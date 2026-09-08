@@ -86,6 +86,14 @@ VALID_MODES_V2: tuple[str, ...] = (
     "voice_only",
 )
 
+# Каркас supervisor-API frame-типов. Расширение (новый supervisor frame)
+# = добавить FrameType в этот набор + handler в SUPERVISOR_HANDLERS ниже.
+# Сейчас только бинарные supervisor-фреймы; cmd-flow (supervisor_* через
+# JSON_CMD) живёт отдельно в _on_json_cmd.
+SUPERVISOR_FRAME_TYPES: frozenset[FrameType] = frozenset(
+    {FrameType.SET_MODE, FrameType.ACQUIRE_FLOOR, FrameType.RELEASE_FLOOR}
+)
+
 
 def _pack_msgpack(payload: dict) -> bytes:
     """Serialize dict → msgpack bytes (bin-type=True для bytes-полей)."""
@@ -2710,6 +2718,17 @@ class WSSServer:
             log.debug("state_update_keepalive ended: %s", e)
 
     # === AV-16: supervisor-command handler =======================================
+    #
+    # Декомпозиция (voice-vr 17, t_af606d97, ADR-0021 R1):
+    #  * 4 pre-guard'а (protocol_version, auth, msgpack unpack, client_id
+    #    normalization) вынесены в _prepare_supervisor_dispatch (CC≤15).
+    #  * Per-frame логика — module-level handler-ы (_handle_set_mode /
+    #    _handle_acquire_floor / _handle_release_floor / _handle_set_voice)
+    #    с сигнатурой ``async (server, ws, session, data, client_id) -> None``.
+    #  * Общий snapshot-отправитель вынесен в _send_supervisor_state_update
+    #    (раньше была копипаста в SET_MODE success и FLOOR success).
+    #  * Диспетчер табличный (SUPERVISOR_HANDLERS), default-ветка ловит
+    #    «неизвестный supervisor frame» → ERROR{BAD_PAYLOAD}.
     async def _handle_supervisor_command(
         self,
         ws,
@@ -2725,6 +2744,45 @@ class WSSServer:
         сервер молча ест»), поэтому v1-клинт СРАЗУ получит явный сигнал
         обновиться через ``ERROR{PROTOCOL_VERSION}`` (см. §8 коды).
         """
+        # pre-guard: каждый guard либо отправляет ERROR и возвращает None,
+        # либо возвращает (data, client_id) — «можно продолжать».
+        prepared = await self._prepare_supervisor_dispatch(ws, session, ftype, payload)
+        if prepared is None:
+            return
+        data, client_id = prepared
+        # табличный dispatcher; default-ветка ловит FrameType'ы, которые
+        # маршрутизируются сюда из _ws_handler, но handler'а не имеют
+        # (например, будущие расширения SUPERVISOR_FRAME_TYPES без правки
+        # таблицы). Защита «добавил новый ftype → забыл handler» →
+        # явный ERROR клиенту, а не молчаливый drop.
+        handler = SUPERVISOR_HANDLERS.get(ftype)
+        if handler is None:
+            log.error(
+                "supervisor_api: no handler for ftype=%s (frame dropped)",
+                ftype,
+            )
+            await self._send_error(
+                ws,
+                0,
+                ErrorCode.BAD_PAYLOAD,
+                f"unknown supervisor frame {ftype.name} (0x{ftype.value:02x})",
+            )
+            return
+        await handler(self, ws, session, data, client_id)
+
+    async def _prepare_supervisor_dispatch(
+        self,
+        ws,
+        session: ClientSession,
+        ftype: FrameType,
+        payload: bytes,
+    ) -> Optional[tuple[dict, str]]:
+        """4 pre-guard'а для supervisor-фрейма: version / auth / msgpack / client_id.
+
+        Возвращает ``(data, server_client_id)`` если все гварды прошли, иначе
+        ``None`` (ERROR уже отправлен). Каждый guard — отдельная ветка,
+        CC≤15 благодаря выносу из ``_handle_supervisor_command``.
+        """
         if session.protocol_version != 2:
             await self._send_error(
                 ws,
@@ -2733,8 +2791,7 @@ class WSSServer:
                 f"{ftype.name} requires subprotocol v2 (negotiated: "
                 f"{session.protocol_version}); update client (docs §11)",
             )
-            return
-
+            return None
         if session.server_client_id is None:
             # Пре-аутентификация, теоретически не должно случиться (выше в
             # _ws_handler есть защита «session.state != authenticated»), но
@@ -2742,8 +2799,7 @@ class WSSServer:
             await self._send_error(
                 ws, 0, ErrorCode.AUTH_FAIL, "session not authenticated"
             )
-            return
-
+            return None
         # unpack msgpack
         try:
             data = _unpack_msgpack(payload)
@@ -2756,8 +2812,7 @@ class WSSServer:
                 ErrorCode.BAD_PAYLOAD,
                 f"supervisor payload: {exc}",
             )
-            return
-
+            return None
         # Игнорируем client-supplied client_id (см. §11 + AV-16 «клиент не
         # должен уметь представиться Telegram'ом»). Сервер подставляет свой
         # server_client_id; расхождение — лог-warning.
@@ -2770,118 +2825,207 @@ class WSSServer:
                 session.session_id,
                 payload_client_id,
             )
+        return (data, client_id)
 
-        if ftype == FrameType.SET_MODE:
-            mode = data.get("mode")
-            if not isinstance(mode, str) or mode not in VALID_MODES_V2:
-                await self._send_error(
-                    ws,
-                    0,
-                    ErrorCode.BAD_PAYLOAD,
-                    f"mode must be one of {list(VALID_MODES_V2)}; got {mode!r}",
-                )
-                return
-            try:
-                body = self.bridge.supervisor_set_mode(client_id, mode)
-            except Exception as exc:  # noqa: BLE001
-                # Мост не должен валить event-loop; если падает — это баг
-                # реализации Bridge и его надо исправлять, но клиент получит
-                # INTERNAL и сможет retry.
-                log.exception("supervisor_set_mode bridge crashed: %s", exc)
-                await self._send_error(
-                    ws,
-                    0,
-                    ErrorCode.INTERNAL,
-                    f"supervisor_set_mode: {exc}",
-                )
-                return
-            # Контракт: applied=False → FSM не пропустила → MODE_CONFLICT;
-            # иначе → успех → STATE_UPDATE со свежим снапшотом.
-            if not body.get("applied"):
-                await self._send_error(
-                    ws,
-                    0,
-                    ErrorCode.MODE_CONFLICT,
-                    str(body.get("reason", "refused")),
-                )
-                return
-            # Успех: шлём клиенту свежий STATE_UPDATE с msgpack {state: ...}.
-            snapshot = self.bridge.supervisor_state()
-            if snapshot is None:
-                # мост ещё не подключился — клиент пусть ждёт keep-alive.
-                return
-            if isinstance(snapshot, (bytes, bytearray)):
-                payload_bytes = bytes(snapshot)
-            elif isinstance(snapshot, dict):
-                payload_bytes = _pack_msgpack({"state": snapshot})
-            else:
-                return
-            await ws.send_bytes(encode_frame(FrameType.STATE_UPDATE, 0, payload_bytes))
+    async def _send_supervisor_state_update(self, ws) -> None:
+        """Отправить клиенту STATE_UPDATE с msgpack {state: <bridge snapshot>}.
+
+        Вынесен из двух копи-паст (SET_MODE success + FLOOR success). Если
+        bridge ещё не подключился (``snapshot is None``) — молча ничего не
+        шлём, клиент дождётся следующего STATE_UPDATE (1 Hz keep-alive или
+        следующая успешная supervisor-команда).
+        """
+        snapshot = self.bridge.supervisor_state()
+        if snapshot is None:
+            # мост ещё не подключился — клиент пусть ждёт keep-alive.
             return
-
-        if ftype in (FrameType.ACQUIRE_FLOOR, FrameType.RELEASE_FLOOR):
-            floor = data.get("floor")
-            if not isinstance(floor, str) or floor not in VALID_FLOORS_V2:
-                await self._send_error(
-                    ws,
-                    0,
-                    ErrorCode.BAD_PAYLOAD,
-                    f"floor must be one of {list(VALID_FLOORS_V2)}; got {floor!r}",
-                )
-                return
-            try:
-                if ftype == FrameType.ACQUIRE_FLOOR:
-                    body = self.bridge.supervisor_acquire_floor(client_id, floor)
-                else:
-                    body = self.bridge.supervisor_release_floor(client_id, floor)
-            except Exception as exc:  # noqa: BLE001
-                log.exception("supervisor_floor bridge crashed: %s", exc)
-                await self._send_error(
-                    ws,
-                    0,
-                    ErrorCode.INTERNAL,
-                    f"supervisor floor: {exc}",
-                )
-                return
-
-            granted = bool(body.get("granted", body.get("applied")))
-            if not granted:
-                # Конфликт: floor занят другим client_id или другой
-                # permission_denied reason. Per §8 код FLOOR_HELD — единый
-                # код для обоих сценариев; ``held_by`` в message.
-                held_by = body.get("held_by")
-                reason = body.get("reason", "refused")
-                err_message = (
-                    reason if held_by is None else f"{reason}; held_by={held_by}"
-                )
-                await self._send_error(
-                    ws,
-                    0,
-                    ErrorCode.FLOOR_HELD,
-                    err_message,
-                )
-                return
-
-            # Успех: STATE_UPDATE со свежим snapshot (аналогично SET_MODE).
-            snapshot = self.bridge.supervisor_state()
-            if snapshot is None:
-                return
-            if isinstance(snapshot, (bytes, bytearray)):
-                payload_bytes = bytes(snapshot)
-            elif isinstance(snapshot, dict):
-                payload_bytes = _pack_msgpack({"state": snapshot})
-            else:
-                return
-            await ws.send_bytes(encode_frame(FrameType.STATE_UPDATE, 0, payload_bytes))
+        if isinstance(snapshot, (bytes, bytearray)):
+            payload_bytes = bytes(snapshot)
+        elif isinstance(snapshot, dict):
+            payload_bytes = _pack_msgpack({"state": snapshot})
+        else:
             return
+        await ws.send_bytes(encode_frame(FrameType.STATE_UPDATE, 0, payload_bytes))
 
-        # Unreachable: elif chain выше покрывает все три frame-type.
-        await self._send_error(
+
+# === AV-16: supervisor-frame handlers (module-level) =========================
+#
+# Каждый handler — async-функция с сигнатурой
+#     async def _handle_<frame>(server, ws, session, data, client_id) -> None
+# Почему не методы WSSServer: handler регистрируется в SUPERVISOR_HANDLERS
+# на module-level (после определения класса), и обращение через unbound
+# функцию WSSServer._method() потеряет self — мы бы передавали server
+# в аргумент ``self`` handler-а, и сигнатура не совпала бы. Module-level
+# async-функция явно принимает server первым аргументом — без сюрпризов.
+#
+# Handler'ы не делают pre-guard'ы (это работа _prepare_supervisor_dispatch);
+# они работают с уже провалидированными (data, client_id) и сразу
+# диспетчируют в bridge.
+
+
+async def _handle_set_mode(
+    server: "WSSServer",
+    ws,
+    session: ClientSession,
+    data: dict,
+    client_id: str,
+) -> None:
+    """SET_MODE (0x30): валидация mode → bridge.supervisor_set_mode → STATE_UPDATE.
+
+    Контракт: applied=False → FSM не пропустила → MODE_CONFLICT;
+    иначе → успех → STATE_UPDATE со свежим снапшотом.
+    """
+    mode = data.get("mode")
+    if not isinstance(mode, str) or mode not in VALID_MODES_V2:
+        await server._send_error(
             ws,
             0,
             ErrorCode.BAD_PAYLOAD,
-            f"unknown supervisor frame {ftype}",
+            f"mode must be one of {list(VALID_MODES_V2)}; got {mode!r}",
         )
+        return
+    try:
+        body = server.bridge.supervisor_set_mode(client_id, mode)
+    except Exception as exc:  # noqa: BLE001
+        # Мост не должен валить event-loop; если падает — это баг
+        # реализации Bridge и его надо исправлять, но клиент получит
+        # INTERNAL и сможет retry.
+        log.exception("supervisor_set_mode bridge crashed: %s", exc)
+        await server._send_error(
+            ws,
+            0,
+            ErrorCode.INTERNAL,
+            f"supervisor_set_mode: {exc}",
+        )
+        return
+    if not body.get("applied"):
+        await server._send_error(
+            ws,
+            0,
+            ErrorCode.MODE_CONFLICT,
+            str(body.get("reason", "refused")),
+        )
+        return
+    # Успех: шлём клиенту свежий STATE_UPDATE с msgpack {state: ...}.
+    await server._send_supervisor_state_update(ws)
+
+
+async def _handle_acquire_floor(
+    server: "WSSServer",
+    ws,
+    session: ClientSession,
+    data: dict,
+    client_id: str,
+) -> None:
+    """ACQUIRE_FLOOR (0x31): валидация floor → bridge.supervisor_acquire_floor.
+
+    Контракт: granted/applied=False → FLOOR_HELD (с held_by если есть);
+    иначе → успех → STATE_UPDATE со свежим снапшотом.
+    """
+    await _handle_floor_op(
+        server,
+        ws,
+        session,
+        data,
+        client_id,
+        bridge_call=server.bridge.supervisor_acquire_floor,
+    )
+
+
+async def _handle_release_floor(
+    server: "WSSServer",
+    ws,
+    session: ClientSession,
+    data: dict,
+    client_id: str,
+) -> None:
+    """RELEASE_FLOOR (0x32): валидация floor → bridge.supervisor_release_floor.
+
+    Контракт как у ACQUIRE_FLOOR (см. _handle_acquire_floor).
+    """
+    await _handle_floor_op(
+        server,
+        ws,
+        session,
+        data,
+        client_id,
+        bridge_call=server.bridge.supervisor_release_floor,
+    )
+
+
+async def _handle_floor_op(
+    server: "WSSServer",
+    ws,
+    session: ClientSession,
+    data: dict,
+    client_id: str,
+    *,
+    bridge_call: Any,
+) -> None:
+    """Общая часть ACQUIRE/RELEASE_FLOOR: валидация + bridge_call + STATE_UPDATE.
+
+    Раньше ACQUIRE/RELEASE шли двумя копи-паста if-блоками внутри
+    ``_handle_supervisor_command`` (строки 2822-2876 develop @ 2026-09-08).
+    Оба пути теперь здесь; выбор acquire vs release — через ``bridge_call``
+    (частично применённый bridge-метод, передаётся из caller-а).
+    """
+    floor = data.get("floor")
+    if not isinstance(floor, str) or floor not in VALID_FLOORS_V2:
+        await server._send_error(
+            ws,
+            0,
+            ErrorCode.BAD_PAYLOAD,
+            f"floor must be one of {list(VALID_FLOORS_V2)}; got {floor!r}",
+        )
+        return
+    try:
+        body = bridge_call(client_id, floor)
+    except Exception as exc:  # noqa: BLE001
+        log.exception("supervisor_floor bridge crashed: %s", exc)
+        await server._send_error(
+            ws,
+            0,
+            ErrorCode.INTERNAL,
+            f"supervisor floor: {exc}",
+        )
+        return
+    granted = bool(body.get("granted", body.get("applied")))
+    if not granted:
+        # Конфликт: floor занят другим client_id или другой
+        # permission_denied reason. Per §8 код FLOOR_HELD — единый
+        # код для обоих сценариев; ``held_by`` в message.
+        held_by = body.get("held_by")
+        reason = body.get("reason", "refused")
+        err_message = (
+            reason if held_by is None else f"{reason}; held_by={held_by}"
+        )
+        await server._send_error(
+            ws,
+            0,
+            ErrorCode.FLOOR_HELD,
+            err_message,
+        )
+        return
+    # Успех: STATE_UPDATE со свежим snapshot (аналогично SET_MODE).
+    await server._send_supervisor_state_update(ws)
+
+
+# Каркас supervisor-фреймов: FrameType → async-handler.
+# Используется ``_handle_supervisor_command`` после pre-guard-ов; default
+# в dispatcher отправляет ERROR{BAD_PAYLOAD} «unknown supervisor frame»
+# для FrameType-ов из SUPERVISOR_FRAME_TYPES, которые ещё не имеют
+# зарегистрированного handler-а (защита от «добавил новый ftype в
+# маршрутизацию — забыл handler»).
+#
+# Значения — module-level async-функции (НЕ bound-методы WSSServer),
+# потому что dict инициализируется в module-scope, где instance
+# WSSServer ещё не существует. Сигнатура handler-а — см. комментарий
+# выше перед _handle_set_mode.
+SUPERVISOR_HANDLERS: dict[FrameType, Any] = {
+    FrameType.SET_MODE: _handle_set_mode,
+    FrameType.ACQUIRE_FLOOR: _handle_acquire_floor,
+    FrameType.RELEASE_FLOOR: _handle_release_floor,
+}
 
 
 # Проверяем наличие aiohttp лениво, чтобы тесты могли мокать.
