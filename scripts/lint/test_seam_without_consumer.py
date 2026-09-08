@@ -515,5 +515,261 @@ class BaselineRoundTripTests(unittest.TestCase):
             self.assertEqual(rc, 1)
 
 
+class MsgTypeResolutionTests(unittest.TestCase):
+    """Issue #2188 / voice-vr 03: ``create_publisher``/``create_subscription``
+    сверяют не только имя топика, но и тип сообщения. Иначе шов
+    ``create_publisher(String, "/teleop_heartbeat")`` vs
+    ``create_subscription(TeleopHeartbeat, "/teleop_heartbeat")`` —
+    два разных IDL-класса — проходит как «связанный», а в рантайме ROS
+    не поднимает DDS-соединение.
+    """
+
+    def _scan(self, files: dict[str, str]) -> swc.SeamScan:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        paths = [_write(root, rel, content) for rel, content in files.items()]
+        original_root = swc.REPO_ROOT
+        swc.REPO_ROOT = root
+        try:
+            return swc.scan_files(paths)
+        finally:
+            swc.REPO_ROOT = original_root
+
+    def test_same_msg_type_is_not_a_mismatch(self):
+        scan = self._scan(
+            {
+                "src/rob_box_voice/rob_box_voice/tts_node.py": (
+                    "from std_msgs.msg import String\n"
+                    "class TtsNode:\n"
+                    "    def __init__(self):\n"
+                    "        self.create_publisher(String, '/tts/ready', 10)\n"
+                ),
+                "src/rob_box_quest/rob_box_quest/quest_node.py": (
+                    "from std_msgs.msg import String\n"
+                    "class QuestNode:\n"
+                    "    def __init__(self):\n"
+                    "        self.create_subscription(String, '/tts/ready', self.cb, 10)\n"
+                ),
+            }
+        )
+        self.assertEqual(swc._collect_topic_type_mismatches(scan), [])
+
+    def test_different_msg_types_under_same_topic_is_mismatch(self):
+        # Direct shape of /teleop_heartbeat on develop (issue #2188):
+        # quest_node publishes std_msgs/String, arbiter subscribes the
+        # IDL TeleopHeartbeat. Same topic name, mismatched types.
+        scan = self._scan(
+            {
+                "src/rob_box_quest/rob_box_quest/quest_node.py": (
+                    "from std_msgs.msg import String\n"
+                    "class QuestNode:\n"
+                    "    def __init__(self):\n"
+                    "        self.create_publisher(String, '/teleop_heartbeat', 10)\n"
+                ),
+                "src/rob_box_supervisor/rob_box_supervisor/arbiter_node.py": (
+                    "from rob_box_supervisor_msgs.msg import TeleopHeartbeat\n"
+                    "class AvatarArbiter:\n"
+                    "    def __init__(self):\n"
+                    "        self.create_subscription(TeleopHeartbeat, '/teleop_heartbeat', self.cb, 10)\n"
+                ),
+            }
+        )
+        mismatches = swc._collect_topic_type_mismatches(scan)
+        self.assertEqual(len(mismatches), 1)
+        self.assertEqual(mismatches[0], "/teleop_heartbeat|String != TeleopHeartbeat")
+
+    def test_unresolved_msg_type_is_skipped_not_flagged(self):
+        # Calling ``self._heartbeat_msg_type`` (a method-returned IDL
+        # class) cannot be resolved statically — and we do NOT want to
+        # falsely flag a mismatch on it. The mismatched-by-name sibling
+        # below should still be detected.
+        scan = self._scan(
+            {
+                "src/rob_box_quest/rob_box_quest/quest_node.py": (
+                    "from std_msgs.msg import String\n"
+                    "class QuestNode:\n"
+                    "    def __init__(self):\n"
+                    "        self._heartbeat_msg_type = self._try_import()\n"
+                    "        self.create_subscription(self._heartbeat_msg_type, '/x', self.cb, 10)\n"
+                ),
+                "src/rob_box_supervisor/rob_box_supervisor/arbiter_node.py": (
+                    "from std_msgs.msg import String\n"
+                    "class AvatarArbiter:\n"
+                    "    def __init__(self):\n"
+                    "        self.create_publisher(String, '/y', 10)\n"
+                    "        self.create_subscription(String, '/x', self.cb, 10)\n"
+                ),
+            }
+        )
+        # /x has a sub but no pub in this fixture — it is NOT a type
+        # mismatch candidate (no pub-type to compare against).
+        # /y has only a pub — also not a mismatch candidate.
+        # Both stay out of the mismatch list.
+        self.assertEqual(swc._collect_topic_type_mismatches(scan), [])
+        # And /x's sub is recorded as having no resolvable msg type:
+        self.assertEqual(scan.unresolved_msg_types[0].expr_src, "self._heartbeat_msg_type")
+
+    def test_import_alias_resolves_to_original_name(self):
+        # ``from X import String as RosString`` followed by
+        # ``create_publisher(RosString, ...)`` must normalise to ``String``
+        # so the comparison works against another ``String`` import.
+        scan = self._scan(
+            {
+                "src/rob_box_telegram/rob_box_telegram/supervisor_client.py": (
+                    "from std_msgs.msg import String as RosString\n"
+                    "class TelegramClient:\n"
+                    "    def __init__(self):\n"
+                    "        self.create_publisher(RosString, '/topic', 10)\n"
+                ),
+                "src/rob_box_voice/rob_box_voice/audio_node.py": (
+                    "from std_msgs.msg import String\n"
+                    "class AudioNode:\n"
+                    "    def __init__(self):\n"
+                    "        self.create_subscription(String, '/topic', self.cb, 10)\n"
+                ),
+            }
+        )
+        self.assertEqual(swc._collect_topic_type_mismatches(scan), [])
+
+    def test_dotted_msg_type_resolves_to_short_name(self):
+        # ``std_msgs.msg.String`` and ``String`` should compare equal.
+        scan = self._scan(
+            {
+                "src/rob_box_a/rob_box_a/a.py": (
+                    "import std_msgs.msg\n"
+                    "class A:\n"
+                    "    def __init__(self):\n"
+                    "        self.create_publisher(std_msgs.msg.String, '/t', 10)\n"
+                ),
+                "src/rob_box_b/rob_box_b/b.py": (
+                    "from std_msgs.msg import String\n"
+                    "class B:\n"
+                    "    def __init__(self):\n"
+                    "        self.create_subscription(String, '/t', self.cb, 10)\n"
+                ),
+            }
+        )
+        self.assertEqual(swc._collect_topic_type_mismatches(scan), [])
+
+    def test_lazy_import_inside_function_resolves(self):
+        # rob_box_mcp_tools pattern: ``from std_msgs.msg import String``
+        # happens inside ``run()``, not at module scope. Lazy-import
+        # collection must catch it so the mismatch detector doesn't
+        # drown MCP tools in false negatives.
+        scan = self._scan(
+            {
+                "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/say.py": (
+                    "class SayTool:\n"
+                    "    def run(self):\n"
+                    "        from std_msgs.msg import String\n"
+                    "        self.create_publisher(String, '/say', 10)\n"
+                ),
+                "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/listener.py": (
+                    "class ListenerTool:\n"
+                    "    def run(self):\n"
+                    "        from std_msgs.msg import String\n"
+                    "        self.create_subscription(String, '/say', self.cb, 10)\n"
+                ),
+            }
+        )
+        self.assertEqual(swc._collect_topic_type_mismatches(scan), [])
+
+    def test_baseline_round_trip_for_topic_type_mismatch(self):
+        # Update baseline → mismatch recorded → check passes (no NEW
+        # violation). This is the same flow cc_budget follows for its
+        # categories and the contract voice-vr 03 promises Шифу.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = [
+                _write(
+                    root,
+                    "src/pkg/pkg/pub.py",
+                    "from std_msgs.msg import String\n"
+                    "class P:\n"
+                    "    def __init__(self):\n"
+                    "        self.create_publisher(String, '/x', 10)\n",
+                ),
+                _write(
+                    root,
+                    "src/pkg/pkg/sub.py",
+                    "from other.msg import Bool\n"
+                    "class S:\n"
+                    "    def __init__(self):\n"
+                    "        self.create_subscription(Bool, '/x', self.cb, 10)\n",
+                ),
+            ]
+            baseline_path = root / "seam_baseline.json"
+            allow_path = root / "seam_allowlist.json"
+            allow_path.write_text(
+                json.dumps(
+                    {"publishers_without_local_subscriber": {}, "subscribers_without_local_publisher": {}}
+                ),
+                encoding="utf-8",
+            )
+            orig_root, orig_baseline, orig_allow = (
+                swc.REPO_ROOT,
+                swc.BASELINE_FILE,
+                swc.ALLOWLIST_FILE,
+            )
+            swc.REPO_ROOT, swc.BASELINE_FILE, swc.ALLOWLIST_FILE = (
+                root,
+                baseline_path,
+                allow_path,
+            )
+            try:
+                rc = swc.cmd_update_baseline(paths, base_sha="deadbeef")
+                self.assertEqual(rc, 0)
+                baseline = swc._load_baseline()
+                self.assertIn("/x|String != Bool", baseline["topic_type_mismatch"])
+                rc = swc.cmd_check(paths, baseline)
+                self.assertEqual(rc, 0)
+                # Now flip the sub to use the same type — baseline still
+                # holds the old mismatch key, which is fine: it remains
+                # grandfathered and doesn't generate a NEW FAIL, even
+                # though it's no longer an actual mismatch on disk.
+                _write(
+                    root,
+                    "src/pkg/pkg/sub.py",
+                    "from std_msgs.msg import String\n"
+                    "class S:\n"
+                    "    def __init__(self):\n"
+                    "        self.create_subscription(String, '/x', self.cb, 10)\n",
+                )
+                rc = swc.cmd_check(paths, baseline)
+                self.assertEqual(rc, 0)
+                # And a brand-new mismatch (different topic) IS a FAIL.
+                _write(
+                    root,
+                    "src/pkg/pkg/sub.py",
+                    "from std_msgs.msg import String\n"
+                    "class S:\n"
+                    "    def __init__(self):\n"
+                    "        self.create_subscription(String, '/y', self.cb, 10)\n"
+                    "        self.create_publisher(String, '/y', 10)\n",
+                )
+                _write(
+                    root,
+                    "src/pkg/pkg/sub2.py",
+                    "from other.msg import Int32\n"
+                    "class S2:\n"
+                    "    def __init__(self):\n"
+                    "        self.create_subscription(Int32, '/y', self.cb, 10)\n",
+                )
+                paths = [
+                    Path(root / "src/pkg/pkg/pub.py"),
+                    Path(root / "src/pkg/pkg/sub.py"),
+                    Path(root / "src/pkg/pkg/sub2.py"),
+                ]
+                rc = swc.cmd_check(paths, baseline)
+                self.assertEqual(rc, 1)
+            finally:
+                swc.REPO_ROOT, swc.BASELINE_FILE, swc.ALLOWLIST_FILE = (
+                    orig_root,
+                    orig_baseline,
+                    orig_allow,
+                )
+
+
 if __name__ == "__main__":
     unittest.main()
