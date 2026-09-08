@@ -20,7 +20,8 @@ issue #2192):
          ``VALID_FLOORS_V2``, ``VALID_MODES_V2``,
          ``VOICE_PIPELINE_DEFAULT_LANGUAGE`` (разбросаны по модулю)
       4. ``src/rob_box_quest/rob_box_quest/server/session.py``
-         — ``ErrorCode`` (8 кодов, дубль ``FLOOR_HELD``/``MODE_CONFLICT``)
+         — ``ErrorCode`` (9 кодов, дубль ``FLOOR_HELD``/``MODE_CONFLICT``
+         + ``UNKNOWN_COMMAND``)
       5. ``src/rob_box_quest/webxr_client/src/wire/messages.ts``
          — ``JsonCmd`` / ``JsonEvent`` union-типы
          (часть имён сервер НЕ шлёт: ``avatar_set_mode``, ``ui_button``,
@@ -1052,6 +1053,10 @@ ERRORS: tuple[str, ...] = (
     "MODE_CONFLICT",
     # INTERNAL — необработанное исключение в server-side handler'е.
     "INTERNAL",
+    # UNKNOWN_COMMAND — клиент прислал JSON_CMD с неизвестным ``cmd``
+    # (issue #2194, voice-vr 09). Раньше сервер молча ронял хвост функции
+    # без ERROR/WARNING; теперь — единый код для всех неизвестных команд.
+    "UNKNOWN_COMMAND",
 )
 
 
@@ -1097,6 +1102,10 @@ ERROR_SPECS: tuple[ErrorCodeSpec, ...] = (
     ErrorCodeSpec(
         "INTERNAL",
         "Необработанное исключение в server-side handler'е (§8).",
+    ),
+    ErrorCodeSpec(
+        "UNKNOWN_COMMAND",
+        "JSON_CMD с неизвестным ``cmd`` (issue #2194, voice-vr 09 §8).",
     ),
 )
 
