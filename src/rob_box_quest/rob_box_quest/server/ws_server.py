@@ -1206,6 +1206,25 @@ class WSSServer:
         """
         return self._avatar_arbiter.should_send_floor_held_error(session_id)
 
+    def _find_session_by_client_id(
+        self, client_id: str
+    ) -> "Optional[ClientSession]":
+        """Найти активную :class:`ClientSession` по server_client_id.
+
+        ``_sessions`` keyed by ``session_id`` (UUID), а внешний API
+        (avatar_arbiter, supervisor_*, JSON_EVENT клиенту) оперирует
+        ``server_client_id`` (issue #2190, ``"quest:<uuid>"``).
+        Линейный поиск по всем сессиям — их обычно < 5, поэтому
+        overhead не критичен (gate и heartbeat идут по
+        ``_avatar_arbiter.floor_holder`` напрямую, без поиска).
+        """
+        if not client_id:
+            return None
+        for sess in self._sessions.values():
+            if sess.server_client_id == client_id:
+                return sess
+        return None
+
     def on_floor_lost_external(self, client_id: str) -> None:
         """Внешнее уведомление (от Bridge/avatar_supervisor) о потере floor.
 
@@ -1214,6 +1233,13 @@ class WSSServer:
         будет вызываться из подписки. Сейчас используется из
         QuestBridge через Bridge.on_floor_lost (см. _unregister_session
         для случая закрытия сессии).
+
+        ``client_id`` — server_client_id формата ``"quest:<session_uuid>"``
+        (issue #2190). Это совпадает с тем, что avatar_arbiter публикует
+        в ``/avatar/state.teleop_floor.client_id``, и с тем, что ws_server
+        хранит в ``_avatar_arbiter.floor_holder``. Поэтому сравнение
+        ``floor_holder != client_id`` корректно без дополнительной
+        конвертации.
 
         Внутри:
         1) Сбрасываем локальный tracker (если ещё держит — значит
@@ -1225,6 +1251,8 @@ class WSSServer:
         # ADR-0051 §2.2 (issue #1999, C2): проверяем avatar_arbiter
         # (источник истины по floor-ам) напрямую. Раньше это был
         # tracker.is_held_by — теперь его роль исполняет клиент.
+        # issue #2190: оба аргумента в формате server_client_id, никакой
+        # конвертации не нужно.
         if self._avatar_arbiter.floor_holder != client_id:
             # avatar_arbiter уже не считает client_id держателем —
             # likely двойное уведомление (release в _unregister_session
@@ -1236,10 +1264,12 @@ class WSSServer:
         # Уведомить Bridge (QuestBridge опубликует zero Twist).
         self.bridge.on_floor_lost(client_id)
         # Уведомить активные WS-сессии с этим client_id, если ещё открыты.
-        session = self._sessions.get(client_id)
+        # issue #2190: client_id — server_client_id, а ``_sessions``
+        # keyed by session_id. Ищем сессию через ``_find_session_by_client_id``.
+        session = self._find_session_by_client_id(client_id)
         if session is None or not session.is_open():
             return
-        ws = self._ws_by_session.get(client_id)
+        ws = self._ws_by_session.get(session.session_id)
         if ws is None:
             return
         # JSON_EVENT шлём в event-loop (он же вызвал эту функцию).
@@ -1267,7 +1297,7 @@ class WSSServer:
 
         fut = asyncio.run_coroutine_threadsafe(_notify(), loop)
         fut.add_done_callback(_consume_future_exception)
-        log.info("quest: floor_lost session_id=%s (external)", client_id)
+        log.info("quest: floor_lost client_id=%s (external)", client_id)
 
     def broadcast_frame(self, ui_name: str, payload: bytes) -> int:
         """Слать BINARY_FRAME всем сессиям, подписанным на ui_name.
@@ -1674,8 +1704,13 @@ class WSSServer:
                 ts_ms, seq = int(time.time() * 1000), 0
             # ADR-0051 §2.2: gate через avatar_arbiter (источник истины
             # по floor-ам). tracker больше не используется.
+            # issue #2190 (voice-vr 05): сравниваем с server_client_id —
+            # единый формат во всех точках (gate/heartbeat/release/
+            # STATE_UPDATE). Это «внешнее имя» сессии, которое видит
+            # avatar_supervisor и которое клиент увидит в
+            # ``/avatar/state.teleop_floor.client_id``.
             if self._require_teleop_floor and self._avatar_arbiter.floor_holder != (
-                session.session_id
+                session.server_client_id
             ):
                 if self._should_send_floor_held_error(session.session_id):
                     await self._send_error(
@@ -1696,8 +1731,14 @@ class WSSServer:
             # — тоже живость клиента (он активен), шлём heartbeat-reley.
             # Источник живости — клиент: сервер НЕ генерирует heartbeat-ы
             # на автомате (см. design.md §4.4 «не обнулит dead-man»).
+            # issue #2190: relay тоже шлём server_client_id (а не session_id) —
+            # единый формат «quest:<uuid>», который ожидает avatar_supervisor.
+            # server_client_id гарантированно не None после AUTHENTICATED
+            # (см. ClientSession.mark_authenticated); ``or ""`` — defensive.
             try:
-                self.bridge.relay_teleop_heartbeat(session.session_id, ts_ms, seq)
+                self.bridge.relay_teleop_heartbeat(
+                    session.server_client_id or "", ts_ms, seq
+                )
             except Exception as exc:  # noqa: BLE001 — relay не должен ронять сессию
                 log.warning("quest: relay_teleop_heartbeat failed: %s", exc)
             _ = deadman  # Phase 1.5: telemetry через deadman-события
@@ -1726,15 +1767,18 @@ class WSSServer:
             # тогда супервизор может ошибочно «оживить» чужой сессии
             # клиента, что противоречит §4.4 «источник живости — клиент».
             # ADR-0051 §2.2: gate через avatar_arbiter.
+            # issue #2190: сравниваем с server_client_id (как в gate twist).
             if self._require_teleop_floor and self._avatar_arbiter.floor_holder != (
-                session.session_id
+                session.server_client_id
             ):
                 # Тем не менее feed_client_alive — watchdog WSS-сессии
                 # крутится по любой живости клиента.
                 self.bridge.feed_client_alive()
                 return
             try:
-                self.bridge.relay_teleop_heartbeat(session.session_id, ts_ms, seq)
+                self.bridge.relay_teleop_heartbeat(
+                    session.server_client_id or "", ts_ms, seq
+                )
             except Exception as exc:  # noqa: BLE001
                 log.warning("quest: relay_teleop_heartbeat failed: %s", exc)
             self.bridge.feed_client_alive()
