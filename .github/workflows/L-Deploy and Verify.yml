@@ -370,6 +370,68 @@ jobs:
              fi" \
             || echo "⚠️  Warning: time sync failed on Vision Pi"
 
+      - name: "[Vision Pi] Run voice-resources-init (sync, before main up)"
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🧩 Running voice-resources-init (one-shot) on Vision Pi..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          # Issue #2095 / deploy run #34144648195: race между Exited voice-resources-init
+          # и post-startup health-check (supercollider / voice-assistant) с
+          # depends_on: service_completed_successfully. Прежний workaround
+          # (docker rm -f + network rm + container prune + --force-recreate)
+          # убирал stale-слот ДО запуска, но race возникал ВНУТРИ одного
+          # `docker compose up`: init exit'нул, supercollider через ~6 сек
+          # пошёл в Healthy, в этот момент compose инспектирует init по ID —
+          # «No such container: <HASH>», exit 1.
+          #
+          # Фикс v2 (товарищ Шифу, комментарий к PR #2120, 2026-09-08):
+          # v1 выносил init в отдельный sync-шаг, но забыл исключить init
+          # из основного `docker compose up -d` — `voice-resources-init`
+          # обычный service в compose-файле, и `--force-recreate` пересоздавал
+          # его внутри основного up, после чего voice-assistant снова ждал
+          # по depends_on (окно race возвращалось). v2 + следующий шаг
+          # (`Start Containers` с `--scale voice-resources-init=0`)
+          # гарантируют, что init прогоняется РОВНО ОДИН раз — здесь.
+          #
+          # Кто реально удаляет exited init-контейнер (товарищ Шифу спросил):
+          # docker daemon сам по себе НЕ удаляет exited-контейнеры
+          # (без --rm/autoremove они лежат в `docker ps -a` бесконечно).
+          # Удаляет их `docker container prune -f` (выполнен ниже) +
+          # явный `docker rm -f voice-resources-init` в финальном
+          # fallback'е — оба сбрасывают name-slot. Цикл `docker ps -a
+          # --filter` проверяет, что prune реально вычистил init
+          # к моменту старта основного `up -d`.
+          #
+          # Защита от сбоя init (ненулевой exit): падаем весь шаг, deploy fail —
+          # лучше красный deploy, чем молча работающий робот без renardo-сэмплов
+          # (supercollider тогда начнёт падать на «Buffer UGen: no buffer data»).
+          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
+            "cd ~/rob_box_project/docker/vision && \
+             export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
+             export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
+             if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
+             echo '🧹 pre-init cleanup (retro t_d01fe536+t_9d35468d): stale containers + network'; \
+             docker rm -f voice-resources-init 2>/dev/null || true; \
+             docker network rm vision_default 2>/dev/null || true; \
+             docker container prune -f 2>/dev/null || true; \
+             echo '🚀 running voice-resources-init synchronously (no -d)'; \
+             docker compose up voice-resources-init && \
+             echo '⏳ waiting up to 15s for init to leave ps -a (prune/rm подбирает exited-контейнер)'; \
+             for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do \
+               if ! docker ps -a --filter name=voice-resources-init --format '{{.ID}}' | grep -q .; then \
+                 echo \"  ✓ init container no longer in ps -a after \${i}s (prune отработал)\"; \
+                 break; \
+               fi; \
+               sleep 1; \
+             done && \
+             if docker ps -a --filter name=voice-resources-init --format '{{.ID}}' | grep -q .; then \
+               echo '⚠️  init container still listed by daemon after 15s — forcing rm'; \
+               docker rm -f voice-resources-init 2>/dev/null || true; \
+               sleep 2; \
+             fi"
+
       - name: "[Vision Pi] Start Containers"
         if: '!inputs.dry_run'
         run: |
@@ -377,38 +439,45 @@ jobs:
           echo "🚀 Starting Vision Pi containers..."
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-          # Ретро 14.08 t_d01fe536: одноразовый init-контейнер voice-resources-init
-          # (Exited) из прошлого деплоя блокирует compose up — «Conflict. The container
-          # name /voice-resources-init is already in use» + «network vision_default already
-          # exists» (deploy round-109 06:03Z упал на этом).
+          # Issue #2095 / товарищ Шифу (комментарий к PR #2120, 2026-09-08):
+          # предыдущая версия этого фикса выносила `docker compose up
+          # voice-resources-init` в отдельный sync-шаг, но в основном `up -d`
+          # оставляла compose-файл как есть — а `voice-resources-init` объявлен
+          # в docker-compose.yaml как обычный service. `--force-recreate`
+          # пересоздавал init внутри основного up, после чего
+          # `voice-assistant` / `supercollider` снова ждали по
+          # `depends_on: service_completed_successfully` — окно race
+          # возвращалось, просто init прогонялся дважды.
           #
-          # Ретро 18.08 t_9d35468d (round-130): docker rm -f + network rm БЫЛО НЕДОСТАТОЧНО.
-          # Демон docker удерживает name-slot для свеже-удалённого контейнера ~5-6 секунд,
-          # и при повторном deploy (после предыдущего fail) compose up получает
-          # «Conflict. The container name /voice-resources-init is already in use by
-          # container HASH» — даже после того, как `docker rm -f` удалил контейнер
-          # по имени. Это intermittent: первый прогон после простоя — OK, повторный
-          # через <30s — fail.
+          # Этот шаг ИСКЛЮЧАЕТ voice-resources-init из основного `up -d`:
+          # `--scale voice-resources-init=0` (compose-флаг, accepted by `up`)
+          # говорит compose не создавать этот сервис. Длинные/хрупкие
+          # списки сервисов через позиционные аргументы не используем —
+          # они рассинхронизируются с compose-файлом при добавлении
+          # нового сервиса (--scale — общий флаг, не зависит от
+          # конкретного набора service-имён).
           #
-          # Фикс:
-          # 1) `docker container prune -f` — сбрасывает ВСЕ stopped-контейнеры
-          #    (защита от stale name-slot, не только voice-resources-init);
-          # 2) `docker rm -f voice-resources-init` — точечно для one-shot init;
-          # 3) `docker network rm vision_default` — stale-сеть;
-          # 4) `docker compose up -d --force-recreate --pull never` — compose
-          #    принудительно пересоздаёт контейнеры, а не переиспользует (осторожно:
-          #    он ещё и down не делает, см. step Stop Containers выше).
-          #    NB: --force-recreate тут безопасен — Stop Containers уже сделал down.
+          # Параллельно уточняем причину «No such container: <HASH>»:
+          # docker daemon НЕ удаляет exited-контейнер сам по себе
+          # (без --rm/autoremove exited-контейнеры лежат в `docker ps -a`
+          # бесконечно). Удаляет их шаг выше (`docker container prune -f`)
+          # + явный `docker rm -f voice-resources-init` — оба сбрасывают
+          # name-slot, и цикл `docker ps -a --filter` в предыдущем шаге
+          # проверяет, что после exit init-а prune реально его вычистил.
+          # К моменту старта остальных сервисов voice-resources-init
+          # гарантированно отсутствует в ps -a →
+          # `depends_on: service_completed_successfully` satisfied без race.
           sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
             "cd ~/rob_box_project/docker/vision && \
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
-             if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
+             if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
              echo '🔧 retro t_d01fe536+t_9d35468d: cleanup stale containers/networks'; \
              docker rm -f voice-resources-init 2>/dev/null || true; \
              docker network rm vision_default 2>/dev/null || true; \
              docker container prune -f 2>/dev/null || true; \
-             docker compose up -d --force-recreate --pull never"
+             echo '🚀 compose up (--scale voice-resources-init=0 — init уже выполнен в предыдущем шаге)'; \
+             docker compose up -d --force-recreate --pull never --remove-orphans --scale voice-resources-init=0"
 
       # ==================== MAIN PI DEPLOYMENT ====================
 

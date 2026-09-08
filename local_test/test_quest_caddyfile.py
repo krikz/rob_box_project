@@ -187,3 +187,77 @@ class TestListenPorts:
             "443 — дефолт браузера Quest, 8443 — контракт quest_smoke.sh "
             "(QUEST_PORT по умолчанию)."
         )
+
+
+class TestReverseProxyHostContract:
+    """Regression issue #2138 (2026-09-08): Go getaddrinfo ломает WS-сессию.
+
+    Caddyfile писал ``reverse_proxy localhost:8766``. В Go ``localhost``
+    резолвится через ``getaddrinfo`` сначала в ``[::1]`` (IPv6), и только
+    потом в ``127.0.0.1``. ``quest_node`` биндит aiohttp-приложение на
+    IPv4 (TCPSite(host='0.0.0.0', port=8766) — quest_node.py:2402-2407),
+    а в IPv6 ничего не слушает. Результат: Caddy получает
+    ``dial tcp [::1]:8766: connect: connection refused`` → 502 на КАЖДЫЙ
+    WS-handshake от шлема (10.1.1.59, OculusBrowser/150.1.0.24). WS-сессия
+    не устанавливается, ``set_voice`` cmd не доходит до ws_server, picker
+    apply в шлеме молча умирает. Внешний симптом: 0 строк ``SetVoice:`` в
+    avatar-supervisor и 0 строк ``voice`` в rob-box-quest за 20 минут
+    сессии (доказательство — runtime-sniff на Vision Pi 10.1.1.21,
+    2026-09-08, см. PR #2140).
+
+    Эти тесты запрещают ``localhost`` в upstream и требуют явный IP —
+    чтобы Caddy не зависел от порядка резолва getaddrinfo.
+    """
+
+    @pytest.mark.parametrize("path", ["/healthz", "/quest"])
+    def test_upstream_uses_explicit_ip_not_localhost(self, path):
+        """``localhost`` в reverse_proxy → 502 на IPv6-only host."""
+        text = _caddyfile_text()  # включая комментарии — чтобы assert был честным
+        m = re.search(rf"handle\s+{re.escape(path)}\s*\{{", text)
+        assert m, f"нет блока `handle {path}`"
+        # Ищем ближайший reverse_proxy после открытия handle (внутри блока).
+        # Грубо, но тут строки короткие — достаточно, чтобы поймать регресс.
+        rest = text[m.end():]
+        depth = 1
+        rp = ""
+        for line in rest.splitlines():
+            depth += line.count("{") - line.count("}")
+            if "reverse_proxy" in line:
+                rp = line
+            if depth <= 0:
+                break
+        assert rp, f"в `handle {path}` нет reverse_proxy"
+        assert "localhost" not in rp, (
+            f"handle {path} использует `localhost` в reverse_proxy: {rp!r}. "
+            "Go резолвит localhost в [::1] ДО 127.0.0.1; если апстрим слушает "
+            "только IPv4 (как aiohttp TCPSite('0.0.0.0', 8766)), Caddy получает "
+            "`dial tcp [::1]:8766: connection refused` → 502 на каждый WS-handshake "
+            "от шлема. Укажите явный IPv4: `reverse_proxy 127.0.0.1:8766`. "
+            "См. runtime-sniff 10.1.1.21 в issue #2138 / PR #2140."
+        )
+
+    @pytest.mark.parametrize("path", ["/healthz", "/quest"])
+    def test_upstream_uses_loopback_ip(self, path):
+        """reverse_proxy должен указывать на loopback IP (не 0.0.0.0, не имя)."""
+        text = _strip_comments(_caddyfile_text())
+        m = re.search(rf"handle\s+{re.escape(path)}\s*\{{", text)
+        assert m, f"нет блока `handle {path}`"
+        rest = text[m.end():]
+        depth = 1
+        rp = ""
+        for line in rest.splitlines():
+            depth += line.count("{") - line.count("}")
+            if "reverse_proxy" in line:
+                rp = line
+            if depth <= 0:
+                break
+        assert rp, f"в `handle {path}` нет reverse_proxy"
+        m2 = re.search(r"reverse_proxy\s+(\S+?):(\d+)", rp)
+        assert m2, f"в `handle {path}` upstream в неожиданном формате: {rp!r}"
+        host = m2.group(1)
+        assert host in ("127.0.0.1", "::1"), (
+            f"handle {path} reverse_proxy указывает на {host!r}. "
+            "Ожидается явный loopback-IP (127.0.0.1 или ::1). 0.0.0.0 / :: "
+            "в upstream Caddy НЕ допустим — это адрес bind'а, а не адреса "
+            "назначения; localhost запрещён из-за getaddrinfo race (issue #2138)."
+        )

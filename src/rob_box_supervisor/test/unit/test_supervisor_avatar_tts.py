@@ -182,11 +182,14 @@ class TestPublishAvatarTtsEmptyTextDrop(unittest.TestCase):
 
 
 class TestPublishGripTtsEmptyTextDrop(unittest.TestCase):
-    """Issue #2096 — guard пустого text в ``_publish_grip_tts``.
+    """Issue #2096 + #2137 — guard пустого text в ``_publish_grip_tts``.
 
     Зеркальная защита к ``_publish_avatar_tts``: пустой text из грип-пайплайна
     (после LLM-transform мог вернуть ``""``) тоже не должен уходить в
-    /avatar/tts/request.
+    /voice/tts/request. Также проверяем, что happy-path пишет в
+    ``/voice/tts/request`` (динамики робота, §7.5) с ``priority="operator"``
+    и без sink=headset (шлем остаётся только для собственных реплик ТАРС,
+    инвариант 6b §7.4).
     """
 
     def setUp(self) -> None:
@@ -197,17 +200,21 @@ class TestPublishGripTtsEmptyTextDrop(unittest.TestCase):
 
     def test_empty_string_drops_request(self) -> None:
         self.node._publish_grip_tts("")
-        self.assertEqual(_published_avatar_tts(self.node), [])
+        self.assertEqual(_published_voice_tts(self.node), [])
 
     def test_whitespace_only_drops_request(self) -> None:
         self.node._publish_grip_tts("   \n\t  ")
-        self.assertEqual(_published_avatar_tts(self.node), [])
+        self.assertEqual(_published_voice_tts(self.node), [])
 
     def test_non_empty_text_still_publishes(self) -> None:
+        """Happy-path → /voice/tts/request с priority="operator" (§7.5)."""
         self.node._publish_grip_tts("мы начинаем")
-        pub = _published_avatar_tts(self.node)
-        self.assertEqual(len(pub), 1)
-        self.assertEqual(pub[0]["ssml"], "<speak>мы начинаем</speak>")
+        voice_pub = _published_voice_tts(self.node)
+        self.assertEqual(len(voice_pub), 1)
+        self.assertEqual(voice_pub[0]["ssml"], "<speak>мы начинаем</speak>")
+        self.assertEqual(voice_pub[0]["priority"], "operator")
+        # Не должен ничего утечь в /avatar/tts/request (шлем только для ТАРС).
+        self.assertEqual(_published_avatar_tts(self.node), [])
 
 
 if __name__ == "__main__":

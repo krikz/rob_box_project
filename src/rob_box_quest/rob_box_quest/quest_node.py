@@ -729,13 +729,28 @@ class QuestBridge:
             "provider": provider,
             "ts_ms": int(time.time() * 1000),
         }
+        # ADR-0067 / issue #2138.C: observability. Без этого лога невозможно
+        # отличить «pub/sub не доезжает до supervisor» (H2/H3 в ADR §3.3) от
+        # «picker ничего не прислал» (H5) — без raw-вывода в grep ничего не
+        # понять. Делаем ДВА лога: «publishing...» ДО publish, «published...»
+        # ПОСЛЕ успешного return из publisher.publish(). Если между ними
+        # видна только первая строка — publish завис/упал.
+        self._node.get_logger().info(
+            f"set_voice: publishing voice_id={voice_id} provider={provider} "
+            f"preset={preset} → /avatar/set_voice"
+        )
         try:
             self._set_voice_pub.publish(
                 _string_msg(json.dumps(payload, ensure_ascii=False))
             )
         except Exception as exc:  # noqa: BLE001
-            self._node.get_logger().warning(f"quest: set_voice publish failed: {exc}")
+            self._node.get_logger().warning(
+                f"set_voice: publish failed voice_id={voice_id} exc={exc}"
+            )
             return False, None, "publish_failed", None
+        self._node.get_logger().info(
+            f"set_voice: published voice_id={voice_id} to /avatar/set_voice"
+        )
         return True, voice_id, None, None
 
     def publish_preview_voice(self, request_id: str, voice_id: str, text: str) -> None:

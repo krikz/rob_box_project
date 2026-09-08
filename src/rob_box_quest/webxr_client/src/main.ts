@@ -276,12 +276,21 @@ export function bootstrap(opts: BootstrapOptions): {
   /**
    * Смена стиля речи / языка вывода → `set_voice` (AV-28 §P7).
    *
-   * ВАЖНО: `voice_id` здесь НЕ шлём. Сервер (ws_server.py, cmd set_voice)
-   * разводит две фичи, делящие одно имя `preset`, по значению поля:
-   * preset ∈ VOICE_PRESET_IDS (стиль речи) или наличие language → это
-   * AV-28-запрос, и `voice_id` в нём игнорируется. Отправлять сюда
-   * реальный voice_id — врать оператору: он бы увидел ack, а голос
-   * не сменился бы. Выбор голоса живёт только в TTS picker'е (apply).
+   * ТОЛЬКО ДЛЯ AV-28 (чипы стиля/языка). НЕ для выбора голоса.
+   * Выбор голоса живёт в TTS picker'е — отдельный путь `apply` (см. блок
+   * «AV-27: TTS picker» ниже, а также `state/tts_picker_state.ts`).
+   *
+   * ВАЖНО: `voice_id` здесь НЕ шлём — он всегда пустой. Сервер
+   * (ws_server.py, cmd set_voice) разводит две фичи, делящие одно имя
+   * `preset`, по ЗНАЧЕНИЮ поля: preset ∈ VOICE_PRESET_IDS (стиль речи)
+   * или наличие language → это AV-28-запрос, и `voice_id` в нём
+   * игнорируется. Отправлять сюда реальный voice_id — врать оператору:
+   * он бы увидел ack, а голос не сменился бы.
+   *
+   * Issue #2138 указывал на этот код как на источник «голос не
+   * меняется», но picker использует другой код-путь (`apply`, ниже);
+   * этот комментарий оставлен, чтобы будущий рефакторинг не свалил обе
+   * фичи в одну функцию обратно.
    */
   function sendStyleChange(preset?: VoicePresetId, language?: VoiceLanguage): void {
     const c = conn;
@@ -701,6 +710,12 @@ export function bootstrap(opts: BootstrapOptions): {
   //   apply       → JSON_CMD{set_voice}
   // и обратно: voice_list / voice_set_ack / voice_set_nack /
   // preview_voice_audio+BINARY_FRAME / preview_voice_done / _error.
+  //
+  // ВАЖНО: этот код-путь — единственный, через который оператор
+  // меняет голос. Стиль речи/язык меняется через sendStyleChange (AV-28)
+  // и намеренно НЕ здесь: сервер разводит две фичи по полю `preset`, и
+  // смешение в одной функции вернёт баг #2138. См. комментарий у
+  // sendStyleChange и ADR-0067.
 
   let ttsState: TtsPickerState = INITIAL_TTS_PICKER_STATE;
   const previewSink: PreviewAudioSink = createPreviewAudioSink();
