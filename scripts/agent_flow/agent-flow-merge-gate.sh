@@ -3481,11 +3481,13 @@ except Exception:
                     log "issue #${number}: fallback path (ADR-AF-0063 §4.1), WARNING gh pr view body failed — retry next tick"
                     labeled=$((labeled+1)); continue
                 fi
-                # Keyword regex (?i) — case-insensitive matches «Closes»,
-                # «closes», «FIXES», «Resolves», etc. Boundary `\b#${number}\b`
-                # предотвращает match на похожих номерах (#1234 vs #123).
-                _fb_kw_pat="(?i)(?:closes|fixes|resolves)[[:space:]]+#${number}\b"
-                if ! printf '%s' "$_fb_pr_body" | grep -qE "$_fb_kw_pat"; then
+                # Keyword regex — case-insensitive (через `grep -i`, не
+                # `(?i)` — последнее PCRE-only, не работает в `grep -E`).
+                # Matches «Closes», «closes», «FIXES», «Resolves», etc.
+                # Boundary `\b#${number}\b` предотвращает match на похожих
+                # номерах (#1234 vs #123).
+                _fb_kw_pat="(closes|fixes|resolves)[[:space:]]+#${number}\b"
+                if ! printf '%s' "$_fb_pr_body" | grep -qiE "$_fb_kw_pat"; then
                     # Нет keyword для ЭТОГО issue в PR-body → fallback не для нас.
                     # Это reference-only PR (issue упомянута без intent close)
                     # или другой-issue PR. По дизайну (§6) оставляем OPEN.
