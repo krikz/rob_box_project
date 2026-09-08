@@ -2463,27 +2463,12 @@ class TTSNode(Node):
             self.get_logger().warn(f"⚠️ [ADR-0055] /avatar/tts/request: bad JSON: {exc}")
             return
 
-        # ADR-0055 / ADR-0077 — switch по sink.
+        # ADR-0055 / ADR-0077 — switch по sink. Вынесен в helper чтобы не
+        # раздувать CC _on_avatar_tts_request (ADR-0021).
         sink = chunk_data.get("sink", "")
-        if sink == "preview":
-            # ADR-0077 / issue #2138.A.3 — picker'у нужен «прослушиваемый
-            # образец» голоса. Отдельный путь: без dialogue_id/barge-in
-            # защиты (preview НЕ прерывает текущую реплику личности), без
-            # Unicode-guard (preview-фраза короткая и контролируемая), без
-            # ThreadPoolExecutor (синхронный сетевой запрос). Результат
-            # уходит в /avatar/preview_voice/audio (JSON+base64) +
-            # /avatar/preview_voice/result (done) или /avatar/preview_voice/error.
-            self._on_avatar_tts_request_preview(chunk_data)
-            return
-        if sink != "headset":
-            self.get_logger().warn(
-                f"⚠️ [ADR-0055] /avatar/tts/request: invalid sink={sink!r} "
-                "(expected 'headset' or 'preview'), DROP"
-            )
-            self._publish_avatar_tts_error(
-                request_id=chunk_data.get("request_id", ""),
-                error="invalid_sink",
-            )
+        if not self._dispatch_avatar_tts_sink(chunk_data, sink):
+            # invalid sink (или неизвестный) — _dispatch уже залогировал
+            # и опубликовал _avatar_tts_error; нам тут делать нечего.
             return
 
         if "ssml" not in chunk_data:
@@ -2662,7 +2647,34 @@ class TTSNode(Node):
     # ── Preview-канал (ADR-0077 / issue #2138.A.3) ─────────────────────
     # picker'у голосов нужны «прослушиваемые образцы». Канал
     # ``/avatar/tts/request`` (sink="preview") → ``synthesize_preview``
-    # → ``/avatar/preview_voice/{audio,result,error}``. см. ADR-0077.
+    # → ``/avatar/preview_voice/{audio,result,error}``. см. ADR-0078.
+
+    def _dispatch_avatar_tts_sink(self, chunk_data: dict, sink: str) -> bool:
+        # Вынесено из ``_on_avatar_tts_request`` чтобы не раздувать CC
+        # (ADR-0021). Возвращает True если sink распознан и запрос надо
+        # обработать дальше (headset/preview); False если DROP.
+        if sink == "preview":
+            # ADR-0077 / issue #2138.A.3 — picker'у нужен «прослушиваемый
+            # образец» голоса. Отдельный путь: без dialogue_id/barge-in
+            # защиты (preview НЕ прерывает текущую реплику личности), без
+            # Unicode-guard (preview-фраза короткая и контролируемая), без
+            # ThreadPoolExecutor (синхронный сетевой запрос). Результат
+            # уходит в /avatar/preview_voice/audio (JSON+base64) +
+            # /avatar/preview_voice/result (done) или /avatar/preview_voice/error.
+            self._on_avatar_tts_request_preview(chunk_data)
+            return False  # preview уже обработан — caller должен return
+        if sink == "headset":
+            return True  # caller продолжит обработку headset-пути
+        # invalid / unknown
+        self.get_logger().warn(
+            f"⚠️ [ADR-0055] /avatar/tts/request: invalid sink={sink!r} "
+            "(expected 'headset' or 'preview'), DROP"
+        )
+        self._publish_avatar_tts_error(
+            request_id=chunk_data.get("request_id", ""),
+            error="invalid_sink",
+        )
+        return False
 
     def _on_avatar_tts_request_preview(self, chunk_data: dict) -> None:
         # ADR-0077 / issue #2138.A.3 — обработка preview-синтеза.

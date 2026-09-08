@@ -1626,56 +1626,29 @@ class AvatarSupervisor(Node):
         # → ``/avatar/tts/request`` с ``sink="preview"`` → ``tts_node`` делает
         # pure-synth (``synthesize_preview``) → ``/avatar/preview_voice/audio``
         # (JSON+base64) → ws_server → клиент (``preview_audio_sink.ts``).
-        # Старая заглушка ``preview_synthesis_not_implemented_in_mvp`` жила
-        # потому что в tts_node не было отдельного пути pure-synth — теперь он
-        # есть (см. ``TTSNode.synthesize_preview``).
-        raw = (msg.data or "").strip()
-        if not raw:
-            self._log.warning("PreviewVoice: empty payload")
-            return
-        try:
-            data = json.loads(raw)
-        except (ValueError, TypeError) as exc:
-            self._log.warning(f"PreviewVoice: bad json: {exc}")
-            return
-        if not isinstance(data, dict):
-            self._log.warning("PreviewVoice: payload not dict")
-            return
-        request_id = data.get("request_id")
-        voice_id = data.get("voice_id")
-        text = data.get("text")
-        provider = data.get("provider")
-        if not isinstance(request_id, str) or not request_id:
+        # Валидация/делегация вынесены в helpers чтобы не раздувать CC
+        # (ADR-0021).
+        data = self._preview_parse_payload(msg)
+        if data is None:
+            return  # ошибка уже залогирована
+        request_id, voice_id, text, provider = self._preview_extract_fields(data)
+        if request_id is None:
             self._log.warning("PreviewVoice: missing request_id")
             return
-        if not isinstance(voice_id, str) or not voice_id:
+        if voice_id is None:
             self._publish_preview_error(request_id, "voice_id_required")
             return
-        if not isinstance(text, str) or not text:
+        if text is None:
             self._publish_preview_error(request_id, "text_required")
             return
         # Валидация по реестру — делаем ДО публикации, чтобы picker сразу
         # получил honest error (а не silent-hang). Дубликат логики в
         # tts_node — это сознательно: supervisor шлёт честный preview_error,
         # даже если tts_node прислал бы тот же reason с задержкой на сеть.
-        if provider and isinstance(provider, str):
-            if voice_id not in _voices_for(provider):
-                self._publish_preview_error(
-                    request_id, f"voice_unavailable:{provider}:{voice_id}"
-                )
-                return
-        else:
-            # Без hint — ищем где знают.
-            known_in = [
-                p for p in ("yandex", "minimax", "silero") if voice_id in _voices_for(p)
-            ]
-            if not known_in:
-                self._publish_preview_error(request_id, "voice_unknown")
-                return
-            # Берём первого провайдера, который знает голос (для tts_node это
-            # hint — какой голос у какого провайдера искать). Если голос
-            # доступен у нескольких, берём minimax (приоритет для preview).
-            provider = "minimax" if "minimax" in known_in else known_in[0]
+        resolved = self._preview_resolve_provider(request_id, voice_id, provider)
+        if resolved is None:
+            return  # preview_error уже опубликован
+        provider = resolved
         # Делегируем в tts_node через существующий канал /avatar/tts/request
         # с sink="preview". request_id протаскиваем до tts_node — он его
         # проставит в preview_voice_audio/result/error, чтобы ws_server
@@ -1692,6 +1665,75 @@ class AvatarSupervisor(Node):
             # внутри. Дополнительно шлём preview_error с той же причиной
             # для ws_server, чтобы picker не завис на «слушаю…».
             self._publish_preview_error(request_id, "empty_text_dropped")
+
+    @staticmethod
+    def _preview_parse_payload(msg: RosString):
+        """Парсит msg.data → dict или None (с WARN-логом)."""
+        raw = (msg.data or "").strip()
+        if not raw:
+            AvatarSupervisor._preview_log_static("empty payload")
+            return None
+        try:
+            data = json.loads(raw)
+        except (ValueError, TypeError) as exc:
+            AvatarSupervisor._preview_log_static(f"bad json: {exc}")
+            return None
+        if not isinstance(data, dict):
+            AvatarSupervisor._preview_log_static("payload not dict")
+            return None
+        return data
+
+    @staticmethod
+    def _preview_extract_fields(data: dict):
+        """Возвращает (request_id, voice_id, text, provider) — None если
+        неправильный тип или пусто (но без логирования — caller сам
+        решает что делать)."""
+        request_id = data.get("request_id")
+        voice_id = data.get("voice_id")
+        text = data.get("text")
+        provider = data.get("provider")
+
+        def _str_or_none(v):
+            return v if isinstance(v, str) and v else None
+
+        return (
+            _str_or_none(request_id),
+            _str_or_none(voice_id),
+            _str_or_none(text),
+            _str_or_none(provider),
+        )
+
+    def _preview_resolve_provider(
+        self, request_id: str, voice_id: str, provider: Optional[str]
+    ) -> Optional[str]:
+        """Валидирует voice_id по реестру. Возвращает финальный provider
+        (str) или None (если preview_error уже опубликован и caller должен
+        return)."""
+        if provider is not None:
+            if voice_id not in _voices_for(provider):
+                self._publish_preview_error(
+                    request_id, f"voice_unavailable:{provider}:{voice_id}"
+                )
+                return None
+            return provider
+        # Без hint — ищем где знают.
+        known_in = [
+            p for p in ("yandex", "minimax", "silero") if voice_id in _voices_for(p)
+        ]
+        if not known_in:
+            self._publish_preview_error(request_id, "voice_unknown")
+            return None
+        # Берём первого провайдера, который знает голос (для tts_node это
+        # hint — какой голос у какого провайдера искать). Если голос
+        # доступен у нескольких, берём minimax (приоритет для preview).
+        return "minimax" if "minimax" in known_in else known_in[0]
+
+    @staticmethod
+    def _preview_log_static(msg: str) -> None:
+        # Stand-alone логгер — _preview_parse_payload static, без self.
+        import logging as _logging
+
+        _logging.getLogger("rob_box_supervisor.preview").warning(msg)
 
     def _publish_preview_error(self, request_id: str, reason: str) -> None:
         """Опубликовать preview_voice_error (JSON) для ws_server.
