@@ -689,27 +689,60 @@ class STTNode(Node):
                 self._route_wake_result(text)
             self._active_source = _SRC_RESPEAKER
         else:
-            if text:
-                self.get_logger().warning(f'❌ ОТКЛОНЕНО (короткое, <{self.min_text_chars} chars): "{text}"')
-            else:
-                self.get_logger().warning("❌ ОТКЛОНЕНО (пустое)")
-            # Issue 989 Fix A: различаем rejected(empty) и rejected(short).
-            # rejected(empty) — это почти наверняка эхо собственной музыки/голоса
-            # робота или шум: НЕ говорим «не расслышал», молчим. Иначе робот
-            # говорит фразу → её эхо снова ловится → снова empty → бесконечный цикл.
-            # rejected(short) — Vosk/Yandex вернули что-то (например «не»/«пути»),
-            # т.е. был реальный речевой ввод, но слишком короткий — можно переспросить.
-            # wake-поток: фон/ложное VAD-срабатывание — молчим, робот не должен
-            # «переспрашивать» на каждый сегмент без operator-вейка.
-            if source == _SRC_WAKE:
-                self.get_logger().info("🔇 [wake] Сегмент без operator-вейка/отклонён — молчу")
-            elif text:
-                self._maybe_speak_unclear()
-            else:
-                self.get_logger().info("🔇 [issue 989] Пустой STT (эхо/музыка) — молчу, без «не расслышал»")
-            if source != _SRC_WAKE:
-                self.publish_state("ready")
-            self._active_source = _SRC_RESPEAKER
+            self._handle_rejected_text(text, source, duration)
+
+    def _handle_rejected_text(self, text: str, source: str, duration: float) -> None:
+        """Ветка «текста нет / текст слишком короткий»: лог + решение молчать.
+
+        Issue 989 Fix A: различаем rejected(empty) и rejected(short).
+        rejected(empty) — это почти наверняка эхо собственной музыки/голоса
+        робота или шум: НЕ говорим «не расслышал», молчим. Иначе робот
+        говорит фразу → её эхо снова ловится → снова empty → бесконечный цикл.
+        rejected(short) — Vosk/Yandex вернули что-то (например «не»/«пути»),
+        т.е. был реальный речевой ввод, но слишком короткий — можно переспросить.
+        wake-поток: фон/ложное VAD-срабатывание — молчим, робот не должен
+        «переспрашивать» на каждый сегмент без operator-вейка.
+
+        Вынесено из ``_process_audio`` (issue #2135): разведение причин для
+        wake добавляло ветку в метод, который и так на потолке CC-бюджета
+        (ADR-0021 R1, ``scripts/lint/cc_budget_baseline.json``).
+        """
+        if text:
+            self.get_logger().warning(f'❌ ОТКЛОНЕНО (короткое, <{self.min_text_chars} chars): "{text}"')
+        else:
+            self.get_logger().warning("❌ ОТКЛОНЕНО (пустое)")
+        if source == _SRC_WAKE:
+            self._log_wake_rejection(text, duration)
+        elif text:
+            self._maybe_speak_unclear()
+        else:
+            self.get_logger().info("🔇 [issue 989] Пустой STT (эхо/музыка) — молчу, без «не расслышал»")
+        if source != _SRC_WAKE:
+            self.publish_state("ready")
+        self._active_source = _SRC_RESPEAKER
+
+    def _log_wake_rejection(self, text: str, duration: float) -> None:
+        """Wake-сегмент отклонён: сказать в лог ПОЧЕМУ (issue #2135).
+
+        Раньше обе причины печатались одной строкой «🔇 [wake] Сегмент без
+        operator-вейка/отклонён — молчу», хотя вейк в этой ветке вообще не
+        искали: сюда попадает только «STT ничего не вернул» или «вернул
+        слишком короткое». Именно это маскировало дефект #2135 — в логах
+        робота поток 20мс-кадров выглядел как «оператор говорит, но не
+        вейк-слово», а на самом деле распознавание запускалось на 0.02 с.
+        Длительность сегмента в строке — чтобы такой перекос было видно
+        сразу, без сопоставления с соседним «🎤 Получена фраза».
+        """
+        if text:
+            self.get_logger().info(
+                f'🔇 [wake] Сегмент {duration:.2f}с: STT вернул короткое '
+                f'"{text}" (<{self.min_text_chars} chars) — вейк не искали, молчу'
+            )
+        else:
+            self.get_logger().info(
+                f"🔇 [wake] Сегмент {duration:.2f}с: STT вернул пусто — "
+                "вейк не искали, молчу"
+            )
 
     def _publish_ptt_result(self, text: str) -> None:
         """Опубликовать распознанную PTT-фразу в ``/avatar/ptt/result``.

@@ -91,19 +91,29 @@ async def _open_and_hello(client, pin):
 
 async def test_stream_id_2_reaches_quest_wake_ros_publisher(fixed_pin):
     """Полный путь: WS VOICE_AUDIO(sid=2) → ws_server routing → QuestBridge
-    (реальный, не тестовый double) → mock ROS Publisher на /audio/quest_wake,
-    с тем же payload, что пришёл по сети."""
+    (реальный, не тестовый double) → mock ROS Publisher на /audio/quest_wake.
+
+    issue #2135: контракт топика — ОДНА AudioData на фразу, а не на кадр.
+    Поэтому по сети идёт поток 20мс-кадров, а публикация случается только
+    после того, как таймер моста заметил паузу в потоке (``tick_wake_audio``
+    — в проде его дёргает ``QuestNode._on_tick_timer`` 30 раз в секунду).
+    """
     bridge, quest_wake_pub = _make_real_bridge_with_mock_wake_pub()
     server = WSSServer(bridge=bridge, pin=fixed_pin)
     app = build_app(server)
     async with TestClient(TestServer(app)) as http_client:
         ws = await _open_and_hello(http_client, fixed_pin)
         try:
-            pcm = b"\x00\x00\xff\x7f\x00\x80\x01\x00"
-            await ws.send_bytes(encode_frame(FrameType.VOICE_AUDIO, 2, pcm))
+            frame = b"\x00\x00\xff\x7f\x00\x80\x01\x00" * 80  # 640 Б = 20 мс
+            for _ in range(25):  # 0.5 с речи
+                await ws.send_bytes(encode_frame(FrameType.VOICE_AUDIO, 2, frame))
             await asyncio.sleep(0.05)
+            assert quest_wake_pub.published == [], "кадры не уходят по одному"
+
+            # Пауза в потоке кадров → таймер закрывает фразу.
+            bridge.tick_wake_audio(time.monotonic() + 10.0)
             assert len(quest_wake_pub.published) == 1
-            assert bytes(quest_wake_pub.published[0].data) == pcm
+            assert bytes(quest_wake_pub.published[0].data) == frame * 25
         finally:
             await ws.close()
 
@@ -119,6 +129,7 @@ async def test_stream_id_1_does_not_reach_quest_wake_publisher(fixed_pin):
             pcm = b"\x00\x00\xff\x7f"
             await ws.send_bytes(encode_frame(FrameType.VOICE_AUDIO, 1, pcm))
             await asyncio.sleep(0.05)
+            bridge.tick_wake_audio(time.monotonic() + 10.0)
             assert len(quest_wake_pub.published) == 0
         finally:
             await ws.close()

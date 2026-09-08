@@ -288,6 +288,72 @@ class TestWakeRoute:
         node.avatar_stt_result_pub.publish.assert_not_called()
 
 
+class TestWakeRejectionLogging:
+    """issue #2135: лог отклонённого wake-сегмента называет НАСТОЯЩУЮ причину.
+
+    Раньше и «STT вернул пусто», и «STT вернул слишком короткое» печатались
+    одной строкой «🔇 [wake] Сегмент без operator-вейка/отклонён — молчу»,
+    хотя вейк в этой ветке вообще не искали. Именно это маскировало дефект
+    #2135: в логах робота поток 20мс-кадров выглядел как «оператор говорит,
+    но не вейк-слово», а на самом деле распознавание запускалось на 0.02 с.
+    """
+
+    @staticmethod
+    def _node_with_log_capture():
+        node = _make_node()
+        infos: list[str] = []
+        warnings: list[str] = []
+        logger = SimpleNamespace(
+            info=lambda m, *a, **kw: infos.append(str(m)),
+            warning=lambda m, *a, **kw: warnings.append(str(m)),
+            warn=lambda m, *a, **kw: warnings.append(str(m)),
+            error=lambda *a, **kw: None,
+            debug=lambda *a, **kw: None,
+        )
+        node.get_logger = lambda: logger
+        return node, infos, warnings
+
+    def test_empty_stt_is_not_reported_as_missing_wake(self):
+        node, infos, _warnings = self._node_with_log_capture()
+        _run_route(node, "wake", "")
+        joined = " ".join(infos)
+        assert "без operator-вейка" not in joined
+        assert "пусто" in joined
+        assert "вейк не искали" in joined
+        node.avatar_stt_result_pub.publish.assert_not_called()
+
+    def test_rejection_log_names_segment_duration(self):
+        """Длительность в строке — то, из-за отсутствия чего дефект #2135
+        не читался в логах (сегменты были по 0.02с; здесь _audio_msg — 1с)."""
+        node, infos, _warnings = self._node_with_log_capture()
+        _run_route(node, "wake", "")
+        # Именно в строке отказа, а не только в «🎤 Получена фраза» выше:
+        # раньше причина и длительность жили в разных сообщениях, и в
+        # логе робота они разъезжались потоком других сегментов.
+        assert any("[wake]" in m and "1.00с" in m for m in infos), infos
+
+    def test_short_text_rejection_is_distinct_from_empty(self):
+        node, infos, _warnings = self._node_with_log_capture()
+        _run_route(node, "wake", "не")
+        joined = " ".join(infos)
+        assert "короткое" in joined
+        assert '"не"' in joined
+        assert "пусто" not in joined
+        assert "без operator-вейка" not in joined
+
+    def test_wake_rejection_still_silent_no_unclear_prompt(self):
+        """Инвариант 6a не тронут: на wake-сегменте робот не переспрашивает."""
+        node, _infos, _warnings = self._node_with_log_capture()
+        _run_route(node, "wake", "не")
+        node._maybe_speak_unclear.assert_not_called()
+
+    def test_respeaker_short_text_still_asks_again(self):
+        """Регресс-страховка: у ReSpeaker поведение не изменилось."""
+        node, _infos, _warnings = self._node_with_log_capture()
+        _run_route(node, "respeaker", "не")
+        node._maybe_speak_unclear.assert_called_once()
+
+
 class TestHelpers:
     def test_publish_ptt_result_plain(self):
         node = _make_node()
