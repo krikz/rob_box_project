@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # ============================================================================
-# check_set_voice_traffic.sh — регрессионный скрипт (issue #2138.C / ADR-0067)
+# check_set_voice_traffic.sh — регрессионный скрипт (issue #2138.C / ADR-0073)
 #
 # Источник истины: <repo>/.github/scripts/check_set_voice_traffic.sh
 # Копия на runner (self-hosted) обновляется через checkout — НЕ через
 # hardlink/symlink. Шаблон дистрибуции совпадает с check_container_status.sh
 # (вызывается из .github/workflows/L-Deploy and Verify.yml).
 #
-# ЗАЧЕМ: ADR-0067 / issue #2138 §3.3 фиксирует 6 гипотез пропадающих смен
+# ЗАЧЕМ: ADR-0073 / issue #2138 §3.3 фиксирует 6 гипотез пропадающих смен
 # голоса в picker'е. Чтобы сузить H1..H6 при инциденте, нужно логировать
 # pub/sub-факт «picker выдал /avatar/set_voice» на стороне робота. Мост
 # логирует «publishing…»/«published…» (issue #2138.C, см. C1), но это

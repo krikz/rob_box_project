@@ -38,7 +38,7 @@ class _MockNode:
 
     def __init__(self) -> None:
         self.warnings: list[str] = []
-        # ADR-0067 / issue #2138.C: ловим .info() для регрессии, чтобы
+        # ADR-0073 / issue #2138.C: ловим .info() для регрессии, чтобы
         # зафиксировать «publishing…» / «published…» в bridge.set_voice.
         self.infos: list[str] = []
 
@@ -669,7 +669,7 @@ def test_set_voice_unknown_returns_nack_with_available():
 def test_set_voice_success_publishes_json_with_provider_hint():
     """set_voice(alena) при активном yandex → ack + publish в /avatar/set_voice.
 
-    ADR-0067 / issue #2138.C: дополнительно проверяем две отладочные
+    ADR-0073 / issue #2138.C: дополнительно проверяем две отладочные
     строки, которые позволяют отличить «picker ничего не прислал» (H5)
     от «pub/sub не доезжает до supervisor» (H2/H3) при поиске пропавших
     смен голоса в docker logs (см. PR-body).
@@ -717,7 +717,7 @@ def test_set_voice_success_publishes_json_with_provider_hint():
     # только первая — publish завис/упал, и это явный сигнал проблемы).
     assert node.infos.index(publishing_lines[0]) < node.infos.index(published_lines[0]), (
         "«publishing» ОБЯЗАН появиться раньше «published» — иначе теряется "
-        "смысл observability-фикса (см. ADR-0067 §3.3)"
+        "смысл observability-фикса (см. ADR-0073 §3.3)"
     )
 
 

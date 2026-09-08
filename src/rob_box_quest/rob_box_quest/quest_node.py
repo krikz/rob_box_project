@@ -729,7 +729,7 @@ class QuestBridge:
             "provider": provider,
             "ts_ms": int(time.time() * 1000),
         }
-        # ADR-0067 / issue #2138.C: observability. Без этого лога невозможно
+        # ADR-0073 / issue #2138.C: observability. Без этого лога невозможно
         # отличить «pub/sub не доезжает до supervisor» (H2/H3 в ADR §3.3) от
         # «picker ничего не прислал» (H5) — без raw-вывода в grep ничего не
         # понять. Делаем ДВА лога: «publishing...» ДО publish, «published...»
