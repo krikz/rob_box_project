@@ -841,6 +841,20 @@ def _text_or_language_notice(
     return notice
 
 
+# bug(#2183) — живые voice-параметры ноды: {имя ROS-параметра: (человекочитаемое
+# имя провайдера, ключ реестра)}. Имя атрибута совпадает с именем параметра.
+#
+# Таблица, а не три ветки в ``parameters_callback``: ADR-0021 держит
+# цикломатическую сложность этого метода в бюджете (три отдельных ``elif``
+# поднимали её с 14 до 17 при лимите 15), а добавление четвёртого провайдера
+# теперь не трогает поток управления вообще.
+_LIVE_VOICE_PARAMS = {
+    "yandex_voice": ("Yandex", "yandex"),
+    "minimax_voice": ("MiniMax", "minimax"),
+    "silero_speaker": ("Silero", "silero"),
+}
+
+
 class TTSNode(Node):
     """ROS2 нода для синтеза речи с YandexSpeechKit + Silero fallback + MiniMax (opt-in)."""
 
@@ -6406,25 +6420,19 @@ class TTSNode(Node):
                 self.get_logger().info(
                     f"🎵 Yandex speed (pitch) изменён: {self.yandex_speed}"
                 )
-            elif param.name == "yandex_voice":
-                # bug(#2183): раньше этой ветки не было — параметр менялся
-                # (ros2 param get подтверждал новое значение), но
-                # self.yandex_voice, однократно прочитанный в __init__
-                # (см. строку ~1134), никогда не обновлялся, поэтому синтез
-                # молча продолжал использовать голос, прочитанный при старте
-                # ноды. Живой repro: SetVoice ставит yandex_voice=alena,
-                # ``ros2 param get /tts_node yandex_voice`` подтверждает
-                # alena, а следующий синтез всё равно идёт голосом anton.
-                self.yandex_voice = param.value
-                self._log_voice_param_applied("Yandex", "yandex", self.yandex_voice)
-            elif param.name == "minimax_voice":
-                # bug(#2183) — та же дыра, что и yandex_voice выше.
-                self.minimax_voice = param.value
-                self._log_voice_param_applied("MiniMax", "minimax", self.minimax_voice)
-            elif param.name == "silero_speaker":
-                # bug(#2183) — та же дыра, что и yandex_voice выше.
-                self.silero_speaker = param.value
-                self._log_voice_param_applied("Silero", "silero", self.silero_speaker)
+            elif param.name in _LIVE_VOICE_PARAMS:
+                # bug(#2183): раньше этих параметров тут не было вообще —
+                # параметр менялся (``ros2 param get`` подтверждал новое
+                # значение), но self.yandex_voice, однократно прочитанный в
+                # __init__ (см. строку ~1134), никогда не обновлялся, поэтому
+                # синтез молча продолжал использовать голос, прочитанный при
+                # старте ноды. Живой repro: SetVoice ставит
+                # yandex_voice=alena, ``ros2 param get /tts_node
+                # yandex_voice`` подтверждает alena, а следующий синтез всё
+                # равно идёт голосом anton.
+                _display, _provider = _LIVE_VOICE_PARAMS[param.name]
+                setattr(self, param.name, param.value)
+                self._log_voice_param_applied(_display, _provider, param.value)
             elif param.name == "minimax_max_retries":
                 self.minimax_max_retries = min(3, max(0, int(param.value)))
                 self.get_logger().info(
