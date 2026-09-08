@@ -115,6 +115,20 @@
     },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/operator_admin.py": {
       "ShowMetricsTool.execute": 18
+    },
+    "src/rob_box_quest/rob_box_quest/server/ws_server.py": {
+      "WSSServer._handle_supervisor_command": 24,
+      "WSSServer._on_json_cmd": 107,
+      "WSSServer._ws_handler": 27
+    },
+    "src/rob_box_quest/rob_box_quest/streams/alerts.py": {
+      "evaluate_alerts": 17
     }
+  },
+  "_refactor_cards": {
+    "src/rob_box_quest/rob_box_quest/server/ws_server.py:WSSServer._on_json_cmd": "#2195 (voice-vr 10)",
+    "src/rob_box_quest/rob_box_quest/server/ws_server.py:WSSServer._ws_handler": "#2201 (voice-vr 16)",
+    "src/rob_box_quest/rob_box_quest/server/ws_server.py:WSSServer._handle_supervisor_command": "#2202 (voice-vr 17)",
+    "src/rob_box_quest/rob_box_quest/streams/alerts.py:evaluate_alerts": "#2203 (voice-vr 18)"
   }
 }
