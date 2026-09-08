@@ -144,8 +144,8 @@ export interface CaptainBridgeOptions {
   onPanelTopicChange?(panelId: string, oldTopic: string, newTopic: string): void;
   /**
    * AV-27: оператор ткнул лучом в TTS picker (строку/PREVIEW/APPLY/STOP/
-   * CLOSE/вкладку VOICE). Сцена не знает ни про WSS, ни про состояние
-   * стора — она только сообщает, куда попал луч.
+   * CLOSE). Сцена не знает ни про WSS, ни про состояние стора — она только
+   * сообщает, куда попал луч.
    */
   onTtsPickerAction?(action: TtsPickerTarget): void;
   /**
@@ -1021,21 +1021,17 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
 
   // ---------- AV-27: TTS picker (3D-меню выбора голоса) ----------
   //
-  // Живёт рядом с экраном-стеной: оператор смотрит на видео, меню всплывает
-  // левее, на том же радиусе. Вкладка VOICE висит постоянно — в VR клавиш
-  // нет, точка входа обязана быть кликабельным объектом.
+  // Постоянной точки входа в сцене нет: меню открывается по кнопке TTS на
+  // панели голосового пайплайна (`openTtsPickerNearPipeline`) или клавишей V
+  // на десктопе (`openTtsPicker`). Отдельная вкладка VOICE, что висела
+  // всегда слева у экрана-стены, убрана — она торчала на главном экране.
 
   const ttsPicker: TtsPickerMenuHandle = createTtsPickerMenu();
   scene.add(ttsPicker.object);
-  scene.add(ttsPicker.launchObject);
-  // Вкладка — левее и ниже экрана-стены, той же ориентации (facing +Z).
-  ttsPicker.launchObject.position.set(-1.35, 0.95, -3.85);
 
-  // Вкладка кликабельна всегда: цель регистрируется один раз.
-  {
-    const lt = ttsPicker.launchTarget();
-    pointer.addTarget({ id: lt.id, object: lt.object, draggable: false });
-  }
+  // Позиция открытия клавишей V: у экрана-стены, той же ориентации (facing
+  // +Z) — там, где раньше висела вкладка VOICE.
+  const TTS_MENU_ANCHOR = new THREE.Vector3(-1.35, 0.95, -3.85);
 
   /** Пере-регистрация целей меню: только пока оно открыто. */
   let ttsTargetIds: string[] = [];
@@ -1059,9 +1055,9 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
 
   function openTtsPicker(): void {
     if (ttsPicker.isVisible()) return;
-    // Ставим меню на позицию вкладки, чтобы оно оказалось на том же
+    // Ставим меню на точку привязки, чтобы оно оказалось на том же
     // радиусе и повороте, что панели (глубина слоя как у stream_menu).
-    const p = ttsPicker.launchObject.position;
+    const p = TTS_MENU_ANCHOR;
     ttsPicker.show(new THREE.Vector3(p.x, p.y, p.z), 0);
     syncTtsTargets();
   }
@@ -1069,8 +1065,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   function openTtsPickerNearPipeline(): void {
     if (ttsPicker.isVisible()) return;
     // Меню всплывает над панелью пайплайна и развёрнуто к оператору так же,
-    // как панель — иначе оператор, смотрящий на панель, не увидит меню
-    // (вкладка VOICE висит далеко слева у экрана-стены).
+    // как панель — иначе оператор, смотрящий на панель, не увидит меню.
     const p = voicePipeline.getPosition();
     ttsPicker.show(new THREE.Vector3(p.x, p.y, p.z), voicePipeline.object.rotation.y);
     syncTtsTargets();

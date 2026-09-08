@@ -16,7 +16,6 @@ import {
   CLOSE_TARGET_ID,
   EMPTY_VOICES_TEXT,
   INITIAL_TTS_PICKER_STATE,
-  LAUNCH_TARGET_ID,
   STOP_TARGET_ID,
   previewTargetId,
   selectTargetId,
@@ -174,13 +173,6 @@ describe("tts_picker_menu — цели указателя", () => {
     menu.dispose();
   });
 
-  it("вкладка VOICE — отдельная постоянная цель", () => {
-    const menu = createTtsPickerMenu();
-    expect(menu.launchTarget().id).toBe(LAUNCH_TARGET_ID);
-    expect(menu.launchObject.visible).toBe(true);
-    menu.dispose();
-  });
-
   it("открытое меню отдаёт строки, PREVIEW и CLOSE; мёртвый APPLY/STOP — нет", () => {
     const menu = createTtsPickerMenu();
     menu.show(new THREE.Vector3(0, 1, -1), 0);
@@ -218,14 +210,13 @@ describe("tts_picker_menu — цели указателя", () => {
     menu.dispose();
   });
 
-  it("hide снимает все цели меню, вкладка остаётся", () => {
+  it("hide снимает все цели меню", () => {
     const menu = createTtsPickerMenu();
     menu.show(new THREE.Vector3(0, 1, -1), 0);
     menu.render(ready());
     expect(menu.targets().length).toBeGreaterThan(0);
     menu.hide();
     expect(menu.targets()).toEqual([]);
-    expect(menu.launchTarget().id).toBe(LAUNCH_TARGET_ID);
     menu.dispose();
   });
 });
