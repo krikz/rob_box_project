@@ -13,3 +13,5 @@ coverage/
 public/models/**/*.glb
 public/models/**/*.gltf
 !public/models/**/*.optimized.glb
+# generated intermediates from build_bridge_assets.mjs → gltf:optimize
+public/models/**/_raw/
