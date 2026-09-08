@@ -109,6 +109,12 @@
     },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/web_search.py": {
       "SearchWebTool.execute": 18
+    },
+    "src/rob_box_supervisor/rob_box_supervisor/metrics_source.py": {
+      "MetricsSource.query_logs": 16
+    },
+    "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/operator_admin.py": {
+      "ShowMetricsTool.execute": 18
     }
   }
 }
