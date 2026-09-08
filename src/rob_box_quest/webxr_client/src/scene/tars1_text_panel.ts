@@ -25,9 +25,9 @@
 import * as THREE from "three";
 
 export interface Tars1TextPanelOptions {
-  /** Ширина canvas в пикселях (default 512 — соответствует ширине panel). */
+  /** Ширина canvas в пикселях (default 1280 — 16:9 как у основного экрана). */
   canvasWidth?: number;
-  /** Высота canvas в пикселях (default 384). */
+  /** Высота canvas в пикселях (default 720 — 16:9). */
   canvasHeight?: number;
   /** Сколько последних строк хранить в кольцевом буфере (default 32). */
   maxLines?: number;
@@ -58,8 +58,8 @@ export interface Tars1TextPanelHandle {
 export function createTars1TextPanel(
   opts: Tars1TextPanelOptions = {}
 ): Tars1TextPanelHandle {
-  const canvasWidth = opts.canvasWidth ?? 512;
-  const canvasHeight = opts.canvasHeight ?? 384;
+  const canvasWidth = opts.canvasWidth ?? 1280;
+  const canvasHeight = opts.canvasHeight ?? 720;
   const maxLines = opts.maxLines ?? 32;
   const fontSize = opts.fontSize ?? 22;
 
