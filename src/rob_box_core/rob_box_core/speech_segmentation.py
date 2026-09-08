@@ -214,7 +214,8 @@ class PhraseSegmenter:
     config: SpeechSegmentationConfig = field(default_factory=lambda: DEFAULT_WAKE_CONFIG)
     _frames: List[bytes] = field(default_factory=list)
     _buffered_bytes: int = 0
-    _last_frame_at: Optional[float] = None
+    _last_speech_at: Optional[float] = None
+    _silence_bytes_since_speech: int = 0
     dropped_short_phrases: int = 0
     truncated_phrases: int = 0
 
@@ -231,36 +232,59 @@ class PhraseSegmenter:
     def add_frame(self, payload: bytes, now_monotonic: float) -> Optional[bytes]:
         """Принять кадр. Вернуть фразу, если она закрылась этим вызовом.
 
-        Два повода закрыть фразу здесь:
+        Семантика «фраза закрылась»:
 
         1. Перед этим кадром была пауза ≥ ``gap_timeout_s`` — значит кадр
            открывает НОВУЮ фразу, а старую надо отдать (таймер мог не
            успеть, если пауза совпала с приходом следующей реплики).
-        2. Буфер упёрся в ``max_phrase_bytes`` — режем принудительно.
+        2. После последнего речевого кадра накопилось ≥ ``gap_timeout_s``
+           тишины — буква «конец фразы» (старая логика
+           ``_voice_silence_ms`` в ``quest_node.publish_voice_audio``).
+        3. Буфер упёрся в ``max_phrase_bytes`` — режем принудительно.
+
+        Кадры-тишины (VAD решил «не речь») НЕ попадают в буфер, но
+        обновляют счётчик ``_silence_bytes_since_speech``. Это счётчик
+        байтов PCM-тишины, пересчитывается в секунды через ``BYTES_PER_S``
+        — эквивалентно старому «ms per 20ms-chunk».
         """
         phrase = self._close_if_gap(now_monotonic)
-        # Если кадр — тишина и клиент её не отфильтровал (robot_voice),
-        # мы его в буфер не кладём: накапливается только речь. Это
-        # совместимо со старой логикой (есть `_voice_buffer`, а тишина
-        # идёт в `_voice_silence_ms`).
-        if not _frame_is_speech(payload, self.config.statistic, self.config.speech_threshold):
-            # Тишина в кадре не открывает новую фразу (нет метки времени),
-            # но и не закрывает старую принудительно — это работа таймера.
-            return phrase
-        self._frames.append(payload)
-        self._buffered_bytes += len(payload)
-        self._last_frame_at = now_monotonic
-        if phrase is None and self._buffered_bytes >= self.config.max_phrase_bytes:
-            self.truncated_phrases += 1
-            phrase = self._close()
+        is_speech = _frame_is_speech(
+            payload, self.config.statistic, self.config.speech_threshold
+        )
+        if is_speech:
+            self._frames.append(payload)
+            self._buffered_bytes += len(payload)
+            self._last_speech_at = now_monotonic
+            self._silence_bytes_since_speech = 0
+            if (
+                phrase is None
+                and self._buffered_bytes >= self.config.max_phrase_bytes
+            ):
+                self.truncated_phrases += 1
+                phrase = self._close()
+        else:
+            # Тишина: НЕ добавляем в буфер, но инкрементим счётчик.
+            # Когда счётчик перевалит за gap_timeout_s × BYTES_PER_S — фраза
+            # закрывается. Проверяем ПОСЛЕ инкремента, чтобы фрейм,
+            # достигший порога, был «тем самым».
+            self._silence_bytes_since_speech += len(payload)
+            if (
+                phrase is None
+                and self._frames
+                and self._last_speech_at is not None
+                and self._silence_bytes_since_speech
+                >= self.config.gap_timeout_bytes
+            ):
+                phrase = self._close()
         return phrase
 
     def tick(self, now_monotonic: float) -> Optional[bytes]:
         """Таймерный тик: закрыть фразу, если поток кадров замолчал.
 
-        Единственный путь, по которому фраза закрывается в реальной жизни:
-        оператор договорил → кадры кончились → ``add_frame`` больше не
-        вызывается.
+        Используется, когда кадры вообще перестали приходить
+        (``add_frame`` не вызывается). Для каналов, где клиент не фильтрует
+        тишину (robot_voice), обычно хватает внутреннего флаша в
+        :meth:`add_frame`; здесь — резервный путь.
         """
         return self._close_if_gap(now_monotonic)
 
@@ -273,14 +297,51 @@ class PhraseSegmenter:
         dropped = self._buffered_bytes
         self._frames = []
         self._buffered_bytes = 0
-        self._last_frame_at = None
+        self._last_speech_at = None
+        self._silence_bytes_since_speech = 0
         return dropped
 
-    def _close_if_gap(self, now_monotonic: float) -> Optional[bytes]:
-        """Фраза закончена, если с последнего кадра прошло ≥ gap_timeout_s."""
-        if self._last_frame_at is None or not self._frames:
+    def force_close(self) -> Optional[bytes]:
+        """Закрыть буфер принудительно (без проверки gap/min).
+
+        Используется на границах сессии, где пользователь явно завершил
+        ввод (PTT release, voice mode change): содержимое буфера должно
+        уйти в STT **как есть**, без требования «подожди ещё gap/min_phrase»
+        — иначе первая короткая реплика теряется.
+
+        В отличие от :meth:`tick`, не учитывает ``min_phrase_bytes``: тут
+        короткий буфер — это явный «что было, то отдаём», а не блип VAD.
+
+        Возвращает ``None``, если буфер пуст.
+        """
+        if not self._frames:
+            self._buffered_bytes = 0
+            self._last_speech_at = None
+            self._silence_bytes_since_speech = 0
             return None
-        if now_monotonic - self._last_frame_at < self.config.gap_timeout_s:
+        # Склеиваем без min-проверки: пользователь явно сказал «хватит».
+        data = b"".join(self._frames)
+        self._frames = []
+        self._buffered_bytes = 0
+        self._last_speech_at = None
+        self._silence_bytes_since_speech = 0
+        return data
+
+    def _close_if_gap(self, now_monotonic: float) -> Optional[bytes]:
+        """Фраза закончена по time-monotonic-разрыву (wake-канал).
+
+        Закрывает фразу, если с момента последнего РЕЧЕВОГО кадра прошло
+        ≥ ``gap_timeout_s`` **без новых речевых кадров**. Используется,
+        когда клиент уже отфильтровал тишину (wake-канал, ``statistic="none"``)
+        и кадры-речи приходят с фиксированным периодом 20 мс; если оператор
+        замолчал, кадры вообще перестают приходить, и :meth:`tick` дёргает
+        эту проверку.
+        """
+        if not self._frames:
+            return None
+        if self._last_speech_at is None:
+            return None
+        if now_monotonic - self._last_speech_at < self.config.gap_timeout_s:
             return None
         return self._close()
 
@@ -293,7 +354,8 @@ class PhraseSegmenter:
         data = b"".join(self._frames)
         self._frames = []
         self._buffered_bytes = 0
-        self._last_frame_at = None
+        self._last_speech_at = None
+        self._silence_bytes_since_speech = 0
         if len(data) < self.config.min_phrase_bytes:
             self.dropped_short_phrases += 1
             return None

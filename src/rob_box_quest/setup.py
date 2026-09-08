@@ -12,6 +12,7 @@ setup(
     ],
     install_requires=[
         "setuptools",
+        "rob_box_core",
     ],
     zip_safe=True,
     maintainer="krikz",
