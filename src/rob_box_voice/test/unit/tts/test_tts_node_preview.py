@@ -97,6 +97,9 @@ def _bare_node_with(mocks: dict) -> TTSNode:
     #   - идти в FIFO-gate (см. self._play_order_cond)
     #   - играть ALSA (см. self.play_audio)
     n.minimax_voice = "default-active-voice"
+    n.minimax_model = "speech-02-hd"
+    n.minimax_language = "ru"
+    n.preview_format = TTSFormat.MP3
     n._play_order_cond = threading.Condition()
     n.play_audio = MagicMock()
     return n
@@ -219,11 +222,14 @@ def test_synthesize_preview_times_out_instead_of_hanging():
     Без таймаута сценарий «MiniMax не отвечает» делает picker нерабочим до
     рестарта supervisor'а (молчащий сценарий — самый коварный).
     """
-    barrier = threading.Event()
+    import asyncio as _asyncio
 
     async def _slow_synthesize(text, *, settings=None):
-        # Симулируем «висим» пока тест не отпустит barrier.
-        barrier.wait(timeout=10.0)
+        # asyncio.sleep — awaitable, asyncio.wait_for может прервать.
+        # threading.Event.wait в асинхронной корутине НЕ прерывается
+        # (GIL блокирует тред) — это не наш сценарий; MiniMax-клиент
+        # использует httpx-сессию, awaitable по сети.
+        await _asyncio.sleep(10.0)
         return TTSAudio(samples=b"\\x00", sample_rate=16000, format=TTSFormat.MP3)
 
     slow = MagicMock()
@@ -244,11 +250,21 @@ def test_synthesize_preview_times_out_instead_of_hanging():
     except Exception as exc:
         raised = exc
 
-    # Отпускаем «висящий» future, чтобы pytest не ругался на warning.
-    barrier.set()
-
     assert raised is not None, "synthesize_preview не бросил по таймауту"
-    assert "timeout" in str(raised).lower() or "timed out" in str(raised).lower()
+    # Сообщение может быть на русском («превысил таймаут N с») — ищем
+    # любой маркер таймаута. Reason стабильный («preview_timeout»).
+    assert (
+        "таймаут" in str(raised).lower()
+        or "timeout" in str(raised).lower()
+        or getattr(raised, "reason", "") == "preview_timeout"
+    )
+    # Класс должен быть PreviewSynthesisTimeoutError для удобства телеметрии.
+    from rob_box_voice.tts_node import PreviewSynthesisTimeoutError  # noqa: PLC0415
+
+    assert isinstance(raised, PreviewSynthesisTimeoutError), (
+        f"ожидался PreviewSynthesisTimeoutError, got {type(raised).__name__}"
+    )
+    assert raised.timeout_s == 0.2
 
 
 # ── test 3: parameter declared ──────────────────────────────────────────

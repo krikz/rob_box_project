@@ -57,6 +57,7 @@ import sys
 import threading
 import time
 import wave
+from dataclasses import dataclass
 from pathlib import Path
 from collections.abc import Mapping
 
@@ -155,6 +156,96 @@ class _TTSEmptyTextError(Exception):
     silero никогда его не видят, и ``_mark_provider_dead`` никогда не
     вызывается по этой причине.
     """
+
+
+# ── Preview-synthesis error hierarchy (ADR-0077 / issue #2138.A.3) ────
+# supervisor использует ``except PreviewSynthesisError`` чтобы отделить
+# наши ошибки от внешних (MiniMax бросает свой MiniMaxTTSError).
+# Иерархия:
+#   PreviewSynthesisError           — база, поле ``reason`` для ws_server.
+#     ├─ PreviewSynthesisTimeoutError — сетевой синтез не уложился.
+#     └─ PreviewSynthesisUnavailableError — MiniMax opt-in не подключён.
+
+
+class PreviewSynthesisError(Exception):
+    # Базовый класс ошибок preview-синтеза. Поле ``reason`` — стабильная
+    # строка, которую supervisor пишет в
+    # ``preview_voice_error{reason: <reason>}``. Это публичный контракт
+    # между avatar_supervisor и ws_server/клиентом — менять опасно.
+
+    def __init__(self, message, reason="preview_synthesis_failed"):
+        super().__init__(message)
+        self.reason = reason
+
+
+class PreviewSynthesisTimeoutError(PreviewSynthesisError):
+    # Сетевой синтез не уложился в ``timeout_s``. Отдельный класс (не
+    # просто reason=timeout) для удобства юнит-тестов и для будущих
+    # телеметрий: «сколько preview'ов висит до таймаута» — отдельный
+    # gauge от «сколько preview'ов падает по 5xx».
+
+    def __init__(self, message, timeout_s):
+        super().__init__(message, reason="preview_timeout")
+        self.timeout_s = timeout_s
+
+
+class PreviewSynthesisUnavailableError(PreviewSynthesisError):
+    # MiniMax opt-in не подключён (MINIMAX_AVAILABLE=False).
+    # Capability-honest: честно говорим «preview сейчас недоступен», а
+    # не делаем вид что работаем. supervisor шлёт
+    # preview_voice_error{reason: minimax_unavailable}.
+
+    def __init__(self, message):
+        super().__init__(message, reason="minimax_unavailable")
+
+
+# ── Preview-synthesis value object ─────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class PreviewAudioResult:
+    # Результат preview-синтеза для picker'а оператора.
+    # audio_bytes — байты в ЗАКОДИРОВАННОМ контейнере (mp3/wav/ogg), а НЕ
+    # сырой int16 PCM. Это требование preview_audio_sink.ts: WebAudio
+    # decodeAudioData декодирует mp3/wav/opus, но не raw PCM без
+    # контейнера. content_type — MIME для ws_server/клиента (audio/mpeg
+    # для mp3, audio/wav для wav и т.п.). supervisor оборачивает в
+    # {format, content_type, audio_b64, ...} JSON для
+    # /avatar/preview_voice/audio.
+
+    audio_bytes: bytes
+    content_type: str
+    sample_rate: int
+    format_str: str
+    duration_s: float
+
+
+def _format_to_content_type(fmt):
+    # Map TTSFormat → MIME content_type для ws_server preview_audio_sink.
+    # Клиент (preview_audio_sink.ts) передаёт content_type в
+    # AudioContext.decodeAudioData — браузерный декодер сам подберёт
+    # формат по MIME. PCM (raw) сюда не идёт: audio/L16 технически
+    # существует, но в preview-канале WebAudio его ест только если
+    # знает sampleRate через параметр, а клиент этого не делает — мы
+    # конвертируем в контейнер заранее (mp3/wav).
+    if fmt == TTSFormat.MP3:
+        return "audio/mpeg"
+    if fmt == TTSFormat.WAV:
+        return "audio/wav"
+    if fmt == TTSFormat.OGG:
+        # OGG-контейнер может нести Opus или Vorbis. Клиент шлёт
+        # content_type "audio/ogg" — WebAudio разберётся через codec
+        # внутри. Если внутри Opus — современный Chromium/Quest
+        # поддерживает; если Vorbis — fallback на Edge не нужен.
+        return "audio/ogg"
+    if fmt == TTSFormat.PCM:
+        # Сырой PCM в preview-канале НЕ поддерживается (см. docstring
+        # PreviewAudioResult). Если caller выбрал preview_format=pcm —
+        # мы всё равно отдадим, но content_type поставим audio/L16 чтобы
+        # клиент мог понять «это сырой PCM» (на практике decodeAudioData
+        # тут молча упадёт; см. ADR-0077 §грабли).
+        return "audio/L16"
+    return "application/octet-stream"
 
 
 # Issue #1160 — Prometheus metrics (этап 1 observability).
@@ -841,6 +932,15 @@ class TTSNode(Node):
         # провайдер вернёт выбранный контейнер, а _synthesize_minimax_async
         # транскодирует его в int16 LE PCM через utils.audio_transcode.
         self.declare_parameter("minimax_format", "pcm")  # pcm | wav | mp3 | ogg
+        # ADR-0077 / issue #2138.A.3 — preview-synthesis формат контейнера.
+        # Отдельный от minimax_format (тот рассчитан на ALSA playback; preview
+        # идёт в /avatar/preview_voice/audio → ws_server → WebAudio клиента,
+        # которому нужен ЗАКОДИРОВАННЫЙ контейнер, не сырой PCM).
+        # Default mp3: decodeAudioData его декодирует; ogg/opus/wav — тоже.
+        # Если поставите preview_format=pcm — клиент упадёт в decodeAudioData,
+        # picker покажет ошибку, но supervisor увидит честный preview_voice_error
+        # (НЕ silent-mock). См. ADR-0077 §грабли.
+        self.declare_parameter("preview_format", "mp3")  # pcm | wav | mp3 | ogg
         # Retry policy — соответствует ADR-0003 §2.6.
         self.declare_parameter("minimax_max_retries", 2)  # 0..3
         self.declare_parameter(
@@ -1067,6 +1167,12 @@ class TTSNode(Node):
         self.minimax_timeout = float(self.get_parameter("minimax_timeout").value)
         self.minimax_format = self._parse_format(
             self.get_parameter("minimax_format").value
+        )
+        # ADR-0077 / issue #2138.A.3 — preview-synthesis формат контейнера.
+        # Если rob_box_llm недоступен — fallback на mp3-строку (тот же
+        # graceful-degrade, что у minimax_format на line 1172).
+        self.preview_format = self._parse_format(
+            self.get_parameter("preview_format").value
         )
         self.minimax_max_retries = min(
             3, max(0, int(self.get_parameter("minimax_max_retries").value))
@@ -5568,6 +5674,150 @@ class TTSNode(Node):
             )
 
         self._avatar_audio_pub.publish(msg)
+
+    # ── Preview-synthesis (ADR-0077 / issue #2138.A.3) ─────────────────
+    # Канбан-карточка t_74dd49c2: чистый синтез БЕЗ FIFO/ALSA/metrics для
+    # picker'а оператора. ws_server/клиент preview'а ждут закодированный
+    # контейнер (mp3/wav/opus) — см. preview_audio_sink.ts §1: WebAudio
+    # ``decodeAudioData`` сам декодирует mp3/wav. Сырой PCM туда НЕ идёт
+    # (это грабли канала ТАРС, см. ADR-0055 §грабли).
+
+    def synthesize_preview(  # noqa: C901 — readable linear flow, not complex
+        self,
+        text: str,
+        voice: Optional[str] = None,
+        *,
+        provider: Optional[Any] = None,
+        timeout_s: float = 10.0,
+    ) -> "PreviewAudioResult":
+        """Синтезировать «прослушиваемый образец» голоса для picker'а.
+
+        Возвращает :class:`PreviewAudioResult` с байтами в **закодированном**
+        контейнере (mp3/wav/opus — что выбрано в ``preview_format``), а не
+        сырым int16 PCM. Этим preview отличается от ``_publish_headset_audio``
+        (sink=headset → /avatar/tts/audio) и от ``_publish_audio``
+        (sink=speaker → /voice/audio/speech).
+
+        Args:
+            text: фраза для синтеза (уже плоский текст, без SSML).
+            voice: запрошенный голос picker'а. **НЕ меняет активный голос
+                личности** (``self.minimax_voice`` остаётся как был).
+            provider: ``TTSProvider`` для синтеза. Если ``None`` —
+                ``self._ensure_minimax_provider()`` (тот же клиент, что
+                и для основного голоса — делим HTTP-пул, экономим
+                keep-alive).
+            timeout_s: жёсткий таймаут на сетевой синтез. По истечении —
+                :class:`PreviewSynthesisTimeoutError`. Без таймаута
+                picker может «висеть вечно» при недоступном upstream.
+
+        Returns:
+            :class:`PreviewAudioResult` с полями ``audio_bytes``,
+            ``content_type``, ``sample_rate``, ``format_str``,
+            ``duration_s``.
+
+        Raises:
+            PreviewSynthesisTimeoutError: ``provider.synthesize()`` не
+                уложился в ``timeout_s``.
+            PreviewSynthesisError: провайдер бросил (auth/bad-request/rate
+                limit/5xx) — текст ошибки в ``exc.reason``.
+            PreviewSynthesisUnavailableError: MiniMax opt-in не подключён
+                (``MINIMAX_AVAILABLE=False``).
+        """
+        import asyncio
+
+        if not MINIMAX_AVAILABLE:
+            raise PreviewSynthesisUnavailableError(
+                "minimax_unavailable: rob_box_llm не подключён — preview требует MiniMax"
+            )
+        if not text or not text.strip():
+            # Тот же guard, что и в _synthesize_and_play (issue #2096):
+            # пустой текст раньше ронял провайдер chain в TTSBadRequestError
+            # и каскадно помечал всех провайдеров мёртвыми на 30s.
+            raise PreviewSynthesisError(
+                "empty_text: пустой текст для preview", reason="empty_text"
+            )
+        if timeout_s <= 0:
+            raise PreviewSynthesisError(
+                f"invalid_timeout: timeout_s={timeout_s} должен быть > 0",
+                reason="invalid_timeout",
+            )
+
+        # Резолвим провайдер ТОЛЬКО для чтения (НЕ сохраняем обратно в
+        # self.minimax_voice — preview не должно менять активный голос
+        # личности, см. contract).
+        if provider is None:
+            provider = self._ensure_minimax_provider()
+
+        # Настройки синтеза. voice — из аргумента (НЕ из self.minimax_voice).
+        # format — из preview_format (default mp3, см. ADR-0077 §tts_node).
+        # sample_rate — не форсируем (MiniMax сам подберёт под формат).
+        settings = TTSSettings(
+            voice=voice,
+            model=self.minimax_model,
+            language=self.minimax_language,
+            format=self.preview_format,
+        )
+
+        async def _call():
+            # asyncio.wait_for отменяет корутину по таймауту. На стороне
+            # MiniMax-клиента httpx-сессия тоже идёт через свой timeout, но
+            # в дополнение к нему ставим наш сторож — picker не должен
+            # «висеть» дольше ``timeout_s`` (по умолчанию 10 с) ни при каких
+            # условиях upstream'а.
+            return await asyncio.wait_for(
+                provider.synthesize(text, settings=settings),
+                timeout=timeout_s,
+            )
+
+        try:
+            tts_audio = _run_in_tts_loop(_call())
+        except PreviewSynthesisError:
+            # Уже наша ошибка — пробрасываем без обёртки.
+            raise
+        except Exception as exc:  # noqa: BLE001
+            # asyncio.TimeoutError (из wait_for), MiniMaxTTSError*, CancelledError…
+            # Различаем «висели и сорвались по таймауту» vs «провайдер бросил».
+            err_name = type(exc).__name__
+            if err_name in ("TimeoutError", "PreviewSynthesisTimeoutError"):
+                raise PreviewSynthesisTimeoutError(
+                    f"preview синтез превысил таймаут {timeout_s:.1f}s "
+                    f"(provider={getattr(provider, 'name', '?')}, voice={voice!r})",
+                    timeout_s=timeout_s,
+                ) from exc
+            raise PreviewSynthesisError(
+                f"preview синтез упал: {err_name}: {exc}",
+                reason=str(exc),
+            ) from exc
+
+        # Конвертируем TTSFormat → MIME content_type для ws_server/клиента.
+        content_type = _format_to_content_type(tts_audio.format)
+
+        # Грубая оценка длительности (для логов/диагностики). Для mp3/wav
+        # точная длительность требует парсинга контейнера — клиент всё равно
+        # сделает это через decodeAudioData, поэтому число ориентировочное.
+        bytes_per_sample = 2  # int16
+        if tts_audio.format == TTSFormat.PCM:
+            duration_s = len(tts_audio.samples) / (
+                tts_audio.sample_rate * bytes_per_sample
+            )
+        else:
+            # Грубая оценка для mp3 @ ~128 kbps; для wav/ogg тоже мимо,
+            # но это diag-only.
+            duration_s = (len(tts_audio.samples) * 8.0) / 128_000.0
+
+        self.get_logger().info(
+            f"🎧 [preview-synth] ok: {len(tts_audio.samples)} bytes "
+            f"format={tts_audio.format.value} sr={tts_audio.sample_rate} "
+            f"voice={voice or 'default'} dur~{duration_s:.2f}s"
+        )
+
+        return PreviewAudioResult(
+            audio_bytes=tts_audio.samples,
+            content_type=content_type,
+            sample_rate=tts_audio.sample_rate,
+            format_str=tts_audio.format.value,
+            duration_s=duration_s,
+        )
 
     def _ensure_minimax_provider(self):
         """Return the MiniMax provider, constructing it exactly once.
