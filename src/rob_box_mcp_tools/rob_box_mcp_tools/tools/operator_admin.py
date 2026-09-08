@@ -3,7 +3,9 @@
 operator_admin.py - Операторские инструменты супервизора (ТАРС).
 
 Срез ``operator.admin`` в каталоге — диагностика ROS-системы и контейнеров
-без ``docker.sock`` (см. ADR-0051 §6 + docs/architecture/target-operator-agent-and-dialogue.md §6).
+без ``docker.sock`` (см. ADR-0051 §6 + docs/architecture/target-operator-agent-and-dialogue.md §6),
+а также «межпроцессные» тулзы, которые прокидывают запрос оператора
+в другие ноды (issue #2113, TARS 2 metrics panel).
 
 Инструменты:
 
@@ -18,8 +20,13 @@ operator_admin.py - Операторские инструменты суперв
   обязательная санитизация перед выдачей агенту.
 * :class:`ContainerStatusTool` — restart-count/CPU/RAM/uptime контейнеров
   через Prometheus ``/api/v1/query`` (cAdvisor уже отдаёт метрики).
+* :class:`ShowMetricsTool` (issue #2113) — публикует запрос в топик
+  ``/avatar/tars/panel_request``, на который подписан существующий
+  :class:`rob_box_supervisor.tars_panel.TarsPanelDispatcher`. Dispatcher
+  парсит запрос, строит URL Grafana-панели и публикует ответ в
+  ``/avatar/tars/panel_url`` (Quest-клиент уже подписан на этот топик).
 
-Все три ``execution_type = ToolExecutionType.MEDIUM`` (2-10s): зависят от
+Все четыре ``execution_type = ToolExecutionType.MEDIUM`` (2-10s): зависят от
 сетевых вызовов и ROS-discovery. ``read_only=True``.
 """
 
@@ -32,9 +39,19 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from typing import Any, Dict, List, Optional
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
+
+# Локальный TYPE_CHECKING-импорт ROS-типов, чтобы unit-тесты на CI без
+# rclpy не падали на этапе импорта модуля. Сам импорт для создания
+# publisher'а / String() сообщения делается в ``__init__`` и ``execute``
+# соответственно.
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from std_msgs.msg import String
 
 # ----------------------------------------------------------------------------
 # Module-level logger (не зависит от ROS 2 — грейсфул degrade в юнит-тестах).
@@ -622,3 +639,209 @@ def _sanitize_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
     if "msg" in out and isinstance(out["msg"], str):
         out["msg"] = _sanitize_text(out["msg"])
     return out
+
+
+# ----------------------------------------------------------------------------
+# show_metrics (issue #2113 / TARS 2 metrics panel)
+# ----------------------------------------------------------------------------
+#
+# Контракт входа/выхода зафиксирован в
+# ``rob_box_supervisor.tars_panel.TarsPanelDispatcher`` (issue #2113):
+#
+# * ``/avatar/tars/panel_request`` (sub) — JSON ``{"request_id": str,
+#   "query": str, "datasource": "prometheus"|"loki"}``;
+# * ``/avatar/tars/panel_url`` (pub) — JSON ``{"request_id": str,
+#   "url": str, "status": "ok"|"error", "error": str?}``.
+#
+# Этот тул — MCP-обёртка первой части конвейера: публикует запрос, и
+# сразу возвращает LLM короткий текстовый статус («Опубликовал запрос»).
+# Сам URL собирает ``TarsPanelDispatcher`` и публикует в ``/avatar/tars/panel_url``
+# отдельно — Quest-клиент уже подписан на этот топик.
+#
+# Грейсфул degrade: если нода не ROS (юнит-тесты без rclpy) —
+# ``execute()`` возвращает ``success=False`` с понятным сообщением,
+# вместо AttributeError. Это согласуется с ADR-0018 (честный FAIL).
+
+
+# Поддерживаемые datasource'ы — те же, что и в TarsPanelDispatcher
+# (см. _DATASOURCE_PATH в ``rob_box_supervisor.tars_panel``). Дублируем
+# список здесь, чтобы тул умел валидировать ``datasource`` ДО публикации
+# (TARS panel dispatcher всё равно их проверит и опубликует status=error
+# при неизвестном — но мы экономим round-trip и не шумим в логе
+# ``/avatar/tars/panel_request`` с заведомо битыми запросами).
+_SHOW_METRICS_DATASOURCES = ("prometheus", "loki")
+
+
+class ShowMetricsTool(MCPTool):
+    """Публикация LLM tool-call ``show_metrics`` в ``/avatar/tars/panel_request``.
+
+    Используется оператором (ТАРС, через ``/mcp/execute``) — показать
+    операторский мониторинг (Grafana) на боковом экране TARS 2
+    (Captain Bridge в Quest-клиенте). Тонкая обёртка над двумя топиками:
+
+    * in:  ``query`` (PromQL/LogQL) + опциональный ``datasource``;
+    * out: запрос в ``/avatar/tars/panel_request``, ответ с URL — в
+      ``/avatar/tars/panel_url`` (в Quest).
+
+    Сама сборка URL — в :class:`rob_box_supervisor.tars_panel.TarsPanelDispatcher`
+    (его публикация в ``/avatar/tars/panel_url`` уже подписана
+    Quest-клиентом, см. ADR-0060). Этот тул ничего не знает про
+    Grafana/Prometheus — только шлёт запрос и ждёт ответа через ROS-шину.
+    """
+
+    @property
+    def name(self) -> str:
+        return "show_metrics"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Открыть Grafana-панель на боковом экране TARS 2 (Captain Bridge) "
+            "с указанным PromQL/LogQL запросом. Используй когда оператор "
+            "просит показать графики, метрики, логи, дрейф CPU, latency, "
+            "ошибки, телеметрию ('покажи дрейф CPU', 'открой ошибки stt_node'). "
+            "Возвращает короткий статус — LLM повторит его оператору."
+        )
+
+    @property
+    def parameters(self) -> List[MCPToolParameter]:
+        return [
+            MCPToolParameter(
+                name="query",
+                type="string",
+                description=(
+                    "PromQL-выражение (напр. 'rate(cpu_usage[5m])') или "
+                    "LogQL-запрос (напр. '{job=\"voice\"}'). Обязательный."
+                ),
+                required=True,
+            ),
+            MCPToolParameter(
+                name="datasource",
+                type="string",
+                description=(
+                    "Источник телеметрии: 'prometheus' (default) или 'loki'."
+                ),
+                required=False,
+                enum=list(_SHOW_METRICS_DATASOURCES),
+                default="prometheus",
+            ),
+        ]
+
+    @property
+    def slice(self) -> str:
+        # ADR-0052 / issue #1998 §6.2 + issue #2113 (TARS 2 metrics).
+        # Диагностика/визуализация для оператора — operator.admin.
+        return "operator.admin"
+
+    @property
+    def execution_type(self) -> ToolExecutionType:
+        # Публикация в топик мгновенная (<100ms); сборку URL и рендер
+        # делает TarsPanelDispatcher + Quest-клиент уже после.
+        return ToolExecutionType.FAST
+
+    @property
+    def read_only(self) -> bool:
+        return True
+
+    def __init__(self, node: Optional[Any] = None) -> None:
+        super().__init__(node)
+        # Publisher создаём ТОЛЬКО если есть ROS-нода. В юнит-тестах
+        # передают ``node=Mock()`` без ``create_publisher`` — поэтому
+        # сначала проверяем, что у node есть соответствующий атрибут.
+        # Если нет — ``self._panel_request_pub`` останется ``None``,
+        # и ``execute()`` вернёт честный ``success=False`` вместо
+        # падения (ADR-0018).
+        self._panel_request_pub: Optional[Any] = None
+        if node is not None and hasattr(node, "create_publisher"):
+            from std_msgs.msg import String  # noqa: PLC0415 — локальный импорт
+
+            self._panel_request_pub = node.create_publisher(
+                String, "/avatar/tars/panel_request", 10
+            )
+
+    def execute(
+        self,
+        query: str,
+        datasource: str = "prometheus",
+    ) -> MCPToolResult:
+        """Опубликовать запрос в ``/avatar/tars/panel_request``.
+
+        Возвращает короткий статус — LLM проговорит его оператору
+        («Готово, открыл панель на TARS 2»). Сам URL собирает
+        ``TarsPanelDispatcher`` в ``rob_box_supervisor.tars_panel``
+        и публикует в ``/avatar/tars/panel_url`` (на этот топик уже
+        подписан Quest-клиент).
+        """
+        query = (query or "").strip()
+        datasource = (datasource or "prometheus").strip().lower() or "prometheus"
+
+        # Валидация — ДО публикации, чтобы не зашумлять шину заведомо
+        # битыми запросами. TarsPanelDispatcher их всё равно отвергнет,
+        # но мы экономим round-trip и держим поведение консистентным
+        # с ``MCPTool.validate_parameters`` (тул уже проверил, что
+        # ``query`` непустой).
+        if not query:
+            return MCPToolResult(
+                success=False,
+                error="query is required",
+            )
+        if datasource not in _SHOW_METRICS_DATASOURCES:
+            return MCPToolResult(
+                success=False,
+                error=f"unsupported datasource: {datasource!r}",
+            )
+
+        self.log_info(
+            f"show_metrics: datasource={datasource}, query={query[:64]!r}"
+        )
+
+        # 8-hex request_id — совпадает с TarsPanelDispatcher (uuid4 hex).
+        # Корреляция между запросом и публикацией URL в
+        # ``/avatar/tars/panel_url`` нужна только для дедупа в
+        # Quest-клиенте (issue #2113 §«request_id»).
+        request_id = uuid.uuid4().hex[:8]
+        if self._panel_request_pub is None:
+            # Нода без ROS (юнит-тест без rclpy.create_publisher) — честный
+            # отказ вместо AttributeError. ADR-0018: «честный FAIL лучше
+            # красивого PASS».
+            return MCPToolResult(
+                success=False,
+                data={"request_id": request_id},
+                error=(
+                    "ROS publisher недоступен: /avatar/tars/panel_request "
+                    "не опубликован (node без create_publisher)"
+                ),
+            )
+
+        try:
+            from std_msgs.msg import String  # noqa: PLC0415 — локальный импорт
+
+            payload = String()
+            payload.data = json.dumps(
+                {
+                    "request_id": request_id,
+                    "query": query,
+                    "datasource": datasource,
+                },
+                ensure_ascii=False,
+            )
+            self._panel_request_pub.publish(payload)
+        except Exception as exc:  # noqa: BLE001
+            return MCPToolResult(
+                success=False,
+                data={"request_id": request_id},
+                error=f"publish failed: {exc}",
+            )
+
+        return MCPToolResult(
+            success=True,
+            data={
+                "request_id": request_id,
+                "datasource": datasource,
+                "query": query,
+            },
+            message=(
+                f"Опубликовал {datasource}-запрос «{query}» в "
+                "/avatar/tars/panel_request. Quest откроет панель на TARS 2."
+            ),
+        )

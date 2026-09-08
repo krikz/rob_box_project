@@ -304,17 +304,20 @@ def test_synthetic_classifier_used_in_tests():
         ("dialogue_node", "say", False),                # operator.speech
         ("dialogue_node", "dialogue_pause", False),     # operator.control
         ("dialogue_node", "read_logs", False),          # operator.admin
+        ("dialogue_node", "show_metrics", False),       # operator.admin (issue #2113)
         # avatar_supervisor (все срезы)
         ("avatar_supervisor", "say", True),
         ("avatar_supervisor", "dialogue_pause", True),
         ("avatar_supervisor", "read_logs", True),
         ("avatar_supervisor", "speak_text", True),
+        ("avatar_supervisor", "show_metrics", True),    # issue #2113/2184
         # harness (core + personality)
         ("harness", "speak_text", True),
         ("harness", "say", False),
         # unknown sender — fail-closed
         ("unknown_node", "speak_text", False),
         ("unknown_node", "get_battery_level", False),
+        ("unknown_node", "show_metrics", False),        # unknown fail-closed
     ],
 )
 def test_matrix_against_bundled_yaml(sender, tool, should_be_allowed):
@@ -330,3 +333,67 @@ def test_matrix_against_bundled_yaml(sender, tool, should_be_allowed):
         f"sender={sender!r} tool={tool!r} expected={should_be_allowed}, "
         f"got={decision.allowed}, reason={decision.reason!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Issue #2184 — slice-guard regression для ``show_metrics``.
+#
+# Исходный лог с прода (avatar-supervisor / Vision Pi):
+#
+#   LLM RESPONSE: tool_calls=[('show_metrics',
+#       '{"query": "rate(network_latency_ms[5m])", "datasource": "prometheus"}')]
+#   [16] tool: "Инструмент 'show_metrics' недоступен: tool 'show_metrics' не
+#       принадлежит ни одному срезу sender'а 'avatar_supervisor' (доступные
+#       срезы: core, operator.admin, operator.control, operator.speech, personality)"
+#
+# До фикса sender avatar_supervisor не видел show_metrics ни в одном срезе —
+# mcp_server отвечал slice-Failure, тул был зарегистрирован только в
+# локальном ``ToolRegistry`` supervisor'а и ``/mcp/execute`` его не знал.
+#
+# Регрессия закрывается одной строкой в ``slice_policy.yaml``:
+# ``- show_metrics`` в ``slices.operator.admin``. После этого
+# ``avatar_supervisor`` (есть operator.admin) → allowed, а
+# ``dialogue_node`` / ``harness`` (нет operator.admin) → запрет.
+# ---------------------------------------------------------------------------
+
+
+def test_issue_2184_avatar_supervisor_can_call_show_metrics():
+    """avatar_supervisor может вызвать show_metrics — slice guard пропускает.
+
+    Без этой строки ``slices.operator.admin: [..., show_metrics]`` LLM-агент
+    avatar_supervisor получал «tool 'show_metrics' не принадлежит ни одному
+    срезу sender'а 'avatar_supervisor'» и тул никогда не доходил до
+    ``/avatar/tars/panel_request``.
+    """
+    decision = load_default_authority().is_allowed(
+        "avatar_supervisor", "show_metrics"
+    )
+    assert decision.allowed is True, (
+        f"avatar_supervisor обязан мочь вызвать show_metrics (issue #2184); "
+        f"получили reason={decision.reason!r}"
+    )
+
+
+def test_issue_2184_dialogue_node_blocked_from_show_metrics():
+    """dialogue_node НЕ может вызвать show_metrics (нет operator.admin).
+
+    Та же картина, что и для read_logs: «громкий» операторский тул
+    не должен утекать к LLM-личности — slice-guard режет до FSM/execute.
+    """
+    decision = load_default_authority().is_allowed(
+        "dialogue_node", "show_metrics"
+    )
+    assert decision.allowed is False, (
+        "dialogue_node НЕ должен видеть show_metrics — это операторский тул"
+    )
+    # В причине отказа должны быть: имя инструмента, имя sender'а и
+    # список срезов sender'а (для диагностики оператору, ADR-0018).
+    reason = decision.reason
+    assert "show_metrics" in reason
+    assert "dialogue_node" in reason
+    # dialogue_node имеет срезы core + personality — именно они
+    # перечислены в причине. ``operator.admin`` в списке быть не должно,
+    # иначе что-то изменилось в политике (для dialogue_node операторские
+    # срезы в принципе недоступны).
+    assert "core" in reason and "personality" in reason
+    assert "operator.admin" not in reason

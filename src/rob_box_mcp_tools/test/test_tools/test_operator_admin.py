@@ -16,6 +16,7 @@ test_operator_admin.py - Unit тесты для operator.admin среза (ADR-0
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from typing import Any, Dict, List
 from unittest.mock import Mock, patch
@@ -67,6 +68,7 @@ from rob_box_mcp_tools.tools.operator_admin import (  # noqa: E402
     ContainerStatusTool,
     ReadLogsTool,
     Ros2NodeStatusTool,
+    ShowMetricsTool,
     _DEFAULT_EXPECTED_NODES,
     _http_get_json,
     _probe_ros_node_names,
@@ -482,3 +484,169 @@ class TestHttpHelpers:
             side_effect=urllib.error.URLError("nope"),
         ):
             assert _http_get_json("http://x") is None
+
+
+# ----------------------------------------------------------------------------
+# ShowMetricsTool (issue #2113 / TARS 2 metrics panel)
+# ----------------------------------------------------------------------------
+#
+# Тест-планы:
+# 1. Metadata: name=show_metrics, slice=operator.admin, parameters
+#    (query обязательный, datasource опциональный).
+# 2. Happy path: execute(query=...) → публикует JSON в
+#    /avatar/tars/panel_request, формат {request_id, query, datasource},
+#    success=True + message для LLM.
+# 3. datasource=loki: попадает в payload.
+# 4. datasource=None (default): в payload попадает "prometheus".
+# 5. Пустой query: success=False без публикации.
+# 6. Неподдерживаемый datasource: success=False без публикации.
+# 7. Без node (без ROS): success=False с понятным сообщением.
+# 8. publisher.publish raises: success=False, error содержит описание.
+# 9. Контракт для TarsPanelDispatcher: payload содержит все 3 поля
+#    (request_id/query/datasource) с правильными типами.
+
+
+@pytest.mark.unit
+class TestShowMetricsTool:
+    """Тесты ShowMetricsTool — операторский show_metrics (issue #2113)."""
+
+    def test_tool_metadata(self, mock_node):
+        """Метаданные tool'а: имя, slice, обязательные параметры."""
+        tool = ShowMetricsTool(mock_node)
+        assert tool.name == "show_metrics"
+        assert tool.slice == "operator.admin"  # ADR-0052 / issue #1998
+        assert tool.read_only is True
+        # parameters: query (required), datasource (optional)
+        names = [p.name for p in tool.parameters]
+        assert names == ["query", "datasource"]
+        query_param = tool.parameters[0]
+        assert query_param.required is True
+        ds_param = tool.parameters[1]
+        assert ds_param.required is False
+        assert ds_param.default == "prometheus"
+        assert ds_param.enum == ["prometheus", "loki"]
+
+    def test_tool_registered_in_mcp_tools_init(self):
+        """ShowMetricsTool экспортирован через ``tools/__init__``."""
+        import importlib
+
+        # Lazy import — в conftest_local_shim мы уже подменили ROS, но
+        # сам импорт tools/__init__.py должен протащить ShowMetricsTool
+        # через wildcard ``from .operator_admin import *``.
+        from rob_box_mcp_tools import tools as tools_pkg
+
+        assert "ShowMetricsTool" in tools_pkg.__all__, (
+            "ShowMetricsTool должен быть в tools.__all__ — иначе mcp_server"
+            "не сможет его импортировать"
+        )
+        assert hasattr(tools_pkg, "ShowMetricsTool"), (
+            "ShowMetricsTool должен быть доступен как rob_box_mcp_tools.tools.ShowMetricsTool"
+        )
+
+    def test_execute_publishes_json_to_panel_request(self, mock_node):
+        """execute(query) → публикует JSON в /avatar/tars/panel_request.
+
+        Контракт публикации зафиксирован в rob_box_supervisor.tars_panel:
+        ``{"request_id": str, "query": str, "datasource": str}``.
+        """
+        tool = ShowMetricsTool(mock_node)
+        result = tool.execute(query="rate(cpu_usage[5m])")
+
+        assert result.success is True
+        assert result.data["datasource"] == "prometheus"
+        assert result.data["query"] == "rate(cpu_usage[5m])"
+        # request_id — 8 hex символов (uuid4.hex[:8])
+        assert isinstance(result.data["request_id"], str)
+        assert len(result.data["request_id"]) == 8
+        # message — то, что LLM повторит оператору
+        assert "Опубликовал" in result.message
+
+        # Проверяем публикацию на /avatar/tars/panel_request
+        pub = mock_node._publishers["/avatar/tars/panel_request"]
+        assert len(pub.published_messages) == 1
+        msg = pub.published_messages[0]
+        payload = json.loads(msg.data)
+        assert payload["query"] == "rate(cpu_usage[5m])"
+        assert payload["datasource"] == "prometheus"
+        assert payload["request_id"] == result.data["request_id"]
+
+    def test_execute_loki_datasource_propagates_to_payload(self, mock_node):
+        """datasource=loki → попадает в payload (для LogQL-запросов)."""
+        tool = ShowMetricsTool(mock_node)
+        result = tool.execute(
+            query='{job="voice"}',
+            datasource="loki",
+        )
+
+        assert result.success is True
+        assert result.data["datasource"] == "loki"
+        pub = mock_node._publishers["/avatar/tars/panel_request"]
+        payload = json.loads(pub.published_messages[0].data)
+        assert payload["datasource"] == "loki"
+        assert payload["query"] == '{job="voice"}'
+
+    def test_execute_datasource_normalizes_case(self, mock_node):
+        """datasource='Prometheus' → 'prometheus' (lowercase, как у dispatcher'а)."""
+        tool = ShowMetricsTool(mock_node)
+        result = tool.execute(query="up", datasource="Prometheus")
+        assert result.success is True
+        assert result.data["datasource"] == "prometheus"
+        pub = mock_node._publishers["/avatar/tars/panel_request"]
+        payload = json.loads(pub.published_messages[0].data)
+        assert payload["datasource"] == "prometheus"
+
+    def test_execute_empty_query_returns_error_without_publishing(self, mock_node):
+        """Пустой query → success=False, никакой публикации."""
+        tool = ShowMetricsTool(mock_node)
+        # validate_parameters поймает пустой query на стороне registry.execute
+        # (required=True), но и сам execute() должен страховаться.
+        # Передаём whitespace-only — это пройдёт required, но execute
+        # должен отвергнуть.
+        result = tool.execute(query="   ")
+        assert result.success is False
+        assert "query" in result.error.lower()
+        pub = mock_node._publishers.get("/avatar/tars/panel_request")
+        assert pub is None or pub.published_messages == [], (
+            "при пустом query публикации быть не должно"
+        )
+
+    def test_execute_unknown_datasource_returns_error_without_publishing(self, mock_node):
+        """datasource='influxdb' → success=False, никакой публикации."""
+        tool = ShowMetricsTool(mock_node)
+        result = tool.execute(query="up", datasource="influxdb")
+        assert result.success is False
+        assert "datasource" in result.error.lower()
+        pub = mock_node._publishers.get("/avatar/tars/panel_request")
+        assert pub is None or pub.published_messages == [], (
+            "при неизвестном datasource публикации быть не должно"
+        )
+
+    def test_execute_without_node_returns_honest_fail(self):
+        """Без ноды (юнит-тест без ROS) — честный success=False, не raise.
+
+        ADR-0018: лучше честный FAIL, чем AttributeError.
+        """
+        tool = ShowMetricsTool(node=None)
+        result = tool.execute(query="up")
+        assert result.success is False
+        assert "publisher" in result.error.lower() or "create_publisher" in result.error.lower()
+
+    def test_execute_handles_publish_failure_gracefully(self, mock_node):
+        """Если publisher.publish() бросает — success=False + понятный error."""
+        tool = ShowMetricsTool(mock_node)
+        pub = mock_node._publishers["/avatar/tars/panel_request"]
+        pub.publish = Mock(side_effect=RuntimeError("zombie topic"))
+
+        result = tool.execute(query="up")
+        assert result.success is False
+        assert "zombie topic" in result.error
+
+    def test_request_ids_are_unique_across_calls(self, mock_node):
+        """request_id должен быть уникален (uuid4 hex)."""
+        tool = ShowMetricsTool(mock_node)
+        ids = set()
+        for _ in range(20):
+            r = tool.execute(query="up")
+            assert r.success
+            ids.add(r.data["request_id"])
+        assert len(ids) == 20, f"request_id'ы должны быть уникальны, получили {ids}"
