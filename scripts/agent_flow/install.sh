@@ -102,6 +102,13 @@ EXPECTED=(
     watchdog-provider-quick.sh
     agent-flow-drift-detect.sh
     kanban-retro-create.sh
+    # Worker-helper для контракта отчёта (ADR-0077, issue #2159, 2026-09-08):
+    # воркер вызывает `bash scripts/agent_flow/kanban-report-write.sh $TASK_ID`
+    # ПЕРЕД `kanban_complete` — скрипт собирает git diff/pytest/gh pr view и
+    # пишет `docs/reports/kanban/<task_id>.md` (git tracked, переживает worktree GC).
+    # Без него ретро/аудит через месяц невозможен — `kanban_complete` оставляет
+    # только Result (~300 символов) + список путей без содержимого.
+    kanban-report-write.sh
     validate_honesty.sh
     # Pre-PR check на ADR namespace collision (ретро 01.09 t_debcb647):
     # дополняет validate_honesty.sh (claim-evidence) функцией проверки
