@@ -57,30 +57,6 @@ from std_msgs.msg import String
 # issue #1988 — константа топика ответа ТАРС (единый источник правды).
 from rob_box_core.avatar_command import AVATAR_COMMAND_RESULT_TOPIC
 
-# issue #2099 — AV-27 / issue #1919: единый SoT списка голосов TTS-провайдера.
-# До этого импорта вызов ``QuestBridge.set_voice`` падал с
-# ``NameError: name '_voices_for' is not defined`` (ws_handler крашился при
-# каждой попытке UI Quest поставить голос через WS). Supervisor импортирует
-# то же имя (см. supervisor_node.py:53), quest просто отстал — после
-# рефакторинга ``Bridge.execute(Command)`` (PR #2056/#2086) call site в
-# ``set_voice`` остался, а символ в namespace модуля не подтянулся.
-# ВАЖНО: импорт ЗАЩИЩЁННЫЙ, а не жёсткий. Образ ``rob-box-quest`` не
-# содержит ``rob_box_voice.tts_voice_registry`` — жёсткий импорт уронил
-# quest_node в Restarting loop на роботе (``ModuleNotFoundError`` на старте,
-# деплой 2026-09-07, регресс PR #2105). Это конвенция репозитория для всех
-# потребителей реестра: см. ``mcp_tools/tools/dialogue.py`` и
-# ``mcp_tools/voice_state.py`` — «пакет должен оставаться импортируемым без
-# rob_box_voice». Деградация осмысленная: пустой список голосов →
-# ``set_voice`` отдаёт ``tts_unreachable`` в UI шлема вместо падения ноды.
-try:
-    from rob_box_voice.tts_voice_registry import voices_for as _voices_for
-except ImportError:  # pragma: no cover — образы без rob_box_voice
-
-    def _voices_for(provider: str) -> list:
-        """Fallback: реестр голосов недоступен в этом образе."""
-        return []
-
-
 from .core.safety import Watchdog
 from .core.teleop import TeleopController
 from .core.wake_segmenter import WakePhraseSegmenter
@@ -94,6 +70,7 @@ from .streams.provider import CameraFrame, CameraProvider
 from .streams.registry import STREAM_CATALOG
 from .streams.status import StatusAggregator
 from .streams.voice_state import normalize_voice_state
+from .streams.voice_picker import pick_voice
 from .streams.wifi import read_wifi_rssi
 from .protocol.topics import encode_voice_state
 
@@ -775,17 +752,30 @@ class QuestBridge:
             * ok=False, reason="tts_unreachable"|"voice_unavailable"|"missing_publisher"
               — nack; available заполняется списком id голосов активного
               провайдера когда reason="voice_unavailable" (UI-подсказка).
+
+        Источник истины для валидации (issue #2138, fix #2138.A) — кэш
+        latched-топика ``/voice/tts/voices`` (см. ``on_voices_message``), а
+        не компайл-тайм реестр ``tts_voice_registry``: в образе
+        ``rob-box-quest`` пакета ``rob_box_voice`` нет (конвенция «пакет
+        должен оставаться импортируемым без rob_box_voice»), и старый
+        код через ``_voices_for(provider)`` всегда возвращал ``[]`` →
+        ``tts_unreachable`` для ЛЮБОГО голоса при живом TTS. Чистая
+        логика валидации вынесена в ``streams.voice_picker.pick_voice``
+        и покрыта ``test_voice_picker.py`` без rclpy/audio_common_msgs.
         """
         if self._set_voice_pub is None:
             return False, None, "missing_publisher", None
         provider = self._active_provider
         if not provider:
             return False, None, "tts_unreachable", None
-        voices = _voices_for(provider)
-        if not voices:
-            return False, None, "tts_unreachable", None
-        if voice_id not in voices:
-            return False, None, "voice_unavailable", voices
+        # ``list_voices_snapshot`` возвращает актуальный (с учётом TTL) кэш
+        # ``/voice/tts/voices`` — это и есть реальный ответ провайдера о
+        # доступных голосах. Если кэш пуст/протух — capability-honest
+        # ``tts_unreachable``, не молчаливый «ОК».
+        snapshot = self.list_voices_snapshot()
+        choice = pick_voice(snapshot["voices"], voice_id=voice_id)
+        if not choice.ok:
+            return False, None, choice.reason, choice.available
         # Валидно → публикуем запрос супервизору. Формат: JSON-строка в
         # std_msgs/String (как /avatar/set_voice_mode и /avatar/set_voice).
         payload = {

@@ -754,25 +754,33 @@ def test_publish_preview_voice_without_provider_still_emits():
     assert parsed["request_id"] == "req-x"
 
 
-# ── issue #2099 — регресс NameError: '_voices_for' is not defined ────────────
+# ── issue #2138 — регресс «set_voice всегда tts_unreachable» ──────────────
 #
-# До фикса ``QuestBridge.set_voice`` падал с NameError при КАЖДОЙ попытке
-# UI Quest поставить голос через WS — ws_handler крашился, ws-сессия ломалась.
-# Supervisor импортирует ``voices_for as _voices_for`` корректно (см.
-# supervisor_node.py:53), а вот quest — отстал после рефакторинга
-# ``Bridge.execute(Command)`` (PR #2056/#2086): call site в ``set_voice``
-# остался, но символ в namespace модуля не подтянулся.
+# До фикса ``QuestBridge.set_voice`` валидировал ``voice_id`` через
+# компайл-тайм реестр ``rob_box_voice.tts_voice_registry``. В образе
+# ``rob-box-quest`` пакета нет (конвенция «пакет должен оставаться
+# импортируемым без rob_box_voice»), и защищённый fallback возвращал
+# ``[]`` → ``set_voice`` ВСЕГДА отдавал ``tts_unreachable`` при живом TTS.
 #
-# Тесты ниже НЕ требуют rclpy/audio_common_msgs — они работают и на
-# dev-env, и в Docker image.
+# Фикс: валидация по latched-кэшу ``/voice/tts/voices``
+# (``streams.voice_picker.pick_voice``). Тесты ниже фиксируют НОВЫЙ
+# контракт — что ``quest_node.py`` НЕ зависит от ``tts_voice_registry``
+# напрямую и НЕ требует его наличия в образе. Если кто-то снова
+# потащит реестр в quest-узел (нарушая конвенцию импортируемости без
+# rob_box_voice) — эти тесты укажут на регресс.
+#
+# Сама чистая логика валидации покрыта ``test_voice_picker.py`` —
+# работает без rclpy/audio_common_msgs и на dev-env, и в Docker image.
 
 
-def test_quest_node_imports_voices_for_from_voice_registry():
-    """Source-level регресс: ``quest_node.py`` должен импортировать ``_voices_for``.
+def test_quest_node_does_not_import_tts_voice_registry():
+    """Source-level регресс #2138: ``quest_node.py`` НЕ должен напрямую
+    импортировать ``tts_voice_registry``.
 
-    Парсим исходник текстом (AST) — это работает в любом окружении, без
-    тяжёлых зависимостей. Если кто-то снова отстанет от supervisor при
-    рефакторинге registry, этот тест сразу укажет на проблему.
+    Парсим исходник AST-ом (работает на любом окружении). Если кто-то
+    снова потащит реестр голосов прямо в quest-узел — образ
+    ``rob-box-quest`` (без rob_box_voice) сломается с ``Restarting``
+    loop на старте, как в регрессии PR #2105 (issue #2099).
     """
     import ast
     from pathlib import Path
@@ -784,102 +792,100 @@ def test_quest_node_imports_voices_for_from_voice_registry():
     source = quest_node_path.read_text(encoding="utf-8")
     tree = ast.parse(source)
 
-    found = False
+    bad_imports = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.ImportFrom):
             continue
         if node.module != "rob_box_voice.tts_voice_registry":
             continue
-        for alias in node.names:
-            # ``voices_for as _voices_for`` ИЛИ ``voices_for`` без alias —
-            # нас интересует оба варианта, но call site в set_voice ждёт
-            # именно ``_voices_for``.
-            target = alias.asname or alias.name
-            if target == "_voices_for":
-                found = True
-                break
+        bad_imports.append(ast.dump(node))
 
-    assert found, (
-        "quest_node.py должен импортировать "
-        "`from rob_box_voice.tts_voice_registry import voices_for as _voices_for` "
-        "(issue #2099, ws_handler крашился с NameError без этого импорта)"
+    assert not bad_imports, (
+        "quest_node.py НЕ должен импортировать rob_box_voice.tts_voice_registry — "
+        "пакет rob_box_voice отсутствует в образе rob-box-quest, и жёсткий/даже "
+        "защищённый импорт — мёртвая ловушка. Валидация голосов теперь идёт по "
+        "latched-кэшу /voice/tts/voices (см. streams.voice_picker.pick_voice, "
+        "issue #2138 fix). Если ты вернул этот импорт — остановись и проверь "
+        "issue #2138, прежде чем мёржить."
     )
 
 
-def test_voices_for_import_is_guarded():
-    """Регресс деплоя 2026-09-07: жёсткий импорт ронял quest_node на роботе.
+def test_quest_node_does_not_define_voices_for_fallback():
+    """Source-level регресс #2138: ``quest_node.py`` НЕ должен содержать
+    собственный fallback ``_voices_for``.
 
-    Образ ``rob-box-quest`` не содержит ``rob_box_voice.tts_voice_registry``.
-    PR #2105 добавил импорт на уровне модуля БЕЗ ``try/except`` — нода легла
-    в Restarting loop с ``ModuleNotFoundError`` сразу после деплоя, вместе
-    с ней ушли ВСЕ топики квеста (``/audio/quest_in``, ``/audio/quest_wake``,
-    телеоп). Конвенция репозитория — защищённый импорт с fallback, см.
-    ``rob_box_mcp_tools/tools/dialogue.py`` и ``rob_box_mcp_tools/voice_state.py``.
-
-    Проверяем структурно (AST): импорт ``tts_voice_registry`` обязан лежать
-    внутри ``ast.Try``. Ловится именно причина падения, а не симптом.
+    До фикса в файле был блок
+    ``try: from rob_box_voice.tts_voice_registry import voices_for as _voices_for
+    except ImportError: def _voices_for(provider): return []``.
+    Этот блок — корень #2138: на роботе fallback всегда возвращал ``[]``,
+    и ``set_voice`` не пропускал ни одного голоса. После фикса валидация
+    идёт через ``pick_voice`` (cache), и модуль ``quest_node`` ничем
+    подобным не занимается.
     """
     import ast
     from pathlib import Path
 
-    repo_root = Path(__file__).resolve().parents[4]  # test/unit/... → repo root
+    repo_root = Path(__file__).resolve().parents[4]
+    quest_node_path = repo_root / "src" / "rob_box_quest" / "rob_box_quest" / "quest_node.py"
+    source = quest_node_path.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    # Ищем любую ``def _voices_for(...)`` внутри модуля. Если она
+    # появится — это регресс #2138.
+    fallback_defs = []
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == "_voices_for"
+        ):
+            fallback_defs.append(ast.dump(node))
+
+    assert not fallback_defs, (
+        "quest_node.py не должен определять локальный fallback _voices_for — "
+        "это путь к регрессу issue #2138. Валидация голоса теперь — "
+        "streams.voice_picker.pick_voice по latched-кэшу /voice/tts/voices."
+    )
+
+
+def test_quest_node_uses_pick_voice_from_voice_picker_module():
+    """Source-level регресс #2138: ``QuestBridge.set_voice`` обязан вызывать
+    ``pick_voice`` из ``streams.voice_picker``.
+
+    Без этого вызова нет фикса #2138 — кто-то может случайно откатить
+    bridge на старый путь через ``_voices_for(provider)``. Тест находит
+    метод ``set_voice`` и проверяет, что его тело содержит обращение к
+    ``pick_voice``.
+    """
+    import ast
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[4]
     quest_node_path = repo_root / "src" / "rob_box_quest" / "rob_box_quest" / "quest_node.py"
     tree = ast.parse(quest_node_path.read_text(encoding="utf-8"))
 
-    guarded = False
+    # Найти класс QuestBridge → метод set_voice → имена в его теле.
+    set_voice_found = False
+    uses_pick_voice = False
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Try):
+        if not isinstance(node, ast.ClassDef):
             continue
-        for stmt in node.body:
+        if node.name != "QuestBridge":
+            continue
+        for item in node.body:
             if (
-                isinstance(stmt, ast.ImportFrom)
-                and stmt.module == "rob_box_voice.tts_voice_registry"
+                isinstance(item, ast.FunctionDef)
+                and item.name == "set_voice"
             ):
-                guarded = True
+                set_voice_found = True
+                for sub in ast.walk(item):
+                    if isinstance(sub, ast.Name) and sub.id == "pick_voice":
+                        uses_pick_voice = True
+                    if isinstance(sub, ast.Attribute) and sub.attr == "pick_voice":
+                        uses_pick_voice = True
 
-    assert guarded, (
-        "импорт rob_box_voice.tts_voice_registry в quest_node.py обязан быть "
-        "внутри try/except ImportError — образ rob-box-quest не содержит этот "
-        "модуль, жёсткий импорт кладёт ноду в Restarting loop (деплой 2026-09-07)"
-    )
-
-
-def test_quest_node_module_exposes_voices_for_alias():
-    """Runtime регресс: при импорте ``rob_box_node`` алиас ``_voices_for`` доступен.
-
-    Это ловит случай, когда import-line есть в исходнике, но модуль не
-    импортируется (например, синтаксическая ошибка или пропавший
-    rob_box_voice в sys.path).
-
-    Тест skip'ается, если ``audio_common_msgs`` недоступен — quest_node
-    тянет rclpy/audio_common_msgs на верхнем уровне (только в Docker).
-    """
-    pytest.importorskip(
-        "audio_common_msgs",
-        reason="QuestBridge/quest_node требует rclpy/audio_common_msgs (только в Docker image)",
-    )
-    import importlib
-
-    # Принудительно импортируем зависимости, чтобы ``from rob_box_voice...``
-    # в quest_node.py мог резолвиться.
-    pytest.importorskip("rob_box_voice", reason="rob_box_voice не в sys.path")
-    import rob_box_quest.quest_node as qn  # noqa: E402
-
-    # Ре-импорт через importlib на случай уже загруженной версии модуля
-    # в этом pytest-сеансе (тесты выше могли уже затянуть quest_node).
-    importlib.reload(qn)
-
-    assert hasattr(qn, "_voices_for"), (
-        "quest_node должен экспортировать алиас ``_voices_for`` "
-        "после рефакторинга Bridge.execute(Command) (issue #2099)"
-    )
-    assert callable(qn._voices_for), (
-        "``_voices_for`` должен быть callable (тот же ``voices_for`` "
-        "из rob_box_voice.tts_voice_registry)"
-    )
-    # Smoke: на известном провайдере возвращается список строк.
-    yandex_voices = qn._voices_for("yandex")
-    assert isinstance(yandex_voices, list)
-    assert all(isinstance(v, str) for v in yandex_voices), (
-        f"yandex voices должны быть list[str], получили {yandex_voices!r}"
+    assert set_voice_found, "QuestBridge.set_voice не найден — структура файла изменилась?"
+    assert uses_pick_voice, (
+        "QuestBridge.set_voice обязан вызывать pick_voice (issue #2138 fix). "
+        "Если ты это убрал — это регресс: set_voice снова ходит через "
+        "реестр/кэш неверным путём и ломает выбор голоса на роботе."
     )
