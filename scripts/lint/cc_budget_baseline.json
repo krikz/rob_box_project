@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created": "2026-09-08",
-  "base_sha": "20baf70125fc03b53d0c811dd4f95918cfe25217",
+  "base_sha": "103109f439e40194ff0d03dff38767b347725cb5",
   "limits": {
     "method": 15,
     "init": 20
@@ -28,7 +28,7 @@
       "DialogueNode._continue_after_tool_calls": 22,
       "DialogueNode._do_recursive_streaming": 22,
       "DialogueNode._execute_tool_calls": 18,
-      "DialogueNode._handle_result": 62,
+      "DialogueNode._handle_result": 65,
       "DialogueNode._on_stt": 54,
       "DialogueNode._run_turn": 57
     },
@@ -56,7 +56,7 @@
       "TTSNode._synthesize_and_play": 19,
       "TTSNode._synthesize_silero": 23,
       "TTSNode._synthesize_yandex": 18,
-      "TTSNode.dialogue_callback": 25
+      "TTSNode.dialogue_callback": 28
     },
     "src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py": {
       "AvatarSupervisor._build_operator_llm": 16,

@@ -117,6 +117,7 @@ from rob_box_voice.core.dialogue_guards import (
     build_babble_retry_prompt,
     build_music_retry_prompt,
     build_renardo_code_retry_prompt,
+    build_system_regurgitate_retry_prompt,
     build_unbacked_action_retry_prompt,
     build_tool_retry_prompt as build_tool_retry_prompt,
     detect_required_tool as detect_required_tool,
@@ -125,6 +126,7 @@ from rob_box_voice.core.dialogue_guards import (
     is_metalanguage_babble,
     is_music_stop_command,
     is_planning_narration,
+    is_system_template_regurgitated,
     user_wants_music,
     user_wants_performance,
 )
@@ -814,6 +816,12 @@ class DialogueNode(Node):
         # Защита от бесконечного LLM ping-pong: один ретрай на turn.
         # Сбрасывается на новый user-initiated turn (см. _run_turn).
         self._tool_retry_used: bool = False
+
+        # Issue #2175 — MiniMax-M3 regurgitates ``<system>...</system>``
+        # template после ``set_voice`` + multi-voice user_input. Один
+        # одноразовый ретрай с явным требованием отвечать обычным
+        # языком, иначе LLM и код уходят в пинг-понг.
+        self._system_regurgitate_retry_used: bool = False
 
         # Issue #1881 — общий бюджет СИНТЕТИЧЕСКИХ ретраев на user-turn.
         # Раньше у каждого guard'а был свой одноразовый флаг
@@ -2577,6 +2585,14 @@ class DialogueNode(Node):
         в /voice/tts/current_voice при вызове set_voice. Храним голос для
         контекста [TTS] (Q8): LLM видит current_voice и может вернуть его
         дефолтным голосом или сменить снова.
+
+        Issue #2175 — provider/voice switch invalidates MiniMax's internal
+        кэш system-context. После ``set_voice`` MiniMax-M3 три запроса
+        подряд regurgitates ``<system>...</system>`` template. Сбрасываем
+        «грязный» маркер, который dialogue_node использует для guard'а —
+        теперь следующий LLM-ответ пройдёт через guard заново (один
+        одноразовый ретрай защитит от первого regurgitates, но если LLM
+        продолжит после смены голоса — защита должна быть готова).
         """
         try:
             payload = json.loads(msg.data or "{}")
@@ -2590,6 +2606,12 @@ class DialogueNode(Node):
             provider = payload.get("provider") or self.get_parameter("tts_provider").value
         except Exception:  # noqa: BLE001 — stub без параметра
             provider = payload.get("provider")
+        # Issue #2175 — инвалидируем system-template guard после смены
+        # голоса/провайдера. Без этого следующий regurgitates прошёл бы
+        # без retry (флаг уже взведён от прошлого turn'а) и юзер
+        # услышал бы «получатель ответа забыл указать антропоморфные
+        # атрибуты» прямо поверх только что сменённого голоса.
+        self._system_regurgitate_retry_used = False
         self.get_logger().info(
             f"🎙️ [issue 1219] TTS current_voice → '{self._current_tts_voice}' "
             f"(provider: {provider})"
@@ -2603,6 +2625,10 @@ class DialogueNode(Node):
         провайдера (квота/сеть) и после каждого успешного синтеза.
         Храним фактического провайдера и голос — LLM-контекст [TTS]
         строится по ним (голоса РЕАЛЬНОГО провайдера, а не номинального).
+
+        Issue #2175 — смена TTS-провайдера (yandex→minimax fallback или
+        обратно) тоже инвалидирует MiniMax's кэш system-context, поэтому
+        ресетим guard-флаг.
         """
         try:
             payload = json.loads(msg.data or "{}")
@@ -2619,6 +2645,9 @@ class DialogueNode(Node):
         # инициализируется в __init__, но handler может вызваться и на
         # голом объекте; лог не должен падать).
         actual_voice = getattr(self, "_actual_tts_voice", None)
+        # Issue #2175 — ресетим guard-флаг после смены провайдера
+        # (см. _on_tts_current_voice для обоснования).
+        self._system_regurgitate_retry_used = False
         self.get_logger().info(
             f"🎙️ [issue 1229] TTS actual provider → '{self._actual_tts_provider}' "
             f"(voice: {actual_voice}, reason: {payload.get('reason')})"
@@ -3502,6 +3531,7 @@ class DialogueNode(Node):
             self._action_claim_retry_used = False
             self._code_speech_retry_used = False
             self._tool_retry_used = False
+            self._system_regurgitate_retry_used = False
             self._synthetic_retries_left = self.DEFAULT_SYNTHETIC_RETRIES
             # Bug C (юзер-музыка) — сброс user-budget тоже только на
             # user-initiated turn; DJ-transition живёт своей жизнью и
@@ -4365,6 +4395,89 @@ class DialogueNode(Node):
                 user_input=user_input or "", spoken=spoken, rule=rule
             ),
             is_action_claim_retry=True,
+            is_synthetic=True,
+            raw_user_command=user_input,
+        )
+        return True
+
+    def _check_system_template_regurgitate_and_retry(
+        self,
+        *,
+        spoken: str,
+        user_input: Optional[str],
+        tools_called: tuple,
+        speak_text_real: int = 0,
+    ) -> bool:
+        """Issue #2175 — одноразовый ретрай на regurgitated system-template.
+
+        Live 08.09 (Vision Pi, 14:52): три запроса подряд после
+        ``set_voice`` + multi-voice user_input + новая DJ-skill context
+        давали в ``spoken`` ровно кусок СИСТЕМНОГО промпта вида::
+
+            <system>
+            [получатель ответа забыл указать антропоморфные атрибуты]
+            </system>
+
+        Это невалидный user-facing ответ — TTS озвучивал метаинструкцию
+        через Yandex→MiniMax fallback, юзер слышал «получатель ответа
+        забыл указать антропоморфные атрибуты» поверх только что
+        сменённого голоса. Корневая причина — MiniMax-M3 regurgitates
+        system-template при определённых условиях (см. issue body).
+
+        Защита — двухуровневая (это первый уровень, dialogue_node):
+        regex-detector :func:`is_system_template_regurgitated` ловит
+        ПОЛНЫЙ ``<system>...</system>``-блок без surrounding текста
+        и требует ОДИН одноразовый CRITICAL-ретрай. Второй уровень —
+        defense-in-depth в :func:`tts_node.dialogue_callback` (отказ
+        синтеза + ``/voice/tts/finished(success=False)``).
+
+        Retry rules — все должны выполниться для ретрая:
+        1. ``speak_text`` НЕ была реально вызвана (``speak_text_real==0``).
+           Если LLM уже что-то произнесла через тул — НЕ вмешиваемся.
+        2. ``spoken`` — regurgitated ``<system>...</system>``-блок
+           (см. :func:`is_system_template_regurgitated`).
+        3. ``_system_regurgitate_retry_used`` ещё ``False`` (защита от
+           ping-pong) и общий ``_synthetic_retries_left`` не исчерпан.
+
+        Returns:
+            ``True`` — ретрай отправлен, вызывающий НЕ должен публиковать
+            текст в TTS (иначе юзер услышит regurgitates, а потом
+            ответ ретрая).
+        """
+        if speak_text_real > 0:
+            return False
+        if not spoken:
+            return False
+        if getattr(self, "_system_regurgitate_retry_used", False):
+            return False
+        if not is_system_template_regurgitated(spoken):
+            return False
+
+        # Тот же перевод DSM, что и в babble/renardo/action-claim ретраях:
+        # без него process_input увидит IDLE и вернёт пустой результат.
+        try:
+            if self._dsm.current_state == DialogueStateKind.IDLE:
+                self._dsm.on_event(DialogueEvent.WAKE_WORD)
+                self._publish_state()
+            self._dsm.on_event(DialogueEvent.STT_RESULT)
+            self._publish_state()
+        except ImportError:
+            pass
+
+        # Issue #1881 — общий budget декрементится рядом с поимённым
+        # флагом. Если budget == 0, ретрай НЕ отправляется.
+        if not self._consume_synthetic_retry(guard_name="system_regurgitate"):
+            return False
+        self._system_regurgitate_retry_used = True
+        self._mark_retry_dispatched()
+        self.get_logger().warning(
+            "🧾 [issue 2175] MiniMax regurgitates system-template в spoken "
+            f"(head={spoken[:120]!r}) — один ретрай, "
+            f"user_input={user_input!r}, tools={list(tools_called)!r}"
+        )
+        self._dispatch_turn(
+            build_system_regurgitate_retry_prompt(user_input),
+            is_action_claim_retry=False,  # свой тип, чтобы не путать с Bug E
             is_synthetic=True,
             raw_user_command=user_input,
         )
@@ -5364,6 +5477,17 @@ class DialogueNode(Node):
                 "spoken matches planning pattern, tools empty, "
                 f"speaking nothing (head={spoken[:120]!r})"
             )
+            return
+        # Issue #2175 — MiniMax-M3 regurgitates ``<system>...</system>``
+        # template вместо user-facing ответа. Один одноразовый CRITICAL-
+        # ретрай ДО babble/renardo/action-claim — чтобы regurgitates НЕ
+        # прошли в TTS (Yandex→MiniMax fallback озвучивал их на роботе).
+        if spoken and self._check_system_template_regurgitate_and_retry(
+            spoken=spoken,
+            user_input=raw_user_command or user_input,
+            tools_called=tools_called,
+            speak_text_real=speak_text_real,
+        ):
             return
         # Issue #992 Bug D — metalanguage / babble detector. Fires ONE
         # synchronous retry with a CRITICAL prompt reminder when the
