@@ -936,6 +936,20 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   scene.add(pointerBeam.object);
 
   function updatePointer(ray: PointerRay | null): void {
+    // Сфера драга живёт вокруг головы оператора. Камера в VR может
+    // уехать из (0, 1.6, 0) — local-floor mode позволяет отойти от
+    // стартовой точки и наклониться. Без `setCenter` каждый кадр
+    // панели катались бы вокруг начала координат, а не вокруг
+    // оператора: чем дальше он ушёл, тем сильнее панель «прилипала
+    // не туда» (issue #2143 §1.1). Центр обновляем ДО update(ray), и
+    // в частности ДО первого `radiusOf(id)` в момент justPressed —
+    // иначе при захвате панели в стороне от старта координат
+    // `dragRadius` посчитается от старого центра.
+    pointer.setCenter({
+      x: camera.position.x,
+      y: camera.position.y,
+      z: camera.position.z
+    });
     pointer.update(ray);
     pointerBeam.update(ray, pointer.getHit());
   }

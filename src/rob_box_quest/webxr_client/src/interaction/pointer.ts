@@ -17,8 +17,8 @@ import * as THREE from "three";
 import {
   cornerFromUv,
   dragTargetPosition,
-  horizontalRadius,
   isDrag,
+  length,
   type PanelCorner,
   type Vec3
 } from "./pointer_math";
@@ -247,11 +247,25 @@ export class PointerSystem {
     return null;
   }
 
+  /**
+   * 3D-расстояние от центра сферы драга до текущей позиции таргета.
+   * Этот скаляр зафиксируется в `dragRadius` в момент захвата и
+   * передаётся в `dragTargetPosition` как радиус 3D-сферы
+   * (`intersectRaySphere`). Раньше здесь возвращался горизонтальный
+   * радиус, что для панелей на y≠center.y давало 3D-радиус МЕНЬШЕ
+   * истинного 3D-расстояния — каждое перетаскивание подтягивало панель
+   * ближе. Возвращаем честное 3D, чтобы DoD был «расстояние не
+   * накапливается» (issue #2143 §1.2).
+   */
   private radiusOf(id: string): number {
     const target = this.targets.find((t) => t.id === id);
     if (!target) return 2;
     const p = target.object.position;
-    return horizontalRadius({ x: p.x, y: p.y, z: p.z }, this.center);
+    return length({
+      x: p.x - this.center.x,
+      y: p.y - this.center.y,
+      z: p.z - this.center.z
+    });
   }
 
   /** Точка на сфере, куда сейчас светит луч — база для клик/драг порога. */
