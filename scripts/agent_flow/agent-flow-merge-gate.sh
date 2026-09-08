@@ -340,6 +340,50 @@ print("0" if has_meaningful else "1")
 ' 2>/dev/null || echo 0
 }
 
+# --- worker-report soft-warning (issue #2159, ADR-0077) ----------------------
+# Pre-merge: если в PR воркер не приложил `docs/reports/kanban/<task_id>.md`
+# — печатает WARN в лог merge-gate. **НЕ блокирует** merge (по body карточки
+# Шифу: «не блокировать, мягкий warning»). Hot-fix PR (1-2 файла) exempt:
+# отчёт воркера там нерелевантен, а добавление отчёта → out-of-scope.
+#
+# Семантика: «нет ни одного файла под docs/reports/kanban/*.md» в PR.
+# Это best-effort hint: воркеры должны сами создавать отчёт ПЕРЕД
+# `kanban_complete` через scripts/agent_flow/kanban-report-write.sh. Если
+# забыли — увидим в ретро, что таких PR было много → ужесточим gate.
+#
+# Использование: warn_no_worker_report <pr_number>
+warn_no_worker_report() {
+    local pr_num="$1"
+    local files_json
+    files_json="$(gh pr view "$pr_num" --repo "$GH_REPO" --json files \
+        --jq '[.files[].path]' 2>/dev/null || echo '[]')"
+    if [ -z "$files_json" ] || [ "$files_json" = "null" ]; then
+        # gh не ответил / нет прав — fail-open (НЕ шумим).
+        return 0
+    fi
+    # Проверяем: есть ли хоть один файл под docs/reports/kanban/*.md?
+    # Без python3: grep по JSON-литералу (файл — строка в кавычках).
+    if printf '%s' "$files_json" | grep -qE '"docs/reports/kanban/[^"]+\.md"'; then
+        return 0  # отчёт есть — ОК
+    fi
+    # Проверяем: PR маленький (≤2 файла)? Тогда это hot-fix, exempt.
+    # Считаем файлы как кол-во JSON-строк в кавычках: `grep -o '"..."'` →
+    # wc -l. Без python3 -c (sandbox-friendlier).
+    local _fcount
+    _fcount="$(printf '%s' "$files_json" | grep -oE '"[^"]+"' | wc -l)"
+    # 0 файлов → пустой PR, не warn (нечего warn-ить, fail-open)
+    if [ "${_fcount:-0}" -eq 0 ] 2>/dev/null; then
+        return 0
+    fi
+    # 1-2 файла без отчёта → hot-fix exempt
+    if [ "${_fcount:-0}" -le 2 ]; then
+        return 0
+    fi
+    # ≥3 файлов без отчёта → WARN
+    echo "WARN: PR #${pr_num} has no docs/reports/kanban/*.md report (issue #2159, ADR-0077) — workers should add it before kanban_complete (soft warning, not blocking)" >&2
+    return 0
+}
+
 # --- honesty-hint (ADR-0018, 18.08.2026) ------------------------------------
 # Pre-merge проверка PR body на «голословный PASS»: если воркер не приложил
 # raw-evidence (pytest / docker logs / gh run view / sqlite / git log /
@@ -4540,6 +4584,10 @@ git push --force-with-lease origin ${pr_head_ref}
     _dead_flag=0
     if [ "$pr_state" = "OPEN" ] && [ "$pr_mergeable" = "MERGEABLE" ] \
         && [ "$pr_merge_state" = "CLEAN" ]; then
+        # Soft warning: PR воркер-карточки без docs/reports/kanban/*.md (issue
+        # #2159, ADR-0077). Печатает WARN в лог, НЕ блокирует merge. Hot-fix
+        # PR (≤2 файлов) exempt — exempt-логика внутри самой функции.
+        warn_no_worker_report "$pr_number" || true
         if [ "$(pr_is_dead_content "$pr_number")" = "1" ]; then
             _dead_flag=1
             log "issue #${number}: ⚠️ PR #${pr_number} DEAD-CONTENT detected (after rebase: only binary, 0 meaningful files) — flagging"

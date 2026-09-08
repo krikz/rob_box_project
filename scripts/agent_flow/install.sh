@@ -246,6 +246,14 @@ EXPECTED=(
     # install.sh best-effort после раскладки скриптов; идемпотентен.
     # Drift-detect контролирует наличие файла во всех профилях (EXPECTED).
     sync-skills.sh
+    # Kanban worker report writer (issue #2159, ADR-0077): генератор отчёта
+    # воркера в <worktree>/docs/reports/kanban/<task_id>.md. Воркер вызывает
+    # ПЕРЕД kanban_complete; скрипт собирает git log/diff/CI, ставит заглушки
+    # для свободных секций (Что сделано, Skill results, Caveats), воркер
+    # дописывает руками. Без раскладки в профили — devops/architect
+    # не смогут сгенерировать отчёт и потеряют raw-evidence для ретро.
+    # Тесты — scripts/agent_flow/tests/test_kanban_report_write.sh.
+    kanban-report-write.sh
 )
 
 # Режим --list-files: печатает EXPECTED по одному имени на строку и выходит.
