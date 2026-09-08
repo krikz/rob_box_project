@@ -2691,7 +2691,11 @@ class AvatarSupervisor(Node):
         """ROS-callback ``/avatar/ptt/result`` — фраза с левого грипа.
 
         Запускает прямоточную трансформацию по текущей конфигурации панели
-        и публикует результат в ``/voice/tts/request`` (динамики робота).
+        и публикует результат в ``/voice/tts/request`` (динамики робота,
+        §7.5). Целевая аудитория — люди рядом с роботом; оператор слышит
+        свою реплику акустически (динамики → воздух → уши) и через
+        PTT-гейт клиента, side-tone в шлем не нужен (инвариант 6b §7.4:
+        два выхода звука не смешиваются).
         """
         text = self._extract_grip_ptt_text(msg.data or "")
         if not text:
@@ -2809,54 +2813,59 @@ class AvatarSupervisor(Node):
     def _publish_grip_tts(
         self, text: str, language: Optional[str] = None
     ) -> None:
-        """Опубликовать текст в ``/avatar/tts/request`` (ТАРС в шлем, ADR-0055).
+        """Опубликовать текст в ``/voice/tts/request`` (динамики робота, §7.5).
 
-        Раньше это был ``/voice/tts/request`` (динамики робота). Теперь
-        все реплики пайплайна грипа идут в шлем через
-        ``/avatar/tts/request`` (sink="headset"): грип говорит голосом
-        оператора (прямоточный пайплайн — ``/avatar/ptt/result`` →
-        ``/avatar/voice_pipeline`` → ``transform`` → ЭТО), и для
-        аудио-канала шлем — естественный получатель.
+        Прямоточный пайплайн грипа (issue #1989, §7.5):
+        ``/avatar/ptt/result`` → ``/avatar/voice_pipeline`` →
+        ``transform`` → ``/voice/tts/request``. Целевая аудитория —
+        люди рядом с роботом, поэтому грип говорит голосом робота из
+        динамиков (тот же канал, что и инструмент ``say``).
 
-        Payload — JSON ``{request_id, ssml, sink:"headset", language?}``:
-        ``ssml`` обязателен (tts_node читает его в _on_avatar_tts_request),
+        Payload — JSON ``{ssml, language?, priority: "operator"}``:
+        ``ssml`` обязателен (tts_node читает ssml в dialogue_callback),
+        ``priority="operator"`` (ADR-0056 §3.5, _TTS_PRIORITY_PREEMPTS)
+        чтобы voice-планировщик вставил реплику сразу за текущей
+        озвучкой и положил её поверх очереди динамика — иначе грип
+        «глохнет» в очереди перед текущей фразой личности.
         ``language`` передаём ТОЛЬКО когда текст переписан LLM и должен
         звучать на выбранном языке (AV-28); дословный текст остаётся на
         языке оператора без override.
 
-        Динамики робота (``/voice/tts/request``) теперь зарезервированы
-        за инструментом ``say`` (см. ADR-0055 §Чего не делаем).
+        Шлем (sink="headset", ``/avatar/tts/request``) сюда НЕ идёт —
+        инвариант 6b §7.4: «Два выхода звука не смешиваются».
+        Собственные реплики ТАРС остаются в шлеме через ``_publish_avatar_tts``.
 
         Issue #2096 — drop при пустом text (раньше публиковали
         ``<speak></speak>``, tts_node получал пустой SSML и райзил
         MiniMax "text is empty" → CRITICAL в deploy-логе).
-        """
-        import uuid as _uuid
 
+        Issue #2137 — регресс против §7.5: ``_publish_grip_tts`` ошибочно
+        слал в ``/avatar/tts/request`` (sink=headset), и оператор слышал
+        «сам себя» в шлеме, а люди рядом — ничего. Фикс: обратно на
+        ``/voice/tts/request`` с ``priority="operator"``.
+        """
         # Issue #2096 — пустой text → DROP (warning). Раньше уходило в
         # /avatar/tts/request, tts_node ловил MiniMax bad-request, лог
         # CRITICAL в deploy-issue (см. PR #NNNN).
         if not text or not text.strip():
             self._log.warning(
-                f"GripPipeline: avatar_tts_request skipped — empty text "
+                f"GripPipeline: voice_tts_request skipped — empty text "
                 f"(language={language!r})"
             )
             return
 
-        request_id = _uuid.uuid4().hex[:8]  # см. ADR-0055 §tts_node
-        payload = {
-            "request_id": request_id,
+        payload: dict[str, Any] = {
             "ssml": f"<speak>{text}</speak>",
-            "sink": "headset",
+            "priority": GRIP_TTS_SOURCE,  # "operator" — REPLACE-priority
         }
         if language:
             payload["language"] = language
         try:
             msg = RosString()
             msg.data = json.dumps(payload, ensure_ascii=False)
-            self._avatar_tts_request_pub.publish(msg)
+            self._tts_request_pub.publish(msg)
         except Exception as exc:  # noqa: BLE001
-            self._log.warning(f"GripPipeline: avatar_tts_request publish failed: {exc}")
+            self._log.warning(f"GripPipeline: voice_tts_request publish failed: {exc}")
 
     def _maybe_speak_agent_reply(self, source: str, summary: str) -> None:
         """Озвучить ответ агента в шлем, если вход был голосовым (#2116).
