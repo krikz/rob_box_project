@@ -161,6 +161,10 @@ UNKNOWN_ASSIGNEE_ROLLUP_MARKER="${UNKNOWN_ASSIGNEE_ROLLUP_MARKER:-agent-flow-tri
 # Max unknown-assignee issues за ОДИН tick, после которых phase-break (чтобы
 # не блокировать остальной triage если у нас массовый баг в метках).
 UNKNOWN_ASSIGNEE_PHASE_BREAK_AT="${UNKNOWN_ASSIGNEE_PHASE_BREAK_AT:-50}"
+# G10a dedup (ретро t_03977adb, issue #2171, ADR-AF-0062 follow-up) —
+# см. описание в defaults-блоке ниже и в agent-flow-triage.sh:202-215.
+AGENT_FLOW_FILE_OVERLAP_DEDUP_HOURS="${AGENT_FLOW_FILE_OVERLAP_DEDUP_HOURS:-6}"
+AGENT_FLOW_FILE_OVERLAP_MARKER="${AGENT_FLOW_FILE_OVERLAP_MARKER:-hermes-triage-g10a}"
 DRY_RUN="${DRY_RUN:-false}"
 ISSUE_LIMIT="${ISSUE_LIMIT:-50}"
 LOCK_FILE="${LOCK_FILE:-/tmp/agent-flow-triage.lock}"
@@ -202,6 +206,20 @@ af_load_profile_env "$PROFILE_ENV"
 : "${UNKNOWN_ASSIGNEE_ROLLUP_LABEL:=agent-flow-error}"
 : "${UNKNOWN_ASSIGNEE_ROLLUP_MARKER:=agent-flow-triage:unknown-assignee-rollup}"
 : "${UNKNOWN_ASSIGNEE_PHASE_BREAK_AT:=50}"
+# --- G10a dedup env-vars (ретро t_03977adb, issue #2171, ADR-AF-0062 follow-up) ----
+# G10a в issue #2162 начал спамить 38 одинаковых комментов за 1.5ч — каждую
+# минуту cron писал новый «file-overlap-skip», потому что в скрипте не было
+# дедупа на САМИ triage-комменты (только на kanban-карточки, G5/G6b/G9a/b).
+#
+# Решение: каждый G10a-коммент помечается marker'ом
+# `<!-- hermes-triage-g10a: <hash> -->` где hash = sha1(issue_number +
+# sorted-PR-list-basenames-overlapped). Если в issue уже есть свежий G10a
+# коммент с ТАКИМ ЖЕ hash — skip. Если hash ОТЛИЧАЕТСЯ (state изменился) —
+# edit существующего коммента через `gh api PATCH` (без нового коммента).
+# Если последний G10a-коммент < $AGENT_FLOW_FILE_OVERLAP_DEDUP_HOURS часов
+# назад — rate-limit skip (даже если state изменился), см. ADR-AF-0062 §2.5.
+AGENT_FLOW_FILE_OVERLAP_DEDUP_HOURS="${AGENT_FLOW_FILE_OVERLAP_DEDUP_HOURS:-6}"
+AGENT_FLOW_FILE_OVERLAP_MARKER="${AGENT_FLOW_FILE_OVERLAP_MARKER:-hermes-triage-g10a}"
 : "${DRY_RUN:=false}"
 : "${ISSUE_LABEL:=hermes}"
 : "${DONE_LABEL:=e2e-done}"
@@ -480,10 +498,70 @@ for r in results:
     log "🚨 issue #${number}: G10a file-overlap — файл ${_fo_ifile} уже правится в OPEN PR #${_fo_pr} (${_fo_head}) — карточку НЕ создаём (ретро t_50a18fa9, ADR-AF-0062)"
 
     if [ "$DRY_RUN" != "true" ]; then
-        local overlap_list
-        overlap_list="$(printf '%s\n' "$overlap_results" | awk -F'\t' '{print "- PR #"$1" ("$2") правит "$4}' | sort -u | head -10)"
-        gh issue comment "$number" --repo "$GH_REPO" --body \
-            "🚨 **agent-flow-triage: G10a file-overlap-skip (ретро t_50a18fa9, ADR-AF-0062)**
+    local overlap_list
+    overlap_list="$(printf '%s\n' "$overlap_results" | awk -F'\t' '{print "- PR #"$1" ("$2") правит "$4}' | sort -u | head -10)"
+
+    # G10a dedup (ретро t_03977adb, issue #2171, ADR-AF-0062 follow-up):
+    # issue #2162 начал спамить 38 одинаковых комментов за 1.5ч. Решение —
+    # маркер + state-hash + rate-limit-window. Логика:
+    #  1. State hash = sha1(issue_number + sorted-pr-файлов-overlap'нутых)
+    #  2. Если в issue уже есть G10a-коммент с ТАКИМ ЖЕ hash → skip (state не менялся)
+    #  3. Если hash ОТЛИЧАЕТСЯ → edit существующего коммента (state изменился)
+    #  4. Если последний G10a-коммент < DEDUP_HOURS часов назад → rate-limit skip
+    #     (даже если state изменился; см. ADR-AF-0062 §2.5 acceptance #4)
+    local _state_hash _marker_line _existing_id _existing_hash _existing_iso _now_epoch _cutoff_epoch _existing_epoch
+    # Строим state-hash: сортируем overlap-list строк (PR+file), чтобы он
+    # был стабильным между тиками.
+    _state_hash="$(printf '%s\n' "$overlap_results" \
+        | awk -F'\t' '{print $1"\t"$3"\t"$4}' \
+        | sort -u \
+        | { printf '%s\n' "$(cat)"; printf '%s' "$number"; } \
+        | sha1sum \
+        | awk '{print substr($1,1,12)}')"
+    _marker_line="<!-- ${AGENT_FLOW_FILE_OVERLAP_MARKER}: ${_state_hash} -->"
+
+    # Ищем существующий G10a-коммент в последних 100 комментах.
+    # Возвращает: "<comment_id>|<iso_date>|<hash>" или пусто.
+    # jq filter экранирует marker (regex-спецсимволов нет, но на всякий).
+    local _marker_jq
+    _marker_jq="$(printf '%s' "$AGENT_FLOW_FILE_OVERLAP_MARKER" | sed 's/[][\\^$.*?+|(){}]/\\&/g')"
+    local _existing
+    _existing="$(gh api "repos/${GH_REPO}/issues/${number}/comments?per_page=100" \
+        --jq "[.[] | select((.body // \"\") | test(\"\\Q${_marker_jq}\\E\"))] | last | \"\\(.id // empty)|\\(.created_at // empty)|\\(.body // \"\")\" | sub(\"\\Q${_marker_jq}\\E: \"; \"\") | sub(\" -->$\"; \"\")" 2>/dev/null || true)"
+
+    _existing_id="" _existing_hash="" _existing_iso=""
+    if [ -n "$_existing" ]; then
+        _existing_id="$(printf '%s' "$_existing" | awk -F'|' '{print $1}')"
+        _existing_iso="$(printf '%s' "$_existing" | awk -F'|' '{print $2}')"
+        _existing_hash="$(printf '%s' "$_existing" | awk -F'|' '{print $3}')"
+    fi
+
+    # Решаем: skip / edit / new-comment.
+    local _action="new"
+    if [ -n "$_existing_id" ] && [ "$_existing_hash" = "$_state_hash" ]; then
+        _action="skip"
+        log "G10a dedup: issue #${number} — state-hash совпадает (${_state_hash}), skip"
+    elif [ -n "$_existing_id" ] && [ "$_existing_hash" != "$_state_hash" ]; then
+        # State изменился — проверим rate-limit (DEDUP_HOURS).
+        _now_epoch="$(date -u +%s)"
+        _cutoff_epoch=$((_now_epoch - AGENT_FLOW_FILE_OVERLAP_DEDUP_HOURS * 3600))
+        _existing_epoch=0
+        if [ -n "$_existing_iso" ]; then
+            _existing_epoch="$(date -u -d "$_existing_iso" +%s 2>/dev/null || echo 0)"
+        fi
+        if [ "${_existing_epoch:-0}" -ge "${_cutoff_epoch:-0}" ] 2>/dev/null; then
+            _action="rate-limit-skip"
+            log "G10a dedup: issue #${number} — state изменился (hash ${_existing_hash}→${_state_hash}), но последний G10a-коммент ${_existing_iso} < ${AGENT_FLOW_FILE_OVERLAP_DEDUP_HOURS}h ago — rate-limit skip (edit отложен)"
+        else
+            _action="edit"
+            log "G10a dedup: issue #${number} — state изменился (hash ${_existing_hash}→${_state_hash}), прошло ${AGENT_FLOW_FILE_OVERLAP_DEDUP_HOURS}h — edit existing comment #${_existing_id}"
+        fi
+    fi
+
+    # Compose body with marker.
+    local _full_body
+    _full_body="${_marker_line}
+🚨 **agent-flow-triage: G10a file-overlap-skip (ретро t_50a18fa9, ADR-AF-0062)**
 
 Triage **НЕ создал** kanban-карточку для этого issue — обнаружен file-overlap с уже открытым PR, который правит тот же файл (\`${_fo_ifile}\`).
 
@@ -497,13 +575,42 @@ ${overlap_list}
 2. Смержить один из найденных PR (предпочтительно более широкий — он закроет все связанные баги), ИЛИ
 3. Если этот issue про ДРУГОЙ фикс (не пересекается с уже идущим) — переформулировать body, чтобы glob-path не совпадал с уже открытыми PR (например, добавь distinguishing context в описание файла), тогда G10a не сматчит.
 
-После того как Шифу закроет/смержит дубликаты, повторный тик triage создаст карточку (если body больше не указывает на уже закрытые/merged PR)." >/dev/null 2>&1 || true
-        gh issue edit "$number" --repo "$GH_REPO" --add-label "agent-flow-error" >/dev/null 2>&1 || true
+После того как Шифу закроет/смержит дубликаты, повторный тик triage создаст карточку (если body больше не указывает на уже закрытые/merged PR)."
+
+    case "$_action" in
+        skip)
+            # No-op. Никаких GitHub side-effects. Логируем.
+            : # log already printed above
+            ;;
+        rate-limit-skip)
+            # Логируем только, не пишем в issue.
+            : # log already printed above
+            ;;
+        edit)
+            # Edit существующего коммента через gh api PATCH.
+            # Body передаём через stdin чтобы избежать ARG_MAX и quoting-проблем
+            # с эмодзи/Markdown. gh api --input - читает body из stdin.
+            printf '%s' "$_full_body" | gh api \
+                --method PATCH \
+                -H "Content-Type: application/json" \
+                "repos/${GH_REPO}/issues/comments/${_existing_id}" \
+                --input - >/dev/null 2>&1 || true
+            ;;
+        new)
+            # Fallback: если existing-коммент не найден (первый раз пишем).
+            printf '%s' "$_full_body" | gh issue comment "$number" \
+                --repo "$GH_REPO" --body-file - >/dev/null 2>&1 \
+                || gh issue comment "$number" --repo "$GH_REPO" \
+                    --body "$_full_body" >/dev/null 2>&1 || true
+            ;;
+    esac
+
+    gh issue edit "$number" --repo "$GH_REPO" --add-label "agent-flow-error" >/dev/null 2>&1 || true
     fi
 
     dedup_file_overlap_skipped=$((dedup_file_overlap_skipped+1))
     return 0
-}
+    }
 
 role_for() {  # $1=labels_json
     printf '%s' "$1" \
