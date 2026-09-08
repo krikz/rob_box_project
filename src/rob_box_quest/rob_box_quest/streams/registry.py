@@ -121,13 +121,29 @@ STREAM_CATALOG: dict[str, StreamSpec] = {
         default_quality="med",
         description="OAK-D color (depthai SDK, in-process)",
     ),
+    # Depth-камера OAK-D. Раньше стояла как CAMERA_DIRECT с source="oak:depth"
+    # и никогда не отдавала ни кадра: capture-поток пытался открыть OAK
+    # через depthai SDK, в образе ``rob-box-quest`` depthai нет (``import
+    # depthai`` → ImportError, см. streams/provider.py:OakDepthaiSource) →
+    # поток тихо завершался с логом «camera camera_oak_depth unavailable
+    # — thread exits». В логах на роботе это видно как пустая панель
+    # глубины в шлеме при живом потоке кадров от ``oak-d``.
+    #
+    # Берём кадры из ROS-топика oak-d, тем же лёгким путём, что
+    # camera_rear и camera_ceiling (image_transport compressedDepth —
+    # PNG-кодированный mono16 depth). Источник истины для выбора
+    # топика — ``src/rob_box_telegram/.../telegram_node.py:101``
+    # (camera_depth_topic) и ``docs/analysis/nodes-current-state.md``.
+    # JPEG-варианта (``/compressed``) oak-d не публикует при
+    # ``i_publish_compressed: false`` в docker/vision/config/oak-d —
+    # только ``compressedDepth``, см. ``oak_d_config.yaml:62``.
     "camera_oak_depth": StreamSpec(
         ui_name="camera_oak_depth",
         topic_id=0x1004,
-        kind=StreamKind.CAMERA_DIRECT,
-        source="oak:depth",
+        kind=StreamKind.ROS_TOPIC,
+        source="/camera/camera/depth/image_rect_raw/compressedDepth",
         default_quality="med",
-        description="OAK-D depth (depthai SDK, colormapped)",
+        description="OAK-D depth (oak-d ROS topic, compressedDepth PNG)",
     ),
 }
 

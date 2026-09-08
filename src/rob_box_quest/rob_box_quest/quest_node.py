@@ -1745,6 +1745,20 @@ class QuestNode(Node):
             self._on_ceiling_image,
             _CAMERA_QOS,
         )
+        # camera_oak_depth (0x1004): OAK-D depth из oak-d ROS-контейнера.
+        # Тот же паттерн, что у camera_ceiling: capture-поток через depthai
+        # в образе rob-box-quest не работает (depthai отсутствует → поток
+        # завершается с «thread exits», панель глубины в шлеме остаётся
+        # пустой при живом потоке кадров от oak-d). Берём готовые кадры
+        # из ROS-топика compressedDepth (PNG-кодированный mono16 depth,
+        # формат тот же, что в telegram_node:101). Клиент Quest рендерит
+        # их как есть (см. docs/architecture/meta-quest-api.md §4.4).
+        self._camera_oak_depth_sub = self.create_subscription(
+            CompressedImage,
+            "/camera/camera/depth/image_rect_raw/compressedDepth",
+            self._on_depth_image,
+            _CAMERA_QOS,
+        )
         # map_2d (0x1103): SLAM-карта rtabmap. Публикуется TRANSIENT_LOCAL
         # (latched) — подписка обязана совпадать, иначе уже опубликованная
         # карта не придёт до следующего обновления, а оно может быть через
@@ -1851,9 +1865,21 @@ class QuestNode(Node):
         # прокинуто вовсе — capture-поток только писал в лог «cannot open
         # /dev/video0» и умирал. Потолочная камера теперь ROS-стрим, см.
         # `_on_ceiling_image` и streams/registry.py.
+        #
+        # camera_oak_depth тоже больше НЕ запускается здесь (issue #2138.B):
+        # depthai в образе ``rob-box-quest`` нет → capture-поток завершается
+        # с «camera camera_oak_depth unavailable — thread exits» на каждом
+        # старте, и панель глубины в шлеме остаётся пустой при живом потоке
+        # кадров от ``oak-d``. Глубина теперь ROS-стрим (compressedDepth),
+        # см. `_on_depth_image` и streams/registry.py.
+        #
+        # camera_oak_color остаётся как depthai-stub (отдельная карточка,
+        # правило маленьких PR — ADR-0013): capture-поток стартует,
+        # ``OakDepthaiSource.open()`` возвращает False на образе без
+        # depthai → поток тихо завершается. Цвет на роботе уже приходит
+        # через ROS-топик camera_rear (0x1001), см. `_on_camera_image`.
         cameras = [
             ("camera_oak_color", "oak:color", 15.0),
-            ("camera_oak_depth", "oak:depth", 5.0),
         ]
         self._camera_provider = CameraProvider(cameras=cameras)
         for ui_name, source_id, _fps in cameras:
@@ -1944,6 +1970,17 @@ class QuestNode(Node):
         if not msg.data:
             return
         self.bridge.publish_frame("camera_ceiling", bytes(msg.data))
+
+    def _on_depth_image(self, msg: CompressedImage) -> None:
+        """ROS /camera/camera/depth/image_rect_raw/compressedDepth → WS (camera_oak_depth).
+
+        Зеркало ``_on_ceiling_image`` — форвардим ``msg.data`` (PNG-байты
+        compressedDepth) как есть. Клиент Quest отрисует их в панели
+        глубины без перекодирования; см. registry.py описание топика.
+        """
+        if not msg.data:
+            return
+        self.bridge.publish_frame("camera_oak_depth", bytes(msg.data))
 
     def _on_map(self, msg: OccupancyGrid) -> None:
         """ROS /rtabmap/map → map_2d (0x1103): PNG решётки + поза робота."""
