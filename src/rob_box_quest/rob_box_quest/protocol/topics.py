@@ -1,6 +1,11 @@
 """Topic registry + payload-кодеки rob_box_quest.
 
-Источник истины: docs/architecture/meta-quest-api.md §4.
+Источник истины: docs/architecture/meta-quest-api.md §4 +
+:mod:`rob_box_core.bridge_protocol` (single source of truth, voice-vr 07
+/ issue #2192). ``TOPIC_IDS`` тут — re-export из каталога; payload-кодеки
+(:func:`encode_lidar_2d`, :func:`encode_robot_status`,
+:func:`encode_person_detections`, :func:`encode_voice_state`) — это
+чистая логика сериализации и остаётся здесь.
 
 Этот модуль — чистая логика без зависимостей от ROS/Zenoh. Все форматы —
 ровно те, что в meta-quest-api.md. Phase 2/3 расширят payload'ы
@@ -14,19 +19,16 @@ from typing import Any, Sequence
 
 import msgpack
 
-
-# --- Topic ID registry (meta-quest-api.md §4) -----------------------------
-TOPIC_IDS: dict[str, int] = {
-    # Server-initiated streams (0x1000..0xFFFF).
-    "camera_rear": 0x1001,
-    "camera_front": 0x1002,
-    "lidar_2d": 0x1101,
-    "lidar_3d": 0x1102,
-    "map_2d": 0x1103,
-    "robot_status": 0x1201,
-    "voice_state": 0x1202,
-    "person_detections": 0x1301,
-}
+# [voice-vr 07] / issue #2192: ``TOPIC_IDS`` — re-export из
+# rob_box_core.bridge_protocol. Раньше объявлялся здесь как литерал-dict
+# из 8 записей, что приводило к расхождению с ``streams/registry.py``
+# (9 записей, частично пересекающихся) и с потолочными/передними
+# камерами, появившимися после Phase 1.4 v2.
+# Канон — ``bridge_protocol.STREAMS``; legacy-импортеры
+# (``from rob_box_quest.protocol.topics import TOPIC_IDS``) получают
+# тот же объект.
+from rob_box_core.bridge_protocol import STREAMS as _BRIDGE_STREAMS
+from rob_box_core.bridge_protocol import TOPIC_IDS  # noqa: F401  (re-export)
 
 
 # --- lidar_2d payload (meta-quest-api.md §4) -----------------------------

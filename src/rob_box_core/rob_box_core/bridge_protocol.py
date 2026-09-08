@@ -165,6 +165,18 @@ class EventSpec:
     description: str = ""
 
 
+class StreamKind(str, Enum):
+    """Источник данных для :class:`StreamSpec` (server-initiated streams).
+
+    ``str``-родитель даёт ``StreamKind.ROS_TOPIC == "ros_topic"`` (для
+    обратной совместимости со старыми потребителями, которые сравнивают
+    ``spec.kind`` со строкой-литералом).
+    """
+
+    ROS_TOPIC = "ros_topic"
+    CAMERA_DIRECT = "camera_direct"
+
+
 @dataclass(frozen=True)
 class StreamSpec:
     """Сервер-инициируемый стрим (meta-quest-api.md §4).
@@ -173,7 +185,7 @@ class StreamSpec:
         ui_name: имя, которое клиент видит в ``SUBSCRIBE{topic: ...}``.
         topic_id: 4-байтовый little-endian uint32 в payload
             ``BINARY_FRAME`` (для клиентского парсера, см. §4).
-        kind: источник данных (``"ros_topic"`` или ``"camera_direct"``).
+        kind: источник данных (``ros_topic`` или ``camera_direct``).
         source: для ``ros_topic`` — имя ROS-топика; для ``camera_direct``
             — device-id (``"oak:color"``, ``"oak:depth"``, ``"ceiling"``).
         default_quality: human-hint для UI (``"low"|"med"|"high"``).
@@ -182,7 +194,7 @@ class StreamSpec:
 
     ui_name: str
     topic_id: int
-    kind: str  # "ros_topic" | "camera_direct"
+    kind: StreamKind
     source: str
     default_quality: str = "med"
     description: str = ""
@@ -615,7 +627,7 @@ STREAMS: tuple[StreamSpec, ...] = (
     StreamSpec(
         ui_name="camera_rear",
         topic_id=0x1001,
-        kind="ros_topic",
+        kind=StreamKind.ROS_TOPIC,
         source="/camera/camera/color/image_raw",
         default_quality="med",
         description="OAK-D color (Phase 1 fallback через ROS).",
@@ -623,7 +635,7 @@ STREAMS: tuple[StreamSpec, ...] = (
     StreamSpec(
         ui_name="camera_front",
         topic_id=0x1002,
-        kind="ros_topic",
+        kind=StreamKind.ROS_TOPIC,
         source="/camera/front/image_raw",
         default_quality="med",
         description="(Phase 2) панорамная передняя камера.",
@@ -631,7 +643,7 @@ STREAMS: tuple[StreamSpec, ...] = (
     StreamSpec(
         ui_name="camera_oak_color",
         topic_id=0x1003,
-        kind="camera_direct",
+        kind=StreamKind.CAMERA_DIRECT,
         source="oak:color",
         default_quality="med",
         description="OAK-D color (depthai SDK, in-process).",
@@ -639,7 +651,7 @@ STREAMS: tuple[StreamSpec, ...] = (
     StreamSpec(
         ui_name="camera_oak_depth",
         topic_id=0x1004,
-        kind="ros_topic",
+        kind=StreamKind.ROS_TOPIC,
         source="/camera/camera/depth/image_rect_raw/compressedDepth",
         default_quality="med",
         description=(
@@ -649,7 +661,7 @@ STREAMS: tuple[StreamSpec, ...] = (
     StreamSpec(
         ui_name="camera_ceiling",
         topic_id=0x1005,
-        kind="ros_topic",
+        kind=StreamKind.ROS_TOPIC,
         source="/ceiling_camera/image_raw/compressed",
         default_quality="med",
         description="USB ceiling camera (usb_cam → image_transport JPEG).",
@@ -657,7 +669,7 @@ STREAMS: tuple[StreamSpec, ...] = (
     StreamSpec(
         ui_name="lidar_2d",
         topic_id=0x1101,
-        kind="ros_topic",
+        kind=StreamKind.ROS_TOPIC,
         source="/scan",
         default_quality="high",
         description="2D LiDAR (sensor_msgs/LaserScan, 10 Hz).",
@@ -665,7 +677,7 @@ STREAMS: tuple[StreamSpec, ...] = (
     StreamSpec(
         ui_name="lidar_3d",
         topic_id=0x1102,
-        kind="ros_topic",
+        kind=StreamKind.ROS_TOPIC,
         source="/rtabmap/cloud_map",
         default_quality="low",
         description="3D point cloud (zstd+msgpack, 2 Hz).",
@@ -673,7 +685,7 @@ STREAMS: tuple[StreamSpec, ...] = (
     StreamSpec(
         ui_name="map_2d",
         topic_id=0x1103,
-        kind="ros_topic",
+        kind=StreamKind.ROS_TOPIC,
         source="/rtabmap/map",
         default_quality="low",
         description="SLAM occupancy grid (RGBA PNG + поза робота).",
@@ -681,7 +693,7 @@ STREAMS: tuple[StreamSpec, ...] = (
     StreamSpec(
         ui_name="robot_status",
         topic_id=0x1201,
-        kind="ros_topic",
+        kind=StreamKind.ROS_TOPIC,
         source="aggregation",
         default_quality="med",
         description="1 Hz battery/wifi/mode/vel.",
@@ -689,7 +701,7 @@ STREAMS: tuple[StreamSpec, ...] = (
     StreamSpec(
         ui_name="voice_state",
         topic_id=0x1202,
-        kind="ros_topic",
+        kind=StreamKind.ROS_TOPIC,
         source="/voice/dialogue/state",
         default_quality="med",
         description="Dialogue FSM state (event-driven).",
@@ -697,7 +709,7 @@ STREAMS: tuple[StreamSpec, ...] = (
     StreamSpec(
         ui_name="person_detections",
         topic_id=0x1301,
-        kind="ros_topic",
+        kind=StreamKind.ROS_TOPIC,
         source="phase2_source",
         default_quality="med",
         description="(Phase 2 R11) детекция людей в стриме.",
@@ -899,6 +911,16 @@ _STREAMS_BY_TOPIC_ID: Mapping[int, StreamSpec] = MappingProxyType(
 _ERRORS_SET: frozenset[str] = frozenset(ERRORS)
 
 
+# Public read-only dict-views над :data:`STREAMS` (для backward-compat
+# с кодом, который импортировал ``STREAM_CATALOG`` / ``TOPIC_IDS`` из
+# ``rob_box_quest.streams.registry`` / ``rob_box_quest.protocol.topics``;
+# voice-vr 07 / issue #2192 — re-export, см. обёртки там).
+STREAM_CATALOG: Mapping[str, StreamSpec] = _STREAMS_BY_UI_NAME
+TOPIC_IDS: Mapping[str, int] = MappingProxyType(
+    {s.ui_name: s.topic_id for s in STREAMS}
+)
+
+
 def get_command(name: str) -> CommandSpec | None:
     """Lookup команды по имени (``None`` если нет в каталоге)."""
     return _COMMANDS_BY_NAME.get(name)
@@ -947,6 +969,7 @@ __all__ = (
     "FrameTypeId",
     "CommandSpec",
     "EventSpec",
+    "StreamKind",
     "StreamSpec",
     "ErrorCodeSpec",
     "Mode",
@@ -955,6 +978,7 @@ __all__ = (
     "COMMANDS",
     "EVENTS",
     "STREAMS",
+    "STREAM_CATALOG",
     "MODES",
     "FLOORS",
     "ERRORS",
@@ -963,6 +987,7 @@ __all__ = (
     "VOICE_LANGUAGES",
     "VOICE_PIPELINE_DEFAULT_LANGUAGE",
     "VOICE_WIRE_MODES",
+    "TOPIC_IDS",
     "get_command",
     "get_event",
     "get_stream",
