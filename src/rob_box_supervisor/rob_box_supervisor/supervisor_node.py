@@ -1621,15 +1621,14 @@ class AvatarSupervisor(Node):
         future.add_done_callback(_done)
 
     def _on_preview_voice(self, msg: RosString) -> None:
-        """Обработка ``/avatar/preview_voice`` — синтезировать preview-фразу.
-
-        Текущий MVP: full preview-synthesis в tts_node — отдельная карточка
-        (рефакторинг _synthesize_and_play на pure-synth + playback). Здесь
-        supervisor делает валидацию и публикует honest error в
-        ``/avatar/preview_voice/error``. Контракт ws_server ↔ клиент
-        сохранён полностью — UI увидит причину и отрисует «preview пока
-        недоступен, попробуйте позже».
-        """
+        # ADR-0077 / issue #2138.A.3 — picker'у голосов нужен «прослушиваемый
+        # образец». Канал: ``/avatar/preview_voice`` (JSON, ws_server → здесь)
+        # → ``/avatar/tts/request`` с ``sink="preview"`` → ``tts_node`` делает
+        # pure-synth (``synthesize_preview``) → ``/avatar/preview_voice/audio``
+        # (JSON+base64) → ws_server → клиент (``preview_audio_sink.ts``).
+        # Старая заглушка ``preview_synthesis_not_implemented_in_mvp`` жила
+        # потому что в tts_node не было отдельного пути pure-synth — теперь он
+        # есть (см. ``TTSNode.synthesize_preview``).
         raw = (msg.data or "").strip()
         if not raw:
             self._log.warning("PreviewVoice: empty payload")
@@ -1655,7 +1654,10 @@ class AvatarSupervisor(Node):
         if not isinstance(text, str) or not text:
             self._publish_preview_error(request_id, "text_required")
             return
-        # Валидация по реестру.
+        # Валидация по реестру — делаем ДО публикации, чтобы picker сразу
+        # получил honest error (а не silent-hang). Дубликат логики в
+        # tts_node — это сознательно: supervisor шлёт честный preview_error,
+        # даже если tts_node прислал бы тот же reason с задержкой на сеть.
         if provider and isinstance(provider, str):
             if voice_id not in _voices_for(provider):
                 self._publish_preview_error(
@@ -1670,10 +1672,26 @@ class AvatarSupervisor(Node):
             if not known_in:
                 self._publish_preview_error(request_id, "voice_unknown")
                 return
-        # MVP: честная ошибка.
-        self._publish_preview_error(
-            request_id, "preview_synthesis_not_implemented_in_mvp"
+            # Берём первого провайдера, который знает голос (для tts_node это
+            # hint — какой голос у какого провайдера искать). Если голос
+            # доступен у нескольких, берём minimax (приоритет для preview).
+            provider = "minimax" if "minimax" in known_in else known_in[0]
+        # Делегируем в tts_node через существующий канал /avatar/tts/request
+        # с sink="preview". request_id протаскиваем до tts_node — он его
+        # проставит в preview_voice_audio/result/error, чтобы ws_server
+        # коррелировал с picker'ом.
+        sent_rid = self._publish_avatar_tts(
+            text=text,
+            voice=voice_id,
+            sink="preview",
+            request_id=request_id,
         )
+        if not sent_rid:
+            # На случай если _publish_avatar_tts вернул пустую строку
+            # (text drop). request_id сохранён, ошибка уже отлогирована
+            # внутри. Дополнительно шлём preview_error с той же причиной
+            # для ws_server, чтобы picker не завис на «слушаю…».
+            self._publish_preview_error(request_id, "empty_text_dropped")
 
     def _publish_preview_error(self, request_id: str, reason: str) -> None:
         """Опубликовать preview_voice_error (JSON) для ws_server.
@@ -2887,7 +2905,12 @@ class AvatarSupervisor(Node):
         self._publish_avatar_tts(summary)
 
     def _publish_avatar_tts(
-        self, text: str, language: Optional[str] = None, voice: Optional[str] = None
+        self,
+        text: str,
+        language: Optional[str] = None,
+        voice: Optional[str] = None,
+        sink: str = "headset",
+        request_id: Optional[str] = None,
     ) -> str:
         """ADR-0055 / issue #1993 — публикация собственной реплики ТАРС в шлем.
 
@@ -2896,6 +2919,19 @@ class AvatarSupervisor(Node):
         ``/voice/tts/request`` (если вообще ходили), теперь строго в
         ``/avatar/tts/request`` с ``sink="headset"``, чтобы попасть в шлем
         оператора через новый обратный канал (ADR-0055).
+
+        ADR-0077 / issue #2138.A.3 — preview-канал для picker'а голосов.
+        ``sink="preview"`` уходит на тот же ``/avatar/tts/request``, но
+        tts_node его ловит в ``_on_avatar_tts_request`` отдельной веткой и
+        делает pure-synth БЕЗ _synthesize_and_play (НЕ идёт в FIFO/ALSA,
+        НЕ публикует /avatar/tts/audio, НЕ публикует /voice/audio/speech).
+        Результат — bytes в mp3/wav контейнере — публикуется в
+        ``/avatar/preview_voice/audio`` (см. preview_audio_sink.ts §1).
+
+        request_id: для sink="preview" caller ЗНАЕТ request_id (он пришёл
+        от quest_node через /avatar/preview_voice), и его надо протащить
+        до tts_node для корреляции preview_voice_audio/done/error с ws_server.
+        Для sink="headset" — генерируем свой uuid4().hex[:8] (старое поведение).
 
         Returns:
             request_id (uuid hex8), чтобы caller мог логировать/коррелировать
@@ -2913,15 +2949,19 @@ class AvatarSupervisor(Node):
         if not text or not text.strip():
             self._log.warning(
                 f"avatar_supervisor: avatar_tts_request skipped — empty text "
-                f"(language={language!r}, voice={voice!r})"
+                f"(language={language!r}, voice={voice!r}, sink={sink!r})"
             )
             return ""
 
-        request_id = _uuid.uuid4().hex[:8]
+        if request_id is not None:
+            # Caller-provided (preview). Не регенерим.
+            rid = request_id
+        else:
+            rid = _uuid.uuid4().hex[:8]
         payload = {
-            "request_id": request_id,
+            "request_id": rid,
             "ssml": f"<speak>{text}</speak>",
-            "sink": "headset",
+            "sink": sink,
         }
         if language:
             payload["language"] = language
@@ -2935,7 +2975,7 @@ class AvatarSupervisor(Node):
             self._log.warning(
                 f"avatar_supervisor: avatar_tts_request publish failed: {exc}"
             )
-        return request_id
+        return rid
 
 
 class _NoopLabelCounter:

@@ -994,6 +994,18 @@ class TTSNode(Node):
         self.declare_parameter("avatar_request_topic", "/avatar/tts/request")
         self.declare_parameter("avatar_error_topic", "/avatar/tts/error")
         self.declare_parameter("avatar_control_topic", "/avatar/tts/control")
+        # ADR-0077 / issue #2138.A.3 — preview-канал для picker'а голосов.
+        # Контракт публикаций — зеркалирует ``avatar_*``:
+        #   * ``/avatar/preview_voice/audio``  — String JSON {request_id,
+        #     format, content_type, audio_b64, sample_rate, duration_s}.
+        #   * ``/avatar/preview_voice/result`` — String JSON {request_id, ...}.
+        #   * ``/avatar/preview_voice/error``  — String JSON {request_id,
+        #     reason, ts_ms}. reason — стабильная строка для ws_server/UI.
+        # Зашиты константами (не параметрами) — см. CC-budget ADR-0021 и
+        # логику выше (``_tars1_text_topic``).
+        self._preview_audio_topic: str = "/avatar/preview_voice/audio"
+        self._preview_result_topic: str = "/avatar/preview_voice/result"
+        self._preview_error_topic: str = "/avatar/preview_voice/error"
         # Issue #2113 (quest #2112) — echo of TTS-текста на отдельный
         # топик для боковой текстовой панели TARS 1 в Captain Bridge.
         # Контракт: String JSON {request_id, text, streaming:bool, done:bool}.
@@ -1433,6 +1445,21 @@ class TTSNode(Node):
         # идёт в динамик шлема.
         self._tars1_text_pub = self.create_publisher(
             String, self._tars1_text_topic, 10
+        )
+        # ADR-0077 / issue #2138.A.3 — publishers preview-канала.
+        # Заводятся ВСЕГДА (даже в мини-CI-env без preview-клиента): ws_server
+        # на проде подписан на error/done/audio и шлёт picker'у через
+        # ws_server.deliver_preview_*. mock-rclpy в unit-тестах
+        # перехватывает .publish() и складывает в .published — см.
+        # ``tests/conftest.py``.
+        self._preview_audio_pub = self.create_publisher(
+            String, self._preview_audio_topic, 10
+        )
+        self._preview_result_pub = self.create_publisher(
+            String, self._preview_result_topic, 10
+        )
+        self._preview_error_pub = self.create_publisher(
+            String, self._preview_error_topic, 10
         )
         self._avatar_tts_control_sub = self.create_subscription(
             String, self.avatar_control_topic, self.control_callback, 10
@@ -2401,13 +2428,26 @@ class TTSNode(Node):
         """ADR-0055 / issue #1993 — обработка запроса ТАРС в шлем.
 
         Контракт сообщения — копия ``/voice/tts/request`` плюс обязательное
-        ``sink == "headset"``. Любой другой sink → ``_avatar_tts_error_pub``
-        с ``error="invalid_sink"`` и DROP (ADR-0055 §tts_node).
+        ``sink`` поле. Допустимые значения:
+        * ``"headset"`` — реплика в шлем через ``/avatar/tts/audio`` (PCM,
+          ALSA-skip), см. ADR-0055.
+        * ``"preview"`` — «прослушиваемый образец» голоса для picker'а
+          оператора, см. ADR-0077 / issue #2138.A.3. Чистый синтез БЕЗ
+          _synthesize_and_play: НЕ идёт в FIFO/ALSA/metrics, байты
+          возвращаются в mp3/wav контейнере в ``/avatar/preview_voice/audio``.
+
+        Любой другой sink → ``_avatar_tts_error_pub`` с
+        ``error="invalid_sink"`` и DROP.
 
         Дальше — почти полная копия ``dialogue_callback``: защита от
         устаревшего dialogue_id (barge-in), Unicode-script guard (issue 1709),
         генерация speech_id если не задан, передача в тот же bounded
         ThreadPoolExecutor с дополнительным kwarg ``sink="headset"``.
+
+        Для ``sink="preview"`` путь отдельный — НЕ идёт через
+        ThreadPoolExecutor (preview короткий, sync-friendly, не прерывает
+        текущую реплику), а через прямой вызов ``_on_avatar_tts_request_preview``
+        ниже.
 
         Различия от ``dialogue_callback``:
         * ``_avatar_tts_request_id`` обновляется при старте — для control_callback
@@ -2423,12 +2463,22 @@ class TTSNode(Node):
             self.get_logger().warn(f"⚠️ [ADR-0055] /avatar/tts/request: bad JSON: {exc}")
             return
 
-        # ADR-0055 §tts_node: единственный валидный sink на этом канале — headset.
+        # ADR-0055 / ADR-0077 — switch по sink.
         sink = chunk_data.get("sink", "")
+        if sink == "preview":
+            # ADR-0077 / issue #2138.A.3 — picker'у нужен «прослушиваемый
+            # образец» голоса. Отдельный путь: без dialogue_id/barge-in
+            # защиты (preview НЕ прерывает текущую реплику личности), без
+            # Unicode-guard (preview-фраза короткая и контролируемая), без
+            # ThreadPoolExecutor (синхронный сетевой запрос). Результат
+            # уходит в /avatar/preview_voice/audio (JSON+base64) +
+            # /avatar/preview_voice/result (done) или /avatar/preview_voice/error.
+            self._on_avatar_tts_request_preview(chunk_data)
+            return
         if sink != "headset":
             self.get_logger().warn(
                 f"⚠️ [ADR-0055] /avatar/tts/request: invalid sink={sink!r} "
-                "(expected 'headset'), DROP"
+                "(expected 'headset' or 'preview'), DROP"
             )
             self._publish_avatar_tts_error(
                 request_id=chunk_data.get("request_id", ""),
@@ -2607,6 +2657,178 @@ class TTSNode(Node):
         except Exception as exc:  # noqa: BLE001 — диагностика не должна падать
             self.get_logger().warn(
                 f"⚠️ [ADR-0055] /avatar/tts/error publish failed: {exc}"
+            )
+
+    # ── Preview-канал (ADR-0077 / issue #2138.A.3) ─────────────────────
+    # picker'у голосов нужны «прослушиваемые образцы». Канал
+    # ``/avatar/tts/request`` (sink="preview") → ``synthesize_preview``
+    # → ``/avatar/preview_voice/{audio,result,error}``. см. ADR-0077.
+
+    def _on_avatar_tts_request_preview(self, chunk_data: dict) -> None:
+        # ADR-0077 / issue #2138.A.3 — обработка preview-синтеза.
+        # Прямой вызов ``synthesize_preview`` (синхронный метод, async
+        # внутри через ``_run_in_tts_loop``) — НЕ идёт в
+        # ThreadPoolExecutor/_synthesize_and_play, т.к. preview НЕ
+        # прерывает текущую реплику и НЕ публикует /avatar/tts/audio.
+        request_id = chunk_data.get("request_id", "")
+        voice = chunk_data.get("voice")
+        # ssml обязателен для совместимости с headset-контрактом (тот же
+        # канал /avatar/tts/request). Извлекаем plain-text тем же
+        # _extract_text_from_ssml, что и headset — picker шлёт ту же
+        # структуру что и say.
+        ssml = chunk_data.get("ssml", "")
+        text = self._extract_text_from_ssml(ssml) if ssml else chunk_data.get("text", "")
+        # Тот же guard, что и headset (issue #2096): пустой text → DROP
+        # + preview_error, picker не должен «висеть» в ожидании.
+        if not text or not text.strip():
+            self.get_logger().warn(
+                f"⚠️ [ADR-0077] preview синтез: empty text/ssml, "
+                f"DROP request_id={request_id[:8] if request_id else ''}"
+            )
+            self._publish_preview_error(request_id, "empty_text")
+            return
+        try:
+            result = self.synthesize_preview(
+                text=text,
+                voice=voice,
+                timeout_s=10.0,
+            )
+        except PreviewSynthesisTimeoutError as exc:
+            self.get_logger().warn(
+                f"⚠️ [ADR-0077] preview таймаут: {exc}"
+            )
+            self._publish_preview_error(request_id, exc.reason)
+            return
+        except PreviewSynthesisUnavailableError as exc:
+            self.get_logger().warn(
+                f"⚠️ [ADR-0077] preview недоступен (MiniMax opt-in): {exc}"
+            )
+            self._publish_preview_error(request_id, exc.reason)
+            return
+        except PreviewSynthesisError as exc:
+            self.get_logger().warn(
+                f"⚠️ [ADR-0077] preview ошибка: {exc} (reason={exc.reason})"
+            )
+            self._publish_preview_error(request_id, exc.reason)
+            return
+        # Успех — публикуем bytes + result. base64 потому что ws_server/
+        # клиент ожидают JSON (preview_audio_sink.ts §1), а bytes в JSON
+        # естественно идут как base64.
+        import base64 as _base64
+
+        self._publish_preview_audio(
+            request_id=request_id,
+            format_str=result.format_str,
+            content_type=result.content_type,
+            sample_rate=result.sample_rate,
+            duration_s=result.duration_s,
+            audio_bytes=result.audio_bytes,
+        )
+        self._publish_preview_result(
+            request_id=request_id,
+            format_str=result.format_str,
+            sample_rate=result.sample_rate,
+            duration_s=result.duration_s,
+            content_type=result.content_type,
+        )
+
+    def _publish_preview_audio(
+        self,
+        *,
+        request_id: str,
+        format_str: str,
+        content_type: str,
+        sample_rate: int,
+        duration_s: float,
+        audio_bytes: bytes,
+    ) -> None:
+        # Контракт ``/avatar/preview_voice/audio`` — String JSON
+        # {request_id, format, content_type, audio_b64, sample_rate,
+        # duration_s}. ws_server маппит это в ``preview_voice_audio``
+        # (JSON_EVENT{...} + BINARY_FRAME с теми же bytes). preview_audio_sink.ts
+        # декодирует audio_b64 → ArrayBuffer и играет через WebAudio
+        # decodeAudioData (по content_type).
+        import base64 as _base64
+
+        try:
+            payload = String()
+            payload.data = json.dumps(
+                {
+                    "request_id": request_id,
+                    "format": format_str,
+                    "content_type": content_type,
+                    "sample_rate": int(sample_rate),
+                    "duration_s": float(duration_s),
+                    "audio_b64": _base64.b64encode(audio_bytes).decode("ascii"),
+                },
+                ensure_ascii=False,
+            )
+            self._preview_audio_pub.publish(payload)
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warn(
+                f"⚠️ [ADR-0077] /avatar/preview_voice/audio publish failed: {exc}"
+            )
+            # Если preview_audio не дошёл — шлём error, чтобы picker
+            # не висел в ожидании.
+            self._publish_preview_error(request_id, "audio_publish_failed")
+
+    def _publish_preview_result(
+        self,
+        *,
+        request_id: str,
+        format_str: str,
+        sample_rate: int,
+        duration_s: float,
+        content_type: str,
+    ) -> None:
+        # ``/avatar/preview_voice/result`` — String JSON done-маркер.
+        # ws_server форвардит как ``preview_voice_done`` event'ом на
+        # клиент. Отдельный топик от audio — UI может рендерить
+        # «прослушал: X секунд» пока аудио ещё играет (не блокируем на нём).
+        try:
+            payload = String()
+            payload.data = json.dumps(
+                {
+                    "request_id": request_id,
+                    "format": format_str,
+                    "content_type": content_type,
+                    "sample_rate": int(sample_rate),
+                    "duration_s": float(duration_s),
+                },
+                ensure_ascii=False,
+            )
+            self._preview_result_pub.publish(payload)
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warn(
+                f"⚠️ [ADR-0077] /avatar/preview_voice/result publish failed: {exc}"
+            )
+
+    def _publish_preview_error(self, request_id: str, reason: str) -> None:
+        # ``/avatar/preview_voice/error`` — String JSON {request_id,
+        # reason, ts_ms}. ws_server форвардит ``preview_voice_error``.
+        # ``reason`` — стабильная строка, публичный контракт с UI
+        # (ADR-0077 §error-reasons). Текущие reason'ы:
+        #   * preview_timeout
+        #   * minimax_unavailable
+        #   * preview_synthesis_failed (для прочих ошибок провайдера)
+        #   * empty_text
+        #   * audio_publish_failed
+        import time as _time
+
+        try:
+            payload = String()
+            payload.data = json.dumps(
+                {
+                    "request_id": request_id,
+                    "reason": reason,
+                    "ts_ms": int(_time.time() * 1000),
+                },
+                ensure_ascii=False,
+            )
+            self._preview_error_pub.publish(payload)
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warn(
+                f"⚠️ [ADR-0077] /avatar/preview_voice/error publish failed: {exc}"
             )
 
     def _publish_tars1_text(
