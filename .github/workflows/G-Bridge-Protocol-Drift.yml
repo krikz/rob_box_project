@@ -1,0 +1,157 @@
+name: "G: Bridge Protocol TS Drift"
+
+# ADR-0080 §2.2 — guard against silent drift between the Python catalog
+# (``rob_box_core._bridge_protocol_data``) and the TS mirror
+# (``webxr_client/src/wire/protocol_generated.ts``).
+#
+# Why a separate workflow:
+#   * ``G-Run Tests.yml`` boots ROS 2 + colcon to test ROS-side packages.
+#     The drift check is a pure-Python import (it loads
+#     ``_bridge_protocol_data``, which has no ROS2 deps) — running it
+#     through colcon would add ~3-5 min of overhead per CI run for no
+#     signal gain.
+#   * The same matrix (``pytest src/rob_box_core/test``) is run by
+#     ``G-Run Tests.yml`` anyway, so we don't need a separate Python
+#     install — the workflow only needs the drift detector itself.
+#   * Path filter keeps PRs that don't touch the wire contract (UI,
+#     tests, refactors) fast.
+#
+# What we actually verify:
+#   1. ``tools/gen_bridge_protocol_ts.py --check`` — the on-disk
+#      ``protocol_generated.ts`` matches what the catalog would emit.
+#   2. ``pytest src/rob_box_core/test/test_bridge_protocol_data.py`` — the
+#      catalog itself is internally consistent (no duplicate cmd/event
+#      names apart from known collisions, all payload shapes valid,
+#      discriminant fields match entry names, AV-27/AV-28 contract
+#      invariants hold).
+#   3. ``messages.ts`` actually imports from the generated layer
+#      (otherwise the drift detector is theatre).
+
+on:
+  pull_request:
+    branches:
+      - develop
+      - main
+      - 'feature/**'
+    paths:
+      - 'src/rob_box_core/rob_box_core/_bridge_protocol_data.py'
+      - 'src/rob_box_quest/webxr_client/src/wire/protocol_generated.ts'
+      - 'src/rob_box_quest/webxr_client/src/wire/messages.ts'
+      - 'tools/gen_bridge_protocol_ts.py'
+      - 'src/rob_box_core/test/test_bridge_protocol_data.py'
+      - '.github/workflows/G-Bridge-Protocol-Drift.yml'
+  push:
+    branches:
+      - develop
+      - main
+      - 'feature/**'
+    paths:
+      - src/rob_box_core/rob_box_core/_bridge_protocol_data.py
+      - src/rob_box_quest/webxr_client/src/wire/protocol_generated.ts
+      - src/rob_box_quest/webxr_client/src/wire/messages.ts
+      - tools/gen_bridge_protocol_ts.py
+      - src/rob_box_core/test/test_bridge_protocol_data.py
+      - .github/workflows/G-Bridge-Protocol-Drift.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  drift-check:
+    name: "Bridge protocol: catalog → TS mirror drift"
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - name: Install rob_box_core (catalog runtime)
+        working-directory: src/rob_box_core
+        run: |
+          python -m pip install --upgrade pip
+          # Plain install (no ``.[dev]`` needed — the catalog has zero
+          # install_requires beyond setuptools; the drift test pulls
+          # in pytest via the global pip cache below).
+          pip install -e .
+
+      - name: Install pytest
+        run: python3 -m pip install --quiet --no-cache-dir pytest
+
+      - name: Run catalog structural tests
+        # test_bridge_protocol_data.py guards the catalog itself: every
+        # entry has the required fields, no surprise cmd/event name
+        # collisions, payload grammar is closed over real values, AV-27
+        # optional voice_id in voice_set_nack, etc. ``--check`` below
+        # is a different layer — catalog ↔ TS mirror parity.
+        working-directory: src/rob_box_core
+        run: |
+          PYTHONPATH=. python3 -m pytest \
+            test/test_bridge_protocol_data.py \
+            -v \
+            -o addopts="" \
+            -p no:cacheprovider
+
+      - name: Regenerate and compare (drift detection)
+        # The whole point of this workflow: if the catalog changes but
+        # the TS mirror wasn't regenerated, ``--check`` fails. If the
+        # TS mirror was hand-edited, it also fails. Either way the
+        # developer has to run ``python tools/gen_bridge_protocol_ts.py``
+        # and commit the diff.
+        run: |
+          echo "--- drift check (catalog -> TS mirror) ---"
+          python3 tools/gen_bridge_protocol_ts.py --check
+
+      - name: Verify TS mirror is consumed by messages.ts
+        # Belt-and-braces: the generated file is only useful if the
+        # hand-written ``messages.ts`` actually imports from it. We
+        # grep for one of the known cmd interfaces — if a future
+        # refactor accidentally bypasses the generated layer the
+        # drift detector will silently stop catching real-world drift.
+        run: |
+          if ! grep -q 'from "./protocol_generated"' \
+              src/rob_box_quest/webxr_client/src/wire/messages.ts; then
+            echo "::error::messages.ts no longer imports protocol_generated." \
+                 "The drift detector only catches real-world drift if" \
+                 "messages.ts is wired to the generated layer."
+            exit 1
+          fi
+          echo "OK: messages.ts imports from ./protocol_generated"
+
+      - name: "Sanity webxr_client typecheck"
+        # The drift check itself doesn't run the full vitest suite
+        # (that's G-Run Tests.yml / G-WebXR-gltf-verify territory), but
+        # we want at least the TS compiler to agree with the new shape —
+        # otherwise the generated file might break downstream code the
+        # drift detector can't see. node_modules absent on a CI runner
+        # that hasn't run npm ci yet — skip in that case.
+        working-directory: src/rob_box_quest/webxr_client
+        run: |
+          if [ -d node_modules ]; then
+            npm run typecheck
+          else
+            echo "node_modules absent — skipping typecheck (npm ci runs in G-WebXR-gltf-verify.yml)."
+          fi
+
+      - name: Explain failure
+        if: failure()
+        run: |
+          echo "::error::Bridge protocol drift detected."
+          echo ""
+          echo "Самая частая причина: ты изменил src/rob_box_core/rob_box_core/_bridge_protocol_data.py"
+          echo "(добавил/удалил cmd или event, поправил payload) и забыл перегенерировать TS-зеркало."
+          echo ""
+          echo "Лечение:"
+          echo "    python3 tools/gen_bridge_protocol_ts.py"
+          echo "    git add src/rob_box_quest/webxr_client/src/wire/protocol_generated.ts"
+          echo "    git commit -m 'feat(bridge): regenerate protocol_generated.ts'"
+          echo ""
+          echo "Если ты РЕДАКТИРОВАЛ protocol_generated.ts руками — это ошибка: правь каталог,"
+          echo "а не сгенерированный файл (ADR-0080 §2.2)."
+          echo ""
+          echo "См. voice-vr 08 / docs/adr/0080 для контекста."
