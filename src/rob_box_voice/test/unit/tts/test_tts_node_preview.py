@@ -46,7 +46,10 @@ from test.unit.tts.conftest import _install_all_mocks  # noqa: E402
 _install_all_mocks()
 
 from rob_box_voice import tts_node as _tts_node_mod  # noqa: E402
-from rob_box_voice.tts_node import TTSNode  # noqa: E402
+from rob_box_voice.tts_node import (  # noqa: E402
+    PreviewSynthesisTimeoutError,
+    TTSNode,
+)
 from rob_box_llm import TTSAudio, TTSFormat  # noqa: E402
 
 # _tts_node_mod уже импортирован ради side-effect (FakeNode rebinding).
@@ -259,8 +262,11 @@ def test_synthesize_preview_times_out_instead_of_hanging():
         or getattr(raised, "reason", "") == "preview_timeout"
     )
     # Класс должен быть PreviewSynthesisTimeoutError для удобства телеметрии.
-    from rob_box_voice.tts_node import PreviewSynthesisTimeoutError  # noqa: PLC0415
-
+    # Import на уровне модуля (рядом с TTSNode), НЕ внутри теста: повторный
+    # from ... import здесь брал бы класс из sys.modules НА МОМЕНТ ВЫЗОВА,
+    # а другие файлы tts-набора подменяют rob_box_voice.tts_node (collection/
+    # фикстуры) — isinstance сравнивал бы класс из ДРУГОЙ копии модуля и
+    # падал с «ожидался X, got X» (см. PR #2173 / run 34227845050).
     assert isinstance(raised, PreviewSynthesisTimeoutError), (
         f"ожидался PreviewSynthesisTimeoutError, got {type(raised).__name__}"
     )

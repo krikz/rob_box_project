@@ -31,10 +31,7 @@ from test.unit.tts.conftest import _install_all_mocks  # noqa: E402
 _install_all_mocks()
 
 from rob_box_voice import tts_node as _tts_node_mod  # noqa: E402
-from rob_box_voice.tts_node import (  # noqa: E402
-    PreviewSynthesisError,
-    TTSNode,
-)
+from rob_box_voice.tts_node import TTSNode  # noqa: E402
 from rob_box_llm import TTSAudio, TTSFormat  # noqa: E402
 
 del _tts_node_mod
@@ -156,12 +153,17 @@ def test_sink_preview_provider_error_publishes_preview_error_with_reason():
     node = _bare_node_with_preview(mocks)
 
     # synthesize_preview бросает с нашим reason.
-    from rob_box_voice.tts_node import PreviewSynthesisError
-
     def _raise(*a, **kw):
-        raise PreviewSynthesisError(
-            "fake provider boom", reason="minimax_rate_limited"
-        )
+        # Бросаем тот же PreviewSynthesisError-класс, который except в
+        # ``_on_avatar_tts_request_preview`` реально ловит (из globals ноды):
+        # несколько файлов tts-набора подменяют ``rob_box_voice.tts_node``
+        # (collection/фикстуры), из-за чего top-level import может дать класс
+        # из ДРУГОЙ копии модуля, и ``except PreviewSynthesisError`` не
+        # поймал бы наш экземпляр («то же имя, другой класс-объект» —
+        # PR #2173 / run 34227845050). В чистом окружении оба класса —
+        # один и тот же объект.
+        handler_cls = TTSNode._on_avatar_tts_request_preview.__globals__["PreviewSynthesisError"]
+        raise handler_cls("fake provider boom", reason="minimax_rate_limited")
 
     node.synthesize_preview = _raise  # type: ignore[assignment]
 
