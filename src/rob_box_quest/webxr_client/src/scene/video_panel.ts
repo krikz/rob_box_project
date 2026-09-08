@@ -1,50 +1,114 @@
-// Video panel — PlaneGeometry + CanvasTexture, обновляется из JPEG payload.
+// Video panel — PlaneGeometry + текстура, обновляется из JPEG payload.
 //
-// Архитектура (дизайн §3): <img> декодирует JPEG, затем texture.image = img
-// и needsUpdate=true. Drop-oldest если GPU занят (флаг ready не успевает
-// выставиться → пропускаем кадр).
+// Архитектура (issue #2144): JPEG декодируется через `createImageBitmap()`
+// вне главного потока, а готовый `ImageBitmap` кладётся в текстуру как
+// есть (`texture.image = bitmap`), без промежуточного 2D-canvas.
+//
+// Почему не как было. Старый путь на каждый входящий кадр делал три
+// дорогие вещи на главном потоке:
+//   1. `new Image()` + `URL.createObjectURL` — синхронный декод JPEG;
+//   2. `ctx.drawImage` — CPU-блит с масштабированием в canvas 1280×720
+//      (главный экран) и 960×540 (потолочная камера);
+//   3. `CanvasTexture.needsUpdate` → полный `texImage2D` из
+//      HTMLCanvasElement, ≈3.7 МБ + ≈2 МБ на кадр, синхронно ВНУТРИ
+//      `renderer.render()`.
+// XR-кадр не укладывался в дедлайн композитора; three.js в стерео рисует
+// оба глаза последовательными вьюпортами в один буфер, и при обрыве один
+// глаз оставался с clearColor — оператор видел мигание левого глаза.
+// Бисект 2026-09-08 (`docker stop oak-d ceiling-camera` → мерцание
+// пропало, камеры вернули) закрепил причину именно за этим трактом.
+//
+// Механизм — СТОИМОСТЬ заливки, а не «аплоад попал между глазами»: JS
+// однопоточный, колбэк WebSocket не может прервать `render()`. Поэтому
+// заливку надо было удешевить, а не отложить в XR-цикл.
+//
+// Canvas остался только там, где поверх видео рисуется подпись
+// (`showLabel: true` — панели PanelManager): туда декодированный битмап
+// блитуется, как раньше, зато декод всё равно ушёл с главного потока.
+// Главный экран и потолочная камера идут быстрым путём (`showLabel:
+// false`, см. `captain_bridge.ts`).
+//
+// Drop-oldest сохранён: пока предыдущий кадр декодируется, новый
+// пропускается с инкрементом `droppedCount`.
 
 import * as THREE from "three";
 import type { PanelState } from "./panel_manager";
 
+/** Что вернул декодер: быстрый путь — ImageBitmap, фолбэк — <img>. */
+type DecodedFrame = ImageBitmap | HTMLImageElement;
+
+/**
+ * ImageBitmap отличается от HTMLImageElement наличием `close()`.
+ * Проверяем по утке, а не через `instanceof ImageBitmap`: конструктора
+ * может не быть (старый браузер, jsdom в тестах), и тогда `instanceof`
+ * молча увёл бы нас в неверную ветку.
+ */
+function asBitmap(frame: DecodedFrame): ImageBitmap | null {
+  const maybe = frame as ImageBitmap;
+  return typeof maybe.close === "function" ? maybe : null;
+}
+
 export interface VideoPanelOptions {
   /** Рисовать debug-подпись topic в углу панели (default true). */
   showLabel?: boolean;
-  /** Разрешение внутреннего canvas (default 640×360). */
+  /**
+   * Разрешение внутреннего canvas (default 640×360). Работает только при
+   * `showLabel: true` — быстрый путь берёт разрешение прямо из JPEG.
+   */
   canvasWidth?: number;
   canvasHeight?: number;
 }
 
 export class VideoPanel {
   readonly mesh: THREE.Mesh;
-  private canvas: HTMLCanvasElement;
-  private ctx: CanvasRenderingContext2D;
-  private texture: THREE.CanvasTexture;
-  private currentImage: HTMLImageElement | null = null;
+  /** Canvas-композит. null на быстром пути (без подписи). */
+  private canvas: HTMLCanvasElement | null = null;
+  private ctx: CanvasRenderingContext2D | null = null;
+  private texture: THREE.Texture;
+  /** Битмап, который сейчас лежит в текстуре (быстрый путь). */
+  private currentBitmap: ImageBitmap | null = null;
+  /** Кадр в процессе декодирования — основа drop-oldest. */
+  private decoding = false;
+  private disposed = false;
   private state: PanelState;
   private frameCount = 0;
   private droppedCount = 0;
   private readonly showLabel: boolean;
+  private readonly bitmapOptions: ImageBitmapOptions;
 
   constructor(state: PanelState, opts: VideoPanelOptions = {}) {
     this.state = state;
     this.showLabel = opts.showLabel ?? true;
     const canvasWidth = opts.canvasWidth ?? 640;
     const canvasHeight = opts.canvasHeight ?? 360;
-    // Внутренний canvas — типичный JPEG с камеры робота,
-    // CanvasTexture сама масштабируется на Plane.
-    this.canvas = document.createElement("canvas");
-    this.canvas.width = canvasWidth;
-    this.canvas.height = canvasHeight;
-    const ctx = this.canvas.getContext("2d", { alpha: false });
-    if (!ctx) {
-      throw new Error("VideoPanel: failed to acquire 2D context");
-    }
-    this.ctx = ctx;
-    this.ctx.fillStyle = "#000";
-    this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+    // three.js игнорирует `texture.flipY` для ImageBitmap (см. доку
+    // ImageBitmapLoader), поэтому переворот заказываем у декодера, а
+    // сам flipY на быстром пути выключаем — так кадр не перевернётся
+    // дважды там, где UNPACK_FLIP_Y всё-таки применяется. Canvas-путь
+    // остаётся с обычным flipY = true, и битмап туда нужен неперевёрнутый.
+    this.bitmapOptions = { imageOrientation: this.showLabel ? "none" : "flipY" };
 
-    this.texture = new THREE.CanvasTexture(this.canvas);
+    const initial = document.createElement("canvas");
+    if (this.showLabel) {
+      initial.width = canvasWidth;
+      initial.height = canvasHeight;
+      const ctx = initial.getContext("2d", { alpha: false });
+      if (!ctx) {
+        throw new Error("VideoPanel: failed to acquire 2D context");
+      }
+      this.canvas = initial;
+      this.ctx = ctx;
+      ctx.fillStyle = "#000";
+      ctx.fillRect(0, 0, initial.width, initial.height);
+    } else {
+      // Заглушка до первого кадра: чёрный 2×2 вместо canvas на 1280×720,
+      // который на быстром пути никто не рисует. Держим именно canvas,
+      // а не пустую текстуру, — иначе three.js ругается «no image data».
+      initial.width = 2;
+      initial.height = 2;
+    }
+
+    this.texture = new THREE.CanvasTexture(initial);
     this.texture.minFilter = THREE.LinearFilter;
     this.texture.magFilter = THREE.LinearFilter;
     this.texture.colorSpace = THREE.SRGBColorSpace;
@@ -89,7 +153,7 @@ export class VideoPanel {
 
   /** Подпись с topic в углу панели (для UI/отладки). */
   setLabel(text: string): void {
-    if (!this.showLabel) return;
+    if (!this.showLabel || !this.ctx) return;
     this.drawLabel(text);
     this.texture.needsUpdate = true;
   }
@@ -97,26 +161,23 @@ export class VideoPanel {
   /** Подставить JPEG-байты. Возвращает false, если кадр дропнут (GPU занят). */
   ingestJpeg(jpeg: Uint8Array): boolean {
     this.frameCount += 1;
-    // Drop-oldest: если текущий image ещё не декодирован — пропускаем.
-    if (this.currentImage && !this.currentImage.complete) {
+    // Drop-oldest: предыдущий кадр ещё декодируется — этот пропускаем.
+    if (this.decoding) {
       this.droppedCount += 1;
       return false;
     }
-    const img = new Image();
-    img.onload = () => {
-      if (this.currentImage) {
-        URL.revokeObjectURL(this.currentImage.src);
-      }
-      this.currentImage = img;
-      this.ctx!.drawImage(img, 0, 0, this.canvas.width, this.canvas.height);
-      if (this.showLabel) this.drawLabel(this.state.topic);
-      this.texture.needsUpdate = true;
-    };
-    img.onerror = () => {
-      this.droppedCount += 1;
-    };
+    this.decoding = true;
     const blob = new Blob([jpeg as BlobPart], { type: "image/jpeg" });
-    img.src = URL.createObjectURL(blob);
+    this.decodeFrame(blob).then(
+      (frame) => {
+        this.decoding = false;
+        this.presentFrame(frame);
+      },
+      () => {
+        this.decoding = false;
+        this.droppedCount += 1;
+      }
+    );
     return true;
   }
 
@@ -125,12 +186,70 @@ export class VideoPanel {
   }
 
   dispose(): void {
+    this.disposed = true;
     (this.mesh.geometry as THREE.BufferGeometry).dispose();
     (this.mesh.material as THREE.Material).dispose();
     this.texture.dispose();
-    if (this.currentImage) {
-      URL.revokeObjectURL(this.currentImage.src);
+    if (this.currentBitmap) {
+      this.currentBitmap.close();
+      this.currentBitmap = null;
     }
+  }
+
+  /** Декод JPEG вне главного потока; фолбэк — <img>, если API нет. */
+  private decodeFrame(blob: Blob): Promise<DecodedFrame> {
+    if (typeof createImageBitmap !== "function") {
+      return this.decodeViaImageElement(blob);
+    }
+    try {
+      return createImageBitmap(blob, this.bitmapOptions);
+    } catch {
+      // Реализация без второго аргумента / без поддержки Blob.
+      return this.decodeViaImageElement(blob);
+    }
+  }
+
+  /** Старый путь: медленно (декод на главном потоке), зато везде есть. */
+  private decodeViaImageElement(blob: Blob): Promise<DecodedFrame> {
+    return new Promise<DecodedFrame>((resolve, reject) => {
+      const url = URL.createObjectURL(blob);
+      const img = new Image();
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        resolve(img);
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error("VideoPanel: JPEG decode failed"));
+      };
+      img.src = url;
+    });
+  }
+
+  /** Декодированный кадр → текстура. */
+  private presentFrame(frame: DecodedFrame): void {
+    if (this.disposed) {
+      asBitmap(frame)?.close();
+      return;
+    }
+    if (this.ctx && this.canvas) {
+      // Панель с подписью: метка ложится поверх видео в том же canvas.
+      this.ctx.drawImage(frame, 0, 0, this.canvas.width, this.canvas.height);
+      this.drawLabel(this.state.topic);
+      this.texture.needsUpdate = true;
+      // Пиксели уже скопированы в canvas — битмап больше не нужен.
+      asBitmap(frame)?.close();
+      return;
+    }
+    // Быстрый путь: кадр становится источником текстуры как есть.
+    const previous = this.currentBitmap;
+    const bitmap = asBitmap(frame);
+    this.currentBitmap = bitmap;
+    this.texture.flipY = bitmap === null;
+    this.texture.image = frame;
+    this.texture.needsUpdate = true;
+    // Предыдущий кадр освобождаем ПОСЛЕ замены, иначе течёт GPU-память.
+    if (previous && previous !== bitmap) previous.close();
   }
 
   private applyTransform(): void {
