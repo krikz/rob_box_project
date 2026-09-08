@@ -39,6 +39,26 @@ from rob_box_quest.streams.registry import (
     get_stream,
 )
 
+np = pytest.importorskip("numpy", reason="depth_compressed_to_jpeg требует numpy (только в Docker image)")
+cv2 = pytest.importorskip("cv2", reason="depth_compressed_to_jpeg требует cv2 (только в Docker image)")
+
+from rob_box_quest.streams.depth import depth_compressed_to_jpeg  # noqa: E402
+
+
+def _make_16bit_depth_png(
+    values: "np.ndarray",
+) -> bytes:
+    """np.uint16 (h, w) массив миллиметров → PNG bytes (как публикует OAK-D).
+
+    Тот же путь, что использует ``_strip_compressed_depth_header`` на
+    входе: голый PNG БЕЗ 12-байтного ConfigHeader compressedDepth —
+    ``depth_compressed_to_jpeg`` его уже не видит, заголовок снимается
+    раньше в ``quest_node._on_depth_image``.
+    """
+    ok, buf = cv2.imencode(".png", values.astype(np.uint16))
+    assert ok, "тестовая обвязка не смогла закодировать синтетический PNG"
+    return bytes(buf)
+
 
 # --- Реестр: camera_oak_depth → ROS_TOPIC ----------------------------------
 
@@ -314,3 +334,177 @@ class TestQuestNodeDepthHandler:
             "bridge.publish_frame(\"camera_oak_depth\", bytes(msg.data)) "
             "по образцу _on_ceiling_image."
         )
+
+    def test_on_depth_image_calls_depth_compressed_to_jpeg(self):
+        """Регресс продолжения #2138.B (2026-09-08): голый 16-битный PNG
+
+        форвардить клиенту нельзя — ``createImageBitmap()`` схлопывает 16
+        бит до 8, взяв старший байт, и комната 500-5000 мм превращается в
+        почти чёрный кадр (та же жалоба оператора «панель не работает»,
+        просто без ошибки в консоли). ``_on_depth_image`` обязан звать
+        ``depth_compressed_to_jpeg`` перед ``bridge.publish_frame``.
+        """
+        repo_root = Path(__file__).resolve().parents[5]
+        quest_node_path = (
+            repo_root / "src" / "rob_box_quest" / "rob_box_quest" / "quest_node.py"
+        )
+        source = quest_node_path.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+
+        calls_depth_encoder = False
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ClassDef) or node.name != "QuestNode":
+                continue
+            for item in node.body:
+                if not isinstance(item, ast.FunctionDef) or item.name != "_on_depth_image":
+                    continue
+                for sub in ast.walk(item):
+                    if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name):
+                        if sub.func.id == "depth_compressed_to_jpeg":
+                            calls_depth_encoder = True
+
+        assert calls_depth_encoder, (
+            "_on_depth_image не вызывает depth_compressed_to_jpeg — "
+            "16-битный PNG уйдёт клиенту как есть, createImageBitmap() "
+            "схлопнет 16 бит до 8 (старший байт), панель глубины станет "
+            "почти чёрной вместо пустой — та же жалоба оператора."
+        )
+
+
+# --- streams.depth.depth_compressed_to_jpeg (16-бит PNG → цветной JPEG) -----
+
+
+class TestDepthCompressedToJpeg:
+    """Синтетические 16-битные PNG, без ROS-зависимостей (только cv2/numpy).
+
+    compressedDepth для формата 16UC1 — это 16-битный grayscale PNG в
+    миллиметрах (не готовая к показу картинка). Если форвардить его как
+    есть, браузерный ``createImageBitmap()`` схлопывает 16 бит → 8,
+    беря старший байт: комната 500-5000 мм превращается в почти чёрный
+    кадр (0x1388 → 0x13 = 19/255) — визуально та же «пустая панель»,
+    просто без ошибки в логах. ``depth_compressed_to_jpeg`` должен это
+    предотвращать: нормализовать по перцентилям валидных пикселей и
+    наложить псевдо-colormap, а не просто урезать биты.
+    """
+
+    def test_returns_valid_jpeg_bytes(self):
+        depth_mm = np.full((16, 16), 2000, dtype=np.uint16)
+        png = _make_16bit_depth_png(depth_mm)
+
+        jpeg = depth_compressed_to_jpeg(png, max_width=None)
+
+        assert isinstance(jpeg, bytes)
+        assert jpeg[:2] == b"\xff\xd8", "JPEG должен начинаться с SOI-маркера 0xFFD8"
+        decoded = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
+        assert decoded is not None, "результат должен сам быть декодируемым JPEG"
+        assert decoded.shape[:2] == (16, 16)
+
+    def test_near_pixels_are_bluer_than_far_pixels(self):
+        """Синий=близко, красный=далеко (JET colormap, тот же порядок,
+
+        что в rob_box_telegram._depth_compressed_to_jpeg /photo_depth).
+        Левая половина кадра — близко (500 мм), правая — далеко (5000 мм).
+        """
+        depth_mm = np.zeros((8, 16), dtype=np.uint16)
+        depth_mm[:, :8] = 500
+        depth_mm[:, 8:] = 5000
+        png = _make_16bit_depth_png(depth_mm)
+
+        jpeg = depth_compressed_to_jpeg(png, max_width=None)
+        decoded = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)  # BGR
+
+        near_px = decoded[4, 2].astype(int)  # (B, G, R)
+        far_px = decoded[4, 13].astype(int)
+
+        assert near_px[0] > far_px[0], (
+            f"ближний пиксель должен быть синее дальнего: near={tuple(near_px)} "
+            f"far={tuple(far_px)}"
+        )
+        assert far_px[2] > near_px[2], (
+            f"дальний пиксель должен быть краснее ближнего: near={tuple(near_px)} "
+            f"far={tuple(far_px)}"
+        )
+
+    def test_16bit_input_is_not_truncated_to_top_byte(self):
+        """Регрессия самого бага: наивное усечение 16→8 бит (>> 8, как
+
+        делает браузерный createImageBitmap) дало бы у всех пикселей в
+        диапазоне 256-5000 мм один и тот же старший байт диапазона —
+        почти чёрный кадр без контраста. depth_compressed_to_jpeg обязан
+        различать 500 мм и 4500 мм по яркости/цвету результата.
+        """
+        depth_mm = np.zeros((8, 16), dtype=np.uint16)
+        depth_mm[:, :8] = 500
+        depth_mm[:, 8:] = 4500
+        png = _make_16bit_depth_png(depth_mm)
+
+        jpeg = depth_compressed_to_jpeg(png, max_width=None)
+        decoded = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
+
+        near_px = decoded[4, 2].astype(int)
+        far_px = decoded[4, 13].astype(int)
+        assert tuple(near_px) != tuple(far_px), (
+            "500 мм и 4500 мм дали одинаковый цвет — похоже на наивное "
+            ">> 8 усечение (тот самый баг), а не перцентильную нормализацию"
+        )
+
+    def test_zero_depth_pixels_are_excluded_from_normalization(self):
+        """0 в 16UC1 depth = «нет данных», а не «глубина 0 мм». Если 0
+
+        попадёт в перцентильную статистику — валидные пиксели потеряют
+        контраст (обширные дыры без данных перетянут перцентили).
+        """
+        depth_mm = np.zeros((10, 10), dtype=np.uint16)
+        depth_mm[:, :] = 0  # почти всё - "нет данных"
+        depth_mm[5, 5] = 1000
+        depth_mm[5, 6] = 3000
+        png = _make_16bit_depth_png(depth_mm)
+
+        jpeg = depth_compressed_to_jpeg(png, max_width=None)
+        decoded = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
+
+        near_px = decoded[5, 5].astype(int)
+        far_px = decoded[5, 6].astype(int)
+        assert tuple(near_px) != tuple(far_px), (
+            "два единственных валидных пикселя (1000мм, 3000мм) получили "
+            "одинаковый цвет — статистика нормализации испорчена нулями-дырами"
+        )
+
+    def test_all_invalid_pixels_does_not_crash(self):
+        """Кадр целиком без данных (робот смотрит в никуда) не должен ронять
+
+        обработчик — деление на диапазон 0 должно быть защищено.
+        """
+        depth_mm = np.zeros((8, 8), dtype=np.uint16)
+        png = _make_16bit_depth_png(depth_mm)
+
+        jpeg = depth_compressed_to_jpeg(png, max_width=None)
+        assert jpeg[:2] == b"\xff\xd8"
+
+    def test_downscales_to_max_width(self):
+        """max_width обрезает ширину пропорционально — см. обоснование
+
+        даунскейла (WS-трафик, не CPU) в streams/depth.py докстринге.
+        """
+        depth_mm = np.full((720, 1280), 2000, dtype=np.uint16)
+        png = _make_16bit_depth_png(depth_mm)
+
+        jpeg = depth_compressed_to_jpeg(png, max_width=640)
+        decoded = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
+
+        assert decoded.shape[1] == 640
+        assert decoded.shape[0] == 360  # пропорционально: 720 * (640/1280)
+
+    def test_max_width_none_keeps_original_size(self):
+        depth_mm = np.full((720, 1280), 2000, dtype=np.uint16)
+        png = _make_16bit_depth_png(depth_mm)
+
+        jpeg = depth_compressed_to_jpeg(png, max_width=None)
+        decoded = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
+
+        assert decoded.shape[1] == 1280
+        assert decoded.shape[0] == 720
+
+    def test_invalid_png_raises_value_error(self):
+        with pytest.raises(ValueError):
+            depth_compressed_to_jpeg(b"not a png at all")

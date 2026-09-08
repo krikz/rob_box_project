@@ -137,13 +137,31 @@ STREAM_CATALOG: dict[str, StreamSpec] = {
     # JPEG-варианта (``/compressed``) oak-d не публикует при
     # ``i_publish_compressed: false`` в docker/vision/config/oak-d —
     # только ``compressedDepth``, см. ``oak_d_config.yaml:62``.
+    #
+    # ВАЖНО (диагностика 2026-09-08, продолжение #2138.B): "PNG-кодированный"
+    # выше — не совсем точно, и это не конец истории. ``compressedDepth`` —
+    # это 12-байтный бинарный ConfigHeader (int32 format + float
+    # depthQuantA + float depthQuantB) + ПОТОМ PNG, а сам PNG для формата
+    # 16UC1 — 16-битный grayscale (миллиметры), не готовая к показу
+    # картинка. quest_node.py:_on_depth_image (1) отрезает ConfigHeader
+    # (``_strip_compressed_depth_header`` — иначе клиентский
+    # ``createImageBitmap()`` не находит PNG-сигнатуру в начале потока и
+    # тихо роняет кадр — панель пустая, без ошибок в консоли), а затем
+    # (2) перекодирует 16-битный PNG в цветной JPEG
+    # (``streams.depth.depth_compressed_to_jpeg`` — 2/98-перцентильная
+    # нормализация + JET colormap), потому что без этого шага
+    # createImageBitmap сам схлопнул бы 16 бит до 8, взяв старший байт, и
+    # комната 500–5000 мм превратилась бы в почти чёрный кадр (та же
+    # жалоба оператора «панель пустая/не видно», просто без сигнатуры
+    # ошибки). Итоговый payload на WS — обычный JPEG, тем же путём, что
+    # camera_rear/camera_ceiling; клиент не меняется.
     "camera_oak_depth": StreamSpec(
         ui_name="camera_oak_depth",
         topic_id=0x1004,
         kind=StreamKind.ROS_TOPIC,
         source="/camera/camera/depth/image_rect_raw/compressedDepth",
         default_quality="med",
-        description="OAK-D depth (oak-d ROS topic, compressedDepth PNG)",
+        description="OAK-D depth (oak-d ROS topic, перекодировано в цветной JPEG)",
     ),
 }
 

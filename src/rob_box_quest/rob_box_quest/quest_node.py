@@ -65,6 +65,7 @@ from .server.ws_server import NoOpBridge, WSSServer, build_app
 from .streams.alerts import Alert, AlertThresholds, evaluate_alerts
 from .streams.battery import parse_battery_json, voltage_to_pct
 from .streams.lidar import scan_to_payload
+from .streams.depth import depth_compressed_to_jpeg
 from .streams.occupancy import encode_map_2d, grid_to_png
 from .streams.provider import CameraFrame, CameraProvider
 from .streams.registry import STREAM_CATALOG
@@ -162,6 +163,45 @@ def _string_msg(value: str) -> String:
     m = String()
     m.data = value
     return m
+
+
+# PNG magic (89 50 4E 47 0D 0A 1A 0A) — используется, чтобы отрезать
+# ConfigHeader у compressedDepth (см. _strip_compressed_depth_header).
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+def _strip_compressed_depth_header(data: bytes) -> Optional[bytes]:
+    """Отрезать ConfigHeader у image_transport ``compressedDepth``.
+
+    Диагностика (2026-09-08, issue #2138.B продолжение): ``compressedDepth``
+    — это НЕ голый PNG. Перед PNG-байтами image_transport кладёт бинарный
+    ``ConfigHeader`` (12 байт: int32 format + float depthQuantA + float
+    depthQuantB). Проверено на роботе (``ros2 topic echo`` через
+    rclpy-скрипт по /camera/camera/depth/image_rect_raw/compressedDepth):
+
+        FORMAT_FIELD: '16UC1; compressedDepth'
+        FIRST_32_BYTES_HEX: 00000000ffff0000d8a37a7589504e470d0a1a0a...
+        PNG_MAGIC_AT_OFFSET: 12
+
+    ``_on_depth_image`` раньше форвардил ``msg.data`` как есть (комментарий
+    «Клиент Quest отрисует их как есть» не учитывал этот заголовок).
+    Клиент (``webxr_client/src/scene/video_panel.ts:ingestJpeg``) кладёт
+    payload в ``Blob`` и декодирует через ``createImageBitmap()`` —
+    браузер ищет PNG-сигнатуру С НАЧАЛА потока, не находит (мешают 12
+    байт ConfigHeader) и тихо роняет промис (``droppedCount`` растёт,
+    панель остаётся пустой, ни строки в консоли). Тот же формат уже
+    корректно обрабатывается в ``rob_box_telegram/handlers/commands.py``
+    (``_depth_compressed_to_jpeg``) — тем же способом (поиск PNG-сигнатуры
+    вместо жёсткого ``[12:]``, т.к. длина ConfigHeader форматно-зависима).
+
+    Возвращает None, если PNG-сигнатура не найдена (RVL-сжатие или иной
+    формат, который так просто не отрисовать) — вызывающий код тогда
+    кадр не публикует.
+    """
+    offset = data.find(_PNG_SIGNATURE)
+    if offset == -1:
+        return None
+    return data[offset:]
 
 
 def _read_alert_thresholds(node) -> AlertThresholds:
@@ -2043,13 +2083,47 @@ class QuestNode(Node):
     def _on_depth_image(self, msg: CompressedImage) -> None:
         """ROS /camera/camera/depth/image_rect_raw/compressedDepth → WS (camera_oak_depth).
 
-        Зеркало ``_on_ceiling_image`` — форвардим ``msg.data`` (PNG-байты
-        compressedDepth) как есть. Клиент Quest отрисует их в панели
-        глубины без перекодирования; см. registry.py описание топика.
+        НЕ зеркало ``_on_ceiling_image`` — в отличие от обычного JPEG,
+        ``compressedDepth`` несёт 12-байтный бинарный ``ConfigHeader``
+        ПЕРЕД PNG-данными (см. ``_strip_compressed_depth_header`` докстринг
+        и raw-доказательство там же). Раньше этот заголовок форвардился
+        клиенту как есть → ``createImageBitmap()`` не находил PNG-сигнатуру
+        в начале потока и тихо ронял промис — панель глубины оставалась
+        пустой при живом топике. Отрезаем заголовок здесь.
+
+        Второй шаг (продолжение #2138.B, 2026-09-08): голый PNG после
+        отрезания заголовка — это 16-битный grayscale (миллиметры), а не
+        обычная картинка. ``createImageBitmap()`` не умеет 16 бит на
+        канал и молча схлопывает до 8, беря старший байт — комната
+        500–5000 мм превращается в почти чёрный кадр (0x1388 → старший
+        байт 0x13 = 19/255). Формально «не пустая», но для оператора та
+        же жалоба. Поэтому вместо форварда голого PNG кодируем его в
+        цветной JPEG (см. ``streams.depth.depth_compressed_to_jpeg`` —
+        нормализация по 2/98 перцентилям + JET colormap, синий=близко/
+        красный=далеко; та же логика, что уже проверена в
+        ``rob_box_telegram/handlers/commands.py:_depth_compressed_to_jpeg``
+        для ``/photo_depth``). Клиент не меняется: ``ingestJpeg`` уже
+        декодирует по сигнатуре байт, а не по заявленному типу канала.
         """
         if not msg.data:
             return
-        self.bridge.publish_frame("camera_oak_depth", bytes(msg.data))
+        png = _strip_compressed_depth_header(bytes(msg.data))
+        if png is None:
+            self.get_logger().warning(
+                "camera_oak_depth: PNG signature not found in compressedDepth "
+                "payload (format=%r, len=%d) — не PNG-сжатие (RVL?), кадр пропущен",
+                msg.format,
+                len(msg.data),
+            )
+            return
+        try:
+            jpeg = depth_compressed_to_jpeg(png)
+        except Exception as exc:  # noqa: BLE001 — best-effort, как on_map/grid_to_png
+            self.get_logger().warning(
+                "camera_oak_depth: depth→JPEG encode failed (%s) — кадр пропущен", exc
+            )
+            return
+        self.bridge.publish_frame("camera_oak_depth", jpeg)
 
     def _on_map(self, msg: OccupancyGrid) -> None:
         """ROS /rtabmap/map → map_2d (0x1103): PNG решётки + поза робота."""
