@@ -266,6 +266,88 @@ async def test_check_deepseek_balance_returns_total(monkeypatch: pytest.MonkeyPa
 
 
 @pytest.mark.asyncio
+async def test_check_deepseek_balance_multicurrency_uses_best_currency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """🔴 FIX (live 08.09): CNY и USD НЕ суммируются как одна валюта.
+
+    Реальный ответ /user/balance: CNY = -1.02 (минус!), USD = +5.60.
+    Старый код складывал валюты → баланс -0.31 ≤ 0 → DeepSeek ошибочно
+    unavailable (TTL 300s) → робот «интернет недоступен», хотя USD были.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "is_available": True,
+                "balance_infos": [
+                    {"currency": "CNY", "total_balance": "-1.02"},
+                    {"currency": "USD", "total_balance": "5.60"},
+                ],
+            },
+            request=request,
+        )
+
+    client = _patch_httpx_client(monkeypatch, handler)
+    balance = await check_deepseek_balance("https://api.deepseek.com", "sk-test")
+    # Должен вернуть лучшую валюту (USD), а не сумму CNY+USD.
+    assert balance == pytest.approx(5.60)
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_check_deepseek_balance_multicurrency_sums_within_currency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Записи ОДНОЙ валюты суммируются; максимум — по валютам."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "is_available": True,
+                "balance_infos": [
+                    {"currency": "CNY", "total_balance": "100.00"},
+                    {"currency": "CNY", "total_balance": "10.00"},
+                    {"currency": "USD", "total_balance": "3.00"},
+                ],
+            },
+            request=request,
+        )
+
+    client = _patch_httpx_client(monkeypatch, handler)
+    balance = await check_deepseek_balance("https://api.deepseek.com", "sk-test")
+    assert balance == pytest.approx(110.0)  # max(CNY=110, USD=3)
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_check_deepseek_balance_all_negative_returns_negative_max(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Все валюты ≤ 0 → возвращается отрицательный максимум (unavailable)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "is_available": True,
+                "balance_infos": [
+                    {"currency": "CNY", "total_balance": "-2.00"},
+                    {"currency": "USD", "total_balance": "-0.50"},
+                ],
+            },
+            request=request,
+        )
+
+    client = _patch_httpx_client(monkeypatch, handler)
+    balance = await check_deepseek_balance("https://api.deepseek.com", "sk-test")
+    assert balance == pytest.approx(-0.50)
+    await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_check_deepseek_balance_unavailable_returns_zero(monkeypatch: pytest.MonkeyPatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(

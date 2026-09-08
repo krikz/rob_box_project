@@ -397,10 +397,12 @@ async def check_deepseek_balance(
 ) -> float | None:
     """Query DeepSeek's ``/user/balance`` endpoint.
 
-    Returns the total balance (sum of all ``balance_infos``) or ``None``
-    when the balance cannot be determined (endpoint down, network
-    error, non-JSON response). ``None`` means "assume healthy" — a
-    broken health-check must never block the provider.
+    Returns the largest per-currency balance (summing entries within
+    one currency, NOT across currencies — CNY and USD are different
+    money), or ``None`` when the balance cannot be determined
+    (endpoint down, network error, non-JSON response). ``None`` means
+    "assume healthy" — a broken health-check must never block the
+    provider.
 
     Reference: https://api-docs.deepseek.com/api/get-user-balance
     """
@@ -416,13 +418,27 @@ async def check_deepseek_balance(
         if not data.get("is_available", True):
             return 0.0
         infos = data.get("balance_infos") or []
-        total = 0.0
+        # 🔴 FIX (live 08.09): /user/balance может вернуть НЕСКОЛЬКО валют
+        # (напр. CNY = -1.02, USD = +5.60). Суммировать их как одну валюту
+        # нельзя: отрицательный CNY-«карман» занулял реальные USD → баланс
+        # ≤ 0 → провайдер ошибочно помечался unavailable (TTL 300s) →
+        # робот говорил «интернет недоступен», хотя на USD деньги были.
+        # Группируем по валюте (внутри валюты суммируем — DeepSeek может
+        # вернуть несколько записей одной валюты) и возвращаем максимум:
+        # аккаунт работоспособен, пока ХОТЬ одна валюта с положительным
+        # балансом. Ложноположительный «healthy» не страшен — реальную
+        # нехватку поймает реактивный 429-путь (вторая линия обороны).
+        by_currency: dict[str, float] = {}
         for info in infos:
             try:
-                total += float(info.get("total_balance") or 0.0)
+                balance = float(info.get("total_balance") or 0.0)
             except (TypeError, ValueError):
                 continue
-        return total
+            currency = str(info.get("currency") or "USD")
+            by_currency[currency] = by_currency.get(currency, 0.0) + balance
+        if not by_currency:
+            return 0.0
+        return max(by_currency.values())
     except Exception as exc:  # noqa: BLE001 — any probe failure ⇒ unknown
         _log.warning("[health] deepseek balance check failed: %r", exc)
         return None
