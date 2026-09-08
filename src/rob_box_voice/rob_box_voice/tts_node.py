@@ -882,6 +882,15 @@ class TTSNode(Node):
         # Параметризуем имя топика для тестов и чтобы шов с ``audio_topic``
         # остался единственной параметризацией.
         self.declare_parameter("headset_audio_topic", "/avatar/tts/audio")
+        # ADR-0078 §4 follow-up (issue #2162) — side-channel sample_rate.
+        # AudioData не имеет поля rate, и приватный атрибут Python-объекта
+        # через DDS НЕ сериализуется (rclpy десериализует только поля IDL;
+        # quest_node через DDS получает msg без _tars_sample_rate).
+        # Решение — отдельный топик-метаданные (String JSON), который
+        # публикуется РЯДОМ с каждым AudioData. Контракт:
+        #   {"request_id": str, "sample_rate": int, "ts_ms": int}
+        # Параметризован, чтобы тесты могли подменить.
+        self.declare_parameter("headset_audio_meta_topic", "/avatar/tts/audio_meta")
         self.declare_parameter("avatar_request_topic", "/avatar/tts/request")
         self.declare_parameter("avatar_error_topic", "/avatar/tts/error")
         self.declare_parameter("avatar_control_topic", "/avatar/tts/control")
@@ -1117,6 +1126,10 @@ class TTSNode(Node):
         # Те же параметры, что у audio_topic/... — единственный шов в одном
         # месте для forward-compat тестов и override'ов через launch-файлы.
         self.headset_audio_topic = str(self.get_parameter("headset_audio_topic").value)
+        # ADR-0078 §4: side-channel sample_rate через /avatar/tts/audio_meta.
+        self.headset_audio_meta_topic = str(
+            self.get_parameter("headset_audio_meta_topic").value
+        )
         self.avatar_request_topic = str(
             self.get_parameter("avatar_request_topic").value
         )
@@ -1364,6 +1377,13 @@ class TTSNode(Node):
         # байт-в-байт, иначе не сможет декодировать чанк.
         self._avatar_audio_pub = self.create_publisher(
             AudioData, self.headset_audio_topic, audio_qos
+        )
+        # ADR-0078 §4 follow-up: side-channel метаданные для чанков headset-аудио.
+        # String JSON {request_id, sample_rate, ts_ms} — публикуется ДО
+        # каждого AudioData в /avatar/tts/audio. Подписчик (quest_node)
+        # кеширует request_id → sample_rate и подставляет в deliver_audio().
+        self._avatar_audio_meta_pub = self.create_publisher(
+            String, self.headset_audio_meta_topic, 10
         )
         self.state_pub = self.create_publisher(String, "/voice/tts/state", 10)
         self.finished_pub = self.create_publisher(
@@ -4265,7 +4285,10 @@ class TTSNode(Node):
             return
         topic_audio = self._prepare_audio_for_topic(audio_np, sample_rate)
         if sink == "headset":
-            self._publish_headset_audio(topic_audio)
+            # ADR-0078 §4: пробрасываем реальный rate в /avatar/tts/audio,
+            # чтобы quest_node передал sample_rate в WS-meta для ручной
+            # сборки AudioBuffer в шлеме.
+            self._publish_headset_audio(topic_audio, sample_rate)
         else:
             self._publish_audio(topic_audio)
         # Issue #1229 — после успешного синтеза публикуем фактического
@@ -5352,8 +5375,9 @@ class TTSNode(Node):
                     )
                     # ADR-0055 / issue #1993 — headset маршрут: вместо
                     # /voice/audio/speech публикуем в /avatar/tts/audio.
+                    # ADR-0078 §4: пробрасываем chunk_sample_rate в WS-meta.
                     if sink == "headset":
-                        self._publish_headset_audio(topic_audio)
+                        self._publish_headset_audio(topic_audio, chunk_sample_rate)
                     else:
                         self._publish_audio(topic_audio)
 
@@ -5472,7 +5496,13 @@ class TTSNode(Node):
 
         self.audio_pub.publish(msg)
 
-    def _publish_headset_audio(self, audio_np: np.ndarray):
+    def _publish_headset_audio(
+        self,
+        audio_np: np.ndarray,
+        sample_rate: Optional[int] = None,
+        *,
+        request_id: Optional[str] = None,
+    ):
         """ADR-0055 / issue #1993 — публикация синтезированной реплики ТАРС
         в ``/avatar/tts/audio`` (int16 LE PCM, тот же SR, что ``/voice/audio/speech``).
 
@@ -5480,11 +5510,62 @@ class TTSNode(Node):
         ``ws_server.deliver_audio(stream="operator_tts", ...)`` доставит
         в шлем оператора. Динамики робота НЕ играют (sink=headset → ALSA
         path skipped в ``_synthesize_and_play``).
+
+        ADR-0078 §4: ``sample_rate`` — реальный rate PCM в Гц. Через DDS
+        AudioData (нет поля rate) sample_rate не передаётся, поэтому
+        публикуем **side-channel** ``/avatar/tts/audio_meta`` (String JSON
+        ``{request_id, sample_rate, ts_ms}``) **ДО** AudioData. quest_node
+        кеширует ``request_id → sample_rate`` и подставляет в
+        ``ws_server.deliver_audio(sample_rate=...)``.
+
+        Fallback ``sample_rate``: ``self.audio_output_sample_rate`` (declare
+        default 16000). Если None, в лог уходит WARNING: в норме ВСЕГДА
+        передаётся. ``request_id`` обязателен — supervisor генерирует его
+        в ``_publish_avatar_tts`` (uuid hex8). Без request_id audio_meta
+        не публикуем (клиент не сможет сматчить кэш с чанком).
         """
         audio_int16 = (np.clip(audio_np, -1.0, 1.0) * 32767).astype("<i2", copy=False)
 
         msg = AudioData()
         msg.data = list(audio_int16.tobytes())
+
+        if sample_rate is None:
+            sample_rate = getattr(self, "audio_output_sample_rate", 16000)
+            self.get_logger().warning(
+                "🎧 [ADR-0078] _publish_headset_audio без sample_rate — "
+                f"fallback {sample_rate} (audio_output_sample_rate)"
+            )
+
+        # request_id: явный kwarg побеждает; иначе берём
+        # ``self._avatar_tts_request_id`` (выставляется в _on_avatar_tts_request
+        # до старта синтеза — supervisor генерит uuid hex8 в
+        # _publish_avatar_tts).
+        if not request_id:
+            request_id = getattr(self, "_avatar_tts_request_id", None)
+
+        # ADR-0078 §4: публикуем audio_meta (side-channel) ДО AudioData,
+        # чтобы подписчик успел закешировать sample_rate до прихода чанка.
+        # В одном DDS-потоке порядок гарантирован; разные потоки — допустимо
+        # что audio_meta придёт после, тогда fallback в deliver_audio.
+        if request_id:
+            try:
+                meta_payload = {
+                    "request_id": str(request_id),
+                    "sample_rate": int(sample_rate),
+                    "ts_ms": int(time.time() * 1000),
+                }
+                meta_msg = String()
+                meta_msg.data = json.dumps(meta_payload, ensure_ascii=False)
+                self._avatar_audio_meta_pub.publish(meta_msg)
+            except Exception as exc:  # noqa: BLE001 — диагностика не должна падать
+                self.get_logger().warning(
+                    f"🎧 [ADR-0078] _avatar_audio_meta_pub publish failed: {exc}"
+                )
+        else:
+            self.get_logger().warning(
+                "🎧 [ADR-0078] _publish_headset_audio без request_id — "
+                "audio_meta не публикуется, клиент будет на fallback"
+            )
 
         self._avatar_audio_pub.publish(msg)
 

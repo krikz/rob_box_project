@@ -60,6 +60,15 @@ import { supervisorEffect, type FloorLabel, type SupervisorState } from "./state
 import { createPreviewAudioSink, type PreviewAudioSink } from "./ui/preview_audio_sink";
 import { createOperatorAudioSink, type OperatorAudioSink } from "./ui/operator_audio_sink";
 import {
+  createAcceptTonePlayer,
+  type AcceptTonePlayer
+} from "./ui/accept_tone";
+import {
+  parseTarsStateEvent,
+  type TarsStage,
+  type TarsStateEvent
+} from "./ui/tars_state_indicator";
+import {
   INITIAL_TTS_PICKER_STATE,
   PREVIEW_TEXT,
   newPreviewRequestId,
@@ -778,6 +787,23 @@ export function bootstrap(opts: BootstrapOptions): {
   // ``stop()`` зовётся на voice_ptt_start ДО отправки на сервер
   // (оператор должен услышать тишину раньше, чем сервер обработает STOP).
   const operatorAudioSink: OperatorAudioSink = createOperatorAudioSink();
+  // ADR-0078 / issue #2162 — локальный акцепт-тон в шлеме. Шифу слышит
+  // короткий «тик» в момент, когда STT подтвердил wake-word (стадия
+  // accepted), ДО голоса ТАРС.
+  const acceptTonePlayer: AcceptTonePlayer = createAcceptTonePlayer();
+  // ADR-0078 §3.6 — текущая стадия tars_state (для HUD/логов).
+  // currentTarsStage читается в UI-логике (case "operator_tts_audio":
+  // если ещё не speaking — выставить), lastTarsEvent — последний полный
+  // event для отладки (можно экспортировать в window.__tars в e2e-build).
+  let currentTarsStage: TarsStage = "idle";
+  let lastTarsEvent: TarsStateEvent | null = null;
+  function logLastTarsEvent(): void {
+    // no-op в проде; в dev-build можно подвесить на window.
+    if (lastTarsEvent) {
+      // eslint-disable-next-line no-console
+      console.debug("[quest] tars_state:", lastTarsEvent.stage);
+    }
+  }
   // Первая отрисовка: меню скрыто, но текстуры готовы — при открытии не
   // будет кадра с пустыми плашками.
   bridge.renderTtsPicker(ttsState);
@@ -1032,24 +1058,96 @@ export function bootstrap(opts: BootstrapOptions): {
         dispatchTts({ kind: "preview_error", requestId: e.request_id, reason: e.reason });
         return true;
       }
-      // ADR-0055 / issue #1993 — обратный канал ТАРС в шлем. Те же
-      // события, что у preview, но без UI-pipeline: чанки в
-      // operatorAudioSink, на _done → play(), на _error → drop. _done
-      // и _error сейчас не публикуются сервером (ADR-0055 §ws_server),
-      // но client-типы уже заведены — обрабатываем на всякий случай.
+      // ADR-0055 / issue #1993 + ADR-0078 — обратный канал ТАРС в шлем.
+      // Каждый чанк operator_tts_audio САМОДОСТАТОЧНЫЙ: играется сразу по
+      // приходу байт (ставя в очередь), НЕ ждём operator_tts_done.
+      // sample_rate нужен ручной сборке AudioBuffer из int16-LE PCM.
+      // operator_tts_done/error оставлены как flush/сброс (forward-compat).
       case "operator_tts_audio": {
-        const e = ev as { request_id: string; content_type?: string; seq: number; total: number };
-        operatorAudioSink.onMeta(e.request_id, e.content_type ?? "audio/pcm", e.seq, e.total);
+        const e = ev as {
+          request_id: string;
+          content_type?: string;
+          sample_rate?: number;
+          seq: number;
+          total: number;
+        };
+        operatorAudioSink.onMeta(
+          e.request_id,
+          e.content_type ?? "audio/pcm",
+          e.seq,
+          e.total,
+          e.sample_rate
+        );
+        // ADR-0078 §3.1: запускаем сразу — ставим в очередь.
+        void operatorAudioSink.play(e.request_id);
+        // ADR-0078 §3.6: speaking-стадия tars_state на ПЕРВОМ чанке
+        // реплики. Если стадия уже speaking/accepted — не обновляем.
+        if (currentTarsStage !== "speaking") {
+          currentTarsStage = "speaking";
+          lastTarsEvent = {
+            stage: "speaking",
+            requestId: e.request_id,
+            tsMs: Date.now()
+          };
+        }
         return true;
       }
       case "operator_tts_done": {
         const e = ev as { request_id: string };
-        void operatorAudioSink.play(e.request_id);
+        // Раньше тут вызывался play() — теперь чанки играются сами по
+        // приходу. Метод play() уже мог быть вызван; тут только синхро-
+        // низируем tars_state→idle (после последнего чанка опера услышала
+        // ответ полностью).
+        // NB: реально сервер НЕ шлёт done в норме — этот case зарезерви-
+        // рован для forward-compat и для e2e-тестов.
+        operatorAudioSink.stop();
+        if (currentTarsStage !== "idle") {
+          currentTarsStage = "idle";
+          lastTarsEvent = {
+            stage: "idle",
+            requestId: e.request_id,
+            tsMs: Date.now()
+          };
+        }
         return true;
       }
       case "operator_tts_error": {
         const e = ev as { request_id: string; reason: string };
         operatorAudioSink.error(e.reason);
+        if (currentTarsStage !== "idle") {
+          currentTarsStage = "idle";
+          lastTarsEvent = {
+            stage: "idle",
+            requestId: e.request_id,
+            tsMs: Date.now()
+          };
+        }
+        return true;
+      }
+      case "tars_state": {
+        // ADR-0078 §3.6 — стадии accepted/thinking/speaking/idle.
+        const parsed = parseTarsStateEvent(ev);
+        if (!parsed) return true;
+        currentTarsStage = parsed.stage;
+        lastTarsEvent = parsed;
+        if (parsed.stage === "accepted") {
+          // Короткий «тик» в шлеме — Шифу слышит, что wake принят.
+          void acceptTonePlayer.play();
+        }
+        // UI-индикация: setStreaming(true) на стадии speaking делает
+        // «мигание» в TARS1-панели, чтобы Шифу видел «ТАРС говорит».
+        // idle — гасит. Это НЕ новый UI, переиспользуем существующий
+        // поток (см. tars1_text_panel.ts). accepted/thinking — тосты.
+        if (parsed.stage === "speaking") {
+          bridge.tars1Panel.setStreaming(true);
+        } else if (parsed.stage === "idle") {
+          bridge.tars1Panel.setStreaming(false);
+        } else if (parsed.stage === "accepted") {
+          toast.show("✓ ТАРС принял", { level: "info", autoHideMs: 2000 });
+        } else if (parsed.stage === "thinking") {
+          toast.show("… ТАРС думает", { level: "info", autoHideMs: 4000 });
+        }
+        logLastTarsEvent();
         return true;
       }
       default:
@@ -1829,6 +1927,10 @@ export function bootstrap(opts: BootstrapOptions): {
       clearInterval(utteranceTicker);
       clearApplyTimeout();
       previewSink.dispose();
+      // ADR-0078: operatorAudioSink.dispose() теперь закрывает AudioContext
+      // (раньше не закрывался — утечка контекста на каждом reconnect'е).
+      operatorAudioSink.dispose();
+      acceptTonePlayer.dispose();
       conn?.close();
       bridge.dispose();
       // Phase 2.3 overlays cleanup.

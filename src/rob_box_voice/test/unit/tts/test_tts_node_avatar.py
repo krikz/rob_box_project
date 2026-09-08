@@ -288,9 +288,11 @@ def test_publish_headset_audio_sends_int16_le_pcm():
     байтов — тест фиксирует, что НЕ base64 и НЕ float32.
     """
     n = object.__new__(TTSNode)
-    pub = _CapturingAudioPub()
-    n._avatar_audio_pub = pub
-    n._avatar_audio_pub.publish = pub.publish
+    n.get_logger = lambda: MagicMock()
+    n._avatar_audio_pub = _CapturingAudioPub()
+    n._avatar_audio_meta_pub = _CapturingPublisher()
+    n.audio_output_sample_rate = 16000
+    pub = n._avatar_audio_pub
 
     # 1000 семплов @ 16 kHz = 0.0625 с моно.
     audio_np = np.linspace(-0.5, 0.5, 1000, dtype=np.float32)
@@ -313,8 +315,11 @@ def test_publish_headset_audio_sends_int16_le_pcm():
 def test_publish_headset_audio_int16_clipping():
     """Пики за пределами [-1.0, 1.0] → clip в int16 (защита от overflow)."""
     n = object.__new__(TTSNode)
-    pub = _CapturingAudioPub()
-    n._avatar_audio_pub = pub
+    n.get_logger = lambda: MagicMock()
+    n._avatar_audio_pub = _CapturingAudioPub()
+    n._avatar_audio_meta_pub = _CapturingPublisher()
+    n.audio_output_sample_rate = 16000
+    pub = n._avatar_audio_pub
 
     audio_np = np.array([2.0, -2.0, 1.5, -1.5], dtype=np.float32)
     TTSNode._publish_headset_audio(n, audio_np)
@@ -596,3 +601,89 @@ def test_sink_kwarg_in_run_synthesis_worker_signature():
     # sink НЕ positional — пробрасывается через **kwargs (как voice/language).
     assert "sink" not in sig.parameters
     assert "**kwargs" in str(sig)
+
+
+# ── ADR-0078 §4 follow-up (issue #2162): side-channel sample_rate ──────
+#
+# Корневой баг исходного wip: sample_rate пробрасывался через приватный
+# атрибут AudioData (`setattr(msg, "_tars_sample_rate", ...)`) — rclpy
+# неизвестные поля в DDS НЕ сериализует, и quest_node получает None
+# (прямо наблюдалось в stderr vitest: "PCM without sample_rate in meta
+# — fallback 16000"). Решение — отдельный side-channel-топик
+# ``/avatar/tts/audio_meta`` (String JSON: {request_id, sample_rate,
+# ts_ms}), публикуется РЯДОМ с каждым AudioData. Контракт: один
+# audio_meta на каждый _publish_headset_audio, **до** AudioData
+# (quest_node кеширует request_id→sample_rate по audio_meta,
+# при следующем AudioData использует кеш).
+
+
+def _make_publish_node():
+    """Node-stub для ``_publish_headset_audio`` с audio_meta-publisher.
+
+    Только то, что нужно новой реализации: AvatarAudioPub (для AudioData)
+    + AvatarAudioMetaPub (для String JSON side-channel) + audio_output_sample_rate.
+    """
+    n = object.__new__(TTSNode)
+    n.get_logger = lambda: MagicMock()
+    n._avatar_audio_pub = _CapturingAudioPub()
+    n._avatar_audio_meta_pub = _CapturingPublisher()
+    n.audio_output_sample_rate = 16000
+    return n
+
+
+def test_publish_headset_audio_emits_meta_before_audio_with_request_id():
+    """ADR-0078 §4: _publish_headset_audio публикует audio_meta ДО AudioData.
+
+    Контракт side-channel:
+      payload: ``{"request_id": str, "sample_rate": int, "ts_ms": int}``
+      request_id НЕ пустой (иначе клиент не сможет сматчить кэш с чанком).
+    """
+    n = _make_publish_node()
+    audio = np.zeros(160, dtype=np.float32)  # 10мс @ 16kHz
+    n._publish_headset_audio(audio, sample_rate=16000, request_id="req-abc123")
+
+    # Оба сообщения опубликованы.
+    assert len(n._avatar_audio_meta_pub.messages) == 1, (
+        "audio_meta должен быть опубликован 1 раз на чанк"
+    )
+    assert len(n._avatar_audio_pub.messages) == 1, (
+        "AudioData должна быть опубликована 1 раз на чанк"
+    )
+
+    meta = json.loads(n._avatar_audio_meta_pub.messages[0].data)
+    assert meta["request_id"] == "req-abc123"
+    assert meta["sample_rate"] == 16000
+    assert isinstance(meta["ts_ms"], int) and meta["ts_ms"] > 0
+
+
+def test_publish_headset_audio_meta_falls_back_to_declared_sample_rate():
+    """ADR-0078 §4 fallback: без sample_rate → audio_output_sample_rate (16000).
+
+    Также требуем request_id (sink=headset всегда приходит из
+    supervisor'а, у которого _uuid.uuid4().hex[:8]).
+    """
+    n = _make_publish_node()
+    audio = np.zeros(80, dtype=np.float32)
+    n._publish_headset_audio(audio, sample_rate=None, request_id="req-xyz")
+
+    assert len(n._avatar_audio_meta_pub.messages) == 1
+    meta = json.loads(n._avatar_audio_meta_pub.messages[0].data)
+    assert meta["sample_rate"] == 16000  # fallback
+    assert meta["request_id"] == "req-xyz"
+
+
+def test_publish_headset_audio_signature_accepts_request_id_kwarg():
+    """API расширен: keyword-only request_id. Проверяем, что kwarg обязателен.
+
+    Без request_id _publish_headset_audio не должен отправлять audio_meta —
+    иначе у клиента будет неконсистентный кэш.
+    """
+    import inspect
+
+    sig = inspect.signature(TTSNode._publish_headset_audio)
+    params = sig.parameters
+    # request_id — keyword-only с дефолтом None (для backward-compat
+    # с тестами, которые ещё не передают; в проде ВСЕГДА передаётся).
+    assert "request_id" in params, (
+        "_publish_headset_audio должен принимать request_id для audio_meta"
+    )
