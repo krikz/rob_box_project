@@ -34,21 +34,32 @@ class _MockPublisher:
 
 
 class _MockNode:
-    """Минимум для QuestBridge — нужен только get_logger().warning."""
+    """Минимум для QuestBridge — нужен get_logger().warning + .info."""
 
     def __init__(self) -> None:
         self.warnings: list[str] = []
+        # ADR-0067 / issue #2138.C: ловим .info() для регрессии, чтобы
+        # зафиксировать «publishing…» / «published…» в bridge.set_voice.
+        self.infos: list[str] = []
 
     def get_logger(self):
-        return _Logger(self.warnings)
+        return _Logger(self.warnings, self.infos)
 
 
 class _Logger:
-    def __init__(self, sink: list[str]) -> None:
-        self._sink = sink
+    def __init__(self, sink_warn: list[str], sink_info: list[str]) -> None:
+        self._sink_warn = sink_warn
+        self._sink_info = sink_info
 
     def warning(self, msg: str) -> None:
-        self._sink.append(msg)
+        self._sink_warn.append(msg)
+
+    def info(self, msg: str) -> None:
+        # None означает «sink недоступен» — даунгрейд до no-op, чтобы старые
+        # тесты, которые создают _Logger с одним аргументом, не падали (см.
+        # _LoggerCapture в _make_node_only_for_callback_test ниже).
+        if self._sink_info is not None:
+            self._sink_info.append(msg)
 
 
 def _make_bridge():
@@ -531,6 +542,10 @@ def _make_voice_bridge(set_voice_pub=None, preview_voice_pub=None, voices_cache_
 
     QuestBridge живёт в rob_box_quest.quest_node, который тянет rclpy +
     audio_common_msgs — пропускаем в dev-env (см. _make_bridge выше).
+
+    NB: возвращает ТОЛЬКО (bridge, svp, pvp) — node доступен через
+    ``bridge._node`` напрямую (тест-наблюдатель может подменить его на
+    свой ``_MockNode`` для сбора .info() — см. test_set_voice_*).
     """
     pytest.importorskip("audio_common_msgs", reason="QuestBridge требует rclpy/audio_common_msgs (только в Docker image)")
     from rob_box_quest.quest_node import QuestBridge
@@ -652,7 +667,13 @@ def test_set_voice_unknown_returns_nack_with_available():
 
 
 def test_set_voice_success_publishes_json_with_provider_hint():
-    """set_voice(alena) при активном yandex → ack + publish в /avatar/set_voice."""
+    """set_voice(alena) при активном yandex → ack + publish в /avatar/set_voice.
+
+    ADR-0067 / issue #2138.C: дополнительно проверяем две отладочные
+    строки, которые позволяют отличить «picker ничего не прислал» (H5)
+    от «pub/sub не доезжает до supervisor» (H2/H3) при поиске пропавших
+    смен голоса в docker logs (см. PR-body).
+    """
     bridge, svp, _ = _make_voice_bridge()
     bridge.on_provider_state_message(_string_msg(json.dumps({"provider": "yandex", "voice": "alena"})))
     bridge.on_voices_message(_string_msg(json.dumps({
@@ -662,6 +683,11 @@ def test_set_voice_success_publishes_json_with_provider_hint():
         "voices": [{"voice_id": "alena"}],
         "ts": 1.0,
     })))
+    # Подменяем ``_node`` на наш логгер со сбором .info(), чтобы сверить,
+    # что debug-логи моста действительно пишутся (это и есть contract
+    # observability-фикса в #2138.C).
+    node = _MockNode()
+    bridge._node = node  # type: ignore[assignment]  # pyright: QuestNode vs MockNode
     ok, applied, reason, available = bridge.set_voice("alena", "friendly")
     assert ok is True
     assert applied == "alena"
@@ -673,6 +699,26 @@ def test_set_voice_success_publishes_json_with_provider_hint():
     assert parsed["preset"] == "friendly"
     assert parsed["provider"] == "yandex"
     assert "ts_ms" in parsed
+    # Две info-строки: «publishing…» ДО publish + «published…» ПОСЛЕ publish.
+    publishing_lines = [m for m in node.infos if "set_voice: publishing" in m]
+    published_lines = [m for m in node.infos if "set_voice: published" in m]
+    assert publishing_lines, (
+        f"bridge.set_voice должна логировать «publishing…» ДО publish; "
+        f"получили infos={node.infos}"
+    )
+    assert published_lines, (
+        f"bridge.set_voice должна логировать «published…» ПОСЛЕ publish; "
+        f"получили infos={node.infos}"
+    )
+    assert "voice_id=alena" in publishing_lines[0]
+    assert "voice_id=alena" in published_lines[0]
+    assert "/avatar/set_voice" in publishing_lines[0]
+    # «published» идёт ПОСЛЕ «publishing» — порядок критичен (если видна
+    # только первая — publish завис/упал, и это явный сигнал проблемы).
+    assert node.infos.index(publishing_lines[0]) < node.infos.index(published_lines[0]), (
+        "«publishing» ОБЯЗАН появиться раньше «published» — иначе теряется "
+        "смысл observability-фикса (см. ADR-0067 §3.3)"
+    )
 
 
 def test_set_voice_no_active_provider_returns_tts_unreachable():
