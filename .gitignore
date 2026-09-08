@@ -108,6 +108,13 @@ docker/vision/config/voice_assistant/event_mode.yaml
 # e2e live test artefacts (regenerated each run)
 tests/e2e/_artifacts/
 
+# ADR-0076 §2.2: side-channel эмпирического сбора STT-семплов «ТАРС»
+# с шлема (issue #2158, follow-up #2135). Файл data/stt_tars_samples.jsonl
+# пишется, когда ``ROBBOX_STT_COLLECT=1``, и НЕ должен случайно утечь
+# в коммит. Сборщик ``core/tars_sample_logger.py`` сам делает mkdir
+# data/ при необходимости.
+/data/
+
 # frontend
 node_modules/
 # Vite root cache — artefact of `npx vite` when invoked from a directory
