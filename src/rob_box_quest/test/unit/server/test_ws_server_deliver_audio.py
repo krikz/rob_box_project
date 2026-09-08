@@ -504,3 +504,210 @@ def test_backward_compat_preview_pending_property(fixed_pin):
     server.register_audio_session("operator_tts", "o1", mock_ws)
     assert "o1" not in server._preview_pending
     assert "o1" in server._audio_pending["operator_tts"]
+
+
+# ── ADR-0078 / issue #2162 follow-up — ТАРС в шлем ────────────────────
+
+
+@pytest.mark.asyncio
+async def test_deliver_audio_operator_tts_includes_sample_rate_in_meta(fixed_pin):
+    """ADR-0078 §3.1: meta оператор-TTS содержит ``sample_rate`` (int, Гц).
+
+    Клиентский ``operator_audio_sink`` руками собирает ``AudioBuffer`` из
+    int16-LE PCM, и ему нужна частота. Без ``sample_rate`` в meta синк
+    не знает, на какой частоте создавать ``AudioBuffer``.
+    """
+    server = WSSServer(bridge=NoOpBridge(), pin=fixed_pin)
+    app = build_app(server)
+    async with TestClient(TestServer(app)) as client:
+        ws, _ = await _authenticate(client, fixed_pin)
+        assert ws is not None
+        server_session_id = list(server._sessions.keys())[0]
+        server_ws = server._ws_by_session[server_session_id]
+        server._send_loop = asyncio.get_event_loop()
+        ping_task = asyncio.create_task(_keep_alive(ws))
+        try:
+            assert server.register_audio_session(
+                "operator_tts", "req-sr-1", server_ws
+            )
+            pcm = b"\x00\x01\x02\x03\x04\x05"
+            delivered = server.deliver_audio(
+                stream="operator_tts",
+                request_id="req-sr-1",
+                audio_bytes=pcm,
+                audio_format="pcm_s16le",
+                content_type="audio/pcm",
+                sample_rate=16000,  # ADR-0078 §4: реальное значение tts_node
+                seq=0,
+                total=0,
+            )
+            assert delivered is True
+            body = await _wait_for_json_event(
+                ws,
+                lambda b: b.get("type") == "operator_tts_audio",
+                timeout=2.0,
+            )
+            assert body is not None
+            # sample_rate есть в meta, int, > 0 (Гц).
+            assert "sample_rate" in body, (
+                "operator_tts_audio meta должна содержать sample_rate (Гц)"
+            )
+            assert isinstance(body["sample_rate"], int)
+            assert body["sample_rate"] == 16000
+        finally:
+            ping_task.cancel()
+            try:
+                await ping_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            try:
+                await ws.close()
+            except Exception:
+                pass
+
+
+@pytest.mark.asyncio
+async def test_deliver_audio_preview_unchanged_by_sample_rate(fixed_pin):
+    """ADR-0078 §3.1: для ``stream='preview'`` поле ``sample_rate`` НЕ добавляется.
+
+    Preview использует ``decodeAudioData`` (mp3/wav/opus), частота
+    декодируется самой браузерной API; sample_rate в meta для preview —
+    шум, ломает контракт AV-27.
+    """
+    server = WSSServer(bridge=NoOpBridge(), pin=fixed_pin)
+    app = build_app(server)
+    async with TestClient(TestServer(app)) as client:
+        ws, _ = await _authenticate(client, fixed_pin)
+        assert ws is not None
+        server_session_id = list(server._sessions.keys())[0]
+        server_ws = server._ws_by_session[server_session_id]
+        server._send_loop = asyncio.get_event_loop()
+        ping_task = asyncio.create_task(_keep_alive(ws))
+        try:
+            assert server.start_preview_session("req-pv-sr", server_ws)
+            # Передаём sample_rate даже для preview — сервер должен
+            # проигнорировать для preview (поле в meta НЕ появляется).
+            server.deliver_preview_audio(
+                request_id="req-pv-sr",
+                audio_bytes=b"mp3",
+                audio_format="mp3",
+                content_type="audio/mpeg",
+                sample_rate=16000,  # ignored
+                seq=0,
+                total=1,
+            )
+            body = await _wait_for_json_event(
+                ws,
+                lambda b: b.get("type") == "preview_voice_audio",
+                timeout=2.0,
+            )
+            assert body is not None
+            assert body["type"] == "preview_voice_audio"
+            # Регрессия AV-27: meta не должна содержать sample_rate.
+            assert "sample_rate" not in body, (
+                "preview_voice_audio НЕ должен содержать sample_rate "
+                "(регрессия AV-27)"
+            )
+        finally:
+            ping_task.cancel()
+            try:
+                await ping_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            try:
+                await ws.close()
+            except Exception:
+                pass
+
+
+@pytest.mark.asyncio
+async def test_deliver_audio_operator_tts_chunk_is_self_contained(fixed_pin):
+    """ADR-0078 §3.1: каждый ``operator_tts_audio`` чанк самодостаточен.
+
+    Контрактное отличие от preview: оператор-TTS не требует пары
+    ``_done`` для проигрывания. Сервер НЕ шлёт ``operator_tts_done``
+    автоматически (он зарезервирован для flush/сброса, ADR-0078 §3.1).
+    Этот тест — контрактное запрещение: после ``deliver_audio(...)``
+    клиент НЕ должен получить никаких дальнейших сообщений с тем же
+    request_id, пока сторона явно не пошлёт done/error.
+    """
+    server = WSSServer(bridge=NoOpBridge(), pin=fixed_pin)
+    app = build_app(server)
+    async with TestClient(TestServer(app)) as client:
+        ws, _ = await _authenticate(client, fixed_pin)
+        assert ws is not None
+        server_session_id = list(server._sessions.keys())[0]
+        server_ws = server._ws_by_session[server_session_id]
+        server._send_loop = asyncio.get_event_loop()
+        ping_task = asyncio.create_task(_keep_alive(ws))
+        try:
+            assert server.register_audio_session(
+                "operator_tts", "req-self-1", server_ws
+            )
+            server.deliver_audio(
+                stream="operator_tts",
+                request_id="req-self-1",
+                audio_bytes=b"\x10\x20\x30\x40",
+                audio_format="pcm_s16le",
+                content_type="audio/pcm",
+                sample_rate=16000,
+                seq=0,
+                total=0,
+            )
+            # Должен быть ровно один JSON_EVENT operator_tts_audio.
+            body = await _wait_for_json_event(
+                ws,
+                lambda b: b.get("type") == "operator_tts_audio"
+                and b.get("request_id") == "req-self-1",
+                timeout=2.0,
+            )
+            assert body is not None
+            # Бинарный фрейм.
+            binary = await _read_frame(ws, type_filter=FrameType.BINARY_FRAME, timeout=1.0)
+            assert binary is not None
+            # Второй JSON_EVENT с тем же request_id НЕ должен прилететь
+            # автоматически (например, неявный _done).
+            extra = await _wait_for_json_event(
+                ws,
+                lambda b: b.get("request_id") == "req-self-1"
+                and b.get("type") in ("operator_tts_done", "operator_tts_error"),
+                timeout=0.5,
+            )
+            assert extra is None, (
+                "сервер НЕ должен автоматически слать operator_tts_done "
+                "после deliver_audio (ADR-0078 §3.1, контрактное отличие "
+                "от preview_voice_done)"
+            )
+        finally:
+            ping_task.cancel()
+            try:
+                await ping_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            try:
+                await ws.close()
+            except Exception:
+                pass
+
+
+@pytest.mark.asyncio
+async def test_deliver_operator_tts_done_flushes_pending(fixed_pin):
+    """ADR-0078 §3.1: ``deliver_operator_tts_done`` — flush/сброс.
+
+    Когда-нибудь сервер начнёт публиковать done (например, при
+    supervised shutdown или при error-stream). Метод уже готов (ADR-0055
+    §ws_server), просто зарезервирован. Тест — контракт: после done
+    реестр чист, и второй done по тому же request_id возвращает False.
+    """
+    server = WSSServer(bridge=NoOpBridge(), pin=fixed_pin)
+    mock_ws = MagicMock()
+    mock_ws.closed = False
+    assert server.register_audio_session(
+        "operator_tts", "req-flush-1", mock_ws
+    )
+    # Первый done — ок.
+    assert server.deliver_operator_tts_done("req-flush-1") is True
+    # Второй done по тому же id — False (нет в реестре).
+    assert server.deliver_operator_tts_done("req-flush-1") is False
+    # Реестр пуст.
+    assert "req-flush-1" not in server._audio_pending.get("operator_tts", {})

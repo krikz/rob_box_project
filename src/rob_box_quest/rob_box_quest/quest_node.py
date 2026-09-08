@@ -1638,20 +1638,52 @@ class QuestNode(Node):
         # Параметры: ADR-0055 §quest_node.
         self.declare_parameter("avatar_tts_audio_topic", "/avatar/tts/audio")
         self.declare_parameter("avatar_tts_request_topic", "/avatar/tts/request")
+        # ADR-0078 §4 follow-up (issue #2162) — side-channel sample_rate
+        # (String JSON от tts_node). Параметризован для тестов.
+        self.declare_parameter("avatar_tts_audio_meta_topic", "/avatar/tts/audio_meta")
+        # ADR-0078 §3.6 / issue #2162 follow-up — wake-word «ТАРС» принят
+        # (stt_node → /avatar/stt/result) → tars_state accepted в WS.
+        self.declare_parameter("avatar_stt_result_topic", "/avatar/stt/result")
         self._avatar_tts_audio_topic = str(
             self.get_parameter("avatar_tts_audio_topic").value
         )
         self._avatar_tts_request_topic = str(
             self.get_parameter("avatar_tts_request_topic").value
         )
+        self._avatar_tts_audio_meta_topic = str(
+            self.get_parameter("avatar_tts_audio_meta_topic").value
+        )
+        self._avatar_stt_result_topic = str(
+            self.get_parameter("avatar_stt_result_topic").value
+        )
         # Текущий avatar-request-id и привязанный ws. Обновляются в
         # ``_on_avatar_tts_request_meta`` (side-channel). Используются в
         # ``_on_avatar_tts_audio`` для маршрутизации чанков в шлем.
         self._current_avatar_request_id: Optional[str] = None
         self._current_avatar_ws: Optional[Any] = None
+        # ADR-0078 §4: кеш request_id → sample_rate. Заполняется в
+        # ``_on_avatar_tts_audio_meta`` (side-channel) и используется в
+        # ``_on_avatar_tts_audio`` для ``deliver_audio(sample_rate=...)``.
+        self._avatar_request_sample_rate: dict[str, int] = {}
         self._avatar_audio_sub = self.create_subscription(
             AudioData, self._avatar_tts_audio_topic,
             self._on_avatar_tts_audio, _avatar_audio_qos,
+        )
+        # ADR-0078 §4 follow-up: side-channel sample_rate (String JSON
+        # {request_id, sample_rate, ts_ms}) от tts_node. Публикуется ДО
+        # каждого AudioData в /avatar/tts/audio. Кешируем request_id →
+        # sample_rate для _on_avatar_tts_audio и одновременно шлём в WS
+        # tars_state accepted.
+        self._avatar_audio_meta_sub = self.create_subscription(
+            String, self._avatar_tts_audio_meta_topic,
+            self._on_avatar_tts_audio_meta, 10,
+        )
+        # ADR-0078 §3.6: stt_node публикует /avatar/stt/result когда
+        # wake-слово «ТАРС» распознано (после фильтрации). Это самое
+        # раннее «принято к обработке» в цикле ТАРС-в-шлем.
+        self._avatar_stt_result_sub = self.create_subscription(
+            String, self._avatar_stt_result_topic,
+            self._on_avatar_stt_result, 10,
         )
         self._avatar_tts_request_sub = self.create_subscription(
             String, self._avatar_tts_request_topic,
@@ -2240,6 +2272,12 @@ class QuestNode(Node):
         stream="operator_tts", request_id=current, ws=current, ...)``.
         ``ws`` достаётся из side-channel registry (см.
         ``_on_avatar_tts_request_meta``).
+
+        ADR-0078 §4 (issue #2162 follow-up): ``sample_rate`` берётся из
+        кеша ``self._avatar_request_sample_rate[request_id]`` (заполняется
+        в ``_on_avatar_tts_audio_meta``). Fallback — 16000, как в ws_server
+        (для обратной совместимости со старыми клиентами, которые
+        sample_rate не передают).
         """
         request_id = self._current_avatar_request_id
         ws = self._current_avatar_ws
@@ -2255,6 +2293,8 @@ class QuestNode(Node):
                 "(request_id/ws None) — DROP"
             )
             return
+        # ADR-0078 §4: sample_rate из side-channel кеша, fallback 16000.
+        cached_sample_rate = self._avatar_request_sample_rate.get(request_id, 16000)
         try:
             # ROS2 audio_common_msgs/AudioData.data — это uint8[]; rclpy при
             # маршалинге через Cyclone DDS/Zenoh отдаёт его как ``array.array``
@@ -2277,13 +2317,15 @@ class QuestNode(Node):
                 content_type="audio/pcm",
                 seq=0,
                 total=0,
+                sample_rate=cached_sample_rate,  # ADR-0078 §4
                 ws=ws,
             )
             # Факт доставки в WS — оставляем info-лог, чтобы было видно
             # прохождение чанка до оператора (issue #2136 DoD).
             self.get_logger().info(
                 f"🎧 [ADR-0055] deliver_audio(operator_tts) ok: "
-                f"{len(audio_bytes)}B, request_id={request_id[:8]}"
+                f"{len(audio_bytes)}B, sample_rate={cached_sample_rate}, "
+                f"request_id={request_id[:8]}"
             )
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warning(
@@ -2501,6 +2543,104 @@ class QuestNode(Node):
             self.ws_server.broadcast_json_event(event)
         except Exception as e:  # noqa: BLE001
             self.get_logger().debug(f"tars1_text broadcast failed: {e}")
+
+    def _on_avatar_tts_audio_meta(self, msg: String) -> None:
+        """ADR-0078 §4 follow-up (issue #2162): side-channel sample_rate.
+
+        ROS /avatar/tts/audio_meta (String JSON) от tts_node. Контракт:
+        ``{"request_id": str, "sample_rate": int, "ts_ms": int}``.
+        Side-channel публикуется ДО каждого /avatar/tts/audio AudioData.
+        Здесь кешируем ``request_id → sample_rate`` для последующего
+        ``_on_avatar_tts_audio`` и одновременно рассылаем в WS
+        ``tars_state accepted`` (оператор слышит «акцепт-тон» ДО речи ТАРС).
+
+        Гейт ``_current_avatar_request_id``: audio_meta приходит только
+        в рамках активного запроса (sink=headset). Если активного нет
+        (например, race-условие), молча дропаем — это просто лишний
+        side-channel, ничего не ломает.
+        """
+        try:
+            payload = json.loads(msg.data or "")
+        except (json.JSONDecodeError, TypeError):
+            self.get_logger().warning(
+                "🎧 [ADR-0078] /avatar/tts/audio_meta: битый JSON, drop"
+            )
+            return
+        if not isinstance(payload, dict):
+            return
+        request_id = str(payload.get("request_id", "") or "")
+        sample_rate = payload.get("sample_rate")
+        if not request_id or not isinstance(sample_rate, int):
+            self.get_logger().warning(
+                f"🎧 [ADR-0078] /avatar/tts/audio_meta: неполный payload "
+                f"request_id={request_id!r} sample_rate={sample_rate!r}"
+            )
+            return
+        # Кешируем sample_rate для следующего AudioData-чанка.
+        self._avatar_request_sample_rate[request_id] = int(sample_rate)
+        # Очистка старых записей (LRU-обрезка, чтобы не утекала память).
+        if len(self._avatar_request_sample_rate) > 16:
+            # Оставляем только последние 8 по insertion order (Python 3.7+).
+            self._avatar_request_sample_rate = dict(
+                list(self._avatar_request_sample_rate.items())[-8:]
+            )
+        # Активной сессии нет — meta вне контекста, drop без WS-event.
+        if self._current_avatar_request_id is None:
+            return
+        # WS-event: tars_state accepted (с request_id).
+        event = {
+            "type": "tars_state",
+            "stage": "accepted",
+            "request_id": request_id,
+            "sample_rate": int(sample_rate),
+            "ts_ms": int(time.time() * 1000),
+        }
+        try:
+            self.ws_server.broadcast_json_event(event)
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().debug(f"tars_state accepted broadcast failed: {e}")
+
+    def _on_avatar_stt_result(self, msg: String) -> None:
+        """ADR-0078 §3.6 follow-up (issue #2162): stt_node wake «ТАРС».
+
+        ROS /avatar/stt/result (String JSON) от stt_node. Контракт:
+        ``{"source": str, "client_id": str, "text": str, "ts_ms": int}``.
+        Это самое раннее «принято» в цикле ТАРС-в-шлем — wake-фраза
+        распознана (после фильтрации wake-слов) и сейчас уйдёт в
+        avatar_supervisor → AgentCore. Здесь рассылаем в WS
+        ``tars_state accepted`` с текстом — клиент показывает оператору
+        «ACCEPTED» и играет акцепт-тон.
+        """
+        try:
+            payload = json.loads(msg.data or "")
+        except (json.JSONDecodeError, TypeError):
+            self.get_logger().warning(
+                "🎧 [ADR-0078] /avatar/stt/result: битый JSON, drop"
+            )
+            return
+        if not isinstance(payload, dict):
+            return
+        text = str(payload.get("text", "") or "").strip()
+        if not text:
+            return
+        client_id = str(payload.get("client_id", "") or "")
+        ts_ms_raw = payload.get("ts_ms")
+        ts_ms = int(ts_ms_raw) if isinstance(ts_ms_raw, (int, float)) else int(
+            time.time() * 1000
+        )
+        # request_id зеркалит supervisor'овский генератор: f"{client_id}:{ts_ms}"
+        request_id = f"{client_id}:{ts_ms}" if client_id else ""
+        event = {
+            "type": "tars_state",
+            "stage": "accepted",
+            "request_id": request_id,
+            "text": text,
+            "ts_ms": ts_ms,
+        }
+        try:
+            self.ws_server.broadcast_json_event(event)
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().debug(f"tars_state stt accepted broadcast failed: {e}")
 
     def _on_tars_panel_url(self, msg: String) -> None:
         """ROS /avatar/tars/panel_url → JSON_EVENT (type=tars_panel_url).

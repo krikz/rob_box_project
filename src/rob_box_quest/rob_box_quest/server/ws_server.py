@@ -911,6 +911,7 @@ class WSSServer:
         content_type: str,
         seq: int,
         total: int,
+        sample_rate: Optional[int] = None,
         ws: Optional[Any] = None,
     ) -> bool:
         """Обобщённая доставка аудио в WS клиента (ADR-0055, issue #1993).
@@ -922,6 +923,11 @@ class WSSServer:
             аудио-байты — через ``_schedule_ws_send_binary`` (BINARY_FRAME,
             stream_id=0).
           * Unknown stream → log.warning + ``False``, без побочных эффектов.
+          * ADR-0078 §3.1: для ``stream="operator_tts"`` в meta добавляется
+            поле ``sample_rate`` (int, Гц) — обязательное для ручной
+            сборки ``AudioBuffer`` из int16-LE PCM на стороне клиента.
+            Для ``stream="preview"`` поле НЕ добавляется (preview использует
+            ``decodeAudioData`` и частоту не передаёт).
 
         Args:
             stream: один из ``_AUDIO_STREAMS``. Иначе — дроп.
@@ -968,6 +974,10 @@ class WSSServer:
             "total": total,
             "ts_ms": ts_ms,
         }
+        # ADR-0078 §3.1: sample_rate только для operator_tts (preview не
+        # использует — там decodeAudioData и частота вшита в контейнер).
+        if stream == "operator_tts" and sample_rate is not None:
+            meta["sample_rate"] = int(sample_rate)
         self._schedule_ws_send(ws_resolved, meta)
         if audio_bytes:
             self._schedule_ws_send_binary(ws_resolved, audio_bytes)
@@ -981,6 +991,7 @@ class WSSServer:
         content_type: str,
         seq: int,
         total: int,
+        sample_rate: Optional[int] = None,
     ) -> bool:
         """Тонкая обёртка для AV-27 preview-канала (обратная совместимость).
 
@@ -988,6 +999,10 @@ class WSSServer:
         и поведение НЕ меняются (тесты AV-19/AV-27 остаются зелёными без
         правок); ADR-0055 ввёл обобщённый канал, а preview — первый стрим
         на нём.
+
+        ``sample_rate`` принят для симметрии сигнатуры, но НЕ попадает в
+        meta preview'а (ADR-0078 §3.1: для preview частота вшита в
+        контейнер mp3/wav/opus, ``decodeAudioData`` сам знает).
         """
         return self.deliver_audio(
             stream="preview",
@@ -997,6 +1012,7 @@ class WSSServer:
             content_type=content_type,
             seq=seq,
             total=total,
+            sample_rate=sample_rate,
         )
 
     def deliver_preview_done(self, request_id: str) -> bool:
@@ -1013,6 +1029,30 @@ class WSSServer:
         """
         return self._send_audio_error(
             "preview", "preview_voice_error", request_id, reason
+        )
+
+    def deliver_operator_tts_done(self, request_id: str) -> bool:
+        """Финал оператор-TTS реплики → operator_tts_done. Чистит pending.
+
+        ADR-0078 §3.1: клиент играет каждый чанк сразу по приходу байт
+        (очередь), поэтому ``done`` сейчас НЕ публикуется сервером в норме
+        (нет финального синхронизирующего маркера). Метод оставлен для
+        forward-compat: явный flush/сброс (например, при supervised shutdown,
+        supervisor-level error или в e2e-тестах).
+        """
+        return self._send_audio_done(
+            "operator_tts", "operator_tts_done", request_id
+        )
+
+    def deliver_operator_tts_error(self, request_id: str, reason: str) -> bool:
+        """Ошибка оператор-TTS → operator_tts_error. Чистит pending.
+
+        ADR-0078 §3.1: симметрично ``deliver_preview_error``, для flush
+        при error-path (supervisor не смог синтезировать, ws закрылся,
+        и т.п.).
+        """
+        return self._send_audio_error(
+            "operator_tts", "operator_tts_error", request_id, reason
         )
 
     def _send_audio_done(
