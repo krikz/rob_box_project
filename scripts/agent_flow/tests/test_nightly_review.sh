@@ -21,6 +21,9 @@
 #   G. Деградация: нет gh → секции печатают «НЕТ ДАННЫХ», тик не падает.
 #   H. DRY_RUN → ни одного `kanban create`, дайджест на stdout есть.
 #   I. Исключения: docs/ в компонентную таблицу не попадает.
+#   J. Idempotency-key дедупа = ISO-неделя, а не голая дата (фикс #2159).
+#   K. Карточка создаётся ВСЕГДА (нечего условно пропускать — outcome
+#      известен только ПОСЛЕ ревью, см. nightly-review-record.sh / ADR-0079).
 #
 # Invocation:
 #   bash scripts/agent_flow/tests/test_nightly_review.sh
@@ -219,12 +222,14 @@ test_A_outside_window() {
 # ---------------------------------------------------------------------------
 test_B_nightly_card() {
     reset_state
-    local rc journal
+    local rc journal iso_week
+    iso_week="$(date -d "$REVIEW_DATE" +%G-W%V 2>/dev/null || date +%Y-W%V)"
     rc="$(run_nightly NIGHTLY_REVIEW_FORCE=true COMPONENT_REVIEW_MAX=0)"
     assert_eq "0" "$rc" "B: exit 0" || return 1
     journal="$(cat "$KANBAN_JOURNAL")"
     assert_contains "🌙 ночной ревью ${REVIEW_DATE}" "$journal" "B: заголовок карточки" || return 1
-    assert_contains "retro:nightly-review-${REVIEW_DATE}" "$journal" "B: idempotency-key" || return 1
+    # ADR-0049 follow-up: ключ = ISO-неделя (не голая дата — issue #2159).
+    assert_contains "retro:nightly-review-${iso_week}" "$journal" "B: idempotency-key=ISO-неделя" || return 1
     assert_contains "--assignee architect" "$journal" "B: assignee=architect" || return 1
     assert_eq "1" "$(journal_creates)" "B: ровно одна карточка (COMPONENT_REVIEW_MAX=0)" || return 1
 }
@@ -234,13 +239,14 @@ test_B_nightly_card() {
 # ---------------------------------------------------------------------------
 test_C_component_cards() {
     reset_state
-    local rc journal
+    local rc journal iso_week
+    iso_week="$(date -d "$REVIEW_DATE" +%G-W%V 2>/dev/null || date +%Y-W%V)"
     rc="$(run_nightly NIGHTLY_REVIEW_FORCE=true COMPONENT_REVIEW_MAX=1)"
     assert_eq "0" "$rc" "C: exit 0" || return 1
     journal="$(cat "$KANBAN_JOURNAL")"
     assert_eq "2" "$(journal_creates)" "C: nightly + ровно одна компонентная (cap=1)" || return 1
     assert_contains "ревью компонента: src/rob_box_voice" "$journal" "C: top-1 по churn = voice" || return 1
-    assert_contains "component-review-src-rob_box_voice-${REVIEW_DATE}" "$journal" "C: key компонента" || return 1
+    assert_contains "component-review-src-rob_box_voice-${iso_week}" "$journal" "C: ключ компонента = ISO-неделя" || return 1
     assert_contains "--assignee analyst" "$journal" "C: компонентная на analyst" || return 1
 }
 
@@ -343,6 +349,46 @@ test_I_exclude_docs() {
     assert_contains "| \`src/rob_box_voice\` |" "$out" "I: кодовый компонент в таблице" || return 1
 }
 
+# ---------------------------------------------------------------------------
+# J. ADR-0049 follow-up: dedup-ключ БЕЗ даты → ISO-неделя (фикс #2159).
+#
+#    До: ключ содержал `nightly-review-2026-09-08`. Две параллельные тики
+#    в одном окне гонки (component-review-*-2026-09-08 vs nightly-review-2026-09-08)
+#    имели РАЗНЫЕ idempotency-keys → слой 2 молчал.
+#
+#    После: ключ включает ISO-неделю `nightly-review-<YYYY-WW>`. Внутри одной
+#    недели повторный тик → тот же key → idempotency-key срабатывает.
+# ---------------------------------------------------------------------------
+test_J_iso_week_key() {
+    reset_state
+    local rc journal
+    rc="$(run_nightly NIGHTLY_REVIEW_FORCE=true COMPONENT_REVIEW_MAX=0)"
+    assert_eq "0" "$rc" "J: exit 0" || return 1
+    journal="$(cat "$KANBAN_JOURNAL")"
+    # ISO-week: %G-%V → 2026-W36 на 2026-09-08 (вторник ISO-недели 36).
+    local iso_week
+    iso_week="$(date -d "$REVIEW_DATE" +%G-W%V 2>/dev/null || date +%Y-W%V)"
+    assert_contains "retro:nightly-review-${iso_week}" "$journal" "J: idempotency-key содержит ISO-неделю, не дату" || return 1
+    assert_not_contains "retro:nightly-review-${REVIEW_DATE}" "$journal" "J: ключ НЕ содержит голую дату" || return 1
+}
+
+# ---------------------------------------------------------------------------
+# K. Карточка создаётся ВСЕГДА (не зависит от несуществующего в проде
+#    NIGHTLY_REVIEW_OUTCOME). Ревью 08.09 (до мержа #2177): первая версия
+#    ADR-0079 пыталась условно пропускать создание по этой переменной, но
+#    её физически некому выставить ДО того, как ревьюер посмотрел на код —
+#    dead branch, тесты были зелёными, потому что сами же его и выставляли.
+#    Персистентность находок теперь — nightly-review-record.sh, вызываемый
+#    самим ревьюером (см. test_nightly_review_persistence.sh).
+# ---------------------------------------------------------------------------
+test_K_card_always_created() {
+    reset_state
+    local rc
+    rc="$(run_nightly NIGHTLY_REVIEW_FORCE=true COMPONENT_REVIEW_MAX=0)"
+    assert_eq "0" "$rc" "K: exit 0" || return 1
+    assert_eq "1" "$(journal_creates)" "K: kanban-карточка создаётся независимо от NIGHTLY_REVIEW_OUTCOME (её никто не задаёт в проде)" || return 1
+}
+
 run_test "A: вне ночного окна → skip"                     test_A_outside_window
 run_test "B: ночная карточка (key + assignee)"            test_B_nightly_card
 run_test "C: компонентные карточки, cap соблюдается"      test_C_component_cards
@@ -352,6 +398,8 @@ run_test "F: sentinel — второй тик за ночь"               test_
 run_test "G: деградация без gh"                           test_G_no_gh_degradation
 run_test "H: dry-run"                                     test_H_dry_run
 run_test "I: EXCLUDE_RE (docs/)"                          test_I_exclude_docs
+run_test "J: dedup-ключ = ISO-неделя (фикс #2159)"        test_J_iso_week_key
+run_test "K: карточка создаётся всегда (не зависит от NIGHTLY_REVIEW_OUTCOME)" test_K_card_always_created
 
 printf '\n[==========] %d tests, %d passed, %d failed\n' \
     "$TESTS_TOTAL" "$TESTS_PASSED" "$TESTS_FAILED"
