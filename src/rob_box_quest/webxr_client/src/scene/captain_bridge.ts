@@ -573,78 +573,48 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   ceilingScreen.mesh.rotation.z = CEILING_SCREEN_ROLL_RAD;
   scene.add(ceilingScreen.mesh);
 
-  // TARS 1 + TARS 2 (issue #2113, quest #2112 / follow-up #2142):
-  // Captain Bridge — два боковых экрана по сторонам от FRONT CAM, лицом к
-  // оператору. Размер и ориентация — по ADR-0074 §4.0 (вариант E, выбран
-  // Шифу 2026-09-08): yaw = 36.9°, дистанция 4.50 м, back-tilt ≈ 1.3°.
-  // Позиции и углы НЕ меняются; меняется только ширина W (ADR-0076 R1).
+  // TARS 1 + TARS 2 (issue #2113, quest #2112) — «кокпит из трёх одинаковых
+  // экранов-стен» (решение Шифу 2026-09-08, поверх ADR-0074/0076).
   //
-  // ADR-0076 (PR #2156) фиксирует расширение ROOM_D до 9.12 м (R1).
-  // Ширина W = 3.0 м (безопасный компромисс: z_inner = -4.50, требуемый
-  // ROOM_D/2 = 4.55, R1 = 4.56 хватает с запасом 1 см). Если Шифу выберет
-  // W = 3.2 м — переключить на R2 (ROOM_D = 10.0) одной правкой ниже.
-  // aspect 16:9 (как у основного экрана 4.8 × 2.7).
+  // Главный экран (FRONT CAM) не трогаем: 4.8 × 2.7, центр (0, 1.5, -3.9).
+  // TARS1/TARS2 — две КОПИИ главного экрана того же размера 4.8 × 2.7,
+  // по бокам. Каждое крыло шарнирно прижато своей внутренней кромкой к краю
+  // главного экрана (вертикальная кромка x = ±2.4 при z = -3.9) и развёрнуто
+  // к оператору. Угол между боковым и главным экраном — 130° (внутренний),
+  // то есть крыло отогнуто на 50° от плоскости главного (эскиз Шифу:
+  // «48 / 48 / 48 при 130°», R39 к главному).
   //
-  // ИЗВЕСТНЫЙ ОТКРЫТЫЙ ДЕФЕКТ (issue #2142-B, раскопано nightly-review-fix
-  // 2026-09-08, доказано скриптом на THREE.Box3 + точным пересечением
-  // кромки панели с плоскостью экрана-стены z=-3.9): при ТЕКУЩИХ
-  // TARS_PANEL_X/Y/Z и yaw-формуле (см. ниже) панели TARS1/TARS2
-  // физически пересекают прямоугольник главного экрана ДАЖЕ на honestly
-  // исправленной геометрии (mesh.scale = финальный размер, без двойного
-  // масштабирования) и даже на нижней границе диапазона ADR-0074
-  // (W=2.4 м). Расчёт (при неизменных X=2.7/Y=1.5/Z=-3.6/yaw=36.87°):
-  // безопасная ширина без пересечения — не больше ~0.98 м. То есть само
-  // положение/угол из ADR-0074 §4.0 «вариант E» несовместимо с любой
-  // шириной панели из согласованного диапазона 2.4–3.2 м — предыдущая
-  // геометрическая проверка (ADR-0074/0076) сверяла только клиренс до
-  // задней стены (ROOM_D), но не пересечение с главным экраном.
-  // Пофиксить долю бага (двойное масштабирование, mesh был 4.8×1.52 м
-  // вместо заявленных 3.0×1.69 м) — сделано ниже и в tars1_text_panel.ts /
-  // tars2_metrics_panel.ts. Пересечение с главным экраном ЭТИМ не снято:
-  // нужна новая архитектурная карточка (сдвинуть X/Z, увеличить дистанцию
-  // или уменьшить диапазон W) — владелец должен решить, что двигать, как
-  // это уже было с ROOM_D в ADR-0076. НЕ меняю позицию/угол сам.
-  const TARS_PANEL_WIDTH = 3.0; // TODO(ADR-0076 R2): 3.2 если Шифу захочет максимум
-  const TARS_PANEL_SIZE = {
-    width: TARS_PANEL_WIDTH,
-    height: (TARS_PANEL_WIDTH * 9) / 16, // 16:9, как у основного экрана
-  };
-  const TARS_PANEL_Y = 1.5;
-  const TARS_PANEL_Z = -3.6;
-  const TARS_PANEL_X = 2.7;
+  // Пересечений НЕТ по построению: крыло и главный экран делят только общую
+  // вертикальную кромку (segment-пересечение в XZ пусто, есть лишь точка-
+  // шарнир). Дальняя кромка крыла уходит в x = ±(2.4 + 4.8·cos 50°) ≈ ±5.49,
+  // поэтому декоративный короб комнаты расширен по ширине ROOM_W 7 → 11.6 м
+  // (build_bridge_assets.mjs). ROOM_D не менялся (крылья не выходят за него:
+  // far-z ≈ -0.22 лежит внутри [−4.56, +4.56]).
+  const TARS_PANEL_SIZE = { width: 4.8, height: 2.7 }; // = как главный экран
+  const TARS_PANEL_Y = 1.5; // = как главный экран
+  const TARS_MAIN_EDGE_X = 2.4; // край главного экрана (половина его 4.8 м)
+  const TARS_MAIN_Z = -3.9; // плоскость главного экрана
+  /** Отгиб крыла от плоскости главного: 180° − 130° = 50°. */
+  const TARS_FLARE_RAD = THREE.MathUtils.degToRad(50);
+  // Центр крыла = кромка главного + половина ширины крыла вдоль отгиба.
+  const TARS_WING_X =
+    TARS_MAIN_EDGE_X + (TARS_PANEL_SIZE.width / 2) * Math.cos(TARS_FLARE_RAD);
+  const TARS_WING_Z =
+    TARS_MAIN_Z + (TARS_PANEL_SIZE.width / 2) * Math.sin(TARS_FLARE_RAD);
+
+  // Левое крыло (TARS 1): local +X меша направлен к шарниру (краю главного),
+  // разворот +50° вокруг вертикали уводит крыло влево-вперёд к оператору.
   const tars1Panel = createTars1TextPanel();
-  tars1Panel.mesh.position.set(-TARS_PANEL_X, TARS_PANEL_Y, TARS_PANEL_Z);
+  tars1Panel.mesh.position.set(-TARS_WING_X, TARS_PANEL_Y, TARS_WING_Z);
   tars1Panel.mesh.scale.set(TARS_PANEL_SIZE.width, TARS_PANEL_SIZE.height, 1);
-  // Back-tilt: нормаль направлена из центра экрана в оператора
-  // (0, 1.6, 0). Разница по y: 1.6 - 1.5 = 0.1, по z: -3.6 - 0 = -3.6.
-  // Плоскость по умолчанию смотрит в +Z, rotateY на atan2(x, z) даёт
-  // нормаль в плоскости XZ. Здесь нужно ещё немного наклонить по X —
-  // поднимаем низ экрана к оператору, верх — от него.
-  {
-    const dx = -tars1Panel.mesh.position.x; // 2.7 (положительный X)
-    const dz = -tars1Panel.mesh.position.z; // 3.6 (положительный Z)
-    tars1Panel.mesh.rotation.y = Math.atan2(dx, dz);
-    // Наклон вверх (верх экрана чуть к стене): небольшой, чтобы текст
-    // читался без запрокидывания головы.
-    const dy = EYE_HEIGHT_M - TARS_PANEL_Y;
-    const horizDist = Math.hypot(dx, dz);
-    tars1Panel.mesh.rotation.x = -Math.atan2(dy, horizDist);
-  }
+  tars1Panel.mesh.rotation.y = TARS_FLARE_RAD;
   scene.add(tars1Panel.mesh);
 
+  // Правое крыло (TARS 2) — зеркально левому: разворот −50°.
   const tars2Panel = createTars2MetricsPanel();
-  tars2Panel.mesh.position.set(TARS_PANEL_X, TARS_PANEL_Y, TARS_PANEL_Z);
+  tars2Panel.mesh.position.set(TARS_WING_X, TARS_PANEL_Y, TARS_WING_Z);
   tars2Panel.mesh.scale.set(TARS_PANEL_SIZE.width, TARS_PANEL_SIZE.height, 1);
-  // Симметричный back-tilt: оператор слева от FRONT CAM не появляется,
-    // правый экран смотрит на него так же.
-  {
-    const dx = -tars2Panel.mesh.position.x; // -2.7
-    const dz = -tars2Panel.mesh.position.z; // 3.6
-    tars2Panel.mesh.rotation.y = Math.atan2(dx, dz);
-    const dy = EYE_HEIGHT_M - TARS_PANEL_Y;
-    const horizDist = Math.hypot(dx, dz);
-    tars2Panel.mesh.rotation.x = -Math.atan2(dy, horizDist);
-  }
+  tars2Panel.mesh.rotation.y = -TARS_FLARE_RAD;
   scene.add(tars2Panel.mesh);
 
   // Arm-state HUD: справа вверху на стене, рядом с экраном камеры.
