@@ -487,6 +487,194 @@ af_skills_for_profile() {  # $1=assignee  $2=labels_csv  $3=pr_flag
 }
 
 # ---------------------------------------------------------------------------
+# parse_body_skills_section <body> → печатает skills (один на строку).
+#
+# ADR-0080 / issue #2162: контракт — создатель карточки может ЯВНО указать
+# секцию `## Skills (порядок)` в body:
+#
+#   ## Skills (порядок)
+#
+#   1. <skill-name-1> — <что делает>
+#   2. <skill-name-2> — <что делает>
+#
+# Парсер принимает ОБА формата:
+#   * нумерованный "1. foo — описание" → берём первое слово после цифры+точки
+#   * bullet "- foo — описание" / "* foo" → берём первое слово после маркера
+#   * голые "foo" / "foo — описание" → берём первую строку (whitespace-split)
+# Дедупликация с сохранением порядка. Комментарии (строки после `—`/`:`)
+# отбрасываются. Секция заканчивается на следующей `## ` (любой heading)
+# или конце body.
+#
+# Контракт:
+#   $1 = body текст (может содержать или не содержать секцию)
+#   stdout = skills, по одному на строку, в порядке появления
+#   exit = 0 всегда (если секции нет — пустой stdout, fail-OPEN)
+#
+# Использование:
+#   mapfile -t CARDS_SKILLS < <(parse_body_skills_section "$task_body")
+# ---------------------------------------------------------------------------
+parse_body_skills_section() {  # $1=body
+    local _body="${1:-}"
+    [ -n "$_body" ] || return 0
+
+    # Выделяем блок от `## Skills` до следующего `## ` (любой другой heading)
+    # или конца body. AWK — потому что bash regex для многострочных
+    # секций read-only через grep -A и обрезается на первой строке.
+    local _section
+    _section="$(printf '%s\n' "$_body" | awk '
+        BEGIN { in_section = 0; }
+        /^##[[:space:]]+Skills/ { in_section = 1; next; }
+        /^##[[:space:]]+/ {
+            if (in_section) { in_section = 0; exit; }
+            next;
+        }
+        in_section { print; }
+    ')"
+
+    [ -n "$_section" ] || return 0
+
+    local _seen=""
+    local _line _skill
+    while IFS= read -r _line; do
+        # strip leading numbering "1." / "1)" / bullets "- " / "* "
+        _skill="$(printf '%s' "$_line" | sed -E 's/^[[:space:]]*([0-9]+[.)]|[-*])[[:space:]]+//' )"
+        # если ничего не изменилось (голое слово) — оставляем как есть
+        [ -z "$_skill" ] && continue
+
+        # отбрасываем комментарий после `—` или `:` (только для первой лексемы)
+        _skill="$(printf '%s' "$_skill" | awk '
+            {
+                # Берём первое whitespace-разделённое слово; разделители —
+                # пробел, em-dash (—), en-dash (–), colon (:), pipe (|),
+                # tab. Это позволяет "foo — описание", "foo: описание",
+                # "foo | note" — везде берётся только skill name.
+                n = split($0, parts, /[ \t—–:|]/);
+                print parts[1];
+            }
+        ')"
+
+        # trim whitespace
+        _skill="$(printf '%s' "$_skill" | tr -d '[:space:]')"
+        [ -n "$_skill" ] || continue
+
+        # dedup (case-sensitive, порядок первого вхождения)
+        case " $_seen " in
+            *" $_skill "*) continue ;;
+        esac
+        _seen="$_seen $_skill"
+        printf '%s\n' "$_skill"
+    done <<< "$_section"
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# af_card_defaults_for <assignee> [labels_csv] → многострочный список skills
+#                                          из card_defaults.yaml.
+#
+# ADR-0080 / issue #2162: если в body карточки НЕТ секции `## Skills`,
+# dispatcher (agent-flow-triage.sh) добавляет дефолт по assignee. Группы:
+#   review_cards, backend_fix_cards, frontend_cards, devops_cards,
+#   tester_cards, architect_cards, analyst_cards, agent_flow_cards,
+#   default_cards.
+#
+# Контракт:
+#   $1 = assignee (profile id)
+#   $2 = labels_csv (опционально, "a,b,c") — для refine'а (например,
+#       agent:pr-reviewer → review_cards)
+#   stdout = skills, по одному на строку (включая verification-before-
+#       completion первым). exit = 0 если yaml не найден (fail-OPEN,
+#       печатает только verification-before-completion).
+#
+# Парсинг YAML минимальный: читаем card_defaults.yaml как plain text
+# и достаём список после ключа "<group>:" до следующего ключа top-level.
+# Без зависимости от yq/PyYAML — должен работать в hermetic test env.
+#
+# Путь к yaml: ${HERMES_HOME}/../scripts/agent_flow/card_defaults.yaml
+# (т.е. относительно самого скрипта), или $CARD_DEFAULTS_YAML override.
+# ---------------------------------------------------------------------------
+af_card_defaults_for() {  # $1=assignee  $2=labels_csv
+    local _assignee="${1:-}" _labels="${2:-}"
+    local _group=""
+    local _yaml="${CARD_DEFAULTS_YAML:-}"
+
+    # По умолчанию — рядом с самим lib_agent_flow_common.sh.
+    if [ -z "$_yaml" ]; then
+        local _lib_dir
+        _lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-/dev/null}")" 2>/dev/null && pwd || echo "")"
+        if [ -n "$_lib_dir" ]; then
+            _yaml="$_lib_dir/card_defaults.yaml"
+        fi
+    fi
+
+    # Pick group: сначала по assignee, потом по label, иначе default.
+    case "$_assignee" in
+        pr-reviewer|review)                  _group="review_cards" ;;
+        backend)                             _group="backend_fix_cards" ;;
+        frontend)                            _group="frontend_cards" ;;
+        devops)                              _group="devops_cards" ;;
+        tester)                              _group="tester_cards" ;;
+        architect)                           _group="architect_cards" ;;
+        analyst)                             _group="analyst_cards" ;;
+        agent-flow)                          _group="agent_flow_cards" ;;
+        *)                                   _group="default_cards" ;;
+    esac
+    # Label-based override (например, agent:pr-reviewer на backend карточке
+    # всё равно должна идти с review_cards).
+    if [ -n "$_labels" ]; then
+        local _lc
+        _lc="$(printf '%s' "$_labels" | tr '[:upper:]' '[:lower:]')"
+        case ",${_lc}," in
+            *",agent:pr-reviewer,"*|*"agent:pr-reviewer,"*|*",needs-review,"*|*"needs-review,"*)
+                _group="review_cards" ;;
+            *",agent:backend,"*|*",type:backend,"*)
+                _group="backend_fix_cards" ;;
+            *",agent:devops,"*|*",type:devops,"*|*",type:infra,"*|*",type:ci,"*)
+                _group="devops_cards" ;;
+            *",agent:architect,"*|*",type:architecture,"*|*",type:adr,"*)
+                _group="architect_cards" ;;
+            *",agent:tester,"*|*",type:sdlc,"*)
+                _group="tester_cards" ;;
+        esac
+    fi
+
+    if [ -z "$_group" ] || [ ! -f "$_yaml" ]; then
+        # Fail-OPEN: даже без yaml — verification-before-completion обязателен.
+        printf '%s\n' "verification-before-completion"
+        return 0
+    fi
+
+    # Минимальный yaml-парсер: awk ищет "<group>:" на отдельной строке,
+    # печатает все "- foo" до следующего "<key>:" на top-level.
+    local _skills
+    _skills="$(awk -v group="$_group:" '
+        BEGIN { in_grp = 0; }
+        # Top-level key — строка, начинающаяся с non-whitespace + ":" и не "-"
+        # (list items имеют leading whitespace).
+        /^[^[:space:]#]/ {
+            if (in_grp) { in_grp = 0; exit; }
+            if ($0 == group) { in_grp = 1; next; }
+        }
+        in_grp && /^[[:space:]]*-[[:space:]]*/ {
+            # strip "- " prefix; print everything after (yaml scalar)
+            line = $0
+            sub(/^[[:space:]]*-[[:space:]]*/, "", line)
+            # strip inline comments "  # foo"
+            sub(/[[:space:]]+#.*$/, "", line)
+            gsub(/[[:space:]]+$/, "", line)
+            if (length(line) > 0) print line;
+        }
+    ' "$_yaml")"
+
+    if [ -z "$_skills" ]; then
+        printf '%s\n' "verification-before-completion"
+        return 0
+    fi
+
+    printf '%s\n' "$_skills"
+    return 0
+}
+
+# ---------------------------------------------------------------------------
 # detect_pr_kind <pr_labels_csv> <pr_title> → печатает "lint" | "functional"
 #
 # "lint" = e2e на железе не нужен, зелёного CI достаточно.

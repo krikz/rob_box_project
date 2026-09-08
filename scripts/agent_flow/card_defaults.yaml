@@ -1,0 +1,110 @@
+# card_defaults.yaml — дефолтные наборы skills для разных типов карточек.
+#
+# Контракт (ADR-0080, issue #2162): если в body карточки НЕТ секции
+# `## Skills (порядок)`, dispatcher (agent-flow-triage.sh) добавляет дефолт
+# по assignee + типу задачи (label). Воркер парсит body, видит секцию,
+# вызывает skill_loader для каждого skill по порядку.
+#
+# Формат:
+#   <group>:
+#     - <skill-name-1>
+#     - <skill-name-2>
+#     ...
+#
+# Группы:
+#   review_cards   — карточки с label `agent:pr-reviewer` / `needs-review`
+#   backend_fix_cards — backend, type:bug / type:functional
+#   frontend_cards  — frontend (зарезервировано, profile ещё не создан)
+#   devops_cards   — devops, process / CI / infra задачи
+#   tester_cards   — tester, type:process / sdlc-review
+#   architect_cards — architect, ADR / design
+#   default_cards  — fallback для всего, что не подошло
+#
+# Применяется в agent-flow-triage.sh через af_card_defaults_for <assignee>
+# [labels_csv] → многострочный список skills. Helper — af_load_card_defaults
+# в lib_agent_flow_common.sh.
+#
+# Скиллы ДОЛЖНЫ быть установлены в профиле через sync-skills.sh (SKILL_SYNC_ALLOWLIST)
+# либо через .agents/skills/<skill>/ напрямую. Если skill отсутствует —
+# af_skills_for_profile его отбросит (fail-OPEN).
+#
+# СЕПАРАЦИЯ ОТВЕТСТВЕННОСТИ:
+#   * Этот файл — ТОЛЬКО ДЕФОЛТЫ для новых карточек без явной секции.
+#   * Если создатель карточки указал `## Skills (порядок)` явно — ЭТОТ
+#     файл НЕ применяется (явное > дефолт).
+#   * af_skills_for_profile в lib_agent_flow_common.sh — ОБЯЗАТЕЛЬНОЕ
+#     ядро: verification-before-completion + primary + code-review (для
+#     PR-порождающих профилей). Этот файл — РАСШИРЕНИЕ для особых
+#     профилей (review/tester/architect), которым нужен конкретный
+#     дополнительный skill (например, agent-flow для architect).
+
+# ---------------------------------------------------------------------------
+# Карточки ревью (pr-reviewer / agent:pr-reviewer)
+# ---------------------------------------------------------------------------
+review_cards:
+  - verification-before-completion  # чеклист перед kanban_complete (ADR-0018)
+  - code-review                      # двухосевое ревью diff (Standards+Spec)
+  - diff-review                      # независимый аудит diff
+  - architecture-doc-review          # для PR с ADR/архитектурой
+
+# ---------------------------------------------------------------------------
+# Backend — bugfixes / functional / feature
+# ---------------------------------------------------------------------------
+backend_fix_cards:
+  - verification-before-completion
+  - test-driven-development          # TDD сначала (RED-GREEN-REFACTOR)
+  - systematic-debugging             # root cause debugging (4-phase)
+  - code-review                      # safety-net на PR
+
+# ---------------------------------------------------------------------------
+# Frontend — зарезервировано (frontend profile не существует, но если появится)
+# ---------------------------------------------------------------------------
+frontend_cards:
+  - verification-before-completion
+  - test-driven-development
+  - code-review
+
+# ---------------------------------------------------------------------------
+# DevOps — process / CI / infra задачи (ADR-0018/0022/0049 ...)
+# ---------------------------------------------------------------------------
+devops_cards:
+  - verification-before-completion
+  - agent-flow                       # процессные изменения в agent-flow
+  - code-review                      # safety-net на PR (shell/yaml)
+  - resolving-merge-conflicts        # если rebase/merge конфликт
+
+# ---------------------------------------------------------------------------
+# Tester — process / sdlc-review / contract-drift
+# ---------------------------------------------------------------------------
+tester_cards:
+  - verification-before-completion
+  - test-driven-development
+  - sdlc-review                      # process-ревью в SDLC цикле
+
+# ---------------------------------------------------------------------------
+# Architect — ADR / design / process-fix
+# ---------------------------------------------------------------------------
+architect_cards:
+  - verification-before-completion
+  - agent-flow                       # процессные изменения
+  - architecture-doc-review          # для ADR-черновиков
+  - to-tickets                       # декомпозиция в таски (если нужно)
+
+# ---------------------------------------------------------------------------
+# Default — fallback для всего остального (analyst, plugin profiles, и т.п.)
+# ---------------------------------------------------------------------------
+default_cards:
+  - verification-before-completion
+  - agent-flow                       # безопасный default — универсальный skill
+
+# ---------------------------------------------------------------------------
+# Специальные профили
+# ---------------------------------------------------------------------------
+analyst_cards:
+  - verification-before-completion
+  - test-driven-development
+
+agent_flow_cards:
+  - verification-before-completion
+  - agent-flow
+  - code-review
