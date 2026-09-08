@@ -534,8 +534,9 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   pointer.addTarget({ id: PIPELINE_DRAG_TARGET_ID, object: voicePipeline.object, draggable: true });
 
   // Большой экран-стена перед оператором: на него выводим фронтальную
-  // камеру. Стена мостика стоит на z = -4 (ROOM_D/2); экран висит чуть
-  // ближе (z = -3.9), лицом к пользователю (facing +Z).
+  // камеру. Стена мостика стоит на z = -4.56 (ROOM_D/2, ADR-0076 R1,
+  // ROOM_D = 9.12); экран висит чуть ближе (z = -3.9), лицом к
+  // пользователю (facing +Z).
   const mainScreen = new VideoPanel(
     {
       id: "main_screen",
@@ -572,15 +573,22 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   ceilingScreen.mesh.rotation.z = CEILING_SCREEN_ROLL_RAD;
   scene.add(ceilingScreen.mesh);
 
-  // TARS 1 + TARS 2 (issue #2113, quest #2112): Captain Bridge — два новых
-  // экрана по бокам от FRONT CAM, лицом к оператору. FRONT CAM стоит на
-  // z=-3.9, ширина 4.8 м. Берём те же размеры, что у camera_oak_depth
-  // side panel (1.6 × 1.2 м) — это достаточно крупно, чтобы текст и
-  // метрики читались, и при этом панели не налезают на экран-стену.
-  // Позиция — симметрично слева/справа, чуть ближе к стене, чтобы
-  // back-tilt (поворот лицом к оператору) давал нормаль, попадающую в
-  // голову оператора (0, 1.6, 0).
-  const TARS_PANEL_SIZE = { width: 1.6, height: 1.2 };
+  // TARS 1 + TARS 2 (issue #2113, quest #2112 / follow-up #2142):
+  // Captain Bridge — два боковых экрана по сторонам от FRONT CAM, лицом к
+  // оператору. Размер и ориентация — по ADR-0074 §4.0 (вариант E, выбран
+  // Шифу 2026-09-08): yaw = 36.9°, дистанция 4.50 м, back-tilt ≈ 1.3°.
+  // Позиции и углы НЕ меняются; меняется только ширина W (ADR-0076 R1).
+  //
+  // ADR-0076 (PR #2156) фиксирует расширение ROOM_D до 9.12 м (R1).
+  // Ширина W = 3.0 м (безопасный компромисс: z_inner = -4.50, требуемый
+  // ROOM_D/2 = 4.55, R1 = 4.56 хватает с запасом 1 см). Если Шифу выберет
+  // W = 3.2 м — переключить на R2 (ROOM_D = 10.0) одной правкой ниже.
+  // aspect 16:9 (как у основного экрана 4.8 × 2.7).
+  const TARS_PANEL_WIDTH = 3.0; // TODO(ADR-0076 R2): 3.2 если Шифу захочет максимум
+  const TARS_PANEL_SIZE = {
+    width: TARS_PANEL_WIDTH,
+    height: (TARS_PANEL_WIDTH * 9) / 16, // 16:9, как у основного экрана
+  };
   const TARS_PANEL_Y = 1.5;
   const TARS_PANEL_Z = -3.6;
   const TARS_PANEL_X = 2.7;

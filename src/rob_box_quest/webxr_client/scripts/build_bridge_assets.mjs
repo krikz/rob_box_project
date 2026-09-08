@@ -145,8 +145,13 @@ function mergeGeoms(geoms) {
 
 // Room dimensions (m) — обязательно соблюдаются в floor/walls/props/nav/occluders,
 // чтобы safe-walk-area действительно была внутри walls.
+//
+// ROOM_D = 9.12 (ADR-0076 R1, kanban t_010739cf → t_2263e9d8): расширение
+// с 8.0 для размещения TARS-панелей W=3.0 (z_inner=-4.50, требуемый 4.55).
+// Альтернатива R2 (10.0) — под W=3.2; R3 — под W=4.8 (не в этом ADR).
+// См. docs/adr/0075-meta-quest-tars-room-d-expansion.md.
 const ROOM_W = 7;   // x-axis (left-right)
-const ROOM_D = 8;   // z-axis (front-back)
+const ROOM_D = 9.12; // z-axis (front-back), ADR-0076 R1
 const ROOM_H = 3;   // y-axis (height)
 
 // ===== FLOOR =====

@@ -44,7 +44,7 @@
     },
     "dimensions_m": {
       "width": 7,
-      "depth": 8,
+      "depth": 9.12,
       "height": 3
     },
     "ceiling": "open (room-scale VR)"
@@ -53,12 +53,12 @@
     "min": [
       -3.2,
       0,
-      -3.7
+      -4.26
     ],
     "max": [
       3.2,
       2.5,
-      3.7
+      4.26
     ],
     "note": "polygon AABB внутри стен; не включает зону main console (z >= 1.5) и side terminals (|x| >= 3.0). Размер: ~6.4×2.5×7.4м — комфортно для room-scale VR с центром в (0, 0, 0)."
   },
@@ -190,7 +190,7 @@
       "position": [
         0,
         1.5,
-        -3.96
+        -4.52
       ],
       "size": [
         7.4,
@@ -209,7 +209,7 @@
       "position": [
         0,
         1.5,
-        3.96
+        4.52
       ],
       "size": [
         7.4,
@@ -231,7 +231,7 @@
         0
       ],
       "size": [
-        8.4,
+        9.52,
         3.2,
         0.01
       ],
@@ -250,7 +250,7 @@
         0
       ],
       "size": [
-        8.4,
+        9.52,
         3.2,
         0.01
       ],
@@ -278,7 +278,7 @@
     },
     {
       "name": "bridge_walls.glb",
-      "size": 24608,
+      "size": 24556,
       "budget": 184320,
       "ok": true
     },
@@ -296,7 +296,7 @@
     },
     {
       "name": "bridge_occluders.glb",
-      "size": 6000,
+      "size": 5996,
       "budget": 20480,
       "ok": true
     }

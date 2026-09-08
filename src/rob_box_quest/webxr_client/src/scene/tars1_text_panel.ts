@@ -25,9 +25,9 @@
 import * as THREE from "three";
 
 export interface Tars1TextPanelOptions {
-  /** Ширина canvas в пикселях (default 512 — соответствует ширине panel). */
+  /** Ширина canvas в пикселях (default 1280 — 16:9 как у основного экрана). */
   canvasWidth?: number;
-  /** Высота canvas в пикселях (default 384). */
+  /** Высота canvas в пикселях (default 720 — 16:9). */
   canvasHeight?: number;
   /** Сколько последних строк хранить в кольцевом буфере (default 32). */
   maxLines?: number;
@@ -58,8 +58,8 @@ export interface Tars1TextPanelHandle {
 export function createTars1TextPanel(
   opts: Tars1TextPanelOptions = {}
 ): Tars1TextPanelHandle {
-  const canvasWidth = opts.canvasWidth ?? 512;
-  const canvasHeight = opts.canvasHeight ?? 384;
+  const canvasWidth = opts.canvasWidth ?? 1280;
+  const canvasHeight = opts.canvasHeight ?? 720;
   const maxLines = opts.maxLines ?? 32;
   const fontSize = opts.fontSize ?? 22;
 
@@ -76,10 +76,14 @@ export function createTars1TextPanel(
   texture.magFilter = THREE.LinearFilter;
   texture.colorSpace = THREE.SRGBColorSpace;
 
-  // Соотношение сторон canvas ≈ 4:3; плоскость по умолчанию 1.6 × 1.2 м
-  // (как FRONT CAM был, см. captain_bridge.ts: VideoPanel main_screen),
-  // но это управляется извне через mesh.scale — здесь только канвас.
-  const geometry = new THREE.PlaneGeometry(1.6, 1.2);
+  // Соотношение сторон canvas и плоскости — 16:9 (ADR-0074 §4.0, вариант E:
+  // все три экрана Captain Bridge должны быть одного aspect ratio, как
+  // основной 4.8 × 2.7). Плоскость по умолчанию 1.6 × 0.9 м; фактический
+  // размер задаётся снаружи через mesh.scale (см. captain_bridge.ts:
+  // TARS_PANEL_SIZE). Если ширину панели меняет архитектор (ADR §4.0,
+  // диапазон 2.4–3.2 м), PlaneGeometry оставляем 1.6 × 0.9 — это лишь
+  // отношение сторон, реальный размер идёт через mesh.scale.
+  const geometry = new THREE.PlaneGeometry(1.6, 0.9);
   const material = new THREE.MeshBasicMaterial({
     map: texture,
     side: THREE.DoubleSide,
