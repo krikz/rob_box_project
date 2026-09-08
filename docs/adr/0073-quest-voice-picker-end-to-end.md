@@ -1,4 +1,4 @@
-# ADR-0067 — quest voice picker: end-to-end gap analysis (issue #2138)
+# ADR-0073 — quest voice picker: end-to-end gap analysis (issue #2138)
 
 - Status: proposed (разбор инцидента; фикс — отдельные карточки)
 - Date: 2026-09-08
