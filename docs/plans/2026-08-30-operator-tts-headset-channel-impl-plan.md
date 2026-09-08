@@ -382,7 +382,7 @@
 
 - ADR-0067 (этот шаг) — основной дизайн-документ.
 - ADR-0051 (supervisor/operator-agent/arbiter split, §2.9) — родитель.
-- ADR-0054 (wake stream, шаг 5а) — параллельный шаг, не пересекается.
+- ADR-0071 (wake stream, шаг 5а) — параллельный шаг, не пересекается.
 - ADR-0065 (wake_words.yaml SSoT) — личность wake живёт в коде.
 - ADR-0013 (incremental delivery) — поэтому 5 коммитов, не один big-bang.
 - ADR-0018 (honest FAIL) — DoD требует raw-цифры и grep-evidence, без

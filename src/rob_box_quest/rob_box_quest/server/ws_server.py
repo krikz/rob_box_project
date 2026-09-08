@@ -203,7 +203,7 @@ class Bridge(Protocol):
 
     def publish_quest_wake_audio(self, payload: bytes) -> None:
         """VOICE_AUDIO (stream_id=2, wake-channel): always-on микрофон с
-        client-side RMS VAD (ADR-0054 step 5а) → AudioData в /audio/quest_wake.
+        client-side RMS VAD (ADR-0071 step 5а) → AudioData в /audio/quest_wake.
 
         Реализация (QuestBridge, issue #1992): публикует в ROS-топик
         /audio/quest_wake, который читает stt_node.quest_wake_audio_callback
@@ -222,7 +222,7 @@ class Bridge(Protocol):
         Поведение реализации:
         - Запоминает ``_wake_active = active`` (для diagnostic/observability).
         - Опционально публикует latched-топик ``/avatar/wake_stream{state}``
-          для дашборда и e2e-наблюдателей (ADR-0054 §2.4).
+          для дашборда и e2e-наблюдателей (ADR-0071 §2.4).
 
         Контракт идемпотентен: повторный start при уже активном — no-op.
         """
@@ -443,7 +443,7 @@ class NoOpBridge:
         return None
 
     def publish_quest_wake_audio(self, payload: bytes) -> None:
-        # NoOpBridge: ADR-0054 step 5a, stream_id=2 → wake-канал.
+        # NoOpBridge: ADR-0071 step 5a, stream_id=2 → wake-канал.
         # Реальная маршрутизация в /audio/quest_wake → stt_node реализована
         # в QuestBridge (quest_node.py, issue #1992). NoOpBridge — тестовый
         # ROS-free double, остаётся no-op намеренно.
@@ -1741,7 +1741,7 @@ class WSSServer:
             )
             return
         if cmd in ("voice_listen_start", "voice_listen_stop"):
-            # ADR-0054 step 5a: панельный тумблер «всегда слушать».
+            # ADR-0071 step 5a: панельный тумблер «всегда слушать».
             # Клиент шлёт это при включении/выключении wake-канала в UI
             # (UI — отдельная карточка, здесь только серверная сторона).
             # Сервер фиксирует состояние и публикует /avatar/wake_stream
@@ -2347,7 +2347,7 @@ class WSSServer:
                         await ws.close(code=1000, message=b"goodbye")
                         return ws
                     elif ftype == FrameType.VOICE_AUDIO:
-                        # ADR-0054 step 5a: stream_id==2 → wake-канал
+                        # ADR-0071 step 5a: stream_id==2 → wake-канал
                         # (publish_quest_wake_audio), иначе — PTT/radio
                         # (publish_voice_audio, текущее поведение).
                         # Back-compat: stream_id==0 тоже идёт в radio-канал

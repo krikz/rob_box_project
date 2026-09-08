@@ -273,7 +273,7 @@ class QuestBridge:
         sound_stop_pub=None,
         stt_in_pub=None,
         quest_wake_pub=None,  # issue #1992: /audio/quest_wake (wake-канал → stt_node)
-        wake_stream_pub=None,  # ADR-0054 step 5a: /avatar/wake_stream observability
+        wake_stream_pub=None,  # ADR-0071 step 5a: /avatar/wake_stream observability
         set_voice_mode_pub=None,
         set_voice_preset_pub=None,
         set_voice_language_pub=None,
@@ -303,7 +303,7 @@ class QuestBridge:
         # при вейке «ТАРС», целевая §7.1/§9.1). None в unit-тестах моста →
         # publish_quest_wake_audio no-op.
         self._quest_wake_pub = quest_wake_pub
-        # ADR-0054 step 5a: wake-channel observability.
+        # ADR-0071 step 5a: wake-channel observability.
         # None в unit-тестах моста → set_wake_stream_state no-op.
         self._wake_stream_pub = wake_stream_pub
         self._wake_active = False
@@ -557,7 +557,7 @@ class QuestBridge:
             self._wake_audio_window_bytes = 0
 
     def set_wake_stream_state(self, active: bool) -> None:
-        """JSON_CMD {cmd: voice_listen_start/stop} (ADR-0054 step 5а).
+        """JSON_CMD {cmd: voice_listen_start/stop} (ADR-0071 step 5а).
 
         Обновляет серверный флаг wake-канала и публикует latched-событие
         /avatar/wake_stream{state:active|paused} для наблюдателей
@@ -1455,7 +1455,7 @@ class QuestNode(Node):
         self._quest_wake_pub = self.create_publisher(
             AudioData, "/audio/quest_wake", _VOICE_QOS
         )
-        # ADR-0054 step 5a: wake-channel (stream_id=2) observability.
+        # ADR-0071 step 5a: wake-channel (stream_id=2) observability.
         # Latched-событие {state: active|paused} для дашборда и e2e-тестов.
         # Публикуется из set_wake_stream_state (JSON_CMD voice_listen_*).
         self._wake_stream_pub = self.create_publisher(

@@ -223,11 +223,14 @@ git grep -i reflex src/rob_box_voice/rob_box_voice/command_node.py | wc -l  # �
 ## 6. Связанные ADR
 
 - ADR-0051 (родитель) — агентский цикл оператора.
-- ADR-0054 (sibling — 0054-dialogue-control-pause-resume.md) — пауза личности
+- ADR-0066 (`0066-dialogue-control-pause-resume.md`) — пауза личности
   через `/dialogue/control`. Это другой шаг (6), но оба в одной миграции
   operator-agent и используют общий принцип «единственный канал = один топик».
-- ADR-0054 (sibling — 0054-operator-agent-step-5a-wake-stream.md) — wake-stream
-  от Quest. Это другой шаг (5а); здесь шаг 7б.
+  (Раньше этот документ тоже претендовал на номер 0054 — перенумерован в
+  0066 отдельно от разбора в ADR-0071 §12.)
+- ADR-0071 (`0071-operator-agent-step-5a-wake-stream.md`) — wake-stream
+  от Quest. Это другой шаг (5а); здесь шаг 7б. (Восстановлен из архива и
+  перенумерован из 0054 — см. ADR-0071 §12 для полной истории коллизии.)
 - ADR-0013 (incremental delivery) — поэтому `enable_reflex_layer=false` в дефолте,
   а не «выкатываем сразу на прод».
 - ADR-0018 (honest FAIL) — DoD требует raw pytest-вывод и grep-чеки; без них

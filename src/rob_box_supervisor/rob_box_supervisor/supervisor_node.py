@@ -118,7 +118,7 @@ REASON_APPLIED = "applied"
 # отказывает клиенту. Стандартное behaviour: applied=false, reason=MONITOR_MODE_REASON.
 REASON_MONITOR = MONITOR_MODE_REASON
 
-# ADR-0054 — после merge §6 dialogue_node больше НЕ принимает параметр
+# ADR-0066 — после merge §6 dialogue_node больше НЕ принимает параметр
 # ``voice_input_mode``. Управление личностью идёт через топик
 # ``/dialogue/control`` (String JSON, action: pause|resume). Внешний
 # контракт ``/avatar/set_voice_mode`` остаётся для обратной совместимости
@@ -128,14 +128,14 @@ REASON_MONITOR = MONITOR_MODE_REASON
 # ``reason="voice_mode_deprecated"`` (ADR-0018: честный FAIL, не молчание).
 SET_VOICE_MODE_TOPIC: str = "/avatar/set_voice_mode"
 
-# ADR-0054 §2.1 — единый канал «оператор → личность» (pause/resume).
+# ADR-0066 §2.1 — единый канал «оператор → личность» (pause/resume).
 # Publisher — супервизор (AvatarSupervisor), subscriber — dialogue_node.
 # QoS — RELIABLE, KEEP_LAST depth=10 (синхронизировано с dialogue_node,
 # см. dialogue_node.py:200). Payload: JSON
 # ``{"action": "pause"|"resume", "reason": str, "ts_s": float}``.
 DIALOGUE_CONTROL_TOPIC: str = "/dialogue/control"
 DIALOGUE_CONTROL_ACK_TOPIC: str = "/dialogue/control_ack"
-# Допустимые ``action``-значения (ADR-0054 §2.1, _on_dialogue_control
+# Допустимые ``action``-значения (ADR-0066 §2.1, _on_dialogue_control
 # в dialogue_node.py:2189). Используются как whitelist в
 # ``_publish_dialogue_control`` для защиты от опечаток в caller-коде.
 DIALOGUE_CONTROL_ACTIONS: frozenset[str] = frozenset({"pause", "resume"})
@@ -362,7 +362,7 @@ GRIP_OFF_PRESETS: frozenset[str] = frozenset({"", "none", "off"})
 GRIP_DEFAULT_LANGUAGE: str = "ru"
 
 # Какой ``action`` слать в ``/dialogue/control`` пока супервизор-агент
-# обрабатывает команду оператора. ADR-0054 §6.7: теперь это всегда
+# обрабатывает команду оператора. ADR-0066 §6.7: теперь это всегда
 # ``pause`` (вход) и ``resume`` (finally). Режим «off» из старого
 # ``voice_input_mode`` сводится именно к pause личности — никакого TTL
 # (ADR-0051 инвариант 8). Если оператор хочет ограниченную паузу — он
@@ -409,7 +409,7 @@ class AvatarSupervisor(Node):
     # ``agent_enabled`` гейт всего agent-прохода (default true — ТАРС
     # работает сразу). ``system_prompt_file`` — имя файла в
     # ``rob_box_supervisor/prompts/``. Параметр ``agent_during_voice_mode``
-    # удалён вместе с ``voice_input_mode`` (ADR-0054 §6 / §6.7): теперь
+    # удалён вместе с ``voice_input_mode`` (ADR-0066 §6 / §6.7): теперь
     # во время обработки команды оператора супервизор ВСЕГДА шлёт
     # ``pause`` в ``/dialogue/control`` (и ``resume`` в finally). Если
     # клиенту нужен другой режим — он вызывает
@@ -429,7 +429,7 @@ class AvatarSupervisor(Node):
         # Логгер ROS (не stdlib logging — для unified rclpy logging).
         self._log = self.get_logger()
 
-        # ADR-0028 S5 (обновлено в ADR-0054 §6.7) — супервизор управляет
+        # ADR-0028 S5 (обновлено в ADR-0066 §6.7) — супервизор управляет
         # личностью через топик ``/dialogue/control`` (String JSON,
         # action: pause|resume). Phase 1 транспорт — топик (см.
         # SET_VOICE_MODE_TOPIC). dialogue_node ack-ает на
@@ -437,7 +437,7 @@ class AvatarSupervisor(Node):
         self.create_subscription(
             RosString, SET_VOICE_MODE_TOPIC, self._on_set_voice_mode, 10
         )
-        # ADR-0054 §6.7 — публикация в ``/dialogue/control``. Используется
+        # ADR-0066 §6.7 — публикация в ``/dialogue/control``. Используется
         # для swap-контекста вокруг ``_run_agent_sync`` (pause на входе,
         # resume в finally) и для обработки явных
         # ``/avatar/set_voice_mode``-команд (legacy-контракт).
@@ -490,7 +490,7 @@ class AvatarSupervisor(Node):
             self.SYSTEM_PROMPT_FILE_PARAM, "operator_system_prompt.txt"
         )
         # Параметр ``agent_during_voice_mode`` удалён вместе с
-        # ``voice_input_mode`` (ADR-0054 §6.7). Старое default-поведение
+        # ``voice_input_mode`` (ADR-0066 §6.7). Старое default-поведение
         # «pause личности на время обработки команды» теперь жёстко
         # зашито в ``_dialogue_control_swap`` (см. ниже).
         # ── LLM / tools / память оператора (issue #1988) ─────────────
@@ -524,10 +524,10 @@ class AvatarSupervisor(Node):
             or "operator_system_prompt.txt"
         )
         # Поле ``_agent_during_voice_mode`` удалено вместе с параметром
-        # ``voice_input_mode`` (ADR-0054 §6.7). Старое поведение «поставь
+        # ``voice_input_mode`` (ADR-0066 §6.7). Старое поведение «поставь
         # личность в off на время обработки команды» теперь реализовано
         # через ``_dialogue_control_swap`` — жёстко шлём ``pause`` на
-        # входе и ``resume`` в finally (контракт ADR-0054 §2.1).
+        # входе и ``resume`` в finally (контракт ADR-0066 §2.1).
 
         # AgentCore создаётся ЛЕНИВО (см. _ensure_agent_core): при
         # ``agent_enabled=false`` мы не должны инстанцировать LLM /
@@ -547,7 +547,7 @@ class AvatarSupervisor(Node):
         # поднимутся при первом ``_build_agent_metrics``.
         self._agent_metrics: dict[str, Any] = {"enabled": False}
         # Поле ``_voice_input_mode_before_swap`` удалено вместе с
-        # ``voice_input_mode`` (ADR-0054 §6.7). В новой схеме через
+        # ``voice_input_mode`` (ADR-0066 §6.7). В новой схеме через
         # ``/dialogue/control`` супервизор ВСЕГДА шлёт ``pause`` на входе
         # и ``resume`` в finally — режим личности не «свапается», а
         # переводится в SILENCED → IDLE. Snapshot предыдущего значения
@@ -1126,8 +1126,8 @@ class AvatarSupervisor(Node):
             f"avatar_supervisor started: mode={self._mode}, zenoh={zenoh}"
         )
 
-    # ── dialogue control (ADR-0054 §6.7) ──────────────────────────
-    # После удаления ``voice_input_mode`` (ADR-0054 §6) единственная
+    # ── dialogue control (ADR-0066 §6.7) ──────────────────────────
+    # После удаления ``voice_input_mode`` (ADR-0066 §6) единственная
     # точка влияния супервизора на личность — топик ``/dialogue/control``.
     # Метод ``_apply_voice_mode`` оставлен для обратной совместимости с
     # клиентами ``/avatar/set_voice_mode`` (UI Quest, web-admin): mode
@@ -1149,7 +1149,7 @@ class AvatarSupervisor(Node):
         ack-нуть на ``/dialogue/control_ack``; ack на стороне супервизора
         не ждём — fire-and-forget, личность всё равно реагирует идемпотентно).
         Returns ``False`` при невалидном ``action`` (защита от опечаток в
-        caller-коде). ADR-0054 §2.1.
+        caller-коде). ADR-0066 §2.1.
         """
         if action not in DIALOGUE_CONTROL_ACTIONS:
             self._log.warning(
@@ -1176,7 +1176,7 @@ class AvatarSupervisor(Node):
     def _on_set_voice_mode(self, msg: RosString) -> None:
         """Обработка ``/avatar/set_voice_mode`` — legacy-контракт.
 
-        После удаления ``voice_input_mode`` (ADR-0054 §6) этот топик всё ещё
+        После удаления ``voice_input_mode`` (ADR-0066 §6) этот топик всё ещё
         принимается (UI Quest, web-admin), но mode → action маппинг сводится
         к двум значениям: ``respeaker``→``resume``, ``off``→``pause``.
         В monitor-режиме принимаем и логируем, но НЕ применяем (S12);
@@ -1192,9 +1192,9 @@ class AvatarSupervisor(Node):
     def _apply_voice_mode(self, mode: str) -> tuple[bool, str]:
         """Legacy-контракт ``/avatar/set_voice_mode`` через ``/dialogue/control``.
 
-        После удаления ``voice_input_mode`` (ADR-0054 §6) супервизор больше
+        После удаления ``voice_input_mode`` (ADR-0066 §6) супервизор больше
         НЕ ставит параметр на dialogue_node — только публикует action в
-        ``/dialogue/control``. Маппинг (ADR-0054 §6.7):
+        ``/dialogue/control``. Маппинг (ADR-0066 §6.7):
 
         * ``respeaker`` → ``resume`` (вернуть личность к активной работе)
         * ``off``       → ``pause`` (глушим личность, оператор работает)
@@ -1772,7 +1772,7 @@ class AvatarSupervisor(Node):
         except Exception as exc:  # noqa: BLE001
             self._log.warning(f"agent_metrics: tool_call record failed: {exc}")
 
-    # ── helpers: dialogue control swap (ADR-0054 §6.7) ──────────────────
+    # ── helpers: dialogue control swap (ADR-0066 §6.7) ──────────────────
     # После удаления ``voice_input_mode`` swap вокруг ``_run_agent_sync``
     # работает по новой схеме: на входе публикуем ``pause`` в
     # ``/dialogue/control``, в ``finally`` (включая путь с исключением)
@@ -1791,7 +1791,7 @@ class AvatarSupervisor(Node):
     def _dialogue_control_swap(self) -> Iterator[None]:
         """Контекст-менеджер «пока оператор работает, личность молчит».
 
-        ADR-0054 §6.7: на входе публикуем ``pause`` в ``/dialogue/control``,
+        ADR-0066 §6.7: на входе публикуем ``pause`` в ``/dialogue/control``,
         в ``finally`` (включая путь с исключением) — ``resume``. Поле
         ``prev_mode``/``_capture_current_voice_mode`` больше не нужны:
         dialogue_node сам знает свой FSM-стейт и ack-ает, супервизор лишь
@@ -1822,7 +1822,7 @@ class AvatarSupervisor(Node):
         finally:
             # Восстанавливаем личность — ВСЕГДА, включая путь с исключением
             # (AC #8). resume из не-paused состояния в dialogue_node —
-            # no-op + ack с текущим состоянием (§2.5 ADR-0054), так что
+            # no-op + ack с текущим состоянием (§2.5 ADR-0066), так что
             # безопасно даже если pause не дошёл.
             applied_out = self._publish_dialogue_control(
                 DIALOGUE_CONTROL_RESUME,
@@ -2446,7 +2446,7 @@ class AvatarSupervisor(Node):
           2. Гейт ``agent_enabled``. False → публикуем ``agent_disabled``.
           3. Ленивая инициализация AgentCore (один раз).
           4. ``_dialogue_control_swap()`` (try/finally) — личность молчит
-             пока мы работаем (ADR-0054 §6.7: публикуем ``pause`` в
+             пока мы работаем (ADR-0066 §6.7: публикуем ``pause`` в
              ``/dialogue/control`` на входе, ``resume`` в finally).
           5. ``AgentCore.process_input(payload)`` → результат.
           6. Публикация результата в ``/avatar/command_result``.
@@ -2498,7 +2498,7 @@ class AvatarSupervisor(Node):
         # (см. _capture_current_voice_mode), в active-режиме Phase 2
         # заменит на настоящий GetParameters.
         #
-        # ADR-0054 §6.7 — snapshot больше не нужен: dialogue_node сам
+        # ADR-0066 §6.7 — snapshot больше не нужен: dialogue_node сам
         # знает свой FSM-стейт. Swap публикует ``pause`` на входе и
         # ``resume`` в finally без предварительного capture.
 
@@ -2550,8 +2550,7 @@ class AvatarSupervisor(Node):
         #
         # Озвучиваем только голосовой вход: на текстовую команду из Telegram
         # оператор ждёт текст, а не речь в наушниках.
-        if self._param_bool("speak_agent_replies", True) and source == "quest":
-            self._publish_avatar_tts(str(result.get("summary", "")))
+        self._maybe_speak_agent_reply(source, str(result.get("summary", "")))
 
         # Журнал ТАРС (§5.4): что сделал, когда, чем кончилось.
         self._record_operator_journal(
@@ -2858,6 +2857,25 @@ class AvatarSupervisor(Node):
             self._avatar_tts_request_pub.publish(msg)
         except Exception as exc:  # noqa: BLE001
             self._log.warning(f"GripPipeline: avatar_tts_request publish failed: {exc}")
+
+    def _maybe_speak_agent_reply(self, source: str, summary: str) -> None:
+        """Озвучить ответ агента в шлем, если вход был голосовым (#2116).
+
+        Вынесено из ``_on_avatar_command`` отдельным методом ради
+        CC-бюджета (ADR-0021): встроенная ветка подняла сложность
+        обработчика с 17 до 19 и завалила ``scripts/lint/cc_budget.py``.
+        Поднимать baseline вместо выноса нельзя — именно так выигрыш от
+        шага 1 плана миграции и откатывается.
+
+        Озвучиваем только голосовой вход: на текстовую команду из Telegram
+        оператор ждёт текст, а не речь в наушниках. Пустой ``summary``
+        отсекает сам ``_publish_avatar_tts`` (#2096).
+        """
+        if source != "quest":
+            return
+        if not self._param_bool("speak_agent_replies", True):
+            return
+        self._publish_avatar_tts(summary)
 
     def _publish_avatar_tts(
         self, text: str, language: Optional[str] = None, voice: Optional[str] = None
