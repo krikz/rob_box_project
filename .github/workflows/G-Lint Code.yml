@@ -60,6 +60,23 @@ jobs:
         run: |
           python scripts/lint/cc_budget.py
 
+      # ADR-0021 policy / issue #2118: "seam without consumer" guard — a ROS
+      # topic published with no subscriber (or vice versa) anywhere in src/,
+      # or a private _publish_*/_on_* method called only from tests. Hard
+      # gate (no continue-on-error) — same two-tier scheme as CC-budget:
+      # scripts/lint/seam_baseline.json grandfathers everything already on
+      # develop, scripts/lint/seam_allowlist.json documents legal external
+      # consumers/producers (WS bridge to the Quest headset, twist_mux,
+      # hardware drivers, ...). Only a genuinely NEW seam fails the build.
+      # Self-tests: scripts/lint/test_seam_without_consumer.py.
+      - name: Seam-without-consumer guard (issue #2118)
+        run: |
+          python scripts/lint/seam_without_consumer.py
+
+      - name: Seam-without-consumer guard self-tests (issue #2118)
+        run: |
+          python -m unittest scripts.lint.test_seam_without_consumer -v
+
       # ADR-AF-0030 §2.4 / issue #2076 Phase 2: ADR-namespace collision guard
       # с поддержкой двух доменов (AF для agent-flow, RT для рантайма).
       # Hard gate (no continue-on-error) — PR с новым docs/adr/(AF-)?NNNN-*.md
