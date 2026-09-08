@@ -286,6 +286,132 @@ t6_syntax_lib() {
 t6_syntax_lib
 
 # =============================================================================
+echo "=== T7: af_skills_for_profile returns multi-skill list (ретро t_aafad606, ADR-0077) ==="
+
+# Это ключевая регрессия: одна карточка = один skill → воркеры не делают
+# self-review. Новый helper af_skills_for_profile должен вернуть:
+#   1) обязательный verification-before-completion ПЕРВЫМ (если есть в профиле)
+#   2) primary skill вторым (task/role)
+#   3) code-review третьим, ТОЛЬКО для PR-порождающих профилей (backend, devops,
+#      developer, tester, pr-reviewer)
+#   4) дедупликация — повторы отбрасываются (например, pr-reviewer → code-review
+#      как primary, не дублируется с дополнительным code-review)
+
+extract_helper_multi() {
+    local lib="$1"
+    # Извлекаем af_skills_for_profile + все вложенные helper-функции (_skill_installed,
+    # _add_skill) которые она определяет. Используем awk чтобы захватить тело
+    # функции до первой standalone '}' (т.е. до закрытия самой внешней функции).
+    local start
+    start="$(grep -n '^af_skills_for_profile()' "$lib" | head -1 | cut -d: -f1)"
+    if [ -z "$start" ]; then
+        echo "extract_helper_multi: af_skills_for_profile() not found" >&2
+        return 1
+    fi
+    local end
+    end="$(awk -v s="$start" 'NR>=s && /^}$/{print NR; exit}' "$lib")"
+    sed -n "${start},${end}p" "$lib" > /tmp/.triage_multi_helper.sh
+    # shellcheck disable=SC1091
+    . /tmp/.triage_multi_helper.sh
+}
+
+echo "  setup: extract af_skills_for_profile"
+if ! extract_helper_multi "$LIB"; then
+    fail "T7_setup_extract" "af_skills_for_profile not found"
+fi
+
+# T7.1: backend + bug → 3 skills (verification-before-completion + systematic-debugging + code-review)
+t71_backend_bug() {
+    local out
+    out="$(af_skills_for_profile backend 'bug,agent:backend' '' 2>/dev/null)"
+    local -a arr
+    mapfile -t arr <<<"$out"
+    if [ "${#arr[@]}" -lt 2 ]; then
+        fail "T7.1_backend_bug" "expected ≥2 skills, got ${#arr[@]}: '$out'"
+        return 1
+    fi
+    if [ "${arr[0]}" != "verification-before-completion" ]; then
+        fail "T7.1_backend_bug" "first must be verification-before-completion, got '${arr[0]}'"
+        return 1
+    fi
+    pass "T7.1_backend_bug → ${#arr[@]} skills: [${arr[*]}]"
+}
+t71_backend_bug
+
+# T7.2: architect + bug → НЕТ code-review (architect не PR-порождающий)
+t72_architect_no_cr() {
+    local out
+    out="$(af_skills_for_profile architect 'bug,agent:architect' '' 2>/dev/null)"
+    if printf '%s\n' "$out" | grep -qx 'code-review'; then
+        fail "T7.2_architect_no_cr" "code-review should NOT be in: '$out'"
+        return 1
+    fi
+    if ! printf '%s\n' "$out" | grep -qx 'verification-before-completion'; then
+        fail "T7.2_architect_no_cr" "verification-before-completion MISSING in: '$out'"
+        return 1
+    fi
+    pass "T7.2_architect_no_cr → [$(echo "$out" | tr '\n' ',' | sed 's/,$//')]"
+}
+t72_architect_no_cr
+
+# T7.3: pr-reviewer → дедупликация (primary = code-review, добавлять не нужно)
+t73_pr_reviewer_dedup() {
+    local out
+    out="$(af_skills_for_profile pr-reviewer '' '' 2>/dev/null)"
+    local -a arr
+    mapfile -t arr <<<"$out"
+    local count_cr
+    count_cr="$(printf '%s\n' "${arr[@]}" | grep -cx 'code-review' || true)"
+    if [ "$count_cr" != "1" ]; then
+        fail "T7.3_pr_reviewer_dedup" "code-review must appear exactly once, got $count_cr: '$out'"
+        return 1
+    fi
+    pass "T7.3_pr_reviewer_dedup → [${arr[*]}] (code-review dedup OK)"
+}
+t73_pr_reviewer_dedup
+
+# T7.4: unknown assignee → empty (fail-OPEN, как раньше)
+t74_unknown_fail_open() {
+    local out
+    out="$(af_skills_for_profile does-not-exist-12345 '' '' 2>/dev/null)"
+    if [ -n "$out" ]; then
+        fail "T7.4_unknown_fail_open" "expected empty, got '$out'"
+        return 1
+    fi
+    pass "T7.4_unknown_fail_open → empty (fail-OPEN preserved)"
+}
+t74_unknown_fail_open
+
+# T7.5: agent-flow-triage.sh использует af_skills_for_profile (НЕ single helper)
+t75_triage_uses_multi() {
+    if ! grep -q 'af_skills_for_profile' "$TRIAGE"; then
+        fail "T7.5_triage_uses_multi" "af_skills_for_profile NOT referenced in $TRIAGE"
+        return 1
+    fi
+    # Дополнительно: убедимся что используется mapfile, а не просто $(...)
+    if ! grep -q 'mapfile -t skills_for_card' "$TRIAGE"; then
+        fail "T7.5_triage_mapfile" "mapfile -t skills_for_card NOT in $TRIAGE"
+        return 1
+    fi
+    pass "T7.5_triage_uses_multi (af_skills_for_profile + mapfile)"
+}
+t75_triage_uses_multi
+
+# T7.6: agent-flow-handoff.sh также использует af_skills_for_profile
+t76_handoff_uses_multi() {
+    if ! grep -q 'af_skills_for_profile' "$HANDOFF"; then
+        fail "T7.6_handoff_uses_multi" "af_skills_for_profile NOT referenced in $HANDOFF"
+        return 1
+    fi
+    if ! grep -q 'mapfile -t child_skills' "$HANDOFF"; then
+        fail "T7.6_handoff_mapfile" "mapfile -t child_skills NOT in $HANDOFF"
+        return 1
+    fi
+    pass "T7.6_handoff_uses_multi"
+}
+t76_handoff_uses_multi
+
+# =============================================================================
 echo
 if [ "$FAIL" -gt 0 ]; then
     printf '\033[31mFAIL\033[0m  %d/%d passed\n' "$PASS" "$((PASS+FAIL))"

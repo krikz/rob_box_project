@@ -375,6 +375,118 @@ af_skill_for_profile() {  # $1=assignee  $2=labels_csv (optional)
 }
 
 # ---------------------------------------------------------------------------
+# af_skills_for_profile <assignee> [labels_csv] [pr_flag] → multi-line: skill
+# names (one per line), dedup, обязательный verification-before-completion
+# первым.
+#
+# Контракт:
+#   $1 = assignee (profile id)
+#   $2 = CSV меток issue (опционально, "a,b,c") — для маппинга по типу задачи
+#   $3 = "pr" | "" — explicit PR-флаг; если пусто и assignee ∈ {backend,
+#       developer, tester, devops, pr-reviewer} → авто-detect "pr" (эти
+#       профили порождают PR → нужен code-review)
+#   stdout = skills, разделенные \n (для mapfile -t); первый — обязательный
+#       verification-before-completion (если установлен в профиле), затем
+#       primary skill (task/role) и опционально code-review
+#   exit = 0 всегда (fail-OPEN)
+#
+# Ретро t_aafad606 (issue #2160): одна карточка = один skill → воркеры не
+# делают self-review. ADR-0077 вводит multi-skill: ОБЯЗАТЕЛЬНЫЙ
+# verification-before-completion + доменный primary + опциональный code-review
+# для PR-порождающих профилей. Обратная совместимость: af_skill_for_profile
+# остаётся как был (single primary skill) для тестов и обратной совместимости.
+#
+# Правила:
+#   1) verification-before-completion — всегда первый (если установлен).
+#   2) primary skill (task-candidate > role-candidate) — вторым, dedup с #1.
+#   3) code-review — третьим, если pr_flag != "" И он ещё не в списке И
+#      установлен в профиле.
+#   4) Дедупликация (case-sensitive) — повторы отбрасываются с сохранением
+#      первого вхождения.
+#   5) Пустой результат = ни один skill не найден → fail-OPEN (как раньше).
+#
+# Использование:
+#   mapfile -t SKILLS < <(af_skills_for_profile backend "bug,agent:backend" "")
+#   for s in "${SKILLS[@]}"; do args+=(--skill "$s"); done
+# ---------------------------------------------------------------------------
+af_skills_for_profile() {  # $1=assignee  $2=labels_csv  $3=pr_flag
+    local _assignee="${1:-}" _labels="${2:-}" _pr_flag="${3:-}"
+    local _skills_dir _hermes_home _cand _primary="" _add_cr=0 _seen=""
+    local _skills_out=()
+
+    [ -n "$_assignee" ] || return 0
+    _hermes_home="${HERMES_HOME:-/home/builder/.hermes}"
+    _skills_dir="${_hermes_home}/profiles/${_assignee}/skills"
+    [ -d "$_skills_dir" ] || return 0
+
+    # Проверка установленности skill в профиле (symlink-following walk,
+    # совпадает с логикой af_skill_for_profile). Возвращает 0 если найден.
+    _skill_installed() {
+        local s="$1"
+        [ -f "${_skills_dir}/${s}/SKILL.md" ] \
+            || [ -f "${_skills_dir}/repo/${s}/SKILL.md" ] \
+            || [ -f "${_skills_dir}/bundled/${s}/SKILL.md" ] \
+            || [ -f "${_skills_dir}/devops/${s}/SKILL.md" ] \
+            || [ -f "${_skills_dir}/autonomous-ai-agents/${s}/SKILL.md" ] \
+            || [ -f "${_skills_dir}/software-development/${s}/SKILL.md" ] \
+            || [ -f "${_skills_dir}/productivity/${s}/SKILL.md" ] \
+            || [ -f "${_skills_dir}/research/${s}/SKILL.md" ] \
+            || [ -f "${_skills_dir}/process/${s}/SKILL.md" ] \
+            || find -L "$_skills_dir" -maxdepth 4 -path '*/_org' -prune -o \
+               -type f -name SKILL.md -print 2>/dev/null \
+               | grep -q "/${s}/SKILL.md\$" \
+            || return 1
+        return 0
+    }
+
+    # Дедуп helper: добавляет $_cand в _skills_out только если ещё нет.
+    _add_skill() {
+        local s="$1"
+        [ -n "$s" ] || return 0
+        case " $_seen " in
+            *" $s "*) return 0 ;;
+        esac
+        _skill_installed "$s" || return 0
+        _skills_out+=("$s")
+        _seen="$_seen $s"
+    }
+
+    # 1) Обязательный verification-before-completion первым.
+    _add_skill "verification-before-completion"
+
+    # 2) Primary skill через af_skill_for_profile (single, тот же алгоритм).
+    _primary="$(af_skill_for_profile "$_assignee" "$_labels" 2>/dev/null || true)"
+    if [ -n "$_primary" ]; then
+        # af_skill_for_profile уже проверил установленность; добавляем
+        # минуя _add_skill (чтобы не делать дубль walk).
+        case " $_seen " in
+            *" $_primary "*) ;;
+            *)
+                _skills_out+=("$_primary")
+                _seen="$_seen $_primary"
+                ;;
+        esac
+    fi
+
+    # 3) code-review для PR-порождающих профилей.
+    #    Авто-detect: assignee из списка, плюс явный pr_flag="pr".
+    case "$_pr_flag$_assignee" in
+        pr*|backend|developer|tester|devops|pr-reviewer) _add_cr=1 ;;
+    esac
+    if [ "$_add_cr" = "1" ]; then
+        _add_skill "code-review"
+    fi
+
+    # Вывод: один skill на строку.
+    if [ "${#_skills_out[@]}" -eq 0 ]; then
+        _af_log "af_skills_for_profile(${_assignee}): no installed skills — failing OPEN (no --skill)"
+        return 0
+    fi
+    printf '%s\n' "${_skills_out[@]}"
+    return 0
+}
+
+# ---------------------------------------------------------------------------
 # detect_pr_kind <pr_labels_csv> <pr_title> → печатает "lint" | "functional"
 #
 # "lint" = e2e на железе не нужен, зелёного CI достаточно.
