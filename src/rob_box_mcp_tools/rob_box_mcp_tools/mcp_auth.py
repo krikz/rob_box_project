@@ -72,7 +72,15 @@ _REPLAY_CACHE_SIZE = 1024
 #: Кто имеет право звать тулы. Совпадает с набором нодов, которые
 #: действительно публикуют в ``/mcp/execute`` (см. llm_adapter.py,
 #: async_executor.py).
-DEFAULT_ALLOWED_SENDERS = frozenset({"dialogue_node", "harness"})
+#:
+#: Исторически здесь были только ``dialogue_node`` и ``harness`` — это
+#: ломалось для ``avatar_supervisor`` (ТАРС): HMAC-подпись была валидной
+#: (``RequestAuthenticator`` создавался с секретом), но ``verify()``
+#: отклонял запрос на этапе ``sender not in allowed_senders`` ещё до
+#: slice-гарда. После #2132 sender берётся из ``node.get_name()``, и
+#: ``avatar_supervisor`` подписывает свои запросы как
+#: ``avatar_supervisor`` — поэтому он должен быть в whitelist.
+DEFAULT_ALLOWED_SENDERS = frozenset({"dialogue_node", "avatar_supervisor", "harness"})
 
 
 class RequestAuthenticator:
