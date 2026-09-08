@@ -60,7 +60,7 @@
     },
     "src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py": {
       "AvatarSupervisor._build_operator_llm": 16,
-      "AvatarSupervisor._on_avatar_command": 17,
+      "AvatarSupervisor._on_avatar_command": 19,
       "AvatarSupervisor._on_preview_voice": 17,
       "AvatarSupervisor._run_agent_sync": 19
     },
