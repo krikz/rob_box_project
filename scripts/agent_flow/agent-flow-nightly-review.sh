@@ -108,10 +108,10 @@ export HOME="${HOME:-/home/builder}"
 REPO_DIR="${REPO_DIR:-/home/builder/hermes-share/rob_box_project}"
 KANBAN_BOARD="${KANBAN_BOARD:-robbox}"
 HERMES_BIN="${HERMES_BIN:-hermes}"
-# kanban-retro-create.sh внутри обращается к $GH_BIN под `set -u`. Если
-# cron вызывает ночной ревью без GH_BIN (а это обычный случай), нужно явно
-# экспортировать default — иначе слой 4 ADR-0078 упадёт на `unbound variable`
-# ещё ДО того, как guard `command -v "$GH_BIN"` успеет отработать.
+# kanban-retro-create.sh (ADR-0078) внутри обращается к $GH_BIN под `set -u`.
+# Если cron вызывает ночной ревью без GH_BIN (а это обычный случай), нужно
+# явно задать default — иначе слой 4 упадёт на `unbound variable` ещё ДО
+# того, как guard `command -v "$GH_BIN"` успеет отработать.
 GH_BIN="${GH_BIN:-gh}"
 export GH_BIN
 LOCK_FILE="${LOCK_FILE:-/tmp/agent-flow-nightly-review.lock}"
@@ -135,6 +135,9 @@ MAX_RUNTIME_COMPONENT="${COMPONENT_REVIEW_MAX_RUNTIME:-2700}"
 NIGHTLY_REVIEW_OUTCOME="${NIGHTLY_REVIEW_OUTCOME:-open-issue-unknown}"
 # Если воркер сказал «находок нет» / «всё dedup» — карточка не создаётся, но
 # JSONL пишется. Это контракт §3.2 ADR-0049 в действии: честный пустой отчёт.
+# Авто-дефолт JSONL (ADR-0078): `<reports_dir>/nightly-review/<DATE>.jsonl`.
+# Реальный путь собирается ПОСЛЕ секции gates (там известна REVIEW_DATE с
+# учётом NIGHTLY_REVIEW_DATE override); здесь только объявляем переменную.
 NIGHTLY_REVIEW_JSONL="${NIGHTLY_REVIEW_JSONL:-}"
 export COMPONENT_REVIEW_EXCLUDE_RE NIGHTLY_REVIEW_OUTCOME NIGHTLY_REVIEW_JSONL
 # Cron может звать нас с POSIX-локалью, а секции дайджеста печатают
@@ -192,6 +195,16 @@ NOW_EPOCH="$(date +%s)"
 NOW_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 export WIN_START_EPOCH WIN_START_UTC NOW_EPOCH SECTION_LIMIT
 
+# --- JSONL путь (ADR-0078, после gates — REVIEW_DATE уже с override) -------
+# Если вызывающий не задал NIGHTLY_REVIEW_JSONL — собираем дефолт:
+# `<reports_dir>/nightly-review/<REVIEW_DATE>.jsonl`. Так тесты с явным
+# NIGHTLY_REVIEW_DATE могут рассчитывать на конкретный JSONL-файл.
+if [ -z "$NIGHTLY_REVIEW_JSONL" ]; then
+    _nr_reports_root="${NIGHTLY_REVIEW_REPORTS_DIR:-${REPO_DIR:-.}/docs/reports}"
+    NIGHTLY_REVIEW_JSONL="${_nr_reports_root}/nightly-review/${REVIEW_DATE}.jsonl"
+    export NIGHTLY_REVIEW_JSONL
+    unset _nr_reports_root
+fi
 log "ревью-сутки ${REVIEW_DATE}: окно ${WIN_START_UTC} → ${NOW_UTC} (UTC), dry_run=${DRY_RUN}"
 
 # --- data collectors ---------------------------------------------------------
@@ -199,6 +212,7 @@ log "ревью-сутки ${REVIEW_DATE}: окно ${WIN_START_UTC} → ${NOW_U
 # нет инструмента / упал вызов → «НЕТ ДАННЫХ (<причина>)».
 
 _gh_json() {  # $1..=аргументы gh; печатает JSON или rc!=0
+    [ -n "${GH_BIN:-}" ] || return 1
     command -v "$GH_BIN" >/dev/null 2>&1 || return 1
     [ -n "${GH_REPO:-}" ] || return 1
     "$GH_BIN" "$@" 2>/dev/null || return 1

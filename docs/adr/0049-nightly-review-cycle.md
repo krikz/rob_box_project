@@ -200,25 +200,34 @@ LLM вызывал `kanban create` без механической провер�
 - `tests/test_nightly_review.sh`: 9 → 13 (добавлены J/K/L/M — ISO-week
   ключ, no-real-defect без карточки, JSONL валидация,
   duplicate-suppressed без карточки).
-- `tests/test_nightly_review_persistence.sh` (ADR-0078 follow-up,
-  параллельная работа): отдельные тесты слоя 4 issue-label guard.
+- `tests/test_nightly_review_persistence.sh` (ADR-0078 follow-up): 6 тестов
+  (P1-P6) на JSONL создание, no-real-defect / duplicate-suppressed без
+  карточки, ISO-week ключ, fingerprint sha1[:12] стабильность.
+- `tests/test_kanban_retro_create.sh`: 10 → 15 (добавлены K/L/M/N/O — слой
+  4 issue-label guard: skip на открытом issue текущей ISO-недели, ignore
+  issue из прошлой недели, fail-open при gh недоступен, prefix
+  `component-review-*` тоже триггерит слой, не-prefix ключ bypass'ит слой
+  без вызова gh).
 
 ## 7. Acceptance
 
 | # | Критерий | Кто | Как проверить |
 |---|---|---|---|
-| 1 | `bash scripts/agent_flow/tests/test_nightly_review.sh` — 13/13 pass (после follow-up #2159) | воркер | raw-вывод теста в PR |
+| 1 | `bash scripts/agent_flow/tests/test_nightly_review.sh` — 13/13 pass + `test_nightly_review_persistence.sh` 6/6 + `test_kanban_retro_create.sh` 15/15 (после follow-up #2159/ADR-0078) | воркер | raw-вывод тестов в PR |
 | 2 | `bash scripts/agent_flow/install.sh --list-files` содержит `agent-flow-nightly-review.sh` | воркер | вывод команды |
 | 3 | На хосте после `install.sh` есть cron-job «Agent Flow Nightly Review (ADR-0049)» | devops | `hermes cron list` |
-| 4 | Первый боевой тик создал ровно одну карточку `nightly-review-<дата>` | Шифу | `hermes kanban list` + `t_<id>` |
-| 5 | Повторный тик той же ночью карточек НЕ создал | devops | лог тика: `уже создано` / `SKIP` |
-| 6 | Компонент с живой ревью-карточкой не получает вторую | devops | лог тика: `на кулдауне` |
+| 4 | Первый боевой тик создал ровно одну карточку `nightly-review-<YYYY-WW>` | Шифу | `hermes kanban list` + `t_<id>` |
+| 5 | Повторный тик той же ISO-недели карточек НЕ создал (слой 4 issue-label guard) | devops | лог тика: `SKIP (gh-issue-label guard: nightly-review issue #<N> открыт за текущую ISO-неделю)` |
+| 6 | Компонент с живой ревью-карточкой не получает вторую (cooldown 7 дней) | devops | лог тика: `на кулдауне (7д)` |
 
 ## 8. Verification log (для будущего надзора)
 
 - 03.09.2026 — `test_nightly_review.sh`: 9 tests, 9 passed, 0 failed
   (dev-машина, git-bash; `flock`/`python3` подменены шимами теста —
   на Linux-хосте шимы не создаются).
+- 08.09.2026 (ADR-0078 follow-up) — `test_nightly_review.sh` 13/13 +
+  `test_nightly_review_persistence.sh` 6/6 + `test_kanban_retro_create.sh`
+  15/15 (включая слой 4 issue-label guard K/L/M/N/O). Все 34 теста PASS.
 - Боевой прогон на хосте — **не выполнялся** на момент написания ADR
   (нужен `hermes` + `gh` на build-хосте). До первого боевого тика статус
   «работает» ставить нельзя.

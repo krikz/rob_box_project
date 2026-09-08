@@ -270,7 +270,12 @@ default `[02:00, 06:00)` по локальному времени хоста. О
 
 Обе карточки идут через `kanban-retro-create.sh` (4 слоя дедупа: pre-check
 по маркеру, idempotency-key, маркер в body, **issue-label guard для
-nightly-review-*** — issue #2159), плюс sentinel
+`nightly-review-*` / `component-review-*`** — issue #2159, ADR-0078). Слой
+4: перед create скрипт ищет открытый GitHub issue с label `nightly-review`,
+созданный в текущей ISO-неделе (`date -u +%G-W%V` → понедельник 00:00 UTC);
+если есть — SKIP, дайджест уже ушёл через issue (читать Шифу удобнее там).
+Fail-open (если `gh` недоступен / нет issue с label — пропускаем слой 4,
+полагаемся на 1-3). Плюс sentinel
 `/tmp/agent-flow-nightly-review.<дата>.done` — «одна ночь = один комплект
 карточек». Скрипт НЕ чинит код, НЕ трогает метки/PR/issues и НЕ зовёт
 LLM: рассуждения живут внутри созданных карточек.
