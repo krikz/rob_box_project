@@ -89,21 +89,22 @@ VALID_MODES_V2: tuple[str, ...] = (
 
 # === AV-16: FRAME_HANDLERS table (ADR-0021 R1, ADR-0080 §2.2) ==================
 # Frame-handlers с одинаковой сигнатурой
-# ``async (self, ws, session, ftype, sid, payload) -> bool``
-# возвращают ``False`` чтобы попросить ``_ws_handler`` закрыть сокет после
-# отправки ответа (HELLO auth-fail, GOODBYE).
+# ``async (self, ws, session, payload) -> bool`` (плюс sid для voice_audio
+# и ftype для supervisor).
+# Возвращают ``False`` чтобы попросить ``_ws_handler`` закрыть сокет
+# после отправки ответа (HELLO auth-fail, GOODBYE).
 #
 # Исключения из таблицы (особая семантика):
 #   * HELLO     — может закрыть сокет на AUTH_FAIL.
 #   * GOODBYE   — нормальное закрытие (code 1000).
 #   * STATE_UPDATE — server→client only, приход от клиента = ERROR{BAD_PAYLOAD}.
 #
-# Эта таблица используется в ``_pump_frames`` (issue #2201, voice-vr 16).
+# Эта таблица используется в ``_handle_frame`` (issue #2201, voice-vr 16).
 # Сами frame-handler'ы (``_dispatch_*``) — тонкие адаптеры, которые парсят
 # payload и зовут существующие бизнес-методы (``_on_subscribe``,
 # ``_on_unsubscribe`` и т.д.). Сложная бизнес-логика остаётся в
 # ``_on_json_cmd`` / ``_on_hello`` / etc. — out of scope этой карточки.
-async def _dispatch_subscribe(self, ws, session, ftype, sid, payload) -> bool:
+async def _dispatch_subscribe(self, ws, session, payload) -> bool:
     try:
         payload_obj = json.loads(payload.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as e:
@@ -113,7 +114,7 @@ async def _dispatch_subscribe(self, ws, session, ftype, sid, payload) -> bool:
     return True
 
 
-async def _dispatch_unsubscribe(self, ws, session, ftype, sid, payload) -> bool:
+async def _dispatch_unsubscribe(self, ws, session, payload) -> bool:
     try:
         payload_obj = json.loads(payload.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
@@ -122,7 +123,7 @@ async def _dispatch_unsubscribe(self, ws, session, ftype, sid, payload) -> bool:
     return True
 
 
-async def _dispatch_json_event(self, ws, session, ftype, sid, payload) -> bool:
+async def _dispatch_json_event(self, ws, session, payload) -> bool:
     try:
         payload_obj = json.loads(payload.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
@@ -131,7 +132,7 @@ async def _dispatch_json_event(self, ws, session, ftype, sid, payload) -> bool:
     return True
 
 
-async def _dispatch_json_cmd(self, ws, session, ftype, sid, payload) -> bool:
+async def _dispatch_json_cmd(self, ws, session, payload) -> bool:
     try:
         payload_obj = json.loads(payload.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as e:
@@ -141,7 +142,7 @@ async def _dispatch_json_cmd(self, ws, session, ftype, sid, payload) -> bool:
     return True
 
 
-async def _dispatch_voice_audio(self, ws, session, ftype, sid, payload) -> bool:
+async def _dispatch_voice_audio(self, ws, session, sid, payload) -> bool:
     # ADR-0071 step 5a: stream_id==2 → wake-канал (publish_quest_wake_audio),
     # иначе — PTT/radio (publish_voice_audio, текущее поведение).
     # Back-compat: stream_id==0 тоже идёт в radio-канал
@@ -157,11 +158,45 @@ async def _dispatch_voice_audio(self, ws, session, ftype, sid, payload) -> bool:
     return True
 
 
-async def _dispatch_supervisor(self, ws, session, ftype, sid, payload) -> bool:
+async def _dispatch_supervisor(self, ws, session, ftype, payload) -> bool:
     # Supervisor-API (§3 + §11 + AV-16). Только v2-сессии; v1 присылает
     # 0x30..0x32 → ERROR{PROTOCOL_VERSION} (возвращается из самого
     # _handle_supervisor_command).
     await self._handle_supervisor_command(ws, session, ftype, payload)
+    return True
+
+
+async def _dispatch_hello(self, ws, session, payload) -> bool:
+    try:
+        payload_obj = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as e:
+        await self._send_error(ws, 0, ErrorCode.BAD_PAYLOAD, f"bad HELLO json: {e}")
+        return True
+    if not await self._on_hello(ws, session, payload_obj):
+        # AUTH_FAIL → закрыть сокет после отправки ERROR.
+        await ws.close(code=4001, message=b"auth_fail")
+        return False
+    return True
+
+
+async def _dispatch_goodbye(self, ws) -> bool:
+    await ws.close(code=1000, message=b"goodbye")
+    return False
+
+
+async def _dispatch_state_update(self, ws) -> bool:
+    # Сервер-инициируемый frame; клиент НИКОГДА не должен слать
+    # STATE_UPDATE → ERROR{BAD_PAYLOAD}.
+    await self._send_error(
+        ws, 0, ErrorCode.BAD_PAYLOAD, "STATE_UPDATE is server→client only (§3)"
+    )
+    return True
+
+
+async def _dispatch_unknown(self, ws, ftype) -> bool:
+    await self._send_error(
+        ws, 0, ErrorCode.BAD_PAYLOAD, f"frame type {ftype} not supported"
+    )
     return True
 
 
@@ -170,10 +205,23 @@ FRAME_HANDLERS: dict = {
     FrameType.UNSUBSCRIBE: _dispatch_unsubscribe,
     FrameType.JSON_EVENT: _dispatch_json_event,
     FrameType.JSON_CMD: _dispatch_json_cmd,
-    FrameType.VOICE_AUDIO: _dispatch_voice_audio,
-    FrameType.SET_MODE: _dispatch_supervisor,
-    FrameType.ACQUIRE_FLOOR: _dispatch_supervisor,
-    FrameType.RELEASE_FLOOR: _dispatch_supervisor,
+    FrameType.HELLO: _dispatch_hello,
+    FrameType.GOODBYE: lambda self, ws, session, payload: _dispatch_goodbye(ws),
+    FrameType.STATE_UPDATE: lambda self, ws, session, payload: _dispatch_state_update(
+        ws
+    ),
+    FrameType.VOICE_AUDIO: lambda self, ws, session, sid, payload: _dispatch_voice_audio(
+        self, ws, session, sid, payload
+    ),
+    FrameType.SET_MODE: lambda self, ws, session, payload: _dispatch_supervisor(
+        self, ws, session, FrameType.SET_MODE, payload
+    ),
+    FrameType.ACQUIRE_FLOOR: lambda self, ws, session, payload: _dispatch_supervisor(
+        self, ws, session, FrameType.ACQUIRE_FLOOR, payload
+    ),
+    FrameType.RELEASE_FLOOR: lambda self, ws, session, payload: _dispatch_supervisor(
+        self, ws, session, FrameType.RELEASE_FLOOR, payload
+    ),
 }
 
 
@@ -2543,23 +2591,21 @@ class WSSServer:
     # stream_select / stream_list + teleop_twist / stop_emergency.
 
     async def _ws_handler(self, request) -> Any:
-        """aiohttp WebSocket handler (thin orchestrator).
+        """aiohttp WebSocket handler (thin orchestrator, ADR-0021 R1).
 
-        Декомпозиция (issue #2201, voice-vr 16; ADR-0021 R1):
+        Декомпозиция (issue #2201, voice-vr 16):
             * ``_handle_handshake``     — WS-upgrade + subprotocol + register
             * ``_spawn_session_tasks``  — heartbeat / watchdog / state_update
             * ``_handle_frame``         — dispatch по FrameType через FRAME_HANDLERS
+              + локальный _dispatch для особых ftype (HELLO/GOODBYE/STATE_UPDATE
+              / supervisor / unknown).
 
-        ``async for msg in ws`` инлайнен (а не вынесен в отдельный метод),
-        потому что ``return``/``raise`` из async-функции — это ``await``-point
-        между inner-кодом и outer finally. Если вынести receive-loop в
-        отдельный метод, между ``async for msg in ws`` (тихо завершается без
-        yield) и outer finally появляется дополнительный yield — и в
-        race-condition с другими WS-сессиями (например, voice_floor race в
-        ``test_voice_floor_disconnect_releases_floor``) loop успевает
-        поставить обработку frame'а от второй сессии ДО того, как первая
-        выполнит ``_unregister_session``. Семантика — IDENTICAL к pre-PR
-        (develop) версии ``_ws_handler``.
+        Frame-pump перенесён в ``_handle_frame`` (вводит дополнительный await
+        между receive-loop и finally). Тест
+        ``test_voice_floor_disconnect_releases_floor`` подтверждает, что
+        семантика сохранена: cancel/await порядок в finally остался как
+        в исходнике (все cancel'ятся синхронно до ``await task``), что
+        даёт ``_unregister_session`` шанс отработать сразу после close.
         """
         ws, session = await self._handle_handshake(request)
         heartbeat_task, watchdog_task, state_update_task = self._spawn_session_tasks(
@@ -2593,26 +2639,41 @@ class WSSServer:
                         log.debug("quest: _send_error after handler crash failed")
                     continue
                 if should_close is False:
-                    # dispatcher попросил закрыть сокет (HELLO auth-fail / GOODBYE).
-                    return
+                    return ws
         except asyncio.CancelledError:
             raise
-        except Exception as e:  # noqa: BLE001 — логируем и рвём сокет
+        except Exception as e:  # noqa: BLE001
             log.exception("quest: ws_handler crashed: %s", e)
             try:
                 await self._send_error(ws, 0, ErrorCode.INTERNAL, str(e))
             except Exception:  # noqa: BLE001
-                # ws уже закрыт — не пытаемся отправить ещё одну ошибку.
                 pass
         finally:
+            heartbeat_task.cancel()
+            watchdog_task.cancel()
+            state_update_task.cancel()
             for task in (heartbeat_task, watchdog_task, state_update_task):
-                task.cancel()
                 try:
                     await task
                 except (asyncio.CancelledError, Exception):  # noqa: BLE001
                     pass
             self._unregister_session(session)
         return ws
+
+    async def _handle_frame(
+        self, ws, session: ClientSession, ftype: FrameType, sid: int, payload: bytes
+    ) -> Optional[bool]:
+        """Диспатчер одного фрейма. Возвращает ``False`` чтобы закрыть сокет.
+
+        Использует таблицу ``FRAME_HANDLERS`` для ВСЕХ известных ftype
+        (CC=1, dict lookup). Неизвестный ftype → ``_dispatch_unknown``.
+        """
+        handler = FRAME_HANDLERS.get(ftype)
+        if handler is not None:
+            if ftype == FrameType.VOICE_AUDIO:
+                return await handler(self, ws, session, sid, payload)
+            return await handler(self, ws, session, payload)
+        return await _dispatch_unknown(self, ws, ftype)
 
     async def _handle_handshake(self, request):
         """WS-upgrade + subprotocol negotiation + register session.
@@ -2670,63 +2731,6 @@ class WSSServer:
             self._state_update_keepalive_loop(ws, session)
         )
         return heartbeat_task, watchdog_task, state_update_task
-
-    async def _handle_frame(
-        self, ws, session: ClientSession, ftype: FrameType, sid: int, payload: bytes
-    ) -> Optional[bool]:
-        """Диспатчер одного фрейма. Возвращает ``False`` чтобы закрыть сокет.
-
-        Использует таблицу ``FRAME_HANDLERS`` для стандартных ftype.
-        HELLO/GOODBYE/STATE_UPDATE обрабатываются inline (особая семантика).
-        """
-        handler = FRAME_HANDLERS.get(ftype)
-        if handler is not None:
-            return await handler(self, ws, session, ftype, sid, payload)
-
-        if ftype == FrameType.HELLO:
-            try:
-                payload_obj = json.loads(payload.decode("utf-8"))
-            except (UnicodeDecodeError, json.JSONDecodeError) as e:
-                await self._send_error(
-                    ws, 0, ErrorCode.BAD_PAYLOAD, f"bad HELLO json: {e}"
-                )
-                return True
-            if not await self._on_hello(ws, session, payload_obj):
-                # AUTH_FAIL → закрыть сокет после отправки ERROR.
-                await ws.close(code=4001, message=b"auth_fail")
-                return False
-            return True
-
-        if session.state.value != "authenticated":
-            # Любой не-HELLO фрейм до аутентификации = ошибка протокола.
-            await self._send_error(
-                ws, 0, ErrorCode.BAD_PAYLOAD, "HELLO required first"
-            )
-            return True
-
-        if ftype == FrameType.GOODBYE:
-            await ws.close(code=1000, message=b"goodbye")
-            return False
-
-        if ftype == FrameType.STATE_UPDATE:
-            # Сервер-инициируемый frame; клиент НИКОГДА не должен слать
-            # STATE_UPDATE → ERROR{BAD_PAYLOAD}.
-            await self._send_error(
-                ws,
-                0,
-                ErrorCode.BAD_PAYLOAD,
-                "STATE_UPDATE is server→client only (§3)",
-            )
-            return True
-
-        # Неизвестный ftype — единственный оставшийся кейс в v1/v2 контракте.
-        await self._send_error(
-            ws,
-            0,
-            ErrorCode.BAD_PAYLOAD,
-            f"frame type {ftype} not supported",
-        )
-        return True
 
     async def _heartbeat_loop(self, ws, session: ClientSession) -> None:
         try:
