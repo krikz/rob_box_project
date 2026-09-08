@@ -2117,15 +2117,34 @@ class QuestNode(Node):
             )
             return
         try:
+            # ROS2 audio_common_msgs/AudioData.data — это uint8[]; rclpy при
+            # маршалинге через Cyclone DDS/Zenoh отдаёт его как ``array.array``
+            # (НЕ ``bytes``/``bytearray``). Прежний isinstance-guard
+            # ``isinstance(msg.data, (bytes, bytearray))`` ловил ТОЛЬКО эти
+            # типы, а ``array.array`` пропускал → audio_bytes = b"" → оператор
+            # слышал тишину (issue #2136, ADR-0055 §quest_node).
+            #
+            # ``bytes(msg.data)`` корректно работает для ``array.array``,
+            # ``bytes``, ``bytearray`` и любой iterable-of-int (см. образец
+            # в rob_box_voice/stt_node.py:556). Fallback ``b""`` — только
+            # если msg.data пустой/None (защитный default, в норме не срабатывает).
+            raw_data = msg.data if msg.data is not None else b""
+            audio_bytes = bytes(raw_data) if raw_data else b""
             self.ws_server.deliver_audio(
                 stream="operator_tts",
                 request_id=request_id,
-                audio_bytes=bytes(msg.data) if isinstance(msg.data, (bytes, bytearray)) else b"",
+                audio_bytes=audio_bytes,
                 audio_format="pcm_s16le",
                 content_type="audio/pcm",
                 seq=0,
                 total=0,
                 ws=ws,
+            )
+            # Факт доставки в WS — оставляем info-лог, чтобы было видно
+            # прохождение чанка до оператора (issue #2136 DoD).
+            self.get_logger().info(
+                f"🎧 [ADR-0055] deliver_audio(operator_tts) ok: "
+                f"{len(audio_bytes)}B, request_id={request_id[:8]}"
             )
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warning(
