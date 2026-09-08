@@ -584,6 +584,26 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   // ROOM_D/2 = 4.55, R1 = 4.56 хватает с запасом 1 см). Если Шифу выберет
   // W = 3.2 м — переключить на R2 (ROOM_D = 10.0) одной правкой ниже.
   // aspect 16:9 (как у основного экрана 4.8 × 2.7).
+  //
+  // ИЗВЕСТНЫЙ ОТКРЫТЫЙ ДЕФЕКТ (issue #2142-B, раскопано nightly-review-fix
+  // 2026-09-08, доказано скриптом на THREE.Box3 + точным пересечением
+  // кромки панели с плоскостью экрана-стены z=-3.9): при ТЕКУЩИХ
+  // TARS_PANEL_X/Y/Z и yaw-формуле (см. ниже) панели TARS1/TARS2
+  // физически пересекают прямоугольник главного экрана ДАЖЕ на honestly
+  // исправленной геометрии (mesh.scale = финальный размер, без двойного
+  // масштабирования) и даже на нижней границе диапазона ADR-0074
+  // (W=2.4 м). Расчёт (при неизменных X=2.7/Y=1.5/Z=-3.6/yaw=36.87°):
+  // безопасная ширина без пересечения — не больше ~0.98 м. То есть само
+  // положение/угол из ADR-0074 §4.0 «вариант E» несовместимо с любой
+  // шириной панели из согласованного диапазона 2.4–3.2 м — предыдущая
+  // геометрическая проверка (ADR-0074/0076) сверяла только клиренс до
+  // задней стены (ROOM_D), но не пересечение с главным экраном.
+  // Пофиксить долю бага (двойное масштабирование, mesh был 4.8×1.52 м
+  // вместо заявленных 3.0×1.69 м) — сделано ниже и в tars1_text_panel.ts /
+  // tars2_metrics_panel.ts. Пересечение с главным экраном ЭТИМ не снято:
+  // нужна новая архитектурная карточка (сдвинуть X/Z, увеличить дистанцию
+  // или уменьшить диапазон W) — владелец должен решить, что двигать, как
+  // это уже было с ROOM_D в ADR-0076. НЕ меняю позицию/угол сам.
   const TARS_PANEL_WIDTH = 3.0; // TODO(ADR-0076 R2): 3.2 если Шифу захочет максимум
   const TARS_PANEL_SIZE = {
     width: TARS_PANEL_WIDTH,
@@ -837,6 +857,32 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   // PanelManager. Битый JSON/чужой version → дефолт (молча не молчим: warn).
   const PIPELINE_POS_STORAGE_KEY = "rob_box_quest.voice_pipeline_pos.v1";
 
+  // Диагностика 2026-09-08 (nightly-review-fix, issue "voice button stuck
+  // on main screen"): в отличие от panel_layout_store (там позиция всегда
+  // пересчитывается из angleDeg + ФИКСИРОВАННОГО радиуса 2.0, см.
+  // panel_layout_store.ts:positionFromAngleAndHeight — устойчиво к любым
+  // изменениям геометрии), этот ключ хранит СЫРЫЕ мировые координаты и до
+  // сих пор восстанавливал их без всякой проверки. Раскопки git log
+  // показали: 2026-09-03 (b0c338a9) панель стала перетаскиваемой и её
+  // позиция начала сохраняться; 2026-09-03..09-08 в PointerSystem.radiusOf
+  // жил баг (issue #2143 / ADR-0072), тянувший панель к лицу оператора с
+  // каждым повторным захватом ("после 3-4 захватов — 0.3 м от лица").
+  // Баг в pointer.ts пофиксили (setCenter + честный 3D radiusOf), но САМ
+  // ключ в localStorage — нет: если у оператора уже была захвачена
+  // "убежавшая" позиция, она восстанавливается по сей день, и фикс #2150
+  // на неё не влияет никак. Отсюда и "чиним - а на шлеме всё как было".
+  //
+  // Минимальная защита без версионирования (версия геометрии панели не
+  // менялась после b0c338a9, так что version-bump тут не поможет сам по
+  // себе): отбрасываем сохранённую позицию, если её 3D-расстояние от
+  // дефолтного центра оператора (0, EYE_HEIGHT_M, 0) выходит за разумные
+  // границы — либо "прилипло к лицу" (создуп-баг), либо улетело за пределы
+  // мостика. Дефолтный радиус панели — VOICE_PIPELINE_RADIUS_M (2.4 м);
+  // границы дают запас на осознанный драг оператора, но отсекают явный
+  // мусор.
+  const PIPELINE_POS_MIN_DIST_M = 0.8;
+  const PIPELINE_POS_MAX_DIST_M = 4.0;
+
   function savePipelinePos(): void {
     if (!layoutStorage) return;
     const p = voicePipeline.getPosition();
@@ -859,6 +905,17 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
         typeof d.y === "number" &&
         typeof d.z === "number"
       ) {
+        const dist = Math.hypot(d.x - 0, d.y - EYE_HEIGHT_M, d.z - 0);
+        if (dist < PIPELINE_POS_MIN_DIST_M || dist > PIPELINE_POS_MAX_DIST_M) {
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[captain_bridge] restorePipelinePos: сохранённая позиция на расстоянии ${dist.toFixed(2)} м ` +
+              `от оператора вне допустимых границ [${PIPELINE_POS_MIN_DIST_M}, ${PIPELINE_POS_MAX_DIST_M}] м ` +
+              "(похоже на наследие бага #2143 drag-creep) — игнорируем, стираем ключ, панель остаётся на дефолтной позиции"
+          );
+          layoutStorage.removeItem(PIPELINE_POS_STORAGE_KEY);
+          return;
+        }
         voicePipeline.setPosition(d.x, d.y, d.z);
       }
     } catch (err) {
