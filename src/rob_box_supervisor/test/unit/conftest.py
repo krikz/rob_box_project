@@ -33,9 +33,18 @@ def _install_ros_mocks() -> None:  # noqa: C901 — test infra helpers grow with
 
     # ── FakeNode ──────────────────────────────────────────────────────
     class FakePublisher:
-        def __init__(self, topic: str, msg_type: Any) -> None:
+        def __init__(self, topic: str, msg_type: Any, qos: Any = None) -> None:
             self.topic = topic
             self.msg_type = msg_type
+            self.qos = qos
+            # Latched QoS-проверка: храним durability явно (см.
+            # test_teleop_lock_uses_latched_qos — ADR-0080: twist_mux
+            # читает lock-топики при init, transient_local обязателен,
+            # иначе при реконнекте подписчик пропустит True и потеряет
+            # блокировку. mock должен отражать это).
+            self.durability = (
+                getattr(qos, "durability", None) if qos is not None else None
+            )
             self.published: list[Any] = []
 
         def publish(self, msg: Any) -> None:
@@ -100,7 +109,7 @@ def _install_ros_mocks() -> None:  # noqa: C901 — test infra helpers grow with
 
         # ── pubs / subs / timers / services ─────────────────────────────
         def create_publisher(self, msg_type: Any, topic: str, qos: Any = 10) -> FakePublisher:
-            pub = FakePublisher(topic, msg_type)
+            pub = FakePublisher(topic, msg_type, qos)
             self._publishers[topic] = pub
             return pub
 
@@ -186,7 +195,16 @@ def _install_ros_mocks() -> None:  # noqa: C901 — test infra helpers grow with
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             self.data = ""
 
-    mock_std_msgs_msg = types.SimpleNamespace(String=FakeStringMsg)
+    # std_msgs.msg.Bool — добавлено для ADR-0080: avatar_arbiter публикует
+    # /teleop_lock и /teleop_lock_watchdog как std_msgs/Bool (см.
+    # arbiter_node._publish_teleop_locks). twist_mux ожидает именно
+    # Bool на lock-топиках (см. ADR-0080 R1/R2); String с "true"/"false"
+    # на проде НЕ распознаётся.
+    class FakeBoolMsg:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.data = False
+
+    mock_std_msgs_msg = types.SimpleNamespace(String=FakeStringMsg, Bool=FakeBoolMsg)
     mock_std_msgs = types.SimpleNamespace(msg=mock_std_msgs_msg)
 
     # ── std_srvs.srv.Trigger ──────────────────────────────────────────

@@ -97,6 +97,7 @@ from typing import Any, Callable, Optional
 
 import rclpy
 from rclpy.node import Node
+from std_msgs.msg import Bool as RosBool
 from std_msgs.msg import String as RosString
 
 from rob_box_supervisor.core.state import (
@@ -366,6 +367,21 @@ class AvatarArbiter(Node):
     # мимо). ADR-0028 §4.4 S10 требует «не реже 10 Гц».
     FLOOR_EXPIRY_CHECK_PERIOD_S = 0.1
 
+    # ── twist_mux locks (ADR-0080, voice-vr 06.5 / #2191) ──────────────
+    # Единственный владелец LockManager — avatar_arbiter, поэтому
+    # публикуем ОБА lock-а отсюда (ADR-0080 R3): зеркалят /joystick_lock
+    # по семантике «у меня руль» и блокируют web_ui(50)/voice(25)/nav2(10)
+    # через twist_mux (R4). voice_floor в twist_mux НЕ пробрасывается (R5).
+    TELEOP_LOCK_TOPIC = "/teleop_lock"
+    TELEOP_LOCK_WATCHDOG_TOPIC = "/teleop_lock_watchdog"
+    # 20 Гц достаточно для lock-топика: twist_mux опрашивает lock-топики
+    # синхронно с приходом cmd_vel, и задержка ≤50 мс при освобождении
+    # floor-а не критична (dead-man 500 мс уже внутри). 20 Гц дешевле, чем
+    # отдельный rclpy event-driven callback на каждое изменение LockManager,
+    # и не зависит от того, кто дёрнул acquire/release — один таймер
+    # покрывает все пути (heartbeat-trip, прямой release, FSM-переход).
+    TELEOP_LOCK_PUBLISH_PERIOD_S = 0.05
+
     def __init__(self) -> None:
         super().__init__("avatar_arbiter")
 
@@ -502,6 +518,37 @@ class AvatarArbiter(Node):
         # а не ждём следующего 1 Гц-тика.
         self._expiry_timer = self.create_timer(
             self.FLOOR_EXPIRY_CHECK_PERIOD_S, self._check_floor_expiry
+        )
+
+        # ── twist_mux lock publishers (ADR-0080 R1/R2/R3, #2191) ────────
+        # /teleop_lock и /teleop_lock_watchdog — std_msgs/Bool. Источник
+        # истины один (LockManager.holder(Floor.TELEOP)) — публикуем
+        # дериватив из одного таймера, чтобы пути (acquire/release/expire/
+        # FSM-переход) не разъехались.
+        # QoS: reliable+transient_local (latched) — twist_mux по
+        # контракту читает lock-топики при init и при пересборке графа;
+        # без latched новый подписчик может пропустить True, если
+        # arbiter уже стоит с активным floor (false negative = автономия
+        # не блокируется).
+        lock_qos = QoSProfile(
+            depth=1,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            reliability=rclpy.qos.ReliabilityPolicy.RELIABLE,
+        )
+        self._teleop_lock_pub = self.create_publisher(
+            RosBool, self.TELEOP_LOCK_TOPIC, lock_qos
+        )
+        self._teleop_lock_watchdog_pub = self.create_publisher(
+            RosBool, self.TELEOP_LOCK_WATCHDOG_TOPIC, lock_qos
+        )
+        # Один 20 Гц-таймер на оба lock-топика (см.
+        # TELEOP_LOCK_PUBLISH_PERIOD_S). Кешируем последнее опубликованное
+        # значение каждого lock-а: показывать False чаще, чем того же
+        # False за 50 мс, смысла нет, и latched QoS всё равно съест дубль.
+        self._last_published_teleop_lock: Optional[bool] = None
+        self._last_published_teleop_lock_watchdog: Optional[bool] = None
+        self._teleop_lock_timer = self.create_timer(
+            self.TELEOP_LOCK_PUBLISH_PERIOD_S, self._publish_teleop_locks
         )
 
         # ── IDL-типы для типизированных сервисов (AV-12, ADR-0028 §4.3) ──
@@ -869,6 +916,71 @@ class AvatarArbiter(Node):
         msg = RosString()
         msg.data = payload_str
         self._state_pub.publish(msg)
+
+    # ── twist_mux lock publish (ADR-0080 R1/R2/R3, #2191) ───────────────
+    def _publish_teleop_locks(self) -> None:
+        """Timer-callback 20 Гц: публикует /teleop_lock и /teleop_lock_watchdog.
+
+        Источник истины — :class:`LockManager` (``_lock_manager``).
+        :py:meth:`LockManager.holder` сам учитывает dead-man: если с
+        последнего heartbeat прошло > ``dead_man_timeout_ms`` — возвращает
+        ``None`` и обнуляет state. Это и есть «проверка dead-man
+        семантика», которую просит карточка: за счёт единственного
+        вызова ``holder()`` избегаем второго пути снятия lock-а через
+        :py:meth:`force_expire` (тот уже работает для ``/avatar/state``
+        в :py:meth:`_check_floor_expiry`, см. ADR-0028 §4.4 S10).
+
+        Семантика двух lock-ов (ADR-0080 §3):
+
+        - ``/teleop_lock`` = (LockManager.holder(Floor.TELEOP) is not None).
+          Пока quest-оператор держит teleop_floor — True. Sticky: если
+          арбитр умрёт, twist_mux оставит последнее True (timeout=0.0
+          в yaml), автономия останется заблокированной.
+        - ``/teleop_lock_watchdog`` = True (heartbeat «я жив»).
+          Если арбитр умрёт — twist_mux через 0.5 с опустит watchdog в
+          False, и общий lock перестанет действовать (timeout=0.5 в
+          yaml) → автономия разблокирована без ручного ``ros2 topic pub``.
+
+        В обоих случаях работаем в monitor- и active-режимах одинаково:
+        LockManager — единственный владелец floor-ов (ADR-0028 §4.2), его
+        состояние не зависит от self._mode. monitor (ADR-0028 §4.5)
+        отличается только тем, что сервисы acquire/release/set_mode
+        не меняют floor-ы, но LockManager.holder() всё равно читает то,
+        что записали раньше (или вообще ничего, если монитор свежий).
+
+        De-dup публикации: показываем одно и то же значение только при
+        РЕАЛЬНОМ изменении (``self._last_published_*``). Latched QoS и
+        так проглотит дубликаты, но экономия полосы и логов в 20 Гц
+        заметна.
+        """
+        from rob_box_supervisor.core import Floor  # noqa: PLC0415
+
+        try:
+            teleop_holder = self._lock_manager.holder(Floor.TELEOP)
+        except Exception as exc:  # noqa: BLE001 — не валить таймер
+            self._log.warning(
+                f"avatar_arbiter: teleop lock publish skipped (holder() failed): "
+                f"{type(exc).__name__}: {exc}"
+            )
+            return
+
+        teleop_lock_value = bool(teleop_holder is not None)
+        # watchdog — True пока нода исполняет timer-callback (то есть
+        # «жива и крутит rclpy event loop»). Если процесс умер — таймер
+        # остановится, twist_mux по timeout 0.5 снимет watchdog в False.
+        watchdog_value = True
+
+        if teleop_lock_value != self._last_published_teleop_lock:
+            msg = RosBool()
+            msg.data = teleop_lock_value
+            self._teleop_lock_pub.publish(msg)
+            self._last_published_teleop_lock = teleop_lock_value
+
+        if watchdog_value != self._last_published_teleop_lock_watchdog:
+            msg = RosBool()
+            msg.data = watchdog_value
+            self._teleop_lock_watchdog_pub.publish(msg)
+            self._last_published_teleop_lock_watchdog = watchdog_value
 
     # ── subscription callbacks (Phase 1: best-effort parse) ──────────
     def _on_odom_msg(self, msg: RosString) -> None:

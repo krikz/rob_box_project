@@ -50,8 +50,27 @@ twist_mux:
     # оператор работает пультом (issue #1344 — «поворот приходит сам»).
     # timeout=0.0 → lock «липкий»: последнее значение сохраняется, если нода
     # умрёт/зависнет (вооружён → автономия заблокирована до восстановления).
+    #
+    # teleop_lock + teleop_lock_watchdog (ADR-0080, #2191): зеркалят
+    # /joystick_lock по семантике «у меня руль» — avatar_arbiter
+    # (единственный владелец LockManager, ADR-0028 §4.2) публикует True
+    # пока teleop_floor занят. Блокируют web_ui(50)/voice(25)/nav2(10).
+    #
+    # Гибрид (R2 ADR-0080): /teleop_lock sticky (timeout=0.0) — как
+    # joystick_lock, безопасность; /teleop_lock_watchdog timeout=0.5 —
+    # auto-release при падении avatar_arbiter без ручного ros2 topic pub.
+    # twist_mux смотрит на КАЖДЫЙ lock независимо: достаточно одного True,
+    # чтобы заблокировать нижестоящие источники.
     locks:
       joystick_lock:
         topic: /joystick_lock
         timeout: 0.0
+        priority: 100
+      teleop_lock:
+        topic: /teleop_lock
+        timeout: 0.0
+        priority: 100
+      teleop_lock_watchdog:
+        topic: /teleop_lock_watchdog
+        timeout: 0.5
         priority: 100

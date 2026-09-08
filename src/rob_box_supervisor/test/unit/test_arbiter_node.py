@@ -1311,8 +1311,201 @@ class TestAvatarArbiterTeleopHeartbeat(unittest.TestCase):
         self.node._on_teleop_heartbeat(msg)
 
 
-if __name__ == "__main__":
-    unittest.main()
+# ════════════════════════════════════════════════════════════════════════
+# ADR-0080 / voice-vr 06.5 / #2191 — /teleop_lock + /teleop_lock_watchdog
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestTeleopLockPublishers(unittest.TestCase):
+    """ADR-0080 R1/R2/R3 — avatar_arbiter публикует twist_mux-lock-и.
+
+    Покрывает:
+    - наличие publisher-ов на /teleop_lock и /teleop_lock_watchdog
+      (Bool, latched);
+    - переход floor acquired → released → expired, и как меняется
+      публикация;
+    - watchdog всегда True пока таймер крутится;
+    - de-dup публикаций (одно и то же значение не дублируется).
+    """
+
+    def setUp(self) -> None:
+        self.node = AvatarArbiter()
+
+    def tearDown(self) -> None:
+        self.node.destroy_node()
+
+    # ── структура: оба publisher-а зарегистрированы в __init__ ─────────
+    def test_teleop_lock_publisher_exists(self) -> None:
+        """ADR-0080 R1: /teleop_lock publisher создан в __init__."""
+        self.assertIn("/teleop_lock", self.node._publishers)
+
+    def test_teleop_lock_watchdog_publisher_exists(self) -> None:
+        """ADR-0080 R2: /teleop_lock_watchdog publisher создан в __init__."""
+        self.assertIn("/teleop_lock_watchdog", self.node._publishers)
+
+    def test_teleop_lock_publish_timer_registered(self) -> None:
+        """20 Гц-таймер на оба lock-топика зарегистрирован."""
+        timer_periods = [t.period for t in self.node._timers]
+        # Период из TELEOP_LOCK_PUBLISH_PERIOD_S (0.05 с).
+        self.assertIn(0.05, timer_periods)
+
+    def test_teleop_lock_uses_latched_qos(self) -> None:
+        """Latched (transient_local) QoS — иначе twist_mux при реконнекте
+        может пропустить True и потерять блокировку (false negative)."""
+        pub = self.node._publishers["/teleop_lock"]
+        # mock-rclpy conftest хранит qos через ``QoSProfile.__init__``;
+        # проверяем, что durability был transient_local.
+        self.assertEqual(getattr(pub, "durability", None), "transient_local")
+
+    # ── happy path: floor acquired → release ─────────────────────────
+    def test_acquire_releases_publishes_true_then_false(self) -> None:
+        """Переход floor acquired → released отражается в /teleop_lock."""
+        from rob_box_supervisor.core import Floor as LockFloor
+
+        # Базовое состояние: floor свободен, _last_published_… = None.
+        # Первый тик должен опубликовать False (явное «нет floor-а» —
+        # раньше None означал «никогда не публиковали»).
+        self.node._publish_teleop_locks()
+        pub = self.node._publishers["/teleop_lock"]
+        self.assertEqual(len(pub.published), 1)
+        self.assertFalse(pub.published[0].data)
+        self.assertFalse(self.node._last_published_teleop_lock)
+
+        # acquire → True в /teleop_lock (только если значение сменилось).
+        self.node._lock_manager.acquire("quest", LockFloor.TELEOP)
+        self.node._publish_teleop_locks()
+        self.assertEqual(len(pub.published), 2)
+        self.assertTrue(pub.published[1].data)
+        self.assertTrue(self.node._last_published_teleop_lock)
+
+        # release → False снова.
+        self.node._lock_manager.release("quest", LockFloor.TELEOP)
+        self.node._publish_teleop_locks()
+        self.assertEqual(len(pub.published), 3)
+        self.assertFalse(pub.published[2].data)
+        self.assertFalse(self.node._last_published_teleop_lock)
+
+    # ── dead-man: floor expired → /teleop_lock = False ───────────────
+    def test_expired_floor_publishes_false(self) -> None:
+        """Dead-man trip (heartbeat перестал приходить) → False в lock.
+
+        ADR-0080: holder() сам учитывает dead-man (LockManager.holder()
+        возвращает None и обнуляет state, если с последнего heartbeat
+        прошло > timeout). Значит после ``_check_floor_expiry`` —
+        /teleop_lock автоматически становится False.
+        """
+        from rob_box_supervisor.core import Floor as LockFloor
+
+        # Управляем часами через подменяемый clock (AV-13), чтобы
+        # воспроизвести dead-man в тесте.
+        clock = {"t": 1000}
+
+        def _fake_clock() -> int:
+            return clock["t"]
+
+        self.node._now_ms = _fake_clock
+        self.node._lock_manager = type(self.node._lock_manager)(  # noqa: PLC0415
+            clock=_fake_clock, timeout_ms=500
+        )
+
+        # acquire + heartbeat в момент t=1000.
+        self.node._lock_manager.acquire("quest", LockFloor.TELEOP, now_ms=1000)
+        self.node._lock_manager.heartbeat("quest", LockFloor.TELEOP, now_ms=1000)
+        self.node._publish_teleop_locks()
+        pub = self.node._publishers["/teleop_lock"]
+        self.assertTrue(pub.published[-1].data)
+
+        # Часы прыгают за 500 мс — heartbeat не приходил, floor истёк.
+        clock["t"] = 1600
+        # Принудительно трипаем через force_expire (как watcher делает в проде).
+        self.node._lock_manager.force_expire(LockFloor.TELEOP, now_ms=1600)
+        self.node._publish_teleop_locks()
+        self.assertFalse(pub.published[-1].data)
+
+    # ── watchdog: всегда True, пока таймер жив ──────────────────────
+    def test_watchdog_publishes_true_on_first_tick(self) -> None:
+        """Первый тик публикует True в /teleop_lock_watchdog (heartbeat)."""
+        self.node._publish_teleop_locks()
+        pub = self.node._publishers["/teleop_lock_watchdog"]
+        self.assertEqual(len(pub.published), 1)
+        self.assertTrue(pub.published[0].data)
+        self.assertTrue(self.node._last_published_teleop_lock_watchdog)
+
+    def test_watchdog_publishes_true_after_teleop_floor_release(self) -> None:
+        """Watchdog живёт независимо от teleop_floor: release floor → watchdog
+        всё равно True (арбитр жив, просто floor освободился)."""
+        from rob_box_supervisor.core import Floor as LockFloor
+
+        self.node._lock_manager.acquire("quest", LockFloor.TELEOP)
+        self.node._publish_teleop_locks()  # → True в оба
+        self.node._lock_manager.release("quest", LockFloor.TELEOP)
+        self.node._publish_teleop_locks()  # → False в /teleop_lock, True в watchdog
+
+        wd_pub = self.node._publishers["/teleop_lock_watchdog"]
+        # Последний опубликованный watchdog — True.
+        self.assertTrue(wd_pub.published[-1].data)
+
+    # ── de-dup: одно и то же значение не дублируется ────────────────
+    def test_no_redundant_publish_when_state_unchanged(self) -> None:
+        """Если значение не изменилось с прошлого тика — НЕ публикуем.
+
+        Экономит полосу и логи при steady-state (20 Гц × 2 топика вхолостую).
+        """
+        from rob_box_supervisor.core import Floor as LockFloor
+
+        self.node._publish_teleop_locks()  # первый тик: False в оба
+        teleop_pub = self.node._publishers["/teleop_lock"]
+        wd_pub = self.node._publishers["/teleop_lock_watchdog"]
+        teleop_count = len(teleop_pub.published)
+        wd_count = len(wd_pub.published)
+
+        # acquire + release + acquire — всё укладывается в один и тот же
+        # False→True→False→True. Здесь acquire оставляет True, и второй
+        # тик ничего не меняет: нода держит floor, всё ещё True.
+        self.node._lock_manager.acquire("quest", LockFloor.TELEOP)
+        self.node._publish_teleop_locks()  # False → True (должен publish)
+        # Состояние не изменилось (True → True): не публикуем.
+        self.node._publish_teleop_locks()
+        self.assertEqual(len(teleop_pub.published), teleop_count + 1)
+
+        # Watchdog всегда True, поэтому только первый тик публикует.
+        # Сейчас он уже опубликован → второй тик не публикует.
+        self.assertEqual(len(wd_pub.published), wd_count)
+
+    # ── FSM-переход отпускает floor → /teleop_lock = False ───────────
+    def test_mode_transition_releases_floor_and_lock(self) -> None:
+        """Если FSM-переход (mixed → off) освобождает floor в LockManager —
+        /teleop_lock переходит в False. Источник истины един (LockManager),
+        отдельной синхронизации lock-ов не нужно.
+        """
+        from rob_box_supervisor.core import Floor as LockFloor
+
+        self.node._lock_manager.acquire("quest", LockFloor.TELEOP)
+        self.node._publish_teleop_locks()  # → True
+        teleop_pub = self.node._publishers["/teleop_lock"]
+        self.assertTrue(teleop_pub.published[-1].data)
+
+        # Имитируем то, что делает _release_lock_manager_floor после FSM.
+        self.node._release_lock_manager_floor("quest", LockFloor.TELEOP)
+        self.node._publish_teleop_locks()
+        self.assertFalse(teleop_pub.published[-1].data)
+
+    # ── guard: ошибка в holder() не валит таймер ─────────────────────
+    def test_publish_survives_lock_manager_error(self) -> None:
+        """Если LockManager.holder() бросает исключение — таймер не падает,
+        пишет WARN и пропускает тик. Иначе 20 Гц-таймер стал бы опасен
+        для ноды (LOOP crash).
+        """
+        from unittest.mock import patch
+
+        with patch.object(
+            self.node._lock_manager, "holder", side_effect=RuntimeError("boom")
+        ):
+            # Не должно быть исключения наружу.
+            try:
+                self.node._publish_teleop_locks()
+            except RuntimeError:
+                self.fail("publish must not propagate exceptions out of timer")
 
 
 if __name__ == "__main__":
