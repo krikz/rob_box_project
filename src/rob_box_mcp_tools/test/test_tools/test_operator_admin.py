@@ -507,8 +507,51 @@ class TestHttpHelpers:
 
 
 @pytest.mark.unit
+def _autorespond(tool, payload_factory):
+    """Смоделировать avatar_supervisor: ответить на panel_request.
+
+    issue #2184: тул больше не «выстрелил и забыл» — он ждёт данных в
+    ``/avatar/tars/panel_data``, чтобы ТАРС называл оператору числа, а не
+    рапортовал об открытии панели. В тестах супервизора нет, поэтому
+    publish на panel_request сразу дёргает обратный callback с тем же
+    request_id (как это делает TarsPanelDispatcher на роботе).
+
+    ``payload_factory(request_id) -> dict`` — тело ответа.
+    """
+    pub = tool._panel_request_pub
+    original = pub.publish
+
+    def _publish_and_answer(msg):
+        original(msg)
+        request = json.loads(msg.data)
+        reply = Mock()
+        reply.data = json.dumps(payload_factory(request["request_id"]))
+        tool._on_panel_data(reply)
+
+    pub.publish = _publish_and_answer
+    return pub
+
+
+def _ok_payload(request_id, *, query="rate(process_cpu_seconds_total[5m])"):
+    return {
+        "request_id": request_id,
+        "status": "ok",
+        "query": query,
+        "summary": "Вывел на TARS 2 — voice-assistant: 0.04",
+        "series": [
+            {
+                "name": "voice-assistant",
+                "labels": {"instance": "10.1.1.11:9100"},
+                "points": [[1788893900.0, 0.03], [1788893960.0, 0.04]],
+            }
+        ],
+        "url": "http://10.1.1.249:3000/explore?orgId=1&left=%7B%7D",
+        "error": "",
+    }
+
+
 class TestShowMetricsTool:
-    """Тесты ShowMetricsTool — операторский show_metrics (issue #2113)."""
+    """Тесты ShowMetricsTool — операторский show_metrics (issue #2113/#2184)."""
 
     def test_tool_metadata(self, mock_node):
         """Метаданные tool'а: имя, slice, обязательные параметры."""
@@ -550,29 +593,121 @@ class TestShowMetricsTool:
         ``{"request_id": str, "query": str, "datasource": str}``.
         """
         tool = ShowMetricsTool(mock_node)
+        pub = _autorespond(tool, _ok_payload)
         result = tool.execute(query="rate(cpu_usage[5m])")
 
         assert result.success is True
         assert result.data["datasource"] == "prometheus"
-        assert result.data["query"] == "rate(cpu_usage[5m])"
-        # request_id — 8 hex символов (uuid4.hex[:8])
-        assert isinstance(result.data["request_id"], str)
-        assert len(result.data["request_id"]) == 8
-        # message — то, что LLM повторит оператору
-        assert "Опубликовал" in result.message
+        # query в ответе — тот, что реально выполнил супервизор (он мог
+        # отрезолвить несуществующее имя метрики).
+        assert result.data["query"] == "rate(process_cpu_seconds_total[5m])"
+        assert result.data["status"] == "ok"
+        assert result.data["series_count"] == 1
+        # latest — числа для голосового ответа ТАРСа.
+        assert result.data["latest"] == {"voice-assistant": 0.04}
+        # message — то, что LLM повторит оператору: значения, а не обещание.
+        assert "0.04" in result.message
+        assert "Опубликовал" not in result.message
 
         # Проверяем публикацию на /avatar/tars/panel_request
-        pub = mock_node._publishers["/avatar/tars/panel_request"]
         assert len(pub.published_messages) == 1
         msg = pub.published_messages[0]
         payload = json.loads(msg.data)
         assert payload["query"] == "rate(cpu_usage[5m])"
         assert payload["datasource"] == "prometheus"
         assert payload["request_id"] == result.data["request_id"]
+        # request_id — 8 hex символов (uuid4.hex[:8])
+        assert len(result.data["request_id"]) == 8
+
+    def test_execute_reports_timeout_instead_of_claiming_success(self, mock_node):
+        """Супервизор молчит → success=False, а не «открыл панель».
+
+        Регрессия issue #2184: тул возвращал success=True сразу после
+        публикации, и ТАРС бодро сообщал оператору об открытой панели, даже
+        когда avatar_supervisor лежал (ADR-0018).
+        """
+        import rob_box_mcp_tools.tools.operator_admin as oa
+
+        tool = ShowMetricsTool(mock_node)
+        original_timeout = oa._SHOW_METRICS_TIMEOUT_SEC
+        oa._SHOW_METRICS_TIMEOUT_SEC = 0.05  # никто не ответит
+        try:
+            result = tool.execute(query="up")
+        finally:
+            oa._SHOW_METRICS_TIMEOUT_SEC = original_timeout
+        assert result.success is False
+        assert "panel_data" in result.error
+
+    def test_execute_empty_result_is_success_but_says_no_data(self, mock_node):
+        """status=empty — тракт цел, данных нет: LLM не должен выдумывать числа."""
+        tool = ShowMetricsTool(mock_node)
+        _autorespond(
+            tool,
+            lambda rid: {
+                "request_id": rid,
+                "status": "empty",
+                "query": "rate(network_latency_ms[5m])",
+                "summary": "По запросу «rate(network_latency_ms[5m])» данных нет. Есть: up.",
+                "series": [],
+                "available": ["up"],
+            },
+        )
+        result = tool.execute(query="rate(network_latency_ms[5m])")
+        assert result.success is True
+        assert result.data["status"] == "empty"
+        assert result.data["series_count"] == 0
+        assert result.data["available"] == ["up"]
+        assert "данных нет" in result.message.lower()
+
+    def test_execute_supervisor_error_propagates(self, mock_node):
+        """Prometheus лёг → success=False с причиной от супервизора."""
+        tool = ShowMetricsTool(mock_node)
+        _autorespond(
+            tool,
+            lambda rid: {
+                "request_id": rid,
+                "status": "error",
+                "query": "up",
+                "summary": "Метрики не пришли: connection refused",
+                "error": "http://10.1.1.249:9090/api/v1/query_range: connection refused",
+            },
+        )
+        result = tool.execute(query="up")
+        assert result.success is False
+        assert "connection refused" in result.error
+
+    def test_execute_ignores_foreign_request_ids(self, mock_node):
+        """Ответ на ЧУЖОЙ request_id не будит наш вызов.
+
+        На шине параллельно живут запросы от других вызовов ТАРСа — взять
+        чужие данные значило бы показать оператору не тот график.
+        """
+        import rob_box_mcp_tools.tools.operator_admin as oa
+
+        tool = ShowMetricsTool(mock_node)
+        _autorespond(tool, lambda rid: _ok_payload("deadbeef"))
+        original_timeout = oa._SHOW_METRICS_TIMEOUT_SEC
+        oa._SHOW_METRICS_TIMEOUT_SEC = 0.05
+        try:
+            result = tool.execute(query="up")
+        finally:
+            oa._SHOW_METRICS_TIMEOUT_SEC = original_timeout
+        assert result.success is False
 
     def test_execute_loki_datasource_propagates_to_payload(self, mock_node):
         """datasource=loki → попадает в payload (для LogQL-запросов)."""
         tool = ShowMetricsTool(mock_node)
+        pub = _autorespond(
+            tool,
+            lambda rid: {
+                "request_id": rid,
+                "status": "ok",
+                "query": '{job="voice"}',
+                "summary": "Вывел на TARS 2 — 2 строки",
+                "series": [],
+                "lines": [{"ts": 1788893960.0, "line": "hello", "labels": {}}],
+            },
+        )
         result = tool.execute(
             query='{job="voice"}',
             datasource="loki",
@@ -580,7 +715,7 @@ class TestShowMetricsTool:
 
         assert result.success is True
         assert result.data["datasource"] == "loki"
-        pub = mock_node._publishers["/avatar/tars/panel_request"]
+        assert result.data["series_count"] == 1
         payload = json.loads(pub.published_messages[0].data)
         assert payload["datasource"] == "loki"
         assert payload["query"] == '{job="voice"}'
@@ -588,10 +723,10 @@ class TestShowMetricsTool:
     def test_execute_datasource_normalizes_case(self, mock_node):
         """datasource='Prometheus' → 'prometheus' (lowercase, как у dispatcher'а)."""
         tool = ShowMetricsTool(mock_node)
+        pub = _autorespond(tool, lambda rid: _ok_payload(rid, query="up"))
         result = tool.execute(query="up", datasource="Prometheus")
         assert result.success is True
         assert result.data["datasource"] == "prometheus"
-        pub = mock_node._publishers["/avatar/tars/panel_request"]
         payload = json.loads(pub.published_messages[0].data)
         assert payload["datasource"] == "prometheus"
 
@@ -644,6 +779,7 @@ class TestShowMetricsTool:
     def test_request_ids_are_unique_across_calls(self, mock_node):
         """request_id должен быть уникален (uuid4 hex)."""
         tool = ShowMetricsTool(mock_node)
+        _autorespond(tool, lambda rid: _ok_payload(rid, query="up"))
         ids = set()
         for _ in range(20):
             r = tool.execute(query="up")

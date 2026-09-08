@@ -1628,6 +1628,20 @@ export function bootstrap(opts: BootstrapOptions): {
             }
             return;
           }
+          // issue #2184 — TARS 2 panel DATA: ряды точек из Prometheus или
+          // строки Loki. Приходит следом за tars_panel_url на тот же
+          // tool call и перекрывает его: setPanelData рисует настоящий
+          // график, а не host/path ссылки. Формат — messages.ts,
+          // {type:"tars_panel_data", status, query, note, summary,
+          //  series, lines, available, url, error, ts_ms}.
+          if ((event as { type?: string }).type === "tars_panel_data") {
+            bridge.tars2Panel.setPanelData(
+              event as unknown as Parameters<
+                typeof bridge.tars2Panel.setPanelData
+              >[0]
+            );
+            return;
+          }
           // AV-26 / R7: robot_alert от сервера → toast + HUD-метка.
           // Формат: { type:"robot_alert", code, level, active?, args, ts_ms }.
           // active:true → поднятие; active:false или отсутствует +
