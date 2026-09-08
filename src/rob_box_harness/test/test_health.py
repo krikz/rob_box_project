@@ -266,14 +266,15 @@ async def test_check_deepseek_balance_returns_total(monkeypatch: pytest.MonkeyPa
 
 
 @pytest.mark.asyncio
-async def test_check_deepseek_balance_multicurrency_uses_best_currency(
+async def test_check_deepseek_balance_negative_account_ignored(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """🔴 FIX (live 08.09): CNY и USD НЕ суммируются как одна валюта.
+    """🔴 FIX (live 08.09): отрицательный счёт не вычитается из хорошего.
 
     Реальный ответ /user/balance: CNY = -1.02 (минус!), USD = +5.60.
     Старый код складывал валюты → баланс -0.31 ≤ 0 → DeepSeek ошибочно
     unavailable (TTL 300s) → робот «интернет недоступен», хотя USD были.
+    Теперь: учитываем только положительные счета → USD 5.60 → healthy.
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -291,16 +292,15 @@ async def test_check_deepseek_balance_multicurrency_uses_best_currency(
 
     client = _patch_httpx_client(monkeypatch, handler)
     balance = await check_deepseek_balance("https://api.deepseek.com", "sk-test")
-    # Должен вернуть лучшую валюту (USD), а не сумму CNY+USD.
     assert balance == pytest.approx(5.60)
     await client.aclose()
 
 
 @pytest.mark.asyncio
-async def test_check_deepseek_balance_multicurrency_sums_within_currency(
+async def test_check_deepseek_balance_sums_all_positive_accounts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Записи ОДНОЙ валюты суммируются; максимум — по валютам."""
+    """Суммируются все положительные счета, валюты не важны."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -318,15 +318,15 @@ async def test_check_deepseek_balance_multicurrency_sums_within_currency(
 
     client = _patch_httpx_client(monkeypatch, handler)
     balance = await check_deepseek_balance("https://api.deepseek.com", "sk-test")
-    assert balance == pytest.approx(110.0)  # max(CNY=110, USD=3)
+    assert balance == pytest.approx(113.0)
     await client.aclose()
 
 
 @pytest.mark.asyncio
-async def test_check_deepseek_balance_all_negative_returns_negative_max(
+async def test_check_deepseek_balance_all_negative_returns_zero(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Все валюты ≤ 0 → возвращается отрицательный максимум (unavailable)."""
+    """Все счета ≤ 0 → 0.0 (unavailable)."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -343,7 +343,7 @@ async def test_check_deepseek_balance_all_negative_returns_negative_max(
 
     client = _patch_httpx_client(monkeypatch, handler)
     balance = await check_deepseek_balance("https://api.deepseek.com", "sk-test")
-    assert balance == pytest.approx(-0.50)
+    assert balance == 0.0
     await client.aclose()
 
 
