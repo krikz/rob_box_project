@@ -28,7 +28,7 @@ from ..core.avatar_arbiter import (
     AcquireResult,
     LocalAvatarArbiterClient,
 )
-from ..core.floor import AvatarFloorSnapshot, AvatarStateFloorCache
+from ..core.floor import AvatarFloorSnapshot, AvatarStateFloorCache, FloorViewUpdate
 from ..protocol.frame import FrameType, decode_frame, encode_frame
 from ..streams.registry import STREAM_CATALOG, get_stream
 from .session import (
@@ -750,7 +750,7 @@ class WSSServer:
         # #1999 follow-up будут удалены.
         self._floor_tracker = self._avatar_arbiter
         self._voice_floor = self._avatar_arbiter
-        # client_id (= session_id) → True если ws_server уже сообщил
+        # session_id → True если ws_server уже сообщил
         # клиенту о FLOOR_HELD-error в текущем окне rate-limit. Нужно,
         # чтобы при HOLD-окне не слать ERROR повторно (rate-limit — на
         # уровне avatar_arbiter клиента, но здесь дополнительно дедуплим,
@@ -1224,6 +1224,79 @@ class WSSServer:
             if sess.server_client_id == client_id:
                 return sess
         return None
+
+    def update_floor_cache(
+        self, snapshot: "AvatarFloorSnapshot"
+    ) -> "FloorViewUpdate":
+        """Обновить :py:attr:`AvatarStateFloorCache` из /avatar/state.
+
+        Issue #2190 (voice-vr 05): «живой путь floor_lost». Раньше
+        кеш жил только через ``LocalAvatarArbiterClient._push_to_cache``
+        (мутации из try_acquire/release) — внешний ``/avatar/state``
+        из avatar_supervisor никак не доходил до ws_server. Теперь
+        QuestBridge.on_avatar_state парсит msgpack → ``AvatarFloorSnapshot``
+        и зовёт этот метод; он же возвращает diff (``FloorViewUpdate``)
+        — на его основании QuestBridge шлёт ``JSON_EVENT{floor_lost}``
+        бывшему держателю, если avatar_supervisor перехватил/освободил
+        floor.
+
+        Метод вызывается из aiohttp-loop (см. ``_dispatch_state_update``),
+        поэтому single-thread инвариант кеша соблюдён.
+        """
+        return self._floor_cache.update(snapshot)
+
+    def notify_floor_lost_external(self, client_id: str, reason: str) -> None:
+        """Шлёт ``JSON_EVENT{floor_lost}`` в сокет указанного client_id.
+
+        Issue #2190: ``QuestBridge.on_avatar_state`` зовёт этот метод,
+        когда diff из ``AvatarStateFloorCache.update`` показал, что
+        бывший держатель floor-а (server_client_id) был одной из
+        наших Quest-сессий. avatar_supervisor (внешний) перехватил
+        или освободил floor — клиент должен DISARM-нуть и показать тост.
+
+        ``client_id`` — server_client_id (``"quest:<uuid>"``).
+        Метод НЕ трогает ``_avatar_arbiter.floor_holder`` —
+        avatar_supervisor остаётся источником истины; ws_server только
+        оповещает UI клиента.
+
+        Если у клиента ещё нет активной WS-сессии (например, отключился
+        пока avatar_supervisor перехватывал) — метод no-op. Это
+        безопасно, потому что кеш уже обновлён и при следующем
+        ``subscribe``/переподключении клиент увидит правильный state.
+        """
+        if not client_id:
+            return
+        session = self._find_session_by_client_id(client_id)
+        if session is None or not session.is_open():
+            return
+        ws = self._ws_by_session.get(session.session_id)
+        if ws is None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        if loop is None:
+            return
+
+        async def _notify() -> None:
+            try:
+                payload = json.dumps(
+                    {
+                        "type": "floor_lost",
+                        "floor": "teleop",
+                        "reason": reason,
+                        "ts_ms": int(time.time() * 1000),
+                    },
+                    separators=(",", ":"),
+                ).encode("utf-8")
+                await ws.send_bytes(encode_frame(FrameType.JSON_EVENT, 0, payload))
+            except Exception as exc:  # noqa: BLE001
+                log.warning("quest: floor_lost notify failed: %s", exc)
+
+        fut = asyncio.run_coroutine_threadsafe(_notify(), loop)
+        fut.add_done_callback(_consume_future_exception)
+        log.info("quest: floor_lost notify client_id=%s reason=%s", client_id, reason)
 
     def on_floor_lost_external(self, client_id: str) -> None:
         """Внешнее уведомление (от Bridge/avatar_supervisor) о потере floor.
