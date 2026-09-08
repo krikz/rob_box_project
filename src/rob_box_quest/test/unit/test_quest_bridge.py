@@ -969,3 +969,155 @@ def test_quest_node_uses_pick_voice_from_voice_picker_module():
         "Если ты это убрал — это регресс: set_voice снова ходит через "
         "реестр/кэш неверным путём и ломает выбор голоса на роботе."
     )
+
+
+# ---------------------------------------------------------------------------
+# relay_teleop_heartbeat — IDL-типизация (issue #2189, ADR-0028 §4.4 S10)
+# ---------------------------------------------------------------------------
+#
+# До #2189 relay_teleop_heartbeat публиковал ``std_msgs/String`` с JSON-payload,
+# а супервизор-арбитр был подписан на ``rob_box_supervisor_msgs/msg/
+# TeleopHeartbeat`` — разные типы не соединяются, поэтому
+# LockManager.heartbeat() ни разу не вызывался и dead-man 500 мс был
+# фактически выключен. Эти тесты фиксируют, что:
+# 1) relay шлёт объект-сообщение с полями ``client_id/ts_ms/seq`` (а не JSON
+#    в ``.data`` как было);
+# 2) тип соответствует IDL ``TeleopHeartbeat`` из rob_box_supervisor_msgs;
+# 3) ``_heartbeat_pub=None`` — no-op (monitor-safe, ADR-0028 §4.5).
+
+
+class _FakeTeleopHeartbeatMsg:
+    """Минимальный fake IDL-объекта ``TeleopHeartbeat``.
+
+    Поля ровно как в ``src/rob_box_supervisor_msgs/msg/TeleopHeartbeat.msg``
+    (string client_id, uint64 ts_ms, uint32 seq) — этого достаточно для
+    unit-теста моста, который формирует сообщение и публикует его.
+    IDL-класс из ``rob_box_supervisor_msgs`` НЕ нужен: тест работает
+    даже на dev-env без colcon build (тот же fail-safe, что и
+    ``relay_teleop_heartbeat``).
+    """
+
+    def __init__(self) -> None:
+        self.client_id: str = ""
+        self.ts_ms: int = 0
+        self.seq: int = 0
+
+
+def _install_fake_teleop_heartbeat_module():
+    """Подменить ``rob_box_supervisor_msgs.msg.TeleopHeartbeat`` на fake.
+
+    Используется только в этом файле: возвращает модуль-fake, чтобы
+    ``from rob_box_supervisor_msgs.msg import TeleopHeartbeat`` внутри
+    ``relay_teleop_heartbeat`` отрезолвился в наш _FakeTeleopHeartbeatMsg.
+    Возвращает модуль, чтобы тест мог его потом снять через ``sys.modules.pop``.
+    """
+    import sys as _sys
+
+    fake_mod = type(_sys)("rob_box_supervisor_msgs.msg")
+    fake_mod.TeleopHeartbeat = _FakeTeleopHeartbeatMsg
+    _sys.modules["rob_box_supervisor_msgs.msg"] = fake_mod
+    return fake_mod
+
+
+def _make_bridge_with_heartbeat_pub():
+    """Сконструировать QuestBridge + отдельный ``heartbeat_pub``.
+
+    Возвращает ``(bridge, heartbeat_pub)``, где ``heartbeat_pub`` —
+    переданный в конструктор mock (НЕ ``bridge._heartbeat_pub``, потому
+    что он всегда равен переданному, но в тесте мы хотим ссылку).
+    """
+    pytest.importorskip(
+        "geometry_msgs",
+        reason="QuestBridge требует rclpy/geometry_msgs (только в Docker image)",
+    )
+    from rob_box_quest.quest_node import QuestBridge
+
+    node = _MockNode()
+    hb_pub = _MockPublisher()
+    bridge = QuestBridge(
+        node=node,
+        cmd_vel_quest_pub=_MockPublisher(),
+        cmd_vel_emergency_pub=_MockPublisher(),
+        heartbeat_pub=hb_pub,
+    )
+    return bridge, hb_pub
+
+
+def test_relay_teleop_heartbeat_publishes_idl_message_not_json_string():
+    """Relay публикует объект-IDL с полями, а не JSON в std_msgs/String.
+
+    Это корень issue #2189: до фикса шлёл ``std_msgs/String`` с
+    ``data=json.dumps({...})``. В ROS2 подписчик на ``TeleopHeartbeat``
+    такое сообщение не примет — типы не совпадают, поэтому
+    LockManager.heartbeat не вызывался и dead-man 500 мс был выключен.
+    """
+    fake_mod = _install_fake_teleop_heartbeat_module()
+    try:
+        bridge, hb_pub = _make_bridge_with_heartbeat_pub()
+        bridge.relay_teleop_heartbeat(client_id="quest:abc-uuid", ts_ms=12345, seq=7)
+
+        assert len(hb_pub.published) == 1, "relay должен опубликовать ровно 1 сообщение"
+        msg = hb_pub.published[0]
+
+        # 1. НЕ std_msgs/String с JSON-строкой в .data — это была старая
+        #    (сломанная) ветка до issue #2189.
+        assert not hasattr(msg, "data") or not isinstance(
+            getattr(msg, "data", None), str
+        ), (
+            "relay_teleop_heartbeat вернул std_msgs.String/.data=JSON — это "
+            "старая (сломанная) ветка до issue #2189. ROS2-подписчик на "
+            "TeleopHeartbeat не получит такое сообщение и dead-man 500 мс "
+            "останется выключенным."
+        )
+
+        # 2. Поля соответствуют IDL TeleopHeartbeat (.msg):
+        #    string client_id / uint64 ts_ms / uint32 seq.
+        assert getattr(msg, "client_id", None) == "quest:abc-uuid", (
+            f"client_id в сообщении = {getattr(msg, 'client_id', None)!r}, "
+            "ожидалось 'quest:abc-uuid'"
+        )
+        assert int(getattr(msg, "ts_ms", -1)) == 12345
+        assert int(getattr(msg, "seq", -1)) == 7
+    finally:
+        import sys as _sys
+
+        _sys.modules.pop("rob_box_supervisor_msgs.msg", None)
+
+
+def test_relay_teleop_heartbeat_none_publisher_is_noop():
+    """``_heartbeat_pub=None`` → relay no-op (monitor-safe, ADR-0028 §4.5)."""
+    pytest.importorskip(
+        "geometry_msgs",
+        reason="QuestBridge требует rclpy/geometry_msgs (только в Docker image)",
+    )
+    from rob_box_quest.quest_node import QuestBridge
+
+    bridge = QuestBridge(
+        node=_MockNode(),
+        cmd_vel_quest_pub=_MockPublisher(),
+        cmd_vel_emergency_pub=_MockPublisher(),
+        heartbeat_pub=None,  # IDL не собран / тест без rclpy
+    )
+    # Не должно быть исключений и предупреждений.
+    bridge.relay_teleop_heartbeat(client_id="quest:x", ts_ms=0, seq=1)
+
+
+def test_relay_teleop_heartbeat_publishes_one_message_per_call():
+    """Каждый вызов relay → ровно 1 publish (без спама, как publish_emergency)."""
+    fake_mod = _install_fake_teleop_heartbeat_module()
+    try:
+        bridge, hb_pub = _make_bridge_with_heartbeat_pub()
+        for i in range(20):
+            bridge.relay_teleop_heartbeat(client_id="quest:uuid", ts_ms=i, seq=i)
+        assert len(hb_pub.published) == 20, (
+            f"Ожидалось 20 публикаций (по одной на вызов), получили {len(hb_pub.published)} — "
+            "есть антиспам-логика, которой быть не должно (ADR-0028 §4.4: 'Не слать heartbeat на автомате' "
+            "регулируется на стороне ws_server, а НЕ relay-а)."
+        )
+        # seq монотонный, ts_ms — клиентские метки.
+        seqs = [m.seq for m in hb_pub.published]
+        assert seqs == list(range(20)), "seq должно расти на 1 каждый вызов"
+    finally:
+        import sys as _sys
+
+        _sys.modules.pop("rob_box_supervisor_msgs.msg", None)

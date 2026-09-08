@@ -1135,9 +1135,10 @@ class QuestBridge:
     def relay_teleop_heartbeat(self, client_id: str, ts_ms: int, seq: int) -> None:
         """Опубликовать TeleopHeartbeat в ``/teleop_heartbeat`` от ``client_id``.
 
-        Контракт:
-        - topic: ``/teleop_heartbeat`` (``std_msgs/String``, msgpack-encoded
-          dict ``{client_id, ts_ms, seq}``).
+        Контракт (ADR-0028 §4.4 S10, issue #2189):
+        - topic: ``/teleop_heartbeat``, тип — IDL
+          ``rob_box_supervisor_msgs/msg/TeleopHeartbeat`` с полями
+          ``client_id`` (string), ``ts_ms`` (uint64), ``seq`` (uint32).
         - Источник живости — клиент (ADR-0028 §4.4 «Не слать heartbeat на
           автомате»): мы только релеим, никогда не генерируем сами.
         - ts_ms — клиентское локальное время, seq — монотонная
@@ -1145,22 +1146,26 @@ class QuestBridge:
           дедупликации на стороне супервизора и метрик).
         - ``self._heartbeat_pub`` может быть ``None`` в юнит-тестах —
           это сознательно, чтобы ws_server тестировался без rclpy.
+
+        IDL-типизация обязательна: до #2189 pub публиковал
+        ``std_msgs/String`` (JSON-payload), а супервизор-арбитр был
+        подписан на ``TeleopHeartbeat`` — в ROS2 разные типы не
+        соединяются, поэтому LockManager.heartbeat ни разу не вызывался,
+        и dead-man 500 мс (ADR-0028 §4.4 S10) был нерабочим.
         """
         if self._heartbeat_pub is None:
             return
-        # ``_heartbeat_pub`` уже лениво создан в __init__ только при наличии
-        # rclpy (см. _init_heartbeat_pub). Если телеоп-узел ещё не создал
-        # pub (тест-сценарий), выходим тихо — relay не критичен.
+        # ``_heartbeat_pub`` создаётся в QuestNode.__init__ через
+        # lazy-import IDL (см. _try_import_heartbeat_msg_type). Если pub
+        # не создан (IDL-пакет не собран / тест без rclpy) — выходим
+        # тихо, relay не критичен (ADR-0028 §4.5 monitor-safe).
         try:
-            from std_msgs.msg import String as RosString  # type: ignore
-            import json as _json
+            from rob_box_supervisor_msgs.msg import TeleopHeartbeat  # noqa: PLC0415
 
-            payload = {"client_id": client_id, "ts_ms": int(ts_ms), "seq": int(seq)}
-            msg = RosString()
-            # JSON вместо msgpack — supervisor_client.py из rob_box_telegram
-            # уже парсит оба (см. _on_state_msg), для единообразия Phase 1
-            # шлём JSON (msgpack потребует AV-5 IDL).
-            msg.data = _json.dumps(payload, ensure_ascii=False)
+            msg = TeleopHeartbeat()
+            msg.client_id = client_id
+            msg.ts_ms = int(ts_ms)
+            msg.seq = int(seq)
             self._heartbeat_pub.publish(msg)
         except Exception as exc:  # noqa: BLE001 — relay не должен ронять ноду
             self._node.get_logger().warning(
@@ -1875,7 +1880,34 @@ class QuestNode(Node):
         # AV-19 (issue #1911, ADR-0028 §4.4 S10): relay teleop_heartbeat.
         # Сюда ws_server релеит клиентский teleop_heartbeat / teleop_twist
         # от имени client_id (см. WSSServer._on_json_cmd).
-        self._heartbeat_pub = self.create_publisher(String, "/teleop_heartbeat", _RE)
+        #
+        # Тип — IDL ``rob_box_supervisor_msgs/msg/TeleopHeartbeat``
+        # (issue #2189): до #2189 здесь был ``std_msgs/String`` (JSON), и
+        # супервизор-арбитр, подписанный на ``TeleopHeartbeat``, вообще не
+        # получал ничего → LockManager.heartbeat() никогда не вызывался,
+        # dead-man 500 мс (ADR-0028 §4.4 S10) был нерабочим. Тип паблишера
+        # и подписчика должны совпадать — иначе ROS2 их не соединит.
+        #
+        # IDL может быть не собран (CI / fresh clone без ``colcon build``
+        # пакета ``rob_box_supervisor_msgs``) → try/except ImportError и
+        # relay no-op с WARN-логом, чтобы нода оставалась живой (monitor-safe,
+        # ADR-0028 §4.5).
+        try:
+            from rob_box_supervisor_msgs.msg import (  # noqa: PLC0415
+                TeleopHeartbeat as _TeleopHeartbeatMsg,
+            )
+
+            self._heartbeat_pub = self.create_publisher(
+                _TeleopHeartbeatMsg, "/teleop_heartbeat", _RE
+            )
+        except ImportError:
+            self._heartbeat_pub = None
+            self.get_logger().warning(
+                "rob_box_supervisor_msgs/msg/TeleopHeartbeat not built "
+                "(colcon build пакета rob_box_supervisor_msgs?). /teleop_heartbeat "
+                "publisher не создан — relay из ws_server будет no-op, "
+                "dead-man enforcement недоступен (ADR-0028 §4.5 monitor-safe)."
+            )
 
         # Phase 2 (issue #2002, ADR-0013): supervisor service-client —
         # ЕДИНЫЙ /supervisor/execute (ExecuteCommand.srv, ADR-0051 §2.1).
