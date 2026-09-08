@@ -7,6 +7,8 @@
     "cmd_vel_joy": "Потребитель — twist_mux, см. /cmd_vel_voice. Конфиг: docker/main/config/twist_mux/twist_mux.yaml (topic: cmd_vel_joy).",
     "cmd_vel_quest": "Потребитель — twist_mux, см. /cmd_vel_voice. Конфиг: docker/main/config/twist_mux/twist_mux.yaml (topic: cmd_vel_quest).",
     "/joystick_lock": "Потребитель — twist_mux (lock-топик мультиплексора), внешний узел. Конфиг: docker/main/config/twist_mux/twist_mux.yaml.",
+    "/teleop_lock": "Потребитель — twist_mux (lock-топик мультиплексора), внешний узел, зеркалит /joystick_lock по семантике «у меня руль». Конфиг: docker/main/config/twist_mux/twist_mux.yaml. Источник — avatar_arbiter (LockManager.holder(Floor.TELEOP), ADR-0080 R1/R3, #2191).",
+    "/teleop_lock_watchdog": "Потребитель — twist_mux (lock-топик мультиплексора), внешний узел, watchdog для auto-release при падении avatar_arbiter (timeout=0.5, ADR-0080 R2). Конфиг: docker/main/config/twist_mux/twist_mux.yaml. Источник — avatar_arbiter (#2191).",
     "/panel_image": "Потребитель — ros2leds (src/ros2leds — git submodule, в этом чекауте не выкачан; C++/vendor-пакет, вне Python AST-скана). LED-матрица. См. docker/vision/scripts/led_matrix/start_led_matrix.sh (\"IN: /panel_image\").",
     "joint_states": "Публикует src/rob_box_bringup/scripts/dummy_joint_state_publisher.py — dev-утилита для визуализации в RViz без реальных моторов (см. её докстринг). Реальный потребитель — robot_state_publisher/RViz (стандартный внешний ROS2-тулинг, не в src/).",
     "/avatar/wake_stream": "Диагностический heartbeat по дизайну (ADR-0071 шаг 5a) — наблюдатели (e2e-тесты через `ros2 topic echo`), не функциональный ROS-подписчик. См. комментарий у quest_node.py (wake_stream_pub, строка ~563).",
