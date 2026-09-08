@@ -60,6 +60,14 @@
 #   NIGHTLY_REVIEW_DRY_RUN=true     — всё посчитать, карточки НЕ создавать
 #   NIGHTLY_REVIEW_FORCE=true       — игнорировать ночное окно и sentinel
 #   NIGHTLY_REVIEW_DATE=YYYY-MM-DD  — переопределить ревью-сутки (для тестов)
+#   NIGHTLY_REVIEW_OUTCOME=         — open-issue-<N> | no-real-defect |
+#                                     duplicate-suppressed:<fingerprint>
+#                                     (default open-issue-unknown — для
+#                                     совместимости; реальный воркер должен
+#                                     передать явный outcome)
+#   NIGHTLY_REVIEW_JSONL=path       — append-only JSONL с записью тика;
+#                                     пишется ВСЕГДА при исходе (даже если
+#                                     карточка не создана)
 #   NIGHTLY_REVIEW_STATE_DIR        — где лежит sentinel (default /tmp)
 #   NIGHTLY_REVIEW_TEST_MODE=1      — пропустить MAINTENANCE-гейт (сетевой
 #                                     ls-remote); только для юнит-тестов
@@ -100,7 +108,12 @@ export HOME="${HOME:-/home/builder}"
 REPO_DIR="${REPO_DIR:-/home/builder/hermes-share/rob_box_project}"
 KANBAN_BOARD="${KANBAN_BOARD:-robbox}"
 HERMES_BIN="${HERMES_BIN:-hermes}"
+# kanban-retro-create.sh (ADR-0079) внутри обращается к $GH_BIN под `set -u`.
+# Если cron вызывает ночной ревью без GH_BIN (а это обычный случай), нужно
+# явно задать default — иначе слой 4 упадёт на `unbound variable` ещё ДО
+# того, как guard `command -v "$GH_BIN"` успеет отработать.
 GH_BIN="${GH_BIN:-gh}"
+export GH_BIN
 LOCK_FILE="${LOCK_FILE:-/tmp/agent-flow-nightly-review.lock}"
 STATE_DIR="${NIGHTLY_REVIEW_STATE_DIR:-/tmp}"
 
@@ -117,7 +130,16 @@ FORCE="${NIGHTLY_REVIEW_FORCE:-false}"
 SECTION_LIMIT="${NIGHTLY_REVIEW_SECTION_LIMIT:-40}"
 MAX_RUNTIME_NIGHTLY="${NIGHTLY_REVIEW_MAX_RUNTIME:-3600}"
 MAX_RUNTIME_COMPONENT="${COMPONENT_REVIEW_MAX_RUNTIME:-2700}"
-export COMPONENT_REVIEW_EXCLUDE_RE
+# ADR-0049 follow-up (issue #2159): dedup-ключ БЕЗ даты. Используем ISO-неделю
+# (`%G-W%V` → `2026-W37`). Если вызывающий хочет явный ключ — NIGHTLY_REVIEW_KEY.
+NIGHTLY_REVIEW_OUTCOME="${NIGHTLY_REVIEW_OUTCOME:-open-issue-unknown}"
+# Если воркер сказал «находок нет» / «всё dedup» — карточка не создаётся, но
+# JSONL пишется. Это контракт §3.2 ADR-0049 в действии: честный пустой отчёт.
+# Авто-дефолт JSONL (ADR-0079): `<reports_dir>/nightly-review/<DATE>.jsonl`.
+# Реальный путь собирается ПОСЛЕ секции gates (там известна REVIEW_DATE с
+# учётом NIGHTLY_REVIEW_DATE override); здесь только объявляем переменную.
+NIGHTLY_REVIEW_JSONL="${NIGHTLY_REVIEW_JSONL:-}"
+export COMPONENT_REVIEW_EXCLUDE_RE NIGHTLY_REVIEW_OUTCOME NIGHTLY_REVIEW_JSONL
 # Cron может звать нас с POSIX-локалью, а секции дайджеста печатают
 # кириллицу. Без этого python падает с UnicodeEncodeError и тик умирает.
 export PYTHONIOENCODING="${PYTHONIOENCODING:-utf-8}"
@@ -173,6 +195,16 @@ NOW_EPOCH="$(date +%s)"
 NOW_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 export WIN_START_EPOCH WIN_START_UTC NOW_EPOCH SECTION_LIMIT
 
+# --- JSONL путь (ADR-0079, после gates — REVIEW_DATE уже с override) -------
+# Если вызывающий не задал NIGHTLY_REVIEW_JSONL — собираем дефолт:
+# `<reports_dir>/nightly-review/<REVIEW_DATE>.jsonl`. Так тесты с явным
+# NIGHTLY_REVIEW_DATE могут рассчитывать на конкретный JSONL-файл.
+if [ -z "$NIGHTLY_REVIEW_JSONL" ]; then
+    _nr_reports_root="${NIGHTLY_REVIEW_REPORTS_DIR:-${REPO_DIR:-.}/docs/reports}"
+    NIGHTLY_REVIEW_JSONL="${_nr_reports_root}/nightly-review/${REVIEW_DATE}.jsonl"
+    export NIGHTLY_REVIEW_JSONL
+    unset _nr_reports_root
+fi
 log "ревью-сутки ${REVIEW_DATE}: окно ${WIN_START_UTC} → ${NOW_UTC} (UTC), dry_run=${DRY_RUN}"
 
 # --- data collectors ---------------------------------------------------------
@@ -180,6 +212,7 @@ log "ревью-сутки ${REVIEW_DATE}: окно ${WIN_START_UTC} → ${NOW_U
 # нет инструмента / упал вызов → «НЕТ ДАННЫХ (<причина>)».
 
 _gh_json() {  # $1..=аргументы gh; печатает JSON или rc!=0
+    [ -n "${GH_BIN:-}" ] || return 1
     command -v "$GH_BIN" >/dev/null 2>&1 || return 1
     [ -n "${GH_REPO:-}" ] || return 1
     "$GH_BIN" "$@" 2>/dev/null || return 1
@@ -610,24 +643,42 @@ cat "$DIGEST_FILE"
 
 # --- create nightly card -----------------------------------------------------
 NIGHTLY_TITLE="🌙 ночной ревью ${REVIEW_DATE}"
-NIGHTLY_KEY="nightly-review-${REVIEW_DATE}"
+# ISO-week dedup-ключ: один ключ на неделю, а не на дату. Две параллельные тики
+# в одной неделе (issue #2159: nightly + компонентная в одном окне) получат
+# один и тот же --key → idempotency-key работает (слой 2 dedup).
+ISO_WEEK="$(date -d "$REVIEW_DATE" +%G-W%V 2>/dev/null || date +%Y-W%V)"
+NIGHTLY_KEY="nightly-review-${ISO_WEEK}"
 created_nightly=""
 
-if [ "$DRY_RUN" = "true" ]; then
-    log "DRY-RUN: карточка '${NIGHTLY_TITLE}' (key=${NIGHTLY_KEY}, assignee=${NIGHTLY_REVIEW_ASSIGNEE}) НЕ создаётся"
-else
-    if created_nightly="$(bash "$RETRO_CREATE" \
-        --board "$KANBAN_BOARD" \
-        --title "$NIGHTLY_TITLE" \
-        --body "$(cat "$DIGEST_FILE")" \
-        --assignee "$NIGHTLY_REVIEW_ASSIGNEE" \
-        --key "$NIGHTLY_KEY" \
-        --max-runtime "$MAX_RUNTIME_NIGHTLY" 2>&1)"; then
-        log "nightly card: ${created_nightly}"
-    else
-        log "nightly card: ОШИБКА создания — ${created_nightly}"
-    fi
-fi
+# ADR-0049 follow-up: outcome определяет, нужна ли kanban-карточка.
+# Карточка нужна ТОЛЬКО когда воркер нашёл что-то реальное (issue или
+# подтверждённую находку). «Находок нет» / «всё dedup» → карточка не
+# создаётся, JSONL всё равно пишется (для отладки и для архива).
+# (контракт §3.2 ADR-0049: «находок нет → так и напиши, честный пустой
+# отчёт лучше выдуманного списка».)
+case "$NIGHTLY_REVIEW_OUTCOME" in
+    no-real-defect|duplicate-suppressed:*)
+        log "nightly: outcome=${NIGHTLY_REVIEW_OUTCOME} → kanban-карточка НЕ создаётся (sentinel всё равно пишется)"
+        created_nightly="SKIPPED outcome=${NIGHTLY_REVIEW_OUTCOME}"
+        ;;
+    open-issue-*|*)
+        if [ "$DRY_RUN" = "true" ]; then
+            log "DRY-RUN: карточка '${NIGHTLY_TITLE}' (key=${NIGHTLY_KEY}, assignee=${NIGHTLY_REVIEW_ASSIGNEE}) НЕ создаётся"
+        else
+            if created_nightly="$(bash "$RETRO_CREATE" \
+                --board "$KANBAN_BOARD" \
+                --title "$NIGHTLY_TITLE" \
+                --body "$(cat "$DIGEST_FILE")" \
+                --assignee "$NIGHTLY_REVIEW_ASSIGNEE" \
+                --key "$NIGHTLY_KEY" \
+                --max-runtime "$MAX_RUNTIME_NIGHTLY" 2>&1)"; then
+                log "nightly card: ${created_nightly}"
+            else
+                log "nightly card: ОШИБКА создания — ${created_nightly}"
+            fi
+        fi
+        ;;
+esac
 
 # --- create component review cards -------------------------------------------
 _comp_created=0
@@ -695,7 +746,10 @@ COMP_TASK_EOF
         )"
 
         comp_title="🔍 ревью компонента: ${comp} (${REVIEW_DATE})"
-        comp_key="component-review-${comp_slug}-${REVIEW_DATE}"
+        # ISO-week dedup-ключ: стабильный на всю неделю. Если два тика в одном
+        # окне гонки (issue #2159) попытаются создать карточку на один и тот же
+        # компонент — один и тот же idempotency-key подавит дубль.
+        comp_key="component-review-${comp_slug}-${ISO_WEEK}"
 
         if [ "$DRY_RUN" = "true" ]; then
             log "DRY-RUN: компонентная карточка '${comp_title}' (key=${comp_key}) НЕ создаётся"
@@ -721,5 +775,44 @@ if [ "$DRY_RUN" != "true" ]; then
     : > "$SENTINEL" 2>/dev/null || log "не смог записать sentinel ${SENTINEL} (не фатально)"
 fi
 
-log "итог: nightly='${created_nightly:-dry-run}' component_cards=${_comp_created} skipped_cooldown=${_comp_skipped_cooldown} skipped_small=${_comp_skipped_small}"
+# --- JSONL append (ADR-0049 follow-up) ---------------------------------------
+# Append-only лог тика: одна строка JSON, стабильный формат. Переживает merge
+# в git-истории (после merge в develop — коммит с файлом попадает в основной
+# репо). Даже если kanban-карточка не создана (outcome=no-real-defect) —
+# строка пишется: Шифу видит «тик прошёл, находок нет, что проверил».
+if [ -n "$NIGHTLY_REVIEW_JSONL" ]; then
+    _jsonl_dir="$(dirname "$NIGHTLY_REVIEW_JSONL")"
+    mkdir -p "$_jsonl_dir" 2>/dev/null || true
+    # Вытаскиваем fingerprint из outcome, если это duplicate-suppressed:<fp>
+    _fingerprint=""
+    case "$NIGHTLY_REVIEW_OUTCOME" in
+        duplicate-suppressed:*) _fingerprint="${NIGHTLY_REVIEW_OUTCOME#duplicate-suppressed:}" ;;
+    esac
+    # Безопасная JSON-сериализация значений (python3 json по дефолту экранирует).
+    _jsonl_line="$(NOW_UTC="$NOW_UTC" NIGHTLY_REVIEW_OUTCOME="$NIGHTLY_REVIEW_OUTCOME" \
+        NIGHTLY_REVIEW_FINGERPRINT="$_fingerprint" REVIEW_DATE="$REVIEW_DATE" \
+        ISO_WEEK="$ISO_WEEK" CHURN_FILES="$(printf '%s\n' "$CHURN" | head -c 200)" \
+        python3 -c '
+import json, os, sys
+rec = {
+    "ts": os.environ["NOW_UTC"],
+    "review_date": os.environ["REVIEW_DATE"],
+    "iso_week": os.environ["ISO_WEEK"],
+    "task_id": "agent-flow-nightly-review",
+    "component": "agent_flow_process",
+    "files_changed": [],
+    "findings": [],
+    "outcome": os.environ["NIGHTLY_REVIEW_OUTCOME"],
+    "fingerprint": os.environ.get("NIGHTLY_REVIEW_FINGERPRINT", ""),
+}
+print(json.dumps(rec, ensure_ascii=False))
+')"
+    if printf '%s\n' "$_jsonl_line" >> "$NIGHTLY_REVIEW_JSONL" 2>/dev/null; then
+        log "jsonl: append → ${NIGHTLY_REVIEW_JSONL} (outcome=${NIGHTLY_REVIEW_OUTCOME})"
+    else
+        log "jsonl: не смог записать ${NIGHTLY_REVIEW_JSONL} (не фатально)"
+    fi
+fi
+
+log "итог: nightly='${created_nightly:-dry-run}' component_cards=${_comp_created} skipped_cooldown=${_comp_skipped_cooldown} skipped_small=${_comp_skipped_small} outcome=${NIGHTLY_REVIEW_OUTCOME}"
 exit 0
