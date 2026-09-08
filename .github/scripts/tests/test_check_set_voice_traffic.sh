@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================================
-# test_check_set_voice_traffic.sh — регрессионный тест (issue #2138.C / ADR-0067)
+# test_check_set_voice_traffic.sh — регрессионный тест (issue #2138.C / ADR-0073)
 #
 # Источник истины: <repo>/.github/scripts/tests/test_check_set_voice_traffic.sh
 #
@@ -10,7 +10,7 @@
 # `timeout`/`ros2` через PATH, читает HEALTHY_RESULT/HZ_RESULT и сверяет
 # с ожиданием.
 #
-# Зачем: ретро run #34153246013 + ADR-0067 §3.3 — на robot'е picker
+# Зачем: ретро run #34153246013 + ADR-0073 §3.3 — на robot'е picker
 # «голос не меняется» без видимой причины. Нужно зафиксировать, что
 # healthcheck умеет отличать «есть трафик» от «совсем нет трафика»
 # (H1/H2/H3) и НЕ валит деплой в случае «редкого единичного message

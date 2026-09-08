@@ -715,7 +715,7 @@ export function bootstrap(opts: BootstrapOptions): {
   // меняет голос. Стиль речи/язык меняется через sendStyleChange (AV-28)
   // и намеренно НЕ здесь: сервер разводит две фичи по полю `preset`, и
   // смешение в одной функции вернёт баг #2138. См. комментарий у
-  // sendStyleChange и ADR-0067.
+  // sendStyleChange и ADR-0073.
 
   let ttsState: TtsPickerState = INITIAL_TTS_PICKER_STATE;
   const previewSink: PreviewAudioSink = createPreviewAudioSink();
