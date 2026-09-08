@@ -50,6 +50,19 @@ def _make_audio_msg(pcm_bytes: bytes):
     return m
 
 
+def _make_audio_msg_array(pcm_bytes: bytes):
+    """AudioData с PCM-данными как ``array.array`` (реальный тип из rclpy, issue #2136).
+
+    Раньше код имел ``isinstance(msg.data, (bytes, bytearray))`` guard, который
+    для ``array.array`` возвращал False → audio_bytes = b"" → оператор слышал
+    тишину. Этот factory воспроизводит реальный shape, который приходит из ROS.
+    """
+    import array as _array
+    m = MagicMock()
+    m.data = _array.array("B", pcm_bytes)
+    return m
+
+
 def _make_host(*, active_sessions_count: int = 1, ws_for_session: dict | None = None):
     """Минимальный host с интерфейсом, который handler'ы требуют от QuestNode.
 
@@ -215,6 +228,54 @@ class TestOnAvatarTtsAudio(unittest.TestCase):
         # Не должно бросить исключение (callback от ROS).
         QuestNode._on_avatar_tts_audio(host, _make_audio_msg(b"\x00"))
         host.ws_server.deliver_audio.assert_called_once()
+
+    def test_routes_array_array_data_nonempty(self):
+        """Regression #2136: ``msg.data`` приходит как ``array.array`` (а не bytes).
+
+        Прежний isinstance-guard ``(bytes, bytearray)`` возвращал False для
+        ``array.array`` → audio_bytes становился ``b""`` → оператор слышал
+        тишину. После фикса bytes() на array.array даёт корректный payload.
+        """
+        import array as _array
+        host = _make_host(active_sessions_count=1)
+        QuestNode._on_avatar_tts_request_meta(
+            host,
+            _make_msg({
+                "request_id": "r-arr",
+                "ssml": "<speak>x</speak>",
+                "sink": "headset",
+            }),
+        )
+        host.ws_server.deliver_audio.reset_mock()
+        payload = b"\x01\x02\x03\x04\x05\x06\x07\x08"
+        QuestNode._on_avatar_tts_audio(host, _make_audio_msg_array(payload))
+        host.ws_server.deliver_audio.assert_called_once()
+        kwargs = host.ws_server.deliver_audio.call_args.kwargs
+        # Главное: payload дошёл, не пустой.
+        self.assertIsInstance(kwargs["audio_bytes"], bytes)
+        self.assertEqual(kwargs["audio_bytes"], payload)
+        self.assertGreater(len(kwargs["audio_bytes"]), 0)
+        # sanity: действительно прислали array.array, не bytes.
+        self.assertIsInstance(
+            _make_audio_msg_array(payload).data, _array.array
+        )
+
+    def test_empty_data_sends_empty_payload(self):
+        """msg.data == пустой bytes/array → audio_bytes = b"" (no crash, no leak)."""
+        host = _make_host(active_sessions_count=1)
+        QuestNode._on_avatar_tts_request_meta(
+            host,
+            _make_msg({
+                "request_id": "r-empty",
+                "ssml": "<speak>x</speak>",
+                "sink": "headset",
+            }),
+        )
+        host.ws_server.deliver_audio.reset_mock()
+        QuestNode._on_avatar_tts_audio(host, _make_audio_msg_array(b""))
+        host.ws_server.deliver_audio.assert_called_once()
+        kwargs = host.ws_server.deliver_audio.call_args.kwargs
+        self.assertEqual(kwargs["audio_bytes"], b"")
 
 
 # ── guard: не задеваем /voice/tts/request (старый путь) ──────────────
