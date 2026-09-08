@@ -2221,37 +2221,18 @@ class TTSNode(Node):
         """
         try:
             chunk_data = json.loads(msg.data)
-        except (json.JSONDecodeError, TypeError) as exc:
-            self.get_logger().warn(f"⚠ /voice/tts/request: bad JSON: {exc}")
-            return
-
-        # Issue #2198 — единый вход через поле sink. Если sink ∈ {headset, preview}
-        # — делегируем в существующие avatar/preview-пути (backward-compat с
-        # прямыми публикаторами в /avatar/tts/request). Иначе — старый путь
-        # динамиков (dialogue_node / speak_text MCP).
-        sink = chunk_data.get("sink", "speaker")
-        if sink in ("headset", "preview"):
-            # Делегация в _on_avatar_tts_request: тот же набор гвардов
-            # (stale_dialogue, empty_text, Unicode-script, ssml→text fallback),
-            # тот же ThreadPoolExecutor с kwarg sink="headset" (для headset)
-            # или прямой synthesize_preview (для preview). Тесты
-            # test_tts_node_avatar.py и test_tts_node_preview*.py покрывают оба
-            # пути на уровне _on_avatar_tts_request; этот диспатч остаётся
-            # backward-compat триггером.
-            self._on_avatar_tts_request(msg)
-            return
-        if sink not in ("speaker", ""):
-            # Любой не-валидный sink → DROP + warning. ``speak_text`` (динамики)
-            # не ждёт error-callback в этом случае, но и не зависнет: либо
-            # реплика не дойдёт, либо дойдёт без sink — старый путь (default).
-            self.get_logger().warn(
-                f"⚠ /voice/tts/request: unknown sink={sink!r} "
-                f"(expected 'speaker'/'headset'/'preview'), DROP"
-            )
-            return
-
-        # sink='speaker' (или отсутствует) — старый путь в динамики робота.
-        try:
+            # Issue #2198 — единый вход через поле sink. Switch живёт
+            # в ``_resolve_voice_tts_sink`` (primary chokepoint). helper
+            # возвращает ``(canonical, raw)``: canonical ∈ {speaker, headset,
+            # preview, None}, raw = исходное значение из payload.
+            sink, raw = self._resolve_voice_tts_sink(chunk_data)
+            # Делегируем dispatch в helper (ADR-0021: удержать CC
+            # dialogue_callback). helper возвращает ``True`` если
+            # запрос обработан (delegate в avatar/preview или DROP
+            # невалидного sink) → caller выходит; ``False`` если это
+            # legacy ``sink='speaker'`` → caller продолжает обработку.
+            if self._dispatch_voice_tts_sink(msg, sink, raw):
+                return
 
             if "ssml" not in chunk_data:
                 self.get_logger().warn("⚠ Chunk без SSML")
@@ -2813,6 +2794,69 @@ class TTSNode(Node):
             request_id=chunk_data.get("request_id", ""),
             error="invalid_sink",
         )
+        return False
+
+    def _resolve_voice_tts_sink(
+        self, chunk_data: dict
+    ) -> tuple[str | None, str]:
+        """Issue #2198 / voice-vr 13 — pure-helper маршрутизации по ``sink``
+        для ``/voice/tts/request``.
+
+        Возвращает ``(canonical, raw)``:
+          * ``canonical = "headset"`` / ``"preview"`` / ``"speaker"`` —
+            каноническое значение ``sink`` для маршрутизации;
+          * ``canonical = None`` — поле невалидно (любой не-известный sink);
+          * ``raw`` — исходное значение поля из payload (для WARN
+            caller'у и diagnostics), включая пустую строку если поле
+            отсутствует.
+
+        Семантика:
+          * ``"headset"`` / ``"preview"`` — делегировать в
+            ``_on_avatar_tts_request`` (тот же chokepoint, что и для
+            deprecated ``/avatar/tts/request`` подписки).
+          * ``"speaker"`` (default, отсутствие поля = backward-compat) —
+            старый путь в динамики через ``_synthesize_and_play``.
+          * Любой другой ``sink`` (включая ``""`` если явно задан) →
+            ``canonical = None`` → caller логирует WARN + DROP.
+
+        Этот helper — pure-функция маршрутизации (НЕ делает side-effect'ов):
+        не логирует, не публикует, не дёргает синтез.
+        """
+        raw = chunk_data.get("sink", "speaker")
+        if raw in ("headset", "preview", "speaker", ""):
+            # Нормализуем: отсутствие поля → "speaker" (default).
+            return (raw or "speaker", raw)
+        return (None, raw)
+
+    def _dispatch_voice_tts_sink(
+        self, msg: String, sink: str | None, raw: str
+    ) -> bool:
+        """Issue #2198 / voice-vr 13 — dispatch по ``sink`` для нового
+        канала ``/voice/tts/request``. Вынесен из ``dialogue_callback``
+        (ADR-0021: удержать CC dialogue_callback в бюджете).
+
+        Возвращает ``True`` если запрос обработан (delegate в
+        avatar/preview-путь или DROP невалидного sink), ``False`` если
+        это legacy ``sink="speaker"`` (default) и caller продолжает
+        обработку сам.
+
+        Семантика:
+          * ``"headset"`` / ``"preview"`` — делегирует в
+            ``_on_avatar_tts_request`` (тот же chokepoint, что и для
+            deprecated ``/avatar/tts/request`` подписки);
+          * ``None`` (невалидный sink) — логирует WARN + DROP;
+          * ``"speaker"`` (default) — возвращает ``False``, caller
+            продолжает обработку legacy-пути (динамики).
+        """
+        if sink in ("headset", "preview"):
+            self._on_avatar_tts_request(msg)
+            return True
+        if sink is None:
+            self.get_logger().warn(
+                f"⚠ /voice/tts/request: unknown sink={raw!r} "
+                f"(expected 'speaker'/'headset'/'preview'), DROP"
+            )
+            return True
         return False
 
     def _on_avatar_tts_request_preview(self, chunk_data: dict) -> None:

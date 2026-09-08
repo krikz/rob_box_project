@@ -276,17 +276,15 @@ def test_avatar_tts_request_logs_deprecated_warning():
 # ── 3. AST-инвариант: ``sink`` switch живёт ровно в одном месте ────────
 
 
-def test_sink_switch_lives_only_in_dialogue_callback():
-    """AST-инвариант issue #2198: решение о маршруте по sink — ровно одно
-    primary-место (chokepoint), в ``dialogue_callback``. Это фиксирует
-    «единый вход синтезатора» для **нового** контракта — обходные пути
-    добавлять нельзя (см. ADR-0080 §2.3, инвариант 6).
+def test_dialogue_callback_does_not_read_sink_directly():
+    """AST-инвариант issue #2198 (ADR-0021 CC-budget): ``dialogue_callback``
+    НЕ читает поле ``sink`` из payload напрямую — это работа helper'а
+    ``_resolve_voice_tts_sink`` (primary chokepoint). Сам
+    ``dialogue_callback`` лишь делегирует в helper и читает результат.
 
-    Ловим ОБЕ формы чтения sink из payload:
-      * ``chunk_data["sink"]``  (Subscript AST-нода)
-      * ``chunk_data.get("sink", ...)`` (Call AST-нода с .get)
-    Реальная реализация использует ``.get(...)`` для backward-compat
-    (отсутствие поля = default 'speaker').
+    Если кто-то снова впишет ``chunk_data["sink"]`` или
+    ``chunk_data.get("sink", ...)`` прямо в ``dialogue_callback`` —
+    тест упадёт, потому что это раздувает CC (baseline=28).
     """
     import ast
     import inspect
@@ -312,7 +310,6 @@ def test_sink_switch_lives_only_in_dialogue_callback():
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
             if node.func.attr != "get":
                 continue
-            # первый позиционный аргумент — ключ
             if not node.args:
                 continue
             key = node.args[0]
@@ -324,25 +321,17 @@ def test_sink_switch_lives_only_in_dialogue_callback():
             ):
                 sink_field_reads.append(node.func.value.id)
 
-    # ``dialogue_callback`` — primary chokepoint: sink читается
-    # именно здесь (``_dispatch_avatar_tts_sink`` в deprecated
-    # ``_on_avatar_tts_request`` — обёртка-транзит без своего switch'а
-    # по полю payload: см. test_sink_dispatch_via_voice_or_avatar_*).
-    assert "chunk_data" in sink_field_reads, (
-        f"dialogue_callback должен читать chunk_data['sink'] или "
-        f"chunk_data.get('sink', ...), got {sink_field_reads}"
+    assert sink_field_reads == [], (
+        "dialogue_callback НЕ должен читать chunk_data['sink'] / "
+        "chunk_data.get('sink', ...) напрямую — это работа "
+        "_resolve_voice_tts_sink (ADR-0021 CC-budget). "
+        f"Найденные reads: {sink_field_reads}"
     )
 
 
-def test_sink_dispatch_via_voice_or_avatar_topics_route_through_consistent_helpers():
-    """``/voice/tts/request`` с sink ∈ {headset, preview} маршрутизирует в
-    ТЕ ЖЕ helper'ы, что и ``/avatar/tts/request`` (backward-compat).
-
-    Проверяем через AST: ``dialogue_callback`` для headset/preview
-    вызывает ``self._on_avatar_tts_request`` (тот же deprecated-callback,
-    который обрабатывает ``/avatar/tts/request`` подписку). Это гарантирует,
-    что инвариант 6b (одинаковый набор гвардов для ТАРС-в-шлем,
-    независимо от топика-источника) сохраняется.
+def test_dialogue_callback_delegates_to_resolve_helper():
+    """``dialogue_callback`` обязан дёргать ``_resolve_voice_tts_sink``
+    для маршрутизации sink'а — это декомпозиция chokepoint'а в helper.
     """
     import ast
     import inspect
@@ -353,7 +342,6 @@ def test_sink_dispatch_via_voice_or_avatar_topics_route_through_consistent_helpe
     called_names: set[str] = set()
 
     for ast_node in ast.walk(tree):
-        # ast.Call(func=Attribute(value=Name(id='self'), attr='_on_avatar_tts_request'))
         if isinstance(ast_node, ast.Call) and isinstance(
             ast_node.func, ast.Attribute
         ):
@@ -363,29 +351,94 @@ def test_sink_dispatch_via_voice_or_avatar_topics_route_through_consistent_helpe
             ):
                 called_names.add(ast_node.func.attr)
 
-    assert "_on_avatar_tts_request" in called_names, (
-        "dialogue_callback обязан делегировать headset/preview в "
-        "_on_avatar_tts_request для консистентности гвардов. "
+    assert "_resolve_voice_tts_sink" in called_names, (
+        "dialogue_callback обязан делегировать маршрутизацию sink'а в "
+        "_resolve_voice_tts_sink (ADR-0021 CC-budget). "
         f"Найденные self-методы: {sorted(called_names)}"
+    )
+
+
+def test_sink_dispatch_via_voice_or_avatar_topics_route_through_consistent_helpers():
+    """``/voice/tts/request`` с sink ∈ {headset, preview} маршрутизирует в
+    ТЕ ЖЕ helper'ы, что и ``/avatar/tts/request`` (backward-compat).
+
+    После рефакторинга step 2/2: dialogue_callback делегирует dispatch в
+    ``_dispatch_voice_tts_sink`` (ADR-0021 CC-budget helper), который уже
+    вызывает ``_on_avatar_tts_request`` для headset/preview-путей.
+    Проверяем через AST, что цепочка «dialogue_callback → dispatch →
+    _on_avatar_tts_request» сохранена (либо напрямую, либо через helper).
+    Это гарантирует, что инвариант 6b (одинаковый набор гвардов для
+    ТАРС-в-шлем, независимо от топика-источника) сохраняется.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    src_dlg = textwrap.dedent(inspect.getsource(TTSNode.dialogue_callback))
+    tree_dlg = ast.parse(src_dlg)
+    called_in_dialogue: set[str] = set()
+    for ast_node in ast.walk(tree_dlg):
+        if isinstance(ast_node, ast.Call) and isinstance(
+            ast_node.func, ast.Attribute
+        ):
+            if (
+                isinstance(ast_node.func.value, ast.Name)
+                and ast_node.func.value.id == "self"
+            ):
+                called_in_dialogue.add(ast_node.func.attr)
+
+    # Ищем цепочку: dialogue_callback → (напрямую или через helper) →
+    # _on_avatar_tts_request. Допустимы обе формы после рефакторинга.
+    if "_on_avatar_tts_request" in called_in_dialogue:
+        # Старая форма (step 1/2): прямой вызов.
+        assert True
+        return
+    assert "_dispatch_voice_tts_sink" in called_in_dialogue, (
+        "dialogue_callback обязан делегировать dispatch (либо напрямую в "
+        "_on_avatar_tts_request, либо через _dispatch_voice_tts_sink) для "
+        "консистентности гвардов. "
+        f"Найденные self-методы: {sorted(called_in_dialogue)}"
+    )
+
+    # Проверяем, что _dispatch_voice_tts_sink вызывает _on_avatar_tts_request.
+    src_disp = textwrap.dedent(inspect.getsource(TTSNode._dispatch_voice_tts_sink))
+    tree_disp = ast.parse(src_disp)
+    called_in_dispatch: set[str] = set()
+    for ast_node in ast.walk(tree_disp):
+        if isinstance(ast_node, ast.Call) and isinstance(
+            ast_node.func, ast.Attribute
+        ):
+            if (
+                isinstance(ast_node.func.value, ast.Name)
+                and ast_node.func.value.id == "self"
+            ):
+                called_in_dispatch.add(ast_node.func.attr)
+
+    assert "_on_avatar_tts_request" in called_in_dispatch, (
+        "_dispatch_voice_tts_sink обязан делегировать в "
+        "_on_avatar_tts_request для headset/preview-путей (invariant 6b). "
+        f"Найденные self-методы в helper: {sorted(called_in_dispatch)}"
     )
 
 
 def test_sink_field_is_dispatched_in_exactly_one_primary_place():
     """AST-инвариант issue #2198 DoD: «ровно один вход синтезатора».
 
-    Решение о маршруте по полю ``sink`` payload'а принимается в
-    ``dialogue_callback`` (новый канал ``/voice/tts/request``) — это
-    ЕДИНСТВЕННОЕ primary-место. ``_dispatch_avatar_tts_sink`` в
-    deprecated ``_on_avatar_tts_request`` — транзитный helper для
-    backward-compat с прямыми публикаторами в ``/avatar/tts/request``;
-    его sink приходит уже распарсенным из ``_on_avatar_tts_request``
-    (``chunk_data.get("sink", "")``), и helper лишь делегирует в
-    preview/headset-пути. Этот helper УЙДЁТ вместе с удалением
+    Решение о маршруте по полю ``sink`` payload'а принимается в одном
+    месте — ``_resolve_voice_tts_sink`` (pure-helper маршрутизации для
+    нового канала ``/voice/tts/request``). ``dialogue_callback``
+    делегирует в этот helper и не принимает решений сам.
+    ``_on_avatar_tts_request`` (deprecated backward-compat для прямых
+    публикаторов в ``/avatar/tts/request``) имеет свой локальный switch
+    через ``_dispatch_avatar_tts_sink`` — он уйдёт вместе с удалением
     deprecated-подписки в следующем релизе.
 
-    Что проверяет AST-тест: в исходнике ``tts_node.py`` (по всему файлу,
-    не только ``dialogue_callback``) методов, читающих поле ``sink`` из
-    payload как **первичный** switch — ровно один (он же — chokepoint).
+    Что проверяет AST-тест: в исходнике ``tts_node.py`` (по всему файлу)
+    методов, читающих поле ``sink`` из payload (``chunk_data``/``msg``)
+    как **первичный** switch — ровно два:
+      * ``_resolve_voice_tts_sink`` — новый primary chokepoint;
+      * ``_on_avatar_tts_request`` — deprecated wrapper, уйдёт.
+    ``dialogue_callback`` НЕ читает sink напрямую (делегирует в helper).
     """
     import ast
     import inspect
@@ -393,24 +446,13 @@ def test_sink_field_is_dispatched_in_exactly_one_primary_place():
     src = inspect.getsource(TTSNode)
     tree = ast.parse(src)
 
-    # Список методов, где sink читается из payload (НЕ из параметра).
-    # Это "primary switch" места — принимают решение на основании поля
-    # в payload. ``_dispatch_avatar_tts_sink`` принимает sink как параметр
-    # (не из payload), поэтому не считается primary.
     primary_switch_methods: list[str] = []
 
     for node in ast.walk(tree):
-        # Ищем FunctionDef → проверяем его body на чтение sink из
-        # chunk_data/msg.
         if not isinstance(node, ast.FunctionDef):
             continue
-        body_src = ast.unparse(node)
-        # crude: если в теле есть обращение к chunk_data/msg с ключом
-        # "sink" или вызовом .get("sink", ...) — это primary-switch.
-        # (AST-walk ниже отфильтрует helper, который не читает sink.)
         reads_sink_from_payload = False
         for sub in ast.walk(node):
-            # chunk_data["sink"]
             if isinstance(sub, ast.Subscript):
                 sl = sub.slice
                 if (
@@ -421,7 +463,6 @@ def test_sink_field_is_dispatched_in_exactly_one_primary_place():
                 ):
                     reads_sink_from_payload = True
                     break
-            # chunk_data.get("sink", ...)
             if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute):
                 if sub.func.attr != "get" or not sub.args:
                     continue
@@ -437,24 +478,27 @@ def test_sink_field_is_dispatched_in_exactly_one_primary_place():
         if reads_sink_from_payload:
             primary_switch_methods.append(node.name)
 
-    # Primary switch — ровно один: dialogue_callback. _on_avatar_tts_request
-    # делает то же самое, НО это deprecated-обёртка (транзит), которая
-    # тоже валидна как secondary для backward-compat. Сейчас — допускаем
-    # ОБА (новый + deprecated). Когда /avatar/tts/request удалится —
-    # здесь останется только dialogue_callback.
-    assert "dialogue_callback" in primary_switch_methods, (
-        f"dialogue_callback обязан читать sink из payload, "
-        f"got primary_switch_methods={primary_switch_methods}"
+    # Chokepoint для нового канала — ``_resolve_voice_tts_sink`` (helper,
+    # ADR-0021: не раздувать CC dialogue_callback). ``dialogue_callback``
+    # НЕ должен читать sink сам — только звать helper.
+    assert "dialogue_callback" not in primary_switch_methods, (
+        "dialogue_callback НЕ должен читать sink из payload напрямую — "
+        "это работа _resolve_voice_tts_sink (ADR-0021 CC-budget). "
+        f"primary_switch_methods={primary_switch_methods}"
     )
-    # И НЕ должно появиться новых primary-switch мест помимо двух
-    # известных. Любой третий — обходной путь chokepoint'а (нарушение
-    # инварианта 6b).
+    assert "_resolve_voice_tts_sink" in primary_switch_methods, (
+        "_resolve_voice_tts_sink (primary chokepoint) обязан читать sink "
+        f"из payload, got primary_switch_methods={primary_switch_methods}"
+    )
+    # Deprecated wrapper для backward-compat: тоже читает sink из
+    # payload (через _dispatch_avatar_tts_sink). Уйдёт вместе с
+    # удалением /avatar/tts/request подписки в следующем релизе.
     assert set(primary_switch_methods) <= {
-        "dialogue_callback",
+        "_resolve_voice_tts_sink",
         "_on_avatar_tts_request",
     }, (
         f"Найден неизвестный primary-switch (обход chokepoint'а!): "
-        f"{primary_switch_methods}. Допустимы только dialogue_callback "
+        f"{primary_switch_methods}. Допустимы только _resolve_voice_tts_sink "
         f"(новый канал) и _on_avatar_tts_request (deprecated backward-compat)."
     )
 
