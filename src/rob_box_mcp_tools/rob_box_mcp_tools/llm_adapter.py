@@ -45,12 +45,23 @@ class LLMToolCallAdapter:
     Версия 2.0: Поддержка async execution, параллельное выполнение, прерывания
     """
 
-    def __init__(self, node: Node):
+    def __init__(self, node: Node, *, sender: Optional[str] = None):
         """
         Инициализация адаптера
 
         Args:
-            node: ROS 2 Node для доступа к publishers/subscribers
+            node: ROS 2 Node для доступа к publishers/subscribers.
+                Имя ноды (``node.get_name()``) используется как ``sender``
+                по умолчанию — это имя попадает в HMAC-подпись и
+                сверяется с ``DEFAULT_ALLOWED_SENDERS`` на стороне
+                ``mcp_server``. До #2132 здесь был жёсткий литерал
+                ``sender="dialogue_node"``, что ломалось для
+                ``avatar_supervisor`` (ТАРС): все его tool-call-ы шли
+                под чужим identity и резались срез-гардом по правам
+                личности.
+            sender: Явное имя отправителя, если нужно подписать запросы
+                от имени, отличного от имени ROS-ноды (например, для
+                тестов). По умолчанию — ``node.get_name()``.
         """
         self.node = node
 
@@ -71,9 +82,15 @@ class LLMToolCallAdapter:
         self.execute_pub = node.create_publisher(String, "/mcp/execute", qos_profile)
 
         # Подпись запросов общим секретом — mcp_server отклоняет
-        # неподписанные tool-call-ы (см. mcp_auth.py).
+        # неподписанные tool-call-ы (см. mcp_auth.py). ``sender`` берём
+        # из имени ROS-ноды, чтобы ``dialogue_node`` подписывался как
+        # ``dialogue_node``, а ``avatar_supervisor`` — как
+        # ``avatar_supervisor`` (это требование slice-гарда: у каждого
+        # свой набор срезов, см. ``slice_policy.yaml``). Тесты и
+        # редкие форы могут передать явный ``sender`` через kwarg.
+        effective_sender = sender if sender is not None else node.get_name()
         self.authenticator = RequestAuthenticator.from_env(
-            sender="dialogue_node", logger=node.get_logger()
+            sender=effective_sender, logger=node.get_logger()
         )
 
         # Subscriber для результатов (используем отдельную callback_group!)
