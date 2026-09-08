@@ -2550,8 +2550,7 @@ class AvatarSupervisor(Node):
         #
         # Озвучиваем только голосовой вход: на текстовую команду из Telegram
         # оператор ждёт текст, а не речь в наушниках.
-        if self._param_bool("speak_agent_replies", True) and source == "quest":
-            self._publish_avatar_tts(str(result.get("summary", "")))
+        self._maybe_speak_agent_reply(source, str(result.get("summary", "")))
 
         # Журнал ТАРС (§5.4): что сделал, когда, чем кончилось.
         self._record_operator_journal(
@@ -2858,6 +2857,25 @@ class AvatarSupervisor(Node):
             self._avatar_tts_request_pub.publish(msg)
         except Exception as exc:  # noqa: BLE001
             self._log.warning(f"GripPipeline: avatar_tts_request publish failed: {exc}")
+
+    def _maybe_speak_agent_reply(self, source: str, summary: str) -> None:
+        """Озвучить ответ агента в шлем, если вход был голосовым (#2116).
+
+        Вынесено из ``_on_avatar_command`` отдельным методом ради
+        CC-бюджета (ADR-0021): встроенная ветка подняла сложность
+        обработчика с 17 до 19 и завалила ``scripts/lint/cc_budget.py``.
+        Поднимать baseline вместо выноса нельзя — именно так выигрыш от
+        шага 1 плана миграции и откатывается.
+
+        Озвучиваем только голосовой вход: на текстовую команду из Telegram
+        оператор ждёт текст, а не речь в наушниках. Пустой ``summary``
+        отсекает сам ``_publish_avatar_tts`` (#2096).
+        """
+        if source != "quest":
+            return
+        if not self._param_bool("speak_agent_replies", True):
+            return
+        self._publish_avatar_tts(summary)
 
     def _publish_avatar_tts(
         self, text: str, language: Optional[str] = None, voice: Optional[str] = None
