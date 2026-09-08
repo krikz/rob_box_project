@@ -168,6 +168,117 @@ describe("PointerSystem", () => {
     expect(Math.hypot(pos.x - CENTER.x, pos.z - CENTER.z)).toBeCloseTo(2, 2);
   });
 
+  // Regression #2143 §1.2 (radiusOf как 3D): при захвате без движения
+  // луча панель не должна подтягиваться к оператору. Панель стоит на
+  // y=1.4 при центре y=1.6, поэтому 3D-радиус = √(2² + 0.2²) ≈ 2.01.
+  // Если бы `radiusOf` отдавал горизонтальный (2.0), каждое пересечение
+  // луча со сферой давало бы радиус 2.0 < реального 3D, и панель бы
+  // «прилипала» ближе. Этот тест ловит именно «3D стабильно при
+  // повторных update с тем же лучом».
+  it("does not creep inward across repeated updates with the same ray (#2143)", () => {
+    const handlers = {
+      onHover: vi.fn(), onSelect: vi.fn(),
+      onDragStart: vi.fn(), onDrag: vi.fn(), onDragEnd: vi.fn(),
+      onResizeStart: vi.fn(), onResize: vi.fn(), onResizeEnd: vi.fn()
+    };
+    const sys = new PointerSystem({ center: CENTER, handlers });
+    // Панель на y=1.4 (≠ center.y) — имитируем voice pipeline panel.
+    const mesh = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.2, 0.7),
+      new THREE.MeshBasicMaterial()
+    );
+    mesh.position.set(0, 1.4, -2);
+    mesh.lookAt(CENTER.x, 1.4, CENTER.z);
+    mesh.updateMatrixWorld(true);
+    sys.addTarget({ id: "vpl", object: mesh, draggable: true });
+
+    // 1) hover по центру (press=true ещё нет).
+    // 2) press (центр) → pressedId = "vpl", pressOrigin = forward ray point.
+    // 3) move луч вбок — CLICK_SLOP_M пройден, drag стартует.
+    // 4-5) те же лучи — drag продолжается с той же позицией.
+    const forward = { origin: CENTER, direction: { x: 0, y: 0, z: -1 }, pressed: false };
+    const press = { origin: CENTER, direction: { x: 0, y: 0, z: -1 }, pressed: true };
+    const drag = { origin: CENTER, direction: { x: 0.2, y: 0, z: -0.98 }, pressed: true };
+    sys.update(forward);
+    sys.update(press); // press
+    sys.update(drag); // start drag
+    sys.update(drag);
+    sys.update(drag);
+
+    expect(handlers.onDrag).toHaveBeenCalled();
+    const dragCalls = handlers.onDrag.mock.calls as Array<[string, { x: number; y: number; z: number }]>;
+    const initialPos = dragCalls[0][1];
+    const initialDist = Math.hypot(
+      initialPos.x - CENTER.x,
+      initialPos.y - CENTER.y,
+      initialPos.z - CENTER.z
+    );
+    // Каждый последующий вызов onDrag с тем же лучом должен сохранять
+    // 3D-расстояние до центра. Если бы фикса не было — каждое
+    // повторение чуть уменьшало бы дистанцию (накопление).
+    for (const [, pos] of dragCalls) {
+      const d = Math.hypot(pos.x - CENTER.x, pos.y - CENTER.y, pos.z - CENTER.z);
+      expect(d).toBeCloseTo(initialDist, 2);
+    }
+  });
+
+  // Regression #2143 §1.1 (setCenter): панель должна кататься вокруг
+  // фактической позиции оператора, а не вокруг (0, 1.6, 0). Сдвигаем
+  // центр на +1 по x, захватываем панель в стороне — drag должен
+  // держать панель на том же 3D-расстоянии от НОВОГО центра.
+  it("drags around the operator's actual position, not the spawn origin (#2143)", () => {
+    const handlers = {
+      onHover: vi.fn(), onSelect: vi.fn(),
+      onDragStart: vi.fn(), onDrag: vi.fn(), onDragEnd: vi.fn(),
+      onResizeStart: vi.fn(), onResize: vi.fn(), onResizeEnd: vi.fn()
+    };
+    const sys = new PointerSystem({ center: CENTER, handlers });
+    const mesh = panel(0, 1.6, -2);
+    sys.addTarget({ id: "p1", object: mesh, draggable: true });
+
+    // Оператор отошёл на +1 по x. Панель (0, 1.6, -2) теперь на
+    // расстоянии √5 от оператора (1, 1.6, 0), а не 2.
+    const operatorAt = { x: 1, y: 1.6, z: 0 };
+    const initialDist = Math.hypot(0 - 1, 0, -2 - 0);
+    sys.setCenter(operatorAt);
+    // Луч из operatorAt в направлении (panel - operatorAt) нормализованный.
+    sys.update({
+      origin: operatorAt,
+      direction: { x: -1, y: 0, z: -2 }, // попадёт в панель (нормализуется внутри)
+      pressed: false
+    });
+    sys.update({
+      origin: operatorAt,
+      direction: { x: -1, y: 0, z: -2 },
+      pressed: true
+    });
+    sys.update({
+      origin: operatorAt,
+      direction: { x: -0.6, y: 0, z: -2.1 },
+      pressed: true
+    });
+    sys.update({
+      origin: operatorAt,
+      direction: { x: -0.6, y: 0, z: -2.1 },
+      pressed: true
+    });
+
+    expect(handlers.onDrag).toHaveBeenCalled();
+    const dragCalls = handlers.onDrag.mock.calls as Array<[string, { x: number; y: number; z: number }]>;
+    for (const [, pos] of dragCalls) {
+      const d = Math.hypot(
+        pos.x - operatorAt.x,
+        pos.y - operatorAt.y,
+        pos.z - operatorAt.z
+      );
+      // 3D-расстояние от НОВОГО центра должно быть ≈initialDist.
+      // До фикса setCenter не вызывался → радиус был бы √(2²+0²)=2
+      // от СТАРОГО центра (и панель к нему бы и катилась), а от
+      // нового — искажённое расстояние.
+      expect(d).toBeCloseTo(initialDist, 2);
+    }
+  });
+
   it("never drags a target marked non-draggable (buttons)", () => {
     const { sys, handlers } = setup(false);
     sys.update(forward(false));
