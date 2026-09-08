@@ -50,6 +50,7 @@ from rob_box_core.prompt_sections import (
     render_prompt,
 )
 from rob_box_core.tool_catalog import CORE_SKILL, skill_names, tools_for_skill
+from rob_box_core.utterance import Sink, Utterance
 from rob_box_harness.config import LLMConfig
 from rob_box_harness.core.agent_core import AgentCore, DialogResult
 from rob_box_harness.core.dialogue_state_machine import (
@@ -5996,10 +5997,16 @@ class DialogueNode(Node):
         """Publish a one-off TTS payload via SSML JSON with a unique ``dialogue_id``."""
         dialogue_id = str(uuid.uuid4())
         self.current_dialogue_id = dialogue_id
-        payload = json.dumps({
-            "ssml": f"<speak>{text}</speak>",
-            "dialogue_id": dialogue_id,
-        }, ensure_ascii=False)
+        # voice-vr 12 (issue #2197): единый сборщик SSML — ``Utterance``.
+        # XML-экранирование &, <, > делает сам сборщик.
+        payload = json.dumps(
+            Utterance(
+                text=text,
+                sink=Sink.SPEAKERS,
+                extra={"dialogue_id": dialogue_id},
+            ).to_request(),
+            ensure_ascii=False,
+        )
         msg = String()
         msg.data = payload
         self.response_pub.publish(msg)

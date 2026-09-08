@@ -505,9 +505,26 @@ class SpeakTextTool(MCPTool):
         pitch = pitch_map.get(animation, None)
 
         def _make_ssml(chunk: str) -> str:
+            # voice-vr 12 (issue #2197): единый сборщик SSML — ``Utterance``.
+            # XML-экранирование &, <, > делает сам сборщик; ``pitch``
+            # приходит из локальной таблицы (high/low/x-high) и в SSML
+            # не нуждается в экранировании.
+            from rob_box_core.utterance import escape_xml_text
+
             if pitch:
-                return f"<speak><prosody pitch='{pitch}'>{chunk}</prosody></speak>"
-            return f"<speak>{chunk}</speak>"
+                # Prosody-обёртка нужна только для эмоциональных анимаций.
+                # ``escape_xml_text`` — публичный алиас того же escape,
+                # что внутри ``Utterance.ssml``.
+                return (
+                    f"<speak><prosody pitch='{pitch}'>"
+                    f"{escape_xml_text(chunk)}"
+                    f"</prosody></speak>"
+                )
+            # Без prosody — пользуемся готовым ``Utterance.ssml`` (один
+            # источник правды для всей сборки SSML).
+            from rob_box_core.utterance import Utterance
+
+            return Utterance(text=chunk).ssml
 
         # Разбиваем текст на чанки ≤ _MAX_CHUNK_CHARS (лимит Yandex TTS)
         chunks = self._split_sentences(text, self._MAX_CHUNK_CHARS)

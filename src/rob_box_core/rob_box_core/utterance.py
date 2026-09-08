@@ -98,12 +98,21 @@ _XML_ESCAPE_TABLE = str.maketrans(
 def _escape_xml_text(text: str) -> str:
     """Экранировать ``&``, ``<``, ``>`` для вставки в текстовый узел SSML.
 
-    >>> _escape_xml_text("a & b < c > d")
+    Публичный re-export: ``escape_xml_text``. Нужен вызывающим, которые
+    собирают НЕ-стандартный SSML (например, ``<prosody>...</prosody>`` внутри
+    ``<speak>...</speak>``) и хотят ровно тот же escape, что в
+    :attr:`Utterance.ssml`.
+
+    >>> escape_xml_text("a & b < c > d")
     'a &amp; b &lt; c &gt; d'
-    >>> _escape_xml_text("plain")
+    >>> escape_xml_text("plain")
     'plain'
     """
     return text.translate(_XML_ESCAPE_TABLE)
+
+
+#: Публичный алиас для :func:`_escape_xml_text`.
+escape_xml_text = _escape_xml_text
 
 
 @dataclass

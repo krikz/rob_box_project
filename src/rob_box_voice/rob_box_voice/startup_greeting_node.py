@@ -39,6 +39,9 @@ from rob_box_voice.startup_greeting import (
     THINKING_SOUND,
 )
 
+# voice-vr 12 (issue #2197, ADR-0080 §1.3 / §2.3): единый сборщик SSML.
+from rob_box_core.utterance import Sink, Utterance
+
 
 class StartupGreetingNode(Node):
     """Нода одноразового приветствия при старте системы."""
@@ -169,7 +172,10 @@ class StartupGreetingNode(Node):
         self.get_logger().info(f'Говорю: "{greeting}"')
 
         payload = json.dumps(
-            {"ssml": f"<speak>{greeting}</speak>"},
+            Utterance(
+                text=greeting,
+                sink=Sink.SPEAKERS,
+            ).to_request(),
             ensure_ascii=False,
         )
         msg = String()

@@ -152,8 +152,17 @@ except ImportError:  # pragma: no cover — защита для standalone-за�
     _BUILD_SSML_AVAILABLE = False
 
     def build_ssml_payload(text: str, animation: str = "neutral") -> str:  # type: ignore[no-redef]
+        # voice-vr 12 (issue #2197): единый сборщик SSML — ``Utterance``.
+        # Раньше было ``f"<speak>{text}</speak>"`` без экранирования.
+        from rob_box_core.utterance import Sink, Utterance
+
         return json.dumps(
-            {"ssml": f"<speak>{text}</speak>", "speech_id": "stt-unclear", "emotion": animation},
+            Utterance(
+                text=text,
+                sink=Sink.SPEAKERS,
+                emotion=animation,
+                extra={"speech_id": "stt-unclear"},
+            ).to_request(),
             ensure_ascii=False,
         )
 
