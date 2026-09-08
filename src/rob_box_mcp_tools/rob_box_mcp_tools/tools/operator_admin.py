@@ -20,11 +20,13 @@ operator_admin.py - Операторские инструменты суперв
   обязательная санитизация перед выдачей агенту.
 * :class:`ContainerStatusTool` — restart-count/CPU/RAM/uptime контейнеров
   через Prometheus ``/api/v1/query`` (cAdvisor уже отдаёт метрики).
-* :class:`ShowMetricsTool` (issue #2113) — публикует запрос в топик
-  ``/avatar/tars/panel_request``, на который подписан существующий
-  :class:`rob_box_supervisor.tars_panel.TarsPanelDispatcher`. Dispatcher
-  парсит запрос, строит URL Grafana-панели и публикует ответ в
-  ``/avatar/tars/panel_url`` (Quest-клиент уже подписан на этот топик).
+* :class:`ShowMetricsTool` (issue #2113, #2184) — публикует запрос в топик
+  ``/avatar/tars/panel_request``, на который подписан
+  :class:`rob_box_supervisor.tars_panel.TarsPanelDispatcher`, и ЖДЁТ ответа
+  в ``/avatar/tars/panel_data``: dispatcher выполняет запрос в
+  Prometheus/Loki и отдаёт реальные ряды точек (их же рисует Quest-клиент
+  на экране TARS 2). Тул возвращает LLM последние значения, чтобы ТАРС
+  называл числа, а не рапортовал об открытии панели.
 
 Все четыре ``execution_type = ToolExecutionType.MEDIUM`` (2-10s): зависят от
 сетевых вызовов и ROS-discovery. ``read_only=True``.
@@ -35,6 +37,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -64,8 +67,17 @@ _LOG = logging.getLogger(__name__)
 # Defaults — overridable через env / конфиг.
 # ----------------------------------------------------------------------------
 
-_DEFAULT_LOKI_URL = os.environ.get("LOKI_URL", "http://loki:3100")
-_DEFAULT_PROM_URL = os.environ.get("PROMETHEUS_URL", "http://prometheus:9090")
+# Стек мониторинга (docker/monitoring/docker-compose.yaml) живёт НЕ рядом с
+# нодами: Prometheus/Loki/Grafana подняты на build-машине katana (10.1.1.249)
+# в host-сети, а voice-assistant / avatar-supervisor крутятся на Vision Pi
+# тоже в host-сети. Docker-DNS между ними нет — старые дефолты
+# ``http://prometheus:9090`` / ``http://loki:3100`` с робота не резолвились
+# вообще (проверено 08.09.2026: env PROMETHEUS_URL/LOKI_URL в контейнерах не
+# задан ни одной строкой compose), из-за чего молча не работали ещё
+# ``container_status`` и ``read_logs(source=loki)``. Прямой адрес katana
+# отвечает из контейнера avatar-supervisor: /-/healthy → 200.
+_DEFAULT_LOKI_URL = os.environ.get("LOKI_URL", "http://10.1.1.249:3100")
+_DEFAULT_PROM_URL = os.environ.get("PROMETHEUS_URL", "http://10.1.1.249:9090")
 # Таймаут HTTP-запросов — на Pi4 локальные сервисы отвечают <200ms,
 # ставим 2s (запас на cold-cache PromQL и медленный Loki).
 _HTTP_TIMEOUT_SEC = float(os.environ.get("OPERATOR_ADMIN_HTTP_TIMEOUT", "2.0"))
@@ -671,6 +683,40 @@ def _sanitize_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
 # ``/avatar/tars/panel_request`` с заведомо битыми запросами).
 _SHOW_METRICS_DATASOURCES = ("prometheus", "loki")
 
+# Сколько ждём ответ супервизора на ``/avatar/tars/panel_data``.
+# TarsPanelDispatcher ходит в Prometheus по HTTP (таймаут 5s) в отдельном
+# потоке, так что 8s покрывают худший случай с запасом на ROS-доставку.
+# Ожидание — не роскошь: без него LLM получал «опубликовал запрос» и бодро
+# сообщал оператору «открыл дрейф CPU», даже когда метрики не существует и
+# панель оставалась пустой (issue #2184, ADR-0018).
+_SHOW_METRICS_TIMEOUT_SEC = float(
+    os.environ.get("SHOW_METRICS_TIMEOUT", "8.0")
+)
+
+
+def _latest_values(series: Any) -> Dict[str, Any]:
+    """Последнее значение каждого ряда — то, что ТАРС называет голосом.
+
+    Для Loki рядов нет, есть строки: тогда отдаём пусто, а LLM опирается на
+    ``message``. Формат ряда — контракт ``/avatar/tars/panel_data``
+    (``{"name", "labels", "points": [[ts, value], …]}``).
+    """
+    out: Dict[str, Any] = {}
+    if not isinstance(series, list):
+        return out
+    for item in series[:6]:
+        if not isinstance(item, dict):
+            continue
+        points = item.get("points")
+        if not isinstance(points, list) or not points:
+            continue
+        last = points[-1]
+        try:
+            out[str(item.get("name") or "series")] = float(last[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+    return out
+
 
 class ShowMetricsTool(MCPTool):
     """Публикация LLM tool-call ``show_metrics`` в ``/avatar/tars/panel_request``.
@@ -696,11 +742,19 @@ class ShowMetricsTool(MCPTool):
     @property
     def description(self) -> str:
         return (
-            "Открыть Grafana-панель на боковом экране TARS 2 (Captain Bridge) "
-            "с указанным PromQL/LogQL запросом. Используй когда оператор "
-            "просит показать графики, метрики, логи, дрейф CPU, latency, "
-            "ошибки, телеметрию ('покажи дрейф CPU', 'открой ошибки stt_node'). "
-            "Возвращает короткий статус — LLM повторит его оператору."
+            "Показать телеметрию робота на боковом экране TARS 2 "
+            "(Captain Bridge) и получить её значения. Тул выполняет запрос "
+            "в Prometheus (метрики) или Loki (логи) и возвращает последние "
+            "значения — отвечай оператору ИМИ, а не фразой «открыл панель». "
+            "Используй когда просят показать графики, метрики, логи, CPU, "
+            "память, latency, ошибки ('покажи дрейф CPU', 'открой ошибки "
+            "stt_node'). Рабочие запросы: "
+            "'rate(process_cpu_seconds_total[5m])' — CPU, "
+            "'process_resident_memory_bytes' — RAM, 'up' — живость "
+            "экспортеров, 'rate(voice_llm_request_duration_seconds_sum[5m]) "
+            "/ rate(voice_llm_request_duration_seconds_count[5m])' — "
+            "задержка LLM. Простые слова ('cpu', 'память', 'latency') тоже "
+            "принимаются — они резолвятся по живому каталогу метрик."
         )
 
     @property
@@ -710,8 +764,10 @@ class ShowMetricsTool(MCPTool):
                 name="query",
                 type="string",
                 description=(
-                    "PromQL-выражение (напр. 'rate(cpu_usage[5m])') или "
-                    "LogQL-запрос (напр. '{job=\"voice\"}'). Обязательный."
+                    "PromQL-выражение (напр. "
+                    "'rate(process_cpu_seconds_total[5m])'), LogQL-запрос "
+                    "(напр. '{job=\"voice\"}') или простое слово-метрика "
+                    "('cpu', 'память', 'latency'). Обязательный."
                 ),
                 required=True,
             ),
@@ -735,9 +791,10 @@ class ShowMetricsTool(MCPTool):
 
     @property
     def execution_type(self) -> ToolExecutionType:
-        # Публикация в топик мгновенная (<100ms); сборку URL и рендер
-        # делает TarsPanelDispatcher + Quest-клиент уже после.
-        return ToolExecutionType.FAST
+        # Не FAST: тул ждёт, пока супервизор реально сходит в Prometheus/Loki
+        # и вернёт данные в ``/avatar/tars/panel_data`` (до
+        # _SHOW_METRICS_TIMEOUT_SEC). Это цена честного ответа оператору.
+        return ToolExecutionType.MEDIUM
 
     @property
     def read_only(self) -> bool:
@@ -752,12 +809,91 @@ class ShowMetricsTool(MCPTool):
         # и ``execute()`` вернёт честный ``success=False`` вместо
         # падения (ADR-0018).
         self._panel_request_pub: Optional[Any] = None
+        # request_id → результат из /avatar/tars/panel_data. Ключи чистим
+        # сразу после чтения — словарь не растёт (одна запись на вызов).
+        self._pending: Dict[str, Dict[str, Any]] = {}
+        self._pending_events: Dict[str, threading.Event] = {}
+        self._pending_lock = threading.Lock()
         if node is not None and hasattr(node, "create_publisher"):
             from std_msgs.msg import String  # noqa: PLC0415 — локальный импорт
 
             self._panel_request_pub = node.create_publisher(
                 String, "/avatar/tars/panel_request", 10
             )
+            # Обратный канал: супервизор публикует сюда данные, которые
+            # реально приехали из Prometheus/Loki. Подписка — в СВОЕЙ
+            # ReentrantCallbackGroup: execute() блокируется на Event, и с
+            # MultiThreadedExecutor (см. mcp_server._make_executor) callback
+            # должен уметь отработать в другом потоке, иначе получим дедлок.
+            if hasattr(node, "create_subscription"):
+                try:
+                    group = None
+                    try:
+                        from rclpy.callback_groups import (  # noqa: PLC0415
+                            ReentrantCallbackGroup,
+                        )
+
+                        group = ReentrantCallbackGroup()
+                    except ImportError:
+                        pass  # стенд без rclpy — подписка всё равно нужна
+                    kwargs = {"callback_group": group} if group is not None else {}
+                    node.create_subscription(
+                        String,
+                        "/avatar/tars/panel_data",
+                        self._on_panel_data,
+                        10,
+                        **kwargs,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    # Без обратного канала тул продолжает работать — просто
+                    # честно сообщит о таймауте вместо конкретных чисел.
+                    _LOG.warning(
+                        f"show_metrics: panel_data subscription failed: {exc}"
+                    )
+
+    def _on_panel_data(self, msg: Any) -> None:
+        """Результат от TarsPanelDispatcher → разбудить ждущий execute()."""
+        try:
+            payload = json.loads(msg.data)
+        except (json.JSONDecodeError, TypeError, AttributeError):
+            return
+        if not isinstance(payload, dict):
+            return
+        request_id = str(payload.get("request_id") or "")
+        if not request_id:
+            return
+        with self._pending_lock:
+            event = self._pending_events.get(request_id)
+            if event is None:
+                return  # чужой/протухший запрос — не наш вызов
+            self._pending[request_id] = payload
+        event.set()
+
+    def _arm_panel_data(self, request_id: str) -> "threading.Event":
+        """Подписаться на свой ``request_id`` ДО публикации запроса.
+
+        Порядок важен: супервизор на быстром кэше отвечает раньше, чем
+        execute() успевает дойти до ожидания, — если регистрировать Event
+        после publish, ответ уходит в никуда и тул врёт про таймаут.
+        """
+        event = threading.Event()
+        with self._pending_lock:
+            self._pending_events[request_id] = event
+        return event
+
+    def _await_panel_data(
+        self, request_id: str, event: "threading.Event", timeout: float
+    ) -> Optional[Dict[str, Any]]:
+        """Дождаться ``panel_data`` с нашим ``request_id`` (или None)."""
+        try:
+            if not event.wait(timeout):
+                return None
+            with self._pending_lock:
+                return self._pending.get(request_id)
+        finally:
+            with self._pending_lock:
+                self._pending_events.pop(request_id, None)
+                self._pending.pop(request_id, None)
 
     def execute(
         self,
@@ -813,6 +949,7 @@ class ShowMetricsTool(MCPTool):
                 ),
             )
 
+        event = self._arm_panel_data(request_id)
         try:
             from std_msgs.msg import String  # noqa: PLC0415 — локальный импорт
 
@@ -827,21 +964,56 @@ class ShowMetricsTool(MCPTool):
             )
             self._panel_request_pub.publish(payload)
         except Exception as exc:  # noqa: BLE001
+            self._await_panel_data(request_id, event, 0.0)  # снять регистрацию
             return MCPToolResult(
                 success=False,
                 data={"request_id": request_id},
                 error=f"publish failed: {exc}",
             )
 
-        return MCPToolResult(
-            success=True,
-            data={
-                "request_id": request_id,
-                "datasource": datasource,
-                "query": query,
-            },
-            message=(
-                f"Опубликовал {datasource}-запрос «{query}» в "
-                "/avatar/tars/panel_request. Quest откроет панель на TARS 2."
-            ),
+        result = self._await_panel_data(
+            request_id, event, _SHOW_METRICS_TIMEOUT_SEC
         )
+        if result is None:
+            # Супервизор не ответил: либо avatar-supervisor лежит, либо
+            # TarsPanelDispatcher не поднялся. Врать «открыл» нельзя —
+            # оператор будет смотреть в пустой экран (ADR-0018).
+            return MCPToolResult(
+                success=False,
+                data={
+                    "request_id": request_id,
+                    "datasource": datasource,
+                    "query": query,
+                },
+                error=(
+                    f"avatar_supervisor не ответил за {_SHOW_METRICS_TIMEOUT_SEC:.0f}s "
+                    "(/avatar/tars/panel_data). Панель TARS 2 не обновилась."
+                ),
+            )
+
+        status = str(result.get("status") or "error")
+        summary = str(result.get("summary") or "")
+        series = result.get("series") or result.get("lines") or []
+        data = {
+            "request_id": request_id,
+            "datasource": datasource,
+            "query": result.get("query") or query,
+            "status": status,
+            "series_count": len(series) if isinstance(series, list) else 0,
+            "url": result.get("url", ""),
+            "note": result.get("note", ""),
+            "available": result.get("available", []),
+            # Последние значения — чтобы LLM мог назвать числа голосом, а не
+            # пересказывать факт открытия панели.
+            "latest": _latest_values(series),
+        }
+        if status == "error":
+            return MCPToolResult(
+                success=False,
+                data=data,
+                error=str(result.get("error") or summary or "unknown error"),
+            )
+        # status == "empty" — это не сбой тракта, а честный «данных нет»:
+        # success=True, но message прямо говорит об этом, чтобы LLM не
+        # придумал цифры.
+        return MCPToolResult(success=True, data=data, message=summary)

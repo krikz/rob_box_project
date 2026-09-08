@@ -1761,6 +1761,17 @@ class QuestNode(Node):
             self._on_tars_panel_url,
             10,
         )
+        # issue #2184 — consumer /avatar/tars/panel_data: те же tool call'ы,
+        # но с РЯДАМИ ТОЧЕК из Prometheus/Loki, а не с одной ссылкой.
+        # Relay в JSON_EVENT (type="tars_panel_data"); клиент рисует их на
+        # canvas (tars2Panel.setPanelData). URL-канал выше остаётся ради
+        # обратной совместимости со старыми сборками клиента.
+        self._tars_panel_data_sub = self.create_subscription(
+            String,
+            "/avatar/tars/panel_data",
+            self._on_tars_panel_data,
+            10,
+        )
         # Подписка на /voice/tts/voices (TRANSIENT_LOCAL depth=1) — это
         # первый TRANSIENT_LOCAL publisher tts_node (см. design t_5b9d5d0c
         # §47-49). RELIABLE обязательно — TRANSIENT_LOCAL «latched» semantics
@@ -2746,6 +2757,46 @@ class QuestNode(Node):
             self.ws_server.broadcast_json_event(event)
         except Exception as e:  # noqa: BLE001
             self.get_logger().debug(f"tars_panel_url broadcast failed: {e}")
+
+    def _on_tars_panel_data(self, msg: String) -> None:
+        """ROS /avatar/tars/panel_data → JSON_EVENT (type=tars_panel_data).
+
+        issue #2184: ``tars_panel.py`` публикует сюда результат запроса в
+        Prometheus/Loki — ряды точек, которые клиент рисует сам. Контракт
+        входа — String JSON ``{request_id, status, datasource, query, note,
+        summary, series, lines, available, url, error}``.
+
+        Полезная нагрузка режется по размеру перед broadcast'ом: PromQL с
+        широким селектором способен вернуть десятки рядов, а WebSocket-канал
+        Quest'а общий с телеметрией (ADR-0060). Супервизор уже ограничивает
+        ряды (MAX_SERIES=6), здесь — страховка от «чужого» publisher'а.
+        """
+        try:
+            payload = json.loads(msg.data or "")
+        except (json.JSONDecodeError, TypeError):
+            return
+        if not isinstance(payload, dict):
+            return
+        series = payload.get("series")
+        lines = payload.get("lines")
+        event = {
+            "type": "tars_panel_data",
+            "request_id": str(payload.get("request_id", "") or ""),
+            "status": str(payload.get("status", "") or ""),
+            "datasource": str(payload.get("datasource", "") or ""),
+            "query": str(payload.get("query", "") or ""),
+            "note": str(payload.get("note", "") or ""),
+            "summary": str(payload.get("summary", "") or ""),
+            "series": series[:8] if isinstance(series, list) else [],
+            "lines": lines[:40] if isinstance(lines, list) else [],
+            "url": str(payload.get("url", "") or ""),
+            "error": str(payload.get("error", "") or ""),
+            "ts_ms": int(time.time() * 1000),
+        }
+        try:
+            self.ws_server.broadcast_json_event(event)
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().debug(f"tars_panel_data broadcast failed: {e}")
 
     def _send_alert_event(self, alert: Alert, *, active: bool) -> None:
         """Сформировать JSON_EVENT для robot_alert и разослать всем сессиям."""

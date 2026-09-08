@@ -187,5 +187,91 @@ class TestOnTarsPanelUrl(unittest.TestCase):
         # Не упало — relay best-effort.
 
 
+@_skip
+class TestOnTarsPanelData(unittest.TestCase):
+    """Шов: ROS /avatar/tars/panel_data → JSON_EVENT(type=tars_panel_data).
+
+    issue #2184: по этому каналу едут РЯДЫ ТОЧЕК из Prometheus/Loki — то,
+    что панель TARS 2 реально рисует. Контракт входа — tars_panel.py
+    ``_publish_result``.
+    """
+
+    def _payload(self, **over):
+        payload = {
+            "request_id": "req1",
+            "status": "ok",
+            "datasource": "prometheus",
+            "query": "rate(process_cpu_seconds_total[5m])",
+            "note": "«cpu» → rate(process_cpu_seconds_total[5m])",
+            "summary": "Вывел на TARS 2 — voice-assistant: 0.04",
+            "series": [
+                {
+                    "name": "voice-assistant",
+                    "labels": {"instance": "10.1.1.11:9100"},
+                    "points": [[1788893900.0, 0.03], [1788893960.0, 0.04]],
+                }
+            ],
+            "lines": [],
+            "url": "http://10.1.1.249:3000/explore?orgId=1",
+            "error": "",
+        }
+        payload.update(over)
+        return payload
+
+    def test_broadcasts_series(self) -> None:
+        host = _stub_host()
+        QuestNode._on_tars_panel_data(host, _msg(self._payload()))
+
+        host.ws_server.broadcast_json_event.assert_called_once()
+        event = host.ws_server.broadcast_json_event.call_args.args[0]
+        self.assertEqual(event["type"], "tars_panel_data")
+        self.assertEqual(event["request_id"], "req1")
+        self.assertEqual(event["status"], "ok")
+        self.assertEqual(event["series"][0]["name"], "voice-assistant")
+        self.assertEqual(
+            event["series"][0]["points"], [[1788893900.0, 0.03], [1788893960.0, 0.04]]
+        )
+        self.assertIn("0.04", event["summary"])
+        self.assertIn("ts_ms", event)
+
+    def test_series_are_capped(self) -> None:
+        """Чужой publisher с широким селектором не забьёт WS-канал Quest'а."""
+        host = _stub_host()
+        many = [
+            {"name": f"s{i}", "labels": {}, "points": [[1.0, float(i)]]}
+            for i in range(30)
+        ]
+        QuestNode._on_tars_panel_data(host, _msg(self._payload(series=many)))
+        event = host.ws_server.broadcast_json_event.call_args.args[0]
+        self.assertEqual(len(event["series"]), 8)
+
+    def test_empty_status_is_relayed_not_dropped(self) -> None:
+        """status=empty — тоже событие: клиент обязан сказать «данных нет»."""
+        host = _stub_host()
+        QuestNode._on_tars_panel_data(
+            host, _msg(self._payload(status="empty", series=[]))
+        )
+        event = host.ws_server.broadcast_json_event.call_args.args[0]
+        self.assertEqual(event["status"], "empty")
+        self.assertEqual(event["series"], [])
+
+    def test_non_list_series_becomes_empty_list(self) -> None:
+        host = _stub_host()
+        QuestNode._on_tars_panel_data(host, _msg(self._payload(series="oops")))
+        event = host.ws_server.broadcast_json_event.call_args.args[0]
+        self.assertEqual(event["series"], [])
+
+    def test_bad_json_is_ignored(self) -> None:
+        host = _stub_host()
+        QuestNode._on_tars_panel_data(host, _msg("not-json"))
+        host.ws_server.broadcast_json_event.assert_not_called()
+
+    def test_broadcast_failure_does_not_raise(self) -> None:
+        host = _stub_host()
+        host.ws_server.broadcast_json_event.side_effect = RuntimeError("ws closed")
+        QuestNode._on_tars_panel_data(host, _msg(self._payload()))
+        # Не упало — relay best-effort.
+
+
 if __name__ == "__main__":
     unittest.main()
