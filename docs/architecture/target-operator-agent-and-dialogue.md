@@ -14,6 +14,8 @@
 **Пересматривает:** ADR-0028 §4.5 (параметрическое управление `dialogue_node`),
 ADR-0001 §2.7.1 (`DialogHarness` как параллельная реализация)
 **Основано на:** разбор кода `develop` @ `20e1b9e3`, см. §2
+**Продолжение:** `docs/adr/0080-voice-and-headset-control-eight-seams.md` —
+статус шагов этого плана на 08.09 (§13.0) плюс четыре шва, которых здесь не было
 
 ---
 
@@ -1107,6 +1109,41 @@ sequenceDiagram
 ---
 
 ## 13. План миграции
+
+### 13.0 Статус шагов на 2026-09-08 (проверено по коду `develop` @ `7ef2f98d`)
+
+Проверка — чтением кода, не отчётами карточек. Продолжение и уточнение —
+`docs/adr/0080-voice-and-headset-control-eight-seams.md`.
+
+| шаг | статус | чем подтверждено |
+|---|---|---|
+| 1. Сторож CC | ⚠️ **есть, но не держит** | `scripts/lint/cc_budget.py` работает; baseline от 08.09 грандфазерит `_handle_result` CC=65, `_run_turn` CC=57, `_on_stt` CC=54 (при написании ADR-0021 было 44/47/28). `rob_box_quest` вне области сканирования — `_on_json_cmd` CC=107 сторож не видит. ADR-0080 §2 волна 0 |
+| 2. Удаление мёртвого | ⚠️ **частично** | каркас `Harness` снят (ADR-0051 §3.2). Осталось: `scheduler/pre_gen.py` + `speculative_executor.py` + `decision/estimator/quality` ~1855 строк, импортируются только собой и тестами. ADR-0080 §2.8 |
+| 3. `AgentCore` | ✅ сделано | оба агента строят `AgentCore` (`dialogue_node.py:490`, `supervisor_node.py:1969`) |
+| 4. Вынести `avatar_arbiter` | ✅ сделано | `arbiter_node.py`, сервисы `/avatar_arbiter/*`, контейнер `avatar-arbiter` с `AVATAR_ARBITER_MODE=active` |
+| 4а. Супервизор — ТАРС | ✅ сделано | `AgentCore` + `ROSMCPToolProvider` + срезы `operator.*` |
+| 4б. Пайплайн грипа | ✅ сделано | `grip_pipeline.py`, `/avatar/ptt/result`, `/avatar/voice_pipeline` (открытый баг #2137 — звучит в наушники вместо динамиков) |
+| 5. Маршрутизация речи | ✅ сделано | `stt_node` роутит три источника в три топика (`stt_node.py:348,355,361`) |
+| 5а-0. `AudioWorklet` | ✅ сделано | `input/voice_capture.ts:12-24` |
+| 5а. Всегда-включённый микрофон | ✅ сделано | `/audio/quest_wake`, `voice_listen_start/stop`, `WakePhraseSegmenter` (после #2135) |
+| 5б. Обратный канал в шлем | ✅ сделано | `/avatar/tts/request` с `sink="headset"` → `/avatar/tts/audio` |
+| 6. `/dialogue/control` | ✅ сделано | `voice_input_mode` удалён (ADR-0066), остались только комментарии |
+| 7. `EventBus` и отмена | ❌ **не сделано** | шина создаётся в `task_scheduler.py:639`, единственный подписчик — на другом экземпляре (`command_node.py:214`). ADR-0080 §2.8 |
+| 7а. Приоритет в `tts_node` | ✅ сделано | `_normalize_tts_priority`, поле `priority` в `/voice/tts/request` |
+| 7б. `ReflexLayer` | ❌ **написан, не подключён** | `enable_reflex_layer` default `False` и нигде не выставляется; включённый работает по пустой очереди |
+| 8. Срез на транспорте | ✅ сделано | `slice_authority` в `mcp_server` (ADR-0052) |
+| 9. Один владелец floor | ❌ **не сделано, и хуже, чем считалось** | quest гейтит по своему in-process мьютексу; гейт выключен по умолчанию; `/avatar/state` в него не возвращается; heartbeat не доходит до арбитра из-за типов. ADR-0080 §1.1 и §2.1, issue #1999 |
+| 10. Одна база памяти | ❌ не сделано | `voice_memory.db` и `harness_voice.db` живут обе; миграция `010` написана. Issue #2000 |
+| 11. `operator.admin` | ✅ сделано | `tools/operator_admin.py`, срез в `slice_policy.yaml` |
+| 12. Сужение Quest seam | ❌ не сделано | `Bridge` — 29 методов (в плане было «вместо 25»). ADR-0080 §2.6, issue #2002 |
+| 13. Спекулятивная генерация | ✅ сделано | `scheduler/pregen/*` подключён в `tts_node`, `pregenerate_enabled=True` (ADR-0056). Issue #2003 «ЗАБЛОКИРОВАН» устарел |
+
+**Чего в этом плане не было и что добавляет ADR-0080:** каталог протокола
+мостика (§2.2 — три команды клиента сегодня уходят в пустоту), модуль реплики
+(§2.3 — десять сборок SSML в пяти пакетах), ход диалога (§2.4 — гварды чистые,
+оркестрация нет), единая сегментация речи (§2.5 — четыре правила «конец фразы»).
+
+---
 
 Шаги 1–3 независимы и делаются параллельно.
 
