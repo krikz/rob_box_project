@@ -1,4 +1,4 @@
-# ADR-0072: avatar_supervisor использует MultiThreadedExecutor — фикс голода /mcp/result callback'а
+# ADR-0075: avatar_supervisor использует MultiThreadedExecutor — фикс голода /mcp/result callback'а
 
 | Поле | Значение |
 |---|---|
