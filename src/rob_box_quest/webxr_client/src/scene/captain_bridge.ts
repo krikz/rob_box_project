@@ -572,15 +572,25 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   ceilingScreen.mesh.rotation.z = CEILING_SCREEN_ROLL_RAD;
   scene.add(ceilingScreen.mesh);
 
-  // TARS 1 + TARS 2 (issue #2113, quest #2112): Captain Bridge — два новых
-  // экрана по бокам от FRONT CAM, лицом к оператору. FRONT CAM стоит на
-  // z=-3.9, ширина 4.8 м. Берём те же размеры, что у camera_oak_depth
-  // side panel (1.6 × 1.2 м) — это достаточно крупно, чтобы текст и
-  // метрики читались, и при этом панели не налезают на экран-стену.
-  // Позиция — симметрично слева/справа, чуть ближе к стене, чтобы
-  // back-tilt (поворот лицом к оператору) давал нормаль, попадающую в
-  // голову оператора (0, 1.6, 0).
-  const TARS_PANEL_SIZE = { width: 1.6, height: 1.2 };
+  // TARS 1 + TARS 2 (issue #2113, quest #2112 / follow-up #2142):
+  // Captain Bridge — два боковых экрана по сторонам от FRONT CAM, лицом к
+  // оператору. Размер и ориентация — по ADR-0074 §4.0 (вариант E, выбран
+  // Шифу 2026-09-08): yaw = 36.9°, дистанция 4.50 м, back-tilt ≈ 1.3°.
+  // Меняется только размер; aspect 16:9 (как у основного экрана 4.8 × 2.7).
+  //
+  // WIP(quest #2142 followup, kanban t_2263e9d8): ширина панелей
+  // зафиксирована временно на 1.6 м (4:3 → 16:9 через height = W·9/16).
+  // Итоговая ширина 2.4–3.2 м из ADR §4.0 придёт от архитектора
+  // (kanban t_010739cf) — будет заменено одной строкой без перетряски
+  // позиций (X/Y/Z, углы — фиксированы ADR §4.0).
+  // Позиция симметрична слева/справа, чуть ближе к стене, чтобы
+  // back-tilt (поворот лицом к оператору) давал нормаль в голову
+  // оператора (0, 1.6, 0).
+  const TARS_PANEL_WIDTH = 1.6; // TODO(kanban t_010739cf): обновить до 2.4–3.2 м
+  const TARS_PANEL_SIZE = {
+    width: TARS_PANEL_WIDTH,
+    height: (TARS_PANEL_WIDTH * 9) / 16, // 16:9, как у основного экрана
+  };
   const TARS_PANEL_Y = 1.5;
   const TARS_PANEL_Z = -3.6;
   const TARS_PANEL_X = 2.7;

@@ -99,8 +99,13 @@ export function createTars2MetricsPanel(
   texture.magFilter = THREE.LinearFilter;
   texture.colorSpace = THREE.SRGBColorSpace;
 
-  // 4:3 — то же, что у TARS 1 / FRONT CAM.
-  const geometry = new THREE.PlaneGeometry(1.6, 1.2);
+  // 16:9 — по ADR-0074 §4.0 (вариант E: все три экрана Captain Bridge
+  // одного aspect ratio, как основной 4.8 × 2.7). Плоскость по умолчанию
+  // 1.6 × 0.9 м; реальный размер задаётся снаружи через mesh.scale
+  // (см. captain_bridge.ts: TARS_PANEL_SIZE). При смене ширины панели
+  // архитектором (диапазон 2.4–3.2 м) PlaneGeometry не меняется — здесь
+  // только отношение сторон.
+  const geometry = new THREE.PlaneGeometry(1.6, 0.9);
   const material = new THREE.MeshBasicMaterial({
     map: texture,
     side: THREE.DoubleSide,
