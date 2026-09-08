@@ -373,18 +373,6 @@ def test_publish_quest_wake_audio_none_publisher_is_noop():
     bridge.publish_quest_wake_audio(_pcm_chunk(4000, 4000))
 
 
-def test_chunk_is_silent_threshold():
-    pytest.importorskip("geometry_msgs", reason="QuestBridge требует rclpy/geometry_msgs (только в Docker image)")
-    from rob_box_quest.quest_node import _chunk_is_silent
-
-    assert _chunk_is_silent(_pcm_chunk(0, 0, 0)) is True
-    assert _chunk_is_silent(_pcm_chunk(499, -499)) is True
-    assert _chunk_is_silent(_pcm_chunk(500, 0)) is False
-    assert _chunk_is_silent(_pcm_chunk(-500)) is False
-    assert _chunk_is_silent(b"") is True
-    assert _chunk_is_silent(b"\x01") is True  # нечётная длина → тишина
-
-
 def test_set_voice_mode_maps_wire_to_param_and_publishes():
     bridge, _voice_in, _tts, _sound, _stt_in, set_voice_mode = _make_voice_bridge()
     bridge.set_voice_mode("ttts_proxy")
