@@ -224,6 +224,38 @@ def _declared_params(class_node: ast.ClassDef) -> dict[str, str | None]:
                 declared[name] = None
             elif name not in declared:
                 declared[name] = default
+
+    # Второй идиом объявления параметров: список кортежей в
+    # ``super().__init__(..., parameters=[("input_topic", "led_matrix/data")])``
+    # (и то же самое в ``declare_parameters(namespace=..., parameters=[...])``).
+    #
+    # Без него сторож даёт ЛОЖНОЕ срабатывание там, где две стороны шва
+    # объявляют топик по-разному. Реальный случай: led_matrix_compositor
+    # пишет паблишер литералом ``self.output_topic = "led_matrix/data"`` —
+    # резолвится; led_matrix_driver объявляет подписку этим идиомом — не
+    # резолвился, и паблишер выглядел как шов без потребителя, хотя
+    # потребитель есть (led_matrix_driver.py:27).
+    for sub in ast.walk(class_node):
+        if not isinstance(sub, ast.Call):
+            continue
+        for kw in sub.keywords:
+            if kw.arg != "parameters" or not isinstance(kw.value, (ast.List, ast.Tuple)):
+                continue
+            for elt in kw.value.elts:
+                if not isinstance(elt, (ast.Tuple, ast.List)) or len(elt.elts) < 2:
+                    continue
+                name_node, default_node = elt.elts[0], elt.elts[1]
+                if not (
+                    isinstance(name_node, ast.Constant)
+                    and isinstance(name_node.value, str)
+                ):
+                    continue
+                default = _literal_str(default_node)
+                name = name_node.value
+                if name in declared and declared[name] != default:
+                    declared[name] = None
+                elif name not in declared:
+                    declared[name] = default
     return declared
 
 
