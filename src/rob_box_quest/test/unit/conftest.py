@@ -29,6 +29,36 @@ import types
 
 import pytest
 
+# Ранний sys.path-бутстрап для rob_box_core: тесты QuestBridge теперь
+# импортируют ``rob_box_core.speech_segmentation`` на module-level (issue
+# #2199 — единый сегментатор вместо локального wake_segmenter.py). На
+# colcon-сборке rob_box_core приходит через install-space, но на dev-машине
+# без ``pip install -e`` его надо положить рядом с rob_box_quest руками.
+# Эвристика: поднимаемся вверх от conftest.py, пока рядом с каталогом не
+# обнаружится ``src/rob_box_core/rob_box_core/__init__.py``.
+import os.path as _osp_bootstrap
+
+_conftest_dir = _osp_bootstrap.dirname(_osp_bootstrap.abspath(__file__))
+_bootstrap_done = False
+for _depth in range(8):
+    if _depth == 0:
+        _candidate_root = _osp_bootstrap.dirname(_conftest_dir)
+    else:
+        _candidate_root = _osp_bootstrap.normpath(
+            _osp_bootstrap.join(_conftest_dir, *([".."] * _depth))
+        )
+    _candidate_core = _osp_bootstrap.join(_candidate_root, "src", "rob_box_core")
+    if _osp_bootstrap.isfile(
+        _osp_bootstrap.join(_candidate_core, "rob_box_core", "__init__.py")
+    ):
+        if _candidate_core not in sys.path:
+            sys.path.insert(0, _candidate_core)
+        _bootstrap_done = True
+        break
+if not _bootstrap_done:
+    pass  # rob_box_core уже в sys.path через pip install -e / colcon install
+
+
 _ROS_MODULES = (
     "rclpy",
     "rclpy.executors",
@@ -46,6 +76,7 @@ _ROS_MODULES = (
     "std_msgs.msg",
     "rob_box_core",
     "rob_box_core.avatar_command",
+    "rob_box_core.speech_segmentation",
 )
 
 
@@ -111,6 +142,18 @@ def quest_node_mod():
     for name in _ROS_MODULES:
         if name in sys.modules:
             continue
+        # Для rob_box_core.* сначала пробуем реальный импорт: пакет может
+        # быть установлен через ``pip install -e src/rob_box_core`` или
+        # лежать на PYTHONPATH (dev-машина с уже развёрнутым пакетом, но
+        # без ROS — тогда ros-заглушки всё ещё нужны). Если импорт
+        # невозможен — ставим типизированный stub, чтобы соседние
+        # ``importorskip`` видели «модуль есть».
+        if name.startswith("rob_box_core"):
+            try:
+                importlib.import_module(name)
+                continue
+            except ImportError:
+                pass
         module = types.ModuleType(name)
         for attr, value in _STUB_ATTRS.get(name, {}).items():
             setattr(module, attr, value)
