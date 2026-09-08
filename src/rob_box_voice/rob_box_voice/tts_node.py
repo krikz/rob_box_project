@@ -57,6 +57,7 @@ import sys
 import threading
 import time
 import wave
+from dataclasses import dataclass
 from pathlib import Path
 from collections.abc import Mapping
 
@@ -166,6 +167,96 @@ class _TTSEmptyTextError(Exception):
     silero никогда его не видят, и ``_mark_provider_dead`` никогда не
     вызывается по этой причине.
     """
+
+
+# ── Preview-synthesis error hierarchy (ADR-0077 / issue #2138.A.3) ────
+# supervisor использует ``except PreviewSynthesisError`` чтобы отделить
+# наши ошибки от внешних (MiniMax бросает свой MiniMaxTTSError).
+# Иерархия:
+#   PreviewSynthesisError           — база, поле ``reason`` для ws_server.
+#     ├─ PreviewSynthesisTimeoutError — сетевой синтез не уложился.
+#     └─ PreviewSynthesisUnavailableError — MiniMax opt-in не подключён.
+
+
+class PreviewSynthesisError(Exception):
+    # Базовый класс ошибок preview-синтеза. Поле ``reason`` — стабильная
+    # строка, которую supervisor пишет в
+    # ``preview_voice_error{reason: <reason>}``. Это публичный контракт
+    # между avatar_supervisor и ws_server/клиентом — менять опасно.
+
+    def __init__(self, message, reason="preview_synthesis_failed"):
+        super().__init__(message)
+        self.reason = reason
+
+
+class PreviewSynthesisTimeoutError(PreviewSynthesisError):
+    # Сетевой синтез не уложился в ``timeout_s``. Отдельный класс (не
+    # просто reason=timeout) для удобства юнит-тестов и для будущих
+    # телеметрий: «сколько preview'ов висит до таймаута» — отдельный
+    # gauge от «сколько preview'ов падает по 5xx».
+
+    def __init__(self, message, timeout_s):
+        super().__init__(message, reason="preview_timeout")
+        self.timeout_s = timeout_s
+
+
+class PreviewSynthesisUnavailableError(PreviewSynthesisError):
+    # MiniMax opt-in не подключён (MINIMAX_AVAILABLE=False).
+    # Capability-honest: честно говорим «preview сейчас недоступен», а
+    # не делаем вид что работаем. supervisor шлёт
+    # preview_voice_error{reason: minimax_unavailable}.
+
+    def __init__(self, message):
+        super().__init__(message, reason="minimax_unavailable")
+
+
+# ── Preview-synthesis value object ─────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class PreviewAudioResult:
+    # Результат preview-синтеза для picker'а оператора.
+    # audio_bytes — байты в ЗАКОДИРОВАННОМ контейнере (mp3/wav/ogg), а НЕ
+    # сырой int16 PCM. Это требование preview_audio_sink.ts: WebAudio
+    # decodeAudioData декодирует mp3/wav/opus, но не raw PCM без
+    # контейнера. content_type — MIME для ws_server/клиента (audio/mpeg
+    # для mp3, audio/wav для wav и т.п.). supervisor оборачивает в
+    # {format, content_type, audio_b64, ...} JSON для
+    # /avatar/preview_voice/audio.
+
+    audio_bytes: bytes
+    content_type: str
+    sample_rate: int
+    format_str: str
+    duration_s: float
+
+
+def _format_to_content_type(fmt):
+    # Map TTSFormat → MIME content_type для ws_server preview_audio_sink.
+    # Клиент (preview_audio_sink.ts) передаёт content_type в
+    # AudioContext.decodeAudioData — браузерный декодер сам подберёт
+    # формат по MIME. PCM (raw) сюда не идёт: audio/L16 технически
+    # существует, но в preview-канале WebAudio его ест только если
+    # знает sampleRate через параметр, а клиент этого не делает — мы
+    # конвертируем в контейнер заранее (mp3/wav).
+    if fmt == TTSFormat.MP3:
+        return "audio/mpeg"
+    if fmt == TTSFormat.WAV:
+        return "audio/wav"
+    if fmt == TTSFormat.OGG:
+        # OGG-контейнер может нести Opus или Vorbis. Клиент шлёт
+        # content_type "audio/ogg" — WebAudio разберётся через codec
+        # внутри. Если внутри Opus — современный Chromium/Quest
+        # поддерживает; если Vorbis — fallback на Edge не нужен.
+        return "audio/ogg"
+    if fmt == TTSFormat.PCM:
+        # Сырой PCM в preview-канале НЕ поддерживается (см. docstring
+        # PreviewAudioResult). Если caller выбрал preview_format=pcm —
+        # мы всё равно отдадим, но content_type поставим audio/L16 чтобы
+        # клиент мог понять «это сырой PCM» (на практике decodeAudioData
+        # тут молча упадёт; см. ADR-0077 §грабли).
+        return "audio/L16"
+    return "application/octet-stream"
 
 
 # Issue #1160 — Prometheus metrics (этап 1 observability).
@@ -852,6 +943,15 @@ class TTSNode(Node):
         # провайдер вернёт выбранный контейнер, а _synthesize_minimax_async
         # транскодирует его в int16 LE PCM через utils.audio_transcode.
         self.declare_parameter("minimax_format", "pcm")  # pcm | wav | mp3 | ogg
+        # ADR-0077 / issue #2138.A.3 — preview-synthesis формат контейнера.
+        # Отдельный от minimax_format (тот рассчитан на ALSA playback; preview
+        # идёт в /avatar/preview_voice/audio → ws_server → WebAudio клиента,
+        # которому нужен ЗАКОДИРОВАННЫЙ контейнер, не сырой PCM).
+        # Default mp3: decodeAudioData его декодирует; ogg/opus/wav — тоже.
+        # Если поставите preview_format=pcm — клиент упадёт в decodeAudioData,
+        # picker покажет ошибку, но supervisor увидит честный preview_voice_error
+        # (НЕ silent-mock). См. ADR-0077 §грабли.
+        self.declare_parameter("preview_format", "mp3")  # pcm | wav | mp3 | ogg
         # Retry policy — соответствует ADR-0003 §2.6.
         self.declare_parameter("minimax_max_retries", 2)  # 0..3
         self.declare_parameter(
@@ -905,6 +1005,18 @@ class TTSNode(Node):
         self.declare_parameter("avatar_request_topic", "/avatar/tts/request")
         self.declare_parameter("avatar_error_topic", "/avatar/tts/error")
         self.declare_parameter("avatar_control_topic", "/avatar/tts/control")
+        # ADR-0077 / issue #2138.A.3 — preview-канал для picker'а голосов.
+        # Контракт публикаций — зеркалирует ``avatar_*``:
+        #   * ``/avatar/preview_voice/audio``  — String JSON {request_id,
+        #     format, content_type, audio_b64, sample_rate, duration_s}.
+        #   * ``/avatar/preview_voice/result`` — String JSON {request_id, ...}.
+        #   * ``/avatar/preview_voice/error``  — String JSON {request_id,
+        #     reason, ts_ms}. reason — стабильная строка для ws_server/UI.
+        # Зашиты константами (не параметрами) — см. CC-budget ADR-0021 и
+        # логику выше (``_tars1_text_topic``).
+        self._preview_audio_topic: str = "/avatar/preview_voice/audio"
+        self._preview_result_topic: str = "/avatar/preview_voice/result"
+        self._preview_error_topic: str = "/avatar/preview_voice/error"
         # Issue #2113 (quest #2112) — echo of TTS-текста на отдельный
         # топик для боковой текстовой панели TARS 1 в Captain Bridge.
         # Контракт: String JSON {request_id, text, streaming:bool, done:bool}.
@@ -1078,6 +1190,12 @@ class TTSNode(Node):
         self.minimax_timeout = float(self.get_parameter("minimax_timeout").value)
         self.minimax_format = self._parse_format(
             self.get_parameter("minimax_format").value
+        )
+        # ADR-0077 / issue #2138.A.3 — preview-synthesis формат контейнера.
+        # Если rob_box_llm недоступен — fallback на mp3-строку (тот же
+        # graceful-degrade, что у minimax_format на line 1172).
+        self.preview_format = self._parse_format(
+            self.get_parameter("preview_format").value
         )
         self.minimax_max_retries = min(
             3, max(0, int(self.get_parameter("minimax_max_retries").value))
@@ -1338,6 +1456,21 @@ class TTSNode(Node):
         # идёт в динамик шлема.
         self._tars1_text_pub = self.create_publisher(
             String, self._tars1_text_topic, 10
+        )
+        # ADR-0077 / issue #2138.A.3 — publishers preview-канала.
+        # Заводятся ВСЕГДА (даже в мини-CI-env без preview-клиента): ws_server
+        # на проде подписан на error/done/audio и шлёт picker'у через
+        # ws_server.deliver_preview_*. mock-rclpy в unit-тестах
+        # перехватывает .publish() и складывает в .published — см.
+        # ``tests/conftest.py``.
+        self._preview_audio_pub = self.create_publisher(
+            String, self._preview_audio_topic, 10
+        )
+        self._preview_result_pub = self.create_publisher(
+            String, self._preview_result_topic, 10
+        )
+        self._preview_error_pub = self.create_publisher(
+            String, self._preview_error_topic, 10
         )
         self._avatar_tts_control_sub = self.create_subscription(
             String, self.avatar_control_topic, self.control_callback, 10
@@ -2334,13 +2467,26 @@ class TTSNode(Node):
         """ADR-0055 / issue #1993 — обработка запроса ТАРС в шлем.
 
         Контракт сообщения — копия ``/voice/tts/request`` плюс обязательное
-        ``sink == "headset"``. Любой другой sink → ``_avatar_tts_error_pub``
-        с ``error="invalid_sink"`` и DROP (ADR-0055 §tts_node).
+        ``sink`` поле. Допустимые значения:
+        * ``"headset"`` — реплика в шлем через ``/avatar/tts/audio`` (PCM,
+          ALSA-skip), см. ADR-0055.
+        * ``"preview"`` — «прослушиваемый образец» голоса для picker'а
+          оператора, см. ADR-0077 / issue #2138.A.3. Чистый синтез БЕЗ
+          _synthesize_and_play: НЕ идёт в FIFO/ALSA/metrics, байты
+          возвращаются в mp3/wav контейнере в ``/avatar/preview_voice/audio``.
+
+        Любой другой sink → ``_avatar_tts_error_pub`` с
+        ``error="invalid_sink"`` и DROP.
 
         Дальше — почти полная копия ``dialogue_callback``: защита от
         устаревшего dialogue_id (barge-in), Unicode-script guard (issue 1709),
         генерация speech_id если не задан, передача в тот же bounded
         ThreadPoolExecutor с дополнительным kwarg ``sink="headset"``.
+
+        Для ``sink="preview"`` путь отдельный — НЕ идёт через
+        ThreadPoolExecutor (preview короткий, sync-friendly, не прерывает
+        текущую реплику), а через прямой вызов ``_on_avatar_tts_request_preview``
+        ниже.
 
         Различия от ``dialogue_callback``:
         * ``_avatar_tts_request_id`` обновляется при старте — для control_callback
@@ -2356,17 +2502,12 @@ class TTSNode(Node):
             self.get_logger().warn(f"⚠️ [ADR-0055] /avatar/tts/request: bad JSON: {exc}")
             return
 
-        # ADR-0055 §tts_node: единственный валидный sink на этом канале — headset.
+        # ADR-0055 / ADR-0077 — switch по sink. Вынесен в helper чтобы не
+        # раздувать CC _on_avatar_tts_request (ADR-0021).
         sink = chunk_data.get("sink", "")
-        if sink != "headset":
-            self.get_logger().warn(
-                f"⚠️ [ADR-0055] /avatar/tts/request: invalid sink={sink!r} "
-                "(expected 'headset'), DROP"
-            )
-            self._publish_avatar_tts_error(
-                request_id=chunk_data.get("request_id", ""),
-                error="invalid_sink",
-            )
+        if not self._dispatch_avatar_tts_sink(chunk_data, sink):
+            # invalid sink (или неизвестный) — _dispatch уже залогировал
+            # и опубликовал _avatar_tts_error; нам тут делать нечего.
             return
 
         if "ssml" not in chunk_data:
@@ -2540,6 +2681,205 @@ class TTSNode(Node):
         except Exception as exc:  # noqa: BLE001 — диагностика не должна падать
             self.get_logger().warn(
                 f"⚠️ [ADR-0055] /avatar/tts/error publish failed: {exc}"
+            )
+
+    # ── Preview-канал (ADR-0079 / issue #2138.A.3) ─────────────────────
+    # picker'у голосов нужны «прослушиваемые образцы». Канал
+    # ``/avatar/tts/request`` (sink="preview") → ``synthesize_preview``
+    # → ``/avatar/preview_voice/{audio,result,error}``. см. ADR-0079.
+
+    def _dispatch_avatar_tts_sink(self, chunk_data: dict, sink: str) -> bool:
+        # Вынесено из ``_on_avatar_tts_request`` чтобы не раздувать CC
+        # (ADR-0021). Возвращает True если sink распознан и запрос надо
+        # обработать дальше (headset/preview); False если DROP.
+        if sink == "preview":
+            # ADR-0077 / issue #2138.A.3 — picker'у нужен «прослушиваемый
+            # образец» голоса. Отдельный путь: без dialogue_id/barge-in
+            # защиты (preview НЕ прерывает текущую реплику личности), без
+            # Unicode-guard (preview-фраза короткая и контролируемая), без
+            # ThreadPoolExecutor (синхронный сетевой запрос). Результат
+            # уходит в /avatar/preview_voice/audio (JSON+base64) +
+            # /avatar/preview_voice/result (done) или /avatar/preview_voice/error.
+            self._on_avatar_tts_request_preview(chunk_data)
+            return False  # preview уже обработан — caller должен return
+        if sink == "headset":
+            return True  # caller продолжит обработку headset-пути
+        # invalid / unknown
+        self.get_logger().warn(
+            f"⚠️ [ADR-0055] /avatar/tts/request: invalid sink={sink!r} "
+            "(expected 'headset' or 'preview'), DROP"
+        )
+        self._publish_avatar_tts_error(
+            request_id=chunk_data.get("request_id", ""),
+            error="invalid_sink",
+        )
+        return False
+
+    def _on_avatar_tts_request_preview(self, chunk_data: dict) -> None:
+        # ADR-0077 / issue #2138.A.3 — обработка preview-синтеза.
+        # Прямой вызов ``synthesize_preview`` (синхронный метод, async
+        # внутри через ``_run_in_tts_loop``) — НЕ идёт в
+        # ThreadPoolExecutor/_synthesize_and_play, т.к. preview НЕ
+        # прерывает текущую реплику и НЕ публикует /avatar/tts/audio.
+        request_id = chunk_data.get("request_id", "")
+        voice = chunk_data.get("voice")
+        # ssml обязателен для совместимости с headset-контрактом (тот же
+        # канал /avatar/tts/request). Извлекаем plain-text тем же
+        # _extract_text_from_ssml, что и headset — picker шлёт ту же
+        # структуру что и say.
+        ssml = chunk_data.get("ssml", "")
+        text = self._extract_text_from_ssml(ssml) if ssml else chunk_data.get("text", "")
+        # Тот же guard, что и headset (issue #2096): пустой text → DROP
+        # + preview_error, picker не должен «висеть» в ожидании.
+        if not text or not text.strip():
+            self.get_logger().warn(
+                f"⚠️ [ADR-0077] preview синтез: empty text/ssml, "
+                f"DROP request_id={request_id[:8] if request_id else ''}"
+            )
+            self._publish_preview_error(request_id, "empty_text")
+            return
+        try:
+            result = self.synthesize_preview(
+                text=text,
+                voice=voice,
+                timeout_s=10.0,
+            )
+        except PreviewSynthesisTimeoutError as exc:
+            self.get_logger().warn(
+                f"⚠️ [ADR-0077] preview таймаут: {exc}"
+            )
+            self._publish_preview_error(request_id, exc.reason)
+            return
+        except PreviewSynthesisUnavailableError as exc:
+            self.get_logger().warn(
+                f"⚠️ [ADR-0077] preview недоступен (MiniMax opt-in): {exc}"
+            )
+            self._publish_preview_error(request_id, exc.reason)
+            return
+        except PreviewSynthesisError as exc:
+            self.get_logger().warn(
+                f"⚠️ [ADR-0077] preview ошибка: {exc} (reason={exc.reason})"
+            )
+            self._publish_preview_error(request_id, exc.reason)
+            return
+        # Успех — публикуем bytes + result. base64 потому что ws_server/
+        # клиент ожидают JSON (preview_audio_sink.ts §1), а bytes в JSON
+        # естественно идут как base64.
+        import base64 as _base64
+
+        self._publish_preview_audio(
+            request_id=request_id,
+            format_str=result.format_str,
+            content_type=result.content_type,
+            sample_rate=result.sample_rate,
+            duration_s=result.duration_s,
+            audio_bytes=result.audio_bytes,
+        )
+        self._publish_preview_result(
+            request_id=request_id,
+            format_str=result.format_str,
+            sample_rate=result.sample_rate,
+            duration_s=result.duration_s,
+            content_type=result.content_type,
+        )
+
+    def _publish_preview_audio(
+        self,
+        *,
+        request_id: str,
+        format_str: str,
+        content_type: str,
+        sample_rate: int,
+        duration_s: float,
+        audio_bytes: bytes,
+    ) -> None:
+        # Контракт ``/avatar/preview_voice/audio`` — String JSON
+        # {request_id, format, content_type, audio_b64, sample_rate,
+        # duration_s}. ws_server маппит это в ``preview_voice_audio``
+        # (JSON_EVENT{...} + BINARY_FRAME с теми же bytes). preview_audio_sink.ts
+        # декодирует audio_b64 → ArrayBuffer и играет через WebAudio
+        # decodeAudioData (по content_type).
+        import base64 as _base64
+
+        try:
+            payload = String()
+            payload.data = json.dumps(
+                {
+                    "request_id": request_id,
+                    "format": format_str,
+                    "content_type": content_type,
+                    "sample_rate": int(sample_rate),
+                    "duration_s": float(duration_s),
+                    "audio_b64": _base64.b64encode(audio_bytes).decode("ascii"),
+                },
+                ensure_ascii=False,
+            )
+            self._preview_audio_pub.publish(payload)
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warn(
+                f"⚠️ [ADR-0077] /avatar/preview_voice/audio publish failed: {exc}"
+            )
+            # Если preview_audio не дошёл — шлём error, чтобы picker
+            # не висел в ожидании.
+            self._publish_preview_error(request_id, "audio_publish_failed")
+
+    def _publish_preview_result(
+        self,
+        *,
+        request_id: str,
+        format_str: str,
+        sample_rate: int,
+        duration_s: float,
+        content_type: str,
+    ) -> None:
+        # ``/avatar/preview_voice/result`` — String JSON done-маркер.
+        # ws_server форвардит как ``preview_voice_done`` event'ом на
+        # клиент. Отдельный топик от audio — UI может рендерить
+        # «прослушал: X секунд» пока аудио ещё играет (не блокируем на нём).
+        try:
+            payload = String()
+            payload.data = json.dumps(
+                {
+                    "request_id": request_id,
+                    "format": format_str,
+                    "content_type": content_type,
+                    "sample_rate": int(sample_rate),
+                    "duration_s": float(duration_s),
+                },
+                ensure_ascii=False,
+            )
+            self._preview_result_pub.publish(payload)
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warn(
+                f"⚠️ [ADR-0077] /avatar/preview_voice/result publish failed: {exc}"
+            )
+
+    def _publish_preview_error(self, request_id: str, reason: str) -> None:
+        # ``/avatar/preview_voice/error`` — String JSON {request_id,
+        # reason, ts_ms}. ws_server форвардит ``preview_voice_error``.
+        # ``reason`` — стабильная строка, публичный контракт с UI
+        # (ADR-0077 §error-reasons). Текущие reason'ы:
+        #   * preview_timeout
+        #   * minimax_unavailable
+        #   * preview_synthesis_failed (для прочих ошибок провайдера)
+        #   * empty_text
+        #   * audio_publish_failed
+        import time as _time
+
+        try:
+            payload = String()
+            payload.data = json.dumps(
+                {
+                    "request_id": request_id,
+                    "reason": reason,
+                    "ts_ms": int(_time.time() * 1000),
+                },
+                ensure_ascii=False,
+            )
+            self._preview_error_pub.publish(payload)
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warn(
+                f"⚠️ [ADR-0077] /avatar/preview_voice/error publish failed: {exc}"
             )
 
     def _publish_tars1_text(
@@ -5607,6 +5947,150 @@ class TTSNode(Node):
             )
 
         self._avatar_audio_pub.publish(msg)
+
+    # ── Preview-synthesis (ADR-0077 / issue #2138.A.3) ─────────────────
+    # Канбан-карточка t_74dd49c2: чистый синтез БЕЗ FIFO/ALSA/metrics для
+    # picker'а оператора. ws_server/клиент preview'а ждут закодированный
+    # контейнер (mp3/wav/opus) — см. preview_audio_sink.ts §1: WebAudio
+    # ``decodeAudioData`` сам декодирует mp3/wav. Сырой PCM туда НЕ идёт
+    # (это грабли канала ТАРС, см. ADR-0055 §грабли).
+
+    def synthesize_preview(  # noqa: C901 — readable linear flow, not complex
+        self,
+        text: str,
+        voice: Optional[str] = None,
+        *,
+        provider: Optional[Any] = None,
+        timeout_s: float = 10.0,
+    ) -> "PreviewAudioResult":
+        """Синтезировать «прослушиваемый образец» голоса для picker'а.
+
+        Возвращает :class:`PreviewAudioResult` с байтами в **закодированном**
+        контейнере (mp3/wav/opus — что выбрано в ``preview_format``), а не
+        сырым int16 PCM. Этим preview отличается от ``_publish_headset_audio``
+        (sink=headset → /avatar/tts/audio) и от ``_publish_audio``
+        (sink=speaker → /voice/audio/speech).
+
+        Args:
+            text: фраза для синтеза (уже плоский текст, без SSML).
+            voice: запрошенный голос picker'а. **НЕ меняет активный голос
+                личности** (``self.minimax_voice`` остаётся как был).
+            provider: ``TTSProvider`` для синтеза. Если ``None`` —
+                ``self._ensure_minimax_provider()`` (тот же клиент, что
+                и для основного голоса — делим HTTP-пул, экономим
+                keep-alive).
+            timeout_s: жёсткий таймаут на сетевой синтез. По истечении —
+                :class:`PreviewSynthesisTimeoutError`. Без таймаута
+                picker может «висеть вечно» при недоступном upstream.
+
+        Returns:
+            :class:`PreviewAudioResult` с полями ``audio_bytes``,
+            ``content_type``, ``sample_rate``, ``format_str``,
+            ``duration_s``.
+
+        Raises:
+            PreviewSynthesisTimeoutError: ``provider.synthesize()`` не
+                уложился в ``timeout_s``.
+            PreviewSynthesisError: провайдер бросил (auth/bad-request/rate
+                limit/5xx) — текст ошибки в ``exc.reason``.
+            PreviewSynthesisUnavailableError: MiniMax opt-in не подключён
+                (``MINIMAX_AVAILABLE=False``).
+        """
+        import asyncio
+
+        if not MINIMAX_AVAILABLE:
+            raise PreviewSynthesisUnavailableError(
+                "minimax_unavailable: rob_box_llm не подключён — preview требует MiniMax"
+            )
+        if not text or not text.strip():
+            # Тот же guard, что и в _synthesize_and_play (issue #2096):
+            # пустой текст раньше ронял провайдер chain в TTSBadRequestError
+            # и каскадно помечал всех провайдеров мёртвыми на 30s.
+            raise PreviewSynthesisError(
+                "empty_text: пустой текст для preview", reason="empty_text"
+            )
+        if timeout_s <= 0:
+            raise PreviewSynthesisError(
+                f"invalid_timeout: timeout_s={timeout_s} должен быть > 0",
+                reason="invalid_timeout",
+            )
+
+        # Резолвим провайдер ТОЛЬКО для чтения (НЕ сохраняем обратно в
+        # self.minimax_voice — preview не должно менять активный голос
+        # личности, см. contract).
+        if provider is None:
+            provider = self._ensure_minimax_provider()
+
+        # Настройки синтеза. voice — из аргумента (НЕ из self.minimax_voice).
+        # format — из preview_format (default mp3, см. ADR-0077 §tts_node).
+        # sample_rate — не форсируем (MiniMax сам подберёт под формат).
+        settings = TTSSettings(
+            voice=voice,
+            model=self.minimax_model,
+            language=self.minimax_language,
+            format=self.preview_format,
+        )
+
+        async def _call():
+            # asyncio.wait_for отменяет корутину по таймауту. На стороне
+            # MiniMax-клиента httpx-сессия тоже идёт через свой timeout, но
+            # в дополнение к нему ставим наш сторож — picker не должен
+            # «висеть» дольше ``timeout_s`` (по умолчанию 10 с) ни при каких
+            # условиях upstream'а.
+            return await asyncio.wait_for(
+                provider.synthesize(text, settings=settings),
+                timeout=timeout_s,
+            )
+
+        try:
+            tts_audio = _run_in_tts_loop(_call())
+        except PreviewSynthesisError:
+            # Уже наша ошибка — пробрасываем без обёртки.
+            raise
+        except Exception as exc:  # noqa: BLE001
+            # asyncio.TimeoutError (из wait_for), MiniMaxTTSError*, CancelledError…
+            # Различаем «висели и сорвались по таймауту» vs «провайдер бросил».
+            err_name = type(exc).__name__
+            if err_name in ("TimeoutError", "PreviewSynthesisTimeoutError"):
+                raise PreviewSynthesisTimeoutError(
+                    f"preview синтез превысил таймаут {timeout_s:.1f}s "
+                    f"(provider={getattr(provider, 'name', '?')}, voice={voice!r})",
+                    timeout_s=timeout_s,
+                ) from exc
+            raise PreviewSynthesisError(
+                f"preview синтез упал: {err_name}: {exc}",
+                reason=str(exc),
+            ) from exc
+
+        # Конвертируем TTSFormat → MIME content_type для ws_server/клиента.
+        content_type = _format_to_content_type(tts_audio.format)
+
+        # Грубая оценка длительности (для логов/диагностики). Для mp3/wav
+        # точная длительность требует парсинга контейнера — клиент всё равно
+        # сделает это через decodeAudioData, поэтому число ориентировочное.
+        bytes_per_sample = 2  # int16
+        if tts_audio.format == TTSFormat.PCM:
+            duration_s = len(tts_audio.samples) / (
+                tts_audio.sample_rate * bytes_per_sample
+            )
+        else:
+            # Грубая оценка для mp3 @ ~128 kbps; для wav/ogg тоже мимо,
+            # но это diag-only.
+            duration_s = (len(tts_audio.samples) * 8.0) / 128_000.0
+
+        self.get_logger().info(
+            f"🎧 [preview-synth] ok: {len(tts_audio.samples)} bytes "
+            f"format={tts_audio.format.value} sr={tts_audio.sample_rate} "
+            f"voice={voice or 'default'} dur~{duration_s:.2f}s"
+        )
+
+        return PreviewAudioResult(
+            audio_bytes=tts_audio.samples,
+            content_type=content_type,
+            sample_rate=tts_audio.sample_rate,
+            format_str=tts_audio.format.value,
+            duration_s=duration_s,
+        )
 
     def _ensure_minimax_provider(self):
         """Return the MiniMax provider, constructing it exactly once.

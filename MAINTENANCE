@@ -1,0 +1,4 @@
+MAINTENANCE — manual pause of agent-flow (human-set by товарищ Шифу)
+agent-flow: paused, merge-gate: paused, triage: paused, e2e-process: paused
+Do not auto-remove (no auto-sleep: marker). Remove manually when testing is done.
+Reason: manual testing window (voice preview synthesis, PR #2173) — agents must not interfere.

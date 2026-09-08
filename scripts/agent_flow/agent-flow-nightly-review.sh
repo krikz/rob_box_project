@@ -28,13 +28,12 @@
 #      kanban (done / failed / всё ещё висящие), ретро-карточки за сутки.
 #   3. Создаёт ОДНУ карточку «🌙 ночной ревью <REVIEW_DATE>» на
 #      NIGHTLY_REVIEW_ASSIGNEE (default architect) через kanban-retro-create.sh
-#      с key `nightly-review-<REVIEW_DATE>` (дедуп: один тик = одна карточка,
-#      повторный тик той же ночью → SKIP).
+#      с key `nightly-review-<ISO-неделя>` (дедуп: см. ADR-0049 §6.1/ADR-0079).
 #   4. Считает churn по компонентам (первые два сегмента пути), берёт top-N
 #      кодовых компонентов и на каждый создаёт карточку
 #      «🔍 ревью компонента: <comp> (<REVIEW_DATE>)» на
 #      COMPONENT_REVIEW_ASSIGNEE (default analyst) с key
-#      `component-review-<slug>-<REVIEW_DATE>`.
+#      `component-review-<slug>-<ISO-неделя>`.
 #
 # ЧТО НЕ ДЕЛАЕТ (явно):
 #   - НЕ чинит код и НЕ трогает метки/PR/issues. Только читает и создаёт
@@ -42,8 +41,19 @@
 #   - НЕ вызывает LLM сам (no_agent job). LLM работает ВНУТРИ созданной
 #     карточки — так дайджест остаётся механическим (raw evidence), а
 #     рассуждения живут там, где их видно и можно откатить.
+#   - НЕ решает outcome карточки заранее. Этот скрипт создаёт карточку ДО
+#     того, как кто-либо посмотрел на код — он физически не может знать,
+#     найдёт ли ревьюер дефект. (ADR-0079 ревизия 08.09: первая версия
+#     пыталась читать NIGHTLY_REVIEW_OUTCOME из своего же окружения на
+#     этом самом шаге — мёртвый код, переменную некому было выставить до
+#     запуска ревьюера. См. nightly-review-record.sh.)
 #   - НЕ создаёт карточку на компонент, который ревьюили < COOLDOWN дней
 #     назад (иначе src/rob_box_voice получал бы карточку каждую ночь).
+#   - НЕ пишет находки в JSONL сам. Дайджест механический (что произошло),
+#     а находки появляются только после того, как ревьюер посмотрел на
+#     код — это его работа, и запись делает ОН, вызовом
+#     `nightly-review-record.sh` перед `kanban_complete` (тот же паттерн,
+#     что ADR-0077 для обычных worker-отчётов).
 #
 # ENV:
 #   REPO_DIR                        — клон репо (default hermes-share путь)
@@ -100,7 +110,12 @@ export HOME="${HOME:-/home/builder}"
 REPO_DIR="${REPO_DIR:-/home/builder/hermes-share/rob_box_project}"
 KANBAN_BOARD="${KANBAN_BOARD:-robbox}"
 HERMES_BIN="${HERMES_BIN:-hermes}"
+# kanban-retro-create.sh (ADR-0079) внутри обращается к $GH_BIN под `set -u`.
+# Если cron вызывает ночной ревью без GH_BIN (а это обычный случай), нужно
+# явно задать default — иначе слой 4 упадёт на `unbound variable` ещё ДО
+# того, как guard `command -v "$GH_BIN"` успеет отработать.
 GH_BIN="${GH_BIN:-gh}"
+export GH_BIN
 LOCK_FILE="${LOCK_FILE:-/tmp/agent-flow-nightly-review.lock}"
 STATE_DIR="${NIGHTLY_REVIEW_STATE_DIR:-/tmp}"
 
@@ -117,6 +132,8 @@ FORCE="${NIGHTLY_REVIEW_FORCE:-false}"
 SECTION_LIMIT="${NIGHTLY_REVIEW_SECTION_LIMIT:-40}"
 MAX_RUNTIME_NIGHTLY="${NIGHTLY_REVIEW_MAX_RUNTIME:-3600}"
 MAX_RUNTIME_COMPONENT="${COMPONENT_REVIEW_MAX_RUNTIME:-2700}"
+# ADR-0049 §6.1 follow-up (issue #2159): dedup-ключ БЕЗ голой даты. Используем
+# ISO-неделю (`%G-W%V` → `2026-W37`) — см. NIGHTLY_KEY / comp_key ниже.
 export COMPONENT_REVIEW_EXCLUDE_RE
 # Cron может звать нас с POSIX-локалью, а секции дайджеста печатают
 # кириллицу. Без этого python падает с UnicodeEncodeError и тик умирает.
@@ -180,6 +197,7 @@ log "ревью-сутки ${REVIEW_DATE}: окно ${WIN_START_UTC} → ${NOW_U
 # нет инструмента / упал вызов → «НЕТ ДАННЫХ (<причина>)».
 
 _gh_json() {  # $1..=аргументы gh; печатает JSON или rc!=0
+    [ -n "${GH_BIN:-}" ] || return 1
     command -v "$GH_BIN" >/dev/null 2>&1 || return 1
     [ -n "${GH_REPO:-}" ] || return 1
     "$GH_BIN" "$@" 2>/dev/null || return 1
@@ -603,6 +621,26 @@ trap 'rm -f "$DIGEST_FILE"' EXIT
   подхватил триаж. НЕ чинить руками в этой карточке.
 - Если находок нет — так и напиши: «находок нет», с перечислением того, что
   проверил. Честный пустой отчёт лучше выдуманного списка.
+
+### Персистентность (ADR-0079, ОБЯЗАТЕЛЬНО перед `kanban_complete`)
+
+Эта карточка будет заархивирована и убрана — комментарий выше исчезнет.
+Прежде чем звать `kanban_complete`, запусти в своём worktree:
+
+```bash
+scripts/agent_flow/nightly-review-record.sh \
+    --task-id t_<id_этой_карточки> \
+    --component nightly \
+    --outcome no-real-defect              # или open-issue-<N> / duplicate-suppressed:<fp>
+    # на каждую реальную находку — свой --finding (см. --help скрипта)
+git add docs/reports/nightly-review/*.jsonl
+git commit -m "report(nightly-review): <дата карточки>"
+git push
+```
+
+Скрипт сам посчитает fingerprint находки и предупредит, если такая же
+находка уже трекается открытым issue за последние 30 дней — тогда ссылайся
+на существующий issue, новый не заводи.
 TASK_EOF
 } > "$DIGEST_FILE"
 
@@ -610,9 +648,21 @@ cat "$DIGEST_FILE"
 
 # --- create nightly card -----------------------------------------------------
 NIGHTLY_TITLE="🌙 ночной ревью ${REVIEW_DATE}"
-NIGHTLY_KEY="nightly-review-${REVIEW_DATE}"
+# ISO-week dedup-ключ: один ключ на неделю, а не на дату. Две параллельные тики
+# в одной неделе (issue #2159: nightly + компонентная в одном окне) получат
+# один и тот же --key → idempotency-key работает (слой 2 dedup).
+ISO_WEEK="$(date -d "$REVIEW_DATE" +%G-W%V 2>/dev/null || date +%Y-W%V)"
+NIGHTLY_KEY="nightly-review-${ISO_WEEK}"
 created_nightly=""
 
+# Карточка создаётся ВСЕГДА — этот скрипт работает ДО того, как кто-либо
+# посмотрел на код (no_agent, ADR-0049 §2.2), поэтому не может знать заранее,
+# найдёт ли ревьюер реальный дефект. Раньше (ADR-0079, первая версия) здесь
+# стояла попытка условного создания по NIGHTLY_REVIEW_OUTCOME — переменная,
+# которую в проде некому было выставить до запуска ревьюера (dead branch,
+# найдено на ревью 08.09). Дедуп даёт ISO-week ключ + layer-4 guard в
+# kanban-retro-create.sh; персистентность находок — nightly-review-record.sh,
+# который запускает сам ревьюер (см. §7 задания карточки выше).
 if [ "$DRY_RUN" = "true" ]; then
     log "DRY-RUN: карточка '${NIGHTLY_TITLE}' (key=${NIGHTLY_KEY}, assignee=${NIGHTLY_REVIEW_ASSIGNEE}) НЕ создаётся"
 else
@@ -691,11 +741,30 @@ CI ловит падения, но не ловит четыре вещи — и�
 - **НЕ чинить в этой карточке.** Ревью не открывает PR с фиксами: работа
   ревью — найти и описать. Исключение — Шифу явно попросил в комментарии.
 - Находок нет → напиши «находок нет» и перечисли, что именно проверил.
+
+### Персистентность (ADR-0079, ОБЯЗАТЕЛЬНО перед `kanban_complete`)
+
+Эта карточка будет заархивирована — комментарий выше исчезнет. Перед
+`kanban_complete` запусти в своём worktree:
+
+```bash
+scripts/agent_flow/nightly-review-record.sh \
+    --task-id t_<id_этой_карточки> \
+    --component <slug_компонента> \
+    --outcome no-real-defect              # или open-issue-<N> / duplicate-suppressed:<fp>
+    # на каждую реальную находку — свой --finding (см. --help скрипта)
+git add docs/reports/nightly-review/*.jsonl
+git commit -m "report(component-review): <дата карточки>"
+git push
+```
 COMP_TASK_EOF
         )"
 
         comp_title="🔍 ревью компонента: ${comp} (${REVIEW_DATE})"
-        comp_key="component-review-${comp_slug}-${REVIEW_DATE}"
+        # ISO-week dedup-ключ: стабильный на всю неделю. Если два тика в одном
+        # окне гонки (issue #2159) попытаются создать карточку на один и тот же
+        # компонент — один и тот же idempotency-key подавит дубль.
+        comp_key="component-review-${comp_slug}-${ISO_WEEK}"
 
         if [ "$DRY_RUN" = "true" ]; then
             log "DRY-RUN: компонентная карточка '${comp_title}' (key=${comp_key}) НЕ создаётся"
@@ -720,6 +789,10 @@ fi
 if [ "$DRY_RUN" != "true" ]; then
     : > "$SENTINEL" 2>/dev/null || log "не смог записать sentinel ${SENTINEL} (не фатально)"
 fi
+
+# Находки персистятся ревьюером через nightly-review-record.sh (ADR-0079,
+# см. §7 текста карточки выше) — не этим скриптом. На момент этого тика
+# ни один воркер ещё не смотрел на код, писать JSONL здесь нечего.
 
 log "итог: nightly='${created_nightly:-dry-run}' component_cards=${_comp_created} skipped_cooldown=${_comp_skipped_cooldown} skipped_small=${_comp_skipped_small}"
 exit 0

@@ -797,6 +797,18 @@ export function bootstrap(opts: BootstrapOptions): {
   // event для отладки (можно экспортировать в window.__tars в e2e-build).
   let currentTarsStage: TarsStage = "idle";
   let lastTarsEvent: TarsStateEvent | null = null;
+  // Диагностика 2026-09-08 (ТАРС не слышно в шлеме): request_id последней
+  // пришедшей operator_tts_audio меты. BINARY_FRAME с байтами этого чанка
+  // приходит ОТДЕЛЬНЫМ WS-сообщением ПОСЛЕ меты (ws_server.deliver_audio
+  // шлёт meta через _schedule_ws_send, потом bytes через
+  // _schedule_ws_send_binary — см. ws_server.py:981-983). play() поэтому
+  // обязан вызываться ПОСЛЕ onChunk() (в onBinaryFrame), а не сразу на
+  // мете — иначе entry.bytes ещё 0, play() молча удаляет pending-запись и
+  // сбрасывает currentRequestId, и когда бинарный фрейм наконец приходит,
+  // onChunk() находит currentRequestId===null и роняет чанк без единого
+  // лога. Так ронялся КАЖДЫЙ чанк КАЖДОЙ реплики (полная тишина в шлеме,
+  // хотя accept-тон — независимый локальный синтез — слышен нормально).
+  let lastOperatorTtsRequestId: string | null = null;
   function logLastTarsEvent(): void {
     // no-op в проде; в dev-build можно подвесить на window.
     if (lastTarsEvent) {
@@ -1078,8 +1090,10 @@ export function bootstrap(opts: BootstrapOptions): {
           e.total,
           e.sample_rate
         );
-        // ADR-0078 §3.1: запускаем сразу — ставим в очередь.
-        void operatorAudioSink.play(e.request_id);
+        // ADR-0078 §3.1: запускаем ПОСЛЕ прихода байт, не здесь — см.
+        // onBinaryFrame ниже и комментарий у lastOperatorTtsRequestId.
+        // Байты этого чанка идут отдельным BINARY_FRAME ПОСЛЕ этой меты.
+        lastOperatorTtsRequestId = e.request_id;
         // ADR-0078 §3.6: speaking-стадия tars_state на ПЕРВОМ чанке
         // реплики. Если стадия уже speaking/accepted — не обновляем.
         if (currentTarsStage !== "speaking") {
@@ -1346,7 +1360,14 @@ export function bootstrap(opts: BootstrapOptions): {
           // чанки просто отбрасываются (sink.onChunk вернёт false).
           if (streamId === 0) {
             previewSink.onChunk(payload);
-            operatorAudioSink.onChunk(payload);
+            const operatorConsumed = operatorAudioSink.onChunk(payload);
+            // Диагностика 2026-09-08: play() зовём ТОЛЬКО теперь, когда
+            // байты этого чанка реально накоплены (см. комментарий у
+            // lastOperatorTtsRequestId выше) — раньше play() звался на
+            // мете, ДО этого onChunk, и ронял чанк молча.
+            if (operatorConsumed && lastOperatorTtsRequestId !== null) {
+              void operatorAudioSink.play(lastOperatorTtsRequestId);
+            }
             return;
           }
           const topic = conn!.getTopicForStream(streamId);
