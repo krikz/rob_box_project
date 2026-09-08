@@ -287,6 +287,37 @@ class TestWakeRoute:
         node._route_wake_result("просто фоновая речь")
         node.avatar_stt_result_pub.publish.assert_not_called()
 
+    @pytest.mark.parametrize(
+        "misrecognition",
+        [
+            # ADR-0076 §2.5: STT-искажения «ТАРС» из микрофона шлема
+            # на текущем словаре НЕ проходят в /avatar/stt/result.
+            # Это freeze: инвариант 6a зафиксирован ДО того, как мы
+            # (или кто-то после нас) добавим варианты в operator
+            # namespace. Каждое слово — кандидат на эмпирическую
+            # проверку (ADR §2.6), а не добавление вслепую.
+            #
+            # NB: «тарс расскажи анекдот» СЕЙЧАС проходит — это
+            # нормальный wake. Проверка живого wake в
+            # ``test_wake_with_tars_routes_and_strips_wake_word`` выше.
+            "арс расскажи анекдот",
+            "дарс расскажи анекдот",
+            "тэрс расскажи анекдот",
+            "тарас езжай к окну",
+            "тар зделай что-нибудь",
+            "таа расскажи анекдот",
+        ],
+    )
+    def test_wake_stt_distortions_do_not_match_today(self, misrecognition):
+        """На сегодняшнем wake-листе (``тарс``, ``tars``) STT-искажения
+        из микрофона шлема НЕ адресуют агента. Этот тест — freeze
+        baseline; если он упадёт, значит кто-то расширил wake-список
+        без эмпирической сводки (см. ADR-0076 §2.6) или изменил
+        has_wake_word (целевая §7.1)."""
+        node = _make_node()
+        node._route_wake_result(misrecognition)
+        node.avatar_stt_result_pub.publish.assert_not_called()
+
 
 class TestWakeRejectionLogging:
     """issue #2135: лог отклонённого wake-сегмента называет НАСТОЯЩУЮ причину.

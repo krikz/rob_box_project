@@ -52,6 +52,43 @@ except ImportError:  # pragma: no cover — модуль всегда есть �
     class STTTimeoutError(TimeoutError):  # type: ignore[no-redef]
         pass
 
+# Issue #2158, ADR-0076 — сбор STT-семплов с wake-сегментов шлема для
+# эмпирического пополнения wake-листа ТАРС. Kill-switch через переменную
+# ``ROBBOX_STT_COLLECT=1``; по умолчанию модуль no-op (см. ADR §2.2).
+# Pure-Python, тестируется отдельно в test_tars_sample_logger.py.
+# Делаем ленивый lookup функции на каждый вызов: в юнит-тестах среда
+# может подменить переменную окружения, и тогда первый же вызов увидит
+# обновлённое значение. Никаких «импорт как имя» — это лечит проблему
+# Pyright с re-export type-mismatch в fallback-пути ``ImportError``.
+def _maybe_emit_tars_sample(
+    *,
+    raw_text,
+    has_operator_wake,
+    duration_s,
+    attempts,
+    operator_wake_words,
+):
+    """Site-channel: пишет wake-сегмент шлема в JSONL при ROBBOX_STT_COLLECT=1.
+
+    Ничего не делает, если модуль сборщика недоступен или env не выставлен.
+    Не бросает — файл/диск не должны ронять STT-ноду.
+    """
+    import os as _os
+
+    if _os.environ.get("ROBBOX_STT_COLLECT") != "1":
+        return False
+    try:
+        from rob_box_voice.core import tars_sample_logger as _tsl
+    except ImportError:
+        return False
+    return _tsl.append_sample(
+        raw_text=raw_text,
+        has_operator_wake=has_operator_wake,
+        duration_s=duration_s,
+        attempts=_tsl.build_attempts_snapshot(attempts),
+        operator_wake_words=operator_wake_words,
+    )
+
 
 # Issue #1160 — Prometheus metrics (этап 1 observability).
 # ``prometheus_client`` — optional dep; если её нет, всё превращается в
@@ -236,6 +273,9 @@ class STTNode(Node):
         self.operator_wake_words = list(self.operator_wake_words)
         # #1990 — источник текущей обрабатываемой фразы (для boop/barge-гейтов).
         self._active_source: str = _SRC_RESPEAKER
+        # ADR-0076: последние STT-попытки (используется side-channel-сборщиком
+        # wake-семплов; см. _route_wake_result / _log_wake_rejection).
+        self._last_attempts: list = []
         # Issue #1734 — barge_in_policy НЕ читаем как свой параметр (это
         # был бы второй YAML-источник для того же значения — ровно класс
         # ошибки, который уже случился с wake_words выше, issue #1252, и
@@ -620,6 +660,10 @@ class STTNode(Node):
         if _STT_FALLBACK_AVAILABLE:
             with start_span("stt.recognize") as _stt_span:
                 text, attempts = self._recognize_with_fallback(audio_bytes)
+                # ADR-0076: сохраняем попытки для side-channel-сборщика
+                # wake-сегментов (вызывается ниже в _route_wake_result /
+                # _log_wake_rejection). Никуда больше не уходит.
+                self._last_attempts = list(attempts)
                 # Issue #979 — final_text передаём только если фраза реально
                 # ПРИНЯТА: иначе rejected(short) («не» от Vosk) залогируется как
                 # «accepted» — ложь, вводит в заблуждение при отладке.
@@ -662,6 +706,8 @@ class STTNode(Node):
             # случиться в нашем пакете, но пусть будет legacy-fallback).
             text = self._recognize_legacy(audio_bytes)
             attempts = []
+            # ADR-0076: фиксируем пустые попытки для wake-сборщика.
+            self._last_attempts = []
 
         # Публикация результата по источнику (wake-роутер, #1990)
         if text and not is_short_phrase(text, min_chars=self.min_text_chars):
@@ -733,6 +779,17 @@ class STTNode(Node):
         Длительность сегмента в строке — чтобы такой перекос было видно
         сразу, без сопоставления с соседним «🎤 Получена фраза».
         """
+        # ADR-0076: side-channel. Пусто/короткое на wake — это ровно тот
+        # случай, когда STT «не расслышал» или «съел первую букву». Пишем
+        # его как семпл (с raw_text=None или коротким text), чтобы в сводке
+        # увидеть «а сколько вообще сегментов пропадает молча».
+        _maybe_emit_tars_sample(
+            raw_text=text,
+            has_operator_wake=False,
+            duration_s=duration,
+            attempts=getattr(self, "_last_attempts", None),
+            operator_wake_words=self.operator_wake_words,
+        )
         if text:
             self.get_logger().info(
                 f'🔇 [wake] Сегмент {duration:.2f}с: STT вернул короткое '
@@ -765,12 +822,30 @@ class STTNode(Node):
         на /avatar/stt/result — тот же, что на /avatar/command (04a §3.5).
         client_id сессии шлема stt_node не знает — привяжет шаг 5а/quest-слой.
         """
+        # ADR-0076: site-channel для эмпирического сбора STT-семплов
+        # шлема. Никак не меняет маршрутизацию ниже — это side-channel.
         text_lower = text.lower()
         if not has_wake_word(text_lower, self.operator_wake_words):
+            # Длительность сегмента: пишем «от последней фразы до текущего
+            # момента». self._phrase_started_at обнуляется между сегментами
+            # в ``_process_audio`` (инициализируется при старте каждой
+            # фразы). Если ноль (тест) — 0.0, что ОК для сортировки.
+            _started = getattr(self, "_phrase_started_at", 0)
+            _duration = (time.monotonic() - _started) if _started > 0 else 0.0
+            _maybe_emit_tars_sample(
+                raw_text=text,
+                has_operator_wake=False,
+                duration_s=_duration,
+                attempts=getattr(self, "_last_attempts", None),
+                operator_wake_words=self.operator_wake_words,
+            )
             self.get_logger().info(
                 f"🔇 [wake] Нет operator-вейка в {text[:40]!r} — не маршрутизирую"
             )
             return
+        # Вейк найден — это НЕ семпл «не сработало», а нормальная публикация.
+        # В ADR §2.2 нет требования писать и успешные wake: для текущей задачи
+        # интересны «арс расскажи анекдот», а не «тарс расскажи анекдот».
         stripped = strip_wake_word(text, self.operator_wake_words)
         payload = json.dumps(
             {
