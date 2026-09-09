@@ -5,7 +5,7 @@
 //          шлёт непрерывный поток int16 PCM 16 kHz mono в VOICE_AUDIO/stream_id=1.
 //          Без VAD — sound_node не рвёт стрим своим 300мс watchdog'ом.
 //   - wake: всегда-включённый поток (по умолчанию), шлёт VOICE_AUDIO/stream_id=2,
-//          отфильтрованный RMS-VAD с hangover 200мс (тишина не идёт в WS).
+//          отфильтрованный RMS-VAD с hangover (тишина не идёт в WS).
 //          Подавляется при зажатом грипе (одна фраза — один маршрут).
 //          Включается/выключается через setWakeGate.
 //
@@ -17,6 +17,15 @@
 //   конкурировало с three.js render loop → дропы кадров в VR. AudioWorklet
 //   исполняется в отдельном audio rendering thread (см. ADR-0051 §2.7 и
 //   target-operator-agent-and-dialogue §7.2 "Технический долг").
+//
+// issue #2199: VAD-параметры вынесены в voice_segmentation_constants.ts
+// — единый источник правды вместе с серверным
+// rob_box_core/config/speech_segmentation.yaml.
+
+import {
+  VOICE_HANGOVER_MS_DEFAULT,
+  VOICE_RMS_THRESHOLD_DEFAULT,
+} from "./voice_segmentation_constants";
 
 export const VOICE_SAMPLE_RATE = 16000;
 export const VOICE_CHUNK_SAMPLES = 320; // 20 мс @ 16 kHz
@@ -168,15 +177,16 @@ export function createVoiceCapture(opts: VoiceCaptureOptions): VoiceCapture {
   };
 
   // ── VAD-параметры (ADR-0071 §2.1) ────────────────────────────────────────
-  // rmsThreshold — стартовая точка (200 инт16 единиц ≈ 0.0061); на замере
-  // шлема подбирается. hangoverMs 200мс — компромисс «не рвать слоги».
+  // rmsThreshold — стартовая точка; на замере шлема подбирается.
+  // hangoverMs — компромисс «не рвать слоги».
   // ptt-канал гейтится по VOICE_PTT_ENABLED (при грипе).
-  const VAD_RMS_THRESHOLD_DEFAULT = 200;
-  const VAD_HANGOVER_MS_DEFAULT = 200;
-  const rmsThreshold = opts.vad?.rmsThreshold ?? VAD_RMS_THRESHOLD_DEFAULT;
+  // Значения берутся из voice_segmentation_constants.ts — единый
+  // источник правды с rob_box_core/config/speech_segmentation.yaml
+  // (issue #2199).
+  const rmsThreshold = opts.vad?.rmsThreshold ?? VOICE_RMS_THRESHOLD_DEFAULT;
   const hangoverSamplesTotal = Math.max(
     0,
-    ((opts.vad?.hangoverMs ?? VAD_HANGOVER_MS_DEFAULT) * VOICE_SAMPLE_RATE) / 1000
+    ((opts.vad?.hangoverMs ?? VOICE_HANGOVER_MS_DEFAULT) * VOICE_SAMPLE_RATE) / 1000
   );
 
   let ctx: AudioContext | null = null;

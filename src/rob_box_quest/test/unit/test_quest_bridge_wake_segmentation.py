@@ -13,6 +13,10 @@
 настоящие сообщения, а соседние файлы с ``importorskip`` продолжают честно
 скипаться.
 
+issue #2199: тест переведён с ``rob_box_quest.core.wake_segmenter`` (legacy
+shim) на ``rob_box_core.speech_segmentation.DEFAULT_WAKE_CONFIG``. Контракт
+тот же — поток 20мс-кадров → ровно одна публикация на фразу.
+
 Что проверяется
 ---------------
 * поток 20мс-кадров + пауза → ровно одна публикация с суммарным payload
@@ -22,10 +26,11 @@
 * сброс буфера при разрыве WS-сессии.
 """
 
-from rob_box_quest.core.wake_segmenter import (
-    WAKE_PHRASE_GAP_TIMEOUT_S as GAP_TIMEOUT_S,
-    WAKE_PHRASE_MAX_BYTES,
-)
+from rob_box_core.speech_segmentation import DEFAULT_WAKE_CONFIG
+
+
+GAP_TIMEOUT_S = DEFAULT_WAKE_CONFIG.gap_timeout_s
+WAKE_PHRASE_MAX_BYTES = DEFAULT_WAKE_CONFIG.max_phrase_bytes
 
 
 class _MockPublisher:

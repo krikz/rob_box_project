@@ -56,10 +56,14 @@ from std_msgs.msg import String
 
 # issue #1988 — константа топика ответа ТАРС (единый источник правды).
 from rob_box_core.avatar_command import AVATAR_COMMAND_RESULT_TOPIC
+from rob_box_core.speech_segmentation import (
+    DEFAULT_ROBOT_VOICE_CONFIG,
+    DEFAULT_WAKE_CONFIG,
+    PhraseSegmenter,
+)
 
 from .core.safety import Watchdog
 from .core.teleop import TeleopController
-from .core.wake_segmenter import WakePhraseSegmenter
 from .server.session import WATCHDOG_TIMEOUT_S as SESSION_WATCHDOG_TIMEOUT_S
 from .server.ws_server import NoOpBridge, WSSServer, build_app
 from .streams.alerts import Alert, AlertThresholds, evaluate_alerts
@@ -110,32 +114,11 @@ WIRE_TO_VOICE_INPUT_MODE: dict[str, str] = {
     "llm_formalize": "quest_llm_formalize",
 }
 
-# Робот-голос (P7): EOU-детекция на лету. Пока оператор держит грип, PCM
-# буферизуется, а по тишине (конец фразы) буфер уходит в STT — распознавание
-# успевает ДО отпускания грипа (иначе гонка с voice_input_mode=respeaker).
-VOICE_SAMPLE_RATE_HZ: int = 16000  # int16 PCM 16 kHz mono (webxr_client)
-VOICE_BYTES_PER_MS: float = VOICE_SAMPLE_RATE_HZ * 2 / 1000.0  # 32 байта/мс
-VOICE_SILENCE_THRESHOLD: int = 500  # пик int16 ниже → считаем тишиной
-VOICE_SILENCE_TIMEOUT_MS: float = 300.0  # тишина дольше → конец фразы
-
 # issue #1992 observability: публикация в /audio/quest_wake раньше не
 # логировалась вовсе — «клиент не шлёт wake» и «мост не публикует»
 # выглядели в docker logs одинаково (тишина). Первый пакет — сразу INFO,
 # дальше сводка раз в это окно (см. QuestBridge._note_wake_audio_publish).
 WAKE_AUDIO_LOG_INTERVAL_S: float = 10.0
-
-
-def _chunk_is_silent(payload: bytes, threshold: int = VOICE_SILENCE_THRESHOLD) -> bool:
-    """True если int16 LE PCM-чанк — тишина (пик |сэмпла| < threshold)."""
-    if len(payload) < 2:
-        return True
-    for i in range(0, len(payload) - 1, 2):
-        s = payload[i] | (payload[i + 1] << 8)  # int16 little-endian
-        if s >= 0x8000:
-            s -= 0x10000  # знаковый разряд
-        if abs(s) >= threshold:
-            return False
-    return True
 
 
 class _AlwaysActiveWSServer:
@@ -330,8 +313,9 @@ class QuestBridge:
         # КАЖДЫЙ 20мс-кадр отдельным AudioData, а stt_node распознаёт каждое
         # сообщение целиком — на 640 байтах распознавание всегда пусто, вейк
         # «ТАРС» из шлема не мог сработать в принципе. Теперь кадры копятся и
-        # уходят одной фразой (см. core/wake_segmenter.py).
-        self._wake_segmenter = WakePhraseSegmenter()
+        # уходят одной фразой — см. rob_box_core.PhraseSegmenter
+        # (issue #2199: единый сегментатор вместо четырёх правил).
+        self._wake_segmenter = PhraseSegmenter(DEFAULT_WAKE_CONFIG)
         # issue #1992 observability: счётчики публикации в /audio/quest_wake.
         # См. publish_quest_wake_audio / _note_wake_audio_publish.
         self._wake_audio_publish_count = 0
@@ -374,8 +358,11 @@ class QuestBridge:
         self._avatar_state_lock = threading.Lock()
         # Текущий голосовой режим: "radio" (рация, default) | "robot_voice".
         self._voice_mode: str = "radio"
-        self._voice_buffer: list[bytes] = []
-        self._voice_silence_ms: float = 0.0
+        # issue #2199: robot_voice использует общий PhraseSegmenter с peak-VAD
+        # (аналог старой VOICE_SILENCE_THRESHOLD=500 / TIMEOUT=300мс; см.
+        # DEFAULT_ROBOT_VOICE_CONFIG). Клиент VAD не делает на PTT-канале —
+        # сегментирует сервер, пока грип зажат.
+        self._voice_segmenter = PhraseSegmenter(DEFAULT_ROBOT_VOICE_CONFIG)
         # ws_server может быть None в юнит-тестах. В проде QuestNode всегда
         # передаёт реальный WSSServer — иначе _publish_zero() вернёт True
         # через заглушку и поведение будет как «есть активная сессия».
@@ -510,16 +497,11 @@ class QuestBridge:
         /audio/quest_in (STT) — распознавание успевает до отпускания грипа.
         """
         if self._voice_mode == "robot_voice":
-            if _chunk_is_silent(payload):
-                if self._voice_buffer:
-                    chunk_ms = len(payload) / VOICE_BYTES_PER_MS
-                    self._voice_silence_ms += chunk_ms
-                    if self._voice_silence_ms >= VOICE_SILENCE_TIMEOUT_MS:
-                        self._flush_voice_buffer()
-                # ведущая тишина — игнор
-            else:
-                self._voice_buffer.append(payload)
-                self._voice_silence_ms = 0.0
+            # issue #2199: общий PhraseSegmenter с peak-VAD. Кадры-тишины
+            # не открывают новую фразу, фразу закрывает таймерный tick().
+            phrase = self._voice_segmenter.add_frame(payload, time.monotonic())
+            if phrase is not None:
+                self._publish_voice_phrase(phrase)
             return
         if self._voice_in_pub is None:
             return
@@ -668,18 +650,32 @@ class QuestBridge:
             f"quest: wake stream {'active' if active else 'paused'}"
         )
 
-    def _flush_voice_buffer(self) -> None:
-        """Накопленный PCM → один AudioData в /audio/quest_in (STT)."""
-        if self._stt_in_pub is None or not self._voice_buffer:
-            self._voice_buffer = []
-            self._voice_silence_ms = 0.0
+    def _publish_voice_phrase(self, phrase: bytes) -> None:
+        """Готовая фраза из :class:`PhraseSegmenter` → один AudioData в STT."""
+        if self._stt_in_pub is None:
             return
-        data = b"".join(self._voice_buffer)
-        self._voice_buffer = []
-        self._voice_silence_ms = 0.0
         msg = AudioData()
-        msg.data = list(data)
+        msg.data = list(phrase)
         self._stt_in_pub.publish(msg)
+
+    def tick_voice_audio(self, now_monotonic: float) -> None:
+        """Таймерный тик для PTT robot_voice (issue #2199, см. wake-аналог).
+
+        Закрывает фразу по паузе в потоке кадров: оператор замолчал, пока
+        грип ещё зажат — кадры перестали приходить, ``add_frame`` больше
+        не вызывается. Вызывается из ``_on_tick_timer`` рядом с
+        ``tick_wake_audio``.
+        """
+        if self._voice_mode != "robot_voice":
+            return
+        phrase = self._voice_segmenter.tick(now_monotonic)
+        if phrase is not None:
+            self._publish_voice_phrase(phrase)
+
+    def reset_voice_audio(self) -> None:
+        """Разрыв PTT-сессии (грип отпущен по watchdog) → выбросить
+        недособранную фразу, чтобы она не ушла в STT недоговоренной."""
+        self._voice_segmenter.reset()
 
     def publish_voice_stop(self) -> None:
         """PTT stop: STOP в /voice/sound/stop → sound_node закрывает стрим."""
@@ -690,16 +686,20 @@ class QuestBridge:
     def publish_voice_robot_start(self) -> None:
         """PTT start (робот-голос): barge-in + перейти в режим буферизации."""
         self._voice_mode = "robot_voice"
-        self._voice_buffer = []
-        self._voice_silence_ms = 0.0
+        self._voice_segmenter.reset()
         self.publish_voice_barge_in()
 
     def publish_voice_robot_stop(self) -> None:
-        """PTT stop (робот-голос): слить остаток фразы без завершающей тишины."""
+        """PTT stop (робот-голос): допихнуть последнюю фразу и выйти в radio."""
         if self._voice_mode != "robot_voice":
             return
         self._voice_mode = "radio"
-        self._flush_voice_buffer()
+        # На закрытии грипа оператор мог не дотянуть паузу (gap_timeout_s).
+        # Принудительно финишируем буфер без min_phrase-проверки: если он
+        # пуст — сегментатор вернёт None и ничего не уйдёт.
+        phrase = self._voice_segmenter.force_close()
+        if phrase is not None:
+            self._publish_voice_phrase(phrase)
 
     def set_voice_mode(self, mode: str) -> None:
         """voice_mode cmd → запрос супервизору сменить режим голоса.
@@ -2568,6 +2568,9 @@ class QuestNode(Node):
         # «пауза» — это отсутствие вызовов publish_quest_wake_audio. Заметить
         # её может только таймер.
         self.bridge.tick_wake_audio(now)
+        # issue #2199: то же для robot_voice — без таймера паузу в потоке
+        # кадров PTT никто не заметит.
+        self.bridge.tick_voice_audio(now)
 
     def _on_watchdog_timer(self) -> None:
         # Edge-triggered: один раз на trip → один WARNING + один emergency.

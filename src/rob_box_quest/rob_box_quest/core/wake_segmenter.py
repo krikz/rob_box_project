@@ -1,161 +1,99 @@
-"""Сегментатор wake-потока шлема: кадры 20 мс → одна фраза (issue #2135).
+"""DEPRECATED shim — переезд на ``rob_box_core.speech_segmentation`` (issue #2199).
 
-Зачем это существует
---------------------
-Клиент (`webxr_client/src/input/voice_capture.ts`) режет микрофон шлема на
-кадры по 320 сэмплов (20 мс @ 16 кГц, 640 байт int16) и гейтит их
-RMS-VAD'ом с hangover 200 мс. VAD решает **«слать или не слать»**, но не
-**«где кончилась фраза»** — на проводе идёт ровный поток кадров, пока
-оператор говорит, и пауза, когда молчит.
+Исторически wake-канал шлема сегментировал кадры 20 мс → фразы отдельный
+модуль ``core/wake_segmenter.py`` (issue #2135). В рамках issue #2199 вся
+логика «фраза кончилась» переехала в :mod:`rob_box_core.speech_segmentation`
+и конфигурируется через :class:`~rob_box_core.speech_segmentation.SpeechSegmentationConfig`.
 
-`stt_node.quest_wake_audio_callback` запускает ПОЛНЫЙ цикл распознавания
-на КАЖДОЕ сообщение в `/audio/quest_wake`. Пока мост публиковал по одному
-кадру на сообщение, распознавание шло на 640 байтах и всегда возвращало
-пусто — вейк «ТАРС» из шлема не мог сработать никогда (live-лог робота
-2026-09-08: `🎤 Получена фраза: 0.02с (640 bytes)` → `❌ ОТКЛОНЕНО
-(пустое)` на каждом кадре, при том что ReSpeaker в том же логе отдавал
-`4.32с (138112 bytes)` → `✅ ПРИНЯТО`).
+Этот файл остался как **обратно-совместимый shim**:
 
-У ReSpeaker роль сегментатора играет `audio_node` (VAD +
-`speech_continuation`), у шлема эквивалента не было. Этот модуль —
-недостающее звено: он накапливает кадры и закрывает фразу по **паузе в
-потоке кадров** (клиентский hangover уже гарантирует, что пауза в кадрах
-= конец речи, а не межслоговая тишина).
+* ``WakePhraseSegmenter`` → :class:`rob_box_core.speech_segmentation.PhraseSegmenter`
+  сконструированный с ``DEFAULT_WAKE_CONFIG``.
+* ``WAKE_PHRASE_GAP_TIMEOUT_S`` / ``WAKE_PHRASE_MAX_BYTES`` / ``WAKE_PHRASE_MIN_BYTES``
+  / ``WAKE_PHRASE_MAX_S`` / ``WAKE_PHRASE_MIN_S`` / ``WAKE_BYTES_PER_S`` /
+  ``WAKE_SAMPLE_RATE_HZ`` → соответствующие атрибуты/свойства
+  :class:`~rob_box_core.speech_segmentation.SpeechSegmentationConfig` или
+  :data:`~rob_box_core.speech_segmentation.BYTES_PER_S` / ``SAMPLE_RATE_HZ``.
 
-Контракт
---------
-* :meth:`WakePhraseSegmenter.add_frame` — очередной кадр из WS. Вернёт
-  готовую фразу, если этот кадр открыл новую (пауза перед ним) или если
-  буфер упёрся в потолок.
-* :meth:`WakePhraseSegmenter.tick` — вызывается таймером. Закрыть фразу по
-  паузе может ТОЛЬКО таймер: когда оператор замолчал, кадры перестают
-  приходить, и `add_frame` больше не вызовется.
-* :meth:`WakePhraseSegmenter.reset` — WS-сессия оборвалась: недособранную
-  фразу выбросить, чтобы она не склеилась с речью следующей сессии.
+Каждое обращение к символам из этого модуля пишет :class:`DeprecationWarning`
+— при первой возможности переведите потребителей на
+``rob_box_core.speech_segmentation`` напрямую и удалите этот файл.
 
-Чистый Python: без rclpy/aiohttp, тестируется на dev-машине без ROS
-(см. `test/unit/core/test_wake_segmenter.py`).
+Зачем этот shim вообще
+----------------------
+Чтобы существующие юнит-тесты ``test_quest_bridge_wake_segmentation.py``,
+``test_quest_bridge_wake_audio_observability.py`` и ``test_wake_segmenter.py``
+продолжили собирать те же символы, что и раньше — без правки их импортов.
+Перевод тестов на новый модуль — следующий шаг (см. ``tools/migrate_wake_*.py``
+в TODO-листе #2199, если будет).
 """
 
 from __future__ import annotations
 
-from typing import List, Optional
+import warnings as _warnings
 
-# int16 mono PCM 16 кГц — формат wake-канала (voice_capture.ts).
-WAKE_SAMPLE_RATE_HZ: int = 16000
-WAKE_BYTES_PER_S: int = WAKE_SAMPLE_RATE_HZ * 2  # 32000 Б/с
-
-# Пауза в потоке кадров, после которой фраза считается законченной.
-# Клиент держит hangover 200 мс (voice_capture.ts, VAD_HANGOVER_MS_DEFAULT),
-# то есть после последнего «речевого» кадра он шлёт ещё 200 мс и только
-# потом замолкает. 400 мс = hangover + запас на джиттер WS: меньше —
-# рискуем порвать фразу на сетевой икоте, больше — оператор ждёт ответа.
-WAKE_PHRASE_GAP_TIMEOUT_S: float = 0.4
-
-# Потолок буфера. Клиентский VAD теоретически может «залипнуть» на шуме
-# (вентилятор, музыка) и лить кадры бесконечно — без потолка буфер съест
-# память ноды. 15 с — заведомо больше любой реплики оператора; на потолке
-# фразу режем и отдаём как есть, а не выбрасываем (речь важнее границы).
-WAKE_PHRASE_MAX_S: float = 15.0
-WAKE_PHRASE_MAX_BYTES: int = int(WAKE_PHRASE_MAX_S * WAKE_BYTES_PER_S)
-
-# Нижняя граница: сегмент короче — это блип VAD (щелчок, хлопок двери),
-# в котором физически не помещается слово «ТАРС». Отдавать такое в STT
-# бессмысленно — ровно из этого состоял дефект #2135.
-WAKE_PHRASE_MIN_S: float = 0.25
-WAKE_PHRASE_MIN_BYTES: int = int(WAKE_PHRASE_MIN_S * WAKE_BYTES_PER_S)
+from rob_box_core.speech_segmentation import (  # noqa: F401  (re-export)
+    BYTES_PER_S,
+    DEFAULT_WAKE_CONFIG,
+    PhraseSegmenter as _PhraseSegmenter,
+    SAMPLE_RATE_HZ,
+)
 
 
-class WakePhraseSegmenter:
-    """Кадры wake-канала → фразы. Состояние — один буфер и метка времени.
+# ── Контракт старого wake_segmenter.py (issue #2135) ──────────────────
 
-    Не потокобезопасен: и `add_frame` (aiohttp event-loop), и `tick`
-    (ROS-таймер) вызываются из моста, где публикация в rclpy уже
-    сериализована GIL'ом на уровне одного вызова. Буфер — список bytes,
-    склейка один раз на фразу (а не конкатенация на каждый кадр).
+# Исторические имена констант.
+WAKE_SAMPLE_RATE_HZ: int = SAMPLE_RATE_HZ
+WAKE_BYTES_PER_S: int = BYTES_PER_S
+WAKE_PHRASE_GAP_TIMEOUT_S: float = DEFAULT_WAKE_CONFIG.gap_timeout_s
+WAKE_PHRASE_MAX_S: float = DEFAULT_WAKE_CONFIG.max_phrase_s
+WAKE_PHRASE_MIN_S: float = DEFAULT_WAKE_CONFIG.min_phrase_s
+WAKE_PHRASE_MAX_BYTES: int = DEFAULT_WAKE_CONFIG.max_phrase_bytes
+WAKE_PHRASE_MIN_BYTES: int = DEFAULT_WAKE_CONFIG.min_phrase_bytes
+
+
+def __getattr__(name: str):  # PEP 562 — ленивый алиас
+    """Резолвим ``WAKE_*`` / ``WakePhraseSegmenter`` через rob_box_core.
+
+    Срабатывает только когда атрибут не найден обычным образом — например,
+    при ``from rob_box_quest.core.wake_segmenter import WAKE_PHRASE_GAP_TIMEOUT_S``
+    Python сначала пытается найти ``WAKE_PHRASE_GAP_TIMEOUT_S`` в глобальной
+    области модуля, и только если не нашёл — зовёт ``__getattr__``. Поэтому
+    явные константы выше (с теми же именами) **перебивают** эту функцию.
     """
+    if name == "WakePhraseSegmenter":
+        _warnings.warn(
+            "rob_box_quest.core.wake_segmenter.WakePhraseSegmenter is deprecated; "
+            "use rob_box_core.speech_segmentation.PhraseSegmenter "
+            "with DEFAULT_WAKE_CONFIG instead (issue #2199).",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        # Возвращаем фабрику-класс, совместимую по сигнатуре
+        # (``WakePhraseSegmenter()`` без аргументов — старый API).
+        class _WakePhraseSegmenterCompat(_PhraseSegmenter):
+            def __init__(self) -> None:
+                super().__init__(DEFAULT_WAKE_CONFIG)
 
-    def __init__(
-        self,
-        gap_timeout_s: float = WAKE_PHRASE_GAP_TIMEOUT_S,
-        max_bytes: int = WAKE_PHRASE_MAX_BYTES,
-        min_bytes: int = WAKE_PHRASE_MIN_BYTES,
-    ) -> None:
-        self._gap_timeout_s = gap_timeout_s
-        self._max_bytes = max_bytes
-        self._min_bytes = min_bytes
-        self._frames: List[bytes] = []
-        self._buffered_bytes = 0
-        self._last_frame_at: Optional[float] = None
-        # Observability: сколько блипов отброшено как «короче min_bytes»
-        # и сколько раз фразу пришлось резать по потолку.
-        self.dropped_short_phrases = 0
-        self.truncated_phrases = 0
+        return _WakePhraseSegmenterCompat
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
-    @property
-    def buffered_bytes(self) -> int:
-        """Сколько байт лежит в незакрытой фразе (0 — буфер пуст)."""
-        return self._buffered_bytes
 
-    def add_frame(self, payload: bytes, now_monotonic: float) -> Optional[bytes]:
-        """Принять кадр. Вернуть фразу, если она закрылась этим вызовом.
+_warnings.warn(
+    "rob_box_quest.core.wake_segmenter is deprecated and will be removed; "
+    "import rob_box_core.speech_segmentation instead (issue #2199).",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
-        Два повода закрыть фразу здесь:
 
-        1. Перед этим кадром была пауза ≥ ``gap_timeout_s`` — значит кадр
-           открывает НОВУЮ фразу, а старую надо отдать (таймер мог не
-           успеть, если пауза совпала с приходом следующей реплики).
-        2. Буфер упёрся в ``max_bytes`` — режем принудительно.
-        """
-        phrase = self._close_if_gap(now_monotonic)
-        self._frames.append(payload)
-        self._buffered_bytes += len(payload)
-        self._last_frame_at = now_monotonic
-        if phrase is None and self._buffered_bytes >= self._max_bytes:
-            self.truncated_phrases += 1
-            phrase = self._close()
-        return phrase
-
-    def tick(self, now_monotonic: float) -> Optional[bytes]:
-        """Таймерный тик: закрыть фразу, если поток кадров замолчал.
-
-        Единственный путь, по которому фраза закрывается в реальной жизни:
-        оператор договорил → клиентский VAD отпустил → кадры кончились →
-        `add_frame` больше не вызывается.
-        """
-        return self._close_if_gap(now_monotonic)
-
-    def reset(self) -> int:
-        """Выбросить недособранную фразу. Возвращает число потерянных байт.
-
-        Вызывается при разрыве WS-сессии: половина фразы прошлого оператора
-        не должна приклеиться к речи следующего.
-        """
-        dropped = self._buffered_bytes
-        self._frames = []
-        self._buffered_bytes = 0
-        self._last_frame_at = None
-        return dropped
-
-    def _close_if_gap(self, now_monotonic: float) -> Optional[bytes]:
-        """Фраза закончена, если с последнего кадра прошло ≥ gap_timeout_s."""
-        if self._last_frame_at is None or not self._frames:
-            return None
-        if now_monotonic - self._last_frame_at < self._gap_timeout_s:
-            return None
-        return self._close()
-
-    def _close(self) -> Optional[bytes]:
-        """Склеить буфер в фразу и очистить состояние.
-
-        None — если фраза короче ``min_bytes`` (блип VAD, см. модульный
-        докстринг): буфер всё равно очищается, наружу ничего не идёт.
-        """
-        data = b"".join(self._frames)
-        self._frames = []
-        self._buffered_bytes = 0
-        self._last_frame_at = None
-        if len(data) < self._min_bytes:
-            self.dropped_short_phrases += 1
-            return None
-        return data
+__all__ = [
+    "WAKE_SAMPLE_RATE_HZ",
+    "WAKE_BYTES_PER_S",
+    "WAKE_PHRASE_GAP_TIMEOUT_S",
+    "WAKE_PHRASE_MAX_BYTES",
+    "WAKE_PHRASE_MIN_BYTES",
+    "WAKE_PHRASE_MAX_S",
+    "WAKE_PHRASE_MIN_S",
+    "WakePhraseSegmenter",
+]

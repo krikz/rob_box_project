@@ -21,6 +21,9 @@
   <exec_depend>python3-aiohttp</exec_depend>
   <exec_depend>python3-msgpack</exec_depend>
 
+  <!-- issue #2199: единый сегментатор речи (PhraseSegmenter). -->
+  <exec_depend>rob_box_core</exec_depend>
+
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
   <test_depend>ament_pep257</test_depend>

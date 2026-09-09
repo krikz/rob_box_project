@@ -13,9 +13,15 @@ issue #2135: единица учёта здесь — ФРАЗА, а не 20мс
 (``test/unit/conftest.py``) подставляет заглушки ROS-модулей, если
 настоящих нет. Раньше файл целиком скипался через ``importorskip`` — ровно
 это однажды привело к ложному закрытию карточки #1992.
+
+issue #2199: тест переведён с ``rob_box_quest.core.wake_segmenter`` (legacy
+shim) на ``rob_box_core.speech_segmentation.DEFAULT_WAKE_CONFIG``.
 """
 
-from rob_box_quest.core.wake_segmenter import WAKE_PHRASE_GAP_TIMEOUT_S
+from rob_box_core.speech_segmentation import DEFAULT_WAKE_CONFIG
+
+
+WAKE_PHRASE_GAP_TIMEOUT_S = DEFAULT_WAKE_CONFIG.gap_timeout_s
 
 FRAME = b"\x00\x01" * 320  # 640 байт = 20 мс @ 16 кГц int16
 FRAME_PERIOD_S = 0.02

@@ -30,6 +30,14 @@ from rob_box_core.ports import (
     ToolValidationError,
     ValidationResult,
 )
+from rob_box_core.speech_segmentation import (
+    BYTES_PER_S,
+    DEFAULT_ROBOT_VOICE_CONFIG,
+    DEFAULT_WAKE_CONFIG,
+    PhraseSegmenter,
+    SAMPLE_RATE_HZ,
+    SpeechSegmentationConfig,
+)
 from rob_box_core.utterance import (
     ALLOWED_PRIORITIES,
     DEFAULT_PRIORITY,
@@ -84,6 +92,13 @@ __all__ = [
     "make_telegram_client_id",
     "new_request_id",
     "now_ts_ms",
+    # speech_segmentation (issue #2199: единый сегментатор речи)
+    "PhraseSegmenter",
+    "SpeechSegmentationConfig",
+    "DEFAULT_WAKE_CONFIG",
+    "DEFAULT_ROBOT_VOICE_CONFIG",
+    "SAMPLE_RATE_HZ",
+    "BYTES_PER_S",
 ]
 
 __version__ = "0.1.0"
