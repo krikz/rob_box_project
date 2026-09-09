@@ -3333,25 +3333,11 @@ except Exception:
             log "DRY-RUN would reconcile issue #${number} (re-read labels, maybe close, then cleanup ${branch})"
             continue
         fi
-        # ADR-0022 extension (issue #1475): после merge в develop/main
-        # триггерим L-Build-All-Services, чтобы .image-versions.prod получил
-        # prod-<new-sha> теги. Non-fatal: build failure НЕ блокирует merge-gate
-        # (см. agent-flow-post-merge-build.sh).
-        #
-        # Issue #1625 (Шифу 25.08): develop build больше не триггерим
-        # автоматически — develop-HEAD собирается вручную или push-триггером
-        # L-Build-All-Services.yml. main build ОБЯЗАТЕЛЕН (production safety)
-        # и обеспечивается двумя независимыми путями (ADR-0088):
-        #   1. workflow G-Auto-merge-to-Main триггерит build после merge в main;
-        #   2. agent-flow-post-merge-build.sh сам skip'ает develop.
-        #
-        # ВНУТРЕННИЙ guard ниже НЕ ТРИГГЕРИТСЯ: внешний `if [ "$pr_state" = "MERGED" ]
-        # && [ "$pr_base" = "$DEVELOP_BRANCH" ]` гарантирует $pr_base == develop,
-        # поэтому ветка `elif [ base=main ]` исторически мертва. Оставлен
-        # единственный лог-маркер (issue #1625 acceptance), никаких сайд-эффектов.
-        if [ "$pr_base" = "$DEVELOP_BRANCH" ]; then
-            log "issue #${number}: skipping post-merge build for ${pr_base} (Шифу 25.08, issue #1625)"
-        fi
+        # Production-safety для main обеспечивает workflow G-Auto-merge to Main
+        # (ADR-AF-0064). Сам post-merge-build.sh skip'ает develop, его вызывают
+        # workflow и ad-hoc триггеры — НЕ merge-gate. Skip-лог ниже — маркер
+        # для ревьюера: «здесь build НЕ запускается by design, не забыли».
+        log "issue #${number}: skipping post-merge build for ${pr_base} (main build → G-Auto-merge to Main, ADR-AF-0064)"
         # 0.1) Re-read current labels & state — race with e2e-process
         # (e2e-process may have set e2e-done between our initial issue-list
         # pull and now; also the issue may already be CLOSED from a previous
