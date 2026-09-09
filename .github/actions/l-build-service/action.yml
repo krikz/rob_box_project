@@ -1,0 +1,233 @@
+name: 'L-Build Service (composite)'
+description: >-
+  Reusable composite action для self-hosted build-job'ов в L-Build Main Pi Services /
+  L-Build Vision Pi Services / L-Build Single Service. Оборачивает docker-сборку
+  сервиса: buildx build + (опционально) docker push ТОЛЬКО в локальный registry.
+
+  Clean stale submodules + actions/checkout живут в вызывающем job'е, а НЕ здесь:
+  GitHub требует, чтобы репозиторий был зачекаутен ДО вызова локального composite
+  action (иначе раннер не найдёт .github/actions/l-build-service/action.yml и упадёт
+  с "Did you forget to run actions/checkout"). Т.е. composite физически не может
+  сам себя причекаутить — checkout обязан быть в job'е до `uses:`.
+
+  Режим по умолчанию (load=false) = buildx build --load (все --tag в локальный
+  docker daemon) + docker push ТОЛЬКО тегов локального registry (localhost:5000).
+  Это соответствует прежнему (проверенному) поведению и требуется
+  update-image-versions'у, который делает `docker tag` из локального daemon.
+  GHCR-теги НЕ пушим: runner не залогинен в ghcr.io для локальных test/dev сборок
+  (issue #1503) — buildx --push по GHCR-тегу падал бы с unauthorized (run
+  #34368750126). GHCR-тег остаётся локальным именем образа в daemon.
+
+  Если нужен только образ в daemon без пуша в registry (например, для `docker run`
+  в том же job'е) — input `load=true` → buildx build --load без docker push.
+
+  Acceptance: см. issue #2280 (arch review 2026-09-09, кандидат 4).
+
+inputs:
+  service-name:
+    description: 'Имя сервиса (для логов/метаданных, никак не влияет на buildx).'
+    required: false
+    default: 'service'
+
+  dockerfile-path:
+    description: 'Путь к Dockerfile относительно корня репо.'
+    required: true
+
+  build-context:
+    description: >-
+      Путь к build context относительно корня репо (по умолчанию ".").
+      Соответствует последнему позиционному аргументу buildx build.
+    required: false
+    default: '.'
+
+  platform:
+    description: 'buildx --platform (linux/arm64 для self-hosted Pi-builder).'
+    required: false
+    default: 'linux/arm64'
+
+  # Список тегов для buildx --tag. По одному тегу на строку.
+  # GHCR-теги и LOCAL-теги разделять не нужно — buildx сам пушит на каждый
+  # registry, на который залогинен runner. Но т.к. на self-hosted runner'е
+  # НЕ делается `docker login ghcr.io` для develop/test build'ов (issue #1503),
+  # GHCR-теги будут локально прокинуты buildx'ом и никому не отправятся — это
+  # эквивалентно прежнему поведению `--load` + отсутствию docker push.
+  tags:
+    description: >-
+      Список тегов для buildx --tag, по одному тегу на строку. Обязательно
+      включите LOCAL-тег (localhost:5000/...) если push_to_registry=true —
+      buildx сам его запишет в registry.
+    required: true
+
+  # Список build-args в формате KEY=VAL, по одной записи на строку.
+  # Совпадает 1:1 с тем, что раньше стояло после --build-arg= в прежних job'ах.
+  # Обязательные: APT_PROXY=http://host.docker.internal:3142 (если нужен).
+  build-args:
+    description: >-
+      Список build-args в формате KEY=VAL, по одной записи на строку.
+      Каждая строка превращается в отдельный --build-arg=KEY=VAL.
+    required: false
+    default: ''
+
+  # Один флаг, который включает COMPUTE-хеши внутри action'а — чтобы
+  # не повторять `find ... | sha256sum` в каждом job'е. Если нужна
+  # нестандартная логика (например, hash TS-исходников для webxr_client) —
+  # оставьте пустым и считайте хеш в самом job'е, потом передавайте
+  # через build-args как SOURCE_HASH=...
+  compute-submodule-sha:
+    description: >-
+      Имя субмодуля (например, src/ros2leds или src/vesc_nexus) для
+      которого action посчитает SHA и подмешает его как
+      <submodule-dir-upper>_SHA=<sha> build-arg. Если пусто — не считает.
+      ВНИМАНИЕ: имя build-arg формируется как `<basename>_SHA=<sha>` —
+      для src/ros2leds → ROS2LEDS_SHA, для src/vesc_nexus → VESC_NEXUS_SHA
+      (в верхнем регистре, неразрывный underscore).
+    required: false
+    default: ''
+
+  load:
+    description: >-
+      Если true → только buildx build --load (образ в локальный docker daemon),
+      БЕЗ docker push в registry. Если false (по умолчанию) → buildx --load +
+      docker push тегов локального registry (см. local-registry). GHCR не пушится.
+    required: false
+    default: 'false'
+
+  local-registry:
+    description: >-
+      Реестр, в который реально пушим при load=false (локальная сборка).
+      GHCR-теги НЕ пушим никогда: self-hosted runner не залогинен в ghcr.io
+      для test/dev (issue #1503), buildx --push по ним падал бы unauthorized.
+    required: false
+    default: 'localhost:5000'
+
+  # Self-hosted runner уже настроен на host.docker.internal:host-gateway —
+  # в buildx передаём его явно. Для будущих job'ов, которым не нужен
+  # APT_PROXY / buildkit gateway, можно отключить.
+  add-host:
+    description: 'Значение для buildx --add-host (по умолчанию host.docker.internal:host-gateway).'
+    required: false
+    default: 'host.docker.internal:host-gateway'
+
+  # Полный вывод buildx в лог job'а, по умолчанию ON (раньше тоже было видно).
+  # Progress оставлен plain для краткости лога (раньше тоже не использовали --progress=json).
+  progress:
+    description: 'Значение для buildx --progress (auto / plain / tty). По умолчанию plain.'
+    required: false
+    default: 'plain'
+
+runs:
+  using: 'composite'
+  steps:
+    # ---- Шаг 1: buildx --load + docker push (LOCAL registry only) ----
+    # Clean stale submodules + checkout выполняются в вызывающем job'е (см.
+    # description выше): локальный composite action требует зачекаутенный
+    # репозиторий ДО своего вызова, поэтому физически не может содержать
+    # собственный checkout. Если убрать checkout из job'а — раннер не найдёт
+    # action.yml и job упадёт (баг run #34366133083, fix issue #2280).
+    #
+    # Почему НЕ buildx --push: (1) он пушит ВСЕ --tag, включая GHCR, а runner
+    # не залогинен в ghcr.io для локальных test/dev сборок → unauthorized
+    # (run #34368750126); (2) update-image-versions делает `docker tag` из
+    # локального docker daemon — образ обязан быть в daemon, а --push туда его
+    # не кладёт. Поэтому: buildx --load (все теги в daemon) + docker push ТОЛЬКО
+    # тегов локального registry (localhost:5000). GHCR-тег остаётся локальным
+    # именем в daemon (как в прежнем коде, issue #1503).
+    - name: Build ${{ inputs.service-name }}
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        # Multi-line inputs (tags, build-args) — GitHub Actions подаёт их
+        # с реальными LF между строками. Здесь через env → temp-file →
+        # read на каждой строке, чтобы пережить CRLF (если вдруг runner
+        # на Windows) и trailing newlines. <<< "$VAR" вполне работает в bash
+        # для LF-входов, но file-based подход надёжнее для CI.
+        TAGS_TMP="$(mktemp)"
+        BUILD_ARGS_TMP="$(mktemp)"
+        trap 'rm -f "$TAGS_TMP" "$BUILD_ARGS_TMP"' EXIT
+        # shellcheck disable=SC2154  # inputs.* подставляется GH Actions до запуска bash
+        printf '%s\n' "${{ inputs.tags }}" > "$TAGS_TMP"
+        printf '%s\n' "${{ inputs.build-args }}" > "$BUILD_ARGS_TMP"
+
+        # Соберём флаги --tag
+        TAG_ARGS=()
+        while IFS= read -r tag || [ -n "$tag" ]; do
+          # пропускаем пустые строки (от trailing newline в inputs.tags)
+          [ -z "$tag" ] && continue
+          TAG_ARGS+=(--tag "$tag")
+        done < "$TAGS_TMP"
+
+        # Соберём --build-arg=...
+        BUILD_ARG_ARGS=()
+        while IFS= read -r arg || [ -n "$arg" ]; do
+          [ -z "$arg" ] && continue
+          BUILD_ARG_ARGS+=(--build-arg="$arg")
+        done < "$BUILD_ARGS_TMP"
+
+        # Опционально: посчитаем SHA субмодуля и добавим как build-arg
+        # (имя build-arg = <basename>_SHA в верхнем регистре — это
+        # согласовано с Dockerfile'ами, ожидающими ROS2LEDS_SHA / VESC_NEXUS_SHA).
+        if [ -n "${{ inputs.compute-submodule-sha }}" ]; then
+          SUBMODULE_PATH="${{ inputs.compute-submodule-sha }}"
+          SUBMODULE_BASENAME="$(basename "$SUBMODULE_PATH")"
+          SHA_VAR="${SUBMODULE_BASENAME^^}_SHA"
+          SHA_VAL="$(git submodule status "$SUBMODULE_PATH" | awk '{print $1}' | sed 's/^[+-]//')"
+          echo "  $SHA_VAR: $SHA_VAL"
+          BUILD_ARG_ARGS+=(--build-arg="${SHA_VAR}=${SHA_VAL}")
+        fi
+
+        # Режим load vs load+push-local. buildx --push НЕ используем — причины
+        # в комментарии над шагом и в description (GHCR unauthorized + daemon
+        # нужен update-image-versions'у).
+        echo "🏗️ Building ${{ inputs.service-name }}..."
+        echo "  Dockerfile: ${{ inputs.dockerfile-path }}"
+        echo "  Build context: ${{ inputs.build-context }}"
+        echo "  Tags:"
+        while IFS= read -r tag || [ -n "$tag" ]; do
+          [ -z "$tag" ] && continue
+          echo "    - $tag"
+        done < "$TAGS_TMP"
+        if [ "${{ inputs.load }}" = "true" ]; then
+          echo "  Output mode: --load (no push to registry)"
+        else
+          echo "  Output mode: --load + docker push (LOCAL registry only)"
+        fi
+
+        # buildx build --load: образ со всеми --tag уходит в локальный docker
+        # daemon (нужен update-image-versions'у для `docker tag`).
+        docker buildx build \
+          --platform "${{ inputs.platform }}" \
+          --file "${{ inputs.dockerfile-path }}" \
+          "${TAG_ARGS[@]}" \
+          --load \
+          --add-host="${{ inputs.add-host }}" \
+          "${BUILD_ARG_ARGS[@]}" \
+          --progress="${{ inputs.progress }}" \
+          "${{ inputs.build-context }}"
+
+        # Локальная сборка → пушим ТОЛЬКО теги локального registry.
+        # GHCR-теги (ghcr.io/...) НЕ пушим: runner не залогинен в ghcr.io для
+        # test/dev (issue #1503), попытка push упала бы с unauthorized. GHCR-тег
+        # уже есть в daemon как локальное имя образа (см. --load выше).
+        if [ "${{ inputs.load }}" != "true" ]; then
+          echo "  Pushing LOCAL tags (${{ inputs.local-registry }}/*):"
+          while IFS= read -r tag || [ -n "$tag" ]; do
+            [ -z "$tag" ] && continue
+            case "$tag" in
+              "${{ inputs.local-registry }}"/*)
+                echo "    docker push $tag"
+                docker push "$tag"
+                ;;
+            esac
+          done < "$TAGS_TMP"
+        fi
+
+        echo "✅ Built ${{ inputs.service-name }}"
+
+    # ---- Шаг 2 (опционально): verification & tagging ----
+    # Если job — это ВНУТРЕННИЙ build-job без `update-image-versions`,
+    # verification здесь не нужен (verify делается централизованно в
+    # update-image-versions, см. issue #1482 acceptance B). Этот шаг
+    # здесь — заглушка для будущих расширений, не активен по умолчанию.
+
+outputs: {}
