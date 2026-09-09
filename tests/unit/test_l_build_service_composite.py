@@ -30,14 +30,18 @@ def _load_action_yaml() -> dict:
     """Parse action.yml into a Python dict (uses stdlib yaml)."""
     import yaml
 
-    with ACTION_YML.open() as fh:
+    # action.yml contains UTF-8 Russian comments — encoding must be explicit
+    # on Windows (default cp1252 would raise UnicodeDecodeError).
+    with ACTION_YML.open(encoding="utf-8") as fh:
         return yaml.safe_load(fh)
 
 
 def _extract_build_step_bash(action: dict) -> str:
-    """Return the `run:` body of the build step (skipping Clean / Checkout).
+    """Return the `run:` body of the single Build step.
 
-    Strips the leading indent so we can exec it via `bash -c` directly.
+    The composite is buildx-only (clean+checkout live in the calling job), so
+    there is exactly one step whose name starts with "Build ". Strips the
+    leading indent so we can exec it via `bash -c` directly.
     """
     steps = action["runs"]["steps"]
     build_step = next(s for s in steps if s["name"].startswith("Build "))
@@ -140,14 +144,25 @@ def _run_build_step(
 
 
 def test_action_yaml_is_loadable():
-    """Smoke test: action.yml is valid YAML and has expected shape."""
+    """Smoke test: action.yml is valid YAML and has expected shape.
+
+    Composite is buildx-ONLY: checkout must happen in the CALLING job. GitHub
+    resolves `uses: ./.github/actions/...` from the job workspace, which exists
+    only after actions/checkout ran — so a composite can never self-checkout.
+    Putting Clean/Checkout inside the composite (and calling it as the job's
+    first step) makes every job fail with "Can't find action.yml ... Did you
+    forget to run actions/checkout" (regression: run #34366133083, 18/18 jobs).
+    """
     action = _load_action_yaml()
     assert action["name"] == "L-Build Service (composite)"
     assert action["runs"]["using"] == "composite"
     step_names = [s["name"] for s in action["runs"]["steps"]]
-    assert any("Clean stale submodules" in n for n in step_names), step_names
-    assert "Checkout repository" in step_names, step_names
-    assert any(n.startswith("Build ") for n in step_names), step_names
+    assert len(step_names) == 1, step_names
+    assert step_names[0].startswith("Build "), step_names
+    # No self-checkout / clean-stale inside the composite (impossible at runtime
+    # + would be redundant with the job-level checkout).
+    assert not any("checkout" in n.lower() for n in step_names), step_names
+    assert not any("clean stale" in n.lower() for n in step_names), step_names
 
 
 def test_action_declares_expected_inputs():
