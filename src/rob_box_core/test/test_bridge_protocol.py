@@ -341,6 +341,57 @@ class TestVoiceConfig:
         """Голосвание: дефолтный язык пайплайна ∈ VOICE_LANGUAGES."""
         assert VOICE_PIPELINE_DEFAULT_LANGUAGE in VOICE_LANGUAGES
 
+    def test_default_language_is_single_source_of_truth(self):
+        """issue #2265 — больше НЕТ трёх копий «ru».
+
+        ``supervisor_node.GRIP_DEFAULT_LANGUAGE`` и
+        ``ws_server.VOICE_PIPELINE_DEFAULT_LANGUAGE`` ОБЯЗАНЫ быть
+        re-export'ами канонической константы из ``bridge_protocol``
+        (тот же объект, что и здесь). Если кто-то снова заведёт
+        локальную копию — этот тест поймает на первом же запуске CI,
+        без ручного вычитывания номеров строк в комментариях.
+
+        Конструкция «try/except ImportError» нужна потому, что
+        ws_server тащит за собой tornado; supervisor_node — rclpy.
+        Оба пакета устанавливаются в G-Run Tests.yml, но здесь мы
+        хотим лёгкий guard, который едет даже на голой машине без
+        ROS2 — поэтому проверяем только то, что доступно.
+        """
+        import importlib
+
+        canonical = VOICE_PIPELINE_DEFAULT_LANGUAGE
+        assert canonical == "ru", (
+            "Дефолтный язык пайплайна сменился — обнови комментарий и "
+            "убедись, что voice_presets.yaml / ws_server всё ещё "
+            "принимают это значение как валидный language_id."
+        )
+
+        # ws_server — pure Python (tornado присутствует в CI), проверяем
+        # равенство re-export'а канону.
+        ws_server = importlib.import_module("rob_box_quest.server.ws_server")
+        assert ws_server.VOICE_PIPELINE_DEFAULT_LANGUAGE is canonical, (
+            "ws_server.VOICE_PIPELINE_DEFAULT_LANGUAGE оторвался от "
+            "канона — верни прямой импорт из bridge_protocol."
+        )
+
+        # supervisor_node — ROS-узел (rclpy в CI); импорт может
+        # провалиться на голой машине. В этом случае доверяемся
+        # смоук-тесту в test_supervisor_node.py, который запускается
+        # в G-Run Tests.yml.
+        try:
+            supervisor = importlib.import_module(
+                "rob_box_supervisor.supervisor_node"
+            )
+        except ImportError as exc:
+            if "rclpy" not in str(exc):
+                raise
+            return  # ROS не установлен — пропускаем локально.
+
+        assert supervisor.GRIP_DEFAULT_LANGUAGE is canonical, (
+            "supervisor_node.GRIP_DEFAULT_LANGUAGE оторвался от "
+            "канона — верни прямой импорт из bridge_protocol."
+        )
+
     def test_wire_modes_subset_of_input_modes(self):
         """Клиент шлёт только разрешённые voice_input_mode."""
         from rob_box_core.bridge_protocol import VoiceInputMode

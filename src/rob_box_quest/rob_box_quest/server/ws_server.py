@@ -52,6 +52,7 @@ from .voice_floor import FloorHolder, FloorState, VoiceFloorCache
 # ``ws_server.VOICE_PRESET_IDS`` — это тот же объект, что в каталоге.
 from rob_box_core.bridge_protocol import (
     VOICE_LANGUAGES,  # noqa: F401  (re-export для обратной совместимости)
+    VOICE_PIPELINE_DEFAULT_LANGUAGE,  # noqa: F401  (issue #2265: единый SoT для дефолтного языка)
     VOICE_PRESET_IDS,  # noqa: F401  (re-export для обратной совместимости)
 )
 
@@ -285,10 +286,13 @@ def _validate_voice_set_payload(
 
 
 # Шаг 4б (t_80e7aa1e): дефолтный язык пайплайна грипа до первой
-# синхронизации с панели. Должен совпадать с ``GRIP_DEFAULT_LANGUAGE``
-# в supervisor_node.py:362 — иначе оптимистичная подсветка клиента
-# разъедется с тем, что реально применилось.
-VOICE_PIPELINE_DEFAULT_LANGUAGE: str = "ru"
+# синхронизации с панели.
+#
+# ADR-0080 §2.7 / issue #2265: источник истины — ``rob_box_core.bridge_protocol.
+# VOICE_PIPELINE_DEFAULT_LANGUAGE``. Раньше тут жила третья копия «ru»
+# (помимо supervisor_node и каталога); re-export через прямой импорт
+# гарантирует совпадение без ручной синхронизации (тот же приём, что
+# для VOICE_PRESET_IDS выше и для GRIP_DEFAULT_LANGUAGE в supervisor_node).
 
 
 def _validate_voice_pipeline_payload(
