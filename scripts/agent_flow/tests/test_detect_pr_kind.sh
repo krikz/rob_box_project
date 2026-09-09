@@ -20,6 +20,9 @@ set -euo pipefail
 TEST_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$TEST_LIB_DIR/.." && pwd)"  # scripts/agent_flow/, где лежат *.sh
 
+# shellcheck source=lib/lib_eval_func.sh
+. "$TEST_LIB_DIR/lib/lib_eval_func.sh"
+
 # Color codes (если stdout — терминал)
 if [ -t 1 ]; then
     RED=$'\033[31m'; GRN=$'\033[32m'; YEL=$'\033[33m'; BLU=$'\033[34m'; END=$'\033[0m'
@@ -33,24 +36,10 @@ TESTS_FAILED=0
 FAILED_NAMES=()
 
 # ---- Извлечение detect_pr_kind из реальных production-скриптов -------------
-# Чтобы тест не зависел от copy-paste: парсим функцию из исходников через awk
-# и eval'им в текущий scope. Если в будущем кто-то поправит detect_pr_kind
-# в одном файле и забудет про второй — этот тест сразу скажет.
-extract_func() {  # $1=script_path $2=func_signature $3=out_var
-    local script="$1" sig="$2" outvar="$3" body
-    # Сигнатура: has_label() или detect_pr_kind() с опциональным комментарием
-    body="$(awk -v sig="$sig" '
-        $0 ~ "^" sig "[[:space:]]*\\(\\)" {flag=1}
-        flag {print}
-        flag && /^}/ {flag=0; exit}
-    ' "$script")"
-    if [ -z "$body" ]; then
-        printf 'FAIL: func %s не найдена в %s\n' "$sig" "$script" >&2
-        return 1
-    fi
-    printf -v "$outvar" '%s' "$body"
-}
-
+# Парсим функцию из исходников через общий lib (issue #2295). Если кто-то
+# поправит detect_pr_kind в lib и забудет про вызывающие скрипты — этот тест
+# СРАЗУ скажет (extract_func_or_die падает с понятным FAIL-сообщением).
+#
 # После дедупа 30.08 detect_pr_kind и has_label живут в ОДНОМ месте —
 # lib_agent_flow_common.sh, который сорсят и e2e-process, и merge-gate.
 # Расходиться копиям больше негде, поэтому тест:
@@ -73,8 +62,8 @@ for _script in agent-flow-e2e-process.sh agent-flow-merge-gate.sh; do
     fi
 done
 
-extract_func "$LIB_COMMON" "detect_pr_kind" LIB_BODY
-extract_func "$LIB_COMMON" "has_label"      LIB_HAS_LABEL
+LIB_BODY="$(extract_func_or_die "$LIB_COMMON" "detect_pr_kind")"
+LIB_HAS_LABEL="$(extract_func_or_die "$LIB_COMMON" "has_label")"
 
 # Подставь NO_E2E_LABEL — detect_pr_kind обращается к глобальной переменной.
 # shellcheck disable=SC2034

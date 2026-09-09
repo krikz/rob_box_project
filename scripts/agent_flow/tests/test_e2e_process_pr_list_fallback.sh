@@ -85,14 +85,15 @@ NEEDS_E2E_LABEL="needs-e2e"
 ISSUE_LIMIT=20
 log() { :; }   # stub
 
-# Extract each helper function from the script
-extract_func() {
-    local fname="$1"
-    sed -n "/^${fname}()/,/^}$/p" "$E2E_PROCESS"
-}
+# Extract each helper function from the script via the shared lib (issue #2295).
+# Brace-depth tracking lives in lib_eval_func.sh now, so this test no longer
+# ships its own awk/sed copy (was: line-range /^func()/ → /^}/ which silently
+# truncates any helper that contains nested { ... }).
+# shellcheck source=lib/lib_eval_func.sh
+. "$TEST_DIR/lib/lib_eval_func.sh"
 
-eval "$(extract_func gh_pr_state_by_head)"
-eval "$(extract_func gh_pr_open_by_title)"
+eval "$(extract_func_or_die "$E2E_PROCESS" gh_pr_state_by_head)"
+eval "$(extract_func_or_die "$E2E_PROCESS" gh_pr_open_by_title)"
 
 # Override gh with a mock that simulates different responses
 MOCK_DIR="$(mktemp -d)"
@@ -440,7 +441,7 @@ MOCK
     # Mock search to return PR #1565
     set_rest_search '[{"number":1565,"title":"Issue #1561: foo bar"}]'
     # Need to eval find_open_pr_by_issue — extract it from the script
-    eval "$(sed -n '/^find_open_pr_by_issue()/,/^}$/p' "$E2E_PROCESS")"
+    eval "$(extract_func_or_die "$E2E_PROCESS" find_open_pr_by_issue)"
     local _result
     _result="$(find_open_pr_by_issue "1561")"
     if printf '%s' "$_result" | grep -q '^1565	z-{agent}/1561-'; then

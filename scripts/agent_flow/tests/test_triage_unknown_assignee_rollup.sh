@@ -51,13 +51,11 @@ assert_eq() {
 }
 
 # === Helpers (test-local) ===
-extract_func() {
-    awk -v fn="$2" '
-        $0 == fn "() {" { f = 1 }
-        f { print }
-        f && /^\}$/ { exit }
-    ' "$1"
-}
+# Source shared lib_eval_func.sh (issue #2295) instead of redefining
+# extract_func locally — keeps semantic-fail behavior consistent across tests
+# and avoids silent regressions when functions get reindented in the source.
+# shellcheck source=lib/lib_eval_func.sh
+. "$TESTS_DIR/lib/lib_eval_func.sh"
 
 # Mock gh so the test is hermetic. The mock supports the patterns our function
 # uses: `gh issue comment --body`, `gh issue edit --add-label`, and
@@ -150,10 +148,10 @@ setup_mock_env() {
     export GH_CALLS_LOG ROLLUP_FILE LABELS_FILE COMMENTS_JSON PATH
 }
 
-# Source the function from the script under test.
-# We extract the function and eval it inside a fresh subshell.
+# Source the function from the script under test via extract_func_or_die so a
+# missing/reindented function fails LOUDLY instead of silently breaking the test.
 _emit_unknown_assignee_rollup() { :; }  # stub for eval_helper
-eval "$(extract_func "$SCRIPT_UNDER_TEST" _emit_unknown_assignee_rollup)"
+eval "$(extract_func_or_die "$SCRIPT_UNDER_TEST" _emit_unknown_assignee_rollup)"
 
 # Provide outer-scope deps
 log() { printf '[log] %s\n' "$*" >&2; }

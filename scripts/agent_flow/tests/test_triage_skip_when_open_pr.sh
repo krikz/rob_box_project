@@ -38,22 +38,17 @@ fail() {
 }
 
 # Извлекаем функцию branch_label_override из скрипта как bash-исходник
-extract_func() {
-    local fname="$1"
-    awk -v fn="$fname" '
-        $0 ~ "^" fn "\\(\\)" { printflag=1; print; next }
-        printflag { print; if (/^}$/) { exit} }
-    ' "$SCRIPT_UNDER_TEST"
-}
+# через общий lib (issue #2295). Ветка с extract_func_or_die даёт явный
+# FAIL при реинденте/переносе функции вместо молчаливого eval "" → тест
+# падает с понятным сообщением.
+# shellcheck source=lib/lib_eval_func.sh
+. "$TESTS_DIR/lib/lib_eval_func.sh"
 
 # --- T1: branch_label_override парсит метку -------------------------------
 echo "=== T1: branch_label_override parses branch:NAME label ==="
 
-FUNC_SRC="$(extract_func branch_label_override)"
-if [ -z "$FUNC_SRC" ]; then
-    fail "T1.0: branch_label_override function not found in $SCRIPT_UNDER_TEST"
-    exit 1
-fi
+FUNC_SRC="$(extract_func_or_die "$SCRIPT_UNDER_TEST" branch_label_override)" \
+    || { fail "T1.0: extract_func_or_die failed for branch_label_override"; exit 1; }
 
 # Подключаем функцию в текущий shell
 eval "$FUNC_SRC"
