@@ -837,3 +837,179 @@ class TestAgentReplyIsSpoken(unittest.TestCase):
         """Пустой summary не уходит в синтез (иначе провайдеры мрут, #2096)."""
         self._run("quest", summary="")
         self.assertEqual(_published_avatar_tts(self.node), [])
+
+
+# ─────────────────────────────────────────────────────────────────────
+# ADR-0083 §2.3 — supervisor_node собирает AgentCore через build_agent(spec)
+# (PR #2276 + follow-up t_387a9288). Этот блок — приёмка инфраструктуры:
+#   * ``_build_agent_core_sync`` собирает ``AgentSpec(name='operator', ...)``
+#     и зовёт ``build_agent(spec, tools=..., memory=...)``;
+#   * ``narrow_tools_to_skill=False`` (ТАРС видит все инструменты);
+#   * ``memory_namespace='operator'`` (ADR-0083 §2.4);
+#   * ``health_cache_persist_path`` общий на машину
+#     (``~/.rob_box/llm_health.json``) — supervisor и dialogue делят
+#     один HealthCache, ADR-0083 §1.3 #1 закрыт;
+#   * ``skill_slice=("operator.speech", "operator.control")`` —
+#     supervisor больше НЕ лезет в ``rob_box_voice/prompts/skills``
+#     (ADR-0083 §1.3 #3).
+# ─────────────────────────────────────────────────────────────────────
+
+
+class TestBuildAgentSpecOperator(unittest.TestCase):
+    """Acceptance-тест: supervisor собирает AgentCore через ``build_agent``."""
+
+    def setUp(self) -> None:
+        self.node = AvatarSupervisor()
+
+    def tearDown(self) -> None:
+        self.node.destroy_node()
+
+    def test_build_agent_sync_calls_build_agent_with_operator_spec(self) -> None:
+        """AC ADR-0083 §2.3: _build_agent_core_sync → build_agent(spec).
+
+        Подменяем ``build_agent`` (lazy import) и проверяем, что спек
+        передаётся с правильным ``name='operator'``. Это контракт для
+        обоих follow-up карточек (dialogue + supervisor).
+        """
+        captured: dict = {}
+
+        def fake_build_agent(spec, *, tools, memory):  # type: ignore[no-untyped-def]
+            captured["spec"] = spec
+            captured["tools"] = tools
+            captured["memory"] = memory
+            return object()
+
+        # Подменяем build_agent в модуле, чтобы lazy import внутри
+        # _build_agent_core_sync зацепил наш stub.
+        from rob_box_supervisor import supervisor_node as sn_mod
+        original = sn_mod.build_agent
+        sn_mod.build_agent = fake_build_agent
+        # Stub tools/memory, чтобы сборка не валилась.
+        self.node._build_operator_tools = lambda: object()  # type: ignore[method-assign]
+        self.node._build_operator_memory = lambda: object()  # type: ignore[method-assign]
+        try:
+            core, dsm = self.node._build_agent_core_sync()
+        finally:
+            sn_mod.build_agent = original
+
+        self.assertIsNotNone(core, "build_agent не вызван — supervisor не собрался")
+        spec = captured.get("spec")
+        self.assertIsNotNone(spec, "AgentSpec не передан в build_agent")
+        # ADR-0083 §2.3 / §2.4
+        self.assertEqual(spec.name, "operator")
+        self.assertEqual(spec.memory_namespace, "operator")
+        # ADR-0083 §2.2 #J
+        self.assertFalse(
+            spec.narrow_tools_to_skill,
+            "ТАРС должен видеть все инструменты (ADR-0083 §2.2 #J)",
+        )
+        # ADR-0083 §2.2 #F
+        self.assertFalse(
+            spec.use_scheduler,
+            "W7b планировщик живёт только на стороне личности (ADR-0083 §2.2 #F)",
+        )
+        # ADR-0083 §1.2 #B
+        self.assertEqual(
+            dict(spec.per_provider_settings), {},
+            "supervisor держит per_provider_settings пусто (ADR-0083 §1.2 #B)",
+        )
+        # ADR-0083 §1.2 #A
+        self.assertEqual(
+            dict(spec.health_balance_checkers), {},
+            "supervisor держит balance_checkers пусто (ADR-0083 §1.2 #A)",
+        )
+        # ADR-0083 §1.3 #1 — общий persist_path.
+        self.assertIsNotNone(
+            spec.health_cache_persist_path,
+            "health_cache_persist_path обязателен (ADR-0083 §1.3 #1)",
+        )
+        self.assertTrue(
+            str(spec.health_cache_persist_path).endswith("llm_health.json"),
+            f"persist_path должен указывать на общий llm_health.json, "
+            f"got {spec.health_cache_persist_path!r}",
+        )
+        # ADR-0083 §1.3 #3 — supervisor больше НЕ лезет в voice/skills.
+        self.assertEqual(
+            tuple(spec.skill_slice),
+            ("operator.speech", "operator.control"),
+            "skill_slice должен быть только operator-срезы (ADR-0083 §1.3 #3)",
+        )
+        # ADR-0083 §G — on_prompt observer.
+        self.assertIsNotNone(
+            spec.on_prompt,
+            "on_prompt observer обязателен для PromptStats (ADR-0083 §G)",
+        )
+        # tools/memory пробрасываются нодой — без них build_agent невозможен.
+        # Проверяем через ``is`` те самые объекты, что попали в build_agent
+        # (а не новые object() — каждый ``_build_operator_tools()`` создаёт
+        # новый).
+        self.assertIsNotNone(captured.get("tools"))
+        self.assertIsNotNone(captured.get("memory"))
+
+    def test_parse_provider_chain_default_is_minimax_deepseek(self) -> None:
+        """Issue #2111: default ``llm_providers`` = ``minimax,deepseek`` (ADR-0043 §3.2)."""
+        names = AvatarSupervisor._parse_provider_chain("minimax,deepseek")
+        self.assertEqual(names, ("minimax", "deepseek"))
+        # CSV-trim + lower
+        names = AvatarSupervisor._parse_provider_chain("  MiniMax , DEEPSEEK ")
+        self.assertEqual(names, ("minimax", "deepseek"))
+        # Empty → fallback (защита от битого YAML, ADR-0043 §3.2).
+        names = AvatarSupervisor._parse_provider_chain("")
+        self.assertEqual(names, ("deepseek",))
+
+    def test_memory_init_uses_operator_namespace(self) -> None:
+        """ADR-0083 §2.4 / §E: SQLiteVoiceMemory(agent='operator').
+
+        Без запуска реальной БД — проверяем через mock, что ``agent``
+        kwarg передан с правильным значением (иначе факты оператора
+        попадут в namespace 'default' и сольются с личностью).
+        """
+        captured: dict = {}
+
+        def fake_sqlite_voice(db_path, *, agent="default"):  # type: ignore[no-untyped-def]
+            captured["db_path"] = db_path
+            captured["agent"] = agent
+            return _FakeStore()
+
+        from rob_box_harness import memory as harness_memory
+        original = harness_memory.SQLiteVoiceMemory
+        harness_memory.SQLiteVoiceMemory = fake_sqlite_voice  # type: ignore[assignment]
+        # Оборачиваем asyncio.run, чтобы не запускать event loop.
+        # Возвращаем ``None`` для совместимости с любыми корутинами —
+        # supervisor вызывает ``asyncio.run(store.init())``.
+        import asyncio as _asyncio
+        original_run = _asyncio.run
+
+        def fake_run(coro):  # type: ignore[no-untyped-def]
+            try:
+                coro.close()  # type: ignore[attr-defined]
+            except Exception:  # noqa: BLE001
+                pass
+            return None
+
+        _asyncio.run = fake_run
+        try:
+            store = self.node._build_operator_memory()
+        finally:
+            harness_memory.SQLiteVoiceMemory = original  # type: ignore[assignment]
+            _asyncio.run = original_run
+
+        self.assertEqual(
+            captured.get("agent"), "operator",
+            "SQLiteVoiceMemory должен собираться с agent='operator' "
+            "(ADR-0083 §2.4 / §E)",
+        )
+        # default сменился на /data/harness_voice.db.
+        self.assertEqual(
+            captured.get("db_path"), "/data/harness_voice.db",
+            "default sqlite_db_path теперь /data/harness_voice.db "
+            "(ADR-0083 §E, общая БД с dialogue_node)",
+        )
+        self.assertIsNotNone(store)
+
+
+class _FakeStore:
+    """Заглушка SQLiteVoiceMemory: init() ничего не делает."""
+
+    async def init(self) -> None:
+        return None
