@@ -147,8 +147,11 @@ RUN apt-get update -qq \
  && rm -rf /var/lib/apt/lists/* \
  && rm -f /etc/apt/apt.conf.d/02proxy
 
-# Python runtime-deps. ros2-zenoh база — Ubuntu 22.04 + PEP 668 (externally
-# managed), поэтому pip install требует --break-system-packages.
+# Python runtime-deps. ros2-zenoh база — Ubuntu 22.04 (jammy), системный pip
+# 22.0.2 (из apt python3-pip). НЕ ставим --break-system-packages: (1) эта опция
+# появилась в pip>=23.0, а jammy-pip её не знает ("no such option", run
+# #34395422773); (2) PEP 668 / EXTERNALLY-MANAGED на Ubuntu 22.04 отсутствует
+# (он появился в 23.04+), поэтому флаг тут и не нужен.
 #   - aiohttp>=3.9: WS-сервер в ws_server.py (использует asyncio + WebSocket).
 #   - msgpack: rob_box_core.bridge_protocol + rob_box_quest.protocol.topics.
 #   - opencv-python-headless (>=4.8, собран под numpy 2.x): camera_rear JPEG
@@ -156,7 +159,7 @@ RUN apt-get update -qq \
 #     На arm64 pip-wheel pre-built — не собираем из исходников (иначе
 #     opencv contrib сборка = ~15 мин на Pi-раннере).
 # pip3 --no-cache-dir — экономия места (apt уже почистил apt lists).
-RUN pip3 install --no-cache-dir --break-system-packages --retries 5 --timeout 300 \
+RUN pip3 install --no-cache-dir --retries 5 --timeout 300 \
       "aiohttp>=3.9.1,<4.0" \
       "msgpack>=1.0.0" \
       "opencv-python-headless>=4.8.0"
