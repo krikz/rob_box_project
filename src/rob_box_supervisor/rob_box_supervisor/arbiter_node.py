@@ -367,13 +367,15 @@ class AvatarArbiter(Node):
     # мимо). ADR-0028 §4.4 S10 требует «не реже 10 Гц».
     FLOOR_EXPIRY_CHECK_PERIOD_S = 0.1
 
-    # ── twist_mux locks (ADR-0080, voice-vr 06.5 / #2191) ──────────────
+    # ── twist_mux locks (ADR-0081, voice-vr 06.5 / #2191) ──────────────
     # Единственный владелец LockManager — avatar_arbiter, поэтому
-    # публикуем ОБА lock-а отсюда (ADR-0080 R3): зеркалят /joystick_lock
-    # по семантике «у меня руль» и блокируют web_ui(50)/voice(25)/nav2(10)
+    # публикуем /teleop_lock отсюда (ADR-0081 R3): зеркалит /joystick_lock
+    # по семантике «у меня руль» и блокирует web_ui(50)/voice(25)/nav2(10)
     # через twist_mux (R4). voice_floor в twist_mux НЕ пробрасывается (R5).
+    # Watchdog-топика НЕТ (ADR-0081 Q2/R2, решение владельца 2026-09-09):
+    # аппаратура(100) выше lock-а(90), залипший lock при падении арбитра
+    # не страшен — пульт продолжает управлять, авто-разблокировка не нужна.
     TELEOP_LOCK_TOPIC = "/teleop_lock"
-    TELEOP_LOCK_WATCHDOG_TOPIC = "/teleop_lock_watchdog"
     # 20 Гц достаточно для lock-топика: twist_mux опрашивает lock-топики
     # синхронно с приходом cmd_vel, и задержка ≤50 мс при освобождении
     # floor-а не критична (dead-man 500 мс уже внутри). 20 Гц дешевле, чем
@@ -520,13 +522,12 @@ class AvatarArbiter(Node):
             self.FLOOR_EXPIRY_CHECK_PERIOD_S, self._check_floor_expiry
         )
 
-        # ── twist_mux lock publishers (ADR-0080 R1/R2/R3, #2191) ────────
-        # /teleop_lock и /teleop_lock_watchdog — std_msgs/Bool. Источник
-        # истины один (LockManager.holder(Floor.TELEOP)) — публикуем
-        # дериватив из одного таймера, чтобы пути (acquire/release/expire/
-        # FSM-переход) не разъехались.
+        # ── twist_mux lock publisher (ADR-0081 R1/R3, #2191) ────────────
+        # /teleop_lock — std_msgs/Bool. Источник истины один
+        # (LockManager.holder(Floor.TELEOP)) — публикуем из таймера,
+        # чтобы пути (acquire/release/expire/FSM-переход) не разъехались.
         # QoS: reliable+transient_local (latched) — twist_mux по
-        # контракту читает lock-топики при init и при пересборке графа;
+        # контракту читает lock-топик при init и при пересборке графа;
         # без latched новый подписчик может пропустить True, если
         # arbiter уже стоит с активным floor (false negative = автономия
         # не блокируется).
@@ -538,15 +539,11 @@ class AvatarArbiter(Node):
         self._teleop_lock_pub = self.create_publisher(
             RosBool, self.TELEOP_LOCK_TOPIC, lock_qos
         )
-        self._teleop_lock_watchdog_pub = self.create_publisher(
-            RosBool, self.TELEOP_LOCK_WATCHDOG_TOPIC, lock_qos
-        )
-        # Один 20 Гц-таймер на оба lock-топика (см.
-        # TELEOP_LOCK_PUBLISH_PERIOD_S). Кешируем последнее опубликованное
-        # значение каждого lock-а: показывать False чаще, чем того же
-        # False за 50 мс, смысла нет, и latched QoS всё равно съест дубль.
-        self._last_published_teleop_lock: Optional[bool] = None
-        self._last_published_teleop_lock_watchdog: Optional[bool] = None
+        # 20 Гц-таймер на lock-топик (см. TELEOP_LOCK_PUBLISH_PERIOD_S).
+        # БЕЗ de-dup (ADR-0081 §5.4, решение владельца): у /joystick_lock
+        # уже есть владелец (joystick_control_node), публикующий на 20 Гц
+        # каждый тик безусловно — одиночная публикация по фронту затирается
+        # чужим публикатором за 50 мс. Значение шлём каждый тик.
         self._teleop_lock_timer = self.create_timer(
             self.TELEOP_LOCK_PUBLISH_PERIOD_S, self._publish_teleop_locks
         )
@@ -917,9 +914,9 @@ class AvatarArbiter(Node):
         msg.data = payload_str
         self._state_pub.publish(msg)
 
-    # ── twist_mux lock publish (ADR-0080 R1/R2/R3, #2191) ───────────────
+    # ── twist_mux lock publish (ADR-0081 R1/R3, #2191) ───────────────────
     def _publish_teleop_locks(self) -> None:
-        """Timer-callback 20 Гц: публикует /teleop_lock и /teleop_lock_watchdog.
+        """Timer-callback 20 Гц: публикует /teleop_lock.
 
         Источник истины — :class:`LockManager` (``_lock_manager``).
         :py:meth:`LockManager.holder` сам учитывает dead-man: если с
@@ -930,28 +927,28 @@ class AvatarArbiter(Node):
         :py:meth:`force_expire` (тот уже работает для ``/avatar/state``
         в :py:meth:`_check_floor_expiry`, см. ADR-0028 §4.4 S10).
 
-        Семантика двух lock-ов (ADR-0080 §3):
+        Семантика lock-а (ADR-0081 §3):
 
         - ``/teleop_lock`` = (LockManager.holder(Floor.TELEOP) is not None).
           Пока quest-оператор держит teleop_floor — True. Sticky: если
           арбитр умрёт, twist_mux оставит последнее True (timeout=0.0
-          в yaml), автономия останется заблокированной.
-        - ``/teleop_lock_watchdog`` = True (heartbeat «я жив»).
-          Если арбитр умрёт — twist_mux через 0.5 с опустит watchdog в
-          False, и общий lock перестанет действовать (timeout=0.5 в
-          yaml) → автономия разблокирована без ручного ``ros2 topic pub``.
+          в yaml), автономия останется заблокированной. Watchdog-а НЕТ
+          (ADR-0081 Q2/R2, решение владельца): аппаратура(100) выше
+          lock-а(90), залипший lock не опасен — пульт продолжает
+          управлять при падении арбитра.
 
-        В обоих случаях работаем в monitor- и active-режимах одинаково:
-        LockManager — единственный владелец floor-ов (ADR-0028 §4.2), его
-        состояние не зависит от self._mode. monitor (ADR-0028 §4.5)
-        отличается только тем, что сервисы acquire/release/set_mode
-        не меняют floor-ы, но LockManager.holder() всё равно читает то,
-        что записали раньше (или вообще ничего, если монитор свежий).
+        Работаем в monitor- и active-режимах одинаково: LockManager —
+        единственный владелец floor-ов (ADR-0028 §4.2), его состояние
+        не зависит от self._mode. monitor (ADR-0028 §4.5) отличается
+        только тем, что сервисы acquire/release/set_mode не меняют
+        floor-ы, но LockManager.holder() всё равно читает то, что
+        записали раньше (или вообще ничего, если монитор свежий).
 
-        De-dup публикации: показываем одно и то же значение только при
-        РЕАЛЬНОМ изменении (``self._last_published_*``). Latched QoS и
-        так проглотит дубликаты, но экономия полосы и логов в 20 Гц
-        заметна.
+        БЕЗ de-dup (ADR-0081 §5.4, решение владельца): публикуем значение
+        КАЖДЫЙ тик безусловно. У соседнего /joystick_lock уже есть
+        владелец (joystick_control_node), публикующий на 20 Гц каждый
+        тик — одиночная публикация по фронту затирается чужим
+        публикатором за 50 мс, и sticky-топик «отпускается» молча.
         """
         from rob_box_supervisor.core import Floor  # noqa: PLC0415
 
@@ -965,22 +962,10 @@ class AvatarArbiter(Node):
             return
 
         teleop_lock_value = bool(teleop_holder is not None)
-        # watchdog — True пока нода исполняет timer-callback (то есть
-        # «жива и крутит rclpy event loop»). Если процесс умер — таймер
-        # остановится, twist_mux по timeout 0.5 снимет watchdog в False.
-        watchdog_value = True
 
-        if teleop_lock_value != self._last_published_teleop_lock:
-            msg = RosBool()
-            msg.data = teleop_lock_value
-            self._teleop_lock_pub.publish(msg)
-            self._last_published_teleop_lock = teleop_lock_value
-
-        if watchdog_value != self._last_published_teleop_lock_watchdog:
-            msg = RosBool()
-            msg.data = watchdog_value
-            self._teleop_lock_watchdog_pub.publish(msg)
-            self._last_published_teleop_lock_watchdog = watchdog_value
+        msg = RosBool()
+        msg.data = teleop_lock_value
+        self._teleop_lock_pub.publish(msg)
 
     # ── subscription callbacks (Phase 1: best-effort parse) ──────────
     def _on_odom_msg(self, msg: RosString) -> None:

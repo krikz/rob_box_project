@@ -1312,20 +1312,24 @@ class TestAvatarArbiterTeleopHeartbeat(unittest.TestCase):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# ADR-0080 / voice-vr 06.5 / #2191 — /teleop_lock + /teleop_lock_watchdog
+# ADR-0081 / voice-vr 06.5 / #2191 — /teleop_lock (twist_mux bridge)
 # ════════════════════════════════════════════════════════════════════════
 
 
 class TestTeleopLockPublishers(unittest.TestCase):
-    """ADR-0080 R1/R2/R3 — avatar_arbiter публикует twist_mux-lock-и.
+    """ADR-0081 R1/R3 — avatar_arbiter публикует twist_mux-lock /teleop_lock.
 
     Покрывает:
-    - наличие publisher-ов на /teleop_lock и /teleop_lock_watchdog
-      (Bool, latched);
+    - наличие publisher-а на /teleop_lock (Bool, latched);
     - переход floor acquired → released → expired, и как меняется
       публикация;
-    - watchdog всегда True пока таймер крутится;
-    - de-dup публикаций (одно и то же значение не дублируется).
+    - публикацию БЕЗ de-dup: значение уходит в топик каждый тик
+      безусловно (ADR-0081 §5.4 — иначе одиночную публикацию по фронту
+      затирает чужой публикатор на том же топике за 50 мс).
+
+    Watchdog-а (`/teleop_lock_watchdog`) НЕТ — ADR-0081 Q2/R2 отменяет
+    его: аппаратура(100) выше lock-а(90), залипший lock при падении
+    авbiter-а не опасен, авто-разблокировка не нужна.
     """
 
     def setUp(self) -> None:
@@ -1334,17 +1338,13 @@ class TestTeleopLockPublishers(unittest.TestCase):
     def tearDown(self) -> None:
         self.node.destroy_node()
 
-    # ── структура: оба publisher-а зарегистрированы в __init__ ─────────
+    # ── структура: publisher зарегистрирован в __init__ ────────────────
     def test_teleop_lock_publisher_exists(self) -> None:
-        """ADR-0080 R1: /teleop_lock publisher создан в __init__."""
+        """ADR-0081 R1: /teleop_lock publisher создан в __init__."""
         self.assertIn("/teleop_lock", self.node._publishers)
 
-    def test_teleop_lock_watchdog_publisher_exists(self) -> None:
-        """ADR-0080 R2: /teleop_lock_watchdog publisher создан в __init__."""
-        self.assertIn("/teleop_lock_watchdog", self.node._publishers)
-
     def test_teleop_lock_publish_timer_registered(self) -> None:
-        """20 Гц-таймер на оба lock-топика зарегистрирован."""
+        """20 Гц-таймер на lock-топик зарегистрирован."""
         timer_periods = [t.period for t in self.node._timers]
         # Период из TELEOP_LOCK_PUBLISH_PERIOD_S (0.05 с).
         self.assertIn(0.05, timer_periods)
@@ -1362,34 +1362,30 @@ class TestTeleopLockPublishers(unittest.TestCase):
         """Переход floor acquired → released отражается в /teleop_lock."""
         from rob_box_supervisor.core import Floor as LockFloor
 
-        # Базовое состояние: floor свободен, _last_published_… = None.
-        # Первый тик должен опубликовать False (явное «нет floor-а» —
-        # раньше None означал «никогда не публиковали»).
+        # Базовое состояние: floor свободен. Первый тик публикует False
+        # (явное «нет floor-а»).
         self.node._publish_teleop_locks()
         pub = self.node._publishers["/teleop_lock"]
         self.assertEqual(len(pub.published), 1)
         self.assertFalse(pub.published[0].data)
-        self.assertFalse(self.node._last_published_teleop_lock)
 
-        # acquire → True в /teleop_lock (только если значение сменилось).
+        # acquire → True в /teleop_lock.
         self.node._lock_manager.acquire("quest", LockFloor.TELEOP)
         self.node._publish_teleop_locks()
         self.assertEqual(len(pub.published), 2)
         self.assertTrue(pub.published[1].data)
-        self.assertTrue(self.node._last_published_teleop_lock)
 
         # release → False снова.
         self.node._lock_manager.release("quest", LockFloor.TELEOP)
         self.node._publish_teleop_locks()
         self.assertEqual(len(pub.published), 3)
         self.assertFalse(pub.published[2].data)
-        self.assertFalse(self.node._last_published_teleop_lock)
 
     # ── dead-man: floor expired → /teleop_lock = False ───────────────
     def test_expired_floor_publishes_false(self) -> None:
         """Dead-man trip (heartbeat перестал приходить) → False в lock.
 
-        ADR-0080: holder() сам учитывает dead-man (LockManager.holder()
+        ADR-0081: holder() сам учитывает dead-man (LockManager.holder()
         возвращает None и обнуляет state, если с последнего heartbeat
         прошло > timeout). Значит после ``_check_floor_expiry`` —
         /teleop_lock автоматически становится False.
@@ -1422,55 +1418,33 @@ class TestTeleopLockPublishers(unittest.TestCase):
         self.node._publish_teleop_locks()
         self.assertFalse(pub.published[-1].data)
 
-    # ── watchdog: всегда True, пока таймер жив ──────────────────────
-    def test_watchdog_publishes_true_on_first_tick(self) -> None:
-        """Первый тик публикует True в /teleop_lock_watchdog (heartbeat)."""
-        self.node._publish_teleop_locks()
-        pub = self.node._publishers["/teleop_lock_watchdog"]
-        self.assertEqual(len(pub.published), 1)
-        self.assertTrue(pub.published[0].data)
-        self.assertTrue(self.node._last_published_teleop_lock_watchdog)
-
-    def test_watchdog_publishes_true_after_teleop_floor_release(self) -> None:
-        """Watchdog живёт независимо от teleop_floor: release floor → watchdog
-        всё равно True (арбитр жив, просто floor освободился)."""
-        from rob_box_supervisor.core import Floor as LockFloor
-
-        self.node._lock_manager.acquire("quest", LockFloor.TELEOP)
-        self.node._publish_teleop_locks()  # → True в оба
-        self.node._lock_manager.release("quest", LockFloor.TELEOP)
-        self.node._publish_teleop_locks()  # → False в /teleop_lock, True в watchdog
-
-        wd_pub = self.node._publishers["/teleop_lock_watchdog"]
-        # Последний опубликованный watchdog — True.
-        self.assertTrue(wd_pub.published[-1].data)
-
-    # ── de-dup: одно и то же значение не дублируется ────────────────
-    def test_no_redundant_publish_when_state_unchanged(self) -> None:
-        """Если значение не изменилось с прошлого тика — НЕ публикуем.
-
-        Экономит полосу и логи при steady-state (20 Гц × 2 топика вхолостую).
+    # ── БЕЗ de-dup: значение публикуется каждый тик безусловно ────────
+    def test_publishes_every_tick_even_when_state_unchanged(self) -> None:
+        """ADR-0081 §5.4: де-дупликация публикаций противопоказана для
+        sticky-топика. У соседнего /joystick_lock уже есть владелец
+        (joystick_control_node), публикующий на 20 Гц КАЖДЫЙ тик, а не
+        по фронту — одиночная публикация затирается чужим публикатором
+        на том же топике за 50 мс. За N тиков без изменения floor в
+        топик должно уйти ровно N сообщений (не 1).
         """
         from rob_box_supervisor.core import Floor as LockFloor
 
-        self.node._publish_teleop_locks()  # первый тик: False в оба
-        teleop_pub = self.node._publishers["/teleop_lock"]
-        wd_pub = self.node._publishers["/teleop_lock_watchdog"]
-        teleop_count = len(teleop_pub.published)
-        wd_count = len(wd_pub.published)
+        pub = self.node._publishers["/teleop_lock"]
 
-        # acquire + release + acquire — всё укладывается в один и тот же
-        # False→True→False→True. Здесь acquire оставляет True, и второй
-        # тик ничего не меняет: нода держит floor, всё ещё True.
+        # Floor свободен, состояние не меняется — 5 тиков подряд.
+        n_ticks = 5
+        for _ in range(n_ticks):
+            self.node._publish_teleop_locks()
+        self.assertEqual(len(pub.published), n_ticks)
+        self.assertTrue(all(not m.data for m in pub.published))
+
+        # То же самое с floor занятым (True не меняется) — снова N сообщений.
         self.node._lock_manager.acquire("quest", LockFloor.TELEOP)
-        self.node._publish_teleop_locks()  # False → True (должен publish)
-        # Состояние не изменилось (True → True): не публикуем.
-        self.node._publish_teleop_locks()
-        self.assertEqual(len(teleop_pub.published), teleop_count + 1)
-
-        # Watchdog всегда True, поэтому только первый тик публикует.
-        # Сейчас он уже опубликован → второй тик не публикует.
-        self.assertEqual(len(wd_pub.published), wd_count)
+        before = len(pub.published)
+        for _ in range(n_ticks):
+            self.node._publish_teleop_locks()
+        self.assertEqual(len(pub.published), before + n_ticks)
+        self.assertTrue(all(m.data for m in pub.published[before:]))
 
     # ── FSM-переход отпускает floor → /teleop_lock = False ───────────
     def test_mode_transition_releases_floor_and_lock(self) -> None:
