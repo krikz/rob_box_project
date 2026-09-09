@@ -539,7 +539,7 @@ class AvatarSupervisor(Node):
         self._operator_dsm: Any = None
         # Журнал ТАРС (§5.4) — тоже лениво, персист по journal_path.
         self._operator_journal: Any = None
-# Метрики супервизор-агента (issue #2232). РАНЬШЕ здесь стояла
+        # Метрики супервизор-агента (issue #2232). РАНЬШЕ здесь стояла
         # заглушка ``{"enabled": False}`` с комментарием «реальные счётчики
         # поднимутся при первом ``_build_agent_metrics``» — но триггера не
         # существовало: ``_build_agent_metrics`` не вызывался НИ ОТКУДА, а
