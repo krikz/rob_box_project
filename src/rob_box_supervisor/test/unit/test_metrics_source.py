@@ -167,6 +167,37 @@ def test_resolve_query_bare_word() -> None:
     assert note
 
 
+def test_resolve_query_bare_alias_skips_catalog_fetch() -> None:
+    """Регрессия #2272: ``resolve_query("cpu")`` НЕ ходит в /api/v1/label/__name__/values.
+
+    Старый код ``bare in QUERY_ALIASES and bare not in self.metric_names()``
+    платил за каждый «холодный» (>60s TTL) tool call полный HTTP round-trip
+    к Prometheus — плюс ещё один на ``query_range``. Клиент ждал до 10s
+    (5+5s), а закладывался на 8s, и при просадке хоста получал
+    ложный «не ответил за 8s». QUERY_ALIASES хранит ОВЕРРАЙДЫ, а не
+    «предложения», так что для баре-имени резолв должен быть локальным.
+    """
+    calls: list[str] = []
+
+    def _get(url: str) -> bytes:
+        calls.append(url)
+        raise AssertionError(
+            f"resolve_query() leaked an HTTP call for known alias: {url}"
+        )
+
+    src = MetricsSource(http_get=_get)
+    resolved, note = src.resolve_query("cpu")
+    assert resolved == "rate(process_cpu_seconds_total[5m])"
+    assert note
+    assert calls == [], f"unexpected HTTP calls: {calls}"
+
+    # То же для русских алиасов — самый частый вход от оператора.
+    resolved, note = src.resolve_query("память")
+    assert resolved == "process_resident_memory_bytes"
+    assert note
+    assert calls == [], f"unexpected HTTP calls: {calls}"
+
+
 def test_resolve_query_russian_word() -> None:
     """«память» тоже принимается — оператор говорит по-русски."""
     src = MetricsSource(http_get=_fake_http())
