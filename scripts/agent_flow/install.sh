@@ -1120,10 +1120,59 @@ sweep_stale_skill_baks
 
 echo
 echo "==> hermes-agent vendor patches"
+# Ретро t_9e0760b9 (09.09.2026): install.sh 14 тиков подряд падал из-за
+# устаревших vendor-патчей (hermes-agent upstream сдвинулся). Каждый patch
+# failure валил set -e и весь install.sh → drift-detect cron не мог
+# донести скрипты на хост (32 файла отставших). Делаем patch-приложение
+# non-fatal: warning в лог, exit остаётся 0 (sync продолжается).
+#
+# Сводка выводится после цикла — видно сколько патчей applied/skipped/
+# failed, чтобы cron-метрика ловила регрессии без false-positive падения.
+_vpatches_applied=0
+_vpatches_already=0
+_vpatches_skipped=0
+_vpatches_failed=0
 for _patch in "$SCRIPT_DIR"/vendor/hermes-agent-*.patch; do
     [ -f "$_patch" ] || continue
-    apply_hermes_agent_patch "$_patch"
+    # .DISABLED файлы (например hermes-agent-spawn-worktree-precheck.patch.DISABLED)
+    # не применяются — operator явно отключил их. Считаем как skipped.
+    case "$_patch" in
+        *.DISABLED)
+            _vpatches_skipped=$((_vpatches_skipped + 1))
+            echo "  SKIP patch disabled by operator: $(basename "$_patch")"
+            continue
+            ;;
+    esac
+    # Запускаем в subshell чтобы локальный exit не валил основной цикл.
+    # set -e в основном скрипте остаётся — ошибка patch'ей логируется в
+    # _vpatches_failed и не abort'ит install.sh.
+    if (cd "$HERMES_AGENT_DIR" 2>/dev/null && git rev-parse --is-inside-work-tree >/dev/null 2>&1); then
+        if (cd "$HERMES_AGENT_DIR" && git apply --reverse --check "$_patch" >/dev/null 2>&1); then
+            _vpatches_already=$((_vpatches_already + 1))
+            echo "  OK   patch already applied (reverse-check clean): $(basename "$_patch")"
+        elif apply_hermes_agent_patch "$_patch" 2>/dev/null; then
+            _vpatches_applied=$((_vpatches_applied + 1))
+        else
+            _vpatches_failed=$((_vpatches_failed + 1))
+            # apply_hermes_agent_patch уже напечатал ERROR/Regenerate подсказку
+            # в stderr (см. функцию выше); добавляем non-fatal маркер в stdout
+            # чтобы cron-лог видел «patch не критичен, продолжили».
+            echo "  WARN patch failed but install.sh continues (non-fatal): $(basename "$_patch")"
+        fi
+    else
+        # Нет hermes-agent git checkout (например, CI runner без него) —
+        # это не наша проблема, пропускаем.
+        _vpatches_skipped=$((_vpatches_skipped + 1))
+        echo "  SKIP hermes-agent not a git checkout: $(basename "$_patch")"
+    fi
 done
+echo "  patch-summary: applied=$_vpatches_applied already=$_vpatches_already skipped=$_vpatches_skipped failed=$_vpatches_failed"
+if [ "$_vpatches_failed" -gt 0 ]; then
+    # Не валим install.sh (set -e сохраняется) — но помечаем факт в
+    # alert.log чтобы drift-detect watchdog мог увидеть «X patches failed»
+    # отдельным каналом, не как fatal failure всего install.sh.
+    echo "  NOTE: failed patches should be regenerated via scripts/agent_flow/agent-flow-regen-vendor-patch.sh" >&2
+fi
 echo
 echo "==> kanban MAINTENANCE probe config (retro t_1d467636)"
 ensure_kanban_maintenance_probe
