@@ -7,12 +7,10 @@ Action Clients: NavigateToPose, FollowPath
 
 REFACTORED: Now uses CommandParser from core module for intent classification
 
-ADR-0086 (2026-09-09): the in-process ``EventBus`` ↔ ``ReflexLayer``
-bridge was removed — the reflex layer was subscribed to a phantom
-``TaskScheduler`` instance that never received tasks. ``handle_stop()``
-continues to cancel Nav2 goals via ``CancelGoal`` (see below); preemption
-of in-flight TTS chunks remains handled by ``_normalize_tts_priority`` in
-``tts_node`` (ADR-0066 §8а.3).
+The in-process cancel bridge that used to live here was removed by
+ADR-0086 (2026-09-09). ``handle_stop()`` cancels Nav2 goals via
+``CancelGoal``; preemption of in-flight TTS chunks is handled by
+``_normalize_tts_priority`` in ``tts_node`` (ADR-0066 §8а.3).
 """
 
 from typing import Optional, Dict, List
@@ -39,11 +37,6 @@ class CommandNode(Node):
         self.declare_parameter('enable_navigation', True)
         self.declare_parameter('enable_follow', False)  # TODO: Phase 6
         self.declare_parameter('enable_vision', False)  # TODO: Phase 6
-        # ADR-0086 (2026-09-09): the ``enable_reflex_layer`` parameter
-        # was removed together with the ``EventBus`` ↔ ``ReflexLayer``
-        # bridge. Deployments that still ship the legacy parameter in
-        # their YAML are logged-and-ignored by rclpy — the node has no
-        # bridge to start.
 
         self.confidence_threshold = self.get_parameter('confidence_threshold').value
         self.enable_navigation = self.get_parameter('enable_navigation').value
@@ -95,13 +88,6 @@ class CommandNode(Node):
         # handles all waypoint CRUD.
         self.waypoints = {}
 
-        # ADR-0086 (2026-09-09): the in-process ``EventBus`` ↔
-        # ``ReflexLayer`` bridge that previously lived here was
-        # removed. ``handle_stop()`` continues to cancel Nav2 goals
-        # via ``CancelGoal``; preemption of in-flight TTS chunks is
-        # handled by ``_normalize_tts_priority`` in ``tts_node``
-        # (ADR-0066 §8а.3).
-
         self.get_logger().info('✅ CommandNode инициализирован (using CommandParser from core)')
         self.get_logger().info(f'  Navigation: {"✓" if self.enable_navigation else "✗"}')
         self.get_logger().info(f'  Waypoints: динамические (через MCP tools)')
@@ -121,13 +107,6 @@ class CommandNode(Node):
 
         # Use CommandParser to parse command (includes wake word removal)
         command = self.command_parser.parse(text)
-
-        # ADR-0086 (2026-09-09): the in-process ``EventBus`` ↔
-        # ``ReflexLayer`` publish was removed. The rclpy callback
-        # continues to publish intent + execute the command via the
-        # Nav2 path; preemption of in-flight TTS chunks is handled
-        # by ``_normalize_tts_priority`` in ``tts_node``
-        # (ADR-0066 §8а.3).
 
         # Всегда публиковать intent (даже UNKNOWN) для dialogue_node
         self.publish_intent(command)

@@ -60,10 +60,10 @@ from .quick_decide import (
     QuickVerdict,
     quick_decide,
 )
-# ADR-0086 (2026-09-09): ``ReflexLayer`` and the EventBus cancel bridge
+# ADR-0086 (2026-09-09): the reflex layer and its EventBus cancel bridge
 # were removed — the module subscribed to a ``TaskScheduler`` instance
 # that never received tasks, so the bridge had no observable effect.
-# ``EventBus`` and ``scheduler.cancel`` envelope stay inside the
+# ``EventBus`` and the ``scheduler.cancel`` envelope stay inside the
 # scheduler package (``task_scheduler.py``, ``event_bus.py``) as the
 # internal observability channel for cancel-preemption.
 from .task_scheduler import (
