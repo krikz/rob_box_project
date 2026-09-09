@@ -19,7 +19,7 @@ race, сериализуя канал **voice** так, что два `speak_tex
 | AcceptanceGate / AWAITING_CONFIRMATION | `rob_box_harness.core.acceptance` | 1.5 ✅ уже сделано в этой ветке |
 | SchedulerEventBus (battery / obstacle) | — | 2 |
 | Двухуровневое quick-decide (LLM < 800мс) | — | 2 |
-| Reflex-канал / «стой» / «направо» | — | 1.5+ |
+| Reflex-канал / «стой» / «направо» | удалено (ADR-0086, 2026-09-09) | — |
 | SegmentEstimator / ETA / speculative pre-gen | — | 3 |
 
 Эти фичи **нарочно** не подключены к MVP — каждая будет опираться
@@ -88,7 +88,7 @@ async def main() -> None:
   реализовано в C2 #1995): executor'у шлётся
   `asyncio.CancelledError`, статус → CANCELLED, на шину
   публикуется envelope `scheduler.cancel` для подписчиков
-  (reflex bridge, observability).
+  наблюдаемости (ADR-0086: рефлекс-мост удалён).
 - **`[CHANNELS]` snapshot.** `sched.channel_status(kind)` /
   `sched.all_statuses()` возвращают `ChannelStatus` с полями
   `queue_depth`, `current_task_id`, `current_tool`, `eta_s`. Phase 3

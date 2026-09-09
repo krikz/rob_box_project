@@ -22,8 +22,10 @@ Cancellation (C2, #1995):
   through ``_pump``'s existing handler and the task transitions
   to CANCELLED.
 * Every successful cancel publishes a ``scheduler.cancel``
-  envelope on :attr:`event_bus` so subscribers (reflex bridge,
-  observability) see the preemption without polling.
+  envelope on :attr:`event_bus` so observability subscribers
+  see the preemption without polling
+  (ADR-0086: the reflex bridge was removed 2026-09-09; the
+  envelope remains the internal observability channel).
 
 Threading / concurrency
 -----------------------
@@ -39,7 +41,6 @@ worker thread should use ``asyncio.run_coroutine_threadsafe``).
 Out of scope
 ------------
 
-* ReflexLayer integration (Phase 2.5, #968 §8.10).
 * Speculative pre-generation (Phase 3, #968 §11.4).
 """
 
@@ -633,9 +634,12 @@ class TaskScheduler:
         # pub/sub surface. The bus is constructed synchronously here
         # because TaskScheduler itself is built inside an asyncio loop
         # (enforced above by the ``_loop`` resolution). The bus exposes
-        # sync ``subscribe`` so callers (reflex layer, command bridge)
-        # can register handlers from non-async code paths; ``publish``
-        # is async because EventSubscription queues are asyncio.Queue.
+        # sync ``subscribe`` so callers (observability) can register
+        # handlers from non-async code paths; ``publish`` is async
+        # because EventSubscription queues are asyncio.Queue.
+        # ADR-0086 (2026-09-09): the reflex layer / command bridge
+        # subscriber was removed; the bus remains the internal
+        # observability channel for cancel-preemption.
         self.event_bus: EventBus = EventBus()
         self._cancel_subscriptions: Dict[
             str, EventSubscription
@@ -949,9 +953,9 @@ class TaskScheduler:
            is expected to honour cancellation — TTS executors
            already do via their internal ``await``s.
         3. Both paths publish a ``scheduler.cancel`` envelope
-           on :attr:`event_bus` so any subscriber (reflex
-           layer, observability, future tool-bridge) sees the
-           preemption without polling.
+           on :attr:`event_bus` so any subscriber (observability,
+           future tool-bridge) sees the preemption without polling.
+           (ADR-0086, 2026-09-09: the reflex bridge was removed.)
 
         Tasks already in :attr:`TaskStatus.COMPLETED` /
         :attr:`TaskStatus.FAILED` are reported as not found

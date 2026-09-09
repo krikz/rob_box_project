@@ -19,19 +19,13 @@ Phase 2 (quick-decide + EventBus):
 * :class:`EventBus` — bounded publish/subscribe bus with explicit
   backpressure.
 
-Phase 2.5 (reflex layer — issue #968 §8.10):
-
-* :class:`ReflexLayer` — debounced command interpretation surface
-  used by the ``command_reflex_bridge`` to translate incoming
-  intents into :class:`ReflexDecision` objects.
-
 Speculative TTS pre-generation (ADR-0056) lives in the dedicated
 :mod:`rob_box_voice.scheduler.pregen` sub-package and is the only
 speculation path wired into :mod:`rob_box_voice.tts_node`. The
 older ``scheduler.{pre_gen,speculative_executor,decision,
-estimator,quality}`` modules were removed in voice-vr 22 because
-they were never wired to a live caller and were covered only by
-their own tests — see ADR-0080 §2.8.
+estimator,quality,reflex}`` modules were removed because they were
+never wired to a live caller and were covered only by their own
+tests — see ADR-0080 §2.8 and ADR-0086.
 
 Pure data + asyncio, no rclpy. Unit tests build synthetic
 executors so the LLM integration can wire the package via a
@@ -66,17 +60,12 @@ from .quick_decide import (
     QuickVerdict,
     quick_decide,
 )
-from .reflex import (
-    DEFAULT_DEBOUNCE_MS,
-    DEFAULT_HISTORY_SIZE,
-    ReflexDecision,
-    ReflexEvent,
-    ReflexKind,
-    ReflexLayer,
-    ReflexMetrics,
-    ReflexPriority,
-    command_to_view,
-)
+# ADR-0086 (2026-09-09): ``ReflexLayer`` and the EventBus cancel bridge
+# were removed — the module subscribed to a ``TaskScheduler`` instance
+# that never received tasks, so the bridge had no observable effect.
+# ``EventBus`` and ``scheduler.cancel`` envelope stay inside the
+# scheduler package (``task_scheduler.py``, ``event_bus.py``) as the
+# internal observability channel for cancel-preemption.
 from .task_scheduler import (
     ChannelKind,
     ChannelStatus,
@@ -112,15 +101,6 @@ __all__ = [
     "DEDUP_WINDOW_S",
     "QuickVerdict",
     "quick_decide",
-    "DEFAULT_DEBOUNCE_MS",
-    "DEFAULT_HISTORY_SIZE",
-    "ReflexDecision",
-    "ReflexEvent",
-    "ReflexKind",
-    "ReflexLayer",
-    "ReflexMetrics",
-    "ReflexPriority",
-    "command_to_view",
     "ChannelKind",
     "ChannelStatus",
     "LlmContinueContext",
