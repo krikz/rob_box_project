@@ -29,8 +29,6 @@
   "method_seams_without_caller": [
     "DialogueNode._on_perception_update"
   ],
-  "topic_type_mismatch": [
-    "/teleop_heartbeat|String != TeleopHeartbeat"
-  ],
+  "topic_type_mismatch": [],
   "topic_type_mismatch_best_effort": []
 }
