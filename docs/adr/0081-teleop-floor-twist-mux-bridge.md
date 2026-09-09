@@ -75,10 +75,15 @@ nav2(10) и оставляет живыми quest(90) и аппаратуру(10
 по приоритету. Это сознательная перестановка — VR-оператор «у меня руль»
 так же, как аппаратура, и не должен уступать текстовому kill-switch-у.
 
-**Резерв на замер (см. §5):** поведение twist_mux может быть не
-`strict <`, а `<=` — тогда lock на 90 заглушит и сам quest. Это надо
-проверить на роботе перед merge реализации (`t_9d33e8ca`). Если
-`<=` — опустить lock до 89 или поднять quest до 91.
+**Замер на роботе (2026-09-09 06:35 UTC, Main Pi `RPNAV`, 10.1.1.10,
+контейнер `twist-mux`, raw-вывод в issue #2191):** семантика
+подтверждена эмпирически — **lock глушит источники со строго меньшим
+приоритетом, равный — не глушится**. Прогон: публикация нулевых `Twist`
+на `cmd_vel_joy` (100) и `cmd_vel_web` (50) при FREE/ENGAGED/FREE
+состоянии `joystick_lock` (100) — `/diagnostics` показал:
+`joystick` остаётся `unmasked` под lock-ом равного приоритета, `web_ui`
+(50) → `masked`, `voice` (25) → `masked`, `navigation` (10) → `masked`.
+Значит lock=90 / quest=90 — корректные числа, никаких 89/91 не нужно.
 
 ### Q2 — Watchdog **не нужен**, чистый sticky (`timeout: 0.0`)
 
@@ -161,70 +166,152 @@ twist_mux. `/voice_lock` не вводим.
 
 ## 5. Замер на роботе (raw-evidence, обязателен до merge реализации)
 
-Прежде чем коммитить `t_9d33e8ca` — замерить на железе два факта:
+### 5.1 Что измерено (2026-09-09 06:35 UTC, владелец: Шифу)
 
-### 5.1 Поведение twist_mux: `strict <` или `<=`
+Прогон на живом роботе (Main Pi `RPNAV`, `10.1.1.10`, контейнер
+`twist-mux`), без движения: публиковались **нулевые** `Twist` на
+`cmd_vel_joy` (prio 100) и `cmd_vel_web` (prio 50), состояние
+читалось из `/diagnostics`.
 
-Команда:
-```bash
-# Активный quest-телеоп (оператор в шлеме, стик подёргивает).
-# Параллельно: оператор вручную публикует /teleop_lock = true.
-ros2 topic pub /teleop_lock std_msgs/Bool "data: true" --once
-# Наблюдаем /cmd_vel — едет ли от cmd_vel_quest?
-ros2 topic echo /cmd_vel
+```
+--- A: lock FREE ---
+  current priority                   = 0
+  lock locks.joystick_lock         = free   (... priority #100)
+  velocity topics.joystick         = unmasked (... priority #100)
+  velocity topics.web_ui           = unmasked (... priority #50)
+
+--- B: lock ENGAGED (priority #100) ---
+  current priority                 = 100
+  lock locks.joystick_lock         = locked (... priority #100)
+  velocity topics.joystick         = unmasked (... priority #100)  <-- РАВНЫЙ приоритет НЕ заблокирован
+  velocity topics.web_ui           = masked   (... priority #50)   <-- МЕНЬШИЙ заблокирован
+  velocity topics.voice            = masked   (... priority #25)
+  velocity topics.navigation       = masked   (... priority #10)
+
+--- C: lock FREE (после owner restored False) ---
+  lock locks.joystick_lock         = free
+  velocity topics.web_ui           = unmasked
 ```
 
-Если `/cmd_vel` молчит → поведение `strict <`, lock 90 не глушит
-источник 90 → ОК, реализуем как есть.
+**Вывод: lock глушит источники со строго меньшим приоритетом.
+Равный приоритет не глушится. Семантика `<`, не `<=`.**
 
-Если `/cmd_vel` едет → поведение `<=` (или twist_mux игнорирует
-источник==lock) → fallback: поднять quest до 91 или опустить lock до 89.
+Следовательно, числа из §2 (lock=90, quest=90) корректны: равные
+приоритеты **не глушат** друг друга → quest-оператор не теряет
+`teleop_floor` от собственного lock-а.
 
-### 5.2 Поведение twist_mux при «липком» lock в момент падения арбитра
+### 5.2 Что подтверждено этим замером
 
-(Definition of Done #2 из карточки, но watchdog отменён — теперь это
-проверка именно того, что **отсутствие watchdog-а безопасно** при
-падении арбитра. Поскольку аппаратура(100) выше lock-а(90) — залипший
-lock не глушит пульт, но это надо подтвердить.)
+| Решение | Подтверждение замером |
+|---|---|
+| R1: lock priority=90 | ✅ `<`, не `<=` — равные не глохнут |
+| R2: watchdog не нужен | ✅ залипший lock не страшен: аппаратура(100) > lock(90), пульт работает при падении арбитра (вывод Шифу: «при падении нам всё равно»). |
+| R3: avatar_arbiter публикует | ✅ (по факту реализации, см. §7 «Дрейф») |
+| R4: блокируются web/voice/nav2 | ✅ `/diagnostics` показывает `masked` для всех priority<100 |
+| R5: voice_floor в twist_mux не идёт | ✅ (домен не пересекается) |
+| R6: quest 40→90 | ✅ (побочный эффект зафиксирован, см. §2) |
 
-```bash
-# 1. Включить пульт (ARMED).
-# 2. Поднять avatar_arbiter, он публикует /teleop_lock = true.
-# 3. ros2 topic echo /cmd_vel_joy — видим движение от пульта.
-# 4. SIGKILL avatar_arbiter.
-# 5. Смотрим /cmd_vel — должен ехать от пульта, НЕ блокироваться.
-ros2 topic echo /cmd_vel
-```
+### 5.3 Как проверять реализацию (DoD для `t_9d33e8ca`)
 
-### 5.3 Исходный замер из §5 draft v0 (текущая дыра)
+**Прямой способ через `/diagnostics`** (без движения робота):
 
 ```bash
-# 1. Quest WS держит teleop_floor, стик в нейтрали (молчит > 0.5 с).
-# 2. Параллельно шлём cmd_vel_voice через telega-бота / dialogue_node.
-# 3. Смотрим, что реально едет на /cmd_vel (выход twist_mux).
-ros2 topic echo /cmd_vel
-ros2 topic echo /cmd_vel_voice
-ros2 topic echo /avatar/state | grep -E "teleop_floor|voice_floor|mode"
+# 1. Поднять avatar_arbiter, опубликовать teleop_floor.
+ros2 topic pub /teleop_lock std_msgs/Bool "data: true" --rate 20
+
+# 2. Читать /diagnostics twist_mux — ищем "topics.quest = unmasked"
+#    и "topics.voice = masked", "topics.navigation = masked".
+ros2 topic echo /diagnostics | grep -E 'masked|unmasked|locked|free'
+
+# Ожидаемо после реализации:
+#   velocity topics.joystick    = unmasked
+#   velocity topics.quest       = unmasked   <-- равенство приоритетов
+#   velocity topics.web_ui      = masked
+#   velocity topics.voice       = masked
+#   velocity topics.navigation  = masked
 ```
 
-Ожидаемо увидим до реализации: при quest-floor=HELD в `/avatar/state` в
-`/cmd_vel` всё равно приходят движения от voice/nav2 — это и есть дыра.
+**Падение арбитра + липкий lock** (проверка «липкий lock без
+watchdog-а безопасен»):
 
-После реализации — тот же сценарий, но `/cmd_vel` молчит пока
-`/avatar/state.teleop_floor != null`. Это и есть приёмочный тест для
-`t_9d33e8ca`.
+```bash
+# 1. Включить пульт (ARMED, /joystick_lock=true).
+# 2. SIGKILL avatar_arbiter — /teleop_lock остаётся True (sticky).
+# 3. ros2 topic echo /cmd_vel_joy — аппаратура должна работать,
+#    /cmd_vel едет от пульта, не от замёрзшего quest.
+```
+
+### 5.4 Деталь из замера, обязательная для реализации
+
+**Публиковать `/teleop_lock` периодически (20 Гц), а не по изменению.**
+У `/joystick_lock` уже есть владелец, который шлёт его на 20 Гц:
+`joystick_control_node.publish_joy_from_sbus` (таймер 0.05 с)
+публикует `data = is_armed(...)` каждый тик, а не по фронту.
+Одиночный `--once True` затирается за 50 мс — `joystick_lock` снова
+`free`. Поэтому de-dup публикаций в `arbiter_node._publish_teleop_locks`
+**противопоказан** для sticky-топика: пусть арбитр шлёт значение
+**каждый тик**, как это делает `joystick_control_node`. Иначе любой
+чужой публикатор на том же топике перетрёт состояние и никто
+не заметит.
+
+(Этот пункт — следствие замера. Если реализация в `t_9d33e8ca`
+оставляет de-dup — это архитектурная ошибка, фиксить.)
+
+### 5.5 Рекомендация по терминологии замера в DoD
+
+Расплывчатое «замер на роботе» в карточке заменяется на:
+
+> Проверить через `/diagnostics` twist_mux: под `/teleop_lock=true`
+> источники `voice`/`web_ui`/`navigation` — `masked`, `quest` —
+> `unmasked`, `joystick` — `unmasked`. Сценарий падения арбитра:
+> после `SIGKILL avatar_arbiter` пульт продолжает управлять
+> (`/cmd_vel` едет от `cmd_vel_joy`).
 
 ## 6. Definition of Done для этой карточки
 
-- [x] Решение записано как amendment к ADR-0028 §4.2 / §7 (этот файл).
-- [ ] Замер на роботе: поведение `twist_mux` при «липком» lock в момент
-      падения арбитра (raw-лог, фрагмент 30-50 строк). Делегировано
-      в `t_9d33e8ca` (требует доступ к железу).
+- [x] Решение записано как amendment к ADR-0028 §4.2 / §7 (этот файл,
+      rename 0080 → 0081 + owner decisions 2026-09-09).
+- [x] Замер на роботе (raw-лог): семантика `twist_mux` — `strict <`,
+      равные приоритеты не глохнут. Делегировано владельцу (Шифу),
+      результат в issue #2191 (комментарий «Замер на роботе: семантика
+      lock в twist_mux»). Фрагмент приведён в §5.1.
 - [x] Заведена карточка `t_9d33e8ca` (backend) на реализацию с
       конкретной схемой lock-топиков и acceptance criteria, привязанными
-      к этому ADR.
+      к этому ADR. **Дрейф реализации относительно ADR — см. §7
+      «Дрейф», требует решения владельца.**
 
-## 7. Что НЕ делаем в этой карточки
+## 7. Дрейф реализации относительно ADR — требует решения владельца
+
+Реализация в PR #2205 / `t_9d33e8ca` была завершена **до** финальных
+решений Шифу 2026-09-09. После решений реализация **расходится** с
+ADR-0081 в трёх точках. Это нужно явно зафиксировать — Шифу должен
+выбрать один из двух путей:
+
+| # | ADR-0081 (R1, R2, §5.4) | PR #2205 (факт) | Конфликт |
+|---|---|---|---|
+| D1 | lock priority = **90** | priority = **100** | lock=100 при `cmd_vel_quest`=90 **заглушит самого держателя** (сематика `<`, см. §5.1) → VR-оператор теряет floor от собственного lock-а. **Серьёзный архитектурный дефект.** |
+| D2 | watchdog **отменён** (Q2) | `/teleop_lock_watchdog` **присутствует** | Лишний топик, лишний код, лишние unit-тесты. По решению Шифу «арбитр у нас только для квест-телеопа… при падении нам всё равно». |
+| D3 | periodic publish **20 Гц**, **без de-dup** (см. §5.4) | `arbiter_node._publish_teleop_locks` использует **de-dup публикаций** | Одиночный `--once True` затирается за 50 мс → twist_mux-топик снова `free`. Из замера: «de-dup, который я раньше согласовал оставить для sticky-топика, из-за этого лучше убрать: пусть арбитр шлёт значение каждый тик». |
+
+**Варианты разрешения** (выбирает Шифу):
+
+- **(a) PR #2205 править** — подвинуть priority на 90, удалить watchdog
+  + связанные тесты, убрать de-dup в `_publish_teleop_locks`. CI +
+  повторный замер через `/diagnostics` (см. §5.3).
+- **(b) ADR-0081 амендить** — признать priority=100 + watchdog + de-dup
+  правильным решением. Тогда архитектурно: VR-оператор на одном
+  приоритете с аппаратурой, авторазблокировка включена, и замер §5.1
+  надо повторить с `cmd_vel_joy` под `/teleop_lock=true` — будет ли
+  пульт работать? (при lock=100, joy=100, lock FREE → joystick
+  unmasked; lock ENGAGED → по §5.1 равенство не глушит → ОК;
+  но если Шифу захочет иначе, нужны новые цифры.)
+
+Текущий технический долг — **PR #2205 не merge-блокер** по CI
+(75 unit-тестов зелёные), но **архитектурно противоречит зафиксированным
+решениям владельца**. Это не решается автоматически — нужна явная
+воля Шифу.
+
+## 8. Что НЕ делаем в этой карточки
 
 - Не пишем код avatar_arbiter / twist_mux.yaml / QuestBridge —
   это `t_9d33e8ca`.
@@ -233,13 +320,15 @@ ros2 topic echo /avatar/state | grep -E "teleop_floor|voice_floor|mode"
   это отдельный ADR.
 - Не вводим `/teleop_lock_watchdog` (отменено, см. Q2).
 
-## 8. История решений
+## 9. История решений
 
 | Дата | Событие | Решение |
 |---|---|---|
 | 2026-09-08 | ADR-0080 draft (t_8045c101, PR #2200) | Предложены (A)/(B)/(C) по Q1, (C) по Q2, рекомендация R5 по Q4. |
 | 2026-09-09 | Коллизия номера с ADR-0080 «восемь швов» (PR #2221, merged) | Переименование 0080 → 0081. |
 | 2026-09-09 | Решения Шифу в PR #2200 (krikz, «Решения владельца по Q1–Q4») | Q1: lock=90 (не 100), quest 40→90. Q2: watchdog отменён, чистый sticky. Q3: закрыт через Q1. Q4: без изменений. |
+| 2026-09-09 06:35 UTC | Замер Шифу на роботе (issue #2191, комментарий «Замер на роботе: семантика lock в twist_mux») | Подтверждено: `strict <`, равные приоритеты не глохнут. lock=90 / quest=90 — корректные числа. Watchdog не нужен (аппаратура > lock). Деталь: публиковать 20 Гц, без de-dup. |
+| 2026-09-09 | Обнаружен архитектурный дрейф PR #2205 vs ADR-0081 | §7: priority 90 vs 100, watchdog отменён vs есть, de-dup vs 20 Гц. Бинарный выбор Шифу: править PR или амендить ADR. |
 
 ## Источники истины
 
@@ -250,10 +339,13 @@ ros2 topic echo /avatar/state | grep -E "teleop_floor|voice_floor|mode"
 - docs/architecture/SYSTEM_OVERVIEW.md §5.4
 - `docker/main/config/twist_mux/twist_mux.yaml`
 - `src/rob_box_teleop/rob_box_teleop/joystick_control_node.py:115`
-  (паттерн `/joystick_lock`)
+  (паттерн `/joystick_lock`, **20 Гц periodic publish — см. §5.4**)
 - `src/rob_box_supervisor/rob_box_supervisor/core/locks.py` (LockManager API)
 - `src/rob_box_supervisor/rob_box_supervisor/arbiter_node.py`
-  (avatar_arbiter, ROS-узел)
+  (avatar_arbiter, ROS-узел; **см. §7 «Дрейф»** — de-dup vs 20 Гц)
 - `src/rob_box_quest/rob_box_quest/core/avatar_arbiter.py`
   (LocalAvatarArbiterClient, stub)
 - PR #2200 (issue #2191, комментарий «Решения владельца по Q1–Q4»)
+- PR #2200 (issue #2191, комментарий **«Замер на роботе: семантика lock
+  в twist_mux»**, 2026-09-09 06:35 UTC) — raw-evidence §5.1
+- PR #2205 (`t_9d33e8ca`, реализация; **архитектурный дрейф — §7**)
