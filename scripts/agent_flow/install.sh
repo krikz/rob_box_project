@@ -195,6 +195,16 @@ EXPECTED=(
     # те, для которых найден MERGED PR (PATTERN «карточки-призраки»).
     # Регистрация cron-job делается в ensure_blocked_watchdog_cron ниже.
     agent-flow-blocked-watchdog.sh
+    # Reactive conflict-sweep (ретро t_8fba04b9, issue #1977): no-agent
+    # fallback на случай merge-gate silent path. Каждые 1h сканирует open
+    # issues с ОБЕИМИ метками `needs-e2e` И `e2e-done` (data race: после
+    # merge кто-то добавил needs-e2e обратно, ADR-0014 инвариант выполнен
+    # но merge-gate не закрывает) И закрывает те, для которых найден
+    # MERGED PR в develop. Также поддерживает one-shot mode
+    # CONFLICT_SWEEP_ISSUE_NUM=NNN для cleanup уже разрешённого конфликта
+    # где labels сняли руками. Регистрация cron-job делается в
+    # ensure_conflict_sweep_cron ниже.
+    agent-flow-conflict-sweep.sh
 # Fail-streak escalation watchdog (ретро 28.08 t_faac94b0): no-agent,
     # вызывается ИЗ launcher'а (после e2e-process.sh tick), не отдельным
     # cron-job. При streak ≥ WARN → issue-comment, при streak ≥ PAUSE →
@@ -807,6 +817,27 @@ ensure_blocked_watchdog_cron() {
     ensure_cron_job devops "Agent Flow Blocked Watchdog" "agent-flow-blocked-watchdog.sh" "every 4h" interval
 }
 ensure_blocked_watchdog_cron
+echo "==> Ensure cron job registration: reactive conflict-sweep (ретро t_8fba04b9, issue #1977)"
+# Проблема: merge-gate 5-min loop ТИХО не закрывает issues с конфликтом
+# меток `needs-e2e + e2e-done` после merge (ADR-0014 инвариант выполнен
+# но "Status: silent (empty output)" 50+ тиков подряд). Ручной cleanup
+# (через gh issue close + gh issue edit) уже проведён для #1977, но
+# pattern системный — нужна автоматизация.
+#
+# Решение: ensure_conflict_sweep_cron() — идемпотентная функция,
+# регистрирующая interval-job (every 1h) в devops-профиле, no_agent
+# (скрипт = sweep). Дубль-guard по (script + interval + enabled).
+# Каждый тик сканирует open issues с ОБЕИМИ метками и закрывает те, для
+# которых найден MERGED PR в develop. Дополнительно поддерживает
+# one-shot mode через env CONFLICT_SWEEP_ISSUE_NUM для уже-разрешённых
+# конфликтов.
+#
+# Регистрация переживает install.sh: каждый запуск (в т.ч. auto-fix из
+# drift-detect) проверяет jobs.json и создаёт недостающий job.
+ensure_conflict_sweep_cron() {
+    ensure_cron_job devops "Agent Flow Conflict Sweep (ADR-0014 fallback)" "agent-flow-conflict-sweep.sh" "every 1h" interval
+}
+ensure_conflict_sweep_cron
 echo "==> Ensure cron job registration: cron-надзор mis-scope карточек (ADR-0036 §4.3, ретро t_aa585aa7)"
 # Проблема: agent-flow-blocked-watchdog-scope.sh раскладывается install.sh
 # (commit от t_aa585aa7), но cron-job НЕ создаётся автоматически. Без него
