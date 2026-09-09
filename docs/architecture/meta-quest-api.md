@@ -1,10 +1,18 @@
 # rob_box_quest — WebSocket / REST API контракт
 
-> Companion-документ к [ADR-0027](../adr/0027-meta-quest-ar-control.md).
+> Companion-документ к [ADR-0027](../adr/0027-meta-quest-ar-control.md)
+> и [ADR-0082](../adr/0082-amendment-0027-meta-quest-api-drift-fix.md) (drift
+> fix 2026-09-08, см. §13 «Amendment history»).
+>
 > Описывает **точный** wire-протокол между веб-клиентом (браузер desktop/планшет
 > или Meta Quest WebXR) и сервисом `rob_box_quest` (Vision Pi). Это reference
-> для реализации Phase 1; до Phase 1 — заморожен, любые изменения через
-> ADR-0027 amendment.
+> для реализации и для клиента; **обновляется при каждом изменении wire-протокола**.
+> Каждое значимое изменение фиксируется amendment-ом (см. §13).
+>
+> **Phase status (raw-факт 2026-09-08, см. ADR-0082 §1.2):**
+> - §1, §3, §4, §7, §8, §10, §11.1-11.2 — Phase 1 + 2, реализовано.
+> - §5, §6, §9 — помечают per-cmd `phase N / implemented / planned`.
+> - §12 — out of scope / not implemented / см. ADR-0027 §6 Q-вопросы.
 
 ## 1. Транспорт
 
@@ -46,6 +54,12 @@
   (UTF-8, без BOM). **Не** MessagePack в payload — JSON человеко-читаем
   и проще дебажится из web-консоли; payload компактных потоков
   (LiDAR 2D-scan ~360 точек, voice_state event) и так влезает.
+- **Топик в `BINARY_FRAME` определяется по `stream_id`** (см. §3, §4),
+  а **не** по префиксу в payload. Ранние версии этого дока описывали
+  4-байтовый `topic_id`-prefix внутри payload; в фактическом wire
+  (`ws_server.py`, `wire/protocol.ts:8-14`) payload идёт как есть, и
+  клиент маршрутизирует по `stream_id`, выданному в `subscribe_ack`.
+  См. ADR-0082 §2.2 (drift fix 2026-09-08).
 
 ## 3. Frame types
 
@@ -55,8 +69,8 @@
 | `0x02` | `WELCOME` | server → client | `{server_version: "0.1.0", session_id: "<uuid4>", server_time_ms: 1234567890, robot_status: {...}, teleop_floor_held_by: "<client_id>"\|null}` |
 | `0x03` | `SUBSCRIBE` | client → server | `{topic: "camera_rear"\|"camera_front"\|"lidar_2d"\|"lidar_3d"\|"voice_state"\|"robot_status"\|"person_detections", quality: "low"\|"med"\|"high"}` |
 | `0x04` | `UNSUBSCRIBE` | client → server | `{topic: "..."}` |
-| `0x10` | `BINARY_FRAME` | server → client | binary blob (raw bytes; topic указан в subscribe-confirm или заголовке см. §4) |
-| `0x11` | `JSON_CMD` | client → server | см. §5 |
+| `0x10` | `BINARY_FRAME` | server → client | binary blob (raw bytes; topic определяется по `stream_id` из `subscribe_ack`, см. §4) |
+| `0x11` | `JSON_CMD` | client → server | JSON object; `cmd` is one of the implemented commands catalogued in §5 |
 | `0x12` | `JSON_EVENT` | server → client | см. §6 |
 | `0x20` | `GOODBYE` | обе стороны | `{reason: "user_logout"\|"shutdown"\|"timeout"\|"auth_fail"}` |
 | `0xFF` | `ERROR` | обе стороны | `{code: "AUTH_FAIL"\|"BAD_PAYLOAD"\|"RATE_LIMIT"\|"TOPIC_UNKNOWN"\|"FLOOR_HELD"\|"MODE_CONFLICT"\|"INTERNAL", message: "..."}` |
@@ -112,29 +126,27 @@ stateDiagram-v2
 ## 4. `BINARY_FRAME` — server → client data streams
 
 Каждый server-initiated stream (после `SUBSCRIBE`) получает свой
-`stream_id` из диапазона `0x1000..0xFFFF`. Чтобы клиент понимал, что
-именно внутри `BINARY_FRAME`, в начало каждого фрейма добавлен
-**4-байтовый topic-tag** (только для BINARY_FRAME, для JSON_CMD/JSON_EVENT
-топик внутри JSON):
+`stream_id` из диапазона `0x1000..0xFFFF`. Клиент понимает, что именно
+внутри `BINARY_FRAME`, по сохранённому в `subscribe_ack` соответствию
+`stream_id → topic`. В payload нет дополнительного topic-tag: данные
+передаются как есть.
 
-```
-[4 bytes: topic_id (LE)]   ← внутри payload, перед данными
-[N bytes: raw data]
-```
+Ранний вариант спецификации описывал `topic_id` — uint32 prefix внутри
+payload. Он не является частью текущего wire-протокола и приведён только
+как историческая причина amendment-а; ассоциация теперь задаётся через
+`SUBSCRIBE`/`subscribe_ack`:
 
-`topic_id` — uint32, ассоциация задаётся в `SUBSCRIBE-confirm`:
-
-| Topic UI-name | topic_id | Формат data |
+| Topic UI-name | stream_id (from `subscribe_ack`) | Формат data |
 |---|---|---|
-| `camera_rear` | `0x1001` | H.264 Annex-B NAL-units (один или несколько подряд; не Annex-B целиком, потому что клиент сам собирает Annex-B для MediaSource) |
-| `camera_front` | `0x1002` | (Phase 2) — панорамная передняя камера |
-| `camera_ceiling` | `0x1005` | JPEG bytes as-is из `/ceiling_camera/image_raw/compressed` (usb_cam → image_transport). ROS-стрим, НЕ прямое чтение `/dev/video0`: устройство держит контейнер `ceiling-camera` |
-| `lidar_2d` | `0x1101` | little-endian float32: `[angle_min, angle_max, angle_inc, range_min, range_max, time_increment, scan_time, n_points]` + `n_points × float32 ranges` + `n_points × float32 intensities` (соответствует `sensor_msgs/LaserScan` ROS2 msg). **`n_points` — тоже float32**, весь заголовок однороден: читать его как uint32 нельзя |
-| `lidar_3d` | `0x1102` | zstd-compressed MessagePack: подвыборка PointCloud2 до 10k точек, `{n_points, frame_id, fields: ["x","y","z","intensity"], points: [[x,y,z,i], ...]}` |
-| `map_2d` | `0x1103` | MessagePack `{resolution, width, height, origin_x, origin_y, robot_x, robot_y, robot_yaw, ts_ms, png?}` — SLAM-решётка `/rtabmap/map` как RGBA PNG + поза робота из tf `map → base_link`. Поле `png` необязательно: кадр БЕЗ него — лёгкое обновление позы (5 Гц, ~140 байт), кадр С ним — новая картинка карты. `robot_*` = `null`, если tf ещё не собрался |
-| `robot_status` | `0x1201` | MessagePack `{battery_pct, wifi_rssi, mode, vel_linear, vel_angular, ts_ms}` — 1 Hz |
-| `voice_state` | `0x1202` | MessagePack `{state: "idle"\|"listening"\|"thinking"\|"speaking"\|"denied", ts_ms, utterance_id?, holder_id?, detail?}` — event-driven. См. §6 `JSON_EVENT{type:voice_state}` для семантики `denied`/`holder_id`/`detail` (добавлены в PR #1930 + #1933 под аудит G8/G19, см. issue #1912). |
-| `person_detections` | `0x1301` | MessagePack `{ts_ms, detections: [{id, cls, x, y, z, w, h, conf}]}` — Phase 2 (R11) |
+| `camera_rear` | `stream_id` из `subscribe_ack` | H.264 Annex-B NAL-units (один или несколько подряд; не Annex-B целиком, потому что клиент сам собирает Annex-B для MediaSource) |
+| `camera_front` | `stream_id` из `subscribe_ack` | (Phase 2) — панорамная передняя камера |
+| `camera_ceiling` | `stream_id` из `subscribe_ack` | JPEG bytes as-is из `/ceiling_camera/image_raw/compressed` (usb_cam → image_transport). ROS-стрим, НЕ прямое чтение `/dev/video0`: устройство держит контейнер `ceiling-camera` |
+| `lidar_2d` | `stream_id` из `subscribe_ack` | little-endian float32: `[angle_min, angle_max, angle_inc, range_min, range_max, time_increment, scan_time, n_points]` + `n_points × float32 ranges` + `n_points × float32 intensities` (соответствует `sensor_msgs/LaserScan` ROS2 msg). **`n_points` — тоже float32**, весь заголовок однороден: читать его как uint32 нельзя |
+| `lidar_3d` | `stream_id` из `subscribe_ack` | zstd-compressed MessagePack: подвыборка PointCloud2 до 10k точек, `{n_points, frame_id, fields: ["x","y","z","intensity"], points: [[x,y,z,i], ...]}` |
+| `map_2d` | `stream_id` из `subscribe_ack` | MessagePack `{resolution, width, height, origin_x, origin_y, robot_x, robot_y, robot_yaw, ts_ms, png?}` — SLAM-решётка `/rtabmap/map` как RGBA PNG + поза робота из tf `map → base_link`. Поле `png` необязательно: кадр БЕЗ него — лёгкое обновление позы (5 Гц, ~140 байт), кадр С ним — новая картинка карты. `robot_*` = `null`, если tf ещё не собрался |
+| `robot_status` | `stream_id` из `subscribe_ack` | MessagePack `{battery_pct, wifi_rssi, mode, vel_linear, vel_angular, ts_ms}` — 1 Hz |
+| `voice_state` | `stream_id` из `subscribe_ack` | MessagePack `{state: "idle"\|"listening"\|"thinking"\|"speaking"\|"denied", ts_ms, utterance_id?, holder_id?, detail?}` — event-driven. См. §6 `JSON_EVENT{type:voice_state}` для семантики `denied`/`holder_id`/`detail` (добавлены в PR #1930 + #1933 под аудит G8/G19, см. issue #1912). |
+| `person_detections` | `stream_id` из `subscribe_ack` | MessagePack `{ts_ms, detections: [{id, cls, x, y, z, w, h, conf}]}` — Phase 2 (R11) |
 
 **Frequency policy:**
 
@@ -157,6 +169,38 @@ stateDiagram-v2
 
 ## 5. `JSON_CMD` — client → server
 
+Сводный каталог ниже — machine-checkable часть контракта. Статус `implemented`
+означает, что команда имеет ветку в `WSSServer._on_json_cmd` на дату
+2026-09-08; `planned` означает намеренно не реализованную команду, которая
+не должна использоваться клиентом. Каталог проверяется тестами WS-сервера.
+
+| `cmd` | Статус | Фаза | Ответ / действие |
+|---|---|---|---|
+| `ping` | implemented | Phase 1 | обновляет watchdog |
+| `stream_list` | implemented | Phase 2 / R10 | `JSON_EVENT{type: "stream_list"}` |
+| `teleop_twist` | implemented | Phase 1 | публикует `cmd_vel_quest` при доступном floor |
+| `teleop_heartbeat` | implemented | Phase 1 / AV-19 | relay в `/teleop_heartbeat` |
+| `stop_emergency` | implemented | Phase 1 | аварийная остановка вне floor-gate |
+| `voice_ptt_start` / `voice_ptt_stop` | implemented | Phase 2.1+ | voice floor и audio routing |
+| `voice_mode` | implemented | Phase 2.1+ | `voice_mode_ack` |
+| `voice_listen_start` / `voice_listen_stop` | implemented | Phase 2.1+ / ADR-0071 | `voice_listen_ack` |
+| `stream_select` | implemented | Phase 2 / R10 | `stream_select_ack` |
+| `supervisor_set_mode` | implemented | Phase 2 / AV-16 | `supervisor_state` или `MODE_CONFLICT` |
+| `supervisor_acquire_floor` | implemented | Phase 2 / AV-16 | `supervisor_state` или `FLOOR_HELD` |
+| `supervisor_release_floor` | implemented | Phase 2 / AV-16 | `supervisor_state` или `FLOOR_HELD` |
+| `supervisor_get_state` | implemented | Phase 2 / AV-16 | `supervisor_state` |
+| `list_voices` | implemented | Phase 2 / AV-27 | `voice_list` из локального snapshot |
+| `set_voice` | implemented | Phase 2 / AV-27/28 | `voice_set_ack` или `voice_set_nack` |
+| `voice_pipeline` | implemented | Phase 2.1+ / AV-28 | `voice_pipeline_ack` или `voice_pipeline_nack` |
+| `preview_voice` | implemented | Phase 2 / AV-27 | preview audio events + `BINARY_FRAME` |
+| `ui_button` | planned | Phase 2 / R14 | не реализовано; Q11 |
+| `admin_logs` / `admin_logs_stop` | planned | Phase 2 / R14 | не реализовано; Q11 |
+| `set_panel_topic` | planned | Phase 2 / R10 | заменено реализованным `stream_select` |
+
+Команды со статусом `planned` остаются в каталоге только для явного
+различения обещанного API и доступного API. На 2026-09-08 они не являются
+частью wire-контракта и клиент не должен их отправлять.
+
 ```json
 {
   "cmd": "teleop_twist",
@@ -168,10 +212,19 @@ stateDiagram-v2
 }
 ```
 
-`deadman=true` ОБЯЗАН быть на каждом teleop-фрейме; если `false` —
-сервер игнорирует фрейм (это страховка от «отпустил grip, но пакет
-застрял в TCP буфере и пришёл позже»). Throttle: не чаще 30 Гц
-(`seq` монотонный, сервер отбрасывает фреймы с повторным `seq`).
+`deadman: bool` — **диагностический** маркер совместимости. Семантика
+безопасностного teleop-gate живёт в `avatar_arbiter` (ADR-0051): при
+`require_teleop_floor=true` сервер не публикует `cmd_vel_quest`, если floor
+занят другой сессией, и отправляет `ERROR{FLOOR_HELD}` не чаще 1 Гц.
+Исторически `deadman` планировался как per-frame gate, но в текущем сервере
+поле читается и явно не используется как gate (`ws_server.py:1655,1690,1703`).
+Не удалять поле без отдельного compatibility amendment.
+
+`seq: int` — монотонный sequence от клиента. В текущем контракте он
+пробрасывается вместе с `ts_ms` в relay heartbeat для диагностики и метрик;
+сервер **не** выполняет anti-replay и не отбрасывает повторный `seq`.
+Throttle 30 Гц — ответственность клиента; серверный floor-gate и watchdog
+остаются независимыми от `seq`.
 
 > **AV-19 — `teleop_twist` и `teleop_floor`.** При
 > `require_teleop_floor=true` (ROS-параметр ноды
@@ -203,18 +256,6 @@ AV-19 (ADR-0028 §4.4 S10): клиент шлёт `teleop_heartbeat` 10 Гц п�
 `idle`, или `stopping` — иначе супервизор примет чужую сессию за
 живого владельца и не снимет floor. Это **отдельный** контракт от
 существующего ping/watchdog (`connection.ts`), их не смешивать.
-
-```json
-{
-  "cmd": "ui_button",
-  "ts_ms": 1234567890,
-  "button": "sound_play" | "sound_stop" | "light_toggle" | "led_preset:<name>",
-  "press": true | false
-}
-```
-
-Маппинг `button` → ROS-сервис: phase-1 — hardcoded dict в `rob_box_quest`,
-phase-2 — registry из `rob_box_voice/command_node.py`.
 
 ```json
 {
@@ -326,20 +367,6 @@ seq, total}` + `BINARY_FRAME`. Финал — `preview_voice_done` или
 
 ```json
 {
-  "cmd": "set_panel_topic",
-  "ts_ms": 1234567890,
-  "panel_id": "panel_1",
-  "topic": "camera_oak_color"
-}
-```
-
-Phase 2 §6.2. Меняет топик, который рендерится в данной panel.
-Сервер переключает `subscribe_ack` на новый topic (если ещё не
-подписан — стартует подписку, старый topic — unsubscribe если
-больше никто не слушает).
-
-```json
-{
   "cmd": "stop_emergency",
   "ts_ms": 1234567890,
   "source": "controller_b" | "ui_button" | "client_lost"
@@ -356,32 +383,9 @@ Phase 2 §6.2. Меняет топик, который рендерится в �
 }
 ```
 
-Phase 2 (R10). Сервер отвечает `JSON_EVENT{type: "stream_list", topics: [...]}`
-— список доступных стримов для стрим-селектора.
-
-```json
-{
-  "cmd": "admin_logs",
-  "ts_ms": 1234567890,
-  "service": "dialogue_node" | "rob_box_quest" | "all",
-  "tail": 100,
-  "follow": false
-}
-```
-
-Phase 2 (R14). Сервер читает `docker logs <service>` (или journald) и отвечает
-`JSON_EVENT{type: "admin_logs_chunk", ...}`. `follow=true` — стриминг до
-`admin_logs_stop`. Для PoC — read-only; restart/диагностика — отдельная
-карточка (Q11).
-
-```json
-{
-  "cmd": "admin_logs_stop",
-  "ts_ms": 1234567890
-}
-```
-
-Останавливает `follow`-стриминг логов.
+Phase 2 (R10). Сервер отвечает `JSON_EVENT{type: "stream_list", items: [...]}`
+— список доступных стримов для стрим-селектора. Каждый item приходит из
+`Bridge.available_streams()`.
 
 ### 5.1. Supervisor-команды (Phase 2, subprotocol `robbox-quest-v2`)
 
@@ -434,9 +438,11 @@ JSON-обёртка нужна для admin-панели и тестовых к�
 //   thinking  → LLM обрабатывает (между STT и TTS).
 //   denied    → второй клиент попытался PTT, пока floor занят;
 //               отправляется ТОЛЬКО requester-у (не broadcast).
-{ "type": "stream_list",    "topics": ["camera_rear", "camera_front", "lidar_2d"], "ts_ms": 1234567890 }
-{ "type": "admin_logs_chunk", "service": "dialogue_node", "lines": ["..."], "ts_ms": 1234567890 }
-{ "type": "admin_logs_end",   "service": "dialogue_node", "ts_ms": 1234567890 }
+{ "type": "stream_list",    "items": [{"topic": "camera_rear", "kind": "camera"}], "ts_ms": 1234567890 }
+{ "type": "stream_select_ack", "topic": "camera_oak_color", "stream_id": null, "kind": "camera_direct", "ts_ms": 1234567890 }
+{ "type": "voice_listen_ack", "active": true, "ts_ms": 1234567890 }
+{ "type": "voice_pipeline_ack", "llm_enabled": true, "preset": "translate", "language": "en", "ts_ms": 1234567890 }
+{ "type": "voice_pipeline_nack", "preset": "bad", "language": "en", "reason": "invalid_voice_pipeline_preset: 'bad'", "ts_ms": 1234567890 }
 { "type": "ping",           "ts_ms": 1234567890, "nonce": "..." }   // см. §7
 { "type": "pong",           "ts_ms": 1234567890, "nonce": "..." }
 { "type": "voice_list",     "voices": [...], "ts_ms": 1234567890 }     // §4.1
@@ -445,7 +451,7 @@ JSON-обёртка нужна для admin-панели и тестовых к�
 { "type": "preview_voice_audio", "request_id": "...", "format": "opus", "content_type": "audio/ogg", "seq": 0, "total": 1, "ts_ms": 1234567890 } // §4.2
 { "type": "preview_voice_done",  "request_id": "...", "ts_ms": 1234567890 }
 { "type": "preview_voice_error", "request_id": "...", "reason": "tts_timeout", "ts_ms": 1234567890 }
-{ "type": "stream_select_ack",  "topic": "camera_oak_color", "stream_id": 0x1002, "kind": "jpeg" } // §6.2
+
 // AV-19: сервер сообщает, что наша сессия больше не держит
 // teleop_floor (dead-man 500 мс, FSM-переход супервизора, или
 // ручной release). Клиент обязан мгновенно DISARM-нуться
@@ -528,14 +534,12 @@ QuestNode alert timer 1 Гц):**
 |---|---|---|
 | `teleop_twist` | 30 Hz (per client) | drop + `ERROR{RATE_LIMIT}` |
 | `teleop_heartbeat` | 10 Hz (per client, AV-19) | клиент сам throttle'ит через `teleop_fsm.heartbeatCmd`; relay 1:1 |
-| `ui_button` | 5 Hz | drop |
 | `voice_ptt_start` / `voice_ptt_stop` | edge-triggered, max 2 start/s | drop |
 | `voice_mode` | 1 per 5 s | drop |
 | `set_voice` (AV-27, `voice_id`) | 1 per 2 s | `voice_set_nack{reason: "rate_limited"}` |
 | `set_voice` (AV-28, `preset`/`language`) | 1 per 0.5 s, **свой слот** | `voice_set_nack{reason: "rate_limited"}` |
 | `list_voices` | 1 per 10 s | ответ из кэша (не drop) |
 | `preview_voice` | 1 per 5 s, max 3 concurrent `request_id` | drop |
-| `set_panel_topic` | 5 Hz per panel | drop |
 | `stop_emergency` | 1 per 100 ms | drop |
 | `ping` | 1 per 5 s | drop |
 
@@ -565,10 +569,10 @@ Server-side enforcement — token bucket per client; reset при reconnect.
 [t=17ms]   server → client   subscribe_ack  {topic: "lidar_2d", stream_id: 0x1101}
 [t=17ms]   client → server   SUBSCRIBE  {topic: "robot_status"}
 [t=18ms]   server → client   subscribe_ack  {topic: "robot_status", stream_id: 0x1201}
-[t=33ms]   server → client   BINARY_FRAME  stream_id=0x1001  topic_id=0x1001  [H.264 NAL: SPS]
-[t=33ms]   server → client   BINARY_FRAME  stream_id=0x1001  topic_id=0x1001  [H.264 NAL: PPS]
-[t=66ms]   server → client   BINARY_FRAME  stream_id=0x1001  topic_id=0x1001  [H.264 NAL: IDR]
-[t=99ms]   server → client   BINARY_FRAME  stream_id=0x1001  topic_id=0x1001  [H.264 NAL: non-IDR]
+[t=33ms]  server → client   BINARY_FRAME  stream_id=0x1001  [H.264 NAL: SPS]
+[t=33ms]  server → client   BINARY_FRAME  stream_id=0x1001  [H.264 NAL: PPS]
+[t=66ms]  server → client   BINARY_FRAME  stream_id=0x1001  [H.264 NAL: IDR]
+[t=99ms]  server → client   BINARY_FRAME  stream_id=0x1001  [H.264 NAL: non-IDR]
 ...
 [t=100ms]  client → server   JSON_CMD  {cmd: "teleop_twist", linear: {x: 0.5}, angular: {z: 0.0}, deadman: true, seq: 1}
 [t=200ms]  server → client   heartbeat  {ts_ms: ...}
@@ -667,7 +671,9 @@ supervisor_service_timeout`), НЕ блокирует event-loop aiohttp (accept
 | — | `set_voice {voice_id, preset?}` / `voice_set_ack` / `voice_set_nack` | Phase 2 §4.3 |
 | — | `list_voices` / `voice_list` | Phase 2 §4.1 |
 | — | `preview_voice {voice_id, text, request_id}` / `preview_voice_audio` / `preview_voice_done` / `preview_voice_error` | Phase 2 §4.2 |
-| — | `set_panel_topic {panel_id, topic}` / `stream_select_ack` | Phase 2 §6.2 |
+| — | `stream_select {topic}` / `stream_select_ack` | Phase 2 R10 |
+| — | `voice_listen_start` / `voice_listen_stop` / `voice_listen_ack` | ADR-0071 |
+| — | `voice_pipeline` / `voice_pipeline_ack` / `voice_pipeline_nack` | AV-28, шаг 4б |
 
 Старые клиенты (Phase 1.0), присылающие `voice_ptt {state:"start"}`,
 будут проигнорированы сервером Phase 2.1+ (warning в логе, голосовой
@@ -684,3 +690,19 @@ supervisor_service_timeout`), НЕ блокирует event-loop aiohttp (accept
 - Hand-tracking pinch-grab для AR-объектов (Phase 2 опц., ADR-0027 §6 Q5).
 - Spatial audio с HRTF (Phase 3, ADR-0027 §6 Q6).
 - Replay/logging — записи сессий для отладки (Phase 3).
+
+**Команды, намеренно не реализованные на 2026-09-08** (владелец контракта:
+architect, issue #2196):
+
+- `ui_button` — Phase 2 / R14, ожидает решения по Q11 в ADR-0027.
+- `admin_logs` / `admin_logs_stop` — Phase 2 / R14, ожидают решения по Q11.
+- `set_panel_topic` — Phase 2 / R10; заменена реализованной
+  `stream_select`, отдельная панельная маршрутизация отложена.
+
+Клиент не должен отправлять эти команды как часть текущего wire-протокола.
+
+## 13. Amendment history
+
+| Дата | Amendment | Изменение |
+|---|---|---|
+| 2026-09-08 | ADR-0082 / issue #2196 | Снят статус frozen; удалены неподтверждённые команды из реализованного API; добавлены `voice_pipeline`, `voice_listen_*`, `stream_select` и их события; `deadman`/`seq` и `BINARY_FRAME` описаны по фактическому поведению кода. Владелец: architect. |
