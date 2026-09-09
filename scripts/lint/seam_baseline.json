@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "created": "2026-09-08",
-  "base_sha": "4f201b48705b360a6e3296b87f4f7a6cdad7ca3f",
+  "created": "2026-09-09",
+  "base_sha": "59ef3a433d02448f24910afe5c5fc671b944bece",
   "publishers_without_local_subscriber": [
     "/animation/audio_trigger",
     "/animations/trigger",
@@ -21,7 +21,6 @@
   "subscribers_without_local_publisher": [
     "/audio/enable_reactive",
     "/avatar/tts/control",
-    "/avatar/voice_pipeline",
     "/perception/vision_context",
     "/voice/current_dialogue_id",
     "/voice/speaker/merge",
@@ -29,5 +28,7 @@
   ],
   "method_seams_without_caller": [
     "DialogueNode._on_perception_update"
-  ]
+  ],
+  "topic_type_mismatch": [],
+  "topic_type_mismatch_best_effort": []
 }

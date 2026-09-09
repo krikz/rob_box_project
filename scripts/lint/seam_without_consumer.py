@@ -75,6 +75,22 @@ _SKIP_DIR_NAMES = {
 _TOPIC_CALL_NAMES = {"create_publisher": "pub", "create_subscription": "sub"}
 _SEAM_PREFIXES = ("_publish_", "_on_")
 
+# Msg-type resolution: как и для топиков, лучшее, что мы можем сделать
+# статически — нормализовать выражение к строковому идентификатору типа
+# (``"String"``, ``"TeleopHeartbeat"``). Если оба конца шва дают одинаковый
+# идентификатор — типы совпадают; если разные — ``topic_type_mismatch``
+# (issue #2188 / voice-vr 03). ROS 2 в рантайме такое соединение не
+# поднимет: ``create_publisher(String, ...)`` и
+# ``create_subscription(TeleopHeartbeat, ...)`` — два разных IDL-класса.
+#
+# Граница применимости: «не резолвится» (f-строка, вызов функции,
+# неразрешимый атрибут) попадает в ``unresolved_msg_types`` — НЕ в FAIL.
+# Если хоть один конец шва неизвестен, мы не имеем права утверждать ни
+# «совпадают», ни «не совпадают», и молчаливо считать «совпадают» —
+# ровно тот класс silent-fail, от которого этот сторож и появился
+# (ADR-0021 §R3). Поэтому новый FAIL выдаётся ТОЛЬКО когда ОБА конца
+# шва резолвятся в конкретные разные идентификаторы.
+
 
 # ---------------------------------------------------------------------------
 # File classification / discovery
@@ -281,7 +297,9 @@ def _get_parameter_value(node: ast.expr, declared_params: dict[str, str | None])
 
 
 def _class_consts(
-    class_node: ast.ClassDef, module_consts: dict[str, str | None] | None = None
+    class_node: ast.ClassDef,
+    module_consts: dict[str, str | None] | None = None,
+    import_map: dict[str, tuple[str, str]] | None = None,
 ) -> dict[str, str | None]:
     """Class-body literals + unambiguous ``self.attr = <literal-ish>`` in any method.
 
@@ -290,13 +308,31 @@ def _class_consts(
     only) a bare reference to a same-named module-level constant — this repo
     has a re-export idiom (``TOPIC_STATE = "/avatar/state"`` at module scope,
     then ``TOPIC_STATE = TOPIC_STATE`` inside the class body so it's reachable
-    as ``self.TOPIC_STATE``). All of these resolve to the same flat
-    ``attr -> str | None`` map so callers don't need to know which style
-    produced the value.
+    as ``self.TOPIC_STATE``).
+
+    Also (for ``self.attr = <Name>`` in any method) we record the
+    canonical msg-type identifier if ``<Name>`` is a known import alias
+    from ``import_map``. This resolves the ``_heartbeat_msg_type =
+    TeleopHeartbeat`` pattern that the IDL-helper idiom uses to keep
+    ``create_subscription`` calls type-explicit: ``self.attr`` lookup in
+    :func:`_msg_type_id` returns the canonical msg-type short name.
+
+    Lastly, ``self.attr = self.method(...)`` where ``self.method`` is
+    defined in the same class and its body is a single
+    ``from <module> import <Name>`` followed by ``return <Name>`` also
+    resolves to that import's canonical name. This catches the
+    ``_try_import_xxx()`` helper idiom in :mod:`arbiter_node` (issue
+    #2188 / voice-vr 03). Such helpers are recognisable: they contain
+    exactly one ``from ... import`` line and one ``return`` whose value
+    is exactly that imported name.
+
+    All of these resolve to the same flat ``attr -> str | None`` map so
+    callers don't need to know which style produced the value.
     """
     consts: dict[str, str | None] = {}
     declared_params = _declared_params(class_node)
     module_consts = module_consts or {}
+    import_map = import_map or {}
 
     def _record(name: str, lit: str | None) -> None:
         if name in consts and consts[name] != lit:
@@ -304,19 +340,35 @@ def _class_consts(
         elif name not in consts:
             consts[name] = lit
 
+    def _resolve_value(value: ast.expr) -> str | None:
+        """Pick the most specific static value for ``value``: literal,
+        same-named module const, imported name (canonical msg-type id)."""
+        lit = _literal_str(value)
+        if lit is not None:
+            return lit
+        if isinstance(value, ast.Name):
+            mod_lit = module_consts.get(value.id)
+            if isinstance(mod_lit, str) and mod_lit:
+                return mod_lit
+            imp = import_map.get(value.id)
+            if imp is not None:
+                # canonical short name = the import's ``orig`` component
+                return imp[1]
+        return None
+
+    # ``self.<method>`` -> canonical msg-type id, for the
+    # ``self.attr = self._try_import_xxx()`` pattern.
+    method_import_map: dict[str, str] = _class_self_method_imports(class_node, import_map)
+
     for node in class_node.body:
         if isinstance(node, ast.Assign):
-            lit = _literal_str(node.value)
-            if lit is None and isinstance(node.value, ast.Name):
-                lit = module_consts.get(node.value.id)
+            lit = _resolve_value(node.value)
             for target in node.targets:
                 if isinstance(target, ast.Name):
                     _record(target.id, lit)
         elif isinstance(node, ast.AnnAssign) and node.value is not None:
             if isinstance(node.target, ast.Name):
-                lit = _literal_str(node.value)
-                if lit is None and isinstance(node.value, ast.Name):
-                    lit = module_consts.get(node.value.id)
+                lit = _resolve_value(node.value)
                 _record(node.target.id, lit)
 
     for node in class_node.body:
@@ -331,9 +383,18 @@ def _class_consts(
                 value = sub.value
             else:
                 continue
-            lit = _literal_str(value)
+            lit = _resolve_value(value)
             if lit is None:
                 lit = _get_parameter_value(value, declared_params)
+            if lit is None and isinstance(value, ast.Call):
+                # ``self.attr = self.<method>(...)`` — resolve via the
+                # method-import map (see :func:`_class_self_method_imports`).
+                lit = _resolve_self_method_call(value, method_import_map)
+                if lit is None:
+                    # ``self.attr = SomeHelper()`` where SomeHelper is a
+                    # *method* (not just ``self.x``) — record as
+                    # unresolvable so we don't silently mis-attribute.
+                    pass
             for target in targets:
                 if (
                     isinstance(target, ast.Attribute)
@@ -342,6 +403,88 @@ def _class_consts(
                 ):
                     _record(target.attr, lit)
     return consts
+
+
+def _class_self_method_imports(
+    class_node: ast.ClassDef, import_map: dict[str, tuple[str, str]]
+) -> dict[str, str]:
+    """``method_name -> canonical msg-type id`` for ``_try_import_xxx()``-style helpers.
+
+    A method qualifies when its body is structurally:
+
+      * (optional) a docstring,
+      * a ``try: from X import Y; return Y; except ImportError: ...``
+        pair — we follow the success branch only.
+
+    This is the shape of
+    :py:meth:`arbiter_node._try_import_heartbeat_msg` and its siblings —
+    they exist to bridge the ``from rob_box_supervisor_msgs.msg
+    import TeleopHeartbeat`` import into a ``self.attr = TeleopHeartbeat``
+    attribute when the IDL package is built, and to return ``None``
+    otherwise. We deliberately keep the rule narrow: a more permissive
+    pattern would risk false positives on unrelated helpers.
+
+    The body is normalised by stripping the leading docstring and any
+    ``try/except`` boilerplate, then we look for exactly one
+    ``from X import Y`` (with one name) plus exactly one ``return Y``
+    of that name at top level — same rule as before, but on the
+    de-boilerplated version.
+    """
+    out: dict[str, str] = {}
+    for node in class_node.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        body = list(node.body)
+        # 1. Strip leading docstring.
+        if (
+            body
+            and isinstance(body[0], ast.Expr)
+            and isinstance(body[0].value, ast.Constant)
+            and isinstance(body[0].value.value, str)
+        ):
+            body = body[1:]
+        if not body:
+            continue
+        # 2. Unwrap a single ``try: ... except: ...`` envelope (the
+        #    common ``_try_import_xxx`` helper shape), keeping only the
+        #    ``try``-branch body. The ``except`` branch is usually a
+        #    ``return None`` sentinel and is irrelevant for type inference.
+        if len(body) == 1 and isinstance(body[0], ast.Try):
+            try_node = body[0]
+            body = list(try_node.body)
+        if len(body) != 2:
+            continue
+        import_stmt, ret_stmt = body
+        if isinstance(import_stmt, ast.ImportFrom) and isinstance(ret_stmt, ast.Return):
+            imp_names = [a for a in import_stmt.names if a.name != "*"]
+            if len(imp_names) != 1:
+                continue
+            imp = imp_names[0]
+            if ret_stmt.value is None or not isinstance(ret_stmt.value, ast.Name):
+                continue
+            if ret_stmt.value.id != (imp.asname or imp.name):
+                continue
+            local = imp.asname or imp.name
+            if import_map.get(local) == (import_stmt.module, imp.name):
+                out[node.name] = imp.name
+    return out
+
+
+def _resolve_self_method_call(
+    value: ast.Call, method_import_map: dict[str, str]
+) -> str | None:
+    """If ``value`` is ``self.<method>(...)`` and the method is in
+    ``method_import_map``, return the canonical msg-type id it would
+    return. Otherwise ``None``.
+    """
+    func = value.func
+    if not (
+        isinstance(func, ast.Attribute)
+        and isinstance(func.value, ast.Name)
+        and func.value.id == "self"
+    ):
+        return None
+    return method_import_map.get(func.attr)
 
 
 def _module_dotted_name(path: Path) -> str | None:
@@ -373,20 +516,57 @@ def _module_dotted_name(path: Path) -> str | None:
 
 
 def _collect_imports(tree: ast.Module) -> dict[str, tuple[str, str]]:
-    """Top-level ``from module import name [as alias]`` -> alias -> (module, name).
+    """Top-level + lazy ``from module import name [as alias]`` -> alias -> (module, name).
 
-    Only module-level, absolute (``level == 0``) imports are tracked — lazy
-    imports inside function bodies are intentionally out of scope (ADR-0021
-    R4 already caps those) and relative imports are rare enough in this repo
-    that resolving them isn't worth the complexity; both fall through to
-    "could not resolve" rather than silently guessing.
+    Также собираем bare ``import std_msgs.msg`` (то есть без ``from``) —
+    имя ``std_msgs.msg`` становится доступно как ``std_msgs``-корень в
+    :func:`_msg_type_id` для dotted-msg-типов вроде
+    ``std_msgs.msg.String``. Без этого пункта полные dotted-имена
+    типов не резолвились бы (issue #2188).
+
+    Резолвим lazy-импорты внутри функций (``from std_msgs.msg import
+    String`` глубоко в :py:meth:`run` — частый паттерн в rob_box_mcp_tools),
+    потому что они несут тот же идентификатор типа, что и top-level
+    импорты, и без них msg-type резолвер показывал бы десятки
+    нерезолвов на ``String`` в MCP-тулзах (issue #2188).
+
+    Only absolute (``level == 0``) imports are tracked — relative imports
+    are rare enough in this repo that resolving them isn't worth the
+    complexity; both fall through to "could not resolve" rather than
+    silently guessing.
     """
     imports: dict[str, tuple[str, str]] = {}
+
+    def _record_from(node: ast.ImportFrom) -> None:
+        if not (node.module and node.level == 0):
+            return
+        for alias in node.names:
+            local = alias.asname or alias.name
+            imports[local] = (node.module, alias.name)
+
+    def _record_import(node: ast.Import) -> None:
+        for alias in node.names:
+            local = alias.asname or alias.name
+            # ``import std_msgs.msg`` binds ``std_msgs.msg`` к ``std_msgs``
+            # (Python: ``import a.b`` → ``a`` is the bound name). Берём
+            # только корневой компонент — он нам нужен для матча
+            # ``std_msgs.msg.String`` в :func:`_msg_type_id`.
+            root = alias.name.split(".", 1)[0]
+            imports[local] = (root, alias.name)
+
     for node in tree.body:
-        if isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
-            for alias in node.names:
-                local = alias.asname or alias.name
-                imports[local] = (node.module, alias.name)
+        if isinstance(node, ast.ImportFrom):
+            _record_from(node)
+        elif isinstance(node, ast.Import):
+            _record_import(node)
+    # Lazy imports inside functions. We rely on the last assignment wins
+    # semantics for the same alias (matches Python's runtime behaviour:
+    # whichever import runs last binds the name).
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            _record_from(node)
+        elif isinstance(node, ast.Import):
+            _record_import(node)
     return imports
 
 
@@ -512,10 +692,34 @@ class TopicHit:
     file: str
     line: int
     kind: str  # "pub" | "sub"
+    # ``msg_type_id`` — нормализованный строковый идентификатор типа
+    # сообщения (``"String"``, ``"std_msgs.msg.String"``,
+    # ``"rob_box_supervisor_msgs.msg.TeleopHeartbeat"``), если получилось
+    # резолвнуть AST-узел статически; ``None`` — если нет (тогда
+    # сравнение типов пропускается, попадает в
+    # ``scan.unresolved_msg_types``). Голое короткое имя
+    # (``"String"``, ``"TeleopHeartbeat"``) — нормальная форма для
+    # сравнения: импорт алиаса не должен скрывать факт расхождения.
+    msg_type_id: str | None = None
 
 
 @dataclass
 class UnresolvedTopic:
+    file: str
+    line: int
+    kind: str
+    expr_src: str
+
+
+@dataclass
+class UnresolvedMsgType:
+    """``create_publisher(Subscribed, ...)``/``create_subscription(...)``
+    call site, где 1-й позиционный аргумент (msg-type) не удалось
+    нормализовать к идентификатору типа — f-строка, вызов функции,
+    нерезолвимый атрибут. Никогда не гейтит CI; печатается в секции
+    «не удалось разрешить» для последующей диагностики вручную.
+    """
+
     file: str
     line: int
     kind: str
@@ -535,6 +739,10 @@ class SeamScan:
     pubs: dict[str, list[TopicHit]] = field(default_factory=dict)
     subs: dict[str, list[TopicHit]] = field(default_factory=dict)
     unresolved: list[UnresolvedTopic] = field(default_factory=list)
+    # ``unresolved_msg_types`` отдельно от ``unresolved`` (топиков),
+    # потому что msg-type может быть нерезолвим даже при известном
+    # имени топика (и наоборот) — это два независимых канала отчёта.
+    unresolved_msg_types: list[UnresolvedMsgType] = field(default_factory=list)
     seam_defs: list[SeamDef] = field(default_factory=list)
     # method_name -> {"prod": count, "test": count}
     seam_usage: dict[str, dict[str, int]] = field(default_factory=dict)
@@ -563,6 +771,110 @@ def _topic_arg(call: ast.Call) -> ast.expr | None:
     return None
 
 
+def _msg_type_arg(call: ast.Call) -> ast.expr | None:
+    """1-й позиционный аргумент ``create_publisher/submission(...)``
+    (msg-type: ``String``, ``TeleopHeartbeat``, ``std_msgs.msg.String``).
+
+    Если когда-нибудь ROS2 примет keyword-аргумент для типа
+    (``msg_type=...``) — добавим сюда; пока все call-sites в репо
+    передают его первым позиционным аргументом.
+    """
+    return call.args[0] if call.args else None
+
+
+def _msg_type_id(
+    node: ast.expr,
+    module_consts: dict[str, str | None],
+    class_consts: dict[str, str | None] | None,
+    local_consts: dict[str, str | None],
+    import_map: dict[str, tuple[str, str]] | None,
+    all_module_consts: dict[str, dict[str, str | None]] | None,
+) -> str | None:
+    """Нормализовать выражение msg-типа к каноническому строковому
+    идентификатору для сравнения между концами шва.
+
+    Возвращает:
+      * ``"String"`` — для ``create_publisher(String, ...)`` (импорт
+        алиаса ``from std_msgs.msg import String as RosString``
+        резолвится через ``import_map`` и сворачивается к тому же
+        короткому имени — иначе alias мог бы маскировать расхождение);
+      * ``"std_msgs.msg.String"`` — для атрибутной формы
+        ``std_msgs.msg.String``;
+      * ``"rob_box_supervisor_msgs.msg.TeleopHeartbeat"`` — то же
+        для длинного IDL-имени;
+      * ``None`` — для f-строк, вызовов функций, нерезолвимых
+        атрибутов; сравнение типов в этом случае пропускается,
+        запись попадает в ``unresolved_msg_types``.
+
+    Важно: ``None`` НЕ означает «совпадают» — это явный отказ от
+    ответа. Если хоть один конец шва ``None``, mismatch не
+    выдаётся (иначе мы бы получили silent-fail ровно того класса,
+    который этот сторож ловит — issue #2188 / ADR-0021 §R3).
+    """
+    # ``str(SomeName)``-обёртка — некоторые ноды пишут
+    # ``create_subscription(str(self._heartbeat_msg_type), ...)``
+    # на всякий случай. Идемпотентно, как у топиков.
+    node = _unwrap_str_call(node)
+    if isinstance(node, ast.Name):
+        local = local_consts.get(node.id)
+        if isinstance(local, str) and local:
+            # Локальная переменная, инициализированная строкой —
+            # редкая форма (msg-type как строка?), трактуем как opaque
+            # идентификатор. На практике не встречается, но и не
+            # мешает — резолв как opaque.
+            return local
+        if class_consts is not None:
+            cls = class_consts.get(node.id)
+            if isinstance(cls, str) and cls:
+                return cls
+        if node.id in module_consts:
+            mc = module_consts[node.id]
+            if isinstance(mc, str) and mc:
+                return mc
+        # import: ``from std_msgs.msg import String`` / ``... as RosString``
+        if import_map and all_module_consts and node.id in import_map:
+            mod, orig = import_map[node.id]
+            # Короткий канонический ID = оригинальное имя импорта
+            # (alias тут НЕ нормализуем: ``from X import Y as Z`` —
+            # ``Y`` это имя типа; ``Z`` — локальный алиас. Если оба
+            # конца используют один и тот же тип под разными алиасами,
+            # orig-имя совпадёт; если типы разные — orig-имена
+            # разойдутся).
+            return orig
+        return None
+    if isinstance(node, ast.Attribute):
+        # ``self.<attr>`` where ``<attr>`` was assigned in the same
+        # class to either a literal, a module-level constant, an
+        # imported name, or the return of a single-line
+        # ``_try_import_xxx()`` helper. All of these flow into
+        # ``class_consts`` via :func:`_class_consts`. Without this
+        # branch, ``create_subscription(self._heartbeat_msg_type, ...)``
+        # would always be unresolved — and since the unresolved side
+        # is then silently dropped from mismatch comparison, this is
+        # exactly the silent-fail class the linter exists to prevent
+        # (issue #2188 / voice-vr 03).
+        if (
+            class_consts is not None
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "self"
+            and isinstance(class_consts.get(node.attr), str)
+        ):
+            return class_consts[node.attr]
+        # Полное dotted имя типа: ``pkg.msg.String``.
+        # Только резолвим, если ``node.value`` — это ``Name`` с
+        # известным imported модулем (например ``std_msgs.msg.String``
+        # где ``std_msgs`` — это ``import std_msgs.msg``). Это НЕ
+        # покрывает ``self.some_attr`` (метод-возвращаемый IDL-тип) —
+        # тот резолвится вручную через ``_try_import_*`` в проде и
+        # намеренно остаётся нерезолвимым здесь: «не знаю» лучше,
+        # чем «совпадают», иначе мы рискуем проглядеть тот самый
+        # silent-fail, ради которого этот сторож и существует.
+        if isinstance(node.value, ast.Name) and node.value.id in (import_map or {}):
+            return node.attr
+        return None
+    return None
+
+
 def _walk_topics(
     node: ast.AST,
     rel: str,
@@ -583,7 +895,7 @@ def _walk_topics(
     """
     for child in ast.iter_child_nodes(node):
         if isinstance(child, ast.ClassDef):
-            new_class_consts = _class_consts(child, module_consts)
+            new_class_consts = _class_consts(child, module_consts, import_map)
             new_declared_params = _declared_params(child)
             _walk_topics(
                 child, rel, module_consts, new_class_consts, local_consts,
@@ -601,6 +913,23 @@ def _walk_topics(
             kind = _topic_call_kind(child)
             if kind is not None:
                 arg = _topic_arg(child)
+                msg_type_expr = _msg_type_arg(child)
+                msg_type_id: str | None = None
+                if msg_type_expr is not None:
+                    msg_type_id = _msg_type_id(
+                        msg_type_expr,
+                        module_consts,
+                        class_consts,
+                        local_consts,
+                        import_map,
+                        all_module_consts,
+                    )
+                    if msg_type_id is None:
+                        scan.unresolved_msg_types.append(
+                            UnresolvedMsgType(
+                                rel, child.lineno, kind, _src(msg_type_expr)
+                            )
+                        )
                 if arg is None:
                     scan.unresolved.append(
                         UnresolvedTopic(rel, child.lineno, kind, _src(child))
@@ -612,7 +941,13 @@ def _walk_topics(
                             UnresolvedTopic(rel, child.lineno, kind, _src(arg))
                         )
                     else:
-                        hit = TopicHit(resolved, rel, child.lineno, kind)
+                        hit = TopicHit(
+                            resolved,
+                            rel,
+                            child.lineno,
+                            kind,
+                            msg_type_id=msg_type_id,
+                        )
                         bucket = scan.pubs if kind == "pub" else scan.subs
                         bucket.setdefault(resolved, []).append(hit)
         _walk_topics(
@@ -733,7 +1068,15 @@ def _load_baseline() -> dict:
     if not BASELINE_FILE.exists():
         print(f"seam_without_consumer: missing baseline {BASELINE_FILE}; run --update-baseline")
         sys.exit(2)
-    return json.loads(BASELINE_FILE.read_text(encoding="utf-8"))
+    baseline = json.loads(BASELINE_FILE.read_text(encoding="utf-8"))
+    # Совместимость со старым форматом baseline (до issue #2188 / voice-vr 03):
+    # секций topic_type_mismatch / topic_type_mismatch_best_effort тогда не
+    # было. Если ключа нет — добавляем как пустой список (новые находки
+    # сразу начнут гейтить CI, если такие появятся). Это лучше, чем ронять
+    # загрузку и путать разработчика.
+    baseline.setdefault("topic_type_mismatch", [])
+    baseline.setdefault("topic_type_mismatch_best_effort", [])
+    return baseline
 
 
 def _empty_baseline() -> dict:
@@ -741,7 +1084,63 @@ def _empty_baseline() -> dict:
         "publishers_without_local_subscriber": [],
         "subscribers_without_local_publisher": [],
         "method_seams_without_caller": [],
+        "topic_type_mismatch": [],
+        "topic_type_mismatch_best_effort": [],
     }
+
+
+def _collect_topic_type_mismatches(scan: SeamScan) -> list[str]:
+    """Список ключей ``"<topic>|<pub_type> != <sub_type>"`` для топиков,
+    у которых ОБА конца шва (pub и sub) резолвнулись к разным
+    msg-типам.
+
+    Топики, где хоть один конец нерезолвим (msg_type_id == None),
+    пропускаются — мы не имеем права утверждать ни «совпадают», ни
+    «различаются». Это сознательно (см. граница применимости
+    в шапке файла).
+    """
+    out: list[str] = []
+    for topic in sorted(scan.pubs.keys() & scan.subs.keys()):
+        pub_types = {h.msg_type_id for h in scan.pubs[topic] if h.msg_type_id}
+        sub_types = {h.msg_type_id for h in scan.subs[topic] if h.msg_type_id}
+        if not pub_types or not sub_types:
+            continue
+        # Сейчас по дизайну один pub-тип и один sub-тип на топик в
+        # репо (если где-то их несколько — конфликт уже на уровне
+        # нескольких pub'ов в одной ноде, что само по себе баг).
+        # Берём первые непустые.
+        pub_t = next(iter(pub_types))
+        sub_t = next(iter(sub_types))
+        if pub_t != sub_t:
+            out.append(f"{topic}|{pub_t} != {sub_t}")
+    return out
+
+
+def _collect_best_effort_mismatches(scan: SeamScan) -> list[str]:
+    """Топики, где одна сторона шва резолвима, а другая — нет.
+
+    Тип-в-стиле ``self._heartbeat_msg_type = self._try_import_xxx()``
+    (issue #2188 / quest_node.py → arbiter_node.py) — sub-тип не
+    резолвится статически, pub-тип резолвится (``String``). Этого
+    достаточно чтобы СИЛЬНО подозревать mismatch, но не достаточно
+    чтобы гейтить CI (sub-тип мог быть и корректным — например,
+    ``self._heartbeat_msg_type = String`` в ленивом импорте).
+
+    Поэтому — отдельная best-effort секция: видна Шифу в выводе,
+    подсвечивает точку, но НЕ считается FAIL (то же поведение,
+    что и «не удалось разрешить» для топиков).
+    """
+    out: list[str] = []
+    for topic in sorted(scan.pubs.keys() & scan.subs.keys()):
+        pub_types = {h.msg_type_id for h in scan.pubs[topic] if h.msg_type_id}
+        sub_types = {h.msg_type_id for h in scan.subs[topic] if h.msg_type_id}
+        if pub_types and not sub_types:
+            pub_t = next(iter(pub_types))
+            out.append(f"{topic}|pub={pub_t} sub=? (unresolved msg-type)")
+        elif sub_types and not pub_types:
+            sub_t = next(iter(sub_types))
+            out.append(f"{topic}|pub=? (unresolved msg-type) sub={sub_t}")
+    return out
 
 
 def cmd_update_baseline(files: list[Path], base_sha: str) -> int:
@@ -767,6 +1166,8 @@ def cmd_update_baseline(files: list[Path], base_sha: str) -> int:
         "publishers_without_local_subscriber": pub_only,
         "subscribers_without_local_publisher": sub_only,
         "method_seams_without_caller": seam_only,
+        "topic_type_mismatch": _collect_topic_type_mismatches(scan),
+        "topic_type_mismatch_best_effort": _collect_best_effort_mismatches(scan),
     }
     BASELINE_FILE.write_text(json.dumps(baseline, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     print(f"seam_without_consumer: baseline written to {_rel(BASELINE_FILE)}")
@@ -857,12 +1258,58 @@ def cmd_check(files: list[Path], baseline: dict) -> int:
                 "  — seam covered by tests only, no production caller"
             )
 
+    print("\n== ROS topics: pub/sub msg-type mismatch (issue #2188 / voice-vr 03) ==")
+    mismatches = _collect_topic_type_mismatches(scan)
+    type_baseline = set(baseline.get("topic_type_mismatch", []))
+    if not mismatches:
+        print("  (none)")
+    for entry in mismatches:
+        topic = entry.split("|", 1)[0]
+        pub_sites = scan.pubs.get(topic, [])
+        sub_sites = scan.subs.get(topic, [])
+        pub_where = "; ".join(f"{h.file}:{h.line}" for h in pub_sites)
+        sub_where = "; ".join(f"{h.file}:{h.line}" for h in sub_sites)
+        if entry in type_baseline:
+            print(
+                f"  [ok ] {entry}  pub={pub_where}  sub={sub_where}  "
+                "— grandfathered, see seam_baseline.json"
+            )
+        else:
+            violations += 1
+            print(
+                f"  [FAIL] {entry}  pub={pub_where}  sub={sub_where}  "
+                "— ROS 2 will not connect pub and sub with different msg types"
+            )
+
+    best_effort = _collect_best_effort_mismatches(scan)
+    best_effort_baseline = set(baseline.get("topic_type_mismatch_best_effort", []))
+    if best_effort:
+        print(
+            "\n== Best-effort mismatch suspects (informational — "
+            "msg-type resolved on one side only, never gates CI) =="
+        )
+        for entry in best_effort:
+            topic = entry.split("|", 1)[0]
+            pub_sites = scan.pubs.get(topic, [])
+            sub_sites = scan.subs.get(topic, [])
+            pub_where = "; ".join(f"{h.file}:{h.line}" for h in pub_sites)
+            sub_where = "; ".join(f"{h.file}:{h.line}" for h in sub_sites)
+            status = (
+                "— grandfathered, see seam_baseline.json"
+                if entry in best_effort_baseline
+                else "— NEW suspect, recommend manual check"
+            )
+            print(f"  [??] {entry}  pub={pub_where}  sub={sub_where}  {status}")
+
     print("\n== Could not resolve (informational — never gates CI) ==")
-    if not scan.unresolved:
+    if not scan.unresolved and not scan.unresolved_msg_types:
         print("  (none)")
     for u in scan.unresolved:
         kind_name = "create_publisher" if u.kind == "pub" else "create_subscription"
         print(f"  [??] {u.file}:{u.line}  {kind_name}(...) topic expr = {u.expr_src}")
+    for u in scan.unresolved_msg_types:
+        kind_name = "create_publisher" if u.kind == "pub" else "create_subscription"
+        print(f"  [??] {u.file}:{u.line}  {kind_name}(...) msg-type expr = {u.expr_src}")
 
     print()
     if violations:
