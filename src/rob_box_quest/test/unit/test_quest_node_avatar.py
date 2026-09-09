@@ -66,17 +66,43 @@ def _make_audio_msg_array(pcm_bytes: bytes):
 def _make_host(*, active_sessions_count: int = 1, ws_for_session: dict | None = None):
     """Минимальный host с интерфейсом, который handler'ы требуют от QuestNode.
 
-    ``ws_server._sessions`` имитируется MagicMock, у которого ``__iter__`` /
-    ``.keys()`` отдают нужные ключи; ``get_active_sessions()`` возвращает
-    переданное значение.
+    ВАЖНО (issue #2232 regression): ``host`` — это ``MagicMock()``, а прод-код
+    в handler'ах делает ``self._current_avatar_request_id is None`` /
+    ``self._current_avatar_ws is None`` / ``self._pick_active_operator_ws()``
+    type guards. На ``MagicMock`` auto-attrs возвращают ``MagicMock`` вместо
+    ``None`` и truthy bool, поэтому без явной инициализации ВСЕ drop-кейсы
+    проваливаются. Контракт:
+
+    * ``host._current_avatar_request_id`` → ``None`` до первой ``request_meta``
+      с ``sink="headset"`` (handler сам проставит строкой).
+    * ``host._current_avatar_ws`` → ``None`` до первой ``request_meta``.
+    * ``host._pick_active_operator_ws()`` → ``None`` если ``active_sessions_count==0``,
+      иначе первый ws из ``_ws_by_session`` (имитация выбора единственной
+      активной сессии из ADR-0055 §quest_node).
+    * ``host.ws_server._sessions`` / ``_ws_by_session`` — dict-семантика
+      (вставка, итерация по insertion order, ``list(.keys())``).
+    * ``host.ws_server.get_active_sessions()`` — int.
     """
     host = MagicMock()
     host.ws_server = MagicMock()
-    # Имитация dict-семантики _sessions.
+    # Имитация dict-семантики _sessions (вставка, итерация по insertion order).
     sessions = ws_for_session or {"sess-1": "ws-object-1"}
-    host.ws_server._sessions = sessions
+    host.ws_server._sessions = dict(sessions)
     host.ws_server._ws_by_session = {k: MagicMock(name=f"ws:{k}") for k in sessions}
     host.ws_server.get_active_sessions = MagicMock(return_value=active_sessions_count)
+    # ADR-0055 §quest_node: handler ставит request_id только после
+    # удачного register_audio_session. До этого — None.
+    host._current_avatar_request_id = None
+    host._current_avatar_ws = None
+    # ADR-0078 §4: кеш sample_rate по request_id (используется в _on_avatar_tts_audio).
+    host._avatar_request_sample_rate = {}
+    if active_sessions_count == 0:
+        host._pick_active_operator_ws = MagicMock(return_value=None)
+    else:
+        first_key = next(iter(sessions))
+        host._pick_active_operator_ws = MagicMock(
+            return_value=host.ws_server._ws_by_session[first_key]
+        )
     return host
 
 
