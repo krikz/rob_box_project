@@ -1243,10 +1243,15 @@ VOICE_LANGUAGES = _VOICE_LANGUAGES_RESOLVED
 del _VOICE_PRESET_IDS_RESOLVED, _VOICE_LANGUAGES_RESOLVED
 
 
-# Дефолтный язык grip-пайплайна до первой синхронизации с панели
-# (должен совпадать с GRIP_DEFAULT_LANGUAGE в supervisor_node.py:362 —
-# иначе оптимистичная подсветка клиента разъедется с тем, что реально
-# применилось).
+# Дефолтный язык grip-пайплайна до первой синхронизации с панели.
+#
+# ADR-0080 §2.7 / issue #2265: ЕДИНСТВЕННЫЙ источник истины для
+# дефолтного языка. ``supervisor_node.GRIP_DEFAULT_LANGUAGE`` и
+# ``ws_server.VOICE_PIPELINE_DEFAULT_LANGUAGE`` — re-export'ы через
+# прямой импорт (тот же приём, что для ``VOICE_PRESET_IDS`` /
+# ``VOICE_LANGUAGES``); правка здесь автоматически доезжает до всех
+# потребителей. Контракт проверяется в
+# ``test_bridge_protocol.test_default_language_is_single_source_of_truth``.
 VOICE_PIPELINE_DEFAULT_LANGUAGE: str = "ru"
 
 

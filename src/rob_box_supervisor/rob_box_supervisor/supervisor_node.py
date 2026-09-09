@@ -371,7 +371,15 @@ GRIP_TTS_SOURCE: str = "operator"
 GRIP_OFF_PRESETS: frozenset[str] = frozenset({"", "none", "off"})
 # Default конфигурации пайплайна до первого /avatar/voice_pipeline:
 # «Без стиля» — грип произносит дословно, без LLM.
-GRIP_DEFAULT_LANGUAGE: str = "ru"
+#
+# ADR-0080 §2.7 / issue #2265: единственный источник истины для
+# дефолтного языка — ``rob_box_core.bridge_protocol.VOICE_PIPELINE_DEFAULT_LANGUAGE``.
+# Раньше тут жила копия «ru» в трёх местах (supervisor_node, ws_server,
+# catalog comment), которая разъезжалась молча. Теперь — алиас через
+# прямой импорт (тот же приём, что для VOICE_PRESET_IDS / VOICE_LANGUAGES,
+# см. комментарий выше и voice-vr 21).
+from rob_box_core.bridge_protocol import VOICE_PIPELINE_DEFAULT_LANGUAGE  # noqa: E402,F401
+GRIP_DEFAULT_LANGUAGE: str = VOICE_PIPELINE_DEFAULT_LANGUAGE  # re-export для обратной совместимости
 
 # Какой ``action`` слать в ``/dialogue/control`` пока супервизор-агент
 # обрабатывает команду оператора. ADR-0066 §6.7: теперь это всегда
