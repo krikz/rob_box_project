@@ -112,16 +112,34 @@ class SQLiteVoiceMemory(MemoryStore):
         Path to the SQLite database file. ``:memory:`` for in-memory
         (useful for tests). ``~`` is expanded to the user's home dir.
         Defaults to ``~/.rob_box/voice.db``.
+    agent:
+        Namespace key written into the ``agent`` column on every row.
+        ADR-0083 §2.4 — both dialogue_node (personality) and
+        supervisor_node (operator) point at the same file; the column
+        is what keeps their facts disjoint. Defaults to ``"default"``
+        so every pre-migration caller (tests, speaker profile helpers,
+        the VoiceMemoryAdapter shim) stays source-compatible. ADR-0083
+        §2.4 / ADR-0055 Phase 2.
     """
 
     name = "sqlite_voice"
 
-    def __init__(self, db_path: str = "~/.rob_box/voice.db") -> None:
+    def __init__(
+        self,
+        db_path: str = "~/.rob_box/voice.db",
+        *,
+        agent: str = "default",
+    ) -> None:
         self._db_path: str = (
             ":memory:"
             if db_path == ":memory:"
             else str(Path(db_path).expanduser().resolve())
         )
+        # ADR-0083 §2.4 — ``agent`` is the per-handle namespace. Stored
+        # on the instance so ``_FACTS_DDL`` / ``_ensure_agent_namespace``
+        # can backfill it; future code paths that take an explicit
+        # ``agent`` kwarg on ``save_fact`` override this default.
+        self._agent: str = agent
         self._conn: sqlite3.Connection | None = None
         self._initialized: bool = False
         # Guards the single shared connection. All SQLite work is pushed
