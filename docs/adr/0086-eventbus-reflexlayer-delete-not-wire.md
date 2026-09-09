@@ -1,4 +1,4 @@
-# ADR-0083: `EventBus` шина отмены и `ReflexLayer` — удалить, не подключать
+# ADR-0086: `EventBus` шина отмены и `ReflexLayer` — удалить, не подключать
 
 | Поле | Значение |
 |---|---|
@@ -9,6 +9,12 @@
 | Затрагивает | `src/rob_box_voice/rob_box_voice/scheduler/reflex.py` (861 LOC — удалить), `src/rob_box_voice/rob_box_voice/scheduler/__init__.py` (re-export `ReflexLayer`, `ReflexEvent`, `ReflexKind`, `ReflexPriority`, `ReflexDecision`, `ReflexMetrics`, `command_to_view`, `DEFAULT_DEBOUNCE_MS`, `DEFAULT_HISTORY_SIZE` — удалить), `src/rob_box_voice/test/test_reflex_layer.py` (850 LOC — удалить), `src/rob_box_voice/test/unit/node/command_reflex_bridge/` (4 файла, 614 LOC — удалить), `src/rob_box_voice/rob_box_voice/command_node.py` (параметр `enable_reflex_layer`, фоновый поток `_bus_thread_main`, `_start_reflex_bridge`, `_init_bus`, `build_parsed_envelope`, `_publish_parsed_async` — ~140 LOC), `docker/vision/config/voice_assistant/command_node.yaml` (строка `enable_reflex_layer: true`), `src/rob_box_voice/rob_box_voice/scheduler/README.md` (упоминание «reflex bridge»), `src/rob_box_voice/rob_box_voice/scheduler/task_scheduler.py` (комментарий в шапке про «reflex bridge»-подписчиков), `docs/architecture/target-operator-agent-and-dialogue.md` §13 строка «7б. `ReflexLayer` ❌ **написан, не подключён**», ADR-0054 (архивировать — задача перекрыта), `CONTEXT.md` (статус спекулятивной генерации / отмены / рефлекса) |
 | Родители | ADR-0018 (честный FAIL — инвариант 12 запрещает «написанное, но не подключённое»), ADR-0080 §2.8 (открытый вопрос №3 — этот ADR закрывает), ADR-0054 (предшественник — реализация моста, не решила корневую проблему), ADR-0082 (образец формата «дрейф-документа ↔ кода»), ADR-AF-0013 (incremental delivery — большие PR не катим), `docs/design/SCHEDULER_DESIGN.md` §8.10 (проектная база reflex-сценариев — устарела) |
 | Связанные | issue #2245 (эта карточка), #1997 (рефлекс-мост, перекрыт), #1993 (ReflexLayer, код), `docs/plans/2026-09-08-archive-triage.md` (подтверждает перекрытие #1997 PR #2048), PR #2048 (ReflexLayer bridge — смержен, но без продового эффекта) |
+
+> **Перенумерован 2026-09-09 из ADR-0083 в ADR-0086.** Номер 0083 занял
+> PR #2247 (`build_agent(spec)`, создан на 24 секунды раньше). 0084 занят
+> PR #2252 (`TurnGuards`), 0085 занят влитым переносом
+> `0080-tars2-renders-metrics-...md` (PR #2257). Следующий свободный —
+> 0086. См. `docs/plans/2026-09-09-voice-vr-architecture-handoff.md` §4.1.
 
 > **TL;DR.** `EventBus` остаётся **внутри `TaskScheduler`** (он там родился и там нужен — для `scheduler.cancel` envelope'ов из `_publish_cancel_event`, C2 #1995). `ReflexLayer` (~861 LOC) + весь мост в `command_node` (~140 LOC) + связанные тесты (~1464 LOC) — **удаляются**. «Стой!» продолжает работать через уже существующий `command_node.handle_stop()` → `action_msgs/srv/CancelGoal` (`command_node.py:467-499`); он не покрывает preemption TTS-чанков, но это **и есть** желаемое поведение (см. ADR-0054 / `scheduler/README.md` §v36 — FIFO voice channel удерживает порядок, обрыв чанка на полуслове ломает state machine). Реализация reflex-сценариев из `SCHEDULER_DESIGN §8.10.6` откладывается до решения владельца по сценарию 7 §7 ниже.
 
@@ -173,14 +179,14 @@ SchedulerToolExecutor» vs «удалить вместе с ReflexLayer») я
 
 | Файл | Что |
 |---|---|
-| `docs/adr/0054-operator-agent-step-7b-eventbus-bridge.md` | В шапке добавить: «**Статус: Archived by ADR-0083, 2026-09-09.** Мост не решил корневую проблему — `ReflexLayer` отменял не на том `TaskScheduler`. См. ADR-0083 §3.4.» |
-| `docs/adr/0080-voice-and-headset-control-eight-seams.md` §2.8 | Заменить «Шина отмены либо отдаётся … либо удаляется вместе с `ReflexLayer`. Держать написанный, но не подключённый механизм запрещено» на «Шина отмены остаётся внутри `TaskScheduler`. `ReflexLayer` удалён ADR-0083.» |
-| `docs/architecture/target-operator-agent-and-dialogue.md` §13 | Строка `7б. ReflexLayer ❌ написан, не подключён` → `7б. ReflexLayer ✅ удалён ADR-0083` |
+| `docs/adr/0054-operator-agent-step-7b-eventbus-bridge.md` | В шапке добавить: «**Статус: Archived by ADR-0086, 2026-09-09.** Мост не решил корневую проблему — `ReflexLayer` отменял не на том `TaskScheduler`. См. ADR-0086 §3.4.» |
+| `docs/adr/0080-voice-and-headset-control-eight-seams.md` §2.8 | Заменить «Шина отмены либо отдаётся … либо удаляется вместе с `ReflexLayer`. Держать написанный, но не подключённый механизм запрещено» на «Шина отмены остаётся внутри `TaskScheduler`. `ReflexLayer` удалён ADR-0086.» |
+| `docs/architecture/target-operator-agent-and-dialogue.md` §13 | Строка `7б. ReflexLayer ❌ написан, не подключён` → `7б. ReflexLayer ✅ удалён ADR-0086` |
 | `docs/architecture/target-operator-agent-and-dialogue.md` §8а.1 таблица | Строка `| ReflexLayer | 656 | **не подключён** | … |` → строка удаляется |
-| `src/rob_box_voice/rob_box_voice/scheduler/README.md` | Убрать упоминание «(reflex bridge, observability)» из строки 91 про cancel-envelope. Добавить в таблицу «Что НЕ входит в MVP» строку `\|\| ReflexLayer / «стой!» через планировщик \| удалено (ADR-0083) \| — \|`. |
+| `src/rob_box_voice/rob_box_voice/scheduler/README.md` | Убрать упоминание «(reflex bridge, observability)» из строки 91 про cancel-envelope. Добавить в таблицу «Что НЕ входит в MVP» строку `\|\| ReflexLayer / «стой!» через планировщик \| удалено (ADR-0086) \| — \|`. |
 | `src/rob_box_voice/rob_box_voice/scheduler/task_scheduler.py:1-44` (docstring) | Убрать фразу «Every successful cancel publishes a `scheduler.cancel` envelope … subscribers (reflex bridge, observability) see the preemption». Заменить на «Every successful cancel publishes a `scheduler.cancel` envelope so observability subscribers can see the preemption». |
 | `src/rob_box_voice/rob_box_voice/scheduler/task_scheduler.py:947-955` | Аналогично — убрать «reflex layer» из перечисления подписчиков. |
-| `CONTEXT.md` | Статус «отмена / рефлекс»: отмена подключена через `scheduler.cancel` envelope, рефлекс удалён ADR-0083. |
+| `CONTEXT.md` | Статус «отмена / рефлекс»: отмена подключена через `scheduler.cancel` envelope, рефлекс удалён ADR-0086. |
 
 ---
 
@@ -286,7 +292,7 @@ asyncio.sleep(...)` воспроизведения, `asyncio.CancelledError` е�
 
 ### 3.4 Почему не вариант «оставить с пометкой»
 
-Оставить модуль с `"""DEPRECATED: see ADR-0083."""` в шапке и
+Оставить модуль с `"""DEPRECATED: see ADR-0086."""` в шапке и
 выключить флаг — рассматривался. Отвергнут, потому что:
 
 - В `__init__.py` re-export остаётся публичным API пакета;
@@ -327,16 +333,16 @@ git revert этого PR + ADR-0054 возвращает всё на место.
 
 Коммиты (для читаемости в git log):
 
-1. `wip(adr-0083): удалить scheduler/reflex.py и связанные тесты`
+1. `wip(adr-0086): удалить scheduler/reflex.py и связанные тесты`
    — `git rm` шести файлов, правка `scheduler/__init__.py` (re-export),
    `scheduler/README.md`, `scheduler/task_scheduler.py` docstring,
    правка `command_node.yaml`.
-2. `wip(adr-0083): удалить мост из command_node.py`
+2. `wip(adr-0086): удалить мост из command_node.py`
    — `command_node.py:14-17, 49-59, 106-126, 143-291, 309-314`.
-3. `wip(adr-0083): синхронизировать документы`
+3. `wip(adr-0086): синхронизировать документы`
    — `target-operator-agent-and-dialogue.md` §13 + §8а.1,
    `CONTEXT.md`, `ADR-0054` (архивная плашка), `ADR-0080` §2.8.
-4. `ci(adr-0083): прогнать pytest + lint`
+4. `ci(adr-0086): прогнать pytest + lint`
 
 Порядок важен: (1) убирает публичный API → (2) убирает вызывающий
 код → (3) убирает документацию. Между (1) и (2) проходит
@@ -375,13 +381,13 @@ git revert этого PR + ADR-0054 возвращает всё на место.
 1. **«Стой!» через прерывание TTS — нужен в проде?**
    Варианты:
    - **(a) Не нужен.** Голосовой канал остаётся FIFO; «стой!» отменяет
-     только Nav2 (как сегодня). Принимаем ADR-0083 как есть.
+     только Nav2 (как сегодня). Принимаем ADR-0086 как есть.
    - **(b) Нужен, но как priority-врезка** (после текущего чанка).
      Уже сделано в ADR-0066 + §8а.3 (`_normalize_tts_priority`). Ничего
      нового не пишем, просто документируем «стой!» через priority.
    - **(c) Нужен, через cancel.** Тогда это **отдельная** карточка
      implementation с честным e2e «„Стой!" во время песни» на
-     живом роботе; ADR-0083 откладывается или отменяется.
+     живом роботе; ADR-0086 откладывается или отменяется.
 
 2. **Архивировать ли ADR-0054 немедленно**, или пометить
    «будет воскрешён при варианте 1(c)»? Рекомендация:
