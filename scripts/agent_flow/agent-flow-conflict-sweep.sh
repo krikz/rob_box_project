@@ -105,6 +105,8 @@ _marker_tag="🤖 [agent:devops] script=agent-flow-conflict-sweep"
 
 # issue_has_recent_marker <issue_num> — проверяет, был ли уже marker в
 # последние WINDOW_HOURS часов. Возвращает 0 если найден (→ idempotent skip).
+# На любой ошибке gh (rate-limit, auth) возвращает 1 (= "не найден"),
+# чтобы скрипт не залип на неудачной проверке идемпотентности.
 issue_has_recent_marker() {
     local _num="$1"
     local _window_start_iso
@@ -116,31 +118,14 @@ issue_has_recent_marker() {
         | grep -qF "$_marker_tag"
 }
 
-# find_merged_pr <issue_num> — ищет MERGED PR ссылающийся на issue.
-# Возвращает "PR#:sha:baseRef:headRef:mergedAt" через stdout или пустую строку.
-# exact-match regex — issue должен быть ПЕРВЫМ или ЕДИНСТВЕННЫМ issue-ref'ом.
-find_merged_pr() {
-    local _num="$1"
-    gh pr list --repo "$GH_REPO" --state merged --search "#${_num}" \
-        --json number,mergeCommit,baseRefName,headRefName,mergedAt,title 2>/dev/null \
-    | python3 -c "
-import json, re, sys
-try:
-    data = json.load(sys.stdin)
-except Exception:
-    sys.exit(0)
-issue = '${_num}'
-for pr in data:
-    mc = pr.get('mergeCommit') or {}
-    oid = mc.get('oid') if isinstance(mc, dict) else None
-    if not oid:
-        continue
-    title = pr.get('title') or ''
-    if re.search(r'(^|[^0-9])#' + issue + r'([^0-9]|\$)', title):
-        print(f'{pr[\"number\"]}:{oid}:{pr.get(\"baseRefName\",\"\")}:{pr.get(\"headRefName\",\"\")}:{pr.get(\"mergedAt\",\"\")}')
-        sys.exit(0)
-"
-}
+# find_merged_pr_helper() — НЕ вызывается напрямую из main loop (он
+# инлайнен для перехвата exit code через PIPESTATUS, см. main loop ниже).
+# Оставлено как документация regex'а: exact-match `(#NNN)([^0-9]|$)`
+# отсекает false-positive от PR с похожим номером в title.
+# ВАЖНО: gh search ловит ЛЮБОЙ issue-number в title (например, PR для #1595
+# может содержать "AV-1 #1595" и попасть под поиск "#1605"). Чтобы избежать
+# false-positive, фильтруем по exact `#NNNN` в title — issue должен быть
+# ПЕРВЫМ или ЕДИНСТВЕННЫМ issue-референсом.
 
 # is_in_base <sha> <base_branch> — проверяет, что mergeCommit sha присутствует
 # в base branch (через `git branch --contains`). Возвращает 0 если найден.
@@ -219,8 +204,56 @@ for issue_num in "${_issues_to_check[@]}"; do
         continue
     fi
 
-    # ищем merged PR
-    _pr_info="$(find_merged_pr "$issue_num" || true)"
+    # ищем merged PR. Если gh вернул non-zero (rate-limit, auth) —
+    # логируем reason и считаем как SKIP (fail-closed: лучше пропустить
+    # один tick, чем закрыть issue без доказательства merged-PR).
+    # ВАЖНО: $(...) это subshell, который проглатывает exit code, поэтому
+    # сначала запускаем gh в pipe, затем читаем ${PIPESTATUS[0]}.
+    # ВАЖНО: set -o pipefail включён, и gh|exit1+python3|exit0 даст rc=1
+    # из-за pipefail. Чтобы перехватить именно rc gh (а не pipefail),
+    # запускаем gh отдельно (вне pipe) и пишем stdout в файл, потом
+    # python3 читает из файла.
+    _gh_rc=0
+    : > /tmp/cs_pr_stdout_$$.txt
+    : > /tmp/cs_pr_err_$$.txt
+    # Отключаем pipefail временно для одного вызова gh — нам нужен
+    # РЕАЛЬНЫЙ exit code gh, а не синтетический от pipefail.
+    # Также добавляем `|| _gh_rc=$?` (не `|| true`) чтобы:
+    #   1. set -e не abort'нул скрипт на non-zero exit
+    #   2. _gh_rc всё равно захватил реальный rc gh (после `|| true`
+    #      $? был бы 0, а это нам НЕ нужно).
+    set +o pipefail
+    gh pr list --repo "$GH_REPO" --state merged --search "#${issue_num}" \
+        --json number,mergeCommit,baseRefName,headRefName,mergedAt,title \
+        > /tmp/cs_pr_stdout_$$.txt \
+        2>/tmp/cs_pr_err_$$.txt || _gh_rc=$?
+    _gh_rc="${_gh_rc:-0}"  # fallback если gh завершился успешно
+    set -o pipefail
+    if [ "$_gh_rc" -ne 0 ]; then
+        _gh_err="$(cat /tmp/cs_pr_err_$$.txt 2>/dev/null | head -3 | tr '\n' ' ')"
+        rm -f /tmp/cs_pr_stdout_$$.txt /tmp/cs_pr_err_$$.txt
+        _skipped=$(( _skipped + 1 ))
+        echo "[$(_now_iso)] conflict-sweep: SKIP #${issue_num} (gh pr list failed rc=${_gh_rc}: ${_gh_err:-no stderr})" >&2
+        continue
+    fi
+    _pr_info="$(python3 -c "
+import json, re, sys
+try:
+    data = json.load(open('/tmp/cs_pr_stdout_' + '$$' + '.txt'))
+except Exception:
+    sys.exit(0)
+issue = '${issue_num}'
+for pr in data:
+    mc = pr.get('mergeCommit') or {}
+    oid = mc.get('oid') if isinstance(mc, dict) else None
+    if not oid:
+        continue
+    title = pr.get('title') or ''
+    if re.search(r'(^|[^0-9])#' + issue + r'([^0-9]|\$)', title):
+        print(f'{pr[\"number\"]}:{oid}:{pr.get(\"baseRefName\",\"\")}:{pr.get(\"headRefName\",\"\")}:{pr.get(\"mergedAt\",\"\")}')
+        sys.exit(0)
+" 2>/dev/null)"
+    rm -f /tmp/cs_pr_stdout_$$.txt /tmp/cs_pr_err_$$.txt
     if [ -z "$_pr_info" ]; then
         _skipped=$(( _skipped + 1 ))
         echo "[$(_now_iso)] conflict-sweep: SKIP #${issue_num} (no merged PR found)" >&2

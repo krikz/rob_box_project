@@ -350,5 +350,62 @@ assert_contains "closed=1" "$STDERR_LOG" "C9: closed=1 несмотря на edi
 assert_contains "gh issue close" "$JOURNAL" "C9: close в journal" || fail "C9 close journal"
 assert_contains "gh issue edit" "$JOURNAL" "C9: edit в journal (label cleanup attempted)" || fail "C9 edit journal"
 
-pass "conflict-sweep: все 9 кейсов прошли"
+# ============================================================================
+# C10. gh pr list returns non-zero (rate-limit / auth) — script logs SKIP
+#      with gh-error reason, NO side-effects. Fail-closed behaviour:
+#      лучше пропустить tick, чем закрыть issue без доказательства
+#      merged-PR (это та же защита от silent-fail, что и в merge-gate).
+# ============================================================================
+cat > "$WORK/issues.json" <<'JSON'
+[{"number":1977,"title":"feat(e2e): synth fallback chain"}]
+JSON
+# Создаём mock-gh, который на pr list возвращает exit 1 + stderr
+# с rate-limit ошибкой.
+cat > "$WORK/bin/gh" <<'EOF'
+#!/bin/bash
+case "$1" in
+    "auth") echo "✓ logged in"; exit 0 ;;
+    "issue")
+        case "$2" in
+            "list")
+                if [ -n "${MOCK_GH_ISSUE_LIST:-}" ] && [ -f "${MOCK_GH_ISSUE_LIST}" ]; then
+                    cat "${MOCK_GH_ISSUE_LIST}"
+                else
+                    echo '[]'
+                fi
+                exit 0 ;;
+            "view"|"comment"|"close"|"edit") exit 0 ;;
+        esac ;;
+    "pr")
+        case "$2" in
+            "list")
+                # Rate-limit симуляция: stderr + exit 1, stdout пустой
+                echo "GraphQL: API rate limit exceeded" >&2
+                exit 1 ;;
+            "view") echo '{}'; exit 0 ;;
+        esac ;;
+    "api")
+        if [ -n "${MOCK_GH_API:-}" ] && [ -f "${MOCK_GH_API}" ]; then
+            cat "${MOCK_GH_API}"
+        else
+            echo '[]'
+        fi
+        exit 0 ;;
+esac
+echo ""
+EOF
+chmod +x "$WORK/bin/gh"
+run_sweep "MOCK_GH_ISSUE_LIST=$WORK/issues.json"
+assert_contains "gh pr list failed rc=1" "$STDERR_LOG" "C10: rate-limit → SKIP с reason в логе" || fail "C10 log"
+assert_contains "closed=0" "$STDERR_LOG" "C10: closed=0 (fail-closed)" || fail "C10 closed counter"
+# journal должен быть пустой — никаких side-effects
+if [ -s "$WORK/journal.txt" ]; then
+    echo "  FAIL: C10: при gh-fail должны быть NO side-effects"
+    cat "$WORK/journal.txt"
+    fail "C10 journal"
+else
+    echo "  ok: C10: gh-fail → no side-effects (fail-closed)"
+fi
+
+pass "conflict-sweep: все 10 кейсов прошли"
 exit 0
