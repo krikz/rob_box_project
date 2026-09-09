@@ -303,6 +303,41 @@ print(json.dumps(keep, ensure_ascii=False))
 # как и весь остальной код agent-flow. _profile_skill_names в hermes-agent
 # использует тот же источник (get_profile_dir()).
 # ---------------------------------------------------------------------------
+# Single source of truth для проверки «установлен ли skill в профиле».
+# Используется и af_skill_for_profile, и af_skills_for_profile — раньше логика
+# дублировалась в двух местах, что разъезжалось при добавлении новых
+# категорий (ретро 09.09.2026, issue #2297).
+#
+# Контракт:
+#   $1 = skills_dir (например /home/builder/.hermes/profiles/backend/skills)
+#   $2 = skill name (без категории, например git-workflow)
+#   rc = 0 если найден, 1 если нет
+#
+# Walk: плоский skills/<skill>/ + категории repo/bundled/devops/autonomous-ai-agents
+# /software-development/productivity/research/process (категории создаются
+# sync-skills.sh и плагинами). Финальный fallback — symlink-following find -L
+# по всему дереву (для свежей раскладки, где категория ещё не symlink).
+# Идентично _profile_skill_names в hermes-agent.
+_skill_installed() {  # $1=skills_dir  $2=skill_name  →  rc 0/1
+    local _sd="$1" _s="$2"
+    [ -n "$_sd" ] && [ -n "$_s" ] || return 1
+    [ -d "$_sd" ] || return 1
+    [ -f "${_sd}/${_s}/SKILL.md" ] \
+        || [ -f "${_sd}/repo/${_s}/SKILL.md" ] \
+        || [ -f "${_sd}/bundled/${_s}/SKILL.md" ] \
+        || [ -f "${_sd}/devops/${_s}/SKILL.md" ] \
+        || [ -f "${_sd}/autonomous-ai-agents/${_s}/SKILL.md" ] \
+        || [ -f "${_sd}/software-development/${_s}/SKILL.md" ] \
+        || [ -f "${_sd}/productivity/${_s}/SKILL.md" ] \
+        || [ -f "${_sd}/research/${_s}/SKILL.md" ] \
+        || [ -f "${_sd}/process/${_s}/SKILL.md" ] \
+        || find -L "$_sd" -maxdepth 4 -path '*/_org' -prune -o \
+           -type f -name SKILL.md -print 2>/dev/null \
+           | grep -q "/${_s}/SKILL.md$" \
+        || return 1
+    return 0
+}
+
 af_skill_for_profile() {  # $1=assignee  $2=labels_csv (optional)
     local _assignee="${1:-}" _labels="${2:-}" _hermes_home _skills_dir _cand
     local _role_candidate _task_candidate _labels_lower
@@ -342,30 +377,11 @@ af_skill_for_profile() {  # $1=assignee  $2=labels_csv (optional)
     fi
 
     # Пробуем сперва task-кандидат, затем роль-кандидат. Проверка установлен-
-    # ности — symlink-following walk (как _profile_skill_names в hermes-agent):
-    # плоский skills/<skill>/ + категории repo/bundled/devops/... (repo/ кладёт
-    # sync-skills.sh). `find -L` — медленный fallback для свежей раскладки
-    # профиля, где категория ещё не symlink.
+    # ности делегирована в top-level _skill_installed — единый источник
+    # правды для всего lib (см. ретро 09.09.2026, issue #2297).
     for _cand in "$_task_candidate" "$_role_candidate"; do
         [ -n "$_cand" ] || continue
-        if [ -f "$_skills_dir/${_cand}/SKILL.md" ] \
-            || [ -f "$_skills_dir/repo/${_cand}/SKILL.md" ] \
-            || [ -f "$_skills_dir/bundled/${_cand}/SKILL.md" ] \
-            || [ -f "$_skills_dir/devops/${_cand}/SKILL.md" ] \
-            || [ -f "$_skills_dir/autonomous-ai-agents/${_cand}/SKILL.md" ] \
-            || [ -f "$_skills_dir/software-development/${_cand}/SKILL.md" ] \
-            || [ -f "$_skills_dir/productivity/${_cand}/SKILL.md" ] \
-            || [ -f "$_skills_dir/research/${_cand}/SKILL.md" ] \
-            || [ -f "$_skills_dir/process/${_cand}/SKILL.md" ]; then
-            printf '%s' "$_cand"
-            return 0
-        fi
-        # Fallback: walk все категории (slow path, но бывает при свежей
-        # раскладке профиля — категория может быть ещё не symlink). Это тот
-        # же алгоритм что и _profile_skill_names, но средствами bash.
-        if find -L "$_skills_dir" -maxdepth 4 -path '*/_org' -prune -o \
-            -type f -name SKILL.md -print 2>/dev/null \
-            | grep -q "/${_cand}/SKILL.md$"; then
+        if _skill_installed "$_skills_dir" "$_cand"; then
             printf '%s' "$_cand"
             return 0
         fi
@@ -419,34 +435,16 @@ af_skills_for_profile() {  # $1=assignee  $2=labels_csv  $3=pr_flag
     _skills_dir="${_hermes_home}/profiles/${_assignee}/skills"
     [ -d "$_skills_dir" ] || return 0
 
-    # Проверка установленности skill в профиле (symlink-following walk,
-    # совпадает с логикой af_skill_for_profile). Возвращает 0 если найден.
-    _skill_installed() {
-        local s="$1"
-        [ -f "${_skills_dir}/${s}/SKILL.md" ] \
-            || [ -f "${_skills_dir}/repo/${s}/SKILL.md" ] \
-            || [ -f "${_skills_dir}/bundled/${s}/SKILL.md" ] \
-            || [ -f "${_skills_dir}/devops/${s}/SKILL.md" ] \
-            || [ -f "${_skills_dir}/autonomous-ai-agents/${s}/SKILL.md" ] \
-            || [ -f "${_skills_dir}/software-development/${s}/SKILL.md" ] \
-            || [ -f "${_skills_dir}/productivity/${s}/SKILL.md" ] \
-            || [ -f "${_skills_dir}/research/${s}/SKILL.md" ] \
-            || [ -f "${_skills_dir}/process/${s}/SKILL.md" ] \
-            || find -L "$_skills_dir" -maxdepth 4 -path '*/_org' -prune -o \
-               -type f -name SKILL.md -print 2>/dev/null \
-               | grep -q "/${s}/SKILL.md\$" \
-            || return 1
-        return 0
-    }
-
     # Дедуп helper: добавляет $_cand в _skills_out только если ещё нет.
+    # Проверка установленности делегирована в top-level _skill_installed
+    # (единый источник правды, ретро 09.09.2026, issue #2297).
     _add_skill() {
         local s="$1"
         [ -n "$s" ] || return 0
         case " $_seen " in
             *" $s "*) return 0 ;;
         esac
-        _skill_installed "$s" || return 0
+        _skill_installed "$_skills_dir" "$s" || return 0
         _skills_out+=("$s")
         _seen="$_seen $s"
     }
