@@ -326,13 +326,21 @@ preset, language}` или `voice_set_nack` с reason.
 > | `preset` (AV-28) | `technical` \| `street` \| `caveman` \| `business` \| `philosopher` \| `lenin` (стиль речи из `voice_presets.yaml`) |
 > | `language` | `ru` \| `en` (язык вывода LLM-перефразирования и TTS) |
 >
-> Маршрут: UI → ws_server → Bridge → `/avatar/set_voice_preset` (или
-> `/avatar/set_voice_language`) → avatar_supervisor → `SetParameters`
-> на `dialogue_node`. Supervisor — единственная точка записи
-> (ADR-0028 S5); прямых `SetParameters` из `rob_box_quest` нет.
+> **voice-vr 21 / ADR-0080 §2.7 (актуализировано):** `dialogue_node` больше
+> не имеет параметров `voice_preset` / `voice_output_language` (удалены), и
+> supervisor больше не делает `SetParameters` — ни на `dialogue_node`, ни на
+> любую другую ноду (инвариант ADR-0080 §1.6). Маршрут `UI → ws_server →
+> Bridge → /avatar/set_voice_preset` (или `/avatar/set_voice_language`) →
+> avatar_supervisor остался как легаси-приёмник: whitelist-валидация +
+> `voice_set_ack`/`nack` для UI, но применённое значение больше никуда не
+> пишется и не влияет на звучание. Реальный стиль/язык грип-пайплайна
+> задаётся отдельным каналом — `/avatar/voice_pipeline` (issue #1989, см.
+> `supervisor_node._on_grip_voice_pipeline`), читающим `voice_presets.yaml`
+> напрямую через `grip_pipeline.load_voice_presets()`.
 >
-> Whitelist — единый на стороне ws_server (`VOICE_PRESET_IDS` /
-> `VOICE_LANGUAGES`) и supervisor. Невалидное значение →
+> Whitelist — единый источник `rob_box_core.bridge_protocol.VOICE_PRESET_IDS`/
+> `VOICE_LANGUAGES` (зеркало `voice_presets.yaml`), ws_server и supervisor
+> импортируют его, никаких локальных копий. Невалидное значение →
 > `voice_set_nack{reason: "invalid_voice_preset" | "invalid_voice_language"}`,
 > UI откатывает optimistic update.
 >

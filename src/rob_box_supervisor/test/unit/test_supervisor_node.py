@@ -115,13 +115,18 @@ class TestAvatarSupervisorDoesNotMutateExternalState(unittest.TestCase):
             self.assertNotIn("twist_mux", t)
 
     def test_no_set_parameter_calls_for_dialogue_via_pubs(self) -> None:
-        """Нет publisher-ов на /voice/ (кроме /voice/tts/request, шаг 4б) +
+        """Нет publisher-ов на /voice/ (кроме /voice/tts/request, шаг 4б, и
+        /voice/tts/set_voice, voice-vr 21 / ADR-0080 §2.7) +
         в /dialogue/ — только ``/dialogue/control`` (ADR-0066 §6.7,
-        pause/resume для личности). Голос-параметры — через параметр-клиенты
-        под mode=active, не топики.
+        pause/resume для личности). Голос-параметры — через топик
+        /voice/tts/set_voice (НЕ записью в чужие ROS-параметры), голос
+        личности — yaml-direct через ``grip_pipeline``.
         """
         voice_pubs = [t for t in self.node._publishers if t.startswith("/voice/")]
-        self.assertEqual(voice_pubs, ["/voice/tts/request"])
+        self.assertEqual(
+            sorted(voice_pubs),
+            sorted(["/voice/tts/request", "/voice/tts/set_voice"]),
+        )
         dialogue_pubs = [
             t for t in self.node._publishers if t.startswith("/dialogue/")
         ]
@@ -292,7 +297,9 @@ class TestAvatarSupervisorVoicePresetsAndLanguage(unittest.TestCase):
     """AV-28 §P7 — супервизор владеет voice_preset + voice_output_language.
 
     Маршрут: UI → ws_server.set_voice → Bridge → /avatar/set_voice_preset
-    (или _language) → supervisor → SetParameters на dialogue_node.
+    (или _language) → supervisor (валидация whitelist + фиксация в
+    grip_pipeline.yaml-direct, voice-vr 21 / ADR-0080 §2.7 — больше
+    НЕ пишет в чужие ROS-параметры).
     Симметрично TestAvatarSupervisorVoiceMode (выше), но для параметров
     стиля речи и языка вывода, которые появились в Phase 3 (AV-28).
     """
@@ -334,14 +341,26 @@ class TestAvatarSupervisorVoicePresetsAndLanguage(unittest.TestCase):
         self.assertIn("invalid_voice_language", reason)
 
     def test_whitelists_match_ws_server_and_yaml(self) -> None:
-        """Whitelist'ы супервизора = ws_server.VOICE_* = voice_presets.yaml.
+        """Whitelist'ы = ws_server.VOICE_* = ``rob_box_core.bridge_protocol``
+        (здесь SoT для ``voice_presets.yaml``) = yaml-источник.
 
-        Разъехавшись, они дают молчаливый отказ: ws_server отвечает
-        Quest'у ack, а супервизор роняет запрос в applied=False. Так уехали
-        `translate` и языки fr/de/zh/hi — оператор жал кнопку, UI
+        voice-vr 21: один источник (``bridge_protocol``), и ws_server /
+        supervisor импортируют его же, а не держат локальную копию.
+        Разъехавшись, они давали молчаливый отказ: ws_server отвечал
+        Quest'у ack, а супервизор ронял запрос в applied=False. Так уехали
+        ``translate`` и языки fr/de/zh/hi — оператор жал кнопку, UI
         подсвечивал выбор, робот его не получал.
         """
         import yaml
+
+        from rob_box_quest.server.ws_server import (
+            VOICE_LANGUAGES as WS_LANGUAGES,
+            VOICE_PRESET_IDS as WS_PRESETS,
+        )
+        from rob_box_core.bridge_protocol import (
+            VOICE_LANGUAGES as CATALOG_LANGUAGES,
+            VOICE_PRESET_IDS as CATALOG_PRESETS,
+        )
 
         yaml_path = (
             pathlib.Path(__file__).resolve().parents[3]
@@ -350,12 +369,22 @@ class TestAvatarSupervisorVoicePresetsAndLanguage(unittest.TestCase):
             / "voice_presets.yaml"
         )
         data = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
-        self.assertEqual(set(data["presets"].keys()), set(VOICE_PRESET_IDS))
-        self.assertEqual(
-            {str(code).lower() for code in data["languages"]},
-            set(VOICE_LANGUAGES),
-        )
-        # Класс валидирует ровно этими списками (второй копии больше нет).
+        yaml_presets = set(data["presets"].keys())
+        yaml_languages = {str(code).lower() for code in data["languages"]}
+        # 1. YAML — финальный источник истины.
+        self.assertEqual(yaml_presets, set(VOICE_PRESET_IDS))
+        self.assertEqual(yaml_languages, set(VOICE_LANGUAGES))
+        # 2. Каталог (bridge_protocol) — переэкспорт этой же константы,
+        #    должен быть биткомпактен с YAML (иначе codegen рассинхронится).
+        self.assertEqual(yaml_presets, set(CATALOG_PRESETS))
+        self.assertEqual(yaml_languages, set(CATALOG_LANGUAGES))
+        # 3. ws_server — это symlink ``bridge_protocol``,
+        #    должен быть идентичен ему (адрес регресс — три копии списка).
+        self.assertEqual(set(WS_PRESETS), set(CATALOG_PRESETS))
+        self.assertEqual(set(WS_LANGUAGES), set(CATALOG_LANGUAGES))
+        # 4. Класс валидирует ровно этими списками — второй копии
+        #    на классе быть не должно (ранее был ``_AV28_*``, который
+        #    и разъезжался с ws_server).
         self.assertEqual(set(self.node._AV28_PRESET_IDS), set(VOICE_PRESET_IDS))
         self.assertEqual(set(self.node._AV28_LANGUAGES), set(VOICE_LANGUAGES))
 
@@ -374,25 +403,22 @@ class TestAvatarSupervisorVoicePresetsAndLanguage(unittest.TestCase):
         self.assertEqual(reason, "empty_voice_language")
 
     def test_active_mode_dispatches_preset(self) -> None:
-        """В active режиме валидный preset → SetParameters(voice_preset=...)."""
+        """voice-vr 21: валидный preset в active → ``applied`` без
+        записи в чужие ROS-параметры dialogue_node (ADR-0080 §2.7).
+        Живой путь — ``grip_pipeline`` yaml-direct, поэтому проверяем
+        только факт валидации whitelist'а + сигнатуру возврата; никаких
+        побочных эффектов на mock-rclpy быть не должно.
+        """
         self.node._mode = "active"
-        self.node._set_dialogue_param = MagicMock()
         applied, reason = self.node._apply_voice_preset("philosopher")
         self.assertTrue(applied)
         self.assertEqual(reason, "applied")
-        self.node._set_dialogue_param.assert_called_once_with(
-            "voice_preset", "philosopher"
-        )
 
     def test_active_mode_dispatches_language(self) -> None:
         self.node._mode = "active"
-        self.node._set_dialogue_param = MagicMock()
         applied, reason = self.node._apply_voice_language("en")
         self.assertTrue(applied)
         self.assertEqual(reason, "applied")
-        self.node._set_dialogue_param.assert_called_once_with(
-            "voice_output_language", "en"
-        )
 
     def test_on_set_voice_preset_feeds_apply(self) -> None:
         """Топик → _apply_voice_preset; в monitor применяется=false."""
@@ -409,17 +435,135 @@ class TestAvatarSupervisorVoicePresetsAndLanguage(unittest.TestCase):
         self.node._on_set_voice_language(_make_string_msg("ru"))
         self.node._apply_voice_language.assert_called_once_with("ru")
 
-    def test_param_set_failure_reported(self) -> None:
-        """Ошибка RPC SetParameters должна отдаваться как param_set_failed,
-        а не валить ноду (BLE001-семейство ошибок)."""
+    def test_active_mode_no_set_parameters_call(self) -> None:
+        """voice-vr 21: ``_apply_voice_*`` НЕ пишет в чужие ROS-параметры
+        (визуальная регрессия на ADR-0080 §2.7 — единственная живая
+        проточка параметров — tts_node picker через /voice/tts/set_voice
+        топик, не через клиент записи). Раньше были
+        ``_set_dialogue_param`` + ``_set_tts_voice_param`` mocks;
+        теперь атрибуты вообще не должны существовать на классе.
+        """
         self.node._mode = "active"
-        self.node._set_dialogue_param = MagicMock(
-            side_effect=RuntimeError("service unavailable")
+        # Атрибут не должен существовать ни на инстансе, ни на классе.
+        self.assertFalse(
+            hasattr(self.node, "_set_dialogue_param"),
+            "voice-vr 21: _set_dialogue_param удалён; "
+            "supervisor не пишет в чужие ROS-параметры",
         )
+        # voice-vr 21 / ADR-0080 §2.7: то же для tts_node.
+        self.assertFalse(
+            hasattr(self.node, "_set_tts_voice_param"),
+            "voice-vr 21: _set_tts_voice_param удалён; "
+            "supervisor пишет в tts_node через /voice/tts/set_voice, "
+            "а не клиентом записи параметров",
+        )
+        # Старое поведение, которое роняло узел через param_set_failed,
+        # теперь недостижимо. Гарантируем, что _apply всё равно не падает
+        # (нет шинного RPC, поэтому нечего ловить).
         applied, reason = self.node._apply_voice_preset("street")
-        self.assertFalse(applied)
-        self.assertIn("param_set_failed", reason)
-        self.assertIn("service unavailable", reason)
+        self.assertTrue(applied)
+        self.assertEqual(reason, "applied")
+
+    def test_apply_set_voice_publishes_to_tts_set_voice_topic(self) -> None:
+        """voice-vr 21 / ADR-0080 §2.7 — ``_apply_set_voice`` в active
+        публикует JSON в ``/voice/tts/set_voice`` (НЕ клиентом записи).
+        Регрессия на регрессию: после удаления ``_set_tts_voice_param``
+        живой write-side для голоса tts_node — это топик-контракт.
+        """
+        from unittest.mock import MagicMock
+
+        from rob_box_supervisor.supervisor_node import SET_TTS_VOICE_TOPIC
+
+        self.node._mode = "active"
+        # Подменяем publisher на MagicMock чтобы перехватить publish().
+        self.node._set_voice_tts_pub = MagicMock()
+        applied, reason = self.node._apply_set_voice("alena", provider_hint="yandex")
+        self.assertTrue(applied)
+        self.assertEqual(reason, "applied:yandex")
+        # Проверяем что publish был вызван с правильным JSON.
+        self.node._set_voice_tts_pub.publish.assert_called_once()
+        # Извлекаем RosString.data из вызова.
+        call_args = self.node._set_voice_tts_pub.publish.call_args
+        ros_msg = call_args[0][0]
+        import json as _json
+        payload = _json.loads(ros_msg.data)
+        self.assertEqual(payload["voice_id"], "alena")
+        self.assertEqual(payload["provider"], "yandex")
+        self.assertEqual(payload["source"], "set_voice")
+        # topic объявлен в SET_TTS_VOICE_TOPIC.
+        self.assertEqual(SET_TTS_VOICE_TOPIC, "/voice/tts/set_voice")
+
+    def test_no_set_parameters_call_to_dialogue_node_in_source(self) -> None:
+        """voice-vr 21 / ADR-0080 §2.7 — DoD-критерий: в исходниках
+        ``AvatarSupervisor`` не должно быть НИ ОДНОГО живого
+        клиента записи в чужие ROS-параметры на
+        ``/dialogue_node/set_parameters`` или
+        ``/tts_node/set_parameters``.
+
+        Это регрессия на регрессию: до #2243 (голос-vr 21) были
+        ``_set_dialogue_param`` + ``_set_tts_voice_param`` с ленивыми
+        клиентами к этим сервисам, которые слали ``voice_preset``/
+        ``voice_output_language`` (мёртвая запись — ADR-0066 §6.3,
+        dialogue_node только логировал) и ``yandex_voice``/
+        ``minimax_voice``/``silero_speaker`` (живая запись, но
+        сцеплённая с внутренней схемой имён tts_node).
+        «Мёртвый»/«знание-схемы» write-side — кандидат на повторную
+        регрессию при будущих карточках, ловим текстовым grep.
+        """
+        import pathlib
+
+        # Ищем ``src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py``
+        # относительно файла теста:
+        #   parents[0] = test/unit/
+        #   parents[1] = test/
+        #   parents[2] = src/rob_box_supervisor/      ← тут лежит «наш» пакет
+        #   parents[3] = src/
+        # Поэтому идём через ``parents[2]`` + ``rob_box_supervisor/``.
+        src_path = (
+            pathlib.Path(__file__).resolve().parents[2]
+            / "rob_box_supervisor"
+            / "supervisor_node.py"
+        )
+        if not src_path.is_file():
+            # Fallback для редкого cwd=src/rob_box_supervisor/test/unit.
+            src_path = pathlib.Path(__file__).resolve().parents[1] / "supervisor_node.py"
+        # Читаем исходник и выделяем «живые» строки (без комментариев и
+        # docstrings) — иначе любой docstring про запись в чужие
+        # параметры роняет тест.
+        live_lines = []
+        for raw in src_path.read_text(encoding="utf-8").splitlines():
+            stripped = raw.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            # Простое определение docstring (грубое, но достаточное для
+            # нашего файла — он не использует nested docstring):
+            if stripped.startswith(('"""', "'''")):
+                continue
+            live_lines.append(stripped)
+        live = "\n".join(live_lines)
+        # DoD: write-side в чужие ROS-параметры не должен встречаться
+        # как живой код. Конкретно:
+        # * нет /dialogue_node/set_parameters (был _set_dialogue_param);
+        # * нет /tts_node/set_parameters (был _set_tts_voice_param);
+        # * нет create_client(.../set_parameters) вообще.
+        for forbidden in (
+            "/dialogue_node/set_parameters",
+            "/tts_node/set_parameters",
+            "_set_dialogue_param",
+            "_set_tts_voice_param",
+            "_voice_param_key_for",
+            "_tts_param_client",
+            "_dialogue_param_client",
+            '"/dialogue_node/set_parameters"',
+            '"/tts_node/set_parameters"',
+        ):
+            self.assertNotIn(
+                forbidden,
+                live,
+                f"voice-vr 21: forbidden live reference to {forbidden!r} "
+                f"in supervisor_node.py — supervisor должен перестать "
+                f"писать в чужие ROS-параметры (ADR-0080 §2.7)",
+            )
 
 
 if __name__ == "__main__":

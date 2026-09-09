@@ -1512,6 +1512,19 @@ class TTSNode(Node):
             String, "/voice/tts/set_provider", self._on_set_provider, 10
         )
 
+        # ADR-0080 §2.7 / voice-vr 21: явный контракт смены голоса.
+        # ``supervisor_node`` НЕ пишет в ``yandex_voice``/``minimax_voice``/
+        # ``silero_speaker`` через SetParameters (это знание внутренней
+        # схемы имён) — он публикует JSON ``{"voice_id", "provider"?, "source"?}``
+        # в этот топик, и tts_node сам применяет к атрибуту (согласно
+        # «живой» таблице ``_LIVE_VOICE_PARAMS``). ``parameters_callback``
+        # остаётся — он по-прежнему принимает прямые ``ros2 param set``/
+        # MCP-SetVoice без провайдера, см. bug #2183 — но из
+        # supervisor_node SetParameters-контракт на tts_node УДАЛЁН.
+        self.set_voice_sub = self.create_subscription(
+            String, "/voice/tts/set_voice", self._on_set_voice, 10
+        )
+
         # Публикация аудио и состояния
         if self.audio_qos_reliability == "best_effort":
             audio_reliability = ReliabilityPolicy.BEST_EFFORT
@@ -2196,6 +2209,131 @@ class TTSNode(Node):
                 self.get_logger().debug(
                     f"cancel_pregen on provider switch failed: {exc!r}"
                 )
+
+    # === set_voice helpers (ADR-0080 §2.7 / voice-vr 21) ===================
+    #
+    # Вынесены из ``_on_set_voice`` для удержания CC ≤ 15 (ADR-0021).
+    # Каждый хелпер делает одну вещь: парсинг / резолв провайдера /
+    # маппинг провайдер→параметр / применение.
+
+    @staticmethod
+    def _parse_set_voice_payload(msg: String) -> dict[str, Any] | None:
+        """Распарсить JSON-payload из ``/voice/tts/set_voice``.
+
+        Возвращает dict или ``None`` (битый JSON / не dict — handler
+        логирует warning и выходит).
+        """
+        try:
+            payload = json.loads(msg.data) if msg.data else {}
+        except (TypeError, ValueError):
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    @staticmethod
+    def _resolve_set_voice_provider(
+        payload: dict[str, Any], voice_id: str
+    ) -> str | None:
+        """Резолв провайдера: явный hint → registry fallback.
+
+        Возвращает ``"yandex"`` / ``"minimax"`` / ``"silero"`` или
+        ``None``. Registry может отсутствовать — тогда fallback
+        молча пропускается (он best-effort).
+        """
+        provider_raw = payload.get("provider")
+        if isinstance(provider_raw, str) and provider_raw.strip():
+            return provider_raw.strip().lower()
+        try:
+            from .tts_voice_registry import voices_for as _voices_for  # noqa: PLC0415
+        except Exception:  # noqa: BLE001 — registry недоступен
+            return None
+        for p in ("yandex", "minimax", "silero"):
+            if voice_id in _voices_for(p):
+                return p
+        return None
+
+    @staticmethod
+    def _param_for_set_voice_provider(provider: str) -> tuple[str, str] | None:
+        """Провайдер → ``(param_name, display_name)``.
+
+        ``param_name`` — это имя атрибута ``TTSNode``, который
+        хранит живой выбор (например ``yandex_voice``). ``None``
+        если провайдер неизвестен — handler DROP.
+        """
+        for name, (display, prov) in _LIVE_VOICE_PARAMS.items():
+            if prov == provider:
+                return name, display
+        return None
+
+    def _apply_set_voice(
+        self,
+        param_name: str,
+        display_name: str,
+        provider: str,
+        voice_id: str,
+        source: str,
+    ) -> None:
+        """Применить голос: ``setattr`` + лог + bonus info.
+
+        На этом шаге ошибок быть не должно (валидация выше), но
+        try/except оставлен как defense-in-depth — supervisor
+        не должен падать, если setattr неожиданно кинул.
+        """
+        try:
+            setattr(self, param_name, voice_id)
+            self._log_voice_param_applied(display_name, provider, voice_id)
+            self.get_logger().info(
+                f"🎙️ [voice-vr 21] set_voice applied: {display_name} "
+                f"voice_id={voice_id} (source={source})"
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(
+                f"⚠️ [voice-vr 21] set_voice: failed to apply "
+                f"{param_name}={voice_id!r}: {exc!r}"
+            )
+
+    def _on_set_voice(self, msg: String):
+        """ADR-0080 §2.7 / voice-vr 21 — явный контракт смены голоса TTS.
+
+        ``supervisor_node`` больше НЕ пишет в ``yandex_voice``/
+        ``minimax_voice``/``silero_speaker`` через SetParameters
+        (знание внутренней схемы имён); он публикует JSON в топик
+        ``/voice/tts/set_voice``, и этот handler применяет голос.
+
+        Wire-формат: ``{"voice_id": str, "provider"?: str, "source"?: str}``.
+        Логика вынесена в ``_parse_set_voice_payload``,
+        ``_resolve_set_voice_provider``, ``_param_for_set_voice_provider``,
+        ``_apply_set_voice`` — этот метод остаётся диспетчером
+        (CC ≤ 15, см. ADR-0021).
+        """
+        payload = self._parse_set_voice_payload(msg)
+        if payload is None:
+            self.get_logger().warning(
+                "⚠️ [voice-vr 21] set_voice: bad JSON or non-dict payload"
+            )
+            return
+        voice_id_raw = payload.get("voice_id")
+        if not isinstance(voice_id_raw, str) or not voice_id_raw.strip():
+            self.get_logger().warning(
+                "⚠️ [voice-vr 21] set_voice: missing or empty voice_id"
+            )
+            return
+        voice_id = voice_id_raw.strip()
+        provider = self._resolve_set_voice_provider(payload, voice_id)
+        if not provider:
+            self.get_logger().warning(
+                f"⚠️ [voice-vr 21] set_voice: cannot resolve provider for "
+                f"voice_id={voice_id!r}; dropping"
+            )
+            return
+        mapped = self._param_for_set_voice_provider(provider)
+        if mapped is None:
+            self.get_logger().warning(
+                f"⚠️ [voice-vr 21] set_voice: unknown provider={provider!r}; dropping"
+            )
+            return
+        param_name, display_name = mapped
+        source = payload.get("source", "unknown")
+        self._apply_set_voice(param_name, display_name, provider, voice_id, source)
 
     def dialogue_callback(self, msg: String):
         """Обработка JSON chunks от ``/voice/tts/request`` — ЕДИНЫЙ вход синтезатора.

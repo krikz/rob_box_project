@@ -467,26 +467,40 @@ class Bridge(Protocol):
 
     # ── AV-28 §P7 (issue #1920) — voice style preset + language ──────────────
     # Эти методы отвечают за смену СТИЛЯ речи (technical / street / caveman /
-    # business / philosopher / lenin) и языка вывода на ``dialogue_node``.
+    # business / philosopher / lenin) и языка вывода.
     # ВНИМАНИЕ: «preset» здесь — это стиль речи (style preset), а НЕ
     # TTS-вариант из ``set_voice(voice_id, preset)`` выше. Контракт
-    # разный: AV-27 «preset» — на стороне tts_node, AV-28 — на стороне
-    # dialogue_node. Никакого пересечения в рантайме.
+    # разный: AV-27 «preset» — на стороне tts_node, AV-28 — историческая
+    # привязка к dialogue_node (см. ниже — актуальность утрачена).
+    #
+    # voice-vr 21 / ADR-0080 §2.7: dialogue_node больше НЕ имеет параметров
+    # ``voice_preset`` / ``voice_output_language`` (удалены — формализация
+    # переехала в ``grip_pipeline`` супервизора, читает yaml напрямую).
+    # Супервизор больше не делает ``SetParameters`` вообще. Топики
+    # ``/avatar/set_voice_preset`` / ``/avatar/set_voice_language`` всё ещё
+    # принимаются и валидируются по whitelist (ack/nack для UI), но
+    # результат только логируется — реального эффекта на речь у них нет.
+    # Живой путь смены стиля/языка грипа — ``publish_voice_pipeline`` ниже.
     def set_voice_preset(self, preset: str) -> None:
-        """AV-28 §P7: выставить ``voice_preset`` на ``dialogue_node``.
+        """AV-28 §P7: запросить смену ``voice_preset`` (легаси-канал).
 
-        Публикует запрос в ``/avatar/set_voice_preset``; супервизор
-        делает ``SetParameters(voice_preset=<preset>)`` (ADR-0028 S5).
+        Публикует запрос в ``/avatar/set_voice_preset``. Супервизор
+        валидирует по whitelist и отвечает ack/nack, но НЕ пишет в чужие
+        ROS-параметры (ADR-0080 §2.7) — dialogue_node больше не имеет
+        параметра ``voice_preset``, писать было бы куда. Приём — только
+        лог на стороне супервизора. Для реального изменения поведения
+        грип-пайплайна используйте ``publish_voice_pipeline``.
         """
         ...
 
     def set_voice_language(self, language: str) -> None:
-        """AV-28 §P7: выставить ``voice_output_language`` на ``dialogue_node``.
+        """AV-28 §P7: запросить смену ``voice_output_language`` (легаси-канал).
 
-        Публикует запрос в ``/avatar/set_voice_language``; супервизор
-        делает ``SetParameters(voice_output_language=<language>)``
-        (ADR-0028 S5). Без рестарта dialogue_node — параметр
-        подхватывается на следующей фразе.
+        Публикует запрос в ``/avatar/set_voice_language``. Как и
+        ``set_voice_preset`` — только whitelist-валидация + ack/nack +
+        лог на супервизоре; ``SetParameters`` на dialogue_node не
+        делается (параметра там больше нет, ADR-0080 §2.7). Реальный
+        язык грип-пайплайна меняется через ``publish_voice_pipeline``.
         """
         ...
 
