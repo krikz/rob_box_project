@@ -55,6 +55,11 @@ CREATE TABLE IF NOT EXISTS facts (
     key         TEXT    NOT NULL,
     value       TEXT    NOT NULL,
     scope       TEXT    NOT NULL,
+    -- ADR-0083 §2.4 / ADR-0055 Phase 2 — agent namespace column. The
+    -- default ('default') preserves rows written before migration 011
+    -- (when the column did not exist); later code path upgrades those
+    -- rows via the inline backfill in ``_ensure_agent_namespace``.
+    agent       TEXT    NOT NULL DEFAULT 'default',
     metadata_json TEXT,
     created_at  REAL    NOT NULL DEFAULT (strftime('%s', 'now'))
 );
@@ -93,6 +98,7 @@ CREATE TABLE IF NOT EXISTS event_profile (
 
 _INDEXES_DDL = [
     "CREATE INDEX IF NOT EXISTS idx_facts_scope_key ON facts(scope, key);",
+    "CREATE INDEX IF NOT EXISTS idx_facts_agent ON facts(agent);",
     "CREATE INDEX IF NOT EXISTS idx_faq_event ON faq_items(event_id);",
 ]
 
@@ -151,6 +157,14 @@ class SQLiteVoiceMemory(MemoryStore):
         await self._run_sync(lambda conn: conn.execute(_WAYPOINTS_DDL))
         await self._run_sync(lambda conn: conn.execute(_FAQ_ITEMS_DDL))
         await self._run_sync(lambda conn: conn.execute(_EVENT_PROFILE_DDL))
+        # ADR-0083 §2.4 — inline upgrade for pre-migration-011 databases.
+        # Idempotent: ``PRAGMA table_info`` decides whether the column is
+        # missing; if it is, we add it and backfill the namespace. Mirrors
+        # the precedent in ``voice_memory.py:_ensure_speaker_id_columns``
+        # (issue #1770) — the alternative of running the full migrations
+        # stream against this DB is NOT safe (see 006_music_github_presets
+        # incident).
+        await self._run_sync(self._ensure_agent_namespace)
         for idx_ddl in _INDEXES_DDL:
             await self._run_sync(lambda conn, d=idx_ddl: conn.execute(d))
 
@@ -222,9 +236,71 @@ class SQLiteVoiceMemory(MemoryStore):
         except sqlite3.Error:
             pass
 
+    # ── migration helpers ──────────────────────────────────────
+
+    def _ensure_agent_namespace(self, conn: sqlite3.Connection) -> None:
+        """Idempotently add the ``agent`` column to ``facts`` (ADR-0083 §2.4).
+
+        Pre-011 databases store facts without the agent namespace;
+        a fresh build gets the column via ``_FACTS_DDL`` and this method
+        is a no-op. When the column is missing we ``ALTER TABLE`` it in,
+        then run the deterministic backfill described in
+        ``migrations/011_agent_namespace.sql``:
+
+        * ``scope = 'mcp:legacy'``        → ``agent='personality'``
+          (VoiceMemoryAdapter Phase 1 rows that ADR-0055 §1.1 stitched
+          into the unified DB).
+        * ``scope LIKE 'operator.%'``     → ``agent='operator'``
+        * everything else                 → ``agent='personality'``
+
+        Backfill only fires when the column has just been added, so a
+        database already on 011 will skip it (no wasted UPDATE).
+
+        The ``PRAGMA table_info`` round-trip is a single small read and
+        keeps the upgrade path branch-free for ``conn.executescript``-less
+        callers.
+        """
+        existing = {
+            row[1] for row in conn.execute("PRAGMA table_info(facts)")
+        }
+        if "agent" in existing:
+            return
+        conn.execute(
+            "ALTER TABLE facts ADD COLUMN agent TEXT NOT NULL "
+            "DEFAULT 'default'"
+        )
+        # Deterministic backfill (ADR-0083 §2.4).
+        conn.execute(
+            "UPDATE facts SET agent = 'operator' "
+            "WHERE agent = 'default' AND ("
+            "scope = 'mcp:legacy' OR scope LIKE 'operator.%'"
+            ")"
+        )
+        conn.execute(
+            "UPDATE facts SET agent = 'personality' "
+            "WHERE agent = 'default'"
+        )
+        conn.commit()
+        _logger.info(
+            "Migrated facts table to ADR-0083 §2.4 namespace "
+            "(operator=%d, personality=%d)",
+            conn.execute(
+                "SELECT COUNT(*) FROM facts WHERE agent='operator'"
+            ).fetchone()[0],
+            conn.execute(
+                "SELECT COUNT(*) FROM facts WHERE agent='personality'"
+            ).fetchone()[0],
+        )
+
     # ── MemoryStore ABC ─────────────────────────────────────────
 
-    async def save_fact(self, scope: str, fact: Fact) -> None:
+    async def save_fact(
+        self,
+        scope: str,
+        fact: Fact,
+        *,
+        agent: str = "default",
+    ) -> None:
         """Persist ``fact`` under ``scope``, replacing existing fact with the same key.
 
         The legacy ``INSERT OR REPLACE`` was a no-op upsert because the
@@ -234,6 +310,13 @@ class SQLiteVoiceMemory(MemoryStore):
         first, then INSERT: idempotent regardless of schema. Uses the
         thread-safe ``_run_sync`` wrapper (commit+lock) introduced in
         issue #1086 — see also ``_append``.
+
+        ADR-0083 §2.4 — ``agent`` is the namespace column introduced by
+        migration 011. Both halves of the dialogue pair (personality and
+        operator) write to the same SQLite file and rely on this column
+        to keep their facts disjoint. Default ``'default'`` keeps every
+        pre-migration caller (tests, fixture loaders, the speaker
+        profile helpers) source-compatible without code edits.
         """
 
         def _save(conn: sqlite3.Connection) -> None:
@@ -247,27 +330,40 @@ class SQLiteVoiceMemory(MemoryStore):
                 ensure_ascii=False,
             )
             conn.execute(
-                "DELETE FROM facts WHERE scope = ? AND key = ?",
-                (scope, fact.key),
+                "DELETE FROM facts WHERE scope = ? AND key = ? AND agent = ?",
+                (scope, fact.key, agent),
             )
             conn.execute(
-                "INSERT INTO facts (key, value, scope, metadata_json) "
-                "VALUES (?, ?, ?, ?)",
-                (fact.key, value_str, scope, metadata_json),
+                "INSERT INTO facts (key, value, scope, agent, metadata_json) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (fact.key, value_str, scope, agent, metadata_json),
             )
             conn.commit()
 
         await self._run_sync(_save)
 
-    async def clear_facts(self, scope: str) -> int:
+    async def clear_facts(self, scope: str, *, agent: str | None = None) -> int:
         """Remove every fact for ``scope``; returns the number of rows removed.
 
         Issue W5-4 — используется ``merge_speaker_facts()`` для очистки
         исходного scope после переноса фактов в основной профиль.
+
+        ADR-0083 §2.4 — when ``agent`` is provided, only rows owned by
+        that namespace are removed. ``None`` (legacy behaviour) wipes
+        every row regardless of agent — the in-process caller did not
+        know about namespaces and the tests rely on it.
         """
 
         def _clear(conn: sqlite3.Connection) -> int:
-            cursor = conn.execute("DELETE FROM facts WHERE scope = ?", (scope,))
+            if agent is None:
+                cursor = conn.execute(
+                    "DELETE FROM facts WHERE scope = ?", (scope,)
+                )
+            else:
+                cursor = conn.execute(
+                    "DELETE FROM facts WHERE scope = ? AND agent = ?",
+                    (scope, agent),
+                )
             conn.commit()
             return cursor.rowcount
 
@@ -279,11 +375,18 @@ class SQLiteVoiceMemory(MemoryStore):
         query: str,
         *,
         top_k: int = 5,
+        agent: str | None = None,
     ) -> list[Fact]:
         """Return up to ``top_k`` facts matching ``query`` via LIKE search.
 
         Best-effort: uses simple SQL LIKE with wildcards. No semantic
         embedding for P0 (P1 enhancement).
+
+        ADR-0083 §2.4 — when ``agent`` is provided, only rows owned by
+        that namespace are returned. ``None`` (legacy behaviour) keeps
+        the historical "return everything in the scope" semantics; that
+        path exists because callers that pre-date 011 had no concept of
+        a namespace and tests rely on the union view.
         """
         if top_k <= 0:
             raise ValueError(f"top_k must be positive, got {top_k}")
@@ -292,12 +395,21 @@ class SQLiteVoiceMemory(MemoryStore):
 
         def _search(conn: sqlite3.Connection) -> list[Fact]:
             pattern = f"%{query}%"
-            cursor = conn.execute(
-                "SELECT key, value, metadata_json FROM facts "
-                "WHERE scope = ? AND (key LIKE ? OR value LIKE ?) "
-                "ORDER BY created_at DESC LIMIT ?",
-                (scope, pattern, pattern, top_k),
-            )
+            if agent is None:
+                cursor = conn.execute(
+                    "SELECT key, value, metadata_json FROM facts "
+                    "WHERE scope = ? AND (key LIKE ? OR value LIKE ?) "
+                    "ORDER BY created_at DESC LIMIT ?",
+                    (scope, pattern, pattern, top_k),
+                )
+            else:
+                cursor = conn.execute(
+                    "SELECT key, value, metadata_json FROM facts "
+                    "WHERE scope = ? AND agent = ? AND "
+                    "(key LIKE ? OR value LIKE ?) "
+                    "ORDER BY created_at DESC LIMIT ?",
+                    (scope, agent, pattern, pattern, top_k),
+                )
             rows = cursor.fetchall()
             facts = []
             for row in rows:
@@ -325,22 +437,33 @@ class SQLiteVoiceMemory(MemoryStore):
         scope: str,
         *,
         limit: int = 50,
+        agent: str | None = None,
     ) -> list[Fact]:
         """Return up to ``limit`` facts stored under ``scope`` (newest first).
 
         Direct scan without a query — used to load ALL speaker facts into
         the LLM context (issue #1077). Thread-safe via ``_run_sync``
         (issue #1086).
+
+        ADR-0083 §2.4 — ``agent`` mirrors the new ``search_facts`` semantics.
         """
         if limit <= 0:
             raise ValueError(f"limit must be positive, got {limit}")
 
         def _list(conn: sqlite3.Connection) -> list[Fact]:
-            cursor = conn.execute(
-                "SELECT key, value, metadata_json FROM facts "
-                "WHERE scope = ? ORDER BY created_at DESC, id DESC LIMIT ?",
-                (scope, limit),
-            )
+            if agent is None:
+                cursor = conn.execute(
+                    "SELECT key, value, metadata_json FROM facts "
+                    "WHERE scope = ? ORDER BY created_at DESC, id DESC LIMIT ?",
+                    (scope, limit),
+                )
+            else:
+                cursor = conn.execute(
+                    "SELECT key, value, metadata_json FROM facts "
+                    "WHERE scope = ? AND agent = ? "
+                    "ORDER BY created_at DESC, id DESC LIMIT ?",
+                    (scope, agent, limit),
+                )
             facts = []
             for row in cursor.fetchall():
                 meta = json.loads(row["metadata_json"]) if row["metadata_json"] else {}
