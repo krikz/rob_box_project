@@ -2232,7 +2232,9 @@ af_maintenance_gate_or_exit
 
 # --- G2: gh auth check -------------------------------------------------------
 if ! gh auth status >/dev/null 2>&1; then
-    log "gh auth not configured — exit 1"; exit 1
+    log "gh auth not configured — exit 1"
+    af_summary_set auth "gh auth not configured"; af_summary_emit 1
+    exit 1
 fi
 
 # --- required env ------------------------------------------------------------
@@ -2247,7 +2249,9 @@ issues_json="$(gh_list_issues_by_label "$ISSUE_LABEL" open "$ISSUE_LIMIT")"
 if [ -z "$issues_json" ] || [ "$issues_json" = "[]" ]; then
     rate="$(gh api rate_limit --jq '.resources.core.remaining' 2>/dev/null || echo 999)"
     if [ "${rate:-999}" = "0" ]; then
-        log "GitHub rate-limit exhausted — skip tick"; exit 0
+        log "GitHub rate-limit exhausted — skip tick"
+        af_summary_set rate-limit "GitHub core rate-limit=0"; af_summary_emit 0
+        exit 0
     fi
     # Ретро 15.08 t_2c814334 (pr-orphan-no-labels): `gh issue list` / `gh pr
     # list` идут через GraphQL. При graphql rate-limit=0 (а core при этом
@@ -7129,5 +7133,9 @@ pr_label_sweep_merged_pass_all || true
 log "tick done: considered=${considered} labeled=${labeled} skipped=${skipped} errored=${errored} retro_closed=${retro_closed} retro_labeled=${retro_labeled} clean_labeled=${clean_labeled} orphan_labeled=${orphan_labeled} backfill_labeled=${backfill_labeled} retro_archived=${retro_archived} pmcr_completed=${pmcr_completed} human_close_propagated=${human_close_propagated} review_handling_processed=${review_handling_processed} review_handling_skipped=${review_handling_skipped} review_handling_errored=${review_handling_errored}"
 
 # Exit non-zero only on hard errors so cron can alert.
-if [ "$errored" -gt 0 ]; then exit 1; fi
+if [ "$errored" -gt 0 ]; then
+    af_summary_set error "errored=${errored} (tick done)"; af_summary_emit 1
+    exit 1
+fi
+af_summary_set ok "considered=${considered} labeled=${labeled} skipped=${skipped} errored=${errored} retro_closed=${retro_closed}"; af_summary_emit 0
 exit 0

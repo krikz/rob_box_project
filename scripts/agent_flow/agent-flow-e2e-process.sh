@@ -378,6 +378,11 @@ _wt_disk_check() {
 }
 
 cleanup() {
+    # issue #2329: emit summary BEFORE worktree cleanup, чтобы Hermes cron
+    # увидел reason/lock/maintenance/no-work на stdout ДО того, как мы
+    # потревожим файлы. (af_summary_emit молчит, если _AF_SUPPRESS_SUMMARY=1
+    # или если уже emit'или в этом тике — см. lib_agent_flow_common.sh.)
+    af_summary_emit 0
     if [ -d "$WORKTREE_DIR" ]; then
         git -C "$REPO_DIR" worktree remove --force "$WORKTREE_DIR" 2>/dev/null || true
         [ -d "$WORKTREE_DIR" ] && rm -rf "$WORKTREE_DIR"
@@ -465,6 +470,7 @@ done
 # Это позволяет watchdog'у быстро дёргать счётчик без flock/ENV (до 0.1с).
 if [ "$_SELF_TEST" = "1" ] && [ "$_ST_COUNTER_DRY" = "1" ]; then
     _wt_count_worktrees
+    af_summary_set self-test "counter dry-run"; af_summary_emit 0
     exit 0
 fi
 if [ "$_SELF_TEST" = "1" ]; then
@@ -473,17 +479,19 @@ if [ "$_SELF_TEST" = "1" ]; then
     log "self-test: WORKTREE_DIR=${WORKTREE_DIR} (default /tmp/agent-flow-e2e-\$\$)"
     log "self-test: REPO_DIR=${REPO_DIR:-<unset>}; would-pass to env via .env"
     log "self-test: scripts/agent_flow scripts synced via bash install.sh (run before cron)"
+    af_summary_set self-test "worktree_count=${cnt}"; af_summary_emit 0
     exit 0
 fi
 if [ "$_CLEANUP_ONLY" = "1" ]; then
     # В cleanup-only режиме REPO_DIR опционален — если пустой, всё равно
     # делаем best-effort rm -rf для orphan (важно для лечения 87GB mess).
     log "cleanup-only: e2e_worktree_count(before)=$(_wt_count_worktrees)"
-    _wt_disk_check || { log "cleanup-only: disk check FAILED (free <${E2E_DISK_MIN_GB}GB) — abort (issue #1707)"; exit 1; }
+    _wt_disk_check || { log "cleanup-only: disk check FAILED (free <${E2E_DISK_MIN_GB}GB) — abort (issue #1707)"; af_summary_set disk "cleanup-only: disk <${E2E_DISK_MIN_GB}GB — abort"; af_summary_emit 1; exit 1; }
     _wt_sweep_orphans || true
     _wt_sweep_ttl || true
     git -C "$REPO_DIR" worktree prune 2>/dev/null || true
     log "cleanup-only: e2e_worktree_count(after)=$(_wt_count_worktrees)"
+    af_summary_set self-test "cleanup-only done, worktree_count(before)=$(_wt_count_worktrees)"; af_summary_emit 0
     exit 0
 fi
 
@@ -882,7 +890,7 @@ os.replace(tmp, fp)
 # Под замком (после flock), до ensure_worktree — гарантирует, что только
 # один тик одновременно чистит /tmp/agent-flow-e2e-*. Если места мало —
 # skip tick (exit 0, не ошибка): cron повторит через час.
-_wt_disk_check || exit 0
+_wt_disk_check || { af_summary_set disk "disk <${E2E_DISK_MIN_GB:-20}GB — skip tick (issue #1707)"; af_summary_emit 0; exit 0; }
 _wt_sweep_orphans || true
 _wt_sweep_ttl || true
 
@@ -914,7 +922,9 @@ for _try in 1 2 3; do
     sleep 5
 done
 if [ "$_gh_auth_ok" -ne 1 ]; then
-    log "gh auth not configured (или сеть недоступна после 3 попыток) — exit 1"; exit 1
+    log "gh auth not configured (или сеть недоступна после 3 попыток) — exit 1"
+    af_summary_set auth "gh auth not configured (или сеть)"; af_summary_emit 1
+    exit 1
 fi
 
 # --- G2.5: pre-flight rate-limit check (ретро 25.08 t_7766fe44) ---------------
@@ -1758,9 +1768,13 @@ if [ -z "$issues_json" ] || [ "$issues_json" = "[]" ]; then
     # (ретро 12.08: core может быть жив, а graphql исчерпан → «no issues» ложный).
     rate="$(gh api rate_limit --jq '[.resources.core.remaining, .resources.graphql.remaining] | min' 2>/dev/null || echo 999)"
     if [ "${rate:-999}" = "0" ]; then
-        log "GitHub rate-limit exhausted (min core/graphql=0) — skip tick"; exit 0
+        log "GitHub rate-limit exhausted (min core/graphql=0) — skip tick"
+        af_summary_set rate-limit "GitHub core/graphql min=0"; af_summary_emit 0
+        exit 0
     fi
-    log "no issues with label '${NEEDS_E2E_LABEL}' on ${GH_REPO}"; exit 0
+    log "no issues with label '${NEEDS_E2E_LABEL}' on ${GH_REPO}"
+    af_summary_set no-work "no issues with label '${NEEDS_E2E_LABEL}'"; af_summary_emit 0
+    exit 0
 fi
 
 # --- ensure e2e:infra-fail label exists (ретро 10.08 t_9caf5d52) -------------
@@ -2581,6 +2595,7 @@ collect_issues_json
 if [ -z "$issues_json" ] || [ "$issues_json" = "[]" ]; then
     log "no live candidates after post-round sweep — round-ветку НЕ создаю (ретро 13.08 t_fe266643)"
     log "tick done: processed=0 skipped=0 round=NONE (sweep снял всех кандидатов)"
+    af_summary_set no-work "sweep снял всех кандидатов, processed=0"; af_summary_emit 0
     exit 0
 fi
 
@@ -2762,6 +2777,7 @@ if [ "${live_candidates:-0}" -eq 0 ]; then
     # только лог и выход; round-ветка не создавалась, счётчик не тронут.
     log "🛑 no live e2e candidates (${_g_total} needs-e2e issues, все без живых PR) — round-ветку НЕ создаю (ретро 13.08 t_4212e8ad)"
     log "tick done: processed=0 skipped=0 round=NONE (guard: no live candidates)"
+    af_summary_set no-work "guard: no live candidates, processed=0"; af_summary_emit 0
     exit 0
 fi
 log "pre-round guard: ${live_candidates} live candidate(s) — создаю round"
@@ -4546,5 +4562,9 @@ if [ "$_run_now_triggered" = "1" ] || git -C "$REPO_DIR" show "origin/${MAINTENA
     fi
 fi
 
-if [ "$errored" -gt 0 ]; then exit 1; fi
+if [ "$errored" -gt 0 ]; then
+    af_summary_set error "processed=${processed} skipped=${skipped} errored=${errored} round=${ROUND_BRANCH}"; af_summary_emit 1
+    exit 1
+fi
+af_summary_set ok "processed=${processed} skipped=${skipped} errored=${errored} round=${ROUND_BRANCH}"; af_summary_emit 0
 exit 0
