@@ -85,28 +85,13 @@ from rob_box_core.bridge_protocol import (  # noqa: E402,F401 — re-export SoT
     VOICE_PRESET_IDS,
 )
 
-
-def _voice_param_key_for(provider: str) -> str:
-    """Целевой параметр tts_node для голоса активного провайдера.
-
-    Соответствие задано в src/rob_box_voice/config/tts_node.yaml:
-      yandex  → yandex_voice   (tts_node.py:677)
-      minimax → minimax_voice  (tts_node.py:716)
-      silero  → silero_speaker (tts_node.py:691)
-
-    Это единственное место, где живёт маппинг provider → param-key. Если
-    завтра появится новый провайдер — добавить ветку здесь + соответствующее
-    объявление параметра в tts_node.yaml + запись в PROVIDER_VOICES.
-    """
-    if provider == "yandex":
-        return "yandex_voice"
-    if provider == "minimax":
-        return "minimax_voice"
-    if provider == "silero":
-        return "silero_speaker"
-    # Provider без поддержки смены голоса — вызывающий код ловит
-    # ``voice_unavailable:provider:voice_id`` через validation.
-    return ""
+# ADR-0080 §2.7 / voice-vr 21 — единый топик-контракт смены голоса.
+# ``/voice/tts/set_voice`` живёт на tts_node (``_on_set_voice``) и
+# единственный, кто принимает voice_id от супервизора. Раньше здесь
+# был ленивый параметр-клиент на tts_node (знание внутренней схемы
+# имён ``yandex_voice``/``minimax_voice``/``silero_speaker``) — это
+# явный шов ADR-0080 §2.7, теперь закрыт.
+SET_TTS_VOICE_TOPIC: str = "/voice/tts/set_voice"
 
 
 # AV-14 (issue #1906) — ``/avatar/state`` wire format lives in
@@ -461,9 +446,9 @@ class AvatarSupervisor(Node):
         # AV-28 §P7 (issue #1920) — voice style preset / language топики.
         # Валидируем ID по whitelist (см. единый список
         # ``rob_box_core.bridge_protocol``) и только логируем факт
-        # приёма (voice-vr 21 / ADR-0080 §2.7). Раньше здесь стояло
-        # SetParameters на dialogue_node — живой путь формализации
-        # теперь в ``grip_pipeline`` (yaml-direct). Когда расширим
+        # приёма (voice-vr 21 / ADR-0080 §2.7). Раньше здесь стояла
+        # запись в dialogue_node — живой путь формализации теперь в
+        # ``grip_pipeline`` (yaml-direct). Когда расширим
         # ``/dialogue/control`` под set_preset/set_language, обработчик
         # сменит тело — сигнатура топиков и whitelist остаются.
         self.create_subscription(
@@ -489,13 +474,15 @@ class AvatarSupervisor(Node):
         self._preview_error_pub = self.create_publisher(
             RosString, PREVIEW_VOICE_ERROR_TOPIC, 10
         )
-        # AV-27 — параметр-клиент к tts_node. Создаётся лениво в _set_tts_voice_param
-        # (минимальный контакт с tts_node, в monitor — не создаётся).
-        self._tts_param_client = None
-        # voice-vr 21 — SetParameters-клиент к dialogue_node удалён
-        # (ADR-0080 §2.7: супервизор не пишет в чужие ROS-параметры).
-        # ``voice_preset`` / ``voice_output_language`` теперь читаются
-        # через ``grip_pipeline.load_voice_presets()`` (yaml-direct).
+        # ADR-0080 §2.7 / voice-vr 21 — write-сторона в чужие
+        # ROS-параметры tts_node УДАЛЕНА. supervisor публикует запрос в
+        # /voice/tts/set_voice (RosString JSON ``{voice_id, provider,
+        # source}``), и tts_node применяет через свой ``_on_set_voice``
+        # — знание схемы имён (``yandex_voice``/``minimax_voice``/
+        # ``silero_speaker``) живёт ТОЛЬКО в tts_node.
+        self._set_voice_tts_pub = self.create_publisher(
+            RosString, SET_TTS_VOICE_TOPIC, 10
+        )
 
         # ── AV-21/ТАРС (issue #1988): супервизор-агент оператора ────
         # ``agent_enabled`` default true — мастер-гейт всего agent-прохода;
@@ -1431,7 +1418,7 @@ class AvatarSupervisor(Node):
     # ── AV-28 §P7 (issue #1920) — voice style preset + language ─────────
     # ADR-0080 §2.7 / voice-vr 21: супервизор больше НЕ пишет в чужие
     # ROS-параметры (``voice_preset`` / ``voice_output_language`` на
-    # ``dialogue_node`` через SetParameters). Параметры остались в
+    # ``dialogue_node``). Параметры остались в
     # ``dialogue_node.parameters_callback`` только как «когда-то был
     # формализатор, сейчас единственное живое чтение — yaml-direct»
     # (см. ADR-0066 §6.3 + ``grip_pipeline.load_voice_presets``).
@@ -1467,7 +1454,6 @@ class AvatarSupervisor(Node):
         """Чистая логика применения ``voice_preset`` (тестируется без rclpy).
 
         voice-vr 21: супервизор не пишет в чужие ROS-параметры (ADR-0080 §2.7).
-        Раньше вызывал ``_set_dialogue_param('voice_preset', ...)`` —
         dialogue_node.parameters_callback только логировал значение
         (ADR-0066 §6.3). Сейчас ничего не публикуется наружу: живой
         путь — ``grip_pipeline.load_voice_presets()`` поверх YAML.
@@ -1483,7 +1469,7 @@ class AvatarSupervisor(Node):
         # значение для LLM-формализации через ``grip_pipeline``.
         self._log.info(
             f"[voice-vr 21] voice_preset accepted={preset!r} "
-            "(path: grip_pipeline yaml-direct; no SetParameters to dialogue_node)"
+            "(path: grip_pipeline yaml-direct; no foreign param writes)"
         )
         return True, "applied"
 
@@ -1499,7 +1485,7 @@ class AvatarSupervisor(Node):
         """Чистая логика применения ``voice_output_language`` (тестируется без rclpy).
 
         Аналогично :py:meth:`_apply_voice_preset` — супервизор больше
-        НЕ вызывает SetParameters на dialogue_node (ADR-0080 §2.7).
+        НЕ пишет в чужие ROS-параметры на dialogue_node (ADR-0080 §2.7).
         Живой путь — ``grip_pipeline`` с yaml-direct.
         """
         if not language:
@@ -1510,7 +1496,7 @@ class AvatarSupervisor(Node):
             return False, MONITOR_MODE_REASON
         self._log.info(
             f"[voice-vr 21] voice_output_language accepted={language!r} "
-            "(path: grip_pipeline yaml-direct; no SetParameters to dialogue_node)"
+            "(path: grip_pipeline yaml-direct; no foreign param writes)"
         )
         return True, "applied"
 
@@ -1518,11 +1504,13 @@ class AvatarSupervisor(Node):
     def _on_set_voice(self, msg: RosString) -> None:
         """Обработка ``/avatar/set_voice`` — сменить голос TTS.
 
-        Дизайн (docs/architecture/tts-picker-ros-path.md §128-150): валидируем
-        voice_id по ``tts_voice_registry``, выставляем соответствующий
-        строковый параметр на ``tts_node`` через SetParameters
-        (lazy-клиент /tts_node/set_parameters). В monitor-режиме НЕ трогаем
-        чужие параметры (S12) — только логируем и выходим.
+        ADR-0080 §2.7 / voice-vr 21: супервизор НЕ пишет в чужие
+        ROS-параметры (раньше — параметр-клиент на tts_node — это
+        знание внутренней схемы имён ``yandex_voice``/``minimax_voice``/
+        ``silero_speaker``, явный шов ADR-0080 §2.7). Теперь публикует
+        JSON в ``/voice/tts/set_voice`` (``SET_TTS_VOICE_TOPIC``), и
+        tts_node применяет через ``_on_set_voice``. В monitor-режиме
+        НЕ публикуем (S12) — только логируем и выходим.
 
         Quest-сервер уже выполнил свою валидацию по текущему активному
         провайдеру (по /voice/tts/provider_state); мы дублируем её по SoT
@@ -1555,8 +1543,16 @@ class AvatarSupervisor(Node):
         """Чистая логика применения set_voice (тестируется без rclpy).
 
         Возвращает ``(applied, reason)``. В monitor — ``applied=False`` без
-        записи (S12). В active — SetParameters на tts_node с параметр-ключом,
-        зависящим от активного провайдера (см. ``_voice_param_key_for``).
+        записи (S12). В active — публикация JSON в
+        ``/voice/tts/set_voice`` (явный контракт ADR-0080 §2.7),
+        tts_node применяет через ``_on_set_voice`` (знание схемы имён
+        параметров — внутри tts_node, НЕ в supervisor).
+
+        Обратная совместимость: контракт на запись в чужие ROS-параметры
+        tts_node УДАЛЁН. Знание имён (``yandex_voice``/``minimax_voice``/
+        ``silero_speaker``) — это шов ADR-0080 §2.7, теперь закрыт.
+        На тестовом стенде оставлены прямые ``ros2 param set`` /
+        MCP-SetVoice — это путь ``parameters_callback`` внутри tts_node.
         """
         if self._mode != "active":
             return False, MONITOR_MODE_REASON
@@ -1574,60 +1570,20 @@ class AvatarSupervisor(Node):
             return False, f"voice_not_in_any_provider: {voice_id!r}"
         if voice_id not in _voices_for(provider):
             return False, f"voice_unavailable:{provider}:{voice_id}"
-        param_key = _voice_param_key_for(provider)
-        if not param_key:
-            return False, f"no_param_key_for_provider:{provider}"
-        try:
-            self._set_tts_voice_param(param_key, voice_id)
-        except Exception as exc:  # noqa: BLE001
-            self._log.warning(f"SetVoice: tts_node param-set failed: {exc}")
-            return False, f"param_set_failed:{exc}"
-        return True, f"applied:{provider}:{param_key}"
-
-    def _set_tts_voice_param(self, name: str, value: str) -> None:
-        """Выставить string-параметр голоса на ``tts_node``.
-
-        Клиент создаётся лениво (первый вызов в active-режиме). Аналогично
-        :py:meth:`_set_dialogue_param` — разные клиенты потому что SetParameters
-        скоуплен на конкретный нод (см. design t_5b9d5d0c §23-27).
-        """
-        # Ленивый импорт — как в _set_dialogue_param (ADR-0021):
-        # supervisor_node обязан импортироваться без ROS-стека.
-        from rcl_interfaces.msg import (  # noqa: PLC0415
-            Parameter,
-            ParameterType,
-            ParameterValue,
+        # Публикуем JSON в /voice/tts/set_voice — единственный живой
+        # write-side для голоса (ADR-0080 §2.7 / voice-vr 21). tts_node
+        # принимает, валидирует, обновляет атрибут и логирует. Никаких
+        # write-side в чужие ROS-параметры в supervisor_node больше нет
+        # (DoD-критерий: «supervisor не пишет в чужие ROS-параметры»).
+        payload = json.dumps(
+            {"voice_id": voice_id, "provider": provider, "source": "set_voice"}
         )
-        from rcl_interfaces.srv import SetParameters  # noqa: PLC0415
-
-        if self._tts_param_client is None:
-            self._tts_param_client = self.create_client(
-                SetParameters, "/tts_node/set_parameters"
-            )
-        req = SetParameters.Request()
-        param = Parameter()
-        param.name = name
-        param.value = ParameterValue()
-        param.value.type = ParameterType.PARAMETER_STRING
-        param.value.string_value = value
-        req.parameters = [param]
-
-        future = self._tts_param_client.call_async(req)
-
-        def _done(fut) -> None:
-            try:
-                res = fut.result()
-                ok = bool(res and res.results and res.results[0].successful)
-                if not ok:
-                    self._log.warning("SetVoice: tts_node rejected parameter set")
-                else:
-                    self._log.info(
-                        f"SetVoice: tts_node accepted param {name}={value!r}"
-                    )
-            except Exception as exc:  # noqa: BLE001
-                self._log.warning(f"SetVoice: parameter set future failed: {exc}")
-
-        future.add_done_callback(_done)
+        self._set_voice_tts_pub.publish(RosString(data=payload))
+        self._log.info(
+            f"SetVoice: published voice_id={voice_id} provider={provider} "
+            f"to {SET_TTS_VOICE_TOPIC} (applied=True, reason=applied:{provider})"
+        )
+        return True, f"applied:{provider}"
 
     def _on_preview_voice(self, msg: RosString) -> None:
         # ADR-0077 / issue #2138.A.3 — picker'у голосов нужен «прослушиваемый

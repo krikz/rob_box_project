@@ -78,10 +78,12 @@ Out of scope для этой карточки (см. issue #2192 / ADR-0080):
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Any, Mapping, Optional
 
 
 # === Wire payload value grammar (voice-vr 08) ================================
@@ -1120,9 +1122,12 @@ ERROR_SPECS: tuple[ErrorCodeSpec, ...] = (
 
 
 # Синхронизирован с ``src/rob_box_voice/config/voice_presets.yaml`` и
-# meta-quest-api.md §P7. Расширение = правка YAML + этой константы,
-# без правок dialogue_node (требование origin-карточки #1920).
-VOICE_PRESET_IDS: tuple[str, ...] = (
+# meta-quest-api.md §P7. Расширение пресетов = правка YAML; voice-vr 21
+# / ADR-0080 §2.7 — Python-тупла ниже служит FALLBACK'ом на случай
+# недоступности yaml (CI-минимум без зависимости на пакет rob_box_voice),
+# а живой список загружается из yaml через ``_load_voice_lists_from_yaml``
+# ниже. Тот же приём для VOICE_LANGUAGES.
+_VOICE_PRESET_IDS_FALLBACK: tuple[str, ...] = (
     "technical",
     "street",
     "caveman",
@@ -1136,7 +1141,100 @@ VOICE_PRESET_IDS: tuple[str, ...] = (
 
 # Языки вывода LLM-формализатора (аудит панели пайплайна, AV-28 §P7).
 # Ключи languages: в voice_presets.yaml — источник истины.
-VOICE_LANGUAGES: tuple[str, ...] = ("ru", "en", "fr", "de", "zh", "hi")
+_VOICE_LANGUAGES_FALLBACK: tuple[str, ...] = ("ru", "en", "fr", "de", "zh", "hi")
+
+
+def _resolve_voice_presets_yaml_path() -> Optional[str]:
+    """Найти ``voice_presets.yaml`` пакета ``rob_box_voice``.
+
+    Порядок (одинаков с :func:`rob_box_supervisor.grip_pipeline.resolve_voice_presets_path`,
+    чтобы константор и grip-пайплайн читали один файл):
+
+      0. env ``ROB_BOX_VOICE_PRESETS_YAML`` — override для тестов /
+         staging (если задан, используется как есть, без проверки
+         существования через ``isfile``);
+      1. ament share ``rob_box_voice/config/voice_presets.yaml`` (робот);
+      2. source-tree ``<repo>/src/rob_box_voice/config/voice_presets.yaml``
+         (colcon symlink / unit-тесты).
+
+    ``None`` — файл нигде не найден → останется FALLBACK.
+    """
+    env_override = os.environ.get("ROB_BOX_VOICE_PRESETS_YAML")
+    if env_override:
+        return env_override
+    try:
+        from ament_index_python.packages import (  # noqa: PLC0415
+            get_package_share_directory,
+        )
+
+        share = os.path.join(
+            get_package_share_directory("rob_box_voice"),
+            "config",
+            "voice_presets.yaml",
+        )
+        if os.path.isfile(share):
+            return share
+    except Exception:  # noqa: BLE001 — нет ament (CI / unit-тесты / не-colcon)
+        pass
+    # Source-tree fallback. bridge_protocol живёт в
+    # ``<repo>/src/rob_box_core/rob_box_core/bridge_protocol.py``,
+    # поэтому идём через parents[3] (== ``src/``) + rob_box_voice/config/.
+    source = (
+        Path(__file__).resolve().parents[3]
+        / "rob_box_voice"
+        / "config"
+        / "voice_presets.yaml"
+    )
+    return str(source) if source.is_file() else None
+
+
+def _load_voice_lists_from_yaml() -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Прочитать ключи ``presets`` и ``languages`` из voice_presets.yaml.
+
+    Возвращает ``(preset_ids, language_ids)``. На любой ошибке (нет
+    файла, битый yaml, не-dict, отсутствует секция) — возвращает
+    FALLBACK-туплы. Без side-effects (warning не пишем — модуль импортится
+    часто, и шум в conftest не нужен; регрессию ловит DoD-тест
+    ``TestVoiceConfigYamlDrivesWhitelist``).
+    """
+    path = _resolve_voice_presets_yaml_path()
+    if path is None:
+        return _VOICE_PRESET_IDS_FALLBACK, _VOICE_LANGUAGES_FALLBACK
+    try:
+        import yaml  # noqa: PLC0415 — лениво: bridge_protocol импортится без yaml
+
+        with open(path, "r", encoding="utf-8") as fh:
+            data = yaml.safe_load(fh)
+    except Exception:  # noqa: BLE001
+        return _VOICE_PRESET_IDS_FALLBACK, _VOICE_LANGUAGES_FALLBACK
+    if not isinstance(data, dict):
+        return _VOICE_PRESET_IDS_FALLBACK, _VOICE_LANGUAGES_FALLBACK
+    raw_presets = data.get("presets")
+    if isinstance(raw_presets, dict) and raw_presets:
+        preset_ids = tuple(str(k) for k in raw_presets.keys())
+    else:
+        preset_ids = _VOICE_PRESET_IDS_FALLBACK
+    raw_languages = data.get("languages")
+    if isinstance(raw_languages, dict) and raw_languages:
+        language_ids = tuple(str(k).lower() for k in raw_languages.keys())
+    elif isinstance(raw_languages, list) and raw_languages:
+        # Совместимость со старым списочным форматом (см. коммент в yaml).
+        language_ids = tuple(str(x).lower() for x in raw_languages)
+    else:
+        language_ids = _VOICE_LANGUAGES_FALLBACK
+    return preset_ids, language_ids
+
+
+# Финальные публичные константы: при импорте модуля пытаемся
+# прочитать voice_presets.yaml; на неудаче — FALLBACK. Это и есть
+# ADR-0080 §2.7 «один белый список»: yaml → константор → ws_server.
+# (Python-тупла перестала быть SoT — она страховка на случай CI без yaml.)
+VOICE_PRESET_IDS: tuple[str, ...]
+VOICE_LANGUAGES: tuple[str, ...]
+_VOICE_PRESET_IDS_RESOLVED, _VOICE_LANGUAGES_RESOLVED = _load_voice_lists_from_yaml()
+VOICE_PRESET_IDS = _VOICE_PRESET_IDS_RESOLVED
+VOICE_LANGUAGES = _VOICE_LANGUAGES_RESOLVED
+del _VOICE_PRESET_IDS_RESOLVED, _VOICE_LANGUAGES_RESOLVED
 
 
 # Дефолтный язык grip-пайплайна до первой синхронизации с панели

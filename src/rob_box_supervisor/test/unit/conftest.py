@@ -150,7 +150,9 @@ def _install_ros_mocks() -> None:  # noqa: C901 — test infra helpers grow with
             return svc
 
         def create_client(self, srv_type: Any, name: str) -> MagicMock:
-            """Подмена create_client (SetParameters → dialogue_node)."""
+            """Подмена create_client (использовался для записи в чужие
+            ROS-параметры — voice-vr 21 / ADR-0080 §2.7 запись удалена,
+            метод остался для будущих сервисов)."""
             client = MagicMock()
             client.srv_type = srv_type
             client.srv_name = name
@@ -193,7 +195,14 @@ def _install_ros_mocks() -> None:  # noqa: C901 — test infra helpers grow with
     # ── std_msgs.msg.String ───────────────────────────────────────────
     class FakeStringMsg:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
-            self.data = ""
+            # Принимаем data=... явно (нужно для set_voice JSON в
+            # voice-vr 21 / ADR-0080 §2.7); иначе default "".
+            if "data" in kwargs:
+                self.data = kwargs["data"]
+            elif args:
+                self.data = args[0]
+            else:
+                self.data = ""
 
     # std_msgs.msg.Bool — добавлено для ADR-0081: avatar_arbiter публикует
     # /teleop_lock как std_msgs/Bool (см. arbiter_node._publish_teleop_locks).

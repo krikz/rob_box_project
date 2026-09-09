@@ -1512,6 +1512,19 @@ class TTSNode(Node):
             String, "/voice/tts/set_provider", self._on_set_provider, 10
         )
 
+        # ADR-0080 §2.7 / voice-vr 21: явный контракт смены голоса.
+        # ``supervisor_node`` НЕ пишет в ``yandex_voice``/``minimax_voice``/
+        # ``silero_speaker`` через SetParameters (это знание внутренней
+        # схемы имён) — он публикует JSON ``{"voice_id", "provider"?, "source"?}``
+        # в этот топик, и tts_node сам применяет к атрибуту (согласно
+        # «живой» таблице ``_LIVE_VOICE_PARAMS``). ``parameters_callback``
+        # остаётся — он по-прежнему принимает прямые ``ros2 param set``/
+        # MCP-SetVoice без провайдера, см. bug #2183 — но из
+        # supervisor_node SetParameters-контракт на tts_node УДАЛЁН.
+        self.set_voice_sub = self.create_subscription(
+            String, "/voice/tts/set_voice", self._on_set_voice, 10
+        )
+
         # Публикация аудио и состояния
         if self.audio_qos_reliability == "best_effort":
             audio_reliability = ReliabilityPolicy.BEST_EFFORT
@@ -2196,6 +2209,115 @@ class TTSNode(Node):
                 self.get_logger().debug(
                     f"cancel_pregen on provider switch failed: {exc!r}"
                 )
+
+    def _on_set_voice(self, msg: String):
+        """ADR-0080 §2.7 / voice-vr 21 — явный контракт смены голоса TTS.
+
+        ``supervisor_node`` больше НЕ пишет в ``yandex_voice``/
+        ``minimax_voice``/``silero_speaker`` через SetParameters
+        (знание внутренней схемы имён); он публикует JSON в топик
+        ``/voice/tts/set_voice``, и этот handler применяет голос.
+
+        Wire-формат:
+            {"voice_id": str,
+             "provider": "yandex"|"minimax"|"silero"?,
+             "source": "set_voice"|"ui"|"..."?}
+
+        Алгоритм:
+            1. Парсим JSON; невалидный / не-dict → warning + DROP.
+            2. voice_id обязателен; пустой → DROP.
+            3. provider из payload предпочтителен, fallback — первое
+               вхождение voice_id в ``tts_voice_registry``.
+               provider=None после обоих → DROP (не знаем, в какой
+               атрибут писать).
+            4. Переводим провайдера в имя атрибута через
+               ``_LIVE_VOICE_PARAMS`` (таблица, не три ветки).
+               Неизвестный провайдер → DROP.
+            5. Обновляем атрибут ``self.<param_name>`` (живой для
+               следующего синтеза) + логируем через
+               ``_log_voice_param_applied`` для консистентности с
+               ``parameters_callback`` (bug #2183).
+            6. Сохраняем параметр через ``set_parameters`` —
+               ``parameters_callback`` НЕ должен пере-применить
+               (один и тот же код-путь), но если supervisor
+               перепубликует state, атрибут уже нужный.
+        """
+        try:
+            payload = json.loads(msg.data) if msg.data else {}
+        except (TypeError, ValueError) as exc:
+            self.get_logger().warning(
+                f"⚠️ [voice-vr 21] set_voice: bad JSON payload: {exc}"
+            )
+            return
+        if not isinstance(payload, dict):
+            self.get_logger().warning(
+                "⚠️ [voice-vr 21] set_voice: payload is not a dict"
+            )
+            return
+
+        voice_id_raw = payload.get("voice_id")
+        if not isinstance(voice_id_raw, str) or not voice_id_raw.strip():
+            self.get_logger().warning(
+                "⚠️ [voice-vr 21] set_voice: missing or empty voice_id"
+            )
+            return
+        voice_id = voice_id_raw.strip()
+
+        # Резолв провайдера. Явный hint из payload предпочтителен —
+        # supervisor знает активного через provider_state.
+        provider_raw = payload.get("provider")
+        provider = (
+            provider_raw.strip().lower()
+            if isinstance(provider_raw, str) and provider_raw.strip()
+            else None
+        )
+        try:
+            from .tts_voice_registry import voices_for as _voices_for
+        except Exception:  # noqa: BLE001 — registry недоступен
+            _voices_for = None  # type: ignore[assignment]
+        if not provider and _voices_for is not None:
+            for p in ("yandex", "minimax", "silero"):
+                if voice_id in _voices_for(p):
+                    provider = p
+                    break
+        if not provider:
+            self.get_logger().warning(
+                f"⚠️ [voice-vr 21] set_voice: cannot resolve provider for "
+                f"voice_id={voice_id!r} (hint={provider_raw!r}); dropping"
+            )
+            return
+
+        # Провайдер → имя атрибута. Одна таблица, а не три ветки.
+        if provider not in {v[1] for v in _LIVE_VOICE_PARAMS.values()}:
+            self.get_logger().warning(
+                f"⚠️ [voice-vr 21] set_voice: unknown provider={provider!r}; dropping"
+            )
+            return
+        # Инвертированный поиск param_name → (display, provider).
+        param_name = next(
+            name for name, (_disp, prov) in _LIVE_VOICE_PARAMS.items()
+            if prov == provider
+        )
+        display_name, _ = _LIVE_VOICE_PARAMS[param_name]
+
+        # Применяем: setattr + set_parameters (консистентность с
+        # parameters_callback, чтобы ``ros2 param get`` видел то же
+        # значение). На пути нет SetParameters-клиента на чужой нод —
+        # supervisor_node сюда не пишет, и единственный живой
+        # write-side в tts_node — этот handler + ``parameters_callback``
+        # (для прямых ``ros2 param set`` / MCP-SetVoice без провайдера).
+        try:
+            setattr(self, param_name, voice_id)
+            self._log_voice_param_applied(display_name, provider, voice_id)
+            self.get_logger().info(
+                f"🎙️ [voice-vr 21] set_voice applied: {display_name} "
+                f"voice_id={voice_id} (source={payload.get('source', 'unknown')})"
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(
+                f"⚠️ [voice-vr 21] set_voice: failed to apply "
+                f"{param_name}={voice_id!r}: {exc!r}"
+            )
 
     def dialogue_callback(self, msg: String):
         """Обработка JSON chunks от ``/voice/tts/request`` — ЕДИНЫЙ вход синтезатора.

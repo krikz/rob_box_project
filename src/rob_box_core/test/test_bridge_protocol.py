@@ -351,6 +351,210 @@ class TestVoiceConfig:
             )
 
 
+class TestVoiceConfigYamlDrivesWhitelist:
+    """voice-vr 21 / ADR-0080 §2.7 — DoD-3:
+
+    Добавление пресета в ``voice_presets.yaml`` доезжает до
+    ``VOICE_PRESET_IDS`` / ``VOICE_LANGUAGES`` БЕЗ правки Python.
+    Тест подменяет путь к yaml через ``monkeypatch`` на временный
+    файл с тем же shape и проверяет, что константы его отражают.
+
+    Дополнительно фиксирует, что реэкспорт в ws_server
+    (через повторный импорт) тоже подхватывает обновлённый
+    список — это и есть «один белый список» (ADR-0080 §2.7).
+    """
+
+    def _write_yaml(self, tmp_path, presets, languages):
+        """Записать минимальный ``voice_presets.yaml`` и вернуть путь."""
+        # Минимальный, но валидный формат — секции presets/languages;
+        # остальные поля yaml не влияют на VOICE_*_IDS.
+        lines = ["presets:"]
+        for key, name in presets.items():
+            lines.append(f"  {key}:")
+            lines.append(f'    name: "{name}"')
+        lines.append("languages:")
+        for code, meta in languages.items():
+            lines.append(f"  {code}:")
+            lines.append(f'    name: "{meta["name"]}"')
+        path = tmp_path / "voice_presets.yaml"
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return path
+
+    def test_added_preset_in_yaml_reaches_voice_preset_ids(
+        self, monkeypatch, tmp_path
+    ):
+        """Новый ключ в yaml → присутствует в VOICE_PRESET_IDS.
+
+        Подменяем ``_resolve_voice_presets_yaml_path`` через
+        monkeypatch.setattr — так тест НЕ правит реальный yaml и
+        НЕ зависит от colcon/ament-share (source-tree lookup).
+        """
+        from rob_box_core import bridge_protocol
+
+        yaml_path = self._write_yaml(
+            tmp_path,
+            presets={
+                "technical": "Технический",
+                "new_one": "Новый пресет",
+                "another": "Другой",
+            },
+            languages={"ru": {"name": "Русский"}, "en": {"name": "English"}},
+        )
+        monkeypatch.setattr(
+            bridge_protocol, "_resolve_voice_presets_yaml_path", lambda: str(yaml_path)
+        )
+
+        preset_ids, language_ids = bridge_protocol._load_voice_lists_from_yaml()
+        assert "new_one" in preset_ids
+        assert "another" in preset_ids
+        # Старые ключи из yaml не должны быть потеряны.
+        assert "technical" in preset_ids
+        # Languages — тоже из yaml.
+        assert set(language_ids) == {"ru", "en"}
+
+    def test_yaml_change_picked_up_on_subprocess_restart(
+        self, tmp_path
+    ):
+        """После смены yaml + новый процесс — константы свежие.
+
+        Это вторая половина DoD-3: между запусками робота yaml
+        может поменяться (например, через ``cp`` новой версии
+        в ``/ws/install/.../share/rob_box_voice/config/``).
+        Контракт «yaml → whitelist» не должен требовать правки
+        Python; достаточно перезапустить процесс (новый import
+        модуля = новое чтение yaml).
+
+        Тест запускает ``importlib.reload(bridge_protocol)`` в
+        дочернем Python-процессе с подменённым путём к yaml —
+        изоляция от родителя + реальный «новый import» с нуля,
+        без monkeypatch-артефактов.
+        """
+        import subprocess
+        import sys
+        import textwrap
+
+        yaml_text = textwrap.dedent(
+            """\
+            presets:
+              pirate:
+                name: "Пират"
+              wizard:
+                name: "Маг"
+            languages:
+              ru:
+                name: "Русский"
+              jp:
+                name: "日本語"
+            """
+        )
+        yaml_path = tmp_path / "voice_presets.yaml"
+        yaml_path.write_text(yaml_text, encoding="utf-8")
+
+        # Подменяем резолвер через env var ROB_BOX_VOICE_PRESETS_YAML —
+        # чистый путь «как на роботе после деплоя»: тот же бинарь,
+        # другой yaml на диске (или просто env override). Import + reload
+        # идут стандартно, monkeypatch НЕ нужен.
+        child_script = textwrap.dedent(
+            """
+            import importlib
+            from rob_box_core import bridge_protocol
+            reloaded = importlib.reload(bridge_protocol)
+            print("PRESETS", ",".join(reloaded.VOICE_PRESET_IDS))
+            print("LANGUAGES", ",".join(reloaded.VOICE_LANGUAGES))
+            """
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", child_script],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={
+                **__import__("os").environ,
+                "PYTHONPATH": ":".join(
+                    [
+                        "src/rob_box_voice",
+                        "src/rob_box_llm",
+                        "src/rob_box_core",
+                        "src/rob_box_harness",
+                    ]
+                ),
+                "ROB_BOX_VOICE_PRESETS_YAML": str(yaml_path),
+            },
+            cwd=str(tmp_path.parent.parent),  # repo root
+            timeout=30,
+        )
+        assert result.returncode == 0, (
+            f"child failed: rc={result.returncode} stdout={result.stdout!r} "
+            f"stderr={result.stderr!r}"
+        )
+        presets_line = next(
+            (l for l in result.stdout.splitlines() if l.startswith("PRESETS ")),
+            "",
+        )
+        languages_line = next(
+            (l for l in result.stdout.splitlines() if l.startswith("LANGUAGES ")),
+            "",
+        )
+        assert presets_line, f"no PRESETS in child stdout: {result.stdout!r}"
+        assert languages_line, f"no LANGUAGES in child stdout: {result.stdout!r}"
+        child_presets = presets_line.split(" ", 1)[1].split(",")
+        child_languages = languages_line.split(" ", 1)[1].split(",")
+        assert "pirate" in child_presets, (
+            f"DoD-3: добавление пресета в yaml должно доезжать до "
+            f"VOICE_PRESET_IDS без правки Python; got {child_presets!r}"
+        )
+        assert "wizard" in child_presets
+        assert "jp" in child_languages
+        # И наоборот: НЕ должно быть preset'ов, которых нет в yaml.
+        # (Защита от регрессии «FALLBACK приклеился к yaml».)
+        for forbidden in ("technical", "street", "caveman", "lenin", "translate"):
+            assert forbidden not in child_presets, (
+                f"DoD-3: yaml не содержит {forbidden!r}, но child-процесс "
+                f"его видит — FALLBACK просочился: {child_presets!r}"
+            )
+
+    def test_yaml_missing_falls_back_to_hardcoded(self, monkeypatch):
+        """yaml недоступен → откат на FALLBACK-туплу (CI-минимум).
+
+        Это страховка: модуль должен импортироваться БЕЗ yaml
+        (conftest, минимальный CI), и тогда константы всё равно
+        содержат рабочий минимум (``technical``, ``translate``,
+        ``ru``, ``en``).
+        """
+        from rob_box_core import bridge_protocol
+
+        monkeypatch.setattr(
+            bridge_protocol, "_resolve_voice_presets_yaml_path", lambda: None
+        )
+        preset_ids, language_ids = bridge_protocol._load_voice_lists_from_yaml()
+        assert preset_ids == bridge_protocol._VOICE_PRESET_IDS_FALLBACK
+        assert language_ids == bridge_protocol._VOICE_LANGUAGES_FALLBACK
+        # Минимум для UI/тестов: «translate» (нейтральный пресет) и
+        # «ru» (дефолтный язык).
+        assert "translate" in preset_ids
+        assert "ru" in language_ids
+
+    def test_yaml_list_languages_legacy_format(self, monkeypatch, tmp_path):
+        """Поддержка старого списочного формата ``languages: [ru, en]``.
+
+        Исторический комментарий в yaml упоминает обратную совместимость;
+        тест фиксирует: даже если в yaml ``languages: [...]`` —
+        константы собираются из списка.
+        """
+        from rob_box_core import bridge_protocol
+
+        yaml_path = tmp_path / "voice_presets.yaml"
+        yaml_path.write_text(
+            "presets:\n  tech: {name: \"T\"}\nlanguages: [ru, en, de]\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            bridge_protocol, "_resolve_voice_presets_yaml_path", lambda: str(yaml_path)
+        )
+        _, language_ids = bridge_protocol._load_voice_lists_from_yaml()
+        assert language_ids == ("ru", "en", "de")
+
+
 # --- 6. Frame types reference ----------------------------------------------
 
 
