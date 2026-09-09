@@ -10,10 +10,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from rob_box_quest.server.session import ClientSession, ErrorCode
+from rob_box_quest.server.session import ClientSession
 from rob_box_quest.server.ws_server import (
     JSON_CMD_HANDLERS,
-    VOICE_PRESET_IDS,
     NoOpBridge,
     WSSServer,
 )
@@ -105,6 +104,8 @@ async def test_unknown_json_cmd_returns_terminal_error_and_warning(
     with caplog.at_level(logging.WARNING):
         await server._on_json_cmd(ws, session, {"cmd": "not_registered"})
 
+    from rob_box_quest.server.session import ErrorCode
+
     server._send_error.assert_awaited_once_with(
         ws,
         0,
@@ -119,125 +120,31 @@ async def test_unknown_json_cmd_returns_terminal_error_and_warning(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("mode", "expected_bridge_method"),
-    [
-        ("voice", "set_voice"),
-        ("style", "set_voice_preset"),
-    ],
-)
-async def test_set_voice_uses_explicit_mode(
-    dispatcher, monkeypatch, mode, expected_bridge_method
-) -> None:
-    server, ws, session = dispatcher
-    monkeypatch.setattr(server, "_voice_rate_limit_check", lambda *_args: True)
-    server.bridge.set_voice = MagicMock(return_value=(True, "technical", "", []))
-    server.bridge.set_voice_preset = MagicMock()
-    server.bridge.set_voice_language = MagicMock()
-    payload = {
-        "cmd": "set_voice",
-        "mode": mode,
-        "voice_id": "technical",
-        "preset": "technical",
-    }
-
-    await JSON_CMD_HANDLERS["set_voice"](server, ws, session, payload)
-
-    getattr(server.bridge, expected_bridge_method).assert_called_once()
-    other_method = "set_voice_preset" if expected_bridge_method == "set_voice" else "set_voice"
-    getattr(server.bridge, other_method).assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_set_voice_missing_mode_falls_back_to_voice_id_guess(
-    dispatcher, monkeypatch
-) -> None:
-    """Обратная совместимость (issue #2195): ``mode`` — новое поле
-    контракта, но ``webxr_client/src/main.ts`` (TTS picker `apply`,
-    строка ~949) пока его не шлёт — только ``voice_id``/``preset``. До
-    парной правки клиента отсутствие ``mode`` не должно ронять picker:
-    сервер угадывает намерение по значению payload, как раньше.
-    voice_id без style-preset → AV-27 (TTS picker) → ``bridge.set_voice``.
+async def test_set_voice_routes_directly_to_provider(dispatcher, monkeypatch) -> None:
+    """ADR-0087 (2026-09-09, вариант (a)): ``set_voice`` cmd маршрут —
+    это ТОЛЬКО AV-27 picker (``_json_cmd_set_voice_provider`` →
+    ``bridge.set_voice``). Legacy AV-28 style/language ветка удалена
+    вместе с ``_json_cmd_set_voice_style`` — никаких mode/style guess,
+    никакого ``bridge.set_voice_preset``/``set_voice_language``.
     """
     server, ws, session = dispatcher
     monkeypatch.setattr(server, "_voice_rate_limit_check", lambda *_args: True)
     server.bridge.set_voice = MagicMock(return_value=(True, "alena", "", []))
     server.bridge.set_voice_preset = MagicMock()
+    server.bridge.set_voice_language = MagicMock()
 
+    # Самый «грязный» payload: был preset из whitelist + language —
+    # раньше это уверенно отправлялось в style-ветку, теперь
+    # picker-фоллбэк через ``_validate_voice_set_payload`` уже не
+    # существует, и ``bridge.set_voice`` всё равно вызывается.
     await JSON_CMD_HANDLERS["set_voice"](
         server,
         ws,
         session,
-        {"cmd": "set_voice", "voice_id": "alena"},
+        {"cmd": "set_voice", "voice_id": "alena", "preset": "lenin"},
     )
 
     server.bridge.set_voice.assert_called_once()
     server.bridge.set_voice_preset.assert_not_called()
+    server.bridge.set_voice_language.assert_not_called()
     server._send_error.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_set_voice_missing_mode_falls_back_to_style_guess_via_preset(
-    dispatcher, monkeypatch
-) -> None:
-    """Как выше, но preset ∈ VOICE_PRESET_IDS без mode → AV-28 (стиль
-    речи) → ``bridge.set_voice_preset``, даже если voice_id тоже задан
-    (значение поля решает развилку, не его наличие — ADR-0080/AV-28 §P7)."""
-    server, ws, session = dispatcher
-    monkeypatch.setattr(server, "_voice_rate_limit_check", lambda *_args: True)
-    server.bridge.set_voice = MagicMock(return_value=(True, "alena", "", []))
-    server.bridge.set_voice_preset = MagicMock()
-
-    await JSON_CMD_HANDLERS["set_voice"](
-        server,
-        ws,
-        session,
-        {"cmd": "set_voice", "preset": VOICE_PRESET_IDS[0]},
-    )
-
-    server.bridge.set_voice_preset.assert_called_once_with(VOICE_PRESET_IDS[0])
-    server.bridge.set_voice.assert_not_called()
-    server._send_error.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_set_voice_missing_mode_falls_back_to_style_guess_via_language(
-    dispatcher, monkeypatch
-) -> None:
-    """language без mode → тоже AV-28 (у AV-27/picker такого поля нет)."""
-    server, ws, session = dispatcher
-    monkeypatch.setattr(server, "_voice_rate_limit_check", lambda *_args: True)
-    server.bridge.set_voice = MagicMock(return_value=(True, "alena", "", []))
-    server.bridge.set_voice_language = MagicMock()
-
-    await JSON_CMD_HANDLERS["set_voice"](
-        server,
-        ws,
-        session,
-        {"cmd": "set_voice", "language": "en"},
-    )
-
-    server.bridge.set_voice_language.assert_called_once_with("en")
-    server.bridge.set_voice.assert_not_called()
-    server._send_error.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_set_voice_invalid_explicit_mode_still_rejected(dispatcher) -> None:
-    """Явный, но невалидный ``mode`` остаётся ошибкой (только
-    ОТСУТСТВИЕ поля включает legacy-совместимость, не любое значение)."""
-    server, ws, session = dispatcher
-
-    await JSON_CMD_HANDLERS["set_voice"](
-        server,
-        ws,
-        session,
-        {"cmd": "set_voice", "mode": "bogus", "voice_id": "alena"},
-    )
-
-    server._send_error.assert_awaited_once_with(
-        ws,
-        0,
-        ErrorCode.BAD_PAYLOAD,
-        "set_voice: mode must be 'voice' or 'style'",
-    )
