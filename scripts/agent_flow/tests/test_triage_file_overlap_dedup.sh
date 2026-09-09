@@ -300,6 +300,65 @@ run_test "T10. call order in process_issues_json"             test_T10_call_orde
 run_test "T11. shellcheck + bash -n syntax check"             test_T11_syntax_check
 
 # ============================================================================
+# T12: G10a dedup marker `<!-- hermes-triage-g10a: <hash> -->` есть в body
+# comment, который пишется в issue. Это нужно чтобы dedup-find работал.
+# ============================================================================
+test_T12_g10a_marker_in_comment_body() {
+    local code
+    code="$(cat "$SCRIPT_UNDER_TEST")"
+    assert_contains "<!-- \${AGENT_FLOW_FILE_OVERLAP_MARKER}: \${_state_hash} -->" "$code" "T12.1: G10a marker template в body template"
+    assert_contains "_marker_line=" "$code" "T12.2: переменная _marker_line определена"
+    assert_contains "_state_hash=" "$code" "T12.3: переменная _state_hash определена"
+}
+
+# ============================================================================
+# T13: AGENT_FLOW_FILE_OVERLAP_DEDUP_HOURS env-var определена с дефолтом 6
+# и используется в rate-limit-skip логике.
+# ============================================================================
+test_T13_dedup_hours_env() {
+    local code
+    code="$(cat "$SCRIPT_UNDER_TEST")"
+    assert_contains 'AGENT_FLOW_FILE_OVERLAP_DEDUP_HOURS="${AGENT_FLOW_FILE_OVERLAP_DEDUP_HOURS:-6}"' "$code" "T13.1: env-var определена с дефолтом 6"
+    assert_contains 'AGENT_FLOW_FILE_OVERLAP_DEDUP_HOURS * 3600' "$code" "T13.2: hours → seconds конверсия в cutoff"
+    assert_contains '_action="rate-limit-skip"' "$code" "T13.3: rate-limit-skip action определён"
+}
+
+# ============================================================================
+# T14: gh api PATCH используется для edit-old-comment (state changed).
+# Без этого при изменении state spam-обновления остановить нельзя.
+# ============================================================================
+test_T14_gh_api_patch_used() {
+    local code
+    code="$(cat "$SCRIPT_UNDER_TEST")"
+    assert_contains "--method PATCH" "$code" "T14.1: gh api --method PATCH для edit"
+    assert_contains 'repos/${GH_REPO}/issues/comments/${_existing_id}' "$code" "T14.2: edit endpoint по comment_id"
+    assert_contains '_action="edit"' "$code" "T14.3: edit action определён"
+}
+
+# ============================================================================
+# T15: state hash должен включать issue_number — иначе два разных issue
+# с одинаковым overlap-файлом получили бы одинаковый hash и dedup путал бы
+# их комменты. Проверяем через код: number фигурирует в sha1sum input.
+# ============================================================================
+test_T15_hash_includes_issue_number() {
+    local code
+    code="$(cat "$SCRIPT_UNDER_TEST")"
+    # Ищем в районе построения _state_hash: должен быть printf '$number'
+    local hash_block
+    hash_block="$(printf '%s' "$code" | awk '/_state_hash=/,/sha1sum/' | head -10)"
+    if printf '%s' "$hash_block" | grep -qF '$number'; then
+        pass "T15: hash-input включает issue_number"
+    else
+        fail "T15: hash-input НЕ включает issue_number" "block: $hash_block"
+    fi
+}
+
+run_test "T12. G10a dedup marker in comment body"             test_T12_g10a_marker_in_comment_body
+run_test "T13. AGENT_FLOW_FILE_OVERLAP_DEDUP_HOURS defined"   test_T13_dedup_hours_env
+run_test "T14. gh api PATCH used for edit-old path"           test_T14_gh_api_patch_used
+run_test "T15. hash includes issue_number (per-issue scoping)" test_T15_hash_includes_issue_number
+
+# ============================================================================
 # Summary.
 # ============================================================================
 echo ""

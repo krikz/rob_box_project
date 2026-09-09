@@ -25,9 +25,9 @@
 import * as THREE from "three";
 
 export interface Tars1TextPanelOptions {
-  /** Ширина canvas в пикселях (default 512 — соответствует ширине panel). */
+  /** Ширина canvas в пикселях (default 1280 — 16:9 как у основного экрана). */
   canvasWidth?: number;
-  /** Высота canvas в пикселях (default 384). */
+  /** Высота canvas в пикселях (default 720 — 16:9). */
   canvasHeight?: number;
   /** Сколько последних строк хранить в кольцевом буфере (default 32). */
   maxLines?: number;
@@ -58,8 +58,8 @@ export interface Tars1TextPanelHandle {
 export function createTars1TextPanel(
   opts: Tars1TextPanelOptions = {}
 ): Tars1TextPanelHandle {
-  const canvasWidth = opts.canvasWidth ?? 512;
-  const canvasHeight = opts.canvasHeight ?? 384;
+  const canvasWidth = opts.canvasWidth ?? 1280;
+  const canvasHeight = opts.canvasHeight ?? 720;
   const maxLines = opts.maxLines ?? 32;
   const fontSize = opts.fontSize ?? 22;
 
@@ -76,10 +76,20 @@ export function createTars1TextPanel(
   texture.magFilter = THREE.LinearFilter;
   texture.colorSpace = THREE.SRGBColorSpace;
 
-  // Соотношение сторон canvas ≈ 4:3; плоскость по умолчанию 1.6 × 1.2 м
-  // (как FRONT CAM был, см. captain_bridge.ts: VideoPanel main_screen),
-  // но это управляется извне через mesh.scale — здесь только канвас.
-  const geometry = new THREE.PlaneGeometry(1.6, 1.2);
+  // Соотношение сторон canvas и плоскости — 16:9 (ADR-0074 §4.0, вариант E:
+  // все три экрана Captain Bridge должны быть одного aspect ratio, как
+  // основной 4.8 × 2.7). Геометрия — ЕДИНИЧНЫЙ план (1×1): фактический
+  // размер в метрах задаётся снаружи через mesh.scale.set(width, height, 1)
+  // (см. captain_bridge.ts: TARS_PANEL_SIZE). ВАЖНО: если тут поставить
+  // не-единичный размер (было 1.6×0.9 до bugfix #2142-B), итоговый мировой
+  // размер меша станет geometry-size × scale, а не scale — двойное
+  // масштабирование. Ровно это раздувало панель до 4.8×1.52 м вместо
+  // заявленных 3.0×1.69 м и гнало её в главный экран (issue #2142-B,
+  // раскопано nightly-review-fix: bug существовал с самого fa5854fd, стал
+  // заметнее после ресайза W=1.6→3.0 в e17e5bca). Aspect ratio 16:9 теперь
+  // держит сам TARS_PANEL_SIZE (width, width*9/16) в captain_bridge.ts —
+  // геометрии он не касается.
+  const geometry = new THREE.PlaneGeometry(1, 1);
   const material = new THREE.MeshBasicMaterial({
     map: texture,
     side: THREE.DoubleSide,

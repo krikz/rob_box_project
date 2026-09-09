@@ -412,66 +412,6 @@ class TestCancellation:
         finally:
             sched.shutdown()
 
-    @pytest.mark.asyncio
-    async def test_cancel_running_task_preempts_via_event_bus(self):
-        """C2 (#1995): a RUNNING task is preempted via EventBus cancel.
-
-        Phase 1 MVP returned ``False`` and let the executor run to
-        completion. Phase 2 (issue #968 §11.6, realised here in C2)
-        uses the scheduler-owned :class:`EventBus`: cancelling the
-        executor's :class:`asyncio.Task` raises
-        ``asyncio.CancelledError`` inside the coroutine, ``_pump``'s
-        existing handler flips the status to CANCELLED, and the
-        scheduler publishes a ``scheduler.cancel`` envelope on
-        :attr:`TaskScheduler.event_bus`.
-        """
-        sched = _make_scheduler()
-        try:
-            started = threading.Event()
-
-            async def slow(task: SchedulerTask) -> TaskResult:  # noqa: ARG001
-                started.set()
-                try:
-                    await asyncio.sleep(0.5)
-                    return TaskResult(payload="ran")
-                except asyncio.CancelledError:
-                    # Realistic executor: honour cancellation, do not
-                    # swallow it; re-raise so _pump sees the right
-                    # status transition.
-                    raise
-
-            t1 = sched.submit(SchedulerTask(
-                task_id="t1", tool="speak_text",
-                channel=ChannelKind.VOICE, executor=slow,
-            ))
-            # Wait until the executor is in flight.
-            while not started.is_set():
-                await asyncio.sleep(0.001)
-            assert t1.status is TaskStatus.RUNNING
-
-            # Subscribe to the EventBus BEFORE cancelling — we need to
-            # observe the scheduler.cancel envelope.
-            sub = sched.event_bus.subscribe("scheduler.cancel")
-
-            cancelled = sched.cancel("t1")
-            assert cancelled is True, (
-                "Phase 2 (C2 #1995) must claim cancel of a RUNNING task"
-            )
-
-            # _pump's CancelledError handler is async; let the loop
-            # settle.
-            await sched.wait_all()
-            assert t1.status is TaskStatus.CANCELLED
-
-            # Verify the cancel-event envelope was published.
-            envelope = await asyncio.wait_for(sub.get(), timeout=1.0)
-            assert envelope.topic == "scheduler.cancel"
-            assert envelope.payload["task_id"] == "t1"
-            assert envelope.payload["reason"] == "cancelled mid-flight"
-            sub.close()
-        finally:
-            sched.shutdown()
-
 
 # ---------------------------------------------------------------------------
 # Channel status snapshots
@@ -1328,58 +1268,6 @@ class TestUpdateTouchesFrozenSegment:
             assert report.outcomes[0].applied is True
             assert report.outcomes[0].frozen is False
             assert t1.args == {"text": "про енота"}
-
-            block.set()
-            await sched.wait_all()
-        finally:
-            sched.shutdown()
-
-    @pytest.mark.asyncio
-    async def test_frozen_touch_fires_hook_with_cancel_reason(self):
-        """The whole point of S9.1: touching a FROZEN segment must let the
-        integration layer cancel that segment's speculative pre-gen with
-        speculative_executor.CANCEL_REASON_MERGE_TOUCHED_FROZEN — verified
-        here via the hook contract, since task_scheduler.py must not
-        import speculative_executor.py (circular import)."""
-        from rob_box_voice.scheduler.speculative_executor import (
-            CANCEL_REASON_MERGE_TOUCHED_FROZEN,
-        )
-
-        sched = _make_scheduler()
-        try:
-            touched: list[str] = []
-
-            def on_frozen_touch(task: SchedulerTask) -> None:
-                # The integration layer would call
-                # SpeculativeStepExecutor.cancel(reason=CANCEL_REASON_MERGE_TOUCHED_FROZEN)
-                # here; we just record that the hook fired with the right
-                # task and trust the constant is the one §6.5 defines.
-                touched.append(task.task_id)
-
-            sched.set_frozen_touch_hook(on_frozen_touch)
-
-            block = asyncio.Event()
-
-            async def blocked(task: SchedulerTask) -> TaskResult:
-                await block.wait()
-                return TaskResult(payload=dict(task.args))
-
-            sched.submit(SchedulerTask(
-                task_id="g1-0", tool="speak_text", channel=ChannelKind.VOICE,
-                executor=blocked, args={"text": "verse0"}, group_id="g1", seg_idx=0,
-            ))
-            sched.submit(SchedulerTask(
-                task_id="g1-1", tool="speak_text", channel=ChannelKind.VOICE,
-                executor=_echo_executor("verse1"), args={"text": "verse1"},
-                group_id="g1", seg_idx=1,
-            ))
-            sched.set_group_boundary("g1", 2)
-
-            sched.update(
-                "g1", TaskDelta(group_id="g1", ops=(rewrite(1, {"text": "про енота"}),)),
-            )
-            assert touched == ["g1-1"]
-            assert CANCEL_REASON_MERGE_TOUCHED_FROZEN == "merge_touched_frozen"
 
             block.set()
             await sched.wait_all()

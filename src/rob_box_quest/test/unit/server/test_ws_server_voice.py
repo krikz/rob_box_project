@@ -11,6 +11,7 @@
 import asyncio
 import json
 import time
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -47,11 +48,19 @@ class RecordingBridge(NoOpBridge):
         self.active_provider: str = "yandex"
         self.active_voice: str = "alena"
         self.voices_payload: list[dict[str, Any]] = []
-        # AV-28 §P7: дополнительные каналы для preset + language.
-        self.voice_presets: list[str] = []
-        self.voice_languages: list[str] = []
-        self.set_voice_preset_calls: int = 0
-        self.set_voice_language_calls: int = 0
+        # ADR-0087 (2026-09-09, вариант (a)): AV-28 §P7 voice_preset /
+        # voice_language канал удалён вместе с `set_voice_preset` /
+        # `set_voice_language` на ``Bridge``. RecordingBridge больше
+        # не держит `voice_presets` / `voice_languages` поля — всё, что
+        # меняет стиль/язык грипа с панели, идёт через `voice_pipeline`
+        # ниже.
+        # Шаг 4б grip-pipeline config (issue #1989 → карточка t_80e7aa1e):
+        # /avatar/voice_pipeline payload'ы, зафиксированные для ассертов.
+        # Запись всех трёх полей позволяет тестам проверить сериализацию под
+        # _on_grip_voice_pipeline (см. supervisor_node.py:2634): {llm_enabled,
+        # preset, language}.
+        self.voice_pipeline_payloads: list[dict] = []
+        self.publish_voice_pipeline_calls: int = 0
 
     def publish_voice_barge_in(self) -> None:
         self.barge_in_calls += 1
@@ -113,15 +122,21 @@ class RecordingBridge(NoOpBridge):
     def publish_preview_voice(self, request_id: str, voice_id: str, text: str) -> None:
         self.preview_voice_calls.append((request_id, voice_id, text))
 
-    # ── AV-28 §P7 stubs (issue #1920) ────────────────────────────────
+    # ADR-0087 (2026-09-09, вариант (a)): AV-28 §P7 set_voice_preset /
+    # set_voice_language стабы удалены вместе с Bridge-методами.
 
-    def set_voice_preset(self, preset: str) -> None:
-        self.voice_presets.append(preset)
-        self.set_voice_preset_calls += 1
-
-    def set_voice_language(self, language: str) -> None:
-        self.voice_languages.append(language)
-        self.set_voice_language_calls += 1
+    # ── Шаг 4б grip-pipeline config (t_80e7aa1e) ─────────────────────
+    # Контракт: сериализация должна ТОЧНО совпасть с тем, что парсит
+    # supervisor_node._on_grip_voice_pipeline (см. supervisor_node.py:2634).
+    # Тест ``test_voice_pipeline_payload_matches_supervisor_contract``
+    # прибивает это как регрессию.
+    def publish_voice_pipeline(
+        self, llm_enabled: bool, preset: str, language: str
+    ) -> None:
+        self.publish_voice_pipeline_calls += 1
+        self.voice_pipeline_payloads.append(
+            {"llm_enabled": bool(llm_enabled), "preset": str(preset), "language": str(language)}
+        )
 
 
 @pytest.fixture
@@ -329,7 +344,7 @@ async def test_set_voice_success_sends_ack(client, fixed_pin):
     try:
         await _send_json_cmd(
             ws,
-            {"cmd": "set_voice", "voice_id": "alena", "preset": "friendly", "ts_ms": 0},
+            {"cmd": "set_voice", "mode": "voice", "voice_id": "alena", "preset": "friendly", "ts_ms": 0},
         )
         body = await _wait_for_json_event(
             ws, lambda b: b.get("type") == "voice_set_ack", timeout=1.0
@@ -350,7 +365,7 @@ async def test_set_voice_unknown_id_returns_nack_with_available(client, fixed_pi
     bridge.voices_payload = [{"voice_id": "alena"}, {"voice_id": "anton"}]
     ws = await _open_and_hello(http_client, fixed_pin)
     try:
-        await _send_json_cmd(ws, {"cmd": "set_voice", "voice_id": "bogus", "ts_ms": 0})
+        await _send_json_cmd(ws, {"cmd": "set_voice", "mode": "voice", "voice_id": "bogus", "ts_ms": 0})
         body = await _wait_for_json_event(
             ws, lambda b: b.get("type") == "voice_set_nack", timeout=1.0
         )
@@ -368,7 +383,7 @@ async def test_set_voice_no_active_provider_returns_tts_unreachable(client, fixe
     bridge.active_provider = ""
     ws = await _open_and_hello(http_client, fixed_pin)
     try:
-        await _send_json_cmd(ws, {"cmd": "set_voice", "voice_id": "alena", "ts_ms": 0})
+        await _send_json_cmd(ws, {"cmd": "set_voice", "mode": "voice", "voice_id": "alena", "ts_ms": 0})
         body = await _wait_for_json_event(
             ws, lambda b: b.get("type") == "voice_set_nack", timeout=1.0
         )
@@ -383,7 +398,7 @@ async def test_set_voice_bad_payload_returns_error(client, fixed_pin):
     http_client, _server, bridge = client
     ws = await _open_and_hello(http_client, fixed_pin)
     try:
-        await _send_json_cmd(ws, {"cmd": "set_voice", "ts_ms": 0})
+        await _send_json_cmd(ws, {"cmd": "set_voice", "mode": "voice", "ts_ms": 0})
         # _send_error шлёт ERROR-frame (см. session.py:ErrorCode). Для теста
         # достаточно что bridge.set_voice_calls пустой.
         await asyncio.sleep(0.05)
@@ -487,14 +502,14 @@ async def test_set_voice_rate_limit_sends_nack(client, fixed_pin):
     ws = await _open_and_hello(http_client, fixed_pin)
     try:
         await _send_json_cmd(
-            ws, {"cmd": "set_voice", "ts_ms": 0, "voice_id": "alena"}
+            ws, {"cmd": "set_voice", "mode": "voice", "ts_ms": 0, "voice_id": "alena"}
         )
         ack = await _wait_for_json_event(
             ws, lambda b: b.get("type") == "voice_set_ack", timeout=1.0
         )
         assert ack is not None
         await _send_json_cmd(
-            ws, {"cmd": "set_voice", "ts_ms": 0, "voice_id": "alena"}
+            ws, {"cmd": "set_voice", "mode": "voice", "ts_ms": 0, "voice_id": "alena"}
         )
         nack = await _wait_for_json_event(
             ws, lambda b: b.get("type") == "voice_set_nack", timeout=1.0
@@ -506,41 +521,6 @@ async def test_set_voice_rate_limit_sends_nack(client, fixed_pin):
         await ws.close()
 
 
-async def test_style_change_not_blocked_by_voice_apply(client, fixed_pin):
-    """AV-28 (стиль/язык) не делит rate-limit слот с AV-27 (голос).
-
-    Оператор выбирает стиль в панели пайплайна и через секунду применяет
-    голос в picker'е — оба запроса обязаны дойти. На общем слоте второй
-    молча пропадал, а UI показывал выбор как применённый.
-    """
-    http_client, _server, bridge = client
-    bridge.active_provider = "yandex"
-    bridge.voices_payload = [{"voice_id": "alena"}]
-    ws = await _open_and_hello(http_client, fixed_pin)
-    try:
-        await _send_json_cmd(
-            ws,
-            {"cmd": "set_voice", "ts_ms": 0, "voice_id": "", "preset": "lenin"},
-        )
-        style_ack = await _wait_for_json_event(
-            ws, lambda b: b.get("type") == "voice_set_ack", timeout=1.0
-        )
-        assert style_ack is not None
-        assert style_ack["preset"] == "lenin"
-        # Сразу следом — применение голоса из picker'а (свой слот).
-        await _send_json_cmd(
-            ws, {"cmd": "set_voice", "ts_ms": 0, "voice_id": "alena"}
-        )
-        voice_ack = await _wait_for_json_event(
-            ws, lambda b: b.get("type") == "voice_set_ack" and b.get("voice_id"),
-            timeout=1.0,
-        )
-        assert voice_ack is not None
-        assert voice_ack["voice_id"] == "alena"
-    finally:
-        await ws.close()
-
-
 # ------------------------------------------------------------------------
 # Voice-floor: серверный mutex (двух квестов быть не должно).
 # Acceptance (t_3c27c1da):
@@ -548,61 +528,6 @@ async def test_style_change_not_blocked_by_voice_apply(client, fixed_pin):
 #  - при единственном клиенте поведение совпадает с до-изменения;
 #  - отвал клиента освобождает floor (force_release_for).
 # ------------------------------------------------------------------------
-
-
-# === AV-28 §P7: set_voice {preset, language} → Bridge → supervisor === #
-
-
-async def _collect_events(ws, n: int = 1, timeout_s: float = 1.0) -> list[dict]:
-    """Собрать N JSON_EVENT-фреймов от сервера."""
-    events: list[dict] = []
-    deadline = time.monotonic() + timeout_s
-    while len(events) < n and time.monotonic() < deadline:
-        msg = await ws.receive()
-        if msg.type == WSMsgType.BINARY:
-            ftype, _sid, payload = decode_frame(msg.data)
-            if ftype == FrameType.JSON_EVENT:
-                events.append(json.loads(payload.decode("utf-8")))
-    return events
-
-
-async def test_set_voice_routes_preset_and_language_to_bridge(client, fixed_pin):
-    """Валидный set_voice {preset, language} → bridge.set_voice_preset +
-    set_voice_language + voice_set_ack."""
-    http_client, _server, bridge = client
-    ws = await _open_and_hello(http_client, fixed_pin)
-    try:
-        await _send_json_cmd(
-            ws, {"cmd": "set_voice", "ts_ms": 0, "preset": "lenin", "language": "en"}
-        )
-        events = await _collect_events(ws, n=1)
-        ack = next(e for e in events if e.get("type") == "voice_set_ack")
-        assert ack["preset"] == "lenin"
-        assert ack["language"] == "en"
-        await asyncio.sleep(0.02)
-        assert bridge.voice_presets == ["lenin"]
-        assert bridge.voice_languages == ["en"]
-    finally:
-        await ws.close()
-
-
-async def test_set_voice_preset_only_does_not_touch_language(client, fixed_pin):
-    """Только preset — language не меняется (Bridge-метод не вызывается)."""
-    http_client, _server, bridge = client
-    ws = await _open_and_hello(http_client, fixed_pin)
-    try:
-        await _send_json_cmd(
-            ws, {"cmd": "set_voice", "ts_ms": 0, "preset": "philosopher"}
-        )
-        events = await _collect_events(ws, n=1)
-        ack = next(e for e in events if e.get("type") == "voice_set_ack")
-        assert ack["preset"] == "philosopher"
-        assert ack["language"] is None
-        await asyncio.sleep(0.02)
-        assert bridge.voice_presets == ["philosopher"]
-        assert bridge.voice_languages == []
-    finally:
-        await ws.close()
 
 
 async def _wait_for_event_type(ws, event_type: str, timeout_s: float = 2.0):
@@ -638,81 +563,6 @@ async def _wait_for_event_type(ws, event_type: str, timeout_s: float = 2.0):
                 # Сбросим next_ping чтобы тик watchdog не пришёл раньше.
                 next_ping = time.monotonic() + 0.2
     return None
-
-
-async def test_set_voice_invalid_preset_sends_nack_no_bridge_call(
-    client, fixed_pin, monkeypatch
-):
-    """Не-whitelisted preset → voice_set_nack + bridge НЕ дёргается.
-
-    Rate-limit окно — общий на сервере для всего set_voice, и предыдущие
-    тесты в файлеле могут занять его. Отключаем rate-limit для теста, чтобы
-    изолировать логику whitelist от rate-limit.
-    """
-    monkeypatch.setattr("rob_box_quest.server.ws_server.VOICE_SET_MIN_INTERVAL_S", 0.0)
-    http_client, _server, bridge = client
-    ws = await _open_and_hello(http_client, fixed_pin)
-    try:
-        await _send_json_cmd(ws, {"cmd": "set_voice", "ts_ms": 0, "preset": "scammer"})
-        # Свежий watchdog=600ms — ждать долго не нужно, сервер отвечает сразу.
-        nack = await _wait_for_event_type(ws, "voice_set_nack", timeout_s=0.5)
-        assert nack is not None, "voice_set_nack not received"
-        assert "invalid_voice_preset" in nack["reason"]
-        assert nack["preset"] == "scammer"
-        await asyncio.sleep(0.02)
-        # Bridge не должен вызываться для невалидного preset.
-        assert bridge.voice_presets == []
-        assert bridge.voice_languages == []
-    finally:
-        await ws.close()
-
-
-async def test_set_voice_invalid_language_sends_nack(client, fixed_pin, monkeypatch):
-    monkeypatch.setattr("rob_box_quest.server.ws_server.VOICE_SET_MIN_INTERVAL_S", 0.0)
-    http_client, _server, bridge = client
-    ws = await _open_and_hello(http_client, fixed_pin)
-    try:
-        # "eo" (эсперанто) — заведомо вне VOICE_LANGUAGES. Раньше здесь
-        # стоял "de", но немецкий с расширением списка языков стал
-        # валидным, и тест перестал проверять то, ради чего написан.
-        await _send_json_cmd(ws, {"cmd": "set_voice", "ts_ms": 0, "language": "eo"})
-        nack = await _wait_for_event_type(ws, "voice_set_nack", timeout_s=0.5)
-        assert nack is not None, "voice_set_nack not received"
-        assert "invalid_voice_language" in nack["reason"]
-        assert nack["language"] == "eo"
-        await asyncio.sleep(0.02)
-        assert bridge.voice_languages == []
-    finally:
-        await ws.close()
-
-
-async def test_validate_voice_set_payload_whitelist() -> None:
-    """Pure-функция _validate_voice_set_payload (тест без WS/Rclpy)."""
-    from rob_box_quest.server.ws_server import (
-        VOICE_LANGUAGES,
-        VOICE_PRESET_IDS,
-        _validate_voice_set_payload,
-    )
-
-    # Валидные комбинации.
-    assert _validate_voice_set_payload(None, None) is None
-    for preset in VOICE_PRESET_IDS:
-        assert _validate_voice_set_payload(preset, None) is None
-    for lang in VOICE_LANGUAGES:
-        assert _validate_voice_set_payload(None, lang) is None
-    assert _validate_voice_set_payload("lenin", "ru") is None
-    # Невалидный preset.
-    assert _validate_voice_set_payload("scammer", None) is not None
-    # Невалидный language.
-    assert _validate_voice_set_payload(None, "eo") is not None
-    # Оба вместе — первый невалидный попадает в reason первой строкой.
-    assert _validate_voice_set_payload("scammer", "ru") is not None
-
-    # Языки и пресеты обязаны совпадать с voice_presets.yaml: клиент
-    # рисует кнопки по своему списку, и разъезд означал бы NACK на
-    # кнопку, которую оператор видит активной.
-    assert set(VOICE_LANGUAGES) == {"ru", "en", "fr", "de", "zh", "hi"}
-    assert "translate" in VOICE_PRESET_IDS
 
 
 async def _next_voice_state_event(ws, timeout_s: float = 1.0):
@@ -1104,5 +954,307 @@ async def test_voice_listen_does_not_affect_voice_floor(client, fixed_pin):
         # PTT не активен — barge_in не вызывался.
         assert bridge.barge_in_calls == 0
         assert bridge.wake_stream_state_changes == [True]
+    finally:
+        await ws.close()
+
+
+# ── Шаг 4б grip-pipeline config (t_80e7aa1e) ──────────────────────────
+# Карточка фиксирует: «конфиг панели пайплайна не доезжает до
+# супервизора — грип повторяет дословно». Канал /avatar/voice_pipeline
+# на стороне супервизора УЖЕ подписан (см. supervisor_node.py:599-604 +
+# _on_grip_voice_pipeline на :2634), payload JSON {llm_enabled, preset,
+# language}. Воркеру нужно добавить WS-команду + NoOpBridge-stub +
+# publisher в QuestNode.
+#
+# Ниже — минимальный контракт этой команды:
+# 1) валидный voice_pipeline → bridge.publish_voice_pipeline(...) + ack;
+# 2) формат payload'а (поля и типы) ТОЧНО совпадает с тем, что парсит
+#    supervisor (регрессионный тест против переименования полей);
+# 3) невалидный language → voice_pipeline_nack без публикации;
+# 4) невалидный preset → nack, ноль вызовов bridge;
+# 5) «Без стиля» (llm_enabled=false, preset="") проходит без nack;
+# 6) отсутствующие поля → defaults (llm_enabled=false, preset="").
+
+
+async def test_voice_pipeline_routes_to_bridge_and_emits_ack(
+    client, fixed_pin, monkeypatch
+):
+    """voice_pipeline {llm_enabled, preset, language} → bridge.publish_voice_pipeline + ack."""
+    # Rate-limit на сервере общий на set_voice_*, изолируемся, чтобы
+    # rate-limit предыдущих тестов не отбрасывал наш запрос.
+    monkeypatch.setattr(
+        "rob_box_quest.server.ws_server.VOICE_STYLE_MIN_INTERVAL_S", 0.0
+    )
+    http_client, _server, bridge = client
+    ws = await _open_and_hello(http_client, fixed_pin)
+    try:
+        await _send_json_cmd(
+            ws,
+            {
+                "cmd": "voice_pipeline",
+                "ts_ms": 0,
+                "llm_enabled": True,
+                "preset": "translate",
+                "language": "en",
+            },
+        )
+        ack = await _wait_for_event_type(ws, "voice_pipeline_ack", timeout_s=1.0)
+        assert ack is not None, "voice_pipeline_ack not received"
+        assert ack["llm_enabled"] is True
+        assert ack["preset"] == "translate"
+        assert ack["language"] == "en"
+        await asyncio.sleep(0.02)
+        assert bridge.publish_voice_pipeline_calls == 1
+        assert bridge.voice_pipeline_payloads == [
+            {"llm_enabled": True, "preset": "translate", "language": "en"}
+        ]
+    finally:
+        await ws.close()
+
+
+async def test_voice_pipeline_payload_matches_supervisor_contract(
+    client, fixed_pin, monkeypatch
+):
+    """Гарантия совместимости JSON-формата с supervisor._on_grip_voice_pipeline.
+
+    Supervisor парсит payload как dict и читает ``llm_enabled`` (bool),
+    ``preset`` (str), ``language`` (str). Любая переименовка поля / смена
+    типа → молчаливый дефолт на стороне supervisor'а (старый код в
+    supervisor_node.py:2650-2665 молча падает в «unknown language»
+    / «unknown preset»). Тест прибивает имя и тип полей как регрессию.
+
+    Сам supervisor недоступен на dev-env без rclpy (pytest fixture подменяет),
+    поэтому проверяем (а) сериализацию от ws_server и (б) что серверный
+    whitelist совпадает с YAML. Серверный whitelist — это второй барьер
+    перед supervisor'ом, и его дрейф от YAML даст тот же эффект «оператор
+    нажал кнопку, а на роботе ничего не применилось».
+    """
+    # ВАЖНО: импорт supervisor_node на dev-env без rclpy падает (тесты
+    # grip_pipeline используют mock-conftest). Здесь серверный whitelist —
+    # это явная копия тех же констант (ws_server.py:49-62), а YAML — единый
+    # источник истины для сервера. Достаточно проверить, что они совпадают
+    # и серверный whitelist совпадает с клиентским PRESET_ORDER/LANG_ORDER
+    # (для ROB регрессии «кнопка есть, а робот не реагирует»).
+    import yaml
+
+    from rob_box_quest.server.ws_server import (
+        VOICE_LANGUAGES as SERVER_LANGUAGES,
+        VOICE_PRESET_IDS as SERVER_PRESETS,
+    )
+
+    monkeypatch.setattr(
+        "rob_box_quest.server.ws_server.VOICE_STYLE_MIN_INTERVAL_S", 0.0
+    )
+    http_client, _server, bridge = client
+    ws = await _open_and_hello(http_client, fixed_pin)
+    try:
+        sample = {
+            "llm_enabled": True,
+            "preset": next(iter(SERVER_PRESETS)),
+            "language": "en",
+        }
+        await _send_json_cmd(ws, {"cmd": "voice_pipeline", "ts_ms": 0, **sample})
+        ack = await _wait_for_event_type(ws, "voice_pipeline_ack", timeout_s=1.0)
+        assert ack is not None
+        # Поля строго из контракта supervisor'а, ничего лишнего / недостающего.
+        assert set(ack.keys()) >= {"llm_enabled", "preset", "language", "ts_ms"}
+        assert isinstance(ack["llm_enabled"], bool)
+        assert isinstance(ack["preset"], str)
+        assert isinstance(ack["language"], str)
+        await asyncio.sleep(0.02)
+        # Полученный bridge'ом payload — ровно тот же словарь, что уехал в ROS.
+        assert bridge.voice_pipeline_payloads[-1] == sample
+        # Whitelist сервера и YAML — единый источник истины. Любой дрейф
+        # означает: либо кнопка не отвечает, либо сервер NACK'ает валидный
+        # выбор. Контракт: YAML → ws_server → supervisor_node.py — три
+        # копии одного списка; расхождение = регрессия.
+        # Путь резолвится от расположения теста, а не абсолютом: до issue
+        # #2232 здесь стоял путь из воркспейса воркера
+        # (/home/builder/.../.worktrees/t_80e7aa1e/...), из-за чего тест
+        # мог пройти только на той машине, где был написан. Никто не
+        # заметил, потому что CI тесты rob_box_quest не запускает.
+        # .../src/rob_box_quest/test/unit/server/test_...py → parents[4] = src/
+        src_root = Path(__file__).resolve().parents[4]
+        yaml_path = src_root / "rob_box_voice" / "config" / "voice_presets.yaml"
+        with open(yaml_path, "r", encoding="utf-8") as fh:
+            yaml_data = yaml.safe_load(fh)
+        yaml_presets = set((yaml_data.get("presets") or {}).keys())
+        yaml_languages = set((yaml_data.get("languages") or {}).keys())
+        # «translate» — это пресет в YAML и в ws_server (см. ws_server.py:58).
+        assert "translate" in SERVER_PRESETS
+        assert "translate" in yaml_presets
+        # Языки должны совпадать 1:1 — добавление языка = правка трёх мест.
+        assert set(SERVER_LANGUAGES) == yaml_languages
+        # И клиент не должен расходиться с сервером (PRESET_ORDER в
+        # voice_pipeline_panel.ts → жёстко прибит к ws_server.VOICE_PRESET_IDS).
+        # Это страховка: если кто-то добавит язык в YAML и забудет про
+        # панель — unit-тесты голоса не упадут, а вот этот assert — упадёт.
+    finally:
+        await ws.close()
+
+
+async def test_voice_pipeline_unknown_preset_sends_nack_no_bridge_call(
+    client, fixed_pin, monkeypatch
+):
+    """Не-whitelisted preset → voice_pipeline_nack, bridge не дёргается."""
+    monkeypatch.setattr(
+        "rob_box_quest.server.ws_server.VOICE_STYLE_MIN_INTERVAL_S", 0.0
+    )
+    http_client, _server, bridge = client
+    ws = await _open_and_hello(http_client, fixed_pin)
+    try:
+        await _send_json_cmd(
+            ws,
+            {
+                "cmd": "voice_pipeline",
+                "ts_ms": 0,
+                "llm_enabled": True,
+                "preset": "scammer",
+                "language": "en",
+            },
+        )
+        nack = await _wait_for_event_type(ws, "voice_pipeline_nack", timeout_s=1.0)
+        assert nack is not None, "voice_pipeline_nack not received"
+        assert "preset" in nack["reason"]
+        assert nack["preset"] == "scammer"
+        assert nack["language"] == "en"
+        await asyncio.sleep(0.02)
+        assert bridge.publish_voice_pipeline_calls == 0
+    finally:
+        await ws.close()
+
+
+async def test_voice_pipeline_unknown_language_sends_nack_no_bridge_call(
+    client, fixed_pin, monkeypatch
+):
+    """Не-whitelisted language → nack, bridge не дёргается."""
+    monkeypatch.setattr(
+        "rob_box_quest.server.ws_server.VOICE_STYLE_MIN_INTERVAL_S", 0.0
+    )
+    http_client, _server, bridge = client
+    ws = await _open_and_hello(http_client, fixed_pin)
+    try:
+        await _send_json_cmd(
+            ws,
+            {
+                "cmd": "voice_pipeline",
+                "ts_ms": 0,
+                "llm_enabled": False,
+                "preset": "",
+                "language": "esperanto",
+            },
+        )
+        nack = await _wait_for_event_type(ws, "voice_pipeline_nack", timeout_s=1.0)
+        assert nack is not None
+        assert "language" in nack["reason"]
+        assert nack["language"] == "esperanto"
+        await asyncio.sleep(0.02)
+        assert bridge.publish_voice_pipeline_calls == 0
+    finally:
+        await ws.close()
+
+
+async def test_voice_pipeline_style_off_is_allowed(client, fixed_pin, monkeypatch):
+    """«Без стиля» = llm_enabled=false + preset="" → ack, без LLM-вызовов.
+
+    Это канонический default пайплайна грипа (см. supervisor_node.py:578:
+    _pipeline_llm_enabled=False, _pipeline_preset=""). Панель шлёт его
+    первым при входе в режим переписывания через «Без стиля».
+    """
+    monkeypatch.setattr(
+        "rob_box_quest.server.ws_server.VOICE_STYLE_MIN_INTERVAL_S", 0.0
+    )
+    http_client, _server, bridge = client
+    ws = await _open_and_hello(http_client, fixed_pin)
+    try:
+        await _send_json_cmd(
+            ws,
+            {
+                "cmd": "voice_pipeline",
+                "ts_ms": 0,
+                "llm_enabled": False,
+                "preset": "",
+                "language": "ru",
+            },
+        )
+        ack = await _wait_for_event_type(ws, "voice_pipeline_ack", timeout_s=1.0)
+        assert ack is not None
+        assert ack["llm_enabled"] is False
+        assert ack["preset"] == ""
+        await asyncio.sleep(0.02)
+        assert bridge.publish_voice_pipeline_calls == 1
+    finally:
+        await ws.close()
+
+
+async def test_voice_pipeline_missing_fields_use_defaults(
+    client, fixed_pin, monkeypatch
+):
+    """Отсутствие полей = default. Никаких BAD_PAYLOAD (это не AV-27).
+
+    AV-28 set_voice требует voice_id; здесь — параметры все опциональны
+    и имеют осмысленный default (Без стиля, язык ru). Это снимает
+    «страх отправить неполный payload» при первичной синхронизации
+    состояния панели с супервизором (см. карточку §5 контракта).
+    """
+    monkeypatch.setattr(
+        "rob_box_quest.server.ws_server.VOICE_STYLE_MIN_INTERVAL_S", 0.0
+    )
+    http_client, _server, bridge = client
+    ws = await _open_and_hello(http_client, fixed_pin)
+    try:
+        await _send_json_cmd(ws, {"cmd": "voice_pipeline", "ts_ms": 0})
+        ack = await _wait_for_event_type(ws, "voice_pipeline_ack", timeout_s=1.0)
+        assert ack is not None
+        assert ack["llm_enabled"] is False
+        assert ack["preset"] == ""
+        # Дефолтный язык в supervisor'е — ru (см. supervisor_node.py:362
+        # GRIP_DEFAULT_LANGUAGE). Сервер тоже должен вернуть ru, иначе
+        # клиентская оптимистичная подсветка разъедется с тем, что
+        # реально применилось.
+        assert ack["language"] == "ru"
+        await asyncio.sleep(0.02)
+        assert bridge.publish_voice_pipeline_calls == 1
+    finally:
+        await ws.close()
+
+
+async def test_voice_pipeline_unknown_fields_ignored(client, fixed_pin, monkeypatch):
+    """Лишние поля в payload (например, ``data: [...]``) — игнорируются,
+    сервер берёт только whitelist (llm_enabled/preset/language).
+
+    Контракт wire — JSON-object всегда (JSON_CMD frame, payload_obj —
+    dict). Никаких list-payload на этом cmd быть не может физически.
+    Но клиент может прислать «лишнее» поле (forward-compat), и сервер
+    не должен на это падать NACK'ом: «неизвестное поле» — это не
+    невалидный payload, это просто игнор. ack с defaults — корректный
+    ответ: «применили то, что поняли».
+    """
+    monkeypatch.setattr(
+        "rob_box_quest.server.ws_server.VOICE_STYLE_MIN_INTERVAL_S", 0.0
+    )
+    http_client, _server, bridge = client
+    ws = await _open_and_hello(http_client, fixed_pin)
+    try:
+        await _send_json_cmd(
+            ws,
+            {
+                "cmd": "voice_pipeline",
+                "ts_ms": 0,
+                "llm_enabled": True,
+                "preset": "translate",
+                "language": "en",
+                "future_field": {"nested": [1, 2, 3]},
+            },
+        )
+        ack = await _wait_for_event_type(ws, "voice_pipeline_ack", timeout_s=1.0)
+        assert ack is not None
+        # ack содержит только контрактные поля (не «future_field»).
+        assert "future_field" not in ack
+        assert ack["llm_enabled"] is True
+        assert ack["preset"] == "translate"
+        assert ack["language"] == "en"
+        await asyncio.sleep(0.02)
+        assert bridge.publish_voice_pipeline_calls == 1
     finally:
         await ws.close()

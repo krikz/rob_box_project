@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import sys
 import types
+import urllib.parse
 from dataclasses import dataclass
 from typing import Any, Callable
 from unittest.mock import MagicMock
@@ -164,56 +165,184 @@ def _make_msg(payload: Any) -> Any:
     return m
 
 
+# ── источник данных: фейк вместо HTTP ──────────────────────────────
+#
+# issue #2184: dispatcher больше не собирает URL «на бумаге», а реально ходит
+# в Prometheus/Loki. В юнит-тестах сеть недопустима — подменяем MetricsSource
+# целиком, а сборку URL берём настоящую (explore_url — чистая функция).
+
+from rob_box_supervisor.metrics_source import MetricsSource  # noqa: E402
+
+
+def _stub_source(result: dict[str, Any] | None = None) -> MetricsSource:
+    """MetricsSource с замоканным HTTP: каталог пуст, ответ задаётся тестом."""
+    src = MetricsSource(http_get=lambda url: b'{"status":"success","data":[]}')
+    payload = result if result is not None else {"status": "ok", "query": "up", "series": []}
+    src.query_range = lambda query, **kw: dict(payload)  # type: ignore[assignment]
+    src.query_logs = lambda query, **kw: dict(payload)  # type: ignore[assignment]
+    return src
+
+
+def _dispatcher(
+    node: _FakeNode,
+    *,
+    result: dict[str, Any] | None = None,
+    **kwargs: Any,
+) -> TarsPanelDispatcher:
+    """Dispatcher без сети и без потоков (spawn выполняется синхронно)."""
+    kwargs.setdefault("metrics", _stub_source(result))
+    kwargs.setdefault("spawn", lambda fn: fn())
+    return TarsPanelDispatcher(node, **kwargs)
+
+
+_SERIES_OK = {
+    "status": "ok",
+    "query": "rate(process_cpu_seconds_total[5m])",
+    "note": "",
+    "series": [
+        {
+            "name": "voice-assistant",
+            "labels": {"instance": "10.1.1.11:9100"},
+            "points": [[1788893900.0, 0.03], [1788893960.0, 0.04]],
+        }
+    ],
+    "range_minutes": 15,
+}
+
+
 # ── тесты ──────────────────────────────────────────────────────────
 
 
-def test_build_panel_url_prometheus_default_base() -> None:
-    """build_panel_url собирает корректный URL для Prometheus."""
+def test_build_panel_url_points_at_explore_not_a_dashboard() -> None:
+    """URL ведёт в Grafana Explore — единственную страницу с произвольным query.
+
+    Регрессия issue #2184: раньше собирался ``/d/prometheus-overview?query=…``
+    — дашборда с таким UID в Grafana нет, а ``?query=`` дашборд игнорирует.
+    """
     node = _FakeNode()
-    d = TarsPanelDispatcher(node)
-    url = d.build_panel_url("prometheus", "rate(cpu_usage[5m])")
-    assert url.startswith("http://prometheus.lan/grafana/")
-    assert "prometheus-overview" in url
-    assert "query=rate%28cpu_usage%5B5m%5D%29" in url
+    d = _dispatcher(node)
+    url = d.build_panel_url("prometheus", "rate(process_cpu_seconds_total[5m])")
+    assert "/explore?" in url
+    assert "prometheus-overview" not in url
+    # Запрос уезжает внутри JSON-параметра left, а не отдельным ?query=.
+    assert "left=" in url
+    assert "process_cpu_seconds_total" in urllib.parse.unquote(url)
 
 
-def test_build_panel_url_loki_path() -> None:
-    """build_panel_url собирает корректный URL для Loki."""
+def test_build_panel_url_loki_uses_loki_datasource() -> None:
+    """Для loki в Explore подставляется datasource Loki, а не Prometheus."""
     node = _FakeNode()
-    d = TarsPanelDispatcher(node)
-    url = d.build_panel_url("loki", '{job="voice"}')
-    assert "loki-logs" in url
-    assert "query=" in url
+    d = _dispatcher(node)
+    url = urllib.parse.unquote(d.build_panel_url("loki", '{job="voice"}'))
+    assert '"datasource":"Loki"' in url
+    # LogQL едет внутри JSON — кавычки в нём экранированы.
+    assert r'{job=\"voice\"}' in url
 
 
 def test_build_panel_url_custom_base() -> None:
-    """base_url с трейлинг-слэшем нормализуется (без дублирования)."""
+    """base_url с трейлинг-слэшем нормализуется (без дублирования слэшей)."""
     node = _FakeNode()
-    d = TarsPanelDispatcher(node, base_url="http://example.com/grafana/")
+    d = TarsPanelDispatcher(
+        node, base_url="http://example.com:3000/", spawn=lambda fn: fn()
+    )
     url = d.build_panel_url("prometheus", "up")
-    # Один слэш между base и path — никаких двойных.
-    assert url == "http://example.com/grafana/d/prometheus-overview?query=up"
+    assert url.startswith("http://example.com:3000/explore?")
 
 
-def test_on_panel_request_publishes_ok_url() -> None:
-    """Валидный запрос → публикация ``status=ok`` с URL."""
+def test_on_panel_request_publishes_series_to_panel_data() -> None:
+    """Валидный запрос → в ``/avatar/tars/panel_data`` уезжают точки.
+
+    Ядро issue #2184: раньше публиковался только URL, и оператор не видел
+    ни одной цифры. Теперь на панель едут ряды из Prometheus.
+    """
     node = _FakeNode()
-    d = TarsPanelDispatcher(node)
+    _dispatcher(node, result=_SERIES_OK)
     sub = _subscription(node, "/avatar/tars/panel_request")
     sub.callback(
         _make_msg(
             {
                 "request_id": "req-1",
-                "query": "rate(cpu[5m])",
+                "query": "cpu",
                 "datasource": "prometheus",
             }
         )
     )
-    out = _last_published(node, "/avatar/tars/panel_url")
+    out = _last_published(node, "/avatar/tars/panel_data")
     assert out["request_id"] == "req-1"
     assert out["status"] == "ok"
-    assert "prometheus-overview" in out["url"]
-    assert out["error"] == ""
+    assert out["series"][0]["points"] == [[1788893900.0, 0.03], [1788893960.0, 0.04]]
+    # summary — то, что ТАРС произносит; в нём должно быть значение, а не
+    # «панель открыта».
+    assert "voice-assistant" in out["summary"]
+    assert "0.04" in out["summary"]
+
+
+def test_on_panel_request_publishes_url_before_data() -> None:
+    """Legacy panel_url публикуется ПЕРВЫМ, иначе он затирает график.
+
+    Клиент обрабатывает события в порядке прихода, а ``setPanelUrl``
+    сбрасывает нарисованные данные (ссылка их не несёт).
+    """
+    node = _FakeNode()
+    order: list[str] = []
+    _dispatcher(node, result=_SERIES_OK)
+    for topic in ("/avatar/tars/panel_url", "/avatar/tars/panel_data"):
+        pub = node._publishers[topic]
+        original = pub.publish
+
+        def _track(msg: Any, _t: str = topic, _o: Any = original) -> None:
+            order.append(_t)
+            _o(msg)
+
+        pub.publish = _track  # type: ignore[method-assign]
+    sub = _subscription(node, "/avatar/tars/panel_request")
+    sub.callback(_make_msg({"request_id": "r", "query": "up"}))
+    assert order == ["/avatar/tars/panel_url", "/avatar/tars/panel_data"]
+
+
+def test_on_panel_request_empty_result_is_not_an_error() -> None:
+    """Пустой результат → ``status=empty`` + список доступных метрик.
+
+    Оператор должен понять, что запрос выполнился, а данных нет — иначе он
+    решит, что сломался тракт (ADR-0018).
+    """
+    node = _FakeNode()
+    _dispatcher(
+        node,
+        result={
+            "status": "empty",
+            "query": "rate(network_latency_ms[5m])",
+            "series": [],
+            "available": ["up", "voice_llm_request_total"],
+        },
+    )
+    sub = _subscription(node, "/avatar/tars/panel_request")
+    sub.callback(_make_msg({"request_id": "r2", "query": "network_latency_ms"}))
+    out = _last_published(node, "/avatar/tars/panel_data")
+    assert out["status"] == "empty"
+    assert out["available"] == ["up", "voice_llm_request_total"]
+    assert "данных нет" in out["summary"].lower()
+
+
+def test_on_panel_request_prometheus_down_reports_honestly() -> None:
+    """MetricsUnavailable → status=error с причиной, без падения потока."""
+    from rob_box_supervisor.metrics_source import MetricsUnavailable
+
+    node = _FakeNode()
+    src = _stub_source()
+
+    def _boom(query: str, **kw: Any) -> dict[str, Any]:
+        raise MetricsUnavailable("http://10.1.1.249:9090/api/v1/query_range: timed out")
+
+    src.query_range = _boom  # type: ignore[assignment]
+    TarsPanelDispatcher(node, metrics=src, spawn=lambda fn: fn())
+    sub = _subscription(node, "/avatar/tars/panel_request")
+    sub.callback(_make_msg({"request_id": "r3", "query": "up"}))
+    out = _last_published(node, "/avatar/tars/panel_data")
+    assert out["status"] == "error"
+    assert "timed out" in out["error"]
+    url_out = _last_published(node, "/avatar/tars/panel_url")
+    assert url_out["url"] == ""  # ссылки, за которой ничего нет, не даём
 
 
 def test_on_panel_request_empty_query_publishes_error() -> None:
@@ -282,14 +411,15 @@ def test_register_tool_adds_show_metrics_to_registry() -> None:
 
 
 @pytest.mark.asyncio
-async def test_show_metrics_handler_publishes_request_and_returns_status() -> None:
-    """handler ``show_metrics`` публикует panel_request; subscription
-    вызывает ``_on_panel_request`` → panel_url заполняется URL'ом.
-    """
-    import asyncio
+async def test_show_metrics_handler_returns_values_not_a_promise() -> None:
+    """handler ``show_metrics`` отдаёт LLM реальные значения, а не обещание.
 
+    Регрессия issue #2184: раньше handler возвращал «Опубликовал запрос…
+    Quest откроет панель», и ТАРС уверенно рапортовал об открытии панели,
+    которая оставалась пустой.
+    """
     node = _FakeNode()
-    d = TarsPanelDispatcher(node)
+    d = _dispatcher(node, result=_SERIES_OK)
     registry = MagicMock()
 
     # Ловим реальную register'нутую пару (spec, handler).
@@ -303,27 +433,18 @@ async def test_show_metrics_handler_publishes_request_and_returns_status() -> No
     d.register_tool(registry)
 
     handler = captured["handler"]
-    result = await handler({"query": "rate(cpu[5m])", "datasource": "prometheus"})
-    assert result["status"] == "published"
-    assert "request_id" in result
-    assert result["datasource"] == "prometheus"
-    assert result["query"] == "rate(cpu[5m])"
+    result = await handler({"query": "cpu", "datasource": "prometheus"})
+    assert result["status"] == "ok"
+    assert result["series_count"] == 1
+    assert "0.04" in result["message"]
+    assert result["query"] == "rate(process_cpu_seconds_total[5m])"
 
-    # Handler опубликовал в /avatar/tars/panel_request — это эмулирует
-    # цикл: подписка на тот же топик вызывает _on_panel_request, который
-    # парсит и публикует ответ в /avatar/tars/panel_url.
-    req_pub = node._publishers.get("/avatar/tars/panel_request")
-    assert req_pub is not None
-    assert req_pub.published
-    sub = _subscription(node, "/avatar/tars/panel_request")
-    sub.callback(req_pub.published[-1])
-    # await нужен только для handler'a (async); здесь синхронно.
-    await asyncio.sleep(0)
-
-    out = _last_published(node, "/avatar/tars/panel_url")
+    # Handler сам публикует результат на панель — Quest получает данные без
+    # второго round-trip'а через /avatar/tars/panel_request.
+    out = _last_published(node, "/avatar/tars/panel_data")
     assert out["request_id"] == result["request_id"]
     assert out["status"] == "ok"
-    assert "prometheus-overview" in out["url"]
+    assert out["series"][0]["name"] == "voice-assistant"
 
 
 @pytest.mark.asyncio
@@ -369,18 +490,33 @@ async def test_show_metrics_handler_unknown_datasource_returns_error() -> None:
 def test_panel_url_topic_default() -> None:
     """topic'и создаются с дефолтами из сигнатуры."""
     node = _FakeNode()
-    TarsPanelDispatcher(node)
+    _dispatcher(node)
     assert "/avatar/tars/panel_request" in [s.topic for s in node._subscriptions]
     assert "/avatar/tars/panel_url" in node._publishers
+    assert "/avatar/tars/panel_data" in node._publishers
 
 
 def test_panel_topics_override() -> None:
     """Топики можно переопределить (например, для тестов с namespace)."""
     node = _FakeNode()
-    TarsPanelDispatcher(
+    _dispatcher(
         node,
         panel_request_topic="/test/req",
         panel_url_topic="/test/url",
+        panel_data_topic="/test/data",
     )
     assert "/test/req" in [s.topic for s in node._subscriptions]
     assert "/test/url" in node._publishers
+    assert "/test/data" in node._publishers
+
+
+def test_default_grafana_base_url_is_reachable_host() -> None:
+    """Дефолт больше не указывает на несуществующий ``prometheus.lan``.
+
+    Регрессия issue #2184: этот хост не резолвился ни с робота, ни с katana,
+    поэтому ссылка на панель была заведомо мёртвой.
+    """
+    from rob_box_supervisor.tars_panel import DEFAULT_GRAFANA_BASE_URL
+
+    assert "prometheus.lan" not in DEFAULT_GRAFANA_BASE_URL
+    assert DEFAULT_GRAFANA_BASE_URL.startswith("http")

@@ -314,3 +314,82 @@ def test_battery_sentinel_or_none_yields_no_alert(pct):
     """Любой «нет данных» → никакой ложной тревоги."""
     alerts = evaluate_alerts(now_ms=1000, thresholds=QUICK, battery_pct=pct)
     assert alerts == []
+
+
+# --- Граничные значения hold/hysteresis ------------------------------------
+#
+# (voice-vr 18, DoD: «hold/hysteresis на граничных значениях
+# now_ms - prev.since_ms»). Проверяем ровно-в-точку-в-точку и ±1 мс:
+#  - ровно hold_ms → алёрт поднят (>=, не >);
+#  - hold_ms - 1 → ещё не поднят.
+
+
+@pytest.mark.parametrize("delta_ms", [9999, 10_000, 10_001])
+def test_battery_low_hold_boundary(delta_ms):
+    """Граничные значения ``now_ms - prev.since_ms`` относительно hold_ms."""
+    thresholds = AlertThresholds(hold_ms=10_000)
+    seed = Alert(code=CODE_BATTERY_LOW, level=LEVEL_WARN, since_ms=0)
+    alerts = evaluate_alerts(
+        now_ms=delta_ms,
+        thresholds=thresholds,
+        battery_pct=10,
+        prev_alerts=[seed],
+    )
+    if delta_ms >= 10_000:
+        assert any(a.code == CODE_BATTERY_LOW for a in alerts)
+    else:
+        assert alerts == []
+
+
+@pytest.mark.parametrize("delta_ms", [9999, 10_000, 10_001])
+def test_wifi_weak_hold_boundary(delta_ms):
+    """Граничные значения ``now_ms - prev.since_ms`` для WIFI_WEAK."""
+    thresholds = AlertThresholds(hold_ms=10_000)
+    seed = Alert(code=CODE_WIFI_WEAK, level=LEVEL_WARN, since_ms=0)
+    alerts = evaluate_alerts(
+        now_ms=delta_ms,
+        thresholds=thresholds,
+        wifi_rssi=-80,
+        prev_alerts=[seed],
+    )
+    if delta_ms >= 10_000:
+        assert any(a.code == CODE_WIFI_WEAK for a in alerts)
+    else:
+        assert alerts == []
+
+
+@pytest.mark.parametrize("pct", [24, 25, 26])
+def test_battery_low_hysteresis_boundary(pct):
+    """Граничные значения pct вокруг ``low + hysteresis = 25``.
+
+    При prev-алёрте: pct=24 ещё активен (< 25), pct=25 уже снят (>= 25).
+    """
+    raised = evaluate_alerts(now_ms=1000, thresholds=QUICK, battery_pct=20)
+    battery_alert = next(a for a in raised if a.code == CODE_BATTERY_LOW)
+    alerts = evaluate_alerts(
+        now_ms=2000,
+        thresholds=QUICK,
+        battery_pct=pct,
+        prev_alerts=[battery_alert],
+    )
+    if pct < 25:
+        assert any(a.code == CODE_BATTERY_LOW for a in alerts)
+    else:
+        assert alerts == []
+
+
+@pytest.mark.parametrize("rssi", [-71, -70, -69])
+def test_wifi_weak_hysteresis_boundary(rssi):
+    """Граничные значения rssi вокруг ``weak + hysteresis = -70``."""
+    raised = evaluate_alerts(now_ms=1000, thresholds=QUICK, wifi_rssi=-75)
+    wifi_alert = next(a for a in raised if a.code == CODE_WIFI_WEAK)
+    alerts = evaluate_alerts(
+        now_ms=2000,
+        thresholds=QUICK,
+        wifi_rssi=rssi,
+        prev_alerts=[wifi_alert],
+    )
+    if rssi < -70:
+        assert any(a.code == CODE_WIFI_WEAK for a in alerts)
+    else:
+        assert alerts == []

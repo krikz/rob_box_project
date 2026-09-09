@@ -10,8 +10,17 @@
 #   - Sound card WM8960 (3.5mm jack для TTS output)
 #   - NeoPixel LED матрицы (через led_matrix_compositor)
 ARG BASE_IMAGE=ghcr.io/krikz/rob_box:voice-base-humble-latest
-# Версия сборки для инвалидации кеша при изменении зависимостей
-ARG BUILD_VERSION=2026-03-08-app-layer
+# Issue #2314 (devops, raw-evidence): после deploy z-{e2e}/test-round-387
+# quest_node падал с `ModuleNotFoundError: rob_box_core.avatar_command`.
+# Root cause: SOURCE_HASH в L-Build Vision Pi Services.yml не покрывал
+# src/rob_box_core → слой `COPY src/rob_box_core/rob_box_core`
+# не инвалидировался при правках rob_box_core → avatar_command.py
+# не доезжал до image. Лечение SOURCE_HASH сделано в том же PR.
+# Этот ARG BUILD_VERSION — независимая страховка: bump'аем при изменениях
+# app-layer'а, чтобы buildx cache не переиспользовал старые слои при
+# изменениях базового образа или в случае любого другого непредвиденного
+# cache hit. Согласовано с supervisor/Dockerfile (там уже bump по дате).
+ARG BUILD_VERSION=2026-09-09-core-cache-fix
 
 FROM ${BASE_IMAGE}
 
@@ -46,7 +55,16 @@ COPY src/rob_box_harness/package.xml /ws/src/rob_box_harness/
 COPY src/rob_box_llm/package.xml /ws/src/rob_box_llm/
 # IDL пакет для avatar_supervisor (AV-12 / AV-5): собирается раньше
 # rob_box_supervisor, потому что тот на нём зависит.
-COPY src/rob_box_supervisor_msgs/package.xml /ws/src/rob_box_supervisor_msgs/
+COPY src/rob_box_supervisor_msgs/package.xml  /ws/src/rob_box_supervisor_msgs/
+# Issue #2279 (arch review): публикуем согласованный colcon-workspace
+# в voice-assistant — supervisor/quest больше НЕ пересобирают
+# rob_box_supervisor_msgs/rob_box_core (это приводило к version skew
+# между базой и потребителями, регрессии #2081 / #2089).
+# COPY идёт ПЕРЕД colcon build — иначе голосасс build
+# падает на ament_cmake (нужны CMakeLists.txt/srv/msg).
+COPY src/rob_box_supervisor_msgs/CMakeLists.txt /ws/src/rob_box_supervisor_msgs/
+COPY src/rob_box_supervisor_msgs/srv /ws/src/rob_box_supervisor_msgs/srv
+COPY src/rob_box_supervisor_msgs/msg /ws/src/rob_box_supervisor_msgs/msg
 
 # Шаг 2: Установка ROS зависимостей через rosdep
 # Этот слой кешируется пока package.xml не изменяется
@@ -54,6 +72,46 @@ RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     . /ws/install/setup.sh && \
     rosdep update && \
     rosdep install --from-paths src/rob_box_core src/rob_box_voice src/rob_box_animations src/rob_box_perception_msgs src/rob_box_mcp_tools src/rob_box_harness src/rob_box_llm src/rob_box_supervisor_msgs --ignore-src -r -y || true
+
+# =============================================================================
+# Шаг 2.5: APP-LAYER PYTHON ЗАВИСИМОСТИ (issue #2277)
+# =============================================================================
+# ВАЖНО: Этот слой СТАВИТСЯ ДО COPY Python-исходников (Шаг 8). Все pip-пакеты
+# ниже не зависят от нашего кода — только от PyPI. Если перенести их ПОСЛЕ
+# `COPY src/rob_box_*/rob_box_*`, любая правка .py инвалидирует ~5 минут
+# компиляции resemblyzer/llvmlite на arm64 (run #34342854085 показал 8m25s
+# вместо ожидаемых ~1m при тёплом кеше).
+#
+# Раньше было 7 отдельных RUN pip3 install ... ПОСЛЕ Step 8 + 2 ДУБЛЯ
+# (resemblyzer x2, coverage+pyyaml x2). Дубли — артефакт параллельных
+# hotfix-коммитов (#1101, #1104, #1160), которые никто не чистил.
+# Все пакеты объединены в ОДИН RUN: один слой, одна транзакция pip,
+# один cache-key, никаких дублей.
+#
+# Почему НЕ voice_base: ~10 GB pytorch/vosk/yandex/renardo cache
+# инвалидируется для всех потребителей (voice_assistant, supervisor,
+# quest). aiohttp/prometheus/resemblyzer/coverage/pyyaml/ddgs/
+# duckduckgo-search — лёгкие, ставятся в app-layer точечно.
+#
+# Пакеты:
+#   - aiohttp — voice-action-server / rob_box_quest ws-server
+#   - prometheus_client — metrics endpoint audio_node (issue #1160)
+#   - resemblyzer — speaker_id_node (issue #1077); на ARM64 компилирует
+#     llvmlite ~3 min, на x86 — pre-built wheel
+#   - coverage, pyyaml — runtime-pin для resemblyzer → librosa → numba
+#     (issue #1101: coverage.types.Tracer, pyyaml C-парсер)
+#   - ddgs — переименованный duckduckgo-search (issue #1104); search_web
+#     и music_skill (search_artist_style) пробуют импорт ddgs ПЕРВЫМ
+#   - duckduckgo-search — fallback в web_search.py (импорт-цепочка
+#     ddgs → duckduckgo_search), нельзя убирать
+RUN pip3 install --no-cache-dir --retries 5 --timeout 300 \
+    "aiohttp>=3.9.1,<4.0" \
+    "prometheus_client>=0.20.0" \
+    "resemblyzer" \
+    "coverage>=7.0" \
+    "pyyaml>=6.0" \
+    "ddgs>=9.0.0" \
+    "duckduckgo-search>=8.0.0"
 
 # Шаг 3: Копируем setup.py и CMakeLists.txt (структура пакета меняется редко)
 COPY src/rob_box_core/setup.py /ws/src/rob_box_core/
@@ -70,6 +128,12 @@ COPY src/rob_box_llm/setup.cfg /ws/src/rob_box_llm/
 
 # Шаг 4: Копируем конфигурационные файлы и ресурсы
 COPY src/rob_box_core/resource /ws/src/rob_box_core/resource
+# Issue #2250: rob_box_core/setup.py data_files включает config/speech_segmentation.yaml
+# (issue #2199, PR #2211 voice-vr 14). Без COPY всей директории setup.py падает
+# при install с "error: can't copy 'config/speech_segmentation.yaml': doesn't exist".
+# Копируем директорию целиком (glob-стиль), а не конкретный файл — иначе любое
+# новое config/* сломает билд тем же путём (issue #2250, ретро #2211).
+COPY src/rob_box_core/config /ws/src/rob_box_core/config
 COPY src/rob_box_voice/resource /ws/src/rob_box_voice/resource
 COPY src/rob_box_mcp_tools/resource /ws/src/rob_box_mcp_tools/resource
 COPY src/rob_box_harness/resource /ws/src/rob_box_harness/resource
@@ -156,68 +220,10 @@ if not os.path.exists(theme):
 print("renardo conf.json + FoxDotEditor theme stub created")
 PY
 
-# --- voice-action-server deps -----------------------------------------------
-# voice-action-server (rob_box_voice/action_server/http_server.py) imports
-# `aiohttp` at runtime. voice_base owns the heavy pip install layer (pytorch,
-# vosk, yandex, renardo...) and this Dockerfile only inherits that base — so
-# the earlier builds produced stale layers that lacked aiohttp, leaving the
-# voice-action-server container in a `ModuleNotFoundError` restart loop on
-# the live robot. Pin aiohttp explicitly in this app-layer so a future
-# clean rebuild from a fresh voice_base doesn't reintroduce the regression.
-# Kept off voice_base on purpose: changing voice_base would invalidate the
-# ~10 GB pytorch etc. cache for every consumer.
-RUN pip3 install --no-cache-dir --retries 5 --timeout 120 "aiohttp>=3.9.1,<4.0"
-# Issue #1160 — Prometheus metrics endpoint. Лёгкий Python-пакет; ставим в
-# app-layer (не в voice_base), чтобы не инвалидировать кеш pytorch/vosk/yandex.
-RUN pip3 install --no-cache-dir --retries 5 --timeout 120 "prometheus_client>=0.20.0"
-# --------------------------------------------------------------------------
-# --------------------------------------------------------------------------
-# 🔴 FIX (issue #1077): resemblyzer для speaker_id_node (голосовая биометрия).
-# Установлен в app-layer (не в voice_base) чтобы не инвалидировать кеш
-# pytorch/vosk/yandex. На ARM64 компилирует llvmlite (~3 min), на x86 —
-# pre-built wheel. Без resemblyzer speaker_id_node молча падает при импорте.
-RUN pip3 install --no-cache-dir --retries 5 --timeout 300 resemblyzer
-# --------------------------------------------------------------------------
-# Issue #1101 — runtime pin для resemblyzer. Без coverage>=7.0 resemblyzer
-# → librosa → numba → coverage.types.Tracer → AttributeError
-# (`module 'coverage' has no attribute 'types'`). Без pyyaml>=6.0 — старый
-# C-парсер, resemblyzer не может загрузить модели. Пин нужно здесь, в
-# app-layer, иначе voice_base cache останется старым и пересборка не
-# подцепит. Установлено ДО ребилда rob_box_voice чтобы зависимости уже
-# были видны для speaker_id_node.
-RUN pip3 install --no-cache-dir --retries 5 --timeout 120 "coverage>=7.0" "pyyaml>=6.0"
-# --------------------------------------------------------------------------
-# --- search_web / search_artist_style deps ----------------------------------
-# `ddgs` — переименованный duckduckgo-search (issue #1104). Старый пакет
-# `duckduckgo_search` больше не возвращает нормальные результаты (0/мусор),
-# а `web_search.py` (search_web MCP-инструмент) и `music_skill.py`
-# (search_artist_style) пробуют импорт `ddgs` ПЕРВЫМ. Ставим новый пакет
-# здесь (app-layer), как и aiohttp: менять voice_base не хотим — это
-# инвалидировало бы ~10 GB pytorch-кеша для всех потребителей.
-RUN pip3 install --no-cache-dir --retries 5 --timeout 120 "ddgs>=9.0.0"
-# 🔴 FIX (issue #1077): resemblyzer для speaker_id_node (голосовая биометрия).
-# Установлен в app-layer (не в voice_base) чтобы не инвалидировать кеш
-# pytorch/vosk/yandex. На ARM64 компилирует llvmlite (~3 min), на x86 —
-# pre-built wheel. Без resemblyzer speaker_id_node молча падает при импорте.
-RUN pip3 install --no-cache-dir --retries 5 --timeout 300 resemblyzer
-# --------------------------------------------------------------------------
-# Issue #1101 — runtime pin для resemblyzer. Без coverage>=7.0 resemblyzer
-# → librosa → numba → coverage.types.Tracer → AttributeError
-# (`module 'coverage' has no attribute 'types'`). Без pyyaml>=6.0 — старый
-# C-парсер, resemblyzer не может загрузить модели. Пин нужно здесь, в
-# app-layer, иначе voice_base cache останется старым и пересборка не
-# подцепит. Установлено ДО ребилда rob_box_voice чтобы зависимости уже
-# были видны для speaker_id_node.
-RUN pip3 install --no-cache-dir --retries 5 --timeout 120 "coverage>=7.0" "pyyaml>=6.0"
-# --------------------------------------------------------------------------
-# 🔴 FIX (issue #1101): duckduckgo-search для web_search.py MCP-инструмента.
-# search_web() в rob_box_mcp_tools/tools/web_search.py пробует импорт ddgs →
-# duckduckgo_search. Без пакета tool падает: "ddgs import FAILED: No module
-# named 'ddgs'; duckduckgo_search=No module named 'duckduckgo_search'".
-# Установлен в app-layer (не в voice_base) — чистый Python, без тяжёлых
-# зависимостей, не инвалидирует кеш pytorch/vosk/yandex.
-RUN pip3 install --no-cache-dir --retries 5 --timeout 120 "duckduckgo-search>=8.0.0"
-# --------------------------------------------------------------------------
+# (Шаги pip install, ранее жившие здесь, перенесены в Шаг 2.5 выше —
+# до COPY Python-исходников, см. issue #2277. Дубли и комментарии к ним
+# удалены: aiohttp/prometheus_client/resemblyzer/coverage/pyyaml/ddgs/
+# duckduckgo-search теперь ставятся одним RUN.)
 
 # Шаг 9: Копируем scripts
 COPY src/rob_box_voice/scripts /ws/src/rob_box_voice/scripts
@@ -244,7 +250,7 @@ RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     rm -rf /opt/ros/${ROS_DISTRO}/share/*/cmake/*.cmake~ && \
     ldconfig && \
     colcon build \
-    --packages-select rob_box_core rob_box_perception_msgs rob_box_mcp_tools rob_box_llm rob_box_harness rob_box_voice rob_box_animations \
+    --packages-select rob_box_core rob_box_supervisor_msgs rob_box_perception_msgs rob_box_mcp_tools rob_box_llm rob_box_harness rob_box_voice rob_box_animations \
     --cmake-args \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON

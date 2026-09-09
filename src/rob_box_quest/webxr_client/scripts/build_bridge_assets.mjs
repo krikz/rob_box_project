@@ -145,8 +145,16 @@ function mergeGeoms(geoms) {
 
 // Room dimensions (m) — обязательно соблюдаются в floor/walls/props/nav/occluders,
 // чтобы safe-walk-area действительно была внутри walls.
-const ROOM_W = 7;   // x-axis (left-right)
-const ROOM_D = 8;   // z-axis (front-back)
+//
+// ROOM_D = 9.12 (ADR-0076 R1): расширение с 8.0 для размещения TARS-панелей.
+// ROOM_W = 11.6 (2026-09-08, «кокпит из трёх экранов-стен», решение Шифу):
+// главный экран остался 4.8 × 2.7, TARS1/TARS2 — его копии 4.8 × 2.7,
+// шарнирно прижаты к его краям и отогнуты на 50° (внутренний угол 130°).
+// Дальняя кромка крыла: x = 2.4 + 4.8·cos50° ≈ 5.49 → нужна половина ширины
+// ~5.8 (ROOM_W = 11.6), иначе крылья врезаются в боковые стены.
+// См. captain_bridge.ts (блок TARS 1 + TARS 2) и ADR-0074/0076.
+const ROOM_W = 11.6; // x-axis (left-right)
+const ROOM_D = 9.12; // z-axis (front-back), ADR-0076 R1
 const ROOM_H = 3;   // y-axis (height)
 
 // ===== FLOOR =====

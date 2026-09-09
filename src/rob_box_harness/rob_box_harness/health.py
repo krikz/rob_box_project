@@ -397,10 +397,12 @@ async def check_deepseek_balance(
 ) -> float | None:
     """Query DeepSeek's ``/user/balance`` endpoint.
 
-    Returns the total balance (sum of all ``balance_infos``) or ``None``
-    when the balance cannot be determined (endpoint down, network
-    error, non-JSON response). ``None`` means "assume healthy" — a
-    broken health-check must never block the provider.
+    Returns the sum of positive ``balance_infos`` (a provider is usable
+    as long as ANY account has a positive balance; negative accounts in
+    other currencies are ignored, not subtracted), or ``None`` when the
+    balance cannot be determined (endpoint down, network error,
+    non-JSON response). ``None`` means "assume healthy" — a broken
+    health-check must never block the provider.
 
     Reference: https://api-docs.deepseek.com/api/get-user-balance
     """
@@ -416,12 +418,21 @@ async def check_deepseek_balance(
         if not data.get("is_available", True):
             return 0.0
         infos = data.get("balance_infos") or []
+        # 🔴 FIX (live 08.09): /user/balance может вернуть НЕСКОЛЬКО валют
+        # (напр. CNY = -1.02, USD = +5.60). Складывать их как одну валюту
+        # нельзя: отрицательный CNY-«карман» занулял реальные USD → баланс
+        # ≤ 0 → провайдер ошибочно помечался unavailable (TTL 300s) →
+        # робот говорил «интернет недоступен», хотя на USD деньги были.
+        # Учитываем ТОЛЬКО положительные счета: если хоть на одном из них
+        # баланс > 0 — провайдер рабочий. Отрицательные не вычитаются.
         total = 0.0
         for info in infos:
             try:
-                total += float(info.get("total_balance") or 0.0)
+                balance = float(info.get("total_balance") or 0.0)
             except (TypeError, ValueError):
                 continue
+            if balance > 0:
+                total += balance
         return total
     except Exception as exc:  # noqa: BLE001 — any probe failure ⇒ unknown
         _log.warning("[health] deepseek balance check failed: %r", exc)

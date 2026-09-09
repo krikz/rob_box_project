@@ -26,7 +26,7 @@ from aiohttp import WSMsgType
 from aiohttp.test_utils import TestClient, TestServer
 
 from rob_box_quest.core.avatar_arbiter import LocalAvatarArbiterClient
-from rob_box_quest.core.floor import AvatarStateFloorCache
+from rob_box_quest.core.floor import AvatarStateFloorCache, make_server_client_id
 from rob_box_quest.protocol.frame import FrameType, decode_frame, encode_frame
 from rob_box_quest.server.session import ErrorCode
 from rob_box_quest.server.ws_server import NoOpBridge, WSSServer, build_app
@@ -77,8 +77,40 @@ async def _send_hello(ws, pin):
     await ws.send_bytes(encode_frame(FrameType.HELLO, 0, payload))
 
 
-async def _read_frame(ws, *, type_filter=None, timeout=1.0):
-    """Прочитать один BINARY фрейм, опционально фильтруя по типу.
+async def _send_client_ping(ws):
+    """Клиентский JSON_CMD{cmd:\"ping\"} — сбрасывает server watchdog.
+
+    Полезно в тестах, где между WS-handshake и проверкой проходит
+    больше WATCHDOG_TIMEOUT_S (0.6 с) — иначе сервер закроет сокет
+    до того, как тест успеет прочитать результат.
+    """
+    payload = json.dumps({"cmd": "ping"}).encode("utf-8")
+    await ws.send_bytes(encode_frame(FrameType.JSON_CMD, 0, payload))
+
+
+async def _keepalive_pings(ws, interval_s: float = 0.2) -> None:
+    """Фоновый ping-loop — держит WS-сессию живой пока тест спит.
+
+    Запускается через ``asyncio.create_task`` и отменяется после
+    завершения основного сценария. Интервал 200 мс < WATCHDOG_TIMEOUT_S
+    (= 600 мс), поэтому сервер не успеет закрыть сокет.
+    """
+    try:
+        while True:
+            await asyncio.sleep(interval_s)
+            await _send_client_ping(ws)
+    except asyncio.CancelledError:
+        return
+
+
+async def _read_frame(ws, *, type_filter=None, event_type=None, timeout=1.0):
+    """Прочитать один BINARY фрейм, опционально фильтруя.
+
+    Параметры:
+      - ``type_filter`` — фильтр по :class:`FrameType` (HELLO/WELCOME/...).
+      - ``event_type`` — фильтр по полю ``type`` ВНУТРИ
+        ``JSON_EVENT`` payload (например ``"floor_lost"`` или
+        ``"heartbeat"``). Игнорируется для других типов фреймов.
 
     Возвращает (FrameType, payload_bytes) или None если timeout.
     """
@@ -92,8 +124,16 @@ async def _read_frame(ws, *, type_filter=None, timeout=1.0):
             return None
         if msg.type == WSMsgType.BINARY:
             ftype, _sid, payload = decode_frame(msg.data)
-            if type_filter is None or ftype == type_filter:
-                return ftype, payload
+            if type_filter is not None and ftype != type_filter:
+                continue
+            if event_type is not None and ftype == FrameType.JSON_EVENT:
+                try:
+                    inner = json.loads(payload.decode("utf-8"))
+                except Exception:  # noqa: BLE001
+                    continue
+                if inner.get("type") != event_type:
+                    continue
+            return ftype, payload
     return None
 
 
@@ -184,7 +224,11 @@ async def test_default_mode_heartbeat_relay(fixed_pin):
         bridge.heartbeats.clear()
         await _send_teleop_heartbeat(ws, seq=42)
         await asyncio.sleep(0.05)
-        assert any(s == sid and seq == 42 for s, _ts, seq in bridge.heartbeats), (
+        # issue #2190: client_id в heartbeat-relay — server_client_id.
+        assert any(
+            s == make_server_client_id(sid) and seq == 42
+            for s, _ts, seq in bridge.heartbeats
+        ), (
             f"heartbeat не релеился; got={bridge.heartbeats}"
         )
         try:
@@ -211,9 +255,13 @@ async def test_gate_blocks_twist_when_floor_held_by_other(fixed_pin):
         assert sid_a != sid_b
         # ADR-0051 §2.2: avatar_arbiter — единственный источник истины
         # по floor-ам; cache — только mirror. Проверяем клиент и кэш.
-        assert server._avatar_arbiter.floor_holder == sid_a
-        assert server._floor_cache.is_held_by(sid_a) is True
-        assert server._floor_cache.is_held_by(sid_b) is False
+        # issue #2190 (voice-vr 05): и arbiter, и cache теперь
+        # оперируют server_client_id ("quest:<session_uuid>") —
+        # единый формат во всех 4 точках (gate/heartbeat/release/
+        # STATE_UPDATE).
+        assert server._avatar_arbiter.floor_holder == make_server_client_id(sid_a)
+        assert server._floor_cache.is_held_by(make_server_client_id(sid_a)) is True
+        assert server._floor_cache.is_held_by(make_server_client_id(sid_b)) is False
 
         # B шлёт twist — должна прийти ERROR{FLOOR_HELD}.
         await _send_teleop_twist(ws_b, seq=1)
@@ -224,7 +272,9 @@ async def test_gate_blocks_twist_when_floor_held_by_other(fixed_pin):
         assert body["code"] == ErrorCode.FLOOR_HELD
         # Relay не должен быть — у B нет floor.
         await asyncio.sleep(0.05)
-        assert not any(s == sid_b for s, _ts, _seq in bridge.heartbeats), (
+        assert not any(
+            s == make_server_client_id(sid_b) for s, _ts, _seq in bridge.heartbeats
+        ), (
             f"B не должен слать relay; got={bridge.heartbeats}"
         )
         try:
@@ -246,7 +296,10 @@ async def test_gate_allows_twist_when_floor_is_mine(fixed_pin):
         await _send_teleop_twist(ws_a, seq=10)
         await asyncio.sleep(0.05)
         # Relay должен быть (A держит floor).
-        assert any(s == sid_a and seq == 10 for s, _ts, seq in bridge.heartbeats)
+        assert any(
+            s == make_server_client_id(sid_a) and seq == 10
+            for s, _ts, seq in bridge.heartbeats
+        )
         # ERROR не должно быть.
         err = await _read_frame(ws_a, type_filter=FrameType.ERROR, timeout=0.3)
         assert err is None, f"A держит floor — ERROR не должно слаться; got={err}"
@@ -310,15 +363,16 @@ async def test_floor_released_on_unregister(fixed_pin):
     async with TestClient(TestServer(app)) as client:
         ws_a, sid_a = await _authenticate(client, fixed_pin)
         ws_b, sid_b = await _authenticate(client, fixed_pin)
-        assert server._avatar_arbiter.floor_holder == sid_a
-        assert server._floor_cache.is_held_by(sid_a) is True
-        assert server._floor_cache.is_held_by(sid_b) is False
+        # issue #2190: floor_holder хранится в формате server_client_id.
+        assert server._avatar_arbiter.floor_holder == make_server_client_id(sid_a)
+        assert server._floor_cache.is_held_by(make_server_client_id(sid_a)) is True
+        assert server._floor_cache.is_held_by(make_server_client_id(sid_b)) is False
 
         await ws_a.close()
         # Дать event-loop отработать unregister.
         await asyncio.sleep(0.1)
         assert server._avatar_arbiter.floor_holder is None
-        assert server._floor_cache.is_held_by(sid_a) is False
+        assert server._floor_cache.is_held_by(make_server_client_id(sid_a)) is False
         # B всё ещё без floor — нужно re-acquire, который произойдёт
         # через avatar_arbiter service в Phase 2; в Phase 1 B остаётся
         # без floor до выхода. Это явно задокументировано: см. design.md.
@@ -366,25 +420,44 @@ async def test_floor_lost_external_notifies_bridge_and_client(fixed_pin):
     app = build_app(server)
     async with TestClient(TestServer(app)) as client:
         ws_a, sid_a = await _authenticate(client, fixed_pin)
-        assert server._avatar_arbiter.floor_holder == sid_a
+        # issue #2190: floor_holder — server_client_id.
+        assert server._avatar_arbiter.floor_holder == make_server_client_id(sid_a)
+        # Watchdog (WATCHDOG_TIMEOUT_S = 0.6 с) трипает сессию, которая
+        # молчит между handshake и чтением floor_lost event — фоновый
+        # ping-loop держит её живой, пока тест фильтрует heartbeat-events.
+        ping_task = asyncio.create_task(_keepalive_pings(ws_a))
+        try:
+            # Имитируем внешний сигнал потери floor (Telegram-оператор взял его).
+            # Контракт issue #2190: client_id в on_floor_lost_external — server_client_id.
+            server.on_floor_lost_external(make_server_client_id(sid_a))
+            await asyncio.sleep(0.05)
 
-        # Имитируем внешний сигнал потери floor (Telegram-оператор взял его).
-        server.on_floor_lost_external(sid_a)
-        await asyncio.sleep(0.05)
-
-        # 1) Bridge.on_floor_lost вызван.
-        assert bridge.floor_lost_clients == [sid_a], (
-            f"bridge.on_floor_lost not called; got={bridge.floor_lost_clients}"
-        )
-        # 2) Floor снят в tracker.
-        assert server._avatar_arbiter.floor_holder is None
-        # 3) Клиент получил JSON_EVENT{type:"floor_lost"}.
-        evt = await _read_frame(ws_a, type_filter=FrameType.JSON_EVENT, timeout=0.5)
-        assert evt is not None, "JSON_EVENT{floor_lost} не пришёл клиенту"
-        _, payload = evt
-        body = json.loads(payload.decode("utf-8"))
-        assert body.get("type") == "floor_lost"
-        assert body.get("floor") == "teleop"
+            # 1) Bridge.on_floor_lost вызван с server_client_id.
+            assert bridge.floor_lost_clients == [make_server_client_id(sid_a)], (
+                f"bridge.on_floor_lost not called; got={bridge.floor_lost_clients}"
+            )
+            # 2) Floor снят в tracker.
+            assert server._avatar_arbiter.floor_holder is None
+            # 3) Клиент получил JSON_EVENT{type:"floor_lost"} — фильтруем
+            # по type, потому что сервер параллельно шлёт heartbeat-event
+            # (200 ms keepalive), который приходит раньше floor_lost.
+            evt = await _read_frame(
+                ws_a,
+                type_filter=FrameType.JSON_EVENT,
+                event_type="floor_lost",
+                timeout=1.0,
+            )
+            assert evt is not None, "JSON_EVENT{floor_lost} не пришёл клиенту"
+            _, payload = evt
+            body = json.loads(payload.decode("utf-8"))
+            assert body.get("type") == "floor_lost"
+            assert body.get("floor") == "teleop"
+        finally:
+            ping_task.cancel()
+            try:
+                await ping_task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
         try:
             await ws_a.close()
         except Exception:  # noqa: BLE001
@@ -400,8 +473,9 @@ async def test_floor_lost_external_noop_when_not_holder(fixed_pin):
         ws_a, sid_a = await _authenticate(client, fixed_pin)
         ws_b, sid_b = await _authenticate(client, fixed_pin)
         bridge.floor_lost_clients.clear()
-        # B не держит floor — вызов не должен ничего сделать.
-        server.on_floor_lost_external(sid_b)
+        # B не держит floor — вызов не должен ничего сделать
+        # (передаём server_client_id для соответствия issue #2190).
+        server.on_floor_lost_external(make_server_client_id(sid_b))
         await asyncio.sleep(0.05)
         assert bridge.floor_lost_clients == []
         try:
@@ -440,8 +514,12 @@ async def test_welcome_includes_teleop_floor_held_by(fixed_pin):
         assert got_b is not None, "WELCOME для B не пришёл (watchdog?)"
         body_b = json.loads(got_b[1].decode("utf-8"))
 
-        assert body_b.get("teleop_floor_held_by") == sid_a, (
-            f"ожидали teleop_floor_held_by={sid_a}, got={body_b.get('teleop_floor_held_by')}"
+        # issue #2190: WELCOME.teleop_floor_held_by — server_client_id,
+        # а не голый session_id (это и есть «внешнее имя» для
+        # клиентского сравнения с /avatar/state).
+        assert body_b.get("teleop_floor_held_by") == make_server_client_id(sid_a), (
+            f"ожидали teleop_floor_held_by={make_server_client_id(sid_a)}, "
+            f"got={body_b.get('teleop_floor_held_by')}"
         )
         try:
             await ws_a.close()

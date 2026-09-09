@@ -30,6 +30,24 @@ from rob_box_core.ports import (
     ToolValidationError,
     ValidationResult,
 )
+from rob_box_core.speech_segmentation import (
+    BYTES_PER_S,
+    DEFAULT_ROBOT_VOICE_CONFIG,
+    DEFAULT_WAKE_CONFIG,
+    PhraseSegmenter,
+    SAMPLE_RATE_HZ,
+    SpeechSegmentationConfig,
+)
+from rob_box_core.utterance import (
+    ALLOWED_PRIORITIES,
+    DEFAULT_PRIORITY,
+    PRIORITY_BARGE_IN,
+    PRIORITY_NORMAL,
+    PRIORITY_OPERATOR,
+    PRIORITY_REPLACE,
+    Sink,
+    Utterance,
+)
 
 __all__ = [
     "Clock",
@@ -51,6 +69,15 @@ __all__ = [
     "ToolTimeout",
     "ToolTimeoutError",
     "ToolValidationError",
+    # Utterance — единый сборщик SSML (voice-vr 12, ADR-0080 §1.3, §2.3)
+    "ALLOWED_PRIORITIES",
+    "DEFAULT_PRIORITY",
+    "PRIORITY_BARGE_IN",
+    "PRIORITY_NORMAL",
+    "PRIORITY_OPERATOR",
+    "PRIORITY_REPLACE",
+    "Sink",
+    "Utterance",
     # avatar_command (AV-22, freeze §3.3 worker-brief)
     "AVATAR_COMMAND_TOPIC",
     "AVATAR_COMMAND_RESULT_TOPIC",
@@ -65,6 +92,13 @@ __all__ = [
     "make_telegram_client_id",
     "new_request_id",
     "now_ts_ms",
+    # speech_segmentation (issue #2199: единый сегментатор речи)
+    "PhraseSegmenter",
+    "SpeechSegmentationConfig",
+    "DEFAULT_WAKE_CONFIG",
+    "DEFAULT_ROBOT_VOICE_CONFIG",
+    "SAMPLE_RATE_HZ",
+    "BYTES_PER_S",
 ]
 
 __version__ = "0.1.0"

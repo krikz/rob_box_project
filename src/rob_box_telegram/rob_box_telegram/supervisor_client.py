@@ -267,6 +267,31 @@ def _try_import_execute_command() -> Any:
         return None
 
 
+def _try_import_heartbeat_msg_type():
+    """Ленивый импорт IDL ``rob_box_supervisor_msgs.msg.TeleopHeartbeat``.
+
+    Контракт (issue #2189, ADR-0028 §4.4 S10): /teleop_heartbeat
+    обязан публиковаться типом ``rob_box_supervisor_msgs/msg/TeleopHeartbeat``
+    (поля ``client_id``/``ts_ms``/``seq``), а не ``std_msgs/String`` —
+    иначе супервизор-арбитр (подписанный на тот же IDL) не получит
+    ничего и ``LockManager.heartbeat()`` не вызывается → dead-man
+    500 мс не отрабатывает.
+
+    Возвращает ``None`` если IDL-пакет не собран (CI mock-stend без
+    ``colcon build``). Клиент в этом случае работает в heartbeat
+    no-op + WARN, а сам факт-что-фикс-не-сработал логируется один раз
+    (см. ``start_heartbeat``).
+    """
+    try:
+        from rob_box_supervisor_msgs.msg import (  # noqa: PLC0415
+            TeleopHeartbeat as _TeleopHeartbeat,
+        )
+
+        return _TeleopHeartbeat
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _try_import_command_msg() -> Any:
     """Ленивый импорт ``rob_box_supervisor_msgs.msg.Command``.
 
@@ -361,6 +386,13 @@ class SupervisorClient:
         # Heartbeat
         self._heartbeat_timer: Optional[Any] = None
         self._heartbeat_pub: Optional[Any] = None
+        # IDL-тип ``TeleopHeartbeat``, зафиксированный в момент создания
+        # паблишера (issue #2189). Сохраняем здесь, чтобы ``_send_heartbeat``
+        # формировал объекты того же класса — иначе ROS2 уронит publish()
+        # на type-mismatch или молча отбросит сообщение, и dead-man
+        # 500 мс опять сломается по тихому.
+        self._heartbeat_msg_type: Optional[Any] = None
+        self._heartbeat_seq: int = 0
 
         # ROS-клиенты сервисов (создаются лениво в active-режиме).
         # Phase 2 (issue #2002): реально используем ТОЛЬКО _execute_client
@@ -519,18 +551,51 @@ class SupervisorClient:
 
         Idempotent: повторный вызов — no-op (return). Если публикация
         уже идёт, ничего не делаем. В monitor-режиме — no-op.
+
+        Issue #2189 (ADR-0028 §4.4 S10): тип паблишера теперь — IDL
+        ``rob_box_supervisor_msgs/msg/TeleopHeartbeat`` (поля
+        ``client_id``/``ts_ms``/``seq``), а не ``std_msgs/String``
+        (JSON). До #2189 Telegram-оператор публиковал String — супервизор
+        был подписан на IDL — в ROS2 pub/sub с разными типами не
+        соединяются → LockManager.heartbeat() не вызывался, dead-man
+        500 мс был нерабочим. Тип паблишера и подписчика должны совпадать.
+
+        IDL может быть не собран (CI / fresh clone без ``colcon build``
+        пакета ``rob_box_supervisor_msgs``) → try/except ImportError,
+        ``self._heartbeat_pub = None`` + WARN. Heartbeat-цикл при этом
+        НЕ запускается (вместо старого «publisher = std_msgs/String
+        независимо от того, есть ли супервизор»). Шифу прямо просил
+        в комментарии к PR #2204: «если publisher может не создаться,
+        стоит добавить в DoD проверку на роботе, что в проде IDL
+        собран» — WARN делает «тихую деградацию» наблюдаемой.
         """
         if self._mode != "active":
             return
         if self._heartbeat_timer is not None:
             return
-        RosString = _try_import_rclpy()
-        if RosString is None:
+        # Нужен и rclpy (для ``create_publisher``), и IDL TeleopHeartbeat.
+        # Если rclpy недоступен — мы уже в monitor-no-op, но без
+        # этого guard'а упали бы на ``self._node.create_publisher``.
+        if _try_import_rclpy() is None:
+            return
+        TeleopHeartbeat = _try_import_heartbeat_msg_type()
+        if TeleopHeartbeat is None:
+            logger.warning(
+                "SupervisorClient[%s] /teleop_heartbeat publisher NOT created: "
+                "rob_box_supervisor_msgs/msg/TeleopHeartbeat IDL is not built. "
+                "Colcon-соберите пакет rob_box_supervisor_msgs. "
+                "Dead-man 500 мс (ADR-0028 §4.4 S10) будет НЕРАБОЧИМ, "
+                "пока эта нода не увидит IDL. "
+                "См. issue #2189.",
+                self._client_id,
+            )
             return
         try:
             self._heartbeat_pub = self._node.create_publisher(
-                RosString, self.TOPIC_HEARTBEAT, 10
+                TeleopHeartbeat, self.TOPIC_HEARTBEAT, 10
             )
+            self._heartbeat_msg_type = TeleopHeartbeat
+            self._heartbeat_seq = 0
             self._heartbeat_timer = self._node.create_timer(
                 self._heartbeat_period_s, self._send_heartbeat
             )
@@ -542,7 +607,7 @@ class SupervisorClient:
             self._heartbeat_timer = None
             return
         logger.info(
-            "SupervisorClient[%s] heartbeat started (period=%.3fs)",
+            "SupervisorClient[%s] heartbeat started (period=%.3fs, msg=IDL TeleopHeartbeat)",
             self._client_id,
             self._heartbeat_period_s,
         )
@@ -556,6 +621,7 @@ class SupervisorClient:
                 pass
             self._heartbeat_timer = None
         self._heartbeat_pub = None
+        self._heartbeat_msg_type = None
 
     def subscribe_state(self, listener: Callable[[AvatarState], None]) -> Callable[[], None]:
         """Подписка на изменения /avatar/state. Возвращает unsubscribe."""
@@ -1182,20 +1248,34 @@ class SupervisorClient:
         )
 
     def _send_heartbeat(self) -> None:
+        """Сформировать и опубликовать ``TeleopHeartbeat`` IDL.
+
+        Issue #2189 (ADR-0028 §4.4 S10): до фикса этот метод публиковал
+        ``std_msgs/String`` с JSON-строкой, а супервизор-арбитр был подписан
+        на IDL ``TeleopHeartbeat``. В ROS 2 pub/sub с разными типами не
+        соединяются → ``LockManager.heartbeat()`` никогда не вызывался →
+        dead-man 500 мс был нерабочим. Теперь тип паблишера и payload-а
+        совпадают — IDL ``TeleopHeartbeat`` с полями ``client_id``/
+        ``ts_ms``/``seq``.
+
+        ``seq`` — монотонный счётчик от 0, инкрементируется на каждый
+        publish; супервизор использует его, чтобы заметить «дыры» в
+        потоке (heartbeat-delivered, но не в realtime).
+        """
         if not self._is_holding(Floor.TELEOP):
             self.stop_heartbeat()
             return
-        if self._heartbeat_pub is None:
+        if self._heartbeat_pub is None or self._heartbeat_msg_type is None:
             return
-        RosString = _try_import_rclpy()
-        if RosString is None:
+        try:
+            msg = self._heartbeat_msg_type()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Heartbeat msg alloc failed: %r", exc)
             return
-        payload = {
-            "client_id": self._client_id,
-            "ts_ms": int(time.time() * 1000),
-        }
-        msg = RosString()
-        msg.data = json.dumps(payload, ensure_ascii=False)
+        msg.client_id = self._client_id
+        msg.ts_ms = int(time.time() * 1000)
+        msg.seq = self._heartbeat_seq
+        self._heartbeat_seq = (self._heartbeat_seq + 1) & 0xFFFFFFFF
         try:
             self._heartbeat_pub.publish(msg)
         except Exception as exc:  # noqa: BLE001

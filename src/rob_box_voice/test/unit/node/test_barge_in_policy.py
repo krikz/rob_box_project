@@ -465,9 +465,28 @@ class TestParametersCallbackBargeInPolicy:
         n._barge_in_policy_pub.publish.assert_not_called()
 
     def test_unrelated_param_does_not_touch_barge_in_policy(self, n):
-        # ADR-0066 §6.3 — ``voice_input_mode`` УДАЛЁН. Проверяем что
-        # ``voice_preset`` (который остался для LLM-формализации в
-        # grip_pipeline супервизора) не трогает barge_in_policy.
-        n.parameters_callback([self._param("voice_preset", "technical")])
+        # ADR-0066 §6.3 — ``voice_input_mode`` УДАЛЁН.
+        # voice-vr 21 — ``voice_preset`` тоже удалён (см.
+        # ADR-0080 §2.7: супервизор больше НЕ пишет в чужие
+        # ROS-параметры). Используем ``system_prompt_file`` —
+        # декларированный в dialogue_node параметр, к barge_in
+        # логически не относящийся.
+        n.parameters_callback([self._param("system_prompt_file", "x.txt")])
         assert n._barge_in_policy == "replace"
         n._barge_in_policy_pub.publish.assert_not_called()
+
+    def test_unknown_param_warns_not_rejected(self, n):
+        # voice-vr 21: ``parameters_callback`` теперь явно
+        # обрабатывает ТОЛЬКО ``barge_in_policy``. Любой другой
+        # runtime-SetParameters (например, забытый ``voice_preset``
+        # со старой supervisor_node, либо ручной ``ros2 param set``)
+        # логируется как warning и НОДА НЕ ПАДАЕТ — на проде это
+        # важнее, чем вернуть ``SetParametersResult(successful=False)``,
+        # иначе старый supervisor накажет активную dialogue_node.
+        result = n.parameters_callback(
+            [self._param("voice_preset", "technical")]
+        )
+        # Узел не тронул barge_in и не вернул failed — revert-safe.
+        assert n._barge_in_policy == "replace"
+        n._barge_in_policy_pub.publish.assert_not_called()
+        assert result.successful is True

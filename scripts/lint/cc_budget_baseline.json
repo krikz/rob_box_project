@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "created": "2026-09-07",
-  "base_sha": "789892bc6d8b6923704b98f15257ac907003be2d",
+  "created": "2026-09-08",
+  "base_sha": "103109f439e40194ff0d03dff38767b347725cb5",
   "limits": {
     "method": 15,
     "init": 20
@@ -28,7 +28,7 @@
       "DialogueNode._continue_after_tool_calls": 22,
       "DialogueNode._do_recursive_streaming": 22,
       "DialogueNode._execute_tool_calls": 18,
-      "DialogueNode._handle_result": 62,
+      "DialogueNode._handle_result": 65,
       "DialogueNode._on_stt": 54,
       "DialogueNode._run_turn": 57
     },
@@ -42,7 +42,7 @@
       "select_recognition": 18
     },
     "src/rob_box_voice/rob_box_voice/stt_node.py": {
-      "STTNode._process_audio": 24,
+      "STTNode._process_audio": 20,
       "STTNode._recognize_yandex_phase": 26
     },
     "src/rob_box_voice/rob_box_voice/tts_chunking.py": {
@@ -56,12 +56,11 @@
       "TTSNode._synthesize_and_play": 19,
       "TTSNode._synthesize_silero": 23,
       "TTSNode._synthesize_yandex": 18,
-      "TTSNode.dialogue_callback": 25
+      "TTSNode.dialogue_callback": 29
     },
     "src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py": {
       "AvatarSupervisor._build_operator_llm": 16,
       "AvatarSupervisor._on_avatar_command": 17,
-      "AvatarSupervisor._on_preview_voice": 17,
       "AvatarSupervisor._run_agent_sync": 19
     },
     "src/rob_box_harness/rob_box_harness/config.py": {
@@ -110,6 +109,320 @@
     },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/web_search.py": {
       "SearchWebTool.execute": 18
+    },
+    "src/rob_box_supervisor/rob_box_supervisor/metrics_source.py": {
+      "MetricsSource.query_logs": 16
+    },
+    "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/operator_admin.py": {
+      "ShowMetricsTool.execute": 18
     }
-  }
+  },
+  "_legacy_acknowledged": [
+    {
+      "path": "src/rob_box_voice/rob_box_voice/audio_node.py",
+      "method": "AudioNode.check_vad_and_doa",
+      "cc": 19,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_voice/rob_box_voice/core/dj_mode.py",
+      "method": "DJModeController._apply_enable_payload",
+      "cc": 18,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_voice/rob_box_voice/core/music_guard.py",
+      "method": "MusicGuard.evaluate",
+      "cc": 16,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_voice/rob_box_voice/core/music_stack_validation.py",
+      "method": "classify_sclang_log",
+      "cc": 19,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_voice/rob_box_voice/core/sample_search.py",
+      "method": "search_renardo_samples",
+      "cc": 31,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_voice/rob_box_voice/dialogue_node.py",
+      "method": "DialogueNode._build_dynamic_system_context",
+      "cc": 24,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_voice/rob_box_voice/dialogue_node.py",
+      "method": "DialogueNode._build_single_provider",
+      "cc": 23,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_voice/rob_box_voice/dialogue_node.py",
+      "method": "DialogueNode._continue_after_tool_calls",
+      "cc": 22,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_voice/rob_box_voice/dialogue_node.py",
+      "method": "DialogueNode._do_recursive_streaming",
+      "cc": 22,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_voice/rob_box_voice/dialogue_node.py",
+      "method": "DialogueNode._execute_tool_calls",
+      "cc": 18,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_voice/rob_box_voice/dialogue_node.py",
+      "method": "DialogueNode._handle_result",
+      "cc": 65,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_voice/rob_box_voice/dialogue_node.py",
+      "method": "DialogueNode._on_stt",
+      "cc": 54,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_voice/rob_box_voice/dialogue_node.py",
+      "method": "DialogueNode._run_turn",
+      "cc": 57,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_voice/rob_box_voice/scheduler/pregen/pre_gen.py",
+      "method": "build_pregen_task",
+      "cc": 22,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_voice/rob_box_voice/scheduler/task_scheduler.py",
+      "method": "TaskScheduler.update",
+      "cc": 26,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_voice/rob_box_voice/stt_fallback.py",
+      "method": "select_recognition",
+      "cc": 18,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_voice/rob_box_voice/stt_node.py",
+      "method": "STTNode._process_audio",
+      "cc": 20,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_voice/rob_box_voice/stt_node.py",
+      "method": "STTNode._recognize_yandex_phase",
+      "cc": 26,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_voice/rob_box_voice/tts_chunking.py",
+      "method": "split_text",
+      "cc": 20,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_voice/rob_box_voice/tts_node.py",
+      "method": "TTSNode.__init__",
+      "cc": 28,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_voice/rob_box_voice/tts_node.py",
+      "method": "TTSNode._on_avatar_tts_request",
+      "cc": 16,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_voice/rob_box_voice/tts_node.py",
+      "method": "TTSNode._on_set_provider",
+      "cc": 18,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_voice/rob_box_voice/tts_node.py",
+      "method": "TTSNode._parse_ssml_attributes",
+      "cc": 17,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_voice/rob_box_voice/tts_node.py",
+      "method": "TTSNode._synthesize_and_play",
+      "cc": 19,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_voice/rob_box_voice/tts_node.py",
+      "method": "TTSNode._synthesize_silero",
+      "cc": 23,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_voice/rob_box_voice/tts_node.py",
+      "method": "TTSNode._synthesize_yandex",
+      "cc": 18,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_voice/rob_box_voice/tts_node.py",
+      "method": "TTSNode.dialogue_callback",
+      "cc": 29,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py",
+      "method": "AvatarSupervisor._build_operator_llm",
+      "cc": 16,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py",
+      "method": "AvatarSupervisor._on_avatar_command",
+      "cc": 17,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py",
+      "method": "AvatarSupervisor._run_agent_sync",
+      "cc": 19,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_harness/rob_box_harness/config.py",
+      "method": "_parse_tts",
+      "cc": 17,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_harness/rob_box_harness/core/agent_core.py",
+      "method": "AgentCore._run_with_tools",
+      "cc": 48,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_harness/rob_box_harness/core/agent_core.py",
+      "method": "AgentCore.process_input",
+      "cc": 23,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_harness/rob_box_harness/core/confirmation_policy.py",
+      "method": "ToolConfirmationPolicy.from_mapping",
+      "cc": 16,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_harness/rob_box_harness/providers/minimax.py",
+      "method": "HarnessMiniMaxProvider.stream",
+      "cc": 22,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/async_executor.py",
+      "method": "AsyncToolExecutor.execute_tools_parallel",
+      "cc": 22,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/core/arranger.py",
+      "method": "spec_from_flat",
+      "cc": 19,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/core/minimax_music_client.py",
+      "method": "MinimaxMusicClient.generate",
+      "cc": 25,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/slice_authority.py",
+      "method": "ToolSliceAuthority.extended_with",
+      "cc": 16,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/slice_authority.py",
+      "method": "ToolSliceAuthority.from_mapping",
+      "cc": 21,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/dialogue.py",
+      "method": "SpeakTextTool._split_sentences",
+      "cc": 18,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/dialogue.py",
+      "method": "SpeakTextTool.execute",
+      "cc": 22,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/mapping.py",
+      "method": "StartMappingTool.execute",
+      "cc": 18,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/minimax_music.py",
+      "method": "GenSaveToLibraryTool.execute",
+      "cc": 18,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/music.py",
+      "method": "MusicManager.execute_code",
+      "cc": 23,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/music.py",
+      "method": "MusicManager.stop_all",
+      "cc": 16,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/music.py",
+      "method": "SetDjModeTool.execute",
+      "cc": 18,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/sound.py",
+      "method": "GetSoundInfoTool.execute",
+      "cc": 19,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/web_search.py",
+      "method": "SearchWebTool.execute",
+      "cc": 18,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_supervisor/rob_box_supervisor/metrics_source.py",
+      "method": "MetricsSource.query_logs",
+      "cc": 16,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/operator_admin.py",
+      "method": "ShowMetricsTool.execute",
+      "cc": 18,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    }
+  ]
 }

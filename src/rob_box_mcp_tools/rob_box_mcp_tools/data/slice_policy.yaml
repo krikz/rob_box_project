@@ -140,3 +140,11 @@ slices:
     - read_logs
     - ros2_node_status
     - container_status
+    # Issue #2113 (TARS 2 metrics panel): ``show_metrics`` публикует
+    # запрос в ``/avatar/tars/panel_request`` — там его подхватывает
+    # существующий ``rob_box_supervisor.tars_panel.TarsPanelDispatcher``
+    # и публикует собранный URL Grafana-панели в ``/avatar/tars/panel_url``.
+    # Тул «общий» с LLM-инструментом show_metrics в avatar_supervisor
+    # (тот же ToolSpec, но handler иной), поэтому добавление сюда
+    # открывает операторский send'ер на MCP-путь ``/mcp/execute``.
+    - show_metrics

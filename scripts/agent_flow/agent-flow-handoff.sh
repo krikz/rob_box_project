@@ -66,14 +66,24 @@ $body"
   # Ретро t_b3476561: handoff раньше не передавал --skill → карточки stuck.
   # af_skill_for_profile() даёт детерминированный skill по assignee + check
   # что он реально есть в профиле (fail-OPEN если нет).
-  child_skill="$(af_skill_for_profile "$next")"
+  #
+  # Ретро t_aafad606 / issue #2160 / ADR-0077: одна карточка = один skill →
+  # воркеры не делают self-review. Используем af_skills_for_profile для
+  # multi-skill: ОБЯЗАТЕЛЬНЫЙ verification-before-completion + primary +
+  # code-review (для PR-порождающих профилей). Labels от parent не пробрасываем
+  # (handoff обычно про новый контекст), но pr_flag="auto" — авто-detect.
+  mapfile -t child_skills < <(af_skills_for_profile "$next" "" "")
   child_skill_args=()
-  if [ -n "$child_skill" ]; then
-    child_skill_args=(--skill "$child_skill")
-    log "  skill-inference (handoff): next=${next} -> skill=${child_skill}"
+  if [ "${#child_skills[@]}" -gt 0 ] && [ -n "${child_skills[0]}" ]; then
+    for s in "${child_skills[@]}"; do
+      [ -n "$s" ] && child_skill_args+=(--skill "$s")
+    done
+    log "  skill-inference (handoff): next=${next} -> skills=[${child_skills[*]}]"
+  else
+    log "  skill-inference (handoff): next=${next} → нет валидных skills, --skill не передаём"
   fi
   if [[ "$DRY_RUN" == true ]]; then
-    log "DRY-RUN: would create blocked child for $id -> $next (skill=${child_skill:-none}) and subscribe telegram:495039871"
+    log "DRY-RUN: would create blocked child for $id -> $next (skills=${child_skills[*]:-none}) and subscribe telegram:495039871"
     continue
   fi
   out="$($HERMES_BIN kanban --board "$BOARD" create --assignee "$next" --parent "$id" --workspace worktree --branch "z-{agent}/${id}-${next}" --initial-status blocked "${child_skill_args[@]}" --body "$child_body" --created-by agent-flow-handoff "$child_title" 2>&1)" || { log "create failed for $id: $out"; exit 1; }

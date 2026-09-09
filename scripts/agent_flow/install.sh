@@ -87,6 +87,11 @@ EXPECTED=(
     agent-flow-install-daily.sh
     agent-flow-handoff.sh
     round_ensure.sh
+    # Round-formation module (issue #2299, 09.09.2026): единый владелец
+    # ls-remote → max-N → freshness-check → create/reuse/recreate. Source'ится
+    # из round_ensure.sh и agent-flow-e2e-process.sh. Должен лежать рядом
+    # со скриптами во всех 4 target-папках.
+    round_formation.sh
     agent-flow-cleanup-249.sh
     agent-flow-deploy-sweep.sh
     agent-flow-unlabeled-sweep.sh
@@ -102,6 +107,13 @@ EXPECTED=(
     watchdog-provider-quick.sh
     agent-flow-drift-detect.sh
     kanban-retro-create.sh
+    # Worker-helper для контракта отчёта (ADR-0077, issue #2159, 2026-09-08):
+    # воркер вызывает `bash scripts/agent_flow/kanban-report-write.sh $TASK_ID`
+    # ПЕРЕД `kanban_complete` — скрипт собирает git diff/pytest/gh pr view и
+    # пишет `docs/reports/kanban/<task_id>.md` (git tracked, переживает worktree GC).
+    # Без него ретро/аудит через месяц невозможен — `kanban_complete` оставляет
+    # только Result (~300 символов) + список путей без содержимого.
+    kanban-report-write.sh
     validate_honesty.sh
     # Pre-PR check на ADR namespace collision (ретро 01.09 t_debcb647):
     # дополняет validate_honesty.sh (claim-evidence) функцией проверки
@@ -231,6 +243,11 @@ EXPECTED=(
     # kanban-retro-create.sh (дедуп по key). Регистрация cron-job —
     # в ensure_nightly_review_cron ниже.
     agent-flow-nightly-review.sh
+    # Персистентность находок ночного ревью (ADR-0079, issue #2159):
+    # НЕ cron-job — вызывается САМИМ LLM-ревьюером перед kanban_complete
+    # (инструкция в теле карточки, см. agent-flow-nightly-review.sh),
+    # тем же паттерном, что kanban-report-write.sh для ADR-0077.
+    nightly-review-record.sh
     # Decomposed-children wake-up watchdog (ADR-AF-0052, nightly-review
     # t_bfd19ffb): no-agent job, каждые 4ч сканирует task_events.kind=
     # 'decomposed' и для детей со started_at=NULL, status ∈ {todo,triage},

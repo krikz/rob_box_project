@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================================
 # test_e2e_process_acceptance_file.sh — bug t_cca7c074 (ретро 19.08),
-# расширено для issue #1456 / #1452
+# расширено для issue #1456 / #1452 / #2300
 #
 # Проверяет парсинг acceptance_file в agent-flow-e2e-process.sh и его
 # auto-discovery по convention в репо:
@@ -13,16 +13,19 @@
 #   5) Auto-discovery PREFIX (issue #1452): <scenario_dir>/<prefix>_acceptance[_v<N>].json
 #      где PREFIX = basename без суффиксов _suite / _v<N>
 #      (решает кейс music_library_suite_v1.json → music_library_acceptance_v1.json)
-#   6) Ничего нет + scenario задан → workflow сам упадёт на GATE-1 (но
-#      e2e-process не падает, а логирует warning — fail-fast НЕ делаем)
+#   6) Ничего нет + scenario задан → e2e-process не передаёт acceptance_file,
+#      workflow упадёт на GATE-1 (e2e-process не падает, а логирует warning)
 #   7) Ничего нет + scenario НЕ задан (smoke-test --text) → НЕ ищем
 #      acceptance.json (single-shot use case, ADR-0022 §4.1)
 #   8) workflow_args содержит -f acceptance_file=<path> если что-то нашлось
 #   9) Convention 3 в e2e-process.sh (issue #1456) — strip _suite/_v<N> в
-#      deploy-слое (раньше была только в harness). Чтобы не дублировать
-#      harness PREFIX на deploy-уровне, для сценариев вида foo_suite_v1.json
-#      e2e-process сам отрезолвит foo_acceptance_v1.json и передаст явно
-#      в workflow (а не даст harness падать в GATE-1).
+#      deploy-слое. Чтобы не дублировать harness PREFIX на deploy-уровне,
+#      для сценариев вида foo_suite_v1.json e2e-process сам отрезолвит
+#      foo_acceptance_v1.json и передаст явно в workflow.
+#  10) Issue #2300 (09.09.2026): единственный резолвер — e2e-process;
+#      harness (e2e_voice_test.sh) НЕ имеет собственного auto-discovery
+#      (если есть — регресс: были исторические false-FAIL из-за рассинхрона
+#      harness ↔ deploy-side, см. issue #1452 / #1456 / #1551).
 #
 # Тест НЕ запускает agent-flow-e2e-process.sh целиком (слишком много
 # pre-checks), а изолирует ту же логику парсинга в локальные функции —
@@ -89,33 +92,14 @@ extract_acceptance_file() {  # $1=body
         | sed -E 's/^[[:space:]]*acceptance_file[[:space:]]*:[[:space:]]*//; s/^`//; s/`$//; s/^"//; s/"$//' || true
 }
 
-# --- Локальная копия harness auto-discovery (синхронна с e2e_voice_test.sh) --
-# PREFIX: убираем типичные хвосты (_suite, _v1, _v<N>) — issue #1452.
-harness_discover_acceptance() {  # $1=scenario_file
-    local scenario_file="$1"
-    local _scenario_dir _scenario_base _scenario_prefix _cand _found
-    _scenario_dir="$(dirname "$scenario_file")"
-    _scenario_base="$(basename "$scenario_file" .json)"
-    _scenario_prefix="$_scenario_base"
-    _scenario_prefix="${_scenario_prefix%_v[0-9]*}"
-    _scenario_prefix="${_scenario_prefix%_suite}"
-    _found=""
-    for _cand in \
-        "acceptance.json" \
-        "${_scenario_base}_acceptance.json" \
-        "${_scenario_prefix}_acceptance.json" \
-        "${_scenario_prefix}_acceptance_v1.json" \
-        "${_scenario_prefix}_acceptance_v2.json"; do
-        if [ -f "${_scenario_dir}/${_cand}" ]; then
-            _found="${_scenario_dir}/${_cand}"
-            break
-        fi
-    done
-    printf '%s' "$_found"
-}
-
+# Issue #2300 / ADR контракт (09.09.2026): единственный резолвер —
+# agent-flow-e2e-process.sh:resolve_acceptance_candidate. Локальная копия
+# harness_discover_acceptance удалена — harness (e2e_voice_test.sh)
+# больше НЕ имеет своего auto-discovery (был источник drift с deploy,
+# см. issue #1452 / #1456 / #1551).
+#
 # e2e-process auto-discovery (convention 1/2 + Convention 3 — issue #1456).
-# Синхронна с PREFIX-логикой в harness (issue #1452). Локальная копия
+# Синхронна с PREFIX-логикой в e2e-process.sh (issue #1452). Локальная копия
 # реализации в e2e-process.sh (Convention 3 в issue #1456 — strip _suite
 # и _v<N> для сценариев вида foo_suite_v1.json → foo_acceptance.json /
 # foo_acceptance_v1.json). Если скрипт изменится — обновите и эту копию.
@@ -196,11 +180,25 @@ else
     fail "auto-discovery acceptance_file" "не найден в e2e-process.sh"
 fi
 
-# Sanity для harness: PREFIX-логика из issue #1452 должна присутствовать
-if grep -q 'PREFIX: убираем типичные хвосты' "$HARNESS"; then
-    pass "PREFIX-логика в e2e_voice_test.sh присутствует (issue #1452)"
+# Issue #2300 (09.09.2026): harness НЕ должен иметь собственного auto-discovery.
+# Регрессия: если кто-то снова добавит candidate-search в e2e_voice_test.sh,
+# он рассинхронизируется с e2e-process и вернёт исторические false-FAIL
+# (issue #1452 round-155, #1456, #1551). Этот guard — якорь.
+if grep -q 'GATE-1: acceptance auto-discovered' "$HARNESS"; then
+    fail "harness auto-discovery удалён" \
+        "в e2e_voice_test.sh снова появился 'GATE-1: acceptance auto-discovered' — регресс issue #2300 (был источник drift issue #1452/#1456/#1551)"
 else
-    fail "PREFIX-логика" "не найдена в e2e_voice_test.sh"
+    pass "harness auto-discovery удалён (issue #2300 контракт: единственный резолвер — e2e-process)"
+fi
+# Дополнительно: PREFIX-стрип (_v[0-9]*/_suite) — фича была ТОЛЬКО в harness
+# (issue #1452 round-155). После #2300 она живёт только в e2e-process; если
+# снова появится в harness — это регресс (drift с deploy-стороной).
+if grep -qE 'scenario_prefix="${scenario_prefix%_suite}' "$HARNESS" \
+   || grep -qE 'scenario_prefix="${scenario_prefix%_v\[0-9\]\*}' "$HARNESS"; then
+    fail "harness PREFIX-логика удалена" \
+        "в e2e_voice_test.sh снова есть PREFIX-стрип — регресс issue #2300 (deploy/harness drift)"
+else
+    pass "harness PREFIX-логика удалена (issue #2300)"
 fi
 
 # --- Test 1: простое значение ---------------------------------------------
@@ -243,36 +241,37 @@ assert_eq "real PR e2e block" \
     ".github/e2e/scenarios/music_library_acceptance_v1.json" "$out"
 
 # --- Test 6: convention 1 — dir/acceptance.json ----------------------------
+# (issue #2300: единственный резолвер — e2e-process. Test против ep_discover,
+# не harness.)
 echo ""
-echo "=== Test 6: convention 1 — <scenario_dir>/acceptance.json ==="
+echo "=== Test 6: convention 1 — <scenario_dir>/acceptance.json (e2e-process) ==="
 _mock_dir="$(mktemp -d)"
 trap 'rm -rf "$_mock_dir" "$_mock_dir2" "$_mock_dir3" "$_mock_dir4"' EXIT
 mkdir -p "$_mock_dir/scenarios"
 echo '{}' > "$_mock_dir/scenarios/full_instrument_suite_v1.json"
 echo '{}' > "$_mock_dir/scenarios/acceptance.json"
-_discovered="$(harness_discover_acceptance "$_mock_dir/scenarios/full_instrument_suite_v1.json")"
-assert_eq "harness convention 1 wins" \
-    "$_mock_dir/scenarios/acceptance.json" "$_discovered"
 _discovered_ep="$(ep_discover_acceptance "$_mock_dir/scenarios/full_instrument_suite_v1.json")"
 assert_eq "e2e-process convention 1 wins" \
     "$_mock_dir/scenarios/acceptance.json" "$_discovered_ep"
 
 # --- Test 7: convention 2 — dir/<basename>_acceptance.json -----------------
+# (issue #2300: только e2e-process.)
 echo ""
-echo "=== Test 7: convention 2 — <scenario_dir>/<basename>_acceptance.json ==="
+echo "=== Test 7: convention 2 — <scenario_dir>/<basename>_acceptance.json (e2e-process) ==="
 _mock_dir2="$(mktemp -d)"
 trap 'rm -rf "$_mock_dir" "$_mock_dir2" "$_mock_dir3" "$_mock_dir4"' EXIT
 mkdir -p "$_mock_dir2/scenarios"
 echo '{}' > "$_mock_dir2/scenarios/foo_suite.json"
 # БЕЗ acceptance.json — должен сработать convention 2
 echo '{}' > "$_mock_dir2/scenarios/foo_suite_acceptance.json"
-_discovered="$(harness_discover_acceptance "$_mock_dir2/scenarios/foo_suite.json")"
-assert_eq "harness convention 2 — dir/<basename>_acceptance.json" \
-    "$_mock_dir2/scenarios/foo_suite_acceptance.json" "$_discovered"
+_discovered_ep="$(ep_discover_acceptance "$_mock_dir2/scenarios/foo_suite.json")"
+assert_eq "e2e-process convention 2 — dir/<basename>_acceptance.json" \
+    "$_mock_dir2/scenarios/foo_suite_acceptance.json" "$_discovered_ep"
 
 # --- Test 8: PREFIX — dir/<prefix>_acceptance_v1.json (issue #1452) ---------
+# (issue #2300: только e2e-process.)
 echo ""
-echo "=== Test 8: PREFIX logic — music_library_suite_v1.json → music_library_acceptance_v1.json ==="
+echo "=== Test 8: PREFIX logic — music_library_suite_v1.json → music_library_acceptance_v1.json (e2e-process) ==="
 _mock_dir3="$(mktemp -d)"
 trap 'rm -rf "$_mock_dir" "$_mock_dir2" "$_mock_dir3" "$_mock_dir4"' EXIT
 mkdir -p "$_mock_dir3/scenarios"
@@ -280,20 +279,22 @@ echo '{}' > "$_mock_dir3/scenarios/music_library_suite_v1.json"
 # БЕЗ acceptance.json / suite_v1_acceptance.json — должен сработать PREFIX
 # (strip _suite_v1 → music_library, найти music_library_acceptance_v1.json)
 echo '{}' > "$_mock_dir3/scenarios/music_library_acceptance_v1.json"
-_discovered="$(harness_discover_acceptance "$_mock_dir3/scenarios/music_library_suite_v1.json")"
-assert_eq "harness PREFIX (issue #1452) — strip _suite_v1" \
-    "$_mock_dir3/scenarios/music_library_acceptance_v1.json" "$_discovered"
+_discovered_ep="$(ep_discover_acceptance "$_mock_dir3/scenarios/music_library_suite_v1.json")"
+assert_eq "e2e-process PREFIX (issue #1452) — strip _suite_v1" \
+    "$_mock_dir3/scenarios/music_library_acceptance_v1.json" "$_discovered_ep"
 
 # --- Test 9: ничего не найдено → пусто, но НЕ fail-fast --------------------
+# (issue #2300: e2e-process не падает, логирует warning; workflow сам упадёт
+# на GATE-1.)
 echo ""
-echo "=== Test 9: ни convention, ни PREFIX не сработал → пусто ==="
+echo "=== Test 9: ни convention, ни PREFIX не сработал → пусто (e2e-process) ==="
 _mock_dir4="$(mktemp -d)"
 trap 'rm -rf "$_mock_dir" "$_mock_dir2" "$_mock_dir3" "$_mock_dir4"' EXIT
 mkdir -p "$_mock_dir4/scenarios"
 echo '{}' > "$_mock_dir4/scenarios/orphan.json"
 # БЕЗ acceptance.json / *_acceptance.json
-_discovered="$(harness_discover_acceptance "$_mock_dir4/scenarios/orphan.json")"
-assert_eq "no match → empty (workflow сам упадёт на GATE-1)" "" "$_discovered"
+_discovered_ep="$(ep_discover_acceptance "$_mock_dir4/scenarios/orphan.json")"
+assert_eq "no match → empty (e2e-process не передаёт acceptance; workflow сам упадёт на GATE-1)" "" "$_discovered_ep"
 
 # --- Test 10: scenario_file не задан → НЕ ищем acceptance_file -------------
 echo ""

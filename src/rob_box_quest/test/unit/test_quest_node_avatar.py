@@ -50,20 +50,59 @@ def _make_audio_msg(pcm_bytes: bytes):
     return m
 
 
+def _make_audio_msg_array(pcm_bytes: bytes):
+    """AudioData с PCM-данными как ``array.array`` (реальный тип из rclpy, issue #2136).
+
+    Раньше код имел ``isinstance(msg.data, (bytes, bytearray))`` guard, который
+    для ``array.array`` возвращал False → audio_bytes = b"" → оператор слышал
+    тишину. Этот factory воспроизводит реальный shape, который приходит из ROS.
+    """
+    import array as _array
+    m = MagicMock()
+    m.data = _array.array("B", pcm_bytes)
+    return m
+
+
 def _make_host(*, active_sessions_count: int = 1, ws_for_session: dict | None = None):
     """Минимальный host с интерфейсом, который handler'ы требуют от QuestNode.
 
-    ``ws_server._sessions`` имитируется MagicMock, у которого ``__iter__`` /
-    ``.keys()`` отдают нужные ключи; ``get_active_sessions()`` возвращает
-    переданное значение.
+    ВАЖНО (issue #2232 regression): ``host`` — это ``MagicMock()``, а прод-код
+    в handler'ах делает ``self._current_avatar_request_id is None`` /
+    ``self._current_avatar_ws is None`` / ``self._pick_active_operator_ws()``
+    type guards. На ``MagicMock`` auto-attrs возвращают ``MagicMock`` вместо
+    ``None`` и truthy bool, поэтому без явной инициализации ВСЕ drop-кейсы
+    проваливаются. Контракт:
+
+    * ``host._current_avatar_request_id`` → ``None`` до первой ``request_meta``
+      с ``sink="headset"`` (handler сам проставит строкой).
+    * ``host._current_avatar_ws`` → ``None`` до первой ``request_meta``.
+    * ``host._pick_active_operator_ws()`` → ``None`` если ``active_sessions_count==0``,
+      иначе первый ws из ``_ws_by_session`` (имитация выбора единственной
+      активной сессии из ADR-0055 §quest_node).
+    * ``host.ws_server._sessions`` / ``_ws_by_session`` — dict-семантика
+      (вставка, итерация по insertion order, ``list(.keys())``).
+    * ``host.ws_server.get_active_sessions()`` — int.
     """
     host = MagicMock()
     host.ws_server = MagicMock()
-    # Имитация dict-семантики _sessions.
+    # Имитация dict-семантики _sessions (вставка, итерация по insertion order).
     sessions = ws_for_session or {"sess-1": "ws-object-1"}
-    host.ws_server._sessions = sessions
+    host.ws_server._sessions = dict(sessions)
     host.ws_server._ws_by_session = {k: MagicMock(name=f"ws:{k}") for k in sessions}
     host.ws_server.get_active_sessions = MagicMock(return_value=active_sessions_count)
+    # ADR-0055 §quest_node: handler ставит request_id только после
+    # удачного register_audio_session. До этого — None.
+    host._current_avatar_request_id = None
+    host._current_avatar_ws = None
+    # ADR-0078 §4: кеш sample_rate по request_id (используется в _on_avatar_tts_audio).
+    host._avatar_request_sample_rate = {}
+    if active_sessions_count == 0:
+        host._pick_active_operator_ws = MagicMock(return_value=None)
+    else:
+        first_key = next(iter(sessions))
+        host._pick_active_operator_ws = MagicMock(
+            return_value=host.ws_server._ws_by_session[first_key]
+        )
     return host
 
 
@@ -215,6 +254,54 @@ class TestOnAvatarTtsAudio(unittest.TestCase):
         # Не должно бросить исключение (callback от ROS).
         QuestNode._on_avatar_tts_audio(host, _make_audio_msg(b"\x00"))
         host.ws_server.deliver_audio.assert_called_once()
+
+    def test_routes_array_array_data_nonempty(self):
+        """Regression #2136: ``msg.data`` приходит как ``array.array`` (а не bytes).
+
+        Прежний isinstance-guard ``(bytes, bytearray)`` возвращал False для
+        ``array.array`` → audio_bytes становился ``b""`` → оператор слышал
+        тишину. После фикса bytes() на array.array даёт корректный payload.
+        """
+        import array as _array
+        host = _make_host(active_sessions_count=1)
+        QuestNode._on_avatar_tts_request_meta(
+            host,
+            _make_msg({
+                "request_id": "r-arr",
+                "ssml": "<speak>x</speak>",
+                "sink": "headset",
+            }),
+        )
+        host.ws_server.deliver_audio.reset_mock()
+        payload = b"\x01\x02\x03\x04\x05\x06\x07\x08"
+        QuestNode._on_avatar_tts_audio(host, _make_audio_msg_array(payload))
+        host.ws_server.deliver_audio.assert_called_once()
+        kwargs = host.ws_server.deliver_audio.call_args.kwargs
+        # Главное: payload дошёл, не пустой.
+        self.assertIsInstance(kwargs["audio_bytes"], bytes)
+        self.assertEqual(kwargs["audio_bytes"], payload)
+        self.assertGreater(len(kwargs["audio_bytes"]), 0)
+        # sanity: действительно прислали array.array, не bytes.
+        self.assertIsInstance(
+            _make_audio_msg_array(payload).data, _array.array
+        )
+
+    def test_empty_data_sends_empty_payload(self):
+        """msg.data == пустой bytes/array → audio_bytes = b"" (no crash, no leak)."""
+        host = _make_host(active_sessions_count=1)
+        QuestNode._on_avatar_tts_request_meta(
+            host,
+            _make_msg({
+                "request_id": "r-empty",
+                "ssml": "<speak>x</speak>",
+                "sink": "headset",
+            }),
+        )
+        host.ws_server.deliver_audio.reset_mock()
+        QuestNode._on_avatar_tts_audio(host, _make_audio_msg_array(b""))
+        host.ws_server.deliver_audio.assert_called_once()
+        kwargs = host.ws_server.deliver_audio.call_args.kwargs
+        self.assertEqual(kwargs["audio_bytes"], b"")
 
 
 # ── guard: не задеваем /voice/tts/request (старый путь) ──────────────

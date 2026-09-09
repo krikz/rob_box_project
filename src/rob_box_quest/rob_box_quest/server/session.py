@@ -25,22 +25,85 @@ class SessionState(str, Enum):
 
 
 # Error-коды из meta-quest-api.md §8.
-class ErrorCode:
-    AUTH_FAIL = "AUTH_FAIL"
-    BAD_PAYLOAD = "BAD_PAYLOAD"
-    TOPIC_UNKNOWN = "TOPIC_UNKNOWN"
-    RATE_LIMIT = "RATE_LIMIT"
-    PROTOCOL_VERSION = "PROTOCOL_VERSION"  # AV-16: subprotocol mismatch (§11)
-    FLOOR_HELD = "FLOOR_HELD"  # AV-16: ACQUIRE_FLOOR / RELEASE_FLOOR (§8)
-    MODE_CONFLICT = "MODE_CONFLICT"  # AV-16: SET_MODE отвергнут FSM (§8)
-    INTERNAL = "INTERNAL"
-    # AV-19 (issue #1911, ADR-0028 §4.4, meta-quest-api.md §5/§8):
-    # запрошенный teleop_floor уже держит другой client_id. Сервер
-    # отдаёт эту ошибку только при ``require_teleop_floor=true`` и
-    # rate-limited (≤ 1 Гц на сессию), чтобы не заливать сокет.
-    FLOOR_HELD = "FLOOR_HELD"
-    # AV-19: FSM супервизора отклонила смену режима (Phase 2).
-    MODE_CONFLICT = "MODE_CONFLICT"
+# [voice-vr 07] / issue #2192: ``ErrorCode`` — read-only façade над
+# :data:`rob_box_core.bridge_protocol.ERRORS`. Раньше жил в этом модуле
+# обычным классом с дублями ``FLOOR_HELD``/``MODE_CONFLICT`` (см. issue
+# #2192, ADR-0080 §2.2 инвариант 3). Теперь — единый источник истины
+# в rob_box_core.bridge_protocol; legacy-импортеры
+# (``from rob_box_quest.server.session import ErrorCode``) получают
+# тот же набор атрибутов + два guard'а:
+#
+#   * ``ErrorCode.NOT_A_REAL_CODE`` → AttributeError с «не существует в
+#     каноне» (а не silent ``AttributeError: 'ErrorCode' has no attribute``).
+#   * ``ErrorCode.AUTH_FAIL = "HACKED"`` → AttributeError с «неизменяем»
+#     (раньше присваивание проходило без ошибки — баг voice-vr 02).
+class _ErrorCodeMeta(type):
+    """Мета-класс для :class:`ErrorCode`.
+
+    Канонический набор кодов подгружается лениво из
+    :mod:`rob_box_core.bridge_protocol` и кладётся как class-level
+    атрибуты на самом метаклассе; при ``ErrorCode.AUTH_FAIL`` Python
+    сначала ищет атрибут в ``type(ErrorCode)`` (= ``_ErrorCodeMeta``),
+    а не в самом ``ErrorCode``. Это даёт два эффекта:
+
+      * ``__getattr__`` срабатывает как fallback для имён, которых нет
+        в каноне (а не просто дефолтный ``AttributeError``).
+      * ``__setattr__`` отвергает любое присваивание не-дандер имени.
+    """
+
+    def __getattr__(cls, name: str) -> str:  # noqa: D401
+        from rob_box_core.bridge_protocol import is_known_error
+
+        if name.startswith("_"):
+            raise AttributeError(name)
+        if is_known_error(name):
+            # На случай гонки: код добавлен в канон, но bind-цикл
+            # ещё не отработал — отдаём строку напрямую.
+            return name
+        raise AttributeError(
+            f"ErrorCode.{name!r} не существует в каноне "
+            "(см. rob_box_core.bridge_protocol.ERRORS)"
+        )
+
+    def __setattr__(cls, name: str, value: object) -> None:
+        if name.startswith("_"):
+            type.__setattr__(cls, name, value)
+            return
+        raise AttributeError(
+            f"ErrorCode неизменяем: попытка присвоить {name!r}={value!r}; "
+            f"для нового кода добавьте его в rob_box_core.bridge_protocol.ERRORS"
+        )
+
+
+class ErrorCode(metaclass=_ErrorCodeMeta):
+    """Канонические коды ``ERROR.code`` (meta-quest-api.md §8).
+
+    Используется как ``ErrorCode.BAD_PAYLOAD`` (строковая константа).
+    Атрибуты хранятся на метаклассе (см. :class:`_ErrorCodeMeta`).
+    Пустое тело класса — это нормально: bind выполняется сразу после
+    определения класса (см. ниже).
+    """
+
+
+# Bind канонических кодов как атрибутов метакласса. Прямое присваивание
+# в теле класса запрещено нашим ``__setattr__``, поэтому используем
+# ``type.__setattr__`` на метаклассе.
+from rob_box_core.bridge_protocol import ERRORS as _CANON_ERRORS  # noqa: E402
+
+for _code in _CANON_ERRORS:
+    type.__setattr__(_ErrorCodeMeta, _code, _code)
+del _code
+# AV-19 (issue #1911, ADR-0028 §4.4, meta-quest-api.md §5/§8):
+# запрошенный teleop_floor уже держит другой client_id. Сервер
+# отдаёт эту ошибку только при ``require_teleop_floor=true`` и
+# rate-limited (≤ 1 Гц на сессию), чтобы не заливать сокет.
+#
+# [voice-vr 10] UNKNOWN_COMMAND (issue #2195): клиент прислал JSON_CMD
+# с неизвестным ``cmd``. Терминальный dispatcher-fallback возвращает
+# явный отказ вместо молчаливого drop. Канон живёт в
+# rob_box_core.bridge_protocol.ERRORS; bind-цикл выше подхватит код
+# автоматически (для legacy-импортеров через ``ErrorCode.UNKNOWN_COMMAND``).
+
 
 
 # Поддерживаемые wire-subprotocol-версии (AV-16, docs §11.1).

@@ -260,18 +260,50 @@ default `[02:00, 06:00)` по локальному времени хоста. О
    >6ч / ретро), churn по компонентам. Секция без данных печатает
    `НЕТ ДАННЫХ (<причина>)`, а не пустой список.
 2. Создаёт ОДНУ карточку **«🌙 ночной ревью \<дата\>»** на `architect`
-   (key `nightly-review-<дата>`).
+   (key `nightly-review-<ISO-неделя>`, см. ADR-0049 §6.1 — issue #2159).
 3. Создаёт до `COMPONENT_REVIEW_MAX` (default 3) карточек
-   **«🔍 ревью компонента: \<comp\>»** на `analyst`
-   (key `component-review-<slug>-<дата>`) — по компонентам с наибольшим
-   churn, мимо `COMPONENT_REVIEW_EXCLUDE_RE` (`docs/`, `evidence/`, …) и
-   мимо компонентов на кулдауне (`COMPONENT_REVIEW_COOLDOWN_DAYS`,
-   default 7 дней).
+   **«🔍 ревью компонента: \<comp\>** на `analyst`
+   (key `component-review-<slug>-<ISO-неделя>`) — по компонентам с
+   наибольшим churn, мимо `COMPONENT_REVIEW_EXCLUDE_RE` (`docs/`,
+   `evidence/`, …) и мимо компонентов на кулдауне
+   (`COMPONENT_REVIEW_COOLDOWN_DAYS`, default 7 дней).
 
-Обе карточки идут через `kanban-retro-create.sh` (три слоя дедупа), плюс
-sentinel `/tmp/agent-flow-nightly-review.<дата>.done` — «одна ночь = один
-комплект карточек». Скрипт НЕ чинит код, НЕ трогает метки/PR/issues и НЕ
-зовёт LLM: рассуждения живут внутри созданных карточек.
+Обе карточки идут через `kanban-retro-create.sh` (4 слоя дедупа: pre-check
+по маркеру, idempotency-key, маркер в body, **issue-label guard для
+`nightly-review-*` / `component-review-*`** — issue #2159, ADR-0079). Слой
+4: перед create скрипт ищет открытый GitHub issue с label `nightly-review`,
+созданный в текущей ISO-неделе (`date -u +%G-W%V` → понедельник 00:00 UTC);
+если есть — SKIP, дайджест уже ушёл через issue (читать Шифу удобнее там).
+Fail-open (если `gh` недоступен / нет issue с label — пропускаем слой 4,
+полагаемся на 1-3). Плюс sentinel
+`/tmp/agent-flow-nightly-review.<дата>.done` — «одна ночь = один комплект
+карточек». Скрипт НЕ чинит код, НЕ трогает метки/PR/issues и НЕ зовёт
+LLM: рассуждения живут внутри созданных карточек.
+
+**Персистентность находок (ADR-0079) — пишет ревьюер, не этот скрипт.**
+`agent-flow-nightly-review.sh` создаёт карточку ДО того, как кто-либо
+посмотрел на код — он физически не знает, найдёт ли ревьюер дефект.
+Поэтому запись находок сделана отдельным шагом ревьюера: тело каждой
+карточки требует перед `kanban_complete` вызвать
+
+```bash
+scripts/agent_flow/nightly-review-record.sh \
+    --task-id t_<id> --component <slug> --outcome <outcome> \
+    [--finding '{"type":...,"file":...,"line":...,"symbol":...,"raw":...}']... \
+    [--files-changed a.py,b.py]
+git add docs/reports/nightly-review/*.jsonl && git commit ... && git push
+```
+
+`--outcome` ∈ `open-issue-<N>` | `no-real-defect` | `duplicate-suppressed:<fp>`
+(последние два не требуют `--finding`). Скрипт сам считает fingerprint
+находки (`sha1(type:file:line:symbol)[:12]`, калька SARIF
+`partialFingerprints`) и предупреждает (WARNING, fail-open), если такая
+же находка уже трекается открытым issue за последние 30 дней. Пишет ОДНУ
+строку в `docs/reports/nightly-review/<review-date>.jsonl`:
+`{ts, review_date, iso_week, task_id, component, files_changed,
+findings[{type, severity, file, line, symbol, fingerprint, raw}], outcome}`
+— переживает merge в git-истории и архивирование kanban-карточки. Скрипт
+НЕ коммитит и НЕ пушит — это делает воркер, как и в ADR-0077.
 
 ```bash
 # сухой прогон в любое время суток (карточки не создаются):
@@ -421,6 +453,37 @@ bash scripts/agent_flow/tests/test_validate_test_ws_dirs.sh
 bash <repo>/scripts/agent_flow/round_ensure.sh            # печатает z-{e2e}/test-round-N
 bash <repo>/scripts/agent_flow/round_ensure.sh --wait 300 # ждать до 5 мин
 ```
+
+### `round_formation.sh` — единый модуль формирования e2e test-round (issue #2299, 09.09.2026)
+
+**Single source of truth** для ls-remote → max-N → freshness-check → create/
+reuse/recreate. До этого та же логика жила копипастой в `agent-flow-e2e-process.sh:round_ensure()`
+и `round_ensure.sh` с **противоположной** семантикой записи счётчика (DEFERRED
+у автоматики vs IMMEDIATE у ручного — последняя создавала ghost-дрейф на
+ручных прогонах, ретро t_d3aeaa9b).
+
+**Канон (09.09.2026):** оба пути (автоматический и ручной) теперь используют
+этот модуль с DEFERRED-семантикой — счётчик персистится ТОЛЬКО после
+подтверждённого `≥1` запуска раунда (для автоматики — в post-tick cleanup;
+для ручного — оператор может вызвать `rf_persist_counter_if_real_round` явно
+после успешного e2e run).
+
+**Контракт:**
+- `. round_formation.sh` — после `set -euo pipefail` и определения своего `log()`
+- Env: `REPO_DIR`, `GH_REPO`, `FOUNDATION_BRANCH` (default: develop),
+  `TEST_ROUND_PREFIX` (default: `z-{e2e}/test-round-`),
+  `ROUND_COUNTER_FILE` (default: `~/.hermes/state/agent-flow-e2e-round-counter`),
+  `DRY_RUN`, `GIT_PUSH_FN` (default: `git_push_with_cred_fallback`).
+- API:
+  - `round_formation [gh_push_fn_override]` — главная функция. Выставляет
+    `ROUND_BRANCH`, `ROUND_FORMATION_CREATED=1` (если создано/пересоздано) или
+    `ROUND_FORMATION_REUSED=1` (если reuse), `n` / `max_n` / `counter_n`.
+    Counter НЕ пишет.
+  - `rf_persist_counter_if_real_round` — записать counter (≥1 run);
+    вызывать из post-tick cleanup.
+  - `rf_ghost_round_log_and_metric` — маркер `GHOST_ROUND counter_rollback`
+    + cumulative metric `agent-flow-e2e-ghost-rounds-total`; вызывать на
+    0 run'ов вместо записи counter.
 
 ### `agent-flow-cleanup-249.sh` — безопасный cleanup /tmp на build-хосте (ретро 11.08 t_26a6d362)
 

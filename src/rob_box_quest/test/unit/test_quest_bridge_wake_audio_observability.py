@@ -4,14 +4,28 @@ logs rob-box-quest`` показывал ту же тишину что при ж�
 клиенте, который вообще ничего не шлёт (симптом отчёта: владелец сказал
 «ТАРС» в шлем несколько раз, в логах ни строки по wake/VOICE_AUDIO).
 
-Требует rclpy/geometry_msgs/audio_common_msgs (Docker image) — на dev-env
-без ROS пропускается через importorskip, как остальные тесты QuestBridge
-(см. test/unit/test_quest_bridge.py).
+issue #2135: единица учёта здесь — ФРАЗА, а не 20мс-кадр. Мост копит кадры
+в ``WakePhraseSegmenter`` и публикует одну ``AudioData`` на фразу, поэтому
+и «first packet», и сводка считают фразы. Тесты переведены на этот контракт
+(раньше «одна публикация» получалась от одного кадра).
+
+Тесты выполняются и без ROS: фикстура ``quest_node_mod``
+(``test/unit/conftest.py``) подставляет заглушки ROS-модулей, если
+настоящих нет. Раньше файл целиком скипался через ``importorskip`` — ровно
+это однажды привело к ложному закрытию карточки #1992.
+
+issue #2199: тест переведён с ``rob_box_quest.core.wake_segmenter`` (legacy
+shim) на ``rob_box_core.speech_segmentation.DEFAULT_WAKE_CONFIG``.
 """
 
-import time
+from rob_box_core.speech_segmentation import DEFAULT_WAKE_CONFIG
 
-import pytest
+
+WAKE_PHRASE_GAP_TIMEOUT_S = DEFAULT_WAKE_CONFIG.gap_timeout_s
+
+FRAME = b"\x00\x01" * 320  # 640 байт = 20 мс @ 16 кГц int16
+FRAME_PERIOD_S = 0.02
+FRAMES_PER_PHRASE = 25  # 0.5 с — заведомо выше порога «блип VAD»
 
 
 class _MockPublisher:
@@ -44,75 +58,72 @@ class _MockNode:
         return self.logger
 
 
-def _make_bridge():
-    pytest.importorskip(
-        "geometry_msgs", reason="QuestBridge требует rclpy/geometry_msgs (только в Docker image)"
-    )
-    from rob_box_quest.quest_node import QuestBridge
-
+def _make_bridge(quest_node_mod, monkeypatch, quest_wake_pub=None):
+    """QuestBridge с ручными часами (clock[0] — то, что вернёт monotonic)."""
+    clock = [5000.0]
+    monkeypatch.setattr(quest_node_mod.time, "monotonic", lambda: clock[0])
     node = _MockNode()
-    quest_wake_pub = _MockPublisher()
-    bridge = QuestBridge(
+    if quest_wake_pub is None:
+        quest_wake_pub = _MockPublisher()
+    bridge = quest_node_mod.QuestBridge(
         node=node,
         cmd_vel_quest_pub=_MockPublisher(),
         cmd_vel_emergency_pub=_MockPublisher(),
         quest_wake_pub=quest_wake_pub,
     )
-    return bridge, quest_wake_pub, node
+    return bridge, quest_wake_pub, node, clock
 
 
-def test_first_wake_publish_logs_immediately():
-    bridge, quest_wake_pub, node = _make_bridge()
-    bridge.publish_quest_wake_audio(b"\x00\x01" * 160)
+def _say_one_phrase(bridge, clock) -> None:
+    """Одна фраза: поток кадров + пауза, которую замечает таймер."""
+    for _ in range(FRAMES_PER_PHRASE):
+        bridge.publish_quest_wake_audio(FRAME)
+        clock[0] += FRAME_PERIOD_S
+    clock[0] += WAKE_PHRASE_GAP_TIMEOUT_S
+    bridge.tick_wake_audio(clock[0])
+
+
+def test_first_wake_publish_logs_immediately(quest_node_mod, monkeypatch):
+    bridge, quest_wake_pub, node, clock = _make_bridge(quest_node_mod, monkeypatch)
+    _say_one_phrase(bridge, clock)
     assert len(quest_wake_pub.published) == 1
     assert any(
         "first packet" in m and "/audio/quest_wake" in m for m in node.logger.infos
     )
 
 
-def test_second_publish_within_window_does_not_log_again(monkeypatch):
-    bridge, quest_wake_pub, node = _make_bridge()
-    from rob_box_quest import quest_node as quest_node_mod
-    now = [5000.0]
-    monkeypatch.setattr(quest_node_mod.time, "monotonic", lambda: now[0])
-    bridge.publish_quest_wake_audio(b"\x00\x01" * 160)
+def test_second_publish_within_window_does_not_log_again(quest_node_mod, monkeypatch):
+    bridge, quest_wake_pub, node, clock = _make_bridge(quest_node_mod, monkeypatch)
+    _say_one_phrase(bridge, clock)
     node.logger.infos.clear()
-    now[0] += 0.02  # один чанк 20мс позже
-    bridge.publish_quest_wake_audio(b"\x00\x01" * 160)
+    _say_one_phrase(bridge, clock)
     assert node.logger.infos == []
-    assert len(quest_wake_pub.published) == 2  # публикация в ROS не блокируется логом
+    assert len(quest_wake_pub.published) == 2  # публикация не блокируется логом
 
 
-def test_summary_logged_after_interval_elapses(monkeypatch):
-    bridge, quest_wake_pub, node = _make_bridge()
-    from rob_box_quest import quest_node as quest_node_mod
-
-    now = [5000.0]
-    monkeypatch.setattr(quest_node_mod.time, "monotonic", lambda: now[0])
-    bridge.publish_quest_wake_audio(b"\x00\x01" * 160)  # first packet, count=1
+def test_summary_logged_after_interval_elapses(quest_node_mod, monkeypatch):
+    bridge, quest_wake_pub, node, clock = _make_bridge(quest_node_mod, monkeypatch)
+    _say_one_phrase(bridge, clock)  # first packet, count=1
     node.logger.infos.clear()
     for _ in range(9):
-        now[0] += 0.02
-        bridge.publish_quest_wake_audio(b"\x00\x01" * 160)  # count=2..10
+        _say_one_phrase(bridge, clock)  # count=2..10
     assert node.logger.infos == []
-    now[0] += quest_node_mod.WAKE_AUDIO_LOG_INTERVAL_S
-    bridge.publish_quest_wake_audio(b"\x00\x01" * 160)  # count=11 -> summary
+    clock[0] += quest_node_mod.WAKE_AUDIO_LOG_INTERVAL_S
+    _say_one_phrase(bridge, clock)  # count=11 -> summary
     summaries = [m for m in node.logger.infos if "publish summary" in m]
     assert len(summaries) == 1
     assert "10 packets" in summaries[0]
     assert "total 11 packets" in summaries[0]
 
 
-def test_none_publisher_stays_silent_no_op():
-    """quest_wake_pub=None (unit-тесты моста без ROS) — no-op, без AttributeError
-    на логгере: publish_quest_wake_audio должен вернуться до любого учёта."""
-    pytest.importorskip(
-        "geometry_msgs", reason="QuestBridge требует rclpy/geometry_msgs (только в Docker image)"
-    )
-    from rob_box_quest.quest_node import QuestBridge
-
+def test_none_publisher_stays_silent_no_op(quest_node_mod, monkeypatch):
+    """quest_wake_pub=None (unit-тесты моста без ROS) — no-op, без
+    AttributeError на логгере: publish_quest_wake_audio должен вернуться до
+    любого учёта."""
+    clock = [5000.0]
+    monkeypatch.setattr(quest_node_mod.time, "monotonic", lambda: clock[0])
     node = _MockNode()
-    bridge = QuestBridge(
+    bridge = quest_node_mod.QuestBridge(
         node=node,
         cmd_vel_quest_pub=_MockPublisher(),
         cmd_vel_emergency_pub=_MockPublisher(),

@@ -56,30 +56,11 @@ from std_msgs.msg import String
 
 # issue #1988 — константа топика ответа ТАРС (единый источник правды).
 from rob_box_core.avatar_command import AVATAR_COMMAND_RESULT_TOPIC
-
-# issue #2099 — AV-27 / issue #1919: единый SoT списка голосов TTS-провайдера.
-# До этого импорта вызов ``QuestBridge.set_voice`` падал с
-# ``NameError: name '_voices_for' is not defined`` (ws_handler крашился при
-# каждой попытке UI Quest поставить голос через WS). Supervisor импортирует
-# то же имя (см. supervisor_node.py:53), quest просто отстал — после
-# рефакторинга ``Bridge.execute(Command)`` (PR #2056/#2086) call site в
-# ``set_voice`` остался, а символ в namespace модуля не подтянулся.
-# ВАЖНО: импорт ЗАЩИЩЁННЫЙ, а не жёсткий. Образ ``rob-box-quest`` не
-# содержит ``rob_box_voice.tts_voice_registry`` — жёсткий импорт уронил
-# quest_node в Restarting loop на роботе (``ModuleNotFoundError`` на старте,
-# деплой 2026-09-07, регресс PR #2105). Это конвенция репозитория для всех
-# потребителей реестра: см. ``mcp_tools/tools/dialogue.py`` и
-# ``mcp_tools/voice_state.py`` — «пакет должен оставаться импортируемым без
-# rob_box_voice». Деградация осмысленная: пустой список голосов →
-# ``set_voice`` отдаёт ``tts_unreachable`` в UI шлема вместо падения ноды.
-try:
-    from rob_box_voice.tts_voice_registry import voices_for as _voices_for
-except ImportError:  # pragma: no cover — образы без rob_box_voice
-
-    def _voices_for(provider: str) -> list:
-        """Fallback: реестр голосов недоступен в этом образе."""
-        return []
-
+from rob_box_core.speech_segmentation import (
+    DEFAULT_ROBOT_VOICE_CONFIG,
+    DEFAULT_WAKE_CONFIG,
+    PhraseSegmenter,
+)
 
 from .core.safety import Watchdog
 from .core.teleop import TeleopController
@@ -88,11 +69,13 @@ from .server.ws_server import NoOpBridge, WSSServer, build_app
 from .streams.alerts import Alert, AlertThresholds, evaluate_alerts
 from .streams.battery import parse_battery_json, voltage_to_pct
 from .streams.lidar import scan_to_payload
+from .streams.depth import depth_compressed_to_jpeg
 from .streams.occupancy import encode_map_2d, grid_to_png
 from .streams.provider import CameraFrame, CameraProvider
 from .streams.registry import STREAM_CATALOG
 from .streams.status import StatusAggregator
 from .streams.voice_state import normalize_voice_state
+from .streams.voice_picker import pick_voice
 from .streams.wifi import read_wifi_rssi
 from .protocol.topics import encode_voice_state
 
@@ -131,32 +114,11 @@ WIRE_TO_VOICE_INPUT_MODE: dict[str, str] = {
     "llm_formalize": "quest_llm_formalize",
 }
 
-# Робот-голос (P7): EOU-детекция на лету. Пока оператор держит грип, PCM
-# буферизуется, а по тишине (конец фразы) буфер уходит в STT — распознавание
-# успевает ДО отпускания грипа (иначе гонка с voice_input_mode=respeaker).
-VOICE_SAMPLE_RATE_HZ: int = 16000  # int16 PCM 16 kHz mono (webxr_client)
-VOICE_BYTES_PER_MS: float = VOICE_SAMPLE_RATE_HZ * 2 / 1000.0  # 32 байта/мс
-VOICE_SILENCE_THRESHOLD: int = 500  # пик int16 ниже → считаем тишиной
-VOICE_SILENCE_TIMEOUT_MS: float = 300.0  # тишина дольше → конец фразы
-
 # issue #1992 observability: публикация в /audio/quest_wake раньше не
 # логировалась вовсе — «клиент не шлёт wake» и «мост не публикует»
 # выглядели в docker logs одинаково (тишина). Первый пакет — сразу INFO,
 # дальше сводка раз в это окно (см. QuestBridge._note_wake_audio_publish).
 WAKE_AUDIO_LOG_INTERVAL_S: float = 10.0
-
-
-def _chunk_is_silent(payload: bytes, threshold: int = VOICE_SILENCE_THRESHOLD) -> bool:
-    """True если int16 LE PCM-чанк — тишина (пик |сэмпла| < threshold)."""
-    if len(payload) < 2:
-        return True
-    for i in range(0, len(payload) - 1, 2):
-        s = payload[i] | (payload[i + 1] << 8)  # int16 little-endian
-        if s >= 0x8000:
-            s -= 0x10000  # знаковый разряд
-        if abs(s) >= threshold:
-            return False
-    return True
 
 
 class _AlwaysActiveWSServer:
@@ -184,6 +146,45 @@ def _string_msg(value: str) -> String:
     m = String()
     m.data = value
     return m
+
+
+# PNG magic (89 50 4E 47 0D 0A 1A 0A) — используется, чтобы отрезать
+# ConfigHeader у compressedDepth (см. _strip_compressed_depth_header).
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+def _strip_compressed_depth_header(data: bytes) -> Optional[bytes]:
+    """Отрезать ConfigHeader у image_transport ``compressedDepth``.
+
+    Диагностика (2026-09-08, issue #2138.B продолжение): ``compressedDepth``
+    — это НЕ голый PNG. Перед PNG-байтами image_transport кладёт бинарный
+    ``ConfigHeader`` (12 байт: int32 format + float depthQuantA + float
+    depthQuantB). Проверено на роботе (``ros2 topic echo`` через
+    rclpy-скрипт по /camera/camera/depth/image_rect_raw/compressedDepth):
+
+        FORMAT_FIELD: '16UC1; compressedDepth'
+        FIRST_32_BYTES_HEX: 00000000ffff0000d8a37a7589504e470d0a1a0a...
+        PNG_MAGIC_AT_OFFSET: 12
+
+    ``_on_depth_image`` раньше форвардил ``msg.data`` как есть (комментарий
+    «Клиент Quest отрисует их как есть» не учитывал этот заголовок).
+    Клиент (``webxr_client/src/scene/video_panel.ts:ingestJpeg``) кладёт
+    payload в ``Blob`` и декодирует через ``createImageBitmap()`` —
+    браузер ищет PNG-сигнатуру С НАЧАЛА потока, не находит (мешают 12
+    байт ConfigHeader) и тихо роняет промис (``droppedCount`` растёт,
+    панель остаётся пустой, ни строки в консоли). Тот же формат уже
+    корректно обрабатывается в ``rob_box_telegram/handlers/commands.py``
+    (``_depth_compressed_to_jpeg``) — тем же способом (поиск PNG-сигнатуры
+    вместо жёсткого ``[12:]``, т.к. длина ConfigHeader форматно-зависима).
+
+    Возвращает None, если PNG-сигнатура не найдена (RVL-сжатие или иной
+    формат, который так просто не отрисовать) — вызывающий код тогда
+    кадр не публикует.
+    """
+    offset = data.find(_PNG_SIGNATURE)
+    if offset == -1:
+        return None
+    return data[offset:]
 
 
 def _read_alert_thresholds(node) -> AlertThresholds:
@@ -275,10 +276,9 @@ class QuestBridge:
         quest_wake_pub=None,  # issue #1992: /audio/quest_wake (wake-канал → stt_node)
         wake_stream_pub=None,  # ADR-0071 step 5a: /avatar/wake_stream observability
         set_voice_mode_pub=None,
-        set_voice_preset_pub=None,
-        set_voice_language_pub=None,
         set_voice_pub=None,
         preview_voice_pub=None,
+        voice_pipeline_pub=None,  # Шаг 4б (t_80e7aa1e): /avatar/voice_pipeline (grip cfg)
         voices_cache_ttl_sec: float = 300.0,
         heartbeat_pub=None,  # AV-19: publisher in /teleop_heartbeat
         # Phase 2 (issue #2002): QuestNode шлёт supervisor-API команды
@@ -307,6 +307,13 @@ class QuestBridge:
         # None в unit-тестах моста → set_wake_stream_state no-op.
         self._wake_stream_pub = wake_stream_pub
         self._wake_active = False
+        # issue #2135: сегментатор wake-потока. До него мост публиковал
+        # КАЖДЫЙ 20мс-кадр отдельным AudioData, а stt_node распознаёт каждое
+        # сообщение целиком — на 640 байтах распознавание всегда пусто, вейк
+        # «ТАРС» из шлема не мог сработать в принципе. Теперь кадры копятся и
+        # уходят одной фразой — см. rob_box_core.PhraseSegmenter
+        # (issue #2199: единый сегментатор вместо четырёх правил).
+        self._wake_segmenter = PhraseSegmenter(DEFAULT_WAKE_CONFIG)
         # issue #1992 observability: счётчики публикации в /audio/quest_wake.
         # См. publish_quest_wake_audio / _note_wake_audio_publish.
         self._wake_audio_publish_count = 0
@@ -316,13 +323,15 @@ class QuestBridge:
         self._wake_audio_last_log_ts: Optional[float] = None
         # voice_mode → супервизор (ADR-0028 S5): /avatar/set_voice_mode.
         self._set_voice_mode_pub = set_voice_mode_pub
-        # AV-28 §P7 (issue #1920) — voice style preset / language → супервизор.
-        # /avatar/set_voice_preset, /avatar/set_voice_language (см. meta-quest-api.md §P7).
-        self._set_voice_preset_pub = set_voice_preset_pub
-        self._set_voice_language_pub = set_voice_language_pub
         # AV-27 / issue #1919 — set_voice / preview_voice → супервизор.
         self._set_voice_pub = set_voice_pub
         self._preview_voice_pub = preview_voice_pub
+        # Шаг 4б (issue #1989, t_80e7aa1e) — конфиг пайплайна грипа →
+        # супервизор. ADR-0087: AV-28 set_voice_preset/language (легаси
+        # style-путь) удалён — этот канал теперь единственный для стиля/языка.
+        # /avatar/voice_pipeline, payload JSON {llm_enabled, preset, language}.
+        # None в unit-тестах моста → publish_voice_pipeline no-op + warn.
+        self._voice_pipeline_pub = voice_pipeline_pub
         # AV-19: publisher в /teleop_heartbeat. None в unit-тестах —
         # тогда relay_teleop_heartbeat будет no-op (см. его комментарий).
         self._heartbeat_pub = heartbeat_pub
@@ -344,8 +353,11 @@ class QuestBridge:
         self._avatar_state_lock = threading.Lock()
         # Текущий голосовой режим: "radio" (рация, default) | "robot_voice".
         self._voice_mode: str = "radio"
-        self._voice_buffer: list[bytes] = []
-        self._voice_silence_ms: float = 0.0
+        # issue #2199: robot_voice использует общий PhraseSegmenter с peak-VAD
+        # (аналог старой VOICE_SILENCE_THRESHOLD=500 / TIMEOUT=300мс; см.
+        # DEFAULT_ROBOT_VOICE_CONFIG). Клиент VAD не делает на PTT-канале —
+        # сегментирует сервер, пока грип зажат.
+        self._voice_segmenter = PhraseSegmenter(DEFAULT_ROBOT_VOICE_CONFIG)
         # ws_server может быть None в юнит-тестах. В проде QuestNode всегда
         # передаёт реальный WSSServer — иначе _publish_zero() вернёт True
         # через заглушку и поведение будет как «есть активная сессия».
@@ -480,16 +492,11 @@ class QuestBridge:
         /audio/quest_in (STT) — распознавание успевает до отпускания грипа.
         """
         if self._voice_mode == "robot_voice":
-            if _chunk_is_silent(payload):
-                if self._voice_buffer:
-                    chunk_ms = len(payload) / VOICE_BYTES_PER_MS
-                    self._voice_silence_ms += chunk_ms
-                    if self._voice_silence_ms >= VOICE_SILENCE_TIMEOUT_MS:
-                        self._flush_voice_buffer()
-                # ведущая тишина — игнор
-            else:
-                self._voice_buffer.append(payload)
-                self._voice_silence_ms = 0.0
+            # issue #2199: общий PhraseSegmenter с peak-VAD. Кадры-тишины
+            # не открывают новую фразу, фразу закрывает таймерный tick().
+            phrase = self._voice_segmenter.add_frame(payload, time.monotonic())
+            if phrase is not None:
+                self._publish_voice_phrase(phrase)
             return
         if self._voice_in_pub is None:
             return
@@ -498,21 +505,71 @@ class QuestBridge:
         self._voice_in_pub.publish(msg)
 
     def publish_quest_wake_audio(self, payload: bytes) -> None:
-        """VOICE_AUDIO (stream_id=2, wake-channel) → AudioData в /audio/quest_wake.
+        """VOICE_AUDIO (stream_id=2, wake-channel) → ОДНА AudioData на фразу.
 
         Клиент уже отфильтровал silence через RMS VAD с hangover 200 мс
-        (voice_capture.ts), здесь payload всегда содержит речь. Публикует в
-        /audio/quest_wake, который слушает stt_node.quest_wake_audio_callback
-        и маршрутизирует в /avatar/stt/result только при вейке «ТАРС»
-        (целевая §7.1/§9.1, issue #1992). ``self._quest_wake_pub`` — None в
-        unit-тестах моста (конструируются без ROS) → no-op, как
-        publish_voice_audio.
+        (voice_capture.ts), здесь payload всегда содержит речь — но это
+        отдельный кадр 20 мс / 640 байт, а не фраза.
+
+        issue #2135: раньше каждый такой кадр уходил в /audio/quest_wake
+        отдельным сообщением, а stt_node.quest_wake_audio_callback гоняет
+        полный цикл распознавания на КАЖДОЕ сообщение — распознавание 20 мс
+        всегда возвращает пусто, поэтому вейк «ТАРС» из шлема не мог
+        сработать никогда (лог робота 2026-09-08: «Получена фраза: 0.02с
+        (640 bytes)» → «ОТКЛОНЕНО (пустое)» на каждом кадре). Теперь кадры
+        копятся в :class:`WakePhraseSegmenter` и уходят одной AudioData на
+        фразу — то есть тот контракт топика, который stt_node и так
+        предполагает в своём докстринге («распознаём VAD-сегмент»).
+
+        Фразу закрывает пауза в потоке кадров; закрыть её по паузе может
+        только :meth:`tick_wake_audio` (кадры перестали приходить →
+        publish_quest_wake_audio больше не вызывается). Здесь фраза
+        отдаётся, только если кадр открыл новую (пауза перед ним) или буфер
+        упёрся в потолок.
+
+        ``self._quest_wake_pub`` — None в unit-тестах моста (конструируются
+        без ROS) → no-op, как publish_voice_audio.
         """
         if self._quest_wake_pub is None:
             return
-        self._note_wake_audio_publish(len(payload))
+        phrase = self._wake_segmenter.add_frame(payload, time.monotonic())
+        if phrase is not None:
+            self._publish_wake_phrase(phrase)
+
+    def tick_wake_audio(self, now_monotonic: float) -> None:
+        """Таймерный тик (30 Гц): закрыть wake-фразу по паузе в потоке кадров.
+
+        issue #2135: оператор договорил → клиентский VAD отпустил → кадры
+        кончились. Никакой WS-фрейм больше не придёт, поэтому закрыть фразу
+        и отдать её в STT может только таймер. Вызывается из
+        ``QuestNode._on_tick_timer`` рядом с ``tick_publish``.
+        """
+        if self._quest_wake_pub is None:
+            return
+        phrase = self._wake_segmenter.tick(now_monotonic)
+        if phrase is not None:
+            self._publish_wake_phrase(phrase)
+
+    def reset_wake_audio(self) -> None:
+        """WS-сессия оборвалась → выбросить недособранную wake-фразу.
+
+        issue #2135: без этого половина фразы ушедшего оператора склеится с
+        первыми кадрами следующей сессии и уедет в STT одним куском.
+        Вызывается из ``WSSServer._unregister_session`` (disconnect,
+        watchdog, GOODBYE) и при ``voice_listen_stop``.
+        """
+        dropped = self._wake_segmenter.reset()
+        if dropped:
+            self._node.get_logger().info(
+                f"quest: wake audio buffer dropped ({dropped} bytes, "
+                "session end / listen stop)"
+            )
+
+    def _publish_wake_phrase(self, phrase: bytes) -> None:
+        """Готовая фраза → AudioData в /audio/quest_wake (+ observability)."""
+        self._note_wake_audio_publish(len(phrase))
         msg = AudioData()
-        msg.data = list(payload)
+        msg.data = list(phrase)
         self._quest_wake_pub.publish(msg)
 
     def _note_wake_audio_publish(self, nbytes: int) -> None:
@@ -522,11 +579,15 @@ class QuestBridge:
         логах вообще: и «клиент шлёт, мост публикует» и «клиент ничего не
         шлёт» выглядели в ``docker logs rob-box-quest`` одинаково —
         тишина по ``wake``/``voice_listen``/``VOICE_AUDIO``. Первый
-        опубликованный пакет — сразу INFO (подтверждает, что мост хотя бы
+        опубликованная фраза — сразу INFO (подтверждает, что мост хотя бы
         раз получил и передал payload дальше в ROS), дальше — сводка не
-        чаще раза в :data:`WAKE_AUDIO_LOG_INTERVAL_S` секунд (поток
-        ~16 кГц, чанк 20мс -> до 50 публикаций/сек — без троттлинга лог
-        захлебнётся).
+        чаще раза в :data:`WAKE_AUDIO_LOG_INTERVAL_S` секунд.
+
+        issue #2135: «packets» здесь теперь = ФРАЗЫ, а не 20мс-кадры. До
+        сегментатора сюда прилетало до 50 вызовов/сек (кадр = публикация) и
+        троттлинг был обязателен, чтобы лог не захлебнулся; сейчас темп на
+        два порядка ниже, но троттлинг оставлен — он же защищает от
+        «залипшего» клиентского VAD, режущего поток по потолку буфера.
         """
         now = time.monotonic()
         self._wake_audio_publish_count += 1
@@ -567,6 +628,10 @@ class QuestBridge:
         if prev == active:
             return
         self._wake_active = active
+        if not active:
+            # issue #2135: тумблер выключен — недособранная фраза больше
+            # никому не адресована, иначе она склеится со следующим start.
+            self.reset_wake_audio()
         if self._wake_stream_pub is not None:
             msg = String()
             msg.data = json.dumps(
@@ -580,18 +645,32 @@ class QuestBridge:
             f"quest: wake stream {'active' if active else 'paused'}"
         )
 
-    def _flush_voice_buffer(self) -> None:
-        """Накопленный PCM → один AudioData в /audio/quest_in (STT)."""
-        if self._stt_in_pub is None or not self._voice_buffer:
-            self._voice_buffer = []
-            self._voice_silence_ms = 0.0
+    def _publish_voice_phrase(self, phrase: bytes) -> None:
+        """Готовая фраза из :class:`PhraseSegmenter` → один AudioData в STT."""
+        if self._stt_in_pub is None:
             return
-        data = b"".join(self._voice_buffer)
-        self._voice_buffer = []
-        self._voice_silence_ms = 0.0
         msg = AudioData()
-        msg.data = list(data)
+        msg.data = list(phrase)
         self._stt_in_pub.publish(msg)
+
+    def tick_voice_audio(self, now_monotonic: float) -> None:
+        """Таймерный тик для PTT robot_voice (issue #2199, см. wake-аналог).
+
+        Закрывает фразу по паузе в потоке кадров: оператор замолчал, пока
+        грип ещё зажат — кадры перестали приходить, ``add_frame`` больше
+        не вызывается. Вызывается из ``_on_tick_timer`` рядом с
+        ``tick_wake_audio``.
+        """
+        if self._voice_mode != "robot_voice":
+            return
+        phrase = self._voice_segmenter.tick(now_monotonic)
+        if phrase is not None:
+            self._publish_voice_phrase(phrase)
+
+    def reset_voice_audio(self) -> None:
+        """Разрыв PTT-сессии (грип отпущен по watchdog) → выбросить
+        недособранную фразу, чтобы она не ушла в STT недоговоренной."""
+        self._voice_segmenter.reset()
 
     def publish_voice_stop(self) -> None:
         """PTT stop: STOP в /voice/sound/stop → sound_node закрывает стрим."""
@@ -602,16 +681,20 @@ class QuestBridge:
     def publish_voice_robot_start(self) -> None:
         """PTT start (робот-голос): barge-in + перейти в режим буферизации."""
         self._voice_mode = "robot_voice"
-        self._voice_buffer = []
-        self._voice_silence_ms = 0.0
+        self._voice_segmenter.reset()
         self.publish_voice_barge_in()
 
     def publish_voice_robot_stop(self) -> None:
-        """PTT stop (робот-голос): слить остаток фразы без завершающей тишины."""
+        """PTT stop (робот-голос): допихнуть последнюю фразу и выйти в radio."""
         if self._voice_mode != "robot_voice":
             return
         self._voice_mode = "radio"
-        self._flush_voice_buffer()
+        # На закрытии грипа оператор мог не дотянуть паузу (gap_timeout_s).
+        # Принудительно финишируем буфер без min_phrase-проверки: если он
+        # пуст — сегментатор вернёт None и ничего не уйдёт.
+        phrase = self._voice_segmenter.force_close()
+        if phrase is not None:
+            self._publish_voice_phrase(phrase)
 
     def set_voice_mode(self, mode: str) -> None:
         """voice_mode cmd → запрос супервизору сменить режим голоса.
@@ -629,41 +712,39 @@ class QuestBridge:
             return
         self._set_voice_mode_pub.publish(_string_msg(param_mode))
 
-    # ── AV-28 §P7 (issue #1920): voice style preset + language ──────────────
-    # Симметрично ``set_voice_mode``: ws_server вызывает → публикуем в
-    # /avatar/set_voice_preset или /avatar/set_voice_language → супервизор
-    # делает SetParameters(voice_preset=…) / SetParameters(voice_output_language=…)
-    # на dialogue_node (ADR-0028 §S5, meta-quest-api.md §P7).
-    # Сам quest_node НЕ трогает dialogue_node напрямую — единая точка записи
-    # для всех voice-параметров супервизор.
-    def set_voice_preset(self, preset: str) -> None:
-        """AV-28 §P7: запрос супервизору сменить стиль речи.
-
-        Публикует ``String`` с ``preset`` (один из VOICE_PRESET_IDS) в
-        ``/avatar/set_voice_preset``. Whitelist — на ws_server, но если
-        сюда дошёл неожиданный ID, пишем WARN и выходим.
-        """
-        if self._set_voice_preset_pub is None:
+    # ── Шаг 4б (issue #1989, t_80e7aa1e): конфиг пайплайна грипа ───────
+    # ADR-0087 (2026-09-09, вариант (a)): AV-28 §P7 set_voice_preset/
+    # set_voice_language (легаси style-путь на dialogue_node) удалены —
+    # ws_server больше не вызывает эти методы Bridge, публикация была
+    # мёртвой (супервизор перестал подписываться на эти топики в том же
+    # PR). voice_pipeline — единственный оставшийся канал стиля/языка,
+    # меняет _pipeline_* на супервизоре (грип-трансформация,
+    # см. supervisor_node.py:2634).
+    #
+    # ws_server уже провалидировал whitelist preset/language, поэтому
+    # здесь — только JSON-сериализация под supervisor. Никакого
+    # переименования/нормализации: supervisor ждёт строки из
+    # GRIP_OFF_PRESETS = {"", "none", "off"} и из VOICE_LANGUAGES
+    # 1:1, и тест test_publish_voice_pipeline_style_off_payload это
+    # прибивает как регрессию.
+    def publish_voice_pipeline(
+        self, llm_enabled: bool, preset: str, language: str
+    ) -> None:
+        """Шаг 4б: конфиг пайплайна грипа → /avatar/voice_pipeline."""
+        if self._voice_pipeline_pub is None:
             self._node.get_logger().warning(
-                "quest: set_voice_preset called but publisher not initialized"
+                "quest: publish_voice_pipeline called but publisher not initialized"
             )
             return
-        self._set_voice_preset_pub.publish(_string_msg(preset))
-
-    def set_voice_language(self, language: str) -> None:
-        """AV-28 §P7: запрос супервизору сменить язык вывода.
-
-        Публикует ``String`` с ``language`` (один из VOICE_LANGUAGES:
-        ru|en|fr|de|zh|hi)
-        в ``/avatar/set_voice_language``. Без рестарта dialogue_node —
-        параметр подхватывается на следующей фразе.
-        """
-        if self._set_voice_language_pub is None:
-            self._node.get_logger().warning(
-                "quest: set_voice_language called but publisher not initialized"
-            )
-            return
-        self._set_voice_language_pub.publish(_string_msg(language))
+        payload = json.dumps(
+            {
+                "llm_enabled": bool(llm_enabled),
+                "preset": str(preset),
+                "language": str(language),
+            },
+            ensure_ascii=False,
+        )
+        self._voice_pipeline_pub.publish(_string_msg(payload))
 
     # ── AV-27 TTS picker (issue #1919) ────────────────────────────────────
 
@@ -710,17 +791,30 @@ class QuestBridge:
             * ok=False, reason="tts_unreachable"|"voice_unavailable"|"missing_publisher"
               — nack; available заполняется списком id голосов активного
               провайдера когда reason="voice_unavailable" (UI-подсказка).
+
+        Источник истины для валидации (issue #2138, fix #2138.A) — кэш
+        latched-топика ``/voice/tts/voices`` (см. ``on_voices_message``), а
+        не компайл-тайм реестр ``tts_voice_registry``: в образе
+        ``rob-box-quest`` пакета ``rob_box_voice`` нет (конвенция «пакет
+        должен оставаться импортируемым без rob_box_voice»), и старый
+        код через ``_voices_for(provider)`` всегда возвращал ``[]`` →
+        ``tts_unreachable`` для ЛЮБОГО голоса при живом TTS. Чистая
+        логика валидации вынесена в ``streams.voice_picker.pick_voice``
+        и покрыта ``test_voice_picker.py`` без rclpy/audio_common_msgs.
         """
         if self._set_voice_pub is None:
             return False, None, "missing_publisher", None
         provider = self._active_provider
         if not provider:
             return False, None, "tts_unreachable", None
-        voices = _voices_for(provider)
-        if not voices:
-            return False, None, "tts_unreachable", None
-        if voice_id not in voices:
-            return False, None, "voice_unavailable", voices
+        # ``list_voices_snapshot`` возвращает актуальный (с учётом TTL) кэш
+        # ``/voice/tts/voices`` — это и есть реальный ответ провайдера о
+        # доступных голосах. Если кэш пуст/протух — capability-honest
+        # ``tts_unreachable``, не молчаливый «ОК».
+        snapshot = self.list_voices_snapshot()
+        choice = pick_voice(snapshot["voices"], voice_id=voice_id)
+        if not choice.ok:
+            return False, None, choice.reason, choice.available
         # Валидно → публикуем запрос супервизору. Формат: JSON-строка в
         # std_msgs/String (как /avatar/set_voice_mode и /avatar/set_voice).
         payload = {
@@ -1004,9 +1098,10 @@ class QuestBridge:
     def relay_teleop_heartbeat(self, client_id: str, ts_ms: int, seq: int) -> None:
         """Опубликовать TeleopHeartbeat в ``/teleop_heartbeat`` от ``client_id``.
 
-        Контракт:
-        - topic: ``/teleop_heartbeat`` (``std_msgs/String``, msgpack-encoded
-          dict ``{client_id, ts_ms, seq}``).
+        Контракт (ADR-0028 §4.4 S10, issue #2189):
+        - topic: ``/teleop_heartbeat``, тип — IDL
+          ``rob_box_supervisor_msgs/msg/TeleopHeartbeat`` с полями
+          ``client_id`` (string), ``ts_ms`` (uint64), ``seq`` (uint32).
         - Источник живости — клиент (ADR-0028 §4.4 «Не слать heartbeat на
           автомате»): мы только релеим, никогда не генерируем сами.
         - ts_ms — клиентское локальное время, seq — монотонная
@@ -1014,22 +1109,26 @@ class QuestBridge:
           дедупликации на стороне супервизора и метрик).
         - ``self._heartbeat_pub`` может быть ``None`` в юнит-тестах —
           это сознательно, чтобы ws_server тестировался без rclpy.
+
+        IDL-типизация обязательна: до #2189 pub публиковал
+        ``std_msgs/String`` (JSON-payload), а супервизор-арбитр был
+        подписан на ``TeleopHeartbeat`` — в ROS2 разные типы не
+        соединяются, поэтому LockManager.heartbeat ни разу не вызывался,
+        и dead-man 500 мс (ADR-0028 §4.4 S10) был нерабочим.
         """
         if self._heartbeat_pub is None:
             return
-        # ``_heartbeat_pub`` уже лениво создан в __init__ только при наличии
-        # rclpy (см. _init_heartbeat_pub). Если телеоп-узел ещё не создал
-        # pub (тест-сценарий), выходим тихо — relay не критичен.
+        # ``_heartbeat_pub`` создаётся в QuestNode.__init__ через
+        # lazy-import IDL (см. _try_import_heartbeat_msg_type). Если pub
+        # не создан (IDL-пакет не собран / тест без rclpy) — выходим
+        # тихо, relay не критичен (ADR-0028 §4.5 monitor-safe).
         try:
-            from std_msgs.msg import String as RosString  # type: ignore
-            import json as _json
+            from rob_box_supervisor_msgs.msg import TeleopHeartbeat  # noqa: PLC0415
 
-            payload = {"client_id": client_id, "ts_ms": int(ts_ms), "seq": int(seq)}
-            msg = RosString()
-            # JSON вместо msgpack — supervisor_client.py из rob_box_telegram
-            # уже парсит оба (см. _on_state_msg), для единообразия Phase 1
-            # шлём JSON (msgpack потребует AV-5 IDL).
-            msg.data = _json.dumps(payload, ensure_ascii=False)
+            msg = TeleopHeartbeat()
+            msg.client_id = client_id
+            msg.ts_ms = int(ts_ms)
+            msg.seq = int(seq)
             self._heartbeat_pub.publish(msg)
         except Exception as exc:  # noqa: BLE001 — relay не должен ронять ноду
             self._node.get_logger().warning(
@@ -1248,6 +1347,15 @@ class QuestBridge:
         арбитраж floor вынесен из supervisor_node, issue #1987).
         Декодируем **только** через ``rob_box_supervisor.core.state.unpack``
         (AV-14), сохраняем bytes в cache и пушим в WS через ws_server.
+
+        issue #2190 (voice-vr 05): дополнительно обновляем
+        ``AvatarStateFloorCache`` через
+        :py:meth:`rob_box_quest.core.floor.AvatarStateFloorCache.update` —
+        это даёт нам diff (``FloorViewUpdate``), на основании которого
+        QuestBridge может отослать ``JSON_EVENT{floor_lost}`` бывшему
+        держателю (avatar_supervisor перехватил или освободил floor).
+        Сам update и notify делаются в aiohttp-loop через
+        ``_dispatch_state_update``.
         """
         raw_text = getattr(msg, "data", None)
         if not isinstance(raw_text, str):
@@ -1262,7 +1370,7 @@ class QuestBridge:
                 unpack as _state_unpack,
             )  # noqa: WPS433
 
-            _state_unpack(raw_bytes)
+            decoded_state = _state_unpack(raw_bytes)
         except Exception as exc:  # noqa: BLE001
             # Schema-version mismatch или мусор — не падаем, лог + пропуск.
             self._node.get_logger().debug(f"avatar/state decode skipped: {exc}")
@@ -1271,26 +1379,78 @@ class QuestBridge:
         with self._avatar_state_lock:
             self._avatar_state_cache = raw_bytes
 
-        # WS broadcast в v2-сессии (потокобезопасно через run_coroutine_threadsafe).
+        # Парсим teleop_floor в AvatarFloorSnapshot и обновляем FloorCache.
+        # Возвращает diff (FloorViewUpdate) — по нему решим, кому слать
+        # JSON_EVENT{floor_lost} (issue #2190). Парсинг и обновление идём
+        # в aiohttp-loop (там же broadcast_state_update), чтобы не было
+        # гонок на FloorCache (он рассчитан на single-thread).
+        snapshot = self._avatar_state_to_snapshot(decoded_state)
         if self._aio_send_loop is None:
             return
         loop = self._aio_send_loop
         try:
             asyncio.run_coroutine_threadsafe(
-                self._dispatch_state_update(raw_bytes), loop
+                self._dispatch_state_update(raw_bytes, snapshot), loop
             )
         except RuntimeError:
             pass  # loop уже закрыт
 
-    async def _dispatch_state_update(self, raw_bytes: bytes) -> None:
-        """Async coroutine для ``broadcast_state_update``.
+    @staticmethod
+    def _avatar_state_to_snapshot(state: Any) -> "AvatarFloorSnapshot":
+        """AvatarState (rob_box_supervisor) → AvatarFloorSnapshot.
+
+        Контракт: ``state.teleop_floor.client_id`` — server_client_id
+        (``"quest:<uuid>"``), см. issue #2190 §«единый client_id». Если
+        avatar_arbiter пишет туда session_id или любой другой формат —
+        это ошибка вызывающей стороны (исправится в Phase 2).
+        """
+        from rob_box_quest.core.floor import AvatarFloorSnapshot
+
+        teleop = state.teleop_floor
+        voice = state.voice_floor
+        return AvatarFloorSnapshot(
+            teleop_holder=(teleop.client_id if teleop is not None else None),
+            voice_holder=(voice.client_id if voice is not None else None),
+            avatar_mode=str(state.mode) if state.mode else "off",
+            schema_version=int(state.version) if state.version else None,
+        )
+
+    async def _dispatch_state_update(
+        self,
+        raw_bytes: bytes,
+        snapshot: "AvatarFloorSnapshot",
+    ) -> None:
+        """Async coroutine для ``broadcast_state_update`` + diff-handling.
 
         Выполняется в aiohttp-loop thread; никакого rclpy внутри.
+        Делает:
+          1) ``ws_server.update_floor_cache(snapshot)`` → FloorViewUpdate.
+          2) ``ws_server.broadcast_state_update(raw_bytes)`` — STATE_UPDATE
+             всем v2-клиентам (msgpack).
+          3) Если diff показал «prev_holder был наш server_client_id» —
+             ``JSON_EVENT{floor_lost}`` в сокет этого клиента (через
+             ``ws_server.notify_floor_lost(prev_holder)``).
         """
+        try:
+            diff = self._ws_server.update_floor_cache(snapshot)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("update_floor_cache failed: %s", exc)
+            diff = None
         try:
             self._ws_server.broadcast_state_update(raw_bytes)
         except Exception as exc:  # noqa: BLE001
             log.debug("dispatch_state_update failed: %s", exc)
+        if diff is None:
+            return
+        # issue #2190: если diff показывает, что prev_holder был «наш»
+        # server_client_id (т.е. одна из наших Quest-сессий), шлём
+        # JSON_EVENT{floor_lost} в её сокет. avatar_supervisor перехватил
+        # floor (или отпустил) — клиент должен DISARM-нуть.
+        if diff.teleop_lost and diff.prev_teleop_holder:
+            self._ws_server.notify_floor_lost_external(
+                diff.prev_teleop_holder,
+                reason="avatar_supervisor_released_or_replaced",
+            )
 
 
 def _trigger_response_to_dict(response: Any) -> dict:
@@ -1399,9 +1559,13 @@ class QuestNode(Node):
         # которому идёт WSS до Quest. Пустое имя = первый интерфейс в таблице.
         self.declare_parameter("wifi_iface", "")
         # AV-19 (issue #1911, ADR-0028 §4.4): гейт teleop_floor.
-        # Default=false чтобы не сломать текущий рабочий мостик; включается
-        # # отдельным коммитом после e2e (карточка явно просит).
-        self.declare_parameter("require_teleop_floor", False)
+        # issue #2190 (voice-vr 05): default=True — раньше был False
+        # («не сломать текущий рабочий мостик»), теперь включаем по
+        # умолчанию и считаем это прод-готовым поведением. Если кто-то
+        # сознательно ставит False (отладка, e2e без второй сессии) —
+        # WARNING на старте про «аварийный обход» (см. _require_teleop_floor
+        # ниже).
+        self.declare_parameter("require_teleop_floor", True)
         # AV-26 / R7: robot_alert пороги (см. streams/alerts.py). Дефолты
         # дублируют значения из webxr_client/src/scene/status_hud.ts — клиент
         # и сервер не должны разъезжаться на «свечке» (acceptance: «в PR
@@ -1426,6 +1590,18 @@ class QuestNode(Node):
         self._require_teleop_floor = bool(
             self.get_parameter("require_teleop_floor").value
         )
+        if not self._require_teleop_floor:
+            # issue #2190 (voice-vr 05): дефолт теперь True; explicit
+            # False — аварийный обход гейта. Логируем на старте WARNING,
+            # чтобы Шифу увидел в docker logs: «эта нода работает без
+            # gate teleop_floor — кто угодно может уехать». Сам гейт
+            # в ws_server тогда просто пропускает teleop_twist без
+            # проверки holder-а (silent_gate в логах).
+            self.get_logger().warning(
+                "⚠️ require_teleop_floor=False — АВАРИЙНЫЙ ОБХОД гейта teleop_floor: "
+                "любой Quest-клиент может публиковать cmd_vel_quest без floor-а. "
+                "Рекомендуемый default=True (issue #2190). Проверьте launch-файл."
+            )
         self._alert_thresholds = _read_alert_thresholds(self)
 
         # Publishers (см. twist_mux.yaml: priority 40 quest, 255 emergency).
@@ -1480,17 +1656,9 @@ class QuestNode(Node):
         self._set_voice_mode_pub = self.create_publisher(
             String, "/avatar/set_voice_mode", _RE
         )
-        # AV-28 §P7 (issue #1920) — voice style preset / language → супервизор.
-        # Топики /avatar/set_voice_preset, /avatar/set_voice_language
-        # (см. meta-quest-api.md §P7). Супервизор делает SetParameters на
-        # dialogue_node (voice_preset / voice_output_language). Без рестарта
-        # dialogue_node — параметр подхватывается на следующей фразе.
-        self._set_voice_preset_pub = self.create_publisher(
-            String, "/avatar/set_voice_preset", _RE
-        )
-        self._set_voice_language_pub = self.create_publisher(
-            String, "/avatar/set_voice_language", _RE
-        )
+        # ADR-0087 (2026-09-09): AV-28 §P7 set_voice_preset/language
+        # publishers удалены вместе с Bridge-методами — легаси style-путь,
+        # заменён voice_pipeline (см. комментарий у методов ниже).
         # AV-27 / issue #1919 — TTS picker: set_voice / preview_voice →
         # супервизор (ADR-0028 S5/S12 — никаких прямых SetParameters из
         # quest_node на tts_node). Топики std_msgs/String (JSON payload),
@@ -1498,6 +1666,16 @@ class QuestNode(Node):
         self._set_voice_pub = self.create_publisher(String, "/avatar/set_voice", _RE)
         self._preview_voice_pub = self.create_publisher(
             String, "/avatar/preview_voice", _RE
+        )
+        # Шаг 4б (issue #1989, t_80e7aa1e): конфиг пайплайна грипа →
+        # супервизор. std_msgs/String с JSON {llm_enabled, preset, language}.
+        # supervisor (_on_grip_voice_pipeline, supervisor_node.py:2634)
+        # валидирует whitelist ещё раз и кладёт в self._pipeline_*.
+        # Это ОТДЕЛЬНЫЙ топик от /avatar/set_voice_{preset,language} —
+        # те меняют voice_preset на dialogue_node (личность), этот —
+        # _pipeline_* на супервизоре (грип-трансформация).
+        self._voice_pipeline_pub = self.create_publisher(
+            String, "/avatar/voice_pipeline", _RE
         )
         # Ответы preview_voice (String JSON):
         # /avatar/preview_voice/result — done/error с request_id;
@@ -1537,20 +1715,52 @@ class QuestNode(Node):
         # Параметры: ADR-0055 §quest_node.
         self.declare_parameter("avatar_tts_audio_topic", "/avatar/tts/audio")
         self.declare_parameter("avatar_tts_request_topic", "/avatar/tts/request")
+        # ADR-0078 §4 follow-up (issue #2162) — side-channel sample_rate
+        # (String JSON от tts_node). Параметризован для тестов.
+        self.declare_parameter("avatar_tts_audio_meta_topic", "/avatar/tts/audio_meta")
+        # ADR-0078 §3.6 / issue #2162 follow-up — wake-word «ТАРС» принят
+        # (stt_node → /avatar/stt/result) → tars_state accepted в WS.
+        self.declare_parameter("avatar_stt_result_topic", "/avatar/stt/result")
         self._avatar_tts_audio_topic = str(
             self.get_parameter("avatar_tts_audio_topic").value
         )
         self._avatar_tts_request_topic = str(
             self.get_parameter("avatar_tts_request_topic").value
         )
+        self._avatar_tts_audio_meta_topic = str(
+            self.get_parameter("avatar_tts_audio_meta_topic").value
+        )
+        self._avatar_stt_result_topic = str(
+            self.get_parameter("avatar_stt_result_topic").value
+        )
         # Текущий avatar-request-id и привязанный ws. Обновляются в
         # ``_on_avatar_tts_request_meta`` (side-channel). Используются в
         # ``_on_avatar_tts_audio`` для маршрутизации чанков в шлем.
         self._current_avatar_request_id: Optional[str] = None
         self._current_avatar_ws: Optional[Any] = None
+        # ADR-0078 §4: кеш request_id → sample_rate. Заполняется в
+        # ``_on_avatar_tts_audio_meta`` (side-channel) и используется в
+        # ``_on_avatar_tts_audio`` для ``deliver_audio(sample_rate=...)``.
+        self._avatar_request_sample_rate: dict[str, int] = {}
         self._avatar_audio_sub = self.create_subscription(
             AudioData, self._avatar_tts_audio_topic,
             self._on_avatar_tts_audio, _avatar_audio_qos,
+        )
+        # ADR-0078 §4 follow-up: side-channel sample_rate (String JSON
+        # {request_id, sample_rate, ts_ms}) от tts_node. Публикуется ДО
+        # каждого AudioData в /avatar/tts/audio. Кешируем request_id →
+        # sample_rate для _on_avatar_tts_audio и одновременно шлём в WS
+        # tars_state accepted.
+        self._avatar_audio_meta_sub = self.create_subscription(
+            String, self._avatar_tts_audio_meta_topic,
+            self._on_avatar_tts_audio_meta, 10,
+        )
+        # ADR-0078 §3.6: stt_node публикует /avatar/stt/result когда
+        # wake-слово «ТАРС» распознано (после фильтрации). Это самое
+        # раннее «принято к обработке» в цикле ТАРС-в-шлем.
+        self._avatar_stt_result_sub = self.create_subscription(
+            String, self._avatar_stt_result_topic,
+            self._on_avatar_stt_result, 10,
         )
         self._avatar_tts_request_sub = self.create_subscription(
             String, self._avatar_tts_request_topic,
@@ -1588,6 +1798,17 @@ class QuestNode(Node):
             self._on_tars_panel_url,
             10,
         )
+        # issue #2184 — consumer /avatar/tars/panel_data: те же tool call'ы,
+        # но с РЯДАМИ ТОЧЕК из Prometheus/Loki, а не с одной ссылкой.
+        # Relay в JSON_EVENT (type="tars_panel_data"); клиент рисует их на
+        # canvas (tars2Panel.setPanelData). URL-канал выше остаётся ради
+        # обратной совместимости со старыми сборками клиента.
+        self._tars_panel_data_sub = self.create_subscription(
+            String,
+            "/avatar/tars/panel_data",
+            self._on_tars_panel_data,
+            10,
+        )
         # Подписка на /voice/tts/voices (TRANSIENT_LOCAL depth=1) — это
         # первый TRANSIENT_LOCAL publisher tts_node (см. design t_5b9d5d0c
         # §47-49). RELIABLE обязательно — TRANSIENT_LOCAL «latched» semantics
@@ -1614,7 +1835,34 @@ class QuestNode(Node):
         # AV-19 (issue #1911, ADR-0028 §4.4 S10): relay teleop_heartbeat.
         # Сюда ws_server релеит клиентский teleop_heartbeat / teleop_twist
         # от имени client_id (см. WSSServer._on_json_cmd).
-        self._heartbeat_pub = self.create_publisher(String, "/teleop_heartbeat", _RE)
+        #
+        # Тип — IDL ``rob_box_supervisor_msgs/msg/TeleopHeartbeat``
+        # (issue #2189): до #2189 здесь был ``std_msgs/String`` (JSON), и
+        # супервизор-арбитр, подписанный на ``TeleopHeartbeat``, вообще не
+        # получал ничего → LockManager.heartbeat() никогда не вызывался,
+        # dead-man 500 мс (ADR-0028 §4.4 S10) был нерабочим. Тип паблишера
+        # и подписчика должны совпадать — иначе ROS2 их не соединит.
+        #
+        # IDL может быть не собран (CI / fresh clone без ``colcon build``
+        # пакета ``rob_box_supervisor_msgs``) → try/except ImportError и
+        # relay no-op с WARN-логом, чтобы нода оставалась живой (monitor-safe,
+        # ADR-0028 §4.5).
+        try:
+            from rob_box_supervisor_msgs.msg import (  # noqa: PLC0415
+                TeleopHeartbeat as _TeleopHeartbeatMsg,
+            )
+
+            self._heartbeat_pub = self.create_publisher(
+                _TeleopHeartbeatMsg, "/teleop_heartbeat", _RE
+            )
+        except ImportError:
+            self._heartbeat_pub = None
+            self.get_logger().warning(
+                "rob_box_supervisor_msgs/msg/TeleopHeartbeat not built "
+                "(colcon build пакета rob_box_supervisor_msgs?). /teleop_heartbeat "
+                "publisher не создан — relay из ws_server будет no-op, "
+                "dead-man enforcement недоступен (ADR-0028 §4.5 monitor-safe)."
+            )
 
         # Phase 2 (issue #2002, ADR-0013): supervisor service-client —
         # ЕДИНЫЙ /supervisor/execute (ExecuteCommand.srv, ADR-0051 §2.1).
@@ -1678,6 +1926,20 @@ class QuestNode(Node):
             CompressedImage,
             "/ceiling_camera/image_raw/compressed",
             self._on_ceiling_image,
+            _CAMERA_QOS,
+        )
+        # camera_oak_depth (0x1004): OAK-D depth из oak-d ROS-контейнера.
+        # Тот же паттерн, что у camera_ceiling: capture-поток через depthai
+        # в образе rob-box-quest не работает (depthai отсутствует → поток
+        # завершается с «thread exits», панель глубины в шлеме остаётся
+        # пустой при живом потоке кадров от oak-d). Берём готовые кадры
+        # из ROS-топика compressedDepth (PNG-кодированный mono16 depth,
+        # формат тот же, что в telegram_node:101). Клиент Quest рендерит
+        # их как есть (см. docs/architecture/meta-quest-api.md §4.4).
+        self._camera_oak_depth_sub = self.create_subscription(
+            CompressedImage,
+            "/camera/camera/depth/image_rect_raw/compressedDepth",
+            self._on_depth_image,
             _CAMERA_QOS,
         )
         # map_2d (0x1103): SLAM-карта rtabmap. Публикуется TRANSIENT_LOCAL
@@ -1757,10 +2019,9 @@ class QuestNode(Node):
             quest_wake_pub=self._quest_wake_pub,
             wake_stream_pub=self._wake_stream_pub,
             set_voice_mode_pub=self._set_voice_mode_pub,
-            set_voice_preset_pub=self._set_voice_preset_pub,
-            set_voice_language_pub=self._set_voice_language_pub,
             set_voice_pub=self._set_voice_pub,
             preview_voice_pub=self._preview_voice_pub,
+            voice_pipeline_pub=self._voice_pipeline_pub,
             voices_cache_ttl_sec=float(
                 self.get_parameter("voices_cache_ttl_sec").value
             ),
@@ -1786,9 +2047,21 @@ class QuestNode(Node):
         # прокинуто вовсе — capture-поток только писал в лог «cannot open
         # /dev/video0» и умирал. Потолочная камера теперь ROS-стрим, см.
         # `_on_ceiling_image` и streams/registry.py.
+        #
+        # camera_oak_depth тоже больше НЕ запускается здесь (issue #2138.B):
+        # depthai в образе ``rob-box-quest`` нет → capture-поток завершается
+        # с «camera camera_oak_depth unavailable — thread exits» на каждом
+        # старте, и панель глубины в шлеме остаётся пустой при живом потоке
+        # кадров от ``oak-d``. Глубина теперь ROS-стрим (compressedDepth),
+        # см. `_on_depth_image` и streams/registry.py.
+        #
+        # camera_oak_color остаётся как depthai-stub (отдельная карточка,
+        # правило маленьких PR — ADR-0013): capture-поток стартует,
+        # ``OakDepthaiSource.open()`` возвращает False на образе без
+        # depthai → поток тихо завершается. Цвет на роботе уже приходит
+        # через ROS-топик camera_rear (0x1001), см. `_on_camera_image`.
         cameras = [
             ("camera_oak_color", "oak:color", 15.0),
-            ("camera_oak_depth", "oak:depth", 5.0),
         ]
         self._camera_provider = CameraProvider(cameras=cameras)
         for ui_name, source_id, _fps in cameras:
@@ -1879,6 +2152,51 @@ class QuestNode(Node):
         if not msg.data:
             return
         self.bridge.publish_frame("camera_ceiling", bytes(msg.data))
+
+    def _on_depth_image(self, msg: CompressedImage) -> None:
+        """ROS /camera/camera/depth/image_rect_raw/compressedDepth → WS (camera_oak_depth).
+
+        НЕ зеркало ``_on_ceiling_image`` — в отличие от обычного JPEG,
+        ``compressedDepth`` несёт 12-байтный бинарный ``ConfigHeader``
+        ПЕРЕД PNG-данными (см. ``_strip_compressed_depth_header`` докстринг
+        и raw-доказательство там же). Раньше этот заголовок форвардился
+        клиенту как есть → ``createImageBitmap()`` не находил PNG-сигнатуру
+        в начале потока и тихо ронял промис — панель глубины оставалась
+        пустой при живом топике. Отрезаем заголовок здесь.
+
+        Второй шаг (продолжение #2138.B, 2026-09-08): голый PNG после
+        отрезания заголовка — это 16-битный grayscale (миллиметры), а не
+        обычная картинка. ``createImageBitmap()`` не умеет 16 бит на
+        канал и молча схлопывает до 8, беря старший байт — комната
+        500–5000 мм превращается в почти чёрный кадр (0x1388 → старший
+        байт 0x13 = 19/255). Формально «не пустая», но для оператора та
+        же жалоба. Поэтому вместо форварда голого PNG кодируем его в
+        цветной JPEG (см. ``streams.depth.depth_compressed_to_jpeg`` —
+        нормализация по 2/98 перцентилям + JET colormap, синий=близко/
+        красный=далеко; та же логика, что уже проверена в
+        ``rob_box_telegram/handlers/commands.py:_depth_compressed_to_jpeg``
+        для ``/photo_depth``). Клиент не меняется: ``ingestJpeg`` уже
+        декодирует по сигнатуре байт, а не по заявленному типу канала.
+        """
+        if not msg.data:
+            return
+        png = _strip_compressed_depth_header(bytes(msg.data))
+        if png is None:
+            self.get_logger().warning(
+                "camera_oak_depth: PNG signature not found in compressedDepth "
+                "payload (format=%r, len=%d) — не PNG-сжатие (RVL?), кадр пропущен",
+                msg.format,
+                len(msg.data),
+            )
+            return
+        try:
+            jpeg = depth_compressed_to_jpeg(png)
+        except Exception as exc:  # noqa: BLE001 — best-effort, как on_map/grid_to_png
+            self.get_logger().warning(
+                "camera_oak_depth: depth→JPEG encode failed (%s) — кадр пропущен", exc
+            )
+            return
+        self.bridge.publish_frame("camera_oak_depth", jpeg)
 
     def _on_map(self, msg: OccupancyGrid) -> None:
         """ROS /rtabmap/map → map_2d (0x1103): PNG решётки + поза робота."""
@@ -2101,6 +2419,12 @@ class QuestNode(Node):
         stream="operator_tts", request_id=current, ws=current, ...)``.
         ``ws`` достаётся из side-channel registry (см.
         ``_on_avatar_tts_request_meta``).
+
+        ADR-0078 §4 (issue #2162 follow-up): ``sample_rate`` берётся из
+        кеша ``self._avatar_request_sample_rate[request_id]`` (заполняется
+        в ``_on_avatar_tts_audio_meta``). Fallback — 16000, как в ws_server
+        (для обратной совместимости со старыми клиентами, которые
+        sample_rate не передают).
         """
         request_id = self._current_avatar_request_id
         ws = self._current_avatar_ws
@@ -2116,16 +2440,39 @@ class QuestNode(Node):
                 "(request_id/ws None) — DROP"
             )
             return
+        # ADR-0078 §4: sample_rate из side-channel кеша, fallback 16000.
+        cached_sample_rate = self._avatar_request_sample_rate.get(request_id, 16000)
         try:
+            # ROS2 audio_common_msgs/AudioData.data — это uint8[]; rclpy при
+            # маршалинге через Cyclone DDS/Zenoh отдаёт его как ``array.array``
+            # (НЕ ``bytes``/``bytearray``). Прежний isinstance-guard
+            # ``isinstance(msg.data, (bytes, bytearray))`` ловил ТОЛЬКО эти
+            # типы, а ``array.array`` пропускал → audio_bytes = b"" → оператор
+            # слышал тишину (issue #2136, ADR-0055 §quest_node).
+            #
+            # ``bytes(msg.data)`` корректно работает для ``array.array``,
+            # ``bytes``, ``bytearray`` и любой iterable-of-int (см. образец
+            # в rob_box_voice/stt_node.py:556). Fallback ``b""`` — только
+            # если msg.data пустой/None (защитный default, в норме не срабатывает).
+            raw_data = msg.data if msg.data is not None else b""
+            audio_bytes = bytes(raw_data) if raw_data else b""
             self.ws_server.deliver_audio(
                 stream="operator_tts",
                 request_id=request_id,
-                audio_bytes=bytes(msg.data) if isinstance(msg.data, (bytes, bytearray)) else b"",
+                audio_bytes=audio_bytes,
                 audio_format="pcm_s16le",
                 content_type="audio/pcm",
                 seq=0,
                 total=0,
+                sample_rate=cached_sample_rate,  # ADR-0078 §4
                 ws=ws,
+            )
+            # Факт доставки в WS — оставляем info-лог, чтобы было видно
+            # прохождение чанка до оператора (issue #2136 DoD).
+            self.get_logger().info(
+                f"🎧 [ADR-0055] deliver_audio(operator_tts) ok: "
+                f"{len(audio_bytes)}B, sample_rate={cached_sample_rate}, "
+                f"request_id={request_id[:8]}"
             )
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warning(
@@ -2168,7 +2515,15 @@ class QuestNode(Node):
                 self._camera_started = True
             except Exception as e:  # noqa: BLE001
                 self.get_logger().warning(f"camera provider start failed: {e}")
-        self.bridge.tick_publish(time.monotonic())
+        now = time.monotonic()
+        self.bridge.tick_publish(now)
+        # issue #2135: wake-фраза закрывается по паузе в потоке кадров, а
+        # «пауза» — это отсутствие вызовов publish_quest_wake_audio. Заметить
+        # её может только таймер.
+        self.bridge.tick_wake_audio(now)
+        # issue #2199: то же для robot_voice — без таймера паузу в потоке
+        # кадров PTT никто не заметит.
+        self.bridge.tick_voice_audio(now)
 
     def _on_watchdog_timer(self) -> None:
         # Edge-triggered: один раз на trip → один WARNING + один emergency.
@@ -2339,6 +2694,104 @@ class QuestNode(Node):
         except Exception as e:  # noqa: BLE001
             self.get_logger().debug(f"tars1_text broadcast failed: {e}")
 
+    def _on_avatar_tts_audio_meta(self, msg: String) -> None:
+        """ADR-0078 §4 follow-up (issue #2162): side-channel sample_rate.
+
+        ROS /avatar/tts/audio_meta (String JSON) от tts_node. Контракт:
+        ``{"request_id": str, "sample_rate": int, "ts_ms": int}``.
+        Side-channel публикуется ДО каждого /avatar/tts/audio AudioData.
+        Здесь кешируем ``request_id → sample_rate`` для последующего
+        ``_on_avatar_tts_audio`` и одновременно рассылаем в WS
+        ``tars_state accepted`` (оператор слышит «акцепт-тон» ДО речи ТАРС).
+
+        Гейт ``_current_avatar_request_id``: audio_meta приходит только
+        в рамках активного запроса (sink=headset). Если активного нет
+        (например, race-условие), молча дропаем — это просто лишний
+        side-channel, ничего не ломает.
+        """
+        try:
+            payload = json.loads(msg.data or "")
+        except (json.JSONDecodeError, TypeError):
+            self.get_logger().warning(
+                "🎧 [ADR-0078] /avatar/tts/audio_meta: битый JSON, drop"
+            )
+            return
+        if not isinstance(payload, dict):
+            return
+        request_id = str(payload.get("request_id", "") or "")
+        sample_rate = payload.get("sample_rate")
+        if not request_id or not isinstance(sample_rate, int):
+            self.get_logger().warning(
+                f"🎧 [ADR-0078] /avatar/tts/audio_meta: неполный payload "
+                f"request_id={request_id!r} sample_rate={sample_rate!r}"
+            )
+            return
+        # Кешируем sample_rate для следующего AudioData-чанка.
+        self._avatar_request_sample_rate[request_id] = int(sample_rate)
+        # Очистка старых записей (LRU-обрезка, чтобы не утекала память).
+        if len(self._avatar_request_sample_rate) > 16:
+            # Оставляем только последние 8 по insertion order (Python 3.7+).
+            self._avatar_request_sample_rate = dict(
+                list(self._avatar_request_sample_rate.items())[-8:]
+            )
+        # Активной сессии нет — meta вне контекста, drop без WS-event.
+        if self._current_avatar_request_id is None:
+            return
+        # WS-event: tars_state accepted (с request_id).
+        event = {
+            "type": "tars_state",
+            "stage": "accepted",
+            "request_id": request_id,
+            "sample_rate": int(sample_rate),
+            "ts_ms": int(time.time() * 1000),
+        }
+        try:
+            self.ws_server.broadcast_json_event(event)
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().debug(f"tars_state accepted broadcast failed: {e}")
+
+    def _on_avatar_stt_result(self, msg: String) -> None:
+        """ADR-0078 §3.6 follow-up (issue #2162): stt_node wake «ТАРС».
+
+        ROS /avatar/stt/result (String JSON) от stt_node. Контракт:
+        ``{"source": str, "client_id": str, "text": str, "ts_ms": int}``.
+        Это самое раннее «принято» в цикле ТАРС-в-шлем — wake-фраза
+        распознана (после фильтрации wake-слов) и сейчас уйдёт в
+        avatar_supervisor → AgentCore. Здесь рассылаем в WS
+        ``tars_state accepted`` с текстом — клиент показывает оператору
+        «ACCEPTED» и играет акцепт-тон.
+        """
+        try:
+            payload = json.loads(msg.data or "")
+        except (json.JSONDecodeError, TypeError):
+            self.get_logger().warning(
+                "🎧 [ADR-0078] /avatar/stt/result: битый JSON, drop"
+            )
+            return
+        if not isinstance(payload, dict):
+            return
+        text = str(payload.get("text", "") or "").strip()
+        if not text:
+            return
+        client_id = str(payload.get("client_id", "") or "")
+        ts_ms_raw = payload.get("ts_ms")
+        ts_ms = int(ts_ms_raw) if isinstance(ts_ms_raw, (int, float)) else int(
+            time.time() * 1000
+        )
+        # request_id зеркалит supervisor'овский генератор: f"{client_id}:{ts_ms}"
+        request_id = f"{client_id}:{ts_ms}" if client_id else ""
+        event = {
+            "type": "tars_state",
+            "stage": "accepted",
+            "request_id": request_id,
+            "text": text,
+            "ts_ms": ts_ms,
+        }
+        try:
+            self.ws_server.broadcast_json_event(event)
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().debug(f"tars_state stt accepted broadcast failed: {e}")
+
     def _on_tars_panel_url(self, msg: String) -> None:
         """ROS /avatar/tars/panel_url → JSON_EVENT (type=tars_panel_url).
 
@@ -2369,6 +2822,46 @@ class QuestNode(Node):
             self.ws_server.broadcast_json_event(event)
         except Exception as e:  # noqa: BLE001
             self.get_logger().debug(f"tars_panel_url broadcast failed: {e}")
+
+    def _on_tars_panel_data(self, msg: String) -> None:
+        """ROS /avatar/tars/panel_data → JSON_EVENT (type=tars_panel_data).
+
+        issue #2184: ``tars_panel.py`` публикует сюда результат запроса в
+        Prometheus/Loki — ряды точек, которые клиент рисует сам. Контракт
+        входа — String JSON ``{request_id, status, datasource, query, note,
+        summary, series, lines, available, url, error}``.
+
+        Полезная нагрузка режется по размеру перед broadcast'ом: PromQL с
+        широким селектором способен вернуть десятки рядов, а WebSocket-канал
+        Quest'а общий с телеметрией (ADR-0060). Супервизор уже ограничивает
+        ряды (MAX_SERIES=6), здесь — страховка от «чужого» publisher'а.
+        """
+        try:
+            payload = json.loads(msg.data or "")
+        except (json.JSONDecodeError, TypeError):
+            return
+        if not isinstance(payload, dict):
+            return
+        series = payload.get("series")
+        lines = payload.get("lines")
+        event = {
+            "type": "tars_panel_data",
+            "request_id": str(payload.get("request_id", "") or ""),
+            "status": str(payload.get("status", "") or ""),
+            "datasource": str(payload.get("datasource", "") or ""),
+            "query": str(payload.get("query", "") or ""),
+            "note": str(payload.get("note", "") or ""),
+            "summary": str(payload.get("summary", "") or ""),
+            "series": series[:8] if isinstance(series, list) else [],
+            "lines": lines[:40] if isinstance(lines, list) else [],
+            "url": str(payload.get("url", "") or ""),
+            "error": str(payload.get("error", "") or ""),
+            "ts_ms": int(time.time() * 1000),
+        }
+        try:
+            self.ws_server.broadcast_json_event(event)
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().debug(f"tars_panel_data broadcast failed: {e}")
 
     def _send_alert_event(self, alert: Alert, *, active: bool) -> None:
         """Сформировать JSON_EVENT для robot_alert и разослать всем сессиям."""

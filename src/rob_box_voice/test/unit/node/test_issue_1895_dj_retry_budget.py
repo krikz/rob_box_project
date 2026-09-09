@@ -68,6 +68,40 @@ def _calls(method_node, attr: str) -> bool:
     )
 
 
+#: Чистые ``core/turn.py``-хелперы, которым guard имеет право делегировать
+#: списание общего budget вместо inline ``_consume_synthetic_retry``
+#: (issue #2266 / ADR-0021 R2). Контракт хелпера: вернуть ``None``, когда
+#: ``budget_left <= 0``, и отдать ``new_state`` с уже декрементнутым
+#: счётчиком — то же поведение, что ``_consume_synthetic_retry`` → ``False``.
+#: Расширять этот набор можно ТОЛЬКО вместе с юнит-тестами на сам хелпер
+#: (см. ``test/unit/core/test_turn.py::TestBeginBabbleRetry``).
+_CORE_BUDGET_DELEGATES = {"begin_babble_retry"}
+
+
+def _calls_bare(method_node, func_name: str) -> bool:
+    """``func(...)`` — вызов свободной функции (не метода ``self.``)."""
+    return any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == func_name
+        for node in ast.walk(method_node)
+    )
+
+
+def _assigns_attr(method_node, attr: str) -> bool:
+    """``self.<attr> = ...`` где-либо внутри метода."""
+    for node in ast.walk(method_node):
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if (isinstance(target, ast.Attribute)
+                    and target.attr == attr
+                    and isinstance(target.value, ast.Name)
+                    and target.value.id == "self"):
+                return True
+    return False
+
+
 def _all_dispatch_calls(method_node) -> list:
     """Все ``self._dispatch_turn(...)`` / ``self._dispatch_dj_turn(...)``."""
     out = []
@@ -250,18 +284,43 @@ def test_every_guard_dispatch_is_synthetic(guard_name: str) -> None:
 )
 def test_every_guard_consumes_synthetic_budget(guard_name: str) -> None:
     """Каждый guard, который диспатчит синхронный ретрай, обязан до этого
-    списать общий budget через ``_consume_synthetic_retry``.
+    списать общий budget — либо inline через ``_consume_synthetic_retry``,
+    либо делегировав его чистому ``core/``-хелперу.
 
     Без этого guard теряет бюджет: ping-pong между разными guard'ами
     обходит общий счётчик (см. issue #1881, e209e14c).
+
+    Issue #2266 / ADR-0021 R2 — после выноса бабл-гварда в ``core/turn.py``
+    списание бюджета для него делает чистая функция
+    ``begin_babble_retry`` (она возвращает ``None`` при ``budget_left <= 0``
+    и отдаёт ``new_state`` с уже декрементнутым счётчиком). Инвариант тот
+    же — «бюджет списан ДО диспатча», меняется только исполнитель. Поэтому
+    guard считается корректным, если он ЛИБО зовёт
+    ``_consume_synthetic_retry`` напрямую, ЛИБО зовёт ``core/``-хелпер из
+    ``_CORE_BUDGET_DELEGATES`` и зеркалит результат в
+    ``self._synthetic_retries_left``.
     """
     src = DIALOGUE_NODE.read_text(encoding="utf-8-sig")
     methods = _class_methods(src)
     assert guard_name in methods, f"{guard_name} не существует — тест устарел"
     method = methods[guard_name]
 
-    assert _calls(method, "_consume_synthetic_retry"), (
-        f"{guard_name} не зовёт _consume_synthetic_retry — "
+    if _calls(method, "_consume_synthetic_retry"):
+        return
+
+    delegate = next(
+        (name for name in _CORE_BUDGET_DELEGATES if _calls_bare(method, name)),
+        None,
+    )
+    assert delegate is not None, (
+        f"{guard_name} не зовёт ни _consume_synthetic_retry, ни один из "
+        f"core/-хелперов {sorted(_CORE_BUDGET_DELEGATES)} — "
         "общий budget _synthetic_retries_left остаётся нетронутым, "
         "guard может пинг-понгом уйти в бесконечный цикл"
+    )
+    assert _assigns_attr(method, "_synthetic_retries_left"), (
+        f"{guard_name} делегирует бюджет в core/ через {delegate}(), но не "
+        "зеркалит результат в self._synthetic_retries_left — "
+        "legacy-счётчик разъедется с core/-side TurnState и остальные "
+        "guard'ы увидят несписанный бюджет"
     )

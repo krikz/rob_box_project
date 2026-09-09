@@ -144,8 +144,8 @@ export interface CaptainBridgeOptions {
   onPanelTopicChange?(panelId: string, oldTopic: string, newTopic: string): void;
   /**
    * AV-27: оператор ткнул лучом в TTS picker (строку/PREVIEW/APPLY/STOP/
-   * CLOSE/вкладку VOICE). Сцена не знает ни про WSS, ни про состояние
-   * стора — она только сообщает, куда попал луч.
+   * CLOSE). Сцена не знает ни про WSS, ни про состояние стора — она только
+   * сообщает, куда попал луч.
    */
   onTtsPickerAction?(action: TtsPickerTarget): void;
   /**
@@ -534,8 +534,9 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   pointer.addTarget({ id: PIPELINE_DRAG_TARGET_ID, object: voicePipeline.object, draggable: true });
 
   // Большой экран-стена перед оператором: на него выводим фронтальную
-  // камеру. Стена мостика стоит на z = -4 (ROOM_D/2); экран висит чуть
-  // ближе (z = -3.9), лицом к пользователю (facing +Z).
+  // камеру. Стена мостика стоит на z = -4.56 (ROOM_D/2, ADR-0076 R1,
+  // ROOM_D = 9.12); экран висит чуть ближе (z = -3.9), лицом к
+  // пользователю (facing +Z).
   const mainScreen = new VideoPanel(
     {
       id: "main_screen",
@@ -572,51 +573,48 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   ceilingScreen.mesh.rotation.z = CEILING_SCREEN_ROLL_RAD;
   scene.add(ceilingScreen.mesh);
 
-  // TARS 1 + TARS 2 (issue #2113, quest #2112): Captain Bridge — два новых
-  // экрана по бокам от FRONT CAM, лицом к оператору. FRONT CAM стоит на
-  // z=-3.9, ширина 4.8 м. Берём те же размеры, что у camera_oak_depth
-  // side panel (1.6 × 1.2 м) — это достаточно крупно, чтобы текст и
-  // метрики читались, и при этом панели не налезают на экран-стену.
-  // Позиция — симметрично слева/справа, чуть ближе к стене, чтобы
-  // back-tilt (поворот лицом к оператору) давал нормаль, попадающую в
-  // голову оператора (0, 1.6, 0).
-  const TARS_PANEL_SIZE = { width: 1.6, height: 1.2 };
-  const TARS_PANEL_Y = 1.5;
-  const TARS_PANEL_Z = -3.6;
-  const TARS_PANEL_X = 2.7;
+  // TARS 1 + TARS 2 (issue #2113, quest #2112) — «кокпит из трёх одинаковых
+  // экранов-стен» (решение Шифу 2026-09-08, поверх ADR-0074/0076).
+  //
+  // Главный экран (FRONT CAM) не трогаем: 4.8 × 2.7, центр (0, 1.5, -3.9).
+  // TARS1/TARS2 — две КОПИИ главного экрана того же размера 4.8 × 2.7,
+  // по бокам. Каждое крыло шарнирно прижато своей внутренней кромкой к краю
+  // главного экрана (вертикальная кромка x = ±2.4 при z = -3.9) и развёрнуто
+  // к оператору. Угол между боковым и главным экраном — 130° (внутренний),
+  // то есть крыло отогнуто на 50° от плоскости главного (эскиз Шифу:
+  // «48 / 48 / 48 при 130°», R39 к главному).
+  //
+  // Пересечений НЕТ по построению: крыло и главный экран делят только общую
+  // вертикальную кромку (segment-пересечение в XZ пусто, есть лишь точка-
+  // шарнир). Дальняя кромка крыла уходит в x = ±(2.4 + 4.8·cos 50°) ≈ ±5.49,
+  // поэтому декоративный короб комнаты расширен по ширине ROOM_W 7 → 11.6 м
+  // (build_bridge_assets.mjs). ROOM_D не менялся (крылья не выходят за него:
+  // far-z ≈ -0.22 лежит внутри [−4.56, +4.56]).
+  const TARS_PANEL_SIZE = { width: 4.8, height: 2.7 }; // = как главный экран
+  const TARS_PANEL_Y = 1.5; // = как главный экран
+  const TARS_MAIN_EDGE_X = 2.4; // край главного экрана (половина его 4.8 м)
+  const TARS_MAIN_Z = -3.9; // плоскость главного экрана
+  /** Отгиб крыла от плоскости главного: 180° − 130° = 50°. */
+  const TARS_FLARE_RAD = THREE.MathUtils.degToRad(50);
+  // Центр крыла = кромка главного + половина ширины крыла вдоль отгиба.
+  const TARS_WING_X =
+    TARS_MAIN_EDGE_X + (TARS_PANEL_SIZE.width / 2) * Math.cos(TARS_FLARE_RAD);
+  const TARS_WING_Z =
+    TARS_MAIN_Z + (TARS_PANEL_SIZE.width / 2) * Math.sin(TARS_FLARE_RAD);
+
+  // Левое крыло (TARS 1): local +X меша направлен к шарниру (краю главного),
+  // разворот +50° вокруг вертикали уводит крыло влево-вперёд к оператору.
   const tars1Panel = createTars1TextPanel();
-  tars1Panel.mesh.position.set(-TARS_PANEL_X, TARS_PANEL_Y, TARS_PANEL_Z);
+  tars1Panel.mesh.position.set(-TARS_WING_X, TARS_PANEL_Y, TARS_WING_Z);
   tars1Panel.mesh.scale.set(TARS_PANEL_SIZE.width, TARS_PANEL_SIZE.height, 1);
-  // Back-tilt: нормаль направлена из центра экрана в оператора
-  // (0, 1.6, 0). Разница по y: 1.6 - 1.5 = 0.1, по z: -3.6 - 0 = -3.6.
-  // Плоскость по умолчанию смотрит в +Z, rotateY на atan2(x, z) даёт
-  // нормаль в плоскости XZ. Здесь нужно ещё немного наклонить по X —
-  // поднимаем низ экрана к оператору, верх — от него.
-  {
-    const dx = -tars1Panel.mesh.position.x; // 2.7 (положительный X)
-    const dz = -tars1Panel.mesh.position.z; // 3.6 (положительный Z)
-    tars1Panel.mesh.rotation.y = Math.atan2(dx, dz);
-    // Наклон вверх (верх экрана чуть к стене): небольшой, чтобы текст
-    // читался без запрокидывания головы.
-    const dy = EYE_HEIGHT_M - TARS_PANEL_Y;
-    const horizDist = Math.hypot(dx, dz);
-    tars1Panel.mesh.rotation.x = -Math.atan2(dy, horizDist);
-  }
+  tars1Panel.mesh.rotation.y = TARS_FLARE_RAD;
   scene.add(tars1Panel.mesh);
 
+  // Правое крыло (TARS 2) — зеркально левому: разворот −50°.
   const tars2Panel = createTars2MetricsPanel();
-  tars2Panel.mesh.position.set(TARS_PANEL_X, TARS_PANEL_Y, TARS_PANEL_Z);
+  tars2Panel.mesh.position.set(TARS_WING_X, TARS_PANEL_Y, TARS_WING_Z);
   tars2Panel.mesh.scale.set(TARS_PANEL_SIZE.width, TARS_PANEL_SIZE.height, 1);
-  // Симметричный back-tilt: оператор слева от FRONT CAM не появляется,
-    // правый экран смотрит на него так же.
-  {
-    const dx = -tars2Panel.mesh.position.x; // -2.7
-    const dz = -tars2Panel.mesh.position.z; // 3.6
-    tars2Panel.mesh.rotation.y = Math.atan2(dx, dz);
-    const dy = EYE_HEIGHT_M - TARS_PANEL_Y;
-    const horizDist = Math.hypot(dx, dz);
-    tars2Panel.mesh.rotation.x = -Math.atan2(dy, horizDist);
-  }
+  tars2Panel.mesh.rotation.y = -TARS_FLARE_RAD;
   scene.add(tars2Panel.mesh);
 
   // Arm-state HUD: справа вверху на стене, рядом с экраном камеры.
@@ -829,6 +827,32 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   // PanelManager. Битый JSON/чужой version → дефолт (молча не молчим: warn).
   const PIPELINE_POS_STORAGE_KEY = "rob_box_quest.voice_pipeline_pos.v1";
 
+  // Диагностика 2026-09-08 (nightly-review-fix, issue "voice button stuck
+  // on main screen"): в отличие от panel_layout_store (там позиция всегда
+  // пересчитывается из angleDeg + ФИКСИРОВАННОГО радиуса 2.0, см.
+  // panel_layout_store.ts:positionFromAngleAndHeight — устойчиво к любым
+  // изменениям геометрии), этот ключ хранит СЫРЫЕ мировые координаты и до
+  // сих пор восстанавливал их без всякой проверки. Раскопки git log
+  // показали: 2026-09-03 (b0c338a9) панель стала перетаскиваемой и её
+  // позиция начала сохраняться; 2026-09-03..09-08 в PointerSystem.radiusOf
+  // жил баг (issue #2143 / ADR-0072), тянувший панель к лицу оператора с
+  // каждым повторным захватом ("после 3-4 захватов — 0.3 м от лица").
+  // Баг в pointer.ts пофиксили (setCenter + честный 3D radiusOf), но САМ
+  // ключ в localStorage — нет: если у оператора уже была захвачена
+  // "убежавшая" позиция, она восстанавливается по сей день, и фикс #2150
+  // на неё не влияет никак. Отсюда и "чиним - а на шлеме всё как было".
+  //
+  // Минимальная защита без версионирования (версия геометрии панели не
+  // менялась после b0c338a9, так что version-bump тут не поможет сам по
+  // себе): отбрасываем сохранённую позицию, если её 3D-расстояние от
+  // дефолтного центра оператора (0, EYE_HEIGHT_M, 0) выходит за разумные
+  // границы — либо "прилипло к лицу" (создуп-баг), либо улетело за пределы
+  // мостика. Дефолтный радиус панели — VOICE_PIPELINE_RADIUS_M (2.4 м);
+  // границы дают запас на осознанный драг оператора, но отсекают явный
+  // мусор.
+  const PIPELINE_POS_MIN_DIST_M = 0.8;
+  const PIPELINE_POS_MAX_DIST_M = 4.0;
+
   function savePipelinePos(): void {
     if (!layoutStorage) return;
     const p = voicePipeline.getPosition();
@@ -851,6 +875,17 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
         typeof d.y === "number" &&
         typeof d.z === "number"
       ) {
+        const dist = Math.hypot(d.x - 0, d.y - EYE_HEIGHT_M, d.z - 0);
+        if (dist < PIPELINE_POS_MIN_DIST_M || dist > PIPELINE_POS_MAX_DIST_M) {
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[captain_bridge] restorePipelinePos: сохранённая позиция на расстоянии ${dist.toFixed(2)} м ` +
+              `от оператора вне допустимых границ [${PIPELINE_POS_MIN_DIST_M}, ${PIPELINE_POS_MAX_DIST_M}] м ` +
+              "(похоже на наследие бага #2143 drag-creep) — игнорируем, стираем ключ, панель остаётся на дефолтной позиции"
+          );
+          layoutStorage.removeItem(PIPELINE_POS_STORAGE_KEY);
+          return;
+        }
         voicePipeline.setPosition(d.x, d.y, d.z);
       }
     } catch (err) {
@@ -956,21 +991,17 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
 
   // ---------- AV-27: TTS picker (3D-меню выбора голоса) ----------
   //
-  // Живёт рядом с экраном-стеной: оператор смотрит на видео, меню всплывает
-  // левее, на том же радиусе. Вкладка VOICE висит постоянно — в VR клавиш
-  // нет, точка входа обязана быть кликабельным объектом.
+  // Постоянной точки входа в сцене нет: меню открывается по кнопке TTS на
+  // панели голосового пайплайна (`openTtsPickerNearPipeline`) или клавишей V
+  // на десктопе (`openTtsPicker`). Отдельная вкладка VOICE, что висела
+  // всегда слева у экрана-стены, убрана — она торчала на главном экране.
 
   const ttsPicker: TtsPickerMenuHandle = createTtsPickerMenu();
   scene.add(ttsPicker.object);
-  scene.add(ttsPicker.launchObject);
-  // Вкладка — левее и ниже экрана-стены, той же ориентации (facing +Z).
-  ttsPicker.launchObject.position.set(-1.35, 0.95, -3.85);
 
-  // Вкладка кликабельна всегда: цель регистрируется один раз.
-  {
-    const lt = ttsPicker.launchTarget();
-    pointer.addTarget({ id: lt.id, object: lt.object, draggable: false });
-  }
+  // Позиция открытия клавишей V: у экрана-стены, той же ориентации (facing
+  // +Z) — там, где раньше висела вкладка VOICE.
+  const TTS_MENU_ANCHOR = new THREE.Vector3(-1.35, 0.95, -3.85);
 
   /** Пере-регистрация целей меню: только пока оно открыто. */
   let ttsTargetIds: string[] = [];
@@ -994,9 +1025,9 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
 
   function openTtsPicker(): void {
     if (ttsPicker.isVisible()) return;
-    // Ставим меню на позицию вкладки, чтобы оно оказалось на том же
+    // Ставим меню на точку привязки, чтобы оно оказалось на том же
     // радиусе и повороте, что панели (глубина слоя как у stream_menu).
-    const p = ttsPicker.launchObject.position;
+    const p = TTS_MENU_ANCHOR;
     ttsPicker.show(new THREE.Vector3(p.x, p.y, p.z), 0);
     syncTtsTargets();
   }
@@ -1004,8 +1035,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   function openTtsPickerNearPipeline(): void {
     if (ttsPicker.isVisible()) return;
     // Меню всплывает над панелью пайплайна и развёрнуто к оператору так же,
-    // как панель — иначе оператор, смотрящий на панель, не увидит меню
-    // (вкладка VOICE висит далеко слева у экрана-стены).
+    // как панель — иначе оператор, смотрящий на панель, не увидит меню.
     const p = voicePipeline.getPosition();
     ttsPicker.show(new THREE.Vector3(p.x, p.y, p.z), voicePipeline.object.rotation.y);
     syncTtsTargets();

@@ -168,17 +168,25 @@ class SpeechFormatter:
     def wrap_in_ssml(self, text: str) -> str:
         """
         Wrap text in SSML speak tags.
-        
+
         Args:
             text: Text to wrap
-        
+
         Returns:
             Text wrapped in <speak>...</speak>
+
+        Note:
+            voice-vr 12 (issue #2197, ADR-0080 §2.3): ``Utterance.ssml`` —
+            единое место сборки SSML с XML-экранированием ``&``/`<`/`>`.
+            Если на входе уже корректный SSML — возвращаем как есть.
         """
         if self.is_ssml(text):
             return text
-        
-        return f"<speak>{text}</speak>"
+
+        # ``Utterance`` экранирует &, <, > для текстового узла SSML.
+        from rob_box_core.utterance import Utterance
+
+        return Utterance(text=text).ssml
     
     def extract_from_ssml(self, ssml_text: str) -> str:
         """

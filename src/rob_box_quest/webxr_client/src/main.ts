@@ -60,6 +60,15 @@ import { supervisorEffect, type FloorLabel, type SupervisorState } from "./state
 import { createPreviewAudioSink, type PreviewAudioSink } from "./ui/preview_audio_sink";
 import { createOperatorAudioSink, type OperatorAudioSink } from "./ui/operator_audio_sink";
 import {
+  createAcceptTonePlayer,
+  type AcceptTonePlayer
+} from "./ui/accept_tone";
+import {
+  parseTarsStateEvent,
+  type TarsStage,
+  type TarsStateEvent
+} from "./ui/tars_state_indicator";
+import {
   INITIAL_TTS_PICKER_STATE,
   PREVIEW_TEXT,
   newPreviewRequestId,
@@ -70,6 +79,7 @@ import {
 } from "./state/tts_picker_state";
 import type { JsonEvent, VoiceInfo, VoicePreset } from "./wire/messages";
 import type { JsonCmd } from "./wire/messages";
+import { buildVoicePipelineCmd } from "./wire/voice_pipeline_cmd";
 
 const CLIENT_VERSION = "0.1.0";
 // AV-17: subprotocol v2 по умолчанию. Если сервер на v1 — supervisor
@@ -274,35 +284,49 @@ export function bootstrap(opts: BootstrapOptions): {
   }
 
   /**
-   * Смена стиля речи / языка вывода → `set_voice` (AV-28 §P7).
+   * Шаг 4б (t_80e7aa1e, issue #1989): синхронизировать конфиг пайплайна
+   * грипа на супервизоре. Это ЕДИНСТВЕННЫЙ канал смены стиля/языка
+   * речи с панели пайплайна (ADR-0087, 2026-09-09): legacy AV-28
+   * `set_voice` cmd с payload {preset, language} удалён из ws_server
+   * вместе с подписками `/avatar/set_voice_preset|language` на
+   * супервизоре — канал был «честный no-op» после PR #2255, без
+   * владельца на `/dialogue/control`, и на каждый клик чипа
+   * отправлялся впустую.
    *
-   * ТОЛЬКО ДЛЯ AV-28 (чипы стиля/языка). НЕ для выбора голоса.
-   * Выбор голоса живёт в TTS picker'е — отдельный путь `apply` (см. блок
-   * «AV-27: TTS picker» ниже, а также `state/tts_picker_state.ts`).
+   * Что отправляется (см. buildVoicePipelineCmd): {llm_enabled, preset,
+   * language} — точно та полезная нагрузка, что парсит
+   * supervisor._on_grip_voice_pipeline. Сервер валидирует whitelist и
+   * публикует в /avatar/voice_pipeline.
    *
-   * ВАЖНО: `voice_id` здесь НЕ шлём — он всегда пустой. Сервер
-   * (ws_server.py, cmd set_voice) разводит две фичи, делящие одно имя
-   * `preset`, по ЗНАЧЕНИЮ поля: preset ∈ VOICE_PRESET_IDS (стиль речи)
-   * или наличие language → это AV-28-запрос, и `voice_id` в нём
-   * игнорируется. Отправлять сюда реальный voice_id — врать оператору:
-   * он бы увидел ack, а голос не сменился бы.
-   *
-   * Issue #2138 указывал на этот код как на источник «голос не
-   * меняется», но picker использует другой код-путь (`apply`, ниже);
-   * этот комментарий оставлен, чтобы будущий рефакторинг не свалил обе
-   * фичи в одну функцию обратно.
+   * Зовётся из всех веток onPipelineAction, где меняется любое из
+   * (stt, llm, preset, language) — чтобы супервизор всегда имел
+   * актуальный snapshot панели. До этой правки (t_80e7aa1e) канал
+   * /avatar/voice_pipeline не имел автора и супервизор сидел на default
+   * «Без стиля», поэтому грип повторял дословно при любом выборе
+   * оператора.
    */
-  function sendStyleChange(preset?: VoicePresetId, language?: VoiceLanguage): void {
+  function sendVoicePipeline(): void {
     const c = conn;
     if (!c || disconnected) return;
+    // Снимок состояния панели для buildVoicePipelineCmd:
+    //   * llm_enabled = pipelineLlmOn (true=стилизуем, false=дословно);
+    //   * preset = modeManager.snapshot().currentPreset, причём если
+    //     llm=false — preset="" (грип не стилизует, см. supervisor_node.py:359);
+    //   * language = modeManager.snapshot().currentLanguage;
+    //   * sttOn идёт только в voice_pipeline cmd как «не трогает» —
+    //     этот канал про грип, STT-ступень управляется через voice_mode.
     const snap = modeManager.snapshot();
-    c.send({
-      cmd: "set_voice",
-      ts_ms: Date.now(),
-      voice_id: "",
-      preset: preset ?? snap.currentPreset ?? DEFAULT_VOICE_PRESET,
-      language: language ?? snap.currentLanguage ?? DEFAULT_VOICE_LANGUAGE
+    const preset = pipelineLlmOn === false
+      ? ""
+      : (snap.currentPreset ?? DEFAULT_VOICE_PRESET);
+    const language = snap.currentLanguage ?? DEFAULT_VOICE_LANGUAGE;
+    const cmd = buildVoicePipelineCmd({
+      sttOn: pipelineSttOn === true,
+      llmOn: pipelineLlmOn === true,
+      preset: preset as VoicePresetId | "",
+      language: language as VoiceLanguage
     });
+    c.send(cmd);
   }
 
   /**
@@ -370,10 +394,22 @@ export function bootstrap(opts: BootstrapOptions): {
   const bridge = createCaptainBridge({
     canvas: opts.canvas,
     enableXr: true,
-    // Панель сменила стрим через меню (R10): подписываемся на новый топик
-    // и отписываемся от старого, если его больше никто не показывает.
+    // Панель сменила стрим через меню (R10, closes #2236):
+    //   1) Шлём `stream_select` — мета-команду UI: сервер проверяет, что
+    //      топик есть в registry, и возвращает `stream_select_ack` с
+    //      kind/stream_id. До этого фикса клиент только менял локальный
+    //      стор панели и подписку, а серверный обработчик висел мёртвым
+    //      (ws_server.py:2149).
+    //   2) Подписываемся на новый топик (мета-команда может вернуть
+    //      `stream_id: null`, тогда SUBSCRIBE нужен; если уже подписаны —
+    //      идемпотентно, см. ws_server._on_subscribe).
+    //   3) Отписываемся от старого, если его больше никто не показывает.
     onPanelTopicChange: (_panelId, oldTopic, newTopic) => {
       if (!conn || disconnected) return;
+      // Мета-команда: UI запросил смену активного стрима. sendCmd логирует
+      // и гасит исключение, чтобы сбой отправки не уронил локальный обмен
+      // подписками ниже.
+      sendCmd({ cmd: "stream_select", topic: newTopic, ts_ms: Date.now() });
       conn.subscribe(newTopic);
       const stillUsed = bridge.videoTopics().includes(oldTopic);
       if (!stillUsed) conn.unsubscribe(oldTopic);
@@ -406,12 +442,17 @@ export function bootstrap(opts: BootstrapOptions): {
           pipelineSttOn = !pipelineSttOn;
           bridge.voicePipeline.setSttOn(pipelineSttOn);
           conn.send({ cmd: "voice_mode", ts_ms: Date.now(), mode: voiceModeForToggles() });
+          // Шаг 4б (t_80e7aa1e): грип-пайплайн тоже должен знать про
+          // STT-тумблер. llm_enabled идёт от pipelineLlmOn, не от sttOn —
+          // см. сужение «стиль/язык грипа не зависят от STT» в buildVoicePipelineCmd.
+          sendVoicePipeline();
           return;
         }
         case "llm": {
           pipelineLlmOn = !pipelineLlmOn;
           bridge.voicePipeline.setLlmOn(pipelineLlmOn);
           conn.send({ cmd: "voice_mode", ts_ms: Date.now(), mode: voiceModeForToggles() });
+          sendVoicePipeline();
           return;
         }
         case "tts": {
@@ -434,32 +475,28 @@ export function bootstrap(opts: BootstrapOptions): {
           pipelineLlmOn = false;
           bridge.voicePipeline.setLlmOn(false);
           conn.send({ cmd: "voice_mode", ts_ms: Date.now(), mode: voiceModeForToggles() });
+          // Шаг 4б: уведомить супервизор, что пайплайн переведён в «Без стиля».
+          sendVoicePipeline();
           return;
         }
         case "preset": {
           bridge.voicePipeline.setCurrentPreset(action.preset);
           modeManager.setCurrentPreset(action.preset);
           ensureLlmFormalize();
-          try {
-            sendStyleChange(action.preset);
-          } catch (err) {
-            // eslint-disable-next-line no-console
-            console.warn("[quest] set_voice preset send failed:", err);
-            bridge.voicePipeline.setCurrentPreset(modeManager.snapshot().currentPreset);
-          }
+          // Шаг 4б: новый пресет → новый llm_enabled=true + preset=<X>.
+          // ADR-0087: legacy `sendStyleChange` удалён — `voice_pipeline`
+          // единственный канал смены стиля/языка с панели.
+          sendVoicePipeline();
           return;
         }
         case "lang": {
           bridge.voicePipeline.setCurrentLanguage(action.language);
           modeManager.setCurrentLanguage(action.language);
           ensureLlmFormalize();
-          try {
-            sendStyleChange(undefined, action.language);
-          } catch (err) {
-            // eslint-disable-next-line no-console
-            console.warn("[quest] set_voice lang send failed:", err);
-            bridge.voicePipeline.setCurrentLanguage(modeManager.snapshot().currentLanguage);
-          }
+          // Шаг 4б: новый язык → новый language=<Y>, llm_enabled/preset
+          // не трогаем. ADR-0087: legacy `sendStyleChange` удалён —
+          // `voice_pipeline` единственный канал смены стиля/языка.
+          sendVoicePipeline();
           return;
         }
       }
@@ -712,10 +749,10 @@ export function bootstrap(opts: BootstrapOptions): {
   // preview_voice_audio+BINARY_FRAME / preview_voice_done / _error.
   //
   // ВАЖНО: этот код-путь — единственный, через который оператор
-  // меняет голос. Стиль речи/язык меняется через sendStyleChange (AV-28)
-  // и намеренно НЕ здесь: сервер разводит две фичи по полю `preset`, и
-  // смешение в одной функции вернёт баг #2138. См. комментарий у
-  // sendStyleChange и ADR-0073.
+  // меняет голос (AV-27 picker, ``set_voice`` cmd). Стиль речи/язык
+  // меняется через ``voice_pipeline`` cmd (AV-28 §P7, ADR-0087) — тот
+  // путь живёт в `sendVoicePipeline()` рядом, не здесь. Смешение двух
+  // фич в одной функции вернёт баг #2138. См. ADR-0073.
 
   let ttsState: TtsPickerState = INITIAL_TTS_PICKER_STATE;
   const previewSink: PreviewAudioSink = createPreviewAudioSink();
@@ -724,6 +761,35 @@ export function bootstrap(opts: BootstrapOptions): {
   // ``stop()`` зовётся на voice_ptt_start ДО отправки на сервер
   // (оператор должен услышать тишину раньше, чем сервер обработает STOP).
   const operatorAudioSink: OperatorAudioSink = createOperatorAudioSink();
+  // ADR-0078 / issue #2162 — локальный акцепт-тон в шлеме. Шифу слышит
+  // короткий «тик» в момент, когда STT подтвердил wake-word (стадия
+  // accepted), ДО голоса ТАРС.
+  const acceptTonePlayer: AcceptTonePlayer = createAcceptTonePlayer();
+  // ADR-0078 §3.6 — текущая стадия tars_state (для HUD/логов).
+  // currentTarsStage читается в UI-логике (case "operator_tts_audio":
+  // если ещё не speaking — выставить), lastTarsEvent — последний полный
+  // event для отладки (можно экспортировать в window.__tars в e2e-build).
+  let currentTarsStage: TarsStage = "idle";
+  let lastTarsEvent: TarsStateEvent | null = null;
+  // Диагностика 2026-09-08 (ТАРС не слышно в шлеме): request_id последней
+  // пришедшей operator_tts_audio меты. BINARY_FRAME с байтами этого чанка
+  // приходит ОТДЕЛЬНЫМ WS-сообщением ПОСЛЕ меты (ws_server.deliver_audio
+  // шлёт meta через _schedule_ws_send, потом bytes через
+  // _schedule_ws_send_binary — см. ws_server.py:981-983). play() поэтому
+  // обязан вызываться ПОСЛЕ onChunk() (в onBinaryFrame), а не сразу на
+  // мете — иначе entry.bytes ещё 0, play() молча удаляет pending-запись и
+  // сбрасывает currentRequestId, и когда бинарный фрейм наконец приходит,
+  // onChunk() находит currentRequestId===null и роняет чанк без единого
+  // лога. Так ронялся КАЖДЫЙ чанк КАЖДОЙ реплики (полная тишина в шлеме,
+  // хотя accept-тон — независимый локальный синтез — слышен нормально).
+  let lastOperatorTtsRequestId: string | null = null;
+  function logLastTarsEvent(): void {
+    // no-op в проде; в dev-build можно подвесить на window.
+    if (lastTarsEvent) {
+      // eslint-disable-next-line no-console
+      console.debug("[quest] tars_state:", lastTarsEvent.stage);
+    }
+  }
   // Первая отрисовка: меню скрыто, но текстуры готовы — при открытии не
   // будет кадра с пустыми плашками.
   bridge.renderTtsPicker(ttsState);
@@ -890,11 +956,14 @@ export function bootstrap(opts: BootstrapOptions): {
         return true;
       }
       case "voice_set_ack": {
-        // Один тип события обслуживает обе фичи (см. sendStyleChange):
-        //   • AV-27 (picker) — ack с `voice_id`;
-        //   • AV-28 (стиль/язык) — ack с `preset`/`language`, БЕЗ voice_id.
-        // Раньше обработчик безусловно писал `e.voice_id` в mode_manager, и
-        // style-ack затирал активный голос `undefined`. Разводим явно.
+        // AV-27 picker (set_voice cmd) — единственный маршрут этого
+        // ack после ADR-0087. AV-28 style/language ветка удалена, и
+        // voice_set_ack приходит ТОЛЬКО с `voice_id` (style-ack'ов
+        // больше нет в протоколе). Старый комментарий про «обе фичи»
+        // оставлен в ADR-0087 §2.1 как точка отсчёта для регрессии.
+        // До правки обработчик безусловно писал `e.voice_id` в
+        // mode_manager, и style-ack затирал активный голос `undefined`;
+        // теперь это уже невозможно.
         const e = ev as {
           voice_id?: string;
           preset?: VoicePreset;
@@ -909,6 +978,9 @@ export function bootstrap(opts: BootstrapOptions): {
           // без этого applied-голос был виден только после нового voice_list.
           bridge.voicePipeline.setCurrentVoice(voiceId);
         }
+        // `preset` / `language` в voice_set_ack больше не приходят
+        // (после ADR-0087 AV-28 ветка удалена), но если бэкенд
+        // когда-то вернёт эти поля — продолжаем обновлять кеш.
         if (e.preset) {
           ackedPreset = e.preset;
           modeManager.setCurrentPreset(e.preset);
@@ -978,24 +1050,98 @@ export function bootstrap(opts: BootstrapOptions): {
         dispatchTts({ kind: "preview_error", requestId: e.request_id, reason: e.reason });
         return true;
       }
-      // ADR-0055 / issue #1993 — обратный канал ТАРС в шлем. Те же
-      // события, что у preview, но без UI-pipeline: чанки в
-      // operatorAudioSink, на _done → play(), на _error → drop. _done
-      // и _error сейчас не публикуются сервером (ADR-0055 §ws_server),
-      // но client-типы уже заведены — обрабатываем на всякий случай.
+      // ADR-0055 / issue #1993 + ADR-0078 — обратный канал ТАРС в шлем.
+      // Каждый чанк operator_tts_audio САМОДОСТАТОЧНЫЙ: играется сразу по
+      // приходу байт (ставя в очередь), НЕ ждём operator_tts_done.
+      // sample_rate нужен ручной сборке AudioBuffer из int16-LE PCM.
+      // operator_tts_done/error оставлены как flush/сброс (forward-compat).
       case "operator_tts_audio": {
-        const e = ev as { request_id: string; content_type?: string; seq: number; total: number };
-        operatorAudioSink.onMeta(e.request_id, e.content_type ?? "audio/pcm", e.seq, e.total);
+        const e = ev as {
+          request_id: string;
+          content_type?: string;
+          sample_rate?: number;
+          seq: number;
+          total: number;
+        };
+        operatorAudioSink.onMeta(
+          e.request_id,
+          e.content_type ?? "audio/pcm",
+          e.seq,
+          e.total,
+          e.sample_rate
+        );
+        // ADR-0078 §3.1: запускаем ПОСЛЕ прихода байт, не здесь — см.
+        // onBinaryFrame ниже и комментарий у lastOperatorTtsRequestId.
+        // Байты этого чанка идут отдельным BINARY_FRAME ПОСЛЕ этой меты.
+        lastOperatorTtsRequestId = e.request_id;
+        // ADR-0078 §3.6: speaking-стадия tars_state на ПЕРВОМ чанке
+        // реплики. Если стадия уже speaking/accepted — не обновляем.
+        if (currentTarsStage !== "speaking") {
+          currentTarsStage = "speaking";
+          lastTarsEvent = {
+            stage: "speaking",
+            requestId: e.request_id,
+            tsMs: Date.now()
+          };
+        }
         return true;
       }
       case "operator_tts_done": {
         const e = ev as { request_id: string };
-        void operatorAudioSink.play(e.request_id);
+        // Раньше тут вызывался play() — теперь чанки играются сами по
+        // приходу. Метод play() уже мог быть вызван; тут только синхро-
+        // низируем tars_state→idle (после последнего чанка опера услышала
+        // ответ полностью).
+        // NB: реально сервер НЕ шлёт done в норме — этот case зарезерви-
+        // рован для forward-compat и для e2e-тестов.
+        operatorAudioSink.stop();
+        if (currentTarsStage !== "idle") {
+          currentTarsStage = "idle";
+          lastTarsEvent = {
+            stage: "idle",
+            requestId: e.request_id,
+            tsMs: Date.now()
+          };
+        }
         return true;
       }
       case "operator_tts_error": {
         const e = ev as { request_id: string; reason: string };
         operatorAudioSink.error(e.reason);
+        if (currentTarsStage !== "idle") {
+          currentTarsStage = "idle";
+          lastTarsEvent = {
+            stage: "idle",
+            requestId: e.request_id,
+            tsMs: Date.now()
+          };
+        }
+        return true;
+      }
+      case "tars_state": {
+        // ADR-0078 §3.6 — стадии accepted/thinking/speaking/idle.
+        const parsed = parseTarsStateEvent(ev);
+        if (!parsed) return true;
+        currentTarsStage = parsed.stage;
+        lastTarsEvent = parsed;
+        if (parsed.stage === "accepted") {
+          // Короткий «тик» в шлеме — Шифу слышит, что wake принят.
+          void acceptTonePlayer.play();
+        }
+        // UI-индикация: setStreaming(true) на стадии speaking делает
+        // «мигание» в TARS1-панели, чтобы Шифу видел «ТАРС говорит».
+        // idle — гасит. Это НЕ новый UI, переиспользуем существующий
+        // поток (см. tars1_text_panel.ts). accepted/thinking — тосты.
+        if (parsed.stage === "speaking") {
+          bridge.tars1Panel.setStreaming(true);
+        } else if (parsed.stage === "idle") {
+          bridge.tars1Panel.setStreaming(false);
+        } else if (parsed.stage === "accepted") {
+          toast.show("✓ ТАРС принял", { level: "info", autoHideMs: 2000 });
+        } else if (parsed.stage === "thinking") {
+          toast.show("… ТАРС думает", { level: "info", autoHideMs: 4000 });
+        }
+        logLastTarsEvent();
         return true;
       }
       default:
@@ -1103,6 +1249,13 @@ export function bootstrap(opts: BootstrapOptions): {
             // Сервер ответит JSON_EVENT{type:"voice_list"} (voice_id+display_name)
             // и/или {type:"voice_presets"} (список пресетов+языков+дефолты).
             conn!.send({ cmd: "list_voices", ts_ms: Date.now() });
+            // Шаг 4б (t_80e7aa1e): первичная синхронизация конфига
+            // пайплайна грипа с супервизором. До этой правки канал
+            // /avatar/voice_pipeline не имел автора, и супервизор сидел
+            // на default «Без стиля» — грип повторял дословно при любом
+            // выборе оператора (см. карточку t_80e7aa1e). После
+            // подключения шлём текущее состояние панели.
+            sendVoicePipeline();
             opts.pinOverlay.classList.add("pin-overlay--hidden");
           } else if (state === "auth_failed") {
             setStatus("WRONG PIN", "lost");
@@ -1187,7 +1340,14 @@ export function bootstrap(opts: BootstrapOptions): {
           // чанки просто отбрасываются (sink.onChunk вернёт false).
           if (streamId === 0) {
             previewSink.onChunk(payload);
-            operatorAudioSink.onChunk(payload);
+            const operatorConsumed = operatorAudioSink.onChunk(payload);
+            // Диагностика 2026-09-08: play() зовём ТОЛЬКО теперь, когда
+            // байты этого чанка реально накоплены (см. комментарий у
+            // lastOperatorTtsRequestId выше) — раньше play() звался на
+            // мете, ДО этого onChunk, и ронял чанк молча.
+            if (operatorConsumed && lastOperatorTtsRequestId !== null) {
+              void operatorAudioSink.play(lastOperatorTtsRequestId);
+            }
             return;
           }
           const topic = conn!.getTopicForStream(streamId);
@@ -1348,6 +1508,60 @@ export function bootstrap(opts: BootstrapOptions): {
             );
             return;
           }
+          // Шаг 4б (t_80e7aa1e): подтверждение конфига пайплайна грипа.
+          // ack → синхронизируем modeManager/UI с тем, что супервизор
+          // реально применил (полезно, если сервер дропнул/изменил поля).
+          if (type === "voice_pipeline_ack") {
+            const ack = event as {
+              llm_enabled?: boolean;
+              preset?: string;
+              language?: string;
+            };
+            // llm_enabled false → панель должна показать «Без стиля».
+            // Меняем только LLM-тумблер; preset/language обрабатываются
+            // симметрично voice_set_ack выше.
+            if (typeof ack.llm_enabled === "boolean") {
+              pipelineLlmOn = ack.llm_enabled;
+              bridge.voicePipeline.setLlmOn(ack.llm_enabled);
+            }
+            // preset: только если пришёл whitelist-валидный (пустая строка
+            // для «Без стиля» — допустима).
+            if (typeof ack.preset === "string") {
+              const stylePreset =
+                ack.preset === "" || (PRESET_ORDER as readonly string[]).includes(ack.preset)
+                  ? (ack.preset as "" | VoicePresetId)
+                  : null;
+              if (stylePreset !== null) {
+                modeManager.setCurrentPreset(stylePreset as VoicePreset);
+                bridge.voicePipeline.setCurrentPreset(stylePreset as VoicePreset);
+              }
+            }
+            if (typeof ack.language === "string") {
+              modeManager.setCurrentLanguage(ack.language as VoiceLanguage);
+              bridge.voicePipeline.setCurrentLanguage(ack.language as VoiceLanguage);
+            }
+            return;
+          }
+          // Шаг 4б: сервер отказал в конфиге пайплайна → откатываем
+          // оптимистичный апдейт UI к последнему snapshot'у modeManager.
+          // Это симметрично voice_set_nack (см. блок выше).
+          if (type === "voice_pipeline_nack") {
+            const nack = event as { reason?: string };
+            // eslint-disable-next-line no-console
+            console.warn(
+              "[quest] voice_pipeline_nack:",
+              nack.reason ?? "(no reason)"
+            );
+            const snap = modeManager.snapshot();
+            bridge.voicePipeline.setCurrentPreset(snap.currentPreset);
+            bridge.voicePipeline.setCurrentLanguage(snap.currentLanguage);
+            bridge.voicePipeline.setLlmOn(pipelineLlmOn);
+            errorOverlay.show(
+              "Не удалось обновить пайплайн",
+              nack.reason ?? "Сервер отклонил запрос"
+            );
+            return;
+          }
           // AV-19: JSON_EVENT{type:"floor_lost"} → мгновенный DISARM.
           if ((event as { type?: string }).type === "floor_lost") {
             fsm.setHasFloor(false);
@@ -1392,6 +1606,20 @@ export function bootstrap(opts: BootstrapOptions): {
             } else {
               bridge.tars2Panel.setState("error");
             }
+            return;
+          }
+          // issue #2184 — TARS 2 panel DATA: ряды точек из Prometheus или
+          // строки Loki. Приходит следом за tars_panel_url на тот же
+          // tool call и перекрывает его: setPanelData рисует настоящий
+          // график, а не host/path ссылки. Формат — messages.ts,
+          // {type:"tars_panel_data", status, query, note, summary,
+          //  series, lines, available, url, error, ts_ms}.
+          if ((event as { type?: string }).type === "tars_panel_data") {
+            bridge.tars2Panel.setPanelData(
+              event as unknown as Parameters<
+                typeof bridge.tars2Panel.setPanelData
+              >[0]
+            );
             return;
           }
           // AV-26 / R7: robot_alert от сервера → toast + HUD-метка.
@@ -1714,6 +1942,10 @@ export function bootstrap(opts: BootstrapOptions): {
       clearInterval(utteranceTicker);
       clearApplyTimeout();
       previewSink.dispose();
+      // ADR-0078: operatorAudioSink.dispose() теперь закрывает AudioContext
+      // (раньше не закрывался — утечка контекста на каждом reconnect'е).
+      operatorAudioSink.dispose();
+      acceptTonePlayer.dispose();
       conn?.close();
       bridge.dispose();
       // Phase 2.3 overlays cleanup.

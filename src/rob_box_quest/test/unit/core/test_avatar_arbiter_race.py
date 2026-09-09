@@ -33,6 +33,7 @@ from rob_box_quest.core.floor import (
     AvatarFloorSnapshot,
     AvatarStateFloorCache,
     FloorHolder,
+    make_server_client_id,
 )
 
 
@@ -46,6 +47,10 @@ def test_two_clients_compete_only_one_wins():
     с разными session_id (без threading — клиент однопоточный).
     Контракт ADR-0051 §2.2: ``_floor_holder`` после двух acquire —
     ровно один из session_id, второй получает ``granted=False``.
+
+    issue #2190 (voice-vr 05): ``_floor_holder`` теперь хранит
+    ``server_client_id`` (``"quest:<uuid>"``), а не голый session_id.
+    Это единый формат во всех точках (gate/heartbeat/STATE_UPDATE).
     """
     cache = AvatarStateFloorCache()
     arbiter = LocalAvatarArbiterClient(cache=cache)
@@ -53,20 +58,20 @@ def test_two_clients_compete_only_one_wins():
     # Клиент A выигрывает.
     res_a = arbiter.try_acquire_floor(session_id="sessionA", client_id="questA")
     assert res_a.granted is True
-    assert res_a.held_by == "sessionA"
+    assert res_a.held_by == make_server_client_id("sessionA")
     assert res_a.reason in ("granted", "already_held")
 
     # Клиент B — отказ, держит A.
     res_b = arbiter.try_acquire_floor(session_id="sessionB", client_id="questB")
     assert res_b.granted is False
-    assert res_b.held_by == "sessionA"
+    assert res_b.held_by == make_server_client_id("sessionA")
     assert res_b.reason == "held_by_other"
 
     # Кэш зеркалит фактическое состояние — ровно один holder.
-    assert arbiter.floor_holder == "sessionA"
-    assert cache.holder == "sessionA"
-    assert cache.is_held_by("sessionA") is True
-    assert cache.is_held_by("sessionB") is False
+    assert arbiter.floor_holder == make_server_client_id("sessionA")
+    assert cache.holder == make_server_client_id("sessionA")
+    assert cache.is_held_by(make_server_client_id("sessionA")) is True
+    assert cache.is_held_by(make_server_client_id("sessionB")) is False
 
 
 def test_re_acquire_same_session_is_idempotent():
@@ -85,7 +90,7 @@ def test_re_acquire_same_session_is_idempotent():
     assert first.granted is True and first.reason == "granted"
     assert second.granted is True and second.reason == "already_held"
     # Floor не ушёл в чужие руки.
-    assert arbiter.floor_holder == "sessionA"
+    assert arbiter.floor_holder == make_server_client_id("sessionA")
 
 
 def test_release_then_other_can_acquire():
@@ -106,8 +111,8 @@ def test_release_then_other_can_acquire():
     # Теперь B может занять.
     res = arbiter.try_acquire_floor(session_id="sessionB", client_id="questB")
     assert res.granted is True
-    assert arbiter.floor_holder == "sessionB"
-    assert cache.holder == "sessionB"
+    assert arbiter.floor_holder == make_server_client_id("sessionB")
+    assert cache.holder == make_server_client_id("sessionB")
 
 
 def test_release_other_session_is_no_op():
@@ -125,8 +130,8 @@ def test_release_other_session_is_no_op():
     # B пытается освободить A — no-op.
     assert arbiter.release_floor("sessionB") is False
     # Floor всё ещё у A.
-    assert arbiter.floor_holder == "sessionA"
-    assert cache.holder == "sessionA"
+    assert arbiter.floor_holder == make_server_client_id("sessionA")
+    assert cache.holder == make_server_client_id("sessionA")
 
 
 def test_force_release_for_session_releases_both_floors():
@@ -140,7 +145,7 @@ def test_force_release_for_session_releases_both_floors():
 
     arbiter.try_acquire_floor(session_id="sessionA", client_id="questA")
     arbiter.try_acquire_voice(session_id="sessionA", client_id="questA")
-    assert arbiter.floor_holder == "sessionA"
+    assert arbiter.floor_holder == make_server_client_id("sessionA")
     assert arbiter.voice_holder == "sessionA"
 
     released = arbiter.force_release_for("sessionA")
@@ -160,7 +165,7 @@ def test_force_release_for_other_session_no_op():
     arbiter.try_acquire_floor(session_id="sessionA", client_id="questA")
     released = arbiter.force_release_for("sessionB")
     assert released is False
-    assert arbiter.floor_holder == "sessionA"
+    assert arbiter.floor_holder == make_server_client_id("sessionA")
 
 
 # === Voice floor independent of teleop ======================================
@@ -184,9 +189,9 @@ def test_voice_and_teleop_independent():
     res_voice = arbiter.try_acquire_voice(session_id="sessionB", client_id="telegram")
 
     assert res_voice.granted is True
-    assert arbiter.floor_holder == "sessionA"
+    assert arbiter.floor_holder == make_server_client_id("sessionA")
     assert arbiter.voice_holder == "sessionB"
-    assert cache.holder == "sessionA"
+    assert cache.holder == make_server_client_id("sessionA")
     assert cache.voice_holder == "sessionB"
 
 
@@ -227,7 +232,7 @@ def test_cache_mirrors_after_each_mutation():
     arbiter = LocalAvatarArbiterClient(cache=cache)
 
     arbiter.try_acquire_floor(session_id="sessionA", client_id="questA")
-    assert cache.holder == "sessionA"
+    assert cache.holder == make_server_client_id("sessionA")
 
     arbiter.release_floor("sessionA")
     assert cache.holder is None

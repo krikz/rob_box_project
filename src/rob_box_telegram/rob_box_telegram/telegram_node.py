@@ -34,6 +34,9 @@ from rob_box_core.avatar_command import (
     encode_command,
     make_telegram_client_id,
 )
+# voice-vr 12 (issue #2197, ADR-0080 §1.3 / §2.3): единый сборщик SSML.
+from rob_box_core.utterance import Sink, Utterance
+
 from .camera_cache import CameraCache
 from .handlers import commands as _cmds
 from .handlers.callbacks import callback_handler
@@ -349,12 +352,13 @@ class TelegramNode(Node):
         if is_metrics_enabled():
             record_telegram_message("out", message_type="voice")
         m = String()
+        # voice-vr 12 (issue #2197): единый сборщик SSML — ``Utterance``.
         m.data = json.dumps(
-            {
-                "ssml": f"<speak>{text}</speak>",
-                "speech_id": str(uuid.uuid4()),
-                "emotion": "neutral",
-            },
+            Utterance(
+                text=text,
+                sink=Sink.SPEAKERS,
+                extra={"speech_id": str(uuid.uuid4())},
+            ).to_request(),
             ensure_ascii=False,
         )
         self._response_pub.publish(m)
@@ -370,12 +374,13 @@ class TelegramNode(Node):
 
         def _do_publish() -> None:
             m = String()
+            # voice-vr 12 (issue #2197): единый сборщик SSML — ``Utterance``.
             m.data = json.dumps(
-                {
-                    "ssml": f"<speak>{text}</speak>",
-                    "speech_id": str(uuid.uuid4()),
-                    "emotion": "neutral",
-                },
+                Utterance(
+                    text=text,
+                    sink=Sink.SPEAKERS,
+                    extra={"speech_id": str(uuid.uuid4())},
+                ).to_request(),
                 ensure_ascii=False,
             )
             # AV-10: в active-режиме супервизор сам перешлёт

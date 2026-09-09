@@ -458,7 +458,7 @@ class TestCreateServiceSrvTypeContract(unittest.TestCase):
         # Тестируем «сырой» mock-rclpy FakeNode.create_service напрямую —
         # это именно та вальва, которую мы добавили в conftest. ``__init__``
         # ноды тут не нужен, нас интересует контракт mock-а.
-        from test.unit.conftest import _install_ros_mocks  # noqa: F401, PLC0415
+        _load_conftest_mocks()  # issue #2232: см. хелпер внизу файла
         from rclpy.node import Node as _FakeNode  # noqa: PLC0415
 
         node = _FakeNode("__test__")
@@ -488,7 +488,7 @@ class TestCreateServiceSrvTypeContract(unittest.TestCase):
         Проверяем именно Response, чтобы guard не пропустил «обратную»
         опечатку.
         """
-        from test.unit.conftest import _install_ros_mocks  # noqa: F401, PLC0415
+        _load_conftest_mocks()  # issue #2232: см. хелпер внизу файла
         from rclpy.node import Node as _FakeNode  # noqa: PLC0415
 
         node = _FakeNode("__test__")
@@ -517,7 +517,7 @@ class TestCreateServiceSrvTypeContract(unittest.TestCase):
         убеждаемся, что валидация не over-rejects и нормальный путь
         всё ещё работает.
         """
-        from test.unit.conftest import _install_ros_mocks  # noqa: F401, PLC0415
+        _load_conftest_mocks()  # issue #2232: см. хелпер внизу файла
         from rclpy.node import Node as _FakeNode  # noqa: PLC0415
 
         node = _FakeNode("__test__")
@@ -1311,9 +1311,202 @@ class TestAvatarArbiterTeleopHeartbeat(unittest.TestCase):
         self.node._on_teleop_heartbeat(msg)
 
 
-if __name__ == "__main__":
-    unittest.main()
+# ════════════════════════════════════════════════════════════════════════
+# ADR-0081 / voice-vr 06.5 / #2191 — /teleop_lock (twist_mux bridge)
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestTeleopLockPublishers(unittest.TestCase):
+    """ADR-0081 R1/R3 — avatar_arbiter публикует twist_mux-lock /teleop_lock.
+
+    Покрывает:
+    - наличие publisher-а на /teleop_lock (Bool, latched);
+    - переход floor acquired → released → expired, и как меняется
+      публикация;
+    - публикацию БЕЗ de-dup: значение уходит в топик каждый тик
+      безусловно (ADR-0081 §5.4 — иначе одиночную публикацию по фронту
+      затирает чужой публикатор на том же топике за 50 мс).
+
+    Watchdog-а (`/teleop_lock_watchdog`) НЕТ — ADR-0081 Q2/R2 отменяет
+    его: аппаратура(100) выше lock-а(90), залипший lock при падении
+    авbiter-а не опасен, авто-разблокировка не нужна.
+    """
+
+    def setUp(self) -> None:
+        self.node = AvatarArbiter()
+
+    def tearDown(self) -> None:
+        self.node.destroy_node()
+
+    # ── структура: publisher зарегистрирован в __init__ ────────────────
+    def test_teleop_lock_publisher_exists(self) -> None:
+        """ADR-0081 R1: /teleop_lock publisher создан в __init__."""
+        self.assertIn("/teleop_lock", self.node._publishers)
+
+    def test_teleop_lock_publish_timer_registered(self) -> None:
+        """20 Гц-таймер на lock-топик зарегистрирован."""
+        timer_periods = [t.period for t in self.node._timers]
+        # Период из TELEOP_LOCK_PUBLISH_PERIOD_S (0.05 с).
+        self.assertIn(0.05, timer_periods)
+
+    def test_teleop_lock_uses_latched_qos(self) -> None:
+        """Latched (transient_local) QoS — иначе twist_mux при реконнекте
+        может пропустить True и потерять блокировку (false negative)."""
+        pub = self.node._publishers["/teleop_lock"]
+        # mock-rclpy conftest хранит qos через ``QoSProfile.__init__``;
+        # проверяем, что durability был transient_local.
+        self.assertEqual(getattr(pub, "durability", None), "transient_local")
+
+    # ── happy path: floor acquired → release ─────────────────────────
+    def test_acquire_releases_publishes_true_then_false(self) -> None:
+        """Переход floor acquired → released отражается в /teleop_lock."""
+        from rob_box_supervisor.core import Floor as LockFloor
+
+        # Базовое состояние: floor свободен. Первый тик публикует False
+        # (явное «нет floor-а»).
+        self.node._publish_teleop_locks()
+        pub = self.node._publishers["/teleop_lock"]
+        self.assertEqual(len(pub.published), 1)
+        self.assertFalse(pub.published[0].data)
+
+        # acquire → True в /teleop_lock.
+        self.node._lock_manager.acquire("quest", LockFloor.TELEOP)
+        self.node._publish_teleop_locks()
+        self.assertEqual(len(pub.published), 2)
+        self.assertTrue(pub.published[1].data)
+
+        # release → False снова.
+        self.node._lock_manager.release("quest", LockFloor.TELEOP)
+        self.node._publish_teleop_locks()
+        self.assertEqual(len(pub.published), 3)
+        self.assertFalse(pub.published[2].data)
+
+    # ── dead-man: floor expired → /teleop_lock = False ───────────────
+    def test_expired_floor_publishes_false(self) -> None:
+        """Dead-man trip (heartbeat перестал приходить) → False в lock.
+
+        ADR-0081: holder() сам учитывает dead-man (LockManager.holder()
+        возвращает None и обнуляет state, если с последнего heartbeat
+        прошло > timeout). Значит после ``_check_floor_expiry`` —
+        /teleop_lock автоматически становится False.
+        """
+        from rob_box_supervisor.core import Floor as LockFloor
+
+        # Управляем часами через подменяемый clock (AV-13), чтобы
+        # воспроизвести dead-man в тесте.
+        clock = {"t": 1000}
+
+        def _fake_clock() -> int:
+            return clock["t"]
+
+        self.node._now_ms = _fake_clock
+        self.node._lock_manager = type(self.node._lock_manager)(  # noqa: PLC0415
+            clock=_fake_clock, timeout_ms=500
+        )
+
+        # acquire + heartbeat в момент t=1000.
+        self.node._lock_manager.acquire("quest", LockFloor.TELEOP, now_ms=1000)
+        self.node._lock_manager.heartbeat("quest", LockFloor.TELEOP, now_ms=1000)
+        self.node._publish_teleop_locks()
+        pub = self.node._publishers["/teleop_lock"]
+        self.assertTrue(pub.published[-1].data)
+
+        # Часы прыгают за 500 мс — heartbeat не приходил, floor истёк.
+        clock["t"] = 1600
+        # Принудительно трипаем через force_expire (как watcher делает в проде).
+        self.node._lock_manager.force_expire(LockFloor.TELEOP, now_ms=1600)
+        self.node._publish_teleop_locks()
+        self.assertFalse(pub.published[-1].data)
+
+    # ── БЕЗ de-dup: значение публикуется каждый тик безусловно ────────
+    def test_publishes_every_tick_even_when_state_unchanged(self) -> None:
+        """ADR-0081 §5.4: де-дупликация публикаций противопоказана для
+        sticky-топика. У соседнего /joystick_lock уже есть владелец
+        (joystick_control_node), публикующий на 20 Гц КАЖДЫЙ тик, а не
+        по фронту — одиночная публикация затирается чужим публикатором
+        на том же топике за 50 мс. За N тиков без изменения floor в
+        топик должно уйти ровно N сообщений (не 1).
+        """
+        from rob_box_supervisor.core import Floor as LockFloor
+
+        pub = self.node._publishers["/teleop_lock"]
+
+        # Floor свободен, состояние не меняется — 5 тиков подряд.
+        n_ticks = 5
+        for _ in range(n_ticks):
+            self.node._publish_teleop_locks()
+        self.assertEqual(len(pub.published), n_ticks)
+        self.assertTrue(all(not m.data for m in pub.published))
+
+        # То же самое с floor занятым (True не меняется) — снова N сообщений.
+        self.node._lock_manager.acquire("quest", LockFloor.TELEOP)
+        before = len(pub.published)
+        for _ in range(n_ticks):
+            self.node._publish_teleop_locks()
+        self.assertEqual(len(pub.published), before + n_ticks)
+        self.assertTrue(all(m.data for m in pub.published[before:]))
+
+    # ── FSM-переход отпускает floor → /teleop_lock = False ───────────
+    def test_mode_transition_releases_floor_and_lock(self) -> None:
+        """Если FSM-переход (mixed → off) освобождает floor в LockManager —
+        /teleop_lock переходит в False. Источник истины един (LockManager),
+        отдельной синхронизации lock-ов не нужно.
+        """
+        from rob_box_supervisor.core import Floor as LockFloor
+
+        self.node._lock_manager.acquire("quest", LockFloor.TELEOP)
+        self.node._publish_teleop_locks()  # → True
+        teleop_pub = self.node._publishers["/teleop_lock"]
+        self.assertTrue(teleop_pub.published[-1].data)
+
+        # Имитируем то, что делает _release_lock_manager_floor после FSM.
+        self.node._release_lock_manager_floor("quest", LockFloor.TELEOP)
+        self.node._publish_teleop_locks()
+        self.assertFalse(teleop_pub.published[-1].data)
+
+    # ── guard: ошибка в holder() не валит таймер ─────────────────────
+    def test_publish_survives_lock_manager_error(self) -> None:
+        """Если LockManager.holder() бросает исключение — таймер не падает,
+        пишет WARN и пропускает тик. Иначе 20 Гц-таймер стал бы опасен
+        для ноды (LOOP crash).
+        """
+        from unittest.mock import patch
+
+        with patch.object(
+            self.node._lock_manager, "holder", side_effect=RuntimeError("boom")
+        ):
+            # Не должно быть исключения наружу.
+            try:
+                self.node._publish_teleop_locks()
+            except RuntimeError:
+                self.fail("publish must not propagate exceptions out of timer")
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# --- issue #2232 -------------------------------------------------------------
+def _load_conftest_mocks() -> None:
+    """Поднять ROS-моки из соседнего ``conftest.py`` по абсолютному пути.
+
+    Раньше здесь стояло ``from test.unit.conftest import _install_ros_mocks``.
+    Абсолютный импорт ``test.unit`` разрешается только если корень пакета
+    оказался на ``sys.path`` — так бывает при локальном прогоне из корня
+    репозитория и НЕ бывает в CI, где pytest стартует из каталога пакета.
+    Результат: три теста падали с ``ModuleNotFoundError: No module named
+    'test.unit'``, и это не замечали, потому что CI не запускал
+    rob_box_supervisor вообще (#2232).
+
+    Грузим conftest по пути от ``__file__`` — работает в обоих раскладах.
+    """
+    import importlib.util
+    from pathlib import Path
+
+    conftest_path = Path(__file__).resolve().parent / "conftest.py"
+    spec = importlib.util.spec_from_file_location(
+        "_supervisor_unit_conftest", conftest_path
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module._install_ros_mocks()

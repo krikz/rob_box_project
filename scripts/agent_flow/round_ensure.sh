@@ -15,9 +15,19 @@
 #   повторяй позже (дождись idle ротации). Никогда не создавай round вручную
 #   мимо этого скрипта.
 #
-# Usage:
+# Использование:
 #   round_ensure.sh            # печатает z-{e2e}/test-round-N (создаёт если нет)
 #   round_ensure.sh --wait N   # ждать до N секунд освобождения flock
+#
+# Ретро 09.09 (issue #2299): round_ensure.sh — ТОНКАЯ ОБЁРТКА над
+# round_formation.sh (общий модуль формирования round-ветки, см. ADR-0075
+# с defer-семантикой). Скрипт владеет:
+#   - flock + --wait N (как у agent-flow-e2e-process.sh)
+#   - env-загрузчиком profile .env
+#   - печатью ROUND_BRANCH
+# Counter записывается через rf_persist_counter_if_real_round / ghost-маркер
+# через rf_ghost_round_log_and_metric — тем же каноном, что и автоматика,
+# чтобы счётчик не убегал на ручных прогонах.
 #
 # Env (как у agent-flow-e2e-process.sh): GH_REPO, REPO_DIR, KANBAN_BOARD,
 # HERMES_HOME, LOCK_FILE (default /tmp/agent-flow-e2e-process.lock).
@@ -77,72 +87,52 @@ if ! flock -n 9; then
     fi
 fi
 
-# --- round number: max(N) на remote + 1 (персистентный счётчик) -------------
-# Ретро 12.08 (t_bff6eccf): cleanup удаляет stale round-ветки → max по remote
-# сбрасывается на 1. Счётчик храним в файле состояния — нумерация переживает
-# cleanup (тот же файл, что у agent-flow-e2e-process.sh).
-TEST_ROUND_PREFIX='z-{e2e}/test-round-'
-ROUND_COUNTER_FILE="${ROUND_COUNTER_FILE:-${HERMES_HOME}/state/agent-flow-e2e-round-counter}"
-list="$(git -C "$REPO_DIR" ls-remote --heads origin "${TEST_ROUND_PREFIX}*" 2>/dev/null \
-    | awk '{print $2}' | sed "s#refs/heads/${TEST_ROUND_PREFIX}##" || true)"
-if [ -z "$list" ]; then
-    max_n=0
-else
-    max_n="$(printf '%s\n' "$list" | sort -n | tail -n1)"
-fi
-counter_n=0
-if [ -f "$ROUND_COUNTER_FILE" ]; then
-    counter_n="$(tr -dc '0-9' < "$ROUND_COUNTER_FILE" 2>/dev/null || echo 0)"
-    counter_n="${counter_n:-0}"
-fi
-if [ "$counter_n" -gt "$max_n" ]; then
-    log "round counter: file=${counter_n} > remote-max=${max_n} (cleanup сбросил ветки?) — берём max из файла"
-    max_n="$counter_n"
-fi
-n=$((max_n + 1))
-ROUND_BRANCH="${TEST_ROUND_PREFIX}${n}"
-log "round number: max=${max_n} -> next=${n}"
+# --- Делегируем в round_formation.sh (issue #2299) -------------------------
+# SOT лежит рядом со скриптом. install.sh раскладывает оба файла в одинаковые
+# каталоги профилей (см. EXPECTED[] в install.sh).
+_LIB_DIR_HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+# shellcheck source=round_formation.sh
+. "${_LIB_DIR_HERE}/round_formation.sh"
 
-if ! git -C "$REPO_DIR" ls-remote --heads origin "$ROUND_BRANCH" 2>/dev/null | grep -q .; then
-    if [ "$DRY_RUN" = "true" ]; then
-        log "DRY-RUN would: create ${ROUND_BRANCH} from origin/develop"
+# Используем git_push_with_cred_fallback если доступен (защита от регрессии
+# credential policy, ретро 23.08 t_b977cb4b), иначе raw git push.
+_pf() {
+    if declare -F git_push_with_cred_fallback >/dev/null 2>&1; then
+        git_push_with_cred_fallback "$@"
     else
-        log "creating ${ROUND_BRANCH} from origin/develop (fresh fetch)"
-        git -C "$REPO_DIR" fetch origin develop 2>&1 | sed 's/^/  /' || true
-        if ! git -C "$REPO_DIR" push origin "origin/develop:refs/heads/${ROUND_BRANCH}" 2>&1 | sed 's/^/  /'; then
-            log "failed to create ${ROUND_BRANCH}"; exit 1
-        fi
+        # Fallback: прямой git push (для unit-тестов, где моки gh).
+        # round_formation.sh принимает имя функции первым аргументом;
+        # если cred_fallback нет, передаём "git" — но это не сработает
+        # для push (round_formation ожидает $push_fn <dir> <remote> <refspec>).
+        # Поэтому для standalone-сценариев без cred_fallback делая raw push.
+        local dir="$1" remote="$2"; shift 2
+        git -C "$dir" push "$remote" "$@" 2>&1 || return 1
     fi
-else
-    # Ретро 12.08 t_d3aeaa9b: НЕ переиспользуем stale round (база устарела).
-    # round-59 был создан из develop ДО фиксов валидатора #1143 и ротации
-    # #1141 — reuse вернул бы e2e на регрессе. Проверка: round-ветка должна
-    # содержать актуальный origin/develop; если нет — удаляем и создаём заново.
-    log "checking ${ROUND_BRANCH} base freshness (must contain origin/develop)"
-    if [ "$DRY_RUN" = "true" ]; then
-        log "DRY-RUN would: check ancestry origin/develop..${ROUND_BRANCH}"
-    else
-        git -C "$REPO_DIR" fetch origin develop 2>&1 | sed 's/^/  /' || true
-        if git -C "$REPO_DIR" merge-base --is-ancestor "origin/develop" "origin/${ROUND_BRANCH}" 2>/dev/null; then
-            log "reusing ${ROUND_BRANCH} (база актуальна: содержит origin/develop)"
-        else
-            log "🛑 ${ROUND_BRANCH} база УСТАРЕЛА (не содержит origin/develop) — удаляю и создам заново (ретро 12.08 t_d3aeaa9b)"
-            git -C "$REPO_DIR" push origin --delete "$ROUND_BRANCH" 2>&1 | sed 's/^/  /' || true
-            git -C "$REPO_DIR" fetch origin develop 2>&1 | sed 's/^/  /' || true
-            if ! git -C "$REPO_DIR" push origin "origin/develop:refs/heads/${ROUND_BRANCH}" 2>&1 | sed 's/^/  /'; then
-                log "failed to recreate ${ROUND_BRANCH}"; exit 1
-            fi
-            log "recreated ${ROUND_BRANCH} from fresh origin/develop"
-        fi
-    fi
+}
+
+if ! round_formation _pf; then
+    log "❌ round_formation failed"; exit 1
 fi
 
-# Сохраняем счётчик (только после успешного создания/reuse).
-if [ "$n" -gt "$counter_n" ]; then
-    printf '%s\n' "$n" > "$ROUND_COUNTER_FILE" 2>/dev/null \
-        && log "round counter saved: ${n} -> ${ROUND_COUNTER_FILE}" \
-        || log "WARNING: cannot write round counter ${ROUND_COUNTER_FILE}"
-fi
+# --- Persist counter — DEFERRED-семантика (issue #2299) ---------------------
+# Канон (09.09.2026): ручной прогон использует ту же deferred-семантику, что
+# и автоматика. round_ensure.sh НЕ персистит счётчик немедленно — этим владеет
+# ТОЛЬКО round_formation → post-tick cleanup (через rf_persist_counter_if_real_
+# round). Это устраняет возвратную ghost-дрейф, описанную в issue #2299:
+# раньше ручной round на пустом раунде (оператор умер до build) оставлял
+# счётчик на +1 при том, что ветка удалялась.
+#
+# Операторский workflow после --wait exit 0:
+#   1. merge фикса в ROUND_BRANCH
+#   2. gh workflow run "L-E2E Voice Test" --ref $ROUND_BRANCH
+#   3. если прогон упал/не запустился — следующий e2e-process tick увидит
+#      round-ветку и либо REUSE (если ещё живая), либо RECREATE.
+#
+# Если оператор хочет ГАРАНТИРОВАТЬ счётчик для своего прогона (например,
+# ручной прогон фактически сделан и больше не повторится), он может вызвать
+# `round_formation_persist_now` явно из shell после успешного e2e run. Это
+# та же rf_persist_counter_if_real_round — экспортирована ниже как алиас
+# для operator convenience.
 
 printf '%s\n' "$ROUND_BRANCH"
-log "OK: ручной round = ${ROUND_BRANCH}. Дальше — merge фикса в эту ветку и запуск e2e (workflow L-E2E) НЕ параллельно с e2e-process."
+log "OK: ручной round = ${ROUND_BRANCH}. Counter НЕ персистится (deferred). Дальше — merge фикса в эту ветку и запуск e2e (workflow L-E2E) НЕ параллельно с e2e-process."

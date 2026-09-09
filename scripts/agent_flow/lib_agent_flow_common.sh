@@ -173,14 +173,20 @@ has_label_json() {  # $1=labels_json  $2=label_name
 }
 
 # ---------------------------------------------------------------------------
-# slugify <text> — kebab-case, только [a-z0-9-], максимум 40 символов.
-# Используется для имён веток z-{agent}/<issue>-<slug>.
+# slugify <text> — kebab-case, только [a-z0-9-], максимум 50 символов.
+# Используется для имён веток z-{agent}/<issue>-<slug> и openspec-change папок
+# (issue #2296, согласовано 09.09.2026: канон = 50-символьный slugify из
+# agent-flow-openspec-sync.sh; lib и openspec-sync используют один и тот же).
+#
+# Для извлечения slug из имени ветки (z-{agent}/<num>-<slug> → <slug>) см.
+# `agent-flow-openspec-sync.sh slug-for-branch <branch>` — единая точка
+# преобразования branch → openspec-slug (ADR-0039).
 # ---------------------------------------------------------------------------
 slugify() {
     printf '%s' "$1" \
         | tr '[:upper:]' '[:lower:]' \
         | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g; s/-{2,}/-/g' \
-        | cut -c1-40
+        | cut -c1-50
 }
 
 # ---------------------------------------------------------------------------
@@ -303,6 +309,41 @@ print(json.dumps(keep, ensure_ascii=False))
 # как и весь остальной код agent-flow. _profile_skill_names в hermes-agent
 # использует тот же источник (get_profile_dir()).
 # ---------------------------------------------------------------------------
+# Single source of truth для проверки «установлен ли skill в профиле».
+# Используется и af_skill_for_profile, и af_skills_for_profile — раньше логика
+# дублировалась в двух местах, что разъезжалось при добавлении новых
+# категорий (ретро 09.09.2026, issue #2297).
+#
+# Контракт:
+#   $1 = skills_dir (например /home/builder/.hermes/profiles/backend/skills)
+#   $2 = skill name (без категории, например git-workflow)
+#   rc = 0 если найден, 1 если нет
+#
+# Walk: плоский skills/<skill>/ + категории repo/bundled/devops/autonomous-ai-agents
+# /software-development/productivity/research/process (категории создаются
+# sync-skills.sh и плагинами). Финальный fallback — symlink-following find -L
+# по всему дереву (для свежей раскладки, где категория ещё не symlink).
+# Идентично _profile_skill_names в hermes-agent.
+_skill_installed() {  # $1=skills_dir  $2=skill_name  →  rc 0/1
+    local _sd="$1" _s="$2"
+    [ -n "$_sd" ] && [ -n "$_s" ] || return 1
+    [ -d "$_sd" ] || return 1
+    [ -f "${_sd}/${_s}/SKILL.md" ] \
+        || [ -f "${_sd}/repo/${_s}/SKILL.md" ] \
+        || [ -f "${_sd}/bundled/${_s}/SKILL.md" ] \
+        || [ -f "${_sd}/devops/${_s}/SKILL.md" ] \
+        || [ -f "${_sd}/autonomous-ai-agents/${_s}/SKILL.md" ] \
+        || [ -f "${_sd}/software-development/${_s}/SKILL.md" ] \
+        || [ -f "${_sd}/productivity/${_s}/SKILL.md" ] \
+        || [ -f "${_sd}/research/${_s}/SKILL.md" ] \
+        || [ -f "${_sd}/process/${_s}/SKILL.md" ] \
+        || find -L "$_sd" -maxdepth 4 -path '*/_org' -prune -o \
+           -type f -name SKILL.md -print 2>/dev/null \
+           | grep -q "/${_s}/SKILL.md$" \
+        || return 1
+    return 0
+}
+
 af_skill_for_profile() {  # $1=assignee  $2=labels_csv (optional)
     local _assignee="${1:-}" _labels="${2:-}" _hermes_home _skills_dir _cand
     local _role_candidate _task_candidate _labels_lower
@@ -342,35 +383,110 @@ af_skill_for_profile() {  # $1=assignee  $2=labels_csv (optional)
     fi
 
     # Пробуем сперва task-кандидат, затем роль-кандидат. Проверка установлен-
-    # ности — symlink-following walk (как _profile_skill_names в hermes-agent):
-    # плоский skills/<skill>/ + категории repo/bundled/devops/... (repo/ кладёт
-    # sync-skills.sh). `find -L` — медленный fallback для свежей раскладки
-    # профиля, где категория ещё не symlink.
+    # ности делегирована в top-level _skill_installed — единый источник
+    # правды для всего lib (см. ретро 09.09.2026, issue #2297).
     for _cand in "$_task_candidate" "$_role_candidate"; do
         [ -n "$_cand" ] || continue
-        if [ -f "$_skills_dir/${_cand}/SKILL.md" ] \
-            || [ -f "$_skills_dir/repo/${_cand}/SKILL.md" ] \
-            || [ -f "$_skills_dir/bundled/${_cand}/SKILL.md" ] \
-            || [ -f "$_skills_dir/devops/${_cand}/SKILL.md" ] \
-            || [ -f "$_skills_dir/autonomous-ai-agents/${_cand}/SKILL.md" ] \
-            || [ -f "$_skills_dir/software-development/${_cand}/SKILL.md" ] \
-            || [ -f "$_skills_dir/productivity/${_cand}/SKILL.md" ] \
-            || [ -f "$_skills_dir/research/${_cand}/SKILL.md" ] \
-            || [ -f "$_skills_dir/process/${_cand}/SKILL.md" ]; then
-            printf '%s' "$_cand"
-            return 0
-        fi
-        # Fallback: walk все категории (slow path, но бывает при свежей
-        # раскладке профиля — категория может быть ещё не symlink). Это тот
-        # же алгоритм что и _profile_skill_names, но средствами bash.
-        if find -L "$_skills_dir" -maxdepth 4 -path '*/_org' -prune -o \
-            -type f -name SKILL.md -print 2>/dev/null \
-            | grep -q "/${_cand}/SKILL.md$"; then
+        if _skill_installed "$_skills_dir" "$_cand"; then
             printf '%s' "$_cand"
             return 0
         fi
     done
     _af_log "af_skill_for_profile(${_assignee}): no installed skill for task='${_task_candidate}' role='${_role_candidate}' — falling back (no --skill)"
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# af_skills_for_profile <assignee> [labels_csv] [pr_flag] → multi-line: skill
+# names (one per line), dedup, обязательный verification-before-completion
+# первым.
+#
+# Контракт:
+#   $1 = assignee (profile id)
+#   $2 = CSV меток issue (опционально, "a,b,c") — для маппинга по типу задачи
+#   $3 = "pr" | "" — explicit PR-флаг; если пусто и assignee ∈ {backend,
+#       developer, tester, devops, pr-reviewer} → авто-detect "pr" (эти
+#       профили порождают PR → нужен code-review)
+#   stdout = skills, разделенные \n (для mapfile -t); первый — обязательный
+#       verification-before-completion (если установлен в профиле), затем
+#       primary skill (task/role) и опционально code-review
+#   exit = 0 всегда (fail-OPEN)
+#
+# Ретро t_aafad606 (issue #2160): одна карточка = один skill → воркеры не
+# делают self-review. ADR-0077 вводит multi-skill: ОБЯЗАТЕЛЬНЫЙ
+# verification-before-completion + доменный primary + опциональный code-review
+# для PR-порождающих профилей. Обратная совместимость: af_skill_for_profile
+# остаётся как был (single primary skill) для тестов и обратной совместимости.
+#
+# Правила:
+#   1) verification-before-completion — всегда первый (если установлен).
+#   2) primary skill (task-candidate > role-candidate) — вторым, dedup с #1.
+#   3) code-review — третьим, если pr_flag != "" И он ещё не в списке И
+#      установлен в профиле.
+#   4) Дедупликация (case-sensitive) — повторы отбрасываются с сохранением
+#      первого вхождения.
+#   5) Пустой результат = ни один skill не найден → fail-OPEN (как раньше).
+#
+# Использование:
+#   mapfile -t SKILLS < <(af_skills_for_profile backend "bug,agent:backend" "")
+#   for s in "${SKILLS[@]}"; do args+=(--skill "$s"); done
+# ---------------------------------------------------------------------------
+af_skills_for_profile() {  # $1=assignee  $2=labels_csv  $3=pr_flag
+    local _assignee="${1:-}" _labels="${2:-}" _pr_flag="${3:-}"
+    local _skills_dir _hermes_home _cand _primary="" _add_cr=0 _seen=""
+    local _skills_out=()
+
+    [ -n "$_assignee" ] || return 0
+    _hermes_home="${HERMES_HOME:-/home/builder/.hermes}"
+    _skills_dir="${_hermes_home}/profiles/${_assignee}/skills"
+    [ -d "$_skills_dir" ] || return 0
+
+    # Дедуп helper: добавляет $_cand в _skills_out только если ещё нет.
+    # Проверка установленности делегирована в top-level _skill_installed
+    # (единый источник правды, ретро 09.09.2026, issue #2297).
+    _add_skill() {
+        local s="$1"
+        [ -n "$s" ] || return 0
+        case " $_seen " in
+            *" $s "*) return 0 ;;
+        esac
+        _skill_installed "$_skills_dir" "$s" || return 0
+        _skills_out+=("$s")
+        _seen="$_seen $s"
+    }
+
+    # 1) Обязательный verification-before-completion первым.
+    _add_skill "verification-before-completion"
+
+    # 2) Primary skill через af_skill_for_profile (single, тот же алгоритм).
+    _primary="$(af_skill_for_profile "$_assignee" "$_labels" 2>/dev/null || true)"
+    if [ -n "$_primary" ]; then
+        # af_skill_for_profile уже проверил установленность; добавляем
+        # минуя _add_skill (чтобы не делать дубль walk).
+        case " $_seen " in
+            *" $_primary "*) ;;
+            *)
+                _skills_out+=("$_primary")
+                _seen="$_seen $_primary"
+                ;;
+        esac
+    fi
+
+    # 3) code-review для PR-порождающих профилей.
+    #    Авто-detect: assignee из списка, плюс явный pr_flag="pr".
+    case "$_pr_flag$_assignee" in
+        pr*|backend|developer|tester|devops|pr-reviewer) _add_cr=1 ;;
+    esac
+    if [ "$_add_cr" = "1" ]; then
+        _add_skill "code-review"
+    fi
+
+    # Вывод: один skill на строку.
+    if [ "${#_skills_out[@]}" -eq 0 ]; then
+        _af_log "af_skills_for_profile(${_assignee}): no installed skills — failing OPEN (no --skill)"
+        return 0
+    fi
+    printf '%s\n' "${_skills_out[@]}"
     return 0
 }
 
@@ -420,6 +536,172 @@ detect_pr_kind() {  # $1=labels_csv $2=title
 }
 
 # ---------------------------------------------------------------------------
+# af_role_for <labels_csv> [fallback] — единая таблица agent:* label → profile.
+#
+# Контракт:
+#   $1 = labels_csv (lowercased, "agent:devops,bug,priority:high" — то, что
+#        приходит из `gh issue list --json labels` или CSV-список меток)
+#   $2 = fallback profile (опционально; default:
+#        $AGENT_FLOW_DEFAULT_ROLE (or "architect" if unset)).
+#        Передача $2="" явно = "пустой fallback" → last-resort "devops".
+#   stdout = одно из:
+#       - profile из таблицы (agent:<token> → profile, см. _af_role_table)
+#       - fallback ($2, или AGENT_FLOW_DEFAULT_ROLE, или architect),
+#         если метка agent:* не найдена
+#       - "devops", если fallback пустой (последний рубеж — см. ADR-0041)
+#   exit = 0 всегда (fail-OPEN — caller сам решает, что делать)
+#
+# Поведение:
+#   1) lower-case на входе (`tr` в bash), чтобы "Agent:Devops" тоже подобрался.
+#   2) ищем ПЕРВЫЙ `agent:<token>` в списке меток (порядок определяется caller'ом).
+#   3) токен матчится против _af_role_table (case-statement — это «таблица
+#      данных» в bash; добавить новый label = одна строка).
+#   4) если метка найдена, но профиля нет в `hermes profile list` — warn +
+#      возврат fallback. Это **fail-OPEN**, не hard gate: caller (triage) уже
+#      имеет собственный жёсткий guard через `is_valid_profile` (skip + errored++).
+#      Здесь дубль жёсткого gate'а не нужен — это источник разъехавшихся
+#      дефолтов в прошлом (agent-flow-triage.sh:615 vs agent-flow-merge-gate.sh:4082).
+#   5) devops как последний рубеж — профиль-воркер (он же умеет force-with-lease
+#      push, см. ретро 02.09 t_2bd2e7ea). Никогда не возвращаем "default"
+#      (ADR-0041 silent-drop в диспетчере → карточка висит в ready вечно).
+#
+# История (09.09.2026, issue #2292):
+#   Раньше эта логика жила в 4 копиях:
+#     - agent-flow-triage.sh:615  — regex, fallback=architect
+#     - agent-flow-merge-gate.sh:4082, :4284 — whitelist (без agent:tester)
+#     - agent-flow-e2e-process.sh:3196 — whitelist (без agent:tester)
+#     - test_merge_gate_assignee_fallback.sh:63 — тест-реплика
+#   Копии успели разъехаться: e2e-process потерял agent:tester, merge-gate
+#   две копии с разными комментариями. Любая правка (добавить label, сменить
+#   fallback) требовала 4 синхронных коммита — рецепт дрейфа. Теперь одна
+#   функция + одна таблица; добавить profile = одна строка case.
+#
+# Использование:
+#   role="$(af_role_for "$labels")"             # fallback=${AGENT_FLOW_DEFAULT_ROLE:-architect}
+#   role="$(af_role_for "$labels" devops)"      # явный fallback
+# ---------------------------------------------------------------------------
+af_role_for() {  # $1=labels_csv  $2=fallback (default AGENT_FLOW_DEFAULT_ROLE|architect|devops)
+    local _labels _fallback _token _profile _hermes_home _valid_profiles_csv
+    _labels="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"
+    # Семантика fallback (важно для ADR-0041 last-resort):
+    #   - $2 задан И непустой → используем его (явный override вызывающего).
+    #   - $2 UNSET (не передан) → берём $AGENT_FLOW_DEFAULT_ROLE (или architect).
+    #   - $2 = "" (явно пустая строка) → пустая строка. Не подменяем на default:
+    #     это сигнал "caller хочет пустой fallback → devops по last-resort".
+    #   - Итоговый fallback всё ещё пустой → devops (ADR-0041 silent-drop недопустим).
+    if [ "$#" -ge 2 ] && [ -n "${2-}" ]; then
+        _fallback="$2"
+    else
+        _fallback="${AGENT_FLOW_DEFAULT_ROLE:-architect}"
+    fi
+    [ -n "$_fallback" ] || _fallback="devops"
+
+    _profile=""
+    if [ -n "$_labels" ]; then
+        # Первый agent:<token> в списке — caller контролирует порядок меток.
+        # Цикл по запятой: дешевле awk/python, не плодит подпроцессы на горячем пути.
+        _labels="$_labels,"
+        while [ -n "$_labels" ] && [ "$_labels" != "," ]; do
+            _token="${_labels%%,*}"
+            _labels="${_labels#*,}"
+            # Проверяем префикс "agent:" через case (быстрее [[ =~ ]] на горячем пути).
+            case "$_token" in
+                agent:*)
+                    _token="${_token#agent:}"
+                    # Каноничная таблица agent:<token> → profile.
+                    # ADD HERE: новый label = одна строка case.
+                    case "$_token" in
+                        backend|developer|devops|tester|architect|\
+                        frontend|analyst|pm|pr-reviewer|techwriter|\
+                        ml-engineer|ros2-engineer|embedded|cad-engineer|\
+                        dba|designer|llm-expert|base|agent-flow)
+                            _profile="$_token" ;;
+                        *)
+                            # Метка есть, но профиль не каноничный — warn + пропуск.
+                            # Не возвращаем $_token напрямую: он мог быть что угодно
+                            # ("agent:triager" из ретро t_1ca827a6), и caller всё равно
+                            # отфильтрует через is_valid_profile. Здесь — fallback.
+                            _af_log "af_role_for: unknown agent:label '$_token' — falling back to '$_fallback'"
+                            ;;
+                    esac
+                    [ -n "$_profile" ] && break
+                    ;;
+            esac
+        done
+    fi
+
+    # Если не нашли — fallback. Если fallback сам невалиден — devops.
+    if [ -z "$_profile" ]; then
+        _profile="$_fallback"
+    fi
+
+    # Warn + fail-open против живого списка профилей (если доступен).
+    # Не делаем hard gate: caller (triage) уже зовёт is_valid_profile для
+    # errored++ / skip; merge-gate и e2e-process принимают fallback как есть.
+    # Парсим по тому же regex что и load_valid_profiles в triage.sh, плюс
+    # strip ведущего `◆` (active profile marker в hermes profile list).
+    _hermes_home="${HERMES_HOME:-/home/builder/.hermes}"
+    if [ -x "${HERMES_BIN:-}" ]; then
+        _valid_profiles_csv="$("${HERMES_BIN}" profile list 2>/dev/null \
+            | awk '
+                /^[ \t]*─/{next} /^[ \t]*Profile[ \t]/{next}
+                /^[ \t]*$/{next} /^[ \t]*default[ \t]/{next}
+                {gsub(/^[ \t]+|[ \t]+$/,""); sub(/^[^a-zA-Z0-9]+/,""); print $1}
+            ' | sort -u | paste -sd, -)" || _valid_profiles_csv=""
+        if [ -n "$_valid_profiles_csv" ] \
+            && ! printf '%s' ",$_valid_profiles_csv," | grep -q ",$_profile,"; then
+            _af_log "af_role_for: profile '$_profile' NOT in hermes profile list — warn + fail-open (caller should hard-gate if needed)"
+        fi
+    fi
+
+    printf '%s' "$_profile"
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# af_role_found_for <labels_csv> → exit 0 если есть валидный agent:* label,
+# exit 1 если нет (или он неизвестный).
+#
+# Зачем (issue #2292): scan-all-prs в merge-gate раньше использовал
+# локальный case-цикл с флагом `_assignee_explicit=1` — «нашли явную метку
+# agent:*». Это различало «назначили devops по метке» и «назначили devops
+# как fallback, потому что меток нет». Логика ниже (contract_drift)
+# перезаписывает assignee на backend, ЕСЛИ метки не было.
+#
+# Если бы мы взяли `af_role_for` и смотрели «результат != devops», мы бы
+# сломали кейс с явной `agent:devops`: вернулось бы `devops`, флаг бы
+# остался 0, и contract_drift перезаписал бы на backend. Регрессия.
+#
+# Companion-функция: тот же token-парсер, что в af_role_for, но возвращает
+# только факт «нашли валидный token из _af_role_table». Никакого stdout —
+# чисто exit-code. Дешёвая: ранний break, без fallback-логики.
+# ---------------------------------------------------------------------------
+af_role_found_for() {  # $1=labels_csv
+    local _labels="${1:-}" _token
+    [ -n "$_labels" ] || return 1
+    _labels="$(printf '%s' "$_labels" | tr '[:upper:]' '[:lower:]'),"
+    while [ -n "$_labels" ] && [ "$_labels" != "," ]; do
+        _token="${_labels%%,*}"
+        _labels="${_labels#*,}"
+        case "$_token" in
+            agent:*)
+                    case "${_token#agent:}" in
+                        backend|developer|devops|tester|architect|\
+                        frontend|analyst|pm|pr-reviewer|techwriter|\
+                        ml-engineer|ros2-engineer|embedded|cad-engineer|\
+                        dba|designer|llm-expert|base|agent-flow)
+                            return 0 ;;
+                    esac
+                    # Невалидный agent:* (например, agent:triager) — НЕ считаем
+                    # «явным». Caller должен идти в fallback-ветку.
+                    return 1
+                    ;;
+        esac
+    done
+    return 1
+}
+
+# ---------------------------------------------------------------------------
 # free_stale_worktrees_for <task_id> — снять чужие worktree на нашей ветке.
 #
 # Карточка держит свой worktree; если та же ветка занята worktree'ем другой
@@ -457,6 +739,60 @@ except Exception: print("")' 2>/dev/null || true)"
     done < <(git -C "$my_wt" worktree list --porcelain 2>/dev/null)
     git -C "$my_wt" worktree prune 2>/dev/null || true
     return 0
+}
+
+# ---------------------------------------------------------------------------
+# _gm_recent_commented <kind> <number> <marker> <window_seconds> [mode]
+#   — обёртка над hermes_github.sh::comment_recently_posted с инвертированной
+#   семантикой (0 = should_post, 1 = should_skip), удобной для merge-gate.
+#
+# Возвращает:
+#   0 (truthy) — комментария с маркером M за окно W секунд НЕТ → постить.
+#   1 (falsey)  — комментарий ЕСТЬ → skip.
+#
+# Args:
+#   kind           — "issue" | "pr" (проходит в comment_recently_posted)
+#   number         — issue# / pr# (digits)
+#   marker         — substring (mode=contains) или prefix (mode=prefix),
+#                    которому должен удовлетворять body комментария.
+#   window_seconds — non-negative integer (24*3600 = 24h, 6*3600 = 6h, etc.)
+#   mode           — optional "prefix" (default) или "contains".
+#
+# Когда caller уже source'нул hermes_github.sh, всё работает out-of-the-box.
+# Если hermes_github.sh не source'нут — функция still возвращает 1 (don't post),
+# чтобы не сломать flow и не запостить случайно дубль.
+#
+# Кейсы (issue #2293, соглашение 09.09.2026):
+#   Раньше в agent-flow-merge-gate.sh было ~20 inline-сканов вида:
+#     _dedup_since="$(date -u -d 'N hours ago' +...)"
+#     _dup_count="$(gh api ".../comments?since=${_dedup_since}..." --jq \
+#         '[.[] | select(.body | startswith/contains("MARKER"))] | length')"
+#     if [ "${_dup_count:-0}" -eq 0 ]; then gh issue comment ...; fi
+#   Теперь:
+#     if ! _gm_recent_commented "issue" "$number" "MARKER" "$((N*3600))" \
+#         prefix; then gh issue comment ...; fi
+#
+# Преимущества:
+#   - Нет jq-фильтра в каждом месте (читаемость).
+#   - Нет date-string'а в каждом месте (window — секунды).
+#   - Нет GH_REPO/${number}/kind — всё вычисляется внутри.
+#   - Helper-семантика стабильна при изменении API (server-side ?since=).
+# ---------------------------------------------------------------------------
+_gm_recent_commented() {
+    local kind="${1:-}" number="${2:-}" marker="${3:-}"
+    local window_seconds="${4:-0}" mode="${5:-prefix}"
+
+    # Безопасный fallback: если hermes_github.sh не source'нут (например,
+    # тесты изолированы), comment_recently_posted будет undefined → будем
+    # считать, что коммента НЕТ, и caller постит. Это безопаснее, чем silent
+    # skip без контракта.
+    if ! declare -F comment_recently_posted >/dev/null 2>&1; then
+        _af_log "WARN: _gm_recent_commented: comment_recently_posted is not defined (hermes_github.sh not sourced?) — assuming NOT posted"
+        return 0
+    fi
+
+    comment_recently_posted "$kind" "$number" "$marker" \
+        "$window_seconds" "$mode"
 }
 
 # ---------------------------------------------------------------------------

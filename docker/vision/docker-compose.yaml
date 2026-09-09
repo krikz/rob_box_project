@@ -246,6 +246,15 @@ services:
       # По умолчанию Europe/Moscow, т.к. робот обслуживает русскоязычного оператора.
       - TZ=${ROBOT_TIMEZONE:-Europe/Moscow}
       - ROBOT_TIMEZONE=${ROBOT_TIMEZONE:-Europe/Moscow}
+      # issue #2184 — стек мониторинга поднят на build-машине katana, не в
+      # этой compose-сети: docker-DNS сюда не достаёт, и дефолты вида
+      # http://prometheus:9090 с робота не резолвились (из-за чего молча не
+      # работали operator.admin-тулзы container_status / read_logs(loki) /
+      # show_metrics). Задаём адрес явно.
+      - MONITORING_HOST=${MONITORING_HOST:-10.1.1.249}
+      - PROMETHEUS_URL=${PROMETHEUS_URL:-http://${MONITORING_HOST:-10.1.1.249}:9090}
+      - LOKI_URL=${LOKI_URL:-http://${MONITORING_HOST:-10.1.1.249}:3100}
+      - GRAFANA_URL=${GRAFANA_URL:-http://${MONITORING_HOST:-10.1.1.249}:3000}
     env_file:
       - .env.secrets  # API keys: MIMO_API_KEY, DEEPSEEK_API_KEY (для fallback), YANDEX_API_KEY, YANDEX_FOLDER_ID
     volumes:
@@ -364,6 +373,14 @@ services:
       # (PR #1618) → включаем active, чтобы супервизор применял voice_input_mode
       # (SetVoiceMode). Teleop-FSM/floors остаются Phase 2 (NOT_IMPLEMENTED).
       - AVATAR_SUPERVISOR_MODE=active
+      # issue #2184 — TarsPanelDispatcher ходит за метриками сам (Prometheus
+      # /api/v1/query_range, Loki /loki/api/v1/query_range) и публикует ряды
+      # точек в /avatar/tars/panel_data. Стек мониторинга живёт на katana,
+      # не в этой compose-сети — адрес задаём явно (см. metrics_source.py).
+      - MONITORING_HOST=${MONITORING_HOST:-10.1.1.249}
+      - PROMETHEUS_URL=${PROMETHEUS_URL:-http://${MONITORING_HOST:-10.1.1.249}:9090}
+      - LOKI_URL=${LOKI_URL:-http://${MONITORING_HOST:-10.1.1.249}:3100}
+      - GRAFANA_URL=${GRAFANA_URL:-http://${MONITORING_HOST:-10.1.1.249}:3000}
     # issue #2111 — БЕЗ ЭТОГО У ТАРС НЕТ LLM ВООБЩЕ.
     # avatar_supervisor._build_operator_llm строит провайдеров из ключей в
     # окружении (MINIMAX_API_KEY / DEEPSEEK_API_KEY). У сервиса не было
@@ -379,8 +396,10 @@ services:
       - ./config:/config:ro
       - ./scripts:/ros_scripts:ro
       - ./scripts/supervisor:/scripts:ro
-      # issue #1988 — память оператора (/data/operator_memory.db) и журнал
-      # ТАРС (/data/operator_journal.jsonl): переживают рестарт контейнера.
+      # issue #1988 — память оператора и журнал ТАРС. После ADR-0083 §E
+      # обе ноды (supervisor + voice-assistant) пишут в одну
+      # ``/data/harness_voice.db``, различая факты через колонку ``agent``
+      # (``operator`` / ``personality``, миграция 011_agent_namespace.sql).
       # Тот же host-path, что у voice-assistant (./data/voice → /data).
       - ./data/voice:/data
     command: ["/ros_scripts/ros_with_namespace.sh", "/bin/bash", "/scripts/start_supervisor.sh"]

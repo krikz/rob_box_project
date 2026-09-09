@@ -16,6 +16,9 @@ import time
 import pytest
 
 from rob_box_quest.core.safety import WATCHDOG_TIMEOUT_S
+from rob_box_quest.server.session import (
+    WATCHDOG_TIMEOUT_S as SESSION_WATCHDOG_TIMEOUT_S,
+)
 from rob_box_quest.core.teleop import (
     DEADMAN_TIMEOUT_S,
     MAX_ANGULAR_RAD_S,
@@ -122,8 +125,10 @@ def test_feed_client_alive_resets_watchdog():
     # Feed → ARMED.
     bridge.feed_client_alive()
     assert bridge._watchdog.armed is True
-    # Свежий — не tripped.
-    assert bridge.watchdog_check(_t.monotonic() + 1.0) is False
+    # Свежий — не tripped. issue #2232: было ``+ 1.0``, что БОЛЬШЕ таймаута
+    # (0.6 с) — то есть «свежесть» проверялась моментом, когда watchdog уже
+    # обязан сработать. Берём заведомо меньше таймаута.
+    assert bridge.watchdog_check(_t.monotonic() + SESSION_WATCHDOG_TIMEOUT_S / 2) is False
     # После timeout — tripped.
     assert bridge.watchdog_check(_t.monotonic() + 3600.0) is True
 
@@ -174,9 +179,17 @@ def test_watchdog_consume_trip_does_not_spam():
 
 
 def test_watchdog_check_uses_session_timeout():
-    """Watchdog настроен на SESSION_WATCHDOG_TIMEOUT_S = 0.6 с."""
+    """Watchdog моста настроен на SESSION_WATCHDOG_TIMEOUT_S (0.6 с).
+
+    issue #2232: тест сверялся с ``core.safety.WATCHDOG_TIMEOUT_S`` (0.5),
+    хотя мост берёт ``server.session.WATCHDOG_TIMEOUT_S`` (0.6) —
+    ``quest_node.py:371``. Две разные константы с одинаковым именем в
+    разных модулях; докстринг называл правильную, а assert сверял чужую.
+    """
     bridge, _, _, _ = _make_bridge()
-    assert bridge._watchdog.timeout_s == WATCHDOG_TIMEOUT_S
+    assert bridge._watchdog.timeout_s == SESSION_WATCHDOG_TIMEOUT_S
+    # Страховка от «починим сравнением с самим собой»: константы разные.
+    assert SESSION_WATCHDOG_TIMEOUT_S != WATCHDOG_TIMEOUT_S
 
 
 def test_emergency_stop_locks_teleop_and_zeroes_output():
@@ -266,26 +279,50 @@ def test_voice_radio_mode_streams_to_voice_in():
     bridge, voice_in, _tts, _sound, stt_in, _svm = _make_voice_bridge()
     bridge.publish_voice_audio(_pcm_chunk(4000, 4000))
     assert len(voice_in.published) == 1
-    assert voice_in.published[0].data == [0xA0, 0x0F, 0xA0, 0x0F]
+    # issue #2232: под настоящим rclpy ``AudioData.data`` — ``array('B', ...)``,
+    # и сравнение с list даёт False. list() приводит к сравнимому виду
+    # (тот же приём, что в test_quest_bridge_wake_segmentation.py).
+    assert list(voice_in.published[0].data) == [0xA0, 0x0F, 0xA0, 0x0F]
     assert len(stt_in.published) == 0
 
 
 def test_voice_robot_mode_flushes_on_silence():
-    """EOU: фраза уходит в STT по тишине, пока грип ещё зажат (не ждём release)."""
+    """EOU: фраза уходит в STT по паузе, пока грип ещё зажат (не ждём release).
+
+    issue #2232 / #2199: механизм сменился, поведение — нет. Раньше
+    ``publish_voice_audio`` само считало тишину и флашило буфер после
+    ``VOICE_SILENCE_TIMEOUT_MS``; тест кормил 15 тихих кадров и ждал
+    публикацию прямо в ``publish_voice_audio``.
+
+    После #2199 сегментацией занимается общий ``PhraseSegmenter``
+    (``DEFAULT_ROBOT_VOICE_CONFIG``: peak > 500, gap 0.3 с, min 0.25 с),
+    а закрывает фразу по паузе ``tick_voice_audio`` — его дёргает
+    таймер ноды (``quest_node.py:2573``), как и для wake-канала. Тихие
+    кадры теперь просто не речь, они фразу не закрывают.
+
+    Тест переписан под новый механизм; проверяемое свойство прежнее —
+    фраза уходит одним сообщением в /audio/quest_in до отпускания грипа.
+    """
+    import time as _t
+
     bridge, voice_in, tts_control, sound_stop, stt_in, _svm = _make_voice_bridge()
     bridge.publish_voice_robot_start()
     assert len(tts_control.published) == 1  # barge-in STOP TTS
     assert len(sound_stop.published) == 1  # barge-in STOP sound
-    # Речь буферизуется, НЕ идёт в /avatar/voice_in и НЕ в STT.
-    bridge.publish_voice_audio(_pcm20ms(4000))
-    bridge.publish_voice_audio(_pcm20ms(4000))
+
+    # 20 × 20 мс = 0.4 с речи — больше min_phrase_s (0.25 с).
+    for _ in range(20):
+        bridge.publish_voice_audio(_pcm20ms(4000))
+    # Кадры копятся: ни в /avatar/voice_in, ни в STT ничего не ушло.
     assert len(voice_in.published) == 0
     assert len(stt_in.published) == 0
-    # 15 × 20 мс = 300 мс тишины → конец фразы → флаш в /audio/quest_in.
-    for _ in range(15):
-        bridge.publish_voice_audio(_pcm20ms(0))
+
+    # Пауза больше gap_timeout_s (0.3 с) → тик закрывает фразу.
+    bridge.tick_voice_audio(_t.monotonic() + 10.0)
+
     assert len(stt_in.published) == 1
     assert len(stt_in.published[0].data) > 0
+    # Грип ещё зажат — в динамик робота по-прежнему ничего не ушло.
     assert len(voice_in.published) == 0
 
 
@@ -337,25 +374,22 @@ def _make_wake_bridge():
     return bridge, quest_wake
 
 
-def test_publish_quest_wake_audio_publishes_to_quest_wake_pub():
-    """publish_quest_wake_audio публикует ровно тот payload, что пришёл,
-    одним AudioData — без буферизации/EOU-логики (в отличие от robot_voice
-    на PTT-канале: клиент уже отфильтровал тишину через RMS VAD)."""
-    bridge, quest_wake = _make_wake_bridge()
-    payload = _pcm_chunk(4000, 4000)
-    bridge.publish_quest_wake_audio(payload)
-    assert len(quest_wake.published) == 1
-    # rclpy AudioData.data — array.array('B', ...) под настоящим сообщением
-    # (uint8[] сериализуется так), list() приводит к сравнимому виду.
-    assert list(quest_wake.published[0].data) == [0xA0, 0x0F, 0xA0, 0x0F]
-
-
-def test_publish_quest_wake_audio_multiple_chunks_publish_individually():
-    bridge, quest_wake = _make_wake_bridge()
-    bridge.publish_quest_wake_audio(_pcm20ms(4000))
-    bridge.publish_quest_wake_audio(_pcm20ms(-4000))
-    assert len(quest_wake.published) == 2
-    assert quest_wake.published[0].data != quest_wake.published[1].data
+# issue #2232 / #2135: два теста, стоявшие здесь
+# (``test_publish_quest_wake_audio_publishes_to_quest_wake_pub`` и
+# ``test_publish_quest_wake_audio_multiple_chunks_publish_individually``),
+# удалены как устаревшие. Они проверяли поведение ДО #2135 — «каждый
+# 20мс-кадр публикуется отдельным AudioData, без буферизации/EOU-логики».
+# #2135 это поведение и чинил: кадры копятся в WakePhraseSegmenter и
+# уходят ОДНИМ AudioData на фразу, закрываемую паузой через
+# tick_wake_audio. Именно из-за покадровой публикации вейк «ТАРС» из
+# шлема не мог сработать никогда.
+#
+# Тесты остались красными и невидимыми: CI не запускал rob_box_quest
+# (#2232), а локально они skip-аются без geometry_msgs.
+#
+# Актуальный контракт полностью покрыт в
+# test_quest_bridge_wake_segmentation.py (фраза по паузе, две реплики —
+# два сообщения, потолок буфера, сброс при disconnect).
 
 
 def test_publish_quest_wake_audio_none_publisher_is_noop():
@@ -371,18 +405,6 @@ def test_publish_quest_wake_audio_none_publisher_is_noop():
     )
     # Не должно бросить исключение.
     bridge.publish_quest_wake_audio(_pcm_chunk(4000, 4000))
-
-
-def test_chunk_is_silent_threshold():
-    pytest.importorskip("geometry_msgs", reason="QuestBridge требует rclpy/geometry_msgs (только в Docker image)")
-    from rob_box_quest.quest_node import _chunk_is_silent
-
-    assert _chunk_is_silent(_pcm_chunk(0, 0, 0)) is True
-    assert _chunk_is_silent(_pcm_chunk(499, -499)) is True
-    assert _chunk_is_silent(_pcm_chunk(500, 0)) is False
-    assert _chunk_is_silent(_pcm_chunk(-500)) is False
-    assert _chunk_is_silent(b"") is True
-    assert _chunk_is_silent(b"\x01") is True  # нечётная длина → тишина
 
 
 def test_set_voice_mode_maps_wire_to_param_and_publishes():
@@ -402,6 +424,86 @@ def test_set_voice_mode_unknown_ignored():
     bridge, _voice_in, _tts, _sound, _stt_in, set_voice_mode = _make_voice_bridge()
     bridge.set_voice_mode("bogus_mode")
     assert len(set_voice_mode.published) == 0
+
+
+# ── Шаг 4б grip-pipeline config (t_80e7aa1e) ──────────────────────────
+# Контракт: ws_server → QuestBridge.publish_voice_pipeline → ROS String в
+# /avatar/voice_pipeline → supervisor._on_grip_voice_pipeline.
+# Тест проверяет, что JSON, который supervisor реально распарсит,
+# содержит именно {llm_enabled: bool, preset: str, language: str}.
+
+
+def _make_voice_pipeline_only_bridge(quest_node_mod):
+    """QuestBridge с mock-publisher'ом для /avatar/voice_pipeline.
+
+    Использует фикстуру ``quest_node_mod`` из conftest.py — она подменяет
+    ROS-пакеты (rclpy, audio_common_msgs) заглушками. Без этого фикстура
+    падает ``ModuleNotFoundError: No module named 'audio_common_msgs'``
+    на dev-env без ROS (§4.3 ловушка из operator-handoff).
+    """
+    QuestBridge = quest_node_mod.QuestBridge
+
+    node = _MockNode()
+    voice_pipeline_pub = _MockPublisher()
+    bridge = QuestBridge(
+        node=node,
+        cmd_vel_quest_pub=_MockPublisher(),
+        cmd_vel_emergency_pub=_MockPublisher(),
+        voice_pipeline_pub=voice_pipeline_pub,
+    )
+    return bridge, voice_pipeline_pub
+
+
+def test_publish_voice_pipeline_publishes_json_to_ros(quest_node_mod):
+    """publish_voice_pipeline → 1 String в /avatar/voice_pipeline."""
+    bridge, voice_pipeline_pub = _make_voice_pipeline_only_bridge(quest_node_mod)
+    bridge.publish_voice_pipeline(True, "translate", "en")
+    assert len(voice_pipeline_pub.published) == 1
+    msg = voice_pipeline_pub.published[0]
+    # Payload — String.data, формат сериализации делает bridge, не ws_server.
+    data = msg.data
+    # Проверяем: это JSON-строка с ровно тремя контрактными полями.
+    parsed = json.loads(data)
+    assert parsed == {"llm_enabled": True, "preset": "translate", "language": "en"}
+
+
+def test_publish_voice_pipeline_style_off_payload(quest_node_mod):
+    """«Без стиля»: llm_enabled=False + preset='' → payload с пустым preset.
+
+    Supervisor трактует preset='' как «Без стиля» (GRIP_OFF_PRESETS, см.
+    supervisor_node.py:359). Важно, чтобы bridge не дропал пустой
+    preset и не нормализовал в «none» — supervisor ждёт строку из
+    списка GRIP_OFF_PRESETS = {"", "none", "off"}.
+    """
+    bridge, voice_pipeline_pub = _make_voice_pipeline_only_bridge(quest_node_mod)
+    bridge.publish_voice_pipeline(False, "", "ru")
+    assert len(voice_pipeline_pub.published) == 1
+    parsed = json.loads(voice_pipeline_pub.published[0].data)
+    assert parsed == {"llm_enabled": False, "preset": "", "language": "ru"}
+
+
+def test_publish_voice_pipeline_missing_publisher_logs_and_silently_drops(
+    quest_node_mod,
+):
+    """Если publisher не сконфигурирован — no-op + warning, не exception.
+
+    Мост создаётся раньше publisher'а (см. quest_node.py — set_voice_*
+    публикаторы тоже None до конструктора ноды). Чтобы ws_server мог
+    жить, мост должен корректно падать в no-op, иначе первый
+    voice_pipeline cmd отвалит handler.
+    """
+    QuestBridge = quest_node_mod.QuestBridge
+
+    node = _MockNode()
+    bridge = QuestBridge(
+        node=node,
+        cmd_vel_quest_pub=_MockPublisher(),
+        cmd_vel_emergency_pub=_MockPublisher(),
+        # voice_pipeline_pub явно не передаём → None
+    )
+    bridge.publish_voice_pipeline(True, "translate", "en")
+    # Никаких exceptions. Warning залогирован.
+    assert any("voice_pipeline" in w for w in node.warnings)
 
 
 # --- voice_state (AV-20, 0x1202) --------------------------------------------
@@ -534,7 +636,12 @@ class _MockStringPublisher(_MockPublisher):
         super().publish(getattr(msg, "data", msg))
 
 
-def _make_voice_bridge(set_voice_pub=None, preview_voice_pub=None, voices_cache_ttl_sec=300.0):
+# issue #2232: раньше эта фабрика называлась ``_make_voice_bridge`` — как и
+# фабрика на строке ~226, возвращающая ШЕСТЬ значений. Второе определение
+# затеняло первое, и восемь тестов выше падали с
+# ``ValueError: not enough values to unpack (expected 6, got 3)``.
+# Локально это не видно: без geometry_msgs они skip-аются.
+def _make_voice_picker_bridge(set_voice_pub=None, preview_voice_pub=None, voices_cache_ttl_sec=300.0):
     """Construct QuestBridge с mock-publishers для voice-picker.
 
     set_voice_pub / preview_voice_pub опциональны (None → мост будет
@@ -576,7 +683,7 @@ def _string_msg(payload_str: str):
 
 def test_voices_cache_empty_snapshot_before_latched_publish():
     """Без latched-publish от tts_node — snapshot возвращает voices=[]."""
-    bridge, _, _ = _make_voice_bridge()
+    bridge, _, _ = _make_voice_picker_bridge()
     snap = bridge.list_voices_snapshot()
     assert snap["voices"] == []
     assert snap["active_provider"] == ""
@@ -585,7 +692,7 @@ def test_voices_cache_empty_snapshot_before_latched_publish():
 
 def test_voices_cache_hit_after_latched_publish():
     """После on_voices_message с приличным payload — snapshot содержит voices."""
-    bridge, _, _ = _make_voice_bridge()
+    bridge, _, _ = _make_voice_picker_bridge()
     payload = json.dumps({
         "provider": "yandex",
         "voice": "alena",
@@ -606,7 +713,7 @@ def test_voices_cache_hit_after_latched_publish():
 
 def test_voices_cache_expiry_returns_empty():
     """voices_cache_ttl_sec=0.1 → через 0.2 с snapshot пустой (TTL истёк)."""
-    bridge, _, _ = _make_voice_bridge(voices_cache_ttl_sec=0.1)
+    bridge, _, _ = _make_voice_picker_bridge(voices_cache_ttl_sec=0.1)
     payload = json.dumps({
         "provider": "yandex",
         "voice": "alena",
@@ -624,7 +731,7 @@ def test_voices_cache_expiry_returns_empty():
 
 def test_on_provider_state_message_invalidates_cache_on_provider_change():
     """Смена провайдера → invalidate cache (TTL=0, чтобы следующий list увидел [])."""
-    bridge, _, _ = _make_voice_bridge()
+    bridge, _, _ = _make_voice_picker_bridge()
     payload = json.dumps({
         "provider": "yandex",
         "voice": "alena",
@@ -644,7 +751,7 @@ def test_on_provider_state_message_invalidates_cache_on_provider_change():
 
 def test_set_voice_unknown_returns_nack_with_available():
     """set_voice(bogus) при активном yandex → nack + available=текущий список."""
-    bridge, svp, _ = _make_voice_bridge()
+    bridge, svp, _ = _make_voice_picker_bridge()
     # Актитируем активный провайдер через provider_state (как сделал бы tts_node).
     bridge.on_provider_state_message(_string_msg(json.dumps({"provider": "yandex", "voice": "alena"})))
     # Загружаем voices_payload (через on_voices_message).
@@ -674,7 +781,7 @@ def test_set_voice_success_publishes_json_with_provider_hint():
     от «pub/sub не доезжает до supervisor» (H2/H3) при поиске пропавших
     смен голоса в docker logs (см. PR-body).
     """
-    bridge, svp, _ = _make_voice_bridge()
+    bridge, svp, _ = _make_voice_picker_bridge()
     bridge.on_provider_state_message(_string_msg(json.dumps({"provider": "yandex", "voice": "alena"})))
     bridge.on_voices_message(_string_msg(json.dumps({
         "provider": "yandex",
@@ -723,7 +830,7 @@ def test_set_voice_success_publishes_json_with_provider_hint():
 
 def test_set_voice_no_active_provider_returns_tts_unreachable():
     """Без provider_state — set_voice возвращает tts_unreachable, ничего не публикует."""
-    bridge, svp, _ = _make_voice_bridge()
+    bridge, svp, _ = _make_voice_picker_bridge()
     ok, _, reason, _ = bridge.set_voice("alena", None)
     assert ok is False
     assert reason == "tts_unreachable"
@@ -732,7 +839,7 @@ def test_set_voice_no_active_provider_returns_tts_unreachable():
 
 def test_publish_preview_voice_emits_json():
     """publish_preview_voice → JSON в preview_voice_pub с request_id/voice_id/text."""
-    bridge, _, pvp = _make_voice_bridge()
+    bridge, _, pvp = _make_voice_picker_bridge()
     bridge.on_provider_state_message(_string_msg(json.dumps({"provider": "yandex", "voice": "alena"})))
     bridge.publish_preview_voice("req-1", "alena", "Привет, оператор!")
     assert len(pvp.published) == 1
@@ -746,7 +853,7 @@ def test_publish_preview_voice_emits_json():
 
 def test_publish_preview_voice_without_provider_still_emits():
     """preview_voice без provider_state (холодный старт) — provider="", но payload валиден."""
-    bridge, _, pvp = _make_voice_bridge()
+    bridge, _, pvp = _make_voice_picker_bridge()
     bridge.publish_preview_voice("req-x", "alena", "test")
     assert len(pvp.published) == 1
     parsed = json.loads(pvp.published[0])
@@ -754,25 +861,33 @@ def test_publish_preview_voice_without_provider_still_emits():
     assert parsed["request_id"] == "req-x"
 
 
-# ── issue #2099 — регресс NameError: '_voices_for' is not defined ────────────
+# ── issue #2138 — регресс «set_voice всегда tts_unreachable» ──────────────
 #
-# До фикса ``QuestBridge.set_voice`` падал с NameError при КАЖДОЙ попытке
-# UI Quest поставить голос через WS — ws_handler крашился, ws-сессия ломалась.
-# Supervisor импортирует ``voices_for as _voices_for`` корректно (см.
-# supervisor_node.py:53), а вот quest — отстал после рефакторинга
-# ``Bridge.execute(Command)`` (PR #2056/#2086): call site в ``set_voice``
-# остался, но символ в namespace модуля не подтянулся.
+# До фикса ``QuestBridge.set_voice`` валидировал ``voice_id`` через
+# компайл-тайм реестр ``rob_box_voice.tts_voice_registry``. В образе
+# ``rob-box-quest`` пакета нет (конвенция «пакет должен оставаться
+# импортируемым без rob_box_voice»), и защищённый fallback возвращал
+# ``[]`` → ``set_voice`` ВСЕГДА отдавал ``tts_unreachable`` при живом TTS.
 #
-# Тесты ниже НЕ требуют rclpy/audio_common_msgs — они работают и на
-# dev-env, и в Docker image.
+# Фикс: валидация по latched-кэшу ``/voice/tts/voices``
+# (``streams.voice_picker.pick_voice``). Тесты ниже фиксируют НОВЫЙ
+# контракт — что ``quest_node.py`` НЕ зависит от ``tts_voice_registry``
+# напрямую и НЕ требует его наличия в образе. Если кто-то снова
+# потащит реестр в quest-узел (нарушая конвенцию импортируемости без
+# rob_box_voice) — эти тесты укажут на регресс.
+#
+# Сама чистая логика валидации покрыта ``test_voice_picker.py`` —
+# работает без rclpy/audio_common_msgs и на dev-env, и в Docker image.
 
 
-def test_quest_node_imports_voices_for_from_voice_registry():
-    """Source-level регресс: ``quest_node.py`` должен импортировать ``_voices_for``.
+def test_quest_node_does_not_import_tts_voice_registry():
+    """Source-level регресс #2138: ``quest_node.py`` НЕ должен напрямую
+    импортировать ``tts_voice_registry``.
 
-    Парсим исходник текстом (AST) — это работает в любом окружении, без
-    тяжёлых зависимостей. Если кто-то снова отстанет от supervisor при
-    рефакторинге registry, этот тест сразу укажет на проблему.
+    Парсим исходник AST-ом (работает на любом окружении). Если кто-то
+    снова потащит реестр голосов прямо в quest-узел — образ
+    ``rob-box-quest`` (без rob_box_voice) сломается с ``Restarting``
+    loop на старте, как в регрессии PR #2105 (issue #2099).
     """
     import ast
     from pathlib import Path
@@ -784,102 +899,252 @@ def test_quest_node_imports_voices_for_from_voice_registry():
     source = quest_node_path.read_text(encoding="utf-8")
     tree = ast.parse(source)
 
-    found = False
+    bad_imports = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.ImportFrom):
             continue
         if node.module != "rob_box_voice.tts_voice_registry":
             continue
-        for alias in node.names:
-            # ``voices_for as _voices_for`` ИЛИ ``voices_for`` без alias —
-            # нас интересует оба варианта, но call site в set_voice ждёт
-            # именно ``_voices_for``.
-            target = alias.asname or alias.name
-            if target == "_voices_for":
-                found = True
-                break
+        bad_imports.append(ast.dump(node))
 
-    assert found, (
-        "quest_node.py должен импортировать "
-        "`from rob_box_voice.tts_voice_registry import voices_for as _voices_for` "
-        "(issue #2099, ws_handler крашился с NameError без этого импорта)"
+    assert not bad_imports, (
+        "quest_node.py НЕ должен импортировать rob_box_voice.tts_voice_registry — "
+        "пакет rob_box_voice отсутствует в образе rob-box-quest, и жёсткий/даже "
+        "защищённый импорт — мёртвая ловушка. Валидация голосов теперь идёт по "
+        "latched-кэшу /voice/tts/voices (см. streams.voice_picker.pick_voice, "
+        "issue #2138 fix). Если ты вернул этот импорт — остановись и проверь "
+        "issue #2138, прежде чем мёржить."
     )
 
 
-def test_voices_for_import_is_guarded():
-    """Регресс деплоя 2026-09-07: жёсткий импорт ронял quest_node на роботе.
+def test_quest_node_does_not_define_voices_for_fallback():
+    """Source-level регресс #2138: ``quest_node.py`` НЕ должен содержать
+    собственный fallback ``_voices_for``.
 
-    Образ ``rob-box-quest`` не содержит ``rob_box_voice.tts_voice_registry``.
-    PR #2105 добавил импорт на уровне модуля БЕЗ ``try/except`` — нода легла
-    в Restarting loop с ``ModuleNotFoundError`` сразу после деплоя, вместе
-    с ней ушли ВСЕ топики квеста (``/audio/quest_in``, ``/audio/quest_wake``,
-    телеоп). Конвенция репозитория — защищённый импорт с fallback, см.
-    ``rob_box_mcp_tools/tools/dialogue.py`` и ``rob_box_mcp_tools/voice_state.py``.
-
-    Проверяем структурно (AST): импорт ``tts_voice_registry`` обязан лежать
-    внутри ``ast.Try``. Ловится именно причина падения, а не симптом.
+    До фикса в файле был блок
+    ``try: from rob_box_voice.tts_voice_registry import voices_for as _voices_for
+    except ImportError: def _voices_for(provider): return []``.
+    Этот блок — корень #2138: на роботе fallback всегда возвращал ``[]``,
+    и ``set_voice`` не пропускал ни одного голоса. После фикса валидация
+    идёт через ``pick_voice`` (cache), и модуль ``quest_node`` ничем
+    подобным не занимается.
     """
     import ast
     from pathlib import Path
 
-    repo_root = Path(__file__).resolve().parents[4]  # test/unit/... → repo root
+    repo_root = Path(__file__).resolve().parents[4]
+    quest_node_path = repo_root / "src" / "rob_box_quest" / "rob_box_quest" / "quest_node.py"
+    source = quest_node_path.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    # Ищем любую ``def _voices_for(...)`` внутри модуля. Если она
+    # появится — это регресс #2138.
+    fallback_defs = []
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == "_voices_for"
+        ):
+            fallback_defs.append(ast.dump(node))
+
+    assert not fallback_defs, (
+        "quest_node.py не должен определять локальный fallback _voices_for — "
+        "это путь к регрессу issue #2138. Валидация голоса теперь — "
+        "streams.voice_picker.pick_voice по latched-кэшу /voice/tts/voices."
+    )
+
+
+def test_quest_node_uses_pick_voice_from_voice_picker_module():
+    """Source-level регресс #2138: ``QuestBridge.set_voice`` обязан вызывать
+    ``pick_voice`` из ``streams.voice_picker``.
+
+    Без этого вызова нет фикса #2138 — кто-то может случайно откатить
+    bridge на старый путь через ``_voices_for(provider)``. Тест находит
+    метод ``set_voice`` и проверяет, что его тело содержит обращение к
+    ``pick_voice``.
+    """
+    import ast
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[4]
     quest_node_path = repo_root / "src" / "rob_box_quest" / "rob_box_quest" / "quest_node.py"
     tree = ast.parse(quest_node_path.read_text(encoding="utf-8"))
 
-    guarded = False
+    # Найти класс QuestBridge → метод set_voice → имена в его теле.
+    set_voice_found = False
+    uses_pick_voice = False
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Try):
+        if not isinstance(node, ast.ClassDef):
             continue
-        for stmt in node.body:
+        if node.name != "QuestBridge":
+            continue
+        for item in node.body:
             if (
-                isinstance(stmt, ast.ImportFrom)
-                and stmt.module == "rob_box_voice.tts_voice_registry"
+                isinstance(item, ast.FunctionDef)
+                and item.name == "set_voice"
             ):
-                guarded = True
+                set_voice_found = True
+                for sub in ast.walk(item):
+                    if isinstance(sub, ast.Name) and sub.id == "pick_voice":
+                        uses_pick_voice = True
+                    if isinstance(sub, ast.Attribute) and sub.attr == "pick_voice":
+                        uses_pick_voice = True
 
-    assert guarded, (
-        "импорт rob_box_voice.tts_voice_registry в quest_node.py обязан быть "
-        "внутри try/except ImportError — образ rob-box-quest не содержит этот "
-        "модуль, жёсткий импорт кладёт ноду в Restarting loop (деплой 2026-09-07)"
+    assert set_voice_found, "QuestBridge.set_voice не найден — структура файла изменилась?"
+    assert uses_pick_voice, (
+        "QuestBridge.set_voice обязан вызывать pick_voice (issue #2138 fix). "
+        "Если ты это убрал — это регресс: set_voice снова ходит через "
+        "реестр/кэш неверным путём и ломает выбор голоса на роботе."
     )
 
 
-def test_quest_node_module_exposes_voices_for_alias():
-    """Runtime регресс: при импорте ``rob_box_node`` алиас ``_voices_for`` доступен.
+# ---------------------------------------------------------------------------
+# relay_teleop_heartbeat — IDL-типизация (issue #2189, ADR-0028 §4.4 S10)
+# ---------------------------------------------------------------------------
+#
+# До #2189 relay_teleop_heartbeat публиковал ``std_msgs/String`` с JSON-payload,
+# а супервизор-арбитр был подписан на ``rob_box_supervisor_msgs/msg/
+# TeleopHeartbeat`` — разные типы не соединяются, поэтому
+# LockManager.heartbeat() ни разу не вызывался и dead-man 500 мс был
+# фактически выключен. Эти тесты фиксируют, что:
+# 1) relay шлёт объект-сообщение с полями ``client_id/ts_ms/seq`` (а не JSON
+#    в ``.data`` как было);
+# 2) тип соответствует IDL ``TeleopHeartbeat`` из rob_box_supervisor_msgs;
+# 3) ``_heartbeat_pub=None`` — no-op (monitor-safe, ADR-0028 §4.5).
 
-    Это ловит случай, когда import-line есть в исходнике, но модуль не
-    импортируется (например, синтаксическая ошибка или пропавший
-    rob_box_voice в sys.path).
 
-    Тест skip'ается, если ``audio_common_msgs`` недоступен — quest_node
-    тянет rclpy/audio_common_msgs на верхнем уровне (только в Docker).
+class _FakeTeleopHeartbeatMsg:
+    """Минимальный fake IDL-объекта ``TeleopHeartbeat``.
+
+    Поля ровно как в ``src/rob_box_supervisor_msgs/msg/TeleopHeartbeat.msg``
+    (string client_id, uint64 ts_ms, uint32 seq) — этого достаточно для
+    unit-теста моста, который формирует сообщение и публикует его.
+    IDL-класс из ``rob_box_supervisor_msgs`` НЕ нужен: тест работает
+    даже на dev-env без colcon build (тот же fail-safe, что и
+    ``relay_teleop_heartbeat``).
+    """
+
+    def __init__(self) -> None:
+        self.client_id: str = ""
+        self.ts_ms: int = 0
+        self.seq: int = 0
+
+
+def _install_fake_teleop_heartbeat_module():
+    """Подменить ``rob_box_supervisor_msgs.msg.TeleopHeartbeat`` на fake.
+
+    Используется только в этом файле: возвращает модуль-fake, чтобы
+    ``from rob_box_supervisor_msgs.msg import TeleopHeartbeat`` внутри
+    ``relay_teleop_heartbeat`` отрезолвился в наш _FakeTeleopHeartbeatMsg.
+    Возвращает модуль, чтобы тест мог его потом снять через ``sys.modules.pop``.
+    """
+    import sys as _sys
+
+    fake_mod = type(_sys)("rob_box_supervisor_msgs.msg")
+    fake_mod.TeleopHeartbeat = _FakeTeleopHeartbeatMsg
+    _sys.modules["rob_box_supervisor_msgs.msg"] = fake_mod
+    return fake_mod
+
+
+def _make_bridge_with_heartbeat_pub():
+    """Сконструировать QuestBridge + отдельный ``heartbeat_pub``.
+
+    Возвращает ``(bridge, heartbeat_pub)``, где ``heartbeat_pub`` —
+    переданный в конструктор mock (НЕ ``bridge._heartbeat_pub``, потому
+    что он всегда равен переданному, но в тесте мы хотим ссылку).
     """
     pytest.importorskip(
-        "audio_common_msgs",
-        reason="QuestBridge/quest_node требует rclpy/audio_common_msgs (только в Docker image)",
+        "geometry_msgs",
+        reason="QuestBridge требует rclpy/geometry_msgs (только в Docker image)",
     )
-    import importlib
+    from rob_box_quest.quest_node import QuestBridge
 
-    # Принудительно импортируем зависимости, чтобы ``from rob_box_voice...``
-    # в quest_node.py мог резолвиться.
-    pytest.importorskip("rob_box_voice", reason="rob_box_voice не в sys.path")
-    import rob_box_quest.quest_node as qn  # noqa: E402
+    node = _MockNode()
+    hb_pub = _MockPublisher()
+    bridge = QuestBridge(
+        node=node,
+        cmd_vel_quest_pub=_MockPublisher(),
+        cmd_vel_emergency_pub=_MockPublisher(),
+        heartbeat_pub=hb_pub,
+    )
+    return bridge, hb_pub
 
-    # Ре-импорт через importlib на случай уже загруженной версии модуля
-    # в этом pytest-сеансе (тесты выше могли уже затянуть quest_node).
-    importlib.reload(qn)
 
-    assert hasattr(qn, "_voices_for"), (
-        "quest_node должен экспортировать алиас ``_voices_for`` "
-        "после рефакторинга Bridge.execute(Command) (issue #2099)"
+def test_relay_teleop_heartbeat_publishes_idl_message_not_json_string():
+    """Relay публикует объект-IDL с полями, а не JSON в std_msgs/String.
+
+    Это корень issue #2189: до фикса шлёл ``std_msgs/String`` с
+    ``data=json.dumps({...})``. В ROS2 подписчик на ``TeleopHeartbeat``
+    такое сообщение не примет — типы не совпадают, поэтому
+    LockManager.heartbeat не вызывался и dead-man 500 мс был выключен.
+    """
+    fake_mod = _install_fake_teleop_heartbeat_module()
+    try:
+        bridge, hb_pub = _make_bridge_with_heartbeat_pub()
+        bridge.relay_teleop_heartbeat(client_id="quest:abc-uuid", ts_ms=12345, seq=7)
+
+        assert len(hb_pub.published) == 1, "relay должен опубликовать ровно 1 сообщение"
+        msg = hb_pub.published[0]
+
+        # 1. НЕ std_msgs/String с JSON-строкой в .data — это была старая
+        #    (сломанная) ветка до issue #2189.
+        assert not hasattr(msg, "data") or not isinstance(
+            getattr(msg, "data", None), str
+        ), (
+            "relay_teleop_heartbeat вернул std_msgs.String/.data=JSON — это "
+            "старая (сломанная) ветка до issue #2189. ROS2-подписчик на "
+            "TeleopHeartbeat не получит такое сообщение и dead-man 500 мс "
+            "останется выключенным."
+        )
+
+        # 2. Поля соответствуют IDL TeleopHeartbeat (.msg):
+        #    string client_id / uint64 ts_ms / uint32 seq.
+        assert getattr(msg, "client_id", None) == "quest:abc-uuid", (
+            f"client_id в сообщении = {getattr(msg, 'client_id', None)!r}, "
+            "ожидалось 'quest:abc-uuid'"
+        )
+        assert int(getattr(msg, "ts_ms", -1)) == 12345
+        assert int(getattr(msg, "seq", -1)) == 7
+    finally:
+        import sys as _sys
+
+        _sys.modules.pop("rob_box_supervisor_msgs.msg", None)
+
+
+def test_relay_teleop_heartbeat_none_publisher_is_noop():
+    """``_heartbeat_pub=None`` → relay no-op (monitor-safe, ADR-0028 §4.5)."""
+    pytest.importorskip(
+        "geometry_msgs",
+        reason="QuestBridge требует rclpy/geometry_msgs (только в Docker image)",
     )
-    assert callable(qn._voices_for), (
-        "``_voices_for`` должен быть callable (тот же ``voices_for`` "
-        "из rob_box_voice.tts_voice_registry)"
+    from rob_box_quest.quest_node import QuestBridge
+
+    bridge = QuestBridge(
+        node=_MockNode(),
+        cmd_vel_quest_pub=_MockPublisher(),
+        cmd_vel_emergency_pub=_MockPublisher(),
+        heartbeat_pub=None,  # IDL не собран / тест без rclpy
     )
-    # Smoke: на известном провайдере возвращается список строк.
-    yandex_voices = qn._voices_for("yandex")
-    assert isinstance(yandex_voices, list)
-    assert all(isinstance(v, str) for v in yandex_voices), (
-        f"yandex voices должны быть list[str], получили {yandex_voices!r}"
-    )
+    # Не должно быть исключений и предупреждений.
+    bridge.relay_teleop_heartbeat(client_id="quest:x", ts_ms=0, seq=1)
+
+
+def test_relay_teleop_heartbeat_publishes_one_message_per_call():
+    """Каждый вызов relay → ровно 1 publish (без спама, как publish_emergency)."""
+    fake_mod = _install_fake_teleop_heartbeat_module()
+    try:
+        bridge, hb_pub = _make_bridge_with_heartbeat_pub()
+        for i in range(20):
+            bridge.relay_teleop_heartbeat(client_id="quest:uuid", ts_ms=i, seq=i)
+        assert len(hb_pub.published) == 20, (
+            f"Ожидалось 20 публикаций (по одной на вызов), получили {len(hb_pub.published)} — "
+            "есть антиспам-логика, которой быть не должно (ADR-0028 §4.4: 'Не слать heartbeat на автомате' "
+            "регулируется на стороне ws_server, а НЕ relay-а)."
+        )
+        # seq монотонный, ts_ms — клиентские метки.
+        seqs = [m.seq for m in hb_pub.published]
+        assert seqs == list(range(20)), "seq должно расти на 1 каждый вызов"
+    finally:
+        import sys as _sys
+
+        _sys.modules.pop("rob_box_supervisor_msgs.msg", None)

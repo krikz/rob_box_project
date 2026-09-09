@@ -28,7 +28,7 @@ from ..core.avatar_arbiter import (
     AcquireResult,
     LocalAvatarArbiterClient,
 )
-from ..core.floor import AvatarFloorSnapshot, AvatarStateFloorCache
+from ..core.floor import AvatarFloorSnapshot, AvatarStateFloorCache, FloorViewUpdate
 from ..protocol.frame import FrameType, decode_frame, encode_frame
 from ..streams.registry import STREAM_CATALOG, get_stream
 from .session import (
@@ -41,25 +41,20 @@ from .session import (
 )
 from .voice_floor import FloorHolder, FloorState, VoiceFloorCache
 
-# AV-28 §P7 (issue #1920): список допустимых voice-preset ID и языков вывода.
-# Синхронизирован с src/rob_box_voice/config/voice_presets.yaml (PR #1931)
-# и meta-quest-api.md §P7. Сервер не выдумывает — если клиент прислал
-# не-whitelisted preset/language → NACK (UI откатывает optimistic update).
-# Расширение списка = правка YAML + сюда, без правок dialogue_node.
-VOICE_PRESET_IDS: tuple[str, ...] = (
-    "technical",
-    "street",
-    "caveman",
-    "business",
-    "philosopher",
-    "lenin",
-    # «Перевод» — нейтральный пресет: не стилизует, только чистит оговорки
-    # и переводит на выбранный язык (voice_presets.yaml → presets.translate).
-    "translate",
+# AV-28 §P7 (issue #1920): whitelist voice-preset ID и языков вывода.
+# Single source of truth — ``rob_box_core.bridge_protocol`` (туда же
+# импортирует supervisor_node). Если кто-то добавляет 8-й пресет в
+# voice_presets.yaml + bridge_protocol, ws_server подхватит его
+# автоматически. Раньше тут была копия-tuple — issue #2240 фиксирует
+# третий инцидент с расхождением копий (валидация NACK'ала реальный
+# preset). Не возвращаемся к локальному объявлению: conformance-тест
+# ``test_ws_server_voice_presets`` всё равно проверит, что
+# ``ws_server.VOICE_PRESET_IDS`` — это тот же объект, что в каталоге.
+from rob_box_core.bridge_protocol import (
+    VOICE_LANGUAGES,  # noqa: F401  (re-export для обратной совместимости)
+    VOICE_PIPELINE_DEFAULT_LANGUAGE,  # noqa: F401  (issue #2265: единый SoT для дефолтного языка)
+    VOICE_PRESET_IDS,  # noqa: F401  (re-export для обратной совместимости)
 )
-# Языки вывода. Ключи languages: в voice_presets.yaml — источник истины;
-# здесь тот же список, потому что сервер валидирует запрос до ROS.
-VOICE_LANGUAGES: tuple[str, ...] = ("ru", "en", "fr", "de", "zh", "hi")
 
 # msgpack — payload supervisor-API (0x30..0x33). Импорт ленив: в некоторых
 # dev-env модуль может отсутствовать (как у нас на билд-машине для пары
@@ -71,9 +66,13 @@ except ImportError:  # pragma: no cover — dev-env only
     _msgpack = None
 
 
-# === AV-16: supervisor-API helpers =============================================
-# Эти helper-ы живут в ws_server потому что Bridge-supervisor-state snapshot
-# отдаётся через msgpack-encoded payload в STATE_UPDATE-фрейме (§3 строка 66).
+# === JSON_CMD dispatch table =================================================
+# Handler implementations are defined after WSSServer; this annotation keeps
+# the table's interface explicit while allowing handlers to call server seams.
+JSON_CMD_HANDLERS: dict[str, Any] = {}
+
+
+
 # Helper-ы — чистая логика, тестируются прямо в protocol/protocol/ тестах.
 
 VALID_FLOORS_V2: tuple[str, ...] = ("teleop", "voice")
@@ -85,6 +84,152 @@ VALID_MODES_V2: tuple[str, ...] = (
     "teleop_only",
     "voice_only",
 )
+
+# Каркас supervisor-API frame-типов. Расширение (новый supervisor frame)
+# = добавить FrameType в этот набор + handler в SUPERVISOR_HANDLERS ниже.
+# Сейчас только бинарные supervisor-фреймы; cmd-flow (supervisor_* через
+# JSON_CMD) живёт отдельно в _on_json_cmd.
+SUPERVISOR_FRAME_TYPES: frozenset[FrameType] = frozenset(
+    {FrameType.SET_MODE, FrameType.ACQUIRE_FLOOR, FrameType.RELEASE_FLOOR}
+)
+
+
+# === AV-16: FRAME_HANDLERS table (ADR-0021 R1, ADR-0080 §2.2) ==================
+# Frame-handlers с одинаковой сигнатурой
+# ``async (self, ws, session, payload) -> bool`` (плюс sid для voice_audio
+# и ftype для supervisor).
+# Возвращают ``False`` чтобы попросить ``_ws_handler`` закрыть сокет
+# после отправки ответа (HELLO auth-fail, GOODBYE).
+#
+# Исключения из таблицы (особая семантика):
+#   * HELLO     — может закрыть сокет на AUTH_FAIL.
+#   * GOODBYE   — нормальное закрытие (code 1000).
+#   * STATE_UPDATE — server→client only, приход от клиента = ERROR{BAD_PAYLOAD}.
+#
+# Эта таблица используется в ``_handle_frame`` (issue #2201, voice-vr 16).
+# Сами frame-handler'ы (``_dispatch_*``) — тонкие адаптеры, которые парсят
+# payload и зовут существующие бизнес-методы (``_on_subscribe``,
+# ``_on_unsubscribe`` и т.д.). Сложная бизнес-логика остаётся в
+# ``_on_json_cmd`` / ``_on_hello`` / etc. — out of scope этой карточки.
+async def _dispatch_subscribe(self, ws, session, payload) -> bool:
+    try:
+        payload_obj = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as e:
+        await self._send_error(ws, 0, ErrorCode.BAD_PAYLOAD, f"bad SUBSCRIBE json: {e}")
+        return True
+    await self._on_subscribe(ws, session, payload_obj)
+    return True
+
+
+async def _dispatch_unsubscribe(self, ws, session, payload) -> bool:
+    try:
+        payload_obj = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return True  # UNSUBSCRIBE с битым json — noop (как было в исходнике)
+    await self._on_unsubscribe(ws, session, payload_obj)
+    return True
+
+
+async def _dispatch_json_event(self, ws, session, payload) -> bool:
+    try:
+        payload_obj = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return True  # JSON_EVENT с битым json — noop (как было в исходнике)
+    await self._on_json_event(ws, session, payload_obj)
+    return True
+
+
+async def _dispatch_json_cmd(self, ws, session, payload) -> bool:
+    try:
+        payload_obj = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as e:
+        await self._send_error(ws, 0, ErrorCode.BAD_PAYLOAD, f"bad JSON_CMD json: {e}")
+        return True
+    await self._on_json_cmd(ws, session, payload_obj)
+    return True
+
+
+async def _dispatch_voice_audio(self, ws, session, sid, payload) -> bool:
+    # ADR-0071 step 5a: stream_id==2 → wake-канал (publish_quest_wake_audio),
+    # иначе — PTT/radio (publish_voice_audio, текущее поведение).
+    # Back-compat: stream_id==0 тоже идёт в radio-канал
+    # (исторически клиенты слали sid=0).
+    # issue #1992 observability: см. _note_voice_audio_rx — без этого приём
+    # молчит одинаково что при живом потоке без подписчика, что при клиенте,
+    # который вообще ничего не шлёт.
+    self._note_voice_audio_rx(sid, len(payload), session.session_id)
+    if sid == 2:
+        self.bridge.publish_quest_wake_audio(payload)
+    else:
+        self.bridge.publish_voice_audio(payload)
+    return True
+
+
+async def _dispatch_supervisor(self, ws, session, ftype, payload) -> bool:
+    # Supervisor-API (§3 + §11 + AV-16). Только v2-сессии; v1 присылает
+    # 0x30..0x32 → ERROR{PROTOCOL_VERSION} (возвращается из самого
+    # _handle_supervisor_command).
+    await self._handle_supervisor_command(ws, session, ftype, payload)
+    return True
+
+
+async def _dispatch_hello(self, ws, session, payload) -> bool:
+    try:
+        payload_obj = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as e:
+        await self._send_error(ws, 0, ErrorCode.BAD_PAYLOAD, f"bad HELLO json: {e}")
+        return True
+    if not await self._on_hello(ws, session, payload_obj):
+        # AUTH_FAIL → закрыть сокет после отправки ERROR.
+        await ws.close(code=4001, message=b"auth_fail")
+        return False
+    return True
+
+
+async def _dispatch_goodbye(self, ws) -> bool:
+    await ws.close(code=1000, message=b"goodbye")
+    return False
+
+
+async def _dispatch_state_update(self, ws) -> bool:
+    # Сервер-инициируемый frame; клиент НИКОГДА не должен слать
+    # STATE_UPDATE → ERROR{BAD_PAYLOAD}.
+    await self._send_error(
+        ws, 0, ErrorCode.BAD_PAYLOAD, "STATE_UPDATE is server→client only (§3)"
+    )
+    return True
+
+
+async def _dispatch_unknown(self, ws, ftype) -> bool:
+    await self._send_error(
+        ws, 0, ErrorCode.BAD_PAYLOAD, f"frame type {ftype} not supported"
+    )
+    return True
+
+
+FRAME_HANDLERS: dict = {
+    FrameType.SUBSCRIBE: _dispatch_subscribe,
+    FrameType.UNSUBSCRIBE: _dispatch_unsubscribe,
+    FrameType.JSON_EVENT: _dispatch_json_event,
+    FrameType.JSON_CMD: _dispatch_json_cmd,
+    FrameType.HELLO: _dispatch_hello,
+    FrameType.GOODBYE: lambda self, ws, session, payload: _dispatch_goodbye(ws),
+    FrameType.STATE_UPDATE: lambda self, ws, session, payload: _dispatch_state_update(
+        ws
+    ),
+    FrameType.VOICE_AUDIO: lambda self, ws, session, sid, payload: _dispatch_voice_audio(
+        self, ws, session, sid, payload
+    ),
+    FrameType.SET_MODE: lambda self, ws, session, payload: _dispatch_supervisor(
+        self, ws, session, FrameType.SET_MODE, payload
+    ),
+    FrameType.ACQUIRE_FLOOR: lambda self, ws, session, payload: _dispatch_supervisor(
+        self, ws, session, FrameType.ACQUIRE_FLOOR, payload
+    ),
+    FrameType.RELEASE_FLOOR: lambda self, ws, session, payload: _dispatch_supervisor(
+        self, ws, session, FrameType.RELEASE_FLOOR, payload
+    ),
+}
 
 
 def _pack_msgpack(payload: dict) -> bytes:
@@ -123,20 +268,34 @@ VOICE_AUDIO_LOG_INTERVAL_S: float = 10.0
 log = logging.getLogger(__name__)
 
 
-def _validate_voice_set_payload(
-    preset: Optional[str], language: Optional[str]
+# Шаг 4б (t_80e7aa1e): дефолтный язык пайплайна грипа до первой
+# синхронизации с панели.
+#
+# ADR-0080 §2.7 / issue #2265: источник истины — ``rob_box_core.bridge_protocol.
+# VOICE_PIPELINE_DEFAULT_LANGUAGE``. Раньше тут жила третья копия «ru»
+# (помимо supervisor_node и каталога); re-export через прямой импорт
+# гарантирует совпадение без ручной синхронизации (тот же приём, что
+# для VOICE_PRESET_IDS выше и для GRIP_DEFAULT_LANGUAGE в supervisor_node).
+
+
+def _validate_voice_pipeline_payload(
+    llm_enabled: bool, preset: str, language: str
 ) -> Optional[str]:
-    """Whitelist preset/language для AV-28 §P7 (тестируется без rclpy).
+    """Whitelist для voice_pipeline (тестируется без rclpy/WS).
 
     Возвращает ``None`` если payload валиден, иначе строку-причину для
-    ``voice_set_nack.reason``. Оба поля опциональны — пустой payload
-    (ничего не меняем) трактуется как валидный (UI получит ack с ``null``
-    в обеих позициях и mode_manager сохранит предыдущие значения).
+    ``voice_pipeline_nack.reason``.
+
+    Семантика «без стиля» = ``llm_enabled=False`` ИЛИ ``preset in
+    {"", "none", "off"}`` — грип идёт в TTS дословно, 0 вызовов LLM
+    (см. supervisor_node.classify_preset). Сервер не выдумывает
+    экзотические комбинации: пустой preset при llm_enabled=True — это
+    явный сигнал «не стилизуем» (id «none»), и он валиден.
     """
-    if preset is not None and preset not in VOICE_PRESET_IDS:
-        return f"invalid_voice_preset: {preset!r}"
-    if language is not None and language not in VOICE_LANGUAGES:
-        return f"invalid_voice_language: {language!r}"
+    if preset and preset not in VOICE_PRESET_IDS:
+        return f"invalid_voice_pipeline_preset: {preset!r}"
+    if language and language not in VOICE_LANGUAGES:
+        return f"invalid_voice_pipeline_language: {language!r}"
     return None
 
 
@@ -205,13 +364,26 @@ class Bridge(Protocol):
         """VOICE_AUDIO (stream_id=2, wake-channel): always-on микрофон с
         client-side RMS VAD (ADR-0071 step 5а) → AudioData в /audio/quest_wake.
 
-        Реализация (QuestBridge, issue #1992): публикует в ROS-топик
-        /audio/quest_wake, который читает stt_node.quest_wake_audio_callback
-        и маршрутизирует в /avatar/stt/result только при вейке «ТАРС»
-        (целевая §7.1/§9.1). Тестовая реализация — NoOpBridge — остаётся
-        no-op: unit-тесты на routing stream_id проверяют только то, что
-        WS-сервер вызывает этот метод с правильным payload, без участия
-        ROS-стека.
+        ``payload`` — один кадр 20 мс / 640 байт, НЕ фраза. Реализация
+        (QuestBridge, issue #2135) копит кадры и публикует ОДНУ AudioData на
+        фразу, закрывая её по паузе в потоке (см. `core/wake_segmenter.py`):
+        stt_node гоняет полный цикл распознавания на каждое сообщение, и на
+        20 мс оно всегда возвращает пусто. Дальше stt_node маршрутизирует в
+        /avatar/stt/result только при вейке «ТАРС» (целевая §7.1/§9.1).
+
+        Тестовая реализация — NoOpBridge — остаётся no-op: unit-тесты на
+        routing stream_id проверяют только то, что WS-сервер вызывает этот
+        метод с правильным payload, без участия ROS-стека.
+        """
+        ...
+
+    def reset_wake_audio(self) -> None:
+        """WS-сессия закончилась → выбросить недособранную wake-фразу.
+
+        issue #2135: сегментатор wake-канала (QuestBridge) держит буфер
+        кадров между вызовами ``publish_quest_wake_audio``. Буфер принадлежит
+        сессии: без сброса хвост фразы ушедшего оператора склеится с первыми
+        кадрами следующей. NoOpBridge — no-op (буфера нет).
         """
         ...
 
@@ -280,28 +452,25 @@ class Bridge(Protocol):
         """
         ...
 
-    # ── AV-28 §P7 (issue #1920) — voice style preset + language ──────────────
-    # Эти методы отвечают за смену СТИЛЯ речи (technical / street / caveman /
-    # business / philosopher / lenin) и языка вывода на ``dialogue_node``.
-    # ВНИМАНИЕ: «preset» здесь — это стиль речи (style preset), а НЕ
-    # TTS-вариант из ``set_voice(voice_id, preset)`` выше. Контракт
-    # разный: AV-27 «preset» — на стороне tts_node, AV-28 — на стороне
-    # dialogue_node. Никакого пересечения в рантайме.
-    def set_voice_preset(self, preset: str) -> None:
-        """AV-28 §P7: выставить ``voice_preset`` на ``dialogue_node``.
+    # AV-28 §P7 (issue #1920) — voice style preset/language удалены
+    # по ADR-0087 (2026-09-09, вариант (a)). Методы ``set_voice_preset`` /
+    # ``set_voice_language`` на ``Bridge`` и ``NoOpBridge`` сняты вместе
+    # с `_json_cmd_set_voice_style` и подписками супервизора на
+    # ``/avatar/set_voice_preset|language``. Смена стиля/языка грипа с
+    # панели теперь только через ``voice_pipeline`` cmd →
+    # ``publish_voice_pipeline`` (см. ниже) → супервизор
+    # ``_on_grip_voice_pipeline``.
+    def publish_voice_pipeline(
+        self, llm_enabled: bool, preset: str, language: str
+    ) -> None:
+        """Шаг 4б (issue #1989): опубликовать конфиг пайплайна грипа в /avatar/voice_pipeline.
 
-        Публикует запрос в ``/avatar/set_voice_preset``; супервизор
-        делает ``SetParameters(voice_preset=<preset>)`` (ADR-0028 S5).
-        """
-        ...
-
-    def set_voice_language(self, language: str) -> None:
-        """AV-28 §P7: выставить ``voice_output_language`` на ``dialogue_node``.
-
-        Публикует запрос в ``/avatar/set_voice_language``; супервизор
-        делает ``SetParameters(voice_output_language=<language>)``
-        (ADR-0028 S5). Без рестарта dialogue_node — параметр
-        подхватывается на следующей фразе.
+        Отдельный канал от AV-28 set_voice_preset/language: те меняют
+        voice_preset на dialogue_node (личность), а этот меняет _pipeline_*
+        на СУПЕРВИЗОРЕ (грип-трансформация, см. supervisor_node.py:2634).
+        Если ``llm_enabled=False`` или ``preset=""`` — грип произносит
+        дословно (0 вызовов LLM). Сервер уже провалидировал whitelist (см.
+        ``_validate_voice_pipeline_payload``); здесь — только публикация.
         """
         ...
 
@@ -454,6 +623,11 @@ class NoOpBridge:
         log.debug("NoOpBridge: set_wake_stream_state active=%s", active)
         return None
 
+    def reset_wake_audio(self) -> None:
+        # NoOpBridge: буфера wake-фразы нет (сегментация живёт в QuestBridge,
+        # issue #2135) — сбрасывать нечего.
+        return None
+
     def publish_voice_stop(self) -> None:
         return None
 
@@ -484,18 +658,23 @@ class NoOpBridge:
         # видели честный «no-op без моста».
         return False, None, "tts_unreachable", None
 
-    # ── AV-28 §P7 (issue #1920) — voice style stubs (NoOpBridge) ────────────
-    # Симметрично ``set_voice_preset``/``set_voice_language`` в Protocol:
-    # NoOpBridge для unit-тестов ws_server без ROS — ничего не публикует,
-    # но держит сигнатуру, чтобы isinstance(bridge, Bridge) работал.
-    def set_voice_preset(self, preset: str) -> None:
-        # NoOpBridge: см. set_voice_mode ниже — фиксируется в логе для теста.
-        log.debug("NoOpBridge: set_voice_preset preset=%s", preset)
-        return None
-
-    def set_voice_language(self, language: str) -> None:
-        # NoOpBridge: фиксируется в логе для теста.
-        log.debug("NoOpBridge: set_voice_language language=%s", language)
+    # AV-28 §P7 (issue #1920) — voice style preset/language удалены
+    # по ADR-0087 (2026-09-09, вариант (a)): см. ``Bridge`` выше.
+    # NoOpBridge зеркалит сигнатуры протокола, и ``set_voice_preset`` /
+    # ``set_voice_language`` также сняты — unit-тесты без ROS
+    # (test_ws_server_voice.py) больше их не дёргают, потому что
+    # ``_json_cmd_set_voice_style`` удалён.
+    # Шаг 4б grip-pipeline config (t_80e7aa1e) — см. ``Bridge``.
+    def publish_voice_pipeline(
+        self, llm_enabled: bool, preset: str, language: str
+    ) -> None:
+        # NoOpBridge: ничего не публикуем, только лог для отладки теста.
+        log.debug(
+            "NoOpBridge: publish_voice_pipeline llm_enabled=%s preset=%r language=%r",
+            llm_enabled,
+            preset,
+            language,
+        )
         return None
 
     def publish_preview_voice(self, request_id: str, voice_id: str, text: str) -> None:
@@ -562,7 +741,8 @@ _stream_ids_in_use: set[int] = set()
 
 # AV-27 / issue #1919 — rate-limit policy (docs/architecture/meta-quest-api.md §9):
 # list_voices ≤ 1/10s, set_voice ≤ 1/2s, preview_voice ≤ 1/5s + ≤3 параллельных;
-# AV-28 (стиль/язык) — свой слот set_voice_style ≤ 1/0.5s.
+# voice_pipeline ≤ 1/0.5s (та же защита, что была у AV-28 set_voice_style,
+# до ADR-0087 — теперь это единый защитный слот для смены стиля/языка грипа).
 # Реализуется через in-memory last-ts per ws (не per session) — соединение
 # одно, но политика прибита к клиенту.
 VOICE_LIST_MIN_INTERVAL_S: float = 10.0
@@ -580,14 +760,10 @@ _AUDIO_STREAMS: frozenset[str] = frozenset({"preview", "operator_tts"})
 # Один и тот же потолок для preview и operator_tts — на Quest один оператор.
 _AUDIO_PENDING_STALE_S: float = 60.0
 
-# AV-28 (стиль речи + язык вывода) считает СВОЙ слот, а не делит слот с
-# AV-27. Раньше слот был общий, и это ломало обычную работу оператора:
-# выбрал стиль в панели пайплайна → через секунду выбрал язык (или
-# применил голос в picker'е) → второй запрос молча падал в rate-limit, а
-# UI уже показывал новое значение. Два клика подряд — это не флуд, это
-# нормальный сценарий; флуд по-прежнему режется, но по каждой фиче
-# отдельно. Интервал меньше: AV-28 — это SetParameters на dialogue_node,
-# без синтеза и без похода к TTS-провайдеру.
+# ADR-0087 (2026-09-09, вариант (a)): AV-28 set_voice_style cmd удалён
+# вместе с `_json_cmd_set_voice_style`. rate-limit-слот остался и теперь
+# обслуживает voice_pipeline — единственный путь смены стиля/языка
+# грипа с панели (см. комментарий AV-27 выше).
 VOICE_STYLE_MIN_INTERVAL_S: float = 0.5
 
 
@@ -673,7 +849,7 @@ class WSSServer:
         # #1999 follow-up будут удалены.
         self._floor_tracker = self._avatar_arbiter
         self._voice_floor = self._avatar_arbiter
-        # client_id (= session_id) → True если ws_server уже сообщил
+        # session_id → True если ws_server уже сообщил
         # клиенту о FLOOR_HELD-error в текущем окне rate-limit. Нужно,
         # чтобы при HOLD-окне не слать ERROR повторно (rate-limit — на
         # уровне avatar_arbiter клиента, но здесь дополнительно дедуплим,
@@ -834,6 +1010,7 @@ class WSSServer:
         content_type: str,
         seq: int,
         total: int,
+        sample_rate: Optional[int] = None,
         ws: Optional[Any] = None,
     ) -> bool:
         """Обобщённая доставка аудио в WS клиента (ADR-0055, issue #1993).
@@ -845,6 +1022,11 @@ class WSSServer:
             аудио-байты — через ``_schedule_ws_send_binary`` (BINARY_FRAME,
             stream_id=0).
           * Unknown stream → log.warning + ``False``, без побочных эффектов.
+          * ADR-0078 §3.1: для ``stream="operator_tts"`` в meta добавляется
+            поле ``sample_rate`` (int, Гц) — обязательное для ручной
+            сборки ``AudioBuffer`` из int16-LE PCM на стороне клиента.
+            Для ``stream="preview"`` поле НЕ добавляется (preview использует
+            ``decodeAudioData`` и частоту не передаёт).
 
         Args:
             stream: один из ``_AUDIO_STREAMS``. Иначе — дроп.
@@ -891,6 +1073,10 @@ class WSSServer:
             "total": total,
             "ts_ms": ts_ms,
         }
+        # ADR-0078 §3.1: sample_rate только для operator_tts (preview не
+        # использует — там decodeAudioData и частота вшита в контейнер).
+        if stream == "operator_tts" and sample_rate is not None:
+            meta["sample_rate"] = int(sample_rate)
         self._schedule_ws_send(ws_resolved, meta)
         if audio_bytes:
             self._schedule_ws_send_binary(ws_resolved, audio_bytes)
@@ -904,6 +1090,7 @@ class WSSServer:
         content_type: str,
         seq: int,
         total: int,
+        sample_rate: Optional[int] = None,
     ) -> bool:
         """Тонкая обёртка для AV-27 preview-канала (обратная совместимость).
 
@@ -911,6 +1098,10 @@ class WSSServer:
         и поведение НЕ меняются (тесты AV-19/AV-27 остаются зелёными без
         правок); ADR-0055 ввёл обобщённый канал, а preview — первый стрим
         на нём.
+
+        ``sample_rate`` принят для симметрии сигнатуры, но НЕ попадает в
+        meta preview'а (ADR-0078 §3.1: для preview частота вшита в
+        контейнер mp3/wav/opus, ``decodeAudioData`` сам знает).
         """
         return self.deliver_audio(
             stream="preview",
@@ -920,6 +1111,7 @@ class WSSServer:
             content_type=content_type,
             seq=seq,
             total=total,
+            sample_rate=sample_rate,
         )
 
     def deliver_preview_done(self, request_id: str) -> bool:
@@ -936,6 +1128,30 @@ class WSSServer:
         """
         return self._send_audio_error(
             "preview", "preview_voice_error", request_id, reason
+        )
+
+    def deliver_operator_tts_done(self, request_id: str) -> bool:
+        """Финал оператор-TTS реплики → operator_tts_done. Чистит pending.
+
+        ADR-0078 §3.1: клиент играет каждый чанк сразу по приходу байт
+        (очередь), поэтому ``done`` сейчас НЕ публикуется сервером в норме
+        (нет финального синхронизирующего маркера). Метод оставлен для
+        forward-compat: явный flush/сброс (например, при supervised shutdown,
+        supervisor-level error или в e2e-тестах).
+        """
+        return self._send_audio_done(
+            "operator_tts", "operator_tts_done", request_id
+        )
+
+    def deliver_operator_tts_error(self, request_id: str, reason: str) -> bool:
+        """Ошибка оператор-TTS → operator_tts_error. Чистит pending.
+
+        ADR-0078 §3.1: симметрично ``deliver_preview_error``, для flush
+        при error-path (supervisor не смог синтезировать, ws закрылся,
+        и т.п.).
+        """
+        return self._send_audio_error(
+            "operator_tts", "operator_tts_error", request_id, reason
         )
 
     def _send_audio_done(
@@ -1089,6 +1305,98 @@ class WSSServer:
         """
         return self._avatar_arbiter.should_send_floor_held_error(session_id)
 
+    def _find_session_by_client_id(
+        self, client_id: str
+    ) -> "Optional[ClientSession]":
+        """Найти активную :class:`ClientSession` по server_client_id.
+
+        ``_sessions`` keyed by ``session_id`` (UUID), а внешний API
+        (avatar_arbiter, supervisor_*, JSON_EVENT клиенту) оперирует
+        ``server_client_id`` (issue #2190, ``"quest:<uuid>"``).
+        Линейный поиск по всем сессиям — их обычно < 5, поэтому
+        overhead не критичен (gate и heartbeat идут по
+        ``_avatar_arbiter.floor_holder`` напрямую, без поиска).
+        """
+        if not client_id:
+            return None
+        for sess in self._sessions.values():
+            if sess.server_client_id == client_id:
+                return sess
+        return None
+
+    def update_floor_cache(
+        self, snapshot: "AvatarFloorSnapshot"
+    ) -> "FloorViewUpdate":
+        """Обновить :py:attr:`AvatarStateFloorCache` из /avatar/state.
+
+        Issue #2190 (voice-vr 05): «живой путь floor_lost». Раньше
+        кеш жил только через ``LocalAvatarArbiterClient._push_to_cache``
+        (мутации из try_acquire/release) — внешний ``/avatar/state``
+        из avatar_supervisor никак не доходил до ws_server. Теперь
+        QuestBridge.on_avatar_state парсит msgpack → ``AvatarFloorSnapshot``
+        и зовёт этот метод; он же возвращает diff (``FloorViewUpdate``)
+        — на его основании QuestBridge шлёт ``JSON_EVENT{floor_lost}``
+        бывшему держателю, если avatar_supervisor перехватил/освободил
+        floor.
+
+        Метод вызывается из aiohttp-loop (см. ``_dispatch_state_update``),
+        поэтому single-thread инвариант кеша соблюдён.
+        """
+        return self._floor_cache.update(snapshot)
+
+    def notify_floor_lost_external(self, client_id: str, reason: str) -> None:
+        """Шлёт ``JSON_EVENT{floor_lost}`` в сокет указанного client_id.
+
+        Issue #2190: ``QuestBridge.on_avatar_state`` зовёт этот метод,
+        когда diff из ``AvatarStateFloorCache.update`` показал, что
+        бывший держатель floor-а (server_client_id) был одной из
+        наших Quest-сессий. avatar_supervisor (внешний) перехватил
+        или освободил floor — клиент должен DISARM-нуть и показать тост.
+
+        ``client_id`` — server_client_id (``"quest:<uuid>"``).
+        Метод НЕ трогает ``_avatar_arbiter.floor_holder`` —
+        avatar_supervisor остаётся источником истины; ws_server только
+        оповещает UI клиента.
+
+        Если у клиента ещё нет активной WS-сессии (например, отключился
+        пока avatar_supervisor перехватывал) — метод no-op. Это
+        безопасно, потому что кеш уже обновлён и при следующем
+        ``subscribe``/переподключении клиент увидит правильный state.
+        """
+        if not client_id:
+            return
+        session = self._find_session_by_client_id(client_id)
+        if session is None or not session.is_open():
+            return
+        ws = self._ws_by_session.get(session.session_id)
+        if ws is None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        if loop is None:
+            return
+
+        async def _notify() -> None:
+            try:
+                payload = json.dumps(
+                    {
+                        "type": "floor_lost",
+                        "floor": "teleop",
+                        "reason": reason,
+                        "ts_ms": int(time.time() * 1000),
+                    },
+                    separators=(",", ":"),
+                ).encode("utf-8")
+                await ws.send_bytes(encode_frame(FrameType.JSON_EVENT, 0, payload))
+            except Exception as exc:  # noqa: BLE001
+                log.warning("quest: floor_lost notify failed: %s", exc)
+
+        fut = asyncio.run_coroutine_threadsafe(_notify(), loop)
+        fut.add_done_callback(_consume_future_exception)
+        log.info("quest: floor_lost notify client_id=%s reason=%s", client_id, reason)
+
     def on_floor_lost_external(self, client_id: str) -> None:
         """Внешнее уведомление (от Bridge/avatar_supervisor) о потере floor.
 
@@ -1097,6 +1405,13 @@ class WSSServer:
         будет вызываться из подписки. Сейчас используется из
         QuestBridge через Bridge.on_floor_lost (см. _unregister_session
         для случая закрытия сессии).
+
+        ``client_id`` — server_client_id формата ``"quest:<session_uuid>"``
+        (issue #2190). Это совпадает с тем, что avatar_arbiter публикует
+        в ``/avatar/state.teleop_floor.client_id``, и с тем, что ws_server
+        хранит в ``_avatar_arbiter.floor_holder``. Поэтому сравнение
+        ``floor_holder != client_id`` корректно без дополнительной
+        конвертации.
 
         Внутри:
         1) Сбрасываем локальный tracker (если ещё держит — значит
@@ -1108,6 +1423,8 @@ class WSSServer:
         # ADR-0051 §2.2 (issue #1999, C2): проверяем avatar_arbiter
         # (источник истины по floor-ам) напрямую. Раньше это был
         # tracker.is_held_by — теперь его роль исполняет клиент.
+        # issue #2190: оба аргумента в формате server_client_id, никакой
+        # конвертации не нужно.
         if self._avatar_arbiter.floor_holder != client_id:
             # avatar_arbiter уже не считает client_id держателем —
             # likely двойное уведомление (release в _unregister_session
@@ -1119,10 +1436,12 @@ class WSSServer:
         # Уведомить Bridge (QuestBridge опубликует zero Twist).
         self.bridge.on_floor_lost(client_id)
         # Уведомить активные WS-сессии с этим client_id, если ещё открыты.
-        session = self._sessions.get(client_id)
+        # issue #2190: client_id — server_client_id, а ``_sessions``
+        # keyed by session_id. Ищем сессию через ``_find_session_by_client_id``.
+        session = self._find_session_by_client_id(client_id)
         if session is None or not session.is_open():
             return
-        ws = self._ws_by_session.get(client_id)
+        ws = self._ws_by_session.get(session.session_id)
         if ws is None:
             return
         # JSON_EVENT шлём в event-loop (он же вызвал эту функцию).
@@ -1150,7 +1469,7 @@ class WSSServer:
 
         fut = asyncio.run_coroutine_threadsafe(_notify(), loop)
         fut.add_done_callback(_consume_future_exception)
-        log.info("quest: floor_lost session_id=%s (external)", client_id)
+        log.info("quest: floor_lost client_id=%s (external)", client_id)
 
     def broadcast_frame(self, ui_name: str, payload: bytes) -> int:
         """Слать BINARY_FRAME всем сессиям, подписанным на ui_name.
@@ -1330,6 +1649,10 @@ class WSSServer:
         # Освободить stream_id'ы этой сессии.
         for sid in session.subscribed.values():
             _stream_ids_in_use.discard(sid)
+        # issue #2135: буфер wake-фразы принадлежит сессии. Оборвался WS
+        # (disconnect/watchdog/GOODBYE) — недособранную фразу выбрасываем,
+        # иначе она склеится с речью следующего оператора.
+        self.bridge.reset_wake_audio()
         # Освободить voice floor, если эта сессия его держала
         # (watchdog/GOODBYE/disconnect → без явного voice_ptt_stop).
         # ADR-0051 §2.2: avatar_arbiter.release_voice() — теперь
@@ -1490,707 +1813,32 @@ class WSSServer:
         session: ClientSession,
         payload_obj: dict[str, Any],
     ) -> None:
-        """JSON_CMD → Bridge + meta-commands.
+        """Dispatch a JSON_CMD through the module-level handler table.
 
-        Контракт:
-        - ping → session.feed_ping() (клиент шлёт JSON_CMD{cmd:"ping"})
-                 или JSON_EVENT{type:"ping"} — обрабатывается в _on_json_event
-        - teleop_twist → Bridge.publish_quest + feed_client_alive
-        - stop_emergency → Bridge.publish_emergency + emergency_stop
-        - stream_select → переключение активного camera-стрима
-        - stream_list → JSON_EVENT{type: stream_list, items: [...]}
-        - voice_ptt_start/stop → Bridge barge-in / voice stop (рация, P3)
-        - voice_mode / ui_button → Phase 2
+        Рефакторинг voice-vr 10 (issue #2195): бывшая разросшаяся
+        if/elif-цепочка (~200 строк) сведена к module-level
+        ``_json_cmd_*`` функциям, зарегистрированным в
+        :data:`JSON_CMD_HANDLERS` (см. конец файла). Здесь только
+        терминальный dispatcher: lookup → handler, иначе явный отказ
+        ERROR{UNKNOWN_COMMAND} вместо молчаливого drop.
         """
         cmd = payload_obj.get("cmd")
-        if cmd == "ping":
-            # Клиентский webxr_client/src/wire/connection.ts шлёт ping как
-            # JSON_CMD{cmd:"ping"} (отступление от контракта meta-quest-api.md
-            # §7, который говорит JSON_EVENT{type:"ping"}). Сбрасываем watchdog
-            # в обоих случаях чтобы не терять сессию.
-            session.feed_ping()
-            self.bridge.feed_client_alive()
-            return
-        if cmd == "stream_list":
-            items = []
-            for s in self.bridge.available_streams():
-                items.append(s)
-            await self._send(
-                ws,
-                FrameType.JSON_EVENT,
-                0,
-                {"type": "stream_list", "items": items},
-            )
-            return
-        if cmd == "teleop_twist":
-            try:
-                linear = float(payload_obj.get("linear", {}).get("x", 0.0))
-                angular = float(payload_obj.get("angular", {}).get("z", 0.0))
-            except (TypeError, ValueError):
-                await self._send_error(
-                    ws, 0, ErrorCode.BAD_PAYLOAD, "teleop_twist: bad linear/angular"
-                )
-                return
-            deadman = bool(payload_obj.get("deadman", False))
-            # AV-19: gate teleop_twist (ADR-0028 §4.4, meta-quest-api.md §5).
-            # Если включён require_teleop_floor и эта сессия НЕ держит
-            # teleop_floor — НЕ публикуем cmd_vel_quest и отдаём
-            # ERROR{FLOOR_HELD} (rate-limited, не чаще 1 раза в секунду;
-            # иначе на 30 Гц teleop_twist зальём сокет ошибками).
-            # stop_emergency (см. ниже) — ВСЕГДА в обход гейта, по
-            # ADR-0028 §4.4 / карточке: «аварийная остановка работает
-            # всегда, у кого бы ни был floor».
-            ts_ms_raw = payload_obj.get("ts_ms", int(time.time() * 1000))
-            seq_raw = payload_obj.get("seq", 0)
-            try:
-                ts_ms = (
-                    int(ts_ms_raw)
-                    if isinstance(ts_ms_raw, (int, float))
-                    else int(time.time() * 1000)
-                )
-                seq = int(seq_raw) if isinstance(seq_raw, (int, float)) else 0
-            except (TypeError, ValueError):
-                ts_ms, seq = int(time.time() * 1000), 0
-            # ADR-0051 §2.2: gate через avatar_arbiter (источник истины
-            # по floor-ам). tracker больше не используется.
-            if self._require_teleop_floor and self._avatar_arbiter.floor_holder != (
-                session.session_id
-            ):
-                if self._should_send_floor_held_error(session.session_id):
-                    await self._send_error(
-                        ws,
-                        0,
-                        ErrorCode.FLOOR_HELD,
-                        f"teleop_floor held by {self._avatar_arbiter.floor_holder!r}",
-                    )
-                # НЕ публикуем cmd_vel_quest, но feed_client_alive всё
-                # равно вызываем — клиент жив, watchdog должен крутиться.
-                self.bridge.feed_client_alive()
-                _ = deadman  # намерение: deadman игнорируется пока gate закрыт.
-                return
-            # Floor наш (или gate выключен) — публикуем.
-            self.bridge.publish_quest(linear, angular)
-            self.bridge.feed_client_alive()
-            # AV-19: relay teleop_heartbeat (ADR-0028 §4.4 S10). Twist-фрейм
-            # — тоже живость клиента (он активен), шлём heartbeat-reley.
-            # Источник живости — клиент: сервер НЕ генерирует heartbeat-ы
-            # на автомате (см. design.md §4.4 «не обнулит dead-man»).
-            try:
-                self.bridge.relay_teleop_heartbeat(session.session_id, ts_ms, seq)
-            except Exception as exc:  # noqa: BLE001 — relay не должен ронять сессию
-                log.warning("quest: relay_teleop_heartbeat failed: %s", exc)
-            _ = deadman  # Phase 1.5: telemetry через deadman-события
-            return
-        if cmd == "teleop_heartbeat":
-            # AV-19: клиентский heartbeat (ADR-0028 §4.4 S10). Сервер
-            # релеит в /teleop_heartbeat от имени этой сессии. Это
-            # ВТОРОЙ источник живости (первый — teleop_twist); оба
-            # пробрасываются одинаково. Никакого периодического
-            # self-loop на сервере: dead-man ловит именно молчание
-            # клиента, поэтому heartbeat нельзя слать «на автомате».
-            ts_ms_raw = payload_obj.get("ts_ms", int(time.time() * 1000))
-            seq_raw = payload_obj.get("seq", 0)
-            try:
-                ts_ms = (
-                    int(ts_ms_raw)
-                    if isinstance(ts_ms_raw, (int, float))
-                    else int(time.time() * 1000)
-                )
-                seq = int(seq_raw) if isinstance(seq_raw, (int, float)) else 0
-            except (TypeError, ValueError):
-                ts_ms, seq = int(time.time() * 1000), 0
-            # Если gate включён и floor чужой — relay НЕ шлём (клиент
-            # не должен жить в логе супервизора как владелец floor).
-            # Можно было бы слать всё равно (heartbeat не вредный), но
-            # тогда супервизор может ошибочно «оживить» чужой сессии
-            # клиента, что противоречит §4.4 «источник живости — клиент».
-            # ADR-0051 §2.2: gate через avatar_arbiter.
-            if self._require_teleop_floor and self._avatar_arbiter.floor_holder != (
-                session.session_id
-            ):
-                # Тем не менее feed_client_alive — watchdog WSS-сессии
-                # крутится по любой живости клиента.
-                self.bridge.feed_client_alive()
-                return
-            try:
-                self.bridge.relay_teleop_heartbeat(session.session_id, ts_ms, seq)
-            except Exception as exc:  # noqa: BLE001
-                log.warning("quest: relay_teleop_heartbeat failed: %s", exc)
-            self.bridge.feed_client_alive()
-            return
-        if cmd == "stop_emergency":
-            # AV-19: stop_emergency ВСЕГДА в обход гейта (ADR-0028 §4.4,
-            # карточка: «аварийная остановка работает всегда, у кого бы
-            # ни был floor»). Это страховка от зависшего Quest-клиента
-            # в момент, когда floor держит Telegram-оператор: B-кнопка
-            # или UI-кнопка в очках ОБЯЗАНА остановить робота.
-            self.bridge.publish_emergency()
-            self.bridge.emergency_stop()
-            return
-        if cmd == "voice_ptt_start":
-            # PTT start: mode "robot_voice" (левый grip) → STT → LLM → TTS;
-            # иначе "radio" (правый grip) → barge-in (прервать TTS + музыку).
-            #
-            # Voice-floor (server-side mutex): два квеста (оператор + AV-23
-            # telegram-bridge) НЕ должны одновременно публиковать PCM в
-            # /avatar/voice_in. При попытке второго voice_ptt_start шлём
-            # requester-у JSON_EVENT{type:"voice_state", state:"denied"} и
-            # НЕ вызываем bridge. Подробности см. voice_floor.py + план
-            # docs/plans/2026-08-27-quest-voice-passthrough-design.md §5.
-            # ADR-0051 §2.2: avatar_arbiter — источник истины по
-            # voice_floor. Попытка занять через avatar_arbiter.try_acquire_voice().
-            client_id = payload_obj.get("client_id")
-            if not isinstance(client_id, str):
-                client_id = None
-            voice_result = self._avatar_arbiter.try_acquire_voice(
-                session.session_id, client_id or ""
-            )
-            if not voice_result.granted:
-                # ``busy_holder`` — FloorHolder текущего держателя (Phase 1
-                # avatar_arbiter клиент его собирает сам; Phase 2 вернётся
-                # сервисом напрямую).
-                busy_label = (
-                    voice_result.busy_holder.label()
-                    if voice_result.busy_holder is not None
-                    else "unknown"
-                )
-                log.info(
-                    "quest: voice floor DENIED session=%s busy=%s",
-                    session.session_id,
-                    busy_label,
-                )
-                await self._send_voice_state(
-                    ws,
-                    state="denied",
-                    ts_ms=int(time.time() * 1000),
-                    holder_id=busy_label,
-                    detail=f"busy: {busy_label}",
-                )
-                return
-            # voice floor успешно взят — обновить voice cache (mirror из
-            # avatar_arbiter), чтобы UI-подписчики видели LISTENING.
-            self._voice_cache.update(
-                FloorState.LISTENING,
-                FloorHolder(
-                    session_id=session.session_id,
-                    client_id=client_id or "anon",
-                ),
-            )
-            log.info(
-                "quest: voice floor ACQUIRED session=%s client_id=%s",
+        handler = JSON_CMD_HANDLERS.get(cmd)
+        if handler is None:
+            log.warning(
+                "quest: unknown JSON_CMD received: cmd=%r session_id=%s "
+                "(see issue #2195)",
+                cmd,
                 session.session_id,
-                client_id or "anon",
             )
-            if payload_obj.get("mode") == "robot_voice":
-                self.bridge.publish_voice_robot_start()
-            else:
-                self.bridge.publish_voice_barge_in()
-            await self._send_voice_state(
+            await self._send_error(
                 ws,
-                state="listening",
-                ts_ms=int(time.time() * 1000),
-                holder_id=self._voice_cache.holder.label()
-                if self._voice_cache.holder
-                else None,
-            )
-            return
-        if cmd == "voice_ptt_stop":
-            # Правый grip (рация) → закрыть голосовой стрим; левый grip
-            # (робот-голос) → вытолкнуть буфер PCM в STT.
-            #
-            # Voice-floor: если requester — текущий держатель, освобождаем
-            # и публикуем voice_state{idle}. Иначе — bridge-вызов как
-            # прежде (идемпотентен), но floor не трогаем (защита от
-            # двойного stop от не-держателя).
-            # ADR-0051 §2.2: avatar_arbiter.release_voice() — единственная
-            # точка освобождения voice_floor.
-            was_holder = self._avatar_arbiter.release_voice(session.session_id)
-            if was_holder:
-                # mirror в кэше: UI должен видеть IDLE сразу.
-                self._voice_cache.update(FloorState.IDLE, None)
-                log.info(
-                    "quest: voice floor RELEASED session=%s",
-                    session.session_id,
-                )
-            if payload_obj.get("mode") == "robot_voice":
-                self.bridge.publish_voice_robot_stop()
-            else:
-                self.bridge.publish_voice_stop()
-            if was_holder:
-                await self._send_voice_state(
-                    ws,
-                    state="idle",
-                    ts_ms=int(time.time() * 1000),
-                )
-            return
-        if cmd == "voice_mode":
-            # Смена режима голоса (off/passthrough/ttts_proxy/stt_llm/...).
-            # Маршрутизация — через супервизор (ADR-0028 S5): bridge переводит
-            # wire-режим в voice_input_mode и публикует запрос супервизору.
-            mode = payload_obj.get("mode")
-            self.bridge.set_voice_mode(mode)
-            await self._send(
-                ws,
-                FrameType.JSON_EVENT,
                 0,
-                {
-                    "type": "voice_mode_ack",
-                    "mode": mode,
-                    "ts_ms": int(time.time() * 1000),
-                },
+                ErrorCode.UNKNOWN_COMMAND,
+                f"unknown JSON_CMD: {cmd!r}",
             )
             return
-        if cmd in ("voice_listen_start", "voice_listen_stop"):
-            # ADR-0071 step 5a: панельный тумблер «всегда слушать».
-            # Клиент шлёт это при включении/выключении wake-канала в UI
-            # (UI — отдельная карточка, здесь только серверная сторона).
-            # Сервер фиксирует состояние и публикует /avatar/wake_stream
-            # для наблюдателей (дашборд, e2e). Идемпотентно.
-            active = cmd == "voice_listen_start"
-            try:
-                self.bridge.set_wake_stream_state(active)
-            except Exception as exc:  # noqa: BLE001
-                log.warning("quest: set_wake_stream_state failed: %s", exc)
-            await self._send(
-                ws,
-                FrameType.JSON_EVENT,
-                0,
-                {
-                    "type": "voice_listen_ack",
-                    "active": active,
-                    "ts_ms": int(time.time() * 1000),
-                },
-            )
-            return
-        if cmd == "stream_select":
-            # Meta-command: UI запросил смену активного стрима.
-            # Сервер подтверждает что стрим есть в registry, и возвращает
-            # текущий stream_id (если уже подписан) или подсказывает
-            # SUBSCRIBE. Клиент сам решает — UNSUBSCRIBE+SUBSCRIBE.
-            topic = payload_obj.get("topic")
-            spec = get_stream(topic) if isinstance(topic, str) else None
-            if spec is None:
-                await self._send_error(
-                    ws,
-                    0,
-                    ErrorCode.TOPIC_UNKNOWN,
-                    f"topic '{topic}' not in registry",
-                )
-                return
-            sid = session.subscribed.get(topic)
-            await self._send(
-                ws,
-                FrameType.JSON_EVENT,
-                0,
-                {
-                    "type": "stream_select_ack",
-                    "topic": topic,
-                    "stream_id": sid,  # может быть None → клиент делает SUBSCRIBE
-                    "kind": spec.kind.value,
-                },
-            )
-            return
-        # === AV-16: supervisor_* JSON-эквиваленты (§5.1) =====================
-        # Доступно только v2-сессиям; v1 → ERROR{PROTOCOL_VERSION} тем же
-        # поведенческим контрактом, что и в _handle_supervisor_command.
-        if cmd in (
-            "supervisor_set_mode",
-            "supervisor_acquire_floor",
-            "supervisor_release_floor",
-            "supervisor_get_state",
-        ):
-            if session.protocol_version != 2:
-                await self._send_error(
-                    ws,
-                    0,
-                    ErrorCode.PROTOCOL_VERSION,
-                    f"{cmd} requires subprotocol v2 (negotiated: {session.protocol_version}); "
-                    f"update client (docs §11)",
-                )
-                return
-            if session.server_client_id is None:
-                await self._send_error(
-                    ws,
-                    0,
-                    ErrorCode.AUTH_FAIL,
-                    "session not authenticated",
-                )
-                return
-            client_id = session.server_client_id
-            # client-supplied client_id игнорируется точно так же как в
-            # бинарных фреймах (см. _handle_supervisor_command).
-            payload_client_id = payload_obj.get("client_id")
-            if payload_client_id is not None and payload_client_id != client_id:
-                log.warning(
-                    "supervisor_api (JSON): client_id mismatch session=%s "
-                    "payload=%s (ignored; using server-side)",
-                    session.session_id,
-                    payload_client_id,
-                )
-
-            if cmd == "supervisor_get_state":
-                # poll-эквивалент STATE_UPDATE (§5.1): синхронный ответ.
-                snapshot = self.bridge.supervisor_state()
-                if snapshot is None:
-                    await self._send(
-                        ws,
-                        FrameType.JSON_EVENT,
-                        0,
-                        {
-                            "type": "supervisor_state",
-                            "state": None,
-                            "ts_ms": int(time.time() * 1000),
-                        },
-                    )
-                    return
-                if isinstance(snapshot, (bytes, bytearray)):
-                    # bytes-форма от моста — отдаём как base64-meta в message.
-                    # Кандидат на AV-16+ streaming — пока упростим: маленький
-                    # inline msgpack через hex-строку в message не нужен,
-                    # у клиента есть бинарный STATE_UPDATE-фрейм.
-                    await self._send_error(
-                        ws,
-                        0,
-                        ErrorCode.INTERNAL,
-                        "supervisor_state snapshot is msgpack bytes; "
-                        "use binary STATE_UPDATE frame instead",
-                    )
-                    return
-                await self._send(
-                    ws,
-                    FrameType.JSON_EVENT,
-                    0,
-                    {
-                        "type": "supervisor_state",
-                        "state": snapshot,
-                        "ts_ms": int(time.time() * 1000),
-                    },
-                )
-                return
-
-            # supervisor_set_mode / supervisor_acquire_floor / supervisor_release_floor
-            if cmd == "supervisor_set_mode":
-                mode = payload_obj.get("mode")
-                if not isinstance(mode, str) or mode not in VALID_MODES_V2:
-                    await self._send_error(
-                        ws,
-                        0,
-                        ErrorCode.BAD_PAYLOAD,
-                        f"mode must be one of {list(VALID_MODES_V2)}; got {mode!r}",
-                    )
-                    return
-                try:
-                    body = self.bridge.supervisor_set_mode(client_id, mode)
-                except Exception as exc:  # noqa: BLE001
-                    log.exception("supervisor_set_mode bridge crashed: %s", exc)
-                    await self._send_error(
-                        ws,
-                        0,
-                        ErrorCode.INTERNAL,
-                        f"supervisor_set_mode: {exc}",
-                    )
-                    return
-                if not body.get("applied"):
-                    await self._send_error(
-                        ws,
-                        0,
-                        ErrorCode.MODE_CONFLICT,
-                        str(body.get("reason", "refused")),
-                    )
-                    return
-                await self._send(
-                    ws,
-                    FrameType.JSON_EVENT,
-                    0,
-                    {
-                        "type": "supervisor_state",
-                        "state": self.bridge.supervisor_state(),
-                        "ts_ms": int(time.time() * 1000),
-                    },
-                )
-                return
-
-            # floor-операции
-            floor = payload_obj.get("floor")
-            if not isinstance(floor, str) or floor not in VALID_FLOORS_V2:
-                await self._send_error(
-                    ws,
-                    0,
-                    ErrorCode.BAD_PAYLOAD,
-                    f"floor must be one of {list(VALID_FLOORS_V2)}; got {floor!r}",
-                )
-                return
-            try:
-                if cmd == "supervisor_acquire_floor":
-                    body = self.bridge.supervisor_acquire_floor(client_id, floor)
-                else:  # supervisor_release_floor
-                    body = self.bridge.supervisor_release_floor(client_id, floor)
-            except Exception as exc:  # noqa: BLE001
-                log.exception("supervisor_floor bridge crashed: %s", exc)
-                await self._send_error(
-                    ws,
-                    0,
-                    ErrorCode.INTERNAL,
-                    f"supervisor floor: {exc}",
-                )
-                return
-            granted = bool(body.get("granted", body.get("applied")))
-            if not granted:
-                held_by = body.get("held_by")
-                reason = body.get("reason", "refused")
-                err_message = (
-                    reason if held_by is None else f"{reason}; held_by={held_by}"
-                )
-                await self._send_error(
-                    ws,
-                    0,
-                    ErrorCode.FLOOR_HELD,
-                    err_message,
-                )
-                return
-            await self._send(
-                ws,
-                FrameType.JSON_EVENT,
-                0,
-                {
-                    "type": "supervisor_state",
-                    "state": self.bridge.supervisor_state(),
-                    "ts_ms": int(time.time() * 1000),
-                },
-            )
-            return
-
-        # ── AV-27 / issue #1919 — TTS picker ──────────────────────────
-        if cmd == "list_voices":
-            # Лимит здесь только логируем: list_voices — чтение локального
-            # кэша (list_voices_snapshot), наверх он не ходит и стоить
-            # роботу ничего не может. Молчаливый дроп зато стоил дорого:
-            # оператор закрывал и в те же 10 с открывал TTS picker, и меню
-            # навсегда оставалось в «loading…», потому что ответа не было
-            # вовсе. Отвечаем снимком в любом случае.
-            if not self._voice_rate_limit_check(
-                ws, "list_voices", VOICE_LIST_MIN_INTERVAL_S
-            ):
-                log.debug("list_voices rate-limited — отвечаем из кэша")
-            snap = self.bridge.list_voices_snapshot()
-            await self._send(
-                ws,
-                FrameType.JSON_EVENT,
-                0,
-                {
-                    "type": "voice_list",
-                    "voices": snap["voices"],
-                    "active_provider": snap["active_provider"],
-                    "active_voice": snap["active_voice"],
-                    "ts_ms": int(time.time() * 1000),
-                },
-            )
-            return
-        if cmd == "set_voice":
-            # ── AV-27 (TTS picker) + AV-28 (style preset + language) ─────
-            # Один cmd обслуживает обе фичи. Диспетчер:
-            # 1) если в payload есть preset ∈ VOICE_PRESET_IDS или
-            #    language ∈ VOICE_LANGUAGES — это AV-28 style/language
-            #    запрос → bridge.set_voice_preset / set_voice_language
-            #    → супервизор → SetParameters на dialogue_node
-            #    (см. ADR-0028 §S5, meta-quest-api.md §P7).
-            # 2) иначе (нет style-preset) — это AV-27 voice_id запрос
-            #    → bridge.set_voice(voice_id, preset) (TTS picker).
-            # Rate-limit считается ПОСЛЕ развилки: у AV-27 и AV-28 свои
-            # слоты (см. VOICE_STYLE_MIN_INTERVAL_S). И дропа молча тут
-            # больше нет — на превышение уходит voice_set_nack, иначе UI
-            # остаётся с оптимистично подсвеченным выбором, которого на
-            # роботе не случилось.
-            voice_id = payload_obj.get("voice_id")
-            preset = payload_obj.get("preset")
-            language = payload_obj.get("language")
-            ts_ms = int(time.time() * 1000)
-            # ── AV-28 §P7: style preset / language flow ────────────────────
-            # Развилка по ЗНАЧЕНИЮ, а не по наличию поля: имя `preset`
-            # делят две фичи. У AV-27 это пресет провайдера
-            # (standard|friendly|authoritative|whisper), у AV-28 — id стиля
-            # речи из VOICE_PRESET_IDS. Роутинг «есть preset → значит
-            # AV-28» отправлял легитимный запрос picker'а в whitelist
-            # стилей и отвечал NACK вместо ACK.
-            #
-            # Признак AV-28 — либо preset из списка стилей, либо language
-            # (у AV-27 такого поля нет вовсе). Всё прочее идёт в AV-27,
-            # где preset валидирует сам bridge.
-            av28_language = language if isinstance(language, str) else None
-            av28_preset = (
-                preset
-                if isinstance(preset, str) and preset in VOICE_PRESET_IDS
-                else None
-            )
-            # Третий признак: preset без voice_id. У picker'а voice_id
-            # обязателен и непуст, у панели стилей он может быть пустым —
-            # значит запрос с preset, но без voice_id это AV-28 с
-            # неизвестным стилем, и ответить на него надо NACK
-            # invalid_voice_preset, а не BAD_PAYLOAD про voice_id.
-            style_without_voice = (
-                isinstance(preset, str)
-                and preset
-                and not (isinstance(voice_id, str) and voice_id)
-            )
-            is_av28_request = (
-                av28_preset is not None
-                or av28_language is not None
-                or bool(style_without_voice)
-            )
-            if style_without_voice and av28_preset is None:
-                av28_preset = preset
-            if is_av28_request:
-                if not self._voice_rate_limit_check(
-                    ws, "set_voice_style", VOICE_STYLE_MIN_INTERVAL_S
-                ):
-                    log.info(
-                        "set_voice(AV-28) rate-limited: preset=%r language=%r",
-                        av28_preset,
-                        av28_language,
-                    )
-                    await self._send(
-                        ws,
-                        FrameType.JSON_EVENT,
-                        0,
-                        {
-                            "type": "voice_set_nack",
-                            "preset": av28_preset,
-                            "language": av28_language,
-                            "reason": "rate_limited",
-                            "ts_ms": ts_ms,
-                        },
-                    )
-                    return
-                nack_reason = _validate_voice_set_payload(
-                    preset=av28_preset, language=av28_language
-                )
-                if nack_reason:
-                    await self._send(
-                        ws,
-                        FrameType.JSON_EVENT,
-                        0,
-                        {
-                            "type": "voice_set_nack",
-                            "preset": av28_preset,
-                            "language": av28_language,
-                            "reason": nack_reason,
-                            "ts_ms": ts_ms,
-                        },
-                    )
-                    return
-                # Применяем: preset → /avatar/set_voice_preset; language →
-                # /avatar/set_voice_language. Супервизор делает SetParameters
-                # на dialogue_node (см. supervisor_node.py _apply_voice_*).
-                if av28_preset is not None:
-                    self.bridge.set_voice_preset(av28_preset)
-                if av28_language is not None:
-                    self.bridge.set_voice_language(av28_language)
-                await self._send(
-                    ws,
-                    FrameType.JSON_EVENT,
-                    0,
-                    {
-                        "type": "voice_set_ack",
-                        "preset": av28_preset,
-                        "language": av28_language,
-                        "ts_ms": ts_ms,
-                    },
-                )
-                return
-            # ── AV-27 / issue #1919: TTS picker flow ───────────────────────
-            if not self._voice_rate_limit_check(
-                ws, "set_voice", VOICE_SET_MIN_INTERVAL_S
-            ):
-                log.info("set_voice(AV-27) rate-limited: voice_id=%r", voice_id)
-                await self._send(
-                    ws,
-                    FrameType.JSON_EVENT,
-                    0,
-                    {
-                        "type": "voice_set_nack",
-                        "voice_id": voice_id if isinstance(voice_id, str) else "",
-                        "reason": "rate_limited",
-                        "ts_ms": ts_ms,
-                    },
-                )
-                return
-            if not isinstance(voice_id, str) or not voice_id:
-                await self._send_error(
-                    ws,
-                    0,
-                    ErrorCode.BAD_PAYLOAD,
-                    "set_voice: voice_id or preset/language required",
-                )
-                return
-            if preset is not None and not isinstance(preset, str):
-                await self._send_error(
-                    ws, 0, ErrorCode.BAD_PAYLOAD, "set_voice: preset must be string"
-                )
-                return
-            ok, applied_voice, reason, available = self.bridge.set_voice(
-                voice_id, preset
-            )
-            if not ok:
-                err_payload = {
-                    "type": "voice_set_nack",
-                    "voice_id": voice_id,
-                    "reason": reason or "unknown",
-                    "ts_ms": ts_ms,
-                }
-                if available:
-                    err_payload["available"] = available
-                await self._send(ws, FrameType.JSON_EVENT, 0, err_payload)
-                return
-            await self._send(
-                ws,
-                FrameType.JSON_EVENT,
-                0,
-                {
-                    "type": "voice_set_ack",
-                    "voice_id": applied_voice or voice_id,
-                    "preset": preset or "standard",
-                    "ts_ms": ts_ms,
-                },
-            )
-            return
-        if cmd == "preview_voice":
-            if not self._voice_rate_limit_check(
-                ws, "preview_voice", VOICE_PREVIEW_MIN_INTERVAL_S
-            ):
-                return
-            request_id = payload_obj.get("request_id")
-            voice_id = payload_obj.get("voice_id")
-            text = payload_obj.get("text")
-            if not isinstance(request_id, str) or not request_id:
-                await self._send_error(
-                    ws, 0, ErrorCode.BAD_PAYLOAD, "preview_voice: request_id required"
-                )
-                return
-            if not isinstance(voice_id, str) or not voice_id:
-                await self._send_error(
-                    ws, 0, ErrorCode.BAD_PAYLOAD, "preview_voice: voice_id required"
-                )
-                return
-            if not isinstance(text, str) or not text:
-                await self._send_error(
-                    ws, 0, ErrorCode.BAD_PAYLOAD, "preview_voice: text required"
-                )
-                return
-            if not self.start_preview_session(request_id, ws):
-                await self._send(
-                    ws,
-                    FrameType.JSON_EVENT,
-                    0,
-                    {
-                        "type": "preview_voice_error",
-                        "request_id": request_id,
-                        "reason": "too_many_concurrent_previews",
-                        "ts_ms": int(time.time() * 1000),
-                    },
-                )
-                return
-            self.bridge.publish_preview_voice(request_id, voice_id, text)
-            return
+        await handler(self, ws, session, payload_obj)
 
     async def _on_unsubscribe(
         self,
@@ -2235,7 +1883,98 @@ class WSSServer:
     # stream_select / stream_list + teleop_twist / stop_emergency.
 
     async def _ws_handler(self, request) -> Any:
-        """aiohttp WebSocket handler."""
+        """aiohttp WebSocket handler (thin orchestrator, ADR-0021 R1).
+
+        Декомпозиция (issue #2201, voice-vr 16):
+            * ``_handle_handshake``     — WS-upgrade + subprotocol + register
+            * ``_spawn_session_tasks``  — heartbeat / watchdog / state_update
+            * ``_handle_frame``         — dispatch по FrameType через FRAME_HANDLERS
+              + локальный _dispatch для особых ftype (HELLO/GOODBYE/STATE_UPDATE
+              / supervisor / unknown).
+
+        Frame-pump перенесён в ``_handle_frame`` (вводит дополнительный await
+        между receive-loop и finally). Тест
+        ``test_voice_floor_disconnect_releases_floor`` подтверждает, что
+        семантика сохранена: cancel/await порядок в finally остался как
+        в исходнике (все cancel'ятся синхронно до ``await task``), что
+        даёт ``_unregister_session`` шанс отработать сразу после close.
+        """
+        ws, session = await self._handle_handshake(request)
+        heartbeat_task, watchdog_task, state_update_task = self._spawn_session_tasks(
+            ws, session
+        )
+        try:
+            async for msg in ws:
+                if msg.type != msg.type.BINARY:
+                    continue  # text frames вне контракта
+                try:
+                    ftype, sid, payload = decode_frame(msg.data)
+                except ValueError as e:
+                    await self._send_error(ws, 0, ErrorCode.BAD_PAYLOAD, str(e))
+                    continue
+                # Исключения из frame-loop (issue #2099/#2100): один кривой
+                # КАДР (баг конкретного cmd-хендлера) НЕ должен убивать всю
+                # WS-сессию.
+                try:
+                    should_close = await self._handle_frame(
+                        ws, session, ftype, sid, payload
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:  # noqa: BLE001
+                    log.exception(
+                        "quest: frame handler crashed (ftype=%s): %s", ftype, e
+                    )
+                    try:
+                        await self._send_error(ws, 0, ErrorCode.INTERNAL, str(e))
+                    except Exception:  # noqa: BLE001
+                        log.debug("quest: _send_error after handler crash failed")
+                    continue
+                if should_close is False:
+                    return ws
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            log.exception("quest: ws_handler crashed: %s", e)
+            try:
+                await self._send_error(ws, 0, ErrorCode.INTERNAL, str(e))
+            except Exception:  # noqa: BLE001
+                pass
+        finally:
+            heartbeat_task.cancel()
+            watchdog_task.cancel()
+            state_update_task.cancel()
+            for task in (heartbeat_task, watchdog_task, state_update_task):
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
+            self._unregister_session(session)
+        return ws
+
+    async def _handle_frame(
+        self, ws, session: ClientSession, ftype: FrameType, sid: int, payload: bytes
+    ) -> Optional[bool]:
+        """Диспатчер одного фрейма. Возвращает ``False`` чтобы закрыть сокет.
+
+        Использует таблицу ``FRAME_HANDLERS`` для ВСЕХ известных ftype
+        (CC=1, dict lookup). Неизвестный ftype → ``_dispatch_unknown``.
+        """
+        handler = FRAME_HANDLERS.get(ftype)
+        if handler is not None:
+            if ftype == FrameType.VOICE_AUDIO:
+                return await handler(self, ws, session, sid, payload)
+            return await handler(self, ws, session, payload)
+        return await _dispatch_unknown(self, ws, ftype)
+
+    async def _handle_handshake(self, request):
+        """WS-upgrade + subprotocol negotiation + register session.
+
+        Возвращает пару ``(ws, session)`` готовую к frame-pump'у:
+            * ``ws``      — aiohttp WebSocketResponse после ``ws.prepare()``
+            * ``session`` — ClientSession c выставленным ``protocol_version``
+              и clock-baseline через ``feed_heartbeat()``.
+        """
         from aiohttp import web as _aiohttp_web
 
         # Echo negotiated subprotocol (Sec-WebSocket-Protocol). Without this,
@@ -2249,6 +1988,7 @@ class WSSServer:
         # работать на v1 (monitor-only, см. §11.1).
         ws = _aiohttp_web.WebSocketResponse(protocols=SUPPORTED_SUBPROTOCOLS_V2)
         await ws.prepare(request)
+
         session = ClientSession()
         # Фиксируем согласованный subprotocol-version: client может прислать
         # ``Sec-WebSocket-Protocol: v2`` или ``v1`` (или ничего — fallback v1).
@@ -2264,153 +2004,25 @@ class WSSServer:
         self._register_session(session, ws)
         # Отправить heartbeat сразу для clock baseline.
         session.feed_heartbeat()
+        return ws, session
 
-        # Heartbeat loop (отдельная task).
+    def _spawn_session_tasks(
+        self, ws, session: ClientSession
+    ) -> tuple[asyncio.Task, asyncio.Task, asyncio.Task]:
+        """Стартует 3 фоновых task'а для сессии. Возвращает кортеж для cancel'а.
+
+        Фоновые task'и:
+            * ``_heartbeat_loop``             — клиент-keepalive каждые 200 мс
+            * ``_watchdog_loop``              — kill-switch при долгом бездействии
+            * ``_state_update_keepalive_loop`` — STATE_UPDATE 1Hz только для v2
+        """
         heartbeat_task = asyncio.create_task(self._heartbeat_loop(ws, session))
-        # Watchdog loop.
         watchdog_task = asyncio.create_task(self._watchdog_loop(ws, session))
         # STATE_UPDATE keep-alive 1 Hz (только для v2-сессий; для v1 — no-op).
         state_update_task = asyncio.create_task(
             self._state_update_keepalive_loop(ws, session)
         )
-
-        try:
-            async for msg in ws:
-                if msg.type != msg.type.BINARY:
-                    continue  # text frames вне контракта
-                try:
-                    ftype, sid, payload = decode_frame(msg.data)
-                except ValueError as e:
-                    await self._send_error(ws, 0, ErrorCode.BAD_PAYLOAD, str(e))
-                    continue
-                # issue #2100/#2099 — один кривой КАДР (баг конкретного
-                # cmd-хендлера, напр. NameError в bridge.set_voice) НЕ должен
-                # убивать всю WS-сессию. До этой правки исключение здесь
-                # улетало в внешний except (см. ниже) → _unregister_session →
-                # вся сессия закрывалась, и operator_tts audio, летящий в ЭТУ
-                # же сессию (deliver_audio привязан к ws через
-                # register_audio_session), терял получателя без единого
-                # предупреждения на стороне supervisor/tts_node — реплика
-                # ТАРС в шлем просто пропадала. Теперь один упавший frame
-                # логируется, клиенту уходит ERROR{INTERNAL}, и цикл
-                # продолжается — сессия и все её audio-регистрации живы.
-                try:
-                    if ftype == FrameType.HELLO:
-                        try:
-                            payload_obj = json.loads(payload.decode("utf-8"))
-                        except (UnicodeDecodeError, json.JSONDecodeError) as e:
-                            await self._send_error(
-                                ws, 0, ErrorCode.BAD_PAYLOAD, f"bad HELLO json: {e}"
-                            )
-                            continue
-                        if not await self._on_hello(ws, session, payload_obj):
-                            # AUTH_FAIL → закрыть сокет после отправки ERROR.
-                            await ws.close(code=4001, message=b"auth_fail")
-                            return ws
-                        continue
-                    if session.state.value != "authenticated":
-                        await self._send_error(
-                            ws, 0, ErrorCode.BAD_PAYLOAD, "HELLO required first"
-                        )
-                        continue
-                    if ftype == FrameType.SUBSCRIBE:
-                        try:
-                            payload_obj = json.loads(payload.decode("utf-8"))
-                        except (UnicodeDecodeError, json.JSONDecodeError):
-                            await self._send_error(
-                                ws, 0, ErrorCode.BAD_PAYLOAD, "bad SUBSCRIBE json"
-                            )
-                            continue
-                        await self._on_subscribe(ws, session, payload_obj)
-                    elif ftype == FrameType.UNSUBSCRIBE:
-                        try:
-                            payload_obj = json.loads(payload.decode("utf-8"))
-                        except (UnicodeDecodeError, json.JSONDecodeError):
-                            continue
-                        await self._on_unsubscribe(ws, session, payload_obj)
-                    elif ftype == FrameType.JSON_EVENT:
-                        try:
-                            payload_obj = json.loads(payload.decode("utf-8"))
-                        except (UnicodeDecodeError, json.JSONDecodeError):
-                            continue
-                        await self._on_json_event(ws, session, payload_obj)
-                    elif ftype == FrameType.JSON_CMD:
-                        try:
-                            payload_obj = json.loads(payload.decode("utf-8"))
-                        except (UnicodeDecodeError, json.JSONDecodeError):
-                            await self._send_error(
-                                ws, 0, ErrorCode.BAD_PAYLOAD, "bad JSON_CMD json"
-                            )
-                            continue
-                        await self._on_json_cmd(ws, session, payload_obj)
-                    elif ftype == FrameType.GOODBYE:
-                        await ws.close(code=1000, message=b"goodbye")
-                        return ws
-                    elif ftype == FrameType.VOICE_AUDIO:
-                        # ADR-0071 step 5a: stream_id==2 → wake-канал
-                        # (publish_quest_wake_audio), иначе — PTT/radio
-                        # (publish_voice_audio, текущее поведение).
-                        # Back-compat: stream_id==0 тоже идёт в radio-канал
-                        # (исторически клиенты слали sid=0).
-                        # issue #1992 observability: см. _note_voice_audio_rx —
-                        # без этого приём молчит одинаково что при живом
-                        # потоке без подписчика, что при клиенте, который
-                        # вообще ничего не шлёт.
-                        self._note_voice_audio_rx(sid, len(payload), session.session_id)
-                        if sid == 2:
-                            self.bridge.publish_quest_wake_audio(payload)
-                        else:
-                            self.bridge.publish_voice_audio(payload)
-                    elif ftype in (
-                        FrameType.SET_MODE,
-                        FrameType.ACQUIRE_FLOOR,
-                        FrameType.RELEASE_FLOOR,
-                    ):
-                        # Supervisor-API (§3 + §11 + AV-16). Только v2-сессии;
-                        # v1 присылает 0x30..0x32 → ERROR{PROTOCOL_VERSION}.
-                        await self._handle_supervisor_command(
-                            ws, session, ftype, payload
-                        )
-                    elif ftype == FrameType.STATE_UPDATE:
-                        # Сервер-инициируемый frame; клиент НИКОГДА не должен
-                        # слать STATE_UPDATE → ERROR{BAD_PAYLOAD}.
-                        await self._send_error(
-                            ws,
-                            0,
-                            ErrorCode.BAD_PAYLOAD,
-                            "STATE_UPDATE is server→client only (§3)",
-                        )
-                    else:
-                        await self._send_error(
-                            ws,
-                            0,
-                            ErrorCode.BAD_PAYLOAD,
-                            f"frame type {ftype} not supported in Phase 1.2",
-                        )
-                except asyncio.CancelledError:
-                    raise
-                except Exception as e:  # noqa: BLE001 — один cmd не рвёт сессию
-                    log.exception(
-                        "quest: frame handler crashed (ftype=%s): %s", ftype, e
-                    )
-                    await self._send_error(ws, 0, ErrorCode.INTERNAL, str(e))
-                    continue
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:  # noqa: BLE001 — логируем и рвём сокет
-            log.exception("quest: ws_handler crashed: %s", e)
-            await self._send_error(ws, 0, ErrorCode.INTERNAL, str(e))
-        finally:
-            heartbeat_task.cancel()
-            watchdog_task.cancel()
-            state_update_task.cancel()
-            for task in (heartbeat_task, watchdog_task, state_update_task):
-                try:
-                    await task
-                except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                    pass
-            self._unregister_session(session)
-        return ws
+        return heartbeat_task, watchdog_task, state_update_task
 
     async def _heartbeat_loop(self, ws, session: ClientSession) -> None:
         try:
@@ -2492,6 +2104,17 @@ class WSSServer:
             log.debug("state_update_keepalive ended: %s", e)
 
     # === AV-16: supervisor-command handler =======================================
+    #
+    # Декомпозиция (voice-vr 17, t_af606d97, ADR-0021 R1):
+    #  * 4 pre-guard'а (protocol_version, auth, msgpack unpack, client_id
+    #    normalization) вынесены в _prepare_supervisor_dispatch (CC≤15).
+    #  * Per-frame логика — module-level handler-ы (_handle_set_mode /
+    #    _handle_acquire_floor / _handle_release_floor / _handle_set_voice)
+    #    с сигнатурой ``async (server, ws, session, data, client_id) -> None``.
+    #  * Общий snapshot-отправитель вынесен в _send_supervisor_state_update
+    #    (раньше была копипаста в SET_MODE success и FLOOR success).
+    #  * Диспетчер табличный (SUPERVISOR_HANDLERS), default-ветка ловит
+    #    «неизвестный supervisor frame» → ERROR{BAD_PAYLOAD}.
     async def _handle_supervisor_command(
         self,
         ws,
@@ -2507,6 +2130,45 @@ class WSSServer:
         сервер молча ест»), поэтому v1-клинт СРАЗУ получит явный сигнал
         обновиться через ``ERROR{PROTOCOL_VERSION}`` (см. §8 коды).
         """
+        # pre-guard: каждый guard либо отправляет ERROR и возвращает None,
+        # либо возвращает (data, client_id) — «можно продолжать».
+        prepared = await self._prepare_supervisor_dispatch(ws, session, ftype, payload)
+        if prepared is None:
+            return
+        data, client_id = prepared
+        # табличный dispatcher; default-ветка ловит FrameType'ы, которые
+        # маршрутизируются сюда из _ws_handler, но handler'а не имеют
+        # (например, будущие расширения SUPERVISOR_FRAME_TYPES без правки
+        # таблицы). Защита «добавил новый ftype → забыл handler» →
+        # явный ERROR клиенту, а не молчаливый drop.
+        handler = SUPERVISOR_HANDLERS.get(ftype)
+        if handler is None:
+            log.error(
+                "supervisor_api: no handler for ftype=%s (frame dropped)",
+                ftype,
+            )
+            await self._send_error(
+                ws,
+                0,
+                ErrorCode.BAD_PAYLOAD,
+                f"unknown supervisor frame {ftype.name} (0x{ftype.value:02x})",
+            )
+            return
+        await handler(self, ws, session, data, client_id)
+
+    async def _prepare_supervisor_dispatch(
+        self,
+        ws,
+        session: ClientSession,
+        ftype: FrameType,
+        payload: bytes,
+    ) -> Optional[tuple[dict, str]]:
+        """4 pre-guard'а для supervisor-фрейма: version / auth / msgpack / client_id.
+
+        Возвращает ``(data, server_client_id)`` если все гварды прошли, иначе
+        ``None`` (ERROR уже отправлен). Каждый guard — отдельная ветка,
+        CC≤15 благодаря выносу из ``_handle_supervisor_command``.
+        """
         if session.protocol_version != 2:
             await self._send_error(
                 ws,
@@ -2515,8 +2177,7 @@ class WSSServer:
                 f"{ftype.name} requires subprotocol v2 (negotiated: "
                 f"{session.protocol_version}); update client (docs §11)",
             )
-            return
-
+            return None
         if session.server_client_id is None:
             # Пре-аутентификация, теоретически не должно случиться (выше в
             # _ws_handler есть защита «session.state != authenticated»), но
@@ -2524,8 +2185,7 @@ class WSSServer:
             await self._send_error(
                 ws, 0, ErrorCode.AUTH_FAIL, "session not authenticated"
             )
-            return
-
+            return None
         # unpack msgpack
         try:
             data = _unpack_msgpack(payload)
@@ -2538,8 +2198,7 @@ class WSSServer:
                 ErrorCode.BAD_PAYLOAD,
                 f"supervisor payload: {exc}",
             )
-            return
-
+            return None
         # Игнорируем client-supplied client_id (см. §11 + AV-16 «клиент не
         # должен уметь представиться Telegram'ом»). Сервер подставляет свой
         # server_client_id; расхождение — лог-warning.
@@ -2552,118 +2211,603 @@ class WSSServer:
                 session.session_id,
                 payload_client_id,
             )
+        return (data, client_id)
 
-        if ftype == FrameType.SET_MODE:
-            mode = data.get("mode")
-            if not isinstance(mode, str) or mode not in VALID_MODES_V2:
-                await self._send_error(
-                    ws,
-                    0,
-                    ErrorCode.BAD_PAYLOAD,
-                    f"mode must be one of {list(VALID_MODES_V2)}; got {mode!r}",
-                )
-                return
-            try:
-                body = self.bridge.supervisor_set_mode(client_id, mode)
-            except Exception as exc:  # noqa: BLE001
-                # Мост не должен валить event-loop; если падает — это баг
-                # реализации Bridge и его надо исправлять, но клиент получит
-                # INTERNAL и сможет retry.
-                log.exception("supervisor_set_mode bridge crashed: %s", exc)
-                await self._send_error(
-                    ws,
-                    0,
-                    ErrorCode.INTERNAL,
-                    f"supervisor_set_mode: {exc}",
-                )
-                return
-            # Контракт: applied=False → FSM не пропустила → MODE_CONFLICT;
-            # иначе → успех → STATE_UPDATE со свежим снапшотом.
-            if not body.get("applied"):
-                await self._send_error(
-                    ws,
-                    0,
-                    ErrorCode.MODE_CONFLICT,
-                    str(body.get("reason", "refused")),
-                )
-                return
-            # Успех: шлём клиенту свежий STATE_UPDATE с msgpack {state: ...}.
-            snapshot = self.bridge.supervisor_state()
-            if snapshot is None:
-                # мост ещё не подключился — клиент пусть ждёт keep-alive.
-                return
-            if isinstance(snapshot, (bytes, bytearray)):
-                payload_bytes = bytes(snapshot)
-            elif isinstance(snapshot, dict):
-                payload_bytes = _pack_msgpack({"state": snapshot})
-            else:
-                return
-            await ws.send_bytes(encode_frame(FrameType.STATE_UPDATE, 0, payload_bytes))
+    async def _send_supervisor_state_update(self, ws) -> None:
+        """Отправить клиенту STATE_UPDATE с msgpack {state: <bridge snapshot>}.
+
+        Вынесен из двух копи-паст (SET_MODE success + FLOOR success). Если
+        bridge ещё не подключился (``snapshot is None``) — молча ничего не
+        шлём, клиент дождётся следующего STATE_UPDATE (1 Hz keep-alive или
+        следующая успешная supervisor-команда).
+        """
+        snapshot = self.bridge.supervisor_state()
+        if snapshot is None:
+            # мост ещё не подключился — клиент пусть ждёт keep-alive.
             return
-
-        if ftype in (FrameType.ACQUIRE_FLOOR, FrameType.RELEASE_FLOOR):
-            floor = data.get("floor")
-            if not isinstance(floor, str) or floor not in VALID_FLOORS_V2:
-                await self._send_error(
-                    ws,
-                    0,
-                    ErrorCode.BAD_PAYLOAD,
-                    f"floor must be one of {list(VALID_FLOORS_V2)}; got {floor!r}",
-                )
-                return
-            try:
-                if ftype == FrameType.ACQUIRE_FLOOR:
-                    body = self.bridge.supervisor_acquire_floor(client_id, floor)
-                else:
-                    body = self.bridge.supervisor_release_floor(client_id, floor)
-            except Exception as exc:  # noqa: BLE001
-                log.exception("supervisor_floor bridge crashed: %s", exc)
-                await self._send_error(
-                    ws,
-                    0,
-                    ErrorCode.INTERNAL,
-                    f"supervisor floor: {exc}",
-                )
-                return
-
-            granted = bool(body.get("granted", body.get("applied")))
-            if not granted:
-                # Конфликт: floor занят другим client_id или другой
-                # permission_denied reason. Per §8 код FLOOR_HELD — единый
-                # код для обоих сценариев; ``held_by`` в message.
-                held_by = body.get("held_by")
-                reason = body.get("reason", "refused")
-                err_message = (
-                    reason if held_by is None else f"{reason}; held_by={held_by}"
-                )
-                await self._send_error(
-                    ws,
-                    0,
-                    ErrorCode.FLOOR_HELD,
-                    err_message,
-                )
-                return
-
-            # Успех: STATE_UPDATE со свежим snapshot (аналогично SET_MODE).
-            snapshot = self.bridge.supervisor_state()
-            if snapshot is None:
-                return
-            if isinstance(snapshot, (bytes, bytearray)):
-                payload_bytes = bytes(snapshot)
-            elif isinstance(snapshot, dict):
-                payload_bytes = _pack_msgpack({"state": snapshot})
-            else:
-                return
-            await ws.send_bytes(encode_frame(FrameType.STATE_UPDATE, 0, payload_bytes))
+        if isinstance(snapshot, (bytes, bytearray)):
+            payload_bytes = bytes(snapshot)
+        elif isinstance(snapshot, dict):
+            payload_bytes = _pack_msgpack({"state": snapshot})
+        else:
             return
+        await ws.send_bytes(encode_frame(FrameType.STATE_UPDATE, 0, payload_bytes))
 
-        # Unreachable: elif chain выше покрывает все три frame-type.
-        await self._send_error(
+
+# === AV-16: supervisor-frame handlers (module-level) =========================
+#
+# Каждый handler — async-функция с сигнатурой
+#     async def _handle_<frame>(server, ws, session, data, client_id) -> None
+# Почему не методы WSSServer: handler регистрируется в SUPERVISOR_HANDLERS
+# на module-level (после определения класса), и обращение через unbound
+# функцию WSSServer._method() потеряет self — мы бы передавали server
+# в аргумент ``self`` handler-а, и сигнатура не совпала бы. Module-level
+# async-функция явно принимает server первым аргументом — без сюрпризов.
+#
+# Handler'ы не делают pre-guard'ы (это работа _prepare_supervisor_dispatch);
+# они работают с уже провалидированными (data, client_id) и сразу
+# диспетчируют в bridge.
+
+
+async def _handle_set_mode(
+    server: "WSSServer",
+    ws,
+    session: ClientSession,
+    data: dict,
+    client_id: str,
+) -> None:
+    """SET_MODE (0x30): валидация mode → bridge.supervisor_set_mode → STATE_UPDATE.
+
+    Контракт: applied=False → FSM не пропустила → MODE_CONFLICT;
+    иначе → успех → STATE_UPDATE со свежим снапшотом.
+    """
+    mode = data.get("mode")
+    if not isinstance(mode, str) or mode not in VALID_MODES_V2:
+        await server._send_error(
             ws,
             0,
             ErrorCode.BAD_PAYLOAD,
-            f"unknown supervisor frame {ftype}",
+            f"mode must be one of {list(VALID_MODES_V2)}; got {mode!r}",
         )
+        return
+    try:
+        body = server.bridge.supervisor_set_mode(client_id, mode)
+    except Exception as exc:  # noqa: BLE001
+        # Мост не должен валить event-loop; если падает — это баг
+        # реализации Bridge и его надо исправлять, но клиент получит
+        # INTERNAL и сможет retry.
+        log.exception("supervisor_set_mode bridge crashed: %s", exc)
+        await server._send_error(
+            ws,
+            0,
+            ErrorCode.INTERNAL,
+            f"supervisor_set_mode: {exc}",
+        )
+        return
+    if not body.get("applied"):
+        await server._send_error(
+            ws,
+            0,
+            ErrorCode.MODE_CONFLICT,
+            str(body.get("reason", "refused")),
+        )
+        return
+    # Успех: шлём клиенту свежий STATE_UPDATE с msgpack {state: ...}.
+    await server._send_supervisor_state_update(ws)
+
+
+async def _handle_acquire_floor(
+    server: "WSSServer",
+    ws,
+    session: ClientSession,
+    data: dict,
+    client_id: str,
+) -> None:
+    """ACQUIRE_FLOOR (0x31): валидация floor → bridge.supervisor_acquire_floor.
+
+    Контракт: granted/applied=False → FLOOR_HELD (с held_by если есть);
+    иначе → успех → STATE_UPDATE со свежим снапшотом.
+    """
+    await _handle_floor_op(
+        server,
+        ws,
+        session,
+        data,
+        client_id,
+        bridge_call=server.bridge.supervisor_acquire_floor,
+    )
+
+
+async def _handle_release_floor(
+    server: "WSSServer",
+    ws,
+    session: ClientSession,
+    data: dict,
+    client_id: str,
+) -> None:
+    """RELEASE_FLOOR (0x32): валидация floor → bridge.supervisor_release_floor.
+
+    Контракт как у ACQUIRE_FLOOR (см. _handle_acquire_floor).
+    """
+    await _handle_floor_op(
+        server,
+        ws,
+        session,
+        data,
+        client_id,
+        bridge_call=server.bridge.supervisor_release_floor,
+    )
+
+
+async def _handle_floor_op(
+    server: "WSSServer",
+    ws,
+    session: ClientSession,
+    data: dict,
+    client_id: str,
+    *,
+    bridge_call: Any,
+) -> None:
+    """Общая часть ACQUIRE/RELEASE_FLOOR: валидация + bridge_call + STATE_UPDATE.
+
+    Раньше ACQUIRE/RELEASE шли двумя копи-паста if-блоками внутри
+    ``_handle_supervisor_command`` (строки 2822-2876 develop @ 2026-09-08).
+    Оба пути теперь здесь; выбор acquire vs release — через ``bridge_call``
+    (частично применённый bridge-метод, передаётся из caller-а).
+    """
+    floor = data.get("floor")
+    if not isinstance(floor, str) or floor not in VALID_FLOORS_V2:
+        await server._send_error(
+            ws,
+            0,
+            ErrorCode.BAD_PAYLOAD,
+            f"floor must be one of {list(VALID_FLOORS_V2)}; got {floor!r}",
+        )
+        return
+    try:
+        body = bridge_call(client_id, floor)
+    except Exception as exc:  # noqa: BLE001
+        log.exception("supervisor_floor bridge crashed: %s", exc)
+        await server._send_error(
+            ws,
+            0,
+            ErrorCode.INTERNAL,
+            f"supervisor floor: {exc}",
+        )
+        return
+    granted = bool(body.get("granted", body.get("applied")))
+    if not granted:
+        # Конфликт: floor занят другим client_id или другой
+        # permission_denied reason. Per §8 код FLOOR_HELD — единый
+        # код для обоих сценариев; ``held_by`` в message.
+        held_by = body.get("held_by")
+        reason = body.get("reason", "refused")
+        err_message = (
+            reason if held_by is None else f"{reason}; held_by={held_by}"
+        )
+        await server._send_error(
+            ws,
+            0,
+            ErrorCode.FLOOR_HELD,
+            err_message,
+        )
+        return
+    # Успех: STATE_UPDATE со свежим snapshot (аналогично SET_MODE).
+    await server._send_supervisor_state_update(ws)
+
+
+# Каркас supervisor-фреймов: FrameType → async-handler.
+# Используется ``_handle_supervisor_command`` после pre-guard-ов; default
+# в dispatcher отправляет ERROR{BAD_PAYLOAD} «unknown supervisor frame»
+# для FrameType-ов из SUPERVISOR_FRAME_TYPES, которые ещё не имеют
+# зарегистрированного handler-а (защита от «добавил новый ftype в
+# маршрутизацию — забыл handler»).
+#
+# Значения — module-level async-функции (НЕ bound-методы WSSServer),
+# потому что dict инициализируется в module-scope, где instance
+# WSSServer ещё не существует. Сигнатура handler-а — см. комментарий
+# выше перед _handle_set_mode.
+SUPERVISOR_HANDLERS: dict[FrameType, Any] = {
+    FrameType.SET_MODE: _handle_set_mode,
+    FrameType.ACQUIRE_FLOOR: _handle_acquire_floor,
+    FrameType.RELEASE_FLOOR: _handle_release_floor,
+}
+
+
+# === JSON_CMD handler implementations ======================================
+
+
+async def _json_cmd_ping(server, ws, session, payload):
+    session.feed_ping()
+    server.bridge.feed_client_alive()
+
+
+async def _json_cmd_stream_list(server, ws, session, payload):
+    await server._send(
+        ws,
+        FrameType.JSON_EVENT,
+        0,
+        {"type": "stream_list", "items": list(server.bridge.available_streams())},
+    )
+
+
+async def _json_cmd_stream_select(server, ws, session, payload):
+    topic = payload.get("topic")
+    spec = get_stream(topic) if isinstance(topic, str) else None
+    if spec is None:
+        await server._send_error(
+            ws, 0, ErrorCode.TOPIC_UNKNOWN, f"topic '{topic}' not in registry"
+        )
+        return
+    await server._send(
+        ws,
+        FrameType.JSON_EVENT,
+        0,
+        {
+            "type": "stream_select_ack",
+            "topic": topic,
+            "stream_id": session.subscribed.get(topic),
+            "kind": spec.kind.value,
+        },
+    )
+
+
+async def _json_cmd_teleop_twist(server, ws, session, payload):
+    try:
+        linear = float(payload.get("linear", {}).get("x", 0.0))
+        angular = float(payload.get("angular", {}).get("z", 0.0))
+    except (TypeError, ValueError):
+        await server._send_error(
+            ws, 0, ErrorCode.BAD_PAYLOAD, "teleop_twist: bad linear/angular"
+        )
+        return
+    ts_ms, seq = _json_cmd_ts_seq(payload)
+    # AV-19 (issue #2190, voice-vr 05): сравниваем с server_client_id,
+    # а не session_id — единый формат «quest:<uuid>» во всех точках
+    # (gate/heartbeat/release/STATE_UPDATE). Это «внешнее имя» сессии,
+    # которое видит avatar_supervisor.
+    if server._require_teleop_floor and server._avatar_arbiter.floor_holder != (
+        session.server_client_id
+    ):
+        if server._should_send_floor_held_error(session.session_id):
+            await server._send_error(
+                ws,
+                0,
+                ErrorCode.FLOOR_HELD,
+                f"teleop_floor held by {server._avatar_arbiter.floor_holder!r}",
+            )
+        server.bridge.feed_client_alive()
+        return
+    server.bridge.publish_quest(linear, angular)
+    server.bridge.feed_client_alive()
+    try:
+        # server_client_id гарантированно не None после AUTHENTICATED
+        # (см. ClientSession.mark_authenticated); ``or ""`` — defensive.
+        server.bridge.relay_teleop_heartbeat(
+            session.server_client_id or "", ts_ms, seq
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("quest: relay_teleop_heartbeat failed: %s", exc)
+
+
+async def _json_cmd_teleop_heartbeat(server, ws, session, payload):
+    ts_ms, seq = _json_cmd_ts_seq(payload)
+    # AV-19 (issue #2190): сравниваем с server_client_id (как в gate twist).
+    if server._require_teleop_floor and server._avatar_arbiter.floor_holder != (
+        session.server_client_id
+    ):
+        # Тем не менее feed_client_alive — watchdog WSS-сессии
+        # крутится по любой живости клиента.
+        server.bridge.feed_client_alive()
+        return
+    try:
+        server.bridge.relay_teleop_heartbeat(
+            session.server_client_id or "", ts_ms, seq
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("quest: relay_teleop_heartbeat failed: %s", exc)
+    server.bridge.feed_client_alive()
+
+
+def _json_cmd_ts_seq(payload: dict[str, Any]) -> tuple[int, int]:
+    now_ms = int(time.time() * 1000)
+    ts_raw = payload.get("ts_ms", now_ms)
+    seq_raw = payload.get("seq", 0)
+    try:
+        ts_ms = int(ts_raw) if isinstance(ts_raw, (int, float)) else now_ms
+        seq = int(seq_raw) if isinstance(seq_raw, (int, float)) else 0
+    except (TypeError, ValueError):
+        return now_ms, 0
+    return ts_ms, seq
+
+
+async def _json_cmd_stop_emergency(server, ws, session, payload):
+    server.bridge.publish_emergency()
+    server.bridge.emergency_stop()
+
+
+async def _json_cmd_voice_ptt_start(server, ws, session, payload):
+    client_id = payload.get("client_id")
+    client_id = client_id if isinstance(client_id, str) else None
+    result = server._avatar_arbiter.try_acquire_voice(session.session_id, client_id or "")
+    if not result.granted:
+        holder = result.busy_holder.label() if result.busy_holder is not None else "unknown"
+        log.info("quest: voice floor DENIED session=%s busy=%s", session.session_id, holder)
+        await server._send_voice_state(
+            ws, "denied", int(time.time() * 1000), holder, f"busy: {holder}"
+        )
+        return
+    server._voice_cache.update(
+        FloorState.LISTENING, FloorHolder(session.session_id, client_id or "anon")
+    )
+    log.info(
+        "quest: voice floor ACQUIRED session=%s client_id=%s",
+        session.session_id,
+        client_id or "anon",
+    )
+    if payload.get("mode") == "robot_voice":
+        server.bridge.publish_voice_robot_start()
+    else:
+        server.bridge.publish_voice_barge_in()
+    await server._send_voice_state(
+        ws,
+        "listening",
+        int(time.time() * 1000),
+        server._voice_cache.holder.label() if server._voice_cache.holder else None,
+    )
+
+
+async def _json_cmd_voice_ptt_stop(server, ws, session, payload):
+    was_holder = server._avatar_arbiter.release_voice(session.session_id)
+    if was_holder:
+        server._voice_cache.update(FloorState.IDLE, None)
+        log.info("quest: voice floor RELEASED session=%s", session.session_id)
+    if payload.get("mode") == "robot_voice":
+        server.bridge.publish_voice_robot_stop()
+    else:
+        server.bridge.publish_voice_stop()
+    if was_holder:
+        await server._send_voice_state(ws, "idle", int(time.time() * 1000))
+
+
+async def _json_cmd_voice_mode(server, ws, session, payload):
+    mode = payload.get("mode")
+    server.bridge.set_voice_mode(mode)
+    await server._send(
+        ws,
+        FrameType.JSON_EVENT,
+        0,
+        {"type": "voice_mode_ack", "mode": mode, "ts_ms": int(time.time() * 1000)},
+    )
+
+
+async def _json_cmd_voice_listen(server, ws, session, payload):
+    active = payload.get("cmd") == "voice_listen_start"
+    try:
+        server.bridge.set_wake_stream_state(active)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("quest: set_wake_stream_state failed: %s", exc)
+    await server._send(
+        ws,
+        FrameType.JSON_EVENT,
+        0,
+        {"type": "voice_listen_ack", "active": active, "ts_ms": int(time.time() * 1000)},
+    )
+
+
+async def _json_cmd_supervisor(server, ws, session, payload):
+    cmd = payload.get("cmd")
+    # [voice-vr 09 / issue #2194]: канонические имена — ``avatar_set_mode``
+    # / ``avatar_acquire_floor`` / ``avatar_release_floor`` (мета-API
+    # ADR-0080 §1.2). Прежние ``supervisor_*`` остаются рабочими алиасами
+    # (старые клиенты, тесты в test_ws_server_v2.py) — но каждое
+    # использование логируем WARNING, чтобы легче отследить откат на
+    # старые имена в полевых логах.
+    if isinstance(cmd, str) and cmd.startswith("supervisor_"):
+        log.warning(
+            "quest: deprecated JSON_CMD alias used: %s "
+            "(use avatar_* equivalent; see ADR-0080 §1.2 / issue #2194)",
+            cmd,
+        )
+    if session.protocol_version != 2:
+        await server._send_error(
+            ws,
+            0,
+            ErrorCode.PROTOCOL_VERSION,
+            f"{cmd} requires subprotocol v2 (negotiated: {session.protocol_version}); update client (docs §11)",
+        )
+        return
+    if session.server_client_id is None:
+        await server._send_error(ws, 0, ErrorCode.AUTH_FAIL, "session not authenticated")
+        return
+    client_id = session.server_client_id
+    payload_client_id = payload.get("client_id")
+    if payload_client_id is not None and payload_client_id != client_id:
+        log.warning(
+            "supervisor_api (JSON): client_id mismatch session=%s payload=%s (ignored; using server-side)",
+            session.session_id,
+            payload_client_id,
+        )
+    if cmd == "supervisor_get_state":
+        await _json_cmd_supervisor_get_state(server, ws)
+        return
+    # [voice-vr 09 / issue #2194] Канонические имена avatar_* маппятся в
+    # legacy supervisor_* для bridge (один и тот же API супервизора).
+    # Payload в avatar_* использует ``kind``, в supervisor_* — ``floor``;
+    # нормализуем в ``floor`` здесь, чтобы дальнейшая логика (включая
+    # ``_json_cmd_supervisor_floor_op``, который сам читает
+    # ``payload["cmd"]``) работала с одним именем.
+    # avatar_get_state НЕ маппим и не регистрируем: клиент не шлёт ни
+    # его, ни supervisor_get_state (grep по webxr_client/src пуст) —
+    # команда без отправителя (issue #2194).
+    if isinstance(cmd, str) and cmd.startswith("avatar_"):
+        cmd = "supervisor_" + cmd[len("avatar_"):]
+        payload = {**payload, "cmd": cmd}
+        if "floor" not in payload and "kind" in payload:
+            payload["floor"] = payload["kind"]
+    if cmd == "supervisor_set_mode":
+        if not await _json_cmd_supervisor_set_mode(server, ws, client_id, payload):
+            return
+    else:
+        if not await _json_cmd_supervisor_floor_op(server, ws, client_id, payload):
+            return
+    await server._send(
+        ws,
+        FrameType.JSON_EVENT,
+        0,
+        {"type": "supervisor_state", "state": server.bridge.supervisor_state(), "ts_ms": int(time.time() * 1000)},
+    )
+
+
+async def _json_cmd_supervisor_get_state(server, ws) -> None:
+    snapshot = server.bridge.supervisor_state()
+    if isinstance(snapshot, (bytes, bytearray)):
+        await server._send_error(ws, 0, ErrorCode.INTERNAL, "supervisor_state snapshot is msgpack bytes; use binary STATE_UPDATE frame instead")
+        return
+    await server._send(ws, FrameType.JSON_EVENT, 0, {"type": "supervisor_state", "state": snapshot, "ts_ms": int(time.time() * 1000)})
+
+
+async def _json_cmd_supervisor_set_mode(server, ws, client_id, payload) -> bool:
+    mode = payload.get("mode")
+    if not isinstance(mode, str) or mode not in VALID_MODES_V2:
+        await server._send_error(ws, 0, ErrorCode.BAD_PAYLOAD, f"mode must be one of {list(VALID_MODES_V2)}; got {mode!r}")
+        return False
+    try:
+        body = server.bridge.supervisor_set_mode(client_id, mode)
+    except Exception as exc:  # noqa: BLE001
+        log.exception("supervisor_set_mode bridge crashed: %s", exc)
+        await server._send_error(ws, 0, ErrorCode.INTERNAL, f"supervisor_set_mode: {exc}")
+        return False
+    if not body.get("applied"):
+        await server._send_error(ws, 0, ErrorCode.MODE_CONFLICT, str(body.get("reason", "refused")))
+        return False
+    return True
+
+
+async def _json_cmd_supervisor_floor_op(server, ws, client_id, payload) -> bool:
+    floor = payload.get("floor")
+    if not isinstance(floor, str) or floor not in VALID_FLOORS_V2:
+        await server._send_error(ws, 0, ErrorCode.BAD_PAYLOAD, f"floor must be one of {list(VALID_FLOORS_V2)}; got {floor!r}")
+        return False
+    cmd = payload.get("cmd")
+    try:
+        method = server.bridge.supervisor_acquire_floor if cmd == "supervisor_acquire_floor" else server.bridge.supervisor_release_floor
+        body = method(client_id, floor)
+    except Exception as exc:  # noqa: BLE001
+        log.exception("supervisor_floor bridge crashed: %s", exc)
+        await server._send_error(ws, 0, ErrorCode.INTERNAL, f"supervisor floor: {exc}")
+        return False
+    if not bool(body.get("granted", body.get("applied"))):
+        held_by = body.get("held_by")
+        reason = body.get("reason", "refused")
+        await server._send_error(ws, 0, ErrorCode.FLOOR_HELD, reason if held_by is None else f"{reason}; held_by={held_by}")
+        return False
+    return True
+
+
+async def _json_cmd_list_voices(server, ws, session, payload):
+    server._voice_rate_limit_check(ws, "list_voices", VOICE_LIST_MIN_INTERVAL_S)
+    snap = server.bridge.list_voices_snapshot()
+    await server._send(
+        ws,
+        FrameType.JSON_EVENT,
+        0,
+        {"type": "voice_list", "voices": snap["voices"], "active_provider": snap["active_provider"], "active_voice": snap["active_voice"], "ts_ms": int(time.time() * 1000)},
+    )
+
+
+async def _json_cmd_set_voice(server, ws, session, payload):
+    """``set_voice`` cmd: смена голоса TTS через AV-27 picker.
+
+    ADR-0087 (2026-09-09, вариант (a)): legacy AV-28 style/language ветка
+    удалена вместе с `sendStyleChange` (webxr_client) и подписками
+    `/avatar/set_voice_preset|language` (supervisor). Остался только
+    рабочий путь — ``set_voice`` payload `{voice_id, preset?}` →
+    `_json_cmd_set_voice_provider` → ``bridge.set_voice`` →
+    ``/voice/tts/set_voice`` → tts_node.
+    """
+    await _json_cmd_set_voice_provider(server, ws, payload)
+
+
+async def _json_cmd_set_voice_provider(server, ws, payload):
+    voice_id = payload.get("voice_id")
+    preset = payload.get("preset")
+    if not server._voice_rate_limit_check(ws, "set_voice", VOICE_SET_MIN_INTERVAL_S):
+        await server._send(ws, FrameType.JSON_EVENT, 0, {"type": "voice_set_nack", "voice_id": voice_id if isinstance(voice_id, str) else "", "reason": "rate_limited", "ts_ms": int(time.time() * 1000)})
+        return
+    if not isinstance(voice_id, str) or not voice_id:
+        await server._send_error(ws, 0, ErrorCode.BAD_PAYLOAD, "set_voice: voice_id required")
+        return
+    if preset is not None and not isinstance(preset, str):
+        await server._send_error(ws, 0, ErrorCode.BAD_PAYLOAD, "set_voice: preset must be string")
+        return
+    ok, applied_voice, reason, available = server.bridge.set_voice(voice_id, preset)
+    if not ok:
+        err = {"type": "voice_set_nack", "voice_id": voice_id, "reason": reason or "unknown", "ts_ms": int(time.time() * 1000)}
+        if available:
+            err["available"] = available
+        await server._send(ws, FrameType.JSON_EVENT, 0, err)
+        return
+    await server._send(ws, FrameType.JSON_EVENT, 0, {"type": "voice_set_ack", "voice_id": applied_voice or voice_id, "preset": preset or "standard", "ts_ms": int(time.time() * 1000)})
+
+
+async def _json_cmd_voice_pipeline(server, ws, session, payload):
+    if not server._voice_rate_limit_check(ws, "voice_pipeline", VOICE_STYLE_MIN_INTERVAL_S):
+        await server._send(ws, FrameType.JSON_EVENT, 0, {"type": "voice_pipeline_nack", "preset": payload.get("preset"), "language": payload.get("language"), "reason": "rate_limited", "ts_ms": int(time.time() * 1000)})
+        return
+    llm_enabled = bool(payload.get("llm_enabled"))
+    preset = payload.get("preset").strip().lower() if isinstance(payload.get("preset"), str) else ""
+    language = payload.get("language").strip().lower() if isinstance(payload.get("language"), str) else VOICE_PIPELINE_DEFAULT_LANGUAGE
+    reason = _validate_voice_pipeline_payload(llm_enabled, preset, language)
+    if reason:
+        await server._send(ws, FrameType.JSON_EVENT, 0, {"type": "voice_pipeline_nack", "preset": preset, "language": language, "reason": reason, "ts_ms": int(time.time() * 1000)})
+        return
+    server.bridge.publish_voice_pipeline(llm_enabled, preset, language)
+    await server._send(ws, FrameType.JSON_EVENT, 0, {"type": "voice_pipeline_ack", "llm_enabled": llm_enabled, "preset": preset, "language": language, "ts_ms": int(time.time() * 1000)})
+
+
+async def _json_cmd_preview_voice(server, ws, session, payload):
+    if not server._voice_rate_limit_check(ws, "preview_voice", VOICE_PREVIEW_MIN_INTERVAL_S):
+        return
+    request_id, voice_id, text = payload.get("request_id"), payload.get("voice_id"), payload.get("text")
+    for value, message in ((request_id, "request_id"), (voice_id, "voice_id"), (text, "text")):
+        if not isinstance(value, str) or not value:
+            await server._send_error(ws, 0, ErrorCode.BAD_PAYLOAD, f"preview_voice: {message} required")
+            return
+    if not server.start_preview_session(request_id, ws):
+        await server._send(ws, FrameType.JSON_EVENT, 0, {"type": "preview_voice_error", "request_id": request_id, "reason": "too_many_concurrent_previews", "ts_ms": int(time.time() * 1000)})
+        return
+    server.bridge.publish_preview_voice(request_id, voice_id, text)
+
+
+JSON_CMD_HANDLERS.update(
+    {
+        "ping": _json_cmd_ping,
+        "stream_list": _json_cmd_stream_list,
+        "stream_select": _json_cmd_stream_select,
+        "teleop_twist": _json_cmd_teleop_twist,
+        "teleop_heartbeat": _json_cmd_teleop_heartbeat,
+        "stop_emergency": _json_cmd_stop_emergency,
+        "voice_ptt_start": _json_cmd_voice_ptt_start,
+        "voice_ptt_stop": _json_cmd_voice_ptt_stop,
+        "voice_mode": _json_cmd_voice_mode,
+        "voice_listen_start": _json_cmd_voice_listen,
+        "voice_listen_stop": _json_cmd_voice_listen,
+        "supervisor_set_mode": _json_cmd_supervisor,
+        "supervisor_acquire_floor": _json_cmd_supervisor,
+        "supervisor_release_floor": _json_cmd_supervisor,
+        "supervisor_get_state": _json_cmd_supervisor,
+        # [voice-vr 09 / issue #2194] канонические имена (ADR-0080 §1.2);
+        # avatar_get_state НЕ регистрируем — senderless, удалён (closes #2194).
+        "avatar_set_mode": _json_cmd_supervisor,
+        "avatar_acquire_floor": _json_cmd_supervisor,
+        "avatar_release_floor": _json_cmd_supervisor,
+        "list_voices": _json_cmd_list_voices,
+        "set_voice": _json_cmd_set_voice,
+        "voice_pipeline": _json_cmd_voice_pipeline,
+        "preview_voice": _json_cmd_preview_voice,
+    }
+)
 
 
 # Проверяем наличие aiohttp лениво, чтобы тесты могли мокать.

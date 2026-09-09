@@ -16,6 +16,7 @@ test_operator_admin.py - Unit тесты для operator.admin среза (ADR-0
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from typing import Any, Dict, List
 from unittest.mock import Mock, patch
@@ -67,6 +68,7 @@ from rob_box_mcp_tools.tools.operator_admin import (  # noqa: E402
     ContainerStatusTool,
     ReadLogsTool,
     Ros2NodeStatusTool,
+    ShowMetricsTool,
     _DEFAULT_EXPECTED_NODES,
     _http_get_json,
     _probe_ros_node_names,
@@ -482,3 +484,305 @@ class TestHttpHelpers:
             side_effect=urllib.error.URLError("nope"),
         ):
             assert _http_get_json("http://x") is None
+
+
+# ----------------------------------------------------------------------------
+# ShowMetricsTool (issue #2113 / TARS 2 metrics panel)
+# ----------------------------------------------------------------------------
+#
+# Тест-планы:
+# 1. Metadata: name=show_metrics, slice=operator.admin, parameters
+#    (query обязательный, datasource опциональный).
+# 2. Happy path: execute(query=...) → публикует JSON в
+#    /avatar/tars/panel_request, формат {request_id, query, datasource},
+#    success=True + message для LLM.
+# 3. datasource=loki: попадает в payload.
+# 4. datasource=None (default): в payload попадает "prometheus".
+# 5. Пустой query: success=False без публикации.
+# 6. Неподдерживаемый datasource: success=False без публикации.
+# 7. Без node (без ROS): success=False с понятным сообщением.
+# 8. publisher.publish raises: success=False, error содержит описание.
+# 9. Контракт для TarsPanelDispatcher: payload содержит все 3 поля
+#    (request_id/query/datasource) с правильными типами.
+
+
+@pytest.mark.unit
+def _autorespond(tool, payload_factory):
+    """Смоделировать avatar_supervisor: ответить на panel_request.
+
+    issue #2184: тул больше не «выстрелил и забыл» — он ждёт данных в
+    ``/avatar/tars/panel_data``, чтобы ТАРС называл оператору числа, а не
+    рапортовал об открытии панели. В тестах супервизора нет, поэтому
+    publish на panel_request сразу дёргает обратный callback с тем же
+    request_id (как это делает TarsPanelDispatcher на роботе).
+
+    ``payload_factory(request_id) -> dict`` — тело ответа.
+    """
+    pub = tool._panel_request_pub
+    original = pub.publish
+
+    def _publish_and_answer(msg):
+        original(msg)
+        request = json.loads(msg.data)
+        reply = Mock()
+        reply.data = json.dumps(payload_factory(request["request_id"]))
+        tool._on_panel_data(reply)
+
+    pub.publish = _publish_and_answer
+    return pub
+
+
+def _ok_payload(request_id, *, query="rate(process_cpu_seconds_total[5m])"):
+    return {
+        "request_id": request_id,
+        "status": "ok",
+        "query": query,
+        "summary": "Вывел на TARS 2 — voice-assistant: 0.04",
+        "series": [
+            {
+                "name": "voice-assistant",
+                "labels": {"instance": "10.1.1.11:9100"},
+                "points": [[1788893900.0, 0.03], [1788893960.0, 0.04]],
+            }
+        ],
+        "url": "http://10.1.1.249:3000/explore?orgId=1&left=%7B%7D",
+        "error": "",
+    }
+
+
+class TestShowMetricsTool:
+    """Тесты ShowMetricsTool — операторский show_metrics (issue #2113/#2184)."""
+
+    def test_tool_metadata(self, mock_node):
+        """Метаданные tool'а: имя, slice, обязательные параметры."""
+        tool = ShowMetricsTool(mock_node)
+        assert tool.name == "show_metrics"
+        assert tool.slice == "operator.admin"  # ADR-0052 / issue #1998
+        assert tool.read_only is True
+        # parameters: query (required), datasource (optional)
+        names = [p.name for p in tool.parameters]
+        assert names == ["query", "datasource"]
+        query_param = tool.parameters[0]
+        assert query_param.required is True
+        ds_param = tool.parameters[1]
+        assert ds_param.required is False
+        assert ds_param.default == "prometheus"
+        assert ds_param.enum == ["prometheus", "loki"]
+
+    def test_tool_registered_in_mcp_tools_init(self):
+        """ShowMetricsTool экспортирован через ``tools/__init__``."""
+        import importlib
+
+        # Lazy import — в conftest_local_shim мы уже подменили ROS, но
+        # сам импорт tools/__init__.py должен протащить ShowMetricsTool
+        # через wildcard ``from .operator_admin import *``.
+        from rob_box_mcp_tools import tools as tools_pkg
+
+        assert "ShowMetricsTool" in tools_pkg.__all__, (
+            "ShowMetricsTool должен быть в tools.__all__ — иначе mcp_server"
+            "не сможет его импортировать"
+        )
+        assert hasattr(tools_pkg, "ShowMetricsTool"), (
+            "ShowMetricsTool должен быть доступен как rob_box_mcp_tools.tools.ShowMetricsTool"
+        )
+
+    def test_execute_publishes_json_to_panel_request(self, mock_node):
+        """execute(query) → публикует JSON в /avatar/tars/panel_request.
+
+        Контракт публикации зафиксирован в rob_box_supervisor.tars_panel:
+        ``{"request_id": str, "query": str, "datasource": str}``.
+        """
+        tool = ShowMetricsTool(mock_node)
+        pub = _autorespond(tool, _ok_payload)
+        result = tool.execute(query="rate(cpu_usage[5m])")
+
+        assert result.success is True
+        assert result.data["datasource"] == "prometheus"
+        # query в ответе — тот, что реально выполнил супервизор (он мог
+        # отрезолвить несуществующее имя метрики).
+        assert result.data["query"] == "rate(process_cpu_seconds_total[5m])"
+        assert result.data["status"] == "ok"
+        assert result.data["series_count"] == 1
+        # latest — числа для голосового ответа ТАРСа.
+        assert result.data["latest"] == {"voice-assistant": 0.04}
+        # message — то, что LLM повторит оператору: значения, а не обещание.
+        assert "0.04" in result.message
+        assert "Опубликовал" not in result.message
+
+        # Проверяем публикацию на /avatar/tars/panel_request
+        assert len(pub.published_messages) == 1
+        msg = pub.published_messages[0]
+        payload = json.loads(msg.data)
+        assert payload["query"] == "rate(cpu_usage[5m])"
+        assert payload["datasource"] == "prometheus"
+        assert payload["request_id"] == result.data["request_id"]
+        # request_id — 8 hex символов (uuid4.hex[:8])
+        assert len(result.data["request_id"]) == 8
+
+    def test_execute_reports_timeout_instead_of_claiming_success(self, mock_node):
+        """Супервизор молчит → success=False, а не «открыл панель».
+
+        Регрессия issue #2184: тул возвращал success=True сразу после
+        публикации, и ТАРС бодро сообщал оператору об открытой панели, даже
+        когда avatar_supervisor лежал (ADR-0018).
+        """
+        import rob_box_mcp_tools.tools.operator_admin as oa
+
+        tool = ShowMetricsTool(mock_node)
+        original_timeout = oa._SHOW_METRICS_TIMEOUT_SEC
+        oa._SHOW_METRICS_TIMEOUT_SEC = 0.05  # никто не ответит
+        try:
+            result = tool.execute(query="up")
+        finally:
+            oa._SHOW_METRICS_TIMEOUT_SEC = original_timeout
+        assert result.success is False
+        assert "panel_data" in result.error
+
+    def test_execute_empty_result_is_success_but_says_no_data(self, mock_node):
+        """status=empty — тракт цел, данных нет: LLM не должен выдумывать числа."""
+        tool = ShowMetricsTool(mock_node)
+        _autorespond(
+            tool,
+            lambda rid: {
+                "request_id": rid,
+                "status": "empty",
+                "query": "rate(network_latency_ms[5m])",
+                "summary": "По запросу «rate(network_latency_ms[5m])» данных нет. Есть: up.",
+                "series": [],
+                "available": ["up"],
+            },
+        )
+        result = tool.execute(query="rate(network_latency_ms[5m])")
+        assert result.success is True
+        assert result.data["status"] == "empty"
+        assert result.data["series_count"] == 0
+        assert result.data["available"] == ["up"]
+        assert "данных нет" in result.message.lower()
+
+    def test_execute_supervisor_error_propagates(self, mock_node):
+        """Prometheus лёг → success=False с причиной от супервизора."""
+        tool = ShowMetricsTool(mock_node)
+        _autorespond(
+            tool,
+            lambda rid: {
+                "request_id": rid,
+                "status": "error",
+                "query": "up",
+                "summary": "Метрики не пришли: connection refused",
+                "error": "http://10.1.1.249:9090/api/v1/query_range: connection refused",
+            },
+        )
+        result = tool.execute(query="up")
+        assert result.success is False
+        assert "connection refused" in result.error
+
+    def test_execute_ignores_foreign_request_ids(self, mock_node):
+        """Ответ на ЧУЖОЙ request_id не будит наш вызов.
+
+        На шине параллельно живут запросы от других вызовов ТАРСа — взять
+        чужие данные значило бы показать оператору не тот график.
+        """
+        import rob_box_mcp_tools.tools.operator_admin as oa
+
+        tool = ShowMetricsTool(mock_node)
+        _autorespond(tool, lambda rid: _ok_payload("deadbeef"))
+        original_timeout = oa._SHOW_METRICS_TIMEOUT_SEC
+        oa._SHOW_METRICS_TIMEOUT_SEC = 0.05
+        try:
+            result = tool.execute(query="up")
+        finally:
+            oa._SHOW_METRICS_TIMEOUT_SEC = original_timeout
+        assert result.success is False
+
+    def test_execute_loki_datasource_propagates_to_payload(self, mock_node):
+        """datasource=loki → попадает в payload (для LogQL-запросов)."""
+        tool = ShowMetricsTool(mock_node)
+        pub = _autorespond(
+            tool,
+            lambda rid: {
+                "request_id": rid,
+                "status": "ok",
+                "query": '{job="voice"}',
+                "summary": "Вывел на TARS 2 — 2 строки",
+                "series": [],
+                "lines": [{"ts": 1788893960.0, "line": "hello", "labels": {}}],
+            },
+        )
+        result = tool.execute(
+            query='{job="voice"}',
+            datasource="loki",
+        )
+
+        assert result.success is True
+        assert result.data["datasource"] == "loki"
+        assert result.data["series_count"] == 1
+        payload = json.loads(pub.published_messages[0].data)
+        assert payload["datasource"] == "loki"
+        assert payload["query"] == '{job="voice"}'
+
+    def test_execute_datasource_normalizes_case(self, mock_node):
+        """datasource='Prometheus' → 'prometheus' (lowercase, как у dispatcher'а)."""
+        tool = ShowMetricsTool(mock_node)
+        pub = _autorespond(tool, lambda rid: _ok_payload(rid, query="up"))
+        result = tool.execute(query="up", datasource="Prometheus")
+        assert result.success is True
+        assert result.data["datasource"] == "prometheus"
+        payload = json.loads(pub.published_messages[0].data)
+        assert payload["datasource"] == "prometheus"
+
+    def test_execute_empty_query_returns_error_without_publishing(self, mock_node):
+        """Пустой query → success=False, никакой публикации."""
+        tool = ShowMetricsTool(mock_node)
+        # validate_parameters поймает пустой query на стороне registry.execute
+        # (required=True), но и сам execute() должен страховаться.
+        # Передаём whitespace-only — это пройдёт required, но execute
+        # должен отвергнуть.
+        result = tool.execute(query="   ")
+        assert result.success is False
+        assert "query" in result.error.lower()
+        pub = mock_node._publishers.get("/avatar/tars/panel_request")
+        assert pub is None or pub.published_messages == [], (
+            "при пустом query публикации быть не должно"
+        )
+
+    def test_execute_unknown_datasource_returns_error_without_publishing(self, mock_node):
+        """datasource='influxdb' → success=False, никакой публикации."""
+        tool = ShowMetricsTool(mock_node)
+        result = tool.execute(query="up", datasource="influxdb")
+        assert result.success is False
+        assert "datasource" in result.error.lower()
+        pub = mock_node._publishers.get("/avatar/tars/panel_request")
+        assert pub is None or pub.published_messages == [], (
+            "при неизвестном datasource публикации быть не должно"
+        )
+
+    def test_execute_without_node_returns_honest_fail(self):
+        """Без ноды (юнит-тест без ROS) — честный success=False, не raise.
+
+        ADR-0018: лучше честный FAIL, чем AttributeError.
+        """
+        tool = ShowMetricsTool(node=None)
+        result = tool.execute(query="up")
+        assert result.success is False
+        assert "publisher" in result.error.lower() or "create_publisher" in result.error.lower()
+
+    def test_execute_handles_publish_failure_gracefully(self, mock_node):
+        """Если publisher.publish() бросает — success=False + понятный error."""
+        tool = ShowMetricsTool(mock_node)
+        pub = mock_node._publishers["/avatar/tars/panel_request"]
+        pub.publish = Mock(side_effect=RuntimeError("zombie topic"))
+
+        result = tool.execute(query="up")
+        assert result.success is False
+        assert "zombie topic" in result.error
+
+    def test_request_ids_are_unique_across_calls(self, mock_node):
+        """request_id должен быть уникален (uuid4 hex)."""
+        tool = ShowMetricsTool(mock_node)
+        _autorespond(tool, lambda rid: _ok_payload(rid, query="up"))
+        ids = set()
+        for _ in range(20):
+            r = tool.execute(query="up")
+            assert r.success
+            ids.add(r.data["request_id"])
+        assert len(ids) == 20, f"request_id'ы должны быть уникальны, получили {ids}"

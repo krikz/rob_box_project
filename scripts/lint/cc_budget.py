@@ -12,11 +12,15 @@ not in the baseline or has grown past its recorded grandfather value.
 
 Scope: every Python module under the active development packages
 (``src/rob_box_voice/rob_box_voice``, ``src/rob_box_supervisor/rob_box_supervisor``,
-``src/rob_box_harness/rob_box_harness``, ``src/rob_box_mcp_tools/rob_box_mcp_tools``).
+``src/rob_box_harness/rob_box_harness``, ``src/rob_box_mcp_tools/rob_box_mcp_tools``,
+``src/rob_box_quest/rob_box_quest``).
 ADR-0021 explicitly applies the rule to "``dialogue_node.py`` and any new voice
-nodes in ``rob_box_voice``"; extending it to the three sibling packages is the
+nodes in ``rob_box_voice``"; extending it to the four sibling packages is the
 least-surprise scope: these are where active development is happening, and any
-new method added there must respect the budget.
+new method added there must respect the budget. ``rob_box_quest`` (Meta Quest
+telepresence, ADR-0080) was added in issue #2186 — without it the gate silently
+fixes CC growth instead of stopping it (the ``WSSServer._on_json_cmd`` blast
+balloon reached CC=107 undetected).
 
 Usage:
   python scripts/lint/cc_budget.py                     # check (default scope)
@@ -44,6 +48,7 @@ _PACKAGE_ROOTS = (
     "src/rob_box_supervisor/rob_box_supervisor",
     "src/rob_box_harness/rob_box_harness",
     "src/rob_box_mcp_tools/rob_box_mcp_tools",
+    "src/rob_box_quest/rob_box_quest",
 )
 DEFAULT_TARGETS: tuple[Path, ...] = tuple(REPO_ROOT / p for p in _PACKAGE_ROOTS)
 
@@ -219,7 +224,7 @@ def main(argv: list[str] | None = None) -> int:
         default=list(DEFAULT_TARGETS),
         help=(
             "Python files or package directories to scan "
-            "(default: the four active packages under src/)"
+            "(default: the five active packages under src/)"
         ),
     )
     parser.add_argument(

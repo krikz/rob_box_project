@@ -2,7 +2,7 @@
 
 | Поле | Значение |
 |---|---|
-| Статус | Accepted (дизайн-фаза, реализация отложена) |
+| Статус | Accepted; amended 2026-09-08 (Phase 1 + часть Phase 2 реализованы, оставшиеся возможности планируются) |
 | Дата | 2026-08-24 |
 | Автор | architect (Hermes Agent), kanban t_77f08bb8 |
 | Контекст | Issue #1576 (LOW priority, design-only) — Meta Quest 2 / 3 / Pro как нативный WebXR-клиент к роботу: passthrough + camera stream + LiDAR overlay + teleop + микрофон очков |
@@ -566,39 +566,32 @@ desktop-сценария, но:
 
 ## 7. Изменения в этом ADR
 
-**Сейчас (дизайн-фаза):**
+**2026-09-08 — Amendment ADR-0082 (issue #2196, architect):**
 
-1. Этот файл — `docs/adr/0027-meta-quest-ar-control.md` (принят).
-2. Companion-документ `docs/architecture/meta-quest-api.md` с детальным
-   HTTP/WS-контрактом (frame schema, MessagePack-структуры, error codes).
+Companion `meta-quest-api.md` больше не считается замороженным: его статус
+изменён на живой reference wire-контракта, с amendment history (§13).
+Документ синхронизирован с фактическим `rob_box_quest`:
 
-**Когда дойдёт до реализации (Phase 1):**
+- удалены из доступного API неподтверждённые `ui_button`, `admin_logs`,
+  `admin_logs_stop` и `set_panel_topic`; они явно отмечены planned/not
+  implemented в companion-документе;
+- добавлены реализованные `voice_pipeline`, `voice_listen_start/stop`,
+  `stream_select` и соответствующие ack/nack-события;
+- исправлены описания `deadman`/`seq` (gate живёт в `avatar_arbiter`, anti-replay
+  по `seq` нет) и `BINARY_FRAME` (payload as-is, маршрутизация по `stream_id`,
+  без `topic_id` prefix).
 
-3. Новый пакет `src/rob_box_quest/` — Python (ROS2 node + ws-server на
-   `aiohttp` или `websockets`).
-4. `docker/vision/docker-compose.yaml` — сервис `rob_box_quest` + опц.
-   healthcheck.
-5. `docker/main/config/twist_mux/twist_mux.yaml` — добавить `quest` input
-   с приоритетом ниже joystick и timeout 0.5 с.
-6. `src/rob_box_voice/rob_box_voice/dialogue_node.py` — параметр
-   `voice_input_mode` и топик `/audio/quest_in` (мини-фича в рамках
-   ADR-0021 R3 «per-bag workflow», отдельная worker-карточка).
-7. `/safety/emergency_stop` topic + handler (или сервис, зависит от того,
-   как уже сделано в rob_box_bringup).
-8. Веб-клиент: статический билд Three.js + WebXR Device API, source
-   в `src/rob_box_quest/webxr_client/` (или отдельный `webxr_quest/`
-   монорепо), собирается esbuild'ом в `docker/vision/quest_static/`.
-   Работает и в обычном браузере, и в Quest (R9).
+Это amendment меняет только документацию и контрактный reference; серверный
+код и клиентские исходники не изменяются.
 
-**Phase 2/3 (Видение v2, §1.1):**
+**Реализовано и остаётся плановым:**
 
-9. Стрим-селектор: registry доступных стримов + `SUBSCRIBE` на несколько
-   `camera_*` одновременно (R10).
-10. Детекция людей → топик `person_detections` → подсветка в 3D-сцене (R11, Q10).
-11. Ходимое виртуальное пространство: grid-map + pointcloud как 3D-сцена (R12, Q9).
-12. Голосовой режим `llm_formalize` в `dialogue_node` (R13, §3.4).
-13. Админ-панель: логи, статус, restart/диагностика (R14, Q11).
-14. Эволюция доступа к северной звезде: TOTP/mTLS + DNS/TLS + туннель (Q12).
+- Реализованы пакет `src/rob_box_quest/`, сервис `rob_box_quest`, Quest input
+  в `twist_mux`, базовый WebXR-клиент и voice-интеграция; точный текущий
+  wire-контракт приведён в companion-документе.
+- Оставшиеся требования R10–R14 и вопросы §6 (расширенный stream selector,
+  person detections, walkable 3D space, `llm_formalize`, admin panel и
+  эволюция доступа) выполняются отдельными карточками с acceptance criteria.
 
 **Не делаем:**
 

@@ -60,7 +60,21 @@ jobs:
           echo "docker_tag=${DOCKER_TAG}" >> $GITHUB_OUTPUT
           echo "Docker Tag: $DOCKER_TAG"
 
-  # Параллельная сборка всех сервисов Main Pi (до 8 одновременно)
+# Issue #2280 (arch review 2026-09-09, кандидат 4): buildx-сборка вынесена
+  # в composite action ./.github/actions/l-build-service (см. action.yml).
+  # ВАЖНО (fix run #34366133083): composite — buildx-only. GitHub требует,
+  # чтобы репозиторий был зачекаутен ДО вызова локального composite action
+  # (иначе раннер не найдёт action.yml → "Did you forget to run
+  # actions/checkout"). Поэтому каждый build-job начинается с clean-stale
+  # submodules + checkout (как и до рефакторинга), затем опциональный
+  # pre-step для специфичных cache-invalidation хешей (URDF_FILES_HASH —
+  # per-job) и уже потом composite-call. Внутри composite: buildx --load
+  # (образ в daemon — нужен update-image-versions) + docker push ТОЛЬКО
+  # локального registry. GHCR не пушим на локальных test/dev сборках
+  # (runner не залогинен в ghcr.io, issue #1503; buildx --push по GHCR-тегу
+  # падал unauthorized — run #34368750126).
+  # См. acceptance #2280.
+
   build-robot-state-publisher:
     needs: prepare
     runs-on: [self-hosted, rob-box]
@@ -77,34 +91,31 @@ jobs:
           submodules: recursive
           clean: true
 
-      - name: Build robot-state-publisher
+      - name: Compute URDF files hash (cache invalidation)
+        # URDF/Xacro/package.xml/CMakeLists в src/rob_box_description меняют
+        # кеш docker buildx → пересборка образа. Hash не нужен в других job'ах
+        # (per-service hash), поэтому считается здесь, передаётся через
+        # build-args как URDF_FILES_HASH=<hash>.
+        id: urdf-hash
         run: |
-          SERVICE="robot_state_publisher"
-          GHCR_TAG="${IMAGE_PREFIX}:robot-state-publisher-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-          LOCAL_TAG="${LOCAL_PREFIX}:robot-state-publisher-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-
-          # Вычисляем хеш всех важных файлов описания робота для инвалидации кеша при изменении
-          # Включаем: .xacro, .urdf, package.xml, CMakeLists.txt из src/rob_box_description
           URDF_FILES_HASH=$(find src/rob_box_description -type f \
             \( -name "*.xacro" -o -name "*.urdf" -o -name "package.xml" -o -name "CMakeLists.txt" \) \
             | sort | xargs sha256sum | sha256sum | awk '{print $1}')
+          echo "urdf_hash=${URDF_FILES_HASH}" >> "$GITHUB_OUTPUT"
 
-          docker buildx build \
-            --platform linux/arm64 \
-            --file docker/main/${SERVICE}/Dockerfile \
-            --tag "${GHCR_TAG}" \
-            --tag "${LOCAL_TAG}" \
-            --load \
-            --add-host=host.docker.internal:host-gateway \
-            --build-arg="BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO}" \
-            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
-            --build-arg="URDF_FILES_HASH=${URDF_FILES_HASH}" \
-            .
-
-          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
-            docker push "${LOCAL_TAG}"
-          fi
-          echo "✅ Built ${SERVICE}"
+      - name: Build robot-state-publisher
+        uses: ./.github/actions/l-build-service
+        with:
+          service-name: robot-state-publisher
+          dockerfile-path: docker/main/robot_state_publisher/Dockerfile
+          build-context: '.'
+          tags: |
+            ${{ env.IMAGE_PREFIX }}:robot-state-publisher-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
+            ${{ env.LOCAL_PREFIX }}:robot-state-publisher-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
+          build-args: |
+            BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh-${{ env.ROS_DISTRO }}
+            APT_PROXY=http://host.docker.internal:3142
+            URDF_FILES_HASH=${{ steps.urdf-hash.outputs.urdf_hash }}
 
   build-rtabmap:
     needs: prepare
@@ -123,26 +134,17 @@ jobs:
           clean: true
 
       - name: Build rtabmap
-        run: |
-          SERVICE="rtabmap"
-          GHCR_TAG="${IMAGE_PREFIX}:${SERVICE}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-          LOCAL_TAG="${LOCAL_PREFIX}:${SERVICE}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-
-          docker buildx build \
-            --platform linux/arm64 \
-            --file docker/main/${SERVICE}/Dockerfile \
-            --tag "${GHCR_TAG}" \
-            --tag "${LOCAL_TAG}" \
-            --load \
-            --add-host=host.docker.internal:host-gateway \
-            --build-arg="BASE_IMAGE=localhost:5000/krikz/rob_box_base:rtabmap-${ROS_DISTRO}" \
-            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
-            docker/main/${SERVICE}
-
-          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
-            docker push "${LOCAL_TAG}"
-          fi
-          echo "✅ Built ${SERVICE}"
+        uses: ./.github/actions/l-build-service
+        with:
+          service-name: rtabmap
+          dockerfile-path: docker/main/rtabmap/Dockerfile
+          build-context: docker/main/rtabmap
+          tags: |
+            ${{ env.IMAGE_PREFIX }}:rtabmap-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
+            ${{ env.LOCAL_PREFIX }}:rtabmap-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
+          build-args: |
+            BASE_IMAGE=localhost:5000/krikz/rob_box_base:rtabmap-${{ env.ROS_DISTRO }}
+            APT_PROXY=http://host.docker.internal:3142
 
   build-twist-mux:
     needs: prepare
@@ -161,26 +163,17 @@ jobs:
           clean: true
 
       - name: Build twist-mux
-        run: |
-          SERVICE="twist_mux"
-          GHCR_TAG="${IMAGE_PREFIX}:twist-mux-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-          LOCAL_TAG="${LOCAL_PREFIX}:twist-mux-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-
-          docker buildx build \
-            --platform linux/arm64 \
-            --file docker/main/${SERVICE}/Dockerfile \
-            --tag "${GHCR_TAG}" \
-            --tag "${LOCAL_TAG}" \
-            --load \
-            --add-host=host.docker.internal:host-gateway \
-            --build-arg="BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO}" \
-            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
-            docker/main/${SERVICE}
-
-          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
-            docker push "${LOCAL_TAG}"
-          fi
-          echo "✅ Built ${SERVICE}"
+        uses: ./.github/actions/l-build-service
+        with:
+          service-name: twist-mux
+          dockerfile-path: docker/main/twist_mux/Dockerfile
+          build-context: docker/main/twist_mux
+          tags: |
+            ${{ env.IMAGE_PREFIX }}:twist-mux-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
+            ${{ env.LOCAL_PREFIX }}:twist-mux-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
+          build-args: |
+            BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh-${{ env.ROS_DISTRO }}
+            APT_PROXY=http://host.docker.internal:3142
 
   build-teleop:
     needs: prepare
@@ -199,26 +192,17 @@ jobs:
           clean: true
 
       - name: Build teleop
-        run: |
-          SERVICE="teleop"
-          GHCR_TAG="${IMAGE_PREFIX}:teleop-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-          LOCAL_TAG="${LOCAL_PREFIX}:teleop-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-
-          docker buildx build \
-            --platform linux/arm64 \
-            --file docker/main/${SERVICE}/Dockerfile \
-            --tag "${GHCR_TAG}" \
-            --tag "${LOCAL_TAG}" \
-            --load \
-            --add-host=host.docker.internal:host-gateway \
-            --build-arg="BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO}" \
-            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
-            .
-
-          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
-            docker push "${LOCAL_TAG}"
-          fi
-          echo "✅ Built ${SERVICE}"
+        uses: ./.github/actions/l-build-service
+        with:
+          service-name: teleop
+          dockerfile-path: docker/main/teleop/Dockerfile
+          build-context: '.'
+          tags: |
+            ${{ env.IMAGE_PREFIX }}:teleop-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
+            ${{ env.LOCAL_PREFIX }}:teleop-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
+          build-args: |
+            BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh-${{ env.ROS_DISTRO }}
+            APT_PROXY=http://host.docker.internal:3142
 
   build-ros2-control:
     needs: prepare
@@ -237,30 +221,20 @@ jobs:
           clean: true
 
       - name: Build ros2-control
-        run: |
-          SERVICE="ros2_control"
-          GHCR_TAG="${IMAGE_PREFIX}:ros2-control-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-          LOCAL_TAG="${LOCAL_PREFIX}:ros2-control-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-
-          # Получаем SHA субмодуля vesc_nexus для инвалидации кэша
-          VESC_NEXUS_SHA=$(git submodule status src/vesc_nexus | awk '{print $1}' | sed 's/^[+-]//')
-
-          docker buildx build \
-            --platform linux/arm64 \
-            --file docker/main/${SERVICE}/Dockerfile \
-            --tag "${GHCR_TAG}" \
-            --tag "${LOCAL_TAG}" \
-            --load \
-            --add-host=host.docker.internal:host-gateway \
-            --build-arg="BASE_IMAGE=localhost:5000/krikz/rob_box_base:rtabmap-${ROS_DISTRO}" \
-            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
-            --build-arg="VESC_NEXUS_SHA=${VESC_NEXUS_SHA}" \
-            .
-
-          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
-            docker push "${LOCAL_TAG}"
-          fi
-          echo "✅ Built ${SERVICE}"
+        uses: ./.github/actions/l-build-service
+        with:
+          service-name: ros2-control
+          dockerfile-path: docker/main/ros2_control/Dockerfile
+          build-context: '.'
+          tags: |
+            ${{ env.IMAGE_PREFIX }}:ros2-control-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
+            ${{ env.LOCAL_PREFIX }}:ros2-control-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
+          # vesc_nexus submodule → SHA инвалидирует кеш при обновлении субмодуля.
+          # Composite action сам посчитает SHA и подмешает VESC_NEXUS_SHA=<sha>.
+          compute-submodule-sha: src/vesc_nexus
+          build-args: |
+            BASE_IMAGE=localhost:5000/krikz/rob_box_base:rtabmap-${{ env.ROS_DISTRO }}
+            APT_PROXY=http://host.docker.internal:3142
 
   build-nav2:
     needs: prepare
@@ -279,26 +253,17 @@ jobs:
           clean: true
 
       - name: Build nav2
-        run: |
-          SERVICE="nav2"
-          GHCR_TAG="${IMAGE_PREFIX}:${SERVICE}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-          LOCAL_TAG="${LOCAL_PREFIX}:${SERVICE}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-
-          docker buildx build \
-            --platform linux/arm64 \
-            --file docker/main/${SERVICE}/Dockerfile \
-            --tag "${GHCR_TAG}" \
-            --tag "${LOCAL_TAG}" \
-            --load \
-            --add-host=host.docker.internal:host-gateway \
-            --build-arg="BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO}" \
-            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
-            docker/main/${SERVICE}
-
-          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
-            docker push "${LOCAL_TAG}"
-          fi
-          echo "✅ Built ${SERVICE}"
+        uses: ./.github/actions/l-build-service
+        with:
+          service-name: nav2
+          dockerfile-path: docker/main/nav2/Dockerfile
+          build-context: docker/main/nav2
+          tags: |
+            ${{ env.IMAGE_PREFIX }}:nav2-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
+            ${{ env.LOCAL_PREFIX }}:nav2-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
+          build-args: |
+            BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh-${{ env.ROS_DISTRO }}
+            APT_PROXY=http://host.docker.internal:3142
 
   build-lslidar:
     needs: prepare
@@ -317,26 +282,17 @@ jobs:
           clean: true
 
       - name: Build lslidar
-        run: |
-          SERVICE="lslidar"
-          GHCR_TAG="${IMAGE_PREFIX}:${SERVICE}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-          LOCAL_TAG="${LOCAL_PREFIX}:${SERVICE}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-
-          docker buildx build \
-            --platform linux/arm64 \
-            --file docker/main/${SERVICE}/Dockerfile \
-            --tag "${GHCR_TAG}" \
-            --tag "${LOCAL_TAG}" \
-            --load \
-            --add-host=host.docker.internal:host-gateway \
-            --build-arg="BASE_IMAGE=localhost:5000/krikz/rob_box_base:pcl-${ROS_DISTRO}" \
-            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
-            docker/main
-
-          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
-            docker push "${LOCAL_TAG}"
-          fi
-          echo "✅ Built ${SERVICE}"
+        uses: ./.github/actions/l-build-service
+        with:
+          service-name: lslidar
+          dockerfile-path: docker/main/lslidar/Dockerfile
+          build-context: docker/main
+          tags: |
+            ${{ env.IMAGE_PREFIX }}:lslidar-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
+            ${{ env.LOCAL_PREFIX }}:lslidar-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
+          build-args: |
+            BASE_IMAGE=localhost:5000/krikz/rob_box_base:pcl-${{ env.ROS_DISTRO }}
+            APT_PROXY=http://host.docker.internal:3142
 
   build-perception:
     needs: prepare
@@ -355,28 +311,18 @@ jobs:
           clean: true
 
       - name: Build perception
-        run: |
-          SERVICE="perception"
-          GHCR_TAG="${IMAGE_PREFIX}:${SERVICE}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-          LOCAL_TAG="${LOCAL_PREFIX}:${SERVICE}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
+        uses: ./.github/actions/l-build-service
+        with:
+          service-name: perception
+          dockerfile-path: docker/main/perception/Dockerfile
+          build-context: '.'
+          tags: |
+            ${{ env.IMAGE_PREFIX }}:perception-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
+            ${{ env.LOCAL_PREFIX }}:perception-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
+          build-args: |
+            BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh-${{ env.ROS_DISTRO }}
+            APT_PROXY=http://host.docker.internal:3142
 
-          docker buildx build \
-            --platform linux/arm64 \
-            --file docker/main/${SERVICE}/Dockerfile \
-            --tag "${GHCR_TAG}" \
-            --tag "${LOCAL_TAG}" \
-            --load \
-            --add-host=host.docker.internal:host-gateway \
-            --build-arg="BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO}" \
-            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
-            .
-
-          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
-            docker push "${LOCAL_TAG}"
-          fi
-          echo "✅ Built ${SERVICE}"
-
-  # Обновление .image-versions — SHA-тег после успешной сборки
   update-image-versions:
     needs:
       - prepare

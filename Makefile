@@ -10,8 +10,10 @@
 #   make test-tts-fast    — same suite, no coverage gate (faster local loop).
 #   make test-tts-verbose — same suite with ``-vv`` and stdout-captured logs.
 #   make lint-cc          — run the ADR-0021 CC-budget guard locally (CI mirror).
+#   make stt-tars-stats   — empirical STT-distortion summary for helm
+#                           wake-word «ТАРС» (ADR-0077 §2.3).
 
-.PHONY: test-tts test-tts-fast test-tts-verbose lint-cc help
+.PHONY: test-tts test-tts-fast test-tts-verbose lint-cc stt-tars-stats help
 
 # Include the cross-provider conformance module explicitly: ``-k minimax``
 # selects only the MiniMax parametrisations and silently drops the
@@ -29,6 +31,8 @@ help:
 	@echo "  make test-tts-fast      Same suite, no coverage gate (faster local feedback loop)"
 	@echo "  make test-tts-verbose   Same suite with -vv and captured stdout"
 	@echo "  make lint-cc            Run ADR-0021 CC-budget guard (dialogue_node.py + new voice nodes)"
+	@echo "  make stt-tars-stats     Empirical STT-distortion summary for helm wake-word «ТАРС» (ADR-0077)."
+	@echo "                            Pass JSONL=<path> and/or YAML=<path>. Use --diff for candidates."
 
 # ADR-0021 R1 (issue #1984): CC<=15 for methods, CC<=20 for __init__.
 # Baseline exemptions live in scripts/lint/cc_budget_baseline.json; run
@@ -49,3 +53,12 @@ test-tts-fast:
 
 test-tts-verbose:
 	cd src/rob_box_llm && PYTHONPATH=. python3 -m pytest -k '$(TTS_TEST_FILTER)' $(TTS_COV_ARGS) -vv -s
+
+# ADR-0077 §2.3 — сухая сводка STT-семплов «ТАРС» с шлема (без правок YAML).
+# Требует:  ROBBOX_STT_COLLECT=1 при работе stt_node + наличие JSONL.
+# Пример:   JSONL=data/stt_tars_samples.jsonl make stt-tars-stats
+#           JSONL=data/stt_tars_samples.jsonl make stt-tars-stats ARGS='--diff --top 30'
+JSONL ?= data/stt_tars_samples.jsonl
+ARGS  ?=
+stt-tars-stats:
+	python3 scripts/stt/tars_stats.py $(JSONL) $(ARGS)

@@ -57,6 +57,7 @@ from rob_box_quest.core.floor import (
     AvatarFloorSnapshot,
     AvatarStateFloorCache,
     FloorHolder,
+    make_server_client_id,
 )
 
 
@@ -110,10 +111,21 @@ class LocalAvatarArbiterClient:
         cache: AvatarStateFloorCache,
         now_fn: Optional[Callable[[], float]] = None,
     ) -> None:
+        # issue #2190 (voice-vr 05): теперь храним server_client_id
+        # (формат ``"quest:<session_uuid>"``) — единый идентификатор
+        # сессии во ВСЕХ точках соприкосновения (ws_server gate,
+        # heartbeat, supervisor_* API, STATE_UPDATE клиенту).
+        # Раньше здесь лежал session_id, что ломало сопоставление
+        # client_id из /avatar/state и client_id из supervisor_*
+        # вызовов (там всегда "quest:<uuid>").
         self._floor_holder: Optional[str] = None
         # voice floor: session_id + client_id (последний — для UI label).
         # ADR-0051 §2.2: avatar_arbiter service в Phase 2 будет
         # возвращать FloorHolder целиком; пока мы его собираем сами.
+        # Для voice floor session_id остаётся «как было» — это
+        # внутренний ключ, который видит только Quest-WS
+        # (release/force_release идут по session_id, голосовой floor
+        # не уходит в supervisor_* API напрямую).
         self._voice_holder: Optional[str] = None
         self._voice_holder_client_id: Optional[str] = None
         self._last_error_monotonic: dict[str, float] = {}
@@ -128,24 +140,54 @@ class LocalAvatarArbiterClient:
         """Попытка занять teleop_floor от имени ``session_id``.
 
         Идемпотентно для того же session_id. ``client_id`` —
-        дополнительный идентификатор (для логов/UI); если пустой —
-        используется session_id.
+        дополнительный идентификатор для логов (``AcquireResult.held_by``
+        вернёт именно его, если передан). Для хранения holder-а в
+        ``_floor_holder`` ВСЕГДА используется
+        :py:func:`make_server_client_id` формат (``"quest:<session_uuid>"``),
+        см. issue #2190 §«единый client_id». Это обеспечивает
+        совпадение с ``/avatar/state.teleop_floor.client_id``, с
+        WELCOME.teleop_floor_held_by и с ``Bridge.supervisor_*``
+        client_id-аргументами — единая идентичность во всех точках.
+
+        Контракт ADR-0051 §2.2: фактический holder — server_client_id,
+        session_id остаётся внутренним ключом release-логики
+        (``release_floor(session_id)``).
         """
         if not session_id:
             return AcquireResult(granted=False, reason="invalid_session_id")
-        if self._floor_holder == session_id:
-            return AcquireResult(granted=True, held_by=session_id, reason="already_held")
+        holder_key = make_server_client_id(session_id)
+        if not holder_key:
+            return AcquireResult(granted=False, reason="invalid_session_id")
+        # ``held_by`` = server_client_id holder-а (issue #2190 §«единый
+        # client_id»). UI/логи/JSON-ответ — везде один формат
+        # ``"quest:<uuid>"``, без отдельного ``client_id``.
+        if self._floor_holder == holder_key:
+            return AcquireResult(
+                granted=True, held_by=holder_key, reason="already_held"
+            )
         if self._floor_holder is None:
-            self._floor_holder = session_id
+            self._floor_holder = holder_key
             self._push_to_cache()
-            return AcquireResult(granted=True, held_by=session_id, reason="granted")
+            return AcquireResult(
+                granted=True, held_by=holder_key, reason="granted"
+            )
         return AcquireResult(
-            granted=False, held_by=self._floor_holder, reason="held_by_other"
+            granted=False,
+            held_by=self._floor_holder,
+            reason="held_by_other",
         )
 
     def release_floor(self, session_id: str) -> bool:
-        """Отпустить teleop_floor. True если session_id реально держал."""
-        if self._floor_holder == session_id:
+        """Отпустить teleop_floor. True если session_id реально держал.
+
+        Принимает session_id (для совместимости с _unregister_session),
+        но ищет по ``server_client_id(session_id)`` — потому что
+        фактический holder хранится именно в этом формате.
+        """
+        if not session_id:
+            return False
+        holder_key = make_server_client_id(session_id)
+        if self._floor_holder == holder_key:
             self._floor_holder = None
             self._push_to_cache()
             return True

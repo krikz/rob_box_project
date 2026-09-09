@@ -169,6 +169,17 @@ def _install_all_mocks():
     mock_utils_pkg.find_respeaker_device_sounddevice = MagicMock()
     sys.modules["rob_box_voice.utils"] = mock_utils_pkg
 
+    # ── rcl_interfaces (parameters_callback → SetParametersResult) ─────────
+    # ``TTSNode.parameters_callback`` does ``from rcl_interfaces.msg import
+    # SetParametersResult`` as a *local* import inside the function body
+    # (issue #2183 test coverage needs it callable), so it must resolve
+    # even though nothing else in this test dir touches ROS parameters
+    # directly. ``MagicMock(successful=True)`` sets ``.successful`` via
+    # constructor kwargs — mirrors ``test/unit/node/conftest.py``.
+    mock_rcl_interfaces = MagicMock()
+    mock_rcl_interfaces_msg = MagicMock()
+    mock_rcl_interfaces_msg.SetParametersResult = MagicMock
+
     # ── registry ──────────────────────────────────────────────────────────
     mocks = {
         "rclpy": mock_rclpy,
@@ -177,6 +188,11 @@ def _install_all_mocks():
     }
     for name, mock in mocks.items():
         sys.modules[name] = mock
+    for name, mock in (
+        ("rcl_interfaces", mock_rcl_interfaces),
+        ("rcl_interfaces.msg", mock_rcl_interfaces_msg),
+    ):
+        sys.modules.setdefault(name, mock)
 
 
 _install_all_mocks()
