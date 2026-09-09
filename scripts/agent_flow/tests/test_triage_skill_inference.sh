@@ -64,9 +64,13 @@ assert_eq() {  # $1=expected $2=actual $3=msg
 # body that contained nested { ... } (e.g. helper functions defined inside).
 # shellcheck source=lib/lib_eval_func.sh
 . "$TEST_DIR/lib/lib_eval_func.sh"
+# af_skill_for_profile зовёт top-level _skill_installed (ретро 09.09.2026
+# #2297) — обе функции нужны в scope helper-файла.
+_skill_installed_helper="$(extract_func_or_die "$LIB" _skill_installed)" \
+    || { echo "FAIL: extract_func_or_die не нашёл _skill_installed в $LIB" >&2; exit 1; }
 af_skill_helper="$(extract_func_or_die "$LIB" af_skill_for_profile)" \
     || { echo "FAIL: extract_func_or_die не нашёл af_skill_for_profile в $LIB" >&2; exit 1; }
-printf '%s\n' "$af_skill_helper" > /tmp/.triage_skill_helper.sh
+{ printf '%s\n' "$_skill_installed_helper"; printf '%s\n' "$af_skill_helper"; } > /tmp/.triage_skill_helper.sh
 # shellcheck disable=SC1091
 . /tmp/.triage_skill_helper.sh
 # Mock _af_log (called from fail-OPEN path; not fail-fast).
@@ -286,9 +290,15 @@ echo "=== T7: af_skills_for_profile returns multi-skill list (ретро t_aafad
 #      как primary, не дублируется с дополнительным code-review)
 
 echo "  setup: extract af_skills_for_profile"
+# af_skills_for_profile зовёт и top-level _skill_installed, и af_skill_for_profile
+# (для primary skill) — ретро 09.09.2026 #2297. Все три нужны в scope.
+_skill_installed_helper2="$(extract_func_or_die "$LIB" _skill_installed)" \
+    || { echo "FAIL: extract_func_or_die не нашёл _skill_installed в $LIB" >&2; exit 1; }
+af_skill_helper2="$(extract_func_or_die "$LIB" af_skill_for_profile)" \
+    || { echo "FAIL: extract_func_or_die не нашёл af_skill_for_profile в $LIB" >&2; exit 1; }
 af_skills_helper="$(extract_func_or_die "$LIB" af_skills_for_profile)" \
     || { echo "FAIL: extract_func_or_die не нашёл af_skills_for_profile в $LIB" >&2; exit 1; }
-printf '%s\n' "$af_skills_helper" > /tmp/.triage_multi_helper.sh
+{ printf '%s\n' "$_skill_installed_helper2"; printf '%s\n' "$af_skill_helper2"; printf '%s\n' "$af_skills_helper"; } > /tmp/.triage_multi_helper.sh
 # shellcheck disable=SC1091
 . /tmp/.triage_multi_helper.sh
 

@@ -32,9 +32,14 @@ fail() { FAIL=$((FAIL+1)); echo "  ✗ $1 (${2:-})"; }
 # который молча обрезал тело функции, если в нём был вложенный { ... }.
 # shellcheck source=lib/lib_eval_func.sh
 . "$TEST_DIR/lib/lib_eval_func.sh"
+# af_skill_for_profile зовёт top-level _skill_installed (ретро 09.09.2026
+# #2297) — обе функции нужны в scope helper.sh, иначе вызов _skill_installed
+# внутри af_skill_for_profile упадёт как "command not found".
+skill_installed_body="$(extract_func_or_die "$LIB" _skill_installed)" \
+    || { echo "FAIL: extract_func_or_die не нашёл _skill_installed в $LIB" >&2; exit 1; }
 helper_body="$(extract_func_or_die "$LIB" af_skill_for_profile)" \
     || { echo "FAIL: extract_func_or_die не нашёл af_skill_for_profile в $LIB" >&2; exit 1; }
-printf '%s\n' "$helper_body" > "$WORK/helper.sh"
+{ printf '%s\n' "$skill_installed_body"; printf '%s\n' "$helper_body"; } > "$WORK/helper.sh"
 # shellcheck disable=SC1091
 . "$WORK/helper.sh"
 _af_log() { :; }

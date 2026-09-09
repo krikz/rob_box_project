@@ -79,6 +79,21 @@ jobs:
           echo "Docker Tag: $DOCKER_TAG"
 
   # Параллельная сборка всех сервисов Vision Pi (до 8 одновременно)
+# Issue #2280 (arch review 2026-09-09, кандидат 4): buildx-сборка вынесена
+  # в composite action ./.github/actions/l-build-service (см. action.yml).
+  # ВАЖНО (fix run #34366133083): composite — buildx-only. GitHub требует,
+  # чтобы репозиторий был зачекаутен ДО вызова локального composite action
+  # (иначе раннер не найдёт action.yml → "Did you forget to run
+  # actions/checkout"). Поэтому каждый build-job начинается с clean-stale
+  # submodules + checkout (как и до рефакторинга), затем опциональный
+  # pre-step для специфичных cache-invalidation хешей (SOURCE_HASH —
+  # per-job, зависит от сервиса) и уже потом composite-call. Внутри
+  # composite: buildx --load (образ в daemon — нужен update-image-versions)
+  # + docker push ТОЛЬКО локального registry. GHCR не пушим на локальных
+  # test/dev сборках (runner не залогинен в ghcr.io, issue #1503; buildx
+  # --push по GHCR-тегу падал unauthorized — run #34368750126).
+  # См. acceptance #2280.
+
   build-oak-d:
     needs: prepare
     runs-on: [self-hosted, rob-box]
@@ -96,26 +111,17 @@ jobs:
           clean: true
 
       - name: Build oak-d
-        run: |
-          SERVICE="oak-d"
-          GHCR_TAG="${IMAGE_PREFIX}:${SERVICE}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-          LOCAL_TAG="${LOCAL_PREFIX}:${SERVICE}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-
-          docker buildx build \
-            --platform linux/arm64 \
-            --file docker/vision/${SERVICE}/Dockerfile \
-            --tag "${GHCR_TAG}" \
-            --tag "${LOCAL_TAG}" \
-            --load \
-            --add-host=host.docker.internal:host-gateway \
-            --build-arg="BASE_IMAGE=localhost:5000/krikz/rob_box_base:depthai-${ROS_DISTRO}" \
-            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
-            docker/vision
-
-          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
-            docker push "${LOCAL_TAG}"
-          fi
-          echo "✅ Built ${SERVICE}"
+        uses: ./.github/actions/l-build-service
+        with:
+          service-name: oak-d
+          dockerfile-path: docker/vision/oak-d/Dockerfile
+          build-context: docker/vision
+          tags: |
+            ${{ env.IMAGE_PREFIX }}:oak-d-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
+            ${{ env.LOCAL_PREFIX }}:oak-d-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
+          build-args: |
+            BASE_IMAGE=localhost:5000/krikz/rob_box_base:depthai-${{ env.ROS_DISTRO }}
+            APT_PROXY=http://host.docker.internal:3142
 
   build-led-matrix:
     needs: prepare
@@ -134,30 +140,20 @@ jobs:
           clean: true
 
       - name: Build led-matrix
-        run: |
-          SERVICE="led_matrix"
-          GHCR_TAG="${IMAGE_PREFIX}:led-matrix-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-          LOCAL_TAG="${LOCAL_PREFIX}:led-matrix-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-
-          # Получаем SHA субмодуля ros2leds для инвалидации кэша
-          ROS2LEDS_SHA=$(git submodule status src/ros2leds | awk '{print $1}' | sed 's/^[+-]//')
-
-          docker buildx build \
-            --platform linux/arm64 \
-            --file docker/vision/${SERVICE}/Dockerfile \
-            --tag "${GHCR_TAG}" \
-            --tag "${LOCAL_TAG}" \
-            --load \
-            --add-host=host.docker.internal:host-gateway \
-            --build-arg="BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO}" \
-            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
-            --build-arg="ROS2LEDS_SHA=${ROS2LEDS_SHA}" \
-            .
-
-          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
-            docker push "${LOCAL_TAG}"
-          fi
-          echo "✅ Built ${SERVICE}"
+        uses: ./.github/actions/l-build-service
+        with:
+          service-name: led-matrix
+          dockerfile-path: docker/vision/led_matrix/Dockerfile
+          build-context: '.'
+          tags: |
+            ${{ env.IMAGE_PREFIX }}:led-matrix-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
+            ${{ env.LOCAL_PREFIX }}:led-matrix-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
+          # ros2leds submodule → composite action сам посчитает SHA и
+          # подмешает ROS2LEDS_SHA=<sha> для Dockerfile cache invalidation.
+          compute-submodule-sha: src/ros2leds
+          build-args: |
+            BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh-${{ env.ROS_DISTRO }}
+            APT_PROXY=http://host.docker.internal:3142
 
   build-ceiling-camera:
     needs: prepare
@@ -176,26 +172,17 @@ jobs:
           clean: true
 
       - name: Build ceiling-camera
-        run: |
-          SERVICE="ceiling-camera"
-          GHCR_TAG="${IMAGE_PREFIX}:${SERVICE}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-          LOCAL_TAG="${LOCAL_PREFIX}:${SERVICE}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-
-          docker buildx build \
-            --platform linux/arm64 \
-            --file docker/vision/${SERVICE}/Dockerfile \
-            --tag "${GHCR_TAG}" \
-            --tag "${LOCAL_TAG}" \
-            --load \
-            --add-host=host.docker.internal:host-gateway \
-            --build-arg="BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO}" \
-            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
-            docker/vision
-
-          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
-            docker push "${LOCAL_TAG}"
-          fi
-          echo "✅ Built ${SERVICE}"
+        uses: ./.github/actions/l-build-service
+        with:
+          service-name: ceiling-camera
+          dockerfile-path: docker/vision/ceiling-camera/Dockerfile
+          build-context: docker/vision
+          tags: |
+            ${{ env.IMAGE_PREFIX }}:ceiling-camera-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
+            ${{ env.LOCAL_PREFIX }}:ceiling-camera-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
+          build-args: |
+            BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh-${{ env.ROS_DISTRO }}
+            APT_PROXY=http://host.docker.internal:3142
 
   build-voice-assistant:
     needs: [prepare, build-voice-base]
@@ -211,33 +198,43 @@ jobs:
         uses: actions/checkout@v7
         with:
           submodules: recursive
-          clean: true  # Очистка working directory для корректного кеширования Docker
+          clean: true
+
+      - name: Compute Python sources hash (cache invalidation)
+        # Per-service hash: rob_box_voice + rob_box_animations (точные пути
+        # зависят от сервиса — supervisor берёт rob_box_supervisor, quest
+        # добавляет webxr_client). Считаем здесь, передаём через build-args.
+        #
+        # Issue #2314 (devops): регрессия avatar_command повторялась потому,
+        # SOURCE_HASH не покрывал src/rob_box_core, а voice_assistant/Dockerfile
+        # делает `COPY src/rob_box_core/rob_box_core /ws/src/.../rob_box_core`.
+        # Когда в rob_box_core добавляется новый модуль (avatar_command.py
+        # добавлен 02.09.2026 в 824f3e34, мерж в 4386bb92), слой COPY
+        # не инвалидируется → buildx переиспользует старый слой →
+        # avatar_command.py не попадает в image → ModuleNotFoundError
+        # на старте quest_node (restart loop на Vision Pi).
+        # Лечение: включаем src/rob_box_core в SOURCE_HASH. rob_box_voice
+        # импортирует rob_box_core (dialogue_node.py), avatar_command
+        # handlers — добавление rob_box_core в hash обязательно.
+        id: source-hash
+        run: |
+          SOURCE_HASH=$(find src/rob_box_voice/rob_box_voice src/rob_box_animations/rob_box_animations src/rob_box_core \
+            -type f -name "*.py" 2>/dev/null | sort | xargs sha256sum | sha256sum | awk '{print $1}')
+          echo "source_hash=${SOURCE_HASH}" >> "$GITHUB_OUTPUT"
 
       - name: Build voice-assistant
-        run: |
-          SERVICE="voice_assistant"
-          GHCR_TAG="${IMAGE_PREFIX}:voice-assistant-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-          LOCAL_TAG="${LOCAL_PREFIX}:voice-assistant-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-
-          # Вычисляем hash Python исходников для инвалидации кеша
-          SOURCE_HASH=$(find src/rob_box_voice/rob_box_voice src/rob_box_animations/rob_box_animations -type f -name "*.py" | sort | xargs sha256sum | sha256sum | awk '{print $1}')
-
-          docker buildx build \
-            --platform linux/arm64 \
-            --file docker/vision/${SERVICE}/Dockerfile \
-            --tag "${GHCR_TAG}" \
-            --tag "${LOCAL_TAG}" \
-            --load \
-            --add-host=host.docker.internal:host-gateway \
-            --build-arg="BASE_IMAGE=${LOCAL_PREFIX}:voice-base-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}" \
-            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
-            --build-arg="SOURCE_HASH=${SOURCE_HASH}" \
-            .
-
-          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
-            docker push "${LOCAL_TAG}"
-          fi
-          echo "✅ Built ${SERVICE}"
+        uses: ./.github/actions/l-build-service
+        with:
+          service-name: voice-assistant
+          dockerfile-path: docker/vision/voice_assistant/Dockerfile
+          build-context: '.'
+          tags: |
+            ${{ env.IMAGE_PREFIX }}:voice-assistant-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
+            ${{ env.LOCAL_PREFIX }}:voice-assistant-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
+          build-args: |
+            BASE_IMAGE=${{ env.LOCAL_PREFIX }}:voice-base-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
+            APT_PROXY=http://host.docker.internal:3142
+            SOURCE_HASH=${{ steps.source-hash.outputs.source_hash }}
 
   build-voice-resources:
     needs: prepare
@@ -256,25 +253,17 @@ jobs:
           clean: true
 
       - name: Build voice-resources
-        run: |
-          SERVICE="voice_resources"
-          IMAGE_NAME="voice-resources"
-          GHCR_TAG="${IMAGE_PREFIX}:${IMAGE_NAME}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-          LOCAL_TAG="${LOCAL_PREFIX}:${IMAGE_NAME}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-
-          docker buildx build \
-            --platform linux/arm64 \
-            --file docker/vision/${SERVICE}/Dockerfile \
-            --tag "${GHCR_TAG}" \
-            --tag "${LOCAL_TAG}" \
-            --load \
-            --add-host=host.docker.internal:host-gateway \
-            docker/vision
-
-          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
-            docker push "${LOCAL_TAG}"
-          fi
-          echo "✅ Built ${IMAGE_NAME}"
+        uses: ./.github/actions/l-build-service
+        with:
+          service-name: voice-resources
+          dockerfile-path: docker/vision/voice_resources/Dockerfile
+          build-context: docker/vision
+          tags: |
+            ${{ env.IMAGE_PREFIX }}:voice-resources-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
+            ${{ env.LOCAL_PREFIX }}:voice-resources-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
+          # voice-resources не зависит от BASE_IMAGE (нет --build-arg BASE_IMAGE)
+          build-args: |
+            APT_PROXY=http://host.docker.internal:3142
 
   build-voice-base:
     needs: prepare
@@ -293,25 +282,17 @@ jobs:
           clean: true
 
       - name: Build voice-base
-        run: |
-          SERVICE="voice_base"
-          IMAGE_NAME="voice-base"
-          GHCR_TAG="${IMAGE_PREFIX}:${IMAGE_NAME}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-          LOCAL_TAG="${LOCAL_PREFIX}:${IMAGE_NAME}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-
-          docker buildx build \
-            --platform linux/arm64 \
-            --file docker/vision/${SERVICE}/Dockerfile \
-            --tag "${GHCR_TAG}" \
-            --tag "${LOCAL_TAG}" \
-            --load \
-            --add-host=host.docker.internal:host-gateway \
-            --build-arg="BASE_IMAGE=localhost:5000/krikz/rob_box_base:rtabmap-${ROS_DISTRO}" \
-            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
-            docker/vision/${SERVICE}
-
-          docker push "${LOCAL_TAG}"
-          echo "✅ Built ${IMAGE_NAME}"
+        uses: ./.github/actions/l-build-service
+        with:
+          service-name: voice-base
+          dockerfile-path: docker/vision/voice_base/Dockerfile
+          build-context: docker/vision/voice_base
+          tags: |
+            ${{ env.IMAGE_PREFIX }}:voice-base-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
+            ${{ env.LOCAL_PREFIX }}:voice-base-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
+          build-args: |
+            BASE_IMAGE=localhost:5000/krikz/rob_box_base:rtabmap-${{ env.ROS_DISTRO }}
+            APT_PROXY=http://host.docker.internal:3142
 
   build-telegram-bot:
     needs: prepare
@@ -329,31 +310,30 @@ jobs:
           submodules: recursive
           clean: true
 
-      - name: Build telegram-bot
+      - name: Compute Python sources hash (cache invalidation)
+        # Issue #2314: telegram_node.py импортирует rob_box_core
+        # (AV-22 handlers) — добавляем rob_box_core в SOURCE_HASH, чтобы
+        # изменения в rob_box_core (avatar_command и др.) инвалидировали
+        # слой COPY в telegram-bot/Dockerfile.
+        id: source-hash
         run: |
-          SERVICE="telegram_bot"
-          GHCR_TAG="${IMAGE_PREFIX}:telegram-bot-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-          LOCAL_TAG="${LOCAL_PREFIX}:telegram-bot-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
+          SOURCE_HASH=$(find src/rob_box_telegram/rob_box_telegram src/rob_box_core -type f -name "*.py" 2>/dev/null \
+            | sort | xargs sha256sum | sha256sum | awk '{print $1}')
+          echo "source_hash=${SOURCE_HASH}" >> "$GITHUB_OUTPUT"
 
-          # Вычисляем hash Python исходников для инвалидации кеша
-          SOURCE_HASH=$(find src/rob_box_telegram/rob_box_telegram -type f -name "*.py" | sort | xargs sha256sum | sha256sum | awk '{print $1}')
-
-          docker buildx build \
-            --platform linux/arm64 \
-            --file docker/vision/${SERVICE}/Dockerfile \
-            --tag "${GHCR_TAG}" \
-            --tag "${LOCAL_TAG}" \
-            --load \
-            --add-host=host.docker.internal:host-gateway \
-            --build-arg="BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO}" \
-            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
-            --build-arg="SOURCE_HASH=${SOURCE_HASH}" \
-            .
-
-          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
-            docker push "${LOCAL_TAG}"
-          fi
-          echo "✅ Built ${SERVICE}"
+      - name: Build telegram-bot
+        uses: ./.github/actions/l-build-service
+        with:
+          service-name: telegram-bot
+          dockerfile-path: docker/vision/telegram_bot/Dockerfile
+          build-context: '.'
+          tags: |
+            ${{ env.IMAGE_PREFIX }}:telegram-bot-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
+            ${{ env.LOCAL_PREFIX }}:telegram-bot-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
+          build-args: |
+            BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh-${{ env.ROS_DISTRO }}
+            APT_PROXY=http://host.docker.internal:3142
+            SOURCE_HASH=${{ steps.source-hash.outputs.source_hash }}
 
   build-supercollider:
     needs: prepare
@@ -372,25 +352,19 @@ jobs:
           clean: true
 
       - name: Build supercollider
-        run: |
-          SERVICE="supercollider"
-          GHCR_TAG="${IMAGE_PREFIX}:${SERVICE}-${{ needs.prepare.outputs.docker_tag }}"
-          LOCAL_TAG="${LOCAL_PREFIX}:${SERVICE}-${{ needs.prepare.outputs.docker_tag }}"
-
-          docker buildx build \
-            --platform linux/arm64 \
-            --file docker/vision/${SERVICE}/Dockerfile \
-            --tag "${GHCR_TAG}" \
-            --tag "${LOCAL_TAG}" \
-            --load \
-            --add-host=host.docker.internal:host-gateway \
-            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
-            docker/vision/${SERVICE}
-
-          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
-            docker push "${LOCAL_TAG}"
-          fi
-          echo "✅ Built ${SERVICE}"
+        uses: ./.github/actions/l-build-service
+        with:
+          service-name: supercollider
+          # ⚠️ tag naming inconsistent: supercollider не использует ROS_DISTRO
+          # в теге (см. update-image-versions ниже — он исключён из SHA-push).
+          # Сохраняем прежнее поведение 1:1 (см. исходный build-supercollider).
+          dockerfile-path: docker/vision/supercollider/Dockerfile
+          build-context: docker/vision/supercollider
+          tags: |
+            ${{ env.IMAGE_PREFIX }}:supercollider-${{ needs.prepare.outputs.docker_tag }}
+            ${{ env.LOCAL_PREFIX }}:supercollider-${{ needs.prepare.outputs.docker_tag }}
+          build-args: |
+            APT_PROXY=http://host.docker.internal:3142
 
   # AV-9 (issue #1603): Avatar Supervisor (Phase 1 monitor).
   # Dockerfile наследует voice-assistant image и пересобирает только
@@ -421,31 +395,30 @@ jobs:
           submodules: recursive
           clean: true
 
-      - name: Build supervisor
+      - name: Compute Python sources hash (cache invalidation)
+        # Issue #2314: supervisor_node.py импортирует rob_box_core
+        # (avatar_command handlers) — добавляем rob_box_core в SOURCE_HASH,
+        # иначе изменения в rob_box_core не инвалидируют COPY-слой в
+        # supervisor/Dockerfile (тот же класс багов, что с voice-assistant).
+        id: source-hash
         run: |
-          SERVICE="supervisor"
-          GHCR_TAG="${IMAGE_PREFIX}:supervisor-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-          LOCAL_TAG="${LOCAL_PREFIX}:supervisor-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
+          SOURCE_HASH=$(find src/rob_box_supervisor/rob_box_supervisor src/rob_box_core -type f -name "*.py" 2>/dev/null \
+            | sort | xargs sha256sum | sha256sum | awk '{print $1}')
+          echo "source_hash=${SOURCE_HASH}" >> "$GITHUB_OUTPUT"
 
-          # Хеш Python исходников для инвалидации кеша supervisor-слоя.
-          SOURCE_HASH=$(find src/rob_box_supervisor/rob_box_supervisor -type f -name "*.py" | sort | xargs sha256sum | sha256sum | awk '{print $1}')
-
-          docker buildx build \
-            --platform linux/arm64 \
-            --file docker/vision/${SERVICE}/Dockerfile \
-            --tag "${GHCR_TAG}" \
-            --tag "${LOCAL_TAG}" \
-            --load \
-            --add-host=host.docker.internal:host-gateway \
-            --build-arg="BASE_IMAGE=${LOCAL_PREFIX}:voice-assistant-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}" \
-            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
-            --build-arg="SOURCE_HASH=${SOURCE_HASH}" \
-            .
-
-          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
-            docker push "${LOCAL_TAG}"
-          fi
-          echo "✅ Built ${SERVICE}"
+      - name: Build supervisor
+        uses: ./.github/actions/l-build-service
+        with:
+          service-name: supervisor
+          dockerfile-path: docker/vision/supervisor/Dockerfile
+          build-context: '.'
+          tags: |
+            ${{ env.IMAGE_PREFIX }}:supervisor-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
+            ${{ env.LOCAL_PREFIX }}:supervisor-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
+          build-args: |
+            BASE_IMAGE=${{ env.LOCAL_PREFIX }}:voice-assistant-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
+            APT_PROXY=http://host.docker.internal:3142
+            SOURCE_HASH=${{ steps.source-hash.outputs.source_hash }}
 
   # Phase 1.6 (ADR-0027): Meta Quest WebXR-консоль — caddy:2-alpine +
   # aiohttp WSS-сервер rob_box_quest. Не зависит от voice-assistant (нет
@@ -468,35 +441,37 @@ jobs:
           submodules: recursive
           clean: true
 
-      - name: Build quest
+      - name: Compute Python + TS sources hash (cache invalidation)
+        # WebXR-клиент — TS/JSON/HTML, rob_box_quest — Python. ОБЕ
+        # директории должны быть в hash (иначе правка webxr_client не
+        # инвалидирует кэш → не пересоберёт образ). См. док по L-Build
+        # Single Service.yml (там тот же hash в job prepare).
+        # Issue #2314: добавляем src/rob_box_core — quest_node.py импортирует
+        # rob_box_core (avatar_command). Без этого изменения в rob_box_core
+        # не инвалидируют COPY-слой в quest/Dockerfile, avatar_command.py
+        # не попадает в image → ModuleNotFoundError на старте.
+        id: source-hash
         run: |
-          SERVICE="quest"
-          GHCR_TAG="${IMAGE_PREFIX}:quest-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-          LOCAL_TAG="${LOCAL_PREFIX}:quest-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
-
-          # Хеш Python + TS исходников для инвалидации build cache.
           SOURCE_HASH=$( (find src/rob_box_quest/rob_box_quest -type f -name "*.py"; \
-                          find src/rob_box_quest/webxr_client -type f \( -name "*.ts" -o -name "*.json" -o -name "*.html" \)) \
+                          find src/rob_box_quest/webxr_client -type f \( -name "*.ts" -o -name "*.json" -o -name "*.html" \); \
+                          find src/rob_box_core -type f -name "*.py") \
                         | sort | xargs sha256sum 2>/dev/null | sha256sum | awk '{print $1}')
+          echo "source_hash=${SOURCE_HASH}" >> "$GITHUB_OUTPUT"
 
-          docker buildx build \
-            --platform linux/arm64 \
-            --file docker/vision/${SERVICE}/Dockerfile \
-            --tag "${GHCR_TAG}" \
-            --tag "${LOCAL_TAG}" \
-            --load \
-            --add-host=host.docker.internal:host-gateway \
-            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
-            --build-arg="IMAGE_TAG=${{ needs.prepare.outputs.docker_tag }}" \
-            --build-arg="SOURCE_HASH=${SOURCE_HASH}" \
-            .
+      - name: Build quest
+        uses: ./.github/actions/l-build-service
+        with:
+          service-name: quest
+          dockerfile-path: docker/vision/quest/Dockerfile
+          build-context: '.'
+          tags: |
+            ${{ env.IMAGE_PREFIX }}:quest-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
+            ${{ env.LOCAL_PREFIX }}:quest-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
+          build-args: |
+            APT_PROXY=http://host.docker.internal:3142
+            BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh-${{ env.ROS_DISTRO }}
+            SOURCE_HASH=${{ steps.source-hash.outputs.source_hash }}
 
-          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
-            docker push "${LOCAL_TAG}"
-          fi
-          echo "✅ Built ${SERVICE}"
-
-  # Обновление .image-versions — SHA-тег после успешной сборки
   update-image-versions:
     needs: [prepare, build-oak-d, build-led-matrix, build-ceiling-camera, build-voice-base, build-voice-resources, build-voice-assistant, build-telegram-bot, build-supercollider, build-supervisor, build-quest]
     runs-on: [self-hosted, rob-box]

@@ -134,9 +134,22 @@ class TurnState:
         budget_left: Remaining synthetic retries for the current turn.
             ``0`` means the budget is exhausted; :class:`TurnGuards` will
             downgrade any ``Retry`` verdict to ``Accept`` with a warning.
+        babble_retry_consumed: ``True`` once :class:`BabbleGuard` has
+            already fired a one-shot synthetic retry for this turn.
+            Mirrors the legacy ``DialogueNode._babble_retry_used`` flag
+            (issue #992 Bug D). Lives in :class:`TurnState` so the
+            ``core/`` orchestrator can enforce the one-shot rule without
+            the dialogue_node adapter keeping a per-guard boolean of its
+            own — same pattern as ``budget_left`` for the cross-guard
+            budget (issue #1881). Other per-guard flags
+            (``_code_speech_retry_used`` / ``_action_claim_retry_used`` /
+            ``_tool_retry_used`` / ``_system_regurgitate_retry_used``)
+            stay in dialogue_node for now and migrate in voice-vr 23
+            (ADR-0084 §"Что НЕ сделано в этой карточке").
     """
 
     budget_left: int = DEFAULT_MAX_SYNTHETIC_RETRIES
+    babble_retry_consumed: bool = False
 
 
 @dataclass(frozen=True)
@@ -362,6 +375,133 @@ def consume_budget(state: TurnState) -> TurnState:
     return replace(state, budget_left=max(0, state.budget_left - 1))
 
 
+def consume_babble_retry(state: TurnState) -> TurnState:
+    """Return a new ``TurnState`` with ``babble_retry_consumed=True``.
+
+    Mirrors the legacy ``DialogueNode._babble_retry_used = True`` write
+    that fires after a babble retry is dispatched (issue #992 Bug D).
+    Lives in ``core/`` so :class:`BabbleGuard` can enforce the one-shot
+    rule without dialogue_node keeping a per-guard boolean — same
+    pattern as :func:`consume_budget` for the cross-guard budget.
+
+    Idempotent: flipping the flag twice is harmless (the field is just
+    ``True`` either way), so a misuse from a follow-up card can't
+    accidentally regress behaviour.
+    """
+    return replace(state, babble_retry_consumed=True)
+
+
+@dataclass(frozen=True)
+class BabbleRetryDecision:
+    """Pure result of :func:`begin_babble_retry` — what the adapter consumes.
+
+    Issue #2266 / ADR-0021 R2 step 2 — the babble policy + the budget
+    step + the one-shot flag all live in ``core/``. The adapter
+    (:meth:`DialogueNode._check_babble_and_retry`) just performs the
+    ROS-bound side effects (DSM transition, ``_dispatch_turn``) using
+    the decision fields below.
+
+    Attributes:
+        prompt: The synthetic prompt to dispatch as the next turn's
+            ``user_input``. Echoes the original request and adds the
+            CRITICAL reminder — see
+            :func:`rob_box_voice.core.dialogue_guards.build_babble_retry_prompt`.
+        new_state: The :class:`TurnState` to install on the dialogue
+            node — ``budget_left`` has been decremented by 1 and
+            ``babble_retry_consumed=True``. Pure: a fresh ``TurnState``
+            is returned (the input state is not mutated).
+        reason: Short human-readable tag for the log line. Not
+            interpreted programmatically; the adapter logs it via its
+            own logger to keep ``core/`` log-free.
+    """
+
+    prompt: str
+    new_state: TurnState
+    reason: str
+
+
+def begin_babble_retry(
+    *,
+    spoken: str,
+    user_input: str,
+    tools_called: tuple,
+    speak_text_real: int,
+    state: TurnState,
+) -> Optional[BabbleRetryDecision]:
+    """Issue #992 Bug D — decide whether to fire ONE babble retry, in pure.
+
+    Same predicate chain as :class:`BabbleGuard` (speak-text-real /
+    non-empty / metalanguage / planning / promise-only /
+    user-wants-performance), but ADDS the two side-effecting state
+    mutations that used to live inline in
+    ``DialogueNode._check_babble_and_retry`` (issue #2266 /
+    ADR-0021 R2 step 2):
+
+    1. ``budget_left`` is decremented (mirrors the legacy
+       ``self._consume_synthetic_retry(guard_name="babble")`` call).
+    2. ``babble_retry_consumed=True`` is set (mirrors the legacy
+       ``self._babble_retry_used = True`` write).
+
+    Both happen as pure ``dataclasses.replace`` operations — the
+    function takes a :class:`TurnState` and returns a new one, no
+    mutation of the input. This keeps ``core/`` testable in isolation
+    and lets the dialogue_node adapter stay a thin shell.
+
+    Budget exhaustion is treated as "no retry" (matches the legacy
+    semantics from ``_consume_synthetic_retry`` returning ``False``).
+    The :class:`BabbleGuard` one-shot rule is enforced BEFORE this
+    function consumes the budget, so a second babble reply in the same
+    turn returns ``None`` without touching the budget — mirrors the
+    legacy ``if self._babble_retry_used: return False`` short-circuit.
+
+    Returns:
+        ``None`` — no retry should fire (BabbleGuard deferred, or
+        budget already exhausted). The caller publishes the original
+        ``spoken`` text to TTS as-is.
+        :class:`BabbleRetryDecision` — caller must (1) install
+        ``new_state`` on the dialogue node, (2) perform the ROS-bound
+        DSM transition, (3) call ``_dispatch_turn(prompt, ...)``.
+
+    Pure: no ROS, no I/O, no logger access. Side effects live in the
+    caller.
+    """
+    ctx = GuardContext(
+        reply=Reply(
+            spoken=spoken or "",
+            tools_called=tuple(tools_called or ()),
+            speak_text_real=int(speak_text_real or 0),
+        ),
+        turn=TurnContext(
+            user_input=user_input or "",
+            is_dj_auto=False,
+        ),
+        state=state,
+    )
+    verdict = BabbleGuard().evaluate(ctx)
+    if verdict is None:
+        return None
+    if verdict.kind is not VerdictKind.RETRY:
+        # Future-proofing: BabbleGuard today only raises RETRY, but
+        # if it ever raises DISCARD we honour it here as "no retry".
+        return None
+    if state.budget_left <= 0:
+        # Mirrors ``_consume_synthetic_retry`` returning False: budget
+        # exhausted → no retry, even if a guard asked. Already logged
+        # by the caller in legacy code paths; the pure helper just
+        # returns None and lets the caller log.
+        return None
+    # Build the post-mutation state: flag the one-shot AND decrement
+    # the budget in one replace so the caller can't accidentally apply
+    # only one of them.
+    new_state = consume_budget(consume_babble_retry(state))
+    prompt = verdict.prompt or build_babble_retry_prompt(user_input or "")
+    return BabbleRetryDecision(
+        prompt=prompt,
+        new_state=new_state,
+        reason="babble_guard",
+    )
+
+
 def reset_budget(max_retries: int = DEFAULT_MAX_SYNTHETIC_RETRIES) -> TurnState:
     """Return a fresh ``TurnState`` with the full budget.
 
@@ -439,35 +579,100 @@ class ToolSkippedGuard:
         )
 
 
+#: Pure-promise openers (issue #992 Bug D) — phrases that are NEVER
+#: valid answers regardless of what the user asked for. The legacy
+#: ``DialogueNode._check_babble_and_retry`` keeps this subset as a
+#: fallback after ``user_wants_performance`` returns False. The
+#: ``BabbleGuard`` wrapper below relies on the same constant.
+#:
+#: «Зачит», «погнали», «устроим», «переключ», «давай-ка» — these
+#: openers come from live failures (see live 30.08 / 02.09 logs in
+#: the legacy dialogue_node.py comments). The match is a substring on
+#: the first 60 chars of the lower-cased reply.
+BABBLE_PROMISE_ONLY_OPENERS: tuple = (
+    "зачит",
+    "погнали",
+    "устроим",
+    "переключ",
+    "давай-ка",
+)
+
+
+def _is_promise_only_babble(spoken: str) -> bool:
+    """``True`` iff the reply opens with one of the :data:`BABBLE_PROMISE_ONLY_OPENERS`."""
+    head = spoken[:60].lower()
+    return any(p in head for p in BABBLE_PROMISE_ONLY_OPENERS)
+
+
 @dataclass(frozen=True)
 class BabbleGuard:
     """Issue #992 Bug D — LLM answered with metalanguage instead of performing.
 
-    Returns ``RETRY`` only when one of these holds:
+    Returns ``RETRY`` when one of these holds:
 
-    1. The spoken text matches the *promise-only* opener subset
-       («зачит», «погнали», «устроим», «переключ», «давай-ка»). These
-       are NEVER valid answers, regardless of what the user asked for.
-    2. The user explicitly asked for a performance
+    1. :attr:`TurnState.babble_retry_consumed` is already ``True`` —
+       the one-shot rule fired earlier this turn. ``None`` is returned
+       so the second babble reply passes through to TTS verbatim (see
+       ``test_issue_992_babble_guard.py::test_retry_only_fires_once_*``).
+       The legacy equivalent was
+       ``DialogueNode._babble_retry_used`` (now removed in voice-vr 22,
+       issue #2266).
+    2. The spoken text matches the *promise-only* opener subset
+       (:data:`BABBLE_PROMISE_ONLY_OPENERS` — «зачит», «погнали»,
+       «устроим», «переключ», «давай-ка»). These are NEVER valid
+       answers, regardless of what the user asked for.
+    3. The user explicitly asked for a performance
        (:func:`user_wants_performance`).
-    3. The LLM is reading its own plan aloud (:func:`is_planning_narration`).
+    4. The LLM is reading its own plan aloud (:func:`is_planning_narration`).
 
-    See :func:`is_metalanguage_babble` for the full detector; this guard is
-    a thin wrapper around it that produces the verdict shape.
+    See :func:`is_metalanguage_babble` for the full detector; this
+    guard is a thin wrapper around it that produces the verdict
+    shape.
+
+    The caller (:class:`DialogueNode` adapter) is expected to apply
+    :func:`consume_babble_retry` after a successful dispatch so the
+    next :meth:`Guard.evaluate` call sees the consumed flag — mirrors
+    :func:`consume_budget` for the cross-guard budget. Idempotency is
+    not required at the consume site: the field is a boolean, and the
+    orchestrator treats ``True`` as "already fired" regardless of how
+    many times the write was attempted.
     """
 
     name: str = "babble"
 
     def evaluate(self, ctx: GuardContext) -> Optional[Verdict]:
+        if ctx.state.babble_retry_consumed:
+            # One-shot rule (issue #992 Bug D): a second babble reply in
+            # the same turn MUST pass through to TTS verbatim — the
+            # alternative would be an unbounded LLM ping-pong. Mirrors
+            # the legacy ``self._babble_retry_used`` short-circuit at
+            # ``dialogue_node.py:4232-4233``.
+            return None
         if ctx.reply.speak_text_real > 0:
             return None
         if not ctx.reply.spoken:
             return None
         if not is_metalanguage_babble(ctx.reply.spoken):
             return None
-        user_wants_perf = user_wants_performance(ctx.turn.user_input or "")
-        if not user_wants_perf and not is_planning_narration(ctx.reply.spoken):
-            return None
+        # 🔴 FIX (live 02.09): planning narration is NEVER a valid
+        # answer regardless of user_input — matches legacy
+        # ``DialogueNode._check_babble_and_retry`` (vision-pi 02.09:
+        # user said «ебани ланудж», no perf keyword, robot read its
+        # own plan aloud).
+        if is_planning_narration(ctx.reply.spoken):
+            prompt = build_babble_retry_prompt(ctx.turn.user_input or "")
+            return Verdict(
+                kind=VerdictKind.RETRY,
+                guard_name=self.name,
+                prompt=prompt,
+            )
+        if not user_wants_performance(ctx.turn.user_input or ""):
+            # Promise-only subset always retries regardless of
+            # user_input — these phrases are NEVER valid answers.
+            # Mirrors the legacy fallback at
+            # ``dialogue_node.py:4245-4251`` exactly.
+            if not _is_promise_only_babble(ctx.reply.spoken):
+                return None
         prompt = build_babble_retry_prompt(ctx.turn.user_input or "")
         return Verdict(
             kind=VerdictKind.RETRY,
@@ -736,6 +941,7 @@ __all__ = [
     "Reply",
     "ToolSkippedGuard",
     "BabbleGuard",
+    "BabbleRetryDecision",
     "EmbeddedRenardoCodeGuard",
     "UnbackedActionClaimGuard",
     "PlanningNarrationHardMute",
@@ -745,6 +951,8 @@ __all__ = [
     "TurnState",
     "Verdict",
     "VerdictKind",
+    "begin_babble_retry",
+    "consume_babble_retry",
     "consume_budget",
     "default_guards",
     "music_guard_adapter",

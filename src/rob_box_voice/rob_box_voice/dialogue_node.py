@@ -29,6 +29,7 @@ import threading
 import time
 import traceback
 import uuid
+from pathlib import Path
 from typing import Any, List, Optional
 
 import yaml
@@ -53,6 +54,14 @@ from rob_box_core.tool_catalog import CORE_SKILL, skill_names, tools_for_skill
 from rob_box_core.utterance import Sink, Utterance
 from rob_box_harness.config import LLMConfig
 from rob_box_harness.core.agent_core import AgentCore, DialogResult
+from rob_box_harness.core.assembly import (
+    AgentSpec,
+    build_agent,
+    build_llm_chain,
+    load_skill_prompts,
+    load_system_prompt,
+    normalize_skill_slice,
+)
 from rob_box_harness.core.dialogue_state_machine import (
     DialogueEvent,
     DialogueStateKind,
@@ -80,7 +89,6 @@ from rob_box_harness.providers import (
     DEFAULT_MODEL as MINIMAX_DEFAULT_MODEL,
     DEEPSEEK_DEFAULT_BASE_URL,
     DEEPSEEK_DEFAULT_MODEL,
-    LLM_PROVIDER_REGISTRY,
     build_deepseek_provider,
     build_minimax_provider,
 )
@@ -115,7 +123,6 @@ from rob_box_voice.core.dialogue_guards import (
     RENARDO_MUSIC_TOOLS,
     MUSIC_RETRY_PROMPT_PREFIX,
     MUSIC_STOP_OVERRIDES,
-    build_babble_retry_prompt,
     build_music_retry_prompt,
     build_renardo_code_retry_prompt,
     build_system_regurgitate_retry_prompt,
@@ -159,6 +166,7 @@ from rob_box_voice.core.turn import (
     TurnGuards as TurnGuards,
     TurnState as TurnState,
     VerdictKind as TurnVerdictKind,
+    begin_babble_retry as begin_babble_retry,
     default_guards as turn_guards_default_order,
     music_guard_adapter as turn_guards_music_adapter,
     reset_budget as turn_guards_reset_budget,
@@ -358,8 +366,16 @@ class DialogueNode(Node):
         # between tool surface and prompt text otherwise makes the LLM
         # confidently say «нет такой функции» (see issue #1403).
         self._mcp_tool_names: set[str] = self._collect_mcp_tool_names()
-        self._system_prompt: str = self._load_system_prompt()
-        self._skill_prompts: dict[str, str] = self._load_skill_prompts()
+        # ADR-0083 §2.3 — wiring ``dialogue_node`` через
+        # ``build_agent(spec)``. Чтение файлов промпта/скиллов
+        # делегировано в ``load_system_prompt`` / ``load_skill_prompts``
+        # (assembly.py); здесь мы делаем только split-section
+        # post-processing, а сам ``AgentCore`` собирается в один вызов
+        # ``build_agent(spec, llm=..., tools=..., memory=...)`` ниже.
+        # Инициализируем пустыми значениями — фактический текст
+        # подгружается из spec внутри блока ``build_agent``.
+        self._system_prompt: str = ""
+        self._skill_prompts: dict[str, str] = {}
         # Фаза 5 change'а: §5 MUSIC и §6 WAYPOINTS размечены в мастер-промпте
         # как секции скиллов. При skills_enabled=false остаются на месте
         # (побайтово как раньше), при true — уезжают во фрагменты и едут
@@ -492,10 +508,12 @@ class DialogueNode(Node):
         # Issue #1160 — LLM держим и в атрибуте ноды: метрики
         # (``record_voice_llm_request``) и future OTel spans берут имя
         # провайдера из ``self._llm.name``, а не из ``self._core._llm``
-        # (private-атрибут AgentCore). Раньше ``_build_llm()`` вызывался
-        # inline и нода теряла ссылку — обращение ``self._llm`` падало
-        # AttributeError в ``_run_turn``.
-        self._llm = self._build_llm()
+        # (private-атрибут AgentCore). ADR-0083 §2.3 — LLM собираем ОДИН
+        # раз через ``build_llm_chain(spec)`` (harness), передаём тот же
+        # объект в ``build_agent(..., llm=...)``, чтобы не дублировать
+        # build_provider() и не словить расхождение env-ключей.
+        personality_spec = self._build_personality_spec()
+        self._llm = build_llm_chain(personality_spec)
         # W7c (issue #968): /harness/task_events publisher — scheduler
         # lifecycle events (task.created/started/completed/...) for
         # monitoring. Created BEFORE _build_tool_provider so the W7b
@@ -507,27 +525,43 @@ class DialogueNode(Node):
         # _build_dynamic_system_context can render the [ACTIVE TASKS]
         # block for the LLM. None when scheduler is disabled/failed.
         self._scheduler_executor: Any = None
-        self._core: AgentCore = AgentCore(
-            llm=self._llm,
+        # ADR-0083 §2.3 — раскол §5 MUSIC / §6 WAYPOINTS по фрагментам
+        # скиллов выполняется ДО ``build_agent``. ``load_system_prompt`` /
+        # ``load_skill_prompts`` (harness) читают те же файлы, что
+        # раньше читала нода, но результат мы обрабатываем на стороне
+        # ноды (node-specific markup rules, ADR-0056) и передаём
+        # post-processed значения в ``build_agent`` через ``system_prompt=``
+        # / ``skill_prompts=`` overrides (см. ADR-0083 §2.3 follow-up).
+        raw_system_prompt = load_system_prompt(personality_spec)
+        raw_skill_prompts = load_skill_prompts(personality_spec)
+        self._system_prompt, self._skill_prompts = self._split_skill_sections(
+            raw_system_prompt, raw_skill_prompts
+        )
+        self._validate_skill_fragments(self._skill_prompts)
+        # Issue #1219 — regression guard для voice-change feature:
+        # промпт ОБЯЗАН содержать ``RULE #VOICE`` (иначе MiniMax-M3 live
+        # молча игнорирует запрос и оставляет голос по умолчанию). Раньше
+        # проверка жила inline в ``_load_system_prompt``; теперь
+        # файл читает harness, а guard вызываем здесь, в ноде.
+        if self._system_prompt and "RULE #VOICE" not in self._system_prompt:
+            self.get_logger().warning(
+                "⚠️ [issue 1219] System prompt does not contain "
+                "'RULE #VOICE' — LLM may ignore voice-change "
+                "requests and skip the set_voice tool. See "
+                "master_prompt_compact.txt for the canonical block."
+            )
+        # ADR-0083 §2.3 — единственная точка сборки ``AgentCore`` в проде.
+        # ``tools`` и ``memory`` приносит нода (ROS/asyncio-loop
+        # ownership, ADR-0083 §2.3 trade-off); ``llm`` собран выше и
+        # передаётся явно, чтобы ``self._llm`` и ``self._core._llm``
+        # были ОДНИМ объектом (identity, не только ``==``).
+        self._core: AgentCore = build_agent(
+            personality_spec,
             tools=self._build_tool_provider(),
             memory=self._memory,
-            dsm=self._dsm,
-            history_trim_limit=int(self.get_parameter("history_max_turns").value),
+            llm=self._llm,
             system_prompt=self._system_prompt,
-            use_streaming=bool(self.get_parameter("llm_streaming").value),
-            on_prompt=self._on_prompt_stats,
             skill_prompts=self._skill_prompts,
-            narrow_tools_to_skill=bool(
-                self.get_parameter("skill_tool_narrowing").value
-            ),
-            # 🔴 FIX (issue #1883): forward the primary provider's
-            # ``LLMSettings`` so ``max_tokens`` / ``temperature`` from
-            # ``dialogue_node.yaml`` actually reach the wire request.
-            # Multi-provider chains get per-provider overrides via
-            # ``HealthAwareFallbackLLM.settings_for`` — the wrapper
-            # dispatches the right ``LLMSettings`` to whichever
-            # provider ends up answering.
-            llm_settings=getattr(self, "_llm_settings", None),
         )
 
         cbg = ReentrantCallbackGroup()
@@ -1139,45 +1173,162 @@ class DialogueNode(Node):
                 )
         return SetParametersResult(successful=True)
 
-    def _load_system_prompt(self) -> str:
-        prompt_file = self.get_parameter("system_prompt_file").value
+    def _parse_provider_chain(self) -> tuple[str, ...]:
+        """Разобрать CSV ``llm_providers`` в нормализованный tuple.
+
+        ADR-0083 §2.3 — раньше жило inline в ``_resolve_provider_chain``
+        dialogue_node; теперь единый inline-парсер для personality-ноды
+        (у supervisor'а такой же, ADR-0043 §3.2 / issue #2111).
+        ``deepseek`` — дефолт, если параметр пуст.
+        """
+        providers_str = str(
+            self.get_parameter("llm_providers").value or "deepseek"
+        ).strip()
+        return tuple(
+            p.strip().lower()
+            for p in providers_str.split(",")
+            if p.strip()
+        )
+
+    def _resolve_global_llm_settings(self) -> LLMSettings | None:
+        """Глобальные ``temperature`` / ``max_tokens`` из ROS-параметров.
+
+        ADR-0083 §2.3 — было частью ``_build_llm_settings_for``.
+        YAML 0 → ``None`` (LLMSettings конвенция: «оставь провайдеру»).
+        """
         try:
-            from ament_index_python.packages import get_package_share_directory
-            pkg = get_package_share_directory("rob_box_voice")
-            with open(os.path.join(pkg, "prompts", prompt_file),
-                      "r", encoding="utf-8") as fh:
-                prompt = fh.read()
-            self.get_logger().info(
-                f"✅ Prompt loaded: {prompt_file} ({len(prompt)} bytes) "
-                f"from {os.path.join(pkg, 'prompts', prompt_file)}\n"
-                f"   first line: {prompt.split(chr(10))[0][:120]!r}")
-            # Regression guard for issue #1219 (voice-change feature): the
-            # prompt MUST contain an explicit ``RULE #VOICE`` block
-            # instructing the LLM to call ``set_voice(...)`` for voice
-            # change requests. Without it, MiniMax-M3 (live provider)
-            # silently ignores the request and answers "Ок." without any
-            # tool call — the robot stays on the default male voice.
-            # If you're refactoring the prompt, keep the rule; if you
-            # switch to a different compact prompt, copy the rule over.
-            if "RULE #VOICE" not in prompt:
-                self.get_logger().warning(
-                    "⚠️ [issue 1219] System prompt does not contain "
-                    "'RULE #VOICE' — LLM may ignore voice-change "
-                    "requests and skip the set_voice tool. See "
-                    "master_prompt_compact.txt for the canonical block."
+            global_temperature = float(
+                self.get_parameter("temperature").value or 0.0
+            )
+        except Exception:
+            global_temperature = 0.0
+        try:
+            global_max_tokens = int(
+                self.get_parameter("max_tokens").value or 0
+            )
+        except Exception:
+            global_max_tokens = 0
+        if global_temperature <= 0 and global_max_tokens <= 0:
+            return None
+        return LLMSettings(
+            temperature=(
+                global_temperature if global_temperature > 0 else None
+            ),
+            max_tokens=(global_max_tokens if global_max_tokens > 0 else None),
+        )
+
+    def _resolve_per_provider_llm_settings(
+        self, chain: tuple[str, ...]
+    ) -> dict[str, LLMSettings]:
+        """Per-provider override (issue #1883): ``<name>.temperature/max_tokens``.
+
+        Если для провайдера ничего не задано — он пропускается (не
+        попадает в ``per_provider_settings``, чтобы ``build_agent``
+        увидел «пусто» и не лез в ``None``).
+        """
+        per_provider: dict[str, LLMSettings] = {}
+        for name in chain:
+            try:
+                per_temperature = float(
+                    self.get_parameter(f"{name}.temperature").value or 0.0
                 )
-            # Issue #1409 — SSoT tools-vs-prompt validation (music-domain only).
-            # ``music_skill_prompt.txt`` is a static contract the LLM reads
-            # verbatim at startup, so any MCP tool the LLM can call MUST be
-            # mentioned by name — otherwise the LLM degrades to «нет такой
-            # функции» fallback (see issue #1403: ``generate_music`` was
-            # registered but never mentioned, so the LLM kept using Renardo).
-            # Other domain prompts (FAQ, navigation, web_search) stay
-            # unchecked for now — TODO when their contracts harden.
-            return prompt
-        except Exception as exc:  # noqa: BLE001
-            self.get_logger().warning(f"⚠️ Prompt not found ({exc})")
-            return "Ты ROBBOX — умный робот-ассистент. Отвечай кратко и по делу."
+            except Exception:
+                per_temperature = 0.0
+            try:
+                per_max_tokens = int(
+                    self.get_parameter(f"{name}.max_tokens").value or 0
+                )
+            except Exception:
+                per_max_tokens = 0
+            if per_temperature <= 0 and per_max_tokens <= 0:
+                continue
+            per_provider[name] = LLMSettings(
+                temperature=(
+                    per_temperature if per_temperature > 0 else None
+                ),
+                max_tokens=(per_max_tokens if per_max_tokens > 0 else None),
+            )
+        return per_provider
+
+    def _resolve_personality_prompt_dir(self) -> Path:
+        """Где лежат ``prompts/`` и ``prompts/skills/`` для personality.
+
+        ADR-0083 §2.3 — ``prompt_dir`` часть спек. Возвращаем
+        ``<share_dir>/prompts`` через ``ament_index_python`` —
+        тестовые обёртки (``scripts/dialogue/chat.py``,
+        ``ros2 launch test``) могут подменить через mock ``spec``
+        напрямую, эта функция только точка правды для production.
+        """
+        from ament_index_python.packages import (
+            get_package_share_directory as _ament_probe,
+        )
+        return Path(_ament_probe("rob_box_voice")) / "prompts"
+
+    def _build_personality_spec(self) -> AgentSpec:
+        """Собрать :class:`AgentSpec` для личности робота (ADR-0083 §2.3).
+
+        Оркестратор: декомпозирован на 4 хелпера (``_parse_provider_chain``,
+        ``_resolve_global_llm_settings``, ``_resolve_per_provider_llm_settings``,
+        ``_resolve_personality_prompt_dir``) для соблюдения CC-budget
+        ADR-0021 (limit 15). Каждый хелпер покрывает один срез параметров;
+        ``build_agent`` потом собирает по спеке ``AgentCore`` без знания
+        про rclpy.
+        """
+        chain = self._parse_provider_chain()
+        spec_settings = self._resolve_global_llm_settings()
+        per_provider = self._resolve_per_provider_llm_settings(chain)
+
+        cache_path_raw = str(
+            self.get_parameter("health_cache_path").value or ""
+        ).strip()
+        try:
+            health_ttl = float(
+                self.get_parameter("health_ttl_s").value
+                or DEFAULT_HEALTH_TTL_S
+            )
+        except (TypeError, ValueError):
+            health_ttl = DEFAULT_HEALTH_TTL_S
+
+        skill_slice: tuple[str, ...] = normalize_skill_slice(skill_names())
+        try:
+            prompt_dir: Path = self._resolve_personality_prompt_dir()
+        except Exception as exc:  # noqa: BLE001 — старт-страховка
+            self.get_logger().warning(
+                f"⚠️ ament_index probe for rob_box_voice failed: {exc!r}; "
+                "spec.prompt_dir будет пустым, load_system_prompt вернёт ''"
+            )
+            prompt_dir = Path()
+
+        return AgentSpec(
+            name="personality",
+            prompt_dir=prompt_dir,
+            system_prompt_file=str(
+                self.get_parameter("system_prompt_file").value
+                or "master_prompt_compact.txt"
+            ),
+            skill_slice=skill_slice,
+            narrow_tools_to_skill=bool(
+                self.get_parameter("skill_tool_narrowing").value or False
+            ),
+            memory_namespace="personality",
+            use_scheduler=True,
+            on_prompt=self._on_prompt_stats,
+            provider_chain=chain,
+            settings=spec_settings,
+            per_provider_settings=per_provider,
+            use_streaming=bool(
+                self.get_parameter("llm_streaming").value or False
+            ),
+            health_cache_persist_path=(
+                Path(cache_path_raw).expanduser() if cache_path_raw else None
+            ),
+            health_ttl_s=health_ttl,
+            history_trim_limit=int(
+                self.get_parameter("history_max_turns").value or 20
+            ),
+            dsm=self._dsm,
+            user_id="default",
+        )
 
     def _collect_mcp_tool_names(self) -> set[str]:
         """Return the canonical set of MCP tool names (SSoT).
@@ -1300,64 +1451,6 @@ class DialogueNode(Node):
             )
         return rendered.system_prompt, merged
 
-    def _load_skill_prompts(self) -> dict[str, str]:
-        """Прочитать фрагменты доменных скиллов с диска.
-
-        Файлы читает нода, а не harness: harness обязан оставаться без
-        файловой системы и без ROS2 (он получает готовый словарь).
-
-        При ``skills_enabled=false`` возвращаем пустой словарь — тогда
-        AgentCore ведёт себя ровно как до скиллов, побайтово.
-
-        Имя файла = имя скилла из каталога. Отсутствие файла для
-        объявленного скилла — не ошибка старта: скилл останется без
-        текста, а его инструменты никуда не денутся. Ронять ноду из-за
-        промпта нельзя — робот должен подняться и говорить.
-        """
-        if not self._skills_enabled():
-            self.get_logger().info(
-                "ℹ️ skills_enabled=false — доменные скиллы выключены "
-                "(Move A не активен, поведение как до change'а)"
-            )
-            return {}
-
-        try:
-            from ament_index_python.packages import get_package_share_directory
-
-            skills_dir = os.path.join(
-                get_package_share_directory("rob_box_voice"), "prompts", "skills"
-            )
-            loaded: dict[str, str] = {}
-            absent: list[str] = []
-            for skill in skill_names():
-                path = os.path.join(skills_dir, f"{skill}.txt")
-                try:
-                    with open(path, "r", encoding="utf-8") as fh:
-                        text = fh.read().strip()
-                except OSError:
-                    absent.append(skill)
-                    continue
-                if text:
-                    loaded[skill] = text
-                else:
-                    absent.append(skill)
-            self.get_logger().info(
-                f"🧩 Загружено фрагментов скиллов: {len(loaded)} "
-                f"({', '.join(sorted(loaded)) or '—'})"
-            )
-            if absent:
-                self.get_logger().warning(
-                    f"⚠️ Без текста остались скиллы: {', '.join(sorted(absent))} "
-                    "— их инструменты работают, но доменных инструкций у LLM нет"
-                )
-            return loaded
-        except Exception as exc:  # noqa: BLE001 — промпт не роняет ноду
-            self.get_logger().warning(
-                f"⚠️ Не удалось загрузить фрагменты скиллов ({exc}); "
-                "Move A остаётся выключенным"
-            )
-            return {}
-
     def _activate_skill_for(self, text: str) -> None:
         """Активировать домен ДО обращения к LLM.
 
@@ -1452,21 +1545,6 @@ class DialogueNode(Node):
             except Exception:
                 pass
             return store
-    # ── LLM provider registry (well-known defaults) ────────────────────
-    # Each entry maps a provider name to its factory and constants.
-    # Extend this dict to add new providers (mimo, qwen, etc.).
-    # ── LLM provider registry (metadata + well-known defaults) ──────────
-    # Each entry maps a provider name to its metadata.  Per-call overrides
-    # (base_url, model, api_key) are read from the YAML section
-    # ``<provider_name>.base_url`` etc., falling back to these defaults.
-    # Extend this dict to add new providers.
-    #: Well-known LLM providers. The table itself lives in
-    #: ``rob_box_harness.providers.catalog`` — a ROS2-free module — so the
-    #: local text-chat entry point (``scripts/dialogue/chat.py``) and this
-    #: node cannot drift apart on base URLs, models or env var names. This
-    #: attribute stays as the node-local alias the methods below read.
-    _LLM_PROVIDER_REGISTRY: dict[str, dict[str, Any]] = LLM_PROVIDER_REGISTRY
-
     _BARGE_IN_POLICIES = ("replace", "classify")
 
     # ADR-0066 §6.3 — ``_DEFAULT_VOICE_PRESETS_FILE`` УДАЛЁН вместе с
@@ -1513,292 +1591,6 @@ class DialogueNode(Node):
         msg = String()
         msg.data = self._barge_in_policy
         pub.publish(msg)
-
-    def _resolve_provider_chain(self) -> list[str]:
-        """Resolve the ordered list of LLM provider names from config.
-
-        Reads ``llm_providers`` (comma-separated).
-        Первый в списке = primary, остальные = fallbacks.
-        Default: ``["deepseek"]``.
-        """
-        providers_str = str(
-            self.get_parameter("llm_providers").value or "deepseek"
-        ).strip()
-        chain = [
-            p.strip().lower()
-            for p in providers_str.split(",")
-            if p.strip()
-        ]
-        self.get_logger().info(
-            f"🔗 LLM provider chain: {chain} (primary={chain[0] if chain else '?'})"
-        )
-        return chain
-
-    def _build_single_provider(self, name: str) -> Any | None:
-        """Build one LLM provider from its YAML section + registry defaults.
-
-        Resolution order (per field):
-        1. YAML param ``<name>.base_url`` (etc.) — если задан
-        2. Registry default (``_LLM_PROVIDER_REGISTRY[name]``)
-        3. Module-level constant (``MINIMAX_DEFAULT_BASE_URL`` etc.)
-
-        API key resolution:
-        1. YAML ``<name>.api_key`` (явный)
-        2. Env var из registry ``env_key_var`` (напр. ``MINIMAX_API_KEY``)
-        3. ``None`` — провайдер сам разберётся (или кинет ConfigError)
-        """
-        name = name.strip().lower()
-        entry = self._LLM_PROVIDER_REGISTRY.get(name)
-        if entry is None:
-            self.get_logger().warning(
-                f"⚠️ Unknown LLM provider: {name!r} — skipped. "
-                f"Known: {sorted(self._LLM_PROVIDER_REGISTRY.keys())!r}"
-            )
-            return None
-
-        display = entry["display_name"]
-
-        # Resolve per-field: YAML → registry default → module constant
-        def _p(key: str, default: str = "") -> str:
-            """Read ``<name>.<key>`` from ROS param, fallback chain."""
-            try:
-                val = str(self.get_parameter(f"{name}.{key}").value or "").strip()
-            except Exception:
-                val = ""
-            return val or default
-
-        base_url = (
-            _p("base_url", entry.get("default_base_url", ""))
-            or MINIMAX_DEFAULT_BASE_URL  # fallback для minimax
-        )
-        model = (
-            _p("model", entry.get("default_model", ""))
-            or MINIMAX_DEFAULT_MODEL
-        )
-
-        # API key: YAML explicit → env var → None
-        api_key = _p("api_key") or None
-        if not api_key:
-            env_var = entry.get("env_key_var", "")
-            if env_var:
-                api_key = os.environ.get(env_var) or None
-
-        # Timeout — read here so the provider build can use it directly.
-        # ``temperature`` and ``max_tokens`` are read by ``_build_llm``
-        # (issue #1883) where they are assembled into a ``LLMSettings``
-        # object that flows into ``AgentCore``. Reading them here too
-        # would be a duplicate path that drifts silently — ``_build_llm``
-        # is the single owner.
-        try:
-            timeout_s = float(self.get_parameter(f"{name}.timeout_s").value or 0)
-        except Exception:
-            timeout_s = 0.0
-
-        # ── Build ──────────────────────────────────────────────────
-        try:
-            if name == "minimax":
-                provider = build_minimax_provider(
-                    LLMConfig(
-                        provider="minimax",
-                        model=model or MINIMAX_DEFAULT_MODEL,
-                        api_key=api_key,
-                        timeout_s=timeout_s or 90.0,
-                    )
-                )
-            else:
-                # OpenAI-совместимые: deepseek, mimo, qwen
-                provider = build_deepseek_provider(
-                    api_key=api_key,
-                    base_url=base_url or DEEPSEEK_DEFAULT_BASE_URL,
-                    model=model or DEEPSEEK_DEFAULT_MODEL,
-                )
-
-            self.get_logger().info(
-                f"✅ LLM provider built: {display} ({name}) "
-                f"base_url={base_url or '(default)'} model={model or '(default)'}"
-            )
-            return provider
-        except Exception as exc:  # noqa: BLE001
-            # 🔴 FIX (live 10.08): self.get_logger() может крашнуться
-            # внутри except-блока из-за _rclpy_logger_safe monkey-patch
-            # (ValueError: Logger severity cannot be changed between calls).
-            # Защитный fallback: пробуем rclpy-логер, при ошибке → print.
-            warn_msg = (
-                f"⚠️ LLM provider {name!r} ({display}) "
-                f"не построен: {type(exc).__name__}: {exc}"
-            )
-            try:
-                self.get_logger().warning(warn_msg)
-            except Exception:
-                try:
-                    logging.warning(warn_msg)
-                except Exception:
-                    print(warn_msg, flush=True)
-            return None
-
-    def _build_llm(self) -> Any:
-        # ── Resolve provider chain ──────────────────────────────────────
-        chain_names: list[str] = self._resolve_provider_chain()
-
-        # ── Build each provider (skip failures) ─────────────────────────
-        built: list[Any] = []
-        chain_display: list[str] = []
-        for name in chain_names:
-            provider = self._build_single_provider(name)
-            if provider is not None:
-                built.append(provider)
-                chain_display.append(name)
-
-        if not built:
-            raise RuntimeError(
-                f"No LLM providers could be built from chain {chain_names!r}. "
-                "Check API keys and environment variables."
-            )
-
-        # ── Issue #1883: per-provider LLM settings (max_tokens / temperature)
-        # Build a {provider_name: LLMSettings} map from the YAML
-        # ``<name>.temperature`` / ``<name>.max_tokens`` params, falling
-        # back to the global ``temperature`` / ``max_tokens`` for that
-        # provider. The map is consumed by ``HealthAwareFallbackLLM`` so
-        # each provider in the chain actually receives its own settings
-        # on the wire (previously the values were logged and silently
-        # dropped). ``None`` for a field means "leave it to the provider
-        # default" — exactly the LLMSettings semantics.
-        settings_for: dict[str, LLMSettings] = {
-            name: self._build_llm_settings_for(name) for name in chain_display
-        }
-        primary_settings: LLMSettings = settings_for[chain_display[0]]
-
-        # ── Start-up config log ─────────────────────────────────────────
-        self.get_logger().info(
-            f"⚙️ LLM CONFIG: chain={chain_display} "
-            f"primary.temperature={primary_settings.temperature} "
-            f"primary.max_tokens={primary_settings.max_tokens} "
-            f"per_provider={[f'{n}=({s.temperature},{s.max_tokens})' for n, s in settings_for.items()]}"
-        )
-
-        # ── Single provider — no fallback needed ────────────────────────
-        if len(built) == 1:
-            # NOTE: rclpy RcutilsLogger accepts max 2 positional args
-            # (fmt, args). Use f-string to avoid "takes 2 positional
-            # arguments but N were given" + silent Empty assistant.
-            self.get_logger().info(
-                f"[health] build_llm: provider_chain={chain_display} active={chain_display[0]} (single)",
-            )
-            # Stash on the provider object so the node's __init__ can pick
-            # up the same LLMSettings when wiring AgentCore (single-provider
-            # path doesn't go through HealthAwareFallbackLLM).
-            self._llm_settings = primary_settings
-            return built[0]
-
-        # ── Multi-provider: HealthAwareFallbackLLM ──────────────────────
-        # Health cache (persistent — survives robot restart)
-        cache_path = str(
-            self.get_parameter("health_cache_path").value or ""
-        ).strip()
-        try:
-            health_ttl = float(
-                self.get_parameter("health_ttl_s").value
-                or DEFAULT_HEALTH_TTL_S
-            )
-        except (TypeError, ValueError):
-            health_ttl = DEFAULT_HEALTH_TTL_S
-        cache = HealthCache(
-            ttl_s=health_ttl,
-            persist_path=cache_path or None,
-        )
-
-        # Balance probes: only for providers that expose a balance API
-        balance_checkers: dict[str, Any] = {}
-        for i, name in enumerate(chain_display):
-            entry = self._LLM_PROVIDER_REGISTRY.get(name, {})
-            if entry.get("has_balance_api") and name == "deepseek":
-                def _deepseek_balance_probe(
-                    _name: str = name,
-                ) -> Any:
-                    return check_deepseek_balance(
-                        DEEPSEEK_DEFAULT_BASE_URL,
-                        os.environ.get("DEEPSEEK_API_KEY", ""),
-                        timeout_s=5.0,
-                    )
-                balance_checkers["deepseek"] = _deepseek_balance_probe
-
-        # NOTE: rclpy RcutilsLogger accepts max 2 positional args
-        # (fmt, args). Use f-string to avoid "takes 2 positional
-        # arguments but N were given" + silent Empty assistant.
-        self.get_logger().info(
-            f"[health] build_llm: provider_chain={chain_display} active={chain_display[0]} (health-aware, TTL {health_ttl:.0f}s)",
-        )
-        # Stash for the AgentCore wiring below — the fallback wrapper
-        # is the LLM that AgentCore talks to, but it will dispatch
-        # ``settings_for[name]`` to each provider on its own, so we pass
-        # the PRIMARY provider's settings as the AgentCore default and
-        # let ``HealthAwareFallbackLLM.settings_for`` do the per-provider
-        # rewrite on top.
-        self._llm_settings = primary_settings
-        return HealthAwareFallbackLLM(
-            built,
-            cache=cache,
-            balance_checkers=balance_checkers,
-            logger=self.get_logger(),
-            settings_for=settings_for,
-        )
-
-    def _build_llm_settings_for(self, name: str) -> LLMSettings:
-        """Build the ``LLMSettings`` for one provider in the chain.
-
-        Per-provider YAML (issue #1883) overrides the global values::
-
-            temperature: 0.7
-            max_tokens: 500
-            minimax:
-              temperature: 0.3        # only used when minimax is active
-              max_tokens: 250
-            deepseek:
-              max_tokens: 800         # deepseek has a longer context
-
-        The precedence:
-
-        1. ``<name>.temperature`` / ``<name>.max_tokens`` — per-provider.
-           ``0`` means "no override; fall back to global".
-        2. Global ``temperature`` / ``max_tokens``.
-
-        The result is forwarded to ``HealthAwareFallbackLLM`` via
-        ``settings_for=`` so each provider in the chain receives its
-        own ``LLMSettings`` on the wire.
-        """
-        try:
-            per_temperature = float(
-                self.get_parameter(f"{name}.temperature").value or 0.0
-            )
-        except Exception:
-            per_temperature = 0.0
-        try:
-            per_max_tokens = int(
-                self.get_parameter(f"{name}.max_tokens").value or 0
-            )
-        except Exception:
-            per_max_tokens = 0
-        try:
-            global_temperature = float(self.get_parameter("temperature").value or 0.0)
-        except Exception:
-            global_temperature = 0.0
-        try:
-            global_max_tokens = int(self.get_parameter("max_tokens").value or 0)
-        except Exception:
-            global_max_tokens = 0
-        temperature = per_temperature if per_temperature > 0 else global_temperature
-        max_tokens = per_max_tokens if per_max_tokens > 0 else global_max_tokens
-        # ``LLMSettings`` uses ``None`` to mean "leave it to the provider
-        # default"; we use ``0`` as "no override" because YAML params
-        # can't tell the difference between "0" and "unset" for the ROS
-        # double/int parameters. Translate 0 → None to keep the wire
-        # request clean (no ``temperature: 0`` shoved to MiniMax, which
-        # would override the model default and likely break responses).
-        return LLMSettings(
-            temperature=(temperature if temperature > 0 else None),
-            max_tokens=(max_tokens if max_tokens > 0 else None),
-        )
 
     def _build_tool_provider(self) -> ToolProvider:
         # W5a: wire the real ROSMCPToolProvider when ``tool_provider``
@@ -3568,6 +3360,15 @@ class DialogueNode(Node):
             self._tool_retry_used = False
             self._system_regurgitate_retry_used = False
             self._synthetic_retries_left = self.DEFAULT_SYNTHETIC_RETRIES
+            # Issue #2266 / ADR-0021 R2 — mirror the budget reset to the
+            # ``core/``-side ``TurnState`` so ``begin_babble_retry`` sees a
+            # fresh ``babble_retry_consumed=False`` on every user-initiated
+            # turn. Until ``_use_turn_guards`` flips for the babble
+            # catch-site, this is the only reset path that exercises
+            # ``TurnState``.
+            self._turn_state = turn_guards_reset_budget(
+                self.DEFAULT_SYNTHETIC_RETRIES
+            )
             # Bug C (юзер-музыка) — сброс user-budget тоже только на
             # user-initiated turn; DJ-transition живёт своей жизнью и
             # ресетится в ``_dispatch_dj_turn``
@@ -4202,6 +4003,14 @@ class DialogueNode(Node):
     ) -> bool:
         """Issue #992 Bug D — single-shot babble retry dispatcher.
 
+        Thin shell over :func:`rob_box_voice.core.turn.begin_babble_retry`
+        (issue #2266 / ADR-0021 R2 step 2 — DoD #2.3). The PREDICATE chain
+        + the BUDGET step + the ONE-SHOT FLAG now live in ``core/``; this
+        method only does the ROS-bound side effects on a non-``None``
+        verdict (DSM re-open, log, ``_dispatch_turn``) and the legacy
+        ``_babble_retry_used`` mirror write so existing
+        ``test_issue_992_babble_guard.py`` assertions stay green.
+
         Inspects ``spoken`` (the LLM final text after strip_markdown)
         and decides whether to force ONE retry with a CRITICAL
         reminder. Returns ``True`` when a retry was scheduled (so the
@@ -4209,6 +4018,7 @@ class DialogueNode(Node):
         detector passed and the caller should proceed normally.
 
         Retry rules — all must hold for a retry to fire:
+
         1. ``speak_text`` was NOT really called this cycle — i.e.
            ``speak_text_real`` is 0. A real call is already handled by
            the issue-988 anti-duplicate path; a *phantom* call
@@ -4224,59 +4034,78 @@ class DialogueNode(Node):
            explicitly asked for a performance.
         4. We have NOT already used our one-shot babble retry for
            this turn (avoids an infinite LLM ping-pong).
+
+        The predicate chain (incl. the 02.09 «planning narration»
+        carve-out and the 30.08 «promise-only» carve-out) is
+        covered by :class:`BabbleGuard` — see ``core/turn.py`` and the
+        ``TestBabbleIntegrationViaTurnGuards`` + ``TestBeginBabbleRetry``
+        suites in ``test/unit/core/test_turn.py``.
         """
-        if speak_text_real > 0:
-            return False
-        if not spoken:
-            return False
-        if getattr(self, "_babble_retry_used", False):
-            return False
-        if not self._is_metalanguage_babble(spoken):
-            return False
-        # 🔴 FIX (live 02.09): планирование модели вслух («Юзер просит...,
-        # запускаю через compose_music») — НИКОГДА не валидный ответ, что бы
-        # ни просил юзер. Гейт по user_wants_performance тут не нужен: в
-        # живом логе он и не сработал (юзер сказал «ебани ланудж», ни одного
-        # ключевого слова), и робот зачитал план вслух, не вызвав тулов.
-        user_wants_perf = self._user_wants_performance(user_input or "")
-        if not user_wants_perf and not is_planning_narration(spoken):
-            # The promise-only subset always retries regardless of
-            # user_input — these phrases are NEVER valid answers.
-            promise_only = (
-                "зачит", "погнали", "устроим",
-                "переключ", "давай-ка",
+        # Lazy init for the ``core/``-side TurnState mirror. Until
+        # ``_use_turn_guards`` flips, the bridge in
+        # :meth:`_evaluate_turn_guards` is the only place that
+        # populates ``self._turn_state``; for the babble shell to be
+        # self-contained we initialize it here on first use. After
+        # the first call ``_turn_state`` follows the legitimate
+        # reset-on-user-turn path in :meth:`_run_turn``. ``getattr`` with
+        # ``None`` default keeps ``__new__``-style test fixtures
+        # (``test_issue_1882_planning_narration.py`` et al.) working.
+        if getattr(self, "_turn_state", None) is None:
+            self._turn_state = turn_guards_reset_budget(
+                self.DEFAULT_SYNTHETIC_RETRIES
             )
-            head = spoken[:60].lower()
-            if not any(p in head for p in promise_only):
-                return False
+        # Local alias — guarantees a non-``None`` reference even if
+        # ``self._turn_state`` is briefly rebound in another thread, and
+        # keeps Pyright's ``TurnState`` narrowing explicit.
+        state = self._turn_state
+        assert state is not None  # for type-checkers (init above)
+        decision = begin_babble_retry(
+            spoken=spoken,
+            user_input=user_input or "",
+            tools_called=tuple(tools_called or ()),
+            speak_text_real=int(speak_text_real or 0),
+            state=state,
+        )
+        if decision is None:
+            return False
+        # Install the post-mutation state — the pure helper has
+        # already decremented the budget and flipped the one-shot
+        # flag for us. We mirror ``babble_retry_consumed`` back to
+        # the legacy ``_babble_retry_used`` field so the
+        # ``test_issue_992_babble_guard.py:264-267`` regression
+        # assertion (and any live log readers) keep working.
+        self._turn_state = decision.new_state
+        self._babble_retry_used = decision.new_state.babble_retry_consumed
         # Issue #992 Bug D — the retry turn needs the same DSM state
-        # transitions as a real STT input (IDLE → LISTENING → DIALOGUE)
-        # — otherwise AgentCore's process_input sees IDLE and returns
-        # an empty result, which trips the
-        # "Что-то я задумался, повтори пожалуйста" fallback. This is
-        # exactly the wake-word gate logic from ``_on_stt``.
+        # transitions as a real STT input (IDLE → LISTENING →
+        # DIALOGUE) — otherwise AgentCore's process_input sees IDLE
+        # and returns an empty result, which trips the
+        # "Что-то я задумался, повтори пожалуйста" fallback.
+        # Delegated to ``_reopen_dialogue_for_retry`` which mirrors
+        # the wake-word gate logic from ``_on_stt`` (issue #1204).
         try:
-            if self._dsm.current_state == DialogueStateKind.IDLE:
-                self._dsm.on_event(DialogueEvent.WAKE_WORD)
-                self._publish_state()
-            self._dsm.on_event(DialogueEvent.STT_RESULT)
-            self._publish_state()
+            self._reopen_dialogue_for_retry()
         except ImportError:
             # dialog_state_machine is part of rob_box_harness; if it
             # ever disappears the safe default is to skip the
             # transition and let process_input return an empty result.
             pass
-        # Mark the retry as used BEFORE dispatching so a re-entrant
-        # call from the retry itself can never escalate to a second
-        # retry.
-        # Issue #1881 — общий budget декрементится рядом с поимённым
-        # флагом. Если budget == 0, ретрай НЕ отправляется — и
-        # babble-текст публикуется как есть (см. live-логи 02.09).
-        if not self._consume_synthetic_retry(guard_name="babble"):
-            return False
-        self._babble_retry_used = True
+        # Issue #1881 — mirror the budget decrement to the legacy
+        # ``_synthetic_retries_left`` field so the surrounding
+        # ``_run_turn.finally`` keeps seeing the same counter it has
+        # always seen (and so the other ``_check_*_and_retry`` paths
+        # that read this field don't diverge). The pure core/-helper
+        # owns the canonical ``budget_left`` on ``decision.new_state``;
+        # the legacy field stays as a mirror for the catch-sites that
+        # haven't migrated yet (issue #2266 / ADR-0084 §"Правила
+        # миграции" — ONE catch-site at a time).
+        self._synthetic_retries_left = (
+            decision.new_state.budget_left
+        )
+        # Mark the retry as dispatched BEFORE returning so the
+        # parent turn's ``_run_turn.finally`` defers DIALOGUE_END and
+        # the recursive ``_run_turn`` finds DIALOGUE (issue #1204).
         self._mark_retry_dispatched()
-        retry_prompt = self._build_babble_retry_prompt(user_input or "")
         self.get_logger().warning(
             "🗣️ [issue 992 Bug D] LLM babble detected — retrying once with "
             f"CRITICAL reminder (head={spoken[:60]!r})"
@@ -4287,27 +4116,13 @@ class DialogueNode(Node):
         # просканирует синтетический babble-промпт (в нём есть «песня»)
         # и запустит ложный music-ретрай.
         self._dispatch_turn(
-            retry_prompt,
+            decision.prompt,
             is_babble_retry=True,
             # Synthetic prompt — never persisted as something the user said.
             is_synthetic=True,
             raw_user_command=user_input,
         )
         return True
-
-    def _build_babble_retry_prompt(self, user_input: str) -> str:
-        """Issue #992 Bug D — synthetic follow-up prompt for babble retry.
-
-        Echoes the original ``user_input`` so the LLM has the request
-        in context, then appends a CRITICAL instruction that names the
-        babble pattern and demands a tool-call reply (no plain text
-        promises).
-
-        Delegates to
-        :func:`rob_box_voice.core.dialogue_guards.build_babble_retry_prompt`
-        (TD-1 decomposition).
-        """
-        return build_babble_retry_prompt(user_input)
 
     def _check_embedded_renardo_code_and_retry(
         self,
@@ -4706,15 +4521,25 @@ class DialogueNode(Node):
         ``_check_*_and_retry`` family so a one-line switch in the catch
         site (e.g. :meth:`_handle_result`) is enough to migrate.
         """
-        if not self._use_turn_guards:
+        # ``getattr`` with default ``False`` so test fixtures that build
+        # ``DialogueNode`` via ``object.__new__`` (e.g.
+        # ``test_issue_1882_planning_narration.py``) keep working — they
+        # skip ``__init__`` and therefore don't get the attribute set.
+        # Production paths go through ``__init__`` where
+        # ``self._use_turn_guards = False`` is declared explicitly.
+        if not getattr(self, "_use_turn_guards", False):
             return None
         guards = self._ensure_turn_guards()
-        if self._turn_state is None:
+        # ``__new__``-style test fixtures may bypass ``__init__`` and
+        # leave ``self._turn_state`` unset; mirror the same defensive
+        # ``getattr`` pattern used in ``_check_babble_and_retry``.
+        if getattr(self, "_turn_state", None) is None:
             # Bridge started mid-test or before _run_turn fired its
             # budget reset. Defensive default — keeps the verdict
             # surface deterministic for the very first call.
             self._reset_turn_budget()
-        assert self._turn_state is not None  # for type-checkers
+        state = self._turn_state
+        assert state is not None  # for type-checkers (init above)
         turn = TurnContext(
             user_input=user_input or "",
             is_dj_auto=False,
@@ -4724,7 +4549,7 @@ class DialogueNode(Node):
             tools_called=tuple(tools_called or ()),
             speak_text_real=int(speak_text_real or 0),
         )
-        verdict = guards.evaluate(reply, turn, self._turn_state)
+        verdict = guards.evaluate(reply, turn, state)
         if verdict.kind is TurnVerdictKind.RETRY:
             # Translate to the legacy ``_check_*_and_retry`` side effects
             # so the surrounding ``_run_turn.finally`` keeps seeing the
@@ -5679,6 +5504,17 @@ class DialogueNode(Node):
         # Returns ``True`` when a retry was scheduled; in that case we
         # MUST NOT publish the meta-text to TTS — otherwise the user
         # would hear the babble AND then the retry answer.
+        #
+        # Issue #2266 / voice-vr 22 — the catch-site itself is NOT
+        # rewired here. ``_check_babble_and_retry`` is now a thin shell
+        # over the pure ``core.turn.begin_babble_retry``, so the
+        # orchestration (predicates + budget + one-shot flag) already
+        # lives in ``core/`` while this call site keeps the exact
+        # signature and ``bool`` contract it had before. Adding a
+        # second ``_evaluate_turn_guards`` branch here would inflate
+        # ``_handle_result`` (CC 65 → 69) — the opposite of what
+        # ADR-0021 asks for. The bridge stays available for voice-vr 23
+        # when ``_use_turn_guards`` flips for ALL catch-sites at once.
         if spoken and self._check_babble_and_retry(
             spoken=spoken,
             # Issue #1204: на синтетических ретрай-турах юзер-интент

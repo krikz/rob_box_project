@@ -114,7 +114,14 @@ def test_every_self_call_resolves_to_something_defined(cls_name: str) -> None:
 
 
 def test_skill_pipeline_methods_are_present() -> None:
-    """Точечная страховка на методы, которые уже терялись при рефакторинге."""
+    """Точечная страховка на методы, которые уже терялись при рефакторинге.
+
+    ADR-0083 §2.3 — ``_load_skill_prompts`` мигрировал в
+    ``rob_box_harness.core.assembly.load_skill_prompts`` (PR #2276,
+    follow-up ADR-0083 §2.3), поэтому он больше не должен быть
+    в этом списке (тест-страховка была именно против регрессии
+    «пропал из ноды», теперь его там и нет by design).
+    """
     tree = _tree()
     defined = {
         node.name
@@ -122,7 +129,6 @@ def test_skill_pipeline_methods_are_present() -> None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
     for required in (
-        "_load_skill_prompts",
         "_validate_skill_fragments",
         "_activate_skill_for",
         "_publish_skill_load_counters",

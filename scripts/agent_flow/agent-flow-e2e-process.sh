@@ -1191,11 +1191,18 @@ fail_streak_needs_review_sweep || true
 # (1, 2, 3 ...) — простой инкремент, БЕЗ даты.
 # Ретро 12.08 (t_bff6eccf): max также учитывает персистентный счётчик
 # (ROUND_COUNTER_FILE) — cleanup round-веток не должен сбрасывать нумерацию.
+#
+# Ретро 09.09 (issue #2299): round_ensure — ТОНКАЯ ОБЁРТКА над round_formation.sh
+# (модуль владеет ls-remote → max-N → freshness-check → create/reuse/recreate).
+# Counter всё ещё DEFERRED (записывается в post-tick cleanup ниже, НЕ здесь —
+# канон из ретро 23.08 t_fdb19f7b Phase 1+2). round_ensure.sh использует тот
+# же модуль с тем же контрактом.
 ROUND_BRANCH=""
 # Ретро 14.08 (t_4268f2bf): 1 = round_ensure СОЗДАЛ (или пересоздал) round-ветку
 # этим тиком (а не переиспользовал существующую). Нужен для post-tick cleanup
 # пустых round-веток (см. ниже): если ветка создана, но за тик на ней не
 # появилось ни одного run — кандидат был снят до запуска, ветку удаляем.
+# Пробрасывается из ROUND_FORMATION_CREATED модуля.
 ROUND_CREATED=0
 # n / max_n / counter_n — НЕ local: нужны в post-tick cleanup (после return
 # из round_ensure) для решения «counter rollback vs persist». Ретро 23.08
@@ -1203,90 +1210,26 @@ ROUND_CREATED=0
 n=0
 max_n=0
 counter_n=0
+
+# Source модуля round_formation.sh (issue #2299). Путь относительный —
+# SOT лежит рядом со скриптом. install.sh раскладывает оба файла в
+# одинаковые каталоги профилей.
+_LIB_DIR_HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+# shellcheck source=round_formation.sh
+. "${_LIB_DIR_HERE}/round_formation.sh"
+
 round_ensure() {
-    local list
-    list="$(git -C "$REPO_DIR" ls-remote --heads origin "${TEST_ROUND_PREFIX}*" 2>/dev/null \
-        | awk '{print $2}' | sed "s#refs/heads/${TEST_ROUND_PREFIX}##" || true)"
-    if [ -z "$list" ]; then
-        max_n=0
-    else
-        max_n="$(printf '%s\n' "$list" | sort -n | tail -n1)"
+    # Делегируем в модуль. rf_* функции выставят ROUND_BRANCH, n, max_n,
+    # counter_n, ROUND_FORMATION_CREATED / ROUND_FORMATION_REUSED. Counter
+    # НЕ пишется здесь — это решено в post-tick cleanup (≥1 run = persist,
+    # 0 run'ов = ghost-log).
+    if ! round_formation git_push_with_cred_fallback; then
+        return 1
     fi
-    # Персистентный счётчик: берём max(remote-ветки, файл-счётчик).
-    counter_n=0
-    if [ -f "$ROUND_COUNTER_FILE" ]; then
-        counter_n="$(tr -dc '0-9' < "$ROUND_COUNTER_FILE" 2>/dev/null || echo 0)"
-        counter_n="${counter_n:-0}"
-    fi
-    if [ "$counter_n" -gt "$max_n" ]; then
-        log "round counter: file=${counter_n} > remote-max=${max_n} (cleanup сбросил ветки?) — берём max из файла"
-        max_n="$counter_n"
-    fi
-    n=$((max_n + 1))
-    ROUND_BRANCH="${TEST_ROUND_PREFIX}${n}"
-    log "round number: max=${max_n} -> next=${n}"
-
-    # If branch doesn't exist on remote, create it from foundation (fresh origin).
-    if ! git -C "$REPO_DIR" ls-remote --heads origin "$ROUND_BRANCH" 2>/dev/null | grep -q .; then
-        log "creating ${ROUND_BRANCH} from ${FOUNDATION_BRANCH} (fresh fetch)"
-        if [ "$DRY_RUN" = "true" ]; then
-            log "DRY-RUN would: git push origin origin/${FOUNDATION_BRANCH}:refs/heads/${ROUND_BRANCH}"
-            ROUND_CREATED=1
-        else
-            # CRITICAL: пушим origin/${FOUNDATION_BRANCH}, НЕ локальную ветку —
-            # локальный develop может отстать (чужие коммиты). Всегда свежий.
-            if ! git -C "$REPO_DIR" fetch origin "$FOUNDATION_BRANCH" 2>&1 | sed 's/^/  /'; then
-                log "failed to fetch origin/${FOUNDATION_BRANCH}"; return 1
-            fi
-            if ! git_push_with_cred_fallback "$REPO_DIR" origin "origin/${FOUNDATION_BRANCH}:refs/heads/${ROUND_BRANCH}" 2>&1 | sed 's/^/  /'; then
-                log "failed to create ${ROUND_BRANCH}"; return 1
-            fi
-            # Ретро 14.08 (t_4268f2bf): ветка создана ЭТИМ тиком — post-tick
-            # cleanup сможет удалить её, если на ней не появится ни одного run.
-            ROUND_CREATED=1
-        fi
-    else
-        # Ретро 12.08 t_d3aeaa9b: НЕ переиспользуем stale round (база устарела).
-        # round-59 был создан из develop ДО фиксов валидатора #1143 и ротации
-        # #1141 — reuse вернул бы e2e на регрессе. Проверка: round-ветка должна
-        # содержать актуальный origin/${FOUNDATION_BRANCH}; если нет — удаляем
-        # и создаём заново. Иначе e2e-прогон на устаревшей базе (ретро 12.08).
-        log "checking ${ROUND_BRANCH} base freshness (must contain origin/${FOUNDATION_BRANCH})"
-        if [ "$DRY_RUN" = "true" ]; then
-            log "DRY-RUN would: check ancestry origin/${FOUNDATION_BRANCH}..${ROUND_BRANCH}"
-        else
-            if ! git -C "$REPO_DIR" fetch origin "$FOUNDATION_BRANCH" 2>&1 | sed 's/^/  /'; then
-                log "failed to fetch origin/${FOUNDATION_BRANCH}"; return 1
-            fi
-            if git -C "$REPO_DIR" merge-base --is-ancestor "origin/${FOUNDATION_BRANCH}" "origin/${ROUND_BRANCH}" 2>/dev/null; then
-                log "reusing ${ROUND_BRANCH} (база актуальна: содержит origin/${FOUNDATION_BRANCH})"
-            else
-                log "🛑 ${ROUND_BRANCH} база УСТАРЕЛА (не содержит origin/${FOUNDATION_BRANCH}) — удаляю и создам заново (ретро 12.08 t_d3aeaa9b)"
-                if ! git_push_with_cred_fallback "$REPO_DIR" origin --delete "$ROUND_BRANCH" 2>&1 | sed 's/^/  /'; then
-                    log "failed to delete stale ${ROUND_BRANCH} (non-fatal)"; true
-                fi
-                if ! git_push_with_cred_fallback "$REPO_DIR" origin "origin/${FOUNDATION_BRANCH}:refs/heads/${ROUND_BRANCH}" 2>&1 | sed 's/^/  /'; then
-                    log "failed to recreate ${ROUND_BRANCH}"; return 1
-                fi
-                # Ретро 14.08 (t_4268f2bf): ветка ПЕРЕСОЗДАНА этим тиком — если на
-                # ней не появится run'ов, post-tick cleanup удалит её (stale-база +
-                # 0 прогонов = мусор).
-                ROUND_CREATED=1
-                log "recreated ${ROUND_BRANCH} from fresh origin/${FOUNDATION_BRANCH}"
-            fi
-        fi
-    fi
-
-    # Ретро 23.08 (t_fdb19f7b, Phase 1+2): counter НЕ персистится здесь.
-    # Раньше счётчик записывался сразу после создания round-ветки, и если за
-    # тик кандидат снимался (sweep/merge-gate/ручной merge) ДО запуска build,
-    # cleanup удалял ветку — а counter оставался на +1 (ghost). За час накапли-
-    # валось 4 ghost'а → counter расходился с remote (наблюдение: counter=209
-    # vs remote=193, drift=16). Теперь counter персистится ТОЛЬКО после успеш-
-    # ного round (≥1 run) — см. post-tick cleanup ниже.
-
-    # Make sure worktree has it.
-    git -C "$WORKTREE_DIR" fetch origin "$ROUND_BRANCH" --quiet 2>/dev/null || true
+    # Пробрасываем флаг для post-tick cleanup (имя переменной оставлено
+    # для обратной совместимости с test_e2e_process_round_ensure_counter.sh
+    # который читает GHOST_ROUND counter_rollback маркер).
+    ROUND_CREATED="${ROUND_FORMATION_CREATED}"
 }
 
 # --- git_push_with_cred_fallback (ретро 23.08 t_b977cb4b, реконструкция t_98bb3a1d) ---
@@ -3191,15 +3134,11 @@ except Exception:
         # assignee=профиль по метке issue (agent:backend → backend, etc).
         # Ретро 02.09 t_2bd2e7ea: default → devops fallback (default невалиден
         # по ADR-0041 — silent-drop в диспетчере).
-        _conflict_assignee="devops"
-        for lbl in $(gh issue view "$number" --repo "$GH_REPO" --json labels --jq '[.labels[].name] | .[]' 2>/dev/null); do
-            case "$lbl" in
-                agent:backend)    _conflict_assignee="backend"; break ;;
-                agent:developer)  _conflict_assignee="developer"; break ;;
-                agent:devops)     _conflict_assignee="devops"; break ;;
-                agent:architect)  _conflict_assignee="architect"; break ;;
-            esac
-        done
+        # Issue #2292: единая таблица af_role_for (lib_agent_flow_common.sh).
+        _conflict_assignee="$(af_role_for \
+            "$(gh issue view "$number" --repo "$GH_REPO" --json labels \
+                --jq '[.labels[].name] | join(",")' 2>/dev/null || echo '')" \
+            devops)"
         _conflict_body="## 🔀 merge conflict: \`${branch}\` → \`${ROUND_BRANCH}\` (ретро 10.08)
 
 **ПРИЧИНА:** develop убежал вперёд, твоя ветка \`${branch}\` (PR #${pr_number:-?}) не мерджится напрямую.
@@ -3365,8 +3304,13 @@ for t in data:
     # 2) L: Deploy and Verify на round   → ждём success
     # 3) L: E2E Voice Test на round      → ждём verdict
     wait_workflow() {  # $1=workflow_name $2=branch $3=timeout_s $4=label $5=min_created_epoch
-        local wf="$1" br="$2" tmo="$3" lbl="$4" min_epoch="${5:-0}" rid="" st="" dl
-        # Ждём ПОЯВЛЕНИЯ нового run (createdAt >= момента триггера)
+        # Ретро 09.09.2026 (issue #2302): poll+retry+race-fix+cancel — в
+        # lib_agent_flow_common.sh::wait_run. Эта обёртка ждёт только
+        # ПОЯВЛЕНИЯ нового run (createdAt >= момента триггера), потом
+        # делегирует wait_run. Контракт (rc=0 на success, rc=1 на
+        # timeout/discovery fail) сохранён для caller'ов ниже.
+        local wf="$1" br="$2" tmo="$3" lbl="$4" min_epoch="${5:-0}" rid="" dl _jq_filter
+        # Фаза 1: ждём появления нового run (до 120с).
         dl=$((SECONDS + 120))
         while [ "$SECONDS" -lt "$dl" ]; do
             _jq_filter="[.[] | select(.createdAt >= \"$min_epoch\")][0].databaseId"
@@ -3374,11 +3318,8 @@ for t in data:
                 --limit 3 --json databaseId,createdAt --jq "$_jq_filter" 2>/dev/null || echo "")"
             # Надзор 13.08 (t_e75b74d1/t_d2aab049): cobra-краш 'accepts at most 1
             # arg(s), received 2' — run_id из gh run list приходил МУЛЬТИСТРОЧНЫМ
-            # (2+ id при перекрытии ранов/пустой выдаче) и разбивался на 2
-            # позиционных аргумента gh run view → тик умирал на wait-фазе
-            # (17/23 раундов 12-13.08: двойные прогоны, needs-review не ставился).
-            # Санитизируем ДО любого использования: только первая числовая
-            # последовательность, иначе пусто.
+            # (2+ id при перекрытии ранов/пустой выдаче). Санитизируем ДО
+            # любого использования: только первая числовая последовательность.
             rid="$(printf '%s' "$rid" | grep -oE '[0-9]+' | head -n1 || true)"
             if [ -n "$rid" ] && [[ "$rid" =~ ^[0-9]+$ ]]; then
                 break
@@ -3389,70 +3330,31 @@ for t in data:
             log "issue #${number}: ${lbl} run not created"; return 1
         fi
         log "issue #${number}: ${lbl} run ${rid} created — waiting (timeout ${tmo}s)"
-        dl=$((SECONDS + tmo))
-        while [ "$SECONDS" -lt "$dl" ]; do
-            st="$(gh run view "$rid" --repo "$GH_REPO" --json status --jq '.status' 2>/dev/null || echo "")"
-            if [ "$st" = "completed" ]; then
-                local concl _c_try
-                concl=""
-                # Ретро-фикс (09.08 #4): conclusion иногда пустой сразу после
-                # completed (gh run view гонка) → success считался FAILURE.
-                # Перечитываем до 3 раз с паузой, только потом вердикт.
-                for _c_try in 1 2 3; do
-                    concl="$(gh run view "$rid" --repo "$GH_REPO" --json conclusion --jq '.conclusion' 2>/dev/null || echo "")"
-                    if [ -n "$concl" ] && [ "$concl" != "null" ]; then break; fi
-                    sleep 5
-                done
-                if [ "$concl" = "success" ]; then
-                    log "issue #${number}: ${lbl} OK (run ${rid})"
-                    return 0
-                else
-                    # Ретро-фикс 01.09 (t_32c28562): conclusion=failure тоже
-                    # бывает ложным в момент перехода in_progress→success.
-                    # 09.08 #4 чинил только пустой/null conclusion, а реальный
-                    # race на 01.09 был 4-й раз подряд (round-316/317/319/
-                    # 320/321/322, issue #1824): gh run view вернул 'failure'
-                    # в момент transition, через 1 мин статус стал success.
-                    # Решение: post-fail recheck loop — до 5 повторов по 10с,
-                    # если хоть один recheck даст success — это race, считаем
-                    # OK и пишем audit-комментарий в issue. Только если ВСЕ 6
-                    # polls (1 начальный + 5 recheck) дают failure → настоящий FAIL.
-                    local _recheck_concl _rc_try _rc_success_seen
-                    _rc_success_seen=0
-                    for _rc_try in 1 2 3 4 5; do
-                        sleep 10
-                        _recheck_concl="$(gh run view "$rid" --repo "$GH_REPO" --json conclusion --jq '.conclusion' 2>/dev/null || echo "")"
-                        if [ "$_recheck_concl" = "success" ]; then
-                            _rc_success_seen=1
-                            log "issue #${number}: ⚠️ race detected on ${lbl} run ${rid} — initial=failure, recheck#${_rc_try}=success (01.09 t_32c28562)"
-                            gh issue comment "$number" --repo "$GH_REPO" --body \
-                                "agent-flow: ⚠️ race detected on ${lbl} run \`${rid}\` — initial poll=failure, recheck#${_rc_try}=success (workflow still in transition). Accepting as OK. https://github.com/${GH_REPO}/actions/runs/${rid}" >/dev/null 2>&1 || true
-                            return 0
-                        fi
-                    done
-                    log "issue #${number}: ${lbl} FAILED (run ${rid}, ${concl:-unknown}, recheck×5=failure — confirmed)"
-                    return 1
-                fi
-            fi
-            sleep "$E2E_POLL_INTERVAL"
-        done
-        log "issue #${number}: ${lbl} TIMEOUT (${tmo}s)"
-        # Ретро 13.08 t_da3e0bd5: build/deploy TIMEOUT — НЕ оставляем run висеть.
-        # Залипший docker build (job in_progress часами) держит раннер и ~20 job'ов
-        # round в очереди (наблюдение 13.08: 4 параллельных L-Build ≈ 50 job'ов на
-        # 8 раннерах, e2e-конвейер стоял 3 часа). gh run cancel освобождает раннеры;
-        # следующий тик сделает новый round, а dedup (active_round_with_issue) не
-        # даст задвоить issue, пока активный round жив.
-        if [ -n "$rid" ] && [[ "$rid" =~ ^[0-9]+$ ]]; then
-            _st_now="$(gh run view "$rid" --repo "$GH_REPO" --json status --jq '.status' 2>/dev/null || echo '')"
-            if [ "$_st_now" != "completed" ]; then
-                if gh run cancel "$rid" --repo "$GH_REPO" >/dev/null 2>&1; then
-                    log "issue #${number}: ${lbl} run ${rid} CANCELED после TIMEOUT (освобождаю раннеры)"
-                else
-                    log "issue #${number}: WARNING ${lbl} cancel run ${rid} failed (возможно уже completed)"
-                fi
-            fi
+        # Фаза 2: poll до completed. wait_run сам делает 3× retry на пустой
+        # conclusion (ретро 09.08 #4), 5× recheck на race in_progress→success
+        # (ретро 01.09 t_32c28562) и gh run cancel на TIMEOUT (ретро 13.08
+        # t_da3e0bd5).
+        # НЕ local WR_RUN_RACE_DETECTED — это глобал, который lib::wait_run
+        # выставляет (=1) при обнаружении race. local тут затенит значение.
+        local concl rc
+        WR_RUN_RACE_DETECTED=0
+        concl="$(wait_run "$rid" "$tmo" "$lbl" "$GH_REPO" "$E2E_POLL_INTERVAL" 1)" || rc=$?
+        rc="${rc:-0}"
+        if [ "$WR_RUN_RACE_DETECTED" = "1" ]; then
+            log "issue #${number}: ⚠️ race detected on ${lbl} run ${rid} — post-fail recheck дал success (01.09 t_32c28562)"
+            gh issue comment "$number" --repo "$GH_REPO" --body \
+                "agent-flow: ⚠️ race detected on ${lbl} run \`${rid}\` — initial poll=failure, post-fail recheck=success (workflow still in transition). Accepting as OK. https://github.com/${GH_REPO}/actions/runs/${rid}" >/dev/null 2>&1 || true
         fi
+        if [ "$rc" = "0" ]; then
+            if [ "$concl" = "success" ]; then
+                log "issue #${number}: ${lbl} OK (run ${rid})"
+                return 0
+            fi
+            log "issue #${number}: ${lbl} FAILED (run ${rid}, ${concl}, recheck×5=failure — confirmed)"
+            return 1
+        fi
+        # rc=1 = TIMEOUT (wait_run уже сделал cancel, если cancel_on_timeout=1)
+        log "issue #${number}: ${lbl} TIMEOUT (${tmo}s)"
         return 1
     }
 
@@ -3825,12 +3727,13 @@ vision_default на Pi — перед up добавлен 'docker rm -f voice-re
     # ADR-0040 §2.2.2: на non-zero — increment consecutive_fails в state,
     # и если >= ${E2E_CONSECUTIVE_FAIL_LIMIT} — label e2e:infra-fail (terminal,
     # ADR Q4), СНЯТЬ needs-e2e (чтобы issue не крутился бесконечно),
-    # comment с run-link. Round-ветка не используется для следующих issues
-    # в этом тике (помечается E2E_TRIGGER_FAILED_THIS_TICK=1, ADR-0040 Q1).
+    # comment с run-link. ИСПРАВЛЕНО issue #2301 + ADR-0040 amendment:
+    # round-ветка ${ROUND_BRANCH} для этого issue УЖЕ СОЗДАНА (round_ensure до
+    # issue-loop, line ~1190) и ПЕРЕИСПОЛЬЗУЕТСЯ следующими issues в этом же
+    # тике (continue → next iteration). Round-counter откатывается через
+    # post-tick cleanup, если за тик на ветке не появилось ни одного run.
     _e_run_id=""
-    E2E_TRIGGER_FAILED_THIS_TICK=0
     if ! _e_run_id="$(_trigger_workflow_with_retry "$E2E_WORKFLOW" --ref "$ROUND_BRANCH" "${e2e_args[@]}")"; then
-        E2E_TRIGGER_FAILED_THIS_TICK=1
         # Run НЕ стартанул → bump_fail + check threshold.
         _new_fail_count="$(e2e_run_state_bump_fail "$number" "" 2>/dev/null || echo '0')"
         # Strip newline
@@ -3856,15 +3759,17 @@ agent-flow: 🛑 e2e infra-fail — run \`${E2E_WORKFLOW}\` НЕ стартан�
 
 После починки — снять \`${INFRA_FAIL_LABEL}\` руками (Шифу) и заново поставить \`${NEEDS_E2E_LABEL}\` для следующего тика.
 
-Round-ветка \`${ROUND_BRANCH}\` НЕ использовалась для других issues в этом тике (помечена \`E2E_TRIGGER_FAILED_THIS_TICK=1\`).
+Round-ветка \`${ROUND_BRANCH}\` создана round_ensure ДО issue-loop (line ~1190) и ПЕРЕИСПОЛЬЗУЕТСЯ остальными issues этого тика (issue #2301, ADR-0040 amendment): round-counter откатится через post-tick cleanup, если за тик на ветке не появилось ни одного run.
 EOF
 )" >/dev/null 2>&1 || log "WARNING: failed to post infra-fail comment to issue #${number}"
             log "issue #${number}: e2e:infra-fail SET (terminal, consecutive_fails=${_new_fail_count} >= ${E2E_CONSECUTIVE_FAIL_LIMIT})"
             errored=$((errored+1))
             continue
         fi
-        # Не достигли порога — продолжаем тик. Round-ветка не для других
-        # issues (Q1): следующая issue пойдёт в отдельный round.
+        # Не достигли порога — продолжаем тик (continue к следующему issue).
+        # Round-ветка ${ROUND_BRANCH} ПЕРЕИСПОЛЬЗУЕТСЯ (round_ensure до issue-loop,
+        # ADR-0040 amendment по issue #2301): переменная E2E_TRIGGER_FAILED_THIS_TICK
+        # удалена как dead code (объявлялась, но не читалась).
         errored=$((errored+1))
         continue
     fi
@@ -3873,39 +3778,49 @@ EOF
     run_id="$_e_run_id"
 
     # --- wait for verdict (только СВЕЖИЙ run, createdAt >= момента триггера) ---
+    # Ретро 09.09.2026 (issue #2302): poll+retry+race-fix делегирован
+    # lib_agent_flow_common.sh::wait_run. Здесь остаётся только Фаза 1
+    # (поиск run с createdAt >= $e_epoch) и обработка TIMEOUT.
     log "issue #${number}: waiting verdict (timeout ${E2E_RUN_TIMEOUT}s)"
-    deadline=$((SECONDS + E2E_RUN_TIMEOUT))
-    run_id=""
-    verdict=""
-    while [ "$SECONDS" -lt "$deadline" ]; do
+    # Фаза 1: ждём появления run с createdAt >= $e_epoch.
+    _v_dl=$((SECONDS + E2E_RUN_TIMEOUT))
+    while [ "$SECONDS" -lt "$_v_dl" ]; do
         _jq_filter="[.[] | select(.createdAt >= \"$e_epoch\")][0].databaseId"
         run_id="$(gh run list --repo "$GH_REPO" --workflow "$E2E_WORKFLOW" --branch "$ROUND_BRANCH" \
             --limit 3 --json databaseId,createdAt --jq "$_jq_filter" 2>/dev/null || echo "")"
         # Надзор 13.08: санитизация run_id (cobra-краш 2-х аргументов, см. wait_workflow).
         run_id="$(printf '%s' "$run_id" | grep -oE '[0-9]+' | head -n1 || true)"
         if [ -n "$run_id" ] && [[ "$run_id" =~ ^[0-9]+$ ]]; then
-            status="$(gh run view "$run_id" --repo "$GH_REPO" --json status --jq '.status' 2>/dev/null || echo "")"
-            if [ "$status" = "completed" ]; then
-                # Ретро-фикс (09.08 #4): conclusion иногда пустой сразу после
-                # completed — перечитываем до 3 раз, иначе success → FAILURE.
-                verdict=""
-                for _v_try in 1 2 3; do
-                    verdict="$(gh run view "$run_id" --repo "$GH_REPO" --json conclusion --jq '.conclusion' 2>/dev/null || echo "")"
-                    if [ -n "$verdict" ] && [ "$verdict" != "null" ]; then break; fi
-                    sleep 5
-                done
-                break
-            fi
+            break
         fi
+        run_id=""
         sleep "$E2E_POLL_INTERVAL"
     done
-
-    if [ -z "$verdict" ]; then
-        log "issue #${number}: e2e verdict timeout — manual review needed"
+    if [ -z "$run_id" ]; then
+        log "issue #${number}: e2e verdict timeout — run not appeared"
         gh issue edit "$number" --repo "$GH_REPO" --remove-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
         gh issue comment "$number" --repo "$GH_REPO" --body \
-            "agent-flow: ❌ e2e verdict timeout (run id ${run_id:-unknown}). Manual review: https://github.com/${GH_REPO}/actions/runs/${run_id:-}" >/dev/null 2>&1 || true
+            "agent-flow: ❌ e2e verdict timeout (run not appeared in ${E2E_RUN_TIMEOUT}s). Manual review: https://github.com/${GH_REPO}/actions" >/dev/null 2>&1 || true
         errored=$((errored+1)); continue
+    fi
+    # Фаза 2: poll до completed. cancel_on_timeout=0: e2e пусть завершится
+    # естественно, а не cancel'ится (в отличие от build/deploy).
+    # НЕ local: $verdict и $run_id используются ниже (download, fail_kind,
+    # verdict-handler, post-comment) — глобалы этой тиковой функции.
+    local rc WR_RUN_RACE_DETECTED=0
+    verdict="$(wait_run "$run_id" "$E2E_RUN_TIMEOUT" "e2e" "$GH_REPO" "$E2E_POLL_INTERVAL" 0)" || rc=$?
+    rc="${rc:-0}"
+    if [ "$rc" != "0" ] || [ "$verdict" = "timed_out" ]; then
+        log "issue #${number}: e2e verdict timeout — manual review needed (run ${run_id})"
+        gh issue edit "$number" --repo "$GH_REPO" --remove-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
+        gh issue comment "$number" --repo "$GH_REPO" --body \
+            "agent-flow: ❌ e2e verdict timeout (run id ${run_id}). Manual review: https://github.com/${GH_REPO}/actions/runs/${run_id}" >/dev/null 2>&1 || true
+        errored=$((errored+1)); continue
+    fi
+    if [ "$WR_RUN_RACE_DETECTED" = "1" ]; then
+        log "issue #${number}: ⚠️ race detected on e2e run ${run_id} — post-fail recheck дал success (01.09 t_32c28562)"
+        gh issue comment "$number" --repo "$GH_REPO" --body \
+            "agent-flow: ⚠️ race detected on e2e run \`${run_id}\` — initial poll=failure, post-fail recheck=success (workflow still in transition). Accepting as OK. https://github.com/${GH_REPO}/actions/runs/${run_id}" >/dev/null 2>&1 || true
     fi
 
     # --- download artifact (best-effort) ---
@@ -4257,15 +4172,11 @@ sshpass -p open ssh ros2@10.1.1.21 'docker logs voice-assistant --since <ts> | g
         # НЕ создаём — воркеру нечего чинить (квота/робот/build или фикс уже в develop).
         # Определяем профиль воркера по меткам issue (agent:<role>)
         # Ретро 02.09 t_2bd2e7ea: default → devops fallback.
-        _worker_assignee="devops"
-        for lbl in $(gh issue view "$number" --repo "$GH_REPO" --json labels --jq '[.labels[].name] | .[]' 2>/dev/null); do
-            case "$lbl" in
-                agent:backend)    _worker_assignee="backend"; break ;;
-                agent:developer)  _worker_assignee="developer"; break ;;
-                agent:devops)     _worker_assignee="devops"; break ;;
-                agent:architect)  _worker_assignee="architect"; break ;;
-            esac
-        done
+        # Issue #2292: единая таблица af_role_for (lib_agent_flow_common.sh).
+        _worker_assignee="$(af_role_for \
+            "$(gh issue view "$number" --repo "$GH_REPO" --json labels \
+                --jq '[.labels[].name] | join(",")' 2>/dev/null || echo '')" \
+            devops)"
 
         if [ "$verdict" = "success" ]; then
             # Ретро 18.08 (#1419): все backticks в _gate_body="..." ДОЛЖНЫ быть экранированы как \` —
@@ -4484,24 +4395,11 @@ if [ "${ROUND_CREATED:-0}" = "1" ] && [ -n "$ROUND_BRANCH" ]; then
     _round_runs="$(printf '%s' "$_round_runs" | grep -oE '[0-9]+' | head -n1 || echo 0)"
     if [ "${_round_runs:-0}" -eq 0 ] 2>/dev/null; then
         log "🛑 ${ROUND_BRANCH}: создана этим тиком, 0 run'ов — кандидат снят до запуска (ретро 14.08 t_4268f2bf)"
-        # Ретро 23.08 (t_fdb19f7b, Phase 2): явный маркер GHOST_ROUND counter_rollback
-        # для парсера монитора (grep -c GHOST_ROUND). Counter НЕ инкрементируется —
-        # round_ensure не персистит (Phase 1).
-        log "GHOST_ROUND counter_rollback branch=${ROUND_BRANCH} n=${n:-?} remote_max=${max_n:-?} prev_counter=${counter_n:-0}"
-        # Cumulative metric для мониторинга. Переживает cleanup (как round-counter).
-        if [ "$DRY_RUN" != "true" ]; then
-            _ghost_prev=0
-            if [ -f "$GHOST_ROUNDS_TOTAL_FILE" ]; then
-                _ghost_prev="$(tr -dc '0-9' < "$GHOST_ROUNDS_TOTAL_FILE" 2>/dev/null || echo 0)"
-                _ghost_prev="${_ghost_prev:-0}"
-            fi
-            _ghost_next=$((_ghost_prev + 1))
-            printf '%s\n' "$_ghost_next" > "$GHOST_ROUNDS_TOTAL_FILE" 2>/dev/null \
-                && log "ghost-rounds-total: ${_ghost_prev} -> ${_ghost_next} -> ${GHOST_ROUNDS_TOTAL_FILE}" \
-                || log "WARNING: cannot write ghost-rounds-total ${GHOST_ROUNDS_TOTAL_FILE}"
-        else
-            log "DRY-RUN would increment ghost-rounds-total ${GHOST_ROUNDS_TOTAL_FILE}"
-        fi
+        # Ретро 23.08 (t_fdb19f7b, Phase 2) + 09.09 (issue #2299): явный маркер
+        # GHOST_ROUND counter_rollback для парсера монитора (grep -c GHOST_ROUND).
+        # Counter НЕ инкрементируется — round_formation модуль не персистит
+        # (Phase 1). Используем rf_ghost_round_log_and_metric (единый канон).
+        rf_ghost_round_log_and_metric "$ROUND_BRANCH"
         if [ "$DRY_RUN" = "true" ]; then
             log "DRY-RUN would: gh api -X DELETE repos/${GH_REPO}/git/refs/heads/${ROUND_BRANCH}"
         elif gh api -X DELETE "repos/${GH_REPO}/git/refs/heads/${ROUND_BRANCH}" >/dev/null 2>&1; then
@@ -4511,18 +4409,12 @@ if [ "${ROUND_CREATED:-0}" = "1" ] && [ -n "$ROUND_BRANCH" ]; then
         fi
     else
         log "${ROUND_BRANCH}: ${_round_runs} run(s) — ветка оставлена"
-        # Ретро 23.08 (t_fdb19f7b, Phase 1): counter персистится ТОЛЬКО после
-        # успешного round (≥1 run). До фикса counter записывался в round_ensure
-        # до прогона — на ghost'ах убегал в +1.
-        if [ "${n:-0}" -gt "${counter_n:-0}" ]; then
-            if [ "$DRY_RUN" != "true" ]; then
-                printf '%s\n' "$n" > "$ROUND_COUNTER_FILE" 2>/dev/null \
-                    && log "round counter saved: ${n} -> ${ROUND_COUNTER_FILE}" \
-                    || log "WARNING: cannot write round counter ${ROUND_COUNTER_FILE}"
-            else
-                log "DRY-RUN would: round counter saved ${n} -> ${ROUND_COUNTER_FILE}"
-            fi
-        fi
+        # Ретро 23.08 (t_fdb19f7b, Phase 1) + 09.09 (issue #2299): counter
+        # персистится ТОЛЬКО после успешного round (≥1 run). До фикса counter
+        # записывался в round_ensure до прогона — на ghost'ах убегал в +1.
+        # Используем rf_persist_counter_if_real_round (единый канон из
+        # round_formation.sh модуля).
+        rf_persist_counter_if_real_round
     fi
 fi
 

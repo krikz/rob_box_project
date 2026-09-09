@@ -328,69 +328,32 @@ source "$SCRIPT_DIR_E2E/e2e_voice_lib.sh"
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR_E2E/e2e_voice_wake_gate.sh"
 
-# --- ADR-0022 GATE-1 acceptance.json (auto-discovery + gating) --------------
-# Резолвим ACCEPTANCE_FILE в порядке приоритета:
-#   1) --acceptance <path> (явный CLI)
-#   2) <dir(scenario.json)>/acceptance.json (preferred — common-case)
-#   3) <dir(scenario.json)>/<SCENARIO_BASE>_acceptance.json
-#      (back-compat: scenario=foo.json → foo_acceptance.json)
-#   4) <dir(scenario.json)>/<SCENARIO_BASE>_acceptance_v<N>.json
-#   5) <dir(scenario.json)>/<SCENARIO_PREFIX>_acceptance.json
-#      где PREFIX — имя без суффиксов _suite / _v1 / _v<N>
-#      (issue #1452: music_library_suite_v1.json → music_library_acceptance_v1.json)
-#   6) <dir(scenario.json)>/<SCENARIO_PREFIX>_acceptance_v<N>.json
-#   7) пустой → gating решает, что делать
+# --- ADR-0022 GATE-1 acceptance.json (gating only) -------------------------
+# Issue #2300 (09.09.2026): auto-discovery списка кандидатов
+# (acceptance.json / <base>_acceptance.json / <prefix>_acceptance_v<N>.json)
+# теперь живёт ТОЛЬКО в agent-flow-e2e-process.sh:resolve_acceptance_candidate().
+# Это единственный резолвер в системе — раньше та же логика дублировалась
+# здесь (issue #1452 / #1456 / #1551 исторические false-FAIL из-за рассинхрона
+# harness ↔ deploy-side). Контракт: e2e-process резолвит один раз и
+# передаёт путь явно через `-f acceptance_file=<path>` в workflow input →
+# env ACCEPTANCE_FILE → сюда. Харнесс читает как есть, без fallback-поиска.
 #
-# Issue #1452 (round-155 GATE-1 FAIL): ищется ровно acceptance.json, но в
-# репо лежит music_library_acceptance_v1.json → false-FAIL без реального
-# прогона. Решается цепочкой кандидатов (без поломки обратной совместимости
-# — acceptance.json по-прежнему в приоритете).
-if [ -z "$ACCEPTANCE_FILE" ] && [ -n "$SCENARIO_FILE" ]; then
-    _scenario_dir="$(dirname "$SCENARIO_FILE")"
-    _scenario_base="$(basename "$SCENARIO_FILE" .json)"
-    # PREFIX: убираем типичные хвосты сценариев (_suite, _v1, _v<N>)
-    _scenario_prefix="$_scenario_base"
-    # _v\d+ → strip
-    _scenario_prefix="${_scenario_prefix%_v[0-9]*}"
-    # _suite → strip (часто между feature и version: music_library_suite_v1).
-    # Используем именно %_suite (с подчёркиванием): %suite без _ удаляет
-    # буквы ИЗ КОНЦА слова и оставляет висящий _ (issue #1461):
-    # music_library_suite → music_library_, а не music_library.
-    _scenario_prefix="${_scenario_prefix%_suite}"
-    _found=""
-    for _cand in \
-        "acceptance.json" \
-        "${_scenario_base}_acceptance.json" \
-        "${_scenario_prefix}_acceptance.json" \
-        "${_scenario_prefix}_acceptance_v1.json" \
-        "${_scenario_prefix}_acceptance_v2.json"; do
-        if [ -f "${_scenario_dir}/${_cand}" ]; then
-            _found="${_scenario_dir}/${_cand}"
-            break
-        fi
-    done
-    if [ -n "$_found" ]; then
-        ACCEPTANCE_FILE="$_found"
-        log "GATE-1: acceptance auto-discovered at $ACCEPTANCE_FILE"
-    fi
-fi
-
-# Gating: scenario.json задан И acceptance.json отсутствует И не отключён
-# через --acceptance-skip → FAIL (ADR-0022 §4.1 R1: smoke-false-PASS).
-# Single-shot --text без scenario не требует acceptance (smoke-test
-# legitimate use case — быстрая итерация на одной фразе).
+# Gating оставлен как guard для ручного запуска workflow (без e2e-process):
+# scenario.json задан + acceptance.json отсутствует + не --acceptance-skip
+# → FAIL (ADR-0022 §4.1 R1: smoke-false-PASS).
+# Single-shot --text без scenario не требует acceptance (legitimate smoke).
 if [ -n "$SCENARIO_FILE" ] && [ -z "$ACCEPTANCE_FILE" ] && [ "$ACCEPTANCE_SKIP" != "1" ]; then
-    _scenario_dir="$(dirname "$SCENARIO_FILE")"
-    _scenario_base="$(basename "$SCENARIO_FILE" .json)"
-    _scenario_prefix="$_scenario_base"
-    _scenario_prefix="${_scenario_prefix%_v[0-9]*}"
-    _scenario_prefix="${_scenario_prefix%_suite}"
-    log "❌ GATE-1 FAIL: --scenario задан, но acceptance.json не найден"
-    log "   Ожидался один из:"
-    log "     1) ${_scenario_dir}/acceptance.json"
-    log "     2) ${_scenario_dir}/${_scenario_base}_acceptance.json"
-    log "     3) ${_scenario_dir}/${_scenario_prefix}_acceptance.json"
-    log "     4) ${_scenario_dir}/${_scenario_prefix}_acceptance_v1.json"
+    log "❌ GATE-1 FAIL: --scenario задан, но ACCEPTANCE_FILE не передан"
+    log "   Контракт ADR-0022 §4.1 / issue #2300: путь к acceptance.json"
+    log "   должен резолвиться на deploy-стороне (agent-flow-e2e-process.sh:"
+    log "   resolve_acceptance_candidate), а не здесь. Этот запуск либо"
+    log "   ручной (workflow_dispatch без e2e-process) — укажи --acceptance <path>"
+    log "   явно, либо e2e-process не отрезолвил путь (см. его логи)."
+    log "   Ожидаемые кандидаты в <dir(scenario)>:"
+    log "     1) acceptance.json"
+    log "     2) <scenario_basename>_acceptance.json"
+    log "     3) <scenario_prefix>_acceptance.json  (prefix = strip _v<N>/_suite)"
+    log "     4) <scenario_prefix>_acceptance_v<N>.json"
     log "   Обход (НЕ рекомендуется): --acceptance-skip"
     log "   Подробнее: docs/adr/0022-process-e2e-done-gates.md §4.1"
     mkdir -p "$OUT_DIR"
@@ -398,15 +361,9 @@ if [ -n "$SCENARIO_FILE" ] && [ -z "$ACCEPTANCE_FILE" ] && [ "$ACCEPTANCE_SKIP" 
 {
   "gate": "GATE-1",
   "pass": false,
-  "reason": "scenario.json provided but acceptance.json not found",
+  "reason": "scenario.json provided but ACCEPTANCE_FILE env not set (issue #2300: auto-discovery is e2e-process-only)",
   "scenario_file": "$SCENARIO_FILE",
-  "expected_acceptance_paths": [
-    "$(dirname "$SCENARIO_FILE")/acceptance.json",
-    "$(dirname "$SCENARIO_FILE")/${_scenario_base}_acceptance.json",
-    "$(dirname "$SCENARIO_FILE")/${_scenario_prefix}_acceptance.json",
-    "$(dirname "$SCENARIO_FILE")/${_scenario_prefix}_acceptance_v1.json"
-  ],
-  "hint": "create acceptance.json with expected_tool_calls + must_not_call, or pass --acceptance-skip to disable gating"
+  "hint": "agent-flow-e2e-process.sh:resolve_acceptance_candidate resolves the acceptance path; harness reads it via env ACCEPTANCE_FILE. Manual runs must pass --acceptance <path> explicitly."
 }
 EOF
     echo "E2E_GATE1_MISSING_ACCEPTANCE"
@@ -1184,6 +1141,10 @@ PY
 # Issue #1353: запись микрофона охватывает ВЕСЬ retry-цикл (все шаги, все
 # попытки). Стартуем до if/else, останавливаем в trap EXIT (см. ниже).
 start_recording
+
+# Advisory health probe is always collected, but never changes PASS/FAIL.
+# Keep it in the run artifact so e2e reports expose infrastructure health.
+observe_step "${SCENARIO_FILE:+scenario}${SCENARIO_FILE:-single}" > "$OUT_DIR/health_snapshot.json" || true
 
 # Гарантированная остановка записи при любом завершении (PASS/FAIL/ошибка).
 # stop_recording сам идемпотентен: повторный вызов с пустым REC_PID — noop.

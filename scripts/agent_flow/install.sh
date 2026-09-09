@@ -87,6 +87,11 @@ EXPECTED=(
     agent-flow-install-daily.sh
     agent-flow-handoff.sh
     round_ensure.sh
+    # Round-formation module (issue #2299, 09.09.2026): единый владелец
+    # ls-remote → max-N → freshness-check → create/reuse/recreate. Source'ится
+    # из round_ensure.sh и agent-flow-e2e-process.sh. Должен лежать рядом
+    # со скриптами во всех 4 target-папках.
+    round_formation.sh
     agent-flow-cleanup-249.sh
     agent-flow-deploy-sweep.sh
     agent-flow-unlabeled-sweep.sh

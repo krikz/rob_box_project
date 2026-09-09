@@ -206,6 +206,11 @@ af_load_profile_env "$PROFILE_ENV"
 : "${UNKNOWN_ASSIGNEE_ROLLUP_LABEL:=agent-flow-error}"
 : "${UNKNOWN_ASSIGNEE_ROLLUP_MARKER:=agent-flow-triage:unknown-assignee-rollup}"
 : "${UNKNOWN_ASSIGNEE_PHASE_BREAK_AT:=50}"
+# --- Phase 3 (bug-orphans) defaults (ретро t_a733c3d2) ---
+: "${BUG_PRIORITY_LABELS:=priority:critical,priority:high,priority:medium}"
+: "${BUG_ORPHAN_MARKER:=agent-flow-triage:phase3-bug-orphan}"
+: "${BUG_ORPHAN_DEDUP_MIN:=60}"
+: "${NEEDS_TRIAGE_LABEL:=needs-triage}"
 # --- G10a dedup env-vars (ретро t_03977adb, issue #2171, ADR-AF-0062 follow-up) ----
 # G10a в issue #2162 начал спамить 38 одинаковых комментов за 1.5ч — каждую
 # минуту cron писал новый «file-overlap-skip», потому что в скрипте не было
@@ -612,13 +617,10 @@ ${overlap_list}
     return 0
     }
 
-role_for() {  # $1=labels_json
-    printf '%s' "$1" \
-        | grep -oE 'agent:[a-z0-9_-]+' \
-        | head -n1 \
-        | sed 's/^agent://' \
-        || printf '%s' "$AGENT_FLOW_DEFAULT_ROLE"
-}
+# (role_for удалён — issue #2292. Все вызовы напрямую зовут af_role_for
+# из lib_agent_flow_common.sh. Старая реализация жила в 5 копиях и
+# разъехалась: e2e-process потерял agent:tester, merge-gate две копии
+# с разными комментариями. Теперь одна таблица + одна функция.)
 
 # branch_exists_in_remote — ретро-фикс (26.08 t_dfd3d19d, ADR-0032): G9b
 # race-window dedup. Проверяет, существует ли уже ветка $1 в remote refs.
@@ -1162,7 +1164,7 @@ except Exception: print("")' 2>/dev/null || true)"
 #   MAINTENANCE_BRANCH, DONE_LABEL, BIG_BANG_OVERRIDE_LABEL, BIG_BANG_MAX_COMMITS,
 #   BIG_BANG_MAX_LINES, VALID_PROFILES, AGENT_FLOW_DEFAULT_ROLE, AGENT_FLOW_MAX_RUNTIME,
 #   AGENT_FLOW_MAX_RETRIES, AGENT_FLOW_LARGE_BODY_CHARS, AGENT_FLOW_MAX_RUNTIME_LARGE,
-#   GH_REPO, HERMES_BIN, DRY_RUN, LOG_PREFIX, role_for, branch_for, branch_label_override,
+#   GH_REPO, HERMES_BIN, DRY_RUN, LOG_PREFIX, af_role_for, branch_for, branch_label_override,
 #   is_valid_profile, load_valid_profiles, free_stale_worktrees_for_branch, runtime_for,
 #   worker_contract_block, gh (auth).
 #
@@ -1268,7 +1270,7 @@ process_issues_json() {
         skipped=$((skipped+1)); continue
     fi
 
-    role="$(role_for "$labels")"
+    role="$(af_role_for "$labels" "${AGENT_FLOW_DEFAULT_ROLE:-}")"
     branch="$(branch_for "$labels" "$number" "$title")"
     max_runtime="$(runtime_for "$labels" "$body")"
 
@@ -1739,8 +1741,10 @@ role: ${role}"
     #   * Если sync падает — НЕ блокируем kanban (warn + log). OpenSpec — advisory.
     if [ -x "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/agent-flow-openspec-sync.sh" ]; then
         _sync_bin="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/agent-flow-openspec-sync.sh"
-        # slug = branch-suffix (z-{agent}/<id>-<slug> → <slug>)
-        _slug="$(printf '%s' "${branch}" | sed -E 's|^z-[a-z0-9_-]+/||; s|^[0-9]+-||')"
+        # slug = branch-suffix (z-{agent}/<id>-<slug> → <slug>) — канонический
+        # regex в agent-flow-openspec-sync.sh:slug_for_branch (issue #2296).
+        # Подкоманда не требует OPENSPEC_ROOT (fast-path в скрипте).
+        _slug="$("$_sync_bin" slug-for-branch "${branch}")"
         _issue_url="https://github.com/${GH_REPO}/issues/${number}"
         if "$_sync_bin" create-change "$number" "$task_id" "$_slug" "$title" "$_issue_url" "$body" >/dev/null 2>&1; then
             log "openspec-sync: change folder created (or already exists) for ${task_id}-${_slug}"
@@ -1813,7 +1817,7 @@ _emit_unknown_assignee_rollup() {
     # Rollup-state counters — declared as `local` so they don't pollute outer scope.
     # (unknown_assignee_rollup_emitted/_dedup_hit читаются из outer scope в
     # summary log, поэтому мы пишем туда через `declare -g` если нужно.)
-    local _count=0 _bad_roles_seen="" _now_epoch _cutoff_epoch _last_marker_epoch _valid_csv _marker _last_iso
+    local _count=0 _bad_roles_seen="" _valid_csv _marker _dedup_window_seconds _dedup_hit
     local _rec _n _role _tp
     while IFS= read -r _rec; do
         [ -n "$_rec" ] || continue
@@ -1834,18 +1838,18 @@ _emit_unknown_assignee_rollup() {
     fi
 
     # Per-tick dedup: проверяем последний комментарий с маркером.
+    # Idempotency через generic helper (#2293, соглашение 09.09.2026):
+    # comment_recently_posted(kind, number, marker, window, [mode]) → 0/1.
+    # mode=prefix — marker должен быть в начале body (мы всегда пишем
+    # rollup именно с маркером на первой строке). Раньше тут был jq
+    # `test()` regex — для нашего marker'а (нет регекс-спецсимволов)
+    # результат эквивалентен startswith().
     _marker="${UNKNOWN_ASSIGNEE_ROLLUP_MARKER}"
-    _now_epoch="$(date -u +%s)"
-    _cutoff_epoch=$((_now_epoch - UNKNOWN_ASSIGNEE_ROLLUP_DEDUP_MIN * 60))
-    _last_marker_epoch="0"
-    _last_iso=""
-    # gh issue view возвращает ISO-время → парсим через date.
-    # Экранируем маркер для jq regex test() (регекс-спецсимволы внутри строки).
-    _marker_jq="$(printf '%s' "$_marker" | sed 's/[][\\^$.*?+|(){}]/\\&/g')"
-    if _last_iso="$(gh api "repos/${GH_REPO}/issues/${UNKNOWN_ASSIGNEE_ROLLUP_ISSUE}/comments?per_page=20" \
-        --jq '([.[] | select((.body // "") | test("'"${_marker_jq}"'"))] | last | .created_at) // empty' 2>/dev/null || true)" \
-        && [ -n "$_last_iso" ]; then
-        _last_marker_epoch="$(date -u -d "$_last_iso" +%s 2>/dev/null || echo 0)"
+    _dedup_window_seconds=$(( UNKNOWN_ASSIGNEE_ROLLUP_DEDUP_MIN * 60 ))
+    _dedup_hit=1
+    if ! comment_recently_posted issue "$UNKNOWN_ASSIGNEE_ROLLUP_ISSUE" \
+        "$_marker" "$_dedup_window_seconds" prefix; then
+        _dedup_hit=0
     fi
 
     # Per-issue label — делаем всегда (и для dedup-hit, и для fresh-write),
@@ -1865,8 +1869,8 @@ _emit_unknown_assignee_rollup() {
     done < <(printf '%s' "$_unknown_assignee_records")
 
     # Если свежий rollup-комментарий уже есть — dedup-hit: не пишем ещё раз.
-    if [ "${_last_marker_epoch:-0}" -ge "${_cutoff_epoch}" ] 2>/dev/null; then
-        log "_emit_unknown_assignee_rollup: dedup-hit (last rollup @ ${_last_iso}, cutoff ${UNKNOWN_ASSIGNEE_ROLLUP_DEDUP_MIN}m ago) — skip new comment"
+    if [ "${_dedup_hit:-0}" -eq 1 ]; then
+        log "_emit_unknown_assignee_rollup: dedup-hit (last rollup within ${UNKNOWN_ASSIGNEE_ROLLUP_DEDUP_MIN}m window) — skip new comment"
         # outer-scope counter: declare -g если нужно изменить из subshell,
         # но мы в той же shell, поэтому прямое присваивание работает
         # (counter declared в main script scope).
@@ -2006,6 +2010,43 @@ process_issues_json "phase1" "$phase1_json"
 # github/workflows/gsd-*.yml, который добавляет label hermes автоматически.
 # ADR-0028 фиксирует двухфазный фильтр как промежуточное решение.
 GSD_SOURCE_LABEL="${GSD_SOURCE_LABEL:-source:gsd}"
+# --- Phase 3: bug-orphans (ретро-фикс t_a733c3d2, 09.09.2026) -------------
+# Проблема: triage фильтрует issues по process-меткам (`hermes`, `agent:*`)
+# и молча игнорирует P0/P1 bug-issues без них (без `hermes` Phase 1 не видит,
+# без `agent:*` role_for возвращает default). Результат: 6 OPEN bug-issues
+# (#2132, #2136, #2137, #2141, #2142, #2143) висит без kanban-карточки, пока
+# `agent-flow-unlabeled-sweep.sh` (ADR-0022 GATE-2) не закроет их как
+# "not planned" через 48ч (по факту — процессный шум от GSD-воркера).
+#
+# Решение: Phase 3 бампит такие issues обратно в процессный pipeline:
+#   - ставит `hermes` (Phase 1 подхватит на следующий тик и создаст kanban-карточку);
+#   - если есть `agent:<role>` label — пробрасывает его (явный сигнал assignee);
+#   - если эвристика assignee не выводится — ставит `needs-triage` + комментарий
+#     «укажи assignee через `agent:<role>` или явную ветку `branch:<name>`».
+#
+# Фильтр: bug-issues БЕЗ process-меток. Не трогает issue, по которому УЖЕ идёт
+# работа (Phase 1/Phase 2 + дедуп по phase1+phase2_issue_numbers). Backward-compat:
+# Phase 3 не создаёт kanban-карточки сам — это делает Phase 1 после установки
+# `hermes`. Все guards (existing_by_issue, throttle, big-bang, MERGED-PR skip,
+# role validation) работают «из коробки» в Phase 1.
+#
+# Phase 3 НЕ конкурирует с agent-flow-unlabeled-sweep: sweep закрывает issues
+# старше 24ч как «not planned», Phase 3 успевает за 30 мин (cron every 1m).
+# Приоритетные labels для фильтра (любой из):
+BUG_PRIORITY_LABELS="${BUG_PRIORITY_LABELS:-priority:critical,priority:high,priority:medium}"
+# Если у issue есть `bug` label И хотя бы один из приоритетов выше — Phase 3
+# его подхватывает. `priority:medium` оставлен потому что #2141 (priority:medium)
+# висит 35ч+ stale; иначе его Phase 3 не увидит.
+#
+# Marker для per-issue comment — дедуп в окне $BUG_ORPHAN_DEDUP_MIN мин
+# (default 60), чтобы cron every 1m не спамил один и тот же issue.
+BUG_ORPHAN_MARKER="${BUG_ORPHAN_MARKER:-agent-flow-triage:phase3-bug-orphan}"
+BUG_ORPHAN_DEDUP_MIN="${BUG_ORPHAN_DEDUP_MIN:-60}"
+# Default assignee, когда agent:* не выводится (метка `agent:<unknown>` или
+# вовсе нет). Совпадает с AGENT_FLOW_DEFAULT_ROLE. Используется ТОЛЬКО для
+# метки `agent:<role>` если она подтверждена is_valid_profile; иначе — null +
+# `needs-triage`.
+NEEDS_TRIAGE_LABEL="${NEEDS_TRIAGE_LABEL:-needs-triage}"
 phase2_json="$(gh issue list \
     --repo "$GH_REPO" \
     --label "$GSD_SOURCE_LABEL" \
@@ -2102,6 +2143,263 @@ except Exception: print(0)
     fi
 fi
 
+# --- Phase 3: bug-orphans (ретро-фикс t_a733c3d2, 09.09.2026) -------------
+# Контракт и motivation — см. defaults-блок выше (BUG_PRIORITY_LABELS / etc.).
+# Этот блок:
+#   1. Берём ВСЕ open issues с меткой `bug` (для repro: 6 из #2132/#2136/#2137/
+#      #2141/#2142/#2143). Один `gh issue list` round-trip, без per-issue API.
+#   2. Python-фильтр: оставить только те, у которых:
+#        a) есть хотя бы один из BUG_PRIORITY_LABELS (по умолчанию critical/
+#           high/medium — `medium` оставлен потому что #2141 висит 35ч+ stale);
+#        b) НЕТ process-меток (hermes / needs-e2e / e2e-done / e2e:rejected /
+#           no-e2e-required / stale-candidate — последняя критична, иначе
+#           sweep пометил их на закрытие и Phase 3 начнёт бутить их обратно);
+#        c) НЕТ в phase1/phase2_issue_numbers (issue уже в работе);
+#        d) это issue, не PR (defensive — `gh issue list --label bug` PR
+#           возвращать не должен, но мы это гарантируем).
+#   3. На каждый отфильтрованный issue — process_bug_orphan (см. ниже):
+#        a) dedup-комментарий (если в окне BUG_ORPHAN_DEDUP_MIN мин уже есть
+#           комментарий с маркером BUG_ORPHAN_MARKER — skip, чтобы cron every
+#           1m не спамил);
+#        b) ставим `hermes` (Phase 1 на следующем тике подхватит и создаст
+#           kanban-карточку через process_issues_json — все guards работают
+#           «из коробки»);
+#        c) если есть валидный `agent:<role>` label — пробрасываем его;
+#        d) иначе — ставим `needs-triage` + добавляем assignee-guidance в
+#           комментарий (Шифу/юзер видит: «нужен assignee, без него карточка
+#           не создастся»).
+#
+# Fail-OPEN: gh/API ошибки не блокируют cron (warning в лог, return 0).
+# Backward-compat: ничего не делает, если BUG_PRIORITY_LABELS пустой или
+# фильтр возвращает 0 issues — это уже закрывает существующий happy path.
+phase3_orphan_skipped=0
+phase3_orphan_marked=0
+phase3_orphan_errored=0
+
+# Собираем объединённый набор уже-обрабатываемых issues (Phase 1 + Phase 2)
+# для дедупа Phase 3. Если оба пусты — пустая строка, фильтр пропустит всё.
+# NOTE: phase2_issue_numbers (как отдельная переменная) НЕ существует —
+# номера извлекаются лениво из $phase2_filtered ниже.
+_already_in_pipeline="$phase1_issue_numbers"
+
+phase3_json=""
+
+# Загружаем OPEN issues с меткой `bug` (per-issue labels уже включены).
+# Используем тот же gh_list_issues_by_label helper, что и Phase 1 (retest-fallback
+# на REST при пустом ответе gh-list, ретро t_1457).
+phase3_bug_json="$(gh_list_issues_by_label "bug" open "$ISSUE_LIMIT" 2>/dev/null || true)"
+
+if [ -z "$phase3_bug_json" ] || [ "$phase3_bug_json" = "[]" ]; then
+    log "Phase 3: bug-orphans (0 issues, no bug-flagged issues on ${GH_REPO})"
+    phase3_json=""
+else
+    # Соберём phase2_issue_numbers (если phase2_filtered непустой) — нужен для
+    # дедупа. Делаем это лениво, после Phase 2.
+    _phase2_nums_tmp=""
+    if [ -n "$phase2_filtered" ] && [ "$phase2_filtered" != "[]" ]; then
+        _phase2_nums_tmp="$(printf '%s' "$phase2_filtered" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    print("|".join(str(it["number"]) for it in d if isinstance(it, dict) and it.get("number")))
+except Exception:
+    print("")
+' 2>/dev/null)"
+    fi
+    # Обновим _already_in_pipeline с phase2.
+    [ -n "$_phase2_nums_tmp" ] && _already_in_pipeline="${_already_in_pipeline:+$_already_in_pipeline|}$_phase2_nums_tmp"
+
+    # Фильтр Phase 3 (python):
+    #   - есть хотя бы один BUG_PRIORITY_LABEL;
+    #   - НЕТ process-меток (whitelist);
+    #   - НЕТ в _already_in_pipeline;
+    #   - не PR (defensive).
+    # shellcheck disable=SC2016  # python source in single quotes — no shell vars expected
+    phase3_json="$(BUG_LABELS="$BUG_PRIORITY_LABELS" \
+        PROCESS_LABELS="hermes,needs-e2e,e2e-done,e2e:rejected,no-e2e-required,stale-candidate" \
+        ALREADY_PIPELINE="$_already_in_pipeline" \
+        HERMES_LABEL="$ISSUE_LABEL" \
+        printf '%s' "$phase3_bug_json" | BUG_LABELS="$BUG_PRIORITY_LABELS" \
+        PROCESS_LABELS="hermes,needs-e2e,e2e-done,e2e:rejected,no-e2e-required,stale-candidate" \
+        ALREADY_PIPELINE="$_already_in_pipeline" \
+        HERMES_LABEL="$ISSUE_LABEL" \
+        python3 -c '
+import os, sys, json
+bug_labels_env = os.environ.get("BUG_LABELS", "priority:critical,priority:high,priority:medium")
+process_labels_env = os.environ.get("PROCESS_LABELS", "hermes,needs-e2e,e2e-done,e2e:rejected,no-e2e-required,stale-candidate")
+already_pipeline = set()
+ap = os.environ.get("ALREADY_PIPELINE", "")
+if ap:
+    for x in ap.split("|"):
+        x = x.strip()
+        if x.isdigit():
+            already_pipeline.add(int(x))
+hermes_label = os.environ.get("HERMES_LABEL", "hermes")
+bug_label_set = {s.strip() for s in bug_labels_env.split(",") if s.strip()}
+process_label_set = {s.strip() for s in process_labels_env.split(",") if s.strip()}
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    print("[]"); sys.exit(0)
+if not isinstance(data, list):
+    print("[]"); sys.exit(0)
+keep = []
+for it in data:
+    if not isinstance(it, dict):
+        continue
+    n = it.get("number")
+    if not isinstance(n, int):
+        continue
+    # Skip if in phase1/phase2 (уже в работе)
+    if n in already_pipeline:
+        continue
+    # Defensive: PR
+    if it.get("pull_request") is not None:
+        continue
+    label_names = {l.get("name") for l in it.get("labels", []) if isinstance(l, dict)}
+    # Skip if уже есть process-метка (в т.ч. hermes)
+    if label_names & process_label_set:
+        continue
+    # Skip if уже есть hermes (defensive — process_label_set это включает,
+    # но пусть будет explicit на случай изменения process_label_set)
+    if hermes_label in label_names:
+        continue
+    # Require: `bug` label + хотя бы один priority из bug_labels_env
+    if "bug" not in label_names:
+        continue
+    if not (label_names & bug_label_set):
+        continue
+    keep.append(it)
+print(json.dumps(keep, ensure_ascii=False))
+' 2>/dev/null)"
+
+    phase3_count="$(printf '%s' "$phase3_json" | python3 -c '
+import json, sys
+try: print(len(json.load(sys.stdin)))
+except Exception: print(0)
+' 2>/dev/null)"
+    log "Phase 3: bug-orphans (${phase3_count} issues, bug + priority:* without process labels)"
+
+    # Обработка каждого orphan: dedup comment + label bumps.
+    if [ -n "$phase3_json" ] && [ "$phase3_json" != "[]" ]; then
+        # Load valid profiles один раз (lazy — Phase 1 возможно уже загрузил).
+        load_valid_profiles 2>/dev/null || true
+        # NB: pipe в subshell обнулил бы outer-scope счётчики
+        # (phase3_orphan_skipped/marked/errored). Поэтому сначала прогоняем
+        # python в файл (mktemp), потом читаем file → loop в текущем shell.
+        _p3_orphan_in="$(mktemp -t p3-orphans.XXXXXX 2>/dev/null || echo "/tmp/p3-orphans.$$")"
+        printf '%s' "$phase3_json" | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+for it in data:
+    if not isinstance(it, dict):
+        continue
+    n = it.get("number", "")
+    title = it.get("title", "")[:80]
+    label_names = ",".join(sorted((l.get("name") or "") for l in it.get("labels", []) if isinstance(l, dict)))
+    print(f"{n}\t{title}\t{label_names}")
+' 2>/dev/null > "$_p3_orphan_in"
+
+        # NB: process substitution `done < <(...)` (а не pipe), чтобы счётчики
+        # `phase3_orphan_*` пробросились обратно в outer scope — иначе они
+        # обнулятся в subshell и финальный `tick done:` лог покажет 0/0/0.
+        while IFS=$'\t' read -r p3_number p3_title p3_labels; do
+            [ -z "$p3_number" ] && continue
+            # Skip если уже в pipeline (race: пока Phase 3 грузился, что-то изменилось).
+            # _already_in_pipeline — pipe-separated list из phase1_issue_numbers +
+            # phase2_filtered. Match: либо "|N|", либо ",N|", либо "|N,", либо ",N,".
+            # NB: SC2195 не работает для multi-pattern через `|` в case — поэтому
+            # делаем через `[[ =~ ]]` регулярку (быстрее + яснее).
+            if [[ "$_already_in_pipeline" =~ (^|[|,])${p3_number}($|[|,]) ]]; then
+                continue
+            fi
+            # 1. dedup-комментарий: если в окне BUG_ORPHAN_DEDUP_MIN мин уже есть
+            #    комментарий с маркером BUG_ORPHAN_MARKER на этом issue — skip.
+            #    (Используем REST API: gh issue comments — без пагинации для простоты,
+            #    поскольку окно 60 мин → обычно 0-1 комментариев.)
+            dedup_since="$(date -u -d "${BUG_ORPHAN_DEDUP_MIN} minutes ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+            _existing_marker_count="$(gh api "repos/${GH_REPO}/issues/${p3_number}/comments?since=${dedup_since}&per_page=20" 2>/dev/null | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    print(0); sys.exit(0)
+target = sys.argv[1] if len(sys.argv) > 1 else ""
+print(sum(1 for c in data if isinstance(c.get("body"), str) and target in c["body"]))
+' "$BUG_ORPHAN_MARKER" 2>/dev/null)" || _existing_marker_count=0
+            if [ "${_existing_marker_count:-0}" -gt 0 ] 2>/dev/null; then
+                log "Phase 3 issue #${p3_number}: dedup — fresh marker в ${BUG_ORPHAN_DEDUP_MIN}min окно, skip"
+                phase3_orphan_skipped=$((phase3_orphan_skipped+1))
+                continue
+            fi
+
+            # 2. Определяем assignee: первый валидный `agent:<role>` из labels,
+            #    иначе — `needs-triage` (юзер/Шифу должен явно указать).
+            _agent_role=""
+            _agent_role="$(printf '%s' "$p3_labels" | tr ',' '\n' | grep -E '^agent:' | head -n1 | sed 's/^agent://' | tr -d '[:space:]')"
+            _has_valid_agent=""
+            if [ -n "$_agent_role" ] && [ "$VALID_PROFILES" != "__disabled__" ]; then
+                case ",${VALID_PROFILES}," in
+                    *",${_agent_role},"*) _has_valid_agent="yes" ;;
+                    *) _has_valid_agent="" ;;
+                esac
+            fi
+
+            log "Phase 3 issue #${p3_number} (${p3_title:0:50}...): bug-orphan, agent=${_agent_role:-<none>} (valid=${_has_valid_agent:-no})"
+
+            if [ "$DRY_RUN" = "true" ]; then
+                phase3_orphan_marked=$((phase3_orphan_marked+1))
+                continue
+            fi
+
+            # 3. Ставим `hermes` (Phase 1 подхватит на следующий тик).
+            if ! gh issue edit "$p3_number" --repo "$GH_REPO" --add-label "$ISSUE_LABEL" >/dev/null 2>&1; then
+                log "Phase 3 issue #${p3_number}: WARNING add-label ${ISSUE_LABEL} failed — retry next tick"
+                phase3_orphan_errored=$((phase3_orphan_errored+1))
+                continue
+            fi
+
+            # 4. Если есть валидный agent:* — пробрасываем; иначе — needs-triage.
+            if [ -n "$_has_valid_agent" ]; then
+                gh issue edit "$p3_number" --repo "$GH_REPO" --add-label "agent:${_agent_role}" >/dev/null 2>&1 || true
+                _comment_action="hermes+agent:${_agent_role}"
+            else
+                gh issue edit "$p3_number" --repo "$GH_REPO" --add-label "$NEEDS_TRIAGE_LABEL" >/dev/null 2>&1 || true
+                _comment_action="${ISSUE_LABEL}+${NEEDS_TRIAGE_LABEL}"
+            fi
+
+            # 5. Комментарий с маркером (дедуп) + гайд.
+            _marker="<!-- ${BUG_ORPHAN_MARKER} -->"
+            _assignee_guidance=""
+            if [ -z "$_has_valid_agent" ]; then
+                _assignee_guidance=$'\n\n**Что нужно:** assignee не выведен из labels. Добавьте label `agent:<role>` (например `agent:devops` / `agent:backend` / `agent:architect`), либо явную ветку через label `branch:<name>`, и triage создаст kanban-карточку на следующем тике.'
+            else
+                _assignee_guidance=$'\n\n**Что нужно:** Phase 1 на следующем тике создаст kanban-карточку с assignee `agent:${_agent_role}`. Дополнительных действий не требуется.'
+            fi
+            _body="${_marker}
+🤖 **[agent:devops] script=agent-flow-triage action=phase3-bug-orphan-mark**
+
+**Событие:** issue OPEN с меткой \`bug\` + один из приоритетов (\`priority:critical\`/\`priority:high\`/\`priority:medium\`) обнаружен **без process-меток** (hermes/needs-e2e/e2e-done/etc). Без вмешательства triage-cron он бы провалился через фильтр Phase 1 → 24ч+ orphan до закрытия sweep'ом (ADR-0022 GATE-2) как «not planned».
+
+**Что сделано:** поставлены метки \`${_comment_action}\`. Triage Phase 1 на следующем тике подхватит этот issue и создаст kanban-карточку (все guards: idempotency, throttle, big-bang, MERGED-PR skip, role validation — работают «из коробки»).
+${_assignee_guidance}
+
+См. kanban-card t_a733c3d2 (ретро-фикс triage-cron-skips-bugs-without-process-labels)."
+
+            if gh issue comment "$p3_number" --repo "$GH_REPO" --body "$_body" >/dev/null 2>&1; then
+                phase3_orphan_marked=$((phase3_orphan_marked+1))
+            else
+                log "Phase 3 issue #${p3_number}: WARNING comment failed (labels already set, dedup next tick)"
+                phase3_orphan_errored=$((phase3_orphan_errored+1))
+            fi
+        done < "$_p3_orphan_in"
+        rm -f "$_p3_orphan_in" 2>/dev/null || true
+    fi
+fi
+
 # Ретро-фикс (01.09, t_e1a9613d, issue #1824): ЕДИНЫЙ rollup-комментарий
 # для всех unknown-assignee issues, собранных в _unknown_assignee_records
 # из обеих фаз (Phase 1 + Phase 2). Без этого каждый тик (cron every 1m)
@@ -2110,7 +2408,7 @@ fi
 _emit_unknown_assignee_rollup || true
 
 # --- summary -----------------------------------------------------------------
-log "tick done: created=${created} skipped=${skipped} errored=${errored} dedup-skipped: ${dedup_intra_skipped} (intra-tick), ${dedup_race_skipped} (race), ${dedup_file_overlap_skipped} (file-overlap), unknown-assignee: rollup-emitted=${unknown_assignee_rollup_emitted} (dedup-hit=${unknown_assignee_rollup_dedup_hit})"
+log "tick done: created=${created} skipped=${skipped} errored=${errored} dedup-skipped: ${dedup_intra_skipped} (intra-tick), ${dedup_race_skipped} (race), ${dedup_file_overlap_skipped} (file-overlap), unknown-assignee: rollup-emitted=${unknown_assignee_rollup_emitted} (dedup-hit=${unknown_assignee_rollup_dedup_hit}), phase3-bug-orphans: marked=${phase3_orphan_marked} skipped=${phase3_orphan_skipped} errored=${phase3_orphan_errored}"
 
 # Exit non-zero only on hard errors (G4/G5) so cron can alert.
 if [ "$errored" -gt 0 ]; then exit 1; fi

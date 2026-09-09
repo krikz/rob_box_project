@@ -443,10 +443,10 @@ for pr in data:
                         log "DRY-RUN would: add ${STALE_BRANCH_REUSE_LABEL} + comment stale-branch block + remove needs-review on PR #${_spr_num}"
                         continue
                     fi
-                    _spr_dedup_since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
-                    _spr_dup="$(gh api "repos/${GH_REPO}/issues/${_spr_num}/comments?since=${_spr_dedup_since}&per_page=100" \
-                        --jq '[.[] | select(.body | startswith("🛑 **stale-branch reuse"))] | length' 2>/dev/null || echo 0)"
-                    if [ "${_spr_dup:-0}" -eq 0 ]; then
+                    # Идемпотентность через generic helper (issue #2293):
+                    # comment_recently_posted(kind, number, marker, window, [mode]).
+                    if ! comment_recently_posted pr "$_spr_num" \
+                        "🛑 **stale-branch reuse" 86400 prefix; then
                         gh pr comment "$_spr_num" --repo "$GH_REPO" --body \
                             "🛑 **stale-branch reuse with new functional fix** (merge-gate, ретро 14.08 t_28afb585, метка ретро 31.08 t_04371252)
 
@@ -482,10 +482,9 @@ for pr in data:
                 log "DRY-RUN would: comment stale-branch block on PR #${_spr_num}"
                 continue
             fi
-            _spr_dedup_since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
-            _spr_dup="$(gh api "repos/${GH_REPO}/issues/${_spr_num}/comments?since=${_spr_dedup_since}&per_page=100" \
-                --jq '[.[] | select(.body | startswith("🛑 **stale-branch re-commit"))] | length' 2>/dev/null || echo 0)"
-            if [ "${_spr_dup:-0}" -eq 0 ]; then
+            # Идемпотентность через generic helper (issue #2293):
+            if ! comment_recently_posted pr "$_spr_num" \
+                "🛑 **stale-branch re-commit" 86400 prefix; then
                 gh pr comment "$_spr_num" --repo "$GH_REPO" --body \
                     "🛑 **stale-branch re-commit detected** (merge-gate, ретро 12.08 t_d3aeaa9b)
 
@@ -562,10 +561,8 @@ stale_conflicting_scan_all() {
         return 0
     fi
 
-    # Идемпотентный комментарий (24ч window, как в stale-branch-scan).
-    local _sc_dedup_since
-    _sc_dedup_since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
-        || date -u +%Y-%m-%dT%H:%M:%SZ)"
+    # Идемпотентный комментарий (24ч window, как в stale-branch-scan) — теперь
+    # через generic helper comment_recently_posted (issue #2293, ADR-AF-0063+).
 
     # Разбор JSON в tsv (PR_num, headRef, mergeable, updatedAtISO, has_label_already).
     printf '%s' "$_sc_prs" | python3 -c '
@@ -632,11 +629,9 @@ for pr in data:
                 log "DRY-RUN would: add ${STALE_CONFLICTING_LABEL} on PR #${_sc_pr_num} + comment stale > ${STALE_CONFLICTING_HOURS}ч"
                 continue
             fi
-            local _sc_dup
-            _sc_dup="$(gh api "repos/${GH_REPO}/issues/${_sc_pr_num}/comments?since=${_sc_dedup_since}&per_page=100" \
-                --jq '[.[] | select(.body | startswith("🟠 **stale-CONFLICTING"))] | length' 2>/dev/null \
-                || echo 0)"
-            if [ "${_sc_dup:-0}" -eq 0 ]; then
+            # Идемпотентность через generic helper (issue #2293):
+            if ! comment_recently_posted pr "$_sc_pr_num" \
+                "🟠 **stale-CONFLICTING" 86400 prefix; then
                 gh pr comment "$_sc_pr_num" --repo "$GH_REPO" --body \
 "🟠 **stale-CONFLICTING: rebase на develop > ${STALE_CONFLICTING_HOURS}ч (merge-gate, ретро 24.08 t_cd32788f)**
 
@@ -691,12 +686,10 @@ PR #${_sc_pr_num} (\\\`${_sc_head}\\\`) → develop = **CONFLICTING** уже ${_
                 --jq '.comments[].body' 2>/dev/null \
                 | grep -Eo '^kanban: t_[a-f0-9]+' | tail -n1 | sed 's/^kanban: //' || true)"
         fi
-        # Rate-limit escalation-comment (24ч).
-        local _sc_escalate_dedup
-        _sc_escalate_dedup="$(gh api "repos/${GH_REPO}/issues/${_sc_pr_num}/comments?since=${_sc_dedup_since}&per_page=100" \
-            --jq '[.[] | select(.body | startswith("🟠 **stale-CONFLICTING ESCALATION"))] | length' 2>/dev/null \
-            || echo 0)"
-        if [ "${_sc_escalate_dedup:-0}" -gt 0 ]; then
+        # Rate-limit escalation-comment (24ч). Идемпотентность через generic helper
+        # (#2293): если свежий escalation-comment уже есть → skip+continue.
+        if comment_recently_posted pr "$_sc_pr_num" \
+            "🟠 **stale-CONFLICTING ESCALATION" 86400 prefix; then
             log "stale-conflicting-scan: PR #${_sc_pr_num} CONFLICTING ${_sc_age_hours}ч — escalation dedup (<24ч), skip"
             continue
         fi
@@ -795,9 +788,6 @@ e2e-rotation каждый тик skip-ает round с reason «stale-conflicting
 #
 # Вызывается рядом со stale_conflicting_scan_all (scan-all-prs блок).
 needs_review_conflict_reconcile_all() {
-    local _nrc_dedup_since
-    _nrc_dedup_since="$(date -u -d "${NEEDS_REVIEW_CONFLICT_DEDUP_HOURS} hours ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
-        || date -u +%Y-%m-%dT%H:%M:%SZ)"
     # Берём open PR с needs-review + mergeable + mergeStateStatus + labels.
     local _nrc_prs
     _nrc_prs="$(gh pr list --repo "$GH_REPO" --state open --label "$NEEDS_REVIEW_LABEL" \
@@ -861,12 +851,11 @@ for pr in data:
                             && log "needs-review-conflict-reconcile: PR #${_nrc_pr_num} MERGEABLE+CLEAN — restored ${NEEDS_REVIEW_LABEL}" \
                             || log "needs-review-conflict-reconcile: WARNING restore ${NEEDS_REVIEW_LABEL} on PR #${_nrc_pr_num} failed (non-fatal)"
                     fi
-                    # Одноразовый recovery-коммент (24ч dedup).
-                    local _nrc_recover_dup
-                    _nrc_recover_dup="$(gh api "repos/${GH_REPO}/issues/${_nrc_pr_num}/comments?since=${_nrc_dedup_since}&per_page=100" \
-                        --jq '[.[] | select(.body | contains("✅ needs-review conflict RECOVERED"))] | length' 2>/dev/null \
-                        || echo 0)"
-                    if [ "${_nrc_recover_dup:-0}" -eq 0 ] && [ "$DRY_RUN" != "true" ]; then
+                    # Одноразовый recovery-коммент (24ч dedup). Идемпотентность через generic
+                    # helper (#2293): contains-mode (substring), 24h окно.
+                    if ! comment_recently_posted pr "$_nrc_pr_num" \
+                        "✅ needs-review conflict RECOVERED" 86400 contains \
+                        && [ "$DRY_RUN" != "true" ]; then
                         gh pr comment "$_nrc_pr_num" --repo "$GH_REPO" --body \
 "✅ **needs-review conflict RECOVERED (merge-gate needs-review-conflict-reconcile, $(date -u +%H:%M:%SZ), ретро 02.09 t_4869a1f7)**
 
@@ -906,12 +895,11 @@ PR #${_nrc_pr_num} (\\\\\`${_nrc_head}\\\\\`) → develop = **MERGEABLE+ CLEAN**
                 || log "needs-review-conflict-reconcile: WARNING add ${MERGE_CONFLICT_LABEL} on PR #${_nrc_pr_num} failed (non-fatal)"
         fi
 
-        # PR-коммент с инструкцией rebase (24ч dedup).
-        local _nrc_dup
-        _nrc_dup="$(gh api "repos/${GH_REPO}/issues/${_nrc_pr_num}/comments?since=${_nrc_dedup_since}&per_page=100" \
-            --jq '[.[] | select(.body | startswith("🟠 needs-review + CONFLICTING"))] | length' 2>/dev/null \
-            || echo 0)"
-        if [ "${_nrc_dup:-0}" -eq 0 ] && [ "$DRY_RUN" != "true" ]; then
+        # PR-коммент с инструкцией rebase (24ч dedup). Идемпотентность через generic
+        # helper (#2293): prefix-mode, 24h окно.
+        if ! comment_recently_posted pr "$_nrc_pr_num" \
+            "🟠 needs-review + CONFLICTING" 86400 prefix \
+            && [ "$DRY_RUN" != "true" ]; then
             gh pr comment "$_nrc_pr_num" --repo "$GH_REPO" --body \
 "🟠 **needs-review + CONFLICTING (merge-gate, ретро 02.09 t_4869a1f7, $(date -u +%H:%M:%SZ))**
 
@@ -996,12 +984,11 @@ for (fname, sha), prs in sorted(seen.items()):
             log "DRY-RUN would: duplicate-file comment on PR #${_dp1} и PR #${_dp2}"
             continue
         fi
-        _dd_since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
         for _pr in "$_dp1" "$_dp2"; do
             _other="$([ "$_pr" = "$_dp1" ] && echo "$_dp2" || echo "$_dp1")"
-            _dup_cnt="$(gh api "repos/${GH_REPO}/issues/${_pr}/comments?since=${_dd_since}&per_page=100" \
-                --jq '[.[] | select(.body | contains("duplicate file detected"))] | length' 2>/dev/null || echo 0)"
-            if [ "${_dup_cnt:-0}" -eq 0 ]; then
+            # Идемпотентность через generic helper (#2293): contains-mode.
+            if ! comment_recently_posted pr "$_pr" \
+                "duplicate file detected" 86400 contains; then
                 gh pr comment "$_pr" --repo "$GH_REPO" --body \
                     "⚠️ **duplicate file detected** (merge-gate, ретро 15.08 t_20383d32)
 
@@ -1127,14 +1114,13 @@ for a, b, fa, fb in emitted:
             log "DRY-RUN would: add label ${COMPETING_PRS_BLOCKED_LABEL} to PR #${_pr_a} и #${_pr_b}, comment with Шифу instructions"
             continue
         fi
-        _dd_since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
         for _pr in "$_pr_a" "$_pr_b"; do
             _other="$([ "$_pr" = "$_pr_a" ] && echo "$_pr_b" || echo "$_pr_a")"
             _other_f="$([ "$_pr" = "$_pr_a" ] && echo "$_fb" || echo "$_fa")"
             _own_f="$([ "$_pr" = "$_pr_a" ] && echo "$_fa" || echo "$_fb")"
-            _dup_cnt="$(gh api "repos/${GH_REPO}/issues/${_pr}/comments?since=${_dd_since}&per_page=100" \
-                --jq '[.[] | select(.body | contains("competing PR detected"))] | length' 2>/dev/null || echo 0)"
-            if [ "${_dup_cnt:-0}" -eq 0 ]; then
+            # Идемпотентность через generic helper (#2293): contains-mode.
+            if ! comment_recently_posted pr "$_pr" \
+                "competing PR detected" 86400 contains; then
                 gh pr comment "$_pr" --repo "$GH_REPO" --body \
                     "🚨 **competing PR detected** (merge-gate, ретро t_50a18fa9, ADR-AF-0062)
 
@@ -1236,14 +1222,13 @@ for pr in data:
             log "DRY-RUN would: process-marker-missing comment on PR #${_wm_pr} и issue #${_wm_issue}"
             continue
         fi
-        _wm_since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
         _wm_head="$(gh pr view "$_wm_pr" --repo "$GH_REPO" --json headRefName --jq '.headRefName' 2>/dev/null || echo "?")"
         _wm_base="$(gh pr view "$_wm_pr" --repo "$GH_REPO" --json baseRefName --jq '.baseRefName' 2>/dev/null || echo "?")"
         _wm_state="$(gh pr view "$_wm_pr" --repo "$GH_REPO" --json mergeStateStatus --jq '.mergeStateStatus' 2>/dev/null || echo "?")"
-        # 24h dedup на substring тела (как у duplicate-file-scan).
-        _wm_dup_pr="$(gh api "repos/${GH_REPO}/issues/${_wm_pr}/comments?since=${_wm_since}&per_page=100" \
-            --jq '[.[] | select(.body | contains("process marker missing"))] | length' 2>/dev/null || echo 0)"
-        if [ "${_wm_dup_pr:-0}" -eq 0 ]; then
+        # 24h dedup на substring тела. Идемпотентность через generic helper (#2293):
+        # contains-mode (marker — "process marker missing" подстрока в body).
+        if ! comment_recently_posted pr "$_wm_pr" \
+            "process marker missing" 86400 contains; then
             gh pr comment "$_wm_pr" --repo "$GH_REPO" --body \
                 "⚠️ **process marker missing** (merge-gate, ретро 25.08 t_1a4f3275 / issue #1624)
 
@@ -1264,10 +1249,10 @@ PR имеет process-метку (agent-flow* / needs-e2e / needs-review), но 
 Merge-gate **НЕ блокирует** CI/e2e (alert, не gate). Решение за человеком (Шифу / шисюн)." >/dev/null 2>&1 || true
         fi
         # Параллельно комментим issue (если issue существует и не duplicate).
+        # Идемпотентность через generic helper (#2293): contains-mode.
         if [ -n "$_wm_issue" ] && [ "$_wm_issue" != "?" ]; then
-            _wm_dup_iss="$(gh api "repos/${GH_REPO}/issues/${_wm_issue}/comments?since=${_wm_since}&per_page=100" \
-                --jq '[.[] | select(.body | contains("process marker missing on PR"))] | length' 2>/dev/null || echo 0)"
-            if [ "${_wm_dup_iss:-0}" -eq 0 ]; then
+            if ! comment_recently_posted issue "$_wm_issue" \
+                "process marker missing on PR" 86400 contains; then
                 gh issue comment "$_wm_issue" --repo "$GH_REPO" --body \
                     "⚠️ **process marker missing on PR** (merge-gate, ретро 25.08 t_1a4f3275 / issue #1624)
 
@@ -1335,12 +1320,11 @@ for i in d:
         gh issue edit "$_dep_num" --repo "$GH_REPO" --add-label hermes >/dev/null 2>&1 || true
         gh issue edit "$_dep_num" --repo "$GH_REPO" --add-label agent:devops >/dev/null 2>&1 || true
         # Коммент с дедупликацией (24h) — не спамим каждый тик.
-        _dep_since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
-        _dep_dup="$(gh api "repos/${GH_REPO}/issues/${_dep_num}/comments?since=${_dep_since}&per_page=100" \
-            --jq '[.[] | select(.body | startswith("🏷️ **Авто-reconcile**"))] | length' 2>/dev/null || echo 0)"
-        if [ "${_dep_dup:-0}" -eq 0 ]; then
+        # Идемпотентность через generic helper (#2293): prefix-mode.
+        if ! comment_recently_posted issue "$_dep_num" \
+            "🏷️ **Авто-reconcile**" 86400 prefix; then
             gh issue comment "$_dep_num" --repo "$GH_REPO" --body \
-                "🏷️ **Авто-reconcile** (merge-gate, ретро 15.08 t_238ff3f7): deployment-issue без hermes-метки > ${DEPLOY_RECONCILE_MINUTES}м — проставлены \\\`hermes\\\` + \\\`agent:devops\\\`; триаж создаст kanban-карточку (backstop для label-less deploy-issues, #1276)." >/dev/null 2>&1 || true
+                "🏷️ **Авто-reconcile** (merge-gate, ретро 15.08 t_238ff3f7): deployment-issue без hermes-метки > ${DEPLOY_RECONCILE_MINUTES}м — проставлены \`hermes\` + \`agent:devops\`; триаж создаст kanban-карточку (backstop для label-less deploy-issues, #1276)." >/dev/null 2>&1 || true
         fi
     done
     return 0
@@ -2048,8 +2032,10 @@ archive_openspec_change_for_merge() {  # $1=cid $2=num $3=pr $4=branch
     sync_bin="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/agent-flow-openspec-sync.sh"
     [ -x "$sync_bin" ] || { log "openspec-sync: $sync_bin not found/executable — skipping"; return 0; }
     # slug = branch-suffix (z-{agent}/<id>-<slug> → <slug>), fallback = cid.
+    # Канонический regex — в agent-flow-openspec-sync.sh:slug_for_branch
+    # (issue #2296). Если branch не передан, slug = cid.
     if [ -n "$br" ]; then
-        _slug="$(printf '%s' "$br" | sed -E 's|^z-[a-z0-9_-]+/||; s|^[0-9]+-||')"
+        _slug="$("$sync_bin" slug-for-branch "$br")"
     else
         _slug="$cid"
     fi
@@ -2739,15 +2725,11 @@ for n in sorted(nums):
         return 1
     fi
 
-    # 24h dedup (как big-bang блок) — merge-gate тикает каждые ~5-10 мин,
-    # без dedup было бы ~144 одинаковых спам-коммента в день.
-    local _ac_dedup_since
-    _ac_dedup_since="$(date -u -d "${ADR_COLLISION_COMMENT_DEDUP_HOURS} hours ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
-        || date -u +%Y-%m-%dT%H:%M:%SZ)"
-    local _ac_dup_count
-    _ac_dup_count="$(gh api "repos/${GH_REPO}/issues/${number}/comments?since=${_ac_dedup_since}&per_page=100" \
-        --jq '[.[] | select(.body | contains("ADR-COLLISION detected"))] | length' 2>/dev/null || echo 0)"
-    if [ "${_ac_dup_count:-0}" -eq 0 ] 2>/dev/null; then
+    # Идемпотентность через generic helper (issue #2293, ADR-AF-0063+):
+    # _gm_recent_commented(kind, number, marker, window, [mode]) — тонкая
+    # обёртка над comment_recently_posted. Если маркера нет → постим.
+    if ! _gm_recent_commented "issue" "$number" "ADR-COLLISION detected" \
+        "$((ADR_COLLISION_COMMENT_DEDUP_HOURS * 3600))" contains; then
         gh issue comment "$number" --repo "$GH_REPO" --body \
             "🚨 **PR #${pr_number} ADR-COLLISION detected** (merge-gate, ретро 25.08 t_00ba0224, $(date -u +%H:%M:%SZ))
 
@@ -2765,7 +2747,7 @@ Merge-gate **НЕ поставит ${NEEDS_E2E_LABEL}** пока коллизи�
             && log "issue #${number}: ADR-collision comment posted (${ADR_COLLISION_COMMENT_DEDUP_HOURS}h dedup)" \
             || log "WARNING: ADR-collision comment post failed for issue #${number}"
     else
-        log "issue #${number}: ADR-collision comment уже проставлен (×${_ac_dup_count} за ${ADR_COLLISION_COMMENT_DEDUP_HOURS}ч) — dedup skip"
+        log "issue #${number}: ADR-collision comment уже проставлен (за ${ADR_COLLISION_COMMENT_DEDUP_HOURS}ч) — dedup skip"
     fi
 
     # Метка на issue (best-effort). Аналог agent-flow:big-bang-blocked.
@@ -3151,10 +3133,9 @@ print(f"pr_head_oid={shlex.quote(pr_head_oid)}")
                         log "DRY-RUN would: add ${STALE_BRANCH_REUSE_LABEL} + comment stale-branch block + remove needs-review on PR #${pr_number}"
                         skipped=$((skipped+1)); continue
                     fi
-                    _stale_dedup_since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
-                    _stale_dup="$(gh api "repos/${GH_REPO}/issues/${number}/comments?since=${_stale_dedup_since}&per_page=100" \
-                        --jq '[.[] | select(.body | startswith("🛑 **stale-branch reuse"))] | length' 2>/dev/null || echo 0)"
-                    if [ "${_stale_dup:-0}" -eq 0 ]; then
+                    # Идемпотентность через generic helper (issue #2293).
+                    if ! _gm_recent_commented "issue" "$number" \
+                        "🛑 **stale-branch reuse" 86400 prefix; then
                         gh issue comment "$number" --repo "$GH_REPO" --body \
                             "🛑 **stale-branch reuse with new functional fix** (merge-gate, ретро 14.08 t_28afb585, метка ретро 31.08 t_04371252)
 
@@ -3188,10 +3169,9 @@ print(f"pr_head_oid={shlex.quote(pr_head_oid)}")
                 log "DRY-RUN would: add ${STALE_BRANCH_REUSE_LABEL} + comment stale-branch block on issue #${number}"
                 skipped=$((skipped+1)); continue
             fi
-            _stale_dedup_since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
-            _stale_dup="$(gh api "repos/${GH_REPO}/issues/${number}/comments?since=${_stale_dedup_since}&per_page=100" \
-                --jq '[.[] | select(.body | startswith("🛑 **stale-branch re-commit"))] | length' 2>/dev/null || echo 0)"
-            if [ "${_stale_dup:-0}" -eq 0 ]; then
+            # Идемпотентность через generic helper (issue #2293).
+            if ! _gm_recent_commented "issue" "$number" \
+                "🛑 **stale-branch re-commit" 86400 prefix; then
                 gh issue comment "$number" --repo "$GH_REPO" --body \
                     "🛑 **stale-branch re-commit detected** (merge-gate, ретро 12.08 t_d3aeaa9b, метка ретро 31.08 t_04371252)
 
@@ -3333,22 +3313,11 @@ except Exception:
             log "DRY-RUN would reconcile issue #${number} (re-read labels, maybe close, then cleanup ${branch})"
             continue
         fi
-        # ADR-0022 extension (issue #1475): после merge в develop/main
-        # триггерим L-Build-All-Services, чтобы .image-versions.prod получил
-        # prod-<new-sha> теги. Non-fatal: build failure НЕ блокирует merge-gate
-        # (см. agent-flow-post-merge-build.sh).
-        #
-        # Issue #1625 (Шифу 25.08): develop build больше не триггерим
-        # автоматически — develop-HEAD собирается вручную или push-триггером
-        # L-Build-All-Services.yml. main build ОБЯЗАТЕЛЕН (production safety).
-        # Двойная защита: merge-gate guard И post-merge-build.sh skip-блок.
-        if [ "$pr_base" = "$DEVELOP_BRANCH" ]; then
-            log "issue #${number}: skipping post-merge build for ${pr_base} (Шифу 25.08, issue #1625)"
-        elif [ -n "${REPO_DIR:-}" ] && [ -d "$REPO_DIR" ] && [ -f "${REPO_DIR}/scripts/agent_flow/agent-flow-post-merge-build.sh" ]; then
-            if ! bash "${REPO_DIR}/scripts/agent_flow/agent-flow-post-merge-build.sh" "${pr_number}" "${pr_base}" 2>/dev/null; then
-                log "issue #${number}: WARNING post-merge build trigger failed (non-fatal, push-trigger should retry)"
-            fi
-        fi
+        # Production-safety для main обеспечивает workflow G-Auto-merge to Main
+        # (ADR-AF-0064). Сам post-merge-build.sh skip'ает develop, его вызывают
+        # workflow и ad-hoc триггеры — НЕ merge-gate. Skip-лог ниже — маркер
+        # для ревьюера: «здесь build НЕ запускается by design, не забыли».
+        log "issue #${number}: skipping post-merge build for ${pr_base} (main build → G-Auto-merge to Main, ADR-AF-0064)"
         # 0.1) Re-read current labels & state — race with e2e-process
         # (e2e-process may have set e2e-done between our initial issue-list
         # pull and now; also the issue may already be CLOSED from a previous
@@ -3497,10 +3466,10 @@ except Exception:
                 # Audit-коммент (6h dedup). Маркер «🔁 fallback auto-close
                 # (ADR-AF-0063 §4.1)» уникален — не путаем с «✅ ретро-путь»
                 # или «🛠 merge-gate (ретро 13.08)».
-                _fb_dedup_since="$(date -u -d '6 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
-                _fb_dup_count="$(gh api "repos/${GH_REPO}/issues/${number}/comments?since=${_fb_dedup_since}&per_page=100" \
-                    --jq '[.[] | select(.body | contains("🔁 fallback auto-close (ADR-AF-0063 §4.1)"))] | length' 2>/dev/null || echo 0)"
-                if [ "${_fb_dup_count:-0}" -eq 0 ] && [ "$DRY_RUN" != "true" ]; then
+                # Идемпотентность через generic helper (issue #2293).
+                if ! _gm_recent_commented "issue" "$number" \
+                    "🔁 fallback auto-close (ADR-AF-0063 §4.1)" 21600 contains \
+                    && [ "$DRY_RUN" != "true" ]; then
                     gh issue comment "$number" --repo "$GH_REPO" --body \
 "🔁 fallback auto-close (ADR-AF-0063 §4.1): PR #${pr_number} смержен в ${DEVELOP_BRANCH}, PR-body содержит keyword \`Closes/Fixes/Resolves #${number}\`, но squash-merge commit-message потерял body (\`squash_merge_commit_message: COMMIT_MESSAGES\`). Issue закрыта как fallback — основной путь по \`e2e-done\`/\`no-e2e-required\` не сработал, потому что worker обошёл e2e-rotation (архитектурный / docs / ADR PR)." >/dev/null 2>&1 || true
                 fi
@@ -3596,9 +3565,9 @@ except Exception:
                         log "issue #${number}: USER-REOPEN GUARD (issue #1391) — timeline пуст, auto-close подавлен (conservative)"
                         if [ "$DRY_RUN" != "true" ]; then
                             gh issue edit "$number" --repo "$GH_REPO" --add-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
-                            _urg_dup="$(gh api "repos/${GH_REPO}/issues/${number}/comments?since=$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)&per_page=100" \
-                                --jq '[.[] | select(.body | contains("USER-REOPEN GUARD"))] | length' 2>/dev/null || echo 0)"
-                            if [ "${_urg_dup:-0}" -eq 0 ]; then
+                            # Идемпотентность через generic helper (issue #2293).
+                            if ! _gm_recent_commented "issue" "$number" \
+                                "USER-REOPEN GUARD" 86400 contains; then
                                 gh issue comment "$number" --repo "$GH_REPO" --body \
                                     "🛡 merge-gate (issue #1391, retro 18.08 t_c4f1d5c8): timeline issue недоступен → auto-close подавлен по conservative-правилу (ADR-0014 §4 req 4). Issue возвращён в \`${NEEDS_E2E_LABEL}\`, следующий тик попробует снова когда timeline будет доступен." >/dev/null 2>&1 || true
                             fi
@@ -3615,10 +3584,10 @@ except Exception:
                             gh issue edit "$number" --repo "$GH_REPO" --add-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
                             # Audit-коммент с причиной (24h dedup, чтобы
                             # не спамить при каждом тике пока юзер держит
-                            # issue открытой).
-                            _urg_dup="$(gh api "repos/${GH_REPO}/issues/${number}/comments?since=$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)&per_page=100" \
-                                --jq '[.[] | select(.body | contains("USER-REOPEN GUARD"))] | length' 2>/dev/null || echo 0)"
-                            if [ "${_urg_dup:-0}" -eq 0 ]; then
+                            # issue открытой). Идемпотентность через generic helper
+                            # (#2293): contains-mode, 24h окно.
+                            if ! _gm_recent_commented issue "$number" \
+                                "USER-REOPEN GUARD" 86400 contains; then
                                 gh issue comment "$number" --repo "$GH_REPO" --body \
                                     "🛡 merge-gate (issue #1391, retro 18.08 t_c4f1d5c8): user-reopen после \`${DONE_LABEL}\` (reopen at \`${_user_reopen_at}\` > e2e-done at \`${_e2e_done_at}\`) → auto-close подавлен, метка \`${DONE_LABEL}\` снята, возврат в \`${NEEDS_E2E_LABEL}\`. Если смёржен новый фикс — следующий e2e-раунд перепоставит \`${DONE_LABEL}\` и закроет issue штатно." >/dev/null 2>&1 || true
                             fi
@@ -3714,10 +3683,9 @@ except Exception:
                                             --add-label "$MERGED_NO_E2E_STALE_LABEL" >/dev/null 2>&1 || true
                                         gh issue edit "$number" --repo "$GH_REPO" \
                                             --remove-label "$REJECTED_LABEL" >/dev/null 2>&1 || true
-                                        _mnes_dedup_since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
-                                        _mnes_dup="$(gh api "repos/${GH_REPO}/issues/${number}/comments?since=${_mnes_dedup_since}&per_page=100" \
-                                            --jq '[.[] | select(.body | contains("merged-no-e2e-stale"))] | length' 2>/dev/null || echo 0)"
-                                        if [ "${_mnes_dup:-0}" -eq 0 ]; then
+                                        # Идемпотентность через generic helper (issue #2293).
+                                        if ! _gm_recent_commented "issue" "$number" \
+                                            "merged-no-e2e-stale" 86400 contains; then
                                             gh issue comment "$number" --repo "$GH_REPO" --body \
 "🧹 merge-gate (ретро 02.09 t_a09e893a, orphan-needs-e2e-after-merge):
 
@@ -3765,12 +3733,9 @@ ROOT cause: ретро-фикс в этом PR добавил branch-pattern fal
                         log "issue #${number}: Q22-orphan, recent user-reopen → skip auto-close (issue #1391 supplement)"
                         labeled=$((labeled+1)); continue
                     fi
-                    _orphan_since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
-                    _orphan_dup="$(gh api "repos/${GH_REPO}/issues/${number}/comments?since=${_orphan_since}&per_page=100" \
-                        --jq '[.[] | select(.body | contains("Фикс влит по Q22"))] | length' 2>/dev/null || echo 0)"
-                    gh issue edit "$number" --repo "$GH_REPO" --remove-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
-                    gh issue edit "$number" --repo "$GH_REPO" --remove-label "$REJECTED_LABEL" >/dev/null 2>&1 || true
-                    if [ "${_orphan_dup:-0}" -eq 0 ]; then
+                    # Идемпотентность через generic helper (issue #2293).
+                    if ! _gm_recent_commented "issue" "$number" \
+                        "Фикс влит по Q22" 86400 contains; then
                         gh issue comment "$number" --repo "$GH_REPO" --body \
                             "🛠 merge-gate (ретро 13.08 t_0b76514f): PR #${pr_number} смержен вручную (Q22) без e2e-прогона, ветка \`${branch}\` удалена → e2e невозможен. Фикс влит по Q22 — issue закрыта." >/dev/null 2>&1 || true
                     fi
@@ -3856,11 +3821,10 @@ except Exception:
         #    «✅ PR #N смержен» постился КАЖДЫЙ тик (5 мин) → 6 одинаковых на
         #    #1089 (08:35–08:49). Постим только если за последние часы такого
         #    коммента ещё нет. ADR-0014: текст говорит правду — упомянуть
-        #    закрытие issue явно.
-        _dedup_since="$(date -u -d '6 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
-        _dup_count="$(gh api "repos/${GH_REPO}/issues/${number}/comments?since=${_dedup_since}&per_page=100" \
-            --jq '[.[] | select(.body | startswith("✅ PR #'"${pr_number}"' смержен"))] | length' 2>/dev/null || echo 0)"
-        if [ "${_dup_count:-0}" -eq 0 ]; then
+        #    закрытие issue явно. Идемпотентность через generic helper (#2293):
+        #    prefix-mode, 6h окно.
+        if ! _gm_recent_commented issue "$number" \
+            "✅ PR #${pr_number} смержен" 21600 prefix; then
             _close_note=""
             if [ "$_closed_this_tick" = "1" ]; then
                 _close_note="Issue закрыта (reason=completed, PASS-proven). "
@@ -3868,7 +3832,7 @@ except Exception:
             gh issue comment "$number" --repo "$GH_REPO" --body \
                 "✅ PR #${pr_number} смержен в ${pr_base}. ${_close_note}Cleanup: ветка удалена, worktree освобождены, карточка заархивирована." >/dev/null 2>&1 || true
         else
-            log "issue #${number}: merged-cleanup comment already exists (×${_dup_count}) — dedup skip"
+            log "issue #${number}: merged-cleanup comment already exists — dedup skip"
         fi
         # 6) Снять stale-метки со смерженного фикса (ретро 10.08 t_9caf5d52):
         #    e2e:rejected/needs-e2e на merged-PR не актуальны. e2e-done НЕ
@@ -3902,6 +3866,11 @@ except Exception:
         # Сигнал 2 (ретро 10.08 t_9caf5d52): коммент воркера ПОСЛЕ метки.
         # Отличаем от комментов самого процесса (начинаются с agent-flow: или
         # ## 📊 e2e-доклад) — воркер пишет worker-evidence:/свободным текстом.
+        #
+        # Inline (НЕ через _gm_recent_commented): это signal detection, не
+        # idempotency — compound condition (5 startswith-НЕ clauses) использует
+        # AND, который generic helper #2293 не поддерживает (single-marker only).
+        # Если переписывать — расширять API до compound markers; out of scope (#2293).
         if [ -z "$_return_reason" ]; then
             _worker_cmt="$(gh api "repos/${GH_REPO}/issues/${number}/comments?since=${_rejected_at}&per_page=100" \
                 --jq '[.[] | select((.body | startswith("agent-flow:") | not) and (.body | startswith("## 📊 e2e-доклад") | not) and (.body | startswith("⛔ CI красный") | not) and (.body | startswith("✅ PR #") | not) and (.body | startswith("🔀 merge conflict") | not) and (.body | startswith("🔄") | not))] | length' 2>/dev/null || echo 0)"
@@ -3960,6 +3929,11 @@ sys.exit(0)' 2>/dev/null || echo "")"
                 gh pr edit "$pr_number" --repo "$GH_REPO" --add-label "$NEEDS_REVIEW_LABEL" >/dev/null 2>&1 || true
                 gh pr edit "$pr_number" --repo "$GH_REPO" --remove-label "$REJECTED_LABEL" >/dev/null 2>&1 || true
                 # 24h dedup — issue остаётся e2e:rejected, тик повторяется ~5м.
+                #
+                # Inline (НЕ через _gm_recent_commented): compound condition —
+                # тело должно содержать ОБА substring'а ("type:testing" AND
+                # "НЕ валидирует acceptance"). Generic helper #2293 поддерживает
+                # только single-marker; расширение API до compound — out of scope.
                 _tt_since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
                 _tt_dup="$(gh api "repos/${GH_REPO}/issues/${number}/comments?since=${_tt_since}&per_page=100" \
                     --jq '[.[] | select(.body | contains("type:testing") and contains("НЕ валидирует acceptance"))] | length' 2>/dev/null || echo 0)"
@@ -4078,16 +4052,12 @@ except Exception:
             # Ретро 02.09 t_2bd2e7ea: default НЕ валиден — упал бы в ADR-0041
             # silent-drop. Если метки нет, fallback на devops (он же воркер,
             # который и должен разрешать конфликт через force-with-lease push).
-            _assignee="devops"
-            for lbl in $(gh issue view "$number" --repo "$GH_REPO" --json labels --jq '[.labels[].name] | .[]' 2>/dev/null); do
-                case "$lbl" in
-                    agent:backend)    _assignee="backend"; break ;;
-                    agent:developer)  _assignee="developer"; break ;;
-                    agent:tester)     _assignee="tester"; break ;;
-                    agent:devops)     _assignee="devops"; break ;;
-                    agent:architect)  _assignee="architect"; break ;;
-                esac
-            done
+            # Используем единую таблицу af_role_for (lib_agent_flow_common.sh,
+            # issue #2292) — fallback=devops явно.
+            _assignee="$(af_role_for \
+                "$(gh issue view "$number" --repo "$GH_REPO" --json labels \
+                    --jq '[.labels[].name] | join(",")' 2>/dev/null || echo '')" \
+                devops)"
             if [ -n "${task_id:-}" ]; then
                 _card_status="$(kanban_card_status "$task_id")"
                 case "$_card_status" in
@@ -4281,16 +4251,11 @@ for t in data:
                 fi
                 # assignee по метке issue (та же логика, что и в rebase-блоке ниже).
                 # Ретро 02.09 t_2bd2e7ea: default → devops fallback.
-                _assignee="devops"
-                for lbl in $(gh issue view "$number" --repo "$GH_REPO" --json labels --jq '[.labels[].name] | .[]' 2>/dev/null); do
-                    case "$lbl" in
-                        agent:backend)    _assignee="backend"; break ;;
-                        agent:developer)  _assignee="developer"; break ;;
-                        agent:tester)     _assignee="tester"; break ;;
-                        agent:devops)     _assignee="devops"; break ;;
-                        agent:architect)  _assignee="architect"; break ;;
-                    esac
-                done
+                # Issue #2292: единая таблица af_role_for (lib_agent_flow_common.sh).
+                _assignee="$(af_role_for \
+                    "$(gh issue view "$number" --repo "$GH_REPO" --json labels \
+                        --jq '[.labels[].name] | join(",")' 2>/dev/null || echo '')" \
+                    devops)"
                 # Skill — профильный, как в recovery-блоке.
                 _skill="architecture-doc-review"
                 case "$_assignee" in
@@ -4369,16 +4334,11 @@ ${_un_failed_md}
             pr_head_ref="$(gh pr view "$pr_number" --repo "$GH_REPO" --json headRefName --jq '.headRefName' 2>/dev/null || echo "")"
             [ -z "${pr_head_ref:-}" ] && log "issue #${number}: WARNING cannot fetch headRefName for PR #${pr_number}" && continue
             # Ретро 02.09 t_2bd2e7ea: default → devops fallback.
-            _assignee="devops"
-            for lbl in $(gh issue view "$number" --repo "$GH_REPO" --json labels --jq '[.labels[].name] | .[]' 2>/dev/null); do
-                case "$lbl" in
-                    agent:backend)    _assignee="backend"; break ;;
-                    agent:developer)  _assignee="developer"; break ;;
-                    agent:tester)     _assignee="tester"; break ;;
-                    agent:devops)     _assignee="devops"; break ;;
-                    agent:architect)  _assignee="architect"; break ;;
-                esac
-            done
+            # Issue #2292: единая таблица af_role_for (lib_agent_flow_common.sh).
+            _assignee="$(af_role_for \
+                "$(gh issue view "$number" --repo "$GH_REPO" --json labels \
+                    --jq '[.labels[].name] | join(",")' 2>/dev/null || echo '')" \
+                devops)"
             _reminder="## ⚠️ CI UNSTABLE detected (merge-gate tick, $(date -u +%H:%M:%SZ))
 
 PR #${pr_number} (\`${pr_head_ref}\`) = **mergeable=MERGEABLE + mergeStateStatus=UNSTABLE** (CI fail, но конфликтов с develop нет).
@@ -4568,13 +4528,11 @@ git push --force-with-lease origin ${pr_head_ref}
             fi
             # Comment-on-issue: 24h dedup (как в big-bang / stale-rebase блоках),
             # чтобы не спамить при каждом тике merge-gate (~10 мин).
-            _dead_dedup_since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
-                || date -u +%Y-%m-%dT%H:%M:%SZ)"
-            _dead_dup_count="$(gh api "repos/${GH_REPO}/issues/${number}/comments?since=${_dead_dedup_since}&per_page=100" \
-                --jq '[.[] | select(.body | contains("DEAD-CONTENT detected"))] | length' 2>/dev/null || echo 0)"
+            # Идемпотентность через generic helper (#2293): contains-mode, 24h.
             _dead_files_count="$(gh pr view "$pr_number" --repo "$GH_REPO" --json files \
                 --jq '[.files[].path] | length' 2>/dev/null || echo 0)"
-            if [ "${_dead_dup_count:-0}" -eq 0 ] 2>/dev/null; then
+            if ! _gm_recent_commented issue "$number" \
+                "DEAD-CONTENT detected" 86400 contains; then
                 gh issue comment "$number" --repo "$GH_REPO" --body \
                     "🪦 **PR #${pr_number} DEAD-CONTENT detected** (merge-gate, ретро 22.08 t_e8d52cb7, $(date -u +%H:%M:%SZ))
 
@@ -4588,7 +4546,7 @@ Guard будет повторять alert, пока PR не закрыт или 
                     && log "issue #${number}: dead-content comment posted (24h dedup, files=${_dead_files_count})" \
                     || log "WARNING: dead-content comment post failed for issue #${number}"
             else
-                log "issue #${number}: dead-content comment already posted (×${_dead_dup_count} за 24ч) — dedup skip"
+                log "issue #${number}: dead-content comment already posted (за 24ч) — dedup skip"
             fi
         fi
         # Skip дальнейшей классификации (lint/big-bang/needs-e2e) — dead-content
@@ -4686,15 +4644,15 @@ git rev-list --left-right --count origin/${DEVELOP_BRANCH}...${branch}
                             # от UNSTABLE / CONFLICTING, где нужен e2e на новой
                             # фикс-ветке).
                             log "issue #${number}: STALE REBASE — карточка ${task_id} мёртвая (status=${_sr_card_status}), пишу только в issue"
-                            _sr_dedup_since="$(date -u -d "${STALE_REBASE_COMMENT_DEDUP_HOURS} hours ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
-                                || date -u +%Y-%m-%dT%H:%M:%SZ)"
-                            _sr_dup="$(gh api "repos/${GH_REPO}/issues/${number}/comments?since=${_sr_dedup_since}&per_page=100" \
-                                --jq '[.[] | select(.body | contains("STALE REBASE detected"))] | length' 2>/dev/null || echo 0)"
-                            if [ "${_sr_dup:-0}" -eq 0 ]; then
+                            # Идемпотентность через generic helper (#2293):
+                            # contains-mode, configurable window.
+                            _sr_window_seconds=$(( STALE_REBASE_COMMENT_DEDUP_HOURS * 3600 ))
+                            if ! _gm_recent_commented issue "$number" \
+                                "STALE REBASE detected" "$_sr_window_seconds" contains; then
                                 gh issue comment "$number" --repo "$GH_REPO" --body "$_sr_reminder" >/dev/null 2>&1 || true
-                                log "issue #${number}: STALE REBASE comment posted on issue #${number} (dedup=${_sr_dup:-0}, ahead=${_sr_ahead})"
+                                log "issue #${number}: STALE REBASE comment posted on issue #${number} (ahead=${_sr_ahead})"
                             else
-                                log "issue #${number}: STALE REBASE comment already posted on issue #${number} (×${_sr_dup} за ${STALE_REBASE_COMMENT_DEDUP_HOURS}h) — dedup skip"
+                                log "issue #${number}: STALE REBASE comment already posted on issue #${number} (за ${STALE_REBASE_COMMENT_DEDUP_HOURS}h) — dedup skip"
                             fi
                             ;;
                         *)
@@ -4715,15 +4673,14 @@ git rev-list --left-right --count origin/${DEVELOP_BRANCH}...${branch}
                     # Пишем comment-on-issue (24h dedup). Scan-all-prs подберёт
                     # для создания recovery-карточки, если понадобится.
                     log "issue #${number}: STALE REBASE — task_id пуст, пишу comment-on-issue"
-                    _sr_dedup_since="$(date -u -d "${STALE_REBASE_COMMENT_DEDUP_HOURS} hours ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
-                        || date -u +%Y-%m-%dT%H:%M:%SZ)"
-                    _sr_dup="$(gh api "repos/${GH_REPO}/issues/${number}/comments?since=${_sr_dedup_since}&per_page=100" \
-                        --jq '[.[] | select(.body | contains("STALE REBASE detected"))] | length' 2>/dev/null || echo 0)"
-                    if [ "${_sr_dup:-0}" -eq 0 ]; then
+                    # Идемпотентность через generic helper (#2293): contains-mode.
+                    _sr_window_seconds=$(( STALE_REBASE_COMMENT_DEDUP_HOURS * 3600 ))
+                    if ! _gm_recent_commented issue "$number" \
+                        "STALE REBASE detected" "$_sr_window_seconds" contains; then
                         gh issue comment "$number" --repo "$GH_REPO" --body "$_sr_reminder" >/dev/null 2>&1 || true
                         log "issue #${number}: STALE REBASE comment posted on issue #${number} (task_id пуст, ahead=${_sr_ahead})"
                     else
-                        log "issue #${number}: STALE REBASE comment already posted on issue #${number} (×${_sr_dup}) — dedup skip"
+                        log "issue #${number}: STALE REBASE comment already posted on issue #${number} — dedup skip"
                     fi
                 fi
             fi
@@ -4786,11 +4743,10 @@ git rev-list --left-right --count origin/${DEVELOP_BRANCH}...${branch}
             # постим только один раз. Сейчас PR огромный (4850/100),
             # round-49..54 → 6 одинаковых комментов = спам. Шифу прямо:
             # «один раз label-коммент, round больше не запускается».
-            _bb_dedup_since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
-            _bb_dup_count="$(gh api "repos/${GH_REPO}/issues/${pr_number}/comments?since=${_bb_dedup_since}&per_page=100" \
-                --jq '[.[] | select(.body | startswith("🚨 **PR #'"${pr_number}"' BIG-BANG"))] | length' 2>/dev/null || echo 0)"
-            if [ "${_bb_dup_count:-0}" -gt 0 ] 2>/dev/null; then
-                log "issue #${number}: big-bang comment на PR #${pr_number} уже проставлен (×${_bb_dup_count} за 24h) — dedup skip"
+            # Идемпотентность через generic helper (#2293): prefix-mode, 24h.
+            if _gm_recent_commented pr "$pr_number" \
+                "🚨 **PR #${pr_number} BIG-BANG" 86400 prefix; then
+                log "issue #${number}: big-bang comment на PR #${pr_number} уже проставлен (за 24h) — dedup skip"
                 skipped=$((skipped+1)); continue
             fi
             # Коммент И на issue (чтобы воркер увидел в task), И на PR
@@ -5058,18 +5014,20 @@ for pr in data:
 
     # Определяем assignee по меткам issue (если знаем issue_num)
     # Ретро 02.09 t_2bd2e7ea: default → devops fallback (default невалиден).
+    # Issue #2292: единая таблица af_role_for (lib_agent_flow_common.sh).
+    # Флаг _assignee_explicit: явная agent:* метка ИЛИ fallback? contract_drift
+    # ниже перезаписывает на backend ТОЛЬКО если метки не было — поэтому
+    # нужен af_role_found_for, а не проверка `!= devops` (иначе явная
+    # agent:devops считалась бы fallback'ом → регрессия).
     _assignee="devops"
     _assignee_explicit=0
     if [ -n "$issue_num" ]; then
-        for lbl in $(gh issue view "$issue_num" --repo "$GH_REPO" --json labels --jq '[.labels[].name] | .[]' 2>/dev/null); do
-            case "$lbl" in
-                agent:backend)    _assignee="backend"; _assignee_explicit=1; break ;;
-                agent:developer)  _assignee="developer"; _assignee_explicit=1; break ;;
-                agent:tester)     _assignee="tester"; _assignee_explicit=1; break ;;
-                agent:devops)     _assignee="devops"; _assignee_explicit=1; break ;;
-                agent:architect)  _assignee="architect"; _assignee_explicit=1; break ;;
-            esac
-        done
+        _issue_labels="$(gh issue view "$issue_num" --repo "$GH_REPO" --json labels \
+            --jq '[.labels[].name] | join(",")' 2>/dev/null || echo '')"
+        if af_role_found_for "$_issue_labels"; then
+            _assignee="$(af_role_for "$_issue_labels" devops)"
+            _assignee_explicit=1
+        fi
     fi
 
     # ------------------------------------------------------------------------
@@ -5202,10 +5160,9 @@ git push --force-with-lease origin ${head}
             if [ -n "$_dev_failed" ] && [ -z "$_dev_only" ]; then
                 # develop-regression: develop ⊆ PR по failed checks.
                 # Recovery-карточка бессильна → только PR-коммент с 24h dedup.
-                _unstable_dedup_since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
-                _unstable_dup_count="$(gh api "repos/${GH_REPO}/issues/${pr_num}/comments?since=${_unstable_dedup_since}&per_page=100" \
-                    --jq '[.[] | select(.body | startswith("⚠️ **develop-regression** (merge-gate"))] | length' 2>/dev/null || echo 0)"
-                if [ "${_unstable_dup_count:-0}" -eq 0 ] 2>/dev/null; then
+                # Идемпотентность через generic helper (#2293): prefix-mode, 24h.
+                if ! _gm_recent_commented pr "$pr_num" \
+                    "⚠️ **develop-regression** (merge-gate" 86400 prefix; then
                     _dev_failed_csv="$(printf '%s' "$_dev_failed" | paste -sd, -)"
                     gh pr comment "$pr_num" --repo "$GH_REPO" --body \
                         "⚠️ **develop-regression** (merge-gate scan-all-prs, ретро 02.09 t_8e08b861): PR #${pr_num} (\`${head}\`) = MERGEABLE+UNSTABLE при behind=0 от develop. CI падает на \`${_dev_failed_csv}\` — те же чек-раны падают на develop HEAD (\`${_dev_sha:0:7}\`). **rebase не поможет** (PR уже на develop).
@@ -5216,7 +5173,7 @@ git push --force-with-lease origin ${head}
                         && log "scan-all-prs: PR #${pr_num} develop-regression comment posted (behind=0, dev_failed=${_dev_failed_csv})" \
                         || log "scan-all-prs: WARNING PR comment failed for develop-regression #${pr_num}"
                 else
-                    log "scan-all-prs: PR #${pr_num} develop-regression comment dedup'd (×${_unstable_dup_count} in 24h) — skip"
+                    log "scan-all-prs: PR #${pr_num} develop-regression comment dedup'd (in 24h) — skip"
                 fi
                 log "scan-all-prs: PR #${pr_num} UNSTABLE+behind=0+develop-regression (class=${_un_class}) — rebase-карточка НЕ создастся"
                 continue
@@ -5230,16 +5187,15 @@ git push --force-with-lease origin ${head}
                 if [ "${_rebase_done_24h:-0}" -ge 3 ] 2>/dev/null; then
                     log "scan-all-prs: PR #${pr_num} UNSTABLE+behind=0+PR-side+circuit-break(×${_rebase_done_24h} done/24h) — rebase-loop detected, реbase-карточка НЕ создастся (нужен человек)"
                     # Один PR-комментарий-эскалация с 24h dedup, не спам в карточки.
-                    _loop_dedup_since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
-                    _loop_dup_count="$(gh api "repos/${GH_REPO}/issues/${pr_num}/comments?since=${_loop_dedup_since}&per_page=100" \
-                        --jq '[.[] | select(.body | startswith("🚨 **rebase-loop** (merge-gate"))] | length' 2>/dev/null || echo 0)"
-                    if [ "${_loop_dup_count:-0}" -eq 0 ] 2>/dev/null; then
+                    # Идемпотентность через generic helper (#2293): prefix-mode, 24h.
+                    if ! _gm_recent_commented pr "$pr_num" \
+                        "🚨 **rebase-loop** (merge-gate" 86400 prefix; then
                         gh pr comment "$pr_num" --repo "$GH_REPO" --body \
                             "🚨 **rebase-loop** (merge-gate scan-all-prs, ретро 02.09 t_8e08b861): PR #${pr_num} красный при behind=0 от develop, develop чистый → вина PR. Уже ${_rebase_done_24h} rebase-карточек в done за 24ч, rebase бессилен (merge-base == develop tip). Шифу/воркер: чинить код в ветке \`${head}\` (lint/unit), а не rebase'ить." >/dev/null 2>&1 \
                             && log "scan-all-prs: PR #${pr_num} rebase-loop escalation posted (×${_rebase_done_24h} done/24h)" \
                             || log "scan-all-prs: WARNING PR comment failed for rebase-loop #${pr_num}"
                     else
-                        log "scan-all-prs: PR #${pr_num} rebase-loop comment dedup'd (×${_loop_dup_count} in 24h)"
+                        log "scan-all-prs: PR #${pr_num} rebase-loop comment dedup'd (in 24h)"
                     fi
                     continue
                 fi
@@ -5363,10 +5319,9 @@ for t in data:
         if [ "$mergeable" = "CONFLICTING" ] || [ "$merge_state" = "DIRTY" ]; then
             log "scan-all-prs: PR #${pr_num} ${mergeable}/${merge_state} без карточки — коммент на PR + конфликт-карточка (ретро t_618208c0)"
             # Дедуп PR-комментария (24h) — не спамим каждый тик.
-            _prc_dedup_since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
-            _prc_dup_count="$(gh api "repos/${GH_REPO}/issues/${pr_num}/comments?since=${_prc_dedup_since}&per_page=100" \
-                --jq '[.[] | select(.body | startswith("🔀 **merge conflict** (merge-gate"))] | length' 2>/dev/null || echo 0)"
-            if [ "${_prc_dup_count:-0}" -eq 0 ] 2>/dev/null; then
+            # Идемпотентность через generic helper (#2293): prefix-mode, 24h.
+            if ! _gm_recent_commented pr "$pr_num" \
+                "🔀 **merge conflict** (merge-gate" 86400 prefix; then
                 gh pr comment "$pr_num" --repo "$GH_REPO" --body \
                     "🔀 **merge conflict** (merge-gate, ретро 12.08 t_618208c0): PR #${pr_num} (\`${head}\`) → develop = **CONFLICTING** (mergeStateStatus=${merge_state:-?}).
 
@@ -5385,7 +5340,7 @@ git push --force-with-lease origin ${head}
                     && log "scan-all-prs: PR comment posted to #${pr_num} (merge conflict)" \
                     || log "scan-all-prs: WARNING PR comment failed for #${pr_num}"
             else
-                log "scan-all-prs: PR comment dedup'd for #${pr_num} (×${_prc_dup_count} in 24h)"
+                log "scan-all-prs: PR comment dedup'd for #${pr_num} (in 24h)"
             fi
             # Конфликт-карточка: ищем по branch в title в ЛЮБОМ статусе
             # (идемпотентно, урок t_bff6eccf), reclaim если done/archived,
@@ -6104,10 +6059,9 @@ except Exception:
                 || log "retro-path: WARNING не удалось снять ${REJECTED_LABEL} с #${r_issue}"
         fi
         # Дедупликация комментария (6h) — не спамим каждый тик.
-        _r_dedup_since="$(date -u -d '6 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
-        _r_dup_count="$(gh api "repos/${GH_REPO}/issues/${r_issue}/comments?since=${_r_dedup_since}&per_page=100" \
-            --jq '[.[] | select(.body | startswith("✅ ретро-путь"))] | length' 2>/dev/null || echo 0)"
-        if [ "${_r_dup_count:-0}" -eq 0 ]; then
+        # Идемпотентность через generic helper (#2293): prefix-mode, 6h.
+        if ! _gm_recent_commented issue "$r_issue" \
+            "✅ ретро-путь" 21600 prefix; then
             _r_rejected_note=""
             if [ "$_r_was_rejected" = "1" ]; then
                 _r_rejected_note=" Снят ${REJECTED_LABEL} (фикс влит, e2e не требуется)."
@@ -6152,10 +6106,10 @@ except Exception:
             # коммент с маркером «нужен ручной разбор» — следующий тик его
             # не повторит (dedup 6h), а юзер/разбор увидит явный сигнал.
             log "retro-path: issue #${r_issue} orphan, PASS-доказательства нет — НЕ close, оставлен ручной разбор"
-            _r_orphan_dedup_since="$(date -u -d '6 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
-            _r_orphan_dup_count="$(gh api "repos/${GH_REPO}/issues/${r_issue}/comments?since=${_r_orphan_dedup_since}&per_page=100" \
-                --jq '[.[] | select(.body | contains("🧹 ретро-путь (orphan-cleanup, t_365de06c)"))] | length' 2>/dev/null || echo 0)"
-            if [ "${_r_orphan_dup_count:-0}" -eq 0 ] && [ "$DRY_RUN" != "true" ]; then
+            # Идемпотентность через generic helper (#2293): contains-mode, 6h.
+            if ! _gm_recent_commented issue "$r_issue" \
+                "🧹 ретро-путь (orphan-cleanup, t_365de06c)" 21600 contains \
+                && [ "$DRY_RUN" != "true" ]; then
                 gh issue comment "$r_issue" --repo "$GH_REPO" --body \
                     "🧹 ретро-путь (orphan-cleanup, t_365de06c): issue имела только ${NEEDS_E2E_LABEL} без ${ISSUE_LABEL} (= hermes) после merge PR #${r_pr} в ${DEVELOP_BRANCH}. Снят ${NEEDS_E2E_LABEL} (orphan-cleanup). PASS-доказательства не найдено (нет e2e SUCCESS, PR не CI-only или CI не зелёный). Issue НЕ закрыта автоматически — нужен ручной разбор (verify фикса в роботе/на стенде и закрыть вручную)." >/dev/null 2>&1 || true
             fi

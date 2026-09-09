@@ -108,38 +108,30 @@ case "$1" in
         esac
         ;;
     api)
-        # Detect "comments?per_page=20" query (per-tick dedup probe).
-        if [[ "$*" == *"comments?per_page=20"* ]]; then
-            # Find --jq filter and apply it crudely.
-            _jq=""
-            while [ $# -gt 0 ]; do
-                case "$1" in
-                    --jq) _jq="$2"; shift 2 ;;
-                    *) shift ;;
-                esac
-            done
-            if [ -z "$_jq" ]; then
-                cat "${COMMENTS_JSON:-/tmp/comments.json}"
-            else
-                python3 -c "
+        # Detect "comments?..." queries. Old helper (jq-regex, last created_at)
+        # used `comments?per_page=20`; new generic helper (#2293) uses
+        # `comments?since=...&per_page=100`. Return the inner "comments" array
+        # (real GitHub API returns top-level array, but this test stores it
+        # under "comments" key — unwrap on read so the helper's json.loads
+        # sees a flat list).
+        if [[ "$*" == *"comments?"* ]] || [[ "$*" == *"comments?per_page=20"* ]]; then
+            if [ -z "${COMMENTS_JSON:-}" ] || [ ! -f "$COMMENTS_JSON" ]; then
+                echo "[]"
+                exit 0
+            fi
+            python3 -c "
 import json
 try:
     with open('${COMMENTS_JSON}') as f:
         d = json.load(f)
 except Exception:
-    print('null'); raise SystemExit
-# Crude: return last created_at where body matches the rollup marker.
-out = ''
-for c in d.get('comments', []):
-    body = c.get('body') or ''
-    if 'agent-flow-triage:unknown-assignee-rollup' in body:
-        out = c.get('created_at', '')
-if not out:
-    print('null')
-else:
-    print(out)
+    print('[]')
+    raise SystemExit
+# Unwrap: support both bare array (real API) and {'comments': [...]} (test format).
+if isinstance(d, dict) and 'comments' in d:
+    d = d['comments']
+print(json.dumps(d))
 "
-            fi
             exit 0
         fi
         exit 0
@@ -164,6 +156,57 @@ eval "$(extract_func_or_die "$SCRIPT_UNDER_TEST" _emit_unknown_assignee_rollup)"
 # Provide outer-scope deps
 log() { printf '[log] %s\n' "$*" >&2; }
 whoami_add_label() { echo "whoami_add_label: $*" >> "$LABELS_FILE"; }
+
+# comment_recently_posted — тестовый stub generic helper'а из hermes_github.sh
+# (issue #2293). Зеркалит его логику: возвращает 0 (да, posted) если в $COMMENTS_JSON
+# есть коммент с marker'ом в окне window_seconds, иначе 1.
+#
+# Args: kind number marker window_seconds [mode]
+comment_recently_posted() {
+    local kind="$1" number="$2" marker="$3" window_seconds="$4" mode="${5:-prefix}"
+    [ -z "$number" ] && return 1
+    [ -z "$marker" ] && return 1
+    [ -z "$COMMENTS_JSON" ] || [ ! -f "$COMMENTS_JSON" ] && return 1
+    # Возвращаем stdout python-скрипта как exit code: 0 = найден, 1 = нет.
+    # Зеркалит hermes_github.sh::comment_recently_posted ([ "$found" = "1" ]).
+    # Без этого return-based-on-exit-code функция всегда возвращает 0,
+    # что ломает dedup-логику в _emit_unknown_assignee_rollup (T1 stale write).
+    local _found
+    _found="$(python3 -c "
+import json, sys
+from datetime import datetime, timezone
+try:
+    with open('${COMMENTS_JSON}') as f:
+        d = json.load(f)
+except Exception:
+    print('1'); raise SystemExit
+if isinstance(d, dict) and 'comments' in d:
+    d = d['comments']
+if not isinstance(d, list):
+    print('1'); raise SystemExit
+now = int(datetime.now(timezone.utc).timestamp())
+cutoff = now - int('${window_seconds}')
+marker = '''${marker}'''
+mode = '${mode}'
+found = False
+for c in d:
+    if not isinstance(c, dict): continue
+    body = c.get('body') or ''
+    created = c.get('created_at') or ''
+    matched = body.startswith(marker) if mode == 'prefix' else (marker in body)
+    if not matched: continue
+    try:
+        dt = datetime.fromisoformat(created.replace('Z', '+00:00'))
+        ep = int(dt.timestamp())
+    except Exception:
+        continue
+    if ep >= cutoff:
+        found = True; break
+print('0' if found else '1')
+" 2>/dev/null)"
+    [ -z "$_found" ] && _found=1
+    [ "$_found" = "0" ]
+}
 
 # === T1: parser handles 3 records with spaces in titles ===
 echo "=== T1: parser splits records correctly ==="

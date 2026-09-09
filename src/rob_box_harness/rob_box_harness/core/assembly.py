@@ -265,6 +265,40 @@ def _resolve_provider_settings(
     return spec.settings
 
 
+def build_llm_chain(spec: AgentSpec) -> Any:
+    """Публичная обёртка над :func:`_build_llm_chain` (ADR-0083 §2.3).
+
+    Нода может вызвать её, чтобы собрать LLM ДО :func:`build_agent` —
+    нужно для метрик ``record_voice_llm_request`` / OTel span
+    ``dialogue.llm_call``, которые читают ``self._llm.name`` /
+    ``self._llm.model``. Возвращённый объект можно передать в
+    :func:`build_agent` параметром ``llm=``, и тогда внутренний
+    :func:`_build_llm_chain` повторно НЕ вызывается.
+
+    Контракт повторяет внутренний путь: per-provider ``LLMSettings``
+    разрешаются через :func:`_resolve_provider_settings` (precedence
+    per-provider → spec.settings → None), deepseek-пробер подставляется
+    автоматически, если в ``provider_chain`` есть ``deepseek`` и
+    ``spec.health_balance_checkers`` пуст. Это та же логика, что и до
+    рефакторинга в ``dialogue_node._build_llm`` (ADR-0083 §1.2 #A).
+    """
+    checkers = (
+        _default_balance_checkers(spec)
+        if not spec.health_balance_checkers
+        else dict(spec.health_balance_checkers)
+    )
+    settings_for: dict[str, LLMSettings] = {
+        name: _resolve_provider_settings(spec, name)
+        for name in spec.provider_chain
+    }
+    effective_spec = spec
+    if checkers is not spec.health_balance_checkers and len(
+        spec.provider_chain
+    ) > 1:
+        effective_spec = _with_checkers(spec, checkers)
+    return _build_llm_chain(effective_spec, settings_for=settings_for)
+
+
 def _build_llm_chain(
     spec: AgentSpec,
     settings_for: dict[str, LLMSettings],
@@ -358,6 +392,9 @@ def build_agent(
     *,
     tools: "ToolProvider",
     memory: "MemoryStore",
+    llm: Any = None,
+    system_prompt: str | None = None,
+    skill_prompts: Mapping[str, str] | None = None,
 ) -> AgentCore:
     """Собрать :class:`AgentCore` по спеке (ADR-0083 §2.1).
 
@@ -376,6 +413,25 @@ def build_agent(
       сама, потому что ей принадлежит asyncio-loop, через который
       ``SQLiteVoiceMemory.init()`` синхронно вызывает
       ``conn.executescript`` (см. ADR-0083 §2.3).
+    * ``llm`` — готовый LLM (опционально). Если нода уже собрала LLM
+      (например, через :func:`build_llm_chain` для метрик
+      ``record_voice_llm_request``), она может передать его сюда, чтобы
+      избежать двойной сборки. По умолчанию ``None`` — LLM собирается
+      внутри из ``spec.provider_chain`` (обратная совместимость с
+      тестами, supervisor'ом и сценариями, где нода не держит ссылку
+      на LLM).
+    * ``system_prompt`` — опциональная ЗАМЕНА текста system_prompt
+      (ADR-0083 §2.3 follow-up). По умолчанию ``None`` — текст читается
+      из ``spec.prompt_dir / spec.system_prompt_file``. Если нода
+      применила к прочитанному тексту post-processing
+      (``_split_skill_sections`` dialogue_node — раскол §5/§6
+      мастер-промпта по фрагментам скиллов), она передаёт результат
+      сюда, иначе сборка не увидит pre-split текст.
+    * ``skill_prompts`` — опциональная ЗАМЕНА фрагментов скиллов
+      (ADR-0083 §2.3 follow-up). По умолчанию ``None`` — фрагменты
+      читаются из ``spec.prompt_dir/skills/`` по ``spec.skill_slice``.
+      Нода может передать сюда post-processed словарь (после
+      ``_split_skill_sections`` + ``merge_skill_prompts``).
 
     Контракт:
 
@@ -391,13 +447,6 @@ def build_agent(
             f"AgentSpec {spec.name!r}: provider_chain is empty"
         )
 
-    # Auto-fill deepseek balance probe when caller didn't override.
-    checkers = (
-        _default_balance_checkers(spec)
-        if not spec.health_balance_checkers
-        else dict(spec.health_balance_checkers)
-    )
-
     # Per-provider settings map for ``HealthAwareFallbackLLM.settings_for``.
     # We resolve once up-front so the wrapper receives a stable dict and
     # the single-provider path can also use the primary entry.
@@ -407,20 +456,35 @@ def build_agent(
     }
     primary_settings = settings_for[spec.provider_chain[0]]
 
-    # Apply auto-detected checkers to a *derived* spec-shape so the frozen
-    # dataclass stays immutable. The chain builder reads
-    # ``spec.health_balance_checkers`` directly, so we re-build it once
-    # here with the auto-detected probe instead of mutating the spec.
-    effective_spec = spec
-    if checkers is not spec.health_balance_checkers and len(
-        spec.provider_chain
-    ) > 1:
-        effective_spec = _with_checkers(spec, checkers)
+    if llm is None:
+        # Auto-fill deepseek balance probe when caller didn't override.
+        # Only relevant for the internal LLM build path: when the node
+        # passes its own ``llm=``, the chain is already wired and balance
+        # probes are its problem.
+        checkers = (
+            _default_balance_checkers(spec)
+            if not spec.health_balance_checkers
+            else dict(spec.health_balance_checkers)
+        )
+        # Apply auto-detected checkers to a *derived* spec-shape so the
+        # frozen dataclass stays immutable. The chain builder reads
+        # ``spec.health_balance_checkers`` directly, so we re-build it
+        # once here with the auto-detected probe instead of mutating
+        # the spec.
+        effective_spec = spec
+        if checkers is not spec.health_balance_checkers and len(
+            spec.provider_chain
+        ) > 1:
+            effective_spec = _with_checkers(spec, checkers)
+        llm = _build_llm_chain(effective_spec, settings_for=settings_for)
 
-    llm = _build_llm_chain(effective_spec, settings_for=settings_for)
-
-    system_prompt = load_system_prompt(spec)
-    skill_prompts = load_skill_prompts(spec)
+    # ADR-0083 §2.3 follow-up: caller may post-process the prompt /
+    # skill fragments (dialogue_node applies ``_split_skill_sections``
+    # before core starts). When overrides are None we read from disk.
+    if system_prompt is None:
+        system_prompt = load_system_prompt(spec)
+    if skill_prompts is None:
+        skill_prompts = load_skill_prompts(spec)
 
     core = AgentCore(
         llm=llm,
@@ -480,6 +544,7 @@ def normalize_skill_slice(slice_: Iterable[str] | None) -> tuple[str, ...]:
 __all__ = [
     "AgentSpec",
     "build_agent",
+    "build_llm_chain",
     "load_system_prompt",
     "load_skill_prompts",
     "normalize_skill_slice",

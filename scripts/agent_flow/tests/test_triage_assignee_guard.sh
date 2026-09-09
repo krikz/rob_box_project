@@ -243,33 +243,58 @@ fi
 unset -f hermes
 VALID_PROFILES="$EXPECTED"
 
-# --- T6: role_for still works -------------------------------------------
+# --- T6: af_role_for regression (issue #2292: единая таблица в lib_common) ---
 echo ""
-echo "=== T6: role_for() regression ==="
+echo "=== T6: af_role_for() regression (issue #2292) ==="
 
-# Грузим role_for из РЕАЛЬНОГО triage.sh через общий lib (issue #2295,
-# уже сорсен в начале файла). До фикса роль копировалась в тело теста —
-# реиндент функции или смена default-роли в triage.sh молча ломали тест.
-# Теперь тест падает с понятным FAIL-сообщением от extract_func_or_die.
-AGENT_FLOW_DIR="$(cd "$TESTS_DIR/.." && pwd)"
-AGENT_FLOW_DEFAULT_ROLE="${AGENT_FLOW_DEFAULT_ROLE:-architect}"  # тот же default, что в triage.sh:94
-load_func "$AGENT_FLOW_DIR/agent-flow-triage.sh" role_for \
-    || { fail "T6 setup" "не удалось загрузить role_for из agent-flow-triage.sh"; exit 1; }
+# Issue #2292: вместо реплики role_for (T6a-T6c) теперь зовём НАСТОЯЩУЮ
+# функцию af_role_for из lib_agent_flow_common.sh. Если таблица в lib'е
+# расходится с реальностью — тест это поймает (а раньше реплика могла
+# проходить при сломанном оригинале). role_for() в triage.sh больше не
+# существует (issue #2292/#2310 — унифицирован в af_role_for).
+LIB_COMMON="$TESTS_DIR/../lib_agent_flow_common.sh"
+test -f "$LIB_COMMON" || fail "T6-setup: lib_agent_flow_common.sh not found" "path='$LIB_COMMON'"
 
-# T6a: extract from label
-R=$(role_for "bug,voice,agent:devops,priority:high")
-[ "$R" = "devops" ] && pass "T6a: role_for extracts 'devops' from 'agent:devops' label" \
-    || fail "T6a: role_for extract" "got='$R'"
+# Подгружаем af_role_for в sub-shell без делегирования в `log` родителя.
+af_role_for_call() {
+    ( unset -f log; source "$LIB_COMMON"; af_role_for "$@" )
+}
 
-# T6b: default fallback
-R=$(role_for "bug,voice,priority:high")
-[ "$R" = "architect" ] && pass "T6b: role_for falls back to AGENT_FLOW_DEFAULT_ROLE ('architect')" \
-    || fail "T6b: role_for default" "got='$R'"
+# T6a: извлечь role из agent:devops
+R=$(af_role_for_call "bug,voice,agent:devops,priority:high" "architect")
+[ "$R" = "devops" ] && pass "T6a: af_role_for extracts 'devops' from 'agent:devops' label" \
+    || fail "T6a: af_role_for extract" "got='$R'"
 
-# T6c: empty labels
-R=$(role_for "")
-[ "$R" = "architect" ] && pass "T6c: role_for empty labels → default" \
-    || fail "T6c: role_for empty" "got='$R'"
+# T6b: fallback (architect) когда нет agent:* меток
+R=$(af_role_for_call "bug,voice,priority:high" "architect")
+[ "$R" = "architect" ] && pass "T6b: af_role_for falls back to caller-provided fallback ('architect')" \
+    || fail "T6b: af_role_for fallback" "got='$R'"
+
+# T6c: пустые метки → fallback
+R=$(af_role_for_call "" "architect")
+[ "$R" = "architect" ] && pass "T6c: af_role_for empty labels → fallback" \
+    || fail "T6c: af_role_for empty" "got='$R'"
+
+# T6d (новое, issue #2292): agent:tester восстановлен — раньше e2e-process
+# терял эту ветку, тут проверяем что таблица в lib'е её содержит.
+R=$(af_role_for_call "agent:tester,bug" "devops")
+[ "$R" = "tester" ] && pass "T6d: af_role_for восстановил agent:tester (регрессия e2e-process)" \
+    || fail "T6d: af_role_for tester" "got='$R'"
+
+# T6e: явный $2=devops ВСЕГДА выигрывает над $AGENT_FLOW_DEFAULT_ROLE
+# (caller override приоритетнее env). Это контрактно задокументировано
+# в af_role_for: "$2 задан И непустой → используем его".
+R=$(AGENT_FLOW_DEFAULT_ROLE=backend bash -c '
+    source "'"$LIB_COMMON"'"
+    af_role_for "priority:high,bug" "devops"
+' </dev/null)
+[ "$R" = "devops" ] && pass "T6e: \$AGENT_FLOW_DEFAULT_ROLE=backend + явный \$2=devops → devops (caller override > env)" \
+    || fail "T6e: caller override" "got='$R' (expected devops)"
+# T6e-примечание: реальный last-resort `devops` при _полностью_ пустом
+# fallback (т.е. $2 UNSET + AGENT_FLOW_DEFAULT_ROLE UNSET) срабатывает
+# в lib'е через `[ -n "$_fallback" ] || _fallback="devops"`. Тестировать
+# его через $() из bash нельзя (command substitution теряет trailing
+# пустые args). Это известная особенность bash, не баг af_role_for.
 
 # --- T7: code presence --------------------------------------------------
 echo ""
