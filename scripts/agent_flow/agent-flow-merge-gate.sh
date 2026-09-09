@@ -245,6 +245,46 @@ af_load_profile_env "$PROFILE_ENV"
 log() { printf '%s %s %s\n' "$LOG_PREFIX" "$(date -Iseconds)" "$*" >&2; }
 run() { if [ "$DRY_RUN" = "true" ]; then printf '%s DRY-RUN %s\n' "$LOG_PREFIX" "$*" >&2; else eval "$@"; fi; }
 
+# --- tick-summary logging (ADR-0079 / retro t_e3fc9bfe, issue #1977) ---------
+# Cron читает STDOUT (hermes_cli.subcommands.cron: «Empty stdout = silent»).
+# Все скрипты процесса исторически писали ТОЛЬКО в stderr — из-за чего
+# 50+ тиков merge-gate числились «silent (empty output)» при exit=0
+# (e2e-process / blocked-watchdog — те же грабли). Этот фикс:
+#   1) `out()` — пишет в stdout + (опционально) per-day log-файл. Каждый тик
+#      ОБЯЗАН иметь tick-start и tick-end marker, даже если issues пусто.
+#   2) `tick_start_marker` / `tick_end_marker` — structured cron-visible
+#      заголовки (префикс `# TICK_SUMMARY:` чтобы cron-pipeline мог
+#      парсить без grep по произвольному тексту).
+#   3) Tick-end ловит EXIT (trap) и нормальный return — гарантирует marker
+#      даже при аварийном exit через `set -e`.
+# ADR см. docs/adr/0079-cron-tick-summary-policy.md.
+MERGE_GATE_TICK_LOG_DIR="${MERGE_GATE_TICK_LOG_DIR:-$HOME/.hermes/profiles/architect/logs/merge-gate}"
+out() {
+    # Пишет в stdout (cron читает это!) и в log-файл по дню (для диагностики
+    # задним числом). Log-файл — best-effort, mkdir может не быть доступен.
+    local _line
+    _line="$(printf '%s %s %s\n' "$LOG_PREFIX" "$(date -Iseconds)" "$*")"
+    printf '%s\n' "$_line"
+    if [ -n "$MERGE_GATE_TICK_LOG_DIR" ]; then
+        mkdir -p "$MERGE_GATE_TICK_LOG_DIR" 2>/dev/null || true
+        if [ -d "$MERGE_GATE_TICK_LOG_DIR" ]; then
+            printf '%s\n' "$_line" >> "$MERGE_GATE_TICK_LOG_DIR/$(date -u +%Y-%m-%d).log" 2>/dev/null || true
+        fi
+    fi
+}
+tick_start_marker() {
+    # Вызывать ПОСЛЕ прохождения всех gate'ов (auth/maintenance/rate-limit),
+    # чтобы marker не появлялся при skip-tick (там уже есть свой лог от gate).
+    out "# TICK_SUMMARY: start pid=$$ script=agent-flow-merge-gate label_filter='${ISSUE_LABEL}' state=open limit=${ISSUE_LIMIT} repo=${GH_REPO:-<unset>}"
+}
+tick_end_marker() {
+    # Counter-имена совпадают с финальным log "tick done:" ниже — намеренно,
+    # чтобы cron и tail-лог показывали одно и то же.
+    out "# TICK_SUMMARY: end considered=${considered:-0} labeled=${labeled:-0} skipped=${skipped:-0} errored=${errored:-0} retro_closed=${retro_closed:-0} retro_labeled=${retro_labeled:-0} clean_labeled=${clean_labeled:-0} orphan_labeled=${orphan_labeled:-0} backfill_labeled=${backfill_labeled:-0} retro_archived=${retro_archived:-0} pmcr_completed=${pmcr_completed:-0} human_close_propagated=${human_close_propagated:-0} review_handling_processed=${review_handling_processed:-0} review_handling_skipped=${review_handling_skipped:-0} review_handling_errored=${review_handling_errored:-0}"
+}
+# Ловим аварийные exit'ы (set -e + cron обрыв) — marker всё равно уходит.
+trap 'tick_end_marker 2>/dev/null || true' EXIT
+
 # --- функциональные файлы PR (ретро 14.08 t_28afb585, t_04371252) -----------
 # Возвращает 1, если среди файлов PR есть ФУНКЦИОНАЛЬНЫЙ код (docker/, src/,
 # скрипты процесса scripts/agent_flow/* и тесты процесса tests/agent_flow/*);
@@ -2220,6 +2260,12 @@ af_maintenance_gate_or_exit
 if ! gh auth status >/dev/null 2>&1; then
     log "gh auth not configured — exit 1"; exit 1
 fi
+
+# --- tick_start: structured marker в stdout (ADR-0079 / retro t_e3fc9bfe) ---
+# Вызываем ПОСЛЕ прохождения всех gate'ов (maintenance/auth/flock), но ДО
+# `gh_list_issues_by_label` — marker появляется только при РЕАЛЬНОМ тике,
+# не при skip-tick (flock busy / maintenance set / auth fail).
+tick_start_marker
 
 # --- required env ------------------------------------------------------------
 : "${GH_REPO:?GH_REPO must be set (owner/repo)}"
@@ -7081,6 +7127,11 @@ pr_label_sweep_merged_pass_all || true
 
 # --- summary -----------------------------------------------------------------
 log "tick done: considered=${considered} labeled=${labeled} skipped=${skipped} errored=${errored} retro_closed=${retro_closed} retro_labeled=${retro_labeled} clean_labeled=${clean_labeled} orphan_labeled=${orphan_labeled} backfill_labeled=${backfill_labeled} retro_archived=${retro_archived} pmcr_completed=${pmcr_completed} human_close_propagated=${human_close_propagated} review_handling_processed=${review_handling_processed} review_handling_skipped=${review_handling_skipped} review_handling_errored=${review_handling_errored}"
+
+# --- tick_end: structured marker в stdout (ADR-0079 / retro t_e3fc9bfe) ------
+# Явный вызов перед exit; trap EXIT гарантирует marker и при аварийном
+# завершении через `set -e` / kill (двойная страховка).
+tick_end_marker
 
 # Exit non-zero only on hard errors so cron can alert.
 if [ "$errored" -gt 0 ]; then exit 1; fi
