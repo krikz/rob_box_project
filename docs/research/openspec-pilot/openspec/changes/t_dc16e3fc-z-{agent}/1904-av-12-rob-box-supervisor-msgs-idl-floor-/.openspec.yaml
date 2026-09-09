@@ -1,6 +1,0 @@
-schema: spec-driven
-created: 2026-09-02
-issue: "#1904"
-task: "t_dc16e3fc"
-agent: "agent-flow"
-goal: "[AV-12] rob_box_supervisor_msgs: IDL-пакет + переезд сервисов floor с std_srvs/Trigger"

@@ -1,6 +1,0 @@
-schema: spec-driven
-created: 2026-09-08
-issue: "#2136"
-task: "t_72ec895b"
-agent: "agent-flow"
-goal: "bug(quest P0): в шлем всегда уходит 0 байт — isinstance-guard на array.array в _on_avatar_tts_audio"

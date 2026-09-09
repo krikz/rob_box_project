@@ -1,6 +1,0 @@
-schema: spec-driven
-created: 2026-09-08
-issue: "#2137"
-task: "t_156a0944"
-agent: "agent-flow"
-goal: "bug(operator): пайплайн грипа звучит в наушниках оператора, а должен на динамиках робота"

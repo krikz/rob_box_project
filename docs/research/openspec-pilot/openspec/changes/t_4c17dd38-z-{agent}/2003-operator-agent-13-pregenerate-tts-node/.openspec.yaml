@@ -1,6 +1,0 @@
-schema: spec-driven
-created: 2026-09-07
-issue: "#2003"
-task: "t_4c17dd38"
-agent: "agent-flow"
-goal: "[operator-agent 13] Спекулятивная генерация (pregenerate в tts_node) — ЗАБЛОКИРОВАН"

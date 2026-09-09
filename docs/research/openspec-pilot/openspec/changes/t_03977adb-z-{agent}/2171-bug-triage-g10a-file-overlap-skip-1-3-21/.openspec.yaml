@@ -1,6 +1,0 @@
-schema: spec-driven
-created: 2026-09-08
-issue: "#2171"
-task: "t_03977adb"
-agent: "agent-flow"
-goal: "bug(triage): G10a file-overlap-skip спамит по 1-3 коммента в минуту на #2162 — дедупликация issue-комментов не реализована (38 комментов за 1.5ч)"

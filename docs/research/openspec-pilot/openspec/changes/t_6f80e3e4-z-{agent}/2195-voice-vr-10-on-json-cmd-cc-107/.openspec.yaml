@@ -1,6 +1,0 @@
-schema: spec-driven
-created: 2026-09-08
-issue: "#2195"
-task: "t_6f80e3e4"
-agent: "agent-flow"
-goal: "[voice-vr 10] _on_json_cmd (CC=107) → диспетчер по таблице + терминальная ветка"

@@ -1,6 +1,0 @@
-schema: spec-driven
-created: 2026-09-07
-issue: "#1996"
-task: "t_f9bacb7f"
-agent: "agent-flow"
-goal: "[operator-agent 07a] Приоритет в tts_node: поле priority в /voice/tts/request"

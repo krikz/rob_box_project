@@ -1,6 +1,0 @@
-schema: spec-driven
-created: 2026-09-09
-issue: "#2240"
-task: "t_c7ef0fe8"
-agent: "agent-flow"
-goal: "bug(quest): пресет «Перевод» не работает из шлема — ws_server NACK'ает translate, которого нет в его копии белого списка"

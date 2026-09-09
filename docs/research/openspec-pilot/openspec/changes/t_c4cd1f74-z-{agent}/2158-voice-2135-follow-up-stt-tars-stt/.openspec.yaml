@@ -1,6 +1,0 @@
-schema: spec-driven
-created: 2026-09-08
-issue: "#2158"
-task: "t_c4cd1f74"
-agent: "agent-flow"
-goal: "voice(#2135 follow-up): собрать реальные STT-искажения «ТАРС» с микрофона шлема — в списке только «тарс»/«tars», а STT вернул «арс»"

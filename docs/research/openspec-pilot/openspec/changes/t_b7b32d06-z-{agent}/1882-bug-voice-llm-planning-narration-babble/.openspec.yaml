@@ -1,6 +1,0 @@
-schema: spec-driven
-created: 2026-09-02
-issue: "#1882"
-task: "t_b7b32d06"
-agent: "agent-flow"
-goal: "bug(voice): робот зачитывает вслух планирование LLM — planning-narration гуард не глушит озвучку, если babble-ретрай уже потрачен"

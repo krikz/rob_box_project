@@ -1,6 +1,0 @@
-schema: spec-driven
-created: 2026-09-05
-issue: "#1986"
-task: "t_e39e165c"
-agent: "agent-flow"
-goal: "[operator-agent 03] AgentCore — обобщение DialogCore (личность байт-в-байт)"

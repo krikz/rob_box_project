@@ -1,6 +1,0 @@
-schema: spec-driven
-created: 2026-09-02
-issue: "#1905"
-task: "t_ccc724cf"
-agent: "agent-flow"
-goal: "[AV-13] avatar_supervisor: подписка /teleop_heartbeat + настоящий dead-man 500 мс"

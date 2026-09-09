@@ -1,6 +1,0 @@
-schema: spec-driven
-created: 2026-09-05
-issue: "#1987"
-task: "t_4d2b1e8f"
-agent: "agent-flow"
-goal: "[operator-agent 04] avatar_arbiter — вынести FSM + LockManager в ноду без LLM"

@@ -1,6 +1,0 @@
-schema: spec-driven
-created: 2026-09-05
-issue: "#1992"
-task: "t_97a82c5a"
-agent: "agent-flow"
-goal: "[operator-agent 05a] Всегда-включённый микрофон шлема (stream_id=wake + VAD-гейт)"

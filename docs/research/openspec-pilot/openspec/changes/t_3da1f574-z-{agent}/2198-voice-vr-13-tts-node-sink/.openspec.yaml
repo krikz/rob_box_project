@@ -1,6 +1,0 @@
-schema: spec-driven
-created: 2026-09-08
-issue: "#2198"
-task: "t_3da1f574"
-agent: "agent-flow"
-goal: "[voice-vr 13] tts_node: один вход, приёмник реплики — поле sink"

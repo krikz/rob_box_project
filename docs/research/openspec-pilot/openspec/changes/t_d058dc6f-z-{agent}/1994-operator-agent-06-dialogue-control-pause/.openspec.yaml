@@ -1,6 +1,0 @@
-schema: spec-driven
-created: 2026-09-05
-issue: "#1994"
-task: "t_d058dc6f"
-agent: "agent-flow"
-goal: "[operator-agent 06] /dialogue/control pause/resume + удаление voice_input_mode"

@@ -1,6 +1,0 @@
-schema: spec-driven
-created: 2026-09-02
-issue: "#1902"
-task: "t_45604966"
-agent: "agent-flow"
-goal: "chore(process): feature/avatar упоминается в 4 production скриптах + 3 тестах + 2 workflows после удаления ветки — orphan refs cleanup"

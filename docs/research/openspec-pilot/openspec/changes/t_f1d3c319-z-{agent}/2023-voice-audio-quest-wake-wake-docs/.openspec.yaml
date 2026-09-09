@@ -1,6 +1,0 @@
-schema: spec-driven
-created: 2026-09-07
-issue: "#2023"
-task: "t_f1d3c319"
-agent: "agent-flow"
-goal: "voice: /audio/quest_wake — подписка и wake-роутер оператора без публикатора и без контракта в docs"

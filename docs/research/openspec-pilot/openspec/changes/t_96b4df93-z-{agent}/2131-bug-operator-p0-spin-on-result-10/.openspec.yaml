@@ -1,6 +1,0 @@
-schema: spec-driven
-created: 2026-09-08
-issue: "#2131"
-task: "t_96b4df93"
-agent: "agent-flow"
-goal: "bug(operator P0): ТАРС не может выполнить ни один инструмент — однопоточный spin голодает on_result (таймаут 10 с)"

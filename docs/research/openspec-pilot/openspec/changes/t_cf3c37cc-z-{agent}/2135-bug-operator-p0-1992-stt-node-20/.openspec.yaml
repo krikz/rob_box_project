@@ -1,6 +1,0 @@
-schema: spec-driven
-created: 2026-09-08
-issue: "#2135"
-task: "t_cf3c37cc"
-agent: "agent-flow"
-goal: "bug(operator P0 #1992): вейк из шлема невозможен — в stt_node приходят 20мс кадры, а не фразы (сегментатора нет)"

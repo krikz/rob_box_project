@@ -1,6 +1,0 @@
-schema: spec-driven
-created: 2026-09-02
-issue: "#1906"
-task: "t_b9581a9d"
-agent: "agent-flow"
-goal: "[AV-14] /avatar/state: единый кодек супервизор↔клиенты + контрактный тест на стык"

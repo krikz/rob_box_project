@@ -1,6 +1,0 @@
-schema: spec-driven
-created: 2026-09-08
-issue: "#2138"
-task: "t_69cb9566"
-agent: "agent-flow"
-goal: "bug(quest): выбор голоса из шлема не работает — клиент шлёт voice_id="""

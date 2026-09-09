@@ -1,6 +1,0 @@
-schema: spec-driven
-created: 2026-09-02
-issue: "#1895"
-task: "t_b802daf9"
-agent: "agent-flow"
-goal: "bug(voice #1881 follow-up): DJ_RETRY обходит общий budget синтетических ретраев и обнуляет его"

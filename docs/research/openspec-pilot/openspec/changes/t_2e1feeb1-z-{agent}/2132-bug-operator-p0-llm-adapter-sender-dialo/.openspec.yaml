@@ -1,6 +1,0 @@
-schema: spec-driven
-created: 2026-09-08
-issue: "#2132"
-task: "t_2e1feeb1"
-agent: "agent-flow"
-goal: "bug(operator P0): все операторские инструменты режутся срезом — llm_adapter подписывает запросы ТАРС как sender=dialogue_node"

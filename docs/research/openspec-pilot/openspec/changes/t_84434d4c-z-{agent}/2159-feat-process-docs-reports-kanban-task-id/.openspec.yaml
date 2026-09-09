@@ -1,6 +1,0 @@
-schema: spec-driven
-created: 2026-09-08
-issue: "#2159"
-task: "t_84434d4c"
-agent: "agent-flow"
-goal: "feat(process): воркеры должны сохранять полные отчёты в docs/reports/kanban/<task_id>.md при kanban_complete — иначе после архивации нечего ревьюить"

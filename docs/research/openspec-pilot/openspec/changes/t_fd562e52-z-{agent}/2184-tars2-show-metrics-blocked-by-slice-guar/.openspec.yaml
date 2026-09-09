@@ -1,6 +1,0 @@
-schema: spec-driven
-created: 2026-09-08
-issue: "#2184"
-task: "t_fd562e52"
-agent: "agent-flow"
-goal: "[TARS2] show_metrics blocked by slice-guard + not registered in MCP server — Grafana charts don't reach TARS 2 screen"

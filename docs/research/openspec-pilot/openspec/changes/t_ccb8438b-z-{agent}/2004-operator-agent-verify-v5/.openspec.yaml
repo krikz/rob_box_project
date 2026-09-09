@@ -1,6 +1,0 @@
-schema: spec-driven
-created: 2026-09-09
-issue: "#2004"
-task: "t_ccb8438b"
-agent: "agent-flow"
-goal: "[operator-agent verify] Проверка гипотез на живом роботе (статический анализ → факт)"

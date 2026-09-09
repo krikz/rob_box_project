@@ -1,6 +1,0 @@
-schema: spec-driven
-created: 2026-09-02
-issue: "#1883"
-task: "t_6f7e70c6"
-agent: "agent-flow"
-goal: "bug(voice): max_tokens и temperature из dialogue_node.yaml не доезжают до LLM-провайдера — DialogCore зовёт stream() без settings"

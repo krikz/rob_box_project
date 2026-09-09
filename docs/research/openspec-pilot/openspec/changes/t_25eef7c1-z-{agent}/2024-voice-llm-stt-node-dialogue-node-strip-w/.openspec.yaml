@@ -1,6 +1,0 @@
-schema: spec-driven
-created: 2026-09-07
-issue: "#2024"
-task: "t_25eef7c1"
-agent: "agent-flow"
-goal: "voice: следы LLM-воркера в stt_node/dialogue_node — вторая расходящаяся копия strip_wake_word, мёртвые тесты и docstring'и (#1990)"

@@ -1,6 +1,0 @@
-schema: spec-driven
-created: 2026-09-08
-issue: "#2144"
-task: "t_531b019a"
-agent: "agent-flow"
-goal: "bug(quest): левый глаз моргает при движении головой — только на капитанском мостике"

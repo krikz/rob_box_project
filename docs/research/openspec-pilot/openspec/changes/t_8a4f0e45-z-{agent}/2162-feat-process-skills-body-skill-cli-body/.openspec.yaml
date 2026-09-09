@@ -1,6 +1,0 @@
-schema: spec-driven
-created: 2026-09-08
-issue: "#2162"
-task: "t_8a4f0e45"
-agent: "agent-flow"
-goal: "feat(process): явное указание skills в body карточки (а не через --skill CLI) — воркер парсит body и вызывает скилы сам"

@@ -1,6 +1,0 @@
-schema: spec-driven
-created: 2026-09-08
-issue: "#2193"
-task: "t_ddc7050a"
-agent: "agent-flow"
-goal: "[voice-vr 08] Генератор TS-типов протокола из каталога + сверка в CI"

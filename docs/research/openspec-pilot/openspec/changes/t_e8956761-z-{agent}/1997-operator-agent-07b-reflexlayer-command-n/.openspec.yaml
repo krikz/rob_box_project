@@ -1,6 +1,0 @@
-schema: spec-driven
-created: 2026-09-05
-issue: "#1997"
-task: "t_e8956761"
-agent: "agent-flow"
-goal: "[operator-agent 07b] ReflexLayer: переезд к шине, подписка на command_node"

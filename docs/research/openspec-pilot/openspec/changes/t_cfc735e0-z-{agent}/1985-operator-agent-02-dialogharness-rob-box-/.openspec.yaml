@@ -1,6 +1,0 @@
-schema: spec-driven
-created: 2026-09-07
-issue: "#1985"
-task: "t_cfc735e0"
-agent: "agent-flow"
-goal: "[operator-agent 02] Удаление мёртвого кода: DialogHarness, rob_box_voice/llm, форки music, лишние state-машины"

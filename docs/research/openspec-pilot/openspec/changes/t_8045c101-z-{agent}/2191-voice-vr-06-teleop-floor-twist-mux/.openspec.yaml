@@ -1,6 +1,0 @@
-schema: spec-driven
-created: 2026-09-08
-issue: "#2191"
-task: "t_8045c101"
-agent: "agent-flow"
-goal: "[voice-vr 06] Право и приоритет — одно решение: связать teleop_floor с twist_mux"

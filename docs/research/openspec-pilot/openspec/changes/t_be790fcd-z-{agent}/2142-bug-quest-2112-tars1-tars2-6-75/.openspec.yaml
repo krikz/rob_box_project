@@ -1,6 +1,0 @@
-schema: spec-driven
-created: 2026-09-08
-issue: "#2142"
-task: "t_be790fcd"
-agent: "agent-flow"
-goal: "bug(quest #2112): экраны TARS1/TARS2 в 6.75 раза мельче основного — взят габарит боковой камеры вместо кокпита"

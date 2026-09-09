@@ -1,6 +1,0 @@
-schema: spec-driven
-created: 2026-09-08
-issue: "#2122"
-task: "t_e11c4131"
-agent: "agent-flow"
-goal: "bug(ci): Deploy and Verify рапортует success при контейнере в Restarting loop"
