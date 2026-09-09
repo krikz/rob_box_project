@@ -42,6 +42,9 @@ class _MockNode:
     def get_logger(self):
         return self
 
+    def info(self, msg: str) -> None:  # pragma: no cover - diagnostics only
+        pass
+
     def warning(self, msg: str) -> None:  # pragma: no cover - diagnostics only
         pass
 

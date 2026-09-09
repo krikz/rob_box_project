@@ -269,6 +269,12 @@ jobs:
           # ``audio_common_msgs`` приходит из apt-install шага Build
           # workspace. Per-file прогон, как rob_box_telegram (issue #1196
           # L1) — единый pytest на пакет ловит cross-file pollution.
+          #
+          # Exit code: pytest = 0 (passed), 1 (failed), 2 (interrupted),
+          # 3 (internal error), 4 (pytest cmdline error), 5 (no tests
+          # collected — все skip'нуты через ``importorskip``, ок),
+          # >=124 (timeout). Считаем FAILED только 1 и 3/4; 5 (all-skip)
+          # — это ожидаемое поведение на CI-env без части зависимостей.
           echo "=== pytest: rob_box_quest (per-file, issue #2232) ==="
           QUEST_FAILED=0
           for Q_TEST in "$QUEST_DIR"/test/unit/test_*.py "$QUEST_DIR"/test/unit/*/test_*.py; do
@@ -281,7 +287,17 @@ jobs:
                 -p no:ament_copyright -p no:ament_xmllint \
                 -p no:ament_lint -p no:colcon_core \
                 --tb=short --no-header -q \
-                "$Q_TEST" ) || { echo "❌ rob_box_quest FAILED: $Q_NAME"; QUEST_FAILED=1; }
+                "$Q_TEST" )
+            Q_EXIT=$?
+            if [ "$Q_EXIT" -eq 1 ] || [ "$Q_EXIT" -eq 3 ] || [ "$Q_EXIT" -eq 4 ]; then
+              echo "❌ rob_box_quest FAILED: $Q_NAME (exit=$Q_EXIT)"
+              QUEST_FAILED=1
+            elif [ "$Q_EXIT" -eq 5 ]; then
+              echo "ℹ️  rob_box_quest all-skipped: $Q_NAME (exit=5, CI-env без зависимостей)"
+            elif [ "$Q_EXIT" -ge 124 ]; then
+              echo "❌ rob_box_quest TIMEOUT: $Q_NAME (exit=$Q_EXIT)"
+              QUEST_FAILED=1
+            fi
           done
           if [ "$QUEST_FAILED" != "0" ]; then
             echo "❌ rob_box_quest tests FAILED"
