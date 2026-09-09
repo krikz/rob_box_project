@@ -130,6 +130,7 @@ def _run_build_step(
     load: str = "false",
     add_host: str = "host.docker.internal:host-gateway",
     progress: str = "plain",
+    local_registry: str = "localhost:5000",
 ) -> subprocess.CompletedProcess:
     """Substitute `${{ inputs.* }}` placeholders in bash_body with values.
 
@@ -148,6 +149,7 @@ def _run_build_step(
         "${{ inputs.load }}": load,
         "${{ inputs.add-host }}": add_host,
         "${{ inputs.progress }}": progress,
+        "${{ inputs.local-registry }}": local_registry,
     }
     expanded = bash_body
     for placeholder, value in substitutions.items():
@@ -166,6 +168,10 @@ def _run_build_step(
         text=True,
         check=False,
         env=env,
+        # Script output contains UTF-8 (emoji/✅); on Windows text=True would
+        # otherwise decode with cp1252 and raise UnicodeDecodeError.
+        encoding="utf-8",
+        errors="replace",
     )
 
 
