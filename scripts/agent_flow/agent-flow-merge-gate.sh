@@ -4078,16 +4078,12 @@ except Exception:
             # Ретро 02.09 t_2bd2e7ea: default НЕ валиден — упал бы в ADR-0041
             # silent-drop. Если метки нет, fallback на devops (он же воркер,
             # который и должен разрешать конфликт через force-with-lease push).
-            _assignee="devops"
-            for lbl in $(gh issue view "$number" --repo "$GH_REPO" --json labels --jq '[.labels[].name] | .[]' 2>/dev/null); do
-                case "$lbl" in
-                    agent:backend)    _assignee="backend"; break ;;
-                    agent:developer)  _assignee="developer"; break ;;
-                    agent:tester)     _assignee="tester"; break ;;
-                    agent:devops)     _assignee="devops"; break ;;
-                    agent:architect)  _assignee="architect"; break ;;
-                esac
-            done
+            # Используем единую таблицу af_role_for (lib_agent_flow_common.sh,
+            # issue #2292) — fallback=devops явно.
+            _assignee="$(af_role_for \
+                "$(gh issue view "$number" --repo "$GH_REPO" --json labels \
+                    --jq '[.labels[].name] | join(",")' 2>/dev/null || echo '')" \
+                devops)"
             if [ -n "${task_id:-}" ]; then
                 _card_status="$(kanban_card_status "$task_id")"
                 case "$_card_status" in
@@ -4281,16 +4277,11 @@ for t in data:
                 fi
                 # assignee по метке issue (та же логика, что и в rebase-блоке ниже).
                 # Ретро 02.09 t_2bd2e7ea: default → devops fallback.
-                _assignee="devops"
-                for lbl in $(gh issue view "$number" --repo "$GH_REPO" --json labels --jq '[.labels[].name] | .[]' 2>/dev/null); do
-                    case "$lbl" in
-                        agent:backend)    _assignee="backend"; break ;;
-                        agent:developer)  _assignee="developer"; break ;;
-                        agent:tester)     _assignee="tester"; break ;;
-                        agent:devops)     _assignee="devops"; break ;;
-                        agent:architect)  _assignee="architect"; break ;;
-                    esac
-                done
+                # Issue #2292: единая таблица af_role_for (lib_agent_flow_common.sh).
+                _assignee="$(af_role_for \
+                    "$(gh issue view "$number" --repo "$GH_REPO" --json labels \
+                        --jq '[.labels[].name] | join(",")' 2>/dev/null || echo '')" \
+                    devops)"
                 # Skill — профильный, как в recovery-блоке.
                 _skill="architecture-doc-review"
                 case "$_assignee" in
@@ -4369,16 +4360,11 @@ ${_un_failed_md}
             pr_head_ref="$(gh pr view "$pr_number" --repo "$GH_REPO" --json headRefName --jq '.headRefName' 2>/dev/null || echo "")"
             [ -z "${pr_head_ref:-}" ] && log "issue #${number}: WARNING cannot fetch headRefName for PR #${pr_number}" && continue
             # Ретро 02.09 t_2bd2e7ea: default → devops fallback.
-            _assignee="devops"
-            for lbl in $(gh issue view "$number" --repo "$GH_REPO" --json labels --jq '[.labels[].name] | .[]' 2>/dev/null); do
-                case "$lbl" in
-                    agent:backend)    _assignee="backend"; break ;;
-                    agent:developer)  _assignee="developer"; break ;;
-                    agent:tester)     _assignee="tester"; break ;;
-                    agent:devops)     _assignee="devops"; break ;;
-                    agent:architect)  _assignee="architect"; break ;;
-                esac
-            done
+            # Issue #2292: единая таблица af_role_for (lib_agent_flow_common.sh).
+            _assignee="$(af_role_for \
+                "$(gh issue view "$number" --repo "$GH_REPO" --json labels \
+                    --jq '[.labels[].name] | join(",")' 2>/dev/null || echo '')" \
+                devops)"
             _reminder="## ⚠️ CI UNSTABLE detected (merge-gate tick, $(date -u +%H:%M:%SZ))
 
 PR #${pr_number} (\`${pr_head_ref}\`) = **mergeable=MERGEABLE + mergeStateStatus=UNSTABLE** (CI fail, но конфликтов с develop нет).
@@ -5058,18 +5044,20 @@ for pr in data:
 
     # Определяем assignee по меткам issue (если знаем issue_num)
     # Ретро 02.09 t_2bd2e7ea: default → devops fallback (default невалиден).
+    # Issue #2292: единая таблица af_role_for (lib_agent_flow_common.sh).
+    # Флаг _assignee_explicit: явная agent:* метка ИЛИ fallback? contract_drift
+    # ниже перезаписывает на backend ТОЛЬКО если метки не было — поэтому
+    # нужен af_role_found_for, а не проверка `!= devops` (иначе явная
+    # agent:devops считалась бы fallback'ом → регрессия).
     _assignee="devops"
     _assignee_explicit=0
     if [ -n "$issue_num" ]; then
-        for lbl in $(gh issue view "$issue_num" --repo "$GH_REPO" --json labels --jq '[.labels[].name] | .[]' 2>/dev/null); do
-            case "$lbl" in
-                agent:backend)    _assignee="backend"; _assignee_explicit=1; break ;;
-                agent:developer)  _assignee="developer"; _assignee_explicit=1; break ;;
-                agent:tester)     _assignee="tester"; _assignee_explicit=1; break ;;
-                agent:devops)     _assignee="devops"; _assignee_explicit=1; break ;;
-                agent:architect)  _assignee="architect"; _assignee_explicit=1; break ;;
-            esac
-        done
+        _issue_labels="$(gh issue view "$issue_num" --repo "$GH_REPO" --json labels \
+            --jq '[.labels[].name] | join(",")' 2>/dev/null || echo '')"
+        if af_role_found_for "$_issue_labels"; then
+            _assignee="$(af_role_for "$_issue_labels" devops)"
+            _assignee_explicit=1
+        fi
     fi
 
     # ------------------------------------------------------------------------
