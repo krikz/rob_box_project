@@ -458,7 +458,7 @@ class TestCreateServiceSrvTypeContract(unittest.TestCase):
         # Тестируем «сырой» mock-rclpy FakeNode.create_service напрямую —
         # это именно та вальва, которую мы добавили в conftest. ``__init__``
         # ноды тут не нужен, нас интересует контракт mock-а.
-        from test.unit.conftest import _install_ros_mocks  # noqa: F401, PLC0415
+        _load_conftest_mocks()  # issue #2232: см. хелпер внизу файла
         from rclpy.node import Node as _FakeNode  # noqa: PLC0415
 
         node = _FakeNode("__test__")
@@ -488,7 +488,7 @@ class TestCreateServiceSrvTypeContract(unittest.TestCase):
         Проверяем именно Response, чтобы guard не пропустил «обратную»
         опечатку.
         """
-        from test.unit.conftest import _install_ros_mocks  # noqa: F401, PLC0415
+        _load_conftest_mocks()  # issue #2232: см. хелпер внизу файла
         from rclpy.node import Node as _FakeNode  # noqa: PLC0415
 
         node = _FakeNode("__test__")
@@ -517,7 +517,7 @@ class TestCreateServiceSrvTypeContract(unittest.TestCase):
         убеждаемся, что валидация не over-rejects и нормальный путь
         всё ещё работает.
         """
-        from test.unit.conftest import _install_ros_mocks  # noqa: F401, PLC0415
+        _load_conftest_mocks()  # issue #2232: см. хелпер внизу файла
         from rclpy.node import Node as _FakeNode  # noqa: PLC0415
 
         node = _FakeNode("__test__")
@@ -1484,3 +1484,29 @@ class TestTeleopLockPublishers(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# --- issue #2232 -------------------------------------------------------------
+def _load_conftest_mocks() -> None:
+    """Поднять ROS-моки из соседнего ``conftest.py`` по абсолютному пути.
+
+    Раньше здесь стояло ``from test.unit.conftest import _install_ros_mocks``.
+    Абсолютный импорт ``test.unit`` разрешается только если корень пакета
+    оказался на ``sys.path`` — так бывает при локальном прогоне из корня
+    репозитория и НЕ бывает в CI, где pytest стартует из каталога пакета.
+    Результат: три теста падали с ``ModuleNotFoundError: No module named
+    'test.unit'``, и это не замечали, потому что CI не запускал
+    rob_box_supervisor вообще (#2232).
+
+    Грузим conftest по пути от ``__file__`` — работает в обоих раскладах.
+    """
+    import importlib.util
+    from pathlib import Path
+
+    conftest_path = Path(__file__).resolve().parent / "conftest.py"
+    spec = importlib.util.spec_from_file_location(
+        "_supervisor_unit_conftest", conftest_path
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module._install_ros_mocks()
