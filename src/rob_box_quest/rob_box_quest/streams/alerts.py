@@ -173,6 +173,97 @@ def _passes_hold(
     return (now_ms - prev.since_ms) >= hold_ms
 
 
+def _emit_battery_alert(
+    battery_pct: Optional[int],
+    prev: Optional[Alert],
+    now_ms: int,
+    thresholds: AlertThresholds,
+) -> Optional[Alert]:
+    """Вернуть BATTERY_LOW алёрт или ``None`` (источник/гистерезис/hold).
+
+    Выделено из ``evaluate_alerts`` для снижения CC оркестратора
+    (ADR-0021 R1). Чистая функция: один вход → один выход.
+    """
+    if battery_pct is None:
+        return None
+    if not _battery_alert_active(battery_pct, thresholds, prev):
+        return None
+    if not _passes_hold(CODE_BATTERY_LOW, prev, now_ms, thresholds.hold_ms):
+        return None
+    since = prev.since_ms if prev is not None else now_ms
+    return Alert(
+        code=CODE_BATTERY_LOW,
+        level=LEVEL_WARN,
+        args={"pct": int(battery_pct)},
+        since_ms=since,
+    )
+
+
+def _emit_wifi_alert(
+    wifi_rssi: Optional[int],
+    prev: Optional[Alert],
+    now_ms: int,
+    thresholds: AlertThresholds,
+) -> Optional[Alert]:
+    """Вернуть WIFI_WEAK алёрт или ``None`` (источник/гистерезис/hold).
+
+    Выделено из ``evaluate_alerts`` для снижения CC оркестратора
+    (ADR-0021 R1). Чистая функция: один вход → один выход.
+    """
+    if wifi_rssi is None:
+        return None
+    if not _wifi_alert_active(wifi_rssi, thresholds, prev):
+        return None
+    if not _passes_hold(CODE_WIFI_WEAK, prev, now_ms, thresholds.hold_ms):
+        return None
+    since = prev.since_ms if prev is not None else now_ms
+    return Alert(
+        code=CODE_WIFI_WEAK,
+        level=LEVEL_WARN,
+        args={"rssi_dbm": int(wifi_rssi)},
+        since_ms=since,
+    )
+
+
+def _emit_stuck_alert(
+    cmd_vel_linear: Optional[float],
+    cmd_vel_angular: Optional[float],
+    odom_motion_s: Optional[float],
+    prev_by_code: Mapping[str, Alert],
+    now_ms: int,
+    thresholds: AlertThresholds,
+) -> Optional[Alert]:
+    """Вернуть ROBOT_STUCK алёрт или ``None``.
+
+    ``prev_by_code`` нужен целиком (а не отдельный ``prev``), потому что
+    семантика ``since_ms`` для ROBOT_STUCK другая — берётся из любого
+    предыдущего ROBOT_STUCK, который был поднят в прошлом тике.
+
+    ROBOT_STUCK выдержки не требует — ``stuck_timeout_s`` уже играет её роль.
+    Выделено из ``evaluate_alerts`` для снижения CC оркестратора
+    (ADR-0021 R1). Чистая функция: один вход → один выход.
+    """
+    if not _stuck_alert_active(
+        cmd_vel_linear=cmd_vel_linear,
+        cmd_vel_angular=cmd_vel_angular,
+        odom_motion_s=odom_motion_s,
+        thresholds=thresholds,
+    ):
+        return None
+    prev = prev_by_code.get(CODE_ROBOT_STUCK)
+    since = prev.since_ms if prev is not None else now_ms
+    return Alert(
+        code=CODE_ROBOT_STUCK,
+        level=LEVEL_ERROR,
+        args={
+            "cmd_linear": float(cmd_vel_linear) if cmd_vel_linear is not None else 0.0,
+            "cmd_angular": float(cmd_vel_angular) if cmd_vel_angular is not None else 0.0,
+            "odom_motion_s": float(odom_motion_s) if odom_motion_s is not None else 0.0,
+        },
+        since_ms=since,
+    )
+
+
 def evaluate_alerts(
     *,
     now_ms: int,
@@ -184,77 +275,31 @@ def evaluate_alerts(
     odom_motion_s: Optional[float] = None,
     prev_alerts: Iterable[Alert] = (),
 ) -> list[Alert]:
-    """Вернуть список АКТИВНЫХ алёртов на момент ``now_ms``.
+    """Оркестратор алёртов: вернуть список АКТИВНЫХ алёртов на момент ``now_ms``.
 
     Параметры с ``None`` — источник недоступен (не приходил / отсутствует
     ROS-топик). Чистая функция: один вход → один выход, без побочных
     эффектов. Состояние гистерезиса передаётся через ``prev_alerts``
     (что было активно на предыдущем тике).
+
+    Логика каждой категории вынесена в ``_emit_*_alert`` helper'ы
+    (ADR-0021 R1, voice-vr 18).
     """
     prev_by_code: dict[str, Alert] = {a.code: a for a in prev_alerts}
 
-    battery_prev = prev_by_code.get(CODE_BATTERY_LOW)
-    wifi_prev = prev_by_code.get(CODE_WIFI_WEAK)
-
-    battery_active = (
-        battery_pct is not None
-        and _battery_alert_active(battery_pct, thresholds, battery_prev)
+    candidates = (
+        _emit_battery_alert(battery_pct, prev_by_code.get(CODE_BATTERY_LOW), now_ms, thresholds),
+        _emit_wifi_alert(wifi_rssi, prev_by_code.get(CODE_WIFI_WEAK), now_ms, thresholds),
+        _emit_stuck_alert(
+            cmd_vel_linear=cmd_vel_linear,
+            cmd_vel_angular=cmd_vel_angular,
+            odom_motion_s=odom_motion_s,
+            prev_by_code=prev_by_code,
+            now_ms=now_ms,
+            thresholds=thresholds,
+        ),
     )
-    wifi_active = (
-        wifi_rssi is not None
-        and _wifi_alert_active(wifi_rssi, thresholds, wifi_prev)
-    )
-    stuck_active = _stuck_alert_active(
-        cmd_vel_linear=cmd_vel_linear,
-        cmd_vel_angular=cmd_vel_angular,
-        odom_motion_s=odom_motion_s,
-        thresholds=thresholds,
-    )
-
-    out: list[Alert] = []
-
-    if battery_active and _passes_hold(
-        CODE_BATTERY_LOW, battery_prev, now_ms, thresholds.hold_ms
-    ):
-        since = battery_prev.since_ms if battery_prev else now_ms
-        out.append(
-            Alert(
-                code=CODE_BATTERY_LOW,
-                level=LEVEL_WARN,
-                args={"pct": int(battery_pct) if battery_pct is not None else None},
-                since_ms=since,
-            )
-        )
-
-    if wifi_active and _passes_hold(
-        CODE_WIFI_WEAK, wifi_prev, now_ms, thresholds.hold_ms
-    ):
-        since = wifi_prev.since_ms if wifi_prev else now_ms
-        out.append(
-            Alert(
-                code=CODE_WIFI_WEAK,
-                level=LEVEL_WARN,
-                args={"rssi_dbm": int(wifi_rssi) if wifi_rssi is not None else None},
-                since_ms=since,
-            )
-        )
-
-    if stuck_active:
-        since = prev_by_code[CODE_ROBOT_STUCK].since_ms if CODE_ROBOT_STUCK in prev_by_code else now_ms
-        out.append(
-            Alert(
-                code=CODE_ROBOT_STUCK,
-                level=LEVEL_ERROR,
-                args={
-                    "cmd_linear": float(cmd_vel_linear) if cmd_vel_linear is not None else 0.0,
-                    "cmd_angular": float(cmd_vel_angular) if cmd_vel_angular is not None else 0.0,
-                    "odom_motion_s": float(odom_motion_s) if odom_motion_s is not None else 0.0,
-                },
-                since_ms=since,
-            )
-        )
-
-    return out
+    return [alert for alert in candidates if alert is not None]
 
 
 __all__ = [
