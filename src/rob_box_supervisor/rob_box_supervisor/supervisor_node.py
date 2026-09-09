@@ -7,8 +7,9 @@
   ``/avatar_arbiter/{acquire_floor,release_floor,set_avatar_mode}``.
 - Здесь (``AvatarSupervisor``) остаются:
   * voice-управление ``dialogue_node``/``tts_node``: ``/avatar/set_voice_mode``,
-    ``/avatar/set_voice_preset``, ``/avatar/set_voice_language``,
-    ``/avatar/set_voice``, ``/avatar/preview_voice*`` (ADR-0028 S5, AV-27/28);
+    ``/avatar/set_voice``, ``/avatar/preview_voice*`` (ADR-0028 S5, AV-27);
+    AV-28 ``set_voice_preset|language`` удалены по ADR-0087 (живой путь
+    смены стиля/языка — ``/avatar/voice_pipeline`` ниже);
   * супервизор-агент оператора (ТАРС, issue #1988): ``/avatar/command`` и
     ``/avatar/stt/result`` → ``AgentCore`` (промпт оператора) →
     ``/avatar/command_result`` + voice-mode swap;
@@ -114,7 +115,7 @@ from rob_box_core.bridge_protocol import (  # noqa: E402,F401 — re-export SoT
     VOICE_PRESET_IDS,
 )
 
-# ADR-0080 §2.7 / voice-vr 21 — единый топик-контракт смены голоса.
+# ADR-0080 §2.7 — единый топик-контракт смены голоса.
 # ``/voice/tts/set_voice`` живёт на tts_node (``_on_set_voice``) и
 # единственный, кто принимает voice_id от супервизора. Раньше здесь
 # был ленивый параметр-клиент на tts_node (знание внутренней схемы
@@ -351,23 +352,14 @@ def _make_execute_response(
     for name, value in fields.items():
         setattr(resp, name, value)
     return resp
-# AV-28 §P7 (issue #1920) — voice style preset / language топики.
-# Симметрично /avatar/set_voice_mode и /avatar/set_voice: payload — String
-# с одним ID (preset|language) без JSON (для скорости и простоты парсинга).
-# voice-vr 21: супервизор НЕ пишет в dialogue_node (ADR-0080 §2.7),
-# см. блок AV-28 §P7 ниже — операция только логируется, формализация
-# идёт через ``grip_pipeline`` (yaml-direct).
-SET_VOICE_PRESET_TOPIC: str = "/avatar/set_voice_preset"
-SET_VOICE_LANGUAGE_TOPIC: str = "/avatar/set_voice_language"
-# Whitelist preset/language для AV-28 §P7. Single source of truth —
-# rob_box_core.bridge_protocol.VOICE_PRESET_IDS / VOICE_LANGUAGES
-# (импортированы выше). Локальная копия была ДВЕ: эта и приватная
-# _AV28_* внутри класса, валидировала вторая. Разъехавшись с yaml, они
-# дали молчаливый отказ: ws_server отвечал Quest'у voice_set_ack
-# (UI показывал «применилось»), а супервизор ронял запрос в
-# applied=False, и оператор об этом не узнавал. Так выпали пресет
-# `translate` и языки fr/de/zh/hi. Теперь whitelist один — канон,
-# импортированный сверху. Issue #2240 фиксирует архитектуру.
+# AV-28 §P7 (issue #1920) — voice style preset/language удалены
+# по ADR-0087 (2026-09-09, вариант (a)): канал был «честный no-op»
+# с PR #2255 (whitelist + log + ack, без побочного эффекта) и без
+# владельца на `/dialogue/control`. Топики `/avatar/set_voice_preset` /
+# `/avatar/set_voice_language` и подписки на них удалены вместе с
+# `_AV28_*` / `_on_set_voice_preset|language` / `_apply_voice_preset|language`
+# в этом модуле. Живой путь смены стиля/языка грипа —
+# `/avatar/voice_pipeline` → `_on_grip_voice_pipeline` (issue #1989).
 # AV-21 (issue #1913) — супервизор-агент «мозг оператора» (ADR-0028 §1.1).
 # Вход: ``/avatar/command`` (std_msgs/String, JSON), выход:
 # ``/avatar/command_result``. Полные JSON-схемы — в
@@ -499,20 +491,11 @@ class AvatarSupervisor(Node):
         self._dialogue_control_pub = self.create_publisher(
             RosString, DIALOGUE_CONTROL_TOPIC, 10
         )
-        # AV-28 §P7 (issue #1920) — voice style preset / language топики.
-        # Валидируем ID по whitelist (см. единый список
-        # ``rob_box_core.bridge_protocol``) и только логируем факт
-        # приёма (voice-vr 21 / ADR-0080 §2.7). Раньше здесь стояла
-        # запись в dialogue_node — живой путь формализации теперь в
-        # ``grip_pipeline`` (yaml-direct). Когда расширим
-        # ``/dialogue/control`` под set_preset/set_language, обработчик
-        # сменит тело — сигнатура топиков и whitelist остаются.
-        self.create_subscription(
-            RosString, SET_VOICE_PRESET_TOPIC, self._on_set_voice_preset, 10
-        )
-        self.create_subscription(
-            RosString, SET_VOICE_LANGUAGE_TOPIC, self._on_set_voice_language, 10
-        )
+        # AV-28 §P7 (issue #1920) — voice style preset/language подписки
+        # удалены по ADR-0087: канал был «честный no-op» после PR #2255
+        # (whitelist + log + ack, без побочного эффекта) и без владельца
+        # на `/dialogue/control`. Живой путь смены стиля/языка грипа —
+        # `/avatar/voice_pipeline` ниже.
         # AV-27 / issue #1919 — set_voice / preview_voice → супервизор.
         # Валидируем voice_id по реестру и выставляем параметр tts_node.
         self.create_subscription(RosString, SET_VOICE_TOPIC, self._on_set_voice, 10)
@@ -1478,99 +1461,13 @@ class AvatarSupervisor(Node):
             held_by=str(client_id),
         )
 
-    # ── AV-28 §P7 (issue #1920) — voice style preset + language ─────────
-    # ADR-0080 §2.7 / voice-vr 21: супервизор больше НЕ пишет в чужие
-    # ROS-параметры. ``voice_preset`` / ``voice_output_language`` УДАЛЕНЫ
-    # из ``dialogue_node`` целиком (declare_parameter + обработка в
-    # parameters_callback — см. dialogue_node.py, эта же карточка): там
-    # больше нет параметра, писать в который. Топики
-    # ``/avatar/set_voice_preset`` / ``/avatar/set_voice_language``
-    # остаются легаси-приёмниками для обратной совместимости с
-    # UI/quest_node: whitelist-валидация по единому списку
-    # (``rob_box_core.bridge_protocol``) + ack/nack оператору через
-    # ``voice_set_ack`` (UI откатывает optimistic update, если nack), но
-    # применённое значение НИКУДА не пишется и не влияет на звучание —
-    # это самостоятельно не подключённый путь (ADR-0018), оставленный как
-    # заглушка до расширения ``/dialogue/control`` под set_preset/
-    # set_language (тема отдельной карточки).
-    #
-    # Живой путь стиля/языка речи — ``/avatar/voice_pipeline`` →
-    # ``_on_grip_voice_pipeline`` → ``self._pipeline_preset`` /
-    # ``self._pipeline_language`` (грип-пайплайн, issue #1989); он читает
-    # ``grip_pipeline.load_voice_presets()`` из yaml сам, независимо от
-    # этого блока. НЕ путать два канала.
-
-    # Валидируем по модульным VOICE_PRESET_IDS / VOICE_LANGUAGES — второй
-    # копии списка здесь больше нет (см. комментарий у импорта).
-    _AV28_PRESET_IDS: frozenset[str] = frozenset(VOICE_PRESET_IDS)
-    _AV28_LANGUAGES: frozenset[str] = frozenset(VOICE_LANGUAGES)
-
-    def _on_set_voice_preset(self, msg: RosString) -> None:
-        """Обработка ``/avatar/set_voice_preset`` — легаси-приём стиля речи.
-
-        voice-vr 21: ``applied=true`` означает только «прошёл whitelist +
-        режим active», НЕ «где-то что-то поменялось». Ничего не
-        публикуется и не сохраняется — см. комментарий блока AV-28 §P7
-        выше про два разных канала.
-        """
-        preset = (msg.data or "").strip()
-        applied, reason = self._apply_voice_preset(preset)
-        self._log.info(
-            f"SetVoicePreset: preset={preset} applied={applied} reason={reason}"
-        )
-
-    def _apply_voice_preset(self, preset: str) -> tuple[bool, str]:
-        """Чистая логика применения ``voice_preset`` (тестируется без rclpy).
-
-        voice-vr 21: супервизор не пишет в чужие ROS-параметры (ADR-0080 §2.7),
-        а dialogue_node больше не имеет параметра ``voice_preset`` вообще
-        (удалён). Этот метод только валидирует и логирует — он НЕ вызывает
-        ``grip_pipeline`` и НЕ трогает ``self._pipeline_preset``; тот
-        живёт своей жизнью через ``/avatar/voice_pipeline`` (см. блочный
-        комментарий выше). Легаси-заглушка до explicit-контракта.
-        """
-        if not preset:
-            return False, "empty_voice_preset"
-        if preset not in self._AV28_PRESET_IDS:
-            return False, f"invalid_voice_preset: {preset!r}"
-        if self._mode != "active":
-            return False, MONITOR_MODE_REASON
-        # Грядущая карточка расширит ``/dialogue/control`` под
-        # set_preset/set_language — до тех пор здесь только whitelist +
-        # лог, без побочных эффектов (см. docstring метода).
-        self._log.info(
-            f"[voice-vr 21] voice_preset accepted={preset!r} "
-            "(legacy no-op: no foreign param writes, no pipeline state change)"
-        )
-        return True, "applied"
-
-    def _on_set_voice_language(self, msg: RosString) -> None:
-        """Обработка ``/avatar/set_voice_language`` — легаси-приём языка вывода."""
-        language = (msg.data or "").strip()
-        applied, reason = self._apply_voice_language(language)
-        self._log.info(
-            f"SetVoiceLanguage: language={language} applied={applied} reason={reason}"
-        )
-
-    def _apply_voice_language(self, language: str) -> tuple[bool, str]:
-        """Чистая логика применения ``voice_output_language`` (тестируется без rclpy).
-
-        Аналогично :py:meth:`_apply_voice_preset` — супервизор больше НЕ
-        пишет в чужие ROS-параметры (ADR-0080 §2.7), и это НЕ то же самое,
-        что смена языка грип-пайплайна (``self._pipeline_language``, через
-        ``/avatar/voice_pipeline``). Только валидация + лог.
-        """
-        if not language:
-            return False, "empty_voice_language"
-        if language not in self._AV28_LANGUAGES:
-            return False, f"invalid_voice_language: {language!r}"
-        if self._mode != "active":
-            return False, MONITOR_MODE_REASON
-        self._log.info(
-            f"[voice-vr 21] voice_output_language accepted={language!r} "
-            "(legacy no-op: no foreign param writes, no pipeline state change)"
-        )
-        return True, "applied"
+    # AV-28 §P7 (issue #1920) — voice style preset/language
+    # `_AV28_*` / `_on_set_voice_preset|language` / `_apply_voice_preset|language`
+    # удалены по ADR-0087 (2026-09-09, вариант (a)): канал был «честный
+    # no-op» после PR #2255 (whitelist + log + ack, без побочного эффекта)
+    # и без владельца на `/dialogue/control`. Живой путь смены
+    # стиля/языка грипа — ``/avatar/voice_pipeline`` → ``_on_grip_voice_pipeline``
+    # → ``self._pipeline_preset`` / ``self._pipeline_language``.
 
     # ── AV-27 TTS picker (issue #1919) ──────────────────────────────
     def _on_set_voice(self, msg: RosString) -> None:
