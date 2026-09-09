@@ -539,15 +539,22 @@ class AvatarSupervisor(Node):
         self._operator_dsm: Any = None
         # Журнал ТАРС (§5.4) — тоже лениво, персист по journal_path.
         self._operator_journal: Any = None
-        # Метрики супервизор-агента инициализируются лениво через
-        # ``_build_agent_metrics`` при первом вызове
-        # ``_record_agent_command``/``_record_agent_tool_call``. Чтобы
-        # ``AttributeError`` не возникал в путях, которые мы не должны
-        # трогать (например, ``agent_disabled`` path до инициализации),
-        # кладём пустую no-op заглушку сразу. ``enabled=False`` →
-        # ``_record_*`` короткое замыкание на return. Реальные счётчики
-        # поднимутся при первом ``_build_agent_metrics``.
-        self._agent_metrics: dict[str, Any] = {"enabled": False}
+        # Метрики супервизор-агента (issue #2232). РАНЬШЕ здесь стояла
+        # заглушка ``{"enabled": False}`` с комментарием «реальные счётчики
+        # поднимутся при первом ``_build_agent_metrics``» — но триггера не
+        # существовало: ``_build_agent_metrics`` не вызывался НИ ОТКУДА, а
+        # ``_record_agent_command`` / ``_record_agent_tool_call`` коротко
+        # замыкались на ``enabled=False`` и молча ничего не писали. То есть
+        # ``avatar_agent_commands_total`` и ``avatar_agent_tool_calls_total``
+        # были нулевыми всегда. Два теста в test_avatar_agent.py это ловили,
+        # но CI не запускал rob_box_supervisor (#2232), и красное никто не
+        # видел.
+        #
+        # Строим сразу: ``_build_agent_metrics`` зависит только от ленивого
+        # импорта ``rob_box_voice.observability.metrics`` (при ImportError
+        # сам возвращает no-op-заглушку с ``enabled=False``), поэтому
+        # безопасен в ``__init__`` после ``self._log`` (строка 432).
+        self._agent_metrics: dict[str, Any] = self._build_agent_metrics()
         # Поле ``_voice_input_mode_before_swap`` удалено вместе с
         # ``voice_input_mode`` (ADR-0066 §6.7). В новой схеме через
         # ``/dialogue/control`` супервизор ВСЕГДА шлёт ``pause`` на входе
