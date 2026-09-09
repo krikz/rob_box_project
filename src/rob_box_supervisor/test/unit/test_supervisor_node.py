@@ -396,25 +396,22 @@ class TestAvatarSupervisorVoicePresetsAndLanguage(unittest.TestCase):
         self.assertEqual(reason, "empty_voice_language")
 
     def test_active_mode_dispatches_preset(self) -> None:
-        """В active режиме валидный preset → SetParameters(voice_preset=...)."""
+        """voice-vr 21: валидный preset в active → ``applied`` без
+        SetParameters на dialogue_node (ADR-0080 §2.7). Живой путь —
+        ``grip_pipeline`` yaml-direct, поэтому проверяем только
+        факт валидации whitelist'а + сигнатуру возврата; никаких
+        побочных эффектов на mock-rclpy быть не должно.
+        """
         self.node._mode = "active"
-        self.node._set_dialogue_param = MagicMock()
         applied, reason = self.node._apply_voice_preset("philosopher")
         self.assertTrue(applied)
         self.assertEqual(reason, "applied")
-        self.node._set_dialogue_param.assert_called_once_with(
-            "voice_preset", "philosopher"
-        )
 
     def test_active_mode_dispatches_language(self) -> None:
         self.node._mode = "active"
-        self.node._set_dialogue_param = MagicMock()
         applied, reason = self.node._apply_voice_language("en")
         self.assertTrue(applied)
         self.assertEqual(reason, "applied")
-        self.node._set_dialogue_param.assert_called_once_with(
-            "voice_output_language", "en"
-        )
 
     def test_on_set_voice_preset_feeds_apply(self) -> None:
         """Топик → _apply_voice_preset; в monitor применяется=false."""
@@ -431,17 +428,26 @@ class TestAvatarSupervisorVoicePresetsAndLanguage(unittest.TestCase):
         self.node._on_set_voice_language(_make_string_msg("ru"))
         self.node._apply_voice_language.assert_called_once_with("ru")
 
-    def test_param_set_failure_reported(self) -> None:
-        """Ошибка RPC SetParameters должна отдаваться как param_set_failed,
-        а не валить ноду (BLE001-семейство ошибок)."""
+    def test_active_mode_no_set_parameters_call(self) -> None:
+        """voice-vr 21: ``_apply_voice_*`` НЕ вызывает SetParameters
+        ни на dialogue_node, ни на tts_node (визуальная регрессия на
+        ADR-0080 §2.7 — единственная проточка параметров — tts_node
+        picker). Раньше был ``_set_dialogue_param`` mock; теперь
+        атрибут вообще не должен существовать на классе.
+        """
         self.node._mode = "active"
-        self.node._set_dialogue_param = MagicMock(
-            side_effect=RuntimeError("service unavailable")
+        # Атрибут не должен существовать ни на инстансе, ни на классе.
+        self.assertFalse(
+            hasattr(self.node, "_set_dialogue_param"),
+            "voice-vr 21: _set_dialogue_param удалён; "
+            "supervisor не пишет в чужие ROS-параметры",
         )
+        # Старое поведение, которое роняло узел через param_set_failed,
+        # теперь недостижимо. Гарантируем, что _apply всё равно не падает
+        # (нет шинного RPC, поэтому нечего ловить).
         applied, reason = self.node._apply_voice_preset("street")
-        self.assertFalse(applied)
-        self.assertIn("param_set_failed", reason)
-        self.assertIn("service unavailable", reason)
+        self.assertTrue(applied)
+        self.assertEqual(reason, "applied")
 
 
 if __name__ == "__main__":

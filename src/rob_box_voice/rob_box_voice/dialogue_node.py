@@ -1050,30 +1050,33 @@ class DialogueNode(Node):
         self.declare_parameter("metrics_port", 9100)
         # ADR-0066 §6.3 — `voice_input_mode` УДАЛЁН. Единственная связь
         # оператора с личностью — топик /dialogue/control (sub выше, в
-        # __init__). Параметры voice_preset / voice_output_language
-        # сохранены (стиль речи и язык для LLM формализации через
-        # grip_pipeline супервизора, ADR-0028 §S5 — это не гейт входа).
-        self.declare_parameter("voice_preset", "")
-        self.declare_parameter("voice_output_language", "")
+        # __init__).
+        #
+        # voice-vr 21 / ADR-0080 §2.7 — ``voice_preset`` /
+        # ``voice_output_language`` тоже удалены: супервизор больше НЕ
+        # пишет в эти параметры (SetParameters-контракт на dialogue_node
+        # был мёртвым с ADR-0066 §6.3 — формализатор уехал в
+        # ``grip_pipeline`` и читает ``voice_presets.yaml`` напрямую).
+        # Грядущий явный канал — расширение ``/dialogue/control`` под
+        # set_preset/set_language, отдельная карточка.
 
     def parameters_callback(self, params):
         """Роутер runtime-изменений параметров (``ros2 param set``).
 
         ADR-0066 §6.3 — ``voice_input_mode`` УДАЛЁН. Единственный канал
-        оператора — ``/dialogue/control``. Параметры ``voice_preset`` /
-        ``voice_output_language`` сохранены: это стиль речи и язык для
-        LLM-формализации в ``grip_pipeline`` супервизора (ADR-0028 §S5),
-        не гейт входа. Обновляются через ``ros2 param set`` от
-        супервизора/фронта — здесь только логируем.
+        оператора — ``/dialogue/control``.
 
-        ``barge_in_policy`` (issue #1734): обновляет ``self._barge_in_policy``
-        и тут же перепубликует его на latched-топик
-        ``/voice/dialogue/barge_in_policy`` (``_publish_barge_in_policy``),
-        чтобы stt_node узнал новое значение немедленно, без рестарта —
-        именно так этот параметр меняли на роботе при воспроизведении
-        бага #1734 (``ros2 param set /dialogue_node barge_in_policy
-        classify``). Невалидное значение игнорируем и остаёмся на
-        текущем — та же логика, что в ``_resolve_barge_in_policy``.
+        voice-vr 21 / ADR-0080 §2.7 — ``voice_preset`` /
+        ``voice_output_language`` УДАЛЕНЫ из dialogue_node; всё ещё
+        работает только ``barge_in_policy`` (issue #1734):
+        обновляет ``self._barge_in_policy`` и тут же перепубликует
+        его на latched-топик ``/voice/dialogue/barge_in_policy``
+        (``_publish_barge_in_policy``), чтобы stt_node узнал новое
+        значение немедленно, без рестарта — именно так этот параметр
+        меняли на роботе при воспроизведении бага #1734 (``ros2 param
+        set /dialogue_node barge_in_policy classify``). Невалидное
+        значение игнорируем и остаёмся на текущем — та же логика,
+        что в ``_resolve_barge_in_policy``.
         """
         for param in params:
             if param.name == "barge_in_policy":
@@ -1090,18 +1093,18 @@ class DialogueNode(Node):
                     f"🔄 [issue 1734] barge_in_policy changed to {raw!r} "
                     f"(republished to stt_node)"
                 )
-            elif param.name == "voice_preset":
-                # ADR-0066 §6.3 — смена пресета через SetParameters от
-                # супервизора / фронта (UI-секция «Стиль речи» голосового
-                # плана). Сам резолв пресета теперь в ``grip_pipeline``
-                # супервизора (см. ``src/rob_box_supervisor/.../
-                # grip_pipeline.py``); здесь только логируем.
-                self.get_logger().info(
-                    f"🎙 [AV-28] voice_preset changed to {param.value!r}"
-                )
-            elif param.name == "voice_output_language":
-                self.get_logger().info(
-                    f"🌐 [AV-28] voice_output_language changed to {param.value!r}"
+            else:
+                # voice-vr 21: ``voice_preset`` / ``voice_output_language``
+                # удалены из declare_parameters; их SetParameters не должен
+                # доходить сюда. Если пришёл — это либо старая нода
+                # supervisor_node (PR #2243), либо ручной ``ros2 param
+                # set`` в проде. Не роняем ноду, но логируем warning,
+                # чтобы ловилось в метриках.
+                self.get_logger().warning(
+                    f"⚠️ [voice-vr 21] unknown runtime param ignored: "
+                    f"name={param.name!r} value={param.value!r} "
+                    f"(voice_preset / voice_output_language были УДАЛЕНЫ "
+                    f"из dialogue_node, ADR-0080 §2.7)"
                 )
         return SetParametersResult(successful=True)
 

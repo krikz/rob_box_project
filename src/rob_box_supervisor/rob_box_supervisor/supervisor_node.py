@@ -321,7 +321,9 @@ def _make_execute_response(
 # AV-28 §P7 (issue #1920) — voice style preset / language топики.
 # Симметрично /avatar/set_voice_mode и /avatar/set_voice: payload — String
 # с одним ID (preset|language) без JSON (для скорости и простоты парсинга).
-# Супервизор делает SetParameters на dialogue_node (см. ADR-0028 §S5).
+# voice-vr 21: супервизор НЕ пишет в dialogue_node (ADR-0080 §2.7),
+# см. блок AV-28 §P7 ниже — операция только логируется, формализация
+# идёт через ``grip_pipeline`` (yaml-direct).
 SET_VOICE_PRESET_TOPIC: str = "/avatar/set_voice_preset"
 SET_VOICE_LANGUAGE_TOPIC: str = "/avatar/set_voice_language"
 # Whitelist preset/language для AV-28 §P7. Single source of truth —
@@ -457,9 +459,13 @@ class AvatarSupervisor(Node):
             RosString, DIALOGUE_CONTROL_TOPIC, 10
         )
         # AV-28 §P7 (issue #1920) — voice style preset / language топики.
-        # Валидируем ID по whitelist (тот же, что в ws_server.py) и выставляем
-        # SetParameters на dialogue_node (voice_preset / voice_output_language).
-        # Без рестарта dialogue_node — параметр подхватывается на следующей фразе.
+        # Валидируем ID по whitelist (см. единый список
+        # ``rob_box_core.bridge_protocol``) и только логируем факт
+        # приёма (voice-vr 21 / ADR-0080 §2.7). Раньше здесь стояло
+        # SetParameters на dialogue_node — живой путь формализации
+        # теперь в ``grip_pipeline`` (yaml-direct). Когда расширим
+        # ``/dialogue/control`` под set_preset/set_language, обработчик
+        # сменит тело — сигнатура топиков и whitelist остаются.
         self.create_subscription(
             RosString, SET_VOICE_PRESET_TOPIC, self._on_set_voice_preset, 10
         )
@@ -483,12 +489,13 @@ class AvatarSupervisor(Node):
         self._preview_error_pub = self.create_publisher(
             RosString, PREVIEW_VOICE_ERROR_TOPIC, 10
         )
-        # Параметр-клиент к dialogue_node создаётся лениво в active-режиме
-        # (в monitor супервизор НЕ трогает чужие параметры — S12).
-        self._dialogue_param_client = None
         # AV-27 — параметр-клиент к tts_node. Создаётся лениво в _set_tts_voice_param
         # (минимальный контакт с tts_node, в monitor — не создаётся).
         self._tts_param_client = None
+        # voice-vr 21 — SetParameters-клиент к dialogue_node удалён
+        # (ADR-0080 §2.7: супервизор не пишет в чужие ROS-параметры).
+        # ``voice_preset`` / ``voice_output_language`` теперь читаются
+        # через ``grip_pipeline.load_voice_presets()`` (yaml-direct).
 
         # ── AV-21/ТАРС (issue #1988): супервизор-агент оператора ────
         # ``agent_enabled`` default true — мастер-гейт всего agent-прохода;
@@ -1422,21 +1429,34 @@ class AvatarSupervisor(Node):
         )
 
     # ── AV-28 §P7 (issue #1920) — voice style preset + language ─────────
-    # Симметрично ``_on_set_voice_mode``: супервизор единственный, кто
-    # выставляет ``voice_preset``/``voice_output_language`` на ``dialogue_node``
-    # (ADR-0028 §S5). Whitelist тот же, что в ws_server.VOICE_PRESET_IDS/
-    # VOICE_LANGUAGES — но supervisor не импортирует ws_server (цикл),
-    # поэтому держим локальный whitelist и доверяем ws_server'у первый
-    # уровень валидации. В monitor-режиме (S12) принимаем и логируем, но
-    # НЕ применяем.
+    # ADR-0080 §2.7 / voice-vr 21: супервизор больше НЕ пишет в чужие
+    # ROS-параметры (``voice_preset`` / ``voice_output_language`` на
+    # ``dialogue_node`` через SetParameters). Параметры остались в
+    # ``dialogue_node.parameters_callback`` только как «когда-то был
+    # формализатор, сейчас единственное живое чтение — yaml-direct»
+    # (см. ADR-0066 §6.3 + ``grip_pipeline.load_voice_presets``).
+    # Грядущий явный контракт — расширение ``/dialogue/control`` (тема
+    # отдельной карточки); сейчас топики ``/avatar/set_voice_preset`` /
+    # ``/avatar/set_voice_language`` принимаются, валидируются по единому
+    # списку (``rob_box_core.bridge_protocol``), и факт применения
+    # логируется — оператор по-прежнему получает ack/nack по ack-каналу
+    # ``voice_set_ack`` (UI откатывает optimistic update, если nack).
+    # Whitelist берётся из ``rob_box_core.bridge_protocol`` (зеркало
+    # ``voice_presets.yaml`` + TS-генерация) — никаких локальных копий.
 
     # Валидируем по модульным VOICE_PRESET_IDS / VOICE_LANGUAGES — второй
-    # копии списка здесь больше нет (см. комментарий у констант).
+    # копии списка здесь больше нет (см. комментарий у импорта).
     _AV28_PRESET_IDS: frozenset[str] = frozenset(VOICE_PRESET_IDS)
     _AV28_LANGUAGES: frozenset[str] = frozenset(VOICE_LANGUAGES)
 
     def _on_set_voice_preset(self, msg: RosString) -> None:
-        """Обработка ``/avatar/set_voice_preset`` — запрос сменить стиль речи."""
+        """Обработка ``/avatar/set_voice_preset`` — запрос сменить стиль речи.
+
+        voice-vr 21: ``applied=true`` означает «пресет принят и зафиксирован
+        в состоянии пайплайна» (yaml-direct), а НЕ «параметр записан в
+        dialogue_node». Контракт-носитель для оператора не меняется —
+        см. комментарий блока AV-28 §P7.
+        """
         preset = (msg.data or "").strip()
         applied, reason = self._apply_voice_preset(preset)
         self._log.info(
@@ -1444,18 +1464,27 @@ class AvatarSupervisor(Node):
         )
 
     def _apply_voice_preset(self, preset: str) -> tuple[bool, str]:
-        """Чистая логика применения ``voice_preset`` (тестируется без rclpy)."""
+        """Чистая логика применения ``voice_preset`` (тестируется без rclpy).
+
+        voice-vr 21: супервизор не пишет в чужие ROS-параметры (ADR-0080 §2.7).
+        Раньше вызывал ``_set_dialogue_param('voice_preset', ...)`` —
+        dialogue_node.parameters_callback только логировал значение
+        (ADR-0066 §6.3). Сейчас ничего не публикуется наружу: живой
+        путь — ``grip_pipeline.load_voice_presets()`` поверх YAML.
+        """
         if not preset:
             return False, "empty_voice_preset"
         if preset not in self._AV28_PRESET_IDS:
             return False, f"invalid_voice_preset: {preset!r}"
         if self._mode != "active":
             return False, MONITOR_MODE_REASON
-        try:
-            self._set_dialogue_param("voice_preset", preset)
-        except Exception as exc:  # noqa: BLE001
-            self._log.warning(f"SetVoicePreset: failed to set dialogue param: {exc}")
-            return False, f"param_set_failed: {exc}"
+        # Грядущая карточка расширит ``/dialogue/control`` под
+        # set_preset/set_language — здесь только фиксируем принятое
+        # значение для LLM-формализации через ``grip_pipeline``.
+        self._log.info(
+            f"[voice-vr 21] voice_preset accepted={preset!r} "
+            "(path: grip_pipeline yaml-direct; no SetParameters to dialogue_node)"
+        )
         return True, "applied"
 
     def _on_set_voice_language(self, msg: RosString) -> None:
@@ -1467,62 +1496,23 @@ class AvatarSupervisor(Node):
         )
 
     def _apply_voice_language(self, language: str) -> tuple[bool, str]:
-        """Чистая логика применения ``voice_output_language`` (тестируется без rclpy)."""
+        """Чистая логика применения ``voice_output_language`` (тестируется без rclpy).
+
+        Аналогично :py:meth:`_apply_voice_preset` — супервизор больше
+        НЕ вызывает SetParameters на dialogue_node (ADR-0080 §2.7).
+        Живой путь — ``grip_pipeline`` с yaml-direct.
+        """
         if not language:
             return False, "empty_voice_language"
         if language not in self._AV28_LANGUAGES:
             return False, f"invalid_voice_language: {language!r}"
         if self._mode != "active":
             return False, MONITOR_MODE_REASON
-        try:
-            self._set_dialogue_param("voice_output_language", language)
-        except Exception as exc:  # noqa: BLE001
-            self._log.warning(f"SetVoiceLanguage: failed to set dialogue param: {exc}")
-            return False, f"param_set_failed: {exc}"
-        return True, "applied"
-
-    def _set_dialogue_param(self, name: str, value: str) -> None:
-        """Выставить string-параметр на ``dialogue_node`` через SetParameters.
-
-        Клиент создаётся лениво (первый вызов в active-режиме). Вызов
-        асинхронный (rclpy client), результат логируем в done-callback —
-        в monitor-режиме метод не вызывается вовсе (S12).
-        """
-        if self._dialogue_param_client is None:
-            from rcl_interfaces.srv import SetParameters  # noqa: PLC0415
-
-            self._dialogue_param_client = self.create_client(
-                SetParameters, "/dialogue_node/set_parameters"
-            )
-        from rcl_interfaces.msg import (  # noqa: PLC0415
-            Parameter,
-            ParameterType,
-            ParameterValue,
+        self._log.info(
+            f"[voice-vr 21] voice_output_language accepted={language!r} "
+            "(path: grip_pipeline yaml-direct; no SetParameters to dialogue_node)"
         )
-        from rcl_interfaces.srv import SetParameters  # noqa: PLC0415
-
-        req = SetParameters.Request()
-        param = Parameter()
-        param.name = name
-        param.value = ParameterValue()
-        param.value.type = ParameterType.PARAMETER_STRING
-        param.value.string_value = value
-        req.parameters = [param]
-
-        future = self._dialogue_param_client.call_async(req)
-
-        def _done(fut) -> None:
-            try:
-                res = fut.result()
-                ok = bool(res and res.results and res.results[0].successful)
-                if not ok:
-                    self._log.warning(
-                        "SetVoiceMode: dialogue_node rejected parameter set"
-                    )
-            except Exception as exc:  # noqa: BLE001
-                self._log.warning(f"SetVoiceMode: parameter set failed: {exc}")
-
-        future.add_done_callback(_done)
+        return True, "applied"
 
     # ── AV-27 TTS picker (issue #1919) ──────────────────────────────
     def _on_set_voice(self, msg: RosString) -> None:
