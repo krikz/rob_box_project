@@ -41,6 +41,13 @@ REPO_ROOT="$(cd "$TEST_DIR/../../.." && pwd)"
 E2E_PROCESS="$REPO_ROOT/scripts/agent_flow/agent-flow-e2e-process.sh"
 HARNESS="$REPO_ROOT/.github/workflows/scripts/e2e_voice_test.sh"
 
+# Source shared eval/extract lib (issue #2295) — раньше sed-выражение
+# `sed -n '/^    resolve_acceptance_candidate() {/,/^    }$/p'` ломалось
+# на реинденте функции (issue #2295 ровно про этот случай). Один источник
+# истины для brace-counter — lib/lib_eval_func.sh.
+# shellcheck source=lib/lib_eval_func.sh
+. "$TEST_DIR/lib/lib_eval_func.sh"
+
 # --- Helpers --------------------------------------------------------------
 TESTS_TOTAL=0
 TESTS_PASSED=0
@@ -163,7 +170,10 @@ printf '%s\n' '{"expected_tool_calls":["generate_music"]}' > "$_round_fixture/.g
 printf '%s\n' '{}' > "$_empty_round_fixture/.github/e2e/scenarios/music_library_suite_v1.json"
 
 # Extract and execute the real production resolver, not a hand-copied helper.
-sed -n '/^    resolve_acceptance_candidate() {/,/^    }$/p' "$E2E_PROCESS" > "$_resolver_tmp"
+# Shared lib_eval_func::extract_func_or_die handles brace-counter — раньше тут
+# был line-range sed (`/^    resolve_acceptance_candidate() {/,/^    }$/p`),
+# который ломался на реинденте функции в исходнике (issue #2295).
+extract_func_or_die "$E2E_PROCESS" resolve_acceptance_candidate > "$_resolver_tmp"
 printf '%s\n' "resolve_acceptance_candidate \".github/e2e/scenarios/music_library_suite_v1.json\" \"\$1\"" >> "$_resolver_tmp"
 chmod +x "$_resolver_tmp"
 _resolved="$(bash "$_resolver_tmp" "$_round_fixture")"

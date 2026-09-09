@@ -24,6 +24,12 @@ TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$TEST_DIR/../../.." && pwd)"
 E2E_PROCESS="$REPO_ROOT/scripts/agent_flow/agent-flow-e2e-process.sh"
 
+# Source shared eval/extract lib (issue #2295) — раньше тут жил локальный
+# `extract_block()` со своим brace-counter awk (ещё один дубль extract_func).
+# Один источник истины для brace-counter — lib/lib_eval_func.sh.
+# shellcheck source=lib/lib_eval_func.sh
+. "$TEST_DIR/lib/lib_eval_func.sh"
+
 # --- Helpers --------------------------------------------------------------
 TESTS_TOTAL=0
 TESTS_PASSED=0
@@ -102,45 +108,23 @@ else
     fail "вызов в main" "top-level call не найден"
 fi
 
-# --- Извлекаем функции в текущий shell ------------------------------------
-# Подход: вытащим блок от маркера '# --- G2.7:' до строки 'fail_streak_needs_review_sweep || true'
-# включительно (это включает все 3 функции + top-level call).
-# Но для теста нам нужны ТОЛЬКО функции + log() — без top-level call.
-# Используем awk чтобы вытащить ровно три функции, начинающиеся с известных имён.
-extract_block() {
-    awk '
-        BEGIN { in_fn = 0; depth = 0 }
-        # Совпадение начала одной из трёх целевых функций
-        /^(compute_e2e_fail_streak|list_open_prs_for_escalation|fail_streak_needs_review_sweep)\(\) \{/ {
-            in_fn = 1; depth = 0
-        }
-        in_fn {
-            print
-            # Считаем { и } в строке (грубо, но работает: у нас нет
-            # вложенных { в одну строку внутри тела функции).
-            opens = gsub(/\{/, "{")
-            closes = gsub(/\}/, "}")
-            depth += opens - closes
-            if (depth == 0 && /^\}$/) {
-                in_fn = 0
-            }
-        }
-    ' "$E2E_PROCESS"
-}
-
-# Также объявим log() — он в основном скрипте, нам нужен для sweep'а
+# Извлекаем функции в текущий shell через shared lib (issue #2295).
+# Раньше был локальный `extract_block()` со своим BEGIN/in_fn/depth awk —
+# миграция убирает дублирование и даёт явный FAIL при реинденте/переносе
+# функции в исходнике. Берём только функции + log(); top-level call
+# `fail_streak_needs_review_sweep || true` в main НЕ нужен (тест его
+# мокает через AUTO_NEEDS_REVIEW_TEST_MODE и проверяет сценарии ниже).
+_TESTS_SHELL=""
+for fn in compute_e2e_fail_streak list_open_prs_for_escalation fail_streak_needs_review_sweep; do
+    _TESTS_SHELL="${_TESTS_SHELL}$(extract_func_or_die "$E2E_PROCESS" "$fn")"$'\n'
+done
+# log() — обёртка printf в stderr (как в основном скрипте); нужен для sweep'а
 # (без него DRY-RUN лог не появится в stderr — а тест его читает).
-# log() — обёртка printf в stderr (как в основном скрипте).
 log() { printf '%s %s\n' "$LOG_PREFIX" "$*" >&2; }
 export LOG_PREFIX="[test-fail-streak-sweep]"
 
-# Соберём тестовый shell-контекст
-_TESTS_SHELL="$(extract_block)
-"
-
-# Очистим комментарии-маркеры от вытащенных функций (они только для grep,
-# не влияют на функциональность — оставляем как есть).
-
+# Загружаем функции в текущий shell. _TESTS_SHELL уже собран через
+# extract_func_or_die выше; eval видит ровно три функции + log().
 # shellcheck disable=SC2086
 eval "$_TESTS_SHELL"
 
