@@ -988,6 +988,49 @@ if [ -f "$FAIL_STREAK_PAUSE_SENTINEL" ]; then
     exit 0
 fi
 
+# --- G3.5: robot-busy sentinel (ночной марафон, docs/e2e/night-voice-marathon.md) -
+# Робот один: и ротация, и ночной марафон играют команды в ОДИН физический
+# динамик и слушают ОДИН микрофон. Параллельный запуск не «замедляет» оба
+# прогона — он делает их бессмысленными: harness ротации ловит в
+# `docker logs voice-assistant` реакции на чужие фразы и наоборот.
+# Классический симптом такой гонки — «✅ ПОЛНЫЙ ЦИКЛ + PATTERN_MISS»
+# (реакция есть, но не на нашу команду).
+#
+# Контракт файла (одна строка, поля через пробел):
+#   <owner> <started_epoch> <expected_end_epoch> <note...>
+# Владелец пишет его перед первой командой и удаляет в trap на выходе.
+#
+# Две защиты от вечной заморозки (в отличие от fail-streak sentinel, где
+# ручной override — это by design):
+#   1. expected_end_epoch — владелец сам объявляет, до какого времени занят;
+#   2. ROBOT_BUSY_MAX_AGE — жёсткий потолок по mtime на случай, если
+#      владельца убили -9 и trap не отработал (в марафоне это ~5 часов,
+#      потолок берём с запасом).
+# Просроченный sentinel УДАЛЯЕТСЯ и тик продолжается — упавший ночью
+# марафон не должен стоить нам суток простоя ротации.
+ROBOT_BUSY_SENTINEL="${ROBOT_BUSY_SENTINEL:-${HERMES_HOME}/state/robot-busy}"
+ROBOT_BUSY_MAX_AGE="${ROBOT_BUSY_MAX_AGE:-28800}"   # 8h
+if [ -f "$ROBOT_BUSY_SENTINEL" ]; then
+    _rb_now="$(date +%s)"
+    _rb_mtime="$(stat -c %Y "$ROBOT_BUSY_SENTINEL" 2>/dev/null || echo 0)"
+    _rb_line="$(head -1 "$ROBOT_BUSY_SENTINEL" 2>/dev/null || true)"
+    _rb_owner="$(printf '%s' "$_rb_line" | awk '{print $1}')"
+    _rb_end="$(printf '%s' "$_rb_line" | awk '{print $3}')"
+    case "${_rb_end:-}" in ''|*[!0-9]*) _rb_end=0 ;; esac
+    _rb_age=$(( _rb_now - _rb_mtime ))
+    if [ "$_rb_age" -gt "$ROBOT_BUSY_MAX_AGE" ]; then
+        log "⚠️ robot-busy sentinel протух (age=${_rb_age}s > ${ROBOT_BUSY_MAX_AGE}s, owner=${_rb_owner:-?}) — удаляю и продолжаю тик"
+        rm -f "$ROBOT_BUSY_SENTINEL" 2>/dev/null || true
+    elif [ "$_rb_end" -gt 0 ] && [ "$_rb_now" -ge "$_rb_end" ]; then
+        log "⚠️ robot-busy sentinel просрочен (expected_end прошёл ${_rb_now}≥${_rb_end}, owner=${_rb_owner:-?}) — удаляю и продолжаю тик"
+        rm -f "$ROBOT_BUSY_SENTINEL" 2>/dev/null || true
+    else
+        log "🤖 robot BUSY (owner=${_rb_owner:-?}, ещё $(( (_rb_end - _rb_now) / 60 )) мин) — skip rotation tick"
+        log "   Робот один на всех: параллельный e2e слышал бы чужие команды. Sentinel: ${ROBOT_BUSY_SENTINEL}"
+        exit 0
+    fi
+fi
+
 # --- required env ------------------------------------------------------------
 : "${GH_REPO:?GH_REPO must be set (owner/repo)}"
 if [ -z "${REPO_DIR}" ] || [ ! -d "$REPO_DIR" ]; then

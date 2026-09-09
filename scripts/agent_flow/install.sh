@@ -85,6 +85,11 @@ EXPECTED=(
     # из-за чего drift-detect его не контролировал и на profile-уровне
     # (devops/scripts/) его не было → cron-тик падал с «Script not found».
     agent-flow-install-daily.sh
+    # Ночной голосовой марафон (docs/e2e/night-voice-marathon.md): no-agent
+    # cron every 1h с внутренним гейтом по часу. Сценарии и раннер тянет из
+    # origin/develop сам, но САМ скрипт должен лежать в scripts_dir — иначе
+    # hermes scheduler отклонит job с «Script not found».
+    agent-flow-night-marathon.sh
     agent-flow-handoff.sh
     round_ensure.sh
     # Round-formation module (issue #2299, 09.09.2026): единый владелец
@@ -917,6 +922,27 @@ ensure_nightly_review_cron() {
     ensure_cron_job devops "Agent Flow Nightly Review (ADR-0049)" "agent-flow-nightly-review.sh" "every 1h" interval
 }
 ensure_nightly_review_cron
+
+echo
+echo "==> Ensure cron job registration: night voice marathon (docs/e2e/night-voice-marathon.md)"
+# Проблема: 117-шаговый голосовой марафон (10 актов, ~4 часа) физически не
+# влезает ни в один раунд ротации — «L: E2E Voice Test» имеет
+# timeout-minutes: 45. Запускать его руками означает не запускать никогда.
+#
+# Решение: ensure_night_marathon_cron() — та же схема, что у ночного ревью:
+# interval-job (every 1h) в devops-профиле, no_agent, а час старта зашит
+# ВНУТРЬ скрипта (окно [NIGHT_MARATHON_HOUR, +WINDOW_HOURS), sentinel на
+# сутки). Марафон стартует в 21:00 local и обязан закончиться до
+# NIGHTLY_REVIEW_HOUR (02:00) — иначе его акты попадут в дайджест следующих
+# суток, то есть через день после поломки.
+#
+# Развязка с ротацией — не через расписание, а через sentinel
+# $HERMES_HOME/state/robot-busy (гейт G3.5 в agent-flow-e2e-process.sh):
+# робот один, и параллельный e2e слушал бы чужие команды.
+ensure_night_marathon_cron() {
+    ensure_cron_job devops "Agent Flow Night Voice Marathon" "agent-flow-night-marathon.sh" "every 1h" interval
+}
+ensure_night_marathon_cron
 
 echo
 echo "==> Ensure cron job registration: decomposed-children wake-up watchdog (ADR-AF-0052, ретро t_bfd19ffb)"

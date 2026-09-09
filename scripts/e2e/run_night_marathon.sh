@@ -42,6 +42,28 @@ MAX_WAIT="${MAX_WAIT:-3600}"
 DRY_RUN="${DRY_RUN:-0}"
 STOP_ON_FOUNDATION_FAIL="${STOP_ON_FOUNDATION_FAIL:-1}"
 
+# --- robot-busy sentinel (взаимное исключение с e2e-ротацией) ---------------
+# Робот один: ротация (agent-flow-e2e-process.sh, cron every 20m) и марафон
+# играют команды в ОДИН динамик и слушают ОДИН микрофон. Параллельный запуск
+# не замедляет прогоны — он делает их бессмысленными: harness видит в логах
+# реакции на чужие фразы («✅ ПОЛНЫЙ ЦИКЛ + PATTERN_MISS»).
+# Контракт файла — одна строка: <owner> <started_epoch> <expected_end_epoch> <note>
+# Ротация читает его в гейте G3.5 и пропускает тик, пока мы держим робота.
+HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
+ROBOT_BUSY_SENTINEL="${ROBOT_BUSY_SENTINEL:-$HERMES_HOME/state/robot-busy}"
+SKIP_SENTINEL="${SKIP_SENTINEL:-0}"
+# Сколько часов резервируем робота под марафон. По замеру run 34385886254
+# (11 шагов = 26.5 мин) 117 шагов — это 2.5-5 часов; 6 даёт запас на ретраи.
+SENTINEL_HOURS="${SENTINEL_HOURS:-6}"
+
+# --- дедлайн (default: не позже ночного ревью) ------------------------------
+# agent-flow-nightly-review.sh стартует в NIGHTLY_REVIEW_HOUR (default 2:00
+# local) и собирает дайджест за окно «вчера 00:00 → сейчас». Марафон обязан
+# ЗАКОНЧИТЬСЯ до этого, иначе его акты попадут в ревью следующих суток —
+# то есть через день после того, как что-то сломалось.
+# DEADLINE_HOUR="" отключает дедлайн (ручной прогон без спешки).
+DEADLINE_HOUR="${DEADLINE_HOUR:-}"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 MANIFEST="$ROOT/.github/e2e/scenarios/night/night_marathon_manifest.json"
@@ -112,9 +134,69 @@ if [ "$DRY_RUN" = "1" ]; then
     exit 0
 fi
 
+# --- дедлайн: во сколько прекратить запускать новые акты ---------------------
+DEADLINE_EPOCH=0
+if [ -n "$DEADLINE_HOUR" ]; then
+    DEADLINE_EPOCH="$(date -d "today ${DEADLINE_HOUR}:00" +%s 2>/dev/null || echo 0)"
+    # Дедлайн ночью после старта вечером — это уже завтрашние сутки.
+    if [ "$DEADLINE_EPOCH" -gt 0 ] && [ "$DEADLINE_EPOCH" -le "$(date +%s)" ]; then
+        DEADLINE_EPOCH="$(date -d "tomorrow ${DEADLINE_HOUR}:00" +%s 2>/dev/null || echo 0)"
+    fi
+    [ "$DEADLINE_EPOCH" -gt 0 ] \
+        && log "дедлайн: $(date -d "@$DEADLINE_EPOCH" +'%F %H:%M') — после него новые акты не стартуют"
+fi
+
+# --- захват робота ----------------------------------------------------------
+SENTINEL_TAKEN=0
+release_sentinel() {
+    [ "$SENTINEL_TAKEN" = "1" ] || return 0
+    rm -f "$ROBOT_BUSY_SENTINEL" 2>/dev/null || true
+    SENTINEL_TAKEN=0
+    log "robot-busy sentinel снят — ротация свободна"
+}
+if [ "$SKIP_SENTINEL" = "1" ]; then
+    log "⚠️ SKIP_SENTINEL=1 — робот НЕ резервируется, ротация может влезть в прогон"
+else
+    mkdir -p "$(dirname "$ROBOT_BUSY_SENTINEL")" 2>/dev/null || true
+    if [ -f "$ROBOT_BUSY_SENTINEL" ]; then
+        _cur="$(head -1 "$ROBOT_BUSY_SENTINEL" 2>/dev/null || true)"
+        _cur_owner="$(printf '%s' "$_cur" | awk '{print $1}')"
+        _cur_end="$(printf '%s' "$_cur" | awk '{print $3}')"
+        case "${_cur_end:-}" in ''|*[!0-9]*) _cur_end=0 ;; esac
+        if [ "$_cur_end" -gt "$(date +%s)" ]; then
+            log "❌ робот уже занят (owner=${_cur_owner:-?}, до $(date -d "@$_cur_end" +'%H:%M')) — не лезу"
+            log "   Если это протухший sentinel: rm $ROBOT_BUSY_SENTINEL"
+            exit 3
+        fi
+        log "⚠️ найден просроченный robot-busy sentinel (owner=${_cur_owner:-?}) — перехватываю"
+    fi
+    _end_epoch=$(( $(date +%s) + SENTINEL_HOURS * 3600 ))
+    # Если задан дедлайн — резервируем ровно до него, не дольше: иначе
+    # упавший марафон держал бы ротацию заблокированной ещё несколько часов.
+    if [ "$DEADLINE_EPOCH" -gt 0 ] && [ "$DEADLINE_EPOCH" -lt "$_end_epoch" ]; then
+        _end_epoch="$DEADLINE_EPOCH"
+    fi
+    printf 'night-marathon %s %s %s\n' "$(date +%s)" "$_end_epoch" "run_night_marathon.sh acts=$n_acts ref=$REF" \
+        > "$ROBOT_BUSY_SENTINEL"
+    SENTINEL_TAKEN=1
+    trap 'release_sentinel' EXIT INT TERM
+    log "robot-busy sentinel взят до $(date -d "@$_end_epoch" +'%F %H:%M') — ротация будет пропускать тики"
+fi
+
 overall=0
 while IFS=$'\t' read -r a_n a_title a_stab a_steps a_scn a_acc; do
     [ -z "$a_n" ] && continue
+
+    # Дедлайн проверяем ПЕРЕД диспатчем: акт живёт до 45 минут, и стартовать
+    # его за десять минут до ночного ревью бессмысленно — результат приедет
+    # уже после того, как дайджест собран.
+    if [ "$DEADLINE_EPOCH" -gt 0 ] && [ "$(date +%s)" -ge "$DEADLINE_EPOCH" ]; then
+        log "⏰ дедлайн $(date -d "@$DEADLINE_EPOCH" +'%H:%M') прошёл — акт $a_n и последующие не запускаю"
+        printf '%s\t%s\t%s\t%s\t-\tskipped_deadline\t-\n' \
+            "$a_n" "$a_title" "$a_stab" "$a_steps" >> "$SUMMARY"
+        continue
+    fi
+
     log "=== АКТ $a_n «$a_title» ($a_steps шагов, $a_stab) ==="
 
     # Метка времени ДО диспатча: по ней ищем свой run среди чужих.
