@@ -226,6 +226,13 @@ jobs:
           # ``cd <pkg>``, конftest сам ставит rclpy/audio_common_msgs моки,
           # ``timeout 240`` от hung-shutdown + junitxml для надёжного FAIL
           # гейта (а не «silent skipped»).
+          #
+          # Runtime deps (НЕ в базовом CI image, apt/python-base-ROS image
+          # их не тянет — проверил: ros-humble-ros-base не зависит от
+          # python3-msgpack / python3-aiohttp, они идут в ros-humble-* рантайм
+          # пакетах, которые мы НЕ ставим для тестов):
+          python3 -m pip install --quiet --no-cache-dir msgpack aiohttp 2>/dev/null || true
+
           CORE_DIR="${{ github.workspace }}/test_ws/src/rob_box_core"
           QUEST_DIR="${{ github.workspace }}/test_ws/src/rob_box_quest"
           SUP_DIR="${{ github.workspace }}/test_ws/src/rob_box_supervisor"
