@@ -95,6 +95,19 @@ jobs:
         run: |
           python scripts/lint/seam_without_consumer.py
 
+      # issue #2232: сторож против повторения дыры «пакет с тестами есть,
+      # в CI не запускается». Сверяет, что каждый src/rob_box_*/test/
+      # реально упомянут в G-Run Tests.yml. Без этого шага сам сторож
+      # был швом без потребителя: скрипт лежал в репозитории и не
+      # вызывался ниоткуда, кроме собственного self-теста.
+      - name: Test-package coverage guard (issue #2232)
+        run: |
+          python scripts/ci/validate_test_packages.py
+
+      - name: Test-package coverage guard self-tests
+        run: |
+          bash scripts/ci/tests/test_validate_test_packages.sh
+
       - name: Seam-without-consumer guard self-tests (issue #2118)
         run: |
           python -m unittest scripts.lint.test_seam_without_consumer -v

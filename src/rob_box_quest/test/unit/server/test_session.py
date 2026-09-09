@@ -57,29 +57,35 @@ class TestWatchdog:
     def test_watchdog_trips_after_timeout(self):
         s = ClientSession()
         s.mark_authenticated("0.1.0", [])
-        t0 = time.monotonic()
-        s.feed_ping(now_monotonic=t0)
+        # Используем целочисленный «monotonic base» вместо time.monotonic().
+        # Иначе ``base + WATCHDOG_TIMEOUT_S`` может давать float, чуть больший
+        # 0.6 (напр. ``0.6 + 3.6e-13``), и при строгом ``> WATCHDOG_TIMEOUT_S``
+        # boundary трипнется — flaky на 64-bit IEEE 754 (issue #2232).
+        base = 1000.0
+        s.feed_ping(now_monotonic=base)
         # Свежий ping — нет trip.
-        assert s.watchdog_tripped(now_monotonic=t0 + 0.1) is False
-        # Ровно на границе — нет trip (строгое >).
-        assert s.watchdog_tripped(now_monotonic=t0 + WATCHDOG_TIMEOUT_S) is False
-        # Через 1 мс после границы — trip.
-        assert s.watchdog_tripped(now_monotonic=t0 + WATCHDOG_TIMEOUT_S + 0.001) is True
+        assert s.watchdog_tripped(now_monotonic=base + 0.1) is False
+        # За 1 мс ДО границы — нет trip (гарантированно внутри окна).
+        assert s.watchdog_tripped(now_monotonic=base + WATCHDOG_TIMEOUT_S - 0.001) is False
+        # Через 1 мс ПОСЛЕ границы — trip (контракт: > WATCHDOG_TIMEOUT_S).
+        assert s.watchdog_tripped(now_monotonic=base + WATCHDOG_TIMEOUT_S + 0.001) is True
 
     def test_feed_ping_resets_watchdog(self):
         s = ClientSession()
         s.mark_authenticated("0.1.0", [])
-        t0 = time.monotonic()
-        s.feed_ping(now_monotonic=t0)
-        # Подошли к границе, но не перешли.
-        boundary = t0 + WATCHDOG_TIMEOUT_S - 0.01
+        # Целочисленный base (см. test_watchdog_trips_after_timeout — не
+        # полагаемся на точность time.monotonic() в 64-bit IEEE 754).
+        base = 1000.0
+        s.feed_ping(now_monotonic=base)
+        # Подошли к границе, но не перешли — за 10 мс ДО.
+        boundary = base + WATCHDOG_TIMEOUT_S - 0.01
         assert s.watchdog_tripped(now_monotonic=boundary) is False
         # Пришёл свежий ping прямо на границе.
         s.feed_ping(now_monotonic=boundary)
-        # Проверяем в пределах нового окна — НЕ trip.
+        # Проверяем в пределах нового окна — НЕ trip (за 50 мс до границы).
         still_safe = boundary + WATCHDOG_TIMEOUT_S - 0.05
         assert s.watchdog_tripped(now_monotonic=still_safe) is False
-        # За пределами нового окна — trip.
+        # За пределами нового окна — trip (через 100 мс после границы).
         assert s.watchdog_tripped(now_monotonic=still_safe + 0.1) is True
 
 
