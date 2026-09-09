@@ -422,10 +422,22 @@ export function bootstrap(opts: BootstrapOptions): {
   const bridge = createCaptainBridge({
     canvas: opts.canvas,
     enableXr: true,
-    // Панель сменила стрим через меню (R10): подписываемся на новый топик
-    // и отписываемся от старого, если его больше никто не показывает.
+    // Панель сменила стрим через меню (R10, closes #2236):
+    //   1) Шлём `stream_select` — мета-команду UI: сервер проверяет, что
+    //      топик есть в registry, и возвращает `stream_select_ack` с
+    //      kind/stream_id. До этого фикса клиент только менял локальный
+    //      стор панели и подписку, а серверный обработчик висел мёртвым
+    //      (ws_server.py:2149).
+    //   2) Подписываемся на новый топик (мета-команда может вернуть
+    //      `stream_id: null`, тогда SUBSCRIBE нужен; если уже подписаны —
+    //      идемпотентно, см. ws_server._on_subscribe).
+    //   3) Отписываемся от старого, если его больше никто не показывает.
     onPanelTopicChange: (_panelId, oldTopic, newTopic) => {
       if (!conn || disconnected) return;
+      // Мета-команда: UI запросил смену активного стрима. sendCmd логирует
+      // и гасит исключение, чтобы сбой отправки не уронил локальный обмен
+      // подписками ниже.
+      sendCmd({ cmd: "stream_select", topic: newTopic, ts_ms: Date.now() });
       conn.subscribe(newTopic);
       const stillUsed = bridge.videoTopics().includes(oldTopic);
       if (!stillUsed) conn.unsubscribe(oldTopic);
