@@ -3340,14 +3340,17 @@ except Exception:
         #
         # Issue #1625 (Шифу 25.08): develop build больше не триггерим
         # автоматически — develop-HEAD собирается вручную или push-триггером
-        # L-Build-All-Services.yml. main build ОБЯЗАТЕЛЕН (production safety).
-        # Двойная защита: merge-gate guard И post-merge-build.sh skip-блок.
+        # L-Build-All-Services.yml. main build ОБЯЗАТЕЛЕН (production safety)
+        # и обеспечивается двумя независимыми путями (ADR-0088):
+        #   1. workflow G-Auto-merge-to-Main триггерит build после merge в main;
+        #   2. agent-flow-post-merge-build.sh сам skip'ает develop.
+        #
+        # ВНУТРЕННИЙ guard ниже НЕ ТРИГГЕРИТСЯ: внешний `if [ "$pr_state" = "MERGED" ]
+        # && [ "$pr_base" = "$DEVELOP_BRANCH" ]` гарантирует $pr_base == develop,
+        # поэтому ветка `elif [ base=main ]` исторически мертва. Оставлен
+        # единственный лог-маркер (issue #1625 acceptance), никаких сайд-эффектов.
         if [ "$pr_base" = "$DEVELOP_BRANCH" ]; then
             log "issue #${number}: skipping post-merge build for ${pr_base} (Шифу 25.08, issue #1625)"
-        elif [ -n "${REPO_DIR:-}" ] && [ -d "$REPO_DIR" ] && [ -f "${REPO_DIR}/scripts/agent_flow/agent-flow-post-merge-build.sh" ]; then
-            if ! bash "${REPO_DIR}/scripts/agent_flow/agent-flow-post-merge-build.sh" "${pr_number}" "${pr_base}" 2>/dev/null; then
-                log "issue #${number}: WARNING post-merge build trigger failed (non-fatal, push-trigger should retry)"
-            fi
         fi
         # 0.1) Re-read current labels & state — race with e2e-process
         # (e2e-process may have set e2e-done between our initial issue-list
