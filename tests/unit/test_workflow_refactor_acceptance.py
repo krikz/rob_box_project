@@ -3,10 +3,13 @@
 Issue #2280 acceptance:
 - каждый build-job в L-Build Main Pi Services.yml и L-Build Vision Pi
   Services.yml вызывает ./.github/actions/l-build-service для сборки (buildx
-  --push, единая сборка флагов) + опциональный pre-step для per-service
-  cache-invalidation хешей.
-- buildx --push используется вместо --load + docker push (двойная работа
-  через local docker daemon устранена).
+  --load + docker push ТОЛЬКО локального registry, единая сборка флагов) +
+  опциональный pre-step для per-service cache-invalidation хешей.
+- GHCR никогда не пушится на локальных test/dev сборках: runner не залогинен
+  в ghcr.io (issue #1503) — buildx --push по GHCR-тегу падал unauthorized
+  (run #34368750126). Поэтому образ собирается в daemon (--load), а пушится
+  только LOCAL-тег (localhost:5000); update-image-versions делает `docker tag`
+  из локального daemon.
 
 ВАЖНО (fix run #34366133083): composite action — buildx-only. GitHub
 требует, чтобы репозиторий был зачекаутен ДО вызова локального composite
@@ -362,11 +365,11 @@ def test_apt_proxy_present_in_every_build_job_with_base_image():
 
 
 def test_no_docker_push_or_load_left_in_build_jobs():
-    """No build-job should still have an inline `docker push` or `--load` flag.
+    """No build-job should have inline `docker push` or `--load` logic.
 
-    Цель рефакторинга — устранить двойную работу (buildx --load → docker
-    daemon → docker push). Если в каком-то job'е остался legacy
-    `--load` или `docker push` в pre/post-step'е — регрессия.
+    Вся docker-логика живёт в composite action (l-build-service). Если в
+    каком-то job'е остался inline `docker push` / `--load` в pre/post-step'е —
+    регрессия (копипаст вернулся в job'ы).
     """
     for src in (MAIN_WF, VISION_WF):
         data = _load(src)

@@ -7,7 +7,10 @@ parse the action.yml, extract the bash script, and unit-test the input-
 parsing / flag-assembly logic in isolation.
 
 These tests guard against the regressions that motivated the refactor
-(issue #2280 acceptance: «buildx --push вместо --load + docker push»).
+(issue #2280): buildx --load (daemon, needed by update-image-versions) +
+`docker push` ТОЛЬКО локального registry — GHCR никогда не пушится на
+локальных test/dev сборках (runner не залогинен в ghcr.io, issue #1503;
+run #34368750126 — buildx --push по GHCR-тегу падал unauthorized).
 """
 
 from __future__ import annotations
@@ -59,6 +62,8 @@ def _fake_docker(monkeypatch, tmp_path: Path) -> Path:
     fake.write_text(
         "#!/usr/bin/env bash\n"
         f"printf '%s\\n' \"$@\" >> \"{log}\"\n"
+        # Marker line so tests can split the log back into per-invocation argv.
+        f"printf '%s\\n' '#DOCKER-CALL#' >> \"{log}\"\n"
         "exit 0\n"
     )
     fake.chmod(0o755)
@@ -67,6 +72,25 @@ def _fake_docker(monkeypatch, tmp_path: Path) -> Path:
     # git submodule status is consulted when compute-submodule-sha is set —
     # monkeypatching git is out of scope; tests that use it skip if git fails.
     return log
+
+
+def _invocations(log_text: str) -> list[list[str]]:
+    """Split the fake-docker log into per-invocation argv lists.
+
+    The fake docker appends one argv per line and a '#DOCKER-CALL#' separator
+    between invocations (buildx build, then one `docker push` per LOCAL tag).
+    """
+    calls: list[list[str]] = []
+    cur: list[str] = []
+    for line in log_text.splitlines():
+        if line == "#DOCKER-CALL#":
+            calls.append(cur)
+            cur = []
+        else:
+            cur.append(line)
+    if cur:
+        calls.append(cur)
+    return calls
 
 
 def _fake_git_submodule(monkeypatch, tmp_path: Path, sha: str = "abc1234567890") -> Path:
@@ -130,13 +154,18 @@ def _run_build_step(
         expanded = expanded.replace(placeholder, value)
 
     # Run with -e (errexit, like set -euo pipefail). Set HOME to something
-    # writable so mktemp works.
+    # writable so mktemp works. We pass the FULL os.environ (not a stripped
+    # env): on Windows Git Bash fails to start without SystemRoot etc., so a
+    # minimal {HOME, PATH} env would break these tests on dev machines (they
+    # only passed on Linux CI where bash does not need Windows env vars).
+    env = dict(__import__("os").environ)
+    env["HOME"] = "/tmp"
     return subprocess.run(
         ["bash", "-e", "-c", expanded],
         capture_output=True,
         text=True,
         check=False,
-        env={"HOME": "/tmp", "PATH": __import__("os").environ["PATH"]},
+        env=env,
     )
 
 
@@ -182,7 +211,8 @@ def test_action_declares_expected_inputs():
 
 
 def test_build_with_two_tags_and_one_build_arg(monkeypatch, tmp_path):
-    """Multi-line inputs parse correctly: 2 --tag + 1 --build-arg."""
+    """2 --tag + 1 --build-arg → buildx --load (both tags), then docker push
+    ONLY the localhost:5000 tag (GHCR is never pushed on local builds)."""
     log = _fake_docker(monkeypatch, tmp_path)
     action = _load_action_yaml()
     bash_body = _extract_build_step_bash(action)
@@ -192,35 +222,59 @@ def test_build_with_two_tags_and_one_build_arg(monkeypatch, tmp_path):
         build_args="APT_PROXY=http://host.docker.internal:3142",
     )
     assert cp.returncode == 0, f"build script failed:\nstderr: {cp.stderr}\nstdout: {cp.stdout}"
-    argv = log.read_text().splitlines()
-    # buildx build followed by --platform linux/arm64 --file <...> ...
-    assert argv[0] == "buildx"
-    assert argv[1] == "build"
-    assert "--platform" in argv and "linux/arm64" in argv
-    assert "--file" in argv and "docker/main/robot_state_publisher/Dockerfile" in argv
-    # --push mode (default load=false)
-    assert "--push" in argv, f"expected --push in argv: {argv}"
-    assert "--load" not in argv, f"did not expect --load: {argv}"
+    calls = _invocations(log.read_text())
+    build = next(c for c in calls if c[:2] == ["buildx", "build"])
+    pushes = [c for c in calls if c and c[0] == "push"]
+    # buildx build --load with both tags (GHCR + LOCAL)
+    assert "--platform" in build and "linux/arm64" in build
+    assert "--file" in build and "docker/main/robot_state_publisher/Dockerfile" in build
+    # --load mode (default load=false builds into the daemon — update-image-versions
+    # does `docker tag` from the daemon). Never --push (GHCR would be unauthorized).
+    assert "--load" in build, f"expected --load in build argv: {build}"
+    assert "--push" not in build, f"did not expect --push: {build}"
     # --tag appears twice (2 tags)
-    tag_idx = [i for i, x in enumerate(argv) if x == "--tag"]
-    assert len(tag_idx) == 2, f"expected 2 --tag flags, got {len(tag_idx)}"
-    assert "localhost:5000/krikz/rob_box:robot-state-publisher-humble-test" in argv
-    assert "ghcr.io/krikz/rob_box:robot-state-publisher-humble-test" in argv
-    # --build-arg appears once (single-element form: "--build-arg=KEY=VAL")
-    ba_idx = [i for i, x in enumerate(argv) if x.startswith("--build-arg=")]
-    assert len(ba_idx) == 1, f"expected 1 --build-arg=…, got {len(ba_idx)}: {argv}"
-    # The KEY=VAL form lives inside the single element
-    assert "--build-arg=APT_PROXY=http://host.docker.internal:3142" in argv
-    # build context is last positional arg
-    assert argv[-1] == "."
+    tag_idx = [i for i, x in enumerate(build) if x == "--tag"]
+    assert len(tag_idx) == 2, f"expected 2 --tag flags, got {len(tag_idx)}: {build}"
+    assert "localhost:5000/krikz/rob_box:robot-state-publisher-humble-test" in build
+    assert "ghcr.io/krikz/rob_box:robot-state-publisher-humble-test" in build
+    # single --build-arg in KEY=VAL form
+    ba_args = [x for x in build if x.startswith("--build-arg=")]
+    assert ba_args == ["--build-arg=APT_PROXY=http://host.docker.internal:3142"], ba_args
+    # docker push targets ONLY the LOCAL tag — GHCR is never pushed on local/test
+    # builds (runner not logged into ghcr.io, issue #1503; buildx --push of the
+    # GHCR tag failed with unauthorized in run #34368750126).
+    assert len(pushes) == 1, f"expected exactly 1 docker push (LOCAL), got: {pushes}"
+    assert pushes[0] == [
+        "push",
+        "localhost:5000/krikz/rob_box:robot-state-publisher-humble-test",
+    ], pushes[0]
+
+
+def test_ghcr_tag_is_never_pushed(monkeypatch, tmp_path):
+    """Regression (run #34368750126): docker push must ONLY target the local
+    registry. GHCR tags are loaded into the daemon (--load) but NOT pushed."""
+    log = _fake_docker(monkeypatch, tmp_path)
+    action = _load_action_yaml()
+    bash_body = _extract_build_step_bash(action)
+    cp = _run_build_step(
+        bash_body,
+        tags="ghcr.io/krikz/rob_box:svc-humble-test\nlocalhost:5000/krikz/rob_box:svc-humble-test",
+        build_args="APT_PROXY=http://host.docker.internal:3142",
+    )
+    assert cp.returncode == 0, f"build script failed:\n{cp.stderr}\n{cp.stdout}"
+    calls = _invocations(log.read_text())
+    pushes = [c for c in calls if c and c[0] == "push"]
+    assert pushes == [["push", "localhost:5000/krikz/rob_box:svc-humble-test"]], (
+        f"expected ONLY localhost:5000 push, got: {pushes}"
+    )
 
 
 def test_load_true_yields_load_flag_not_push(monkeypatch, tmp_path):
-    """When load=true, the script uses --load and NOT --push.
+    """load=true → buildx --load only, and NO docker push to the registry.
 
-    This is the explicit escape hatch — see action.yml docstring for
-    load=true use case («docker run после build»). Default load=false
-    uses --push which is the issue-2280 recommendation.
+    Explicit escape hatch (см. action.yml): образ только в локальном docker
+    daemon, например для `docker run` в том же job'е. Default load=false →
+    buildx --load + docker push тегов ЛОКАЛЬНОГО registry (GHCR не пушится).
     """
     log = _fake_docker(monkeypatch, tmp_path)
     action = _load_action_yaml()

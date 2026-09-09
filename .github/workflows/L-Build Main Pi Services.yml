@@ -68,9 +68,12 @@ jobs:
   # actions/checkout"). Поэтому каждый build-job начинается с clean-stale
   # submodules + checkout (как и до рефакторинга), затем опциональный
   # pre-step для специфичных cache-invalidation хешей (URDF_FILES_HASH —
-  # per-job) и уже потом composite-call. buildx --push (а не --load +
-  # docker push) исключает двойную работу (docker daemon → push),
-  # см. acceptance #2280.
+  # per-job) и уже потом composite-call. Внутри composite: buildx --load
+  # (образ в daemon — нужен update-image-versions) + docker push ТОЛЬКО
+  # локального registry. GHCR не пушим на локальных test/dev сборках
+  # (runner не залогинен в ghcr.io, issue #1503; buildx --push по GHCR-тегу
+  # падал unauthorized — run #34368750126).
+  # См. acceptance #2280.
 
   build-robot-state-publisher:
     needs: prepare
