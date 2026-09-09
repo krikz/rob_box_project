@@ -1379,6 +1379,15 @@ class QuestBridge:
         арбитраж floor вынесен из supervisor_node, issue #1987).
         Декодируем **только** через ``rob_box_supervisor.core.state.unpack``
         (AV-14), сохраняем bytes в cache и пушим в WS через ws_server.
+
+        issue #2190 (voice-vr 05): дополнительно обновляем
+        ``AvatarStateFloorCache`` через
+        :py:meth:`rob_box_quest.core.floor.AvatarStateFloorCache.update` —
+        это даёт нам diff (``FloorViewUpdate``), на основании которого
+        QuestBridge может отослать ``JSON_EVENT{floor_lost}`` бывшему
+        держателю (avatar_supervisor перехватил или освободил floor).
+        Сам update и notify делаются в aiohttp-loop через
+        ``_dispatch_state_update``.
         """
         raw_text = getattr(msg, "data", None)
         if not isinstance(raw_text, str):
@@ -1393,7 +1402,7 @@ class QuestBridge:
                 unpack as _state_unpack,
             )  # noqa: WPS433
 
-            _state_unpack(raw_bytes)
+            decoded_state = _state_unpack(raw_bytes)
         except Exception as exc:  # noqa: BLE001
             # Schema-version mismatch или мусор — не падаем, лог + пропуск.
             self._node.get_logger().debug(f"avatar/state decode skipped: {exc}")
@@ -1402,26 +1411,78 @@ class QuestBridge:
         with self._avatar_state_lock:
             self._avatar_state_cache = raw_bytes
 
-        # WS broadcast в v2-сессии (потокобезопасно через run_coroutine_threadsafe).
+        # Парсим teleop_floor в AvatarFloorSnapshot и обновляем FloorCache.
+        # Возвращает diff (FloorViewUpdate) — по нему решим, кому слать
+        # JSON_EVENT{floor_lost} (issue #2190). Парсинг и обновление идём
+        # в aiohttp-loop (там же broadcast_state_update), чтобы не было
+        # гонок на FloorCache (он рассчитан на single-thread).
+        snapshot = self._avatar_state_to_snapshot(decoded_state)
         if self._aio_send_loop is None:
             return
         loop = self._aio_send_loop
         try:
             asyncio.run_coroutine_threadsafe(
-                self._dispatch_state_update(raw_bytes), loop
+                self._dispatch_state_update(raw_bytes, snapshot), loop
             )
         except RuntimeError:
             pass  # loop уже закрыт
 
-    async def _dispatch_state_update(self, raw_bytes: bytes) -> None:
-        """Async coroutine для ``broadcast_state_update``.
+    @staticmethod
+    def _avatar_state_to_snapshot(state: Any) -> "AvatarFloorSnapshot":
+        """AvatarState (rob_box_supervisor) → AvatarFloorSnapshot.
+
+        Контракт: ``state.teleop_floor.client_id`` — server_client_id
+        (``"quest:<uuid>"``), см. issue #2190 §«единый client_id». Если
+        avatar_arbiter пишет туда session_id или любой другой формат —
+        это ошибка вызывающей стороны (исправится в Phase 2).
+        """
+        from rob_box_quest.core.floor import AvatarFloorSnapshot
+
+        teleop = state.teleop_floor
+        voice = state.voice_floor
+        return AvatarFloorSnapshot(
+            teleop_holder=(teleop.client_id if teleop is not None else None),
+            voice_holder=(voice.client_id if voice is not None else None),
+            avatar_mode=str(state.mode) if state.mode else "off",
+            schema_version=int(state.version) if state.version else None,
+        )
+
+    async def _dispatch_state_update(
+        self,
+        raw_bytes: bytes,
+        snapshot: "AvatarFloorSnapshot",
+    ) -> None:
+        """Async coroutine для ``broadcast_state_update`` + diff-handling.
 
         Выполняется в aiohttp-loop thread; никакого rclpy внутри.
+        Делает:
+          1) ``ws_server.update_floor_cache(snapshot)`` → FloorViewUpdate.
+          2) ``ws_server.broadcast_state_update(raw_bytes)`` — STATE_UPDATE
+             всем v2-клиентам (msgpack).
+          3) Если diff показал «prev_holder был наш server_client_id» —
+             ``JSON_EVENT{floor_lost}`` в сокет этого клиента (через
+             ``ws_server.notify_floor_lost(prev_holder)``).
         """
+        try:
+            diff = self._ws_server.update_floor_cache(snapshot)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("update_floor_cache failed: %s", exc)
+            diff = None
         try:
             self._ws_server.broadcast_state_update(raw_bytes)
         except Exception as exc:  # noqa: BLE001
             log.debug("dispatch_state_update failed: %s", exc)
+        if diff is None:
+            return
+        # issue #2190: если diff показывает, что prev_holder был «наш»
+        # server_client_id (т.е. одна из наших Quest-сессий), шлём
+        # JSON_EVENT{floor_lost} в её сокет. avatar_supervisor перехватил
+        # floor (или отпустил) — клиент должен DISARM-нуть.
+        if diff.teleop_lost and diff.prev_teleop_holder:
+            self._ws_server.notify_floor_lost_external(
+                diff.prev_teleop_holder,
+                reason="avatar_supervisor_released_or_replaced",
+            )
 
 
 def _trigger_response_to_dict(response: Any) -> dict:
@@ -1530,9 +1591,13 @@ class QuestNode(Node):
         # которому идёт WSS до Quest. Пустое имя = первый интерфейс в таблице.
         self.declare_parameter("wifi_iface", "")
         # AV-19 (issue #1911, ADR-0028 §4.4): гейт teleop_floor.
-        # Default=false чтобы не сломать текущий рабочий мостик; включается
-        # # отдельным коммитом после e2e (карточка явно просит).
-        self.declare_parameter("require_teleop_floor", False)
+        # issue #2190 (voice-vr 05): default=True — раньше был False
+        # («не сломать текущий рабочий мостик»), теперь включаем по
+        # умолчанию и считаем это прод-готовым поведением. Если кто-то
+        # сознательно ставит False (отладка, e2e без второй сессии) —
+        # WARNING на старте про «аварийный обход» (см. _require_teleop_floor
+        # ниже).
+        self.declare_parameter("require_teleop_floor", True)
         # AV-26 / R7: robot_alert пороги (см. streams/alerts.py). Дефолты
         # дублируют значения из webxr_client/src/scene/status_hud.ts — клиент
         # и сервер не должны разъезжаться на «свечке» (acceptance: «в PR
@@ -1557,6 +1622,18 @@ class QuestNode(Node):
         self._require_teleop_floor = bool(
             self.get_parameter("require_teleop_floor").value
         )
+        if not self._require_teleop_floor:
+            # issue #2190 (voice-vr 05): дефолт теперь True; explicit
+            # False — аварийный обход гейта. Логируем на старте WARNING,
+            # чтобы Шифу увидел в docker logs: «эта нода работает без
+            # gate teleop_floor — кто угодно может уехать». Сам гейт
+            # в ws_server тогда просто пропускает teleop_twist без
+            # проверки holder-а (silent_gate в логах).
+            self.get_logger().warning(
+                "⚠️ require_teleop_floor=False — АВАРИЙНЫЙ ОБХОД гейта teleop_floor: "
+                "любой Quest-клиент может публиковать cmd_vel_quest без floor-а. "
+                "Рекомендуемый default=True (issue #2190). Проверьте launch-файл."
+            )
         self._alert_thresholds = _read_alert_thresholds(self)
 
         # Publishers (см. twist_mux.yaml: priority 40 quest, 255 emergency).

@@ -55,6 +55,33 @@ from typing import Optional
 QUEST_DEFAULT_CLIENT_ID: str = "quest"
 
 
+def make_server_client_id(session_id: Optional[str]) -> str:
+    """Серверный ``client_id`` для ``session_id``.
+
+    Единый формат по issue #2190 (voice-vr 05): все точки
+    соприкосновения (ws_server gate, heartbeat, avatar_arbiter
+    client, STATE_UPDATE в браузер) используют один и тот же
+    ``server_client_id`` (``"quest:<session_uuid>"``) — это
+    «внешнее имя» сессии, которое видит avatar_supervisor и
+    клиент в /avatar/state. Раньше в LocalAvatarArbiterClient
+    хранился ``session_id`` напрямую, что приводило к
+    расхождению с supervisor_* API и невозможности сопоставить
+    client_id из STATE_UPDATE с client_id из HELLO.
+
+    ``session_id=None`` → возвращаем пустую строку, чтобы
+    type-checker в тестах и call-sites не ругался на Optional.
+
+    ВАЖНО: дубликат :py:func:`rob_box_quest.server.session.server_client_id`
+    (там же формат строки). Дубликат нужен, чтобы не тащить
+    server/session в core/avatar_arbiter.py (иначе — циркулярный
+    импорт через server/__init__.py → ws_server → avatar_arbiter).
+    Если формат изменится — синхронизировать обе функции.
+    """
+    if not session_id:
+        return ""
+    return f"quest:{session_id}"
+
+
 @dataclass(frozen=True)
 class AvatarFloorSnapshot:
     """Снимок состояния floor-ов из /avatar/state (AV-14, ADR-0051 §2.2).
@@ -131,26 +158,99 @@ class AvatarStateFloorCache:
             return False
         return holder != client_id
 
-    def update(self, snapshot: AvatarFloorSnapshot) -> None:
+    def update(self, snapshot: AvatarFloorSnapshot) -> "FloorViewUpdate":
         """Положить новый снимок из /avatar/state.
 
         Единственный мутирующий метод класса. Вызывается из
         ws_server-овского подписчика на ``/avatar_state_topic``.
 
-        Idempotent: повторный update с тем же snapshot — no-op по
-        смыслу (мы только перезаписываем, side-effect-ов нет).
-        """
-        self._snapshot = snapshot
+        Возвращает :class:`FloorViewUpdate` — diff между prev и next.
+        Это позволяет QuestBridge реагировать на переходы
+        «кто-то держал → нас сняли → JSON_EVENT{floor_lost}» без
+        хранения prev-состояния снаружи (см. issue #2190 §
+        "FloorView.update возвращает, что именно изменилось").
 
-    def reset(self) -> None:
+        Idempotent: повторный update с тем же snapshot — diff
+        с пустыми флагами (вызывающая сторона его игнорирует).
+        """
+        prev = self._snapshot
+        self._snapshot = snapshot
+        return FloorViewUpdate.from_diff(prev=prev, next_snapshot=snapshot)
+
+    def reset(self) -> "FloorViewUpdate":
         """Очистить кэш (используется при reset/shutdown).
 
         В AvatarStateFloorCache нет «освобождения» floor-а (это
         решает LockManager по факту release-вызова). Здесь —
         только сброс локального зеркала, чтобы в UI/логах после
-        reset не висел старый holder.
+        reset не висел старый holder. Возвращает diff, чтобы
+        вызывающая сторона могла разослать JSON_EVENT{floor_lost}
+        прежнему держателю (если он был).
         """
+        prev = self._snapshot
         self._snapshot = AvatarFloorSnapshot()
+        return FloorViewUpdate.from_diff(prev=prev, next_snapshot=self._snapshot)
+
+
+@dataclass(frozen=True)
+class FloorViewUpdate:
+    """Diff, который возвращает :py:meth:`AvatarStateFloorCache.update`.
+
+    Карточка issue #2190 (voice-vr 05): ``FloorView.update`` должен
+    возвращать, **что именно** изменилось — иначе QuestBridge не
+    может решить, кому слать ``JSON_EVENT{floor_lost}`` (только
+    прежнему держателю) и нельзя ли сейчас успокоить UI
+    (``teleopLabel: "my" → "other"``).
+
+    Поля:
+      - ``prev_teleop_holder`` / ``next_teleop_holder`` — что было и
+        что стало (для UI). Оба ``Optional[str]`` (server_client_id
+        вида ``"quest:<session_uuid>"`` или ``None``).
+      - ``teleop_holder_changed`` — True если prev != next (включая
+        None↔X). Удобно для дедупа: вызывающая сторона может
+        игнорировать «пустые» обновления.
+      - ``teleop_lost`` — True если раньше КТО-ТО держал (prev_holder
+        is not None), а теперь НИКТО (next_holder is None). Это
+        условие, при котором прежний держатель должен получить
+        ``JSON_EVENT{floor_lost}`` (Avatar-arbiter отпустил floor
+        целиком — робот не должен продолжать ехать).
+      - ``teleop_replaced`` — True если был один holder, стал другой
+        (не None). Прежний holder получит ``JSON_EVENT{floor_lost}``
+        (его floor забрали).
+      - ``new_teleop_holder`` — алиас ``next_teleop_holder`` для
+        удобства вызывающей стороны («кто теперь держит?»).
+
+    Используется из QuestBridge.on_avatar_state: идём по diff и
+    шлём floor_lost тем WS-сессиям, чей ``server_client_id`` стал
+    неактуальным holder-ом (а не «всем подряд»).
+    """
+
+    prev_teleop_holder: Optional[str]
+    next_teleop_holder: Optional[str]
+    teleop_holder_changed: bool
+    teleop_lost: bool
+    teleop_replaced: bool
+    new_teleop_holder: Optional[str] = None
+
+    @classmethod
+    def from_diff(
+        cls,
+        prev: "AvatarFloorSnapshot",
+        next_snapshot: "AvatarFloorSnapshot",
+    ) -> "FloorViewUpdate":
+        prev_h = prev.teleop_holder
+        next_h = next_snapshot.teleop_holder
+        changed = prev_h != next_h
+        lost = changed and prev_h is not None and next_h is None
+        replaced = changed and prev_h is not None and next_h is not None
+        return cls(
+            prev_teleop_holder=prev_h,
+            next_teleop_holder=next_h,
+            teleop_holder_changed=changed,
+            teleop_lost=lost,
+            teleop_replaced=replaced,
+            new_teleop_holder=next_h,
+        )
 
 
 # === Voice floor (read-only cache) =============================================
@@ -283,4 +383,6 @@ __all__ = [
     "FloorState",
     "FloorHolder",
     "VoiceFloorCache",
+    "FloorViewUpdate",
+    "make_server_client_id",
 ]
