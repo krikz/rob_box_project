@@ -38,9 +38,15 @@ WSS protocol contract: [`docs/architecture/meta-quest-api.md`](../../../docs/arc
   voltage is available), Wi-Fi RSSI, speed, ping/pong RTT, robot mode.
 - **WSS protocol**: `robbox-quest-v1` subprotocol. Implemented: streams
   (video / LiDAR / `robot_status`), teleop, `voice_mode`, voice PTT,
-  `stream_list` / `stream_select`, ping/pong. **Not implemented** (types
-  only in `wire/messages.ts`): TTS picker (`list_voices` / `set_voice` /
-  `preview_voice`), `set_panel_topic`, `admin_logs` — see
+  TTS picker (`list_voices` / `set_voice` / `preview_voice`,
+  см. AV-27 в `main.ts`), ping/pong, and **per-panel stream picker**
+  (`stream_select` → `stream_select_ack`, см. AV-25 / R10): клик по
+  панели открывает 3D-меню (`scene/stream_menu.ts`, ряд мешей с
+  prefix `menu:`) поверх неё; выбор строки шлёт JSON_CMD, сервер
+  проверяет топик в registry и возвращает ack с `stream_id`/`kind`
+  (closes #2236).
+  **Not implemented** (types only in `wire/messages.ts`):
+  `set_panel_topic`, `admin_logs` — see
   `docs/plans/2026-08-30-captain-bridge-feature-audit.md`.
 
 ### Phase 2.3 UX overlays (NEW)

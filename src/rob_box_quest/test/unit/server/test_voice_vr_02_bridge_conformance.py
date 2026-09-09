@@ -212,23 +212,14 @@ def test_server_handlers_have_client_user() -> None:
         # поддерживает для обратной совместимости (см. ws_server.py:1864).
         "voice_listen_start",
         "voice_listen_stop",
-        # stream_select — сервер реализует (ws_server.py, Phase 2 / R10),
-        # клиент не шлёт: `grep -rn stream_select webxr_client/src/`
-        # находит имя только в сгенерированном `wire/protocol_generated.ts`,
-        # то есть в типе, а не в вызове. Модуль меню `scene/stream_menu.ts`
-        # написан (116 строк, экспортирует StreamMenuHandle), но нигде не
-        # смонтирован: `MENU_TARGET_PREFIX` не импортируется ни в main.ts,
-        # ни где-либо ещё.
-        #
-        # ВНИМАНИЕ: `webxr_client/README.md:39-41` относит stream_select к
-        # «Implemented» — README расходится с кодом. Не ссылайтесь на него
-        # как на обоснование этого исключения (в первой редакции этого
-        # комментария была именно такая ошибка).
-        #
-        # Это не «опережающая реализация», а незаконченный шов: либо меню
-        # подключается, либо серверный обработчик и модуль удаляются.
-        # Отслеживается отдельной карточкой.
-        "stream_select",
+        # stream_select (closes #2236): клиент шлёт из main.ts
+        # `onPanelTopicChange` после клика по строке меню
+        # (scene/stream_menu.ts: `topicFromTargetId` → applyMenuChoice →
+        # switchStream → callback). Серверный обработчик — мета-команда:
+        # проверяет топик в registry и возвращает stream_select_ack.
+        # До #2236 клиент только менял локальный стор панели, и эта
+        # запись в KNOWN_SERVER_ONLY была честной отметкой о шве; теперь
+        # шов закрыт и исключение больше не нужно.
     }
     suspicious = sorted(server_cmds - client_cmds - KNOWN_SERVER_ONLY)
     assert not suspicious, (
