@@ -2513,7 +2513,13 @@ async def _json_cmd_teleop_twist(server, ws, session, payload):
         )
         return
     ts_ms, seq = _json_cmd_ts_seq(payload)
-    if server._require_teleop_floor and server._avatar_arbiter.floor_holder != session.session_id:
+    # AV-19 (issue #2190, voice-vr 05): сравниваем с server_client_id,
+    # а не session_id — единый формат «quest:<uuid>» во всех точках
+    # (gate/heartbeat/release/STATE_UPDATE). Это «внешнее имя» сессии,
+    # которое видит avatar_supervisor.
+    if server._require_teleop_floor and server._avatar_arbiter.floor_holder != (
+        session.server_client_id
+    ):
         if server._should_send_floor_held_error(session.session_id):
             await server._send_error(
                 ws,
@@ -2526,18 +2532,29 @@ async def _json_cmd_teleop_twist(server, ws, session, payload):
     server.bridge.publish_quest(linear, angular)
     server.bridge.feed_client_alive()
     try:
-        server.bridge.relay_teleop_heartbeat(session.session_id, ts_ms, seq)
+        # server_client_id гарантированно не None после AUTHENTICATED
+        # (см. ClientSession.mark_authenticated); ``or ""`` — defensive.
+        server.bridge.relay_teleop_heartbeat(
+            session.server_client_id or "", ts_ms, seq
+        )
     except Exception as exc:  # noqa: BLE001
         log.warning("quest: relay_teleop_heartbeat failed: %s", exc)
 
 
 async def _json_cmd_teleop_heartbeat(server, ws, session, payload):
     ts_ms, seq = _json_cmd_ts_seq(payload)
-    if server._require_teleop_floor and server._avatar_arbiter.floor_holder != session.session_id:
+    # AV-19 (issue #2190): сравниваем с server_client_id (как в gate twist).
+    if server._require_teleop_floor and server._avatar_arbiter.floor_holder != (
+        session.server_client_id
+    ):
+        # Тем не менее feed_client_alive — watchdog WSS-сессии
+        # крутится по любой живости клиента.
         server.bridge.feed_client_alive()
         return
     try:
-        server.bridge.relay_teleop_heartbeat(session.session_id, ts_ms, seq)
+        server.bridge.relay_teleop_heartbeat(
+            session.server_client_id or "", ts_ms, seq
+        )
     except Exception as exc:  # noqa: BLE001
         log.warning("quest: relay_teleop_heartbeat failed: %s", exc)
     server.bridge.feed_client_alive()
