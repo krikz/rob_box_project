@@ -20,12 +20,15 @@ issue #2192):
          ``VALID_FLOORS_V2``, ``VALID_MODES_V2``,
          ``VOICE_PIPELINE_DEFAULT_LANGUAGE`` (разбросаны по модулю)
       4. ``src/rob_box_quest/rob_box_quest/server/session.py``
-         — ``ErrorCode`` (8 кодов, дубль ``FLOOR_HELD``/``MODE_CONFLICT``)
+         — ``ErrorCode`` (9 кодов, дубль ``FLOOR_HELD``/``MODE_CONFLICT``
+         + ``UNKNOWN_COMMAND``)
       5. ``src/rob_box_quest/webxr_client/src/wire/messages.ts``
          — ``JsonCmd`` / ``JsonEvent`` union-типы
-         (часть имён сервер НЕ шлёт: ``avatar_set_mode``, ``ui_button``,
-         ``set_panel_topic``, ``admin_logs``; ``voice_pipeline`` живёт
-         в отдельном файле ``wire/voice_pipeline_cmd.ts``)
+         (часть имён сервер НЕ шлёт: ``ui_button``, ``set_panel_topic``,
+         ``admin_logs`` — ``avatar_set_mode``/``avatar_acquire_floor``/
+         ``avatar_release_floor`` сервер обрабатывает с закрытия
+         voice-vr 09; ``voice_pipeline`` живёт в отдельном файле
+         ``wire/voice_pipeline_cmd.ts``)
 
     Плюс шестое место, где контракт переписывался человеческим языком:
 
@@ -311,11 +314,12 @@ class StreamSpec:
 # или в ``_handle_supervisor_command`` (для supervisor_* frame-types 0x30-0x33;
 # они НЕ идут через JSON_CMD.cmd — это отдельный frame-type с msgpack).
 #
-# Команды, которые сервер НЕ обрабатывает (avatar_*, ui_button,
-# set_panel_topic, admin_logs*) — перечислены здесь с
-# ``server_dispatched=False`` для visibility (TS-типы объявлены),
-# но помечены явно. Их серверная поддержка — отдельные карточки
-# (voice-vr 09 и др.).
+# Команды, которые сервер НЕ обрабатывает (ui_button, set_panel_topic,
+# admin_logs*) — перечислены здесь с ``server_dispatched=False`` для
+# visibility (TS-типы объявлены), но помечены явно. Их серверная
+# поддержка — отдельные карточки. avatar_set_mode/avatar_acquire_floor/
+# avatar_release_floor раньше тоже были в этом списке — voice-vr 09
+# закрыт, сервер их диспатчит, поэтому server_dispatched=True (default).
 
 
 COMMANDS: tuple[CommandSpec, ...] = (
@@ -539,24 +543,25 @@ COMMANDS: tuple[CommandSpec, ...] = (
         subprotocol="v2",
         description="Синтез превью голоса (§4.2).",
     ),
-    # ── Не диспатчатся сервером (TS-типы объявлены, но молча игнорируются).
-    # Помечены для visibility и для будущих карточек.
+    # ── [voice-vr 09 / issue #2194] Канонические имена (ADR-0080 §1.2).
+    # Раньше здесь стоял server_dispatched=False (сервер игнорировал —
+    # кнопки режима/floor на мостике молча не работали). Карточка
+    # voice-vr 09 закрыта: ws_server._on_json_cmd теперь диспатчит эти
+    # три имени рядом с legacy supervisor_* алиасом (см. ws_server.py,
+    # блок «[voice-vr 09] канонические имена»).
     CommandSpec(
         name="avatar_set_mode",
         # canonical required_fields=("cmd", "ts_ms", "mode"),
-        # optional_fields=("reason",). Заполнено минимальным payload
-        # от канона; сервер НЕ обрабатывает, тип только для
-        # backward-compat старого webxr_client (main.ts:154).
+        # optional_fields=("reason",).
         payload=_p({"cmd": "avatar_set_mode",
             "ts_ms": "int",
             "mode": "str",
             "reason": "str?"}),
         subprotocol="any",
-        server_dispatched=False,
         description=(
-            "(deprecated alias) Алиас supervisor_set_mode. Шлётся старым "
-            "webxr_client (main.ts:154), сервер не обрабатывает — "
-            "закрывается карточкой voice-vr 09."
+            "Канонический алиас supervisor_set_mode (ADR-0080 §1.2). "
+            "Шлётся webxr_client (main.ts:154); voice-vr 09 закрыт — "
+            "сервер обрабатывает наравне с legacy supervisor_set_mode."
         ),
     ),
     CommandSpec(
@@ -566,10 +571,9 @@ COMMANDS: tuple[CommandSpec, ...] = (
             "ts_ms": "int",
             "kind": "str"}),
         subprotocol="any",
-        server_dispatched=False,
         description=(
-            "(deprecated alias) Алиас supervisor_acquire_floor. "
-            "Шлётся старым webxr_client (main.ts:172)."
+            "Канонический алиас supervisor_acquire_floor (ADR-0080 §1.2). "
+            "Шлётся webxr_client (main.ts:172); voice-vr 09 закрыт."
         ),
     ),
     CommandSpec(
@@ -579,10 +583,9 @@ COMMANDS: tuple[CommandSpec, ...] = (
             "ts_ms": "int",
             "kind": "str"}),
         subprotocol="any",
-        server_dispatched=False,
         description=(
-            "(deprecated alias) Алиас supervisor_release_floor. "
-            "Шлётся старым webxr_client (main.ts:175)."
+            "Канонический алиас supervisor_release_floor (ADR-0080 §1.2). "
+            "Шлётся webxr_client (main.ts:175); voice-vr 09 закрыт."
         ),
     ),
     CommandSpec(
@@ -1052,6 +1055,10 @@ ERRORS: tuple[str, ...] = (
     "MODE_CONFLICT",
     # INTERNAL — необработанное исключение в server-side handler'е.
     "INTERNAL",
+    # UNKNOWN_COMMAND — клиент прислал JSON_CMD с неизвестным ``cmd``
+    # (issue #2194, voice-vr 09). Раньше сервер молча ронял хвост функции
+    # без ERROR/WARNING; теперь — единый код для всех неизвестных команд.
+    "UNKNOWN_COMMAND",
 )
 
 
@@ -1097,6 +1104,10 @@ ERROR_SPECS: tuple[ErrorCodeSpec, ...] = (
     ErrorCodeSpec(
         "INTERNAL",
         "Необработанное исключение в server-side handler'е (§8).",
+    ),
+    ErrorCodeSpec(
+        "UNKNOWN_COMMAND",
+        "JSON_CMD с неизвестным ``cmd`` (issue #2194, voice-vr 09 §8).",
     ),
 )
 

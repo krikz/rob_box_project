@@ -9,12 +9,11 @@
     режима на мостике не работают, см. [voice-vr 09]).
 
 Что фиксирует:
-    - на develop сейчас РОВНО три отсутствующих обработчика:
-      ``avatar_set_mode``, ``avatar_acquire_floor``, ``avatar_release_floor``.
-    - тест остаётся ``xfail(strict=True)`` до закрытия [voice-vr 09] — это
-      честный FAIL по ADR-0018. После фикса серверной части (предполагается
-      алиасинг на ``supervisor_*`` либо полноценные ветки) тест станет
-      зелёным БЕЗ правок самого теста — это и есть контракт.
+    - [voice-vr 09 / issue #2194] ЗАКРЫТ: сервер теперь обрабатывает
+      ``avatar_set_mode``, ``avatar_acquire_floor``, ``avatar_release_floor``
+      (см. ``ws_server.py`` — ветки avatar_* рядом с legacy supervisor_*).
+      ``xfail(strict=True)`` с теста снят — это больше не честный FAIL по
+      ADR-0018, а обычное зелёное утверждение контракта.
 
 Что НЕ проверяет (out of scope):
     - Каталог протокола [voice-vr 07] — этот тест переживёт его появление
@@ -38,8 +37,6 @@ import ast
 import re
 from pathlib import Path
 
-import pytest
-
 
 # --- Пути (относительно src/rob_box_quest/test/unit/server/<file>) ----------
 
@@ -55,15 +52,41 @@ _CLIENT_CMD_LITERAL = re.compile(r'\bcmd:\s*"([a-z_][a-z0-9_]*)"')
 _TS_EVENT_LITERAL = re.compile(r'\btype:\s*"([a-z_][a-z0-9_]*)"')
 
 
+_GENERATED_FILE_MARKER = "GENERATED FILE"
+
+
 def _parse_client_used_commands() -> set[str]:
     """Имена ``cmd: "..."``, которые клиент реально шлёт (grep по .ts).
 
     Соответствует формулировке задачи «собирать имена команд из
     TS-исходников (``cmd: "..."`` в ``webxr_client/src``)».
+
+    [voice-vr 09 / issue #2194 доп. фикс]: наивный grep не отличает
+    ОБЪЯВЛЕНИЕ типа команды (``interface FooCmd { cmd: "foo"; ... }``) от
+    места, где команда реально уходит на сервер. Раньше единственным
+    источником таких объявлений считался ``wire/messages.ts`` — но после
+    того как каталог протокола (см. tools/gen_bridge_protocol_ts.py,
+    [voice-vr 07]) сгенерировал ``wire/protocol_generated.ts``, именно
+    ЭТОТ файл стал содержать per-cmd интерфейсы (``cmd: "set_panel_topic";``
+    и т.п.), а ``messages.ts`` лишь реэкспортирует их union и не матчится
+    регэкспом сам по себе.
+    Мы НЕ можем просто сузить парсер до буквальных ``conn.send({cmd: ...})``
+    сайтов (альтернативный вариант починки) — часть команд (например,
+    ``avatar_acquire_floor`` / ``avatar_release_floor`` в main.ts) строится
+    в отдельной функции и возвращается как ``JsonCmd``, а отправляется уже
+    в вызывающем коде через переменную; такое сужение потеряло бы реальные
+    команды и вернуло бы ложноотрицательный результат (тест перестал бы
+    ловить реальный баг [voice-vr 09]).
+    Поэтому исключаем из обхода файлы, помеченные как сгенерированные
+    (маркер ``GENERATED FILE`` в шапке, см. protocol_generated.ts) — они по
+    определению содержат только объявления типов, а не код отправки.
     """
     names: set[str] = set()
     for ts_file in WEBXR_CLIENT_SRC.rglob("*.ts"):
-        names.update(_CLIENT_CMD_LITERAL.findall(ts_file.read_text(encoding="utf-8")))
+        text = ts_file.read_text(encoding="utf-8")
+        if _GENERATED_FILE_MARKER in text[:200]:
+            continue
+        names.update(_CLIENT_CMD_LITERAL.findall(text))
     return names
 
 
@@ -177,21 +200,14 @@ def _parse_ts_event_union() -> set[str]:
 
 # --- Тест --------------------------------------------------------------------
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "voice-vr 09: сервер не обрабатывает avatar_set_mode / "
-        "avatar_acquire_floor / avatar_release_floor — кнопки режима и floor "
-        "на мостике не работают. Это честный FAIL до фикса (ADR-0018). "
-        "После закрытия [voice-vr 09] тест должен стать зелёным БЕЗ правок."
-    ),
-)
 def test_client_cmds_have_server_handlers() -> None:
     """Каждая команда из webxr_client должна иметь ветку в _on_json_cmd.
 
     Проверяет инвариант «мостик не теряет команды молча» (ADR-0080 §2.2,
-    инвариант 3). Когда [voice-vr 09] закроет серверную сторону — этот
-    тест станет зелёным.
+    инвариант 3). [voice-vr 09 / issue #2194] закрыл серверную сторону
+    (avatar_set_mode / avatar_acquire_floor / avatar_release_floor теперь
+    обрабатываются) — маркер ``xfail(strict=True)`` снят, тест стал
+    обычным зелёным утверждением контракта.
     """
     client_cmds = _parse_client_used_commands()
     server_cmds = _parse_server_cmd_handlers()
@@ -229,6 +245,23 @@ def test_server_handlers_have_client_user() -> None:
         # поддерживает для обратной совместимости (см. ws_server.py:1864).
         "voice_listen_start",
         "voice_listen_stop",
+        # stream_select — сервер реализует (ws_server.py, Phase 2 / R10),
+        # клиент не шлёт: `grep -rn stream_select webxr_client/src/`
+        # находит имя только в сгенерированном `wire/protocol_generated.ts`,
+        # то есть в типе, а не в вызове. Модуль меню `scene/stream_menu.ts`
+        # написан (116 строк, экспортирует StreamMenuHandle), но нигде не
+        # смонтирован: `MENU_TARGET_PREFIX` не импортируется ни в main.ts,
+        # ни где-либо ещё.
+        #
+        # ВНИМАНИЕ: `webxr_client/README.md:39-41` относит stream_select к
+        # «Implemented» — README расходится с кодом. Не ссылайтесь на него
+        # как на обоснование этого исключения (в первой редакции этого
+        # комментария была именно такая ошибка).
+        #
+        # Это не «опережающая реализация», а незаконченный шов: либо меню
+        # подключается, либо серверный обработчик и модуль удаляются.
+        # Отслеживается отдельной карточкой.
+        "stream_select",
     }
     suspicious = sorted(server_cmds - client_cmds - KNOWN_SERVER_ONLY)
     assert not suspicious, (

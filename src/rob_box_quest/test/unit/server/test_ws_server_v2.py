@@ -693,3 +693,243 @@ async def test_protocol_version_field_in_session_after_handshake(v2_client):
             await ws.close()
         except Exception:  # noqa: BLE001
             pass
+
+
+# === [voice-vr 09 / issue #2194] avatar_* canonical names ===================
+# До этой правки клиент шлёт avatar_set_mode / avatar_acquire_floor /
+# avatar_release_floor, а сервер знал только supervisor_*. Кликал оператор
+# кнопку на панели мостика — сервер молча ронял хвост _on_json_cmd,
+# ERROR не возвращался (DoD #3 карточки). Ниже — acceptance для новых
+# канонических имён и для терминального ERROR{UNKNOWN_COMMAND}.
+
+
+async def test_v2_json_cmd_avatar_set_mode_calls_bridge(v2_client, fixed_pin):
+    """JSON_CMD{avatar_set_mode} → bridge.supervisor_set_mode с правильным mode.
+
+    Acceptance [voice-vr 09 / #2194]: смена режима с панели меняет avatar_mode.
+    """
+    http_client, server = v2_client
+    ws = await _open_ws(http_client, "robbox-quest-v2")
+    try:
+        await _send_hello(ws, fixed_pin)
+        await _drain_welcome(ws)
+        body = json.dumps(
+            {"cmd": "avatar_set_mode", "ts_ms": 1000, "mode": "avatar_present"}
+        ).encode("utf-8")
+        await ws.send_bytes(encode_frame(FrameType.JSON_CMD, 0, body))
+
+        def is_state_event(ftype, p):
+            if ftype != FrameType.JSON_EVENT:
+                return False
+            try:
+                ev = json.loads(p.decode("utf-8"))
+            except Exception:  # noqa: BLE001
+                return False
+            return ev.get("type") == "supervisor_state"
+
+        result = await _read_first(ws, is_state_event, timeout_s=1.0)
+        assert result[0] != "TIMEOUT"
+        # Bridge получил client_id от сервера и mode от клиента.
+        assert server.bridge.set_mode_calls, "supervisor_set_mode not called"
+        called_client_id, called_mode = server.bridge.set_mode_calls[0]
+        assert called_mode == "avatar_present"
+        assert called_client_id == server_client_id(
+            list(server._sessions.values())[0].session_id
+        )
+    finally:
+        try:
+            await ws.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+async def test_v2_json_cmd_avatar_acquire_floor_with_kind_payload(v2_client, fixed_pin):
+    """JSON_CMD{avatar_acquire_floor, kind:'voice'} → bridge.supervisor_acquire_floor(floor='voice').
+
+    Acceptance [voice-vr 09 / #2194]: payload-формат канонического
+    имени — поле ``kind`` (см. wire/messages.ts AvatarAcquireFloorCmd).
+    Сервер нормализует в ``floor`` для bridge.
+    """
+    http_client, server = v2_client
+    ws = await _open_ws(http_client, "robbox-quest-v2")
+    try:
+        await _send_hello(ws, fixed_pin)
+        await _drain_welcome(ws)
+        body = json.dumps(
+            {"cmd": "avatar_acquire_floor", "ts_ms": 1000, "kind": "voice"}
+        ).encode("utf-8")
+        await ws.send_bytes(encode_frame(FrameType.JSON_CMD, 0, body))
+
+        def is_state_event(ftype, p):
+            if ftype != FrameType.JSON_EVENT:
+                return False
+            try:
+                ev = json.loads(p.decode("utf-8"))
+            except Exception:  # noqa: BLE001
+                return False
+            return ev.get("type") == "supervisor_state"
+
+        result = await _read_first(ws, is_state_event, timeout_s=1.0)
+        assert result[0] != "TIMEOUT"
+        assert server.bridge.acquire_calls, "supervisor_acquire_floor not called"
+        assert server.bridge.acquire_calls[0][1] == "voice"
+    finally:
+        try:
+            await ws.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+async def test_v2_json_cmd_avatar_release_floor_with_kind_payload(v2_client, fixed_pin):
+    """JSON_CMD{avatar_release_floor, kind:'teleop'} → bridge.supervisor_release_floor(floor='teleop').
+
+    Acceptance [voice-vr 09 / #2194]: «отпустить руль» с панели даёт
+    release_floor этой сессии, отказ показывает тост.
+    """
+    http_client, server = v2_client
+    ws = await _open_ws(http_client, "robbox-quest-v2")
+    try:
+        await _send_hello(ws, fixed_pin)
+        await _drain_welcome(ws)
+        body = json.dumps(
+            {"cmd": "avatar_release_floor", "ts_ms": 1000, "kind": "teleop"}
+        ).encode("utf-8")
+        await ws.send_bytes(encode_frame(FrameType.JSON_CMD, 0, body))
+
+        def is_state_event(ftype, p):
+            if ftype != FrameType.JSON_EVENT:
+                return False
+            try:
+                ev = json.loads(p.decode("utf-8"))
+            except Exception:  # noqa: BLE001
+                return False
+            return ev.get("type") == "supervisor_state"
+
+        result = await _read_first(ws, is_state_event, timeout_s=1.0)
+        assert result[0] != "TIMEOUT"
+        assert server.bridge.release_calls, "supervisor_release_floor not called"
+        assert server.bridge.release_calls[0][1] == "teleop"
+    finally:
+        try:
+            await ws.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+async def test_v2_json_cmd_avatar_acquire_floor_rejects_unknown_kind(v2_client, fixed_pin):
+    """avatar_acquire_floor c kind='bogus' → ERROR{BAD_PAYLOAD}, bridge не зовётся."""
+    http_client, server = v2_client
+    ws = await _open_ws(http_client, "robbox-quest-v2")
+    try:
+        await _send_hello(ws, fixed_pin)
+        await _drain_welcome(ws)
+        body = json.dumps(
+            {"cmd": "avatar_acquire_floor", "ts_ms": 1000, "kind": "bogus"}
+        ).encode("utf-8")
+        await ws.send_bytes(encode_frame(FrameType.JSON_CMD, 0, body))
+
+        def is_bad_payload(ftype, p):
+            if ftype != FrameType.ERROR:
+                return False
+            try:
+                err = json.loads(p.decode("utf-8"))
+            except Exception:  # noqa: BLE001
+                return False
+            return err.get("code") == "BAD_PAYLOAD"
+
+        result = await _read_first(ws, is_bad_payload, timeout_s=1.0)
+        assert result[0] != "TIMEOUT"
+        assert server.bridge.acquire_calls == []
+    finally:
+        try:
+            await ws.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+async def test_v2_unknown_json_cmd_returns_error_unknown_command(v2_client, fixed_pin, caplog):
+    """Неизвестный cmd → ERROR{UNKNOWN_COMMAND} + WARNING в лог (DoD #3 карточки #2194)."""
+    import logging
+
+    http_client, server = v2_client
+    ws = await _open_ws(http_client, "robbox-quest-v2")
+    try:
+        await _send_hello(ws, fixed_pin)
+        await _drain_welcome(ws)
+        body = json.dumps({"cmd": "totally_made_up_cmd", "foo": 1}).encode("utf-8")
+        with caplog.at_level(logging.WARNING):
+            await ws.send_bytes(encode_frame(FrameType.JSON_CMD, 0, body))
+
+        def is_unknown(ftype, p):
+            if ftype != FrameType.ERROR:
+                return False
+            try:
+                err = json.loads(p.decode("utf-8"))
+            except Exception:  # noqa: BLE001
+                return False
+            return err.get("code") == "UNKNOWN_COMMAND"
+
+        result = await _read_first(ws, is_unknown, timeout_s=1.0)
+        assert result[0] != "TIMEOUT", "ERROR{UNKNOWN_COMMAND} not received"
+        ftype, raw = result
+        err = json.loads(raw.decode("utf-8"))
+        assert err["code"] == "UNKNOWN_COMMAND"
+        assert "totally_made_up_cmd" in err["message"]
+        # WARNING улетел в лог (см. _on_json_cmd terminal else).
+        assert any(
+            "unknown JSON_CMD" in rec.message and "totally_made_up_cmd" in rec.message
+            for rec in caplog.records
+        ), "no WARNING log for unknown cmd"
+    finally:
+        try:
+            await ws.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+async def test_v2_legacy_supervisor_set_mode_still_works_with_warning(
+    v2_client, fixed_pin, caplog
+):
+    """Legacy ``supervisor_set_mode`` остаётся работоспособным alias + пишет WARNING.
+
+    Acceptance [voice-vr 09 / #2194] «Что входит»: supervisor_*
+    остаются алиасами на один релиз с WARNING при использовании.
+    """
+    import logging
+
+    http_client, server = v2_client
+    ws = await _open_ws(http_client, "robbox-quest-v2")
+    try:
+        await _send_hello(ws, fixed_pin)
+        await _drain_welcome(ws)
+        body = json.dumps(
+            {"cmd": "supervisor_set_mode", "client_id": "any", "mode": "teleop_only"}
+        ).encode("utf-8")
+        with caplog.at_level(logging.WARNING):
+            await ws.send_bytes(encode_frame(FrameType.JSON_CMD, 0, body))
+
+        def is_state_event(ftype, p):
+            if ftype != FrameType.JSON_EVENT:
+                return False
+            try:
+                ev = json.loads(p.decode("utf-8"))
+            except Exception:  # noqa: BLE001
+                return False
+            return ev.get("type") == "supervisor_state"
+
+        result = await _read_first(ws, is_state_event, timeout_s=1.0)
+        assert result[0] != "TIMEOUT"
+        # Bridge всё-таки вызвался (legacy alias работает).
+        assert server.bridge.set_mode_calls
+        assert server.bridge.set_mode_calls[0][1] == "teleop_only"
+        # WARNING в лог ушёл.
+        assert any(
+            "deprecated JSON_CMD alias" in rec.message
+            and "supervisor_set_mode" in rec.message
+            for rec in caplog.records
+        ), "no WARNING log for legacy supervisor_* alias"
+    finally:
+        try:
+            await ws.close()
+        except Exception:  # noqa: BLE001
+            pass

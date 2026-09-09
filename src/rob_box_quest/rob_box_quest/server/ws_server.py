@@ -2177,12 +2177,35 @@ class WSSServer:
         # === AV-16: supervisor_* JSON-эквиваленты (§5.1) =====================
         # Доступно только v2-сессиям; v1 → ERROR{PROTOCOL_VERSION} тем же
         # поведенческим контрактом, что и в _handle_supervisor_command.
+        #
+        # [voice-vr 09 / issue #2194]: канонические имена —
+        # ``avatar_set_mode`` / ``avatar_acquire_floor`` /
+        # ``avatar_release_floor`` (мета-API ADR-0080 §1.2, payload с
+        # полем ``kind``). Прежние ``supervisor_*`` остаются рабочими
+        # алиасами (старые клиенты, тесты в test_ws_server_v2.py) — но
+        # каждое использование логируем WARNING, чтобы легче отследить
+        # откат на старые имена в полевых логах.
         if cmd in (
             "supervisor_set_mode",
             "supervisor_acquire_floor",
             "supervisor_release_floor",
             "supervisor_get_state",
+            # [voice-vr 09] канонические имена (ADR-0080 §1.2).
+            "avatar_set_mode",
+            "avatar_acquire_floor",
+            "avatar_release_floor",
+            # [voice-vr 09] avatar_get_state НЕ добавляем: клиент не шлёт ни
+            # его, ни supervisor_get_state (grep по webxr_client/src пуст) —
+            # команда без отправителя. supervisor_get_state остаётся как
+            # legacy alias для обратной совместимости/тестов.
         ):
+            # [voice-vr 09] WARNING при использовании устаревших алиасов.
+            if cmd.startswith("supervisor_"):
+                log.warning(
+                    "quest: deprecated JSON_CMD alias used: %s "
+                    "(use avatar_* equivalent; see ADR-0080 §1.2 / issue #2194)",
+                    cmd,
+                )
             if session.protocol_version != 2:
                 await self._send_error(
                     ws,
@@ -2251,6 +2274,16 @@ class WSSServer:
                     },
                 )
                 return
+
+            # [voice-vr 09 / issue #2194] Канонические имена avatar_* маппятся
+            # в legacy supervisor_* для bridge (один и тот же API супервизора).
+            # Payload в avatar_* использует ``kind``, в supervisor_* —
+            # ``floor``; нормализуем в ``floor`` здесь, чтобы дальнейшая
+            # логика работала с одним именем.
+            if cmd.startswith("avatar_"):
+                cmd = "supervisor_" + cmd[len("avatar_"):]
+                if "floor" not in payload_obj and "kind" in payload_obj:
+                    payload_obj = {**payload_obj, "floor": payload_obj["kind"]}
 
             # supervisor_set_mode / supervisor_acquire_floor / supervisor_release_floor
             if cmd == "supervisor_set_mode":
@@ -2672,6 +2705,24 @@ class WSSServer:
                 return
             self.bridge.publish_preview_voice(request_id, voice_id, text)
             return
+
+        # [voice-vr 10 / issue #2194] Терминальный fallback для неизвестных
+        # JSON_CMD. До этого правки сервер просто выходил из функции
+        # (никакого ERROR, никакого лога) → оператор нажимал кнопку на
+        # панели мостика и не видел отказа. Теперь — единый ответ
+        # ERROR{UNKNOWN_COMMAND} + WARNING в лог с самим cmd и session_id.
+        log.warning(
+            "quest: unknown JSON_CMD received: cmd=%r session_id=%s "
+            "(see issue #2194)",
+            cmd,
+            session.session_id,
+        )
+        await self._send_error(
+            ws,
+            0,
+            ErrorCode.UNKNOWN_COMMAND,
+            f"unknown JSON_CMD: {cmd!r}",
+        )
 
     async def _on_unsubscribe(
         self,

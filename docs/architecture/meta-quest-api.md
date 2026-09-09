@@ -189,6 +189,9 @@ payload. Он не является частью текущего wire-прот�
 | `supervisor_acquire_floor` | implemented | Phase 2 / AV-16 | `supervisor_state` или `FLOOR_HELD` |
 | `supervisor_release_floor` | implemented | Phase 2 / AV-16 | `supervisor_state` или `FLOOR_HELD` |
 | `supervisor_get_state` | implemented | Phase 2 / AV-16 | `supervisor_state` |
+| `avatar_set_mode` | implemented | Phase 2 / AV-16 / voice-vr 09 | канонический алиас `supervisor_set_mode` (ADR-0080 §1.2); `supervisor_state` или `MODE_CONFLICT` |
+| `avatar_acquire_floor` | implemented | Phase 2 / AV-16 / voice-vr 09 | канонический алиас `supervisor_acquire_floor`; `supervisor_state` или `FLOOR_HELD` |
+| `avatar_release_floor` | implemented | Phase 2 / AV-16 / voice-vr 09 | канонический алиас `supervisor_release_floor`; `supervisor_state` или `FLOOR_HELD` |
 | `list_voices` | implemented | Phase 2 / AV-27 | `voice_list` из локального snapshot |
 | `set_voice` | implemented | Phase 2 / AV-27/28 | `voice_set_ack` или `voice_set_nack` |
 | `voice_pipeline` | implemented | Phase 2.1+ / AV-28 | `voice_pipeline_ack` или `voice_pipeline_nack` |
