@@ -127,6 +127,40 @@ if PR.state == MERGED and PR.base == develop:
    `--state open`; GitHub close сам по себе также идемпотентен.
 7. Связанный PR выбирается существующей детерминированной логикой ветки/карточки,
    а не поиском номера issue в произвольном title.
+8. **Распознавание «timeline пуст»** (req 8, amendment 09.09.2026 от ретро t_657c11ba /
+   issue #1977 / kanban t_67617d73): при срабатывании user-reopen guard
+   (`_timeline_last_labeled_at` и `_timeline_last_reopen_at` оба вернули empty)
+   merge-gate **обязан** различить три случая, прежде чем применять
+   conservative suppress:
+
+   | Case | Признак | Что делать |
+   |---|---|---|
+   | (a) Rate-limit / API down | `gh api timeline` возвращает ошибку (curl non-zero, HTTP 403/429) ИЛИ возвращает <100 событий без нужных меток | **Conservative suppress** (как сейчас) — не доверяем, ничего не знаем |
+   | (b) Pagination exhaust (issue с >300 timeline-событий) | `gh api timeline?per_page=100` возвращает ровно 100 событий (значит есть следующая страница), но на странице 1 нет нужных меток; пагинация до MAX_PAGES=5 (500 events). Если нашли нужное событие — используем; если нет — **fallback на labels.csv** | Trust labels.csv: если `e2e-done` присутствует в `gh issue view --json labels`, close штатный (ADR §2: labels.csv = current state, надёжнее чем event-stream для «что сейчас») |
+   | (c) Real empty (issue без `e2e-done` ever) | `_has_e2e_done=0` (метки реально нет) | Текущая логика: skip, не наш случай |
+
+   **Почему различать:** ret t_657c11ba показал, что issue #1977 имел
+   `e2e-done` в `labels.csv` (поставлен e2e-process 2026-09-07T03:42:10Z), но
+   merge-gate запрашивал `timeline?per_page=100` без пагинации — событие
+   лежало на странице 3 (events 201-300, потому что 457 комментариев
+   flood-спама «⛔ CI красный» сместили timeline). Helper возвращал empty,
+   conservative guard подавлял close, и issue зацикливалась в
+   `needs-e2e`-ротации 50+ тиков подряд (silent — Layer 1 из diagnosis-merge-gate-silent.md).
+
+   **Симметрично для `_user_reopen_at`:** если helper пуст из-за pagination
+   (case b), merge-gate считает что recent reopen **не найден** (fail-open
+   в сторону labels.csv). Узкое окно race: юзер удалит `e2e-done` руками
+   между labels-fetch и timeline-fetch — решается через audit-коммент
+   (24h dedup, Шифу может вручную re-open).
+
+9. **Defense-in-depth backstop:** помимо основного пути в merge-gate,
+   `agent-flow-conflict-sweep.sh` (PR #2330, ретро t_8fba04b9) реактивно
+   сканирует `needs-e2e && e2e-done` issues каждый час и закрывает те, где
+   PR уже MERGED в develop (через `gh pr list --search '#NNN'` +
+   `git branch --contains`). Это страховка от silent-loop merge-gate:
+   даже если req 8 fail-open проглядел реальный stale-reopen, conflict-sweep
+   всё равно закроет issue по более жёсткому инварианту (PR.MERGED + labels
+   conflict + base=develop).
 
 ## 5. Порядок событий и race conditions
 
@@ -224,6 +258,14 @@ follow-up PR после закрытия должен иметь новую issu
    cleanup НЕ запускается. Если ветка существует — прежнее defer (criterion 2).
 
 Тесты должны мокать `gh`/GitHub fixtures и не менять реальные issues.
+
+10. **Amendment 09.09.2026 (req 8, канбан t_67617d73)**: сценарий
+    «paginated timeline + e2e-done в labels.csv → close штатный» и
+    «реально rate-limited issue → suppress close (как сейчас)». Фикс
+    реализует paginated `_timeline_last_labeled_at` / `_timeline_last_reopen_at`
+    с fallback на labels.csv (см. §4 req 8). Без этого фикса issues с
+    >300 timeline-событий (например, спам-флуд комментариев вроде #1977)
+    зацикливаются в silent conservative-loop.
 
 ### Rollout
 

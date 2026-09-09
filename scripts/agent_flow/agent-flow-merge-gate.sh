@@ -2047,6 +2047,132 @@ archive_openspec_change_for_merge() {  # $1=cid $2=num $3=pr $4=branch
     fi
 }
 
+# --- _conflict_sweep_resolve (ADR-0014 Amendment 1, §6.1/§6.2) --------------
+# Сценарий: одновременное присутствие меток `needs-e2e` + `e2e-done` на одной
+# issue — это invariant violation (data race detector signal), а НЕ user
+# override (ADR-0014 §6.1). Ретроспектива t_8fba04b9 (issue #1977 stuck-open):
+# после merge PR в develop кто-то вручную добавляет `needs-e2e` обратно
+# (операторский triage/sweep, либо race c e2e-process), и user-reopen guard
+# (issue #1391, retro t_c4f1d5c8) начинает подавлять close как «юзер
+# переоткрыл». На самом деле это data race: два процесса независимо правят
+# labels, не синхронизируясь через timeline.
+#
+# Вызывается ТОЛЬКО при наличии conflict (caller проверяет `has_label(e2e-done)
+# AND has_label(needs-e2e)`). Поведение зависит от состояния PR:
+#   • PR MERGED + base=develop + conflict:
+#       - если есть whitelist `user-reopened-this` → user intent побеждает,
+#         audit-коммент «data race detected, whitelist overrides», ничего не
+#         трогаем, return 1 (caller fall-through к user-reopen guard path);
+#       - иначе: strip `needs-e2e`, audit-коммент (24h dedup, marker
+#         `data-race-label-conflict`), close issue reason=completed, return 0
+#         (caller должен пометить issue как handled и не идти в user-reopen
+#         guard).
+#   • PR OPEN + conflict: strip `needs-e2e`, audit-коммент, leave OPEN
+#     (defer к штатному e2e-done path). Return 0.
+#   • PR CLOSED unmerged + conflict: strip `needs-e2e`, audit-коммент, leave
+#     OPEN. Return 0.
+#   • Иначе (не наш сценарий — caller ошибся с предусловием): return 1.
+#
+# Аргументы:
+#   $1=issue_number, $2=pr_number, $3=pr_state (MERGED|OPEN|CLOSED),
+#   $4=labels_norm (lowercased csv), $5=branch (для лога и dedup-маркера).
+#
+# Side effects (только при DRY_RUN=false):
+#   - `gh issue edit --remove-label needs-e2e`
+#   - `gh issue comment ...` (через inline dedup, как остальные audit-комменты
+#     в merge-gate — `comment_recently_posted` helper ещё не выделен в
+#     ADR-AF-0063 §generalize phase, см. drift retro)
+#   - `gh issue close ... --reason completed` (только case MERGED)
+#
+# Возврат:
+#   0 — конфликт обработан (strip сделан; для MERGED ещё и close вызван).
+#       Caller должен считать issue handled (continue / помечать _closed).
+#   1 — конфликт НЕ обработан (whitelist override или precondition не сошёлся).
+#       Caller fall-through к существующей логике.
+#
+# Идемпотентность:
+#   - strip needs-e2e на отсутствующей метке = no-op (gh exit 0).
+#   - audit-коммент через 24h dedup: повторный тик в течение 24ч не публикует.
+#   - close на уже CLOSED issue = no-op (gh exit 0).
+# -----------------------------------------------------------------------------
+_conflict_sweep_resolve() {  # $1=number $2=pr_number $3=pr_state $4=labels_norm $5=branch
+    local _cs_number="$1" _cs_pr_number="$2" _cs_pr_state="$3" _cs_labels_norm="$4" _cs_branch="$5"
+    # Whitelist всегда побеждает (ADR-0014 §4 req 6, issue #1391 supplement):
+    # явный manual signal Шифу > любой автоматический strip.
+    if [ -n "${USER_REOPEN_AUDIT_LABEL:-}" ] \
+        && has_label "${_cs_labels_norm:-}" "$USER_REOPEN_AUDIT_LABEL"; then
+        log "issue #${_cs_number}: data-race conflict detected, but ${USER_REOPEN_AUDIT_LABEL} overrides — keeping ${NEEDS_E2E_LABEL}, no close"
+        # Audit-коммент с явным указанием whitelist (24h dedup).
+        local _cswl_since _cswl_dup
+        _cswl_since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+        _cswl_dup="$(gh api "repos/${GH_REPO}/issues/${_cs_number}/comments?since=${_cswl_since}&per_page=100" \
+            --jq '[.[] | select(.body | contains("data-race-label-conflict"))] | length' 2>/dev/null || echo 0)"
+        if [ "${_cswl_dup:-0}" -eq 0 ] && [ "$DRY_RUN" != "true" ]; then
+            gh issue comment "$_cs_number" --repo "$GH_REPO" --body \
+                "🛡 merge-gate (ADR-0014 Amendment 1, §6.2 case D): label conflict (data-race-label-conflict) \`${NEEDS_E2E_LABEL}\` + \`${DONE_LABEL}\` обнаружен, но whitelist \`${USER_REOPEN_AUDIT_LABEL}\` явный user-override — auto-strip подавлен, close не вызван, оставлено в текущем состоянии для ручного решения." >/dev/null 2>&1 || true
+        fi
+        return 1
+    fi
+    # Case MERGED: strip + audit + close (Amendment 1 §6.2 case A).
+    if [ "$_cs_pr_state" = "MERGED" ]; then
+        log "issue #${_cs_number}: data-race label conflict detected (\`${NEEDS_E2E_LABEL}\` + \`${DONE_LABEL}\` + MERGED PR #${_cs_pr_number}) — stripping ${NEEDS_E2E_LABEL}, closing issue (ADR-0014 Amendment 1 §6.2)"
+        if [ "$DRY_RUN" != "true" ]; then
+            gh issue edit "$_cs_number" --repo "$GH_REPO" --remove-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
+            local _cs_since _cs_dup
+            _cs_since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+            _cs_dup="$(gh api "repos/${GH_REPO}/issues/${_cs_number}/comments?since=${_cs_since}&per_page=100" \
+                --jq '[.[] | select(.body | contains("data-race-label-conflict"))] | length' 2>/dev/null || echo 0)"
+            if [ "${_cs_dup:-0}" -eq 0 ]; then
+                gh issue comment "$_cs_number" --repo "$GH_REPO" --body \
+                    "🔧 merge-gate (ADR-0014 Amendment 1, §6.2 case A, retro t_8fba04b9 #1977): на issue одновременно \`${NEEDS_E2E_LABEL}\` и \`${DONE_LABEL}\` — это data-race-label-conflict (invariant violation), не user override. Снят stale \`${NEEDS_E2E_LABEL}\`, issue закрывается штатно (\`reason=completed\`, PASS-proven через \`${DONE_LABEL}\`, PR #${_cs_pr_number} MERGED в \`${DEVELOP_BRANCH}\`)." >/dev/null 2>&1 || true
+            fi
+        fi
+        # whoami + close (как штатный e2e-done path: self-id до close для
+        # прозрачности в GitHub-истории, ADR §4 req 6 / issue #1534).
+        whoami_close_issue "$_cs_number" "data-race label conflict resolved (Amendment 1 §6.2 case A): stripped stale ${NEEDS_E2E_LABEL}, PR #${_cs_pr_number} MERGED into ${DEVELOP_BRANCH}" "branch=${_cs_branch}"
+        if gh issue close "$_cs_number" --repo "$GH_REPO" --reason completed >/dev/null 2>&1; then
+            log "issue #${_cs_number}: CLOSED via data-race path (Amendment 1 §6.2 case A)"
+            # Снять process-метки со смерженного PR (как штатный close path,
+            # ретро t_fd604461).
+            pr_label_sweep_after_merge "${_cs_pr_number}" "data-race close" || true
+            return 0
+        else
+            log "issue #${_cs_number}: WARNING gh issue close failed (data-race path) — defer destructive cleanup to next tick"
+            # strip уже сделан, но close не прошёл → НЕ return 0 (issue не
+            # закрыта, нужен next tick retry); НЕ return 1 (мы strip сделали
+            # и audit-коммент опубликовали, fall-through к user-reopen guard
+            # может запутать state). Возвращаем 2 как сигнал «обработано
+            # частично, нужен retry без rerun pre-check».
+            return 2
+        fi
+    fi
+    # Case OPEN / CLOSED unmerged: strip + audit, leave OPEN (defer).
+    if [ "$_cs_pr_state" = "OPEN" ] || [ "$_cs_pr_state" = "CLOSED" ]; then
+        local _cs_state_label
+        if [ "$_cs_pr_state" = "OPEN" ]; then
+            _cs_state_label="defer к штатному e2e-done path (PR ещё OPEN)"
+        else
+            _cs_state_label="PR CLOSED unmerged, нужен новый follow-up PR"
+        fi
+        log "issue #${_cs_number}: data-race label conflict detected (PR state=${_cs_pr_state}) — stripping ${NEEDS_E2E_LABEL}, leaving OPEN (${_cs_state_label})"
+        if [ "$DRY_RUN" != "true" ]; then
+            gh issue edit "$_cs_number" --repo "$GH_REPO" --remove-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
+            local _cs_since _cs_dup
+            _cs_since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+            _cs_dup="$(gh api "repos/${GH_REPO}/issues/${_cs_number}/comments?since=${_cs_since}&per_page=100" \
+                --jq '[.[] | select(.body | contains("data-race-label-conflict"))] | length' 2>/dev/null || echo 0)"
+            if [ "${_cs_dup:-0}" -eq 0 ]; then
+                gh issue comment "$_cs_number" --repo "$GH_REPO" --body \
+                    "🔧 merge-gate (ADR-0014 Amendment 1, §6.2 case B/C, retro t_8fba04b9 #1977): на issue одновременно \`${NEEDS_E2E_LABEL}\` и \`${DONE_LABEL}\` — data-race-label-conflict (invariant violation), не user override. Снят stale \`${NEEDS_E2E_LABEL}\`, issue остаётся OPEN: ${_cs_state_label}. Если фикс влит окончательно (PR #${_cs_pr_number} MERGED) — следующий merge-gate тик увидит чистый \`${DONE_LABEL}\` и закроет штатно." >/dev/null 2>&1 || true
+            fi
+        fi
+        return 0
+    fi
+    # pr_state пустой или неизвестный — caller ошибся с предусловием.
+    log "issue #${_cs_number}: _conflict_sweep_resolve called with unexpected pr_state='${_cs_pr_state}' — fall-through"
+    return 1
+}
+
 # --- pr_label_sweep_after_merge (ретро 01.09 t_fd604461) -------------------
 # Сценарий: PR смержен (state=MERGED, base=develop), но на нём всё ещё висят
 # process-метки (needs-e2e / needs-review / e2e-done / e2e:rejected /
@@ -3520,6 +3646,38 @@ except Exception:
                 labeled=$((labeled+1)); continue
                 ;;
             OPEN)
+                # ADR-0014 Amendment 1 §6.2 pre-check: label conflict
+                # `needs-e2e + e2e-done` — invariant violation (data race),
+                # не user override. Обработать ДО user-reopen guard
+                # (issue #1391), иначе guard подавит close на ровно этом
+                # сценарии (issue #1977, retro t_8fba04b9).
+                _conflict_rc=255
+                if has_label "${_current_labels_norm:-}" "$NEEDS_E2E_LABEL" \
+                    && [ "$_has_e2e_done" = "1" ]; then
+                    _conflict_sweep_resolve "$number" "${pr_number:-}" "${pr_state:-}" "${_current_labels_norm:-}" "${branch:-}"
+                    _conflict_rc=$?
+                fi
+                if [ "$_conflict_rc" = "0" ]; then
+                    # Conflict обработан: либо close (case A: MERGED), либо
+                    # strip+defer (case B/C: PR OPEN/CLOSED). Existing
+                    # post-case cleanup (branch delete + archive card)
+                    # выполнится в любом случае. Для case A также
+                    # пропускаем existing user-reopen guard — мы только что
+                    # закрыли issue, повторный close path не нужен.
+                    labeled=$((labeled+1)); continue
+                fi
+                if [ "$_conflict_rc" = "2" ]; then
+                    # Частичная обработка: strip сделан, audit опубликован,
+                    # close упал. Issue всё ещё OPEN, но labels уже
+                    # почищены от conflict → следующий тик зайдёт через
+                    # штатный e2e-done path и попробует close заново.
+                    # Destructive cleanup defer (ADR §4 req 4).
+                    log "issue #${number}: data-race partial — defer destructive cleanup to next tick (ADR §4 req 4)"
+                    labeled=$((labeled+1)); continue
+                fi
+                # _conflict_rc=1: либо нет conflict (нормальный путь), либо
+                # whitelist override (нужно показать user-reopen guard'у
+                # свой path). Fall-through к существующей логике.
                 if [ "$_has_e2e_done" = "1" ]; then
                     # User-reopen guard (issue #1391, retro 18.08 t_c4f1d5c8):
                     # если юзер ВРУЧНУЮ переоткрыл issue ПОСЛЕ того, как
