@@ -143,6 +143,12 @@ COPY src/rob_box_quest/setup.cfg  /ws/src/rob_box_quest/
 # чтобы следующий COPY ресурсов нашёл директорию и setup.py.
 COPY src/rob_box_core/package.xml /ws/src/rob_box_core/
 COPY src/rob_box_core/setup.py   /ws/src/rob_box_core/
+# Issue #2250: rob_box_core/setup.py data_files включает config/speech_segmentation.yaml
+# (issue #2199, PR #2211 voice-vr 14). Без COPY всей директории setup.py падает
+# при install с "error: can't copy 'config/speech_segmentation.yaml': doesn't exist".
+# Копируем директорию целиком (glob-стиль), а не конкретный файл — иначе любое
+# новое config/* сломает билд тем же путём (issue #2250, ретро #2211).
+COPY src/rob_box_core/config /ws/src/rob_box_core/config
 
 # Шаг 2: ament_index marker. setup.py ищет ФАЙЛ 'resource/<package_name>'
 # (data_files copy), не директорию (raw-evidence #32900725289 step:25:
