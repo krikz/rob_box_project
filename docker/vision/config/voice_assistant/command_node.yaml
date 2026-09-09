@@ -11,7 +11,3 @@ command_node:
     enable_navigation: true
     enable_follow: false
     enable_vision: false
-    # operator-agent 07b (#1997): CommandNode → EventBus → ReflexLayer → /reflex/events.
-    # Включает внутрипроцессный мост на роботе (docker-деплой, /config/voice_assistant).
-    # Код-дефолт false (ADR-0054); здесь — осознанное включение в прод-конфиге.
-    enable_reflex_layer: true

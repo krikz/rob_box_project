@@ -1,8 +1,12 @@
 # ADR-0054: `ReflexLayer` ↔ `command_node` через внутрипроцессную `EventBus`
 
+> **Статус: Archived by ADR-0086, 2026-09-09.** Мост не решил корневую
+> проблему — `ReflexLayer` отменял не на том `TaskScheduler`. Код моста,
+> сам слой и его тесты удалены. См. ADR-0086 §3.4.
+
 | Поле | Значение |
 |---|---|
-| Статус | Proposed (после merge → Accepted) |
+| Статус | **Archived** by ADR-0086 (2026-09-09); ранее Proposed (после merge → Accepted) |
 | Дата | 2026-09-07 |
 | Автор | architect по карточке `#1997` (operator-agent 07b, шаг 7б из целевой §13) |
 | Контекст | Закрывает шаг 7б целевой миграции `docs/architecture/target-operator-agent-and-dialogue.md` §13: подключить `ReflexLayer` (656 LOC, `scheduler/reflex.py`) к шине, подписать его на топик `command_node` и публиковать `ReflexEvent` на `/reflex/events`. Шина остаётся внутрипроцессной (тащить её в ROS = заводить второй `/mcp/tools` для внутренних событий). Разблокирует рефлексные сценарии «стой!» / «направо» из `docs/design/SCHEDULER_DESIGN.md` §8.10.6. |

@@ -1,7 +1,4 @@
-"""task_scheduler.py — TaskScheduler with cancel-preempt via EventBus.
-
-The scheduler owns a single :class:`EventBus` (Phase 2, issue #968 §11.6)
-that is created at init time and exposed as :attr:`TaskScheduler.event_bus`.
+"""task_scheduler.py — TaskScheduler with cancel-preempt.
 
 Lifecycle:
 
@@ -21,9 +18,12 @@ Cancellation (C2, #1995):
   :class:`asyncio.Task` handle. ``CancelledError`` propagates
   through ``_pump``'s existing handler and the task transitions
   to CANCELLED.
-* Every successful cancel publishes a ``scheduler.cancel``
-  envelope on :attr:`event_bus` so subscribers (reflex bridge,
-  observability) see the preemption without polling.
+* ADR-0086 (2026-09-09): cancel-preemption no longer publishes a
+  ``scheduler.cancel`` observability envelope — the pub/sub
+  ``EventBus`` it used to fan out on had zero subscribers once
+  the reflex bridge (its only one) was removed. ``cancel()``
+  still preempts the RUNNING executor's ``asyncio.Task`` exactly
+  as before; only the dead observability side-channel is gone.
 
 Threading / concurrency
 -----------------------
@@ -39,7 +39,6 @@ worker thread should use ``asyncio.run_coroutine_threadsafe``).
 Out of scope
 ------------
 
-* ReflexLayer integration (Phase 2.5, #968 §8.10).
 * Speculative pre-generation (Phase 3, #968 §11.4).
 """
 
@@ -55,7 +54,7 @@ from enum import Enum
 from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional, Protocol, runtime_checkable
 
 from .delta import DeltaOp, DeltaOpKind, TaskDelta
-from .event_bus import EventBus, EventEnvelope, EventSubscription
+from .event_bus import EventEnvelope
 
 _LOG = logging.getLogger(__name__)
 
@@ -628,19 +627,6 @@ class TaskScheduler:
             )
         self._lock = threading.Lock()
         self._tasks: Dict[str, SchedulerTask] = {}
-        # C1 (#1995, operator-agent 07) — Phase 2 EventBus is created at
-        # TaskScheduler init time so cancel/preempt can fan out through a
-        # pub/sub surface. The bus is constructed synchronously here
-        # because TaskScheduler itself is built inside an asyncio loop
-        # (enforced above by the ``_loop`` resolution). The bus exposes
-        # sync ``subscribe`` so callers (reflex layer, command bridge)
-        # can register handlers from non-async code paths; ``publish``
-        # is async because EventSubscription queues are asyncio.Queue.
-        self.event_bus: EventBus = EventBus()
-        self._cancel_subscriptions: Dict[
-            str, EventSubscription
-        ] = {}
-        self._cancel_handler_started: bool = False
         # S2.2 (scheduler-segments-merge) — group_id → ordered task_ids.
         # Populated in submit(); cleared lazily in segments() once every
         # segment of the group has reached a terminal status (§2.2).
@@ -811,8 +797,9 @@ class TaskScheduler:
     def notify_event(self, group_id: str, event: EventEnvelope) -> None:
         """Register *event* as an unapplied §4.5 continuation signal.
 
-        Called by the quick_decide/EventBus integration layer (outside
-        this module) whenever a decision lands that could need a
+        Called by a future quick_decide integration layer (outside
+        this module, not yet wired — issue #968 §4.5) whenever a
+        decision lands that could need a
         follow-up ``task_delta`` — MERGE, ``battery_critical``, etc. —
         but no fresh user turn is going to carry it. Immediately
         re-evaluates the auto-trigger for *group_id*; if the other two
@@ -933,25 +920,25 @@ class TaskScheduler:
 
         Returns ``True`` if the task was found and either
         cancelled before start or interrupted mid-execution. The
-        MVP cannot preempt a RUNNING executor — that limitation
-        is removed in C2 (#1995, operator-agent 07) by routing
-        preemption through the scheduler-owned :class:`EventBus`:
+        MVP could not preempt a RUNNING executor; that limitation
+        was removed in C2 (#1995, operator-agent 07):
 
         1. If the task is QUEUED, :meth:`_Channel.remove` pulls
-           it from the queue (status flips to CANCELLED) and a
-           ``task.cancelled`` event is fanned out on the bus.
+           it from the queue and flips status to CANCELLED.
         2. If the task is RUNNING, we call ``.cancel()`` on the
            executor's :class:`asyncio.Task` (kept by ``_pump``
            in ``self._current_executor_task``); ``CancelledError``
-           propagates through ``_pump``'s existing handler,
-           flips status to CANCELLED, and emits
-           ``task.cancelled`` on the bus. The executor coroutine
-           is expected to honour cancellation — TTS executors
+           propagates through ``_pump``'s existing handler and
+           flips status to CANCELLED. The executor coroutine is
+           expected to honour cancellation — TTS executors
            already do via their internal ``await``s.
-        3. Both paths publish a ``scheduler.cancel`` envelope
-           on :attr:`event_bus` so any subscriber (reflex
-           layer, observability, future tool-bridge) sees the
-           preemption without polling.
+
+        ADR-0086 (2026-09-09): both paths used to also publish a
+        ``scheduler.cancel`` observability envelope on a pub/sub
+        ``EventBus``; that bus is removed (its only subscriber,
+        the reflex bridge, was removed the same day) — preemption
+        itself is unchanged, only the dead observability
+        side-channel is gone.
 
         Tasks already in :attr:`TaskStatus.COMPLETED` /
         :attr:`TaskStatus.FAILED` are reported as not found
@@ -967,7 +954,6 @@ class TaskScheduler:
         removed = channel.remove(task_id)
         if removed is not None:
             _LOG.info("scheduler: task %s cancelled before start", task_id)
-            self._publish_cancel_event(task_id, "cancelled before start")
             return True
         # C2 (#1995) — preempt a RUNNING task by cancelling the
         # executor's asyncio.Task. The Channel tracks the live
@@ -982,7 +968,6 @@ class TaskScheduler:
                 "scheduler: task %s cancelled mid-flight (C2 preempt)",
                 task_id,
             )
-            self._publish_cancel_event(task_id, "cancelled mid-flight")
             return True
         # The task was past SCHEDULED but the executor had already
         # finished by the time we looked — leave it terminal.
@@ -991,58 +976,6 @@ class TaskScheduler:
             task_id,
         )
         return False
-
-    def _publish_cancel_event(
-        self,
-        task_id: str,
-        reason: str,
-    ) -> None:
-        """Fan a ``scheduler.cancel`` envelope out on :attr:`event_bus`.
-
-        ``publish`` is async and the bus lives on the loop that
-        owns the scheduler. ``cancel()`` is sync and may run from
-        a worker thread (ROS2 callback), so we schedule the publish
-        via ``asyncio.run_coroutine_threadsafe`` and ignore the
-        returned Future — a publish failure must never break
-        ``cancel()`` (the local state has already been mutated).
-        """
-        envelope = EventEnvelope(
-            topic="scheduler.cancel",
-            payload={"task_id": task_id, "reason": reason},
-        )
-        # ``self._loop`` is checked non-None in ``__init__``;
-        # mypy/pyright loses the narrowing here, so we assert.
-        loop = self._loop
-        if loop is None:
-            _LOG.debug(
-                "scheduler: skipped cancel-event publish for %s "
-                "(loop unavailable)",
-                task_id,
-            )
-            return
-        try:
-            future = asyncio.run_coroutine_threadsafe(
-                self.event_bus.publish(envelope), loop
-            )
-            # Don't await — would block the ROS callback. Surface
-            # failures via the loop's exception logger instead.
-            def _on_done(fut):
-                exc = fut.exception()
-                if exc is not None:
-                    _LOG.debug(
-                        "scheduler: cancel-event publish finished (%s)",
-                        exc,
-                    )
-
-            future.add_done_callback(_on_done)
-        except RuntimeError:
-            # Loop is closed or no current loop — the bus is being
-            # torn down with the scheduler; skip silently.
-            _LOG.debug(
-                "scheduler: skipped cancel-event publish for %s "
-                "(loop unavailable)",
-                task_id,
-            )
 
     def get_task(self, task_id: str) -> Optional[SchedulerTask]:
         """Return the live task record for *task_id*, or ``None``."""

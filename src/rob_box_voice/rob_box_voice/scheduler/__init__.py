@@ -14,24 +14,17 @@ Phase 1 MVP (``TaskScheduler``):
 * A :class:`TaskScheduler` façade with ``submit`` / ``cancel`` /
   ``wait_all`` / ``channel_status`` methods.
 
-Phase 2 (quick-decide + EventBus):
-
-* :class:`EventBus` — bounded publish/subscribe bus with explicit
-  backpressure.
-
-Phase 2.5 (reflex layer — issue #968 §8.10):
-
-* :class:`ReflexLayer` — debounced command interpretation surface
-  used by the ``command_reflex_bridge`` to translate incoming
-  intents into :class:`ReflexDecision` objects.
-
 Speculative TTS pre-generation (ADR-0056) lives in the dedicated
 :mod:`rob_box_voice.scheduler.pregen` sub-package and is the only
 speculation path wired into :mod:`rob_box_voice.tts_node`. The
 older ``scheduler.{pre_gen,speculative_executor,decision,
-estimator,quality}`` modules were removed in voice-vr 22 because
-they were never wired to a live caller and were covered only by
-their own tests — see ADR-0080 §2.8.
+estimator,quality,reflex}`` modules were removed because they were
+never wired to a live caller and were covered only by their own
+tests — see ADR-0080 §2.8 and ADR-0086. The bounded publish/
+subscribe ``EventBus`` (Phase 2, issue #968 §11.6) was removed the
+same day for the same reason: its only subscriber was ``reflex``.
+``EventEnvelope`` stays — it is also the value type for the
+unrelated S10 ``llm_continue_hook`` mechanism (issue #968 §4.5).
 
 Pure data + asyncio, no rclpy. Unit tests build synthetic
 executors so the LLM integration can wire the package via a
@@ -51,32 +44,18 @@ from .delta import (
     replace,
     rewrite,
 )
-from .event_bus import (
-    BackpressurePolicy,
-    EventBus,
-    EventBusClosedError,
-    EventBusError,
-    EventEnvelope,
-    EventQueueFullError,
-    EventSubscription,
-)
+from .event_bus import EventEnvelope
 from .quick_decide import (
     CONFIDENCE_FLOOR,
     DEDUP_WINDOW_S,
     QuickVerdict,
     quick_decide,
 )
-from .reflex import (
-    DEFAULT_DEBOUNCE_MS,
-    DEFAULT_HISTORY_SIZE,
-    ReflexDecision,
-    ReflexEvent,
-    ReflexKind,
-    ReflexLayer,
-    ReflexMetrics,
-    ReflexPriority,
-    command_to_view,
-)
+# ADR-0086 (2026-09-09): the reflex layer, its EventBus cancel bridge,
+# and the EventBus pub/sub class itself were removed — the reflex
+# module subscribed to a ``TaskScheduler`` instance that never received
+# tasks, and once it was gone the bus had zero subscribers left.
+# ``EventEnvelope`` stays as a plain value type (see module docstring).
 from .task_scheduler import (
     ChannelKind,
     ChannelStatus,
@@ -101,26 +80,11 @@ __all__ = [
     "drop",
     "replace",
     "rewrite",
-    "BackpressurePolicy",
-    "EventBus",
-    "EventBusClosedError",
-    "EventBusError",
     "EventEnvelope",
-    "EventQueueFullError",
-    "EventSubscription",
     "CONFIDENCE_FLOOR",
     "DEDUP_WINDOW_S",
     "QuickVerdict",
     "quick_decide",
-    "DEFAULT_DEBOUNCE_MS",
-    "DEFAULT_HISTORY_SIZE",
-    "ReflexDecision",
-    "ReflexEvent",
-    "ReflexKind",
-    "ReflexLayer",
-    "ReflexMetrics",
-    "ReflexPriority",
-    "command_to_view",
     "ChannelKind",
     "ChannelStatus",
     "LlmContinueContext",
