@@ -48,3 +48,42 @@ slug = slug[:80] or "step"
 print(slug)
 PY
 }
+
+# observe_step() — advisory robot-health snapshot; never affects PASS/FAIL.
+observe_step() {
+    local step="${1:-functional}" output rc=0
+    output="$(STEP_NAME="$step" ROBOT_SSH="${ROBOT_SSH:-}" bash -c '
+        set +e
+        printf "{\\\"step\\\":\\\"%s\\\",\\\"checked_at\\\":\\\"%s\\\",\\\"docker_ps\\\":\\\"" "$STEP_NAME" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        if [ -n "$ROBOT_SSH" ]; then $ROBOT_SSH "docker ps --format '\''{{.Names}}|{{.Status}}'\''" 2>&1; else printf "ROBOT_SSH_UNSET"; fi
+        printf "\\\",\\\"scan_hz\\\":\\\""
+        if [ -n "$ROBOT_SSH" ]; then $ROBOT_SSH "timeout 8 ros2 topic hz /scan --window 3" 2>&1; else printf "ROBOT_SSH_UNSET"; fi
+        printf "\\\",\\\"odom_hz\\\":\\\""
+        if [ -n "$ROBOT_SSH" ]; then $ROBOT_SSH "timeout 8 ros2 topic hz /odom --window 3" 2>&1; else printf "ROBOT_SSH_UNSET"; fi
+        printf "\\\"}\\n"
+    ' 2>&1)" || rc=$?
+    python3 - "$step" "$rc" "$output" <<'PY2'
+import json, sys
+step, rc, raw = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+try: snapshot = json.loads(raw)
+except json.JSONDecodeError: snapshot = {"step": step, "probe_error": raw[-4000:], "probe_rc": rc}
+print(json.dumps(snapshot, ensure_ascii=False, indent=2))
+PY2
+    return 0
+}
+
+
+# observe_step() — advisory robot-health snapshot; never affects PASS/FAIL.
+observe_step() {
+    local step="${1:-functional}" output rc=0
+    output="$(printf '%s' "$ROBOT_SSH" | sed 's/[[:space:]]*$//' >/dev/null; \
+        ${ROBOT_SSH:-true} "docker ps --format '{{.Names}}|{{.Status}}'" 2>&1; \
+        ${ROBOT_SSH:-true} "timeout 8 ros2 topic hz /scan --window 3" 2>&1; \
+        ${ROBOT_SSH:-true} "timeout 8 ros2 topic hz /odom --window 3" 2>&1)" || rc=$?
+    python3 - "$step" "$rc" "$output" <<'PY2'
+import json, sys
+step, rc, raw = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+print(json.dumps({"step": step, "probe_rc": rc, "raw": raw[-12000:]}, ensure_ascii=False, indent=2))
+PY2
+    return 0
+}
