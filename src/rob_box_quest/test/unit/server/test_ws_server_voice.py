@@ -11,6 +11,7 @@
 import asyncio
 import json
 import time
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -1238,10 +1239,14 @@ async def test_voice_pipeline_payload_matches_supervisor_contract(
         # означает: либо кнопка не отвечает, либо сервер NACK'ает валидный
         # выбор. Контракт: YAML → ws_server → supervisor_node.py — три
         # копии одного списка; расхождение = регрессия.
-        yaml_path = (
-            "/home/builder/rob_box_project/.worktrees/t_80e7aa1e/"
-            "src/rob_box_voice/config/voice_presets.yaml"
-        )
+        # Путь резолвится от расположения теста, а не абсолютом: до issue
+        # #2232 здесь стоял путь из воркспейса воркера
+        # (/home/builder/.../.worktrees/t_80e7aa1e/...), из-за чего тест
+        # мог пройти только на той машине, где был написан. Никто не
+        # заметил, потому что CI тесты rob_box_quest не запускает.
+        # .../src/rob_box_quest/test/unit/server/test_...py → parents[4] = src/
+        src_root = Path(__file__).resolve().parents[4]
+        yaml_path = src_root / "rob_box_voice" / "config" / "voice_presets.yaml"
         with open(yaml_path, "r", encoding="utf-8") as fh:
             yaml_data = yaml.safe_load(fh)
         yaml_presets = set((yaml_data.get("presets") or {}).keys())
