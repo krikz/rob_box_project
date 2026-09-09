@@ -3825,12 +3825,13 @@ vision_default на Pi — перед up добавлен 'docker rm -f voice-re
     # ADR-0040 §2.2.2: на non-zero — increment consecutive_fails в state,
     # и если >= ${E2E_CONSECUTIVE_FAIL_LIMIT} — label e2e:infra-fail (terminal,
     # ADR Q4), СНЯТЬ needs-e2e (чтобы issue не крутился бесконечно),
-    # comment с run-link. Round-ветка не используется для следующих issues
-    # в этом тике (помечается E2E_TRIGGER_FAILED_THIS_TICK=1, ADR-0040 Q1).
+    # comment с run-link. ИСПРАВЛЕНО issue #2301 + ADR-0040 amendment:
+    # round-ветка ${ROUND_BRANCH} для этого issue УЖЕ СОЗДАНА (round_ensure до
+    # issue-loop, line ~1190) и ПЕРЕИСПОЛЬЗУЕТСЯ следующими issues в этом же
+    # тике (continue → next iteration). Round-counter откатывается через
+    # post-tick cleanup, если за тик на ветке не появилось ни одного run.
     _e_run_id=""
-    E2E_TRIGGER_FAILED_THIS_TICK=0
     if ! _e_run_id="$(_trigger_workflow_with_retry "$E2E_WORKFLOW" --ref "$ROUND_BRANCH" "${e2e_args[@]}")"; then
-        E2E_TRIGGER_FAILED_THIS_TICK=1
         # Run НЕ стартанул → bump_fail + check threshold.
         _new_fail_count="$(e2e_run_state_bump_fail "$number" "" 2>/dev/null || echo '0')"
         # Strip newline
@@ -3856,15 +3857,17 @@ agent-flow: 🛑 e2e infra-fail — run \`${E2E_WORKFLOW}\` НЕ стартан�
 
 После починки — снять \`${INFRA_FAIL_LABEL}\` руками (Шифу) и заново поставить \`${NEEDS_E2E_LABEL}\` для следующего тика.
 
-Round-ветка \`${ROUND_BRANCH}\` НЕ использовалась для других issues в этом тике (помечена \`E2E_TRIGGER_FAILED_THIS_TICK=1\`).
+Round-ветка \`${ROUND_BRANCH}\` создана round_ensure ДО issue-loop (line ~1190) и ПЕРЕИСПОЛЬЗУЕТСЯ остальными issues этого тика (issue #2301, ADR-0040 amendment): round-counter откатится через post-tick cleanup, если за тик на ветке не появилось ни одного run.
 EOF
 )" >/dev/null 2>&1 || log "WARNING: failed to post infra-fail comment to issue #${number}"
             log "issue #${number}: e2e:infra-fail SET (terminal, consecutive_fails=${_new_fail_count} >= ${E2E_CONSECUTIVE_FAIL_LIMIT})"
             errored=$((errored+1))
             continue
         fi
-        # Не достигли порога — продолжаем тик. Round-ветка не для других
-        # issues (Q1): следующая issue пойдёт в отдельный round.
+        # Не достигли порога — продолжаем тик (continue к следующему issue).
+        # Round-ветка ${ROUND_BRANCH} ПЕРЕИСПОЛЬЗУЕТСЯ (round_ensure до issue-loop,
+        # ADR-0040 amendment по issue #2301): переменная E2E_TRIGGER_FAILED_THIS_TICK
+        # удалена как dead code (объявлялась, но не читалась).
         errored=$((errored+1))
         continue
     fi

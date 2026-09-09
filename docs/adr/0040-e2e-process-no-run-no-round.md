@@ -160,7 +160,7 @@ fi
 Новое поведение: если trigger вернул non-zero (run не стартанул) →
 
 1. Прочитать `run_state.json` для этого issue. Если `consecutive_fails` (для e2e_workflow specifically) уже ≥ 3 — label `e2e:infra-fail` (idempotent), **снять** `needs-e2e` (issue помечается как «infra-broken, не наш баг»), comment с run-link (`run_id = empty`, объяснение «run не стартанул N раз подряд»).
-2. Если `consecutive_fails < 3` — increment, save state, **продолжаем тик** (не `continue`!), чтобы остальные issues в этом тике получили свой шанс. Round-ветка **не** используется для следующих issues (помечается `E2E_TRIGGER_FAILED_THIS_TICK=1`).
+2. Если `consecutive_fails < 3` — increment, save state, **продолжаем тик** (`continue`), чтобы остальные issues в этом тике получили свой шанс. Round-ветка `${ROUND_BRANCH}` **ПЕРЕИСПОЛЬЗУЕТСЯ** следующими issues (она создана `round_ensure` ДО issue-loop, line ~1190; `ROUND_BRANCH` — глобальная, не пересоздаётся между issues). ~~Раннее ошибочное утверждение «round-ветка не используется для следующих issues» и переменная `E2E_TRIGGER_FAILED_THIS_TICK=1` удалены как dead code~~ — см. **§10 Amendment (issue #2301, 09.09.2026)**.
 3. `round-counter` НЕ инкрементируется (откатывается через post-tick cleanup, который уже работает для «0 runs» — line 3946).
 
 #### 2.2.3 `run_state.json` (новый файл)
@@ -356,3 +356,61 @@ fi
 - Не рефакторить весь `agent-flow-e2e-process.sh` (4033 строк). Менять ТОЛЬКО 4 точки: `_trigger_workflow_with_retry` (line 2007), `process_issue` non-zero branch (line 3396-3398), lock init (line 580), verdict handler (line ~3520).
 - Не менять label `e2e:infra-fail` definition (уже правильный, ADR-AF-0026 совместим).
 - Не менять `wait_workflow` (line 2992) — он продолжает работать с тем же контрактом.
+
+---
+
+## 9. Изменение статуса
+
+| Дата | Статус | Кто | Что |
+|---|---|---|---|
+| 2026-09-01 | Proposed | architect | Начальная версия (issue #1831). |
+| 2026-09-XX | Accepted | Шифу | (после merge PR #XXXX с реализацией §2.2.1–2.2.4) |
+
+---
+
+## 10. Amendment (issue #2301, 09.09.2026)
+
+### 10.1 Что нашли
+
+Архитектурный ревью (improve-codebase-architecture, 09.09.2026, e2e candidate #4) обнаружил, что **§2.2.2 пункт 2 декларирует поведение, которое НЕ enforced в коде**:
+
+> «Round-ветка не используется для следующих issues (помечается `E2E_TRIGGER_FAILED_THIS_TICK=1`).»
+
+Проверка по коду (`scripts/agent_flow/agent-flow-e2e-process.sh`):
+
+1. Переменная `E2E_TRIGGER_FAILED_THIS_TICK` объявлялась (line 3831) и присваивалась (line 3833), но **никто её не читал** (`grep -rn E2E_TRIGGER_FAILED` → 6 hits, все в producer'е или в комментариях).
+2. После trigger-fail скрипт делает `continue` (line 3869) → следующая итерация основного issue-loop **использует ту же `ROUND_BRANCH`** (она глобальна, пересоздаётся только `round_ensure` ДО issue-loop, line ~1190).
+3. `E2E_TRIGGER_FAILED_THIS_TICK` — dead code, **честностная дыра** того же класса, что и мёртвая ветка `main-build` (issue #2294): код объявляет то, чего не делает.
+
+### 10.2 Решение (согласовано 09.09.2026)
+
+**Удалить** переменную `E2E_TRIGGER_FAILED_THIS_TICK` и её упоминания в комментариях как обманчивые. **Переформулировать §2.2.2 пункт 2** под фактическое поведение:
+
+> «Round-ветка `${ROUND_BRANCH}` **ПЕРЕИСПОЛЬЗУЕТСЯ** следующими issues (она создана `round_ensure` ДО issue-loop, line ~1190; `ROUND_BRANCH` — глобальная, не пересоздаётся между issues). `round-counter` откатывается через post-tick cleanup, если за тик на ветке не появилось ни одного run.»
+
+### 10.3 Trade-off (что мы НЕ получаем)
+
+Удалив переменную, мы **отказываемся** от потенциальной future-фичи «round-ветка только для успешных trigger'ов» (т.е. каждая issue → свой round). Это была бы более чистая модель, но:
+
+- Требует переноса `round_ensure` после trigger (ломает контракт «один round = много issues» — отвергнуто в §2.4.3).
+- Не решает исходную проблему CI spam (counter drift): post-tick cleanup + rollback уже работают.
+- Это **отдельный refactor**, не «исправление честностной дыры» — должно идти отдельной developer-карточкой.
+
+**Принцип**: «честный FAIL лучше красивого PASS» (ADR-0018). Лучше явно сказать «round-ветка переиспользуется» (как в коде), чем декларировать изоляцию, которая не enforced.
+
+### 10.4 Q1 Open Question — обновление
+
+Прежний ответ Q1: «round-ветка не удаляется автоматически, может пригодиться для re-run после ручного фикса». Это **остаётся** в силе. Дополнение: round-ветка, созданная в начале тика, **живёт до post-tick cleanup** (line 3946) вне зависимости от того, были ли trigger-fail'ы в этом тике.
+
+### 10.5 Acceptance этой правки
+
+- [x] Переменная `E2E_TRIGGER_FAILED_THIS_TICK` удалена в `scripts/agent_flow/agent-flow-e2e-process.sh` (объявление, присвоение, обманчивые комментарии заменены на честные).
+- [x] §2.2.2 пункт 2 переформулирован под факт.
+- [x] §10 (этот раздел) добавлен как формальный amendment.
+- [x] `bash -n` + затронутые тесты зелёные.
+
+### 10.6 Не делать (out of scope этой правки)
+
+- Не реализовывать «round-per-issue» (см. §10.3) — это отдельная задача.
+- Не менять post-tick cleanup logic (line 3946) — он уже правильный.
+- Не менять `round_ensure` (line ~1190) — контракт «один round = много issues» сохраняется.
