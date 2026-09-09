@@ -46,7 +46,16 @@ COPY src/rob_box_harness/package.xml /ws/src/rob_box_harness/
 COPY src/rob_box_llm/package.xml /ws/src/rob_box_llm/
 # IDL пакет для avatar_supervisor (AV-12 / AV-5): собирается раньше
 # rob_box_supervisor, потому что тот на нём зависит.
-COPY src/rob_box_supervisor_msgs/package.xml /ws/src/rob_box_supervisor_msgs/
+COPY src/rob_box_supervisor_msgs/package.xml  /ws/src/rob_box_supervisor_msgs/
+# Issue #2279 (arch review): публикуем согласованный colcon-workspace
+# в voice-assistant — supervisor/quest больше НЕ пересобирают
+# rob_box_supervisor_msgs/rob_box_core (это приводило к version skew
+# между базой и потребителями, регрессии #2081 / #2089).
+# COPY идёт ПЕРЕД colcon build — иначе голосасс build
+# падает на ament_cmake (нужны CMakeLists.txt/srv/msg).
+COPY src/rob_box_supervisor_msgs/CMakeLists.txt /ws/src/rob_box_supervisor_msgs/
+COPY src/rob_box_supervisor_msgs/srv /ws/src/rob_box_supervisor_msgs/srv
+COPY src/rob_box_supervisor_msgs/msg /ws/src/rob_box_supervisor_msgs/msg
 
 # Шаг 2: Установка ROS зависимостей через rosdep
 # Этот слой кешируется пока package.xml не изменяется
@@ -250,7 +259,7 @@ RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     rm -rf /opt/ros/${ROS_DISTRO}/share/*/cmake/*.cmake~ && \
     ldconfig && \
     colcon build \
-    --packages-select rob_box_core rob_box_perception_msgs rob_box_mcp_tools rob_box_llm rob_box_harness rob_box_voice rob_box_animations \
+    --packages-select rob_box_core rob_box_supervisor_msgs rob_box_perception_msgs rob_box_mcp_tools rob_box_llm rob_box_harness rob_box_voice rob_box_animations \
     --cmake-args \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON

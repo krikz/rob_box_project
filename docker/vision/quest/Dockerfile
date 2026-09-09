@@ -100,82 +100,46 @@ COPY --from=webxr-builder /build/dist /srv/quest_static
 # унаследовал старый rob_box_core без avatar_command.py → restart loop на
 # /ws/install/rob_box_core/lib/.../avatar_command.py.
 #
-# Лечение:
-#   1) COPY src/rob_box_core/* в /ws/src/rob_box_core/* (согласовано с
-#      voice-assistant/Dockerfile шаги 1+3+8) — инвалидирует кеш слоя
-#      при изменениях в rob_box_core.
-#   2) colcon build теперь собирает rob_box_core + rob_box_quest — даже
-#      если базовый voice-assistant image отстаёт, свежий rob_box_core
-#      гарантированно попадает в /ws/install.
-#
-# rob_box_core — лёгкий pure-Python (нет torch/Renardo), его пересборка
-# в quest image НЕ инвалидирует тяжёлый кеш pytorch из voice-base.
-#
 # Issue #2089 (регрессия quest restart loop v2: ModuleNotFoundError
 # rob_box_supervisor_msgs): rob_box_quest.quest_node импортирует
 #   from rob_box_supervisor_msgs.srv import ExecuteCommand
 #   from rob_box_supervisor_msgs.msg import Command
 # (Bridge.execute(Command), issue #2002, ADR-0051 §2.1). Пакет — ament_cmake,
-# IDL генерируется rosidl_default_generators на colcon build. Если он не
-# скопирован и не пересобран в quest image — quest не получает свежие
-# Python-типы (ExecuteCommand/Command) из локального colcon workspace,
-# и падает на старте с ModuleNotFoundError → Restarting loop.
+# IDL генерируется rosidl_default_generators на colcon build.
 #
-# Базовый voice-assistant image эти IDL содержит (он собирает supervisor_msgs
-# как зависимость rob_box_supervisor), НО как только там что-то поменяется,
-# а quest пересоберётся раньше — снова race condition. Поэтому копируем
-# supervisor_msgs в образ явно (Шаг 0, до ament_python-пакетов), чтобы
-# colcon build quest'а собирал его из локального src/, а не из базового слоя.
-# rosdep не нужен: std_msgs и builtin_interfaces уже стоят в voice-assistant
-# (они нужны rob_box_supervisor, который там собран).
-# Шаг 0: IDL-пакет (ament_cmake) — структура пакета, кешируется отдельно.
-COPY src/rob_box_supervisor_msgs/package.xml  /ws/src/rob_box_supervisor_msgs/
-COPY src/rob_box_supervisor_msgs/CMakeLists.txt /ws/src/rob_box_supervisor_msgs/
-COPY src/rob_box_supervisor_msgs/srv /ws/src/rob_box_supervisor_msgs/srv
-COPY src/rob_box_supervisor_msgs/msg /ws/src/rob_box_supervisor_msgs/msg
-
+# Root-cause для обеих регрессий — version skew между базой
+# (voice-assistant) и потребителем (quest). Лечение (issue #2279):
+#   1) voice-assistant image собирает rob_box_core + rob_box_supervisor_msgs
+#      атомарно с исходниками repo. Один SHA = один согласованный workspace.
+#   2) quest больше НЕ пересобирает rob_box_core / rob_box_supervisor_msgs
+#      локально — COPY/CMakeLists/srv/msg/build для них удалены ниже.
+#   3) Тут остаётся ТОЛЬКО rob_box_quest — свой пакет.
+#
+# rosdep не нужен: std_msgs/builtin_interfaces/aiohttp/msgpack/opencv-python-headless
+# уже стоят в voice-assistant (см. Шаг apt-get install) + quest base.
 # Шаг 1: package.xml + setup.py + setup.cfg (структура, кешируется)
 COPY src/rob_box_quest/package.xml /ws/src/rob_box_quest/
 COPY src/rob_box_quest/setup.py   /ws/src/rob_box_quest/
 COPY src/rob_box_quest/setup.cfg  /ws/src/rob_box_quest/
-
-# Issue #2081: rob_box_core package.xml/setup.py тоже нужны на этом слое,
-# чтобы следующий COPY ресурсов нашёл директорию и setup.py.
-COPY src/rob_box_core/package.xml /ws/src/rob_box_core/
-COPY src/rob_box_core/setup.py   /ws/src/rob_box_core/
-# Issue #2250: rob_box_core/setup.py data_files включает config/speech_segmentation.yaml
-# (issue #2199, PR #2211 voice-vr 14). Без COPY всей директории setup.py падает
-# при install с "error: can't copy 'config/speech_segmentation.yaml': doesn't exist".
-# Копируем директорию целиком (glob-стиль), а не конкретный файл — иначе любое
-# новое config/* сломает билд тем же путём (issue #2250, ретро #2211).
-COPY src/rob_box_core/config /ws/src/rob_box_core/config
 
 # Шаг 2: ament_index marker. setup.py ищет ФАЙЛ 'resource/<package_name>'
 # (data_files copy), не директорию (raw-evidence #32900725289 step:25:
 # error: can't copy 'resource/rob_box_quest': doesn't exist or not a regular file).
 # Образец — src/rob_box_supervisor/resource/rob_box_supervisor (0 байт).
 COPY src/rob_box_quest/resource/rob_box_quest /ws/src/rob_box_quest/resource/rob_box_quest
-COPY src/rob_box_core/resource/rob_box_core   /ws/src/rob_box_core/resource/rob_box_core
 
 # Шаг 3: исходный код Python (самый горячий слой, последний)
 COPY src/rob_box_quest/rob_box_quest /ws/src/rob_box_quest/rob_box_quest
-# Issue #2081: rob_box_core — иначе avatar_command.py не попадёт в образ.
-COPY src/rob_box_core/rob_box_core /ws/src/rob_box_core/rob_box_core
 
-# Шаг 4: пересборка rob_box_supervisor_msgs (IDL) + rob_box_core +
-# rob_box_quest (pytorch/renardo из base не трогаем — пересобирается
-# только pure-Python + IDL-слой). WORKDIR=/ws обязателен — colcon
-# ищет пакеты в $PWD/src, а после 'source /opt/ros/.../setup.sh'
-# WORKDIR не меняется, но нам нужно явно стартануть из /ws.
-# Порядок пакетов в --packages-select важен: supervisor_msgs собирается
-# первым, чтобы его сгенерированные Python-типы были доступны при
-# сборке rob_box_core/rob_box_quest (на практике colcon сам разруливает
-# graph-build-order, но явный порядок оставляем для воспроизводимости).
+# Шаг 4: пересборка ТОЛЬКО rob_box_quest (pytorch/renardo из base
+# не трогаем — пересобирается только pure-Python). rob_box_core и
+# rob_box_supervisor_msgs уже согласованы в base image (issue #2279).
+# WORKDIR=/ws обязателен — colcon ищет пакеты в $PWD/src.
 WORKDIR /ws
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     . /ws/install/setup.sh && \
     colcon build \
-        --packages-select rob_box_supervisor_msgs rob_box_core rob_box_quest \
+        --packages-select rob_box_quest \
         --cmake-args -DCMAKE_BUILD_TYPE=Release
 
 # Caddyfile + entry-script
