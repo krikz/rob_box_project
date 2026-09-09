@@ -350,7 +350,7 @@ async def test_set_voice_success_sends_ack(client, fixed_pin):
     try:
         await _send_json_cmd(
             ws,
-            {"cmd": "set_voice", "voice_id": "alena", "preset": "friendly", "ts_ms": 0},
+            {"cmd": "set_voice", "mode": "voice", "voice_id": "alena", "preset": "friendly", "ts_ms": 0},
         )
         body = await _wait_for_json_event(
             ws, lambda b: b.get("type") == "voice_set_ack", timeout=1.0
@@ -371,7 +371,7 @@ async def test_set_voice_unknown_id_returns_nack_with_available(client, fixed_pi
     bridge.voices_payload = [{"voice_id": "alena"}, {"voice_id": "anton"}]
     ws = await _open_and_hello(http_client, fixed_pin)
     try:
-        await _send_json_cmd(ws, {"cmd": "set_voice", "voice_id": "bogus", "ts_ms": 0})
+        await _send_json_cmd(ws, {"cmd": "set_voice", "mode": "voice", "voice_id": "bogus", "ts_ms": 0})
         body = await _wait_for_json_event(
             ws, lambda b: b.get("type") == "voice_set_nack", timeout=1.0
         )
@@ -389,7 +389,7 @@ async def test_set_voice_no_active_provider_returns_tts_unreachable(client, fixe
     bridge.active_provider = ""
     ws = await _open_and_hello(http_client, fixed_pin)
     try:
-        await _send_json_cmd(ws, {"cmd": "set_voice", "voice_id": "alena", "ts_ms": 0})
+        await _send_json_cmd(ws, {"cmd": "set_voice", "mode": "voice", "voice_id": "alena", "ts_ms": 0})
         body = await _wait_for_json_event(
             ws, lambda b: b.get("type") == "voice_set_nack", timeout=1.0
         )
@@ -404,7 +404,7 @@ async def test_set_voice_bad_payload_returns_error(client, fixed_pin):
     http_client, _server, bridge = client
     ws = await _open_and_hello(http_client, fixed_pin)
     try:
-        await _send_json_cmd(ws, {"cmd": "set_voice", "ts_ms": 0})
+        await _send_json_cmd(ws, {"cmd": "set_voice", "mode": "voice", "ts_ms": 0})
         # _send_error шлёт ERROR-frame (см. session.py:ErrorCode). Для теста
         # достаточно что bridge.set_voice_calls пустой.
         await asyncio.sleep(0.05)
@@ -508,14 +508,14 @@ async def test_set_voice_rate_limit_sends_nack(client, fixed_pin):
     ws = await _open_and_hello(http_client, fixed_pin)
     try:
         await _send_json_cmd(
-            ws, {"cmd": "set_voice", "ts_ms": 0, "voice_id": "alena"}
+            ws, {"cmd": "set_voice", "mode": "voice", "ts_ms": 0, "voice_id": "alena"}
         )
         ack = await _wait_for_json_event(
             ws, lambda b: b.get("type") == "voice_set_ack", timeout=1.0
         )
         assert ack is not None
         await _send_json_cmd(
-            ws, {"cmd": "set_voice", "ts_ms": 0, "voice_id": "alena"}
+            ws, {"cmd": "set_voice", "mode": "voice", "ts_ms": 0, "voice_id": "alena"}
         )
         nack = await _wait_for_json_event(
             ws, lambda b: b.get("type") == "voice_set_nack", timeout=1.0
@@ -541,7 +541,7 @@ async def test_style_change_not_blocked_by_voice_apply(client, fixed_pin):
     try:
         await _send_json_cmd(
             ws,
-            {"cmd": "set_voice", "ts_ms": 0, "voice_id": "", "preset": "lenin"},
+            {"cmd": "set_voice", "mode": "style", "ts_ms": 0, "voice_id": "", "preset": "lenin"},
         )
         style_ack = await _wait_for_json_event(
             ws, lambda b: b.get("type") == "voice_set_ack", timeout=1.0
@@ -550,7 +550,7 @@ async def test_style_change_not_blocked_by_voice_apply(client, fixed_pin):
         assert style_ack["preset"] == "lenin"
         # Сразу следом — применение голоса из picker'а (свой слот).
         await _send_json_cmd(
-            ws, {"cmd": "set_voice", "ts_ms": 0, "voice_id": "alena"}
+            ws, {"cmd": "set_voice", "mode": "voice", "ts_ms": 0, "voice_id": "alena"}
         )
         voice_ack = await _wait_for_json_event(
             ws, lambda b: b.get("type") == "voice_set_ack" and b.get("voice_id"),
@@ -594,7 +594,7 @@ async def test_set_voice_routes_preset_and_language_to_bridge(client, fixed_pin)
     ws = await _open_and_hello(http_client, fixed_pin)
     try:
         await _send_json_cmd(
-            ws, {"cmd": "set_voice", "ts_ms": 0, "preset": "lenin", "language": "en"}
+            ws, {"cmd": "set_voice", "mode": "style", "ts_ms": 0, "preset": "lenin", "language": "en"}
         )
         events = await _collect_events(ws, n=1)
         ack = next(e for e in events if e.get("type") == "voice_set_ack")
@@ -613,7 +613,7 @@ async def test_set_voice_preset_only_does_not_touch_language(client, fixed_pin):
     ws = await _open_and_hello(http_client, fixed_pin)
     try:
         await _send_json_cmd(
-            ws, {"cmd": "set_voice", "ts_ms": 0, "preset": "philosopher"}
+            ws, {"cmd": "set_voice", "mode": "style", "ts_ms": 0, "preset": "philosopher"}
         )
         events = await _collect_events(ws, n=1)
         ack = next(e for e in events if e.get("type") == "voice_set_ack")
@@ -674,7 +674,7 @@ async def test_set_voice_invalid_preset_sends_nack_no_bridge_call(
     http_client, _server, bridge = client
     ws = await _open_and_hello(http_client, fixed_pin)
     try:
-        await _send_json_cmd(ws, {"cmd": "set_voice", "ts_ms": 0, "preset": "scammer"})
+        await _send_json_cmd(ws, {"cmd": "set_voice", "mode": "style", "ts_ms": 0, "preset": "scammer"})
         # Свежий watchdog=600ms — ждать долго не нужно, сервер отвечает сразу.
         nack = await _wait_for_event_type(ws, "voice_set_nack", timeout_s=0.5)
         assert nack is not None, "voice_set_nack not received"
@@ -696,7 +696,7 @@ async def test_set_voice_invalid_language_sends_nack(client, fixed_pin, monkeypa
         # "eo" (эсперанто) — заведомо вне VOICE_LANGUAGES. Раньше здесь
         # стоял "de", но немецкий с расширением списка языков стал
         # валидным, и тест перестал проверять то, ради чего написан.
-        await _send_json_cmd(ws, {"cmd": "set_voice", "ts_ms": 0, "language": "eo"})
+        await _send_json_cmd(ws, {"cmd": "set_voice", "mode": "style", "ts_ms": 0, "language": "eo"})
         nack = await _wait_for_event_type(ws, "voice_set_nack", timeout_s=0.5)
         assert nack is not None, "voice_set_nack not received"
         assert "invalid_voice_language" in nack["reason"]

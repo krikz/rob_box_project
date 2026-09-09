@@ -1058,6 +1058,8 @@ ERRORS: tuple[str, ...] = (
     # UNKNOWN_COMMAND — клиент прислал JSON_CMD с неизвестным ``cmd``
     # (issue #2194, voice-vr 09). Раньше сервер молча ронял хвост функции
     # без ERROR/WARNING; теперь — единый код для всех неизвестных команд.
+    # Терминальная ветка dispatcher-таблицы (issue #2195, voice-vr 10)
+    # тоже возвращает этот код вместо молчаливого drop.
     "UNKNOWN_COMMAND",
 )
 
@@ -1107,7 +1109,9 @@ ERROR_SPECS: tuple[ErrorCodeSpec, ...] = (
     ),
     ErrorCodeSpec(
         "UNKNOWN_COMMAND",
-        "JSON_CMD с неизвестным ``cmd`` (issue #2194, voice-vr 09 §8).",
+        "JSON_CMD с неизвестным ``cmd`` (issue #2194, voice-vr 09 §8). "
+        "Терминальная ветка dispatcher-таблицы (issue #2195, voice-vr 10) "
+        "тоже возвращает этот код вместо молчаливого drop.",
     ),
 )
 

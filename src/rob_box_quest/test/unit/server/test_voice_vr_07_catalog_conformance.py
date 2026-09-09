@@ -133,15 +133,18 @@ class _HandlerFinder(ast.NodeVisitor):
 
 
 def _server_dispatched_cmds_from_ws_server() -> set[str]:
-    """AST-обход ws_server.py: возвращает имена cmd, у которых есть
-    явная ветка в ``_on_json_cmd`` (включая supervisor_* — они лежат
-    в if-elif для одного cmd).
+    """Возвращает имена cmd, которые сервер реально диспатчит.
+
+    До voice-vr 10 — AST-обход if-цепочки в ``_on_json_cmd``
+    (``if cmd == "..."``). Этот код заменили на табличный диспетчер
+    :data:`JSON_CMD_HANDLERS` (см. комментарий к ``_HandlerFinder``
+    выше и issue #2195). Поэтому источник истины — ключи этого dict'а,
+    импортируемого из :mod:`rob_box_quest.server.ws_server`. Тот же
+    контракт: каждая зарегистрированная cmd = одна «ветка» в сервере.
     """
-    src = WS_SERVER_PY.read_text(encoding="utf-8")
-    tree = ast.parse(src)
-    finder = _HandlerFinder()
-    finder.visit(tree)
-    return finder.cmds
+    from rob_box_quest.server.ws_server import JSON_CMD_HANDLERS
+
+    return set(JSON_CMD_HANDLERS.keys())
 
 
 def _server_emitted_events_from_ws_server() -> set[str]:

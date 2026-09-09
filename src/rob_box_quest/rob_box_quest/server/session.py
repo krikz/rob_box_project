@@ -93,6 +93,17 @@ from rob_box_core.bridge_protocol import ERRORS as _CANON_ERRORS  # noqa: E402
 for _code in _CANON_ERRORS:
     type.__setattr__(_ErrorCodeMeta, _code, _code)
 del _code
+# AV-19 (issue #1911, ADR-0028 §4.4, meta-quest-api.md §5/§8):
+# запрошенный teleop_floor уже держит другой client_id. Сервер
+# отдаёт эту ошибку только при ``require_teleop_floor=true`` и
+# rate-limited (≤ 1 Гц на сессию), чтобы не заливать сокет.
+#
+# [voice-vr 10] UNKNOWN_COMMAND (issue #2195): клиент прислал JSON_CMD
+# с неизвестным ``cmd``. Терминальный dispatcher-fallback возвращает
+# явный отказ вместо молчаливого drop. Канон живёт в
+# rob_box_core.bridge_protocol.ERRORS; bind-цикл выше подхватит код
+# автоматически (для legacy-импортеров через ``ErrorCode.UNKNOWN_COMMAND``).
+
 
 
 # Поддерживаемые wire-subprotocol-версии (AV-16, docs §11.1).
