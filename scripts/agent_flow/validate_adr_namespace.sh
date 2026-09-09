@@ -109,6 +109,51 @@ if [ -z "$EXISTING_KEYS" ]; then
     exit 0
 fi
 
+# ---- Номера, занятые ОТКРЫТЫМИ PR ----
+#
+# Гард сверялся только с origin/develop и не видел PR в полёте: один номер
+# спокойно берут два одновременных PR, оба проходят проверку, коллизия
+# появляется после второго мержа. Так на develop оказались ДВА ADR-0080
+# (PR #2185 08.09 и PR #2221 09.09) и едва не оказались два ADR-0083
+# (PR #2247 и #2248, созданы с разницей в минуту).
+#
+# Требует gh с токеном: в Actions есть GITHUB_TOKEN, локально без
+# авторизации — печатаем явное сообщение, а не пропускаем молча.
+if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+    INFLIGHT_RAW="$(gh pr list --state open --limit 100 --json number,files \
+        --jq '.[] | .number as $n | .files[].path | select(startswith("docs/adr/")) | "\($n)\t\(.)"' \
+        2>/dev/null || true)"
+    SELF_PATHS="$(git diff "$REF"...HEAD --name-only --diff-filter=A 2>/dev/null || true)"
+    INFLIGHT_PATHS=""
+    while IFS="$(printf '\t')" read -r _pr _path; do
+        [ -n "$_path" ] || continue
+        # свои файлы не считаем — PR не конфликтует сам с собой
+        printf '%s\n' "$SELF_PATHS" | grep -qxF "$_path" && continue
+        # только ДОБАВЛЯЕМЫЕ: если путь уже в baseline, PR его правит
+        if git cat-file -e "$REF:$_path" 2>/dev/null; then continue; fi
+        INFLIGHT_PATHS="$INFLIGHT_PATHS$_pr	$_path
+"
+    done <<EOF
+$INFLIGHT_RAW
+EOF
+    INFLIGHT_KEYS="$(printf '%s\n' "$INFLIGHT_PATHS" | cut -f2 | extract_keys | sort -u || true)"
+    if [ -n "$INFLIGHT_KEYS" ]; then
+        INFLIGHT_COLLISION="$(comm -12 <(printf '%s\n' "$NEW_KEYS") <(printf '%s\n' "$INFLIGHT_KEYS") || true)"
+        if [ -n "$INFLIGHT_COLLISION" ]; then
+            echo "validate_adr_namespace: FAIL - номер занят ОТКРЫТЫМ PR (не только develop):"
+            printf '%s\n' "$INFLIGHT_COLLISION" | sed 's/^/  /'
+            echo ""
+            echo "  Новые ADR-файлы в открытых PR:"
+            printf '%s' "$INFLIGHT_PATHS" | sed 's/^/    PR #/'
+            echo ""
+            echo "  Возьмите следующий свободный номер С УЧЁТОМ PR в полёте."
+            exit 1
+        fi
+    fi
+else
+    echo "validate_adr_namespace: проверка по открытым PR ПРОПУЩЕНА (нет gh или авторизации)."
+fi
+
 # ---- Пересечение множеств (внутри каждого домена отдельно) ----
 COLLISION="$(comm -12 <(printf '%s\n' "$NEW_KEYS") <(printf '%s\n' "$EXISTING_KEYS") || true)"
 
