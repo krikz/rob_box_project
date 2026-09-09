@@ -245,13 +245,22 @@ def test_server_handlers_have_client_user() -> None:
         # поддерживает для обратной совместимости (см. ws_server.py:1864).
         "voice_listen_start",
         "voice_listen_stop",
-        # stream_select — реализован на сервере (Phase 2 / R10, см.
-        # meta-quest-api.md §5 «implemented»), но клиентский UI
-        # стрим-селектора ещё не построен: webxr_client/README.md:41
-        # прямо помечает `stream_select` как «Not implemented» на
-        # стороне клиента. Не мёртвый код — опережающая реализация,
-        # ждёт клиентскую часть (см. docs/plans/2026-08-25-webxr-
-        # captain-bridge-design.md «stream_select UI»).
+        # stream_select — сервер реализует (ws_server.py, Phase 2 / R10),
+        # клиент не шлёт: `grep -rn stream_select webxr_client/src/`
+        # находит имя только в сгенерированном `wire/protocol_generated.ts`,
+        # то есть в типе, а не в вызове. Модуль меню `scene/stream_menu.ts`
+        # написан (116 строк, экспортирует StreamMenuHandle), но нигде не
+        # смонтирован: `MENU_TARGET_PREFIX` не импортируется ни в main.ts,
+        # ни где-либо ещё.
+        #
+        # ВНИМАНИЕ: `webxr_client/README.md:39-41` относит stream_select к
+        # «Implemented» — README расходится с кодом. Не ссылайтесь на него
+        # как на обоснование этого исключения (в первой редакции этого
+        # комментария была именно такая ошибка).
+        #
+        # Это не «опережающая реализация», а незаконченный шов: либо меню
+        # подключается, либо серверный обработчик и модуль удаляются.
+        # Отслеживается отдельной карточкой.
         "stream_select",
     }
     suspicious = sorted(server_cmds - client_cmds - KNOWN_SERVER_ONLY)
