@@ -397,7 +397,16 @@ jobs:
   # rob_box_supervisor через `colcon build --packages-select` (минуты,
   # не часы — pytorch/renardo не трогаем).
   build-supervisor:
-    needs: prepare
+    # needs build-voice-assistant (не только prepare!): supervisor
+    # наследует BASE_IMAGE=...:voice-assistant-... из локального реестра
+    # (строка ниже). Без этой зависимости джобы гонятся параллельно, и
+    # supervisor может собраться раньше, чем voice-assistant допушит
+    # свежий образ — тогда supervisor наследует СТАРЫЙ rob_box_core и
+    # падает ModuleNotFoundError на любом новом модуле (было с
+    # rob_box_core.utterance 09.09.2026: build-supervisor захватил layers
+    # "already exists" в 10:56, build-voice-assistant допушил новое только
+    # в 11:06 — 10 минут гонки).
+    needs: [prepare, build-voice-assistant]
     runs-on: [self-hosted, rob-box]
     steps:
       - name: Clean stale submodules
