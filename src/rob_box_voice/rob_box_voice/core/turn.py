@@ -439,21 +439,53 @@ class ToolSkippedGuard:
         )
 
 
+#: Pure-promise openers (issue #992 Bug D) — phrases that are NEVER
+#: valid answers regardless of what the user asked for. The legacy
+#: ``DialogueNode._check_babble_and_retry`` keeps this subset as a
+#: fallback after ``user_wants_performance`` returns False. The
+#: ``BabbleGuard`` wrapper below relies on the same constant.
+#:
+#: «Зачит», «погнали», «устроим», «переключ», «давай-ка» — these
+#: openers come from live failures (see live 30.08 / 02.09 logs in
+#: the legacy dialogue_node.py comments). The match is a substring on
+#: the first 60 chars of the lower-cased reply.
+BABBLE_PROMISE_ONLY_OPENERS: tuple = (
+    "зачит",
+    "погнали",
+    "устроим",
+    "переключ",
+    "давай-ка",
+)
+
+
+def _is_promise_only_babble(spoken: str) -> bool:
+    """``True`` iff the reply opens with one of the :data:`BABBLE_PROMISE_ONLY_OPENERS`."""
+    head = spoken[:60].lower()
+    return any(p in head for p in BABBLE_PROMISE_ONLY_OPENERS)
+
+
 @dataclass(frozen=True)
 class BabbleGuard:
     """Issue #992 Bug D — LLM answered with metalanguage instead of performing.
 
-    Returns ``RETRY`` only when one of these holds:
+    Returns ``RETRY`` when one of these holds:
 
     1. The spoken text matches the *promise-only* opener subset
-       («зачит», «погнали», «устроим», «переключ», «давай-ка»). These
-       are NEVER valid answers, regardless of what the user asked for.
+       (:data:`BABBLE_PROMISE_ONLY_OPENERS` — «зачит», «погнали»,
+       «устроим», «переключ», «давай-ка»). These are NEVER valid
+       answers, regardless of what the user asked for.
     2. The user explicitly asked for a performance
        (:func:`user_wants_performance`).
     3. The LLM is reading its own plan aloud (:func:`is_planning_narration`).
 
-    See :func:`is_metalanguage_babble` for the full detector; this guard is
-    a thin wrapper around it that produces the verdict shape.
+    See :func:`is_metalanguage_babble` for the full detector; this
+    guard is a thin wrapper around it that produces the verdict
+    shape. Bug fix (issue #2266 / voice-vr 22): the promise-only
+    branch used to live inline in
+    ``DialogueNode._check_babble_and_retry`` and was missed when
+    ``BabbleGuard`` was extracted — without this fallback the guard
+    regressed to "fires only on perf requests" and the well-known
+    «Погнали!» case (live 30.08) silently passed through to TTS.
     """
 
     name: str = "babble"
@@ -465,9 +497,25 @@ class BabbleGuard:
             return None
         if not is_metalanguage_babble(ctx.reply.spoken):
             return None
-        user_wants_perf = user_wants_performance(ctx.turn.user_input or "")
-        if not user_wants_perf and not is_planning_narration(ctx.reply.spoken):
-            return None
+        # 🔴 FIX (live 02.09): planning narration is NEVER a valid
+        # answer regardless of user_input — matches legacy
+        # ``DialogueNode._check_babble_and_retry`` (vision-pi 02.09:
+        # user said «ебани ланудж», no perf keyword, robot read its
+        # own plan aloud).
+        if is_planning_narration(ctx.reply.spoken):
+            prompt = build_babble_retry_prompt(ctx.turn.user_input or "")
+            return Verdict(
+                kind=VerdictKind.RETRY,
+                guard_name=self.name,
+                prompt=prompt,
+            )
+        if not user_wants_performance(ctx.turn.user_input or ""):
+            # Promise-only subset always retries regardless of
+            # user_input — these phrases are NEVER valid answers.
+            # Mirrors the legacy fallback at
+            # ``dialogue_node.py:4245-4251`` exactly.
+            if not _is_promise_only_babble(ctx.reply.spoken):
+                return None
         prompt = build_babble_retry_prompt(ctx.turn.user_input or "")
         return Verdict(
             kind=VerdictKind.RETRY,

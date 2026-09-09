@@ -677,3 +677,203 @@ class TestDefaultGuardsFactory:
             VerdictKind.RETRY,
             VerdictKind.DISCARD,
         }
+
+
+# ---------------------------------------------------------------------------
+# 9. Issue #2266 — babble retry semantics through the bare TurnGuards
+#    surface (without _TestableDialogueNode).
+#
+# DoD #1 of issue #2266: «Логика DSM-перехода и бюджета покрыта тестом
+# через голый интерфейс core/». These tests pin down the babble guard
+# invariants — the same ones ``test_issue_992_babble_guard.py`` checks
+# through the heavy ``_TestableDialogueNode`` harness — but using only
+# the pure ``TurnGuards.evaluate`` surface and a hand-rolled budget
+# driver, so the regression can be diagnosed without ROS2.
+# ---------------------------------------------------------------------------
+
+
+class TestBabbleIntegrationViaTurnGuards:
+    """Babble guard invariants exposed through TurnGuards (issue #2266).
+
+    The legacy ``_TestableDialogueNode`` harness in
+    ``test/test_issue_992_babble_guard.py`` proves the end-to-end behaviour
+    (LLM-provider round-trips, publishers, ``_babble_retry_used`` flag).
+    This class proves the *policy contract* on the bare
+    :class:`TurnGuards` surface — no ROS2, no harness, no flag plumbing.
+    """
+
+    def _guards(self) -> TurnGuards:
+        # Babble-only pipeline. Order is irrelevant — there is only one
+        # guard here — but going through ``default_guards`` would pull
+        # in the music slot which we don't need and which would require
+        # a fake callable. Build it directly.
+        return TurnGuards(guards=[BabbleGuard()])
+
+    def test_babble_opener_with_performance_intent_yields_retry(self) -> None:
+        """«Зачитаю рэп» + perf command → RETRY (mirrors 992 Bug D main path)."""
+        guards = self._guards()
+        verdict = guards.evaluate(
+            _reply(spoken="Зачитаю рэпчик про космос!"),
+            _turn(user_input="зачитай рэп про космос"),
+            _state(),
+        )
+        assert verdict.kind is VerdictKind.RETRY
+        assert verdict.guard_name == "babble"
+        assert verdict.prompt and "зачитай рэп про космос" in verdict.prompt
+
+    def test_pure_promise_opener_retries_without_perf_keyword(self) -> None:
+        """«Погнали!» — pure promise — retries even on a non-perf turn.
+
+        The legacy detector only defers when ``user_wants_performance`` is
+        False AND the opener is NOT in the promise-only subset
+        («зачит», «погнали», «устроим», «переключ», «давай-ка»).
+        Verifying that the TurnGuards wrapper preserves this branch is
+        the whole point of the issue — without it the guard would
+        regress to "fires only on perf requests" and silence the
+        well-known «Погнали!» bug.
+        """
+        guards = self._guards()
+        verdict = guards.evaluate(
+            _reply(spoken="Погнали!"),
+            _turn(user_input="расскажи про себя"),
+            _state(),
+        )
+        assert verdict.kind is VerdictKind.RETRY
+        assert verdict.guard_name == "babble"
+
+    def test_planning_narration_retries_even_off_topic(self) -> None:
+        """Snake_case tool name in the reply → RETRY (issue #992 Bug D fix)."""
+        guards = self._guards()
+        verdict = guards.evaluate(
+            _reply(spoken="юзер хочет узнать время, вызываю get_current_time"),
+            _turn(user_input="сколько времени"),
+            _state(),
+        )
+        assert verdict.kind is VerdictKind.RETRY
+        assert verdict.guard_name == "babble"
+
+    def test_normal_text_defers(self) -> None:
+        """Normal answer → ACCEPT (no guard raises)."""
+        guards = self._guards()
+        verdict = guards.evaluate(
+            _reply(spoken="Сейчас 12:34."),
+            _turn(user_input="сколько времени"),
+            _state(),
+        )
+        assert verdict is ACCEPT
+
+    def test_speak_text_real_skips_babble(self) -> None:
+        """If a real speak_text fired, the babble guard must NOT retry.
+
+        Mirrors the issue-988 anti-duplicate contract — once the LLM
+        voiced the answer, swallowing it to retry would just double
+        the audio. The detector must defer.
+        """
+        guards = self._guards()
+        verdict = guards.evaluate(
+            _reply(spoken="Зачитаю рэпчик про космос!", speak_text_real=1),
+            _turn(user_input="зачитай рэп про космос"),
+            _state(),
+        )
+        assert verdict is ACCEPT
+
+    def test_empty_spoken_defers(self) -> None:
+        """Empty reply → ACCEPT (BabbleGuard guards nothing here)."""
+        guards = self._guards()
+        verdict = guards.evaluate(
+            _reply(spoken=""),
+            _turn(user_input="зачитай рэп про космос"),
+            _state(),
+        )
+        assert verdict is ACCEPT
+
+    def test_state_question_with_babble_opener_defers(self) -> None:
+        """«Играет ли сейчас музыка?» + «сейчас » opener → ACCEPT.
+
+        Live regression 30.08: «играет ли сейчас музыка» is a QUESTION,
+        not a performance command. ``is_state_question`` short-circuits
+        ``user_wants_performance`` to False, and ``сейчас `` is NOT in
+        the promise-only subset, so the guard must defer.
+        """
+        guards = self._guards()
+        verdict = guards.evaluate(
+            _reply(spoken="Сейчас тишина — ничего не играет."),
+            _turn(user_input="играет ли сейчас музыка"),
+            _state(),
+        )
+        assert verdict is ACCEPT
+
+    def test_budget_exhausted_degrades_retry_to_accept(self) -> None:
+        """budget_left == 0 + RETRY → ACCEPT (no LLM ping-pong).
+
+        Issue #1881 — when the per-turn budget is spent, the orchestrator
+        MUST downgrade any further Retry to Accept and log a warning,
+        instead of dispatching another round-trip that would just
+        repeat the same guard verdict. This is the bare ``core/``
+        equivalent of ``_consume_synthetic_retry(guard_name=...)``'s
+        False branch.
+        """
+        guards = self._guards()
+        verdict = guards.evaluate(
+            _reply(spoken="Зачитаю рэпчик про космос!"),
+            _turn(user_input="зачитай рэп про космос"),
+            _state(budget_left=0),
+        )
+        assert verdict is ACCEPT
+
+    def test_consume_budget_decrements_after_retry(self) -> None:
+        """consume_budget(state) → state' with budget_left -= 1.
+
+        The dialogue_node adapter applies ``consume_budget`` after
+        dispatching a Retry verdict so the NEXT ``evaluate`` call sees
+        the decremented budget. Verifying this contract on the bare
+        ``core/`` surface means the regression test
+        ``test_issue_1881_synthetic_retry_budget.py`` has a
+        corresponding low-level check.
+        """
+        state = _state(budget_left=2)
+        next_state = consume_budget(state)
+        assert next_state.budget_left == 1
+        # Original is unchanged — dataclass(frozen=True) immutability.
+        assert state.budget_left == 2
+
+    def test_reset_budget_restores_full_ceiling(self) -> None:
+        """reset_budget() → fresh TurnState at DEFAULT_MAX_SYNTHETIC_RETRIES.
+
+        Mirrors the legacy ``_synthetic_retries_left = DEFAULT`` reset
+        at the top of a user-initiated turn. Verified on the bare
+        surface so the dialogue_node adapter's ``_reset_turn_budget``
+        has a direct unit counterpart.
+        """
+        fresh = reset_budget()
+        assert fresh.budget_left == DEFAULT_MAX_SYNTHETIC_RETRIES
+        # Explicit override works.
+        custom = reset_budget(max_retries=5)
+        assert custom.budget_left == 5
+
+    def test_two_retry_waves_deplete_budget(self) -> None:
+        """RETRY → consume → RETRY → consume → 0 → Accept.
+
+        The "one-shot per turn" rule is enforced by the BUDGET, not by
+        a per-guard boolean. Two successive RETRYs from BabbleGuard
+        drain the budget to zero, and the third call must Accept even
+        though the detector would otherwise fire — matching the legacy
+        ``_babble_retry_used`` invariant in
+        ``test_issue_992_babble_guard.py::test_retry_only_fires_once_*``.
+        """
+        guards = self._guards()
+        state = reset_budget(max_retries=2)
+        spoken = "Зачитаю рэпчик про космос!"
+        user_input = "зачитай рэп про космос"
+
+        v1 = guards.evaluate(_reply(spoken=spoken), _turn(user_input=user_input), state)
+        assert v1.kind is VerdictKind.RETRY
+        state = consume_budget(state)
+
+        v2 = guards.evaluate(_reply(spoken=spoken), _turn(user_input=user_input), state)
+        assert v2.kind is VerdictKind.RETRY
+        state = consume_budget(state)
+
+        v3 = guards.evaluate(_reply(spoken=spoken), _turn(user_input=user_input), state)
+        assert v3 is ACCEPT
+        assert state.budget_left == 0
