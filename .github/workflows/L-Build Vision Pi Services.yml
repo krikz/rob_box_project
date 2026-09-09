@@ -79,19 +79,34 @@ jobs:
           echo "Docker Tag: $DOCKER_TAG"
 
   # Параллельная сборка всех сервисов Vision Pi (до 8 одновременно)
-# Issue #2280 (arch review 2026-09-09, кандидат 4): clean+checkout+buildx
-  # теперь живут в одном composite action ./.github/actions/l-build-service
-  # (см. .github/actions/l-build-service/action.yml). Каждый build-job
-  # сводится к ОДНОМУ шагу `uses: ./.github/actions/l-build-service` +
-  # опциональный pre-step для специфичных cache-invalidation хешей
-  # (SOURCE_HASH для Python-исходников зависит от сервиса, нельзя вынести
-  # в общий код). buildx --push (а не --load + docker push) исключает
-  # двойную работу через local docker daemon, см. acceptance #2280.
+# Issue #2280 (arch review 2026-09-09, кандидат 4): buildx-сборка вынесена
+  # в composite action ./.github/actions/l-build-service (см. action.yml).
+  # ВАЖНО (fix run #34366133083): composite — buildx-only. GitHub требует,
+  # чтобы репозиторий был зачекаутен ДО вызова локального composite action
+  # (иначе раннер не найдёт action.yml → "Did you forget to run
+  # actions/checkout"). Поэтому каждый build-job начинается с clean-stale
+  # submodules + checkout (как и до рефакторинга), затем опциональный
+  # pre-step для специфичных cache-invalidation хешей (SOURCE_HASH —
+  # per-job, зависит от сервиса) и уже потом composite-call.
+  # buildx --push (а не --load + docker push) исключает двойную работу
+  # через local docker daemon, см. acceptance #2280.
 
   build-oak-d:
     needs: prepare
     runs-on: [self-hosted, rob-box]
     steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          clean: true
+
       - name: Build oak-d
         uses: ./.github/actions/l-build-service
         with:
@@ -109,6 +124,18 @@ jobs:
     needs: prepare
     runs-on: [self-hosted, rob-box]
     steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          clean: true
+
       - name: Build led-matrix
         uses: ./.github/actions/l-build-service
         with:
@@ -129,6 +156,18 @@ jobs:
     needs: prepare
     runs-on: [self-hosted, rob-box]
     steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          clean: true
+
       - name: Build ceiling-camera
         uses: ./.github/actions/l-build-service
         with:
@@ -146,6 +185,18 @@ jobs:
     needs: [prepare, build-voice-base]
     runs-on: [self-hosted, rob-box]
     steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          clean: true
+
       - name: Compute Python sources hash (cache invalidation)
         # Per-service hash: rob_box_voice + rob_box_animations (точные пути
         # зависят от сервиса — supervisor берёт rob_box_supervisor, quest
@@ -174,6 +225,18 @@ jobs:
     needs: prepare
     runs-on: [self-hosted, rob-box]
     steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          clean: true
+
       - name: Build voice-resources
         uses: ./.github/actions/l-build-service
         with:
@@ -191,6 +254,18 @@ jobs:
     needs: prepare
     runs-on: [self-hosted, rob-box]
     steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          clean: true
+
       - name: Build voice-base
         uses: ./.github/actions/l-build-service
         with:
@@ -208,6 +283,18 @@ jobs:
     needs: prepare
     runs-on: [self-hosted, rob-box]
     steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          clean: true
+
       - name: Compute Python sources hash (cache invalidation)
         id: source-hash
         run: |
@@ -233,6 +320,18 @@ jobs:
     needs: prepare
     runs-on: [self-hosted, rob-box]
     steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          clean: true
+
       - name: Build supercollider
         uses: ./.github/actions/l-build-service
         with:
@@ -265,6 +364,18 @@ jobs:
     needs: [prepare, build-voice-assistant]
     runs-on: [self-hosted, rob-box]
     steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          clean: true
+
       - name: Compute Python sources hash (cache invalidation)
         id: source-hash
         run: |
@@ -295,6 +406,18 @@ jobs:
     needs: prepare
     runs-on: [self-hosted, rob-box]
     steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          clean: true
+
       - name: Compute Python + TS sources hash (cache invalidation)
         # WebXR-клиент — TS/JSON/HTML, rob_box_quest — Python. ОБЕ
         # директории должны быть в hash (иначе правка webxr_client не

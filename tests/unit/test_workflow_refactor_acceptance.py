@@ -2,19 +2,27 @@
 
 Issue #2280 acceptance:
 - каждый build-job в L-Build Main Pi Services.yml и L-Build Vision Pi
-  Services.yml теперь сводится к ОДНОМУ шагу `uses: ./.github/actions/l-build-service`
-  (+ опциональный pre-step для per-service cache-invalidation хешей).
+  Services.yml вызывает ./.github/actions/l-build-service для сборки (buildx
+  --push, единая сборка флагов) + опциональный pre-step для per-service
+  cache-invalidation хешей.
 - buildx --push используется вместо --load + docker push (двойная работа
   через local docker daemon устранена).
+
+ВАЖНО (fix run #34366133083): composite action — buildx-only. GitHub
+требует, чтобы репозиторий был зачекаутен ДО вызова локального composite
+action, поэтому каждый build-job начинается с clean-stale submodules +
+checkout (как и было до рефакторинга), а composite вызывается ПОСЛЕ.
 
 Эти тесты гарантируют, что:
 1. все ожидаемые build-job'ы остались в файлах (никто не потерялся при
    копи-паст рефакторинге),
 2. каждый build-job вызывает наш composite action (а не пишет inline
    `docker buildx build ... --load ...`),
-3. composite action получает ожидаемые теги (LOCAL_PREFIX/IMAGE_PREFIX,
+3. каждый build-job делает checkout ДО вызова composite (иначе локальный
+   action не находится — run #34366133083, все 18 build-job'ов упали),
+4. composite action получает ожидаемые теги (LOCAL_PREFIX/IMAGE_PREFIX,
    тот же dockerfile-path, тот же build-context что был в прежнем коде),
-4. composite action получает ожидаемые build-args (BASE_IMAGE, APT_PROXY,
+5. composite action получает ожидаемые build-args (BASE_IMAGE, APT_PROXY,
    SOURCE_HASH/URDF_FILES_HASH/VESC_NEXUS_SHA/ROS2LEDS_SHA — где были).
 """
 
@@ -62,7 +70,10 @@ EXPECTED_VISION_JOBS = {
 
 
 def _load(path: Path) -> dict:
-    with path.open() as fh:
+    # Workflow YAML contains UTF-8 Russian comments; on Windows the default
+    # codepage is cp1252, so encoding must be explicit (CI/Linux defaults to
+    # utf-8, which is why this only bites on Windows dev machines).
+    with path.open(encoding="utf-8") as fh:
         return yaml.safe_load(fh)
 
 
@@ -163,6 +174,43 @@ def test_each_build_job_uses_composite_action(job_name):
         f"{job_name}: expected at least one step using "
         f"./.github/actions/l-build-service, got steps: "
         f"{[s.get('name') or s.get('uses') for s in job['steps']]}"
+    )
+
+
+@pytest.mark.parametrize("job_name", sorted(EXPECTED_MAIN_JOBS | EXPECTED_VISION_JOBS))
+def test_each_build_job_checks_out_before_composite(job_name):
+    """Local composite action MUST be invoked only AFTER a checkout step.
+
+    GitHub resolves `uses: ./.github/actions/...` from the job workspace, which
+    exists only after actions/checkout ran. Making the composite call the job's
+    first step (with checkout only INSIDE the composite) fails every build job
+    with "Can't find action.yml ... Did you forget to run actions/checkout" —
+    regression run #34366133083 (18/18 build jobs red).
+
+    Fix: clean-stale + checkout preamble lives in the job (before the composite
+    call), the composite action is buildx-only.
+    """
+    src = MAIN_WF if job_name in EXPECTED_MAIN_JOBS else VISION_WF
+    data = _load(src)
+    steps = data["jobs"][job_name]["steps"]
+    composite_idx = next(
+        (i for i, s in enumerate(steps) if (s.get("uses") or "").endswith("/actions/l-build-service")),
+        None,
+    )
+    assert composite_idx is not None, f"{job_name}: composite step missing"
+    assert composite_idx > 0, (
+        f"{job_name}: composite is the FIRST step — repo not checked out yet, "
+        f"runner can't find the local action (run #34366133083). Add "
+        f"actions/checkout before the composite call."
+    )
+    checkouts_before = [
+        s
+        for s in steps[:composite_idx]
+        if (s.get("uses") or "").startswith("actions/checkout")
+    ]
+    assert checkouts_before, (
+        f"{job_name}: no actions/checkout step before the composite call — "
+        f"local action would not be found."
     )
 
 

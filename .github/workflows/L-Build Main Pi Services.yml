@@ -60,19 +60,34 @@ jobs:
           echo "docker_tag=${DOCKER_TAG}" >> $GITHUB_OUTPUT
           echo "Docker Tag: $DOCKER_TAG"
 
-# Issue #2280 (arch review 2026-09-09, кандидат 4): clean+checkout+buildx
-  # теперь живут в одном composite action ./.github/actions/l-build-service
-  # (см. .github/actions/l-build-service/action.yml). Каждый build-job
-  # сводится к ОДНОМУ шагу `uses: ./.github/actions/l-build-service` +
-  # опциональный pre-step для специфичных cache-invalidation хешей
-  # (URDF_FILES_HASH, VESC_NEXUS_SHA — они НЕ одинаковы между сервисами,
-  # поэтому считаются per-job). buildx --push (а не --load + docker push)
-  # исключает двойную работу (docker daemon → push), см. acceptance #2280.
+# Issue #2280 (arch review 2026-09-09, кандидат 4): buildx-сборка вынесена
+  # в composite action ./.github/actions/l-build-service (см. action.yml).
+  # ВАЖНО (fix run #34366133083): composite — buildx-only. GitHub требует,
+  # чтобы репозиторий был зачекаутен ДО вызова локального composite action
+  # (иначе раннер не найдёт action.yml → "Did you forget to run
+  # actions/checkout"). Поэтому каждый build-job начинается с clean-stale
+  # submodules + checkout (как и до рефакторинга), затем опциональный
+  # pre-step для специфичных cache-invalidation хешей (URDF_FILES_HASH —
+  # per-job) и уже потом composite-call. buildx --push (а не --load +
+  # docker push) исключает двойную работу (docker daemon → push),
+  # см. acceptance #2280.
 
   build-robot-state-publisher:
     needs: prepare
     runs-on: [self-hosted, rob-box]
     steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          clean: true
+
       - name: Compute URDF files hash (cache invalidation)
         # URDF/Xacro/package.xml/CMakeLists в src/rob_box_description меняют
         # кеш docker buildx → пересборка образа. Hash не нужен в других job'ах
@@ -103,6 +118,18 @@ jobs:
     needs: prepare
     runs-on: [self-hosted, rob-box]
     steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          clean: true
+
       - name: Build rtabmap
         uses: ./.github/actions/l-build-service
         with:
@@ -120,6 +147,18 @@ jobs:
     needs: prepare
     runs-on: [self-hosted, rob-box]
     steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          clean: true
+
       - name: Build twist-mux
         uses: ./.github/actions/l-build-service
         with:
@@ -137,6 +176,18 @@ jobs:
     needs: prepare
     runs-on: [self-hosted, rob-box]
     steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          clean: true
+
       - name: Build teleop
         uses: ./.github/actions/l-build-service
         with:
@@ -154,6 +205,18 @@ jobs:
     needs: prepare
     runs-on: [self-hosted, rob-box]
     steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          clean: true
+
       - name: Build ros2-control
         uses: ./.github/actions/l-build-service
         with:
@@ -174,6 +237,18 @@ jobs:
     needs: prepare
     runs-on: [self-hosted, rob-box]
     steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          clean: true
+
       - name: Build nav2
         uses: ./.github/actions/l-build-service
         with:
@@ -191,6 +266,18 @@ jobs:
     needs: prepare
     runs-on: [self-hosted, rob-box]
     steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          clean: true
+
       - name: Build lslidar
         uses: ./.github/actions/l-build-service
         with:
@@ -208,6 +295,18 @@ jobs:
     needs: prepare
     runs-on: [self-hosted, rob-box]
     steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          clean: true
+
       - name: Build perception
         uses: ./.github/actions/l-build-service
         with:

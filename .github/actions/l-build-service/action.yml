@@ -1,8 +1,15 @@
 name: 'L-Build Service (composite)'
 description: >-
   Reusable composite action для self-hosted build-job'ов в L-Build Main Pi Services /
-  L-Build Vision Pi Services / L-Build Single Service. Схлопывает три повторяющихся
-  шага (clean stale submodules → checkout → docker buildx + push) в один.
+  L-Build Vision Pi Services / L-Build Single Service. Оборачивает ОДИН шаг
+  `docker buildx build` (сборка флагов --tag / --build-arg / --push|--load) для
+  build-job'ов и заменяет связку `buildx --load; docker push` на `buildx --push`.
+
+  Clean stale submodules + actions/checkout живут в вызывающем job'е, а НЕ здесь:
+  GitHub требует, чтобы репозиторий был зачекаутен ДО вызова локального composite
+  action (иначе раннер не найдёт .github/actions/l-build-service/action.yml и упадёт
+  с "Did you forget to run actions/checkout"). Т.е. composite физически не может
+  сам себя причекаутить — checkout обязан быть в job'е до `uses:`.
 
   Заменяет связку `docker buildx build --load ...; docker push LOCAL_TAG` на
   один `docker buildx build --push ... --tag LOCAL_TAG ...` — buildx сам
@@ -104,26 +111,13 @@ inputs:
 runs:
   using: 'composite'
   steps:
-    # ---- Шаг 1: clean stale submodules (одна реализация, живёт тут) ----
-    # Прежде это копировалось 20 раз (Main Pi ~8 job'ов + Vision Pi ~11 job'ов +
-    # update-image-versions x2). Любая правка делалась во всех 20 копиях.
-    # Теперь это место одно — и любые изменения (например, добавление нового
-    # субмодуля) делаются тут один раз.
-    - name: Clean stale submodules
-      shell: bash
-      run: |
-        rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
-        git sparse-checkout disable 2>/dev/null || true
-        git checkout --force HEAD 2>/dev/null || true
-
-    # ---- Шаг 2: checkout (submodules recursive, clean true) ----
-    - name: Checkout repository
-      uses: actions/checkout@v7
-      with:
-        submodules: recursive
-        clean: true
-
-    # ---- Шаг 3: docker buildx (push / load) ----
+    # ---- Шаг 1: docker buildx (push / load) ----
+    # Clean stale submodules + checkout выполняются в вызывающем job'е (см.
+    # description выше): локальный composite action требует зачекаутенный
+    # репозиторий ДО своего вызова, поэтому физически не может содержать
+    # собственный checkout. Если убрать checkout из job'а — раннер не найдёт
+    # action.yml и job упадёт (баг run #34366133083, fix issue #2280).
+    #
     # Заменяет прежний `docker buildx build --load ...; docker push LOCAL_TAG`
     # на один `docker buildx build --push ... --tag LOCAL_TAG ...`
     # (buildx сам делает push, локальный docker daemon НЕ задействован).
@@ -214,7 +208,7 @@ runs:
 
         echo "✅ Built ${{ inputs.service-name }}"
 
-    # ---- Шаг 4 (опционально): verification & tagging ----
+    # ---- Шаг 2 (опционально): verification & tagging ----
     # Если job — это ВНУТРЕННИЙ build-job без `update-image-versions`,
     # verification здесь не нужен (verify делается централизованно в
     # update-image-versions, см. issue #1482 acceptance B). Этот шаг
