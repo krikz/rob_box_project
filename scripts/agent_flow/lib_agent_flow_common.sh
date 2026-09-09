@@ -303,6 +303,41 @@ print(json.dumps(keep, ensure_ascii=False))
 # как и весь остальной код agent-flow. _profile_skill_names в hermes-agent
 # использует тот же источник (get_profile_dir()).
 # ---------------------------------------------------------------------------
+# Single source of truth для проверки «установлен ли skill в профиле».
+# Используется и af_skill_for_profile, и af_skills_for_profile — раньше логика
+# дублировалась в двух местах, что разъезжалось при добавлении новых
+# категорий (ретро 09.09.2026, issue #2297).
+#
+# Контракт:
+#   $1 = skills_dir (например /home/builder/.hermes/profiles/backend/skills)
+#   $2 = skill name (без категории, например git-workflow)
+#   rc = 0 если найден, 1 если нет
+#
+# Walk: плоский skills/<skill>/ + категории repo/bundled/devops/autonomous-ai-agents
+# /software-development/productivity/research/process (категории создаются
+# sync-skills.sh и плагинами). Финальный fallback — symlink-following find -L
+# по всему дереву (для свежей раскладки, где категория ещё не symlink).
+# Идентично _profile_skill_names в hermes-agent.
+_skill_installed() {  # $1=skills_dir  $2=skill_name  →  rc 0/1
+    local _sd="$1" _s="$2"
+    [ -n "$_sd" ] && [ -n "$_s" ] || return 1
+    [ -d "$_sd" ] || return 1
+    [ -f "${_sd}/${_s}/SKILL.md" ] \
+        || [ -f "${_sd}/repo/${_s}/SKILL.md" ] \
+        || [ -f "${_sd}/bundled/${_s}/SKILL.md" ] \
+        || [ -f "${_sd}/devops/${_s}/SKILL.md" ] \
+        || [ -f "${_sd}/autonomous-ai-agents/${_s}/SKILL.md" ] \
+        || [ -f "${_sd}/software-development/${_s}/SKILL.md" ] \
+        || [ -f "${_sd}/productivity/${_s}/SKILL.md" ] \
+        || [ -f "${_sd}/research/${_s}/SKILL.md" ] \
+        || [ -f "${_sd}/process/${_s}/SKILL.md" ] \
+        || find -L "$_sd" -maxdepth 4 -path '*/_org' -prune -o \
+           -type f -name SKILL.md -print 2>/dev/null \
+           | grep -q "/${_s}/SKILL.md$" \
+        || return 1
+    return 0
+}
+
 af_skill_for_profile() {  # $1=assignee  $2=labels_csv (optional)
     local _assignee="${1:-}" _labels="${2:-}" _hermes_home _skills_dir _cand
     local _role_candidate _task_candidate _labels_lower
