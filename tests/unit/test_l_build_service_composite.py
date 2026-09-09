@@ -15,6 +15,7 @@ run #34368750126 — buildx --push по GHCR-тегу падал unauthorized).
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import textwrap
