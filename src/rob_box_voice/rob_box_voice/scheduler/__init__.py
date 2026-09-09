@@ -18,18 +18,20 @@ Phase 2 (quick-decide + EventBus):
 
 * :class:`EventBus` — bounded publish/subscribe bus with explicit
   backpressure.
-* :class:`DecisionCoordinator` / :class:`DecisionPlan` /
-  :class:`PlanStep` / :class:`SchedulerStepExecutor` — two-tier
-  planner/executor contract that wires through the MVP scheduler.
 
-Phase 3 (estimators + speculative pre-generation):
+Phase 2.5 (reflex layer — issue #968 §8.10):
 
-* :class:`SegmentEstimator` Protocol + :class:`BaselineEstimator`
-  — pluggable three-axis prediction (duration / cost / confidence).
-* :class:`EstimatorQualityTracker` — EMA error, MAPE, calibration
-  bins; consumed by the LLM feedback loop (§7.1).
-* :class:`SpeculativePreGenerator` — runtime-budget pre-gen with
-  cancel semantics tied to :class:`SchedulerTask` lifecycle.
+* :class:`ReflexLayer` — debounced command interpretation surface
+  used by the ``command_reflex_bridge`` to translate incoming
+  intents into :class:`ReflexDecision` objects.
+
+Speculative TTS pre-generation (ADR-0056) lives in the dedicated
+:mod:`rob_box_voice.scheduler.pregen` sub-package and is the only
+speculation path wired into :mod:`rob_box_voice.tts_node`. The
+older ``scheduler.{pre_gen,speculative_executor,decision,
+estimator,quality}`` modules were removed in voice-vr 22 because
+they were never wired to a live caller and were covered only by
+their own tests — see ADR-0080 §2.8.
 
 Pure data + asyncio, no rclpy. Unit tests build synthetic
 executors so the LLM integration can wire the package via a
@@ -49,24 +51,6 @@ from .delta import (
     replace,
     rewrite,
 )
-from .decision import (
-    DecisionCoordinator,
-    DecisionPlan,
-    HighLevelPlanner,
-    LowLevelExecutor,
-    PlanExecution,
-    PlanStep,
-    SchedulerStepExecutor,
-    StepExecution,
-    StepStatus,
-)
-from .estimator import (
-    BaselineEstimator,
-    EstimatorContext,
-    SegmentEstimate,
-    SegmentEstimator,
-    estimate_total_duration_ms,
-)
 from .event_bus import (
     BackpressurePolicy,
     EventBus,
@@ -82,19 +66,6 @@ from .quick_decide import (
     QuickVerdict,
     quick_decide,
 )
-from .pre_gen import (
-    PreGenCandidate,
-    PreGenCancelledError,
-    PreGenFactory,
-    PreGenPlan,
-    SpeculativePreGenerator,
-)
-from .quality import (
-    CalibrationBin,
-    EstimatorQualityTracker,
-    EstimatorSample,
-    PredictionOutcome,
-)
 from .reflex import (
     DEFAULT_DEBOUNCE_MS,
     DEFAULT_HISTORY_SIZE,
@@ -105,13 +76,6 @@ from .reflex import (
     ReflexMetrics,
     ReflexPriority,
     command_to_view,
-)
-from .speculative_executor import (
-    CANCEL_REASON_MERGE_TOUCHED_FROZEN,
-    CANCEL_REASON_PLAN_SUPERSEDED,
-    SpeculativePlanResult,
-    SpeculativeStepExecutor,
-    estimate_llm_eta_ms,
 )
 from .task_scheduler import (
     ChannelKind,
@@ -137,20 +101,6 @@ __all__ = [
     "drop",
     "replace",
     "rewrite",
-    "DecisionCoordinator",
-    "DecisionPlan",
-    "HighLevelPlanner",
-    "LowLevelExecutor",
-    "PlanExecution",
-    "PlanStep",
-    "SchedulerStepExecutor",
-    "StepExecution",
-    "StepStatus",
-    "BaselineEstimator",
-    "EstimatorContext",
-    "SegmentEstimate",
-    "SegmentEstimator",
-    "estimate_total_duration_ms",
     "BackpressurePolicy",
     "EventBus",
     "EventBusClosedError",
@@ -162,20 +112,6 @@ __all__ = [
     "DEDUP_WINDOW_S",
     "QuickVerdict",
     "quick_decide",
-    "PreGenCandidate",
-    "PreGenCancelledError",
-    "PreGenFactory",
-    "PreGenPlan",
-    "SpeculativePreGenerator",
-    "CalibrationBin",
-    "EstimatorQualityTracker",
-    "EstimatorSample",
-    "PredictionOutcome",
-    "CANCEL_REASON_MERGE_TOUCHED_FROZEN",
-    "CANCEL_REASON_PLAN_SUPERSEDED",
-    "SpeculativePlanResult",
-    "SpeculativeStepExecutor",
-    "estimate_llm_eta_ms",
     "DEFAULT_DEBOUNCE_MS",
     "DEFAULT_HISTORY_SIZE",
     "ReflexDecision",
@@ -198,14 +134,4 @@ __all__ = [
     "TaskSubmitError",
     "TaskNotFoundError",
     "ChannelBusyError",
-    # Phase 2.5 — Reflex layer (issue #968 §8.10)
-    "DEFAULT_DEBOUNCE_MS",
-    "DEFAULT_HISTORY_SIZE",
-    "ReflexDecision",
-    "ReflexEvent",
-    "ReflexKind",
-    "ReflexLayer",
-    "ReflexMetrics",
-    "ReflexPriority",
-    "command_to_view",
 ]

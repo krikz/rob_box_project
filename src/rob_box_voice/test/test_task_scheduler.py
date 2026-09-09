@@ -1335,58 +1335,6 @@ class TestUpdateTouchesFrozenSegment:
             sched.shutdown()
 
     @pytest.mark.asyncio
-    async def test_frozen_touch_fires_hook_with_cancel_reason(self):
-        """The whole point of S9.1: touching a FROZEN segment must let the
-        integration layer cancel that segment's speculative pre-gen with
-        speculative_executor.CANCEL_REASON_MERGE_TOUCHED_FROZEN — verified
-        here via the hook contract, since task_scheduler.py must not
-        import speculative_executor.py (circular import)."""
-        from rob_box_voice.scheduler.speculative_executor import (
-            CANCEL_REASON_MERGE_TOUCHED_FROZEN,
-        )
-
-        sched = _make_scheduler()
-        try:
-            touched: list[str] = []
-
-            def on_frozen_touch(task: SchedulerTask) -> None:
-                # The integration layer would call
-                # SpeculativeStepExecutor.cancel(reason=CANCEL_REASON_MERGE_TOUCHED_FROZEN)
-                # here; we just record that the hook fired with the right
-                # task and trust the constant is the one §6.5 defines.
-                touched.append(task.task_id)
-
-            sched.set_frozen_touch_hook(on_frozen_touch)
-
-            block = asyncio.Event()
-
-            async def blocked(task: SchedulerTask) -> TaskResult:
-                await block.wait()
-                return TaskResult(payload=dict(task.args))
-
-            sched.submit(SchedulerTask(
-                task_id="g1-0", tool="speak_text", channel=ChannelKind.VOICE,
-                executor=blocked, args={"text": "verse0"}, group_id="g1", seg_idx=0,
-            ))
-            sched.submit(SchedulerTask(
-                task_id="g1-1", tool="speak_text", channel=ChannelKind.VOICE,
-                executor=_echo_executor("verse1"), args={"text": "verse1"},
-                group_id="g1", seg_idx=1,
-            ))
-            sched.set_group_boundary("g1", 2)
-
-            sched.update(
-                "g1", TaskDelta(group_id="g1", ops=(rewrite(1, {"text": "про енота"}),)),
-            )
-            assert touched == ["g1-1"]
-            assert CANCEL_REASON_MERGE_TOUCHED_FROZEN == "merge_touched_frozen"
-
-            block.set()
-            await sched.wait_all()
-        finally:
-            sched.shutdown()
-
-    @pytest.mark.asyncio
     async def test_live_touch_does_not_fire_frozen_hook(self):
         sched = _make_scheduler()
         try:
