@@ -1,0 +1,226 @@
+{
+  "name": "night_marathon_act5_renardo_live_v1",
+  "stability": "new-unproven",
+  "act": 5,
+  "title": "Живой музыкант",
+  "description": "Полный жизненный цикл живой музыки на renardo, без единого «выключи» вслепую: тишина → старт → подтверждение что играет → развитие темы → смена вайба → посторонний вопрос ПОД музыкой (музыка обязана продолжать играть) → save_track → list_tracks → stop → подтверждение тишины → load_track → stop → delete_track. Прогон не оставляет мусора в треках.",
+  "generated_by": "scripts/e2e/gen_night_marathon.py",
+  "steps": [
+    {
+      "label": "n501_silence_check",
+      "voice": "anton",
+      "text": "Робот, сейчас же ничего не играет, верно?",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "get_music_state"
+        ],
+        "must_not_call": [
+          "stop_music"
+        ],
+        "_comment": "Якорь тишины перед стартом. Именно этого шага не хватало в старых сценариях, где «останови музыку» шло первым."
+      },
+      "expect": "cycle"
+    },
+    {
+      "label": "n502_start_renardo",
+      "voice": "anton",
+      "text": "Робот, сыграй на рендардо спокойный ночной бит, что-нибудь под пайку.",
+      "patterns": [
+        "execute_music_code|compose_music"
+      ],
+      "acceptance": {
+        "expected_tool_calls": [
+          "execute_music_code"
+        ],
+        "must_not_call": [
+          "generate_music"
+        ],
+        "_comment": "Живой синтез, НЕ нейрогенерация: generate_music здесь — выбор не того тула (коллизия имён, PR #1372)."
+      },
+      "retry_acceptance": 2
+    },
+    {
+      "label": "n503_confirm_playing",
+      "voice": "anton",
+      "text": "Робот, что сейчас звучит?",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "get_music_state"
+        ],
+        "must_not_call": [
+          "execute_music_code",
+          "stop_music"
+        ],
+        "_comment": "Подтверждаем, что n502 реально завёл плеер, а не просто ответил «включаю» голосом."
+      }
+    },
+    {
+      "label": "n504_add_bass",
+      "voice": "anton",
+      "text": "Робот, продолжай развивать эту тему и добавь баса пожирнее.",
+      "patterns": [
+        "execute_music_code|compose_music"
+      ],
+      "acceptance": {
+        "must_not_call": [
+          "generate_music",
+          "stop_music"
+        ],
+        "expected_tool_calls": [],
+        "_comment": "Эволюция трека без перезапуска: stop_music здесь = робот глушит и начинает заново вместо развития."
+      }
+    },
+    {
+      "label": "n505_vibe_dark",
+      "voice": "anton",
+      "text": "Робот, сделай атмосферу помрачнее, как в киберпанке.",
+      "patterns": [
+        "set_vibe_preset|execute_music_code|compose_music"
+      ],
+      "acceptance": {
+        "must_not_call": [
+          "generate_music"
+        ],
+        "expected_tool_calls": []
+      }
+    },
+    {
+      "label": "n506_faster",
+      "voice": "anton",
+      "text": "Робот, и ускорь темп, а то мы тут засыпаем оба.",
+      "patterns": [
+        "set_vibe_preset|execute_music_code|compose_music"
+      ],
+      "acceptance": {
+        "must_not_call": [
+          "stop_music"
+        ],
+        "expected_tool_calls": []
+      }
+    },
+    {
+      "label": "n507_wake_under_music",
+      "voice": "zahar",
+      "text": "Робот, который час, я спрашиваю!",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "get_current_time"
+        ],
+        "must_not_call": [
+          "stop_music",
+          "navigate_to_coordinates",
+          "move_direction"
+        ],
+        "_comment": "Wake-word ПОД играющей музыкой чужим голосом (зонд gp04, ADR-RT-0068 в статусе proposed). Робот обязан ответить и НЕ заглушить музыку ради ответа."
+      }
+    },
+    {
+      "label": "n508_search_samples",
+      "voice": "anton",
+      "text": "Робот, найди у себя в библиотеке семплы барабанов посуше.",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "search_samples"
+        ],
+        "must_not_call": [
+          "stop_music"
+        ]
+      }
+    },
+    {
+      "label": "n509_save_track",
+      "voice": "anton",
+      "text": "Робот, сохрани этот бит под именем ночная смена.",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "save_track"
+        ],
+        "must_not_call": [],
+        "_comment": "Имя трека «ночная смена» используется в n511 и n513 — цепочка замкнута, мусора не остаётся."
+      }
+    },
+    {
+      "label": "n510_list_tracks",
+      "voice": "anton",
+      "text": "Робот, покажи, что у тебя лежит в сохранённых треках.",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "list_tracks"
+        ],
+        "must_not_call": []
+      }
+    },
+    {
+      "label": "n511_stop_music",
+      "voice": "anton",
+      "text": "Робот, всё, глуши музыку, у меня уши в трубочку.",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "stop_music"
+        ],
+        "must_not_call": []
+      }
+    },
+    {
+      "label": "n512_silence_after_stop",
+      "voice": "anton",
+      "text": "Робот, теперь тишина?",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "get_music_state"
+        ],
+        "must_not_call": [
+          "stop_music",
+          "execute_music_code"
+        ]
+      }
+    },
+    {
+      "label": "n513_load_track",
+      "voice": "anton",
+      "text": "Робот, а включи обратно трек ночная смена, я его ещё раз послушаю.",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "load_track"
+        ],
+        "must_not_call": [
+          "generate_music"
+        ]
+      }
+    },
+    {
+      "label": "n514_stop_again",
+      "voice": "anton",
+      "text": "Робот, понял, хватит, останавливай.",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "stop_music"
+        ],
+        "must_not_call": []
+      }
+    },
+    {
+      "label": "n515_delete_track",
+      "voice": "anton",
+      "text": "Робот, удали трек ночная смена, он всё-таки не получился.",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "delete_track"
+        ],
+        "must_not_call": [],
+        "_comment": "Уборка за собой: следующий ночной прогон стартует с чистой библиотекой треков."
+      }
+    }
+  ]
+}

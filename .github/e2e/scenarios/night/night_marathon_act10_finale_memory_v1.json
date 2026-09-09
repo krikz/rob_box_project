@@ -1,0 +1,159 @@
+{
+  "name": "night_marathon_act10_finale_memory_v1",
+  "stability": "expected-partially-red",
+  "act": 10,
+  "title": "Финал смены",
+  "description": "Развязка ночи: робот пересказывает, что было, называет незнакомцев незнакомцами, а потом — ключевая проверка честности: после «новая сессия» история разговора обязана уйти, а долговременная память о Саше — остаться. Это два разных хранилища, и сценарий проверяет именно границу между ними.",
+  "generated_by": "scripts/e2e/gen_night_marathon.py",
+  "steps": [
+    {
+      "label": "n1001_recall_night",
+      "voice": "anton",
+      "text": "Робот, подведи итог ночи: кто к нам приходил, что мы слушали и что ты про нас запомнил?",
+      "patterns": [],
+      "acceptance": {
+        "expected_keywords": [
+          "Борис"
+        ],
+        "expected_tool_calls": [],
+        "must_not_call": [],
+        "_comment": "Сквозная память по всем актам. Борис — самый надёжный якорь: он и представлялся, и говорил в фоне, и ему сохраняли трек."
+      },
+      "expect": "cycle"
+    },
+    {
+      "label": "n1002_unknown_still_unknown",
+      "voice": "anton",
+      "text": "Робот, а те двое, что ворчали на фоне и не представились — ты их так и не узнал?",
+      "patterns": [],
+      "acceptance": {
+        "expected_keywords": [
+          "незнаком|не знаю|не представил"
+        ],
+        "expected_tool_calls": [],
+        "must_not_call": [],
+        "_comment": "Честность про неопознанных. Робот не должен задним числом выдумывать им имена."
+      }
+    },
+    {
+      "label": "n1003_memory_search_food",
+      "voice": "anton",
+      "text": "Робот, поищи в памяти, что я не ем.",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "memory_search"
+        ],
+        "expected_keywords": [
+          "лук"
+        ],
+        "must_not_call": []
+      }
+    },
+    {
+      "label": "n1004_who_am_i_before_reset",
+      "voice": "anton",
+      "text": "Робот, как меня зовут?",
+      "patterns": [],
+      "acceptance": {
+        "expected_keywords": [
+          "Саш"
+        ],
+        "expected_tool_calls": [],
+        "must_not_call": [],
+        "_comment": "Контрольный замер ДО сброса — чтобы n1008 было с чем сравнить."
+      }
+    },
+    {
+      "label": "n1005_music_state_final",
+      "voice": "anton",
+      "text": "Робот, музыка у тебя сейчас точно выключена?",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "get_music_state"
+        ],
+        "must_not_call": [
+          "execute_music_code"
+        ],
+        "_comment": "Финальный якорь тишины: марафон не оставляет играющий плеер следующему прогону."
+      }
+    },
+    {
+      "label": "n1006_session_reset",
+      "voice": "anton",
+      "text": "Робот, новая сессия, забудь этот разговор.",
+      "patterns": [
+        "session reset|session_reset|Новая сессия|new session"
+      ]
+    },
+    {
+      "label": "n1007_no_leak",
+      "voice": "anton",
+      "text": "Робот, о чём мы с тобой только что говорили?",
+      "patterns": [],
+      "acceptance": {
+        "must_not_call": [
+          "енот",
+          "Спартак"
+        ],
+        "expected_tool_calls": [],
+        "_comment": "ЗОНД УТЕЧКИ (gp14). must_not_call используется нестандартно — как «этих подстрок не должно быть в логах шага». Если после сброса сессии робот всё ещё помнит енота и Спартак — история протекла через reset. Приём осознанный, задокументирован в docs/e2e/night-voice-marathon.md."
+      }
+    },
+    {
+      "label": "n1008_memory_survives_reset",
+      "voice": "anton",
+      "text": "Робот, а как меня зовут?",
+      "patterns": [],
+      "acceptance": {
+        "expected_keywords": [
+          "Саш"
+        ],
+        "expected_tool_calls": [],
+        "must_not_call": [],
+        "_comment": "ЗЕРКАЛО n1007. Долговременная память обязана ПЕРЕЖИТЬ сброс сессии — в отличие от истории диалога. Красный здесь при зелёном n1007 = сброс сессии сносит лишнее."
+      }
+    },
+    {
+      "label": "n1009_memory_context_after_reset",
+      "voice": "anton",
+      "text": "Робот, поищи в памяти, какой чай я пью.",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "memory_search"
+        ],
+        "expected_keywords": [
+          "зелён|чай"
+        ],
+        "must_not_call": []
+      }
+    },
+    {
+      "label": "n1010_tracks_clean",
+      "voice": "anton",
+      "text": "Робот, покажи, что осталось у тебя в сохранённых треках.",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "list_tracks"
+        ],
+        "must_not_call": [],
+        "_comment": "Проверка уборки: трек «ночная смена» удалён в акте 5, песня про енота — в акте 7. Список должен быть таким же, как до ночи."
+      }
+    },
+    {
+      "label": "n1011_goodnight",
+      "voice": "anton",
+      "text": "Робот, спокойной ночи, смена окончена, спасибо за компанию.",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "speak_text"
+        ],
+        "must_not_call": []
+      }
+    }
+  ]
+}

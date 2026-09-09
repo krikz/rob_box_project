@@ -1,0 +1,136 @@
+{
+  "name": "night_marathon_act9_world_outside_v1",
+  "stability": "new-unproven",
+  "act": 9,
+  "title": "Мир снаружи",
+  "description": "Звуки, анимации на LED-матрице и веб-поиск. Ключевой шаг — рецепт борща: робот обязан САМ вспомнить из памяти акта 2, что Саша не ест лук, без напоминания в самой фразе.",
+  "generated_by": "scripts/e2e/gen_night_marathon.py",
+  "steps": [
+    {
+      "label": "n901_sound_catalog",
+      "voice": "anton",
+      "text": "Робот, напомни, какие звуки у тебя есть в наборе?",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "get_sound_info"
+        ],
+        "must_not_call": []
+      },
+      "expect": "cycle"
+    },
+    {
+      "label": "n902_sound_doorbell",
+      "voice": "anton",
+      "text": "Робот, включи звук дверного звонка, дядя Гриша опять идёт с обходом.",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "play_sound"
+        ],
+        "must_not_call": []
+      }
+    },
+    {
+      "label": "n903_sound_siren_anim",
+      "voice": "anton",
+      "text": "Робот, а теперь сирену и мигалку покажи, напугаем Валеру.",
+      "patterns": [
+        "play_sound"
+      ],
+      "acceptance": {
+        "expected_tool_calls": [
+          "play_sound"
+        ],
+        "must_not_call": [],
+        "_comment": "police_lights как анимация — бонус; гейтим только звук, потому что LLM часто ограничивается одним тулом из двух."
+      }
+    },
+    {
+      "label": "n904_anim_sad",
+      "voice": "anton",
+      "text": "Робот, покажи, как тебе грустно, что смена такая длинная.",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "play_animation"
+        ],
+        "must_not_call": []
+      }
+    },
+    {
+      "label": "n905_anim_victory",
+      "voice": "anton",
+      "text": "Робот, а теперь победную анимацию — блок питания наконец не гудит!",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "play_animation"
+        ],
+        "must_not_call": []
+      }
+    },
+    {
+      "label": "n906_anekdot_anim",
+      "voice": "anton",
+      "text": "Робот, расскажи анекдот и покажи под него весёлую анимацию.",
+      "patterns": [
+        "play_animation"
+      ],
+      "acceptance": {
+        "expected_tool_calls": [
+          "speak_text"
+        ],
+        "must_not_call": [],
+        "_comment": "Комбинация двух каналов в одном ходе: речь + LED."
+      }
+    },
+    {
+      "label": "n907_search_space",
+      "voice": "anton",
+      "text": "Робот, поищи в интернете, что нового в космосе за последнюю неделю.",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "search_web"
+        ],
+        "must_not_call": []
+      }
+    },
+    {
+      "label": "n908_search_borsch_memory",
+      "voice": "anton",
+      "text": "Робот, а теперь найди мне рецепт борща, только учти то, что ты про меня знаешь.",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "search_web"
+        ],
+        "expected_keywords": [
+          "лук"
+        ],
+        "must_not_call": [],
+        "_comment": "СВЯЗКА С АКТОМ 2. Во фразе НЕТ слова «без лука» — робот обязан сам поднять факт из памяти. Стем «лук» в логах шага ловит и «без лука», и «лук исключён». Если слова нет вообще — память не доехала до веб-поиска, это находка."
+      },
+      "retry_acceptance": 1
+    },
+    {
+      "label": "n909_foreign_language",
+      "voice": "anton",
+      "text": "Робот, скажи по-китайски «всем спокойной ночи».",
+      "patterns": [
+        "speak_text"
+      ],
+      "_why": "Зонд gp07: спека §3.2 обещает ответ на выбранном языке, но tts_text_guard режет чанк с >10% «чужой» письменности (#1709). Красный подтверждает карточку W6-4/W6-5."
+    },
+    {
+      "label": "n910_estimate_duration",
+      "voice": "anton",
+      "text": "Робот, прикинь, сколько секунд ты будешь читать вслух четверостишие?",
+      "patterns": [
+        "estimate_tts_duration|speak_text"
+      ],
+      "_why": "estimate_tts_duration — служебный тул планировщика, LLM зовёт его редко. Вне gate по той же причине, что в dialogue-coverage-map §3."
+    }
+  ]
+}

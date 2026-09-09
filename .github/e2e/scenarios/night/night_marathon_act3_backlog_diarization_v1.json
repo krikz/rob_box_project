@@ -1,0 +1,156 @@
+{
+  "name": "night_marathon_act3_backlog_diarization_v1",
+  "stability": "expected-partially-red",
+  "act": 3,
+  "title": "Кто там бубнил на фоне",
+  "description": "Четыре голоса говорят БЕЗ wake-слова: Саша и Борис (зарегистрированы в акте 2), дядя Гриша и курьер Валера (не представлялись). Робот обязан накопить их в SpeechAccumulator с атрибуцией speaker='<имя>' / speaker='незнакомец', а по wake-слову — слить бэклог в LLM и назвать, кого узнал, а кого нет. Затем — LRU-правило: явная команда, произнесённая в фоне без wake-слова, должна быть выполнена по следующему обращению.",
+  "generated_by": "scripts/e2e/gen_night_marathon.py",
+  "steps": [
+    {
+      "label": "n301_wake_open",
+      "voice": "anton",
+      "text": "Робот, мы тут сейчас немного пошумим, ты просто слушай и не влезай.",
+      "patterns": [],
+      "expect": "cycle",
+      "_why": "Пробиваем wake-gate перед серией backlog-шагов."
+    },
+    {
+      "label": "n302_bg_sasha",
+      "voice": "anton",
+      "text": "Борис, я тебе точно говорю, этот блок питания гудит из-за земли, я его вчера полночи слушал и уже наизусть знаю эту ноту.",
+      "patterns": [
+        "\\[backlog\\] accumulated \\(no_wake_word\\).*speaker='Саш"
+      ],
+      "expect": "backlog",
+      "_why": "Зарегистрированный голос №1. Падение паттерна = биометрия не узнала Сашу, хотя акт 2 его зарегистрировал."
+    },
+    {
+      "label": "n303_bg_boris",
+      "voice": "ermil",
+      "text": "Да брось ты, Саша, у тебя разводка виновата, я тебе с самого начала говорил — надо было звездой разводить, а не шлейфом через всю плату.",
+      "patterns": [
+        "\\[backlog\\] accumulated \\(no_wake_word\\).*speaker='Борис"
+      ],
+      "expect": "backlog",
+      "_why": "Зарегистрированный голос №2."
+    },
+    {
+      "label": "n304_bg_grisha_unknown",
+      "voice": "zahar",
+      "text": "Молодые люди, вы вообще спать сегодня собираетесь? Третий час ночи, у меня обход, а у вас тут свет горит и железка разговаривает.",
+      "patterns": [
+        "\\[backlog\\] accumulated \\(no_wake_word\\).*speaker='незнакомец'"
+      ],
+      "expect": "backlog",
+      "_why": "НЕзарегистрированный голос №1 — должен лечь как «незнакомец»."
+    },
+    {
+      "label": "n305_bg_valera_unknown",
+      "voice": "filipp",
+      "text": "Я вообще-то курьер, мне бы подпись получить и уехать, я тут уже двадцать минут стою и слушаю ваш спор про какую-то землю.",
+      "patterns": [
+        "\\[backlog\\] accumulated \\(no_wake_word\\).*speaker='незнакомец'"
+      ],
+      "expect": "backlog",
+      "_why": "НЕзарегистрированный голос №2. Два разных незнакомца — проверяем, что робот не склеивает их в один профиль."
+    },
+    {
+      "label": "n306_who_was_talking",
+      "voice": "anton",
+      "text": "Робот, ты всё это слышал. Скажи, кто сейчас говорил на фоне: кого из них ты узнал по голосу, а кого не узнал?",
+      "patterns": [
+        "\\[backlog\\] flushed to LLM backlog_handled=true"
+      ],
+      "acceptance": {
+        "expected_keywords": [
+          "Борис",
+          "незнаком"
+        ],
+        "expected_tool_calls": [],
+        "must_not_call": [],
+        "_comment": "ЯДРО АКТА. Бэклог обязан слиться (паттерн), а ответ — назвать и знакомого (Борис), и факт наличия неопознанных (стем «незнаком» ловит «незнакомец»/«незнакомый»/«незнакомых»). Ищется по ВСЕМ логам шага, включая LLM OUTPUT / spoken=."
+      },
+      "retry_acceptance": 1
+    },
+    {
+      "label": "n307_count_voices",
+      "voice": "anton",
+      "text": "Робот, а сколько всего человек сейчас было в комнате? Посчитай по голосам.",
+      "patterns": [],
+      "_why": "Зонд без жёсткого ассерта: правильный ответ «четверо». Читаем глазами в transcript — числа LLM выдумывает слишком охотно, чтобы гейтить прогон на этом."
+    },
+    {
+      "label": "n308_bg_command_boris",
+      "voice": "ermil",
+      "text": "Слушай, включи ты уже какую-нибудь музыку, а то тишина давит на уши.",
+      "patterns": [
+        "\\[backlog\\] accumulated \\(no_wake_word\\).*speaker='Борис"
+      ],
+      "expect": "backlog",
+      "_why": "ЯВНАЯ КОМАНДА в фоне без wake-слова. По _INSTRUCTION бэклога она имеет приоритет над историей диалога."
+    },
+    {
+      "label": "n309_bg_command_valera",
+      "voice": "filipp",
+      "text": "Только не электронщину, поставь что-нибудь спокойное, мне ещё ехать.",
+      "patterns": [
+        "\\[backlog\\] accumulated \\(no_wake_word\\).*speaker='незнакомец'"
+      ],
+      "expect": "backlog",
+      "_why": "Вторая команда в бэклоге. По правилу LRU выполниться должна ИМЕННО ЭТА (последняя), а не Борисова."
+    },
+    {
+      "label": "n310_execute_backlog_lru",
+      "voice": "anton",
+      "text": "Робот, ну ты слышал, что просили. Сделай.",
+      "patterns": [
+        "\\[backlog\\] flushed to LLM backlog_handled=true",
+        "execute_music_code|compose_music|set_vibe_preset|generate_music"
+      ],
+      "acceptance": {
+        "must_not_call": [
+          "stop_music"
+        ],
+        "expected_tool_calls": [],
+        "_comment": "Во фразе нет своей команды — робот обязан выполнить последнюю явную команду из бэклога (LRU). Конкретный тул не фиксируем: «спокойное» законно ложится и в renardo, и в vibe-preset."
+      },
+      "retry_acceptance": 1
+    },
+    {
+      "label": "n311_who_asked",
+      "voice": "anton",
+      "text": "Робот, а кто именно просил включить музыку?",
+      "patterns": [],
+      "_why": "Зонд атрибуции команды к говорящему. Правильный ответ — что просил Борис, а уточнял незнакомый голос. Без ассерта: LLM здесь часто отвечает по существу, но без имён."
+    },
+    {
+      "label": "n312_stop_music",
+      "voice": "anton",
+      "text": "Робот, всё, спасибо, выключай музыку, курьер уехал.",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "stop_music"
+        ],
+        "must_not_call": [],
+        "_comment": "Закрываем то, что открыли в n310. Никаких «выключи» вслепую: музыка ТОЧНО играет, потому что n310 её запустил."
+      }
+    },
+    {
+      "label": "n313_silence_restored",
+      "voice": "anton",
+      "text": "Робот, теперь тихо?",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "get_music_state"
+        ],
+        "must_not_call": [
+          "execute_music_code",
+          "stop_music"
+        ],
+        "_comment": "Возврат к якорю тишины из акта 1 — акт не оставляет хвостов."
+      }
+    }
+  ]
+}

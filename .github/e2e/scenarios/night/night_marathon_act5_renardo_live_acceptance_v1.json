@@ -1,0 +1,25 @@
+{
+  "name": "night_marathon_act5_renardo_live_acceptance_v1",
+  "schema_version": 1,
+  "_comment": [
+    "Акт 5 — самый жёсткий gate марафона: вся цепочка renardo обязана",
+    "работать. Красный любого тула из списка = регрессия живой музыки,",
+    "а не флейк LLM (тулы здесь однозначные, синонимов у них нет)."
+  ],
+  "expected_tool_calls": [
+    "get_music_state",
+    "execute_music_code",
+    "save_track",
+    "list_tracks",
+    "stop_music",
+    "load_track",
+    "delete_track"
+  ],
+  "must_not_call": [],
+  "voice_provenance": {
+    "voice": "anton",
+    "tts": "yandex",
+    "volume": 100,
+    "llm": "minimax-m3"
+  }
+}

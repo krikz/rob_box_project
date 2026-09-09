@@ -1,0 +1,21 @@
+{
+  "name": "night_marathon_act6_dj_booth_acceptance_v1",
+  "schema_version": 1,
+  "_comment": [
+    "Акт 6 — DJ. GATE-1 держит вход (set_dj_mode), выход (stop_music) и",
+    "измерение состояния (get_music_state). Сам «сет с объявлениями»",
+    "(n605) вне gate: тулы под него в коде нет, красный там — находка."
+  ],
+  "expected_tool_calls": [
+    "get_music_state",
+    "set_dj_mode",
+    "stop_music"
+  ],
+  "must_not_call": [],
+  "voice_provenance": {
+    "voice": "anton",
+    "tts": "yandex",
+    "volume": 100,
+    "llm": "minimax-m3"
+  }
+}

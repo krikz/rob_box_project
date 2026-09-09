@@ -1,0 +1,21 @@
+{
+  "name": "night_marathon_act10_finale_memory_acceptance_v1",
+  "schema_version": 1,
+  "_comment": [
+    "Акт 10 — expected-partially-red: gp14 (утечка контекста после сброса)",
+    "живьём не проверялась, а спека §2.4 обещает «старые тёрны не",
+    "протекают». GATE-1 держит только memory_search и speak_text —",
+    "то, что обязано работать независимо от исхода зондов."
+  ],
+  "expected_tool_calls": [
+    "memory_search",
+    "speak_text"
+  ],
+  "must_not_call": [],
+  "voice_provenance": {
+    "voice": "anton",
+    "tts": "yandex",
+    "volume": 100,
+    "llm": "minimax-m3"
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "name": "night_marathon_act1_wakeup_acceptance_v1",
+  "schema_version": 1,
+  "_comment": [
+    "Акт 1 — базовый прогрев. Красный здесь = робот не отвечает вообще,",
+    "дальше по актам идти бессмысленно (раннер останавливает марафон).",
+    "get_perception_context и faq_search намеренно ВНЕ gate — они зависят",
+    "от железа стенда и профиля FAQ (см. dialogue-coverage-map §3)."
+  ],
+  "expected_tool_calls": [
+    "get_current_time",
+    "get_battery_level",
+    "get_robot_status",
+    "get_music_state"
+  ],
+  "must_not_call": [],
+  "voice_provenance": {
+    "voice": "anton",
+    "tts": "yandex",
+    "volume": 100,
+    "llm": "minimax-m3"
+  }
+}

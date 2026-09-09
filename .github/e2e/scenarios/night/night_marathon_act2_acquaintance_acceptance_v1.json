@@ -1,0 +1,21 @@
+{
+  "name": "night_marathon_act2_acquaintance_acceptance_v1",
+  "schema_version": 1,
+  "_comment": [
+    "Акт 2 — фундамент акта 3. Если register_speaker не вызвался ни разу,",
+    "акт 3 бессмысленно даже запускать: атрибуции взяться неоткуда.",
+    "Раннер останавливает марафон на красном акте 2 по этой же причине."
+  ],
+  "expected_tool_calls": [
+    "register_speaker",
+    "memory_save",
+    "memory_search"
+  ],
+  "must_not_call": [],
+  "voice_provenance": {
+    "voice": "anton",
+    "tts": "yandex",
+    "volume": 100,
+    "llm": "minimax-m3"
+  }
+}

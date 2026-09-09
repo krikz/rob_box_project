@@ -1,0 +1,95 @@
+{
+  "name": "night_voice_marathon_v1",
+  "_comment": [
+    "Порядок актов ЗНАЧИМ: акт N опирается на состояние, созданное",
+    "актами < N (профили говорящих, факты в памяти, имена треков).",
+    "Запускать строго по порядку одним раннером:",
+    "  bash scripts/e2e/run_night_marathon.sh",
+    "SSoT сюжета — scripts/e2e/gen_night_marathon.py; файлы актов",
+    "генерируются, править их руками бессмысленно (перезатрутся)."
+  ],
+  "generated_by": "scripts/e2e/gen_night_marathon.py",
+  "acts": [
+    {
+      "act": 1,
+      "title": "Смена началась",
+      "stability": "stable",
+      "steps": 10,
+      "scenario_file": ".github/e2e/scenarios/night/night_marathon_act1_wakeup_v1.json",
+      "acceptance_file": ".github/e2e/scenarios/night/night_marathon_act1_wakeup_acceptance_v1.json"
+    },
+    {
+      "act": 2,
+      "title": "Знакомство и прогрев голосов",
+      "stability": "new-unproven",
+      "steps": 11,
+      "scenario_file": ".github/e2e/scenarios/night/night_marathon_act2_acquaintance_v1.json",
+      "acceptance_file": ".github/e2e/scenarios/night/night_marathon_act2_acquaintance_acceptance_v1.json"
+    },
+    {
+      "act": 3,
+      "title": "Кто там бубнил на фоне",
+      "stability": "expected-partially-red",
+      "steps": 13,
+      "scenario_file": ".github/e2e/scenarios/night/night_marathon_act3_backlog_diarization_v1.json",
+      "acceptance_file": ".github/e2e/scenarios/night/night_marathon_act3_backlog_diarization_acceptance_v1.json"
+    },
+    {
+      "act": 4,
+      "title": "Робот учится говорить",
+      "stability": "flaky-known",
+      "steps": 12,
+      "scenario_file": ".github/e2e/scenarios/night/night_marathon_act4_voice_prosody_v1.json",
+      "acceptance_file": ".github/e2e/scenarios/night/night_marathon_act4_voice_prosody_acceptance_v1.json"
+    },
+    {
+      "act": 5,
+      "title": "Живой музыкант",
+      "stability": "new-unproven",
+      "steps": 15,
+      "scenario_file": ".github/e2e/scenarios/night/night_marathon_act5_renardo_live_v1.json",
+      "acceptance_file": ".github/e2e/scenarios/night/night_marathon_act5_renardo_live_acceptance_v1.json"
+    },
+    {
+      "act": 6,
+      "title": "За пультом",
+      "stability": "new-unproven",
+      "steps": 10,
+      "scenario_file": ".github/e2e/scenarios/night/night_marathon_act6_dj_booth_v1.json",
+      "acceptance_file": ".github/e2e/scenarios/night/night_marathon_act6_dj_booth_acceptance_v1.json"
+    },
+    {
+      "act": 7,
+      "title": "Нейрокомпозитор и библиотека",
+      "stability": "flaky-known",
+      "steps": 12,
+      "scenario_file": ".github/e2e/scenarios/night/night_marathon_act7_neuro_composer_v1.json",
+      "acceptance_file": ".github/e2e/scenarios/night/night_marathon_act7_neuro_composer_acceptance_v1.json"
+    },
+    {
+      "act": 8,
+      "title": "Перебей меня, если сможешь",
+      "stability": "expected-partially-red",
+      "steps": 13,
+      "scenario_file": ".github/e2e/scenarios/night/night_marathon_act8_barge_in_v1.json",
+      "acceptance_file": ".github/e2e/scenarios/night/night_marathon_act8_barge_in_acceptance_v1.json"
+    },
+    {
+      "act": 9,
+      "title": "Мир снаружи",
+      "stability": "new-unproven",
+      "steps": 10,
+      "scenario_file": ".github/e2e/scenarios/night/night_marathon_act9_world_outside_v1.json",
+      "acceptance_file": ".github/e2e/scenarios/night/night_marathon_act9_world_outside_acceptance_v1.json"
+    },
+    {
+      "act": 10,
+      "title": "Финал смены",
+      "stability": "expected-partially-red",
+      "steps": 11,
+      "scenario_file": ".github/e2e/scenarios/night/night_marathon_act10_finale_memory_v1.json",
+      "acceptance_file": ".github/e2e/scenarios/night/night_marathon_act10_finale_memory_acceptance_v1.json"
+    }
+  ],
+  "total_steps": 117
+}

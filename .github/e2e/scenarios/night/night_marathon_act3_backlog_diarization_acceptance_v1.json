@@ -1,0 +1,24 @@
+{
+  "name": "night_marathon_act3_backlog_diarization_acceptance_v1",
+  "schema_version": 1,
+  "_comment": [
+    "Акт 3 помечен expected-partially-red СОЗНАТЕЛЬНО.",
+    "Диаризация (#1077) в voice_core_suite_v1 значится out-of-scope,",
+    "а атрибуция бэклога по говорящему живьём не проверялась ни разу.",
+    "GATE-1 гейтит только то, что обязано работать при любой погоде:",
+    "stop_music (мы сами включили музыку в n310) и get_music_state.",
+    "Атрибуция speaker='...' проверяется per-step паттернами — их падение",
+    "это НАХОДКА (заводить карточку), а не повод чинить сценарий."
+  ],
+  "expected_tool_calls": [
+    "stop_music",
+    "get_music_state"
+  ],
+  "must_not_call": [],
+  "voice_provenance": {
+    "voice": "anton",
+    "tts": "yandex",
+    "volume": 100,
+    "llm": "minimax-m3"
+  }
+}

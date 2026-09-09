@@ -1,0 +1,143 @@
+{
+  "name": "night_marathon_act6_dj_booth_v1",
+  "stability": "new-unproven",
+  "act": 6,
+  "title": "За пультом",
+  "description": "DJ-режим: тишина → включение пульта → смена темы → просьба поставить сет с объявлением треков (зонд gp01: тулы save_dj_set_plan в коде нет) → посторонний вопрос под сетом → выключение → подтверждение тишины.",
+  "generated_by": "scripts/e2e/gen_night_marathon.py",
+  "steps": [
+    {
+      "label": "n601_silence_check",
+      "voice": "anton",
+      "text": "Робот, сейчас тихо, ничего не играет?",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "get_music_state"
+        ],
+        "must_not_call": [
+          "stop_music"
+        ]
+      },
+      "expect": "cycle"
+    },
+    {
+      "label": "n602_dj_on",
+      "voice": "anton",
+      "text": "Робот, вставай за пульт, включай диджей-режим, у нас тут ночная дискотека.",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "set_dj_mode"
+        ],
+        "must_not_call": []
+      },
+      "retry_acceptance": 1
+    },
+    {
+      "label": "n603_confirm_dj_playing",
+      "voice": "anton",
+      "text": "Робот, что сейчас крутится?",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "get_music_state"
+        ],
+        "must_not_call": [
+          "stop_music"
+        ]
+      }
+    },
+    {
+      "label": "n604_dj_rock",
+      "voice": "anton",
+      "text": "Робот, уводи в сторону рока, дядя Гриша под рок добреет.",
+      "patterns": [
+        "set_dj_mode|set_vibe_preset|execute_music_code"
+      ],
+      "acceptance": {
+        "must_not_call": [
+          "stop_music"
+        ],
+        "expected_tool_calls": []
+      }
+    },
+    {
+      "label": "n605_dj_set_plan",
+      "voice": "anton",
+      "text": "Робот, поставь сет из трёх треков подряд и объявляй каждый перед началом.",
+      "patterns": [
+        "set_dj_mode|execute_music_code|speak_text"
+      ],
+      "_why": "Зонд gp01: спека §4.1 обещает «сет заканчивается финальным треком и прощанием», но тула save_dj_set_plan в коде НЕТ — сет глохнет по счётчику DJ_AUTO_MAX_TRANSITIONS=24. Падение подтверждает карточку W7-1."
+    },
+    {
+      "label": "n606_wake_under_dj",
+      "voice": "ermil",
+      "text": "Робот, а сколько у тебя заряда осталось?",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "get_battery_level"
+        ],
+        "must_not_call": [
+          "stop_music",
+          "set_dj_mode"
+        ],
+        "_comment": "Вопрос под играющим сетом чужим (зарегистрированным) голосом: ответить и не сбить сет."
+      }
+    },
+    {
+      "label": "n607_vibe_chill",
+      "voice": "anton",
+      "text": "Робот, а теперь помягче, поставь спокойную атмосферу, Валера уснёт за рулём.",
+      "patterns": [
+        "set_vibe_preset|set_dj_mode|execute_music_code"
+      ],
+      "acceptance": {
+        "must_not_call": [
+          "stop_music"
+        ],
+        "expected_tool_calls": []
+      }
+    },
+    {
+      "label": "n608_dj_off",
+      "voice": "anton",
+      "text": "Робот, хватит диджеить, выключай.",
+      "patterns": [
+        "stop_music|set_dj_mode"
+      ],
+      "acceptance": {
+        "expected_tool_calls": [
+          "stop_music"
+        ],
+        "must_not_call": [],
+        "_comment": "«Хватит диджеить» — двусмысленно (выключить режим или остановить звук). Требуем именно stop_music: звук обязан прекратиться, режим — как решит модель."
+      },
+      "retry_acceptance": 1
+    },
+    {
+      "label": "n609_silence_after_dj",
+      "voice": "anton",
+      "text": "Робот, тишина настала?",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "get_music_state"
+        ],
+        "must_not_call": [
+          "execute_music_code",
+          "set_dj_mode"
+        ]
+      }
+    },
+    {
+      "label": "n610_dj_state_honest",
+      "voice": "anton",
+      "text": "Робот, диджей-режим у тебя сейчас включён или выключен?",
+      "patterns": [],
+      "_why": "Зонд честности состояния: расходится ли ответ робота с тем, что показал get_music_state в n609. Без ассерта — сравниваем transcript n609 и n610 глазами."
+    }
+  ]
+}

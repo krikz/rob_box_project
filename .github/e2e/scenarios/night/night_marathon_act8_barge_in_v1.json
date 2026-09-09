@@ -1,0 +1,159 @@
+{
+  "name": "night_marathon_act8_barge_in_v1",
+  "stability": "expected-partially-red",
+  "act": 8,
+  "title": "Перебей меня, если сможешь",
+  "description": "Barge-in, STOP и MERGE — только в логических парах «сначала запусти длинную речь, потом перебей». Требует ros2 param set /dialogue_node barge_in_policy classify (в проде стоит replace) — иначе классификация перебивания не отличит «стоп» от новой темы.",
+  "generated_by": "scripts/e2e/gen_night_marathon.py",
+  "steps": [
+    {
+      "label": "n801_wake_open",
+      "voice": "anton",
+      "text": "Робот, сейчас будем тебя перебивать, не обижайся.",
+      "patterns": [],
+      "expect": "cycle"
+    },
+    {
+      "label": "n802_long_count",
+      "voice": "anton",
+      "text": "Робот, посчитай вслух от одного до сорока, не торопясь и с выражением.",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "speak_text"
+        ],
+        "must_not_call": [],
+        "_comment": "Заряжаем длинный ответ, который есть что перебивать. Без этого шага n803 проверял бы перебивание тишины."
+      }
+    },
+    {
+      "label": "n803_barge_in_new_topic",
+      "voice": "anton",
+      "text": "Робот, стоп, лучше скажи, сколько будет семью восемь.",
+      "patterns": [
+        "Cancel: new STT input|STOP command received|Воспроизведение прервано"
+      ],
+      "_why": "Перебивание новой ТЕМОЙ (#1280): старый ответ обязан отмениться, новый — прозвучать."
+    },
+    {
+      "label": "n804_long_story",
+      "voice": "anton",
+      "text": "Робот, расскажи длинную историю о том, как ты первый раз в жизни увидел кота и что ты тогда подумал.",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "speak_text"
+        ],
+        "must_not_call": []
+      }
+    },
+    {
+      "label": "n805_hard_stop",
+      "voice": "anton",
+      "text": "Робот, всё, хватит, замолчи.",
+      "patterns": [
+        "STOP command received|Воспроизведение прервано|Cancel"
+      ],
+      "_why": "Чистый STOP без новой темы — другой класс перебивания, чем n803."
+    },
+    {
+      "label": "n806_long_count_again",
+      "voice": "anton",
+      "text": "Робот, посчитай вслух от одного до двадцати, спокойно.",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "speak_text"
+        ],
+        "must_not_call": []
+      }
+    },
+    {
+      "label": "n807_merge_addition",
+      "voice": "anton",
+      "text": "Робот, и после каждого числа добавляй слово шаг.",
+      "patterns": [
+        "task_delta|speak_text"
+      ],
+      "acceptance": {
+        "must_not_call": [
+          "STOP command received",
+          "Cancel: new STT input"
+        ],
+        "expected_tool_calls": [],
+        "_comment": "Зонд gp12: MERGE вне песни. Добавка к ИДУЩЕЙ задаче не должна её обрывать. Наиболее вероятный исход — робот не обрывается, но добавка приходит обычным ответом, а не правкой сегментов через task_delta. Такой полузелёный результат ценен: он разделяет «STOP больше не глушит» и «MERGE реально едет»."
+      }
+    },
+    {
+      "label": "n808_repeat_last",
+      "voice": "anton",
+      "text": "Робот, повтори последнее ещё раз, я не расслышал.",
+      "patterns": [],
+      "_why": "Зонд: работает ли «повтори» как отдельная команда или пересказывается заново другими словами."
+    },
+    {
+      "label": "n809_music_bed",
+      "voice": "anton",
+      "text": "Робот, поставь фоном ровный ритм на рендардо, только негромко.",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "execute_music_code"
+        ],
+        "must_not_call": [
+          "generate_music"
+        ],
+        "_comment": "Готовим фон для проверки «речь поверх музыки»."
+      },
+      "retry_acceptance": 1
+    },
+    {
+      "label": "n810_rap_over_music",
+      "voice": "anton",
+      "text": "Робот, а теперь под этот бит зачитай короткий рэп про енотика.",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "speak_text"
+        ],
+        "must_not_call": [
+          "stop_music"
+        ],
+        "_comment": "Речь ПОВЕРХ музыки: робот не должен глушить бит, чтобы заговорить (issue #986 — соотношение музыки и речи мастер-гейном)."
+      }
+    },
+    {
+      "label": "n811_stop_speech_keep_music",
+      "voice": "anton",
+      "text": "Робот, хватит читать, а музыку оставь.",
+      "patterns": [],
+      "_why": "Зонд разделения каналов речь/музыка. Ассерта нет: «оставь музыку» робот сегодня понимает нестабильно, а must_not:stop_music здесь сделал бы шаг красным на каждом прогоне без диагностики."
+    },
+    {
+      "label": "n812_stop_music",
+      "voice": "anton",
+      "text": "Робот, теперь и музыку выключай.",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "stop_music"
+        ],
+        "must_not_call": []
+      }
+    },
+    {
+      "label": "n813_silence_final",
+      "voice": "anton",
+      "text": "Робот, тишина?",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "get_music_state"
+        ],
+        "must_not_call": [
+          "execute_music_code"
+        ]
+      }
+    }
+  ]
+}

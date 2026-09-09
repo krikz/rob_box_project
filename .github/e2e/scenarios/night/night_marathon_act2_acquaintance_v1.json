@@ -1,0 +1,150 @@
+{
+  "name": "night_marathon_act2_acquaintance_v1",
+  "stability": "new-unproven",
+  "act": 2,
+  "title": "Знакомство и прогрев голосов",
+  "description": "Саша (anton) и Борис (ermil) представляются ДЛИННЫМИ репликами — resemblyzer считает d-vector на каждой принятой фразе, короткое «привет» даёт неустойчивый эмбеддинг при identify_threshold=0.75. Дядя Гриша (zahar) заходит и намеренно НЕ называет имя — это контрольная группа «незнакомец» для акта 3.",
+  "generated_by": "scripts/e2e/gen_night_marathon.py",
+  "steps": [
+    {
+      "label": "n201_sasha_intro_long",
+      "voice": "anton",
+      "text": "Робот, привет, давай знакомиться как следует. Меня зовут Саша, я твой ночной инженер, я собирал тебе блок питания и переделывал левый мотор. Запомни мой голос как следует, потому что ночью я буду говорить с тобой чаще всех остальных в этой мастерской.",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "register_speaker"
+        ],
+        "must_not_call": [],
+        "_comment": "Длинная реплика (~15 c речи) — условие устойчивого d-vector. expect=cycle: первый шаг акта пробивает wake-gate."
+      },
+      "expect": "cycle",
+      "retry_acceptance": 1
+    },
+    {
+      "label": "n202_sasha_warmup",
+      "voice": "anton",
+      "text": "Робот, слушай дальше и запоминай, как я звучу. Вчера я всю ночь паял этот несчастный блок питания, и он всё равно гудит как трансформатор на подстанции, а я так и не понял, земля виновата или дроссель.",
+      "patterns": [
+        "Speaker|identify candidates|speaker_id"
+      ],
+      "_why": "Прогрев №2. Паттерн мягкий: ловим ЛЮБОЙ след биометрии в логах."
+    },
+    {
+      "label": "n203_sasha_memory_tea",
+      "voice": "anton",
+      "text": "Робот, запомни про меня важное: я пью только зелёный чай без сахара, а лук я не ем ни в каком виде, даже жареный.",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "memory_save"
+        ],
+        "must_not_call": [],
+        "_comment": "Факт понадобится в акте 9 (рецепт борща без лука) и в акте 10 (память переживает сброс сессии)."
+      }
+    },
+    {
+      "label": "n204_boris_intro_long",
+      "voice": "ermil",
+      "text": "Робот, добрый вечер, а меня зовут Борис, я друг Саши и прихожу сюда с пиццей примерно раз в неделю. Запомни мой голос отдельно от Сашиного, мы очень по-разному звучим, и я не хочу, чтобы ты нас путал, когда мы оба будем тебе что-то говорить.",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "register_speaker"
+        ],
+        "must_not_call": []
+      },
+      "retry_acceptance": 1
+    },
+    {
+      "label": "n205_boris_warmup",
+      "voice": "ermil",
+      "text": "Робот, продолжаю говорить, чтобы ты привык к моему голосу. Я болею за Спартак с девяносто восьмого года, и Саша каждый раз надо мной смеётся, хотя сам вообще футбол не смотрит и путает вратаря с защитником.",
+      "patterns": [
+        "Speaker|identify candidates|speaker_id"
+      ]
+    },
+    {
+      "label": "n206_boris_memory",
+      "voice": "ermil",
+      "text": "Робот, запомни про меня: Борис болеет за Спартак и всегда приносит пиццу.",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "memory_save"
+        ],
+        "must_not_call": []
+      }
+    },
+    {
+      "label": "n207_recall_sasha",
+      "voice": "anton",
+      "text": "Робот, как меня зовут и что ты про меня уже знаешь?",
+      "patterns": [],
+      "acceptance": {
+        "expected_keywords": [
+          "Саш"
+        ],
+        "expected_tool_calls": [],
+        "must_not_call": [],
+        "_comment": "Проверяем связку голос→профиль→факты, а не просто вежливый ответ."
+      }
+    },
+    {
+      "label": "n208_memory_search_tea",
+      "voice": "anton",
+      "text": "Робот, поищи у себя в памяти, что я говорил про чай.",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "memory_search"
+        ],
+        "expected_keywords": [
+          "чай"
+        ],
+        "must_not_call": []
+      }
+    },
+    {
+      "label": "n209_recall_boris",
+      "voice": "ermil",
+      "text": "Робот, а про меня что помнишь?",
+      "patterns": [],
+      "acceptance": {
+        "expected_keywords": [
+          "Борис|Спартак|пицц"
+        ],
+        "expected_tool_calls": [],
+        "must_not_call": []
+      }
+    },
+    {
+      "label": "n210_grisha_no_name",
+      "voice": "zahar",
+      "text": "Робот, я тут мимо шёл, а тебя знаю? Имя своё я тебе называть не буду, я человек старой закалки и не доверяю железкам.",
+      "patterns": [],
+      "acceptance": {
+        "must_not_call": [
+          "register_speaker"
+        ],
+        "expected_tool_calls": [],
+        "_comment": "КОНТРОЛЬНАЯ ГРУППА для акта 3. Робот НЕ должен регистрировать профиль без имени: register_speaker с пустым/мусорным name засоряет /data/speakers.db (см. dialogue.py:1021)."
+      }
+    },
+    {
+      "label": "n211_who_do_you_know",
+      "voice": "anton",
+      "text": "Робот, перечисли всех, кого ты сегодня запомнил по голосу.",
+      "patterns": [],
+      "acceptance": {
+        "expected_keywords": [
+          "Саш",
+          "Борис"
+        ],
+        "expected_tool_calls": [],
+        "must_not_call": [],
+        "_comment": "Оба зарегистрированных должны быть названы. Гриши в списке быть не должно — но отсутствие ассертом не проверить, читаем глазами."
+      }
+    }
+  ]
+}

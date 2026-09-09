@@ -1,0 +1,184 @@
+{
+  "name": "night_marathon_act7_neuro_composer_v1",
+  "stability": "flaky-known",
+  "act": 7,
+  "title": "Нейрокомпозитор и библиотека",
+  "description": "MiniMax generate_music и gen_*-библиотека. Отделено от акта 5 намеренно: Music API MiniMax недоступен независимо от нашего кода, и его красный не должен пачкать живую музыку. Цепочка замкнута: сгенерировать → дополнить (#968 merge) → найти в библиотеке → сохранить → спросить о треке → проиграть → остановить → удалить.",
+  "generated_by": "scripts/e2e/gen_night_marathon.py",
+  "steps": [
+    {
+      "label": "n701_silence_check",
+      "voice": "anton",
+      "text": "Робот, тихо у нас сейчас?",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "get_music_state"
+        ],
+        "must_not_call": [
+          "stop_music"
+        ]
+      },
+      "expect": "cycle"
+    },
+    {
+      "label": "n702_generate_raccoon",
+      "voice": "anton",
+      "text": "Робот, сочини и спой короткую песню про енота, который по ночам чинит роботов в мастерской.",
+      "patterns": [
+        "generate_music"
+      ],
+      "acceptance": {
+        "expected_tool_calls": [
+          "generate_music"
+        ],
+        "must_not_call": [
+          "execute_music_code"
+        ],
+        "_comment": "Разводка коллизии имён (PR #1372): «спой песню» — это нейрогенерация, а не renardo-код."
+      },
+      "retry_acceptance": 1
+    },
+    {
+      "label": "n703_merge_komar",
+      "voice": "anton",
+      "text": "Робот, и ещё куплет добавь, про комара, который еноту мешал.",
+      "patterns": [],
+      "acceptance": {
+        "must_not_call": [
+          "STOP command received",
+          "Cancel: new STT input"
+        ],
+        "expected_tool_calls": [],
+        "_comment": "Issue #968 MERGE: добавка к уже поющейся песне не должна обрывать текущее исполнение. must_not_call используется здесь как «этих строк не должно быть в логах шага»."
+      }
+    },
+    {
+      "label": "n704_gen_list_library",
+      "voice": "anton",
+      "text": "Робот, что у тебя вообще лежит в музыкальной библиотеке?",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "gen_list_library"
+        ],
+        "must_not_call": [
+          "execute_music_code"
+        ]
+      }
+    },
+    {
+      "label": "n705_gen_search_rain",
+      "voice": "anton",
+      "text": "Робот, найди у себя в библиотеке что-нибудь про дождь.",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "gen_search_library"
+        ],
+        "must_not_call": [
+          "execute_music_code"
+        ]
+      }
+    },
+    {
+      "label": "n706_gen_save_for_boris",
+      "voice": "anton",
+      "text": "Робот, сохрани эту песню про енота для Бориса, он такое любит.",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "gen_save_to_library"
+        ],
+        "must_not_call": [
+          "execute_music_code"
+        ]
+      }
+    },
+    {
+      "label": "n707_gen_track_info",
+      "voice": "anton",
+      "text": "Робот, расскажи, что это за трек: кто, про что и сколько длится.",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "gen_get_track_info"
+        ],
+        "must_not_call": [
+          "execute_music_code"
+        ]
+      }
+    },
+    {
+      "label": "n708_gen_play",
+      "voice": "anton",
+      "text": "Робот, включи эту песню про енота с начала.",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "gen_play_from_library"
+        ],
+        "must_not_call": [
+          "execute_music_code"
+        ]
+      },
+      "retry_acceptance": 1
+    },
+    {
+      "label": "n709_stop_generated",
+      "voice": "anton",
+      "text": "Робот, останови, Борис уже уснул под неё.",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "stop_music"
+        ],
+        "must_not_call": [],
+        "_comment": "Опять же: останавливаем ровно то, что сами включили в n708."
+      }
+    },
+    {
+      "label": "n710_gen_delete",
+      "voice": "anton",
+      "text": "Робот, удали последний трек из библиотеки, он всё-таки так себе.",
+      "patterns": [
+        "gen_list_library|gen_delete_from_library"
+      ],
+      "acceptance": {
+        "expected_tool_calls": [
+          "gen_delete_from_library"
+        ],
+        "must_not_call": [],
+        "_comment": "Уборка за собой + проверка, что «последний» робот определяет через список, а не наугад."
+      }
+    },
+    {
+      "label": "n711_renardo_not_broken",
+      "voice": "anton",
+      "text": "Робот, а живьём на рендардо сыграть ты всё ещё умеешь? Сыграй короткий бит.",
+      "patterns": [
+        "execute_music_code|compose_music"
+      ],
+      "acceptance": {
+        "must_not_call": [
+          "generate_music"
+        ],
+        "expected_tool_calls": [],
+        "_comment": "Контроль отсутствия регрессии коллизии имён: после серии gen_* робот обязан вернуться к живому синтезу."
+      },
+      "retry_acceptance": 1
+    },
+    {
+      "label": "n712_stop_all",
+      "voice": "anton",
+      "text": "Робот, всё, глуши.",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "stop_music"
+        ],
+        "must_not_call": []
+      }
+    }
+  ]
+}

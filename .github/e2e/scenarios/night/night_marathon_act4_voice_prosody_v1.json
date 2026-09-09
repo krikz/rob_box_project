@@ -1,0 +1,157 @@
+{
+  "name": "night_marathon_act4_voice_prosody_v1",
+  "stability": "flaky-known",
+  "act": 4,
+  "title": "Робот учится говорить",
+  "description": "Голоса и просодия: list_tts_voices → текущий голос → смена на alena → смена на jane → ВОЗВРАТ дефолта → громкость/скорость/тон парами (вверх-вниз, чтобы не оставить робота орущим на всю ночь) → сказка разными голосами (#1219). Голоса робота (alena/jane) намеренно не пересекаются с голосами людей из акта 2.",
+  "generated_by": "scripts/e2e/gen_night_marathon.py",
+  "steps": [
+    {
+      "label": "n401_list_voices",
+      "voice": "anton",
+      "text": "Робот, какими голосами ты умеешь говорить? Перечисли, что у тебя есть.",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "list_tts_voices"
+        ],
+        "must_not_call": []
+      },
+      "expect": "cycle"
+    },
+    {
+      "label": "n402_current_voice",
+      "voice": "anton",
+      "text": "Робот, а каким голосом ты говоришь прямо сейчас?",
+      "patterns": [
+        "current_voice"
+      ]
+    },
+    {
+      "label": "n403_set_voice_alena",
+      "voice": "anton",
+      "text": "Робот, говори голосом Алёны.",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "set_voice"
+        ],
+        "voice_changed": true,
+        "must_not_call": [],
+        "_comment": "#1219: не фиксируем КОНКРЕТНЫЙ голос (LLM путает алену-яндекс и minimax-голоса) — требуем факта смены с дефолта."
+      },
+      "retry_acceptance": 2
+    },
+    {
+      "label": "n404_speak_after_set",
+      "voice": "anton",
+      "text": "Робот, скажи этим голосом что-нибудь бодрое, чтобы я услышал разницу.",
+      "patterns": [
+        "current_voice"
+      ]
+    },
+    {
+      "label": "n405_set_voice_jane",
+      "voice": "anton",
+      "text": "Робот, а теперь переключись на голос Джейн.",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "set_voice"
+        ],
+        "must_not_call": []
+      },
+      "retry_acceptance": 1
+    },
+    {
+      "label": "n406_restore_default_voice",
+      "voice": "anton",
+      "text": "Робот, всё, наигрались, верни свой голос по умолчанию.",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "set_voice"
+        ],
+        "must_not_call": [],
+        "_comment": "ОБЯЗАТЕЛЬНЫЙ возврат: без него акты 5-10 пойдут на женском голосе, и speaker_id начнёт матчить собственную речь робота."
+      }
+    },
+    {
+      "label": "n407_volume_up",
+      "voice": "anton",
+      "text": "Робот, говори погромче, дядя Гриша глуховат и стоит в коридоре.",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "set_volume"
+        ],
+        "must_not_call": []
+      }
+    },
+    {
+      "label": "n408_volume_down",
+      "voice": "anton",
+      "text": "Робот, нет, всё-таки потише, а то разбудишь весь этаж.",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "set_volume"
+        ],
+        "must_not_call": [],
+        "_comment": "Парный шаг: акт не оставляет робота на максимальной громкости."
+      }
+    },
+    {
+      "label": "n409_speed_down",
+      "voice": "anton",
+      "text": "Робот, говори помедленнее, я за тобой записываю.",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "set_speed"
+        ],
+        "must_not_call": []
+      }
+    },
+    {
+      "label": "n410_speed_up",
+      "voice": "anton",
+      "text": "Робот, ладно, хватит тянуть, теперь наоборот — тараторь.",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "set_speed"
+        ],
+        "must_not_call": []
+      }
+    },
+    {
+      "label": "n411_pitch_bass",
+      "voice": "anton",
+      "text": "Робот, говори басом, как диктор в старом кино.",
+      "patterns": [
+        "set_pitch|set_voice"
+      ],
+      "_why": "set_pitch есть не у всех провайдеров TTS — принимаем и деградацию в set_voice, но фиксируем в логе, чем ответил."
+    },
+    {
+      "label": "n412_skazka_multivoice",
+      "voice": "anton",
+      "text": "Робот, расскажи сказку про Красную Шапочку и говори за каждого персонажа своим голосом — за бабушку одним, за волка другим.",
+      "patterns": [
+        "voice_used"
+      ],
+      "acceptance": {
+        "expected_tool_calls": [
+          "set_voice"
+        ],
+        "expected_keywords": [
+          "красн"
+        ],
+        "must_not_call": [],
+        "_comment": "#1532: сказка должна быть полной и реально менять голос. Стем «красн» ловит «красную»/«красная» и запрещает generic «жила-была» без героя."
+      },
+      "retry_acceptance": 1
+    }
+  ]
+}
