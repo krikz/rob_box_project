@@ -275,31 +275,44 @@ R=$(role_for "")
 echo ""
 echo "=== T7: code presence in triage.sh ==="
 
-if grep -q '^load_valid_profiles()' "$SCRIPT_UNDER_TEST"; then
-    pass "T7a: load_valid_profiles() defined in triage.sh"
+# T7a/T7b (semantic, issue #2295): вместо `grep -q '^load_valid_profiles()'`
+# (ломается на реинденте/переносе функции в lib) — спрашиваем extract_func_or_die
+# напрямую: «определение извлекается из скрипта». Если функция переехала в
+# lib_agent_flow_common.sh, тест сразу это покажет через FAIL от
+# extract_func_or_die (или ОК если extract_helpers загрузил её оттуда через
+# тот же путь, что используется в T3-T5).
+#
+# Замечание: T3-T5 уже доказывают, что extract_helpers "загружает" обе функции
+# (иначе eval_helper / is_valid_profile вернули бы FAIL). Здесь мы повторяем
+# ту же проверку явно, чтобы T7 читался как code-presence contract.
+if extract_func_or_die "$SCRIPT_UNDER_TEST" load_valid_profiles >/dev/null; then
+    pass "T7a: load_valid_profiles() defined in triage.sh (extract_func_or_die OK)"
 else
-    fail "T7a: load_valid_profiles() not found"
+    fail "T7a: load_valid_profiles() not found via extract_func_or_die"
 fi
 
-if grep -q '^is_valid_profile()' "$SCRIPT_UNDER_TEST"; then
-    pass "T7b: is_valid_profile() defined in triage.sh"
+if extract_func_or_die "$SCRIPT_UNDER_TEST" is_valid_profile >/dev/null; then
+    pass "T7b: is_valid_profile() defined in triage.sh (extract_func_or_die OK)"
 else
-    fail "T7b: is_valid_profile() not found"
+    fail "T7b: is_valid_profile() not found via extract_func_or_die"
 fi
 
-if grep -q 'is_valid_profile "$role"' "$SCRIPT_UNDER_TEST"; then
+# T7c/T7d/T7e — структурные invariants (вызов guard в main loop, label literal,
+# retro-card audit trail). Это не contract функциональности (она покрыта T3-T5),
+# а паттерн в коде — grep оправдан.
+if grep -qF 'is_valid_profile "$role"' "$SCRIPT_UNDER_TEST"; then
     pass "T7c: guard invoked with 'is_valid_profile \"\$role\"' in main loop"
 else
     fail "T7c: guard invocation not found in main loop"
 fi
 
-if grep -q 'agent-flow-error' "$SCRIPT_UNDER_TEST"; then
+if grep -qF 'agent-flow-error' "$SCRIPT_UNDER_TEST"; then
     pass "T7d: guard adds 'agent-flow-error' label to issue on rejection"
 else
     fail "T7d: agent-flow-error label not added on rejection"
 fi
 
-if grep -q 't_dd7a5749' "$SCRIPT_UNDER_TEST"; then
+if grep -qF 't_dd7a5749' "$SCRIPT_UNDER_TEST"; then
     pass "T7e: retro-card reference 't_dd7a5749' present (audit trail)"
 else
     fail "T7e: retro-card reference missing"
