@@ -50,15 +50,37 @@ jobs:
         run: |
           PYTHONPATH=src/rob_box_voice python scripts/lint/dialogue_skip_reasons.py
 
-      # ADR-0021 R1 / issue #1984, #2077: CC-budget guard across the four
+      # ADR-0021 R1 / issue #1984, #2077, #2186: CC-budget guard across the five
       # active packages (rob_box_voice, rob_box_supervisor, rob_box_harness,
-      # rob_box_mcp_tools). Hard gate (no continue-on-error) — new code with
-      # CC>15 (CC>20 for __init__) must fail the lint. Existing over-limit
-      # methods are grandfathered in scripts/lint/cc_budget_baseline.json
+      # rob_box_mcp_tools, rob_box_quest). Hard gate (no continue-on-error) —
+      # new code with CC>15 (CC>20 for __init__) must fail the lint. Existing
+      # over-limit methods are grandfathered in scripts/lint/cc_budget_baseline.json
       # (refactor cards track their removal).
       - name: CC-budget guard (ADR-0021)
         run: |
           python scripts/lint/cc_budget.py
+
+      # ADR-0021 R1 / issue #2186: каждый новый exemption в
+      # cc_budget_baseline.json обязан иметь запись в _refactor_cards с
+      # ссылкой на type:tech-debt issue, иначе refactor-карточка не
+      # заведена — а значит гард не сработает и сложность будет расти
+      # молча (issue #2186, WSSServer._on_json_cmd дожил до CC=107).
+      # Hard gate (no continue-on-error): без ref-card PR падает.
+      # Полная сетевая проверка (--verify-remote) делается отдельным
+      # шагом ниже; локальная — дешёвая структурная валидация.
+      - name: CC-budget ref-card guard (ADR-0021 R1)
+        run: |
+          python scripts/lint/cc_budget_refs.py
+
+      # Self-tests for cc_budget_refs (issue #2186): the guard's own
+      # correctness must be protected the same way as seam_without_consumer
+      # (see issue #2118 convention). If a future refactor breaks detection
+      # of one of the historical "silent baseline growth" patterns, this
+      # test must fail loudly here, not three days after the next real
+      # regression.
+      - name: CC-budget ref-card guard self-tests
+        run: |
+          python -m unittest scripts.lint.test_cc_budget_refs -v
 
       # ADR-0021 policy / issue #2118: "seam without consumer" guard — a ROS
       # topic published with no subscriber (or vice versa) anywhere in src/,
