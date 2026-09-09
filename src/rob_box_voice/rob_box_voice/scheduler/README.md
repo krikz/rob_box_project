@@ -84,11 +84,12 @@ async def main() -> None:
   `FAILED` + `task.error`, следующая задача канала исполняется.
 - **Cancel QUEUED и RUNNING.** `sched.cancel(task_id)` снимает
   ещё не стартовавшую задачу из очереди и **прерывает**
-  RUNNING-задачу через `EventBus` (Phase 2, #968 §11.6,
-  реализовано в C2 #1995): executor'у шлётся
-  `asyncio.CancelledError`, статус → CANCELLED, на шину
-  публикуется envelope `scheduler.cancel` для подписчиков
-  наблюдаемости (ADR-0086: рефлекс-мост удалён).
+  RUNNING-задачу (Phase 2, #968 §11.6, реализовано в C2 #1995):
+  executor'у шлётся `asyncio.CancelledError`, статус → CANCELLED.
+  Раньше это дополнительно публиковало `scheduler.cancel` envelope
+  на `EventBus` для подписчиков наблюдаемости; ADR-0086 (2026-09-09)
+  удалил и рефлекс-мост, и сам `EventBus` — единственный подписчик
+  исчез, публиковать было уже некому.
 - **`[CHANNELS]` snapshot.** `sched.channel_status(kind)` /
   `sched.all_statuses()` возвращают `ChannelStatus` с полями
   `queue_depth`, `current_task_id`, `current_tool`, `eta_s`. Phase 3

@@ -1,20 +1,16 @@
-"""Unit tests for C1+C2 of issue #1995 (operator-agent 07).
+"""Unit tests for C2+C3 of issue #1995 (operator-agent 07).
 
-C1: ``TaskScheduler`` owns an :class:`EventBus` at init time and
-    exposes it as :attr:`TaskScheduler.event_bus`.
+C2: ``TaskScheduler.cancel`` actually preempts RUNNING tasks (Phase 2
+    of issue #968 §11.6). The MVP could only remove QUEUED tasks; now
+    ``cancel`` cancels the executor's :class:`asyncio.Task` and the
+    ``CancelledError`` really propagates into the running coroutine.
 
-C2: ``TaskScheduler.cancel`` actually preempts RUNNING tasks via
-    the EventBus (Phase 2 of issue #968 §11.6). The MVP could
-    only remove QUEUED tasks; now ``cancel`` cancels the
-    executor's :class:`asyncio.Task` and publishes a
-    ``scheduler.cancel`` envelope so subscribers see the
-    preemption.
-
-The tests live in their own file (rather than being merged into
-``test_task_scheduler.py``) so the Phase-2 / Phase-3 split is
-visible in the test index and so the EventBus-specific setup
-(``asyncio.Queue`` per subscriber, ``fnmatch`` topic matching)
-doesn't pollute the MVP suite.
+    ADR-0086 (2026-09-09): C2 used to also publish a ``scheduler.cancel``
+    observability envelope on a pub/sub ``EventBus``. That bus (and its
+    ownership test, C1) is removed — its only subscriber, the reflex
+    bridge, was removed the same day, leaving zero subscribers. This
+    file keeps only the preemption-itself assertion, which never
+    depended on the bus.
 
 C3 (fail-loud on scheduler init failure) lives in the same file
 under :class:`TestFailLoudOnSchedulerFailure` and asserts the
@@ -31,8 +27,6 @@ import pytest
 
 from rob_box_voice.scheduler import (
     ChannelKind,
-    EventBus,
-    EventEnvelope,
     SchedulerTask,
     TaskResult,
     TaskScheduler,
@@ -79,104 +73,19 @@ def _make_scheduler() -> TaskScheduler:
 
 
 # ---------------------------------------------------------------------------
-# C1 — TaskScheduler owns EventBus at init time
+# C2 — Cancel actually preempts a RUNNING task
 # ---------------------------------------------------------------------------
 
 
-class TestEventBusOwnership:
-    """C1 (#1995): the scheduler creates and owns its EventBus."""
-
-    @pytest.mark.asyncio
-    async def test_scheduler_creates_event_bus_on_init(self) -> None:
-        """Every TaskScheduler has a working :class:`EventBus`."""
-        sched = _make_scheduler()
-        try:
-            assert isinstance(sched.event_bus, EventBus)
-            # Sanity: bus is open and accepts subscriptions.
-            sub = sched.event_bus.subscribe("test.*")
-            try:
-                env = EventEnvelope(topic="test.hello", payload={"k": 1})
-                delivered = await sched.event_bus.publish(env)
-                assert delivered == 1
-                received = await asyncio.wait_for(sub.get(), timeout=0.5)
-                assert received.payload == {"k": 1}
-            finally:
-                sub.close()
-        finally:
-            sched.shutdown()
-
-
-# ---------------------------------------------------------------------------
-# C2 — Cancel preempts RUNNING tasks via EventBus
-# ---------------------------------------------------------------------------
-
-
-class TestCancelPreemptViaEventBus:
-    """C2 (#1995): cancel() routes through EventBus for preemption."""
-
-    @pytest.mark.asyncio
-    async def test_cancel_publishes_scheduler_cancel_envelope(self) -> None:
-        """Both QUEUED-cancel and RUNNING-cancel paths emit one envelope
-        on topic ``scheduler.cancel`` with task_id and reason.
-        """
-        sched = _make_scheduler()
-        try:
-            sub = sched.event_bus.subscribe("scheduler.cancel")
-            try:
-                # Submit two tasks, cancel the first while QUEUED,
-                # cancel the second while RUNNING.
-                blocker_done = threading.Event()
-
-                async def blocker(task: SchedulerTask) -> TaskResult:  # noqa: ARG001
-                    blocker_done.set()
-                    await asyncio.sleep(0.3)
-                    return TaskResult(payload="blocker")
-
-                t1 = sched.submit(SchedulerTask(
-                    task_id="t1", tool="speak_text",
-                    channel=ChannelKind.VOICE, executor=blocker,
-                ))
-                t2 = sched.submit(SchedulerTask(
-                    task_id="t2", tool="speak_text",
-                    channel=ChannelKind.VOICE, executor=blocker,
-                ))
-                # t1 is running, t2 is queued. Wait for t1 to enter
-                # the executor before issuing cancels so we have
-                # deterministic ordering.
-                while not blocker_done.is_set():
-                    await asyncio.sleep(0.001)
-
-                # Cancel t2 while QUEUED.
-                assert sched.cancel("t2") is True
-                env_q = await asyncio.wait_for(sub.get(), timeout=0.5)
-                assert env_q.topic == "scheduler.cancel"
-                assert env_q.payload["task_id"] == "t2"
-                assert env_q.payload["reason"] == "cancelled before start"
-
-                # Cancel t1 while RUNNING.
-                assert sched.cancel("t1") is True
-                env_r = await asyncio.wait_for(sub.get(), timeout=0.5)
-                assert env_r.topic == "scheduler.cancel"
-                assert env_r.payload["task_id"] == "t1"
-                assert env_r.payload["reason"] == "cancelled mid-flight"
-
-                await sched.wait_all()
-                assert t1.status is TaskStatus.CANCELLED
-                assert t2.status is TaskStatus.CANCELLED
-            finally:
-                sub.close()
-        finally:
-            sched.shutdown()
+class TestCancelPreempt:
+    """C2 (#1995): cancel() preempts a RUNNING executor."""
 
     @pytest.mark.asyncio
     async def test_cancel_preempt_propagates_cancelled_error_to_executor(
         self,
     ) -> None:
         """End-to-end sanity check: cancel mid-flight raises inside the
-        executor's await, the pump flips status to CANCELLED, and the
-        EventBus envelope is delivered to a subscriber registered before
-        the cancel. Covers the integration between C1 (EventBus) and C2
-        (preempt).
+        executor's await, and the pump flips status to CANCELLED.
         """
         sched = _make_scheduler()
         try:
