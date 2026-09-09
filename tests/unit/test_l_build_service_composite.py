@@ -67,8 +67,9 @@ def _fake_docker(monkeypatch, tmp_path: Path) -> Path:
         "exit 0\n"
     )
     fake.chmod(0o755)
-    # Prepend to PATH so the fake docker is found first
-    monkeypatch.setenv("PATH", f"{tmp_path}:{__import__('os').environ['PATH']}")
+    # Prepend to PATH so the fake docker is found first. Use os.pathsep (':' on
+    # Linux, ';' on Windows) so Git Bash on Windows can still resolve the fake.
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{__import__('os').environ['PATH']}")
     # git submodule status is consulted when compute-submodule-sha is set —
     # monkeypatching git is out of scope; tests that use it skip if git fails.
     return log
@@ -113,7 +114,7 @@ def _fake_git_submodule(monkeypatch, tmp_path: Path, sha: str = "abc1234567890")
         'exec /usr/bin/git "$@"\n'
     )
     shim.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{tmp_path}:{__import__('os').environ['PATH']}")
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{__import__('os').environ['PATH']}")
     return log
 
 
