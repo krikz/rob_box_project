@@ -87,6 +87,144 @@ VALID_MODES_V2: tuple[str, ...] = (
 )
 
 
+# === AV-16: FRAME_HANDLERS table (ADR-0021 R1, ADR-0080 §2.2) ==================
+# Frame-handlers с одинаковой сигнатурой
+# ``async (self, ws, session, payload) -> bool`` (плюс sid для voice_audio
+# и ftype для supervisor).
+# Возвращают ``False`` чтобы попросить ``_ws_handler`` закрыть сокет
+# после отправки ответа (HELLO auth-fail, GOODBYE).
+#
+# Исключения из таблицы (особая семантика):
+#   * HELLO     — может закрыть сокет на AUTH_FAIL.
+#   * GOODBYE   — нормальное закрытие (code 1000).
+#   * STATE_UPDATE — server→client only, приход от клиента = ERROR{BAD_PAYLOAD}.
+#
+# Эта таблица используется в ``_handle_frame`` (issue #2201, voice-vr 16).
+# Сами frame-handler'ы (``_dispatch_*``) — тонкие адаптеры, которые парсят
+# payload и зовут существующие бизнес-методы (``_on_subscribe``,
+# ``_on_unsubscribe`` и т.д.). Сложная бизнес-логика остаётся в
+# ``_on_json_cmd`` / ``_on_hello`` / etc. — out of scope этой карточки.
+async def _dispatch_subscribe(self, ws, session, payload) -> bool:
+    try:
+        payload_obj = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as e:
+        await self._send_error(ws, 0, ErrorCode.BAD_PAYLOAD, f"bad SUBSCRIBE json: {e}")
+        return True
+    await self._on_subscribe(ws, session, payload_obj)
+    return True
+
+
+async def _dispatch_unsubscribe(self, ws, session, payload) -> bool:
+    try:
+        payload_obj = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return True  # UNSUBSCRIBE с битым json — noop (как было в исходнике)
+    await self._on_unsubscribe(ws, session, payload_obj)
+    return True
+
+
+async def _dispatch_json_event(self, ws, session, payload) -> bool:
+    try:
+        payload_obj = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return True  # JSON_EVENT с битым json — noop (как было в исходнике)
+    await self._on_json_event(ws, session, payload_obj)
+    return True
+
+
+async def _dispatch_json_cmd(self, ws, session, payload) -> bool:
+    try:
+        payload_obj = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as e:
+        await self._send_error(ws, 0, ErrorCode.BAD_PAYLOAD, f"bad JSON_CMD json: {e}")
+        return True
+    await self._on_json_cmd(ws, session, payload_obj)
+    return True
+
+
+async def _dispatch_voice_audio(self, ws, session, sid, payload) -> bool:
+    # ADR-0071 step 5a: stream_id==2 → wake-канал (publish_quest_wake_audio),
+    # иначе — PTT/radio (publish_voice_audio, текущее поведение).
+    # Back-compat: stream_id==0 тоже идёт в radio-канал
+    # (исторически клиенты слали sid=0).
+    # issue #1992 observability: см. _note_voice_audio_rx — без этого приём
+    # молчит одинаково что при живом потоке без подписчика, что при клиенте,
+    # который вообще ничего не шлёт.
+    self._note_voice_audio_rx(sid, len(payload), session.session_id)
+    if sid == 2:
+        self.bridge.publish_quest_wake_audio(payload)
+    else:
+        self.bridge.publish_voice_audio(payload)
+    return True
+
+
+async def _dispatch_supervisor(self, ws, session, ftype, payload) -> bool:
+    # Supervisor-API (§3 + §11 + AV-16). Только v2-сессии; v1 присылает
+    # 0x30..0x32 → ERROR{PROTOCOL_VERSION} (возвращается из самого
+    # _handle_supervisor_command).
+    await self._handle_supervisor_command(ws, session, ftype, payload)
+    return True
+
+
+async def _dispatch_hello(self, ws, session, payload) -> bool:
+    try:
+        payload_obj = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as e:
+        await self._send_error(ws, 0, ErrorCode.BAD_PAYLOAD, f"bad HELLO json: {e}")
+        return True
+    if not await self._on_hello(ws, session, payload_obj):
+        # AUTH_FAIL → закрыть сокет после отправки ERROR.
+        await ws.close(code=4001, message=b"auth_fail")
+        return False
+    return True
+
+
+async def _dispatch_goodbye(self, ws) -> bool:
+    await ws.close(code=1000, message=b"goodbye")
+    return False
+
+
+async def _dispatch_state_update(self, ws) -> bool:
+    # Сервер-инициируемый frame; клиент НИКОГДА не должен слать
+    # STATE_UPDATE → ERROR{BAD_PAYLOAD}.
+    await self._send_error(
+        ws, 0, ErrorCode.BAD_PAYLOAD, "STATE_UPDATE is server→client only (§3)"
+    )
+    return True
+
+
+async def _dispatch_unknown(self, ws, ftype) -> bool:
+    await self._send_error(
+        ws, 0, ErrorCode.BAD_PAYLOAD, f"frame type {ftype} not supported"
+    )
+    return True
+
+
+FRAME_HANDLERS: dict = {
+    FrameType.SUBSCRIBE: _dispatch_subscribe,
+    FrameType.UNSUBSCRIBE: _dispatch_unsubscribe,
+    FrameType.JSON_EVENT: _dispatch_json_event,
+    FrameType.JSON_CMD: _dispatch_json_cmd,
+    FrameType.HELLO: _dispatch_hello,
+    FrameType.GOODBYE: lambda self, ws, session, payload: _dispatch_goodbye(ws),
+    FrameType.STATE_UPDATE: lambda self, ws, session, payload: _dispatch_state_update(
+        ws
+    ),
+    FrameType.VOICE_AUDIO: lambda self, ws, session, sid, payload: _dispatch_voice_audio(
+        self, ws, session, sid, payload
+    ),
+    FrameType.SET_MODE: lambda self, ws, session, payload: _dispatch_supervisor(
+        self, ws, session, FrameType.SET_MODE, payload
+    ),
+    FrameType.ACQUIRE_FLOOR: lambda self, ws, session, payload: _dispatch_supervisor(
+        self, ws, session, FrameType.ACQUIRE_FLOOR, payload
+    ),
+    FrameType.RELEASE_FLOOR: lambda self, ws, session, payload: _dispatch_supervisor(
+        self, ws, session, FrameType.RELEASE_FLOOR, payload
+    ),
+}
+
+
 def _pack_msgpack(payload: dict) -> bytes:
     """Serialize dict → msgpack bytes (bin-type=True для bytes-полей)."""
     if _msgpack is None:
@@ -2453,7 +2591,98 @@ class WSSServer:
     # stream_select / stream_list + teleop_twist / stop_emergency.
 
     async def _ws_handler(self, request) -> Any:
-        """aiohttp WebSocket handler."""
+        """aiohttp WebSocket handler (thin orchestrator, ADR-0021 R1).
+
+        Декомпозиция (issue #2201, voice-vr 16):
+            * ``_handle_handshake``     — WS-upgrade + subprotocol + register
+            * ``_spawn_session_tasks``  — heartbeat / watchdog / state_update
+            * ``_handle_frame``         — dispatch по FrameType через FRAME_HANDLERS
+              + локальный _dispatch для особых ftype (HELLO/GOODBYE/STATE_UPDATE
+              / supervisor / unknown).
+
+        Frame-pump перенесён в ``_handle_frame`` (вводит дополнительный await
+        между receive-loop и finally). Тест
+        ``test_voice_floor_disconnect_releases_floor`` подтверждает, что
+        семантика сохранена: cancel/await порядок в finally остался как
+        в исходнике (все cancel'ятся синхронно до ``await task``), что
+        даёт ``_unregister_session`` шанс отработать сразу после close.
+        """
+        ws, session = await self._handle_handshake(request)
+        heartbeat_task, watchdog_task, state_update_task = self._spawn_session_tasks(
+            ws, session
+        )
+        try:
+            async for msg in ws:
+                if msg.type != msg.type.BINARY:
+                    continue  # text frames вне контракта
+                try:
+                    ftype, sid, payload = decode_frame(msg.data)
+                except ValueError as e:
+                    await self._send_error(ws, 0, ErrorCode.BAD_PAYLOAD, str(e))
+                    continue
+                # Исключения из frame-loop (issue #2099/#2100): один кривой
+                # КАДР (баг конкретного cmd-хендлера) НЕ должен убивать всю
+                # WS-сессию.
+                try:
+                    should_close = await self._handle_frame(
+                        ws, session, ftype, sid, payload
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:  # noqa: BLE001
+                    log.exception(
+                        "quest: frame handler crashed (ftype=%s): %s", ftype, e
+                    )
+                    try:
+                        await self._send_error(ws, 0, ErrorCode.INTERNAL, str(e))
+                    except Exception:  # noqa: BLE001
+                        log.debug("quest: _send_error after handler crash failed")
+                    continue
+                if should_close is False:
+                    return ws
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            log.exception("quest: ws_handler crashed: %s", e)
+            try:
+                await self._send_error(ws, 0, ErrorCode.INTERNAL, str(e))
+            except Exception:  # noqa: BLE001
+                pass
+        finally:
+            heartbeat_task.cancel()
+            watchdog_task.cancel()
+            state_update_task.cancel()
+            for task in (heartbeat_task, watchdog_task, state_update_task):
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
+            self._unregister_session(session)
+        return ws
+
+    async def _handle_frame(
+        self, ws, session: ClientSession, ftype: FrameType, sid: int, payload: bytes
+    ) -> Optional[bool]:
+        """Диспатчер одного фрейма. Возвращает ``False`` чтобы закрыть сокет.
+
+        Использует таблицу ``FRAME_HANDLERS`` для ВСЕХ известных ftype
+        (CC=1, dict lookup). Неизвестный ftype → ``_dispatch_unknown``.
+        """
+        handler = FRAME_HANDLERS.get(ftype)
+        if handler is not None:
+            if ftype == FrameType.VOICE_AUDIO:
+                return await handler(self, ws, session, sid, payload)
+            return await handler(self, ws, session, payload)
+        return await _dispatch_unknown(self, ws, ftype)
+
+    async def _handle_handshake(self, request):
+        """WS-upgrade + subprotocol negotiation + register session.
+
+        Возвращает пару ``(ws, session)`` готовую к frame-pump'у:
+            * ``ws``      — aiohttp WebSocketResponse после ``ws.prepare()``
+            * ``session`` — ClientSession c выставленным ``protocol_version``
+              и clock-baseline через ``feed_heartbeat()``.
+        """
         from aiohttp import web as _aiohttp_web
 
         # Echo negotiated subprotocol (Sec-WebSocket-Protocol). Without this,
@@ -2467,6 +2696,7 @@ class WSSServer:
         # работать на v1 (monitor-only, см. §11.1).
         ws = _aiohttp_web.WebSocketResponse(protocols=SUPPORTED_SUBPROTOCOLS_V2)
         await ws.prepare(request)
+
         session = ClientSession()
         # Фиксируем согласованный subprotocol-version: client может прислать
         # ``Sec-WebSocket-Protocol: v2`` или ``v1`` (или ничего — fallback v1).
@@ -2482,153 +2712,25 @@ class WSSServer:
         self._register_session(session, ws)
         # Отправить heartbeat сразу для clock baseline.
         session.feed_heartbeat()
+        return ws, session
 
-        # Heartbeat loop (отдельная task).
+    def _spawn_session_tasks(
+        self, ws, session: ClientSession
+    ) -> tuple[asyncio.Task, asyncio.Task, asyncio.Task]:
+        """Стартует 3 фоновых task'а для сессии. Возвращает кортеж для cancel'а.
+
+        Фоновые task'и:
+            * ``_heartbeat_loop``             — клиент-keepalive каждые 200 мс
+            * ``_watchdog_loop``              — kill-switch при долгом бездействии
+            * ``_state_update_keepalive_loop`` — STATE_UPDATE 1Hz только для v2
+        """
         heartbeat_task = asyncio.create_task(self._heartbeat_loop(ws, session))
-        # Watchdog loop.
         watchdog_task = asyncio.create_task(self._watchdog_loop(ws, session))
         # STATE_UPDATE keep-alive 1 Hz (только для v2-сессий; для v1 — no-op).
         state_update_task = asyncio.create_task(
             self._state_update_keepalive_loop(ws, session)
         )
-
-        try:
-            async for msg in ws:
-                if msg.type != msg.type.BINARY:
-                    continue  # text frames вне контракта
-                try:
-                    ftype, sid, payload = decode_frame(msg.data)
-                except ValueError as e:
-                    await self._send_error(ws, 0, ErrorCode.BAD_PAYLOAD, str(e))
-                    continue
-                # issue #2100/#2099 — один кривой КАДР (баг конкретного
-                # cmd-хендлера, напр. NameError в bridge.set_voice) НЕ должен
-                # убивать всю WS-сессию. До этой правки исключение здесь
-                # улетало в внешний except (см. ниже) → _unregister_session →
-                # вся сессия закрывалась, и operator_tts audio, летящий в ЭТУ
-                # же сессию (deliver_audio привязан к ws через
-                # register_audio_session), терял получателя без единого
-                # предупреждения на стороне supervisor/tts_node — реплика
-                # ТАРС в шлем просто пропадала. Теперь один упавший frame
-                # логируется, клиенту уходит ERROR{INTERNAL}, и цикл
-                # продолжается — сессия и все её audio-регистрации живы.
-                try:
-                    if ftype == FrameType.HELLO:
-                        try:
-                            payload_obj = json.loads(payload.decode("utf-8"))
-                        except (UnicodeDecodeError, json.JSONDecodeError) as e:
-                            await self._send_error(
-                                ws, 0, ErrorCode.BAD_PAYLOAD, f"bad HELLO json: {e}"
-                            )
-                            continue
-                        if not await self._on_hello(ws, session, payload_obj):
-                            # AUTH_FAIL → закрыть сокет после отправки ERROR.
-                            await ws.close(code=4001, message=b"auth_fail")
-                            return ws
-                        continue
-                    if session.state.value != "authenticated":
-                        await self._send_error(
-                            ws, 0, ErrorCode.BAD_PAYLOAD, "HELLO required first"
-                        )
-                        continue
-                    if ftype == FrameType.SUBSCRIBE:
-                        try:
-                            payload_obj = json.loads(payload.decode("utf-8"))
-                        except (UnicodeDecodeError, json.JSONDecodeError):
-                            await self._send_error(
-                                ws, 0, ErrorCode.BAD_PAYLOAD, "bad SUBSCRIBE json"
-                            )
-                            continue
-                        await self._on_subscribe(ws, session, payload_obj)
-                    elif ftype == FrameType.UNSUBSCRIBE:
-                        try:
-                            payload_obj = json.loads(payload.decode("utf-8"))
-                        except (UnicodeDecodeError, json.JSONDecodeError):
-                            continue
-                        await self._on_unsubscribe(ws, session, payload_obj)
-                    elif ftype == FrameType.JSON_EVENT:
-                        try:
-                            payload_obj = json.loads(payload.decode("utf-8"))
-                        except (UnicodeDecodeError, json.JSONDecodeError):
-                            continue
-                        await self._on_json_event(ws, session, payload_obj)
-                    elif ftype == FrameType.JSON_CMD:
-                        try:
-                            payload_obj = json.loads(payload.decode("utf-8"))
-                        except (UnicodeDecodeError, json.JSONDecodeError):
-                            await self._send_error(
-                                ws, 0, ErrorCode.BAD_PAYLOAD, "bad JSON_CMD json"
-                            )
-                            continue
-                        await self._on_json_cmd(ws, session, payload_obj)
-                    elif ftype == FrameType.GOODBYE:
-                        await ws.close(code=1000, message=b"goodbye")
-                        return ws
-                    elif ftype == FrameType.VOICE_AUDIO:
-                        # ADR-0071 step 5a: stream_id==2 → wake-канал
-                        # (publish_quest_wake_audio), иначе — PTT/radio
-                        # (publish_voice_audio, текущее поведение).
-                        # Back-compat: stream_id==0 тоже идёт в radio-канал
-                        # (исторически клиенты слали sid=0).
-                        # issue #1992 observability: см. _note_voice_audio_rx —
-                        # без этого приём молчит одинаково что при живом
-                        # потоке без подписчика, что при клиенте, который
-                        # вообще ничего не шлёт.
-                        self._note_voice_audio_rx(sid, len(payload), session.session_id)
-                        if sid == 2:
-                            self.bridge.publish_quest_wake_audio(payload)
-                        else:
-                            self.bridge.publish_voice_audio(payload)
-                    elif ftype in (
-                        FrameType.SET_MODE,
-                        FrameType.ACQUIRE_FLOOR,
-                        FrameType.RELEASE_FLOOR,
-                    ):
-                        # Supervisor-API (§3 + §11 + AV-16). Только v2-сессии;
-                        # v1 присылает 0x30..0x32 → ERROR{PROTOCOL_VERSION}.
-                        await self._handle_supervisor_command(
-                            ws, session, ftype, payload
-                        )
-                    elif ftype == FrameType.STATE_UPDATE:
-                        # Сервер-инициируемый frame; клиент НИКОГДА не должен
-                        # слать STATE_UPDATE → ERROR{BAD_PAYLOAD}.
-                        await self._send_error(
-                            ws,
-                            0,
-                            ErrorCode.BAD_PAYLOAD,
-                            "STATE_UPDATE is server→client only (§3)",
-                        )
-                    else:
-                        await self._send_error(
-                            ws,
-                            0,
-                            ErrorCode.BAD_PAYLOAD,
-                            f"frame type {ftype} not supported in Phase 1.2",
-                        )
-                except asyncio.CancelledError:
-                    raise
-                except Exception as e:  # noqa: BLE001 — один cmd не рвёт сессию
-                    log.exception(
-                        "quest: frame handler crashed (ftype=%s): %s", ftype, e
-                    )
-                    await self._send_error(ws, 0, ErrorCode.INTERNAL, str(e))
-                    continue
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:  # noqa: BLE001 — логируем и рвём сокет
-            log.exception("quest: ws_handler crashed: %s", e)
-            await self._send_error(ws, 0, ErrorCode.INTERNAL, str(e))
-        finally:
-            heartbeat_task.cancel()
-            watchdog_task.cancel()
-            state_update_task.cancel()
-            for task in (heartbeat_task, watchdog_task, state_update_task):
-                try:
-                    await task
-                except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                    pass
-            self._unregister_session(session)
-        return ws
+        return heartbeat_task, watchdog_task, state_update_task
 
     async def _heartbeat_loop(self, ws, session: ClientSession) -> None:
         try:
