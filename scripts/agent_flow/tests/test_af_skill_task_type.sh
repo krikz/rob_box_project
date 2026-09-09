@@ -27,11 +27,14 @@ PASS=0; FAIL=0
 pass() { PASS=$((PASS+1)); echo "  ✓ $1"; }
 fail() { FAIL=$((FAIL+1)); echo "  ✗ $1 (${2:-})"; }
 
-# Extract af_skill_for_profile (тот же приём, что в test_triage_skill_inference.sh)
-start="$(grep -n '^af_skill_for_profile()' "$LIB" | head -1 | cut -d: -f1)"
-[ -n "$start" ] || { echo "FAIL: af_skill_for_profile not found in $LIB"; exit 1; }
-end="$(awk -v s="$start" 'NR>=s && /^}$/{print NR; exit}' "$LIB")"
-sed -n "${start},${end}p" "$LIB" > "$WORK/helper.sh"
+# Source shared lib_eval_func.sh (issue #2295) — единая точка истины для
+# brace-tracking awk вместо локального sed-диапазона + awk '^}' close,
+# который молча обрезал тело функции, если в нём был вложенный { ... }.
+# shellcheck source=lib/lib_eval_func.sh
+. "$TEST_DIR/lib/lib_eval_func.sh"
+helper_body="$(extract_func_or_die "$LIB" af_skill_for_profile)" \
+    || { echo "FAIL: extract_func_or_die не нашёл af_skill_for_profile в $LIB" >&2; exit 1; }
+printf '%s\n' "$helper_body" > "$WORK/helper.sh"
 # shellcheck disable=SC1091
 . "$WORK/helper.sh"
 _af_log() { :; }

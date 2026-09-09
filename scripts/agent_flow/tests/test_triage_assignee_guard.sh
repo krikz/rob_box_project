@@ -42,24 +42,22 @@ fail() {
 }
 
 # Extract the `load_valid_profiles` and `is_valid_profile` functions from
-# triage.sh for testing in isolation. We use line-number based extraction:
-# find start line, find matching closing `^}` line, sed the range.
+# triage.sh for testing in isolation via the shared lib (issue #2295). Single
+# source of truth for brace-tracking awk — was: line-range /^func()/ → /^}/,
+# which silently truncated helpers containing nested { ... }.
+# shellcheck source=lib/lib_eval_func.sh
+. "$TESTS_DIR/lib/lib_eval_func.sh"
+
+# extract_helpers <script> — eval'ит тела load_valid_profiles и is_valid_profile
+# в текущий scope. При реинденте/переносе функций в triage.sh — FAIL с
+# понятным сообщением от extract_func_or_die.
 extract_helpers() {
     local script="$1"
-    local lp_start lp_end ip_start ip_end
-    # Find line numbers (1-based). Triage.sh has exactly one match per pattern.
-    lp_start="$(grep -n '^VALID_PROFILES=""' "$script" | head -1 | cut -d: -f1)"
-    lp_end="$(awk -v s="$lp_start" 'NR>=s && /^}$/{print NR; exit}' "$script")"
-    ip_start="$(grep -n '^is_valid_profile()' "$script" | head -1 | cut -d: -f1)"
-    ip_end="$(awk -v s="$ip_start" 'NR>=s && /^}$/{print NR; exit}' "$script")"
-    {
-        sed -n "${lp_start},${lp_end}p" "$script"
-        echo ""
-        sed -n "${ip_start},${ip_end}p" "$script"
-    } > /tmp/.guard_helpers.sh
-    # Source them in current shell.
-    # shellcheck disable=SC1091
-    . /tmp/.guard_helpers.sh
+    local lp_body ip_body
+    lp_body="$(extract_func_or_die "$script" load_valid_profiles)" || return 1
+    ip_body="$(extract_func_or_die "$script" is_valid_profile)" || return 1
+    eval "$lp_body" >/dev/null
+    eval "$ip_body" >/dev/null
 }
 
 # --- T1: load_valid_profiles parses correctly ----------------------------
@@ -249,12 +247,10 @@ VALID_PROFILES="$EXPECTED"
 echo ""
 echo "=== T6: role_for() regression ==="
 
-# Грузим role_for из РЕАЛЬНОГО triage.sh через общий lib (issue #2295).
-# До фикса роль копировалась в тело теста — реиндент функции или смена
-# default-роли в triage.sh молча ломали тест. Теперь тест падает с понятным
-# FAIL-сообщением от extract_func_or_die.
-# shellcheck source=lib/lib_eval_func.sh
-. "$TESTS_DIR/lib/lib_eval_func.sh"
+# Грузим role_for из РЕАЛЬНОГО triage.sh через общий lib (issue #2295,
+# уже сорсен в начале файла). До фикса роль копировалась в тело теста —
+# реиндент функции или смена default-роли в triage.sh молча ломали тест.
+# Теперь тест падает с понятным FAIL-сообщением от extract_func_or_die.
 AGENT_FLOW_DIR="$(cd "$TESTS_DIR/.." && pwd)"
 AGENT_FLOW_DEFAULT_ROLE="${AGENT_FLOW_DEFAULT_ROLE:-architect}"  # тот же default, что в triage.sh:94
 load_func "$AGENT_FLOW_DIR/agent-flow-triage.sh" role_for \

@@ -58,29 +58,17 @@ assert_eq() {  # $1=expected $2=actual $3=msg
     return 0
 }
 
-# Extract `af_skill_for_profile` function from lib_agent_flow_common.sh so
-# we can source it in isolation. Line-based extraction (lib is plain bash,
-# no nested function tricks).
-extract_helper() {
-    local lib="$1"
-    local start end
-    start="$(grep -n '^af_skill_for_profile()' "$lib" | head -1 | cut -d: -f1)"
-    if [ -z "$start" ]; then
-        echo "extract_helper: af_skill_for_profile() not found in $lib" >&2
-        return 1
-    fi
-    end="$(awk -v s="$start" 'NR>=s && /^}$/{print NR; exit}' "$lib")"
-    sed -n "${start},${end}p" "$lib" > /tmp/.triage_skill_helper.sh
-    # shellcheck disable=SC1091
-    . /tmp/.triage_skill_helper.sh
-}
-
-# =============================================================================
-echo "=== Setup: extract helper ==="
-if ! extract_helper "$LIB"; then
-    fail "T_setup_extract_helper" "af_skill_for_profile not found in $LIB"
-    exit 1
-fi
+# Extract helpers from lib_agent_flow_common.sh via shared lib (issue #2295).
+# Single source of truth for brace-tracking awk — replaces the local
+# line-range /^func()/ → /^}/ trick which silently truncated any function
+# body that contained nested { ... } (e.g. helper functions defined inside).
+# shellcheck source=lib/lib_eval_func.sh
+. "$TEST_DIR/lib/lib_eval_func.sh"
+af_skill_helper="$(extract_func_or_die "$LIB" af_skill_for_profile)" \
+    || { echo "FAIL: extract_func_or_die не нашёл af_skill_for_profile в $LIB" >&2; exit 1; }
+printf '%s\n' "$af_skill_helper" > /tmp/.triage_skill_helper.sh
+# shellcheck disable=SC1091
+. /tmp/.triage_skill_helper.sh
 # Mock _af_log (called from fail-OPEN path; not fail-fast).
 _af_log() { :; }
 
@@ -297,28 +285,12 @@ echo "=== T7: af_skills_for_profile returns multi-skill list (ретро t_aafad
 #   4) дедупликация — повторы отбрасываются (например, pr-reviewer → code-review
 #      как primary, не дублируется с дополнительным code-review)
 
-extract_helper_multi() {
-    local lib="$1"
-    # Извлекаем af_skills_for_profile + все вложенные helper-функции (_skill_installed,
-    # _add_skill) которые она определяет. Используем awk чтобы захватить тело
-    # функции до первой standalone '}' (т.е. до закрытия самой внешней функции).
-    local start
-    start="$(grep -n '^af_skills_for_profile()' "$lib" | head -1 | cut -d: -f1)"
-    if [ -z "$start" ]; then
-        echo "extract_helper_multi: af_skills_for_profile() not found" >&2
-        return 1
-    fi
-    local end
-    end="$(awk -v s="$start" 'NR>=s && /^}$/{print NR; exit}' "$lib")"
-    sed -n "${start},${end}p" "$lib" > /tmp/.triage_multi_helper.sh
-    # shellcheck disable=SC1091
-    . /tmp/.triage_multi_helper.sh
-}
-
 echo "  setup: extract af_skills_for_profile"
-if ! extract_helper_multi "$LIB"; then
-    fail "T7_setup_extract" "af_skills_for_profile not found"
-fi
+af_skills_helper="$(extract_func_or_die "$LIB" af_skills_for_profile)" \
+    || { echo "FAIL: extract_func_or_die не нашёл af_skills_for_profile в $LIB" >&2; exit 1; }
+printf '%s\n' "$af_skills_helper" > /tmp/.triage_multi_helper.sh
+# shellcheck disable=SC1091
+. /tmp/.triage_multi_helper.sh
 
 # T7.1: backend + bug → 3 skills (verification-before-completion + systematic-debugging + code-review)
 t71_backend_bug() {
