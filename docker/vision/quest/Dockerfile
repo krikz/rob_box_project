@@ -77,6 +77,28 @@ FROM ${BASE_IMAGE}
 # и '/opt/ros//setup.sh' не находится (raw-evidence #32899426873 step:25).
 ARG ROS_DISTRO=humble
 
+# Katana (build-машина): прямого доступа к apt-репозиториям нет — как и
+# dl-cdn (alpine), прямые запросы дают "GPG error: ... At least one invalid
+# signature" (run #34387765562). Поэтому apt идёт через локальный
+# apt-cacher-ng (APT_PROXY=http://host.docker.internal:3142) — тот же паттерн,
+# что в docker/base/Dockerfile.ros2-zenoh. Билд-аргумент APT_PROXY передаётся
+# из workflow (build-quest / case quest). 02proxy удаляем после apt — не
+# тащим прокси-конфиг в рантайм (как делает base).
+ARG APT_PROXY=""
+RUN if [ -n "$APT_PROXY" ]; then \
+        PROXY_HOST=$(echo "$APT_PROXY" | sed 's|.*://\([^:/]*\).*|\1|'); \
+        PROXY_PORT=$(echo "$APT_PROXY" | sed 's|.*://[^:]*:\([0-9]*\).*|\1|'); \
+        echo "🔍 Checking proxy availability at $PROXY_HOST:$PROXY_PORT..."; \
+        if timeout 5 bash -c "cat < /dev/null > /dev/tcp/$PROXY_HOST/$PROXY_PORT" 2>/dev/null; then \
+            echo "Acquire::http::Proxy \"$APT_PROXY\";" > /etc/apt/apt.conf.d/02proxy; \
+            echo "Acquire::http::Timeout \"10\";" >> /etc/apt/apt.conf.d/02proxy; \
+            echo "Acquire::Retries \"3\";" >> /etc/apt/apt.conf.d/02proxy; \
+            echo "✅ Using APT proxy: $APT_PROXY"; \
+        else \
+            echo "⚠️  APT proxy not accessible, will use direct connection"; \
+        fi \
+    fi
+
 # ARCH-quest (#2278): ставим ТОЛЬКО нужные apt-пакеты поверх
 # ros2-zenoh базы. ros2-zenoh = ros:humble-ros-base + rmw_zenoh_cpp, поэтому
 # rclpy + zenoh-транспорт уже есть. Не ставим:
@@ -122,7 +144,8 @@ RUN apt-get update -qq \
       ros-${ROS_DISTRO}-geometry-msgs \
       ros-${ROS_DISTRO}-nav-msgs \
       ros-${ROS_DISTRO}-audio-common-msgs \
- && rm -rf /var/lib/apt/lists/*
+ && rm -rf /var/lib/apt/lists/* \
+ && rm -f /etc/apt/apt.conf.d/02proxy
 
 # Python runtime-deps. ros2-zenoh база — Ubuntu 22.04 + PEP 668 (externally
 # managed), поэтому pip install требует --break-system-packages.
