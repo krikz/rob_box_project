@@ -1,0 +1,30 @@
+# Dev-time dependencies for ``rob_box_harness``.
+#
+# Mirrors the floor in ``rob_box_llm/requirements-dev.txt`` so the
+# two packages test cleanly in the same virtualenv. Strict upper
+# bounds are intentionally absent — openai/httpx/pyyaml are the
+# only runtime dependencies and they are stable APIs.
+#
+# Install::
+#
+#     pip install -r requirements-dev.txt
+
+# Core test runner.
+pytest>=7.4
+
+# Async test support. ``asyncio_mode = auto`` requires 0.21+.
+pytest-asyncio>=0.21
+
+# Coverage reporting. Pairs with the [coverage:*] sections in pytest.ini
+# to enforce a minimum threshold on the harness module.
+pytest-cov>=4.0
+
+# YAML parser — used by rob_box_harness.config.load_config.
+PyYAML>=6.0
+
+# The LLM provider port lives in ``rob_box_llm``. A bare
+# ``pip install -r requirements-dev.txt`` in a fresh venv doesn't
+# pull it in (use ``pip install -e ../rob_box_llm`` from the
+# ``src/`` directory in a colcon workspace). Listed here for
+# documentation purposes only.
+# rob_box_llm>=0.2.1

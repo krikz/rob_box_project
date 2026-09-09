@@ -1,0 +1,38 @@
+# stt_node.yaml — per-node ROS2 config (issue #1004 fix, ADR-0004)
+#
+# ЖИВОЙ конфиг для docker-деплоя (см. audio_node.yaml).
+# Все ключи соответствуют declare_parameter() в stt_node.py 1:1.
+
+stt_node:
+  ros__parameters:
+    model_path: /models/vosk-model-small-ru-0.22
+    sample_rate: 16000
+    # AEC mode: 'hardware' = доверяем XVF-3000 (можно перебивать робота!)
+    #           'software' = выкидываем фразы пока TTS играет
+    aec_mode: hardware
+    # wake_words намеренно НЕ здесь: списки — в docker/vision/config/wake_words.yaml
+    # (SSoT, issue #1990). Нода читает его через wake_words_file (namespace
+    # personality → ReSpeaker / voice/stt/result, operator → wake-поток шлема /
+    # avatar/stt/result). Кодовая DEFAULT_WAKE_WORDS — только фолбек для dev-env.
+    # Монтируемый ./config:/config кладёт файл в /config/wake_words.yaml.
+    wake_words_file: /config/wake_words.yaml
+    yandex_timeout_s: 5.0
+    yandex_max_retries: 1
+    retry_backoff_s: 1.0
+    min_text_chars: 3
+    unclear_phrase: Не расслышал, скажи ещё раз
+    unclear_cooldown_s: 5.0
+    tts_grace_s: 2.5
+    # Issue #1251 — ранний «бульк» (сигнал «услышал, wake word есть»):
+    # как только partial/final STT содержит wake word, публикуем триггер
+    # на /voice/sound/trigger → sound_node играет короткий «бульк» через
+    # ~2-3с после конца фразы (а не ~8с, когда закончатся LLM+TTS).
+    early_boop_enabled: true
+    early_boop_trigger: boop
+    # ⚠️ issue #1734: barge_in_policy здесь НЕТ и не должно быть. Это НЕ
+    # параметр stt_node — единственный источник истины: dialogue_node.yaml
+    # (ключ barge_in_policy). stt_node узнаёт актуальное значение runtime
+    # через latched-топик /voice/dialogue/barge_in_policy (см.
+    # dialogue_node._publish_barge_in_policy / stt_node.barge_in_policy_callback),
+    # а не из своего YAML — иначе будет ровно тот же класс ошибки, что и
+    # с дублированием wake_words выше (issue #1252), который и породил #1734.

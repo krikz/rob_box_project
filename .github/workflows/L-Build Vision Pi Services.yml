@@ -1,0 +1,667 @@
+name: "L: Build Vision Pi Services"
+
+# Локальная сборка сервисов Vision Pi на self-hosted runner
+# Все сервисы собираются параллельно (до 8 одновременно)
+on:
+  workflow_dispatch:  # Ручной запуск
+    inputs:
+      push_to_registry:
+        description: 'Push to local registry (localhost:5000)'
+        required: false
+        default: true
+        type: boolean
+  workflow_call:  # Вызов из других workflow
+    inputs:
+      push_to_registry:
+        description: 'Push to local registry'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write  # Required for git push of .image-versions files
+
+env:
+  LOCAL_REGISTRY: localhost:5000
+  IMAGE_PREFIX: ghcr.io/krikz/rob_box
+  LOCAL_PREFIX: localhost:5000/krikz/rob_box
+  ROS_DISTRO: humble
+
+jobs:
+  # Определение тега
+  prepare:
+    runs-on: [self-hosted, rob-box]
+    outputs:
+      docker_tag: ${{ steps.set-config.outputs.docker_tag }}
+    steps:
+      - name: Set build configuration
+        id: set-config
+        run: |
+          # Issue #1041: на refs/tags/vX.Y.Z... strip refs/heads/ даёт refs/tags/v...,
+          # что не матчит ни одну ветку — попадает в else → DOCKER_TAG=local,
+          # а файла docker/vision/.image-versions.local не существует.
+          # Релизные теги v* мапим в latest (production), это согласовано с
+          # L-Deploy and Verify.yml (production → IMAGE_TAG=latest).
+          # РЕВЕРТ #1139 (13.08): SHA-теги снова коммитятся прямо в текущую ветку.
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]] && [[ "${GITHUB_REF_NAME}" == v* ]]; then
+            DOCKER_TAG="latest"
+          else
+            BRANCH_NAME="${GITHUB_REF#refs/heads/}"
+            if [ "$BRANCH_NAME" = "main" ]; then
+              DOCKER_TAG="latest"
+            elif [ "$BRANCH_NAME" = "develop" ]; then
+              DOCKER_TAG="dev"
+            # ⚠️ ЛОВУШКА (обнаружено при PR #2105, ветка
+            # z-agent/2100-operator-tts-return-channel): паттерны
+            # `z-{e2e}/*` и `z-{agent}/*` матчатся ДОСЛОВНО, фигурные
+            # скобки — литеральные символы паттерна bash [[ == ]], а не
+            # плейсхолдер. `{agent}` без запятой внутри НЕ проходит brace
+            # expansion (для него нужны `,` или `..`), так что паттерн
+            # реально требует ветку вида `z-{agent}/...` (буквально со
+            # скобками в имени — это валидное имя ветки в git). Ветка,
+            # названная `z-agent/...` (БЕЗ скобок, что выглядит естественнее
+            # для человека) сюда не попадает и проваливается в `else` →
+            # DOCKER_TAG=local. Тег `local` в registry НЕ публикуется
+            # (см. update-image-versions ниже) → deploy этой ветки тихо
+            # получает старый образ, без единой ошибки в логах. Именно это
+            # произошло с PR #2105. Если заводишь новую агентскую ветку —
+            # называй её `z-{agent}/...` (со скобками, см.
+            # .agents/skills/github-issues-workflow/SKILL.md) либо
+            # расширь этот паттерн (`z-agent/*` тоже) — сознательно НЕ
+            # трогаем это здесь, чтобы не задеть уже работающий поток PR #2105.
+            elif [[ "$BRANCH_NAME" == feature/* ]] || [[ "$BRANCH_NAME" == feat/* ]] || [[ "$BRANCH_NAME" == copilot/* ]] || [[ "$BRANCH_NAME" == z-{e2e}/* ]] || [[ "$BRANCH_NAME" == z-{agent}/* ]]; then
+              DOCKER_TAG="test"
+            else
+              DOCKER_TAG="local"
+            fi
+          fi
+          echo "docker_tag=${DOCKER_TAG}" >> $GITHUB_OUTPUT
+          echo "Docker Tag: $DOCKER_TAG"
+
+  # Параллельная сборка всех сервисов Vision Pi (до 8 одновременно)
+  build-oak-d:
+    needs: prepare
+    runs-on: [self-hosted, rob-box]
+    steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          clean: true
+
+      - name: Build oak-d
+        run: |
+          SERVICE="oak-d"
+          GHCR_TAG="${IMAGE_PREFIX}:${SERVICE}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
+          LOCAL_TAG="${LOCAL_PREFIX}:${SERVICE}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
+
+          docker buildx build \
+            --platform linux/arm64 \
+            --file docker/vision/${SERVICE}/Dockerfile \
+            --tag "${GHCR_TAG}" \
+            --tag "${LOCAL_TAG}" \
+            --load \
+            --add-host=host.docker.internal:host-gateway \
+            --build-arg="BASE_IMAGE=localhost:5000/krikz/rob_box_base:depthai-${ROS_DISTRO}" \
+            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
+            docker/vision
+
+          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
+            docker push "${LOCAL_TAG}"
+          fi
+          echo "✅ Built ${SERVICE}"
+
+  build-led-matrix:
+    needs: prepare
+    runs-on: [self-hosted, rob-box]
+    steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          clean: true
+
+      - name: Build led-matrix
+        run: |
+          SERVICE="led_matrix"
+          GHCR_TAG="${IMAGE_PREFIX}:led-matrix-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
+          LOCAL_TAG="${LOCAL_PREFIX}:led-matrix-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
+
+          # Получаем SHA субмодуля ros2leds для инвалидации кэша
+          ROS2LEDS_SHA=$(git submodule status src/ros2leds | awk '{print $1}' | sed 's/^[+-]//')
+
+          docker buildx build \
+            --platform linux/arm64 \
+            --file docker/vision/${SERVICE}/Dockerfile \
+            --tag "${GHCR_TAG}" \
+            --tag "${LOCAL_TAG}" \
+            --load \
+            --add-host=host.docker.internal:host-gateway \
+            --build-arg="BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO}" \
+            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
+            --build-arg="ROS2LEDS_SHA=${ROS2LEDS_SHA}" \
+            .
+
+          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
+            docker push "${LOCAL_TAG}"
+          fi
+          echo "✅ Built ${SERVICE}"
+
+  build-ceiling-camera:
+    needs: prepare
+    runs-on: [self-hosted, rob-box]
+    steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          clean: true
+
+      - name: Build ceiling-camera
+        run: |
+          SERVICE="ceiling-camera"
+          GHCR_TAG="${IMAGE_PREFIX}:${SERVICE}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
+          LOCAL_TAG="${LOCAL_PREFIX}:${SERVICE}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
+
+          docker buildx build \
+            --platform linux/arm64 \
+            --file docker/vision/${SERVICE}/Dockerfile \
+            --tag "${GHCR_TAG}" \
+            --tag "${LOCAL_TAG}" \
+            --load \
+            --add-host=host.docker.internal:host-gateway \
+            --build-arg="BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO}" \
+            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
+            docker/vision
+
+          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
+            docker push "${LOCAL_TAG}"
+          fi
+          echo "✅ Built ${SERVICE}"
+
+  build-voice-assistant:
+    needs: [prepare, build-voice-base]
+    runs-on: [self-hosted, rob-box]
+    steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          clean: true  # Очистка working directory для корректного кеширования Docker
+
+      - name: Build voice-assistant
+        run: |
+          SERVICE="voice_assistant"
+          GHCR_TAG="${IMAGE_PREFIX}:voice-assistant-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
+          LOCAL_TAG="${LOCAL_PREFIX}:voice-assistant-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
+
+          # Вычисляем hash Python исходников для инвалидации кеша
+          SOURCE_HASH=$(find src/rob_box_voice/rob_box_voice src/rob_box_animations/rob_box_animations -type f -name "*.py" | sort | xargs sha256sum | sha256sum | awk '{print $1}')
+
+          docker buildx build \
+            --platform linux/arm64 \
+            --file docker/vision/${SERVICE}/Dockerfile \
+            --tag "${GHCR_TAG}" \
+            --tag "${LOCAL_TAG}" \
+            --load \
+            --add-host=host.docker.internal:host-gateway \
+            --build-arg="BASE_IMAGE=${LOCAL_PREFIX}:voice-base-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}" \
+            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
+            --build-arg="SOURCE_HASH=${SOURCE_HASH}" \
+            .
+
+          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
+            docker push "${LOCAL_TAG}"
+          fi
+          echo "✅ Built ${SERVICE}"
+
+  build-voice-resources:
+    needs: prepare
+    runs-on: [self-hosted, rob-box]
+    steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          clean: true
+
+      - name: Build voice-resources
+        run: |
+          SERVICE="voice_resources"
+          IMAGE_NAME="voice-resources"
+          GHCR_TAG="${IMAGE_PREFIX}:${IMAGE_NAME}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
+          LOCAL_TAG="${LOCAL_PREFIX}:${IMAGE_NAME}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
+
+          docker buildx build \
+            --platform linux/arm64 \
+            --file docker/vision/${SERVICE}/Dockerfile \
+            --tag "${GHCR_TAG}" \
+            --tag "${LOCAL_TAG}" \
+            --load \
+            --add-host=host.docker.internal:host-gateway \
+            docker/vision
+
+          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
+            docker push "${LOCAL_TAG}"
+          fi
+          echo "✅ Built ${IMAGE_NAME}"
+
+  build-voice-base:
+    needs: prepare
+    runs-on: [self-hosted, rob-box]
+    steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          clean: true
+
+      - name: Build voice-base
+        run: |
+          SERVICE="voice_base"
+          IMAGE_NAME="voice-base"
+          GHCR_TAG="${IMAGE_PREFIX}:${IMAGE_NAME}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
+          LOCAL_TAG="${LOCAL_PREFIX}:${IMAGE_NAME}-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
+
+          docker buildx build \
+            --platform linux/arm64 \
+            --file docker/vision/${SERVICE}/Dockerfile \
+            --tag "${GHCR_TAG}" \
+            --tag "${LOCAL_TAG}" \
+            --load \
+            --add-host=host.docker.internal:host-gateway \
+            --build-arg="BASE_IMAGE=localhost:5000/krikz/rob_box_base:rtabmap-${ROS_DISTRO}" \
+            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
+            docker/vision/${SERVICE}
+
+          docker push "${LOCAL_TAG}"
+          echo "✅ Built ${IMAGE_NAME}"
+
+  build-telegram-bot:
+    needs: prepare
+    runs-on: [self-hosted, rob-box]
+    steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          clean: true
+
+      - name: Build telegram-bot
+        run: |
+          SERVICE="telegram_bot"
+          GHCR_TAG="${IMAGE_PREFIX}:telegram-bot-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
+          LOCAL_TAG="${LOCAL_PREFIX}:telegram-bot-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
+
+          # Вычисляем hash Python исходников для инвалидации кеша
+          SOURCE_HASH=$(find src/rob_box_telegram/rob_box_telegram -type f -name "*.py" | sort | xargs sha256sum | sha256sum | awk '{print $1}')
+
+          docker buildx build \
+            --platform linux/arm64 \
+            --file docker/vision/${SERVICE}/Dockerfile \
+            --tag "${GHCR_TAG}" \
+            --tag "${LOCAL_TAG}" \
+            --load \
+            --add-host=host.docker.internal:host-gateway \
+            --build-arg="BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO}" \
+            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
+            --build-arg="SOURCE_HASH=${SOURCE_HASH}" \
+            .
+
+          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
+            docker push "${LOCAL_TAG}"
+          fi
+          echo "✅ Built ${SERVICE}"
+
+  build-supercollider:
+    needs: prepare
+    runs-on: [self-hosted, rob-box]
+    steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          clean: true
+
+      - name: Build supercollider
+        run: |
+          SERVICE="supercollider"
+          GHCR_TAG="${IMAGE_PREFIX}:${SERVICE}-${{ needs.prepare.outputs.docker_tag }}"
+          LOCAL_TAG="${LOCAL_PREFIX}:${SERVICE}-${{ needs.prepare.outputs.docker_tag }}"
+
+          docker buildx build \
+            --platform linux/arm64 \
+            --file docker/vision/${SERVICE}/Dockerfile \
+            --tag "${GHCR_TAG}" \
+            --tag "${LOCAL_TAG}" \
+            --load \
+            --add-host=host.docker.internal:host-gateway \
+            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
+            docker/vision/${SERVICE}
+
+          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
+            docker push "${LOCAL_TAG}"
+          fi
+          echo "✅ Built ${SERVICE}"
+
+  # AV-9 (issue #1603): Avatar Supervisor (Phase 1 monitor).
+  # Dockerfile наследует voice-assistant image и пересобирает только
+  # rob_box_supervisor через `colcon build --packages-select` (минуты,
+  # не часы — pytorch/renardo не трогаем).
+  build-supervisor:
+    # needs build-voice-assistant (не только prepare!): supervisor
+    # наследует BASE_IMAGE=...:voice-assistant-... из локального реестра
+    # (строка ниже). Без этой зависимости джобы гонятся параллельно, и
+    # supervisor может собраться раньше, чем voice-assistant допушит
+    # свежий образ — тогда supervisor наследует СТАРЫЙ rob_box_core и
+    # падает ModuleNotFoundError на любом новом модуле (было с
+    # rob_box_core.utterance 09.09.2026: build-supervisor захватил layers
+    # "already exists" в 10:56, build-voice-assistant допушил новое только
+    # в 11:06 — 10 минут гонки).
+    needs: [prepare, build-voice-assistant]
+    runs-on: [self-hosted, rob-box]
+    steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          clean: true
+
+      - name: Build supervisor
+        run: |
+          SERVICE="supervisor"
+          GHCR_TAG="${IMAGE_PREFIX}:supervisor-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
+          LOCAL_TAG="${LOCAL_PREFIX}:supervisor-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
+
+          # Хеш Python исходников для инвалидации кеша supervisor-слоя.
+          SOURCE_HASH=$(find src/rob_box_supervisor/rob_box_supervisor -type f -name "*.py" | sort | xargs sha256sum | sha256sum | awk '{print $1}')
+
+          docker buildx build \
+            --platform linux/arm64 \
+            --file docker/vision/${SERVICE}/Dockerfile \
+            --tag "${GHCR_TAG}" \
+            --tag "${LOCAL_TAG}" \
+            --load \
+            --add-host=host.docker.internal:host-gateway \
+            --build-arg="BASE_IMAGE=${LOCAL_PREFIX}:voice-assistant-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}" \
+            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
+            --build-arg="SOURCE_HASH=${SOURCE_HASH}" \
+            .
+
+          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
+            docker push "${LOCAL_TAG}"
+          fi
+          echo "✅ Built ${SERVICE}"
+
+  # Phase 1.6 (ADR-0027): Meta Quest WebXR-консоль — caddy:2-alpine +
+  # aiohttp WSS-сервер rob_box_quest. Не зависит от voice-assistant (нет
+  # pytorch/Renardo). Зависит от webxr_client/ (Phase 1.5) — build упадёт
+  # с понятной ошибкой если путь отсутствует (явный сигнал зависимости,
+  # не silent degradation).
+  build-quest:
+    needs: prepare
+    runs-on: [self-hosted, rob-box]
+    steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          clean: true
+
+      - name: Build quest
+        run: |
+          SERVICE="quest"
+          GHCR_TAG="${IMAGE_PREFIX}:quest-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
+          LOCAL_TAG="${LOCAL_PREFIX}:quest-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
+
+          # Хеш Python + TS исходников для инвалидации build cache.
+          SOURCE_HASH=$( (find src/rob_box_quest/rob_box_quest -type f -name "*.py"; \
+                          find src/rob_box_quest/webxr_client -type f \( -name "*.ts" -o -name "*.json" -o -name "*.html" \)) \
+                        | sort | xargs sha256sum 2>/dev/null | sha256sum | awk '{print $1}')
+
+          docker buildx build \
+            --platform linux/arm64 \
+            --file docker/vision/${SERVICE}/Dockerfile \
+            --tag "${GHCR_TAG}" \
+            --tag "${LOCAL_TAG}" \
+            --load \
+            --add-host=host.docker.internal:host-gateway \
+            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
+            --build-arg="IMAGE_TAG=${{ needs.prepare.outputs.docker_tag }}" \
+            --build-arg="SOURCE_HASH=${SOURCE_HASH}" \
+            .
+
+          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
+            docker push "${LOCAL_TAG}"
+          fi
+          echo "✅ Built ${SERVICE}"
+
+  # Обновление .image-versions — SHA-тег после успешной сборки
+  update-image-versions:
+    needs: [prepare, build-oak-d, build-led-matrix, build-ceiling-camera, build-voice-base, build-voice-resources, build-voice-assistant, build-telegram-bot, build-supercollider, build-supervisor, build-quest]
+    runs-on: [self-hosted, rob-box]
+    if: success() && inputs.push_to_registry != false
+    # Issue #t_dd49849b: 2.7h+ hang observed on concurrent runs (round-224+225+develop)
+    # when git pull --rebase / git push blocked indefinitely under ref contention.
+    # Hard 10-min cap surfaces the failure visibly (instead of stuck-in_progress).
+    timeout-minutes: 10
+    steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          submodules: false
+          clean: true
+          fetch-depth: 0
+
+      - name: Tag with SHA and update .image-versions
+        # Bugfix issue #1482: вместо `git rev-parse --short HEAD` используем
+        # `${GITHUB_SHA::7}` — это commit, который ТРИГГЕРНУЛ workflow run,
+        # неизменный на всём протяжении run и равный round-ветке HEAD в момент
+        # dispatch/call. Прежний подход брал локальный HEAD, который мог
+        # сместиться после `git pull --rebase` внутри scripts/ci/push-image-versions.sh
+        # → .image-versions.test указывал на несуществующий image (`docker compose pull`
+        # failed → fallback на stale-83d4064f), робот не обновлялся (round-163).
+        run: |
+          DOCKER_TAG="${{ needs.prepare.outputs.docker_tag }}"
+          SHORT_SHA="${GITHUB_SHA::7}"
+          NEW_TAG="${DOCKER_TAG}-${SHORT_SHA}"
+
+          # Tag and push SHA-immutable images to LOCAL registry only.
+          # GHCR push убран — локальные develop/test сборки больше не публикуются
+          # в ghcr.io (issue #1503 решён иначе: deploy читает из local registry
+          # для develop/test, prod-push в GHCR — отдельный workflow на main).
+          tag_and_push() {
+            local LOCAL_TAG="$1"
+            local LOCAL_SHA="${LOCAL_TAG}-${SHORT_SHA}"
+            docker tag "$LOCAL_TAG" "$LOCAL_SHA" && docker push "$LOCAL_SHA"
+            echo "✅ local  $LOCAL_SHA"
+          }
+
+          tag_and_push "${LOCAL_PREFIX}:oak-d-${ROS_DISTRO}-${DOCKER_TAG}"
+          tag_and_push "${LOCAL_PREFIX}:led-matrix-${ROS_DISTRO}-${DOCKER_TAG}"
+          tag_and_push "${LOCAL_PREFIX}:ceiling-camera-${ROS_DISTRO}-${DOCKER_TAG}"
+          tag_and_push "${LOCAL_PREFIX}:voice-resources-${ROS_DISTRO}-${DOCKER_TAG}"
+          tag_and_push "${LOCAL_PREFIX}:voice-assistant-${ROS_DISTRO}-${DOCKER_TAG}"
+          tag_and_push "${LOCAL_PREFIX}:telegram-bot-${ROS_DISTRO}-${DOCKER_TAG}"
+          # supercollider excluded: tag naming is inconsistent (no ROS_DISTRO prefix)
+
+          # Acceptance B (#1482): verify voice-assistant SHA-image is actually
+          # present in the local registry BEFORE writing it to .image-versions.
+          # Если .image-versions указывает на несуществующий tag → docker compose
+          # pull падает → робот не обновляется (см. доказательства в issue #1482).
+          verify_in_registry() {
+            local TAG="$1"
+            local REPO="krikz/rob_box"
+            local URL="http://${LOCAL_REGISTRY}/v2/${REPO}/manifests/${TAG}"
+            local HTTP_CODE
+            HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
+              -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' \
+              "$URL" || echo "000")
+            if [ "$HTTP_CODE" != "200" ]; then
+              echo "❌ Verify FAIL: ${TAG} missing in registry (HTTP ${HTTP_CODE})" >&2
+              echo "   ⚠️  Не коммитим .image-versions с несуществующим SHA-tag" >&2
+              return 1
+            fi
+            echo "✅ Verify OK: ${TAG} present in registry"
+            return 0
+          }
+
+          # Проверяем КАЖДЫЙ service-tag, который пишем в .image-versions. Если
+          # хотя бы один отсутствует → fail job, чтобы мерж-гейт поймал проблему
+          # ДО того, как deploy потянет stale-тег.
+          VERIFY_FAILED=0
+          for SVC_TAG in \
+            "voice-assistant-${ROS_DISTRO}-${NEW_TAG}" \
+            "voice-resources-${ROS_DISTRO}-${NEW_TAG}" \
+            "telegram-bot-${ROS_DISTRO}-${NEW_TAG}" \
+            "oak-d-${ROS_DISTRO}-${NEW_TAG}" \
+            "led-matrix-${ROS_DISTRO}-${NEW_TAG}" \
+            "ceiling-camera-${ROS_DISTRO}-${NEW_TAG}"; do
+            if ! verify_in_registry "$SVC_TAG"; then
+              VERIFY_FAILED=1
+            fi
+          done
+          if [ "$VERIFY_FAILED" -eq 1 ]; then
+            echo "❌ Registry verify failed для одного или нескольких SHA-тегов" >&2
+            echo "   .image-versions.test НЕ будет обновлён (round останется на прежнем SHA)" >&2
+            exit 1
+          fi
+
+          # Update .image-versions file
+          VERSIONS_FILE="docker/vision/.image-versions.${DOCKER_TAG}"
+          if [ -f "$VERSIONS_FILE" ]; then
+            sed -i \
+              -e "s|^OAK_D_TAG=.*|OAK_D_TAG=${NEW_TAG}|" \
+              -e "s|^RTABMAP_SYNC_TAG=.*|RTABMAP_SYNC_TAG=${NEW_TAG}|" \
+              -e "s|^LED_MATRIX_TAG=.*|LED_MATRIX_TAG=${NEW_TAG}|" \
+              -e "s|^CEILING_CAMERA_TAG=.*|CEILING_CAMERA_TAG=${NEW_TAG}|" \
+              -e "s|^VOICE_RESOURCES_TAG=.*|VOICE_RESOURCES_TAG=${NEW_TAG}|" \
+              -e "s|^VOICE_ASSISTANT_TAG=.*|VOICE_ASSISTANT_TAG=${NEW_TAG}|" \
+              -e "s|^TELEGRAM_BOT_TAG=.*|TELEGRAM_BOT_TAG=${NEW_TAG}|" \
+              "$VERSIONS_FILE"
+
+            git config user.email "ci@rob-box.local"
+            git config user.name "Rob Box CI"
+            git add "$VERSIONS_FILE"
+            if ! git diff --cached --quiet; then
+              # 🔴 РЕВЕРТ #1244 (15.08, decision #1316): SHA-теги коммитим
+              # ПРЯМО в текущую ветку (develop) — ci/image-versions-* ветки
+              # НЕ работают (деплой при local не грузит .image-versions,
+              # тянет голые dev-теги → роботы получают старые образы).
+              #
+              # Issue #1388: race main↔vision — оба коммитят в одну ветку.
+              # Вместо inline retry-цикла зовём scripts/ci/push-image-versions.sh:
+              # он делает pull --rebase перед push и ФЕЙЛИТ job при невосстановимой
+              # ошибке (раньше job просто молча терял коммит и завершался success).
+              #
+              # Issue #1826: round-ветки (z-{e2e}/test-round-*) — transient
+              # branches для e2e-прогонов. SHA-tag push в round → agent-flow
+              # видит новый HEAD → триггерит ещё build → loop (каждые ~3-4 мин).
+              # SHA-теги нужны только для develop/main (deploy-flow читает из
+              # .image-versions). На round-ветках deploy читает напрямую через
+              # IMAGE_TAG, поэтому SHA-tag push в round НЕ нужен.
+              CURRENT_BRANCH="$(git branch --show-current)"
+              if [[ "${CURRENT_BRANCH}" =~ ^z-\{e2e\}/test-round- ]] || \
+                 [[ "${CURRENT_BRANCH}" =~ ^z-\{e2e\}/wip- ]]; then
+                echo "⏭️  Issue #1826: skip SHA-tag push for round branch ${CURRENT_BRANCH}"
+                echo "   (prevents infinite build loop — agent-flow would re-trigger on each SHA commit)"
+                echo "   SHA-tag ${NEW_TAG} already pushed to local registry; deploy on round uses IMAGE_TAG directly"
+              else
+                git commit -m "ci: vision SHA tags → ${NEW_TAG} [skip ci]"
+                bash scripts/ci/push-image-versions.sh "$CURRENT_BRANCH" vision
+              fi
+            fi
+          else
+            echo "⚠️  $VERSIONS_FILE not found"
+          fi
+
+  # Итоговая сводка
+  summary:
+    needs: [prepare, build-oak-d, build-led-matrix, build-ceiling-camera, build-voice-base, build-voice-resources, build-voice-assistant, build-telegram-bot, build-supercollider, build-supervisor, build-quest]
+    runs-on: [self-hosted, rob-box]
+    if: always()
+    steps:
+      - name: Build Summary
+        run: |
+          echo "🎉 Vision Pi Services Build Complete!"
+          echo ""
+          echo "Configuration:"
+          echo "  Docker Tag: ${{ needs.prepare.outputs.docker_tag }}"
+          echo "  Push to Registry: ${{ inputs.push_to_registry }}"
+          echo ""
+          echo "Services built:"
+          echo "  ✅ oak-d"
+          echo "  ✅ led-matrix"
+          echo "  ✅ ceiling-camera"
+          echo "  ✅ voice-base"
+          echo "  ✅ voice-resources"
+          echo "  ✅ voice-assistant"
+          echo "  ✅ telegram-bot"
+          echo "  ✅ supercollider"
+          echo "  ✅ supervisor"

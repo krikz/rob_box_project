@@ -1,0 +1,17 @@
+# sound_node.yaml — per-node ROS2 config (issue #1004 fix)
+#
+# Сгенерировано из voice_assistant.yaml при разделении на per-node файлы.
+# Меняйте именно этот файл (или src/rob_box_voice/config/<node>.yaml для
+# других нод), НЕ voice_assistant.yaml — он остаётся как легаси/источник
+# правды для совместимости с тестами test_dialogue_shell.
+#
+# Формат — стандартный ROS2: верхний ключ = имя ноды (должно совпадать с
+# Node(name=...) в launch), под ним ros__parameters: с плоскими параметрами.
+# get_parameter("foo") в ноде находит foo БЕЗ префикса.
+
+sound_node:
+  ros__parameters:
+    sound_pack_dir: /ws/sound_pack
+    volume_db: -12.0
+    trigger_animations: true
+    animation_topic: /animations/trigger

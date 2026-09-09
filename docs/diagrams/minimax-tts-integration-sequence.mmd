@@ -1,0 +1,95 @@
+%% docs/diagrams/minimax-tts-integration-sequence.mmd
+%% Sequence diagram for MiniMax TTS integration end-to-end flow.
+%% Companion to docs/adr/0004-minimax-tts-integration-design.md and
+%% docs/architecture/minimax-tts-integration-design.md.
+%%
+%% Differs from docs/diagrams/minimax-tts-sequence.mmd:
+%%   - shows the retry loop in detail (1 retry, 2 retries, give up)
+%%   - shows registry resolution (provider="<name>")
+%%   - shows the AudioStamped meta-topic (opt-in, dashed)
+%%   - shows the streaming path via TTSProvider.stream()
+
+sequenceDiagram
+    autonumber
+    actor User
+    participant DN as dialogue_node
+    participant TN as tts_node (ROS)
+    participant REG as TTSProviderRegistry<br/>(forward-compat)
+    participant TX as TTSProvider ABC
+    participant MM as MiniMaxTTSProvider
+    participant API as api.minimax.io<br/>(T2A v2)
+    participant AUD as /voice/audio/speech<br/>(AudioData msg)
+    participant META as /voice/audio/speech_meta<br/>(AudioStamped, opt-in)
+    participant Sink as audio_playback<br/>(ReSpeaker/dmix)
+
+    User->>DN: voice command / text
+    DN->>TN: publish /voice/dialogue/response<br/>(JSON chunks, dialogue_id)
+    Note over TN: SSML parse →<br/>normalize_for_tts()
+
+    alt provider=="minimax", streaming==False (sync happy-path)
+        TN->>REG: resolve("minimax")
+        REG-->>TN: MiniMaxTTSProvider<br/>(built-in registration)
+        TN->>TX: TTSProvider.synthesize(<br/>  text, settings=TTSSettings(<br/>    voice, model, language,<br/>    speed, sample_rate, format=PCM))
+        TX->>MM: dispatch
+        MM->>API: POST /v1/t2a_v2<br/>Authorization: Bearer <key>GroupId=...
+
+        alt 2xx & base_resp.status_code == 0 (success)
+            API-->>MM: 200 OK<br/>{data:{audio:<hex>,<br/>  audio_sample_rate:32000},<br/> base_resp:{status_code:0}}
+            MM->>MM: bytes.fromhex(audio)<br/>→ TTSAudio(samples, sr=32000, format=PCM)
+            MM-->>TX: TTSAudio
+            TX-->>TN: TTSAudio
+            TN->>TN: np.frombuffer(int16) → float32 [-1,1]<br/>resample 32 kHz → 16 kHz<br/>mono → stereo
+            TN->>AUD: publish AudioData(<br/>  data=int16 LE tobytes())
+            opt audio_meta_topic != "" (opt-in)
+                TN->>META: publish AudioDataStamped(<br/>  header, sample_rate, channels,<br/>  format, samples)
+            end
+            TN->>Sink: sd.play() (локальное<br/>воспроизведение)
+            Sink-->>User: 🔊 audio
+
+        else HTTP 4xx/5xx or base_resp.status_code != 0
+            API-->>MM: error response
+            MM->>MM: _map_exception →<br/>TTSAuthError / TTSRateLimitError /<br/>TTSBadRequestError / TTSError
+            MM-->>TX: raise TTSError
+            TX-->>TN: raise TTSError
+
+            alt AuthError / BadRequestError → NO RETRY
+                TN->>TN: publish_state("error")<br/>log + raise
+                TN-->>DN: /voice/tts/status=error
+                DN-->>User: "MiniMax недоступен, попробуйте позже"
+
+            else RateLimitError / TimeoutError / TTSError (5xx)
+                loop attempt in [0, max_retries]
+                    Note over TN: delay = backoff_ms/1000 * 2^attempt<br/>(0.5s, 1.0s, 2.0s)
+                    TN->>MM: synthesize() retry
+                    MM->>API: POST /v1/t2a_v2 (retry)
+                    alt 2xx on retry
+                        API-->>MM: 200 OK
+                        MM-->>TN: TTSAudio
+                        Note over TN: continue to publish path
+                    else still failing
+                        API-->>MM: error
+                        MM-->>TN: raise
+                    end
+                end
+                Note over TN: budget exhausted →<br/>publish_state("error") + raise
+            end
+        end
+
+    else provider=="minimax", streaming==True (SSE)
+        TN->>TX: TTSProvider.stream(text, settings=...)
+        TX->>MM: dispatch
+        MM->>API: POST /v1/t2a_v2<br/>(stream=true, SSE)
+        loop SSE events (data: ...\\n\\n)
+            API-->>MM: data:{audio:<hex>, audio_sample_rate:...}
+            MM->>MM: bytes.fromhex → TTSChunk
+            MM-->>TN: yield TTSChunk(samples, sr)
+            TN->>AUD: publish AudioData per chunk
+        end
+        API-->>MM: [DONE] or empty
+        MM-->>TN: yield TTSChunk(finish_reason="stop")
+        Note over TN: today's MiniMax SSE buffers<br/>the full response → equivalent<br/>to sync in latency
+    end
+
+    Note over TN,MM: Config precedence:<br/>runtime ROS-params > ENV (secrets only) > /etc/rob_box/tts.yaml (opt-in) > defaults
+    Note over REG: Built-in registration:<br/>register("minimax", MiniMaxTTSProvider)<br/>register("fake", FakeTTSProvider)
+    Note over MM: aclose() idempotent<br/>(см. minimax_tts.py:663-670)

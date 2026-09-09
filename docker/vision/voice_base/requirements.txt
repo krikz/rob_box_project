@@ -1,0 +1,71 @@
+# Python dependencies for Voice Assistant (rob_box_voice)
+# Оптимизировано для ARM64 (Raspberry Pi 5)
+# Только реально используемые пакеты!
+
+# =============================================================================
+# Base utilities
+# =============================================================================
+pyyaml
+requests
+omegaconf==2.3.1
+openpyxl
+
+# =============================================================================
+# Audio processing
+# =============================================================================
+pyaudio
+sounddevice
+soundfile
+pydub
+numpy<3.0.0
+
+# =============================================================================
+# Image processing (for LED matrix animations)
+# =============================================================================
+pillow
+
+# =============================================================================
+# USB interface for ReSpeaker (used in audio_node.py)
+# =============================================================================
+pyusb
+
+# =============================================================================
+# Machine Learning (PyTorch for Silero TTS)
+# CRITICAL: PyTorch 2.9.0+ required for ARM64 compatibility!
+# PyTorch 2.1.0 has broken MKLDNN matmul primitives on aarch64
+# PyTorch 2.9.0 fixes: "could not create a primitive descriptor for a matmul primitive"
+# scipy: Required by Silero v5 for audio resampling and processing
+# =============================================================================
+torch>=2.13.0
+torchaudio>=2.11.0
+scipy
+
+# =============================================================================
+# Speech-to-Text: Vosk (offline, lightweight Russian STT)
+# Used in: rob_box_voice/stt_node.py
+# =============================================================================
+vosk
+
+# =============================================================================
+# gRPC for Yandex Cloud API v3 (STT + TTS)
+# Used in: rob_box_voice/tts_node.py (TTS with anton voice)
+#          scripts/test_yandex_v3.py, scripts/record_yandex_voice.py
+# =============================================================================
+grpcio
+grpcio-tools
+protobuf
+yandex-cloud-ml-sdk  # Yandex Cloud TTS/STT gRPC API v3 (anton voice!)
+
+# =============================================================================
+# Dialogue system: OpenAI Agents SDK (wraps DeepSeek/Qwen via base_url)
+# Used in: rob_box_voice/dialogue_node.py
+# =============================================================================
+openai>=2.53.0,<3.0.0
+openai-agents>=0.19.4,<1.0.0
+
+# =============================================================================
+# Music synthesis: Renardo (Python FoxDot successor) + SuperCollider via OSC
+# Used in: rob_box_mcp_tools/tools/music.py (execute_music_code, stop_music...)
+# SuperCollider runs in separate container; renardo connects via OSC localhost:57110
+# =============================================================================
+renardo-lib

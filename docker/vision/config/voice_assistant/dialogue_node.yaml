@@ -1,0 +1,136 @@
+# dialogue_node.yaml — per-node ROS2 config (issue #1004 fix, ADR-0004)
+#
+# ЖИВОЙ конфиг для docker-деплоя (см. audio_node.yaml).
+# Все ключи соответствуют declare_parameter() в dialogue_node.py 1:1
+# (включая per-provider секции <name>.base_url/model/... — объявляются
+# динамически для minimax/deepseek/mimo/qwen).
+#
+# LLM: приоритетная цепочка провайдеров (issue #1089). Первый = primary,
+# остальные = fallbacks. Смена провайдера = одна строка llm_providers.
+
+dialogue_node:
+  ros__parameters:
+    # wake_words намеренно НЕ здесь: списки — в docker/vision/config/wake_words.yaml
+    # (SSoT, issue #1990). Нода читает его через wake_words_file: namespace
+    # personality — единственный источник вейк-слов личности (ReSpeaker →
+    # /voice/stt/result). Кодовая DEFAULT_WAKE_WORDS — фолбек для dev-env без
+    # файла (список байт-в-байт тот же).
+    wake_words_file: /config/wake_words.yaml
+    dialogue_timeout: 300.0
+    # S1 (scheduler-segments-merge) — "replace" = сегодняшнее поведение
+    # (STOP на любой новый STT-ввод). "classify" включается в S8.3 после
+    # зелёного e2e; до этого — аварийный откат одной строкой.
+    barge_in_policy: "replace"
+    # TODO(legacy-config): 2026-09-15 — отложенный rollout deepseek primary.
+    # Документация (docstring'и в src/rob_box_harness/rob_box_harness/providers/*.py,
+    # docs/guides/examples/minimax_llm.yaml) говорит [deepseek, minimax, mimo],
+    # runtime yaml оставлен на legacy [minimax, deepseek] намеренно (см. ADR-0043).
+    # При обновлении — синхронизировать test_both_voice_configs_route_dialogue_to_minimax
+    # (src/rob_box_voice/test/test_dialogue_shell.py) в том же коммите.
+    # первый = primary, остальные = fallbacks
+    llm_providers: "minimax,deepseek"
+    enable_mcp_tools: true
+
+    # Бэклог-аккумулятор фоновой речи без wake-слова.
+    accumulate_no_wake_enabled: true
+    accumulate_window_sec: 180.0
+
+    # Issue #XXXX — «новая сессия» / «сбрось всё» / Telegram «/clear»:
+    # сброс контекста текущего диалога без вызова LLM. Фразы по умолчанию
+    # заданы в коде (_DEFAULT_NEW_SESSION_PHRASES); при необходимости
+    # список можно переопределить здесь.
+    new_session_enabled: true
+    # new_session_phrases:
+    # - новая сессия
+    # - сбрось всё
+
+    # ═══════════════════════════════════════════════════════════════
+    #  LLM Provider sections — one per provider (опционально; пусто →
+    #  well-known defaults из _LLM_PROVIDER_REGISTRY в dialogue_node.py)
+    # ═══════════════════════════════════════════════════════════════
+
+    # MiniMax (primary — M3, vision-capable, tools, streaming)
+    minimax:
+      api_key: ""                  # MINIMAX_API_KEY env (или явно)
+      base_url: "https://api.minimax.io/v1"
+      model: "MiniMax-M3"
+      temperature: 0.7
+      max_tokens: 3000   # см. #1883: 500 режет tool-call пополам
+      timeout_s: 90.0
+
+    # DeepSeek (fallback — дешёвый, быстрый, надёжный)
+    deepseek:
+      api_key: ""                  # DEEPSEEK_API_KEY env (или явно)
+      base_url: "https://api.deepseek.com"
+      model: "deepseek-chat"
+      temperature: 0.7
+      max_tokens: 3000   # см. #1883: 500 режет tool-call пополам
+      timeout_s: 90.0
+
+    # MiMo (Xiaomi — fallback #2). Раскомментируй и добавь "mimo" в
+    # llm_providers когда API ключ готов.
+    # mimo:
+    #   api_key: ""
+    #   base_url: "https://api.xiaomimimo.com/v1"
+    #   model: "mimo-v2.5"
+    #   temperature: 0.7
+    #   max_tokens: 500
+    #   timeout_s: 90.0
+
+    # Qwen (Alibaba — запасной, OpenAI-совместимый).
+    # qwen:
+    #   api_key: ""
+    #   base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    #   model: "qwen-turbo"
+    #   temperature: 0.7
+    #   max_tokens: 500
+    #   timeout_s: 90.0
+
+    # Промпт система
+    system_prompt_file: master_prompt_compact.txt
+    # Move A (change skill-scoped-dialogue-context). true — доменные
+    # инструкции (§5 MUSIC, §6 WAYPOINTS и фрагменты prompts/skills/*.txt)
+    # уезжают из системного промпта и приезжают вплотную к текущему ходу.
+    # false — побайтово прежнее поведение, секции стоят на позиции 0.
+    # ВКЛЮЧЕНО 02.09.2026 решением владельца — без недели baseline
+    # (Migration Plan шаг 2 сокращён сознательно). Откат — false + рестарт
+    # контейнера, промпт при false побайтово дореформенный (проверено
+    # хэшем на роботе, evidence-vision-pi.md §3).
+    skills_enabled: true
+    # Move B — сузить tools= до core + активный скилл. Ломает кэшируемый
+    # префикс провайдера при каждой смене домена и добавляет отказ
+    # «роутер промахнулся -> LLM не видит нужный инструмент» (#1403).
+    # Включать только после замера prefix-cache (задача 7.4).
+    skill_tool_narrowing: false
+    history_max_turns: 20
+    agent_max_turns: 20
+    llm_timeout_sec: 90.0
+    verbose_llm: true
+    llm_streaming: true
+    faq_mode_enabled: true
+    faq_event_config_file: ""   # Например: /config/voice_assistant/event_mode.yaml
+    # Инструменты, чьи тёрны исключаются из истории диалога (issue DeepSeek
+    # pattern-completion: handle_navigation + handle_music).
+    # handle_navigation / handle_music — фасады, удалённые вместе со
+    # скиллами Compositor'а: фильтр по ним не отсекал ничего.
+    history_excluded_tools:
+    - move_direction
+    # Диалоговая история harness'а. ДОЛЖНА лежать на смонтированном томе:
+    # ``~/.rob_box/voice.db`` — это /root внутри контейнера, том туда не
+    # смонтирован, поэтому весь контекст разговора умирал вместе с
+    # контейнером (проверено на vision 29.08: файл создан в 15:29 вместе с
+    # контейнером, 69 ходов, ни одного старше).
+    #
+    # Это НЕ ``/data/voice_memory.db``: там живёт VoiceMemory из
+    # mcp_server, и схемы конфликтуют — у harness'а ``waypoints.name``
+    # PRIMARY KEY, у VoiceMemory ``waypoints`` с ``map_id NOT NULL`` и FK
+    # на maps; ``faq_items`` расходятся так же (created_at vs indexed_at).
+    # ``CREATE TABLE IF NOT EXISTS`` промолчал бы, а вставки бы падали.
+    # Два стора остаются двумя сторами — но оба переживают рестарт.
+    sqlite_db_path: /data/harness_voice.db
+    speaker_id_enabled: true
+    speaker_db_path: /data/speakers.db
+    startup_greeting_sec: 12.0
+    startup_greeting_text: "Я на связи, все системы в норме!"
+    tool_provider: ros_mcp
+    api_key: ''

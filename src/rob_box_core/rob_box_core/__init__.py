@@ -1,0 +1,104 @@
+"""rob_box_core — ROS-free contracts shared by the harness packages."""
+
+from rob_box_core.avatar_command import (
+    AVATAR_COMMAND_RESULT_TOPIC,
+    AVATAR_COMMAND_TOPIC,
+    SOURCES,
+    build_command,
+    build_command_result,
+    decode_command,
+    decode_command_result,
+    encode_command,
+    encode_command_result,
+    make_quest_client_id,
+    make_telegram_client_id,
+    new_request_id,
+    now_ts_ms,
+)
+from rob_box_core.clock import Clock, MockClock, SystemClock
+from rob_box_core.memory import Fact, InMemoryStore, MemoryHit, MemoryStore, Turn
+from rob_box_core.ports import (
+    ToolContext,
+    ToolDescriptor,
+    ToolNotFound,
+    ToolNotFoundError,
+    ToolProvider,
+    ToolProviderError,
+    ToolResult,
+    ToolTimeout,
+    ToolTimeoutError,
+    ToolValidationError,
+    ValidationResult,
+)
+from rob_box_core.speech_segmentation import (
+    BYTES_PER_S,
+    DEFAULT_ROBOT_VOICE_CONFIG,
+    DEFAULT_WAKE_CONFIG,
+    PhraseSegmenter,
+    SAMPLE_RATE_HZ,
+    SpeechSegmentationConfig,
+)
+from rob_box_core.utterance import (
+    ALLOWED_PRIORITIES,
+    DEFAULT_PRIORITY,
+    PRIORITY_BARGE_IN,
+    PRIORITY_NORMAL,
+    PRIORITY_OPERATOR,
+    PRIORITY_REPLACE,
+    Sink,
+    Utterance,
+)
+
+__all__ = [
+    "Clock",
+    "SystemClock",
+    "MockClock",
+    "MemoryStore",
+    "InMemoryStore",
+    "Turn",
+    "Fact",
+    "MemoryHit",
+    "ToolProvider",
+    "ToolDescriptor",
+    "ToolResult",
+    "ToolContext",
+    "ValidationResult",
+    "ToolProviderError",
+    "ToolNotFound",
+    "ToolNotFoundError",
+    "ToolTimeout",
+    "ToolTimeoutError",
+    "ToolValidationError",
+    # Utterance — единый сборщик SSML (voice-vr 12, ADR-0080 §1.3, §2.3)
+    "ALLOWED_PRIORITIES",
+    "DEFAULT_PRIORITY",
+    "PRIORITY_BARGE_IN",
+    "PRIORITY_NORMAL",
+    "PRIORITY_OPERATOR",
+    "PRIORITY_REPLACE",
+    "Sink",
+    "Utterance",
+    # avatar_command (AV-22, freeze §3.3 worker-brief)
+    "AVATAR_COMMAND_TOPIC",
+    "AVATAR_COMMAND_RESULT_TOPIC",
+    "SOURCES",
+    "build_command",
+    "build_command_result",
+    "decode_command",
+    "decode_command_result",
+    "encode_command",
+    "encode_command_result",
+    "make_quest_client_id",
+    "make_telegram_client_id",
+    "new_request_id",
+    "now_ts_ms",
+    # speech_segmentation (issue #2199: единый сегментатор речи)
+    "PhraseSegmenter",
+    "SpeechSegmentationConfig",
+    "DEFAULT_WAKE_CONFIG",
+    "DEFAULT_ROBOT_VOICE_CONFIG",
+    "SAMPLE_RATE_HZ",
+    "BYTES_PER_S",
+]
+
+__version__ = "0.1.0"

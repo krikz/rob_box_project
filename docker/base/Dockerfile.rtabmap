@@ -1,0 +1,58 @@
+# Базовый образ для RTAB-Map SLAM
+# Наследуется от официального образа RTAB-Map и добавляет Zenoh
+FROM introlab3it/rtabmap_ros:humble-latest
+
+# Build argument для APT кэша (опциональный)
+ARG APT_PROXY=""
+
+# Настройка APT прокси если указан и доступен
+# Проверяем доступность прокси перед настройкой
+RUN if [ -n "$APT_PROXY" ]; then \
+        PROXY_HOST=$(echo "$APT_PROXY" | sed 's|.*://\([^:/]*\).*|\1|'); \
+        PROXY_PORT=$(echo "$APT_PROXY" | sed 's|.*://[^:]*:\([0-9]*\).*|\1|'); \
+        echo "🔍 Checking proxy availability at $PROXY_HOST:$PROXY_PORT..."; \
+        if timeout 5 bash -c "cat < /dev/null > /dev/tcp/$PROXY_HOST/$PROXY_PORT" 2>/dev/null; then \
+            echo "Acquire::http::Proxy \"$APT_PROXY\";" > /etc/apt/apt.conf.d/02proxy; \
+            echo "Acquire::http::Timeout \"10\";" >> /etc/apt/apt.conf.d/02proxy; \
+            echo "Acquire::Retries \"3\";" >> /etc/apt/apt.conf.d/02proxy; \
+            echo "✅ Using APT proxy: $APT_PROXY"; \
+        else \
+            echo "⚠️  APT proxy not accessible, will use direct connection"; \
+        fi \
+    fi
+
+# Установка плагинов для сжатия изображений и Zenoh.
+# Пин rmw_zenoh_cpp на 0.1.8 (zenoh 1.6.2): 0.1.9 (июль 2026) поднимает zenoh-клиент
+# до 1.8.0, что ломает транспорт (rmw_zenoh#1031 "early eof" → cmd_vel виснет).
+# В основном ROS-репозитории теперь только 0.1.9, поэтому качаем 0.1.8 .deb напрямую
+# из snapshot-репозитория (2026-03-29).
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y curl ca-certificates; \
+    arch=$(dpkg --print-architecture); \
+    case "$arch" in \
+      amd64) rmw_ts=20260304.205755; vnd_ts=20260304.075447;; \
+      arm64) rmw_ts=20260307.172628; vnd_ts=20260307.134822;; \
+      *) echo "unsupported arch: $arch"; exit 1;; \
+    esac; \
+    curl -fsSL -o /tmp/rmw-zenoh.deb "http://snapshots.ros.org/humble/2026-03-29/ubuntu/pool/main/r/ros-humble-rmw-zenoh-cpp/ros-humble-rmw-zenoh-cpp_0.1.8-1jammy.${rmw_ts}_${arch}.deb"; \
+    curl -fsSL -o /tmp/zenoh-vendor.deb "http://snapshots.ros.org/humble/2026-03-29/ubuntu/pool/main/r/ros-humble-zenoh-cpp-vendor/ros-humble-zenoh-cpp-vendor_0.1.8-1jammy.${vnd_ts}_${arch}.deb"; \
+    apt-get install -y /tmp/rmw-zenoh.deb /tmp/zenoh-vendor.deb ros-humble-image-transport-plugins ros-humble-compressed-image-transport ros-humble-theora-image-transport; \
+    rm -f /tmp/rmw-zenoh.deb /tmp/zenoh-vendor.deb; \
+    rm -rf /var/lib/apt/lists/*
+
+# Удаляем APT прокси конфигурацию после установки пакетов
+RUN rm -f /etc/apt/apt.conf.d/02proxy
+
+# Устанавливаем переменные окружения для Zenoh
+ENV RMW_IMPLEMENTATION=rmw_zenoh_cpp \
+    ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST \
+    RUST_LOG=zenoh=info \
+    LD_LIBRARY_PATH=/opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib \
+    QT_QPA_PLATFORM=offscreen
+
+# Метаданные образа
+LABEL maintainer="rob_box_project" \
+      description="Base RTAB-Map image with Zenoh for SLAM" \
+      version="1.0"
+

@@ -1,0 +1,776 @@
+#!/usr/bin/env python3
+"""
+speaker_id_node.py — Real-time speaker identification using resemblyzer d-vectors.
+
+Subscribes:
+    /audio/speech_audio  (AudioData)  — full speech utterance from audio_node
+    /voice/speaker/register (String)  — JSON {"name":"Иван"} — register current speaker
+    /voice/speaker/rename   (String)  — JSON {"speaker_id"|"old_name", "new_name"}
+    /voice/speaker/merge    (String)  — JSON {"src_speaker_id","dst_speaker_id"} —
+                                         issue W5-4, склейка дублей одного голоса
+    /voice/speaker/observe  (String)  — JSON {"speaker_id","text"} — реплика
+                                         известного спикера для подсчёта тем и
+                                         выбора эпитета (issue #1787)
+    /voice/speaker/epithet  (String)  — JSON {"speaker_id","epithet"} — кличка,
+                                         придуманная LLM (слой 2 гибрида);
+                                         принимается после валидации
+
+Publishes:
+    /voice/speaker/result (String) — JSON SpeakerMatch or {"is_known":false};
+                                     у известного спикера есть поле "epithet"
+                                     (внутренняя кличка, issue #1787)
+    /voice/speaker/epithet_request (String) — JSON {"speaker_id","fallback",
+                                     "cluster","hints","messages"} — просьба к
+                                     dialogue_node придумать кличку через LLM
+
+Parameters:
+    db_path                  (str)   — path to SQLite DB       [/data/speakers.db]
+    identify_threshold       (float) — cosine similarity gate  [0.75]
+    register_match_threshold (float) — порог слияния при регистрации (issue
+                                        W5-4; строже identify_threshold — см.
+                                        speaker_embeddings.REGISTER_MATCH_THRESHOLD) [0.82]
+    sample_rate              (int)   — PCM sample rate         [16000]
+    enabled                  (bool)  — enable/disable node     [true]
+"""
+
+import collections
+import json
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from typing import Deque, Dict, Optional, Tuple
+
+import numpy as np
+import rclpy
+from audio_common_msgs.msg import AudioData
+from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from std_msgs.msg import String
+
+from .core import epithets
+from .utils.speaker_embeddings import SpeakerDatabase, SpeakerMatch
+
+# Issue #1160 — Prometheus metrics (этап 1 observability).
+# ``prometheus_client`` — optional dep; если её нет, всё превращается в
+# no-op и старт сервера тихо возвращает ``False``.
+from rob_box_voice.observability import (
+    is_metrics_enabled,
+    record_speaker_recognize,
+    start_metrics_server,
+)
+
+
+class SpeakerIdNode(Node):
+    """Voice-based speaker identification node."""
+
+    def __init__(self) -> None:
+        super().__init__("speaker_id_node")
+
+        # ── Parameters ────────────────────────────────────────────────────────
+        self.declare_parameter("db_path", "/data/speakers.db")
+        self.declare_parameter("identify_threshold", 0.75)
+        # Issue W5-4 — отдельный, более строгий порог для решения «слить с
+        # существующим профилем при регистрации vs завести новый» внутри
+        # register_or_merge(). См. speaker_embeddings.REGISTER_MATCH_THRESHOLD
+        # за обоснованием (синтетический бенчмарк, docs/plans задачи W5-4).
+        self.declare_parameter("register_match_threshold", 0.82)
+        self.declare_parameter("sample_rate", 16000)
+        self.declare_parameter("enabled", True)
+        # Issue #1160 — Prometheus metrics endpoint. 9112 — speaker_id_node.
+        self.declare_parameter("metrics_port", 9112)
+
+        self._enabled: bool = self.get_parameter("enabled").value
+        self._sample_rate: int = self.get_parameter("sample_rate").value
+        db_path: str = self.get_parameter("db_path").value
+        threshold: float = self.get_parameter("identify_threshold").value
+        register_threshold: float = self.get_parameter("register_match_threshold").value
+
+        if not self._enabled:
+            self.get_logger().info("⚠️ speaker_id_node disabled via parameter")
+            return
+
+        # ── Speaker DB (thread-safe via lock) ─────────────────────────────────
+        self._db = SpeakerDatabase(db_path)
+        # Patch thresholds from parameters
+        import rob_box_voice.utils.speaker_embeddings as _se_mod
+
+        _se_mod.IDENTIFY_THRESHOLD = threshold
+        _se_mod.REGISTER_MATCH_THRESHOLD = register_threshold
+        self.get_logger().info(
+            f"✅ SpeakerDatabase opened: {db_path} "
+            f"identify_threshold={threshold} register_match_threshold={register_threshold}"
+        )
+
+        # ── Pending registration ───────────────────────────────────────────────
+        # Set when user says "запомни мой голос как [name]" via /voice/speaker/register.
+        # The NEXT speech utterance will be registered under this name.
+        self._pending_register_name: Optional[str] = None
+        self._pending_register_lock = threading.Lock()
+
+        # Recent embeddings ring-buffer: (timestamp, embedding) — keep last 20 utterances
+        # LLM may take 2-5s to call register_speaker, so a single _last_embedding
+        # can be overwritten by ambient noise. Keep a window instead.
+        self._recent_embeddings: Deque[Tuple[float, np.ndarray]] = collections.deque(maxlen=20)
+        self._MAX_EMBED_AGE_SEC: float = 30.0
+
+        # Issue #1787 — окно последних реплик КАЖДОГО спикера: на нём
+        # считаются темы (epithets.extract_tags) и валентность. 50 — из
+        # research §4.1 («новая доминирующая тема > 40% последних 50
+        # реплик»). Живёт в памяти ноды, а не в БД: это скользящее окно
+        # для решения «пора менять кличку», а не история диалога — её
+        # хранит слой памяти harness'а.
+        self._speech_log: Dict[str, Deque[str]] = {}
+        self._speech_log_lock = threading.Lock()
+
+        # ── Thread pool for inference (non-blocking ROS callbacks) ────────────
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="speaker_id")
+        # Warm up resemblyzer model immediately so first real inference is fast
+        self._executor.submit(self._warmup)
+
+        # ── QoS ───────────────────────────────────────────────────────────────
+        best_effort_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+            depth=5,
+        )
+        reliable_qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10,
+        )
+
+        # ── Publishers ────────────────────────────────────────────────────────
+        self._result_pub = self.create_publisher(String, "/voice/speaker/result", reliable_qos)
+        # Issue #1787, слой 2 — просьба к dialogue_node придумать кличку
+        # через LLM. Сам узел LLM не знает (и не должен: биометрия обязана
+        # работать офлайн), поэтому запрос уходит топиком, а ответ
+        # приходит на /voice/speaker/epithet.
+        self._epithet_request_pub = self.create_publisher(
+            String, "/voice/speaker/epithet_request", reliable_qos
+        )
+
+        # Issue #1160 — Prometheus metrics endpoint. 9112 — speaker_id_node.
+        # Запускаем сервер ТОЛЬКО если есть резёмблизер (иначе нода не даёт
+        # идентификации, и метрики бесполезны). Порт читаем из параметра.
+        metrics_port: int = int(self.get_parameter("metrics_port").value or 0)
+        if metrics_port > 0 and is_metrics_enabled():
+            if start_metrics_server(metrics_port):
+                self.get_logger().info(
+                    f"📊 Speaker-ID metrics server listening on :{metrics_port}/metrics"
+                )
+            else:
+                self.get_logger().warning(
+                    f"📊 Speaker-ID metrics port {metrics_port} not bound "
+                    "(busy or prometheus_client missing)"
+                )
+
+        # ── Subscribers ────────────────────────────────────────────────────────
+        self.create_subscription(
+            AudioData,
+            "/audio/speech_audio",
+            self._on_speech_audio,
+            best_effort_qos,
+        )
+        self.create_subscription(
+            String,
+            "/voice/speaker/register",
+            self._on_register_request,
+            reliable_qos,
+        )
+        self.create_subscription(
+            String,
+            "/voice/speaker/rename",
+            self._on_rename_request,
+            reliable_qos,
+        )
+        # Issue W5-4 — ручная склейка уже расползшихся дублей одного голоса
+        # (например, найденных оператором через list_speakers): JSON
+        # {"src_speaker_id": "...", "dst_speaker_id": "..."}.
+        self.create_subscription(
+            String,
+            "/voice/speaker/merge",
+            self._on_merge_request,
+            reliable_qos,
+        )
+        # Issue #1787 — реплики известного спикера для выбора эпитета.
+        # Текст живёт в dialogue_node (STT), голос — здесь; связывает их
+        # speaker_id. Отдельный топик, а не расширение /voice/stt/result:
+        # эпитет нужен ТОЛЬКО когда биометрия уже опознала говорящего,
+        # иначе теми чужой речи испортили бы чужой профиль.
+        self.create_subscription(
+            String,
+            "/voice/speaker/observe",
+            self._on_observe_request,
+            reliable_qos,
+        )
+        # Issue #1787, слой 2 — кличка, придуманная LLM в dialogue_node.
+        self.create_subscription(
+            String,
+            "/voice/speaker/epithet",
+            self._on_epithet_result,
+            reliable_qos,
+        )
+
+        self.get_logger().info("🎙️ speaker_id_node ready")
+
+    # ── Callbacks ─────────────────────────────────────────────────────────────
+
+    def _warmup(self) -> None:
+        """Pre-load the resemblyzer GE2E model so first real inference is fast."""
+        import time as _time
+        t0 = _time.monotonic()
+        # Issue #1101 — was feeding 1 second of silence (``bytes(16000 * 2)``
+        # = int16 zeros). ``resemblyzer.audio.preprocess_wav`` divides RMS
+        # into int16_max inside ``log10`` → ``RuntimeWarning: divide by
+        # zero encountered in log10`` + ``invalid value encountered in
+        # multiply`` + empty output array (the embedding call silently
+        # returned). Use a noise-shaped warmup so RMS > 0 and the
+        # model loads cleanly.
+        import numpy as np
+        rng = np.random.default_rng(42)
+        warmup = (
+            rng.normal(0, 0.05, 16000).clip(-1, 1).astype(np.float32)
+        )
+        pcm16 = (warmup * 32767).astype(np.int16).tobytes()
+        self._db.embed_audio(pcm16, sample_rate=16000)
+        elapsed_ms = int((_time.monotonic() - t0) * 1000)
+        self.get_logger().info(f"🔥 Resemblyzer warmup done ({elapsed_ms} ms)")
+
+    def _on_speech_audio(self, msg: AudioData) -> None:
+        """Received a complete speech utterance — run inference asynchronously."""
+        pcm_bytes = bytes(msg.data)
+        self.get_logger().info(
+            f"🎤 Received speech audio: {len(pcm_bytes)} bytes ({len(pcm_bytes)/self._sample_rate/2:.1f}s)"
+        )
+        self._executor.submit(self._process_utterance, pcm_bytes)
+
+    def _on_register_request(self, msg: String) -> None:
+        """Register the current (or next) speaker under the given name.
+
+        Expected JSON: {"name": "Иван"} or {"name": "Иван", "speaker_id": "<uuid>"}
+        """
+        try:
+            data = json.loads(msg.data)
+        except json.JSONDecodeError:
+            # Accept plain text name as well
+            data = {"name": msg.data.strip()}
+
+        name = data.get("name", "").strip()
+        if not name:
+            self.get_logger().warning("⚠️ register_request: empty name ignored")
+            return
+
+        speaker_id_hint: Optional[str] = data.get("speaker_id")
+
+        # If we have a fresh embedding from the latest utterance, register immediately
+        now = time.time()
+        with self._pending_register_lock:
+            # Find most recent embedding within MAX_EMBED_AGE_SEC
+            best_embedding = None
+            best_ts = 0.0
+            for ts, emb in reversed(self._recent_embeddings):
+                if now - ts <= self._MAX_EMBED_AGE_SEC and ts > best_ts:
+                    best_embedding = emb
+                    best_ts = ts
+            if best_embedding is not None:
+                self._executor.submit(
+                    self._do_register, name, best_embedding, speaker_id_hint
+                )
+                self.get_logger().info(
+                    f"📝 Registering '{name}' from embedding {now - best_ts:.1f}s ago"
+                )
+            else:
+                # No fresh utterance yet — pend for the next one
+                self._pending_register_name = name
+                self.get_logger().info(
+                    f"📝 Will register next utterance as '{name}'"
+                )
+
+    # ── Processing ────────────────────────────────────────────────────────────
+
+    def _process_utterance(self, pcm_bytes: bytes) -> None:
+        """Compute embedding and identify (or register) speaker.  Runs in thread."""
+        t0 = time.monotonic()
+
+        embedding = self._db.embed_audio(pcm_bytes, self._sample_rate)
+        if embedding is None:
+            # resemblyzer unavailable or audio too short — publish unknown
+            self.get_logger().warning(
+                f"⚠️ embed_audio returned None for {len(pcm_bytes)} bytes "
+                f"({len(pcm_bytes)/self._sample_rate/2:.1f}s) — publishing unknown"
+            )
+            # Issue #1160 — Prometheus metrics: не удалось извлечь эмбеддинг —
+            # считаем это unknown.
+            record_speaker_recognize(known=False, confidence=None)
+            self._publish_result(None)
+            return
+
+        elapsed = (time.monotonic() - t0) * 1000
+
+        # Store as latest embedding for possible registration
+        with self._pending_register_lock:
+            self._recent_embeddings.append((time.time(), embedding))
+            pending_name = self._pending_register_name
+            self._pending_register_name = None
+
+        if pending_name:
+            self._do_register(pending_name, embedding, speaker_id=None)
+            # After registration, also publish as a known speaker result
+            match = self._db.identify(embedding)
+            self._publish_result(match)
+            self.get_logger().info(
+                f"✅ Registered & identified '{pending_name}' "
+                f"(inference {elapsed:.0f} ms)"
+            )
+            # Issue #1160 — Prometheus metrics: только что зарегистрированный
+            # спикер считается known.
+            record_speaker_recognize(
+                known=True,
+                confidence=match.confidence if match else None,
+            )
+            return
+
+        match = self._db.identify(embedding)
+        self._log_identify_candidates(embedding)
+        if match:
+            self.get_logger().info(
+                f"👤 Speaker: '{match.name}' confidence={match.confidence:.3f} "
+                f"({elapsed:.0f} ms)"
+            )
+        else:
+            self.get_logger().info(f"👤 Speaker: unknown ({elapsed:.0f} ms)")
+
+        # Issue #1160 — Prometheus metrics: known/unknown.
+        record_speaker_recognize(
+            known=bool(match),
+            confidence=match.confidence if match else None,
+        )
+        self._publish_result(match)
+
+    def _log_identify_candidates(self, embedding: np.ndarray) -> None:
+        """Issue W5-4 п.4 — диагностика: best_score И второй кандидат.
+
+        Без этого лога в проде виден только булев результат identify()
+        («известен / неизвестен»), и дрейф голоса между двумя дублирующими
+        профилями невозможно отследить постфактум — неясно, насколько
+        близко было решение и с кем именно конкурировал победитель. Лог
+        уровня INFO — намеренно (не debug): это ровно то, что нужно
+        вытащить из логов робота при разборе жалобы «опознал не того».
+        """
+        candidates = self._db.identify_candidates(embedding, top_n=2)
+        if not candidates:
+            return
+        best = candidates[0]
+        if len(candidates) > 1:
+            second = candidates[1]
+            gap = best.confidence - second.confidence
+            self.get_logger().info(
+                f"🔍 identify candidates: best='{best.name}'({best.speaker_id[:8]}) "
+                f"score={best.confidence:.3f} | second='{second.name}'"
+                f"({second.speaker_id[:8]}) score={second.confidence:.3f} | gap={gap:.3f}"
+            )
+        else:
+            self.get_logger().info(
+                f"🔍 identify candidates: best='{best.name}'({best.speaker_id[:8]}) "
+                f"score={best.confidence:.3f} | (единственный известный спикер в БД)"
+            )
+
+    def _on_rename_request(self, msg: String) -> None:
+        """Rename an existing speaker entry.
+
+        Expected JSON: {"speaker_id": "<uuid>", "new_name": "<name>"}
+        or: {"old_name": "<name>", "new_name": "<name>"}
+        (old_name → name-based lookup, for LLM-driven corrections).
+        """
+        try:
+            data = json.loads(msg.data)
+        except json.JSONDecodeError:
+            self.get_logger().warning("⚠️ rename_request: invalid JSON ignored")
+            return
+
+        speaker_id = data.get("speaker_id", "").strip()
+        old_name = data.get("old_name", "").strip()
+        new_name = data.get("new_name", "").strip()
+        if not speaker_id and not old_name:
+            self.get_logger().warning("⚠️ rename_request: missing speaker_id or old_name")
+            return
+        if not new_name:
+            self.get_logger().warning("⚠️ rename_request: missing new_name")
+            return
+
+        ok = False
+        if speaker_id:
+            ok = self._db.rename(speaker_id, new_name)
+        else:
+            # Issue #1101 — name-based rename for LLM corrections.
+            # When user says "I'm not X, I'm Y", LLM calls
+            # register_speaker(name=Y, old_name=X) → published as
+            # /voice/speaker/rename {"old_name": X, "new_name": Y}.
+            sid = self._db.rename_by_name(old_name, new_name)
+            ok = sid is not None
+            speaker_id = sid or ""
+
+        if ok:
+            self.get_logger().info(f"✏️ Renamed → '{new_name}' (id={speaker_id[:8]})")
+        else:
+            self.get_logger().warning(
+                f"⚠️ rename failed: "
+                f"{'old_name=' + old_name if old_name else 'speaker_id=' + speaker_id[:8]} "
+                f"not found in DB"
+            )
+
+        ack = String()
+        ack.data = json.dumps(
+            {"event": "renamed", "ok": ok, "speaker_id": speaker_id, "new_name": new_name},
+            ensure_ascii=False,
+        )
+        self._result_pub.publish(ack)
+
+    def _on_merge_request(self, msg: String) -> None:
+        """Issue W5-4 — склеить два профиля одного голоса («денчик» + «эйджик»).
+
+        Expected JSON: {"src_speaker_id": "<uuid>", "dst_speaker_id": "<uuid>"}
+        Все эмбеддинги ``src`` переносятся под ``dst``, профиль ``src``
+        удаляется. Имя ``dst`` остаётся как есть — вызывающий код должен
+        сам решить, какой из двух id — "основной".
+        """
+        try:
+            data = json.loads(msg.data)
+        except json.JSONDecodeError:
+            self.get_logger().warning("⚠️ merge_request: invalid JSON ignored")
+            return
+
+        src_id = str(data.get("src_speaker_id", "")).strip()
+        dst_id = str(data.get("dst_speaker_id", "")).strip()
+        if not src_id or not dst_id:
+            self.get_logger().warning(
+                "⚠️ merge_request: missing src_speaker_id or dst_speaker_id"
+            )
+            return
+
+        moved = self._db.merge_speakers(src_id, dst_id)
+        ok = moved > 0
+        if ok:
+            self.get_logger().info(
+                f"🔗 Merged speaker {src_id[:8]} → {dst_id[:8]} "
+                f"({moved} embeddings moved)"
+            )
+        else:
+            self.get_logger().warning(
+                f"⚠️ merge failed: src={src_id[:8]} dst={dst_id[:8]} "
+                "(src==dst, src not found, or dst not found in DB)"
+            )
+
+        ack = String()
+        ack.data = json.dumps(
+            {
+                "event": "merged",
+                "ok": ok,
+                "src_speaker_id": src_id,
+                "dst_speaker_id": dst_id,
+                "embeddings_moved": moved,
+            },
+            ensure_ascii=False,
+        )
+        self._result_pub.publish(ack)
+
+    def _do_register(
+        self,
+        name: str,
+        embedding: np.ndarray,
+        speaker_id: Optional[str],
+    ) -> None:
+        """Persist speaker embedding to DB and acknowledge.
+
+        Issue W5-4 — использует ``register_or_merge()`` вместо голого
+        ``register()``: если ``speaker_id`` не передан явно (обычный путь
+        от LLM-тула register_speaker), сначала проверяется, не похож ли
+        голос на уже известный профиль (порог REGISTER_MATCH_THRESHOLD,
+        строже обычной идентификации) — и, при совпадении, эмбеддинг
+        дописывается в существующий профиль вместо создания дубля. Именно
+        отсутствие этой проверки было причиной бага «один голос — два
+        профиля» (денчик/эйджик): раньше КАЖДЫЙ вызов register_speaker
+        создавал новый speaker_id безусловно.
+        """
+        sid, reused = self._db.register_or_merge(name, embedding, speaker_id=speaker_id)
+        if reused:
+            self.get_logger().info(
+                f"🔗 Speaker '{name}' merged into existing profile (id={sid[:8]}) "
+                "— voice matched an already-known speaker, no duplicate created"
+            )
+        else:
+            self.get_logger().info(f"✅ Speaker '{name}' registered (id={sid[:8]})")
+        # Issue #1787 — новый профиль сразу получает внутреннюю кличку.
+        self._ensure_epithet(sid)
+        # Publish a registration-ack so dialogue_node can confirm verbally
+        ack = String()
+        ack.data = json.dumps(
+            {"event": "registered", "name": name, "speaker_id": sid, "reused_profile": reused},
+            ensure_ascii=False,
+        )
+        self._result_pub.publish(ack)
+
+    # ── Эпитеты (issue #1787) ─────────────────────────────────────────────────
+
+    def _on_observe_request(self, msg: String) -> None:
+        """Принять реплику известного спикера — вход для выбора эпитета.
+
+        Expected JSON: ``{"speaker_id": "<uuid>", "text": "..."}``.
+
+        Сама обработка уходит в тот же однопоточный executor, что и
+        инференс: SQLite-соединение открыто с ``check_same_thread=False``,
+        и параллельные записи из ROS-колбэка и из ``_do_register``
+        конкурировали бы за один коннект. Один воркер = сериализация без
+        отдельного мьютекса на БД.
+        """
+        try:
+            data = json.loads(msg.data or "{}")
+        except (json.JSONDecodeError, TypeError):
+            self.get_logger().warning("⚠️ observe_request: invalid JSON ignored")
+            return
+        speaker_id = str(data.get("speaker_id", "")).strip()
+        text = str(data.get("text", "")).strip()
+        if not speaker_id or not text:
+            return
+        self._executor.submit(self._process_observation, speaker_id, text)
+
+    def _process_observation(self, speaker_id: str, text: str) -> None:
+        """Обновить темы спикера и, если есть повод, пересмотреть кличку."""
+        try:
+            with self._speech_log_lock:
+                window = self._speech_log.setdefault(
+                    speaker_id, collections.deque(maxlen=50)
+                )
+                window.append(text)
+                messages = list(window)
+
+            profile = self._db.get_speaker_profile(speaker_id)
+            if profile is None:
+                # Спикера удалили/слили между публикацией и обработкой.
+                return
+
+            tags = epithets.extract_tags(messages)
+            sentiment = epithets.score_sentiment(messages)
+            if tags:
+                self._db.update_speaker_stats(
+                    speaker_id,
+                    tags=[t.cluster for t in tags],
+                    sentiment_score=sentiment,
+                )
+            else:
+                self._db.update_speaker_stats(speaker_id, sentiment_score=sentiment)
+
+            if not profile["epithet"]:
+                # Кличка ещё не назначена (или профиль старше миграции) —
+                # ставим сразу, не дожидаясь накопления тем (research §5.1,
+                # вариант 2: юзер получает кличку немедленно, она может
+                # уточниться позже).
+                self._assign_epithet(
+                    speaker_id,
+                    tags,
+                    sentiment,
+                    epithets.REASON_FIRST_SEEN,
+                    messages=messages,
+                )
+                return
+
+            # Пересмотр — только при новой доминирующей теме И не чаще
+            # раза в MIN_REVIEW_INTERVAL_DAYS (research §4.1: стабильность
+            # клички важнее реактивности).
+            if not epithets.should_review(profile["last_epithet_review"], time.time()):
+                return
+            new_topic = epithets.find_distinctive_topic(profile["tags"], tags)
+            if not new_topic:
+                return
+            # Кличку берём из НОВОЙ темы, а не из общего топа: старая тема
+            # часто ещё лидирует по количеству упоминаний в окне (человек
+            # не перестаёт говорить о прежнем разом), и без этой
+            # перестановки пересмотр выдавал кандидата из того же
+            # кластера — то есть ту же самую кличку.
+            ordered = [t for t in tags if t.cluster == new_topic]
+            ordered += [t for t in tags if t.cluster != new_topic]
+            self._assign_epithet(
+                speaker_id,
+                ordered,
+                sentiment,
+                f"{epithets.REASON_NEW_TOPIC}:{new_topic}",
+                messages=messages,
+            )
+        except Exception as exc:  # noqa: BLE001
+            # Эпитет — вспомогательная метка. Любой сбой здесь не должен
+            # ронять воркер, который в следующий момент считает эмбеддинг.
+            self.get_logger().warning(
+                f"⚠️ [issue 1787] observe failed for {speaker_id[:8]}: "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+    def _assign_epithet(
+        self,
+        speaker_id: str,
+        tags,
+        sentiment: float,
+        reason: str,
+        messages: Optional[list] = None,
+    ) -> Optional[str]:
+        """Слой 1 гибрида: подобрать свободную кличку из словаря.
+
+        ``taken_epithets(exclude_speaker_id=…)`` — то самое место, где
+        закрывается коллизия тёзок: кандидат не может совпасть ни с одной
+        уже выданной кличкой.
+
+        Записав словарного кандидата, узел просит LLM придумать своё
+        слово (слой 2). Порядок именно такой — сначала пишем, потом
+        спрашиваем: словарь отвечает мгновенно и офлайн, поэтому робот
+        никогда не остаётся без клички, даже если LLM недоступна или
+        вернёт мусор.
+        """
+        candidate = epithets.choose_epithet(
+            tags,
+            speaker_id=speaker_id,
+            taken=self._db.taken_epithets(exclude_speaker_id=speaker_id),
+            sentiment=sentiment,
+        )
+        if not self._db.set_epithet(speaker_id, candidate.label, reason):
+            return None
+        self.get_logger().info(
+            f"🔤 [issue 1787] Эпитет {speaker_id[:8]} → {candidate.label!r} "
+            f"(кластер={candidate.source_cluster}, {reason})"
+        )
+        self._request_llm_epithet(speaker_id, candidate, messages or [])
+        return candidate.label
+
+    def _request_llm_epithet(self, speaker_id: str, candidate, messages: list) -> None:
+        """Попросить dialogue_node придумать кличку через LLM (слой 2)."""
+        pub = getattr(self, "_epithet_request_pub", None)
+        if pub is None:
+            return
+        try:
+            msg = String()
+            msg.data = json.dumps(
+                {
+                    "speaker_id": speaker_id,
+                    "fallback": candidate.label,
+                    "cluster": candidate.source_cluster,
+                    "hints": list(
+                        epithets.EPITHET_LEXICON.get(
+                            candidate.source_cluster, epithets.DEFAULT_POOL_NEUTRAL
+                        )[:3]
+                    ),
+                    "messages": [m for m in messages[-5:] if m],
+                },
+                ensure_ascii=False,
+            )
+            pub.publish(msg)
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(
+                f"⚠️ [issue 1787] epithet_request publish failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+    def _on_epithet_result(self, msg: String) -> None:
+        """Принять кличку, придуманную LLM, и применить её после проверки.
+
+        Expected JSON: ``{"speaker_id": "<uuid>", "epithet": "Кулибин"}``.
+
+        Всё, что не прошло ``sanitize_llm_epithet`` (фраза вместо слова,
+        цифры, уже занятая кличка), молча отбрасывается — в профиле
+        остаётся словарный кандидат. Это единственное разумное поведение:
+        текст пришёл из модели, которую попросили «придумать слово», и
+        доверять ему как команде нельзя.
+        """
+        try:
+            data = json.loads(msg.data or "{}")
+        except (json.JSONDecodeError, TypeError):
+            self.get_logger().warning("⚠️ epithet result: invalid JSON ignored")
+            return
+        speaker_id = str(data.get("speaker_id", "")).strip()
+        raw = data.get("epithet")
+        if not speaker_id:
+            return
+
+        label = epithets.sanitize_llm_epithet(
+            raw, taken=self._db.taken_epithets(exclude_speaker_id=speaker_id)
+        )
+        if not label:
+            self.get_logger().info(
+                f"🔤 [issue 1787] LLM-кличка {raw!r} отклонена — "
+                f"остаётся словарная у {speaker_id[:8]}"
+            )
+            return
+        if self._db.set_epithet(speaker_id, label, epithets.REASON_LLM):
+            self.get_logger().info(
+                f"🔤 [issue 1787] LLM переименовала {speaker_id[:8]} → {label!r}"
+            )
+
+    def _ensure_epithet(self, speaker_id: str) -> None:
+        """Выдать кличку сразу при регистрации, если её ещё нет.
+
+        Без этого новый профиль жил бы без эпитета до первой реплики,
+        прилетевшей в ``/voice/speaker/observe`` — а регистрация как раз
+        и есть момент, когда робот впервые «знакомится» с голосом.
+        """
+        try:
+            if self._db.get_epithet(speaker_id):
+                return
+            with self._speech_log_lock:
+                messages = list(self._speech_log.get(speaker_id, ()))
+            self._assign_epithet(
+                speaker_id,
+                epithets.extract_tags(messages),
+                epithets.score_sentiment(messages),
+                epithets.REASON_FIRST_SEEN,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(
+                f"⚠️ [issue 1787] Не удалось назначить эпитет "
+                f"{speaker_id[:8]}: {type(exc).__name__}: {exc}"
+            )
+
+    def _publish_result(self, match: Optional[SpeakerMatch]) -> None:
+        """Serialise and publish the speaker identification result."""
+        if match:
+            payload = {
+                "is_known": True,
+                "speaker_id": match.speaker_id,
+                "name": match.name,
+                "confidence": round(match.confidence, 4),
+                # Issue #1787 — внутренняя кличка. None до первой реплики
+                # (профиль из старой БД) — потребитель обязан это терпеть.
+                "epithet": match.epithet,
+            }
+            self.get_logger().info(
+                f"📢 Publishing: is_known=true name={match.name!r} "
+                f"epithet={match.epithet!r} conf={match.confidence:.3f}"
+            )
+        else:
+            payload = {"is_known": False}
+            self.get_logger().info("📢 Publishing: is_known=false")
+
+        msg = String()
+        msg.data = json.dumps(payload, ensure_ascii=False)
+        self._result_pub.publish(msg)
+
+    # ── Lifecycle ─────────────────────────────────────────────────────────────
+
+    def destroy_node(self) -> None:
+        if hasattr(self, "_executor"):
+            self._executor.shutdown(wait=False)
+        if hasattr(self, "_db"):
+            self._db.close()
+        super().destroy_node()
+
+
+def main(args=None) -> None:
+    rclpy.init(args=args)
+    node = SpeakerIdNode()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()

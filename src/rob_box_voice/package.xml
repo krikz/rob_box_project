@@ -1,0 +1,46 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>rob_box_voice</name>
+  <version>0.1.0</version>
+  <description>AI Voice Assistant for ROBBOX autonomous rover</description>
+  <maintainer email="kukoreken@rob-box.local">krikz</maintainer>
+  <license>MIT</license>
+  <author email="kukoreken@rob-box.local">krikz</author>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <!-- Core ROS2 dependencies -->
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>audio_common_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <exec_depend>action_msgs</exec_depend>
+  <exec_depend>aiohttp</exec_depend>
+
+  <!-- Python dependencies (installed via pip in Dockerfile) -->
+  <!-- Note: python3-pyaudio not available in ARM64 repos, installed via pip -->
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-httpx</exec_depend>
+  <!-- Decoder used by audio_transcode.py for MiniMax MP3/OGG payloads. -->
+  <exec_depend>ffmpeg</exec_depend>
+
+  <!-- tts_node imports the shared TTS contract/provider for MiniMax; the
+       runtime ImportError fallback still keeps yandex/silero importable in
+       minimal developer environments. -->
+  <exec_depend>rob_box_core</exec_depend>
+  <exec_depend>rob_box_harness</exec_depend>
+  <exec_depend>rob_box_llm</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

@@ -1,0 +1,77 @@
+%% docs/diagrams/minimax-tts-ros2-dataflow.mmd
+%% Спецификация: docs/architecture/ros2-audio-contract-spec.md §1, §4
+%% Kanban task: t_9bb85faf
+%% Поток данных от MiniMax T2A API до физического динамика ROS2-ноды.
+%% Это dataflow (flowchart), а не sequence — фокус на нодах и трансформациях.
+flowchart LR
+    %% === External: MiniMax API ===
+    subgraph EXT["MiniMax T2A v2 API (api.minimax.io)"]
+        direction TB
+        API_REQ["HTTP POST /v1/t2a_v2<br/>audio_setting{format=pcm,<br/>sample_rate=32000,<br/>channel=1}"]
+        API_RESP["JSON response<br/>data.audio: hex PCM<br/>extra_info.audio_sample_rate: actual<br/>extra_info.audio_format: actual"]
+        API_REQ -->|"JSON body<br/>Bearer + GroupId"| API_RESP
+    end
+
+    %% === rob_box_llm package ===
+    subgraph LLM["rob_box_llm package (Python)"]
+        direction TB
+        PROV["MiniMaxTTSProvider<br/>(src/rob_box_llm/rob_box_llm/providers/minimax_tts.py)"]
+        DEC["_decode_audio()<br/>hex → int16 LE<br/>или MP3/WAV/OGG → float32"]
+        AUDIO_OBJ["TTSAudio(<br/>  samples: bytes,<br/>  sample_rate: actual,<br/>  format: PCM<br/>)"]
+
+        PROV -->|"HTTP/SSE"| API_REQ
+        API_RESP -->|"httpx"| PROV
+        PROV --> DEC
+        DEC --> AUDIO_OBJ
+    end
+
+    %% === rob_box_voice / tts_node: конверсия ===
+    subgraph NODE["tts_node (rob_box_voice)"]
+        direction TB
+        RESAMPLE["_normalize_audio_to_topic_sr()<br/>resample actual_sr → 16 kHz<br/>(scipy / librosa)"]
+        SERIALIZE["float32 → int16 LE bytes<br/>validate: len % 2 == 0"]
+        MSG_BUILD["AudioData()<br/>data: bytes"]
+        PUB["self.audio_pub<br/>(audio_qos_reliability,<br/>best_effort, depth=10)"]
+
+        AUDIO_OBJ --> RESAMPLE
+        RESAMPLE --> SERIALIZE
+        SERIALIZE --> MSG_BUILD
+        MSG_BUILD --> PUB
+    end
+
+    %% === ROS bus ===
+    subgraph BUS["ROS 2 DDS bus"]
+        direction TB
+        TOPIC["/voice/audio/speech<br/>type: audio_common_msgs/AudioData<br/>QoS: best_effort, volatile,<br/>KEEP_LAST(10)"]
+    end
+
+    %% === In-process playback + external consumers ===
+    subgraph PLAY["Playback (in-process)"]
+        direction TB
+        SINK["AudioPlaybackManager<br/>(sounddevice direct sink,<br/>block_size aligned to 20 ms)"]
+        SPK["Динамик (ReSpeaker / hw)"]
+        SINK --> SPK
+    end
+
+    PUB -->|"publish()"| TOPIC
+    TOPIC -.->|"(internal ROS bridge<br/>для логирования/record)"| EXTLOG[("ros2 bag record<br/>external consumer")]
+
+    %% --- Critical conversion points (annotated) ---
+    AUDIO_OBJ -.->|"① TTSAudio<br/>(actual_sr)"| RESAMPLE
+    RESAMPLE -.->|"② 16 kHz float32<br/>(target_sr)"| SERIALIZE
+    SERIALIZE -.->|"③ int16 LE bytes<br/>(len % 2 == 0)"| MSG_BUILD
+    MSG_BUILD -.->|"④ AudioData{data: bytes}"| TOPIC
+    TOPIC -.->|"⑤ raw PCM<br/>(sample_rate = 16 kHz по контракту)"| SINK
+
+    %% --- Mismatch paths (highlighted) ---
+    RESAMPLE -.->|"if actual_sr != 16 kHz<br/>→ scipy.signal.resample_poly<br/>НЕ metadata rewrite!"| RESAMPLE
+    DEC -.->|"if format == mp3/wav/ogg<br/>→ ffmpeg transcode → float32<br/>else error"| DEC
+    SERIALIZE -.->|"if len % 2 != 0<br/>→ TTSError (no silent fix)"| SERIALIZE
+
+    %% --- Static vs voice-varying (legend) ---
+    classDef static fill:#e1f5e1,stroke:#2e7d32,color:#000
+    classDef varying fill:#fff3cd,stroke:#f57c00,color:#000
+    classDef mismatch fill:#fde0dc,stroke:#c62828,color:#000,stroke-dasharray: 5 3
+
+    class API_REQ,API_RESP,PROV,DEC,RESAMPLE,SERIALIZE,MSG_BUILD,PUB,SINK,SPK,TOPIC static
+    class AUDIO_OBJ varying

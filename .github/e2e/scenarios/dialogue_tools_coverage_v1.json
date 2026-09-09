@@ -1,0 +1,184 @@
+{
+  "name": "dialogue_tools_coverage_v1",
+  "stability": "new-unproven",
+  "_stability_comment": "Первый прогон не выполнялся. ADR-0018: до зелёного прогона считать статус неизвестным.",
+  "description": "Покрытие инструментов харнеса, которых НЕ касался ни один существующий e2e-сценарий. Из 52 зарегистрированных тулов до этой сьюты покрыты были 30. Здесь — безопасная (не двигающая робота) часть непокрытых. Движение и картография вынесены в dialogue_motion_coverage_v1.json, известные недоделки — в dialogue_gap_probe_v1.json. Эта сьюта ДОЛЖНА быть зелёной: все проверяемые тулы существуют и реализованы.",
+  "steps": [
+    {
+      "label": "tc01_memory_search",
+      "voice": "anton",
+      "text": "Робот, запомни что я люблю зелёный чай без сахара",
+      "patterns": ["memory_save"],
+      "acceptance": {
+        "expected_tool_calls": ["memory_save"],
+        "must_not_call": [],
+        "_comment": "Подготовка данных для tc02. Отдельный шаг, чтобы падение поиска не путалось с падением записи."
+      }
+    },
+    {
+      "label": "tc02_memory_search_recall",
+      "voice": "anton",
+      "text": "Робот, поищи в своей памяти что я говорил про чай",
+      "patterns": ["memory_search"],
+      "acceptance": {
+        "expected_tool_calls": ["memory_search"],
+        "must_not_call": [],
+        "_comment": "memory_search не покрыт НИ ОДНИМ существующим сценарием. Проверяем именно поиск, а не memory_context (тот подмешивается автоматически). Если LLM ответит из контекста без вызова тула — это тоже находка: значит тул недостижим на практике."
+      }
+    },
+    {
+      "label": "tc03_faq_search",
+      "voice": "anton",
+      "text": "Робот, что ты умеешь делать, расскажи по пунктам",
+      "patterns": ["faq_search"],
+      "acceptance": {
+        "expected_tool_calls": [],
+        "must_not_call": [],
+        "_comment": "faq_search не покрыт. expected_tool_calls пуст намеренно: тул срабатывает только при загруженном FAQ-профиле (faq_mode_enabled). Если в логе нет ни faq_search, ни признака загруженного профиля — значит FAQ-режим в этой сборке мёртв, и это результат прогона, а не провал."
+      }
+    },
+    {
+      "label": "tc04_perception_context",
+      "voice": "anton",
+      "text": "Робот, что ты сейчас видишь вокруг себя",
+      "patterns": ["get_perception_context"],
+      "acceptance": {
+        "expected_tool_calls": ["get_perception_context"],
+        "must_not_call": [],
+        "_comment": "Не покрыт. Зависит от живой камеры/детектора: при отсутствии источника тул обязан вернуть пустой, но валидный контекст, а не уронить турн."
+      }
+    },
+    {
+      "label": "tc05_sound_info",
+      "voice": "anton",
+      "text": "Робот, какие звуки ты умеешь проигрывать",
+      "patterns": ["get_sound_info"],
+      "acceptance": {
+        "expected_tool_calls": ["get_sound_info"],
+        "must_not_call": [],
+        "_comment": "Не покрыт. play_sound покрыт, а перечисление доступных звуков — нет."
+      }
+    },
+    {
+      "label": "tc06_music_state_idle",
+      "voice": "anton",
+      "text": "Робот, играет ли сейчас музыка",
+      "patterns": ["get_music_state"],
+      "acceptance": {
+        "expected_tool_calls": ["get_music_state"],
+        "must_not_call": ["execute_music_code"],
+        "_comment": "Не покрыт. must_not_call execute_music_code принципиален: в мастер-промпте есть правило «get_music_state только для ПРОВЕРКИ, он НЕ запускает музыку». Если LLM на вопрос о состоянии начинает играть — это регрессия правила."
+      }
+    },
+    {
+      "label": "tc07_search_samples",
+      "voice": "anton",
+      "text": "Робот, найди в своей библиотеке семплы барабанов",
+      "patterns": ["search_samples"],
+      "acceptance": {
+        "expected_tool_calls": ["search_samples"],
+        "must_not_call": [],
+        "_comment": "Не покрыт. Тул упоминается в §4.1 спека как часть research перед сетом, но ни один сценарий его не трогал."
+      }
+    },
+    {
+      "label": "tc08_save_track",
+      "voice": "anton",
+      "text": "Робот, сыграй короткий бит на рендардо и сохрани его как трек тестбит",
+      "patterns": ["execute_music_code", "save_track"],
+      "acceptance": {
+        "expected_tool_calls": ["save_track"],
+        "must_not_call": [],
+        "_comment": "save_track не покрыт. Двухшаговое намерение (сыграть + сохранить) проверяет заодно, что LLM не теряет вторую половину запроса."
+      }
+    },
+    {
+      "label": "tc09_list_tracks",
+      "voice": "anton",
+      "text": "Робот, покажи список сохранённых треков",
+      "patterns": ["list_tracks"],
+      "acceptance": {
+        "expected_tool_calls": ["list_tracks"],
+        "must_not_call": [],
+        "_comment": "Не покрыт. Должен увидеть тестбит из tc08."
+      }
+    },
+    {
+      "label": "tc10_load_track",
+      "voice": "anton",
+      "text": "Робот, загрузи и включи трек тестбит",
+      "patterns": ["load_track"],
+      "acceptance": {
+        "expected_tool_calls": ["load_track"],
+        "must_not_call": [],
+        "_comment": "Не покрыт."
+      }
+    },
+    {
+      "label": "tc11_stop_after_load",
+      "voice": "anton",
+      "text": "Робот, останови музыку",
+      "patterns": ["stop_music"],
+      "acceptance": {
+        "expected_tool_calls": ["stop_music"],
+        "must_not_call": [],
+        "_comment": "Гигиена: гарантируем тишину до следующих шагов, иначе музыка испортит распознавание."
+      }
+    },
+    {
+      "label": "tc12_delete_track",
+      "voice": "anton",
+      "text": "Робот, удали трек тестбит из сохранённых",
+      "patterns": ["delete_track"],
+      "acceptance": {
+        "expected_tool_calls": ["delete_track"],
+        "must_not_call": [],
+        "_comment": "Не покрыт. Замыкает жизненный цикл save → list → load → delete, чтобы прогон не оставлял мусор."
+      }
+    },
+    {
+      "label": "tc13_estimate_tts_duration",
+      "voice": "anton",
+      "text": "Робот, скажи сколько секунд займёт если ты прочитаешь вслух первый куплет любой песни",
+      "patterns": ["estimate_tts_duration"],
+      "acceptance": {
+        "expected_tool_calls": [],
+        "must_not_call": [],
+        "_comment": "Не покрыт. expected_tool_calls пуст: тул служебный, планировщик зовёт его сам, а LLM по своей воле почти никогда. Смысл шага — увидеть в логе, зовётся ли он вообще хоть кем-то. Если за весь прогон ноль вызовов — тул мёртвый, и это находка."
+      }
+    },
+    {
+      "label": "tc14_list_waypoints",
+      "voice": "anton",
+      "text": "Робот, перечисли все точки которые ты запомнил",
+      "patterns": ["list_waypoints"],
+      "acceptance": {
+        "expected_tool_calls": ["list_waypoints"],
+        "must_not_call": ["navigate_to_waypoint", "move_direction"],
+        "_comment": "Не покрыт. must_not_call критичен по безопасности: вопрос о списке точек НЕ должен приводить к движению робота."
+      }
+    },
+    {
+      "label": "tc15_save_then_delete_waypoint",
+      "voice": "anton",
+      "text": "Робот, запомни эту точку как тестточка",
+      "patterns": ["save_waypoint"],
+      "acceptance": {
+        "expected_tool_calls": ["save_waypoint"],
+        "must_not_call": ["move_direction", "navigate_to_waypoint"],
+        "_comment": "save_waypoint покрыт, но только в связке. Здесь — подготовка к tc16."
+      }
+    },
+    {
+      "label": "tc16_delete_waypoint",
+      "voice": "anton",
+      "text": "Робот, удали точку тестточка",
+      "patterns": ["delete_waypoint"],
+      "acceptance": {
+        "expected_tool_calls": ["delete_waypoint"],
+        "must_not_call": ["clear_waypoints"],
+        "_comment": "delete_waypoint не покрыт. must_not_call clear_waypoints — защита: удаление ОДНОЙ точки не должно вычищать всю базу точек оператора. clear_waypoints намеренно НЕ проверяется этой сьютой (разрушает пользовательские данные) — его покрытие только ручное."
+      }
+    }
+  ]
+}

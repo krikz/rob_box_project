@@ -1,0 +1,29 @@
+# Joystick Control Configuration for Rob Box
+# ExpressLRS Joystick HID mapping
+
+joystick_control_node:
+  ros__parameters:
+    # Device settings
+    device_path: "/dev/input/js0"
+    device_name: "ExpressLRS Joystick"
+    check_interval: 2.0  # seconds
+
+    # Joystick mapping (zero-indexed)
+    # ExpressLRS typical mapping:
+    # Axes: 0=Roll, 1=Pitch, 2=Throttle, 3=Yaw
+    # Buttons: varies by controller
+    axis_linear_x: 1      # Pitch (forward/backward)
+    axis_angular_z: 4     # Yaw (left/right rotation) - ПРОТЕСТИРОВАНО!
+    
+    # Enable button (HOLD to drive, release to stop)
+    enable_button: 0      # Кнопка безопасности - ДЕРЖАТЬ ЗАЖАТОЙ для управления
+
+    # Speed limits (ПРОТЕСТИРОВАННЫЕ ЗНАЧЕНИЯ из старого скрипта!)
+    max_linear_speed: 1.0   # m/s (scale_linear.x: -1.0)
+    max_angular_speed: 15.0  # rad/s (scale_angular.yaw: 15.0)
+    
+    # Deadzone to prevent drift
+    deadzone: 0.1
+    
+    # Voice feedback
+    enable_voice_feedback: true

@@ -1,0 +1,35 @@
+# SetAvatarMode.srv — typed avatar-mode transition (ADR-0028 §4.1 / §4.3)
+#
+# `mode` is the TARGET avatar mode, not an FSM event name. This is the
+# wire contract fixed by docs/architecture/meta-quest-api.md §3 (frame
+# `0x30 SET_MODE` — msgpack `{client_id, mode: "off"|"telegram_active"|
+# "avatar_present"|"mixed"}`) and by ADR-0028 §4.3, whose response field
+# is named `actual_mode` — i.e. the request asks for a mode and the
+# server answers with the one it actually reached.
+#
+# The server keeps the event vocabulary to itself: `_target_mode_to_event`
+# in supervisor_node maps (current_mode, target_mode) → `core.fsm.EVENT_*`
+# and feeds that to ModeManager, which stays an event automaton. Clients
+# must NOT know event names — the same event means different transitions
+# depending on the current mode (`quest_release` is `avatar_present → off`
+# but `mixed → telegram_active`), so an event on the wire is ambiguous
+# without the client mirroring the server's FSM.
+#
+# Requesting the mode the FSM is already in is an idempotent no-op
+# (`success=true, applied=true`). A target that is not reachable from the
+# current mode in one step (e.g. `off → mixed`, which needs two clients)
+# is refused with `reason="conflict"` — the FSM is never forced through
+# an intermediate state on the client's behalf.
+
+string client_id
+string mode          # target avatar mode: "off" | "telegram_active" |
+                     # "avatar_present" | "mixed"
+
+---
+
+bool   success
+string mode          # avatar mode AFTER the transition (echo of
+                     # ModeManager.mode.value). Lets clients observe the
+                     # FSM without subscribing to /avatar/state.
+string reason        # "applied", "conflict", "bad_request", "monitor"
+bool   applied       # false in monitor mode (ADR-0028 §4.5)

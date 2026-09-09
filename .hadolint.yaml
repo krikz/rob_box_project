@@ -1,0 +1,27 @@
+# hadolint configuration for rob_box_project
+# Dockerfile linter configuration
+# Used by GitHub Actions lint workflow
+
+# Игнорируемые правила (с объяснением почему)
+ignored:
+  - DL3008  # Pin versions in apt-get install
+            # Причина: ROS packages часто не имеют фиксированных версий
+            # Мы полагаемся на версию базового образа (ros:humble-ros-base)
+  
+  - DL3009  # Delete the apt-get lists after installing
+            # Причина: Уже обработано в базовых образах
+  
+  - DL3015  # Avoid additional packages by specifying --no-install-recommends
+            # Причина: Некоторые ROS зависимости требуют recommended packages
+  
+  - SC2086  # Double quote to prevent globbing and word splitting
+            # Причина: Shell scripts в RUN commands иногда требуют globbing
+
+# Доверенные реестры образов
+trustedRegistries:
+  - docker.io          # Docker Hub (официальные образы)
+  - ghcr.io            # GitHub Container Registry (наши образы)
+  - registry.hub.docker.com  # Альтернативный URL Docker Hub
+
+# Уровень строгости (error, warning, info, style)
+failure-threshold: warning

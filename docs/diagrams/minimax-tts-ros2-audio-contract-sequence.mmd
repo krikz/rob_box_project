@@ -1,0 +1,41 @@
+%% docs/diagrams/minimax-tts-ros2-audio-contract-sequence.mmd
+%% ADR-0007 / sub-fragment 0007b: MiniMax TTS ↔ ROS 2 audio contract
+sequenceDiagram
+    autonumber
+    actor Caller as caller (dialogue_node / MCP)
+    participant TTS as tts_node
+    participant P as MiniMaxTTSProvider
+    participant MM as MiniMax T2A v2
+    participant Topic as /voice/audio/speech
+    participant Play as audio_play_node (logical consumer)
+    participant HW as AudioPlaybackManager / ReSpeaker
+
+    Caller->>TTS: Reliable /voice/dialogue/response
+    TTS->>P: synthesize(text, TTSSettings)
+    P->>MM: POST /v1/t2a_v2 (audio_setting)
+    MM-->>P: hex PCM + actual sample_rate
+    P-->>TTS: TTSAudio(bytes, actual_sr)
+    TTS->>TTS: decode int16 LE; resample actual_sr → 16 kHz
+    TTS->>TTS: validate mono, signed PCM, even byte count
+
+    alt sync (legacy v1)
+        TTS->>Topic: AudioData{data: raw pcm_s16le}
+        Note over Topic: Best Effort + Volatile + KEEP_LAST(10)
+        Topic-->>Play: one bounded legacy message
+    else streaming (opt-in)
+        loop every 20 ms
+            TTS->>Topic: AudioData chunk (640 bytes)
+            Note over TTS,Topic: bounded queue; drop stale chunks on overflow
+            Topic-->>Play: chunk; detect sequence gaps
+        end
+        opt metadata topic enabled
+            TTS->>Topic: /voice/audio/speech_meta (header, stamp, seq, 16kHz, mono)
+        end
+    end
+
+    Play->>HW: PCM playback (or separate audio_play_node)
+    HW-->>Caller: /voice/tts/finished
+
+    Note over Caller,TTS: Commands/control use Reliable + Volatile
+    Note over TTS,Play: STOP/barge-in clears playback and drops old dialogue_id
+    Note over TTS,Topic: no unbounded DDS backpressure; timeout/error is explicit

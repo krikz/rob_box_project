@@ -1,0 +1,23 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Scrape cAdvisor metrics from Main Pi
+  - job_name: 'cadvisor-main'
+    static_configs:
+      - targets: ['localhost:8080']
+        labels:
+          host: 'main-pi'
+
+  # Scrape cAdvisor metrics from Vision Pi
+  - job_name: 'cadvisor-vision'
+    static_configs:
+      - targets: ['10.1.1.11:8080']
+        labels:
+          host: 'vision-pi'
+
+  # Scrape Prometheus itself
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']

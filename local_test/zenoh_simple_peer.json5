@@ -1,0 +1,25 @@
+{
+  // Simple peer mode connection to Main Pi router
+  // With listen capability for incoming connections
+  
+  mode: "peer",
+  
+  connect: {
+    endpoints: ["tcp/10.1.1.10:7447"]
+  },
+  
+  listen: {
+    // Listen on any free port on localhost for incoming connections
+    endpoints: ["tcp/localhost:0"]
+  },
+  
+  scouting: {
+    multicast: {
+      enabled: false  // Don't use multicast, only explicit connection
+    },
+    gossip: {
+      enabled: true,  // Enable gossip for peer discovery
+      autoconnect: ["router", "peer"]
+    }
+  }
+}

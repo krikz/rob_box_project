@@ -1,0 +1,34 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>rob_box_telegram</name>
+  <version>0.1.0</version>
+  <description>Telegram bot operator interface for Rob Box autonomous rover</description>
+  <maintainer email="kukoreken@rob-box.local">krikz</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>rob_box_core</depend>
+  <!-- AV-14 (issue #1906): single codec for /avatar/state lives in
+       rob_box_supervisor.core.state (encode_for_ros_string /
+       decode_from_ros_string). We only import the pure-Python module
+       (no rclpy transitively required), but ament still needs the
+       package to be a build/run-time peer of rob_box_telegram. -->
+  <exec_depend>rob_box_supervisor</exec_depend>
+  <exec_depend>audio_common_msgs</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

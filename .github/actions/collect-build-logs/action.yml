@@ -1,0 +1,107 @@
+name: 'Collect Build Error Logs'
+description: 'Собирает логи ошибок сборки Docker и создает артефакт'
+inputs:
+  job-name:
+    description: 'Название job для идентификации'
+    required: true
+  build-output:
+    description: 'Вывод сборки Docker'
+    required: false
+    default: ''
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Create logs directory
+      shell: bash
+      run: mkdir -p build-logs
+
+    - name: Collect Docker build errors
+      shell: bash
+      if: failure()
+      run: |
+        # Создаем уникальный лог файл для этого job
+        LOG_FILE="build-logs/${{ inputs.job-name }}-$(date +%Y%m%d-%H%M%S).log"
+        
+        echo "=== Build Error Log ===" > "$LOG_FILE"
+        echo "Job: ${{ inputs.job-name }}" >> "$LOG_FILE"
+        echo "Time: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> "$LOG_FILE"
+        echo "Branch: ${GITHUB_REF#refs/heads/}" >> "$LOG_FILE"
+        echo "Commit: ${GITHUB_SHA}" >> "$LOG_FILE"
+        echo "========================" >> "$LOG_FILE"
+        echo "" >> "$LOG_FILE"
+        
+        # Если есть вывод сборки, сохраняем его
+        if [ -n "${{ inputs.build-output }}" ]; then
+          echo "${{ inputs.build-output }}" >> "$LOG_FILE"
+        fi
+        
+        # Собираем системные логи Docker
+        echo "=== Docker Info ===" >> "$LOG_FILE"
+        docker version >> "$LOG_FILE" 2>&1 || true
+        echo "" >> "$LOG_FILE"
+        
+        # Проверяем наличие контейнеров с ошибками
+        echo "=== Recent Docker Errors ===" >> "$LOG_FILE"
+        docker ps -a --filter "status=exited" --format "{{.ID}} {{.Image}} {{.Status}}" >> "$LOG_FILE" 2>&1 || true
+        echo "" >> "$LOG_FILE"
+        
+        # Создаем краткую сводку ошибок
+        SUMMARY_FILE="build-logs/ERROR-SUMMARY.txt"
+        if [ ! -f "$SUMMARY_FILE" ]; then
+          echo "=== Build Errors Summary ===" > "$SUMMARY_FILE"
+          echo "Generated: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> "$SUMMARY_FILE"
+          echo "Branch: ${GITHUB_REF#refs/heads/}" >> "$SUMMARY_FILE"
+          echo "Workflow: ${GITHUB_WORKFLOW}" >> "$SUMMARY_FILE"
+          echo "Run: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" >> "$SUMMARY_FILE"
+          echo "========================" >> "$SUMMARY_FILE"
+          echo "" >> "$SUMMARY_FILE"
+        fi
+        
+        echo "❌ Failed: ${{ inputs.job-name }}" >> "$SUMMARY_FILE"
+        
+        echo "✅ Log saved to: $LOG_FILE"
+        ls -lh build-logs/
+
+    - name: Upload build error logs
+      uses: actions/upload-artifact@v4
+      if: failure()
+      with:
+        name: build-logs-${{ inputs.job-name }}
+        path: build-logs/
+        retention-days: 30
+        if-no-files-found: warn
+
+    - name: Comment PR with error summary
+      uses: actions/github-script@v7
+      if: failure() && github.event_name == 'pull_request'
+      with:
+        script: |
+          const fs = require('fs');
+          const logFile = `build-logs/${{ inputs.job-name }}-*.log`;
+          
+          let comment = `## ❌ Build Failed: ${{ inputs.job-name }}\n\n`;
+          comment += `**Time:** ${new Date().toUTCString()}\n`;
+          comment += `**Branch:** ${context.ref.replace('refs/heads/', '')}\n`;
+          comment += `**Commit:** ${context.sha.substring(0, 7)}\n\n`;
+          comment += `### Error Logs\n`;
+          comment += `Download full logs from [workflow artifacts](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})\n\n`;
+          comment += `<details><summary>Quick Error Preview</summary>\n\n`;
+          comment += `\`\`\`\n`;
+          
+          // Пытаемся прочитать последние ошибки
+          try {
+            const logs = fs.readFileSync('build-logs/ERROR-SUMMARY.txt', 'utf8');
+            comment += logs.substring(0, 2000); // Ограничиваем размер
+          } catch (e) {
+            comment += 'Logs not available\n';
+          }
+          
+          comment += `\`\`\`\n</details>`;
+          
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: comment
+          });

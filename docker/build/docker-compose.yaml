@@ -1,0 +1,340 @@
+# Build Machine Docker Compose Configuration
+# Локальная инфраструктура для сборки Docker образов в локальной сети
+#
+# Компоненты:
+# - DeepSeek Proxy (LiteLLM) — OpenAI API для интеграционных тестов
+# - GitHub Actions self-hosted runner - выполняет workflow локально
+# - Docker Registry - локальное хранилище Docker образов
+# - apt-cacher-ng - кэш APT пакетов для ускорения сборки
+
+services:
+  # Docker Registry - локальное хранилище образов
+  # Доступ: http://<build-machine-ip>:5000
+  registry:
+    image: registry:2.8.3
+    container_name: build-registry
+    network_mode: host
+    volumes:
+      - ./data/registry:/var/lib/registry
+      - ./config/registry-config.yml:/etc/docker/registry/config.yml:ro
+    environment:
+      - REGISTRY_HTTP_ADDR=0.0.0.0:5000
+      - REGISTRY_STORAGE_DELETE_ENABLED=true
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:5000/v2/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # APT Cacher NG - кэш пакетов для ускорения apt-get install с поддержкой параллельных сборок
+  # Доступ: http://<build-machine-ip>:3142
+  # ИЗМЕНЕНО: используем sameersbn/apt-cacher-ng (популярный и стабильный образ)
+  # КРИТИЧНО: init: true обязателен для sameersbn образа (из документации)
+  apt-cacher-ng:
+    image: sameersbn/apt-cacher-ng:3.7.4-20220421
+    container_name: build-apt-cache
+    init: true  # ОБЯЗАТЕЛЬНО! Без этого контейнер падает
+    network_mode: host
+    volumes:
+      - ./data/apt-cache:/var/cache/apt-cacher-ng
+      # ВРЕМЕННО закомментировано: проверим с дефолтным конфигом sameersbn
+      # - ./config/acng.conf:/etc/apt-cacher-ng/acng.conf:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /var/run/apt-cacher-ng/pid || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # DeepSeek Proxy (LiteLLM) — OpenAI-совместимый API для тестов
+  # Проксирует запросы к DeepSeek API, подставляя ключ из .env.secrets.
+  # Тестовые контейнеры обращаются на localhost:4000/v1 без знания ключа.
+  deepseek-proxy:
+    image: ghcr.io/berriai/litellm:main-latest
+    container_name: build-deepseek-proxy
+    network_mode: host
+    env_file:
+      - .env.secrets
+    command: --model deepseek/deepseek-v4-flash --port 4000
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:4000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # GitHub Actions Self-Hosted Runners (множественные для параллельной работы)
+  # Регистрация: ./scripts/register_runner.sh
+  # Требует: GITHUB_TOKEN, GITHUB_OWNER, GITHUB_REPO в .env.secrets
+
+  # Runner 1 - основной
+  github-runner-1:
+    image: myoung34/github-runner:latest
+    container_name: build-github-runner-1
+    network_mode: host
+    privileged: true  # Требуется для Docker-in-Docker
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data/runner1:/runner
+      - /tmp:/tmp  # Для временных файлов сборки
+    env_file:
+      - .env.secrets
+      - .env.local  # Локальные настройки для базовых образов
+    environment:
+      - RUNNER_NAME=rob-box-build-machine-1
+      - RUNNER_WORKDIR=/runner/_work
+      - RUNNER_GROUP=default
+      - LABELS=self-hosted,Linux,X64,rob-box
+      - RUNNER_SCOPE=repo
+      - DISABLE_AUTO_UPDATE=false
+      - EPHEMERAL=false
+    restart: unless-stopped
+    depends_on:
+      - registry
+      - apt-cacher-ng
+
+  # Runner 2 - дополнительный
+  github-runner-2:
+    image: myoung34/github-runner:latest
+    container_name: build-github-runner-2
+    network_mode: host
+    privileged: true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data/runner2:/runner
+      - /tmp:/tmp
+    env_file:
+      - .env.secrets
+      - .env.local  # Локальные настройки для базовых образов
+    environment:
+      - RUNNER_NAME=rob-box-build-machine-2
+      - RUNNER_WORKDIR=/runner/_work
+      - RUNNER_GROUP=default
+      - LABELS=self-hosted,Linux,X64,rob-box
+      - RUNNER_SCOPE=repo
+      - DISABLE_AUTO_UPDATE=false
+      - EPHEMERAL=false
+    restart: unless-stopped
+    depends_on:
+      - registry
+      - apt-cacher-ng
+
+  # Runner 3 - дополнительный
+  github-runner-3:
+    image: myoung34/github-runner:latest
+    container_name: build-github-runner-3
+    network_mode: host
+    privileged: true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data/runner3:/runner
+      - /tmp:/tmp
+    env_file:
+      - .env.secrets
+      - .env.local  # Локальные настройки для базовых образов
+    environment:
+      - RUNNER_NAME=rob-box-build-machine-3
+      - RUNNER_WORKDIR=/runner/_work
+      - RUNNER_GROUP=default
+      - LABELS=self-hosted,Linux,X64,rob-box
+      - RUNNER_SCOPE=repo
+      - DISABLE_AUTO_UPDATE=false
+      - EPHEMERAL=false
+    restart: unless-stopped
+    depends_on:
+      - registry
+      - apt-cacher-ng
+
+  # Runner 4 - дополнительный
+  github-runner-4:
+    image: myoung34/github-runner:latest
+    container_name: build-github-runner-4
+    network_mode: host
+    privileged: true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data/runner4:/runner
+      - /tmp:/tmp
+    env_file:
+      - .env.secrets
+      - .env.local  # Локальные настройки для базовых образов
+    environment:
+      - RUNNER_NAME=rob-box-build-machine-4
+      - RUNNER_WORKDIR=/runner/_work
+      - RUNNER_GROUP=default
+      - LABELS=self-hosted,Linux,X64,rob-box
+      - RUNNER_SCOPE=repo
+      - DISABLE_AUTO_UPDATE=false
+      - EPHEMERAL=false
+    restart: unless-stopped
+    depends_on:
+      - registry
+      - apt-cacher-ng
+
+  # Runner 5 - дополнительный
+  github-runner-5:
+    image: myoung34/github-runner:latest
+    container_name: build-github-runner-5
+    network_mode: host
+    privileged: true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data/runner5:/runner
+      - /tmp:/tmp
+    env_file:
+      - .env.secrets
+      - .env.local  # Локальные настройки для базовых образов
+    environment:
+      - RUNNER_NAME=rob-box-build-machine-5
+      - RUNNER_WORKDIR=/runner/_work
+      - RUNNER_GROUP=default
+      - LABELS=self-hosted,Linux,X64,rob-box
+      - RUNNER_SCOPE=repo
+      - DISABLE_AUTO_UPDATE=false
+      - EPHEMERAL=false
+    restart: unless-stopped
+    depends_on:
+      - registry
+      - apt-cacher-ng
+
+  # Runner 6 - дополнительный
+  github-runner-6:
+    image: myoung34/github-runner:latest
+    container_name: build-github-runner-6
+    network_mode: host
+    privileged: true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data/runner6:/runner
+      - /tmp:/tmp
+    env_file:
+      - .env.secrets
+      - .env.local  # Локальные настройки для базовых образов
+    environment:
+      - RUNNER_NAME=rob-box-build-machine-6
+      - RUNNER_WORKDIR=/runner/_work
+      - RUNNER_GROUP=default
+      - LABELS=self-hosted,Linux,X64,rob-box
+      - RUNNER_SCOPE=repo
+      - DISABLE_AUTO_UPDATE=false
+      - EPHEMERAL=false
+    restart: unless-stopped
+    depends_on:
+      - registry
+      - apt-cacher-ng
+
+  # Runner 7 - дополнительный
+  github-runner-7:
+    image: myoung34/github-runner:latest
+    container_name: build-github-runner-7
+    network_mode: host
+    privileged: true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data/runner7:/runner
+      - /tmp:/tmp
+    env_file:
+      - .env.secrets
+      - .env.local  # Локальные настройки для базовых образов
+    environment:
+      - RUNNER_NAME=rob-box-build-machine-7
+      - RUNNER_WORKDIR=/runner/_work
+      - RUNNER_GROUP=default
+      - LABELS=self-hosted,Linux,X64,rob-box
+      - RUNNER_SCOPE=repo
+      - DISABLE_AUTO_UPDATE=false
+      - EPHEMERAL=false
+    restart: unless-stopped
+    depends_on:
+      - registry
+      - apt-cacher-ng
+
+  # Runner 8 - дополнительный
+  github-runner-8:
+    image: myoung34/github-runner:latest
+    container_name: build-github-runner-8
+    network_mode: host
+    privileged: true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data/runner8:/runner
+      - /tmp:/tmp
+    env_file:
+      - .env.secrets
+      - .env.local  # Локальные настройки для базовых образов
+    environment:
+      - RUNNER_NAME=rob-box-build-machine-8
+      - RUNNER_WORKDIR=/runner/_work
+      - RUNNER_GROUP=default
+      - LABELS=self-hosted,Linux,X64,rob-box
+      - RUNNER_SCOPE=repo
+      - DISABLE_AUTO_UPDATE=false
+      - EPHEMERAL=false
+    restart: unless-stopped
+    depends_on:
+      - registry
+      - apt-cacher-ng
+
+  # Runner E2E - отдельный раннер для e2e-тестов (не мешает билдам)
+  github-runner-e2e:
+    image: myoung34/github-runner:latest
+    container_name: build-github-runner-e2e
+    network_mode: host
+    privileged: true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data/runner-e2e:/runner
+      - /tmp:/tmp
+    env_file:
+      - .env.secrets
+      - .env.local
+    environment:
+      - RUNNER_NAME=rob-box-e2e-1
+      - RUNNER_WORKDIR=/runner/_work
+      - RUNNER_GROUP=default
+      - LABELS=e2e
+      - RUNNER_SCOPE=repo
+      - DISABLE_AUTO_UPDATE=false
+      - EPHEMERAL=false
+    restart: unless-stopped
+    depends_on:
+      - registry
+      - apt-cacher-ng
+
+  # Portainer - опциональный веб-интерфейс для управления
+  # Доступ: http://<build-machine-ip>:9000
+  # Отключен по умолчанию, раскомментируйте для использования
+  # portainer:
+  #   image: portainer/portainer-ce:latest
+  #   container_name: build-portainer
+  #   network_mode: host
+  #   volumes:
+  #     - /var/run/docker.sock:/var/run/docker.sock
+  #     - portainer-data:/data
+  #   restart: unless-stopped
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "wget -qO- http://localhost:9000/api/status || exit 1"]
+  #     interval: 30s
+  #     timeout: 5s
+  #     retries: 3
+
+  # Docker Registry UI - веб-интерфейс для просмотра образов в registry
+  # Доступ: http://<build-machine-ip>:8080
+  registry-ui:
+    image: joxit/docker-registry-ui:latest
+    container_name: build-registry-ui
+    network_mode: host
+    environment:
+      - REGISTRY_TITLE=Rob Box Local Registry
+      - REGISTRY_URL=http://localhost:5000
+      - DELETE_IMAGES=true
+      - SHOW_CONTENT_DIGEST=true
+      - SINGLE_REGISTRY=true
+    restart: unless-stopped
+    depends_on:
+      - registry
+
+volumes:
+  portainer-data:

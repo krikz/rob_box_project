@@ -1,0 +1,48 @@
+# Ambulance Emergency Lights Animation
+name: "ambulance"
+description: "Ambulance emergency lights with red flashing"
+version: "1.0"
+author: "rob_box"
+
+# Timing
+duration_ms: 2000
+loop: true
+fps: 10
+
+# Fade transitions
+fade_in_ms: 100
+fade_out_ms: 100
+
+# Panels
+panels:
+  # All wheels flash red simultaneously
+  - logical_group: "wheels_all"
+    offset_ms: 0
+    frames:
+      - image: "frames/ambulance/wheel_fl_red.png"
+        duration_ms: 100
+      - image: "frames/ambulance/wheel_fl_off.png"
+        duration_ms: 100
+      - image: "frames/ambulance/wheel_fl_red.png"
+        duration_ms: 100
+      - image: "frames/ambulance/wheel_fl_off.png"
+        duration_ms: 700
+
+  # Main display (AMBULANCE text scrolling)
+  - logical_group: "main_display"
+    offset_ms: 0
+    frames:
+      - image: "frames/ambulance/text_01.png"
+        duration_ms: 500
+      - image: "frames/ambulance/text_02.png"
+        duration_ms: 500
+      - image: "frames/ambulance/text_03.png"
+        duration_ms: 500
+      - image: "frames/ambulance/text_04.png"
+        duration_ms: 500
+
+# Metadata
+metadata:
+  priority: "high"
+  category: "emergency"
+  tags: ["ambulance", "emergency", "lights", "red", "medical"]

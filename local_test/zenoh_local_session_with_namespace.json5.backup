@@ -1,0 +1,38 @@
+{
+  // Session config for ROS nodes on dev machine
+  // Connects to LOCAL Zenoh router (like ROS nodes on Vision Pi)
+  
+  mode: "peer",
+  
+  // Connect to LOCAL router
+  // Подключаемся к локальному роутеру через IP wlo1 (НЕ localhost!) - как на Vision/Main Pi
+  connect: {
+    endpoints: ["tcp/10.1.1.249:7447"],
+    timeout_ms: { router: -1, peer: -1, client: 0 },
+    exit_on_failure: { router: false, peer: false, client: true },
+    retry: {
+      period_init_ms: 1000,
+      period_max_ms: 4000,
+      period_increase_factor: 2,
+    }
+  },
+  
+  // Listen for incoming connections
+  // ROS ноды слушают localhost - как на Vision/Main Pi
+  listen: {
+    endpoints: ["tcp/localhost:0"],
+    timeout_ms: 0
+  },
+  
+  scouting: {
+    multicast: {
+      enabled: false
+    }
+  },
+  
+  // Namespace для robot topics - генерируется как на Main/Vision Pi через ros_with_namespace.sh
+  // Все топики робота публикуются в namespace: robots/RBXU100001/0/...
+  // С этим namespace Zenoh будет стрипать префикс robots/RBXU100001 от incoming топиков
+  // RViz увидит топики как: 0/scan, 0/tf, и т.д. (без префикса robots/RBXU100001)
+  namespace: "robots/RBXU100001"
+}

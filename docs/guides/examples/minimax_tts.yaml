@@ -1,0 +1,153 @@
+# =============================================================================
+# MiniMax TTS — пример ROS2-конфигурации для tts_node
+# =============================================================================
+#
+# Этот файл — копируемая заготовка для подключения MiniMax TTS к пакету
+# rob_box_voice. Раскомментируйте / перенесите секцию tts_node в свой
+# voice_assistant.yaml, либо укажите этот файл как config_file в launch:
+#
+#   ros2 launch rob_box_voice voice_assistant.launch.py \
+#       config_file:=/abs/path/to/this.yaml provider:=minimax
+#
+# Секреты (MINIMAX_API_KEY, MINIMAX_GROUP_ID) сюда НЕ вставляйте —
+# они подтягиваются из ENV (см. docker/vision/.env.secrets.template).
+#
+# Подробнее:
+#   - docs/guides/MINIMAX_TTS.md — пользовательский гайд
+#   - docs/architecture/minimax-tts-architecture.md — реализационный контракт
+#   - docs/adr/0003-minimax-tts-architecture.md — ADR
+# =============================================================================
+
+/**:
+  ros__parameters:
+
+    # =========================================================================
+    # TTS Node — переключение на MiniMax
+    # =========================================================================
+    tts_node:
+      # Выбор провайдера. Допустимые значения: "yandex" | "silero" | "minimax".
+      # По умолчанию Yandex (исторический ROBBOX-голос "anton"); для
+      # MiniMax поменяйте на "minimax" и убедитесь, что ENV-переменные
+      # MINIMAX_API_KEY и MINIMAX_GROUP_ID заданы.
+      provider: "minimax"
+
+      # -------------------------------------------------------------------------
+      # MiniMax-specific блок (opt-in)
+      # -------------------------------------------------------------------------
+      # Каждый параметр ниже — ROS-параметр tts_node.*; default'ы совпадают
+      # с MiniMaxTTSProvider.MINIMAX_*_DEFAULT.
+      # Любой из этих параметров можно переопределить через ros2 param set
+      # на лету (кроме секретов, которые только из ENV).
+
+      # ----- Секреты -----------------------------------------------------------
+      # По соображениям безопасности в yaml кладут пустые строки: провайдер
+      # читает MINIMAX_API_KEY / MINIMAX_GROUP_ID из ENV при инициализации.
+      # Если хотите задать ключ через ROS-параметр (НЕ рекомендуется — будет
+      # виден в ros2 param list), раскомментируйте и заполните:
+      # minimax_api_key: "eyJhbGciOi..."
+      # minimax_group_id: "1234567890..."
+      minimax_api_key: ""
+      minimax_group_id: ""
+
+      # ----- Голос и модель ---------------------------------------------------
+      # Voice id — каталог MiniMax. Полный список и demo:
+      #   https://platform.minimaxi.com/docs/api-reference/voice-cloning/voice-cloning-1
+      # Типичные значения для русского:
+      #   "male-qn-qingse"   — мужской, спокойный (default)
+      #   "male-qn-jingying" — мужской, энергичный
+      #   "female-shaonv"    — женский, молодёжный
+      #   "Calm_Woman"       — женский, дикторский
+      minimax_voice: "male-qn-qingse"
+
+      # Модель синтеза. На 2026-07-20 поддерживаются два варианта:
+      #   "speech-02-hd"    — высокое качество (default)
+      #   "speech-02-turbo" — ниже latency, чуть хуже качество
+      # При переключении на turbo имеет смысл включить minimax_streaming=true.
+      minimax_model: "speech-02-hd"
+
+      # ----- Язык -------------------------------------------------------------
+      # Допустимые значения: "ru" | "en" | "zh" | "ja" | "ko" | "es" | "fr"
+      # | "de" | "pt" | "it" | "ar" | "hi" (полный список — в
+      # rob_box_llm/providers/minimax_tts.py::_LANGUAGE_ALIASES).
+      # Также можно передать полное имя ("Russian", "English", …).
+      # ВНИМАНИЕ: BCP-47 с регионом ("ru-RU", "en-US") передаются as-is и
+      # MiniMax их, как правило, не принимает.
+      minimax_language: "ru"
+
+      # ----- Параметры просодии ----------------------------------------------
+      # Скорость речи. Допустимый диапазон [0.5, 2.0]. Также может быть
+      # переопределён SSML <prosody rate> в самом тексте (приоритет выше).
+      # Если указан некорректно — MiniMax вернёт 400.
+      minimax_speed: 1.0
+
+      # Sample rate выходного PCM. MiniMax принимает: 8000 / 16000 / 22050 /
+      # 24000 / 32000 / 44100 Hz. По умолчанию 32000 Hz — компромисс между
+      # качеством и объёмом трафика. Для ReSpeaker (16 kHz) на стороне
+      # tts_node всё равно делается downsample 32k→16k.
+      minimax_sample_rate: 32000
+
+      # ----- Формат контейнера -----------------------------------------------
+      # MiniMax T2A v2 нативно отдаёт PCM. Другие форматы (wav, mp3, ogg)
+      # поддерживаются, но:
+      #   - wav / mp3 — отдаются как hex-encoded контейнер;
+      #   - ogg — НЕ поддерживается; провайдер автоматически запрашивает
+      #     mp3 и помечает TTSAudio.format = "mp3" (см. ADR-0003 §3.2).
+      # При выборе не-PCM формата tts_node сам делает transcode → int16 LE
+      # PCM перед публикацией в /voice/audio/speech.
+      minimax_format: "pcm"   # pcm | wav | mp3 | ogg
+
+      # ----- Таймауты и retry -------------------------------------------------
+      # httpx timeout на один POST. Для очень длинных текстов увеличьте.
+      minimax_timeout: 30.0
+
+      # Количество ретраев на стороне tts_node (НЕ внутри провайдера).
+      # Применимо к TTSTimeoutError, TTSRateLimitError, 5xx.
+      # НЕ ретраит: TTSAuthError, TTSBadRequestError, base_resp!=0.
+      # Допустимый диапазон [0, 3].
+      minimax_max_retries: 2
+
+      # Начальный backoff между ретраями (ms). Удваивается с каждой попыткой:
+      #   attempt 1 → 500 ms, attempt 2 → 1000 ms (при max_retries=2).
+      minimax_retry_backoff_ms: 500
+
+      # ----- Стриминг ---------------------------------------------------------
+      # true — использовать SSE-стриминг (provider.stream()); каждый
+      # TTSChunk публикуется отдельным AudioData msg по мере поступления.
+      # false — буферизованный synthesize(); один AudioData msg на весь
+      # синтез. На T2A v2 SSE выдаёт один аудиочанк + терминальный
+      # finish_reason="stop", поэтому streaming=true даёт небольшой
+      # выигрыш только на длинных текстах.
+      minimax_streaming: false
+
+      # -------------------------------------------------------------------------
+      # Остальные параметры tts_node остаются от Yandex/Silero (значения
+      # ниже — стандартные для пакета rob_box_voice; при provider=minimax
+      # они НЕ используются, но если вы переключаетесь обратно на Yandex,
+      # должны быть валидными).
+      # -------------------------------------------------------------------------
+      speaker: "aidar"          # Silero v5 voice
+      sample_rate: 48000        # Silero v5 native
+      prosody_pitch: "medium"
+      normalize_text: true
+      chipmunk_mode: false
+      pitch_shift: 1.0
+      volume_db: -3.0
+
+      # Yandex-параметры — игнорируются при provider=minimax, но
+      # launch их валидирует при старте tts_node, поэтому оставлены.
+      yandex:
+        voice: "anton"
+        speed: 1.0
+        emotion: "neutral"
+
+      # ROS audio bridge — куда tts_node публикует готовый int16 LE PCM.
+      # Эти параметры общие для всех провайдеров.
+      audio_topic: "/voice/audio/speech"
+      audio_output_sample_rate: 16000
+      audio_qos_reliability: "best_effort"
+      audio_qos_depth: 10
+
+      # Кэширование результатов (на стороне tts_node, не провайдера).
+      cache_dir: "~/.cache/rob_box_voice/tts"
+      pregenerate: true
+      cache_enabled: true

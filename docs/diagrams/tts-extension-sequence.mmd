@@ -1,0 +1,88 @@
+%% TTS Provider — sequence-диаграмма фабрики/реестра (t_8d714ff0)
+%% Показывает end-to-end поток:
+%%   composition-root startup → tts_node first call →
+%%   factory.create(name, config, registry) →
+%%   registry.resolve(name) → builder(config) →
+%%   BaseTTSProvider returned → cached → next call reuses.
+%%
+%% Все имён акторов — из docs/architecture/tts-extension-points.md.
+
+sequenceDiagram
+    autonumber
+
+    participant CR as Composition Root<br/>(process start)
+    participant Reg as TTSProviderRegistry
+    participant Builder as ProviderBuilder<br/>(closure)
+    participant Fac as TTSProviderFactory
+    participant Node as tts_node<br/>(ROS)
+    participant Prov as BaseTTSProvider<br/>(e.g. MiniMax)
+    participant Up as Upstream API<br/>(api.minimax.io)
+
+    %% ---- Phase 1: process start ----
+    rect rgb(245, 245, 245)
+        Note over CR, Reg: Phase 1 — process startup (composition root)
+        CR->>Reg: TTSProviderRegistry()
+        CR->>Reg: register("minimax",<br/>MiniMaxBuilder)
+        CR->>Reg: register("elevenlabs",<br/>ElevenLabsBuilder)
+        CR->>Reg: register("google",<br/>GoogleBuilder)
+        CR->>Reg: register("local-piper",<br/>LocalPiperBuilder)
+        Note right of CR: ONLY place built-ins get registered.<br/>No importlib auto-discovery.<br/>(ADR-0004 §2.3)
+    end
+
+    %% ---- Phase 2: tts_node first request ----
+    rect rgb(230, 245, 255)
+        Note over Node, Prov: Phase 2 — first synthesis request
+        Node->>Node: ROS param read:<br/>tts_node.tts.provider_name = "minimax"
+        Node->>Node: ROS param read:<br/>minimax_api_key, group_id,<br/>voice, model, timeout
+        Node->>Fac: create("minimax",<br/>config={api_key, ...},<br/>registry)
+        Fac->>Reg: resolve("minimax")
+        Reg-->>Fac: MiniMaxBuilder (callback)
+        Fac->>Builder: builder(config)
+        Builder->>Prov: MiniMaxTTSProvider(<br/>api_key=..., group_id=...,<br/>timeout=...)
+        Prov-->>Builder: instance
+        Builder-->>Fac: instance
+        Note right of Fac: cache[(name, hash(config))] = instance
+        Fac-->>Node: BaseTTSProvider (as MiniMax)
+    end
+
+    %% ---- Phase 3: actual synthesis ----
+    rect rgb(230, 255, 230)
+        Note over Node, Up: Phase 3 — actual TTS call
+        Node->>Prov: capabilities()
+        Prov-->>Node: TTSCapabilities(streaming=False,<br/>audio_format_pcm=True,...)
+        Node->>Prov: synthesize(text,<br/>settings=TTSSettings(...))
+        Prov->>Prov: _build_request_payload(text,<br/>settings, voice_meta)
+        Note right of Prov: pure mapping, no HTTP,<br/>testable in isolation
+        Prov->>Up: POST /v1/t2a_v2<br/>(HTTP body = payload)
+        Up-->>Prov: 200 OK + hex-encoded audio
+        Prov->>Prov: hex→bytes → TTSAudio<br/>(samples, sample_rate, format)
+        Prov-->>Node: TTSAudio(samples=...,<br/>sample_rate=32000, format=PCM)
+    end
+
+    %% ---- Phase 4: second request (cache hit) ----
+    rect rgb(255, 245, 230)
+        Note over Node, Fac: Phase 4 — second request (cache hit)
+        Node->>Fac: create("minimax",<br/>config={same}, registry)
+        Fac->>Fac: cache lookup<br/>(hash(config) matches)
+        Fac-->>Node: same BaseTTSProvider instance<br/>(no double-construction)
+        Note right of Node: Same provider reused →<br/>same HTTP pool, same rate-limit budget
+    end
+
+    %% ---- Phase 5: shutdown ----
+    rect rgb(255, 230, 230)
+        Note over Node, Prov: Phase 5 — shutdown (idempotent)
+        Node->>Prov: aclose()
+        Prov->>Prov: close httpx.AsyncClient<br/>(idempotent: tracked in-flight tasks,<br/>short grace period)
+        Prov-->>Node: None
+        Note right of Node: CancelledError не мапится<br/>в retryable upstream-error<br/>(sub-fragment 0007a)
+    end
+
+    %% ---- Alt: unknown provider ----
+    rect rgb(255, 230, 230)
+        Note over Node, Fac: Alt — unknown provider name
+        Node->>Fac: create("nonexistent",<br/>config, registry)
+        Fac->>Reg: resolve("nonexistent")
+        Reg-->>Fac: KeyError
+        Fac-->>Node: raise KeyError("nonexistent")
+        Node->>Node: log + STOP,<br/>no silent fallback
+    end

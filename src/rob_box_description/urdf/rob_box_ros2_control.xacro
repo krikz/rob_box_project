@@ -1,0 +1,117 @@
+<?xml version="1.0"?>
+<!-- 
+  rob_box_ros2_control.xacro
+  
+  ros2_control интеграция с VESC Nexus hardware interface
+  Определяет 4 колеса с VESC моторами через CAN
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- ros2_control Hardware Interface - VESC Nexus                    -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  
+  <ros2_control name="VescSystem" type="system">
+    <hardware>
+      <plugin>vesc_nexus/VescSystemHardwareInterface</plugin>
+      
+      <!-- CAN Interface Configuration -->
+      <param name="can_interface">can0</param>
+      <param name="publish_rate">50.0</param>
+      
+      <!-- Default wheel radius: 9" колёса с редукторами, замер 2026-02-23 -->
+      <param name="wheel_radius">0.1143</param>
+      
+      <!-- Передаточное число редуктора (motor_rps / gear_ratio = wheel_rps) -->
+      <!-- Эмпирическая калибровка 2026-02-27: физ. редуктор 5:1, но max_rps=6.5 -->
+      <!-- уже частично учитывает передачу. Подбирается так чтобы -->
+      <!-- Калибровка 2026-02-28: 2.26/1.04=2.17 (физ 104см vs ожид 100см @0.2m/s×5s) -->
+      <param name="gear_ratio">2.17</param>
+      
+      <!-- Минимальный duty cycle для преодоления мёртвой зоны VESC -->
+      <!-- Используется только в режиме control_mode=duty -->
+      <!-- Калибровка 2026-02-28: 0.08→0.04→0.05 -->
+      <param name="min_duty">0.05</param>
+      
+      <!-- Режим управления моторами: "duty" или "rpm" -->
+      <!-- duty: открытый контур, отправляет duty cycle (% напряжения) -->
+      <!-- rpm: замкнутый контур, отправляет целевой ERPM, VESC PID держит скорость -->
+      <!-- rpm пока вызывает дребезг моторов на низких ERPM (hall interp + PID tuning) -->
+      <param name="control_mode">duty</param>
+    </hardware>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!-- Left Front Wheel -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <joint name="left_front_wheel_joint">
+      <command_interface name="velocity">
+        <param name="min">-10</param>  <!-- м/с -->
+        <param name="max">10</param>
+      </command_interface>
+      <state_interface name="velocity"/>
+      <state_interface name="position"/>
+      
+      <!-- VESC Configuration -->
+      <param name="can_id">49</param>              <!-- CAN ID в VESC Tool -->
+      <param name="poles">30</param>               <!-- Количество полюсов мотора -->
+      <param name="min_erpm">24</param>           <!-- Минимальный ERPM для движения -->
+      <param name="wheel_radius">0.1143</param>    <!-- Замер 2026-02-23: 9" с редуктором -->
+      <param name="max_rps">12.2</param>            <!-- Калибровка 2026-02-28: ratio=1.22@0.2m/s×5s, max_rps=10×1.22 -->
+    </joint>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!-- Right Front Wheel -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <joint name="right_front_wheel_joint">
+      <command_interface name="velocity">
+        <param name="min">-10</param>
+        <param name="max">10</param>
+      </command_interface>
+      <state_interface name="velocity"/>
+      <state_interface name="position"/>
+      
+      <param name="can_id">94</param>
+      <param name="poles">30</param>
+      <param name="min_erpm">24</param>
+      <param name="wheel_radius">0.1143</param>    <!-- Замер 2026-02-23: 9" с редуктором -->
+      <param name="max_rps">12.2</param>            <!-- Калибровка 2026-02-28: ratio=1.22@0.2m/s×5s -->
+    </joint>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!-- Left Rear Wheel -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <joint name="left_rear_wheel_joint">
+      <command_interface name="velocity">
+        <param name="min">-10</param>
+        <param name="max">10</param>
+      </command_interface>
+      <state_interface name="velocity"/>
+      <state_interface name="position"/>
+      
+      <param name="can_id">81</param>
+      <param name="poles">30</param>
+      <param name="min_erpm">24</param>
+      <param name="wheel_radius">0.1143</param>    <!-- Замер 2026-02-23: 9" с редуктором -->
+      <param name="max_rps">12.2</param>            <!-- Калибровка 2026-02-28: ratio=1.22@0.2m/s×5s -->
+    </joint>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!-- Right Rear Wheel -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <joint name="right_rear_wheel_joint">
+      <command_interface name="velocity">
+        <param name="min">-10</param>
+        <param name="max">10</param>
+      </command_interface>
+      <state_interface name="velocity"/>
+      <state_interface name="position"/>
+      
+      <param name="can_id">124</param>
+      <param name="poles">30</param>
+      <param name="min_erpm">24</param>
+      <param name="wheel_radius">0.1143</param>    <!-- Замер 2026-02-23: 9" с редуктором -->
+      <param name="max_rps">12.2</param>            <!-- Калибровка 2026-02-28: ratio=1.22@0.2m/s×5s -->
+    </joint>
+  </ros2_control>
+
+</robot>

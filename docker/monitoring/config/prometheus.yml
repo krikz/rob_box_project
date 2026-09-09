@@ -1,0 +1,72 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+# Alert rules (ADR-0017, SL-2): zenoh-router SPOF-мониторинг
+rule_files:
+  - /etc/prometheus/prometheus_rules.yml
+
+scrape_configs:
+  # Scrape cAdvisor metrics from Main Pi
+  - job_name: 'cadvisor-main'
+    static_configs:
+      - targets: ['10.1.1.10:8080']
+        labels:
+          host: 'main-pi'
+
+  # Scrape cAdvisor metrics from Vision Pi
+  - job_name: 'cadvisor-vision'
+    static_configs:
+      - targets: ['10.1.1.11:8080']
+        labels:
+          host: 'vision-pi'
+
+  # Issue #1160 — voice-assistant metrics (Vision Pi, network_mode: host)
+  # Каждая ROS2-нода биндит свой порт (см. rob_box_voice.observability):
+  # 9100 dialogue_node (LLM latency / fallback), 9110 tts_node,
+  # 9111 stt_node, 9112 speaker_id_node, 9113 audio_node.
+  - job_name: 'voice-assistant'
+    static_configs:
+      - targets:
+          - '10.1.1.11:9100'  # dialogue_node
+          - '10.1.1.11:9110'  # tts_node
+          - '10.1.1.11:9111'  # stt_node
+          - '10.1.1.11:9112'  # speaker_id_node
+          - '10.1.1.11:9113'  # audio_node
+        labels:
+          host: 'vision-pi'
+          service: 'voice-assistant'
+
+  # Issue #1160 — telegram-bot metrics (Vision Pi)
+  - job_name: 'telegram-bot'
+    static_configs:
+      - targets: ['10.1.1.11:9101']
+        labels:
+          host: 'vision-pi'
+          service: 'telegram-bot'
+
+  # Issue #1160 — supercollider music metrics (Vision Pi, когда появится)
+  - job_name: 'supercollider'
+    static_configs:
+      - targets: ['10.1.1.11:9102']
+        labels:
+          host: 'vision-pi'
+          service: 'supercollider'
+
+  # Issue #1234, этап 2 — otel-collector: свои метрики (health pipeline).
+  # Collector слушает /metrics на :8889 (host-сеть, та же машина мониторинга).
+  # Был :8888, но его занял build-deepseek-proxy (LiteLLM metrics, network_mode: host)
+  # → otel-collector crash-loop каждые ~60 сек (issue #1730). Адрес должен
+  # совпадать с service.telemetry.metrics.address в otel-collector.yaml
+  # (страховка от регрессии — scripts/testing/test_monitoring_config.py).
+  - job_name: 'otel-collector'
+    static_configs:
+      - targets: ['localhost:8889']
+        labels:
+          host: 'monitoring'
+          service: 'otel-collector'
+
+  # Scrape Prometheus itself
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']

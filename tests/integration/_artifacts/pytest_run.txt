@@ -1,0 +1,18 @@
+============================= test session starts ==============================
+platform linux -- Python 3.11.15, pytest-9.1.1, pluggy-1.6.0 -- /usr/local/bin/python3
+cachedir: .pytest_cache
+network secrets missing: MINIMAX_API_KEY (network tests will be skipped)
+harness package resolved from: /home/builder/hermes-share/rob_box_project/.worktrees/t_dcdaa9b0/src/rob_box_harness
+rootdir: /home/builder/hermes-share/rob_box_project/.worktrees/t_dcdaa9b0
+configfile: pytest.ini
+plugins: respx-0.23.1, asyncio-1.4.0, anyio-4.14.2, Faker-40.35.0, mock-3.15.1, cov-7.1.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 5 items
+
+tests/integration/test_e2e_harness_minimax.py::test_e2e_harness_minimax_llm_text SKIPPED [ 20%]
+tests/integration/test_e2e_harness_minimax.py::test_e2e_upstream_minimax_llm_typing SKIPPED [ 40%]
+tests/integration/test_e2e_harness_minimax.py::test_e2e_upstream_minimax_tts_synthesize SKIPPED [ 60%]
+tests/integration/test_e2e_harness_minimax.py::test_e2e_harness_minimax_llm_auth_probe PASSED [ 80%]
+tests/integration/test_e2e_harness_minimax.py::test_e2e_harness_dummy_smoke PASSED [100%]
+
+========================= 2 passed, 3 skipped in 1.49s =========================

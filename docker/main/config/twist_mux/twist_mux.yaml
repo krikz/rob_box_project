@@ -1,0 +1,83 @@
+# twist_mux configuration для rob_box
+# Мультиплексирование команд скорости с приоритизацией
+
+twist_mux:
+  ros__parameters:
+    # Источники команд (в порядке приоритета - priority: 0-255, чем выше тем приоритетнее)
+    topics:
+      # 1. Emergency Stop (наивысший приоритет)
+      emergency_stop:
+        topic: cmd_vel_emergency
+        timeout: 0.1
+        priority: 255
+
+      # 2. Joystick/Gamepad (высокий приоритет - оператор с физическим пультом)
+      joystick:
+        topic: cmd_vel_joy
+        timeout: 0.5
+        priority: 100
+
+      # 2.5 Quest (Meta Quest / WebXR teleop, Phase 1.3) — наравне с
+      # аппаратурой (ADR-0081 Q1/R6, решение владельца 2026-09-09):
+      # /teleop_lock стоит на priority=90, и twist_mux глушит источники
+      # СТРОГО МЕНЬШЕГО приоритета (замер на роботе, ADR-0081 §5.1) —
+      # значит quest должен быть РАВЕН lock-у (90), иначе lock глушит
+      # самого держателя floor-а. Побочный эффект: Telegram(50) больше
+      # не перебивает quest-оператора по приоритету — это сознательно.
+      quest:
+        topic: cmd_vel_quest
+        timeout: 0.5
+        priority: 90
+
+      # 3. Web UI / Mobile App (средний приоритет - оператор через веб)
+      web_ui:
+        topic: cmd_vel_web
+        timeout: 1.0
+        priority: 50
+
+      # 4. Voice Commands (низкий-средний приоритет - может быть кто угодно)
+      voice:
+        topic: cmd_vel_voice
+        timeout: 1.0
+        priority: 25
+
+      # 5. Nav2 Navigation (самый низкий приоритет - автономия)
+      navigation:
+        topic: cmd_vel
+        timeout: 0.5
+        priority: 10
+
+    # Locks (блокировка источников с приоритетом ниже)
+    # joystick_lock: joystick_control_node публикует True на /joystick_lock,
+    # пока оператор держит ARM (вооружён) — это блокирует web(50)/voice(25)/
+    # nav2(10), чтобы робота НЕ перехватывали автономные источники, пока
+    # оператор работает пультом (issue #1344 — «поворот приходит сам»).
+    # timeout=0.0 → lock «липкий»: последнее значение сохраняется, если нода
+    # умрёт/зависнет (вооружён → автономия заблокирована до восстановления).
+    #
+    # teleop_lock (ADR-0081 R1/R3/R4, #2191): зеркалит /joystick_lock по
+    # семантике «у меня руль» — avatar_arbiter (единственный владелец
+    # LockManager, ADR-0028 §4.2) публикует True пока teleop_floor занят.
+    # Блокирует web_ui(50)/voice(25)/nav2(10).
+    #
+    # priority=90, НЕ 100 (ADR-0081 Q1, решение владельца 2026-09-09):
+    # замер на роботе показал, что twist_mux глушит источники СТРОГО
+    # МЕНЬШЕГО приоритета, равный приоритет не глушится (§5.1). Lock на
+    # 100 заглушил бы самого держателя floor-а (quest=90). Lock на 90
+    # глушит всё < 90 и оставляет живыми quest(90) и аппаратуру(100).
+    #
+    # sticky (timeout=0.0), БЕЗ watchdog-а (ADR-0081 Q2/R2, решение
+    # владельца): аппаратура(100) выше lock-а(90), поэтому залипший lock
+    # при падении avatar_arbiter не страшен — робот остаётся управляемым
+    # с пульта. Auto-release watchdog избыточен, отдельного топика нет.
+    # twist_mux смотрит на КАЖДЫЙ lock независимо: достаточно одного True,
+    # чтобы заблокировать нижестоящие источники.
+    locks:
+      joystick_lock:
+        topic: /joystick_lock
+        timeout: 0.0
+        priority: 100
+      teleop_lock:
+        topic: /teleop_lock
+        timeout: 0.0
+        priority: 90

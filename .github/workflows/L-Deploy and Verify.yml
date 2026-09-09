@@ -1,0 +1,1338 @@
+name: "L: Deploy and Verify"
+
+# Автоматизированный деплой и проверка работоспособности робота на self-hosted runner
+# Требует: self-hosted runner с доступом к локальной сети (10.1.1.x) и Raspberry Pi устройствам
+# - Останавливает контейнеры на обоих Pi
+# - Обновляет код из выбранной ветки
+# - Подтягивает свежие образы
+# - Запускает контейнеры
+# - Проверяет логи и ROS2 топики
+# - Создает issue при ошибках
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Целевое окружение'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - staging
+          - test
+          - local
+      registry_source:
+        description: 'Источник Docker образов'
+        required: true
+        default: 'github'
+        type: choice
+        options:
+          - skip
+          - github
+          - local
+      dry_run:
+        description: 'Сухой прогон (без реального деплоя)'
+        required: false
+        default: false
+        type: boolean
+      # Issue #1527: трейсинг «кто дёрнул workflow». Все скрипты/воркеры
+      # используют твой GH_TOKEN, поэтому triggering_actor.login всегда = krikz.
+      # Эти опциональные поля заполняются самими скриптами (agent-flow-*),
+      # чтобы в CI job logs было видно кто реально стартанул deploy.
+      triggered_by_script:
+        description: 'Какой скрипт вызвал gh workflow run'
+        required: false
+        type: string
+        default: 'manual'
+      triggered_by_agent:
+        description: 'Какой worker профиль (devops/architect/backend/merge-gate/agent-flow)'
+        required: false
+        type: string
+        default: 'unknown'
+      triggered_by_card:
+        description: 'Kanban card id (t_xxx) если запуск из карточки'
+        required: false
+        type: string
+        default: ''
+      triggered_by_reason:
+        description: 'Краткая причина запуска (free-form)'
+        required: false
+        type: string
+        default: ''
+
+jobs:
+  deploy-and-verify:
+    # Всегда используем self-hosted runner, так как:
+    # - Raspberry Pi устройства в локальной сети (10.1.1.x) недоступны из GitHub hosted runners
+    # - Требуется SSH доступ к устройствам
+    # - Локальный registry (10.1.1.249:5000) доступен только на self-hosted машине
+    runs-on: [self-hosted, rob-box]
+    permissions:
+      contents: read
+      issues: write
+
+    steps:
+      - name: Trigger source (issue #1527)
+        # Трейсинг: видно в CI job log кто реально стартанул этот deploy
+        # (при ручном gh workflow run без -f triggered_by_* — defaults).
+        run: |
+          echo "🔧 Triggered by: ${{ inputs.triggered_by_script }} / agent=${{ inputs.triggered_by_agent }} / card=${{ inputs.triggered_by_card }} / reason=${{ inputs.triggered_by_reason }}"
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 1
+          clean: true
+
+      - name: Setup SSH and Environment
+        id: setup
+        run: |
+          echo "Setting up deployment environment..."
+
+          # Настройка переменных окружения
+          case "${{ inputs.environment }}" in
+            production)
+              echo "IMAGE_TAG=latest" >> $GITHUB_ENV
+              echo "vision_pi_ip=10.1.1.11" >> $GITHUB_ENV
+              echo "main_pi_ip=10.1.1.10" >> $GITHUB_ENV
+              ;;
+            staging)
+              echo "IMAGE_TAG=dev" >> $GITHUB_ENV
+              echo "vision_pi_ip=10.1.1.11" >> $GITHUB_ENV
+              echo "main_pi_ip=10.1.1.10" >> $GITHUB_ENV
+              ;;
+            test)
+              echo "IMAGE_TAG=test" >> $GITHUB_ENV
+              echo "vision_pi_ip=10.1.1.11" >> $GITHUB_ENV
+              echo "main_pi_ip=10.1.1.10" >> $GITHUB_ENV
+              ;;
+            # Ретро 18.08 (t_544e4aa5 / issue #1379): environment=local —
+            # алиас для staging (IMAGE_TAG=dev). Тег "local" в registry
+            # никогда не создаётся (L-Build Vision/Main Pi Services используют
+            # только dev/test/latest), голый IMAGE_TAG=local → compose pull →
+            # "No such image: voice-resources-humble-local". Сохраняем UI-опцию
+            # для обратной совместимости (любой скрипт, выбравший "local", не
+            # сломается), но молча алиасим и логируем warning, чтобы оператор
+            # заметил и перешёл на staging/test явно.
+            local)
+              echo "⚠️  WARNING: environment=local — алиас для staging (IMAGE_TAG=dev). Тег 'local' в registry не публикуется (L-Build Vision/Main Pi Services используют dev/test/latest). Для develop/main/z-{e2e}-веток используй environment=staging/test явно." >&2
+              echo "IMAGE_TAG=dev" >> $GITHUB_ENV
+              echo "vision_pi_ip=10.1.1.11" >> $GITHUB_ENV
+              echo "main_pi_ip=10.1.1.10" >> $GITHUB_ENV
+              ;;
+          esac
+
+          # Настройка источника образов
+          case "${{ inputs.registry_source }}" in
+            github)
+              echo "SERVICE_IMAGE_PREFIX=ghcr.io/krikz/rob_box" >> $GITHUB_ENV
+              echo "registry_display=GitHub Container Registry (ghcr.io)" >> $GITHUB_ENV
+              ;;
+            local)
+              echo "SERVICE_IMAGE_PREFIX=10.1.1.249:5000/krikz/rob_box" >> $GITHUB_ENV
+              echo "registry_display=Local Build Machine Registry (10.1.1.249:5000)" >> $GITHUB_ENV
+              ;;
+            skip)
+              echo "SERVICE_IMAGE_PREFIX=ghcr.io/krikz/rob_box" >> $GITHUB_ENV
+              echo "registry_display=Skipping pull (using existing local images)" >> $GITHUB_ENV
+              ;;
+          esac
+
+          echo "branch=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          echo "timestamp=$(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_OUTPUT
+
+          echo "VISION_FINDINGS_FILE=${RUNNER_TEMP}/vision_deployment_findings.jsonl" >> $GITHUB_ENV
+          echo "MAIN_FINDINGS_FILE=${RUNNER_TEMP}/main_deployment_findings.jsonl" >> $GITHUB_ENV
+          : > "${RUNNER_TEMP}/vision_deployment_findings.jsonl"
+          : > "${RUNNER_TEMP}/main_deployment_findings.jsonl"
+
+          # SSH options: timeout protection against WiFi flakiness / Pi unresponsiveness
+          # ConnectTimeout=10      — fail fast if Pi unreachable
+          # ServerAliveInterval=5  — send keepalive every 5s to detect broken connections
+          # ServerAliveCountMax=3  — drop after 3 missed keepalives (15s)
+          echo "SSH_OPTS=-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3" >> $GITHUB_ENV
+
+          # Установка sshpass для автоматической аутентификации
+          sudo apt-get update -qq
+          sudo apt-get install -y sshpass
+
+      - name: Verify SSH Tools and Connectivity
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🔍 Verifying SSH tools and connectivity..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+          
+          # Проверка наличия необходимых инструментов
+          echo "1. Checking SSH tools availability..."
+          TOOLS_OK=true
+          
+          if ! command -v ssh &> /dev/null; then
+            echo "❌ ERROR: 'ssh' command not found in runner"
+            echo "   The SSH client is not installed or not in PATH"
+            TOOLS_OK=false
+          else
+            echo "✅ ssh: $(which ssh)"
+            ssh -V 2>&1 | head -1
+          fi
+          
+          if ! command -v sshpass &> /dev/null; then
+            echo "❌ ERROR: 'sshpass' command not found in runner"
+            echo "   sshpass was not installed correctly"
+            TOOLS_OK=false
+          else
+            echo "✅ sshpass: $(which sshpass)"
+          fi
+          
+          if [ "$TOOLS_OK" = false ]; then
+            echo ""
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "❌ DEPLOYMENT FAILED: Missing required SSH tools"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo ""
+            echo "Required packages are not available in the runner."
+            echo "Please check the 'Setup SSH and Environment' step for installation errors."
+            exit 1
+          fi
+          
+          echo ""
+          echo "2. Checking network connectivity..."
+          
+          # Проверка сетевой доступности хостов
+          CONNECTIVITY_OK=true
+          
+          echo "Testing Vision Pi (${{ env.vision_pi_ip }})..."
+          if ping -c 1 -W 2 ${{ env.vision_pi_ip }} &> /dev/null; then
+            echo "✅ Vision Pi is reachable via ICMP"
+          else
+            echo "⚠️  Vision Pi is NOT reachable via ICMP (ping)"
+            CONNECTIVITY_OK=false
+          fi
+          
+          # Проверка доступности SSH порта
+          if timeout 3 bash -c "</dev/tcp/${{ env.vision_pi_ip }}/22" 2>/dev/null; then
+            echo "✅ Vision Pi SSH port (22) is open"
+          else
+            echo "❌ Vision Pi SSH port (22) is NOT accessible"
+            CONNECTIVITY_OK=false
+          fi
+          
+          echo ""
+          echo "Testing Main Pi (${{ env.main_pi_ip }})..."
+          if ping -c 1 -W 2 ${{ env.main_pi_ip }} &> /dev/null; then
+            echo "✅ Main Pi is reachable via ICMP"
+          else
+            echo "⚠️  Main Pi is NOT reachable via ICMP (ping)"
+            CONNECTIVITY_OK=false
+          fi
+          
+          # Проверка доступности SSH порта
+          if timeout 3 bash -c "</dev/tcp/${{ env.main_pi_ip }}/22" 2>/dev/null; then
+            echo "✅ Main Pi SSH port (22) is open"
+          else
+            echo "❌ Main Pi SSH port (22) is NOT accessible"
+            CONNECTIVITY_OK=false
+          fi
+          
+          echo ""
+          
+          if [ "$CONNECTIVITY_OK" = false ]; then
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "❌ DEPLOYMENT FAILED: Target hosts unreachable"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo ""
+            echo "The Raspberry Pi devices are not accessible from this runner."
+            echo ""
+            echo "Possible reasons:"
+            echo "  • GitHub Actions runners cannot reach private network IPs (10.1.1.x)"
+            echo "  • This workflow requires a self-hosted runner on the same network"
+            echo "  • Devices may be powered off or network is down"
+            echo "  • Firewall blocking connections"
+            echo ""
+            echo "Solutions:"
+            echo "  1. Use a self-hosted GitHub Actions runner on the local network"
+            echo "  2. Set up a VPN connection from GitHub runners to your network"
+            echo "  3. Use SSH tunneling or a bastion host with public IP"
+            echo ""
+            echo "Target IPs:"
+            echo "  • Vision Pi: ${{ env.vision_pi_ip }}"
+            echo "  • Main Pi: ${{ env.main_pi_ip }}"
+            echo ""
+            exit 1
+          fi
+          
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "✅ All connectivity checks passed"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+      - name: Dry Run Notice
+        if: inputs.dry_run
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🔍 DRY RUN MODE - No actual deployment"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+          echo "Branch: ${{ github.ref_name }}"
+          echo "Environment: ${{ inputs.environment }}"
+          echo "Image Tag: ${{ env.IMAGE_TAG }}"
+          echo "Registry: ${{ env.registry_display }}"
+          echo "Vision Pi: ${{ env.vision_pi_ip }}"
+          echo "Main Pi: ${{ env.main_pi_ip }}"
+          echo ""
+
+      # ==================== VISION PI DEPLOYMENT ====================
+
+      - name: "[Vision Pi] Stop Containers"
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🛑 Stopping Vision Pi containers..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
+            'cd ~/rob_box_project/docker/vision && docker compose down --remove-orphans --timeout 20' \
+            || echo "⚠️  Warning: Failed to stop containers (may not be running)"
+
+      - name: "[Vision Pi] Update Code"
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📥 Updating Vision Pi code from branch: ${{ github.ref_name }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          # Retry git operations (Pi WiFi to github.com can be flaky)
+          # Use reset --hard because this is a robot deployment, not a dev workstation.
+          # The branch may have been force-pushed (e.g. e2e test rounds reuse branches),
+          # so git pull would fail on divergent histories.
+          for attempt in 1 2 3; do
+            sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
+              "cd ~/rob_box_project && \
+               git fetch origin && \
+               git checkout ${{ github.ref_name }} && \
+               git reset --hard origin/${{ github.ref_name }}" \
+              && break
+            echo "⚠️  Attempt $attempt failed, retrying in 5s..."
+            sleep 5
+          done
+
+      - name: "[Vision Pi] .image-versions — из текущей ветки (реверт #1139 v2, 15.08)"
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🔖 .image-versions теперь в текущей ветке (РЕВЕРТ #1244 15.08)"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          # 🔴 РЕВЕРТ #1244 (15.08, decision #1316): per-service ветки
+          # ci/image-versions-{vision,main} НЕ работают — при registry_source=local
+          # деплой не грузит .image-versions (условие 'local' != 'local' = false),
+          # тянет голые dev-теги → роботы получают старые образы. SHA-теги
+          # коммитятся ПРЯМО в develop (как было до #1244, revert 51e041a1).
+          # Если файла нет — compose возьмёт голые теги (fallback).
+
+      - name: "[Vision Pi] Pull Docker Images"
+        if: '!inputs.dry_run && inputs.registry_source != ''skip'''
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📦 Pulling Docker images on Vision Pi..."
+          echo "   Registry: ${{ env.registry_display }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
+            "cd ~/rob_box_project/docker/vision && \
+             export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
+             export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
+             if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
+             docker compose pull --ignore-pull-failures" \
+            || echo "⚠️  Warning: Some images may not be available"
+
+      # ==================== TIME SYNC ====================
+
+      - name: "[Vision Pi] Sync System Time"
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🕐 Syncing system time (NTP) on Vision Pi..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+          echo "Why: desynced clocks make zenoh-router reject incoming data"
+          echo "     ('Error treating timestamp ... exceeding delta 500ms is rejected')"
+          echo "     and the deploy workflow reports false critical_log issues."
+          echo "     ntp.ubuntu.com is often unreachable from 10.1.1.x; the"
+          echo "     sync_time.sh script switches to ru.pool.ntp.org."
+          echo ""
+
+          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
+            "if [ -f ~/rob_box_project/scripts/maintenance/sync_time.sh ]; then \
+               echo 'open' | sudo -S bash ~/rob_box_project/scripts/maintenance/sync_time.sh || true; \
+             else \
+               echo '⚠️  sync_time.sh not found (old code) — skipping'; \
+             fi" \
+            || echo "⚠️  Warning: time sync failed on Vision Pi"
+
+      - name: "[Vision Pi] Run voice-resources-init (sync, before main up)"
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🧩 Running voice-resources-init (one-shot) on Vision Pi..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          # Issue #2095 / deploy run #34144648195: race между Exited voice-resources-init
+          # и post-startup health-check (supercollider / voice-assistant) с
+          # depends_on: service_completed_successfully. Прежний workaround
+          # (docker rm -f + network rm + container prune + --force-recreate)
+          # убирал stale-слот ДО запуска, но race возникал ВНУТРИ одного
+          # `docker compose up`: init exit'нул, supercollider через ~6 сек
+          # пошёл в Healthy, в этот момент compose инспектирует init по ID —
+          # «No such container: <HASH>», exit 1.
+          #
+          # Фикс v2 (товарищ Шифу, комментарий к PR #2120, 2026-09-08):
+          # v1 выносил init в отдельный sync-шаг, но забыл исключить init
+          # из основного `docker compose up -d` — `voice-resources-init`
+          # обычный service в compose-файле, и `--force-recreate` пересоздавал
+          # его внутри основного up, после чего voice-assistant снова ждал
+          # по depends_on (окно race возвращалось). v2 + следующий шаг
+          # (`Start Containers` с `--scale voice-resources-init=0`)
+          # гарантируют, что init прогоняется РОВНО ОДИН раз — здесь.
+          #
+          # Кто реально удаляет exited init-контейнер (товарищ Шифу спросил):
+          # docker daemon сам по себе НЕ удаляет exited-контейнеры
+          # (без --rm/autoremove они лежат в `docker ps -a` бесконечно).
+          # Удаляет их `docker container prune -f` (выполнен ниже) +
+          # явный `docker rm -f voice-resources-init` в финальном
+          # fallback'е — оба сбрасывают name-slot. Цикл `docker ps -a
+          # --filter` проверяет, что prune реально вычистил init
+          # к моменту старта основного `up -d`.
+          #
+          # Защита от сбоя init (ненулевой exit): падаем весь шаг, deploy fail —
+          # лучше красный deploy, чем молча работающий робот без renardo-сэмплов
+          # (supercollider тогда начнёт падать на «Buffer UGen: no buffer data»).
+          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
+            "cd ~/rob_box_project/docker/vision && \
+             export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
+             export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
+             if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
+             echo '🧹 pre-init cleanup (retro t_d01fe536+t_9d35468d): stale containers + network'; \
+             docker rm -f voice-resources-init 2>/dev/null || true; \
+             docker network rm vision_default 2>/dev/null || true; \
+             docker container prune -f 2>/dev/null || true; \
+             echo '🚀 running voice-resources-init synchronously (no -d)'; \
+             docker compose up voice-resources-init && \
+             echo '⏳ waiting up to 15s for init to leave ps -a (prune/rm подбирает exited-контейнер)'; \
+             for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do \
+               if ! docker ps -a --filter name=voice-resources-init --format '{{.ID}}' | grep -q .; then \
+                 echo \"  ✓ init container no longer in ps -a after \${i}s (prune отработал)\"; \
+                 break; \
+               fi; \
+               sleep 1; \
+             done && \
+             if docker ps -a --filter name=voice-resources-init --format '{{.ID}}' | grep -q .; then \
+               echo '⚠️  init container still listed by daemon after 15s — forcing rm'; \
+               docker rm -f voice-resources-init 2>/dev/null || true; \
+               sleep 2; \
+             fi"
+
+      - name: "[Vision Pi] Start Containers"
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🚀 Starting Vision Pi containers..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          # Issue #2095 / товарищ Шифу (комментарий к PR #2120, 2026-09-08):
+          # предыдущая версия этого фикса выносила `docker compose up
+          # voice-resources-init` в отдельный sync-шаг, но в основном `up -d`
+          # оставляла compose-файл как есть — а `voice-resources-init` объявлен
+          # в docker-compose.yaml как обычный service. `--force-recreate`
+          # пересоздавал init внутри основного up, после чего
+          # `voice-assistant` / `supercollider` снова ждали по
+          # `depends_on: service_completed_successfully` — окно race
+          # возвращалось, просто init прогонялся дважды.
+          #
+          # Этот шаг ИСКЛЮЧАЕТ voice-resources-init из основного `up -d`:
+          # `--scale voice-resources-init=0` (compose-флаг, accepted by `up`)
+          # говорит compose не создавать этот сервис. Длинные/хрупкие
+          # списки сервисов через позиционные аргументы не используем —
+          # они рассинхронизируются с compose-файлом при добавлении
+          # нового сервиса (--scale — общий флаг, не зависит от
+          # конкретного набора service-имён).
+          #
+          # Параллельно уточняем причину «No such container: <HASH>»:
+          # docker daemon НЕ удаляет exited-контейнер сам по себе
+          # (без --rm/autoremove exited-контейнеры лежат в `docker ps -a`
+          # бесконечно). Удаляет их шаг выше (`docker container prune -f`)
+          # + явный `docker rm -f voice-resources-init` — оба сбрасывают
+          # name-slot, и цикл `docker ps -a --filter` в предыдущем шаге
+          # проверяет, что после exit init-а prune реально его вычистил.
+          # К моменту старта остальных сервисов voice-resources-init
+          # гарантированно отсутствует в ps -a →
+          # `depends_on: service_completed_successfully` satisfied без race.
+          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
+            "cd ~/rob_box_project/docker/vision && \
+             export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
+             export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
+             if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
+             echo '🔧 retro t_d01fe536+t_9d35468d: cleanup stale containers/networks'; \
+             docker rm -f voice-resources-init 2>/dev/null || true; \
+             docker network rm vision_default 2>/dev/null || true; \
+             docker container prune -f 2>/dev/null || true; \
+             echo '🚀 compose up (--scale voice-resources-init=0 — init уже выполнен в предыдущем шаге)'; \
+             docker compose up -d --force-recreate --pull never --remove-orphans --scale voice-resources-init=0"
+
+      # ==================== MAIN PI DEPLOYMENT ====================
+
+      - name: "[Main Pi] Stop Containers"
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🛑 Stopping Main Pi containers..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
+            'cd ~/rob_box_project/docker/main && docker compose down --remove-orphans --timeout 20' \
+            || echo "⚠️  Warning: Failed to stop containers (may not be running)"
+
+      - name: "[Main Pi] Update Code"
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📥 Updating Main Pi code from branch: ${{ github.ref_name }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          # Retry git operations (Pi WiFi to github.com can be flaky)
+          # Use reset --hard because this is a robot deployment, not a dev workstation.
+          # The branch may have been force-pushed (e.g. e2e test rounds reuse branches),
+          # so git pull would fail on divergent histories.
+          for attempt in 1 2 3; do
+            sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
+              "cd ~/rob_box_project && \
+               git fetch origin && \
+               git checkout ${{ github.ref_name }} && \
+               git reset --hard origin/${{ github.ref_name }}" \
+              && break
+            echo "⚠️  Attempt $attempt failed, retrying in 5s..."
+            sleep 5
+          done
+
+      - name: "[Main Pi] .image-versions — из текущей ветки (реверт #1139 v2, 15.08)"
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🔖 .image-versions теперь в текущей ветке (РЕВЕРТ #1244 15.08)"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          # 🔴 РЕВЕРТ #1244 (15.08, decision #1316): см. Vision-шаг выше.
+          # SHA-теги коммитятся ПРЯМО в develop; если файла нет —
+          # compose возьмёт голые теги (fallback).
+
+      - name: "[Main Pi] Pull Docker Images"
+        if: '!inputs.dry_run && inputs.registry_source != ''skip'''
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📦 Pulling Docker images on Main Pi..."
+          echo "   Registry: ${{ env.registry_display }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
+            "cd ~/rob_box_project/docker/main && \
+             export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
+             export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
+             if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
+             docker compose pull --ignore-pull-failures" \
+            || echo "⚠️  Warning: Some images may not be available"
+
+      # ==================== TIME SYNC ====================
+
+      - name: "[Main Pi] Sync System Time"
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🕐 Syncing system time (NTP) on Main Pi..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+          echo "Why: desynced clocks make zenoh-router reject incoming data"
+          echo "     ('Error treating timestamp ... exceeding delta 500ms is rejected')"
+          echo "     and the deploy workflow reports false critical_log issues."
+          echo "     ntp.ubuntu.com is often unreachable from 10.1.1.x; the"
+          echo "     sync_time.sh script switches to ru.pool.ntp.org."
+          echo ""
+
+          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
+            "if [ -f ~/rob_box_project/scripts/maintenance/sync_time.sh ]; then \
+               echo 'open' | sudo -S bash ~/rob_box_project/scripts/maintenance/sync_time.sh || true; \
+             else \
+               echo '⚠️  sync_time.sh not found (old code) — skipping'; \
+             fi" \
+            || echo "⚠️  Warning: time sync failed on Main Pi"
+
+      - name: "[Main Pi] Start Containers"
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🚀 Starting Main Pi containers..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          # Ретро 18.08 t_9d35468d: на Vision Pi был race на name-slot после `docker rm -f`
+          # (docker daemon удерживает имя ~5-6s). Защищаем Main Pi тем же набором:
+          # `docker container prune -f` + `--force-recreate` (Stop Containers уже сделал down).
+          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
+            "cd ~/rob_box_project/docker/main && \
+             export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
+             export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
+             if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
+             echo '🔧 retro t_9d35468d: prune stale containers + force-recreate'; \
+             docker container prune -f 2>/dev/null || true; \
+             docker compose up -d --force-recreate --pull never"
+
+      # ==================== INITIALIZATION WAIT ====================
+
+      - name: "Wait for Container Initialization"
+        if: '!inputs.dry_run'
+        id: wait_init
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "⏳ Waiting for containers to initialize..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          sleep 30
+          echo "✅ Initialization wait complete"
+
+      # ==================== POST-DEPLOY CLEANUP ====================
+
+      - name: "[Vision Pi] Cleanup Docker Artifacts"
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🧹 Cleaning up unused Docker artifacts on Vision Pi..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
+            "docker system df && \
+             docker image prune -af && \
+             docker builder prune -af && \
+             docker system df" \
+            || echo "⚠️  Warning: Docker cleanup failed on Vision Pi"
+
+      - name: "[Main Pi] Cleanup Docker Artifacts"
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🧹 Cleaning up unused Docker artifacts on Main Pi..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
+            "docker system df && \
+             docker image prune -af && \
+             docker builder prune -af && \
+             docker system df" \
+            || echo "⚠️  Warning: Docker cleanup failed on Main Pi"
+
+      # ==================== HEALTH CHECKS ====================
+
+      - name: "[Vision Pi] Check Container Status"
+        if: '!inputs.dry_run'
+        id: vision_status
+        # Source-of-truth для логики вынесен в .github/scripts/check_container_status.sh
+        # (рефакторинг после #2122 — ретро run 34153246013). Скрипт покрыт
+        # регрессионным тестом .github/scripts/tests/test_check_container_status.sh
+        # (14 ассертов, 7 сценариев) и CI G-Check-Container-Status-Tests. Здесь
+        # только тонкий wrapper: выставляем env и парсим JSON-результат.
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🔍 Checking Vision Pi container status..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+
+          # CONFIRM_INTERVAL=15 не новая константа: это уже принятое в этом
+          # workflow значение SSH keepalive (ServerAliveInterval=5 ×
+          # ServerAliveCountMax=3, см. "Setup SSH and Environment") и совпадает
+          # с interval: 15s healthcheck самого quest-сервиса.
+          PI_HOST="${{ env.vision_pi_ip }}" \
+          PI_USER=ros2 \
+          PI_PASSWORD=open \
+          PI_COMPOSE_DIR='~/rob_box_project/docker/vision' \
+          PI_SSH_OPTS="$SSH_OPTS" \
+          CONFIRM_INTERVAL=15 \
+          SUMMARY_FILE=vision_status_summary.txt \
+          FINDINGS_FILE="$VISION_FINDINGS_FILE" \
+          ENVIRONMENT="${{ inputs.environment }}" \
+          SCOPE=vision \
+            bash .github/scripts/check_container_status.sh > /tmp/vision_status.json
+
+          # Гарантируем наличие файла (на случай если скрипт упал до записи)
+          touch vision_status_summary.txt
+
+          VISION_HEALTHY=$(jq -r '.healthy' /tmp/vision_status.json)
+          VISION_FAILED_COUNT=$(jq -r '.failed_count' /tmp/vision_status.json)
+
+          echo "vision_healthy=$VISION_HEALTHY" >> $GITHUB_OUTPUT
+          echo "failed_count=$VISION_FAILED_COUNT" >> $GITHUB_OUTPUT
+
+          if [ "$VISION_HEALTHY" = "true" ]; then
+            echo "✅ All Vision Pi containers running and confirmed stable"
+          else
+            echo "❌ $VISION_FAILED_COUNT container(s) unhealthy on Vision Pi"
+            echo "--- vision_status_summary.txt ---"
+            cat vision_status_summary.txt
+          fi
+
+      - name: "[Main Pi] Check Container Status"
+        if: '!inputs.dry_run'
+        id: main_status
+        # См. комментарий в "[Vision Pi] Check Container Status" — та же
+        # логика (двухзамерная проверка через docker inspect, см. скрипт
+        # .github/scripts/check_container_status.sh), но для Main Pi.
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🔍 Checking Main Pi container status..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+
+          PI_HOST="${{ env.main_pi_ip }}" \
+          PI_USER=ros2 \
+          PI_PASSWORD=open \
+          PI_COMPOSE_DIR='~/rob_box_project/docker/main' \
+          PI_SSH_OPTS="$SSH_OPTS" \
+          CONFIRM_INTERVAL=15 \
+          SUMMARY_FILE=main_status_summary.txt \
+          FINDINGS_FILE="$MAIN_FINDINGS_FILE" \
+          ENVIRONMENT="${{ inputs.environment }}" \
+          SCOPE=main \
+            bash .github/scripts/check_container_status.sh > /tmp/main_status.json
+
+          touch main_status_summary.txt
+
+          MAIN_HEALTHY=$(jq -r '.healthy' /tmp/main_status.json)
+          MAIN_FAILED_COUNT=$(jq -r '.failed_count' /tmp/main_status.json)
+
+          echo "main_healthy=$MAIN_HEALTHY" >> $GITHUB_OUTPUT
+          echo "failed_count=$MAIN_FAILED_COUNT" >> $GITHUB_OUTPUT
+
+          if [ "$MAIN_HEALTHY" = "true" ]; then
+            echo "✅ All Main Pi containers running and confirmed stable"
+          else
+            echo "❌ $MAIN_FAILED_COUNT container(s) unhealthy on Main Pi"
+            echo "--- main_status_summary.txt ---"
+            cat main_status_summary.txt
+          fi
+
+      - name: "[Vision Pi] Check Container Logs"
+        if: '!inputs.dry_run'
+        id: vision_logs
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📋 Checking Vision Pi container logs..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          # Создаем временный файл для сбора логов
+          LOGS_FILE="vision_logs.txt"
+          echo "" > $LOGS_FILE
+
+          # Получаем список контейнеров
+          CONTAINERS=$(sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
+            'cd ~/rob_box_project/docker/vision && docker compose ps --format json' | jq -r '.Name')
+
+          # Define error exclusion patterns
+          # NOTE: These patterns are redefined in each section (Vision Pi, Main Pi)
+          # because GitHub Actions workflow steps don't share shell variable scope.
+          # This is intentional and not a DRY violation.
+          
+          # Common patterns (used on both Pi)
+          EXCLUDE_COMMON="Serial port /dev/ttyUSB0|Loki.*connection|entry too far behind"
+          EXCLUDE_COMMON="$EXCLUDE_COMMON|could not inspect container|could not fetch logs"
+          EXCLUDE_COMMON="$EXCLUDE_COMMON|Scouting delay elapsed|No such container"
+          # Promtail connection errors when monitoring system is not available
+          EXCLUDE_COMMON="$EXCLUDE_COMMON|error sending batch.*loki.*push|Post.*loki.*push"
+          EXCLUDE_COMMON="$EXCLUDE_COMMON|context deadline exceeded|dial tcp.*3100.*no route to host"
+          
+          # Warning exclusion patterns
+          EXCLUDE_WARN_COMMON="Scouting delay elapsed|Нода не найдена|Unknown logical group"
+          # Promtail warnings about monitoring system
+          EXCLUDE_WARN_COMMON="$EXCLUDE_WARN_COMMON|error sending batch.*loki|enable watchConfig"
+
+          CRITICAL_COUNT=0
+          WARNING_COUNT=0
+
+          for container in $CONTAINERS; do
+            echo "Checking logs for: $container"
+
+            # Получаем первые 50 строк (инициализация) и последние 150 строк логов
+            LOGS_START=$(sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
+              "docker logs --tail 10000 $container 2>&1 | head -50")
+            LOGS_END=$(sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
+              "docker logs --tail 150 $container 2>&1")
+            
+            # Объединяем логи для анализа
+            LOGS=$(printf "%s\n---[...SKIPPED MIDDLE LOGS...]---\n%s" "$LOGS_START" "$LOGS_END")
+
+            # Проверяем на критические ошибки через helper c дедуп/false-positive правилами.
+            CRITICAL=$(printf "%s\n" "$LOGS" | \
+              python3 .github/scripts/deployment_issue_dedup.py extract-log --scope vision --severity critical || true)
+            if [ ! -z "$CRITICAL" ]; then
+              CRITICAL_COUNT=$((CRITICAL_COUNT + 1))
+              CRITICAL_SAMPLE=$(printf "%s\n" "$CRITICAL" | sed '/^[[:space:]]*$/d' | head -1)
+              echo "  ❌ CRITICAL errors found in $container"
+              echo "=== $container CRITICAL ERRORS ===" >> $LOGS_FILE
+              echo "$CRITICAL" >> $LOGS_FILE
+              echo "" >> $LOGS_FILE
+              jq -nc \
+                --arg environment "${{ inputs.environment }}" \
+                --arg scope "vision" \
+                --arg container "$container" \
+                --arg kind "critical_log" \
+                --arg severity "critical" \
+                --arg summary "Critical log pattern detected" \
+                --arg raw_text "$CRITICAL_SAMPLE" \
+                '{environment:$environment, scope:$scope, container:$container, kind:$kind, severity:$severity, summary:$summary, raw_text:$raw_text}' \
+                >> "$VISION_FINDINGS_FILE"
+            fi
+
+            # Проверяем на предупреждения через helper c дедуп/false-positive правилами.
+            WARNINGS=$(printf "%s\n" "$LOGS" | \
+              python3 .github/scripts/deployment_issue_dedup.py extract-log --scope vision --severity warning || true)
+            if [ ! -z "$WARNINGS" ]; then
+              WARNING_COUNT=$((WARNING_COUNT + 1))
+              WARNING_SAMPLE=$(printf "%s\n" "$WARNINGS" | sed '/^[[:space:]]*$/d' | head -1)
+              echo "  ⚠️  Warnings found in $container"
+              echo "=== $container WARNINGS ===" >> $LOGS_FILE
+              printf "%s\n" "$WARNINGS" | head -30 >> $LOGS_FILE
+              echo "" >> $LOGS_FILE
+              jq -nc \
+                --arg environment "${{ inputs.environment }}" \
+                --arg scope "vision" \
+                --arg container "$container" \
+                --arg kind "warning_log" \
+                --arg severity "warning" \
+                --arg summary "Warning log pattern detected" \
+                --arg raw_text "$WARNING_SAMPLE" \
+                '{environment:$environment, scope:$scope, container:$container, kind:$kind, severity:$severity, summary:$summary, raw_text:$raw_text}' \
+                >> "$VISION_FINDINGS_FILE"
+            fi
+            
+            # Если найдены критические ошибки, добавляем полный контекст инициализации
+            if [ ! -z "$CRITICAL" ]; then
+              echo "=== $container INITIALIZATION CONTEXT ===" >> $LOGS_FILE
+              echo "$LOGS_START" >> $LOGS_FILE
+              echo "" >> $LOGS_FILE
+            fi
+          done
+
+          echo "critical_count=$CRITICAL_COUNT" >> $GITHUB_OUTPUT
+          echo "warning_count=$WARNING_COUNT" >> $GITHUB_OUTPUT
+
+          # Сохраняем логи как артефакт
+          if [ -s $LOGS_FILE ]; then
+            cat $LOGS_FILE
+            echo "has_issues=true" >> $GITHUB_OUTPUT
+          else
+            echo "✅ No critical errors or warnings found"
+            echo "has_issues=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: "[Main Pi] Check Container Logs"
+        if: '!inputs.dry_run'
+        id: main_logs
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📋 Checking Main Pi container logs..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          # Создаем временный файл для сбора логов
+          LOGS_FILE="main_logs.txt"
+          echo "" > $LOGS_FILE
+
+          # Получаем список контейнеров
+          CONTAINERS=$(sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
+            'cd ~/rob_box_project/docker/main && docker compose ps --format json' | jq -r '.Name')
+
+          # Define error exclusion patterns
+          # NOTE: These patterns are redefined here (same as Vision Pi section)
+          # because GitHub Actions workflow steps don't share shell variable scope.
+          # This is intentional and not a DRY violation.
+          
+          # Common patterns (used on both Pi)
+          EXCLUDE_COMMON="Serial port /dev/ttyUSB0|Loki.*connection|entry too far behind"
+          EXCLUDE_COMMON="$EXCLUDE_COMMON|could not inspect container|could not fetch logs"
+          EXCLUDE_COMMON="$EXCLUDE_COMMON|Scouting delay elapsed|No such container"
+          # Promtail connection errors when monitoring system is not available
+          EXCLUDE_COMMON="$EXCLUDE_COMMON|error sending batch.*loki.*push|Post.*loki.*push"
+          EXCLUDE_COMMON="$EXCLUDE_COMMON|context deadline exceeded|dial tcp.*3100.*no route to host"
+          
+          # Main Pi specific exclusions (includes common + additional patterns)
+          EXCLUDE_MAIN="$EXCLUDE_COMMON|Robot is out of bounds|Cannot transform tag pose"
+          EXCLUDE_MAIN="$EXCLUDE_MAIN|Sensor origin.*out of map bounds|CAN controller state: ERROR-ACTIVE"
+          
+          # Warning exclusion patterns
+          # Common warning patterns (used on both Pi)
+          EXCLUDE_WARN_COMMON="Scouting delay elapsed|Нода не найдена|Unknown logical group"
+          # Promtail warnings about monitoring system
+          EXCLUDE_WARN_COMMON="$EXCLUDE_WARN_COMMON|error sending batch.*loki|enable watchConfig"
+          
+          # Main Pi inherits from common + adds specific patterns
+          EXCLUDE_WARN_MAIN="$EXCLUDE_WARN_COMMON|could not find a connection.*tree"
+          EXCLUDE_WARN_MAIN="$EXCLUDE_WARN_MAIN|root link.*inertia|No real-time kernel"
+
+          CRITICAL_COUNT=0
+          WARNING_COUNT=0
+
+          for container in $CONTAINERS; do
+            echo "Checking logs for: $container"
+
+            # Получаем первые 50 строк (инициализация) и последние 150 строк логов
+            LOGS_START=$(sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
+              "docker logs --tail 10000 $container 2>&1 | head -50")
+            LOGS_END=$(sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
+              "docker logs --tail 150 $container 2>&1")
+            
+            # Объединяем логи для анализа
+            LOGS=$(printf "%s\n---[...SKIPPED MIDDLE LOGS...]---\n%s" "$LOGS_START" "$LOGS_END")
+
+            # Проверяем на критические ошибки через helper c дедуп/false-positive правилами.
+            CRITICAL=$(printf "%s\n" "$LOGS" | \
+              python3 .github/scripts/deployment_issue_dedup.py extract-log --scope main --severity critical || true)
+            if [ ! -z "$CRITICAL" ]; then
+              CRITICAL_COUNT=$((CRITICAL_COUNT + 1))
+              CRITICAL_SAMPLE=$(printf "%s\n" "$CRITICAL" | sed '/^[[:space:]]*$/d' | head -1)
+              echo "  ❌ CRITICAL errors found in $container"
+              echo "=== $container CRITICAL ERRORS ===" >> $LOGS_FILE
+              echo "$CRITICAL" >> $LOGS_FILE
+              echo "" >> $LOGS_FILE
+              jq -nc \
+                --arg environment "${{ inputs.environment }}" \
+                --arg scope "main" \
+                --arg container "$container" \
+                --arg kind "critical_log" \
+                --arg severity "critical" \
+                --arg summary "Critical log pattern detected" \
+                --arg raw_text "$CRITICAL_SAMPLE" \
+                '{environment:$environment, scope:$scope, container:$container, kind:$kind, severity:$severity, summary:$summary, raw_text:$raw_text}' \
+                >> "$MAIN_FINDINGS_FILE"
+            fi
+
+            # Проверяем на предупреждения через helper c дедуп/false-positive правилами.
+            WARNINGS=$(printf "%s\n" "$LOGS" | \
+              python3 .github/scripts/deployment_issue_dedup.py extract-log --scope main --severity warning || true)
+            if [ ! -z "$WARNINGS" ]; then
+              WARNING_COUNT=$((WARNING_COUNT + 1))
+              WARNING_SAMPLE=$(printf "%s\n" "$WARNINGS" | sed '/^[[:space:]]*$/d' | head -1)
+              echo "  ⚠️  Warnings found in $container"
+              echo "=== $container WARNINGS ===" >> $LOGS_FILE
+              printf "%s\n" "$WARNINGS" | head -30 >> $LOGS_FILE
+              echo "" >> $LOGS_FILE
+              jq -nc \
+                --arg environment "${{ inputs.environment }}" \
+                --arg scope "main" \
+                --arg container "$container" \
+                --arg kind "warning_log" \
+                --arg severity "warning" \
+                --arg summary "Warning log pattern detected" \
+                --arg raw_text "$WARNING_SAMPLE" \
+                '{environment:$environment, scope:$scope, container:$container, kind:$kind, severity:$severity, summary:$summary, raw_text:$raw_text}' \
+                >> "$MAIN_FINDINGS_FILE"
+            fi
+            
+            # Если найдены критические ошибки, добавляем полный контекст инициализации
+            if [ ! -z "$CRITICAL" ]; then
+              echo "=== $container INITIALIZATION CONTEXT ===" >> $LOGS_FILE
+              echo "$LOGS_START" >> $LOGS_FILE
+              echo "" >> $LOGS_FILE
+            fi
+          done
+
+          echo "critical_count=$CRITICAL_COUNT" >> $GITHUB_OUTPUT
+          echo "warning_count=$WARNING_COUNT" >> $GITHUB_OUTPUT
+
+          # Сохраняем логи как артефакт
+          if [ -s $LOGS_FILE ]; then
+            cat $LOGS_FILE
+            echo "has_issues=true" >> $GITHUB_OUTPUT
+          else
+            echo "✅ No critical errors or warnings found"
+            echo "has_issues=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: "[Vision Pi] Check ROS2 Topics"
+        if: '!inputs.dry_run'
+        id: vision_topics
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📡 Checking ROS2 topics on Vision Pi..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          # Проверяем топики OAK-D камеры
+          echo "Checking oak-d container topics..."
+          TOPICS=$(sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
+            "docker exec oak-d bash -c 'source /opt/ros/humble/setup.bash && ros2 topic list 2>/dev/null'" || echo "")
+
+          if [ -z "$TOPICS" ]; then
+            echo "❌ No topics found (ROS2 may not be initialized yet)"
+            echo "topics_healthy=false" >> $GITHUB_OUTPUT
+            jq -nc \
+              --arg environment "${{ inputs.environment }}" \
+              --arg scope "vision" \
+              --arg container "oak-d" \
+              --arg kind "topic_check" \
+              --arg severity "critical" \
+              --arg summary "No ROS2 topics found" \
+              --arg raw_text "No ROS2 topics found in oak-d container" \
+              '{environment:$environment, scope:$scope, container:$container, kind:$kind, severity:$severity, summary:$summary, raw_text:$raw_text}' \
+              >> "$VISION_FINDINGS_FILE"
+          else
+            echo "Topics found:"
+            echo "$TOPICS" | grep -E "(oak|camera|rgb|depth)" || echo "  (no camera topics)"
+
+            # Проверяем наличие критически важных топиков
+            # Примечание: OAK-D публикует в /camera/camera/color/* (ретро 12.08:
+            # старое имя /camera/rgb/image_raw/compressed устарело — монитор
+            # плодил ложные Warning-issues #953/#1046, камера работала).
+            EXPECTED_TOPICS="/camera/camera/color/image_raw/compressed"
+            MISSING_TOPICS=""
+
+            for topic in $EXPECTED_TOPICS; do
+              if ! echo "$TOPICS" | grep -q "$topic"; then
+                MISSING_TOPICS="$MISSING_TOPICS $topic"
+              fi
+            done
+
+            if [ ! -z "$MISSING_TOPICS" ]; then
+              echo "⚠️  Missing expected topics:$MISSING_TOPICS"
+              echo "topics_healthy=partial" >> $GITHUB_OUTPUT
+              jq -nc \
+                --arg environment "${{ inputs.environment }}" \
+                --arg scope "vision" \
+                --arg container "oak-d" \
+                --arg kind "topic_check" \
+                --arg severity "warning" \
+                --arg summary "Expected ROS2 topics missing" \
+                --arg raw_text "Missing expected topics:$MISSING_TOPICS" \
+                '{environment:$environment, scope:$scope, container:$container, kind:$kind, severity:$severity, summary:$summary, raw_text:$raw_text}' \
+                >> "$VISION_FINDINGS_FILE"
+            else
+              echo "✅ All expected topics present"
+              echo "topics_healthy=true" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: "[Main Pi] Check ROS2 Topics"
+        if: '!inputs.dry_run'
+        id: main_topics
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📡 Checking ROS2 topics on Main Pi..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          # Проверяем топики в rtabmap контейнере
+          echo "Checking rtabmap container topics..."
+          TOPICS=$(sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
+            "docker exec rtabmap bash -c 'source /opt/ros/humble/setup.bash && ros2 topic list 2>/dev/null'" || echo "")
+
+          if [ -z "$TOPICS" ]; then
+            echo "❌ No topics found (ROS2 may not be initialized yet)"
+            echo "topics_healthy=false" >> $GITHUB_OUTPUT
+            jq -nc \
+              --arg environment "${{ inputs.environment }}" \
+              --arg scope "main" \
+              --arg container "rtabmap" \
+              --arg kind "topic_check" \
+              --arg severity "critical" \
+              --arg summary "No ROS2 topics found" \
+              --arg raw_text "No ROS2 topics found in rtabmap container" \
+              '{environment:$environment, scope:$scope, container:$container, kind:$kind, severity:$severity, summary:$summary, raw_text:$raw_text}' \
+              >> "$MAIN_FINDINGS_FILE"
+          else
+            echo "Topics found:"
+            echo "$TOPICS" | head -20
+
+            # Просто проверяем что есть хоть какие-то топики
+            TOPIC_COUNT=$(echo "$TOPICS" | wc -l)
+            if [ "$TOPIC_COUNT" -gt 5 ]; then
+              echo "✅ ROS2 topics active ($TOPIC_COUNT topics)"
+              echo "topics_healthy=true" >> $GITHUB_OUTPUT
+            else
+              echo "⚠️  Few topics found ($TOPIC_COUNT topics)"
+              echo "topics_healthy=partial" >> $GITHUB_OUTPUT
+              jq -nc \
+                --arg environment "${{ inputs.environment }}" \
+                --arg scope "main" \
+                --arg container "rtabmap" \
+                --arg kind "topic_check" \
+                --arg severity "warning" \
+                --arg summary "Too few ROS2 topics found" \
+                --arg raw_text "Few topics found ($TOPIC_COUNT topics)" \
+                '{environment:$environment, scope:$scope, container:$container, kind:$kind, severity:$severity, summary:$summary, raw_text:$raw_text}' \
+                >> "$MAIN_FINDINGS_FILE"
+            fi
+          fi
+
+      # ==================== ISSUE CREATION (DISABLED: creates too many duplicates) ====================
+      # To re-enable, remove 'if: false' and restore the original condition below
+
+      - name: "Analyze Results and Create Issue"
+        if: false
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🚨 Issues detected, checking for new deployment problems..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          CANDIDATES_FILE="${RUNNER_TEMP}/deployment_issue_candidates.json"
+          OPEN_ISSUES_FILE="${RUNNER_TEMP}/open_deployment_issues.json"
+          NEW_ISSUES_FILE="${RUNNER_TEMP}/new_deployment_issues.json"
+
+          python3 .github/scripts/deployment_issue_dedup.py prepare \
+            --findings-file "$VISION_FINDINGS_FILE" \
+            --findings-file "$MAIN_FINDINGS_FILE" \
+            --branch "${{ github.ref_name }}" \
+            --workflow-run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --timestamp "${{ steps.setup.outputs.timestamp }}" \
+            --vision-pi-ip "${{ env.vision_pi_ip }}" \
+            --main-pi-ip "${{ env.main_pi_ip }}" \
+            > "$CANDIDATES_FILE"
+
+          gh issue list \
+            --repo "${{ github.repository }}" \
+            --state open \
+            --label deployment \
+            --limit 200 \
+            --json number,title,body,url \
+            > "$OPEN_ISSUES_FILE"
+
+          python3 .github/scripts/deployment_issue_dedup.py filter \
+            --candidates-file "$CANDIDATES_FILE" \
+            --issues-file "$OPEN_ISSUES_FILE" \
+            > "$NEW_ISSUES_FILE"
+
+          TOTAL_FOUND=$(jq 'length' "$CANDIDATES_FILE")
+          TOTAL_NEW=$(jq 'length' "$NEW_ISSUES_FILE")
+          TOTAL_SKIPPED=$((TOTAL_FOUND - TOTAL_NEW))
+
+          echo "Found deployment problems: $TOTAL_FOUND"
+          echo "Skipped as existing duplicates: $TOTAL_SKIPPED"
+          echo "New issues to create: $TOTAL_NEW"
+
+          if [ "$TOTAL_NEW" -eq 0 ]; then
+            echo "✅ No new deployment issues found; all problems already tracked"
+            exit 0
+          fi
+
+          jq -c '.[]' "$NEW_ISSUES_FILE" | while read -r issue; do
+            TITLE=$(echo "$issue" | jq -r '.title')
+            ASSIGNEE=$(echo "$issue" | jq -r '.assignee')
+            BODY_FILE=$(mktemp)
+            echo "$issue" | jq -r '.body' > "$BODY_FILE"
+
+            LABEL_ARGS=()
+            while IFS= read -r label; do
+              LABEL_ARGS+=(--label "$label")
+            done < <(echo "$issue" | jq -r '.labels[]')
+
+            gh issue create \
+              --repo "${{ github.repository }}" \
+              --title "$TITLE" \
+              --body-file "$BODY_FILE" \
+              --assignee "$ASSIGNEE" \
+              "${LABEL_ARGS[@]}"
+
+            rm -f "$BODY_FILE"
+            echo "✅ Created issue: $TITLE"
+          done
+
+      # ==================== SUMMARY ====================
+
+      - name: "Deployment Summary"
+        id: deploy_summary
+        if: always() && !inputs.dry_run
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📊 DEPLOYMENT SUMMARY"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+          echo "Branch: ${{ github.ref_name }}"
+          echo "Environment: ${{ inputs.environment }}"
+          echo "Image Tag: ${{ env.IMAGE_TAG }}"
+          echo "Registry: ${{ env.registry_display }}"
+          echo "Timestamp: ${{ steps.setup.outputs.timestamp }}"
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "Vision Pi (${{ env.vision_pi_ip }})"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "Containers Healthy: ${{ steps.vision_status.outputs.vision_healthy || 'unknown' }}"
+          echo "Failed Containers: ${{ steps.vision_status.outputs.failed_count || '0' }}"
+          echo "Critical Errors: ${{ steps.vision_logs.outputs.critical_count || '0' }}"
+          echo "Warnings: ${{ steps.vision_logs.outputs.warning_count || '0' }}"
+          echo "Topics Status: ${{ steps.vision_topics.outputs.topics_healthy || 'unknown' }}"
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "Main Pi (${{ env.main_pi_ip }})"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "Containers Healthy: ${{ steps.main_status.outputs.main_healthy || 'unknown' }}"
+          echo "Failed Containers: ${{ steps.main_status.outputs.failed_count || '0' }}"
+          echo "Critical Errors: ${{ steps.main_logs.outputs.critical_count || '0' }}"
+          echo "Warnings: ${{ steps.main_logs.outputs.warning_count || '0' }}"
+          echo "Topics Status: ${{ steps.main_topics.outputs.topics_healthy || 'unknown' }}"
+          echo ""
+
+          # Определяем общий статус
+          # Ретро 22.08 #1522 (round-179 false-positive): если run был отменён
+          # пользователем или job прервался до Check Container Status —
+          # outputs vision_healthy/main_healthy пустые, и старое условие
+          # ложно срабатывало на "❌ DEPLOYMENT COMPLETED WITH ISSUES" +
+          # создавался deploy-issue. Теперь распознаём отменённый/прерванный run
+          # явно: ни success, ни issues → отдельный статус "cancelled".
+          if [ "${{ steps.wait_init.conclusion }}" = "cancelled" ] || \
+             [ "${{ steps.wait_init.conclusion }}" = "skipped" ]; then
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "⚠️  DEPLOYMENT RUN CANCELLED OR SKIPPED"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "Run was cancelled by user or interrupted before health checks completed."
+            echo "Container Status: ${{ steps.vision_status.outputs.vision_healthy || 'unknown' }} / ${{ steps.main_status.outputs.main_healthy || 'unknown' }}"
+            echo "No deploy-issue will be created — this is not a deployment failure."
+            echo "deploy_status=cancelled" >> "$GITHUB_OUTPUT"
+          elif [ "${{ steps.vision_status.outputs.vision_healthy }}" == "true" ] && \
+               [ "${{ steps.main_status.outputs.main_healthy }}" == "true" ] && \
+               [ "${{ steps.vision_logs.outputs.critical_count || 0 }}" -eq 0 ] && \
+               [ "${{ steps.main_logs.outputs.critical_count || 0 }}" -eq 0 ]; then
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "✅ DEPLOYMENT SUCCESSFUL"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "deploy_status=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "❌ DEPLOYMENT COMPLETED WITH ISSUES"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "Check the logs above and created GitHub issue for details"
+            echo "deploy_status=issues" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ==================== ISSUE CREATION (retro 14.08 t_d01fe536 + 15.08 t_feca724c) ====================
+      # Ретро 14.08 t_d01fe536: deploy round-109 упал на compose-конфликте
+      # voice-resources-init ('DEPLOYMENT COMPLETED WITH ISSUES', Critical: 0 /
+      # Failed Containers: 0) — issue НЕ создавался, потому что старый шаг
+      # «Analyze Results and Create Issue» выше отключён (if: false, плодил
+      # дубликаты) и срабатывал только на critical-findings из логов. Теперь
+      # ЛЮБОЙ 'DEPLOYMENT COMPLETED WITH ISSUES' → один issue на (branch, env, день),
+      # дедуп по маркеру в body.
+      # Ретро 15.08 t_feca724c: issues создавались БЕЗ метки hermes → агентный
+      # триаж их не видел, карточек не было, воркеры не обрабатывали (#1246/#1260
+      # висели OPEN сутками). Теперь при создании проставляем hermes (триаж
+      # превратит в kanban-карточку) + agent:devops (роль воркера — деплой-проблемы
+      # это зона devops). deploy-sweep пропускает такие issue (нет
+      # deploy-problem-сигнатуры) — они идут в триаж, а не в auto-close.
+
+      - name: "🚨 Create Deployment Issue (any issues)"
+        if: always() && !inputs.dry_run && steps.deploy_summary.outputs.deploy_status == 'issues'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🚨 Deployment completed with issues — creating GitHub issue..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          BRANCH="${{ github.ref_name }}"
+          ENV_NAME="${{ inputs.environment }}"
+          TS="${{ steps.setup.outputs.timestamp }}"
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          MARKER="deploy-fail:${BRANCH}:${ENV_NAME}:$(date -u +%Y-%m-%d)"
+
+          # DoD (branch z-{agent}/deploy-verify-catch-restarting): issue должен
+          # содержать имя контейнера, его State.Status и хвост логов, а не только
+          # ссылку на run. vision_status_summary.txt/main_status_summary.txt
+          # (из "[Vision/Main Pi] Check Container Status") и
+          # vision_logs.txt/main_logs.txt (из "[Vision/Main Pi] Check Container
+          # Logs") — файлы в рабочей директории джобы, живут между шагами одного
+          # job на self-hosted runner (checkout --clean был только один раз в
+          # начале job).
+          DIAGNOSTICS_FILE="$(mktemp)"
+          : > "$DIAGNOSTICS_FILE"
+          for f in vision_status_summary.txt main_status_summary.txt; do
+            if [ -s "$f" ]; then
+              SCOPE_LABEL="Vision Pi"; [ "$f" = "main_status_summary.txt" ] && SCOPE_LABEL="Main Pi"
+              {
+                echo "### ${SCOPE_LABEL}: unhealthy/restart-looping containers"
+                echo '```'
+                cat "$f"
+                echo '```'
+                echo ''
+              } >> "$DIAGNOSTICS_FILE"
+            fi
+          done
+          for f in vision_logs.txt main_logs.txt; do
+            if [ -s "$f" ]; then
+              SCOPE_LABEL="Vision Pi"; [ "$f" = "main_logs.txt" ] && SCOPE_LABEL="Main Pi"
+              {
+                echo "### ${SCOPE_LABEL}: log tail (critical/warning findings)"
+                echo '```'
+                tail -c 4000 "$f"
+                echo '```'
+                echo ''
+              } >> "$DIAGNOSTICS_FILE"
+            fi
+          done
+
+          # Дедуп: открытый issue с тем же маркером уже есть → не плодим дубликат,
+          # только комментируем новый run (ретро 14.08: старый шаг был отключён
+          # именно из-за дубликатов).
+          EXISTING="$(gh issue list --repo "${{ github.repository }}" --label deployment --state open --limit 200 --json number,body 2>/dev/null | jq --arg m "$MARKER" '[.[] | select(.body | contains($m))][0].number // empty' 2>/dev/null || true)"
+          if [ -n "$EXISTING" ]; then
+            echo "✅ Issue #${EXISTING} already tracks ${BRANCH}/${ENV_NAME} today — skip create, comment run"
+            # Ретро 15.08 t_feca724c: старые deploy-issues (созданные до фикса)
+            # не имеют hermes-метки → триаж их не видит. Догоняем метки здесь,
+            # чтобы существующий issue тоже стал kanban-карточкой.
+            gh issue edit "$EXISTING" --repo "${{ github.repository }}" --add-label hermes --add-label agent:devops >/dev/null 2>&1 || true
+            COMMENT_FILE="$(mktemp)"
+            {
+              echo "Ещё один failing deploy run: $RUN_URL"
+              echo ''
+              cat "$DIAGNOSTICS_FILE"
+            } > "$COMMENT_FILE"
+            gh issue comment "$EXISTING" --repo "${{ github.repository }}" --body-file "$COMMENT_FILE" >/dev/null 2>&1 || true
+            rm -f "$COMMENT_FILE" "$DIAGNOSTICS_FILE"
+            exit 0
+          fi
+
+          BODY_FILE="$(mktemp)"
+          {
+            printf '%s\n' \
+              '## 🚨 Deployment Completed With Issues' \
+              '' \
+              "<!-- deploy-signature: ${MARKER} -->" \
+              '' \
+              "**Branch:** \`${BRANCH}\`" \
+              "**Environment:** \`${ENV_NAME}\`" \
+              "**Timestamp:** ${TS}" \
+              "**Workflow Run:** ${RUN_URL}" \
+              '' \
+              'Deployment completed with issues (non-success status). See details below and the workflow log.' \
+              ''
+            cat "$DIAGNOSTICS_FILE"
+          } > "$BODY_FILE"
+          rm -f "$DIAGNOSTICS_FILE"
+
+          gh issue create \
+            --repo "${{ github.repository }}" \
+            --title "🚨 Deploy issues on ${BRANCH} (${ENV_NAME}) — $(date -u +%Y-%m-%d)" \
+            --body-file "$BODY_FILE" \
+            --label deployment \
+            --label hermes \
+            --label agent:devops \
+            >/dev/null 2>&1 \
+            && echo "✅ Created deployment issue for ${BRANCH} (${ENV_NAME}) [labels: deployment, hermes, agent:devops]" \
+            || echo "⚠️  Failed to create deployment issue (may already exist)"
+          rm -f "$BODY_FILE"
+
+      - name: "Dry Run Summary"
+        if: inputs.dry_run
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "✅ DRY RUN COMPLETED"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+          echo "This was a dry run. No actual deployment was performed."
+          echo "The workflow would have deployed:"
+          echo "  Branch: ${{ github.ref_name }}"
+          echo "  Environment: ${{ inputs.environment }}"
+          echo "  Image Tag: ${{ env.IMAGE_TAG }}"
+          echo "  Registry: ${{ env.registry_display }}"
+          echo "  Vision Pi: ${{ env.vision_pi_ip }}"
+          echo "  Main Pi: ${{ env.main_pi_ip }}"
+          echo ""
+          echo "To perform actual deployment, run without dry_run flag."

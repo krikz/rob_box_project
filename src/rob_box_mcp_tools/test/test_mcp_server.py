@@ -1,0 +1,561 @@
+"""Unit tests for MCP server startup behavior."""
+
+import importlib.util
+import os
+import sys
+import types
+from pathlib import Path
+from unittest.mock import MagicMock
+
+import pytest
+
+
+class _FakeRegistry:
+    def __init__(self):
+        self.tools = []
+
+    def register(self, tool):
+        self.tools.append(tool.name)
+
+
+class _FakeLogger:
+    def __init__(self):
+        self.info_messages = []
+        self.error_messages = []
+        self.warning_messages = []
+        self.debug_messages = []
+
+    def info(self, message):
+        self.info_messages.append(message)
+
+    def error(self, message):
+        self.error_messages.append(message)
+
+    def warning(self, message):
+        self.warning_messages.append(message)
+
+    def debug(self, message):
+        self.debug_messages.append(message)
+
+
+class _FakeParameter:
+    def __init__(self, value):
+        self.value = value
+
+
+class _FakeServer:
+    def __init__(self):
+        self.registry = _FakeRegistry()
+        self.waypoint_store = object()
+        self.mapping_state = object()
+        self._logger = _FakeLogger()
+        self.stop_generated_track_playback_calls = 0
+        self.publish_music_state_calls = 0
+
+    def get_parameter(self, name):
+        # ``_register_music_tools`` reads both — the second (music_master_gain)
+        # was added after this fixture was first written (same drift as the
+        # tool-import fallback above).
+        assert name in ("music_max_amp", "music_master_gain")
+        return _FakeParameter(0.7)
+
+    def get_logger(self):
+        return self._logger
+
+    def get_current_pose_snapshot(self):
+        return None
+
+    def stop_generated_track_playback(self):
+        self.stop_generated_track_playback_calls += 1
+
+    def publish_music_state(self):
+        self.publish_music_state_calls += 1
+
+
+def _make_tool_class(tool_name):
+    class _Tool:
+        def __init__(self, *args, **kwargs):
+            self.name = tool_name
+
+    return _Tool
+
+
+def _install_fake_mcp_server_dependencies(monkeypatch):
+    rclpy = types.ModuleType("rclpy")
+    rclpy_node = types.ModuleType("rclpy.node")
+    rclpy_callback_groups = types.ModuleType("rclpy.callback_groups")
+    rclpy_qos = types.ModuleType("rclpy.qos")
+    std_msgs = types.ModuleType("std_msgs")
+    std_msgs_msg = types.ModuleType("std_msgs.msg")
+    registry_module = types.ModuleType("rob_box_mcp_tools.registry")
+    tools_module = types.ModuleType("rob_box_mcp_tools.tools")
+    waypoint_store_module = types.ModuleType("rob_box_mcp_tools.waypoint_store")
+    mapping_state_module = types.ModuleType("rob_box_mcp_tools.mapping_state")
+
+    class Node:
+        pass
+
+    class ReentrantCallbackGroup:
+        pass
+
+    class QoSProfile:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    class ReliabilityPolicy:
+        RELIABLE = 1
+
+    class HistoryPolicy:
+        KEEP_LAST = 1
+
+    class DurabilityPolicy:
+        # Issue #1812: mcp_server.py's ``publish_tools`` QoS (line ~203)
+        # gained a ``durability=DurabilityPolicy.TRANSIENT_LOCAL`` at some
+        # point after this fake ``rclpy.qos`` stub was written, so every
+        # test using ``_load_mcp_server_module`` started failing at import
+        # time with ``ImportError: cannot import name 'DurabilityPolicy'``
+        # — an infra gap, unrelated to any one feature, that happened to
+        # surface again with the watchdog tests added here.
+        TRANSIENT_LOCAL = 1
+
+    class String:
+        def __init__(self):
+            self.data = ""
+
+    class MCPToolRegistry:
+        pass
+
+    class WaypointStore:
+        pass
+
+    class MappingState:
+        pass
+
+    tool_names = {
+        "NavigateToWaypointTool": "navigate_to_waypoint",
+        "NavigateToCoordinatesTool": "navigate_to_coordinates",
+        "MoveDirectionTool": "move_direction",
+        "StopNavigationTool": "stop_navigation",
+        "ListWaypointsTool": "list_waypoints",
+        "SaveWaypointTool": "save_waypoint",
+        "DeleteWaypointTool": "delete_waypoint",
+        "ClearWaypointsTool": "clear_waypoints",
+        "GetCurrentPoseTool": "get_current_pose",
+        "SetVolumeTool": "set_volume",
+        "SetPitchTool": "set_pitch",
+        "SetSpeedTool": "set_speed",
+        "GetRobotStatusTool": "get_robot_status",
+        "GetCurrentTimeTool": "get_current_time",
+        "GetPerceptionContextTool": "get_perception_context",
+        "GetBatteryLevelTool": "get_battery_level",
+        "StartMappingTool": "start_mapping",
+        "ContinueMappingTool": "continue_mapping",
+        "FinishMappingTool": "finish_mapping",
+        "OptimizeMapTool": "optimize_map",
+        "LoadMapTool": "load_map",
+        "PlayAnimationTool": "play_animation",
+        "PlaySoundTool": "play_sound",
+        "GetSoundInfoTool": "get_sound_info",
+        "SpeakTextTool": "speak_text",
+        "ListenForResponseTool": "listen_for_response",
+        "EstimateTtsDurationTool": "estimate_tts_duration",
+        "RegisterSpeakerTool": "register_speaker",
+        "SetVoiceTool": "set_voice",
+        "MemorySaveTool": "memory_save",
+        "MemorySearchTool": "memory_search",
+        "MemoryContextTool": "memory_context",
+        "ExecuteMusicCodeTool": "execute_music_code",
+        "StopMusicTool": "stop_music",
+        "SetVibePresetTool": "set_vibe_preset",
+        "GetMusicStateTool": "get_music_state",
+        "SaveTrackTool": "save_track",
+        "ListTracksTool": "list_tracks",
+        "LoadTrackTool": "load_track",
+        "DeleteTrackTool": "delete_track",
+        "SetDjModeTool": "set_dj_mode",
+        "SearchSamplesTool": "search_samples",
+        "FaqSearchTool": "faq_search",
+        "SearchWebTool": "search_web",
+    }
+
+    for class_name, tool_name in tool_names.items():
+        setattr(tools_module, class_name, _make_tool_class(tool_name))
+
+    def _tools_module_fallback(name):
+        """Issue #1812: ``mcp_server.py`` has grown far more tool imports
+        (compose_music, generate_music, set_tts_provider, task_delta, ...)
+        than this fixture's hand-curated ``tool_names`` map tracks, so the
+        whole module failed to import — one missing name at a time — every
+        time a new tool was added upstream. PEP 562 module ``__getattr__``:
+        anything not explicitly listed above gets a generic stub instead of
+        an ``ImportError``; only tests that actually care about a tool's
+        identity/behaviour need to list it in ``tool_names``.
+
+        Must raise ``AttributeError`` (not synthesize a stub) for dunder
+        names like ``__path__``/``__all__`` — the import machinery probes
+        those to decide whether this is a package, and handing back a
+        class instead of ``None``/a list breaks it with a confusing
+        ``TypeError: 'type' object is not iterable``.
+        """
+        if name.startswith("__") and name.endswith("__"):
+            raise AttributeError(name)
+        return _make_tool_class(name)
+
+    tools_module.__getattr__ = _tools_module_fallback
+
+    class MusicManager:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    class TrackLibrary:
+        def __init__(self, *args, **kwargs):
+            raise FileNotFoundError("missing 004_music_library.sql")
+
+    tools_module.MusicManager = MusicManager
+    tools_module.TrackLibrary = TrackLibrary
+
+    rclpy_node.Node = Node
+    rclpy_callback_groups.ReentrantCallbackGroup = ReentrantCallbackGroup
+    rclpy_qos.QoSProfile = QoSProfile
+    rclpy_qos.ReliabilityPolicy = ReliabilityPolicy
+    rclpy_qos.HistoryPolicy = HistoryPolicy
+    rclpy_qos.DurabilityPolicy = DurabilityPolicy
+    std_msgs_msg.String = String
+    registry_module.MCPToolRegistry = MCPToolRegistry
+    waypoint_store_module.WaypointStore = WaypointStore
+    mapping_state_module.MappingState = MappingState
+
+    monkeypatch.setitem(sys.modules, "rclpy", rclpy)
+    monkeypatch.setitem(sys.modules, "rclpy.node", rclpy_node)
+    monkeypatch.setitem(sys.modules, "rclpy.callback_groups", rclpy_callback_groups)
+    monkeypatch.setitem(sys.modules, "rclpy.qos", rclpy_qos)
+    monkeypatch.setitem(sys.modules, "std_msgs", std_msgs)
+    monkeypatch.setitem(sys.modules, "std_msgs.msg", std_msgs_msg)
+    monkeypatch.setitem(sys.modules, "rob_box_mcp_tools.registry", registry_module)
+    monkeypatch.setitem(sys.modules, "rob_box_mcp_tools.tools", tools_module)
+    monkeypatch.setitem(sys.modules, "rob_box_mcp_tools.waypoint_store", waypoint_store_module)
+    monkeypatch.setitem(sys.modules, "rob_box_mcp_tools.mapping_state", mapping_state_module)
+
+
+def _load_mcp_server_module(monkeypatch):
+    _install_fake_mcp_server_dependencies(monkeypatch)
+    module_path = Path(__file__).resolve().parents[1] / "rob_box_mcp_tools" / "mcp_server.py"
+    spec = importlib.util.spec_from_file_location("rob_box_mcp_tools.mcp_server", module_path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.unit
+def test_register_tools_skips_track_library_failures_without_crashing(monkeypatch):
+    module = _load_mcp_server_module(monkeypatch)
+    server = _FakeServer()
+    server._register_music_tools = lambda: module.MCPServer._register_music_tools(server)
+
+    module.MCPServer._register_tools(server)
+
+    assert "start_mapping" in server.registry.tools
+    assert "execute_music_code" in server.registry.tools
+    assert "set_dj_mode" in server.registry.tools
+    assert "save_track" not in server.registry.tools
+    assert "list_tracks" not in server.registry.tools
+    assert any("Music library disabled" in msg for msg in server.get_logger().error_messages)
+
+
+@pytest.mark.unit
+def test_recommended_executor_threads_never_returns_less_than_two(monkeypatch):
+    module = _load_mcp_server_module(monkeypatch)
+
+    monkeypatch.setattr(os, "sched_getaffinity", lambda pid: {0}, raising=False)
+
+    assert module._recommended_executor_threads() == 2
+
+
+@pytest.mark.unit
+def test_recommended_executor_threads_uses_affinity_when_available(monkeypatch):
+    module = _load_mcp_server_module(monkeypatch)
+
+    monkeypatch.setattr(os, "sched_getaffinity", lambda pid: {0, 1, 2, 3}, raising=False)
+
+    assert module._recommended_executor_threads() == 4
+
+
+# ---------------------------------------------------------------------------
+# Issue #1016 — empty-response music fallback (/mcp/music_fallback)
+# ---------------------------------------------------------------------------
+
+
+class _FakeLibrary:
+    def __init__(self, tracks):
+        self._tracks = tracks
+
+    def list_tracks(self, min_rating=0):
+        return {"success": True, "tracks": self._tracks, "total": len(self._tracks)}
+
+    def load_track(self, name):
+        for t in self._tracks:
+            if t["name"] == name:
+                return {"success": True, "code": f"# {name} code", "track": t}
+        return {"success": False, "error": f"Трек '{name}' не найден"}
+
+
+@pytest.mark.unit
+def test_music_fallback_plays_top_rated_track(monkeypatch):
+    """LLM пустой ответ → /mcp/music_fallback → играет топ-трек (rating DESC)."""
+    module = _load_mcp_server_module(monkeypatch)
+    manager = MagicMock()
+    manager.execute_code.return_value = {"success": True, "message": "ok"}
+    library = _FakeLibrary([
+        {"name": "top_track", "rating": 5, "title": "Top"},
+        {"name": "ok_track", "rating": 3, "title": "Ok"},
+    ])
+    server = _FakeServer()
+    server._music_manager = manager
+    server._track_library = library
+
+    msg = module.String()
+    msg.data = '{"reason": "empty_response"}'
+    module.MCPServer._on_music_fallback(server, msg)
+
+    manager.execute_code.assert_called_once()
+    # Первый в списке = с самым высоким rating (ORDER BY rating DESC).
+    args = manager.execute_code.call_args
+    assert args.kwargs["pattern_name"] == "top_track"
+    assert "# top_track code" in args.args[0]
+
+
+@pytest.mark.unit
+def test_music_fallback_skips_when_manager_missing(monkeypatch):
+    module = _load_mcp_server_module(monkeypatch)
+    server = _FakeServer()
+    server._music_manager = None
+    server._track_library = _FakeLibrary([])
+    msg = module.String()
+    msg.data = ""
+    # Не падает и не играет.
+    module.MCPServer._on_music_fallback(server, msg)
+    assert any(
+        "unavailable" in m for m in server.get_logger().warning_messages
+    )
+
+
+@pytest.mark.unit
+def test_music_fallback_skips_when_library_empty(monkeypatch):
+    module = _load_mcp_server_module(monkeypatch)
+    manager = MagicMock()
+    server = _FakeServer()
+    server._music_manager = manager
+    server._track_library = _FakeLibrary([])
+    msg = module.String()
+    msg.data = ""
+    module.MCPServer._on_music_fallback(server, msg)
+    manager.execute_code.assert_not_called()
+    assert any("пуста" in m for m in server.get_logger().warning_messages)
+
+
+@pytest.mark.unit
+def test_music_fallback_subscription_survives_missing_qos_profile(monkeypatch):
+    """Regression 13.08.2026: ``_register_music_tools()`` runs BEFORE
+    ``__init__`` assigns ``self._qos_profile`` → the subscription died
+    with AttributeError (swallowed by try/except) and the empty-response
+    music fallback never got wired on the robot."""
+    module = _load_mcp_server_module(monkeypatch)
+
+    class _OkLibrary:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def list_tracks(self, *args, **kwargs):
+            return {"total": 0, "tracks": []}
+
+    monkeypatch.setattr(module, "TrackLibrary", _OkLibrary)
+    server = _FakeServer()
+    # Stub out _register_minimax_music_tools — added in issue #1392, requires
+    # GeneratedMusicLibrary which isn't available in this test environment.
+    server._register_minimax_music_tools = lambda: None
+    server._on_music_fallback = lambda msg: None
+    assert not hasattr(server, "_qos_profile"), "precondition: init order reproduces the bug"
+    subscriptions: list[tuple[str, object]] = []
+    server.create_subscription = (
+        lambda msg_type, topic, callback, qos: subscriptions.append((topic, qos))
+    )
+
+    module.MCPServer._register_music_tools(server)
+
+    assert any(topic == "/mcp/music_fallback" for topic, _ in subscriptions)
+    assert not any(
+        "Не удалось подписаться" in message
+        for message in server.get_logger().warning_messages
+    )
+
+
+# ---------------------------------------------------------------------------
+# Issue #1229 — /voice/tts/provider_state (фактический провайдер TTS)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_tts_provider_state_updates_actual_provider(monkeypatch):
+    """tts_node публикует фактического провайдера после фолбека → mcp_server
+    запоминает его для валидации голосов в speak_text/set_voice."""
+    module = _load_mcp_server_module(monkeypatch)
+    server = _FakeServer()
+    server.actual_tts_provider = None
+
+    msg = module.String()
+    msg.data = '{"provider": "yandex", "voice": "anton", "reason": "provider_dead"}'
+    module.MCPServer._on_tts_provider_state(server, msg)
+
+    assert server.actual_tts_provider == "yandex"
+
+
+@pytest.mark.unit
+def test_tts_provider_state_ignores_empty_payload(monkeypatch):
+    module = _load_mcp_server_module(monkeypatch)
+    server = _FakeServer()
+    server.actual_tts_provider = None
+
+    msg = module.String()
+    msg.data = "not-json"
+    module.MCPServer._on_tts_provider_state(server, msg)
+    assert server.actual_tts_provider is None
+
+    msg2 = module.String()
+    msg2.data = ""
+    module.MCPServer._on_tts_provider_state(server, msg2)
+    assert server.actual_tts_provider is None
+
+
+# ---------------------------------------------------------------------------
+# Issue #1812 — music watchdog idle-TTL parameter + form-end protection
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_music_watchdog_idle_ttl_defaults_to_1800(monkeypatch):
+    """300s ("слушаю музыку" читалось как простой) → 1800s (30 min).
+
+    Same env-var-backed pattern as ``_music_watchdog_period_s`` /
+    ``_music_watchdog_enabled``: read once at __init__ time, default when
+    unset.
+    """
+    monkeypatch.delenv("MUSIC_WATCHDOG_IDLE_TTL_S", raising=False)
+    module = _load_mcp_server_module(monkeypatch)
+    server = _FakeServer()
+    # Exercise only the parsing snippet that __init__ runs — constructing
+    # the full Node is out of scope for this fake-module harness (see
+    # test_register_tools_* above for the same pattern with music_max_amp).
+    try:
+        server._music_watchdog_idle_ttl_s = float(
+            module.os.environ.get("MUSIC_WATCHDOG_IDLE_TTL_S", "1800.0")
+        )
+    except (TypeError, ValueError):
+        server._music_watchdog_idle_ttl_s = 1800.0
+    assert server._music_watchdog_idle_ttl_s == 1800.0
+
+
+@pytest.mark.unit
+def test_music_watchdog_idle_ttl_honors_env_override(monkeypatch):
+    monkeypatch.setenv("MUSIC_WATCHDOG_IDLE_TTL_S", "42")
+    module = _load_mcp_server_module(monkeypatch)
+    server = _FakeServer()
+    try:
+        server._music_watchdog_idle_ttl_s = float(
+            module.os.environ.get("MUSIC_WATCHDOG_IDLE_TTL_S", "1800.0")
+        )
+    except (TypeError, ValueError):
+        server._music_watchdog_idle_ttl_s = 1800.0
+    assert server._music_watchdog_idle_ttl_s == 42.0
+
+
+@pytest.mark.unit
+def test_run_music_watchdog_passes_the_configured_ttl_to_the_manager(monkeypatch):
+    """The watchdog timer callback must forward its own TTL explicitly —
+    it must not rely on whatever default MusicManager picked up."""
+    module = _load_mcp_server_module(monkeypatch)
+    server = _FakeServer()
+    server._music_watchdog_idle_ttl_s = 1800.0
+    manager = MagicMock()
+    manager.auto_stop_idle_music.return_value = {"stopped": False}
+    server._music_manager = manager
+
+    module.MCPServer._run_music_watchdog(server)
+
+    manager.auto_stop_idle_music.assert_called_once_with(ttl_seconds=1800.0)
+
+
+@pytest.mark.unit
+def test_run_music_watchdog_logs_stop_with_reason_as_before(monkeypatch):
+    """Regression guard: the existing stop_reason logging (#935/#990) must
+    keep working exactly as before — only the held_reason branch is new."""
+    module = _load_mcp_server_module(monkeypatch)
+    server = _FakeServer()
+    server._music_watchdog_idle_ttl_s = 1800.0
+    manager = MagicMock()
+    manager.auto_stop_idle_music.return_value = {
+        "stopped": True,
+        "active_patterns": ["p1"],
+        "idle_seconds": 1801.0,
+        "ttl_seconds": 1800.0,
+        "stop_reason": "idle_ttl",
+    }
+    server._music_manager = manager
+
+    module.MCPServer._run_music_watchdog(server)
+
+    assert server.stop_generated_track_playback_calls == 1
+    assert server.publish_music_state_calls == 1
+    assert any(
+        "reason=idle_ttl" in m for m in server.get_logger().warning_messages
+    )
+    # No held_reason on a stop — the debug branch must stay silent.
+    assert server.get_logger().debug_messages == []
+
+
+@pytest.mark.unit
+def test_run_music_watchdog_does_not_stop_while_form_is_not_finished(monkeypatch):
+    """Issue #1812: when MusicManager reports ``held_reason`` (a
+    ``compose_music(repeat=False)`` track whose form hasn't played out
+    yet), the watchdog must NOT call stop_generated_track_playback, and it
+    logs the reason at debug level instead of spamming warnings on every
+    ~5s tick."""
+    module = _load_mcp_server_module(monkeypatch)
+    server = _FakeServer()
+    server._music_watchdog_idle_ttl_s = 1800.0
+    manager = MagicMock()
+    manager.auto_stop_idle_music.return_value = {
+        "stopped": False,
+        "held_reason": "form_not_finished",
+        "idle_seconds": 5.0,
+        "form_deadline_remaining_s": 42.0,
+    }
+    server._music_manager = manager
+
+    module.MCPServer._run_music_watchdog(server)
+
+    assert server.stop_generated_track_playback_calls == 0
+    assert server.get_logger().warning_messages == []
+    assert any(
+        "form_not_finished" in m for m in server.get_logger().debug_messages
+    )
+    # publish_music_state still runs every tick regardless (issue 989 Fix C).
+    assert server.publish_music_state_calls == 1
+
+
+@pytest.mark.unit
+def test_run_music_watchdog_survives_a_manager_exception(monkeypatch):
+    module = _load_mcp_server_module(monkeypatch)
+    server = _FakeServer()
+    server._music_watchdog_idle_ttl_s = 1800.0
+    manager = MagicMock()
+    manager.auto_stop_idle_music.side_effect = RuntimeError("boom")
+    server._music_manager = manager
+
+    module.MCPServer._run_music_watchdog(server)
+
+    assert any(
+        "Music watchdog failed" in m for m in server.get_logger().warning_messages
+    )
+    assert server.stop_generated_track_playback_calls == 0

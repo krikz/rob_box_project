@@ -1,0 +1,14 @@
+# ReleaseFloor.srv — typed floor release (ADR-0028 §4.2 / §4.3)
+#
+# Idempotent for the holder of a floor; PermissionError for other callers
+# (server translates to success=false, reason="permission_denied").
+# See LockManager.release() contract (rob_box_supervisor/core/locks.py).
+
+string client_id
+string floor
+
+---
+
+bool   success
+string reason        # "", "permission_denied", "bad_request", "monitor"
+bool   applied       # false in monitor mode (ADR-0028 §4.5)

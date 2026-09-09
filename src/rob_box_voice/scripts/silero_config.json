@@ -1,0 +1,13 @@
+{
+  "config": {
+    "speaker": "aidar",
+    "pitch": "medium",
+    "rate": "x-slow",
+    "sample_rate": 24000,
+    "threads": 4,
+    "use_ssml": true,
+    "chipmunk_mode": true
+  },
+  "text": "Один\nДва \nТри\nЧетыре\nтри два раз три бва раз проверка микрофона, хм... раз раз",
+  "ssml": ""
+}

@@ -1,0 +1,20 @@
+{
+  mode: "peer",
+  
+  connect: {
+    endpoints: ["tcp/10.1.1.249:7447"],
+    timeout_ms: { router: -1, peer: -1, client: 0 },
+    exit_on_failure: { router: false, peer: false, client: true },
+    retry: {
+      period_init_ms: 1000,
+      period_max_ms: 4000,
+      period_increase_factor: 2,
+    }
+  },
+  
+  scouting: {
+    multicast: {
+      enabled: false
+    }
+  }
+}

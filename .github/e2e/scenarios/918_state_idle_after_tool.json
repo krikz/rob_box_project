@@ -1,0 +1,17 @@
+{
+  "description": "Issue #918 — после tool call (get_current_pose) DSM обязан вернуться в IDLE. Шаг 2 проходит ТОЛЬКО если первый turn завершился (state finalize → IDLE); залипший DIALOGUE ломает второй цикл (wait_for_idle timeout).",
+  "steps": [
+    {
+      "text": "Робот, скажи где ты сейчас находишься",
+      "voice": "anton",
+      "label": "s1_status_query",
+      "patterns": ["get_current_pose"]
+    },
+    {
+      "text": "Робот, расскажи короткий анекдот",
+      "voice": "anton",
+      "label": "s2_followup",
+      "patterns": []
+    }
+  ]
+}

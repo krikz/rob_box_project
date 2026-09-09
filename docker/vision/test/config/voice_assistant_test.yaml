@@ -1,0 +1,51 @@
+# voice_assistant_test.yaml — конфигурация dialogue_node для тестового окружения
+#
+# LLM: Ollama (qwen2.5:0.5b) — локальный, без API key
+# OpenAI-совместимый endpoint на порту 11435
+
+/dialogue_node:
+  ros__parameters:
+    provider: "deepseek"
+    api_key: "ollama"
+    base_url: "http://localhost:11435/v1"
+    model: "qwen2.5:0.5b"
+    temperature: 0.5
+    max_tokens: 150       # короткие ответы = быстрые тесты
+    streaming: true
+
+    enable_fallback: false
+    enable_mcp_tools: false
+    internet_available: true
+
+    # S8 Task 8.1 (scheduler-segments-merge plan, issue #968) — enables
+    # the MERGE path (quick_decide dispatch in _on_stt) for e2e. Default
+    # in production stays "replace" until Task 8.3 (only after green
+    # 8.1/8.2 with raw evidence — NOT done from this machine, no stand).
+    barge_in_policy: "classify"
+
+    # wake_words намеренно НЕ здесь: единственное объявление —
+    # rob_box_voice.core.dialogue_text.DEFAULT_WAKE_WORDS, откуда его берут
+    # дефолты dialogue_node и stt_node. Копия в YAML — это ровно то, что
+    # разъехалось в #1252 и стоило #1734.
+    silence_words: "стоп,тихо,замолчи"
+
+    # Системный промпт для тестов — краткие ответы быстрее
+    system_prompt: |
+      Ты — робот ROBBOX. Отвечай очень кратко, 1-2 предложения.
+      Всегда отвечай на русском языке.
+      На приветствие отвечай: "Привет! Я ROBBOX."
+      На вопрос об имени: "Меня зовут ROBBOX."
+
+    max_history_messages: 6
+    history_window_tokens: 1000
+
+    llm_timeout_sec: 30.0
+    max_iterations: 3
+
+    # Не хранить вызовы memory-тулов в истории диалога.
+    # Иначе LLM видит handle_memory в истории → pattern-completion:
+    # вызывает его для КАЖДОГО запроса (даже "привет") →
+    # история пухнет → OOM после 7+ сценариев.
+    # handle_memory / handle_navigation — фасады Compositor'а, удалены:
+    # фильтр по ним не отсекал ничего.
+    history_excluded_tools: ['move_direction']

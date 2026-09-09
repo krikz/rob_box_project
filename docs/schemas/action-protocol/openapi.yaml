@@ -1,0 +1,616 @@
+openapi: 3.0.3
+info:
+  title: rob_box_voice Action Server (HTTP binding)
+  description: |
+    Transport contract for `ActionServer` in `src/rob_box_voice/rob_box_voice/action_server/`.
+
+    This is the canonical source of truth for the HTTP+JSON binding of the action
+    protocol. The same semantics can be expressed as gRPC over protobuf — see
+    `action-protocol.proto` for the wire schema and ADR-0011 for the architecture.
+
+    ## Design goals
+
+    - Transport-neutral core. `ActionServer` (server.py) does not depend on
+      aiohttp. The HTTP adapter (http.py) is the only network-aware module.
+    - Long-lived goals. Goals are identified by UUID v4 (`goal_id`); the
+      client polls `GET /actions/{goal_id}` (or subscribes via WebSocket in Phase 5).
+    - Cooperative + task cancellation. A handler receives both `cancelled`
+      event and asyncio `CancelledError`. Either signal terminates the goal.
+    - Liveness is not readiness. `ok: false` only during graceful shutdown.
+
+  version: "1.0.0"
+  contact:
+    name: architect (Hermes Agent)
+    url: https://github.com/krikz/rob_box_project
+  license:
+    name: internal
+  x-adr:
+    id: "ADR-0011"
+    url: "docs/adr/0011-action-protocol.md"
+  x-kanban:
+    root: "t_6d0e1dfe"
+    implementation: "t_21f11e76"
+
+servers:
+  - url: http://127.0.0.1:8765
+    description: Local sidecar (Phase 4 default)
+  - url: http://voice-action-server:8765
+    description: docker-compose service hostname (same host network)
+
+tags:
+  - name: meta
+    description: Health and lifecycle
+  - name: goals
+    description: Submit, observe and cancel long-running actions
+
+paths:
+  /healthz:
+    get:
+      tags: [meta]
+      summary: Health endpoint (liveness combined with readiness)
+      description: |
+        Returns 200 while the server is healthy and accepting goals.
+        Returns 503 once `shutdown()` has been called. Kubernetes or docker
+        should stop sending traffic and let the sidecar finish in-flight goals.
+
+        Liveness semantics -- `ok: true` iff `shutting_down = false`.
+        `active_goals > 0` does NOT make the server unhealthy.
+
+      operationId: getHealth
+      responses:
+        "200":
+          description: Server is healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+              examples:
+                ok:
+                  summary: Normal state with active goals
+                  value:
+                    ok: true
+                    active_goals: 3
+                    shutting_down: false
+                idle:
+                  summary: No active goals
+                  value:
+                    ok: true
+                    active_goals: 0
+                    shutting_down: false
+        "503":
+          description: Server is shutting down (drain in progress)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+              examples:
+                draining:
+                  summary: Sidecar received SIGTERM
+                  value:
+                    ok: false
+                    active_goals: 2
+                    shutting_down: true
+
+  /actions:
+    post:
+      tags: [goals]
+      summary: Submit a new goal
+      description: |
+        Accepts a goal description, returns a `goal_id` (UUID v4) and initial
+        state `accepted`. The goal transitions to `running` when the handler
+        starts. Client should poll `GET /actions/{goal_id}` for status, feedback
+        and result.
+
+        Idempotency -- clients SHOULD provide a `goal_id` in the goal payload
+        to make retries safe. Currently (v1.0.0) the server does NOT enforce
+        uniqueness; duplicates will create separate goals. See ADR-0011 §6.4
+        Q1 for the Phase 4 step-3 follow-up.
+
+      operationId: submitAction
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SubmitRequest"
+            examples:
+              tts:
+                summary: TTS speak (Phase 4 step-3 example; current step-1 uses generic _handler)
+                value:
+                  goal_id: "550e8400-e29b-41d4-a716-446655440000"
+                  kind: "tts.speak"
+                  params:
+                    text: "Привет, мир!"
+                    voice: "male-qn-qingse"
+                    sample_rate: 32000
+                    format: "pcm"
+                  speculative: false
+      responses:
+        "202":
+          description: Goal accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SubmitResponse"
+              examples:
+                accepted:
+                  value:
+                    goal_id: "550e8400-e29b-41d4-a716-446655440000"
+                    state: "accepted"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "503":
+          description: Server is shutting down, cannot accept new goals
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/responses/ServiceUnavailableSchema"
+
+  /actions/{goal_id}:
+    get:
+      tags: [goals]
+      summary: Get current state, feedback history and result when done
+      description: |
+        Returns a snapshot. Clients are expected to poll at a reasonable
+        interval (50 to 500 ms depending on goal duration) until `state` is
+        one of the terminal states (`succeeded`, `cancelled`, `failed`).
+
+        State semantics:
+          - `accepted` -- goal created, handler not yet started (rare, sub-ms).
+          - `running`  -- handler executing; `feedback[]` is append-only history.
+          - `succeeded` -- `result` populated with the handler return value.
+          - `cancelled` -- `cancel()` was called or shutdown initiated.
+          - `failed`   -- `error` populated with the handler exception message.
+
+      operationId: getActionStatus
+      parameters:
+        - $ref: "#/components/parameters/GoalId"
+      responses:
+        "200":
+          description: Goal state snapshot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusResponse"
+              examples:
+                running:
+                  summary: In-flight with progress feedback
+                  value:
+                    goal_id: "550e8400-e29b-41d4-a716-446655440000"
+                    state: "running"
+                    feedback:
+                      - progress: 0.25
+                      - progress: 0.50
+                    result: null
+                    error: null
+                succeeded:
+                  summary: Terminal state with result
+                  value:
+                    goal_id: "550e8400-e29b-41d4-a716-446655440000"
+                    state: "succeeded"
+                    feedback:
+                      - progress: 1.0
+                    result:
+                      audio_uri: "tts://cache/abc123.wav"
+                      duration_ms: 2400
+                      sample_rate: 32000
+                      format: "wav"
+                    error: null
+                cancelled:
+                  summary: Cancelled mid-execution
+                  value:
+                    goal_id: "550e8400-e29b-41d4-a716-446655440000"
+                    state: "cancelled"
+                    feedback:
+                      - progress: 0.75
+                    result: null
+                    error: null
+                failed:
+                  summary: Handler raised an exception
+                  value:
+                    goal_id: "550e8400-e29b-41d4-a716-446655440000"
+                    state: "failed"
+                    feedback: []
+                    result: null
+                    error: "TTS API returned 502 Bad Gateway"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /actions/{goal_id}/cancel:
+    post:
+      tags: [goals]
+      summary: Cancel a goal (cooperative plus asyncio task cancel)
+      description: |
+        Marks the goal for cancellation. The handler receives both signals:
+          - `asyncio.CancelledError` propagated into the running task.
+          - `cancelled` event set to True.
+
+        Handlers should check `cancelled.is_set()` in long-running loops
+        and exit promptly. After cancellation, the goal state is `cancelled`
+        (never `failed`).
+
+        Idempotent -- cancelling a goal that is already in a terminal state
+        returns 404 (goal handle was pruned) or 200 (still tracked but no-op).
+        See ADR-0011 §3.4 invariant #4.
+
+      operationId: cancelAction
+      parameters:
+        - $ref: "#/components/parameters/GoalId"
+      responses:
+        "200":
+          description: Cancellation acknowledged
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CancelResponse"
+              example:
+                cancelled: true
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+components:
+
+  parameters:
+    GoalId:
+      in: path
+      name: goal_id
+      required: true
+      description: |
+        UUID v4 assigned at submission time (either client-provided or
+        server-generated). Stable across the goal's lifetime.
+      schema:
+        type: string
+        format: uuid
+        example: "550e8400-e29b-41d4-a716-446655440000"
+
+  responses:
+    BadRequest:
+      description: Malformed request (missing goal, invalid JSON, etc.)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: "missing goal"
+            code: "BAD_REQUEST"
+    NotFound:
+      description: Goal with given ID not found or already pruned
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: "goal not found"
+            code: "NOT_FOUND"
+    Conflict:
+      description: Goal with given ID already exists (TODO Phase 4 step-3)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: "goal_id already submitted"
+            code: "DUPLICATE_GOAL_ID"
+    ServiceUnavailableSchema:
+      type: object
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+      example:
+        error: "action server is shutting down"
+        code: "SHUTTING_DOWN"
+
+  schemas:
+
+    ActionState:
+      type: string
+      description: |
+        Lifecycle state of a goal. See ADR-0011 §3.1 for transition rules.
+      enum:
+        - accepted
+        - running
+        - succeeded
+        - cancelled
+        - failed
+
+    Health:
+      type: object
+      required: [ok, active_goals, shutting_down]
+      properties:
+        ok:
+          type: boolean
+          description: True iff `shutting_down = false`
+        active_goals:
+          type: integer
+          format: int32
+          minimum: 0
+          description: Count of goals not yet in a terminal state
+        shutting_down:
+          type: boolean
+          description: True after `shutdown()` has been called
+
+    Goal:
+      type: object
+      description: |
+        The actual goal description. The shape of `params` is handler-specific
+        (TTS, music, nav have different parameter sets). The server treats
+        `params` as opaque and forwards to the resolved handler.
+
+        Discriminator -- `kind` selects the handler in the plugin registry.
+        Current `kind` values:
+          - `tts.speak` (Phase 4 step-3, currently stub handler)
+          - `music.play` (Phase 4 step-3)
+          - `nav.navigate_to_pose` (Phase 4 step-3)
+          - Custom kinds via plugin registry.
+
+        In Phase 4 step-1, all goals go through the single stub handler.
+      required: [kind, params]
+      properties:
+        goal_id:
+          type: string
+          format: uuid
+          description: |
+            Optional client-provided goal ID. If absent, server generates UUID v4.
+            Clients SHOULD provide this for retry safety (see ADR-0011 §4.4).
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        kind:
+          type: string
+          description: Handler selector (plugin registry key)
+          example: "tts.speak"
+        params:
+          type: object
+          description: Handler-specific parameters (opaque to the server)
+          additionalProperties: true
+          example:
+            text: "Привет, мир!"
+        speculative:
+          type: boolean
+          default: false
+          description: |
+            Hint to the handler that this goal may be discarded before commit.
+            Handlers MUST be side-effect free when `speculative = true`.
+            See ADR-0011 §3.6 PASTE Planner.
+        deadline_ms:
+          type: integer
+          format: int32
+          minimum: 0
+          description: |
+            Optional client-side deadline. After this many milliseconds, the
+            server MAY force-cancel the goal. Handlers SHOULD also enforce
+            internal deadlines for I/O operations.
+
+    SubmitRequest:
+      type: object
+      description: |
+        Wire-format for `POST /actions`. Two accepted shapes:
+          1. `{"goal": {...}}` -- preferred (forward-compatible with batch).
+          2. `{...}` -- Goal at top level (legacy; backward-compatible).
+      required: [goal]
+      properties:
+        goal:
+          $ref: "#/components/schemas/Goal"
+
+    SubmitResponse:
+      type: object
+      required: [goal_id, state]
+      properties:
+        goal_id:
+          type: string
+          format: uuid
+          description: Server-assigned (or echoed) UUID v4
+        state:
+          $ref: "#/components/schemas/ActionState"
+
+    FeedbackEvent:
+      type: object
+      description: |
+        A single feedback event emitted by the handler. Schema is open; handlers
+        define their own keys. Common keys (convention, not enforced):
+        - `progress` (number 0.0 to 1.0) -- for streaming operations like TTS.
+        - `chunk_url` (string) -- for media being generated progressively.
+        - `eta_ms` (integer) -- estimated time-to-completion.
+        - `phase` (string) -- discrete phase name (e.g., "synthesizing").
+      additionalProperties: true
+      example:
+        progress: 0.5
+
+    StatusResponse:
+      type: object
+      required: [goal_id, state, feedback]
+      properties:
+        goal_id:
+          type: string
+          format: uuid
+        state:
+          $ref: "#/components/schemas/ActionState"
+        feedback:
+          type: array
+          description: |
+            Append-only history of feedback events. Never truncated.
+            Empty for goals that have not started or have not emitted yet.
+          items:
+            $ref: "#/components/schemas/FeedbackEvent"
+        result:
+          description: |
+            Handler return value. Populated only when `state = succeeded`.
+            Shape is handler-specific (TTS returns audio URI + metadata,
+            music returns score reference, nav returns pose).
+          nullable: true
+        error:
+          type: string
+          nullable: true
+          description: |
+            Stringified exception message. Populated only when `state = failed`.
+            Stacks are intentionally NOT exposed in the HTTP response
+            (operational detail; available in sidecar logs).
+
+    CancelResponse:
+      type: object
+      required: [cancelled]
+      properties:
+        cancelled:
+          type: boolean
+          description: |
+            True if cancellation was triggered. The actual state transition
+            is asynchronous; check `GET /actions/{goal_id}` for confirmation.
+          example: true
+
+    Error:
+      type: object
+      required: [error, code]
+      properties:
+        error:
+          type: string
+          description: Human-readable error message
+        code:
+          type: string
+          description: Machine-readable error code (UPPER_SNAKE_CASE)
+          enum:
+            - BAD_REQUEST
+            - NOT_FOUND
+            - DUPLICATE_GOAL_ID
+            - SHUTTING_DOWN
+            - INTERNAL_ERROR
+
+    TTSGoalParams:
+      type: object
+      description: |
+        Reference schema for `kind: tts.speak` params.
+        Aligned with ADR-0009 (TTSProvider contract).
+      required: [text]
+      properties:
+        text:
+          type: string
+          minLength: 1
+          description: Text to synthesize (non-empty)
+        voice:
+          type: string
+          description: |
+            Voice ID from MiniMax `list_voices()` catalogue. Default per
+            `MiniMaxTTSProvider.DEFAULT_VOICE` (ADR-0009 §2.2).
+          example: "male-qn-qingse"
+        model:
+          type: string
+          description: MiniMax T2A model identifier
+          enum:
+            - speech-02-hd
+            - speech-02-turbo
+          default: speech-02-hd
+        sample_rate:
+          type: integer
+          enum: [8000, 16000, 22050, 24000, 32000]
+          default: 32000
+        format:
+          type: string
+          enum: [pcm, mp3, wav]
+          default: pcm
+        speed:
+          type: number
+          format: float
+          minimum: 0.5
+          maximum: 2.0
+          default: 1.0
+        volume:
+          type: number
+          format: float
+          minimum: 0.0
+          maximum: 10.0
+          default: 1.0
+        pitch:
+          type: integer
+          description: Semitones (positive = up, negative = down)
+          default: 0
+        language:
+          type: string
+          description: BCP-47 code; MiniMax maps to human-readable internally
+          example: "ru"
+
+    TTSGoalResult:
+      type: object
+      description: |
+        Reference schema for the `result` of a successful TTS goal.
+        Aligned with ADR-0009 §2.1 (TTSAudio fields).
+      required: [audio_uri, sample_rate, format]
+      properties:
+        audio_uri:
+          type: string
+          description: |
+            URI to the synthesized audio. Convention:
+              - `tts://cache/<sha256>.wav` for cached results.
+              - `file:///path/to/audio.wav` for on-disk.
+          example: "tts://cache/abc123def456.wav"
+        sample_rate:
+          type: integer
+          enum: [8000, 16000, 22050, 24000, 32000]
+        format:
+          type: string
+          enum: [pcm, mp3, wav]
+        duration_ms:
+          type: integer
+          minimum: 0
+          description: Actual duration of the synthesized audio
+        text:
+          type: string
+          description: Echo of the input text (for traceability)
+
+    MusicGoalParams:
+      type: object
+      description: |
+        Reference schema for `kind: music.play` params (illustrative, Phase 4 step-3).
+      required: [score]
+      properties:
+        score:
+          type: string
+          description: Renardo or FoxDot score reference
+          example: "renardo:house:beat_128"
+        duration_ms:
+          type: integer
+          minimum: 0
+          default: 0
+          description: |
+            Maximum playback duration. 0 = play to natural end.
+        fade_out_ms:
+          type: integer
+          minimum: 0
+          maximum: 2000
+          default: 300
+
+    NavGoalParams:
+      type: object
+      description: |
+        Reference schema for `kind: nav.navigate_to_pose` params (illustrative, Phase 4 step-3).
+      required: [x, y]
+      properties:
+        x:
+          type: number
+          format: float
+        y:
+          type: number
+          format: float
+        theta:
+          type: number
+          format: float
+          description: Heading in radians (0 = +X axis)
+          default: 0
+        safe_boundary_policy:
+          type: string
+          enum: [soft, hard]
+          default: soft
+          description: |
+            Soft = allow MERGE at safe boundary (current Phase 1.5 behavior).
+            Hard = REJECT if any active goal.
+
+# Security (TODO Phase 4 step-3, see ADR-0011 §6.4 Q6)
+# securitySchemes:
+#   ApiKeyAuth:
+#     type: apiKey
+#     in: header
+#     name: X-Action-Server-Token
+#     description: |
+#       Bearer token from ACTION_SERVER_API_TOKEN env. Required for all
+#       /actions/* endpoints in production. /healthz remains open.
+
+# security:
+#   - ApiKeyAuth: []

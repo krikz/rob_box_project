@@ -1,0 +1,140 @@
+{
+  "name": "renardo_evolve_acceptance_v1",
+  "schema_version": 1,
+  "_comment": [
+    "ADR-0022 GATE-1 для renardo_evolve_suite_v1.json. Подхватывается",
+    "автоматически: scenario base 'renardo_evolve_suite_v1' → prefix",
+    "'renardo_evolve' → <prefix>_acceptance_v1.json (см. e2e_voice_test.sh,",
+    "цепочка auto-discovery, issue #1452).",
+    "",
+    "ЧТО ЭТОТ SUITE ДОКАЗЫВАЕТ. Живой прогон 30.08 на Vision Pi показал, что",
+    "робот про музыку ГОВОРИТ, а не играет: 21 из 28 циклов LLM закончились",
+    "с tools=[]. Suite ведёт робота по короткой музыкальной сессии — завести",
+    "тему и несколько раз её развить — и на каждом шаге требует РЕАЛЬНОГО",
+    "вызова тула, а не рассказа о нём.",
+    "",
+    "ПОЧЕМУ АГРЕГАТ ТОЛЬКО execute_music_code. Верхнеуровневый",
+    "expected_tool_calls — это AND по всему прогону (GATE-1 §5.3): каждый",
+    "перечисленный тул обязан встретиться хотя бы раз, иначе e2e-done не",
+    "ставится. Выбор между execute_music_code и compose_music на КАЖДОМ",
+    "шаге отдан модели: оба реально заводят Renardo, и требовать конкретный",
+    "означало бы красить тест в красный за законное решение. Шаги проверяются",
+    "per-step паттерном-альтернативой. Агрегат при этом держится на том, что",
+    "хотя бы один из шести музыкальных шагов уйдёт в execute_music_code —",
+    "в живом прогоне 30.08 он встретился трижды (rn01, rn02, rn05).",
+    "",
+    "ПОЧЕМУ rn06 БОЛЬШЕ НЕ ПРО «renardo». Сначала там стояло «сыграй renardo",
+    "бит» — формулировка-якорь из music_library_suite_v1. Живой прогон её",
+    "убил: Yandex STT распознал «робот сыграй ринардо убит», LLM приняла это",
+    "за НАЗВАНИЕ трека («Играет Ринардо убит»), четыре цикла подряд не звала",
+    "тул и дважды выдала nudge. Латиница в русской голосовой команде —",
+    "ненадёжный якорь; заменено на чистое русское «жёсткий барабанный бит».",
+    "",
+    "ПОЧЕМУ generate_music ЗАПРЕЩЁН. Suite про живой Renardo-движок (старт",
+    "~1с). MiniMax generate_music — другой тракт (40-160с, mp3 через",
+    "sound_node) и другая библиотека. Если LLM уводит туда «сыграй тему» —",
+    "это регрессия роутинга, ровно как issue #1403 в обратную сторону.",
+    "Формулировки шагов нарочно без «сочини»/«спой»/«песня»: промпт роутит",
+    "эти слова в generate_music.",
+    "",
+    "ШАГ rn04 — ГЛАВНЫЙ. Посторонний вопрос посреди играющего трека. До",
+    "фикса ветка «музыка в этом цикле не запускалась» вооружала",
+    "music_cleanup, и трек умирал через 0.1с после ответа: лаунж, игравший",
+    "94 секунды, замолчал ровно на «продолжай лабать». Паттерн [track-mode]",
+    "в сценарии — лог-строка, которой TRACK-музыка отказывается умирать от",
+    "чужого хода. Тула для этого нет, поэтому проверка живёт в patterns,",
+    "а не в expected_tool_calls."
+  ],
+  "expected_tool_calls": [
+    "execute_music_code"
+  ],
+  "must_not_call": [
+    "generate_music"
+  ],
+  "voice_provenance": {
+    "voice": "anton",
+    "tts": "yandex",
+    "stt": "yandex",
+    "volume": 100,
+    "llm": "minimax-m2"
+  },
+  "steps": [
+    {
+      "label": "rn01_theme",
+      "voice": "anton",
+      "text": "Робот, сыграй спокойную тему для рассвета на рояле.",
+      "patterns": ["execute_music_code|compose_music"],
+      "acceptance": {
+        "must_not_call": ["generate_music"],
+        "response_max_ms": 45000
+      }
+    },
+    {
+      "label": "rn02_add_bass",
+      "voice": "anton",
+      "text": "Робот, продолжай развивать эту мелодию и добавь баса.",
+      "patterns": ["execute_music_code|compose_music"],
+      "acceptance": {
+        "must_not_call": ["generate_music"],
+        "response_max_ms": 45000,
+        "_comment": "Пара «развива|добав» + «мелоди|бас». Живьём гуард молчал: «user does NOT want music»."
+      }
+    },
+    {
+      "label": "rn03_to_jungle",
+      "voice": "anton",
+      "text": "Робот, переходи в лёгкий джангл.",
+      "patterns": ["execute_music_code|compose_music"],
+      "acceptance": {
+        "must_not_call": ["generate_music"],
+        "response_max_ms": 45000,
+        "_comment": "Жанр вместо существительного: «переход» + «джангл»."
+      }
+    },
+    {
+      "label": "rn04_unrelated_turn",
+      "voice": "anton",
+      "text": "Робот, который час.",
+      "patterns": ["get_current_time", "\\[track-mode\\]"],
+      "acceptance": {
+        "expected_tool_calls": ["get_current_time"],
+        "must_not_call": ["generate_music"],
+        "response_max_ms": 30000,
+        "_comment": "Регрессия «посторонний ход глушит трек». Шаг красный и если робот не спросил время, и если убил музыку."
+      }
+    },
+    {
+      "label": "rn05_keep_labat",
+      "voice": "anton",
+      "text": "Робот, продолжай лабать, мы летим над облаками.",
+      "patterns": ["execute_music_code|compose_music"],
+      "acceptance": {
+        "must_not_call": ["generate_music"],
+        "response_max_ms": 45000,
+        "_comment": "Слэнг без музыкального существительного — пару «глагол+существительное» такое не ловит."
+      }
+    },
+    {
+      "label": "rn06_hard_beat",
+      "voice": "anton",
+      "text": "Робот, сыграй жёсткий барабанный бит.",
+      "patterns": ["execute_music_code|compose_music"],
+      "acceptance": {
+        "must_not_call": ["generate_music"],
+        "response_max_ms": 45000,
+        "_comment": "Прямая просьба про бит. Раньше здесь было «сыграй renardo бит» — STT слышал «ринардо убит», и LLM принимала это за название трека."
+      }
+    },
+    {
+      "label": "rn07_stop",
+      "voice": "anton",
+      "text": "Робот, останови музыку.",
+      "patterns": ["stop_music|Bug F"],
+      "acceptance": {
+        "must_not_call": ["generate_music"],
+        "response_max_ms": 30000,
+        "_comment": "Годится и вызов stop_music, и код-сайд force-stop (Bug F): оба реально останавливают музыку. Требовать именно тул значило бы делать тест хрупким на поведении, которое сделано устойчивым намеренно."
+      }
+    }
+  ]
+}

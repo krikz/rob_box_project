@@ -1,0 +1,120 @@
+# dialogue_node.yaml — per-node ROS2 config (issue #1004 fix)
+#
+# Формат — стандартный ROS2: верхний ключ = имя ноды (должно совпадать с
+# Node(name=...) в launch), под ним ros__parameters: с плоскими параметрами.
+# get_parameter("foo") в ноде находит foo БЕЗ префикса.
+#
+# Все ключи соответствуют declare_parameter() в dialogue_node.py 1:1.
+# (Ключи silence_timeout/silence_commands/max_question_time/sentence_split/
+# streaming удалены — код их НЕ читает; YAML молча игнорировался, issue #1004.)
+
+dialogue_node:
+  ros__parameters:
+    metrics_port: 9100  # issue #1160 — Prometheus metrics endpoint
+    # wake_words намеренно НЕ здесь: списки — в docker/vision/config/wake_words.yaml
+    # (SSoT, issue #1990). Нода читает его через wake_words_file; пусто здесь =
+    # dev-env без файла → кодовый фолбек DEFAULT_WAKE_WORDS (байт-в-байт тот же).
+    wake_words_file: ""
+    dialogue_timeout: 300.0
+    # TODO(legacy-config): 2026-09-15 — отложенный rollout deepseek primary.
+    # Документация (docstring'и в src/rob_box_harness/rob_box_harness/providers/*.py,
+    # docs/guides/examples/minimax_llm.yaml) говорит [deepseek, minimax, mimo],
+    # runtime yaml оставлен на legacy [minimax, deepseek] намеренно (см. ADR-0043).
+    # При обновлении — синхронизировать test_both_voice_configs_route_dialogue_to_minimax
+    # (src/rob_box_voice/test/test_dialogue_shell.py) в том же коммите.
+    # issue #1089: первый = primary, остальные = fallbacks
+    llm_providers: "minimax,deepseek"
+    # Issue #1219 — активный TTS-провайдер для LLM-контекста [TTS].
+    # Должен совпадать с tts_node.yaml provider (minimax).
+    tts_provider: minimax
+    system_prompt_file: master_prompt_compact.txt
+    # Move A (change skill-scoped-dialogue-context): доменные фрагменты
+    # инструкций приезжают вплотную к текущему ходу, а не лежат на
+    # позиции 0 за двадцатью ходами истории. tools= при этом НЕ меняется,
+    # префикс провайдера остаётся кэшируемым.
+    # ВЫКЛЮЧЕНО: включать после сравнения voice_llm_prompt_tokens с
+    # baseline (Migration Plan change'а, шаг 2).
+    skills_enabled: true
+    # Move B — сузить tools= до core + активный скилл. Ломает
+    # кэшируемый префикс провайдера при каждой смене домена и
+    # добавляет отказ «роутер промахнулся -> LLM не видит нужный
+    # инструмент» (модель выкручивается через load_skill).
+    # ВЫКЛЮЧЕНО до подтверждённого выигрыша по метрикам.
+    skill_tool_narrowing: false
+    history_max_turns: 20
+    faq_mode_enabled: false
+    faq_event_config_file: ''
+    tool_provider: ros_mcp
+    # ADR-0066 §6.3 — ``voice_input_mode`` УДАЛЁН из dialogue_node.
+    # Единственный канал оператора — топик /dialogue/control (sub на
+    # String JSON {action: pause|resume}). См. ADR-0066 §2.1.
+    # voice_preset / voice_output_language сохранены (стиль речи и язык
+    # для LLM-формализации в grip_pipeline супервизора, ADR-0028 §S5).
+    voice_preset: ''
+    voice_output_language: ''
+    # Дополнительные ключи для переопределения оператором:
+    # (все имеют default в коде — здесь выставляем «безопасные» значения)
+    temperature: 0.7
+    # 🔴 3000, а не 500 (02.09.2026). До #1883 (fe35b448) значение из YAML
+    # до провайдера НЕ доезжало, и лимит был провайдерский. После фикса оно
+    # реально уходит в API — и 500 токенов перестало вмещать tool-call:
+    # аргументы execute_music_code / compose_music (код трека, progression,
+    # план сета на 4-8 треков) режутся на finish_reason='length', JSON
+    # приходит битым, ход уходит в корректирующий ретрай. На роботе за один
+    # вечер — 8 срезов подряд (TRUNCATED_TOOL_ARGS, len=616..704).
+    max_tokens: 3000
+    agent_max_turns: 20
+    enable_mcp_tools: true
+    # Issue #1279 — command-intent gate: фразы-команды (NAVIGATE/STOP/STATUS/
+    # MAP) обрабатывает command_node, dialogue_node НЕ дублирует их через
+    # LLM (иначе LLM интерпретирует «вперёд» как музыку → execute_music_code
+    # вместо движения). True = команды не идут в LLM.
+    command_intent_gate_enabled: true
+    # Порог уверенности CommandParser (совпадает с command_node.yaml
+    # confidence_threshold: 0.7).
+    command_intent_gate_confidence: 0.7
+    # Issue #XXXX — «новая сессия» / «сбрось всё» / Telegram «/clear»:
+    # сброс контекста текущего диалога без вызова LLM. Фразы по умолчанию
+    # заданы в коде (_DEFAULT_NEW_SESSION_PHRASES); при необходимости
+    # список можно переопределить здесь.
+    new_session_enabled: true
+    # new_session_phrases:
+    # - новая сессия
+    # - сбрось всё
+    llm_timeout_sec: 90.0
+    verbose_llm: true
+    llm_streaming: true
+    # handle_navigation / handle_music — фасады, удалённые вместе со
+    # скиллами Compositor'а: фильтр по ним не отсекал ничего.
+    history_excluded_tools:
+    - move_direction
+    # Диалоговая история harness'а. ДОЛЖНА лежать на смонтированном томе:
+    # ``~/.rob_box/voice.db`` — это /root внутри контейнера, том туда не
+    # смонтирован, поэтому весь контекст разговора умирал вместе с
+    # контейнером (проверено на vision 29.08: файл создан в 15:29 вместе с
+    # контейнером, 69 ходов, ни одного старше).
+    #
+    # Это НЕ ``/data/voice_memory.db``: там живёт VoiceMemory из
+    # mcp_server, и схемы конфликтуют — у harness'а ``waypoints.name``
+    # PRIMARY KEY, у VoiceMemory ``waypoints`` с ``map_id NOT NULL`` и FK
+    # на maps; ``faq_items`` расходятся так же (created_at vs indexed_at).
+    # ``CREATE TABLE IF NOT EXISTS`` промолчал бы, а вставки бы падали.
+    # Два стора остаются двумя сторами — но оба переживают рестарт.
+    sqlite_db_path: /data/harness_voice.db
+    # Issue #1077 — голосовая биометрия (speaker_id_node, resemblyzer):
+    # префикс [Говорит <имя>] / [Говорит: незнакомец] + session lock.
+    speaker_id_enabled: true
+    speaker_db_path: /data/speakers.db
+    # Бэклог-аккумулятор фоновой речи без wake-слова.
+    accumulate_no_wake_enabled: true
+    accumulate_window_sec: 180.0
+    # Startup greeting (issue #1003, редизайн 06.08): dialogue_node сам
+    # говорит приветствие через N секунд после старта (отдельная нода
+    # убрана — теряла фразу из-за гонки с инициализацией tts_node).
+    # Пустой startup_greeting_text → случайная прикольная фраза из
+    # startup_greeting.GREETINGS (9 вариантов, «Мяу! Я на связи!» и т.д.).
+    startup_greeting_sec: 12.0
+    startup_greeting_text: ''
+    # api_key — пусто → fallback на ENV (DEEPSEEK_API_KEY / MINIMAX_API_KEY / YANDEX_API_KEY).
+    # Секреты не хранятся в YAML.
+    api_key: ''

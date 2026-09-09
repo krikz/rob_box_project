@@ -1,0 +1,72 @@
+# Fire Truck Emergency Lights Animation
+name: "fire_truck"
+description: "Fire truck emergency lights with red and orange"
+version: "1.0"
+author: "rob_box"
+
+# Timing
+duration_ms: 1500
+loop: true
+fps: 10
+
+# Fade transitions
+fade_in_ms: 100
+fade_out_ms: 100
+
+# Panels
+panels:
+  # All wheels alternate red/orange
+  - logical_group: "wheel_front_left"
+    offset_ms: 0
+    frames:
+      - image: "frames/fire_truck/wheel_fl_red.png"
+        duration_ms: 150
+      - image: "frames/fire_truck/wheel_fl_orange.png"
+        duration_ms: 150
+      - image: "frames/fire_truck/wheel_fl_off.png"
+        duration_ms: 200
+
+  - logical_group: "wheel_front_right"
+    offset_ms: 250
+    frames:
+      - image: "frames/fire_truck/wheel_fr_orange.png"
+        duration_ms: 150
+      - image: "frames/fire_truck/wheel_fr_red.png"
+        duration_ms: 150
+      - image: "frames/fire_truck/wheel_fr_off.png"
+        duration_ms: 200
+
+  - logical_group: "wheel_rear_left"
+    offset_ms: 500
+    frames:
+      - image: "frames/fire_truck/wheel_rl_red.png"
+        duration_ms: 150
+      - image: "frames/fire_truck/wheel_rl_orange.png"
+        duration_ms: 150
+      - image: "frames/fire_truck/wheel_rl_off.png"
+        duration_ms: 200
+
+  - logical_group: "wheel_rear_right"
+    offset_ms: 750
+    frames:
+      - image: "frames/fire_truck/wheel_rr_orange.png"
+        duration_ms: 150
+      - image: "frames/fire_truck/wheel_rr_red.png"
+        duration_ms: 150
+      - image: "frames/fire_truck/wheel_rr_off.png"
+        duration_ms: 200
+
+  # Main display (FIRE text flashing)
+  - logical_group: "main_display"
+    offset_ms: 0
+    frames:
+      - image: "frames/fire_truck/text_fire_on.png"
+        duration_ms: 500
+      - image: "frames/fire_truck/text_fire_off.png"
+        duration_ms: 500
+
+# Metadata
+metadata:
+  priority: "high"
+  category: "emergency"
+  tags: ["fire", "emergency", "lights", "red", "orange"]

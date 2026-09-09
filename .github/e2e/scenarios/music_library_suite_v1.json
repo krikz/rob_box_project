@@ -1,0 +1,63 @@
+{
+  "name": "music_library_suite_v1",
+  "description": "E2E для generate_music + AI-library (PR #1361, issue #1371 + #1373). Коллизия имён уже решена в PR #1372 (renardo_* / gen_*); этот suite тренит LLM выбирать правильный tool для каждой пользовательской фразы. Запускать через .github/workflows/L-E2E Voice Test.yml: scenario_file=music_library_suite_v1.json. Исходные файлы команд (.ogg) лежат в .github/e2e/voice_commands/ — pre-recorded локально для ручного прогона и приёмки в ретро. Атомарный харнесс (e2e_voice_test.sh) синтезирует на лету через Yandex TTS — голос anton.",
+  "steps": [
+    {
+      "label": "ml01_generate_romantic",
+      "voice": "anton",
+      "text": "Робот, сыграй что-нибудь романтичное.",
+      "patterns": [
+        "generate_music"
+      ]
+    },
+    {
+      "label": "ml02_list_library",
+      "voice": "anton",
+      "text": "Робот, что у тебя в музыкальной библиотеке?",
+      "patterns": [
+        "gen_list_library"
+      ]
+    },
+    {
+      "label": "ml03_search_rain",
+      "voice": "anton",
+      "text": "Робот, найди трек про дождь.",
+      "patterns": [
+        "gen_search_library"
+      ]
+    },
+    {
+      "label": "ml04_save_for_ivan",
+      "voice": "anton",
+      "text": "Робот, сохрани этот трек для Ивана.",
+      "patterns": [
+        "gen_save_to_library"
+      ]
+    },
+    {
+      "label": "ml05_delete_last",
+      "voice": "anton",
+      "text": "Робот, удали последний трек из библиотеки.",
+      "patterns": [
+        "gen_list_library",
+        "gen_delete_from_library"
+      ]
+    },
+    {
+      "label": "ml06_track_info",
+      "voice": "anton",
+      "text": "Робот, расскажи, что это за трек.",
+      "patterns": [
+        "gen_get_track_info"
+      ]
+    },
+    {
+      "label": "ml07_renardo_path_unchanged",
+      "voice": "anton",
+      "text": "Робот, сыграй renardo бит.",
+      "patterns": [
+        "execute_music_code"
+      ]
+    }
+  ]
+}

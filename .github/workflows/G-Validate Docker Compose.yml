@@ -1,0 +1,292 @@
+name: "G: Validate Docker Compose"
+
+# Автоматическая проверка Docker Compose конфигураций на соответствие стандартам
+# Запускается при каждом PR или push в develop/main
+on:
+  push:
+    branches:
+      - develop
+      - main
+    paths:
+      - 'docker/main/docker-compose.yaml'
+      - 'docker/vision/docker-compose.yaml'
+      - 'docs/development/DOCKER_STANDARDS.md'
+      - '.github/workflows/validate-docker-compose.yml'
+  pull_request:
+    branches:
+      - develop
+      - main
+    paths:
+      - 'docker/main/docker-compose.yaml'
+      - 'docker/vision/docker-compose.yaml'
+      - 'docs/development/DOCKER_STANDARDS.md'
+  workflow_dispatch:  # Ручной запуск
+
+permissions:
+  contents: read
+
+jobs:
+  validate-main-compose:
+    name: Validate Main Pi Docker Compose
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Validate YAML syntax (Main Pi)
+        run: |
+          echo "📋 Проверка синтаксиса YAML для Main Pi..."
+          docker run --rm -v "$PWD:/workspace" -w /workspace alpine sh -c '
+            apk add --no-cache python3 py3-yaml
+            python3 -c "import yaml; yaml.safe_load(open(\"docker/main/docker-compose.yaml\"))"
+          '
+          echo "✅ Синтаксис YAML корректен"
+
+      - name: Check Docker Compose validity (Main Pi)
+        run: |
+          echo "🔍 Проверка валидности Docker Compose для Main Pi..."
+          cd docker/main
+          # Create dummy .env.secrets file if it doesn't exist (for consistency)
+          touch .env.secrets
+          docker compose config > /dev/null
+          echo "✅ Docker Compose конфигурация валидна"
+
+      - name: Validate standards compliance (Main Pi)
+        run: |
+          echo "📏 Проверка соответствия стандартам для Main Pi..."
+
+          # Проверка network_mode: host
+          if ! grep -q "network_mode: host" docker/main/docker-compose.yaml; then
+            echo "❌ Ошибка: не найден 'network_mode: host'"
+            exit 1
+          fi
+          echo "✅ network_mode: host присутствует"
+
+          # Проверка restart: unless-stopped
+          if ! grep -q "restart: unless-stopped" docker/main/docker-compose.yaml; then
+            echo "❌ Ошибка: не найден 'restart: unless-stopped'"
+            exit 1
+          fi
+          echo "✅ restart: unless-stopped присутствует"
+
+          # Проверка стандартных environment переменных
+          for var in ROS_DOMAIN_ID RMW_IMPLEMENTATION ZENOH_CONFIG ROS_AUTOMATIC_DISCOVERY_RANGE; do
+            if ! grep -q "$var" docker/main/docker-compose.yaml; then
+              echo "⚠️  Предупреждение: переменная $var не найдена"
+            fi
+          done
+          echo "✅ Основные environment переменные проверены"
+
+          # Проверка правильной структуры volumes (новая архитектура)
+          # Должно быть: ./config:/config/shared и ./config/{service}:/config/{service}
+          # НЕ должно быть: ./{service}/config:/config/{service} (старая структура)
+          if grep -q "\\./.*/config:/config/" docker/main/docker-compose.yaml; then
+            echo "❌ Ошибка: найдена старая структура volumes (./{service}/config:/config/)"
+            echo "   Должно быть: ./config/{service}:/config/{service}"
+            exit 1
+          fi
+          echo "✅ Структура volumes соответствует стандарту"
+
+          # Проверка что используется ./config:/config/shared
+          if ! grep -q "./config:/config/shared" docker/main/docker-compose.yaml; then
+            echo "⚠️  Предупреждение: не найден маунт ./config:/config/shared"
+          fi
+
+          # Проверка правильной структуры скриптов (новая архитектура)
+          # Должно быть: ./scripts/{service}:/scripts
+          # НЕ должно быть: ./{service}/scripts:/scripts (старая структура)
+          if grep -q "\\./.*/scripts:/scripts" docker/main/docker-compose.yaml; then
+            echo "❌ Ошибка: найдена старая структура volumes (./{service}/scripts:/scripts)"
+            echo "   Должно быть: ./scripts/{service}:/scripts"
+            exit 1
+          fi
+          echo "✅ Структура скриптов соответствует стандарту"
+
+          # Проверка что нет монтирования src папки
+          if grep -q "src:/workspace/src" docker/main/docker-compose.yaml; then
+            echo "❌ Ошибка: найдено монтирование src папки (должно быть в образе)"
+            exit 1
+          fi
+          echo "✅ Нет монтирования src папки"
+
+  validate-vision-compose:
+    name: Validate Vision Pi Docker Compose
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Validate YAML syntax (Vision Pi)
+        run: |
+          echo "📋 Проверка синтаксиса YAML для Vision Pi..."
+          docker run --rm -v "$PWD:/workspace" -w /workspace alpine sh -c '
+            apk add --no-cache python3 py3-yaml
+            python3 -c "import yaml; yaml.safe_load(open(\"docker/vision/docker-compose.yaml\"))"
+          '
+          echo "✅ Синтаксис YAML корректен"
+
+      - name: Check Docker Compose validity (Vision Pi)
+        run: |
+          echo "🔍 Проверка валидности Docker Compose для Vision Pi..."
+          cd docker/vision
+          # Create dummy .env.secrets file if it doesn't exist
+          touch .env.secrets
+          docker compose config > /dev/null
+          echo "✅ Docker Compose конфигурация валидна"
+
+      - name: Validate standards compliance (Vision Pi)
+        run: |
+          echo "📏 Проверка соответствия стандартам для Vision Pi..."
+
+          # Проверка network_mode: host
+          if ! grep -q "network_mode: host" docker/vision/docker-compose.yaml; then
+            echo "❌ Ошибка: не найден 'network_mode: host'"
+            exit 1
+          fi
+          echo "✅ network_mode: host присутствует"
+
+          # Проверка restart: unless-stopped
+          if ! grep -q "restart: unless-stopped" docker/vision/docker-compose.yaml; then
+            echo "❌ Ошибка: не найден 'restart: unless-stopped'"
+            exit 1
+          fi
+          echo "✅ restart: unless-stopped присутствует"
+
+          # Проверка стандартных environment переменных
+          for var in ROS_DOMAIN_ID RMW_IMPLEMENTATION ZENOH_CONFIG ROS_AUTOMATIC_DISCOVERY_RANGE; do
+            if ! grep -q "$var" docker/vision/docker-compose.yaml; then
+              echo "⚠️  Предупреждение: переменная $var не найдена"
+            fi
+          done
+          echo "✅ Основные environment переменные проверены"
+
+          # Проверка правильной структуры volumes (новая архитектура)
+          # Должно быть: ./config:/config/shared и ./config/{service}:/config/{service}
+          # НЕ должно быть: ./{service}/config:/config/{service} (старая структура)
+          if grep -q "\\./.*/config:/config/" docker/vision/docker-compose.yaml; then
+            echo "❌ Ошибка: найдена старая структура volumes (./{service}/config:/config/)"
+            echo "   Должно быть: ./config/{service}:/config/{service}"
+            exit 1
+          fi
+          echo "✅ Структура volumes соответствует стандарту"
+
+          # Проверка что используется ./config:/config/shared
+          if ! grep -q "./config:/config/shared" docker/vision/docker-compose.yaml; then
+            echo "⚠️  Предупреждение: не найден маунт ./config:/config/shared"
+          fi
+
+          # Проверка правильной структуры скриптов (новая архитектура)
+          # Должно быть: ./scripts/{service}:/scripts
+          # НЕ должно быть: ./{service}/scripts:/scripts (старая структура)
+          if grep -q "\\./.*/scripts:/scripts" docker/vision/docker-compose.yaml; then
+            echo "❌ Ошибка: найдена старая структура volumes (./{service}/scripts:/scripts)"
+            echo "   Должно быть: ./scripts/{service}:/scripts"
+            exit 1
+          fi
+          echo "✅ Структура скриптов соответствует стандарту"
+
+          # Проверка memory limits для oak-d
+          if ! grep -A 10 "oak-d:" docker/vision/docker-compose.yaml | grep -q "mem_limit:"; then
+            echo "⚠️  Предупреждение: не найден mem_limit для oak-d"
+          else
+            echo "✅ Memory limits для oak-d настроены"
+          fi
+
+          # Проверка LD_LIBRARY_PATH в oak-d
+          if ! grep -A 15 "oak-d:" docker/vision/docker-compose.yaml | grep -q "LD_LIBRARY_PATH"; then
+            echo "⚠️  Предупреждение: не найден LD_LIBRARY_PATH в oak-d"
+          else
+            echo "✅ LD_LIBRARY_PATH в oak-d настроен"
+          fi
+
+  validate-structure:
+    name: Validate Project Structure
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Check required files
+        run: |
+          echo "📂 Проверка структуры проекта..."
+
+          # Проверка наличия обязательных файлов
+          required_files=(
+            "docs/development/DOCKER_STANDARDS.md"
+            "docs/development/AGENT_GUIDE.md"
+            "docker/main/docker-compose.yaml"
+            "docker/main/config/zenoh_router_config.json5"
+            "docker/main/config/zenoh_session_config.json5"
+            "docker/vision/docker-compose.yaml"
+            "docker/vision/config/zenoh_router_config.json5"
+            "docker/vision/config/zenoh_session_config.json5"
+          )
+
+          for file in "${required_files[@]}"; do
+            if [ ! -f "$file" ]; then
+              echo "❌ Отсутствует обязательный файл: $file"
+              exit 1
+            fi
+            echo "✅ $file"
+          done
+
+          echo ""
+          echo "✅ Все обязательные файлы присутствуют"
+
+      - name: Check service directories structure
+        run: |
+          echo "📁 Проверка структуры директорий сервисов..."
+
+          # Main Pi сервисы
+          for service in robot_state_publisher rtabmap zenoh-router lslidar perception; do
+            if [ ! -d "docker/main/$service" ]; then
+              echo "❌ Отсутствует директория сервиса: docker/main/$service"
+              exit 1
+            fi
+            if [ ! -f "docker/main/$service/Dockerfile" ]; then
+              echo "❌ Отсутствует Dockerfile в: docker/main/$service"
+              exit 1
+            fi
+            echo "✅ docker/main/$service"
+          done
+
+          # Vision Pi сервисы (apriltag удален - интегрирован в oak-d)
+          for service in oak-d zenoh-router supercollider; do
+            if [ ! -d "docker/vision/$service" ]; then
+              echo "❌ Отсутствует директория сервиса: docker/vision/$service"
+              exit 1
+            fi
+            if [ ! -f "docker/vision/$service/Dockerfile" ]; then
+              echo "❌ Отсутствует Dockerfile в: docker/vision/$service"
+              exit 1
+            fi
+            echo "✅ docker/vision/$service"
+          done
+
+          echo ""
+          echo "✅ Структура директорий сервисов корректна"
+
+  summary:
+    name: Validation Summary
+    runs-on: ubuntu-latest
+    needs: [validate-main-compose, validate-vision-compose, validate-structure]
+    if: always()
+    steps:
+      - name: Check validation results
+        run: |
+          echo "📊 Итоги валидации Docker Compose конфигураций:"
+          echo ""
+          echo "Main Pi: ${{ needs.validate-main-compose.result }}"
+          echo "Vision Pi: ${{ needs.validate-vision-compose.result }}"
+          echo "Structure: ${{ needs.validate-structure.result }}"
+          echo ""
+
+          if [[ "${{ needs.validate-main-compose.result }}" == "success" ]] && \
+             [[ "${{ needs.validate-vision-compose.result }}" == "success" ]] && \
+             [[ "${{ needs.validate-structure.result }}" == "success" ]]; then
+            echo "✅ Все проверки пройдены успешно!"
+            echo "🎉 Docker Compose конфигурации соответствуют стандартам проекта"
+          else
+            echo "❌ Некоторые проверки провалились. См. детали выше."
+            exit 1
+          fi

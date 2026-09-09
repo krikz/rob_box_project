@@ -1,0 +1,895 @@
+#!/usr/bin/env python3
+"""Integration tests for the Telegram <-> ROS 2 bridge (Phase 6 v2 / W9).
+
+After W8 ``rob_box_telegram.telegram_node.TelegramNode`` is a thin ROS 2
+input bridge that forwards Telegram messages into the dialogue pipeline and
+keeps camera frames available to Telegram handlers:
+
+    Telegram user --text/voice--> /voice/stt/result         (dialogue in)
+    CompressedImage topics      -> in-memory CameraCache     (camera frames)
+
+The node subscribes to ``/voice/dialogue/response`` and duplicates every
+dialogue/TTS output into the active Telegram chat (issue #1195, echo path
+restored queue-based after 88cecc91 removed it because of the
+asyncio-loop bug t_aad8e224).
+
+These tests cover the W9 acceptance criteria from
+``.planning/phases/06-harness-p0-finalization/06-03-PLAN.md``:
+
+    1. Telegram message -> published to /voice/stt/result (with [TG:chat_id] source marker)
+    2. Telegram node subscribes to the dialogue/TTS response topic and echoes to the chat
+    3. Camera image -> forwarded to appropriate topic (CameraCache update)
+    4. Telegram bot starts (mock Application builder)
+    5. VPN connectivity (skipped — no container in CI; see skipVPN)
+
+The test environment has neither ``rclpy`` nor ``python-telegram-bot``
+installed, so both stacks are injected as fakes into ``sys.modules``
+before the node module is imported. ``rclpy.node.Node`` is replaced
+with a stub that records ``create_publisher`` / ``create_subscription``
+calls so the bridge can be exercised without spinning a real DDS
+discovery. The ``telegram.ext.Application.builder()`` chain is wired to
+an ``AsyncMock`` so the bot startup path runs end-to-end without
+hitting the Telegram API.
+
+No real network, no real LLM, no real Telegram — everything goes through
+``unittest.mock``.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import importlib
+import json
+import os
+import sys
+import threading
+import types
+import unittest
+from unittest.mock import AsyncMock, MagicMock, patch
+
+# ``StdString`` (provided by the rclpy stub injected at first import) is
+# resolved lazily inside the test class, so a top-level import is not
+# needed here.
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Fake rclpy / telegram modules
+#
+# Must run BEFORE ``rob_box_telegram.telegram_node`` is imported; the node
+# pulls in rclpy.node.Node, rclpy.qos.*, sensor_msgs, nav_msgs, std_msgs
+# and telegram.ext.* at module load time.
+# ─────────────────────────────────────────────────────────────────────────
+
+
+_STD_STRING_CLS = None  # set by _install_fake_rclpy() so tests can build msgs
+
+
+def _install_fake_rclpy() -> None:
+    """Inject a minimal rclpy shim so telegram_node can be imported."""
+
+    if "rclpy" in sys.modules:
+        return
+
+    rclpy = types.ModuleType("rclpy")
+    callback_groups = types.ModuleType("rclpy.callback_groups")
+    node_mod = types.ModuleType("rclpy.node")
+    qos_mod = types.ModuleType("rclpy.qos")
+
+    class _Reliability:
+        BEST_EFFORT = "best_effort"
+        RELIABLE = "reliable"
+
+    class _History:
+        KEEP_LAST = "keep_last"
+
+    class _Durability:
+        TRANSIENT_LOCAL = "transient_local"
+        # AV-23 (issue #1915): _VOICE_IN_QOS у рации — volatile, чтобы
+        # sound_node не доигрывал stale-чанки после разрыва. Заглушка
+        # обязана знать оба значения, иначе импорт telegram_node падает
+        # здесь, а не в рации.
+        VOLATILE = "volatile"
+
+    class QoSProfile:
+        def __init__(self, reliability=None, history=None, depth=10, durability=None):
+            self.reliability = reliability
+            self.history = history
+            self.depth = depth
+            self.durability = durability
+
+    class _CallbackGroup:
+        pass
+
+    class ReentrantCallbackGroup(_CallbackGroup):
+        pass
+
+    # Expose QoS factory + policy enums on the qos module so the bridge
+    # can build QoS profiles the same way it does at runtime.
+    qos_mod.QoSProfile = QoSProfile
+    qos_mod.ReliabilityPolicy = _Reliability
+    qos_mod.HistoryPolicy = _History
+    qos_mod.DurabilityPolicy = _Durability
+
+    class Node:
+        """Recording stand-in for rclpy.node.Node."""
+
+        def __init__(self, name: str):
+            self._created_publishers: list = []
+            self._created_subscriptions: list = []
+            self._declared_parameters: dict = {}
+            # Fake logger that captures calls without printing.
+            self.get_logger = MagicMock()
+
+        def declare_parameter(self, name, default_value=None):
+            # emulate rclpy.Parameter declaration behaviour
+            self._declared_parameters[name] = default_value
+            return types.SimpleNamespace(value=default_value)
+
+        def get_parameter(self, name):
+            value = self._declared_parameters.get(name)
+            return types.SimpleNamespace(value=value)
+
+        def create_publisher(self, msg_type, topic, qos_profile=None, **_):
+            pub = MagicMock(name=f"Pub[{topic}]")
+            pub.topic = topic
+            pub.msg_type = msg_type
+            pub.qos = qos_profile
+            # Track every .publish() call on the spy.
+            pub.publish = MagicMock(side_effect=self._record_publish(topic))
+            self._created_publishers.append(pub)
+            return pub
+
+        def create_subscription(self, msg_type, topic, callback, qos_profile=None,
+                                callback_group=None, **_):
+            sub = MagicMock(name=f"Sub[{topic}]")
+            sub.topic = topic
+            sub.msg_type = msg_type
+            sub.callback = callback
+            sub.qos = qos_profile
+            sub.callback_group = callback_group
+            self._created_subscriptions.append(sub)
+            return sub
+
+        def _record_publish(self, topic):
+            calls: list = []
+
+            def _capture(msg):
+                calls.append((topic, msg))
+
+            return _capture
+
+    node_mod.Node = Node
+
+    callback_groups.ReentrantCallbackGroup = ReentrantCallbackGroup
+
+    def _init(args=None):
+        return None
+
+    def _ok():
+        return True
+
+    def _shutdown():
+        return None
+
+    def _spin(_node):
+        return None
+
+    def _try_shutdown():
+        return None
+
+    rclpy.init = _init
+    rclpy.ok = _ok
+    rclpy.shutdown = _shutdown
+    rclpy.spin = _spin
+    rclpy.try_shutdown = _try_shutdown
+
+    sys.modules["rclpy"] = rclpy
+    sys.modules["rclpy.node"] = node_mod
+    sys.modules["rclpy.callback_groups"] = callback_groups
+    sys.modules["rclpy.qos"] = qos_mod
+
+    # rclpy.message_conversion_sets is referenced by some rosidl adapters;
+    # the bridge does not import it directly, but a stub avoids surprises.
+    sys.modules.setdefault("rclpy.message_conversion_sets",
+                           types.ModuleType("rclpy.message_conversion_sets"))
+
+    # ROS 2 message modules — minimal stand-ins for the ones telegram_node
+    # imports. Each carries the attribute the bridge actually accesses.
+    std_msgs = types.ModuleType("std_msgs")
+    std_msgs_msg = types.ModuleType("std_msgs.msg")
+
+    class String:
+        def __init__(self):
+            self.data = ""
+    std_msgs_msg.String = String
+    std_msgs.msg = std_msgs_msg
+    sys.modules["std_msgs"] = std_msgs
+    sys.modules["std_msgs.msg"] = std_msgs_msg
+
+    # Expose the stub String class at module scope so tests can build
+    # ``std_msgs.msg.String`` messages without re-importing.
+    globals()["_STD_STRING_CLS"] = String  # noqa: F841 — late binding for tests
+
+    sensor_msgs = types.ModuleType("sensor_msgs")
+    sensor_msgs_msg = types.ModuleType("sensor_msgs.msg")
+
+    class CompressedImage:
+        def __init__(self):
+            self.data = b""
+            self.format = ""
+    sensor_msgs_msg.CompressedImage = CompressedImage
+    sensor_msgs.msg = sensor_msgs_msg
+    sys.modules["sensor_msgs"] = sensor_msgs
+    sys.modules["sensor_msgs.msg"] = sensor_msgs_msg
+
+    nav_msgs = types.ModuleType("nav_msgs")
+    nav_msgs_msg = types.ModuleType("nav_msgs.msg")
+
+    class OccupancyGrid:
+        def __init__(self):
+            self.data = []
+    nav_msgs_msg.OccupancyGrid = OccupancyGrid
+    nav_msgs.msg = nav_msgs_msg
+    sys.modules["nav_msgs"] = nav_msgs
+    sys.modules["nav_msgs.msg"] = nav_msgs_msg
+
+    geometry_msgs = types.ModuleType("geometry_msgs")
+    geometry_msgs_msg = types.ModuleType("geometry_msgs.msg")
+
+    class Twist:
+        def __init__(self):
+            self.linear = types.SimpleNamespace(x=0.0, y=0.0, z=0.0)
+            self.angular = types.SimpleNamespace(x=0.0, y=0.0, z=0.0)
+    geometry_msgs_msg.Twist = Twist
+    geometry_msgs.msg = geometry_msgs_msg
+    sys.modules["geometry_msgs"] = geometry_msgs
+    sys.modules["geometry_msgs.msg"] = geometry_msgs_msg
+
+    # Expose the String class at module scope for tests that need it.
+    globals()["_STD_STRING_CLS"] = String  # noqa: F841 — late binding for tests
+
+
+def _install_fake_telegram() -> None:
+    """Inject a minimal python-telegram-bot shim."""
+
+    if "telegram" in sys.modules:
+        return
+
+    telegram_mod = types.ModuleType("telegram")
+    ext_mod = types.ModuleType("telegram.ext")
+
+    class Update:
+        pass
+
+    class ContextTypes:
+        DEFAULT_TYPE = object
+
+    class InlineKeyboardButton:
+        def __init__(self, text, callback_data=None):
+            self.text = text
+            self.callback_data = callback_data
+
+    class InlineKeyboardMarkup:
+        def __init__(self, inline_keyboard):
+            self.inline_keyboard = inline_keyboard
+
+    class _Filters:
+        VOICE = "voice"
+        TEXT = "text"
+        COMMAND = "command"
+
+        def __and__(self, other):
+            return ("and", self, other)
+
+        def __invert__(self):
+            return ("not", self)
+
+    filters = _Filters()
+
+    class _Handler:
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+
+    class CommandHandler(_Handler):
+        pass
+
+    class MessageHandler(_Handler):
+        pass
+
+    class CallbackQueryHandler(_Handler):
+        pass
+
+    class _ApplicationBuilder:
+        """Minimal stand-in for ``Application.builder().token(...).build()``."""
+
+        def __init__(self):
+            self._token = None
+            self._application = MagicMock(name="Application")
+            self._application.bot = MagicMock(name="Application.bot")
+            self._application.bot_data = {}
+            self._application.bot.send_message = AsyncMock(
+                name="Application.bot.send_message")
+            self._application.add_handler = MagicMock()
+            self._application.initialize = AsyncMock()
+            self._application.start = AsyncMock()
+            self._application.stop = AsyncMock()
+            self._application.shutdown = AsyncMock()
+            self._application.updater = MagicMock()
+            self._application.updater.start_polling = AsyncMock()
+            self._application.updater.stop = AsyncMock()
+            self._application._loop = asyncio.new_event_loop()
+            self._call_counts: dict = {"builder": 0, "token": 0}
+
+        def token(self, value):
+            self._token = value
+            self._call_counts["token"] += 1
+            return self
+
+        def build(self):
+            self._call_counts["builder"] += 1
+            return self._application
+
+    class _Application:
+        @staticmethod
+        def builder():
+            return _ApplicationBuilder()
+
+    ext_mod.Application = _Application
+    ext_mod.CommandHandler = CommandHandler
+    ext_mod.MessageHandler = MessageHandler
+    ext_mod.CallbackQueryHandler = CallbackQueryHandler
+    ext_mod.ContextTypes = ContextTypes
+    ext_mod.filters = filters
+
+    telegram_mod.Update = Update
+    telegram_mod.InlineKeyboardButton = InlineKeyboardButton
+    telegram_mod.InlineKeyboardMarkup = InlineKeyboardMarkup
+
+    error_mod = types.ModuleType("telegram.error")
+
+    class TimedOut(Exception):
+        pass
+
+    class NetworkError(Exception):
+        pass
+
+    error_mod.TimedOut = TimedOut
+    error_mod.NetworkError = NetworkError
+
+    sys.modules["telegram"] = telegram_mod
+    sys.modules["telegram.ext"] = ext_mod
+    sys.modules["telegram.error"] = error_mod
+
+    # numpy / PIL are pulled in by handlers/commands.py — keep them
+    # non-functional (we never invoke a handler in these tests), but make
+    # the import succeed.
+    sys.modules.setdefault("numpy", types.ModuleType("numpy"))
+    pil_mod = types.ModuleType("PIL")
+    pil_image = MagicMock()
+    pil_mod.Image = pil_image
+    sys.modules.setdefault("PIL", pil_mod)
+
+    # ``voice_processor`` is imported transitively by ``telegram_node``
+    # via ``handlers.messages``. It declares ``import aiohttp`` at module
+    # top — stub it so the import chain succeeds in this no-network env.
+    aiohttp_mod = types.ModuleType("aiohttp")
+    aiohttp_mod.ClientSession = MagicMock()
+    aiohttp_mod.ClientTimeout = MagicMock()
+    sys.modules.setdefault("aiohttp", aiohttp_mod)
+
+
+def _load_telegram_node_module():
+    """(Re)import ``rob_box_telegram.telegram_node`` with fresh stubs."""
+
+    _install_fake_rclpy()
+    _install_fake_telegram()
+    sys.modules.pop("rob_box_telegram.telegram_node", None)
+    sys.modules.pop("rob_box_telegram.camera_cache", None)
+    sys.modules.pop("rob_box_telegram.handlers.commands", None)
+    sys.modules.pop("rob_box_telegram.handlers.callbacks", None)
+    sys.modules.pop("rob_box_telegram.handlers.messages", None)
+    sys.modules.pop("rob_box_telegram.auth", None)
+    sys.modules.pop("rob_box_telegram.keyboard_layouts", None)
+    sys.modules.pop("rob_box_telegram.voice_processor", None)
+    sys.modules.pop("rob_box_telegram", None)
+    return importlib.import_module("rob_box_telegram.telegram_node")
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Tests
+# ─────────────────────────────────────────────────────────────────────────
+
+
+class TestTelegramBridge(unittest.IsolatedAsyncioTestCase):
+    """Integration coverage for the W9 acceptance criteria.
+
+    Each test gets a fresh TelegramNode whose ``_start_telegram_bot``
+    is patched to a no-op (the bot-loop logic is exercised separately
+    in :class:`TestTelegramBotStartup`). That keeps these tests focused
+    on the bridge data path without spinning a real thread or asyncio
+    loop.
+    """
+
+    _TOKEN = "test-token-123456"
+
+    def setUp(self) -> None:
+        self._node_mod = _load_telegram_node_module()
+        # Make sure no previous test's env var leaks in.
+        os.environ["TELEGRAM_BOT_TOKEN"] = self._TOKEN
+        # Avoid touching the threading.Thread bot loop during init.
+        # The patched attribute replaces the *unbound* method, so when
+        # called as ``self._start_telegram_bot(token)`` the lambda
+        # receives both ``self`` and ``token``.
+        self._start_patch = patch.object(
+            self._node_mod.TelegramNode,
+            "_start_telegram_bot",
+            lambda self, token: None,
+        )
+        self._start_patch.start()
+        self.node = self._node_mod.TelegramNode()
+
+    def tearDown(self) -> None:
+        self._start_patch.stop()
+        os.environ.pop("TELEGRAM_BOT_TOKEN", None)
+
+    # ── helpers ────────────────────────────────────────────────────────
+
+    def _publisher_for(self, topic: str):
+        for pub in self.node._created_publishers:
+            if pub.topic == topic:
+                return pub
+        raise AssertionError(f"No publisher registered for {topic}")
+
+    def _subscription_for(self, topic: str):
+        for sub in self.node._created_subscriptions:
+            if sub.topic == topic:
+                return sub
+        raise AssertionError(f"No subscription registered for {topic}")
+
+    # ── Test 1: Telegram message → /voice/stt/result ──────────────────
+
+    def test_telegram_message_published_to_stt_topic(self) -> None:
+        """``forward_to_stt`` must publish the raw text on /voice/stt/result."""
+
+        pub = self._publisher_for("/voice/stt/result")
+        self.assertEqual(pub.publish.call_count, 0)
+
+        self.node.forward_to_stt("Привет, робот!")
+        self.node.forward_to_stt("")
+
+        self.assertEqual(pub.publish.call_count, 1)
+        published = pub.publish.call_args.args[0]
+        self.assertIsInstance(published, _STD_STRING_CLS)
+        self.assertEqual(published.data, "Привет, робот!")
+
+    def test_forward_to_stt_with_chat_id_adds_source_marker(self) -> None:
+        """``forward_to_stt(text, chat_id=...)`` must add the [TG:chat_id]
+        source marker (issue #1195) and record the active chat."""
+
+        pub = self._publisher_for("/voice/stt/result")
+        self.assertIsNone(self.node._active_chat_id)
+
+        self.node.forward_to_stt("продолжай", chat_id=-5269346516)
+
+        self.assertEqual(self.node._active_chat_id, -5269346516)
+        published = pub.publish.call_args.args[0]
+        self.assertEqual(published.data, "[TG:-5269346516] продолжай")
+
+    def test_set_active_chat_records_chat(self) -> None:
+        """``set_active_chat`` must store the chat for echo routing."""
+
+        self.assertIsNone(self.node._active_chat_id)
+        self.node.set_active_chat(12345)
+        self.assertEqual(self.node._active_chat_id, 12345)
+
+    def test_node_subscribes_to_dialogue_response(self) -> None:
+        """Telegram must consume dialogue/TTS output to echo it to the chat
+        (issue #1195 — echo path restored)."""
+
+        sub = self._subscription_for("/voice/dialogue/response")
+        self.assertIsNotNone(sub.callback)
+
+    async def test_response_echo_pushes_to_queue(self) -> None:
+        """``_on_response`` must parse the SSML payload and push
+        ``(chat_id, text)`` into the telegram loop's queue.
+
+        The send itself happens on the telegram asyncio loop
+        (``_chat_echo_worker``), never via ``run_coroutine_threadsafe``
+        from the ROS thread (t_aad8e224).
+        """
+
+        self.node._telegram_loop = asyncio.get_running_loop()
+        self.node._response_queue = asyncio.Queue()
+        self.node._active_chat_id = 12345
+
+        msg = types.SimpleNamespace(
+            data=json.dumps(
+                {"ssml": "<speak>Привет!</speak>", "speech_id": "s1"},
+                ensure_ascii=False,
+            )
+        )
+        self.node._on_response(msg)
+
+        # Give the loop a chance to run the scheduled put_nowait.
+        await asyncio.sleep(0)
+        item = self.node._response_queue.get_nowait()
+        self.assertEqual(item, (12345, "Привет!"))
+
+    async def test_response_echo_uses_payload_tg_chat_id(self) -> None:
+        """When dialogue_node routes the reply explicitly (tg_chat_id in the
+        payload), that chat wins over the fallback active chat."""
+
+        self.node._telegram_loop = asyncio.get_running_loop()
+        self.node._response_queue = asyncio.Queue()
+        self.node._active_chat_id = 999
+
+        msg = types.SimpleNamespace(
+            data=json.dumps(
+                {"ssml": "<speak>Привет!</speak>", "tg_chat_id": 777},
+                ensure_ascii=False,
+            )
+        )
+        self.node._on_response(msg)
+
+        await asyncio.sleep(0)
+        item = self.node._response_queue.get_nowait()
+        self.assertEqual(item, (777, "Привет!"))
+
+    async def test_response_echo_worker_sends_message(self) -> None:
+        """``_chat_echo_worker`` must consume the queue and call
+        ``bot.send_message`` with the routed chat_id."""
+
+        self.node._telegram_loop = asyncio.get_running_loop()
+        queue = asyncio.Queue()
+        self.node._response_queue = queue
+        self.node._telegram_app = self.node._telegram_app or MagicMock(
+            name="Application"
+        )
+        self.node._telegram_app.bot = MagicMock(name="Application.bot")
+
+        sent = asyncio.Event()
+
+        async def _fake_send(**kwargs) -> None:
+            sent.set()
+
+        self.node._telegram_app.bot.send_message = AsyncMock(side_effect=_fake_send)
+
+        worker = asyncio.create_task(self.node._chat_echo_worker())
+        queue.put_nowait((42, "Привет!"))
+        await asyncio.wait_for(sent.wait(), timeout=2.0)
+        worker.cancel()
+        try:
+            await worker
+        except asyncio.CancelledError:
+            pass
+
+        self.node._telegram_app.bot.send_message.assert_awaited_once_with(
+            chat_id=42, text="Привет!"
+        )
+
+    # ── Test 2: Camera image → forwarded to appropriate topic ─────────
+
+    def test_camera_image_forwarded_to_cache(self) -> None:
+        """Each camera subscription must cache the latest compressed frame."""
+
+        cache = self.node.camera_cache
+        self.assertEqual(cache.topics, [])
+
+        front = self._subscription_for(self.node.camera_topic).callback
+        depth = self._subscription_for(self.node.camera_depth_topic).callback
+        up = self._subscription_for(self.node.camera_up_topic).callback
+
+        front_msg = _compressed_image(b"\xff\xd8front")
+        depth_msg = _compressed_image(b"\xff\xd8depth")
+        up_msg = _compressed_image(b"\xff\xd8up")
+
+        front(front_msg)
+        depth(depth_msg)
+        up(up_msg)
+
+        self.assertEqual(set(cache.topics),
+                         {self.node.camera_topic,
+                          self.node.camera_depth_topic,
+                          self.node.camera_up_topic})
+        self.assertEqual(cache.get(self.node.camera_topic), b"\xff\xd8front")
+        self.assertEqual(cache.get(self.node.camera_depth_topic), b"\xff\xd8depth")
+        self.assertEqual(cache.get(self.node.camera_up_topic), b"\xff\xd8up")
+
+    def test_map_grid_subscription_records_payload(self) -> None:
+        """Map subscription stores the latest OccupancyGrid on the node."""
+
+        callback = self._subscription_for("/rtabmap/grid_prob_map").callback
+        self.assertIsNone(self.node.latest_map_grid)
+
+        grid = _occupancy_grid()
+        callback(grid)
+
+        self.assertIs(self.node.latest_map_grid, grid)
+
+    # ── Test 4: Telegram bot starts (mock Application) ────────────────
+
+    def test_start_telegram_bot_is_patched_during_bridge_tests(self) -> None:
+        """``_start_telegram_bot`` must be a no-op for the bridge tests.
+
+        ``setUp`` patches ``_start_telegram_bot`` to a lambda so the
+        threading + asyncio loop never run during unit tests. This
+        assertion guards against regressions (e.g. someone removing
+        the patch and accidentally firing real network calls).
+        """
+        # The patched attribute is a lambda, not the original method.
+        original_method = self._node_mod.TelegramNode._start_telegram_bot
+        patched = self.node._start_telegram_bot
+        self.assertIsNot(patched, original_method)
+        # ``patched`` is bound to ``self.node`` (descriptor protocol),
+        # so passing the token alone is the production-shaped call.
+        self.assertIsNone(patched(self._TOKEN))
+
+
+class TestMessageDebounce(unittest.IsolatedAsyncioTestCase):
+    """Issue #1195 — debounce must not crash on 2+ rapid messages.
+
+    The old implementation stored the timer as ``loop.call_later(...)``
+    (an ``asyncio.TimerHandle``) in ``buf["task"]`` and called
+    ``buf["task"].done()`` on the second message — TimerHandle has no
+    ``.done()`` → AttributeError (visible in telegram-bot logs as "No
+    error handlers are registered"). The fix uses ``asyncio.create_task``.
+    """
+
+    def setUp(self) -> None:
+        self._node_mod = _load_telegram_node_module()
+        import rob_box_telegram.auth as auth_module
+        import rob_box_telegram.handlers.messages as messages_module
+
+        auth_module._allowed_users = {42}
+        # Speed up the debounce window so the test doesn't wait 2s.
+        messages_module._DEBOUNCE_DELAY = 0.05
+        self.messages = messages_module
+
+    def _make_update_and_context(self, text: str):
+        node = MagicMock()
+        node.forward_to_stt = MagicMock()
+
+        update = MagicMock()
+        update.effective_chat.id = 42
+        update.message.text = text
+        update.message.set_reaction = AsyncMock()
+        update.message.reply_text = AsyncMock()
+
+        context = MagicMock()
+        context.bot_data = {"node": node}
+        context.user_data = {}
+        return update, context, node
+
+    async def test_two_messages_in_a_row_do_not_crash(self) -> None:
+        """Two rapid messages must not raise AttributeError and must be
+        merged into a single forward after the debounce window."""
+        update, context, node = self._make_update_and_context("продолжай")
+
+        await self.messages.text_message_handler(update, context)
+        # Second message arrives inside the debounce window — this is the
+        # exact line that crashed before (TimerHandle.done()).
+        await self.messages.text_message_handler(update, context)
+
+        # The buffer task is a real asyncio.Task now (has .done()/.cancel()).
+        buf = context.user_data["msg_buffer"]
+        self.assertIsInstance(buf["task"], asyncio.Task)
+
+        await asyncio.sleep(0.15)  # wait past the debounce window
+
+        node.forward_to_stt.assert_called_once()
+        args, kwargs = node.forward_to_stt.call_args
+        self.assertEqual(args[0], "продолжай\nпродолжай")
+        self.assertEqual(kwargs.get("chat_id"), 42)
+
+    async def test_single_message_forwarded_with_chat_id(self) -> None:
+        """A single message is forwarded with the [TG:] source chat_id."""
+        update, context, node = self._make_update_and_context("робот привет")
+
+        await self.messages.text_message_handler(update, context)
+        await asyncio.sleep(0.15)
+
+        node.forward_to_stt.assert_called_once()
+        args, kwargs = node.forward_to_stt.call_args
+        self.assertEqual(args[0], "робот привет")
+        self.assertEqual(kwargs.get("chat_id"), 42)
+
+
+class TestTelegramBotStartup(unittest.IsolatedAsyncioTestCase):
+    """Smoke test for the real ``_start_telegram_bot`` code path.
+
+    The bot is launched inside ``asyncio.run_coroutine_threadsafe`` on
+    the application's event loop. We stub that schedule point so the
+    ``Application.builder()`` chain is built end-to-end, the
+    ``_run_telegram`` coroutine is collected, but no real socket I/O
+    happens.
+    """
+
+    _TOKEN = "test-token-startup"
+
+    def setUp(self) -> None:
+        self._node_mod = _load_telegram_node_module()
+        os.environ["TELEGRAM_BOT_TOKEN"] = self._TOKEN
+
+    def tearDown(self) -> None:
+        os.environ.pop("TELEGRAM_BOT_TOKEN", None)
+
+    def test_bot_starts_and_registers_handlers(self) -> None:
+        """``TelegramNode()`` must spin up the bot thread without raising.
+
+        The constructor calls ``_start_telegram_bot``, which spawns a
+        daemon thread running the asyncio Application loop. Every await
+        resolves against an ``AsyncMock`` (installed by the fake
+        ``Application.builder()``), so the loop completes synchronously
+        — but the daemon thread is still spawned, which is the contract
+        the bridge promises: bot runs out-of-band from ROS callbacks.
+        """
+        node = self._node_mod.TelegramNode()
+
+        # Drain the spawned thread so we don't leak it into the next test.
+        for t in threading.enumerate():
+            if t.name == "telegram-bot":
+                t.join(timeout=2.0)
+                break
+
+        # The constructor wired ROS 2 publishers/subscriptions before
+        # handing off to the bot thread; that wiring must have run.
+        self.assertTrue(node._created_publishers)
+        self.assertTrue(node._created_subscriptions)
+
+    def test_missing_token_does_not_raise(self) -> None:
+        """A missing token must log an error but never explode."""
+
+        os.environ.pop("TELEGRAM_BOT_TOKEN", None)
+        node = self._node_mod.TelegramNode()
+        self.assertIsNone(node._telegram_app)
+
+
+class TestVPNConnectivity(unittest.TestCase):
+    """VPN connectivity check — environment-dependent.
+
+    The bridge relies on the container's WireGuard tunnel, which is
+    configured at deploy time and has no Python-facing surface that a
+    unit test can poke without root access and a real network device.
+    """
+
+    @unittest.skip(
+        "VPN connectivity requires a live WireGuard tunnel inside the "
+        "deployment container — not testable from CI. Skipping per W9 "
+        "spec ('if testable, otherwise skip')."
+    )
+    def test_vpn_endpoint_reachable(self) -> None:
+        pass
+
+
+class TestAvatarCommandResult(unittest.IsolatedAsyncioTestCase):
+    """issue #1988 (шаг 4а) — Telegram как consumer /avatar/command_result.
+
+    Ответ ТАРС (summary) уходит оператору в исходный чат тем же echo-путём,
+    что диалоговые ответы: ``_on_avatar_command_result`` → _response_queue →
+    _chat_echo_worker. Роут по ``request_id='telegram:<chat_id>:<ts_ms>'``.
+    """
+
+    def setUp(self) -> None:
+        self._node_mod = _load_telegram_node_module()
+        os.environ["TELEGRAM_BOT_TOKEN"] = "test-token-123456"
+        self._start_patch = patch.object(
+            self._node_mod.TelegramNode,
+            "_start_telegram_bot",
+            lambda self, token: None,
+        )
+        self._start_patch.start()
+        self.node = self._node_mod.TelegramNode()
+
+    def tearDown(self) -> None:
+        self._start_patch.stop()
+        os.environ.pop("TELEGRAM_BOT_TOKEN", None)
+
+    def _subscription_for(self, topic: str):
+        for sub in self.node._created_subscriptions:
+            if sub.topic == topic:
+                return sub
+        raise AssertionError(f"No subscription registered for {topic}")
+
+    def test_node_subscribes_to_avatar_command_result(self) -> None:
+        """Telegram слушает /avatar/command_result (DoD #1988)."""
+        sub = self._subscription_for("/avatar/command_result")
+        self.assertIsNotNone(sub.callback)
+
+    def test_resolve_result_chat_parses_telegram_prefix(self) -> None:
+        """'telegram:<chat_id>:<ts>' → chat_id; uuid/quest/битый → None."""
+        node = self.node
+        self.assertEqual(
+            node._resolve_avatar_result_chat("telegram:12345:999"), 12345
+        )
+        self.assertIsNone(node._resolve_avatar_result_chat("aabbccdd"))
+        self.assertIsNone(node._resolve_avatar_result_chat("quest:sid:1"))
+        self.assertIsNone(node._resolve_avatar_result_chat("telegram:abc:1"))
+        self.assertIsNone(node._resolve_avatar_result_chat(""))
+
+    async def test_result_relays_to_originating_chat(self) -> None:
+        """ok-результат → summary уходит в чат из request_id."""
+        self.node._telegram_loop = asyncio.get_running_loop()
+        self.node._response_queue = asyncio.Queue()
+        msg = types.SimpleNamespace(
+            data=json.dumps(
+                {
+                    "request_id": "telegram:777:11",
+                    "ok": True,
+                    "summary": "Выполнено",
+                },
+                ensure_ascii=False,
+            )
+        )
+        self.node._on_avatar_command_result(msg)
+        await asyncio.sleep(0)
+        item = self.node._response_queue.get_nowait()
+        self.assertEqual(item, (777, "Выполнено"))
+
+    async def test_error_result_prefixed(self) -> None:
+        """fail-результат → summary с префиксом ⚠️."""
+        self.node._telegram_loop = asyncio.get_running_loop()
+        self.node._response_queue = asyncio.Queue()
+        msg = types.SimpleNamespace(
+            data=json.dumps(
+                {
+                    "request_id": "telegram:777:12",
+                    "ok": False,
+                    "summary": "agent_unavailable",
+                }
+            )
+        )
+        self.node._on_avatar_command_result(msg)
+        await asyncio.sleep(0)
+        item = self.node._response_queue.get_nowait()
+        self.assertEqual(item, (777, "⚠️ agent_unavailable"))
+
+    async def test_unroutable_falls_back_to_active_chat(self) -> None:
+        """uuid4-request_id (malformed) → fallback на active-чат."""
+        self.node._telegram_loop = asyncio.get_running_loop()
+        self.node._response_queue = asyncio.Queue()
+        self.node._active_chat_id = 42
+        msg = types.SimpleNamespace(
+            data=json.dumps(
+                {"request_id": "aabbccdd", "ok": True, "summary": "ok"}
+            )
+        )
+        self.node._on_avatar_command_result(msg)
+        await asyncio.sleep(0)
+        item = self.node._response_queue.get_nowait()
+        self.assertEqual(item, (42, "ok"))
+
+    async def test_empty_summary_dropped(self) -> None:
+        """Пустой summary не уходит в чат."""
+        self.node._telegram_loop = asyncio.get_running_loop()
+        self.node._response_queue = asyncio.Queue()
+        msg = types.SimpleNamespace(
+            data=json.dumps(
+                {"request_id": "telegram:1:1", "ok": True, "summary": "   "}
+            )
+        )
+        self.node._on_avatar_command_result(msg)
+        await asyncio.sleep(0)
+        self.assertTrue(self.node._response_queue.empty())
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def _compressed_image(payload: bytes):
+    msg = types.SimpleNamespace()
+    msg.data = payload
+    msg.format = "jpeg"
+    return msg
+
+
+def _occupancy_grid():
+    msg = types.SimpleNamespace()
+    msg.data = []
+    return msg
+
+
+if __name__ == "__main__":
+    unittest.main()

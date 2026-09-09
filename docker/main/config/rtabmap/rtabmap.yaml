@@ -1,0 +1,41 @@
+# RTAB-Map параметры для LiDAR-only Main Pi runtime.
+#
+# Этот params-file больше не является главным источником runtime-конфигурации:
+# Main Pi запускает rtabmap через cfg:=/config/rtabmap/rtabmap.ini и
+# patch_rtabmap_launch.py, чтобы жёстко закрепить LiDAR-only режим.
+# Файл оставлен синхронизированным с текущей конфигурацией, чтобы не вводить
+# в заблуждение при ручной диагностике.
+
+/**:
+  ros__parameters:
+    queue_size: 10
+    approx_sync: true  # КРИТИЧНО! Exact sync не работает - timestamps не совпадают
+
+# Параметры для ноды /rtabmap/rtabmap (namespace=rtabmap, node=rtabmap)
+/rtabmap/rtabmap:
+  ros__parameters:
+    queue_size: 10
+    Mem/IncrementalMemory: true
+    Mem/InitWMWithAllNodes: false
+    subscribe_scan: true
+    subscribe_rgbd: false
+    subscribe_rgb: false
+    subscribe_depth: false
+    subscribe_stereo: false
+    Grid/FromDepth: "false"
+    Grid/Sensor: "0"
+    Grid/CellSize: "0.05"
+    Grid/RangeMax: "10.0"
+    Grid/RangeMin: "0.2"
+    Grid/MaxObstacleHeight: "1.5"
+    Grid/MinGroundHeight: "-0.1"
+    Reg/Strategy: "1"
+    Icp/PointToPlane: "false"
+    Icp/Iterations: "30"
+    Icp/Epsilon: "0.001"
+    Icp/MaxTranslation: "0.3"
+    Icp/MaxRotation: "0.78"
+    Icp/CorrespondenceRatio: "0.05"
+    Mem/LaserScanNormalK: "0"
+    RGBD/ProximityPathMaxNeighbors: "10"
+    RGBD/OptimizeFromGraphEnd: "false"

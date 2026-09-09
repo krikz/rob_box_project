@@ -1,0 +1,28 @@
+name: "G: Auto-merge Feature to Develop"
+
+# Автоматическое создание PR в develop после успешной сборки feature веток
+# Срабатывает при пуше в feature/* и copilot/* ветки
+on:
+  push:
+    branches:
+      - 'feature/**'
+      - 'feat/**'
+      - 'copilot/**'
+
+permissions: read-all
+
+jobs:
+  create-pr-to-develop:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Create PR to develop
+        run: |
+          BRANCH="${GITHUB_REF#refs/heads/}"
+          if [ -z "$(gh pr list --head "$BRANCH" --base develop --json number -q '.[0].number')" ]; then
+            gh pr create --base develop --head "$BRANCH" --title "Auto-merge: $BRANCH to develop" --body "Auto-merge from $BRANCH" --label auto || true
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

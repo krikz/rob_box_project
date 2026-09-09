@@ -1,0 +1,1290 @@
+#!/usr/bin/env python3
+"""
+supervisor_client.py — клиентский API супервизора аватара (ADR-0028).
+
+Этот модуль предоставляет тонкий Python-API, через который
+``rob_box_telegram`` взаимодействует с ``avatar_supervisor``:
+
+* ``AcquireFloor{client_id, floor}`` — попросить эксклюзивное право
+  (teleop / voice) перед публикацией ``cmd_vel_*`` или TTS.
+* ``ReleaseFloor{client_id, floor}`` — отпустить право.
+* ``/avatar/state`` (latched) — текущее состояние супервизора, на
+  которое клиент подписывается, чтобы гасить свои кнопки, если
+  ``teleop_floor != "telegram"``.
+* ``teleop_heartbeat`` (10 Гц) — клиент держит floor живым, пока
+  публикует команды движения.
+
+Состояния реализации
+--------------------
+
+ADR-0028 §4.5 разделяет развёртывание супервизора (Phase 2.1–2.2) и
+рефакторинг клиента (Phase 2.4). Чтобы не блокировать текущую
+работу телеграм-бота, ``SupervisorClient`` работает в одном из двух
+режимов:
+
+* ``mode = "monitor"`` (default, Phase 1) — все методы
+  ``acquire_floor`` сразу возвращают ``granted=True``, ``release_floor``
+  и heartbeat — no-op. Это позволяет деплоить клиентский код
+  заранее и включать настоящий супервизор одним переключателем
+  (``mode=active``) без правок в ``telegram_node``.
+* ``mode = "active"`` (Phase 2) — реальные ROS 2 service-calls
+  ``/supervisor/acquire_floor`` и ``/supervisor/release_floor``;
+  подписка на ``/avatar/state`` (msgpack в ``std_msgs/String``);
+  публикация ``teleop_heartbeat`` (msgpack, см. § heartbeat).
+
+Если в режиме ``active`` супервизор ещё не задеплоен (service-call
+падает с timeout) — клиент **честно деградирует** (ADR-0018 §honesty,
+ADR-0028 §4.5): поведение зависит от параметра ``supervisor_required``
+(default ``False`` чтобы не уронить бот на роботе без супервизора):
+
+* ``supervisor_required=False`` (default) — продолжаем работать
+  в fallback: ``granted=True``, ``contacted_service=False``, WARN
+  один раз в 60 секунд + счётчик ``supervisor_service_unavailable_total``.
+  Это сохраняет работоспособность бота во время раскатки supervisor-ноды.
+* ``supervisor_required=True`` — возвращаем ``granted=False``,
+  ``denied_reason="supervisor_unavailable"``; handler в чате
+  показывает «Супервизор недоступен, команда отклонена».
+
+Wire format ``/avatar/state`` (AV-14, issue #1906)
+--------------------------------------------------
+
+До AV-14 этот модуль пытался декодировать ``/avatar/state`` через
+``json.loads`` — что было **тихо неправильно** (издатель
+сериализует msgpack в latin-1 строку, потребитель ждал JSON).
+Результат: каждый ``/avatar/state`` падал в ``JSONDecodeError``,
+``except`` молча проглатывал ошибку, и Telegram-бот **никогда** не
+видел состояния супервизора. UI-gate (``_handle_move``) не блокировал
+кнопки даже когда другой оператор держал ``teleop_floor`` — это
+и был баг #1906.
+
+AV-14 переносит единственный кодек в :mod:`rob_box_supervisor.core.state`:
+``encode_for_ros_string`` / ``decode_from_ros_string``. Эта сторона
+**обязана** использовать его и **не** пытаться парсить payload
+самостоятельно. Если импорт кодека невозможен (например, на минимальном
+CI без ``rob_box_supervisor``) — мы возвращаемся к прежнему
+``AvatarState()``-default и логируем rate-limited WARN, **не**
+``json.loads``-fallback (молчаливый fallback ровно то, что спрятал
+баг, не повторяем).
+
+Моки для тестов
+---------------
+
+Для unit-тестов доступны стабы:
+
+* ``SupervisorClient.set_test_mode("always_grant"|"always_deny")`` —
+  жёстко заданный ответ без обращения к ROS.
+* ``SupervisorClient.set_mock_response("acquire"|"release", fn)`` —
+  подменить функцию-обработчик для теста на acquire/release.
+
+Эти хуки безопасны: они не доступны через ROS-параметры, только
+через прямой вызов из тестов.
+
+Wire-контракт (техдолг, AV-5)
+------------------------------
+
+Серверная сторона сегодня использует ``std_srvs/srv/Trigger`` с
+переходным контрактом (ADR-0028 §4.5 W3-2, ADR-0028 §4.3): ``Trigger.Request``
+пустой, ``client_id`` и ``floor`` читаются либо из атрибутов
+``request.client_id``/``request.floor`` напрямую (симметрично будущему
+кастомному IDL из AV-5), либо из JSON в ``request.data`` как fallback.
+Ответ — ``response.success: bool`` + ``response.message: JSON({
+applied, granted, reason, conflict_with, ...})``.
+
+Этот модуль следует этому же контракту: в активном режиме шлёт
+``client_id``/``floor`` как атрибуты + JSON-строкой в ``request.data``
+(чтобы выжить и на патченных, и на непрятченных серверах). Когда AV-5
+принесёт кастомный IDL, достаточно заменить ``Trigger`` на
+``AcquireFloor.srv`` — клиентский код уже мапит ответ по полям body.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import threading
+import time
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any, Callable, Dict, Optional, TYPE_CHECKING
+
+from .observability import record_avatar_state_decode_error
+
+# AV-14: codec lives in rob_box_supervisor.core.state. The runtime
+# import is done lazily inside ``_on_state_msg`` so the bot stays
+# importable in minimal CI envs without the supervisor package
+# installed. The runtime fallback on import failure is "log + skip",
+# NOT "fall back to json.loads" — silent fallback is exactly the bug
+# #1906 we are closing.
+
+logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    pass  # только для typing-импортов, фактические импорты rclpy — ленивые
+
+
+# AV-14: rate-limited WARN для декодирования /avatar/state. Не чаще
+# раза в 10 секунд — иначе на 1 Гц топике с битым payload залогируем
+# лишних ~10 строк/сек, и нужный сигнал утонет.
+_DECODE_WARN_PERIOD_S: float = 10.0
+_decode_warn_last_ts: float = 0.0
+_decode_warn_lock = threading.Lock()
+
+
+def _maybe_warn_decode(reason: str, exc: BaseException) -> None:
+    """Записать ошибку декодирования в счётчик и (rate-limited) в лог."""
+    global _decode_warn_last_ts
+    try:
+        record_avatar_state_decode_error(reason=reason)
+    except Exception:  # noqa: BLE001 — observability никогда не валит hot path
+        pass
+    now = time.monotonic()
+    with _decode_warn_lock:
+        last = _decode_warn_last_ts
+        if now - last < _DECODE_WARN_PERIOD_S:
+            return
+        _decode_warn_last_ts = now
+    logger.warning(
+        "SupervisorClient: /avatar/state decode failed (%s): %r " "(rate-limited: 1 WARN per %.0fs)",
+        reason,
+        exc,
+        _DECODE_WARN_PERIOD_S,
+    )
+
+
+class Floor(str, Enum):
+    """Два независимых «права», которые клиент может попросить у супервизора."""
+
+    TELEOP = "teleop"
+    VOICE = "voice"
+
+
+# Имена сервисов/топиков. Должны совпадать с константами в rob_box_supervisor.
+#
+# Phase 2 (issue #2002): клиент ходит через ЕДИНЫЙ ``/supervisor/execute``
+# (ADR-0051 §2.1, ExecuteCommand.srv) и больше НЕ дёргает отдельные
+# ``AcquireFloor``/``ReleaseFloor`` сервисы — avatar_supvisor.execute()
+# проксирует их в avatar_arbiter (issue #1987, ADR-0051 §2.2).
+#
+# Старые ``/supervisor/acquire_floor`` / ``/supervisor/release_floor``
+# НЕ зарегистрированы (после Phase 1 split — avatar_arbiter владеет
+# LockManager, supervisor только execute) — клиент ТАМ висит на
+# ``wait_for_service`` timeout → ``supervisor_unavailable`` fallback.
+# Новая версия шлёт Command в ExecuteCommand и читает Response.
+SERVICE_ACQUIRE_LEGACY = "/supervisor/acquire_floor"  # НЕ зарегистрирован
+SERVICE_RELEASE_LEGACY = "/supervisor/release_floor"  # НЕ зарегистрирован
+# Актуальный шов (Phase 2 / issue #2002): rob_box_supervisor_msgs.srv.ExecuteCommand.
+SERVICE_EXECUTE = "/supervisor/execute"
+TOPIC_STATE = "/avatar/state"
+TOPIC_HEARTBEAT = "/teleop_heartbeat"
+
+# kind-значения для Command.msg (должны совпадать с
+# rob_box_supervisor_msgs/msg/Command.msg — uint8). Дублируем как
+# int-константы, чтобы supervisor_client.py не зависел от IDL на mock-стенде.
+_KIND_ACQUIRE_FLOOR: int = 1
+_KIND_RELEASE_FLOOR: int = 2
+
+
+# JSON-ключи ответа сервиса (W3-2 fix-shape, см. _acquire_floor_logic в
+# rob_box_supervisor/rob_box_supervisor/supervisor_node.py).
+_RESP_GRANTED = "granted"
+_RESP_APPLIED = "applied"
+_RESP_REASON = "reason"
+_RESP_HELD_BY = "held_by"
+
+# Специальные коды причин для деградации
+REASON_GRANTED = "granted"
+REASON_CONFLICT_PREFIX = "conflict:"
+REASON_MONITOR = "supervisor_in_monitor_mode"
+REASON_INVALID_REQUEST_PREFIX = "invalid_request:"
+REASON_SUPERVISOR_UNAVAILABLE = "supervisor_unavailable"
+
+# Параметры деградации и rate-limit
+DEFAULT_SUPERVISOR_REQUIRED = False
+DEFAULT_HEARTBEAT_ENABLED = True  # Публикуется только пока _is_holding(TELEOP)
+WARN_RATE_LIMIT_S = 60.0
+DEFAULT_RELEASE_TIMEOUT_S = 0.2
+
+
+@dataclass
+class AcquireResult:
+    """Ответ супервизора на запрос AcquireFloor.
+
+    * ``granted`` — клиент может публиковать команды
+    * ``denied_reason`` — почему отказали (``"held_by_other"`` и т.п.)
+    * ``held_by`` — ``client_id`` текущего держателя (для UI)
+    """
+
+    granted: bool
+    denied_reason: Optional[str] = None
+    held_by: Optional[str] = None
+    # True, если клиент реально дёрнул service; False — fallback/monitor/degrad.
+    contacted_service: bool = False
+
+
+@dataclass
+class AvatarState:
+    """Снимок /avatar/state (msgpack в std_msgs/String)."""
+
+    teleop_floor: Optional[str] = None
+    voice_floor: Optional[str] = None
+    mode: str = "off"  # off / telegram_active / avatar_present / mixed / ...
+    since_ms: int = 0
+    raw: Dict[str, Any] = field(default_factory=dict)
+
+
+# Импортный хелпер: даёт None если rclpy недоступен (юнит-тесты).
+def _try_import_rclpy():
+    try:
+        import rclpy  # noqa: F401  type: ignore
+        from std_msgs.msg import String as _StdString  # type: ignore
+
+        return _StdString
+    except ImportError:
+        return None
+
+
+def _try_import_trigger():
+    try:
+        from std_srvs.srv import Trigger  # type: ignore
+
+        return Trigger
+    except ImportError:
+        return None
+
+
+def _try_import_execute_command() -> Any:
+    """Ленивый импорт ``rob_box_supervisor_msgs.srv.ExecuteCommand``.
+
+    Возвращает ``None`` если IDL не собран / недоступен (CI mock-stend
+    без workspace). Клиент supervisor-а в этом случае работает в
+    fallback-режиме (``supervisor_unavailable`` → grant local, ADR-0018).
+    """
+    try:
+        from rob_box_supervisor_msgs.srv import ExecuteCommand as _Exc  # noqa: PLC0415
+
+        return _Exc
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _try_import_heartbeat_msg_type():
+    """Ленивый импорт IDL ``rob_box_supervisor_msgs.msg.TeleopHeartbeat``.
+
+    Контракт (issue #2189, ADR-0028 §4.4 S10): /teleop_heartbeat
+    обязан публиковаться типом ``rob_box_supervisor_msgs/msg/TeleopHeartbeat``
+    (поля ``client_id``/``ts_ms``/``seq``), а не ``std_msgs/String`` —
+    иначе супервизор-арбитр (подписанный на тот же IDL) не получит
+    ничего и ``LockManager.heartbeat()`` не вызывается → dead-man
+    500 мс не отрабатывает.
+
+    Возвращает ``None`` если IDL-пакет не собран (CI mock-stend без
+    ``colcon build``). Клиент в этом случае работает в heartbeat
+    no-op + WARN, а сам факт-что-фикс-не-сработал логируется один раз
+    (см. ``start_heartbeat``).
+    """
+    try:
+        from rob_box_supervisor_msgs.msg import (  # noqa: PLC0415
+            TeleopHeartbeat as _TeleopHeartbeat,
+        )
+
+        return _TeleopHeartbeat
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _try_import_command_msg() -> Any:
+    """Ленивый импорт ``rob_box_supervisor_msgs.msg.Command``.
+
+    Используется для построения Command-payload в Phase 2 (issue #2002).
+    Если IDL недоступен, клиент падает в fallback (см. ADR-0018).
+    """
+    try:
+        from rob_box_supervisor_msgs.msg import Command as _Cmd  # noqa: PLC0415
+
+        return _Cmd
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _try_import_response_msg() -> Any:
+    """Ленивый импорт ``rob_box_supervisor_msgs.msg.Response``."""
+    try:
+        from rob_box_supervisor_msgs.msg import Response as _Resp  # noqa: PLC0415
+
+        return _Resp
+    except Exception:  # noqa: BLE001
+        return None
+
+
+# ── Метрики (опциональные, см. observability.py) ──────────────────────
+def _record_metric(metric_id: str, **labels: str) -> None:
+    """Один счётчик = одна функция-обёртка в observability.
+
+    Без prometheus_client — no-op (как ``_NoopMetric``).
+    """
+    try:
+        from .observability import _get_counter  # type: ignore[attr-defined]
+    except (ImportError, AttributeError):
+        return
+
+    labelnames = tuple(sorted(labels.keys()))
+    counter = _get_counter(metric_id, metric_id, labelnames)
+    if labels:
+        counter.labels(**labels).inc()
+    else:
+        counter.inc()
+
+
+class SupervisorClient:
+    """Клиент avatar_supervisor (ADR-0028 §4.4).
+
+    Используется только из ``TelegramNode``. Один экземпляр на ноду,
+    создаётся в ``__init__`` и живёт до уничтожения ноды.
+    """
+
+    # Параметры ROS 2 (читаются из declare_parameter в TelegramNode)
+    DEFAULT_MODE = "monitor"  # Phase 1 default — без active-супервизора
+    DEFAULT_ACQUIRE_TIMEOUT_S = 0.5
+    DEFAULT_HEARTBEAT_PERIOD_S = 0.1  # 10 Гц (ADR-0028 §4.4)
+    # Алиасы для обратной совместимости (SupervisorClient.SERVICE_ACQUIRE и т.п.).
+    # ВНИМАНИЕ: ``SERVICE_ACQUIRE`` / ``SERVICE_RELEASE`` теперь указывают
+    # на LEGACY-имена, которые avatar_supervisor НЕ регистрирует после
+    # Phase 1 split (ADR-0051 §2.2) — клиент больше их НЕ использует.
+    # Реальный шов: ``SERVICE_EXECUTE`` (= ``/supervisor/execute``).
+    SERVICE_ACQUIRE = SERVICE_ACQUIRE_LEGACY
+    SERVICE_RELEASE = SERVICE_RELEASE_LEGACY
+    SERVICE_EXECUTE = SERVICE_EXECUTE
+    TOPIC_STATE = TOPIC_STATE
+    TOPIC_HEARTBEAT = TOPIC_HEARTBEAT
+    SUPERVISOR_REQUIRED_DEFAULT = DEFAULT_SUPERVISOR_REQUIRED
+
+    def __init__(
+        self,
+        node: Any,
+        client_id: str = "telegram",
+        mode: str = DEFAULT_MODE,
+        acquire_timeout_s: float = DEFAULT_ACQUIRE_TIMEOUT_S,
+        heartbeat_period_s: float = DEFAULT_HEARTBEAT_PERIOD_S,
+        supervisor_required: bool = DEFAULT_SUPERVISOR_REQUIRED,
+        release_timeout_s: float = DEFAULT_RELEASE_TIMEOUT_S,
+        now_fn: Optional[Callable[[], float]] = None,
+    ) -> None:
+        self._node = node
+        self._client_id = client_id
+        self._mode = mode
+        self._acquire_timeout_s = max(0.0, float(acquire_timeout_s))
+        self._heartbeat_period_s = max(0.0, float(heartbeat_period_s))
+        self._supervisor_required = bool(supervisor_required)
+        self._release_timeout_s = max(0.0, float(release_timeout_s))
+        # now_fn инжектится в тестах для fake-clock rate-limit (ADR-0018).
+        self._now_fn: Callable[[], float] = now_fn or time.monotonic
+
+        # Что мы сейчас держим (для heartbeat и release)
+        self._held_floors: Dict[Floor, float] = {}
+        self._held_floors_lock = threading.Lock()
+
+        # Heartbeat
+        self._heartbeat_timer: Optional[Any] = None
+        self._heartbeat_pub: Optional[Any] = None
+        # IDL-тип ``TeleopHeartbeat``, зафиксированный в момент создания
+        # паблишера (issue #2189). Сохраняем здесь, чтобы ``_send_heartbeat``
+        # формировал объекты того же класса — иначе ROS2 уронит publish()
+        # на type-mismatch или молча отбросит сообщение, и dead-man
+        # 500 мс опять сломается по тихому.
+        self._heartbeat_msg_type: Optional[Any] = None
+        self._heartbeat_seq: int = 0
+
+        # ROS-клиенты сервисов (создаются лениво в active-режиме).
+        # Phase 2 (issue #2002): реально используем ТОЛЬКО _execute_client
+        # (ExecuteCommand.srv на /supervisor/execute) — supervisor.execute()
+        # проксирует в avatar_arbiter. Старые _acquire_client/_release_client
+        # оставлены для backward-compat в тестах (Phase 3 удалит).
+        self._acquire_client: Optional[Any] = None
+        self._release_client: Optional[Any] = None
+        self._execute_client: Optional[Any] = None
+        self._client_lock = threading.Lock()
+
+        # State subscribers
+        self._state_sub: Optional[Any] = None
+        self._state: AvatarState = AvatarState()
+        self._state_lock = threading.Lock()
+        self._state_listeners: list[Callable[[AvatarState], None]] = []
+
+        # Деградация / warn rate-limit
+        self._last_warn_ts: float = 0.0
+
+        # Test hooks (only used by unit tests)
+        self._test_mode: Optional[str] = None  # "always_grant"|"always_deny"|None
+        self._mock_acquire: Optional[Callable[..., AcquireResult]] = None
+        self._mock_release: Optional[Callable[..., None]] = None
+
+        # Connect to actual ROS 2 services/topics if mode == "active"
+        if self._mode == "active":
+            self._setup_active_mode()
+        else:
+            logger.info(
+                "SupervisorClient[%s] in monitor mode — no service calls, "
+                "all floors granted locally (ADR-0028 §4.5)",
+                client_id,
+            )
+
+    # ── Public API ───────────────────────────────────────────────────
+
+    @property
+    def client_id(self) -> str:
+        return self._client_id
+
+    @property
+    def mode(self) -> str:
+        return self._mode
+
+    @property
+    def state(self) -> AvatarState:
+        """Текущий снимок /avatar/state (или локальный, если не active)."""
+        with self._state_lock:
+            return AvatarState(
+                teleop_floor=self._state.teleop_floor,
+                voice_floor=self._state.voice_floor,
+                mode=self._state.mode,
+                since_ms=self._state.since_ms,
+                raw=dict(self._state.raw),
+            )
+
+    @property
+    def supervisor_required(self) -> bool:
+        """Флаг деградации (ADR-0028 §4.5, ADR-0018 §honesty).
+
+        ``False`` (default) — fallback grant + WARN при недоступности
+        супервизора, чтобы не уронить бот на роботе без supervisor-ноды.
+        ``True`` — строгий режим, denial при недоступности.
+        """
+        return self._supervisor_required
+
+    def acquire_floor(
+        self,
+        floor: Floor,
+        timeout_s: Optional[float] = None,
+    ) -> AcquireResult:
+        """Попытаться получить floor. Не блокирует telegram-поток."""
+        if timeout_s is None:
+            timeout_s = self._acquire_timeout_s
+
+        # 1) Test hook — для unit-тестов (см. set_mock_response)
+        if self._mock_acquire is not None:
+            result = self._mock_acquire(floor=floor, client_id=self._client_id)
+            if result.granted:
+                self._record_held(floor)
+                self._ensure_heartbeat_for_teleop(floor)
+            return result
+
+        # 2) Test-mode shortcut
+        if self._test_mode == "always_grant":
+            self._record_held(floor)
+            self._ensure_heartbeat_for_teleop(floor)
+            return AcquireResult(granted=True, contacted_service=False)
+        if self._test_mode == "always_deny":
+            return AcquireResult(
+                granted=False,
+                denied_reason="held_by_other",
+                held_by="quest",
+                contacted_service=False,
+            )
+
+        # 3) Monitor mode (Phase 1 default) — grant locally
+        if self._mode != "active":
+            self._record_held(floor)
+            return AcquireResult(granted=True, contacted_service=False)
+
+        # 4) Active mode — real ROS 2 service call
+        return self._acquire_via_service(floor, timeout_s)
+
+    def release_floor(self, floor: Floor) -> None:
+        """Отпустить floor (best-effort)."""
+        if self._mock_release is not None:
+            self._mock_release(floor=floor, client_id=self._client_id)
+            self._clear_held(floor)
+            self._stop_heartbeat_if_not_holding(Floor.TELEOP)
+            return
+
+        if self._test_mode is not None:
+            self._clear_held(floor)
+            self._stop_heartbeat_if_not_holding(Floor.TELEOP)
+            return
+
+        if self._mode != "active":
+            self._clear_held(floor)
+            self._stop_heartbeat_if_not_holding(Floor.TELEOP)
+            return
+
+        self._release_via_service(floor)
+        self._clear_held(floor)
+        self._stop_heartbeat_if_not_holding(Floor.TELEOP)
+
+    def with_floor(
+        self,
+        floor: Floor,
+        callback: Callable[[], None],
+    ) -> AcquireResult:
+        """Context-manager-style helper: acquire → callback → release.
+
+        Возвращает ``AcquireResult`` чтобы caller мог среагировать
+        на отказ (например, погасить кнопку в UI).
+        """
+        result = self.acquire_floor(floor)
+        if not result.granted:
+            logger.info(
+                "SupervisorClient[%s] denied floor=%s reason=%s held_by=%s",
+                self._client_id,
+                floor.value,
+                result.denied_reason,
+                result.held_by,
+            )
+            return result
+        try:
+            callback()
+        finally:
+            self.release_floor(floor)
+        return result
+
+    def start_heartbeat(self) -> None:
+        """Запустить teleop_heartbeat 10 Гц, пока держим teleop_floor.
+
+        Idempotent: повторный вызов — no-op (return). Если публикация
+        уже идёт, ничего не делаем. В monitor-режиме — no-op.
+
+        Issue #2189 (ADR-0028 §4.4 S10): тип паблишера теперь — IDL
+        ``rob_box_supervisor_msgs/msg/TeleopHeartbeat`` (поля
+        ``client_id``/``ts_ms``/``seq``), а не ``std_msgs/String``
+        (JSON). До #2189 Telegram-оператор публиковал String — супервизор
+        был подписан на IDL — в ROS2 pub/sub с разными типами не
+        соединяются → LockManager.heartbeat() не вызывался, dead-man
+        500 мс был нерабочим. Тип паблишера и подписчика должны совпадать.
+
+        IDL может быть не собран (CI / fresh clone без ``colcon build``
+        пакета ``rob_box_supervisor_msgs``) → try/except ImportError,
+        ``self._heartbeat_pub = None`` + WARN. Heartbeat-цикл при этом
+        НЕ запускается (вместо старого «publisher = std_msgs/String
+        независимо от того, есть ли супервизор»). Шифу прямо просил
+        в комментарии к PR #2204: «если publisher может не создаться,
+        стоит добавить в DoD проверку на роботе, что в проде IDL
+        собран» — WARN делает «тихую деградацию» наблюдаемой.
+        """
+        if self._mode != "active":
+            return
+        if self._heartbeat_timer is not None:
+            return
+        # Нужен и rclpy (для ``create_publisher``), и IDL TeleopHeartbeat.
+        # Если rclpy недоступен — мы уже в monitor-no-op, но без
+        # этого guard'а упали бы на ``self._node.create_publisher``.
+        if _try_import_rclpy() is None:
+            return
+        TeleopHeartbeat = _try_import_heartbeat_msg_type()
+        if TeleopHeartbeat is None:
+            logger.warning(
+                "SupervisorClient[%s] /teleop_heartbeat publisher NOT created: "
+                "rob_box_supervisor_msgs/msg/TeleopHeartbeat IDL is not built. "
+                "Colcon-соберите пакет rob_box_supervisor_msgs. "
+                "Dead-man 500 мс (ADR-0028 §4.4 S10) будет НЕРАБОЧИМ, "
+                "пока эта нода не увидит IDL. "
+                "См. issue #2189.",
+                self._client_id,
+            )
+            return
+        try:
+            self._heartbeat_pub = self._node.create_publisher(
+                TeleopHeartbeat, self.TOPIC_HEARTBEAT, 10
+            )
+            self._heartbeat_msg_type = TeleopHeartbeat
+            self._heartbeat_seq = 0
+            self._heartbeat_timer = self._node.create_timer(
+                self._heartbeat_period_s, self._send_heartbeat
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "SupervisorClient[%s] heartbeat start failed: %r", self._client_id, exc
+            )
+            self._heartbeat_pub = None
+            self._heartbeat_timer = None
+            return
+        logger.info(
+            "SupervisorClient[%s] heartbeat started (period=%.3fs, msg=IDL TeleopHeartbeat)",
+            self._client_id,
+            self._heartbeat_period_s,
+        )
+
+    def stop_heartbeat(self) -> None:
+        """Остановить heartbeat. Безопасно вызывать, даже если не запущен."""
+        if self._heartbeat_timer is not None:
+            try:
+                self._heartbeat_timer.cancel()
+            except Exception:  # noqa: BLE001
+                pass
+            self._heartbeat_timer = None
+        self._heartbeat_pub = None
+        self._heartbeat_msg_type = None
+
+    def subscribe_state(self, listener: Callable[[AvatarState], None]) -> Callable[[], None]:
+        """Подписка на изменения /avatar/state. Возвращает unsubscribe."""
+        self._state_listeners.append(listener)
+        # Сразу отдадим текущее состояние — UI не должен ждать первого
+        # STATE_UPDATE, чтобы понять, держим ли мы floor.
+        try:
+            listener(self.state)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("State listener raised on initial dispatch: %r", exc)
+
+        def _unsubscribe() -> None:
+            try:
+                self._state_listeners.remove(listener)
+            except ValueError:
+                pass
+
+        return _unsubscribe
+
+    # ── Test hooks (только для unit-тестов) ──────────────────────────
+
+    def set_test_mode(self, mode: Optional[str]) -> None:
+        """``"always_grant"`` / ``"always_deny"`` / ``None`` (default)."""
+        self._test_mode = mode
+
+    def set_supervisor_required(self, value: bool) -> None:
+        """Подменить политику деградации в тестах (не для прод-кода)."""
+        self._supervisor_required = bool(value)
+
+    def set_mock_response(
+        self,
+        op: str,
+        fn: Optional[Callable[..., Any]],
+    ) -> None:
+        """Подменить ``acquire`` или ``release`` в тестах."""
+        if op == "acquire":
+            self._mock_acquire = fn
+        elif op == "release":
+            self._mock_release = fn
+        else:
+            raise ValueError(f"Unknown op: {op!r}")
+
+    def reset_test_hooks(self) -> None:
+        self._test_mode = None
+        self._mock_acquire = None
+        self._mock_release = None
+
+    # ── Internal ─────────────────────────────────────────────────────
+
+    def _record_held(self, floor: Floor) -> None:
+        with self._held_floors_lock:
+            self._held_floors[floor] = self._now_fn()
+
+    def _clear_held(self, floor: Floor) -> None:
+        with self._held_floors_lock:
+            self._held_floors.pop(floor, None)
+
+    def _is_holding(self, floor: Floor) -> bool:
+        with self._held_floors_lock:
+            return floor in self._held_floors
+
+    def _ensure_heartbeat_for_teleop(self, floor: Floor) -> None:
+        """Стартует heartbeat если держим teleop. Иначе — no-op.
+
+        Heartbeat стартует **только** когда клиент реально держит
+        teleop_floor (AV-15 acceptance, ADR-0028 §4.4 S10):
+        без активного флора публиковать нечего — это лишний шум и
+        пустые heartbeat-ы делают супервизорную FSM-сематику
+        двусмысленной.
+        """
+        if floor == Floor.TELEOP:
+            self.start_heartbeat()
+
+    def _stop_heartbeat_if_not_holding(self, floor: Floor) -> None:
+        if floor == Floor.TELEOP and not self._is_holding(Floor.TELEOP):
+            self.stop_heartbeat()
+
+    def _setup_active_mode(self) -> None:
+        """Создать service-clients / subscriptions / publishers.
+
+        В активном режиме клиент должен перестать быть «monitor-only»
+        заглушкой: реально ходить в ``/supervisor/acquire_floor`` и
+        ``/supervisor/release_floor``. Импорты rclpy — ленивые (см.
+        ADR-0021 — lazy-import ceiling) и безопасные: если rclpy
+        отсутствует (юнит-тесты без ROS, CI без колкона), клиент
+        остаётся в «деградированном» поведении — это та же честная
+        отметка «не работаем с реальным ROS», что и ADR-0018 §honesty.
+        """
+        RosString = _try_import_rclpy()
+        if RosString is None:
+            logger.warning(
+                "SupervisorClient[%s] cannot create ROS interfaces: rclpy not available",
+                self._client_id,
+            )
+            return
+
+        from rclpy.qos import (  # type: ignore
+            DurabilityPolicy,
+            HistoryPolicy,
+            QoSProfile,
+            ReliabilityPolicy,
+        )
+
+        latched_qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        # Подписка на /avatar/state — это безопасно: state-инфо нужно
+        # даже когда service ещё не поднят (read-only).
+        try:
+            self._state_sub = self._node.create_subscription(
+                RosString,
+                self.TOPIC_STATE,
+                self._on_state_msg,
+                latched_qos,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "SupervisorClient[%s] state subscription failed: %r",
+                self._client_id,
+                exc,
+            )
+
+        # service-clients создаём лениво (первый acquire/release),
+        # потому что в момент декларации нода-нода supervisor-а может
+        # ещё не успеть зарегистрировать сервис. См. _ensure_clients.
+
+        # Heartbeat создаётся только когда держим teleop (см. start_heartbeat).
+
+    def _ensure_clients(self) -> bool:
+            """Ленивое создание service-clients. Возвращает True если готовы.
+
+            Phase 2 (issue #2002): создаём ЕДИНЫЙ ``_execute_client`` для
+            ``/supervisor/execute`` (ExecuteCommand.srv). Старые
+            ``_acquire_client`` / ``_release_client`` для Trigger-сервисов
+            НЕ создаём — supervisor их больше не регистрирует (после
+            ADR-0051 §2.2 split — avatar_arbiter владеет LockManager,
+            supervisor только проксирует через execute).
+
+            Если клиент не удалось создать (нет rclpy, нет IDL) — возвращает
+            ``False`` и caller должен выбрать fallback/monitor-режим через
+            ``_supervisor_required``.
+            """
+            with self._client_lock:
+                if self._execute_client is not None:
+                    return True
+
+                ExecuteCommand = _try_import_execute_command()
+                if ExecuteCommand is None:
+                    # IDL не собран / не в PYTHONPATH — клиент не может
+                    # сделать service-call. Типичная ситуация для
+                    # юнит-тестов вне CI-образа; в прод-коде IDL есть всегда.
+                    return False
+
+                try:
+                    self._execute_client = self._node.create_client(
+                        ExecuteCommand, self.SERVICE_EXECUTE
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "SupervisorClient[%s] create_client(ExecuteCommand) failed: %r",
+                        self._client_id,
+                        exc,
+                    )
+                    return False
+            return True
+
+    def _wait_for_services(self, timeout_s: float) -> bool:
+        """Подождать готовности единого ``/supervisor/execute`` сервиса.
+
+        Не блокирует executor: ``wait_for_service(timeout)`` — это
+        polling-loop внутри rclpy, который проверяет discovery-graph,
+        **но не вызывает** ``spin_until_future_complete`` на чужом
+        executor. Та же стратегия, что в
+        ``supervisor_node._set_dialogue_param`` (ADR-0028 §4.4).
+        """
+        try:
+            execute_ok = bool(
+                self._execute_client
+                and self._execute_client.wait_for_service(timeout_s)
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "SupervisorClient[%s] wait_for_service raised: %r", self._client_id, exc
+            )
+            return False
+        return execute_ok
+
+    def _on_state_msg(self, msg: Any) -> None:
+        """Decode ``/avatar/state`` via the single codec in rob_box_supervisor.
+
+        AV-14 (issue #1906): the publisher and this consumer MUST speak the
+        same wire format, defined in :mod:`rob_box_supervisor.core.state`.
+        We deliberately do **not** fall back to ``json.loads`` here — that
+        silent fallback is exactly the bug we are closing.
+
+        On any decode failure we (a) bump the
+        ``avatar_state_decode_errors_total`` counter and (b) log a
+        rate-limited WARN, but we do NOT update ``self._state`` (UI-gate
+        would silently keep its previous value, which is preferable to
+        resetting to a default-constructed ``AvatarState()`` that lies
+        about "no other operator" — that lie is also a safety bug).
+        """
+        data = getattr(msg, "data", None)
+        if not isinstance(data, str) or not data:
+            _maybe_warn_decode("empty", ValueError("empty msg.data"))
+            return
+
+        try:
+            from rob_box_supervisor.core.state import (  # noqa: PLC0415
+                StateTransportError,
+                StateVersionError,
+                decode_from_ros_string,
+            )
+        except ImportError as exc:
+            # Codec unavailable (e.g. minimal CI without rob_box_supervisor
+            # installed). Same contract: log + skip, never silently default.
+            _maybe_warn_decode("missing_codec", exc)
+            return
+
+        try:
+            decoded = decode_from_ros_string(data)
+        except (StateTransportError, StateVersionError) as exc:
+            _maybe_warn_decode("transport_or_version", exc)
+            return
+        except Exception as exc:  # noqa: BLE001 — не валить подписку
+            _maybe_warn_decode("other", exc)
+            return
+
+        # Bridge supervisor schema (FloorState dataclass with client_id +
+        # since_ms + last_heartbeat_ms) → Telegram UI contract
+        # (teleop_floor/voice_floor = Optional[str] client_id). Callbacks
+        # (_handle_move, _on_avatar_state) and existing tests only read
+        # ``.client_id``-shaped values; ``since_ms`` and the event
+        # become raw fallback fields for now.
+        teleop_holder: Optional[str] = decoded.teleop_floor.client_id if decoded.teleop_floor else None
+        voice_holder: Optional[str] = decoded.voice_floor.client_id if decoded.voice_floor else None
+        new_state = AvatarState(
+            teleop_floor=teleop_holder,
+            voice_floor=voice_holder,
+            mode=str(decoded.mode or "off"),
+            since_ms=int(decoded.since_ms or 0),
+            raw={
+                "mode": decoded.mode,
+                "teleop_floor": (
+                    {
+                        "client_id": teleop_holder,
+                        "since_ms": decoded.teleop_floor.since_ms,
+                        "last_heartbeat_ms": decoded.teleop_floor.last_heartbeat_ms,
+                    }
+                    if decoded.teleop_floor
+                    else None
+                ),
+                "voice_floor": (
+                    {
+                        "client_id": voice_holder,
+                        "since_ms": decoded.voice_floor.since_ms,
+                        "last_heartbeat_ms": decoded.voice_floor.last_heartbeat_ms,
+                    }
+                    if decoded.voice_floor
+                    else None
+                ),
+                "last_event": (
+                    {
+                        "timestamp_ms": decoded.last_event.timestamp_ms,
+                        "client_id": decoded.last_event.client_id,
+                        "kind": decoded.last_event.kind,
+                        "args": dict(decoded.last_event.args),
+                    }
+                    if decoded.last_event
+                    else None
+                ),
+                "since_ms": decoded.since_ms,
+                "version": decoded.version,
+            },
+        )
+        with self._state_lock:
+            self._state = new_state
+        for listener in list(self._state_listeners):
+            try:
+                listener(new_state)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("State listener raised: %r", exc)
+
+    # ── Service-call: acquire через /supervisor/execute (Phase 2, issue #2002) ──
+    #
+    # После ADR-0051 §2.2 avatar_supervisor.execute(Command) — единая
+    # точка входа; legacy ``/supervisor/acquire_floor`` НЕ зарегистрирован
+    # (avatar_arbiter владеет LockManager, supervisor только проксирует).
+    # Клиент шлёт ExecuteCommand с kind=KIND_ACQUIRE_FLOOR и читает
+    # Response{accepted, applied, reason, held_by}.
+
+    def _acquire_via_service(
+        self, floor: Floor, timeout_s: float
+    ) -> AcquireResult:
+        """Sync-вызов ``/supervisor/execute`` (ExecuteCommand.srv).
+
+        Контракт (issue #2002 ADR):
+        * ``ExecuteCommand.Request.command`` — Command.msg с
+          ``kind=KIND_ACQUIRE_FLOOR``, ``client_id``, ``floor``.
+        * ``ExecuteCommand.Response.response`` — Response.msg с полями
+          ``accepted``, ``applied``, ``reason``, ``held_by``,
+          ``contacted_service``, ``actual_mode``.
+
+        Возврат соответствует ``AcquireResult`` (см. dataclass).
+        """
+        # Если rclpy недоступен — fallback по политике (ADR-0018 honesty).
+        if _try_import_rclpy() is None:
+            return self._degrade_on_unavailable(floor, reason="rclpy_unavailable")
+
+        if not self._ensure_clients():
+            return self._degrade_on_unavailable(floor, reason="client_init_failed")
+
+        if not self._wait_for_services(timeout_s):
+            _record_metric(
+                "supervisor_service_unavailable_total",
+                floor=floor.value,
+                reason="wait_for_service_timeout",
+            )
+            return self._degrade_on_unavailable(floor, reason="wait_for_service_timeout")
+
+        ExecuteCommand = _try_import_execute_command()
+        Command = _try_import_command_msg()
+        if ExecuteCommand is None or Command is None:
+            return self._degrade_on_unavailable(
+                floor, reason="execute_idl_unavailable"
+            )
+
+        try:
+            command_obj = Command()
+            command_obj.kind = _KIND_ACQUIRE_FLOOR  # type: ignore[attr-defined]
+            command_obj.client_id = self._client_id  # type: ignore[attr-defined]
+            command_obj.floor = floor.value  # type: ignore[attr-defined]
+
+            request = ExecuteCommand.Request()
+            request.command = command_obj  # type: ignore[attr-defined]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "SupervisorClient[%s] build ExecuteCommand(acquire) failed: %r",
+                self._client_id,
+                exc,
+            )
+            return self._degrade_on_unavailable(
+                floor, reason="execute_request_build_failed"
+            )
+
+        # Делаем call_async и ждём через Event.wait — handler-поток
+        # (asyncio-loop telegram) не блокирует rclpy executor другой ноды,
+        # потому что callback-и rclpy ставят Event из своего потока, а
+        # мы ждём в asyncio-loop, не в rclpy. Та же стратегия, что в
+        # supervisor_node._set_dialogue_param (ADR-0028 §4.4).
+        event = threading.Event()
+
+        try:
+            future = self._execute_client.call_async(request)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "SupervisorClient[%s] call_async(execute) raised: %r",
+                self._client_id,
+                exc,
+            )
+            return self._degrade_on_unavailable(floor, reason="call_async_failed")
+
+        local_result: Dict[str, Any] = {}
+
+        def _done(fut: Any) -> None:
+            try:
+                resp = fut.result()
+            except Exception as exc:  # noqa: BLE001
+                local_result["exc"] = exc
+            else:
+                local_result["resp"] = resp
+            finally:
+                event.set()
+
+        future.add_done_callback(_done)
+
+        if not event.wait(timeout=timeout_s):
+            _record_metric(
+                "supervisor_service_unavailable_total",
+                floor=floor.value,
+                reason="service_timeout",
+            )
+            return self._degrade_on_unavailable(floor, reason="service_timeout")
+
+        if "exc" in local_result:
+            _record_metric(
+                "supervisor_service_unavailable_total",
+                floor=floor.value,
+                reason="service_exception",
+            )
+            return self._degrade_on_unavailable(
+                floor, reason="service_exception"
+            )
+
+        resp = local_result["resp"]
+        result, granted = self._parse_execute_response(resp, floor, kind_hint="acquire")
+        # В ответе сервиса есть granted → обновляем метрику и состояние.
+        if granted:
+            self._record_held(floor)
+            self._ensure_heartbeat_for_teleop(floor)
+            _record_metric(
+                "supervisor_acquire_total",
+                floor=floor.value,
+                result=REASON_GRANTED,
+            )
+        else:
+            _record_metric(
+                "supervisor_acquire_total",
+                floor=floor.value,
+                result=result.denied_reason or "denied",
+            )
+        return result
+
+    def _parse_execute_response(
+        self, resp: Any, floor: Floor, *, kind_hint: str
+    ) -> tuple[AcquireResult, bool]:
+        """Парсит ``ExecuteCommand.Response`` в ``AcquireResult``.
+
+        Возвращает ``(result, granted)`` — семантика ``granted`` теперь
+        означает «arbiter реально выдал floor клиенту» (для acquire) или
+        «release принят» (для release; granted=True здесь отражает
+        applied=True без ошибки).
+
+        Для ``kind_hint="acquire"`` — granted=true если ``response.applied
+        AND response.held_by == client_id``. Для ``kind_hint="release"`` —
+        granted=true если ``response.applied``.
+
+        Структура ответа (rob_box_supervisor_msgs/msg/Response.msg):
+        * ``accepted: bool`` — supervisor принял запрос (true даже в monitor)
+        * ``applied: bool`` — реально выполнено (false в monitor)
+        * ``reason: string`` — машинный код причины
+        * ``held_by: string`` — текущий держатель (для acquire/release)
+        * ``contacted_service: string`` — имя arbiter-сервиса
+        * ``actual_mode: string`` — текущий режим (для set_avatar_mode)
+        """
+        # ExecuteCommand.Response.response — nested Response-msg.
+        # На IDL — ``response.response.accepted``; на mock-stend — то же.
+        outer = getattr(resp, "response", resp)
+        accepted = bool(getattr(outer, "accepted", False))
+        applied = bool(getattr(outer, "applied", False))
+        reason_raw = getattr(outer, "reason", "") or ""
+        reason = str(reason_raw) if isinstance(reason_raw, str) else ""
+        held_by_raw = getattr(outer, "held_by", "") or ""
+        held_by = (
+            str(held_by_raw) if isinstance(held_by_raw, str) and held_by_raw else ""
+        )
+
+        if not accepted:
+            return (
+                AcquireResult(
+                    granted=False,
+                    denied_reason=reason or "execute_rejected",
+                    contacted_service=True,
+                ),
+                False,
+            )
+
+        if not applied:
+            # Supervisor принял, но не применил (монитор-режим,
+            # arbiter_unavailable, mode_conflict и т.п.).
+            return (
+                AcquireResult(
+                    granted=False,
+                    denied_reason=reason or REASON_MONITOR,
+                    held_by=held_by or None,
+                    contacted_service=True,
+                ),
+                False,
+            )
+
+        # applied=True → granted-семантика зависит от kind.
+        if kind_hint == "release":
+            return (
+                AcquireResult(
+                    granted=True,
+                    denied_reason=reason or "released",
+                    contacted_service=True,
+                ),
+                True,
+            )
+        # acquire: granted=true если held_by совпадает с нашим client_id
+        # (arbiter реально выдал floor нам) или если reason содержит
+        # «granted». Иначе (held_by=другой) — это «уже держит другой».
+        acquire_granted = (
+            held_by == self._client_id
+            or "granted" in reason.lower()
+            or not held_by
+        )
+        return (
+            AcquireResult(
+                granted=acquire_granted,
+                denied_reason="" if acquire_granted else reason,
+                held_by=held_by or None,
+                contacted_service=True,
+            ),
+            acquire_granted,
+        )
+
+        if granted:
+            return (
+                AcquireResult(
+                    granted=True,
+                    contacted_service=True,
+                ),
+                True,
+            )
+
+        # Сервис применил запрос, но отказал. Обычно это "conflict:
+        # held_by=quest" — для UI передаём held_by.
+        denied_reason = "held_by_other"
+        if reason.startswith(REASON_CONFLICT_PREFIX) and held_by:
+            denied_reason = "held_by_other"
+        elif reason.startswith(REASON_INVALID_REQUEST_PREFIX):
+            denied_reason = "invalid_request"
+
+        return (
+            AcquireResult(
+                granted=False,
+                denied_reason=denied_reason,
+                held_by=str(held_by) if held_by else None,
+                contacted_service=True,
+            ),
+            False,
+        )
+
+    def _release_via_service(self, floor: Floor) -> None:
+        """Release через ``/supervisor/execute`` (Phase 2, issue #2002).
+
+        Best-effort: ошибку логируем. Если клиент или IDL недоступны —
+        тихо выходим (release в fallback-режиме означает «локально
+        забыли», что supervisor позже всё равно увидит по
+        истечению heartbeat-dead-man).
+        """
+        if _try_import_rclpy() is None or not self._ensure_clients():
+            return
+
+        ExecuteCommand = _try_import_execute_command()
+        Command = _try_import_command_msg()
+        if ExecuteCommand is None or Command is None:
+            return
+
+        try:
+            command_obj = Command()
+            command_obj.kind = _KIND_RELEASE_FLOOR  # type: ignore[attr-defined]
+            command_obj.client_id = self._client_id  # type: ignore[attr-defined]
+            command_obj.floor = floor.value  # type: ignore[attr-defined]
+
+            request = ExecuteCommand.Request()
+            request.command = command_obj  # type: ignore[attr-defined]
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "SupervisorClient[%s] build ExecuteCommand(release) failed: %r",
+                self._client_id,
+                exc,
+            )
+            return
+
+        try:
+            future = self._execute_client.call_async(request)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "SupervisorClient[%s] release call_async(execute) failed: %r",
+                self._client_id,
+                exc,
+            )
+            return
+
+        event = threading.Event()
+
+        def _done(fut: Any) -> None:
+            try:
+                fut.result()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "SupervisorClient[%s] release future error: %r", self._client_id, exc
+                )
+            finally:
+                event.set()
+
+        future.add_done_callback(_done)
+        # Release не должен «залипнуть» — ждём только короткий таймаут.
+        event.wait(timeout=self._release_timeout_s)
+
+    def _degrade_on_unavailable(
+        self, floor: Floor, reason: str
+    ) -> AcquireResult:
+        """Честная деградация при недоступности сервиса (ADR-0018 §honesty).
+
+        ``supervisor_required=False`` (default): grant local + WARN rate-limit.
+        ``supervisor_required=True``: deny с reason="supervisor_unavailable".
+        """
+        if not self._supervisor_required:
+            self._maybe_warn_unavailable(reason)
+            self._record_held(floor)
+            self._ensure_heartbeat_for_teleop(floor)
+            return AcquireResult(
+                granted=True,
+                denied_reason=reason,
+                contacted_service=False,
+            )
+
+        return AcquireResult(
+            granted=False,
+            denied_reason=REASON_SUPERVISOR_UNAVAILABLE,
+            contacted_service=False,
+        )
+
+    def _maybe_warn_unavailable(self, reason: str) -> None:
+        """WARN один раз в WARN_RATE_LIMIT_S (защита от лог-spam)."""
+        now = self._now_fn()
+        if now - self._last_warn_ts < WARN_RATE_LIMIT_S:
+            return
+        self._last_warn_ts = now
+        logger.warning(
+            "SupervisorClient[%s] supervisor unavailable "
+            "(reason=%s, supervisor_required=false → fallback grant). "
+            "WARN rate-limited to once per %.0fs — see ADR-0028 §4.5.",
+            self._client_id,
+            reason,
+            WARN_RATE_LIMIT_S,
+        )
+
+    def _send_heartbeat(self) -> None:
+        """Сформировать и опубликовать ``TeleopHeartbeat`` IDL.
+
+        Issue #2189 (ADR-0028 §4.4 S10): до фикса этот метод публиковал
+        ``std_msgs/String`` с JSON-строкой, а супервизор-арбитр был подписан
+        на IDL ``TeleopHeartbeat``. В ROS 2 pub/sub с разными типами не
+        соединяются → ``LockManager.heartbeat()`` никогда не вызывался →
+        dead-man 500 мс был нерабочим. Теперь тип паблишера и payload-а
+        совпадают — IDL ``TeleopHeartbeat`` с полями ``client_id``/
+        ``ts_ms``/``seq``.
+
+        ``seq`` — монотонный счётчик от 0, инкрементируется на каждый
+        publish; супервизор использует его, чтобы заметить «дыры» в
+        потоке (heartbeat-delivered, но не в realtime).
+        """
+        if not self._is_holding(Floor.TELEOP):
+            self.stop_heartbeat()
+            return
+        if self._heartbeat_pub is None or self._heartbeat_msg_type is None:
+            return
+        try:
+            msg = self._heartbeat_msg_type()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Heartbeat msg alloc failed: %r", exc)
+            return
+        msg.client_id = self._client_id
+        msg.ts_ms = int(time.time() * 1000)
+        msg.seq = self._heartbeat_seq
+        self._heartbeat_seq = (self._heartbeat_seq + 1) & 0xFFFFFFFF
+        try:
+            self._heartbeat_pub.publish(msg)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Heartbeat publish failed: %r", exc)
+
+    def shutdown(self) -> None:
+        """Корректно остановить heartbeat / release floors."""
+        self.stop_heartbeat()
+        with self._held_floors_lock:
+            held = list(self._held_floors.keys())
+        for floor in held:
+            self.release_floor(floor)

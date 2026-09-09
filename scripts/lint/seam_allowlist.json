@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "publishers_without_local_subscriber": {
+    "/cmd_vel_voice": "Потребитель — twist_mux (внешний скомпилированный ROS2-узел, не Python/не в src/), арбитрирует источники скорости. Конфиг: docker/main/config/twist_mux/twist_mux.yaml.",
+    "/cmd_vel_web": "Потребитель — twist_mux, см. /cmd_vel_voice. Конфиг: docker/main/config/twist_mux/twist_mux.yaml (topic: cmd_vel_web).",
+    "cmd_vel_emergency": "Потребитель — twist_mux, см. /cmd_vel_voice. Конфиг: docker/main/config/twist_mux/twist_mux.yaml (topic: cmd_vel_emergency).",
+    "cmd_vel_joy": "Потребитель — twist_mux, см. /cmd_vel_voice. Конфиг: docker/main/config/twist_mux/twist_mux.yaml (topic: cmd_vel_joy).",
+    "cmd_vel_quest": "Потребитель — twist_mux, см. /cmd_vel_voice. Конфиг: docker/main/config/twist_mux/twist_mux.yaml (topic: cmd_vel_quest).",
+    "/joystick_lock": "Потребитель — twist_mux (lock-топик мультиплексора), внешний узел. Конфиг: docker/main/config/twist_mux/twist_mux.yaml.",
+    "/teleop_lock": "Потребитель — twist_mux (lock-топик мультиплексора), внешний узел, зеркалит /joystick_lock по семантике «у меня руль». Конфиг: docker/main/config/twist_mux/twist_mux.yaml. Источник — avatar_arbiter (LockManager.holder(Floor.TELEOP), ADR-0081 R1/R3, #2191).",
+    "/panel_image": "Потребитель — ros2leds (src/ros2leds — git submodule, в этом чекауте не выкачан; C++/vendor-пакет, вне Python AST-скана). LED-матрица. См. docker/vision/scripts/led_matrix/start_led_matrix.sh (\"IN: /panel_image\").",
+    "joint_states": "Публикует src/rob_box_bringup/scripts/dummy_joint_state_publisher.py — dev-утилита для визуализации в RViz без реальных моторов (см. её докстринг). Реальный потребитель — robot_state_publisher/RViz (стандартный внешний ROS2-тулинг, не в src/).",
+    "/avatar/wake_stream": "Диагностический heartbeat по дизайну (ADR-0071 шаг 5a) — наблюдатели (e2e-тесты через `ros2 topic echo`), не функциональный ROS-подписчик. См. комментарий у quest_node.py (wake_stream_pub, строка ~563).",
+    "/harness/task_events": "Потребитель — docker/vision/test/scenario_runner/runner.py (E2E-сценарный раннер, живёт вне src/, поэтому вне скана этого сторожа). Реальная rclpy-подписка подтверждена в файле (TOPIC_TASK_EVENTS).",
+    "/voice/tts/metrics": "Потребитель — scripts/tts_bench/chunk_latency_bench.py (офлайн-бенчмарк задержки TTS, вне src/)."
+  },
+  "subscribers_without_local_publisher": {
+    "/battery_state": "Публикует ros2_control controller_manager (внешний ROS2-стек управления, не Python/не в src/). Конфиг: docker/main/config/controllers/controller_manager.yaml.",
+    "/odom": "Публикует ros2_control controller_manager, см. /battery_state. Конфиг: docker/main/config/controllers/controller_manager.yaml.",
+    "/dynamic_joint_states": "Публикует ros2_control controller_manager, см. /battery_state.",
+    "/scan": "Публикует lidar-драйвер (lslidar, внешний пакет, не в src/). Конфиг: docker/main/config/lslidar/lsx10_custom.yaml.",
+    "/camera/camera/color/image_raw/compressed": "Публикует камера-контейнер oak-d (внешний драйвер, не Python/не в src/). См. docker/vision/scripts/monitor_camera_startup.sh, realtime_monitor.sh.",
+    "/ceiling_camera/image_raw/compressed": "Публикует потолочная камера (отдельный контейнер, внешний драйвер). Конфиг: docker/vision/config/telegram_bot/telegram_bot.yaml (camera_up_topic).",
+    "/camera/camera/depth/image_rect_raw/compressedDepth": "Публикует depth-камера oak-d (внешний драйвер depthai_ros, не Python/не в src/). Используется quest_node для проброса кадров глубины в WS-клиент Quest (issue #2138.B fix #2138.B: camera_oak_depth был объявлен как CAMERA_DIRECT через depthai SDK в rob-box-quest, но depthai в этом образе нет — capture-поток падал с 'thread exits', панель глубины в шлеме была пустой. Берём кадры напрямую из ROS-топика, как ceiling и rear). Тот же топик уже используется telegram_node:101 (camera_depth_topic).",
+    "/rtabmap/grid_prob_map": "Публикует rtabmap_ros (внешний ROS2-пакет SLAM, не в src/).",
+    "/rtabmap/localization_pose": "Публикует rtabmap_ros, см. /rtabmap/grid_prob_map.",
+    "/rtabmap/map": "Публикует rtabmap_ros, см. /rtabmap/grid_prob_map.",
+    "/rosout": "Встроенный топик логов ROS2 — публикуется рантаймом rclpy/rclcpp у КАЖДОГО узла автоматически, никогда через явный create_publisher(...). Подписчики (health_monitor.py, context_aggregator_node.py) легитимны.",
+    "/sensors/motor_state/front_left": "Публикует vesc_nexus (VESC motor controller driver, src/vesc_nexus — git submodule, в этом чекауте не выкачан; сообщение vesc_msgs.VescStateStamped). Подписка в quest_node.py обёрнута в try/except ImportError на случай отсутствия vesc_msgs.",
+    "/device/snapshot": "Публикует ESP32 sensor hub через micro-ROS мост (прошивка/железо, вне Python-скана src/). Единственная попытка ROS-моста в этом репо (context_aggregator_node.py, DeviceSnapshot) закомментирована — не источник, просто мёртвый код рядом. Реальные потребители: quest_node.py (battery JSON) и rob_box_supervisor/arbiter_node.py.",
+    "/voice/state": "Известное расхождение имён, уже задокументированное в ADR-0027 #2 и явно помеченное комментарием в arbiter_node.py (\"НЕ /voice/state\") — реальный топик состояния диалога называется /voice/dialogue/state, а led_node.py всё ещё подписан на старое имя /voice/state. Не чиним в рамках этого PR (сторож сообщает, не чинит, issue #2118), баселайним и оставляем явную ссылку, чтобы не выглядело неизвестной находкой."
+  }
+}

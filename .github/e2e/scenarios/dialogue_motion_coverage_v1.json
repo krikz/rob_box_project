@@ -1,0 +1,138 @@
+{
+  "name": "dialogue_motion_coverage_v1",
+  "stability": "opt-in-unsafe",
+  "_stability_comment": [
+    "🚨 ЭТА СЬЮТА ДВИГАЕТ РОБОТА И МЕНЯЕТ КАРТУ. Не запускать вместе с остальными.",
+    "Перед прогоном обязательно:",
+    "  1) свободное пространство вокруг робота минимум 2 метра во все стороны;",
+    "  2) человек рядом с физической кнопкой останова;",
+    "  3) резервная копия текущей карты — шаги mm05-mm08 её перезаписывают;",
+    "  4) робот НЕ на столе/подставке.",
+    "Именно поэтому движение и картография вынесены сюда, а не в",
+    "dialogue_tools_coverage_v1.json, который безопасно гонять в CI."
+  ],
+  "description": "Покрытие непокрытых тулов движения и картографии: move_direction, navigate_to_waypoint, navigate_to_coordinates, start_mapping, continue_mapping, finish_mapping, load_map, optimize_map. Ни один существующий e2e-сценарий их не трогал — покрыт был только stop_navigation.",
+  "steps": [
+    {
+      "label": "mm01_move_short",
+      "voice": "anton",
+      "text": "Робот, проедь вперёд полметра",
+      "patterns": ["move_direction"],
+      "acceptance": {
+        "expected_tool_calls": ["move_direction"],
+        "must_not_call": [],
+        "_comment": "move_direction не покрыт ни одним сценарием. Дистанция намеренно минимальная. Смотреть: доехала ли команда до vesc/twist_mux, и вернулся ли DSM в IDLE после завершения (регресс issue #918)."
+      }
+    },
+    {
+      "label": "mm02_stop",
+      "voice": "anton",
+      "text": "Робот, стоп, прекрати движение",
+      "patterns": ["stop_navigation"],
+      "acceptance": {
+        "expected_tool_calls": ["stop_navigation"],
+        "must_not_call": [],
+        "_comment": "Обязательный шаг безопасности после любого движения."
+      }
+    },
+    {
+      "label": "mm03_save_waypoint_here",
+      "voice": "anton",
+      "text": "Робот, запомни эту точку как проверочная",
+      "patterns": ["save_waypoint"],
+      "acceptance": {
+        "expected_tool_calls": ["save_waypoint"],
+        "must_not_call": [],
+        "_comment": "Подготовка к mm04."
+      }
+    },
+    {
+      "label": "mm04_navigate_to_waypoint",
+      "voice": "anton",
+      "text": "Робот, езжай к точке проверочная",
+      "patterns": ["navigate_to_waypoint"],
+      "acceptance": {
+        "expected_tool_calls": ["navigate_to_waypoint"],
+        "must_not_call": [],
+        "_comment": "navigate_to_waypoint не покрыт. Робот уже стоит на этой точке, поэтому путь околонулевой — проверяем сам вызов и корректное завершение, а не качество навигации. ВНИМАНИЕ: этот тул в MCPBridge помечен как no-timeout (блокирует до физического завершения) — если шаг висит, это находка про таймауты, а не зависание раннера."
+      }
+    },
+    {
+      "label": "mm05_navigate_coordinates",
+      "voice": "anton",
+      "text": "Робот, езжай в точку с координатами ноль запятая три и ноль",
+      "patterns": ["navigate_to_coordinates"],
+      "acceptance": {
+        "expected_tool_calls": ["navigate_to_coordinates"],
+        "must_not_call": [],
+        "_comment": "navigate_to_coordinates не покрыт. Заодно проверяем, как LLM парсит произнесённые голосом дробные числа — типовое место потери смысла."
+      }
+    },
+    {
+      "label": "mm06_stop_again",
+      "voice": "anton",
+      "text": "Робот, стоп",
+      "patterns": ["stop_navigation"],
+      "acceptance": {
+        "expected_tool_calls": ["stop_navigation"],
+        "must_not_call": [],
+        "_comment": "Безопасность."
+      }
+    },
+    {
+      "label": "mm07_start_mapping",
+      "voice": "anton",
+      "text": "Робот, начни строить карту помещения",
+      "patterns": ["start_mapping"],
+      "acceptance": {
+        "expected_tool_calls": ["start_mapping"],
+        "must_not_call": [],
+        "_comment": "start_mapping не покрыт. С этого шага карта ПЕРЕЗАПИСЫВАЕТСЯ — резервная копия должна быть сделана заранее."
+      }
+    },
+    {
+      "label": "mm08_continue_mapping",
+      "voice": "anton",
+      "text": "Робот, продолжай строить карту",
+      "patterns": ["continue_mapping"],
+      "acceptance": {
+        "expected_tool_calls": ["continue_mapping"],
+        "must_not_call": [],
+        "_comment": "continue_mapping не покрыт."
+      }
+    },
+    {
+      "label": "mm09_optimize_map",
+      "voice": "anton",
+      "text": "Робот, оптимизируй карту",
+      "patterns": ["optimize_map"],
+      "acceptance": {
+        "expected_tool_calls": ["optimize_map"],
+        "must_not_call": [],
+        "_comment": "optimize_map не покрыт."
+      }
+    },
+    {
+      "label": "mm10_finish_mapping",
+      "voice": "anton",
+      "text": "Робот, заканчивай картографирование и сохрани карту как тесткарта",
+      "patterns": ["finish_mapping"],
+      "acceptance": {
+        "expected_tool_calls": ["finish_mapping"],
+        "must_not_call": [],
+        "_comment": "finish_mapping не покрыт. Тоже no-timeout тул в MCPBridge."
+      }
+    },
+    {
+      "label": "mm11_load_map",
+      "voice": "anton",
+      "text": "Робот, загрузи карту тесткарта",
+      "patterns": ["load_map"],
+      "acceptance": {
+        "expected_tool_calls": ["load_map"],
+        "must_not_call": [],
+        "_comment": "load_map не покрыт. Замыкает цикл start → continue → optimize → finish → load."
+      }
+    }
+  ]
+}

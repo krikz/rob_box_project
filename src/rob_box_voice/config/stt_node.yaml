@@ -1,0 +1,39 @@
+# stt_node.yaml — per-node ROS2 config (issue #1004 fix)
+#
+# Формат — стандартный ROS2: верхний ключ = имя ноды (должно совпадать с
+# Node(name=...) в launch), под ним ros__parameters: с плоскими параметрами.
+# get_parameter("foo") в ноде находит foo БЕЗ префикса.
+#
+# Все ключи соответствуют declare_parameter() в stt_node.py 1:1.
+# (Ключи vad_timeout/min_speech_duration/provider/language/whisper_* были
+# удалены — код их НЕ читает; YAML молча игнорировался, issue #1004.)
+
+stt_node:
+  ros__parameters:
+    metrics_port: 9111  # issue #1160 — Prometheus metrics endpoint
+    model_path: /models/vosk-model-small-ru-0.22
+    sample_rate: 16000
+    # wake_words намеренно НЕ здесь: списки — в docker/vision/config/wake_words.yaml
+    # (SSoT, issue #1990). Нода читает его через wake_words_file; пусто здесь =
+    # dev-env без файла → кодовый фолбек DEFAULT_WAKE_WORDS (байт-в-байт тот же).
+    wake_words_file: ""
+    # ===== Fallback/retry/short-phrase (issue #979) =====
+    yandex_timeout_s: 5.0
+    yandex_max_retries: 1
+    retry_backoff_s: 1.0
+    min_text_chars: 3
+    unclear_phrase: Не расслышал, скажи ещё раз
+    unclear_cooldown_s: 5.0
+    tts_grace_s: 2.5
+    # Issue #1251 — ранний «бульк» (сигнал «услышал, wake word есть»):
+    # как только partial/final STT содержит wake word, публикуем триггер
+    # на /voice/sound/trigger → sound_node играет короткий «бульк» через
+    # ~2-3с после конца фразы (а не ~8с, когда закончатся LLM+TTS).
+    early_boop_enabled: true
+    early_boop_trigger: boop
+    # ⚠️ issue #1734: barge_in_policy здесь НЕТ и не должно быть. Единственный
+    # источник истины — dialogue_node.yaml (ключ barge_in_policy). stt_node
+    # узнаёт актуальное значение runtime через latched-топик
+    # /voice/dialogue/barge_in_policy, а не из своего YAML — иначе получим
+    # тот же класс ошибки, что и с дублированием wake_words выше (#1252),
+    # который и породил #1734.

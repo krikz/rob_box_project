@@ -1,0 +1,66 @@
+# Dependabot version updates for rob_box_project
+# Docs: https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+#
+# Covered ecosystems:
+#   github-actions — workflow action versions (e.g. actions/checkout@v4)
+#   pip            — Python deps in ROS 2 packages and Docker service builds
+#   docker         — FROM base images in all service Dockerfiles
+#
+# All updates are grouped per ecosystem → at most 3 PRs/week.
+# Internal ghcr.io/krikz/* images are ignored (managed by CI, not public registry).
+
+version: 2
+updates:
+
+  # ── GitHub Actions ────────────────────────────────────────────────────────
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    groups:
+      github-actions:
+        patterns: ["*"]
+
+  # ── Python (pip) ──────────────────────────────────────────────────────────
+  # ROS 2 package requirements + Docker service build requirements
+  - package-ecosystem: "pip"
+    directories:
+      - "/src/rob_box_voice"
+      - "/src/rob_box_perception"
+      - "/docker/main/perception"
+      - "/docker/vision/voice_base"
+      - "/docker/vision/voice_assistant"
+      - "/tools/animation_editor"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    groups:
+      python-deps:
+        patterns: ["*"]
+
+  # ── Docker base images (Dockerfiles) ──────────────────────────────────────
+  # Scans FROM lines in all service Dockerfiles under docker/main/ and docker/vision/
+  # Glob: /docker/main/* → each service subdir (lslidar, nav2, perception, …)
+  #       /docker/vision/* → each service subdir (voice_assistant, oak-d, …)
+  #       /docker/vision/test/* → test service subdirs (mock_llm, ollama, …)
+  - package-ecosystem: "docker"
+    directories:
+      - "/docker/main/*"
+      - "/docker/vision/*"
+      - "/docker/vision/test/*"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    ignore:
+      # Internal images are built by our CI — no public registry updates available
+      - dependency-name: "ghcr.io/krikz/*"
+      - dependency-name: "10.1.1.249:5000/*"
+      # Allow only patch updates for python image — minor/major jumps (e.g. 3.11 → 3.14)
+      # can break dependencies like renardo-lib that don't yet support newer Python releases.
+      - dependency-name: "python"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+    groups:
+      docker-base-images:
+        patterns: ["*"]
+

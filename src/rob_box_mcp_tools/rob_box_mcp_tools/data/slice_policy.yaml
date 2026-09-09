@@ -1,0 +1,150 @@
+# slice_policy.yaml — sender → slices → tools (ADR-0052, issue #1998 §6.2)
+#
+# Каталог инструментов нарезан на пять срезов. Каждый sender
+# (``dialogue_node``, ``avatar_supervisor``, ``harness``) перечисляет,
+# какие срезы ему доступны. Если sender не указан — он не может
+# вызвать ничего (fail-closed). Если указан, но у него нет нужного
+# среза — ``mcp_server`` отвечает ``success=False`` ещё до любых
+# других гардов (mapping FSM, registry.execute).
+#
+# ``slices.*`` — перечень tool-имён, входящих в срез. Совпадает с
+# ``MCPTool.slice`` каждого подкласса; источник истины для политики
+# — этот YAML, ``MCPTool.slice`` — это декларация (для sanity-check'а
+# при старте и для статической проверки в тестах).
+#
+# Schema:
+#   senders.<name>:    list[str]   # срезы, доступные sender'у
+#   slices.<name>:     list[str]   # tool-имена, входящие в срез
+#
+# Изменение состава среза или sender'а — одна строчка в YAML, без
+# пересборки ``voice-assistant`` (тот же data-driven паттерн, что и
+# ``confirmation_policy.yaml``, ADR-0052 §2).
+
+senders:
+  # ЛLM-личность (dialogue_node): всё, что умеет робот в обычном
+  # режиме, кроме операторских и admin-инструментов.
+  dialogue_node:
+    - core
+    - personality
+
+  # Оператор (avatar_supervisor / ТАРС): привилегированный
+  # пользователь, имеет доступ ко всем срезам включая operator.admin.
+  avatar_supervisor:
+    - core
+    - personality
+    - operator.speech
+    - operator.control
+    - operator.admin
+
+  # Harness (AgentCore) — LLM-каркас в тестовой/дебаг-ноде. По правам
+  # совпадает с личностью (карта та же); отдельный sender — чтобы
+  # можно было ужесточить/расширить независимо.
+  harness:
+    - core
+    - personality
+
+slices:
+  # ── CORE: read-only, безопасные по умолчанию (MCPTool.slice = "core")
+  core:
+    - get_battery_level
+    - get_current_time
+    - get_current_pose
+    - get_robot_status
+    - get_perception_context
+    - get_sound_info
+    - get_music_state
+    - list_waypoints
+
+  # ── PERSONALITY: всё, что LLM-личность может вызывать в обычном
+  # диалоге (музыка, память, навигация, mapping, речь).
+  personality:
+    # речь и TTS
+    - speak_text
+    - listen_for_response
+    - estimate_tts_duration
+    - register_speaker
+    - set_voice
+    - set_tts_provider
+    - list_tts_voices
+    - play_animation
+    - play_sound
+    - set_volume
+    - set_pitch
+    - set_speed
+    - set_dj_mode
+    # поиск / память
+    - search_web
+    - faq_search
+    - memory_save
+    - memory_search
+    - memory_context
+    # MiniMax Music (LLM-генерация)
+    - generate_music
+    - gen_list_library
+    - gen_search_library
+    - gen_save_to_library
+    - gen_play_from_library
+    - gen_delete_from_library
+    - gen_get_track_info
+    - execute_music_code
+    # локальная библиотека и продюсирование
+    - compose_music
+    - stop_music
+    - set_vibe_preset
+    - save_track
+    - list_tracks
+    - load_track
+    - delete_track
+    - search_samples
+    # навигация и mapping
+    - navigate_to_waypoint
+    - navigate_to_coordinates
+    - move_direction
+    - stop_navigation
+    - save_waypoint
+    - delete_waypoint
+    - clear_waypoints
+    - start_mapping
+    - continue_mapping
+    - finish_mapping
+    - optimize_map
+    - load_map
+    # планировщик
+    - task_delta
+
+  # ── OPERATOR.SPEECH: речевой канал оператора (через ТАРС).
+  # ``set_voice`` / ``set_tts_provider`` / ``list_tts_voices`` уже
+  # перечислены в personality — это намеренное пересечение: оператор
+  # и личность используют одни и те же инструменты голоса, но в разных
+  # срезах. Sender'у ``dialogue_node`` это всё равно доступно через
+  # ``personality``; ``avatar_supervisor`` — через ``operator.speech``.
+  operator.speech:
+    - say
+    - set_voice
+    - set_tts_provider
+    - list_tts_voices
+
+  # ── OPERATOR.CONTROL: управление диалогом / режимом аватара
+  operator.control:
+    # управление диалогом (только оператор)
+    - dialogue_pause
+    - dialogue_resume
+    # управление голосом/речью (shared с личностью, но только
+    # оператор имеет право в ``operator.speech``)
+    - set_voice_preset
+    - set_voice_language
+    - preview_voice
+
+  # ── OPERATOR.ADMIN: диагностика (только ТАРС)
+  operator.admin:
+    - read_logs
+    - ros2_node_status
+    - container_status
+    # Issue #2113 (TARS 2 metrics panel): ``show_metrics`` публикует
+    # запрос в ``/avatar/tars/panel_request`` — там его подхватывает
+    # существующий ``rob_box_supervisor.tars_panel.TarsPanelDispatcher``
+    # и публикует собранный URL Grafana-панели в ``/avatar/tars/panel_url``.
+    # Тул «общий» с LLM-инструментом show_metrics в avatar_supervisor
+    # (тот же ToolSpec, но handler иной), поэтому добавление сюда
+    # открывает операторский send'ер на MCP-путь ``/mcp/execute``.
+    - show_metrics

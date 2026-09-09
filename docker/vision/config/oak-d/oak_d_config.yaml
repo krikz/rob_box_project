@@ -1,0 +1,83 @@
+# depthai_ros_driver v2.12.2-humble configuration
+# Node path: /camera/camera (namespace='camera', name='camera')
+# Topics published with i_rs_compat:true:
+#   /camera/camera/color/image_raw      — colour image
+#   /camera/camera/color/camera_info    — colour camera_info
+#   /camera/camera/depth/image_rect_raw — aligned depth (rs_compat renames stereo→depth)
+#
+# Bandwidth optimizations (2026-03-03):
+#   i_low_bandwidth: true  — on-chip H.264 encoding on OAK-D before USB transfer
+#                            reduces eth0 Vision Pi → Main Pi from ~89 MB/s to ~15-20 MB/s
+#                            source: https://docs.luxonis.com/software/ros/depthai-ros/driver/
+#   i_enable_lazy_publisher: true — skip publishing when no subscriber
+#   i_max_q_size: 1               — minimal buffer = lower latency
+#
+# Resolution / FPS tradeoffs (2026-03-10):
+#   RGB stream now prioritizes AprilTag pose geometry over the old RTAB-Map RGBD bridge.
+#   Use ISP-based 1280x720 output to keep intrinsics consistent with a standard 16:9 path.
+#   Telegram still uses compressed transport from this topic, so 720p snapshots are acceptable.
+#   For RGBD alignment: width + height MUST be divisible by 16! 1280%16=0 ✓, 720%16=0 ✓
+
+/camera/camera:
+  ros__parameters:
+    camera:
+      i_nn_type: none              # КРИТИЧЕСКИ ВАЖНО: отключаем нейронную сеть
+      i_pipeline_type: "RGBD"
+      i_stereo_width: 1280
+      i_stereo_height: 720          # Keep aligned depth geometry consistent with 1280x720 RGB output
+      i_fps: 5.0                   # 5fps: снижена нагрузка на CPU/Zenoh, достаточно для SLAM (снижено с 10fps)
+      i_enable_ir: false
+      i_laser_dot_brightness: 0
+      i_floodlight_brightness: 0
+      i_publish_tf_from_calibration: false
+      i_tf_base_frame: "camera_link"
+      i_enable_imu: true           # IMU для RTAB-Map ICP odometry
+      i_enable_preview: false
+      i_enable_diagnostics: false
+      i_usb_speed: "SUPER"
+      i_rs_compat: true              # RealSense-совместимые имена топиков:
+                                   # rgb→color, stereo→depth
+                                   # ВАЖНО: секции параметров тоже переименовываются!
+    color:    # rs_compat: rgb→color (секция параметров)
+      i_low_bandwidth: true            # H.264 on-chip encoding → ~300 KB/s s JPEG vs ~7 MB/s raw
+      i_low_bandwidth_quality: 85      # 85% quality — достаточно для AprilTag + SLAM
+      i_publish_compressed: false
+      i_fps: 5.0                       # Снижено с 10fps: меньше CPU на rtabmap, меньше сетевая нагрузка
+      i_max_q_size: 1                  # минимальный буфер, меньше задержка
+      i_interleaved: false
+      i_board_socket_id: 0
+      i_enable_lazy_publisher: true    # не публиковать без подписчиков
+      i_publish_topic: true
+      i_keep_preview_aspect_ratio: true
+      i_resolution: "1080P"           # Explicit sensor mode for the ISP pipeline
+      i_width: 1280                    # ISP-scaled 1280x720 output for AprilTag pose estimation
+      i_height: 720
+      i_output_isp: true               # Use the recommended ISP path instead of custom video crop
+      i_isp_num: 2
+      i_isp_den: 3
+    depth:    # rs_compat: stereo→depth (секция параметров)
+      i_low_bandwidth: true            # H.264 on-chip encoding для depth → ~1-2 MB/s compressed
+      i_low_bandwidth_quality: 90      # depth: выше quality чем RGB — SLAM чувствителен к артефактам
+      i_publish_compressed: false
+      i_fps: 5.0                       # Sync с RGB fps (снижено с 10)
+      i_max_q_size: 1
+      i_enable_lazy_publisher: true
+      i_publish_topic: true
+      i_output_disparity: false
+      i_get_base_device_timestamp: false
+      i_add_exposure_offset: false
+      i_exposure_offset: 0
+      i_alpha_scaling: 0.0
+      i_align_depth: true          # Align depth to RGB frame for RGBD SLAM
+    infra1:    # rs_compat: left→infra1
+      i_low_bandwidth: false
+      i_fps: 5.0
+      i_max_q_size: 1
+      i_enable_lazy_publisher: true    # не используется rtabmap напрямую
+      i_publish_topic: false           # отключаем left/right raw — не нужны для SLAM
+    infra2:    # rs_compat: right→infra2
+      i_low_bandwidth: false
+      i_fps: 5.0
+      i_max_q_size: 1
+      i_enable_lazy_publisher: true
+      i_publish_topic: false           # отключаем left/right raw — не нужны для SLAM

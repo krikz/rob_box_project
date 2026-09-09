@@ -1,0 +1,114 @@
+# tts_node.yaml — per-node ROS2 config (issue #1004 fix)
+#
+# Формат — стандартный ROS2: верхний ключ = имя ноды (должно совпадать с
+# Node(name=...) в launch), под ним ros__parameters: с плоскими параметрами.
+# get_parameter("foo") в ноде находит foo БЕЗ префикса.
+#
+# Все ключи соответствуют declare_parameter() в tts_node.py 1:1.
+# (Ключи cache_dir/cache_enabled/pregenerate/prosody_pitch и вложенный
+# yandex: {voice,speed,emotion} удалены — код их НЕ читает; YAML молча
+# игнорировался, issue #1004. Голос/скорость Yandex задаются плоскими
+# yandex_voice / yandex_speed.)
+
+tts_node:
+  ros__parameters:
+    metrics_port: 9110  # issue #1160 — Prometheus metrics endpoint
+    provider: minimax
+    # Issue #929 (OOM kill tts_node): фоновый warm-load Silero держит
+    # ~700 MB-1 GB RSS постоянно (PyTorch + модель), даже когда Silero —
+    # только fallback и Yandex/MiniMax работают. Контейнер voice-assistant
+    # (mem_limit 4g) hosting 9 нод: tts_node+torch, speaker_id+torch,
+    # sclang, Vosk — суммарный RSS ~4.2 GB, при лимите 2 GB это был
+    # гарантированный OOM kill. Отключаем warm-load: Silero грузится
+    # лениво при первом реальном fallback (2-3 с, аварийный путь).
+    silero_warm_load: false
+    silero_speaker: aidar
+    silero_sample_rate: 48000
+    synthesis_max_workers: 2
+    synthesis_max_queue: 16
+    # minimax_api_key / minimax_group_id — пусто → fallback на ENV
+    # (MINIMAX_API_KEY / MINIMAX_GROUP_ID). Секреты не хранятся в YAML.
+    minimax_api_key: ''
+    minimax_group_id: ''
+    # Issue #1780 / issue #1004 — emotion / pitch / volume / pronunciation_dict
+    # для MiniMax T2A v2 передаются в voice_setting (см. minimax_tts.py:
+    # ``emotion``, ``pitch`` int semitones, ``vol`` float [0.0, 10.0],
+    # ``pronunciation_dict`` str). Нейтральные дефолты сохраняют текущее
+    # поведение (поля НЕ передаются в API, если явно не заданы):
+    #   emotion = ""               → не передавать
+    #   pitch  = ""                → "" = «не передавать»; иначе int semitones
+    #   volume = ""                → "" = «не передавать»; иначе [1.0, 10.0]
+    #   pronunciation_dict = ""    → JSON-словарь MiniMax
+    # ВАЖНО: значения передаются в declare_parameter() tts_node.py как STRING,
+    # затем при чтении приводятся через _parse_optional_int/_parse_optional_float.
+    # Первый блок с int/float (``pitch=0``/``volume=0.0``) был legacy и попадал
+    # в YAML как дубликат ключа → rclpy set_parameters валился на типе
+    # (InvalidParameterTypeException → tts_node crash-loop на Vision Pi,
+    # issue #1830). Дубль убран, см. fix(voice #1830).
+    # Допустимые значения emotion (MiniMax T2A v2 voice_setting.emotion):
+    #   happy | neutral | sad | angry | fearful | disgusted | surprised
+    # Прокидывание значений в ``TTSSettings`` — в карточке t_4e98182a.
+    # Единственный канонический блок параметров MiniMax-emotion — ниже
+    # (после yandex_ssml_aware), комментарий описывает семантику ``""``.
+    normalize_text: true
+    chipmunk_mode: false
+    pitch_shift: 1.0
+    volume_db: -3.0
+    silero_put_accent: true
+    silero_put_yo: true
+    silero_put_stress_homo: true
+    silero_put_yo_homo: true
+    yandex_api_key: ''
+    yandex_voice: anton
+    yandex_speed: 1.0
+    # Issue #1780 / issue #1004 — флаг «ssml-aware» режима для Yandex.
+    # При True — Yandex-провайдер должен передавать вход как SSML
+    # (``<speak>...<emotion>happy</emotion>...</speak>``) и использовать
+    # ``<emotion>`` / ``<prosody pitch=...>`` теги, поддерживаемые
+    # Yandex gRPC v3. Сейчас False (legacy: текст → Hints(voice, speed)).
+    # Полная интеграция — в карточке t_c401ecaa; флаг уже здесь, чтобы
+    # YAML был валиден и можно было безопасно переключать.
+    yandex_ssml_aware: false
+    chunk_max_chars_yandex: 250
+    chunk_max_chars_silero: 800
+    chunk_max_chars_minimax: 5000
+    chunk_max_retries: 3
+    chunk_min_chars: 50
+    minimax_voice: male-qn-qingse
+    minimax_model: speech-02-hd
+    minimax_language: ru
+    minimax_speed: 1.0
+    minimax_sample_rate: 32000
+    minimax_format: pcm
+    minimax_timeout: 30.0
+    minimax_max_retries: 2
+    minimax_retry_backoff_ms: 500
+    minimax_streaming: false
+    # Issue #1780 / issue #1004 / issue #1830 — единственный канонический блок
+    # MiniMax emotion / pitch / volume / pronunciation_dict. tts_node.py
+    # declare_parameter() ожидает STRING ("" → «не задан»), при чтении
+    # приводится через _parse_optional_int / _parse_optional_float. Это
+    # обеспечивает нейтральное поведение до явной настройки (поля
+    # опускаются из API payload).
+    #   emotion              ∈ {happy, neutral, sad, angry, fearful, disgusted, surprised}
+    #   pitch                — int semitones (-12..+12 typical); "" → None
+    #   volume               — float [0.0, 10.0]; "" → None
+    #   pronunciation_dict   — JSON-строка MiniMax-словаря; "" → None
+    # Допустимые значения emotion (MiniMax T2A v2 voice_setting.emotion):
+    #   happy | neutral | sad | angry | fearful | disgusted | surprised
+    # Прокидывание значений в ``TTSSettings`` — в карточке t_4e98182a.
+    minimax_emotion: neutral
+    minimax_pitch: ''
+    minimax_volume: ''
+    minimax_pronunciation_dict: ''
+    # Issue #1229 — файл персистентного состояния фактического провайдера
+    # TTS (после фолбека minimax→yandex). tts_node пишет сюда {provider,
+    # dead_providers} при смене провайдера; при рестарте контейнера кэш
+    # «мёртвых» восстанавливается, и LLM-контекст [TTS] сразу показывает
+    # реального провайдера (не номинального minimax). Пустая строка —
+    # отключить персистентность.
+    provider_state_file: /data/tts_provider_state.json
+    audio_topic: /voice/audio/speech
+    audio_output_sample_rate: 16000
+    audio_qos_reliability: best_effort
+    audio_qos_depth: 10

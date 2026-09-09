@@ -1,0 +1,68 @@
+# Low Battery Warning Animation
+name: "low_battery"
+description: "Low battery warning with dim red lights"
+version: "1.0"
+author: "rob_box"
+
+# Timing
+duration_ms: 3000
+loop: true
+fps: 10
+
+# Panels
+panels:
+  # All wheels dim red (low power)
+  - logical_group: "wheel_front_left"
+    offset_ms: 0
+    frames:
+      - image: "frames/system/wheel_fl_low.png"
+        duration_ms: 1500
+      - image: "frames/system/wheel_fl_off.png"
+        duration_ms: 1500
+
+  - logical_group: "wheel_front_right"
+    offset_ms: 0
+    frames:
+      - image: "frames/system/wheel_fr_low.png"
+        duration_ms: 1500
+      - image: "frames/system/wheel_fr_off.png"
+        duration_ms: 1500
+
+  - logical_group: "wheel_rear_left"
+    offset_ms: 0
+    frames:
+      - image: "frames/system/wheel_rl_low.png"
+        duration_ms: 1500
+      - image: "frames/system/wheel_rl_off.png"
+        duration_ms: 1500
+
+  - logical_group: "wheel_rear_right"
+    offset_ms: 0
+    frames:
+      - image: "frames/system/wheel_rr_low.png"
+        duration_ms: 1500
+      - image: "frames/system/wheel_rr_off.png"
+        duration_ms: 1500
+
+  # Main display (battery indicator)
+  - logical_group: "main_display"
+    offset_ms: 0
+    frames:
+      - image: "frames/system/battery_low_01.png"
+        duration_ms: 500
+      - image: "frames/system/battery_low_02.png"
+        duration_ms: 500
+      - image: "frames/system/battery_low_03.png"
+        duration_ms: 500
+      - image: "frames/system/battery_low_04.png"
+        duration_ms: 500
+      - image: "frames/system/battery_low_05.png"
+        duration_ms: 500
+      - image: "frames/system/battery_low_06.png"
+        duration_ms: 500
+
+# Metadata
+metadata:
+  priority: "high"
+  category: "system"
+  tags: ["battery", "low_power", "warning", "red", "critical"]

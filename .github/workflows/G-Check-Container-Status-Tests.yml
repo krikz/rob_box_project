@@ -1,0 +1,66 @@
+name: "G: Check Container Status Tests"
+
+# Ретро issue #2122 (2026-09-07): run #34153246013 отрапортовал success при
+# контейнере rob-box-quest в бесконечном «Restarting (1)» loop, потому что
+# старая проверка в L-Deploy and Verify брала ОДИН снимок `docker compose
+# ps` сразу после sleep 30 и сравнивала .State != "running". Контейнер
+# под restart-policy в активном crash-loop ЛЕГИТИМНО показывает
+# State=="running" на доли секунды между падениями — единичный неудачно
+# попавший замер читает «здоров». Тем самым deploy-verify потерял сигнал
+# «робот лежит».
+#
+# Фикс (двухзамерная проверка через `docker inspect`) вынесен в скрипт
+# .github/scripts/check_container_status.sh (коммиты 70e863026 + 7f8939d28
+# в develop, плюс эта обвязка для тестируемости).
+#
+# Этот workflow прогоняет регрессионный bash-тест на любом pull_request,
+# который меняет .github/scripts/check_container_status.sh или тест
+# .github/scripts/tests/test_check_container_status.sh. Защита от
+# регрессии: если кто-то снова упростит проверку до «один снимок и
+# State != running» — CI красный.
+on:
+  pull_request:
+    branches:
+      - develop
+      - main
+    paths:
+      - '.github/scripts/check_container_status.sh'
+      - '.github/scripts/tests/test_check_container_status.sh'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-check-container-status:
+    name: Bash test (mocked sshpass + docker inspect)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          # jq обязателен (workflow L-Deploy and Verify уже полагается
+          # на него). На ubuntu-22.04 его нет по умолчанию.
+          sudo apt-get update -qq
+          sudo apt-get install -y jq shellcheck
+
+      - name: shellcheck (info-level lint)
+        run: |
+          # SC2086 — допустимо для SSH-флагов (нам нужен word splitting).
+          # SC2030/SC2031 — ложные для подоболочек (нет в нашем коде, но
+          # shellcheck старой версии ругается на subshell-сценарии).
+          shellcheck -e SC2086,SC2030,SC2031 \
+            .github/scripts/check_container_status.sh \
+            .github/scripts/tests/test_check_container_status.sh
+
+      - name: Run regression test
+        run: |
+          set -euo pipefail
+          bash .github/scripts/tests/test_check_container_status.sh

@@ -1,0 +1,45 @@
+# Configuration for 'act' - Run GitHub Actions locally
+# https://github.com/nektos/act
+#
+# Installation:
+#   macOS: brew install act
+#   Linux: curl https://raw.githubusercontent.com/nektos/act/master/install.sh | sudo bash
+#   Windows: choco install act-cli
+#
+# Usage:
+#   act                                    # Run default workflow
+#   act -j build-oak-d                     # Run specific job
+#   act -W .github/workflows/build-vision-services.yml  # Run specific workflow
+#   act -l                                 # List all workflows
+#   act -n                                 # Dry run (don't execute)
+#
+# Note: For ARM64 builds on non-ARM machines, you'll need:
+#   docker run --privileged --rm tonistiigi/binfmt --install all
+
+# Use larger runner image with more tools
+-P ubuntu-latest=catthehacker/ubuntu:full-latest
+
+# Container architecture (use native for faster builds)
+--container-architecture linux/amd64
+
+# Bind mount the workspace to preserve artifacts
+--bind
+
+# Use network host mode for better performance
+--network host
+
+# Reuse containers between runs for speed
+--reuse
+
+# Environment variables
+--env REGISTRY=ghcr.io
+--env REPOSITORY_OWNER=krikz
+--env ROS_DISTRO=humble
+--env IMAGE_TAG=local
+
+# Secrets (create .secrets file for actual values)
+# --secret-file .secrets
+
+# Platform emulation for ARM64 (uncomment if building for Raspberry Pi on x86_64)
+# Note: This will be SLOW. Consider using local-build.sh instead.
+# --platform linux/arm64

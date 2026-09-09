@@ -1,0 +1,23 @@
+{
+  "mode": "peer",
+  "connect": {
+    "endpoints": ["tcp/10.1.1.249:7447"]
+  },
+  "listen": {
+    "endpoints": ["tcp/localhost:0"]
+  },
+  "scouting": {
+    "multicast": {
+      "enabled": false
+    },
+    "gossip": {
+      "enabled": true,
+      "target": {
+        "peer": ["router"]
+      },
+      "autoconnect": {
+        "peer": ["router", "peer"]
+      }
+    }
+  }
+}

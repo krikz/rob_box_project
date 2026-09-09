@@ -1,0 +1,17 @@
+# command_node.yaml — per-node ROS2 config (issue #1004 fix)
+#
+# Формат — стандартный ROS2: верхний ключ = имя ноды (должно совпадать с
+# Node(name=...) в launch), под ним ros__parameters: с плоскими параметрами.
+# get_parameter("foo") в ноде находит foo БЕЗ префикса.
+#
+# Все ключи соответствуют declare_parameter() в command_node.py 1:1.
+# (Ключи nav2_enabled/nav2_timeout/waypoints удалены — код их НЕ читает:
+# waypoints переехали в SQLite через MCP tools (save_waypoint и др.),
+# nav2_* — легаси. YAML молча игнорировался, issue #1004.)
+
+command_node:
+  ros__parameters:
+    confidence_threshold: 0.7
+    enable_navigation: true
+    enable_follow: false
+    enable_vision: false

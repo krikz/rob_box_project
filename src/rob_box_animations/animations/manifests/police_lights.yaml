@@ -1,0 +1,115 @@
+# Police Emergency Lights Animation
+name: "police_lights"
+description: "Police emergency lights with alternating blue and red"
+version: "1.0"
+author: "rob_box"
+
+# Timing
+duration_ms: 1000
+loop: true
+fps: 10
+
+# Fade transitions
+fade_in_ms: 100
+fade_out_ms: 100
+
+# Panels
+panels:
+  # Front left wheel (alternates blue -> red)
+  - logical_group: "wheel_front_left"
+    offset_ms: 0
+    frames:
+      - image: "frames/police/wheel_fl_blue.png"
+        duration_ms: 100
+      - image: "frames/police/wheel_fl_off.png"
+        duration_ms: 50
+      - image: "frames/police/wheel_fl_blue.png"
+        duration_ms: 100
+      - image: "frames/police/wheel_fl_off.png"
+        duration_ms: 250
+      - image: "frames/police/wheel_fl_red.png"
+        duration_ms: 100
+      - image: "frames/police/wheel_fl_off.png"
+        duration_ms: 50
+      - image: "frames/police/wheel_fl_red.png"
+        duration_ms: 100
+      - image: "frames/police/wheel_fl_off.png"
+        duration_ms: 250
+
+  # Front right wheel (alternates red -> blue, offset)
+  - logical_group: "wheel_front_right"
+    offset_ms: 500
+    frames:
+      - image: "frames/police/wheel_fr_blue.png"
+        duration_ms: 100
+      - image: "frames/police/wheel_fr_off.png"
+        duration_ms: 50
+      - image: "frames/police/wheel_fr_blue.png"
+        duration_ms: 100
+      - image: "frames/police/wheel_fr_off.png"
+        duration_ms: 250
+      - image: "frames/police/wheel_fr_red.png"
+        duration_ms: 100
+      - image: "frames/police/wheel_fr_off.png"
+        duration_ms: 50
+      - image: "frames/police/wheel_fr_red.png"
+        duration_ms: 100
+      - image: "frames/police/wheel_fr_off.png"
+        duration_ms: 250
+
+  # Rear left (red flashing)
+  - logical_group: "wheel_rear_left"
+    offset_ms: 0
+    frames:
+      - image: "frames/police/wheel_rl_red.png"
+        duration_ms: 100
+      - image: "frames/police/wheel_rl_off.png"
+        duration_ms: 100
+      - image: "frames/police/wheel_rl_red.png"
+        duration_ms: 100
+      - image: "frames/police/wheel_rl_off.png"
+        duration_ms: 700
+
+  # Rear right (blue flashing)
+  - logical_group: "wheel_rear_right"
+    offset_ms: 500
+    frames:
+      - image: "frames/police/wheel_rr_blue.png"
+        duration_ms: 100
+      - image: "frames/police/wheel_rr_off.png"
+        duration_ms: 100
+      - image: "frames/police/wheel_rr_blue.png"
+        duration_ms: 100
+      - image: "frames/police/wheel_rr_off.png"
+        duration_ms: 700
+
+  # Main display (Russian "ПОЛИЦИЯ" scrolling text - 10 frames)
+  - logical_group: "main_display"
+    offset_ms: 0
+    frames:
+      - image: "frames/police/mouth_police_01.png"
+        duration_ms: 100
+      - image: "frames/police/mouth_police_02.png"
+        duration_ms: 100
+      - image: "frames/police/mouth_police_03.png"
+        duration_ms: 100
+      - image: "frames/police/mouth_police_04.png"
+        duration_ms: 100
+      - image: "frames/police/mouth_police_05.png"
+        duration_ms: 100
+      - image: "frames/police/mouth_police_06.png"
+        duration_ms: 100
+      - image: "frames/police/mouth_police_07.png"
+        duration_ms: 100
+      - image: "frames/police/mouth_police_08.png"
+        duration_ms: 100
+      - image: "frames/police/mouth_police_09.png"
+        duration_ms: 100
+      - image: "frames/police/mouth_police_10.png"
+        duration_ms: 100
+
+# Metadata
+metadata:
+  priority: "high"
+  category: "emergency"
+  tags: ["police", "emergency", "lights", "blue", "red", "russian", "cyrillic"]

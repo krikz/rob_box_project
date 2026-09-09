@@ -1,0 +1,79 @@
+.FF.F...                                                                 [100%]
+=================================== FAILURES ===================================
+____ TestHealthzUpstream.test_healthz_does_not_point_at_voice_action_server ____
+
+self = <test_quest_caddyfile.TestHealthzUpstream object at 0x7cb7626c1110>
+
+    def test_healthz_does_not_point_at_voice_action_server(self):
+        """Главный регресс (t_0b926b23): 8765 — чужой сервис."""
+        upstreams = _handle_upstreams(_caddyfile_text())["/healthz"]
+>       assert _VOICE_ACTION_SERVER_PORT not in upstreams, (
+            f"/healthz проксируется на :{_VOICE_ACTION_SERVER_PORT} — это порт "
+            "voice-action-server, а не quest_node. Он отвечает 200 своим телом "
+            '({"ok": true, "active_goals": ...}), из-за чего smoke-проверка '
+            "печатает PASS даже при мёртвом quest_node (ADR-0018: «Честный FAIL "
+            "лучше красивого PASS»). Ожидается порт WS_PORT (8766)."
+        )
+E       AssertionError: /healthz проксируется на :8765 — это порт voice-action-server, а не quest_node. Он отвечает 200 своим телом ({"ok": true, "active_goals": ...}), из-за чего smoke-проверка печатает PASS даже при мёртвом quest_node (ADR-0018: «Честный FAIL лучше красивого PASS»). Ожидается порт WS_PORT (8766).
+E       assert '8765' not in ['8765']
+
+local_test/test_quest_caddyfile.py:101: AssertionError
+________ TestHealthzUpstream.test_healthz_and_quest_share_one_upstream _________
+
+self = <test_quest_caddyfile.TestHealthzUpstream object at 0x7cb7626c1810>
+
+    def test_healthz_and_quest_share_one_upstream(self):
+        """build_app() отдаёт /healthz и /quest из одного aiohttp-приложения."""
+        handles = _handle_upstreams(_caddyfile_text())
+        healthz = handles.get("/healthz", [])
+        quest = handles.get("/quest", [])
+    
+        assert healthz, "у /healthz нет reverse_proxy upstream"
+        assert quest, "у /quest нет reverse_proxy upstream"
+>       assert set(healthz) == set(quest), (
+            f"/healthz -> {healthz}, /quest -> {quest}. Оба маршрута обслуживает "
+            "одно aiohttp-приложение quest_node (server/ws_server.py::build_app), "
+            "поэтому порты обязаны совпадать. Расхождение означает, что один из "
+            "них смотрит в чужой сервис."
+        )
+E       AssertionError: /healthz -> ['8765'], /quest -> ['8766']. Оба маршрута обслуживает одно aiohttp-приложение quest_node (server/ws_server.py::build_app), поэтому порты обязаны совпадать. Расхождение означает, что один из них смотрит в чужой сервис.
+E       assert {'8765'} == {'8766'}
+E         
+E         Extra items in the left set:
+E         '8765'
+E         Extra items in the right set:
+E         '8766'
+E         Use -v to get more diff
+
+local_test/test_quest_caddyfile.py:117: AssertionError
+__ TestComposeWsPortContract.test_caddyfile_upstream_matches_compose_ws_port ___
+
+self = <test_quest_caddyfile.TestComposeWsPortContract object at 0x7cb7626c25d0>
+
+    def test_caddyfile_upstream_matches_compose_ws_port(self):
+        m = re.search(
+            r"WS_PORT=\$\{QUEST_WS_PORT:-(\d+)\}", _COMPOSE.read_text(encoding="utf-8")
+        )
+        assert m, "WS_PORT не найден в compose (см. test_compose_declares_ws_port)"
+        ws_port = m.group(1)
+    
+        handles = _handle_upstreams(_caddyfile_text())
+        for path in ("/healthz", "/quest"):
+>           assert handles.get(path) == [ws_port], (
+                f"handle {path} -> {handles.get(path)}, а compose задаёт "
+                f"WS_PORT={ws_port}. Caddy запечён в образ (COPY в Dockerfile) и "
+                "не читает env, поэтому расхождение чинится только правкой "
+                "Caddyfile + пересборкой образа."
+            )
+E           AssertionError: handle /healthz -> ['8765'], а compose задаёт WS_PORT=8766. Caddy запечён в образ (COPY в Dockerfile) и не читает env, поэтому расхождение чинится только правкой Caddyfile + пересборкой образа.
+E           assert ['8765'] == ['8766']
+E             
+E             At index 0 diff: '8765' != '8766'
+E             Use -v to get more diff
+
+local_test/test_quest_caddyfile.py:145: AssertionError
+=========================== short test summary info ============================
+FAILED local_test/test_quest_caddyfile.py::TestHealthzUpstream::test_healthz_does_not_point_at_voice_action_server
+FAILED local_test/test_quest_caddyfile.py::TestHealthzUpstream::test_healthz_and_quest_share_one_upstream
+FAILED local_test/test_quest_caddyfile.py::TestComposeWsPortContract::test_caddyfile_upstream_matches_compose_ws_port
+3 failed, 5 passed in 0.10s

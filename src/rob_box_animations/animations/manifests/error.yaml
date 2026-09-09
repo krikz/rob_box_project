@@ -1,0 +1,64 @@
+# Error/Warning Animation
+name: "error"
+description: "System error with red flashing lights and X pattern"
+version: "1.0"
+author: "rob_box"
+
+# Timing
+duration_ms: 2000
+loop: true
+fps: 10
+
+# Panels
+panels:
+  # All wheels flash red (error state)
+  - logical_group: "wheel_front_left"
+    offset_ms: 0
+    frames:
+      - image: "frames/system/wheel_fl_error.png"
+        duration_ms: 300
+      - image: "frames/system/wheel_fl_off.png"
+        duration_ms: 200
+
+  - logical_group: "wheel_front_right"
+    offset_ms: 250
+    frames:
+      - image: "frames/system/wheel_fr_error.png"
+        duration_ms: 300
+      - image: "frames/system/wheel_fr_off.png"
+        duration_ms: 200
+
+  - logical_group: "wheel_rear_left"
+    offset_ms: 500
+    frames:
+      - image: "frames/system/wheel_rl_error.png"
+        duration_ms: 300
+      - image: "frames/system/wheel_rl_off.png"
+        duration_ms: 200
+
+  - logical_group: "wheel_rear_right"
+    offset_ms: 750
+    frames:
+      - image: "frames/system/wheel_rr_error.png"
+        duration_ms: 300
+      - image: "frames/system/wheel_rr_off.png"
+        duration_ms: 200
+
+  # Main display (ERROR text and X pattern)
+  - logical_group: "main_display"
+    offset_ms: 0
+    frames:
+      - image: "frames/system/error_text.png"
+        duration_ms: 500
+      - image: "frames/system/error_x.png"
+        duration_ms: 500
+      - image: "frames/system/error_text.png"
+        duration_ms: 500
+      - image: "frames/system/error_off.png"
+        duration_ms: 500
+
+# Metadata
+metadata:
+  priority: "critical"
+  category: "system"
+  tags: ["error", "warning", "critical", "red", "alert"]

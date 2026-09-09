@@ -1,0 +1,85 @@
+%% ADR-0004 target class diagram: provider port, MiniMax adapter,
+%% registry/factory composition root and consumers.
+classDiagram
+    class BaseTTSProvider {
+        <<abstract port>>
+        +name: str
+        +synthesize(text, settings) TTSAudio*
+        +stream(text, settings) AsyncIterator~TTSChunk~*
+        +list_voices() Sequence~TTSVoice~
+        +healthcheck() TTSHealth
+        +aclose() None
+    }
+
+    class MiniMaxTTSProvider {
+        <<HTTP/SSE/WS adapter>>
+        -http_client: AsyncClient
+        -ws_client: WebSocketClient
+        -config: MiniMaxTTSConfig
+        +synthesize(text, settings) TTSAudio
+        +stream(text, settings) AsyncIterator~TTSChunk~
+        +list_voices() Sequence~TTSVoice~
+        +healthcheck() TTSHealth
+        +aclose() None
+        -build_payload(text, settings) dict
+        -map_exception(error) TTSError
+    }
+
+    class FutureProvider {
+        <<ElevenLabs / Google / local>>
+        +synthesize(text, settings) TTSAudio
+        +stream(text, settings) AsyncIterator~TTSChunk~
+        +list_voices() Sequence~TTSVoice~
+        +healthcheck() TTSHealth
+        +aclose() None
+    }
+
+    class TTSProviderRegistry {
+        -builders: dict~str, ProviderBuilder~
+        +register(name, builder) None
+        +get(name) ProviderBuilder
+        +names() tuple~str~
+    }
+
+    class TTSProviderFactory {
+        +create(name, config, registry) BaseTTSProvider$
+    }
+
+    class ProviderBuilder {
+        <<callable>>
+        +build(config) BaseTTSProvider
+    }
+
+    class TTSNode {
+        <<consumer / composition root>>
+        -provider: BaseTTSProvider
+        +synthesize_and_publish(text) None
+    }
+
+    class TTSCLI {
+        <<consumer>>
+        -provider: BaseTTSProvider
+        +run(text) int
+    }
+
+    class TestHarness {
+        <<consumer>>
+        -provider: BaseTTSProvider
+        +verify_contract() None
+    }
+
+    BaseTTSProvider <|-- MiniMaxTTSProvider : implements
+    BaseTTSProvider <|-- FutureProvider : implements
+    TTSProviderRegistry o-- ProviderBuilder : stores
+    TTSProviderFactory ..> TTSProviderRegistry : lookup
+    TTSProviderFactory ..> ProviderBuilder : invokes
+    ProviderBuilder ..> BaseTTSProvider : creates
+    TTSNode ..> TTSProviderFactory : create at startup
+    TTSCLI ..> TTSProviderFactory : create at startup
+    TTSNode --> BaseTTSProvider : Strategy / DI
+    TTSCLI --> BaseTTSProvider : Strategy / DI
+    TestHarness --> BaseTTSProvider : conformance
+
+    note for TTSProviderRegistry "Built-ins импортируются и регистрируются\nявно в composition root. Decorator — только sugar;\nникакого implicit module scanning."
+    note for MiniMaxTTSProvider "Vendor HTTP/WS DTO, auth и error mapping\nне выходят за границу адаптера."
+    note for FutureProvider "Новый provider реализует порт, builder\nи регистрацию; потребители не меняются."

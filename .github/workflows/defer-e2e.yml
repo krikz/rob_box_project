@@ -1,0 +1,165 @@
+name: "G: Defer E2E Environment"
+
+# Isolated CI environment for the 'defer' mechanism e2e tests
+# (scheduler/tool_executor in rob_box_voice).
+#
+# Per Clarify card t_2e84c437 the defer mechanism is pure Python + asyncio:
+#   * NO application / database / message-broker services are required;
+#   * NO ROS / rclpy is required at unit level;
+#   * the environment is: python3 + rob_box_voice (deps rob_box_llm,
+#     rob_box_core) + pytest.
+#
+# This workflow ONLY proves the environment is ready: checkout → install
+# deps → import check → trivial smoke command. The real defer-e2e suite is
+# added by the test-implementation task (this workflow must stay decoupled
+# from the final test files; the suite can be pointed at via smoke_target /
+# pytest_args or by calling this workflow from the implementation task).
+#
+# Local equivalent (from repo root):
+#   PYTHONPATH=src/rob_box_voice:src/rob_box_llm:src/rob_box_core:src/rob_box_harness \
+#     python3 -m pytest src/rob_box_voice/test/test_tool_executor.py -q
+
+on:
+  workflow_dispatch:
+    inputs:
+      smoke_target:
+        description: >-
+          Path to the smoke test that proves the environment is ready.
+        required: false
+        default: src/rob_box_voice/test/test_tool_executor.py
+        type: string
+      pytest_args:
+        description: Extra pytest args (e.g. "-k stop_music").
+        required: false
+        default: ''
+        type: string
+  workflow_call:
+    inputs:
+      smoke_target:
+        description: Path to the smoke test.
+        required: false
+        default: src/rob_box_voice/test/test_tool_executor.py
+        type: string
+      pytest_args:
+        description: Extra pytest args.
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  defer-e2e-env:
+    name: Defer E2E environment smoke
+    runs-on: ubuntu-22.04
+    # Hard cap so a stuck test can't burn runner time (repo convention).
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    env:
+      # defer scheduler imports cleanly without ROS — packages are provided
+      # straight from the source tree (verified: 11 passed locally with
+      # PYTHONPATH only, no pip-installed rob_box_*).
+      ARTIFACT_DIR: defer-e2e
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Set PYTHONPATH (source-tree packages)
+        run: |
+          PY="${GITHUB_WORKSPACE}/src/rob_box_voice"
+          PY="${PY}:${GITHUB_WORKSPACE}/src/rob_box_llm"
+          PY="${PY}:${GITHUB_WORKSPACE}/src/rob_box_core"
+          PY="${PY}:${GITHUB_WORKSPACE}/src/rob_box_harness"
+          echo "PYTHONPATH=${PY}" >> "${GITHUB_ENV}"
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --quiet pytest
+
+      - name: Environment info (for debugging)
+        run: |
+          mkdir -p "${ARTIFACT_DIR}"
+          {
+            echo "=== python ==="
+            python --version
+            which python
+            echo
+            echo "=== PYTHONPATH ==="
+            echo "${PYTHONPATH}"
+            echo
+            echo "=== pip list ==="
+            python -m pip list --format=freeze
+          } | tee "${ARTIFACT_DIR}/env.txt"
+
+      - name: Import check (environment healthy)
+        run: |
+          python - <<'PY'
+          import rob_box_llm.provider
+          import rob_box_core
+          import rob_box_voice.scheduler.task_scheduler
+          import rob_box_voice.scheduler.tool_executor
+          print("imports OK: rob_box_llm, rob_box_core, rob_box_voice.scheduler")
+          PY
+
+      - name: Smoke test
+        run: |
+          set -eo pipefail
+          mkdir -p "${ARTIFACT_DIR}"
+          # shellcheck disable=SC2086
+          python -m pytest \
+            ${SMOKE_TARGET} \
+            -q --tb=short --no-header -p no:cacheprovider \
+            --junitxml="${ARTIFACT_DIR}/smoke.xml" \
+            ${PYTEST_ARGS} \
+            2>&1 | tee "${ARTIFACT_DIR}/smoke.log"
+        env:
+          SMOKE_TARGET: ${{ inputs.smoke_target }}
+          PYTEST_ARGS: ${{ inputs.pytest_args }}
+
+      - name: Upload artifacts / logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: defer-e2e-logs
+          path: ${{ github.workspace }}/defer-e2e/
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## 🔧 Defer E2E Environment" >> "${GITHUB_STEP_SUMMARY}"
+          echo "" >> "${GITHUB_STEP_SUMMARY}"
+          echo "Smoke target: \`${SMOKE_TARGET}\`" >> "${GITHUB_STEP_SUMMARY}"
+          echo "Job result: ${{ job.status }}" >> "${GITHUB_STEP_SUMMARY}"
+          if [ -f "${ARTIFACT_DIR}/smoke.xml" ]; then
+            python - <<'PY' >> "${GITHUB_STEP_SUMMARY}"
+          import xml.etree.ElementTree as ET
+          root = ET.parse("defer-e2e/smoke.xml").getroot()
+          node = root if root.tag == "testsuite" else root.find(".//testsuite")
+          if node is not None:
+              print(
+                  f"Tests: {node.attrib.get('tests', '?')}, "
+                  f"failures: {node.attrib.get('failures', '?')}, "
+                  f"errors: {node.attrib.get('errors', '?')}, "
+                  f"time: {node.attrib.get('time', '?')}s"
+              )
+          else:
+              print("No testsuite element found in smoke.xml")
+          PY
+          fi
+        env:
+          SMOKE_TARGET: ${{ inputs.smoke_target }}

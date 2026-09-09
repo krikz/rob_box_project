@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Rob Box — Вход на мостик</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <canvas id="scene"></canvas>
+    <div id="hud">
+      <div id="status" class="status status--connecting" title="WebSocket connection to robot">
+        CONNECTING…
+      </div>
+      <button
+        id="help-toggle"
+        class="help-toggle"
+        type="button"
+        title="Показать / скрыть горячие клавиши (H)"
+        aria-label="Help (H)"
+      >?</button>
+    </div>
+    <div id="pin-overlay" class="pin-overlay">
+      <form id="pin-form" class="pin-form" autocomplete="off">
+        <h1>Вход на мостик Rob Box</h1>
+        <p class="pin-hint">Введите 6-значный PIN (см. логи робота)</p>
+        <input
+          id="pin-input"
+          type="password"
+          inputmode="numeric"
+          pattern="[0-9]{6}"
+          maxlength="6"
+          minlength="6"
+          placeholder="123456"
+          required
+        />
+        <button type="submit">Войти</button>
+        <p id="pin-error" class="pin-error" hidden>Неверный PIN.</p>
+      </form>
+    </div>
+    <script type="module" src="/src/entry.ts"></script>
+  </body>
+</html>

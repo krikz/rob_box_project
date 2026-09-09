@@ -1,0 +1,68 @@
+from setuptools import find_packages, setup
+from glob import glob
+import os
+
+package_name = 'rob_box_voice'
+
+setup(
+    name=package_name,
+    version='0.1.0',
+    packages=find_packages(exclude=['test']) + ['scripts'],
+    data_files=[
+        ('share/ament_index/resource_index/packages',
+            ['resource/' + package_name]),
+        ('share/' + package_name, ['package.xml']),
+        # Long-running action protocol and optional HTTP/PASTE adapter.
+        (os.path.join('share', package_name, 'action_server'),
+            glob('rob_box_voice/action_server/*.py')),
+        # Launch files
+        (os.path.join('share', package_name, 'launch'),
+            glob('launch/*.launch.py')),
+        # Config files
+        (os.path.join('share', package_name, 'config'),
+            glob('config/*.yaml') + glob('config/*.json')),
+        # ADR-0066 §6.3 — voice style presets (config/presets/*.txt) теперь
+        # читаются ``grip_pipeline`` супервизора (а не dialogue_node), но
+        # install-share нужен — оставляем шаг data_files для ROS-share.
+        (os.path.join('share', package_name, 'config', 'presets'),
+            glob('config/presets/*.txt')),
+        # Prompts
+        (os.path.join('share', package_name, 'prompts'),
+            glob('prompts/*.txt') + glob('prompts/*.yaml')),
+        # Skill-specific prompts
+        (os.path.join('share', package_name, 'prompts', 'skills'),
+            glob('prompts/skills/*.txt')),
+        # Service definitions
+        (os.path.join('share', package_name, 'srv'),
+            glob('srv/*.srv')),
+    ],
+    install_requires=[
+        'setuptools',
+        'rob_box_core>=0.1.0',
+        'rob_box_harness>=0.1.0',
+    ],
+    zip_safe=True,
+    maintainer='krikz',
+    maintainer_email='kukoreken@rob-box.local',
+    description='AI Voice Assistant for ROBBOX autonomous rover with ReSpeaker Mic Array v2.0',
+    license='MIT',
+    tests_require=['pytest'],
+    entry_points={
+        'console_scripts': [
+            'audio_node = rob_box_voice.audio_node:main',
+            'led_node = rob_box_voice.led_node:main',
+            # Phase 2: Dialogue + TTS
+            'dialogue_node = rob_box_voice.dialogue_node:main',
+            'tts_node = rob_box_voice.tts_node:main',
+            # Phase 3: STT (Speech-to-Text)
+            'stt_node = rob_box_voice.stt_node:main',
+            # Phase 4: Sound Effects
+            'sound_node = rob_box_voice.sound_node:main',
+            # Phase 5: Command Recognition
+            'command_node = rob_box_voice.command_node:main',
+            'speaker_id_node = rob_box_voice.speaker_id_node:main',
+            # Utilities
+            'configure_respeaker_aec = scripts.configure_respeaker_aec:main',
+        ],
+    },
+)

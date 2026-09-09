@@ -1,0 +1,881 @@
+"""Tests for ``rob_box_harness.health`` — provider health-check / quota cache.
+
+Covers the issue #1082 contract:
+
+* :func:`is_quota_exhausted` — MiniMax 2056/1008 must be classified as
+  quota exhaustion (NOT transient), generic 429 as transient.
+* :class:`HealthCache` — TTL semantics, skip-while-fresh, re-check after
+  expiry, optional JSON persistence.
+* :func:`check_deepseek_balance` — real ``/user/balance`` parsing with a
+  mocked HTTP transport; a broken balance API returns ``None`` (provider
+  stays healthy).
+* :class:`HealthAwareFallbackLLM` — the dynamic chain
+  ``[healthy] + [unchecked]`` with dead providers skipped; proactive
+  probing; reactive error-code detection; auth/quota handling; stream
+  switching.
+
+No real network is touched — the HTTP transport is mocked at the
+``httpx`` layer.
+"""
+
+from __future__ import annotations
+
+from typing import Any, AsyncIterator, Iterable, Mapping
+
+import httpx
+import pytest
+
+from rob_box_harness.health import (
+    DEFAULT_HEALTH_TTL_S,
+    TRANSIENT_TTL_S,
+    HealthAwareFallbackLLM,
+    HealthCache,
+    ProviderStatus,
+    check_deepseek_balance,
+    is_auth_failure,
+    is_quota_exhausted,
+)
+from rob_box_llm.errors import (
+    AuthError,
+    ProviderError,
+    RateLimitError,
+    TimeoutError as LLMTimeoutError,
+)
+from rob_box_llm.provider import LLMChunk, LLMMessage, LLMResponse, LLMSettings
+
+
+# ---------------------------------------------------------------------------
+# Fake LLM provider
+# ---------------------------------------------------------------------------
+
+
+class _FakeProvider:
+    """Minimal LLMProvider double with call counting + optional failure."""
+
+    def __init__(self, name: str, fail: BaseException | None = None) -> None:
+        self.name = name
+        self.fail = fail
+        self.calls = 0
+        self.stream_calls = 0
+        self.closed = False
+        # Issue #1883 — record the ``settings=`` argument on each
+        # ``complete()`` / ``stream()`` call so tests can verify the
+        # per-provider dispatch in ``HealthAwareFallbackLLM``.
+        self.settings_received: list[LLMSettings | None] = []
+        self.stream_settings_received: list[LLMSettings | None] = []
+
+    async def complete(
+        self,
+        messages: Iterable[LLMMessage],
+        *,
+        tools: Iterable[Mapping[str, Any]] = (),
+        settings: LLMSettings | None = None,
+    ) -> LLMResponse:
+        self.calls += 1
+        self.settings_received.append(settings)
+        if self.fail is not None:
+            raise self.fail
+        return LLMResponse(content=f"from-{self.name}")
+
+    async def stream(
+        self,
+        messages: Iterable[LLMMessage],
+        *,
+        tools: Iterable[Mapping[str, Any]] = (),
+        settings: LLMSettings | None = None,
+    ) -> AsyncIterator[LLMChunk]:
+        self.stream_calls += 1
+        self.stream_settings_received.append(settings)
+        if self.fail is not None:
+            raise self.fail
+        yield LLMChunk(content_delta=f"from-{self.name}", finish_reason="stop")
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+    @property
+    def capabilities(self):
+        from rob_box_llm.provider import ProviderCapabilities
+
+        return ProviderCapabilities(text=True)
+
+
+class _FakeClock:
+    """Injectable clock for HealthCache TTL tests."""
+
+    def __init__(self, start: float = 1000.0) -> None:
+        self.now = start
+
+    def __call__(self) -> float:
+        return self.now
+
+
+_QUOTA_MSG = "429: rate_limit_error Token Plan usage limit reached (2056)"
+
+
+# ---------------------------------------------------------------------------
+# Error classification
+# ---------------------------------------------------------------------------
+
+
+def test_is_quota_exhausted_recognizes_minimax_2056() -> None:
+    assert is_quota_exhausted(RateLimitError(_QUOTA_MSG, provider="minimax")) is True
+
+
+def test_is_quota_exhausted_recognizes_1008_insufficient_balance() -> None:
+    assert is_quota_exhausted(RateLimitError("minimax: 1008 insufficient balance")) is True
+
+
+def test_is_quota_exhausted_false_for_generic_429_burst() -> None:
+    # A plain rate-limited 429 is transient — the provider retry loop
+    # must still handle it.
+    assert is_quota_exhausted(RateLimitError("429: rate-limited", provider="minimax")) is False
+
+
+def test_is_quota_exhausted_false_for_timeout_and_other() -> None:
+    assert is_quota_exhausted(LLMTimeoutError("timeout")) is False
+    assert is_quota_exhausted(ProviderError("boom")) is False
+    assert is_quota_exhausted(ValueError("boom")) is False
+
+
+def test_is_auth_failure_detects_auth_error_and_401_403() -> None:
+    assert is_auth_failure(AuthError("bad key", provider="minimax")) is True
+    assert is_auth_failure(ProviderError("401 Unauthorized")) is True
+    assert is_auth_failure(ProviderError("403 Forbidden")) is True
+    assert is_auth_failure(RateLimitError(_QUOTA_MSG)) is False
+
+
+# ---------------------------------------------------------------------------
+# HealthCache
+# ---------------------------------------------------------------------------
+
+
+def test_cache_defaults_to_unknown() -> None:
+    cache = HealthCache()
+    assert cache.status("minimax") == ProviderStatus.UNKNOWN
+    assert cache.is_unavailable("minimax") is False
+
+
+def test_cache_mark_unavailable_skips_within_ttl() -> None:
+    clock = _FakeClock(start=1000.0)
+    cache = HealthCache(clock=clock)
+    cache.mark_unavailable("minimax", reason="quota 2056")
+    assert cache.status("minimax") == ProviderStatus.UNAVAILABLE
+    assert cache.is_unavailable("minimax") is True
+    # TTL has not passed → still dead.
+    clock.now += DEFAULT_HEALTH_TTL_S - 1
+    assert cache.is_unavailable("minimax") is True
+
+
+def test_cache_expired_unavailable_flips_back_to_unknown() -> None:
+    clock = _FakeClock(start=1000.0)
+    cache = HealthCache(ttl_s=300.0, clock=clock)
+    cache.mark_unavailable("minimax", reason="quota 2056")
+    clock.now += 301.0  # TTL passed
+    assert cache.status("minimax") == ProviderStatus.UNKNOWN
+    assert cache.is_unavailable("minimax") is False
+
+
+def test_cache_mark_healthy_returns_healthy() -> None:
+    cache = HealthCache()
+    cache.mark_healthy("deepseek", balance=110.0)
+    assert cache.status("deepseek") == ProviderStatus.HEALTHY
+    assert cache.is_unavailable("deepseek") is False
+
+
+def test_cache_transient_ttl_shorter_than_default() -> None:
+    clock = _FakeClock(start=1000.0)
+    cache = HealthCache(clock=clock)
+    cache.mark_unavailable("minimax", reason="burst 429", ttl_s=TRANSIENT_TTL_S)
+    assert cache.is_unavailable("minimax") is True
+    clock.now += TRANSIENT_TTL_S + 1
+    assert cache.is_unavailable("minimax") is False
+
+
+def test_cache_persistence_roundtrip(tmp_path) -> None:
+    clock = _FakeClock(start=1000.0)
+    path = tmp_path / "llm_health.json"
+    cache = HealthCache(persist_path=path, clock=clock)
+    cache.mark_unavailable("minimax", reason="quota 2056")
+
+    # A fresh cache (simulating a robot restart) loads the record.
+    reloaded = HealthCache(persist_path=path, clock=clock)
+    assert reloaded.is_unavailable("minimax") is True
+    assert reloaded.get("minimax").reason == "quota 2056"
+
+
+def test_cache_persistence_expired_on_load_is_unknown(tmp_path) -> None:
+    clock = _FakeClock(start=1000.0)
+    path = tmp_path / "llm_health.json"
+    cache = HealthCache(persist_path=path, clock=clock)
+    cache.mark_unavailable("minimax", reason="quota 2056")
+    # Restart much later — TTL passed during the downtime.
+    clock.now += 10_000.0
+    reloaded = HealthCache(persist_path=path, clock=clock)
+    assert reloaded.is_unavailable("minimax") is False
+    assert reloaded.status("minimax") == ProviderStatus.UNKNOWN
+
+
+def test_cache_persistence_missing_file_starts_empty(tmp_path) -> None:
+    cache = HealthCache(persist_path=tmp_path / "nope.json")
+    assert cache.status("minimax") == ProviderStatus.UNKNOWN
+
+
+def test_cache_persistence_corrupt_file_starts_empty(tmp_path) -> None:
+    path = tmp_path / "llm_health.json"
+    path.write_text("{not json", encoding="utf-8")
+    cache = HealthCache(persist_path=path)
+    assert cache.status("minimax") == ProviderStatus.UNKNOWN
+
+
+# ---------------------------------------------------------------------------
+# check_deepseek_balance (mocked HTTP transport)
+# ---------------------------------------------------------------------------
+
+
+def _patch_httpx_client(monkeypatch: pytest.MonkeyPatch, handler) -> httpx.AsyncClient:
+    """Swap ``httpx.AsyncClient`` for one using ``MockTransport``."""
+    import rob_box_harness.health as health_mod
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(health_mod.httpx, "AsyncClient", lambda *a, **k: client)
+    return client
+
+
+@pytest.mark.asyncio
+async def test_check_deepseek_balance_returns_total(monkeypatch: pytest.MonkeyPatch) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/user/balance")
+        assert request.headers["authorization"] == "Bearer sk-test"
+        return httpx.Response(
+            200,
+            json={
+                "is_available": True,
+                "balance_infos": [
+                    {"currency": "CNY", "total_balance": "100.00"},
+                    {"currency": "CNY", "total_balance": "10.00"},
+                ],
+            },
+            request=request,
+        )
+
+    client = _patch_httpx_client(monkeypatch, handler)
+    balance = await check_deepseek_balance("https://api.deepseek.com", "sk-test")
+    assert balance == pytest.approx(110.0)
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_check_deepseek_balance_negative_account_ignored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """🔴 FIX (live 08.09): отрицательный счёт не вычитается из хорошего.
+
+    Реальный ответ /user/balance: CNY = -1.02 (минус!), USD = +5.60.
+    Старый код складывал валюты → баланс -0.31 ≤ 0 → DeepSeek ошибочно
+    unavailable (TTL 300s) → робот «интернет недоступен», хотя USD были.
+    Теперь: учитываем только положительные счета → USD 5.60 → healthy.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "is_available": True,
+                "balance_infos": [
+                    {"currency": "CNY", "total_balance": "-1.02"},
+                    {"currency": "USD", "total_balance": "5.60"},
+                ],
+            },
+            request=request,
+        )
+
+    client = _patch_httpx_client(monkeypatch, handler)
+    balance = await check_deepseek_balance("https://api.deepseek.com", "sk-test")
+    assert balance == pytest.approx(5.60)
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_check_deepseek_balance_sums_all_positive_accounts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Суммируются все положительные счета, валюты не важны."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "is_available": True,
+                "balance_infos": [
+                    {"currency": "CNY", "total_balance": "100.00"},
+                    {"currency": "CNY", "total_balance": "10.00"},
+                    {"currency": "USD", "total_balance": "3.00"},
+                ],
+            },
+            request=request,
+        )
+
+    client = _patch_httpx_client(monkeypatch, handler)
+    balance = await check_deepseek_balance("https://api.deepseek.com", "sk-test")
+    assert balance == pytest.approx(113.0)
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_check_deepseek_balance_all_negative_returns_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Все счета ≤ 0 → 0.0 (unavailable)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "is_available": True,
+                "balance_infos": [
+                    {"currency": "CNY", "total_balance": "-2.00"},
+                    {"currency": "USD", "total_balance": "-0.50"},
+                ],
+            },
+            request=request,
+        )
+
+    client = _patch_httpx_client(monkeypatch, handler)
+    balance = await check_deepseek_balance("https://api.deepseek.com", "sk-test")
+    assert balance == 0.0
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_check_deepseek_balance_unavailable_returns_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"is_available": False, "balance_infos": []}, request=request
+        )
+
+    client = _patch_httpx_client(monkeypatch, handler)
+    balance = await check_deepseek_balance("https://api.deepseek.com", "sk-test")
+    assert balance == 0.0
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_check_deepseek_balance_network_error_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("boom", request=request)
+
+    client = _patch_httpx_client(monkeypatch, handler)
+    balance = await check_deepseek_balance("https://api.deepseek.com", "sk-test")
+    assert balance is None
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_check_deepseek_balance_http_error_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, request=request)
+
+    client = _patch_httpx_client(monkeypatch, handler)
+    balance = await check_deepseek_balance("https://api.deepseek.com", "sk-test")
+    assert balance is None
+    await client.aclose()
+
+
+# ---------------------------------------------------------------------------
+# HealthAwareFallbackLLM — complete
+# ---------------------------------------------------------------------------
+
+
+def _msg(text: str = "hi") -> list[LLMMessage]:
+    return [LLMMessage(role="user", content=text)]
+
+
+@pytest.mark.asyncio
+async def test_fallback_switches_on_quota_exhaustion_and_marks_dead() -> None:
+    """Primary (MiniMax) 2056 → fallback answers, primary marked unavailable."""
+    primary = _FakeProvider("minimax", fail=RateLimitError(_QUOTA_MSG, provider="minimax"))
+    fallback = _FakeProvider("deepseek")
+    cache = HealthCache()
+    wrapper = HealthAwareFallbackLLM([primary, fallback], cache=cache)
+
+    response = await wrapper.complete(_msg())
+
+    assert response.content == "from-deepseek"
+    assert primary.calls == 1  # exactly ONE attempt, no retry cycle
+    assert fallback.calls == 1
+    assert cache.is_unavailable("minimax") is True
+
+
+@pytest.mark.asyncio
+async def test_premarked_unavailable_primary_not_called_at_all() -> None:
+    """The 'первый же запрос идёт на fallback' acceptance: a provider in the
+    cache as unavailable is skipped BEFORE any request."""
+    primary = _FakeProvider("minimax")
+    fallback = _FakeProvider("deepseek")
+    cache = HealthCache()
+    cache.mark_unavailable("minimax", reason="quota 2056")
+
+    wrapper = HealthAwareFallbackLLM([primary, fallback], cache=cache)
+    response = await wrapper.complete(_msg())
+
+    assert response.content == "from-deepseek"
+    assert primary.calls == 0  # dead provider never touched
+    assert fallback.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_after_ttl_expiry_primary_tried_again() -> None:
+    """TTL expiry → the provider is re-checked (quota may have refilled)."""
+    clock = _FakeClock(start=1000.0)
+    primary = _FakeProvider("minimax")
+    fallback = _FakeProvider("deepseek")
+    cache = HealthCache(clock=clock)
+    cache.mark_unavailable("minimax", reason="quota 2056")
+
+    wrapper = HealthAwareFallbackLLM([primary, fallback], cache=cache)
+    # Still inside TTL → fallback.
+    assert (await wrapper.complete(_msg())).content == "from-deepseek"
+    assert primary.calls == 0
+
+    clock.now += DEFAULT_HEALTH_TTL_S + 1  # TTL expired
+    response = await wrapper.complete(_msg())
+    assert response.content == "from-minimax"
+    assert primary.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_balance_probe_zero_marks_unavailable_before_first_call() -> None:
+    """DeepSeek balance=0 → provider marked unavailable by the probe, no
+    request is sent to it."""
+    primary = _FakeProvider("deepseek")
+    fallback = _FakeProvider("minimax")
+    cache = HealthCache()
+    wrapper = HealthAwareFallbackLLM(
+        [primary, fallback],
+        cache=cache,
+        balance_checkers={"deepseek": lambda: _balance(0.0)},
+    )
+
+    response = await wrapper.complete(_msg())
+
+    assert response.content == "from-minimax"
+    assert primary.calls == 0
+    assert cache.is_unavailable("deepseek") is True
+    assert cache.get("deepseek").reason == "balance=0.0"
+
+
+@pytest.mark.asyncio
+async def test_balance_probe_healthy_keeps_provider_first() -> None:
+    primary = _FakeProvider("deepseek")
+    fallback = _FakeProvider("minimax")
+    cache = HealthCache()
+    wrapper = HealthAwareFallbackLLM(
+        [primary, fallback],
+        cache=cache,
+        balance_checkers={"deepseek": lambda: _balance(50.0)},
+    )
+
+    response = await wrapper.complete(_msg())
+
+    assert response.content == "from-deepseek"
+    assert primary.calls == 1
+    assert fallback.calls == 0
+    assert cache.status("deepseek") == ProviderStatus.HEALTHY
+
+
+@pytest.mark.asyncio
+async def test_balance_probe_error_keeps_provider_usable() -> None:
+    """Balance API down → provider must NOT be blocked (edge case #1082)."""
+    primary = _FakeProvider("deepseek")
+    fallback = _FakeProvider("minimax")
+    cache = HealthCache()
+
+    async def broken_probe() -> float:
+        raise RuntimeError("balance api down")
+
+    wrapper = HealthAwareFallbackLLM(
+        [primary, fallback],
+        cache=cache,
+        balance_checkers={"deepseek": broken_probe},
+    )
+
+    response = await wrapper.complete(_msg())
+
+    assert response.content == "from-deepseek"
+    assert primary.calls == 1
+    assert cache.is_unavailable("deepseek") is False
+
+
+@pytest.mark.asyncio
+async def test_balance_probe_cached_not_called_every_request() -> None:
+    """TTL-cache: the balance API is not hammered per request."""
+    calls = {"n": 0}
+
+    async def probing_probe() -> float:
+        calls["n"] += 1
+        return 50.0
+
+    primary = _FakeProvider("deepseek")
+    fallback = _FakeProvider("minimax")
+    cache = HealthCache()
+    wrapper = HealthAwareFallbackLLM(
+        [primary, fallback],
+        cache=cache,
+        balance_checkers={"deepseek": probing_probe},
+    )
+
+    await wrapper.complete(_msg())
+    await wrapper.complete(_msg())
+    await wrapper.complete(_msg())
+
+    assert calls["n"] == 1  # probed once, then cached as HEALTHY
+
+
+@pytest.mark.asyncio
+async def test_auth_error_marks_unavailable_and_uses_fallback() -> None:
+    primary = _FakeProvider("minimax", fail=AuthError("2049 invalid api key", provider="minimax"))
+    fallback = _FakeProvider("deepseek")
+    cache = HealthCache()
+    wrapper = HealthAwareFallbackLLM([primary, fallback], cache=cache)
+
+    response = await wrapper.complete(_msg())
+
+    assert response.content == "from-deepseek"
+    assert primary.calls == 1
+    assert cache.is_unavailable("minimax") is True
+
+
+@pytest.mark.asyncio
+async def test_generic_error_switches_but_does_not_mark_unavailable() -> None:
+    """A one-off provider bug must not take the provider out of rotation."""
+    primary = _FakeProvider("minimax", fail=ProviderError("boom"))
+    fallback = _FakeProvider("deepseek")
+    cache = HealthCache()
+    wrapper = HealthAwareFallbackLLM([primary, fallback], cache=cache)
+
+    response = await wrapper.complete(_msg())
+
+    assert response.content == "from-deepseek"
+    assert cache.is_unavailable("minimax") is False
+
+
+@pytest.mark.asyncio
+async def test_transient_error_marks_short_unavailable() -> None:
+    primary = _FakeProvider("minimax", fail=RateLimitError("429: rate-limited"))
+    fallback = _FakeProvider("deepseek")
+    cache = HealthCache()
+    wrapper = HealthAwareFallbackLLM([primary, fallback], cache=cache)
+
+    response = await wrapper.complete(_msg())
+
+    assert response.content == "from-deepseek"
+    rec = cache.get("minimax")
+    assert rec.status == ProviderStatus.UNAVAILABLE
+    assert rec.ttl_s == TRANSIENT_TTL_S
+
+
+@pytest.mark.asyncio
+async def test_transient_429_emits_fallback_metric(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """🔴 FIX (issue #1082 follow-up): переключение на fallback-провайдера
+    из-за per-request 429 (rate-limit) пишет метрику [llm_fallback_metric]
+    — по аналогии с [stt_attempt_metric] из #1083."""
+    import logging
+
+    caplog.set_level(logging.INFO, logger="rob_box_harness.health")
+    primary = _FakeProvider("minimax", fail=RateLimitError("429: rate-limited"))
+    fallback = _FakeProvider("deepseek")
+    wrapper = HealthAwareFallbackLLM([primary, fallback])
+
+    response = await wrapper.complete(_msg())
+
+    assert response.content == "from-deepseek"
+    metric_lines = [
+        r.getMessage()
+        for r in caplog.records
+        if "[llm_fallback_metric]" in r.getMessage()
+    ]
+    assert len(metric_lines) == 1
+    assert "provider=minimax" in metric_lines[0]
+    assert "reason=rate_limit" in metric_lines[0]
+    assert "action=fallback" in metric_lines[0]
+
+
+@pytest.mark.asyncio
+async def test_all_providers_unavailable_raises() -> None:
+    primary = _FakeProvider("minimax")
+    fallback = _FakeProvider("deepseek")
+    cache = HealthCache()
+    cache.mark_unavailable("minimax", reason="quota")
+    cache.mark_unavailable("deepseek", reason="quota")
+
+    wrapper = HealthAwareFallbackLLM([primary, fallback], cache=cache)
+
+    with pytest.raises(ProviderError):
+        await wrapper.complete(_msg())
+    assert primary.calls == 0
+    assert fallback.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_last_error_propagates_when_chain_exhausted() -> None:
+    primary = _FakeProvider("minimax", fail=RateLimitError(_QUOTA_MSG, provider="minimax"))
+    fallback = _FakeProvider("deepseek", fail=ProviderError("deepseek down"))
+    wrapper = HealthAwareFallbackLLM([primary, fallback])
+
+    with pytest.raises(ProviderError, match="deepseek down"):
+        await wrapper.complete(_msg())
+
+
+# ---------------------------------------------------------------------------
+# HealthAwareFallbackLLM — stream
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stream_switches_on_quota_and_marks_dead() -> None:
+    primary = _FakeProvider("minimax", fail=RateLimitError(_QUOTA_MSG, provider="minimax"))
+    fallback = _FakeProvider("deepseek")
+    cache = HealthCache()
+    wrapper = HealthAwareFallbackLLM([primary, fallback], cache=cache)
+
+    chunks = [chunk async for chunk in wrapper.stream(_msg())]
+
+    assert [c.content_delta for c in chunks] == ["from-deepseek"]
+    assert primary.stream_calls == 1
+    assert cache.is_unavailable("minimax") is True
+
+
+@pytest.mark.asyncio
+async def test_stream_skips_premarked_unavailable_primary() -> None:
+    primary = _FakeProvider("minimax")
+    fallback = _FakeProvider("deepseek")
+    cache = HealthCache()
+    cache.mark_unavailable("minimax", reason="quota 2056")
+    wrapper = HealthAwareFallbackLLM([primary, fallback], cache=cache)
+
+    chunks = [chunk async for chunk in wrapper.stream(_msg())]
+
+    assert [c.content_delta for c in chunks] == ["from-deepseek"]
+    assert primary.stream_calls == 0
+
+
+# ---------------------------------------------------------------------------
+# RcutilsLogger compatibility (regression 13.08.2026)
+# ---------------------------------------------------------------------------
+# dialogue_node passes ``logger=self.get_logger()`` (rclpy RcutilsLogger),
+# whose info/warning/error/debug accept exactly ONE message positional arg.
+# health.py used std-logging ``%s``-style calls like
+# ``self._log.info("[health] stream: chain=%s active=%s", a, b)`` and the
+# whole LLM stream crashed with:
+#   TypeError: RcutilsLogger.info() takes 2 positional arguments but 4 were given
+# → silent Empty assistant response → robot stayed mute.
+# ---------------------------------------------------------------------------
+
+
+class _TwoArgOnlyLogger:
+    """Minimal RcutilsLogger double: methods accept exactly one message."""
+
+    def __init__(self) -> None:
+        self.records: list[tuple[str, str]] = []
+
+    def info(self, message: str) -> None:
+        self.records.append(("info", message))
+
+    def warning(self, message: str) -> None:
+        self.records.append(("warning", message))
+
+    def error(self, message: str) -> None:
+        self.records.append(("error", message))
+
+    def debug(self, message: str) -> None:
+        self.records.append(("debug", message))
+
+
+@pytest.mark.asyncio
+async def test_stream_with_two_arg_logger_does_not_crash() -> None:
+    """Regression: %-style logging through an rclpy-like logger must not
+    kill the LLM stream (previously TypeError → empty assistant answer)."""
+    primary = _FakeProvider("deepseek")
+    logger = _TwoArgOnlyLogger()
+    wrapper = HealthAwareFallbackLLM([primary], logger=logger)  # type: ignore[arg-type]
+
+    chunks = [chunk async for chunk in wrapper.stream(_msg())]
+
+    assert [c.content_delta for c in chunks] == ["from-deepseek"]
+    assert logger.records, "wrapper должен логировать через переданный логгер"
+
+
+@pytest.mark.asyncio
+async def test_complete_with_two_arg_logger_interpolates_args() -> None:
+    """%-style args must be interpolated into a single message (no TypeError,
+    no raw %s left for the consumer logger)."""
+    primary = _FakeProvider("deepseek")
+    logger = _TwoArgOnlyLogger()
+    wrapper = HealthAwareFallbackLLM([primary], logger=logger)  # type: ignore[arg-type]
+
+    response = await wrapper.complete(_msg())
+
+    assert response.content == "from-deepseek"
+    messages = [message for _, message in logger.records]
+    assert any("answered by provider=deepseek" in message for message in messages)
+    assert not any("%s" in message for message in messages)
+
+
+@pytest.mark.asyncio
+async def test_two_arg_logger_handles_failure_path_without_crash() -> None:
+    """Quota-failure classification logs several %-style warnings — none
+    may crash the wrapper when the consumer is an rclpy-like logger."""
+    primary = _FakeProvider("minimax", fail=RateLimitError(_QUOTA_MSG, provider="minimax"))
+    fallback = _FakeProvider("deepseek")
+    logger = _TwoArgOnlyLogger()
+    wrapper = HealthAwareFallbackLLM([primary, fallback], logger=logger)  # type: ignore[arg-type]
+
+    response = await wrapper.complete(_msg())
+
+    assert response.content == "from-deepseek"
+    warning_messages = [
+        message for level, message in logger.records if level == "warning"
+    ]
+    assert any("quota exhausted" in message for message in warning_messages)
+
+
+# ---------------------------------------------------------------------------
+# misc
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_aclose_closes_all_providers() -> None:
+    primary = _FakeProvider("minimax")
+    fallback = _FakeProvider("deepseek")
+    wrapper = HealthAwareFallbackLLM([primary, fallback])
+
+    await wrapper.aclose()
+
+    assert primary.closed is True
+    assert fallback.closed is True
+
+
+def test_empty_provider_list_rejected() -> None:
+    with pytest.raises(ValueError):
+        HealthAwareFallbackLLM([])
+
+
+# ---------------------------------------------------------------------------
+# Issue #1883 — per-provider LLM settings dispatch
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_complete_dispatches_per_provider_settings() -> None:
+    """``settings_for={name: LLMSettings}`` overrides the global ``settings=`` arg.
+
+    Regression for issue #1883: ``dialogue_node.yaml`` allows the operator
+    to set ``minimax.max_tokens`` and ``deepseek.max_tokens`` to different
+    values. Without per-provider dispatch, both providers would receive
+    whichever settings the caller passed last (the primary's).
+    """
+    primary = _FakeProvider("minimax")
+    fallback = _FakeProvider("deepseek")
+    minimax_settings = LLMSettings(temperature=0.3, max_tokens=250)
+    deepseek_settings = LLMSettings(temperature=0.9, max_tokens=800)
+    wrapper = HealthAwareFallbackLLM(
+        [primary, fallback],
+        # No global ``settings=`` arg → each provider MUST receive its
+        # own mapped LLMSettings.
+        settings_for={
+            "minimax": minimax_settings,
+            "deepseek": deepseek_settings,
+        },
+    )
+
+    # 1) Primary answers → it MUST receive minimax_settings.
+    response = await wrapper.complete(_msg())
+    assert response.content == "from-minimax"
+    assert primary.settings_received[-1] is minimax_settings
+    assert fallback.settings_received == []
+
+    # 2) Mark minimax unavailable → wrapper falls through to deepseek
+    #    which MUST receive deepseek_settings.
+    cache = HealthCache()
+    cache.mark_unavailable("minimax", reason="test")
+    wrapper_with_cache = HealthAwareFallbackLLM(
+        [primary, fallback],
+        cache=cache,
+        settings_for={
+            "minimax": minimax_settings,
+            "deepseek": deepseek_settings,
+        },
+    )
+    response = await wrapper_with_cache.complete(_msg())
+    assert response.content == "from-deepseek"
+    assert fallback.settings_received[-1] is deepseek_settings
+
+
+@pytest.mark.asyncio
+async def test_complete_global_settings_used_when_no_per_provider_override() -> None:
+    """When ``settings_for`` is empty, every provider uses the caller's settings.
+
+    Backward-compat: a caller that doesn't know about per-provider
+    settings keeps seeing its own ``settings=`` argument on every
+    downstream ``complete()`` call.
+    """
+    primary = _FakeProvider("minimax")
+    fallback = _FakeProvider("deepseek")
+    wrapper = HealthAwareFallbackLLM([primary, fallback])  # settings_for={}
+
+    global_settings = LLMSettings(temperature=0.5, max_tokens=400)
+    await wrapper.complete(_msg(), settings=global_settings)
+
+    assert primary.settings_received[-1] is global_settings
+
+    # Even when the primary fails and the fallback answers, the fallback
+    # STILL receives the global settings.
+    primary.fail = RateLimitError(_QUOTA_MSG, provider="minimax")
+    fallback.calls = 0
+    fallback.settings_received.clear()
+    response = await wrapper.complete(_msg(), settings=global_settings)
+    assert response.content == "from-deepseek"
+    assert fallback.settings_received[-1] is global_settings
+
+
+@pytest.mark.asyncio
+async def test_stream_dispatches_per_provider_settings() -> None:
+    """Streaming path also honours ``settings_for`` (issue #1883).
+
+    The voice node uses ``stream()`` when ``llm_streaming=true`` is set
+    in YAML; the per-provider dispatch MUST apply to that branch too.
+    """
+    primary = _FakeProvider("minimax")
+    fallback = _FakeProvider("deepseek")
+    minimax_settings = LLMSettings(temperature=0.1, max_tokens=120)
+    deepseek_settings = LLMSettings(temperature=0.8, max_tokens=900)
+    wrapper = HealthAwareFallbackLLM(
+        [primary, fallback],
+        settings_for={
+            "minimax": minimax_settings,
+            "deepseek": deepseek_settings,
+        },
+    )
+
+    chunks: list[LLMChunk] = []
+    async for ch in wrapper.stream(_msg()):
+        chunks.append(ch)
+    assert chunks and chunks[-1].content_delta == "from-minimax"
+    assert primary.stream_settings_received[-1] is minimax_settings
+    assert fallback.stream_settings_received == []
+
+
+def test_capabilities_forward_from_primary() -> None:
+    primary = _FakeProvider("minimax")
+    fallback = _FakeProvider("deepseek")
+    wrapper = HealthAwareFallbackLLM([primary, fallback])
+    # Default LLMProvider.capabilities is text-only.
+    assert wrapper.capabilities.text is True
+
+
+async def _balance(value: float) -> float:
+    return value

@@ -1,0 +1,1927 @@
+"""``AgentCore`` — high-level facade over the four dialogue ports.
+
+Composes:
+
+* :class:`rob_box_llm.LLMProvider`       — LLM client (``complete`` / ``stream``)
+* :class:`rob_box_harness.tools.ToolProvider` — tool dispatch
+* :class:`rob_box_harness.memory.MemoryStore` — conversation + facts persistence
+* :class:`DialogueStateMachine`          — pure lifecycle state machine
+
+into a single async ``process_input`` entry point so the dialogue
+shell (a thin ROS2 node) can stay ≤350 LOC.
+
+The class itself is pure Python — no ROS2, no ``rclpy``. The shell
+calls ``process_input`` from its STT callback and publishes the
+returned :class:`DialogResult` to ``/voice/dialogue/response``.
+
+Per ``.planning/06-01-PLAN.md`` §W3, the class composes the ports
+without absorbing their responsibilities. Tool dispatch and state
+transitions still go through the existing port APIs — AgentCore is
+the *orchestrator*, not a duplicate of the ports.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import re
+from collections import deque
+from dataclasses import dataclass, field, replace
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping
+
+from rob_box_core.token_estimate import estimate_prompt_tokens
+from rob_box_core.tool_catalog import tools_for_skill
+from rob_box_harness.core.confirmation_policy import ConfirmationKind
+from rob_box_harness.core.dialogue_state_machine import (
+    DialogueEvent,
+    DialogueStateKind,
+    DialogueStateMachine,
+)
+from rob_box_harness.memory import MemoryStore, Turn
+from rob_box_harness.tools import ToolProvider, ToolSpec
+from rob_box_llm.provider import (
+    LLMMessage,
+    LLMSettings,
+    LLMProvider,
+    LLMResponse,
+    ToolCall,
+    ToolResult,
+)
+
+if TYPE_CHECKING:
+    # Forward import — AcceptanceGate is in rob_box_harness.core.acceptance
+    # and importing it eagerly here would create a circular dependency
+    # with the package's __init__ exports.
+    from rob_box_harness.core.acceptance import AcceptanceGate
+
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+
+#: Hard cap on tool-loop iterations inside ``process_input``. Mirrors the
+#: legacy OpenAI Agents SDK ``max_turns`` ceiling so a runaway tool loop
+#: can't pin the dialogue thread forever. Five is enough for memory_context
+#: + a follow-up explanation, and short enough that a misbehaving tool
+#: fails loudly rather than running away.
+_MAX_TOOL_ITERATIONS: int = 8
+
+
+#: Имя инструмента, которым LLM подгружает доменный скилл сама.
+#:
+#: Он НЕ живёт в ``rob_box_core.tool_catalog`` намеренно: каталог
+#: описывает то, что робот УМЕЕТ ДЕЛАТЬ (ехать, играть, говорить), а этот
+#: вызов ничего на роботе не исполняет — он меняет состав промпта внутри
+#: harness'а и возвращает текст. Класть его в каталог значило бы просить
+#: mcp_server исполнять то, до чего он не дотягивается: фрагменты лежат в
+#: rob_box_voice, а MCP-сервер — отдельная нода в отдельном контейнере.
+LOAD_SKILL_TOOL: str = "load_skill"
+
+
+def _load_skill_spec(known: tuple[str, ...]) -> dict[str, Any]:
+    """Схема ``load_skill`` в OpenAI-формате.
+
+    Список доступных имён встроен в enum: модель не должна угадывать
+    строку, а промах по имени становится ошибкой валидации у провайдера,
+    а не тихой загрузкой пустоты.
+    """
+    return {
+        "type": "function",
+        "function": {
+            "name": LOAD_SKILL_TOOL,
+            "description": (
+                "Загрузить инструкции по работе с доменом, когда запрос "
+                "пользователя относится к музыке, навигации, памяти, "
+                "голосу или другому домену из списка. Возвращает текст "
+                "инструкций — прочитай его и продолжай ЭТОТ ЖЕ ход. "
+                "Вызывай ОДИН раз, до первого доменного действия."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill": {
+                        "type": "string",
+                        "enum": list(known),
+                        "description": "Имя домена.",
+                    }
+                },
+                "required": ["skill"],
+            },
+        },
+        "annotations": {
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+        },
+    }
+
+
+@dataclass(frozen=True)
+class PromptStats:
+    """Размер одного запроса к LLM — сырьё для ``voice_llm_prompt_tokens``.
+
+    Публикуется на КАЖДОЕ обращение к провайдеру, включая каждую итерацию
+    тул-цикла: ход с восемью итерациями стоит восьми промптов, и метрика,
+    считающая только первый, врала бы в разы.
+
+    ``estimated=True`` означает, что провайдер учёт токенов не прислал и
+    число получено эвристикой (``rob_box_core.token_estimate``). Такое
+    значение годится для сравнения «до/после» и для алертов, но не для
+    биллинга — см. docstring оценщика.
+    """
+
+    prompt_tokens: int
+    estimated: bool
+    provider: str
+    skill: str = "none"
+
+
+#: Тип колбэка, которым shell (ROS2-нода) забирает статистику промпта.
+#: Harness остаётся без зависимости от prometheus_client и от rclpy —
+#: он только сообщает число, а публикует его тот, кто умеет.
+PromptObserver = Callable[[PromptStats], None]
+
+# W7a (issue #968, INSIGHT #1): a single LLM response may carry several
+# tool_calls in one batch (e.g. ``speak_text`` + ``stop_music``). Executing
+# them in the model's raw order fires destructive tools before the voice
+# pipeline has even started — ``stop_music`` used to land on the robot
+# milliseconds after ``speak_text`` was requested, killing the music mid-phrase
+# (e2e v36). The scheduler (W7b) owns cross-batch ordering; this module-level
+# re-ordering fixes the *intra-batch* race:
+#
+# * music tools (``execute_music_code`` / ``set_vibe_preset`` / ``load_track``)
+#   run FIRST so the prelude starts before speech,
+# * ordinary tools keep their relative order,
+# * destructive tools (``stop_music`` / ``stop_navigation``) run LAST and are
+#   flagged ``defer_until_voice_drained`` when the same batch also speaks —
+#   the flag tells the scheduler not to fire the side effect until the voice
+#   channel is empty.
+_MUSIC_PRELUDE_TOOLS: frozenset[str] = frozenset(
+    {"execute_music_code", "set_vibe_preset", "load_track"}
+)
+_VOICE_TOOLS: frozenset[str] = frozenset({"speak_text"})
+_DEFER_TO_END_TOOLS: frozenset[str] = frozenset(
+    {"stop_music", "stop_navigation"}
+)
+
+
+def _tools_called_from_metadata(turn: Any) -> list[str]:
+    """Return the tool names recorded on ``turn`` by ``process_input``.
+
+    Defensive by design: ``metadata`` comes back from SQLite as decoded
+    JSON, so a hand-edited row (or an older schema) can hold anything.
+    Anything that is not a non-empty list of strings yields ``[]`` — a
+    malformed history row must never break a live turn.
+    """
+    metadata = getattr(turn, "metadata", None) or {}
+    if not isinstance(metadata, Mapping):
+        return []
+    raw = metadata.get("tools_called")
+    if not isinstance(raw, (list, tuple)):
+        return []
+    return [str(name) for name in raw if isinstance(name, str) and name]
+
+
+def _order_tool_calls(
+    calls: Iterable[ToolCall],
+) -> tuple[list[ToolCall], set[str]]:
+    """Re-order one LLM batch for safe execution.
+
+    Returns ``(ordered, deferred_call_ids)``:
+
+    * ``ordered`` — stable partition: music prelude tools first, then the
+      remaining tools in their original relative order, then destructive
+      tools last.
+    * ``deferred_call_ids`` — ids of destructive calls whose side effect
+      must wait until the voice channel drains (only set when the batch
+      also contains a voice tool such as ``speak_text``).
+
+    The re-ordering changes execution order ONLY. Tool results are still
+    returned to the LLM in the model's original order (see
+    :meth:`AgentCore._run_with_tools`), so the OpenAI-style conversation
+    history stays valid.
+    """
+    ordered = list(calls)
+
+    def _partition_key(call: ToolCall) -> int:
+        if call.name in _DEFER_TO_END_TOOLS:
+            return 2
+        if call.name in _MUSIC_PRELUDE_TOOLS:
+            return 0
+        return 1
+
+    ordered.sort(key=_partition_key)
+    has_voice = any(call.name in _VOICE_TOOLS for call in ordered)
+    deferred_call_ids = {
+        call.id
+        for call in ordered
+        if has_voice and call.name in _DEFER_TO_END_TOOLS
+    }
+    return ordered, deferred_call_ids
+
+
+#: Completion markers the master prompt teaches the LLM to return AFTER the
+#: last ``speak_text`` call. They are ONLY valid when the turn actually
+#: performed work (tool calls happened in an earlier iteration). When the
+#: model emits a bare marker as its FIRST response with zero tool calls it
+#: is a silent failure — the user hears nothing and nothing happened
+#: (issue #1217, deepseek-v4-flash intermittently does this).
+_SILENT_DONE_MARKERS: frozenset[str] = frozenset(
+    {"done", "task complete", "task_complete", "готово", "всё", "выполнено"}
+)
+
+#: 🔴 FIX (live 01.09, vision-pi 10:17): MiniMax отдаёт ПСЕВДО-ВЫЗОВ ТЕКСТОМ.
+#: На «переходи в легкий джанго» модель вернула content
+#: ``<compose_music composition here>`` и ``tool_calls=()``. Формально это
+#: «содержательный текст», поэтому ход считался нормальным ответом: он ушёл
+#: в TTS-ветку, лёг в историю — и дальше повторялся уже как пример. Через
+#: два хода модель выдавала эту заглушку детерминированно, и на первой
+#: попытке, и на CRITICAL-ретрае; юзер слышал «Я тут растерялся».
+#:
+#: Признак узкий нарочно: ВЕСЬ ответ — одна угловая скобка без прозы вокруг.
+#: Живая реплика целиком внутри ``<...>`` не встречается, а частичное
+#: совпадение («скажу <тихо> привет») трогать нельзя.
+_PSEUDO_TOOL_CALL_RE = re.compile(r"^<[^<>]{1,160}>$")
+
+#: Метка на user-ходе, чей ответ ассистента был отозван через
+#: :meth:`AgentCore.discard_last_reply`. Такой ход остаётся ПОСЛЕДНИМ в
+#: окне и внешне неотличим от сироты после barge-in, которую
+#: ``_clean_history_turns`` обязана выбросить. Разница принципиальная:
+#: сирота — реплика, на которую юзер уже не ждёт ответа, а помеченный ход —
+#: живой запрос, ради которого прямо сейчас идёт синтетический ретрай.
+#:
+#: 🔴 FIX (live 03.09 07:58, DJ): «Ты диджей Векну, тема Изнанка» → модель
+#: ответила словами без тула → music-guard отозвал ответ и отправил
+#: [CRITICAL]-ретрай. Отзыв сделал user-ход хвостовым, ``_clean_history_turns``
+#: снесла его как сироту — и в промпте ретрая от «Векны» не осталось ничего,
+#: кроме цитаты внутри самого гуардовского текста, зато история дважды
+#: говорила «ты диджей Шафутинский». Модель пошла за историей и вызвала
+#: ``set_dj_mode(persona='Диджей Шафутинский', theme='...Шафутинского')`` —
+#: юзер услышал, что робот «всё-таки Шафутинский».
+_PENDING_RETRY_KEY: str = "reply_retracted"
+
+
+def _is_pseudo_tool_call(text: str) -> bool:
+    """Return ``True`` when ``text`` is a tool call the model WROTE instead of made."""
+    return bool(_PSEUDO_TOOL_CALL_RE.match((text or "").strip()))
+
+
+#: ``finish_reason`` values that mean "the model produced NO usable output"
+#: even though the HTTP call succeeded. DeepSeek documents
+#: ``insufficient_system_resource`` (HTTP 200, generation interrupted by
+#: provider resource pressure) and ``content_filter`` (content omitted by
+#: filters); ``length`` with empty content means max_tokens was exhausted
+#: before any token was emitted (issue #1253). All three are retryable —
+#: the corrective retry in ``_run_with_tools`` gives the model a second
+#: chance instead of shipping silence to the user.
+_SILENT_FINISH_REASONS: frozenset[str] = frozenset(
+    {"insufficient_system_resource", "content_filter", "length"}
+)
+
+
+# Issue #1708 — hallucinated-lyrics guard. After ``execute_music_code``
+# (Renardo instrumental), the LLM sometimes also calls ``speak_text`` with
+# invented lyrics («Нига-стайл, Колобок-флоу...»). The user hears a
+# robotic voice reading hallucinated text on top of (or instead of) the
+# beat. Master prompt only authorises ONE short accept phrase after
+# ``execute_music_code`` («Ок, играю Бах»), not full lyrics. We drop
+# ``speak_text`` calls that follow a music tool AND exceed the accept-
+# phrase threshold AND the user request was NOT a vocal one (rap / poem /
+# song — there backing mode legitimately calls speak_text × N).
+#
+# ⚠️ НЕ сводить с ``MUSIC_GUARD_VOCAL_KEYWORDS`` из
+# :mod:`rob_box_voice.core.dialogue_guards`. Имена похожи, вопросы разные:
+#
+# * здесь — «просил ли пользователь голос ВООБЩЕ?». На «да» гард
+#   галлюцинированных текстов не глушит ``speak_text``, потому что
+#   бэкинг-режим законно зовёт его несколько раз;
+# * там — «просил ли пользователь голос БЕЗ бита?». Список у́же
+#   намеренно: для речитатива (рэп / зачитай / частушка) бит обязателен,
+#   и music-guard Bug C (issue #992) должен нуднуть модель, если она не
+#   вызвала ``execute_music_code``.
+#
+# Слить их — значит молча снять требование бита с рэпа. Инвариант
+# «voice — строгое подмножество harness» закреплён тестом
+# ``test_harness_vocal_keywords_are_a_strict_superset``
+# (src/rob_box_voice/test/unit/core/test_dialogue_guards.py).
+#
+# Раньше здесь стояло «Mirrors rob_box_voice.core.dialogue_guards
+# heuristic», что читалось как «списки обязаны совпадать» — неверно.
+_VOCAL_REQUEST_KEYWORDS: tuple = (
+    "спой", "пой ", "песня", "песню", "рэп", "реп", "rap",
+    "зачитай", "зачита", "зачитывай", "стих", "стишок", "стихотворен",
+    "прочитай", "прочти", "куплет", "частушк",
+)
+# Maximum length (chars) of a legitimate post-music accept phrase
+# («Ок, играю Бах.», «Играю Бах», «Поехали»). Anything longer than
+# this on a non-vocal request is a hallucination. The number matches the
+# existing TRACK-mode accept test in test_issue_992_batch_cleanup.
+_ACCEPT_PHRASE_MAX_CHARS: int = 40
+#: Broader set than ``_MUSIC_PRELUDE_TOOLS`` — adds ``generate_music``
+#: (MiniMax Music API) and ``gen_play_from_library``. The prelude set
+#: only governs execution ORDER (music tools must run first), but the
+#: hallucinated-lyrics guard must fire for ANY music tool that leaves
+#: the user hearing lyrics on top of audio (issue #1708 / #1561).
+_MUSIC_LAUNCH_TOOLS: frozenset[str] = frozenset({
+    "execute_music_code", "set_vibe_preset", "load_track",
+    "generate_music", "gen_play_from_library",
+})
+
+
+# ---------------------------------------------------------------------------
+# Result type
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class DialogResult:
+    """Outcome of a single :meth:`AgentCore.process_input` call.
+
+    The shell consumes these fields to decide what to publish on
+    ``/voice/dialogue/response`` / ``/voice/dialogue/state``.
+
+    Fields
+    ------
+    spoken_text:
+        The assistant's reply (already through the LLM). Empty string
+        when the LLM errored before producing output.
+    new_state:
+        The DSM state after processing (typically ``IDLE`` for a
+        successful turn).
+    tools_called:
+        Names of tools the LLM invoked during this turn — populated
+        by the in-core tool loop (see :meth:`AgentCore.process_input`
+        for the full contract). Empty when the model answered in
+        plain text or the tool loop did not run.
+    error:
+        ``None`` on success, otherwise the exception that aborted the
+        turn — the original object, with its type intact. The shell
+        logs this but does not raise it further.
+    error_traceback:
+        Formatted traceback of ``error``, or ``None``. Kept beside the
+        exception rather than folded into it: ``result.error`` used to
+        be ``Exception(f"{exc}\n{traceback}")``, which made the text
+        available but threw the *type* away, and the shell had to
+        recover "is this a provider outage?" by substring-matching the
+        message (``dialogue_node._is_llm_unavailable_error``). The type
+        is the contract; the traceback is diagnostics. Both, separately.
+    """
+
+    spoken_text: str = ""
+    new_state: DialogueStateKind = DialogueStateKind.IDLE
+    tools_called: list[str] = field(default_factory=list)
+    # Issue #992 (TWO MUSIC MODES): how many times the LLM invoked
+    # ``speak_text`` during this turn. ``tools_called`` only keeps
+    # *unique* names, but the dialogue_node music-cleanup gate needs
+    # the raw count to distinguish BACKING (спой/рэп — lyrics via 2+
+    # speak_text calls, music must stop at tts_batch_complete) from
+    # TRACK (сыграй баха — at most one short accept phrase, music
+    # lives until the user stops it).
+    speak_text_count: int = 0
+    # Issue #1343 (silence after accept): how many ``speak_text`` tool
+    # calls carried a REAL (non-empty) ``text`` argument this turn.
+    # ``tools_called`` is populated from the LLM's requested tool-call
+    # names BEFORE execution, so a phantom ``speak_text({})`` /
+    # ``speak_text({"text": ""})`` from deepseek lands in
+    # ``tools_called`` but never voices anything (validation rejects
+    # empty text before the MCP request is sent). The issue-988
+    # anti-duplicate guard in dialogue_node must only skip auto-TTS
+    # when speak_text was REALLY called with content — otherwise the
+    # user hears the accept sound and then silence.
+    speak_text_real_count: int = 0
+    error: BaseException | None = None
+    error_traceback: str | None = None
+    # ── LLM diagnostics (live 16:58) ────────────────────────────────────
+    # When the LLM returns empty content (MiniMax M3 Interleaved Thinking
+    # compaction, timeouts, finish_reason='length'), we want to know WHY
+    # in the debug log. Populated by AgentCore from the last LLMResponse
+    # and consumed by dialogue_node when spoken_text is empty.
+    finish_reason: str | None = None
+    raw_response: Any | None = None
+    # Issue #1899 — propagated from ``LLMResponse.truncated_tool_args``.
+    # True when the last LLM stream produced tool-call arguments JSON that
+    # was cut off mid-stream (most often ``finish_reason='length'``).
+    # dialogue_node surfaces this in the per-turn info log so operators
+    # can correlate the +6 s retry with the upstream token-budget
+    # exhaustion. AgentCore itself ALSO uses the flag (see
+    # ``_run_with_tools``) to ask the model for a shorter retry.
+    truncated_tool_args: bool = False
+
+
+@dataclass(frozen=True)
+class _ToolLoopOutcome:
+    """Что вернул тул-цикл :meth:`AgentCore._run_with_tools`.
+
+    Раньше это был безымянный кортеж, который вызывающая сторона
+    распаковывала одной строкой в 118 символов. Аннотация при этом
+    обещала шесть элементов, а ``return`` отдавал семь — разъехались
+    молча, потому что распаковка длину не проверяет.
+
+    Fields
+    ------
+    spoken_text:
+        Финальный текст модели. Пустая строка, когда ход подавлен
+        (babble-фильтр issue #1253).
+    tools_called:
+        Уникальные имена вызванных тулов, в порядке первого вызова.
+    finish_reason:
+        ``finish_reason`` последнего ответа — нужен ноде, чтобы отличить
+        пустой ответ от обрыва по ``length``.
+    raw_response:
+        Сырой ответ провайдера, для логов.
+    speak_text_count:
+        Сколько раз модель ЗВАЛА ``speak_text`` (issue #992: отличает
+        BACKING-ход от TRACK-хода).
+    speak_text_real_count:
+        Сколько из них несли непустой ``text`` и реально бы прозвучали
+        (issue #1343 — deepseek шлёт ``speak_text({})``).
+    spoken_via_tool:
+        Что реально произнесено через ``speak_text``, склеенное через
+        перевод строки. Пишется в историю вместо маркера «done», иначе
+        модель начинает отвечать «done» сама.
+    truncated_tool_args:
+        Issue #1899 — propagated from the last ``LLMResponse.truncated_tool_args``.
+        ``True`` when the last stream assembled tool-call arguments that
+        were cut off mid-JSON (most often ``finish_reason='length'``).
+        The agent loop already asked the model for a shorter retry
+        before falling out of the tool loop; the flag is preserved so
+        ``DialogResult`` consumers (dialogue_node / future analytics)
+        can see the upstream budget exhaustion.
+    """
+
+    spoken_text: str
+    tools_called: list[str]
+    finish_reason: str | None
+    raw_response: Any
+    speak_text_count: int
+    speak_text_real_count: int
+    spoken_via_tool: str
+    truncated_tool_args: bool = False
+
+
+# ---------------------------------------------------------------------------
+# AgentCore
+# ---------------------------------------------------------------------------
+
+
+class AgentCore:
+    """Shared agent engine — one behaviour, many configurations.
+
+    ``AgentCore`` is the generalisation of the former ``DialogCore`` (issue
+    #1986, target-arch §5). It is a pure Python orchestrator over the four
+    dialogue ports, deliberately carrying NO persona: personality and the
+    skill slice arrive as configuration (``system_prompt`` /
+    ``skill_prompts`` / ``narrow_tools_to_skill``) from the shell. Two
+    agents (личность, оператор/ТАРС) are two configurations of this one
+    engine.
+
+    The shell drives the loop:
+
+    1. STT callback receives text → ``process_input(text, history)``
+    2. Core persists the user turn, calls the LLM, persists the
+       assistant turn, and returns a :class:`DialogResult`.
+    3. Shell publishes the result.
+
+    The core keeps the conversation as an in-memory sliding window of
+    turns (never persisted to the store). The DSM keeps the lifecycle
+    state, the LLM keeps no state at all — the shell either passes an
+    explicit history or lets the core use its own window.
+    """
+
+    def __init__(
+        self,
+        *,
+        llm: LLMProvider,
+        tools: ToolProvider,
+        memory: MemoryStore,
+        dsm: DialogueStateMachine,
+        user_id: str = "default",
+        history_trim_limit: int | None = None,
+        acceptance_gate: "AcceptanceGate | None" = None,
+        system_prompt: str | None = None,
+        use_streaming: bool = False,
+        on_prompt: "PromptObserver | None" = None,
+        skill_prompts: Mapping[str, str] | None = None,
+        narrow_tools_to_skill: bool = False,
+        llm_settings: LLMSettings | None = None,
+    ) -> None:
+        """Compose the four dialogue ports into a single facade.
+
+        Args:
+            llm: LLM client — required.
+            tools: Tool dispatch port — required. AgentCore uses
+                ``tools.discover()`` to fetch the OpenAI-style schema
+                for ``llm.complete(messages, tools=...)`` and runs
+                the tool loop in-process when the LLM asks for a
+                tool call. Required even when the LLM never invokes
+                a tool, because the loop is the only way the model
+                can discover ``memory_context`` and friends.
+            memory: Facts / waypoints / FAQ / event-profile store —
+                required. NOTE: the core does NOT persist conversation
+                turns through this store anymore; turns live in an
+                in-memory sliding window. The store is retained for the
+                shell's fact operations and backward compatibility.
+            dsm: Dialogue state machine — required.
+            user_id: Scope key used when calling the memory store.
+                Defaults to ``"default"``.
+            history_trim_limit: Cap of the in-memory sliding window of
+                turns. When the caller passes ``history=None`` to
+                :meth:`process_input`, the core uses its own window
+                (never the memory port) and this value bounds its size.
+            narrow_tools_to_skill: Move B. When ``True`` and a skill is
+                active, the LLM is offered only ``core`` plus that skill's
+                tools instead of the whole catalog. Default ``False`` —
+                the full catalog, byte for byte today's behaviour. Turning
+                it on shrinks the prompt but breaks the provider's cached
+                prefix on every skill switch and introduces a failure mode
+                where a mis-routed turn cannot see the tool it needs; the
+                model can recover via ``load_skill``.
+            skill_prompts: Optional mapping ``skill name -> instruction
+                text``. When a skill is active and present here, its text
+                is appended as the LAST system message of the turn —
+                immediately before the user's line, i.e. AFTER the whole
+                history. That position is the entire point: instructions
+                sitting at index 0 lose to twenty turns of history that
+                demonstrate the opposite behaviour. Empty mapping keeps
+                the pre-skill behaviour byte for byte.
+            on_prompt: Optional observer called once per LLM request with
+                a :class:`PromptStats`. Lets the shell publish the prompt
+                size without dragging Prometheus (or rclpy) into the
+                harness. Exceptions raised by the observer are swallowed:
+                telemetry must never break a live turn.
+            acceptance_gate: Optional :class:`AcceptanceGate` (issue
+                #968 §8 / §11.2). When provided, every tool call
+                emitted by the LLM is first classified: ``require``
+                segments enter ``AWAITING_CONFIRMATION`` and the
+                LLM receives an ``"awaiting_user_confirmation"``
+                tool result; ``pass_through`` / ``notify`` segments
+                are executed as before. When ``None`` the core runs
+                the legacy un-gated path — backward-compatible with
+                every existing test that doesn't construct a gate.
+            llm_settings: Optional per-call knobs forwarded to the
+                LLM provider on EVERY ``complete()`` / ``stream()``
+                (issue #1883). Without this, ``max_tokens`` and
+                ``temperature`` from ``dialogue_node.yaml`` never
+                reached the provider — only the logger. ``None`` is
+                the legacy behaviour (no ``settings=`` kwarg on the
+                LLM call). The provider decides what to do with
+                ``None`` fields (typically: omit the parameter from
+                the wire request and let the model use its default).
+        """
+        if llm is None:
+            raise TypeError("AgentCore: llm is required")
+        if tools is None:
+            raise TypeError("AgentCore: tools is required")
+        if memory is None:
+            raise TypeError("AgentCore: memory is required")
+        if dsm is None:
+            raise TypeError("AgentCore: dsm is required")
+        self._llm = llm
+        self._tools = tools
+        self._memory = memory
+        self._dsm = dsm
+        self._user_id = user_id
+        self._system_prompt = system_prompt
+        self._history_trim_limit = history_trim_limit
+        # Turns live ONLY in memory (sliding window) — never persisted to
+        # SQLite (Shifu directive 2026-09-02). Only user facts go to the
+        # store. The window is capped by ``history_trim_limit`` when set.
+        _window_max = (
+            history_trim_limit
+            if (history_trim_limit and history_trim_limit > 0)
+            else None
+        )
+        self._turn_window: deque[Turn] = deque(maxlen=_window_max)
+        # 🔴 FIX (live 06.08): стриминг управляется конфигом (dialogue_node.yaml
+        # → llm_streaming). Дефолт False — консервативно, без стриминга.
+        self._use_streaming = use_streaming
+        self._acceptance_gate = acceptance_gate
+        self._on_prompt = on_prompt
+        #: Имя активного скилла. Проставляется активацией (фаза 3);
+        #: "none" — скилл не активирован, поведение как до скиллов.
+        self._active_skill: str = "none"
+        #: Тексты фрагментов: имя скилла -> инструкции. Файлы читает
+        #: shell (ROS2-нода) — harness не ходит в файловую систему.
+        #: Пустой словарь = Move A выключен, вклеивать нечего.
+        self._skill_prompts: dict[str, str] = dict(skill_prompts or {})
+        #: Move B. ``False`` — LLM видит весь каталог, как сегодня.
+        self._narrow_tools_to_skill = narrow_tools_to_skill
+        #: Сколько раз скилл пришлось грузить вызовом LLM вместо
+        #: детерминированного роутера — это и есть «промахи роутера»
+        #: (задача 3.7). Читается нодой для метрики.
+        self._skill_loaded_by_llm: int = 0
+        #: Сколько раз LLM попросила несуществующий домен.
+        self._skill_load_misses: int = 0
+        # 🔴 FIX (issue #1883): per-call knobs (max_tokens / temperature /
+        # thinking-policy merge). Forwarded as ``settings=`` to every
+        # ``complete()`` / ``stream()`` so YAML-driven configuration
+        # actually reaches the provider instead of dying in the log.
+        self._llm_settings = llm_settings
+
+    # ---- main entry point -----------------------------------------------
+
+    async def process_input(
+        self,
+        text: str,
+        *,
+        history: Iterable[LLMMessage] | None = None,
+        is_dj_auto: bool = False,
+        is_synthetic: bool = False,
+        speaker_tag: str | None = None,
+        speaker_context: str | None = None,
+        dynamic_system: str | None = None,
+        preclassified_event: DialogueEvent | None = None,
+    ) -> DialogResult:
+        """Process a single user turn.
+
+        ``dynamic_system`` (live 10.08, two-system-prompt pattern) — XML
+        ``<system_context>...</system_context>`` snapshot собирается
+        dialogue_node каждый turn (текущий спикер, TTS-voice, session lock).
+        Кладётся system-сообщением ПОСЛЕДНИМ перед user input — см.
+        комментарий на месте вставки. Если None — не добавляется.
+
+        ``is_synthetic`` — вход сгенерирован нами, а не человеком
+        (``[CRITICAL]``-ретраи babble/music guard'ов). Такой turn НЕ
+        пишется в историю как реплика пользователя: ответ модели —
+        пишется, потому что его слышал человек, а сам «промпт» человек
+        никогда не произносил. Тот же приём, что ``is_dj_auto`` — см.
+        комментарий у записи user-хода ниже.
+
+        ``preclassified_event`` (live 10.08, issue #1101) — если caller
+        уже классифицировал вход (через ``dsm.on_user_input`` + DSM-переход)
+        и знает финальный event, он передаёт его сюда чтобы не повторять
+        классификацию. Иначе ``on_user_input(text)`` матчит wake-words
+        внутри user-text (напр. «робот» в середине фразы) → возвращает
+        ``WAKE_WORD`` → guard ``event == STT_RESULT`` ломается → LLM не
+        вызывается → «акцепт есть, робот не отвечает».
+
+        Без этого параметра (None) AgentCore сам вызывает
+        ``dsm.on_user_input(text)`` и ``dsm.on_event(event)`` — backward
+        compatible для тестов / DJ-auto / harness-вызовов.
+
+        Returns a :class:`DialogResult` describing the assistant's
+        reply, the new DSM state, and any error. Never raises — LLM
+        exceptions are wrapped in ``result.error`` so the shell can
+        log them without aborting the conversation loop.
+
+        ``is_dj_auto`` (issue #992) — when True the input is treated
+        as an autonomous DJ auto-transition: the wake-word classifier
+        is bypassed and the DSM is force-transitioned to DIALOGUE so
+        the LLM actually runs. Without this the DJ prompt
+        ``"[DJ_AUTO] ... Роббокс ..."`` matches the "роббокс" wake
+        trigger, ``on_user_input`` returns ``WAKE_WORD`` (instead of
+        ``STT_RESULT``), the DSM transition is a no-op on LISTENING,
+        and ``process_input`` silently skips the LLM call — which is
+        exactly the production symptom in issue #992 ("DJ cycle never
+        produces music, robot says 'задумался'").
+
+        History: if the caller passes ``history=None`` the core uses its
+        in-memory sliding window of turns (capped by
+        ``history_trim_limit``). Turns are never persisted — only user
+        facts reach the store. The shell decides whether to pass an
+        explicit list or trust the core's window.
+
+        Steps:
+        1. Classify the input via ``dsm.on_user_input``.
+        2. Drive the DSM via ``dsm.on_event``.
+        3. If we're in ``DIALOGUE`` state (i.e. the input was real
+           speech), persist the user turn, call the LLM **with the
+           tool schemas discovered from** ``self._tools``, persist
+           the assistant turn, and run any follow-up tool loop the
+           LLM triggers until either the model returns a plain-text
+           reply or ``_MAX_TOOL_ITERATIONS`` is reached.
+        4. Return the result.
+
+        Tool-loop contract
+        ------------------
+
+        We pass ``tools.discover()`` (translated to the OpenAI
+        Chat-Completions ``{"type": "function", ...}`` shape) on
+        every ``complete()`` call. When the LLM responds with
+        ``LLMResponse.tool_calls``:
+
+        * Each :class:`ToolCall` is executed via
+          ``self._tools.execute(call)``.
+        * The :class:`ToolResult` (success or function-level error)
+          is fed back as an ``LLMMessage(role="tool", ...)`` and
+          ``complete()`` is re-issued.
+        * ``result.tools_called`` accumulates the *unique* names of
+          tools that actually ran.
+
+        The loop is capped at ``_MAX_TOOL_ITERATIONS`` to keep a
+        runaway tool from pinning the dialogue thread. Tool
+        transport failures (raised :class:`ToolExecutionError`) are
+        wrapped into ``result.error`` the same way LLM errors are.
+        """
+        result = DialogResult()
+
+        # 1. classify — DJ auto-transitions bypass the wake-word
+        #    classifier because their prompt intentionally mentions
+        #    "роббокс" / "диджей" (the persona), which would otherwise
+        #    short-circuit into a WAKE_WORD event and skip the LLM
+        #    call entirely (issue #992 root cause).
+        # 🔴 FIX (issue #1101): если caller уже классифицировал и
+        #    выполнил DSM-переход (dialogue_node делает это в _on_stt),
+        #    пропускаем двойную классификацию. Иначе wake-word внутри
+        #    текста ('робот' в середине фразы) вернёт WAKE_WORD и
+        #    guard 'event == STT_RESULT' пропустит LLM → тишина.
+        if preclassified_event is not None:
+            event = preclassified_event
+        elif is_dj_auto:
+            event = DialogueEvent.STT_RESULT
+        else:
+            event = self._dsm.on_user_input(text)
+
+        # 2. transition (skip if caller already transitioned)
+        if preclassified_event is not None:
+            # Caller already drove the DSM (dialogue_node._on_stt).
+            # Trust its current_state — typically DIALOGUE.
+            #
+            # 🔴 FIX (issue #1217, DJ-auto regression from #1101):
+            # DJ auto-turns do NOT come through ``_on_stt`` — they are
+            # dispatched straight from ``DJModeController.tick`` via
+            # ``_run_turn``, which passes ``preclassified_event=STT_RESULT``.
+            # The else-branch below (with the DJ force-transition) is
+            # therefore skipped, so when the previous turn left the DSM
+            # in IDLE (DIALOGUE_END) the LLM gate
+            # ``current_state == DIALOGUE`` silently drops the turn —
+            # the LLM is never called and the robot answers nothing
+            # (observed in e2e run4: DJ-auto turns returned in ~2 ms
+            # with ``spoken='' tools=[] finish_reason=None`` and zero
+            # ``[health] stream`` log lines). Force the same transition
+            # the else-branch would have done.
+            if is_dj_auto:
+                if self._dsm.current_state == DialogueStateKind.IDLE:
+                    self._dsm.on_event(DialogueEvent.WAKE_WORD)
+                self._dsm.on_event(DialogueEvent.STT_RESULT)
+        else:
+            self._dsm.on_event(event)
+            # DJ auto-turns: if DSM is LISTENING (no wake word yet) but the
+            # shell already drove the cycle, force-transition into DIALOGUE
+            # so the LLM gate fires. ``STT_RESULT`` from LISTENING
+            # normally does this — but a previous turn may have left the
+            # DSM in IDLE (e.g. silence timeout between transitions).
+            if is_dj_auto and self._dsm.current_state == DialogueStateKind.IDLE:
+                self._dsm.on_event(DialogueEvent.WAKE_WORD)
+                self._dsm.on_event(DialogueEvent.STT_RESULT)
+        result.new_state = self._dsm.current_state
+
+        # 3. if we're now in DIALOGUE state, run the LLM
+        if (
+            self._dsm.current_state == DialogueStateKind.DIALOGUE
+            and event == DialogueEvent.STT_RESULT
+        ):
+            try:
+                # Resolve the history BEFORE we append the new turn —
+                # otherwise the window would echo the just-stored user
+                # message back into the prompt.
+                messages = await self._resolve_history(
+                    history, keep_pending_user=is_synthetic
+                )
+                # Issue #1077 — контекст о спикере (профиль + факты из
+                # scope=speaker:<tag>). Вставляем system-сообщением сразу
+                # после основного системного промпта, чтобы LLM знала,
+                # с кем разговаривает (имя, предпочтения, история).
+                if speaker_context:
+                    if messages and messages[0].role == "system":
+                        messages.insert(
+                            1,
+                            LLMMessage(role="system", content=speaker_context),
+                        )
+                    else:
+                        messages.insert(
+                            0,
+                            LLMMessage(role="system", content=speaker_context),
+                        )
+                # Two-system-prompt pattern (live 10.08) — dynamic
+                # <system_context> snapshot: текущий спикер (resemblyzer),
+                # TTS-voice (gender alignment), session lock state.
+                #
+                # Кладётся ПОСЛЕДНИМ system-сообщением, вплотную к текущей
+                # реплике. Раньше он вставлялся в messages[1], то есть
+                # ПЕРЕД двадцатью ходами истории: модель читала «вот что
+                # происходит сейчас», а следом — два десятка ходов
+                # прошлого разговора, и никакого признака, что снапшот
+                # свежее всей этой истории, у неё не было. Волатильный
+                # runtime-стейт должен стоять там, где он и по времени —
+                # рядом с последним user-ходом.
+                if dynamic_system:
+                    messages.append(
+                        LLMMessage(role="system", content=dynamic_system)
+                    )
+                # Move A — фрагмент активного скилла. Кладётся ПОСЛЕДНИМ
+                # системным сообщением, вплотную к реплике юзера: это тот
+                # же принцип, по которому сюда переехал <system_context>
+                # (см. комментарий выше). Инструкция «как пользоваться
+                # этим инструментом» нужна модели В МОМЕНТ вызова, а не
+                # на позиции 0 за двадцать ходов до него, где её
+                # перевешивает свежий few-shot из истории.
+                skill_prompt = self._resolve_skill_prompt()
+                if skill_prompt:
+                    messages.append(
+                        LLMMessage(role="system", content=skill_prompt)
+                    )
+                messages.append(LLMMessage(role="user", content=text))
+                # 🔴 FIX (live 11:19 DJ): DJ-переходы (is_dj_auto=True) НЕ
+                # пишутся в долгую память — иначе каждый переход (#1..#N)
+                # копит user+assistant пары в SQLite, history_max_turns
+                # (20 пар) заполняется DJ-промптами, LLM тонет в 20+
+                # одинаковых «[DJ_AUTO переход #N]» + [CRITICAL] ретраях
+                # → пустые ответы → «Что-то я задумался». Системный
+                # DJ-триггер — не реплика юзера, он не должен загрязнять
+                # контекст диалога.
+                user_metadata = {}
+                if speaker_tag is not None:
+                    user_metadata["speaker_tag"] = speaker_tag
+                #
+                # То же самое, слово в слово, верно для [CRITICAL]-ретраев
+                # babble/music guard'ов (``is_synthetic``). Живой лог с
+                # vision 29.08: из 20 ходов окна два — user-реплики вида
+                # «[CRITICAL] В прошлом цикле ты НЕ вызвал ни один
+                # музыкальный тул», которых человек не произносил. Модель
+                # на каждом следующем ходу перечитывала транскрипт, где её
+                # отчитывают, и отвечала «Менеджер не отвечает» вместо
+                # вызова тула. Ответ на ретрай пишется как обычно — его
+                # человек слышал.
+                if not is_dj_auto and not is_synthetic:
+                    self._turn_window.append(
+                        Turn(
+                            role="user",
+                            content=text,
+                            metadata=user_metadata,
+                        )
+                    )
+                outcome = await self._run_with_tools(messages)
+                result.spoken_text = outcome.spoken_text
+                result.tools_called = list(outcome.tools_called)
+                result.speak_text_count = outcome.speak_text_count
+                result.speak_text_real_count = outcome.speak_text_real_count
+                result.finish_reason = outcome.finish_reason
+                result.raw_response = outcome.raw_response
+                result.truncated_tool_args = outcome.truncated_tool_args
+                if not is_dj_auto:
+                    # Persist an HONEST assistant turn: the text actually
+                    # spoken via speak_text (or a real plain-text reply), NOT
+                    # the bare "done"/"" completion marker. A history full of
+                    # "done" misleads the model into (a) echoing old topics
+                    # and (b) replying "done" itself (silent failures). Silent
+                    # turns are dropped entirely — they add no useful context.
+                    assistant_content = outcome.spoken_via_tool or outcome.spoken_text
+                    if not self._is_silent_spoken(assistant_content, ()):
+                        assistant_metadata = dict(user_metadata)
+                        # 🔴 FIX (live 01.09, vision-pi): история хранила
+                        # ТОЛЬКО текст. Ход «сыграй жёсткий барабанный бит»
+                        # → compose_music + speak_text ложился в SQLite как
+                        # голая фраза «Бочка как кувалда, малый хлёсткий»,
+                        # без единого следа вызова. Через десять ходов
+                        # модель читала транскрипт, где КАЖДАЯ просьба о
+                        # музыке отвечена красивой фразой и ни одним тулом,
+                        # и добросовестно продолжала этот few-shot: болтала
+                        # про саксофон с ``tools=[]``, а гуард выдавал «Я тут
+                        # растерялся — бит не запустился». Чем длиннее сессия,
+                        # тем сильнее вранью учил собственный контекст.
+                        #
+                        # Пишем факт вызова в metadata (LLMMessage несёт
+                        # только role+content, поэтому в промпт его
+                        # раскрывает ``_resolve_history`` отдельным
+                        # system-сообщением — см. там).
+                        if outcome.tools_called:
+                            assistant_metadata["tools_called"] = list(
+                                dict.fromkeys(outcome.tools_called)
+                            )
+                        self._turn_window.append(
+                            Turn(
+                                role="assistant",
+                                content=assistant_content,
+                                metadata=assistant_metadata,
+                            )
+                        )
+            except Exception as exc:  # noqa: BLE001 — carry it in the result
+                import traceback as _tb
+                result.error = exc
+                result.error_traceback = _tb.format_exc()
+                # The user turn was already appended to the in-memory
+                # window BEFORE the LLM call (line above). On error, do
+                # NOT append again — that would duplicate the turn.
+            # End-of-dialogue: drive the state machine back to IDLE.
+            self._dsm.on_event(DialogueEvent.DIALOGUE_END)
+            result.new_state = self._dsm.current_state
+
+        return result
+
+    @staticmethod
+    def _is_silent_response(response: LLMResponse) -> bool:
+        """Issue #1217/#1253 — did the LLM do nothing useful for the user?
+
+        ``True`` when the response carries no tool calls AND its content is
+        either empty or a bare completion marker (``done`` / ``готово`` /
+        ...). The master prompt teaches those markers as the terminal reply
+        AFTER ``speak_text``; when the model emits one as its first answer it
+        means it skipped the actual work — the user hears nothing and nothing
+        happened. Any substantive text is NOT silent even without tools
+        (a plain-text answer is a valid response).
+
+        Issue #1253 — additionally, a ``finish_reason`` that means
+        "generation was interrupted / output omitted" (DeepSeek
+        ``insufficient_system_resource``, ``content_filter``, ``length`` with
+        empty content) is silent even when the aggregator carried a partial
+        content: the user would hear a truncated fragment, so the corrective
+        retry should fire instead.
+        """
+        if response.tool_calls:
+            return False
+        content = (response.content or "").strip().lower()
+        if (not content) or content in _SILENT_DONE_MARKERS:
+            return True
+        # live 01.09 — псевдо-вызов текстом (``<compose_music composition
+        # here>``) ничего не сделал и озвучен быть не может. Ловим ЗДЕСЬ,
+        # внутри цикла: модель получает корректирующий ретрай сразу, а не
+        # через внешний Bug-C гуард двумя ходами позже.
+        if _is_pseudo_tool_call(response.content or ""):
+            return True
+        # Issue #1253 — interrupted / filtered generation is not a valid
+        # final answer even with a partial content fragment.
+        return response.finish_reason in _SILENT_FINISH_REASONS
+
+    @staticmethod
+    def _is_silent_spoken(spoken: str, tools_called: Iterable[str]) -> bool:
+        """Issue #1217 — is this turn's OUTCOME a silent failure?
+
+        Mirrors :meth:`_is_silent_response` for the post-loop values: no
+        tool ran AND the final text is empty or a bare completion marker.
+        Such turns must not be persisted to conversation memory (they would
+        teach the model that an empty marker is a normal assistant reply).
+        """
+        if tools_called:
+            return False
+        content = (spoken or "").strip().lower()
+        if (not content) or content in _SILENT_DONE_MARKERS:
+            return True
+        # live 01.09 — заглушка вида ``<compose_music composition here>``.
+        # Юзер её не слышал (ход ничего не сделал), а в истории она работает
+        # как обучающий пример: следующий ход модель копирует её дословно.
+        return _is_pseudo_tool_call(spoken or "")
+
+    async def discard_last_reply(self) -> bool:
+        """Retract the most recently persisted assistant turn for this user.
+
+        Issue #992 — ``_is_silent_spoken`` only filters empty/marker/
+        pseudo-call text at persist-time; a confident, well-formed
+        "Сыграю его по нотам!" with ``tools_called=[]`` sails through as a
+        normal successful turn (see :meth:`_is_silent_spoken` docstring).
+        A domain-specific guard living above ``AgentCore`` (e.g. the
+        voice shell's music guard) is what actually knows a given request
+        was action-flavoured and got no tool call — once THAT guard
+        confirms the failure (its own retry also produced no tool call),
+        it calls this to remove the unlabeled fake-confirmation turn
+        before it becomes a few-shot example for the next similar
+        request. Removed directly from the in-memory window.
+
+        The user turn the retracted reply answered is marked
+        ``_PENDING_RETRY_KEY`` so the follow-up retry can still see it —
+        without the mark it becomes a trailing orphan and
+        :meth:`_clean_history_turns` drops it (see the constant's comment).
+        """
+        for index in range(len(self._turn_window) - 1, -1, -1):
+            if self._turn_window[index].role == "assistant":
+                del self._turn_window[index]
+                self._mark_pending_user_turn(index - 1)
+                return True
+        return False
+
+    def _mark_pending_user_turn(self, index: int) -> None:
+        """Flag the user turn at ``index`` as «ответ отозван, ретрай идёт».
+
+        ``Turn`` is frozen, so the entry is replaced with a copy carrying
+        the extra metadata key. Silently does nothing when ``index`` is out
+        of range or does not point at a user turn — a retracted reply that
+        answered nothing (DJ-auto, synthetic) has no request to preserve.
+        """
+        if index < 0 or index >= len(self._turn_window):
+            return
+        turn = self._turn_window[index]
+        if turn.role != "user":
+            return
+        metadata = dict(turn.metadata or {})
+        metadata[_PENDING_RETRY_KEY] = True
+        self._turn_window[index] = replace(turn, metadata=metadata)
+
+    def clear_history(self) -> None:
+        """Drop all turns from the in-memory sliding window.
+
+        Called by the shell when the user starts a new session
+        («новая сессия» / «/clear»). Turns are ephemeral and must
+        not survive a session boundary.
+        """
+        self._turn_window.clear()
+
+    @staticmethod
+    def _clean_history_turns(
+        turns: Iterable[LLMMessage],
+        *,
+        keep_trailing_user: bool = False,
+    ) -> list[LLMMessage]:
+        """Collapse consecutive user turns and drop a trailing orphaned one.
+
+        A barge-in (or a silent-failure turn whose assistant reply was not
+        persisted) leaves an orphaned ``user`` turn with no answer in the
+        stored history. Two consecutive user messages make the LLM answer the
+        OLDER one instead of the current question. The current turn's user
+        message is appended separately by ``process_input``, so a trailing
+        user turn here is normally an orphan and must be dropped.
+
+        ``keep_trailing_user`` is the one exception: the caller has
+        established (via ``_PENDING_RETRY_KEY``) that the trailing user turn
+        is the request a synthetic retry is running FOR, not an abandoned
+        one. Dropping it there erases the very words the retry must act on.
+        """
+        out: list[LLMMessage] = []
+        for turn in turns:
+            if out and out[-1].role == "user" and turn.role == "user":
+                out[-1] = turn
+            else:
+                out.append(turn)
+        if out and out[-1].role == "user" and not keep_trailing_user:
+            out.pop()
+        return out
+
+    async def _run_with_tools(
+        self,
+        messages: list[LLMMessage],
+    ) -> _ToolLoopOutcome:
+        """Run the LLM tool loop and return a :class:`_ToolLoopOutcome`.
+
+        ``messages`` is the live message list — tool-result messages
+        are appended in-place so the LLM sees a coherent conversation
+        history on every follow-up turn. The list is intentionally
+        mutated rather than rebuilt: the upstream providers expect
+        an ordered list and rebuilding from scratch would lose the
+        interleaved tool/assistant ordering the wire format requires.
+
+        The loop terminates when:
+
+        * The model returns an empty ``tool_calls`` tuple (i.e. a
+          plain-text reply) — that's the final answer.
+        * ``_MAX_TOOL_ITERATIONS`` is reached — the last spoken
+          text is used verbatim, and a warning is logged so
+          operators can spot runaway loops in the wild.
+        * The provider raises — the exception propagates to the
+          ``except`` in :meth:`process_input`.
+
+        Tool-level errors (i.e. the handler returned ``is_error=True``)
+        are NOT loop-terminating: the LLM gets the error string as
+        a ``tool`` message and can correct itself. Only a
+        :class:`ToolExecutionError` (transport-level) aborts the
+        turn because that's a wiring problem, not a tool problem.
+        """
+        tool_schemas = await self._tools.discover()
+        openai_tools = [_tool_spec_to_openai(spec) for spec in tool_schemas]
+        # Полный набор держим отдельно: при включённом сужении список
+        # нужно ПЕРЕСОБИРАТЬ после каждого load_skill, иначе модель,
+        # сменившая домен, до конца хода так и не увидит его инструменты
+        # (поймано тестом test_model_can_reach_another_domain_via_load_skill).
+        all_openai_tools = list(openai_tools)
+        openai_tools = self._narrow_tools(all_openai_tools)
+        tools_built_for_skill = self._active_skill
+        # Модельный путь активации: LLM сама просит домен, если
+        # детерминированный роутер промахнулся. Результат вызова —
+        # tool-сообщение в самом хвосте messages, то есть позиция
+        # максимальной свежести, и модель действует в ТОМ ЖЕ ходу.
+        if self._skill_prompts:
+            openai_tools.append(_load_skill_spec(self.known_skills()))
+
+        tools_called: list[str] = []
+        seen: set[str] = set()
+        speak_text_count: int = 0
+        speak_text_real_count: int = 0
+        # Actual text spoken via speak_text this turn — used for an honest
+        # conversation history (persisting "done" instead of what was really
+        # said made the LLM echo old topics; see process_input).
+        spoken_texts: list[str] = []
+        # Issue #1253 — any tool that returned ``is_error=True`` this turn.
+        # When a tool failed and the LLM answers with ONLY words (no retry
+        # tool-call, no speak_text) that is babble, not an answer — the
+        # robot would voice «дан» / «бит не получился» instead of acting.
+        tool_error_occurred: bool = False
+        response: LLMResponse = await self._stream_response(
+            messages, tools=openai_tools
+        )
+
+        # Issue #1217 — deepseek-v4-flash intermittently answers with a bare
+        # completion marker ("done") or an EMPTY payload as its FIRST reply,
+        # without any tool call. The user hears nothing and nothing happens.
+        # Allow ONE corrective retry inside the same turn before accepting the
+        # silent failure. The correction is appended to the live message list
+        # (assistant echo when non-empty + a user-role instruction) so the
+        # model sees exactly what went wrong; OpenAI-compatible providers
+        # accept all the resulting shapes (verified against DeepSeek API).
+        #
+        # The retry fires ONLY when NO tool ran in this whole turn
+        # (``not tools_called``): a final "done" AFTER speak_text is
+        # legitimate per the master-prompt contract and must not be retried.
+        _silent_retried = False
+        # Issue #1899: when the LLM hit ``max_tokens`` while still emitting
+        # tool-call arguments JSON, ``_safe_json`` silently degrades to
+        # ``{}``, the tool then fails validation, and the agent loop
+        # wastes ~6 s on a retry that produces the same broken call. We
+        # detect this BEFORE execution and ask the model to redo the turn
+        # with shorter argument payloads. Mirrors the ``_silent_retried``
+        # pattern above — single-shot retry, no recursion.
+        _truncated_tool_args_retried = False
+
+        for _ in range(_MAX_TOOL_ITERATIONS):
+            # Issue #1899 — truncated tool-call arguments. The model
+            # asked for tools but the JSON was cut off mid-stream (most
+            # often ``finish_reason='length'``). Do NOT execute broken
+            # tool-calls; ask the model to redo with a tighter payload.
+            if (
+                response.tool_calls
+                and response.truncated_tool_args
+                and not _truncated_tool_args_retried
+            ):
+                _truncated_tool_args_retried = True
+                _names = sorted({c.name for c in response.tool_calls})
+                logging.getLogger(__name__).warning(
+                    "AgentCore [issue 1899]: tool-call arguments JSON cut "
+                    "off mid-stream (finish_reason=%r). Asking model to "
+                    "retry with shorter args. tools=%s",
+                    response.finish_reason,
+                    _names,
+                )
+                # Record the assistant turn we received so the chat
+                # history stays valid (OpenAI requires an assistant
+                # message before the next user message when tool_calls
+                # were emitted).
+                if response.content or response.tool_calls:
+                    messages.append(
+                        LLMMessage(
+                            role="assistant",
+                            content=response.content,
+                            tool_calls=response.tool_calls,
+                        )
+                    )
+                # Issue #1899 — diagnostic via ``finish_reason`` so the
+                # next worker / live operator sees WHY the retry fired
+                # without grepping logs.
+                messages.append(
+                    LLMMessage(
+                        role="user",
+                        content=(
+                            "[SYSTEM CORRECTION] Твой предыдущий tool-call "
+                            "был ОБРЕЗАН: ответ не поместился в max_tokens "
+                            "и JSON-аргументы НЕ ЗАКРЫЛИСЬ. Инструмент "
+                            f"{_names!r} НЕ БЫЛ вызван (валидация бы упала "
+                            "на пустых/обрезанных аргументах). "
+                            "Повтори ход и вызови нужный tool снова, но "
+                            "с БОЛЕЕ КОРОТКИМИ значениями аргументов — "
+                            "короткие строки, никаких многострочных "
+                            "описаний. Если аргументов слишком много для "
+                            "бюджета токенов, разбей на несколько ходов: "
+                            "сначала вызови основной tool с минимальным "
+                            "набором полей, остальное — следующим ходом."
+                        ),
+                    )
+                )
+                response = await self._stream_response(messages, tools=openai_tools)
+                continue
+
+            if not response.tool_calls:
+                if (
+                    not _silent_retried
+                    and not tools_called
+                    and self._is_silent_response(response)
+                ):
+                    _silent_retried = True
+                    if response.content:
+                        messages.append(
+                            LLMMessage(role="assistant", content=response.content)
+                        )
+                    # live 01.09 — упрёк «ответ был пустым» на псевдо-вызов
+                    # неверен и не помогает: модель ВИДИТ, что текст был.
+                    # Ей надо объяснить, что написать вызов текстом — не
+                    # значит вызвать.
+                    if _is_pseudo_tool_call(response.content or ""):
+                        correction = (
+                            "[SYSTEM CORRECTION] Ты НАПИСАЛ вызов инструмента "
+                            "текстом: "
+                            + (response.content or "").strip()[:120]
+                            + ". Это не вызов — это строка, её никто не "
+                            "выполнил, и пользователь ничего не услышал. "
+                            "Инструменты вызываются механизмом function "
+                            "calling, а не текстом ответа. Повтори ход и "
+                            "вызови нужный tool ПО-НАСТОЯЩЕМУ, со всеми "
+                            "аргументами."
+                        )
+                    else:
+                        correction = (
+                            "[SYSTEM CORRECTION] Твой предыдущий ответ "
+                            "был пустым: ни текста, ни tool-вызова. "
+                            "Пользователь ничего не услышал, ничего не "
+                            "произошло. ОБЯЗАТЕЛЬНО в ЭТОМ ответе вызови "
+                            "нужный tool (speak_text — для речи) или дай "
+                            "содержательный текстовый ответ."
+                        )
+                    messages.append(
+                        LLMMessage(role="user", content=correction)
+                    )
+                    response = await self._stream_response(messages, tools=openai_tools)
+                    continue
+                break
+
+            # Record unique tool names actually invoked, and count
+            # speak_text occurrences (issue #992 — the raw count lets
+            # dialogue_node tell BACKING sing/rap turns from TRACK
+            # composition turns; unique names alone cannot).
+            #
+            # Issue #1343 — count REAL speak_text calls separately:
+            # deepseek sometimes emits ``speak_text({})`` /
+            # ``speak_text({"text": ""})`` with empty text. The name
+            # still lands in ``tools_called`` (it was requested), but
+            # the call is rejected by validation and NOTHING is voiced.
+            # ``speak_text_real_count`` only counts calls that carry a
+            # non-empty ``text`` argument — i.e. calls that would
+            # actually reach the MCP tool and play audio. dialogue_node
+            # uses this to skip auto-TTS only when speech REALLY
+            # happened (issue #988 anti-duplicate), not when the LLM
+            # merely *named* speak_text.
+            for call in response.tool_calls:
+                if call.name == "speak_text":
+                    speak_text_count += 1
+                    args = call.arguments or {}
+                    text = args.get("text", "") if isinstance(args, Mapping) else ""
+                    if isinstance(text, str) and text.strip():
+                        speak_text_real_count += 1
+                        spoken_texts.append(text.strip())
+                if call.name not in seen:
+                    seen.add(call.name)
+                    tools_called.append(call.name)
+
+            # Append the assistant turn that contained the tool_calls
+            # (required by OpenAI Chat-Completions ordering rules).
+            messages.append(
+                LLMMessage(
+                    role="assistant",
+                    content=response.content,
+                    tool_calls=response.tool_calls,
+                )
+            )
+
+            # Execute every requested tool call and feed results back.
+            # When an AcceptanceGate is wired in, require-classified calls
+            # enter AWAITING_CONFIRMATION and the LLM receives a sentinel
+            # tool result instead of an executor result — the LLM cycle
+            # is NOT blocked (§4.4: MERGE/QUEUE/AWAITING don't cancel the
+            # LLM cycle), and the user gets to confirm/reject before the
+            # call ever reaches the executor.
+            #
+            # S2.3/S2.4 (scheduler-segments-merge, issue #968) — open a
+            # fresh segment group for this batch BEFORE execution starts,
+            # same wiring point as the W7a re-ordering below. Not every
+            # ToolProvider is a SchedulerToolExecutor (e.g. plain
+            # ToolProvider ports in tests), so the call is optional:
+            # begin_group() only exists on the scheduler-backed wrapper.
+            # Skipping it there is exactly today's behaviour
+            # (group_id=None for every task).
+            begin_group = getattr(self._tools, "begin_group", None)
+            if begin_group is not None:
+                begin_group()
+
+            # W7a (issue #968): execution order is re-ordered so music
+            # prelude tools run before voice, and destructive tools
+            # (stop_music / stop_navigation) run last — otherwise a
+            # ``[speak_text, stop_music]`` batch fires stop_music before
+            # TTS even starts (e2e v36). Results are still appended in
+            # the model's ORIGINAL order (keyed by tool_call_id) so the
+            # OpenAI-style history stays valid.
+            execution_order, _deferred = _order_tool_calls(
+                response.tool_calls
+            )
+            # Issue #1708 — hallucinated-lyrics guard. Resolve the most
+            # recent user message so the heuristic can tell a vocal
+            # request («спой куплет» — backing mode) apart from a
+            # non-vocal request («сыграй бит про колобка в нига стайле»
+            # — instrumental). Walk the message list in reverse: the
+            # LAST user-role entry is the current turn.
+            _current_user_input: str = ""
+            for _msg in reversed(messages):
+                if _msg.role == "user" and _msg.content:
+                    _current_user_input = str(_msg.content)
+                    break
+            # Music tools that appear ANYWHERE in this LLM batch (both
+            # before and after the candidate speak_text). The order
+            # inside the batch doesn't matter for the guard — the LLM
+            # sometimes calls ``speak_text(title)`` BEFORE
+            # ``execute_music_code`` (issue #1708 live shape) and
+            # sometimes AFTER. Pre-compute the set from the model's
+            # ORIGINAL tool_calls (before our re-ordering) so we cover
+            # both shapes.
+            same_batch_music_calls: set[str] = {
+                call.name
+                for call in response.tool_calls
+                if call.name in _MUSIC_LAUNCH_TOOLS
+            }
+            results_by_call_id: dict[str, ToolResult] = {}
+            for call in execution_order:
+                if self._acceptance_gate is not None:
+                    segment, decision = self._acceptance_gate.submit(
+                        tool=call.name,
+                        args=dict(call.arguments or {}),
+                        call_id=call.id,
+                    )
+                    if decision.kind is ConfirmationKind.REQUIRE:
+                        # Don't call the executor — gate will dispatch it
+                        # later via the future scheduler (Фаза 2).
+                        results_by_call_id[call.id] = ToolResult(
+                            tool_call_id=call.id,
+                            content=json.dumps(
+                                {
+                                    "status": "awaiting_user_confirmation",
+                                    "segment_id": segment.segment_id,
+                                    "tool": call.name,
+                                    "plan_text": segment.decision.plan_text,
+                                    "confirmation_timeout_ms": int(
+                                        self._acceptance_gate.config.confirmation_timeout_ms
+                                    ),
+                                },
+                                ensure_ascii=False,
+                            ),
+                            is_error=False,
+                        )
+                        continue
+
+                # Issue #1708 — drop hallucinated lyrics after a music
+                # tool. The check runs AFTER acceptance-gate but BEFORE
+                # the real executor: a suppressed speak_text never
+                # reaches the MCP tool, so the user hears no TTS for
+                # it. The LLM still gets a sentinel result so it can
+                # learn from the rejection on its next iteration.
+                if _is_hallucinated_speak_text(
+                    call=call,
+                    same_batch_music_calls=frozenset(same_batch_music_calls),
+                    user_input=_current_user_input,
+                ):
+                    logging.getLogger(__name__).warning(
+                        "AgentCore [issue 1708]: suppressing "
+                        "speak_text in batch with %s — hallucinated "
+                        "lyrics would override music. text=%r user_input=%r",
+                        sorted(same_batch_music_calls),
+                        _extract_speak_text(call.arguments)[:80],
+                        _current_user_input[:80],
+                    )
+                    results_by_call_id[call.id] = _suppressed_speak_text_result(call)
+                    # Counter bookkeeping: the suppressed call must NOT
+                    # count toward speak_text_count / speak_text_real_count
+                    # (otherwise issue #988 anti-duplicate skips the
+                    # final ``done`` text — silent user experience) and
+                    # MUST NOT count toward ``spoken_texts`` (otherwise
+                    # honest history records a phrase that was never
+                    # voiced, biasing future turns).
+                    if call.name == "speak_text":
+                        speak_text_count -= 1
+                        text = _extract_speak_text(call.arguments)
+                        if text:
+                            speak_text_real_count -= 1
+                            # spoken_texts is appended above for every
+                            # real speak_text — pop the last matching
+                            # entry so the honest-history path stays
+                            # honest. The list is small (<= N where N
+                            # is the LLM batch size), linear scan is
+                            # fine.
+                            try:
+                                spoken_texts.remove(text)
+                            except ValueError:
+                                pass
+                    continue
+
+                if call.name == LOAD_SKILL_TOOL:
+                    results_by_call_id[call.id] = self._handle_load_skill(call)
+                    continue
+
+                results_by_call_id[call.id] = await self._tools.execute(call)
+
+            for call in response.tool_calls:
+                tool_result = results_by_call_id[call.id]
+                if tool_result.is_error:
+                    tool_error_occurred = True
+                messages.append(
+                    LLMMessage(
+                        role="tool",
+                        content=tool_result.content,
+                        tool_call_id=tool_result.tool_call_id,
+                        tool_result=tool_result,
+                    )
+                )
+
+            # load_skill мог сменить домен — пересобираем набор, иначе
+            # загрузка скилла была бы бессмысленной: текст пришёл, а
+            # инструменты остались от прошлого домена.
+            if self._active_skill != tools_built_for_skill:
+                openai_tools = self._narrow_tools(all_openai_tools)
+                tools_built_for_skill = self._active_skill
+
+            response = await self._stream_response(messages, tools=openai_tools)
+
+        else:  # for-else: loop exhausted without breaking
+            logging.getLogger(__name__).warning(
+                "AgentCore: tool loop hit _MAX_TOOL_ITERATIONS=%d; "
+                "returning the last spoken text as-is.",
+                _MAX_TOOL_ITERATIONS,
+            )
+
+        # Issue #1253 — babble filter on tool error. A tool failed
+        # (is_error=True) and the LLM answered with ONLY words: no retry
+        # tool-call in this final response and no speak_text during the
+        # turn. Voicing that text would make the robot say «дан» / «бит не
+        # получился» while nothing actually happened. System transition:
+        # return empty spoken so dialogue_node moves to the next round
+        # instead of parroting the babble.
+        if (
+            tool_error_occurred
+            and not response.tool_calls
+            and "speak_text" not in seen
+            and response.content
+            and self._is_silent_response(response)
+        ):
+            logging.getLogger(__name__).warning(
+                "AgentCore: tool error + babble-only final answer — "
+                f"suppressing spoken text {response.content[:80]!r} "
+                "(system transition)"
+            )
+            return _ToolLoopOutcome(
+                spoken_text="",
+                tools_called=tools_called,
+                finish_reason=response.finish_reason,
+                raw_response=response.raw,
+                speak_text_count=speak_text_count,
+                speak_text_real_count=speak_text_real_count,
+                spoken_via_tool="\n".join(spoken_texts),
+                truncated_tool_args=response.truncated_tool_args,
+            )
+
+        return _ToolLoopOutcome(
+            spoken_text=response.content,
+            tools_called=tools_called,
+            finish_reason=response.finish_reason,
+            raw_response=response.raw,
+            speak_text_count=speak_text_count,
+            speak_text_real_count=speak_text_real_count,
+            spoken_via_tool="\n".join(spoken_texts),
+            truncated_tool_args=response.truncated_tool_args,
+        )
+
+    async def _stream_response(
+        self,
+        messages: Iterable[LLMMessage],
+        *,
+        tools: Iterable[Mapping[str, Any]] = (),
+        settings: LLMSettings | None = None,
+    ) -> LLMResponse:
+        """Streaming LLM completion aggregated into a full :class:`LLMResponse`.
+
+        🔴 FIX (live 06.08): стриминг переключается конфигом (llm_streaming).
+        False → полный complete() (как раньше, до стриминга); True → stream()
+        с агрегацией tool-call deltas. Оба пути возвращают LLMResponse.
+
+        ``settings`` overrides the instance-level ``_llm_settings`` (issue
+        #1883) so the corrective retry inside ``_run_with_tools`` can pass
+        a per-call override when needed. ``None`` here → fall back to the
+        instance default; ``None`` instance default → ``None`` on the wire
+        (provider legacy behaviour).
+        """
+        messages = list(messages)
+        tools = list(tools)
+        effective_settings: LLMSettings | None = (
+            settings if settings is not None else self._llm_settings
+        )
+        if not self._use_streaming:
+            response = await self._llm.complete(
+                messages, tools=tools, settings=effective_settings
+            )
+            self._report_prompt(messages, tools, response.usage)
+            return response
+        parts: list[str] = []
+        tool_calls: list[ToolCall] = []
+        finish_reason: str | None = None
+        usage: Mapping[str, int] | None = None
+        # Issue #1899: when ANY tool-call in this stream had its
+        # arguments JSON cut off mid-stream, the assembled
+        # ``ToolCall.arguments`` may be ``{}`` or partial. We propagate
+        # the flag into ``LLMResponse.truncated_tool_args`` so
+        # ``_run_with_tools`` can choose to retry the request instead
+        # of executing the broken tool-call.
+        truncated_tool_args: bool = False
+        raw: Any = None
+        stream = self._llm.stream(
+            messages, tools=tools, settings=effective_settings
+        )
+        try:
+            async for chunk in stream:
+                # 🔴 FIX (issue #1280): barge-in — новый STT-инпут уже
+                # отменил текущий run (task.cancel). Бросаем
+                # CancelledError немедленно, ДО обработки чанка:
+                # буферизованные чанки старой темы не должны
+                # агрегироваться в ответ, который потом уйдёт в TTS
+                # («робот добивает старую тему после смены»).
+                # asyncio и так доставит CancelledError на ближайшем
+                # await — здесь делаем это явно и раньше.
+                task = asyncio.current_task()
+                if task is not None and task.cancelled():
+                    raise asyncio.CancelledError
+                if chunk.content_delta:
+                    parts.append(chunk.content_delta)
+                if chunk.tool_call_delta is not None:
+                    tool_calls.append(chunk.tool_call_delta)
+                if chunk.finish_reason:
+                    finish_reason = chunk.finish_reason
+                if chunk.usage:
+                    usage = chunk.usage
+                # Issue #1899 — the terminal chunk carries the verdict
+                # whether ANY tool-call in this stream had its arguments
+                # JSON cut off mid-stream.
+                if chunk.truncated_tool_args:
+                    truncated_tool_args = True
+        finally:
+            # 🔴 FIX (issue #1280): гарантированно закрываем stream при
+            # ЛЮБОМ выходе — включая CancelledError при barge-in. Без
+            # aclose() HTTP-запрос к провайдеру продолжает жить до конца
+            # генерации: провайдер тратит квоту на старую тему, а ответ
+            # старой темы может успеть попасть в TTS.
+            aclose = getattr(stream, "aclose", None)
+            if aclose is not None:
+                try:
+                    await aclose()
+                except Exception:
+                    pass
+        # Учитываем промпт даже когда стрим оборвал barge-in: запрос
+        # провайдеру уже ушёл и уже стоил токенов. Поэтому вызов стоит
+        # ПОСЛЕ finally, но до возврата — на пути отмены сюда не доходит,
+        # и там учёт делает вызывающая сторона по своему усмотрению.
+        self._report_prompt(messages, tools, usage)
+        return LLMResponse(
+            content="".join(parts),
+            tool_calls=tuple(tool_calls),
+            finish_reason=finish_reason,
+            usage=usage,
+            raw=raw,
+            truncated_tool_args=truncated_tool_args,
+        )
+
+    # ---- skills (Move A) -------------------------------------------------
+
+    @property
+    def active_skill(self) -> str:
+        """Имя активного скилла (``"none"`` — не активирован)."""
+        return self._active_skill
+
+    def set_active_skill(self, skill: str | None) -> None:
+        """Активировать доменный скилл на последующие ходы.
+
+        ``None`` / ``"none"`` снимает активацию. Неизвестное имя НЕ
+        роняет ход: активация приходит из классификатора и из вызова
+        LLM, а ни то ни другое не повод оборвать разговор — скилл просто
+        останется неактивным, и модель увидит полный каталог, как
+        сегодня.
+        """
+        self._active_skill = skill or "none"
+
+    @property
+    def skill_load_counters(self) -> tuple[int, int]:
+        """``(загружено вызовом LLM, промахов по имени)``.
+
+        Первое число — метрика промахов детерминированного роутера: если
+        оно растёт, роутер не покрывает реальные формулировки.
+        """
+        return self._skill_loaded_by_llm, self._skill_load_misses
+
+    def known_skills(self) -> tuple[str, ...]:
+        """Скиллы, для которых есть текст фрагмента."""
+        return tuple(sorted(self._skill_prompts))
+
+    def _handle_load_skill(self, call: ToolCall) -> ToolResult:
+        """Исполнить ``load_skill`` внутри harness'а.
+
+        Активирует скилл (он останется активным и на следующих ходах) и
+        возвращает текст инструкций tool-результатом. Ход НЕ прерывается
+        ни при каком исходе: неизвестное имя возвращает ошибку со списком
+        доступных, и модель может исправиться на следующей итерации.
+        """
+        arguments = call.arguments or {}
+        requested = ""
+        if isinstance(arguments, Mapping):
+            requested = str(arguments.get("skill", "") or "").strip()
+
+        text = self._skill_prompts.get(requested)
+        if not text:
+            self._skill_load_misses += 1
+            return ToolResult(
+                tool_call_id=call.id,
+                content=(
+                    f"Неизвестный домен {requested!r}. Доступны: "
+                    + ", ".join(self.known_skills())
+                    + ". Выбери один из них или действуй без загрузки."
+                ),
+                is_error=True,
+            )
+
+        self.set_active_skill(requested)
+        self._skill_loaded_by_llm += 1
+        return ToolResult(
+            tool_call_id=call.id,
+            content=text,
+            is_error=False,
+        )
+
+    def _narrow_tools(
+        self, offered: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Сузить каталог до ``core`` + активный скилл (Move B).
+
+        Ничего не делает при выключенном флаге и при неактивном скилле —
+        тогда возвращается ровно то, что пришло.
+
+        Если сужение оставило бы список пустым (скилл не из каталога,
+        рассинхрон манифеста), возвращаем ПОЛНЫЙ набор: пустой tools=
+        доезжает до юзера как «нет такой функции», а это хуже длинного
+        промпта.
+        """
+        if not self._narrow_tools_to_skill:
+            return offered
+        skill = self._active_skill
+        if skill in ("", "none"):
+            return offered
+        try:
+            allowed = {entry.name for entry in tools_for_skill(skill)}
+        except KeyError:
+            # Неизвестный домен: сузить не по чему — отдаём всё.
+            return offered
+        narrowed = [
+            tool
+            for tool in offered
+            if tool.get("function", {}).get("name") in allowed
+        ]
+        if not narrowed:
+            logging.getLogger(__name__).warning(
+                "AgentCore: narrowing to skill %r left no tools; "
+                "falling back to the full catalog",
+                skill,
+            )
+            return offered
+        return narrowed
+
+    def _resolve_skill_prompt(self) -> str:
+        """Текст активного скилла или пустая строка."""
+        if self._active_skill in ("", "none"):
+            return ""
+        return self._skill_prompts.get(self._active_skill, "")
+
+    def _report_prompt(
+        self,
+        messages: Iterable[LLMMessage],
+        tools: Iterable[Mapping[str, Any]],
+        usage: Mapping[str, int] | None,
+    ) -> None:
+        """Сообщить наблюдателю размер отправленного промпта.
+
+        Точное число берём из ``usage`` провайдера; когда его нет —
+        оцениваем эвристикой и помечаем ``estimated=True``. Ноль из
+        ``usage`` трактуем как «не сообщил»: провайдер, приславший
+        ``prompt_tokens=0`` на непустой запрос, врёт, а нулевая метрика
+        испортила бы перцентили.
+        """
+        observer = self._on_prompt
+        if observer is None:
+            return
+        try:
+            reported = 0
+            if usage:
+                reported = int(usage.get("prompt_tokens", 0) or 0)
+            if reported > 0:
+                stats = PromptStats(
+                    prompt_tokens=reported,
+                    estimated=False,
+                    provider=getattr(self._llm, "name", "unknown"),
+                    skill=self._active_skill,
+                )
+            else:
+                stats = PromptStats(
+                    prompt_tokens=estimate_prompt_tokens(messages, tools),
+                    estimated=True,
+                    provider=getattr(self._llm, "name", "unknown"),
+                    skill=self._active_skill,
+                )
+            observer(stats)
+        except Exception:  # noqa: BLE001 — телеметрия не роняет ход
+            logging.getLogger(__name__).debug(
+                "AgentCore: prompt observer failed", exc_info=True
+            )
+
+    async def _resolve_history(
+        self,
+        history: Iterable[LLMMessage] | None,
+        *,
+        keep_pending_user: bool = False,
+    ) -> list[LLMMessage]:
+        """Build the LLM message list — from an explicit ``history`` or
+        from the in-memory sliding window of turns.
+
+        * When the caller passes an explicit iterable, that wins —
+          the shell owns the trim there.
+        * When ``history`` is ``None``, the core's own in-memory turn
+          window (a ``deque`` capped by ``history_trim_limit``) is used.
+          Turns are NEVER persisted — only user facts reach the store.
+
+        ``keep_pending_user`` (set for synthetic retries) keeps a trailing
+        user turn whose reply was retracted by :meth:`discard_last_reply`
+        instead of treating it as a barge-in orphan.
+        """
+        if history is not None:
+            return list(history)
+        out: list[LLMMessage] = []
+        # 🔴 FIX: system prompt обязателен первым сообщением — раньше
+        # dialogue_node грузил _system_prompt, но никогда не передавал
+        # его в LLM: deepseek работала БЕЗ системного промпта (все
+        # правила «ALWAYS execute_music_code», NO METALANGUAGE и т.д.
+        # не доходили до модели). Найдено через verbose-трейс 09:08:
+        # в messages не было [0] system.
+        if self._system_prompt:
+            out.append(LLMMessage(role="system", content=self._system_prompt))
+        window = list(self._turn_window)
+        # Хвостовой user-ход сохраняем только когда он ПОМЕЧЕН отзывом
+        # ответа и мы действительно внутри синтетического ретрая: обычный
+        # ход про сироту после barge-in рассуждает по-прежнему.
+        keep_trailing_user = bool(
+            keep_pending_user
+            and window
+            and window[-1].role == "user"
+            and isinstance(window[-1].metadata, Mapping)
+            and window[-1].metadata.get(_PENDING_RETRY_KEY)
+        )
+        history_messages: list[LLMMessage] = []
+        for turn in window:
+            # 🔴 FIX (live 01.09): развернуть ``tools_called`` из metadata в
+            # отдельное system-сообщение ПЕРЕД ответом ассистента. Без него
+            # история — набор примеров «просьбу о музыке закрывают словами»
+            # (см. комментарий в ``process_input``).
+            #
+            # Роль именно ``system``, а не префикс в тексте ассистента:
+            # модель копирует то, что видит в своих же репликах (ретро 20.08,
+            # утечка ``[Spkr:...]`` в TTS), а system-текст она не озвучивает.
+            # system-сообщение не считается репликой: лишняя строка на
+            # каждый ход с тулом съела бы треть окна.
+            evidence = _tools_called_from_metadata(turn)
+            if evidence:
+                history_messages.append(
+                    LLMMessage(
+                        role="system",
+                        content=(
+                            "[выполнено в прошлом ходе] вызваны инструменты: "
+                            + ", ".join(evidence)
+                        ),
+                    )
+                )
+            history_messages.append(
+                LLMMessage(role=turn.role, content=turn.content)
+            )
+        out.extend(
+            self._clean_history_turns(
+                history_messages, keep_trailing_user=keep_trailing_user
+            )
+        )
+        return out
+
+
+# --------------------------------------------------------------------------
+# Helpers
+# --------------------------------------------------------------------------
+
+
+def _is_vocal_request(user_input: str) -> bool:
+    """Issue #1708 — does the user request contain a vocal cue?
+
+    Mirrors ``rob_box_voice.core.dialogue_guards.is_vocal_request``
+    without importing it (agent_core lives in ``rob_box_harness`` and
+    cannot depend on ``rob_box_voice``). Kept deliberately narrow: the
+    hallucinated-lyrics guard must only fire on NON-vocal requests
+    («сыграй бит», «включи трек»), never on legitimate rap/poem
+    backing-mode turns («спой куплет»).
+
+    ``user_input`` is matched case-insensitively as a substring scan —
+    same algorithm as the upstream detector so the two stay in sync.
+    """
+    if not user_input:
+        return False
+    low = user_input.lower()
+    return any(kw in low for kw in _VOCAL_REQUEST_KEYWORDS)
+
+
+def _extract_speak_text(text: Any) -> str:
+    """Issue #1708 — defensively pull the ``text`` arg out of a tool call.
+
+    Tool arguments are nominally a ``Mapping`` per the OpenAI Chat-
+    Completions contract, but live providers occasionally deliver a
+    ``str`` / ``None`` (malformed JSON, partial stream, etc.). Anything
+    we can't read is treated as the empty string — the guard never
+    drops an empty speak_text (those are legitimate validation
+    rejections handled by issue #1343, not hallucinated lyrics).
+    """
+    if not isinstance(text, Mapping):
+        return ""
+    raw = text.get("text", "")
+    return raw.strip() if isinstance(raw, str) else ""
+
+
+def _is_hallucinated_speak_text(
+    *,
+    call: ToolCall,
+    same_batch_music_calls: frozenset[str],
+    user_input: str,
+) -> bool:
+    """Issue #1708 — should this ``speak_text`` call be suppressed?
+
+    Returns ``True`` (i.e. the call must NOT be executed — replace the
+    tool result with a sentinel that teaches the LLM not to do this)
+    when ALL of the following hold:
+
+    * The call is ``speak_text`` (other tools are passed through).
+    * A music-launch tool (``execute_music_code`` / ``set_vibe_preset``
+      / ``load_track`` / ``generate_music`` / ``gen_play_from_library``)
+      appears in the SAME LLM batch (either before OR after this
+      ``speak_text`` call) — ``same_batch_music_calls`` carries those
+      names. The order in the batch does NOT matter: the LLM
+      sometimes calls ``speak_text(title)`` BEFORE
+      ``execute_music_code`` (issue #1708 live shape) and sometimes
+      AFTER (other variants). Either way the user hears robotic text
+      on top of the beat.
+    * The user request was NOT a vocal one (no «спой/пой/песня/рэп/
+      зачитай/стих» cues) — rap / poem / song backing mode legitimately
+      calls ``speak_text`` × N after ``execute_music_code``.
+    * The ``text`` argument is longer than ``_ACCEPT_PHRASE_MAX_CHARS``
+      — a short accept («Ок, играю Бах») is allowed even on non-vocal
+      requests per the master prompt §5.
+
+    The check is intentionally conservative: any ambiguity (no music
+    tool in the same batch, vocal request, short accept) returns
+    ``False`` and the ``speak_text`` runs normally. False negatives
+    are tolerable — the audio still plays once, the user might hear
+    lyrics on top of the beat. False positives would silence
+    legitimate rap backing turns and break the master-prompt
+    contract.
+    """
+    if call.name != "speak_text":
+        return False
+    if not same_batch_music_calls:
+        return False
+    if _is_vocal_request(user_input):
+        return False
+    text = _extract_speak_text(call.arguments)
+    if not text:
+        return False  # empty speak_text — issue #1343 path, not us
+    return len(text) > _ACCEPT_PHRASE_MAX_CHARS
+
+
+def _suppressed_speak_text_result(call: ToolCall) -> ToolResult:
+    """Issue #1708 — sentinel result fed to the LLM instead of executing.
+
+    The LLM must see WHY its ``speak_text`` call was dropped so it
+    learns not to repeat the pattern. A short plain-text sentinel is
+    cheaper than an ``is_error=True`` JSON payload — the LLM treats
+    it as a tool result the same way and the next iteration will
+    read it alongside the other tool messages.
+    """
+    return ToolResult(
+        tool_call_id=call.id,
+        content=(
+            "[SYSTEM] speak_text подавлен после execute_music_code: "
+            "нельзя читать сгенерированный текст поверх музыки. "
+            "В этом режиме разрешён только КОРОТКИЙ accept "
+            "(«Ок, играю <трек>», ≤40 символов). "
+            "Верни 'done' сразу после execute_music_code."
+        ),
+        is_error=True,
+    )
+
+
+def _tool_spec_to_openai(spec: ToolSpec) -> dict[str, Any]:
+    """Translate a :class:`ToolSpec` into the OpenAI Chat-Completions shape.
+
+    The upstream DeepSeek / OpenAI provider expects a list of
+    ``{"type": "function", "function": {"name", "description", "parameters"}}``
+    dicts. We pass :class:`ToolSpec.parameters` through unchanged — it
+    is already a JSON Schema fragment by contract.
+
+    Specs without a description or schema still serialise cleanly:
+    the fields are optional in the wire format.
+    """
+    return {
+        "type": "function",
+        "function": {
+            "name": spec.name,
+            "description": spec.description,
+            "parameters": dict(spec.parameters),
+        },
+    }
+
+
+__all__ = ["AgentCore", "DialogResult"]
