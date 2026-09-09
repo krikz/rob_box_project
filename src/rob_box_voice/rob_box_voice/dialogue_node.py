@@ -115,7 +115,6 @@ from rob_box_voice.core.dialogue_guards import (
     RENARDO_MUSIC_TOOLS,
     MUSIC_RETRY_PROMPT_PREFIX,
     MUSIC_STOP_OVERRIDES,
-    build_babble_retry_prompt,
     build_music_retry_prompt,
     build_renardo_code_retry_prompt,
     build_system_regurgitate_retry_prompt,
@@ -159,6 +158,7 @@ from rob_box_voice.core.turn import (
     TurnGuards as TurnGuards,
     TurnState as TurnState,
     VerdictKind as TurnVerdictKind,
+    begin_babble_retry as begin_babble_retry,
     default_guards as turn_guards_default_order,
     music_guard_adapter as turn_guards_music_adapter,
     reset_budget as turn_guards_reset_budget,
@@ -3568,6 +3568,15 @@ class DialogueNode(Node):
             self._tool_retry_used = False
             self._system_regurgitate_retry_used = False
             self._synthetic_retries_left = self.DEFAULT_SYNTHETIC_RETRIES
+            # Issue #2266 / ADR-0021 R2 — mirror the budget reset to the
+            # ``core/``-side ``TurnState`` so ``begin_babble_retry`` sees a
+            # fresh ``babble_retry_consumed=False`` on every user-initiated
+            # turn. Until ``_use_turn_guards`` flips for the babble
+            # catch-site, this is the only reset path that exercises
+            # ``TurnState``.
+            self._turn_state = turn_guards_reset_budget(
+                self.DEFAULT_SYNTHETIC_RETRIES
+            )
             # Bug C (юзер-музыка) — сброс user-budget тоже только на
             # user-initiated turn; DJ-transition живёт своей жизнью и
             # ресетится в ``_dispatch_dj_turn``
@@ -4202,6 +4211,14 @@ class DialogueNode(Node):
     ) -> bool:
         """Issue #992 Bug D — single-shot babble retry dispatcher.
 
+        Thin shell over :func:`rob_box_voice.core.turn.begin_babble_retry`
+        (issue #2266 / ADR-0021 R2 step 2 — DoD #2.3). The PREDICATE chain
+        + the BUDGET step + the ONE-SHOT FLAG now live in ``core/``; this
+        method only does the ROS-bound side effects on a non-``None``
+        verdict (DSM re-open, log, ``_dispatch_turn``) and the legacy
+        ``_babble_retry_used`` mirror write so existing
+        ``test_issue_992_babble_guard.py`` assertions stay green.
+
         Inspects ``spoken`` (the LLM final text after strip_markdown)
         and decides whether to force ONE retry with a CRITICAL
         reminder. Returns ``True`` when a retry was scheduled (so the
@@ -4209,6 +4226,7 @@ class DialogueNode(Node):
         detector passed and the caller should proceed normally.
 
         Retry rules — all must hold for a retry to fire:
+
         1. ``speak_text`` was NOT really called this cycle — i.e.
            ``speak_text_real`` is 0. A real call is already handled by
            the issue-988 anti-duplicate path; a *phantom* call
@@ -4224,59 +4242,78 @@ class DialogueNode(Node):
            explicitly asked for a performance.
         4. We have NOT already used our one-shot babble retry for
            this turn (avoids an infinite LLM ping-pong).
+
+        The predicate chain (incl. the 02.09 «planning narration»
+        carve-out and the 30.08 «promise-only» carve-out) is
+        covered by :class:`BabbleGuard` — see ``core/turn.py`` and the
+        ``TestBabbleIntegrationViaTurnGuards`` + ``TestBeginBabbleRetry``
+        suites in ``test/unit/core/test_turn.py``.
         """
-        if speak_text_real > 0:
-            return False
-        if not spoken:
-            return False
-        if getattr(self, "_babble_retry_used", False):
-            return False
-        if not self._is_metalanguage_babble(spoken):
-            return False
-        # 🔴 FIX (live 02.09): планирование модели вслух («Юзер просит...,
-        # запускаю через compose_music») — НИКОГДА не валидный ответ, что бы
-        # ни просил юзер. Гейт по user_wants_performance тут не нужен: в
-        # живом логе он и не сработал (юзер сказал «ебани ланудж», ни одного
-        # ключевого слова), и робот зачитал план вслух, не вызвав тулов.
-        user_wants_perf = self._user_wants_performance(user_input or "")
-        if not user_wants_perf and not is_planning_narration(spoken):
-            # The promise-only subset always retries regardless of
-            # user_input — these phrases are NEVER valid answers.
-            promise_only = (
-                "зачит", "погнали", "устроим",
-                "переключ", "давай-ка",
+        # Lazy init for the ``core/``-side TurnState mirror. Until
+        # ``_use_turn_guards`` flips, the bridge in
+        # :meth:`_evaluate_turn_guards` is the only place that
+        # populates ``self._turn_state``; for the babble shell to be
+        # self-contained we initialize it here on first use. After
+        # the first call ``_turn_state`` follows the legitimate
+        # reset-on-user-turn path in :meth:`_run_turn``. ``getattr`` with
+        # ``None`` default keeps ``__new__``-style test fixtures
+        # (``test_issue_1882_planning_narration.py`` et al.) working.
+        if getattr(self, "_turn_state", None) is None:
+            self._turn_state = turn_guards_reset_budget(
+                self.DEFAULT_SYNTHETIC_RETRIES
             )
-            head = spoken[:60].lower()
-            if not any(p in head for p in promise_only):
-                return False
+        # Local alias — guarantees a non-``None`` reference even if
+        # ``self._turn_state`` is briefly rebound in another thread, and
+        # keeps Pyright's ``TurnState`` narrowing explicit.
+        state = self._turn_state
+        assert state is not None  # for type-checkers (init above)
+        decision = begin_babble_retry(
+            spoken=spoken,
+            user_input=user_input or "",
+            tools_called=tuple(tools_called or ()),
+            speak_text_real=int(speak_text_real or 0),
+            state=state,
+        )
+        if decision is None:
+            return False
+        # Install the post-mutation state — the pure helper has
+        # already decremented the budget and flipped the one-shot
+        # flag for us. We mirror ``babble_retry_consumed`` back to
+        # the legacy ``_babble_retry_used`` field so the
+        # ``test_issue_992_babble_guard.py:264-267`` regression
+        # assertion (and any live log readers) keep working.
+        self._turn_state = decision.new_state
+        self._babble_retry_used = decision.new_state.babble_retry_consumed
         # Issue #992 Bug D — the retry turn needs the same DSM state
-        # transitions as a real STT input (IDLE → LISTENING → DIALOGUE)
-        # — otherwise AgentCore's process_input sees IDLE and returns
-        # an empty result, which trips the
-        # "Что-то я задумался, повтори пожалуйста" fallback. This is
-        # exactly the wake-word gate logic from ``_on_stt``.
+        # transitions as a real STT input (IDLE → LISTENING →
+        # DIALOGUE) — otherwise AgentCore's process_input sees IDLE
+        # and returns an empty result, which trips the
+        # "Что-то я задумался, повтори пожалуйста" fallback.
+        # Delegated to ``_reopen_dialogue_for_retry`` which mirrors
+        # the wake-word gate logic from ``_on_stt`` (issue #1204).
         try:
-            if self._dsm.current_state == DialogueStateKind.IDLE:
-                self._dsm.on_event(DialogueEvent.WAKE_WORD)
-                self._publish_state()
-            self._dsm.on_event(DialogueEvent.STT_RESULT)
-            self._publish_state()
+            self._reopen_dialogue_for_retry()
         except ImportError:
             # dialog_state_machine is part of rob_box_harness; if it
             # ever disappears the safe default is to skip the
             # transition and let process_input return an empty result.
             pass
-        # Mark the retry as used BEFORE dispatching so a re-entrant
-        # call from the retry itself can never escalate to a second
-        # retry.
-        # Issue #1881 — общий budget декрементится рядом с поимённым
-        # флагом. Если budget == 0, ретрай НЕ отправляется — и
-        # babble-текст публикуется как есть (см. live-логи 02.09).
-        if not self._consume_synthetic_retry(guard_name="babble"):
-            return False
-        self._babble_retry_used = True
+        # Issue #1881 — mirror the budget decrement to the legacy
+        # ``_synthetic_retries_left`` field so the surrounding
+        # ``_run_turn.finally`` keeps seeing the same counter it has
+        # always seen (and so the other ``_check_*_and_retry`` paths
+        # that read this field don't diverge). The pure core/-helper
+        # owns the canonical ``budget_left`` on ``decision.new_state``;
+        # the legacy field stays as a mirror for the catch-sites that
+        # haven't migrated yet (issue #2266 / ADR-0084 §"Правила
+        # миграции" — ONE catch-site at a time).
+        self._synthetic_retries_left = (
+            decision.new_state.budget_left
+        )
+        # Mark the retry as dispatched BEFORE returning so the
+        # parent turn's ``_run_turn.finally`` defers DIALOGUE_END and
+        # the recursive ``_run_turn`` finds DIALOGUE (issue #1204).
         self._mark_retry_dispatched()
-        retry_prompt = self._build_babble_retry_prompt(user_input or "")
         self.get_logger().warning(
             "🗣️ [issue 992 Bug D] LLM babble detected — retrying once with "
             f"CRITICAL reminder (head={spoken[:60]!r})"
@@ -4287,27 +4324,13 @@ class DialogueNode(Node):
         # просканирует синтетический babble-промпт (в нём есть «песня»)
         # и запустит ложный music-ретрай.
         self._dispatch_turn(
-            retry_prompt,
+            decision.prompt,
             is_babble_retry=True,
             # Synthetic prompt — never persisted as something the user said.
             is_synthetic=True,
             raw_user_command=user_input,
         )
         return True
-
-    def _build_babble_retry_prompt(self, user_input: str) -> str:
-        """Issue #992 Bug D — synthetic follow-up prompt for babble retry.
-
-        Echoes the original ``user_input`` so the LLM has the request
-        in context, then appends a CRITICAL instruction that names the
-        babble pattern and demands a tool-call reply (no plain text
-        promises).
-
-        Delegates to
-        :func:`rob_box_voice.core.dialogue_guards.build_babble_retry_prompt`
-        (TD-1 decomposition).
-        """
-        return build_babble_retry_prompt(user_input)
 
     def _check_embedded_renardo_code_and_retry(
         self,
@@ -4706,15 +4729,25 @@ class DialogueNode(Node):
         ``_check_*_and_retry`` family so a one-line switch in the catch
         site (e.g. :meth:`_handle_result`) is enough to migrate.
         """
-        if not self._use_turn_guards:
+        # ``getattr`` with default ``False`` so test fixtures that build
+        # ``DialogueNode`` via ``object.__new__`` (e.g.
+        # ``test_issue_1882_planning_narration.py``) keep working — they
+        # skip ``__init__`` and therefore don't get the attribute set.
+        # Production paths go through ``__init__`` where
+        # ``self._use_turn_guards = False`` is declared explicitly.
+        if not getattr(self, "_use_turn_guards", False):
             return None
         guards = self._ensure_turn_guards()
-        if self._turn_state is None:
+        # ``__new__``-style test fixtures may bypass ``__init__`` and
+        # leave ``self._turn_state`` unset; mirror the same defensive
+        # ``getattr`` pattern used in ``_check_babble_and_retry``.
+        if getattr(self, "_turn_state", None) is None:
             # Bridge started mid-test or before _run_turn fired its
             # budget reset. Defensive default — keeps the verdict
             # surface deterministic for the very first call.
             self._reset_turn_budget()
-        assert self._turn_state is not None  # for type-checkers
+        state = self._turn_state
+        assert state is not None  # for type-checkers (init above)
         turn = TurnContext(
             user_input=user_input or "",
             is_dj_auto=False,
@@ -4724,7 +4757,7 @@ class DialogueNode(Node):
             tools_called=tuple(tools_called or ()),
             speak_text_real=int(speak_text_real or 0),
         )
-        verdict = guards.evaluate(reply, turn, self._turn_state)
+        verdict = guards.evaluate(reply, turn, state)
         if verdict.kind is TurnVerdictKind.RETRY:
             # Translate to the legacy ``_check_*_and_retry`` side effects
             # so the surrounding ``_run_turn.finally`` keeps seeing the
@@ -5679,6 +5712,17 @@ class DialogueNode(Node):
         # Returns ``True`` when a retry was scheduled; in that case we
         # MUST NOT publish the meta-text to TTS — otherwise the user
         # would hear the babble AND then the retry answer.
+        #
+        # Issue #2266 / voice-vr 22 — the catch-site itself is NOT
+        # rewired here. ``_check_babble_and_retry`` is now a thin shell
+        # over the pure ``core.turn.begin_babble_retry``, so the
+        # orchestration (predicates + budget + one-shot flag) already
+        # lives in ``core/`` while this call site keeps the exact
+        # signature and ``bool`` contract it had before. Adding a
+        # second ``_evaluate_turn_guards`` branch here would inflate
+        # ``_handle_result`` (CC 65 → 69) — the opposite of what
+        # ADR-0021 asks for. The bridge stays available for voice-vr 23
+        # when ``_use_turn_guards`` flips for ALL catch-sites at once.
         if spoken and self._check_babble_and_retry(
             spoken=spoken,
             # Issue #1204: на синтетических ретрай-турах юзер-интент
