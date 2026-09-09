@@ -263,17 +263,32 @@ while IFS=$'\t' read -r a_n a_title a_stab a_steps a_scn a_acc; do
         "$a_n" "$a_title" "$a_stab" "$a_steps" "$run_id" "$conclusion" "$url" >> "$SUMMARY"
 
     # Лог акта в отчёт — по нему потом читают, ЧТО именно упало.
-    gh run view "$run_id" --repo "$REPO_SLUG" --log > "$REPORT/act${a_n}_${run_id}.log" 2>/dev/null || true
+    act_log="$REPORT/act${a_n}_${run_id}.log"
+    gh run view "$run_id" --repo "$REPO_SLUG" --log > "$act_log" 2>/dev/null || true
 
     [ "$conclusion" != "success" ] && overall=1
 
     # Акты 1-2 — фундамент: без wake-word и без профилей голосов остальное
     # утонет в no_accept и диагностической ценности не даст.
+    #
+    # Но красный красному рознь, и различать их обязательно. Харнесс сам
+    # печатает причину отказа отдельным маркером:
+    #   E2E_NO_REACTION / E2E_INFRA_FAIL — робот не отвечает или упал синтез.
+    #     Дальше идти бессмысленно: следующие девять актов дадут девять
+    #     страниц no_accept и ни одного факта.
+    #   E2E_FEATURE_FAIL — робот ответил, но не выполнил ассерт. Это НАХОДКА,
+    #     ради которой марафон и запускают, и она не мешает актам 2-10:
+    #     wake-word жив, значит остальное диагностично.
+    # Первый прогон акта 1 (run 34408526453) прошёл 9 шагов из 10 и упал
+    # ровно на фиче — останавливать там марафон было бы ошибкой.
     if [ "$STOP_ON_FOUNDATION_FAIL" = "1" ] && [ "$conclusion" != "success" ] \
        && { [ "$a_n" = "1" ] || [ "$a_n" = "2" ]; }; then
-        log "❌ фундаментальный акт $a_n красный — останавливаю марафон"
-        log "   (STOP_ON_FOUNDATION_FAIL=0 чтобы продолжать вопреки)"
-        break
+        if grep -qE 'E2E_NO_REACTION|E2E_INFRA_FAIL' "$act_log" 2>/dev/null; then
+            log "❌ фундаментальный акт $a_n не отвечает (no_reaction/infra) — останавливаю марафон"
+            log "   (STOP_ON_FOUNDATION_FAIL=0 чтобы продолжать вопреки)"
+            break
+        fi
+        log "⚠️ акт $a_n красный по фиче (E2E_FEATURE_FAIL) — это находка, продолжаю марафон"
     fi
 done <<< "$plan"
 
