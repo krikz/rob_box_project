@@ -1739,8 +1739,10 @@ role: ${role}"
     #   * Если sync падает — НЕ блокируем kanban (warn + log). OpenSpec — advisory.
     if [ -x "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/agent-flow-openspec-sync.sh" ]; then
         _sync_bin="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/agent-flow-openspec-sync.sh"
-        # slug = branch-suffix (z-{agent}/<id>-<slug> → <slug>)
-        _slug="$(printf '%s' "${branch}" | sed -E 's|^z-[a-z0-9_-]+/||; s|^[0-9]+-||')"
+        # slug = branch-suffix (z-{agent}/<id>-<slug> → <slug>) — канонический
+        # regex в agent-flow-openspec-sync.sh:slug_for_branch (issue #2296).
+        # Подкоманда не требует OPENSPEC_ROOT (fast-path в скрипте).
+        _slug="$("$_sync_bin" slug-for-branch "${branch}")"
         _issue_url="https://github.com/${GH_REPO}/issues/${number}"
         if "$_sync_bin" create-change "$number" "$task_id" "$_slug" "$title" "$_issue_url" "$body" >/dev/null 2>&1; then
             log "openspec-sync: change folder created (or already exists) for ${task_id}-${_slug}"

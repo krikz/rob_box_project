@@ -77,7 +77,7 @@ slugify_branch() {  # $1=issue $2=title
     local issue="$1" title="$2" slug
     slug="$(printf '%s' "$title" | tr '[:upper:]' '[:lower:]' \
         | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g; s/-{2,}/-/g' \
-        | cut -c1-40)"
+        | cut -c1-50)"
     printf 'z-{agent}/%s-%s' "$issue" "$slug"
 }
 
@@ -243,7 +243,7 @@ test_F_small_lint_pr_sets_needs_review() {
     local slug
     slug="$(printf '%s' "$title" | tr '[:upper:]' '[:lower:]' \
         | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g; s/-{2,}/-/g' \
-        | cut -c1-40)"
+        | cut -c1-50)"
     branch="z-{agent}/${issue}-${slug}"
     set_state ISSUE_LIST_JSON "[{\"number\":${issue},\"title\":\"${title}\",\"labels\":[{\"name\":\"hermes\"}],\"body\":\"kanban: t_dead${issue}\"}]"
     set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[{"name":"hermes"}]}'
