@@ -367,8 +367,19 @@ class TestVoiceConfig:
         )
 
         # ws_server — pure Python (tornado присутствует в CI), проверяем
-        # равенство re-export'а канону.
-        ws_server = importlib.import_module("rob_box_quest.server.ws_server")
+        # равенство re-export'а канону. Но workflow G-Bridge-Protocol-Drift
+        # ставит только ``rob_box_core`` (без ``rob_box_quest``), чтобы
+        # держать CI дёшёво; без try/except тест валится на голом CI,
+        # который НЕ должен ловить эту регрессию — для этого есть
+        # ``test_supervisor_node.test_grip_default_language_is_re_export_of_catalog``
+        # в G-Run Tests.yml. ModuleNotFoundError (нет пакета) → skip,
+        # ImportError (сам модуль сломан) → fail loud.
+        try:
+            ws_server = importlib.import_module("rob_box_quest.server.ws_server")
+        except ModuleNotFoundError as exc:
+            if "rob_box_quest" not in str(exc):
+                raise
+            return  # rob_box_quest не установлен — пропускаем локально.
         assert ws_server.VOICE_PIPELINE_DEFAULT_LANGUAGE is canonical, (
             "ws_server.VOICE_PIPELINE_DEFAULT_LANGUAGE оторвался от "
             "канона — верни прямой импорт из bridge_protocol."
