@@ -1386,7 +1386,7 @@ def test_extract_relevant_log_line_ignores_quest_node_pin_warning() -> None:
 def test_extract_relevant_log_line_still_catches_other_quest_node_warnings() -> None:
     """Negative test for the Quest-PIN rule above. A genuinely
     concerning quest_node WARN that is NOT the PIN-echo startup line
-    must still surface \u2014 e.g. an actual game-flow problem. The
+    must still surface — e.g. an actual game-flow problem. The
     exclusion is anchored on `Quest PIN: <digits> (show this to
     operator`, so any other WARN from quest_node keeps its severity
     and the operator still sees deploy issues originating from the
@@ -1401,3 +1401,149 @@ def test_extract_relevant_log_line_still_catches_other_quest_node_warnings() -> 
 
     assert line is not None
     assert "player stuck" in line
+
+
+def test_extract_relevant_log_line_ignores_rtabmap_no_imu_main() -> None:
+    """Issue #2229 (deploy run 34300912847 09.09 / kanban t_8bf3e909).
+
+    On the Vision+main test-rig the IMU UART on /dev/ttyAMA0 is
+    optional lab hardware and is not attached — perception_bridge
+    logs `Sensor UART /dev/ttyAMA0 not available; reads will no-op
+    until hardware is attached` at startup. rtabmap.icp_odometry
+    then logs `We didn't receive IMU newer than previous
+    image/scan (0.0000 sec)` for every frame until it catches up
+    that no IMU is coming and falls back to vision-only odometry.
+    The ERROR severity is rtabmap's own log level, not a deployment
+    failure — the rest of the SLAM stack stays healthy on the
+    rig. Same family as the existing `scan_voxel_size` /
+    `scan_normal_k` / `dropping image/scan` exclusions (issues
+    #1485, #1680, #1893). The exclusion must silence the literal
+    `rtabmap.icp_odometry ... didn't receive imu ... (0.0000 sec)`
+    pattern in the main scope (where health_monitor re-echoes it
+    via the shared /rosout bus).
+    """
+    log_text = (
+        "[health_monitor-3]   [ERROR] rtabmap.icp_odometry (39s ago): "
+        "We didn't receive IMU newer than previous image/scan (0.0000 sec)"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="main", severity="critical")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_still_catches_rtabmap_real_critical_error() -> None:
+    """Negative test for the rtabmap no-IMU rule above. A real
+    rtabmap-side critical error (e.g. a fatal librtabmap_core
+    assertion, a segmentation fault inside the SLAM stack) MUST
+    still be reported by the deploy gate — the new exclusion is
+    anchored on the literal `didn't receive imu ... (0.0000 sec)`
+    tail, so any other rtabmap ERROR / FATAL line keeps its
+    severity and the operator still sees the deploy issue.
+    """
+    log_text = (
+        "[health_monitor-3]   [FATAL] rtabmap.rtabmap (12s ago): "
+        "rtabmap: /build/librtabmap_core.so.0.21+0 ... assertion "
+        "'cv::norm(transform) > 0' failed"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="main", severity="critical")
+
+    assert line is not None
+    assert "rtabmap" in line
+
+
+def test_extract_relevant_log_line_ignores_telegram_audio_common_msgs_disabled_vision() -> None:
+    """Issue #2229 (deploy run 34300912847 09.09 / kanban t_8bf3e909).
+
+    When the `audio_common_msgs` python package is not installed in
+    the telegram-bot container, telegram_node publishes the explicit
+    `audio_common_msgs недоступен — /radio выключен, голосовые из
+    Telegram публиковаться не будут` warning ONCE at startup
+    (telegram_node.py:194-201). This is the operator-facing
+    notification that the optional Telegram → /avatar/voice_in
+    radio pipeline is gracefully disabled (ADR-0018 honest
+    degradation), not a deployment failure. On the Vision+main
+    test-rig the radio stack is intentionally absent, so this WARN
+    fires on every test deploy and would otherwise surface as a
+    false `warning_log` finding → `DEPLOYMENT COMPLETED WITH
+    ISSUES`. The exclusion must silence the literal
+    `audio_common_msgs недоступен` signature in the vision scope.
+    """
+    log_text = (
+        "[telegram_node] [WARN] [1788918991.569701997]: "
+        "audio_common_msgs недоступен — /radio выключен, голосовые "
+        "из Telegram публиковаться не будут"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="warning")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_still_catches_other_telegram_node_warnings() -> None:
+    """Negative test for the audio_common_msgs rule above. A real
+    telegram_node WARN that is NOT the /radio-disabled echo
+    must still surface — e.g. an actual bot-loop problem. The
+    exclusion is anchored on the literal `audio_common_msgs
+    недоступен` signature, so any other telegram_node WARN keeps
+    its severity and the operator still sees deploy issues
+    originating from the telegram-bot subsystem.
+    """
+    log_text = (
+        "[telegram_node] [WARN] [1234.567]: "
+        "unknown command from chat 42: /foo_bar_baz, ignored"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="warning")
+
+    assert line is not None
+    assert "unknown command" in line
+
+
+def test_extract_relevant_log_line_ignores_sound_node_already_playing_vision() -> None:
+    """Issue #2229 (deploy run 34300912847 09.09 / kanban t_8bf3e909).
+
+    sound_node logs `[WARN] ⚠️ Звук уже играет (<current_sound>),
+    пропускаю <trigger|file_path>` whenever an external trigger
+    (`/voice/sound/trigger` or `/voice/sound/play_file`) arrives
+    while a previous sound is still playing. This is the
+    intentional overlap-guard inside trigger_callback /
+    play_file_callback (sound_node.py:226-229, 256-259): the node
+    protects the underlying audio device from being preempted
+    mid-playback, so the operator-visible symptom is "the second
+    sound was skipped, the first keeps playing" — not a deployment
+    failure. Real sound_node outages (mp3 decoder crash, ALSA
+    fatal, JACK ProcessGraphAsyncMaster deadlock) keep their
+    WARN/CRITICAL severity because the wording differs. The
+    exclusion must silence the literal `звук уже играет (.*),
+    пропускаю` signature in the vision scope.
+    """
+    log_text = (
+        "[sound_node-7] [WARN] [1788919039.714728571] [sound_node]: "
+        "⚠️ Звук уже играет (thinking), пропускаю very_cute"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="warning")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_still_catches_other_sound_node_warnings() -> None:
+    """Negative test for the sound_node already-playing rule
+    above. A real sound_node WARN that is NOT the overlap-guard
+    echo must still surface — e.g. an audio decoder problem or a
+    missing file lookup. The exclusion is anchored on the literal
+    `звук уже играет (.*), пропускаю` signature, so any other
+    sound_node WARN keeps its severity and the operator still
+    sees deploy issues originating from the audio subsystem.
+    """
+    log_text = (
+        "[sound_node-7] [WARN] [1788919040.123456789] [sound_node]: "
+        "⚠️ Звук для триггера \"unknown_effect_xyz\" не найден"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="warning")
+
+    assert line is not None
+    assert "не найден" in line

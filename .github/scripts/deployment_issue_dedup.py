@@ -416,6 +416,40 @@ CRITICAL_EXCLUDE_BY_SCOPE = {
         # exclusion does not apply. The narrow `[WARN] stt_node`
         # prefix is the health_monitor's exact rewrite shape.
         r"\[warn\] stt_node.*\[stt_attempt\]",
+        # rtabmap icp_odometry (issue #2229, deploy run 34300912847
+        # 09.09 / kanban t_8bf3e909): on the test-rig the IMU UART
+        # on /dev/ttyAMA0 is optional lab hardware and is not
+        # attached — perception_bridge logs "Sensor UART
+        # /dev/ttyAMA0 not available; reads will no-op until
+        # hardware is attached" at startup. rtabmap.icp_odometry
+        # then prints `We didn't receive IMU newer than previous
+        # image/scan (0.0000 sec)` for every frame until the SLAM
+        # node catches up that no IMU is coming, at which point it
+        # falls back to vision-only odometry and the pipeline keeps
+        # tracking. The ERROR severity is rtabmap's own log level,
+        # not a real deployment failure — the rest of the SLAM
+        # stack (rtabmap slam node, point-cloud assembly, Nav2)
+        # stays healthy on the Vision+main split rig. Same family
+        # as the existing rtabmap startup-handshake exclusions for
+        # `scan_voxel_size` / `scan_normal_k` / `dropping
+        # image/scan` (issues #1485, #1680, #1893 — those live in
+        # the WARNING_EXCLUDE lists because rtabmap prints them at
+        # WARN level, this one prints at ERROR so it lives in
+        # CRITICAL_EXCLUDE): rtabmap prints an informational
+        # message during startup handshake about optional lab
+        # hardware being absent, deploy gate must not file a
+        # critical issue per-run on every test rig. The bare
+        # `didn't receive imu` substring is narrow on purpose: a
+        # real "no IMU" deployment bug on hardware that DOES have
+        # the UART would print additional context (serial-port
+        # error, permission-denied on /dev/ttyAMA0) that does NOT
+        # match the `\(0\.0000 sec\)$` tail and would still be
+        # reported. health_monitor re-echoes the rtabmap line via
+        # the shared /rosout bus with the `[ERROR]` /
+        # `[FATAL]` prefix — the `rtabmap\.icp_odometry` prefix
+        # anchors the rule so an unrelated perception ERROR (e.g.
+        # a real librtabmap_core crash) is still surfaced.
+        r"rtabmap\.icp_odometry.*didn't receive imu newer than previous image/scan \(0\.0000 sec\)$",
     ],
     "vision": [
         # telegram_node start_polling transient (issue #1433 / deploy run
@@ -556,6 +590,32 @@ WARNING_EXCLUDE_COMMON = [
     # operator` signature so we don't accidentally silence unrelated
     # WARN lines from rob_box_quest that DO need operator attention.
     r"quest pin: \d+ \(show this to operator",
+    # sound_node already-playing echo (issue #2229, deploy run
+    # 34300912847 09.09 / kanban t_8bf3e909): sound_node logs
+    # `[WARN] ⚠️ Звук уже играет (<current_sound>), пропускаю
+    # <trigger|file_path>` whenever an external trigger
+    # (`/voice/sound/trigger` or `/voice/sound/play_file`) arrives
+    # while a previous sound is still playing. This is the
+    # intentional overlap-guard inside trigger_callback /
+    # play_file_callback (sound_node.py:226-229, 256-259): the
+    # node protects the underlying audio device from being
+    # preempted mid-playback, so the operator-visible symptom is
+    # "the second sound was skipped, the first keeps playing" —
+    # not a deployment failure. Real sound_node outages (mp3
+    # decoder crash, ALSA fatal, JACK ProcessGraphAsyncMaster
+    # deadlock) keep their WARN/CRITICAL severity because the
+    # wording differs. Mirror this rule in COMMON so the same
+    # exclusion applies whether the WARN lands in the
+    # voice-assistant's own log dump or in the Main Pi
+    # health_monitor's /rosout re-echo (the audio device lives
+    # on the Vision Pi, but the shared ROS_DOMAIN_ID=0 bus
+    # surfaces the warning to context_aggregator on the Main
+    # Pi — same scope-leak shape as the stt_node / telegram_node
+    # exclusions above). Narrow to the literal `звук уже играет
+    # (.*), пропускаю` signature so unrelated sound_node WARNs
+    # (e.g. "файл не найден", "звук для триггера ... не
+    # найден") stay visible to the operator.
+    r"звук уже играет \(.*\), пропускаю",
 ]
 WARNING_EXCLUDE_BY_SCOPE = {
     "main": [
@@ -615,6 +675,33 @@ WARNING_EXCLUDE_BY_SCOPE = {
         r"rtabmap\.icp_odometry.*dropping image/scan data with stamp.*\(delay",
     ],
     "vision": [
+        # telegram_node /radio disabled echo (issue #2229, deploy run
+        # 34300912847 09.09 / kanban t_8bf3e909): when the
+        # `audio_common_msgs` python package is not installed in the
+        # telegram-bot container, telegram_node publishes the explicit
+        # `audio_common_msgs недоступен — /radio выключен, голосовые
+        # из Telegram публиковаться не будут` warning ONCE at
+        # startup (telegram_node.py:194-201). The warning is the
+        # operator-facing notification that the optional Telegram →
+        # `/avatar/voice_in` radio pipeline is gracefully disabled
+        # (ADR-0018 "honest degradation": the chain is OFF, not
+        # silently broken — the `publish_voice_audio_chunk` path
+        # short-circuits on the `AudioData is None` guard and never
+        # crashes the bot loop). On the Vision+main test-rig the
+        # /radio radio stack is intentionally absent (the
+        # `audio_common_msgs` dependency ships in the deploy-time
+        # overlay, not the test rig), so this WARN fires on every
+        # test deploy and would otherwise surface as a false
+        # `warning_log` finding → `DEPLOYMENT COMPLETED WITH ISSUES`.
+        # The deploy gate must skip it. Same exclusion class as the
+        # `[issue 989] ReSpeaker не принял threshold` /
+        # `quest pin: <num> (show this to operator` rules in COMMON:
+        # legitimate startup warning carrying operator guidance, not
+        # a deployment failure. Narrow to the literal `audio_common_msgs
+        # недоступен` signature so a real audio_common_msgs import
+        # bug (e.g. an unrelated ImportError mid-loop) keeps its
+        # WARN severity.
+        r"audio_common_msgs недоступен",
         # audio_node HPFONOFF write (issue #1680, deploy round-244):
         # voice-assistant prints "[WARN] HPFONOFF: write_parameter вернул
         # False (устройство занято?). Используется дефолт firmware."
