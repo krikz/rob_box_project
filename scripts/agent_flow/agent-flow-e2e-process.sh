@@ -3191,15 +3191,11 @@ except Exception:
         # assignee=профиль по метке issue (agent:backend → backend, etc).
         # Ретро 02.09 t_2bd2e7ea: default → devops fallback (default невалиден
         # по ADR-0041 — silent-drop в диспетчере).
-        _conflict_assignee="devops"
-        for lbl in $(gh issue view "$number" --repo "$GH_REPO" --json labels --jq '[.labels[].name] | .[]' 2>/dev/null); do
-            case "$lbl" in
-                agent:backend)    _conflict_assignee="backend"; break ;;
-                agent:developer)  _conflict_assignee="developer"; break ;;
-                agent:devops)     _conflict_assignee="devops"; break ;;
-                agent:architect)  _conflict_assignee="architect"; break ;;
-            esac
-        done
+        # Issue #2292: единая таблица af_role_for (lib_agent_flow_common.sh).
+        _conflict_assignee="$(af_role_for \
+            "$(gh issue view "$number" --repo "$GH_REPO" --json labels \
+                --jq '[.labels[].name] | join(",")' 2>/dev/null || echo '')" \
+            devops)"
         _conflict_body="## 🔀 merge conflict: \`${branch}\` → \`${ROUND_BRANCH}\` (ретро 10.08)
 
 **ПРИЧИНА:** develop убежал вперёд, твоя ветка \`${branch}\` (PR #${pr_number:-?}) не мерджится напрямую.
@@ -4257,15 +4253,11 @@ sshpass -p open ssh ros2@10.1.1.21 'docker logs voice-assistant --since <ts> | g
         # НЕ создаём — воркеру нечего чинить (квота/робот/build или фикс уже в develop).
         # Определяем профиль воркера по меткам issue (agent:<role>)
         # Ретро 02.09 t_2bd2e7ea: default → devops fallback.
-        _worker_assignee="devops"
-        for lbl in $(gh issue view "$number" --repo "$GH_REPO" --json labels --jq '[.labels[].name] | .[]' 2>/dev/null); do
-            case "$lbl" in
-                agent:backend)    _worker_assignee="backend"; break ;;
-                agent:developer)  _worker_assignee="developer"; break ;;
-                agent:devops)     _worker_assignee="devops"; break ;;
-                agent:architect)  _worker_assignee="architect"; break ;;
-            esac
-        done
+        # Issue #2292: единая таблица af_role_for (lib_agent_flow_common.sh).
+        _worker_assignee="$(af_role_for \
+            "$(gh issue view "$number" --repo "$GH_REPO" --json labels \
+                --jq '[.labels[].name] | join(",")' 2>/dev/null || echo '')" \
+            devops)"
 
         if [ "$verdict" = "success" ]; then
             # Ретро 18.08 (#1419): все backticks в _gate_body="..." ДОЛЖНЫ быть экранированы как \` —

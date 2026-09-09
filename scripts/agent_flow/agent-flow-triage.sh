@@ -612,13 +612,10 @@ ${overlap_list}
     return 0
     }
 
-role_for() {  # $1=labels_json
-    printf '%s' "$1" \
-        | grep -oE 'agent:[a-z0-9_-]+' \
-        | head -n1 \
-        | sed 's/^agent://' \
-        || printf '%s' "$AGENT_FLOW_DEFAULT_ROLE"
-}
+# (role_for удалён — issue #2292. Все вызовы напрямую зовут af_role_for
+# из lib_agent_flow_common.sh. Старая реализация жила в 5 копиях и
+# разъехалась: e2e-process потерял agent:tester, merge-gate две копии
+# с разными комментариями. Теперь одна таблица + одна функция.)
 
 # branch_exists_in_remote — ретро-фикс (26.08 t_dfd3d19d, ADR-0032): G9b
 # race-window dedup. Проверяет, существует ли уже ветка $1 в remote refs.
@@ -1162,7 +1159,7 @@ except Exception: print("")' 2>/dev/null || true)"
 #   MAINTENANCE_BRANCH, DONE_LABEL, BIG_BANG_OVERRIDE_LABEL, BIG_BANG_MAX_COMMITS,
 #   BIG_BANG_MAX_LINES, VALID_PROFILES, AGENT_FLOW_DEFAULT_ROLE, AGENT_FLOW_MAX_RUNTIME,
 #   AGENT_FLOW_MAX_RETRIES, AGENT_FLOW_LARGE_BODY_CHARS, AGENT_FLOW_MAX_RUNTIME_LARGE,
-#   GH_REPO, HERMES_BIN, DRY_RUN, LOG_PREFIX, role_for, branch_for, branch_label_override,
+#   GH_REPO, HERMES_BIN, DRY_RUN, LOG_PREFIX, af_role_for, branch_for, branch_label_override,
 #   is_valid_profile, load_valid_profiles, free_stale_worktrees_for_branch, runtime_for,
 #   worker_contract_block, gh (auth).
 #
@@ -1268,7 +1265,7 @@ process_issues_json() {
         skipped=$((skipped+1)); continue
     fi
 
-    role="$(role_for "$labels")"
+    role="$(af_role_for "$labels" "${AGENT_FLOW_DEFAULT_ROLE:-}")"
     branch="$(branch_for "$labels" "$number" "$title")"
     max_runtime="$(runtime_for "$labels" "$body")"
 

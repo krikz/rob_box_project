@@ -536,6 +536,172 @@ detect_pr_kind() {  # $1=labels_csv $2=title
 }
 
 # ---------------------------------------------------------------------------
+# af_role_for <labels_csv> [fallback] — единая таблица agent:* label → profile.
+#
+# Контракт:
+#   $1 = labels_csv (lowercased, "agent:devops,bug,priority:high" — то, что
+#        приходит из `gh issue list --json labels` или CSV-список меток)
+#   $2 = fallback profile (опционально; default:
+#        $AGENT_FLOW_DEFAULT_ROLE (or "architect" if unset)).
+#        Передача $2="" явно = "пустой fallback" → last-resort "devops".
+#   stdout = одно из:
+#       - profile из таблицы (agent:<token> → profile, см. _af_role_table)
+#       - fallback ($2, или AGENT_FLOW_DEFAULT_ROLE, или architect),
+#         если метка agent:* не найдена
+#       - "devops", если fallback пустой (последний рубеж — см. ADR-0041)
+#   exit = 0 всегда (fail-OPEN — caller сам решает, что делать)
+#
+# Поведение:
+#   1) lower-case на входе (`tr` в bash), чтобы "Agent:Devops" тоже подобрался.
+#   2) ищем ПЕРВЫЙ `agent:<token>` в списке меток (порядок определяется caller'ом).
+#   3) токен матчится против _af_role_table (case-statement — это «таблица
+#      данных» в bash; добавить новый label = одна строка).
+#   4) если метка найдена, но профиля нет в `hermes profile list` — warn +
+#      возврат fallback. Это **fail-OPEN**, не hard gate: caller (triage) уже
+#      имеет собственный жёсткий guard через `is_valid_profile` (skip + errored++).
+#      Здесь дубль жёсткого gate'а не нужен — это источник разъехавшихся
+#      дефолтов в прошлом (agent-flow-triage.sh:615 vs agent-flow-merge-gate.sh:4082).
+#   5) devops как последний рубеж — профиль-воркер (он же умеет force-with-lease
+#      push, см. ретро 02.09 t_2bd2e7ea). Никогда не возвращаем "default"
+#      (ADR-0041 silent-drop в диспетчере → карточка висит в ready вечно).
+#
+# История (09.09.2026, issue #2292):
+#   Раньше эта логика жила в 4 копиях:
+#     - agent-flow-triage.sh:615  — regex, fallback=architect
+#     - agent-flow-merge-gate.sh:4082, :4284 — whitelist (без agent:tester)
+#     - agent-flow-e2e-process.sh:3196 — whitelist (без agent:tester)
+#     - test_merge_gate_assignee_fallback.sh:63 — тест-реплика
+#   Копии успели разъехаться: e2e-process потерял agent:tester, merge-gate
+#   две копии с разными комментариями. Любая правка (добавить label, сменить
+#   fallback) требовала 4 синхронных коммита — рецепт дрейфа. Теперь одна
+#   функция + одна таблица; добавить profile = одна строка case.
+#
+# Использование:
+#   role="$(af_role_for "$labels")"             # fallback=${AGENT_FLOW_DEFAULT_ROLE:-architect}
+#   role="$(af_role_for "$labels" devops)"      # явный fallback
+# ---------------------------------------------------------------------------
+af_role_for() {  # $1=labels_csv  $2=fallback (default AGENT_FLOW_DEFAULT_ROLE|architect|devops)
+    local _labels _fallback _token _profile _hermes_home _valid_profiles_csv
+    _labels="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"
+    # Семантика fallback (важно для ADR-0041 last-resort):
+    #   - $2 задан И непустой → используем его (явный override вызывающего).
+    #   - $2 UNSET (не передан) → берём $AGENT_FLOW_DEFAULT_ROLE (или architect).
+    #   - $2 = "" (явно пустая строка) → пустая строка. Не подменяем на default:
+    #     это сигнал "caller хочет пустой fallback → devops по last-resort".
+    #   - Итоговый fallback всё ещё пустой → devops (ADR-0041 silent-drop недопустим).
+    if [ "$#" -ge 2 ] && [ -n "${2-}" ]; then
+        _fallback="$2"
+    else
+        _fallback="${AGENT_FLOW_DEFAULT_ROLE:-architect}"
+    fi
+    [ -n "$_fallback" ] || _fallback="devops"
+
+    _profile=""
+    if [ -n "$_labels" ]; then
+        # Первый agent:<token> в списке — caller контролирует порядок меток.
+        # Цикл по запятой: дешевле awk/python, не плодит подпроцессы на горячем пути.
+        _labels="$_labels,"
+        while [ -n "$_labels" ] && [ "$_labels" != "," ]; do
+            _token="${_labels%%,*}"
+            _labels="${_labels#*,}"
+            # Проверяем префикс "agent:" через case (быстрее [[ =~ ]] на горячем пути).
+            case "$_token" in
+                agent:*)
+                    _token="${_token#agent:}"
+                    # Каноничная таблица agent:<token> → profile.
+                    # ADD HERE: новый label = одна строка case.
+                    case "$_token" in
+                        backend|developer|devops|tester|architect|\
+                        frontend|analyst|pm|pr-reviewer|techwriter|\
+                        ml-engineer|ros2-engineer|embedded|cad-engineer|\
+                        dba|designer|llm-expert|base|agent-flow)
+                            _profile="$_token" ;;
+                        *)
+                            # Метка есть, но профиль не каноничный — warn + пропуск.
+                            # Не возвращаем $_token напрямую: он мог быть что угодно
+                            # ("agent:triager" из ретро t_1ca827a6), и caller всё равно
+                            # отфильтрует через is_valid_profile. Здесь — fallback.
+                            _af_log "af_role_for: unknown agent:label '$_token' — falling back to '$_fallback'"
+                            ;;
+                    esac
+                    [ -n "$_profile" ] && break
+                    ;;
+            esac
+        done
+    fi
+
+    # Если не нашли — fallback. Если fallback сам невалиден — devops.
+    if [ -z "$_profile" ]; then
+        _profile="$_fallback"
+    fi
+
+    # Warn + fail-open против живого списка профилей (если доступен).
+    # Не делаем hard gate: caller (triage) уже зовёт is_valid_profile для
+    # errored++ / skip; merge-gate и e2e-process принимают fallback как есть.
+    # Парсим по тому же regex что и load_valid_profiles в triage.sh, плюс
+    # strip ведущего `◆` (active profile marker в hermes profile list).
+    _hermes_home="${HERMES_HOME:-/home/builder/.hermes}"
+    if [ -x "${HERMES_BIN:-}" ]; then
+        _valid_profiles_csv="$("${HERMES_BIN}" profile list 2>/dev/null \
+            | awk '
+                /^[ \t]*─/{next} /^[ \t]*Profile[ \t]/{next}
+                /^[ \t]*$/{next} /^[ \t]*default[ \t]/{next}
+                {gsub(/^[ \t]+|[ \t]+$/,""); sub(/^[^a-zA-Z0-9]+/,""); print $1}
+            ' | sort -u | paste -sd, -)" || _valid_profiles_csv=""
+        if [ -n "$_valid_profiles_csv" ] \
+            && ! printf '%s' ",$_valid_profiles_csv," | grep -q ",$_profile,"; then
+            _af_log "af_role_for: profile '$_profile' NOT in hermes profile list — warn + fail-open (caller should hard-gate if needed)"
+        fi
+    fi
+
+    printf '%s' "$_profile"
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# af_role_found_for <labels_csv> → exit 0 если есть валидный agent:* label,
+# exit 1 если нет (или он неизвестный).
+#
+# Зачем (issue #2292): scan-all-prs в merge-gate раньше использовал
+# локальный case-цикл с флагом `_assignee_explicit=1` — «нашли явную метку
+# agent:*». Это различало «назначили devops по метке» и «назначили devops
+# как fallback, потому что меток нет». Логика ниже (contract_drift)
+# перезаписывает assignee на backend, ЕСЛИ метки не было.
+#
+# Если бы мы взяли `af_role_for` и смотрели «результат != devops», мы бы
+# сломали кейс с явной `agent:devops`: вернулось бы `devops`, флаг бы
+# остался 0, и contract_drift перезаписал бы на backend. Регрессия.
+#
+# Companion-функция: тот же token-парсер, что в af_role_for, но возвращает
+# только факт «нашли валидный token из _af_role_table». Никакого stdout —
+# чисто exit-code. Дешёвая: ранний break, без fallback-логики.
+# ---------------------------------------------------------------------------
+af_role_found_for() {  # $1=labels_csv
+    local _labels="${1:-}" _token
+    [ -n "$_labels" ] || return 1
+    _labels="$(printf '%s' "$_labels" | tr '[:upper:]' '[:lower:]'),"
+    while [ -n "$_labels" ] && [ "$_labels" != "," ]; do
+        _token="${_labels%%,*}"
+        _labels="${_labels#*,}"
+        case "$_token" in
+            agent:*)
+                    case "${_token#agent:}" in
+                        backend|developer|devops|tester|architect|\
+                        frontend|analyst|pm|pr-reviewer|techwriter|\
+                        ml-engineer|ros2-engineer|embedded|cad-engineer|\
+                        dba|designer|llm-expert|base|agent-flow)
+                            return 0 ;;
+                    esac
+                    # Невалидный agent:* (например, agent:triager) — НЕ считаем
+                    # «явным». Caller должен идти в fallback-ветку.
+                    return 1
+                    ;;
+        esac
+    done
+    return 1
+}
+
+# ---------------------------------------------------------------------------
 # free_stale_worktrees_for <task_id> — снять чужие worktree на нашей ветке.
 #
 # Карточка держит свой worktree; если та же ветка занята worktree'ем другой
