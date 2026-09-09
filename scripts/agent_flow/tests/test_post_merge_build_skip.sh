@@ -248,61 +248,125 @@ scenario_D_merge_gate_has_develop_guard() {
 }
 
 # ============================================================================
-# E. merge-gate base-check: develop → skip log; main → вызов скрипта.
-#    Симулируем через mock_env.sh-подобную обвязку в мини-форме.
+# E. merge-gate НЕ триггерит post-merge build (issue #2294, ADR-AF-0064).
+#
+# ЧТО БЫЛО ДО ФИКСА (и почему тест маскировал баг):
+#   merge-gate.sh содержал внутри reconcile-блока конструкцию
+#     if [ "$pr_base" = "$DEVELOP_BRANCH" ]; then  log skip
+#     elif [ -f .../agent-flow-post-merge-build.sh ]; then bash ...  fi
+#   Внешний guard блока — `pr_state=MERGED && pr_base=$DEVELOP_BRANCH` —
+#   гарантирует $pr_base == develop, поэтому ветка `elif` была МЁРТВОЙ.
+#   Старый сценарий E вырезал кусок скрипта через sed по номерам строк,
+#   сорсил его отдельно и подставлял pr_base=main В ОБХОД внешнего guard'а.
+#   Тест «зеленел» на коде, который в проде не исполняется никогда, —
+#   классическая маскировка (issue #2294).
+#
+# ЧТО ТЕПЕРЬ: сценарий гоняет РЕАЛЬНЫЙ agent-flow-merge-gate.sh целиком
+# через штатный харнес tests/lib/mock_env.sh (mock gh/git/hermes, фикстура
+# MERGED-PR), см. tests/lib/pmb_merge_gate_probe.sh. Проверяем:
+#   E1. base=develop → merge-gate входит в reconcile, пишет skip-лог,
+#       post-merge-build.sh НЕ вызван ни разу;
+#   E2. base=main    → merge-gate вообще не входит в reconcile-блок
+#       (внешний guard), post-merge-build.sh НЕ вызван. main-build
+#       обеспечивает workflow «G-Auto-merge to Main» (ADR-AF-0064);
+#   E3. mutation control: если вернуть вызов post-merge-build.sh в
+#       reconcile-блок, probe ОБЯЗАН его увидеть (PMB_CALLS>0). Иначе
+#       E1/E2 были бы вакуумно-зелёными.
+#
+# probe запускается отдельным процессом: lib/mock_env.sh несёт собственные
+# счётчики тестов и assert_*, и его нельзя сорсить внутрь этого файла.
 # ============================================================================
-# Создаём минимальную обвязку: стаб для post-merge-build.sh (вместо
-# реального скрипта — записывает вызов в журнал), и стаб gh, чтобы
-# merge-gate прошёл остальные стадии. Затем — вытаскиваем из merge-gate
-# ровно тот if-блок с ADR-0022 extension и проверяем его поведение в
-# изоляции через subshell source.
-scenario_E_merge_gate_guard_isolated() {
-    local st="$TEST_DIR/E"
+PROBE_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/pmb_merge_gate_probe.sh"
 
-    # Создаём stub post-merge-build.sh — пишет факт вызова в journal.
-    mkdir -p "$st/repo/scripts/agent_flow"
-    cat > "$st/repo/scripts/agent_flow/agent-flow-post-merge-build.sh" <<EOF
-#!/bin/bash
-echo "POST_MERGE_BUILD_CALLED pr=\$1 base=\$2" >> "$st.journal"
-exit 0
-EOF
-    chmod +x "$st/repo/scripts/agent_flow/agent-flow-post-merge-build.sh"
+# probe_field <probe_output> <KEY> → значение KEY= из вывода probe.
+probe_field() {
+    printf '%s\n' "$1" | grep -E "^$2=" | head -1 | cut -d= -f2
+}
 
-# Извлекаем guard-блок по строкам 1813-1830 (где мы его вставили в #1625).
-# Используем номера строк, а не awk-паттерн — надёжнее (паттерн может
-# пересечься с другими местами файла).
-local guard_first_line guard_last_line
-guard_first_line="$(grep -n 'ADR-0022 extension (issue #1475): после merge' "$MERGE_GATE_SCRIPT" | head -1 | cut -d: -f1)"
-guard_last_line="$(awk -v start="$guard_first_line" 'NR>=start && /Re-read current labels/ {print NR; exit}' "$MERGE_GATE_SCRIPT")"
+scenario_E_merge_gate_never_triggers_post_merge_build() {
+    local rc=0
 
-if [ -z "$guard_first_line" ] || [ -z "$guard_last_line" ]; then
-    printf '  FAIL: не удалось найти guard-блок (first=%s last=%s)\n' "$guard_first_line" "$guard_last_line" >&2
-    fail_log+=("merge-gate guard locate")
-    return 1
-fi
+    if [ ! -f "$PROBE_SCRIPT" ]; then
+        printf '  FAIL: probe не найден: %s\n' "$PROBE_SCRIPT" >&2
+        fail_log+=("merge-gate probe missing")
+        return 1
+    fi
 
-local guard_src
-guard_src="$(sed -n "${guard_first_line},${guard_last_line}p" "$MERGE_GATE_SCRIPT")"
+    # --- E1: base=develop ---------------------------------------------
+    local out_dev
+    out_dev="$(bash "$PROBE_SCRIPT" develop 2>/dev/null || true)"
+    assert_eq "1" "$(probe_field "$out_dev" RECONCILE)" \
+        "E1 develop: merge-gate вошёл в post-merge reconcile блок" || rc=1
+    assert_eq "1" "$(probe_field "$out_dev" SKIP_LOG)" \
+        "E1 develop: skip-лог 'skipping post-merge build' присутствует" || rc=1
+    assert_eq "0" "$(probe_field "$out_dev" PMB_CALLS)" \
+        "E1 develop: post-merge-build.sh НЕ вызван" || rc=1
 
-    # Подставляем переменные и запускаем дважды: для develop и для main.
-    log() { :; }  # noop для log() в блоке
+    # --- E2: base=main -------------------------------------------------
+    # Внешний guard (MERGED && base=develop) не пускает main в reconcile;
+    # ниже по коду issue с e2e-done уходит в idempotency-skip. В обоих
+    # случаях post-merge-build.sh не должен быть вызван.
+    local out_main
+    out_main="$(bash "$PROBE_SCRIPT" main 2>/dev/null || true)"
+    assert_eq "0" "$(probe_field "$out_main" RECONCILE)" \
+        "E2 main: merge-gate НЕ входит в reconcile (внешний guard)" || rc=1
+    assert_eq "0" "$(probe_field "$out_main" PMB_CALLS)" \
+        "E2 main: post-merge-build.sh НЕ вызван (main build → G-Auto-merge to Main)" || rc=1
 
-    # Develop: guard должен сработать, stub НЕ вызван.
-    : >"$st.journal"
-    local number=1 pr_number=1625 pr_base=develop DEVELOP_BRANCH=develop REPO_DIR="$st/repo"
-    eval "$guard_src" || true
-    local dev_lines
-    dev_lines="$(wc -l < "$st.journal")"
-    assert_eq "0" "$dev_lines" "develop: post-merge-build stub NOT called (guard active)"
+    # --- E3: mutation control -----------------------------------------
+    # Возвращаем мёртвый вызов в копию merge-gate и убеждаемся, что probe
+    # его ЛОВИТ. Без этого шага E1/E2 могли бы «зеленеть» просто потому,
+    # что probe ничего не измеряет.
+    #
+    # merge-gate сорсит соседние lib_agent_flow_common.sh и вызывает
+    # sibling-скрипты через dirname "$BASH_SOURCE" — поэтому мутант кладём
+    # в каталог-зеркало со симлинками на всё содержимое scripts/agent_flow.
+    local mutant_dir="$TEST_DIR/mg"
+    local mutant="$mutant_dir/agent-flow-merge-gate.sh"
+    mkdir -p "$mutant_dir"
+    local sib
+    for sib in "$SCRIPT_DIR_REAL"/*; do
+        [ "$(basename "$sib")" = "agent-flow-merge-gate.sh" ] && continue
+        ln -sfn "$sib" "$mutant_dir/$(basename "$sib")"
+    done
 
-    # Main: guard НЕ срабатывает, stub вызван ровно 1 раз.
-    : >"$st.journal"
-    pr_base=main
-    eval "$guard_src" || true
-    local main_lines
-    main_lines="$(wc -l < "$st.journal")"
-    assert_eq "1" "$main_lines" "main: post-merge-build stub called exactly once"
-    assert_journal_contains "$st.journal" "POST_MERGE_BUILD_CALLED pr=1625 base=main" "main: stub received correct args"
+    local marker='log "issue #${number}: skipping post-merge build for ${pr_base}'
+    if ! grep -qF -- "$marker" "$MERGE_GATE_SCRIPT"; then
+        printf '  FAIL: skip-лог маркер не найден в merge-gate — тест рассинхронизирован\n' >&2
+        fail_log+=("merge-gate skip marker sync")
+        return 1
+    fi
+    # После строки-маркера вставляем восстановленный вызов post-merge-build.
+    awk -v ins='        bash "${REPO_DIR}/scripts/agent_flow/agent-flow-post-merge-build.sh" "${pr_number}" "${pr_base}" 2>/dev/null || true' '
+        { print }
+        index($0, "skipping post-merge build for ${pr_base}") > 0 && !done {
+            print ins
+            done = 1
+        }
+    ' "$MERGE_GATE_SCRIPT" > "$mutant"
+
+    if ! grep -qF 'agent-flow-post-merge-build.sh" "${pr_number}"' "$mutant"; then
+        printf '  FAIL: mutation не применилась (awk не вставил вызов)\n' >&2
+        fail_log+=("merge-gate mutation apply")
+        return 1
+    fi
+    if ! bash -n "$mutant" 2>/dev/null; then
+        printf '  FAIL: mutant merge-gate не проходит bash -n\n' >&2
+        fail_log+=("merge-gate mutant syntax")
+        return 1
+    fi
+
+    local out_mut
+    out_mut="$(PMB_MERGE_GATE_OVERRIDE="$mutant" bash "$PROBE_SCRIPT" develop 2>/dev/null || true)"
+    local mut_calls
+    mut_calls="$(probe_field "$out_mut" PMB_CALLS)"
+    if [ "${mut_calls:-0}" -lt 1 ]; then
+        printf '  FAIL: mutation control — probe НЕ увидел восстановленный вызов post-merge-build (PMB_CALLS=%s). E1/E2 вакуумны.\n' "${mut_calls:-?}" >&2
+        fail_log+=("merge-gate probe mutation control")
+        rc=1
+    fi
+
+    return $rc
 }
 
 # ============================================================================
@@ -324,7 +388,7 @@ run_scenario "A: develop → exit 0, 0 trigger, log 'skipped'" scenario_A_develo
 run_scenario "B: main → 1 trigger, log 'eligible'" scenario_B_main_triggers
 run_scenario "C: DISABLE_POST_MERGE_BUILD=1 → 0 trigger на main и develop" scenario_C_env_disable_overrides
 run_scenario "D: merge-gate содержит develop-guard (regression)" scenario_D_merge_gate_has_develop_guard
-run_scenario "E: merge-gate base-check изолированно (develop skip / main call)" scenario_E_merge_gate_guard_isolated
+run_scenario "E: merge-gate НЕ триггерит post-merge build (реальный скрипт, #2294)" scenario_E_merge_gate_never_triggers_post_merge_build
 run_scenario "F: develop-skip ДО pre-dispatch dedup (no gh run list)" scenario_F_develop_skip_before_dedup
 
 echo ""
