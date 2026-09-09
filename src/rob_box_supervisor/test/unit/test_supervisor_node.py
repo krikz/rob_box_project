@@ -388,6 +388,31 @@ class TestAvatarSupervisorVoicePresetsAndLanguage(unittest.TestCase):
         self.assertEqual(set(self.node._AV28_PRESET_IDS), set(VOICE_PRESET_IDS))
         self.assertEqual(set(self.node._AV28_LANGUAGES), set(VOICE_LANGUAGES))
 
+    def test_grip_default_language_is_re_export_of_catalog(self) -> None:
+        """issue #2265 — дефолтный язык пайплайна живёт в одном месте.
+
+        ``GRIP_DEFAULT_LANGUAGE`` должен быть тем же объектом, что
+        ``rob_box_core.bridge_protocol.VOICE_PIPELINE_DEFAULT_LANGUAGE``
+        (прямой импорт через алиас — тот же приём, что для
+        ``VOICE_PRESET_IDS`` выше в этом тест-классе).
+
+        До фикса это были две независимые константы «ru» в двух
+        модулях; простой assertEqual пройдёт даже на копии, поэтому
+        проверяем ``is`` — гарантирует, что переменная не переприсвоена.
+        """
+        from rob_box_core.bridge_protocol import (
+            VOICE_PIPELINE_DEFAULT_LANGUAGE as CATALOG_DEFAULT_LANG,
+        )
+        self.assertIs(
+            GRIP_DEFAULT_LANGUAGE,
+            CATALOG_DEFAULT_LANG,
+            "GRIP_DEFAULT_LANGUAGE оторвался от канона — "
+            "верни прямой импорт из rob_box_core.bridge_protocol "
+            "(ADR-0080 §2.7 / issue #2265).",
+        )
+        self.assertEqual(GRIP_DEFAULT_LANGUAGE, "ru")
+        self.assertIn(GRIP_DEFAULT_LANGUAGE, VOICE_LANGUAGES)
+
     def test_empty_preset_rejected(self) -> None:
         """Пустой payload — это битый UI; не пытаемся выставить
         пустую строку параметром (dialogue_node упадёт)."""
