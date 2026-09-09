@@ -1,13 +1,16 @@
 """Registry доступных стримов rob_box_quest.
 
 Источник истины: docs/architecture/meta-quest-api.md §4 (topic_id map)
-+ docs/plans/2026-08-24-meta-quest-telepresence.md §1.4 (Phase 1.4 v2:
-видео мимо ROS2, мульти-камера).
++ :mod:`rob_box_core.bridge_protocol` (single source of truth, voice-vr 07
+/ issue #2192). ``STREAM_CATALOG`` и :class:`StreamSpec` тут — re-export
+из каталога; локальный :class:`StreamKind` оставлен как backward-compat
+для кода, который его импортирует (Phase 1.4 v2 коды «ros_topic» /
+«camera_direct»).
 
 Стримы делятся на 2 класса:
-- ROS2 стримы (lidar_2d, map_2d, robot_status, voice_state,
-  person_detections, camera_rear, camera_ceiling): идут через Zenoh,
-  payload формируется в protocol/topics.py и streams/*.
+- ROS2 стримы (lidar_2d, lidar_3d, map_2d, robot_status, voice_state,
+  person_detections, camera_rear, camera_front, camera_ceiling): идут
+  через Zenoh, payload формируется в protocol/topics.py и streams/*.
 - Камеры мимо ROS (camera_oak_color, camera_oak_depth): читаются
   CameraProvider'ом в Vision Pi напрямую (depthai SDK), payload =
   JPEG/H.264 bytes.
@@ -15,160 +18,32 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from enum import Enum
+from types import MappingProxyType
 from typing import Optional
 
-
-class StreamKind(str, Enum):
-    """Источник данных: ROS2-топик или прямое чтение с устройства."""
-
-    ROS_TOPIC = "ros_topic"
-    CAMERA_DIRECT = "camera_direct"
-
-
-@dataclass(frozen=True)
-class StreamSpec:
-    """Описание одного стрима — известно серверу статически."""
-
-    ui_name: str  # "camera_oak_color"
-    topic_id: int  # 0x1003 для camera_oak_color
-    kind: StreamKind
-    # Для ROS_TOPIC: имя ROS-топика для подписки.
-    # Для CAMERA_DIRECT: device_id ("oak_color"/"oak_depth"/"ceiling")
-    #                    или URL.
-    source: str
-    # Quality → bandwidth hint для UI (Phase 2).
-    default_quality: str = "med"  # low/med/high
-    # Описание для UI (человек-читаемое).
-    description: str = ""
+# [voice-vr 07] / issue #2192: ``STREAM_CATALOG`` и ``StreamSpec`` —
+# re-export из rob_box_core.bridge_protocol. Раньше локально объявлялся
+# dataclass-каталог из 9 записей, что расходилось с ``protocol/topics.py``
+# (только topic_id) и не включало ``camera_front`` / ``lidar_3d`` /
+# ``person_detections`` (последние — Phase 2). Канон — bridge_protocol.
+from rob_box_core.bridge_protocol import (
+    STREAMS as _BRIDGE_STREAMS,
+)
+from rob_box_core.bridge_protocol import (
+    StreamKind,
+    StreamSpec,
+    get_stream,
+    get_stream_by_topic_id,
+)
 
 
-# Каталог стримов Phase 1.4 v2.
-# topic_id продолжает нумерацию из protocol/topics.py §4 (0x1001/0x1101/0x1201/0x1301).
-STREAM_CATALOG: dict[str, StreamSpec] = {
-    # --- ROS-стримы (через Zenoh, payload из protocol.topics) ----------
-    "camera_rear": StreamSpec(
-        ui_name="camera_rear",
-        topic_id=0x1001,
-        kind=StreamKind.ROS_TOPIC,
-        source="/camera/camera/color/image_raw",
-        default_quality="med",
-        description="OAK-D colour (Phase 1 fallback через ROS)",
-    ),
-    "lidar_2d": StreamSpec(
-        ui_name="lidar_2d",
-        topic_id=0x1101,
-        kind=StreamKind.ROS_TOPIC,
-        source="/scan",
-        default_quality="high",
-        description="2D LiDAR (sensor_msgs/LaserScan)",
-    ),
-    # Потолочная камера. Раньше стояла как CAMERA_DIRECT на /dev/video0 и
-    # никогда не отдавала ни кадра: устройство держит эксклюзивно контейнер
-    # `ceiling-camera` (usb_cam), а в `rob-box-quest` /dev/video0 вообще не
-    # прокинут (`docker inspect … .HostConfig.Devices` → null). В логах это
-    # видно как «cannot open /dev/video0 → camera camera_ceiling unavailable
-    # — thread exits» на каждом старте. Берём кадры оттуда, где они уже
-    # есть — из ROS-топика usb_cam'а, тем же лёгким путём, что camera_rear
-    # (JPEG от image_transport форвардится as-is, без перекодирования).
-    "camera_ceiling": StreamSpec(
-        ui_name="camera_ceiling",
-        topic_id=0x1005,
-        kind=StreamKind.ROS_TOPIC,
-        source="/ceiling_camera/image_raw/compressed",
-        default_quality="med",
-        description="USB ceiling camera (usb_cam → image_transport JPEG)",
-    ),
-    "map_2d": StreamSpec(
-        ui_name="map_2d",
-        topic_id=0x1103,
-        kind=StreamKind.ROS_TOPIC,
-        source="/rtabmap/map",
-        default_quality="low",
-        description="SLAM occupancy grid (RGBA PNG + поза робота)",
-    ),
-    "robot_status": StreamSpec(
-        ui_name="robot_status",
-        topic_id=0x1201,
-        kind=StreamKind.ROS_TOPIC,
-        source="aggregation",
-        default_quality="med",
-        description="1 Hz battery/wifi/mode/vel",
-    ),
-    "voice_state": StreamSpec(
-        ui_name="voice_state",
-        topic_id=0x1202,
-        kind=StreamKind.ROS_TOPIC,
-        source="/voice/dialogue/state",
-        default_quality="med",
-        description="Dialogue FSM state",
-    ),
-    "person_detections": StreamSpec(
-        ui_name="person_detections",
-        topic_id=0x1301,
-        kind=StreamKind.ROS_TOPIC,
-        source="phase2_source",
-        default_quality="med",
-        description="Phase 2 (R11)",
-    ),
-    # --- Камеры мимо ROS (читаются CameraProvider напрямую) ------------
-    "camera_oak_color": StreamSpec(
-        ui_name="camera_oak_color",
-        topic_id=0x1003,
-        kind=StreamKind.CAMERA_DIRECT,
-        source="oak:color",
-        default_quality="med",
-        description="OAK-D color (depthai SDK, in-process)",
-    ),
-    # Depth-камера OAK-D. Раньше стояла как CAMERA_DIRECT с source="oak:depth"
-    # и никогда не отдавала ни кадра: capture-поток пытался открыть OAK
-    # через depthai SDK, в образе ``rob-box-quest`` depthai нет (``import
-    # depthai`` → ImportError, см. streams/provider.py:OakDepthaiSource) →
-    # поток тихо завершался с логом «camera camera_oak_depth unavailable
-    # — thread exits». В логах на роботе это видно как пустая панель
-    # глубины в шлеме при живом потоке кадров от ``oak-d``.
-    #
-    # Берём кадры из ROS-топика oak-d, тем же лёгким путём, что
-    # camera_rear и camera_ceiling (image_transport compressedDepth —
-    # PNG-кодированный mono16 depth). Источник истины для выбора
-    # топика — ``src/rob_box_telegram/.../telegram_node.py:101``
-    # (camera_depth_topic) и ``docs/analysis/nodes-current-state.md``.
-    # JPEG-варианта (``/compressed``) oak-d не публикует при
-    # ``i_publish_compressed: false`` в docker/vision/config/oak-d —
-    # только ``compressedDepth``, см. ``oak_d_config.yaml:62``.
-    #
-    # ВАЖНО (диагностика 2026-09-08, продолжение #2138.B): "PNG-кодированный"
-    # выше — не совсем точно, и это не конец истории. ``compressedDepth`` —
-    # это 12-байтный бинарный ConfigHeader (int32 format + float
-    # depthQuantA + float depthQuantB) + ПОТОМ PNG, а сам PNG для формата
-    # 16UC1 — 16-битный grayscale (миллиметры), не готовая к показу
-    # картинка. quest_node.py:_on_depth_image (1) отрезает ConfigHeader
-    # (``_strip_compressed_depth_header`` — иначе клиентский
-    # ``createImageBitmap()`` не находит PNG-сигнатуру в начале потока и
-    # тихо роняет кадр — панель пустая, без ошибок в консоли), а затем
-    # (2) перекодирует 16-битный PNG в цветной JPEG
-    # (``streams.depth.depth_compressed_to_jpeg`` — 2/98-перцентильная
-    # нормализация + JET colormap), потому что без этого шага
-    # createImageBitmap сам схлопнул бы 16 бит до 8, взяв старший байт, и
-    # комната 500–5000 мм превратилась бы в почти чёрный кадр (та же
-    # жалоба оператора «панель пустая/не видно», просто без сигнатуры
-    # ошибки). Итоговый payload на WS — обычный JPEG, тем же путём, что
-    # camera_rear/camera_ceiling; клиент не меняется.
-    "camera_oak_depth": StreamSpec(
-        ui_name="camera_oak_depth",
-        topic_id=0x1004,
-        kind=StreamKind.ROS_TOPIC,
-        source="/camera/camera/depth/image_rect_raw/compressedDepth",
-        default_quality="med",
-        description="OAK-D depth (oak-d ROS topic, перекодировано в цветной JPEG)",
-    ),
-}
-
-
-def get_stream(ui_name: str) -> Optional[StreamSpec]:
-    """Lookup стрима по UI-name (None если нет в каталоге)."""
-    return STREAM_CATALOG.get(ui_name)
+# Read-only dict-view канона, совместимый со старым контрактом
+# ``dict[str, StreamSpec]``. Код, который делает ``STREAM_CATALOG["x"]
+# .source``, продолжает работать; присваивание в каталог теперь упадёт
+# (этого и нельзя было делать, см. ADR-0080 §2.2 инвариант 3).
+STREAM_CATALOG: "MappingProxyType[str, StreamSpec]" = MappingProxyType(
+    {s.ui_name: s for s in _BRIDGE_STREAMS}
+)
 
 
 def list_streams() -> list[StreamSpec]:
@@ -177,6 +52,6 @@ def list_streams() -> list[StreamSpec]:
 
 
 def topic_id_for(ui_name: str) -> Optional[int]:
-    """Shortcut: stream_spec.topic_id или None."""
+    """Shortcut: ``StreamSpec.topic_id`` или ``None``."""
     spec = STREAM_CATALOG.get(ui_name)
     return spec.topic_id if spec else None
