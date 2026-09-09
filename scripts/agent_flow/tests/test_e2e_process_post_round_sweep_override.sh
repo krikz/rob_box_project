@@ -73,15 +73,14 @@ assert_eq() {
 # потом function-definitions. Нам нужна ТОЛЬКО функция
 # issue_needs_e2e_re_added_after_run, плюс переменные POST_ROUND_SWEEP_TEST_MODE.
 # Подход: source'им через `bash -c`, выставив mode ДО source.
-extract_function() {
-    # awk: от маркера '# issue_needs_e2e_re_added_after_run' до строки
-    # содержащей `^}` (закрытие функции).
-    awk '
-        /^# issue_needs_e2e_re_added_after_run / { in_fn=1 }
-        in_fn { print }
-        in_fn && /^}$/ { in_fn=0 }
-    ' "$E2E_PROCESS"
-}
+#
+# Извлечение функции идёт через общий lib (issue #2295). Раньше тут жил
+# отдельный awk-обход по comment-маркеру `# issue_needs_e2e_re_added_after_run`
+# — он тоже был дубликатом extract_func (ещё один brace-counter), и миграция
+# в shared lib даёт явный FAIL при переинденте/переносе функции.
+TEST_DIR_LOCAL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/lib_eval_func.sh
+. "$TEST_DIR_LOCAL/lib/lib_eval_func.sh"
 
 # --- Sanity-check: функция присутствует в скрипте --------------------------
 echo "=== Sanity: функция issue_needs_e2e_re_added_after_run в $E2E_PROCESS ==="
@@ -110,14 +109,12 @@ else
 fi
 
 # --- Загружаем функцию в текущий shell ------------------------------------
-_FN_SRC="$(extract_function)"
-if [ -z "$_FN_SRC" ]; then
-    fail "extract_function" "не удалось извлечь тело функции из $E2E_PROCESS"
-    echo ""
-    echo "=== Итоги ==="
-    echo "Всего: $TESTS_TOTAL  ${GRN}passed: $TESTS_PASSED${END}  ${RED}failed: $TESTS_FAILED${END}"
-    exit 1
-fi
+_FN_SRC="$(extract_func_or_die "$E2E_PROCESS" issue_needs_e2e_re_added_after_run)" \
+    || { fail "extract_func_or_die" "не удалось извлечь тело issue_needs_e2e_re_added_after_run из $E2E_PROCESS"
+         echo ""
+         echo "=== Итоги ==="
+         echo "Всего: $TESTS_TOTAL  ${GRN}passed: $TESTS_PASSED${END}  ${RED}failed: $TESTS_FAILED${END}"
+         exit 1; }
 
 # Source функцию в текущий шелл (eval нужен т.к. awk даёт многострочный код).
 # shellcheck disable=SC2086

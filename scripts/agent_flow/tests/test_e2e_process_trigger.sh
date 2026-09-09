@@ -32,27 +32,16 @@ trap 'rm -rf "$WORK"' EXIT
 
 # ----------------------------------------------------------------------------
 # Утилита: извлечь функцию из скрипта и сохранить в отдельный .sh файл.
-# Использует brace-tracking через awk.
+# Использует shared lib (issue #2295) — единственный источник истины для
+# brace-tracking awk.
 # ----------------------------------------------------------------------------
-extract_func() {
-    local fname="$1" outfile="$2"
-    awk -v fn="$fname" '
-        $0 ~ "^"fn"\\(\\)" {flag=1; depth=0}
-        flag {
-            print
-            for(i=1;i<=length($0);i++) {
-                c=substr($0,i,1)
-                if(c=="{") depth++
-                if(c=="}") { depth--; if(depth==0) { flag=0; print ""; break } }
-            }
-        }
-    ' "$SCRIPT_SH" > "$outfile"
-}
+# shellcheck source=lib/lib_eval_func.sh
+. "$TEST_DIR/lib/lib_eval_func.sh"
 
 # Подготовим функции которые нам нужны для теста
 mkdir -p "$WORK/bin" "$WORK/lib"
-extract_func "poll_run_for_epoch" "$WORK/lib/poll_run_for_epoch.sh"
-extract_func "_trigger_workflow_with_retry" "$WORK/lib/_trigger_workflow_with_retry.sh"
+extract_func_or_die "$SCRIPT_SH" poll_run_for_epoch > "$WORK/lib/poll_run_for_epoch.sh"
+extract_func_or_die "$SCRIPT_SH" _trigger_workflow_with_retry > "$WORK/lib/_trigger_workflow_with_retry.sh"
 
 # Нужен log() и verify_recent_run() для функционирования trigger.
 # log() — простая обёртка.

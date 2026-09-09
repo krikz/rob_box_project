@@ -36,41 +36,26 @@ if [ ! -f "$TRIAGE" ]; then
 fi
 
 # Helpers we need are pure (no env vars read inside their bodies).
-# Source them by extracting the relevant function blocks via awk.
-# Simpler: just source the whole file with a stubbed GH_REPO — helpers don't
-# touch GH_REPO unless the script enters the main loop (which it doesn't if
-# we exit early after sourcing). So we source + set GH_REPO + return early.
-# But the script does work at top-level (parse env, etc.). Instead we use
-# bash to extract each function from the file and eval it in this shell.
-extract_function() {  # $1=function_name
-    local fn="$1"
-    # Find "fn() {" or "fn () {" and copy until matching closing brace at
-    # column 0. Use awk with brace-counter.
-    awk -v fn="$fn" '
-        function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
-        $0 ~ "^" fn "[[:space:]]*\\(\\)[[:space:]]*\\{" { capture=1; depth=1; print; next }
-        capture {
-            n = gsub(/\{/, "{")
-            m = gsub(/\}/, "}")
-            depth += n - m
-            print
-            if (depth <= 0) { capture=0; exit }
-        }
-    ' "$TRIAGE"
-}
+# Source them by extracting the relevant function blocks via the shared
+# eval/extract lib (issue #2295). Раньше тут жил локальный awk с brace-counter
+# (ещё один дубль extract_func) — миграция убирает дублирование и даёт явный
+# FAIL при реинденте/переносе функции в исходнике.
+# shellcheck source=lib/lib_eval_func.sh
+. "$TEST_DIR/lib/lib_eval_func.sh"
 
-# Load helpers into this shell. Use a sub-shell guard so side-effects in
-# source (like HERMES_HOME default) don't pollute the test runner.
+# Load helpers into this shell via extract_func_or_die (issue #2295) — даёт
+# явный FAIL при реинденте/переносе функции в исходнике вместо тихого
+# `eval ""` и последующего command-not-found.
 FINGERPRINT_FILE_GLOBS='docker/*/docker-compose.yaml|docker/*/.env.example|docker/*/Dockerfile|src/*/package.xml|src/*/setup.py|install/setup*.sh'
 FINGERPRINT_DUPLICATE_THRESHOLD=1
 export FINGERPRINT_FILE_GLOBS FINGERPRINT_DUPLICATE_THRESHOLD
 
 # shellcheck disable=SC1090
-eval "$(extract_function file_in_fp_whitelist)"
+eval "$(extract_func_or_die "$TRIAGE" file_in_fp_whitelist)"
 # shellcheck disable=SC1090
-eval "$(extract_function fp_for_pr_file)"
+eval "$(extract_func_or_die "$TRIAGE" fp_for_pr_file)"
 # shellcheck disable=SC1090
-eval "$(extract_function find_duplicate_fix_prs)"
+eval "$(extract_func_or_die "$TRIAGE" find_duplicate_fix_prs)"
 
 # --- Test registry ----------------------------------------------------------
 TESTS_TOTAL=0

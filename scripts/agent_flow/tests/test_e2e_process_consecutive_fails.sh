@@ -31,24 +31,15 @@ FAIL=0
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
-# Extract helpers from main script
-extract_func() {
-    local fname="$1" outfile="$2"
-    awk -v fn="$fname" '
-        $0 ~ "^"fn"\\(\\)" {flag=1; depth=0}
-        flag {
-            print
-            for(i=1;i<=length($0);i++) {
-                c=substr($0,i,1)
-                if(c=="{") depth++
-                if(c=="}") { depth--; if(depth==0) { flag=0; print ""; break } }
-            }
-        }
-    ' "$SCRIPT_SH" > "$outfile"
-}
+# Extract helpers from main script via shared lib (issue #2295). Write each
+# function body to a separate .sh file in $WORK so the test can source them
+# independently — same pattern as before, but the awk brace-tracking now
+# lives in one canonical place (lib/lib_eval_func.sh).
+# shellcheck source=lib/lib_eval_func.sh
+. "$TEST_DIR/lib/lib_eval_func.sh"
 
 for fn in e2e_run_state_load e2e_run_state_save e2e_run_state_get e2e_run_state_bump_fail e2e_run_state_reset e2e_run_state_set_infra_fail; do
-    extract_func "$fn" "$WORK/${fn}.sh"
+    extract_func_or_die "$SCRIPT_SH" "$fn" > "$WORK/${fn}.sh"
 done
 
 # Source all helpers
