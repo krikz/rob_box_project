@@ -63,13 +63,23 @@ assert_eq() {  # $1=expected $2=actual $3=msg
 # no nested function tricks).
 extract_helper() {
     local lib="$1"
-    local start end
-    start="$(grep -n '^af_skill_for_profile()' "$lib" | head -1 | cut -d: -f1)"
+    local start end end_target
+    # Ретро 09.09.2026 #2297: af_skill_for_profile использует top-level
+    # _skill_installed — нужно тащить его тоже. _skill_installed объявлен
+    # прямо ПЕРЕД af_skill_for_profile (см. lib_agent_flow_common.sh), так что
+    # старт берём от него, а конец — от af_skill_for_profile (col-0 '}').
+    start="$(grep -n '^_skill_installed()' "$lib" | head -1 | cut -d: -f1)"
     if [ -z "$start" ]; then
+        echo "extract_helper: _skill_installed() not found in $lib" >&2
+        return 1
+    fi
+    end_target="$(grep -n '^af_skill_for_profile()' "$lib" | head -1 | cut -d: -f1)"
+    if [ -z "$end_target" ]; then
         echo "extract_helper: af_skill_for_profile() not found in $lib" >&2
         return 1
     fi
-    end="$(awk -v s="$start" 'NR>=s && /^}$/{print NR; exit}' "$lib")"
+    # End: первая col-0 '}' ПОСЛЕ строки af_skill_for_profile().
+    end="$(awk -v s="$end_target" 'NR>=s && /^}$/{print NR; exit}' "$lib")"
     sed -n "${start},${end}p" "$lib" > /tmp/.triage_skill_helper.sh
     # shellcheck disable=SC1091
     . /tmp/.triage_skill_helper.sh
@@ -299,17 +309,23 @@ echo "=== T7: af_skills_for_profile returns multi-skill list (ретро t_aafad
 
 extract_helper_multi() {
     local lib="$1"
-    # Извлекаем af_skills_for_profile + все вложенные helper-функции (_skill_installed,
-    # _add_skill) которые она определяет. Используем awk чтобы захватить тело
-    # функции до первой standalone '}' (т.е. до закрытия самой внешней функции).
-    local start
-    start="$(grep -n '^af_skills_for_profile()' "$lib" | head -1 | cut -d: -f1)"
+    local start end end_target
+    # Ретро 09.09.2026 #2297: af_skills_for_profile полагается на top-level
+    # _skill_installed — нужно тащить его тоже. _skill_installed объявлен
+    # прямо ПЕРЕД af_skill_for_profile, а af_skill_for_profile — прямо ПЕРЕД
+    # af_skills_for_profile. Извлекаем единым блоком от _skill_installed до
+    # конца af_skills_for_profile (col-0 '}' после неё).
+    start="$(grep -n '^_skill_installed()' "$lib" | head -1 | cut -d: -f1)"
     if [ -z "$start" ]; then
+        echo "extract_helper_multi: _skill_installed() not found" >&2
+        return 1
+    fi
+    end_target="$(grep -n '^af_skills_for_profile()' "$lib" | head -1 | cut -d: -f1)"
+    if [ -z "$end_target" ]; then
         echo "extract_helper_multi: af_skills_for_profile() not found" >&2
         return 1
     fi
-    local end
-    end="$(awk -v s="$start" 'NR>=s && /^}$/{print NR; exit}' "$lib")"
+    end="$(awk -v s="$end_target" 'NR>=s && /^}$/{print NR; exit}' "$lib")"
     sed -n "${start},${end}p" "$lib" > /tmp/.triage_multi_helper.sh
     # shellcheck disable=SC1091
     . /tmp/.triage_multi_helper.sh

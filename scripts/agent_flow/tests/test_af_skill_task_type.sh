@@ -27,10 +27,13 @@ PASS=0; FAIL=0
 pass() { PASS=$((PASS+1)); echo "  ✓ $1"; }
 fail() { FAIL=$((FAIL+1)); echo "  ✗ $1 (${2:-})"; }
 
-# Extract af_skill_for_profile (тот же приём, что в test_triage_skill_inference.sh)
-start="$(grep -n '^af_skill_for_profile()' "$LIB" | head -1 | cut -d: -f1)"
-[ -n "$start" ] || { echo "FAIL: af_skill_for_profile not found in $LIB"; exit 1; }
-end="$(awk -v s="$start" 'NR>=s && /^}$/{print NR; exit}' "$LIB")"
+# Extract _skill_installed + af_skill_for_profile как единый блок (ретро
+# 09.09.2026 #2297 — af_skill_for_profile зовёт top-level _skill_installed).
+start="$(grep -n '^_skill_installed()' "$LIB" | head -1 | cut -d: -f1)"
+[ -n "$start" ] || { echo "FAIL: _skill_installed not found in $LIB"; exit 1; }
+end_target="$(grep -n '^af_skill_for_profile()' "$LIB" | head -1 | cut -d: -f1)"
+[ -n "$end_target" ] || { echo "FAIL: af_skill_for_profile not found in $LIB"; exit 1; }
+end="$(awk -v s="$end_target" 'NR>=s && /^}$/{print NR; exit}' "$LIB")"
 sed -n "${start},${end}p" "$LIB" > "$WORK/helper.sh"
 # shellcheck disable=SC1091
 . "$WORK/helper.sh"
