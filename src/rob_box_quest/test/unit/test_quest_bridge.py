@@ -337,25 +337,22 @@ def _make_wake_bridge():
     return bridge, quest_wake
 
 
-def test_publish_quest_wake_audio_publishes_to_quest_wake_pub():
-    """publish_quest_wake_audio публикует ровно тот payload, что пришёл,
-    одним AudioData — без буферизации/EOU-логики (в отличие от robot_voice
-    на PTT-канале: клиент уже отфильтровал тишину через RMS VAD)."""
-    bridge, quest_wake = _make_wake_bridge()
-    payload = _pcm_chunk(4000, 4000)
-    bridge.publish_quest_wake_audio(payload)
-    assert len(quest_wake.published) == 1
-    # rclpy AudioData.data — array.array('B', ...) под настоящим сообщением
-    # (uint8[] сериализуется так), list() приводит к сравнимому виду.
-    assert list(quest_wake.published[0].data) == [0xA0, 0x0F, 0xA0, 0x0F]
-
-
-def test_publish_quest_wake_audio_multiple_chunks_publish_individually():
-    bridge, quest_wake = _make_wake_bridge()
-    bridge.publish_quest_wake_audio(_pcm20ms(4000))
-    bridge.publish_quest_wake_audio(_pcm20ms(-4000))
-    assert len(quest_wake.published) == 2
-    assert quest_wake.published[0].data != quest_wake.published[1].data
+# issue #2232 / #2135: два теста, стоявшие здесь
+# (``test_publish_quest_wake_audio_publishes_to_quest_wake_pub`` и
+# ``test_publish_quest_wake_audio_multiple_chunks_publish_individually``),
+# удалены как устаревшие. Они проверяли поведение ДО #2135 — «каждый
+# 20мс-кадр публикуется отдельным AudioData, без буферизации/EOU-логики».
+# #2135 это поведение и чинил: кадры копятся в WakePhraseSegmenter и
+# уходят ОДНИМ AudioData на фразу, закрываемую паузой через
+# tick_wake_audio. Именно из-за покадровой публикации вейк «ТАРС» из
+# шлема не мог сработать никогда.
+#
+# Тесты остались красными и невидимыми: CI не запускал rob_box_quest
+# (#2232), а локально они skip-аются без geometry_msgs.
+#
+# Актуальный контракт полностью покрыт в
+# test_quest_bridge_wake_segmentation.py (фраза по паузе, две реплики —
+# два сообщения, потолок буфера, сброс при disconnect).
 
 
 def test_publish_quest_wake_audio_none_publisher_is_noop():
@@ -602,7 +599,12 @@ class _MockStringPublisher(_MockPublisher):
         super().publish(getattr(msg, "data", msg))
 
 
-def _make_voice_bridge(set_voice_pub=None, preview_voice_pub=None, voices_cache_ttl_sec=300.0):
+# issue #2232: раньше эта фабрика называлась ``_make_voice_bridge`` — как и
+# фабрика на строке ~226, возвращающая ШЕСТЬ значений. Второе определение
+# затеняло первое, и восемь тестов выше падали с
+# ``ValueError: not enough values to unpack (expected 6, got 3)``.
+# Локально это не видно: без geometry_msgs они skip-аются.
+def _make_voice_picker_bridge(set_voice_pub=None, preview_voice_pub=None, voices_cache_ttl_sec=300.0):
     """Construct QuestBridge с mock-publishers для voice-picker.
 
     set_voice_pub / preview_voice_pub опциональны (None → мост будет
@@ -644,7 +646,7 @@ def _string_msg(payload_str: str):
 
 def test_voices_cache_empty_snapshot_before_latched_publish():
     """Без latched-publish от tts_node — snapshot возвращает voices=[]."""
-    bridge, _, _ = _make_voice_bridge()
+    bridge, _, _ = _make_voice_picker_bridge()
     snap = bridge.list_voices_snapshot()
     assert snap["voices"] == []
     assert snap["active_provider"] == ""
@@ -653,7 +655,7 @@ def test_voices_cache_empty_snapshot_before_latched_publish():
 
 def test_voices_cache_hit_after_latched_publish():
     """После on_voices_message с приличным payload — snapshot содержит voices."""
-    bridge, _, _ = _make_voice_bridge()
+    bridge, _, _ = _make_voice_picker_bridge()
     payload = json.dumps({
         "provider": "yandex",
         "voice": "alena",
@@ -674,7 +676,7 @@ def test_voices_cache_hit_after_latched_publish():
 
 def test_voices_cache_expiry_returns_empty():
     """voices_cache_ttl_sec=0.1 → через 0.2 с snapshot пустой (TTL истёк)."""
-    bridge, _, _ = _make_voice_bridge(voices_cache_ttl_sec=0.1)
+    bridge, _, _ = _make_voice_picker_bridge(voices_cache_ttl_sec=0.1)
     payload = json.dumps({
         "provider": "yandex",
         "voice": "alena",
@@ -692,7 +694,7 @@ def test_voices_cache_expiry_returns_empty():
 
 def test_on_provider_state_message_invalidates_cache_on_provider_change():
     """Смена провайдера → invalidate cache (TTL=0, чтобы следующий list увидел [])."""
-    bridge, _, _ = _make_voice_bridge()
+    bridge, _, _ = _make_voice_picker_bridge()
     payload = json.dumps({
         "provider": "yandex",
         "voice": "alena",
@@ -712,7 +714,7 @@ def test_on_provider_state_message_invalidates_cache_on_provider_change():
 
 def test_set_voice_unknown_returns_nack_with_available():
     """set_voice(bogus) при активном yandex → nack + available=текущий список."""
-    bridge, svp, _ = _make_voice_bridge()
+    bridge, svp, _ = _make_voice_picker_bridge()
     # Актитируем активный провайдер через provider_state (как сделал бы tts_node).
     bridge.on_provider_state_message(_string_msg(json.dumps({"provider": "yandex", "voice": "alena"})))
     # Загружаем voices_payload (через on_voices_message).
@@ -742,7 +744,7 @@ def test_set_voice_success_publishes_json_with_provider_hint():
     от «pub/sub не доезжает до supervisor» (H2/H3) при поиске пропавших
     смен голоса в docker logs (см. PR-body).
     """
-    bridge, svp, _ = _make_voice_bridge()
+    bridge, svp, _ = _make_voice_picker_bridge()
     bridge.on_provider_state_message(_string_msg(json.dumps({"provider": "yandex", "voice": "alena"})))
     bridge.on_voices_message(_string_msg(json.dumps({
         "provider": "yandex",
@@ -791,7 +793,7 @@ def test_set_voice_success_publishes_json_with_provider_hint():
 
 def test_set_voice_no_active_provider_returns_tts_unreachable():
     """Без provider_state — set_voice возвращает tts_unreachable, ничего не публикует."""
-    bridge, svp, _ = _make_voice_bridge()
+    bridge, svp, _ = _make_voice_picker_bridge()
     ok, _, reason, _ = bridge.set_voice("alena", None)
     assert ok is False
     assert reason == "tts_unreachable"
@@ -800,7 +802,7 @@ def test_set_voice_no_active_provider_returns_tts_unreachable():
 
 def test_publish_preview_voice_emits_json():
     """publish_preview_voice → JSON в preview_voice_pub с request_id/voice_id/text."""
-    bridge, _, pvp = _make_voice_bridge()
+    bridge, _, pvp = _make_voice_picker_bridge()
     bridge.on_provider_state_message(_string_msg(json.dumps({"provider": "yandex", "voice": "alena"})))
     bridge.publish_preview_voice("req-1", "alena", "Привет, оператор!")
     assert len(pvp.published) == 1
@@ -814,7 +816,7 @@ def test_publish_preview_voice_emits_json():
 
 def test_publish_preview_voice_without_provider_still_emits():
     """preview_voice без provider_state (холодный старт) — provider="", но payload валиден."""
-    bridge, _, pvp = _make_voice_bridge()
+    bridge, _, pvp = _make_voice_picker_bridge()
     bridge.publish_preview_voice("req-x", "alena", "test")
     assert len(pvp.published) == 1
     parsed = json.loads(pvp.published[0])
