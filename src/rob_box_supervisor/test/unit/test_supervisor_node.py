@@ -29,9 +29,7 @@ from rob_box_supervisor.supervisor_node import (
     DIALOGUE_CONTROL_TOPIC,
     GRIP_DEFAULT_LANGUAGE,
     MONITOR_MODE_REASON,
-    SET_VOICE_LANGUAGE_TOPIC,
     SET_VOICE_MODE_TOPIC,
-    SET_VOICE_PRESET_TOPIC,
     VOICE_LANGUAGES,
     VOICE_PRESET_IDS,
     AvatarSupervisor,
@@ -295,14 +293,15 @@ class TestAvatarSupervisorVoiceMode(unittest.TestCase):
 
 
 class TestAvatarSupervisorVoicePresetsAndLanguage(unittest.TestCase):
-    """AV-28 §P7 — супервизор владеет voice_preset + voice_output_language.
+    """AV-28 §P7 — voice style preset/language удалены по ADR-0087.
 
-    Маршрут: UI → ws_server.set_voice → Bridge → /avatar/set_voice_preset
-    (или _language) → supervisor (валидация whitelist + фиксация в
-    grip_pipeline.yaml-direct, voice-vr 21 / ADR-0080 §2.7 — больше
-    НЕ пишет в чужие ROS-параметры).
-    Симметрично TestAvatarSupervisorVoiceMode (выше), но для параметров
-    стиля речи и языка вывода, которые появились в Phase 3 (AV-28).
+    После удаления канала в supervisor_node: `_AV28_*` /
+    `_on_set_voice_preset|language` / `_apply_voice_preset|language`
+    и подписки на `/avatar/set_voice_preset|language` больше не
+    существуют. Регрессии в этом классе следят за тем, чтобы
+    (а) legacy-канал не вернулся в виде «написано, но не подключено»
+    (ADR-0018) и (б) живой write-side голоса через
+    `/voice/tts/set_voice` не сломался.
     """
 
     def setUp(self) -> None:
@@ -311,83 +310,41 @@ class TestAvatarSupervisorVoicePresetsAndLanguage(unittest.TestCase):
     def tearDown(self) -> None:
         self.node.destroy_node()
 
-    def test_preset_topic_subscribed(self) -> None:
-        topics = [s.topic for s in self.node._subscriptions]
-        self.assertIn(SET_VOICE_PRESET_TOPIC, topics)
-        self.assertIn(SET_VOICE_LANGUAGE_TOPIC, topics)
+    def test_preset_language_topics_not_subscribed(self) -> None:
+        """AV-28 §P7 топики больше НЕ подписываются супервизором.
 
-    def test_monitor_mode_does_not_apply_preset(self) -> None:
-        """В monitor супервизор принимает preset, но НЕ применяет (S12)."""
-        applied, reason = self.node._apply_voice_preset("lenin")
-        self.assertFalse(applied)
-        self.assertEqual(reason, MONITOR_MODE_REASON)
-
-    def test_monitor_mode_does_not_apply_language(self) -> None:
-        applied, reason = self.node._apply_voice_language("en")
-        self.assertFalse(applied)
-        self.assertEqual(reason, MONITOR_MODE_REASON)
-
-    def test_invalid_preset_rejected(self) -> None:
-        """Не-whitelisted preset отвергается — UI получит NACK на сервере,
-        а здесь на supervisor-стороне ловим как ``invalid_voice_preset``."""
-        self.node._mode = "active"
-        applied, reason = self.node._apply_voice_preset("not_a_preset")
-        self.assertFalse(applied)
-        self.assertIn("invalid_voice_preset", reason)
-
-    def test_invalid_language_rejected(self) -> None:
-        self.node._mode = "active"
-        applied, reason = self.node._apply_voice_language("xx")
-        self.assertFalse(applied)
-        self.assertIn("invalid_voice_language", reason)
-
-    def test_whitelists_match_ws_server_and_yaml(self) -> None:
-        """Whitelist'ы = ws_server.VOICE_* = ``rob_box_core.bridge_protocol``
-        (здесь SoT для ``voice_presets.yaml``) = yaml-источник.
-
-        voice-vr 21: один источник (``bridge_protocol``), и ws_server /
-        supervisor импортируют его же, а не держат локальную копию.
-        Разъехавшись, они давали молчаливый отказ: ws_server отвечал
-        Quest'у ack, а супервизор ронял запрос в applied=False. Так уехали
-        ``translate`` и языки fr/de/zh/hi — оператор жал кнопку, UI
-        подсвечивал выбор, робот его не получал.
+        До ADR-0087 были подписки на `/avatar/set_voice_preset|language`
+        с no-op обработчиками (whitelist + log + ack, без эффекта).
+        Эти подписки и обработчики удалены — тест лёгкий регресс,
+        не дать каналу вернуться.
         """
-        import yaml
+        topics = [s.topic for s in self.node._subscriptions]
+        self.assertNotIn("/avatar/set_voice_preset", topics)
+        self.assertNotIn("/avatar/set_voice_language", topics)
 
-        from rob_box_quest.server.ws_server import (
-            VOICE_LANGUAGES as WS_LANGUAGES,
-            VOICE_PRESET_IDS as WS_PRESETS,
-        )
-        from rob_box_core.bridge_protocol import (
-            VOICE_LANGUAGES as CATALOG_LANGUAGES,
-            VOICE_PRESET_IDS as CATALOG_PRESETS,
-        )
-
-        yaml_path = (
-            pathlib.Path(__file__).resolve().parents[3]
-            / "rob_box_voice"
-            / "config"
-            / "voice_presets.yaml"
-        )
-        data = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
-        yaml_presets = set(data["presets"].keys())
-        yaml_languages = {str(code).lower() for code in data["languages"]}
-        # 1. YAML — финальный источник истины.
-        self.assertEqual(yaml_presets, set(VOICE_PRESET_IDS))
-        self.assertEqual(yaml_languages, set(VOICE_LANGUAGES))
-        # 2. Каталог (bridge_protocol) — переэкспорт этой же константы,
-        #    должен быть биткомпактен с YAML (иначе codegen рассинхронится).
-        self.assertEqual(yaml_presets, set(CATALOG_PRESETS))
-        self.assertEqual(yaml_languages, set(CATALOG_LANGUAGES))
-        # 3. ws_server — это symlink ``bridge_protocol``,
-        #    должен быть идентичен ему (адрес регресс — три копии списка).
-        self.assertEqual(set(WS_PRESETS), set(CATALOG_PRESETS))
-        self.assertEqual(set(WS_LANGUAGES), set(CATALOG_LANGUAGES))
-        # 4. Класс валидирует ровно этими списками — второй копии
-        #    на классе быть не должно (ранее был ``_AV28_*``, который
-        #    и разъезжался с ws_server).
-        self.assertEqual(set(self.node._AV28_PRESET_IDS), set(VOICE_PRESET_IDS))
-        self.assertEqual(set(self.node._AV28_LANGUAGES), set(VOICE_LANGUAGES))
+    def test_apply_voice_preset_language_methods_removed(self) -> None:
+        """`_apply_voice_preset`/`_apply_voice_language`/`_on_set_voice_preset|language`
+        удалены на классе (ADR-0087 §2.1). Атрибуты не должны
+        существовать ни на инстансе, ни на классе.
+        """
+        for removed in (
+            "_apply_voice_preset",
+            "_apply_voice_language",
+            "_on_set_voice_preset",
+            "_on_set_voice_language",
+            "_AV28_PRESET_IDS",
+            "_AV28_LANGUAGES",
+            "SET_VOICE_PRESET_TOPIC",
+            "SET_VOICE_LANGUAGE_TOPIC",
+        ):
+            self.assertFalse(
+                hasattr(self.node, removed),
+                f"ADR-0087: {removed} должен быть удалён из supervisor_node",
+            )
+            self.assertFalse(
+                hasattr(AvatarSupervisor, removed),
+                f"ADR-0087: {removed} должен быть удалён с класса AvatarSupervisor",
+            )
 
     def test_grip_default_language_is_re_export_of_catalog(self) -> None:
         """issue #2265 — дефолтный язык пайплайна живёт в одном месте.
@@ -414,55 +371,8 @@ class TestAvatarSupervisorVoicePresetsAndLanguage(unittest.TestCase):
         self.assertEqual(GRIP_DEFAULT_LANGUAGE, "ru")
         self.assertIn(GRIP_DEFAULT_LANGUAGE, VOICE_LANGUAGES)
 
-    def test_empty_preset_rejected(self) -> None:
-        """Пустой payload — это битый UI; не пытаемся выставить
-        пустую строку параметром (dialogue_node упадёт)."""
-        self.node._mode = "active"
-        applied, reason = self.node._apply_voice_preset("")
-        self.assertFalse(applied)
-        self.assertEqual(reason, "empty_voice_preset")
-
-    def test_empty_language_rejected(self) -> None:
-        self.node._mode = "active"
-        applied, reason = self.node._apply_voice_language("")
-        self.assertFalse(applied)
-        self.assertEqual(reason, "empty_voice_language")
-
-    def test_active_mode_dispatches_preset(self) -> None:
-        """voice-vr 21: валидный preset в active → ``applied`` без
-        записи в чужие ROS-параметры dialogue_node (ADR-0080 §2.7).
-        Живой путь — ``grip_pipeline`` yaml-direct, поэтому проверяем
-        только факт валидации whitelist'а + сигнатуру возврата; никаких
-        побочных эффектов на mock-rclpy быть не должно.
-        """
-        self.node._mode = "active"
-        applied, reason = self.node._apply_voice_preset("philosopher")
-        self.assertTrue(applied)
-        self.assertEqual(reason, "applied")
-
-    def test_active_mode_dispatches_language(self) -> None:
-        self.node._mode = "active"
-        applied, reason = self.node._apply_voice_language("en")
-        self.assertTrue(applied)
-        self.assertEqual(reason, "applied")
-
-    def test_on_set_voice_preset_feeds_apply(self) -> None:
-        """Топик → _apply_voice_preset; в monitor применяется=false."""
-        self.node._apply_voice_preset = MagicMock(
-            return_value=(False, MONITOR_MODE_REASON)
-        )
-        self.node._on_set_voice_preset(_make_string_msg("lenin"))
-        self.node._apply_voice_preset.assert_called_once_with("lenin")
-
-    def test_on_set_voice_language_feeds_apply(self) -> None:
-        self.node._apply_voice_language = MagicMock(
-            return_value=(False, MONITOR_MODE_REASON)
-        )
-        self.node._on_set_voice_language(_make_string_msg("ru"))
-        self.node._apply_voice_language.assert_called_once_with("ru")
-
     def test_active_mode_no_set_parameters_call(self) -> None:
-        """voice-vr 21: ``_apply_voice_*`` НЕ пишет в чужие ROS-параметры
+        """voice-vr 21: supervisor НЕ пишет в чужие ROS-параметры
         (визуальная регрессия на ADR-0080 §2.7 — единственная живая
         проточка параметров — tts_node picker через /voice/tts/set_voice
         топик, не через клиент записи). Раньше были
@@ -483,12 +393,6 @@ class TestAvatarSupervisorVoicePresetsAndLanguage(unittest.TestCase):
             "supervisor пишет в tts_node через /voice/tts/set_voice, "
             "а не клиентом записи параметров",
         )
-        # Старое поведение, которое роняло узел через param_set_failed,
-        # теперь недостижимо. Гарантируем, что _apply всё равно не падает
-        # (нет шинного RPC, поэтому нечего ловить).
-        applied, reason = self.node._apply_voice_preset("street")
-        self.assertTrue(applied)
-        self.assertEqual(reason, "applied")
 
     def test_apply_set_voice_publishes_to_tts_set_voice_topic(self) -> None:
         """voice-vr 21 / ADR-0080 §2.7 — ``_apply_set_voice`` в active
