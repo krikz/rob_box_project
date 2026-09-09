@@ -675,6 +675,106 @@ class MsgTypeResolutionTests(unittest.TestCase):
         )
         self.assertEqual(swc._collect_topic_type_mismatches(scan), [])
 
+    def test_self_attr_assigned_to_import_resolves(self):
+        # Direct shape of the IDL-helper idiom: ``self._msg = Foo``
+        # where ``Foo`` is imported at function scope. The lint must
+        # see this as a fully-resolved msg-type so that a real mismatch
+        # below is detected, not hidden behind ``sub=?`` (issue
+        # #2188 / voice-vr 03 Шифу `GOODWORKRINKZ` review).
+        scan = self._scan(
+            {
+                "src/rob_box_supervisor/rob_box_supervisor/arbiter_node.py": (
+                    "from rob_box_supervisor_msgs.msg import TeleopHeartbeat\n"
+                    "class AvatarArbiter:\n"
+                    "    def __init__(self):\n"
+                    "        self._heartbeat_msg_type = TeleopHeartbeat\n"
+                    "        self.create_subscription(\n"
+                    "            self._heartbeat_msg_type, '/teleop_heartbeat', self.cb, 10\n"
+                    "        )\n"
+                ),
+                "src/rob_box_quest/rob_box_quest/quest_node.py": (
+                    "from std_msgs.msg import String\n"
+                    "class QuestNode:\n"
+                    "    def __init__(self):\n"
+                    "        self.create_publisher(String, '/teleop_heartbeat', 10)\n"
+                ),
+            }
+        )
+        mismatches = swc._collect_topic_type_mismatches(scan)
+        self.assertEqual(len(mismatches), 1)
+        self.assertEqual(mismatches[0], "/teleop_heartbeat|String != TeleopHeartbeat")
+        # And neither side is reported as unresolved any more.
+        self.assertEqual(swc._collect_best_effort_mismatches(scan), [])
+
+    def test_self_attr_via_try_import_helper_resolves(self):
+        # The exact arbiter_node.py shape (WIP fixture, before #2204
+        # lands): ``self._heartbeat_msg_type = self._try_import_xxx()``
+        # where ``_try_import_xxx`` is a same-class helper that does
+        # ``from rob_box_supervisor_msgs.msg import TeleopHeartbeat;
+        # return TeleopHeartbeat``. This was the `[??]` Шифу asked
+        # to make `[FAIL]` — and now it is.
+        scan = self._scan(
+            {
+                "src/rob_box_supervisor/rob_box_supervisor/arbiter_node.py": (
+                    "from rob_box_supervisor_msgs.msg import TeleopHeartbeat\n"
+                    "class AvatarArbiter:\n"
+                    "    def _try_import_heartbeat_msg(self):\n"
+                    "        from rob_box_supervisor_msgs.msg import TeleopHeartbeat\n"
+                    "        return TeleopHeartbeat\n"
+                    "    def __init__(self):\n"
+                    "        self._heartbeat_msg_type = self._try_import_heartbeat_msg()\n"
+                    "        self.create_subscription(\n"
+                    "            self._heartbeat_msg_type, '/teleop_heartbeat', self.cb, 10\n"
+                    "        )\n"
+                ),
+                "src/rob_box_quest/rob_box_quest/quest_node.py": (
+                    "from std_msgs.msg import String\n"
+                    "class QuestNode:\n"
+                    "    def __init__(self):\n"
+                    "        self.create_publisher(String, '/teleop_heartbeat', 10)\n"
+                ),
+            }
+        )
+        mismatches = swc._collect_topic_type_mismatches(scan)
+        self.assertEqual(len(mismatches), 1)
+        self.assertEqual(mismatches[0], "/teleop_heartbeat|String != TeleopHeartbeat")
+        self.assertEqual(swc._collect_best_effort_mismatches(scan), [])
+
+    def test_self_attr_try_import_mismatch_is_gated_not_best_effort(self):
+        # Belt-and-braces for the round-trip: with the try-import helper
+        # pattern, the mismatch must gate CI (it lands in
+        # ``topic_type_mismatch``) and the best-effort section must be
+        # empty. This is the contract Шифу asked for in PR #2206.
+        scan = self._scan(
+            {
+                "src/rob_box_supervisor/rob_box_supervisor/arbiter_node.py": (
+                    "class AvatarArbiter:\n"
+                    "    def _try_import_heartbeat_msg(self):\n"
+                    "        from rob_box_supervisor_msgs.msg import TeleopHeartbeat\n"
+                    "        return TeleopHeartbeat\n"
+                    "    def __init__(self):\n"
+                    "        self._heartbeat_msg_type = self._try_import_heartbeat_msg()\n"
+                    "        self.create_subscription(\n"
+                    "            self._heartbeat_msg_type, '/teleop_heartbeat', self.cb, 10\n"
+                    "        )\n"
+                ),
+                "src/rob_box_quest/rob_box_quest/quest_node.py": (
+                    "from std_msgs.msg import String\n"
+                    "class QuestNode:\n"
+                    "    def __init__(self):\n"
+                    "        self.create_publisher(String, '/teleop_heartbeat', 10)\n"
+                ),
+            }
+        )
+        gated = swc._collect_topic_type_mismatches(scan)
+        best_effort = swc._collect_best_effort_mismatches(scan)
+        self.assertEqual(len(gated), 1, gated)
+        self.assertEqual(best_effort, [])
+        # The gated entry MUST be the exact key that the baseline
+        # round-trip test (``test_baseline_round_trip_for_topic_type_mismatch``)
+        # learns to absorb.
+        self.assertEqual(gated[0], "/teleop_heartbeat|String != TeleopHeartbeat")
+
     def test_baseline_round_trip_for_topic_type_mismatch(self):
         # Update baseline → mismatch recorded → check passes (no NEW
         # violation). This is the same flow cc_budget follows for its

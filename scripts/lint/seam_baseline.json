@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "created": "2026-09-08",
-  "base_sha": "8cf82fb4bb9239ab427eab31ee318b10824f8d23",
+  "created": "2026-09-09",
+  "base_sha": "59ef3a433d02448f24910afe5c5fc671b944bece",
   "publishers_without_local_subscriber": [
     "/animation/audio_trigger",
     "/animations/trigger",
@@ -29,8 +29,8 @@
   "method_seams_without_caller": [
     "DialogueNode._on_perception_update"
   ],
-  "topic_type_mismatch": [],
-  "topic_type_mismatch_best_effort": [
-    "/teleop_heartbeat|pub=String sub=? (unresolved msg-type)"
-  ]
+  "topic_type_mismatch": [
+    "/teleop_heartbeat|String != TeleopHeartbeat"
+  ],
+  "topic_type_mismatch_best_effort": []
 }

@@ -297,7 +297,9 @@ def _get_parameter_value(node: ast.expr, declared_params: dict[str, str | None])
 
 
 def _class_consts(
-    class_node: ast.ClassDef, module_consts: dict[str, str | None] | None = None
+    class_node: ast.ClassDef,
+    module_consts: dict[str, str | None] | None = None,
+    import_map: dict[str, tuple[str, str]] | None = None,
 ) -> dict[str, str | None]:
     """Class-body literals + unambiguous ``self.attr = <literal-ish>`` in any method.
 
@@ -306,13 +308,31 @@ def _class_consts(
     only) a bare reference to a same-named module-level constant — this repo
     has a re-export idiom (``TOPIC_STATE = "/avatar/state"`` at module scope,
     then ``TOPIC_STATE = TOPIC_STATE`` inside the class body so it's reachable
-    as ``self.TOPIC_STATE``). All of these resolve to the same flat
-    ``attr -> str | None`` map so callers don't need to know which style
-    produced the value.
+    as ``self.TOPIC_STATE``).
+
+    Also (for ``self.attr = <Name>`` in any method) we record the
+    canonical msg-type identifier if ``<Name>`` is a known import alias
+    from ``import_map``. This resolves the ``_heartbeat_msg_type =
+    TeleopHeartbeat`` pattern that the IDL-helper idiom uses to keep
+    ``create_subscription`` calls type-explicit: ``self.attr`` lookup in
+    :func:`_msg_type_id` returns the canonical msg-type short name.
+
+    Lastly, ``self.attr = self.method(...)`` where ``self.method`` is
+    defined in the same class and its body is a single
+    ``from <module> import <Name>`` followed by ``return <Name>`` also
+    resolves to that import's canonical name. This catches the
+    ``_try_import_xxx()`` helper idiom in :mod:`arbiter_node` (issue
+    #2188 / voice-vr 03). Such helpers are recognisable: they contain
+    exactly one ``from ... import`` line and one ``return`` whose value
+    is exactly that imported name.
+
+    All of these resolve to the same flat ``attr -> str | None`` map so
+    callers don't need to know which style produced the value.
     """
     consts: dict[str, str | None] = {}
     declared_params = _declared_params(class_node)
     module_consts = module_consts or {}
+    import_map = import_map or {}
 
     def _record(name: str, lit: str | None) -> None:
         if name in consts and consts[name] != lit:
@@ -320,19 +340,35 @@ def _class_consts(
         elif name not in consts:
             consts[name] = lit
 
+    def _resolve_value(value: ast.expr) -> str | None:
+        """Pick the most specific static value for ``value``: literal,
+        same-named module const, imported name (canonical msg-type id)."""
+        lit = _literal_str(value)
+        if lit is not None:
+            return lit
+        if isinstance(value, ast.Name):
+            mod_lit = module_consts.get(value.id)
+            if isinstance(mod_lit, str) and mod_lit:
+                return mod_lit
+            imp = import_map.get(value.id)
+            if imp is not None:
+                # canonical short name = the import's ``orig`` component
+                return imp[1]
+        return None
+
+    # ``self.<method>`` -> canonical msg-type id, for the
+    # ``self.attr = self._try_import_xxx()`` pattern.
+    method_import_map: dict[str, str] = _class_self_method_imports(class_node, import_map)
+
     for node in class_node.body:
         if isinstance(node, ast.Assign):
-            lit = _literal_str(node.value)
-            if lit is None and isinstance(node.value, ast.Name):
-                lit = module_consts.get(node.value.id)
+            lit = _resolve_value(node.value)
             for target in node.targets:
                 if isinstance(target, ast.Name):
                     _record(target.id, lit)
         elif isinstance(node, ast.AnnAssign) and node.value is not None:
             if isinstance(node.target, ast.Name):
-                lit = _literal_str(node.value)
-                if lit is None and isinstance(node.value, ast.Name):
-                    lit = module_consts.get(node.value.id)
+                lit = _resolve_value(node.value)
                 _record(node.target.id, lit)
 
     for node in class_node.body:
@@ -347,9 +383,18 @@ def _class_consts(
                 value = sub.value
             else:
                 continue
-            lit = _literal_str(value)
+            lit = _resolve_value(value)
             if lit is None:
                 lit = _get_parameter_value(value, declared_params)
+            if lit is None and isinstance(value, ast.Call):
+                # ``self.attr = self.<method>(...)`` — resolve via the
+                # method-import map (see :func:`_class_self_method_imports`).
+                lit = _resolve_self_method_call(value, method_import_map)
+                if lit is None:
+                    # ``self.attr = SomeHelper()`` where SomeHelper is a
+                    # *method* (not just ``self.x``) — record as
+                    # unresolvable so we don't silently mis-attribute.
+                    pass
             for target in targets:
                 if (
                     isinstance(target, ast.Attribute)
@@ -358,6 +403,88 @@ def _class_consts(
                 ):
                     _record(target.attr, lit)
     return consts
+
+
+def _class_self_method_imports(
+    class_node: ast.ClassDef, import_map: dict[str, tuple[str, str]]
+) -> dict[str, str]:
+    """``method_name -> canonical msg-type id`` for ``_try_import_xxx()``-style helpers.
+
+    A method qualifies when its body is structurally:
+
+      * (optional) a docstring,
+      * a ``try: from X import Y; return Y; except ImportError: ...``
+        pair — we follow the success branch only.
+
+    This is the shape of
+    :py:meth:`arbiter_node._try_import_heartbeat_msg` and its siblings —
+    they exist to bridge the ``from rob_box_supervisor_msgs.msg
+    import TeleopHeartbeat`` import into a ``self.attr = TeleopHeartbeat``
+    attribute when the IDL package is built, and to return ``None``
+    otherwise. We deliberately keep the rule narrow: a more permissive
+    pattern would risk false positives on unrelated helpers.
+
+    The body is normalised by stripping the leading docstring and any
+    ``try/except`` boilerplate, then we look for exactly one
+    ``from X import Y`` (with one name) plus exactly one ``return Y``
+    of that name at top level — same rule as before, but on the
+    de-boilerplated version.
+    """
+    out: dict[str, str] = {}
+    for node in class_node.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        body = list(node.body)
+        # 1. Strip leading docstring.
+        if (
+            body
+            and isinstance(body[0], ast.Expr)
+            and isinstance(body[0].value, ast.Constant)
+            and isinstance(body[0].value.value, str)
+        ):
+            body = body[1:]
+        if not body:
+            continue
+        # 2. Unwrap a single ``try: ... except: ...`` envelope (the
+        #    common ``_try_import_xxx`` helper shape), keeping only the
+        #    ``try``-branch body. The ``except`` branch is usually a
+        #    ``return None`` sentinel and is irrelevant for type inference.
+        if len(body) == 1 and isinstance(body[0], ast.Try):
+            try_node = body[0]
+            body = list(try_node.body)
+        if len(body) != 2:
+            continue
+        import_stmt, ret_stmt = body
+        if isinstance(import_stmt, ast.ImportFrom) and isinstance(ret_stmt, ast.Return):
+            imp_names = [a for a in import_stmt.names if a.name != "*"]
+            if len(imp_names) != 1:
+                continue
+            imp = imp_names[0]
+            if ret_stmt.value is None or not isinstance(ret_stmt.value, ast.Name):
+                continue
+            if ret_stmt.value.id != (imp.asname or imp.name):
+                continue
+            local = imp.asname or imp.name
+            if import_map.get(local) == (import_stmt.module, imp.name):
+                out[node.name] = imp.name
+    return out
+
+
+def _resolve_self_method_call(
+    value: ast.Call, method_import_map: dict[str, str]
+) -> str | None:
+    """If ``value`` is ``self.<method>(...)`` and the method is in
+    ``method_import_map``, return the canonical msg-type id it would
+    return. Otherwise ``None``.
+    """
+    func = value.func
+    if not (
+        isinstance(func, ast.Attribute)
+        and isinstance(func.value, ast.Name)
+        and func.value.id == "self"
+    ):
+        return None
+    return method_import_map.get(func.attr)
 
 
 def _module_dotted_name(path: Path) -> str | None:
@@ -716,6 +843,23 @@ def _msg_type_id(
             return orig
         return None
     if isinstance(node, ast.Attribute):
+        # ``self.<attr>`` where ``<attr>`` was assigned in the same
+        # class to either a literal, a module-level constant, an
+        # imported name, or the return of a single-line
+        # ``_try_import_xxx()`` helper. All of these flow into
+        # ``class_consts`` via :func:`_class_consts`. Without this
+        # branch, ``create_subscription(self._heartbeat_msg_type, ...)``
+        # would always be unresolved — and since the unresolved side
+        # is then silently dropped from mismatch comparison, this is
+        # exactly the silent-fail class the linter exists to prevent
+        # (issue #2188 / voice-vr 03).
+        if (
+            class_consts is not None
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "self"
+            and isinstance(class_consts.get(node.attr), str)
+        ):
+            return class_consts[node.attr]
         # Полное dotted имя типа: ``pkg.msg.String``.
         # Только резолвим, если ``node.value`` — это ``Name`` с
         # известным imported модулем (например ``std_msgs.msg.String``
@@ -751,7 +895,7 @@ def _walk_topics(
     """
     for child in ast.iter_child_nodes(node):
         if isinstance(child, ast.ClassDef):
-            new_class_consts = _class_consts(child, module_consts)
+            new_class_consts = _class_consts(child, module_consts, import_map)
             new_declared_params = _declared_params(child)
             _walk_topics(
                 child, rel, module_consts, new_class_consts, local_consts,
