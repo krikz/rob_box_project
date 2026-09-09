@@ -24,6 +24,7 @@ test_dialogue_node.py — Реальные unit-тесты DialogueNode (FA-5, i
 import asyncio
 import json
 import time
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -155,68 +156,47 @@ class TestNodeCreation:
         # но контракт имени проверяем через статический анализ: класс
         # объявляет параметры с ожидаемыми именами.
         assert hasattr(n, "_declare_params")
-        assert hasattr(n, "_build_llm")
+        # ADR-0083 §2.3 — единая точка сборки AgentSpec для personality;
+        # раньше тест проверял ``_build_llm``, но логика LLM/prompt/
+        # skill-prompt сборки переехала в ``rob_box_harness.core.assembly``
+        # (PR #2276, follow-up ADR-0083 §2.3). Нода только строит спек
+        # и зовёт ``build_agent(spec)``.
+        assert hasattr(n, "_build_personality_spec")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  missing API key / provider chain (legacy: test_missing_api_key_raises_error)
+#  ADR-0083 §2.3 — провайдер-цепочка, дефолты и «нет API key» живут
+#  теперь в ``rob_box_harness.core.assembly.build_llm_chain`` /
+#  ``build_agent``. Поведение покрыто в ``test_assembly.py``
+#  (test_build_agent_*, test_load_system_prompt_missing_dir_returns_empty).
+#  Здесь оставляем только быстрый unit-чек, что ``_build_personality_spec``
+#  подхватывает CSV-формат ``llm_providers`` (раньше это была отдельная
+#  функция ``_resolve_provider_chain``, теперь inline-парсинг внутри спека).
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestBuildLlm:
-    def test_resolve_provider_chain_default(self):
-        """Нет параметра llm_providers → default ['deepseek']."""
+class TestBuildPersonalitySpec:
+    def test_spec_parses_csv_provider_chain(self):
+        """llm_providers="deepseek,minimax" → spec.provider_chain == ('deepseek', 'minimax')."""
+        n = _make_node({"llm_providers": "deepseek,minimax"})
+        # Метод требует ``self._resolve_personality_prompt_dir`` (ament_index);
+        # подменяем на MagicMock, проверяем только форму спека. ``get_parameter``
+        # уже настроен в ``_make_node`` — НЕ перетираем.
+        n._resolve_personality_prompt_dir = MagicMock(
+            return_value=Path("/tmp/fake")
+        )
+        spec = n._build_personality_spec()
+        assert spec.name == "personality"
+        assert spec.provider_chain == ("deepseek", "minimax")
+
+    def test_spec_default_provider_is_deepseek(self):
+        """llm_providers unset → spec.provider_chain == ('deepseek',)."""
         n = _make_node()
-        assert n._resolve_provider_chain() == ["deepseek"]
-
-    def test_resolve_provider_chain_parses_csv(self):
-        n = _make_node({"llm_providers": "deepseek, minimax"})
-        assert n._resolve_provider_chain() == ["deepseek", "minimax"]
-
-    def test_resolve_provider_chain_empty_uses_default(self):
-        n = _make_node({"llm_providers": ""})
-        assert n._resolve_provider_chain() == ["deepseek"]
-
-    def test_build_llm_raises_when_no_provider(self):
-        """Пустая цепочка провайдеров → RuntimeError (missing API key path)."""
-        n = _make_node()
-        n._resolve_provider_chain = MagicMock(return_value=["deepseek"])
-        n._build_single_provider = MagicMock(return_value=None)
-        with pytest.raises(RuntimeError, match="No LLM providers"):
-            n._build_llm()
-
-    def test_build_llm_single_provider_returned_directly(self):
-        n = _make_node()
-        provider = MagicMock()
-        n._resolve_provider_chain = MagicMock(return_value=["deepseek"])
-        n._build_single_provider = MagicMock(return_value=provider)
-        assert n._build_llm() is provider
-
-    def test_build_single_provider_unknown_name(self):
-        """Неизвестный провайдер → None + warning (без краха)."""
-        n = _make_node()
-        assert n._build_single_provider("nonexistent") is None
-        n.get_logger().warning.assert_called()
-
-    @patch("rob_box_voice.dialogue_node.build_deepseek_provider")
-    def test_build_single_provider_deepseek(self, mock_build):
-        """deepseek строится с api_key из env (legacy: test_deepseek_api_call)."""
-        import os
-        old = os.environ.get("DEEPSEEK_API_KEY")
-        os.environ["DEEPSEEK_API_KEY"] = "test-ds-key"
-        try:
-            n = _make_node({"deepseek.api_key": ""})
-            provider = MagicMock()
-            mock_build.return_value = provider
-            assert n._build_single_provider("deepseek") is provider
-            kwargs = mock_build.call_args.kwargs
-            assert kwargs["api_key"] == "test-ds-key"
-            assert kwargs["model"]
-            assert kwargs["base_url"]
-        finally:
-            if old is None:
-                os.environ.pop("DEEPSEEK_API_KEY", None)
-            else:
-                os.environ["DEEPSEEK_API_KEY"] = old
+        n._resolve_personality_prompt_dir = MagicMock(
+            return_value=Path("/tmp/fake")
+        )
+        spec = n._build_personality_spec()
+        assert spec.provider_chain == ("deepseek",)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -445,12 +425,11 @@ class TestBuildDynamicSystemContext:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestSystemPrompt:
-    def test_load_system_prompt_returns_default_when_missing(self):
-        """Файл промпта недоступен → дефолтная строка (без краха)."""
-        n = _make_node({"system_prompt_file": "nonexistent.txt"})
-        prompt = n._load_system_prompt()
-        assert "ROBBOX" in prompt
-        assert "робот" in prompt.lower()
+    # ``test_load_system_prompt_returns_default_when_missing`` удалён:
+    # ADR-0083 §2.3 — ``_load_system_prompt`` мигрировал в
+    # ``rob_box_harness.core.assembly.load_system_prompt``, и поведение
+    # «нет файла → пустая строка» покрыто там в
+    # ``test_load_system_prompt_missing_dir_returns_empty``.
 
     def test_render_event_instructions_returns_base_when_no_profile(self):
         n = _make_node()

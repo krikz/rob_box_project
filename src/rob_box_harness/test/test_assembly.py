@@ -461,3 +461,91 @@ async def test_build_agent_respects_user_id_and_dsm(
     core = build_agent(spec, tools=_make_tools(), memory=memory)
     assert core._user_id == "session-uuid-42"  # type: ignore[attr-defined]
     assert core._dsm is dsm  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_build_llm_chain_returns_provider(
+    tmp_prompt_dirs: tuple[Path, Path],
+) -> None:
+    """``build_llm_chain`` публичный API для сборки LLM ДО ``build_agent``.
+
+    Нужен нодам, которые держат ссылку на LLM для метрик
+    ``record_voice_llm_request`` / OTel span ``dialogue.llm_call``
+    (issue #1160, ADR-0083 §2.3). Возвращённый LLM — тот же, что
+    потом использует AgentCore (single provider path).
+    """
+    from rob_box_harness.core.assembly import build_llm_chain
+
+    personality_dir, _ = tmp_prompt_dirs
+    spec = AgentSpec(
+        name="personality",
+        prompt_dir=personality_dir,
+        system_prompt_file="master.txt",
+        provider_chain=("deepseek",),
+    )
+    llm = build_llm_chain(spec)
+    # Single-provider path returns the provider as-is (no wrapper).
+    # ``deepseek`` always builds even without an API key (registry
+    # doesn't gate on env at construction time — that's a runtime
+    # concern), so we just check the object exists and isn't None.
+    assert llm is not None
+
+
+@pytest.mark.asyncio
+async def test_build_agent_accepts_prebuilt_llm(
+    tmp_prompt_dirs: tuple[Path, Path],
+    sqlite_db_path: Path,
+) -> None:
+    """``build_agent(..., llm=...)`` использует переданный LLM вместо
+    внутренней сборки.
+
+    Контракт (ADR-0083 §2.3): если нода уже собрала LLM
+    (``self._llm`` для метрик), она передаёт его явно, чтобы
+    не дублировать ``build_provider()``-цепочку. Проверяем, что
+    AgentCore использует тот же объект (``is`` identity, а не
+    ``==``).
+    """
+    from rob_box_harness.core.assembly import build_llm_chain
+
+    personality_dir, _ = tmp_prompt_dirs
+    spec = AgentSpec(
+        name="personality",
+        prompt_dir=personality_dir,
+        system_prompt_file="master.txt",
+        provider_chain=("deepseek",),
+    )
+    prebuilt = build_llm_chain(spec)
+    memory = await _make_memory(sqlite_db_path, agent="personality")
+    core = build_agent(
+        spec, tools=_make_tools(), memory=memory, llm=prebuilt
+    )
+    # Identity check: core must hold the exact LLM we passed in,
+    # not a freshly built one. This is the contract that prevents
+    # double build (and double env-key resolution) when the node
+    # wires metrics alongside the core.
+    assert core._llm is prebuilt  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_build_agent_without_llm_keeps_backward_compatible_path(
+    tmp_prompt_dirs: tuple[Path, Path],
+    sqlite_db_path: Path,
+) -> None:
+    """``build_agent(spec, tools=..., memory=...)`` без ``llm=`` собирает
+    LLM внутри — обратная совместимость для тестов и supervisor'а
+    (ADR-0083 §2.3, §2.1).
+
+    Default branch must keep working: ``llm=None`` (явно или
+    неявно) → внутренний ``_build_llm_chain`` создаёт provider-chain
+    и core держит свежесобранный LLM.
+    """
+    personality_dir, _ = tmp_prompt_dirs
+    spec = AgentSpec(
+        name="personality",
+        prompt_dir=personality_dir,
+        system_prompt_file="master.txt",
+        provider_chain=("deepseek",),
+    )
+    memory = await _make_memory(sqlite_db_path, agent="personality")
+    core = build_agent(spec, tools=_make_tools(), memory=memory)
+    assert core._llm is not None  # type: ignore[attr-defined]
