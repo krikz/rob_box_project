@@ -144,6 +144,25 @@ from rob_box_voice.core.music_guard import (
     MusicGuard,
     MusicGuardVerdictKind,
 )
+# Issue #2241 / ADR-0080 §2.4 — TurnGuards owns guard order + retry budget.
+# The legacy ``_*_retry_used`` flags and ``_consume_synthetic_retry``
+# remain the source of truth during the incremental migration; the bridge
+# helpers added below (``_evaluate_turn_guards``,
+# ``_dispatch_turn_guards_retry``) are wired OFF by default so the
+# existing regression suite (``test_dialogue_guards.py``,
+# ``test_issue_992_*``, ``test_issue_1777_*``,
+# ``test_issue_1881_synthetic_retry_budget.py``) is unchanged until the
+# next voice-vr card flips the flag for a single catch site.
+from rob_box_voice.core.turn import (
+    Reply as TurnReply,
+    TurnContext as TurnContext,
+    TurnGuards as TurnGuards,
+    TurnState as TurnState,
+    VerdictKind as TurnVerdictKind,
+    default_guards as turn_guards_default_order,
+    music_guard_adapter as turn_guards_music_adapter,
+    reset_budget as turn_guards_reset_budget,
+)
 from rob_box_voice.core.speech_accumulator import SpeechAccumulator
 from rob_box_voice.core.dj_mode import DJHook, DJModeController
 from rob_box_voice.core.speak_helpers import (
@@ -792,6 +811,18 @@ class DialogueNode(Node):
         self._music_guard: MusicGuard = MusicGuard(
             logger=self.get_logger(),
         )
+
+        # Issue #2241 / ADR-0080 §2.4 — TurnGuards is the future home of the
+        # guard order + retry budget. During the incremental migration
+        # (voice-vr 19 → 23) the orchestrator is constructed but NOT used by
+        # the existing ``_check_*_and_retry`` path — ``_evaluate_turn_guards``
+        # below is the single bridge call that flips behaviour for one
+        # catch-site at a time. ``_use_turn_guards`` is OFF by default so
+        # the legacy behaviour (and its regression suite) is preserved
+        # bit-for-bit until a later card turns the flag on.
+        self._use_turn_guards: bool = False
+        self._turn_guards: Optional[TurnGuards] = None
+        self._turn_state: Optional[TurnState] = None
 
         # Issue #992 Bug D — metalanguage / babble detector.
         # ``True`` after a single metalanguage retry has already been
@@ -4577,6 +4608,155 @@ class DialogueNode(Node):
                 )
 
         future.add_done_callback(_log_if_failed)
+
+    # ------------------------------------------------------------------
+    # Issue #2241 / ADR-0080 §2.4 — TurnGuards bridge (voice-vr 19).
+    #
+    # ``_evaluate_turn_guards`` is the single switch between the legacy
+    # ``_*_retry_used`` path and the new :class:`TurnGuards` orchestrator.
+    # Until a follow-up card flips ``_use_turn_guards`` for a specific
+    # catch site, this method is a no-op stub that lets the rest of
+    # :class:``DialogueNode`` keep using the existing ``_check_*_and_retry``
+    # methods byte-for-byte. Once the flag is on, the helper instantiates
+    # :class:`TurnGuards` lazily (one TurnGuards instance per Node lifetime),
+    # reads the budget from the still-authoritative
+    # ``_synthetic_retries_left`` field, and either:
+    #
+    # * returns :data:`TurnVerdictKind.ACCEPT` (caller publishes the reply),
+    # * returns :data:`TurnVerdictKind.RETRY` after translating the
+    #   orchestrator's verdict into a real ``_dispatch_turn`` call and
+    #   decrementing the legacy counter so the regression tests still see
+    #   consistent state, or
+    # * returns :data:`TurnVerdictKind.DISCARD` so the caller suppresses
+    #   the spoken text without a retry.
+    #
+    # Why a single switch: ADR-0021 records that «вынос чистых функций
+    # бюджет не снизил» — moving the orchestration out of dialogue_node
+    # did NOT reduce dialogue_node's CC. The migration therefore has to be
+    # proven with the regressions in place BEFORE we delete the legacy
+    # state, not at the same time. Once voice-vr 19 lands and the budget
+    # plumbing is verified, voice-vr 20+ flips the flag for one catch
+    # site at a time and deletes the now-redundant fields.
+    # ------------------------------------------------------------------
+
+    def _ensure_turn_guards(self) -> TurnGuards:
+        """Lazy-init the :class:`TurnGuards` orchestrator.
+
+        The music-guard slot is wrapped via :func:`music_guard_adapter`
+        so the existing :class:`MusicGuard` instance is reused — we do NOT
+        re-implement music detection here. Construction is cheap (one
+        list of dataclasses) and the result is memoised on ``self``.
+        """
+        if self._turn_guards is not None:
+            return self._turn_guards
+        music_adapter = turn_guards_music_adapter(
+            evaluate_fn=lambda turn, reply: self._music_guard.evaluate(
+                was_dj_auto=turn.is_dj_auto,
+                user_input=turn.user_input,
+                tools_called=reply.tools_called,
+                dj_enabled=self._dj.state.enabled,
+                build_music_retry_prompt=self._build_music_retry_prompt,
+                build_dj_retry_prompt=self._build_dj_retry_prompt,
+            ),
+        )
+        self._turn_guards = TurnGuards(
+            guards=turn_guards_default_order(
+                music_guard=music_adapter,
+                logger=self.get_logger(),
+            ),
+        )
+        return self._turn_guards
+
+    def _reset_turn_budget(self) -> None:
+        """Refresh :class:`TurnState` at the start of a user-initiated turn.
+
+        Mirrors the legacy ``_synthetic_retries_left = DEFAULT_SYNTHETIC_RETRIES``
+        reset at :meth:`_run_turn` (issue #1881). Until ``_use_turn_guards``
+        is True for some catch site this stays a no-op so the existing
+        resets (the source of truth) keep firing.
+        """
+        self._turn_state = turn_guards_reset_budget(
+            self.DEFAULT_SYNTHETIC_RETRIES
+        )
+
+    def _evaluate_turn_guards(
+        self,
+        *,
+        spoken: str,
+        user_input: Optional[str],
+        tools_called: tuple,
+        speak_text_real: int,
+    ) -> Optional[str]:
+        """Run :class:`TurnGuards` on the current reply.
+
+        Returns:
+            * ``None`` — orchestrator is OFF for this catch site or every
+              guard deferred (caller continues with its own checks).
+            * ``"retry:<guard_name>"`` — a guard fired; the caller MUST
+              return early and let the dispatched retry produce the
+              user-facing answer.
+            * ``"discard"`` — a guard hard-muted the reply (e.g. planning
+              narration, issue #1882); the caller MUST drop the spoken
+              text without retrying.
+
+        The method deliberately mirrors the contract of the legacy
+        ``_check_*_and_retry`` family so a one-line switch in the catch
+        site (e.g. :meth:`_handle_result`) is enough to migrate.
+        """
+        if not self._use_turn_guards:
+            return None
+        guards = self._ensure_turn_guards()
+        if self._turn_state is None:
+            # Bridge started mid-test or before _run_turn fired its
+            # budget reset. Defensive default — keeps the verdict
+            # surface deterministic for the very first call.
+            self._reset_turn_budget()
+        assert self._turn_state is not None  # for type-checkers
+        turn = TurnContext(
+            user_input=user_input or "",
+            is_dj_auto=False,
+        )
+        reply = TurnReply(
+            spoken=spoken or "",
+            tools_called=tuple(tools_called or ()),
+            speak_text_real=int(speak_text_real or 0),
+        )
+        verdict = guards.evaluate(reply, turn, self._turn_state)
+        if verdict.kind is TurnVerdictKind.RETRY:
+            # Translate to the legacy ``_check_*_and_retry`` side effects
+            # so the surrounding ``_run_turn.finally`` keeps seeing the
+            # same ``_retry_dispatched_in_turn`` / budget state it has
+            # always seen. ``_dispatch_turn`` re-enters ``_run_turn``
+            # recursively; we mark the flag here for the parent.
+            if self._synthetic_retries_left <= 0:
+                # Mirrors ``_consume_synthetic_retry``'s False return:
+                    # no budget left → no retry, even if a guard asked.
+                    # Already logged by TurnGuards itself.
+                    return None
+            self._synthetic_retries_left -= 1
+            self._retry_dispatched_in_turn = True
+            self._reopen_dialogue_for_retry()
+            self.get_logger().warning(
+                f"🛂 [turn-guards] {verdict.guard_name!r} → synthetic retry "
+                f"(budget_left={self._synthetic_retries_left}) "
+                f"head={spoken[:80]!r}"
+            )
+            self._dispatch_turn(
+                verdict.prompt or "",
+                is_action_claim_retry=(
+                    verdict.guard_name == "unbacked_action_claim"
+                ),
+                is_synthetic=True,
+                raw_user_command=user_input,
+            )
+            return f"retry:{verdict.guard_name}"
+        if verdict.kind is TurnVerdictKind.DISCARD:
+            self.get_logger().warning(
+                f"🤐 [turn-guards] {verdict.guard_name!r} → hard-mute "
+                f"reason={verdict.reason!r} head={spoken[:80]!r}"
+            )
+            return "discard"
+        return None  # ACCEPT — caller publishes as-is.
 
     def _apply_music_guard(
         self,
