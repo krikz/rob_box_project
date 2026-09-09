@@ -285,8 +285,20 @@ class MetricsSource:
             return "", ""
 
         # Голое имя метрики без выражения — самый частый случай («cpu»).
+        # Если bare уже ключ QUERY_ALIASES — резолвим СРАЗУ, без похода в
+        # каталог (issue #2272): and-цепочка ``in QUERY_ALIASES and not in
+        # metric_names()`` платит HTTP-запрос на /api/v1/label/__name__/values
+        # за каждый «холодный» (>60s) tool call, и поверх него ещё идёт
+        # query_range — клиент ждёт два круга, а закладывался на один.
+        # Смысл каталога здесь — защититься от теоретической коллизии
+        # «алиас имеет то же имя, что и реальная метрика». QUERY_ALIASES
+        # хранит именно ОВЕРРАЙДЫ (см. docstring модуля, ADR-0018), а не
+        # «предложения»: оператор произносит «cpu» — ТАРС показывает CPU
+        # процессов ТАРСа, а не упавший cAdvisor. Дополнительная семантика
+        # «не применять алиас, если имя реально существует в Prometheus»
+        # при текущем составе QUERY_ALIASES не нужна и стоит дорого.
         bare = query.strip()
-        if bare.lower() in QUERY_ALIASES and bare not in self.metric_names():
+        if bare.lower() in QUERY_ALIASES:
             resolved = QUERY_ALIASES[bare.lower()]
             return resolved, f"«{bare}» → {resolved}"
 
