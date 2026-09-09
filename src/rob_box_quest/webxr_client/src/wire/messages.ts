@@ -3,7 +3,10 @@
 // Сгенерированная часть контракта (XxxCmd / XxxEvent интерфейсы для
 // admin_logs, teleop_twist, voice_pipeline, …, и discriminated union-ы
 // JsonCmdGenerated / JsonEventGenerated) живёт в `protocol_generated.ts` —
-// это машинное отражение `rob_box_core._bridge_protocol_data` (ADR-0080 §2.2).
+// это машинное отражение канон-каталога `rob_box_core.bridge_protocol`
+// (ADR-0080 §2.2). payload-грамматика лежит на spec-объектах
+// (CommandSpec.payload / EventSpec.payload) — никаких параллельных
+// данных каталога; см. tools/gen_bridge_protocol_ts.py.
 //
 // Здесь остаётся только то, что либо ещё НЕ внесено в каталог, либо
 // несёт UI-специфику (helper-типы для picker'ов и панелей):

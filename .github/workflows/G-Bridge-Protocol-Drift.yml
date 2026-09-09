@@ -1,15 +1,14 @@
 name: "G: Bridge Protocol TS Drift"
 
 # ADR-0080 §2.2 — guard against silent drift between the Python catalog
-# (``rob_box_core._bridge_protocol_data``) and the TS mirror
+# (``rob_box_core.bridge_protocol``) and the TS mirror
 # (``webxr_client/src/wire/protocol_generated.ts``).
 #
 # Why a separate workflow:
 #   * ``G-Run Tests.yml`` boots ROS 2 + colcon to test ROS-side packages.
 #     The drift check is a pure-Python import (it loads
-#     ``_bridge_protocol_data``, which has no ROS2 deps) — running it
-#     through colcon would add ~3-5 min of overhead per CI run for no
-#     signal gain.
+#     ``bridge_protocol``, which has no ROS2 deps) — running it through
+#     colcon would add ~3-5 min of overhead per CI run for no signal gain.
 #   * The same matrix (``pytest src/rob_box_core/test``) is run by
 #     ``G-Run Tests.yml`` anyway, so we don't need a separate Python
 #     install — the workflow only needs the drift detector itself.
@@ -19,13 +18,18 @@ name: "G: Bridge Protocol TS Drift"
 # What we actually verify:
 #   1. ``tools/gen_bridge_protocol_ts.py --check`` — the on-disk
 #      ``protocol_generated.ts`` matches what the catalog would emit.
-#   2. ``pytest src/rob_box_core/test/test_bridge_protocol_data.py`` — the
+#   2. ``pytest src/rob_box_core/test/test_bridge_protocol.py`` — the
 #      catalog itself is internally consistent (no duplicate cmd/event
 #      names apart from known collisions, all payload shapes valid,
 #      discriminant fields match entry names, AV-27/AV-28 contract
 #      invariants hold).
 #   3. ``messages.ts`` actually imports from the generated layer
 #      (otherwise the drift detector is theatre).
+#
+# voice-vr 08: ``_bridge_protocol_data.py`` was removed (it duplicated
+# the canonical catalog). The single source of truth is now
+# ``rob_box_core.bridge_protocol`` — payload grammar lives on
+# ``CommandSpec.payload`` / ``EventSpec.payload``.
 
 on:
   pull_request:
@@ -34,11 +38,11 @@ on:
       - main
       - 'feature/**'
     paths:
-      - 'src/rob_box_core/rob_box_core/_bridge_protocol_data.py'
+      - 'src/rob_box_core/rob_box_core/bridge_protocol.py'
       - 'src/rob_box_quest/webxr_client/src/wire/protocol_generated.ts'
       - 'src/rob_box_quest/webxr_client/src/wire/messages.ts'
       - 'tools/gen_bridge_protocol_ts.py'
-      - 'src/rob_box_core/test/test_bridge_protocol_data.py'
+      - 'src/rob_box_core/test/test_bridge_protocol.py'
       - '.github/workflows/G-Bridge-Protocol-Drift.yml'
   push:
     branches:
@@ -46,11 +50,11 @@ on:
       - main
       - 'feature/**'
     paths:
-      - src/rob_box_core/rob_box_core/_bridge_protocol_data.py
+      - src/rob_box_core/rob_box_core/bridge_protocol.py
       - src/rob_box_quest/webxr_client/src/wire/protocol_generated.ts
       - src/rob_box_quest/webxr_client/src/wire/messages.ts
       - tools/gen_bridge_protocol_ts.py
-      - src/rob_box_core/test/test_bridge_protocol_data.py
+      - src/rob_box_core/test/test_bridge_protocol.py
       - .github/workflows/G-Bridge-Protocol-Drift.yml
   workflow_dispatch:
 
@@ -84,7 +88,7 @@ jobs:
         run: python3 -m pip install --quiet --no-cache-dir pytest
 
       - name: Run catalog structural tests
-        # test_bridge_protocol_data.py guards the catalog itself: every
+        # test_bridge_protocol.py guards the catalog itself: every
         # entry has the required fields, no surprise cmd/event name
         # collisions, payload grammar is closed over real values, AV-27
         # optional voice_id in voice_set_nack, etc. ``--check`` below
@@ -92,7 +96,7 @@ jobs:
         working-directory: src/rob_box_core
         run: |
           PYTHONPATH=. python3 -m pytest \
-            test/test_bridge_protocol_data.py \
+            test/test_bridge_protocol.py \
             -v \
             -o addopts="" \
             -p no:cacheprovider
@@ -143,7 +147,7 @@ jobs:
         run: |
           echo "::error::Bridge protocol drift detected."
           echo ""
-          echo "Самая частая причина: ты изменил src/rob_box_core/rob_box_core/_bridge_protocol_data.py"
+          echo "Самая частая причина: ты изменил src/rob_box_core/rob_box_core/bridge_protocol.py"
           echo "(добавил/удалил cmd или event, поправил payload) и забыл перегенерировать TS-зеркало."
           echo ""
           echo "Лечение:"

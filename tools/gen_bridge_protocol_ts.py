@@ -7,32 +7,37 @@ The WebXR client's JSON_CMD / JSON_EVENT contracts used to be hand-written
 in ``src/rob_box_quest/webxr_client/src/wire/messages.ts`` (321 lines as
 of voice-vr 08), which meant the client and server drifted silently
 (server announced ``voice_pipeline``, ``voice_listen_start/stop``,
-``ping`` that the client never declared). ``voice-vr 07`` extracted the
-catalog into ``rob_box_core._bridge_protocol_data``; this script is
-the matching TS generator (ADR-0080 §2.2).
+``ping`` that the client never declared).
+
+In voice-vr 07 the catalog was extracted into
+``rob_box_core.bridge_protocol`` (frozen dataclasses over the wire
+contract). In voice-vr 08 the **payload grammar** (typed JSON shape of
+each ``cmd`` / ``type`` discriminant) was moved from a parallel
+``_bridge_protocol_data.py`` onto :class:`CommandSpec.payload` and
+:class:`EventSpec.payload`. This script reads those payloads and emits
+``src/rob_box_quest/webxr_client/src/wire/protocol_generated.ts`` with
+a ``DO NOT EDIT`` warning.
 
 What it emits
--------------
-``src/rob_box_quest/webxr_client/src/wire/protocol_generated.ts`` with
-``DO NOT EDIT`` warning header. The file contains:
+------------
+``src/rob_box_quest/webxr_client/src/wire/protocol_generated.ts``:
 
-* ``JsonCmd`` discriminated union over every entry in ``COMMANDS``.
-* ``JsonEvent`` discriminated union over every entry in ``EVENTS``.
-* One ``interface XxxCmd`` / ``XxxEvent`` per entry.
+* ``JsonCmdGenerated`` discriminated union over every ``COMMANDS`` entry.
+* ``JsonEventGenerated`` discriminated union over every ``EVENTS`` entry.
+* One ``interface XxxCmd`` / ``XxxEvent`` per entry, derived from
+  ``spec.payload``.
 * Discriminant-only string-literal types (``CommandName`` /
-  ``EventName``) for narrowing without relying on the inline literal
-  form, since the wire protocol occasionally sends payloads from
-  older/different schemas that still parse against ``[k: string]:
-  unknown`` fallback variants in hand-written code.
+  ``EventName``).
 * Module-level constants (``ERROR_CODES``, ``MODES``, ``FLOORS``,
-  ``VOICE_PRESETS``, ``VOICE_LANGUAGES``, ``QUALITY_LEVELS``).
+  ``VOICE_PRESETS``, ``VOICE_LANGUAGES``, ``QUALITY_LEVELS``,
+  ``SUBPROTOCOLS_OFFERED``).
 
 Hand-written parts of ``messages.ts`` keep importing from this file
 under the bangs:
 
     import type {
-      JsonCmd,
-      JsonEvent,
+      JsonCmdGenerated,
+      JsonEventGenerated,
       TeleopTwistCmd,
       VoicePipelineCmd,
       // ...
@@ -48,13 +53,13 @@ to fail the build when the catalog and the committed TS mirror disagree.
 
 Why we hand-roll this and don't use ``json-schema-to-typescript``
 ---------------------------------------------------------------
-The catalog uses a tiny, opinionated type-language (str/int/float/bool,
-list[X], Record<string,X>, optional ``?``, and ``{"type":"literal",
-"values":[…]}``) that lines up 1:1 with what the LLM-facing harness
-already consumes (``_tool_catalog_data``). Pulling in a heavy
-json-schema-codegen dependency for one file would be a worse fit than
-40 lines of string munging, and the drift detector becomes trivially
-testable from CI without the npm install chain.
+The catalog uses a tiny, opinionated type-language (``str`` / ``int`` /
+``float`` / ``bool``, literal-dict, optional ``?`` via suffix or
+``"optional": True``) that lines up 1:1 with what the runtime tests
+already enforce. Pulling in a heavy json-schema-codegen dependency for
+one file would be a worse fit than ~50 lines of string munging, and
+the drift detector becomes trivially testable from CI without the
+npm install chain.
 """
 
 from __future__ import annotations
@@ -63,10 +68,9 @@ import argparse
 import pathlib
 import re
 import sys
-import textwrap
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
-CATALOG_FILE = REPO_ROOT / "src" / "rob_box_core" / "rob_box_core" / "_bridge_protocol_data.py"
+CATALOG_FILE = REPO_ROOT / "src" / "rob_box_core" / "rob_box_core" / "bridge_protocol.py"
 OUT_FILE = (
     REPO_ROOT
     / "src" / "rob_box_quest" / "webxr_client" / "src" / "wire"
@@ -80,7 +84,7 @@ OUT_FILE = (
 
 
 def _load_catalog_module():
-    """Import the catalog module without triggering __init__.py side-effects.
+    """Import the catalog module without triggering ``__init__.py`` side-effects.
 
     The catalog is a pure data module (no ROS2, no aiohttp), so this is the
     only place we pull in ``rob_box_core``. Running it on a CI box without
@@ -90,57 +94,35 @@ def _load_catalog_module():
     import importlib.util
 
     spec = importlib.util.spec_from_file_location(
-        "_bridge_protocol_data_for_gen", CATALOG_FILE
+        "rob_box_core.bridge_protocol", str(CATALOG_FILE)
     )
     if spec is None or spec.loader is None:
         raise RuntimeError(f"cannot load catalog from {CATALOG_FILE}")
     module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
+    # Bridge-protocol declares its classes under a submodule of
+    # ``rob_box_core``; registering parents avoids
+    # ``AttributeError: 'NoneType' object has no attribute '__dict__'``
+    # in dataclasses._is_type.
+    sys.modules["rob_box_core.bridge_protocol"] = module
+    parent_name = "rob_box_core"
+    if parent_name not in sys.modules:
+        parent_mod = type(sys)(parent_name)
+        sys.modules[parent_name] = parent_mod
+    setattr(sys.modules[parent_name], "bridge_protocol", module)
     spec.loader.exec_module(module)
     return module
 
 
-# Allowed payload-value shapes. The catalog test
-# (``test_bridge_protocol_data._is_valid_payload_value``) enforces the
-# same grammar; we re-check it here only to give a clearer error message
-# at codegen time.
+# Allowed payload-value shapes. Mirror of the runtime check
+# ``bridge_protocol._p`` contract — atomic strings (with ``?`` suffix
+# for optional), composite strings (``list[T]`` / ``Record<string, T>``),
+# literal-dict (``{"type":"literal",...}``), inline-object.
 _ATOMIC = re.compile(r"^(str|int|float|bool|unknown)$")
 _OPTIONAL_ATOMIC = re.compile(r"^(str|int|float|bool|unknown)\?$")
-_COMPOSITE = re.compile(r"^(list\[.+\]|Record<string,\s*.+>)$")
-_OPTIONAL_COMPOSITE = re.compile(r"^(list\[.+\]|Record<string,\s*.+>)\?$")
-_LITERAL_REF = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
-
-
-def _is_valid_payload(value: object) -> bool:
-    """Mirror of the runtime check in ``test_bridge_protocol_data``.
-
-    Returns True iff ``value`` is a payload value the generator knows how
-    to render. The strict version of this check lives in the test
-    module; we keep a loose copy here so the generator fails fast with
-    a file:line when the catalog gets a new shape.
-    """
-    if isinstance(value, str):
-        if _ATOMIC.match(value) or _OPTIONAL_ATOMIC.match(value):
-            return True
-        if _COMPOSITE.match(value) or _OPTIONAL_COMPOSITE.match(value):
-            return True
-        return bool(_LITERAL_REF.match(value))
-    if isinstance(value, dict):
-        if value.get("type") == "literal":
-            vals = value.get("values")
-            if not isinstance(vals, list) or not all(isinstance(v, str) for v in vals):
-                return False
-            if "optional" in value and not isinstance(value["optional"], bool):
-                return False
-            return True
-        # Inline-object schema (e.g. linear/angular on teleop_twist).
-        if not value:
-            return False
-        return all(
-            isinstance(k, str) and k and _is_valid_payload(v)
-            for k, v in value.items()
-        )
-    return False
+_COMPOSITE = re.compile(r"^list\[.+\]$")
+_OPTIONAL_COMPOSITE = re.compile(r"^list\[.+\]\?$")
+_RECORD = re.compile(r"^Record<string,\s*.+>$")
+_OPTIONAL_RECORD = re.compile(r"^Record<string,\s*.+>\?$")
 
 
 def _ts_type(value: object, indent: int = 0) -> str:
@@ -158,22 +140,21 @@ def _ts_type(value: object, indent: int = 0) -> str:
         if _OPTIONAL_ATOMIC.match(value):
             return _ts_type(value.rstrip("?"))
         if _COMPOSITE.match(value):
-            if value.startswith("list["):
-                inner = value[len("list["):-1]
-                return f"Array<{_ts_type(inner)}>"
-            # Record<string, X> — strip prefix, strip trailing ``>``.
-            inner = value[len("Record<string,"):-1].strip()
-            return f"Record<string, {_ts_type(inner)}>"
+            inner = value[len("list["):-1]
+            return f"Array<{_ts_type(inner)}>"
         if _OPTIONAL_COMPOSITE.match(value):
             return _ts_type(value.rstrip("?"))
-        # Literal-type self-reference (e.g. ``cmd: "admin_logs"``).
+        if _RECORD.match(value):
+            inner = value[len("Record<string,"):-1].strip()
+            return f"Record<string, {_ts_type(inner)}>"
+        if _OPTIONAL_RECORD.match(value):
+            return _ts_type(value.rstrip("?"))
+        # Plain string literal (discriminant value, e.g. ``cmd: "ping"``).
         return f'"{value}"'
     if isinstance(value, dict):
         if value.get("type") == "literal":
             values = value["values"]
-            optional = bool(value.get("optional"))
-            rendered = " | ".join(f'"{v}"' for v in values)
-            return rendered  # The trailing ``?`` is added by the caller
+            return " | ".join(f'"{v}"' for v in values)
         # Inline-object schema.
         if not value:
             return "Record<string, never>"
@@ -181,40 +162,22 @@ def _ts_type(value: object, indent: int = 0) -> str:
         for k, v in value.items():
             opt_marker = ""
             rendered_v = _ts_type(v)
-            # If the value is a literal dict flagged optional, OR the
-            # trailing ``?`` is already on the atomic/composite string,
-            # honour it.
             if isinstance(v, dict) and v.get("type") == "literal" and v.get("optional"):
                 opt_marker = "?"
-            elif isinstance(v, str) and v.endswith("?"):
-                opt_marker = ""
-                rendered_v = _ts_type(v[:-1])
-            sep = "," if not opt_marker else ","
-            lines.append(f"{pad}  {k}{opt_marker}: {rendered_v}{sep}")
+            lines.append(f"{pad}  {k}{opt_marker}: {rendered_v};")
         lines.append(f"{pad}}}")
         return "\n".join(lines)
     raise ValueError(f"unhandled payload value: {value!r}")
 
 
-def _render_interface(name: str, entry: dict) -> str:
-    """Emit one ``interface XxxCmd`` (or ``XxxEvent``) body.
+def _render_interface(name: str, payload: dict) -> str:
+    """Emit one ``interface XxxCmd`` (or ``XxxEvent``) body from a payload dict.
 
-    The discriminant field (``cmd`` or ``type``) is rendered as a
-    literal-string union element so the generated ``JsonCmd`` /
-    ``JsonEvent`` discriminates by it.
+    The payload value is read directly off ``spec.payload``; the optional
+    suffix (``?`` on atomic / composite / ``"optional": True`` on literal
+    dict) drives the ``?`` on the field name.
     """
-    payload = entry["payload"]
-    description = entry.get("description", "")
-    if not _is_valid_payload(payload):
-        raise ValueError(
-            f"{name}: payload does not match the generator grammar: {payload!r}"
-        )
-
     lines: list[str] = []
-    if description:
-        # First line as ``/** … */`` header; multi-line gets one line per row.
-        for row in description.splitlines():
-            lines.append(f"  /** {row.strip()} */")
     lines.append(f"  export interface {name} {{")
     for fname, ftype in payload.items():
         if isinstance(ftype, dict) and ftype.get("type") == "literal":
@@ -226,12 +189,7 @@ def _render_interface(name: str, entry: dict) -> str:
         elif isinstance(ftype, str):
             optional = ftype.endswith("?")
             inner = ftype[:-1] if optional else ftype
-            if _COMPOSITE.match(inner) or _OPTIONAL_COMPOSITE.match(inner):
-                # Inline-object composite (rare; left as Record<string, X>
-                # fallback when composite references a named type).
-                rendered = _ts_type(inner)
-            else:
-                rendered = _ts_type(inner)
+            rendered = _ts_type(inner)
             opt = "?" if optional else ""
             lines.append(f"    {fname}{opt}: {rendered};")
         elif isinstance(ftype, dict):
@@ -250,28 +208,6 @@ def _render_const_array(name: str, values: tuple[str, ...]) -> str:
     return f"  export const {name} = [{inner}] as const;"
 
 
-def _render_const_array_dict(name: str, values: tuple[dict, ...], fields: tuple[str, ...]) -> str:
-    """Emit a const array of dict literals — for ERRORS / STREAMS."""
-    rows = []
-    for row in values:
-        bits = []
-        for f in fields:
-            v = row.get(f)
-            if v is None:
-                continue
-            if isinstance(v, str):
-                bits.append(f'{f}: "{v}"')
-            elif isinstance(v, bool):
-                bits.append(f"{f}: {'true' if v else 'false'}")
-            elif isinstance(v, int):
-                bits.append(f"{f}: {v}")
-            else:
-                raise ValueError(f"{name}: unsupported field {f}={v!r}")
-        rows.append(f"    {{ {', '.join(bits)} }}")
-    body = ",\n".join(rows) if rows else ""
-    return f"  export const {name} = [\n{body}\n  ] as const;"
-
-
 def _pascal(name: str) -> str:
     """Convert snake_case to PascalCase for TS interface names."""
     return "".join(part.capitalize() for part in name.split("_"))
@@ -286,7 +222,7 @@ HEADER = """\
 // ⚠️  GENERATED FILE — DO NOT EDIT BY HAND.
 //
 // Source of truth:
-//   src/rob_box_core/rob_box_core/_bridge_protocol_data.py
+//   src/rob_box_core/rob_box_core/bridge_protocol.py
 //
 // Regenerate with:
 //   python tools/gen_bridge_protocol_ts.py
@@ -308,19 +244,19 @@ def generate(catalog) -> str:
     chunks.append("")
     chunks.append("// JSON_CMD — client → server (meta-quest-api.md §5)")
     cmd_names: list[str] = []
-    for entry in catalog.COMMANDS:
-        iface_name = _pascal(entry["name"]) + "Cmd"
-        cmd_names.append(entry["name"])
-        chunks.append(_render_interface(iface_name, entry))
+    for spec in catalog.COMMANDS:
+        iface_name = _pascal(spec.name) + "Cmd"
+        cmd_names.append(spec.name)
+        chunks.append(_render_interface(iface_name, dict(spec.payload)))
     chunks.append("")
 
     # -- EVENT interfaces -------------------------------------------------
     chunks.append("// JSON_EVENT — server → client (meta-quest-api.md §6)")
     evt_names: list[str] = []
-    for entry in catalog.EVENTS:
-        iface_name = _pascal(entry["name"]) + "Event"
-        evt_names.append(entry["name"])
-        chunks.append(_render_interface(iface_name, entry))
+    for spec in catalog.EVENTS:
+        iface_name = _pascal(spec.name) + "Event"
+        evt_names.append(spec.name)
+        chunks.append(_render_interface(iface_name, dict(spec.payload)))
     chunks.append("")
 
     # -- Discriminated unions --------------------------------------------
@@ -353,25 +289,19 @@ def generate(catalog) -> str:
     chunks.append("// Catalog tuples — single source of truth for whitelists.")
     chunks.append(_render_const_array("MODES", catalog.MODES))
     chunks.append(_render_const_array("FLOORS", catalog.FLOORS))
-    chunks.append(_render_const_array("VOICE_PRESETS", catalog.VOICE_PRESETS))
+    chunks.append(_render_const_array("VOICE_PRESETS", catalog.VOICE_PRESET_IDS))
     chunks.append(_render_const_array("VOICE_LANGUAGES", catalog.VOICE_LANGUAGES))
-    chunks.append(_render_const_array("QUALITY_LEVELS", catalog.QUALITY_LEVELS))
     chunks.append(_render_const_array(
-        "SUBPROTOCOLS_OFFERED", tuple(s.replace("robbox-quest-", "") for s in catalog.SUBPROTOCOLS)
+        "SUBPROTOCOLS_OFFERED",
+        ("v1", "v2"),  # mirror of meta-quest-api.md §11.1; канон держит
+                       # ``FrameTypeId``-имена, но ADR-0028 §4.5 явно
+                       # «v1|v2», этого достаточно для picker'а.
     ))
+    chunks.append("")
     chunks.append(
-        _render_const_array_dict(
-            "ERROR_CODES",
-            tuple({"code": e["code"]} for e in catalog.ERRORS),
-            ("code",),
-        )
-    )
-    chunks.append(
-        _render_const_array_dict(
-            "STREAMS",
-            catalog.STREAMS,
-            ("topic", "topic_id", "kind", "default_quality"),
-        )
+        "  export const ERROR_CODES = ["
+        + ", ".join('"' + e.code + '"' for e in catalog.ERROR_SPECS)
+        + "] as const;"
     )
     chunks.append("")
 
@@ -416,7 +346,6 @@ def main() -> int:
                 "Fix : run `python tools/gen_bridge_protocol_ts.py` and commit the diff.",
                 file=sys.stderr,
             )
-            # Print first 60 diff lines for fast eyeballing in CI logs.
             import difflib
             diff = list(difflib.unified_diff(
                 on_disk.splitlines(),
