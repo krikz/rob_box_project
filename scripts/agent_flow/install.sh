@@ -438,20 +438,60 @@ for target_dir in "${TARGET_DIRS[@]}"; do
 done
 
 # ---------------------------------------------------------------------------
-# Применение vendor-патчей к hermes-agent (ретро t_f00676f8).
+# Применение vendor-патчей к hermes-agent (ретро t_f00676f8, issue #2332).
 #
-# Проблема: локальные фиксы hermes-agent (валидация скиллов по профилю
-# t_1ab37fa8: _profile_skill_names/_validate_skills_for_assignee в
-# hermes_cli/kanban_db.py, symlink-following подсчёт скиллов в
-# hermes_cli/profiles.py) накладывались на хост руками БЕЗ сохранения в репо.
-# При `git pull`/`pip install -U hermes-agent` патчи теряются, и регресс
-# t_1ab37fa8 возвращается (карточки со скилами не из профиля падают).
+# Проблема (оригинал, t_f00676f8): локальные фиксы hermes-agent
+# (_profile_skill_names / _validate_skills_for_assignee в
+# hermes_cli/kanban_db.py, --force-scope в hermes_cli/kanban.py,
+# symlink-following подсчёт скиллов в hermes_cli/profiles.py) накладывались
+# на хост руками БЕЗ сохранения в репо. При `git pull` / `pip install -U
+# hermes-agent` патчи теряются, и регресс t_1ab37fa8 возвращается (карточки
+# со скилами не из профиля падают).
 #
-# Решение: диффы хранятся в репо как scripts/agent_flow/vendor/
-# hermes-agent-*.patch; этот скрипт применяет их идемпотентно
-# (git apply --reverse --check => уже применён; git apply --check => можно
-# применить). Вызывать ПОСЛЕ обновления hermes-agent.
+# Проблема (issue #2332, 2026-09): когда upstream включает наш фикс
+# в свой main (либо через ручной merge в dev-ветку как на этом хосте —
+# commit 6c2be533d `feat(kanban): pre-create skill-validation + scope-hint`
+# уже лежит в `z-devops/t_16a245cc-goal-mode-clean-exit-recovery`), patch
+# перестаёт применяться чисто: ``git apply --check`` падает (offsets
+# сдвинулись), ``git apply --reverse --check`` тоже падает (live tree
+# не содержит точно тех хунков, что в patch'е — upstream их переписал).
+# install.sh раньше выдавал ERROR и блокировал всю раскладку.
+#
+# Решение: трёхуровневый idempotent guard перед выходом в ERROR:
+#   1) reverse-check → patch уже применён → OK;
+#   2) SENTINEL-detect (live tree уже содержит сигнатуру фикса) → SKIP with
+#      info (issue #2332): upstream включил / devops смержил руками;
+#   3) forward-check + apply → чисто применяем.
+# Если ничего не сработало → ERROR с подсказкой регенерировать patch.
+# Только ЭТА функция валится с ERROR; остальная раскладка (TARGET_DIRS,
+# drift-detect, cron registration) продолжается — patch-failure не должен
+# блокировать весь install.
 HERMES_AGENT_DIR="${HERMES_AGENT_DIR:-/home/builder/.hermes/hermes-agent}"
+
+# Sentinel-detect (issue #2332): patch навывает "уже применён" если
+# upstream включил наш фикс или dev-ветка содержит ручной merge.
+# Sentinel — anchor-строка из канонического patch'а, который точно
+# присутствует в live tree после ручного merge upstream'а.
+#
+# Формат: "<file-relative-to-HERMES_AGENT_DIR>|<grep -F pattern>"
+# Первое совпадение → SKIP.
+declare -A HERMES_AGENT_PATCH_SENTINELS=(
+    # hermes-agent-skill-validation.patch:
+    # upstream'овский merge commit 6c2be533d / наш фикс
+    ["hermes-agent-skill-validation.patch"]="hermes_cli/kanban_db.py|def _profile_skill_names"
+)
+
+patch_already_in_live() {
+    # $1 = patch basename (e.g. hermes-agent-skill-validation.patch)
+    local name="$1"
+    local sentinel="${HERMES_AGENT_PATCH_SENTINELS[$name]:-}"
+    [ -n "$sentinel" ] || return 1
+    local sentinel_file="${sentinel%|*}"
+    local sentinel_grep="${sentinel#*|}"
+    local full="$HERMES_AGENT_DIR/$sentinel_file"
+    [ -f "$full" ] || return 1
+    grep -qF -- "$sentinel_grep" "$full"
+}
 
 apply_hermes_agent_patch() {
     local patch="$1"
@@ -463,10 +503,20 @@ apply_hermes_agent_patch() {
         echo "  SKIP hermes-agent patch ($patch not found)"
         return 0
     fi
-    echo "==> hermes-agent patch: $patch"
-    # Уже применён?
+    local patch_name
+    patch_name="$(basename "$patch")"
+    echo "==> hermes-agent patch: $patch_name"
+    # Уже применён (точная reverse-проверка)?
     if ( cd "$HERMES_AGENT_DIR" && git apply --reverse --check "$patch" >/dev/null 2>&1 ); then
         echo "  OK   patch already applied (reverse-check clean)"
+        return 0
+    fi
+    # Уже применён через upstream / dev-merge? (sentinel-detect, issue #2332)
+    if patch_already_in_live "$patch_name"; then
+        echo "  SKIP patch already in live tree (sentinel-detect: upstream or dev-merge)"
+        echo "         To re-apply, remove the sentinel from live tree and re-run install.sh"
+        echo "         or regenerate the patch via:"
+        echo "             bash scripts/agent_flow/agent-flow-regen-vendor-patch.sh $patch"
         return 0
     fi
     # Применится чисто?
@@ -484,7 +534,7 @@ apply_hermes_agent_patch() {
     fi
     echo "  ERROR patch does not apply cleanly to $HERMES_AGENT_DIR — upstream moved" >&2
     echo "         Regenerate with: bash scripts/agent_flow/agent-flow-regen-vendor-patch.sh $patch" >&2
-    echo "         See also: ретро t_f00676f8 (original) / t_49c2b63f (regen helper)" >&2
+    echo "         See also: ретро t_f00676f8 (original) / t_49c2b63f (regen helper) / issue #2332" >&2
     return 1
 }
 
