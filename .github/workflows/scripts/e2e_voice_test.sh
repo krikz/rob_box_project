@@ -1142,6 +1142,10 @@ PY
 # попытки). Стартуем до if/else, останавливаем в trap EXIT (см. ниже).
 start_recording
 
+# Advisory health probe is always collected, but never changes PASS/FAIL.
+# Keep it in the run artifact so e2e reports expose infrastructure health.
+observe_step "${SCENARIO_FILE:+scenario}${SCENARIO_FILE:-single}" > "$OUT_DIR/health_snapshot.json" || true
+
 # Гарантированная остановка записи при любом завершении (PASS/FAIL/ошибка).
 # stop_recording сам идемпотентен: повторный вызов с пустым REC_PID — noop.
 trap 'stop_recording' EXIT
