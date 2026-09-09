@@ -45,7 +45,62 @@ import json
 import re
 import sys
 from collections import Counter
+from difflib import SequenceMatcher
 from pathlib import Path
+
+
+def _is_wake_like(word: str, operator_set: set[str], *, min_ratio: float = 0.65) -> bool:
+    """Похоже ли слово на любой wake-токен из operator namespace (ADR-0077 §2.3).
+
+    Используем SequenceMatcher.ratio() как метрику Левенштейн-подобного
+    сходства (pure-stdlib). Порог 0.65 подобран под STT-искажения «ТАРС»:
+    «арс» (~0.57, выпадает по одному символу — оставляем как граничный кейс),
+    «тарз» (0.80), «тарс» (1.0 — уже в YAML), «тэрс» (0.75).
+    Чтобы покрыть «арс» явно, добавляем явный порог по edit-distance ≤ 2
+    через ленивый prefilter на малую длину.
+    """
+    if word in operator_set:
+        return False  # уже покрыто
+    # edit-distance ≤ 2: явная короткая дистанция для коротких wake-токенов
+    # (4 буквы: «тарс», «tars»). SequenceMatcher.ratio() на 4-символьных строках
+    # даёт 0.57 для 1 замены и 0.50 для 2 — оба ниже 0.65. Поэтому
+    # комбинируем: либо ratio ≥ min_ratio, либо быстрый prefilter
+    # по разнице длин + простому Левенштейну.
+    for tok in operator_set:
+        if abs(len(word) - len(tok)) > 2:
+            continue
+        # быстрая оценка через SequenceMatcher.ratio()
+        if SequenceMatcher(None, word, tok).ratio() >= min_ratio:
+            return True
+        # Левенштейн ≤ 2 (pure-stdlib, повторная оценка для коротких)
+        if _levenshtein_le(word, tok, 2):
+            return True
+    return False
+
+
+def _levenshtein_le(a: str, b: str, max_dist: int) -> bool:
+    """True, если edit-distance между a и b ≤ max_dist (pure-stdlib).
+
+    Standard DP, O(len(a)*len(b)). Вызываем только после prefilter по
+    разнице длин ≤ max_dist, так что 4×4 матрица для «тарс».
+    """
+    if abs(len(a) - len(b)) > max_dist:
+        return False
+    if a == b:
+        return True
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        row_min = i
+        for j, cb in enumerate(b, 1):
+            cost = 0 if ca == cb else 1
+            cur.append(min(cur[-1] + 1, prev[j] + 1, prev[j - 1] + cost))
+            if cur[-1] < row_min:
+                row_min = cur[-1]
+        if row_min > max_dist:
+            return False
+        prev = cur
+    return prev[-1] <= max_dist
 
 
 def load_records(path: Path) -> list[dict]:
@@ -159,7 +214,13 @@ def summarize(records: list[dict], top: int = 15) -> None:
 
 
 def diff_against_yaml(records: list[dict], yaml_path: Path) -> None:
-    """--diff: какие слова из выборки НЕ покрыты текущим operator namespace."""
+    """--diff: кандидаты на расширение operator namespace (ADR-0077 §2.3).
+
+    Печатает только слова, **фonetически близкие** к существующим wake-токенам
+    (edit-distance ≤ 2 или SequenceMatcher.ratio ≥ 0.65). Шумовая лексика
+    wake-сегмента («расскажи», «мне», «анекдот»…) НЕ печатается: она не
+    искажение «ТАРС», а просто фоновая речь оператора.
+    """
     if not yaml_path.exists():
         print(f"⚠️ YAML не найден: {yaml_path}", file=sys.stderr)
         return
@@ -178,9 +239,13 @@ def diff_against_yaml(records: list[dict], yaml_path: Path) -> None:
         for m in word_re.findall(text):
             counts[m] += 1
 
+    # ADR-0077 §2.3: «кандидаты на добавление» = фonetические искажения
+    # существующих wake-токенов (edit-distance ≤ 2), а не «любое слово не
+    # в YAML». Шумовая лексика wake-сегмента («расскажи», «мне», «анекдот»)
+    # отфильтрована — она не фonetически близка к «ТАРС».
     candidates = [
         (w, c) for w, c in counts.most_common(40)
-        if w not in operator_set and len(w) >= 2
+        if _is_wake_like(w, operator_set)
     ]
     if not candidates:
         print("🟢 нет кандидатов на расширение (или выборка пуста)")
