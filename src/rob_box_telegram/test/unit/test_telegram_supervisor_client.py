@@ -223,6 +223,23 @@ class _FakeRosString:
         self.data: str = ""
 
 
+class _FakeTeleopHeartbeat:
+    """Stand-in for ``rob_box_supervisor_msgs.msg.TeleopHeartbeat`` (issue #2189).
+
+    IDL-поля: ``client_id`` (string), ``ts_ms`` (uint64), ``seq`` (uint32).
+    Атрибуты плоские, settable через setattr — как настоящие IDL-классы.
+    Используется в ``test_heartbeat_*`` для проверки, что
+    ``SupervisorClient._send_heartbeat`` шлёт именно IDL, а не JSON-строку.
+    """
+
+    __slots__ = ("client_id", "ts_ms", "seq")
+
+    def __init__(self) -> None:
+        self.client_id: str = ""
+        self.ts_ms: int = 0
+        self.seq: int = 0
+
+
 class _FakeFuture:
     """Mimics ``rclpy.task.Future`` API."""
 
@@ -657,6 +674,7 @@ class TestOnStateMsgDecodeContract(unittest.TestCase):
 # ──────────────────────────────────────────────────────────────────────
 
 
+@mock.patch("rob_box_telegram.supervisor_client._try_import_heartbeat_msg_type")
 @mock.patch("rob_box_telegram.supervisor_client._try_import_command_msg")
 @mock.patch("rob_box_telegram.supervisor_client._try_import_execute_command")
 @mock.patch("rob_box_telegram.supervisor_client._try_import_rclpy")
@@ -668,6 +686,11 @@ class TestSupervisorClientActiveServiceCall(unittest.TestCase):
     через ``_FakeExecuteCommand`` / ``_FakeCommand`` / ``_FakeResponse``
     (см. выше) — тесты проверяют что код правильно формирует payload
     и парсит response.
+
+    ``_try_import_heartbeat_msg_type`` тоже мокается (issue #2189) —
+    без него ``start_heartbeat`` WARN-ит «IDL not built» и не создаёт
+    паблишер. Конкретные heartbeat-тесты переопределяют ``return_value``
+    на ``_FakeTeleopHeartbeat``.
     """
 
     def setUp(self) -> None:
@@ -703,6 +726,7 @@ class TestSupervisorClientActiveServiceCall(unittest.TestCase):
         mock_rclpy,
         mock_execute,
         mock_command,
+        mock_heartbeat=None,
         *,
         acquire_resp=None,
         release_resp=None,
@@ -713,10 +737,20 @@ class TestSupervisorClientActiveServiceCall(unittest.TestCase):
 
         Phase 2: один execute-клиент обслуживает оба направления
         (acquire + release). Различаем по ``command.kind`` в factory.
+
+        ``mock_heartbeat`` — параметр, который получает класс через
+        class-level patch (см. декоратор). По умолчанию ``None`` — т.е.
+        ``_try_import_heartbeat_msg_type`` вернёт ``None`` и heartbeat
+        будет пропущен (как до #2189). Heartbeat-тесты переопределяют
+        ``mock_heartbeat.return_value = _FakeTeleopHeartbeat``.
         """
         mock_rclpy.return_value = _FakeRosString
         mock_execute.return_value = _FakeExecuteCommand
         mock_command.return_value = _FakeCommand
+        if mock_heartbeat is not None:
+            # Default: IDL недоступен (как в CI без colcon-build).
+            # Heartbeat-тесты переопределят на _FakeTeleopHeartbeat.
+            mock_heartbeat.return_value = None
 
         def factory(name: str) -> _FakeClient:
             def _factory(request: Any) -> _FakeFuture:
@@ -775,7 +809,7 @@ class TestSupervisorClientActiveServiceCall(unittest.TestCase):
     # ── §1: _acquire_via_service really calls the service and parses response ──
 
     def test_acquire_via_service_calls_svc_and_returns_granted(
-        self, mock_rclpy, mock_execute, mock_command
+        self, mock_rclpy, mock_execute, mock_command, mock_heartbeat
     ) -> None:
         node, client = self._build(mock_rclpy, mock_execute, mock_command)
         result = client.acquire_floor(Floor.TELEOP)
@@ -794,7 +828,7 @@ class TestSupervisorClientActiveServiceCall(unittest.TestCase):
         client.shutdown()
 
     def test_acquire_via_service_parses_held_by_on_denial(
-        self, mock_rclpy, mock_execute, mock_command
+        self, mock_rclpy, mock_execute, mock_command, mock_heartbeat
     ) -> None:
         # Phase 2: denial теперь выражается через Response{applied=False,
         # held_by="quest"} (а не JSON-в-message).
@@ -819,7 +853,7 @@ class TestSupervisorClientActiveServiceCall(unittest.TestCase):
     # ── §2: _release_via_service really calls ReleaseFloor, clears local state in any case ──
 
     def test_release_via_service_calls_svc_and_clears_state(
-        self, mock_rclpy, mock_execute, mock_command
+        self, mock_rclpy, mock_execute, mock_command, mock_heartbeat
     ) -> None:
         node, client = self._build(mock_rclpy, mock_execute, mock_command)
         client.acquire_floor(Floor.TELEOP)
@@ -836,7 +870,7 @@ class TestSupervisorClientActiveServiceCall(unittest.TestCase):
         self.assertEqual(release_req.command.floor, "teleop")
 
     def test_release_clears_local_state_even_if_service_fails(
-        self, mock_rclpy, mock_execute, mock_command
+        self, mock_rclpy, mock_execute, mock_command, mock_heartbeat
     ) -> None:
         # Phase 2: «failed» release = Response{applied=False, reason="conflict"}.
         bad = _FakeExecuteCommandResponse(
@@ -854,7 +888,7 @@ class TestSupervisorClientActiveServiceCall(unittest.TestCase):
     # ── §3: handler does not block when service hangs (timeout 0.5s) ──
 
     def test_acquire_returns_within_timeout_when_service_hangs(
-        self, mock_rclpy, mock_execute, mock_command
+        self, mock_rclpy, mock_execute, mock_command, mock_heartbeat
     ) -> None:
         mock_rclpy.return_value = _FakeRosString
         mock_execute.return_value = _FakeExecuteCommand
@@ -881,7 +915,7 @@ class TestSupervisorClientActiveServiceCall(unittest.TestCase):
         client.shutdown()
 
     def test_acquire_does_not_spin_rclpy_executor(
-        self, mock_rclpy, mock_execute, mock_command
+        self, mock_rclpy, mock_execute, mock_command, mock_heartbeat
     ) -> None:
         """Verify SupervisorClient never calls rclpy.spin_until_future_complete.
 
@@ -903,7 +937,7 @@ class TestSupervisorClientActiveServiceCall(unittest.TestCase):
     # ── §4-5: supervisor_required param + WARN rate-limit ──
 
     def test_supervisor_required_true_denies_when_service_unavailable(
-        self, mock_rclpy, mock_execute, mock_command
+        self, mock_rclpy, mock_execute, mock_command, mock_heartbeat
     ) -> None:
         mock_rclpy.return_value = _FakeRosString
         mock_execute.return_value = _FakeExecuteCommand
@@ -919,7 +953,7 @@ class TestSupervisorClientActiveServiceCall(unittest.TestCase):
         client.shutdown()
 
     def test_supervisor_required_false_grants_with_warn_when_unavailable(
-        self, mock_rclpy, mock_execute, mock_command
+        self, mock_rclpy, mock_execute, mock_command, mock_heartbeat
     ) -> None:
         mock_rclpy.return_value = _FakeRosString
         mock_execute.return_value = _FakeExecuteCommand
@@ -982,11 +1016,14 @@ class TestSupervisorClientActiveServiceCall(unittest.TestCase):
     # ── §7: heartbeat starts only when holding teleop floor ──
 
     def test_heartbeat_starts_only_when_holding_teleop(
-        self, mock_rclpy, mock_execute, mock_command
+        self, mock_rclpy, mock_execute, mock_command, mock_heartbeat
     ) -> None:
+        # Issue #2189: IDL TeleopHeartbeat должен быть доступен, иначе
+        # start_heartbeat не создаст паблишер. Подсовываем фейковый тип.
         mock_rclpy.return_value = _FakeRosString
         mock_execute.return_value = _FakeExecuteCommand
         mock_command.return_value = _FakeCommand
+        mock_heartbeat.return_value = _FakeTeleopHeartbeat
         node = _ActiveNode()
         client = SupervisorClient(
             node=node, client_id="telegram", mode="active", heartbeat_period_s=0.5
@@ -1003,6 +1040,8 @@ class TestSupervisorClientActiveServiceCall(unittest.TestCase):
         self.assertEqual(len(node.timers), 1)
         self.assertEqual(len(node.publishers), 1)
         self.assertTrue(node.publishers[0][1].endswith("teleop_heartbeat"))
+        # Issue #2189: тип паблишера — IDL TeleopHeartbeat, не std_msgs/String.
+        self.assertIs(node.publishers[0][0], _FakeTeleopHeartbeat)
         timer = node.timers[0][2]
         self.assertEqual(timer.cancel.call_count, 0)
         # Release teleop stops heartbeat (cancel() called exactly once).
@@ -1011,6 +1050,168 @@ class TestSupervisorClientActiveServiceCall(unittest.TestCase):
         # Release voice is a no-op for heartbeat.
         client.release_floor(Floor.VOICE)
         self.assertEqual(timer.cancel.call_count, 1)
+        client.shutdown()
+
+    # ── §8: heartbeat payload is IDL TeleopHeartbeat, not String (issue #2189) ──
+
+    def test_heartbeat_payload_uses_idl_not_json_string(
+        self, mock_rclpy, mock_execute, mock_command, mock_heartbeat
+    ) -> None:
+        """Regress #2189: ``_send_heartbeat`` шлёт IDL TeleopHeartbeat.
+
+        До #2189 этот метод формировал ``std_msgs/String`` с
+        ``json.dumps({"client_id":..., "ts_ms":...})`` и слал его в
+        паблишер, объявленный на IDL ``TeleopHeartbeat``. В ROS 2
+        типы должны совпадать, иначе подписчик не получит ничего →
+        ``LockManager.heartbeat()`` не вызывается → dead-man 500 мс
+        не работает. Здесь мы напрямую дёргаем ``_send_heartbeat`` и
+        проверяем, что в ``publisher.publish()`` попал объект
+        ``_FakeTeleopHeartbeat`` (а не String) с правильно
+        заполненными ``client_id``/``ts_ms``/``seq``.
+        """
+        mock_rclpy.return_value = _FakeRosString
+        mock_execute.return_value = _FakeExecuteCommand
+        mock_command.return_value = _FakeCommand
+        mock_heartbeat.return_value = _FakeTeleopHeartbeat
+
+        node = _ActiveNode()
+        client = SupervisorClient(
+            node=node, client_id="telegram", mode="active", heartbeat_period_s=0.5
+        )
+        client.acquire_floor(Floor.TELEOP)
+        self.assertEqual(len(node.publishers), 1)
+        publisher = node.publishers[0]
+        # Паблишер зарегистрирован на IDL TeleopHeartbeat, не String.
+        self.assertIs(publisher[0], _FakeTeleopHeartbeat)
+
+        # Вытаскиваем мок-паблишер и дёргаем ``_send_heartbeat`` напрямую.
+        # В ``_ActiveNode.create_publisher`` возвращается ``mock.MagicMock()``,
+        # но он сохраняется в ``client._heartbeat_pub`` — используем его.
+        sent: List[_FakeTeleopHeartbeat] = []
+
+        def _capture(msg: _FakeTeleopHeartbeat) -> None:
+            sent.append(msg)
+
+        client._heartbeat_pub.publish = _capture  # type: ignore[assignment]
+        client._send_heartbeat()
+
+        self.assertEqual(len(sent), 1)
+        msg = sent[0]
+        # 1. Тип — IDL TeleopHeartbeat, не std_msgs/String.
+        self.assertIsInstance(msg, _FakeTeleopHeartbeat)
+        self.assertNotIsInstance(msg, _FakeRosString)
+        # 2. Никакого JSON-string поля ``.data``.
+        self.assertFalse(hasattr(msg, "data"))
+        # 3. Поля IDL заполнены правильно.
+        self.assertEqual(msg.client_id, "telegram")
+        self.assertGreater(msg.ts_ms, 0)
+        # 4. seq — 0 на первом publish.
+        self.assertEqual(msg.seq, 0)
+        client.shutdown()
+
+    def test_heartbeat_seq_is_monotonic(
+        self, mock_rclpy, mock_execute, mock_command, mock_heartbeat
+    ) -> None:
+        """``seq`` инкрементируется на каждом publish; uint32-overflow-aware."""
+        mock_rclpy.return_value = _FakeRosString
+        mock_execute.return_value = _FakeExecuteCommand
+        mock_command.return_value = _FakeCommand
+        mock_heartbeat.return_value = _FakeTeleopHeartbeat
+
+        node = _ActiveNode()
+        client = SupervisorClient(
+            node=node, client_id="telegram", mode="active", heartbeat_period_s=0.5
+        )
+        client.acquire_floor(Floor.TELEOP)
+
+        sent: List[_FakeTeleopHeartbeat] = []
+        client._heartbeat_pub.publish = lambda msg: sent.append(msg)  # type: ignore[assignment]
+
+        for _ in range(3):
+            client._send_heartbeat()
+
+        self.assertEqual([m.seq for m in sent], [0, 1, 2])
+        # Проверяем wrap-around: ставим seq близко к uint32-максимуму.
+        client._heartbeat_seq = 0xFFFFFFFF
+        client._send_heartbeat()
+        self.assertEqual(sent[-1].seq, 0xFFFFFFFF)
+        client._send_heartbeat()
+        # wrap-around → 0
+        self.assertEqual(sent[-1].seq, 0)
+        client.shutdown()
+
+    def test_heartbeat_noop_when_idl_not_built(
+        self, mock_rclpy, mock_execute, mock_command, mock_heartbeat
+    ) -> None:
+        """Issue #2189: если IDL TeleopHeartbeat не собран — no-op + WARN.
+
+        До #2189 паблишер всё равно создавался на ``std_msgs/String``,
+        и слал что попало «в пустоту» — тихая деградация безопасности.
+        Теперь — fail-safe: паблишер ``None``, heartbeat-цикл не
+        стартует, в логе WARN (Шифу прямо просил наблюдаемую деградацию).
+        """
+        mock_rclpy.return_value = _FakeRosString
+        mock_execute.return_value = _FakeExecuteCommand
+        mock_command.return_value = _FakeCommand
+        mock_heartbeat.return_value = None  # IDL не собран
+
+        node = _ActiveNode()
+        client = SupervisorClient(
+            node=node, client_id="telegram", mode="active", heartbeat_period_s=0.5
+        )
+
+        with self.assertLogs(
+            "rob_box_telegram.supervisor_client", level="WARNING"
+        ) as cm:
+            client.acquire_floor(Floor.TELEOP)
+
+        # Heartbeat-паблишер и таймер НЕ созданы.
+        self.assertEqual(len(node.publishers), 0)
+        self.assertEqual(len(node.timers), 0)
+        self.assertIsNone(client._heartbeat_pub)
+        self.assertIsNone(client._heartbeat_timer)
+        # И в логе — WARN про IDL.
+        self.assertTrue(
+            any("IDL is not built" in rec.getMessage() for rec in cm.records),
+            f"expected WARN about missing IDL, got {[r.getMessage() for r in cm.records]}",
+        )
+        client.shutdown()
+
+    def test_heartbeat_send_skips_when_not_holding_teleop(
+        self, mock_rclpy, mock_execute, mock_command, mock_heartbeat
+    ) -> None:
+        """``_send_heartbeat`` — no-op, если уже отпустили teleop-floor.
+
+        Даже если паблишер остался жить (race в timer-callback после
+        release), не должно быть ``publish()`` — иначе шлём heartbeat
+        не от имени держателя floor-а.
+        """
+        mock_rclpy.return_value = _FakeRosString
+        mock_execute.return_value = _FakeExecuteCommand
+        mock_command.return_value = _FakeCommand
+        mock_heartbeat.return_value = _FakeTeleopHeartbeat
+
+        node = _ActiveNode()
+        client = SupervisorClient(
+            node=node, client_id="telegram", mode="active", heartbeat_period_s=0.5
+        )
+        client.acquire_floor(Floor.TELEOP)
+        client.release_floor(Floor.TELEOP)
+
+        sent: List[Any] = []
+        # После release ``_heartbeat_pub`` = None; ставим мок чтобы убедиться,
+        # что ``_send_heartbeat`` НЕ дёргает publish ни при каких условиях.
+        fake_pub = mock.MagicMock()
+        fake_pub.publish.side_effect = lambda msg: sent.append(msg)
+        client._heartbeat_pub = fake_pub
+        client._heartbeat_msg_type = _FakeTeleopHeartbeat
+
+        client._send_heartbeat()
+        self.assertEqual(
+            sent,
+            [],
+            "_send_heartbeat must no-op once teleop floor is released",
+        )
         client.shutdown()
 
 
