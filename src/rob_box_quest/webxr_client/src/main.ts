@@ -284,42 +284,14 @@ export function bootstrap(opts: BootstrapOptions): {
   }
 
   /**
-   * Смена стиля речи / языка вывода → `set_voice` (AV-28 §P7).
-   *
-   * ТОЛЬКО ДЛЯ AV-28 (чипы стиля/языка). НЕ для выбора голоса.
-   * Выбор голоса живёт в TTS picker'е — отдельный путь `apply` (см. блок
-   * «AV-27: TTS picker» ниже, а также `state/tts_picker_state.ts`).
-   *
-   * ВАЖНО: `voice_id` здесь НЕ шлём — он всегда пустой. Сервер
-   * (ws_server.py, cmd set_voice) разводит две фичи, делящие одно имя
-   * `preset`, по ЗНАЧЕНИЮ поля: preset ∈ VOICE_PRESET_IDS (стиль речи)
-   * или наличие language → это AV-28-запрос, и `voice_id` в нём
-   * игнорируется. Отправлять сюда реальный voice_id — врать оператору:
-   * он бы увидел ack, а голос не сменился бы.
-   *
-   * Issue #2138 указывал на этот код как на источник «голос не
-   * меняется», но picker использует другой код-путь (`apply`, ниже);
-   * этот комментарий оставлен, чтобы будущий рефакторинг не свалил обе
-   * фичи в одну функцию обратно.
-   */
-  function sendStyleChange(preset?: VoicePresetId, language?: VoiceLanguage): void {
-    const c = conn;
-    if (!c || disconnected) return;
-    const snap = modeManager.snapshot();
-    c.send({
-      cmd: "set_voice",
-      ts_ms: Date.now(),
-      voice_id: "",
-      preset: preset ?? snap.currentPreset ?? DEFAULT_VOICE_PRESET,
-      language: language ?? snap.currentLanguage ?? DEFAULT_VOICE_LANGUAGE
-    });
-  }
-
-  /**
    * Шаг 4б (t_80e7aa1e, issue #1989): синхронизировать конфиг пайплайна
-   * грипа на супервизоре. ОТДЕЛЬНЫЙ канал от `set_voice` (тот меняет
-   * voice_preset на dialogue_node, ЛИЧНОСТЬ), этот — _pipeline_* на
-   * супервизоре (грип-трансформация).
+   * грипа на супервизоре. Это ЕДИНСТВЕННЫЙ канал смены стиля/языка
+   * речи с панели пайплайна (ADR-0087, 2026-09-09): legacy AV-28
+   * `set_voice` cmd с payload {preset, language} удалён из ws_server
+   * вместе с подписками `/avatar/set_voice_preset|language` на
+   * супервизоре — канал был «честный no-op» после PR #2255, без
+   * владельца на `/dialogue/control`, и на каждый клик чипа
+   * отправлялся впустую.
    *
    * Что отправляется (см. buildVoicePipelineCmd): {llm_enabled, preset,
    * language} — точно та полезная нагрузка, что парсит
@@ -511,14 +483,9 @@ export function bootstrap(opts: BootstrapOptions): {
           bridge.voicePipeline.setCurrentPreset(action.preset);
           modeManager.setCurrentPreset(action.preset);
           ensureLlmFormalize();
-          try {
-            sendStyleChange(action.preset);
-          } catch (err) {
-            // eslint-disable-next-line no-console
-            console.warn("[quest] set_voice preset send failed:", err);
-            bridge.voicePipeline.setCurrentPreset(modeManager.snapshot().currentPreset);
-          }
           // Шаг 4б: новый пресет → новый llm_enabled=true + preset=<X>.
+          // ADR-0087: legacy `sendStyleChange` удалён — `voice_pipeline`
+          // единственный канал смены стиля/языка с панели.
           sendVoicePipeline();
           return;
         }
@@ -526,14 +493,9 @@ export function bootstrap(opts: BootstrapOptions): {
           bridge.voicePipeline.setCurrentLanguage(action.language);
           modeManager.setCurrentLanguage(action.language);
           ensureLlmFormalize();
-          try {
-            sendStyleChange(undefined, action.language);
-          } catch (err) {
-            // eslint-disable-next-line no-console
-            console.warn("[quest] set_voice lang send failed:", err);
-            bridge.voicePipeline.setCurrentLanguage(modeManager.snapshot().currentLanguage);
-          }
-          // Шаг 4б: новый язык → новый language=<Y>, llm_enabled/preset не трогаем.
+          // Шаг 4б: новый язык → новый language=<Y>, llm_enabled/preset
+          // не трогаем. ADR-0087: legacy `sendStyleChange` удалён —
+          // `voice_pipeline` единственный канал смены стиля/языка.
           sendVoicePipeline();
           return;
         }
@@ -787,10 +749,10 @@ export function bootstrap(opts: BootstrapOptions): {
   // preview_voice_audio+BINARY_FRAME / preview_voice_done / _error.
   //
   // ВАЖНО: этот код-путь — единственный, через который оператор
-  // меняет голос. Стиль речи/язык меняется через sendStyleChange (AV-28)
-  // и намеренно НЕ здесь: сервер разводит две фичи по полю `preset`, и
-  // смешение в одной функции вернёт баг #2138. См. комментарий у
-  // sendStyleChange и ADR-0073.
+  // меняет голос (AV-27 picker, ``set_voice`` cmd). Стиль речи/язык
+  // меняется через ``voice_pipeline`` cmd (AV-28 §P7, ADR-0087) — тот
+  // путь живёт в `sendVoicePipeline()` рядом, не здесь. Смешение двух
+  // фич в одной функции вернёт баг #2138. См. ADR-0073.
 
   let ttsState: TtsPickerState = INITIAL_TTS_PICKER_STATE;
   const previewSink: PreviewAudioSink = createPreviewAudioSink();
@@ -994,11 +956,14 @@ export function bootstrap(opts: BootstrapOptions): {
         return true;
       }
       case "voice_set_ack": {
-        // Один тип события обслуживает обе фичи (см. sendStyleChange):
-        //   • AV-27 (picker) — ack с `voice_id`;
-        //   • AV-28 (стиль/язык) — ack с `preset`/`language`, БЕЗ voice_id.
-        // Раньше обработчик безусловно писал `e.voice_id` в mode_manager, и
-        // style-ack затирал активный голос `undefined`. Разводим явно.
+        // AV-27 picker (set_voice cmd) — единственный маршрут этого
+        // ack после ADR-0087. AV-28 style/language ветка удалена, и
+        // voice_set_ack приходит ТОЛЬКО с `voice_id` (style-ack'ов
+        // больше нет в протоколе). Старый комментарий про «обе фичи»
+        // оставлен в ADR-0087 §2.1 как точка отсчёта для регрессии.
+        // До правки обработчик безусловно писал `e.voice_id` в
+        // mode_manager, и style-ack затирал активный голос `undefined`;
+        // теперь это уже невозможно.
         const e = ev as {
           voice_id?: string;
           preset?: VoicePreset;
@@ -1013,6 +978,9 @@ export function bootstrap(opts: BootstrapOptions): {
           // без этого applied-голос был виден только после нового voice_list.
           bridge.voicePipeline.setCurrentVoice(voiceId);
         }
+        // `preset` / `language` в voice_set_ack больше не приходят
+        // (после ADR-0087 AV-28 ветка удалена), но если бэкенд
+        // когда-то вернёт эти поля — продолжаем обновлять кеш.
         if (e.preset) {
           ackedPreset = e.preset;
           modeManager.setCurrentPreset(e.preset);

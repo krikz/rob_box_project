@@ -268,23 +268,6 @@ VOICE_AUDIO_LOG_INTERVAL_S: float = 10.0
 log = logging.getLogger(__name__)
 
 
-def _validate_voice_set_payload(
-    preset: Optional[str], language: Optional[str]
-) -> Optional[str]:
-    """Whitelist preset/language для AV-28 §P7 (тестируется без rclpy).
-
-    Возвращает ``None`` если payload валиден, иначе строку-причину для
-    ``voice_set_nack.reason``. Оба поля опциональны — пустой payload
-    (ничего не меняем) трактуется как валидный (UI получит ack с ``null``
-    в обеих позициях и mode_manager сохранит предыдущие значения).
-    """
-    if preset is not None and preset not in VOICE_PRESET_IDS:
-        return f"invalid_voice_preset: {preset!r}"
-    if language is not None and language not in VOICE_LANGUAGES:
-        return f"invalid_voice_language: {language!r}"
-    return None
-
-
 # Шаг 4б (t_80e7aa1e): дефолтный язык пайплайна грипа до первой
 # синхронизации с панели.
 #
@@ -469,45 +452,14 @@ class Bridge(Protocol):
         """
         ...
 
-    # ── AV-28 §P7 (issue #1920) — voice style preset + language ──────────────
-    # Эти методы отвечают за смену СТИЛЯ речи (technical / street / caveman /
-    # business / philosopher / lenin) и языка вывода.
-    # ВНИМАНИЕ: «preset» здесь — это стиль речи (style preset), а НЕ
-    # TTS-вариант из ``set_voice(voice_id, preset)`` выше. Контракт
-    # разный: AV-27 «preset» — на стороне tts_node, AV-28 — историческая
-    # привязка к dialogue_node (см. ниже — актуальность утрачена).
-    #
-    # voice-vr 21 / ADR-0080 §2.7: dialogue_node больше НЕ имеет параметров
-    # ``voice_preset`` / ``voice_output_language`` (удалены — формализация
-    # переехала в ``grip_pipeline`` супервизора, читает yaml напрямую).
-    # Супервизор больше не делает ``SetParameters`` вообще. Топики
-    # ``/avatar/set_voice_preset`` / ``/avatar/set_voice_language`` всё ещё
-    # принимаются и валидируются по whitelist (ack/nack для UI), но
-    # результат только логируется — реального эффекта на речь у них нет.
-    # Живой путь смены стиля/языка грипа — ``publish_voice_pipeline`` ниже.
-    def set_voice_preset(self, preset: str) -> None:
-        """AV-28 §P7: запросить смену ``voice_preset`` (легаси-канал).
-
-        Публикует запрос в ``/avatar/set_voice_preset``. Супервизор
-        валидирует по whitelist и отвечает ack/nack, но НЕ пишет в чужие
-        ROS-параметры (ADR-0080 §2.7) — dialogue_node больше не имеет
-        параметра ``voice_preset``, писать было бы куда. Приём — только
-        лог на стороне супервизора. Для реального изменения поведения
-        грип-пайплайна используйте ``publish_voice_pipeline``.
-        """
-        ...
-
-    def set_voice_language(self, language: str) -> None:
-        """AV-28 §P7: запросить смену ``voice_output_language`` (легаси-канал).
-
-        Публикует запрос в ``/avatar/set_voice_language``. Как и
-        ``set_voice_preset`` — только whitelist-валидация + ack/nack +
-        лог на супервизоре; ``SetParameters`` на dialogue_node не
-        делается (параметра там больше нет, ADR-0080 §2.7). Реальный
-        язык грип-пайплайна меняется через ``publish_voice_pipeline``.
-        """
-        ...
-
+    # AV-28 §P7 (issue #1920) — voice style preset/language удалены
+    # по ADR-0087 (2026-09-09, вариант (a)). Методы ``set_voice_preset`` /
+    # ``set_voice_language`` на ``Bridge`` и ``NoOpBridge`` сняты вместе
+    # с `_json_cmd_set_voice_style` и подписками супервизора на
+    # ``/avatar/set_voice_preset|language``. Смена стиля/языка грипа с
+    # панели теперь только через ``voice_pipeline`` cmd →
+    # ``publish_voice_pipeline`` (см. ниже) → супервизор
+    # ``_on_grip_voice_pipeline``.
     def publish_voice_pipeline(
         self, llm_enabled: bool, preset: str, language: str
     ) -> None:
@@ -706,25 +658,13 @@ class NoOpBridge:
         # видели честный «no-op без моста».
         return False, None, "tts_unreachable", None
 
-    # ── AV-28 §P7 (issue #1920) — voice style stubs (NoOpBridge) ────────────
-    # Симметрично ``set_voice_preset``/``set_voice_language`` в Protocol:
-    # NoOpBridge для unit-тестов ws_server без ROS — ничего не публикует,
-    # но держит сигнатуру, чтобы isinstance(bridge, Bridge) работал.
-    def set_voice_preset(self, preset: str) -> None:
-        # NoOpBridge: см. set_voice_mode ниже — фиксируется в логе для теста.
-        log.debug("NoOpBridge: set_voice_preset preset=%s", preset)
-        return None
-
-    def set_voice_language(self, language: str) -> None:
-        # NoOpBridge: фиксируется в логе для теста.
-        log.debug("NoOpBridge: set_voice_language language=%s", language)
-        return None
-
-    # ── Шаг 4б grip-pipeline config (t_80e7aa1e) ────────────────────────
-    # Симметрично ``set_voice_preset``/``set_voice_language``: в Protocol
-    # описана как ``publish_voice_pipeline``. NoOpBridge нужен, чтобы WS-тесты
-    # без ROS (test_ws_server_voice.py и др.) видели NoOpBridge-совместимый
-    # контракт — иначе isinstance(bridge, Bridge) падает и unit-тесты роняются.
+    # AV-28 §P7 (issue #1920) — voice style preset/language удалены
+    # по ADR-0087 (2026-09-09, вариант (a)): см. ``Bridge`` выше.
+    # NoOpBridge зеркалит сигнатуры протокола, и ``set_voice_preset`` /
+    # ``set_voice_language`` также сняты — unit-тесты без ROS
+    # (test_ws_server_voice.py) больше их не дёргают, потому что
+    # ``_json_cmd_set_voice_style`` удалён.
+    # Шаг 4б grip-pipeline config (t_80e7aa1e) — см. ``Bridge``.
     def publish_voice_pipeline(
         self, llm_enabled: bool, preset: str, language: str
     ) -> None:
@@ -801,7 +741,8 @@ _stream_ids_in_use: set[int] = set()
 
 # AV-27 / issue #1919 — rate-limit policy (docs/architecture/meta-quest-api.md §9):
 # list_voices ≤ 1/10s, set_voice ≤ 1/2s, preview_voice ≤ 1/5s + ≤3 параллельных;
-# AV-28 (стиль/язык) — свой слот set_voice_style ≤ 1/0.5s.
+# voice_pipeline ≤ 1/0.5s (та же защита, что была у AV-28 set_voice_style,
+# до ADR-0087 — теперь это единый защитный слот для смены стиля/языка грипа).
 # Реализуется через in-memory last-ts per ws (не per session) — соединение
 # одно, но политика прибита к клиенту.
 VOICE_LIST_MIN_INTERVAL_S: float = 10.0
@@ -819,14 +760,10 @@ _AUDIO_STREAMS: frozenset[str] = frozenset({"preview", "operator_tts"})
 # Один и тот же потолок для preview и operator_tts — на Quest один оператор.
 _AUDIO_PENDING_STALE_S: float = 60.0
 
-# AV-28 (стиль речи + язык вывода) считает СВОЙ слот, а не делит слот с
-# AV-27. Раньше слот был общий, и это ломало обычную работу оператора:
-# выбрал стиль в панели пайплайна → через секунду выбрал язык (или
-# применил голос в picker'е) → второй запрос молча падал в rate-limit, а
-# UI уже показывал новое значение. Два клика подряд — это не флуд, это
-# нормальный сценарий; флуд по-прежнему режется, но по каждой фиче
-# отдельно. Интервал меньше: AV-28 — это SetParameters на dialogue_node,
-# без синтеза и без похода к TTS-провайдеру.
+# ADR-0087 (2026-09-09, вариант (a)): AV-28 set_voice_style cmd удалён
+# вместе с `_json_cmd_set_voice_style`. rate-limit-слот остался и теперь
+# обслуживает voice_pipeline — единственный путь смены стиля/языка
+# грипа с панели (см. комментарий AV-27 выше).
 VOICE_STYLE_MIN_INTERVAL_S: float = 0.5
 
 
@@ -2780,60 +2717,16 @@ async def _json_cmd_list_voices(server, ws, session, payload):
 
 
 async def _json_cmd_set_voice(server, ws, session, payload):
-    mode = payload.get("mode")
-    if mode is None:
-        # Обратная совместимость (issue #2195): explicit ``mode`` — новое
-        # поле контракта, но webxr_client/src/main.ts (sendStyleChange:305,
-        # TTS picker apply:949) его пока не шлёт. До парной правки клиента
-        # отсутствие ``mode`` не должно ронять picker — определяем намерение
-        # по ЗНАЧЕНИЮ payload, как раньше (ADR-0080/AV-28 §P7, было в
-        # if/elif-цепочке _on_json_cmd до voice-vr 10): preset из
-        # VOICE_PRESET_IDS, наличие language, или preset без voice_id → это
-        # style/language запрос (AV-28); иначе — TTS picker (AV-27).
-        preset = payload.get("preset")
-        language = payload.get("language")
-        voice_id = payload.get("voice_id")
-        style_without_voice = (
-            isinstance(preset, str)
-            and bool(preset)
-            and not (isinstance(voice_id, str) and voice_id)
-        )
-        is_style_request = (
-            (isinstance(preset, str) and preset in VOICE_PRESET_IDS)
-            or isinstance(language, str)
-            or style_without_voice
-        )
-        mode = "style" if is_style_request else "voice"
-    if mode not in ("voice", "style"):
-        await server._send_error(ws, 0, ErrorCode.BAD_PAYLOAD, "set_voice: mode must be 'voice' or 'style'")
-        return
-    if mode == "style":
-        await _json_cmd_set_voice_style(server, ws, payload)
-        return
+    """``set_voice`` cmd: смена голоса TTS через AV-27 picker.
+
+    ADR-0087 (2026-09-09, вариант (a)): legacy AV-28 style/language ветка
+    удалена вместе с `sendStyleChange` (webxr_client) и подписками
+    `/avatar/set_voice_preset|language` (supervisor). Остался только
+    рабочий путь — ``set_voice`` payload `{voice_id, preset?}` →
+    `_json_cmd_set_voice_provider` → ``bridge.set_voice`` →
+    ``/voice/tts/set_voice`` → tts_node.
+    """
     await _json_cmd_set_voice_provider(server, ws, payload)
-
-
-async def _json_cmd_set_voice_style(server, ws, payload):
-    preset = payload.get("preset")
-    language = payload.get("language")
-    if not isinstance(preset, str) and preset is not None:
-        await server._send_error(ws, 0, ErrorCode.BAD_PAYLOAD, "set_voice: preset must be string")
-        return
-    if not isinstance(language, str) and language is not None:
-        await server._send_error(ws, 0, ErrorCode.BAD_PAYLOAD, "set_voice: language must be string")
-        return
-    if not server._voice_rate_limit_check(ws, "set_voice_style", VOICE_STYLE_MIN_INTERVAL_S):
-        await server._send(ws, FrameType.JSON_EVENT, 0, {"type": "voice_set_nack", "preset": preset, "language": language, "reason": "rate_limited", "ts_ms": int(time.time() * 1000)})
-        return
-    reason = _validate_voice_set_payload(preset, language)
-    if reason:
-        await server._send(ws, FrameType.JSON_EVENT, 0, {"type": "voice_set_nack", "preset": preset, "language": language, "reason": reason, "ts_ms": int(time.time() * 1000)})
-        return
-    if preset is not None:
-        server.bridge.set_voice_preset(preset)
-    if language is not None:
-        server.bridge.set_voice_language(language)
-    await server._send(ws, FrameType.JSON_EVENT, 0, {"type": "voice_set_ack", "preset": preset, "language": language, "ts_ms": int(time.time() * 1000)})
 
 
 async def _json_cmd_set_voice_provider(server, ws, payload):

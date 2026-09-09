@@ -325,14 +325,25 @@ build_agent(spec: AgentSpec) -> AgentCore
 
 - `dialogue_node` и `supervisor_node` строят агента только через
   `build_agent`. Второй набор `_build_operator_*` удаляется.
-- Одна БД, namespace на агента (закрывает #2000; миграция `010` уже написана).
+- Одна БД, namespace на агента (закрывает #2000; миграция 010 уже написана).
 - Супервизор **перестаёт писать чужие ROS-параметры**. Голос, пресет и язык
   меняются явными контрактами (`/voice/tts/set_voice`, `/dialogue/control`), а
   не `SetParameters` по чужому имени параметра.
 - Белый список пресетов — один, `voice_presets.yaml`, читается через
-  `rob_box_core`. Копии в `ws_server` и `supervisor_node` удаляются.
+  `rob_box_core`. Реализовано в #2240 (whitelist consolidation): копии в
+  `ws_server` и `supervisor_node` удалены, остался прямой импорт из
+  `rob_box_core.bridge_protocol` (тот же приём, что и для
+  `GRIP_DEFAULT_LANGUAGE` — issue #2265).
 - Мёртвые параметры `voice_preset` / `voice_output_language` в `dialogue_node`
-  удаляются вместе с пятихоповым путём записи.
+  удалены вместе с пятихоповым путём записи (voice-vr 21, PR #2255).
+- AV-28 §P7 cmd-путь `set_voice` (mode=style) с панели шлётся через
+  `voice_pipeline` (живой канал, шаг 4б / issue #1989). Прежний «честный
+  no-op» через топики `/avatar/set_voice_preset|language` удалён по
+  ADR-0087 (2026-09-09, вариант (a)): заглушка под `/dialogue/control`
+  осталась без владельца, см. ADR-0086 (прецедент для ReflexLayer).
+  Если в будущем появится конкретная задача под `/dialogue/control`,
+  нужно пересоздать cmd с явным контрактом через новый ADR, а
+  не восстанавливать мёртвую ветку.
 
 ### 2.8 Прополка планировщика
 
