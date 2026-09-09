@@ -115,13 +115,7 @@
     },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/operator_admin.py": {
       "ShowMetricsTool.execute": 18
-    },
-    "src/rob_box_quest/rob_box_quest/server/ws_server.py": {
-      "WSSServer._on_json_cmd": 113
     }
-  },
-  "_refactor_cards": {
-    "src/rob_box_quest/rob_box_quest/server/ws_server.py:WSSServer._on_json_cmd": "#2195 (voice-vr 10)"
   },
   "_legacy_acknowledged": [
     {

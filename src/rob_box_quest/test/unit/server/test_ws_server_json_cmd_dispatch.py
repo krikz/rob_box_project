@@ -11,7 +11,12 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from rob_box_quest.server.session import ClientSession, ErrorCode
-from rob_box_quest.server.ws_server import JSON_CMD_HANDLERS, NoOpBridge, WSSServer
+from rob_box_quest.server.ws_server import (
+    JSON_CMD_HANDLERS,
+    VOICE_PRESET_IDS,
+    NoOpBridge,
+    WSSServer,
+)
 
 
 EXPECTED_JSON_COMMANDS = {
@@ -30,6 +35,12 @@ EXPECTED_JSON_COMMANDS = {
     "supervisor_acquire_floor",
     "supervisor_release_floor",
     "supervisor_get_state",
+    # [voice-vr 09 / issue #2194] канонические имена (ADR-0080 §1.2),
+    # влиты в develop до voice-vr 10 — avatar_get_state НЕ регистрируем
+    # (senderless, удалён).
+    "avatar_set_mode",
+    "avatar_acquire_floor",
+    "avatar_release_floor",
     "list_voices",
     "set_voice",
     "voice_pipeline",
@@ -138,14 +149,90 @@ async def test_set_voice_uses_explicit_mode(
 
 
 @pytest.mark.asyncio
-async def test_set_voice_rejects_missing_explicit_mode(dispatcher) -> None:
+async def test_set_voice_missing_mode_falls_back_to_voice_id_guess(
+    dispatcher, monkeypatch
+) -> None:
+    """Обратная совместимость (issue #2195): ``mode`` — новое поле
+    контракта, но ``webxr_client/src/main.ts`` (TTS picker `apply`,
+    строка ~949) пока его не шлёт — только ``voice_id``/``preset``. До
+    парной правки клиента отсутствие ``mode`` не должно ронять picker:
+    сервер угадывает намерение по значению payload, как раньше.
+    voice_id без style-preset → AV-27 (TTS picker) → ``bridge.set_voice``.
+    """
     server, ws, session = dispatcher
+    monkeypatch.setattr(server, "_voice_rate_limit_check", lambda *_args: True)
+    server.bridge.set_voice = MagicMock(return_value=(True, "alena", "", []))
+    server.bridge.set_voice_preset = MagicMock()
 
     await JSON_CMD_HANDLERS["set_voice"](
         server,
         ws,
         session,
         {"cmd": "set_voice", "voice_id": "alena"},
+    )
+
+    server.bridge.set_voice.assert_called_once()
+    server.bridge.set_voice_preset.assert_not_called()
+    server._send_error.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_set_voice_missing_mode_falls_back_to_style_guess_via_preset(
+    dispatcher, monkeypatch
+) -> None:
+    """Как выше, но preset ∈ VOICE_PRESET_IDS без mode → AV-28 (стиль
+    речи) → ``bridge.set_voice_preset``, даже если voice_id тоже задан
+    (значение поля решает развилку, не его наличие — ADR-0080/AV-28 §P7)."""
+    server, ws, session = dispatcher
+    monkeypatch.setattr(server, "_voice_rate_limit_check", lambda *_args: True)
+    server.bridge.set_voice = MagicMock(return_value=(True, "alena", "", []))
+    server.bridge.set_voice_preset = MagicMock()
+
+    await JSON_CMD_HANDLERS["set_voice"](
+        server,
+        ws,
+        session,
+        {"cmd": "set_voice", "preset": VOICE_PRESET_IDS[0]},
+    )
+
+    server.bridge.set_voice_preset.assert_called_once_with(VOICE_PRESET_IDS[0])
+    server.bridge.set_voice.assert_not_called()
+    server._send_error.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_set_voice_missing_mode_falls_back_to_style_guess_via_language(
+    dispatcher, monkeypatch
+) -> None:
+    """language без mode → тоже AV-28 (у AV-27/picker такого поля нет)."""
+    server, ws, session = dispatcher
+    monkeypatch.setattr(server, "_voice_rate_limit_check", lambda *_args: True)
+    server.bridge.set_voice = MagicMock(return_value=(True, "alena", "", []))
+    server.bridge.set_voice_language = MagicMock()
+
+    await JSON_CMD_HANDLERS["set_voice"](
+        server,
+        ws,
+        session,
+        {"cmd": "set_voice", "language": "en"},
+    )
+
+    server.bridge.set_voice_language.assert_called_once_with("en")
+    server.bridge.set_voice.assert_not_called()
+    server._send_error.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_set_voice_invalid_explicit_mode_still_rejected(dispatcher) -> None:
+    """Явный, но невалидный ``mode`` остаётся ошибкой (только
+    ОТСУТСТВИЕ поля включает legacy-совместимость, не любое значение)."""
+    server, ws, session = dispatcher
+
+    await JSON_CMD_HANDLERS["set_voice"](
+        server,
+        ws,
+        session,
+        {"cmd": "set_voice", "mode": "bogus", "voice_id": "alena"},
     )
 
     server._send_error.assert_awaited_once_with(

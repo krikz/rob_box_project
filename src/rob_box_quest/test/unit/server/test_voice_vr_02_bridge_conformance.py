@@ -91,59 +91,26 @@ def _parse_client_used_commands() -> set[str]:
 
 
 def _parse_server_cmd_handlers() -> set[str]:
-    """AST-обход WSSServer._on_json_cmd: собирает имена cmd, у которых
-    есть явная ветка (``if cmd == "..."`` или ``if cmd in (...)``)."""
-    src = WS_SERVER_PY.read_text(encoding="utf-8")
-    tree = ast.parse(src)
+    """Имена cmd, которые сервер реально диспатчит.
 
-    class Finder(ast.NodeVisitor):
-        def __init__(self) -> None:
-            self.cmds: set[str] = set()
+    До voice-vr 10 (issue #2195) это был AST-обход if-цепочки в
+    ``_on_json_cmd`` (``if cmd == "..."`` / ``if cmd in (...)``). Тот
+    рефакторинг свёл ``_on_json_cmd`` к терминальному dispatcher'у
+    (``JSON_CMD_HANDLERS.get(cmd)``), поэтому статический AST-обход
+    функции больше ничего не находит — веток там просто нет.
 
-        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-            if node.name == "_on_json_cmd":
-                self._scan(node)
-            self.generic_visit(node)
+    ``JSON_CMD_HANDLERS`` не объявлен как единый dict-литерал (сначала
+    пустой dict на уровне модуля, затем ``.update({...})`` ниже, рядом
+    с самими ``_json_cmd_*`` хендлерами) — статически парсить его AST
+    было бы не проще и более хрупко, чем импортировать модуль и читать
+    ключи напрямую. Тот же приём уже используется в
+    ``test_voice_vr_07_catalog_conformance.py::_server_dispatched_cmds_from_ws_server``
+    (см. issue #2195 в её докстринге) — тот же контракт: каждая
+    зарегистрированная cmd = один обработчик на сервере.
+    """
+    from rob_box_quest.server.ws_server import JSON_CMD_HANDLERS
 
-        def visit_AsyncFunctionDef(self, node) -> None:
-            if node.name == "_on_json_cmd":
-                self._scan(node)
-            self.generic_visit(node)
-
-        def _scan(self, fn_node) -> None:
-            for stmt in ast.walk(fn_node):
-                if not isinstance(stmt, ast.If):
-                    continue
-                test = stmt.test
-                # if cmd == "...":
-                if (
-                    isinstance(test, ast.Compare)
-                    and len(test.ops) == 1
-                    and isinstance(test.ops[0], ast.Eq)
-                    and len(test.comparators) == 1
-                    and isinstance(test.left, ast.Name)
-                    and test.left.id == "cmd"
-                    and isinstance(test.comparators[0], ast.Constant)
-                    and isinstance(test.comparators[0].value, str)
-                ):
-                    self.cmds.add(test.comparators[0].value)
-                    continue
-                # if cmd in ("...", "..."):
-                if (
-                    isinstance(test, ast.Compare)
-                    and len(test.ops) == 1
-                    and isinstance(test.ops[0], ast.In)
-                    and isinstance(test.left, ast.Name)
-                    and test.left.id == "cmd"
-                    and isinstance(test.comparators[0], ast.Tuple)
-                ):
-                    for elt in test.comparators[0].elts:
-                        if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
-                            self.cmds.add(elt.value)
-
-    finder = Finder()
-    finder.visit(tree)
-    return finder.cmds
+    return set(JSON_CMD_HANDLERS.keys())
 
 
 def _parse_server_event_handlers() -> set[str]:
