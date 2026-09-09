@@ -31,6 +31,7 @@ from rob_box_voice.core.turn import (
     ACCEPT,
     DEFAULT_MAX_SYNTHETIC_RETRIES,
     BabbleGuard,
+    BabbleRetryDecision,
     EmbeddedRenardoCodeGuard,
     Guard,
     GuardContext,
@@ -44,6 +45,7 @@ from rob_box_voice.core.turn import (
     UnbackedActionClaimGuard,
     Verdict,
     VerdictKind,
+    begin_babble_retry,
     consume_babble_retry,
     consume_budget,
     default_guards,
@@ -1004,6 +1006,268 @@ class TestBabbleRetryConsumedFlag:
 
     def _guards_babble_only(self) -> TurnGuards:
         return TurnGuards(guards=[BabbleGuard()])
+
+
+# ---------------------------------------------------------------------------
+# 11. Issue #2266 — ``begin_babble_retry`` is the bare ``core/`` surface
+#     that owns the babble policy + the budget step + the one-shot flag.
+#     The dialogue_node adapter just performs the ROS-bound side effects
+#     using the returned ``BabbleRetryDecision``. These tests exercise the
+#     pure helper in isolation — no DialogueNode, no harness, no rclpy.
+# ---------------------------------------------------------------------------
+
+
+class TestBeginBabbleRetry:
+    """``begin_babble_retry`` — the pure adapter helper.
+
+    Proves the DoD contract for issue #2266:
+
+    * ``BabbleRetryDecision`` carries the synthetic prompt, the
+      post-mutation :class:`TurnState` (budget decremented AND one-shot
+      flag set), and a reason tag.
+    * Returns ``None`` whenever BabbleGuard defers (clean reply,
+      speak_text_real > 0, empty spoken, second babble in the same
+      turn) — the caller publishes the original ``spoken`` as-is.
+    * Returns ``None`` when the budget is already exhausted — the
+      caller sees it as "no retry, no budget", mirrors the legacy
+      ``_consume_synthetic_retry`` False return.
+    * Pure: the input ``TurnState`` is never mutated.
+    """
+
+    def test_returns_none_on_normal_text(self) -> None:
+        """Plain text + speak_text_real=0 + perf command — but no babble opener."""
+        decision = begin_babble_retry(
+            spoken="Сейчас 12:34.",
+            user_input="сколько времени",
+            tools_called=(),
+            speak_text_real=0,
+            state=_state(),
+        )
+        assert decision is None
+
+    def test_returns_none_when_speak_text_real_positive(self) -> None:
+        """``speak_text_real > 0`` ⇒ no retry (issue-988 anti-duplicate contract)."""
+        decision = begin_babble_retry(
+            spoken="Зачитаю рэпчик про космос!",
+            user_input="зачитай рэп про космос",
+            tools_called=("speak_text",),
+            speak_text_real=1,
+            state=_state(),
+        )
+        assert decision is None
+
+    def test_returns_none_when_spoken_empty(self) -> None:
+        """Empty reply + perf command — no retry."""
+        decision = begin_babble_retry(
+            spoken="",
+            user_input="зачитай рэп про космос",
+            tools_called=(),
+            speak_text_real=0,
+            state=_state(),
+        )
+        assert decision is None
+
+    def test_returns_decision_for_babble_with_perf_intent(self) -> None:
+        """«Зачитаю рэп» + perf command → RETRY decision."""
+        state = _state()
+        decision = begin_babble_retry(
+            spoken="Зачитаю рэпчик про космос!",
+            user_input="зачитай рэп про космос",
+            tools_called=(),
+            speak_text_real=0,
+            state=state,
+        )
+        assert isinstance(decision, BabbleRetryDecision)
+        assert "зачитай рэп про космос" in decision.prompt
+        assert decision.reason == "babble_guard"
+
+    def test_decision_decrements_budget(self) -> None:
+        """The returned ``new_state`` has ``budget_left - 1``."""
+        state = _state(budget_left=3)
+        decision = begin_babble_retry(
+            spoken="Зачитаю рэпчик про космос!",
+            user_input="зачитай рэп про космос",
+            tools_called=(),
+            speak_text_real=0,
+            state=state,
+        )
+        assert decision is not None
+        assert decision.new_state.budget_left == 2
+
+    def test_decision_sets_babble_retry_consumed(self) -> None:
+        """The returned ``new_state`` has ``babble_retry_consumed=True``."""
+        state = _state()
+        decision = begin_babble_retry(
+            spoken="Зачитаю рэпчик про космос!",
+            user_input="зачитай рэп про космос",
+            tools_called=(),
+            speak_text_real=0,
+            state=state,
+        )
+        assert decision is not None
+        assert decision.new_state.babble_retry_consumed is True
+
+    def test_pure_does_not_mutate_input_state(self) -> None:
+        """Input ``TurnState`` is never mutated — pure helper.
+
+        ``TurnState`` is a frozen dataclass (immutable), so this is
+        belt-and-braces: even if the helper tried to mutate, the
+        dataclass would raise ``FrozenInstanceError``. The test pins
+        the contract — if anyone refactors ``TurnState`` to be mutable,
+        the helper MUST keep its purity.
+        """
+        state = _state(budget_left=2)
+        decision = begin_babble_retry(
+            spoken="Зачитаю рэпчик про космос!",
+            user_input="зачитай рэп про космос",
+            tools_called=(),
+            speak_text_real=0,
+            state=state,
+        )
+        assert decision is not None
+        # Input untouched.
+        assert state.budget_left == 2
+        assert state.babble_retry_consumed is False
+
+    def test_returns_none_when_budget_exhausted(self) -> None:
+        """``budget_left == 0`` ⇒ no retry, even if a guard asks.
+
+        Mirrors the legacy ``_consume_synthetic_retry`` False return:
+        budget is the cross-guard ceiling and babble respects it.
+        """
+        state = _state(budget_left=0)
+        decision = begin_babble_retry(
+            spoken="Зачитаю рэпчик про космос!",
+            user_input="зачитай рэп про космос",
+            tools_called=(),
+            speak_text_real=0,
+            state=state,
+        )
+        assert decision is None
+
+    def test_returns_none_when_one_shot_already_consumed(self) -> None:
+        """One-shot rule: second babble in the same turn ⇒ no retry.
+
+        The flag is checked by :class:`BabbleGuard` itself
+        (``ctx.state.babble_retry_consumed`` short-circuit). Without
+        this, the LLM and the guard ping-pong. The helper honours the
+        guard's deferral without consuming the budget — ``state`` is
+        untouched when no retry fires.
+        """
+        state = TurnState(budget_left=3, babble_retry_consumed=True)
+        decision = begin_babble_retry(
+            spoken="Зачитаю рэпчик про космос!",
+            user_input="зачитай рэп про космос",
+            tools_called=(),
+            speak_text_real=0,
+            state=state,
+        )
+        assert decision is None
+        # State untouched (no budget consume, no flag write).
+        assert state.budget_left == 3
+        assert state.babble_retry_consumed is True
+
+    def test_planning_narration_retries_regardless_of_user_input(self) -> None:
+        """Planning narration (live 02.09 «Юзер просит…, запускаю…») → RETRY.
+
+        Even when ``user_input`` carries no performance keyword, the
+        detector MUST retry — mirrors the live failure that drove the
+        02.09 fix (``user_wants_perf=False`` + ``is_planning_narration``
+        path in legacy ``_check_babble_and_retry``).
+        """
+        decision = begin_babble_retry(
+            spoken="юзер хочет узнать время, вызываю get_current_time",
+            user_input="сколько времени",
+            tools_called=(),
+            speak_text_real=0,
+            state=_state(),
+        )
+        assert decision is not None
+        assert decision.new_state.babble_retry_consumed is True
+
+    def test_promise_only_opener_retries_without_perf_keyword(self) -> None:
+        """«Погнали!» — pure promise — retries even on a non-perf turn.
+
+        Mirrors the live 30.08 «Погнали!» bug — the user asked a
+        non-perf question but the opener forces a retry.
+        """
+        decision = begin_babble_retry(
+            spoken="Погнали!",
+            user_input="расскажи про себя",
+            tools_called=(),
+            speak_text_real=0,
+            state=_state(),
+        )
+        assert decision is not None
+        assert decision.new_state.babble_retry_consumed is True
+
+    def test_lifecycle_first_babble_retry_then_silence(self) -> None:
+        """End-to-end on the bare ``core/`` surface.
+
+        Two ``begin_babble_retry`` calls in a row, simulating the
+        first user turn (babble) and the synthetic retry turn (also
+        babbles). The second call MUST return ``None`` because the
+        one-shot flag is set on the returned ``new_state``.
+
+        Proves the cross-guard one-shot invariant that
+        ``test_issue_992_babble_guard.py::test_retry_only_fires_once_*``
+        checks via the heavy harness; the ``core/`` version proves the
+        policy doesn't depend on rclpy / harness / DialogueNode.
+        """
+        spoken = "Зачитаю рэпчик про космос!"
+        user_input = "зачитай рэп про космос"
+        state = _state(budget_left=3)
+
+        # First call — original babble. RETRY decision.
+        d1 = begin_babble_retry(
+            spoken=spoken,
+            user_input=user_input,
+            tools_called=(),
+            speak_text_real=0,
+            state=state,
+        )
+        assert d1 is not None
+        assert d1.new_state.budget_left == 2
+        assert d1.new_state.babble_retry_consumed is True
+
+        # Second call — synthetic retry also babbles. None, no
+        # third LLM call. State untouched (no budget consume, no flag
+        # write — the guard defers BEFORE either happens).
+        d2 = begin_babble_retry(
+            spoken=spoken,
+            user_input=user_input,
+            tools_called=(),
+            speak_text_real=0,
+            state=d1.new_state,
+        )
+        assert d2 is None
+        assert d1.new_state.budget_left == 2
+
+    def test_prompt_is_synthetic_critical_with_user_input_echo(self) -> None:
+        """The returned ``prompt`` is the synthetic CRITICAL reminder.
+
+        Pin down the prompt shape — the legacy dialogue_node used
+        ``build_babble_retry_prompt(user_input)`` and we preserve that.
+        """
+        decision = begin_babble_retry(
+            spoken="Зачитаю рэпчик про космос!",
+            user_input="зачитай рэп про космос",
+            tools_called=(),
+            speak_text_real=0,
+            state=_state(),
+        )
+        assert decision is not None
+        # The prompt must echo the original user command — that's how
+        # the LLM knows what it was asked to do.
+        assert "зачитай рэп про космос" in decision.prompt
+        # And it must carry the CRITICAL reminder — that's how the
+        # LLM is told "don't promise, perform".
+        assert (
+            "CRITICAL" in decision.prompt
+            or "критич" in decision.prompt.lower()
+            or "песн" in decision.prompt.lower()
+            or "промпт" in decision.prompt.lower()
+        )
 
 
 # `TestBabbleRetryConsumedFlag` doesn't inherit `TestBabbleIntegrationViaTurnGuards`

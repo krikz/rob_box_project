@@ -391,6 +391,117 @@ def consume_babble_retry(state: TurnState) -> TurnState:
     return replace(state, babble_retry_consumed=True)
 
 
+@dataclass(frozen=True)
+class BabbleRetryDecision:
+    """Pure result of :func:`begin_babble_retry` — what the adapter consumes.
+
+    Issue #2266 / ADR-0021 R2 step 2 — the babble policy + the budget
+    step + the one-shot flag all live in ``core/``. The adapter
+    (:meth:`DialogueNode._check_babble_and_retry`) just performs the
+    ROS-bound side effects (DSM transition, ``_dispatch_turn``) using
+    the decision fields below.
+
+    Attributes:
+        prompt: The synthetic prompt to dispatch as the next turn's
+            ``user_input``. Echoes the original request and adds the
+            CRITICAL reminder — see
+            :func:`rob_box_voice.core.dialogue_guards.build_babble_retry_prompt`.
+        new_state: The :class:`TurnState` to install on the dialogue
+            node — ``budget_left`` has been decremented by 1 and
+            ``babble_retry_consumed=True``. Pure: a fresh ``TurnState``
+            is returned (the input state is not mutated).
+        reason: Short human-readable tag for the log line. Not
+            interpreted programmatically; the adapter logs it via its
+            own logger to keep ``core/`` log-free.
+    """
+
+    prompt: str
+    new_state: TurnState
+    reason: str
+
+
+def begin_babble_retry(
+    *,
+    spoken: str,
+    user_input: str,
+    tools_called: tuple,
+    speak_text_real: int,
+    state: TurnState,
+) -> Optional[BabbleRetryDecision]:
+    """Issue #992 Bug D — decide whether to fire ONE babble retry, in pure.
+
+    Same predicate chain as :class:`BabbleGuard` (speak-text-real /
+    non-empty / metalanguage / planning / promise-only /
+    user-wants-performance), but ADDS the two side-effecting state
+    mutations that used to live inline in
+    ``DialogueNode._check_babble_and_retry`` (issue #2266 /
+    ADR-0021 R2 step 2):
+
+    1. ``budget_left`` is decremented (mirrors the legacy
+       ``self._consume_synthetic_retry(guard_name="babble")`` call).
+    2. ``babble_retry_consumed=True`` is set (mirrors the legacy
+       ``self._babble_retry_used = True`` write).
+
+    Both happen as pure ``dataclasses.replace`` operations — the
+    function takes a :class:`TurnState` and returns a new one, no
+    mutation of the input. This keeps ``core/`` testable in isolation
+    and lets the dialogue_node adapter stay a thin shell.
+
+    Budget exhaustion is treated as "no retry" (matches the legacy
+    semantics from ``_consume_synthetic_retry`` returning ``False``).
+    The :class:`BabbleGuard` one-shot rule is enforced BEFORE this
+    function consumes the budget, so a second babble reply in the same
+    turn returns ``None`` without touching the budget — mirrors the
+    legacy ``if self._babble_retry_used: return False`` short-circuit.
+
+    Returns:
+        ``None`` — no retry should fire (BabbleGuard deferred, or
+        budget already exhausted). The caller publishes the original
+        ``spoken`` text to TTS as-is.
+        :class:`BabbleRetryDecision` — caller must (1) install
+        ``new_state`` on the dialogue node, (2) perform the ROS-bound
+        DSM transition, (3) call ``_dispatch_turn(prompt, ...)``.
+
+    Pure: no ROS, no I/O, no logger access. Side effects live in the
+    caller.
+    """
+    ctx = GuardContext(
+        reply=Reply(
+            spoken=spoken or "",
+            tools_called=tuple(tools_called or ()),
+            speak_text_real=int(speak_text_real or 0),
+        ),
+        turn=TurnContext(
+            user_input=user_input or "",
+            is_dj_auto=False,
+        ),
+        state=state,
+    )
+    verdict = BabbleGuard().evaluate(ctx)
+    if verdict is None:
+        return None
+    if verdict.kind is not VerdictKind.RETRY:
+        # Future-proofing: BabbleGuard today only raises RETRY, but
+        # if it ever raises DISCARD we honour it here as "no retry".
+        return None
+    if state.budget_left <= 0:
+        # Mirrors ``_consume_synthetic_retry`` returning False: budget
+        # exhausted → no retry, even if a guard asked. Already logged
+        # by the caller in legacy code paths; the pure helper just
+        # returns None and lets the caller log.
+        return None
+    # Build the post-mutation state: flag the one-shot AND decrement
+    # the budget in one replace so the caller can't accidentally apply
+    # only one of them.
+    new_state = consume_budget(consume_babble_retry(state))
+    prompt = verdict.prompt or build_babble_retry_prompt(user_input or "")
+    return BabbleRetryDecision(
+        prompt=prompt,
+        new_state=new_state,
+        reason="babble_guard",
+    )
+
+
 def reset_budget(max_retries: int = DEFAULT_MAX_SYNTHETIC_RETRIES) -> TurnState:
     """Return a fresh ``TurnState`` with the full budget.
 
@@ -830,6 +941,7 @@ __all__ = [
     "Reply",
     "ToolSkippedGuard",
     "BabbleGuard",
+    "BabbleRetryDecision",
     "EmbeddedRenardoCodeGuard",
     "UnbackedActionClaimGuard",
     "PlanningNarrationHardMute",
@@ -839,6 +951,7 @@ __all__ = [
     "TurnState",
     "Verdict",
     "VerdictKind",
+    "begin_babble_retry",
     "consume_babble_retry",
     "consume_budget",
     "default_guards",
