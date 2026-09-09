@@ -1,7 +1,19 @@
 name: "L: Build Base Images"
 
-# Сборка базовых образов на self-hosted runner с локальным registry
-# Используется локальный APT cache для ускорения сборки
+# Сборка базовых образов на self-hosted runner с локальным registry.
+#
+# Параллелизм: 4 базовых образа собираются параллельно. pcl зависит от
+# ros2-zenoh (FROM <local-prefix>:ros2-zenoh-<distro>), поэтому job build-pcl
+# имеет needs: build-ros2-zenoh. Это необходимая зависимость по данным
+# (FROM), а не искусственная последовательность.
+#
+# Кэширование: каждый job использует предыдущий pushed образ из local
+# registry как cache-from (cache-from: type=registry). Это даёт независимый
+# cache key для каждой базы: SHA слоёв не зависит от других jobs.
+#
+# rmw_zenoh_cpp 0.1.8 вендорится в docker/base/vendor/*.deb (см. ARG
+# RMW_ZENOH_VENDOR в Dockerfile'ах), что устраняет hot-fetch HTTP-only
+# snapshots.ros.org при каждом cold build.
 on:
   workflow_dispatch:  # Ручной запуск
     inputs:
@@ -10,12 +22,22 @@ on:
         required: false
         default: 'true'
         type: boolean
+      force_rebuild:
+        description: 'Force rebuild without cache-from'
+        required: false
+        default: false
+        type: boolean
   workflow_call:  # Вызов из других workflow (например, L-Build All Services)
     inputs:
       push_to_registry:
         description: 'Push to local registry'
         required: false
         default: true
+        type: boolean
+      force_rebuild:
+        description: 'Force rebuild without cache-from'
+        required: false
+        default: false
         type: boolean
 
 permissions:
@@ -40,8 +62,19 @@ jobs:
           clean: true
 
       - name: Build ros2-zenoh base image
+        env:
+          FORCE_REBUILD: ${{ inputs.force_rebuild || 'false' }}
         run: |
           echo "🏗️ Building ros2-zenoh base image..."
+
+          # Параллельно собирается 3 независимых образа (rtabmap, depthai, ros2-zenoh),
+          # поэтому buildx запускаем с load и одним исполнителем. Кэш —
+          # последний pushed образ из local registry.
+          if [ "${FORCE_REBUILD}" = "true" ]; then
+            CACHE_FLAGS="--no-cache"
+          else
+            CACHE_FLAGS="--cache-from type=registry,ref=${LOCAL_PREFIX}:ros2-zenoh-${ROS_DISTRO}"
+          fi
 
           docker buildx build \
             --platform linux/arm64 \
@@ -52,6 +85,7 @@ jobs:
             --load \
             --add-host=host.docker.internal:host-gateway \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
+            ${CACHE_FLAGS} \
             docker/base
 
           if [ "${{ inputs.push_to_registry }}" = "true" ]; then
@@ -71,8 +105,16 @@ jobs:
           clean: true
 
       - name: Build rtabmap base image
+        env:
+          FORCE_REBUILD: ${{ inputs.force_rebuild || 'false' }}
         run: |
           echo "🏗️ Building rtabmap base image..."
+
+          if [ "${FORCE_REBUILD}" = "true" ]; then
+            CACHE_FLAGS="--no-cache"
+          else
+            CACHE_FLAGS="--cache-from type=registry,ref=${LOCAL_PREFIX}:rtabmap-${ROS_DISTRO}"
+          fi
 
           docker buildx build \
             --platform linux/arm64 \
@@ -83,6 +125,7 @@ jobs:
             --load \
             --add-host=host.docker.internal:host-gateway \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
+            ${CACHE_FLAGS} \
             docker/base
 
           if [ "${{ inputs.push_to_registry }}" = "true" ]; then
@@ -102,8 +145,16 @@ jobs:
           clean: true
 
       - name: Build depthai base image
+        env:
+          FORCE_REBUILD: ${{ inputs.force_rebuild || 'false' }}
         run: |
           echo "🏗️ Building depthai base image..."
+
+          if [ "${FORCE_REBUILD}" = "true" ]; then
+            CACHE_FLAGS="--no-cache"
+          else
+            CACHE_FLAGS="--cache-from type=registry,ref=${LOCAL_PREFIX}:depthai-${ROS_DISTRO}"
+          fi
 
           docker buildx build \
             --platform linux/arm64 \
@@ -114,6 +165,7 @@ jobs:
             --load \
             --add-host=host.docker.internal:host-gateway \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
+            ${CACHE_FLAGS} \
             docker/base
 
           if [ "${{ inputs.push_to_registry }}" = "true" ]; then
@@ -125,7 +177,7 @@ jobs:
   # Сборка базового образа PCL (для лидаров)
   build-pcl:
     runs-on: [self-hosted, rob-box]
-    needs: build-ros2-zenoh  # Зависит от ros2-zenoh базы
+    needs: build-ros2-zenoh  # Зависит от ros2-zenoh базы (FROM ${BASE_IMAGE})
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -134,8 +186,16 @@ jobs:
           clean: true
 
       - name: Build pcl base image
+        env:
+          FORCE_REBUILD: ${{ inputs.force_rebuild || 'false' }}
         run: |
           echo "🏗️ Building pcl base image..."
+
+          if [ "${FORCE_REBUILD}" = "true" ]; then
+            CACHE_FLAGS="--no-cache"
+          else
+            CACHE_FLAGS="--cache-from type=registry,ref=${LOCAL_PREFIX}:pcl-${ROS_DISTRO}"
+          fi
 
           docker buildx build \
             --platform linux/arm64 \
@@ -147,6 +207,7 @@ jobs:
             --add-host=host.docker.internal:host-gateway \
             --build-arg="BASE_IMAGE=${LOCAL_PREFIX}:ros2-zenoh-${ROS_DISTRO}-latest" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
+            ${CACHE_FLAGS} \
             docker/base
 
           if [ "${{ inputs.push_to_registry }}" = "true" ]; then
