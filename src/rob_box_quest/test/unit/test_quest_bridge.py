@@ -16,6 +16,9 @@ import time
 import pytest
 
 from rob_box_quest.core.safety import WATCHDOG_TIMEOUT_S
+from rob_box_quest.server.session import (
+    WATCHDOG_TIMEOUT_S as SESSION_WATCHDOG_TIMEOUT_S,
+)
 from rob_box_quest.core.teleop import (
     DEADMAN_TIMEOUT_S,
     MAX_ANGULAR_RAD_S,
@@ -122,8 +125,10 @@ def test_feed_client_alive_resets_watchdog():
     # Feed → ARMED.
     bridge.feed_client_alive()
     assert bridge._watchdog.armed is True
-    # Свежий — не tripped.
-    assert bridge.watchdog_check(_t.monotonic() + 1.0) is False
+    # Свежий — не tripped. issue #2232: было ``+ 1.0``, что БОЛЬШЕ таймаута
+    # (0.6 с) — то есть «свежесть» проверялась моментом, когда watchdog уже
+    # обязан сработать. Берём заведомо меньше таймаута.
+    assert bridge.watchdog_check(_t.monotonic() + SESSION_WATCHDOG_TIMEOUT_S / 2) is False
     # После timeout — tripped.
     assert bridge.watchdog_check(_t.monotonic() + 3600.0) is True
 
@@ -174,9 +179,17 @@ def test_watchdog_consume_trip_does_not_spam():
 
 
 def test_watchdog_check_uses_session_timeout():
-    """Watchdog настроен на SESSION_WATCHDOG_TIMEOUT_S = 0.6 с."""
+    """Watchdog моста настроен на SESSION_WATCHDOG_TIMEOUT_S (0.6 с).
+
+    issue #2232: тест сверялся с ``core.safety.WATCHDOG_TIMEOUT_S`` (0.5),
+    хотя мост берёт ``server.session.WATCHDOG_TIMEOUT_S`` (0.6) —
+    ``quest_node.py:371``. Две разные константы с одинаковым именем в
+    разных модулях; докстринг называл правильную, а assert сверял чужую.
+    """
     bridge, _, _, _ = _make_bridge()
-    assert bridge._watchdog.timeout_s == WATCHDOG_TIMEOUT_S
+    assert bridge._watchdog.timeout_s == SESSION_WATCHDOG_TIMEOUT_S
+    # Страховка от «починим сравнением с самим собой»: константы разные.
+    assert SESSION_WATCHDOG_TIMEOUT_S != WATCHDOG_TIMEOUT_S
 
 
 def test_emergency_stop_locks_teleop_and_zeroes_output():
@@ -266,26 +279,50 @@ def test_voice_radio_mode_streams_to_voice_in():
     bridge, voice_in, _tts, _sound, stt_in, _svm = _make_voice_bridge()
     bridge.publish_voice_audio(_pcm_chunk(4000, 4000))
     assert len(voice_in.published) == 1
-    assert voice_in.published[0].data == [0xA0, 0x0F, 0xA0, 0x0F]
+    # issue #2232: под настоящим rclpy ``AudioData.data`` — ``array('B', ...)``,
+    # и сравнение с list даёт False. list() приводит к сравнимому виду
+    # (тот же приём, что в test_quest_bridge_wake_segmentation.py).
+    assert list(voice_in.published[0].data) == [0xA0, 0x0F, 0xA0, 0x0F]
     assert len(stt_in.published) == 0
 
 
 def test_voice_robot_mode_flushes_on_silence():
-    """EOU: фраза уходит в STT по тишине, пока грип ещё зажат (не ждём release)."""
+    """EOU: фраза уходит в STT по паузе, пока грип ещё зажат (не ждём release).
+
+    issue #2232 / #2199: механизм сменился, поведение — нет. Раньше
+    ``publish_voice_audio`` само считало тишину и флашило буфер после
+    ``VOICE_SILENCE_TIMEOUT_MS``; тест кормил 15 тихих кадров и ждал
+    публикацию прямо в ``publish_voice_audio``.
+
+    После #2199 сегментацией занимается общий ``PhraseSegmenter``
+    (``DEFAULT_ROBOT_VOICE_CONFIG``: peak > 500, gap 0.3 с, min 0.25 с),
+    а закрывает фразу по паузе ``tick_voice_audio`` — его дёргает
+    таймер ноды (``quest_node.py:2573``), как и для wake-канала. Тихие
+    кадры теперь просто не речь, они фразу не закрывают.
+
+    Тест переписан под новый механизм; проверяемое свойство прежнее —
+    фраза уходит одним сообщением в /audio/quest_in до отпускания грипа.
+    """
+    import time as _t
+
     bridge, voice_in, tts_control, sound_stop, stt_in, _svm = _make_voice_bridge()
     bridge.publish_voice_robot_start()
     assert len(tts_control.published) == 1  # barge-in STOP TTS
     assert len(sound_stop.published) == 1  # barge-in STOP sound
-    # Речь буферизуется, НЕ идёт в /avatar/voice_in и НЕ в STT.
-    bridge.publish_voice_audio(_pcm20ms(4000))
-    bridge.publish_voice_audio(_pcm20ms(4000))
+
+    # 20 × 20 мс = 0.4 с речи — больше min_phrase_s (0.25 с).
+    for _ in range(20):
+        bridge.publish_voice_audio(_pcm20ms(4000))
+    # Кадры копятся: ни в /avatar/voice_in, ни в STT ничего не ушло.
     assert len(voice_in.published) == 0
     assert len(stt_in.published) == 0
-    # 15 × 20 мс = 300 мс тишины → конец фразы → флаш в /audio/quest_in.
-    for _ in range(15):
-        bridge.publish_voice_audio(_pcm20ms(0))
+
+    # Пауза больше gap_timeout_s (0.3 с) → тик закрывает фразу.
+    bridge.tick_voice_audio(_t.monotonic() + 10.0)
+
     assert len(stt_in.published) == 1
     assert len(stt_in.published[0].data) > 0
+    # Грип ещё зажат — в динамик робота по-прежнему ничего не ушло.
     assert len(voice_in.published) == 0
 
 
