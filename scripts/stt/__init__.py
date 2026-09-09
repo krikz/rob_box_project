@@ -1,1 +1,1 @@
-"""scripts.stt — STT-related utilities (ADR-0076 §2.3)."""
+"""scripts.stt — STT-related utilities (ADR-0077 §2.3)."""
