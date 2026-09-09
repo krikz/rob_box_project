@@ -300,7 +300,9 @@ def test_update_image_versions_vision_still_references_all_build_jobs():
         ("build-telegram-bot", "SOURCE_HASH="),
         ("build-supervisor", "SOURCE_HASH="),
         ("build-quest", "SOURCE_HASH="),
-        ("build-quest", "IMAGE_TAG="),  # quest использует IMAGE_TAG, не BASE_IMAGE
+        # ARCH-quest (#2278): quest наследует rob_box_base:ros2-zenoh
+        # (FROM ${BASE_IMAGE}), НЕ voice-assistant → BASE_IMAGE, не IMAGE_TAG.
+        ("build-quest", "BASE_IMAGE="),
     ],
 )
 def test_per_service_build_arg_present(job_name, expected_arg):
