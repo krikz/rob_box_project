@@ -277,10 +277,14 @@ class TestSystemRegurgitateGuard:
                 state=_state(),
             )
         )
-        if v is not None:
-            assert v.kind is VerdictKind.RETRY
-            assert v.guard_name == "system_regurgitate"
-            assert v.prompt and "CRITICAL" in v.prompt
+        # Bug fix (review, voice-vr 19): this was `if v is not None: assert
+        # ...` — a phantom test that passes even if the guard never fires.
+        # Assert unconditionally so a regression in
+        # ``is_system_template_regurgitated`` actually fails this test.
+        assert v is not None, "guard did not fire on a full regurgitated template"
+        assert v.kind is VerdictKind.RETRY
+        assert v.guard_name == "system_regurgitate"
+        assert v.prompt and "CRITICAL" in v.prompt
 
     def test_defers_on_normal_reply(self) -> None:
         g = SystemRegurgitateGuard()
@@ -389,12 +393,18 @@ class TestBabbleGuard:
 class TestEmbeddedRenardoCodeGuard:
     def test_fires_on_renardo_code_in_text(self) -> None:
         g = EmbeddedRenardoCodeGuard()
-        # Renardo code is multi-line with `\n` separators and 4-space
-        # indent — see dialogue_guards.extract_renardo_code_lines.
+        # Bug fix (review, voice-vr 19): the original fixture
+        # (`a = Synth(...)`) never matched `_RENARDO_CODE_LINE_RE` in
+        # dialogue_guards.py — that regex only recognises Renardo
+        # player-line syntax (``p1 >> ...``), ``Clock.bpm =``, or
+        # ``Scale.default`` / ``Root.default`` assignments. The old
+        # fixture made ``extract_renardo_code_lines`` return None, and the
+        # test's `if v is not None: assert ...` swallowed that silently —
+        # a phantom test that passed even with the guard entirely broken.
         spoken = (
             "Вот код:\n"
-            "    a = Synth(\\test\\, \\default\\);\n"
-            "    b = a.play();\n"
+            "p1 >> blip([0, 2, 4])\n"
+            "Clock.bpm = 120\n"
             "Круто!"
         )
         v = g.evaluate(
@@ -404,9 +414,10 @@ class TestEmbeddedRenardoCodeGuard:
                 state=_state(),
             )
         )
-        if v is not None:
-            assert v.kind is VerdictKind.RETRY
-            assert v.guard_name == "embedded_renardo_code"
+        assert v is not None, "guard did not fire on embedded Renardo code"
+        assert v.kind is VerdictKind.RETRY
+        assert v.guard_name == "embedded_renardo_code"
+        assert v.prompt and "p1 >> blip" in v.prompt
 
     def test_defers_when_no_code(self) -> None:
         g = EmbeddedRenardoCodeGuard()
@@ -423,17 +434,23 @@ class TestEmbeddedRenardoCodeGuard:
 class TestUnbackedActionClaimGuard:
     def test_fires_on_unbacked_claim(self) -> None:
         g = UnbackedActionClaimGuard()
-        # LLM claims it played music but didn't call any tool.
+        # Bug fix (review, voice-vr 19): "сыграй мелодию" / "Вот, играю
+        # мелодию!" matches none of the ``ACTION_CLAIM_RULES`` in
+        # dialogue_guards.py (music isn't one of the covered categories —
+        # waypoint_save, waypoint_delete, track_delete, library_search,
+        # ...), so ``detect_unbacked_action_claim`` always returned None
+        # here and the `if v is not None: assert ...` never executed —
+        # a phantom test. Use the waypoint_save rule, which is covered.
         v = g.evaluate(
             GuardContext(
-                reply=_reply(spoken="Вот, играю мелодию!"),
-                turn=_turn(user_input="сыграй мелодию"),
+                reply=_reply(spoken="Точка сохранена!"),
+                turn=_turn(user_input="запомни эту точку"),
                 state=_state(),
             )
         )
-        if v is not None:
-            assert v.kind is VerdictKind.RETRY
-            assert v.guard_name == "unbacked_action_claim"
+        assert v is not None, "guard did not fire on an unbacked action claim"
+        assert v.kind is VerdictKind.RETRY
+        assert v.guard_name == "unbacked_action_claim"
 
     def test_defers_when_tool_was_called(self) -> None:
         g = UnbackedActionClaimGuard()
@@ -460,10 +477,13 @@ class TestPlanningNarrationHardMute:
                 state=_state(),
             )
         )
-        if v is not None:
-            assert v.kind is VerdictKind.DISCARD
-            assert v.guard_name == "planning_narration_mute"
-            assert v.reason == "planning_narration"
+        # Bug fix (review, voice-vr 19): tighten from the softened
+        # `if v is not None: assert ...` (this one did fire, but the
+        # conditional would silently mask a future regression).
+        assert v is not None, "guard did not fire on planning narration"
+        assert v.kind is VerdictKind.DISCARD
+        assert v.guard_name == "planning_narration_mute"
+        assert v.reason == "planning_narration"
 
     def test_defers_when_tool_called(self) -> None:
         """If a tool was actually called, it's NOT planning narration even
