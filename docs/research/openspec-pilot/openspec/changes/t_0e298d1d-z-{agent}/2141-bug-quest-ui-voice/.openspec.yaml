@@ -1,0 +1,6 @@
+schema: spec-driven
+created: 2026-09-08
+issue: "#2141"
+task: "t_0e298d1d"
+agent: "agent-flow"
+goal: "bug(quest UI): плитка VOICE на главном экране мостика — лишняя и неработающая"

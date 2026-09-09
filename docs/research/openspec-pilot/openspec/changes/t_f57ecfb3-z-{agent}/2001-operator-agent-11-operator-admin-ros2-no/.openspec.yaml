@@ -1,0 +1,6 @@
+schema: spec-driven
+created: 2026-09-05
+issue: "#2001"
+task: "t_f57ecfb3"
+agent: "agent-flow"
+goal: "[operator-agent 11] operator.admin: ros2_node_status + read_logs + container_status"

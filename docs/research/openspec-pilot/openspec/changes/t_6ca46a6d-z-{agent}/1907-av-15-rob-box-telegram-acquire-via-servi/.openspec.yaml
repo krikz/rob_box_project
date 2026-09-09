@@ -1,0 +1,6 @@
+schema: spec-driven
+created: 2026-09-02
+issue: "#1907"
+task: "t_6ca46a6d"
+agent: "agent-flow"
+goal: "[AV-15] rob_box_telegram: настоящий вызов сервисов супервизора вместо заглушки _acquire_via_service"

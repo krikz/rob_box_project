@@ -1,0 +1,6 @@
+schema: spec-driven
+created: 2026-09-02
+issue: "#1601"
+task: "t_06ed68ce"
+agent: "agent-flow"
+goal: "[AV-7] dialogue_node: добавить параметр voice_input_mode (закрыть расхождение ADR-0027 #1)"

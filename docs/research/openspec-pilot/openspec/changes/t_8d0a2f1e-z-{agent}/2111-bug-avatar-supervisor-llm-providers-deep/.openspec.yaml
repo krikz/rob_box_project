@@ -1,0 +1,6 @@
+schema: spec-driven
+created: 2026-09-07
+issue: "#2111"
+task: "t_8d0a2f1e"
+agent: "agent-flow"
+goal: "bug(avatar-supervisor): llm_providers только deepseek — нет fallback chain (dialogue_node работает на chain=['minimax','deepseek'], supervisor только deepseek → DEEPSEEK_API_KEY missing)"

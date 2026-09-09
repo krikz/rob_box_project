@@ -1,0 +1,6 @@
+schema: spec-driven
+created: 2026-09-03
+issue: "#1980"
+task: "t_7255c811"
+agent: "agent-flow"
+goal: "bug(process): drift-guard (ADR-0045) не сработал — PR #1978 и #1979 стартовали НЕ с origin/develop, тащат 12 файлов webxr_client из чужого эпика (AV-11/12)"

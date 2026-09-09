@@ -1,0 +1,6 @@
+schema: spec-driven
+created: 2026-09-08
+issue: "#2194"
+task: "t_a053cf04"
+agent: "agent-flow"
+goal: "[voice-vr 09] bug: панель режимов и floor в шлеме не работает — avatar_* команды без обработчика"

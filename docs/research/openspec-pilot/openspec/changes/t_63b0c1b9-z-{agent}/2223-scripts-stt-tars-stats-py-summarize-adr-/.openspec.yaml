@@ -1,0 +1,6 @@
+schema: spec-driven
+created: 2026-09-09
+issue: "#2223"
+task: "t_63b0c1b9"
+agent: "agent-flow"
+goal: "[scripts/stt] tars_stats.py::summarize не реализует ADR-0077 §2.3 (нет provider-разбивки и доли wake)"

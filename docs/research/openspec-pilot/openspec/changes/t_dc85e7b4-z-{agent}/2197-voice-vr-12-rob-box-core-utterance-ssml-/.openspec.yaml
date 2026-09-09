@@ -1,0 +1,6 @@
+schema: spec-driven
+created: 2026-09-08
+issue: "#2197"
+task: "t_dc85e7b4"
+agent: "agent-flow"
+goal: "[voice-vr 12] rob_box_core.utterance — единственная сборка SSML (сейчас 10 копий в 5 пакетах)"

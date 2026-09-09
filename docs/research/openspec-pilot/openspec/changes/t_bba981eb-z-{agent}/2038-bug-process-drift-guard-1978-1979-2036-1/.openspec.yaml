@@ -1,0 +1,6 @@
+schema: spec-driven
+created: 2026-09-07
+issue: "#2038"
+task: "t_bba981eb"
+agent: "agent-flow"
+goal: "bug(process): drift-guard не работает уже ТРЕТИЙ раз (#1978, #1979, #2036) — воркеры тянут 12 файлов webxr_client. Юзер требует прописать воркерам pre/post-flight проверки ветки"

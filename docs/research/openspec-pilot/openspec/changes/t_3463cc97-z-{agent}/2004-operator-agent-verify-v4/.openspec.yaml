@@ -1,0 +1,6 @@
+schema: spec-driven
+created: 2026-09-08
+issue: "#2004"
+task: "t_3463cc97"
+agent: "agent-flow"
+goal: "[operator-agent verify] Проверка гипотез на живом роботе (статический анализ → факт)"

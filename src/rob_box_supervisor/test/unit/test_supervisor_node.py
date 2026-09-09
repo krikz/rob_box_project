@@ -334,14 +334,26 @@ class TestAvatarSupervisorVoicePresetsAndLanguage(unittest.TestCase):
         self.assertIn("invalid_voice_language", reason)
 
     def test_whitelists_match_ws_server_and_yaml(self) -> None:
-        """Whitelist'ы супервизора = ws_server.VOICE_* = voice_presets.yaml.
+        """Whitelist'ы = ws_server.VOICE_* = ``rob_box_core.bridge_protocol``
+        (здесь SoT для ``voice_presets.yaml``) = yaml-источник.
 
-        Разъехавшись, они дают молчаливый отказ: ws_server отвечает
-        Quest'у ack, а супервизор роняет запрос в applied=False. Так уехали
-        `translate` и языки fr/de/zh/hi — оператор жал кнопку, UI
+        voice-vr 21: один источник (``bridge_protocol``), и ws_server /
+        supervisor импортируют его же, а не держат локальную копию.
+        Разъехавшись, они давали молчаливый отказ: ws_server отвечал
+        Quest'у ack, а супервизор ронял запрос в applied=False. Так уехали
+        ``translate`` и языки fr/de/zh/hi — оператор жал кнопку, UI
         подсвечивал выбор, робот его не получал.
         """
         import yaml
+
+        from rob_box_quest.server.ws_server import (
+            VOICE_LANGUAGES as WS_LANGUAGES,
+            VOICE_PRESET_IDS as WS_PRESETS,
+        )
+        from rob_box_core.bridge_protocol import (
+            VOICE_LANGUAGES as CATALOG_LANGUAGES,
+            VOICE_PRESET_IDS as CATALOG_PRESETS,
+        )
 
         yaml_path = (
             pathlib.Path(__file__).resolve().parents[3]
@@ -350,12 +362,22 @@ class TestAvatarSupervisorVoicePresetsAndLanguage(unittest.TestCase):
             / "voice_presets.yaml"
         )
         data = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
-        self.assertEqual(set(data["presets"].keys()), set(VOICE_PRESET_IDS))
-        self.assertEqual(
-            {str(code).lower() for code in data["languages"]},
-            set(VOICE_LANGUAGES),
-        )
-        # Класс валидирует ровно этими списками (второй копии больше нет).
+        yaml_presets = set(data["presets"].keys())
+        yaml_languages = {str(code).lower() for code in data["languages"]}
+        # 1. YAML — финальный источник истины.
+        self.assertEqual(yaml_presets, set(VOICE_PRESET_IDS))
+        self.assertEqual(yaml_languages, set(VOICE_LANGUAGES))
+        # 2. Каталог (bridge_protocol) — переэкспорт этой же константы,
+        #    должен быть биткомпактен с YAML (иначе codegen рассинхронится).
+        self.assertEqual(yaml_presets, set(CATALOG_PRESETS))
+        self.assertEqual(yaml_languages, set(CATALOG_LANGUAGES))
+        # 3. ws_server — это symlink ``bridge_protocol``,
+        #    должен быть идентичен ему (адрес регресс — три копии списка).
+        self.assertEqual(set(WS_PRESETS), set(CATALOG_PRESETS))
+        self.assertEqual(set(WS_LANGUAGES), set(CATALOG_LANGUAGES))
+        # 4. Класс валидирует ровно этими списками — второй копии
+        #    на классе быть не должно (ранее был ``_AV28_*``, который
+        #    и разъезжался с ws_server).
         self.assertEqual(set(self.node._AV28_PRESET_IDS), set(VOICE_PRESET_IDS))
         self.assertEqual(set(self.node._AV28_LANGUAGES), set(VOICE_LANGUAGES))
 

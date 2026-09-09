@@ -1,0 +1,6 @@
+schema: spec-driven
+created: 2026-09-03
+issue: "#1973"
+task: "t_a2ce09f8"
+agent: "agent-flow"
+goal: "bug(process): agent-flow cron jobs — triage НЕ запущен + merge-gate unbound var (196 fails) + e2e-process gh auth fail (4 fails)"

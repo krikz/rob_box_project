@@ -1,0 +1,6 @@
+schema: spec-driven
+created: 2026-09-07
+issue: "#2063"
+task: "t_6127fb86"
+agent: "agent-flow"
+goal: "feat(process): after pr-reviewer review → trigger kanban-card на разбор требований (а не просто лейбл)"

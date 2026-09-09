@@ -1,0 +1,6 @@
+schema: spec-driven
+created: 2026-09-07
+issue: "#2046"
+task: "t_c6d68a92"
+agent: "agent-flow"
+goal: "[operator-agent 05a-impl] реализация wake stream + VAD gate + voice_listen_* команд по ADR-0054 (#1992)"

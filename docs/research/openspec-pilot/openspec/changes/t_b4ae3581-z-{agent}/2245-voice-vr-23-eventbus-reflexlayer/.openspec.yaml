@@ -1,0 +1,6 @@
+schema: spec-driven
+created: 2026-09-09
+issue: "#2245"
+task: "t_b4ae3581"
+agent: "agent-flow"
+goal: "[voice-vr 23] EventBus отмены и ReflexLayer: подключить или удалить"

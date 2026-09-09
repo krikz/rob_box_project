@@ -1,0 +1,6 @@
+schema: spec-driven
+created: 2026-09-05
+issue: "#1989"
+task: "t_d0a7a064"
+agent: "agent-flow"
+goal: "[operator-agent 04b] Пайплайн грипа: /avatar/ptt/result + пресеты, без ToolProvider"

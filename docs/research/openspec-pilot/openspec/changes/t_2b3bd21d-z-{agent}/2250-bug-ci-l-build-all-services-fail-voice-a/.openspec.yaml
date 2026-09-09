@@ -1,0 +1,6 @@
+schema: spec-driven
+created: 2026-09-09
+issue: "#2250"
+task: "t_2b3bd21d"
+agent: "agent-flow"
+goal: "bug(ci): L: Build All Services fail — voice_assistant + quest образы не собираются (cannot copy config/speech_segmentation.yaml после PR #2211 voice-vr 14)"

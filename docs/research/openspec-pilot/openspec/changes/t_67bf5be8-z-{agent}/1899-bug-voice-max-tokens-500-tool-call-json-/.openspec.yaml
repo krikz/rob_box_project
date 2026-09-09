@@ -1,0 +1,6 @@
+schema: spec-driven
+created: 2026-09-02
+issue: "#1899"
+task: "t_67bf5be8"
+agent: "agent-flow"
+goal: "bug(voice): max_tokens=500 режет аргументы tool-call на середине JSON — _safe_json глотает обрыв, тул падает ToolValidationError"

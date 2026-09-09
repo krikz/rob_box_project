@@ -1,0 +1,6 @@
+schema: spec-driven
+created: 2026-09-05
+issue: "#2002"
+task: "t_2da4b2b4"
+agent: "agent-flow"
+goal: "[operator-agent 12] Сужение Quest seam: Bridge.execute(Command) вместо 25 методов"

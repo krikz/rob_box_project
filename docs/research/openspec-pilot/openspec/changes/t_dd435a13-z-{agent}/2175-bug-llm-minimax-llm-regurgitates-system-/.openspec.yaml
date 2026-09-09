@@ -1,0 +1,6 @@
+schema: spec-driven
+created: 2026-09-08
+issue: "#2175"
+task: "t_dd435a13"
+agent: "agent-flow"
+goal: "bug(llm): MiniMax LLM regurgitates system-template "<system>[получатель забыл указать антропоморфные атрибуты]</system>" в user-facing ответ после set_voice + multi-voice user_input (3 случая подряд)"

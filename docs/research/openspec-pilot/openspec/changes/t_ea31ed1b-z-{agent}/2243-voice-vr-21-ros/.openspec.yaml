@@ -1,0 +1,6 @@
+schema: spec-driven
+created: 2026-09-09
+issue: "#2243"
+task: "t_ea31ed1b"
+agent: "agent-flow"
+goal: "[voice-vr 21] Супервизор не пишет чужие ROS-параметры; один белый список пресетов"

@@ -1,0 +1,6 @@
+schema: spec-driven
+created: 2026-09-02
+issue: "#1879"
+task: "t_a0909b8e"
+agent: "agent-flow"
+goal: "🐛 CI UNSTABLE 12+ч: test_sound_voice_passthrough::test_subscribes_to_avatar_voice_in_best_effort — 'MagicMock' == 'AudioData' (test-fixture stub race)"

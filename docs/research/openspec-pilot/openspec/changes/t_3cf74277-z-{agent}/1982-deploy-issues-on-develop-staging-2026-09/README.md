@@ -1,0 +1,7 @@
+# t_3cf74277-z-{agent}/1982-deploy-issues-on-develop-staging-2026-09
+
+Авто-сгенерировано agent-flow-triage для issue #1982 (kanban t_3cf74277).
+
+Воркер должен расширить: `proposal.md`, `specs/`, `design.md`, `tasks.md`.
+
+Issue: https://github.com/krikz/rob_box_project/issues/1982

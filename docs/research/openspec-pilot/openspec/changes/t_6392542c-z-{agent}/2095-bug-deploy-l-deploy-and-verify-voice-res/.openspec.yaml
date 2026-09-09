@@ -1,0 +1,6 @@
+schema: spec-driven
+created: 2026-09-07
+issue: "#2095"
+task: "t_6392542c"
+agent: "agent-flow"
+goal: "bug(deploy): L: Deploy and Verify падает на voice-resources-init — race между Exited контейнером и post-startup healthcheck (deploy run #34144648195)"

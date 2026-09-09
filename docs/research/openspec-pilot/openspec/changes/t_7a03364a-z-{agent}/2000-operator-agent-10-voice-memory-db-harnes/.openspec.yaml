@@ -1,0 +1,6 @@
+schema: spec-driven
+created: 2026-09-05
+issue: "#2000"
+task: "t_7a03364a"
+agent: "agent-flow"
+goal: "[operator-agent 10] Одна база памяти: миграция voice_memory.db → harness_voice.db"

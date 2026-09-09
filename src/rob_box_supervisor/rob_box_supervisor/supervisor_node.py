@@ -73,6 +73,18 @@ from rob_box_core.bridge_protocol import (  # noqa: E402,F401
     VOICE_PRESET_IDS,  # re-export для обратной совместимости
 )
 
+# voice-vr 21 — единый белый список voice-пресетов и языков (AV-28 §P7).
+# Раньше жил в ``supervisor_node`` и ``ws_server`` двумя параллельными
+# копиями (третья — приватный ``_AV28_*`` на классе), что и дало
+# «UI сказал применилось, supervisor сказал applied=False» (пресет
+# ``translate`` и языки fr/de/zh/hi тихо выпали из ротации). Теперь
+# единственный источник — ``rob_box_core.bridge_protocol`` (зеркало
+# ``voice_presets.yaml`` + TS-генерация).
+from rob_box_core.bridge_protocol import (  # noqa: E402,F401 — re-export SoT
+    VOICE_LANGUAGES,
+    VOICE_PRESET_IDS,
+)
+
 
 def _voice_param_key_for(provider: str) -> str:
     """Целевой параметр tts_node для голоса активного провайдера.

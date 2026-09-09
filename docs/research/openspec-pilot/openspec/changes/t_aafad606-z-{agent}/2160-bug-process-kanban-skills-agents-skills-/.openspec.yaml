@@ -1,0 +1,6 @@
+schema: spec-driven
+created: 2026-09-08
+issue: "#2160"
+task: "t_aafad606"
+agent: "agent-flow"
+goal: "bug(process): воркеры в Kanban не вызывают skills из .agents/skills/ (code-review, diff-review, verification-before-completion, test-driven-development, requesting-code-review) — карточки делаются без ревью"

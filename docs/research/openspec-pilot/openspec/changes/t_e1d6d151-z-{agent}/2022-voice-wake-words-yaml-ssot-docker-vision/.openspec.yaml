@@ -1,0 +1,6 @@
+schema: spec-driven
+created: 2026-09-07
+issue: "#2022"
+task: "t_e1d6d151"
+agent: "agent-flow"
+goal: "voice: wake_words.yaml объявлен SSoT, но недостижим вне docker/vision (src-конфиги пусты, не в share)"

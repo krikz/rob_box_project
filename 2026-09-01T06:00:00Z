@@ -1,0 +1,5 @@
+   → Already tracked by t_48a6e70b (crashed worker), 
+echo  focus is on cleanup not on CI workflow
+echo 
+echo === Recent PR MERGED counts ===
+gh api -X GET search/issues?q=repo:krikz/rob_box_project+is:pr+is:merged+merged:

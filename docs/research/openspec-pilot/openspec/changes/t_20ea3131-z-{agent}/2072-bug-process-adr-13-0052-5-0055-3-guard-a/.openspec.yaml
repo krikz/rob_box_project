@@ -1,0 +1,6 @@
+schema: spec-driven
+created: 2026-09-07
+issue: "#2072"
+task: "t_20ea3131"
+agent: "agent-flow"
+goal: "bug(process): ADR-номера коллидируют 13 раз (0052×5, 0055×3) — guard есть, но мержем его обходят; ADR-0030 нарушен своим же номером"

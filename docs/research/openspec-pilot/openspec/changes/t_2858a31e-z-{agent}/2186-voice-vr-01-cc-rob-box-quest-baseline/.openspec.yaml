@@ -1,0 +1,6 @@
+schema: spec-driven
+created: 2026-09-08
+issue: "#2186"
+task: "t_2858a31e"
+agent: "agent-flow"
+goal: "[voice-vr 01] CC-бюджет на rob_box_quest + запрет молчаливого пополнения baseline"

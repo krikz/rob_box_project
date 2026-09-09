@@ -1,0 +1,6 @@
+schema: spec-driven
+created: 2026-09-07
+issue: "#2069"
+task: "t_59db38de"
+agent: "agent-flow"
+goal: "bug(process): retro-path merge-gate закрывает карточки по ЛЮБОМУ упоминанию #N в теле PR — закрыл #1996/#2003/#2004 как COMPLETED без кода"

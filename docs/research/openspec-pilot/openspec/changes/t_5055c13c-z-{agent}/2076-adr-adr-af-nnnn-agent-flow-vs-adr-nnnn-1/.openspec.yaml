@@ -1,0 +1,6 @@
+schema: spec-driven
+created: 2026-09-07
+issue: "#2076"
+task: "t_5055c13c"
+agent: "agent-flow"
+goal: "ADR-нумерация: доменные неймспейсы ADR-AF-NNNN (agent-flow) vs ADR-NNNN (рантайм) + разведение 13 коллизий"

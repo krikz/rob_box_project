@@ -1,0 +1,6 @@
+schema: spec-driven
+created: 2026-09-02
+issue: "#1935"
+task: "t_6819e687"
+agent: "agent-flow"
+goal: "🚨 Deploy issues on z-{e2e}/test-round-333 (test) — 2026-09-02"

@@ -1,0 +1,6 @@
+schema: spec-driven
+created: 2026-09-03
+issue: "#1977"
+task: "t_b6460597"
+agent: "agent-flow"
+goal: "feat(e2e): synth fallback chain в e2e_voice_test.sh — Yandex → MiniMax → Silero (YANDEX_AUTHERROR, run #33697728942)"

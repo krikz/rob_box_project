@@ -1,0 +1,6 @@
+schema: spec-driven
+created: 2026-09-05
+issue: "#1995"
+task: "t_4120aa1d"
+agent: "agent-flow"
+goal: "[operator-agent 07] Планировщик: EventBus + отмена (снять task_scheduler.py:923)"
