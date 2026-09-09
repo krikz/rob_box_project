@@ -1191,11 +1191,18 @@ fail_streak_needs_review_sweep || true
 # (1, 2, 3 ...) — простой инкремент, БЕЗ даты.
 # Ретро 12.08 (t_bff6eccf): max также учитывает персистентный счётчик
 # (ROUND_COUNTER_FILE) — cleanup round-веток не должен сбрасывать нумерацию.
+#
+# Ретро 09.09 (issue #2299): round_ensure — ТОНКАЯ ОБЁРТКА над round_formation.sh
+# (модуль владеет ls-remote → max-N → freshness-check → create/reuse/recreate).
+# Counter всё ещё DEFERRED (записывается в post-tick cleanup ниже, НЕ здесь —
+# канон из ретро 23.08 t_fdb19f7b Phase 1+2). round_ensure.sh использует тот
+# же модуль с тем же контрактом.
 ROUND_BRANCH=""
 # Ретро 14.08 (t_4268f2bf): 1 = round_ensure СОЗДАЛ (или пересоздал) round-ветку
 # этим тиком (а не переиспользовал существующую). Нужен для post-tick cleanup
 # пустых round-веток (см. ниже): если ветка создана, но за тик на ней не
 # появилось ни одного run — кандидат был снят до запуска, ветку удаляем.
+# Пробрасывается из ROUND_FORMATION_CREATED модуля.
 ROUND_CREATED=0
 # n / max_n / counter_n — НЕ local: нужны в post-tick cleanup (после return
 # из round_ensure) для решения «counter rollback vs persist». Ретро 23.08
@@ -1203,90 +1210,26 @@ ROUND_CREATED=0
 n=0
 max_n=0
 counter_n=0
+
+# Source модуля round_formation.sh (issue #2299). Путь относительный —
+# SOT лежит рядом со скриптом. install.sh раскладывает оба файла в
+# одинаковые каталоги профилей.
+_LIB_DIR_HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+# shellcheck source=round_formation.sh
+. "${_LIB_DIR_HERE}/round_formation.sh"
+
 round_ensure() {
-    local list
-    list="$(git -C "$REPO_DIR" ls-remote --heads origin "${TEST_ROUND_PREFIX}*" 2>/dev/null \
-        | awk '{print $2}' | sed "s#refs/heads/${TEST_ROUND_PREFIX}##" || true)"
-    if [ -z "$list" ]; then
-        max_n=0
-    else
-        max_n="$(printf '%s\n' "$list" | sort -n | tail -n1)"
+    # Делегируем в модуль. rf_* функции выставят ROUND_BRANCH, n, max_n,
+    # counter_n, ROUND_FORMATION_CREATED / ROUND_FORMATION_REUSED. Counter
+    # НЕ пишется здесь — это решено в post-tick cleanup (≥1 run = persist,
+    # 0 run'ов = ghost-log).
+    if ! round_formation git_push_with_cred_fallback; then
+        return 1
     fi
-    # Персистентный счётчик: берём max(remote-ветки, файл-счётчик).
-    counter_n=0
-    if [ -f "$ROUND_COUNTER_FILE" ]; then
-        counter_n="$(tr -dc '0-9' < "$ROUND_COUNTER_FILE" 2>/dev/null || echo 0)"
-        counter_n="${counter_n:-0}"
-    fi
-    if [ "$counter_n" -gt "$max_n" ]; then
-        log "round counter: file=${counter_n} > remote-max=${max_n} (cleanup сбросил ветки?) — берём max из файла"
-        max_n="$counter_n"
-    fi
-    n=$((max_n + 1))
-    ROUND_BRANCH="${TEST_ROUND_PREFIX}${n}"
-    log "round number: max=${max_n} -> next=${n}"
-
-    # If branch doesn't exist on remote, create it from foundation (fresh origin).
-    if ! git -C "$REPO_DIR" ls-remote --heads origin "$ROUND_BRANCH" 2>/dev/null | grep -q .; then
-        log "creating ${ROUND_BRANCH} from ${FOUNDATION_BRANCH} (fresh fetch)"
-        if [ "$DRY_RUN" = "true" ]; then
-            log "DRY-RUN would: git push origin origin/${FOUNDATION_BRANCH}:refs/heads/${ROUND_BRANCH}"
-            ROUND_CREATED=1
-        else
-            # CRITICAL: пушим origin/${FOUNDATION_BRANCH}, НЕ локальную ветку —
-            # локальный develop может отстать (чужие коммиты). Всегда свежий.
-            if ! git -C "$REPO_DIR" fetch origin "$FOUNDATION_BRANCH" 2>&1 | sed 's/^/  /'; then
-                log "failed to fetch origin/${FOUNDATION_BRANCH}"; return 1
-            fi
-            if ! git_push_with_cred_fallback "$REPO_DIR" origin "origin/${FOUNDATION_BRANCH}:refs/heads/${ROUND_BRANCH}" 2>&1 | sed 's/^/  /'; then
-                log "failed to create ${ROUND_BRANCH}"; return 1
-            fi
-            # Ретро 14.08 (t_4268f2bf): ветка создана ЭТИМ тиком — post-tick
-            # cleanup сможет удалить её, если на ней не появится ни одного run.
-            ROUND_CREATED=1
-        fi
-    else
-        # Ретро 12.08 t_d3aeaa9b: НЕ переиспользуем stale round (база устарела).
-        # round-59 был создан из develop ДО фиксов валидатора #1143 и ротации
-        # #1141 — reuse вернул бы e2e на регрессе. Проверка: round-ветка должна
-        # содержать актуальный origin/${FOUNDATION_BRANCH}; если нет — удаляем
-        # и создаём заново. Иначе e2e-прогон на устаревшей базе (ретро 12.08).
-        log "checking ${ROUND_BRANCH} base freshness (must contain origin/${FOUNDATION_BRANCH})"
-        if [ "$DRY_RUN" = "true" ]; then
-            log "DRY-RUN would: check ancestry origin/${FOUNDATION_BRANCH}..${ROUND_BRANCH}"
-        else
-            if ! git -C "$REPO_DIR" fetch origin "$FOUNDATION_BRANCH" 2>&1 | sed 's/^/  /'; then
-                log "failed to fetch origin/${FOUNDATION_BRANCH}"; return 1
-            fi
-            if git -C "$REPO_DIR" merge-base --is-ancestor "origin/${FOUNDATION_BRANCH}" "origin/${ROUND_BRANCH}" 2>/dev/null; then
-                log "reusing ${ROUND_BRANCH} (база актуальна: содержит origin/${FOUNDATION_BRANCH})"
-            else
-                log "🛑 ${ROUND_BRANCH} база УСТАРЕЛА (не содержит origin/${FOUNDATION_BRANCH}) — удаляю и создам заново (ретро 12.08 t_d3aeaa9b)"
-                if ! git_push_with_cred_fallback "$REPO_DIR" origin --delete "$ROUND_BRANCH" 2>&1 | sed 's/^/  /'; then
-                    log "failed to delete stale ${ROUND_BRANCH} (non-fatal)"; true
-                fi
-                if ! git_push_with_cred_fallback "$REPO_DIR" origin "origin/${FOUNDATION_BRANCH}:refs/heads/${ROUND_BRANCH}" 2>&1 | sed 's/^/  /'; then
-                    log "failed to recreate ${ROUND_BRANCH}"; return 1
-                fi
-                # Ретро 14.08 (t_4268f2bf): ветка ПЕРЕСОЗДАНА этим тиком — если на
-                # ней не появится run'ов, post-tick cleanup удалит её (stale-база +
-                # 0 прогонов = мусор).
-                ROUND_CREATED=1
-                log "recreated ${ROUND_BRANCH} from fresh origin/${FOUNDATION_BRANCH}"
-            fi
-        fi
-    fi
-
-    # Ретро 23.08 (t_fdb19f7b, Phase 1+2): counter НЕ персистится здесь.
-    # Раньше счётчик записывался сразу после создания round-ветки, и если за
-    # тик кандидат снимался (sweep/merge-gate/ручной merge) ДО запуска build,
-    # cleanup удалял ветку — а counter оставался на +1 (ghost). За час накапли-
-    # валось 4 ghost'а → counter расходился с remote (наблюдение: counter=209
-    # vs remote=193, drift=16). Теперь counter персистится ТОЛЬКО после успеш-
-    # ного round (≥1 run) — см. post-tick cleanup ниже.
-
-    # Make sure worktree has it.
-    git -C "$WORKTREE_DIR" fetch origin "$ROUND_BRANCH" --quiet 2>/dev/null || true
+    # Пробрасываем флаг для post-tick cleanup (имя переменной оставлено
+    # для обратной совместимости с test_e2e_process_round_ensure_counter.sh
+    # который читает GHOST_ROUND counter_rollback маркер).
+    ROUND_CREATED="${ROUND_FORMATION_CREATED}"
 }
 
 # --- git_push_with_cred_fallback (ретро 23.08 t_b977cb4b, реконструкция t_98bb3a1d) ---
@@ -4479,24 +4422,11 @@ if [ "${ROUND_CREATED:-0}" = "1" ] && [ -n "$ROUND_BRANCH" ]; then
     _round_runs="$(printf '%s' "$_round_runs" | grep -oE '[0-9]+' | head -n1 || echo 0)"
     if [ "${_round_runs:-0}" -eq 0 ] 2>/dev/null; then
         log "🛑 ${ROUND_BRANCH}: создана этим тиком, 0 run'ов — кандидат снят до запуска (ретро 14.08 t_4268f2bf)"
-        # Ретро 23.08 (t_fdb19f7b, Phase 2): явный маркер GHOST_ROUND counter_rollback
-        # для парсера монитора (grep -c GHOST_ROUND). Counter НЕ инкрементируется —
-        # round_ensure не персистит (Phase 1).
-        log "GHOST_ROUND counter_rollback branch=${ROUND_BRANCH} n=${n:-?} remote_max=${max_n:-?} prev_counter=${counter_n:-0}"
-        # Cumulative metric для мониторинга. Переживает cleanup (как round-counter).
-        if [ "$DRY_RUN" != "true" ]; then
-            _ghost_prev=0
-            if [ -f "$GHOST_ROUNDS_TOTAL_FILE" ]; then
-                _ghost_prev="$(tr -dc '0-9' < "$GHOST_ROUNDS_TOTAL_FILE" 2>/dev/null || echo 0)"
-                _ghost_prev="${_ghost_prev:-0}"
-            fi
-            _ghost_next=$((_ghost_prev + 1))
-            printf '%s\n' "$_ghost_next" > "$GHOST_ROUNDS_TOTAL_FILE" 2>/dev/null \
-                && log "ghost-rounds-total: ${_ghost_prev} -> ${_ghost_next} -> ${GHOST_ROUNDS_TOTAL_FILE}" \
-                || log "WARNING: cannot write ghost-rounds-total ${GHOST_ROUNDS_TOTAL_FILE}"
-        else
-            log "DRY-RUN would increment ghost-rounds-total ${GHOST_ROUNDS_TOTAL_FILE}"
-        fi
+        # Ретро 23.08 (t_fdb19f7b, Phase 2) + 09.09 (issue #2299): явный маркер
+        # GHOST_ROUND counter_rollback для парсера монитора (grep -c GHOST_ROUND).
+        # Counter НЕ инкрементируется — round_formation модуль не персистит
+        # (Phase 1). Используем rf_ghost_round_log_and_metric (единый канон).
+        rf_ghost_round_log_and_metric "$ROUND_BRANCH"
         if [ "$DRY_RUN" = "true" ]; then
             log "DRY-RUN would: gh api -X DELETE repos/${GH_REPO}/git/refs/heads/${ROUND_BRANCH}"
         elif gh api -X DELETE "repos/${GH_REPO}/git/refs/heads/${ROUND_BRANCH}" >/dev/null 2>&1; then
@@ -4506,18 +4436,12 @@ if [ "${ROUND_CREATED:-0}" = "1" ] && [ -n "$ROUND_BRANCH" ]; then
         fi
     else
         log "${ROUND_BRANCH}: ${_round_runs} run(s) — ветка оставлена"
-        # Ретро 23.08 (t_fdb19f7b, Phase 1): counter персистится ТОЛЬКО после
-        # успешного round (≥1 run). До фикса counter записывался в round_ensure
-        # до прогона — на ghost'ах убегал в +1.
-        if [ "${n:-0}" -gt "${counter_n:-0}" ]; then
-            if [ "$DRY_RUN" != "true" ]; then
-                printf '%s\n' "$n" > "$ROUND_COUNTER_FILE" 2>/dev/null \
-                    && log "round counter saved: ${n} -> ${ROUND_COUNTER_FILE}" \
-                    || log "WARNING: cannot write round counter ${ROUND_COUNTER_FILE}"
-            else
-                log "DRY-RUN would: round counter saved ${n} -> ${ROUND_COUNTER_FILE}"
-            fi
-        fi
+        # Ретро 23.08 (t_fdb19f7b, Phase 1) + 09.09 (issue #2299): counter
+        # персистится ТОЛЬКО после успешного round (≥1 run). До фикса counter
+        # записывался в round_ensure до прогона — на ghost'ах убегал в +1.
+        # Используем rf_persist_counter_if_real_round (единый канон из
+        # round_formation.sh модуля).
+        rf_persist_counter_if_real_round
     fi
 fi
 
