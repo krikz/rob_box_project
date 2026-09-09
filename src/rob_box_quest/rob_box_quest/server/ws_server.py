@@ -41,25 +41,19 @@ from .session import (
 )
 from .voice_floor import FloorHolder, FloorState, VoiceFloorCache
 
-# AV-28 §P7 (issue #1920): список допустимых voice-preset ID и языков вывода.
-# Синхронизирован с src/rob_box_voice/config/voice_presets.yaml (PR #1931)
-# и meta-quest-api.md §P7. Сервер не выдумывает — если клиент прислал
-# не-whitelisted preset/language → NACK (UI откатывает optimistic update).
-# Расширение списка = правка YAML + сюда, без правок dialogue_node.
-VOICE_PRESET_IDS: tuple[str, ...] = (
-    "technical",
-    "street",
-    "caveman",
-    "business",
-    "philosopher",
-    "lenin",
-    # «Перевод» — нейтральный пресет: не стилизует, только чистит оговорки
-    # и переводит на выбранный язык (voice_presets.yaml → presets.translate).
-    "translate",
+# AV-28 §P7 (issue #1920): whitelist voice-preset ID и языков вывода.
+# Single source of truth — ``rob_box_core.bridge_protocol`` (туда же
+# импортирует supervisor_node). Если кто-то добавляет 8-й пресет в
+# voice_presets.yaml + bridge_protocol, ws_server подхватит его
+# автоматически. Раньше тут была копия-tuple — issue #2240 фиксирует
+# третий инцидент с расхождением копий (валидация NACK'ала реальный
+# preset). Не возвращаемся к локальному объявлению: conformance-тест
+# ``test_ws_server_voice_presets`` всё равно проверит, что
+# ``ws_server.VOICE_PRESET_IDS`` — это тот же объект, что в каталоге.
+from rob_box_core.bridge_protocol import (
+    VOICE_LANGUAGES,  # noqa: F401  (re-export для обратной совместимости)
+    VOICE_PRESET_IDS,  # noqa: F401  (re-export для обратной совместимости)
 )
-# Языки вывода. Ключи languages: в voice_presets.yaml — источник истины;
-# здесь тот же список, потому что сервер валидирует запрос до ROS.
-VOICE_LANGUAGES: tuple[str, ...] = ("ru", "en", "fr", "de", "zh", "hi")
 
 # msgpack — payload supervisor-API (0x30..0x33). Импорт ленив: в некоторых
 # dev-env модуль может отсутствовать (как у нас на билд-машине для пары

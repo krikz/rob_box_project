@@ -63,6 +63,15 @@ from rob_box_core.avatar_command import (
 )
 # voice-vr 12 (issue #2197, ADR-0080 §1.3 / §2.3): единый сборщик SSML.
 from rob_box_core.utterance import Sink, Utterance
+# Issue #2240 — ws_server и supervisor больше НЕ держат свои копии
+# whitelist'а AV-28 §P7: single source of truth в rob_box_core.bridge_protocol.
+# Раньше копия тут расходилась с ws_server / YAML (молчаливый отказ на
+# пресет `translate` + языки fr/de/zh/hi — см. комментарий ниже). Теперь
+# импортируем канон, conformance проверяется в test_supervisor_node.py.
+from rob_box_core.bridge_protocol import (  # noqa: E402,F401
+    VOICE_LANGUAGES,  # re-export для обратной совместимости
+    VOICE_PRESET_IDS,  # re-export для обратной совместимости
+)
 
 
 def _voice_param_key_for(provider: str) -> str:
@@ -303,26 +312,15 @@ def _make_execute_response(
 # Супервизор делает SetParameters на dialogue_node (см. ADR-0028 §S5).
 SET_VOICE_PRESET_TOPIC: str = "/avatar/set_voice_preset"
 SET_VOICE_LANGUAGE_TOPIC: str = "/avatar/set_voice_language"
-# Whitelist preset/language для AV-28 §P7. Должен совпадать с ws_server.
-# (Мы не импортируем ws_server — цикл. Источник правды — voice_presets.yaml;
-# здесь — копия для runtime-валидации, её сверяет тест
-# test_whitelists_match_ws_server_and_yaml.)
-#
-# Копия была ДВЕ: эта и приватная _AV28_* внутри класса, валидировала
-# вторая. Разъехавшись с yaml, они дали молчаливый отказ: ws_server
-# отвечал Quest'у voice_set_ack (UI показывал «применилось»), а
-# супервизор ронял запрос в applied=False, и оператор об этом не узнавал.
-# Так выпали пресет `translate` и языки fr/de/zh/hi. Теперь копия одна.
-VOICE_PRESET_IDS: tuple[str, ...] = (
-    "technical",
-    "street",
-    "caveman",
-    "business",
-    "philosopher",
-    "lenin",
-    "translate",
-)
-VOICE_LANGUAGES: tuple[str, ...] = ("ru", "en", "fr", "de", "zh", "hi")
+# Whitelist preset/language для AV-28 §P7. Single source of truth —
+# rob_box_core.bridge_protocol.VOICE_PRESET_IDS / VOICE_LANGUAGES
+# (импортированы выше). Локальная копия была ДВЕ: эта и приватная
+# _AV28_* внутри класса, валидировала вторая. Разъехавшись с yaml, они
+# дали молчаливый отказ: ws_server отвечал Quest'у voice_set_ack
+# (UI показывал «применилось»), а супервизор ронял запрос в
+# applied=False, и оператор об этом не узнавал. Так выпали пресет
+# `translate` и языки fr/de/zh/hi. Теперь whitelist один — канон,
+# импортированный сверху. Issue #2240 фиксирует архитектуру.
 # AV-21 (issue #1913) — супервизор-агент «мозг оператора» (ADR-0028 §1.1).
 # Вход: ``/avatar/command`` (std_msgs/String, JSON), выход:
 # ``/avatar/command_result``. Полные JSON-схемы — в
