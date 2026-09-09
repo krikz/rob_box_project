@@ -13,6 +13,10 @@
 #
 # API:
 #   eval_helper <script_path> <func_name> [args...]
+#   extract_func <script_path> <func_name>      — печатает тело в stdout
+#   extract_func_or_die <script_path> <func_name> — то же, но с FAIL-сообщением
+#                                                   и exit 1 при отсутствии
+#   load_func <script_path> <func_name>          — eval'ит тело в текущий scope
 #
 # Как ищем функцию (важно для смысла теста):
 #   1. Определение `func_name() {` в самом скрипте — берём его.
@@ -29,13 +33,52 @@
 # ============================================================================
 
 # extract_func <script_path> <func_name> — печатает текст определения функции
-# (от `name() {` до закрывающей `}` в нулевой колонке) или ничего.
+# (от `name() {` до балансирующей `}` в нулевой колонке; корректно работает с
+# вложенными `{` в телах — подсчитывает глубину через awk). Если в скрипте
+# функция не найдена, печатает ничего (молчаливый mode) — это поведение
+# совместимо с историческими вызовами в тестах до 30.08. Для жёсткого
+# контракта используйте extract_func_or_die.
+#
+# БЫЛО: ~10 копий awk-обёрток в tests/*.sh различались сигнатурами вызова
+# (positional args, outvar через printf -v, file output через >file,
+# marker-based для #2341-блоков). Консолидировано в ОДНУ реализацию после
+# того как 30.08-дедуп процессного слоя (функции в lib_agent_flow_common.sh)
+# сломал 4 теста (t_xxx-yyy-zzz / #2295): каждая копия awk искала функцию
+# в конкретном скрипте и при реинденте/переносе возвращала пустое тело.
 extract_func() {
     awk -v fn="$2" '
-        $0 == fn "() {" || index($0, fn "() {") == 1 { f = 1 }
-        f { print }
-        f && /^\}$/ { exit }
+        $0 ~ "^" fn "[[:space:]]*\\(\\)[[:space:]]*\\{" { capture=1; depth=0 }
+        capture {
+            print
+            n = gsub(/\{/, "{"); depth += n
+            n = gsub(/\}/, "}"); depth -= n
+            if (depth == 0 && /^\}/) { capture = 0; exit }
+        }
     ' "$1"
+}
+
+# extract_func_or_die <script_path> <func_name> — как extract_func, но
+# при отсутствии функции печатает FAIL-сообщение в stderr и возвращает 1.
+# Используется в тестах, где «функция X живёт в скрипте Y» — это часть
+# контракта (например, test_detect_pr_kind.sh: detect_pr_kind в ЛИБЕ, не в
+# e2e-process.sh / merge-gate.sh). Если перенесли — тест СРАЗУ это видит.
+extract_func_or_die() {
+    local _body
+    _body="$(extract_func "$1" "$2")"
+    if [ -z "$_body" ]; then
+        printf 'FAIL: func %s не найдена в %s\n' "$2" "$1" >&2
+        return 1
+    fi
+    printf '%s\n' "$_body"
+}
+
+# load_func <script_path> <func_name> — обёртка над eval "$(extract_func ...)"
+# для удобства тестов, которые просто хотят «определить функцию в текущем
+# scope». Сбой → return 1 + сообщение в stderr.
+load_func() {
+    local _body
+    _body="$(extract_func_or_die "$1" "$2")" || return 1
+    eval "$_body"
 }
 
 eval_helper() {  # $1=script $2=func [args...]

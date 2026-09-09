@@ -24,8 +24,12 @@
 # ============================================================================
 set -uo pipefail  # НЕ pipefail: подсчёт rc через `|| rc=$?` ломается с ним
 
-TEST_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$TEST_LIB_DIR/.." && pwd)"
+# Test file anchor — сохраняем ДО source mock_env.sh, потому что тот
+# переустанавливает TEST_LIB_DIR (→ tests/lib) и REPO_ROOT (→ scripts/agent_flow/).
+# Для lib_eval_func.sh нужен tests/lib/lib_eval_func.sh, а REPO_ROOT
+# после mock_env указывает на scripts/agent_flow/, что и нужно.
+TEST_FILE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TEST_LIBS_DIR="$(cd "$TEST_FILE_DIR/lib" && pwd)"
 
 if [ -t 1 ]; then
     RED=$'\033[31m'; GRN=$'\033[32m'; YEL=$'\033[33m'; BLU=$'\033[34m'; END=$'\033[0m'
@@ -39,37 +43,34 @@ TESTS_FAILED=0
 FAILED_NAMES=()
 
 # shellcheck source=lib/mock_env.sh
-. "$TEST_LIB_DIR/lib/mock_env.sh"
+. "$TEST_LIBS_DIR/mock_env.sh"
 
 # ---------------------------------------------------------------------------
 # Source guard + его прямые зависимости из agent-flow-merge-gate.sh.
 #
-# Стратегия: парсим awk'ом ТОЛЬКО функции, от которых зависит guard
-# (log, has_label, check_adr_number_collision) и явно задаём нужные
-# глобальные переменные. Так тест изолирован от main-блока merge-gate
+# Стратегия: парсим ТОЛЬКО функции, от которых зависит guard, и явно задаём
+# нужные глобальные переменные. Так тест изолирован от main-блока merge-gate
 # (не запускает весь gate) и автоматически подхватывает любые правки
 # production-кода (без copy-paste).
 #
-# Если кто-то поправит guard в merge-gate, но не поправит тест — этот
-# тест СРАЗУ покажет drift при первом прогоне.
+# Расположение функций после дедупа 30.08:
+#   - log                          — в merge-gate.sh (свой LOG_PREFIX, не
+#                                    относится к библиотеке)
+#   - has_label                     — в lib_agent_flow_common.sh (общий helper)
+#   - check_adr_number_collision    — в merge-gate.sh (специфика gate)
+#
+# Если кто-то перенесёт одну из функций в другое место — extract_func_or_die
+# СРАЗУ скажет FAIL при первом прогоне.
 # ---------------------------------------------------------------------------
-extract_func() {  # $1=script_path $2=func_signature $3=out_var
-    local script="$1" sig="$2" outvar="$3" body
-    body="$(awk -v sig="$sig" '
-        $0 ~ "^" sig "[[:space:]]*\\(\\)" {flag=1}
-        flag {print}
-        flag && /^}/ {flag=0; exit}
-    ' "$script")"
-    if [ -z "$body" ]; then
-        printf 'FAIL: func %s не найдена в %s\n' "$sig" "$script" >&2
-        return 1
-    fi
-    printf -v "$outvar" '%s' "$body"
-}
+# shellcheck source=lib/lib_eval_func.sh
+. "$TEST_LIBS_DIR/lib_eval_func.sh"
 
-extract_func "$REPO_ROOT/agent-flow-merge-gate.sh" "log"                          MG_LOG
-extract_func "$REPO_ROOT/agent-flow-merge-gate.sh" "has_label"                    MG_HAS_LABEL
-extract_func "$REPO_ROOT/agent-flow-merge-gate.sh" "check_adr_number_collision"   MG_GUARD
+# capture to vars (new extract_func prints to stdout; command-sub assign).
+# extract_func_or_die гарантирует, что has_label найдена (после 30.08-дедупа
+# она в lib, не в merge-gate.sh) — иначе стоп с понятным сообщением.
+MG_LOG="$(extract_func "$REPO_ROOT/agent-flow-merge-gate.sh" "log")"
+MG_HAS_LABEL="$(extract_func_or_die "$REPO_ROOT/lib_agent_flow_common.sh" "has_label")"
+MG_GUARD="$(extract_func "$REPO_ROOT/agent-flow-merge-gate.sh" "check_adr_number_collision")"
 
 unset -f log has_label check_adr_number_collision 2>/dev/null || true
 eval "$MG_LOG" >/dev/null
@@ -84,6 +85,10 @@ NEEDS_E2E_LABEL="needs-e2e"
 ADR_COLLISION_OVERRIDE_LABEL="adr-collision-override"
 ADR_COLLISION_BLOCKED_LABEL="agent-flow:adr-collision"
 ADR_COLLISION_COMMENT_DEDUP_HOURS="24"
+# guard делает `if [ "$DRY_RUN" = "true" ]` — set -u требует, чтобы переменная
+# была определена; в merge-gate.sh она инициализируется в начале скрипта
+# (`DRY_RUN="${DRY_RUN:-false}"`), здесь повторяем default.
+DRY_RUN="${DRY_RUN:-false}"
 
 # ---------------------------------------------------------------------------
 # Test helpers

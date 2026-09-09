@@ -249,14 +249,16 @@ VALID_PROFILES="$EXPECTED"
 echo ""
 echo "=== T6: role_for() regression ==="
 
-# Source role_for from real triage.sh
-role_for() {  # $1=labels_json
-    printf '%s' "$1" \
-        | grep -oE 'agent:[a-z0-9_-]+' \
-        | head -n1 \
-        | sed 's/^agent://' \
-        || printf '%s' "$AGENT_FLOW_DEFAULT_ROLE"
-}
+# Грузим role_for из РЕАЛЬНОГО triage.sh через общий lib (issue #2295).
+# До фикса роль копировалась в тело теста — реиндент функции или смена
+# default-роли в triage.sh молча ломали тест. Теперь тест падает с понятным
+# FAIL-сообщением от extract_func_or_die.
+# shellcheck source=lib/lib_eval_func.sh
+. "$TESTS_DIR/lib/lib_eval_func.sh"
+AGENT_FLOW_DIR="$(cd "$TESTS_DIR/.." && pwd)"
+AGENT_FLOW_DEFAULT_ROLE="${AGENT_FLOW_DEFAULT_ROLE:-architect}"  # тот же default, что в triage.sh:94
+load_func "$AGENT_FLOW_DIR/agent-flow-triage.sh" role_for \
+    || { fail "T6 setup" "не удалось загрузить role_for из agent-flow-triage.sh"; exit 1; }
 
 # T6a: extract from label
 R=$(role_for "bug,voice,agent:devops,priority:high")
