@@ -1812,7 +1812,7 @@ _emit_unknown_assignee_rollup() {
     # Rollup-state counters — declared as `local` so they don't pollute outer scope.
     # (unknown_assignee_rollup_emitted/_dedup_hit читаются из outer scope в
     # summary log, поэтому мы пишем туда через `declare -g` если нужно.)
-    local _count=0 _bad_roles_seen="" _now_epoch _cutoff_epoch _last_marker_epoch _valid_csv _marker _last_iso
+    local _count=0 _bad_roles_seen="" _valid_csv _marker _dedup_window_seconds _dedup_hit
     local _rec _n _role _tp
     while IFS= read -r _rec; do
         [ -n "$_rec" ] || continue
@@ -1833,18 +1833,18 @@ _emit_unknown_assignee_rollup() {
     fi
 
     # Per-tick dedup: проверяем последний комментарий с маркером.
+    # Idempotency через generic helper (#2293, соглашение 09.09.2026):
+    # comment_recently_posted(kind, number, marker, window, [mode]) → 0/1.
+    # mode=prefix — marker должен быть в начале body (мы всегда пишем
+    # rollup именно с маркером на первой строке). Раньше тут был jq
+    # `test()` regex — для нашего marker'а (нет регекс-спецсимволов)
+    # результат эквивалентен startswith().
     _marker="${UNKNOWN_ASSIGNEE_ROLLUP_MARKER}"
-    _now_epoch="$(date -u +%s)"
-    _cutoff_epoch=$((_now_epoch - UNKNOWN_ASSIGNEE_ROLLUP_DEDUP_MIN * 60))
-    _last_marker_epoch="0"
-    _last_iso=""
-    # gh issue view возвращает ISO-время → парсим через date.
-    # Экранируем маркер для jq regex test() (регекс-спецсимволы внутри строки).
-    _marker_jq="$(printf '%s' "$_marker" | sed 's/[][\\^$.*?+|(){}]/\\&/g')"
-    if _last_iso="$(gh api "repos/${GH_REPO}/issues/${UNKNOWN_ASSIGNEE_ROLLUP_ISSUE}/comments?per_page=20" \
-        --jq '([.[] | select((.body // "") | test("'"${_marker_jq}"'"))] | last | .created_at) // empty' 2>/dev/null || true)" \
-        && [ -n "$_last_iso" ]; then
-        _last_marker_epoch="$(date -u -d "$_last_iso" +%s 2>/dev/null || echo 0)"
+    _dedup_window_seconds=$(( UNKNOWN_ASSIGNEE_ROLLUP_DEDUP_MIN * 60 ))
+    _dedup_hit=1
+    if ! comment_recently_posted issue "$UNKNOWN_ASSIGNEE_ROLLUP_ISSUE" \
+        "$_marker" "$_dedup_window_seconds" prefix; then
+        _dedup_hit=0
     fi
 
     # Per-issue label — делаем всегда (и для dedup-hit, и для fresh-write),
@@ -1864,8 +1864,8 @@ _emit_unknown_assignee_rollup() {
     done < <(printf '%s' "$_unknown_assignee_records")
 
     # Если свежий rollup-комментарий уже есть — dedup-hit: не пишем ещё раз.
-    if [ "${_last_marker_epoch:-0}" -ge "${_cutoff_epoch}" ] 2>/dev/null; then
-        log "_emit_unknown_assignee_rollup: dedup-hit (last rollup @ ${_last_iso}, cutoff ${UNKNOWN_ASSIGNEE_ROLLUP_DEDUP_MIN}m ago) — skip new comment"
+    if [ "${_dedup_hit:-0}" -eq 1 ]; then
+        log "_emit_unknown_assignee_rollup: dedup-hit (last rollup within ${UNKNOWN_ASSIGNEE_ROLLUP_DEDUP_MIN}m window) — skip new comment"
         # outer-scope counter: declare -g если нужно изменить из subshell,
         # но мы в той же shell, поэтому прямое присваивание работает
         # (counter declared в main script scope).

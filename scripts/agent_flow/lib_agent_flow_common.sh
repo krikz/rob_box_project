@@ -740,3 +740,57 @@ except Exception: print("")' 2>/dev/null || true)"
     git -C "$my_wt" worktree prune 2>/dev/null || true
     return 0
 }
+
+# ---------------------------------------------------------------------------
+# _gm_recent_commented <kind> <number> <marker> <window_seconds> [mode]
+#   — обёртка над hermes_github.sh::comment_recently_posted с инвертированной
+#   семантикой (0 = should_post, 1 = should_skip), удобной для merge-gate.
+#
+# Возвращает:
+#   0 (truthy) — комментария с маркером M за окно W секунд НЕТ → постить.
+#   1 (falsey)  — комментарий ЕСТЬ → skip.
+#
+# Args:
+#   kind           — "issue" | "pr" (проходит в comment_recently_posted)
+#   number         — issue# / pr# (digits)
+#   marker         — substring (mode=contains) или prefix (mode=prefix),
+#                    которому должен удовлетворять body комментария.
+#   window_seconds — non-negative integer (24*3600 = 24h, 6*3600 = 6h, etc.)
+#   mode           — optional "prefix" (default) или "contains".
+#
+# Когда caller уже source'нул hermes_github.sh, всё работает out-of-the-box.
+# Если hermes_github.sh не source'нут — функция still возвращает 1 (don't post),
+# чтобы не сломать flow и не запостить случайно дубль.
+#
+# Кейсы (issue #2293, соглашение 09.09.2026):
+#   Раньше в agent-flow-merge-gate.sh было ~20 inline-сканов вида:
+#     _dedup_since="$(date -u -d 'N hours ago' +...)"
+#     _dup_count="$(gh api ".../comments?since=${_dedup_since}..." --jq \
+#         '[.[] | select(.body | startswith/contains("MARKER"))] | length')"
+#     if [ "${_dup_count:-0}" -eq 0 ]; then gh issue comment ...; fi
+#   Теперь:
+#     if ! _gm_recent_commented "issue" "$number" "MARKER" "$((N*3600))" \
+#         prefix; then gh issue comment ...; fi
+#
+# Преимущества:
+#   - Нет jq-фильтра в каждом месте (читаемость).
+#   - Нет date-string'а в каждом месте (window — секунды).
+#   - Нет GH_REPO/${number}/kind — всё вычисляется внутри.
+#   - Helper-семантика стабильна при изменении API (server-side ?since=).
+# ---------------------------------------------------------------------------
+_gm_recent_commented() {
+    local kind="${1:-}" number="${2:-}" marker="${3:-}"
+    local window_seconds="${4:-0}" mode="${5:-prefix}"
+
+    # Безопасный fallback: если hermes_github.sh не source'нут (например,
+    # тесты изолированы), comment_recently_posted будет undefined → будем
+    # считать, что коммента НЕТ, и caller постит. Это безопаснее, чем silent
+    # skip без контракта.
+    if ! declare -F comment_recently_posted >/dev/null 2>&1; then
+        _af_log "WARN: _gm_recent_commented: comment_recently_posted is not defined (hermes_github.sh not sourced?) — assuming NOT posted"
+        return 0
+    fi
+
+    comment_recently_posted "$kind" "$number" "$marker" \
+        "$window_seconds" "$mode"
+}

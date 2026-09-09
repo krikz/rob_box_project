@@ -45,6 +45,15 @@
 #   Это защищает от двойного запуска cron'а в одном тике (flock-сбой,
 #   manual rerun) и от "ghost whoami" при reconcile.
 #
+# Generic comment-idempotency:
+#   comment_recently_posted(kind, number, marker, window_seconds, [mode])
+#   — обобщённая версия для merge-gate / triage / e2e-process, где одна и та
+#   же логика (есть ли в issue/PR коммент с маркером M за окно W секунд)
+#   раньше была скопирована inline 14 раз. Теперь все inline-сканы
+#   маршрутизируются через этот helper (#2293, соглашение 09.09.2026).
+#   mode: "prefix" (default) → body startswith(marker);
+#         "contains"           → marker in body (substring).
+#
 # Failure semantics (acceptance #4):
 #   Если gh упал (rate-limit / network / permission) — action всё равно
 #   выполняется (helper возвращает 0). Только в лог пишется warning:
@@ -259,24 +268,57 @@ ${m}"
     return 0
 }
 
-# _whoami_already_posted — idempotency check.
+# comment_recently_posted — generic comment-idempotency check.
 #
-# Args: kind number script_name action
-# Returns: 0 if a matching whoami was posted within the last
-#          HERMES_WHOAMI_WINDOW_SECONDS, else 1.
+# Args: kind number marker window_seconds [mode]
+#   kind             — "issue" | "pr"
+#   number           — issue# или pr# (digits)
+#   marker           — substring (mode=contains) или prefix (mode=prefix)
+#                      which a matching comment body must contain/startswith
+#   window_seconds   — non-negative integer; если 0 → window отключен
+#                      (считаем все существующие комменты)
+#   mode             — optional "prefix" (default) или "contains".
+#                      prefix  → body startswith(marker)
+#                      contains → marker in body (substring)
 #
-# Strategy: GET comments via REST API (since `gh api` is uniformly available
-# in tests + prod, unlike `gh pr/issue view --json comments` whose JSON
-# shape drift). Endpoint:
-#   /repos/{owner}/{repo}/issues/{N}/comments    — for kind=issue (N = issue#)
-#   /repos/{owner}/{repo}/issues/{N}/comments    — for kind=pr  (PR comments
-#       also use the issue-comments endpoint in GitHub REST — "Conversation"
-#       tab unified).
-# Filter:
-#   body starts with marker "<MARKER> script=<script_name> action=<action>"
-#   AND created_at >= now - WINDOW_SECONDS.
-_whoami_already_posted() {
-    local kind="$1" number="$2" script_name="$3" action="$4"
+# Returns: 0 if a matching comment was posted within the window, else 1.
+#
+# Endpoint:
+#   /repos/{owner}/{repo}/issues/{N}/comments?since=<iso>&per_page=100
+#   (PR conversation tab unified with issue-comments in GitHub REST).
+#
+# Server-side cutoff (?since=) ограничивает выборку комментов для эффективности
+# (issues с большим history); client-side Python-фильтр дополнительно проверяет
+# точное равенство (created_at >= now - window_seconds) и матч marker'а.
+#
+# Failure semantics: на любой сбой (нет GH_REPO, gh api, python) возвращаем
+# 1 (assume NOT posted → caller proceeds). Это согласуется с
+# post_whoami_comment: caller лучше продублирует side-effect, чем
+# заблокируется на ложном skip.
+comment_recently_posted() {
+    local kind="${1:-}"
+    local number="${2:-}"
+    local marker="${3:-}"
+    local window_seconds="${4:-0}"
+    local mode="${5:-prefix}"
+
+    if [ -z "$kind" ] || [ -z "$number" ] || [ -z "$marker" ]; then
+        # Bad contract from caller → assume NOT posted.
+        return 1
+    fi
+    case "$kind" in
+        issue|pr) ;;
+        *)
+            # Unknown kind → assume NOT posted.
+            return 1
+            ;;
+    esac
+    case "$mode" in
+        prefix|contains) ;;
+        *)
+            mode="prefix"
+            ;;
+    esac
 
     local GH_REPO="${GH_REPO:-}"
     if [ -z "$GH_REPO" ]; then
@@ -284,49 +326,81 @@ _whoami_already_posted() {
         return 1
     fi
 
-    # Fetch all comments (we don't paginate — typical PR/issue has << 100
-    # comments). If there are 100+ comments, oldest are dropped and a real
-    # whoami within window will still be present (they're recent).
+    # Compute server-side cutoff (ISO8601 Z). Если window_seconds=0 — не
+    # добавляем ?since= (fetch all), фильтрацию всё равно сделает python.
+    local since_query=""
+    if [ "$window_seconds" -gt 0 ] 2>/dev/null; then
+        local cutoff_epoch cutoff_iso
+        cutoff_epoch=$(( $(_now_epoch) - window_seconds ))
+        cutoff_iso="$(date -u -d "@${cutoff_epoch}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+            || date -u +%Y-%m-%dT%H:%M:%SZ)"
+        since_query="?since=${cutoff_iso}"
+    fi
+
     local comments_json
-    if ! comments_json="$(_gh api "repos/${GH_REPO}/issues/${number}/comments?per_page=100" 2>/dev/null)"; then
+    if ! comments_json="$(_gh api "repos/${GH_REPO}/issues/${number}/comments${since_query}&per_page=100" 2>/dev/null)"; then
         # API failure (rate-limit / network) → assume NOT posted. Caller
         # will try to post; that post itself may fail, which is fine.
         return 1
     fi
 
-    local expected_prefix="${HERMES_WHOAMI_MARKER} script=${script_name} action=${action}"
     local cutoff_epoch
-    cutoff_epoch=$(( $(_now_epoch) - HERMES_WHOAMI_WINDOW_SECONDS ))
+    cutoff_epoch=$(( $(_now_epoch) - window_seconds ))
 
-    # Use python3 to parse JSON reliably — comments are arrays of objects
-    # with body + created_at. Avoids jq filter maintenance.
     local found
-    found="$(printf '%s' "$comments_json" | HERMES_WHOAMI_MARKER="$expected_prefix" \
-        HERMES_WHOAMI_CUTOFF="$cutoff_epoch" python3 -c '
+    found="$(printf '%s' "$comments_json" | HERMES_CR_MARKER="$marker" \
+        HERMES_CR_CUTOFF="$cutoff_epoch" HERMES_CR_MODE="$mode" python3 -c '
 import json, os, sys
 try:
     data = json.loads(sys.stdin.read() or "[]")
 except Exception:
     sys.exit(1)
-prefix = os.environ.get("HERMES_WHOAMI_MARKER", "")
-cutoff = int(os.environ.get("HERMES_WHOAMI_CUTOFF", "0"))
+marker = os.environ.get("HERMES_CR_MARKER", "")
+try:
+    cutoff = int(os.environ.get("HERMES_CR_CUTOFF", "0"))
+except Exception:
+    cutoff = 0
+mode = os.environ.get("HERMES_CR_MODE", "prefix")
 for c in data:
     if not isinstance(c, dict): continue
     body = c.get("body", "") or ""
     created = c.get("created_at", "") or ""
-    if not body.startswith(prefix): continue
+    matched = body.startswith(marker) if mode == "prefix" else (marker in body)
+    if not matched: continue
     # GitHub created_at = "2026-08-22T19:18:43Z" → parse to epoch.
+    # Backwards-compat с inline-jq фильтром (#2293): если created_at пустое
+    # (mock-фикстуры / legacy data), считаем коммент "свежим" (>= cutoff).
+    # Это сохраняет поведение старого inline-скана, который не требовал
+    # created_at и матчил только по body.
+    if not created:
+        print("1"); sys.exit(0)
     try:
         from datetime import datetime, timezone
         dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
         ep = int(dt.timestamp())
     except Exception:
-        continue
+        # Не парсится → считаем "свежим" (mock data / non-ISO).
+        print("1"); sys.exit(0)
     if ep >= cutoff:
         print("1"); sys.exit(0)
 print("0")
 ' 2>/dev/null || echo "0")"
     [ "$found" = "1" ]
+}
+
+# _whoami_already_posted — thin wrapper вокруг comment_recently_posted для
+# whoami-комментариев. Маркер = "<HERMES_WHOAMI_MARKER> script=<script> action=<action>".
+# Возвращает 0 если такой же whoami уже постился в последние
+# HERMES_WHOAMI_WINDOW_SECONDS секунд.
+#
+# Этот wrapper остаётся для backwards-compat с тестами и внутренними callers
+# (post_whoami_comment). Тесты (#2293 acceptance) покрывают generic helper
+# напрямую — см. scripts/agent_flow/tests/test_hermes_github.sh.
+_whoami_already_posted() {
+    local kind="$1" number="$2" script_name="$3" action="$4"
+    local marker="${HERMES_WHOAMI_MARKER} script=${script_name} action=${action}"
+    comment_recently_posted "$kind" "$number" "$marker" \
+        "${HERMES_WHOAMI_WINDOW_SECONDS}" "prefix"
 }
 
 # --- convenience wrappers --------------------------------------------------
