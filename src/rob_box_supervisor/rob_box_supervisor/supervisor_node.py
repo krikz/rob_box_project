@@ -62,7 +62,20 @@ from rob_box_core.avatar_command import (
     AVATAR_COMMAND_TOPIC,
 )
 # voice-vr 12 (issue #2197, ADR-0080 §1.3 / §2.3): единый сборщик SSML.
-from rob_box_core.utterance import Sink, Utterance
+# Issue #2233 — try/except fallback: round-деплои (z-{e2e}/test-round-N)
+# наследуют voice-assistant-humble-*-test из registry, а тот обновляется
+# develop-билдами БЕЗ SHA-tag pinning (issue #1826 anti-loop). Если
+# PR #2218 (utterance) merged в develop ПОСЛЕ последнего push
+# voice-assistant-humble-test → supervisor стартует в base-image без
+# rob_box_core.utterance → ModuleNotFoundError → restart-loop.
+# Fallback держит supervisor живым: monitor-режим публикует /avatar/state,
+# avatar-TTS запросы уходят с минимальной локальной реализацией Sink/Utterance.
+# Удалить этот блок когда round-ветки начнут использовать SHA-pinned теги
+# или develop-build будет триггерить voice-assistant rebuild (TODO issue).
+try:
+    from rob_box_core.utterance import Sink, Utterance  # type: ignore[import-not-found]
+except ImportError:
+    from rob_box_supervisor._utterance_fallback import Sink, Utterance  # noqa: F401
 # Issue #2240 — ws_server и supervisor больше НЕ держат свои копии
 # whitelist'а AV-28 §P7: single source of truth в rob_box_core.bridge_protocol.
 # Раньше копия тут расходилась с ws_server / YAML (молчаливый отказ на
