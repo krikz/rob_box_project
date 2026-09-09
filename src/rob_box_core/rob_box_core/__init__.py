@@ -30,6 +30,16 @@ from rob_box_core.ports import (
     ToolValidationError,
     ValidationResult,
 )
+from rob_box_core.utterance import (
+    ALLOWED_PRIORITIES,
+    DEFAULT_PRIORITY,
+    PRIORITY_BARGE_IN,
+    PRIORITY_NORMAL,
+    PRIORITY_OPERATOR,
+    PRIORITY_REPLACE,
+    Sink,
+    Utterance,
+)
 
 __all__ = [
     "Clock",
@@ -51,6 +61,15 @@ __all__ = [
     "ToolTimeout",
     "ToolTimeoutError",
     "ToolValidationError",
+    # Utterance — единый сборщик SSML (voice-vr 12, ADR-0080 §1.3, §2.3)
+    "ALLOWED_PRIORITIES",
+    "DEFAULT_PRIORITY",
+    "PRIORITY_BARGE_IN",
+    "PRIORITY_NORMAL",
+    "PRIORITY_OPERATOR",
+    "PRIORITY_REPLACE",
+    "Sink",
+    "Utterance",
     # avatar_command (AV-22, freeze §3.3 worker-brief)
     "AVATAR_COMMAND_TOPIC",
     "AVATAR_COMMAND_RESULT_TOPIC",

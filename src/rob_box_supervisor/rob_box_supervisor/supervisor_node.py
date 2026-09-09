@@ -61,6 +61,8 @@ from rob_box_core.avatar_command import (
     AVATAR_COMMAND_RESULT_TOPIC,
     AVATAR_COMMAND_TOPIC,
 )
+# voice-vr 12 (issue #2197, ADR-0080 §1.3 / §2.3): единый сборщик SSML.
+from rob_box_core.utterance import Sink, Utterance
 
 
 def _voice_param_key_for(provider: str) -> str:
@@ -2914,12 +2916,18 @@ class AvatarSupervisor(Node):
             )
             return
 
-        payload: dict[str, Any] = {
-            "ssml": f"<speak>{text}</speak>",
-            "priority": GRIP_TTS_SOURCE,  # "operator" — REPLACE-priority
-        }
-        if language:
-            payload["language"] = language
+        # voice-vr 12 (issue #2197): единый сборщик SSML — ``Utterance``.
+        # XML-экранирование &, <, > делает сам сборщик. Для ``/voice/tts/request``
+        # ``sink`` НЕ включаем: канал по контракту — динамики робота, шлем
+        # (sink=headset) — это отдельный ``_publish_avatar_tts`` (инвариант 6b).
+        utterance = Utterance(
+            text=text,
+            sink=Sink.SPEAKERS,
+            priority=GRIP_TTS_SOURCE,  # "operator" — REPLACE-priority
+            language=language,
+        )
+        payload = utterance.to_request()
+        payload.pop("sink", None)
         try:
             msg = RosString()
             msg.data = json.dumps(payload, ensure_ascii=False)
@@ -3000,15 +3008,22 @@ class AvatarSupervisor(Node):
             rid = request_id
         else:
             rid = _uuid.uuid4().hex[:8]
+        # voice-vr 12 (issue #2197): единый сборщик SSML — ``Utterance``.
+        # XML-экранирование &, <, > делает сам сборщик; sink приходит как
+        # строка от вызывающего (headset|preview) — нормализуем через Sink.
+        # speech_id НЕ добавляем: tts_node генерит свой через
+        # ``chunk_data.get("speech_id", str(_uuid.uuid4()))``, а в payload'е
+        # request_id уже служит уникальным ключом.
+        utterance = Utterance(
+            text=text,
+            sink=sink,
+            voice=voice,
+            language=language,
+        )
         payload = {
             "request_id": rid,
-            "ssml": f"<speak>{text}</speak>",
-            "sink": sink,
+            **utterance.to_request(),
         }
-        if language:
-            payload["language"] = language
-        if voice:
-            payload["voice"] = voice
         try:
             msg = RosString()
             msg.data = json.dumps(payload, ensure_ascii=False)

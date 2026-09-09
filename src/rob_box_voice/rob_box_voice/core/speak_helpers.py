@@ -24,6 +24,11 @@ import threading
 import uuid
 from typing import Any, Callable, Dict, List, Optional
 
+# voice-vr 12 (issue #2197, ADR-0080 §1.3 / §2.3): единое место сборки
+# SSML — раньше здесь был ``f"<speak>{text}</speak>"`` без экранирования.
+# Теперь текст проходит через ``Utterance.ssml`` (XML-escape для ``&``/`<`/`>`).
+from rob_box_core.utterance import Sink, Utterance
+
 # Strip history marker prefix that some LLMs copy into output.
 _HISTORY_MARKER_RE = re.compile(
     r"^\[(?:выполнено через|executed via):[^\]]*\]\s*",
@@ -335,23 +340,33 @@ def build_ssml_payload(
     into) is an extra routing hint for telegram_node; tts_node ignores
     unknown fields.
     """
-    payload: Dict[str, Any] = {
-        "ssml": f"<speak>{text}</speak>",
-        "speech_id": str(uuid.uuid4()),
-        "emotion": animation,
-    }
-    if batch_id is not None:
-        payload["batch_id"] = batch_id
-    if batch_index is not None:
-        payload["batch_index"] = int(batch_index)
-    if batch_total is not None:
-        payload["batch_total"] = int(batch_total)
-    if tg_chat_id is not None:
-        payload["tg_chat_id"] = int(tg_chat_id)
-    if voice is not None:
-        payload["voice"] = voice
-    if language is not None:
-        payload["language"] = language
+    payload: Dict[str, Any] = Utterance(
+        text=text,
+        sink=Sink.SPEAKERS,
+        emotion=animation or "neutral",
+        extra={
+            "speech_id": str(uuid.uuid4()),
+            "batch_id": batch_id,
+            "batch_index": batch_index,
+            "batch_total": batch_total,
+            "tg_chat_id": tg_chat_id,
+            "voice": voice,
+            "language": language,
+        },
+    ).to_request()
+    # ``Utterance.to_request`` ставит ``emotion="neutral"`` по умолчанию и
+    # выкидывает ``None``-поля из extra; здесь чистим ``None`` для обратной
+    # совместимости со старыми подписчиками, которые ждут отсутствие ключей.
+    for k in (
+        "batch_id",
+        "batch_index",
+        "batch_total",
+        "tg_chat_id",
+        "voice",
+        "language",
+    ):
+        if k in payload and payload[k] is None:
+            payload.pop(k)
     return json.dumps(payload, ensure_ascii=False)
 
 
