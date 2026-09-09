@@ -216,6 +216,52 @@ echo "$_no_root" | grep -q 'OpenSpec root not found' \
     && log_result PASS "J. prints 'OpenSpec root not found' when no env" \
     || log_result FAIL "J. prints 'OpenSpec root not found' when no env"
 
+echo "=== K. slug-for-branch subcommand (issue #2296) ==="
+# Канонический subcommand — вызывается из merge-gate/triage.
+# Не требует OPENSPEC_ROOT (fast-path в скрипте).
+# 1) z-{agent}/<issue>-<slug> → <slug> (canonical agent-flow branch)
+_sfb1="$("$SYNC" slug-for-branch "z-{agent}/2296-agent-flow-unify-slugify-to-50-char-cano" 2>/dev/null)"
+# NB: текущий regex НЕ покрывает '{' (см. ADR-0039 + комментарий в slug_for_branch),
+# поэтому для canonical z-{agent}/ branch возвращается весь branch as-is.
+# Это pre-existing поведение, намеренно сохранено в issue #2296 (scope = unification,
+# а не bugfix). Тест фиксирует контракт, чтобы регресс был виден.
+assert_eq "z-{agent}/2296-agent-flow-unify-slugify-to-50-char-cano" "$_sfb1" "K. z-{agent}/ branch → preserves (pre-existing behavior)"
+# 2) z-<role>/<id>-<slug> (ретро-ветка) → <slug>
+_sfb2="$("$SYNC" slug-for-branch "z-devops/1234-retro-branch" 2>/dev/null)"
+assert_eq "retro-branch" "$_sfb2" "K. z-devops/<id>-<slug> → <slug>"
+# 3) wt/<task_id> → НЕ strip'ается (другая конвенция, см. merge-gate:2960-2980)
+_sfb3="$("$SYNC" slug-for-branch "wt/t_dead1234" 2>/dev/null)"
+assert_eq "wt/t_dead1234" "$_sfb3" "K. wt/<task_id> → preserved"
+# 4) Нет OPENSPEC_ROOT, нет openspec/ в cwd — subcommand ВСЁ РАВНО работает
+#    (fast-path до resolve_openspec_root).
+_sfb4="$(cd /tmp && OPENSPEC_ROOT="" REPO_DIR="" GH_REPO="" \
+    "$SYNC" slug-for-branch "z-arch/9-foo" 2>/dev/null)"
+assert_eq "foo" "$_sfb4" "K. no OPENSPEC_ROOT → still works (fast-path)"
+# 5) Без аргумента → DIE exit 1
+if "$SYNC" slug-for-branch >/dev/null 2>&1; then
+    log_result FAIL "K. slug-for-branch with no arg exits 1"
+else
+    log_result PASS "K. slug-for-branch with no arg exits 1"
+fi
+
+echo "=== L. canonical 50-char slugify (lib_agent_flow_common.sh) ==="
+# Источник истины — lib_agent_flow_common.sh:slugify (50 chars, единый для
+# всех, в т.ч. для openspec-sync). Проверяем, что 40-char устаревший
+# truncate больше нигде не используется.
+# 1) Slugify "фиксация" длинного title (52 алфавитных символа без дефисов) →
+#    обрезается до 50 chars (c1-50).
+_lib="$TEST_DIR/../lib_agent_flow_common.sh"
+# shellcheck disable=SC1090
+( source "$_lib"; _long="$(printf 'a%.0s' {1..52})"; _got="$(slugify "$_long")"; \
+  _exp="$(printf 'a%.0s' {1..50})"; \
+  if [ "$_got" = "$_exp" ]; then log_result PASS "L. 52-char input truncated to 50 (canonical)"; \
+  else printf '    expected: %q\n    actual:   %q\n' "$_exp" "$_got"; log_result FAIL "L. 50-char truncate"; fi )
+# 2) Slugify из ~40-символьного title — НЕ обрезается (короткий).
+( source "$_lib"; _got="$(slugify 'fix something important here today')"; \
+  if [ "$_got" = "fix-something-important-here-today" ]; then \
+    log_result PASS "L. short title not truncated (40 chars)"; \
+  else printf '    actual: %q\n' "$_got"; log_result FAIL "L. short-title passthrough"; fi )
+
 echo ""
 echo "==== Summary ===="
 echo "passed: $PASS"

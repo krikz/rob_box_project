@@ -382,7 +382,7 @@ issue_branch() {  # $1=issue_num $2=title
     local slug
     slug="$(printf '%s' "$t" | tr '[:upper:]' '[:lower:]' \
         | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g; s/-{2,}/-/g' \
-        | cut -c1-40)"
+        | cut -c1-50)"
     printf '%s' "z-{agent}/${n}-${slug}"
 }
 

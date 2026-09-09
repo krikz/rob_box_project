@@ -77,21 +77,43 @@ resolve_openspec_root() {
     return 1
 }
 
+OPENSPEC_ROOT="${OPENSPEC_ROOT:-}"
+
+# --- slugify -----------------------------------------------------------------
+# Канонический kebab-case slug (макс 50 символов) берётся из
+# lib_agent_flow_common.sh:slugify (issue #2296, согласовано 09.09.2026).
+# Локальной копии НЕТ — единый источник истины.
+#
+# Единственное openspec-специфичное — извлечение slug из имени ветки
+# (z-{agent}/<issue>-<slug> → <slug>). Используется merge-gate и triage
+# вместо дублирования inline-регекса по двум местам.
+slug_for_branch() {  # $1=branch
+    local br="${1:-}"
+    [ -n "$br" ] || return 0
+    # Strip leading 'z-<role>/' (например, z-{agent}/ или z-devops/) и
+    # issue-prefix (цифры-дефис). Regex СОХРАНЁН как был в inline-копиях
+    # agent-flow-merge-gate.sh:2045 / agent-flow-triage.sh:1740 до
+    # унификации (issue #2296) — менять семантику в этом PR не будем,
+    # баг (если есть) отдельно.
+    printf '%s' "$br" | sed -E 's|^z-[a-z0-9_-]+/||; s|^[0-9]+-||'
+}
+
+# Fast-path: slug-for-branch НЕ требует OpenSpec root (нужен из merge-gate/triage
+# в репах, где openspec/ не задеплоен). Обрабатываем ДО resolve_openspec_root —
+# иначе top-level "root not found → exit 0" (строка ниже) прибил бы вызов.
+# (issue #2296)
+if [ "${1:-}" = "slug-for-branch" ]; then
+    [ $# -ge 2 ] || DIE "slug-for-branch: need branch-name arg"
+    slug_for_branch "$2"
+    exit 0
+fi
+
 OPENSPEC_ROOT="$(resolve_openspec_root || true)"
 if [ -z "$OPENSPEC_ROOT" ]; then
     LOG "OpenSpec root not found — skipping (set OPENSPEC_ROOT or REPO_DIR)"
     exit 0
 fi
 LOG "OpenSpec root: $OPENSPEC_ROOT"
-
-# --- slugify ----------------------------------------------------------------
-# Превращает произвольную строку в kebab-case slug (макс 50 символов).
-slugify() {
-    local s="$1"
-    echo "$s" | tr '[:upper:]' '[:lower:]' \
-        | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' \
-        | cut -c1-50
-}
 
 # --- сейчас (ISO 8601) -----------------------------------------------------
 iso_now() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
@@ -326,6 +348,15 @@ Commands:
   status
       Печатает JSON со списком active changes + specs.
 
+  slug-for-branch <branch>
+      Печатает openspec-slug, извлечённый из имени ветки:
+        z-{agent}/<issue>-<slug>      → <slug>
+        z-devops/<id>-<slug>          → <slug>     (ретро-ветки)
+        wt/<task_id>                  → <task_id>  (не strip'ается)
+      НЕ требует OPENSPEC_ROOT — можно дёргать из merge-gate/triage
+      без OpenSpec sandbox. Канонический regex преобразования определён
+      в функции slug_for_branch (см. начало скрипта). (issue #2296)
+
 Env:
   OPENSPEC_ROOT=/path/to/openspec       (auto-detect if unset)
   REPO_DIR=/path/to/repo                (auto-detect if unset)
@@ -356,6 +387,7 @@ main() {
         status)
             cmd_status
             ;;
+        # NB: slug-for-branch обработан выше ДО resolve_openspec_root (не требует root).
         -h|--help|help|"")
             usage
             ;;

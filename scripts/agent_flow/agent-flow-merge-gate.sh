@@ -2048,8 +2048,10 @@ archive_openspec_change_for_merge() {  # $1=cid $2=num $3=pr $4=branch
     sync_bin="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/agent-flow-openspec-sync.sh"
     [ -x "$sync_bin" ] || { log "openspec-sync: $sync_bin not found/executable — skipping"; return 0; }
     # slug = branch-suffix (z-{agent}/<id>-<slug> → <slug>), fallback = cid.
+    # Канонический regex — в agent-flow-openspec-sync.sh:slug_for_branch
+    # (issue #2296). Если branch не передан, slug = cid.
     if [ -n "$br" ]; then
-        _slug="$(printf '%s' "$br" | sed -E 's|^z-[a-z0-9_-]+/||; s|^[0-9]+-||')"
+        _slug="$("$sync_bin" slug-for-branch "$br")"
     else
         _slug="$cid"
     fi

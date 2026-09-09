@@ -173,14 +173,20 @@ has_label_json() {  # $1=labels_json  $2=label_name
 }
 
 # ---------------------------------------------------------------------------
-# slugify <text> — kebab-case, только [a-z0-9-], максимум 40 символов.
-# Используется для имён веток z-{agent}/<issue>-<slug>.
+# slugify <text> — kebab-case, только [a-z0-9-], максимум 50 символов.
+# Используется для имён веток z-{agent}/<issue>-<slug> и openspec-change папок
+# (issue #2296, согласовано 09.09.2026: канон = 50-символьный slugify из
+# agent-flow-openspec-sync.sh; lib и openspec-sync используют один и тот же).
+#
+# Для извлечения slug из имени ветки (z-{agent}/<num>-<slug> → <slug>) см.
+# `agent-flow-openspec-sync.sh slug-for-branch <branch>` — единая точка
+# преобразования branch → openspec-slug (ADR-0039).
 # ---------------------------------------------------------------------------
 slugify() {
     printf '%s' "$1" \
         | tr '[:upper:]' '[:lower:]' \
         | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g; s/-{2,}/-/g' \
-        | cut -c1-40
+        | cut -c1-50
 }
 
 # ---------------------------------------------------------------------------

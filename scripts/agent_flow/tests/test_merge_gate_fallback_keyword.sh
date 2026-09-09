@@ -30,7 +30,7 @@ slugify_branch() {  # $1=issue $2=title
     local issue="$1" title="$2" slug
     slug="$(printf '%s' "$title" | tr '[:upper:]' '[:lower:]' \
         | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g; s/-{2,}/-/g' \
-        | cut -c1-40)"
+        | cut -c1-50)"
     printf 'z-{agent}/%s-%s' "$issue" "$slug"
 }
 
@@ -103,7 +103,7 @@ test_F1_fallback_keyword_closes_issue() {
     local slug
     slug="$(printf '%s' "$title" | tr '[:upper:]' '[:lower:]' \
         | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g; s/-{2,}/-/g' \
-        | cut -c1-40)"
+        | cut -c1-50)"
     local branch="z-{agent}/${issue}-${slug}"
     fixture_fallback "$issue" "$pr" "$branch" "closes #${issue}" "" "$title"
 
@@ -136,7 +136,7 @@ test_F2_reference_only_no_close() {
     local slug
     slug="$(printf '%s' "$title" | tr '[:upper:]' '[:lower:]' \
         | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g; s/-{2,}/-/g' \
-        | cut -c1-40)"
+        | cut -c1-50)"
     local branch="z-{agent}/${issue}-${slug}"
     fixture_fallback "$issue" "$pr" "$branch" "fix related to #${issue} discussion" "" "$title"
 
@@ -169,7 +169,7 @@ test_F3_branch_deleted_defer_to_q22() {
     local slug
     slug="$(printf '%s' "$title" | tr '[:upper:]' '[:lower:]' \
         | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g; s/-{2,}/-/g' \
-        | cut -c1-40)"
+        | cut -c1-50)"
     local branch="z-{agent}/${issue}-${slug}"
     fixture_fallback "$issue" "$pr" "$branch" "closes #${issue}" "" "$title"
     # Branch УДАЛЕНА → fallback skip.
@@ -199,7 +199,7 @@ test_F4_whitelist_label_blocks_fallback() {
     local slug
     slug="$(printf '%s' "$title" | tr '[:upper:]' '[:lower:]' \
         | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g; s/-{2,}/-/g' \
-        | cut -c1-40)"
+        | cut -c1-50)"
     local branch="z-{agent}/${issue}-${slug}"
     fixture_fallback "$issue" "$pr" "$branch" "closes #${issue}" "hermes user-reopened-this" "$title"
 
@@ -227,7 +227,7 @@ test_F5_e2e_done_label_skips_fallback() {
     local slug
     slug="$(printf '%s' "$title" | tr '[:upper:]' '[:lower:]' \
         | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g; s/-{2,}/-/g' \
-        | cut -c1-40)"
+        | cut -c1-50)"
     local branch="z-{agent}/${issue}-${slug}"
     fixture_fallback "$issue" "$pr" "$branch" "closes #${issue}" "hermes e2e-done" "$title"
 
@@ -255,7 +255,7 @@ test_F6_already_closed_idempotent_skip() {
     local slug
     slug="$(printf '%s' "$title" | tr '[:upper:]' '[:lower:]' \
         | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g; s/-{2,}/-/g' \
-        | cut -c1-40)"
+        | cut -c1-50)"
     local branch="z-{agent}/${issue}-${slug}"
     fixture_fallback "$issue" "$pr" "$branch" "closes #${issue}" "" "$title"
     set_state "ISSUE_${issue}_STATE_JSON" '{"state":"CLOSED"}'
