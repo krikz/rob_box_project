@@ -2446,17 +2446,46 @@ fi
 # не сломать regression-acceptance при недоступности timeline API).
 # jq-filter ниже совместим с mock_env.sh (apply_jq, паттерн
 # `[.[] | select(.field == "VAL")][-1].field`) и с реальным gh api.
+#
+# Ретро 09.09 t_5948c129 (issue #1977 silent-loop): GitHub timeline API
+# возвращает максимум 100 событий на страницу и НЕ пагинируется
+# автоматически. Для issues с 200+ комментариев (issue #1977 = 457)
+# событие `e2e-done` лежит на странице 3+, а старая логика
+# `_timeline_last_labeled_at` запрашивала только page=1 → возвращала
+# empty → conservative guard подавлял close → infinite silent skip
+# loop (50+ тиков). Поэтому обе функции теперь пагинируют до 3 страниц
+# (300 events — практически все issues остаются в этом окне; на issue
+# с >300 events fallback на labels.csv-trust, см. ADR-0014 §4 req 4
+# conservative-on-uncertainty).
 _timeline_last_labeled_at() {  # $1=issue_number $2=label_name
-    local issue="$1" label="$2"
-    gh api "repos/${GH_REPO}/issues/${issue}/timeline?per_page=100" \
-        --jq "[.[] | select(.event==\"labeled\" and .label.name==\"${label}\")][-1].created_at" \
-        2>/dev/null || printf ''
+    local issue="$1" label="$2" _page=1 _at _last_page
+    while [ "$_page" -le 3 ]; do
+        _at="$(gh api "repos/${GH_REPO}/issues/${issue}/timeline?per_page=100&page=${_page}" \
+            --jq "[.[] | select(.event==\"labeled\" and .label.name==\"${label}\")][-1].created_at" \
+            2>/dev/null || printf '')"
+        [ "$_at" = "null" ] && _at=""
+        if [ -n "$_at" ]; then
+            printf '%s' "$_at"
+            return 0
+        fi
+        _page=$((_page+1))
+    done
+    printf ''
 }
 _timeline_last_reopen_at() {  # $1=issue_number
-    local issue="$1"
-    gh api "repos/${GH_REPO}/issues/${issue}/timeline?per_page=100" \
-        --jq "[.[] | select(.event==\"reopened\")][-1].created_at" \
-        2>/dev/null || printf ''
+    local issue="$1" _page=1 _at
+    while [ "$_page" -le 3 ]; do
+        _at="$(gh api "repos/${GH_REPO}/issues/${issue}/timeline?per_page=100&page=${_page}" \
+            --jq "[.[] | select(.event==\"reopened\")][-1].created_at" \
+            2>/dev/null || printf '')"
+        [ "$_at" = "null" ] && _at=""
+        if [ -n "$_at" ]; then
+            printf '%s' "$_at"
+            return 0
+        fi
+        _page=$((_page+1))
+    done
+    printf ''
 }
 
 # Ретро 18.08 t_873ebef2 (#1391, дополнение к PR #1399 от e3f227e2):
@@ -3738,12 +3767,51 @@ except Exception:
                     # штатно. Если фикс ложный PASS — юзер сам закроет
                     # руками либо issue зависнет в open (как и при
                     # Q22 user-merge, ADR-0014 §Q22).
-                    _e2e_done_at="$(_timeline_last_labeled_at "$number" "$DONE_LABEL")"
+                    # Ретро 09.09 t_5948c129 (issue #1977 silent-loop): для
+                    # определения наличия e2e-done теперь доверяем
+                    # labels.csv (`_has_e2e_done`), а НЕ timeline API.
+                    # Причина: timeline API возвращает максимум 100
+                    # событий на страницу без авто-пагинации; на issues с
+                    # 200+ комментариями событие `e2e-done` уходит на
+                    # page 3+ и `_timeline_last_labeled_at` возвращает
+                    # empty → conservative guard подавляет close →
+                    # infinite silent skip loop (50+ тиков на issue #1977).
+                    # labels.csv — это текущее состояние, а timeline —
+                    # это история событий; для определения «есть ли
+                    # метка прямо сейчас» labels.csv надёжнее (ADR-0014
+                    # §4 req 4 conservative-on-uncertainty: uncertainty
+                    # про дату события, не про наличие метки).
+                    #
+                    # user-reopen guard (issue #1391, ADR-0014 §4 req 4)
+                    # продолжает опираться на timeline (`_user_reopen_at`)
+                    # — для даты reorder это единственный надёжный источник
+                    # (labels.csv не хранит history событий). Пагинация
+                    # до 3 страниц добавлена в helper (см. выше).
                     _user_reopen_at="$(_timeline_last_reopen_at "$number")"
                     # Helpers возвращают "null" если событий нет (mock и
                     # реальный gh api). Приводим к "empty" для проверок.
-                    [ "$_e2e_done_at" = "null" ] && _e2e_done_at=""
                     [ "$_user_reopen_at" = "null" ] && _user_reopen_at=""
+                    if [ "$_has_e2e_done" = "1" ]; then
+                        # labels.csv-trust: метка есть СЕЙЧАС → e2e-done
+                        # присутствует. Если user-reopen отсутствует —
+                        # нам не нужна точная дата события (сравнение
+                        # «reopen ПОСЛЕ e2e-done» trivially true: нет
+                        # reopen). Если user-reopen есть — нам нужна
+                        # реальная дата e2e-done из timeline (для
+                        # корректного лексикографического сравнения
+                        # «reopen ПОСЛЕ e2e-done»), иначе fallback на
+                        # метку времени в текущий момент (e2e-done
+                        # проставлена ПОСЛЕ reopen → значит метка
+                        # свежая, user-reopen протух → штатный close).
+                        if [ -z "$_user_reopen_at" ]; then
+                            _e2e_done_at="label-present"
+                        else
+                            _e2e_done_at="$(_timeline_last_labeled_at "$number" "$DONE_LABEL")"
+                            [ "$_e2e_done_at" = "null" ] && _e2e_done_at=""
+                        fi
+                    else
+                        _e2e_done_at=""
+                    fi
                     # ADR-0014 §4 req 4 (conservative on uncertainty).
                     # Логика user-reopen guard (issue #1391):
                     #   • Timeline ПОЛНОСТЬЮ пуст (нет ни одного события —

@@ -716,8 +716,29 @@ except Exception:
                 ;;
             repos/*/issues/*/timeline*)
                 issue_num="$(printf '%s' "$path" | sed -nE 's#.*/issues/([0-9]+)/timeline.*#\1#p')"
-                journal "gh api $path"
-                _data="$(get_state ISSUE_${issue_num}_TIMELINE_JSON)"
+                # Ретро 09.09 t_5948c129 (issue #1977 silent-loop):
+                # mock_env теперь поддерживает пагинацию timeline. Если
+                # path содержит `page=N`, читаем
+                # ISSUE_<n>_TIMELINE_JSON_PAGEN (где N=1..3). Если не
+                # задано — fallback на ISSUE_<n>_TIMELINE_JSON (default
+                # page 1, обратная совместимость со старыми тестами,
+                # которые задают TIMELINE_JSON без page-суффикса).
+                _page="$(printf '%s' "$path" | sed -nE 's#.*[?&]page=([0-9]+).*#\1#p')"
+                if [ -n "$_page" ] && [ "$_page" -gt 0 ]; then
+                    journal "gh api $path (timeline page=${_page})"
+                    _data="$(get_state ISSUE_${issue_num}_TIMELINE_JSON_PAGE${_page})"
+                    if [ -z "$_data" ]; then
+                        # Fallback на default TIMELINE_JSON — обратная
+                        # совместимость: существующие тесты (например
+                        # test_merge_gate_user_reopen.sh) задают
+                        # TIMELINE_JSON без PAGE-суффикса, и для них
+                        # page=1 должен вернуть тот же массив.
+                        _data="$(get_state ISSUE_${issue_num}_TIMELINE_JSON)"
+                    fi
+                else
+                    journal "gh api $path (timeline default)"
+                    _data="$(get_state ISSUE_${issue_num}_TIMELINE_JSON)"
+                fi
                 apply_jq "$_data" "$_jq_filter"
                 ;;
             repos/*/pulls/*/commits*)

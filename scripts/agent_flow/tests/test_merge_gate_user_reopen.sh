@@ -172,11 +172,28 @@ test_U3_reopen_before_e2e_done_still_closes() {
 }
 
 # ============================================================================
-# U4. Timeline unreadable (gh api failure) → defer destructive cleanup
-# (ADR §4 req 4: conservative on uncertainty — don't risk closing
-# something user might have just reopened)
+# U4. Timeline unreadable + e2e-done в labels.csv → close штатный
+# (ретро 09.09 t_5948c129 / issue #1977 silent-loop):
+# Раньше этот тест ожидал conservative-defer (timeline пустой → не
+# можем доказать отсутствие reopen → не закрываем). Но это именно
+# та логика, которая вызвала silent-loop на issue #1977: timeline
+# события paginated-out (или rate-limit) → empty → conservative
+# suppress close → infinite skip loop.
+#
+# Новая политика (labels.csv-trust, ADR-0014 amendment pending):
+# если e2e-done В CURRENT LABELS — это sufficient evidence что
+# PASS verdict был. Timeline API status (пустой / rate-limited /
+# paginated-out) не имеет значения для «была ли метка поставлена».
+# Для user-reopen detection timeline всё ещё нужен — но только
+# когда в labels e2e-done есть (см. main close-path: `_user_reopen_at`
+# извлекается ДО проверки conservative guard, и если timeline пуст
+# → reopen не обнаружен → нет evidence о user-reopen → close).
+#
+# Это переопределяет ADR-0014 §4 req 4 conservative-on-uncertainty
+# в пользу labels.csv для наличия метки (current state надёжнее
+# history events для binary decision «есть ли метка»).
 # ============================================================================
-test_U4_timeline_unreadable_defer_close() {
+test_U4_labels_csv_trust_overrides_timeline_empty() {
     new_test
     local issue=1394 branch pr=1398
     branch="$(slugify_branch "$issue" 'timeline unreadable demo')"
@@ -185,10 +202,14 @@ test_U4_timeline_unreadable_defer_close() {
     set_state "ISSUE_${issue}_STATE_JSON" '{"state":"OPEN"}'
     set_state "ISSUE_${issue}_COMMENTS_JSON" "{\"comments\":[{\"body\":\"kanban: t_dead${issue}\\n\"}]}"
     set_state "ISSUE_${issue}_COMMENTS_SINCE_JSON" '[]'
-    # Empty timeline simulates gh api failure / rate-limit / network drop.
+    # Empty timeline simulates gh api failure / rate-limit / pagination
+    # exhaust / network drop. Раньше этот сценарий подавлял close по
+    # conservative guard (ADR-0014 §4 req 4). Новая политика: если
+    # e2e-done в current labels → close штатный (current state =
+    # source of truth, ретро 09.09 t_5948c129).
     set_state "ISSUE_${issue}_TIMELINE_JSON" '[]'
     set_state "PR_HEAD_${branch}_JSON" "[{\"number\":${pr},\"state\":\"MERGED\",\"baseRefName\":\"develop\",\"mergedAt\":\"2026-08-18T11:19:44Z\",\"mergeable\":\"MERGEABLE\",\"mergeStateStatus\":\"CLEAN\",\"statusCheckRollup\":[{\"conclusion\":\"SUCCESS\"}],\"title\":\"[robot] fix #${issue}\",\"labels\":[]}]"
-    set_state "PR_${pr}_COMMITS_JSON" "[]"
+    set_state "PR_${pr}_COMMITS_JSON" '[]'
     set_state PR_LIST_ALL_OPEN_JSON '[]'
     set_state PR_FOLLOWUP_JSON '[]'
     set_state RATE_LIMIT_JSON '{"resources":{"core":{"remaining":5000}}}'
@@ -200,19 +221,18 @@ test_U4_timeline_unreadable_defer_close() {
     local journal
     journal="$(cat "$GH_JOURNAL")"
 
-    # Empty timeline = can't prove no user-reopen → DON'T close (safer).
-    # This differs from the existing "state unreadable → defer cleanup"
-    # branch: there the state itself is unreadable. Here the state IS
-    # readable (OPEN) but the timeline lacks the reopen history.
+    # Labels.csv-trust побеждает timeline-empty: close проходит (issue
+    # #1977 silent-loop break — pagination/empty timeline больше не
+    # подавляет close для PASS-proven issues).
     local close_calls
     close_calls="$(printf '%s\n' "$journal" | grep -c "gh issue close ${issue} --reason completed" || true)"
-    assert_eq "0" "$close_calls" "no close when timeline unreadable (can't prove no-reopen)"
+    assert_eq "1" "$close_calls" "labels.csv e2e-done + timeline empty → close fires (current state = source of truth)"
 }
 
 run_test "U1_user_reopen_after_e2e_done_blocks_close" test_U1_user_reopen_after_e2e_done_blocks_close
 run_test "U2_no_user_reopen_still_closes"           test_U2_no_user_reopen_still_closes
 run_test "U3_reopen_before_e2e_done_still_closes"   test_U3_reopen_before_e2e_done_still_closes
-run_test "U4_timeline_unreadable_defer_close"       test_U4_timeline_unreadable_defer_close
+run_test "U4_labels_csv_trust_overrides_timeline_empty" test_U4_labels_csv_trust_overrides_timeline_empty
 
 # ----------------------------------------------------------------------------
 # Ретро 18.08 t_873ebef2 (дополнение к issue #1391 / PR #1399):
