@@ -281,14 +281,20 @@ jobs:
             [ -f "$Q_TEST" ] || continue
             Q_NAME="$(basename "$Q_TEST")"
             echo "--- rob_box_quest: $Q_NAME ---"
+            Q_EXIT=0
             ( cd "$QUEST_DIR" && PYTHONPATH=".:$PYTHONPATH" timeout 120 python3 -m pytest \
                 -p no:launch_testing \
                 -p no:ament_flake8 -p no:ament_pep257 \
                 -p no:ament_copyright -p no:ament_xmllint \
                 -p no:ament_lint -p no:colcon_core \
                 --tb=short --no-header -q \
-                "$Q_TEST" )
-            Q_EXIT=$?
+                "$Q_TEST" ) || Q_EXIT=$?
+            # ``|| Q_EXIT=$?`` обязательно: шаги GitHub Actions идут под
+            # ``set -e``, и НЕобёрнутая подоболочка с ненулевым кодом рвёт
+            # шаг ДО классификации ниже. Именно так падал прогон на
+            # test_camera_payload.py: файл целиком skip-ается → pytest
+            # отдаёт 5 → ``exit code 5`` у всего job-а, хотя ветка
+            # ``elif [ "$Q_EXIT" -eq 5 ]`` трактует это как норму.
             if [ "$Q_EXIT" -eq 1 ] || [ "$Q_EXIT" -eq 3 ] || [ "$Q_EXIT" -eq 4 ]; then
               echo "❌ rob_box_quest FAILED: $Q_NAME (exit=$Q_EXIT)"
               QUEST_FAILED=1
