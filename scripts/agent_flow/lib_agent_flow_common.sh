@@ -794,3 +794,123 @@ _gm_recent_commented() {
     comment_recently_posted "$kind" "$number" "$marker" \
         "$window_seconds" "$mode"
 }
+
+# ---------------------------------------------------------------------------
+# wait_run <run_id> <timeout_s> [label] → conclusion (через stdout)
+#
+# Единый модуль poll+retry+race-fix для GitHub Actions run'ов. Заменяет две
+# копипасты (ретро 09.09.2026, issue #2302):
+#   - wait_workflow в agent-flow-e2e-process.sh:3367 (build/deploy-фаза)
+#   - inline verdict-цикл в agent-flow-e2e-process.sh:3877 (e2e-фаза)
+#
+# Аргументы:
+#   $1 run_id       — числовой GitHub Actions run id (обязателен, валидируется)
+#   $2 timeout_s    — бюджет ожидания completed (целое секунд)
+#   $3 label        — короткий тег для логов (build/deploy/e2e/...)
+#   $4 gh_repo      — репо для `gh run view/cancel` (default $GH_REPO)
+#   $5 poll_interval — пауза между poll'ами (default $E2E_POLL_INTERVAL=15)
+#   $6 cancel_on_timeout — 1 (default) = отменить run при TIMEOUT;
+#                          0 = оставить (например для e2e, где дать
+#                          естественно завершиться)
+#
+# Контракт (важно для e2e-обёртки):
+#   - На stdout: итоговый conclusion ("success" | "failure" | "cancelled" |
+#     "skipped" | "timed_out" | "" при отмене через timeout). Гарантированно
+#     НЕ пустой при completed-исходе (3× retry на race пустого/null conclusion,
+#     ретро 09.08 #4).
+#   - rc=0  — run completed, conclusion валиден (даже "failure"). 5× recheck
+#             на race in_progress→success (ретро 01.09 t_32c28562).
+#   - rc=1  — таймаут; run либо completed ровно в момент exit, либо
+#             отменён cancel'ом (если cancel_on_timeout=1).
+#
+# Race-fix `in_progress→success` (post-fail recheck × 5, ретро 01.09
+# t_32c28562) живёт в одном месте: если initial conclusion=failure, до
+# 5 повторов по 10с — если хоть один дал success, это race и считаем
+# итог = success. Audit-комментарий в issue — дело вызывающего (у нас
+# был бы issue #${number}, которого lib не знает).
+#
+# gh run cancel при TIMEOUT (ретро 13.08 t_da3e0bd5) — освобождает
+# залипший раннер.
+#
+# rc=2 — run_id пустой/невалидный (программная ошибка caller'а, не
+# сетевая). В отличие от rc=1 (timeout) — НЕ пытаемся cancel'ить.
+# ---------------------------------------------------------------------------
+wait_run() {  # $1=run_id $2=timeout_s $3=label $4=gh_repo $5=poll_interval $6=cancel_on_timeout
+    local rid="$1" tmo="$2" lbl="${3:-run}" _repo="${4:-${GH_REPO:-}}" \
+          _poll="${5:-${E2E_POLL_INTERVAL:-15}}" _cancel="${6:-1}" \
+          st="" concl="" _dl _recheck_concl _rc_try _rc_success_seen
+
+    # Валидация run_id — cobra-краш 13.08 (см. wait_workflow). Пусто или не
+    # число → rc=2, программная ошибка, cancel'ить не пытаемся.
+    if [ -z "$rid" ] || ! [[ "$rid" =~ ^[0-9]+$ ]]; then
+        _af_log "wait_run(${lbl}): invalid run_id='${rid}' (rc=2)"
+        return 2
+    fi
+    if [ -z "$_repo" ]; then
+        _af_log "wait_run(${lbl}): GH_REPO не задан (rc=2)"
+        return 2
+    fi
+
+    _dl=$((SECONDS + tmo))
+    while [ "$SECONDS" -lt "$_dl" ]; do
+        st="$(gh run view "$rid" --repo "$_repo" --json status --jq '.status' 2>/dev/null || echo "")"
+        if [ "$st" = "completed" ]; then
+            # Ретро-фикс (09.08 #4): conclusion иногда пустой сразу после
+            # completed (gh run view гонка) → перечитываем до 3 раз с паузой.
+            for _rc_try in 1 2 3; do
+                concl="$(gh run view "$rid" --repo "$_repo" --json conclusion --jq '.conclusion' 2>/dev/null || echo "")"
+                if [ -n "$concl" ] && [ "$concl" != "null" ]; then
+                    break
+                fi
+                sleep 5
+            done
+            # Пустой после 3 retry — считаем "timed_out" (раньше success→FAILURE,
+            # ретро 09.08 #4). Caller сам решит, считать ли это FAIL.
+            if [ -z "$concl" ] || [ "$concl" = "null" ]; then
+                printf '%s\n' "timed_out"
+                _af_log "wait_run(${lbl}): run ${rid} completed но conclusion пустой после 3 retry"
+                return 0
+            fi
+            if [ "$concl" = "success" ]; then
+                printf '%s\n' "$concl"
+                return 0
+            fi
+            # Ретро-фикс 01.09 (t_32c28562): conclusion=failure тоже бывает
+            # ложным в момент перехода in_progress→success. До 5 повторов
+            # по 10с; если хоть один дал success — race, итог = success.
+            _rc_success_seen=0
+            for _rc_try in 1 2 3 4 5; do
+                sleep 10
+                _recheck_concl="$(gh run view "$rid" --repo "$_repo" --json conclusion --jq '.conclusion' 2>/dev/null || echo "")"
+                if [ "$_recheck_concl" = "success" ]; then
+                    _rc_success_seen=1
+                    _af_log "wait_run(${lbl}): ⚠️ race на run ${rid} — initial=${concl}, recheck#${_rc_try}=success (01.09 t_32c28562)"
+                    # Сигнализируем caller'у о race через WR_RUN_RACE_DETECTED=1
+                    # (audit-комментарий в issue — caller делает со своим
+                    # контекстом #${number}, не lib).
+                    WR_RUN_RACE_DETECTED=1
+                    printf '%s\n' "success"
+                    return 0
+                fi
+            done
+            # Все 6 polls (1 начальный + 5 recheck) дали failure → настоящий FAIL.
+            printf '%s\n' "$concl"
+            return 0
+        fi
+        sleep "$_poll"
+    done
+
+    # TIMEOUT
+    _af_log "wait_run(${lbl}): TIMEOUT (${tmo}s) на run ${rid}"
+    if [ "$_cancel" = "1" ]; then
+        # Ретро 13.08 t_da3e0bd5: TIMEOUT — НЕ оставляем run висеть. Залипший
+        # docker build держит раннер и ~20 job'ов round в очереди.
+        st="$(gh run view "$rid" --repo "$_repo" --json status --jq '.status' 2>/dev/null || echo "")"
+        if [ "$st" != "completed" ] \
+            && gh run cancel "$rid" --repo "$_repo" >/dev/null 2>&1; then
+            _af_log "wait_run(${lbl}): run ${rid} CANCELED после TIMEOUT (освобождаю раннеры)"
+        fi
+    fi
+    printf '%s\n' "timed_out"
+    return 1
+}

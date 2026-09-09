@@ -3304,8 +3304,13 @@ for t in data:
     # 2) L: Deploy and Verify на round   → ждём success
     # 3) L: E2E Voice Test на round      → ждём verdict
     wait_workflow() {  # $1=workflow_name $2=branch $3=timeout_s $4=label $5=min_created_epoch
-        local wf="$1" br="$2" tmo="$3" lbl="$4" min_epoch="${5:-0}" rid="" st="" dl
-        # Ждём ПОЯВЛЕНИЯ нового run (createdAt >= момента триггера)
+        # Ретро 09.09.2026 (issue #2302): poll+retry+race-fix+cancel — в
+        # lib_agent_flow_common.sh::wait_run. Эта обёртка ждёт только
+        # ПОЯВЛЕНИЯ нового run (createdAt >= момента триггера), потом
+        # делегирует wait_run. Контракт (rc=0 на success, rc=1 на
+        # timeout/discovery fail) сохранён для caller'ов ниже.
+        local wf="$1" br="$2" tmo="$3" lbl="$4" min_epoch="${5:-0}" rid="" dl _jq_filter
+        # Фаза 1: ждём появления нового run (до 120с).
         dl=$((SECONDS + 120))
         while [ "$SECONDS" -lt "$dl" ]; do
             _jq_filter="[.[] | select(.createdAt >= \"$min_epoch\")][0].databaseId"
@@ -3313,11 +3318,8 @@ for t in data:
                 --limit 3 --json databaseId,createdAt --jq "$_jq_filter" 2>/dev/null || echo "")"
             # Надзор 13.08 (t_e75b74d1/t_d2aab049): cobra-краш 'accepts at most 1
             # arg(s), received 2' — run_id из gh run list приходил МУЛЬТИСТРОЧНЫМ
-            # (2+ id при перекрытии ранов/пустой выдаче) и разбивался на 2
-            # позиционных аргумента gh run view → тик умирал на wait-фазе
-            # (17/23 раундов 12-13.08: двойные прогоны, needs-review не ставился).
-            # Санитизируем ДО любого использования: только первая числовая
-            # последовательность, иначе пусто.
+            # (2+ id при перекрытии ранов/пустой выдаче). Санитизируем ДО
+            # любого использования: только первая числовая последовательность.
             rid="$(printf '%s' "$rid" | grep -oE '[0-9]+' | head -n1 || true)"
             if [ -n "$rid" ] && [[ "$rid" =~ ^[0-9]+$ ]]; then
                 break
@@ -3328,70 +3330,31 @@ for t in data:
             log "issue #${number}: ${lbl} run not created"; return 1
         fi
         log "issue #${number}: ${lbl} run ${rid} created — waiting (timeout ${tmo}s)"
-        dl=$((SECONDS + tmo))
-        while [ "$SECONDS" -lt "$dl" ]; do
-            st="$(gh run view "$rid" --repo "$GH_REPO" --json status --jq '.status' 2>/dev/null || echo "")"
-            if [ "$st" = "completed" ]; then
-                local concl _c_try
-                concl=""
-                # Ретро-фикс (09.08 #4): conclusion иногда пустой сразу после
-                # completed (gh run view гонка) → success считался FAILURE.
-                # Перечитываем до 3 раз с паузой, только потом вердикт.
-                for _c_try in 1 2 3; do
-                    concl="$(gh run view "$rid" --repo "$GH_REPO" --json conclusion --jq '.conclusion' 2>/dev/null || echo "")"
-                    if [ -n "$concl" ] && [ "$concl" != "null" ]; then break; fi
-                    sleep 5
-                done
-                if [ "$concl" = "success" ]; then
-                    log "issue #${number}: ${lbl} OK (run ${rid})"
-                    return 0
-                else
-                    # Ретро-фикс 01.09 (t_32c28562): conclusion=failure тоже
-                    # бывает ложным в момент перехода in_progress→success.
-                    # 09.08 #4 чинил только пустой/null conclusion, а реальный
-                    # race на 01.09 был 4-й раз подряд (round-316/317/319/
-                    # 320/321/322, issue #1824): gh run view вернул 'failure'
-                    # в момент transition, через 1 мин статус стал success.
-                    # Решение: post-fail recheck loop — до 5 повторов по 10с,
-                    # если хоть один recheck даст success — это race, считаем
-                    # OK и пишем audit-комментарий в issue. Только если ВСЕ 6
-                    # polls (1 начальный + 5 recheck) дают failure → настоящий FAIL.
-                    local _recheck_concl _rc_try _rc_success_seen
-                    _rc_success_seen=0
-                    for _rc_try in 1 2 3 4 5; do
-                        sleep 10
-                        _recheck_concl="$(gh run view "$rid" --repo "$GH_REPO" --json conclusion --jq '.conclusion' 2>/dev/null || echo "")"
-                        if [ "$_recheck_concl" = "success" ]; then
-                            _rc_success_seen=1
-                            log "issue #${number}: ⚠️ race detected on ${lbl} run ${rid} — initial=failure, recheck#${_rc_try}=success (01.09 t_32c28562)"
-                            gh issue comment "$number" --repo "$GH_REPO" --body \
-                                "agent-flow: ⚠️ race detected on ${lbl} run \`${rid}\` — initial poll=failure, recheck#${_rc_try}=success (workflow still in transition). Accepting as OK. https://github.com/${GH_REPO}/actions/runs/${rid}" >/dev/null 2>&1 || true
-                            return 0
-                        fi
-                    done
-                    log "issue #${number}: ${lbl} FAILED (run ${rid}, ${concl:-unknown}, recheck×5=failure — confirmed)"
-                    return 1
-                fi
-            fi
-            sleep "$E2E_POLL_INTERVAL"
-        done
-        log "issue #${number}: ${lbl} TIMEOUT (${tmo}s)"
-        # Ретро 13.08 t_da3e0bd5: build/deploy TIMEOUT — НЕ оставляем run висеть.
-        # Залипший docker build (job in_progress часами) держит раннер и ~20 job'ов
-        # round в очереди (наблюдение 13.08: 4 параллельных L-Build ≈ 50 job'ов на
-        # 8 раннерах, e2e-конвейер стоял 3 часа). gh run cancel освобождает раннеры;
-        # следующий тик сделает новый round, а dedup (active_round_with_issue) не
-        # даст задвоить issue, пока активный round жив.
-        if [ -n "$rid" ] && [[ "$rid" =~ ^[0-9]+$ ]]; then
-            _st_now="$(gh run view "$rid" --repo "$GH_REPO" --json status --jq '.status' 2>/dev/null || echo '')"
-            if [ "$_st_now" != "completed" ]; then
-                if gh run cancel "$rid" --repo "$GH_REPO" >/dev/null 2>&1; then
-                    log "issue #${number}: ${lbl} run ${rid} CANCELED после TIMEOUT (освобождаю раннеры)"
-                else
-                    log "issue #${number}: WARNING ${lbl} cancel run ${rid} failed (возможно уже completed)"
-                fi
-            fi
+        # Фаза 2: poll до completed. wait_run сам делает 3× retry на пустой
+        # conclusion (ретро 09.08 #4), 5× recheck на race in_progress→success
+        # (ретро 01.09 t_32c28562) и gh run cancel на TIMEOUT (ретро 13.08
+        # t_da3e0bd5).
+        # НЕ local WR_RUN_RACE_DETECTED — это глобал, который lib::wait_run
+        # выставляет (=1) при обнаружении race. local тут затенит значение.
+        local concl rc
+        WR_RUN_RACE_DETECTED=0
+        concl="$(wait_run "$rid" "$tmo" "$lbl" "$GH_REPO" "$E2E_POLL_INTERVAL" 1)" || rc=$?
+        rc="${rc:-0}"
+        if [ "$WR_RUN_RACE_DETECTED" = "1" ]; then
+            log "issue #${number}: ⚠️ race detected on ${lbl} run ${rid} — post-fail recheck дал success (01.09 t_32c28562)"
+            gh issue comment "$number" --repo "$GH_REPO" --body \
+                "agent-flow: ⚠️ race detected on ${lbl} run \`${rid}\` — initial poll=failure, post-fail recheck=success (workflow still in transition). Accepting as OK. https://github.com/${GH_REPO}/actions/runs/${rid}" >/dev/null 2>&1 || true
         fi
+        if [ "$rc" = "0" ]; then
+            if [ "$concl" = "success" ]; then
+                log "issue #${number}: ${lbl} OK (run ${rid})"
+                return 0
+            fi
+            log "issue #${number}: ${lbl} FAILED (run ${rid}, ${concl}, recheck×5=failure — confirmed)"
+            return 1
+        fi
+        # rc=1 = TIMEOUT (wait_run уже сделал cancel, если cancel_on_timeout=1)
+        log "issue #${number}: ${lbl} TIMEOUT (${tmo}s)"
         return 1
     }
 
@@ -3815,39 +3778,49 @@ EOF
     run_id="$_e_run_id"
 
     # --- wait for verdict (только СВЕЖИЙ run, createdAt >= момента триггера) ---
+    # Ретро 09.09.2026 (issue #2302): poll+retry+race-fix делегирован
+    # lib_agent_flow_common.sh::wait_run. Здесь остаётся только Фаза 1
+    # (поиск run с createdAt >= $e_epoch) и обработка TIMEOUT.
     log "issue #${number}: waiting verdict (timeout ${E2E_RUN_TIMEOUT}s)"
-    deadline=$((SECONDS + E2E_RUN_TIMEOUT))
-    run_id=""
-    verdict=""
-    while [ "$SECONDS" -lt "$deadline" ]; do
+    # Фаза 1: ждём появления run с createdAt >= $e_epoch.
+    _v_dl=$((SECONDS + E2E_RUN_TIMEOUT))
+    while [ "$SECONDS" -lt "$_v_dl" ]; do
         _jq_filter="[.[] | select(.createdAt >= \"$e_epoch\")][0].databaseId"
         run_id="$(gh run list --repo "$GH_REPO" --workflow "$E2E_WORKFLOW" --branch "$ROUND_BRANCH" \
             --limit 3 --json databaseId,createdAt --jq "$_jq_filter" 2>/dev/null || echo "")"
         # Надзор 13.08: санитизация run_id (cobra-краш 2-х аргументов, см. wait_workflow).
         run_id="$(printf '%s' "$run_id" | grep -oE '[0-9]+' | head -n1 || true)"
         if [ -n "$run_id" ] && [[ "$run_id" =~ ^[0-9]+$ ]]; then
-            status="$(gh run view "$run_id" --repo "$GH_REPO" --json status --jq '.status' 2>/dev/null || echo "")"
-            if [ "$status" = "completed" ]; then
-                # Ретро-фикс (09.08 #4): conclusion иногда пустой сразу после
-                # completed — перечитываем до 3 раз, иначе success → FAILURE.
-                verdict=""
-                for _v_try in 1 2 3; do
-                    verdict="$(gh run view "$run_id" --repo "$GH_REPO" --json conclusion --jq '.conclusion' 2>/dev/null || echo "")"
-                    if [ -n "$verdict" ] && [ "$verdict" != "null" ]; then break; fi
-                    sleep 5
-                done
-                break
-            fi
+            break
         fi
+        run_id=""
         sleep "$E2E_POLL_INTERVAL"
     done
-
-    if [ -z "$verdict" ]; then
-        log "issue #${number}: e2e verdict timeout — manual review needed"
+    if [ -z "$run_id" ]; then
+        log "issue #${number}: e2e verdict timeout — run not appeared"
         gh issue edit "$number" --repo "$GH_REPO" --remove-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
         gh issue comment "$number" --repo "$GH_REPO" --body \
-            "agent-flow: ❌ e2e verdict timeout (run id ${run_id:-unknown}). Manual review: https://github.com/${GH_REPO}/actions/runs/${run_id:-}" >/dev/null 2>&1 || true
+            "agent-flow: ❌ e2e verdict timeout (run not appeared in ${E2E_RUN_TIMEOUT}s). Manual review: https://github.com/${GH_REPO}/actions" >/dev/null 2>&1 || true
         errored=$((errored+1)); continue
+    fi
+    # Фаза 2: poll до completed. cancel_on_timeout=0: e2e пусть завершится
+    # естественно, а не cancel'ится (в отличие от build/deploy).
+    # НЕ local: $verdict и $run_id используются ниже (download, fail_kind,
+    # verdict-handler, post-comment) — глобалы этой тиковой функции.
+    local rc WR_RUN_RACE_DETECTED=0
+    verdict="$(wait_run "$run_id" "$E2E_RUN_TIMEOUT" "e2e" "$GH_REPO" "$E2E_POLL_INTERVAL" 0)" || rc=$?
+    rc="${rc:-0}"
+    if [ "$rc" != "0" ] || [ "$verdict" = "timed_out" ]; then
+        log "issue #${number}: e2e verdict timeout — manual review needed (run ${run_id})"
+        gh issue edit "$number" --repo "$GH_REPO" --remove-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
+        gh issue comment "$number" --repo "$GH_REPO" --body \
+            "agent-flow: ❌ e2e verdict timeout (run id ${run_id}). Manual review: https://github.com/${GH_REPO}/actions/runs/${run_id}" >/dev/null 2>&1 || true
+        errored=$((errored+1)); continue
+    fi
+    if [ "$WR_RUN_RACE_DETECTED" = "1" ]; then
+        log "issue #${number}: ⚠️ race detected on e2e run ${run_id} — post-fail recheck дал success (01.09 t_32c28562)"
+        gh issue comment "$number" --repo "$GH_REPO" --body \
+            "agent-flow: ⚠️ race detected on e2e run \`${run_id}\` — initial poll=failure, post-fail recheck=success (workflow still in transition). Accepting as OK. https://github.com/${GH_REPO}/actions/runs/${run_id}" >/dev/null 2>&1 || true
     fi
 
     # --- download artifact (best-effort) ---
