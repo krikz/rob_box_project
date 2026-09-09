@@ -588,8 +588,10 @@ def default_guards(
     1. :class:`SystemRegurgitateGuard` — must fire BEFORE babble so the
        regurgitated template doesn't get the babble CRITICAL pasted on top
        (issue #2175 follow-up).
-    2. ``music_guard`` (caller-supplied adapter) — TD-2 extraction from
-       :mod:`rob_box_voice.core.music_guard`. See :func:`music_guard_adapter`.
+    2. ``music_guard`` — TD-2 extraction from
+       :mod:`rob_box_voice.core.music_guard`. Caller passes either a
+       :class:`Guard` (already wrapped via :func:`music_guard_adapter`) or
+       a raw ``MusicGuard`` instance (we wrap it transparently).
     3. :class:`ToolSkippedGuard` — non-music tool retry (issue #1777).
     4. :class:`BabbleGuard` — metalanguage / planning narration.
     5. :class:`EmbeddedRenardoCodeGuard` — Renardo code in text.
@@ -603,6 +605,18 @@ def default_guards(
     """
     out: List[Any] = [SystemRegurgitateGuard()]
     if music_guard is not None:
+        # If the caller passed a raw MusicGuard, wrap it for them so the
+        # orchestrator never sees MusicGuard's surface. If they already
+        # passed a Guard (e.g. ``music_guard_adapter(...)`` result), keep
+        # it as-is — both are accepted.
+        if not hasattr(music_guard, "name") or not callable(
+            getattr(music_guard, "evaluate", None)
+        ):
+            raise TypeError(
+                "default_guards(music_guard=...) expects a Guard-like "
+                "object (with .name and .evaluate) — wrap raw MusicGuard "
+                "instances with rob_box_voice.core.turn.music_guard_adapter"
+            )
         out.append(music_guard)
     out.extend([
         ToolSkippedGuard(),
@@ -620,7 +634,7 @@ def default_guards(
 
 
 def music_guard_adapter(
-    music_guard: Any,
+    evaluate_fn: Any,
     *,
     name: str = "music",
 ) -> Any:
@@ -628,9 +642,13 @@ def music_guard_adapter(
     ``Verdict`` shape.
 
     The underlying :class:`rob_box_voice.core.music_guard.MusicGuard` does
-    NOT implement the :class:`Guard` protocol (its ``evaluate`` signature
-    is richer and its verdicts carry ``reason`` / ``prompt`` for nudges).
-    Use this adapter to plug it into :class:`TurnGuards`.
+    NOT implement the :class:`Guard` protocol — its ``evaluate`` signature
+    is keyword-only and takes ``dj_enabled`` / ``build_music_retry_prompt``
+    / ``build_dj_retry_prompt`` that this layer cannot supply on its own.
+    Rather than carry every MusicGuard-specific knob into the orchestrator,
+    we let the dialogue_node adapter close over the music guard's instance
+    state and pass a small ``Callable[[TurnContext, Reply], MusicGuardVerdict]``
+    that the adapter calls with the right pre-bound arguments.
 
     Adapter mapping:
 
@@ -642,32 +660,49 @@ def music_guard_adapter(
       publish the stop cleanup separately; same reasoning as NUDGE).
 
     Args:
-        music_guard: Any object exposing ``evaluate(was_dj_auto, user_input,
-            tools_called)`` returning a verdict with ``.kind.value`` (str enum)
-            and optionally ``.prompt``. The real
-            :class:`rob_box_voice.core.music_guard.MusicGuard` qualifies;
-            other guards with the same shape can also be wrapped.
+        evaluate_fn: A callable ``(turn, reply) -> MusicGuardVerdict``
+            that the dialogue_node adapter builds by closing over its
+            ``MusicGuard`` instance and the prompt builders. Keeps the
+            :class:`Guard` protocol orthogonal to MusicGuard's surface.
         name: The orchestrator-visible guard name. Defaults to ``"music"``.
+
+    Example (in :class:`DialogueNode`)::
+
+        self._turn_guards = TurnGuards(
+            guards=default_guards(
+                music_guard=music_guard_adapter(
+                    lambda turn, reply: self._music_guard.evaluate(
+                        was_dj_auto=turn.is_dj_auto,
+                        user_input=turn.user_input,
+                        tools_called=reply.tools_called,
+                        dj_enabled=self._dj.state.enabled,
+                        build_music_retry_prompt=self._build_music_retry_prompt,
+                        build_dj_retry_prompt=self._build_dj_retry_prompt,
+                    ),
+                ),
+            ),
+        )
     """
 
     class _Adapter:
         # Class-level attribute read by the orchestrator (matches what
         # ``@dataclass(frozen=True)`` guards expose via ``name: str = "..."``).
-        name = name
+        # ``name`` is captured via default-argument binding because Python's
+        # nested-class scope rules do not see the enclosing function's
+        # keyword-only argument directly (PEP 227 / late-binding).
+
+        def __init__(self, *, _name: str = "") -> None:
+            self._guard_name = _name
 
         def evaluate(self, ctx: GuardContext) -> Optional[Verdict]:
-            verdict = music_guard.evaluate(
-                was_dj_auto=ctx.turn.is_dj_auto,
-                user_input=ctx.turn.user_input,
-                tools_called=ctx.reply.tools_called,
-            )
+            verdict = evaluate_fn(ctx.turn, ctx.reply)
             kind_str = getattr(getattr(verdict, "kind", None), "value", None)
             if kind_str in ("skip", "skip_not_applicable"):
                 return None  # defer
             if kind_str in ("dj_retry", "user_retry"):
                 return Verdict(
                     kind=VerdictKind.RETRY,
-                    guard_name=name,
+                    guard_name=self._guard_name,
                     prompt=verdict.prompt,
                 )
             # nudge, force_stop — handled by the dialogue_node adapter;
@@ -676,7 +711,16 @@ def music_guard_adapter(
             # nudge / stop separately.
             return ACCEPT
 
-    return _Adapter()
+    # Expose ``name`` as a class attribute so the orchestrator's
+    # ``getattr(guard, "name", type(guard).__name__)`` resolves it
+    # BEFORE instantiation. Built once via ``type()`` to set the class
+    # attribute without fighting nested-class scoping.
+    Adapter = type(
+        "_Adapter",
+        (_Adapter,),
+        {"name": name},
+    )
+    return Adapter(_name=name)
 
 
 # ---------------------------------------------------------------------------
