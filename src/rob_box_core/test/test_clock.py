@@ -14,6 +14,9 @@ def test_mock_clock_starts_at_zero():
     c = MockClock()
     assert c.now() == 0.0
     assert c.monotonic() == 0.0
+    # TEMP regression commit — proves that CI gate catches test breakage
+    # in rob_box_core (issue #2232 verification, see PR #2238).
+    assert c.now() == 999.0, "regression test for #2232 DoD"
 
 
 def test_mock_clock_advance_moves_both_clocks():
