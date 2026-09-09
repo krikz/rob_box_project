@@ -204,10 +204,22 @@ jobs:
         # Per-service hash: rob_box_voice + rob_box_animations (точные пути
         # зависят от сервиса — supervisor берёт rob_box_supervisor, quest
         # добавляет webxr_client). Считаем здесь, передаём через build-args.
+        #
+        # Issue #2314 (devops): регрессия avatar_command повторялась потому,
+        # SOURCE_HASH не покрывал src/rob_box_core, а voice_assistant/Dockerfile
+        # делает `COPY src/rob_box_core/rob_box_core /ws/src/.../rob_box_core`.
+        # Когда в rob_box_core добавляется новый модуль (avatar_command.py
+        # добавлен 02.09.2026 в 824f3e34, мерж в 4386bb92), слой COPY
+        # не инвалидируется → buildx переиспользует старый слой →
+        # avatar_command.py не попадает в image → ModuleNotFoundError
+        # на старте quest_node (restart loop на Vision Pi).
+        # Лечение: включаем src/rob_box_core в SOURCE_HASH. rob_box_voice
+        # импортирует rob_box_core (dialogue_node.py), avatar_command
+        # handlers — добавление rob_box_core в hash обязательно.
         id: source-hash
         run: |
-          SOURCE_HASH=$(find src/rob_box_voice/rob_box_voice src/rob_box_animations/rob_box_animations \
-            -type f -name "*.py" | sort | xargs sha256sum | sha256sum | awk '{print $1}')
+          SOURCE_HASH=$(find src/rob_box_voice/rob_box_voice src/rob_box_animations/rob_box_animations src/rob_box_core \
+            -type f -name "*.py" 2>/dev/null | sort | xargs sha256sum | sha256sum | awk '{print $1}')
           echo "source_hash=${SOURCE_HASH}" >> "$GITHUB_OUTPUT"
 
       - name: Build voice-assistant
@@ -299,9 +311,13 @@ jobs:
           clean: true
 
       - name: Compute Python sources hash (cache invalidation)
+        # Issue #2314: telegram_node.py импортирует rob_box_core
+        # (AV-22 handlers) — добавляем rob_box_core в SOURCE_HASH, чтобы
+        # изменения в rob_box_core (avatar_command и др.) инвалидировали
+        # слой COPY в telegram-bot/Dockerfile.
         id: source-hash
         run: |
-          SOURCE_HASH=$(find src/rob_box_telegram/rob_box_telegram -type f -name "*.py" \
+          SOURCE_HASH=$(find src/rob_box_telegram/rob_box_telegram src/rob_box_core -type f -name "*.py" 2>/dev/null \
             | sort | xargs sha256sum | sha256sum | awk '{print $1}')
           echo "source_hash=${SOURCE_HASH}" >> "$GITHUB_OUTPUT"
 
@@ -380,9 +396,13 @@ jobs:
           clean: true
 
       - name: Compute Python sources hash (cache invalidation)
+        # Issue #2314: supervisor_node.py импортирует rob_box_core
+        # (avatar_command handlers) — добавляем rob_box_core в SOURCE_HASH,
+        # иначе изменения в rob_box_core не инвалидируют COPY-слой в
+        # supervisor/Dockerfile (тот же класс багов, что с voice-assistant).
         id: source-hash
         run: |
-          SOURCE_HASH=$(find src/rob_box_supervisor/rob_box_supervisor -type f -name "*.py" \
+          SOURCE_HASH=$(find src/rob_box_supervisor/rob_box_supervisor src/rob_box_core -type f -name "*.py" 2>/dev/null \
             | sort | xargs sha256sum | sha256sum | awk '{print $1}')
           echo "source_hash=${SOURCE_HASH}" >> "$GITHUB_OUTPUT"
 
@@ -426,10 +446,15 @@ jobs:
         # директории должны быть в hash (иначе правка webxr_client не
         # инвалидирует кэш → не пересоберёт образ). См. док по L-Build
         # Single Service.yml (там тот же hash в job prepare).
+        # Issue #2314: добавляем src/rob_box_core — quest_node.py импортирует
+        # rob_box_core (avatar_command). Без этого изменения в rob_box_core
+        # не инвалидируют COPY-слой в quest/Dockerfile, avatar_command.py
+        # не попадает в image → ModuleNotFoundError на старте.
         id: source-hash
         run: |
           SOURCE_HASH=$( (find src/rob_box_quest/rob_box_quest -type f -name "*.py"; \
-                          find src/rob_box_quest/webxr_client -type f \( -name "*.ts" -o -name "*.json" -o -name "*.html" \)) \
+                          find src/rob_box_quest/webxr_client -type f \( -name "*.ts" -o -name "*.json" -o -name "*.html" \); \
+                          find src/rob_box_core -type f -name "*.py") \
                         | sort | xargs sha256sum 2>/dev/null | sha256sum | awk '{print $1}')
           echo "source_hash=${SOURCE_HASH}" >> "$GITHUB_OUTPUT"
 

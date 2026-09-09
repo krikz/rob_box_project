@@ -447,19 +447,28 @@ jobs:
           # пересоберёт образ. Совпадает 1:1 с build-quest в
           # L-Build Vision Pi Services.yml.
           if [ "${{ needs.prepare.outputs.service_name }}" = "quest" ]; then
+            # Issue #2314: добавляем src/rob_box_core в SOURCE_HASH, чтобы
+            # изменения в rob_box_core (avatar_command и др.) инвалидировали
+            # COPY-слой в quest/Dockerfile. rob_box_core явно COPY'ится
+            # (issue #2081) — без инвалидации слоя avatar_command.py не
+            # доедет до image при Quest-Dockerfile-cache hit.
             SOURCE_HASH=$( (find src/rob_box_quest/rob_box_quest -type f -name "*.py"; \
-                            find src/rob_box_quest/webxr_client -type f \( -name "*.ts" -o -name "*.json" -o -name "*.html" \)) \
+                            find src/rob_box_quest/webxr_client -type f \( -name "*.ts" -o -name "*.json" -o -name "*.html" \); \
+                            find src/rob_box_core -type f -name "*.py") \
                           | sort | xargs sha256sum 2>/dev/null | sha256sum | awk '{print $1}')
             BUILD_ARGS="${BUILD_ARGS} --build-arg=SOURCE_HASH=${SOURCE_HASH}"
-            echo "  SOURCE_HASH (quest, rob_box_quest+webxr_client): ${SOURCE_HASH}"
+            echo "  SOURCE_HASH (quest, rob_box_quest+webxr_client+rob_box_core): ${SOURCE_HASH}"
           fi
 
           # supervisor (AV-9): hash Python-исходников rob_box_supervisor.
           # Совпадает с build-supervisor в L-Build Vision Pi Services.yml.
+          # Issue #2314: добавляем rob_box_core — supervisor_node.py его
+          # импортирует (avatar_command handlers), COPY-слой должен
+          # инвалидироваться при правках rob_box_core.
           if [ "${{ needs.prepare.outputs.service_name }}" = "supervisor" ]; then
-            SOURCE_HASH=$(find src/rob_box_supervisor/rob_box_supervisor -type f -name "*.py" | sort | xargs sha256sum | sha256sum | awk '{print $1}')
+            SOURCE_HASH=$(find src/rob_box_supervisor/rob_box_supervisor src/rob_box_core -type f -name "*.py" 2>/dev/null | sort | xargs sha256sum | sha256sum | awk '{print $1}')
             BUILD_ARGS="${BUILD_ARGS} --build-arg=SOURCE_HASH=${SOURCE_HASH}"
-            echo "  SOURCE_HASH (supervisor): ${SOURCE_HASH}"
+            echo "  SOURCE_HASH (supervisor + rob_box_core): ${SOURCE_HASH}"
           fi
 
           # Сборка образа
