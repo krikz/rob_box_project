@@ -400,8 +400,13 @@ check_gate1_aggregate() {  # $1=acceptance_file_path $2=before_rfc3339
 
     # Парсим + валидируем acceptance.json в Python → пишем acceptance.json
     # с verdict в OUT_DIR.
-    ACCEPTANCE_FILE="$acc_file" LOGS_FILE="$logs_file" python3 - <<'PY' > "$OUT_DIR/acceptance.json"
+    ACCEPTANCE_FILE="$acc_file" LOGS_FILE="$logs_file" \
+        PYTHONPATH="$SCRIPT_DIR_E2E${PYTHONPATH:+:$PYTHONPATH}" \
+        python3 - <<'PY' > "$OUT_DIR/acceptance.json"
 import json, os, re, sys
+# «тул вызван» != «тул есть в списке доступных»: dialogue_node печатает
+# tools(56) и системный промпт на каждом ходе (см. e2e_tool_match.py).
+from e2e_tool_match import tool_invoked
 
 acc_path = os.environ["ACCEPTANCE_FILE"]
 with open(os.environ["LOGS_FILE"], encoding="utf-8", errors="replace") as _f:
@@ -435,7 +440,7 @@ if not isinstance(expected_call, list) or not isinstance(must_not, list):
 # "MCP tool result: <name>"; некоторая tool_call нода — JSON-RPC формат.
 # Ищем substring — robust к формату, ловит оба.
 def has(frag):
-    return frag.lower() in logs.lower()
+    return tool_invoked(logs, frag)
 
 actual_calls = []
 for c in (expected_call + must_not):
@@ -1030,13 +1035,18 @@ check_acceptance() {  # $1=label $2=acceptance_json_string $3=before_rfc3339
     printf '%s' "$logs" > "$logs_file"
 
     # Прогон acceptance-чекера в Python (читает acc_json + logs → pass/fail + reason).
-    ACC_JSON="$acc_json" LOGS_FILE="$logs_file" python3 - <<'PY' > "$OUT_DIR/acceptance.json"
+    ACC_JSON="$acc_json" LOGS_FILE="$logs_file" \
+        PYTHONPATH="$SCRIPT_DIR_E2E${PYTHONPATH:+:$PYTHONPATH}" \
+        python3 - <<'PY' > "$OUT_DIR/acceptance.json"
 import json, os, re, sys
+# «тул вызван» != «тул есть в списке доступных»: dialogue_node печатает
+# tools(56) и системный промпт на каждом ходе (см. e2e_tool_match.py).
+from e2e_tool_match import tool_invoked
 acc = json.loads(os.environ["ACC_JSON"])
 with open(os.environ["LOGS_FILE"], encoding="utf-8", errors="replace") as _f:
     logs = _f.read()
 def has(s, frag):
-    return frag.lower() in logs.lower()
+    return tool_invoked(logs, frag)
 expected_call = acc.get("expected_tool_calls", []) or []
 must_not = acc.get("must_not_call", []) or []
 expected_kw = acc.get("expected_keywords", []) or []
