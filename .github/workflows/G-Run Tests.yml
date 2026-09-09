@@ -58,6 +58,15 @@ jobs:
         run: |
           source /opt/ros/humble/setup.bash
 
+          # rob_box_quest импортирует ``audio_common_msgs`` на верхнем уровне
+          # (см. src/rob_box_quest/rob_box_quest/quest_node.py:43). В базовом
+          # CI-образе ``rob-box-ci:humble`` его нет (только ``ros-base``),
+          # поэтому без apt-install тесты падают с ModuleNotFoundError ещё
+          # на COLLECTION (issue #2232 — CI не запускал rob_box_quest).
+          apt-get update -qq && apt-get install -y --no-install-recommends \
+            ros-humble-audio-common-msgs \
+          && rm -rf /var/lib/apt/lists/*
+
           # Create workspace — exclude vendor submodules (not our code to lint).
           # Also copy sibling directories (docker/, migrations/, docs/...) so
           # tests can resolve paths like ``../../docker/vision/...`` relative
@@ -82,10 +91,14 @@ jobs:
             [ -d "$d" ] && rsync -av "$d" ${{ github.workspace }}/test_ws/
           done
 
-          # Build packages (use --packages-up-to to include dependencies)
+          # Build packages (use --packages-up-to to include dependencies).
+          # rob_box_core / rob_box_quest / rob_box_supervisor добавлены после
+          # issue #2232: ранее CI их НЕ запускал (conftest с моками rclpy +
+          # audio_common_msgs, но без CI-прогона тесты «молча» скипались или
+          # фейлились на develop при локальном запуске).
           cd ${{ github.workspace }}/test_ws
           colcon build --symlink-install \
-            --packages-up-to rob_box_voice rob_box_animations rob_box_perception rob_box_core rob_box_telegram rob_box_teleop \
+            --packages-up-to rob_box_voice rob_box_animations rob_box_perception rob_box_core rob_box_quest rob_box_supervisor rob_box_telegram rob_box_teleop \
             --cmake-args -DCMAKE_BUILD_TYPE=Release
 
       - name: Run unit tests
@@ -202,6 +215,72 @@ jobs:
               --tb=short --no-header \
               "$TELEOP_DIR/test/" ) || { echo "❌ rob_box_teleop tests FAILED"; exit 1; }
           echo "✅ rob_box_teleop passed"
+
+          # rob_box_core / rob_box_quest / rob_box_supervisor: pytest only
+          # (issue #2232). Ранее CI их не запускал, из-за чего:
+          #   * молча скипались/падали тесты сторожа против дрейфа трёх копий
+          #     белого списка пресетов (YAML → ws_server → supervisor_node);
+          #   * PR #2217 был зелёный при двух падающих тестах на ветке;
+          #   * conformance-тест мостика (#2215) был инертен с момента влития.
+          # Подход — по образцу rob_box_teleop (issue #1344): pytest из-под
+          # ``cd <pkg>``, конftest сам ставит rclpy/audio_common_msgs моки,
+          # ``timeout 240`` от hung-shutdown + junitxml для надёжного FAIL
+          # гейта (а не «silent skipped»).
+          CORE_DIR="${{ github.workspace }}/test_ws/src/rob_box_core"
+          QUEST_DIR="${{ github.workspace }}/test_ws/src/rob_box_quest"
+          SUP_DIR="${{ github.workspace }}/test_ws/src/rob_box_supervisor"
+
+          echo "=== pytest: rob_box_core (timeout 240s) ==="
+          ( cd "$CORE_DIR" && PYTHONPATH=".:$PYTHONPATH" timeout 240 python3 -m pytest \
+              -p no:launch_testing \
+              -p no:ament_flake8 -p no:ament_pep257 \
+              -p no:ament_copyright -p no:ament_xmllint \
+              -p no:ament_lint -p no:colcon_core \
+              --tb=short --no-header -q \
+              --junitxml "${{ github.workspace }}/test_ws/build/rob_box_core/pytest.xml" \
+              test/ ) \
+            || { echo "❌ rob_box_core FAILED"; exit 1; }
+          echo "✅ rob_box_core passed"
+
+          # rob_box_supervisor: тесты в test/unit/ (issue #2232: conftest.py
+          # ставит mock-rclpy + std_srvs; без rclpy CI-окружения тесты
+          # импортируют supervisor_node через stub).
+          echo "=== pytest: rob_box_supervisor (timeout 240s) ==="
+          ( cd "$SUP_DIR" && PYTHONPATH=".:$PYTHONPATH" timeout 240 python3 -m pytest \
+              -p no:launch_testing \
+              -p no:ament_flake8 -p no:ament_pep257 \
+              -p no:ament_copyright -p no:ament_xmllint \
+              -p no:ament_lint -p no:colcon_core \
+              --tb=short --no-header -q \
+              --junitxml "${{ github.workspace }}/test_ws/build/rob_box_supervisor/pytest.xml" \
+              test/unit/ ) \
+            || { echo "❌ rob_box_supervisor FAILED"; exit 1; }
+          echo "✅ rob_box_supervisor passed"
+
+          # rob_box_quest: ~45 файлов / 12k LOC тестов. conftest ставит
+          # расширенные ROS-моки + rob_box_core.* в sys.modules; реальный
+          # ``audio_common_msgs`` приходит из apt-install шага Build
+          # workspace. Per-file прогон, как rob_box_telegram (issue #1196
+          # L1) — единый pytest на пакет ловит cross-file pollution.
+          echo "=== pytest: rob_box_quest (per-file, issue #2232) ==="
+          QUEST_FAILED=0
+          for Q_TEST in "$QUEST_DIR"/test/unit/test_*.py "$QUEST_DIR"/test/unit/*/test_*.py; do
+            [ -f "$Q_TEST" ] || continue
+            Q_NAME="$(basename "$Q_TEST")"
+            echo "--- rob_box_quest: $Q_NAME ---"
+            ( cd "$QUEST_DIR" && PYTHONPATH=".:$PYTHONPATH" timeout 120 python3 -m pytest \
+                -p no:launch_testing \
+                -p no:ament_flake8 -p no:ament_pep257 \
+                -p no:ament_copyright -p no:ament_xmllint \
+                -p no:ament_lint -p no:colcon_core \
+                --tb=short --no-header -q \
+                "$Q_TEST" ) || { echo "❌ rob_box_quest FAILED: $Q_NAME"; QUEST_FAILED=1; }
+          done
+          if [ "$QUEST_FAILED" != "0" ]; then
+            echo "❌ rob_box_quest tests FAILED"
+            exit 1
+          fi
+          echo "✅ rob_box_quest passed"
 
           # rob_box_animations + rob_box_perception: pytest only, split so a
           # hang in one package doesn't block the other.  Each wrapped in
