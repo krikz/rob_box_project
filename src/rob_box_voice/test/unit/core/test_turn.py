@@ -44,6 +44,7 @@ from rob_box_voice.core.turn import (
     UnbackedActionClaimGuard,
     Verdict,
     VerdictKind,
+    consume_babble_retry,
     consume_budget,
     default_guards,
     music_guard_adapter,
@@ -877,3 +878,134 @@ class TestBabbleIntegrationViaTurnGuards:
         v3 = guards.evaluate(_reply(spoken=spoken), _turn(user_input=user_input), state)
         assert v3 is ACCEPT
         assert state.budget_left == 0
+
+
+# ---------------------------------------------------------------------------
+# 10. Issue #2266 — ``babble_retry_consumed`` flag lives in ``TurnState``,
+#     not in ``DialogueNode.__init__``. ``BabbleGuard`` reads it and
+#     ``consume_babble_retry`` writes it; the legacy ``_babble_retry_used``
+#     field is gone (DoD #2 of issue #2266). These tests pin down the
+#     one-shot rule on the bare ``core/`` surface so the regression in
+#     ``test_issue_992_babble_guard.py::test_retry_only_fires_once_*`` has
+#     a low-level counterpart.
+# ---------------------------------------------------------------------------
+
+
+class TestBabbleRetryConsumedFlag:
+    """``TurnState.babble_retry_consumed`` enforces the one-shot rule."""
+
+    def test_fresh_state_has_flag_false(self) -> None:
+        """Default ``TurnState`` must start with ``babble_retry_consumed=False``.
+
+        Mirrors the legacy ``self._babble_retry_used = False`` initializer
+        in ``DialogueNode.__init__``.
+        """
+        state = reset_budget()
+        assert state.babble_retry_consumed is False
+
+    def test_consume_babble_retry_flips_flag(self) -> None:
+        """``consume_babble_retry`` is the canonical write path.
+
+        Same shape as :func:`consume_budget` — returns a new
+        ``TurnState``, original is unchanged (frozen dataclass).
+        """
+        state = reset_budget()
+        consumed = consume_babble_retry(state)
+        assert consumed.babble_retry_consumed is True
+        assert state.babble_retry_consumed is False  # immutability
+
+    def test_consume_babble_retry_is_idempotent(self) -> None:
+        """Calling ``consume_babble_retry`` twice yields the same state.
+
+        Not strictly required by the contract (the field is a boolean
+        and the orchestrator treats ``True`` as "already fired"), but
+        pinning the behaviour avoids accidental regressions in a
+        follow-up card.
+        """
+        once = consume_babble_retry(reset_budget())
+        twice = consume_babble_retry(once)
+        assert once.babble_retry_consumed is True
+        assert twice.babble_retry_consumed is True
+
+    def test_reset_budget_clears_flag(self) -> None:
+        """A fresh user-initiated turn MUST reset ``babble_retry_consumed``.
+
+        Mirrors the legacy ``self._babble_retry_used = False`` write at
+        the top of ``_run_turn``. Without this, a second babble reply
+        on a NEW user turn would silently pass through to TTS even if
+        the user gave a new performance command.
+        """
+        consumed = consume_babble_retry(reset_budget())
+        assert consumed.babble_retry_consumed is True
+        fresh = reset_budget()
+        assert fresh.babble_retry_consumed is False
+
+    def test_babble_guard_defers_when_already_consumed(self) -> None:
+        """BabbleGuard returns ``None`` once the one-shot flag is set.
+
+        Mirrors the legacy ``dialogue_node.py:4232-4233`` short-circuit
+        that read ``self._babble_retry_used`` before doing any work.
+        Without this, a second babble reply in the same turn would loop
+        forever — see
+        ``test_issue_992_babble_guard.py::test_retry_only_fires_once_*``.
+        """
+        guard = BabbleGuard()
+        ctx = GuardContext(
+            reply=_reply(spoken="Зачитаю рэпчик про космос!"),
+            turn=_turn(user_input="зачитай рэп про космос"),
+            state=TurnState(budget_left=3, babble_retry_consumed=True),
+        )
+        assert guard.evaluate(ctx) is None
+
+    def test_babble_guard_fires_when_flag_is_false(self) -> None:
+        """Sanity: BabbleGuard still raises RETRY on a fresh turn.
+
+        The new ``babble_retry_consumed`` check MUST be additive — it
+        does NOT replace the detector. A fresh ``TurnState`` with the
+        default ``babble_retry_consumed=False`` must keep the existing
+        behaviour byte-for-byte.
+        """
+        guard = BabbleGuard()
+        ctx = GuardContext(
+            reply=_reply(spoken="Зачитаю рэпчик про космос!"),
+            turn=_turn(user_input="зачитай рэп про космос"),
+            state=reset_budget(),  # babble_retry_consumed defaults to False
+        )
+        verdict = guard.evaluate(ctx)
+        assert verdict is not None
+        assert verdict.kind is VerdictKind.RETRY
+        assert verdict.guard_name == "babble"
+
+    def test_full_lifecycle_via_turn_guards(self) -> None:
+        """RETRY → consume → second babble → ACCEPT (the bug-992 main path).
+
+        End-to-end on the bare ``core/`` surface: a babble reply fires a
+        RETRY, the adapter applies ``consume_babble_retry`` +
+        ``consume_budget``, the retry turn babbles again — and now BOTH
+        guards agree the second reply passes through. This is exactly
+        what ``test_issue_992_babble_guard.py::test_retry_only_fires_once_*``
+        asserts through the heavy harness; the ``core/`` version proves
+        the policy doesn't depend on it.
+        """
+        guards = self._guards_babble_only()
+        state = reset_budget()
+        spoken = "Зачитаю рэпчик про космос!"
+        user_input = "зачитай рэп про космос"
+
+        # First turn — original babble. RETRY.
+        v1 = guards.evaluate(_reply(spoken=spoken), _turn(user_input=user_input), state)
+        assert v1.kind is VerdictKind.RETRY
+        state = consume_budget(state)
+        state = consume_babble_retry(state)
+
+        # Second turn — the retry also babbles. ACCEPT, no third LLM call.
+        v2 = guards.evaluate(_reply(spoken=spoken), _turn(user_input=user_input), state)
+        assert v2 is ACCEPT
+
+    def _guards_babble_only(self) -> TurnGuards:
+        return TurnGuards(guards=[BabbleGuard()])
+
+
+# `TestBabbleRetryConsumedFlag` doesn't inherit `TestBabbleIntegrationViaTurnGuards`
+# (which is a self-contained class) — pull `_reply`, `_turn`, `_state`
+# locally so the new tests can use them too.
