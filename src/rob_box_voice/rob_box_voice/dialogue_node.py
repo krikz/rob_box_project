@@ -4302,7 +4302,11 @@ class DialogueNode(Node):
         # ``_synthetic_retries_left`` field so the surrounding
         # ``_run_turn.finally`` keeps seeing the same counter it has
         # always seen (and so the other ``_check_*_and_retry`` paths
-        # that read this field don't diverge).
+        # that read this field don't diverge). The pure core/-helper
+        # owns the canonical ``budget_left`` on ``decision.new_state``;
+        # the legacy field stays as a mirror for the catch-sites that
+        # haven't migrated yet (issue #2266 / ADR-0084 §"Правила
+        # миграции" — ONE catch-site at a time).
         self._synthetic_retries_left = (
             decision.new_state.budget_left
         )
@@ -5709,45 +5713,25 @@ class DialogueNode(Node):
         # MUST NOT publish the meta-text to TTS — otherwise the user
         # would hear the babble AND then the retry answer.
         #
-        # Issue #2266 / voice-vr 22 — drive this catch-site through
-        # the bare ``core/turn.py`` surface (``_evaluate_turn_guards``)
-        # so the orchestration (budget, retry, DSM re-open) lives in
-        # one place. The legacy ``_check_babble_and_retry`` stays as a
-        # defensive fallback for the period when ``_use_turn_guards`` is
-        # OFF; it will be deleted in voice-vr 23 (ADR-0084 §"Что НЕ
-        # делаем"). The catch-site contract (return early on retry) is
-        # identical, so the regression suite — both
-        # ``test_issue_992_babble_guard.py`` and the new bare
-        # ``TestBabbleIntegrationViaTurnGuards`` in test_turn.py — keeps
-        # passing byte-for-byte.
-        if spoken:
-            tg_verdict = self._evaluate_turn_guards(
-                spoken=spoken,
-                user_input=raw_user_command or user_input,
-                tools_called=tools_called,
-                speak_text_real=speak_text_real,
-            )
-            if tg_verdict is not None:
-                # Both "retry:<name>" and "discard" mean the orchestrator
-                # took over — the legacy _check_babble_and_retry path
-                # MUST NOT also fire, even when the babble guard was
-                # skipped by ordering. The babble verdict is babble-only
-                # here (no music/tool slots are active), so any non-None
-                # verdict is a definitive early-return.
-                if tg_verdict.startswith("retry:"):
-                    self._babble_retry_used = True
-                    return
-                if tg_verdict == "discard":
-                    return
-            elif self._check_babble_and_retry(
-                spoken=spoken,
-                # Issue #1204: на синтетических ретрай-турах юзер-интент
-                # смотрим по оригинальной команде, а не по CRITICAL-промпту.
-                user_input=raw_user_command or user_input,
-                tools_called=tools_called,
-                speak_text_real=speak_text_real,
-            ):
-                return
+        # Issue #2266 / voice-vr 22 — the catch-site itself is NOT
+        # rewired here. ``_check_babble_and_retry`` is now a thin shell
+        # over the pure ``core.turn.begin_babble_retry``, so the
+        # orchestration (predicates + budget + one-shot flag) already
+        # lives in ``core/`` while this call site keeps the exact
+        # signature and ``bool`` contract it had before. Adding a
+        # second ``_evaluate_turn_guards`` branch here would inflate
+        # ``_handle_result`` (CC 65 → 69) — the opposite of what
+        # ADR-0021 asks for. The bridge stays available for voice-vr 23
+        # when ``_use_turn_guards`` flips for ALL catch-sites at once.
+        if spoken and self._check_babble_and_retry(
+            spoken=spoken,
+            # Issue #1204: на синтетических ретрай-турах юзер-интент
+            # смотрим по оригинальной команде, а не по CRITICAL-промпту.
+            user_input=raw_user_command or user_input,
+            tools_called=tools_called,
+            speak_text_real=speak_text_real,
+        ):
+            return
         # Issue #992 Bug C' — LLM написала сочинённый Renardo-код в реплику
         # вместо execute_music_code(code=...). Код НЕ читаем вслух —
         # требуем вызов тула.
