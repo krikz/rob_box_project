@@ -72,6 +72,37 @@ if ! gh auth status >/dev/null 2>&1; then
     exit 1
 fi
 
+# --- tick-summary logging (ADR-0079 / retro t_e3fc9bfe, issue #1977) ---------
+# Cron читает STDOUT (hermes_cli.subcommands.cron: «Empty stdout = silent»).
+# Этот watchdog исторически писал в stderr только. Теперь — маркеры в
+# stdout + per-day log-файл для диагностики задним числом.
+BLOCKED_WATCHDOG_TICK_LOG_DIR="${BLOCKED_WATCHDOG_TICK_LOG_DIR:-$HOME/.hermes/profiles/architect/logs/blocked-watchdog}"
+out() {
+    local _line
+    _line="$(printf '[%s] blocked-watchdog: %s' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*")"
+    printf '%s\n' "$_line"
+    if [ -n "$BLOCKED_WATCHDOG_TICK_LOG_DIR" ]; then
+        mkdir -p "$BLOCKED_WATCHDOG_TICK_LOG_DIR" 2>/dev/null || true
+        if [ -d "$BLOCKED_WATCHDOG_TICK_LOG_DIR" ]; then
+            printf '%s\n' "$_line" >> "$BLOCKED_WATCHDOG_TICK_LOG_DIR/$(date -u +%Y-%m-%d).log" 2>/dev/null || true
+        fi
+    fi
+}
+tick_start_marker() {
+    out "# TICK_SUMMARY: start pid=$$ script=agent-flow-blocked-watchdog repo=${GH_REPO} window=${WINDOW_HOURS}h"
+}
+tick_end_marker() {
+    out "# TICK_SUMMARY: end checked=${_checked:-0} closed=${_closed:-0} skipped=${_skipped:-0} errors=${_errors:-0} repo=${GH_REPO}"
+}
+trap 'tick_end_marker 2>/dev/null || true' EXIT
+
+# --- tick_start: structured marker в stdout (ADR-0079 / retro t_e3fc9bfe) ---
+# После gh auth + flock. На skip-tick (lock busy / auth fail) marker
+# не появляется — там уже свой лог в stderr. Вызываем ПОСЛЕ определения
+# функций выше (bash не source'ит весь файл заранее — функции доступны
+# только ПОСЛЕ их `function …` строки).
+tick_start_marker
+
 # --- helpers ---------------------------------------------------------------
 _now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
@@ -260,6 +291,7 @@ mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
 # --- exit code -------------------------------------------------------------
 # exit 2 если закрыли хоть один (alert для cron), exit 0 если ничего не
 # закрыли (норма). exit 1 только если gh auth упала (выше).
+tick_end_marker
 if [ "$_closed" -gt 0 ] && [ "$DRY_RUN" != "true" ]; then
     exit 2
 fi

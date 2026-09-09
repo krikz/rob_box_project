@@ -411,6 +411,31 @@ ensure_worktree() {
 log() { printf '%s %s %s\n' "$LOG_PREFIX" "$(date -Iseconds)" "$*" >&2; }
 run() { if [ "$DRY_RUN" = "true" ]; then printf '%s DRY-RUN %s\n' "$LOG_PREFIX" "$*" >&2; else eval "$@"; fi; }
 
+# --- tick-summary logging (ADR-0079 / retro t_e3fc9bfe, issue #1977) ---------
+# Cron читает STDOUT. Скрипт исторически писал только в stderr → silent
+# (= empty stdout). Этот helper дублирует log() в stdout + per-day log-файл.
+# Marker'ы tick-start/end идут в stdout — гарантируют, что cron delivery
+# не покажет «silent». Trap EXIT страхует аварийные exit'ы через set -e.
+E2E_PROCESS_TICK_LOG_DIR="${E2E_PROCESS_TICK_LOG_DIR:-$HOME/.hermes/profiles/architect/logs/e2e-process}"
+out() {
+    local _line
+    _line="$(printf '%s %s %s\n' "$LOG_PREFIX" "$(date -Iseconds)" "$*")"
+    printf '%s\n' "$_line"
+    if [ -n "$E2E_PROCESS_TICK_LOG_DIR" ]; then
+        mkdir -p "$E2E_PROCESS_TICK_LOG_DIR" 2>/dev/null || true
+        if [ -d "$E2E_PROCESS_TICK_LOG_DIR" ]; then
+            printf '%s\n' "$_line" >> "$E2E_PROCESS_TICK_LOG_DIR/$(date -u +%Y-%m-%d).log" 2>/dev/null || true
+        fi
+    fi
+}
+tick_start_marker() {
+    out "# TICK_SUMMARY: start pid=$$ script=agent-flow-e2e-process repo=${GH_REPO:-<unset>} repo_dir=${REPO_DIR:-<unset>}"
+}
+tick_end_marker() {
+    out "# TICK_SUMMARY: end processed=${processed:-0} skipped=${skipped:-0} errored=${errored:-0} round=${ROUND_BRANCH:-NONE}"
+}
+trap 'tick_end_marker 2>/dev/null || true' EXIT
+
 # --- CLI + self-test mode (issue #1707, ретро t_0ff29dcd) ---------------------
 # Этот скрипт исторически читает только env (.env из profile). Для оператора
 # добавлены два флага (compose-style: --self-test --cleanup-only):
@@ -916,6 +941,12 @@ done
 if [ "$_gh_auth_ok" -ne 1 ]; then
     log "gh auth not configured (или сеть недоступна после 3 попыток) — exit 1"; exit 1
 fi
+
+# --- tick_start: structured marker в stdout (ADR-0079 / retro t_e3fc9bfe) ---
+# После G1 (MAINTENANCE) + G2 (auth) + G6 (flock), до collect_issues_json.
+# На skip-tick (gate сработал раньше) marker не появляется — там gate
+# уже пишет свой лог в stderr.
+tick_start_marker
 
 # --- G2.5: pre-flight rate-limit check (ретро 25.08 t_7766fe44) ---------------
 # Skip tick early если GraphQL-квота исчерпана (< 100 remaining). Иначе
@@ -4420,6 +4451,12 @@ fi
 
 # --- summary -----------------------------------------------------------------
 log "tick done: processed=${processed} skipped=${skipped} errored=${errored} round=${ROUND_BRANCH}"
+
+# --- tick_end: structured marker в stdout (ADR-0079 / retro t_e3fc9bfe) ------
+# Явный вызов перед exit; trap EXIT гарантирует marker и при аварийном
+# завершении через `set -e` / kill. Спец-ветки (2526, 2707) делают `exit 0`
+# раньше — но trap EXIT всё равно срабатывает.
+tick_end_marker
 
 # --- RUN_NOW cleanup: удаляем сигнальный файл после прогона (ретро 12.08) ----
 # Если тик стартовал по RUN_NOW (или файл появился во время прогона) —
