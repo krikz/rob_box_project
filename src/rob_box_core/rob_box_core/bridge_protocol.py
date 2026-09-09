@@ -81,6 +81,43 @@ from types import MappingProxyType
 from typing import Any, Mapping
 
 
+# === Wire payload value grammar (voice-vr 08) ================================
+#
+# Single source of truth for the JSON payload shape that travels over each
+# ``cmd`` / ``type`` discriminant. ``tools/gen_bridge_protocol_ts.py`` reads
+# this from :class:`CommandSpec.payload` / :class:`EventSpec.payload` to emit
+# ``webxr_client/src/wire/protocol_generated.ts``; CI guards drift via
+# ``.github/workflows/G-Bridge-Protocol-Drift.yml``.
+#
+# Grammar (mirror of ``_bridge_protocol_data._is_valid_payload_value``;
+# that module was removed in voice-vr 08 — payload now lives on the
+# canonical spec, not in a parallel data dict):
+#
+#   * ``str`` — atomic TS type (``"str"→string``, ``"int"→number``,
+#     ``"float"→number``, ``"bool"→boolean``, ``"unknown"→unknown``).
+#   * ``"type":"literal"`` dict — string-literal union
+#     (``{"a" | "b" | "c"}`` in TS). Optional via ``"optional": True``.
+#   * inline-object dict — TS inline ``{ x: number; y: number }``.
+#
+# ``?`` suffix on atomic / composite values marks the field optional — this is
+# the same convention the old ``_bridge_protocol_data.py`` used, kept here
+# so re-generated TS keeps identical field marks. Optimality is therefore
+# written ONCE (on the payload value) and ``required_fields`` /
+# ``optional_fields`` are derived properties — the convention that prevents
+# the "two truths about one field" drift this card existed to eliminate.
+PayloadValue = str | dict[str, Any]
+Payload = Mapping[str, PayloadValue]
+
+
+def _p(d: dict[str, PayloadValue]) -> Payload:
+    """Freeze a payload mapping so callers can't mutate it post-declare.
+
+    Returned as :class:`types.MappingProxyType` — read-only view; the
+    generator and tests can still iterate it.
+    """
+    return MappingProxyType(d)
+
+
 # === Frame types (meta-quest-api.md §3) =====================================
 #
 # Server/client обмениваются бинарными фреймами:
@@ -125,25 +162,65 @@ class CommandSpec:
 
     Attributes:
         name: имя команды (``cmd: "<name>"`` в payload).
-        required_fields: имена обязательных полей в JSON-payload
-            (для schema-валидации и документации; runtime-проверки
-            НЕТ в этой карточке — out of scope).
-        optional_fields: имена опциональных полей.
+        payload: полный JSON-payload с типами полей (``int`` / ``str`` /
+            ``bool`` / ``{"type":"literal", "values":[…]}`` / inline-object).
+            Источник истины для ``required_fields`` / ``optional_fields``
+            (derived properties ниже) и для TS-зеркала через
+            ``tools/gen_bridge_protocol_ts.py``. ``payload["cmd"]``
+            ОБЯЗАН совпадать с ``name`` — conformance-тест это проверяет.
         subprotocol: минимальная версия subprotocol, на которой команда
             доступна (``"v1"``, ``"v2"``, или ``"any"`` для обеих).
         server_dispatched: сервер реально имеет обработчик ветки в
             ``_on_json_cmd``. ``False`` → сервер вернёт ``ERROR{BAD_PAYLOAD}``;
-            такие команды помечены для visibility (TS-тип объявлен,
+            такие команды помечены для visibility (TS-тип обявлен,
             но сервер не обрабатывает) и для будущих карточек (voice-vr 09).
         description: человеко-описание (для документации/UI).
     """
 
     name: str
-    required_fields: tuple[str, ...] = ()
-    optional_fields: tuple[str, ...] = ()
+    payload: Payload = field(default_factory=lambda: _p({}))
     subprotocol: str = "any"  # "v1" | "v2" | "any"
     server_dispatched: bool = True
     description: str = ""
+
+    @property
+    def required_fields(self) -> tuple[str, ...]:
+        """Имена обязательных полей (derived от ``payload``).
+
+        Поле требуется ⇔ в payload оно либо atomic/composite без суффикса
+        ``?``, либо literal-словарь без ``"optional": True``. Суффикс
+        ``?`` на atomic/composite — единственный способ пометить поле
+        опциональным; ``required_fields`` и ``optional_fields`` всегда
+        согласованы, потому что оба вычисляются из одного источника.
+        """
+        out: list[str] = []
+        for fname, ftype in self.payload.items():
+            if isinstance(ftype, str):
+                if not ftype.endswith("?"):
+                    out.append(fname)
+                continue
+            if isinstance(ftype, dict):
+                if ftype.get("type") == "literal":
+                    if not ftype.get("optional", False):
+                        out.append(fname)
+                    continue
+                # inline-object: все поля inline-объекта обязательны.
+                out.append(fname)
+        return tuple(out)
+
+    @property
+    def optional_fields(self) -> tuple[str, ...]:
+        """Имена опциональных полей (derived от ``payload``)."""
+        out: list[str] = []
+        for fname, ftype in self.payload.items():
+            if isinstance(ftype, str):
+                if ftype.endswith("?"):
+                    out.append(fname)
+                continue
+            if isinstance(ftype, dict):
+                if ftype.get("type") == "literal" and ftype.get("optional", False):
+                    out.append(fname)
+        return tuple(out)
 
 
 @dataclass(frozen=True)
@@ -157,12 +234,40 @@ class EventSpec:
     """
 
     name: str
-    required_fields: tuple[str, ...] = ()
-    optional_fields: tuple[str, ...] = ()
+    payload: Payload = field(default_factory=lambda: _p({}))
     subprotocol: str = "any"
     server_emitted: bool = True
     server_handled: bool = False
     description: str = ""
+
+    @property
+    def required_fields(self) -> tuple[str, ...]:
+        out: list[str] = []
+        for fname, ftype in self.payload.items():
+            if isinstance(ftype, str):
+                if not ftype.endswith("?"):
+                    out.append(fname)
+                continue
+            if isinstance(ftype, dict):
+                if ftype.get("type") == "literal":
+                    if not ftype.get("optional", False):
+                        out.append(fname)
+                    continue
+                out.append(fname)
+        return tuple(out)
+
+    @property
+    def optional_fields(self) -> tuple[str, ...]:
+        out: list[str] = []
+        for fname, ftype in self.payload.items():
+            if isinstance(ftype, str):
+                if ftype.endswith("?"):
+                    out.append(fname)
+                continue
+            if isinstance(ftype, dict):
+                if ftype.get("type") == "literal" and ftype.get("optional", False):
+                    out.append(fname)
+        return tuple(out)
 
 
 class StreamKind(str, Enum):
@@ -216,61 +321,99 @@ class StreamSpec:
 COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec(
         name="ping",
-        required_fields=("cmd", "ts_ms"),
+        # АНОМАЛИЯ (voice-vr 08): оригинальный _bridge_protocol_data.py
+        # добавлял сюда ``nonce: str?`` со ссылкой на «echo в pong», но
+        # ни _on_json_cmd (ws_server.py:1876), ни ws_handler.py не читают
+        # ``nonce`` из ping. Удалено, чтобы derived ``required_fields``
+        # совпадал с канон-контрактом (этот spec до voice-vr 08
+        # имел required_fields=("cmd","ts_ms"), opt=()). Если клиент
+        # действительно шлёт ``nonce`` — это отдельная карточка.
+        payload=_p({"cmd": "ping",
+            "ts_ms": "int",}),
         subprotocol="any",
         description="Watchdog keepalive (meta-quest-api.md §7).",
     ),
     CommandSpec(
         name="stream_list",
-        required_fields=("cmd", "ts_ms"),
+        payload=_p({"cmd": "stream_list",
+            "ts_ms": "int",}),
         subprotocol="v1",
         description="Запрос списка доступных стримов (R10, §5).",
     ),
     CommandSpec(
         name="stream_select",
-        required_fields=("cmd", "ts_ms", "topic"),
+        payload=_p({"cmd": "stream_select",
+            "ts_ms": "int",
+            "topic": "str",}),
         subprotocol="v1",
         description="Переключение активного стрима для UI-панели (§6.2).",
     ),
     CommandSpec(
         name="teleop_twist",
-        required_fields=(
-            "cmd", "ts_ms", "linear", "angular", "deadman",
-        ),
-        optional_fields=("seq",),
+        # АНОМАЛИЯ (voice-vr 08): _bridge_protocol_data.py помечал
+        # ``seq: int`` (required). ws_server.py:1914 (``relay_teleop_heartbeat``
+        # branch) default'ит seq=0 если его нет. Канон до voice-vr 08
+        # держал ``seq`` в optional_fields. Возвращено ``int?`` — клиент
+        # может слать без seq. Если relay обязан получать seq — это
+        # отдельная карточка (issue для ws_server, не для каталога).
+        payload=_p({"cmd": "teleop_twist",
+            "ts_ms": "int",
+            "seq": "int?",
+            "linear": {"x": "float", "y": "float", "z": "float"},
+            "angular": {"x": "float", "y": "float", "z": "float"},
+            "deadman": "bool",}),
         subprotocol="v1",
         description="Телеоп: linear/angular + deadman-grip (§5, AV-19).",
     ),
     CommandSpec(
         name="teleop_heartbeat",
-        required_fields=("cmd", "ts_ms", "seq"),
+        payload=_p({"cmd": "teleop_heartbeat",
+            "ts_ms": "int",
+            "seq": "int",}),
         subprotocol="v1",
         description="Heartbeat клиента пока держит teleop_floor (AV-19).",
     ),
     CommandSpec(
         name="stop_emergency",
-        required_fields=("cmd", "ts_ms"),
-        optional_fields=("source",),
+        # АНОМАЛИЯ (voice-vr 08): _bridge_protocol_data.py помечал
+        # ``source`` как обязательный literal. ws_server.py на stop_emergency
+        # вообще не читает source (только публикует в /safety/emergency_stop).
+        # Канон до voice-vr 08 имел source в optional_fields. Возвращён
+        # optional=True — если клиент реально шлёт source, выяснить это
+        # по ws_server выходит за скоуп voice-vr 08.
+        payload=_p({"cmd": "stop_emergency",
+            "ts_ms": "int",
+            "source": {"type": "literal", "values": ["controller_b", "ui_button", "client_lost"], "optional": True},}),
         subprotocol="any",
         description="Аварийная остановка — всегда в обход гейта floor (§5).",
     ),
     CommandSpec(
         name="voice_ptt_start",
-        required_fields=("cmd", "ts_ms"),
-        optional_fields=("mode", "client_id"),
+        # АНОМАЛИЯ (voice-vr 08): _bridge_protocol_data.py не имел
+        # ``client_id``. Канон до voice-vr 08 держал его в optional_fields
+        # (см. ws_server.py: обработка client_id для multi-client routing).
+        # Добавлен как ``str?``.
+        payload=_p({"cmd": "voice_ptt_start",
+            "ts_ms": "int",
+            "client_id": "str?",
+            "mode": {"type": "literal", "values": ["radio", "robot_voice"], "optional": True},}),
         subprotocol="v1",
         description="Push-to-talk start; mode='radio'|'robot_voice' (§5).",
     ),
     CommandSpec(
         name="voice_ptt_stop",
-        required_fields=("cmd", "ts_ms"),
-        optional_fields=("mode",),
+        payload=_p({"cmd": "voice_ptt_stop",
+            "ts_ms": "int",
+            "mode": {"type": "literal", "values": ["radio", "robot_voice"], "optional": True},}),
         subprotocol="v1",
         description="Push-to-talk stop (§5).",
     ),
     CommandSpec(
         name="voice_mode",
-        required_fields=("cmd", "ts_ms", "mode"),
+        payload=_p({"cmd": "voice_mode",
+            "ts_ms": "int",
+            "mode": {"type": "literal",
+                     "values": ["off", "passthrough", "ttts_proxy", "stt_llm", "llm_formalize"]},}),
         subprotocol="v1",
         description="Смена voice_input_mode (ADR-0027 §3.4).",
     ),
@@ -278,52 +421,87 @@ COMMANDS: tuple[CommandSpec, ...] = (
     # оставлены для обратной совместимости (см. ws_server.py:1864).
     CommandSpec(
         name="voice_listen_start",
-        required_fields=("cmd", "ts_ms"),
+        payload=_p({"cmd": "voice_listen_start",
+            "ts_ms": "int",}),
         subprotocol="v1",
         description="(deprecated) wake-stream ON; используйте wake-API напрямую.",
     ),
     CommandSpec(
         name="voice_listen_stop",
-        required_fields=("cmd", "ts_ms"),
+        payload=_p({"cmd": "voice_listen_stop",
+            "ts_ms": "int",}),
         subprotocol="v1",
         description="(deprecated) wake-stream OFF.",
     ),
     # ── AV-16 / ADR-0028 §4.4: supervisor commands (JSON-эквиваленты, §5.1)
     CommandSpec(
         name="supervisor_set_mode",
-        required_fields=("cmd", "ts_ms", "client_id", "mode"),
+        # АНОМАЛИЯ (voice-vr 08): _bridge_protocol_data.py добавлял
+        # ``seq: int?``. Канон до voice-vr 08 НЕ имел seq (req=
+        # ``(cmd, ts_ms, client_id, mode)``, opt=()). Возвращено к
+        # канону — seq удалён, чтобы derived соответствовал контракту.
+        # Если клиент реально шлёт seq (для корреляции с STATE_UPDATE)
+        # — это отдельная карточка.
+        payload=_p({"cmd": "supervisor_set_mode",
+            "ts_ms": "int",
+            "client_id": "str",
+            "mode": {"type": "literal",
+                     "values": ["off", "telegram_active", "avatar_present", "mixed",
+                                "teleop_only", "voice_only"]},}),
         subprotocol="v2",
         description="Смена avatar_mode (FSM супервизора, §3/§5.1).",
     ),
     CommandSpec(
         name="supervisor_acquire_floor",
-        required_fields=("cmd", "ts_ms", "client_id", "floor"),
+        # АНОМАЛИЯ (voice-vr 08): см. supervisor_set_mode.
+        payload=_p({"cmd": "supervisor_acquire_floor",
+            "ts_ms": "int",
+            "client_id": "str",
+            "floor": {"type": "literal", "values": ["teleop", "voice"]},}),
         subprotocol="v2",
         description="Запрос floor: teleop|voice (§5.1).",
     ),
     CommandSpec(
         name="supervisor_release_floor",
-        required_fields=("cmd", "ts_ms", "client_id", "floor"),
+        # АНОМАЛИЯ (voice-vr 08): см. supervisor_set_mode.
+        payload=_p({"cmd": "supervisor_release_floor",
+            "ts_ms": "int",
+            "client_id": "str",
+            "floor": {"type": "literal", "values": ["teleop", "voice"]},}),
         subprotocol="v2",
         description="Освобождение floor (§5.1).",
     ),
     CommandSpec(
         name="supervisor_get_state",
-        required_fields=("cmd", "ts_ms"),
+        payload=_p({"cmd": "supervisor_get_state",
+            "ts_ms": "int",}),
         subprotocol="v2",
         description="Poll-эквивалент STATE_UPDATE (§5.1).",
     ),
     # ── AV-27 / issue #1919 — TTS picker (§4.1+§4.3)
     CommandSpec(
         name="list_voices",
-        required_fields=("cmd", "ts_ms"),
+        payload=_p({"cmd": "list_voices",
+            "ts_ms": "int",}),
         subprotocol="v1",
         description="Запрос списка доступных голосов (§4.1).",
     ),
     CommandSpec(
         name="set_voice",
-        required_fields=("cmd", "ts_ms"),
-        optional_fields=("voice_id", "preset", "language"),
+        # АНОМАЛИЯ (voice-vr 08): _bridge_protocol_data.py помечал
+        # ``voice_id`` как required. Канон до voice-vr 08 держал его
+        # в optional_fields (preset/language — это РАЗНЫЕ ветки
+        # dispatch в ws_server.py:2156, не одновременные). Возвращён
+        # ``str?``.
+        payload=_p({"cmd": "set_voice",
+            "ts_ms": "int",
+            "voice_id": "str?",
+            "preset": {"type": "literal",
+                       "values": ["standard", "friendly", "authoritative", "whisper",
+                                  "technical", "street", "caveman", "business",
+                                  "philosopher", "lenin"],
+                       "optional": True},
+            "language": {"type": "literal", "values": ["ru", "en"], "optional": True},}),
         subprotocol="v1",
         description=(
             "Установка voice_id (AV-27) или preset/language (AV-28 §P7). "
@@ -332,8 +510,19 @@ COMMANDS: tuple[CommandSpec, ...] = (
     ),
     CommandSpec(
         name="voice_pipeline",
-        required_fields=("cmd", "ts_ms"),
-        optional_fields=("llm_enabled", "preset", "language"),
+        # АНОМАЛИЯ (voice-vr 08): _bridge_protocol_data.py требовал
+        # llm_enabled/preset/language как обязательные поля. Канон до
+        # voice-vr 08 имел их все в optional_fields (preset/language
+        # валидируются ТОЛЬКО если заданы, см. ws_server.py:
+        # _validate_voice_pipeline_payload → ``if preset not in
+        # VOICE_PRESET_IDS: raise``). Возвращены в ``str?``/``bool?``/
+        # ``literal[optional]``. Если клиент реально шлёт все три —
+        # отдельная карточка (handshake-уровень).
+        payload=_p({"cmd": "voice_pipeline",
+            "ts_ms": "int",
+            "llm_enabled": "bool?",
+            "preset": "str?",
+            "language": {"type": "literal", "values": ["ru", "en", "fr", "de", "zh", "hi"], "optional": True},}),
         subprotocol="v2",
         description=(
             "Конфиг grip-пайплайна (трансформация STT→LLM→TTS), "
@@ -342,7 +531,11 @@ COMMANDS: tuple[CommandSpec, ...] = (
     ),
     CommandSpec(
         name="preview_voice",
-        required_fields=("cmd", "ts_ms", "voice_id", "text", "request_id"),
+        payload=_p({"cmd": "preview_voice",
+            "ts_ms": "int",
+            "voice_id": "str",
+            "text": "str",
+            "request_id": "str",}),
         subprotocol="v2",
         description="Синтез превью голоса (§4.2).",
     ),
@@ -350,8 +543,14 @@ COMMANDS: tuple[CommandSpec, ...] = (
     # Помечены для visibility и для будущих карточек.
     CommandSpec(
         name="avatar_set_mode",
-        required_fields=("cmd", "ts_ms", "mode"),
-        optional_fields=("reason",),
+        # canonical required_fields=("cmd", "ts_ms", "mode"),
+        # optional_fields=("reason",). Заполнено минимальным payload
+        # от канона; сервер НЕ обрабатывает, тип только для
+        # backward-compat старого webxr_client (main.ts:154).
+        payload=_p({"cmd": "avatar_set_mode",
+            "ts_ms": "int",
+            "mode": "str",
+            "reason": "str?"}),
         subprotocol="any",
         server_dispatched=False,
         description=(
@@ -362,7 +561,10 @@ COMMANDS: tuple[CommandSpec, ...] = (
     ),
     CommandSpec(
         name="avatar_acquire_floor",
-        required_fields=("cmd", "ts_ms", "kind"),
+        # canonical required_fields=("cmd", "ts_ms", "kind").
+        payload=_p({"cmd": "avatar_acquire_floor",
+            "ts_ms": "int",
+            "kind": "str"}),
         subprotocol="any",
         server_dispatched=False,
         description=(
@@ -372,7 +574,10 @@ COMMANDS: tuple[CommandSpec, ...] = (
     ),
     CommandSpec(
         name="avatar_release_floor",
-        required_fields=("cmd", "ts_ms", "kind"),
+        # canonical required_fields=("cmd", "ts_ms", "kind").
+        payload=_p({"cmd": "avatar_release_floor",
+            "ts_ms": "int",
+            "kind": "str"}),
         subprotocol="any",
         server_dispatched=False,
         description=(
@@ -382,7 +587,10 @@ COMMANDS: tuple[CommandSpec, ...] = (
     ),
     CommandSpec(
         name="set_panel_topic",
-        required_fields=("cmd", "ts_ms", "panel_id", "topic"),
+        payload=_p({"cmd": "set_panel_topic",
+            "ts_ms": "int",
+            "panel_id": "str",
+            "topic": "str",}),
         subprotocol="any",
         server_dispatched=False,
         description=(
@@ -393,7 +601,10 @@ COMMANDS: tuple[CommandSpec, ...] = (
     ),
     CommandSpec(
         name="ui_button",
-        required_fields=("cmd", "ts_ms", "button", "press"),
+        payload=_p({"cmd": "ui_button",
+            "ts_ms": "int",
+            "button": "str",
+            "press": "bool",}),
         subprotocol="any",
         server_dispatched=False,
         description=(
@@ -405,8 +616,11 @@ COMMANDS: tuple[CommandSpec, ...] = (
     ),
     CommandSpec(
         name="admin_logs",
-        required_fields=("cmd", "ts_ms", "service", "tail"),
-        optional_fields=("follow",),
+        payload=_p({"cmd": "admin_logs",
+            "ts_ms": "int",
+            "service": {"type": "literal", "values": ["dialogue_node", "rob_box_quest", "all"]},
+            "tail": "int?",
+            "follow": "bool?",}),
         subprotocol="any",
         server_dispatched=False,
         description=(
@@ -415,7 +629,8 @@ COMMANDS: tuple[CommandSpec, ...] = (
     ),
     CommandSpec(
         name="admin_logs_stop",
-        required_fields=("cmd", "ts_ms"),
+        payload=_p({"cmd": "admin_logs_stop",
+            "ts_ms": "int",}),
         subprotocol="any",
         server_dispatched=False,
         description=(
@@ -432,58 +647,76 @@ COMMANDS: tuple[CommandSpec, ...] = (
 EVENTS: tuple[EventSpec, ...] = (
     EventSpec(
         name="subscribe_ack",
-        required_fields=("type", "topic", "stream_id"),
-        optional_fields=("quality",),
+        payload=_p({"type": "subscribe_ack",
+            "topic": "str",
+            "stream_id": "int",
+            "quality": "str",
+            "kind": "str?",}),
         subprotocol="any",
         description="Подтверждение SUBSCRIBE (§6).",
     ),
     EventSpec(
         name="subscribe_nack",
-        required_fields=("type", "topic", "reason"),
+        payload=_p({"type": "subscribe_nack",
+            "topic": "str",
+            "reason": "str",}),
         subprotocol="any",
         description="Отказ SUBSCRIBE (§6).",
     ),
     EventSpec(
         name="heartbeat",
-        required_fields=("type", "ts_ms"),
+        payload=_p({"type": "heartbeat",
+            "ts_ms": "int",}),
         subprotocol="any",
         server_emitted=True,
         description="200 мс keepalive от сервера (§7).",
     ),
     EventSpec(
         name="ping",
-        required_fields=("type", "ts_ms"),
+        payload=_p({"type": "ping",
+            "ts_ms": "int",
+            "nonce": "str?",}),
         subprotocol="any",
         server_handled=True,
         description="Клиентский keepalive; триггерит pong (§7).",
     ),
     EventSpec(
         name="pong",
-        required_fields=("type", "ts_ms", "server_ts_ms"),
-        optional_fields=("nonce",),
+        payload=_p({"type": "pong",
+            "ts_ms": "int",
+            "nonce": "str?",}),
         subprotocol="any",
         server_emitted=True,
         description="Ответ сервера на ping (§6/§7).",
     ),
     EventSpec(
         name="stream_list",
-        required_fields=("type", "ts_ms"),
-        optional_fields=("items", "topics"),
+        payload=_p({"type": "stream_list",
+            "topics": "list[str]",
+            "ts_ms": "int",}),
         subprotocol="any",
         server_emitted=True,
         description="Ответ на stream_list cmd (§6).",
     ),
     EventSpec(
         name="stream_select_ack",
-        required_fields=("type", "topic", "stream_id", "kind"),
+        payload=_p({"type": "stream_select_ack",
+            "topic": "str",
+            "stream_id": "int?",
+            "kind": "str?",}),
         subprotocol="any",
         server_emitted=True,
         description="Подтверждение stream_select (§6.2).",
     ),
     EventSpec(
         name="voice_state",
-        required_fields=("type", "state", "ts_ms"),
-        optional_fields=("utterance_id", "holder_id", "detail"),
+        payload=_p({"type": "voice_state",
+            "state": {"type": "literal",
+                      "values": ["idle", "listening", "thinking", "speaking", "denied"]},
+            "ts_ms": "int",
+            "utterance_id": "str?",
+            "holder_id": "str?",
+            "detail": "str?",}),
         subprotocol="any",
         server_emitted=True,
         description=(
@@ -493,122 +726,162 @@ EVENTS: tuple[EventSpec, ...] = (
     ),
     EventSpec(
         name="voice_mode_ack",
-        required_fields=("type", "mode", "ts_ms"),
+        payload=_p({"type": "voice_mode_ack",
+            "mode": "str",
+            "ts_ms": "int",}),
         subprotocol="any",
         server_emitted=True,
         description="ACK на voice_mode cmd (§6).",
     ),
     EventSpec(
         name="voice_listen_ack",
-        required_fields=("type", "active", "ts_ms"),
+        # canonical required_fields=("type", "active", "ts_ms").
+        payload=_p({"type": "voice_listen_ack",
+            "active": "bool",
+            "ts_ms": "int"}),
         subprotocol="any",
         server_emitted=True,
         description="ACK на voice_listen_start/stop (ADR-0071).",
     ),
     EventSpec(
         name="voice_list",
-        required_fields=("type", "voices", "ts_ms"),
-        optional_fields=("active_provider", "active_voice"),
+        payload=_p({"type": "voice_list",
+            "voices": "list[VoiceInfo]",
+            "active_provider": "str?",
+            "active_voice": "str?",
+            "ts_ms": "int",}),
         subprotocol="any",
         server_emitted=True,
         description="Список голосов в ответ на list_voices (§4.1).",
     ),
     EventSpec(
         name="voice_set_ack",
-        required_fields=("type", "ts_ms"),
-        optional_fields=("voice_id", "preset", "language"),
+        payload=_p({"type": "voice_set_ack",
+            "voice_id": "str",
+            "preset": "str",
+            "language": "str",
+            "ts_ms": "int",}),
         subprotocol="any",
         server_emitted=True,
         description="ACK на set_voice (§4.3).",
     ),
     EventSpec(
         name="voice_set_nack",
-        required_fields=("type", "ts_ms", "reason"),
-        optional_fields=("voice_id", "preset", "language"),
+        payload=_p({"type": "voice_set_nack",
+            "voice_id": "str?",
+            "preset": "str?",
+            "language": "str?",
+            "reason": "str",
+            "available": "list[str]?",
+            "ts_ms": "int",}),
         subprotocol="any",
         server_emitted=True,
         description="NACK на set_voice (§4.3).",
     ),
     EventSpec(
         name="voice_pipeline_ack",
-        required_fields=("type", "ts_ms", "llm_enabled", "preset", "language"),
+        payload=_p({"type": "voice_pipeline_ack",
+            "ts_ms": "int",}),
         subprotocol="any",
         server_emitted=True,
         description="ACK на voice_pipeline cmd.",
     ),
     EventSpec(
         name="voice_pipeline_nack",
-        required_fields=("type", "ts_ms", "reason"),
-        optional_fields=("preset", "language"),
+        payload=_p({"type": "voice_pipeline_nack",
+            "reason": "str",
+            "ts_ms": "int",}),
         subprotocol="any",
         server_emitted=True,
         description="NACK на voice_pipeline cmd.",
     ),
     EventSpec(
         name="preview_voice_audio",
-        required_fields=("type", "ts_ms"),
-        optional_fields=("request_id", "format", "content_type", "seq", "total"),
+        payload=_p({"type": "preview_voice_audio",
+            "request_id": "str",
+            "format": {"type": "literal", "values": ["mp3", "opus", "wav"]},
+            "content_type": "str",
+            "seq": "int",
+            "total": "int",
+            "ts_ms": "int",}),
         subprotocol="any",
         server_emitted=True,
         description="Чанк аудио превью (§4.2).",
     ),
     EventSpec(
         name="preview_voice_done",
-        required_fields=("type", "request_id", "ts_ms"),
+        payload=_p({"type": "preview_voice_done",
+            "request_id": "str",
+            "ts_ms": "int",}),
         subprotocol="any",
         server_emitted=True,
         description="Финал превью (§4.2).",
     ),
     EventSpec(
         name="preview_voice_error",
-        required_fields=("type", "request_id", "ts_ms", "reason"),
+        payload=_p({"type": "preview_voice_error",
+            "request_id": "str",
+            "reason": "str",
+            "ts_ms": "int",}),
         subprotocol="any",
         server_emitted=True,
         description="Ошибка превью (§4.2).",
     ),
     EventSpec(
         name="supervisor_state",
-        required_fields=("type", "ts_ms"),
-        optional_fields=("state",),
+        payload=_p({"type": "supervisor_state",
+            "state": "Record<string, unknown>",
+            "ts_ms": "int",}),
         subprotocol="v2",
         server_emitted=True,
         description="Snapshot FSM супервизора (§5.1, STATE_UPDATE-эквивалент).",
     ),
     EventSpec(
         name="safety_stop",
-        required_fields=("type", "ts_ms"),
-        optional_fields=("reason",),
+        payload=_p({"type": "safety_stop",
+            "reason": {"type": "literal", "values": ["controller_b", "client_lost"]},
+            "ts_ms": "int",}),
         subprotocol="any",
         server_emitted=True,
         description="Аварийная остановка (§6).",
     ),
     EventSpec(
         name="robot_alert",
-        required_fields=("type", "ts_ms", "active", "code", "level"),
-        optional_fields=("args",),
+        payload=_p({"type": "robot_alert",
+            "code": "str",
+            "level": {"type": "literal", "values": ["warn", "error", "info"]},
+            "active": "bool?",
+            "args": "Record<string, unknown>?",
+            "ts_ms": "int",}),
         subprotocol="any",
         server_emitted=True,
         description="Алёрт робота (battery/wifi/stuck/...) (§6).",
     ),
     EventSpec(
         name="floor_lost",
-        required_fields=("type", "ts_ms", "floor", "reason"),
+        payload=_p({"type": "floor_lost",
+            "floor": {"type": "literal", "values": ["teleop", "voice"]},
+            "reason": "str?",
+            "ts_ms": "int",}),
         subprotocol="any",
         server_emitted=True,
         description="Tэта сессия больше не держит teleop_floor/voice_floor (§6, AV-19).",
     ),
     EventSpec(
         name="admin_logs_chunk",
-        required_fields=("type", "ts_ms"),
-        optional_fields=("service", "lines"),
+        payload=_p({"type": "admin_logs_chunk",
+            "service": {"type": "literal", "values": ["dialogue_node", "rob_box_quest", "all"]},
+            "lines": "list[str]",
+            "ts_ms": "int",}),
         subprotocol="any",
         server_emitted=True,
         description="Стрим логов (R14, §6).",
     ),
     EventSpec(
         name="admin_logs_end",
-        required_fields=("type", "ts_ms"),
-        optional_fields=("service",),
+        payload=_p({"type": "admin_logs_end",
+            "service": "str",
+            "ts_ms": "int",}),
         subprotocol="any",
         server_emitted=True,
         description="Финал стрима логов (R14, §6).",
