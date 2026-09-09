@@ -1178,9 +1178,15 @@ def _resolve_voice_presets_yaml_path() -> Optional[str]:
         pass
     # Source-tree fallback. bridge_protocol живёт в
     # ``<repo>/src/rob_box_core/rob_box_core/bridge_protocol.py``,
-    # поэтому идём через parents[3] (== ``src/``) + rob_box_voice/config/.
+    # поэтому идём через parents[2] (== ``src/``) + rob_box_voice/config/.
+    # ВНИМАНИЕ: было ``parents[3]`` (== repo root) — off-by-one, из-за
+    # которого source-tree fallback никогда не находил файл в среде без
+    # ament (голый ``pytest`` без colcon) и тихо откатывался на
+    # FALLBACK-туплу. Индекс должен совпадать с
+    # ``grip_pipeline.resolve_voice_presets_path`` (``parents[2]`` там же,
+    # т.к. оба модуля лежат на одной глубине ``src/<pkg>/<pkg>/*.py``).
     source = (
-        Path(__file__).resolve().parents[3]
+        Path(__file__).resolve().parents[2]
         / "rob_box_voice"
         / "config"
         / "voice_presets.yaml"

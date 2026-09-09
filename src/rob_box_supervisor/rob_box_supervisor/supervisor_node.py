@@ -1417,19 +1417,25 @@ class AvatarSupervisor(Node):
 
     # ── AV-28 §P7 (issue #1920) — voice style preset + language ─────────
     # ADR-0080 §2.7 / voice-vr 21: супервизор больше НЕ пишет в чужие
-    # ROS-параметры (``voice_preset`` / ``voice_output_language`` на
-    # ``dialogue_node``). Параметры остались в
-    # ``dialogue_node.parameters_callback`` только как «когда-то был
-    # формализатор, сейчас единственное живое чтение — yaml-direct»
-    # (см. ADR-0066 §6.3 + ``grip_pipeline.load_voice_presets``).
-    # Грядущий явный контракт — расширение ``/dialogue/control`` (тема
-    # отдельной карточки); сейчас топики ``/avatar/set_voice_preset`` /
-    # ``/avatar/set_voice_language`` принимаются, валидируются по единому
-    # списку (``rob_box_core.bridge_protocol``), и факт применения
-    # логируется — оператор по-прежнему получает ack/nack по ack-каналу
-    # ``voice_set_ack`` (UI откатывает optimistic update, если nack).
-    # Whitelist берётся из ``rob_box_core.bridge_protocol`` (зеркало
-    # ``voice_presets.yaml`` + TS-генерация) — никаких локальных копий.
+    # ROS-параметры. ``voice_preset`` / ``voice_output_language`` УДАЛЕНЫ
+    # из ``dialogue_node`` целиком (declare_parameter + обработка в
+    # parameters_callback — см. dialogue_node.py, эта же карточка): там
+    # больше нет параметра, писать в который. Топики
+    # ``/avatar/set_voice_preset`` / ``/avatar/set_voice_language``
+    # остаются легаси-приёмниками для обратной совместимости с
+    # UI/quest_node: whitelist-валидация по единому списку
+    # (``rob_box_core.bridge_protocol``) + ack/nack оператору через
+    # ``voice_set_ack`` (UI откатывает optimistic update, если nack), но
+    # применённое значение НИКУДА не пишется и не влияет на звучание —
+    # это самостоятельно не подключённый путь (ADR-0018), оставленный как
+    # заглушка до расширения ``/dialogue/control`` под set_preset/
+    # set_language (тема отдельной карточки).
+    #
+    # Живой путь стиля/языка речи — ``/avatar/voice_pipeline`` →
+    # ``_on_grip_voice_pipeline`` → ``self._pipeline_preset`` /
+    # ``self._pipeline_language`` (грип-пайплайн, issue #1989); он читает
+    # ``grip_pipeline.load_voice_presets()`` из yaml сам, независимо от
+    # этого блока. НЕ путать два канала.
 
     # Валидируем по модульным VOICE_PRESET_IDS / VOICE_LANGUAGES — второй
     # копии списка здесь больше нет (см. комментарий у импорта).
@@ -1437,12 +1443,12 @@ class AvatarSupervisor(Node):
     _AV28_LANGUAGES: frozenset[str] = frozenset(VOICE_LANGUAGES)
 
     def _on_set_voice_preset(self, msg: RosString) -> None:
-        """Обработка ``/avatar/set_voice_preset`` — запрос сменить стиль речи.
+        """Обработка ``/avatar/set_voice_preset`` — легаси-приём стиля речи.
 
-        voice-vr 21: ``applied=true`` означает «пресет принят и зафиксирован
-        в состоянии пайплайна» (yaml-direct), а НЕ «параметр записан в
-        dialogue_node». Контракт-носитель для оператора не меняется —
-        см. комментарий блока AV-28 §P7.
+        voice-vr 21: ``applied=true`` означает только «прошёл whitelist +
+        режим active», НЕ «где-то что-то поменялось». Ничего не
+        публикуется и не сохраняется — см. комментарий блока AV-28 §P7
+        выше про два разных канала.
         """
         preset = (msg.data or "").strip()
         applied, reason = self._apply_voice_preset(preset)
@@ -1453,10 +1459,12 @@ class AvatarSupervisor(Node):
     def _apply_voice_preset(self, preset: str) -> tuple[bool, str]:
         """Чистая логика применения ``voice_preset`` (тестируется без rclpy).
 
-        voice-vr 21: супервизор не пишет в чужие ROS-параметры (ADR-0080 §2.7).
-        dialogue_node.parameters_callback только логировал значение
-        (ADR-0066 §6.3). Сейчас ничего не публикуется наружу: живой
-        путь — ``grip_pipeline.load_voice_presets()`` поверх YAML.
+        voice-vr 21: супервизор не пишет в чужие ROS-параметры (ADR-0080 §2.7),
+        а dialogue_node больше не имеет параметра ``voice_preset`` вообще
+        (удалён). Этот метод только валидирует и логирует — он НЕ вызывает
+        ``grip_pipeline`` и НЕ трогает ``self._pipeline_preset``; тот
+        живёт своей жизнью через ``/avatar/voice_pipeline`` (см. блочный
+        комментарий выше). Легаси-заглушка до explicit-контракта.
         """
         if not preset:
             return False, "empty_voice_preset"
@@ -1465,16 +1473,16 @@ class AvatarSupervisor(Node):
         if self._mode != "active":
             return False, MONITOR_MODE_REASON
         # Грядущая карточка расширит ``/dialogue/control`` под
-        # set_preset/set_language — здесь только фиксируем принятое
-        # значение для LLM-формализации через ``grip_pipeline``.
+        # set_preset/set_language — до тех пор здесь только whitelist +
+        # лог, без побочных эффектов (см. docstring метода).
         self._log.info(
             f"[voice-vr 21] voice_preset accepted={preset!r} "
-            "(path: grip_pipeline yaml-direct; no foreign param writes)"
+            "(legacy no-op: no foreign param writes, no pipeline state change)"
         )
         return True, "applied"
 
     def _on_set_voice_language(self, msg: RosString) -> None:
-        """Обработка ``/avatar/set_voice_language`` — запрос сменить язык вывода."""
+        """Обработка ``/avatar/set_voice_language`` — легаси-приём языка вывода."""
         language = (msg.data or "").strip()
         applied, reason = self._apply_voice_language(language)
         self._log.info(
@@ -1484,9 +1492,10 @@ class AvatarSupervisor(Node):
     def _apply_voice_language(self, language: str) -> tuple[bool, str]:
         """Чистая логика применения ``voice_output_language`` (тестируется без rclpy).
 
-        Аналогично :py:meth:`_apply_voice_preset` — супервизор больше
-        НЕ пишет в чужие ROS-параметры на dialogue_node (ADR-0080 §2.7).
-        Живой путь — ``grip_pipeline`` с yaml-direct.
+        Аналогично :py:meth:`_apply_voice_preset` — супервизор больше НЕ
+        пишет в чужие ROS-параметры (ADR-0080 §2.7), и это НЕ то же самое,
+        что смена языка грип-пайплайна (``self._pipeline_language``, через
+        ``/avatar/voice_pipeline``). Только валидация + лог.
         """
         if not language:
             return False, "empty_voice_language"
@@ -1496,7 +1505,7 @@ class AvatarSupervisor(Node):
             return False, MONITOR_MODE_REASON
         self._log.info(
             f"[voice-vr 21] voice_output_language accepted={language!r} "
-            "(path: grip_pipeline yaml-direct; no foreign param writes)"
+            "(legacy no-op: no foreign param writes, no pipeline state change)"
         )
         return True, "applied"
 

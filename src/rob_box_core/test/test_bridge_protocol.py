@@ -429,9 +429,20 @@ class TestVoiceConfigYamlDrivesWhitelist:
         изоляция от родителя + реальный «новый import» с нуля,
         без monkeypatch-артефактов.
         """
+        import os
         import subprocess
         import sys
         import textwrap
+        from pathlib import Path
+
+        # Репозиторий, не ``tmp_path`` (тот — системный temp-каталог,
+        # ``tmp_path.parent.parent`` НЕ репо-рут ни на Windows, ни на
+        # Linux CI — с этим cwd child всегда падал в
+        # ``ModuleNotFoundError: No module named 'rob_box_core'``,
+        # независимо от PYTHONPATH). Этот файл лежит в
+        # ``<repo>/src/rob_box_core/test/test_bridge_protocol.py``,
+        # поэтому repo root = parents[3].
+        repo_root = Path(__file__).resolve().parents[3]
 
         yaml_text = textwrap.dedent(
             """\
@@ -469,18 +480,18 @@ class TestVoiceConfigYamlDrivesWhitelist:
             text=True,
             check=False,
             env={
-                **__import__("os").environ,
-                "PYTHONPATH": ":".join(
+                **os.environ,
+                "PYTHONPATH": os.pathsep.join(
                     [
-                        "src/rob_box_voice",
-                        "src/rob_box_llm",
-                        "src/rob_box_core",
-                        "src/rob_box_harness",
+                        str(repo_root / "src" / "rob_box_voice"),
+                        str(repo_root / "src" / "rob_box_llm"),
+                        str(repo_root / "src" / "rob_box_core"),
+                        str(repo_root / "src" / "rob_box_harness"),
                     ]
                 ),
                 "ROB_BOX_VOICE_PRESETS_YAML": str(yaml_path),
             },
-            cwd=str(tmp_path.parent.parent),  # repo root
+            cwd=str(repo_root),
             timeout=30,
         )
         assert result.returncode == 0, (
