@@ -328,4 +328,4 @@ export type EventName = "subscribe_ack" | "subscribe_nack" | "heartbeat" | "ping
   export const VOICE_LANGUAGES = ["ru", "en", "fr", "de", "zh", "hi"] as const;
   export const SUBPROTOCOLS_OFFERED = ["v1", "v2"] as const;
 
-  export const ERROR_CODES = ["AUTH_FAIL", "BAD_PAYLOAD", "TOPIC_UNKNOWN", "RATE_LIMIT", "PROTOCOL_VERSION", "FLOOR_HELD", "MODE_CONFLICT", "INTERNAL"] as const;
+  export const ERROR_CODES = ["AUTH_FAIL", "BAD_PAYLOAD", "TOPIC_UNKNOWN", "RATE_LIMIT", "PROTOCOL_VERSION", "FLOOR_HELD", "MODE_CONFLICT", "INTERNAL", "UNKNOWN_COMMAND"] as const;
