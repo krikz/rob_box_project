@@ -444,7 +444,7 @@ jobs:
             ${{ env.LOCAL_PREFIX }}:quest-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
           build-args: |
             APT_PROXY=http://host.docker.internal:3142
-            IMAGE_TAG=${{ needs.prepare.outputs.docker_tag }}
+            BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh-${{ env.ROS_DISTRO }}
             SOURCE_HASH=${{ steps.source-hash.outputs.source_hash }}
 
   update-image-versions:

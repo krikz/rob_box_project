@@ -286,17 +286,15 @@ jobs:
                   # НЕ "rob-box-quest" (это только container_name). Разъедешься
                   # в имени тега здесь — deploy молча возьмёт старый образ.
                   #
-                  # Dockerfile quest НЕ принимает BASE_IMAGE (в отличие от
-                  # остальных сервисов) — вместо этого он сам вычисляет
-                  # RUNTIME_IMAGE из ARG IMAGE_TAG (ghcr.io/.../voice-assistant-
-                  # humble-${IMAGE_TAG}). Поэтому BASE_IMAGE тут пуст, а
-                  # IMAGE_TAG докидывается отдельным build-arg в build-service
-                  # (см. блок ниже, как для VESC_NEXUS_SHA/ROS2LEDS_SHA).
+                  # ARCH-quest (#2278): Dockerfile наследует
+                  # rob_box_base:ros2-zenoh (FROM ${BASE_IMAGE}), НЕ
+                  # voice-assistant. База тянется из локального registry
+                  # (в ghcr тега ros2-zenoh-humble без -latest нет).
                   SERVICE_NAME="quest"
                   IMAGE_NAME="quest"
                   DOCKERFILE="docker/vision/quest/Dockerfile"
                   BUILD_CONTEXT="."
-                  BASE_IMAGE=""
+                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO}"
                   ;;
                 *)
                   echo "❌ Unknown Vision Pi service: $SERVICE"
@@ -432,13 +430,9 @@ jobs:
             echo "  ROS2LEDS_SHA: ${ROS2LEDS_SHA}"
           fi
 
-          # quest (ADR-0027): Dockerfile вычисляет RUNTIME_IMAGE из ARG
-          # IMAGE_TAG (не BASE_IMAGE) — см. комментарий в job prepare.
-          # Совпадает с build-quest в L-Build Vision Pi Services.yml.
-          if [ "${{ needs.prepare.outputs.service_name }}" = "quest" ]; then
-            BUILD_ARGS="${BUILD_ARGS} --build-arg=IMAGE_TAG=${{ needs.prepare.outputs.docker_tag }}"
-            echo "  IMAGE_TAG: ${{ needs.prepare.outputs.docker_tag }}"
-          fi
+          # quest (ADR-0027): BASE_IMAGE передаётся общим блоком выше
+          # (см. case "quest" в job prepare). Совпадает с build-quest в
+          # L-Build Vision Pi Services.yml.
 
           # quest: hash Python-исходников rob_box_quest И TS/JSON/HTML
           # исходников webxr_client (шлем-клиент — часть образа, копируется
