@@ -14,7 +14,9 @@
 
 from __future__ import annotations
 
+import ast
 import struct
+from pathlib import Path
 
 import pytest
 
@@ -448,3 +450,166 @@ def test_robot_voice_silence_counter_resets_on_speech():
     assert seg._silence_bytes_since_speech == 5 * FRAME_LEN
     seg.add_frame(_speech_frame(), 0.5)
     assert seg._silence_bytes_since_speech == 0
+
+
+# ── Guard-rail: единый источник порогов (issue #2199, ревью Шифу 09.09) ──
+#
+# GOODWORKRINKZ просил «тест, который импортирует конфиг и проверяет, что
+# quest_node, wake_segmenter и клиентский слой берут значения из него, а
+# не из литералов». Реализуем это в два слоя:
+#
+# 1. ``test_default_configs_match_yaml_profile`` — Python-дефолты
+#    (``DEFAULT_WAKE_CONFIG``, ``DEFAULT_ROBOT_VOICE_CONFIG``) совпадают
+#    с YAML-профилями. Любая правка одного без другого — тест упадёт.
+# 2. ``test_segmentation_callers_source_thresholds_from_config`` — AST-парс
+#    ``quest_node.py`` и ``wake_segmenter.py``: запрещаем литералы
+#    ``0.4``/``0.3``/``500`` рядом с атрибутами ``gap_timeout_s``,
+#    ``speech_threshold`` (раньше там были магические числа — должны
+#    приезжать из ``DEFAULT_*_CONFIG`` или YAML).
+#
+# Это превращает DoD-инвариант «не сорься с конфигом» в машинно-проверяемый
+# контракт, не зависящий от аккуратности grep'а.
+
+# Пути к файлам, которые должны брать пороги из конфига.
+# test/ лежит в src/rob_box_core/test/ — корень репо на 3 уровня выше.
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_QUEST_NODE_PY = (
+    _REPO_ROOT / "src/rob_box_quest/rob_box_quest/quest_node.py"
+)
+_WAKE_SEGMENTER_PY = (
+    _REPO_ROOT / "src/rob_box_quest/rob_box_quest/core/wake_segmenter.py"
+)
+
+
+def _yaml_profiles() -> dict:
+    """Прочитать ``profiles`` из ``config/speech_segmentation.yaml``.
+
+    pyyaml — мягкая зависимость (объявлена в ``setup.py``), но на
+    dev-машине без ``pip install -e`` может отсутствовать. Тест пропускается
+    в этом случае (CI прогоняет после colcon install — там пакет стоит).
+    """
+    yaml_path = (
+        _REPO_ROOT / "src/rob_box_core/config/speech_segmentation.yaml"
+    )
+    try:
+        import yaml  # type: ignore[import-untyped]
+    except ImportError:
+        pytest.skip("pyyaml не установлен (pip install pyyaml)")
+    with yaml_path.open(encoding="utf-8") as fp:
+        return yaml.safe_load(fp)["profiles"]
+
+
+def test_default_configs_match_yaml_profile():
+    """``DEFAULT_*_CONFIG`` — точное зеркало YAML-профилей.
+
+    Это тест-контракт: правим YAML → меняем дефолт → тест остаётся
+    зелёным. Правим только одно из двух → падаем.
+    """
+    profiles = _yaml_profiles()
+
+    wake = profiles["wake"]
+    assert DEFAULT_WAKE_CONFIG.statistic == wake["statistic"]
+    assert DEFAULT_WAKE_CONFIG.speech_threshold == wake["speech_threshold"]
+    assert DEFAULT_WAKE_CONFIG.gap_timeout_s == wake["gap_timeout_s"]
+    assert DEFAULT_WAKE_CONFIG.min_phrase_s == wake["min_phrase_s"]
+    assert DEFAULT_WAKE_CONFIG.max_phrase_s == wake["max_phrase_s"]
+
+    rv = profiles["robot_voice"]
+    assert DEFAULT_ROBOT_VOICE_CONFIG.statistic == rv["statistic"]
+    assert (
+        DEFAULT_ROBOT_VOICE_CONFIG.speech_threshold == rv["speech_threshold"]
+    )
+    assert DEFAULT_ROBOT_VOICE_CONFIG.gap_timeout_s == rv["gap_timeout_s"]
+    assert DEFAULT_ROBOT_VOICE_CONFIG.min_phrase_s == rv["min_phrase_s"]
+    assert DEFAULT_ROBOT_VOICE_CONFIG.max_phrase_s == rv["max_phrase_s"]
+
+
+def _file_uses_attribute_literal_pair(
+    tree: ast.AST, attr_name: str, forbidden_literals: tuple
+) -> list[tuple[int, str]]:
+    """Вернуть ``[(lineno, snippet), ...]`` для подозрительных узлов.
+
+    Ищем конструкции вида ``<name>.<attr_name> = <literal>`` (Assign) и
+    вызовы ``<name>.<attr_name>(<literal>)`` (Call) — т.е. ситуации, когда
+    кто-то пытается выставить порог сегментации числом в обход конфига.
+    """
+    hits: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if (
+                    isinstance(target, ast.Attribute)
+                    and target.attr == attr_name
+                    and isinstance(node.value, ast.Constant)
+                    and node.value.value in forbidden_literals
+                ):
+                    hits.append(
+                        (node.lineno, f"Assign attr={attr_name} value={node.value.value!r}")
+                    )
+        elif isinstance(node, ast.Call):
+            func = node.func
+            if (
+                isinstance(func, ast.Attribute)
+                and func.attr == attr_name
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and node.args[0].value in forbidden_literals
+            ):
+                hits.append(
+                    (
+                        node.lineno,
+                        f"Call attr={attr_name} value={node.args[0].value!r}",
+                    )
+                )
+    return hits
+
+
+@pytest.mark.parametrize(
+    "py_path, forbidden_pairs",
+    [
+        # wake-канал: gap_timeout_s, min_phrase_s, max_phrase_s из конфига.
+        # robot_voice: + speech_threshold=500.
+        (
+            _QUEST_NODE_PY,
+            {
+                "gap_timeout_s": (0.4,),
+                "min_phrase_s": (0.25,),
+                "max_phrase_s": (15.0,),
+                "speech_threshold": (500,),
+            },
+        ),
+        # wake_segmenter — это shim, его константы ДОЛЖНЫ быть
+        # ``DEFAULT_WAKE_CONFIG.<attr>``. Литералы запрещены.
+        (
+            _WAKE_SEGMENTER_PY,
+            {
+                "gap_timeout_s": (0.4,),
+                "min_phrase_s": (0.25,),
+                "max_phrase_s": (15.0,),
+                "speech_threshold": (500,),
+            },
+        ),
+    ],
+)
+def test_segmentation_callers_source_thresholds_from_config(
+    py_path: Path, forbidden_pairs: dict
+):
+    """quest_node/wake_segmenter НЕ должны содержать литералов порогов.
+
+    DoD-проверка issue #2199: «сегментатор один, пороги — из конфига».
+    Защита от регрессии: кто-то добавил ``segmenter.gap_timeout_s = 0.4``
+    в обход YAML/DEFAULT_*_CONFIG — тест упадёт с указанием файла:строки.
+    """
+    tree = ast.parse(py_path.read_text(encoding="utf-8"))
+    all_hits: list[str] = []
+    for attr, literals in forbidden_pairs.items():
+        for lineno, snippet in _file_uses_attribute_literal_pair(
+            tree, attr, literals
+        ):
+            all_hits.append(f"{py_path.name}:{lineno}: {snippet}")
+    assert not all_hits, (
+        "Найдены литералы порогов сегментации в обход "
+        "DEFAULT_*_CONFIG/YAML (issue #2199, ревью Шифу 09.09). "
+        "Берите значения из rob_box_core.speech_segmentation.DEFAULT_*_CONFIG "
+        "или заведите новое поле в YAML:\n  " + "\n  ".join(all_hits)
+    )
