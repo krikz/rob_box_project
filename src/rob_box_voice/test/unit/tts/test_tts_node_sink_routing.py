@@ -533,3 +533,109 @@ def test_voice_tts_request_legacy_payload_without_sink_still_works():
 
     node._dispatch_avatar_tts_sink.assert_not_called()
     node._on_avatar_tts_request_preview.assert_not_called()
+
+
+# ── 5. issue #2318 — SoT-значение ``Sink.SPEAKERS`` ("speakers") ────────
+#
+# Регрессия из deploy z-{e2e}/test-round-388: продюсеры перешли на
+# ``rob_box_core.utterance.Sink.SPEAKERS`` (== "speakers", voice-vr 12 /
+# #2197), а consumer остался на единственном числе "speaker"
+# (voice-vr 13 / #2198). Итог на роботе:
+#
+#   [tts_node] ⚠ /voice/tts/request: unknown sink='speakers'
+#              (expected 'speaker'/'headset'/'preview'), DROP
+#
+# — то есть КАЖДАЯ реплика в динамики молча дропалась.
+
+
+def test_sot_sink_speakers_value_is_accepted_by_resolver():
+    """``Sink.SPEAKERS`` из SoT обязан резолвиться, а не давать ``None``.
+
+    Тест берёт значение из самого SoT-модуля, а не строковый литерал —
+    иначе при переименовании enum'а рассинхрон опять пройдёт незаметно.
+    """
+    from rob_box_core.utterance import Sink
+
+    node = _make_voice_node()
+    canonical, raw = node._resolve_voice_tts_sink({"sink": Sink.SPEAKERS.value})
+
+    assert raw == Sink.SPEAKERS.value
+    assert canonical == "speaker", (
+        f"Sink.SPEAKERS ({Sink.SPEAKERS.value!r}) должен канонизироваться "
+        f"в 'speaker' (единый вариант написания ниже по стеку), got {canonical!r}"
+    )
+
+
+def test_every_sot_sink_member_resolves_to_known_route():
+    """Ни одно значение из ``Sink`` не должно уходить в DROP.
+
+    Это и есть инвариант контракта: SoT-сборщик и consumer говорят на
+    одном языке. Добавили новый Sink в ``rob_box_core`` и забыли про
+    ``tts_node`` — тест падает здесь, а не в проде голосом «робот молчит».
+    """
+    from rob_box_core.utterance import Sink
+
+    node = _make_voice_node()
+    unresolved = {
+        member.value: node._resolve_voice_tts_sink({"sink": member.value})[0]
+        for member in Sink
+        if node._resolve_voice_tts_sink({"sink": member.value})[0] is None
+    }
+    assert not unresolved, (
+        f"значения Sink, которые tts_node дропает: {unresolved} — "
+        f"рассинхрон rob_box_core.utterance ↔ tts_node (issue #2318)"
+    )
+
+
+def test_voice_tts_request_with_speakers_routes_to_speaker_path():
+    """``sink='speakers'`` идёт в динамики, а НЕ в headset/preview и НЕ в DROP."""
+    node = _make_voice_node()
+    logger = node._test_logger
+    node.dialogue_callback(
+        _msg(
+            {
+                "ssml": "<speak>привет</speak>",
+                "text": "привет",
+                "sink": "speakers",
+            }
+        )
+    )
+
+    node._dispatch_avatar_tts_sink.assert_not_called()
+    node._on_avatar_tts_request_preview.assert_not_called()
+    warn_calls = [str(c) for c, _ in logger.warn.call_args_list]
+    assert not any("unknown sink" in c for c in warn_calls), (
+        f"sink='speakers' (SoT Sink.SPEAKERS) не должен давать DROP, "
+        f"got warns: {warn_calls}"
+    )
+
+
+def test_utterance_to_request_payload_is_not_dropped_end_to_end():
+    """Payload, собранный SoT-сборщиком, проходит маршрутизацию.
+
+    Ближайший к проду вариант проверки: строим запрос ровно тем же
+    вызовом, что и продюсеры (``Utterance(...).to_request()``), и
+    прогоняем через настоящий ``dialogue_callback``.
+    """
+    from rob_box_core.utterance import Sink, Utterance
+
+    node = _make_voice_node()
+    logger = node._test_logger
+    payload = Utterance(text="привет, робот", sink=Sink.SPEAKERS).to_request()
+    assert payload["sink"] == "speakers"  # фиксируем, что SoT шлёт именно это
+
+    node.dialogue_callback(_msg(payload))
+
+    node._dispatch_avatar_tts_sink.assert_not_called()
+    node._on_avatar_tts_request_preview.assert_not_called()
+    warn_calls = [str(c) for c, _ in logger.warn.call_args_list]
+    assert not any(
+        "unknown sink" in c for c in warn_calls
+    ), f"Utterance(sink=Sink.SPEAKERS).to_request() дропнут в tts_node: {warn_calls}"
+
+
+def test_unknown_sink_still_drops_after_2318_fix():
+    """Расширение whitelist НЕ должно превращать его в «пропускай всё»."""
+    node = _make_voice_node()
+    canonical, raw = node._resolve_voice_tts_sink({"sink": "matrix"})
+    assert canonical is None and raw == "matrix"

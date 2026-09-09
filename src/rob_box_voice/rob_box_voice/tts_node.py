@@ -619,6 +619,32 @@ _TTS_PRIORITY_VALUES = frozenset({"operator", "personality", "normal"})
 _TTS_PRIORITY_PREEMPTS = frozenset({"operator"})
 
 
+# Issue #2318 — whitelist поля ``sink`` в ``/voice/tts/request`` и его
+# канонизация. Ключ — то, что реально приходит в payload; значение —
+# каноническое имя, которым дальше по стеку оперируют
+# ``_submit_synthesis(sink=...)`` / ``_sap_publish_for_sink``.
+#
+# ``"speakers"`` — значение ``Sink.SPEAKERS`` из SoT-сборщика
+# ``rob_box_core.utterance`` (ADR-0080 §2.3). Продюсеры (dialogue_node,
+# telegram_node, stt_node, startup_greeting_node, core.speak_helpers)
+# перешли на него в voice-vr 12 (#2197), а consumer в voice-vr 13 (#2198)
+# остался на единственном числе ``"speaker"`` — рассинхрон контракта,
+# из-за которого КАЖДАЯ реплика в динамики уходила в DROP (deploy #2318:
+# «unknown sink='speakers' ... DROP»). Держим оба написания: SoT-имя и
+# исторический ``"speaker"`` (legacy-паблишеры и явный kwarg внутри
+# самого узла).
+#
+# Отсутствие поля и пустая строка → ``"speaker"`` (backward-compat, тот
+# же default, что и до фикса).
+_VOICE_TTS_SINK_ALIASES = {
+    "speaker": "speaker",
+    "speakers": "speaker",
+    "": "speaker",
+    "headset": "headset",
+    "preview": "preview",
+}
+
+
 def _normalize_tts_priority(raw: object) -> str:
     """Whitelist-normalize the ``priority`` field of ``/voice/tts/request``.
 
@@ -2954,6 +2980,15 @@ class TTSNode(Node):
             deprecated ``/avatar/tts/request`` подписки).
           * ``"speaker"`` (default, отсутствие поля = backward-compat) —
             старый путь в динамики через ``_synthesize_and_play``.
+          * ``"speakers"`` (issue #2318) — то же самое, что ``"speaker"``.
+            Это значение ``Sink.SPEAKERS`` из SoT-сборщика
+            ``rob_box_core.utterance`` (ADR-0080 §2.3), которым публикуют
+            ВСЕ пять продюсеров (dialogue_node, telegram_node, stt_node,
+            startup_greeting_node, speak_helpers). До фикса оно не было в
+            whitelist → каждая реплика в динамики уходила в DROP.
+            Канонизируем в ``"speaker"``, чтобы ниже по стеку
+            (``_submit_synthesis(sink=...)`` → ``_sap_publish_for_sink``)
+            остался ровно один вариант написания.
           * Любой другой ``sink`` (включая ``""`` если явно задан) →
             ``canonical = None`` → caller логирует WARN + DROP.
 
@@ -2961,9 +2996,10 @@ class TTSNode(Node):
         не логирует, не публикует, не дёргает синтез.
         """
         raw = chunk_data.get("sink", "speaker")
-        if raw in ("headset", "preview", "speaker", ""):
-            # Нормализуем: отсутствие поля → "speaker" (default).
-            return (raw or "speaker", raw)
+        if raw in _VOICE_TTS_SINK_ALIASES:
+            # Нормализуем: отсутствие поля / "" → "speaker" (default),
+            # "speakers" (Sink.SPEAKERS из SoT) → "speaker".
+            return (_VOICE_TTS_SINK_ALIASES[raw], raw)
         return (None, raw)
 
     def _dispatch_voice_tts_sink(
