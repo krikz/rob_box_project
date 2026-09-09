@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""tars_stats.py — эмпирическая сводка STT-семплов «ТАРС» с шлема (ADR-0076 §2.3).
+"""tars_stats.py — эмпирическая сводка STT-семплов «ТАРС» с шлема (ADR-0077 §2.3).
 
 Читает JSONL-файл, который пишет ``rob_box_voice.core.tars_sample_logger``
 когда ``ROBBOX_STT_COLLECT=1``. Делает **только** сухую сводку — никаких
