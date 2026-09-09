@@ -1173,42 +1173,29 @@ class DialogueNode(Node):
                 )
         return SetParametersResult(successful=True)
 
-    def _resolve_personality_prompt_dir(self) -> Path:
-        """Где лежат ``prompts/`` и ``prompts/skills/`` для personality.
+    def _parse_provider_chain(self) -> tuple[str, ...]:
+        """Разобрать CSV ``llm_providers`` в нормализованный tuple.
 
-        ADR-0083 §2.3 — ``prompt_dir`` часть спек. Возвращаем
-        ``<share_dir>/prompts`` через ``ament_index_python`` —
-        тестовые обёртки (``scripts/dialogue/chat.py``,
-        ``ros2 launch test``) могут подменить через mock ``spec``
-        напрямую, эта функция только точка правды для production.
+        ADR-0083 §2.3 — раньше жило inline в ``_resolve_provider_chain``
+        dialogue_node; теперь единый inline-парсер для personality-ноды
+        (у supervisor'а такой же, ADR-0043 §3.2 / issue #2111).
+        ``deepseek`` — дефолт, если параметр пуст.
         """
-        from ament_index_python.packages import (
-            get_package_share_directory as _ament_probe,
-        )
-        return Path(_ament_probe("rob_box_voice")) / "prompts"
-
-    def _build_personality_spec(self) -> AgentSpec:
-        """Собрать :class:`AgentSpec` для личности робота (ADR-0083 §2.3).
-
-        Единственное место, где ROS-параметры dialogue_node
-        превращаются в декларативный спек. Все 18 полей заполняются
-        здесь; :func:`build_agent` потом собирает по нему ``AgentCore``
-        без знания про rclpy.
-
-        Поведение полностью повторяет то, что раньше жил inline в
-        ``_build_llm`` / ``_build_llm_settings_for`` / ``AgentCore(...)``
-        — побайтово (см. ADR-0083 §1.2 «все расхождения получают имя»).
-        """
-        # Provider chain: ``llm_providers`` (comma-separated) → tuple.
         providers_str = str(
             self.get_parameter("llm_providers").value or "deepseek"
         ).strip()
-        chain: tuple[str, ...] = tuple(
+        return tuple(
             p.strip().lower()
             for p in providers_str.split(",")
             if p.strip()
         )
-        # Global ``temperature`` / ``max_tokens`` → ``spec.settings``.
+
+    def _resolve_global_llm_settings(self) -> LLMSettings | None:
+        """Глобальные ``temperature`` / ``max_tokens`` из ROS-параметров.
+
+        ADR-0083 §2.3 — было частью ``_build_llm_settings_for``.
+        YAML 0 → ``None`` (LLMSettings конвенция: «оставь провайдеру»).
+        """
         try:
             global_temperature = float(
                 self.get_parameter("temperature").value or 0.0
@@ -1221,17 +1208,24 @@ class DialogueNode(Node):
             )
         except Exception:
             global_max_tokens = 0
-        # ``LLMSettings`` uses ``None`` to mean "leave to provider
-        # default"; YAML 0 must translate to ``None`` (см.
-        # dialogue_node.yaml → 0 = no override, ROS double/int can't
-        # tell unset vs zero).
-        spec_settings: LLMSettings | None = None
-        if global_temperature > 0 or global_max_tokens > 0:
-            spec_settings = LLMSettings(
-                temperature=(global_temperature if global_temperature > 0 else None),
-                max_tokens=(global_max_tokens if global_max_tokens > 0 else None),
-            )
-        # Per-provider ``LLMSettings`` overrides (issue #1883).
+        if global_temperature <= 0 and global_max_tokens <= 0:
+            return None
+        return LLMSettings(
+            temperature=(
+                global_temperature if global_temperature > 0 else None
+            ),
+            max_tokens=(global_max_tokens if global_max_tokens > 0 else None),
+        )
+
+    def _resolve_per_provider_llm_settings(
+        self, chain: tuple[str, ...]
+    ) -> dict[str, LLMSettings]:
+        """Per-provider override (issue #1883): ``<name>.temperature/max_tokens``.
+
+        Если для провайдера ничего не задано — он пропускается (не
+        попадает в ``per_provider_settings``, чтобы ``build_agent``
+        увидел «пусто» и не лез в ``None``).
+        """
         per_provider: dict[str, LLMSettings] = {}
         for name in chain:
             try:
@@ -1249,11 +1243,41 @@ class DialogueNode(Node):
             if per_temperature <= 0 and per_max_tokens <= 0:
                 continue
             per_provider[name] = LLMSettings(
-                temperature=(per_temperature if per_temperature > 0 else None),
+                temperature=(
+                    per_temperature if per_temperature > 0 else None
+                ),
                 max_tokens=(per_max_tokens if per_max_tokens > 0 else None),
             )
-        # Health cache: persistent file lives at ``health_cache_path``,
-        # общий на машину (ADR-0083 §1.3 #1).
+        return per_provider
+
+    def _resolve_personality_prompt_dir(self) -> Path:
+        """Где лежат ``prompts/`` и ``prompts/skills/`` для personality.
+
+        ADR-0083 §2.3 — ``prompt_dir`` часть спек. Возвращаем
+        ``<share_dir>/prompts`` через ``ament_index_python`` —
+        тестовые обёртки (``scripts/dialogue/chat.py``,
+        ``ros2 launch test``) могут подменить через mock ``spec``
+        напрямую, эта функция только точка правды для production.
+        """
+        from ament_index_python.packages import (
+            get_package_share_directory as _ament_probe,
+        )
+        return Path(_ament_probe("rob_box_voice")) / "prompts"
+
+    def _build_personality_spec(self) -> AgentSpec:
+        """Собрать :class:`AgentSpec` для личности робота (ADR-0083 §2.3).
+
+        Оркестратор: декомпозирован на 4 хелпера (``_parse_provider_chain``,
+        ``_resolve_global_llm_settings``, ``_resolve_per_provider_llm_settings``,
+        ``_resolve_personality_prompt_dir``) для соблюдения CC-budget
+        ADR-0021 (limit 15). Каждый хелпер покрывает один срез параметров;
+        ``build_agent`` потом собирает по спеке ``AgentCore`` без знания
+        про rclpy.
+        """
+        chain = self._parse_provider_chain()
+        spec_settings = self._resolve_global_llm_settings()
+        per_provider = self._resolve_per_provider_llm_settings(chain)
+
         cache_path_raw = str(
             self.get_parameter("health_cache_path").value or ""
         ).strip()
@@ -1264,13 +1288,8 @@ class DialogueNode(Node):
             )
         except (TypeError, ValueError):
             health_ttl = DEFAULT_HEALTH_TTL_S
-        # Skill slice — нода решает, какие скиллы включать (через
-        # каталог ``skill_names()``). Assembly читает ``prompts/skills/``
-        # по этим именам.
+
         skill_slice: tuple[str, ...] = normalize_skill_slice(skill_names())
-        # Поле ``prompt_dir`` нужно для ``load_system_prompt`` /
-        # ``load_skill_prompts`` — собираем его через ``ament_index``.
-        # Тесты могут подменить, передав свой ``AgentSpec`` напрямую.
         try:
             prompt_dir: Path = self._resolve_personality_prompt_dir()
         except Exception as exc:  # noqa: BLE001 — старт-страховка
@@ -1279,6 +1298,7 @@ class DialogueNode(Node):
                 "spec.prompt_dir будет пустым, load_system_prompt вернёт ''"
             )
             prompt_dir = Path()
+
         return AgentSpec(
             name="personality",
             prompt_dir=prompt_dir,
