@@ -454,6 +454,37 @@ bash <repo>/scripts/agent_flow/round_ensure.sh            # печатает z-{
 bash <repo>/scripts/agent_flow/round_ensure.sh --wait 300 # ждать до 5 мин
 ```
 
+### `round_formation.sh` — единый модуль формирования e2e test-round (issue #2299, 09.09.2026)
+
+**Single source of truth** для ls-remote → max-N → freshness-check → create/
+reuse/recreate. До этого та же логика жила копипастой в `agent-flow-e2e-process.sh:round_ensure()`
+и `round_ensure.sh` с **противоположной** семантикой записи счётчика (DEFERRED
+у автоматики vs IMMEDIATE у ручного — последняя создавала ghost-дрейф на
+ручных прогонах, ретро t_d3aeaa9b).
+
+**Канон (09.09.2026):** оба пути (автоматический и ручной) теперь используют
+этот модуль с DEFERRED-семантикой — счётчик персистится ТОЛЬКО после
+подтверждённого `≥1` запуска раунда (для автоматики — в post-tick cleanup;
+для ручного — оператор может вызвать `rf_persist_counter_if_real_round` явно
+после успешного e2e run).
+
+**Контракт:**
+- `. round_formation.sh` — после `set -euo pipefail` и определения своего `log()`
+- Env: `REPO_DIR`, `GH_REPO`, `FOUNDATION_BRANCH` (default: develop),
+  `TEST_ROUND_PREFIX` (default: `z-{e2e}/test-round-`),
+  `ROUND_COUNTER_FILE` (default: `~/.hermes/state/agent-flow-e2e-round-counter`),
+  `DRY_RUN`, `GIT_PUSH_FN` (default: `git_push_with_cred_fallback`).
+- API:
+  - `round_formation [gh_push_fn_override]` — главная функция. Выставляет
+    `ROUND_BRANCH`, `ROUND_FORMATION_CREATED=1` (если создано/пересоздано) или
+    `ROUND_FORMATION_REUSED=1` (если reuse), `n` / `max_n` / `counter_n`.
+    Counter НЕ пишет.
+  - `rf_persist_counter_if_real_round` — записать counter (≥1 run);
+    вызывать из post-tick cleanup.
+  - `rf_ghost_round_log_and_metric` — маркер `GHOST_ROUND counter_rollback`
+    + cumulative metric `agent-flow-e2e-ghost-rounds-total`; вызывать на
+    0 run'ов вместо записи counter.
+
 ### `agent-flow-cleanup-249.sh` — безопасный cleanup /tmp на build-хосте (ретро 11.08 t_26a6d362)
 
 Удаляет мусор прошлых e2e-ранов на `10.1.1.249` (`yandex_key_*`,
