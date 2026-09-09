@@ -113,20 +113,29 @@ class TestCommandsBasics:
                 f"(ожидается один из {markers}): {cmd.description!r}"
             )
 
-    def test_avatar_aliases_marked_deprecated(self):
-        """Голосвание карточки: ``avatar_*`` помечены deprecated,
-        новые имена — ``supervisor_*`` (по meta-quest-api.md §3, §5.1)."""
+    def test_avatar_canonical_and_supervisor_alias_both_dispatched(self):
+        """[voice-vr 09 / issue #2194] закрыт: ``avatar_*`` — канонические
+        имена (ADR-0080 §1.2), ``supervisor_*`` — legacy-алиасы. Сервер
+        диспатчит ОБА набора имён (см. ws_server.py, блок «канонические
+        имена» рядом с legacy supervisor_* алиасом).
+
+        До закрытия voice-vr 09 этот тест (тогда назывался
+        ``test_avatar_aliases_marked_deprecated``) проверял обратное —
+        что именно ``avatar_*`` не диспатчится, а ``supervisor_*`` — новое
+        имя. Это было названо неверно ещё на этапе постановки задачи:
+        канон — ``avatar_*`` (ADR-0080 §1.2), а ``supervisor_*`` остаётся
+        рабочим legacy-алиасом. Инвертировано вместе с фиксом бага."""
         assert get_command("avatar_set_mode") is not None
-        assert not get_command("avatar_set_mode").server_dispatched
+        assert get_command("avatar_set_mode").server_dispatched
         assert get_command("supervisor_set_mode") is not None
         assert get_command("supervisor_set_mode").server_dispatched
         # И симметрично для floor:
         assert get_command("avatar_acquire_floor") is not None
-        assert not get_command("avatar_acquire_floor").server_dispatched
+        assert get_command("avatar_acquire_floor").server_dispatched
         assert get_command("supervisor_acquire_floor") is not None
         assert get_command("supervisor_acquire_floor").server_dispatched
         assert get_command("avatar_release_floor") is not None
-        assert not get_command("avatar_release_floor").server_dispatched
+        assert get_command("avatar_release_floor").server_dispatched
         assert get_command("supervisor_release_floor") is not None
         assert get_command("supervisor_release_floor").server_dispatched
 

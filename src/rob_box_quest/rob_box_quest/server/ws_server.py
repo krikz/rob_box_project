@@ -2194,7 +2194,10 @@ class WSSServer:
             "avatar_set_mode",
             "avatar_acquire_floor",
             "avatar_release_floor",
-            "avatar_get_state",
+            # [voice-vr 09] avatar_get_state НЕ добавляем: клиент не шлёт ни
+            # его, ни supervisor_get_state (grep по webxr_client/src пуст) —
+            # команда без отправителя. supervisor_get_state остаётся как
+            # legacy alias для обратной совместимости/тестов.
         ):
             # [voice-vr 09] WARNING при использовании устаревших алиасов.
             if cmd.startswith("supervisor_"):
@@ -2232,7 +2235,7 @@ class WSSServer:
                     payload_client_id,
                 )
 
-            if cmd in ("supervisor_get_state", "avatar_get_state"):
+            if cmd == "supervisor_get_state":
                 # poll-эквивалент STATE_UPDATE (§5.1): синхронный ответ.
                 snapshot = self.bridge.supervisor_state()
                 if snapshot is None:
