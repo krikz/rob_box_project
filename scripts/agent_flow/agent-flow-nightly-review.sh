@@ -152,8 +152,8 @@ RETRO_CREATE="${RETRO_CREATE:-$_LIB_DIR_HERE/kanban-retro-create.sh}"
 
 af_load_profile_env ""
 
-command -v python3 >/dev/null 2>&1 || { log "python3 not on PATH — exit 1"; exit 1; }
-[ -f "$RETRO_CREATE" ] || { log "kanban-retro-create.sh не найден: $RETRO_CREATE — exit 1"; exit 1; }
+command -v python3 >/dev/null 2>&1 || { log "python3 not on PATH — exit 1"; af_summary_set error "python3 not on PATH"; af_summary_emit 1; exit 1; }
+[ -f "$RETRO_CREATE" ] || { log "kanban-retro-create.sh не найден: $RETRO_CREATE — exit 1"; af_summary_set error "kanban-retro-create.sh missing"; af_summary_emit 1; exit 1; }
 
 # --- gates -------------------------------------------------------------------
 af_flock_guard_or_exit "$LOCK_FILE"
@@ -175,10 +175,12 @@ _hour_end=$((NIGHTLY_REVIEW_HOUR + NIGHTLY_REVIEW_WINDOW_HOURS))
 if [ "$FORCE" != "true" ]; then
     if [ "$_hour_now" -lt "$NIGHTLY_REVIEW_HOUR" ] || [ "$_hour_now" -ge "$_hour_end" ]; then
         log "вне ночного окна [${NIGHTLY_REVIEW_HOUR}:00, ${_hour_end}:00) — сейчас ${_hour_now}:xx, skip"
+        af_summary_set window "вне окна [${NIGHTLY_REVIEW_HOUR}:00, ${_hour_end}:00) сейчас=${_hour_now}h"; af_summary_emit 0
         exit 0
     fi
     if [ -f "$SENTINEL" ]; then
         log "ревью за ${REVIEW_DATE} уже создано (sentinel ${SENTINEL}) — skip"
+        af_summary_set sentinel "ревью за ${REVIEW_DATE} уже создано"; af_summary_emit 0
         exit 0
     fi
 fi
@@ -795,4 +797,5 @@ fi
 # ни один воркер ещё не смотрел на код, писать JSONL здесь нечего.
 
 log "итог: nightly='${created_nightly:-dry-run}' component_cards=${_comp_created} skipped_cooldown=${_comp_skipped_cooldown} skipped_small=${_comp_skipped_small}"
+af_summary_set ok "nightly='${created_nightly:-dry-run}' component_cards=${_comp_created}"; af_summary_emit 0
 exit 0

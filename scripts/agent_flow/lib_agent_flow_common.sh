@@ -55,6 +55,54 @@ _af_log() {
 }
 
 # ---------------------------------------------------------------------------
+# af_summary_set <kind> [reason...] — запомнить «причину» текущего tick'а.
+#
+# Зачем (issue #2329): скрипты agent-flow пишут логи в stderr (by-design),
+# поэтому stdout при «ничего не делал» (lock held, MAINTENANCE, ночное окно,
+# rate-limit, gh-auth-fail, успешный tick без работы) — пустой, и Hermes cron
+# scheduler.py:5637-5646 сохраняет в output/<job-id>/...md placeholder 156 байт
+# «silent (empty output)». Это нарушает observability по ADR-0018 (honest
+# reporting) и ADR-0079 (nightly-review-persistence): человек, читающий
+# output/-каталог, не видит, какой именно gate skip'нул тик.
+#
+# Контракт: перед `exit 0/1` скрипт зовёт `af_summary_set <kind> <reason>`,
+# а затем `af_summary_emit`. emit пишет ОДНУ строку в stdout вида
+#   summary: kind=<kind> exit=<code> reason="<reason>"
+# (без timestamp, без перевода строки в середине — Hermes cron выводит её
+# как есть в output/-файл).
+#
+# Kind — короткий slug (lock / maintenance / window / sentinel / auth /
+# no-work / ok / error / dry-run / self-test). Reason — произвольный текст
+# (пробелы допустимы, но `\n` — нет: cron ожидает одну строку).
+#
+# Идемпотентность: повторный вызов emit (например, из cleanup-trap после
+# явного emit перед exit) — no-op (флаг _AF_SUMMARY_EMITTED=1).
+# Подавление: _AF_SUPPRESS_SUMMARY=1 для --self-test режимов.
+#
+# Use:
+#   af_summary_set lock "another instance holds $LOCK_FILE"
+#   af_summary_emit 0
+#   exit 0
+# ---------------------------------------------------------------------------
+af_summary_set() {
+    _AF_SUMMARY_KIND="${1:-no-work}"
+    shift || true
+    _AF_SUMMARY_REASON="$*"
+}
+af_summary_kind() { printf '%s' "${_AF_SUMMARY_KIND:-no-work}"; }
+af_summary_reason() { printf '%s' "${_AF_SUMMARY_REASON:-}"; }
+af_summary_emit() {
+    local _ec="${1:-$?}"
+    if [ "${_AF_SUMMARY_EMITTED:-0}" = "1" ]; then return 0; fi
+    _AF_SUMMARY_EMITTED=1
+    if [ "${_AF_SUPPRESS_SUMMARY:-0}" = "1" ]; then return 0; fi
+    printf 'summary: kind=%s exit=%s reason="%s"\n' \
+        "${_AF_SUMMARY_KIND:-no-work}" "${_ec}" "${_AF_SUMMARY_REASON:-}"
+}
+: "${_AF_SUMMARY_KIND:=no-work}"
+: "${_AF_SUMMARY_REASON:=}"
+
+# ---------------------------------------------------------------------------
 # af_load_profile_env [env_path] — подгрузить profile .env.
 #
 # Приоритет: env вызывающего > .env > дефолты скрипта. Намеренно БЕЗ `set -a`:
@@ -112,11 +160,17 @@ af_load_profile_env() {
 af_flock_guard_or_exit() {  # $1=lock_file (default $LOCK_FILE)
     local _lock="${1:-${LOCK_FILE:-}}"
     if [ -z "$_lock" ]; then
-        _af_log "af_flock_guard_or_exit: LOCK_FILE не задан"; exit 1
+        _af_log "af_flock_guard_or_exit: LOCK_FILE не задан"
+        af_summary_set error "LOCK_FILE не задан"; af_summary_emit 1
+        exit 1
     fi
-    exec 9>"$_lock" || { _af_log "cannot open lock $_lock"; exit 1; }
+    exec 9>"$_lock" || { _af_log "cannot open lock $_lock"
+        af_summary_set error "cannot open lock $_lock"; af_summary_emit 1
+        exit 1; }
     if ! flock -n 9; then
-        _af_log "another instance holds $_lock — skip"; exit 0
+        _af_log "another instance holds $_lock — skip"
+        af_summary_set lock "another instance holds $_lock"; af_summary_emit 0
+        exit 0
     fi
     return 0
 }
@@ -140,12 +194,16 @@ af_maintenance_gate_or_exit() {
     if [ -n "${GH_REPO:-}" ]; then
         _remote_ref="${_branch}:${_file}"
         if git ls-remote "https://github.com/${GH_REPO}.git" "$_remote_ref" 2>/dev/null | grep -q .; then
-            _af_log "🛑 MAINTENANCE flag set on remote ${_remote_ref} — skip"; exit 0
+            _af_log "🛑 MAINTENANCE flag set on remote ${_remote_ref} — skip"
+            af_summary_set maintenance "remote ${_remote_ref}"; af_summary_emit 0
+            exit 0
         fi
     fi
     if [ -n "${REPO_DIR:-}" ] && [ -d "$REPO_DIR" ]; then
         if git -C "$REPO_DIR" show "${_branch}:${_file}" >/dev/null 2>&1; then
-            _af_log "🛑 MAINTENANCE flag set locally in ${REPO_DIR} — skip"; exit 0
+            _af_log "🛑 MAINTENANCE flag set locally in ${REPO_DIR} — skip"
+            af_summary_set maintenance "local ${REPO_DIR}:${_branch}:${_file}"; af_summary_emit 0
+            exit 0
         fi
     fi
     return 0
