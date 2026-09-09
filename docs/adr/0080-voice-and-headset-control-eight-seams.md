@@ -339,12 +339,11 @@ build_agent(spec: AgentSpec) -> AgentCore
 - `scheduler/pre_gen.py`, `speculative_executor.py`, `decision.py`,
   `estimator.py`, `quality.py` и их тесты **удаляются**. Живой пакет —
   `scheduler/pregen/*` (ADR-0056).
-- Шина отмены `EventBus` либо отдаётся тому `TaskScheduler`, который реально
-  исполняет задачи (`SchedulerToolExecutor`), либо удаляется вместе с
-  `ReflexLayer`. Держать написанный, но не подключённый механизм запрещено —
-  он читается как существующий (ADR-0018).
+- Шина отмены `EventBus` остаётся внутри `TaskScheduler`. `ReflexLayer`
+  удалён ADR-0086.
 - `CONTEXT.md` приводится в соответствие: спекулятивная генерация
-  **подключена**, не подключены отмена и рефлекс.
+  **подключена**, отмена публикует `scheduler.cancel` envelope внутри
+  планировщика, рефлекс удалён (ADR-0086).
 
 ---
 
