@@ -1,27 +1,41 @@
 #!/usr/bin/env python3
-"""tars_stats.py — эмпирическая сводка STT-семплов «ТАРС» с шлема (ADR-0076 §2.3).
+"""tars_stats.py — эмпирическая сводка STT-семплов «ТАРС» с шлема (ADR-0077 §2.3).
 
 Читает JSONL-файл, который пишет ``rob_box_voice.core.tars_sample_logger``
 когда ``ROBBOX_STT_COLLECT=1``. Делает **только** сухую сводку — никаких
 правок YAML, никакой мутации. Эта утилита — материал для решения Шифу
 о расширении operator wake-list.
 
+Контракт сводки (ADR-0077 §2.3):
+
+* читает JSONL, группирует по ``raw_text`` (нормализация lower + strip);
+* печатает таблицу с **частотой, длительностью, распределением
+  yandex-only vs yandex+vosk, долей wake-хитов**;
+* в режиме ``--diff`` сравнивает с текущим ``docker/vision/config/wake_words.yaml``::operator
+  и печатает **только подсказку** «вот слова, которых нет, но они встречаются
+  N раз на M сегментов». Ничего не правит.
+
 Режимы:
 
-* (по умолчанию) сводка: топ-N вариантов «как STT слышит ТАРС» с частотой
-  и длительностью.
+* (по умолчанию) сводка: топ-N вариантов «как STT слышит ТАРС» с частотой,
+  длительностью и распределением провайдеров.
 * ``--diff``: сверяет с текущим ``docker/vision/config/wake_words.yaml``
   operator namespace и печатает кандидаты на добавление (нечётко — это
   пишет Шифу, не эта утилита).
 
-Запуск:
+Запуск::
 
     python scripts/stt/tars_stats.py data/stt_tars_samples.jsonl
-
     python scripts/stt/tars_stats.py --diff data/stt_tars_samples.jsonl
 
 Скрипт не зависит от rob_box_voice — намеренно, чтобы работал на любой
 машине, где есть только дамп выборки.
+
+Журнал изменений
+----------------
+
+* 2026-09-09 — issue #2223: добавлены колонки ``providers`` (y-only / y+vosk)
+  и итоговая строка ``wake_rate``. ADR-0077 §2.3 теперь выполняется полностью.
 """
 
 from __future__ import annotations
@@ -50,33 +64,98 @@ def load_records(path: Path) -> list[dict]:
     return out
 
 
+def _provider_signature(attempts: list[dict] | None) -> str:
+    """Классифицировать сегмент по списку attempts → 'y_only' / 'y+vosk' / 'none'.
+
+    Логика (ADR-0077 §2.2: ``attempts: [{provider, ok, reason, latency_ms}]``):
+
+    * ``y_only``  — сегмент распознан только Яндексом (vosk не подключался
+      или не вернул ok=True);
+    * ``y+vosk``  — vosk тоже вернул ok=True (fallback отработал);
+    * ``none``    — ни один провайдер не дал ok=True (например пустой STT).
+
+    Используется только поле ``ok`` — это снимок факта успеха, а не latency.
+    """
+    if not attempts:
+        return "none"
+    yandex_ok = any(a.get("provider") == "yandex" and a.get("ok") for a in attempts)
+    vosk_ok = any(a.get("provider") == "vosk" and a.get("ok") for a in attempts)
+    if yandex_ok and vosk_ok:
+        return "y+vosk"
+    if yandex_ok:
+        return "y_only"
+    return "none"
+
+
 def summarize(records: list[dict], top: int = 15) -> None:
-    """Сводка по фразам (нормализованный lower + strip)."""
+    """Сводка по фразам (нормализованный lower + strip).
+
+    Колонки (ADR-0077 §2.3):
+
+    * ``count``     — сколько раз этот raw_text встретился;
+    * ``wake``      — yes/no — был ли в этом raw_text операторский wake;
+    * ``avg_dur``   — средняя длительность wake-сегмента в секундах;
+    * ``providers`` — ``y_only`` (только Яндекс дал ok) / ``y+vosk`` (оба);
+      показывает, нужен ли был fallback на Vosk для данной фразы;
+    * ``raw_text``  — нормализованный текст (lower + strip, обрезан до 60).
+
+    В конце — блок итогов: ``wake_rate = wake_hits / total_with_text``
+    в процентах, чтобы Шифу видел «сколько из услышанного — реальный wake».
+    """
     if not records:
         print("🔇 записей нет — выборка пуста или сбор отключён")
         return
+
     counter: Counter[tuple[str, bool]] = Counter()
     durations: dict[tuple[str, bool], list[float]] = {}
+    provider_buckets: dict[tuple[str, bool], Counter[str]] = {}
     raw_seen: int = 0
+    wake_hits: int = 0
+
     for r in records:
         text = (r.get("raw_text") or "").strip().lower()
         has_wake = bool(r.get("has_operator_wake", False))
+        sig = _provider_signature(r.get("attempts"))
         counter[(text, has_wake)] += 1
         durations.setdefault((text, has_wake), []).append(float(r.get("duration_s") or 0.0))
+        provider_buckets.setdefault((text, has_wake), Counter())[sig] += 1
         if text:
             raw_seen += 1
+        if has_wake:
+            wake_hits += 1
 
+    wake_rate = (wake_hits / raw_seen * 100.0) if raw_seen else 0.0
     print(f"📊 всего записей: {len(records)} (с непустым raw_text: {raw_seen})")
-    print(f"📊 с has_operator_wake=True: {sum(1 for r in records if r.get('has_operator_wake'))}")
+    print(f"📊 с has_operator_wake=True: {wake_hits}")
+    print(f"📊 wake_rate = wake_hits / raw_seen = {wake_rate:.1f}%")
     print()
-    print(f"{'count':>5}  {'wake':<5}  {'avg_dur':<7}  raw_text (нормализованный)")
-    print(f"{'-----':>5}  {'-----':<5}  {'-------':<7}  ----------------------")
+    print(f"{'count':>5}  {'wake':<5}  {'avg_dur':<7}  {'providers':<10}  raw_text (нормализованный)")
+    print(f"{'-----':>5}  {'-----':<5}  {'-------':<7}  {'----------':<10}  ----------------------")
     for (text, has_wake), cnt in counter.most_common(top):
         dur = durations[(text, has_wake)]
         avg = sum(dur) / len(dur) if dur else 0.0
+        buckets = provider_buckets[(text, has_wake)]
+        # Главный сигнал: был ли задействован fallback (vosk).
+        if buckets.get("y+vosk", 0) > 0:
+            providers = f"y+vosk({buckets['y+vosk']})"
+        elif buckets.get("y_only", 0) > 0:
+            providers = f"y_only({buckets['y_only']})"
+        else:
+            providers = f"none({buckets.get('none', 0)})"
         wake_mark = "YES" if has_wake else "no"
         display = text[:60] + ("…" if len(text) > 60 else "")
-        print(f"{cnt:>5}  {wake_mark:<5}  {avg:>6.2f}с  {display}")
+        print(f"{cnt:>5}  {wake_mark:<5}  {avg:>6.2f}с  {providers:<10}  {display}")
+
+    # Блок провайдеров по всей выборке — отдельный «снапшот», чтобы Шифу
+    # видел общий фон: сколько сегментов вообще требовали fallback.
+    total_buckets: Counter[str] = Counter()
+    for c in provider_buckets.values():
+        total_buckets.update(c)
+    print()
+    print(f"📊 провайдеры по всей выборке: "
+          f"y_only={total_buckets.get('y_only', 0)}, "
+          f"y+vosk={total_buckets.get('y+vosk', 0)}, "
+          f"none={total_buckets.get('none', 0)}")
 
 
 def diff_against_yaml(records: list[dict], yaml_path: Path) -> None:
