@@ -10,8 +10,17 @@
 #   - Sound card WM8960 (3.5mm jack для TTS output)
 #   - NeoPixel LED матрицы (через led_matrix_compositor)
 ARG BASE_IMAGE=ghcr.io/krikz/rob_box:voice-base-humble-latest
-# Версия сборки для инвалидации кеша при изменении зависимостей
-ARG BUILD_VERSION=2026-03-08-app-layer
+# Issue #2314 (devops, raw-evidence): после deploy z-{e2e}/test-round-387
+# quest_node падал с `ModuleNotFoundError: rob_box_core.avatar_command`.
+# Root cause: SOURCE_HASH в L-Build Vision Pi Services.yml не покрывал
+# src/rob_box_core → слой `COPY src/rob_box_core/rob_box_core`
+# не инвалидировался при правках rob_box_core → avatar_command.py
+# не доезжал до image. Лечение SOURCE_HASH сделано в том же PR.
+# Этот ARG BUILD_VERSION — независимая страховка: bump'аем на каждый
+# релиз app-layer'а, чтобы buildx cache не переиспользовал старые
+# слои при изменениях базового образа или в случае любого другого
+# непредвиденного cache hit. Согласовано с supervisor/Dockerfile.
+ARG BUILD_VERSION=2026-09-09-core-cache-fix
 
 FROM ${BASE_IMAGE}
 

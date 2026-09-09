@@ -219,8 +219,19 @@ jobs:
           GHCR_TAG="${IMAGE_PREFIX}:voice-assistant-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
           LOCAL_TAG="${LOCAL_PREFIX}:voice-assistant-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
 
-          # Вычисляем hash Python исходников для инвалидации кеша
-          SOURCE_HASH=$(find src/rob_box_voice/rob_box_voice src/rob_box_animations/rob_box_animations -type f -name "*.py" | sort | xargs sha256sum | sha256sum | awk '{print $1}')
+          # Вычисляем hash Python исходников для инвалидации кеша.
+          # Issue #2314 (devops): регрессия avatar_command повторялась потому,
+          # SOURCE_HASH не покрывал rob_box_core, а voice_assistant/Dockerfile
+          # делает `COPY src/rob_box_core/rob_box_core /ws/src/.../rob_box_core`.
+          # Когда в rob_box_core добавляется новый модуль (avatar_command.py
+          # добавлен 02.09.2026 в 824f3e34, мерж в 4386bb92), слой COPY
+          # не инвалидируется → buildx переиспользует старый слой →
+          # avatar_command.py не попадает в image → ModuleNotFoundError
+          # на старте quest_node (restart loop на Vision Pi).
+          # Лечение: обязательно включаем src/rob_box_core в SOURCE_HASH
+          # для всех сервисов, импортирующих rob_box_core (voice/telegram/
+          # supervisor/quest — проверено grep'ом 09.09.2026).
+          SOURCE_HASH=$(find src/rob_box_voice/rob_box_voice src/rob_box_animations/rob_box_animations src/rob_box_core -type f -name "*.py" 2>/dev/null | sort | xargs sha256sum | sha256sum | awk '{print $1}')
 
           docker buildx build \
             --platform linux/arm64 \
@@ -335,8 +346,12 @@ jobs:
           GHCR_TAG="${IMAGE_PREFIX}:telegram-bot-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
           LOCAL_TAG="${LOCAL_PREFIX}:telegram-bot-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
 
-          # Вычисляем hash Python исходников для инвалидации кеша
-          SOURCE_HASH=$(find src/rob_box_telegram/rob_box_telegram -type f -name "*.py" | sort | xargs sha256sum | sha256sum | awk '{print $1}')
+          # Вычисляем hash Python исходников для инвалидации кеша.
+          # Issue #2314: telegram_node.py импортирует rob_box_core
+          # (AV-22 handlers) — добавляем rob_box_core в SOURCE_HASH, чтобы
+          # изменения в rob_box_core (avatar_command и др.) инвалидировали
+          # слой COPY в telegram-bot/Dockerfile.
+          SOURCE_HASH=$(find src/rob_box_telegram/rob_box_telegram src/rob_box_core -type f -name "*.py" 2>/dev/null | sort | xargs sha256sum | sha256sum | awk '{print $1}')
 
           docker buildx build \
             --platform linux/arm64 \
@@ -419,7 +434,11 @@ jobs:
           LOCAL_TAG="${LOCAL_PREFIX}:supervisor-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
 
           # Хеш Python исходников для инвалидации кеша supervisor-слоя.
-          SOURCE_HASH=$(find src/rob_box_supervisor/rob_box_supervisor -type f -name "*.py" | sort | xargs sha256sum | sha256sum | awk '{print $1}')
+          # Issue #2314: supervisor_node.py импортирует rob_box_core —
+          # добавляем rob_box_core в SOURCE_HASH, иначе изменения в
+          # rob_box_core не инвалидируют COPY-слой в supervisor/Dockerfile
+          # (тот же класс багов, что с voice-assistant).
+          SOURCE_HASH=$(find src/rob_box_supervisor/rob_box_supervisor src/rob_box_core -type f -name "*.py" 2>/dev/null | sort | xargs sha256sum | sha256sum | awk '{print $1}')
 
           docker buildx build \
             --platform linux/arm64 \
@@ -466,8 +485,12 @@ jobs:
           LOCAL_TAG="${LOCAL_PREFIX}:quest-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
 
           # Хеш Python + TS исходников для инвалидации build cache.
+          # Issue #2314: quest_node.py импортирует rob_box_core (avatar_command)
+          # — добавляем rob_box_core в SOURCE_HASH, иначе изменения в
+          # rob_box_core не инвалидируют COPY-слой в quest/Dockerfile.
           SOURCE_HASH=$( (find src/rob_box_quest/rob_box_quest -type f -name "*.py"; \
-                          find src/rob_box_quest/webxr_client -type f \( -name "*.ts" -o -name "*.json" -o -name "*.html" \)) \
+                          find src/rob_box_quest/webxr_client -type f \( -name "*.ts" -o -name "*.json" -o -name "*.html" \); \
+                          find src/rob_box_core -type f -name "*.py") \
                         | sort | xargs sha256sum 2>/dev/null | sha256sum | awk '{print $1}')
 
           docker buildx build \
