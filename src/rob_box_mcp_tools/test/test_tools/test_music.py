@@ -42,6 +42,7 @@ from rob_box_mcp_tools.tools.music import (  # noqa: E402
     StopMusicTool,
     SetVibePresetTool,
     GetMusicStateTool,
+    LookupMelodyTool,
     TrackLibrary,
 )
 
@@ -2405,6 +2406,67 @@ class TestGetMusicStateTool:
         assert result.success is True
         assert "SuperCollider" in result.message
         assert "Renardo" in result.message
+
+
+class TestLookupMelodyTool:
+    """Тул поиска известной мелодии в медиатеке и её воспроизведения."""
+
+    def _make_tool(self, mock_node, library=None, manager=None) -> LookupMelodyTool:
+        library = library if library is not None else Mock()
+        manager = manager if manager is not None else Mock()
+        return LookupMelodyTool(mock_node, library, manager)
+
+    def test_tool_name(self, mock_node):
+        assert self._make_tool(mock_node).name == "lookup_melody"
+
+    def test_tool_is_not_destructive(self, mock_node):
+        assert self._make_tool(mock_node).destructive is False
+
+    def test_found_melody_is_played(self, mock_node):
+        library = Mock()
+        library.find_melody.return_value = {
+            "name": "kuznechik",
+            "title": "В траве сидел кузнечик",
+            "code": "p1 >> pluck([4,4,2])",
+        }
+        manager = Mock()
+        manager.execute_code.return_value = {"success": True}
+        tool = self._make_tool(mock_node, library=library, manager=manager)
+        result = tool.execute("кузнечик")
+        assert result.success is True
+        assert "Играю" in result.message
+        manager.execute_code.assert_called_once_with(
+            "p1 >> pluck([4,4,2])", pattern_name="kuznechik"
+        )
+
+    def test_miss_returns_honest_error(self, mock_node):
+        library = Mock()
+        library.find_melody.return_value = None
+        tool = self._make_tool(mock_node, library=library)
+        result = tool.execute("шопен")
+        assert result.success is False
+        assert "не знаешь точных нот" in result.error
+
+
+def test_find_melody_resolves_slug_title_and_tag(tmp_path):
+    """find_melody ищет по slug (транслит), title и tags."""
+    lib = TrackLibrary(db_path=str(tmp_path / "melodies.db"))
+    lib._conn.execute(
+        "ALTER TABLE music_tracks ADD COLUMN type TEXT NOT NULL DEFAULT 'track'"
+    )
+    lib.save_track(
+        name="kuznechik",
+        code="p1 >> pluck([4,4,2])",
+        title="В траве сидел кузнечик",
+        tags=["кузнечик"],
+    )
+    lib._conn.execute("UPDATE music_tracks SET type='melody' WHERE name='kuznechik'")
+    lib._conn.commit()
+
+    assert lib.find_melody("кузнечик")["name"] == "kuznechik"      # tag match
+    assert lib.find_melody("Kuznechik")["name"] == "kuznechik"     # slug match
+    assert lib.find_melody("в траве")["name"] == "kuznechik"       # title substring
+    assert lib.find_melody("шопен") is None
 
 
 # ---------------------------------------------------------------------------

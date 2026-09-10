@@ -65,6 +65,7 @@ from .tools import (
     MemoryContextTool,
     MusicManager,
     TrackLibrary,
+    RtttlLibrary,
     ExecuteMusicCodeTool,
     ComposeMusicTool,
     StopMusicTool,
@@ -76,6 +77,8 @@ from .tools import (
     DeleteTrackTool,
     SetDjModeTool,
     SearchSamplesTool,
+    LookupMelodyTool,
+    SearchMelodyTool,
     FaqSearchTool,
     SearchWebTool,
     # Issue #2113 — TARS 2 metrics panel (operator.admin). Публикует
@@ -941,6 +944,16 @@ class MCPServer(Node):
         self.registry.register(SetDjModeTool(self, music_manager))
         self.registry.register(SearchSamplesTool(self))
 
+        # RTTTL-библиотека (архив data/rtttl_melodies.jsonl.gz) — независима от
+        # SQLite. Поиск по имени/жанру + конвертация RTTTL→Renardo при игре.
+        rtttl_library: Optional[RtttlLibrary] = None
+        try:
+            rtttl_library = RtttlLibrary()
+            self.registry.register(SearchMelodyTool(self, rtttl_library))
+            self.get_logger().info(f"🎵 RTTTL library: {rtttl_library.total()} мелодий")
+        except Exception as exc:
+            self.get_logger().error(f"❌ RTTTL library disabled: {exc}")
+
         try:
             track_library = TrackLibrary()
         except Exception as exc:
@@ -955,6 +968,7 @@ class MCPServer(Node):
         self.registry.register(ListTracksTool(self, track_library))
         self.registry.register(LoadTrackTool(self, track_library, music_manager))
         self.registry.register(DeleteTrackTool(self, track_library))
+        self.registry.register(LookupMelodyTool(self, track_library, music_manager, rtttl_library))
 
         # Issue #1392 — MiniMax music generation + persistent library.
         # Graceful degradation: any failure (no API key, no /data volume,

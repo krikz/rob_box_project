@@ -44,6 +44,8 @@ from ..core.arranger import (
     spec_from_flat,
 )
 from ..core import renardo_sanitizer
+from ..core.rtttl import rtttl_to_renardo
+from ..core.rtttl_library import RtttlLibrary
 
 # Live 13.08 — символы сэмплов в play("x-o-") для предзагрузки буферов.
 _PLAY_SYMBOLS_RE = re.compile(r'play\(\s*"([^"]*)"')
@@ -2781,6 +2783,48 @@ class TrackLibrary:
         full["play_count"] += 1  # reflect incremented value
         return {"success": True, "code": code, "track": full}
 
+    def find_melody(self, query: str) -> Optional[Dict[str, Any]]:
+        """Найти известную мелодию (``type='melody'``) по имени/заголовку/тегу.
+
+        Ищет регистро-независимо по ``name`` (slug), ``title`` и ``tags``
+        (алиасы). Точное совпадение slug (через транслитерацию :meth:`_slug`)
+        имеет приоритет над подстрочным совпадением.
+
+        Args:
+            query: Что юзер назвал («кузнечик», «имперский марш»).
+
+        Returns:
+            Запись мелодии с ``code``, либо ``None`` если не нашлось или
+            колонка ``type`` ещё не добавлена (миграция 006 не применена).
+        """
+        q = (query or "").strip().lower()
+        if not q:
+            return None
+        slug = self._slug(query)
+        with self._lock:
+            try:
+                rows = self._conn.execute(
+                    "SELECT * FROM music_tracks WHERE type = 'melody'"
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return None
+        entries = [self._row_to_dict(r, include_code=True) for r in rows]
+        # Точное совпадение slug — приоритет.
+        for entry in entries:
+            if slug and slug == entry.get("name"):
+                return entry
+        # Подстрочное совпадение по name/title/tags.
+        for entry in entries:
+            names = [
+                entry.get("name") or "",
+                entry.get("title") or "",
+                *(entry.get("tags") or []),
+            ]
+            hay = " ".join(str(n).lower() for n in names)
+            if q in hay:
+                return entry
+        return None
+
     def delete_track(self, name: str) -> Dict[str, Any]:
         """Удалить трек из медиатеки.
 
@@ -2801,6 +2845,198 @@ class TrackLibrary:
         if not deleted:
             return {"success": False, "error": f"Трек '{slug}' не найден"}
         return {"success": True, "message": f"Трек '{slug}' удалён из медиатеки"}
+
+
+class LookupMelodyTool(MCPTool):
+    """Найти известную мелодию по имени и сыграть её.
+
+    Ищет сначала в RTTTL-библиотеке (архив ``data/rtttl_melodies.jsonl.gz``,
+    10460 готовых мелодий) — находит сырую RTTTL-строку, конвертирует её в
+    Renardo (``core.rtttl.rtttl_to_renardo``) и играет. Если в архиве нет —
+    фолбэк на курируемые мелодии ``music_tracks`` (012: русские народные,
+    degree-based). Это не допускает ошибку #1810 — сыграть гамму и назвать
+    её «кузнечиком».
+    """
+
+    def __init__(
+        self,
+        node,
+        library: TrackLibrary,
+        manager: MusicManager,
+        rtttl_library: Optional[RtttlLibrary] = None,
+    ) -> None:
+        super().__init__(node)
+        self._library = library
+        self._manager = manager
+        self._rtttl_library = rtttl_library
+
+    @property
+    def name(self) -> str:
+        return "lookup_melody"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Найти и сыграть известную мелодию по имени. Вызывай ПЕРВЫМ "
+            "делом, когда юзер просит сыграть конкретную мелодию по имени "
+            "(«кузнечик», «имперский марш», «happy birthday», «ёлочка», "
+            "«jingle bells»): не импровизируй по памяти и не выдавай гамму "
+            "за мелодию. Если не нашлось — честно скажи, что не знаешь "
+            "точных нот."
+        )
+
+    @property
+    def parameters(self) -> List[MCPToolParameter]:
+        return [
+            MCPToolParameter(
+                name="name",
+                type="string",
+                description="Название мелодии: «кузнечик», «имперский марш», "
+                "«happy birthday», «ёлочка», «jingle bells»…",
+                required=True,
+            ),
+        ]
+
+    @property
+    def execution_type(self) -> ToolExecutionType:
+        return ToolExecutionType.FAST
+
+    @property
+    def destructive(self) -> bool:
+        return False
+
+    def execute(self, name: str) -> MCPToolResult:
+        """Найти мелодию и сыграть её: сначала RTTTL-архив, потом SQLite."""
+        # 1. RTTTL-библиотека (готовые ноты из интернета) — приоритет.
+        if self._rtttl_library is not None:
+            rec = self._rtttl_library.get(name)
+            if rec is not None:
+                code = rtttl_to_renardo(rec["rtttl"], synth=_synth_for(rec))
+                result = self._manager.execute_code(
+                    code, pattern_name=rec.get("name", "melody")
+                )
+                if not result["success"]:
+                    return MCPToolResult(success=False, error=result["error"])
+                return MCPToolResult(
+                    success=True,
+                    data={
+                        "name": rec.get("name"),
+                        "title": rec.get("title"),
+                        "rtttl": rec.get("rtttl"),
+                    },
+                    message=f"Играю {rec.get('title') or rec.get('name')}.",
+                )
+        # 2. Фолбэк — курируемые мелодии в SQLite (type='melody', миграция 012).
+        entry = self._library.find_melody(name)
+        if entry is None:
+            return MCPToolResult(
+                success=False,
+                error=(
+                    f"Мелодия {name!r} не найдена в библиотеке. Скажи юзеру "
+                    "честно, что не знаешь точных нот, и предложи сыграть "
+                    "что-то в похожем духе — НЕ выдавай импровизацию за оригинал."
+                ),
+            )
+        result = self._manager.execute_code(
+            entry["code"], pattern_name=entry.get("name", "melody")
+        )
+        if not result["success"]:
+            return MCPToolResult(success=False, error=result["error"])
+        return MCPToolResult(
+            success=True,
+            data={"name": entry.get("name"), "title": entry.get("title")},
+            message=f"Играю {entry.get('title') or entry.get('name')}.",
+        )
+
+
+_SYNTH_BY_TAG = [
+    ("game", "square"),
+    ("anthem", "brass"),
+    ("christmas", "bell"),
+    ("movie", "brass"),
+    ("classical", "pianovel"),
+]
+
+
+def _synth_for(rec: Dict[str, Any]) -> str:
+    """Подобрать инструмент Renardo по тегам мелодии (по умолчанию pluck)."""
+    tags = rec.get("tags") or []
+    for tag, synth in _SYNTH_BY_TAG:
+        if tag in tags:
+            return synth
+    return "pluck"
+
+
+class SearchMelodyTool(MCPTool):
+    """Поиск по RTTTL-библиотеке (10460 готовых мелодий) по имени/жанру/тегу.
+
+    Возвращает кандидатов (метаданные, без нот). Ноты конкретной мелодии
+    берутся через lookup_melody. Нужен, когда юзер хочет не одну мелодию, а
+    выбор: «найди новогодние», «что есть из игр?».
+    """
+
+    def __init__(self, node, library: RtttlLibrary) -> None:
+        super().__init__(node)
+        self._library = library
+
+    @property
+    def name(self) -> str:
+        return "search_melody"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Найти мелодии в RTTTL-библиотеке по названию/жанру/тегу "
+            "(«christmas», «mario», «anthem», «имперский марш»). Возвращает "
+            "до limit кандидатов с названием, артистом и тегами. Русские "
+            "названия переводи в английские/известное имя перед поиском. "
+            "Чтобы СЫГРАТЬ конкретную — вызови lookup_melody(name=...)."
+        )
+
+    @property
+    def parameters(self) -> List[MCPToolParameter]:
+        return [
+            MCPToolParameter(
+                name="query",
+                type="string",
+                description="Строка поиска: имя, артист, жанр или тег.",
+                required=True,
+            ),
+            MCPToolParameter(
+                name="limit",
+                type="integer",
+                description="Сколько кандидатов вернуть (по умолчанию 20).",
+                required=False,
+            ),
+        ]
+
+    @property
+    def execution_type(self) -> ToolExecutionType:
+        return ToolExecutionType.FAST
+
+    @property
+    def destructive(self) -> bool:
+        return False
+
+    def execute(self, query: str, limit: int = 20) -> MCPToolResult:
+        try:
+            limit = max(1, min(50, int(limit or 20)))
+        except (TypeError, ValueError):
+            limit = 20
+        hits = self._library.search(query, limit=limit)
+        if not hits:
+            return MCPToolResult(
+                success=False,
+                error=(
+                    f"По запросу {query!r} ничего не найдено в RTTTL-библиотеке. "
+                    "Скажи честно и предложи поискать по-другому."
+                ),
+            )
+        return MCPToolResult(
+            success=True,
+            data={"melodies": hits, "total": len(hits)},
+            message=f"Найдено {len(hits)} мелодий по запросу {query!r}.",
+        )
 
 
 # ---------------------------------------------------------------------------

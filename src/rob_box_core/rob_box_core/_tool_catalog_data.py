@@ -1466,6 +1466,35 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'skill': ('renardo-library',)},
     {   'llm_visible': True,
         'read_only': False,
+        'destructive': False,
+        'idempotent': False,
+        'execution_type': 'fast',
+        'name': 'lookup_melody',
+        'description': 'Найти и сыграть известную мелодию по имени. Вызывай ПЕРВЫМ '
+                       'делом, когда юзер просит сыграть конкретную мелодию по имени '
+                       '(«кузнечик», «имперский марш», «happy birthday», «ёлочка», '
+                       '«jingle bells»): не импровизируй по памяти и не выдавай гамму '
+                       'за мелодию. Если не нашлось — честно скажи, что не знаешь '
+                       'точных нот.',
+        'parameters': {   'type': 'object',
+                          'properties': {   'name': {   'type': 'string',
+                                                        'description': 'Название '
+                                                                       'мелодии: '
+                                                                       '«кузнечик», '
+                                                                       '«имперский '
+                                                                       'марш», «happy '
+                                                                       'birthday», '
+                                                                       '«ёлочка», '
+                                                                       '«jingle '
+                                                                       'bells»…'}},
+                          'required': ['name'],
+                          'additionalProperties': False},
+        'signature': {   'params': ['name'],
+                         'required': ['name'],
+                         'accepts_kwargs': False},
+        'skill': ('composer',)},
+    {   'llm_visible': True,
+        'read_only': False,
         'destructive': True,
         'idempotent': False,
         'execution_type': 'medium',
@@ -2180,6 +2209,35 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                          'required': ['text'],
                          'accepts_kwargs': False},
         'skill': ()},
+    {   'llm_visible': True,
+        'read_only': False,
+        'destructive': False,
+        'idempotent': False,
+        'execution_type': 'fast',
+        'name': 'search_melody',
+        'description': 'Найти мелодии в RTTTL-библиотеке по названию/жанру/тегу '
+                       '(«christmas», «mario», «anthem», «имперский марш»). Возвращает '
+                       'до limit кандидатов с названием, артистом и тегами. Русские '
+                       'названия переводи в английские/известное имя перед поиском. '
+                       'Чтобы СЫГРАТЬ конкретную — вызови lookup_melody(name=...).',
+        'parameters': {   'type': 'object',
+                          'properties': {   'query': {   'type': 'string',
+                                                         'description': 'Строка '
+                                                                        'поиска: имя, '
+                                                                        'артист, жанр '
+                                                                        'или тег.'},
+                                            'limit': {   'type': 'integer',
+                                                         'description': 'Сколько '
+                                                                        'кандидатов '
+                                                                        'вернуть (по '
+                                                                        'умолчанию '
+                                                                        '20).'}},
+                          'required': ['query'],
+                          'additionalProperties': False},
+        'signature': {   'params': ['query', 'limit'],
+                         'required': ['query'],
+                         'accepts_kwargs': False},
+        'skill': ('composer',)},
     {   'llm_visible': True,
         'read_only': True,
         'destructive': False,
