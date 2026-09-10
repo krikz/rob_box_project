@@ -15,7 +15,6 @@ music.py - Инструменты для управления музыкой в 
 - DeleteTrackTool: Удалить трек из медиатеки
 """
 
-import ast
 import json
 import os
 import re
@@ -44,18 +43,7 @@ from ..core.arranger import (
     render,
     spec_from_flat,
 )
-
-# ---------------------------------------------------------------------------
-# Safety filter — compiled once at import time
-# ---------------------------------------------------------------------------
-
-_BLOCKED_TOKENS = re.compile(
-    r"\b("
-    r"import|os|sys|subprocess|shutil|socket|requests|urllib|http|ftplib|"
-    r"importlib|builtins|__import__|__builtins__|__class__|__subclasses__|"
-    r"open|exec|eval|compile|globals|locals|vars|delattr"
-    r")\b"
-)
+from ..core import renardo_sanitizer
 
 # Live 13.08 — символы сэмплов в play("x-o-") для предзагрузки буферов.
 _PLAY_SYMBOLS_RE = re.compile(r'play\(\s*"([^"]*)"')
@@ -79,76 +67,12 @@ _RENARDO_PLAYER_NAMES: frozenset = frozenset(
 #: comments or whitespace can survive this.
 _PATTERN_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,31}$")
 
-#: Reflection builtins that stay allowed (legitimate Renardo use — e.g.
-#: ``Clock.future(8, lambda: setattr(Clock, "bpm", 170))``) but only when the
-#: attribute name is a plain string literal, never a computed one.
-_LITERAL_ATTR_BUILTINS: frozenset = frozenset({"getattr", "setattr", "hasattr"})
-
-# ---------------------------------------------------------------------------
-# Issue #1016 — music-quality guardrail (dramaturgy validator)
-# ---------------------------------------------------------------------------
-# The safety filter above blocks *dangerous system tokens*. This separate
-# guardrail validates *musical quality* before the code reaches Renardo so
-# the LLM cannot regenerate a static 4-8 note loop:
-#
-#   1. Absolute frequencies (freq=440 / hz=220 / midinote=69) are rejected
-#      — Renardo wants scale *degrees* (p1 >> pluck([0,4,7])), not Hz.
-#   2. Every non-play player must carry an explicit ``dur=`` — otherwise
-#      the pattern defaults to a staccato click-train.
-#   3. (soft) A multi-part track without any developing pattern
-#      (``.every`` / ``Pvar`` / ``linvar`` / ``Clock.future``) is a static
-#      loop — warn so the LLM can fix it before the user hears it.
-#
-# Errors block execution; warnings are appended to the result message.
-
-_ABSOLUTE_FREQ_RE = re.compile(
-    r"\b(?:freq|frequency|hz|midinote|note)\s*=\s*(\d+(?:\.\d+)?)"
-)
-# Player creation lines: `p1 >> pluck([0,2,4], dur=0.5)` / `d1 >> play("x-o-")`
-#
-# 🔴 FIX (live 02.09): аргументы захватываются ДО КОНЦА СТРОКИ, а не до
-# первой закрывающей скобки. С `[^)]*` любая вложенная скобка обрывала
-# захват, и всё, что за ней, для валидатора не существовало. Аккорд пэда —
-# PGroup, то есть круглые скобки (`p3 >> warmpad((0, 2, 4), dur=4, ...)`):
-# захват обрывался на `(0, 2, 4)`, dur= в аргументы не попадал, и правило
-# «у каждого не-play плеера должен быть dur» ругалось на строку, где dur
-# есть. Та же слепота касалась inline `var(...)`/`Pvar(...)`.
-_PLAYER_LINE_RE = re.compile(r"^\s*(\w+)\s*>>\s*(\w+)\s*\((.*)\)\s*$", re.MULTILINE)
-# Developing patterns that break a static loop (issue #1016).
-_DEV_PATTERN_RE = re.compile(
-    r"\.every\(|Pvar\(|pvar\(|linvar\(|var\(|Clock\.future|chop=|stutter|shuffle|reverse"
-)
-# Hard-blocked hardware constraints (live 20.08): deepseek игнорирует
-# промпт-запреты, поэтому ловим на уровне кода. chop= (не 0) → щелчки на
-# 16 kHz DAC; spack= (не 0) → сырые глитчевые сэмплы pitchglitch-пака.
-_CHOP_RE = re.compile(r"\bchop\s*=\s*(?!0\b)")
-_SPACK_NONZERO_RE = re.compile(r"\bspack\s*=\s*[1-9]")
-
-# Issue #1804 — на роботе физически смонтированы только d1-d3/p1-p3.
-# Токен слева от ``>>`` в форме [dpsl]+цифра — это renardo-плеер; если он
-# вне допустимой шестёрки, код обязан переставить слой в свободный слот
-# (см. ``_remap_illegal_slots``), а не молча дать модели написать в d4/p5.
-_ALLOWED_PLAYER_SLOTS: Tuple[str, ...] = ("d1", "d2", "d3", "p1", "p2", "p3")
-_ALLOWED_PLAYER_SLOTS_SET: frozenset = frozenset(_ALLOWED_PLAYER_SLOTS)
-_PLAYER_ASSIGN_RE = re.compile(
-    r"^(?P<indent>[ \t]*)(?P<name>[dpsl]\d+)(?P<arrow>\s*>>\s*)(?P<synth>\w+)\s*\(",
-    re.MULTILINE,
-)
-
-# Issue #1803 — длина рисунка play("...") задаёт его период; если она не
-# делит такт, рисунок плывёт относительно соседних слоёв на каждом
-# повторе (см. ``_fix_pattern_length``).
-_PLAY_PATTERN_LEN_RE = re.compile(r"play\((\s*)(['\"])([^'\"]*)\2")
+# Код-санация Renardo вынесена в core/renardo_sanitizer (единый seam).
 
 
 # ---------------------------------------------------------------------------
 # MusicManager
 # ---------------------------------------------------------------------------
-
-
-def _is_dunder(name: str) -> bool:
-    """``True`` для ``__name__``-подобных имён (см. :meth:`MusicManager._filter_code_ast`)."""
-    return name.startswith("__") and name.endswith("__")
 
 
 # 🔴 FIX (live 30.08): этот список ОБЯЗАН покрывать всю палитру,
@@ -1088,379 +1012,41 @@ class MusicManager:
         return self._master_gain
 
     # ------------------------------------------------------------------
-    # Code safety filter
+    # Code safety filter — логика вынесена в core/renardo_sanitizer
+    # (единый seam). Обёртки ниже оставлены для обратной совместимости
+    # тестов, которые зовут приватные методы напрямую.
     # ------------------------------------------------------------------
 
     def _filter_code(self, code: str) -> Tuple[bool, str]:
-        """Проверить код на наличие опасных конструкций.
-
-        Двухслойная проверка:
-
-        1. Текстовый blocklist (``_BLOCKED_TOKENS``) — быстрый отсев
-           очевидных ``import`` / ``os`` / ``eval``.
-        2. AST-проход (:meth:`_filter_code_ast`) — закрывает классические
-           обходы текстового фильтра: доступ к dunder-атрибутам
-           (``__class__`` / ``__globals__`` / ``__subclasses__``) и
-           ``getattr``/``setattr`` с вычисляемым (собранным из строк)
-           именем атрибута. Литеральные ``setattr(Clock, "bpm", 170)``
-           остаются разрешены — они нужны для ``Clock.future()``.
-
-        Args:
-            code: Строка кода для проверки.
-
-        Returns:
-            (is_safe, error_message) — (True, "") если код безопасен.
-        """
-        match = _BLOCKED_TOKENS.search(code)
-        if match:
-            return False, f"Запрещённый токен в коде: '{match.group()}'"
-        return self._filter_code_ast(code)
+        return renardo_sanitizer._filter_code(code)
 
     @staticmethod
     def _filter_code_ast(code: str) -> Tuple[bool, str]:
-        """AST-слой фильтра безопасности (см. :meth:`_filter_code`).
-
-        Текстовый blocklist сравнивает слова с исходником, поэтому его
-        обходит любое имя, собранное во время выполнения
-        (``getattr(x, "__cla" + "ss__")``) или добытое через dunder-цепочку
-        (``().__class__.__subclasses__()``). Здесь мы смотрим на реальную
-        структуру кода, а не на текст.
-
-        Args:
-            code: Строка кода для проверки.
-
-        Returns:
-            (is_safe, error_message) — (True, "") если код безопасен.
-        """
-        try:
-            tree = ast.parse(code)
-        except SyntaxError as exc:
-            return False, f"Синтаксическая ошибка в коде: {exc.msg}"
-
-        for node in ast.walk(tree):
-            # ``().__class__`` / ``p1.__globals__`` — цепочка побега из
-            # песочницы всегда проходит через dunder-атрибут.
-            if isinstance(node, ast.Attribute) and _is_dunder(node.attr):
-                return False, f"Запрещённый доступ к dunder-атрибуту: '{node.attr}'"
-            if isinstance(node, ast.Name) and _is_dunder(node.id):
-                return False, f"Запрещённое dunder-имя: '{node.id}'"
-            # ``getattr(x, name)`` с невычислимым именем — это обход
-            # текстового фильтра. Литеральное имя разрешаем (но не dunder).
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-                if node.func.id in _LITERAL_ATTR_BUILTINS and len(node.args) >= 2:
-                    attr_arg = node.args[1]
-                    if not isinstance(attr_arg, ast.Constant) or not isinstance(
-                        attr_arg.value, str
-                    ):
-                        return False, (
-                            f"'{node.func.id}' допустим только со строковым "
-                            "литералом в качестве имени атрибута"
-                        )
-                    if _is_dunder(attr_arg.value):
-                        return False, (
-                            f"Запрещённый доступ к dunder-атрибуту: "
-                            f"'{attr_arg.value}'"
-                        )
-        return True, ""
+        return renardo_sanitizer._filter_code_ast(code)
 
     # ------------------------------------------------------------------
     # Issue #1016 — music-quality guardrail (dramaturgy validator)
     # ------------------------------------------------------------------
 
     def _validate_music_code(self, code: str) -> Tuple[List[str], List[str]]:
-        """Проверить музыкальное качество кода перед отправкой в Renardo.
-
-        Отличается от :meth:`_filter_code` (безопасность): этот валидатор
-        ловит *музыкальные* ошибки LLM, из-за которых трек звучит как
-        статичный луп (issue #1016):
-
-        1. Абсолютные частоты (``freq=440`` / ``hz=220`` / ``midinote=69``)
-           — Renardo ожидает ступени (``p1 >> pluck([0,4,7])``), а не Hz.
-           → HARD error, выполнение блокируется.
-        2. ``dur=`` у каждого не-play плеера — без него паттерн играет
-           staccato-щелчками (дефолтный dur=1 с sus=0).
-           → WARNING (play() имеет собственный dur из паттерна).
-        3. (soft) Многоголосный трек без развивающих паттернов
-           (``.every`` / ``Pvar`` / ``linvar`` / ``Clock.future``)
-           — статичный повтор 4-8 нот.
-           → WARNING, чтобы LLM исправила до того, как юзер услышит.
-
-        Returns:
-            (errors, warnings) — списки строк. errors блокируют выполнение,
-            warnings добавляются в result message (LLM их увидит).
-        """
-        errors: List[str] = []
-        warnings: List[str] = []
-
-        # 1. Абсолютные частоты — жёсткий запрет (только ступени).
-        freq_match = _ABSOLUTE_FREQ_RE.search(code)
-        if freq_match:
-            errors.append(
-                "Абсолютные частоты запрещены (Renardo ожидает ступени): "
-                f"'{freq_match.group(0)}'. Используй степени, например "
-                "p1 >> pluck([0,4,7]) или p1 >> pluck([0,4,7], oct=3)."
-            )
-
-        # 1b. chop= (не ноль) — щелчки на 16 kHz DAC вместо sidechain.
-        if _CHOP_RE.search(code):
-            errors.append(
-                "chop= запрещён — на 16 kHz DAC даёт щелчки, а не sidechain. "
-                "Для дакинга используй amplify=var([1,0.3],[0.5,0.5])."
-            )
-
-        # 1c. spack= с ненулевым паком — сырые глитчевые сэмплы.
-        if _SPACK_NONZERO_RE.search(code):
-            errors.append(
-                "spack=1 (пак 1_pitchglitch_samples) запрещён — сырые "
-                "глитчевые сэмплы звучат как «звук из базы». Используй "
-                "дефолтный пак (без spack=) или sample=P[0,1,2,3]."
-            )
-
-        # 2. dur= у каждого не-play плеера — soft warning.
-        players = list(_PLAYER_LINE_RE.finditer(code))
-        for m in players:
-            player_name, synth, args = m.group(1), m.group(2), m.group(3)
-            if synth == "play":
-                continue  # play() имеет dur из строки паттерна
-            if "dur" not in args:
-                warnings.append(
-                    f"У '{player_name} >> {synth}(...)' нет dur= — паттерн "
-                    "будет звучать как staccato-щелчки. Добавь dur (например "
-                    "dur=0.5 или dur=[0.5,0.25])."
-                )
-
-        # 3. Многоголосный трек без развития — soft warning.
-        if len(players) >= 2 and not _DEV_PATTERN_RE.search(code):
-            warnings.append(
-                "В коде нет развивающих паттернов (.every/Pvar/linvar/"
-                "Clock.future) — трек будет звучать как статичный луп из "
-                "4-8 нот. Добавь хотя бы один: .every(4, 'stutter'), "
-                "lpf=linvar([500,4000], 16) или Pvar-гармонию."
-            )
-
-        return errors, warnings
+        return renardo_sanitizer._validate_music_code(code)
 
     # ------------------------------------------------------------------
     # Issue #1804 — d4+/p4+ не звучат на роботе, кода-стражи не было
     # ------------------------------------------------------------------
 
     def _remap_illegal_slots(self, code: str) -> Tuple[str, Optional[str]]:
-        """Переставить d4+/p4+/s*/l* в свободный d1-d3/p1-p3 (issue #1804).
-
-        🔴 FIX (live 31.08, «в траве сидел кузнечик»): модель написала
-
-            p1 >> blip([0,2,4,7,9,7,4,2], dur=0.25, amp=0.4)
-            p2 >> dub([0,0,0,-2], dur=0.5, oct=3, amp=0.35)
-            p3 >> play("X..X..X.", amp=0.25)
-            p4 >> play("..o...o.", amp=0.2)     ← не звучит
-
-        Малый барабан пропал без единой ошибки в логах — на роботе physически
-        подключены только d1-d3/p1-p3, а p4/d4+ существуют в самом Renardo
-        и потому `execute_code` их молча принимал. В промпте это записано
-        прямым текстом ("Stay within d1-d3 and p1-p3"), но маленькие модели
-        такие правила регулярно нарушают — играть в угадайку с промптом
-        больше нельзя, слой должен либо спастись, либо честно провалиться.
-
-        Правило переназначения: play(...) — это обычно барабаны/перкуссия
-        → предпочитаем d-слот; любой другой синт (мелодия/бас/пэд) →
-        предпочитаем p-слот. Так совпадает с разводкой ролей в
-        ``core/arranger.ROLE_PROFILE``. Если предпочитаемая категория уже
-        занята — пробуем вторую перед тем, как сдаться. Один и тот же
-        недопустимый токен (например, второе упоминание ``p4``) всегда
-        переезжает в один и тот же новый слот, чтобы не расщепить один
-        логический слой на два разных плеера.
-
-        Returns:
-            ``(код, None)`` если всё поместилось в 6 слотов, либо
-            ``(исходный_код, сообщение_об_ошибке)`` если слотов не хватило
-            — исходный код НЕ должен уходить в Renardo в этом случае.
-        """
-        occupied: set = {
-            m.group("name")
-            for m in _PLAYER_ASSIGN_RE.finditer(code)
-            if m.group("name") in _ALLOWED_PLAYER_SLOTS_SET
-        }
-        remapped: Dict[str, str] = {}
-        errors: List[str] = []
-
-        def _remap(m: re.Match) -> str:
-            name = m.group("name")
-            synth = m.group("synth")
-            if name in _ALLOWED_PLAYER_SLOTS_SET:
-                return m.group(0)
-            if name in remapped:
-                new_name = remapped[name]
-            else:
-                preferred = (
-                    _ALLOWED_PLAYER_SLOTS
-                    if synth == "play"
-                    else _ALLOWED_PLAYER_SLOTS[3:] + _ALLOWED_PLAYER_SLOTS[:3]
-                )
-                free = next((slot for slot in preferred if slot not in occupied), None)
-                if free is None:
-                    errors.append(
-                        f"'{name} >> {synth}(...)' вне d1-d3/p1-p3, а все "
-                        "6 слотов уже заняты — слой некуда переставить. "
-                        "Убери один из существующих слоёв или объедини "
-                        "паттерны."
-                    )
-                    return m.group(0)
-                occupied.add(free)
-                remapped[name] = free
-                new_name = free
-            return f"{m.group('indent')}{new_name}{m.group('arrow')}{synth}("
-
-        fixed_code = _PLAYER_ASSIGN_RE.sub(_remap, code)
-        if errors:
-            return code, "⛔ Недопустимые слоты плееров: " + " ".join(errors)
-        return fixed_code, None
+        return renardo_sanitizer._remap_illegal_slots(code)
 
     # ------------------------------------------------------------------
     # Issue #1803 — рисунок play(...), который не делит такт, плывёт
     # ------------------------------------------------------------------
 
     def _fix_pattern_length(self, code: str) -> str:
-        """Достроить рисунок play("...") до степени двойки (issue #1803).
-
-        🔴 FIX (живые прогоны 30-31.08, четыре трека подряд): модель писала
-        рисунки, чья длина не делит такт —
-
-            d1 >> play("X..X.o...")   9 шагов
-            d2 >> play("=..=...=")    8 шагов
-
-        9 не кратно 8: уже со второго повтора d1 и d2 расходятся по фазе
-        друг с другом, и грув «плывёт» — это особенно слышно в жанрах,
-        где сетка обязана стоять намертво (диско, метал). Модель символы
-        не считает и считать не научится — длина приводится к ближайшей
-        СВЕРХУ степени двойки. Округление вверх, а не вниз: степень
-        двойки всегда кратна всем меньшим степеням двойки, поэтому
-        дополненный рисунок остаётся в фазе с любым другим рисунком той
-        же природы, а округление вниз обрезало бы последний удар модели.
-
-        🔴 FIX (ревью после первого прохода): добивка ставилась символом
-        ``-``. Это НЕ пауза в FoxDot/Renardo — ``-`` маппится на реальный
-        сэмпл (``"hyphen"``, ``renardo_gatherer/collections.py``) и лежит
-        в каждом сэмпл-паке (``samples/0_foxdot_default/_/hyphen``), т.е.
-        это звучащий хэт. Семь ``-`` на конце девятишагового рисунка
-        добавляли модели семь ударов, которых она не писала — грув менялся
-        сильнее, чем исходное уползание по фазе, которое чинил этот метод.
-        Настоящая пауза — ``.`` (для неё сэмпл-каталога нет ни в одном
-        паке); ею и добиваем.
-        """
-
-        def _pow2_at_least(value: int) -> int:
-            target = 1
-            while target < value:
-                target *= 2
-            return target
-
-        def _pad(m: re.Match) -> str:
-            ws, quote, pattern = m.group(1), m.group(2), m.group(3)
-            if len(pattern) <= 1:
-                return m.group(0)
-
-            # 🔴 FIX (live 01.09): сначала снять ХВОСТОВЫЕ ПАУЗЫ, потом
-            # округлять. Иначе типовой промах модели удваивал такт:
-            # 'X..o.X.o.' (9) → 'X..o.X.o........' (16). Девятый символ —
-            # пауза; отбросив её, получаем ровно 8, готовый грув нужной
-            # плотности. Добивка же растягивала такт вдвое, бочка начинала
-            # бить в половину задуманного темпа, а вторую половину такта
-            # занимала тишина — то есть лекарство от уползания по фазе
-            # портило грув сильнее самой болезни.
-            #
-            # Паузы снимаем ПООДИНОЧКЕ, до первой же степени двойки. Все
-            # подряд снимать нельзя: 'X.....' — это «бочка раз в шесть
-            # шагов», обрезка до 'X' заставила бы её бить на каждом шаге.
-            trimmed = pattern
-            while (
-                len(trimmed) > 1
-                and _pow2_at_least(len(trimmed)) != len(trimmed)
-                and trimmed[-1] == "."
-            ):
-                trimmed = trimmed[:-1]
-
-            target = _pow2_at_least(len(trimmed))
-            if target == len(trimmed):
-                if trimmed == pattern:
-                    return m.group(0)
-                return f"play({ws}{quote}{trimmed}{quote}"
-
-            padded = trimmed + "." * (target - len(trimmed))
-            return f"play({ws}{quote}{padded}{quote}"
-
-        return _PLAY_PATTERN_LEN_RE.sub(_pad, code)
+        return renardo_sanitizer._fix_pattern_length(code)
 
     def _cap_amp(self, code: str) -> str:
-        """Ограничить громкость/октаву в коде до безопасных пределов.
-
-        Issue #1000 — phase-3.2 anti-click caps:
-        - ``amp=0.9``               → ``amp=0.7`` (если max_amp=0.7)
-        - ``amp=P[0.5, 1.0]``       → ``amp=P[0.5, 0.7]``
-        - ``amp=1``                 → ``amp=0.7``
-        - ``amplify=var([1,0.3])``  → ``amplify=var([0.7,0.3])``
-        - ``amplify=0.8``           → ``amplify=0.7``
-        - ``oct=9``                 → ``oct=6`` (санитарный потолок)
-
-        Октавный потолок (RC2 в docs/analysis/2026-08-30-music-quality-audit.md):
-        раньше здесь стояло ``max_oct = 4`` с обоснованием «oct=5 очень
-        резкое/громкое» (issue #1000). Резкость oct=5 — это алиасинг на
-        16 kHz, а не громкость. Кап до 4 при этом схлопывал бас (oct=3) и
-        лид в соседние октавы: аранжировка без регистрового разделения на
-        слух и есть «одна мелодия, которая повторяется».
-
-        🔴 FIX (live 31.08): потолок был поднят до 6 в расчёте на то, что
-        алиасинг срежет LPF внутри ``masterlimiter``. Лимитер снят (он
-        выдавал NaN и глушил весь выход), и расчёт вместе с ним рухнул.
-        Живой прогон: модель написала ``bell(..., oct=7)``, кап опустил до
-        6 — и робот засвистел. Обертоны колокола на шестой октаве лежат
-        выше Найквиста (8 kHz) и зеркалятся обратно негармоничным визгом;
-        ``fuzz(drive=0.6)`` и ``play(rate=1.2)`` в том же коде добавляли
-        своих.
-
-        Потолок 5 покрывает регистры аранжировщика целиком (бас 3, пэд 4,
-        мелодия 5) — режется только то, что модель пишет от руки выше них.
-        Вернуть 6 можно, когда на мастер-шине снова будет анти-алиасинговый
-        фильтр — но уже с защитой от NaN.
-        """
-        max_amp = self._max_amp
-        max_oct = 5
-
-        # 1. Сначала P[...] паттерны (более специфичный случай)
-        def _cap_p(m: re.Match) -> str:
-            def _cap_num(n: re.Match) -> str:
-                return f"{min(float(n.group()), max_amp):.3g}"
-            return "amp=P[" + re.sub(r"\b\d+(?:\.\d*)?\b", _cap_num, m.group(1)) + "]"
-
-        code = re.sub(r"amp\s*=\s*P\[([^\]]+)\]", _cap_p, code)
-
-        # 2. amp= простые числа
-        def _cap_n(m: re.Match) -> str:
-            return f"amp={min(float(m.group(1)), max_amp):.3g}"
-
-        code = re.sub(r"amp\s*=\s*(\d+(?:\.\d*)?)", _cap_n, code)
-
-        # 3. amplify=var([...]) — ограничиваем числа внутри var() (issue #1000)
-        def _cap_amplify_var(m: re.Match) -> str:
-            inner = m.group(1)
-            def _cap_num(n: re.Match) -> str:
-                return f"{min(float(n.group()), max_amp):.3g}"
-            inner = re.sub(r"\b\d+(?:\.\d*)?\b", _cap_num, inner)
-            return f"amplify=var({inner})"
-
-        code = re.sub(r"amplify\s*=\s*var\(([^)]+)\)", _cap_amplify_var, code)
-
-        # 4. amplify= простые числа
-        def _cap_amplify_n(m: re.Match) -> str:
-            return f"amplify={min(float(m.group(1)), max_amp):.3g}"
-
-        code = re.sub(r"amplify\s*=\s*(\d+(?:\.\d*)?)", _cap_amplify_n, code)
-
-        # 5. oct= — ограничиваем до max_oct (issue #1000)
-        def _cap_oct(m: re.Match) -> str:
-            return f"oct={min(int(m.group(1)), max_oct)}"
-
-        code = re.sub(r"oct\s*=\s*(\d+)", _cap_oct, code)
-        return code
+        return renardo_sanitizer._cap_amp(code, self._max_amp)
 
     # ------------------------------------------------------------------
     # Issue #990 — segments safety-net
@@ -1561,48 +1147,24 @@ class MusicManager:
         Returns:
             dict с ключами ``success``, ``message`` (или ``error``), ``code``.
         """
-        is_safe, filter_error = self._filter_code(code)
-        if not is_safe:
-            return {"success": False, "error": filter_error}
-
-        # Issue #1016 — music-quality guardrail: блокируем абсолютные
-        # частоты (только ступени), предупреждаем про dur= и статичные
-        # лупы. errors → код НЕ уходит в Renardo; warnings → LLM увидит
-        # их в result message и исправит следующим вызовом.
-        quality_errors, quality_warnings = self._validate_music_code(code)
-        if quality_errors:
+        # Единый seam очистки (core/renardo_sanitizer): безопасность →
+        # музыкальный валидатор → перестановка слотов → pianovel→rhpiano →
+        # длина рисунка → кап amp. Порядок и сообщения сохранены байт-в-байт.
+        sanitized = renardo_sanitizer.sanitize_renando(code, self._max_amp)
+        if sanitized.security_error:
+            return {"success": False, "error": sanitized.security_error}
+        if sanitized.quality_errors:
             return {
                 "success": False,
                 "error": "⛔ Код отклонён музыкальным валидатором: "
-                + " ".join(quality_errors),
-                "code": code,
+                + " ".join(sanitized.quality_errors),
+                "code": sanitized.code,
             }
+        if sanitized.slot_error:
+            return {"success": False, "error": sanitized.slot_error, "code": sanitized.code}
 
-        # Issue #1804 — d4+/p4+ физически не звучат на роботе. Переставляем
-        # слой в свободный d1-d3/p1-p3; если свободных слотов не осталось —
-        # честная ошибка вместо тихо потерянного слоя (см. #1804 и
-        # ``_remap_illegal_slots`` выше).
-        code, slot_error = self._remap_illegal_slots(code)
-        if slot_error:
-            return {"success": False, "error": slot_error, "code": code}
-
-        # 🔴 FIX (live 11:41 «цоканье»): автозамена pianovel/piano → rhpiano
-        # (обе используют MdaPiano физмодель — цокает/щёлкает; rhpiano —
-        # компилируемый и чистый). LLM продолжает писать pianovel несмотря
-        # на запрет в промпте → защита на уровне кода. Взято из ветки
-        # phase-3.2-music-testing (проверено в live-экспериментах юзера).
-        if "pianovel" in code:
-            code = code.replace("pianovel", "rhpiano")
-        # piano заменяем только если это отдельное слово (не rhpiano, pianovel и т.д.)
-        code = re.sub(r"(?<![a-zA-Z])piano(?![a-zA-Z])", "rhpiano", code)
-
-        # Issue #1803 — рисунок play(...), чья длина не делит такт, плывёт
-        # относительно соседних слоёв на каждом повторе (см.
-        # ``_fix_pattern_length`` выше).
-        code = self._fix_pattern_length(code)
-
-        # Ограничиваем amp до максимально допустимого значения
-        code = self._cap_amp(code)
+        code = sanitized.code
+        quality_warnings = list(sanitized.warnings)
 
         # 🔴 DEBUG (live 15:44 «Error in Player: 'amp'»): полный код ПОСЛЕ
         # всех трансформаций (pianovel→rhpiano, amp-caps) — чтобы видеть,
