@@ -397,3 +397,19 @@ def test_issue_2184_dialogue_node_blocked_from_show_metrics():
     # срезы в принципе недоступны).
     assert "core" in reason and "personality" in reason
     assert "operator.admin" not in reason
+
+
+def test_dialogue_node_can_call_melody_tools():
+    """dialogue_node обязан видеть lookup_melody / search_melody.
+
+    Регрессия (live 10.09): тулы RTTTL-библиотеки были зарегистрированы в
+    каталоге, но не добавлены в ``slices.personality`` — dialogue_node получал
+    «tool 'lookup_melody' не принадлежит ни одному срезу sender'а», и LLM на
+    «сыграй гимн СССР» импровизировал вместо точной мелодии.
+    """
+    for tool in ("lookup_melody", "search_melody"):
+        decision = load_default_authority().is_allowed("dialogue_node", tool)
+        assert decision.allowed is True, (
+            f"dialogue_node обязан мочь вызвать {tool}; "
+            f"получили reason={decision.reason!r}"
+        )

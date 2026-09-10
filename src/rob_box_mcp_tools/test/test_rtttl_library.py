@@ -91,3 +91,35 @@ def test_migration_is_idempotent(tmp_path):
     lib = RtttlLibrary(db_path=db, archive_path=str(archive))
     assert lib.total() == 3
 
+
+def test_multiword_and_russian_alias(tmp_path):
+    """«гимн ссср» / «soviet anthem» / «ussr» должны находить Soviet Hymne."""
+    records = [
+        {
+            "name": "soviethy",
+            "title": "Soviet Hymne",
+            "artist": "",
+            "source": "mixed3",
+            "tags": ["anthem"],
+            "rtttl": "SovietHy:d=4,o=6,b=225:f,2a_",
+        },
+        {
+            "name": "unknown_115",
+            "title": "Unknown",
+            "artist": "",
+            "source": "mixed3",
+            "tags": ["ussr"],
+            "rtttl": "x:d=4,o=6,b=100:c",
+        },
+    ]
+    archive = tmp_path / "alias.jsonl.gz"
+    with gzip.open(archive, "wt", encoding="utf-8") as fh:
+        for rec in records:
+            fh.write(json.dumps(rec) + "\n")
+    lib = RtttlLibrary(db_path=str(tmp_path / "alias.db"), archive_path=str(archive))
+
+    assert lib.get("soviet anthem")["name"] == "soviethy"  # мультислово → токены
+    assert lib.get("гимн ссср")["name"] == "soviethy"      # русский alias
+    assert lib.get("ussr")["name"] == "soviethy"           # аббревиатура → не мусор
+    assert lib.get("imperial march") is None               # честно None, нет такой
+

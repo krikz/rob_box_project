@@ -16,6 +16,7 @@ from __future__ import annotations
 import gzip
 import json
 import os
+import re
 import sqlite3
 import threading
 from datetime import datetime, timezone
@@ -47,6 +48,48 @@ CREATE INDEX IF NOT EXISTS idx_rtttl_melodies_name  ON rtttl_melodies(name);
 CREATE INDEX IF NOT EXISTS idx_rtttl_melodies_title ON rtttl_melodies(title);
 CREATE INDEX IF NOT EXISTS idx_rtttl_melodies_artist ON rtttl_melodies(artist);
 """
+
+#: Русские/жаргонные названия → канонический англ. запрос (архив англоязычный).
+_ALIASES = {
+    "гимн ссср": "soviet anthem",
+    "гимн россии": "soviet anthem",
+    "советский гимн": "soviet anthem",
+    "гимн": "soviet anthem",
+    "ссср": "soviet anthem",
+    "ussr": "soviet anthem",
+    "имперский марш": "imperial march",
+    "дарт вейдер": "imperial march",
+    "в пещере горного короля": "mountain king",
+    "григ": "mountain king",
+    "тетрис": "tetris",
+    "коробейники": "tetris",
+    "марио": "mario",
+    "супер марио": "mario",
+    "нокиа": "nokia",
+    "к элизе": "fur elise",
+    "ода к радости": "ode to joy",
+    "с днём рождения": "happy birthday",
+    "с днем рождения": "happy birthday",
+    "джингл белс": "jingle bells",
+    "звёздные войны": "star wars",
+    "звездные войны": "star wars",
+}
+
+_ALIAS_SORTED = sorted(_ALIASES.items(), key=lambda kv: -len(kv[0]))
+
+
+def _normalize(query: str) -> str:
+    """Нижний регистр + замена русских/жаргонных имён на канонический англ."""
+    q = (query or "").strip().lower()
+    for key, value in _ALIAS_SORTED:
+        if key in q:
+            q = q.replace(key, value)
+    return q
+
+
+def _tokens(query: str) -> List[str]:
+    """Разбить запрос на значимые токены (кириллица отбрасывается после алиасов)."""
+    return [t for t in re.split(r"[^a-z0-9]+", query) if t]
 
 
 def _default_archive() -> Union[Path, Any]:
@@ -158,52 +201,81 @@ class RtttlLibrary:
         with self._lock:
             return self._conn.execute("SELECT COUNT(*) FROM rtttl_melodies").fetchone()[0]
 
+    @staticmethod
+    def _score(row: sqlite3.Row, tokens: List[str]) -> int:
+        """Скоринг: сколько токенов запроса попало в поля (name/title весомее)."""
+        name_l = (row["name"] or "").lower()
+        title_l = (row["title"] or "").lower()
+        artist_l = (row["artist"] or "").lower()
+        tags_l = (row["tags"] or "").lower()
+        score = 0
+        for token in tokens:
+            if token == name_l:
+                score += 4
+            elif token in name_l or token in title_l:
+                score += 2
+            elif token in artist_l or token in tags_l:
+                score += 1
+        return score
+
+    def _candidates(self, tokens: List[str], cap: int) -> List[sqlite3.Row]:
+        """Строки, где хотя бы один токен встречается в полях (метаданные)."""
+        clauses = []
+        params: List[str] = []
+        for token in tokens:
+            like = f"%{token}%"
+            clauses.append(
+                "(lower(name) LIKE ? OR lower(title) LIKE ? "
+                "OR lower(artist) LIKE ? OR lower(tags) LIKE ?)"
+            )
+            params += [like, like, like, like]
+        sql = (
+            "SELECT id, name, title, artist, source, tags FROM rtttl_melodies "
+            "WHERE " + " OR ".join(clauses) + " LIMIT ?"
+        )
+        return self._conn.execute(sql, params + [cap]).fetchall()
+
     def get(self, name: str) -> Optional[Dict[str, Any]]:
-        """Найти одну мелодию (точное имя → name/title → artist/tags)."""
-        q = (name or "").strip().lower()
-        if not q:
+        """Найти одну мелодию (точное имя → лучший по токенам запроса)."""
+        q = _normalize(name)
+        tokens = _tokens(q)
+        if not tokens:
             return None
         with self._lock:
             row = self._conn.execute(
-                """
-                SELECT * FROM rtttl_melodies
-                WHERE lower(name) LIKE :like OR lower(title) LIKE :like
-                   OR lower(artist) LIKE :like OR lower(tags) LIKE :like
-                ORDER BY CASE
-                    WHEN lower(name) = :q THEN 0
-                    WHEN lower(name) LIKE :prefix OR lower(title) LIKE :prefix THEN 1
-                    ELSE 2
-                END, title COLLATE NOCASE
-                LIMIT 1
-                """,
-                {"q": q, "like": f"%{q}%", "prefix": f"{q}%"},
+                "SELECT * FROM rtttl_melodies WHERE lower(name) = ? LIMIT 1", (q,)
             ).fetchone()
-        return self._to_dict(row, include_rtttl=True) if row is not None else None
+            if row is not None:
+                return self._to_dict(row, include_rtttl=True)
+            rows = self._candidates(tokens, cap=200)
+        best: Optional[sqlite3.Row] = None
+        best_score = 0
+        for row in rows:
+            score = self._score(row, tokens)
+            if score > best_score:
+                best_score = score
+                best = row
+        if best is None:
+            return None
+        with self._lock:
+            full = self._conn.execute(
+                "SELECT * FROM rtttl_melodies WHERE id = ?", (best["id"],)
+            ).fetchone()
+        return self._to_dict(full, include_rtttl=True) if full is not None else None
 
     def search(self, query: str, limit: int = 20) -> List[Dict[str, Any]]:
-        """Подстрочный поиск по name/title/artist/tags (SQL), top-N.
-
-        Ранжирование делается в SQL (CASE в ORDER BY), поэтому в ОЗУ попадает
-        только итоговый список (≤ limit), а не вся библиотека.
-        """
-        q = (query or "").strip().lower()
-        if not q:
+        """Поиск по токенам запроса (SQL кандидаты → скоринг в Python), top-N."""
+        q = _normalize(query)
+        tokens = _tokens(q)
+        if not tokens:
             return []
         limit = max(1, min(50, int(limit)))
         with self._lock:
-            rows = self._conn.execute(
-                """
-                SELECT name, title, artist, source, tags FROM rtttl_melodies
-                WHERE lower(name) LIKE :like OR lower(title) LIKE :like
-                   OR lower(artist) LIKE :like OR lower(tags) LIKE :like
-                ORDER BY CASE
-                    WHEN lower(name) = :q THEN 0
-                    WHEN lower(name) LIKE :prefix OR lower(title) LIKE :prefix THEN 1
-                    WHEN lower(name) LIKE :like OR lower(title) LIKE :like THEN 2
-                    ELSE 3
-                END, title COLLATE NOCASE
-                LIMIT :limit
-                """,
-                {"q": q, "like": f"%{q}%", "prefix": f"{q}%", "limit": limit},
-            ).fetchall()
-        return [self._to_dict(r) for r in rows]
+            rows = self._candidates(tokens, cap=limit * 10)
+        scored = []
+        for row in rows:
+            score = self._score(row, tokens)
+            if score > 0:
+                scored.append((score, row))
+        scored.sort(key=lambda item: (-item[0], (item[1]["title"] or "").lower()))
+        return [self._to_dict(row) for _score, row in scored[:limit]]
