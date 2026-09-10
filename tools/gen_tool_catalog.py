@@ -467,7 +467,6 @@ SKILL_TOOLS: dict[str, tuple[str, ...]] = {
         "list_tts_voices",
         "set_tts_provider",
         "estimate_tts_duration",
-        "say",
     ),
     "memory": (
         "memory_save",
@@ -485,11 +484,6 @@ SKILL_TOOLS: dict[str, tuple[str, ...]] = {
         "faq_search",
     ),
     "scheduler": ("task_delta",),
-    "operator.admin": (  # ADR-0051 §6 — ТАРС diagnostics (issue #2001)
-        "ros2_node_status",
-        "read_logs",
-        "container_status",
-    ),
 }
 
 

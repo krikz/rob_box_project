@@ -165,6 +165,11 @@ class Ros2NodeStatusTool(MCPTool):
         return "ros2_node_status"
 
     @property
+    def llm_visible(self) -> bool:
+        # ТАРС-только (ADR-0051 §6, #2001): личность эти тулы не видит.
+        return False
+
+    @property
     def description(self) -> str:
         return (
             "Получить статус ROS2-нод робота (active/missing/failed). "
@@ -317,6 +322,11 @@ class ReadLogsTool(MCPTool):
     @property
     def name(self) -> str:
         return "read_logs"
+
+    @property
+    def llm_visible(self) -> bool:
+        # ТАРС-только (ADR-0051 §6, #2001): личность эти тулы не видит.
+        return False
 
     @property
     def description(self) -> str:
@@ -486,6 +496,11 @@ class ContainerStatusTool(MCPTool):
     @property
     def name(self) -> str:
         return "container_status"
+
+    @property
+    def llm_visible(self) -> bool:
+        # ТАРС-только (ADR-0051 §6, #2001): личность эти тулы не видит.
+        return False
 
     @property
     def description(self) -> str:
@@ -738,6 +753,11 @@ class ShowMetricsTool(MCPTool):
     @property
     def name(self) -> str:
         return "show_metrics"
+
+    @property
+    def llm_visible(self) -> bool:
+        # ТАРС-только (#2113/#2184): личность эти тулы не видит.
+        return False
 
     @property
     def description(self) -> str:

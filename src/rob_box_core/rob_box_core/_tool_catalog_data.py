@@ -504,6 +504,27 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                          'required': ['bpm', 'root', 'scale'],
                          'accepts_kwargs': False},
         'skill': ('composer',)},
+    {   'llm_visible': False,
+        'read_only': True,
+        'destructive': True,
+        'idempotent': False,
+        'execution_type': 'medium',
+        'name': 'container_status',
+        'description': 'Получить статус контейнеров (restart-count, CPU, RAM, uptime) '
+                       'через Prometheus/cAdvisor. Используй когда нужно проверить '
+                       "здоровье контейнеров ('покажи состояние voice-assistant').",
+        'parameters': {   'type': 'object',
+                          'properties': {   'name': {   'type': 'string',
+                                                        'description': 'Имя (или '
+                                                                       'подстрока '
+                                                                       'имени) '
+                                                                       'контейнера. '
+                                                                       'Пусто — все '
+                                                                       'контейнеры.'}},
+                          'required': [],
+                          'additionalProperties': False},
+        'signature': {'params': ['name'], 'required': [], 'accepts_kwargs': False},
+        'skill': ()},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': True,
@@ -599,11 +620,12 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'execution_type': 'fast',
         'name': 'execute_music_code',
-        'description': 'Выполнить Renardo-код для создания или изменения музыкального '
-                       'паттерна в реальном времени. Код выполняется в контексте '
-                       "Renardo (FoxDot-совместимый синтаксис). Пример: 'p1 >> "
-                       "pluck([0, 2, 4], dur=0.5, amp=0.8)'. Перед выполнением "
-                       'проверяется доступность SuperCollider. Опасные системные '
+        'description': 'Выполнить готовый Renardo-код. ТОЛЬКО для точного '
+                       'воспроизведения известной мелодии нота-в-ноту или короткого '
+                       'сырого бита — НЕ для сочинения новой музыки (для этого вызывай '
+                       'compose_music: у него есть форма и развитие). Код выполняется '
+                       'в контексте Renardo (FoxDot-совместимый синтаксис). Пример: '
+                       "'p1 >> pluck([0, 2, 4], dur=0.5, amp=0.8)'. Опасные системные "
                        'команды автоматически блокируются. Укажи pattern_name чтобы '
                        'паттерн можно было остановить или изменить позже.',
         'parameters': {   'type': 'object',
@@ -1830,6 +1852,46 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                          'required': ['sound'],
                          'accepts_kwargs': False},
         'skill': ('expression',)},
+    {   'llm_visible': False,
+        'read_only': True,
+        'destructive': True,
+        'idempotent': False,
+        'execution_type': 'medium',
+        'name': 'read_logs',
+        'description': 'Получить логи конкретной ROS2-ноды или контейнера. Используй '
+                       "когда нужно посмотреть почему нода не работает ('покажи логи "
+                       "stt_node', 'что в логах voice-assistant').",
+        'parameters': {   'type': 'object',
+                          'properties': {   'node': {   'type': 'string',
+                                                        'description': 'Имя ROS2-ноды '
+                                                                       'или контейнера '
+                                                                       'для чтения '
+                                                                       'логов.'},
+                                            'source': {   'type': 'string',
+                                                          'description': "'rosout' — "
+                                                                         'локальные '
+                                                                         'логи /rosout '
+                                                                         'из '
+                                                                         'health_monitor; '
+                                                                         "'loki' — "
+                                                                         'контейнерные '
+                                                                         'логи через '
+                                                                         'Loki HTTP '
+                                                                         'API.',
+                                                          'enum': ['rosout', 'loki']},
+                                            'limit': {   'type': 'integer',
+                                                         'description': 'Максимум '
+                                                                        'строк '
+                                                                        '(default: 20 '
+                                                                        'для rosout, '
+                                                                        '50 для '
+                                                                        'loki).'}},
+                          'required': ['node'],
+                          'additionalProperties': False},
+        'signature': {   'params': ['node', 'source', 'limit'],
+                         'required': ['node'],
+                         'accepts_kwargs': False},
+        'skill': ()},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': False,
@@ -1891,6 +1953,38 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                          'required': [],
                          'accepts_kwargs': False},
         'skill': ('memory',)},
+    {   'llm_visible': False,
+        'read_only': True,
+        'destructive': True,
+        'idempotent': False,
+        'execution_type': 'medium',
+        'name': 'ros2_node_status',
+        'description': 'Получить статус ROS2-нод робота (active/missing/failed). '
+                       'Используй когда нужно понять, поднялась ли нода (например, '
+                       "'нода stt_node не работает' или 'проверь audio_node').",
+        'parameters': {   'type': 'object',
+                          'properties': {   'nodes': {   'type': 'array',
+                                                         'description': 'Опциональный '
+                                                                        'список '
+                                                                        'ROS2-нод для '
+                                                                        'проверки. '
+                                                                        'Если пусто — '
+                                                                        'используется '
+                                                                        'дефолтный '
+                                                                        'список '
+                                                                        'критичных нод '
+                                                                        'системы.',
+                                                         'items': {   'type': 'string',
+                                                                      'description': 'Полное '
+                                                                                     'имя '
+                                                                                     'ROS2-ноды '
+                                                                                     'с '
+                                                                                     'ведущим '
+                                                                                     'слэшем.'}}},
+                          'required': [],
+                          'additionalProperties': False},
+        'signature': {'params': ['nodes'], 'required': [], 'accepts_kwargs': False},
+        'skill': ()},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': False,
@@ -2018,7 +2112,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                          'required': ['name'],
                          'accepts_kwargs': False},
         'skill': ('navigation',)},
-    {   'llm_visible': True,
+    {   'llm_visible': False,
         'read_only': False,
         'destructive': True,
         'idempotent': False,
@@ -2049,7 +2143,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'signature': {   'params': ['text'],
                          'required': ['text'],
                          'accepts_kwargs': False},
-        'skill': ('voice-tts',)},
+        'skill': ()},
     {   'llm_visible': True,
         'read_only': True,
         'destructive': False,
@@ -2500,6 +2594,55 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                          'required': ['action'],
                          'accepts_kwargs': False},
         'skill': ('voice-tts',)},
+    {   'llm_visible': False,
+        'read_only': True,
+        'destructive': True,
+        'idempotent': False,
+        'execution_type': 'medium',
+        'name': 'show_metrics',
+        'description': 'Показать телеметрию робота на боковом экране TARS 2 (Captain '
+                       'Bridge) и получить её значения. Тул выполняет запрос в '
+                       'Prometheus (метрики) или Loki (логи) и возвращает последние '
+                       'значения — отвечай оператору ИМИ, а не фразой «открыл панель». '
+                       'Используй когда просят показать графики, метрики, логи, CPU, '
+                       "память, latency, ошибки ('покажи дрейф CPU', 'открой ошибки "
+                       "stt_node'). Рабочие запросы: "
+                       "'rate(process_cpu_seconds_total[5m])' — CPU, "
+                       "'process_resident_memory_bytes' — RAM, 'up' — живость "
+                       "экспортеров, 'rate(voice_llm_request_duration_seconds_sum[5m]) "
+                       "/ rate(voice_llm_request_duration_seconds_count[5m])' — "
+                       "задержка LLM. Простые слова ('cpu', 'память', 'latency') тоже "
+                       'принимаются — они резолвятся по живому каталогу метрик.',
+        'parameters': {   'type': 'object',
+                          'properties': {   'query': {   'type': 'string',
+                                                         'description': 'PromQL-выражение '
+                                                                        '(напр. '
+                                                                        "'rate(process_cpu_seconds_total[5m])'), "
+                                                                        'LogQL-запрос '
+                                                                        '(напр. '
+                                                                        '\'{job="voice"}\') '
+                                                                        'или простое '
+                                                                        'слово-метрика '
+                                                                        "('cpu', "
+                                                                        "'память', "
+                                                                        "'latency'). "
+                                                                        'Обязательный.'},
+                                            'datasource': {   'type': 'string',
+                                                              'description': 'Источник '
+                                                                             'телеметрии: '
+                                                                             "'prometheus' "
+                                                                             '(default) '
+                                                                             'или '
+                                                                             "'loki'.",
+                                                              'enum': [   'prometheus',
+                                                                          'loki'],
+                                                              'default': 'prometheus'}},
+                          'required': ['query'],
+                          'additionalProperties': False},
+        'signature': {   'params': ['query', 'datasource'],
+                         'required': ['query'],
+                         'accepts_kwargs': False},
+        'skill': ()},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': True,

@@ -1109,7 +1109,7 @@ def build_babble_retry_prompt(user_input: str) -> str:
         "✅ ОБЯЗАТЕЛЬНО: вызови нужный tool в ЭТОМ же turn:\n"
         "  • rap/песня → execute_music_code + speak_text(lyrics),\n"
         "  • поэзия → speak_text(...) × N строк,\n"
-        "  • новая мелодия/бит с нуля → execute_music_code(...),\n"
+        "  • новая мелодия/бит с нуля → compose_music(...),\n"
         "  • анекдот → speak_text(...) × N,\n"
         "  • уже существующий/сохранённый трек по имени или теме — "
         "НЕ сочиняй новый: если в этом диалоге уже был вызов "

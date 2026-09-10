@@ -35,6 +35,12 @@ MCP_SERVER = (
 )
 TOOLS_DIR = REPO_ROOT / "src" / "rob_box_mcp_tools" / "rob_box_mcp_tools" / "tools"
 
+#: ТАРС-только тулы, зарегистрированные на mcp_server для исполнения по
+#: /mcp/execute (их зовёт второй агент — avatar_supervisor), но скрытые из
+#: каталога личности через ``llm_visible=False``. Личность их видеть не
+#: должна (ADR-0051 §6, #2001/#2113).
+_TARS_ONLY_HIDDEN_TOOLS: frozenset[str] = frozenset({"show_metrics"})
+
 pytestmark = pytest.mark.skipif(
     not GENERATOR.exists() or not MCP_SERVER.exists(),
     reason="running outside a source checkout (installed package): sources unavailable",
@@ -207,7 +213,11 @@ def test_registered_tools_are_not_hidden_from_the_llm(catalog) -> None:
     registered = _registered_tool_names()
     missing = sorted(name for name in registered if name not in by_name)
     assert not missing, f"registered tools absent from the catalog: {missing}"
-    hidden = sorted(name for name in registered if not by_name[name].llm_visible)
+    hidden = sorted(
+        name
+        for name in registered
+        if not by_name[name].llm_visible and name not in _TARS_ONLY_HIDDEN_TOOLS
+    )
     assert not hidden, (
         "registered tools hidden from the LLM without an explicit reason: "
         f"{hidden} — either expose them or document `llm_visible = False`"
