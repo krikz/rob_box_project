@@ -2130,6 +2130,17 @@ class ComposeMusicTool(MCPTool):
                 required=False,
             ),
             MCPToolParameter(
+                name="lead_dur",
+                type="string",
+                description="Ритм мелодии в битах через запятую, ТОЙ ЖЕ "
+                "длины, что lead_notes (например 0.5,0.5,1). Задавай только "
+                "для ТОЧНОГО воспроизведения известной темы — тогда "
+                "мелодия играется дословно весь трек, а бас и форму "
+                "система строит вокруг неё сама. Для сочинённой с нуля "
+                "музыки пропусти: ритм подберёт аранжировщик.",
+                required=False,
+            ),
+            MCPToolParameter(
                 name="pad_synth",
                 type="string",
                 description="Синт подклада: warmpad, pads, strings, ambi, "
@@ -2205,6 +2216,7 @@ class ComposeMusicTool(MCPTool):
         bass_notes: Optional[str] = None,
         lead_synth: Optional[str] = None,
         lead_notes: Optional[str] = None,
+        lead_dur: Optional[str] = None,
         pad_synth: Optional[str] = None,
         pad_notes: Optional[str] = None,
         progression: Optional[str] = None,
@@ -2227,6 +2239,7 @@ class ComposeMusicTool(MCPTool):
                 bass_notes=bass_notes,
                 lead_synth=lead_synth,
                 lead_notes=lead_notes,
+                lead_dur=lead_dur,
                 pad_synth=pad_synth,
                 pad_notes=pad_notes,
                 progression=progression,

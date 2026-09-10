@@ -235,6 +235,8 @@ class Layer:
         pattern: строка паттерна для ударных ролей (``"X..o.X.o"``).
         degrees: ступени лада для мелодических ролей.
         dur: длительность ноты в битах.
+        durs: точный ритм нот для фиксированной темы (``None`` — плотность
+            владеет аранжировщик через :func:`_dur_var`).
         sample: индекс сэмпла для ударных.
         oct_shift: сдвиг относительно октавы роли — на случай, когда бас
             должен уйти ещё ниже или лид ещё выше.
@@ -245,6 +247,7 @@ class Layer:
     pattern: Optional[str] = None
     degrees: Sequence[float] = field(default_factory=tuple)
     dur: float = 1.0
+    durs: Optional[Sequence[float]] = None
     sample: int = 0
     oct_shift: int = 0
 
@@ -609,31 +612,41 @@ def _render_layer(
                 f"Роль {layer.role!r} без degrees — играть нечего."
             )
 
-        # #1805 — материал по секциям, не только громкость. Пишем как
-        # отдельную переменную (тот же идиом, что и ``gflt = linvar(...)``
-        # ниже), а не инлайном: инлайновый ``Pvar(...)`` внутри аргументов
-        # плеера ломает regex-парсер валидатора качества (ищет ``dur=`` до
-        # первой закрывающей скобки — см. tools/music.py::_PLAYER_LINE_RE).
-        variants, variant_durs = _motif_variants(layer.role, layer.degrees, plan)
-        if len(variants) > 1:
-            motif_name = f"{player}_motif"
-            pre_lines.append(
-                f"{motif_name} = Pvar({_fmt_nested_list(variants)}, "
-                f"{_fmt_list(variant_durs)})"
-            )
-            head = f"{layer.synth}({motif_name}"
-        elif layer.role == "pad":
-            # Пэд держит гармонию — все его ступени звучат одновременно.
-            head = f"{layer.synth}({_fmt_chord(layer.degrees)}"
-        else:
+        # Тема фиксированная (задан точный ритм) — играем дословно весь
+        # трек: никаких транспозиций/инверсий/ретроградов (#1805) и
+        # никакой смены плотности (#1806). Развитие идёт формой и слоями
+        # ВОКРУГ темы, а не внутри неё.
+        if layer.durs is not None:
             head = f"{layer.synth}({_fmt_list(layer.degrees)}"
-
-        # #1806 — плотность нот по секциям, не constant dur всю форму.
-        dur_values, dur_durs = _dur_var(layer.role, plan, layer.dur)
-        if len(dur_values) > 1:
-            args.append(f"dur=var({_fmt_list(dur_values)}, {_fmt_list(dur_durs)})")
         else:
-            args.append(f"dur={_fmt(layer.dur)}")
+            # #1805 — материал по секциям, не только громкость. Пишем как
+            # отдельную переменную (тот же идиом, что и ``gflt = linvar(...)``
+            # ниже), а не инлайном: инлайновый ``Pvar(...)`` внутри аргументов
+            # плеера ломает regex-парсер валидатора качества (ищет ``dur=`` до
+            # первой закрывающей скобки — см. tools/music.py::_PLAYER_LINE_RE).
+            variants, variant_durs = _motif_variants(layer.role, layer.degrees, plan)
+            if len(variants) > 1:
+                motif_name = f"{player}_motif"
+                pre_lines.append(
+                    f"{motif_name} = Pvar({_fmt_nested_list(variants)}, "
+                    f"{_fmt_list(variant_durs)})"
+                )
+                head = f"{layer.synth}({motif_name}"
+            elif layer.role == "pad":
+                # Пэд держит гармонию — все его ступени звучат одновременно.
+                head = f"{layer.synth}({_fmt_chord(layer.degrees)}"
+            else:
+                head = f"{layer.synth}({_fmt_list(layer.degrees)}"
+
+        if layer.durs is not None:
+            args.append(f"dur={_fmt_list(layer.durs)}")
+        else:
+            # #1806 — плотность нот по секциям, не constant dur всю форму.
+            dur_values, dur_durs = _dur_var(layer.role, plan, layer.dur)
+            if len(dur_values) > 1:
+                args.append(f"dur=var({_fmt_list(dur_values)}, {_fmt_list(dur_durs)})")
+            else:
+                args.append(f"dur={_fmt(layer.dur)}")
         args.append(f"oct={max(2, min(7, role_oct + int(layer.oct_shift)))}")
 
     args.append(f"amp={amp_expr}")
@@ -856,6 +869,7 @@ def spec_from_flat(
     bass_notes: Optional[str] = None,
     lead_synth: Optional[str] = None,
     lead_notes: Optional[str] = None,
+    lead_dur: Optional[str] = None,
     pad_synth: Optional[str] = None,
     pad_notes: Optional[str] = None,
     progression: Optional[str] = None,
@@ -911,12 +925,25 @@ def spec_from_flat(
     ):
         degrees = parse_notes(notes)
         if synth and synth.strip() and degrees:
+            # Тема фиксированная: точный ритм даёт LLM. Без него плотность
+            # владеет аранжировщик (ROLE_DEFAULT_DUR + _dur_var) — путь
+            # для сочинённой с нуля музыки не меняется.
+            durs: Optional[Tuple[float, ...]] = None
+            if role == "lead" and lead_dur:
+                durs = parse_notes(lead_dur)
+                if len(durs) != len(degrees):
+                    raise ArrangementError(
+                        f"lead_dur должно быть той же длины, что lead_notes: "
+                        f"{len(durs)} длительностей на {len(degrees)} нот. "
+                        "Каждой ноте темы — своя длительность."
+                    )
             layers.append(
                 Layer(
                     role=role,
                     synth=synth.strip(),
                     degrees=degrees,
                     dur=ROLE_DEFAULT_DUR[role],
+                    durs=durs,
                 )
             )
 

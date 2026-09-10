@@ -760,3 +760,60 @@ class TestSwing:
         spec = spec_from_flat(**base, swing=0.12)
         assert spec.swing == 0.12
         assert "Clock.swing(0.12)" in render(spec)
+
+
+class TestFixedTheme:
+    """Точная тема (lead_notes + lead_dur): лид играется дословно весь
+    трек, бас и форма строятся вокруг неё аранжировщиком. Без lead_dur
+    поведение не меняется — мотив развивается вариациями, как раньше."""
+
+    def test_lead_plays_the_theme_verbatim_without_variants(self):
+        spec = spec_from_flat(
+            bpm=100, root="C", scale="major",
+            form="arc", drums="X..o.X.o", lead_synth="pluck",
+            lead_notes="4,4,2, 4,4,2, 0,1,2,3,4",
+            lead_dur="0.5,0.5,1, 0.5,0.5,1, 0.25,0.25,0.25,0.25,0.5",
+        )
+        code = render(spec)
+        lead = next(l for l in code.splitlines() if l.startswith("p2 >>"))
+        # Тема не варируется: у лида нет своего Pvar-мотива (в отличие от
+        # баса, который может развиваться ретроградом — это нормально).
+        assert "p2_motif" not in code
+        assert "Pvar" not in lead
+        # Точный ритм, а не плотность-огибающая.
+        assert (
+            "dur=[0.5, 0.5, 1, 0.5, 0.5, 1, 0.25, 0.25, 0.25, 0.25, 0.5]"
+            in lead
+        )
+        # Тема дословно в лиде.
+        assert "pluck([4, 4, 2, 4, 4, 2, 0, 1, 2, 3, 4]" in lead
+
+    def test_bass_is_derived_from_the_theme_when_not_given(self):
+        spec = spec_from_flat(
+            bpm=100, root="C", scale="major",
+            form="arc", lead_synth="pluck",
+            lead_notes="4,4,2,4,4,2,0,1,2,3,4",
+            lead_dur="0.5,0.5,1,0.5,0.5,1,0.25,0.25,0.25,0.25,0.5",
+        )
+        code = render(spec)
+        bass = next(l for l in code.splitlines() if l.startswith("p1 >>"))
+        # Бас выведен из тоники темы, а не выдуман случайными ступенями.
+        assert "dub" in bass
+
+    def test_lead_dur_length_mismatch_raises(self):
+        with pytest.raises(ArrangementError):
+            spec_from_flat(
+                lead_synth="pluck",
+                lead_notes="0, 2, 4",
+                lead_dur="0.5, 0.5",
+            )
+
+    def test_without_lead_dur_the_lead_still_varies(self):
+        """Без lead_dur ничего не меняется: мотив развивается вариациями."""
+        spec = spec_from_flat(
+            bpm=120, root="C", scale="minor",
+            form="arc", lead_synth="blip", lead_notes="0, 2, 4, 7",
+        )
+        code = render(spec)
+        assert "p2_motif" in code
+        assert "Pvar" in code
