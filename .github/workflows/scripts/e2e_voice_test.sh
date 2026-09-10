@@ -1228,9 +1228,31 @@ PY
             step_ok=1
             # Паттерны шага
             if [ -n "$patterns_json" ] && [ "$patterns_json" != "[]" ]; then
-                pats="$(printf '%s' "$patterns_json" | python3 -c 'import json,sys; print(" ".join(json.load(sys.stdin)))')"
-                log "STEP ${label}: проверка паттернов: $pats"
-                check_patterns "$STEP_BEFORE" $pats
+                # bug(run 34414065635, 09.09.2026): раньше здесь было
+                # `pats="$(... " ".join(...))"` + `check_patterns ... $pats`
+                # без кавычек — bash разбивал паттерн ПО ПРОБЕЛАМ, и
+                # многословный regex превращался в несколько independent
+                # паттернов. Наблюдалось живьём:
+                #   pattern: \[backlog\] accumulated \(no_wake_word\).*speaker='Саш
+                #   →  PATTERN_OK: \[backlog\]
+                #      PATTERN_OK: accumulated
+                #      PATTERN_MISS: \(no_wake_word\).*speaker='Саш
+                # А в 1280_barge_in_abort_old_topic.json «Cancel: new STT input»
+                # проверялся как четыре паттерна, из которых «new» и «input»
+                # матчат почти любой лог — сьюта зеленела на мусоре.
+                # Читаем паттерны построчно в массив: JSON-строка с переводом
+                # строки внутри паттерна не поддерживается (и не нужна).
+                # `tr -d '\015'` обязателен: mapfile -t срезает только \n, а
+                # CR остаётся ВНУТРИ значения — паттерн «set_voice\r» не
+                # матчит ничего и шаг краснеет без объяснимой причины.
+                # Тот же класс, что inputs.scenario_file с CRLF
+                # (test_e2e_voice_workflow_crlf_inputs.sh).
+                mapfile -t _pats_arr < <(printf '%s' "$patterns_json" \
+                    | python3 -c 'import json,sys
+for p in json.load(sys.stdin):
+    print(p.replace("\n", " "))' | tr -d '\015')
+                log "STEP ${label}: проверка паттернов (${#_pats_arr[@]}): ${_pats_arr[*]}"
+                check_patterns "$STEP_BEFORE" "${_pats_arr[@]}"
                 if [ $? != 0 ]; then
                     step_ok=0
                 else
