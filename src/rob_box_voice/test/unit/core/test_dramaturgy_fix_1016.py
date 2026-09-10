@@ -246,33 +246,45 @@ def test_fresh_start_resets_transition_count() -> None:
     )
 
 
-def test_middle_transitions_are_music_only() -> None:
+def test_middle_transitions_suppress_free_text() -> None:
     """🔴 Живой лог 02.09: на КАЖДОМ переходе поверх бита звучало
     «Переход номер два отыгран — нарастание с дропом в ре миноре
-    фригийском, сто сорок ударов!». Промпт запрещал только ``speak_text``,
-    а свободный текст ответа тоже уходит в TTS. Юзер: «во время сочинения
-    музыки LLM много говорит».
+    фригийском, сто сорок ударов!». Это свободный текст мимо ``speak_text``:
+    на середине сета фраза идёт только через speak_text (короткий тематический
+    выкрик), свободный текст глушится. Юзер: «во время сочинения музыки LLM
+    много говорит» → «пусть говорит прикольную фразу, зажигающую толпу».
     """
     ctrl = _build_controller()
     ctrl.state.set_plan = "\n".join(
         f"Трек {i}: {c}" for i, c in enumerate("abcd", start=1)
     )
 
-    # #1 — представление диджея, говорить можно.
-    assert ctrl.is_music_only_transition(1) is False
-    # Середина сета — только музыка.
-    assert ctrl.is_music_only_transition(2) is True
-    assert ctrl.is_music_only_transition(3) is True
-    # Финальный трек плана — тоже только музыка: прощание говорит хук.
-    assert ctrl.is_music_only_transition(4) is True
+    # #1 — представление диджея, свободная форма разрешена.
+    assert ctrl.suppresses_free_text(1) is False
+    # Середина сета — свободный текст глушится (фраза идёт через speak_text).
+    assert ctrl.suppresses_free_text(2) is True
+    assert ctrl.suppresses_free_text(3) is True
+    # Финальный трек плана — тоже: прощание говорит хук.
+    assert ctrl.suppresses_free_text(4) is True
 
 
-def test_music_only_without_a_plan() -> None:
-    """Без плана финального трека не существует — молчат все переходы,
-    кроме первого."""
+def test_free_text_suppressed_without_a_plan() -> None:
+    """Без плана финального трека не существует — свободный текст глушится
+    на всех переходах, кроме первого."""
     ctrl = _build_controller()
-    assert ctrl.is_music_only_transition(1) is False
-    assert ctrl.is_music_only_transition(7) is True
+    assert ctrl.suppresses_free_text(1) is False
+    assert ctrl.suppresses_free_text(7) is True
+
+
+def test_mid_transition_prompt_instructs_thematic_phrase() -> None:
+    """Середина сета разогревает толпу: короткая тематическая фраза через
+    speak_text, свободный текст запрещён (иначе уходит в TTS мимо гарда)."""
+    ctrl = _build_controller()
+    ctrl.state.set_plan = "\n".join(f"Трек {i}" for i in range(1, 6))
+    prompt = ctrl.build_auto_prompt(3)
+    assert "speak_text" in prompt
+    assert "РАЗОГРЕЙ ТОЛПУ" in prompt
+    assert "НЕ пиши свободный текст" in prompt
 
 
 def test_transition_prompt_asks_for_the_form_length() -> None:
