@@ -2919,11 +2919,7 @@ class LookupMelodyTool(MCPTool):
                     return MCPToolResult(success=False, error=result["error"])
                 return MCPToolResult(
                     success=True,
-                    data={
-                        "name": rec.get("name"),
-                        "title": rec.get("title"),
-                        "rtttl": rec.get("rtttl"),
-                    },
+                    data={"name": rec.get("name"), "title": rec.get("title")},
                     message=f"Играю {rec.get('title') or rec.get('name')}.",
                 )
         # 2. Фолбэк — курируемые мелодии в SQLite (type='melody', миграция 012).
