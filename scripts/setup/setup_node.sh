@@ -611,6 +611,111 @@ setup_node_specific() {
     esac
 }
 
+# ═══════════════════════════════════════════════════════════════════════════
+# HAILO AI HAT (PCIe, Hailo-8)
+# ═══════════════════════════════════════════════════════════════════════════
+# Драйвер собираем из исходников (hailort-drivers, ветка/tag hailo8 — master
+# поддерживает только Hailo-10/15). Firmware и HailoRT ставим из публичных
+# deb archive.raspberrypi.com (в Hailo Developer Zone нужен аккаунт).
+# Версия 4.20.0 зафиксирована: это последняя, для которой публично доступны
+# И firmware (hailofw), И runtime (hailort) одной версии.
+#
+# Идемпотентность: скрипт можно запускать многократно. Каждый компонент
+# проверяется отдельно — если он уже стоит и версия совпадает, пропускаем;
+# доустанавливаем только недостающее. Железки нет — просто пропускаем.
+# ═══════════════════════════════════════════════════════════════════════════
+
+setup_hailo_ai_hat() {
+    local hailo_version="4.20.0"
+    local hailo_drivers_tag="v4.20.0"
+    local hailo_fw_deb="hailofw_4.20.0-1_all.deb"
+    local hailo_rt_deb="hailort_4.20.0-1_arm64.deb"
+    local hailo_archive="http://archive.raspberrypi.com/debian/pool/main"
+
+    log_step "Настройка Hailo AI HAT"
+
+    # lspci нужен для проверки наличия железки
+    if ! command -v lspci &> /dev/null; then
+        log_info "Устанавливаем pciutils (lspci)..."
+        sudo apt-get install -y pciutils
+    fi
+
+    if ! lspci 2>/dev/null | grep -qi "Hailo"; then
+        log_info "Hailo AI HAT не обнаружен на PCIe — настройка не требуется"
+        return 0
+    fi
+
+    log_success "Hailo AI HAT обнаружен:"
+    lspci 2>/dev/null | grep -i "Hailo" | sed 's/^/  /'
+
+    # Сборочные инструменты + заголовки ядра (для сборки драйвера)
+    local headers="/usr/src/linux-headers-$(uname -r)"
+    if [ ! -d "$headers" ]; then
+        log_info "Устанавливаем build-essential и linux-headers-$(uname -r)..."
+        sudo apt-get update
+        sudo apt-get install -y build-essential git "linux-headers-$(uname -r)"
+    elif ! command -v gcc &> /dev/null || ! command -v make &> /dev/null; then
+        log_info "Устанавливаем build-essential..."
+        sudo apt-get install -y build-essential git
+    fi
+
+    # 1) Драйвер hailo_pci
+    local ko="/lib/modules/$(uname -r)/kernel/drivers/misc/hailo_pci.ko"
+    if [ -f "$ko" ] && modinfo hailo_pci 2>/dev/null | grep -q "version:.*${hailo_version}"; then
+        log_success "Драйвер hailo_pci ${hailo_version} уже установлен"
+    else
+        log_info "Собираем драйвер hailo_pci ${hailo_version} из исходников..."
+        local work="$HOME/.robbox-hailo"
+        rm -rf "$work"
+        mkdir -p "$work"
+        git clone --depth 1 -b "$hailo_drivers_tag" \
+            https://github.com/hailo-ai/hailort-drivers.git "$work/hailort-drivers"
+        ( cd "$work/hailort-drivers/linux/pcie" && make all && sudo make install )
+        rm -rf "$work"
+        log_success "Драйвер собран и установлен"
+    fi
+
+    # 2) Firmware
+    if [ -f "/lib/firmware/hailo/hailo8_fw.${hailo_version}.bin" ]; then
+        log_success "Firmware ${hailo_version} уже установлен"
+    else
+        log_info "Устанавливаем firmware ${hailo_version}..."
+        local fw_deb="/tmp/${hailo_fw_deb}"
+        wget -q -O "$fw_deb" "${hailo_archive}/h/hailofw/${hailo_fw_deb}"
+        sudo apt-get install -y "$fw_deb"
+        log_success "Firmware установлен"
+    fi
+
+    # 3) HailoRT (runtime + hailortcli)
+    if command -v hailortcli &> /dev/null && hailortcli --version 2>/dev/null | grep -q "${hailo_version}"; then
+        log_success "HailoRT ${hailo_version} уже установлен"
+    else
+        log_info "Устанавливаем HailoRT ${hailo_version}..."
+        local rt_deb="/tmp/${hailo_rt_deb}"
+        wget -q -O "$rt_deb" "${hailo_archive}/h/hailort/${hailo_rt_deb}"
+        sudo apt-get install -y "$rt_deb"
+        log_success "HailoRT установлен"
+    fi
+
+    # 4) Загружаем драйвер и проверяем связь с устройством
+    if [ ! -e /dev/hailo0 ]; then
+        log_info "Загружаем модуль hailo_pci..."
+        sudo modprobe hailo_pci || log_warning "Не удалось загрузить hailo_pci (см. dmesg | grep hailo)"
+    fi
+
+    if [ -e /dev/hailo0 ] && command -v hailortcli &> /dev/null; then
+        if hailortcli fw-control identify > /tmp/hailo_identify.txt 2>&1; then
+            log_success "Hailo-8 работает:"
+            grep -E "Firmware Version|Board Name|Device Architecture" /tmp/hailo_identify.txt | sed 's/^/  /'
+        else
+            log_warning "hailortcli не смог определить устройство:"
+            sed 's/^/  /' /tmp/hailo_identify.txt
+        fi
+    else
+        log_warning "Устройство /dev/hailo0 не появилось — проверьте: dmesg | grep hailo"
+    fi
+}
+
 setup_vision_node() {
     log_info "Настройка Vision Pi..."
     log_info "Проверка USB устройств..."
@@ -642,6 +747,9 @@ setup_vision_node() {
     else
         log_warning "! SPI не включен, добавьте в config.txt: dtparam=spi=on"
     fi
+
+    # Hailo AI HAT (PCIe)
+    setup_hailo_ai_hat
 }
 
 setup_main_node() {
