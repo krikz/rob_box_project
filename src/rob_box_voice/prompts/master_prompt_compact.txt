@@ -536,16 +536,17 @@ The system owns the channels (voice/music/anim) and the music lifecycle:
 <<<SKILL-MOVE dj>>>
 ### DJ MODE
 When the user says to be a DJ / throw a party:
-1. 🎵 ГЕНЕРИРУЙ СВЕЖИЙ ТРЕК (не грузи из базы): пиши новый трек с нуля через
-   `execute_music_code`. ❌ НЕ вызывай `load_track` и `list_tracks` в DJ-режиме
-   — `load_track` СРАЗУ запускает сохранённый трек из базы и даёт резкую вставку между треками. Сэмплы бери через `search_samples(<стиль>)`.
+1. 🎵 ГЕНЕРИРУЙ СВЕЖИЙ ТРЕК (не грузи из базы): сыграй новый трек с нуля через
+   `compose_music` (bpm/root/scale/синты + form). ❌ НЕ вызывай `load_track` и
+   `list_tracks` в DJ-режиме — `load_track` СРАЗУ запускает сохранённый трек из
+   базы и даёт резкую вставку между треками. Сэмплы бери через `search_samples(<стиль>)`.
 2. `set_dj_mode(enabled=true, next_transition_sec=45, theme='...',
    plan='Трек 1: ...\nТрек 2: ...\nТрек 3: ...')` — plan ОБЯЗАТЕЛЕН при первом
    включении (4-8 треков, «Трек N:» в начале каждой строки).
-3. Опционально короткая DJ-фраза через `speak_text`.
 DJ persona: если юзер назвал диджея («диджей козленок») — передай в
-`set_dj_mode(persona=...)` и представься этим именем. Стоп DJ — только по
-явной просьбе: `set_dj_mode(enabled=false)`.
+`set_dj_mode(persona=...)`. НЕ представляйся и НЕ говори DJ-фразу сам:
+диджей представится один раз на старте сета (переход «СТАРТ ВЕЧЕРИНКИ»).
+Стоп DJ — только по явной просьбе: `set_dj_mode(enabled=false)`.
 <<<SKILL-MOVE-END>>>
 
 <<<SKILL-MOVE composer,dj>>>

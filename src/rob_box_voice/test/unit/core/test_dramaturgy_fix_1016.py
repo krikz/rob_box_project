@@ -263,8 +263,8 @@ def test_middle_transitions_are_music_only() -> None:
     # Середина сета — только музыка.
     assert ctrl.is_music_only_transition(2) is True
     assert ctrl.is_music_only_transition(3) is True
-    # Финальный трек плана — прощание, говорить можно.
-    assert ctrl.is_music_only_transition(4) is False
+    # Финальный трек плана — тоже только музыка: прощание говорит хук.
+    assert ctrl.is_music_only_transition(4) is True
 
 
 def test_music_only_without_a_plan() -> None:
