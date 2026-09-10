@@ -2652,6 +2652,26 @@ class TestMusicSessionLifecycle:
         assert mgr._music_deadline_at is None
         assert mgr._music_deadline_segments is None
 
+    def test_dj_mode_skips_segments_deadline(self):
+        """DJ-сет непрерывен: segments-дедлайн #990 не должен его гасить.
+
+        Один владелец DJ-флага — ``set_dj_mode()``; пока DJ включён,
+        ``auto_stop_idle_music`` сбрасывает дедлайн вместо остановки
+        (живой фикс 10:13 DJ: дедлайн убивал музыку посреди сета).
+        """
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        mgr.set_dj_mode(True)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", pattern_name="p1", segments=16)
+        assert mgr._music_deadline_at is not None
+        result = mgr.auto_stop_idle_music(
+            ttl_seconds=300, now=mgr._music_deadline_at + 1
+        )
+        assert result["stopped"] is False
+        # DJ-ветка сбрасывает дедлайн — следующий переход продлит сессию.
+        assert mgr._music_deadline_at is None
+        assert mgr._music_deadline_segments is None
+
     def test_auto_stop_noop_before_segments_deadline(self):
         """Before the deadline, the segments backstop must NOT fire."""
         mgr = _make_manager(sc_running=True, renardo_available=True)

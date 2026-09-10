@@ -439,10 +439,12 @@ class MusicManager:
         # stats — surfaced via get_state() for the AgentCore safety-net
         self._auto_stop_count: int = 0
         # ------------------------------------------------------------------
-        # Issue #1000 — DJ mode flag. When True, ``execute_code`` strips
-        # ``Clock.future(outro/Clock.clear())`` patterns because the LLM
-        # keeps planning its own stop (banned by contract #992) — only the
-        # system clock + watchdog should stop DJ transitions.
+        # DJ mode flag — единственный владелец: ``set_dj_mode()`` (см.
+        # ниже). Ставится двумя адаптерами одного шва: ``SetDjModeTool``
+        # (напрямую) и ``MCPServer._on_dj_mode`` (из топика /voice/dj_mode,
+        # который dialogue_node публикует в stop-fallback). Читается в
+        # ``auto_stop_idle_music``: пока DJ включён, segments-дедлайн #990
+        # не должен гасить непрерывный сет.
         # ------------------------------------------------------------------
         self._dj_mode_enabled: bool = False
         # ------------------------------------------------------------------
@@ -461,11 +463,12 @@ class MusicManager:
 
     @property
     def dj_mode_enabled(self) -> bool:
-        """True when DJ mode is active — ``Clock.future`` stop patterns are stripped."""
+        """True when DJ mode is active — ``auto_stop_idle_music`` skips the segments-deadline."""
         return self._dj_mode_enabled
 
     def set_dj_mode(self, enabled: bool) -> None:
-        """Set DJ mode flag. Called by :class:`SetDjModeTool`."""
+        """Единственная точка записи DJ-флага. Called by :class:`SetDjModeTool`
+        and :meth:`MCPServer._on_dj_mode`."""
         self._dj_mode_enabled = bool(enabled)
 
     # ------------------------------------------------------------------
@@ -2175,10 +2178,10 @@ class MusicManager:
         # 🔴 FIX (live 10:13 DJ): при активном DJ-режиме дедлайн
         # ИГНОРИРУЕТСЯ — DJ-сет непрерывен (переходы каждые 30-120с),
         # segments-дедлайн #990 (~30с) убивал музыку посреди сета.
-        # DJ-флаг приходит из mcp_server (подписка на /voice/dj_mode).
+        # DJ-флаг ставится через set_dj_mode() (одна точка записи).
         deadline = self._music_deadline_at
         if deadline is not None and now_m >= deadline:
-            if getattr(self, "_dj_active", False):
+            if self.dj_mode_enabled:
                 # DJ живёт по idle-TTL; сбросим дедлайн — следующий
                 # переход продлит сессию.
                 self._music_deadline_at = None
@@ -3682,8 +3685,12 @@ class SearchSamplesTool(MCPTool):
 class SetDjModeTool(MCPTool):
     """Включить или выключить режим DJ — автономные плавные переходы между треками."""
 
-    def __init__(self, node) -> None:
+    def __init__(self, node, manager: Optional[Any] = None) -> None:
         super().__init__(node)
+        # Один владелец DJ-флага — MusicManager. Тул ставит флаг напрямую
+        # (без round-trip через топик) и параллельно публикует /voice/dj_mode
+        # для DJModeController в dialogue_node.
+        self._manager = manager
         from std_msgs.msg import String as _String
         self._dj_mode_pub = node.create_publisher(_String, "/voice/dj_mode", 10)
 
@@ -3790,6 +3797,8 @@ class SetDjModeTool(MCPTool):
         msg = _String()
         msg.data = json.dumps(payload)
         self._dj_mode_pub.publish(msg)
+        if self._manager is not None:
+            self._manager.set_dj_mode(enabled)
         action = "включён" if enabled else "выключен"
         interval_info = f" (следующий через {next_transition_sec}с)" if next_transition_sec and enabled else ""
         persona_info = f", персона: {persona}" if persona else ""
