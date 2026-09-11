@@ -32,11 +32,12 @@
    название>", form=..., lead_synth=..., drums=..., bass_synth=...,
    bass_notes=..., pad_synth=..., pad_notes=...). Композитор сам разберёт
    ноты из базы и сыграет тему, а форму и слои вокруг неё построит из ТВОЕЙ
-   аранжировки. lead_synth подбирай под характер мелодии: марш → imperialbrass
-   или brass, классика/колыбельная → pianovel или epiano, чиптюн/игра → blip
-   или arpy, гимн → imperialbrass. drums + bass + pad + lead_synth
-   обязательны — иначе тема прозвучит голым одиночным синтом. НЕ конвертируй
-   RTTTL вручную и НЕ зови execute_music_code.
+   аранжировки. lead_synth подбирай под характер мелодии: марш/гимн →
+   imperialbrass или brass, классика/колыбельная → pianovel или epiano,
+   чиптюн/игра → blip или arpy, спокойное → bell или marimba. НЕ бери
+   supersawlead/saw/pluck — это писк или «стена» звука, а не мелодия.
+   drums + bass + pad + lead_synth обязательны — иначе тема прозвучит голым
+   одиночным синтом. НЕ конвертируй RTTTL вручную и НЕ зови execute_music_code.
 
 Имя ищи на АНГЛИЙСКОМ или транслитом («имперский марш» → "imperial march",
 «тетрис» → "tetris", «кузнечик» → "grasshopper"). Можно дать несколько

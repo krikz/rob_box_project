@@ -376,17 +376,51 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                              'лида.'},
                                             'lead_synth': {   'type': 'string',
                                                               'description': 'Синт '
-                                                                             'мелодии: '
-                                                                             'blip, '
-                                                                             'arpy, '
-                                                                             'supersawlead, '
-                                                                             'karp, '
-                                                                             'sitar, '
-                                                                             'marimba, '
-                                                                             'bell, '
-                                                                             'cs80lead, '
-                                                                             'pluck, '
-                                                                             'keys.'},
+                                                                             'мелодии. '
+                                                                             'Подбирай '
+                                                                             'под '
+                                                                             'характер: '
+                                                                             'марш/гимн '
+                                                                             '→ '
+                                                                             'imperialbrass '
+                                                                             'или '
+                                                                             'brass, '
+                                                                             'классика '
+                                                                             '→ '
+                                                                             'pianovel/epiano, '
+                                                                             'игра/чиптюн '
+                                                                             '→ '
+                                                                             'blip/arpy, '
+                                                                             'спокойное '
+                                                                             '→ '
+                                                                             'bell/marimba. '
+                                                                             'НЕ бери '
+                                                                             'supersawlead/saw '
+                                                                             '— это '
+                                                                             'грубая '
+                                                                             '«стена» '
+                                                                             'звука, а '
+                                                                             'не '
+                                                                             'мелодия.',
+                                                              'enum': [   'imperialbrass',
+                                                                          'brass',
+                                                                          'flute',
+                                                                          'soprano',
+                                                                          'eoboe',
+                                                                          'organ',
+                                                                          'pianovel',
+                                                                          'epiano',
+                                                                          'rhpiano',
+                                                                          'karp',
+                                                                          'sitar',
+                                                                          'marimba',
+                                                                          'bell',
+                                                                          'strings',
+                                                                          'viola',
+                                                                          'cs80lead',
+                                                                          'pluck',
+                                                                          'blip',
+                                                                          'arpy']},
                                             'lead_notes': {   'type': 'string',
                                                               'description': 'Ступени '
                                                                              'лада для '

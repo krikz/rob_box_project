@@ -109,6 +109,16 @@ CRITICAL_SYNTHS: tuple = (
     "noise", "scatter", "orient", "creep", "play1", "play2",
 )
 
+#: Мелодические синты для известных мелодий (compose_music.lead_synth).
+#: Только «поющие» инструменты с артикуляцией: духовые, фортепиано, молоточки,
+#: струнные. Сюда НЕ входят грубые sustained-стены (supersawlead, saw) и
+#: басовые синты — на плотном рингтонном луп они звучат «непрерывной хуйней».
+MELODIC_LEAD_SYNTHS: tuple = (
+    "imperialbrass", "brass", "flute", "soprano", "eoboe", "organ",
+    "pianovel", "epiano", "rhpiano", "karp", "sitar", "marimba", "bell",
+    "strings", "viola", "cs80lead", "pluck", "blip", "arpy",
+)
+
 
 class MusicManager:
     """Управляет интеграцией с Renardo для LLM-контроля музыки в реальном времени.
@@ -2175,9 +2185,13 @@ class ComposeMusicTool(MCPTool):
             MCPToolParameter(
                 name="lead_synth",
                 type="string",
-                description="Синт мелодии: blip, arpy, supersawlead, karp, "
-                "sitar, marimba, bell, cs80lead, pluck, keys.",
+                description="Синт мелодии. Подбирай под характер: марш/гимн → "
+                "imperialbrass или brass, классика → pianovel/epiano, игра/чиптюн "
+                "→ blip/arpy, спокойное → bell/marimba. НЕ бери supersawlead/saw "
+                "— это грубая «стена» звука, а не мелодия.",
                 required=False,
+                enum=list(MELODIC_LEAD_SYNTHS),
+                enum_strict=False,
             ),
             MCPToolParameter(
                 name="lead_notes",
