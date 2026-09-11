@@ -237,6 +237,8 @@ class Layer:
         dur: длительность ноты в битах.
         durs: точный ритм нот для фиксированной темы (``None`` — плотность
             владеет аранжировщик через :func:`_dur_var`).
+        midi: абсолютные MIDI-ноты темы (``None`` = пауза; ``None`` у слоя —
+            тема задана ступенями лада в ``degrees``).
         sample: индекс сэмпла для ударных.
         oct_shift: сдвиг относительно октавы роли — на случай, когда бас
             должен уйти ещё ниже или лид ещё выше.
@@ -248,6 +250,7 @@ class Layer:
     degrees: Sequence[float] = field(default_factory=tuple)
     dur: float = 1.0
     durs: Optional[Sequence[float]] = None
+    midi: Optional[Sequence[Optional[int]]] = None
     sample: int = 0
     oct_shift: int = 0
 
@@ -298,6 +301,11 @@ def _fmt(value: float) -> str:
 
 def _fmt_list(values: Sequence[float]) -> str:
     return "[" + ", ".join(_fmt(v) for v in values) + "]"
+
+
+def _fmt_midi_list(values: Sequence[Optional[int]]) -> str:
+    """MIDI-список для Renardo ``midinote=[...]``: ``None`` = пауза."""
+    return "[" + ", ".join("None" if v is None else str(int(v)) for v in values) + "]"
 
 
 def _fmt_chord(values: Sequence[float]) -> str:
@@ -607,7 +615,7 @@ def _render_layer(
             raise ArrangementError(
                 f"Роль {layer.role!r} играет синтом — нужно поле synth."
             )
-        if not layer.degrees:
+        if not layer.degrees and layer.midi is None:
             raise ArrangementError(
                 f"Роль {layer.role!r} без degrees — играть нечего."
             )
@@ -616,7 +624,14 @@ def _render_layer(
         # трек: никаких транспозиций/инверсий/ретроградов (#1805) и
         # никакой смены плотности (#1806). Развитие идёт формой и слоями
         # ВОКРУГ темы, а не внутри неё.
-        if layer.durs is not None:
+        if layer.midi is not None:
+            if layer.durs is None:
+                raise ArrangementError(
+                    f"Роль {layer.role!r} с midi — нужен точный ритм durs."
+                )
+            # Абсолютный MIDI: октава не применяется (midinote задаёт высоту).
+            head = f"{layer.synth}(midinote={_fmt_midi_list(layer.midi)}"
+        elif layer.durs is not None:
             head = f"{layer.synth}({_fmt_list(layer.degrees)}"
         else:
             # #1805 — материал по секциям, не только громкость. Пишем как
@@ -647,7 +662,8 @@ def _render_layer(
                 args.append(f"dur=var({_fmt_list(dur_values)}, {_fmt_list(dur_durs)})")
             else:
                 args.append(f"dur={_fmt(layer.dur)}")
-        args.append(f"oct={max(2, min(7, role_oct + int(layer.oct_shift)))}")
+        if layer.midi is None:
+            args.append(f"oct={max(2, min(7, role_oct + int(layer.oct_shift)))}")
 
     args.append(f"amp={amp_expr}")
     # Фильтр-свип вешаем на держащие слои. На ударные не вешаем: срезанная
@@ -790,6 +806,37 @@ def parse_notes(raw: Optional[str]) -> Tuple[float, ...]:
     return tuple(out)
 
 
+def parse_midi(raw: Optional[str]) -> Tuple[Optional[int], ...]:
+    """Разобрать абсолютные MIDI-ноты из ``"74, None, 70"``.
+
+    ``None`` (или пустое место) — пауза. Остальное — целое число MIDI.
+    Принимает и ``"[74, None, 70]"``, и ``"74 70"`` — те же послабления,
+    что и :func:`parse_notes` для ступеней.
+
+    Raises:
+        ArrangementError: в строке есть не число и не ``None``.
+    """
+    if not raw or not raw.strip():
+        return ()
+    cleaned = raw.strip().strip("[]()").replace(";", ",").replace(" ", ",")
+    out: List[Optional[int]] = []
+    for chunk in cleaned.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        if chunk.lower() == "none":
+            out.append(None)
+            continue
+        try:
+            out.append(int(float(chunk)))
+        except ValueError as exc:
+            raise ArrangementError(
+                f"MIDI-ноты должны быть целыми числами (или None для паузы), "
+                f"получено {chunk!r} в {raw!r}."
+            ) from exc
+    return tuple(out)
+
+
 # 🔴 FIX (issue #1803): рисунок play(...), чья длина не делит такт, плывёт
 # относительно соседних слоёв на каждом повторе. Живые прогоны 30-31.08,
 # четыре трека подряд — модель писала "X..o.X.o." (9 шагов) рядом с
@@ -870,6 +917,7 @@ def spec_from_flat(
     lead_synth: Optional[str] = None,
     lead_notes: Optional[str] = None,
     lead_dur: Optional[str] = None,
+    lead_midi: Optional[str] = None,
     pad_synth: Optional[str] = None,
     pad_notes: Optional[str] = None,
     progression: Optional[str] = None,
@@ -884,6 +932,10 @@ def spec_from_flat(
 
     Слой добавляется только если для него есть И синт, И ступени —
     полупустой слой молча пропускается, а не роняет запрос.
+
+    ``lead_midi`` — путь ТОЧНОГО воспроизведения известной темы абсолютным
+    MIDI (из RTTTL-библиотеки): играется дословно с ``lead_dur``, в ступени
+    лада не переводится.
     """
     layers: List[Layer] = []
 
@@ -923,29 +975,59 @@ def spec_from_flat(
         ("lead", lead_synth, lead_notes),
         ("pad", pad_synth, pad_notes),
     ):
-        degrees = parse_notes(notes)
-        if synth and synth.strip() and degrees:
-            # Тема фиксированная: точный ритм даёт LLM. Без него плотность
-            # владеет аранжировщик (ROLE_DEFAULT_DUR + _dur_var) — путь
-            # для сочинённой с нуля музыки не меняется.
-            durs: Optional[Tuple[float, ...]] = None
-            if role == "lead" and lead_dur:
-                durs = parse_notes(lead_dur)
-                if len(durs) != len(degrees):
-                    raise ArrangementError(
-                        f"lead_dur должно быть той же длины, что lead_notes: "
-                        f"{len(durs)} длительностей на {len(degrees)} нот. "
-                        "Каждой ноте темы — своя длительность."
-                    )
+        if not (synth and synth.strip()):
+            continue
+
+        # Тема абсолютным MIDI (известная мелодия из RTTTL): играем дословно,
+        # в ступени лада не переводим — иначе хроматические ноты теряются.
+        if role == "lead" and lead_midi and lead_midi.strip():
+            midi = parse_midi(lead_midi)
+            durs = parse_notes(lead_dur) if lead_dur else None
+            if durs is None:
+                raise ArrangementError(
+                    "lead_midi требует lead_dur той же длины — точный ритм темы."
+                )
+            if len(durs) != len(midi):
+                raise ArrangementError(
+                    f"lead_dur должно быть той же длины, что lead_midi: "
+                    f"{len(durs)} длительностей на {len(midi)} нот. "
+                    "Каждой ноте темы — своя длительность."
+                )
             layers.append(
                 Layer(
-                    role=role,
+                    role="lead",
                     synth=synth.strip(),
-                    degrees=degrees,
+                    midi=midi,
                     dur=ROLE_DEFAULT_DUR[role],
                     durs=durs,
                 )
             )
+            continue
+
+        degrees = parse_notes(notes)
+        if not degrees:
+            continue
+        # Тема фиксированная: точный ритм даёт LLM. Без него плотность
+        # владеет аранжировщик (ROLE_DEFAULT_DUR + _dur_var) — путь
+        # для сочинённой с нуля музыки не меняется.
+        durs = None
+        if role == "lead" and lead_dur:
+            durs = parse_notes(lead_dur)
+            if len(durs) != len(degrees):
+                raise ArrangementError(
+                    f"lead_dur должно быть той же длины, что lead_notes: "
+                    f"{len(durs)} длительностей на {len(degrees)} нот. "
+                    "Каждой ноте темы — своя длительность."
+                )
+        layers.append(
+            Layer(
+                role=role,
+                synth=synth.strip(),
+                degrees=degrees,
+                dur=ROLE_DEFAULT_DUR[role],
+                durs=durs,
+            )
+        )
 
     resolved_form = (form or DEFAULT_FORM).strip()
     _autofill_bass(layers, resolved_form)

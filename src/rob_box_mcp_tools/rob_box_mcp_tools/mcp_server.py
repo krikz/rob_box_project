@@ -935,17 +935,11 @@ class MCPServer(Node):
         # playback automatically.
         self._music_manager: Optional[MusicManager] = music_manager
         self.registry.register(ExecuteMusicCodeTool(self, music_manager))
-        # Форма трека строится кодом, а не LLM (RC4 в
-        # docs/analysis/2026-08-30-music-quality-audit.md).
-        self.registry.register(ComposeMusicTool(self, music_manager))
-        self.registry.register(StopMusicTool(self, music_manager))
-        self.registry.register(SetVibePresetTool(self, music_manager))
-        self.registry.register(GetMusicStateTool(self, music_manager))
-        self.registry.register(SetDjModeTool(self, music_manager))
-        self.registry.register(SearchSamplesTool(self))
 
         # RTTTL-библиотека (архив data/rtttl_melodies.jsonl.gz) — независима от
         # SQLite. Поиск по имени/жанру + конвертация RTTTL→Renardo при игре.
+        # Создаём ДО ComposeMusicTool: композитор по name= сам ищет точные
+        # ноты известной мелодии в этой библиотеке.
         rtttl_library: Optional[RtttlLibrary] = None
         try:
             rtttl_library = RtttlLibrary()
@@ -953,6 +947,15 @@ class MCPServer(Node):
             self.get_logger().info(f"🎵 RTTTL library: {rtttl_library.total()} мелодий")
         except Exception as exc:
             self.get_logger().error(f"❌ RTTTL library disabled: {exc}")
+
+        # Форма трека строится кодом, а не LLM (RC4 в
+        # docs/analysis/2026-08-30-music-quality-audit.md).
+        self.registry.register(ComposeMusicTool(self, music_manager, rtttl_library))
+        self.registry.register(StopMusicTool(self, music_manager))
+        self.registry.register(SetVibePresetTool(self, music_manager))
+        self.registry.register(GetMusicStateTool(self, music_manager))
+        self.registry.register(SetDjModeTool(self, music_manager))
+        self.registry.register(SearchSamplesTool(self))
 
         try:
             track_library = TrackLibrary()

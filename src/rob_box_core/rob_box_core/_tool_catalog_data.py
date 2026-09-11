@@ -54,21 +54,87 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                        'МАТЕРИАЛ — темп, тональность, лад и по несколько нот для баса, '
                        'мелодии и подклада; форму и то, когда какой слой вступает и '
                        'уходит, система строит сама. Используй ЭТОТ инструмент для '
-                       'любой просьбы сыграть музыку, трек, бит или сет. '
-                       'execute_music_code нужен только для точного воспроизведения '
-                       'известной мелодии по нотам.',
+                       'любой просьбы сыграть музыку, трек, бит или сет. Для ИЗВЕСТНОЙ '
+                       'мелодии по имени («гимн СССР», «имперский марш», «happy '
+                       'birthday») передай name (и variants) — система сама найдёт '
+                       'точные ноты в базе RTTTL и построит аранжировку вокруг них. '
+                       'execute_music_code нужен только для точного ручного кода.',
         'parameters': {   'type': 'object',
-                          'properties': {   'bpm': {   'type': 'number',
+                          'properties': {   'name': {   'type': 'string',
+                                                        'description': 'Название '
+                                                                       'известной '
+                                                                       'мелодии, '
+                                                                       'которую юзер '
+                                                                       'просит сыграть '
+                                                                       '(английским '
+                                                                       'или '
+                                                                       'транслитом): '
+                                                                       '«гимн СССР» → '
+                                                                       '"soviet '
+                                                                       'anthem", '
+                                                                       '«имперский '
+                                                                       'марш» → '
+                                                                       '"imperial '
+                                                                       'march", «happy '
+                                                                       'birthday», '
+                                                                       '«jingle '
+                                                                       'bells». Когда '
+                                                                       'name задан, '
+                                                                       'композитор сам '
+                                                                       'находит ТОЧНЫЕ '
+                                                                       'ноты в базе '
+                                                                       'RTTTL и строит '
+                                                                       'аранжировку '
+                                                                       'вокруг них — '
+                                                                       'bpm/root/scale/lead_notes '
+                                                                       'указывать не '
+                                                                       'нужно и не '
+                                                                       'импровизируй '
+                                                                       'ноты по '
+                                                                       'памяти.'},
+                                            'variants': {   'type': 'array',
+                                                            'description': 'Дополнительные '
+                                                                           'варианты '
+                                                                           'названия '
+                                                                           'мелодии '
+                                                                           '(английским/транслитом), '
+                                                                           'которые '
+                                                                           'пробовать '
+                                                                           'по '
+                                                                           'порядку, '
+                                                                           'если name '
+                                                                           'не '
+                                                                           'найдётся. '
+                                                                           'Например '
+                                                                           'name="imperial '
+                                                                           'march", '
+                                                                           'variants=["darth '
+                                                                           'vader", '
+                                                                           '"star wars '
+                                                                           'theme"].',
+                                                            'items': {   'type': 'string',
+                                                                         'description': 'Альтернативное '
+                                                                                        'написание/название '
+                                                                                        'мелодии.'}},
+                                            'bpm': {   'type': 'number',
                                                        'description': 'Темп, 60-180. '
                                                                       'Медленное и '
                                                                       'лиричное 70-95, '
                                                                       'грув 100-120, '
                                                                       'танцевальное '
-                                                                      '124-140.'},
+                                                                      '124-140. Не '
+                                                                      'нужен при name: '
+                                                                      'темп возьмётся '
+                                                                      'из мелодии.'},
                                             'root': {   'type': 'string',
                                                         'description': 'Тоника: C, D, '
                                                                        'E, F, G, A, B '
-                                                                       '(можно с #).',
+                                                                       '(можно с #). '
+                                                                       'Не нужна при '
+                                                                       'name: '
+                                                                       'тональность '
+                                                                       'определится по '
+                                                                       'нотам.',
                                                         'enum': [   'C',
                                                                     'C#',
                                                                     'D',
@@ -89,7 +155,11 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                         'lydian, '
                                                                         'phrygian, '
                                                                         'majorPentatonic, '
-                                                                        'harmonicMinor.'},
+                                                                        'harmonicMinor. '
+                                                                        'Не нужен при '
+                                                                        'name: лад '
+                                                                        'определится '
+                                                                        'по нотам.'},
                                             'form': {   'type': 'string',
                                                         'description': 'Форма '
                                                                        'композиции. '
@@ -519,9 +589,11 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                         'жанр '
                                                                         'независимо от '
                                                                         'инструментов.'}},
-                          'required': ['bpm', 'root', 'scale'],
+                          'required': [],
                           'additionalProperties': False},
-        'signature': {   'params': [   'bpm',
+        'signature': {   'params': [   'name',
+                                       'variants',
+                                       'bpm',
                                        'root',
                                        'scale',
                                        'form',
@@ -541,7 +613,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                        'progression',
                                        'repeat',
                                        'swing'],
-                         'required': ['bpm', 'root', 'scale'],
+                         'required': [],
                          'accepts_kwargs': False},
         'skill': ('composer',)},
     {   'llm_visible': False,

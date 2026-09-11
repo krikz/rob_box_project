@@ -44,6 +44,7 @@ from ..core.arranger import (
     spec_from_flat,
 )
 from ..core import renardo_sanitizer
+from ..core.rtttl_compose import melody_to_compose_params, rtttl_to_melody
 from ..core.rtttl_library import RtttlLibrary
 
 # Live 13.08 — символы сэмплов в play("x-o-") для предзагрузки буферов.
@@ -1951,9 +1952,15 @@ class ComposeMusicTool(MCPTool):
         "bass_synth", "drums", "drums_sample", "hats_sample", "form",
     )
 
-    def __init__(self, node, manager: MusicManager) -> None:
+    def __init__(
+        self,
+        node,
+        manager: MusicManager,
+        rtttl_library: Optional[RtttlLibrary] = None,
+    ) -> None:
         super().__init__(node)
         self._manager = manager
+        self._rtttl_library = rtttl_library
         #: Плоские параметры предыдущего успешного вызова. Нужны только для
         #: обратной связи модели: она не видит своих прошлых tool-вызовов
         #: настолько подробно, чтобы заметить, что третий трек подряд идёт
@@ -1989,6 +1996,17 @@ class ComposeMusicTool(MCPTool):
             "слышится как один длинный трек."
         )
 
+    def _resolve_melody(self, name: str, variants: Optional[List[str]]) -> Optional[Dict[str, Any]]:
+        """Найти RTTTL-мелодию по имени (name → variants) в библиотеке."""
+        if self._rtttl_library is None:
+            return None
+        candidates = [name] + [v for v in (variants or []) if v]
+        for candidate in candidates:
+            rec = self._rtttl_library.get(candidate)
+            if rec is not None:
+                return rec
+        return None
+
     @property
     def name(self) -> str:
         return "compose_music"
@@ -2001,26 +2019,61 @@ class ComposeMusicTool(MCPTool):
             "МАТЕРИАЛ — темп, тональность, лад и по несколько нот для баса, "
             "мелодии и подклада; форму и то, когда какой слой вступает и "
             "уходит, система строит сама. Используй ЭТОТ инструмент для "
-            "любой просьбы сыграть музыку, трек, бит или сет. "
-            "execute_music_code нужен только для точного воспроизведения "
-            "известной мелодии по нотам."
+            "любой просьбы сыграть музыку, трек, бит или сет. Для ИЗВЕСТНОЙ "
+            "мелодии по имени («гимн СССР», «имперский марш», «happy "
+            "birthday») передай name (и variants) — система сама найдёт "
+            "точные ноты в базе RTTTL и построит аранжировку вокруг них. "
+            "execute_music_code нужен только для точного ручного кода."
         )
 
     @property
     def parameters(self) -> List[MCPToolParameter]:
         return [
             MCPToolParameter(
+                name="name",
+                type="string",
+                description=(
+                    "Название известной мелодии, которую юзер просит сыграть "
+                    "(английским или транслитом): «гимн СССР» → \"soviet "
+                    "anthem\", «имперский марш» → \"imperial march\", "
+                    "«happy birthday», «jingle bells». Когда name задан, "
+                    "композитор сам находит ТОЧНЫЕ ноты в базе RTTTL и "
+                    "строит аранжировку вокруг них — bpm/root/scale/"
+                    "lead_notes указывать не нужно и не импровизируй ноты "
+                    "по памяти."
+                ),
+                required=False,
+            ),
+            MCPToolParameter(
+                name="variants",
+                type="array",
+                description=(
+                    "Дополнительные варианты названия мелодии (английским/"
+                    "транслитом), которые пробовать по порядку, если name не "
+                    "найдётся. Например name=\"imperial march\", "
+                    "variants=[\"darth vader\", \"star wars theme\"]."
+                ),
+                required=False,
+                items=MCPToolParameter(
+                    name="variant",
+                    type="string",
+                    description="Альтернативное написание/название мелодии.",
+                ),
+            ),
+            MCPToolParameter(
                 name="bpm",
                 type="number",
                 description="Темп, 60-180. Медленное и лиричное 70-95, "
-                "грув 100-120, танцевальное 124-140.",
-                required=True,
+                "грув 100-120, танцевальное 124-140. Не нужен при name: "
+                "темп возьмётся из мелодии.",
+                required=False,
             ),
             MCPToolParameter(
                 name="root",
                 type="string",
-                description="Тоника: C, D, E, F, G, A, B (можно с #).",
-                required=True,
+                description="Тоника: C, D, E, F, G, A, B (можно с #). "
+                "Не нужна при name: тональность определится по нотам.",
+                required=False,
                 enum=list(VALID_ROOTS),
                 enum_strict=False,
             ),
@@ -2028,8 +2081,9 @@ class ComposeMusicTool(MCPTool):
                 name="scale",
                 type="string",
                 description="Лад: minor, major, dorian, mixolydian, lydian, "
-                "phrygian, majorPentatonic, harmonicMinor.",
-                required=True,
+                "phrygian, majorPentatonic, harmonicMinor. Не нужен при "
+                "name: лад определится по нотам.",
+                required=False,
             ),
             MCPToolParameter(
                 name="form",
@@ -2211,9 +2265,11 @@ class ComposeMusicTool(MCPTool):
 
     def execute(
         self,
-        bpm: float,
-        root: str,
-        scale: str,
+        name: Optional[str] = None,
+        variants: Optional[List[str]] = None,
+        bpm: Optional[float] = None,
+        root: Optional[str] = None,
+        scale: Optional[str] = None,
         form: Optional[str] = None,
         drums: Optional[str] = None,
         drums_sample: int = 0,
@@ -2232,6 +2288,41 @@ class ComposeMusicTool(MCPTool):
         repeat: bool = False,
         swing: float = 0.0,
     ) -> MCPToolResult:
+        # Известная мелодия по имени: ищем в RTTTL-библиотеке, конвертируем
+        # ноты в параметры композитора и заполняем ими вызов.
+        lead_midi: Optional[str] = None
+        melody_title: Optional[str] = None
+        if name:
+            rec = self._resolve_melody(name, variants)
+            if rec is None:
+                return MCPToolResult(
+                    success=False,
+                    error=(
+                        f"Мелодия {name!r} не найдена в библиотеке. Скажи "
+                        "юзеру честно, что не знаешь точных нот, и предложи "
+                        "сыграть что-то в похожем духе — НЕ выдавай "
+                        "импровизацию за оригинал."
+                    ),
+                )
+            try:
+                params = melody_to_compose_params(rtttl_to_melody(rec["rtttl"]))
+            except ValueError as exc:
+                return MCPToolResult(
+                    success=False,
+                    error=f"Не удалось разобрать RTTTL мелодии {name!r}: {exc}",
+                )
+            melody_title = str(rec.get("title") or rec.get("name") or name)
+            bpm = bpm if bpm is not None else params["bpm"]
+            root = root if root is not None else params["root"]
+            scale = scale if scale is not None else params["scale"]
+            lead_synth = lead_synth or params["lead_synth"]
+            lead_midi = params["lead_midi"]
+            lead_dur = params["lead_dur"]
+
+        bpm = float(bpm) if bpm is not None else 120.0
+        root = root or "C"
+        scale = scale or "minor"
+
         try:
             spec = spec_from_flat(
                 bpm=bpm,
@@ -2249,6 +2340,7 @@ class ComposeMusicTool(MCPTool):
                 lead_synth=lead_synth,
                 lead_notes=lead_notes,
                 lead_dur=lead_dur,
+                lead_midi=lead_midi,
                 pad_synth=pad_synth,
                 pad_notes=pad_notes,
                 progression=progression,
@@ -2291,10 +2383,17 @@ class ComposeMusicTool(MCPTool):
             "drums": drums, "drums_sample": drums_sample,
             "hats_sample": hats_sample, "bass_synth": bass_synth,
             "lead_synth": lead_synth, "lead_notes": lead_notes,
-            "progression": progression,
+            "progression": progression, "name": name,
         }
         repeat_warning = self._repeat_warning(flat)
         self._last_flat = flat
+        if melody_title:
+            prefix = (
+                f"Играю «{melody_title}» по точным нотам из базы "
+                f"({form_summary(spec.form)}). "
+            )
+        else:
+            prefix = f"Играю композицию: {form_summary(spec.form)}. "
         # Явный стоп-сигнал в сообщении, а не только в промпте: live 30.08
         # модель вызвала compose_music и следом execute_music_code со своим
         # кодом. Любой музыкальный вызов начинается с Clock.clear(), поэтому
@@ -2304,8 +2403,8 @@ class ComposeMusicTool(MCPTool):
             success=True,
             data=result,
             message=(
-                f"Играю композицию: {form_summary(spec.form)}. "
-                f"Полная форма звучит {duration_s:.0f} секунд — столько же "
+                prefix
+                + f"Полная форма звучит {duration_s:.0f} секунд — столько же "
                 "ставь в next_transition_sec, если это DJ-переход: "
                 "переключение раньше срезает кульминацию, и все треки "
                 "сета слышатся как одинаковые вступления. "

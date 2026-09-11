@@ -42,6 +42,7 @@ from rob_box_mcp_tools.core.arranger import (  # noqa: E402
     ArrangementError,
     CompositionSpec,
     Layer,
+    parse_midi,
     form_duration_seconds,
     form_summary,
     render,
@@ -817,3 +818,46 @@ class TestFixedTheme:
         code = render(spec)
         assert "p2_motif" in code
         assert "Pvar" in code
+
+
+class TestFixedThemeMidi:
+    """Точная тема абсолютным MIDI (lead_midi + lead_dur): лид играется
+    дословно через ``midinote=[...]`` — хроматические ноты и паузы не
+    теряются, а октава роли не накладывается (midinote задаёт высоту)."""
+
+    def test_lead_midi_renders_midinote_verbatim(self):
+        spec = spec_from_flat(
+            bpm=80, root="C", scale="major",
+            form="arc", drums="X..o.X.o", lead_synth="pluck",
+            lead_midi="74, None, 70, 77",
+            lead_dur="0.75, 0.5, 0.5, 0.25",
+        )
+        code = render(spec)
+        lead = next(l for l in code.splitlines() if l.startswith("p2 >>"))
+        assert "midinote=[74, None, 70, 77]" in lead
+        assert "dur=[0.75, 0.5, 0.5, 0.25]" in lead
+        # Абсолютный MIDI: октава роли не применяется.
+        assert "oct=" not in lead
+        # Тема не варируется и не получает собственного Pvar-мотива.
+        assert "p2_motif" not in code
+        assert "Pvar" not in lead
+
+    def test_lead_midi_length_mismatch_raises(self):
+        with pytest.raises(ArrangementError):
+            spec_from_flat(
+                lead_synth="pluck",
+                lead_midi="74, 70, 77",
+                lead_dur="0.75, 0.5",
+            )
+
+    def test_lead_midi_requires_lead_dur(self):
+        with pytest.raises(ArrangementError):
+            spec_from_flat(lead_synth="pluck", lead_midi="74, 70")
+
+    def test_parse_midi_accepts_rest_and_brackets(self):
+        assert parse_midi("[74, None, 70]") == (74, None, 70)
+        assert parse_midi("74 70 none") == (74, 70, None)
+
+    def test_parse_midi_rejects_non_number(self):
+        with pytest.raises(ArrangementError):
+            parse_midi("74, abc")
