@@ -123,3 +123,80 @@ def test_multiword_and_russian_alias(tmp_path):
     assert lib.get("ussr")["name"] == "soviethy"           # аббревиатура → не мусор
     assert lib.get("imperial march") is None               # честно None, нет такой
 
+
+def test_migration_repairs_unknown_title_from_artist(tmp_path):
+    """title='Unknown' → artist (там реальное имя, потерянное при сборке архива)."""
+    records = [
+        {
+            "name": "unknown_16",
+            "title": "Unknown",
+            "artist": "Batman V1.0",
+            "source": "mixed3",
+            "tags": ["movie"],
+            "rtttl": "Unknown:d=4,o=5,b=100:16d#6",
+        },
+    ]
+    archive = tmp_path / "repair.jsonl.gz"
+    with gzip.open(archive, "wt", encoding="utf-8") as fh:
+        for rec in records:
+            fh.write(json.dumps(rec) + "\n")
+    lib = RtttlLibrary(db_path=str(tmp_path / "repair.db"), archive_path=str(archive))
+
+    rec = lib.get("batman")
+    assert rec is not None
+    assert rec["title"] == "Batman V1.0"
+    assert rec["rtttl_name"] == "Unknown"  # имя внутри формата RTTTL
+
+
+def test_rtttl_name_is_searchable(tmp_path):
+    """Поиск должен матчить и имя внутри формата RTTTL (префикс до ':')."""
+    records = [
+        {
+            "name": "unknown_x",
+            "title": "Unknown",
+            "artist": "",
+            "source": "mixed3",
+            "tags": [],
+            "rtttl": "NokiaTun:d=4,o=5,b=225:8e6,8d6",
+        },
+    ]
+    archive = tmp_path / "rtname.jsonl.gz"
+    with gzip.open(archive, "wt", encoding="utf-8") as fh:
+        for rec in records:
+            fh.write(json.dumps(rec) + "\n")
+    lib = RtttlLibrary(db_path=str(tmp_path / "rtname.db"), archive_path=str(archive))
+
+    assert lib.get("nokiatun")["rtttl_name"] == "NokiaTun"
+    assert lib.search("nokiatun")[0]["rtttl_name"] == "NokiaTun"
+
+
+def test_multiword_query_prefers_full_title_over_name_token(tmp_path):
+    """«happy birthday» → «Happy Birthday To You», а не Ashanti «Happy»."""
+    records = [
+        {
+            "name": "happy",
+            "title": "Happy",
+            "artist": "Ashanti",
+            "source": "mixed3",
+            "tags": [],
+            "rtttl": "Happy:d=4,o=5,b=100:c",
+        },
+        {
+            "name": "happybir_3",
+            "title": "Happy Birthday To You",
+            "artist": "Mildred J Hill",
+            "source": "mixed3",
+            "tags": [],
+            "rtttl": "HappyBir:d=8,o=5,b=100:16c,16c,d,c,f,e",
+        },
+    ]
+    archive = tmp_path / "hb.jsonl.gz"
+    with gzip.open(archive, "wt", encoding="utf-8") as fh:
+        for rec in records:
+            fh.write(json.dumps(rec) + "\n")
+    lib = RtttlLibrary(db_path=str(tmp_path / "hb.db"), archive_path=str(archive))
+
+    rec = lib.get("happy birthday")
+    assert rec is not None
+    assert rec["name"] == "happybir_3"
+

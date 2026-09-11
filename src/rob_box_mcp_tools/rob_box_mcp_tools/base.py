@@ -226,6 +226,29 @@ class MCPTool(ABC):
         return False
 
     @property
+    def starts_music(self) -> bool:
+        """Инструмент запускает слышимую музыку (Renardo или mp3).
+
+        Единственный источник для post-turn music guard'а: если в ходе был
+        вызван тул с ``starts_music=True``, гуард не должен ретраить LLM
+        «ты не вызвал музыкальный тул». Ранее это знание дублировалось в
+        ``dialogue_guards.RENARDO_MUSIC_TOOLS``/``GENERATED_MUSIC_TOOLS``
+        и каждый новый музыкальный тул про него забывал (lookup_melody).
+        """
+        return False
+
+    @property
+    def satisfies_user_music(self) -> bool:
+        """Инструмент закрывает пользовательскую просьбу «включи X».
+
+        Отдельно от ``starts_music``: ``load_track`` запускает Renardo, но
+        в DJ-переходе не должен засчитываться за «музыка пошла» (DJ обязан
+        играть через compose_music/lookup_melody), поэтому у него
+        ``starts_music=False``, а ``satisfies_user_music=True``.
+        """
+        return False
+
+    @property
     def destructive(self) -> bool:
         """
         Инструмент выполняет разрушительные операции (destructiveHint)

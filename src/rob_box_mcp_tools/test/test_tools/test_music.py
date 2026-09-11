@@ -2447,6 +2447,29 @@ class TestLookupMelodyTool:
         assert result.success is False
         assert "не знаешь точных нот" in result.error
 
+    def test_variants_are_tried_in_order(self, mock_node):
+        """LLM может дать несколько вариантов названия — пробуем по порядку."""
+        library = Mock()
+        library.find_melody.return_value = None
+        rtttl_library = Mock()
+        rtttl_library.get.side_effect = [
+            None,  # primary name не нашёлся
+            {"name": "starwars_3", "title": "Imperial March", "rtttl": "x:d=4,o=5,b=80:c", "tags": []},
+        ]
+        manager = Mock()
+        manager.execute_code.return_value = {"success": True}
+        tool = LookupMelodyTool(mock_node, library, manager, rtttl_library)
+
+        result = tool.execute("imperial march", variants=["darth vader", "star wars"])
+
+        assert result.success is True
+        # Останавливаемся на первом совпадении — третий вариант не нужен.
+        assert [c.args[0] for c in rtttl_library.get.call_args_list] == [
+            "imperial march",
+            "darth vader",
+        ]
+        manager.execute_code.assert_called_once()
+
 
 def test_find_melody_resolves_slug_title_and_tag(tmp_path):
     """find_melody ищет по slug (транслит), title и tags."""

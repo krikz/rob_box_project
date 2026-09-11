@@ -558,6 +558,8 @@ def extract_tools() -> list[dict[str, Any]]:
                 "read_only": False,
                 "destructive": True,
                 "idempotent": False,
+                "starts_music": False,
+                "satisfies_user_music": False,
                 "execution_type": "medium",
             }
             params: list[dict[str, Any]] | None = None
@@ -570,7 +572,14 @@ def extract_tools() -> list[dict[str, Any]]:
                     entry["description"] = _returned_literal(fn)
                 elif fn.name == "parameters":
                     params = _extract_parameters(fn, cls.name, source.name)
-                elif fn.name in ("read_only", "destructive", "idempotent", "llm_visible"):
+                elif fn.name in (
+                    "read_only",
+                    "destructive",
+                    "idempotent",
+                    "llm_visible",
+                    "starts_music",
+                    "satisfies_user_music",
+                ):
                     value = _returned_literal(fn)
                     if isinstance(value, bool):
                         entry[fn.name] = value

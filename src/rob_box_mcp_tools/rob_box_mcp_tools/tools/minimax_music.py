@@ -130,6 +130,10 @@ class GenerateMusicTool(MCPTool):
         return False
 
     @property
+    def starts_music(self) -> bool:
+        return True
+
+    @property
     def description(self) -> str:
         return (
             "Сгенерировать новый музыкальный трек через MiniMax Music API и "
@@ -732,6 +736,10 @@ class GenPlayFromLibraryTool(MCPTool):
     @property
     def destructive(self) -> bool:
         return False  # mutates DB but logically a "play" action
+
+    @property
+    def starts_music(self) -> bool:
+        return True
 
     def execute(self, track_id: str, **_: Any) -> MCPToolResult:
         valid, err = self.validate_parameters(track_id=track_id)

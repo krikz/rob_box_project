@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS rtttl_melodies (
     source      TEXT    NOT NULL DEFAULT '',
     tags        TEXT    NOT NULL DEFAULT '[]',
     rtttl       TEXT    NOT NULL UNIQUE,
+    rtttl_name  TEXT    NOT NULL DEFAULT '',
     created_at  TEXT    NOT NULL,
     updated_at  TEXT    NOT NULL
 );
@@ -155,33 +156,66 @@ class RtttlLibrary:
     # ------------------------------------------------------------------
 
     def _migrate_from_archive(self) -> None:
+        self._ensure_rtttl_name_column()
         count = self._conn.execute("SELECT COUNT(*) FROM rtttl_melodies").fetchone()[0]
-        if count > 0:
-            return
-        now = datetime.now(timezone.utc).isoformat()
-        insert = (
-            "INSERT OR IGNORE INTO rtttl_melodies "
-            "(name, title, artist, source, tags, rtttl, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-        )
-        with self._conn:  # одна транзакция — частичный импорт невозможен
-            batch: List[tuple] = []
-            for rec in _iter_archive_rows(self._archive):
-                batch.append((
-                    rec.get("name", ""),
-                    rec.get("title", ""),
-                    rec.get("artist", ""),
-                    rec.get("source", ""),
-                    json.dumps(rec.get("tags") or [], ensure_ascii=False),
-                    rec.get("rtttl", ""),
-                    now,
-                    now,
-                ))
-                if len(batch) >= _BATCH:
+        if count == 0:
+            now = datetime.now(timezone.utc).isoformat()
+            insert = (
+                "INSERT OR IGNORE INTO rtttl_melodies "
+                "(name, title, artist, source, tags, rtttl, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+            )
+            with self._conn:  # одна транзакция — частичный импорт невозможен
+                batch: List[tuple] = []
+                for rec in _iter_archive_rows(self._archive):
+                    batch.append((
+                        rec.get("name", ""),
+                        rec.get("title", ""),
+                        rec.get("artist", ""),
+                        rec.get("source", ""),
+                        json.dumps(rec.get("tags") or [], ensure_ascii=False),
+                        rec.get("rtttl", ""),
+                        now,
+                        now,
+                    ))
+                    if len(batch) >= _BATCH:
+                        self._conn.executemany(insert, batch)
+                        batch = []
+                if batch:
                     self._conn.executemany(insert, batch)
-                    batch = []
-            if batch:
-                self._conn.executemany(insert, batch)
+        # Для уже существующих и свежесозданных БД: добить rtttl_name и
+        # восстановить потерянные имена (title='Unknown' → artist).
+        self._repair_missing_names()
+
+    def _ensure_rtttl_name_column(self) -> None:
+        """Добавить колонку ``rtttl_name`` в уже существующую БД (ALTER)."""
+        cols = {row[1] for row in self._conn.execute("PRAGMA table_info(rtttl_melodies)")}
+        if "rtttl_name" not in cols:
+            self._conn.execute(
+                "ALTER TABLE rtttl_melodies ADD COLUMN rtttl_name TEXT NOT NULL DEFAULT ''"
+            )
+            self._conn.commit()
+
+    def _repair_missing_names(self) -> None:
+        """Восстановить имя из двух источников, которые миграция потеряла.
+
+        Архив местами хранит ``name='unknown_NNN'``, ``title='Unknown'``, а
+        реальное имя — в ``artist`` («Batman V1.0»). Дополнительно в самом
+        формате RTTTL есть поле имени (префикс строки до первого ':'): его
+        кладём в ``rtttl_name``, чтобы поиск матчил и по нему.
+        """
+        with self._conn:
+            self._conn.execute(
+                "UPDATE rtttl_melodies "
+                "SET rtttl_name = substr(rtttl, 1, instr(rtttl, ':') - 1) "
+                "WHERE rtttl_name = '' AND instr(rtttl, ':') > 0"
+            )
+            self._conn.execute(
+                "UPDATE rtttl_melodies SET title = artist "
+                "WHERE (title IS NULL OR trim(title) = '' OR lower(trim(title)) = 'unknown') "
+                "AND artist IS NOT NULL AND trim(artist) != '' "
+                "AND lower(trim(artist)) != 'unknown'"
+            )
 
     # ------------------------------------------------------------------
     # Поиск (SQL, на диске)
@@ -203,16 +237,22 @@ class RtttlLibrary:
 
     @staticmethod
     def _score(row: sqlite3.Row, tokens: List[str]) -> int:
-        """Скоринг: сколько токенов запроса попало в поля (name/title весомее)."""
+        """Скоринг: сколько токенов запроса попало в поля (name/rtttl_name весомее)."""
         name_l = (row["name"] or "").lower()
         title_l = (row["title"] or "").lower()
         artist_l = (row["artist"] or "").lower()
         tags_l = (row["tags"] or "").lower()
+        rtttl_name_l = (row["rtttl_name"] or "").lower()
         score = 0
         for token in tokens:
-            if token == name_l:
+            if token == name_l or token == rtttl_name_l:
                 score += 4
-            elif token in name_l or token in title_l:
+            elif token in title_l:
+                # title несёт полное имя («Happy Birthday To You») — ценнее,
+                # чем подстрока slug'а. Иначе «happy birthday» выигрывает
+                # трек Ashanti «Happy» (token == name) у правильного.
+                score += 3
+            elif token in name_l or token in rtttl_name_l:
                 score += 2
             elif token in artist_l or token in tags_l:
                 score += 1
@@ -226,12 +266,13 @@ class RtttlLibrary:
             like = f"%{token}%"
             clauses.append(
                 "(lower(name) LIKE ? OR lower(title) LIKE ? "
-                "OR lower(artist) LIKE ? OR lower(tags) LIKE ?)"
+                "OR lower(artist) LIKE ? OR lower(tags) LIKE ? "
+                "OR lower(rtttl_name) LIKE ?)"
             )
-            params += [like, like, like, like]
+            params += [like, like, like, like, like]
         sql = (
-            "SELECT id, name, title, artist, source, tags FROM rtttl_melodies "
-            "WHERE " + " OR ".join(clauses) + " LIMIT ?"
+            "SELECT id, name, title, artist, source, tags, rtttl_name "
+            "FROM rtttl_melodies WHERE " + " OR ".join(clauses) + " LIMIT ?"
         )
         return self._conn.execute(sql, params + [cap]).fetchall()
 

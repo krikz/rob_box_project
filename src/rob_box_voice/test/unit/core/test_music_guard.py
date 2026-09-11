@@ -44,6 +44,32 @@ def _dj_prompt() -> str:
     return "[CRITICAL] DJ retry — call execute_music_code"
 
 
+def test_lookup_melody_counts_as_music_start() -> None:
+    """lookup_melody играет мелодию (execute_code внутри) — гуард обязан
+    признать его за «музыка пошла». Иначе Bug C ретраит и LLM зовёт
+    execute_music_code повторно, а тот стирает мелодию через Clock.clear()."""
+    guard = MusicGuard()
+    verdict = guard.evaluate(
+        was_dj_auto=False,
+        user_input="сыграй имперский марш",
+        tools_called=("lookup_melody",),
+        dj_enabled=True,
+        build_music_retry_prompt=_music_prompt,
+        build_dj_retry_prompt=_dj_prompt,
+    )
+    assert verdict.kind is MusicGuardVerdictKind.SKIP
+
+
+def test_music_starting_tools_derived_from_catalog() -> None:
+    """Множества музыкальных тулов выводятся из каталога, а не из frozenset."""
+    from rob_box_core.tool_catalog import TOOL_CATALOG
+    from rob_box_voice.core.dialogue_guards import MUSIC_STARTING_TOOLS
+
+    expected = {e.name for e in TOOL_CATALOG if e.starts_music}
+    assert MUSIC_STARTING_TOOLS == frozenset(expected)
+    assert {"execute_music_code", "compose_music", "lookup_melody"} <= MUSIC_STARTING_TOOLS
+
+
 # ---------------------------------------------------------------------------
 # Bug-C happy path — LLM did call execute_music_code
 # ---------------------------------------------------------------------------

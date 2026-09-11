@@ -115,12 +115,11 @@ from rob_box_voice.scheduler.quick_decide import QuickVerdict, quick_decide
 from rob_box_voice.core.dialogue_guards import (
     BABBLE_BANNED_OPENERS as BABBLE_BANNED_OPENERS,
     BABBLE_PERFORMANCE_KEYWORDS as BABBLE_PERFORMANCE_KEYWORDS,
-    GENERATED_MUSIC_TOOLS,
     MUSIC_GUARD_KEYWORDS,
     MUSIC_GUARD_VOCAL_KEYWORDS,
     MUSIC_MODE_TOOLS,
     MUSIC_STOP_TOOLS,
-    RENARDO_MUSIC_TOOLS,
+    MUSIC_STARTING_TOOLS,
     MUSIC_RETRY_PROMPT_PREFIX,
     MUSIC_STOP_OVERRIDES,
     build_music_retry_prompt,
@@ -3660,7 +3659,7 @@ class DialogueNode(Node):
                 # мёртвый воздух и профилактически глушил mp3 через ~14с
                 # после старта. Юзер слышал, как робот 3 хода подряд врал
                 # «уже играет» на самом деле остановленному треку.
-                _music_starters = RENARDO_MUSIC_TOOLS | MUSIC_MODE_TOOLS | GENERATED_MUSIC_TOOLS
+                _music_starters = MUSIC_STARTING_TOOLS | MUSIC_MODE_TOOLS
                 # 🔴 FIX (live 31.08): stop_music не гасил флаг «играет», а
                 # снимался он только в _publish_music_cleanup. После «выключи
                 # музыку» флаг врал, и следующий Bug-C ретрай уходил в

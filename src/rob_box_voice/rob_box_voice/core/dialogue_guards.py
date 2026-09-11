@@ -32,6 +32,8 @@ import re
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
+from rob_box_core.tool_catalog import TOOL_CATALOG
+
 logger = logging.getLogger(__name__)
 
 
@@ -39,31 +41,19 @@ logger = logging.getLogger(__name__)
 # Music tool names — single source of truth
 # ---------------------------------------------------------------------------
 
-#: MCP tools that start Renardo playback.
+#: Инструменты, запускающие слышимую музыку (Renardo или mp3).
 #:
-#: SSoT on purpose. This list used to be hardcoded separately in
-#: ``DialogueNode`` (``_music_starters``) and in ``MusicGuard``
-#: (``_music_started``), and every new music tool had to be added to both.
-#: It never was — which is how ``compose_music`` shipped and got
-#: auto-stopped 1.5 s after it started: ``dialogue_node`` did not recognise
-#: it as a music starter, armed ``_pending_music_cleanup``, then fired
-#: ``music_cleanup`` at turn end because no TTS batch existed yet. The
-#: comment above ``_music_starters`` already recorded the same accident
-#: happening once before with ``load_track`` / ``set_dj_mode``.
-#:
-#: Add new Renardo-side music tools HERE and nowhere else.
-RENARDO_MUSIC_TOOLS: frozenset = frozenset({
-    "execute_music_code",
-    "compose_music",
-})
-
-#: MiniMax mp3 playback. Separate set: these do not go through Renardo, so
-#: the Renardo cleanup path does not apply to them, but for the retry guard
-#: they still count as "music started".
-GENERATED_MUSIC_TOOLS: frozenset = frozenset({
-    "generate_music",
-    "gen_play_from_library",
-})
+#: Единственный источник — capability-флаг ``starts_music`` на ``MCPTool``,
+#: проецируемый в ``rob_box_core.tool_catalog``. Раньше это знание жило в
+#: двух рукописных frozenset'ах (``RENARDO_MUSIC_TOOLS`` /
+#: ``GENERATED_MUSIC_TOOLS``), и каждый новый музыкальный тул про него
+#: забывал: ``compose_music`` вышел и был авто-заглушен через 1.5 с,
+#: ``gen_play_from_library`` — в третий раз, а ``lookup_melody`` играл
+#: мелодию, но гуард его не видел и гнал LLM в повторный
+#: ``execute_music_code`` (тот стирал мелодию через Clock.clear()).
+MUSIC_STARTING_TOOLS: frozenset = frozenset(
+    entry.name for entry in TOOL_CATALOG if entry.starts_music
+)
 
 #: Tools that mean "this turn is no longer starting/managing TRACK-mode
 #: music" — used ONLY to clear ``dialogue_node._track_mode_music_active``
@@ -112,15 +102,12 @@ MUSIC_MODE_TOOLS: frozenset = frozenset({
 })
 
 #: Тулы, которые закрывают ПОЛЬЗОВАТЕЛЬСКУЮ просьбу «включи трек X», но не
-#: закрывают DJ-переход.
-#:
-#: 🔴 FIX (live 30.08, e2e tc10_load_track): ``load_track`` внутри зовёт
-#: ``MusicManager.execute_code`` — то есть реально запускает Renardo. Но он
-#: лежал только в ``MUSIC_MODE_TOOLS``, которые гуард не считает за
-#: «музыка пошла», и корректный вызов всё равно уходил в ретрай.
-#: Для DJ-ветки он по-прежнему не годится: ``set_dj_mode`` без старта — это
-#: ровно та авария Bug B, которую ловит гуард.
-USER_MUSIC_SATISFYING_TOOLS: frozenset = frozenset({"load_track"})
+#: закрывают DJ-переход. Источник — capability-флаг ``satisfies_user_music``
+#: (напр. ``load_track``: запускает Renardo, но в DJ-переходе за «музыка
+#: пошла» не засчитывается).
+USER_MUSIC_SATISFYING_TOOLS: frozenset = frozenset(
+    entry.name for entry in TOOL_CATALOG if entry.satisfies_user_music
+)
 
 
 # ---------------------------------------------------------------------------

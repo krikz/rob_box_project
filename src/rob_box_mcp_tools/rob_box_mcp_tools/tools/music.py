@@ -1897,6 +1897,10 @@ class ExecuteMusicCodeTool(MCPTool):
     def destructive(self) -> bool:
         return False
 
+    @property
+    def starts_music(self) -> bool:
+        return True
+
     def execute(
         self,
         code: str,
@@ -2201,6 +2205,10 @@ class ComposeMusicTool(MCPTool):
     @property
     def destructive(self) -> bool:
         return False
+
+    @property
+    def starts_music(self) -> bool:
+        return True
 
     def execute(
         self,
@@ -2881,8 +2889,10 @@ class LookupMelodyTool(MCPTool):
             "делом, когда юзер просит сыграть конкретную мелодию по имени "
             "(«кузнечик», «имперский марш», «happy birthday», «ёлочка», "
             "«jingle bells»): не импровизируй по памяти и не выдавай гамму "
-            "за мелодию. Если не нашлось — честно скажи, что не знаешь "
-            "точных нот."
+            "за мелодию. Имя ищи на АНГЛИЙСКОМ или транслитом: «имперский "
+            "марш» → \"imperial march\", «тетрис» → \"tetris\". Поиск идёт "
+            "по названию, исполнителю, тегам и имени внутри формата мелодии. "
+            "Если не нашлось — честно скажи, что не знаешь точных нот."
         )
 
     @property
@@ -2891,9 +2901,26 @@ class LookupMelodyTool(MCPTool):
             MCPToolParameter(
                 name="name",
                 type="string",
-                description="Название мелодии: «кузнечик», «имперский марш», "
-                "«happy birthday», «ёлочка», «jingle bells»…",
+                description="Название мелодии (английским или транслитом): "
+                "«имперский марш» → \"imperial march\", «кузнечик» → "
+                "\"grasshopper\", «happy birthday», «jingle bells»…",
                 required=True,
+            ),
+            MCPToolParameter(
+                name="variants",
+                type="array",
+                description=(
+                    "Дополнительные варианты названия (английским/транслитом), "
+                    "которые пробовать по порядку, если name не найдётся. "
+                    "Например name=\"imperial march\", variants=[\"darth vader\", "
+                    "\"star wars theme\"]."
+                ),
+                required=False,
+                items=MCPToolParameter(
+                    name="variant",
+                    type="string",
+                    description="Альтернативное написание/название мелодии.",
+                ),
             ),
         ]
 
@@ -2905,23 +2932,33 @@ class LookupMelodyTool(MCPTool):
     def destructive(self) -> bool:
         return False
 
-    def execute(self, name: str) -> MCPToolResult:
-        """Найти мелодию и сыграть её: сначала RTTTL-архив, потом SQLite."""
+    @property
+    def starts_music(self) -> bool:
+        return True
+
+    def execute(
+        self,
+        name: str,
+        variants: Optional[List[str]] = None,
+    ) -> MCPToolResult:
+        """Найти мелодию и сыграть её: name → variants → SQLite."""
+        candidates = [name] + [v for v in (variants or []) if v]
         # 1. RTTTL-библиотека (готовые ноты из интернета) — приоритет.
         if self._rtttl_library is not None:
-            rec = self._rtttl_library.get(name)
-            if rec is not None:
-                code = rtttl_to_renardo(rec["rtttl"], synth=_synth_for(rec))
-                result = self._manager.execute_code(
-                    code, pattern_name=rec.get("name", "melody")
-                )
-                if not result["success"]:
-                    return MCPToolResult(success=False, error=result["error"])
-                return MCPToolResult(
-                    success=True,
-                    data={"name": rec.get("name"), "title": rec.get("title")},
-                    message=f"Играю {rec.get('title') or rec.get('name')}.",
-                )
+            for candidate in candidates:
+                rec = self._rtttl_library.get(candidate)
+                if rec is not None:
+                    code = rtttl_to_renardo(rec["rtttl"], synth=_synth_for(rec))
+                    result = self._manager.execute_code(
+                        code, pattern_name=rec.get("name", "melody")
+                    )
+                    if not result["success"]:
+                        return MCPToolResult(success=False, error=result["error"])
+                    return MCPToolResult(
+                        success=True,
+                        data={"name": rec.get("name"), "title": rec.get("title")},
+                        message=f"Играю {rec.get('title') or rec.get('name')}.",
+                    )
         # 2. Фолбэк — курируемые мелодии в SQLite (type='melody', миграция 012).
         entry = self._library.find_melody(name)
         if entry is None:
@@ -2983,9 +3020,10 @@ class SearchMelodyTool(MCPTool):
     def description(self) -> str:
         return (
             "Найти мелодии в RTTTL-библиотеке по названию/жанру/тегу "
-            "(«christmas», «mario», «anthem», «имперский марш»). Возвращает "
-            "до limit кандидатов с названием, артистом и тегами. Русские "
-            "названия переводи в английские/известное имя перед поиском. "
+            "(английским или транслитом: «новогодние» → \"christmas\", "
+            "«игры» → \"game\"). Возвращает до limit кандидатов с "
+            "названием, артистом и тегами. Поиск идёт по названию, "
+            "исполнителю, тегам и имени внутри формата мелодии. "
             "Чтобы СЫГРАТЬ конкретную — вызови lookup_melody(name=...)."
         )
 
@@ -3271,6 +3309,10 @@ class LoadTrackTool(MCPTool):
     @property
     def destructive(self) -> bool:
         return False
+
+    @property
+    def satisfies_user_music(self) -> bool:
+        return True
 
     def execute(self, name: str) -> MCPToolResult:
         """Загрузить и воспроизвести трек."""
