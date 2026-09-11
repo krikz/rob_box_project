@@ -2209,12 +2209,21 @@ class TestComposeMusicToolFormDeadline:
 
 
 class TestComposeMusicToolMelodyByName:
-    """``compose_music(name=...)`` сам ищет известную мелодию в RTTTL-библиотеке,
-    конвертирует ноты в абсолютные MIDI и строит аранжировку вокруг темы."""
+    """``compose_music(name=...)`` сам ищет мелодию в RTTTL-библиотеке и
+    конвертирует ноты в абсолютные MIDI. Аранжировку (drums/bass/pad/form)
+    даёт LLM — без неё вызов отклоняется (голое «пиканье» запрещено)."""
 
     def _make_tool(self, mock_node, rtttl_library=None):
         mgr = _make_manager(sc_running=True, renardo_available=True)
         return ComposeMusicTool(mock_node, mgr, rtttl_library), mgr
+
+    _ARR = dict(
+        drums="X..o.X.o",
+        bass_synth="dub",
+        bass_notes="0, 0, 4, 0",
+        pad_synth="warmpad",
+        pad_notes="0, 2, 4",
+    )
 
     def test_name_lookup_builds_arrangement_around_exact_notes(self, mock_node):
         rtttl_library = Mock()
@@ -2225,18 +2234,37 @@ class TestComposeMusicToolMelodyByName:
         }
         tool, mgr = self._make_tool(mock_node, rtttl_library)
         mgr.execute_code = Mock(return_value={"success": True})
-        result = tool.execute(name="fifth")
+        result = tool.execute(name="fifth", **self._ARR)
         assert result.success is True
         code = mgr.execute_code.call_args.args[0]
         assert "midinote=[None, 79, 79, 79, 75]" in code
         assert "Clock.bpm = 63" in code
         assert "Beethoven's Fifth" in result.message
+        # Аранжировка LLM дошла до кода.
+        assert "dub" in code
+        assert "warmpad" in code
+        assert "X..o.X.o" in code
+
+    def test_name_without_arrangement_is_rejected(self, mock_node):
+        rtttl_library = Mock()
+        rtttl_library.get.return_value = {
+            "name": "fifth",
+            "title": "Beethoven's Fifth",
+            "rtttl": "fifth:d=4,o=5,b=63:8p,8g5,8g5,8g5,2d#5",
+        }
+        tool, mgr = self._make_tool(mock_node, rtttl_library)
+        mgr.execute_code = Mock(return_value={"success": True})
+        result = tool.execute(name="fifth")
+        assert result.success is False
+        assert "аранжировка" in result.error
+        assert "drums" in result.error
+        assert not mgr.execute_code.called
 
     def test_name_not_found_is_honest_failure(self, mock_node):
         rtttl_library = Mock()
         rtttl_library.get.return_value = None
         tool, mgr = self._make_tool(mock_node, rtttl_library)
-        result = tool.execute(name="nonexistent")
+        result = tool.execute(name="nonexistent", **self._ARR)
         assert result.success is False
         assert "не найдена" in result.error
 
@@ -2252,7 +2280,9 @@ class TestComposeMusicToolMelodyByName:
         ]
         tool, mgr = self._make_tool(mock_node, rtttl_library)
         mgr.execute_code = Mock(return_value={"success": True})
-        result = tool.execute(name="imperial march", variants=["darth vader"])
+        result = tool.execute(
+            name="imperial march", variants=["darth vader"], **self._ARR
+        )
         assert result.success is True
         assert [c.args[0] for c in rtttl_library.get.call_args_list] == [
             "imperial march",

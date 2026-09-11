@@ -2318,6 +2318,26 @@ class ComposeMusicTool(MCPTool):
             lead_synth = lead_synth or params["lead_synth"]
             lead_midi = params["lead_midi"]
             lead_dur = params["lead_dur"]
+            # Аранжировку даёт LLM (не подставляем дефолты): без drums + bass +
+            # pad тема звучит голым одиночным синтом. Просим модель дополнить
+            # вызов, а не играем «пиканье» (live 11.09).
+            missing = []
+            if not drums:
+                missing.append("drums")
+            if not (bass_synth and bass_notes):
+                missing.append("bass_synth + bass_notes")
+            if not (pad_synth and pad_notes):
+                missing.append("pad_synth + pad_notes")
+            if missing:
+                return MCPToolResult(
+                    success=False,
+                    error=(
+                        f"Мелодия {name!r} найдена, но не задана аранжировка: "
+                        f"не хватает {', '.join(missing)}. Вызови compose_music "
+                        f"ещё раз с теми же name/variants и добавь "
+                        f"{', '.join(missing)}."
+                    ),
+                )
 
         bpm = float(bpm) if bpm is not None else 120.0
         root = root or "C"
@@ -2984,14 +3004,14 @@ class LookupMelodyTool(MCPTool):
     def description(self) -> str:
         return (
             "Найти известную мелодию по имени и вернуть её ТОЧНЫЕ ноты сырой "
-            "RTTTL-строкой в data['rtttl'], НИЧЕГО не играя. Нужен только "
-            "когда нужны сами ноты/метаданные. Чтобы СЫГРАТЬ мелодию по "
-            "имени — вызови compose_music(name=..., variants=[...]): он сам "
-            "найдёт ноты, разберёт RTTTL и построит аранжировку вокруг темы. "
-            "НЕ разбирай RTTTL вручную и НЕ зови execute_music_code с "
-            "самопальным кодом. Имя ищи на АНГЛИЙСКОМ или транслитом "
-            "(«имперский марш» → \"imperial march\"). Если не нашлось — честно "
-            "скажи, что не знаешь точных нот."
+            "RTTTL-строкой в data['rtttl'], НИЧЕГО не играя. Вызывай ПЕРВЫМ "
+            "делом, когда юзер просит сыграть конкретную мелодию: посмотри на "
+            "ноты и подбери аранжировку (form, drums, bass, pad). Затем СЫГРАЙ "
+            "через compose_music(name=..., drums=..., bass_synth=..., "
+            "bass_notes=..., pad_synth=..., pad_notes=..., form=...). "
+            "НЕ конвертируй RTTTL вручную в execute_music_code. Имя ищи на "
+            "АНГЛИЙСКОМ или транслитом («имперский марш» → \"imperial march\"). "
+            "Если не нашлось — честно скажи, что не знаешь точных нот."
         )
 
     @property
