@@ -96,6 +96,9 @@ def melody_to_compose_params(
       * ``lead_midi`` — строка абсолютных MIDI через запятую (``None`` = пауза);
       * ``lead_dur`` — ритм в битах, той же длины;
       * ``lead_synth`` — синт мелодии.
+
+    Аккомпанемент (бас, подклад, ударные) сюда НЕ входит — его даёт модель
+    обычными параметрами ``compose_music`` (drums/bass_notes/pad_notes/...).
     """
     root, scale = detect_key([m for m, _ in melody.notes])
     midi: List[str] = ["None" if m is None else str(int(m)) for m, _ in melody.notes]
