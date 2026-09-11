@@ -54,27 +54,41 @@ def rtttl_to_melody(rtttl: str) -> RtttlMelody:
     return RtttlMelody(bpm=bpm, notes=tuple(notes))
 
 
-def detect_key(midi_notes: Sequence[Optional[int]]) -> Tuple[str, str]:
+def detect_key(
+    midi_notes: Sequence[Optional[int]],
+    durations: Optional[Sequence[float]] = None,
+) -> Tuple[str, str]:
     """Определить ``(тоника, лад)`` по набору абсолютных MIDI-нот.
 
-    Скор каждой пары (тоника, лад) — сколько высотных классов мелодии
-    лежит в ладу. Выбирается пара с максимумом покрытия; при равенстве —
-    лад из :data:`_KEY_SCALES`, тоника по кругу от C. Паузы (``None``)
-    игнорируются. Без нот — ``("C", "major")``.
+    Скор каждой пары (тоника, лад) — суммарная длительность нот, лежащих в
+    ладу (без ``durations`` — просто количество нот). Взвешивание по
+    длительности критично: в хроматических мелодиях (марш, классика)
+    встречаются все 12 ступеней, и простой подсчёт даёт одинаковый скор
+    любому ладу — тоника «теряется», бас и подклад уезжают в случайный лад.
+    Долгая/частая тоника перевешивает проходящие ноты.
+
+    Паузы (``None``) игнорируются. Без нот — ``("C", "major")``.
 
     Тональность нужна не для самой темы (она играется абсолютным MIDI),
     а для баса и подклада, которые аранжировщик достраивает вокруг неё.
     """
-    pcs = {m % 12 for m in midi_notes if m is not None}
-    if not pcs:
+    if durations is None:
+        durations = [1.0] * len(midi_notes)
+    weights: Dict[int, float] = {}
+    for midi, dur in zip(midi_notes, durations):
+        if midi is not None:
+            pc = midi % 12
+            weights[pc] = weights.get(pc, 0.0) + float(dur)
+    if not weights:
         return "C", "major"
     best: Optional[Tuple[str, str]] = None
-    best_score = -1
+    best_score = -1.0
     for scale_name in _KEY_SCALES:
         in_scale = {i % 12 for i in SCALE_INTERVALS[scale_name]}
         for root_idx, root in enumerate(VALID_ROOTS):
-            shifted = {(pc - root_idx) % 12 for pc in pcs}
-            score = len(shifted & in_scale)
+            score = sum(
+                w for pc, w in weights.items() if (pc - root_idx) % 12 in in_scale
+            )
             if score > best_score:
                 best_score = score
                 best = (root, scale_name)
@@ -97,7 +111,10 @@ def melody_to_compose_params(melody: RtttlMelody) -> Dict[str, object]:
     параметрами ``compose_music``.
     """
     melody = _snap_to_bar(melody)
-    root, scale = detect_key([m for m, _ in melody.notes])
+    root, scale = detect_key(
+        [m for m, _ in melody.notes],
+        [d for _, d in melody.notes],
+    )
     midi: List[str] = ["None" if m is None else str(int(m)) for m, _ in melody.notes]
     dur: List[str] = [f"{d:g}" for _, d in melody.notes]
     return {

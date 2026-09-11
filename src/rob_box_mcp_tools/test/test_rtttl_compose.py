@@ -54,6 +54,16 @@ def test_detect_key_ignores_rests_and_defaults_without_notes():
     assert detect_key([None, None]) == ("C", "major")
 
 
+def test_detect_key_weights_by_duration_for_chromatic_melody():
+    """Долгая тоника перевешивает проходящие ноты, а повышенная VII ступень
+    (C#) отличает гармонический минор от относительного мажора."""
+    midi = [74, 74, 74, 70, 77, 73, 74]  # D D D Bb F C# D
+    durs = [1.0, 1.0, 1.0, 0.5, 0.5, 0.5, 2.0]
+    root, scale = detect_key(midi, durs)
+    assert root == "D"
+    assert scale == "harmonicMinor"
+
+
 def test_known_melody_roundtrip_has_matching_midi_and_dur_lengths():
     """lead_midi и lead_dur обязаны иметь одинаковую длину — аранжировщик
     проверяет это и играет ноту в ноту."""
