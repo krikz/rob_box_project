@@ -77,6 +77,7 @@ from .tools import (
     DeleteTrackTool,
     SetDjModeTool,
     SearchSamplesTool,
+    LookupMelodyTool,
     SearchMelodyTool,
     FaqSearchTool,
     SearchWebTool,
@@ -970,6 +971,7 @@ class MCPServer(Node):
         self.registry.register(ListTracksTool(self, track_library))
         self.registry.register(LoadTrackTool(self, track_library, music_manager))
         self.registry.register(DeleteTrackTool(self, track_library))
+        self.registry.register(LookupMelodyTool(self, track_library, music_manager, rtttl_library))
 
         # Issue #1392 — MiniMax music generation + persistent library.
         # Graceful degradation: any failure (no API key, no /data volume,

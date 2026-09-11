@@ -418,6 +418,7 @@ SKILL_TOOLS: dict[str, tuple[str, ...]] = {
         "execute_music_code",
         "set_vibe_preset",
         "search_samples",
+        "lookup_melody",
         "search_melody",
         "get_music_state",
         "stop_music",

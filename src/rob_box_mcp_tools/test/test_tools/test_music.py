@@ -42,6 +42,7 @@ from rob_box_mcp_tools.tools.music import (  # noqa: E402
     StopMusicTool,
     SetVibePresetTool,
     GetMusicStateTool,
+    LookupMelodyTool,
     TrackLibrary,
 )
 
@@ -2466,6 +2467,72 @@ class TestGetMusicStateTool:
         assert result.success is True
         assert "SuperCollider" in result.message
         assert "Renardo" in result.message
+
+
+class TestLookupMelodyTool:
+    """Тул поиска известной мелодии — возвращает ноты, НЕ играет."""
+
+    def _make_tool(self, mock_node, library=None, manager=None) -> LookupMelodyTool:
+        library = library if library is not None else Mock()
+        manager = manager if manager is not None else Mock()
+        return LookupMelodyTool(mock_node, library, manager)
+
+    def test_tool_name(self, mock_node):
+        assert self._make_tool(mock_node).name == "lookup_melody"
+
+    def test_tool_is_not_destructive(self, mock_node):
+        assert self._make_tool(mock_node).destructive is False
+
+    def test_tool_is_read_only(self, mock_node):
+        assert self._make_tool(mock_node).read_only is True
+
+    def test_found_melody_returns_raw_rtttl_without_playing(self, mock_node):
+        rtttl_library = Mock()
+        rtttl_library.get.return_value = {
+            "name": "starwars_3",
+            "title": "Imperial March",
+            "rtttl": "StarWars:d=4,o=5,b=80:8d",
+        }
+        manager = Mock()
+        tool = LookupMelodyTool(mock_node, Mock(), manager, rtttl_library)
+
+        result = tool.execute("imperial march")
+
+        assert result.success is True
+        assert result.data["rtttl"] == "StarWars:d=4,o=5,b=80:8d"
+        assert result.data["title"] == "Imperial March"
+        manager.execute_code.assert_not_called()  # lookup ничего не играет
+
+    def test_miss_returns_honest_error(self, mock_node):
+        library = Mock()
+        library.find_melody.return_value = None
+        tool = self._make_tool(mock_node, library=library)
+        result = tool.execute("шопен")
+        assert result.success is False
+        assert "не знаешь точных нот" in result.error
+
+    def test_variants_are_tried_in_order(self, mock_node):
+        """LLM может дать несколько вариантов названия — пробуем по порядку."""
+        library = Mock()
+        library.find_melody.return_value = None
+        rtttl_library = Mock()
+        rtttl_library.get.side_effect = [
+            None,  # primary name не нашёлся
+            {"name": "starwars_3", "title": "Imperial March", "rtttl": "x:d=4,o=5,b=80:c"},
+        ]
+        manager = Mock()
+        tool = LookupMelodyTool(mock_node, library, manager, rtttl_library)
+
+        result = tool.execute("imperial march", variants=["darth vader", "star wars"])
+
+        assert result.success is True
+        assert result.data["name"] == "starwars_3"
+        # Останавливаемся на первом совпадении — третий вариант не нужен.
+        assert [c.args[0] for c in rtttl_library.get.call_args_list] == [
+            "imperial march",
+            "darth vader",
+        ]
+        manager.execute_code.assert_not_called()
 
 
 def test_find_melody_resolves_slug_title_and_tag(tmp_path):

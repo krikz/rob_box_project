@@ -400,15 +400,14 @@ def test_issue_2184_dialogue_node_blocked_from_show_metrics():
 
 
 def test_dialogue_node_can_call_melody_tools():
-    """dialogue_node обязан видеть search_melody / compose_music.
+    """dialogue_node обязан видеть lookup_melody / search_melody.
 
     Регрессия (live 10.09): тулы RTTTL-библиотеки были зарегистрированы в
     каталоге, но не добавлены в ``slices.personality`` — dialogue_node получал
-    отказ среза, и LLM на «сыграй гимн СССР» импровизировал вместо точной
-    мелодии. lookup_melody удалён: известные мелодии играет compose_music(name=…),
-    поиск — search_melody.
+    «tool 'lookup_melody' не принадлежит ни одному срезу sender'а», и LLM на
+    «сыграй гимн СССР» импровизировал вместо точной мелодии.
     """
-    for tool in ("search_melody", "compose_music"):
+    for tool in ("lookup_melody", "search_melody"):
         decision = load_default_authority().is_allowed("dialogue_node", tool)
         assert decision.allowed is True, (
             f"dialogue_node обязан мочь вызвать {tool}; "
