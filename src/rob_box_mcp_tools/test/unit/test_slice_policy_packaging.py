@@ -102,7 +102,7 @@ class TestSlicePolicyPackaging:
     def test_rtttl_archive_exists_and_is_packaged(self):
         """Архив мелодий (10460 RTTTL) обязан доезжать до install-дерева."""
         assert (_DATA_DIR / "rtttl_melodies.jsonl.gz").is_file(), (
-            "rtttl_melodies.jsonl.gz пропал из data/ — lookup_melody и "
+            "rtttl_melodies.jsonl.gz пропал из data/ — compose_music и "
             "search_melody не найдут ни одной мелодии"
         )
         kwargs = _setup_kwargs()

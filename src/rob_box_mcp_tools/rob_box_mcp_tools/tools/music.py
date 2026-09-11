@@ -2953,140 +2953,12 @@ class TrackLibrary:
         return {"success": True, "message": f"Трек '{slug}' удалён из медиатеки"}
 
 
-class LookupMelodyTool(MCPTool):
-    """Найти известную мелодию по имени и вернуть её ТОЧНЫЕ ноты.
-
-    Ищет в RTTTL-библиотеке (архив ``data/rtttl_melodies.jsonl.gz``,
-    10461 готовых мелодий) и возвращает СЫРУЮ RTTTL-строку в
-    ``data['rtttl']`` — БЕЗ воспроизведения и БЕЗ конвертации. Ноты
-    разбирает и играет сама модель (формат описан в системном промпте).
-    Фолбэк — курируемые мелодии ``music_tracks`` (012). Не допускает
-    ошибку #1810 — сыграть гамму и назвать её «кузнечиком».
-    """
-
-    def __init__(
-        self,
-        node,
-        library: TrackLibrary,
-        manager: MusicManager,
-        rtttl_library: Optional[RtttlLibrary] = None,
-    ) -> None:
-        super().__init__(node)
-        self._library = library
-        self._manager = manager
-        self._rtttl_library = rtttl_library
-
-    @property
-    def name(self) -> str:
-        return "lookup_melody"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Найти известную мелодию по имени и вернуть её ТОЧНЫЕ ноты сырой "
-            "RTTTL-строкой в data['rtttl'], НИЧЕГО не играя. Вызывай ПЕРВЫМ "
-            "делом, когда юзер просит сыграть конкретную мелодию («гимн СССР», "
-            "«имперский марш», «happy birthday», «jingle bells»): не "
-            "импровизируй по памяти. Имя ищи на АНГЛИЙСКОМ или транслитом "
-            "(«имперский марш» → \"imperial march\"). Получив rtttl — разбери "
-            "его и сыграй ноты сам (формат в системном промпте). Если не "
-            "нашлось — честно скажи, что не знаешь точных нот."
-        )
-
-    @property
-    def parameters(self) -> List[MCPToolParameter]:
-        return [
-            MCPToolParameter(
-                name="name",
-                type="string",
-                description="Название мелодии (английским или транслитом): "
-                "«имперский марш» → \"imperial march\", «кузнечик» → "
-                "\"grasshopper\", «happy birthday», «jingle bells»…",
-                required=True,
-            ),
-            MCPToolParameter(
-                name="variants",
-                type="array",
-                description=(
-                    "Дополнительные варианты названия (английским/транслитом), "
-                    "которые пробовать по порядку, если name не найдётся. "
-                    "Например name=\"imperial march\", variants=[\"darth vader\", "
-                    "\"star wars theme\"]."
-                ),
-                required=False,
-                items=MCPToolParameter(
-                    name="variant",
-                    type="string",
-                    description="Альтернативное написание/название мелодии.",
-                ),
-            ),
-        ]
-
-    @property
-    def execution_type(self) -> ToolExecutionType:
-        return ToolExecutionType.FAST
-
-    @property
-    def read_only(self) -> bool:
-        return True
-
-    @property
-    def destructive(self) -> bool:
-        return False
-
-    def execute(
-        self,
-        name: str,
-        variants: Optional[List[str]] = None,
-    ) -> MCPToolResult:
-        """Найти ноты и вернуть сырую RTTTL-строку (без воспроизведения)."""
-        candidates = [name] + [v for v in (variants or []) if v]
-        # 1. RTTTL-библиотека — приоритет.
-        if self._rtttl_library is not None:
-            for candidate in candidates:
-                rec = self._rtttl_library.get(candidate)
-                if rec is not None:
-                    return MCPToolResult(
-                        success=True,
-                        data={
-                            "name": rec.get("name"),
-                            "title": rec.get("title"),
-                            "rtttl": rec.get("rtttl"),
-                        },
-                        message=(
-                            f"Нашёл «{rec.get('title')}». Точные ноты в "
-                            "data['rtttl'] (формат RTTTL, как разбирать — в "
-                            "системном промпте). Сыграй эти ноты сам, не импровизируй."
-                        ),
-                    )
-        # 2. Фолбэк — курируемые мелодии в SQLite (type='melody', миграция 012).
-        entry = self._library.find_melody(name)
-        if entry is None:
-            return MCPToolResult(
-                success=False,
-                error=(
-                    f"Мелодия {name!r} не найдена в библиотеке. Скажи юзеру "
-                    "честно, что не знаешь точных нот, и предложи сыграть "
-                    "что-то в похожем духе — НЕ выдавай импровизацию за оригинал."
-                ),
-            )
-        return MCPToolResult(
-            success=True,
-            data={
-                "name": entry.get("name"),
-                "title": entry.get("title"),
-                "code": entry.get("code"),
-            },
-            message=f"Нашёл «{entry.get('title')}» (готовый Renardo-код в data['code']).",
-        )
-
-
 class SearchMelodyTool(MCPTool):
-    """Поиск по RTTTL-библиотеке (10460 готовых мелодий) по имени/жанру/тегу.
+    """Поиск по RTTTL-библиотеке (10461 готовых мелодий) по имени/жанру/тегу.
 
-    Возвращает кандидатов (метаданные, без нот). Ноты конкретной мелодии
-    берутся через lookup_melody. Нужен, когда юзер хочет не одну мелодию, а
-    выбор: «найди новогодние», «что есть из игр?».
+    Возвращает кандидатов (метаданные, без нот). Чтобы сыграть конкретную —
+    compose_music(name=<название>). Нужен, когда юзер хочет выбор: «найди
+    новогодние», «что есть из игр?».
     """
 
     def __init__(self, node, library: RtttlLibrary) -> None:
@@ -3105,7 +2977,7 @@ class SearchMelodyTool(MCPTool):
             "«игры» → \"game\"). Возвращает до limit кандидатов с "
             "названием, артистом и тегами. Поиск идёт по названию, "
             "исполнителю, тегам и имени внутри формата мелодии. "
-            "Чтобы СЫГРАТЬ конкретную — вызови lookup_melody(name=...)."
+            "Чтобы СЫГРАТЬ конкретную — вызови compose_music(name=...)."
         )
 
     @property

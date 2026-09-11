@@ -1597,69 +1597,6 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                          'accepts_kwargs': False},
         'skill': ('renardo-library',)},
     {   'llm_visible': True,
-        'read_only': True,
-        'destructive': False,
-        'idempotent': False,
-        'starts_music': False,
-        'satisfies_user_music': False,
-        'execution_type': 'fast',
-        'name': 'lookup_melody',
-        'description': 'Найти известную мелодию по имени и вернуть её ТОЧНЫЕ ноты '
-                       "сырой RTTTL-строкой в data['rtttl'], НИЧЕГО не играя. Вызывай "
-                       'ПЕРВЫМ делом, когда юзер просит сыграть конкретную мелодию '
-                       '(«гимн СССР», «имперский марш», «happy birthday», «jingle '
-                       'bells»): не импровизируй по памяти. Имя ищи на АНГЛИЙСКОМ или '
-                       'транслитом («имперский марш» → "imperial march"). Получив '
-                       'rtttl — разбери его и сыграй ноты сам (формат в системном '
-                       'промпте). Если не нашлось — честно скажи, что не знаешь точных '
-                       'нот.',
-        'parameters': {   'type': 'object',
-                          'properties': {   'name': {   'type': 'string',
-                                                        'description': 'Название '
-                                                                       'мелодии '
-                                                                       '(английским '
-                                                                       'или '
-                                                                       'транслитом): '
-                                                                       '«имперский '
-                                                                       'марш» → '
-                                                                       '"imperial '
-                                                                       'march", '
-                                                                       '«кузнечик» → '
-                                                                       '"grasshopper", '
-                                                                       '«happy '
-                                                                       'birthday», '
-                                                                       '«jingle '
-                                                                       'bells»…'},
-                                            'variants': {   'type': 'array',
-                                                            'description': 'Дополнительные '
-                                                                           'варианты '
-                                                                           'названия '
-                                                                           '(английским/транслитом), '
-                                                                           'которые '
-                                                                           'пробовать '
-                                                                           'по '
-                                                                           'порядку, '
-                                                                           'если name '
-                                                                           'не '
-                                                                           'найдётся. '
-                                                                           'Например '
-                                                                           'name="imperial '
-                                                                           'march", '
-                                                                           'variants=["darth '
-                                                                           'vader", '
-                                                                           '"star wars '
-                                                                           'theme"].',
-                                                            'items': {   'type': 'string',
-                                                                         'description': 'Альтернативное '
-                                                                                        'написание/название '
-                                                                                        'мелодии.'}}},
-                          'required': ['name'],
-                          'additionalProperties': False},
-        'signature': {   'params': ['name', 'variants'],
-                         'required': ['name'],
-                         'accepts_kwargs': False},
-        'skill': ('composer',)},
-    {   'llm_visible': True,
         'read_only': False,
         'destructive': True,
         'idempotent': False,
@@ -2418,7 +2355,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                        '→ "game"). Возвращает до limit кандидатов с названием, '
                        'артистом и тегами. Поиск идёт по названию, исполнителю, тегам '
                        'и имени внутри формата мелодии. Чтобы СЫГРАТЬ конкретную — '
-                       'вызови lookup_melody(name=...).',
+                       'вызови compose_music(name=...).',
         'parameters': {   'type': 'object',
                           'properties': {   'query': {   'type': 'string',
                                                          'description': 'Строка '
