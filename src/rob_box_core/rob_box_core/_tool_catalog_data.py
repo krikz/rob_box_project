@@ -1607,13 +1607,15 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'description': 'Найти известную мелодию по имени и вернуть её ТОЧНЫЕ ноты '
                        "сырой RTTTL-строкой в data['rtttl'], НИЧЕГО не играя. Вызывай "
                        'ПЕРВЫМ делом, когда юзер просит сыграть конкретную мелодию: '
-                       'посмотри на ноты и подбери аранжировку (form, drums, bass, '
-                       'pad). Затем СЫГРАЙ через compose_music(name=..., drums=..., '
-                       'bass_synth=..., bass_notes=..., pad_synth=..., pad_notes=..., '
-                       'form=...). НЕ конвертируй RTTTL вручную в execute_music_code. '
-                       'Имя ищи на АНГЛИЙСКОМ или транслитом («имперский марш» → '
-                       '"imperial march"). Если не нашлось — честно скажи, что не '
-                       'знаешь точных нот.',
+                       'посмотри на ноты и подбери аранжировку (lead_synth, form, '
+                       'drums, bass, pad). Затем СЫГРАЙ через compose_music(name=..., '
+                       'lead_synth=..., drums=..., bass_synth=..., bass_notes=..., '
+                       'pad_synth=..., pad_notes=..., form=...). lead_synth подбирай '
+                       'под характер мелодии (марш → imperialbrass, классика → '
+                       'pianovel, игра → blip). НЕ конвертируй RTTTL вручную в '
+                       'execute_music_code. Имя ищи на АНГЛИЙСКОМ или транслитом '
+                       '(«имперский марш» → "imperial march"). Если не нашлось — '
+                       'честно скажи, что не знаешь точных нот.',
         'parameters': {   'type': 'object',
                           'properties': {   'name': {   'type': 'string',
                                                         'description': 'Название '

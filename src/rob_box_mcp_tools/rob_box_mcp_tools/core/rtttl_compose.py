@@ -19,13 +19,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from .arranger import SCALE_INTERVALS, VALID_ROOTS
+from .arranger import BEATS_PER_BAR, SCALE_INTERVALS, VALID_ROOTS
 from .rtttl import parse_rtttl
 
 __all__ = ["RtttlMelody", "rtttl_to_melody", "detect_key", "melody_to_compose_params"]
-
-#: Синт по умолчанию для известной мелодии, когда модель не указала свой.
-DEFAULT_LEAD_SYNTH = "pluck"
 
 #: Лады для детекции тональности, в порядке приоритета при равном счёте.
 _KEY_SCALES = (
@@ -84,22 +81,22 @@ def detect_key(midi_notes: Sequence[Optional[int]]) -> Tuple[str, str]:
     return best if best is not None else ("C", "major")
 
 
-def melody_to_compose_params(
-    melody: RtttlMelody,
-    lead_synth: str = DEFAULT_LEAD_SYNTH,
-) -> Dict[str, object]:
+def melody_to_compose_params(melody: RtttlMelody) -> Dict[str, object]:
     """RTTTL-мелодия → плоские параметры ``compose_music``.
 
     Возвращает dict с ключами:
       * ``bpm`` — темп из RTTTL (``compose_music.bpm``);
       * ``root`` / ``scale`` — определённая тональность (для баса/подклада);
       * ``lead_midi`` — строка абсолютных MIDI через запятую (``None`` = пауза);
-      * ``lead_dur`` — ритм в битах, той же длины;
-      * ``lead_synth`` — синт мелодии.
+      * ``lead_dur`` — ритм в битах, той же длины.
 
-    Аккомпанемент (бас, подклад, ударные) сюда НЕ входит — его даёт модель
-    обычными параметрами ``compose_music`` (drums/bass_notes/pad_notes/...).
+    Мелодия выравнивается по такту (хвостовая пауза доводит луп до целого
+    числа тактов) — иначе луп плывёт относительно ударной сетки и тема
+    звучит «не в тайминг». Синт мелодии (``lead_synth``) и аккомпанемент
+    (drums/bass/pad/form) сюда НЕ входят — их даёт модель обычными
+    параметрами ``compose_music``.
     """
+    melody = _snap_to_bar(melody)
     root, scale = detect_key([m for m, _ in melody.notes])
     midi: List[str] = ["None" if m is None else str(int(m)) for m, _ in melody.notes]
     dur: List[str] = [f"{d:g}" for _, d in melody.notes]
@@ -109,5 +106,22 @@ def melody_to_compose_params(
         "scale": scale,
         "lead_midi": ", ".join(midi),
         "lead_dur": ", ".join(dur),
-        "lead_synth": lead_synth,
     }
+
+
+def _snap_to_bar(melody: RtttlMelody) -> RtttlMelody:
+    """Довести длину мелодии до целого числа тактов хвостовой паузой.
+
+    RTTTL-мелодии — рингтоны с «дыхательными» паузами (``32p``), из-за
+    которых суммарная длина не кратна такту. Без выравнивания луп каждый
+    повтор смещается на дробный остаток и уезжает от ударной сетки.
+    """
+    total = sum(d for _, d in melody.notes)
+    remainder = total % BEATS_PER_BAR
+    if remainder == 0:
+        return melody
+    pad = BEATS_PER_BAR - remainder
+    return RtttlMelody(
+        bpm=melody.bpm,
+        notes=tuple(melody.notes) + ((None, pad),),
+    )

@@ -2218,6 +2218,7 @@ class TestComposeMusicToolMelodyByName:
         return ComposeMusicTool(mock_node, mgr, rtttl_library), mgr
 
     _ARR = dict(
+        lead_synth="blip",
         drums="X..o.X.o",
         bass_synth="dub",
         bass_notes="0, 0, 4, 0",
@@ -2258,6 +2259,7 @@ class TestComposeMusicToolMelodyByName:
         assert result.success is False
         assert "аранжировка" in result.error
         assert "drums" in result.error
+        assert "lead_synth" in result.error
         assert not mgr.execute_code.called
 
     def test_name_not_found_is_honest_failure(self, mock_node):

@@ -2315,13 +2315,14 @@ class ComposeMusicTool(MCPTool):
             bpm = bpm if bpm is not None else params["bpm"]
             root = root if root is not None else params["root"]
             scale = scale if scale is not None else params["scale"]
-            lead_synth = lead_synth or params["lead_synth"]
             lead_midi = params["lead_midi"]
             lead_dur = params["lead_dur"]
             # Аранжировку даёт LLM (не подставляем дефолты): без drums + bass +
-            # pad тема звучит голым одиночным синтом. Просим модель дополнить
-            # вызов, а не играем «пиканье» (live 11.09).
+            # pad + lead_synth тема звучит голым одиночным синтом или вообще
+            # «пиканьем». Просим модель дополнить вызов (live 11.09).
             missing = []
+            if not lead_synth:
+                missing.append("lead_synth")
             if not drums:
                 missing.append("drums")
             if not (bass_synth and bass_notes):
@@ -3006,9 +3007,11 @@ class LookupMelodyTool(MCPTool):
             "Найти известную мелодию по имени и вернуть её ТОЧНЫЕ ноты сырой "
             "RTTTL-строкой в data['rtttl'], НИЧЕГО не играя. Вызывай ПЕРВЫМ "
             "делом, когда юзер просит сыграть конкретную мелодию: посмотри на "
-            "ноты и подбери аранжировку (form, drums, bass, pad). Затем СЫГРАЙ "
-            "через compose_music(name=..., drums=..., bass_synth=..., "
-            "bass_notes=..., pad_synth=..., pad_notes=..., form=...). "
+            "ноты и подбери аранжировку (lead_synth, form, drums, bass, pad). "
+            "Затем СЫГРАЙ через compose_music(name=..., lead_synth=..., "
+            "drums=..., bass_synth=..., bass_notes=..., pad_synth=..., "
+            "pad_notes=..., form=...). lead_synth подбирай под характер "
+            "мелодии (марш → imperialbrass, классика → pianovel, игра → blip). "
             "НЕ конвертируй RTTTL вручную в execute_music_code. Имя ищи на "
             "АНГЛИЙСКОМ или транслитом («имперский марш» → \"imperial march\"). "
             "Если не нашлось — честно скажи, что не знаешь точных нот."

@@ -27,7 +27,8 @@ def test_melody_to_compose_params_fills_bpm_midi_dur():
     assert params["bpm"] == 63
     assert params["lead_midi"] == "None, 79, 79, 79, 75"
     assert params["lead_dur"] == "0.5, 0.5, 0.5, 0.5, 2"
-    assert params["lead_synth"] == "pluck"
+    # Синт мелодии конвертер НЕ выбирает — его даёт LLM.
+    assert "lead_synth" not in params
     # root/scale определяются по нотам — валидные значения для аранжировщика.
     assert params["root"] in ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
     assert params["scale"]
@@ -61,3 +62,13 @@ def test_known_melody_roundtrip_has_matching_midi_and_dur_lengths():
     midi_tokens = params["lead_midi"].split(",")
     dur_tokens = params["lead_dur"].split(",")
     assert len(midi_tokens) == len(dur_tokens) == len(melody.notes)
+
+
+def test_melody_snapped_to_bar_with_tail_rest():
+    """Мелодия некратной такту длины доводится хвостовой паузой до целого
+    числа тактов — иначе луп плывёт относительно ударной сетки (#live 11.09)."""
+    melody = rtttl_to_melody("x:d=8,o=5,b=100:8g5,8g5")
+    params = melody_to_compose_params(melody)
+    # 2 восьмые = 1.0 доля, не кратно 4 → хвостовая пауза 3.0.
+    assert params["lead_midi"] == "79, 79, None"
+    assert params["lead_dur"] == "0.5, 0.5, 3"
