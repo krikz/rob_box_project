@@ -44,10 +44,9 @@ def _dj_prompt() -> str:
     return "[CRITICAL] DJ retry — call execute_music_code"
 
 
-def test_lookup_melody_counts_as_music_start() -> None:
-    """lookup_melody играет мелодию (execute_code внутри) — гуард обязан
-    признать его за «музыка пошла». Иначе Bug C ретраит и LLM зовёт
-    execute_music_code повторно, а тот стирает мелодию через Clock.clear()."""
+def test_lookup_melody_alone_does_not_satisfy_guard() -> None:
+    """lookup_melody только возвращает ноты (не играет) — сам по себе он не
+    закрывает просьбу «сыграй X»: гуард должен дожать до execute_music_code."""
     guard = MusicGuard()
     verdict = guard.evaluate(
         was_dj_auto=False,
@@ -57,7 +56,7 @@ def test_lookup_melody_counts_as_music_start() -> None:
         build_music_retry_prompt=_music_prompt,
         build_dj_retry_prompt=_dj_prompt,
     )
-    assert verdict.kind is MusicGuardVerdictKind.SKIP
+    assert verdict.kind is MusicGuardVerdictKind.USER_RETRY
 
 
 def test_music_starting_tools_derived_from_catalog() -> None:
@@ -67,7 +66,9 @@ def test_music_starting_tools_derived_from_catalog() -> None:
 
     expected = {e.name for e in TOOL_CATALOG if e.starts_music}
     assert MUSIC_STARTING_TOOLS == frozenset(expected)
-    assert {"execute_music_code", "compose_music", "lookup_melody"} <= MUSIC_STARTING_TOOLS
+    assert {"execute_music_code", "compose_music"} <= MUSIC_STARTING_TOOLS
+    # lookup_melody — read-only (возвращает ноты), музыку НЕ запускает.
+    assert "lookup_melody" not in MUSIC_STARTING_TOOLS
 
 
 # ---------------------------------------------------------------------------

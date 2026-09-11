@@ -2409,7 +2409,7 @@ class TestGetMusicStateTool:
 
 
 class TestLookupMelodyTool:
-    """Тул поиска известной мелодии в медиатеке и её воспроизведения."""
+    """Тул поиска известной мелодии — возвращает ноты, НЕ играет."""
 
     def _make_tool(self, mock_node, library=None, manager=None) -> LookupMelodyTool:
         library = library if library is not None else Mock()
@@ -2422,22 +2422,25 @@ class TestLookupMelodyTool:
     def test_tool_is_not_destructive(self, mock_node):
         assert self._make_tool(mock_node).destructive is False
 
-    def test_found_melody_is_played(self, mock_node):
-        library = Mock()
-        library.find_melody.return_value = {
-            "name": "kuznechik",
-            "title": "В траве сидел кузнечик",
-            "code": "p1 >> pluck([4,4,2])",
+    def test_tool_is_read_only(self, mock_node):
+        assert self._make_tool(mock_node).read_only is True
+
+    def test_found_melody_returns_raw_rtttl_without_playing(self, mock_node):
+        rtttl_library = Mock()
+        rtttl_library.get.return_value = {
+            "name": "starwars_3",
+            "title": "Imperial March",
+            "rtttl": "StarWars:d=4,o=5,b=80:8d",
         }
         manager = Mock()
-        manager.execute_code.return_value = {"success": True}
-        tool = self._make_tool(mock_node, library=library, manager=manager)
-        result = tool.execute("кузнечик")
+        tool = LookupMelodyTool(mock_node, Mock(), manager, rtttl_library)
+
+        result = tool.execute("imperial march")
+
         assert result.success is True
-        assert "Играю" in result.message
-        manager.execute_code.assert_called_once_with(
-            "p1 >> pluck([4,4,2])", pattern_name="kuznechik"
-        )
+        assert result.data["rtttl"] == "StarWars:d=4,o=5,b=80:8d"
+        assert result.data["title"] == "Imperial March"
+        manager.execute_code.assert_not_called()  # lookup ничего не играет
 
     def test_miss_returns_honest_error(self, mock_node):
         library = Mock()
@@ -2454,21 +2457,21 @@ class TestLookupMelodyTool:
         rtttl_library = Mock()
         rtttl_library.get.side_effect = [
             None,  # primary name не нашёлся
-            {"name": "starwars_3", "title": "Imperial March", "rtttl": "x:d=4,o=5,b=80:c", "tags": []},
+            {"name": "starwars_3", "title": "Imperial March", "rtttl": "x:d=4,o=5,b=80:c"},
         ]
         manager = Mock()
-        manager.execute_code.return_value = {"success": True}
         tool = LookupMelodyTool(mock_node, library, manager, rtttl_library)
 
         result = tool.execute("imperial march", variants=["darth vader", "star wars"])
 
         assert result.success is True
+        assert result.data["name"] == "starwars_3"
         # Останавливаемся на первом совпадении — третий вариант не нужен.
         assert [c.args[0] for c in rtttl_library.get.call_args_list] == [
             "imperial march",
             "darth vader",
         ]
-        manager.execute_code.assert_called_once()
+        manager.execute_code.assert_not_called()
 
 
 def test_find_melody_resolves_slug_title_and_tag(tmp_path):

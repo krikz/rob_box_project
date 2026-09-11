@@ -1525,21 +1525,22 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                          'accepts_kwargs': False},
         'skill': ('renardo-library',)},
     {   'llm_visible': True,
-        'read_only': False,
+        'read_only': True,
         'destructive': False,
         'idempotent': False,
-        'starts_music': True,
+        'starts_music': False,
         'satisfies_user_music': False,
         'execution_type': 'fast',
         'name': 'lookup_melody',
-        'description': 'Найти и сыграть известную мелодию по имени. Вызывай ПЕРВЫМ '
-                       'делом, когда юзер просит сыграть конкретную мелодию по имени '
-                       '(«кузнечик», «имперский марш», «happy birthday», «ёлочка», '
-                       '«jingle bells»): не импровизируй по памяти и не выдавай гамму '
-                       'за мелодию. Имя ищи на АНГЛИЙСКОМ или транслитом: «имперский '
-                       'марш» → "imperial march", «тетрис» → "tetris". Поиск идёт по '
-                       'названию, исполнителю, тегам и имени внутри формата мелодии. '
-                       'Если не нашлось — честно скажи, что не знаешь точных нот.',
+        'description': 'Найти известную мелодию по имени и вернуть её ТОЧНЫЕ ноты '
+                       "сырой RTTTL-строкой в data['rtttl'], НИЧЕГО не играя. Вызывай "
+                       'ПЕРВЫМ делом, когда юзер просит сыграть конкретную мелодию '
+                       '(«гимн СССР», «имперский марш», «happy birthday», «jingle '
+                       'bells»): не импровизируй по памяти. Имя ищи на АНГЛИЙСКОМ или '
+                       'транслитом («имперский марш» → "imperial march"). Получив '
+                       'rtttl — разбери его и сыграй ноты сам (формат в системном '
+                       'промпте). Если не нашлось — честно скажи, что не знаешь точных '
+                       'нот.',
         'parameters': {   'type': 'object',
                           'properties': {   'name': {   'type': 'string',
                                                         'description': 'Название '

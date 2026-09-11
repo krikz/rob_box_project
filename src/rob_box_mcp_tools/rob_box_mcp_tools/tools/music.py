@@ -44,7 +44,6 @@ from ..core.arranger import (
     spec_from_flat,
 )
 from ..core import renardo_sanitizer
-from ..core.rtttl import rtttl_to_renardo
 from ..core.rtttl_library import RtttlLibrary
 
 # Live 13.08 — символы сэмплов в play("x-o-") для предзагрузки буферов.
@@ -2856,14 +2855,14 @@ class TrackLibrary:
 
 
 class LookupMelodyTool(MCPTool):
-    """Найти известную мелодию по имени и сыграть её.
+    """Найти известную мелодию по имени и вернуть её ТОЧНЫЕ ноты.
 
-    Ищет сначала в RTTTL-библиотеке (архив ``data/rtttl_melodies.jsonl.gz``,
-    10460 готовых мелодий) — находит сырую RTTTL-строку, конвертирует её в
-    Renardo (``core.rtttl.rtttl_to_renardo``) и играет. Если в архиве нет —
-    фолбэк на курируемые мелодии ``music_tracks`` (012: русские народные,
-    degree-based). Это не допускает ошибку #1810 — сыграть гамму и назвать
-    её «кузнечиком».
+    Ищет в RTTTL-библиотеке (архив ``data/rtttl_melodies.jsonl.gz``,
+    10461 готовых мелодий) и возвращает СЫРУЮ RTTTL-строку в
+    ``data['rtttl']`` — БЕЗ воспроизведения и БЕЗ конвертации. Ноты
+    разбирает и играет сама модель (формат описан в системном промпте).
+    Фолбэк — курируемые мелодии ``music_tracks`` (012). Не допускает
+    ошибку #1810 — сыграть гамму и назвать её «кузнечиком».
     """
 
     def __init__(
@@ -2885,14 +2884,14 @@ class LookupMelodyTool(MCPTool):
     @property
     def description(self) -> str:
         return (
-            "Найти и сыграть известную мелодию по имени. Вызывай ПЕРВЫМ "
-            "делом, когда юзер просит сыграть конкретную мелодию по имени "
-            "(«кузнечик», «имперский марш», «happy birthday», «ёлочка», "
-            "«jingle bells»): не импровизируй по памяти и не выдавай гамму "
-            "за мелодию. Имя ищи на АНГЛИЙСКОМ или транслитом: «имперский "
-            "марш» → \"imperial march\", «тетрис» → \"tetris\". Поиск идёт "
-            "по названию, исполнителю, тегам и имени внутри формата мелодии. "
-            "Если не нашлось — честно скажи, что не знаешь точных нот."
+            "Найти известную мелодию по имени и вернуть её ТОЧНЫЕ ноты сырой "
+            "RTTTL-строкой в data['rtttl'], НИЧЕГО не играя. Вызывай ПЕРВЫМ "
+            "делом, когда юзер просит сыграть конкретную мелодию («гимн СССР», "
+            "«имперский марш», «happy birthday», «jingle bells»): не "
+            "импровизируй по памяти. Имя ищи на АНГЛИЙСКОМ или транслитом "
+            "(«имперский марш» → \"imperial march\"). Получив rtttl — разбери "
+            "его и сыграй ноты сам (формат в системном промпте). Если не "
+            "нашлось — честно скажи, что не знаешь точных нот."
         )
 
     @property
@@ -2929,35 +2928,37 @@ class LookupMelodyTool(MCPTool):
         return ToolExecutionType.FAST
 
     @property
-    def destructive(self) -> bool:
-        return False
+    def read_only(self) -> bool:
+        return True
 
     @property
-    def starts_music(self) -> bool:
-        return True
+    def destructive(self) -> bool:
+        return False
 
     def execute(
         self,
         name: str,
         variants: Optional[List[str]] = None,
     ) -> MCPToolResult:
-        """Найти мелодию и сыграть её: name → variants → SQLite."""
+        """Найти ноты и вернуть сырую RTTTL-строку (без воспроизведения)."""
         candidates = [name] + [v for v in (variants or []) if v]
-        # 1. RTTTL-библиотека (готовые ноты из интернета) — приоритет.
+        # 1. RTTTL-библиотека — приоритет.
         if self._rtttl_library is not None:
             for candidate in candidates:
                 rec = self._rtttl_library.get(candidate)
                 if rec is not None:
-                    code = rtttl_to_renardo(rec["rtttl"], synth=_synth_for(rec))
-                    result = self._manager.execute_code(
-                        code, pattern_name=rec.get("name", "melody")
-                    )
-                    if not result["success"]:
-                        return MCPToolResult(success=False, error=result["error"])
                     return MCPToolResult(
                         success=True,
-                        data={"name": rec.get("name"), "title": rec.get("title")},
-                        message=f"Играю {rec.get('title') or rec.get('name')}.",
+                        data={
+                            "name": rec.get("name"),
+                            "title": rec.get("title"),
+                            "rtttl": rec.get("rtttl"),
+                        },
+                        message=(
+                            f"Нашёл «{rec.get('title')}». Точные ноты в "
+                            "data['rtttl'] (формат RTTTL, как разбирать — в "
+                            "системном промпте). Сыграй эти ноты сам, не импровизируй."
+                        ),
                     )
         # 2. Фолбэк — курируемые мелодии в SQLite (type='melody', миграция 012).
         entry = self._library.find_melody(name)
@@ -2970,34 +2971,15 @@ class LookupMelodyTool(MCPTool):
                     "что-то в похожем духе — НЕ выдавай импровизацию за оригинал."
                 ),
             )
-        result = self._manager.execute_code(
-            entry["code"], pattern_name=entry.get("name", "melody")
-        )
-        if not result["success"]:
-            return MCPToolResult(success=False, error=result["error"])
         return MCPToolResult(
             success=True,
-            data={"name": entry.get("name"), "title": entry.get("title")},
-            message=f"Играю {entry.get('title') or entry.get('name')}.",
+            data={
+                "name": entry.get("name"),
+                "title": entry.get("title"),
+                "code": entry.get("code"),
+            },
+            message=f"Нашёл «{entry.get('title')}» (готовый Renardo-код в data['code']).",
         )
-
-
-_SYNTH_BY_TAG = [
-    ("game", "square"),
-    ("anthem", "brass"),
-    ("christmas", "bell"),
-    ("movie", "brass"),
-    ("classical", "pianovel"),
-]
-
-
-def _synth_for(rec: Dict[str, Any]) -> str:
-    """Подобрать инструмент Renardo по тегам мелодии (по умолчанию pluck)."""
-    tags = rec.get("tags") or []
-    for tag, synth in _SYNTH_BY_TAG:
-        if tag in tags:
-            return synth
-    return "pluck"
 
 
 class SearchMelodyTool(MCPTool):

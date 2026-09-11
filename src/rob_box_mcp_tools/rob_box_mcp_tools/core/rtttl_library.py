@@ -78,6 +78,15 @@ _ALIASES = {
 
 _ALIAS_SORTED = sorted(_ALIASES.items(), key=lambda kv: -len(kv[0]))
 
+#: Английские стоп-слова, встречающиеся почти в каждом названии («of», «the»,
+#: «and»). Без их отсева LIKE-кандидаты раздуваются до всего архива, LIMIT-окно
+#: обрезает реальные совпадения — «National Anthem Of Soviet» находил «American
+#: National Anthem» (токен «of» матчил всё, и нужная строка не влезала в окно).
+_STOPWORDS = frozenset({
+    "of", "the", "a", "an", "and", "in", "on", "for", "to", "with",
+    "from", "at", "by", "it", "is", "are", "this", "that", "de", "la",
+})
+
 
 def _normalize(query: str) -> str:
     """Нижний регистр + замена русских/жаргонных имён на канонический англ."""
@@ -90,7 +99,9 @@ def _normalize(query: str) -> str:
 
 def _tokens(query: str) -> List[str]:
     """Разбить запрос на значимые токены (кириллица отбрасывается после алиасов)."""
-    return [t for t in re.split(r"[^a-z0-9]+", query) if t]
+    return [
+        t for t in re.split(r"[^a-z0-9]+", query) if t and t not in _STOPWORDS
+    ]
 
 
 def _default_archive() -> Union[Path, Any]:
@@ -288,7 +299,7 @@ class RtttlLibrary:
             ).fetchone()
             if row is not None:
                 return self._to_dict(row, include_rtttl=True)
-            rows = self._candidates(tokens, cap=200)
+            rows = self._candidates(tokens, cap=2000)
         best: Optional[sqlite3.Row] = None
         best_score = 0
         for row in rows:
