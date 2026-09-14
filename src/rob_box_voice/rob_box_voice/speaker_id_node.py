@@ -80,6 +80,12 @@ class SpeakerIdNode(Node):
         self.declare_parameter("enabled", True)
         # Issue #1160 — Prometheus metrics endpoint. 9112 — speaker_id_node.
         self.declare_parameter("metrics_port", 9112)
+        # Issue #2440 — путь к harness-БД фактов (harness_voice.db). Нужен
+        # шву идентичности для переноса ФАКТОВ профиля при склейке (дефект C:
+        # раньше merge переносил только эмбеддинги в speakers.db, а факты
+        # оставались висеть под старым id). Тот же файл, что у dialogue_node
+        # (sqlite_db_path) — WAL допускает второе подключение на запись.
+        self.declare_parameter("memory_db_path", "/data/harness_voice.db")
 
         self._enabled: bool = self.get_parameter("enabled").value
         self._sample_rate: int = self.get_parameter("sample_rate").value
@@ -429,12 +435,14 @@ class SpeakerIdNode(Node):
         self._result_pub.publish(ack)
 
     def _on_merge_request(self, msg: String) -> None:
-        """Issue W5-4 — склеить два профиля одного голоса («денчик» + «эйджик»).
+        """Issue W5-4 + #2440 — склеить два профиля одного голоса.
 
         Expected JSON: {"src_speaker_id": "<uuid>", "dst_speaker_id": "<uuid>"}
         Все эмбеддинги ``src`` переносятся под ``dst``, профиль ``src``
-        удаляется. Имя ``dst`` остаётся как есть — вызывающий код должен
-        сам решить, какой из двух id — "основной".
+        удаляется, и — через шов идентичности — факты памятного слоя
+        (``speaker_scope(src)`` → ``speaker_scope(dst)``) переносятся тоже
+        (дефект C из issue #2440). Имя ``dst`` остаётся как есть —
+        вызывающий код сам решает, какой из двух id — "основной".
         """
         try:
             data = json.loads(msg.data)
@@ -450,12 +458,18 @@ class SpeakerIdNode(Node):
             )
             return
 
-        moved = self._db.merge_speakers(src_id, dst_id)
-        ok = moved > 0
+        try:
+            embeddings_moved, facts_moved = self._merge_identity(src_id, dst_id)
+        except Exception as exc:  # noqa: BLE001 — merge не должен ронять ноду
+            self.get_logger().warning(
+                f"⚠️ merge via identity seam failed: {type(exc).__name__}: {exc}"
+            )
+            embeddings_moved, facts_moved = 0, 0
+        ok = embeddings_moved > 0
         if ok:
             self.get_logger().info(
                 f"🔗 Merged speaker {src_id[:8]} → {dst_id[:8]} "
-                f"({moved} embeddings moved)"
+                f"({embeddings_moved} embeddings, {facts_moved} facts moved)"
             )
         else:
             self.get_logger().warning(
@@ -470,11 +484,43 @@ class SpeakerIdNode(Node):
                 "ok": ok,
                 "src_speaker_id": src_id,
                 "dst_speaker_id": dst_id,
-                "embeddings_moved": moved,
+                "embeddings_moved": embeddings_moved,
+                "facts_moved": facts_moved,
             },
             ensure_ascii=False,
         )
         self._result_pub.publish(ack)
+
+    def _merge_identity(self, src_id: str, dst_id: str) -> Tuple[int, int]:
+        """Issue #2440 — склейка через шов идентичности (эмбеддинги + факты).
+
+        Запускает асинхронную операцию шва в отдельном event loop: колбэк
+        ROS синхронный, а ``MemoryStore`` — async. Merge — редкая операторская
+        команда, поэтому блокировка колбэка на несколько мс допустима.
+        Возвращает ``(embeddings_moved, facts_moved)``.
+        """
+        import asyncio
+
+        return asyncio.run(self._merge_identity_async(src_id, dst_id))
+
+    async def _merge_identity_async(self, src_id: str, dst_id: str) -> Tuple[int, int]:
+        """Асинхронное тело склейки: шов переносит и эмбеддинги, и факты."""
+        from rob_box_harness.memory import SQLiteVoiceMemory
+        from rob_box_voice.utils.identity_seam import VoiceIdentitySeam
+
+        db_path = str(
+            self.get_parameter("memory_db_path").value or "/data/harness_voice.db"
+        )
+        store = SQLiteVoiceMemory(db_path=db_path)
+        try:
+            await store.init()
+            seam = VoiceIdentitySeam(self._db, store)
+            return await seam.merge(src_id, dst_id)
+        finally:
+            try:
+                await store.teardown()
+            except Exception:  # noqa: BLE001
+                pass
 
     def _do_register(
         self,

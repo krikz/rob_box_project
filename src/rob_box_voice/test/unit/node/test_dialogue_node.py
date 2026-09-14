@@ -368,7 +368,8 @@ class TestBuildDynamicSystemContext:
         ctx = n._build_dynamic_system_context()
         assert "<name>Анна</name>" in ctx
         assert "<voice_confidence>0.92</voice_confidence>" in ctx
-        assert "<speaker_id>sp_12345</speaker_id>" in ctx  # sp_id[:8]
+        # Issue #2440 — полный id, без усечения до 8 символов.
+        assert "<speaker_id>sp_1234567890</speaker_id>" in ctx
 
     def test_invalid_speaker_name_sanitized(self):
         n = _make_node({"provider": "yandex"})

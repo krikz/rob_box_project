@@ -75,14 +75,13 @@ from rob_box_harness.health import (
     HealthCache,
     check_deepseek_balance,
 )
+from rob_box_harness.identity import Acquaintance, MemoryIdentitySeam
 from rob_box_harness.memory import (
     Fact,
     InMemoryStore,
     MemoryStore,
     SQLiteVoiceMemory,
-    get_speaker_profile,
     speaker_scope,
-    touch_speaker,
 )
 from rob_box_harness.providers import (
     DEFAULT_BASE_URL as MINIMAX_DEFAULT_BASE_URL,
@@ -457,6 +456,11 @@ class DialogueNode(Node):
         )
 
         self._memory: MemoryStore = self._build_memory()
+        # Issue #2440 — шов идентичности «Знакомый»: профиль спикера пишется
+        # под СТАБИЛЬНЫМ биометрическим id (из /voice/speaker/result), а не
+        # под per-session Yandex tag. tag остаётся только сигналом
+        # подтверждения реплики внутри SpeakerTracker.
+        self._identity = MemoryIdentitySeam(self._memory)
         # Issue #1077 — speaker profiles: подтверждённый speaker_tag →
         # профиль (scope=speaker:<tag>). SpeakerTracker подтверждает tag
         # после 2+ фраз подряд (защита от нестабильных tags Yandex).
@@ -1962,6 +1966,34 @@ class DialogueNode(Node):
         with self._speaker_lock:
             self._current_speaker = data
 
+    def _current_acquaintance(self) -> Optional[Acquaintance]:
+        """Issue #2440 — знакомый из последнего результата биометрии.
+
+        Читает ``_current_speaker`` (результат speaker_id_node) и, если
+        спикер опознан, строит ``Acquaintance`` со стабильным
+        биометрическим id. Неизвестный спикер (или отсутствие id) → None:
+        профиль под per-session tag создавать нельзя.
+        """
+        with self._speaker_lock:
+            sp = dict(self._current_speaker)
+        if not sp.get("is_known"):
+            return None
+        sid = str(sp.get("speaker_id") or "").strip()
+        if not sid:
+            return None
+        name = sanitize_speaker_name(str(sp.get("name") or "")) or None
+        epithet = str(sp.get("epithet") or "").strip() or None
+        try:
+            confidence = float(sp.get("confidence") or 0.0)
+        except (TypeError, ValueError):
+            confidence = None
+        return Acquaintance(
+            id=sid,
+            name=name,
+            epithet=epithet,
+            confidence=confidence,
+        )
+
     def _on_command_feedback(self, msg: String) -> None:
         """Issue #1279 — озвучить feedback command_node через TTS.
 
@@ -3118,8 +3150,12 @@ class DialogueNode(Node):
             lines.append("    <name>unknown</name>")
         if sp_conf:
             lines.append(f"    <voice_confidence>{sp_conf:.2f}</voice_confidence>")
+        # Issue #2440 — полный id, без усечения до 8 символов: 8 символов не
+        # несут анонимизирующей функции (тот же id уходит в лог целиком), зато
+        # создают несовпадение с полным UUID в voice_memory (точное сравнение
+        # в БД). LLM и MCP-тулы должны видеть один и тот же полный id.
         if sp_id:
-            lines.append(f"    <speaker_id>{sp_id[:8]}</speaker_id>")
+            lines.append(f"    <speaker_id>{sp_id}</speaker_id>")
         # Issue #1787 — внутренняя кличка. Даёт LLM якорь, когда имён
         # два одинаковых или имени нет вовсе. Research §5.3: озвучивать
         # её НЕЛЬЗЯ — юзер этого слова никогда не слышал, «привет,
@@ -3266,8 +3302,9 @@ class DialogueNode(Node):
         Логика:
         1. ``SpeakerTracker.note_phrase`` — подтверждение tag после 2+ фраз
            подряд (>= 0.8с). Короткие (<0.8с) не создают профиль.
-        2. Подтверждённый tag → ``touch_speaker``: создаёт/обновляет профиль
-           (scope=speaker:<tag>, first_seen/last_seen/dialog_count).
+        2. Подтверждённый tag → ``note_seen`` шва идентичности (issue #2440):
+           создаёт/обновляет профиль под ``speaker_scope(биометрический id)``
+           (first_seen/last_seen/dialog_count). tag дальше не используется.
         3. Имя из «меня зовут X» сохраняется в профиль.
         4. Факты спикера (list_facts) форматируются в LLM-контекст.
 
@@ -3285,13 +3322,26 @@ class DialogueNode(Node):
                 )
                 return None
 
-            profile = await touch_speaker(self._memory, tag)
+            # Issue #2440 — профиль ключуем стабильным биометрическим id
+            # (результат speaker_id_node), а не per-session tag. tag здесь
+            # уже сыграл свою роль: подтвердил реплику в SpeakerTracker.
+            person = self._current_acquaintance()
+            if person is None:
+                self.get_logger().debug(
+                    f"👤 [issue 2440] tag={tag!r} подтверждён, но биометрия "
+                    "ещё не разрешила спикера — профиль не создаём "
+                    "(tag нестабилен между сессиями)"
+                )
+                return None
+
+            scope = speaker_scope(person.id)
+            profile = await self._identity.note_seen(person)
             # Имя из «меня зовут X» — сохраняем в профиль (acceptance #1077).
             name = extract_speaker_name(user_input)
             if name and profile.get("name") != name:
                 profile["name"] = name
                 await self._memory.save_fact(
-                    speaker_scope(tag),
+                    scope,
                     Fact(
                         key="profile",
                         value=profile,
@@ -3299,11 +3349,11 @@ class DialogueNode(Node):
                     ),
                 )
                 self.get_logger().info(
-                    f"👤 [issue 1077] Спикер {tag!r} представился: {name!r}"
+                    f"👤 [issue 1077] Спикер {person.id!r} представился: {name!r}"
                 )
 
             # Факты спикера → контекст LLM (list_facts: все факты scope).
-            facts = await self._memory.list_facts(speaker_scope(tag), limit=20)
+            facts = await self._memory.list_facts(scope, limit=20)
             context = format_speaker_context(
                 profile,
                 facts,
@@ -3311,7 +3361,7 @@ class DialogueNode(Node):
             )
             if context:
                 self.get_logger().info(
-                    f"👤 [issue 1077] Спикер {tag!r}: диалог "
+                    f"👤 [issue 1077] Спикер {person.id!r}: диалог "
                     f"#{profile.get('dialog_count', 0)} — контекст загружен"
                 )
             return context

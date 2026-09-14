@@ -159,3 +159,54 @@ def test_tts_configs_route_to_minimax():
             f"{path.name}: provider={provider!r} — должен быть minimax "
             f"(issue #1004)"
         )
+
+
+def _speaker_threshold_constants() -> tuple:
+    """Загрузить константы порогов из speaker_embeddings (issue #2440).
+
+    ``utils/__init__.py`` тянет pyaudio, поэтому грузим модуль напрямую по
+    пути файла (тот же приём, что в test_speaker_embeddings.py), чтобы тест
+    шёл в CI без тяжёлых зависимостей.
+    """
+    import importlib.util
+    import sys
+
+    path = NODE_SRC / "utils" / "speaker_embeddings.py"
+    spec = importlib.util.spec_from_file_location(
+        "rob_box_voice.utils.speaker_embeddings", path
+    )
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["rob_box_voice.utils.speaker_embeddings"] = mod
+    spec.loader.exec_module(mod)
+    return mod.IDENTIFY_THRESHOLD, mod.REGISTER_MATCH_THRESHOLD
+
+
+def test_speaker_thresholds_match_module_constants():
+    """issue #2440 — пороги в YAML должны совпадать со значениями модуля.
+
+    Регрессия из issue #2440 (дефект A): коммит d4c058af6 откалибровал
+    ``IDENTIFY_THRESHOLD`` с 0.75 на 0.72, но YAML не тронул — прод работал
+    на устаревшем 0.75, потому что YAML перекрывает дефолт ``declare_parameter``.
+    Тест сверяет ЗНАЧЕНИЯ, а не только имена ключей (старый тест #1004 имена
+    и сверял, поэтому был зелёным при полностью устаревшем числе).
+    """
+    pytest.importorskip("numpy")
+    identify_thr, register_thr = _speaker_threshold_constants()
+
+    for path in (SRC_CONFIG / "speaker_id_node.yaml",
+                 DOCKER_CONFIG / "speaker_id_node.yaml"):
+        if not path.exists():
+            pytest.skip(f"{path} not found")
+        cfg = _load_config(path, "speaker_id_node")
+        params = cfg["speaker_id_node"]["ros__parameters"]
+        assert float(params["identify_threshold"]) == identify_thr, (
+            f"{path.name}: identify_threshold={params['identify_threshold']!r} "
+            f"не совпадает с speaker_embeddings.IDENTIFY_THRESHOLD="
+            f"{identify_thr} (issue #2440, дефект A)"
+        )
+        assert float(params["register_match_threshold"]) == register_thr, (
+            f"{path.name}: register_match_threshold="
+            f"{params['register_match_threshold']!r} не совпадает с "
+            f"speaker_embeddings.REGISTER_MATCH_THRESHOLD={register_thr} "
+            f"(issue #2440, дефект A)"
+        )

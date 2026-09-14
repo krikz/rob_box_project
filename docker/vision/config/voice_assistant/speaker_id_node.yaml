@@ -7,5 +7,11 @@ speaker_id_node:
   ros__parameters:
     enabled: true
     db_path: "/data/speakers.db"
-    identify_threshold: 0.75
+    # Issue #2348/#2440 — пороги калиброваны и должны совпадать с
+    # speaker_embeddings.IDENTIFY_THRESHOLD / REGISTER_MATCH_THRESHOLD.
+    identify_threshold: 0.72
+    register_match_threshold: 0.75
+    # Issue #2440 — harness-БД фактов для склейки профилей через шов
+    # идентичности (тот же файл, что sqlite_db_path у dialogue_node).
+    memory_db_path: "/data/harness_voice.db"
     sample_rate: 16000
