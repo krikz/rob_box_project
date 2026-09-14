@@ -572,19 +572,27 @@ async def test_preview_voice_delivers_audio_chunks_and_done(server_client, fixed
                 "ts_ms": 0,
             },
         )
+        # Даём event loop шанс обработать входящий фрейм и вызвать handler.
+        # aiohttp test client не синхронен — между send_bytes и
+        # assert'ом сервер ещё мог не прочитать фрейм. Та же пауза, что
+        # в test_preview_voice_calls_bridge_and_registers и test_set_voice_*.
+        await asyncio.sleep(0.1)
         # Bridge увидел publish_preview_voice.
-        # (синхронно — _json_cmd_preview_voice зовёт bridge напрямую в loop)
         assert bridge.preview_published == [
             (request_id, "filipp", "Привет, оператор")
         ], (
             f"preview_voice: bridge.preview_published={bridge.preview_published}; "
             f"ожидалось [{request_id!r}, 'filipp', 'Привет, оператор']"
         )
-        # request_id зарегистрирован в preview-pending.
-        assert request_id in server._preview_pending, (
-            f"preview_voice: request_id {request_id!r} НЕ зарегистрирован "
-            f"в server._preview_pending — start_preview_session не сработал"
-        )
+        # НЕ ассертим ``request_id in server._preview_pending`` здесь:
+        # StubTtsBridge.publish_preview_voice ПЛАНИРУЕТ
+        # ``deliver_preview_audio`` + ``deliver_preview_done`` через
+        # ``loop.call_soon_threadsafe`` — после 0.1с sleep они уже
+        # отработали, и ``deliver_preview_done`` УДАЛИЛ request_id из
+        # ``_audio_pending["preview"]``. Т.е. факт регистрации в pending
+        # виден только мгновенно, до доставки. Проверяем его косвенно:
+        # preview_voice_audio/done пришли, а done почистил pending
+        # (финальный assert ниже).
 
         # Собираем audio-чанки + terminator.
         metas, binaries, terminator = await _collect_preview_audio(
@@ -592,8 +600,8 @@ async def test_preview_voice_delivers_audio_chunks_and_done(server_client, fixed
         )
 
         assert len(metas) >= 1, (
-            f"preview_voice: 0 preview_voice_audio событий за 2с; "
-            f"ожидался ≥1 чанк от StubTtsBridge (default_chunker → 2 чанка)"
+            "preview_voice: 0 preview_voice_audio событий за 2с; "
+            "ожидался ≥1 чанк от StubTtsBridge (default_chunker → 2 чанка)"
         )
         # Все аудио-мета имеют тот же request_id и формат.
         for m in metas:
