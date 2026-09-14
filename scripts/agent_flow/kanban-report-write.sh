@@ -17,25 +17,29 @@
 #   bash scripts/agent_flow/kanban-report-write.sh "$TASK_ID"
 #
 # Что делает (best-effort, отсутствующие секции → "n/a (reason: ...)"):
-#   1. mkdir -p docs/reports/kanban/
-#   2. Парсит `hermes kanban show $TASK_ID --json` для title / assignee / body
-#   3. Извлекает Started / Completed из kanban DB (task_events)
-#   4. Собирает `git diff --stat origin/develop...HEAD` для файлов
-#   5. Собирает `git log --oneline origin/develop..HEAD` для коммитов
-#   6. Ищет связанный PR через `gh pr list --head <branch>` + `gh pr view`
-#   7. Запускает `pytest -v 2>&1 | tail -40` (если есть `tests/`)
-#   8. Пишет docs/reports/kanban/${TASK_ID}.md
-#   9. git add + commit (--allow-empty если файл уже существует и не изменился)
-#  10. Возвращает 0 при успехе, 1 при ошибке, 2 при usage error.
+#   1. Вызывает worker_post_flight.sh — rebase на origin/develop перед записью
+#      отчёта. Если post_flight возвращает exit 1 (conflict) — kanban-report-write
+#      возвращает exit 1 БЕЗ записи отчёта (воркер должен разрешить конфликт).
+#      Это закрывает issue #2438: «PR diverged от develop на десятки коммитов».
+#   2. mkdir -p docs/reports/kanban/
+#   3. Парсит `hermes kanban show $TASK_ID --json` для title / assignee / body
+#   4. Извлекает Started / Completed из kanban DB (task_events)
+#   5. Собирает `git diff --stat origin/develop...HEAD` для файлов
+#   6. Собирает `git log --oneline origin/develop..HEAD` для коммитов
+#   7. Ищет связанный PR через `gh pr list --head <branch>` + `gh pr view`
+#   8. Запускает `pytest -v 2>&1 | tail -40` (если есть `tests/`)
+#   9. Пишет docs/reports/kanban/${TASK_ID}.md
+#  10. git add + commit (--allow-empty если файл уже существует и не изменился)
+#  11. Возвращает 0 при успехе, 1 при ошибке, 2 при usage error.
 #
 # НЕ делает:
 #   - НЕ вызывает `kanban_complete` (это делает воркер САМ, после успеха этого helper).
-#   - НЕ пушит (воркер пушит сам через push-via-gh-api.sh).
+#   - НЕ пушит (воркер пушит сам через push-via-gh-api.sh, в т.ч. после post_flight rebase).
 #   - НЕ меняет state вне своего worktree.
 #
 # Exit codes:
-#   0 = success (файл создан/обновлён + закоммичен).
-#   1 = error (нет kanban DB / не kanban-board / git вне worktree / ...).
+#   0 = success (post_flight OK + файл создан/обновлён + закоммичен).
+#   1 = error (post_flight conflict / нет kanban DB / не kanban-board / git вне worktree / ...).
 #   2 = usage error (нет task_id или неверный формат).
 #
 # Тест: bash scripts/agent_flow/tests/test_kanban_report_write.sh
@@ -63,6 +67,29 @@ if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     echo "kanban-report-write: not inside a git worktree (run from worker wt)" >&2
     exit 1
 fi
+
+# ---- step 0: post-flight rebase (issue #2438) -----------------------------
+# Перед записью отчёта — rebase на свежий origin/develop. Если rebase
+# падает с конфликтом, post_flight пишет инструкцию в issue и возвращает
+# exit 1 → этот скрипт тоже возвращает 1, отчёт НЕ пишется, воркер должен
+# разрешить конфликт и повторить kanban-report-write.sh.
+#
+# Opt-out: SKIP_POST_FLIGHT=true (например, для retro-карточек где rebase
+# не нужен — но тогда воркер должен явно осознавать риск).
+#
+# Ищем worker_post_flight.sh в scripts/agent_flow/ (рядом с этим скриптом).
+_LIB_DIR_HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+if [ -x "${_LIB_DIR_HERE}/worker_post_flight.sh" ]; then
+    _BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+    # ISSUE_NUM не пробрасываем — воркер сам может export'нуть его через env.
+    if ! bash "${_LIB_DIR_HERE}/worker_post_flight.sh" "$TASK_ID" "$_BRANCH" "${ISSUE_NUM:-}" >/dev/null 2>&1; then
+        echo "kanban-report-write: worker_post_flight FAILED (exit $?)" >&2
+        echo "  → rebase conflict in branch ${_BRANCH}." >&2
+        echo "  → resolve conflicts, then re-run this script." >&2
+        exit 1
+    fi
+fi
+unset _LIB_DIR_HERE _BRANCH
 
 REPORT_DIR="docs/reports/kanban"
 REPORT_FILE="${REPORT_DIR}/${TASK_ID}.md"
