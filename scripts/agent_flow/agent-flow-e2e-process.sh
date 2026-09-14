@@ -941,11 +941,19 @@ fi
 af_maintenance_gate_or_exit
 
 # --- G2: gh auth check (retry — сетевой сбой ≠ нет авторизации) ------------
+# Workaround: gh 2.89.0 reports GH_TOKEN env as invalid even when the token works
+# for keyring/hosts.yml and direct API calls. Unset it for the check, restore after.
 _gh_auth_ok=0
+_gh_token_saved="${GH_TOKEN:-}"
+unset GH_TOKEN
 for _try in 1 2 3; do
     if gh auth status >/dev/null 2>&1; then _gh_auth_ok=1; break; fi
     sleep 5
 done
+# Restore GH_TOKEN for git push (Fix layer 1, retro 23.08 t_b977cb4b)
+if [ -n "$_gh_token_saved" ]; then
+    export GH_TOKEN="$_gh_token_saved"
+fi
 if [ "$_gh_auth_ok" -ne 1 ]; then
     log "gh auth not configured (или сеть недоступна после 3 попыток) — exit 1"
     af_summary_set auth "gh auth not configured (или сеть)"; af_summary_emit 1
