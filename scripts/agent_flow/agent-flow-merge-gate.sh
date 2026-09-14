@@ -5518,13 +5518,34 @@ for t in data:
                     # для running — «cannot reclaim (not running)»). done —
                     # терминальное состояние. PR снова конфликтный → создаём
                     # СВЕЖУЮ ready-карточку (воркер отработал, нужен новый).
-                    hermes kanban --board "$KANBAN_BOARD" create \
-                        --assignee "$_assignee" \
-                        --max-runtime 1800 \
-                        --body "$_reminder" \
-                        "🔀 rebase PR #${pr_num} (\`${head}\`) на develop — конфликт/CI (повтор)" >/dev/null 2>&1 \
-                        && log "scan-all-prs: fresh recovery card created (old ${_done_id} was done) for PR #${pr_num}" \
-                        || log "scan-all-prs: WARNING fresh recovery card create failed for PR #${pr_num}"
+                    #
+                    # Ретро-фикс 14.09 t_a8e82f2d: race guard. _branch_matches
+                    # выше был собран ДО done-match логики; за это время другой
+                    # тик мог уже создать active карточку (cron 5-min re-entry).
+                    # Проверяем fresh-list ещё раз непосредственно перед create.
+                    _recheck_matches="$(hermes kanban --board "$KANBAN_BOARD" list --json 2>/dev/null | python3 -c "
+import json,sys
+try:
+    data = json.loads(sys.stdin.read())
+except Exception:
+    sys.exit(0)
+for t in data:
+    title = t.get('title','')
+    if '${head}' in title or 'rebase PR #${pr_num}' in title:
+        print(t['id'], t.get('status',''))
+" 2>/dev/null || true)"
+                    _recheck_active="$(printf '%s\n' "$_recheck_matches" | awk '$2 ~ /^(running|ready|todo)$/ {print $1" "$2; exit}')"
+                    if [ -n "$_recheck_active" ]; then
+                        log "scan-all-prs: race-recheck — active card already exists (${_recheck_active}) for PR #${pr_num}, skip fresh create"
+                    else
+                        hermes kanban --board "$KANBAN_BOARD" create \
+                            --assignee "$_assignee" \
+                            --max-runtime 1800 \
+                            --body "$_reminder" \
+                            "🔀 rebase PR #${pr_num} (\`${head}\`) на develop — конфликт/CI (повтор)" >/dev/null 2>&1 \
+                            && log "scan-all-prs: fresh recovery card created (old ${_done_id} was done) for PR #${pr_num}" \
+                            || log "scan-all-prs: WARNING fresh recovery card create failed for PR #${pr_num}"
+                    fi
                 else
                     _rec_key="merge-conflict-recovery-pr-${pr_num}"
                     _rec_title="🔀 rebase PR #${pr_num} (\`${head}\`) на develop — конфликт/CI"
@@ -5534,18 +5555,41 @@ for t in data:
                     # чего recovery-карточка после done НЕ пере-создавалась и PR
                     # висел CONFLICTING навсегда. Старые карточки выше уже
                     # обработаны (active/blocked/done match) — до else доходим
-                    # только когда карточки НЕТ вообще. Поэтому create БЕЗ
+                    # доходим только когда карточки НЕТ вообще. Поэтому create БЕЗ
                     # idempotency-key: каждая свежая конфликтная ситуация
                     # получает СВЕЖУЮ ready-карточку. Гонка (два merge-gate
                     # тика подряд) → дубликат, но дубликат безопаснее deadlock.
-                    _rec_key="merge-conflict-recovery-pr-${pr_num}-$(date +%s)"
-                    hermes kanban --board "$KANBAN_BOARD" create \
-                        --assignee "$_assignee" \
-                        --max-runtime 1800 \
-                        --body "$_reminder" \
-                        "$_rec_title" >/dev/null 2>&1 \
-                        && log "scan-all-prs: recovery card created fresh for PR #${pr_num} (assignee=${_assignee})" \
-                        || log "scan-all-prs: WARNING recovery card create failed (PR #${pr_num})"
+                    #
+                    # Ретро-фикс 14.09 t_a8e82f2d: race guard. Выше
+                    # _branch_matches мог быть собран до того, как другой тик
+                    # успел сделать fresh create. Проверяем ещё раз fresh-list
+                    # непосредственно перед create — если появилась active
+                    # карточка, пропускаем create (это и есть тот случай,
+                    # который вызывал спам 3-5 карточек на один PR).
+                    _recheck_matches="$(hermes kanban --board "$KANBAN_BOARD" list --json 2>/dev/null | python3 -c "
+import json,sys
+try:
+    data = json.loads(sys.stdin.read())
+except Exception:
+    sys.exit(0)
+for t in data:
+    title = t.get('title','')
+    if '${head}' in title or 'rebase PR #${pr_num}' in title:
+        print(t['id'], t.get('status',''))
+" 2>/dev/null || true)"
+                    _recheck_active="$(printf '%s\n' "$_recheck_matches" | awk '$2 ~ /^(running|ready|todo)$/ {print $1" "$2; exit}')"
+                    if [ -n "$_recheck_active" ]; then
+                        log "scan-all-prs: race-recheck (no-card-yet ветка) — active card appeared (${_recheck_active}) for PR #${pr_num}, skip fresh create"
+                    else
+                        _rec_key="merge-conflict-recovery-pr-${pr_num}-$(date +%s)"
+                        hermes kanban --board "$KANBAN_BOARD" create \
+                            --assignee "$_assignee" \
+                            --max-runtime 1800 \
+                            --body "$_reminder" \
+                            "$_rec_title" >/dev/null 2>&1 \
+                            && log "scan-all-prs: recovery card created fresh for PR #${pr_num} (assignee=${_assignee})" \
+                            || log "scan-all-prs: WARNING recovery card create failed (PR #${pr_num})"
+                    fi
                 fi
                 ;;
         esac
@@ -5602,13 +5646,34 @@ for t in data:
                     done|archived)
                         # Ретро-фикс 13.08 #2: reclaim не работает с done —
                         # создаём СВЕЖУЮ ready-карточку.
-                        hermes kanban --board "$KANBAN_BOARD" create \
-                            --assignee "$_assignee" \
-                            --max-runtime 1800 \
-                            --body "🔀 свежий конфликт: PR #${pr_num} снова не мержится с develop (старая карточка ${_conflict_id} была ${_conflict_status}). Rebase на develop в той же ветке, CI green." \
-                            "🔀 rebase PR #${pr_num} (\`${head}\`) на develop — конфликт/CI (повтор)" >/dev/null 2>&1 \
-                            && log "scan-all-prs: fresh conflict card created (old ${_conflict_id} was ${_conflict_status}) for PR #${pr_num}" \
-                            || log "scan-all-prs: WARNING fresh conflict card create failed for PR #${pr_num}"
+                        #
+                        # Ретро-фикс 14.09 t_a8e82f2d: race guard.
+                        # _existing_conflict выше собран до done-match логики;
+                        # проверяем fresh-list ещё раз, чтобы не плодить дубль.
+                        _recheck_conflict="$(hermes kanban --board "$KANBAN_BOARD" list --json 2>/dev/null | python3 -c "
+import json,sys
+try:
+    data = json.loads(sys.stdin.read())
+except Exception:
+    sys.exit(0)
+for t in data:
+    title = t.get('title','')
+    if title.startswith('🔀 rebase PR #${pr_num}') or ('${head}' in title and 'rebase' in title):
+        print(t['id'], t.get('status',''))
+        break
+" 2>/dev/null | head -1)"
+                        _recheck_active="$(echo "$_recheck_conflict" | awk '$2 ~ /^(running|ready|todo)$/ {print $1" "$2}')"
+                        if [ -n "$_recheck_active" ]; then
+                            log "scan-all-prs: race-recheck (conflict-after-done) — active card appeared (${_recheck_active}) for PR #${pr_num}, skip fresh create"
+                        else
+                            hermes kanban --board "$KANBAN_BOARD" create \
+                                --assignee "$_assignee" \
+                                --max-runtime 1800 \
+                                --body "🔀 свежий конфликт: PR #${pr_num} снова не мержится с develop (старая карточка ${_conflict_id} была ${_conflict_status}). Rebase на develop в той же ветке, CI green." \
+                                "🔀 rebase PR #${pr_num} (\`${head}\`) на develop — конфликт/CI (повтор)" >/dev/null 2>&1 \
+                                && log "scan-all-prs: fresh conflict card created (old ${_conflict_id} was ${_conflict_status}) for PR #${pr_num}" \
+                                || log "scan-all-prs: WARNING fresh conflict card create failed for PR #${pr_num}"
+                        fi
                         ;;
                     blocked)
                         hermes kanban --board "$KANBAN_BOARD" unblock "$_conflict_id" --reason "🔀 свежий конфликт — retry (ретро 12.08 t_618208c0)" >/dev/null 2>&1 || true
@@ -5619,14 +5684,40 @@ for t in data:
                         ;;
                 esac
             else
-                hermes kanban --board "$KANBAN_BOARD" create \
-                    --assignee "$_assignee" \
-                    --priority 90 \
-                    --max-runtime 1800 \
-                    --body "$_reminder" \
-                    "🔀 rebase PR #${pr_num} (\`${head}\`) на develop — конфликт (issue ${issue_num:-?})" >/dev/null 2>&1 \
-                    || log "scan-all-prs: WARNING conflict card create failed (PR #${pr_num}, assignee=${_assignee})"
-                log "scan-all-prs: conflict card created for PR #${pr_num} (assignee=${_assignee})"
+                # Ретро-фикс 14.09 t_a8e82f2d: race guard. _existing_conflict
+                # выше = "" (карточки нет вообще). Но между list и create
+                # другой тик мог сделать fresh. Проверяем ещё раз.
+                _recheck_conflict="$(hermes kanban --board "$KANBAN_BOARD" list --json 2>/dev/null | python3 -c "
+import json,sys
+try:
+    data = json.loads(sys.stdin.read())
+except Exception:
+    sys.exit(0)
+for t in data:
+    title = t.get('title','')
+    if title.startswith('🔀 rebase PR #${pr_num}') or ('${head}' in title and 'rebase' in title):
+        print(t['id'], t.get('status',''))
+        break
+" 2>/dev/null | head -1)"
+                _recheck_id="${_recheck_conflict%% *}"
+                _recheck_active="$(echo "$_recheck_conflict" | awk '$2 ~ /^(running|ready|todo)$/ {print $1" "$2}')"
+                if [ -n "$_recheck_active" ]; then
+                    log "scan-all-prs: race-recheck (no-conflict-card) — active card appeared (${_recheck_active}) for PR #${pr_num}, skip fresh create"
+                elif [ -n "$_recheck_id" ]; then
+                    # Карточка появилась, но в done/archived/blocked —
+                    # обрабатываем как в существующей логике (выше по коду).
+                    # Просто логируем — следующий тик scan-all-prs подхватит.
+                    log "scan-all-prs: race-recheck (no-conflict-card) — non-active card appeared (${_recheck_id}) for PR #${pr_num}, deferring to next tick"
+                else
+                    hermes kanban --board "$KANBAN_BOARD" create \
+                        --assignee "$_assignee" \
+                        --priority 90 \
+                        --max-runtime 1800 \
+                        --body "$_reminder" \
+                        "🔀 rebase PR #${pr_num} (\`${head}\`) на develop — конфликт (issue ${issue_num:-?})" >/dev/null 2>&1 \
+                        || log "scan-all-prs: WARNING conflict card create failed (PR #${pr_num}, assignee=${_assignee})"
+                    log "scan-all-prs: conflict card created for PR #${pr_num} (assignee=${_assignee})"
+                fi
             fi
         else
             log "scan-all-prs: no existing card for PR #${pr_num} (${head}); assignee=${_assignee}, issue=${issue_num:-?} — UNSTABLE, main cycle will pick up if needs-e2e"
