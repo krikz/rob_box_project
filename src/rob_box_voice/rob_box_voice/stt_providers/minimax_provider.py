@@ -138,6 +138,27 @@ class MiniMaxSTTInvalidResponseError(MiniMaxSTTError):
     """The server returned 200 but the body is not what we expected."""
 
 
+def _httpx_timeout_exc() -> type:
+    """Lazy-resolve ``httpx.TimeoutException``.
+
+    Returns the real class under a normal ``httpx`` install. Falls back to
+    :class:`MiniMaxSTTUnavailableError` when ``httpx`` is monkey-patched to
+    a ``types.SimpleNamespace`` (see ``test/unit/node/conftest.py:97`` —
+    used to skip real network in the dialogue_node suite). Without the
+    fallback ``except httpx.TimeoutException`` raises
+    ``AttributeError`` at the call site instead of catching the test
+    stub exception, which broke PR #2369's Unit Tests (ROS2 Humble) job.
+    """
+    cls = getattr(httpx, "TimeoutException", None)
+    return cls if isinstance(cls, type) else MiniMaxSTTUnavailableError
+
+
+def _httpx_http_exc() -> type:
+    """Lazy-resolve ``httpx.HTTPError``. See :func:`_httpx_timeout_exc`."""
+    cls = getattr(httpx, "HTTPError", None)
+    return cls if isinstance(cls, type) else MiniMaxSTTUnavailableError
+
+
 # ---------------------------------------------------------------------------
 # Response dataclass
 # ---------------------------------------------------------------------------
@@ -350,12 +371,20 @@ class MiniMaxSTTProvider:
 
         client = self._get_client()
         started = time.monotonic()
+        # Lazy-resolve exception classes — some CI test envs monkey-patch
+        # ``sys.modules['httpx']`` to ``types.SimpleNamespace(Timeout=...)``
+        # (see ``test/unit/node/conftest.py:97``), which lacks
+        # ``TimeoutException`` / ``HTTPError``. Without lazy resolution
+        # the ``except`` clause below raises ``AttributeError`` at the
+        # call site instead of catching the test stub exception.
+        _timeout_exc = _httpx_timeout_exc()
+        _http_exc = _httpx_http_exc()
         try:
             resp = client.post(url, headers=headers, files=files, data=data)
-        except httpx.TimeoutException as exc:
+        except _timeout_exc as exc:
             _log.warning("minimax STT: timeout after %.2fs (%s)", self._timeout.read, exc)
             raise MiniMaxSTTUnavailableError(f"timeout: {exc}") from exc
-        except httpx.HTTPError as exc:
+        except _http_exc as exc:
             _log.warning("minimax STT: http error (%s)", exc)
             raise MiniMaxSTTUnavailableError(f"http error: {exc}") from exc
 
