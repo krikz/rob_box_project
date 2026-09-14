@@ -257,6 +257,16 @@ FORCE_TRIAGE_APPLY="${FORCE_TRIAGE_APPLY:-false}"
 # назад — rate-limit skip (даже если state изменился), см. ADR-AF-0062 §2.5.
 AGENT_FLOW_FILE_OVERLAP_DEDUP_HOURS="${AGENT_FLOW_FILE_OVERLAP_DEDUP_HOURS:-6}"
 AGENT_FLOW_FILE_OVERLAP_MARKER="${AGENT_FLOW_FILE_OVERLAP_MARKER:-hermes-triage-g10a}"
+# --- G10b dedup env-vars (ретро t_6c594d08, issue #2459, ADR-AF-0066) ---
+# G10b — pre-flight guard от PR-redundant-after-umbrella-merge. Ловит случай,
+# когда для issue уже есть MERGED superseder (другой PR ссылается на тот же
+# issue-ref в title/body через #N / closes #N / fix #N) — карточка-дубль не нужна.
+# Это закрывает race, когда параллельный worker влил реализацию через umbrella,
+# а ADR-only ветка продолжает висеть (ретро t_6c594d08: PR #2453 vs PR #2458).
+# Mark strategy зеркалирует G10a: marker + state-hash + 6h rate-limit + edit.
+AGENT_FLOW_ISSUE_RESOLVED_GUARD="${AGENT_FLOW_ISSUE_RESOLVED_GUARD:-true}"
+AGENT_FLOW_ISSUE_RESOLVED_DEDUP_HOURS="${AGENT_FLOW_ISSUE_RESOLVED_DEDUP_HOURS:-6}"
+AGENT_FLOW_ISSUE_RESOLVED_MARKER="${AGENT_FLOW_ISSUE_RESOLVED_MARKER:-hermes-triage-g10b}"
 : "${DRY_RUN:=false}"
 : "${ISSUE_LABEL:=hermes}"
 : "${DONE_LABEL:=e2e-done}"
@@ -680,6 +690,108 @@ branch_exists_in_remote() {  # $1=branch
         return 0
     fi
     return 1
+}
+
+# issue_already_resolved — ретро t_6c594d08, issue #2459, ADR-AF-0066: G10b
+# pre-flight guard от PR-redundant-after-umbrella-merge. Проверяет, существует
+# ли для issue #N уже MERGED PR, у которого в title или body есть явная ссылка
+# на наш issue (closes/fix/fixes/resolves/ref #N, либо `#N` standalone).
+#
+# Аргументы:
+#   $1 — issue_number
+#
+# Возвращает:
+#   0 — найден MERGED superseder (skip обязателен)
+#   1 — superseder не найден / guard отключён / сетевая ошибка (continue)
+#   stdout: "<pr_number>\t<pr_url>\t<kind:merged|open>" — для caller'а, чтобы
+#           приложить в comment.
+#
+# Fail-OPEN: при любой gh-ошибке возвращает 1 и логирует warn, чтобы cron не
+# падал из-за временного сбоя. Принцип fail-OPEN идентичен G10a и G9b.
+#
+# Кэш: PRS_JSON_CACHE инициализируется ОДИН раз на тик (per-call lazy init),
+# поскольку guard'ы G10a и G10b могут вызываться для разных issues одного тика
+# и каждый делает свой запрос — кэш дедуплицирует. На будущее — можно
+# рефакторить на единый PRS_JSON_CACHE с графом state-фильтров, в этом PR не делаем.
+PRS_JSON_CACHE=""
+issue_already_resolved() {  # $1=issue_number
+    local number="$1"
+    [ "${AGENT_FLOW_ISSUE_RESOLVED_GUARD:-true}" = "true" ] || return 1
+    [ -n "${GH_REPO:-}" ] || return 1
+    [ -n "$number" ] || return 1
+
+    # Кэш: один `gh pr list --state all` на тик (lazy-init).
+    if [ -z "$PRS_JSON_CACHE" ]; then
+        PRS_JSON_CACHE="$(gh pr list --repo "$GH_REPO" --state all --limit 200 \
+            --json number,title,body,state,url 2>/dev/null || echo '[]')"
+        [ -n "$PRS_JSON_CACHE" ] || PRS_JSON_CACHE='[]'
+    fi
+
+    # Ступень A (hard): MERGED superseder → обязательный skip.
+    # Ступень B (soft): OPEN с явной ссылкой в title — warning-skip (коммент другой).
+    local superseder
+    superseder="$(printf '%s' "$PRS_JSON_CACHE" | python3 -c '
+import json, os, re, sys
+
+ISSUE_NUMBER = str(sys.argv[1]).strip()
+ISSUE_RE = re.compile(
+    r"(?i)(?:closes|resolves|refs|fix)(?:es)?[\s]+#\d+"
+    r"|#\d+\b"
+)
+# Narrower: only refs that explicitly mention OUR issue number.
+MY_ISSUE_RE = re.compile(r"#\b'${number}'\b")
+
+PRS = json.loads(sys.stdin.read() or "[]")
+if not isinstance(PRS, list):
+    PRS = []
+
+def text_refs_issue(text):
+    if not text:
+        return False
+    # Strip markdown noise (backticks, code-fences) для устойчивости парсинга.
+    cleaned = re.sub(r"`[^`]*`", "", text)
+    return bool(MY_ISSUE_RE.search(cleaned))
+
+# Prefer genuinely-superseding keywords (closes/fixes/resolves/refs) — strict.
+STRICT_RE = re.compile(
+    r"(?i)\b(?:closes|resolves|refs|fix(?:es|ing)?)\b[\s\S]{0,40}#\b'${number}'\b"
+)
+
+results = {"merged": [], "open_strict": []}
+for pr in PRS:
+    pr_num = pr.get("number")
+    if not pr_num:
+        continue
+    title = pr.get("title") or ""
+    body = pr.get("body") or ""
+    state = (pr.get("state") or "").upper()
+    if state == "MERGED":
+        if text_refs_issue(title) or text_refs_issue(body):
+            results["merged"].append(pr_num)
+    elif state == "OPEN":
+        # Ступень B: только strict-сигналы в title (closes/fixes/etc) — НЕ
+        # просто `#2440` в тексте (это слишком часто встречается в обсуждениях).
+        # Такая мягкая ступень страхует только от прямого conflict-scenario.
+        if STRICT_RE.search(title):
+            results["open_strict"].append(pr_num)
+
+if results["merged"]:
+    n = results["merged"][0]
+    print("merged\t%d" % n)
+elif results["open_strict"]:
+    n = results["open_strict"][0]
+    print("open\t%d" % n)
+' "$number" 2>/dev/null || true)"
+
+    [ -n "$superseder" ] || return 1
+    local kind pr
+    kind="${superseder%%	*}"
+    pr="${superseder##*	}"
+    # Возвращаем результат через stdout для caller'а.
+    printf '%s\n' "$kind	$pr"
+    [ "$kind" = "merged" ] && return 0
+    # open_strict — soft-skip (но пока мягко, как warning).
+    return 0
 }
 
 # dedup_intra_filter — ретро-фикс (26.08 t_dfd3d19d, ADR-0032): G9a intra-tick
@@ -1353,6 +1465,101 @@ process_issues_json() {
     # полностью пропускается (existing happy path не ломаем).
     # Fail-OPEN: сетевые/gh-ошибки не блокируют cron (только warning-лог).
     if file_overlap_with_open_pr "$body" "$number"; then
+        skipped=$((skipped+1)); continue
+    fi
+
+    # Ретро-фикс (15.09 t_6c594d08, issue #2459, ADR-AF-0066): G10b
+    # pre-flight guard от PR-redundant-after-umbrella-merge. Если для
+    # issue #${number} уже есть MERGED PR, у которого в title или body есть
+    # явная ссылка `#${number}` / closes / fixes / resolves (например,
+    # umbrella-PR, влёкший реализацию через общий merge) — карточка не нужна,
+    # ADR-only или duplicated ветка только засорит drift-detect / merge-gate.
+    # Ступень B: OPEN с strict-сигналом (closes/fixes/etc) в title — тоже skip
+    # как race-window (см. acceptance issue #2459).
+    #
+    # Side-effects на skip: comment с supersede-маркером + label.
+    # Marker strategy зеркалирует G10a (state-hash + edit/replace-логика).
+    #
+    # Backward-compat (retention #2459 acceptance #2): если AGENT_FLOW_ISSUE_RESOLVED_GUARD=false
+    # → early-return в issue_already_resolved → guard полностью
+    # пропускается, поведение = ровно то же, что было до фикса.
+    #
+    # Fail-OPEN: при gh-ошибках helper возвращает 1, cron продолжается.
+    _g10b_result=""
+    if _g10b_result="$(issue_already_resolved "$number" 2>/dev/null || true)" \
+        && [ -n "$_g10b_result" ]; then
+        _g10b_kind="${_g10b_result%%	*}"
+        _g10b_pr="${_g10b_result##*	}"
+        log "🚨 issue #${number}: G10b issue-supersed — найден ${_g10b_kind} PR #${_g10b_pr} с явной ссылкой на этот issue — карточку НЕ создаём (ретро t_6c594d08, ADR-AF-0066)"
+
+        if [ "$DRY_RUN" != "true" ]; then
+            # Marker + state-hash. Hash учитывает issue, superseder-pr и kind,
+            # чтобы при смене superseder'а (новый merged PR) переписать коммент.
+            _g10b_hash="$(printf '%s\n' "${number}|${_g10b_kind}|${_g10b_pr}" \
+                | sha1sum | awk '{print substr($1,1,12)}')"
+            _g10b_marker_line="<!-- ${AGENT_FLOW_ISSUE_RESOLVED_MARKER}: ${_g10b_hash} -->"
+            _g10b_marker_jq="$(printf '%s' "$AGENT_FLOW_ISSUE_RESOLVED_MARKER" | sed 's/[][\\^$.*?+|(){}]/\\&/g')"
+
+            # Find existing G10b comment (last 100 comments by id+date+hash).
+            _g10b_existing="$(gh api "repos/${GH_REPO}/issues/${number}/comments?per_page=100" \
+                --jq "[.[] | select((.body // \"\") | test(\"\\Q${_g10b_marker_jq}\\E\"))] | last | \"\\(.id // empty)|\\(.created_at // empty)|\\(.body // \"\")\" | sub(\"\\Q${_g10b_marker_jq}\\E: \"; \"\") | sub(\" -->$\"; \"\")" 2>/dev/null || true)"
+            _g10b_existing_id="" _g10b_existing_hash="" _g10b_existing_iso=""
+            if [ -n "$_g10b_existing" ]; then
+                _g10b_existing_id="$(printf '%s' "$_g10b_existing" | awk -F'|' '{print $1}')"
+                _g10b_existing_iso="$(printf '%s' "$_g10b_existing" | awk -F'|' '{print $2}')"
+                _g10b_existing_hash="$(printf '%s' "$_g10b_existing" | awk -F'|' '{print $3}')"
+            fi
+
+            _g10b_action="new"
+            if [ -n "$_g10b_existing_id" ] && [ "$_g10b_existing_hash" = "$_g10b_hash" ]; then
+                _g10b_action="skip"
+                log "G10b dedup: issue #${number} — state-hash совпадает (${_g10b_hash}), skip"
+            elif [ -n "$_g10b_existing_id" ] && [ "$_g10b_existing_hash" != "$_g10b_hash" ]; then
+                _g10b_now="$(date -u +%s)"
+                _g10b_cutoff=$((_g10b_now - AGENT_FLOW_ISSUE_RESOLVED_DEDUP_HOURS * 3600))
+                _g10b_old_epoch=0
+                [ -n "$_g10b_existing_iso" ] && _g10b_old_epoch="$(date -u -d "$_g10b_existing_iso" +%s 2>/dev/null || echo 0)"
+                if [ "${_g10b_old_epoch:-0}" -ge "${_g10b_cutoff:-0}" ] 2>/dev/null; then
+                    _g10b_action="rate-limit-skip"
+                    log "G10b dedup: issue #${number} — state изменился, последний G10b-коммент < ${AGENT_FLOW_ISSUE_RESOLVED_DEDUP_HOURS}h назад — rate-limit skip"
+                else
+                    _g10b_action="edit"
+                    log "G10b dedup: issue #${number} — state изменился (${_g10b_existing_hash}→${_g10b_hash}), edit existing comment #${_g10b_existing_id}"
+                fi
+            fi
+
+            _g10b_full="${_g10b_marker_line}
+🚨 **agent-flow-triage: G10b issue-supersed-skip (ретро t_6c594d08, ADR-AF-0066)**
+
+Triage **НЕ создал** kanban-карточку для этого issue — уже существует **${_g10b_kind}** PR (\\`#${_g10b_pr}\\`), у которого в title/body есть явная ссылка на этот issue (closes/fixes/resolves #${number} или \\`#${number}\\` standalone). Это типичный race-scenario: параллельный worker влил реализацию через umbrella-merge (другой PR), а этот issue получил дублирующую ветку.
+
+**Почему так:** per-branch guards (G5/G6b/G9b) не ловят cross-branch race, G10a ловит только file-overlap. Новый G10b ловит **issue-supersed** по signal-у \`#${number}\` / \`closes #${number}\` в title/body другого PR.
+
+**Что делать (товарищ Шифу):**
+1. Если оба PR (${_g10b_kind} #${_g10b_pr} И новый, который пытался создать triage) несут валидный фикс — закрыть этот issue как дубликат PR #${_g10b_pr}, ИЛИ
+2. Если этот issue про ДРУГОЙ фикс (superseder PR касается другой части) — переформулировать title/body так, чтобы \`#${number}\` не совпадал с уже существующим PR (например, вынести ссылку на issue в \`<details>\`-секцию без ключевых слов closes/fixes/refs), тогда G10b не сматчит.
+3. Если нужно всё-таки форсировать новую карточку (race-window сработал ложно) — выставить label \`branch:custom-name\` ИЛИ \`AGENT_FLOW_ISSUE_RESOLVED_GUARD=false\` на этом тике.
+
+После того как Шифу закроет/переформулирует, повторный тик triage создаст карточку (если superseder больше не матчится)."
+
+            case "$_g10b_action" in
+                skip|rate-limit-skip)
+                    : # no-op
+                    ;;
+                edit)
+                    # Получить текущий body для PATCH (GitHub API требует full body).
+                    # Для простоты — DELETE existing + POST new (оба POST = 1 RTT
+                    # на GET + 1 на DELETE + 1 на POST = 3, что в пределах
+                    # G10a idem-budget).
+                    gh api -X DELETE "repos/${GH_REPO}/issues/comments/${_g10b_existing_id}" >/dev/null 2>&1 || true
+                    gh issue comment "$number" --repo "$GH_REPO" --body "$_g10b_full" >/dev/null 2>&1 || true
+                    ;;
+                new)
+                    gh issue comment "$number" --repo "$GH_REPO" --body "$_g10b_full" >/dev/null 2>&1 || true
+                    ;;
+            esac
+            gh issue edit "$number" --repo "$GH_REPO" --add-label "agent-flow-error" >/dev/null 2>&1 || true
+        fi
         skipped=$((skipped+1)); continue
     fi
 
