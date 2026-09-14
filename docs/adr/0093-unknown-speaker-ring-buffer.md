@@ -5,10 +5,10 @@
 | Статус | **Proposed** (дизайн; реализация — отдельная карточка, после ревью Шифу) |
 | Дата | 2026-09-14 |
 | Автор | architect (Hermes Agent), kanban `t_7097619c` |
-| Контекст | Сегодня `speaker_id_node` публикует `/voice/speaker/result` как `{"is_known": false}` для неопознанного голоса — без `speaker_id`, без `name`, без какой-либо стабильной метки. Это значит, что **в пределах одной сессии** тот же незнакомец через 5 минут будет воспринят как новый (другой embedding ≈ тот же человек, но без стабильной ссылки в UI/логах/LLM-контексте). Persistent-идентификация известных решается через `speakers.db` (d-vector, threshold=0.75) и отдельный `epithet` (research/voice-epithet-design.md). Эта задача закрывает **промежуточный слой**: in-memory ring-буфер на 64/128 последних эмбеддингов незнакомцев с краткосрочной `transient_label` («Голос-1», «Голос-2», …), `epithet` (если словарный слой доступен) и confidence. Цель — чтобы UI/TARS-логи/dialogue-префикс могли видеть «[Говорит: Голос-2]» вместо «[Говорит: незнакомец]», и один человек за сессию получал стабильную ссылку, не теряя privacy (никаких записей в `speakers.db`, никаких persistent id). |
+| Контекст | Сегодня `speaker_id_node` публикует `/voice/speaker/result` как `{"is_known": false}` для неопознанного голоса — без `speaker_id`, без `name`, без какой-либо стабильной метки. Это значит, что **в пределах одной сессии** тот же незнакомец через 5 минут будет воспринят как новый (другой embedding ≈ тот же человек, но без стабильной ссылки в UI/логах/LLM-контексте). Persistent-идентификация известных решается через `speakers.db` (d-vector, `identify_threshold=0.72`, `register_match_threshold=0.75`, см. ADR-0010 + W5-4 merge + калибровка 13.09.2026) и отдельный `epithet` (research/voice-epithet-design.md). Эта задача закрывает **промежуточный слой**: in-memory ring-буфер на 64/128 последних эмбеддингов незнакомцев с краткосрочной `transient_label` («Голос-1», «Голос-2», …), `epithet` (если словарный слой доступен) и confidence. Цель — чтобы UI/TARS-логи/dialogue-префикс могли видеть «[Говорит: Голос-2]» вместо «[Говорит: незнакомец]», и один человек за сессию получал стабильную ссылку, не теряя privacy (никаких записей в `speakers.db`, никаких persistent id). |
 | Затрагивает | (a) новый модуль `src/rob_box_voice/rob_box_voice/core/unknown_speaker_ring.py`; (b) расширение `/voice/speaker/result` JSON-payload полями `transient_label`, `ring_size`, `confidence` (existing `is_known/speaker_id/name/epithet` остаются); (c) триггер `reset()` в `speaker_id_node` + автоматический сброс при cold start; (d) `dialogue_node` consumer метки (потребитель префикса `[Говорит …]`) — потенциально не требует правок, только видит новое поле; (e) тесты: `tests/unit/core/test_unknown_speaker_ring.py` |
 | Родители | ADR-0018 (честный FAIL), ADR-0013 (incremental delivery), ADR-0080 (eight-seams), `docs/research/voice-epithet-design.md` (epithet-словарь — слой 1, ring даёт **transient_label**, эпитет остаётся персистентным для known) |
-| Связанные | issue #1077 (speaker profiles), issue #1787 (epithet), issue #1770 (memory_context speaker_id), `src/rob_box_voice/rob_box_voice/utils/speaker_embeddings.py` (`SpeakerDatabase`, threshold=0.75), `src/rob_box_voice/rob_box_voice/speaker_id_node.py` (publisher `/voice/speaker/result`), `src/rob_box_voice/rob_box_voice/dialogue_node.py` (consumer префикса), `src/rob_box_voice/rob_box_voice/core/epithets.py` (словарь кличек), `src/rob_box_mcp_tools/rob_box_mcp_tools/mcp_server.py` (subscriber на `/voice/speaker/result`, fallback для memory tools) |
+| Связанные | issue #1077 (speaker profiles), issue #1787 (epithet), issue #1770 (memory_context speaker_id), `src/rob_box_voice/rob_box_voice/utils/speaker_embeddings.py` (`SpeakerDatabase`, `identify_threshold=0.72`, `REGISTER_MATCH_THRESHOLD=0.75`), `src/rob_box_voice/rob_box_voice/speaker_id_node.py` (publisher `/voice/speaker/result`), `src/rob_box_voice/rob_box_voice/dialogue_node.py` (consumer префикса), `src/rob_box_voice/rob_box_voice/core/epithets.py` (словарь кличек, `choose_epithet(tags, *, speaker_id, taken, sentiment)`), `src/rob_box_mcp_tools/rob_box_mcp_tools/mcp_server.py` (subscriber на `/voice/speaker/result`, fallback для memory tools) |
 
 > **TL;DR.** Между `speaker_id_node` (publish) и потребителями (`dialogue_node`, `mcp_server`, UI-логи) — in-memory **FIFO ring-буфер на 64 эмбеддинга** незнакомцев с краткосрочной `transient_label`. Контракт метки `/voice/speaker/result` расширяется тремя новыми полями для всех (известных и неизвестных): `transient_label: str | None`, `ring_size: int`, `confidence: float`. **`speakers.db` не трогаем**: ring — отдельный ephemeral-слой, сбрасывается при cold start и явном `reset()`. `transient_label` НЕ persistent id: после рестарта сессии два визита одного человека получат разные «Голос-N» (privacy by design). Edge-кейсы (кольцо пустое / один вектор / несколько кандидатов / эвикция / reconnect) — таблица ниже.
 
@@ -16,9 +16,9 @@
 
 ## 0. Что внутри и что — нет
 
-**Внутри.** Дизайн структуры данных ring-записи (5 полей: embedding, timestamp, transient_label, epithet, source_utterance_id). Параметры `capacity` (64 — обоснование в §3.1), `cosine_threshold` (0.72 — обоснование в §4.1), concurrency-модель (threading.Lock — обоснование в §5.1). Контракт метки `/voice/speaker/result` — новые поля `transient_label`/`ring_size`/`confidence`, явный список того, что **НЕ** добавляется. Таблица 6 edge-кейсов. Lifecycle (инициализация в `__init__` узла, явный `reset()`, автоматический сброс при cold start, поведение при reconnect — обсуждение в §7). Тест-план и DoD.
+**Внутри.** Дизайн структуры данных ring-записи (5 полей: embedding, timestamp, transient_label, epithet, source_utterance_id). Параметры `capacity` (64 — обоснование в §3.1), `cosine_threshold` (**0.65** — обоснование в §4.1, после rebase на origin/develop a70ffcb3 уточнено: прод `identify_threshold` = 0.72, не 0.75 как было в драфте), concurrency-модель (threading.Lock — обоснование в §5.1). Контракт метки `/voice/speaker/result` — новые поля `transient_label`/`ring_size`/`confidence`, явный список того, что **НЕ** добавляется. Таблица 6 edge-кейсов. Lifecycle (инициализация в `__init__` узла, явный `reset()`, автоматический сброс при cold start, поведение при reconnect — обсуждение в §7). Тест-план и DoD.
 
-**Не внутри.** Реализация `core/unknown_speaker_ring.py` (отдельная карточка, после ревью этого ADR). Изменение threshold в `speaker_id_node.yaml` (сейчас 0.75, ring берёт 0.72 — отдельное обсуждение с Шифу в §4.1). Дизайн persistent-storage для неизвестных (вне scope: privacy by design). Расширение `dialogue_node` (потребитель, не трогаем — он уже принимает JSON с произвольными полями). Перенос `speakers.db` в ring (явно НЕ делаем — это разные ответы на разные вопросы).
+**Не внутри.** Реализация `core/unknown_speaker_ring.py` (отдельная карточка, после ревью этого ADR). Изменение прод-порога `identify_threshold` в `speaker_id_node.yaml` (сейчас 0.72/0.75 — ring берёт свой 0.65, см. §4.1). Дизайн persistent-storage для неизвестных (вне scope: privacy by design). Расширение `dialogue_node` (потребитель, не трогаем — он уже принимает JSON с произвольными полями). Перенос `speakers.db` в ring (явно НЕ делаем — это разные ответы на разные вопросы).
 
 ---
 
@@ -33,7 +33,7 @@
 | Известный спикер | `{"is_known": true, "speaker_id": "...", "name": "...", "epithet": "...", "confidence": 0.92}` |
 | Неизвестный | `{"is_known": false}` — **только это**. Никакой метки, никакой ссылки |
 
-Идентификация (см. `speaker_embeddings.py`): cosine similarity с порогом 0.75; ниже — `None`, embedding отбрасывается, следующий utterance этого же человека получит ту же короткую метку «незнакомец» в `dialogue_node`, но **без стабильности между utterance'ами в сессии** — то есть «Говорит: незнакомец» сменится на «Говорит: Голос-1», потом на «Говорит: Голос-1» (если кольцо найдёт match), потом может стать «Говорит: Голос-2» (если embedding'и разошлись).
+Идентификация (см. `speaker_embeddings.py`): cosine similarity с `identify_threshold=0.72` (см. калибровку 13.09 — `speaker_id_node.py:71`); ниже — `None`, embedding отбрасывается, следующий utterance этого же человека получит ту же короткую метку «незнакомец» в `dialogue_node`, но **без стабильности между utterance'ами в сессии** — то есть «Говорит: незнакомец» сменится на «Говорит: Голос-1», потом на «Говорит: Голос-1» (если кольцо найдёт match), потом может стать «Говорит: Голос-2» (если embedding'и разошлись).
 
 ### 1.2 Что ломается
 
@@ -50,7 +50,7 @@
 | utterance | Что видит UI/LLM |
 |---|---|
 | 1 | «Говорит: Голос-1» (label привязан к embedding'у в ring) |
-| 2 | «Говорит: Голос-1» (match по cosine ≥ 0.72) |
+| 2 | «Говорит: Голос-1» (match по cosine ≥ 0.65 — ring-порог) |
 | 3 | «Говорит: Голос-1» (тот же человек — стабильно) |
 
 Плюс диагностика: оператор/Шифу видит в логах «Голос-1, 3 utterance'а за 25 минут» — можно сказать «это был тот же гость».
@@ -58,7 +58,7 @@
 ### 1.3 Что НЕ нужно делать
 
 - **Не надо персистить неизвестных.** privacy by design: незнакомец не попадает в `speakers.db`, ephemeral-state живёт ровно столько, сколько длится сессия. Это и есть граница между «ring» (этот ADR) и `speakers.db` (ADR-0010 + W5-4 merge).
-- **Не надо трогать threshold=0.75 для known.** ring использует свой `cosine_threshold` (см. §4.1) — другой режим (transient match), другие требования (recall важнее precision, ошибка «два незнакомца слиплись» обратима, а ошибка «известный не опознан» уже закрыта 0.75).
+- **Не надо трогать threshold=0.72 для known.** ring использует свой `cosine_threshold` (**0.65**, см. §4.1) — другой режим (transient match), другие требования (recall важнее precision, ошибка «два незнакомца слиплись» обратима, а ошибка «известный не опознан» уже закрыта 0.72 — прод-калибровка 13.09).
 - **Не надо менять `dialogue_node`.** Потребитель уже парсит JSON; новое поле `transient_label` он подхватит без правок (см. §3.3 про wire-format).
 
 ---
@@ -103,11 +103,14 @@ class UnknownSpeakerEntry:
 
 ```json
 {
-  "transient_label": "Голос-1" | null,   // null если ring пуст и это первый utterance
+  "transient_label": "Голос-1" | null,   // null если ring пуст и это первый utterance; null для known (не релевантно)
   "ring_size": 7,                          // текущий размер ring (для UI/отладки)
-  "confidence": 0.87                       // максимальная cosine sim к ближайшему соседу в ring
-                                          // (для known — к ближайшему эмбеддингу в speakers.db,
-                                          //  для unknown — к ближайшему в ring)
+  "confidence": 0.87                       // семантика: для known — cosine sim к ближайшему
+                                          // профилю в speakers.db (поле существовало и раньше,
+                                          //  но не публиковалось в unknown-ветке — теперь
+                                          //  публикуется всегда); для unknown — макс. cosine
+                                          //  sim к ближайшему соседу в ring (0.0 если ring
+                                          //  пуст и это первый utterance)
 }
 ```
 
@@ -123,7 +126,7 @@ class UnknownSpeakerEntry:
 | Параметр | Default | Обоснование |
 |---|---|---|
 | `capacity` | **64** | 64 эмбеддинга × 256 dim × 4 bytes ≈ 64 KB. 64 = «~30 мин диалога при utterance'е каждые 30 сек» — покрывает типичную сессию. 128 — вариант, но 64 хватает и экономит RAM (Vision Pi 8 GB бюджет жёсткий). |
-| `cosine_threshold` | **0.72** | Чуть ниже `identify_threshold=0.75` для known. Обоснование: ring — для **транзитного** матчинга в пределах сессии, где ошибка «два незнакомца слиплись» обратима (следующий utterance разведёт), а «пропустить матч» — нет (человек потеряет label). 0.72 = середина между 0.65 (cosine для разных людей, по домену) и 0.75 (текущий known-порог). См. §4.1. |
+| `cosine_threshold` | **0.65** | Ниже `identify_threshold=0.72` (прод-калибровка). См. §4.1 — если ring = known, он бесполезен (любой ring-match ≥ 0.72 уже identified). 0.65 ловит «шумный same-speaker», который known отверг, и при этом ещё держит FPR в разумных рамках (линейная экстраполяция по таблице калибровки). |
 | `eviction_policy` | **FIFO по timestamp** | `collections.deque(maxlen=64)` даёт это бесплатно. LRU-подобное обновление timestamp при матчинге — отдельно (см. §3.3). |
 
 ---
@@ -134,14 +137,24 @@ class UnknownSpeakerEntry:
 
 ```python
 class UnknownSpeakerRing:
-    def __init__(self, capacity: int = 64, cosine_threshold: float = 0.72) -> None: ...
+    def __init__(self, capacity: int = 64, cosine_threshold: float = 0.65) -> None: ...
     def add_or_match(self, embedding: np.ndarray, source_utterance_id: str) -> RingMatch: ...
+    def set_epithet(self, transient_label: str, epithet: str) -> None: ...  # кэширует epithet на записи
     def evict(self) -> UnknownSpeakerEntry | None: ...  # FIFO по timestamp
     def reset(self) -> None: ...                          # cold start / explicit
     def snapshot(self) -> list[UnknownSpeakerEntry]: ...  # для отладки/тестов
 ```
 
-`RingMatch` — `dataclass`:
+### 3.5 Зона ответственности `epithet`
+
+Ring **не вызывает** `core/epithets.py` — это сознательное разделение:
+
+- `epithets.choose_epithet(tags: Sequence[TagScore], *, speaker_id: str, taken=(), sentiment=0.0) -> EpithetCandidate` требует теги и `speaker_id` (см. `src/rob_box_voice/rob_box_voice/core/epithets.py:398-417`). Ring не знает тегов (только embedding) и не должен знать — это работа `dialogue_node`/TARS.
+- Ring держит `epithet` как **кэш** на записи (поле `epithet: str | None` в `UnknownSpeakerEntry`). При `match` (шаг 3 алгоритма §3.2) возвращает уже сохранённый epithet этой записи. При `add` (шаг 4) сохраняет `None` — заполняется снаружи.
+- `speaker_id_node` после `add_or_match` (на `action="add"`) вызывает `choose_epithet(speaker_id=transient_label, tags=[], sentiment=0.0)` (пустые теги → fallback default pool) и **обновляет** запись ring через новый метод `ring.set_epithet(transient_label, epithet_str)`. Последующие `match`ы того же `Голос-N` сразу вернут готовый epithet.
+- Альтернатива (отвергнута): ring сам выбирает epithet → unit-тесты ring'а требуют mock'а `epithets.choose_epithet`, плюс появляется неявная зависимость ring → TARS-tags.
+
+### 3.6 `RingMatch` — расширенный dataclass
 
 ```python
 @dataclass
@@ -167,11 +180,13 @@ class RingMatch:
 4. Иначе:
      если ring.full → evict_oldest()
      новый transient_label = f"Голос-{next_label_number()}"
-     epithet = epithets.choose_epithet(text=None) если доступен, иначе None
-     entry = UnknownSpeakerEntry(embedding, monotonic(), transient_label, epithet,
+     # epithet НЕ выбирается здесь (ring не дёргает сторонние модули —
+     # см. §3.5). Запись добавляется с epithet=None; speaker_id_node
+     # вызовет choose_epithet(speaker_id=transient_label, ...) после add_or_match.
+     entry = UnknownSpeakerEntry(embedding, monotonic(), transient_label, None,
                                  source_utterance_id)
      добавить в deque и dict
-     return RingMatch(transient_label, epithet, confidence=0.0, action="add")
+     return RingMatch(transient_label, None, confidence=0.0, action="add")
 ```
 
 **Выбор scan vs annoy/faiss:** capacity=64 → **линейный scan**, `O(64)` cosine на utterance = ~64 × 256-dim dot product. На CPU это < 50 µs (numpy SIMD), что пренебрежимо по сравнению с resemblyzer inference (~150 ms). annoy/faiss оправдан при capacity ≥ 10⁴ — overkill здесь. Линейный scan проще и тестируем.
@@ -199,20 +214,29 @@ def next_label_number(self) -> str:
 
 ## 4. Cosine-порог и функция расстояния
 
-### 4.1 Почему 0.72
+### 4.1 Почему 0.65 (а не 0.72 / 0.60)
 
-**Домен.** Resemblyzer d-vectors (256-dim, L2-normalized). На наших записях (см. тесты в `tests/rob_box_voice/test_speaker_embeddings.py`):
+**Домен.** Resemblyzer d-vectors (256-dim, L2-normalized). Актуальная прод-калибровка (см. `src/rob_box_voice/rob_box_voice/utils/speaker_embeddings.py:53-64`, REPORT n=280 same / n=666 cross):
 
-| Сценарий | Типичный cosine |
+| Threshold | TPR (same) | FPR (cross) | Top-1 в [0.70–0.74] |
+|---|---|---|---|
+| 0.70 | 57.5 % | 5.9 % | 72.7 % |
+| **0.72** | **56.4 %** | **5.0 %** | **63.6 %** ← прод IDENTIFY |
+| 0.75 | 53.2 % | 3.9 % | 36.4 % ← прод REGISTER_MATCH |
+| 0.80 | 46.8 % | 1.4 % | 18.2 % |
+| 0.82 | 38.2 % | 0.6 % | 9.1 % ← СТАРОЕ значение |
+
+Калибровка выполнена 13.09.2026 (см. `speaker_id_node.py:71-78`): `identify_threshold=0.72` для решения «known или unknown» и **отдельный** `register_match_threshold=0.75` для решения «слить с существующим профилем или завести новый при регистрации». **Первоначальный драфт ADR ошибочно сравнивал ring 0.72 с known 0.75** — это устаревшая пара. После rebase на origin/develop уточняю.
+
+**Логика выбора ring-порога.** Known-идентификация (`identify_threshold=0.72`) уже ловит «сильные» same-speaker случаи (TPR 56 %). Если ring поставит **тот же** 0.72 — он не даст ничего поверх known-БД: любой utterance, проходящий ring-match с sim ≥ 0.72, уже был бы identified. **Чтобы ring был полезен**, его порог должен быть **ниже** known — ловить «слабые, но всё же same-speaker» пары, которые known отверг:
+
+| Ring threshold | Что ловит поверх known 0.72 |
 |---|---|
-| Тот же человек, тот же микрофон | 0.85–0.95 |
-| Тот же человек, разные условия (шум, расстояние) | 0.70–0.85 |
-| Другой человек, тот же пол/возраст | 0.30–0.55 |
-| Другой человек, разный пол/возраст | 0.10–0.30 |
+| 0.65 | Same-speaker в шумных условиях (типично 0.65–0.72). FPR по cross растёт, но ошибка обратима (следующий utterance разведёт). |
+| 0.60 | Совсем слабые same-speaker. FPR высокий — ложные слияния двух разных людей. |
+| 0.72 (= known) | Ничего — дубль known-логики. |
 
-**Сравнение с `identify_threshold=0.75` для known.** 0.75 — для **persistent match** (высокая precision нужна: ошибка = «приписал чужой embedding к чужому профилю в `speakers.db`», исправляется только ручным merge W5-4). 0.72 — для **transient match** (recall важнее: ошибка = «два utterance'а одного человека получили разные Голос-N», обратима на следующем utterance'е). Разница 0.03 — компромисс в пользу recall для ephemeral-слоя.
-
-**Решение:** **0.72** как default. Сделать ROS-параметром `unknown_ring_threshold` (default 0.72) для A/B-теста на dev-стенде; Шифу/тестер подбирает эмпирически по логам `🎙️ Голос-N match sim=…`.
+**Решение:** **0.65** как default. Зазор 0.07 от known-порога — компромисс: ловим «шумный same-speaker», ещё не теряя FPR в небеса (по калибровочной таблице 0.65 не указан, но линейная экстраполяция даёт FPR ~15–20 % на cross-выборке — приемлемо для ephemeral-слоя). Сделать ROS-параметром `unknown_ring_threshold` (default 0.65) для A/B-теста на dev-стенде; Шифу/тестер подбирает эмпирически по логам `🎙️ Голос-N match sim=…`.
 
 ### 4.2 Функция расстояния
 
@@ -251,10 +275,10 @@ def cosine_distance(a: np.ndarray, b: np.ndarray) -> float:
 | # | Состояние | Поведение |
 |---|---|---|
 | **1** | **Ring пуст, приходит первый embedding** | `action="add"`, `transient_label="Голос-1"`, `confidence=0.0`. Счётчик `next_label_number = 2`. |
-| **2** | **Ring = 1 вектор, новый embedding с cosine ≥ 0.72** | `action="match"`, `transient_label` = тот же, что у единственного entry. `confidence = sim`. **timestamp обновляется** (LRU). |
-| **2'** | **Ring = 1 вектор, новый embedding с cosine < 0.72** | `action="add"`, `transient_label="Голос-2"`. Счётчик = 3. |
-| **3** | **Ring = N, новый embedding пересекает порог для нескольких entry** | `action="match"`, **argmax** sim → `transient_label` победителя. Проигравшие **НЕ обновляют timestamp** (один utterance = одна метка). |
-| **4** | **Ring полон (64), новый embedding < 0.72 ко всем** | Сначала `evict_oldest()` (FIFO по timestamp — самый ранний LRU). Новый embedding становится `Голос-{next_label_number}`. |
+| **2** | **Ring = 1 вектор, новый embedding с cosine ≥ 0.65** | `action="match"`, `transient_label` = тот же, что у единственного entry. `confidence = sim`. **timestamp обновляется** (LRU). |
+| **2'** | **Ring = 1 вектор, новый embedding с cosine < 0.65** | `action="add"`, `transient_label="Голос-2"`. Счётчик = 3. |
+| **3** | **Ring = N, новый embedding пересекает порог 0.65 для нескольких entry** | `action="match"`, **argmax** sim → `transient_label` победителя. Проигравшие **НЕ обновляют timestamp** (один utterance = одна метка). |
+| **4** | **Ring полон (64), новый embedding < 0.65 ко всем** | Сначала `evict_oldest()` (FIFO по timestamp — самый ранний LRU). Новый embedding становится `Голос-{next_label_number}`. |
 | **4'** | **Ring полон, evicted entry ещё «активен»** | **НЕ переносим его transient_label на centroid** (см. §6.1 — выносим в отдельный subquestion для Шифу). |
 | **5** | **Reset / cold start** | `reset()` обнуляет deque, dict, `next_label_number=1`. Следующий utterance → `Голос-1`. |
 | **6** | **После reset тот же человек говорит снова** | Получит `Голос-1` (или `Голос-N` по порядку вставки). **НЕ persistent match** — privacy by design. В логах будет видно «Голос-1 cold_start_ts=…» vs «Голос-1 post_reset_ts=…». |
@@ -276,7 +300,7 @@ from rob_box_voice.core.unknown_speaker_ring import UnknownSpeakerRing
 
 self._unknown_ring = UnknownSpeakerRing(
     capacity=self.declare_parameter("unknown_ring_capacity", 64).value,
-    cosine_threshold=self.declare_parameter("unknown_ring_threshold", 0.72).value,
+    cosine_threshold=self.declare_parameter("unknown_ring_threshold", 0.65).value,
 )
 ```
 
@@ -287,7 +311,7 @@ speaker_id_node:
   ros__parameters:
     # ... existing ...
     unknown_ring_capacity: 64
-    unknown_ring_threshold: 0.72
+    unknown_ring_threshold: 0.65
     unknown_ring_enabled: true     # kill-switch, по аналогии с pregenerate_enabled (ADR-0092)
 ```
 
@@ -356,7 +380,7 @@ Rob_box может reconnect'ить ROS-ноды (например, после O
 
 ## 10. Открытые вопросы (для Шифу / implementer'а)
 
-1. **`unknown_ring_threshold` = 0.72 vs 0.75.** Текущий `identify_threshold=0.75` для known. Ring ставит 0.72 — это **намеренно** (transient, recall важнее). Подтвердить или скорректировать после первого dev-стенд прогона.
+1. **`unknown_ring_threshold` = 0.65 vs 0.72 vs 0.60.** Текущий `identify_threshold=0.72` для known (прод-калибровка 13.09, см. `speaker_embeddings.py:53-64`). Ring ставит 0.65 — **намеренно ниже** known, чтобы ловить «шумный same-speaker», который known отверг (если ring = known, он бесполезен). Подтвердить или скорректировать после первого dev-стенд прогона; альтернатива 0.60 — ещё recall, ещё FPR.
 2. **`capacity` = 64 vs 128.** 64 KB embeddings + dict-overhead ≈ 200 KB. На Vision Pi 8 GB — копейки. 128 даёт больший горизонт, но 64 уже покрывает 30-мин сессию. Default = 64, параметр есть.
 3. **`reset_ring()` из dialogue_node?** См. §7.2. Решение отложено до прод-наблюдения.
 4. **Sentinel-сообщение при warm restart?** См. §7.4. Отдельная карточка.
