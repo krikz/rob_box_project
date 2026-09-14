@@ -86,12 +86,18 @@ if [ "${HAILO_ENABLED}" = "true" ]; then
 fi
 
 # ---------- launch ROS 2 node ----------
-exec ros2 run rob_box_perception vision_hailo \
-    --ros-args \
-    -p hailo_enabled:=${HAILO_ENABLED} \
-    -p hef_path:="${HEF_PATH}" \
-    -p stub_period_sec:=${STUB_PERIOD_SEC} \
-    -p confidence_threshold:=${CONFIDENCE_THRESHOLD} \
-    -p input_topic:="${INPUT_TOPIC}" \
-    -p output_topic:="${OUTPUT_TOPIC}" \
+# Собираем --ros-args массивом: пустой hef_path нельзя передавать как
+# `-p hef_path:=` — rcl падает "Couldn't parse parameter override rule".
+ROS_ARGS=(
+    -p hailo_enabled:=${HAILO_ENABLED}
+    -p stub_period_sec:=${STUB_PERIOD_SEC}
+    -p confidence_threshold:=${CONFIDENCE_THRESHOLD}
+    -p input_topic:="${INPUT_TOPIC}"
+    -p output_topic:="${OUTPUT_TOPIC}"
     -p publish_when_no_input:=true
+)
+if [ -n "${HEF_PATH}" ]; then
+    ROS_ARGS+=( -p "hef_path:=${HEF_PATH}" )
+fi
+
+exec ros2 run rob_box_perception vision_hailo --ros-args "${ROS_ARGS[@]}"
