@@ -1,5 +1,15 @@
 # AI HAT+ 26 TOPS — Анализ апгрейда Vision Pi
 
+> **⚠️ DEPRECATED 2026-09-14 — Заменён ADR-0089.**
+>
+> Этот документ **устарел** и не отражает текущий архитектурный контекст rob_box_project. С момента написания (2026-02-19) прошло 1422+ коммита за 2 недели (без единого касающегося AI HAT+), появились avatar-supervisor (ADR-0028), WebXR-Quest (ADR-0027/0086), MCP-bridge, MiniMax↔deepseek↔ollama провайдер-чейн, TARS cockpit (ADR-0074/0076), wake gate (ADR-0070), Phase 6 v2 / W11 рефакторинг perception (`context_aggregator_node.py` вместо архивного `vision_stub_node`).
+>
+> **Актуальный документ**: [`docs/adr/0089-ai-hat-plus-deployment.md`](../../adr/0089-ai-hat-plus-deployment.md) (ADR-0089).
+>
+> Документ сохраняется как исторический артефакт (явное решение шисюна). Любые правки по AI HAT+ идут в ADR-0089, не сюда.
+>
+> — devops worker, kanban-card t_b9b6cf73 (issue #2349), 2026-09-14.
+
 > **Тип документа**: PM Analysis / Upgrade Proposal  
 > **Автор**: Product Manager Agent  
 > **Дата**: 2026-02-19  
