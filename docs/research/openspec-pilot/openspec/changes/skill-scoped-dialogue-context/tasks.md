@@ -181,24 +181,19 @@ LLM читает дословно.
       скилла `voice-tts`, тест перенацеливается туда.
       **Здесь же** повторить сверку surface `openai-agents` на версии из
       образа (`>=0.19.4`) — см. `design.md` §Decisions.4, оговорка.
-- [~] 6.2 ЧАСТИЧНО. Удалены мёртвые `status_skill_prompt.txt` (содержание
-      перенесено в `voice-tts.txt`), `memory_skill_prompt.txt`,
-      `navigation_skill_prompt.txt`, `faq_skill_prompt.txt`.
-      **`music_skill_prompt.txt` (80 КБ) НЕ удалён — задача оказалась
-      шире, чем в неё заложено.** В рантайм он действительно не грузится,
-      но на нём висят пять контрактных тестов: `test_generate_music_is_gone`,
-      `test_known_melody_library_1810`, `test_music_runtime_assets`,
-      `test_synth_palette_is_preloaded`, `test_issue_988_prompt_anti_duplicate`.
-      Они проверяют настоящие инварианты (палитра синтов, библиотека
-      мелодий, runtime-ассеты), которых нет ни в каталоге, ни в кратком
-      `composer.txt`. Удалить файл = молча выкинуть эти проверки. Нужна
-      отдельная карточка: решить, куда переезжают инварианты.
-      **Заготовка карточки готова — `followups.md`, карточка A.** Там же
-      уточнён список: пришпиливают файл ШЕСТЬ тестовых файлов, а не пять
-      (добавились `test_issue_1392_v3_tool_order` и
-      `test_prompt_animation_enum`; `test_issue_988_prompt_anti_duplicate`
-      после задачи 6.3 смотрит на мастер-промпт). Issue за товарищем Шифу:
-      `hermes` в окружении воркера нет, публичные issue воркер не заводит.
+- [x] 6.2 Удалены мёртвые `status_skill_prompt.txt` (содержание перенесено
+      в `voice-tts.txt`), `memory_skill_prompt.txt`, `navigation_skill_prompt.txt`,
+      `faq_skill_prompt.txt`, а также `music_skill_prompt.txt` (issue #2439).
+      Живой контент последнего переехал: рецепты Imperial March /
+      Stranger Things / библиотека русских-детских песен и HONESTY RULE —
+      в `composer.txt`, DJ-инструкции переходов — в блок
+      `<<<SKILL-MOVE dj>>>` мастер-промпта, enum `speak_text.animation` —
+      только в мастер-промпт, совет по `lead_synth` — в схему
+      `ComposeMusicTool`, `search_web` добавлен в скилл `composer`.
+      Шесть тестовых файлов перенацелены на живые источники или обоснованно
+      удалены (`test_issue_1392_v3_tool_order.py`); `test_no_orphan_fragments`
+      ужесточён (освобождение для `*_skill_prompt.txt` снято). Карточка A из
+      `followups.md` закрыта.
 - [x] 6.3 Удалить `prompts/compositor_prompt.txt` (15 КБ, ссылается на
       удалённые фасады `handle_music`/`handle_navigation`) вместе с тремя
       сторожащими его тестами (`test_compositor_prompt.py`,

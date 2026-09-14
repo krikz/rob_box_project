@@ -10,6 +10,17 @@ issue, ни kanban-карточка отсюда автоматически не
 
 ## Карточка A — куда переезжают инварианты `music_skill_prompt.txt`
 
+> **Статус: решено** (issue #2439). `music_skill_prompt.txt` удалён;
+> живой контент переехал: рецепты Imperial March / Stranger Things /
+> библиотека русских-детских песен и HONESTY RULE — в `composer.txt`
+> (скилл `composer`), DJ-инструкции переходов — в блок
+> `<<<SKILL-MOVE dj>>>` мастер-промпта, enum `speak_text.animation` — только
+> в мастер-промпте, совет по `lead_synth` — в схему `ComposeMusicTool`.
+> `search_web` добавлен в скилл `composer` (каталог перегенерирован), шесть
+> тестовых файлов перенацелены на живые источники или обоснованно удалены
+> (`test_issue_1392_v3_tool_order.py`), комментарий в `dialogue_node.py`
+> переписан, поле `_mcp_tool_names` удалено.
+
 **Откуда:** задача 6.2 change'а `skill-scoped-dialogue-context`, закрыта
 частично.
 

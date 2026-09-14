@@ -36,14 +36,30 @@ def _repo_root(start: Path) -> Path:
 
 
 REPO_ROOT = _repo_root(Path(__file__).resolve())
-MUSIC_SKILL_PROMPT = (
-    REPO_ROOT / "src" / "rob_box_voice" / "prompts" / "skills" / "music_skill_prompt.txt"
+COMPOSER_PROMPT = (
+    REPO_ROOT / "src" / "rob_box_voice" / "prompts" / "skills" / "composer.txt"
+)
+MASTER_PROMPT = (
+    REPO_ROOT / "src" / "rob_box_voice" / "prompts" / "master_prompt_compact.txt"
 )
 
 
 @pytest.fixture(scope="module")
 def prompt_text() -> str:
-    return MUSIC_SKILL_PROMPT.read_text(encoding="utf-8")
+    return COMPOSER_PROMPT.read_text(encoding="utf-8")
+
+
+def _master_dj_block() -> str:
+    """Извлечь блок ``<<<SKILL-MOVE dj>>>`` мастер-промпта.
+
+    DJ-инструкции после удаления мёртвого music_skill_prompt.txt живут в
+    мастер-промпте (блок, который при включённых скиллах приклеивается к
+    фрагменту dj через merge_skill_prompts).
+    """
+    content = MASTER_PROMPT.read_text(encoding="utf-8")
+    start = content.index("<<<SKILL-MOVE dj>>>")
+    end = content.index("<<<SKILL-MOVE-END>>>", start)
+    return content[start:end]
 
 
 #: Required real-world tunes (issue #1810 explicitly names these five).
@@ -192,9 +208,9 @@ def test_honesty_rule_present_and_forbids_silent_substitution(prompt_text: str) 
     assert "кузнечик" in section.lower()
 
 
-def test_search_web_is_documented_in_the_music_skill_prompt(prompt_text: str) -> None:
+def test_search_web_is_documented_in_the_composer_prompt(prompt_text: str) -> None:
     """Companion fix: search_web is a registered MCP tool (issue #1101) but
-    was never mentioned in music_skill_prompt.txt, so guard #1409 would
+    was never mentioned in the composer prompt, so guard #1409 would
     (correctly) flag it as an undocumented tool, and the model never
     considered it as a melody-lookup fallback. Both need it present here."""
     assert "search_web(" in prompt_text
@@ -203,30 +219,25 @@ def test_search_web_is_documented_in_the_music_skill_prompt(prompt_text: str) ->
     )
 
 
-def test_dj_section_uses_compose_music_not_handwritten_code(prompt_text: str) -> None:
-    """Issue #1811: the static DJ-mode instructions at the top of the
-    prompt (separate from the dynamic per-transition prompt in dj_mode.py)
-    used to tell the model to write raw execute_music_code every transition
-    with hand-managed pattern counts and amp sums. That's now the
-    arranger's job."""
-    dj_start = prompt_text.index("DJ MODE — RULE #1")
-    dj_end = prompt_text.index("RENARDO CODE GOTCHAS") if "RENARDO CODE GOTCHAS" in prompt_text else dj_start + 3000
-    dj_section = prompt_text[dj_start:dj_end]
+def test_dj_section_uses_compose_music_not_handwritten_code() -> None:
+    """Issue #1811: DJ transitions go through compose_music, not raw
+    execute_music_code with hand-managed pattern counts and amp sums.
+    The canonical DJ instruction now lives in the master prompt's
+    ``<<<SKILL-MOVE dj>>>`` block (merged into the dj fragment at runtime)."""
+    dj_section = _master_dj_block()
 
     assert "compose_music" in dj_section
-    assert "STEP 1. compose_music()" in dj_section
+    assert "ГЕНЕРИРУЙ СВЕЖИЙ ТРЕК" in dj_section
 
     # Old hand-written-code-only instructions must not remain as the
     # primary DJ instruction.
-    assert "STEP 1. execute_music_code()" not in dj_section
+    assert "execute_music_code()" not in dj_section
 
 
-def test_dj_section_does_not_require_manual_pattern_amp_bookkeeping(prompt_text: str) -> None:
+def test_dj_section_does_not_require_manual_pattern_amp_bookkeeping() -> None:
     """Removed per issue #1811: the arranger + master filter own pattern
     counts and amp sums now, the model shouldn't compute them per transition."""
-    dj_start = prompt_text.index("DJ TRANSITIONS — RULE #2")
-    dj_end = prompt_text.index("RANDOMIZATION MANDATE")
-    dj_section = prompt_text[dj_start:dj_end]
+    dj_section = _master_dj_block()
 
     for stale in (
         "MAX 6 PATTERNS total: no more than 2-3 drums",
@@ -236,13 +247,11 @@ def test_dj_section_does_not_require_manual_pattern_amp_bookkeeping(prompt_text:
         assert stale not in dj_section, f"{stale!r} is a pre-#1811 hand-coded limit"
 
 
-def test_dj_section_mentions_new_compose_music_params(prompt_text: str) -> None:
+def test_dj_section_mentions_new_compose_music_params() -> None:
     """hats_sample/perc/perc_sample/swing are new compose_music params
     (#1805/#1806) especially useful for DJ variety — the prompt should
     point the model at them."""
-    dj_start = prompt_text.index("DJ TRANSITIONS — RULE #2")
-    dj_end = prompt_text.index("RUNTIME-VALIDATED synths")
-    dj_section = prompt_text[dj_start:dj_end]
+    dj_section = _master_dj_block()
 
     for param in ("hats_sample", "perc", "perc_sample", "swing"):
         assert param in dj_section, f"{param!r} missing from DJ transition guidance"

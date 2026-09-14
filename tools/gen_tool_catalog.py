@@ -420,6 +420,7 @@ SKILL_TOOLS: dict[str, tuple[str, ...]] = {
         "search_samples",
         "lookup_melody",
         "search_melody",
+        "search_web",
         "get_music_state",
         "stop_music",
     ),

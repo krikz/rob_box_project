@@ -20,7 +20,7 @@ FOXDOT_INIT_PATH = REPO_ROOT / "docker" / "vision" / "voice_assistant" / "foxdot
 START_VOICE_ASSISTANT_PATH = REPO_ROOT / "docker" / "vision" / "scripts" / "voice_assistant" / "start_voice_assistant.sh"
 CUSTOM_SYNTHDEF_DIR = REPO_ROOT / "docker" / "vision" / "voice_assistant" / "custom_synthdefs"
 MASTER_PROMPT_PATH = REPO_ROOT / "src" / "rob_box_voice" / "prompts" / "master_prompt_compact.txt"
-MUSIC_SKILL_PROMPT_PATH = REPO_ROOT / "src" / "rob_box_voice" / "prompts" / "skills" / "music_skill_prompt.txt"
+COMPOSER_PROMPT_PATH = REPO_ROOT / "src" / "rob_box_voice" / "prompts" / "skills" / "composer.txt"
 
 
 def test_foxdot_init_uses_distinct_placeholder_guard_and_no_pathname_exists() -> None:
@@ -107,8 +107,8 @@ def test_sc_only_custom_synthdef_files_exist_for_repo_owned_palette() -> None:
         assert f"SynthDef.new(\\{synth_name}" in content
 
 
-def test_music_skill_prompt_contains_stranger_things_structure_guidance() -> None:
-    content = MUSIC_SKILL_PROMPT_PATH.read_text(encoding="utf-8")
+def test_composer_prompt_contains_stranger_things_structure_guidance() -> None:
+    content = COMPOSER_PROMPT_PATH.read_text(encoding="utf-8")
 
     assert "Stranger Things" in content
     assert "strangerpulsepad" in content
@@ -145,31 +145,8 @@ def test_master_prompt_contains_tb303_safety_guidance() -> None:
     assert "echo" in content.lower()
 
 
-def test_music_skill_prompt_bans_extra_players_and_random_effect_samples() -> None:
-    content = MUSIC_SKILL_PROMPT_PATH.read_text(encoding="utf-8")
-
-    assert "NEVER use d4, d5, p4, p5" in content
-    assert 'NEVER use `play("k"' in content or 'NEVER use "k"' in content
-    assert "spack=1" in content
-    assert 'NEVER invent sample letters like "A"' in content or 'NEVER invent sample letters like `A`' in content
-    assert 'search_samples("kick", case="upper")' in content or "search_samples('kick', case='upper')" in content
-
-
-def test_music_skill_prompt_contains_tb303_safety_guidance() -> None:
-    content = MUSIC_SKILL_PROMPT_PATH.read_text(encoding="utf-8")
-
-    assert "tb303" in content.lower()
-    assert "attack=0.01" in content.lower()
-    assert "crack-prone" in content.lower() or "click-prone" in content.lower()
-    assert "do not combine tb303" in content.lower() or "never combine tb303" in content.lower()
-    assert "crush" in content.lower()
-    assert "bits" in content.lower()
-    assert "echo" in content.lower()
-    assert "retrobass" in content.lower() or "wobblebass" in content.lower()
-
-
-def test_music_skill_prompt_contains_imperial_march_sc_only_guidance() -> None:
-    content = MUSIC_SKILL_PROMPT_PATH.read_text(encoding="utf-8")
+def test_composer_prompt_contains_imperial_march_sc_only_guidance() -> None:
+    content = COMPOSER_PROMPT_PATH.read_text(encoding="utf-8")
 
     assert "Imperial March" in content or "Star Wars march" in content
     assert "imperialbrass" in content
@@ -201,14 +178,6 @@ def test_master_prompt_mentions_estimate_tts_duration() -> None:
     assert "segments" in content
 
 
-def test_music_skill_prompt_mentions_estimate_tts_duration() -> None:
-    """#949 AC4 — the music skill lists estimate_tts_duration as a tool."""
-    content = MUSIC_SKILL_PROMPT_PATH.read_text(encoding="utf-8")
-
-    assert "estimate_tts_duration(text)" in content
-    assert "30 симв/с" in content or "30 chars" in content
-
-
 def test_master_prompt_delegates_named_tracks_to_the_general_style_rule() -> None:
     """The master prompt keeps the *rule*; the skill prompt keeps the recipes.
 
@@ -222,8 +191,8 @@ def test_master_prompt_delegates_named_tracks_to_the_general_style_rule() -> Non
     design.
 
     The per-track detail still exists and is still guarded — in
-    `music_skill_prompt.txt`, by
-    ``test_music_skill_prompt_contains_stranger_things_structure_guidance``.
+    `composer.txt`, by
+    ``test_composer_prompt_contains_stranger_things_structure_guidance``.
     What the master prompt owes us is the general rule, and that is what
     this checks.
     """
@@ -261,27 +230,27 @@ _PHANTOM_TOOL_NAMES = (
 )
 
 
-def test_music_skill_prompt_names_no_unregistered_tools() -> None:
+def test_composer_prompt_names_no_unregistered_tools() -> None:
     """#1810 — every tool the prompt orders must actually be registered."""
-    content = MUSIC_SKILL_PROMPT_PATH.read_text(encoding="utf-8")
+    content = COMPOSER_PROMPT_PATH.read_text(encoding="utf-8")
 
     for phantom in _PHANTOM_TOOL_NAMES:
         assert phantom not in content, (
-            f"music_skill_prompt.txt orders '{phantom}', which is not a "
+            f"composer.txt orders '{phantom}', which is not a "
             f"registered MCP tool (see _tool_catalog_data.py). The LLM will "
             f"get a tool-not-found error and fall back to prose or to "
             f"inventing music."
         )
 
 
-def test_music_skill_prompt_offers_search_web_for_unknown_melodies() -> None:
+def test_composer_prompt_offers_search_web_for_unknown_melodies() -> None:
     """#1810 — the skill must know it can look a melody up on the web.
 
     ``search_web`` is registered and reachable from this skill, but the
     prompt never mentioned it, so an unknown tune became a generic scale in
     the right mood presented as the real thing.
     """
-    content = MUSIC_SKILL_PROMPT_PATH.read_text(encoding="utf-8")
+    content = COMPOSER_PROMPT_PATH.read_text(encoding="utf-8")
 
     assert "search_web(query, max_results=5)" in content
     assert "RULE #NOTES" in content

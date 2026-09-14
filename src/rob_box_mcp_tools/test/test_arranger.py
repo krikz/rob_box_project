@@ -247,7 +247,7 @@ class TestRegisters:
         assert "oct=7" in code and "oct=99" not in code
 
     def test_players_stay_within_the_deployable_range(self):
-        """d4+/p4+ на этом роботе не звучат — см. music_skill_prompt.txt."""
+        """d4+/p4+ на этом роботе не звучат — см. composer.txt / мастер-промпт."""
         code = render(_spec())
         players = {line.split(" >>")[0] for line in code.splitlines() if ">>" in line}
         assert players <= {"d1", "d2", "d3", "p1", "p2", "p3"}

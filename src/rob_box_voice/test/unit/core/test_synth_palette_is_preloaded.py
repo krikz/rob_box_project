@@ -56,8 +56,8 @@ def _repo_root(start: Path) -> Path:
 REPO_ROOT = _repo_root(Path(__file__).resolve())
 FOXDOT_INIT = REPO_ROOT / "docker" / "vision" / "voice_assistant" / "foxdot_init.sc"
 MASTER_PROMPT = REPO_ROOT / "src" / "rob_box_voice" / "prompts" / "master_prompt_compact.txt"
-MUSIC_SKILL_PROMPT = (
-    REPO_ROOT / "src" / "rob_box_voice" / "prompts" / "skills" / "music_skill_prompt.txt"
+COMPOSER_PROMPT = (
+    REPO_ROOT / "src" / "rob_box_voice" / "prompts" / "skills" / "composer.txt"
 )
 
 #: ``d1 >> play("X..o")`` — не SynthDef, а сэмплер (внутри play1/play2).
@@ -92,7 +92,7 @@ def _advertised() -> dict:
     Свободный текст не парсим: там слишком много слов, похожих на имена.
     """
     found: dict = {}
-    for path in (MASTER_PROMPT, MUSIC_SKILL_PROMPT):
+    for path in (MASTER_PROMPT, COMPOSER_PROMPT):
         if not path.exists():
             continue
         text = path.read_text(encoding="utf-8")

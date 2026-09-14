@@ -355,16 +355,6 @@ class DialogueNode(Node):
         # (barge_in_policy, voice_preset, voice_output_language) логируются
         # в parameters_callback без рестарта ноды.
         self.add_on_set_parameters_callback(self.parameters_callback)
-        # Issue #1409 — SSoT for MCP tool names. Populated from
-        # ``ToolRegistry.list_tools()`` at startup (the canonical 32+5
-        # manifests the LLM is wired to via ``_build_tool_provider``) and
-        # kept in sync via ``_on_mcp_tools_update`` when /mcp/tools refresh
-        # messages arrive. ``_load_system_prompt`` uses this set to verify
-        # that every tool the LLM can call is mentioned in the
-        # ``music_skill_prompt.txt`` (case-insensitive) — silent drift
-        # between tool surface and prompt text otherwise makes the LLM
-        # confidently say «нет такой функции» (see issue #1403).
-        self._mcp_tool_names: set[str] = self._collect_mcp_tool_names()
         # ADR-0083 §2.3 — wiring ``dialogue_node`` через
         # ``build_agent(spec)``. Чтение файлов промпта/скиллов
         # делегировано в ``load_system_prompt`` / ``load_skill_prompts``
@@ -1328,24 +1318,6 @@ class DialogueNode(Node):
             dsm=self._dsm,
             user_id="default",
         )
-
-    def _collect_mcp_tool_names(self) -> set[str]:
-        """Return the canonical set of MCP tool names (SSoT).
-
-        Source of truth is ``ToolRegistry.list_tools()`` — the same
-        manifests the LLM is wired to via ``_build_tool_provider``. We
-        don't fall back to ``self.available_tools`` here because the
-        latter is populated asynchronously by ``/mcp/tools`` messages
-        and may be stale/empty at ``_load_system_prompt`` time.
-        """
-        try:
-            return {spec.name for spec in ToolRegistry().list_tools()}
-        except Exception as exc:  # noqa: BLE001 — defensive: bad import / init
-            self.get_logger().warning(
-                f"⚠️ [issue 1409] ToolRegistry probe failed: {exc!r}; "
-                "skipping tools-vs-prompt validation"
-            )
-            return set()
 
     def _validate_skill_fragments(self, fragments: dict[str, str]) -> None:
         """Предупредить, если инструмент скилла не назван в его тексте.
@@ -6070,25 +6042,13 @@ class DialogueNode(Node):
             pass
 
     def _on_mcp_tools_update(self, msg) -> None:
-        """Parse MCP tools JSON and update ``available_tools``.
-
-        Issue #1409 — also keep ``self._mcp_tool_names`` (SSoT set used
-        by ``_load_system_prompt`` validation) in sync. If /mcp/tools
-        delivers a fresher catalogue than ``ToolRegistry.list_tools()``
-        (e.g. an external MCP server registered new tools after
-        startup), we want the next prompt reload to see them too.
-        """
+        """Parse MCP tools JSON and update ``available_tools``."""
         try:
             data = getattr(msg, "data", "") or "[]"
             tools = json.loads(data)
             if isinstance(tools, list):
                 self.available_tools = tools
                 self.mcp_tools_available = True
-                self._mcp_tool_names = {
-                    str(t.get("function", {}).get("name", ""))
-                    for t in tools
-                    if isinstance(t, dict) and t.get("function", {}).get("name")
-                }
             else:
                 self.available_tools = []
                 self.mcp_tools_available = False

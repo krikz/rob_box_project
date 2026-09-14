@@ -173,13 +173,19 @@ def test_fragment_is_not_empty(skill: str) -> None:
 
 
 def test_no_orphan_fragments() -> None:
-    """Файл-фрагмент без скилла в каталоге — мусор, который никто не грузит."""
+    """Файл-фрагмент без скилла в каталоге — мусор, который никто не грузит.
+
+    Раньше файлы схемы именования ``*_skill_prompt.txt`` (в т.ч. удалённый
+    ``music_skill_prompt.txt``) были освобождены от проверки — задача 6.2
+    разбирала их отдельно. После удаления последнего такого файла
+    освобождение снято: ЛЮБОЙ ``prompts/skills/*.txt`` обязан совпадать с
+    именем скилла из ``skill_names()``, иначе setup.py сглобит его в пакет,
+    а рантайм не загрузит ни одной строкой.
+    """
     declared = set(skill_names())
-    # Файлы прежней (мёртвой) схемы именования разбираются в задаче 6.2;
-    # здесь проверяем только новые, названные по имени скилла.
     orphans = sorted(
         path.stem
         for path in _SKILLS_DIR.glob("*.txt")
-        if not path.stem.endswith("_skill_prompt") and path.stem not in declared
+        if path.stem not in declared
     )
     assert not orphans, f"фрагменты без скилла в каталоге: {', '.join(orphans)}"

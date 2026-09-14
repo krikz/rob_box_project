@@ -38,9 +38,6 @@ from rob_box_voice.core.dialogue_guards import (
 
 _REPO = Path(__file__).resolve().parents[4]
 MCP_SERVER = _REPO / "rob_box_mcp_tools" / "rob_box_mcp_tools" / "mcp_server.py"
-MUSIC_SKILL_PROMPT = (
-    _REPO / "rob_box_voice" / "prompts" / "skills" / "music_skill_prompt.txt"
-)
 MASTER_PROMPT = (
     _REPO / "rob_box_voice" / "prompts" / "master_prompt_compact.txt"
 )
@@ -73,7 +70,7 @@ def test_server_still_does_not_register_generate_music() -> None:
     """
     assert not _server_registers_generate_music(), (
         "mcp_server снова регистрирует generate_music — верни его в "
-        "music_skill_prompt.txt и в build_music_retry_prompt, затем поправь "
+        "промпт (composer.txt) и в build_music_retry_prompt, затем поправь "
         "этот тест"
     )
 
@@ -95,52 +92,6 @@ def test_babble_retry_prompt_does_not_demand_a_dead_tool() -> None:
     if _server_registers_generate_music():
         pytest.skip("generate_music снова зарегистрирован")
     assert DEAD_TOOL not in build_babble_retry_prompt("спой песню про кота")
-
-
-def test_music_skill_prompt_never_orders_the_dead_tool() -> None:
-    """В скилл-промпте тул может УПОМИНАТЬСЯ, но только как недоступный.
-
-    Полностью вычищать 1150-строчный промпт рискованно (см. RC3 в
-    docs/analysis/2026-08-30-music-quality-audit.md: противоречивые запреты
-    схлопывают модель в один шаблон). Поэтому контракт мягче: любая строка,
-    где тул встречается, обязана быть либо стрелкой-маршрутом на что-то
-    другое, либо помеченной как устаревшая/недоступная.
-    """
-    if _server_registers_generate_music():
-        pytest.skip("generate_music снова зарегистрирован")
-    if not MUSIC_SKILL_PROMPT.exists():
-        pytest.skip(f"промпт не найден: {MUSIC_SKILL_PROMPT}")
-
-    text = MUSIC_SKILL_PROMPT.read_text(encoding="utf-8-sig")
-    assert "RULE #GONE" in text, (
-        "в music_skill_prompt нет блока RULE #GONE — модель не узнает, что "
-        "generate_music недоступен"
-    )
-
-    # Директива = строка, которая МАРШРУТИЗИРУЕТ в мёртвый тул («→ generate_music»)
-    # или требует его вызвать.
-    offenders = []
-    for n, line in enumerate(text.splitlines(), 1):
-        if DEAD_TOOL not in line:
-            continue
-        low = line.lower()
-        exempt = any(
-            marker in line
-            for marker in ("RULE #GONE", "STALE", "GONE", "discontinued",
-                           "NEVER call", "was the 7th", "WAS a", "not registered",
-                           "DOES NOT EXIST")
-        )
-        if exempt:
-            continue
-        routes_to_dead = bool(re.search(r"(→|->)\s*" + DEAD_TOOL, line))
-        demands = ("must be called" in low and DEAD_TOOL in line)
-        if routes_to_dead or demands:
-            offenders.append(f"{n}: {line.strip()}")
-
-    assert not offenders, (
-        "строки маршрутизируют в недоступный generate_music:\n  "
-        + "\n  ".join(offenders)
-    )
 
 
 def test_master_prompt_does_not_route_to_the_dead_tool() -> None:
