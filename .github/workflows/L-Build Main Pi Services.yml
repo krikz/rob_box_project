@@ -428,7 +428,6 @@ jobs:
           if [ -f "$VERSIONS_FILE" ]; then
             sed -i \
               -e "s|^TWIST_MUX_TAG=.*|TWIST_MUX_TAG=${NEW_TAG}|" \
-              -e "s|^MICRO_ROS_AGENT_TAG=.*|MICRO_ROS_AGENT_TAG=${NEW_TAG}|" \
               -e "s|^ROBOT_STATE_PUBLISHER_TAG=.*|ROBOT_STATE_PUBLISHER_TAG=${NEW_TAG}|" \
               -e "s|^RTABMAP_TAG=.*|RTABMAP_TAG=${NEW_TAG}|" \
               -e "s|^ROS2_CONTROL_TAG=.*|ROS2_CONTROL_TAG=${NEW_TAG}|" \
