@@ -135,6 +135,16 @@ EXPECTED=(
     # Без него ретро/аудит через месяц невозможен — `kanban_complete` оставляет
     # только Result (~300 символов) + список путей без содержимого.
     kanban-report-write.sh
+    # Worker-helpers для pre/post-work rebase protocol (issue #2438,
+    # 2026-09-14): воркер вызывает `worker_pre_flight.sh` в самом начале
+    # сессии (после claim, до кода) и `worker_post_flight.sh` перед
+    # `kanban_complete`. Скрипты делают auto-rebase на origin/develop если
+    # drift > MAX_BRANCH_BEHIND; при конфликте — пишут инструкцию в issue
+    # и возвращают exit 1 (карточка остаётся в running). Без них воркеры
+    # стартуют на устаревших ветках, PR diverged, merge-gate ловит
+    # add/add конфликты (ретро PR #2351, #2363, issue #2438).
+    worker_pre_flight.sh
+    worker_post_flight.sh
     validate_honesty.sh
     # Pre-PR check на ADR namespace collision (ретро 01.09 t_debcb647):
     # дополняет validate_honesty.sh (claim-evidence) функцией проверки

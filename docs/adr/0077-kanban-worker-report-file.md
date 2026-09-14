@@ -219,3 +219,96 @@ bash scripts/agent_flow/kanban-report-write.sh "$TASK_ID"
 - `docs/reports/kanban/t_*.md` — отчёты по kanban-карточкам (появляются по мере dogfooding).
 - `AGENTS.md` секция «Контракт отчёта».
 - `scripts/agent_flow/install.sh` — `EXPECTED+=kanban-report-write.sh`.
+
+## 8. Pre/Post-flight rebase protocol (issue #2438, 2026-09-14, расширение)
+
+ADR-0077 описывает **post-work** контракт воркера (отчёт перед `kanban_complete`).
+Issue #2438 («rebase-protocol неполный») добавил **pre-work** и **post-work rebase**:
+воркеры стартуют на устаревших worktree (PR #2351 — 66 коммитов behind,
+PR #2363 — add/add конфликт с merge-reconciler) и PR diverged от develop,
+merge-gate ловит конфликты, карточка зависает в blocked.
+
+**Решение:** два новых helper-скрипта + интеграция в `kanban-report-write.sh`.
+
+### 8.1 Контракт воркера (расширенный)
+
+**В самом начале сессии** (после claim, после `cd $WORKTREE`):
+
+```bash
+bash scripts/agent_flow/worker_pre_flight.sh "$HERMES_KANBAN_TASK" \
+    "$(git rev-parse --abbrev-ref HEAD)" "${ISSUE_NUM:-}"
+# exit 0 → всё ОК, продолжай работу
+# exit 1 → rebase conflict, ручной resolve (см. issue #2438 → инструкция)
+# exit 2 → usage error (не в worktree, bad task_id)
+```
+
+**Перед `kanban_complete`** (вместо прямого `kanban-report-write.sh`):
+
+```bash
+# Вариант A: явно через post_flight (если воркер не пишет отчёт)
+bash scripts/agent_flow/worker_post_flight.sh "$HERMES_KANBAN_TASK" \
+    "$(git rev-parse --abbrev-ref HEAD)" "${ISSUE_NUM:-}"
+
+# Вариант B: kanban-report-write.sh вызывает post_flight автоматически (рекомендуемый)
+bash scripts/agent_flow/kanban-report-write.sh "$HERMES_KANBAN_TASK"
+# exit 1 от post_flight → kanban-report-write тоже exit 1, отчёт НЕ пишется
+```
+
+### 8.2 Что делают скрипты
+
+`worker_pre_flight.sh`:
+- `git fetch --no-tags origin refs/heads/develop:refs/remotes/origin/develop` (явный refspec, ретро t_730ea7b1).
+- `BEHIND=$(git rev-list --count HEAD..origin/develop)`.
+- Если `BEHIND ≤ MAX_BRANCH_BEHIND` (default 30) → exit 0 (no-op).
+- Если `BEHIND > MAX_BRANCH_BEHIND` → warn в `gh issue comment` (если `ISSUE_NUM`) + `git rebase origin/develop`.
+- Успех → exit 0. Конфликт → инструкция в issue + exit 1.
+
+`worker_post_flight.sh` (тот же протокол, но без MAX_BRANCH_BEHIND-гейта — rebase **всегда** при behind > 0, плюс auto-push через `push-via-gh-api.sh`):
+- Refuse если worktree в `.git/rebase-merge` или `.git/rebase-apply` (предыдущий rebase упал).
+- `git fetch` + `BEHIND`.
+- Если `BEHIND == 0` → exit 0.
+- Если `BEHIND > 0` → `git rebase origin/develop` + `push-via-gh-api.sh`.
+- Успех → exit 0 (kanban_complete можно). Конфликт → инструкция + exit 1 (воркер НЕ вызывает kanban_complete, а разрешает конфликт и повторяет).
+
+### 8.3 Интеграция с `kanban-report-write.sh`
+
+`kanban-report-write.sh` вызывает `worker_post_flight.sh` в самом начале (step 0).
+Если post_flight возвращает exit 1 — kanban-report-write возвращает exit 1 БЕЗ
+записи отчёта. Это **enforcement**: воркер не может завершить карточку с
+diverged веткой. Opt-out: `SKIP_POST_FLIGHT=true` (только для retro-карточек).
+
+### 8.4 Сравнение с другими rebase-уровнями
+
+| Уровень | Когда | Что делает | Источник |
+|---|---|---|---|
+| `validate_branch_freshness.sh` | при `git push` (pre-PR) | блокирует push если behind > 30 | PR #1981, ADR-0045 |
+| `validate_pr_scope.sh` | в merge-gate cron | проверяет scope diff vs base | PR #2040, ADR-0055 |
+| `worker_pre_flight.sh` | начало сессии (после claim) | **auto-rebase** если drift > 30, conflict → exit 1 | **issue #2438** |
+| `worker_post_flight.sh` | перед `kanban_complete` | **auto-rebase** всегда при behind > 0 + push, conflict → exit 1 | **issue #2438** |
+
+Pre/Post-flight **закрывают дыру** между freshness (только блокирует push) и
+scope (только проверяет diff) — воркер получает auto-rebase на свежий develop
+до старта кода и перед завершением, что минимизирует drift-related конфликты.
+
+### 8.5 Trade-offs / что НЕ делаем
+
+- **Не патчим `hermes-agent` dispatcher** (`kanban_db_dispatch.py`) — cross-profile
+  запрет (ADR-0077 §3.5). Воркер вызывает helper сам, как `kanban-report-write.sh`.
+- **Не делаем pre-flight обязательным в dispatch** — opt-in на уровне каждого
+  воркера через skill `bundled/worker-rebase-protocol.md`.
+- **Не блокируем `kanban_complete` ядром** — это уже сделано косвенно через
+  `kanban-report-write.sh` step 0. Скрипт — **точка enforcement**.
+- **Не пушим после rebase в pre_flight** — на старте сессии ветка ещё не
+  зафиксирована, форс-пуш уродлив. Post_flight пушит — там ветка уже имеет
+  коммиты воркера.
+
+### 8.6 Acceptance (issue #2438)
+
+- [ ] `scripts/agent_flow/worker_pre_flight.sh` создан, exit codes 0/1/2.
+- [ ] `scripts/agent_flow/worker_post_flight.sh` создан, exit codes 0/1/2.
+- [ ] `scripts/agent_flow/kanban-report-write.sh` вызывает `worker_post_flight.sh` в начале.
+- [ ] `scripts/agent_flow/install.sh` EXPECTED содержит оба скрипта.
+- [ ] Тесты `tests/test_worker_pre_flight.sh` и `tests/test_worker_post_flight.sh`
+  покрывают 9 сценариев каждый (usage errors, no-op, auto-rebase, conflict).
+- [ ] Skill `bundled/worker-rebase-protocol.md` упоминается в body новых карточек.
+- [ ] Verify: 5 живых карточек прошли full pre+post flight без проблем.
