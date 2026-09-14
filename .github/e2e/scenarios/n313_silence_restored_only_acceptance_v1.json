@@ -1,0 +1,17 @@
+{
+  "name": "n313_silence_restored_only_acceptance",
+  "schema_version": 1,
+  "_comment": [
+    "GATE-1 for n313_silence_restored isolated scenario.",
+    "Both steps gate: pre_clear must end with stop_music, n313 must end with get_music_state.",
+    "Per issue #2347 / PR #2387."
+  ],
+  "expected_tool_calls": ["stop_music", "get_music_state"],
+  "must_not_call": [],
+  "voice_provenance": {
+    "voice": "anton",
+    "tts": "yandex",
+    "volume": 150,
+    "llm": "minimax-m3"
+  }
+}
