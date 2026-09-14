@@ -2057,6 +2057,11 @@ phase2_json="$(gh issue list \
 if [ -z "$phase2_json" ] || [ "$phase2_json" = "[]" ]; then
     log "Phase 2: GSD-orphans (0 issues, source:gsd returned empty)"
     phase2_json=""
+    # Инициализируем phase2_filtered пустой строкой — Phase 3 читает её ниже
+    # (строка 2199, dedup по phase2_issue_numbers) под `set -u`. Без этой
+    # инициализации пустой Phase 2 (=нормальный кейс, source:gsd без issues)
+    # валит весь cron с "unbound variable" (ретро 14.09, тик t_60ff8bb1).
+    phase2_filtered=""
 else
     # Filter: оставить ТОЛЬКО issues с source:gsd + НЕ hermes + НЕ в Phase 1.
     # Дедуп: вычитаем phase1_issue_numbers. Если hermes-метка выставлена —
