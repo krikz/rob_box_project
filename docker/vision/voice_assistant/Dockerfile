@@ -66,12 +66,44 @@ COPY src/rob_box_supervisor_msgs/CMakeLists.txt /ws/src/rob_box_supervisor_msgs/
 COPY src/rob_box_supervisor_msgs/srv /ws/src/rob_box_supervisor_msgs/srv
 COPY src/rob_box_supervisor_msgs/msg /ws/src/rob_box_supervisor_msgs/msg
 
-# Шаг 2: Установка ROS зависимостей через rosdep
-# Этот слой кешируется пока package.xml не изменяется
-RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
-    . /ws/install/setup.sh && \
-    rosdep update && \
-    rosdep install --from-paths src/rob_box_core src/rob_box_voice src/rob_box_animations src/rob_box_perception_msgs src/rob_box_mcp_tools src/rob_box_harness src/rob_box_llm src/rob_box_supervisor_msgs --ignore-src -r -y || true
+# Шаг 2: установка ROS зависимостей через rosdep — УДАЛЁН (issue #2378, devops).
+#
+# До этого PR здесь стояло:
+#     . /opt/ros/${ROS_DISTRO}/setup.sh && \
+#     . /ws/install/setup.sh && \
+#     rosdep update && \
+#     rosdep install --from-paths src/rob_box_core ... src/rob_box_supervisor_msgs \
+#                    --ignore-src -r -y || true
+#
+# Это был ЕДИНСТВЕННЫЙ `rosdep install` в проекте после PR #2286 (9414bb3,
+# issue #2279) — supervisor/quest перевели на «получай apt-зависимости из базы».
+# И он заканчивался на `|| true`: любая ошибка (сеть, отсутствующий ключ,
+# битый index) silently проглатывалась, build продолжался. В тёмной ситуации
+# (нет сети на runner, rosdep exit 1) это давало «image собрался, но
+# apt-зависимости не разрешены» → colcon build падает на `find_package`, или
+# ещё хуже — образ стартует без нужных rosidl-зависимостей и первый
+# `rclpy import` падает в `Restarting loop` (та же регрессия, что #2081 / #2089).
+# Плюс `rosdep update` — это сетевая зависимость каждый cold build, и единственная
+# в vision Dockerfiles после закрытия этой регрессии (в quest/Dockerfile
+# используется `apt-get install` через локальный apt-cacher-ng, без rosdep).
+#
+# Лечение: паттерн «build once, share with all» (как для rob_box_supervisor_msgs
+# после PR #2286). Все apt-зависимости voice-assistant (python3-httpx,
+# python3-aiohttp) добавлены в docker/vision/voice_base/Dockerfile apt-get
+# install — оттуда они доступны потребителю. python3-yaml/pil/numpy/action-msgs/
+# tf2-ros/nav2-msgs/rclpy уже стоят в rob_box_base:rtabmap (introlab3it/
+# rtabmap_ros:humble-latest). python3-openai НЕ существует в apt — rob_box_llm
+# ставит openai через pip в setup.py install_requires; <exec_depend>
+# python3-openai</exec_depend> в его package.xml — техдолг (другая зона),
+# но раньше rosdep его проглатывал через || true; теперь он просто не вызывается.
+#
+# Acceptance (issue #2378):
+#   - Build voice-assistant с пустым network даст exit code != 0 только если
+#     colcon build сам захочет сеть (он не захочет — все deps локальны).
+#   - `rosdep install` больше НИГДЕ в vision/ не вызывается (был единственный
+#     экземпляр — здесь). supervisor/quest уже без него после PR #2286.
+#   - voice-base apt-слой единственный, инвалидируется bump'ой BUILD_VERSION
+#     (см. docker/vision/voice_base/Dockerfile) — артефакт переиспользуется.
 
 # =============================================================================
 # Шаг 2.5: APP-LAYER PYTHON ЗАВИСИМОСТИ (issue #2277)
