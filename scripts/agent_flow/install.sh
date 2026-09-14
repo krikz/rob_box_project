@@ -265,6 +265,16 @@ EXPECTED=(
     # task_comments). НЕ kill, НЕ reassign — Шифу принимает решение.
     # Регистрация cron-job делается в ensure_blocked_watchdog_scope_cron.
     agent-flow-blocked-watchdog-scope.sh
+    # Stale-blocked-after-prereq-merged watchdog (ретро 14.09 t_55c6c882,
+    # pattern повторяет t_55ab37d4): no-agent, ежечасно сканирует все
+    # kanban-доски, для blocked-карточек с PR#-references в body или
+    # block-reason проверяет merged-статус каждого PR через REST
+    # `gh api repos/.../pulls/N`. Если ВСЕ PR merged в develop И все
+    # parent-карточки done → emit ОДИН alert-comment (idempotent через
+    # marker `⚠️ stale-blocked: prerequisites merged`). НЕ auto-unblock —
+    # это решение Шифу. Регистрация cron-job делается в
+    # ensure_stale_blocked_watchdog_cron.
+    agent-flow-stale-blocked-watchdog.sh
     # Ночной ревью-цикл (ADR-0049): no-agent job, раз в ночь собирает
     # дайджест за прошедшие сутки (merged PR / коммиты / issues /
     # красный CI / kanban) и заводит ОДНУ карточку «ночной ревью <дата>»
@@ -972,6 +982,75 @@ sys.exit(1)
 ensure_blocked_watchdog_scope_cron
 
 echo
+echo "==> Ensure cron job registration: stale-blocked-after-prereq-merged watchdog (ретро t_55c6c882)"
+# Проблема: agent-flow-stale-blocked-watchdog.sh раскладывается install.sh,
+# но cron-job НЕ создаётся автоматически. Без него stale-blocked карточки
+# (pattern повторяет t_55ab37d4: prerequisites merged, но карточка остаётся
+# blocked 8+ часов, потому что block_fn не имеет trigger на merged-PR'ы)
+# накапливаются и обнаруживаются только руками Шифу. Ретро-карточка
+# t_55c6c882 автоматизирует auto-detect → alert-comment, но без cron-job'а
+# этот скрипт не запускается на проде.
+#
+# Решение: ensure_stale_blocked_watchdog_cron() — идемпотентная функция,
+# регистрирующая interval-job (every 1h) в devops-профиле, no_agent
+# (скрипт = watchdog). Дубль-guard по (script + interval + enabled).
+# Каждый тик сканирует все kanban-доски, для blocked-карточек с PR#-ref'ами
+# в body/block-reason проверяет merged-статус PR'ов через gh api REST, и
+# если все PR merged + parents done → emit alert-comment (marker-based
+# idempotency: один alert в сутки на карточку).
+ensure_stale_blocked_watchdog_cron() {
+    local profile_dir="/home/builder/.hermes/profiles/devops"
+    local jobs_file="$profile_dir/cron/jobs.json"
+    local job_name="Agent Flow Stale Blocked Watchdog (ретро t_55c6c882)"
+    local job_script="agent-flow-stale-blocked-watchdog.sh"
+    local job_schedule="every 1h"
+
+    if ! command -v hermes >/dev/null 2>&1; then
+        echo "  SKIP ensure-stale-blocked-watchdog-cron: hermes CLI not on PATH (nothing to register)"
+        return 0
+    fi
+    if [ ! -f "$jobs_file" ]; then
+        echo "  SKIP ensure-stale-blocked-watchdog-cron: $jobs_file not present (devops profile not set up here)"
+        return 0
+    fi
+
+    # Guard: уже есть interval-job на этот script.
+    if python3 -c "
+import json, sys
+try:
+    with open('$jobs_file') as f:
+        d = json.load(f)
+except Exception:
+    sys.exit(0)
+for j in d.get('jobs', []):
+    if j.get('script') == '$job_script' and j.get('schedule', {}).get('kind') == 'interval' and j.get('enabled'):
+        sys.exit(0)
+sys.exit(1)
+" 2>/dev/null; then
+        echo "  OK   cron job '$job_name' already registered (interval, enabled)"
+        return 0
+    fi
+
+    echo "  ADD  registering cron job '$job_name' (devops, $job_schedule, no_agent)"
+    if $DRY_RUN; then
+        echo "  [DRY] hermes --profile devops cron create '$job_schedule' --name '$job_name' --script '$job_script' --no-agent --deliver local --workdir '$REPO_DIR'"
+        return 0
+    fi
+    if hermes --profile devops cron create "$job_schedule" \
+        --name "$job_name" \
+        --script "$job_script" \
+        --no-agent \
+        --deliver local \
+        --workdir "$REPO_DIR" >/dev/null 2>&1; then
+        echo "  ADD  cron job created: $job_name ($job_script, $job_schedule)"
+    else
+        echo "  WARN cron job creation failed (non-fatal): $job_name — register manually:"
+        echo "       hermes --profile devops cron create '$job_schedule' --name '$job_name' --script '$job_script' --no-agent --deliver local --workdir $REPO_DIR"
+    fi
+}
+ensure_stale_blocked_watchdog_cron
+
+echo
 echo "==> Ensure cron job registration: ночной ревью (ADR-0049)"
 # Проблема: весь надзор конвейера реактивный и поштучный — никто не смотрит на
 # день целиком и никто не перечитывает код, который воркеры за сутки написали.
@@ -1092,6 +1171,7 @@ _WATCHDOG_LAUNCHER_FILES=(
     agent-flow-blocked-watchdog-scope.sh
     agent-flow-nightly-review.sh
     agent-flow-decomposed-watchdog.sh
+    agent-flow-stale-blocked-watchdog.sh
 )
 
 _md5_verify_fail=0
