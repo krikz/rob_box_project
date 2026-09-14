@@ -1,9 +1,11 @@
-"""Smoke test for the dramaturgy fix in build_auto_prompt (issue #1016 follow-up).
+"""Smoke test for build_auto_prompt dramaturgy (issue #1016 follow-up, #2441).
 
 Verifies that:
   * n=1 prompt BANS load_track/list_tracks (library auto-play) and carries
-    the stage_line markers
-  * n=2 prompt contains the "С РАЗВИТИЕМ" requirement + the listed patterns
+    the stage marker ("Стадия сета: переход #N")
+  * transitions go through compose_music and demand material different from
+    the previous track, instead of carrying hand-written arrangement advice
+    (issue #2441 moved density/swing/form knowledge to composer.txt)
   * Neither prompt leaks task-tracking identifiers (#NNNN, "Refs:", "issue #")
     that carry no semantic value for the LLM and may trigger hallucinated
     "fix #NNNN" comments in generated code.
@@ -57,8 +59,8 @@ def test_n1_contains_library_and_stage_lines() -> None:
         "n=1 prompt must not tell the model to hand-write Renardo code"
     )
 
-    # Stage line: progress indicator for the LLM.
-    assert "переход #1" in prompt, f"stage_line missing — got: {prompt[:200]!r}"
+    # Stage marker: progress indicator for the LLM.
+    assert "переход #1" in prompt, f"stage_marker missing — got: {prompt[:200]!r}"
 
     # Persona + theme still reach the prompt (regression guard).
     assert "Роббокс" in prompt
@@ -69,16 +71,21 @@ def test_n1_contains_library_and_stage_lines() -> None:
 
 
 def test_n2_requires_dramaturgy() -> None:
-    """Issue #1811: development is now the arranger's job (compose_music's
-    ``form``), not hand-written ``.every()``/``Pvar``/``Clock.future`` code."""
+    """Развитие — работа аранжировщика (compose_music), а не текст-подсказка
+    в DJ-промпте (issue #2441): build_auto_prompt больше не учит модель про
+    form=/progression/слои — это знание живёт в composer.txt. Переход обязан
+    только: идти через compose_music, просить ДРУГОЙ материал
+    (bpm/root/scale/synth), чем у предыдущего трека, и не звать рукописный
+    execute_music_code."""
     ctrl = _build_controller()
     ctrl.state.theme = "тёмный техно"
     prompt = ctrl.build_auto_prompt(2)
 
     assert "DJ_AUTO переход #2" in prompt
-    assert "РАЗВИВАТЬСЯ" in prompt, "transition prompt must still demand development"
     assert "compose_music" in prompt, "transition must go through compose_music"
-    assert "form=" in prompt, "form is what carries development now"
+    # Поведение: переход обязан менять материал относительно прошлого трека.
+    assert "другой" in prompt
+    assert "bpm/root/scale/synth" in prompt
 
     # The old hand-written-code dramaturgy techniques are no longer required.
     for pattern in (".every()", "Pvar", "linvar", "Clock.future"):
@@ -126,18 +133,25 @@ def test_n1_contains_research_and_plan_instructions() -> None:
 
 
 def test_tech_guardrails_present_on_transition() -> None:
-    """Issue #1811: аранжировщик и мастер-фильтр держат амплитуды/паттерны —
-    переход обязан нести НЕ ручные лимиты, а инструкцию разнообразить
-    compose_music-параметры между треками."""
+    """Аранжировщик и мастер-фильтр держат амплитуды/паттерны и плотность —
+    DJ-промпт больше не несёт ручную инструкцию по свингу/индексам сэмплов
+    (issue #2441): это знание живёт в composer-фрагменте и описании
+    compose_music. Переход обязан только идти через compose_music и брать
+    сэмплы через search_samples."""
     ctrl = _build_controller()
     ctrl.state.theme = "техно"
     prompt = ctrl.build_auto_prompt(2)
 
     assert "compose_music" in prompt
-    assert "hats_sample" in prompt
-    assert "perc" in prompt
-    assert "swing" in prompt
     assert "search_samples" in prompt
+
+    # Плотность/свинг больше не задача DJ-промпта — аранжировщик держит их
+    # (issue #2441). Это знание не должно дублироваться в build_auto_prompt.
+    for moved in ("swing", "hats_sample", "perc_sample"):
+        assert moved not in prompt, (
+            f"{moved!r} is arranger/composer knowledge — must not be copied "
+            "into the DJ transition prompt"
+        )
 
     # Hand-managed limits from the execute_music_code era are gone — the
     # arranger and master filter own this now, the model shouldn't compute it.

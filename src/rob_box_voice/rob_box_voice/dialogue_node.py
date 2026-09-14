@@ -1422,8 +1422,17 @@ class DialogueNode(Node):
             )
         return rendered.system_prompt, merged
 
-    def _activate_skill_for(self, text: str) -> None:
+    def _activate_skill_for(
+        self, text: str, *, force_skill: str | None = None
+    ) -> None:
         """Активировать домен ДО обращения к LLM.
+
+        ``force_skill`` обходит regex-роутер: DJ_AUTO-переходы обязаны
+        детерминированно получать composer-фрагмент (issue #2441) — у
+        синтетического текста перехода литерал «диджей»/«вечеринка»
+        случайно матчит dj-паттерн на n=1, а на n≥2 результат зависит от
+        текста persona. Аранжировка живёт в composer, поэтому DJ-ход
+        форсирует именно его.
 
         Промах роутера безвреден: при выключенном сужении каталога LLM
         видит все инструменты и при необходимости позовёт ``load_skill``
@@ -1437,16 +1446,21 @@ class DialogueNode(Node):
         router = getattr(self, "_skill_router", None)
         if router is None:
             return
-        try:
-            skill = router.route(text)
-        except Exception as exc:  # noqa: BLE001 — роутер не роняет ход
-            self.get_logger().debug(f"⚠️ [skills] router failed: {exc}")
-            return
-        if not skill:
-            return
+        if force_skill is not None:
+            skill = force_skill
+        else:
+            try:
+                skill = router.route(text)
+            except Exception as exc:  # noqa: BLE001 — роутер не роняет ход
+                self.get_logger().debug(f"⚠️ [skills] router failed: {exc}")
+                return
+            if not skill:
+                return
         try:
             self._core.set_active_skill(skill)
-            record_skill_activation(skill, source="router")
+            record_skill_activation(
+                skill, source="dj-auto" if force_skill is not None else "router"
+            )
             self.get_logger().debug(f"🧭 [skills] активирован {skill!r}")
         except Exception as exc:  # noqa: BLE001
             self.get_logger().debug(f"⚠️ [skills] activation failed: {exc}")
@@ -3471,8 +3485,13 @@ class DialogueNode(Node):
                 ) as _llm_span:
                     # Детерминированная активация домена ДО обращения к
                     # LLM: фрагмент попадает уже в ПЕРВЫЙ запрос хода,
-                    # лишнего round-trip нет.
-                    self._activate_skill_for(user_input)
+                    # лишнего round-trip нет. DJ_AUTO-ход форсирует
+                    # composer — аранжировка живёт там, а regex-роутер по
+                    # синтетическому тексту перехода ненадёжен (issue #2441).
+                    self._activate_skill_for(
+                        user_input,
+                        force_skill="composer" if was_dj_auto else None,
+                    )
                     result: DialogResult = await self._core.process_input(
                         user_input,
                         is_dj_auto=was_dj_auto,
