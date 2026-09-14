@@ -13,6 +13,7 @@ The rest of the file pins individual heuristics and edge cases.
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from rob_box_voice.scheduler.pregen import (
     DURATION_RATIO_FLOOR,
@@ -21,6 +22,8 @@ from rob_box_voice.scheduler.pregen import (
     SILENCE_RATIO_FLOOR,
     check_audio_quality,
 )
+
+pytestmark = pytest.mark.pregenerate_quality
 
 
 def _make_sine(duration_s: float = 1.0, sr: int = 16000,

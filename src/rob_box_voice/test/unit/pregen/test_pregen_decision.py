@@ -17,6 +17,8 @@ from rob_box_voice.scheduler.pregen import (
     decide,
 )
 
+pytestmark = pytest.mark.pregenerate_quality
+
 
 def test_decide_accept_when_pass_and_at_floor():
     assert decide(QualityVerdict.PASS, CONFIDENCE_FLOOR) is Decision.ACCEPT

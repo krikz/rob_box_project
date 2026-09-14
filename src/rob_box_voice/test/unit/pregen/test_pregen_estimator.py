@@ -19,6 +19,8 @@ from rob_box_voice.scheduler.pregen import (
     estimate_confidence,
 )
 
+pytestmark = pytest.mark.pregenerate_quality
+
 
 def _make_task(speech_id: str = "nxt") -> PreGenTask:
     return PreGenTask(

@@ -59,3 +59,17 @@ from rob_box_voice.scheduler.pregen.estimator import (
     _CALIBRATION_GOOD_CV,
     _CALIBRATION_BAD_CV,
 )
+
+
+def pytest_configure(config):
+    """Регистрация кастомных маркеров (--strict-markers требует явности)."""
+    config.addinivalue_line(
+        "markers",
+        "pregenerate_latency: замер TTS-латентности между чанками "
+        "(baseline vs speculative), issue #2003 / ADR-0056 §3.7",
+    )
+    config.addinivalue_line(
+        "markers",
+        "pregenerate_quality: тесты quality/estimator/decision для speculative "
+        "чанков (issue #2003 DoD: «качество не деградировало»)",
+    )
