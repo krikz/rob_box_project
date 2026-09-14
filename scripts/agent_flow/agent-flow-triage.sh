@@ -99,6 +99,10 @@ AGENT_FLOW_MAX_RUNTIME_LARGE="${AGENT_FLOW_MAX_RUNTIME_LARGE:-3600}"
 # Порог "объёмного" body issue (символов) — грубый прокси размера задачи.
 AGENT_FLOW_LARGE_BODY_CHARS="${AGENT_FLOW_LARGE_BODY_CHARS:-2000}"
 AGENT_FLOW_MAX_RETRIES="${AGENT_FLOW_MAX_RETRIES:-2}"
+# Ретро-фикс (14.09.2026 t_10b51b22): крупные задачи получают +1 ретрай
+# (3 вместо 2). Иначе failure_limit=2 → gave_up → blocked навсегда
+# до того, как воркер успевает обойти watchdog-overshoot (см. t_a5488e86).
+AGENT_FLOW_MAX_RETRIES_LARGE="${AGENT_FLOW_MAX_RETRIES_LARGE:-3}"
 # Ретро-фикс (26.08 t_dfd3d19d, ADR-0032): intra-tick dedup (G9a).
 # Группы issues с одинаковыми (sorted-labels, first-N-words-of-title) схлопы-
 # ваются в одну — оставляем старейшую по number, остальные skip+comment
@@ -867,9 +871,17 @@ is_valid_profile() {  # $1=role
 }
 
 # Ретро-фикс (09.08 #2): крупные задачи получают увеличенный --max-runtime.
-# Крупная = label `priority:P0` ИЛИ объёмный body (>= AGENT_FLOW_LARGE_BODY_CHARS).
-runtime_for() {  # $1=labels_csv  $2=body
-    local labels_lower body_len
+# Ретро-фикс (14.09.2026 t_10b51b22): ретро-карточки архитектора (title/body
+# начинаются с «ретро:») тоже получают LARGE — иначе watchdog-overshoot
+# (4*max_rt = 7200s при max_rt=1800) SIGTERM'ит воркера до завершения
+# (см. t_a5488e86: 8 крашей за 5ч, анализ 50+ источников, overshoot-kill цепь).
+# При max_rt=3600 overshoot уходит на 14400s (4ч) — воркер успевает закончить
+# нормальную ретро-работу (анализ логов + правка triage/runtime).
+#
+# Крупная = label `priority:P0` ИЛИ объёмный body (>= AGENT_FLOW_LARGE_BODY_CHARS)
+#          ИЛИ assignee=architect AND (title|body начинается с «ретро:»).
+runtime_for() {  # $1=labels_csv  $2=body  $3=title (опционально)
+    local labels_lower body_len title="$3"
     labels_lower="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
     body_len="${#2}"
     if printf '%s' "$labels_lower" | grep -Eq '(^|,)priority:p0(,|$)'; then
@@ -878,7 +890,52 @@ runtime_for() {  # $1=labels_csv  $2=body
     if [ "$body_len" -ge "$AGENT_FLOW_LARGE_BODY_CHARS" ]; then
         printf '%s' "$AGENT_FLOW_MAX_RUNTIME_LARGE"; return
     fi
+    # Ретро-архитектор: ретро-карточки требуют глубокого анализа (50+ источников,
+    # git log + gh API + правка скриптов) — дефолтные 1800s не хватает.
+    if _is_retro_architect "$labels_lower" "$title" "$2"; then
+        printf '%s' "$AGENT_FLOW_MAX_RUNTIME_LARGE"; return
+    fi
     printf '%s' "$AGENT_FLOW_MAX_RUNTIME"
+}
+
+# Helper: крупная = ретро + архитектор? Возвращает 0 если да, 1 если нет.
+# Принимает lowercase-labels, title, body. Не смотрит на labels для title —
+# только для assignee-фильтра (роль определяется меткой agent:* ИЛИ AGENT_FLOW_DEFAULT_ROLE).
+_is_retro_architect() {  # $1=labels_lower  $2=title  $3=body
+    local labels_lower="$1" title="$2" body="$3"
+    local role
+    role="$(printf '%s' "$labels_lower" | grep -Eo '(^|,)agent:[a-z_-]+' | head -1 | sed 's/.*agent://')"
+    role="${role:-${AGENT_FLOW_DEFAULT_ROLE:-architect}}"
+    [ "$role" = "architect" ] || return 1
+    # title или body начинается с «ретро:» (кириллица + двоеточие)
+    case "$title" in
+        ретро:*) return 0 ;;
+    esac
+    case "$body" in
+        ретро:*) return 0 ;;
+    esac
+    return 1
+}
+
+# Ретро-фикс (14.09.2026 t_10b51b22): карточки крупного класса получают
+# дополнительный ретрай (3 вместо 2). Иначе после двух крашей с
+# watchdog-overshoot карточка получает failure_limit=2 → gave_up →
+# blocked навсегда. Больше ретраев = больше шансов завершить до overshoot.
+max_retries_for() {  # $1=labels_csv  $2=body  $3=title (опционально)
+    local labels_lower body_len title="$3"
+    labels_lower="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+    body_len="${#2}"
+    # Ретро-архитектор ИЛИ объёмный body ИЛИ priority:P0 → +1 ретрай
+    if printf '%s' "$labels_lower" | grep -Eq '(^|,)priority:p0(,|$)'; then
+        printf '%s' "${AGENT_FLOW_MAX_RETRIES_LARGE:-3}"; return
+    fi
+    if [ "$body_len" -ge "$AGENT_FLOW_LARGE_BODY_CHARS" ]; then
+        printf '%s' "${AGENT_FLOW_MAX_RETRIES_LARGE:-3}"; return
+    fi
+    if _is_retro_architect "$labels_lower" "$title" "$2"; then
+        printf '%s' "${AGENT_FLOW_MAX_RETRIES_LARGE:-3}"; return
+    fi
+    printf '%s' "$AGENT_FLOW_MAX_RETRIES"
 }
 
 # Ретро-фикс (09.08 #2): контракт воркера в каждой карточке — воркер коммитит
@@ -1191,10 +1248,11 @@ except Exception: print("")' 2>/dev/null || true)"
 #   existing_by_issue, WORKTREE_CLONES, REPO_DIR, KANBAN_BOARD,
 #   MAINTENANCE_BRANCH, DONE_LABEL, BIG_BANG_OVERRIDE_LABEL, BIG_BANG_MAX_COMMITS,
 #   BIG_BANG_MAX_LINES, VALID_PROFILES, AGENT_FLOW_DEFAULT_ROLE, AGENT_FLOW_MAX_RUNTIME,
-#   AGENT_FLOW_MAX_RETRIES, AGENT_FLOW_LARGE_BODY_CHARS, AGENT_FLOW_MAX_RUNTIME_LARGE,
+#   AGENT_FLOW_MAX_RETRIES, AGENT_FLOW_MAX_RETRIES_LARGE,
+#   AGENT_FLOW_LARGE_BODY_CHARS, AGENT_FLOW_MAX_RUNTIME_LARGE,
 #   GH_REPO, HERMES_BIN, DRY_RUN, LOG_PREFIX, af_role_for, branch_for, branch_label_override,
 #   is_valid_profile, load_valid_profiles, free_stale_worktrees_for_branch, runtime_for,
-#   worker_contract_block, gh (auth).
+#   max_retries_for, _is_retro_architect, worker_contract_block, gh (auth).
 #
 # Обновляет outer-scope counters (created, skipped, errored) — bash scoping
 # без `local` позволяет писать в родительские переменные.
@@ -1300,7 +1358,8 @@ process_issues_json() {
 
     role="$(af_role_for "$labels" "${AGENT_FLOW_DEFAULT_ROLE:-}")"
     branch="$(branch_for "$labels" "$number" "$title")"
-    max_runtime="$(runtime_for "$labels" "$body")"
+    max_runtime="$(runtime_for "$labels" "$body" "$title")"
+    max_retries="$(max_retries_for "$labels" "$body" "$title")"
 
     # Ретро-фикс (26.08 t_dfd3d19d, ADR-0032): G9b race-window dedup.
     # Если вычисленная ветка уже есть в remote refs — карточка создаст
@@ -1706,7 +1765,7 @@ Triage **НЕ создал** kanban-карточку для этого issue, ч
     fi
 
     if [ "$DRY_RUN" = "true" ]; then
-        log "DRY-RUN would run: ${HERMES_BIN} kanban --board ${KANBAN_BOARD} create --assignee ${role} --workspace worktree --branch ${branch} --max-runtime ${max_runtime} --max-retries ${AGENT_FLOW_MAX_RETRIES} ${skill_args[*]:-} --body <...> -- \"<title>\""
+        log "DRY-RUN would run: ${HERMES_BIN} kanban --board ${KANBAN_BOARD} create --assignee ${role} --workspace worktree --branch ${branch} --max-runtime ${max_runtime} --max-retries ${max_retries} ${skill_args[*]:-} --body <...> -- \"<title>\""
         created=$((created+1)); continue
     fi
 
@@ -1717,7 +1776,7 @@ Triage **НЕ создал** kanban-карточку для этого issue, ч
             --workspace worktree \
             --branch "$branch" \
             --max-runtime "$max_runtime" \
-            --max-retries "$AGENT_FLOW_MAX_RETRIES" \
+            --max-retries "$max_retries" \
             "${skill_args[@]}" \
             --body "$full_body" \
             --created-by "agent-flow-triage" \
