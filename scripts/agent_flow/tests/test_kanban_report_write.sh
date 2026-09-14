@@ -125,7 +125,9 @@ cd "$WORK"
 WT4="$WORK/wt4"
 make_fake_worktree "$WT4"
 cd "$WT4"
-out=$(KANBAN_BIN=true KANBAN_DB=/tmp/no-such-db bash "$TARGET" "t_123456" 2>&1)
+# SKIP_POST_FLIGHT=true: post_flight делает git fetch origin — в fake worktree
+# нет origin, тест не про http. Тест проверяет только report-write logic.
+out=$(KANBAN_BIN=true KANBAN_DB=/tmp/no-such-db SKIP_POST_FLIGHT=true bash "$TARGET" "t_123456" 2>&1)
 rc=$?
 assert_exit "worktree-clean-run" 0 "$rc"
 if [ -f "docs/reports/kanban/t_123456.md" ]; then
@@ -151,7 +153,7 @@ def test_pass():
     assert 1 + 1 == 2
 PYEOF
 git add tests/ && git commit -q -m "add test"
-out=$(KANBAN_BIN=true KANBAN_DB=/tmp/no-such-db bash "$TARGET" "t_abcdef" 2>&1)
+out=$(KANBAN_BIN=true KANBAN_DB=/tmp/no-such-db SKIP_POST_FLIGHT=true bash "$TARGET" "t_abcdef" 2>&1)
 rc=$?
 assert_exit "worktree-with-tests" 0 "$rc"
 # pytest секция: или реальный вывод, или n/a (если pytest не установлен). В обоих
@@ -169,7 +171,7 @@ git commit -q -m "extra change"
 printf 'more\n' >> README.md
 git add README.md
 git commit -q -m "another change"
-out=$(KANBAN_BIN=true KANBAN_DB=/tmp/no-such-db bash "$TARGET" "t_feedbeef" 2>&1)
+out=$(KANBAN_BIN=true KANBAN_DB=/tmp/no-such-db SKIP_POST_FLIGHT=true bash "$TARGET" "t_feedbeef" 2>&1)
 rc=$?
 assert_exit "worktree-with-changes" 0 "$rc"
 # git log должен содержать наши коммиты
@@ -181,10 +183,10 @@ cd "$WORK"
 WT7="$WORK/wt7"
 make_fake_worktree "$WT7"
 cd "$WT7"
-out=$(KANBAN_BIN=true KANBAN_DB=/tmp/no-such-db bash "$TARGET" "t_cafe1234" 2>&1)
+out=$(KANBAN_BIN=true KANBAN_DB=/tmp/no-such-db SKIP_POST_FLIGHT=true bash "$TARGET" "t_cafe1234" 2>&1)
 rc1=$?
 assert_exit "first-run" 0 "$rc1"
-out=$(KANBAN_BIN=true KANBAN_DB=/tmp/no-such-db bash "$TARGET" "t_cafe1234" 2>&1)
+out=$(KANBAN_BIN=true KANBAN_DB=/tmp/no-such-db SKIP_POST_FLIGHT=true bash "$TARGET" "t_cafe1234" 2>&1)
 rc2=$?
 assert_exit "second-run-idempotent" 0 "$rc2"
 cd "$WORK"
@@ -193,7 +195,7 @@ cd "$WORK"
 WT8="$WORK/wt8"
 make_fake_worktree "$WT8"
 cd "$WT8"
-out=$(KANBAN_BIN=true KANBAN_DB=/tmp/no-such-db-xyz bash "$TARGET" "t_badf00d" 2>&1)
+out=$(KANBAN_BIN=true KANBAN_DB=/tmp/no-such-db-xyz SKIP_POST_FLIGHT=true bash "$TARGET" "t_badf00d" 2>&1)
 rc=$?
 assert_exit "missing-db-no-fatal" 0 "$rc"
 assert_contains "started-na-when-no-db" "docs/reports/kanban/t_badf00d.md" "**Started:**"
