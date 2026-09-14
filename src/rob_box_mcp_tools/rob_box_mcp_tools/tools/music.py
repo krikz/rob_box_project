@@ -25,7 +25,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, cast
 
 from rob_box_voice.core.music_stack_validation import (
     MusicStackStatus,
@@ -2277,6 +2277,149 @@ class ComposeMusicTool(MCPTool):
     def starts_music(self) -> bool:
         return True
 
+    @staticmethod
+    def _missing_arrangement_fields(
+        lead_synth: Optional[str],
+        drums: Optional[str],
+        bass_synth: Optional[str],
+        bass_notes: Optional[str],
+        pad_synth: Optional[str],
+        pad_notes: Optional[str],
+    ) -> List[str]:
+        """Поля аранжировки, которых не хватает поверх найденной RTTTL-темы."""
+        missing: List[str] = []
+        if not lead_synth:
+            missing.append("lead_synth")
+        if not drums:
+            missing.append("drums")
+        if not (bass_synth and bass_notes):
+            missing.append("bass_synth + bass_notes")
+        if not (pad_synth and pad_notes):
+            missing.append("pad_synth + pad_notes")
+        return missing
+
+    def _resolve_rtttl_params(
+        self,
+        name: Optional[str],
+        variants: Optional[List[str]],
+        bpm: Optional[float],
+        root: Optional[str],
+        scale: Optional[str],
+        lead_synth: Optional[str],
+        drums: Optional[str],
+        bass_synth: Optional[str],
+        bass_notes: Optional[str],
+        pad_synth: Optional[str],
+        pad_notes: Optional[str],
+    ) -> Tuple[
+        Optional[MCPToolResult],
+        Any,
+        Any,
+        Any,
+        Optional[str],
+        Optional[str],
+        Optional[str],
+    ]:
+        """Подтянуть параметры темы из RTTTL по имени.
+
+        Возвращает ``(error, bpm, root, scale, lead_midi, lead_dur,
+        melody_title)``. Если первый элемент — ``MCPToolResult``, вызов
+        завершается ошибкой, остальные поля None.
+        """
+        if not name:
+            return None, bpm, root, scale, None, None, None
+        rec = self._resolve_melody(name, variants)
+        if rec is None:
+            return (
+                MCPToolResult(
+                    success=False,
+                    error=(
+                        f"Мелодия {name!r} не найдена в библиотеке. Скажи "
+                        "юзеру честно, что не знаешь точных нот, и предложи "
+                        "сыграть что-то в похожем духе — НЕ выдавай "
+                        "импровизацию за оригинал."
+                    ),
+                ),
+                None, None, None, None, None, None,
+            )
+        try:
+            params = melody_to_compose_params(rtttl_to_melody(rec["rtttl"]))
+        except ValueError as exc:
+            return (
+                MCPToolResult(
+                    success=False,
+                    error=f"Не удалось разобрать RTTTL мелодии {name!r}: {exc}",
+                ),
+                None, None, None, None, None, None,
+            )
+        melody_title = str(rec.get("title") or rec.get("name") or name)
+        resolved_bpm: Any = bpm if bpm is not None else params["bpm"]
+        resolved_root: Any = root if root is not None else params["root"]
+        resolved_scale: Any = scale if scale is not None else params["scale"]
+        lead_midi_resolved: Optional[str] = cast(Optional[str], params["lead_midi"])
+        lead_dur_resolved: Optional[str] = cast(Optional[str], params["lead_dur"])
+        return (
+            None,
+            resolved_bpm,
+            resolved_root,
+            resolved_scale,
+            lead_midi_resolved,
+            lead_dur_resolved,
+            melody_title,
+        )
+
+    def _build_compose_result_data(
+        self, spec: Any, raw_result: Dict[str, Any], duration_s: float
+    ) -> Dict[str, Any]:
+        """Обогатить результат execute_code полями ``form`` и ``duration_seconds``."""
+        raw_result["form"] = form_summary(spec.form)
+        # Issue #1811 follow-up (live 02.09): диджей ставил
+        # next_transition_sec=45, а форма играет 96-190 секунд — дроп и
+        # кульминация не звучали НИ РАЗУ за 30 часов лога. Длительность
+        # считается ровно той же арифметикой, что и Clock.future в render(),
+        # поэтому её можно просто отдать модели.
+        raw_result["duration_seconds"] = round(duration_s, 1)
+        return raw_result
+
+    def _apply_form_deadline(self, spec: Any) -> None:
+        """Issue #1812 — non-repeating трек: защита watchdog'ом от cut-off."""
+        if spec.repeat:
+            self._manager.clear_form_deadline()
+        else:
+            self._manager.set_form_deadline(
+                form_duration_seconds(spec.form, spec.bpm)
+            )
+
+    @staticmethod
+    def _format_compose_message(
+        melody_title: Optional[str],
+        form_text: str,
+        duration_s: float,
+        repeat_warning: str,
+    ) -> str:
+        """Префикс + подсказки для модели (DJ-тайминг, стоп-сигнал)."""
+        if melody_title:
+            prefix = (
+                f"Играю «{melody_title}» по точным нотам из базы "
+                f"({form_text}). "
+            )
+        else:
+            prefix = f"Играю композицию: {form_text}. "
+        # Явный стоп-сигнал в сообщении, а не только в промпте: live 30.08
+        # модель вызвала compose_music и следом execute_music_code со своим
+        # кодом. Любой музыкальный вызов начинается с Clock.clear(), поэтому
+        # второй вызов стирает только что построенную аранжировку — трёх-
+        # минутная композиция превращается в четырёхтактовый луп.
+        return (
+            prefix
+            + f"Полная форма звучит {duration_s:.0f} секунд — столько же "
+            "ставь в next_transition_sec, если это DJ-переход: "
+            "переключение раньше срезает кульминацию, и все треки "
+            "сета слышатся как одинаковые вступления. "
+            "Музыка уже звучит — НЕ вызывай execute_music_code после "
+            "этого, иначе аранжировка будет стёрта." + repeat_warning
+        )
+
     def execute(
         self,
         name: Optional[str] = None,
@@ -2304,45 +2447,22 @@ class ComposeMusicTool(MCPTool):
     ) -> MCPToolResult:
         # Известная мелодия по имени: ищем в RTTTL-библиотеке, конвертируем
         # ноты в параметры композитора и заполняем ими вызов.
-        lead_midi: Optional[str] = None
-        melody_title: Optional[str] = None
+        err, bpm, root, scale, lead_midi, lead_dur, melody_title = (
+            self._resolve_rtttl_params(
+                name, variants, bpm, root, scale,
+                lead_synth, drums, bass_synth, bass_notes, pad_synth, pad_notes,
+            )
+        )
+        if err is not None:
+            return err
+
+        # Аранжировку даёт LLM (не подставляем дефолты): без drums + bass +
+        # pad + lead_synth тема звучит голым одиночным синтом или вообще
+        # «пиканьем». Просим модель дополнить вызов (live 11.09).
         if name:
-            rec = self._resolve_melody(name, variants)
-            if rec is None:
-                return MCPToolResult(
-                    success=False,
-                    error=(
-                        f"Мелодия {name!r} не найдена в библиотеке. Скажи "
-                        "юзеру честно, что не знаешь точных нот, и предложи "
-                        "сыграть что-то в похожем духе — НЕ выдавай "
-                        "импровизацию за оригинал."
-                    ),
-                )
-            try:
-                params = melody_to_compose_params(rtttl_to_melody(rec["rtttl"]))
-            except ValueError as exc:
-                return MCPToolResult(
-                    success=False,
-                    error=f"Не удалось разобрать RTTTL мелодии {name!r}: {exc}",
-                )
-            melody_title = str(rec.get("title") or rec.get("name") or name)
-            bpm = bpm if bpm is not None else params["bpm"]
-            root = root if root is not None else params["root"]
-            scale = scale if scale is not None else params["scale"]
-            lead_midi = params["lead_midi"]
-            lead_dur = params["lead_dur"]
-            # Аранжировку даёт LLM (не подставляем дефолты): без drums + bass +
-            # pad + lead_synth тема звучит голым одиночным синтом или вообще
-            # «пиканьем». Просим модель дополнить вызов (live 11.09).
-            missing = []
-            if not lead_synth:
-                missing.append("lead_synth")
-            if not drums:
-                missing.append("drums")
-            if not (bass_synth and bass_notes):
-                missing.append("bass_synth + bass_notes")
-            if not (pad_synth and pad_notes):
-                missing.append("pad_synth + pad_notes")
+            missing = self._missing_arrangement_fields(
+                lead_synth, drums, bass_synth, bass_notes, pad_synth, pad_notes,
+            )
             if missing:
                 return MCPToolResult(
                     success=False,
@@ -2393,26 +2513,10 @@ class ComposeMusicTool(MCPTool):
         if not result["success"]:
             return MCPToolResult(success=False, error=result["error"])
 
-        # Issue #1812 — a non-repeating track has a computable finite
-        # length; arm the watchdog's form-end protection so idle dialogue
-        # (the normal "listening in silence" case) can't cut it off before
-        # its one pass of the form has actually played out. A looping track
-        # (repeat=True) has no natural end, so the idle TTL alone governs
-        # it — make sure no stale deadline from a previous track lingers.
-        if spec.repeat:
-            self._manager.clear_form_deadline()
-        else:
-            self._manager.set_form_deadline(form_duration_seconds(spec.form, spec.bpm))
-
+        self._apply_form_deadline(spec)
         self._notify_music_state()
-        result["form"] = form_summary(spec.form)
-        # Issue #1811 follow-up (live 02.09): диджей ставил
-        # next_transition_sec=45, а форма играет 96-190 секунд — дроп и
-        # кульминация не звучали НИ РАЗУ за 30 часов лога. Длительность
-        # считается ровно той же арифметикой, что и Clock.future в render(),
-        # поэтому её можно просто отдать модели.
         duration_s = form_duration_seconds(spec.form, spec.bpm)
-        result["duration_seconds"] = round(duration_s, 1)
+        self._build_compose_result_data(spec, result, duration_s)
         flat = {
             "bpm": bpm, "root": root, "scale": scale, "form": form or "arc",
             "drums": drums, "drums_sample": drums_sample,
@@ -2422,29 +2526,11 @@ class ComposeMusicTool(MCPTool):
         }
         repeat_warning = self._repeat_warning(flat)
         self._last_flat = flat
-        if melody_title:
-            prefix = (
-                f"Играю «{melody_title}» по точным нотам из базы "
-                f"({form_summary(spec.form)}). "
-            )
-        else:
-            prefix = f"Играю композицию: {form_summary(spec.form)}. "
-        # Явный стоп-сигнал в сообщении, а не только в промпте: live 30.08
-        # модель вызвала compose_music и следом execute_music_code со своим
-        # кодом. Любой музыкальный вызов начинается с Clock.clear(), поэтому
-        # второй вызов стирает только что построенную аранжировку — трёх-
-        # минутная композиция превращается в четырёхтактовый луп.
         return MCPToolResult(
             success=True,
             data=result,
-            message=(
-                prefix
-                + f"Полная форма звучит {duration_s:.0f} секунд — столько же "
-                "ставь в next_transition_sec, если это DJ-переход: "
-                "переключение раньше срезает кульминацию, и все треки "
-                "сета слышатся как одинаковые вступления. "
-                "Музыка уже звучит — НЕ вызывай execute_music_code после "
-                "этого, иначе аранжировка будет стёрта." + repeat_warning
+            message=self._format_compose_message(
+                melody_title, form_summary(spec.form), duration_s, repeat_warning,
             ),
         )
 
@@ -3744,34 +3830,81 @@ class SetDjModeTool(MCPTool):
     def destructive(self) -> bool:
         return False
 
-    def execute(self, enabled: bool, next_transition_sec: Optional[int] = None, theme: Optional[str] = None, transition_seconds: Optional[int] = None, persona: Optional[str] = None, plan: Optional[str] = None) -> MCPToolResult:
-        """Опубликовать команду включения/выключения DJ-режима."""
-        from std_msgs.msg import String as _String
-        # LLM иногда шлёт transition_seconds вместо next_transition_sec
+    @staticmethod
+    def _coerce_transition_seconds(
+        next_transition_sec: Optional[int],
+        transition_seconds: Optional[int],
+    ) -> Optional[int]:
+        """LLM иногда шлёт ``transition_seconds`` вместо ``next_transition_sec``."""
         if transition_seconds is not None and next_transition_sec is None:
-            next_transition_sec = transition_seconds
-        payload: dict = {"enabled": enabled}
+            return transition_seconds
+        return next_transition_sec
+
+    @staticmethod
+    def _build_dj_payload(
+        enabled: bool,
+        next_transition_sec: Optional[int],
+        theme: Optional[str],
+        persona: Optional[str],
+        plan: Optional[str],
+    ) -> Dict[str, Any]:
+        """Собрать JSON-payload для /voice/dj_mode из аргументов LLM.
+
+        Все текстовые поля — strip(), все отсутствующие опускаются (не
+        шлём «None»-строки наверх).
+        """
+        payload: Dict[str, Any] = {"enabled": enabled}
         if next_transition_sec is not None:
-            payload["next_transition_sec"] = max(15, min(300, int(next_transition_sec)))
-        if theme and isinstance(theme, str) and theme.strip():
-            payload["theme"] = theme.strip()
+            payload["next_transition_sec"] = max(
+                15, min(300, int(next_transition_sec))
+            )
         # 🔴 FIX (live 10:13 DJ): персона юзера («ты диджей Пёс») —
         # пробрасываем в DJState, чтобы автопромпты не перезаписывали
         # её дефолтом «ДиДжей РОббокс».
+        if theme and isinstance(theme, str) and theme.strip():
+            payload["theme"] = theme.strip()
         if persona and isinstance(persona, str) and persona.strip():
             payload["persona"] = persona.strip()
         # 🔴 FIX (live 15:30 06.08): план сета — DJ проходит по плану и
         # корректно завершается с финальным объявлением, а не молча по лимиту.
         if plan and isinstance(plan, str) and plan.strip():
             payload["plan"] = plan.strip()
+        return payload
+
+    @staticmethod
+    def _format_log_suffix(
+        next_transition_sec: Optional[int],
+        enabled: bool,
+        persona: Optional[str],
+        plan: Optional[str],
+    ) -> str:
+        """Хвост строки лога/сообщения: интервал, персона, план."""
+        parts: List[str] = []
+        if next_transition_sec and enabled:
+            parts.append(f" (следующий через {next_transition_sec}с)")
+        if persona:
+            parts.append(f", персона: {persona}")
+        if plan:
+            parts.append(f", план: {len(plan.splitlines())} треков")
+        return "".join(parts)
+
+    def execute(self, enabled: bool, next_transition_sec: Optional[int] = None, theme: Optional[str] = None, transition_seconds: Optional[int] = None, persona: Optional[str] = None, plan: Optional[str] = None) -> MCPToolResult:
+        """Опубликовать команду включения/выключения DJ-режима."""
+        from std_msgs.msg import String as _String
+        next_transition_sec = self._coerce_transition_seconds(
+            next_transition_sec, transition_seconds
+        )
+        payload = self._build_dj_payload(
+            enabled, next_transition_sec, theme, persona, plan
+        )
         msg = _String()
         msg.data = json.dumps(payload)
         self._dj_mode_pub.publish(msg)
         if self._manager is not None:
             self._manager.set_dj_mode(enabled)
         action = "включён" if enabled else "выключен"
-        interval_info = f" (следующий через {next_transition_sec}с)" if next_transition_sec and enabled else ""
-        persona_info = f", персона: {persona}" if persona else ""
-        plan_info = f", план: {len(plan.splitlines())} треков" if plan else ""
-        self.log_info(f"🎧 DJ-режим {action}{interval_info}{persona_info}{plan_info}")
-        return MCPToolResult(success=True, message=f"DJ-режим {action}{interval_info}{persona_info}{plan_info}")
+        log_suffix = self._format_log_suffix(
+            next_transition_sec, enabled, persona, plan
+        )
+        self.log_info(f"🎧 DJ-режим {action}{log_suffix}")
+        return MCPToolResult(success=True, message=f"DJ-режим {action}{log_suffix}")
