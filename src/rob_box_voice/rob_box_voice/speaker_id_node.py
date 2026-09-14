@@ -25,10 +25,10 @@ Publishes:
 
 Parameters:
     db_path                  (str)   — path to SQLite DB       [/data/speakers.db]
-    identify_threshold       (float) — cosine similarity gate  [0.75]
+    identify_threshold       (float) — cosine similarity gate  [0.72]
     register_match_threshold (float) — порог слияния при регистрации (issue
-                                        W5-4; строже identify_threshold — см.
-                                        speaker_embeddings.REGISTER_MATCH_THRESHOLD) [0.82]
+                                       W5-4 + #2348; строже identify_threshold —
+                                       см. speaker_embeddings.REGISTER_MATCH_THRESHOLD) [0.75]
     sample_rate              (int)   — PCM sample rate         [16000]
     enabled                  (bool)  — enable/disable node     [true]
 """
@@ -68,12 +68,14 @@ class SpeakerIdNode(Node):
 
         # ── Parameters ────────────────────────────────────────────────────────
         self.declare_parameter("db_path", "/data/speakers.db")
-        self.declare_parameter("identify_threshold", 0.75)
-        # Issue W5-4 — отдельный, более строгий порог для решения «слить с
-        # существующим профилем при регистрации vs завести новый» внутри
-        # register_or_merge(). См. speaker_embeddings.REGISTER_MATCH_THRESHOLD
-        # за обоснованием (синтетический бенчмарк, docs/plans задачи W5-4).
-        self.declare_parameter("register_match_threshold", 0.82)
+        self.declare_parameter("identify_threshold", 0.72)
+        # Issue W5-4 + #2348 — отдельный, более строгий порог для решения
+        # «слить с существующим профилем при регистрации vs завести новый»
+        # внутри register_or_merge(). Калибровка по
+        # .hermes/research/cosine_distributions/REPORT.md (n=280 same / n=666 cross,
+        # 0.75 даёт TPR 53 % / FPR 3.9 % — компромисс между «поймать дубль» и
+        # «не склеить разных людей»). См. speaker_embeddings.REGISTER_MATCH_THRESHOLD.
+        self.declare_parameter("register_match_threshold", 0.75)
         self.declare_parameter("sample_rate", 16000)
         self.declare_parameter("enabled", True)
         # Issue #1160 — Prometheus metrics endpoint. 9112 — speaker_id_node.
