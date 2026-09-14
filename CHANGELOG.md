@@ -449,6 +449,44 @@ llm_streaming, agent-flow. В активной разработке, требу�
 
 ## [Unreleased]
 
+### MiniMax STT provider (Phase 1 PoC, kanban t_7283c042 / issue #2365)
+
+Cross-package documentation polish для MiniMax Speech-to-Text провайдера,
+вмерженного в `develop` через PR #2369 (commit `490918d1f`) и
+спецификацию [ADR-0091](docs/adr/0091-minimax-stt-provider.md).
+Никаких изменений в коде — только docs & comments.
+
+#### Изменено (docs-only)
+
+* **Новый operator-гайд:**
+  [`docs/architecture/minimax-stt-provider.md`](docs/architecture/minimax-stt-provider.md)
+  — mini-разбор для операторов: chain order (`vosk → minimax → yandex`),
+  env-var `MINIMAX_API_KEY`, toggle on/off, pytest-команды,
+  troubleshooting. Подробная архитектура/контракт — в ADR-0091 и
+  [`docs/architecture/stt-provider-contract.md`](docs/architecture/stt-provider-contract.md).
+* **Расширен class docstring**
+  `src/rob_box_voice/rob_box_voice/stt_providers/minimax_provider.py`
+  (`MiniMaxSTTProvider`) — две новые секции: «When to prefer this
+  provider» (cloud + diarization trade-offs, latency для barge-in,
+  когда выбирать vs Vosk/Yandex) и «Configuration» (env, base_url,
+  model, timeout, max audio size).
+* **`src/rob_box_voice/README.md`** — MiniMax STT добавлен в список
+  провайдеров + новая подсекция «MiniMax STT (Phase 1 PoC)» с
+  конфигурацией (`MINIMAX_API_KEY`), toggle on/off, ссылками на
+  ADR и pytest-команды.
+* **CHANGELOG-записи:**
+  [`src/rob_box_voice/CHANGELOG.md`](src/rob_box_voice/CHANGELOG.md)
+  (`### Added` → MiniMax STT provider — Phase 1 PoC).
+
+#### Не менялось
+
+* Сам код `MiniMaxSTTProvider` (Phase 1) и его поведение — только docstring.
+* Phase 2 wiring в `stt_node._recognize_with_fallback` —
+  намеренно вне scope этой карточки; см. ADR-0091 §3 и issue #2365.
+* Поведение chain в production — MiniMax STT будет вставлен между
+  Vosk и Yandex только после Phase 2 merge (новая PR с
+  ROS-параметрами `minimax_stt_*`).
+
 ### Agent-flow: auto-create fail-streak issue (ADR-FS-001, kanban t_401e52de)
 
 > Ретро t_401e52de: 8 fail-прогонов L: E2E Voice Test подряд прошли молча

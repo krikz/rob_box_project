@@ -237,6 +237,58 @@ class MiniMaxSTTProvider:
     Construction is intentionally cheap (no I/O). Use
     :meth:`maybe_from_env` to get a ready-to-use instance or ``None``
     when the provider is not configured.
+
+    When to prefer this provider
+    ----------------------------
+
+    This is the **cloud + diarization** leg of the STT chain. Pick it
+    over Vosk / Yandex when **one or more** of the following holds
+    (issue #2365, ADR-0091, ``docs/architecture/minimax-stt-provider.md``):
+
+    * **Cloud is acceptable.** Vosk is offline-first and is preferred
+      when the link to ``https://api.minimax.io`` is unreliable or
+      the robot must keep listening without network. MiniMax requires
+      outbound HTTPS + a valid ``MINIMAX_API_KEY``.
+    * **Speaker diarization is needed** (issues #2346, #2348).
+      MiniMax returns ``segments[*]`` with per-utterance ``speaker``
+      labels, which the backlog and the night-marathon scenarios use to
+      disambiguate "speaker changed" from "same speaker misidentified".
+      Vosk returns no diarization at all; Yandex yields a single
+      ``speaker_tag`` per utterance and cannot be combined reliably with
+      MiniMax in a mixed chain.
+    * **Latency budget for barge-in matters** but Vosk is too noisy
+      for the audio conditions. MiniMax streaming/HTTPS adds roughly
+      800–1300 ms per call (probe in ``stt_fallback.py``) — faster
+      than Yandex gRPC streaming under load, slower than Vosk. In
+      practice MiniMax sits between Vosk and Yandex on the
+      ``vosk → minimax → yandex`` chain.
+    * **Cost-sensitive cloud path.** MiniMax is cheaper than Yandex
+      for short utterances (see ``asr-1.0`` pricing docs) while
+      still being a real ASR rather than a keyword spotter.
+
+    When **not** to prefer it:
+
+    * Hot path with strict offline-only operation → use Vosk first.
+    * Russian-language recognition where only Yandex parity numbers
+      exist → Yandex remains primary for ``ru-RU`` accuracy.
+
+    Configuration
+    -------------
+
+    * API key from ``MINIMAX_API_KEY`` (default env name, overridable
+      via :meth:`maybe_from_env`'s ``api_key_env``).
+    * Base URL is ``https://api.minimax.io`` (override only for tests
+      with the mock server in ``tools/mock_minimax_server.py``).
+    * Default model ``asr-1.0`` (a.k.a. MiniMax-M3 STT), default
+      language ``"ru"`` (set to ``None`` to auto-detect).
+    * Per-call HTTP timeout: connect 5s / read 15s / write 10s
+      (see :data:`DEFAULT_TIMEOUT`).
+    * Max audio size: 25 MB (see :data:`MAX_AUDIO_BYTES`).
+
+    When ``MINIMAX_API_KEY`` is unset, ``maybe_from_env()`` returns
+    ``None`` so the chain cleanly skips this provider (no noisy
+    warning, no retry). See ``docs/architecture/minimax-stt-provider.md``
+    for the chain order and runtime-flag rollout plan (Phase 2).
     """
 
     name: str = PROVIDER_NAME
