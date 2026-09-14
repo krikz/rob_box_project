@@ -107,6 +107,12 @@ ROLE_PROFILE: Dict[str, Tuple[str, int, float]] = {
     "bass":  ("p1", 3, 0.50),
     "lead":  ("p2", 5, 0.52),
     "pad":   ("p3", 4, 0.30),
+    # Второй голос выведенной аранжировки. Слот d3 — потому что Renardo
+    # даёт ровно 6 слотов (d1-d3/p1-p3, renardo_sanitizer::
+    # _ALLOWED_PLAYER_SLOTS), и остальные пять уже заняты. Имя слота на
+    # звук не влияет; конфликта с перкуссией нет, потому что выведенная
+    # аранжировка перкуссию не добавляет (грув несут drums + hats).
+    "counter": ("d3", 4, 0.26),
 }
 
 #: Роли, которые играют сэмплами через ``play(...)``, а не синтом.
@@ -277,6 +283,10 @@ class CompositionSpec:
     #: False -> в конце формы музыка останавливается сама. True (DJ-режим)
     #: -> форма зацикливается бесконечно.
     repeat: bool = True
+    #: Длина фиксированной темы в тактах (0 — темы нет). Секции формы
+    #: подгоняются под целое число её повторов, чтобы границы формы
+    #: совпадали с границами фразы (:func:`_snap_plan_to_theme`).
+    theme_bars: int = 0
     #: Свинг восьмых, 0..0.3 (issue #1806). 0 = ровная сетка — дефолт для
     #: большинства жанров. Ненулевой свинг нужен там, где ровные восьмые
     #: физически не звучат как жанр (джаз, блюз, шафл, фанк) — ``Clock.
@@ -312,9 +322,24 @@ def _fmt_list(values: Sequence[float]) -> str:
 ABSOLUTE_MIDI_ARGS = "oct=0, root=0, scale=Scale.chromatic"
 
 
-def _fmt_midi_list(values: Sequence[Optional[int]]) -> str:
+def _fmt_midi_note(value) -> str:
+    """Одна позиция списка нот: пауза, нота или аккорд.
+
+    Кортеж рендерится круглыми скобками — в Renardo это PGroup, то есть
+    ОДНОВРЕМЕННОЕ звучание (renardo_lib/Patterns/Main.py::PGroup). Тот же
+    урок, что и в :func:`_fmt_chord`: квадратные скобки дали бы арпеджио
+    по одной ноте за такт вместо аккорда.
+    """
+    if value is None:
+        return "None"
+    if isinstance(value, (tuple, list)):
+        return "(" + ", ".join(str(int(v)) for v in value) + ")"
+    return str(int(value))
+
+
+def _fmt_midi_list(values: Sequence[object]) -> str:
     """Список абсолютных MIDI как ступени Renardo: ``None`` = пауза."""
-    return "[" + ", ".join("None" if v is None else str(int(v)) for v in values) + "]"
+    return "[" + ", ".join(_fmt_midi_note(v) for v in values) + "]"
 
 
 def _fmt_chord(values: Sequence[float]) -> str:
@@ -364,16 +389,54 @@ def _merge_adjacent(values: Sequence, durations: Sequence[int]) -> Tuple[List, L
     return merged_values, merged_durations
 
 
-def resolve_form(name: Optional[str]) -> List[Tuple[str, int, Dict[str, float]]]:
+def resolve_form(
+    name: Optional[str], theme_bars: int = 0
+) -> List[Tuple[str, int, Dict[str, float]]]:
     """Вернуть план формы, молча падая на дефолт для неизвестного имени.
 
     Неизвестная форма — не повод отказать в музыке: LLM регулярно
     выдумывает названия, и лучше сыграть дугу, чем вернуть ошибку.
+
+    Args:
+        theme_bars: длина фиксированной темы в тактах. Ненулевое значение
+            подгоняет секции под ЦЕЛОЕ число её повторов — см.
+            :func:`_snap_plan_to_theme`. 0 — форма как записана в
+            :data:`FORMS` (музыка, сочинённая с нуля: там темы фиксированной
+            длины нет и подгонять не подо что).
     """
-    return FORMS.get((name or "").strip().lower(), FORMS[DEFAULT_FORM])
+    plan = FORMS.get((name or "").strip().lower(), FORMS[DEFAULT_FORM])
+    return _snap_plan_to_theme(plan, theme_bars)
 
 
-def form_duration_seconds(name: Optional[str], bpm: float) -> float:
+def _snap_plan_to_theme(
+    plan: Sequence[Tuple[str, int, Dict[str, float]]], theme_bars: int
+) -> List[Tuple[str, int, Dict[str, float]]]:
+    """Подогнать секции формы под целое число повторов темы.
+
+    🔴 FIX (live 14.09): секции формы записаны круглыми числами тактов
+    (8/8/16/8/16/8), а живая тема круглой не бывает — имперский марш
+    занимает 9 тактов. На форме ``arc`` это давало 7.1 повтора: каждая
+    смена секции приходилась на середину фразы, а на стыке лупа тема
+    обрывалась. Слышно это именно как «мелодия не попадает»: громкость и
+    слои переключаются там, где у темы ничего не происходит.
+
+    Теперь каждая секция округляется до ближайшего целого числа повторов
+    (но не меньше одного), так что любая граница формы совпадает с
+    границей фразы. Пропорции формы при этом сохраняются: короткие секции
+    остаются короткими, длинные — длинными.
+    """
+    if theme_bars <= 0:
+        return list(plan)
+    snapped: List[Tuple[str, int, Dict[str, float]]] = []
+    for name, bars, intensities in plan:
+        repeats = max(1, int(round(float(bars) / theme_bars)))
+        snapped.append((name, repeats * theme_bars, intensities))
+    return snapped
+
+
+def form_duration_seconds(
+    name: Optional[str], bpm: float, theme_bars: int = 0
+) -> float:
     """Длительность одного прохода формы в секундах реального времени.
 
     Issue #1812: у трека, сыгранного с ``repeat=False``, форма конечна и её
@@ -391,27 +454,47 @@ def form_duration_seconds(name: Optional[str], bpm: float) -> float:
         Длительность в секундах: ``total_bars * BEATS_PER_BAR * 60 / bpm``.
     """
     clamped_bpm = max(BPM_RANGE[0], min(BPM_RANGE[1], float(bpm)))
-    plan = resolve_form(name)
+    plan = resolve_form(name, theme_bars)
     total_beats = sum(int(bars) for _n, bars, _i in plan) * BEATS_PER_BAR
     return total_beats * 60.0 / clamped_bpm
+
+
+def _section_intensity(role: str, intensities: Dict[str, float]) -> float:
+    """Интенсивность роли в одной секции формы.
+
+    Контрмелодии в таблицах FORMS нет: она появилась вместе с выведенной
+    аранжировкой и по смыслу привязана к теме, а не к секции. Её уровень
+    берётся от лида (:data:`COUNTER_OF_LEAD`), если форма не назвала его
+    явно — тогда второй голос входит и уходит вместе с темой в любой
+    форме, включая те, что добавят позже.
+    """
+    if role == "counter" and "counter" not in intensities:
+        return float(intensities.get("lead", 0.0)) * COUNTER_OF_LEAD
+    return float(intensities.get(role, 0.0))
 
 
 def _amp_envelope(
     role: str,
     plan: Sequence[Tuple[str, int, Dict[str, float]]],
     base_amp: float,
+    floor: float = 0.0,
 ) -> Tuple[List[float], List[int]]:
     """Собрать (значения amp, длительности в битах) для одной роли.
 
     Соседние секции с одинаковой интенсивностью склеиваются — иначе
     ``var([0.5, 0.5, 0.5], [32, 32, 64])`` порождает лишние переключения
     и делает код нечитаемым.
+
+    Args:
+        floor: нижняя граница интенсивности, доля 0..1. Нужна
+            фиксированной теме (:data:`FIXED_THEME_AMP_FLOOR`): форма
+            вправе делать её тише, но не вправе выключить.
     """
     amps: List[float] = []
     durs: List[int] = []
     for _name, bars, intensities in plan:
-        amp = round(base_amp * float(intensities.get(role, 0.0)), 4)
-        amps.append(amp)
+        intensity = max(_section_intensity(role, intensities), float(floor))
+        amps.append(round(base_amp * intensity, 4))
         durs.append(int(bars) * BEATS_PER_BAR)
     return _merge_adjacent(amps, durs)
 
@@ -701,7 +784,14 @@ def _render_layer(
         )
     player, role_oct, base_amp = profile
 
-    amps, durs = _amp_envelope(layer.role, plan, base_amp)
+    # Фиксированная тема (и её второй голос) не имеет права замолчать
+    # совсем — её попросили сыграть. См. FIXED_THEME_AMP_FLOOR.
+    floor = 0.0
+    if layer.midi is not None and layer.role in ("lead", "counter"):
+        floor = FIXED_THEME_AMP_FLOOR
+        if layer.role == "counter":
+            floor *= COUNTER_OF_LEAD
+    amps, durs = _amp_envelope(layer.role, plan, base_amp, floor=floor)
     if not any(amps):
         # Роль не участвует ни в одной секции этой формы (например drums в
         # ambient) — плеер не создаём вовсе, чтобы не гонять тихие ноты.
@@ -745,7 +835,7 @@ def render(spec: CompositionSpec) -> str:
 
     bpm = max(BPM_RANGE[0], min(BPM_RANGE[1], float(spec.bpm)))
     root = spec.root if spec.root in VALID_ROOTS else "C"
-    plan = resolve_form(spec.form)
+    plan = resolve_form(spec.form, getattr(spec, "theme_bars", 0))
     total_bars = sum(int(bars) for _n, bars, _i in plan)
     total_beats = total_bars * BEATS_PER_BAR
 
@@ -827,7 +917,26 @@ def render(spec: CompositionSpec) -> str:
 #: плотности фактуры, где модель систематически ошибается в сторону
 #: слишком коротких значений (лог: dur 2 -> 1 -> 0.5 -> 0.25 -> 0.125).
 #: Роль знает свою плотность лучше.
-ROLE_DEFAULT_DUR: Dict[str, float] = {"bass": 1.0, "lead": 0.5, "pad": 4.0}
+ROLE_DEFAULT_DUR: Dict[str, float] = {
+    "bass": 1.0, "lead": 0.5, "pad": 4.0, "counter": 0.5,
+}
+
+#: Доля громкости лида, которую получает контрмелодия там, где форма не
+#: называет её явно. Второй голос — тень темы: он обязан быть тише, но
+#: обязан появляться и исчезать ВМЕСТЕ с ней. Отдельные числа в каждой
+#: секции каждой формы (FORMS) дали бы то же самое, но рассинхронились бы
+#: при первой же правке формы.
+COUNTER_OF_LEAD = 0.55
+
+#: Нижняя граница громкости ФИКСИРОВАННОЙ темы (RTTTL), доля от базовой.
+#:
+#: 🔴 FIX (live 14.09): у роли ``lead`` нет интенсивности в секциях intro
+#: и build формы ``arc`` (и в intro/gap у остальных), поэтому тема
+#: получала ``amp=var([0, ...], [64, ...])`` — на 80 BPM это 48 секунд
+#: барабанов без мелодии в ответ на «сыграй имперский марш». Для темы,
+#: которую ПОПРОСИЛИ сыграть, молчание — не динамика, а невыполненная
+#: просьба: форма продолжает менять её громкость, но больше не гасит.
+FIXED_THEME_AMP_FLOOR = 0.5
 
 
 def parse_notes(raw: Optional[str]) -> Tuple[float, ...]:
@@ -1032,8 +1141,54 @@ def _add_melodic_layer(
     return True
 
 
+def _add_derived_layers(
+    layers: List[Layer],
+    harmony,
+    *,
+    lead_synth: str,
+    bass_synth: Optional[str],
+    pad_synth: Optional[str],
+    counter_synth: Optional[str],
+    drums_sample: int,
+    hats_sample: int,
+) -> None:
+    """Разложить готовую гармонизацию темы в слои аранжировки.
+
+    От LLM здесь берутся ТОЛЬКО тембры (синты и сэмплы) — ноты и рисунки
+    целиком выведены из мелодии (см. :mod:`core.harmonize`). Поэтому
+    ``bass_notes`` / ``pad_notes`` / ``progression`` / рисунки ударных,
+    если модель их прислала, сюда не попадают: они были главным
+    источником фальши (модель писала их, не видя ни одной ноты темы).
+
+    Перкуссия не добавляется намеренно: её слот занимает контрмелодия,
+    а грув уже несут выведенные бочка и хэты.
+    """
+    _add_drum_layer_if_present(layers, "drums", harmony.drums, drums_sample)
+    _add_drum_layer_if_present(layers, "hats", harmony.hats, hats_sample)
+
+    for role, synth, part in (
+        ("bass", bass_synth, harmony.bass),
+        ("lead", lead_synth, harmony.lead),
+        ("pad", pad_synth, harmony.pad),
+        ("counter", counter_synth, harmony.counter),
+    ):
+        if not (synth and synth.strip()) or not part:
+            continue
+        layers.append(
+            Layer(
+                role=role,
+                synth=synth.strip(),
+                midi=tuple(note for note, _dur in part),
+                durs=tuple(float(dur) for _note, dur in part),
+                dur=ROLE_DEFAULT_DUR[role],
+            )
+        )
+
+
 def spec_from_flat(
     *,
+    harmony=None,
+    counter_synth: Optional[str] = None,
     bpm: float = 120.0,
     root: str = "C",
     scale: str = "minor",
@@ -1068,8 +1223,51 @@ def spec_from_flat(
     ``lead_midi`` — путь ТОЧНОГО воспроизведения известной темы абсолютным
     MIDI (из RTTTL-библиотеки): играется дословно с ``lead_dur``, в ступени
     лада не переводится.
+
+    ``harmony`` (:class:`core.harmonize.Harmonization`) — тема, уже
+    разложенная на партии. Если он передан, ВСЕ ноты аккомпанемента и
+    рисунки ударных берутся из него, а не от модели: они выведены из
+    самой мелодии и промахнуться мимо её тональности не могут. За
+    моделью остаются тембры, форма и темп.
     """
     layers: List[Layer] = []
+
+    if harmony is not None:
+        if not (lead_synth and lead_synth.strip()):
+            raise ArrangementError(
+                "Для выведенной аранжировки нужен lead_synth — тема "
+                "должна чем-то играть."
+            )
+        _add_derived_layers(
+            layers,
+            harmony,
+            lead_synth=lead_synth,
+            bass_synth=bass_synth,
+            pad_synth=pad_synth,
+            # Свой тембр второго голоса, если задан. По умолчанию — тембр
+            # темы: два голоса одним инструментом читаются как одна партия
+            # в терцию, что всегда безопасно. Но контрастный тембр (тема
+            # медью, второй голос струнными) звучит богаче, поэтому выбор
+            # оставлен наружу.
+            counter_synth=counter_synth or lead_synth,
+            drums_sample=drums_sample,
+            hats_sample=hats_sample,
+        )
+        return CompositionSpec(
+            bpm=float(bpm),
+            root=(root or "C").strip(),
+            scale=(scale or "minor").strip(),
+            form=(form or DEFAULT_FORM).strip(),
+            layers=tuple(layers),
+            # Прогрессии нет намеренно: вся гармония уже записана
+            # абсолютными нотами баса и пэда. Root.default, который
+            # двигал бы ступени, для них не существует — и потому не
+            # может увести аккомпанемент от фиксированной темы.
+            progression=(),
+            theme_bars=int(harmony.bars),
+            repeat=bool(repeat),
+            swing=float(swing or 0.0),
+        )
 
     # 🔴 FIX (live 31.08): здесь стояло sample=3 намертво. В библиотеке
     # 4585 сэмплов в трёх паках, а compose_music дотягивался только до

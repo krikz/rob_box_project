@@ -125,8 +125,11 @@ class TestForm:
 
     def test_unknown_form_falls_back_to_default(self):
         """LLM регулярно выдумывает названия — лучше сыграть, чем отказать."""
-        assert resolve_form("психоделический_джаз") is FORMS[DEFAULT_FORM]
-        assert resolve_form(None) is FORMS[DEFAULT_FORM]
+        # Равенство, а не идентичность: resolve_form отдаёт КОПИЮ плана
+        # (её подгоняют под длину фиксированной темы, см. _snap_plan_to_theme),
+        # и совпадение объектов было случайным свойством, а не контрактом.
+        assert resolve_form("психоделический_джаз") == FORMS[DEFAULT_FORM]
+        assert resolve_form(None) == FORMS[DEFAULT_FORM]
         assert render(_spec(form="нет такой формы"))
 
     def test_ambient_form_omits_silent_percussion_layers(self):

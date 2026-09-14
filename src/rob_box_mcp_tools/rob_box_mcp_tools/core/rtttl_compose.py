@@ -20,9 +20,15 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from .arranger import BEATS_PER_BAR, SCALE_INTERVALS, VALID_ROOTS
+from .harmonize import harmonize
 from .rtttl import parse_rtttl
 
-__all__ = ["RtttlMelody", "rtttl_to_melody", "detect_key", "melody_to_compose_params"]
+__all__ = [
+    "RtttlMelody",
+    "rtttl_to_melody",
+    "detect_key",
+    "melody_to_compose_params",
+]
 
 #: Лады для детекции тональности, в порядке приоритета при равном счёте.
 _KEY_SCALES = (
@@ -102,13 +108,18 @@ def melody_to_compose_params(melody: RtttlMelody) -> Dict[str, object]:
       * ``bpm`` — темп из RTTTL (``compose_music.bpm``);
       * ``root`` / ``scale`` — определённая тональность (для баса/подклада);
       * ``lead_midi`` — строка абсолютных MIDI через запятую (``None`` = пауза);
-      * ``lead_dur`` — ритм в битах, той же длины.
+      * ``lead_dur`` — ритм в битах, той же длины;
+      * ``harmony`` — :class:`core.harmonize.Harmonization`: та же тема,
+        разложенная на бас, пэд, контрмелодию и рисунки ударных.
 
     Мелодия выравнивается по такту (хвостовая пауза доводит луп до целого
     числа тактов) — иначе луп плывёт относительно ударной сетки и тема
-    звучит «не в тайминг». Синт мелодии (``lead_synth``) и аккомпанемент
-    (drums/bass/pad/form) сюда НЕ входят — их даёт модель обычными
-    параметрами ``compose_music``.
+    звучит «не в тайминг».
+
+    НОТЫ аккомпанемента модель больше не выбирает: они выведены из самой
+    темы (``harmony``). За моделью остаются тембры, форма и темп — см.
+    :mod:`core.harmonize`. Плоские ``lead_midi``/``lead_dur`` остаются в
+    ответе для обратной совместимости и для логов.
     """
     melody = _snap_to_bar(melody)
     root, scale = detect_key(
@@ -123,6 +134,7 @@ def melody_to_compose_params(melody: RtttlMelody) -> Dict[str, object]:
         "scale": scale,
         "lead_midi": ", ".join(midi),
         "lead_dur": ", ".join(dur),
+        "harmony": harmonize(melody.notes, melody.bpm, root, scale),
     }
 
 

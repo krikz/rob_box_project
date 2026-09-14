@@ -2177,9 +2177,11 @@ class ComposeMusicTool(MCPTool):
                 name="bass_notes",
                 type="string",
                 description="Ступени лада для баса через запятую, 2-5 "
-                "чисел (отрицательные — вниз от тоники). Бас держит "
-                "гармонию: он должен согласоваться с progression, а не "
-                "повторять мотив лида.",
+                "чисел. НУМЕРАЦИЯ С НУЛЯ: 0 — тоника, 2 — терция, "
+                "4 — квинта (отрицательные — вниз от тоники). Римские "
+                "цифры сюда НЕ подходят: «1» это НЕ тоника, а секунда. "
+                "Бас держит гармонию: он должен согласоваться с "
+                "progression, а не повторять мотив лида.",
                 required=False,
             ),
             MCPToolParameter(
@@ -2197,7 +2199,8 @@ class ComposeMusicTool(MCPTool):
                 name="lead_notes",
                 type="string",
                 description="Ступени лада для мелодии через запятую, 4-8 "
-                "чисел. Это МОТИВ, а не гамма: нужен скачок и ответ на "
+                "чисел. НУМЕРАЦИЯ С НУЛЯ: 0 — тоника. "
+                "Это МОТИВ, а не гамма: нужен скачок и ответ на "
                 "него, а не пробег по соседним ступеням вверх-вниз. "
                 "Сочиняй под тему и жанр каждого трека заново.",
                 required=False,
@@ -2224,16 +2227,22 @@ class ComposeMusicTool(MCPTool):
                 name="pad_notes",
                 type="string",
                 description="Аккорд подклада — 3-4 ступени лада через "
-                "запятую. Трезвучие тоники (терция + квинта) — самый "
-                "нейтральный вариант; секста, септима и обращения дают "
-                "трекам разный цвет.",
+                "запятую. НУМЕРАЦИЯ С НУЛЯ: трезвучие тоники это "
+                "\"0,2,4\" (тоника + терция + квинта), НЕ \"1,3,5\" — "
+                "последнее даст аккорд на секунде. Трезвучие тоники — "
+                "самый нейтральный вариант; секста, септима и обращения "
+                "дают трекам разный цвет.",
                 required=False,
             ),
             MCPToolParameter(
                 name="progression",
                 type="string",
                 description="Движение тоники по ступеням лада — 3-4 "
-                "числа через запятую, по одному на секцию формы. Даёт "
+                "числа через запятую, по одному на секцию формы. "
+                "НУМЕРАЦИЯ С НУЛЯ, а не римскими цифрами: I-V-vi-IV "
+                "пишется \"0,4,5,3\", а НЕ \"1,5,6,4\" — последнее "
+                "сдвинет всю гармонию на ступень вверх, и тоника не "
+                "прозвучит ни разу за трек. Даёт "
                 "гармоническое развитие, с ним трек заметно живее. "
                 "Выбирай движение под жанр и настроение конкретного "
                 "трека: в живом логе 56% вызовов пришли с ОДНОЙ и той же "
@@ -2323,11 +2332,15 @@ class ComposeMusicTool(MCPTool):
         """Подтянуть параметры темы из RTTTL по имени.
 
         Возвращает ``(error, bpm, root, scale, lead_midi, lead_dur,
-        melody_title)``. Если первый элемент — ``MCPToolResult``, вызов
-        завершается ошибкой, остальные поля None.
+        melody_title, harmony)``. Если первый элемент — ``MCPToolResult``,
+        вызов завершается ошибкой, остальные поля None.
+
+        ``harmony`` — тема, разложенная на бас, пэд, контрмелодию и
+        ударные (:mod:`core.harmonize`). Именно она, а не присланные
+        моделью ноты, становится аккомпанементом.
         """
         if not name:
-            return None, bpm, root, scale, None, None, None
+            return None, bpm, root, scale, None, None, None, None
         rec = self._resolve_melody(name, variants)
         if rec is None:
             return (
@@ -2340,7 +2353,7 @@ class ComposeMusicTool(MCPTool):
                         "импровизацию за оригинал."
                     ),
                 ),
-                None, None, None, None, None, None,
+                None, None, None, None, None, None, None,
             )
         try:
             params = melody_to_compose_params(rtttl_to_melody(rec["rtttl"]))
@@ -2350,7 +2363,7 @@ class ComposeMusicTool(MCPTool):
                     success=False,
                     error=f"Не удалось разобрать RTTTL мелодии {name!r}: {exc}",
                 ),
-                None, None, None, None, None, None,
+                None, None, None, None, None, None, None,
             )
         melody_title = str(rec.get("title") or rec.get("name") or name)
         resolved_bpm: Any = bpm if bpm is not None else params["bpm"]
@@ -2366,6 +2379,7 @@ class ComposeMusicTool(MCPTool):
             lead_midi_resolved,
             lead_dur_resolved,
             melody_title,
+            params.get("harmony"),
         )
 
     def _build_compose_result_data(
@@ -2387,7 +2401,7 @@ class ComposeMusicTool(MCPTool):
             self._manager.clear_form_deadline()
         else:
             self._manager.set_form_deadline(
-                form_duration_seconds(spec.form, spec.bpm)
+                form_duration_seconds(spec.form, spec.bpm, getattr(spec, "theme_bars", 0))
             )
 
     @staticmethod
@@ -2447,7 +2461,7 @@ class ComposeMusicTool(MCPTool):
     ) -> MCPToolResult:
         # Известная мелодия по имени: ищем в RTTTL-библиотеке, конвертируем
         # ноты в параметры композитора и заполняем ими вызов.
-        err, bpm, root, scale, lead_midi, lead_dur, melody_title = (
+        err, bpm, root, scale, lead_midi, lead_dur, melody_title, harmony = (
             self._resolve_rtttl_params(
                 name, variants, bpm, root, scale,
                 lead_synth, drums, bass_synth, bass_notes, pad_synth, pad_notes,
@@ -2480,6 +2494,11 @@ class ComposeMusicTool(MCPTool):
 
         try:
             spec = spec_from_flat(
+                # Тема из библиотеки: аккомпанемент выводится из её нот,
+                # а bass_notes/pad_notes/progression/рисунки ударных от
+                # модели игнорируются — именно они промахивались мимо
+                # тональности, потому что писались вслепую (live 14.09).
+                harmony=harmony,
                 bpm=bpm,
                 root=root,
                 scale=scale,
@@ -2515,7 +2534,7 @@ class ComposeMusicTool(MCPTool):
 
         self._apply_form_deadline(spec)
         self._notify_music_state()
-        duration_s = form_duration_seconds(spec.form, spec.bpm)
+        duration_s = form_duration_seconds(spec.form, spec.bpm, getattr(spec, "theme_bars", 0))
         self._build_compose_result_data(spec, result, duration_s)
         flat = {
             "bpm": bpm, "root": root, "scale": scale, "form": form or "arc",

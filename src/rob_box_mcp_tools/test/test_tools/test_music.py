@@ -2248,7 +2248,11 @@ class TestComposeMusicToolMelodyByName:
         # Аранжировка LLM дошла до кода.
         assert "dub" in code
         assert "warmpad" in code
-        assert "X..o.X.o" in code
+        # Рисунок ударных от модели НЕ используется: он выводится из
+        # атак самой темы (core.harmonize). Модель задаёт только тембр —
+        # ноты и рисунки она писала вслепую, и это было источником фальши.
+        assert "X..o.X.o" not in code
+        assert "d1 >> play(" in code
 
     def test_name_without_arrangement_is_rejected(self, mock_node):
         rtttl_library = Mock()
