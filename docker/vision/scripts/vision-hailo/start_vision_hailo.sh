@@ -14,7 +14,10 @@
 #   1 — setup error (config not found / ROS не sourced).
 #   2 — node crashed (ros2 launch fallback).
 
-set -euo pipefail
+# НЕ `set -u`: `source /opt/ros/$ROS_DISTRO/setup.bash` обращается к
+# необъявленной AMENT_TRACE_SETUP_FILES и падает под nounset
+# (тот же паттерн, что start_quest.sh).
+set -eo pipefail
 
 # ---------- defaults (override через ENV или YAML) ----------
 HAILO_ENABLED="${HAILO_ENABLED:-false}"
