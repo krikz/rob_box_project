@@ -2238,13 +2238,26 @@ class TestComposeMusicToolMelodyByName:
         result = tool.execute(name="fifth", **self._ARR)
         assert result.success is True
         code = mgr.execute_code.call_args.args[0]
-        assert "midinote=[None, 79, 79, 79, 75]" in code
+        # Ноты позиционно (degree), НЕ через midinote= — Renardo этот
+        # ключ как высоту игнорирует (регресс 14.09, см. core/rtttl.py).
+        # Тема играется дословно. Удвоения в октаву здесь нет: три
+        # восьмых и длинная нота — РЕДКАЯ тема (одна атака на бит при
+        # пороге 1.2), а удвоение и второй голос положены только плотным
+        # (harmonize::DENSE_ONSETS_PER_BEAT).
+        assert "[None, 79, 79, 79, 75]" in code
+        assert "d3 >>" not in code  # второй голос редкой теме не даётся
+        assert "midinote=" not in code
+        assert "oct=0, root=0, scale=Scale.chromatic" in code
         assert "Clock.bpm = 63" in code
         assert "Beethoven's Fifth" in result.message
         # Аранжировка LLM дошла до кода.
         assert "dub" in code
         assert "warmpad" in code
-        assert "X..o.X.o" in code
+        # Рисунок ударных от модели НЕ используется: он выводится из
+        # атак самой темы (core.harmonize). Модель задаёт только тембр —
+        # ноты и рисунки она писала вслепую, и это было источником фальши.
+        assert "X..o.X.o" not in code
+        assert "d1 >> play(" in code
 
     def test_name_without_arrangement_is_rejected(self, mock_node):
         rtttl_library = Mock()

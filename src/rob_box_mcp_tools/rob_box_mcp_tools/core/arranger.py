@@ -107,6 +107,12 @@ ROLE_PROFILE: Dict[str, Tuple[str, int, float]] = {
     "bass":  ("p1", 3, 0.50),
     "lead":  ("p2", 5, 0.52),
     "pad":   ("p3", 4, 0.30),
+    # Второй голос выведенной аранжировки. Слот d3 — потому что Renardo
+    # даёт ровно 6 слотов (d1-d3/p1-p3, renardo_sanitizer::
+    # _ALLOWED_PLAYER_SLOTS), и остальные пять уже заняты. Имя слота на
+    # звук не влияет; конфликта с перкуссией нет, потому что выведенная
+    # аранжировка перкуссию не добавляет (грув несут drums + hats).
+    "counter": ("d3", 4, 0.26),
 }
 
 #: Роли, которые играют сэмплами через ``play(...)``, а не синтом.
@@ -253,6 +259,11 @@ class Layer:
     midi: Optional[Sequence[Optional[int]]] = None
     sample: int = 0
     oct_shift: int = 0
+    #: Длина звучания ноты в битах, независимо от ``dur`` (шага сетки).
+    #: В Renardo ``sus`` по умолчанию равен ``dur``, то есть нота тянется
+    #: до следующей. Остинато подклада без короткого ``sus`` слипается
+    #: обратно в выдержанный аккорд и перестаёт быть ритмом.
+    sus: Optional[float] = None
 
 
 @dataclass
@@ -277,6 +288,10 @@ class CompositionSpec:
     #: False -> в конце формы музыка останавливается сама. True (DJ-режим)
     #: -> форма зацикливается бесконечно.
     repeat: bool = True
+    #: Длина фиксированной темы в тактах (0 — темы нет). Секции формы
+    #: подгоняются под целое число её повторов, чтобы границы формы
+    #: совпадали с границами фразы (:func:`_snap_plan_to_theme`).
+    theme_bars: int = 0
     #: Свинг восьмых, 0..0.3 (issue #1806). 0 = ровная сетка — дефолт для
     #: большинства жанров. Ненулевой свинг нужен там, где ровные восьмые
     #: физически не звучат как жанр (джаз, блюз, шафл, фанк) — ``Clock.
@@ -303,9 +318,33 @@ def _fmt_list(values: Sequence[float]) -> str:
     return "[" + ", ".join(_fmt(v) for v in values) + "]"
 
 
-def _fmt_midi_list(values: Sequence[Optional[int]]) -> str:
-    """MIDI-список для Renardo ``midinote=[...]``: ``None`` = пауза."""
-    return "[" + ", ".join("None" if v is None else str(int(v)) for v in values) + "]"
+#: Аргументы плеера, при которых ступень Renardo численно равна MIDI-ноте.
+#:
+#: Дублирует :data:`core.rtttl.ABSOLUTE_MIDI_ARGS` намеренно: там лежит
+#: полное объяснение, почему ``midinote=`` не работает, а здесь модуль
+#: остаётся без зависимости от RTTTL-парсера (аранжировщик умеет играть
+#: дословную тему из любого источника, не только из рингтона).
+ABSOLUTE_MIDI_ARGS = "oct=0, root=0, scale=Scale.chromatic"
+
+
+def _fmt_midi_note(value) -> str:
+    """Одна позиция списка нот: пауза, нота или аккорд.
+
+    Кортеж рендерится круглыми скобками — в Renardo это PGroup, то есть
+    ОДНОВРЕМЕННОЕ звучание (renardo_lib/Patterns/Main.py::PGroup). Тот же
+    урок, что и в :func:`_fmt_chord`: квадратные скобки дали бы арпеджио
+    по одной ноте за такт вместо аккорда.
+    """
+    if value is None:
+        return "None"
+    if isinstance(value, (tuple, list)):
+        return "(" + ", ".join(str(int(v)) for v in value) + ")"
+    return str(int(value))
+
+
+def _fmt_midi_list(values: Sequence[object]) -> str:
+    """Список абсолютных MIDI как ступени Renardo: ``None`` = пауза."""
+    return "[" + ", ".join(_fmt_midi_note(v) for v in values) + "]"
 
 
 def _fmt_chord(values: Sequence[float]) -> str:
@@ -355,16 +394,83 @@ def _merge_adjacent(values: Sequence, durations: Sequence[int]) -> Tuple[List, L
     return merged_values, merged_durations
 
 
-def resolve_form(name: Optional[str]) -> List[Tuple[str, int, Dict[str, float]]]:
+def resolve_form(
+    name: Optional[str], theme_bars: int = 0
+) -> List[Tuple[str, int, Dict[str, float]]]:
     """Вернуть план формы, молча падая на дефолт для неизвестного имени.
 
     Неизвестная форма — не повод отказать в музыке: LLM регулярно
     выдумывает названия, и лучше сыграть дугу, чем вернуть ошибку.
+
+    Args:
+        theme_bars: длина фиксированной темы в тактах. Ненулевое значение
+            подгоняет секции под ЦЕЛОЕ число её повторов — см.
+            :func:`_snap_plan_to_theme`. 0 — форма как записана в
+            :data:`FORMS` (музыка, сочинённая с нуля: там темы фиксированной
+            длины нет и подгонять не подо что).
     """
-    return FORMS.get((name or "").strip().lower(), FORMS[DEFAULT_FORM])
+    plan = FORMS.get((name or "").strip().lower(), FORMS[DEFAULT_FORM])
+    return _snap_plan_to_theme(plan, theme_bars)
 
 
-def form_duration_seconds(name: Optional[str], bpm: float) -> float:
+def _snap_plan_to_theme(
+    plan: Sequence[Tuple[str, int, Dict[str, float]]], theme_bars: int
+) -> List[Tuple[str, int, Dict[str, float]]]:
+    """Подогнать секции формы под целое число повторов темы.
+
+    🔴 FIX (live 14.09): секции формы записаны круглыми числами тактов
+    (8/8/16/8/16/8), а живая тема круглой не бывает — имперский марш
+    занимает 9 тактов. На форме ``arc`` это давало 7.1 повтора: каждая
+    смена секции приходилась на середину фразы, а на стыке лупа тема
+    обрывалась. Слышно это именно как «мелодия не попадает»: громкость и
+    слои переключаются там, где у темы ничего не происходит.
+
+    Считаем не по секциям, а от БЮДЖЕТА повторов: сколько раз тема
+    укладывается в форму целиком. Бюджет раздаётся секциям пропорцио-
+    нально их исходной длине (метод наибольших остатков), и секции, которым
+    не досталось ни одного повтора, выпадают.
+
+    Бюджет, а не «каждой секции минимум один повтор» — потому что в
+    библиотеке 10460 мелодий и попадаются темы по 40-79 тактов. При
+    минимуме в один повтор шесть секций растянули бы такую тему на
+    полчаса; с бюджетом длинная тема сама становится формой и играет
+    один-два раза.
+    """
+    if theme_bars <= 0:
+        return list(plan)
+
+    total_bars = sum(int(bars) for _n, bars, _i in plan)
+    budget = max(1, int(round(total_bars / float(theme_bars))))
+
+    # Наибольшие остатки: сначала целые части, потом по одному повтору
+    # тем секциям, у которых дробный хвост больше. Без этого округление
+    # каждой секции по отдельности теряет или добавляет повторы, и сумма
+    # перестаёт совпадать с бюджетом.
+    shares = [budget * int(bars) / total_bars for _n, bars, _i in plan]
+    repeats = [int(share) for share in shares]
+    order = sorted(
+        range(len(plan)), key=lambda i: shares[i] - repeats[i], reverse=True
+    )
+    for i in order[: budget - sum(repeats)]:
+        repeats[i] += 1
+
+    snapped = [
+        (name, repeats[i] * theme_bars, intensities)
+        for i, (name, _bars, intensities) in enumerate(plan)
+        if repeats[i] > 0
+    ]
+    if snapped:
+        return snapped
+    # Бюджет целиком осел на секции, которых не осталось (возможно только
+    # при вырожденном плане) — играем тему один раз самой длинной секцией.
+    longest = max(range(len(plan)), key=lambda i: plan[i][1])
+    name, _bars, intensities = plan[longest]
+    return [(name, theme_bars, intensities)]
+
+
+def form_duration_seconds(
+    name: Optional[str], bpm: float, theme_bars: int = 0
+) -> float:
     """Длительность одного прохода формы в секундах реального времени.
 
     Issue #1812: у трека, сыгранного с ``repeat=False``, форма конечна и её
@@ -382,27 +488,47 @@ def form_duration_seconds(name: Optional[str], bpm: float) -> float:
         Длительность в секундах: ``total_bars * BEATS_PER_BAR * 60 / bpm``.
     """
     clamped_bpm = max(BPM_RANGE[0], min(BPM_RANGE[1], float(bpm)))
-    plan = resolve_form(name)
+    plan = resolve_form(name, theme_bars)
     total_beats = sum(int(bars) for _n, bars, _i in plan) * BEATS_PER_BAR
     return total_beats * 60.0 / clamped_bpm
+
+
+def _section_intensity(role: str, intensities: Dict[str, float]) -> float:
+    """Интенсивность роли в одной секции формы.
+
+    Контрмелодии в таблицах FORMS нет: она появилась вместе с выведенной
+    аранжировкой и по смыслу привязана к теме, а не к секции. Её уровень
+    берётся от лида (:data:`COUNTER_OF_LEAD`), если форма не назвала его
+    явно — тогда второй голос входит и уходит вместе с темой в любой
+    форме, включая те, что добавят позже.
+    """
+    if role == "counter" and "counter" not in intensities:
+        return float(intensities.get("lead", 0.0)) * COUNTER_OF_LEAD
+    return float(intensities.get(role, 0.0))
 
 
 def _amp_envelope(
     role: str,
     plan: Sequence[Tuple[str, int, Dict[str, float]]],
     base_amp: float,
+    floor: float = 0.0,
 ) -> Tuple[List[float], List[int]]:
     """Собрать (значения amp, длительности в битах) для одной роли.
 
     Соседние секции с одинаковой интенсивностью склеиваются — иначе
     ``var([0.5, 0.5, 0.5], [32, 32, 64])`` порождает лишние переключения
     и делает код нечитаемым.
+
+    Args:
+        floor: нижняя граница интенсивности, доля 0..1. Нужна
+            фиксированной теме (:data:`FIXED_THEME_AMP_FLOOR`): форма
+            вправе делать её тише, но не вправе выключить.
     """
     amps: List[float] = []
     durs: List[int] = []
     for _name, bars, intensities in plan:
-        amp = round(base_amp * float(intensities.get(role, 0.0)), 4)
-        amps.append(amp)
+        intensity = max(_section_intensity(role, intensities), float(floor))
+        amps.append(round(base_amp * intensity, 4))
         durs.append(int(bars) * BEATS_PER_BAR)
     return _merge_adjacent(amps, durs)
 
@@ -622,8 +748,13 @@ def _render_melodic_player_head(
             raise ArrangementError(
                 f"Роль {layer.role!r} с midi — нужен точный ритм durs."
             )
-        # Абсолютный MIDI: октава не применяется (midinote задаёт высоту).
-        head = f"{layer.synth}(midinote={_fmt_midi_list(layer.midi)}"
+        # 🔴 FIX (live 14.09): было ``midinote=[...]`` — Renardo этот
+        # ключ как источник высоты ИГНОРИРУЕТ (пересчитывает freq из
+        # degree и затирает, Players.py::new_message_header). degree не
+        # передавался → вся тема звучала на одной ноте MIDI 60. Ноты
+        # идут позиционно, а ABSOLUTE_MIDI_ARGS делает ступень равной
+        # MIDI-ноте; oct здесь не применяется (высота уже абсолютная).
+        head = f"{layer.synth}({_fmt_midi_list(layer.midi)}"
         return head, pre_lines
 
     if layer.durs is not None:
@@ -664,8 +795,14 @@ def _render_melodic_args(
             args.append(f"dur=var({_fmt_list(dur_values)}, {_fmt_list(dur_durs)})")
         else:
             args.append(f"dur={_fmt(layer.dur)}")
+    if layer.sus is not None:
+        args.append(f"sus={_fmt(layer.sus)}")
     if layer.midi is None:
         args.append(f"oct={max(2, min(7, role_oct + int(layer.oct_shift)))}")
+    else:
+        # root=0 обязателен: иначе Root.default (var с прогрессией)
+        # транспонирует дословную тему вслед за гармонией.
+        args.append(ABSOLUTE_MIDI_ARGS)
     return args
 
 
@@ -683,7 +820,14 @@ def _render_layer(
         )
     player, role_oct, base_amp = profile
 
-    amps, durs = _amp_envelope(layer.role, plan, base_amp)
+    # Фиксированная тема (и её второй голос) не имеет права замолчать
+    # совсем — её попросили сыграть. См. FIXED_THEME_AMP_FLOOR.
+    floor = 0.0
+    if layer.midi is not None and layer.role in ("lead", "counter"):
+        floor = FIXED_THEME_AMP_FLOOR
+        if layer.role == "counter":
+            floor *= COUNTER_OF_LEAD
+    amps, durs = _amp_envelope(layer.role, plan, base_amp, floor=floor)
     if not any(amps):
         # Роль не участвует ни в одной секции этой формы (например drums в
         # ambient) — плеер не создаём вовсе, чтобы не гонять тихие ноты.
@@ -703,7 +847,19 @@ def _render_layer(
     args.append(f"amp={amp_expr}")
     # Фильтр-свип вешаем на держащие слои. На ударные не вешаем: срезанная
     # атака бочки слышна как проваленный грув.
-    if use_filter and layer.role in ("bass", "pad", "lead"):
+    # 🔴 FIX (live 14.09, «солло не все ноты играет»): свип ездит от 700 Гц,
+    # и на нижнем краю он срезает ВСЁ, что выше. У имперского марша выше
+    # 700 Гц лежат 37% нот темы (она идёт до D6 = 1175 Гц), а бас и
+    # подклад — целиком ниже: 0 нот из 36 и 0 из 108. Поэтому аккомпанемент
+    # звучал целым, а тема циклически теряла ноты по ходу свипа.
+    #
+    # Фиксированную тему форма вправе делать тише и ярче, но не вправе
+    # стирать — тот же принцип, что у FIXED_THEME_AMP_FLOOR и что у
+    # ударных, которые исключены из свипа с самого начала (срезанная атака
+    # бочки слышна как проваленный грув). Сочинённой с нуля мелодии свип
+    # по-прежнему достаётся: там он краска, а не потеря материала.
+    fixed_theme = layer.midi is not None and layer.role in ("lead", "counter")
+    if use_filter and layer.role in ("bass", "pad", "lead") and not fixed_theme:
         args.append("lpf=gflt")
 
     line = f"{player} >> {head}, " + ", ".join(args) + ")"
@@ -727,7 +883,7 @@ def render(spec: CompositionSpec) -> str:
 
     bpm = max(BPM_RANGE[0], min(BPM_RANGE[1], float(spec.bpm)))
     root = spec.root if spec.root in VALID_ROOTS else "C"
-    plan = resolve_form(spec.form)
+    plan = resolve_form(spec.form, getattr(spec, "theme_bars", 0))
     total_bars = sum(int(bars) for _n, bars, _i in plan)
     total_beats = total_bars * BEATS_PER_BAR
 
@@ -809,7 +965,26 @@ def render(spec: CompositionSpec) -> str:
 #: плотности фактуры, где модель систематически ошибается в сторону
 #: слишком коротких значений (лог: dur 2 -> 1 -> 0.5 -> 0.25 -> 0.125).
 #: Роль знает свою плотность лучше.
-ROLE_DEFAULT_DUR: Dict[str, float] = {"bass": 1.0, "lead": 0.5, "pad": 4.0}
+ROLE_DEFAULT_DUR: Dict[str, float] = {
+    "bass": 1.0, "lead": 0.5, "pad": 4.0, "counter": 0.5,
+}
+
+#: Доля громкости лида, которую получает контрмелодия там, где форма не
+#: называет её явно. Второй голос — тень темы: он обязан быть тише, но
+#: обязан появляться и исчезать ВМЕСТЕ с ней. Отдельные числа в каждой
+#: секции каждой формы (FORMS) дали бы то же самое, но рассинхронились бы
+#: при первой же правке формы.
+COUNTER_OF_LEAD = 0.55
+
+#: Нижняя граница громкости ФИКСИРОВАННОЙ темы (RTTTL), доля от базовой.
+#:
+#: 🔴 FIX (live 14.09): у роли ``lead`` нет интенсивности в секциях intro
+#: и build формы ``arc`` (и в intro/gap у остальных), поэтому тема
+#: получала ``amp=var([0, ...], [64, ...])`` — на 80 BPM это 48 секунд
+#: барабанов без мелодии в ответ на «сыграй имперский марш». Для темы,
+#: которую ПОПРОСИЛИ сыграть, молчание — не динамика, а невыполненная
+#: просьба: форма продолжает менять её громкость, но больше не гасит.
+FIXED_THEME_AMP_FLOOR = 0.5
 
 
 def parse_notes(raw: Optional[str]) -> Tuple[float, ...]:
@@ -1014,8 +1189,166 @@ def _add_melodic_layer(
     return True
 
 
+#: Полутоны, которые синт добавляет к запрошенной высоте ВНУТРИ СЕБЯ.
+#:
+#: 🔴 FIX (live 14.09, «режет ноты», «бас гудит»): 36 из 63 SynthDef'ов
+#: на роботе меняют частоту прямо в определении — ``freq = freq / 4`` и
+#: подобное. Басовые делают это осмысленно (их пишут так, чтобы играть
+#: басом от обычных ступеней), но аранжировщик об этом не знал и считал
+#: все регистры по НОМИНАЛЬНЫМ нотам. Последствия были разные и все
+#: неприятные:
+#:
+#: * ``dirt`` (÷4) как тема — мелодия уезжала на две октавы вниз, ПОД
+#:   подклад, и он её накрывал: на слух «ноты пропадают»;
+#: * ``ecello`` / ``jbass`` / ``dub`` / ``moogbass`` (÷4) как бас — нота
+#:   D2 звучала как D0, ниже слышимого: бас превращался в гул;
+#: * ``blip`` (×2) как тема — октавой выше задуманного;
+#: * ``subbass`` (÷3) как бас — сдвиг на 19 полутонов, то есть октава
+#:   ПЛЮС КВИНТА: просишь ре, звучит соль. Бас играл не ту ступень
+#:   аккорда, и никакая гармонизация этого не спасала.
+#:
+#: Значения — на сколько полутонов НАДО ПОДНЯТЬ ноту при отправке, чтобы
+#: прозвучала задуманная. Внутри модуль всюду рассуждает о звучащей
+#: высоте, поправка вносится последним шагом, при выводе кода.
+#:
+#: Таблица снята с самих .scd (``freq = freq * N`` / ``freq / N``,
+#: полутоны = 12·log2(коэффициент)). ``subbass`` округлён с ошибкой в
+#: 2 цента — она неслышима.
+SYNTH_SEMITONE_SHIFT: Dict[str, int] = {
+    "risseto": 80, "twang": 36,
+    "bass": 24, "bassguitar": 24, "dafbass": 24, "dbass": 24, "dblbass": 24,
+    "dirt": 24, "donk1": 24, "donk2": 24, "dub": 24, "ebass": 24,
+    "ecello": 24, "fbass": 24, "jbass": 24, "moogbass": 24, "squish": 24,
+    "subbass": 19,
+    "arpy": 12, "drone": 12, "faim2": 12, "fuzz": 12, "glitchbass": 12,
+    "noquarter": 12, "pbass": 12, "soft": 12, "ssaw": 12, "star": 12,
+    "subbass2": 12, "vibass": 12, "wobblebass": 12, "wsawbass": 12,
+    "blip": -12, "gong": -12, "noise": -12, "rissetobell": -12,
+}
+
+
+def _compensate(note, shift: int):
+    """Поднять ноту (или аккорд) на ``shift`` полутонов; ``None`` — пауза."""
+    if shift == 0 or note is None:
+        return note
+    if isinstance(note, (tuple, list)):
+        return tuple(int(v) + shift for v in note)
+    return int(note) + shift
+
+
+#: Длина удара остинато в битах. Короче шага сетки (доли) — иначе
+#: соседние аккорды смыкаются и остинато снова слышится как подложка.
+PAD_STAB_SUS = 0.4
+
+
+def _add_derived_layers(
+    layers: List[Layer],
+    harmony,
+    *,
+    theme_octaves: bool,
+    lead_synth: str,
+    bass_synth: Optional[str],
+    pad_synth: Optional[str],
+    counter_synth: Optional[str],
+    drums_sample: int,
+    hats_sample: int,
+) -> None:
+    """Разложить готовую гармонизацию темы в слои аранжировки.
+
+    От LLM здесь берутся ТОЛЬКО тембры (синты и сэмплы) — ноты и рисунки
+    целиком выведены из мелодии (см. :mod:`core.harmonize`). Поэтому
+    ``bass_notes`` / ``pad_notes`` / ``progression`` / рисунки ударных,
+    если модель их прислала, сюда не попадают: они были главным
+    источником фальши (модель писала их, не видя ни одной ноты темы).
+
+    Перкуссия не добавляется намеренно: её слот занимает контрмелодия,
+    а грув уже несут выведенные бочка и хэты.
+    """
+    _add_drum_layer_if_present(layers, "drums", harmony.drums, drums_sample)
+    _add_drum_layer_if_present(layers, "hats", harmony.hats, hats_sample)
+
+    # Наряд аранжировки соразмерен плотности темы. Второй голос и удвоение
+    # в октаву делают тему ТОЛЩЕ — плотной, громкой теме (марш, гимн,
+    # чиптюн) это вес, а редкой (крадущаяся тема с паузами между фразами)
+    # это гибель: её узнают по тонкой одинокой линии и по тишине вокруг.
+    # См. harmonize::DENSE_ONSETS_PER_BEAT.
+    dense = getattr(harmony, "dense", True)
+    for role, synth, part in (
+        ("bass", bass_synth, harmony.bass),
+        ("lead", lead_synth, harmony.lead),
+        ("pad", pad_synth, harmony.pad),
+        ("counter", counter_synth, harmony.counter if dense else ()),
+    ):
+        if not (synth and synth.strip()) or not part:
+            continue
+        notes = [note for note, _dur in part]
+        if (
+            role == "lead"
+            and theme_octaves
+            and dense
+            and _fits_octave_double(notes)
+        ):
+            notes = [_octave_double(note) for note in notes]
+        # Последний шаг: поправка на собственное транспонирование синта.
+        # До этой строки всё выше рассуждало о ЗВУЧАЩЕЙ высоте — регистры,
+        # удвоение, потолок подклада. См. SYNTH_SEMITONE_SHIFT.
+        shift = SYNTH_SEMITONE_SHIFT.get(synth.strip(), 0)
+        if shift:
+            notes = [_compensate(note, shift) for note in notes]
+        layers.append(
+            Layer(
+                role=role,
+                synth=synth.strip(),
+                midi=tuple(notes),
+                durs=tuple(float(dur) for _note, dur in part),
+                dur=ROLE_DEFAULT_DUR[role],
+                # Подклад ведёт остинато: удар должен быть короче шага
+                # сетки, иначе соседние аккорды сливаются в выдержанный
+                # звук и ритм пропадает (см. harmonize::_build_pad).
+                sus=PAD_STAB_SUS if role == "pad" else None,
+            )
+        )
+
+
+#: Ниже этой ноты удваивать тему октавой вниз нельзя: удвоение залезет
+#: в регистр баса. Библиотека — 10460 разных мелодий, и низких среди них
+#: полно (басовые риффы, мужские вокальные темы); для них удвоение даёт
+#: не вес, а кашу на границе с басовой партией.
+MIN_MIDI_FOR_OCTAVE_DOUBLE = 60  # C4
+
+
+def _fits_octave_double(notes: Sequence[object]) -> bool:
+    """Хватает ли теме высоты, чтобы удвоить её октавой вниз?
+
+    Смотрим на САМУЮ НИЗКУЮ ноту темы, а не на среднюю: достаточно одной
+    низкой ноты, чтобы её удвоение село на бас. Тема из одних пауз
+    удвоения не получает — удваивать нечего.
+    """
+    pitches = [
+        int(n) for n in notes if isinstance(n, (int, float)) and n is not None
+    ]
+    return bool(pitches) and min(pitches) >= MIN_MIDI_FOR_OCTAVE_DOUBLE
+
+
+def _octave_double(note):
+    """Нота → она же вместе с октавой ниже (``None`` остаётся паузой).
+
+    Тема в октавах — базовый приём оркестровки: в марше её ведут низкая
+    медь и низкие струнные одновременно, и именно удвоение даёт вес.
+    Одна линия одним тембром на слух и есть «монофонично и плоско».
+    """
+    if note is None:
+        return None
+    if isinstance(note, (tuple, list)):
+        return tuple(note)
+    return (int(note) - 12, int(note))
+
+
 def spec_from_flat(
     *,
+    harmony=None,
+    counter_synth: Optional[str] = None,
+    theme_octaves: bool = True,
     bpm: float = 120.0,
     root: str = "C",
     scale: str = "minor",
@@ -1050,8 +1383,52 @@ def spec_from_flat(
     ``lead_midi`` — путь ТОЧНОГО воспроизведения известной темы абсолютным
     MIDI (из RTTTL-библиотеки): играется дословно с ``lead_dur``, в ступени
     лада не переводится.
+
+    ``harmony`` (:class:`core.harmonize.Harmonization`) — тема, уже
+    разложенная на партии. Если он передан, ВСЕ ноты аккомпанемента и
+    рисунки ударных берутся из него, а не от модели: они выведены из
+    самой мелодии и промахнуться мимо её тональности не могут. За
+    моделью остаются тембры, форма и темп.
     """
     layers: List[Layer] = []
+
+    if harmony is not None:
+        if not (lead_synth and lead_synth.strip()):
+            raise ArrangementError(
+                "Для выведенной аранжировки нужен lead_synth — тема "
+                "должна чем-то играть."
+            )
+        _add_derived_layers(
+            layers,
+            harmony,
+            theme_octaves=bool(theme_octaves),
+            lead_synth=lead_synth,
+            bass_synth=bass_synth,
+            pad_synth=pad_synth,
+            # Свой тембр второго голоса, если задан. По умолчанию — тембр
+            # темы: два голоса одним инструментом читаются как одна партия
+            # в терцию, что всегда безопасно. Но контрастный тембр (тема
+            # медью, второй голос струнными) звучит богаче, поэтому выбор
+            # оставлен наружу.
+            counter_synth=counter_synth or lead_synth,
+            drums_sample=drums_sample,
+            hats_sample=hats_sample,
+        )
+        return CompositionSpec(
+            bpm=float(bpm),
+            root=(root or "C").strip(),
+            scale=(scale or "minor").strip(),
+            form=(form or DEFAULT_FORM).strip(),
+            layers=tuple(layers),
+            # Прогрессии нет намеренно: вся гармония уже записана
+            # абсолютными нотами баса и пэда. Root.default, который
+            # двигал бы ступени, для них не существует — и потому не
+            # может увести аккомпанемент от фиксированной темы.
+            progression=(),
+            theme_bars=int(harmony.bars),
+            repeat=bool(repeat),
+            swing=float(swing or 0.0),
+        )
 
     # 🔴 FIX (live 31.08): здесь стояло sample=3 намертво. В библиотеке
     # 4585 сэмплов в трёх паках, а compose_music дотягивался только до

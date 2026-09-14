@@ -75,9 +75,34 @@ def test_zero_duration_raises():
         parse_rtttl("t:d=0,o=5,b=100:c")
 
 
-def test_renardo_output_has_midinote_and_dur():
+def test_renardo_output_has_degrees_and_dur():
     code = rtttl_to_renardo("fifth:d=4,o=5,b=63:8p,8g5,8g5,8g5,2d#5")
     assert "Clock.clear()" in code
     assert "Clock.bpm = 63" in code
-    assert "midinote=[None, 79, 79, 79, 75]" in code
+    assert "[None, 79, 79, 79, 75]" in code
     assert "dur=[0.5, 0.5, 0.5, 0.5, 2]" in code
+
+
+def test_renardo_output_never_uses_midinote_kwarg():
+    """Ноты идут ПОЗИЦИОННО (degree), а не через ``midinote=``.
+
+    Регресс-тест на живой баг 14.09: Renardo считает freq из ``degree``
+    и затирает ``midinote`` (Players.py::new_message_header), поэтому
+    с ``midinote=[...]`` ЛЮБАЯ мелодия звучала как ритм на одной ноте
+    MIDI 60. Проверяем именно отсутствие ключа, а не форму строки:
+    вернуть его — значит вернуть немую мелодию.
+    """
+    code = rtttl_to_renardo("fifth:d=4,o=5,b=63:8p,8g5,8g5,8g5,2d#5")
+    assert "midinote=" not in code
+
+
+def test_renardo_output_pins_absolute_pitch_args():
+    """Ступень равна MIDI-ноте только при oct=0/root=0/chromatic.
+
+    ``root=0`` отдельно важен: без него ``Root.default`` аранжировки
+    (var с прогрессией) транспонирует дословную тему вслед за гармонией.
+    """
+    code = rtttl_to_renardo("fifth:d=4,o=5,b=63:8p,8g5,8g5,8g5,2d#5")
+    assert "oct=0" in code
+    assert "root=0" in code
+    assert "scale=Scale.chromatic" in code
