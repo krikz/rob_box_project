@@ -14,6 +14,16 @@ tts_node:
   ros__parameters:
     metrics_port: 9110  # issue #1160 — Prometheus metrics endpoint
     provider: minimax
+    # Issue #2003 / ADR-0092 §3.5 — speculative pre-generation (chunk-level).
+    # `pregenerate_enabled` is the hard kill-switch; `False` makes pregenerate()/
+    # claim_pregen()/cancel_pregen() all no-op. Useful for e2e baseline
+    # comparison. `pregenerate_confidence_floor` matches CONFIDENCE_FLOOR
+    # (scheduler/pregen/estimator.py); estimator values below floor drop the
+    # chunk before synthesis (speculative_executor.kickoff). `pregenerate_history_window`
+    # bounds the EMA calibration buffers (actual/estimated durations).
+    pregenerate_enabled: true
+    pregenerate_confidence_floor: 0.6
+    pregenerate_history_window: 10
     # Issue #929 (OOM kill tts_node): фоновый warm-load Silero держит
     # ~700 MB-1 GB RSS постоянно (PyTorch + модель), даже когда Silero —
     # только fallback и Yandex/MiniMax работают. Контейнер voice-assistant

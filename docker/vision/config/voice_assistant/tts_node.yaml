@@ -8,6 +8,12 @@
 tts_node:
   ros__parameters:
     provider: minimax
+    # Issue #2003 / ADR-0092 §3.5 — speculative pre-generation (chunk-level).
+    # See ../config/tts_node.yaml for the full comment block. Defaults match
+    # the declare_parameter() defaults in tts_node.py.
+    pregenerate_enabled: true
+    pregenerate_confidence_floor: 0.6
+    pregenerate_history_window: 10
     silero_speaker: aidar
     silero_sample_rate: 48000
     synthesis_max_workers: 2
