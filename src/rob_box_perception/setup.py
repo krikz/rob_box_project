@@ -39,6 +39,11 @@ setup(
             'rob_box_perception.health_monitor:main',
             'perception_bridge = '
             'rob_box_perception.perception_bridge:main',
+            # ADR-0089 Phase 1: AI HAT+ inference node. Stub publishes
+            # deterministic test events when no HEF is configured; real
+            # HEF loading is gated by the hailo_enabled launch parameter.
+            'vision_hailo = '
+            'rob_box_perception.vision_hailo_node:main',
         ],
     },
 )

@@ -58,6 +58,15 @@ try:
 except ImportError:
     PerceptionEvent = None  # Fallback if not built yet
 
+# ADR-0089 Phase 1: VisionEvent msg is optional — node stays buildable
+# without it (mirrors the PerceptionEvent fallback above). When missing,
+# we skip subscribing to /vision/hailo/events and the structured
+# vision_events_json stays empty.
+try:
+    from rob_box_perception_msgs.msg import VisionEvent
+except ImportError:
+    VisionEvent = None  # Fallback if not built yet
+
 
 class ContextAggregatorNode(Node):
     """Агрегатор контекста восприятия (MPC lite)."""
@@ -83,6 +92,12 @@ class ContextAggregatorNode(Node):
         self.current_odom: Optional[Odometry] = None
         self.current_sensors: Dict = {}
         self.last_apriltags: List[int] = []
+
+        # ============ ADR-0089 Phase 1: AI HAT+ events ============
+        # Кольцевой буфер последних VisionEvent. Окна = memory_window (сек).
+        # Публикуется как vision_events_json в PerceptionEvent.
+        # При отсутствии VisionEvent.msg — буфер остаётся пустым (fallback).
+        self._hailo_events: List[Dict] = []
 
         # Здоровье системы
         self.recent_errors: List[Dict] = []
@@ -202,6 +217,26 @@ class ContextAggregatorNode(Node):
             10
         )
 
+        # ============ ADR-0089 Phase 1: AI HAT+ VisionEvent ============
+        # Подписка на структурированные события лиц/объектов от
+        # vision_hailo_node. Подаёт vision_events_json в PerceptionEvent.
+        if VisionEvent is not None:
+            self._hailo_events_sub = self.create_subscription(
+                VisionEvent,
+                '/vision/hailo/events',
+                self.on_hailo_vision_event,
+                10
+            )
+            self.get_logger().info(
+                '👁️  Hailo VisionEvent subscribed (/vision/hailo/events)'
+            )
+        else:
+            self._hailo_events_sub = None
+            self.get_logger().warning(
+                '⚠️  VisionEvent msg не найден — /vision/hailo/events '
+                'подписка отключена (ADR-0089 Phase 1 deferred)'
+            )
+
         # ============ Публикации ============
 
         if PerceptionEvent:
@@ -238,6 +273,42 @@ class ContextAggregatorNode(Node):
             self.get_logger().debug(f'👁️  Vision: {description}')
         except json.JSONDecodeError:
             self.get_logger().error('❌ Ошибка парсинга vision_context')
+
+    def on_hailo_vision_event(self, msg) -> None:
+        """Callback VisionEvent от vision_hailo_node (ADR-0089 Phase 1).
+
+        Сериализует ROS-msg в dict и кладёт в кольцевой буфер
+        `_hailo_events` (окно = `memory_window` секунд). В publish_event()
+        буфер публикуется как `PerceptionEvent.vision_events_json`.
+
+        Контракт полей — VisionEvent.msg (см. rob_box_perception_msgs).
+        """
+        event_dict = {
+            'stamp': {
+                'sec': int(msg.stamp.sec),
+                'nanosec': int(msg.stamp.nanosec),
+            },
+            'source_camera': msg.source_camera,
+            'event_type': msg.event_type,
+            'class_name': msg.class_name,
+            'class_id': int(msg.class_id),
+            'confidence': float(msg.confidence),
+            'bbox_cx': float(msg.bbox_cx),
+            'bbox_cy': float(msg.bbox_cy),
+            'bbox_w': float(msg.bbox_w),
+            'bbox_h': float(msg.bbox_h),
+            'distance_m': float(msg.distance_m),
+            'embedding_id': msg.embedding_id,
+            'display_name': msg.display_name,
+            'attributes_json': msg.attributes_json,
+        }
+        now = time.time()
+        self._hailo_events.append({'time': now, 'event': event_dict})
+        # Чистка старых событий (тот же memory_window что и для других типов).
+        cutoff = now - self.memory_window
+        self._hailo_events = [
+            e for e in self._hailo_events if e['time'] > cutoff
+        ]
 
     def on_robot_pose(self, msg: PoseStamped):
         """Обновление позиции."""
@@ -458,6 +529,16 @@ class ContextAggregatorNode(Node):
             )
         else:
             event.vision_context = ''
+
+        # ============ ADR-0089 Phase 1: AI HAT+ structured events ============
+        # Публикуем последние VisionEvent в JSON. vision_event_count
+        # — это cache hint для downstream-консьюмеров (mcp_server.py),
+        # которые могут пропустить парсинг если ничего не изменилось.
+        hailo_payload = [item['event'] for item in self._hailo_events]
+        event.vision_event_count = len(hailo_payload)
+        event.vision_events_json = json.dumps(
+            hailo_payload, ensure_ascii=False
+        )
 
         # Pose
         if self.current_pose:

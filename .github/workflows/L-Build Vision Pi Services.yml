@@ -472,8 +472,54 @@ jobs:
             BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh-${{ env.ROS_DISTRO }}
             SOURCE_HASH=${{ steps.source-hash.outputs.source_hash }}
 
+  # ADR-0089 Phase 1 (issue #2349): AI HAT+ 26 TOPS inference. Stub-режим —
+  # собирается поверх ros2-zenoh базы (НЕ voice-assistant: hailort/HEF ещё
+  # не ставим до Phase 1.5). Образ содержит rob_box_perception_msgs +
+  # rob_box_perception (vision_hailo console_script). См. Dockerfile.
+  build-vision-hailo:
+    needs: prepare
+    runs-on: [self-hosted, rob-box]
+    steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          clean: true
+
+      - name: Compute Python sources hash (cache invalidation)
+        # vision-hailo/Dockerfile COPY'ит src/rob_box_perception +
+        # src/rob_box_perception_msgs (IDL). Оба пути в hash — иначе
+        # правка .msg/.py не инвалидирует COPY-слой → stale-образ
+        # (тот же класс багов, что issue #2314 для rob_box_core).
+        id: source-hash
+        run: |
+          SOURCE_HASH=$( (find src/rob_box_perception/rob_box_perception -type f \( -name "*.py" \); \
+                          find src/rob_box_perception_msgs -type f \( -name "*.msg" -o -name "CMakeLists.txt" -o -name "package.xml" \)) \
+                        | sort | xargs sha256sum 2>/dev/null | sha256sum | awk '{print $1}')
+          echo "source_hash=${SOURCE_HASH}" >> "$GITHUB_OUTPUT"
+
+      - name: Build vision-hailo
+        uses: ./.github/actions/l-build-service
+        with:
+          service-name: vision-hailo
+          dockerfile-path: docker/vision/vision-hailo/Dockerfile
+          build-context: '.'
+          tags: |
+            ${{ env.IMAGE_PREFIX }}:vision-hailo-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
+            ${{ env.LOCAL_PREFIX }}:vision-hailo-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
+          build-args: |
+            APT_PROXY=http://host.docker.internal:3142
+            BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh-${{ env.ROS_DISTRO }}
+            SOURCE_HASH=${{ steps.source-hash.outputs.source_hash }}
+
   update-image-versions:
-    needs: [prepare, build-oak-d, build-led-matrix, build-ceiling-camera, build-voice-base, build-voice-resources, build-voice-assistant, build-telegram-bot, build-supercollider, build-supervisor, build-quest]
+    needs: [prepare, build-oak-d, build-led-matrix, build-ceiling-camera, build-voice-base, build-voice-resources, build-voice-assistant, build-telegram-bot, build-supercollider, build-supervisor, build-quest, build-vision-hailo]
     runs-on: [self-hosted, rob-box]
     if: success() && inputs.push_to_registry != false
     # Issue #t_dd49849b: 2.7h+ hang observed on concurrent runs (round-224+225+develop)
@@ -524,6 +570,7 @@ jobs:
           tag_and_push "${LOCAL_PREFIX}:voice-resources-${ROS_DISTRO}-${DOCKER_TAG}"
           tag_and_push "${LOCAL_PREFIX}:voice-assistant-${ROS_DISTRO}-${DOCKER_TAG}"
           tag_and_push "${LOCAL_PREFIX}:telegram-bot-${ROS_DISTRO}-${DOCKER_TAG}"
+          tag_and_push "${LOCAL_PREFIX}:vision-hailo-${ROS_DISTRO}-${DOCKER_TAG}"
           # supercollider excluded: tag naming is inconsistent (no ROS_DISTRO prefix)
 
           # Acceptance B (#1482): verify voice-assistant SHA-image is actually
@@ -557,7 +604,8 @@ jobs:
             "telegram-bot-${ROS_DISTRO}-${NEW_TAG}" \
             "oak-d-${ROS_DISTRO}-${NEW_TAG}" \
             "led-matrix-${ROS_DISTRO}-${NEW_TAG}" \
-            "ceiling-camera-${ROS_DISTRO}-${NEW_TAG}"; do
+            "ceiling-camera-${ROS_DISTRO}-${NEW_TAG}" \
+            "vision-hailo-${ROS_DISTRO}-${NEW_TAG}"; do
             if ! verify_in_registry "$SVC_TAG"; then
               VERIFY_FAILED=1
             fi
@@ -579,6 +627,7 @@ jobs:
               -e "s|^VOICE_RESOURCES_TAG=.*|VOICE_RESOURCES_TAG=${NEW_TAG}|" \
               -e "s|^VOICE_ASSISTANT_TAG=.*|VOICE_ASSISTANT_TAG=${NEW_TAG}|" \
               -e "s|^TELEGRAM_BOT_TAG=.*|TELEGRAM_BOT_TAG=${NEW_TAG}|" \
+              -e "s|^VISION_HAILO_TAG=.*|VISION_HAILO_TAG=${NEW_TAG}|" \
               "$VERSIONS_FILE"
 
             git config user.email "ci@rob-box.local"
@@ -618,7 +667,7 @@ jobs:
 
   # Итоговая сводка
   summary:
-    needs: [prepare, build-oak-d, build-led-matrix, build-ceiling-camera, build-voice-base, build-voice-resources, build-voice-assistant, build-telegram-bot, build-supercollider, build-supervisor, build-quest]
+    needs: [prepare, build-oak-d, build-led-matrix, build-ceiling-camera, build-voice-base, build-voice-resources, build-voice-assistant, build-telegram-bot, build-supercollider, build-supervisor, build-quest, build-vision-hailo]
     runs-on: [self-hosted, rob-box]
     if: always()
     steps:
@@ -640,3 +689,4 @@ jobs:
           echo "  ✅ telegram-bot"
           echo "  ✅ supercollider"
           echo "  ✅ supervisor"
+          echo "  ✅ vision-hailo"
