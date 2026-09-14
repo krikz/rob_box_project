@@ -2210,8 +2210,9 @@ class TestComposeMusicToolFormDeadline:
 
 class TestComposeMusicToolMelodyByName:
     """``compose_music(name=...)`` сам ищет мелодию в RTTTL-библиотеке и
-    конвертирует ноты в абсолютные MIDI. Аранжировку (drums/bass/pad/form)
-    даёт LLM — без неё вызов отклоняется (голое «пиканье» запрещено)."""
+    конвертирует ноты в абсолютные MIDI. От LLM нужны только тембры
+    (lead/bass/pad) — без них вызов отклоняется (голое «пиканье» запрещено);
+    ноты и рисунки ударных система выводит из самой темы."""
 
     def _make_tool(self, mock_node, rtttl_library=None):
         mgr = _make_manager(sc_running=True, renardo_available=True)
@@ -2219,11 +2220,8 @@ class TestComposeMusicToolMelodyByName:
 
     _ARR = dict(
         lead_synth="blip",
-        drums="X..o.X.o",
         bass_synth="dub",
-        bass_notes="0, 0, 4, 0",
         pad_synth="warmpad",
-        pad_notes="0, 2, 4",
     )
 
     def test_name_lookup_builds_arrangement_around_exact_notes(self, mock_node):
@@ -2253,13 +2251,10 @@ class TestComposeMusicToolMelodyByName:
         assert "oct=0, root=0, scale=Scale.chromatic" in code
         assert "Clock.bpm = 63" in code
         assert "Beethoven's Fifth" in result.message
-        # Аранжировка LLM дошла до кода.
+        # Аранжировка LLM дошла до кода: только тембры — нот и рисунков в
+        # _ARR больше нет, их система выводит из темы (core.harmonize).
         assert "dub" in code
         assert "warmpad" in code
-        # Рисунок ударных от модели НЕ используется: он выводится из
-        # атак самой темы (core.harmonize). Модель задаёт только тембр —
-        # ноты и рисунки она писала вслепую, и это было источником фальши.
-        assert "X..o.X.o" not in code
         assert "d1 >> play(" in code
 
     def test_name_without_arrangement_is_rejected(self, mock_node):
@@ -2274,8 +2269,14 @@ class TestComposeMusicToolMelodyByName:
         result = tool.execute(name="fifth")
         assert result.success is False
         assert "аранжировка" in result.error
-        assert "drums" in result.error
         assert "lead_synth" in result.error
+        assert "bass_synth" in result.error
+        assert "pad_synth" in result.error
+        # Ноты и рисунки ударных больше не требуются: они выводятся из темы,
+        # а требовать их — учить модель писать аккомпанемент вслепую.
+        assert "drums" not in result.error
+        assert "bass_notes" not in result.error
+        assert "pad_notes" not in result.error
         assert not mgr.execute_code.called
 
     def test_name_not_found_is_honest_failure(self, mock_node):

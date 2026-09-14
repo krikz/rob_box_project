@@ -2048,9 +2048,13 @@ class ComposeMusicTool(MCPTool):
                     "anthem\", «имперский марш» → \"imperial march\", "
                     "«happy birthday», «jingle bells». Когда name задан, "
                     "композитор сам находит ТОЧНЫЕ ноты в базе RTTTL и "
-                    "строит аранжировку вокруг них — bpm/root/scale/"
-                    "lead_notes указывать не нужно и не импровизируй ноты "
-                    "по памяти."
+                    "выводит из них аккомпанемент. Задай только тембры "
+                    "lead_synth + bass_synth + pad_synth (по желанию "
+                    "drums_sample/hats_sample, form и bpm как оверрайд "
+                    "темпа). bpm/root/scale/lead_notes/lead_dur/bass_notes/"
+                    "pad_notes/progression/drums/hats/perc указывать не "
+                    "нужно и не импровизируй ноты по памяти — они будут "
+                    "проигнорированы."
                 ),
                 required=False,
             ),
@@ -2116,7 +2120,8 @@ class ComposeMusicTool(MCPTool):
                 "o — малый, n — перкуссия, точка — пауза. Длина 4, 8 или 16 "
                 "знаков. Рисунок сочиняй под жанр (ровная четверть, бэкбит, "
                 "брейкбит, синкопа) — не переноси один и тот же из трека в "
-                "трек. Пропусти для музыки без ударных.",
+                "трек. Пропусти для музыки без ударных. Игнорируется при "
+                "заданном name: рисунок ударных выводится из атак мелодии.",
                 required=False,
             ),
             MCPToolParameter(
@@ -2137,7 +2142,8 @@ class ComposeMusicTool(MCPTool):
                 description="Паттерн хэтов: дефис — удар, точка — пауза. "
                 "Длина 4, 8 или 16 знаков. Плотность хэтов — половина "
                 "жанра: ровные шестнадцатые, скупые восьмые и синкопа "
-                "звучат по-разному на одном и том же бите.",
+                "звучат по-разному на одном и том же бите. Игнорируется "
+                "при заданном name: хэты выводит система из мелодии.",
                 required=False,
             ),
             MCPToolParameter(
@@ -2155,7 +2161,8 @@ class ComposeMusicTool(MCPTool):
                 description="Паттерн перкуссии — третий ударный слой поверх "
                 "бочки и хэтов: n — удар, точка — пауза, длина 4, 8 или 16 "
                 "знаков. Форма отводит ему место в кульминации; без него "
-                "плотные секции пустее.",
+                "плотные секции пустее. Игнорируется при заданном name: "
+                "слот перкуссии занимает контрмелодия из темы.",
                 required=False,
             ),
             MCPToolParameter(
@@ -2181,7 +2188,9 @@ class ComposeMusicTool(MCPTool):
                 "4 — квинта (отрицательные — вниз от тоники). Римские "
                 "цифры сюда НЕ подходят: «1» это НЕ тоника, а секунда. "
                 "Бас держит гармонию: он должен согласоваться с "
-                "progression, а не повторять мотив лида.",
+                "progression, а не повторять мотив лида. Игнорируется при "
+                "заданном name: бас выводится из самой мелодии, это поле "
+                "не нужно.",
                 required=False,
             ),
             MCPToolParameter(
@@ -2202,7 +2211,9 @@ class ComposeMusicTool(MCPTool):
                 "чисел. НУМЕРАЦИЯ С НУЛЯ: 0 — тоника. "
                 "Это МОТИВ, а не гамма: нужен скачок и ответ на "
                 "него, а не пробег по соседним ступеням вверх-вниз. "
-                "Сочиняй под тему и жанр каждого трека заново.",
+                "Сочиняй под тему и жанр каждого трека заново. "
+                "Игнорируется при заданном name: мелодия берётся из базы "
+                "RTTTL.",
                 required=False,
             ),
             MCPToolParameter(
@@ -2213,7 +2224,9 @@ class ComposeMusicTool(MCPTool):
                 "для ТОЧНОГО воспроизведения известной темы — тогда "
                 "мелодия играется дословно весь трек, а бас и форму "
                 "система строит вокруг неё сама. Для сочинённой с нуля "
-                "музыки пропусти: ритм подберёт аранжировщик.",
+                "музыки пропусти: ритм подберёт аранжировщик. "
+                "Игнорируется при заданном name: ритм темы берётся из "
+                "базы RTTTL.",
                 required=False,
             ),
             MCPToolParameter(
@@ -2231,7 +2244,8 @@ class ComposeMusicTool(MCPTool):
                 "\"0,2,4\" (тоника + терция + квинта), НЕ \"1,3,5\" — "
                 "последнее даст аккорд на секунде. Трезвучие тоники — "
                 "самый нейтральный вариант; секста, септима и обращения "
-                "дают трекам разный цвет.",
+                "дают трекам разный цвет. Игнорируется при заданном name: "
+                "пэд выводится из гармонии самой мелодии.",
                 required=False,
             ),
             MCPToolParameter(
@@ -2248,7 +2262,8 @@ class ComposeMusicTool(MCPTool):
                 "трека: в живом логе 56% вызовов пришли с ОДНОЙ и той же "
                 "последовательностью, скопированной из этого описания, — "
                 "именно поэтому сет звучал как один трек. Пропусти для "
-                "статичной гармонии.",
+                "статичной гармонии. Игнорируется при заданном name: "
+                "гармония уже записана абсолютными нотами темы.",
                 required=False,
             ),
             MCPToolParameter(
@@ -2289,22 +2304,24 @@ class ComposeMusicTool(MCPTool):
     @staticmethod
     def _missing_arrangement_fields(
         lead_synth: Optional[str],
-        drums: Optional[str],
         bass_synth: Optional[str],
-        bass_notes: Optional[str],
         pad_synth: Optional[str],
-        pad_notes: Optional[str],
     ) -> List[str]:
-        """Поля аранжировки, которых не хватает поверх найденной RTTTL-темы."""
+        """Поля аранжировки, которых не хватает поверх найденной RTTTL-темы.
+
+        При ``name=`` от модели нужны ТОЛЬКО тембры: ноты и рисунки ударных
+        выводятся из самой мелодии (:mod:`core.harmonize`), поэтому
+        ``bass_notes`` / ``pad_notes`` / ``progression`` / ``drums`` / ``hats``
+        / ``perc`` здесь не требуются. Бас и пэд при ``name=`` ничем не
+        автозаполняются, поэтому их синты остаются обязательными.
+        """
         missing: List[str] = []
-        if not lead_synth:
+        if not (lead_synth and lead_synth.strip()):
             missing.append("lead_synth")
-        if not drums:
-            missing.append("drums")
-        if not (bass_synth and bass_notes):
-            missing.append("bass_synth + bass_notes")
-        if not (pad_synth and pad_notes):
-            missing.append("pad_synth + pad_notes")
+        if not (bass_synth and bass_synth.strip()):
+            missing.append("bass_synth")
+        if not (pad_synth and pad_synth.strip()):
+            missing.append("pad_synth")
         return missing
 
     def _resolve_rtttl_params(
@@ -2470,12 +2487,13 @@ class ComposeMusicTool(MCPTool):
         if err is not None:
             return err
 
-        # Аранжировку даёт LLM (не подставляем дефолты): без drums + bass +
-        # pad + lead_synth тема звучит голым одиночным синтом или вообще
-        # «пиканьем». Просим модель дополнить вызов (live 11.09).
+        # Аранжировку даёт LLM (не подставляем дефолты): без lead_synth +
+        # bass_synth + pad_synth тема звучит голым одиночным синтом — бас и
+        # пэд при name= ничем не автозаполняются. Просим модель дополнить
+        # вызов (live 11.09, уточнено 14.09: ноты/рисунки не требуем).
         if name:
             missing = self._missing_arrangement_fields(
-                lead_synth, drums, bass_synth, bass_notes, pad_synth, pad_notes,
+                lead_synth, bass_synth, pad_synth,
             )
             if missing:
                 return MCPToolResult(
@@ -2494,10 +2512,12 @@ class ComposeMusicTool(MCPTool):
 
         try:
             spec = spec_from_flat(
-                # Тема из библиотеки: аккомпанемент выводится из её нот,
-                # а bass_notes/pad_notes/progression/рисунки ударных от
-                # модели игнорируются — именно они промахивались мимо
-                # тональности, потому что писались вслепую (live 14.09).
+                # Тема из библиотеки: аккомпанемент выводится из её нот.
+                # От модели при name= отбрасываются bass_notes / pad_notes /
+                # lead_notes / lead_dur / progression и рисунки drums / hats /
+                # perc — именно они писались вслепую и промахивались мимо
+                # тональности (live 14.09). lead_midi / lead_dur из RTTTL
+                # остаются в ответе только для логов и обратной совместимости.
                 harmony=harmony,
                 bpm=bpm,
                 root=root,
@@ -3128,8 +3148,9 @@ class LookupMelodyTool(MCPTool):
             "делом, когда юзер просит сыграть конкретную мелодию: посмотри на "
             "ноты и подбери аранжировку (lead_synth, form, drums, bass, pad). "
             "Затем СЫГРАЙ через compose_music(name=..., lead_synth=..., "
-            "drums=..., bass_synth=..., bass_notes=..., pad_synth=..., "
-            "pad_notes=..., form=...). lead_synth подбирай под характер "
+            "bass_synth=..., pad_synth=..., form=...). Ноты и рисунки "
+            "ударных при name= система выводит из самой мелодии — не "
+            "сочиняй их. lead_synth подбирай под характер "
             "мелодии (марш → imperialbrass, классика → pianovel, игра → blip). "
             "НЕ конвертируй RTTTL вручную в execute_music_code. Имя ищи на "
             "АНГЛИЙСКОМ или транслитом («имперский марш» → \"imperial march\"). "

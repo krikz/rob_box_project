@@ -83,15 +83,26 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                        'композитор сам '
                                                                        'находит ТОЧНЫЕ '
                                                                        'ноты в базе '
-                                                                       'RTTTL и строит '
-                                                                       'аранжировку '
-                                                                       'вокруг них — '
-                                                                       'bpm/root/scale/lead_notes '
+                                                                       'RTTTL и '
+                                                                       'выводит из них '
+                                                                       'аккомпанемент. '
+                                                                       'Задай только '
+                                                                       'тембры '
+                                                                       'lead_synth + '
+                                                                       'bass_synth + '
+                                                                       'pad_synth (по '
+                                                                       'желанию '
+                                                                       'drums_sample/hats_sample, '
+                                                                       'form и bpm как '
+                                                                       'оверрайд '
+                                                                       'темпа). '
+                                                                       'bpm/root/scale/lead_notes/lead_dur/bass_notes/pad_notes/progression/drums/hats/perc '
                                                                        'указывать не '
                                                                        'нужно и не '
                                                                        'импровизируй '
-                                                                       'ноты по '
-                                                                       'памяти.'},
+                                                                       'ноты по памяти '
+                                                                       '— они будут '
+                                                                       'проигнорированы.'},
                                             'variants': {   'type': 'array',
                                                             'description': 'Дополнительные '
                                                                            'варианты '
@@ -203,7 +214,14 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                         'трека в трек. '
                                                                         'Пропусти для '
                                                                         'музыки без '
-                                                                        'ударных.'},
+                                                                        'ударных. '
+                                                                        'Игнорируется '
+                                                                        'при заданном '
+                                                                        'name: рисунок '
+                                                                        'ударных '
+                                                                        'выводится из '
+                                                                        'атак '
+                                                                        'мелодии.'},
                                             'drums_sample': {   'type': 'integer',
                                                                 'description': 'Индекс '
                                                                                'сэмпла '
@@ -272,7 +290,13 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                        'звучат '
                                                                        'по-разному на '
                                                                        'одном и том же '
-                                                                       'бите.'},
+                                                                       'бите. '
+                                                                       'Игнорируется '
+                                                                       'при заданном '
+                                                                       'name: хэты '
+                                                                       'выводит '
+                                                                       'система из '
+                                                                       'мелодии.'},
                                             'hats_sample': {   'type': 'integer',
                                                                'description': 'Индекс '
                                                                               'сэмпла '
@@ -318,7 +342,14 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                        'кульминации; '
                                                                        'без него '
                                                                        'плотные секции '
-                                                                       'пустее.'},
+                                                                       'пустее. '
+                                                                       'Игнорируется '
+                                                                       'при заданном '
+                                                                       'name: слот '
+                                                                       'перкуссии '
+                                                                       'занимает '
+                                                                       'контрмелодия '
+                                                                       'из темы.'},
                                             'perc_sample': {   'type': 'integer',
                                                                'description': 'Индекс '
                                                                               'сэмпла '
@@ -390,7 +421,18 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                              'а не '
                                                                              'повторять '
                                                                              'мотив '
-                                                                             'лида.'},
+                                                                             'лида. '
+                                                                             'Игнорируется '
+                                                                             'при '
+                                                                             'заданном '
+                                                                             'name: '
+                                                                             'бас '
+                                                                             'выводится '
+                                                                             'из самой '
+                                                                             'мелодии, '
+                                                                             'это поле '
+                                                                             'не '
+                                                                             'нужно.'},
                                             'lead_synth': {   'type': 'string',
                                                               'description': 'Синт '
                                                                              'мелодии. '
@@ -469,7 +511,15 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                              'и жанр '
                                                                              'каждого '
                                                                              'трека '
-                                                                             'заново.'},
+                                                                             'заново. '
+                                                                             'Игнорируется '
+                                                                             'при '
+                                                                             'заданном '
+                                                                             'name: '
+                                                                             'мелодия '
+                                                                             'берётся '
+                                                                             'из базы '
+                                                                             'RTTTL.'},
                                             'lead_dur': {   'type': 'string',
                                                             'description': 'Ритм '
                                                                            'мелодии в '
@@ -504,7 +554,15 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                            'пропусти: '
                                                                            'ритм '
                                                                            'подберёт '
-                                                                           'аранжировщик.'},
+                                                                           'аранжировщик. '
+                                                                           'Игнорируется '
+                                                                           'при '
+                                                                           'заданном '
+                                                                           'name: ритм '
+                                                                           'темы '
+                                                                           'берётся из '
+                                                                           'базы '
+                                                                           'RTTTL.'},
                                             'pad_synth': {   'type': 'string',
                                                              'description': 'Синт '
                                                                             'подклада: '
@@ -549,7 +607,16 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                             'дают '
                                                                             'трекам '
                                                                             'разный '
-                                                                            'цвет.'},
+                                                                            'цвет. '
+                                                                            'Игнорируется '
+                                                                            'при '
+                                                                            'заданном '
+                                                                            'name: пэд '
+                                                                            'выводится '
+                                                                            'из '
+                                                                            'гармонии '
+                                                                            'самой '
+                                                                            'мелодии.'},
                                             'progression': {   'type': 'string',
                                                                'description': 'Движение '
                                                                               'тоники '
@@ -628,7 +695,17 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                               'Пропусти '
                                                                               'для '
                                                                               'статичной '
-                                                                              'гармонии.'},
+                                                                              'гармонии. '
+                                                                              'Игнорируется '
+                                                                              'при '
+                                                                              'заданном '
+                                                                              'name: '
+                                                                              'гармония '
+                                                                              'уже '
+                                                                              'записана '
+                                                                              'абсолютными '
+                                                                              'нотами '
+                                                                              'темы.'},
                                             'repeat': {   'type': 'boolean',
                                                           'description': 'true — форма '
                                                                          'зацикливается '
@@ -1702,13 +1779,14 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                        'ПЕРВЫМ делом, когда юзер просит сыграть конкретную мелодию: '
                        'посмотри на ноты и подбери аранжировку (lead_synth, form, '
                        'drums, bass, pad). Затем СЫГРАЙ через compose_music(name=..., '
-                       'lead_synth=..., drums=..., bass_synth=..., bass_notes=..., '
-                       'pad_synth=..., pad_notes=..., form=...). lead_synth подбирай '
-                       'под характер мелодии (марш → imperialbrass, классика → '
-                       'pianovel, игра → blip). НЕ конвертируй RTTTL вручную в '
-                       'execute_music_code. Имя ищи на АНГЛИЙСКОМ или транслитом '
-                       '(«имперский марш» → "imperial march"). Если не нашлось — '
-                       'честно скажи, что не знаешь точных нот.',
+                       'lead_synth=..., bass_synth=..., pad_synth=..., form=...). Ноты '
+                       'и рисунки ударных при name= система выводит из самой мелодии — '
+                       'не сочиняй их. lead_synth подбирай под характер мелодии (марш '
+                       '→ imperialbrass, классика → pianovel, игра → blip). НЕ '
+                       'конвертируй RTTTL вручную в execute_music_code. Имя ищи на '
+                       'АНГЛИЙСКОМ или транслитом («имперский марш» → "imperial '
+                       'march"). Если не нашлось — честно скажи, что не знаешь точных '
+                       'нот.',
         'parameters': {   'type': 'object',
                           'properties': {   'name': {   'type': 'string',
                                                         'description': 'Название '
