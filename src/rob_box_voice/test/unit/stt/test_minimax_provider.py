@@ -220,6 +220,66 @@ SILENCE_AUDIO = b"\x00\x00" * 16000
 
 
 # ---------------------------------------------------------------------------
+# autouse fixture — isolate this module from ``unit/node/conftest.py``'s
+# ``types.SimpleNamespace`` shim for ``sys.modules['httpx']``.
+#
+# Background:
+#   * ``unit/node/conftest.py:97`` installs ``httpx = SimpleNamespace(Timeout=...)``
+#     so the dialogue_node tests don't need real network.
+#   * That shim lacks ``TimeoutException`` / ``HTTPError``, so when
+#     ``MiniMaxSTTProvider.transcribe`` is invoked and one of the
+#     ``except httpx.TimeoutException as exc:`` / ``except httpx.HTTPError``
+#     clauses is evaluated at runtime, Python raises
+#     ``AttributeError: 'types.SimpleNamespace' object has no attribute 'TimeoutException'``.
+#   * The shim is installed with ``setdefault``, so any module that loads
+#     real httpx *first* wins — but :mod:`rob_box_voice.stt_providers.minimax_provider`
+#     is imported lazily inside the tests, by which time the shim has
+#     already won.
+#
+# Strategy:
+#   * Make sure the real httpx package is bound to ``sys.modules['httpx']``
+#     before this module's tests run, but **only for this module's lifetime**.
+#   * ``addfinalizer`` restores the previous entry so that sibling
+#     modules in the same ``pytest test/`` invocation (notably
+#     ``unit/tts/test_provider_chain.py``) keep their SimpleNamespace
+#     httpx and don't regress.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _ensure_real_httpx_during_tests():
+    """autouse — swap ``sys.modules['httpx']`` for the real package.
+
+    Idempotent: if the real package is already bound, this is a no-op
+    apart from the finalizer. Restores the prior entry after each test
+    so other tests in the same ``pytest`` run aren't affected.
+    """
+    import importlib
+    import sys as _sys
+
+    saved = _sys.modules.get("httpx")
+    is_real = saved is not None and hasattr(saved, "__file__")
+    if is_real:
+        yield
+        return
+
+    # Drop the shim and re-import the real package. If httpx is missing
+    # on this image entirely we keep whatever's bound (likely None).
+    try:
+        _sys.modules.pop("httpx", None)
+        importlib.import_module("httpx")
+    except ImportError:
+        pass
+    try:
+        yield
+    finally:
+        if saved is not None:
+            _sys.modules["httpx"] = saved
+        else:
+            _sys.modules.pop("httpx", None)
+
+
+# ---------------------------------------------------------------------------
 # Constants / config
 # ---------------------------------------------------------------------------
 
