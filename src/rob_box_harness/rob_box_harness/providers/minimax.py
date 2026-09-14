@@ -309,7 +309,11 @@ class HarnessMiniMaxProvider(LLMProvider):  # type: ignore[misc]
         # разумный дефолт 4096 для голоса (промпт 39K символов,
         # музыкальный код + речь не влезают в 256).
         if settings is None:
-            settings = LLMSettings(model=DEFAULT_MODEL, max_tokens=4096)
+            # model=None → иннер-провайдер берёт СВОЙ default model.
+            # Не хардкодим DEFAULT_MODEL: для инстанса, созданного с
+            # не-vision моделью (напр. MiniMax-M2.7), capability-check
+            # должен отсекать image_input ДО сети.
+            settings = LLMSettings(max_tokens=4096)
         elif settings.max_tokens is None:
             settings = LLMSettings(
                 **{**asdict(settings), "max_tokens": 4096}
@@ -338,7 +342,8 @@ class HarnessMiniMaxProvider(LLMProvider):  # type: ignore[misc]
         # 🔴 FIX (live 06.08): тот же max_tokens-дефолт, что в complete —
         # MiniMax режет на 256 токенах без max_tokens (обрывки «[INSTR»).
         if settings is None:
-            settings = LLMSettings(model=DEFAULT_MODEL, max_tokens=4096)
+            # model=None → иннер-провайдер берёт СВОЙ default model.
+            settings = LLMSettings(max_tokens=4096)
         elif settings.max_tokens is None:
             settings = LLMSettings(
                 **{**asdict(settings), "max_tokens": 4096}
