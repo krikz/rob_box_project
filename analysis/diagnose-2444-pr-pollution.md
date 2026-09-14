@@ -85,3 +85,9 @@ INFO-режиме выдаёт 0).
   (только force-push в их ветки, и моя ветка 41b5805a сама = wt/t_d4ce35e3,
   pollution в HEAD, чистка в другой карточке).
 - Не правим worker_pre_flight.sh / worker_post_flight.sh — это PR #2443 в работе.
+- **Не правим AGENTS.md** напрямую (заблокировано single-query protection —
+  `AGENTS.md` это culture-файл, требует явного аппрува товарища Шифу).
+  Вместо этого предлагаю PR-описание чтобы merge-gate/Шифу принял решение
+  отдельно. Правило «rebase может принести чужие файлы — проверяй diff»
+  записано в skill `.agents/skills/rebase-pollution-check/SKILL.md`
+  и ADR-0095; AGENTS.md обновление — follow-up.

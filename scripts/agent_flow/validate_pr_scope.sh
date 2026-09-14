@@ -39,6 +39,16 @@
 #                          формально вне scope карточки).
 #   BASE_REF             — что считать эталоном (default origin/develop).
 #   GITHUB_EVENT_NAME=pull_request + MERGE_COMMIT_INFERRED=true → skip.
+#   PR_SCOPE_MODE=pre-merge — расширенный режим: сравниваем **working tree**
+#                          (uncommitted changes — staged + unstaged, через
+#                          `git diff origin/develop` с двухточечным синтаксисом)
+#                          vs `origin/develop`. Ловит pollution даже если
+#                          воркер ещё не сделал commit (типичный сценарий: после
+#                          rebase мусорные файлы появились в working tree, и
+#                          воркер увидит их в `git status` как `A`-prefix).
+#                          По умолчанию OFF (чтобы не сломать текущее поведение
+#                          post-PR gate). Воркер включает явно перед push или
+#                          перед `gh pr create`.
 #
 # Exit codes:
 #   0 — OK (нет out-of-scope файлов ИЛИ skipped ИЛИ info-режим)
@@ -81,7 +91,24 @@ fi
 
 # Список файлов в diff: уникальный, отсортированный. Используем «names-only»
 # через «--name-only» — самый дешёвый способ получить ровно то, что пойдёт в PR.
-DIFF_FILES="$(git diff --name-only "$BASE_REF...HEAD" 2>/dev/null | sort -u || true)"
+#
+# По умолчанию: трёхточечный diff (BASE...HEAD) — дельта HEAD относительно
+# merge-base. Хватает для pollution, которая сидит в HEAD как новые файлы от
+# старых wip-коммитов (issue #2444 raw-evidence: validate_pr_scope уже ловит).
+#
+# Режим pre-merge (PR_SCOPE_MODE=pre-merge): двухточечный `git diff BASE_REF`
+# без указания HEAD — это индекс + working tree vs BASE_REF (т.е. ВСЁ что
+# сейчас в ветке, включая некоммитнутые изменения). Плюс untracked файлы.
+# Ловит pollution ДО коммита, чтобы воркер мог удалить мусор до push.
+if [ "${PR_SCOPE_MODE:-}" = "pre-merge" ]; then
+    WT_TRACKED="$(git diff --name-only "$BASE_REF" 2>/dev/null | sort -u || true)"
+    WT_UNTRACKED="$(git ls-files --others --exclude-standard 2>/dev/null | sort -u || true)"
+    DIFF_FILES="$(printf '%s\n%s\n' "$WT_TRACKED" "$WT_UNTRACKED" \
+        | sed '/^$/d' | sort -u)"
+    echo "[validate_pr_scope] mode=pre-merge: working tree + index + untracked vs $BASE_REF" >&2
+else
+    DIFF_FILES="$(git diff --name-only "$BASE_REF...HEAD" 2>/dev/null | sort -u || true)"
+fi
 
 if [ -z "$DIFF_FILES" ]; then
     echo "[validate_pr_scope] OK: no file changes between $BASE_REF and HEAD"
