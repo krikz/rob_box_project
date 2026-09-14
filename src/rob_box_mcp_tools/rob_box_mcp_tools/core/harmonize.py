@@ -280,6 +280,43 @@ def _chord_candidates(
     return out
 
 
+def _best_chord(
+    candidates: Sequence[Tuple[Tuple[int, ...], bool]],
+    weights: Dict[int, float],
+    scale_factor: float,
+    downbeat: Optional[int],
+    is_edge: bool,
+    tonic_pcs: Tuple[int, ...],
+    previous: Optional[Tuple[int, ...]],
+) -> Tuple[int, ...]:
+    """Выбрать аккорд окна с лучшим взвешенным скором.
+
+    Скор: сумма весов нот, попавших в аккорд; бонус за корень — ТОЛЬКО
+    диатоническим (разводит аккорды лада с общими нотами; хроматическому
+    он давал выиграть по совпадению баса), штраф недиатоническому, бонус
+    за совпадение с первой нотой окна, бонус тонике на стыке лупа, штраф
+    за смену аккорда.
+    """
+    best: Tuple[int, ...] = tonic_pcs
+    best_score = float("-inf")
+    for pcs, diatonic in candidates:
+        score = sum(weights.get(pc, 0.0) for pc in pcs)
+        if diatonic:
+            score += (_ROOT_WEIGHT - 1.0) * weights.get(pcs[0], 0.0)
+        if not diatonic:
+            score -= _CHROMATIC_PENALTY * scale_factor
+        if downbeat is not None and downbeat % 12 == pcs[0]:
+            score += _DOWNBEAT_BONUS * scale_factor
+        if is_edge and pcs == tonic_pcs:
+            score += _CADENCE_BONUS * scale_factor
+        if previous is not None and pcs != previous:
+            score -= _CHANGE_PENALTY * scale_factor
+        if score > best_score:
+            best_score = score
+            best = pcs
+    return best
+
+
 def _pick_chords(
     timed: Sequence[Tuple[float, Optional[int], float]],
     total_beats: float,
@@ -320,29 +357,9 @@ def _pick_chords(
         # сами ноты и намертво тянула прошлый аккорд.
         scale_factor = min(1.0, sum(weights.values()) / window)
 
-        best: Tuple[int, ...] = tonic_pcs
-        best_score = float("-inf")
-        for pcs, diatonic in candidates:
-            score = sum(weights.get(pc, 0.0) for pc in pcs)
-            # Бонус за корень — ТОЛЬКО диатоническим. Он существует, чтобы
-            # разводить аккорды лада с общими нотами (i и VI в миноре — две
-            # ноты из трёх общие). Хроматическому он давал выиграть по
-            # совпадению баса: в гимне окно B(1.5)+A(0.5) забрал СИ МАЖОР,
-            # объясняющий из него одну ноту — свою же тонику, — обойдя
-            # диатонический G на 0.05 балла.
-            if diatonic:
-                score += (_ROOT_WEIGHT - 1.0) * weights.get(pcs[0], 0.0)
-            if not diatonic:
-                score -= _CHROMATIC_PENALTY * scale_factor
-            if downbeat is not None and downbeat % 12 == pcs[0]:
-                score += _DOWNBEAT_BONUS * scale_factor
-            if is_edge and pcs == tonic_pcs:
-                score += _CADENCE_BONUS * scale_factor
-            if previous is not None and pcs != previous:
-                score -= _CHANGE_PENALTY * scale_factor
-            if score > best_score:
-                best_score = score
-                best = pcs
+        best = _best_chord(
+            candidates, weights, scale_factor, downbeat, is_edge, tonic_pcs, previous
+        )
         picked.append((begin, best))
         previous = best
 

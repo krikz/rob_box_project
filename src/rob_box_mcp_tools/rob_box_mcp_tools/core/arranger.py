@@ -1282,12 +1282,7 @@ def _add_derived_layers(
         if not (synth and synth.strip()) or not part:
             continue
         notes = [note for note, _dur in part]
-        if (
-            role == "lead"
-            and theme_octaves
-            and dense
-            and _fits_octave_double(notes)
-        ):
+        if _should_octave_double(role, theme_octaves, dense, notes):
             notes = [_octave_double(note) for note in notes]
         # Последний шаг: поправка на собственное транспонирование синта.
         # До этой строки всё выше рассуждало о ЗВУЧАЩЕЙ высоте — регистры,
@@ -1328,6 +1323,17 @@ def _fits_octave_double(notes: Sequence[object]) -> bool:
         int(n) for n in notes if isinstance(n, (int, float)) and n is not None
     ]
     return bool(pitches) and min(pitches) >= MIN_MIDI_FOR_OCTAVE_DOUBLE
+
+
+def _should_octave_double(role: str, theme_octaves: bool, dense: bool, notes: Sequence[object]) -> bool:
+    """Удваивать ли тему октавой вниз для этого слоя.
+
+    Удвоение нужно только лид-голосу, при включённой опции и в плотной
+    теме: плотная, громкая тема от удвоения выигрывает в весе, редкая —
+    теряет характер. Дополнительно тема должна иметь запас высоты, чтобы
+    удвоение не село на регистр баса (:func:`_fits_octave_double`).
+    """
+    return role == "lead" and theme_octaves and dense and _fits_octave_double(notes)
 
 
 def _octave_double(note):
@@ -1392,6 +1398,11 @@ def spec_from_flat(
     """
     layers: List[Layer] = []
 
+    root = (root or "C").strip()
+    scale = (scale or "minor").strip()
+    form = (form or DEFAULT_FORM).strip()
+    swing = float(swing or 0.0)
+
     if harmony is not None:
         if not (lead_synth and lead_synth.strip()):
             raise ArrangementError(
@@ -1416,9 +1427,9 @@ def spec_from_flat(
         )
         return CompositionSpec(
             bpm=float(bpm),
-            root=(root or "C").strip(),
-            scale=(scale or "minor").strip(),
-            form=(form or DEFAULT_FORM).strip(),
+            root=root,
+            scale=scale,
+            form=form,
             layers=tuple(layers),
             # Прогрессии нет намеренно: вся гармония уже записана
             # абсолютными нотами баса и пэда. Root.default, который
@@ -1427,7 +1438,7 @@ def spec_from_flat(
             progression=(),
             theme_bars=int(harmony.bars),
             repeat=bool(repeat),
-            swing=float(swing or 0.0),
+            swing=swing,
         )
 
     # 🔴 FIX (live 31.08): здесь стояло sample=3 намертво. В библиотеке
@@ -1457,18 +1468,17 @@ def spec_from_flat(
 
         _add_melodic_layer(layers, role, synth, notes, lead_dur)
 
-    resolved_form = (form or DEFAULT_FORM).strip()
-    _autofill_bass(layers, resolved_form)
+    _autofill_bass(layers, form)
 
     return CompositionSpec(
         bpm=float(bpm),
-        root=(root or "C").strip(),
-        scale=(scale or "minor").strip(),
-        form=resolved_form,
+        root=root,
+        scale=scale,
+        form=form,
         layers=tuple(layers),
         progression=tuple(int(v) for v in parse_notes(progression)),
         repeat=bool(repeat),
-        swing=float(swing or 0.0),
+        swing=swing,
     )
 
 
