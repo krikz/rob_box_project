@@ -1289,6 +1289,128 @@ PR #${_wm_pr} (\`${_wm_head}\` → \`${_wm_base}\`, state=${_wm_state}) имее
     return 0
 }
 
+# --- G10d: PR-orphan-after-issue-merged guard (ретро 15.09 t_df2ae7ca) -------
+# Сценарий (PR #2457 + issue #2406 / 2026-09-14 21:29Z→21:48Z):
+# worker создал PR с процесс-меткой (needs-e2e/needs-review/agent-flow*), привязанный
+# к issue, но ДО merge этого issue'а фикс был влит через ДРУГОЙ PR (race-window
+# merge-gate ↔ close-issue-marker). Когда issue закрылся через fix-PR, текущий PR
+# остался открытым с процесс-меткой, но kanban-карточки больше нет — закрытый issue
+# не получит kanban-marker от живого процесса. merge-gate крутит pr_without_marker_scan
+# каждые ~10мин и спамит в мёртвый issue (8+ комментов подряд — наблюдалось 22:14Z→23:34Z).
+#
+# Guard: для КАЖДОГО open PR с процесс-меткой проверяем state issue'а, на который
+# ссылается PR (title #NNNN ИЛИ branch z-{agent}/NNNN-*). Если issue=CLOSED —
+# это orphan: снимаем процесс-метки с PR (merge-gate перестаёт его видеть), пишем
+# ОДИН раз idempotency-marker в issue и в PR. Дальнейшие тики skip через dedup.
+#
+# Отличие от G10a (file-overlap-skip) и G10b (PR-redundant-after-umbrella-merge):
+# те ловят race ДО merge; G10d ловит orphan ПОСЛЕ того, как issue закрыт.
+#
+# Backward-compat (acceptance #3): тривиальная ручная чистка (gh pr close <PR>)
+# остаётся опцией для Шифу — guard автоматический, не блокирующий.
+# Fail-OPEN: gh-ошибки → warning-лог, PR не трогаем.
+# Idempotency: HTML-комментарий `<!-- merge-gate-g10d-skip: <PR> -->` в issue body
+# детектится comment_recently_posted через contains-mode.
+PR_ORPHAN_AFTER_ISSUE_MERGED_GUARD="${PR_ORPHAN_AFTER_ISSUE_MERGED_GUARD:-true}"
+g10d_pr_orphan_after_issue_merged_scan_all() {
+    [ "$PR_ORPHAN_AFTER_ISSUE_MERGED_GUARD" = "true" ] || {
+        log "g10d-pr-orphan-scan: guard disabled (PR_ORPHAN_AFTER_ISSUE_MERGED_GUARD=false)"
+        return 0
+    }
+    _po_prs="$(gh pr list --repo "$GH_REPO" --state open \
+        --json number,title,headRefName,labels 2>/dev/null || echo '[]')"
+    printf '%s' "$_po_prs" | PR_LIST="$_po_prs" GH_REPO_G10C="$GH_REPO" python3 -c '
+import json, os, sys, subprocess
+GH_REPO = os.environ.get("GH_REPO_G10C", "")
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+if not isinstance(data, list):
+    sys.exit(0)
+for pr in data:
+    labels = {l.get("name","") for l in pr.get("labels", [])}
+    # Только PR с process-метками — иначе трогаем чужие ветки.
+    if not ({"agent-flow","agent-flow-error","needs-e2e","needs-review"} & labels):
+        continue
+    num = pr["number"]
+    title = pr.get("title","") or ""
+    head = pr.get("headRefName","") or ""
+    import re
+    # Issue number: title #NNNN ИЛИ branch z-{agent}/NNNN-... ИЛИ z-<agent>/NNNN-...
+    m = re.search(r"#(\d+)", title)
+    issue_num = m.group(1) if m else ""
+    if not issue_num:
+        # Ловим и design-doc canonical «z-{agent}/NNNN-» и реальное «z-<agent>/NNNN-»
+        # (z-architect/, z-devops/, z-backend/, z-{e2e}/test-round-... — у последних
+        # NNNN идёт НЕ сразу после слэша, поэтому regex их не ловит, и это OK).
+        m2 = re.search(r"z-(?:\{agent\}|[a-z]+)/(\d+)-", head)
+        issue_num = m2.group(1) if m2 else ""
+    if not issue_num:
+        continue
+    # Issue state через REST (с fallback на closed_at merge-факт).
+    try:
+        r = subprocess.run(
+            ["gh","api",f"repos/{GH_REPO}/issues/{issue_num}"],
+            capture_output=True, text=True, timeout=15)
+        if r.returncode != 0:
+            continue
+        iss = json.loads(r.stdout or "{}")
+    except Exception:
+        continue
+    state = iss.get("state","")
+    if state != "CLOSED":
+        continue
+    # State reason: closed (manual close) vs completed (merge в default branch).
+    # Оба варианта считаем orphan — PR больше не имеет смысла (issue закрыт).
+    # Печатаем pr_num<TAB>issue_num<TAB>state_reason для bash.
+    sr = iss.get("state_reason","")
+    print(f"{num}\t{issue_num}\t{sr}")
+' 2>/dev/null | while IFS=$'\t' read -r _po_pr _po_issue _po_state_reason; do
+        [ -z "$_po_pr" ] && continue
+        log "g10d-pr-orphan-scan: PR #${_po_pr} ссылается на issue #${_po_issue} (state=CLOSED, state_reason=${_po_state_reason}) — orphan (ретро 15.09 t_df2ae7ca)"
+        if [ "$DRY_RUN" = "true" ]; then
+            log "DRY-RUN would: remove process-labels on PR #${_po_pr}, post one-shot comment on issue #${_po_issue}"
+            continue
+        fi
+        # 1) Снимаем процесс-метки с PR — merge-gate больше не будет его сканировать
+        #    и не заспамит в мёртвый issue. Idempotent: gh pr edit --remove-label
+        #    тихо игнорирует отсутствующие метки.
+        for _lbl in needs-e2e needs-review agent-flow agent-flow-error; do
+            gh pr edit "$_po_pr" --repo "$GH_REPO" --remove-label "$_lbl" >/dev/null 2>&1 || true
+        done
+        # 2) Один раз в issue с idempotency-маркером — дальше contains-mode dedup.
+        #    Маркер короче остальных (видно глазами в таймлайне issue), поэтому
+        #    НЕ используется prefix-mode в comment_recently_posted — используем
+        #    сам маркер как сигнатуру.
+        if ! comment_recently_posted issue "$_po_issue" \
+            "merge-gate-g10d-skip: ${_po_pr}" 2592000 contains; then
+            gh issue comment "$_po_issue" --repo "$GH_REPO" --body \
+"<!-- merge-gate-g10d-skip: ${_po_pr} -->
+🤖 **[agent:devops] script=agent-flow-merge-gate action=g10d-pr-orphan-skip**
+
+PR #${_po_pr} (state_reason=${_po_state_reason}) ссылается на этот issue (он закрыт). Фикс уже влит другим путём, либо issue был закрыт вручную — этот PR stale и merge-gate больше его НЕ обрабатывает (процесс-метки сняты).
+
+**Что делать (при ревью Шифу):**
+- Если PR #${_po_pr} всё ещё нужен — закрыть его вручную: \`gh pr close ${_po_pr} --comment 'stale after issue merged'\`.
+- Если он закрыт правильно — игнорировать (orphan-cleanup уже выполнен).
+
+Контекст: ретро 15.09 t_df2ae7ca (G10d guard)." >/dev/null 2>&1 || true
+        fi
+        # 3) Один раз в PR с cross-link, чтобы Шифу видел причину в PR-таймлайне.
+        if ! comment_recently_posted pr "$_po_pr" \
+            "merge-gate-g10d-skip" 2592000 contains; then
+            gh pr comment "$_po_pr" --repo "$GH_REPO" --body \
+"🤖 **[agent:devops] script=agent-flow-merge-gate action=g10d-pr-orphan-skip**
+
+Этот PR ссылается на issue #${_po_issue}, который уже CLOSED (state_reason=${_po_state_reason}, см. https://github.com/${GH_REPO}/issues/${_po_issue}). Процесс-метки сняты — merge-gate перестаёт его обрабатывать, чтобы не спамить в закрытый issue.
+
+**Что делать (при ревью Шифу):** закрыть PR как stale или оставить открытым, если требуется merge. Ретро 15.09 t_df2ae7ca." >/dev/null 2>&1 || true
+        fi
+    done
+    return 0
+}
+
 # gh_list_issues_by_label — перенесена в lib_agent_flow_common.sh (дедуп 30.08).
 
 # --- deploy-issue label-less orphan backstop (ретро 15.08 t_238ff3f7) -------
@@ -5345,6 +5467,10 @@ competing_prs_block_scan_all
 # PR-without-kanban-marker scan (ретро 25.08 t_1a4f3275 / issue #1624):
 # тот же паттерн вызова — основной путь + no-issues путь сходятся сюда.
 pr_without_marker_scan_all
+# G10d PR-orphan guard (ретро 15.09 t_df2ae7ca): ВЫЗВАТЬ ПОСЛЕ pr_without_marker_scan_all,
+# чтобы если issue уже закрыт — на этом тике pr_without_marker_scan отработает
+# (последний раз спама), а g10d снимет процесс-метки и не пустит на следующий тик.
+g10d_pr_orphan_after_issue_merged_scan_all
 # Deploy-issue label-less orphan backstop (ретро 15.08 t_238ff3f7): тот же
 # паттерн вызова — основной путь + no-issues путь сходятся сюда.
 deploy_issue_reconcile_all
