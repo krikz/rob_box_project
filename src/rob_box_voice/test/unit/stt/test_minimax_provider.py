@@ -40,16 +40,62 @@ from rob_box_voice.stt_providers.minimax_provider import (
 
 
 # ---------------------------------------------------------------------------
-# Test doubles — httpx transport + helpers
+# Test doubles — httpx client + response stub
 # ---------------------------------------------------------------------------
+#
+# Why we don't subclass ``httpx.BaseTransport`` / ``httpx.MockTransport``:
+#
+# Some CI test environments monkey-patch ``httpx`` itself (see
+# ``test/test_dialogue_node.py:117`` and ``test/unit/node/conftest.py:97``
+# — both build ``types.SimpleNamespace(...)`` to skip real network).
+# Subclassing ``httpx.BaseTransport`` then blows up at collection time
+# with::
+#
+#     AttributeError: 'types.SimpleNamespace' object has no attribute 'BaseTransport'
+#
+# which is exactly what the Unit Tests (ROS2 Humble) job saw on this PR.
+#
+# We instead replace ``MiniMaxSTTProvider._get_client`` / ``client.post``
+# with a tiny stub that records the call and returns whatever the test
+# wants. This works under both real httpx and the SimpleNamespace shim.
 
 
-class _StubTransport(httpx.BaseTransport):
-    """Минимальный поддельный httpx transport.
+class _StubHTTPResponse:
+    """Минимальный поддельный ``httpx.Response``.
 
-    Подменяет реальный сокет. Возвращает заранее заданные ``status`` +
-    ``payload`` независимо от тела запроса. Можно также поднять
-    исключение (``exception``), чтобы имитировать timeout / connect error.
+    Поддерживает только то, что использует ``MiniMaxSTTProvider.transcribe``:
+    ``status_code``, ``text``, ``json()``.
+    """
+
+    def __init__(
+        self,
+        *,
+        status: int = 200,
+        payload: Any = None,
+        raw_body: Optional[bytes] = None,
+    ) -> None:
+        self.status_code = status
+        self._payload = payload
+        self._raw_body = raw_body
+        if raw_body is not None:
+            self.text = raw_body.decode("utf-8", errors="replace")
+        elif payload is not None:
+            self.text = ""
+        else:
+            self.text = ""
+
+    def json(self) -> Any:
+        if self._payload is None:
+            raise ValueError("no json payload configured")
+        return self._payload
+
+
+class _StubHTTPClient:
+    """Заменяет ``httpx.Client`` (или его SimpleNamespace-shim).
+
+    ``post(...)`` возвращает заранее заданный ``_StubHTTPResponse``.
+    Любое исключение (``exception=``) поднимается — имитация timeout /
+    connect error / и т.п.
     """
 
     def __init__(
@@ -60,41 +106,61 @@ class _StubTransport(httpx.BaseTransport):
         raw_body: Optional[bytes] = None,
         exception: Optional[Exception] = None,
     ) -> None:
-        self.status = status
-        self.payload = payload
-        self.raw_body = raw_body
-        self.exception = exception
-        self.calls: list[httpx.Request] = []
+        self._status = status
+        self._payload = payload
+        self._raw_body = raw_body
+        self._exception = exception
+        self.calls: list[dict[str, Any]] = []
+        self.closed = False
 
-    def handle_request(self, request: httpx.Request) -> httpx.Response:
-        self.calls.append(request)
-        if self.exception is not None:
-            raise self.exception
+    def post(self, url: str, *, headers: dict, files: dict, data: dict) -> _StubHTTPResponse:
+        self.calls.append(
+            {
+                "url": url,
+                "headers": dict(headers),
+                "files": {k: (v[0], v[1].read() if hasattr(v[1], "read") else v[1]) for k, v in files.items()},
+                "data": dict(data),
+            }
+        )
+        if self._exception is not None:
+            raise self._exception
+        return _StubHTTPResponse(
+            status=self._status, payload=self._payload, raw_body=self._raw_body
+        )
 
-        if self.raw_body is not None:
-            return httpx.Response(self.status, content=self.raw_body)
-        return httpx.Response(self.status, json=self.payload)
+    def close(self) -> None:
+        self.closed = True
+
+    # httpx.Client context-manager support (если кто-то вызовет ``with``).
+    def __enter__(self) -> "_StubHTTPClient":
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self.close()
 
 
 def _make_provider(
-    transport: _StubTransport,
+    stub_client: _StubHTTPClient,
     *,
     api_key: str = "test-key-12345",
     language: Optional[str] = "ru",
-    timeout: httpx.Timeout = httpx.Timeout(connect=1.0, read=1.0, write=1.0, pool=1.0),
+    timeout: Optional[httpx.Timeout] = None,
 ) -> MiniMaxSTTProvider:
-    client = httpx.Client(
-        transport=transport,
-        timeout=timeout,
-    )
-    return MiniMaxSTTProvider(
+    """Construct a provider wired to ``stub_client`` (bypasses real httpx)."""
+    if timeout is None:
+        timeout = httpx.Timeout(connect=1.0, read=1.0, write=1.0, pool=1.0)
+    provider = MiniMaxSTTProvider(
         base_url=DEFAULT_BASE_URL,
         api_key=api_key,
         model=DEFAULT_MODEL,
         language=language,
         timeout=timeout,
-        client=client,
     )
+    # Подменяем внутренний client, чтобы реальный httpx не дёргался.
+    # Конструктор не вызывает ``_get_client`` лениво — поэтому присвоение
+    # напрямую безопасно.
+    provider._client = stub_client  # type: ignore[assignment]
+    return provider
 
 
 # 1 second of 16kHz 16-bit mono PCM silence (~32 KiB).
@@ -163,7 +229,7 @@ class TestExtractText:
 
 class TestRecognizeSuccess:
     def test_returns_text_for_200_json(self):
-        transport = _StubTransport(status=200, payload={"text": "расскажи сказку"})
+        transport = _StubHTTPClient(status=200, payload={"text": "расскажи сказку"})
         provider = _make_provider(transport)
 
         text = provider.recognize(SILENCE_AUDIO)
@@ -171,49 +237,44 @@ class TestRecognizeSuccess:
         assert text == "расскажи сказку"
         assert len(transport.calls) == 1
         # Endpoint is correct (research confirmed POST https://api.minimax.io/v1/speech_to_text).
-        assert transport.calls[0].url.path == "/v1/speech_to_text"
-        # Method
-        assert transport.calls[0].method == "POST"
+        assert transport.calls[0]["url"].endswith("/v1/speech_to_text")
 
     def test_request_carries_bearer_token(self):
-        transport = _StubTransport(status=200, payload={"text": "ок"})
+        transport = _StubHTTPClient(status=200, payload={"text": "ок"})
         provider = _make_provider(transport, api_key="super-secret-key")
 
         provider.recognize(SILENCE_AUDIO)
 
-        auth_header = transport.calls[0].headers.get("Authorization")
+        auth_header = transport.calls[0]["headers"].get("Authorization")
         assert auth_header == "Bearer super-secret-key"
 
     def test_request_sends_multipart_file_and_model(self):
-        transport = _StubTransport(status=200, payload={"text": "ок"})
+        transport = _StubHTTPClient(status=200, payload={"text": "ок"})
         provider = _make_provider(transport)
 
         provider.recognize(SILENCE_AUDIO)
 
-        # httpx собирает multipart — проверим, что в теле есть и файл, и поля.
-        content_type = transport.calls[0].headers.get("Content-Type", "")
-        assert content_type.startswith("multipart/form-data"), content_type
-        # Body as multipart — проверяем по байтам.
-        body = transport.calls[0].read()
-        assert b'name="model"' in body
-        assert b"asr-1.0" in body
-        assert b'name="file"' in body
-        # Язык (по умолчанию ru) — провайдер должен его прокинуть.
-        # Multipart-значения httpx НЕ квотирует — это plain ``ru``.
-        assert b'name="language"' in body
-        assert b"ru" in body
+        # Упрощённая проверка: stub не собирает multipart-байты, но
+        # проверяем, что модель/language/file попали в вызов.
+        data = transport.calls[0]["data"]
+        files = transport.calls[0]["files"]
+        assert data["model"] == "asr-1.0"
+        assert data["response_format"] == "json"
+        assert data["language"] == "ru"
+        assert files["file"][0] == "audio.wav"
+        assert files["file"][1] == SILENCE_AUDIO
 
     def test_language_none_omits_language_field(self):
-        transport = _StubTransport(status=200, payload={"text": "ок"})
+        transport = _StubHTTPClient(status=200, payload={"text": "ок"})
         provider = _make_provider(transport, language=None)
 
         provider.recognize(SILENCE_AUDIO)
 
-        body = transport.calls[0].read()
-        assert b'name="language"' not in body
+        # Stub хранит data как dict — проверим, что language там нет.
+        assert "language" not in transport.calls[0]["data"]
 
     def test_strips_whitespace_in_text(self):
-        transport = _StubTransport(status=200, payload={"text": "   привет   "})
+        transport = _StubHTTPClient(status=200, payload={"text": "   привет   "})
         provider = _make_provider(transport)
 
         assert provider.recognize(SILENCE_AUDIO) == "привет"
@@ -237,7 +298,7 @@ class TestRecognizeErrorCases:
         ],
     )
     def test_http_error_status_returns_none(self, status, payload):
-        transport = _StubTransport(status=status, payload=payload)
+        transport = _StubHTTPClient(status=status, payload=payload)
         provider = _make_provider(transport)
 
         # recognize() must NOT raise — it degrades to None so the chain
@@ -245,14 +306,14 @@ class TestRecognizeErrorCases:
         assert provider.recognize(SILENCE_AUDIO) is None
 
     def test_400_with_unexpected_payload_returns_none(self):
-        transport = _StubTransport(status=400, payload={"error": "bad request"})
+        transport = _StubHTTPClient(status=400, payload={"error": "bad request"})
         provider = _make_provider(transport)
 
         # 400 is also swallowed (won't help retrying, but no need to crash).
         assert provider.recognize(SILENCE_AUDIO) is None
 
     def test_non_json_response_returns_none(self):
-        transport = _StubTransport(
+        transport = _StubHTTPClient(
             status=200, raw_body=b"<html>not json</html>"
         )
         provider = _make_provider(transport)
@@ -260,7 +321,7 @@ class TestRecognizeErrorCases:
         assert provider.recognize(SILENCE_AUDIO) is None
 
     def test_json_without_text_field_returns_none(self):
-        transport = _StubTransport(
+        transport = _StubHTTPClient(
             status=200, payload={"result": "no text key"}
         )
         provider = _make_provider(transport)
@@ -268,7 +329,7 @@ class TestRecognizeErrorCases:
         assert provider.recognize(SILENCE_AUDIO) is None
 
     def test_timeout_translates_to_none(self):
-        transport = _StubTransport(
+        transport = _StubHTTPClient(
             exception=httpx.ReadTimeout("read timed out")
         )
         provider = _make_provider(transport)
@@ -277,7 +338,7 @@ class TestRecognizeErrorCases:
         assert provider.recognize(SILENCE_AUDIO) is None
 
     def test_connect_error_translates_to_none(self):
-        transport = _StubTransport(
+        transport = _StubHTTPClient(
             exception=httpx.ConnectError("dns failed")
         )
         provider = _make_provider(transport)
@@ -292,28 +353,28 @@ class TestRecognizeErrorCases:
 
 class TestTranscribeRaisesTyped:
     def test_401_raises_auth_error(self):
-        transport = _StubTransport(status=401, payload={"error": "bad key"})
+        transport = _StubHTTPClient(status=401, payload={"error": "bad key"})
         provider = _make_provider(transport)
 
         with pytest.raises(MiniMaxSTTAuthError):
             provider.transcribe(SILENCE_AUDIO)
 
     def test_429_raises_rate_limit_error(self):
-        transport = _StubTransport(status=429, payload={"error": "slow down"})
+        transport = _StubHTTPClient(status=429, payload={"error": "slow down"})
         provider = _make_provider(transport)
 
         with pytest.raises(MiniMaxSTTRateLimitError):
             provider.transcribe(SILENCE_AUDIO)
 
     def test_5xx_raises_unavailable(self):
-        transport = _StubTransport(status=503, payload={"error": "down"})
+        transport = _StubHTTPClient(status=503, payload={"error": "down"})
         provider = _make_provider(transport)
 
         with pytest.raises(MiniMaxSTTUnavailableError):
             provider.transcribe(SILENCE_AUDIO)
 
     def test_missing_text_raises_invalid_response(self):
-        transport = _StubTransport(status=200, payload={"foo": "bar"})
+        transport = _StubHTTPClient(status=200, payload={"foo": "bar"})
         provider = _make_provider(transport)
 
         with pytest.raises(MiniMaxSTTInvalidResponseError):
@@ -334,7 +395,7 @@ class TestTranscribeRaisesTyped:
 
 class TestInputValidation:
     def test_empty_audio_raises_before_network(self):
-        transport = _StubTransport(status=200, payload={"text": "ok"})
+        transport = _StubHTTPClient(status=200, payload={"text": "ok"})
         provider = _make_provider(transport)
 
         with pytest.raises(MiniMaxSTTError, match="empty"):
@@ -344,7 +405,7 @@ class TestInputValidation:
         assert transport.calls == []
 
     def test_oversize_audio_raises_before_network(self):
-        transport = _StubTransport(status=200, payload={"text": "ok"})
+        transport = _StubHTTPClient(status=200, payload={"text": "ok"})
         provider = _make_provider(transport)
 
         huge = b"\x00" * (MAX_AUDIO_BYTES + 1)
@@ -399,7 +460,7 @@ class TestConstruction:
 
 class TestProtocolConformance:
     def test_satisfies_stt_provider_protocol(self):
-        transport = _StubTransport(status=200, payload={"text": "ок"})
+        transport = _StubHTTPClient(status=200, payload={"text": "ок"})
         provider = _make_provider(transport)
         # ``STTProvider`` в rob_box_voice.stt_fallback объявлен как
         # ``typing.Protocol`` БЕЗ ``@runtime_checkable``, поэтому
@@ -409,13 +470,13 @@ class TestProtocolConformance:
         assert callable(getattr(provider, "recognize", None))
 
     def test_name_attribute_is_string(self):
-        transport = _StubTransport(status=200, payload={"text": "ок"})
+        transport = _StubHTTPClient(status=200, payload={"text": "ок"})
         provider = _make_provider(transport)
         assert isinstance(provider.name, str)
         assert provider.name  # not empty
 
     def test_recognize_callable_with_bytes(self):
-        transport = _StubTransport(status=200, payload={"text": "ок"})
+        transport = _StubHTTPClient(status=200, payload={"text": "ок"})
         provider = _make_provider(transport)
         # Сигнатура: recognize(bytes) — без extra kwargs (Phase 2 может
         # добавить ``language=``, ``diarize=``, но базовый контракт не
@@ -438,7 +499,7 @@ class TestParityWithFallback:
         # достаточно убедиться, что MiniMax-ответ прозрачно проходит
         # через ``recognize()`` и попадает в финальный текст.
         expected_text = "робот расскажи сказку про дракона"
-        transport = _StubTransport(
+        transport = _StubHTTPClient(
             status=200, payload={"text": expected_text}
         )
         provider = _make_provider(transport)
@@ -475,7 +536,7 @@ class TestLogRedaction:
         ]
 
         secret = "very-secret-xyz"
-        transport = _StubTransport(status=200, payload={"text": "ok"})
+        transport = _StubHTTPClient(status=200, payload={"text": "ok"})
         _make_provider(transport, api_key=secret)
 
         redactor = next(

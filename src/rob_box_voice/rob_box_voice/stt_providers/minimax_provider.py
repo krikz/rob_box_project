@@ -360,23 +360,7 @@ class MiniMaxSTTProvider:
             raise MiniMaxSTTUnavailableError(f"http error: {exc}") from exc
 
         latency_ms = int((time.monotonic() - started) * 1000)
-
-        if resp.status_code in (401, 403):
-            raise MiniMaxSTTAuthError(
-                f"minimax STT: auth failure (HTTP {resp.status_code})"
-            )
-        if resp.status_code == 429:
-            raise MiniMaxSTTRateLimitError("minimax STT: rate-limited (HTTP 429)")
-        if resp.status_code >= 500:
-            raise MiniMaxSTTUnavailableError(
-                f"minimax STT: server error (HTTP {resp.status_code})"
-            )
-        if resp.status_code >= 400:
-            # 400-class errors that are not auth/rate are client mistakes —
-            # bubble up so callers know it was our fault.
-            raise MiniMaxSTTInvalidResponseError(
-                f"minimax STT: HTTP {resp.status_code}: {resp.text[:200]}"
-            )
+        _raise_for_http_status(resp)
 
         try:
             payload = resp.json()
@@ -428,6 +412,29 @@ def _extract_text(payload: Any) -> Optional[str]:
         if isinstance(text, str):
             return text.strip() or None
     return None
+
+
+def _raise_for_http_status(resp: httpx.Response) -> None:
+    """Translate a non-2xx response into a typed :class:`MiniMaxSTTError`.
+
+    Kept as a separate helper so :meth:`MiniMaxSTTProvider.transcribe`
+    stays under the ADR-0021 cyclomatic-complexity budget (CC<=15).
+    """
+    status = resp.status_code
+    if status in (401, 403):
+        raise MiniMaxSTTAuthError(f"minimax STT: auth failure (HTTP {status})")
+    if status == 429:
+        raise MiniMaxSTTRateLimitError("minimax STT: rate-limited (HTTP 429)")
+    if status >= 500:
+        raise MiniMaxSTTUnavailableError(
+            f"minimax STT: server error (HTTP {status})"
+        )
+    if status >= 400:
+        # 400-class errors that are not auth/rate are client mistakes —
+        # bubble up so callers know it was our fault.
+        raise MiniMaxSTTInvalidResponseError(
+            f"minimax STT: HTTP {status}: {resp.text[:200]}"
+        )
 
 
 __all__ = [
