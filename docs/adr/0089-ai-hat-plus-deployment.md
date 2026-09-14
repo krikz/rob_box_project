@@ -109,7 +109,6 @@ Main Pi (10.1.1.22) **не подходит**: его HAT-слот занят CA
 - Новый msg `VisionEvent` (header + bbox + class_id + class_name + confidence + embedding_id + event_type) в `src/rob_box_perception_msgs/`.
 - Расширение `PerceptionEvent.msg` (структурированные поля под face/object).
 - Расширение `context_aggregator_node.py` (подписка на `/vision/hailo/events`, маппинг в `vision_summaries`).
-- **`vision_hailo_node` запускается НЕ из perception launch-файла**: нода живёт в собственном Docker-сервисе `vision-hailo` (см. §3 touchpoint #6; Phase 1 реализован в PR #2349). Deployment seam = `docker compose --profile hailo up -d vision-hailo`. Launch-интеграция `internal_dialogue.launch.py` перекрыта отдельным сервисом, чтобы не тащить HailoRT/TAPPAS-зависимости в общий perception-контейнер.
 - `safety_stop_node` в `src/rob_box_teleop/` (выходит за scope этого ADR — отдельная карточка, см. §10).
 - Юнит-тесты на HEF-loader stub (без реального железа) + интеграционный тест на context_aggregator.
 
@@ -124,11 +123,11 @@ Main Pi (10.1.1.22) **не подходит**: его HAT-слот занят CA
 | 3 | `src/rob_box_perception/rob_box_perception/vision_hailo_node.py` | **NEW**: stub с реальным интерфейсом HailoInference (поддерживает mock HEF для CI + real HEF через hailo_platform API) | 1 |
 | 4 | `src/rob_box_perception/rob_box_perception/context_aggregator_node.py` | Подписка на `/vision/hailo/events`, сериализация в `vision_summaries`/`vision_events_json` | 1 |
 | 5 | `src/rob_box_perception/setup.py` | Добавить console_scripts entry `vision_hailo` | 1 |
-| 6 | ~~`src/rob_box_perception/launch/internal_dialogue.launch.py`~~ | **НЕ ПРИМЕНИМО** — `vision_hailo_node` живёт в отдельном Docker-сервисе `vision-hailo` (см. §2.3 и touchpoint #12). Deployment seam = docker-compose profile `hailo` (`docker compose --profile hailo up -d vision-hailo`). Launch-файл `internal_dialogue.launch.py` намеренно НЕ правится, чтобы не тащить HailoRT/TAPPAS-зависимости в perception-контейнер. Phase 1 закрыт в PR #2349 без правок launch-файлов. | 1 |
+| 6 | `src/rob_box_perception/launch/internal_dialogue.launch.py` | Добавить Node `vision_hailo` (gated `hailo_enabled` параметром) | 1 |
 | 7 | `src/rob_box_perception/test/unit/test_vision_hailo_node.py` | **NEW**: 8 unit-тестов на stub (HEF-loader mock, msg construction, lifecycle) | 1 |
 | 8 | `src/rob_box_perception/README.md` | Обновить раздел про vision pipeline — убрать архивный TODO `vision_stub_node`, добавить `vision_hailo_node` + Phase-план | 1 |
-| 9 | `docker/vision/vision-hailo/Dockerfile` | **NEW**: Phase 1 stub — colcon-сборка `rob_box_perception_msgs` + `rob_box_perception` поверх `ros2-zenoh` базы (HailoRT — Phase 1.5) | 1 |
-| 10 | `docker/vision/scripts/vision-hailo/start_vision_hailo.sh` | **NEW**: launch script (`ros2 run rob_box_perception vision_hailo`) | 1 |
+| 9 | `docker/vision/vision-hailo/Dockerfile` | **NEW**: hailort + tappas + python binding (ARM64 base) | 1 |
+| 10 | `docker/vision/vision-hailo/start_vision_hailo.sh` | **NEW**: launch script (`ros2 run rob_box_perception vision_hailo`) | 1 |
 | 11 | `docker/vision/config/hailo_models.yaml` | **NEW**: SSoT активных HEF + параметры | 1 |
 | 12 | `docker/vision/docker-compose.yaml` | Добавить сервис `vision-hailo` (depends_on: zenoh-router, device: /dev/hailo0) | 1 |
 | 13 | `docs/reports/AI_HAT_UPGRADE_ANALYSIS.md` | **DEPRECATED**: prepend deprecation banner со ссылкой на этот ADR | 1 |
