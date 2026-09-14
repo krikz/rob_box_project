@@ -334,6 +334,136 @@ class TestDuplicateVoiceBug:
         assert db.list_speakers()[0]["embeddings"] == 2
 
 
+class TestRegisterOrMergeBelowThreshold:
+    """Задача t_0216f270 — «Тест создания нового профиля при явно другом голосе».
+
+    Контракт register_or_merge(): если голос НЕ похож ни на один
+    существующий профиль (cosine sim < REGISTER_MATCH_THRESHOLD), должен
+    быть создан НОВЫЙ профиль, а существующий — остаться нетронутым.
+
+    Дополняет test_register_or_merge_keeps_different_speakers_separate
+    (smoke check на двух ортогональных эмбеддингах): здесь — параметризация
+    по нескольким уровням cosine-сходства ниже порога и явная проверка,
+    что id и embeddings СТАРОГО профиля не изменились (acceptance задачи).
+
+    Все эмбеддинги — синтетические, без resemblyzer. ``alpha`` подобран так,
+    чтобы pairwise cosine был примерно равен ``target_cos``:
+        cos(sim(v_degraded, base)) ~ 1/sqrt(1+alpha^2)
+        alpha = sqrt(1/target_cos^2 - 1)
+    Для target_cos=0.5 → alpha≈1.732, для 0.3 → alpha≈3.179. Тест
+    дополнительно проверяет, что реальная cosine между base и degraded
+    действительно ниже REGISTER_MATCH_THRESHOLD — иначе «зеленый» тест
+    недоказущ.
+    """
+
+    @pytest.mark.parametrize(
+        "target_cos",
+        [0.5, 0.3],
+        ids=["cos~0.5", "cos~0.3"],
+    )
+    def test_register_or_merge_creates_new_profile_when_below_threshold(
+        self, db, target_cos
+    ):
+        # Сначала регистрируем «старый» голос — это baseline.
+        base = _random_embedding(1000)
+        sid_old, _ = db.register_or_merge("Денис", base)
+        # Снимок состояния старого профиля ПОСЛЕ его регистрации.
+        before = {s["id"]: s["embeddings"] for s in db.list_speakers()}
+        assert len(before) == 1
+        assert before[sid_old] == 1
+
+        # Строим «явно другой» голос с заданным cosine к base.
+        # alpha = sqrt(1/target_cos^2 - 1)
+        alpha = float((1.0 / target_cos ** 2 - 1.0) ** 0.5)
+        different = _degraded(base, alpha, noise_seed=2000)
+
+        # Страховка: реальная cosine ниже порога merge, иначе тест тривиален.
+        actual_cos = float(
+            np.dot(base / np.linalg.norm(base), different / np.linalg.norm(different))
+        )
+        assert actual_cos < REGISTER_MATCH_THRESHOLD, (
+            f"test fixture: actual_cos={actual_cos:.3f} >= "
+            f"REGISTER_MATCH_THRESHOLD={REGISTER_MATCH_THRESHOLD} — "
+            f"тест потерял смысл, нужно увеличить alpha"
+        )
+        # И при этом действительно ниже target_cos+eps (наш _degraded —
+        # аналитическая аппроксимация, шум от <base,noise> даёт дельту).
+        assert actual_cos < target_cos + 0.05, (
+            f"degraded cos={actual_cos:.3f} ожидаемо близко к target={target_cos}, "
+            f"но сильно выше — пересчитать alpha"
+        )
+
+        # Сама проверка: register_or_merge на явно другом голосе.
+        new_sid, reused = db.register_or_merge("Сергей", different)
+
+        # Acceptance #1 — профилей стало на 1 больше.
+        speakers = db.list_speakers()
+        assert len(speakers) == 2, (
+            "ожидаем 2 профиля: старый + новый; "
+            f"reused={reused} — возможно, ложное слияние"
+        )
+
+        # Acceptance #2 — у нового профиля len(embeddings) == 1.
+        new_profile = next(s for s in speakers if s["id"] == new_sid)
+        assert new_profile["embeddings"] == 1, (
+            f"новый профиль должен содержать ровно 1 эмбеддинг, "
+            f"получили {new_profile['embeddings']}"
+        )
+        assert new_profile["name"] == "Сергей"
+        assert new_sid != sid_old
+
+        # Acceptance #3 — id и embeddings СТАРОГО профиля не изменились.
+        old_profile = next(s for s in speakers if s["id"] == sid_old)
+        assert old_profile["id"] == sid_old
+        assert old_profile["embeddings"] == before[sid_old], (
+            f"старый профиль тронут: было {before[sid_old]} эмбеддингов, "
+            f"стало {old_profile['embeddings']}"
+        )
+        assert old_profile["name"] == "Денис"
+
+        # reused-флаг подтверждает, что register_or_merge пошёл по ветке
+        # «новый профиль», а не «merge с найденным».
+        assert reused is False
+
+    def test_orthogonal_voice_creates_new_profile_without_touching_old(self, db):
+        """Полностью ортогональные эмбеддинги (cos ~ 0) — экстремальный кейс
+        «явно другой голос» (ещё дальше от порога, чем 0.3/0.5).
+
+        Дублирует coverage test_register_or_merge_keeps_different_speakers_separate,
+        но явно сверяет snapshot СТАРОГО профиля до/после, как требует acceptance.
+        Использует имена ≥ MIN_SPEAKER_NAME_LEN (2) — иначе register() бросит
+        ValueError (#2348 / #1101), и тест будет о «неправильном имени», а не
+        о пороге cosine.
+        """
+        # Baseline: один зарегистрированный профиль.
+        sid_old, _ = db.register_or_merge("Ан", _random_embedding(11))
+        before = db.list_speakers()
+        assert len(before) == 1
+        before_old_embs = before[0]["embeddings"]
+        assert before_old_embs == 1
+        before_old_id = before[0]["id"]
+
+        # Ортогональный (другой seed → независимый единичный вектор, dot ~ 0).
+        new_sid, reused = db.register_or_merge("Бо", _random_embedding(22))
+
+        # Acceptance.
+        speakers = db.list_speakers()
+        assert len(speakers) == 2
+        assert reused is False
+        assert new_sid != sid_old
+
+        # Новый профиль: ровно 1 эмбеддинг.
+        new_profile = next(s for s in speakers if s["id"] == new_sid)
+        assert new_profile["embeddings"] == 1
+        assert new_profile["name"] == "Бо"
+
+        # Старый профиль: id и embeddings не изменились.
+        old_profile = next(s for s in speakers if s["id"] == sid_old)
+        assert old_profile["id"] == before_old_id
+        assert old_profile["embeddings"] == before_old_embs
+        assert old_profile["name"] == "Ан"
+
+
 class TestIdentifyCandidatesDiagnostics:
     """Issue W5-4 п.4 — диагностика: best_score И второй кандидат."""
 
