@@ -2176,6 +2176,9 @@ class DialogueNode(Node):
                 with self._speaker_lock:
                     sp = dict(getattr(self, "_current_speaker", {}) or {})
                 sp_name = sanitize_speaker_name(sp.get("name")) if sp.get("is_known") else ""
+                # Issue #2346/t_39b59d89: обратимая диагностика act3 n302/n303/n308.
+                # Вынесено в helper, чтобы не растить CC `_on_stt` (ADR-0021 R1).
+                self._emit_backlog_diag_log(sp, sp_name, speaker_tag, text)
                 accumulator.add(
                     text,
                     speaker_tag=speaker_tag,
@@ -6356,6 +6359,34 @@ class DialogueNode(Node):
             self.get_logger().warn(f"asyncio loop driver join raised: {exc}")
         finally:
             executor.shutdown(wait=False)
+
+    # Issue #2346/t_39b59d89: обратимая диагностика act3 n302/n303/n308.
+    # Даёт 100% ответ, почему `speaker='Борис'/'Саша'` пропущен в
+    # pattern-проверке harness'а: голос не опознан (`is_known=False`)?
+    # Или `name` пустой/неправильный? Не трогает ни threshold, ни
+    # attr-race — только пишет сырой dump `_current_speaker` рядом с
+    # существующим backlog-логом, чтобы в следующем прогоне (после фикса
+    # SKIPPED-шага "Collect robot logs" в workflow) сразу читать причину
+    # из docker logs / артефакта e2e-voice-logs-<RID>. Вынесено из
+    # `_on_stt` чтобы не растить CC (ADR-0021 R1).
+    def _emit_backlog_diag_log(
+        self,
+        sp: dict,
+        sp_name: str,
+        speaker_tag: object,
+        text: str,
+    ) -> None:
+        self.get_logger().info(
+            f"robot_log(step=backlog_diag): raw_current_speaker="
+            f"is_known={sp.get('is_known')!r} "
+            f"name={sp.get('name')!r} "
+            f"confidence={sp.get('confidence')!r} "
+            f"speaker_id={str(sp.get('speaker_id') or '')[:8]!r} "
+            f"tag_in={speaker_tag!r} "
+            f"sanitized_name={sp_name!r} "
+            f"text={text[:60]!r}"
+        )
+
     def destroy_node(self) -> None:
         try:
             self.shutdown_asyncio_loop(wait=False)
