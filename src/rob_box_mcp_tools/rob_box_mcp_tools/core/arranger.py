@@ -303,8 +303,17 @@ def _fmt_list(values: Sequence[float]) -> str:
     return "[" + ", ".join(_fmt(v) for v in values) + "]"
 
 
+#: Аргументы плеера, при которых ступень Renardo численно равна MIDI-ноте.
+#:
+#: Дублирует :data:`core.rtttl.ABSOLUTE_MIDI_ARGS` намеренно: там лежит
+#: полное объяснение, почему ``midinote=`` не работает, а здесь модуль
+#: остаётся без зависимости от RTTTL-парсера (аранжировщик умеет играть
+#: дословную тему из любого источника, не только из рингтона).
+ABSOLUTE_MIDI_ARGS = "oct=0, root=0, scale=Scale.chromatic"
+
+
 def _fmt_midi_list(values: Sequence[Optional[int]]) -> str:
-    """MIDI-список для Renardo ``midinote=[...]``: ``None`` = пауза."""
+    """Список абсолютных MIDI как ступени Renardo: ``None`` = пауза."""
     return "[" + ", ".join("None" if v is None else str(int(v)) for v in values) + "]"
 
 
@@ -622,8 +631,13 @@ def _render_melodic_player_head(
             raise ArrangementError(
                 f"Роль {layer.role!r} с midi — нужен точный ритм durs."
             )
-        # Абсолютный MIDI: октава не применяется (midinote задаёт высоту).
-        head = f"{layer.synth}(midinote={_fmt_midi_list(layer.midi)}"
+        # 🔴 FIX (live 14.09): было ``midinote=[...]`` — Renardo этот
+        # ключ как источник высоты ИГНОРИРУЕТ (пересчитывает freq из
+        # degree и затирает, Players.py::new_message_header). degree не
+        # передавался → вся тема звучала на одной ноте MIDI 60. Ноты
+        # идут позиционно, а ABSOLUTE_MIDI_ARGS делает ступень равной
+        # MIDI-ноте; oct здесь не применяется (высота уже абсолютная).
+        head = f"{layer.synth}({_fmt_midi_list(layer.midi)}"
         return head, pre_lines
 
     if layer.durs is not None:
@@ -666,6 +680,10 @@ def _render_melodic_args(
             args.append(f"dur={_fmt(layer.dur)}")
     if layer.midi is None:
         args.append(f"oct={max(2, min(7, role_oct + int(layer.oct_shift)))}")
+    else:
+        # root=0 обязателен: иначе Root.default (var с прогрессией)
+        # транспонирует дословную тему вслед за гармонией.
+        args.append(ABSOLUTE_MIDI_ARGS)
     return args
 
 

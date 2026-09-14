@@ -2238,7 +2238,11 @@ class TestComposeMusicToolMelodyByName:
         result = tool.execute(name="fifth", **self._ARR)
         assert result.success is True
         code = mgr.execute_code.call_args.args[0]
-        assert "midinote=[None, 79, 79, 79, 75]" in code
+        # Ноты позиционно (degree), НЕ через midinote= — Renardo этот
+        # ключ как высоту игнорирует (регресс 14.09, см. core/rtttl.py).
+        assert "[None, 79, 79, 79, 75]" in code
+        assert "midinote=" not in code
+        assert "oct=0, root=0, scale=Scale.chromatic" in code
         assert "Clock.bpm = 63" in code
         assert "Beethoven's Fifth" in result.message
         # Аранжировка LLM дошла до кода.

@@ -822,10 +822,10 @@ class TestFixedTheme:
 
 class TestFixedThemeMidi:
     """Точная тема абсолютным MIDI (lead_midi + lead_dur): лид играется
-    дословно через ``midinote=[...]`` — хроматические ноты и паузы не
-    теряются, а октава роли не накладывается (midinote задаёт высоту)."""
+    дословно ступенями хроматического лада — хроматические ноты и паузы
+    не теряются, а октава роли не накладывается (высота уже абсолютная)."""
 
-    def test_lead_midi_renders_midinote_verbatim(self):
+    def test_lead_midi_renders_degrees_verbatim(self):
         spec = spec_from_flat(
             bpm=80, root="C", scale="major",
             form="arc", drums="X..o.X.o", lead_synth="pluck",
@@ -834,10 +834,19 @@ class TestFixedThemeMidi:
         )
         code = render(spec)
         lead = next(l for l in code.splitlines() if l.startswith("p2 >>"))
-        assert "midinote=[74, None, 70, 77]" in lead
+        assert "[74, None, 70, 77]" in lead
         assert "dur=[0.75, 0.5, 0.5, 0.25]" in lead
-        # Абсолютный MIDI: октава роли не применяется.
-        assert "oct=" not in lead
+        # 🔴 Регресс 14.09: с ``midinote=[...]`` Renardo игнорирует высоту
+        # (пересчитывает freq из degree и затирает) — вся тема звучала на
+        # одной ноте MIDI 60. Ноты обязаны идти позиционно.
+        assert "midinote=" not in lead
+        # Ступень равна MIDI-ноте только при этих трёх аргументах; root=0
+        # ещё и защищает тему от транспонирования Root.default-прогрессией.
+        assert "oct=0" in lead
+        assert "root=0" in lead
+        assert "scale=Scale.chromatic" in lead
+        # Октава роли не применяется — высота задана абсолютно.
+        assert "oct=4" not in lead and "oct=5" not in lead
         # Тема не варируется и не получает собственного Pvar-мотива.
         assert "p2_motif" not in code
         assert "Pvar" not in lead
