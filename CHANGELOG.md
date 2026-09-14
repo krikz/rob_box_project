@@ -488,6 +488,50 @@ llm_streaming, agent-flow. В активной разработке, требу�
 * Auto-pause sentinel на streak ≥ 20.
 * install.sh — скрипт уже в `EXPECTED`, новая логика self-contained внутри.
 
+### Agent-flow: документация fail-streak watchdog (kanban t_e72760e9)
+
+> Карточка t_e72760e9 (techwriter) — пост-merge polish PR к #2374: заполнить
+> пробелы в user-facing документации, которых не было в исходном коммите
+> (требовала acceptance из task body: state-путь, gh auth/scope,
+> DRY-RUN, explicit disable через ENV). Код НЕ менялся — только README
+> и CHANGELOG.
+
+#### Добавлено (в `scripts/agent_flow/README.md`, секция `agent-flow-e2e-fail-streak-watchdog.sh`)
+
+* Подсекция **«State-файлы (rate-limit + pause-sentinel)»** — таблица
+  `$HERMES_HOME/state/agent-flow-e2e-fail-streak-{last-issue,pause}`
+  с колонками «назначение / очистка» + явное замечание про путь из task body
+  `/var/lib/agent-flow/e2e-fail-streak-issue.last` (абстрактный reference,
+  реальный код использует `$HERMES_HOME/state/...`).
+* Подсекция **«Требования к окружению»** — `gh` CLI + `gh auth status` (exit 1
+  без логина), GitHub token scope `repo` (нужен и для `gh run list`,
+  и для `gh issue create`), опциональный `read:org` (только если задан
+  `E2E_FAIL_STREAK_ISSUE_ASSIGNEE` как `@org-member`), `python3`
+  (для парсинга JSON), `flock` (util-linux), `REPO_DIR` для `git -C`.
+* Подсекция **«Как отключить или сильно ослабить watchdog»** — explicit
+  рецепты: `E2E_FAIL_STREAK_ISSUE_THRESHOLD=999999` отключает auto-create
+  (но comment + pause продолжают работать), три порога в 999999 отключают
+  весь watchdog, `E2E_FAIL_STREAK_ISSUE_RATE_LIMIT_HOURS=24` меняет окно
+  rate-limit, `rm -f $HERMES_HOME/state/agent-flow-e2e-fail-streak-{last-issue,pause}`
+  для срочного cooldown-clear / manual resume после fix регрессии.
+* Подсекция **«DRY-RUN для оператора»** — `FAIL_STREAK_DRY_RUN=true bash …`
+  с явным списком, что в DRY-RUN блокируется (`gh issue comment`,
+  `gh issue create`, `touch` pause-sentinel, write cooldown) и что
+  остаётся как обычно (READ: `gh run list`, `gh auth status`, `git -C`).
+  Это «safe test path» для оператора перед любым ENV-тюнингом или
+  новым релизом watchdog'а.
+* В ENV-таблицу добавлены `HERMES_HOME` (`~/.hermes`), `GH_REPO`
+  (`krikz/rob_box_project`), `LOCK_FILE` (`/tmp/agent-flow-e2e-fail-streak-watchdog.lock`),
+  `FAIL_STREAK_DRY_RUN` (`false`) — раньше не были видны оператору
+  без чтения исходника.
+* Подсекция **«Тесты / регресс-гард»** — explicit `bash scripts/agent_flow/tests/test_e2e_fail_streak_auto_issue.sh`
+  с ожидаемым `PASS=10 FAIL=0 exit 0` + утверждение «можно гонять в любом
+  окружении (включая CI без `gh` auth) — mock-gh лежит в `mktemp -d/bin/gh`».
+
+#### Не менялось
+
+* Никакого кода — только README и этот CHANGELOG-entry. См. PR (kanban t_e72760e9).
+
 ### MiniMax TTS-провайдер
 
 #### Добавлено

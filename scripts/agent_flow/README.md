@@ -702,6 +702,10 @@ Reconcile делает merge-gate; этот скрипт — единствен�
 
 ### `agent-flow-e2e-fail-streak-watchdog.sh` — auto-escalation + auto-create issue
 
+> Каноническое имя секции по карточке t_e72760e9: **«Fail-streak auto-issue»**
+> (ADR-FS-001, kanban t_401e52de). Ниже — auto-escalation (comment + pause)
+> и сам auto-create-issue, единый watchdog.
+
 При fail-streak ≥ `E2E_FAIL_STREAK_WARN` (default 5):
 
 1. **Comment-alert** в открытый `needs-e2e` / unlabeled-process issue (idem­po­tent по
@@ -720,7 +724,44 @@ Reconcile делает merge-gate; этот скрипт — единствен�
    `agent-flow-e2e-process.sh` читает в начале каждого tick и пропускает round
    creation. Manual override — удаление файла.
 
-ENV-тюнинг (все с разумными дефолтами):
+#### State-файлы (rate-limit + pause-sentinel)
+
+Оба файла живут под **`$HERMES_HOME`** (default `~/.hermes`, переопределяется
+через `HERMES_HOME` в env крона). Фиксированные пути:
+
+| Файл | Назначение | Очистка |
+|---|---|---|
+| `$HERMES_HOME/state/agent-flow-e2e-fail-streak-last-issue` | epoch последнего успешного `gh issue create` (Unix sec). Используется для rate-limit guard. | Удалить, чтобы следующий тик снова мог создать issue (или подождать `E2E_FAIL_STREAK_ISSUE_RATE_LIMIT_HOURS` ч). |
+| `$HERMES_HOME/state/agent-flow-e2e-fail-streak-pause` | sentinel «заморозить e2e-ротацию», созданный при streak ≥ PAUSE. Содержит `streak=N`, `triggered=<iso>`, инструкцию по ручному override. | **Только вручную** (см. комментарии в самом файле). Удаление до фикса регрессии → следующие 20+ FAIL'ов сожгут CI minutes. |
+
+> ⚠️ Путь из task body `/var/lib/agent-flow/e2e-fail-streak-issue.last` — это
+> абстрактный «systemd-style» reference; реальный скрипт использует
+> `$HERMES_HOME/state/...` (см. ENV-таблицу скрипта: `ISSUE_COOLDOWN_FILE`,
+> `PAUSE_SENTINEL`). Это намеренно: на хосте Hermes конфиг/стейт
+> концентрируется под `~/.hermes/`, чтобы `install.sh` мог раскладывать
+> скрипт без `root` и без отдельной `/var/lib` договорённости.
+
+#### Требования к окружению
+
+* **`gh` CLI установлен** (`command -v gh`). Watchdog в начале тика делает
+  `gh auth status` — если не `logged in`, exit 1 и тик молча завершается
+  (см. comment-alert: cron-delivery сработает, но issue НЕ создаётся).
+* **GitHub-токен с scope `repo` (full control of repositories)** — нужен и
+  для чтения `gh run list`, и для создания issue. На нашем devops-профиле
+  это Personal Access Token пользователя `krikz` (см. `gh auth status` →
+  `Token scopes: '...', 'repo', ...`).
+* **`read:org`** — нужен ТОЛЬКО если `E2E_FAIL_STREAK_ISSUE_ASSIGNEE` задан
+  как `@org-member`. По умолчанию assignee пустой, scope не требуется.
+* **`python3`** — используется для парсинга JSON-ответов `gh run list` /
+  `gh issue list` (streak counter + timeline table). Без python3 скрипт
+  падает на первом же parse с `ERROR: cannot parse runs json` → exit 1.
+* **`flock`** (util-linux) — guard от параллельного запуска (`LOCK_FILE`).
+* **Repo path через `REPO_DIR`** — для `git -C origin/develop ...` (develop
+  HEAD + релевантные merges в issue-body). Если пусто, fallback на `git`
+  без `-C` (текущий cwd), что работает только если watchdog запущен
+  ИЗ корня репо.
+
+#### ENV-тюнинг (все с разумными дефолтами)
 
 | Var | Default | Назначение |
 |---|---|---|
@@ -732,11 +773,84 @@ ENV-тюнинг (все с разумными дефолтами):
 | `E2E_FAIL_STREAK_ISSUE_ASSIGNEE` | `` (пусто) | assignee issue (опц.) |
 | `E2E_FAIL_STREAK_DEDUP_HOURS` | 6 | дедуп alert-комментариев |
 | `REPO_DIR` | `` (cwd) | путь к локальному clone репо для `git -C` (develop HEAD + merges) |
+| `HERMES_HOME` | `~/.hermes` | корень для state-файлов (cooldown + pause) |
+| `GH_REPO` | `krikz/rob_box_project` | owner/repo для всех `gh` вызовов |
+| `LOCK_FILE` | `/tmp/agent-flow-e2e-fail-streak-watchdog.lock` | flock guard |
+| `FAIL_STREAK_DRY_RUN` | `false` | **DRY-RUN** — log only, никаких `gh issue comment` / `gh issue create` / touch sentinel. См. «DRY-RUN для оператора» ниже. |
 
-Тесты: `scripts/agent_flow/tests/test_e2e_fail_streak_auto_issue.sh`
+#### Как отключить или сильно ослабить watchdog
+
+* **Полностью отключить auto-create issue** (но оставить comment-alert и
+  pause):
+  ```bash
+  E2E_FAIL_STREAK_ISSUE_THRESHOLD=999999 bash scripts/agent_flow/agent-flow-e2e-fail-streak-watchdog.sh
+  ```
+  Threshold выше максимально наблюдаемого streak → условие
+  `streak ≥ THRESHOLD` никогда не сработает, comment + pause продолжат
+  работать как раньше.
+* **Полностью отключить весь watchdog** (ни comment, ни issue, ни pause):
+  убери `agent-flow-e2e-fail-streak-watchdog.sh` из chain вызовов
+  `agent-flow-e2e-process-launcher.sh` (см. комментарий-строку в `install.sh`,
+  раздел «Fail-streak escalation watchdog»). Альтернатива — обнулить все три
+  порога: `E2E_FAIL_STREAK_WARN=999999 E2E_FAIL_STREAK_ISSUE_THRESHOLD=999999 E2E_FAIL_STREAK_PAUSE=999999`.
+* **Сменить rate-limit window** (как требует task body): через
+  `E2E_FAIL_STREAK_ISSUE_RATE_LIMIT_HOURS`. Пример: «не чаще раза в сутки»:
+  ```bash
+  E2E_FAIL_STREAK_ISSUE_RATE_LIMIT_HOURS=24 bash scripts/agent_flow/agent-flow-e2e-fail-streak-watchdog.sh
+  ```
+* **Сменить cooldown срочно** (например, нужно СЕЙЧАС создать issue при
+  следующем тике, не дожидаясь окна): удалить state-файл
+  `rm -f "$HERMES_HOME/state/agent-flow-e2e-fail-streak-last-issue"` —
+  следующий тик увидит «cooldown absent» и пройдёт второй guard
+  (GitHub-truth: нет открытого issue с лейблом `e2e-fail-streak`).
+* **Снять pause-sentinel** (после fix регрессии): удалить файл
+  `rm -f "$HERMES_HOME/state/agent-flow-e2e-fail-streak-pause"`. Это
+  ручное действие намеренно — следующие 20+ FAIL'ов без подтверждения
+  фикса сожгут CI minutes (см. ADR-0018 + sentinel header).
+
+#### DRY-RUN для оператора
+
+Перед любым изменением watchdog (новый ENV-тюнинг, новая версия скрипта,
+эксперимент с threshold'ами) — **сначала прогнать DRY-RUN**, чтобы убедиться,
+что тик видит streak и action-ветки логируются без side-effect:
+
+```bash
+# На хосте, где живёт cron-tick (default /home/builder):
+FAIL_STREAK_DRY_RUN=true bash /home/builder/.hermes/scripts/agent-flow-e2e-fail-streak-watchdog.sh
+
+# Или прямо из репо (после install.sh раскладки):
+FAIL_STREAK_DRY_RUN=true bash scripts/agent_flow/agent-flow-e2e-fail-streak-watchdog.sh
+```
+
+В DRY-RUN:
+* `gh issue comment …` → логируется `DRY-RUN would: gh issue comment …` (no API call);
+* `gh issue create …` → логируется `DRY-RUN would: gh issue create --label …`;
+* pause-sentinel `touch …` → логируется `DRY-RUN would: touch …` (файл НЕ создаётся);
+* cooldown `date +%s > "$ISSUE_COOLDOWN_FILE"` НЕ выполняется → следующий
+  реальный тик НЕ будет «заблокирован» от DRY-RUN'а.
+
+Все остальные side-effects (`gh run list`, `gh auth status`, `git -C …`)
+выполняются как обычно — это READ-операции, безопасные.
+
+#### Тесты / регресс-гард
+
+Регрессионные unit-тесты через PATH-hijack mock-gh / mock-git (без сети,
+без реальных issues) — `scripts/agent_flow/tests/test_e2e_fail_streak_auto_issue.sh`
 (10 кейсов: streak<threshold, DRY-RUN, fresh/stale cooldown, existing issue,
 create-call correctness, 8-fails→1-issue acceptance, gh-failure handling,
 assignee, marker).
+
+Запуск:
+
+```bash
+bash scripts/agent_flow/tests/test_e2e_fail_streak_auto_issue.sh
+# ожидаемый итог: PASS=10 FAIL=0 exit 0
+```
+
+Тесты можно гонять **в любом окружении** (включая CI без `gh` auth) — mock-gh
+лежит в `mktemp -d/bin/gh` и не уходит в сеть. Это самый дешёвый способ
+проверить, что очередной refactor watchdog'а не сломал идемпотентность / DRY-RUN
+/ cooldown guards.
 
 ### `agent-flow-rotation-watchdog.sh` — жива ли e2e-ротация
 
