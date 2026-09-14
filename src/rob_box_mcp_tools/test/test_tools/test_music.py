@@ -2244,7 +2244,10 @@ class TestComposeMusicToolMelodyByName:
         # восьмых и длинная нота — РЕДКАЯ тема (одна атака на бит при
         # пороге 1.2), а удвоение и второй голос положены только плотным
         # (harmonize::DENSE_ONSETS_PER_BEAT).
-        assert "[None, 79, 79, 79, 75]" in code
+        # blip играет на октаву выше написанного (SYNTH_SEMITONE_SHIFT =
+        # -12), поэтому в коде нота на октаву ниже задуманной G5/D#5 —
+        # на слух тема остаётся дословной (79/75 звучат как 79/75).
+        assert "[None, 67, 67, 67, 63]" in code
         assert "d3 >>" not in code  # второй голос редкой теме не даётся
         assert "midinote=" not in code
         assert "oct=0, root=0, scale=Scale.chromatic" in code
