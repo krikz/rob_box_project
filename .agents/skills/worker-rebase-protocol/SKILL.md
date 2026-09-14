@@ -20,7 +20,7 @@ PR diverged, merge-gate ловит add/add конфликты, карточка 
 ## Workflow
 
 ```
-[claim] → [pre_flight rebase] → [work] → [push] → [post_flight rebase] → [report] → [kanban_complete]
+[claim] → [pre_flight rebase] → [work] → [scope_check] → [push] → [post_flight rebase] → [report] → [kanban_complete]
 ```
 
 ### Шаг 1: pre-work rebase (после claim, до кода)
@@ -45,7 +45,20 @@ bash scripts/agent_flow/worker_pre_flight.sh "$HERMES_KANBAN_TASK" \
 
 ### Шаг 2: обычная работа
 
-Делай код, пиши тесты, коммить, пушит в свою ветку.
+Делай код, пиши тесты. **Перед каждым коммитом** проверяй, что в staged/untracked
+нет чужих файлов:
+
+```bash
+# Покажет всё, что воркер может закоммитить (staged + unstaged + untracked)
+# + committed diff vs origin/develop. С PR_ALLOWED_PREFIXES — блокирует левое.
+PR_ALLOWED_PREFIXES="scripts/agent_flow/,docs/adr/" \
+    bash scripts/agent_flow/worker_scope_check.sh "$HERMES_KANBAN_TASK" "${ISSUE_NUM:-}"
+```
+
+- **Не делай `git add .` / `git commit -a` вслепую** — сначала `git status`,
+  потом точечный `git add <file>` только своих файлов.
+- Если в `git log origin/develop..HEAD` висят чужие коммиты — ветка грязная,
+  пересоздай её с `origin/develop` (см. anti-patterns ниже).
 
 ### Шаг 3: post-work rebase + отчёт (перед kanban_complete)
 
@@ -114,12 +127,16 @@ bash scripts/agent_flow/worker_post_flight.sh "$HERMES_KANBAN_TASK" \
   на токенах (ретро t_8abada71).
 - **Не игнорируй `SKIP_PRE_FLIGHT=true`** — это opt-out только для retro-карточек,
   не для обычной работы.
+- **Не коммить `git add .` вслепую.** Перед коммитом — `worker_scope_check.sh`
+  и `git status`. PR #2443 ушёл с 4 чужими файлами (hailo + webxr) именно
+  потому, что воркер не смотрел, что у него в worktree.
 
 ## Связанные
 
 - ADR-0077 §8 — формализация контракта (`docs/adr/0077-kanban-worker-report-file.md`).
 - `scripts/agent_flow/worker_pre_flight.sh` — pre-work auto-rebase.
-- `scripts/agent_flow/worker_post_flight.sh` — post-work auto-rebase + push.
+- `scripts/agent_flow/worker_post_flight.sh` — post-work auto-rebase + push + scope check.
+- `scripts/agent_flow/worker_scope_check.sh` — self-check файлов перед push (левое не коммитим).
 - `scripts/agent_flow/kanban-report-write.sh` — report + step 0 = post_flight.
 - `docs/reports/kanban/README.md` — workflow с rebase.
 - Issue #2438 — оригинальная задача (4 примера с drift).

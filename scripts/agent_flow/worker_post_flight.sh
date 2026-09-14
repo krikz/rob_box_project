@@ -136,6 +136,21 @@ fi
 # Явный fetch refspec (ретро t_730ea7b1)
 git fetch --no-tags origin "refs/heads/develop:refs/remotes/origin/develop" >/dev/null 2>&1 || true
 
+# ---- step 2.5: scope self-check (issue #2438, PR #2443) -------------------
+# Перед rebase/push — самопроверка файлов: working tree (staged + unstaged +
+# untracked) + committed diff vs origin/develop сверяются с
+# PR_ALLOWED_PREFIXES / PR_ALLOWED_GLOBS. Если воркер подхватил чужие файлы
+# (другой worktree / чужая задача) — блокируем карточку, пока не разберёт.
+# Opt-out: SKIP_SCOPE_CHECK=true (см. worker_scope_check.sh).
+_SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+if [ -x "${_SELF_DIR}/worker_scope_check.sh" ]; then
+    if ! bash "${_SELF_DIR}/worker_scope_check.sh" "$TASK_ID" "${ISSUE_NUM:-}" >&2; then
+        log "scope check FAILED: out-of-scope files present; resolve before kanban_complete"
+        exit 1
+    fi
+fi
+unset _SELF_DIR
+
 # ---- step 3: behind count ------------------------------------------------
 BEHIND="$(git rev-list --count "${CURRENT_BRANCH}..origin/develop" 2>/dev/null || echo "?")"
 AHEAD="$(git rev-list --count "origin/develop..${CURRENT_BRANCH}" 2>/dev/null || echo "?")"

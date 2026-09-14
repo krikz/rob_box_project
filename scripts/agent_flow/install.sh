@@ -145,6 +145,13 @@ EXPECTED=(
     # add/add конфликты (ретро PR #2351, #2363, issue #2438).
     worker_pre_flight.sh
     worker_post_flight.sh
+    # Worker-helper для scope self-check (issue #2438, PR #2443, 2026-09-14):
+    # воркер вызывает перед push/kanban_complete — сверяет working tree
+    # (staged + unstaged + untracked) и committed diff vs origin/develop с
+    # PR_ALLOWED_PREFIXES/PR_ALLOWED_GLOBS. Ловит «левые» файлы с чужих
+    # worktree (PR #2443 ушёл с 4 чужими hailo/webxr файлами). Вызывается
+    # автоматически из worker_post_flight.sh (opt-out SKIP_SCOPE_CHECK=true).
+    worker_scope_check.sh
     validate_honesty.sh
     # Pre-PR check на ADR namespace collision (ретро 01.09 t_debcb647):
     # дополняет validate_honesty.sh (claim-evidence) функцией проверки

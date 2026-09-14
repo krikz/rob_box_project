@@ -265,10 +265,13 @@ bash scripts/agent_flow/kanban-report-write.sh "$HERMES_KANBAN_TASK"
 
 `worker_post_flight.sh` (тот же протокол, но без MAX_BRANCH_BEHIND-гейта — rebase **всегда** при behind > 0, плюс auto-push через `push-via-gh-api.sh`):
 - Refuse если worktree в `.git/rebase-merge` или `.git/rebase-apply` (предыдущий rebase упал).
-- `git fetch` + `BEHIND`.
+- `git fetch` + scope self-check (`worker_scope_check.sh`, см. §8.7).
+- `BEHIND`.
 - Если `BEHIND == 0` → exit 0.
 - Если `BEHIND > 0` → `git rebase origin/develop` + `push-via-gh-api.sh`.
 - Успех → exit 0 (kanban_complete можно). Конфликт → инструкция + exit 1 (воркер НЕ вызывает kanban_complete, а разрешает конфликт и повторяет).
+
+`worker_pre_flight.sh` при старте также логирует `AHEAD` (коммиты на ветке, которых нет в develop): если `AHEAD > 0` на свежем claim — это сигнал, что воркер подхватил чужие коммиты (ретро PR #2443), и должен пересоздать ветку.
 
 ### 8.3 Интеграция с `kanban-report-write.sh`
 
@@ -285,6 +288,7 @@ diverged веткой. Opt-out: `SKIP_POST_FLIGHT=true` (только для ret
 | `validate_pr_scope.sh` | в merge-gate cron | проверяет scope diff vs base | PR #2040, ADR-0055 |
 | `worker_pre_flight.sh` | начало сессии (после claim) | **auto-rebase** если drift > 30, conflict → exit 1 | **issue #2438** |
 | `worker_post_flight.sh` | перед `kanban_complete` | **auto-rebase** всегда при behind > 0 + push, conflict → exit 1 | **issue #2438** |
+| `worker_scope_check.sh` | перед push/kanban_complete (внутри post_flight) | блокирует out-of-scope файлы в working tree + diff | **issue #2438, PR #2443** |
 
 Pre/Post-flight **закрывают дыру** между freshness (только блокирует push) и
 scope (только проверяет diff) — воркер получает auto-rebase на свежий develop
@@ -306,9 +310,21 @@ scope (только проверяет diff) — воркер получает a
 
 - [ ] `scripts/agent_flow/worker_pre_flight.sh` создан, exit codes 0/1/2.
 - [ ] `scripts/agent_flow/worker_post_flight.sh` создан, exit codes 0/1/2.
+- [ ] `scripts/agent_flow/worker_scope_check.sh` создан, вызывается из post_flight.
 - [ ] `scripts/agent_flow/kanban-report-write.sh` вызывает `worker_post_flight.sh` в начале.
 - [ ] `scripts/agent_flow/install.sh` EXPECTED содержит оба скрипта.
 - [ ] Тесты `tests/test_worker_pre_flight.sh` и `tests/test_worker_post_flight.sh`
   покрывают 9 сценариев каждый (usage errors, no-op, auto-rebase, conflict).
 - [ ] Skill `bundled/worker-rebase-protocol.md` упоминается в body новых карточек.
 - [ ] Verify: 5 живых карточек прошли full pre+post flight без проблем.
+
+### 8.7 Scope self-check (issue #2438, PR #2443)
+
+`worker_scope_check.sh` — третий рубеж (после freshness и post-PR scope):
+воркер сверяет **working tree** (staged + unstaged + untracked) и
+**committed diff vs `origin/develop`** с `PR_ALLOWED_PREFIXES` /
+`PR_ALLOWED_GLOBS`. Без prefixes — INFO-режим (показывает список файлов,
+не блокирует). С prefixes — блокирует (exit 1) при out-of-scope файлах.
+Вызывается автоматически из `worker_post_flight.sh` (step 2.5), opt-out
+`SKIP_SCOPE_CHECK=true`. Закрывает кейс PR #2443: в PR про rebase-protocol
+попали 4 чужих файла (hailo + webxr) с прошлых worktree.

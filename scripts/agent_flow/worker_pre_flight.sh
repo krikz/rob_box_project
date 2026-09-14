@@ -136,6 +136,17 @@ AHEAD="$(git rev-list --count "origin/develop..${CURRENT_BRANCH}" 2>/dev/null ||
 
 log "drift: ahead=$AHEAD behind=$BEHIND (max=$MAX_BEHIND) branch=$CURRENT_BRANCH"
 
+# ---- step 2.5: leftover-commits warning (issue #2438, PR #2443) -----------
+# AHEAD > 0 на старте — на ветке уже висят коммиты, которых нет в develop.
+# Для свежего claim это почти наверняка чужой мусор (см. PR #2443: hailo +
+# webxr коммиты от прошлых воркеров). Не блокируем (возможен legit resume
+# своей ветки), но показываем список — воркер должен решить, его это или нет.
+if [ "$AHEAD" != "?" ] && [ "$AHEAD" -gt 0 ] 2>/dev/null; then
+    log "WARN: branch already has $AHEAD commit(s) not in origin/develop — possible leftover from another task"
+    git log --oneline "origin/develop..${CURRENT_BRANCH}" 2>/dev/null | sed 's/^/    commit: /' >&2 || true
+    log "If these are NOT your commits — recreate branch from fresh origin/develop (see worker-rebase-protocol skill)."
+fi
+
 if [ "$BEHIND" = "?" ]; then
     log "WARN: could not count BEHIND (git rev-list failed); skipping rebase"
     exit 0
