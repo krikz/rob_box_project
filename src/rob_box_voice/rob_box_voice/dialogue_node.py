@@ -3207,6 +3207,26 @@ class DialogueNode(Node):
             "stop_music tool, а потом коротко подтверди; если ВСЁ stopped — "
             "verbal «уже выключено» без tool call.</reminder>"
         )
+        # Issue #2406 (n201/n204 intro — register_speaker на discovery-шаге) —
+        # SYSTEM REMINDER: на intro-сценарии («давай знакомиться, меня зовут
+        # Саша») LLM по умолчанию отвечает verbal-only «Приятно познакомиться!»
+        # на основе <name>unknown</name> тега и пропускает register_speaker tool.
+        # e2e-гейт n201_sasha_intro_long / n204_boris_intro_long требует
+        # tool call в трейсе. Ставим МЕЖДУ stop_music и get_music_state —
+        # reminders[-1] остаётся time-reminder (test_issue_1777_time_format),
+        # reminders[-2] остаётся get_music_state (test_issue_2347), а новый
+        # reminder занимает reminders[1] (после stop_music).
+        lines.append(
+            "  <reminder>Если юзер представляется («давай знакомиться», "
+            "«я …», «зовут меня …», «привет, я …», «запомни меня как …», "
+            "«меня зовут …») — ОБЯЗАТЕЛЬНО вызови register_speaker tool ПЕРЕД "
+            "verbal-ответом, передав имя из реплики как name=. Имя бери "
+            "ИЗ user_input (например «давай знакомиться, меня зовут Саша» → "
+            "register_speaker(name=\"Саша\")), НЕ из <name>unknown</name> "
+            "тега — он stale для нового юзера (profile ещё не создан, "
+            "warm-up не догрелся). Tool call обязателен даже если кажется, "
+            "что ответ и так очевиден — e2e ловит verbal-only как fail.</reminder>"
+        )
         # Issue #2347 (n313 silence_restored) — SYSTEM REMINDER: на
         # state-запрос LLM по умолчанию делает verbal-only ответ из
         # <music_state> тега и пропускает get_music_state tool. e2e-гейт
