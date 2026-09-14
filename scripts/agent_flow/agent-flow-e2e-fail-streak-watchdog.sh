@@ -23,6 +23,10 @@
 #          label `needs-e2e` ИЛИ недавний FAIL-round ветке → если есть
 #          упоминание в issue body — fallback на #1668 как known issue).
 #        - log alert для cron-delivery.
+#      Если streak > STREAK_WARN (5) И нет открытого issue с лейблом
+#      `e2e-fail-streak` → СОЗДАТЬ новый issue с этим лейблом + статистикой
+#      streak, последними failed runs и ссылкой на последние develop-коммиты
+#      (включая music-фиксы). Rate-limit через RATE_LIMIT_HOURS (default 4ч).
 #      Если streak > STREAK_PAUSE (20):
 #        - Auto-pause: создаём файл PAUSE_SENTINEL → e2e-process в начале
 #          следующего тика увидит sentinel и пропустит round creation
@@ -31,16 +35,39 @@
 #   3. Idempotent: comment пишется только если последний marker старше
 #      MARKER_DEDUP_HOURS (default 6h). Pause-sentinel НЕ снимается —
 #      это manual override (Шиф/юзер).
+#   4. AUTO-CREATE ISSUE (ADR-FS-001, ретро t_401e52de):
+#      При streak ≥ E2E_FAIL_STREAK_ISSUE_THRESHOLD (default 5) И НЕТ
+#      открытого issue с лейблом `e2e-fail-streak` → создать ОДИН issue
+#      через `gh issue create` с body: timeline failed runs (id/conclusion/
+#      createdAt/headSha[7]/headBranch), develop HEAD SHA, релевантные
+#      merged PR (через `git log origin/develop --merges --since=…`), и
+#      hypothesis `music-fix regression` со ссылками на #2246/#2347 и
+#      на другие связанные issue из последних PR.
+#      Rate-limit: mtime ISSUE_COOLDOWN_FILE < E2E_FAIL_STREAK_ISSUE_RATE_LIMIT_HOURS
+#      → skip. Файл живёт в $HERMES_HOME/state/agent-flow-e2e-fail-streak-last-issue
+#      и содержит epoch последнего успешного создания issue (Unix time).
+#      Если `gh issue list --label e2e-fail-streak --state open` уже
+#      возвращает хотя бы 1 → skip (идемпотентность по GitHub, не по локальному
+#      state — на случай если state-файл потерян, но issue уже висит).
 #
 # ENV:
-#   GH_REPO                       — owner/repo (default krikz/rob_box_project)
-#   FAIL_STREAK_DRY_RUN=true      — log only, no API writes
-#   E2E_FAIL_STREAK_WARN=5        — порог алерта (issue comment)
-#   E2E_FAIL_STREAK_PAUSE=20      — порог auto-pause (sentinel file)
-#   E2E_FAIL_STREAK_LIMIT=30      — сколько последних run'ов смотрим
-#   E2E_FAIL_STREAK_DEDUP_HOURS=6 — дедупликация алерт-комментариев
-#   HERMES_HOME                   — для sentinel path (default ~/.hermes)
-#   LOCK_FILE                     — flock guard
+#   GH_REPO                                  — owner/repo (default krikz/rob_box_project)
+#   FAIL_STREAK_DRY_RUN=true                 — log only, no API writes
+#   E2E_FAIL_STREAK_WARN=5                   — порог алерта (issue comment)
+#   E2E_FAIL_STREAK_PAUSE=20                 — порог auto-pause (sentinel file)
+#   E2E_FAIL_STREAK_LIMIT=30                 — сколько последних run'ов смотрим
+#   E2E_FAIL_STREAK_DEDUP_HOURS=6            — дедупликация алерт-комментариев
+#   E2E_FAIL_STREAK_ISSUE_THRESHOLD=5        — порог для auto-create issue
+#                                              (default = WARN: один тик на каждый streak)
+#   E2E_FAIL_STREAK_ISSUE_RATE_LIMIT_HOURS=4 — дедупликация создания issue
+#   E2E_FAIL_STREAK_ISSUE_LABEL=e2e-fail-streak — лейбл нового issue
+#   E2E_FAIL_STREAK_ISSUE_ASSIGNEE=          — assignee (пусто = без assignee)
+#   HERMES_HOME                              — для sentinel path (default ~/.hermes)
+#   REPO_DIR                                 — путь к локальному clone репо (для
+#                                              `git -C` develop HEAD + merges).
+#                                              Если пусто — fallback на `git`
+#                                              без -C (текущий cwd).
+#   LOCK_FILE                                — flock guard
 #
 # Выходы:
 #   - Exit 0 — всё ok (даже если streak=0).
@@ -64,15 +91,54 @@ E2E_FAIL_STREAK_WARN="${E2E_FAIL_STREAK_WARN:-5}"
 E2E_FAIL_STREAK_PAUSE="${E2E_FAIL_STREAK_PAUSE:-20}"
 E2E_FAIL_STREAK_LIMIT="${E2E_FAIL_STREAK_LIMIT:-30}"
 E2E_FAIL_STREAK_DEDUP_HOURS="${E2E_FAIL_STREAK_DEDUP_HOURS:-6}"
+E2E_FAIL_STREAK_ISSUE_THRESHOLD="${E2E_FAIL_STREAK_ISSUE_THRESHOLD:-5}"
+E2E_FAIL_STREAK_ISSUE_RATE_LIMIT_HOURS="${E2E_FAIL_STREAK_ISSUE_RATE_LIMIT_HOURS:-4}"
+E2E_FAIL_STREAK_ISSUE_LABEL="${E2E_FAIL_STREAK_ISSUE_LABEL:-e2e-fail-streak}"
+E2E_FAIL_STREAK_ISSUE_ASSIGNEE="${E2E_FAIL_STREAK_ISSUE_ASSIGNEE:-}"
 HERMES_HOME="${HERMES_HOME:-/home/builder/.hermes}"
+REPO_DIR="${REPO_DIR:-}"     # for `git -C` (develop HEAD + recent merges)
 DRY_RUN="${FAIL_STREAK_DRY_RUN:-false}"
 LOCK_FILE="${LOCK_FILE:-/tmp/agent-flow-e2e-fail-streak-watchdog.lock}"
 PAUSE_SENTINEL="${PAUSE_SENTINEL:-${HERMES_HOME}/state/agent-flow-e2e-fail-streak-pause}"
+ISSUE_COOLDOWN_FILE="${ISSUE_COOLDOWN_FILE:-${HERMES_HOME}/state/agent-flow-e2e-fail-streak-last-issue}"
 MARKER_TAG="🤖 [agent:devops] script=agent-flow-e2e-fail-streak-watchdog streak=${E2E_FAIL_STREAK_WARN}+"
 
 PREFIX="[agent-flow-e2e-fail-streak-watchdog]"
 
 log() { printf '%s %s %s\n' "$PREFIX" "$(date -Iseconds)" "$*" >&2; }
+
+# --- helpers ---------------------------------------------------------------
+
+# format_failed_runs_table _runs_json _max_rows _repo
+# → печатает markdown-таблицу последних failed runs (id | conclusion | createdAt | sha[7] | branch)
+format_failed_runs_table() {
+    local _runs="$1" _max_rows="${2:-5}" _repo="$3"
+    GH_REPO_PASS="$_repo" MAX_ROWS_PASS="$_max_rows" printf '%s' "$_runs" \
+        | GH_REPO_PASS="$_repo" MAX_ROWS_PASS="$_max_rows" python3 -c '
+import json, os, sys
+try:
+    runs = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+max_rows = int(os.environ["MAX_ROWS_PASS"])
+repo = os.environ["GH_REPO_PASS"]
+shown = 0
+for r in runs:
+    if shown >= max_rows:
+        break
+    c = r.get("conclusion")
+    if c not in ("failure", "cancelled", "timed_out"):
+        continue
+    rid = r.get("databaseId", "")
+    created = r.get("createdAt", "")
+    sha = (r.get("headSha") or "")[:7]
+    branch = r.get("headBranch", "")
+    if not rid:
+        continue
+    print(f"| [{rid}](https://github.com/{repo}/actions/runs/{rid}) | {c} | {created} | `{sha}` | `{branch}` |")
+    shown += 1
+' 2>/dev/null || true
+}
 
 # --- flock guard ----------------------------------------------------------
 exec 9>"$LOCK_FILE" || true
@@ -205,6 +271,111 @@ try:
 except Exception:
     pass
 ' 2>/dev/null)
+fi
+
+# --- AUTO-CREATE ISSUE: idempotent + rate-limited (ADR-FS-001, t_401e52de) ---
+# При fail-streak ≥ E2E_FAIL_STREAK_ISSUE_THRESHOLD создаём ОДИН issue с
+# лейблом `e2e-fail-streak`. Два независимых guard'а:
+#   (a) Rate-limit: ISSUE_COOLDOWN_FILE (mtime) старше RATE_LIMIT_HOURS
+#       (если файл существует и свежий — skip).
+#   (b) GitHub-truth: если уже есть ОТКРЫТЫЙ issue с лейблом
+#       `e2e-fail-streak` — skip (защита от дублей при потере state-файла).
+# Issue body: timeline failed runs + develop HEAD + релевантные merged PR
+# (issue-ссылки из commit messages) + hypothesis `music-fix regression`
+# со ссылками на #2246/#2347.
+if [ "${_streak:-0}" -ge "$E2E_FAIL_STREAK_ISSUE_THRESHOLD" ] 2>/dev/null; then
+    _cooldown_ok="true"
+    if [ -f "$ISSUE_COOLDOWN_FILE" ]; then
+        _cooldown_epoch="$(stat -c '%Y' "$ISSUE_COOLDOWN_FILE" 2>/dev/null || echo 0)"
+        _cooldown_age_s=$(( $(date -u +%s) - ${_cooldown_epoch:-0} ))
+        _cooldown_limit_s=$(( E2E_FAIL_STREAK_ISSUE_RATE_LIMIT_HOURS * 3600 ))
+        if [ "${_cooldown_age_s:-0}" -lt "${_cooldown_limit_s}" ]; then
+            log "ISSUE_COOLDOWN active: ${_cooldown_age_s}s < ${_cooldown_limit_s}s — skip create"
+            _cooldown_ok="false"
+        fi
+    fi
+
+    _existing_e2e_issues="$(gh issue list --repo "$GH_REPO" --state open \
+        --label "$E2E_FAIL_STREAK_ISSUE_LABEL" --limit 1 --json number 2>/dev/null \
+        | python3 -c 'import json,sys; a=json.load(sys.stdin); print(len(a))' 2>/dev/null || echo 0)"
+    if [ "${_existing_e2e_issues:-0}" -gt 0 ] 2>/dev/null; then
+        log "open ${E2E_FAIL_STREAK_ISSUE_LABEL} issues: ${_existing_e2e_issues} — skip create"
+        _cooldown_ok="false"
+    fi
+
+    if [ "$_cooldown_ok" = "true" ]; then
+        # Собрать develop HEAD + релевантные merged PR за последние 5 дней
+        _develop_head="$(git -C "${REPO_DIR:-$HERMES_HOME}" rev-parse --short=7 origin/develop 2>/dev/null \
+            || git rev-parse --short=7 HEAD 2>/dev/null || echo unknown)"
+        # Issue-refs из последних 10 merge-коммитов develop (заголовок PR содержит "(#NNNN)")
+        _related_prs="$(git -C "${REPO_DIR:-$HERMES_HOME}" log origin/develop \
+            --merges --since='5 days ago' --pretty=format:'%s' 2>/dev/null \
+            | grep -oE '#[0-9]+' | sort -u | tr '\n' ' ' | head -c 400 || echo "")"
+        _failed_table="$(format_failed_runs_table "$_runs_json" 8 "$GH_REPO")"
+
+        _create_body="🤖 [agent:devops] script=agent-flow-e2e-fail-streak-watchdog action=auto-create-issue
+
+## fail-streak alert
+
+L: E2E Voice Test (\`${E2E_WORKFLOW}\`) упал **${_streak}** раз подряд.
+- **Last success:** ${_last_success_at:-NONE}
+- **develop HEAD:** \`${_develop_head}\`
+- **Threshold:** streak ≥ ${E2E_FAIL_STREAK_ISSUE_THRESHOLD}
+- **Rate-limit:** ${E2E_FAIL_STREAK_ISSUE_RATE_LIMIT_HOURS}ч (cooldown file: \`${ISSUE_COOLDOWN_FILE}\`)
+
+## Timeline (last 8 failed runs)
+
+| run | conclusion | createdAt | headSha | branch |
+|---|---|---|---|---|
+${_failed_table}
+
+## Hypothesis: music-fix regression?
+
+Рядом с image build (11 Sep 18:11 MSK, sha=022794fb631f) в develop попали 4 music-фикса:
+- \`f47da7b\` — docs(music): направить игру мелодий по имени в compose_music
+- \`7e8eab5\` — feat(music): требовать аранжировку LLM при игре мелодии по имени
+- \`62c7f62\` — feat(music): требовать lead_synth для известной мелодии
+- \`d17e107\` — feat(music): ограничить выбор lead_synth списком мелодических синтов
+
+Если acceptance ловит music-regression на atomic harness — на проде тоже будет.
+См. cross-refs: #2246 (supervisor метрики), #2347 (voice follow-up).
+Релевантные merged PR за последние 5 дней: ${_related_prs:-_(none parsed)_}.
+
+## Что делать
+
+1. Открыть последний failed run → ROBOT LOG block → какой маркер (STT-empty / no_wake_word / tts-fallback / no-speech).
+2. Если hypothesis подтвердилась — поставить процессные метки (\`needs-e2e\`/\`agent-flow-error\`) и привязать PR-фикс.
+3. Если инфра-проблема — добавить \`MAINTENANCE\` на develop.
+4. После закрытия fail-streak (новый SUCCESS) → удалить этот issue (\`gh issue close N --reason 'completed'\`).
+
+> Скрипт-страж: \`scripts/agent_flow/agent-flow-e2e-fail-streak-watchdog.sh\`.
+> При streak ≥ ${E2E_FAIL_STREAK_PAUSE} дополнительно создаётся pause-sentinel → e2e ротация замораживается.
+"
+
+        if [ "$DRY_RUN" = "true" ]; then
+            log "DRY-RUN would: gh issue create --label ${E2E_FAIL_STREAK_ISSUE_LABEL} (streak=${_streak}, develop=${_develop_head})"
+        else
+            _create_args=(--repo "$GH_REPO" --title "[e2e-fail-streak] L: E2E Voice Test — ${_streak} fails подряд (develop ${_develop_head})" --label "$E2E_FAIL_STREAK_ISSUE_LABEL" --body "$_create_body")
+            if [ -n "${E2E_FAIL_STREAK_ISSUE_ASSIGNEE:-}" ]; then
+                _create_args+=(--assignee "$E2E_FAIL_STREAK_ISSUE_ASSIGNEE")
+            fi
+            _create_out=""
+            _create_rc=0
+            _create_out="$(gh issue create "${_create_args[@]}" 2>&1)" || _create_rc=$?
+            if [ "${_create_rc}" = "0" ]; then
+                _issue_url="$(printf '%s' "$_create_out" | grep -oE 'https://github.com/[^ ]+/issues/[0-9]+' | head -n 1 || true)"
+                log "🚨 AUTO-CREATED fail-streak issue: ${_issue_url:-${_create_out}}"
+                # Записать cooldown (epoch) — следующие 4ч не создавать ещё
+                mkdir -p "$(dirname "$ISSUE_COOLDOWN_FILE")" 2>/dev/null || true
+                date -u +%s > "$ISSUE_COOLDOWN_FILE" 2>/dev/null \
+                    && log "cooldown written: $ISSUE_COOLDOWN_FILE" \
+                    || log "WARN: cannot write cooldown file $ISSUE_COOLDOWN_FILE"
+            else
+                log "ERROR: gh issue create failed (rc=${_create_rc}): ${_create_out}"
+            fi
+            unset _create_rc
+        fi
+    fi
 fi
 
 # --- PAUSE: sentinel file (manual override only) ---------------------------

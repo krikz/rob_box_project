@@ -449,6 +449,45 @@ llm_streaming, agent-flow. В активной разработке, требу�
 
 ## [Unreleased]
 
+### Agent-flow: auto-create fail-streak issue (ADR-FS-001, kanban t_401e52de)
+
+> Ретро t_401e52de: 8 fail-прогонов L: E2E Voice Test подряд прошли молча
+> без issue — process-gap. Watchdog теперь создаёт ОДИН issue с лейблом
+> `e2e-fail-streak` (rate-limit 4ч), вместо безмолвного fail-streak.
+
+#### Добавлено
+
+* `scripts/agent_flow/agent-flow-e2e-fail-streak-watchdog.sh`:
+  - Новая ветка «AUTO-CREATE ISSUE» (после «WARN: issue comment», до «PAUSE: sentinel»).
+    Срабатывает при `streak ≥ E2E_FAIL_STREAK_ISSUE_THRESHOLD` (default 5).
+  - Два guard'а идемпотентности: (a) `ISSUE_COOLDOWN_FILE` (mtime) младше
+    `E2E_FAIL_STREAK_ISSUE_RATE_LIMIT_HOURS` → skip; (b) `gh issue list
+    --label e2e-fail-streak --state open` уже возвращает 1+ → skip.
+  - Issue body: timeline последних 8 failed runs (`format_failed_runs_table`
+    уже был добавлен ранее в шапку), `git -C $REPO_DIR rev-parse origin/develop`
+    → HEAD SHA, релевантные merged PR за 5 дней (парсятся из
+    `git log origin/develop --merges --pretty=format:'%s' | grep -oE '#[0-9]+'`),
+    hypothesis «music-fix regression» с cross-refs на `#2246` (supervisor
+    метрики) и `#2347` (voice follow-up).
+  - Title: `[e2e-fail-streak] L: E2E Voice Test — N fails подряд (develop <sha>)`.
+  - ENV: `E2E_FAIL_STREAK_ISSUE_THRESHOLD`,
+    `E2E_FAIL_STREAK_ISSUE_RATE_LIMIT_HOURS`,
+    `E2E_FAIL_STREAK_ISSUE_LABEL`,
+    `E2E_FAIL_STREAK_ISSUE_ASSIGNEE`,
+    `REPO_DIR`.
+* `scripts/agent_flow/tests/test_e2e_fail_streak_auto_issue.sh` — 10 unit-кейсов
+  через PATH-hijack mock-gh / mock-git:
+  S1 streak<threshold, S2 DRY-RUN, S3 fresh cooldown,
+  S4 existing open issue, S5 create-call correctness, S6 8-fails→1-issue
+  (acceptance), S7 stale cooldown, S8 gh-fail handling, S9 assignee,
+  Sanity marker в body.
+
+#### Не менялось
+
+* Существующая comment-alert ветка (Q22 unlabel respect).
+* Auto-pause sentinel на streak ≥ 20.
+* install.sh — скрипт уже в `EXPECTED`, новая логика self-contained внутри.
+
 ### MiniMax TTS-провайдер
 
 #### Добавлено
