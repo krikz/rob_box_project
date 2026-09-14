@@ -82,7 +82,7 @@ Main Pi (10.1.1.22) **не подходит**: его HAT-слот занят CA
 
 ### 2.2. Архитектурный интеграционный шов (главное решение)
 
-**Не плодим новый канал контекста**. События лиц/объектов льются в **существующий** `PerceptionEvent.vision_summaries` (JSON array) через `/vision/hailo/events` (новый msg `VisionEvent` → подписка в `context_aggregator_node.py`).
+**Не плодим новый канал контекста**. События лиц/объектов льются в **существующий** `PerceptionEvent` через `/vision/hailo/events` (новый msg `VisionEvent` → подписка в `context_aggregator_node.py`).
 
 ```
 [OAK-D / MJPEG]──▶ [vision_hailo_node (Hailo-8)] ──▶ /vision/hailo/events (VisionEvent[])
@@ -92,13 +92,32 @@ Main Pi (10.1.1.22) **не подходит**: его HAT-слот занят CA
                                                                   │
                                                                   ▼
                                             /perception/context_update (PerceptionEvent)
-                                            .vision_summaries (JSON array of VisionEvent)
+                                            .vision_event_count (int32)
+                                            .vision_events_json  (string, JSON array)
                                                                   │
-                                                                  ▼
+                                                                  ▼   ◀── этот хоп ЕЩЁ НЕ РЕАЛИЗОВАН
                                             [mcp_server.py] ──▶ [AgentCore] ──▶ LLM
+                                                                  ↑
+                                                              Phase 1.5
 ```
 
-**Почему так**: dialogue_node и harness уже читают `PerceptionEvent.vision_summaries` через `mcp_server.py`. Любой новый vision-event автоматически попадает в LLM-контекст без изменений consumer-кода.
+**Текущее состояние шва (Phase 1, merged PR #2349, commit 7c558418)**:
+
+- ✅ **Producer-side готов**: `vision_hailo_node` публикует `/vision/hailo/events` (stub + real HEF loader); `context_aggregator_node` подписан, сериализует буфер в `event.vision_event_count` и `event.vision_events_json` (см. `context_aggregator_node.py:537-541`).
+- ❌ **Consumer-side НЕ подключён**: `mcp_server.on_perception_update` (см. `mcp_server.py:1295-1310`) кладёт в `perception_context_tool.update_context` ровно **4 поля**: `timestamp`, `internet_available`, `battery_percentage`, `mapping_mode`. Поля `vision_events_json` и `vision_summaries` до `get_perception_context` и, соответственно, до LLM **не доходят**.
+- ⚠️ **Поле `vision_summaries`** (старое, для Phase 3 scene-graph): объявлено в `PerceptionEvent.msg:52`, но **ни один producer его не заполняет** и **ни один consumer не читает**. Сейчас мёртвое.
+
+**Что это значит для Phase 1**: producer-side работает вхолостую — события публикуются в `vision_events_json`, но до LLM не доходят. Phase 1 закрывает детектор + safety stop (R3 не нарушен: vision не лезет в wake-gate), но **не закрывает** интеграцию с LLM-контекстом.
+
+**Privacy-stoop (важно для stub-режима)**: в stub-режиме (`hailo_enabled=false`) `vision_hailo_node` публикует **детерминированные синтетические события** ("person at 1m, conf 0.92" каждые `stub_period_sec`). Сейчас они **случайно не доходят до LLM** (потому что consumer не подключён). Это **корректное поведение по факту, но не по замыслу** — оно держится на том, что Phase 1.5 ещё не сделан. **Требование к Phase 1.5**: при подключении `mcp_server` к `vision_events_json` обязательно фильтровать `event_type == "stub"` (или требовать `hailo_enabled=true`) **до** передачи в LLM-контекст. Иначе stub выдаст в LLM выдуманных "person at 1m" → скомпрометированная личность.
+
+**Phase 1.5 (отдельная карточка, между Phase 1 и Phase 2)**:
+
+- Расширить `mcp_server.on_perception_update` чтобы класть `vision_event_count` + `vision_events_json` в `perception_context_tool.update_context` (cache hint: skip парсинг если `count == 0`).
+- Реализовать **stub-filter**: события с `event_type == "stub"` (или с `source == "stub"`) не должны попадать в LLM-контекст в любом deployment.
+- Параллельно принять решение по `vision_summaries` (Phase 3 scene-graph): либо удалить (мёртвое поле), либо явно пометить как "Phase 3 only, do not populate in Phase 1/1.5/2".
+
+**Почему так**: одно изменение в `mcp_server.py` — небольшое, но трогает privacy-critical path (LLM-контекст). Хотим отдельную карточку с явным privacy-review и acceptance-критерием "stub-events не доходят до LLM", а не молча включать его в общий Phase 1 merge.
 
 ### 2.3. Что входит в этот ADR (контракт)
 
@@ -108,8 +127,7 @@ Main Pi (10.1.1.22) **не подходит**: его HAT-слот занят CA
 - Новая ROS 2 нода `vision_hailo_node` (stub + real HEF loader) в `src/rob_box_perception/`.
 - Новый msg `VisionEvent` (header + bbox + class_id + class_name + confidence + embedding_id + event_type) в `src/rob_box_perception_msgs/`.
 - Расширение `PerceptionEvent.msg` (структурированные поля под face/object).
-- Расширение `context_aggregator_node.py` (подписка на `/vision/hailo/events`, маппинг в `vision_summaries`).
-- **`vision_hailo_node` запускается НЕ из perception launch-файла**: нода живёт в собственном Docker-сервисе `vision-hailo` (см. §3 touchpoint #6; Phase 1 реализован в PR #2349). Deployment seam = `docker compose --profile hailo up -d vision-hailo`. Launch-интеграция `internal_dialogue.launch.py` перекрыта отдельным сервисом, чтобы не тащить HailoRT/TAPPAS-зависимости в общий perception-контейнер.
+- Расширение `context_aggregator_node.py` (подписка на `/vision/hailo/events`, маппинг в `vision_event_count` + `vision_events_json`).
 - `safety_stop_node` в `src/rob_box_teleop/` (выходит за scope этого ADR — отдельная карточка, см. §10).
 - Юнит-тесты на HEF-loader stub (без реального железа) + интеграционный тест на context_aggregator.
 
@@ -117,23 +135,36 @@ Main Pi (10.1.1.22) **не подходит**: его HAT-слот занят CA
 
 ## 3. Touchpoints (точные файлы, что меняется)
 
+### Phase 1 (PoC, ~2 недели) — producer-side
+
 | # | Файл | Что меняется | Phase |
 |---|---|---|---|
 | 1 | `src/rob_box_perception_msgs/msg/PerceptionEvent.msg` | Добавить поля `vision_event_count`, `vision_events_json` (JSON array of VisionEvent) | 1 |
 | 2 | `src/rob_box_perception_msgs/msg/VisionEvent.msg` | **NEW**: header + bbox + class_id + class_name + confidence + embedding_id + event_type | 1 |
 | 3 | `src/rob_box_perception/rob_box_perception/vision_hailo_node.py` | **NEW**: stub с реальным интерфейсом HailoInference (поддерживает mock HEF для CI + real HEF через hailo_platform API) | 1 |
-| 4 | `src/rob_box_perception/rob_box_perception/context_aggregator_node.py` | Подписка на `/vision/hailo/events`, сериализация в `vision_summaries`/`vision_events_json` | 1 |
+| 4 | `src/rob_box_perception/rob_box_perception/context_aggregator_node.py` | Подписка на `/vision/hailo/events`, сериализация в `vision_event_count` + `vision_events_json` | 1 |
 | 5 | `src/rob_box_perception/setup.py` | Добавить console_scripts entry `vision_hailo` | 1 |
-| 6 | ~~`src/rob_box_perception/launch/internal_dialogue.launch.py`~~ | **НЕ ПРИМЕНИМО** — `vision_hailo_node` живёт в отдельном Docker-сервисе `vision-hailo` (см. §2.3 и touchpoint #12). Deployment seam = docker-compose profile `hailo` (`docker compose --profile hailo up -d vision-hailo`). Launch-файл `internal_dialogue.launch.py` намеренно НЕ правится, чтобы не тащить HailoRT/TAPPAS-зависимости в perception-контейнер. Phase 1 закрыт в PR #2349 без правок launch-файлов. | 1 |
+| 6 | `src/rob_box_perception/launch/internal_dialogue.launch.py` | Добавить Node `vision_hailo` (gated `hailo_enabled` параметром) | 1 |
 | 7 | `src/rob_box_perception/test/unit/test_vision_hailo_node.py` | **NEW**: 8 unit-тестов на stub (HEF-loader mock, msg construction, lifecycle) | 1 |
 | 8 | `src/rob_box_perception/README.md` | Обновить раздел про vision pipeline — убрать архивный TODO `vision_stub_node`, добавить `vision_hailo_node` + Phase-план | 1 |
-| 9 | `docker/vision/vision-hailo/Dockerfile` | **NEW**: Phase 1 stub — colcon-сборка `rob_box_perception_msgs` + `rob_box_perception` поверх `ros2-zenoh` базы (HailoRT — Phase 1.5) | 1 |
-| 10 | `docker/vision/scripts/vision-hailo/start_vision_hailo.sh` | **NEW**: launch script (`ros2 run rob_box_perception vision_hailo`) | 1 |
+| 9 | `docker/vision/vision-hailo/Dockerfile` | **NEW**: hailort + tappas + python binding (ARM64 base) | 1 |
+| 10 | `docker/vision/vision-hailo/start_vision_hailo.sh` | **NEW**: launch script (`ros2 run rob_box_perception vision_hailo`) | 1 |
 | 11 | `docker/vision/config/hailo_models.yaml` | **NEW**: SSoT активных HEF + параметры | 1 |
 | 12 | `docker/vision/docker-compose.yaml` | Добавить сервис `vision-hailo` (depends_on: zenoh-router, device: /dev/hailo0) | 1 |
 | 13 | `docs/reports/AI_HAT_UPGRADE_ANALYSIS.md` | **DEPRECATED**: prepend deprecation banner со ссылкой на этот ADR | 1 |
 | 14 | `ROADMAP.md` | Обновить строку 55 (AI HAT+): 🔄→🟡, ссылка на этот ADR; раздел Tier A: face recognition → 🟡, dynamic obstacle → 🟡 | 1 |
 | 15 | `src/rob_box_perception_msgs/CMakeLists.txt` | Добавить `VisionEvent.msg` в `add_message_files` | 1 |
+
+### Phase 1.5 (отдельная карточка, **между Phase 1 и Phase 2**) — consumer-side
+
+| # | Файл | Что меняется | Phase |
+|---|---|---|---|
+| 16 | `src/rob_box_mcp_tools/rob_box_mcp_tools/mcp_server.py` | Расширить `on_perception_update` (`mcp_server.py:1295-1310`): класть `vision_event_count` + `vision_events_json` в `perception_context_tool.update_context` (cache hint: skip если `count == 0`). | 1.5 |
+| 17 | `src/rob_box_mcp_tools/rob_box_mcp_tools/mcp_server.py` | Реализовать **stub-filter**: события с `event_type == "stub"` (или `source == "stub"`) **не должны** попадать в LLM-контекст ни в каком deployment. | 1.5 |
+| 18 | `src/rob_box_mcp_tools/rob_box_mcp_tools/mcp_server.py` (или новый модуль) | Решить судьбу `vision_summaries` (Phase 3, сейчас мёртвое): либо удалить из `PerceptionEvent.msg` + из `MCP-tools`, либо явно пометить "Phase 3 only, do not populate in Phase 1/1.5/2". | 1.5 |
+| 19 | `src/rob_box_perception/test/unit/test_vision_events_aggregator.py` (или новый test_mcp_perception_consumer.py) | **NEW**: unit-тест: `mcp_server.on_perception_update` корректно мерджит `vision_events_json`, пропускает stub-events, использует `vision_event_count == 0` как cache hint. | 1.5 |
+| 20 | `src/rob_box_mcp_tools/test/` | **NEW**: интеграционный тест: stub `PerceptionEvent` с `vision_events_json` (real events) → `get_perception_context` → JSON содержит `vision_events_json`. | 1.5 |
+| 21 | `docs/reports/PRIVACY_REVIEW_PHASE_1_5.md` | **NEW**: privacy review записи — почему stub-filter обязателен, threat model "synthetic person at 1m" → LLM-compromised identity. | 1.5 |
 
 **Out of scope этого ADR (отдельные карточки)**:
 - Phase 2 face enrollment-flow + dialogue_node интеграция.
@@ -141,6 +172,7 @@ Main Pi (10.1.1.22) **не подходит**: его HAT-слот занят CA
 - Phase 3 scene-graph в `rob_box_supervisor/tars_panel.py`.
 - V2 Hailo-Whisper STT (Phase 4 опционально).
 - V8 Vision-wake-word (отдельная карточка, ADR-0070).
+- Phase 1.5 consumer-side (`mcp_server.py`) — **отдельная карточка**, не часть Phase 1.
 
 ---
 
@@ -252,7 +284,16 @@ Community ROS2-обёртки (для Phase 2 опционально): `hailo_ro
 - [ ] CI: flake8 + pytest + docker build dry-run — все зелёные.
 - [ ] `validate_adr_namespace.sh` clean (этот ADR-0089 не пересекается с AF-доменом).
 
-### Phase 2 (отдельная карточка, после Phase 1 merge)
+### Phase 1.5 (отдельная карточка, consumer-side)
+- [ ] `mcp_server.on_perception_update` мерджит `vision_event_count` + `vision_events_json` в `perception_context_tool.update_context`.
+- [ ] `vision_event_count == 0` — skip парсинг (cache hint работает, проверено логом).
+- [ ] **Stub-filter работает**: unit-тест с `event_type == "stub"` → события НЕ попадают в `get_perception_context`. (Privacy acceptance.)
+- [ ] Privacy review `docs/reports/PRIVACY_REVIEW_PHASE_1_5.md` принят шисюном.
+- [ ] Принято решение по `vision_summaries` (удалить / пометить "Phase 3 only").
+- [ ] CI: unit-тесты + интеграционный тест на consumer-side зелёные.
+- [ ] E2E: voice-команда "Робот, что ты видишь?" → LLM-ответ содержит реальный `vision_events_json` payload (если `hailo_enabled=true`) или "ничего" (если stub, **не выдуманную личность**).
+
+### Phase 2 (отдельная карточка, после Phase 1.5 merge)
 - [ ] Privacy review принят шисюном.
 - [ ] Face enrollment-flow через dialogue_node работает end-to-end.
 - [ ] `/data/faces.db` создаётся, embeddings сохраняются, FAISS-индекс работает.
@@ -283,6 +324,8 @@ Community ROS2-обёртки (для Phase 2 опционально): `hailo_ro
 3. **Privacy review owner**: кто делает privacy review перед Phase 2 merge (шисюн / товарищ Шифу / внешний юрист)?
 4. **`safety_stop_node` карточка**: создаём отдельную kanban-карточку сразу после merge Phase 1, или ждём Phase 1 merge в main?
 5. **OAK-D face detection migration**: Phase 2 — мигрируем существующий OAK-D face pipeline (если есть) на Hailo, или OAK-D остаётся для depth+AprilTag, а Hailo — для face?
+6. **Phase 1.5 приоритет**: включаем сразу после Phase 1 merge, или ждём Phase 2 (face), чтобы не делать два touchpoint'a на `mcp_server` подряд? (аргументы за оба: сразу — stub-фильтр нужен ДО реальных лиц; позже — один merge = один PR).
+7. **Stub-filter маркер**: фильтруем по `event_type == "stub"`, по `source == "stub"`, или по параметру `hailo_enabled` runtime? (Вариант A — самое надёжное, но добавляет поле в `VisionEvent`. Вариант B — самое простое, но ломается если кто-то переименует source.)
 
 ---
 
@@ -307,6 +350,7 @@ Community ROS2-обёртки (для Phase 2 опционально): `hailo_ro
 | Дата | Автор | Изменение |
 |---|---|---|
 | 2026-09-14 | devops (t_b9b6cf73) | Initial ADR-0089 на основе architect research note |
+| 2026-09-14 | architect (t_e19d6a06, issue #2357) | **§2.2 fix — consumer-side не подключён**: убрано ложное "dialogue_node и harness уже читают vision_summaries через mcp_server.py" (проверено grep + `mcp_server.py:1295-1310` — кладёт только 4 поля). Producer-side (Phase 1, PR #2349) готов, consumer-side (Phase 1.5) вынесен в отдельную таблицу §3 (touchpoints #16–21). Явно зафиксировано: stub-события сейчас до LLM не доходят случайно (consumer не подключён); Phase 1.5 ОБЯЗАН реализовать stub-фильтр **до** передачи в LLM (privacy-stoop). `vision_summaries` помечено как мёртвое поле, решение по нему — в Phase 1.5. Acceptance criteria §9 дополнены Phase 1.5 чек-листом (включая "stub-events не попадают в get_perception_context"). §11 Open questions расширены вопросами 6–7 про приоритет Phase 1.5 и маркер stub-фильтра. **Без изменений кода** в этом issue. |
 
 ---
 
