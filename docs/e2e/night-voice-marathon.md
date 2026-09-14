@@ -171,6 +171,59 @@ gh workflow run "L-E2E Voice Test.yml" --ref develop -f environment=test \
   -f acceptance_file=.github/e2e/scenarios/night/night_marathon_act3_backlog_diarization_acceptance_v1.json
 ```
 
+### Автозапуск по ночам
+
+Марафон зарегистрирован как отдельный ночной раунд:
+`scripts/agent_flow/agent-flow-night-marathon.sh`, cron-job
+«Agent Flow Night Voice Marathon» (devops, no_agent, every 1h). Час старта
+зашит не в расписание, а внутрь скрипта — ровно как у ночного ревью:
+
+```
+21:00  старт марафона                    NIGHT_MARATHON_HOUR
+~01:00 марафон закончился, робот отпущен
+02:00  дедлайн: новые акты не стартуют    NIGHTLY_REVIEW_HOUR
+02:00  agent-flow-nightly-review.sh собирает дайджест за «вчера 00:00 → сейчас»
+       — акты марафона попадают в него как runs «L: E2E Voice Test»
+04:00  agents_sleep PEAK, MAINTENANCE — всё спит
+```
+
+Дедлайн не декоративный: ревью собирает окно «вчера 00:00 → сейчас», и
+акт, доехавший в 02:10, попадёт в дайджест **следующих** суток — то есть
+через день после того, как что-то сломалось. Поэтому раннер проверяет
+время **перед** диспатчем каждого акта (акт живёт до 45 минут) и
+недостартовавшие помечает в `summary.tsv` как `skipped_deadline`.
+
+### Развязка с ротацией: робот один
+
+`agent-flow-e2e-process.sh` крутит раунды по cron каждые 20 минут и гоняет
+тот же workflow против того же робота. Параллельный запуск не замедляет
+прогоны — он их обнуляет: harness видит в `docker logs voice-assistant`
+реакции на чужие фразы. Симптом — «✅ ПОЛНЫЙ ЦИКЛ + PATTERN_MISS».
+
+Развязка — файл `$HERMES_HOME/state/robot-busy`, одна строка:
+
+```
+<owner> <started_epoch> <expected_end_epoch> <note>
+```
+
+`run_night_marathon.sh` пишет его перед первым актом и снимает в `trap`.
+Гейт G3.5 в `agent-flow-e2e-process.sh` его читает и пропускает тик.
+Две независимые страховки от вечной заморозки ротации:
+
+1. `expected_end_epoch` — владелец сам объявляет, до какого времени занят
+   (и не дольше дедлайна);
+2. `ROBOT_BUSY_MAX_AGE` (8 ч) по mtime — на случай, если владельца убили
+   `-9` и `trap` не отработал.
+
+Просроченный sentinel **удаляется**, и тик продолжается: упавший ночью
+марафон не должен стоить суток простоя ротации. В отличие от
+fail-streak-sentinel, где ручной override — это by design.
+
+Побочный эффект, которым удобно пользоваться: `touch
+$HERMES_HOME/state/robot-busy` — это «руки прочь от робота» на ближайшие
+8 часов. Поведение зафиксировано тестом
+`scripts/agent_flow/tests/test_e2e_process_robot_busy_gate.sh` (сценарий RB5).
+
 ### Перед прогоном
 
 ```bash
@@ -201,6 +254,70 @@ ros2 param set /dialogue_node barge_in_policy classify
 Явный `expect: "cycle"` на первом шаге запрещает auto-promote в
 `wake-gated`: шаг реально проигрывается, реально пробивает wake-gate и
 открывает дорогу остальным шагам акта.
+
+---
+
+## 8.5. Находка первого прогона: GATE-1 был декоративным
+
+Первый живой прогон акта 1 ([run 34408526453][r1], 09.09.2026) прошёл
+9 шагов из 10 и вскрыл баг не в роботе, а **в самом харнессе**.
+
+`n110_silence_baseline` («у тебя сейчас играет какая-нибудь музыка?»)
+получил `❌ forbidden tool calls invoked: ['stop_music',
+'execute_music_code']`. Логи робота за это окно показали другое:
+
+```
+tools=[]
+```
+
+Робот в этом ходе не вызвал **ни одного** тула. Откуда взялись
+«forbidden»: `check_acceptance` и `check_gate1_aggregate` искали имя тула
+**подстрокой** по логу, а `dialogue_node` печатает на каждом ходе список
+доступных тулов и системный промпт:
+
+```
+tools(56): clear_waypoints, compose_music, ..., stop_music, ...
+```
+
+Замер по этому прогону (1065 строк лога):
+
+| tool | голое имя | в кавычках | «Запрос выполнения» | вызывался? |
+|---|---|---|---|---|
+| `get_current_time` | 38 | 4 | 1 | да |
+| `get_battery_level` | 36 | 4 | 1 | да |
+| `get_sound_info` | 31 | 4 | 1 | да |
+| `get_music_state` | **17** | 0 | 0 | **нет** |
+| `move_direction` | **17** | 0 | 0 | **нет** |
+| `stop_music` | **17** | 0 | 0 | **нет** |
+
+17 — это пол, который создаёт сам лог запроса. Следствия симметричны и
+оба скверные:
+
+- **`expected_tool_calls` проходил всегда** → GATE-1 печатал
+  «✅ all checks passed» независимо от поведения робота. В том же прогоне
+  5 шагов из 11 в `voice_core_suite_v1` были красными, а GATE-1 — зелёным.
+  ADR-0022 гейт был декоративным.
+- **`must_not_call` падал всегда**, когда его вообще выставляли.
+
+Починка — `.github/workflows/scripts/e2e_tool_match.py`: `tool_invoked()`
+ищет имя тула только по маркерам реального вызова (`tools=['x']`,
+`ToolCall(name='x')`, `Запрос выполнения: x`, `Инструмент x выполнен`),
+а для НЕ-имён (`"STOP command received"`, `"Cancel: new STT input"`)
+оставляет обычный подстрочный поиск — этим способом сценарии пользуются
+законно. Тесты: `tests/unit/e2e_scripts/test_e2e_tool_match.py`
+(фикстуры — живые фрагменты лога с робота).
+
+> ⚠️ **Это меняет цвет чужих прогонов.** GATE-1 начнёт по-настоящему
+> проверять `expected_tool_calls` во ВСЕХ сьютах. Часть из них была
+> зелёной только потому, что гейт ничего не проверял. Первые красные
+> после этой правки — почти наверняка не регрессия робота, а снятая
+> маскировка.
+
+Отдельно: сам `n110` остаётся красным и по делу. На вопрос «играет ли
+музыка» робот ответил из головы, не вызвав `get_music_state` — ровно то
+поведение, против которого марафон и написан.
+
+[r1]: https://github.com/krikz/rob_box_project/actions/runs/34408526453
 
 ---
 
@@ -235,6 +352,10 @@ ros2 param set /dialogue_node barge_in_policy classify
 | `.github/e2e/scenarios/night/night_marathon_act*_v1.json` | сгенерированные акты |
 | `.github/e2e/scenarios/night/night_marathon_act*_acceptance_v1.json` | GATE-1 по ADR-0022 |
 | `.github/e2e/scenarios/night/night_marathon_manifest.json` | порядок актов для раннера |
+| `scripts/agent_flow/agent-flow-night-marathon.sh` | cron-обёртка: окно, дедлайн, дедуп за сутки |
+| `scripts/agent_flow/tests/test_e2e_process_robot_busy_gate.sh` | тест гейта G3.5 (робот занят) |
+| `.github/workflows/scripts/e2e_tool_match.py` | «тул вызван» vs «тул доступен» (§8.5) |
+| `tests/unit/e2e_scripts/test_e2e_tool_match.py` | тесты матчера на живых логах |
 
 Файлы актов **генерируются**. Правка руками переживёт ровно до следующего
 запуска генератора.

@@ -245,46 +245,6 @@ af_load_profile_env "$PROFILE_ENV"
 log() { printf '%s %s %s\n' "$LOG_PREFIX" "$(date -Iseconds)" "$*" >&2; }
 run() { if [ "$DRY_RUN" = "true" ]; then printf '%s DRY-RUN %s\n' "$LOG_PREFIX" "$*" >&2; else eval "$@"; fi; }
 
-# --- tick-summary logging (ADR-0079 / retro t_e3fc9bfe, issue #1977) ---------
-# Cron читает STDOUT (hermes_cli.subcommands.cron: «Empty stdout = silent»).
-# Все скрипты процесса исторически писали ТОЛЬКО в stderr — из-за чего
-# 50+ тиков merge-gate числились «silent (empty output)» при exit=0
-# (e2e-process / blocked-watchdog — те же грабли). Этот фикс:
-#   1) `out()` — пишет в stdout + (опционально) per-day log-файл. Каждый тик
-#      ОБЯЗАН иметь tick-start и tick-end marker, даже если issues пусто.
-#   2) `tick_start_marker` / `tick_end_marker` — structured cron-visible
-#      заголовки (префикс `# TICK_SUMMARY:` чтобы cron-pipeline мог
-#      парсить без grep по произвольному тексту).
-#   3) Tick-end ловит EXIT (trap) и нормальный return — гарантирует marker
-#      даже при аварийном exit через `set -e`.
-# ADR см. docs/adr/0079-cron-tick-summary-policy.md.
-MERGE_GATE_TICK_LOG_DIR="${MERGE_GATE_TICK_LOG_DIR:-$HOME/.hermes/profiles/architect/logs/merge-gate}"
-out() {
-    # Пишет в stdout (cron читает это!) и в log-файл по дню (для диагностики
-    # задним числом). Log-файл — best-effort, mkdir может не быть доступен.
-    local _line
-    _line="$(printf '%s %s %s\n' "$LOG_PREFIX" "$(date -Iseconds)" "$*")"
-    printf '%s\n' "$_line"
-    if [ -n "$MERGE_GATE_TICK_LOG_DIR" ]; then
-        mkdir -p "$MERGE_GATE_TICK_LOG_DIR" 2>/dev/null || true
-        if [ -d "$MERGE_GATE_TICK_LOG_DIR" ]; then
-            printf '%s\n' "$_line" >> "$MERGE_GATE_TICK_LOG_DIR/$(date -u +%Y-%m-%d).log" 2>/dev/null || true
-        fi
-    fi
-}
-tick_start_marker() {
-    # Вызывать ПОСЛЕ прохождения всех gate'ов (auth/maintenance/rate-limit),
-    # чтобы marker не появлялся при skip-tick (там уже есть свой лог от gate).
-    out "# TICK_SUMMARY: start pid=$$ script=agent-flow-merge-gate label_filter='${ISSUE_LABEL}' state=open limit=${ISSUE_LIMIT} repo=${GH_REPO:-<unset>}"
-}
-tick_end_marker() {
-    # Counter-имена совпадают с финальным log "tick done:" ниже — намеренно,
-    # чтобы cron и tail-лог показывали одно и то же.
-    out "# TICK_SUMMARY: end considered=${considered:-0} labeled=${labeled:-0} skipped=${skipped:-0} errored=${errored:-0} retro_closed=${retro_closed:-0} retro_labeled=${retro_labeled:-0} clean_labeled=${clean_labeled:-0} orphan_labeled=${orphan_labeled:-0} backfill_labeled=${backfill_labeled:-0} retro_archived=${retro_archived:-0} pmcr_completed=${pmcr_completed:-0} human_close_propagated=${human_close_propagated:-0} review_handling_processed=${review_handling_processed:-0} review_handling_skipped=${review_handling_skipped:-0} review_handling_errored=${review_handling_errored:-0}"
-}
-# Ловим аварийные exit'ы (set -e + cron обрыв) — marker всё равно уходит.
-trap 'tick_end_marker 2>/dev/null || true' EXIT
-
 # --- функциональные файлы PR (ретро 14.08 t_28afb585, t_04371252) -----------
 # Возвращает 1, если среди файлов PR есть ФУНКЦИОНАЛЬНЫЙ код (docker/, src/,
 # скрипты процесса scripts/agent_flow/* и тесты процесса tests/agent_flow/*);
@@ -2384,16 +2344,8 @@ af_maintenance_gate_or_exit
 
 # --- G2: gh auth check -------------------------------------------------------
 if ! gh auth status >/dev/null 2>&1; then
-    log "gh auth not configured — exit 1"
-    af_summary_set auth "gh auth not configured"; af_summary_emit 1
-    exit 1
+    log "gh auth not configured — exit 1"; exit 1
 fi
-
-# --- tick_start: structured marker в stdout (ADR-0079 / retro t_e3fc9bfe) ---
-# Вызываем ПОСЛЕ прохождения всех gate'ов (maintenance/auth/flock), но ДО
-# `gh_list_issues_by_label` — marker появляется только при РЕАЛЬНОМ тике,
-# не при skip-tick (flock busy / maintenance set / auth fail).
-tick_start_marker
 
 # --- required env ------------------------------------------------------------
 : "${GH_REPO:?GH_REPO must be set (owner/repo)}"
@@ -2407,9 +2359,7 @@ issues_json="$(gh_list_issues_by_label "$ISSUE_LABEL" open "$ISSUE_LIMIT")"
 if [ -z "$issues_json" ] || [ "$issues_json" = "[]" ]; then
     rate="$(gh api rate_limit --jq '.resources.core.remaining' 2>/dev/null || echo 999)"
     if [ "${rate:-999}" = "0" ]; then
-        log "GitHub rate-limit exhausted — skip tick"
-        af_summary_set rate-limit "GitHub core rate-limit=0"; af_summary_emit 0
-        exit 0
+        log "GitHub rate-limit exhausted — skip tick"; exit 0
     fi
     # Ретро 15.08 t_2c814334 (pr-orphan-no-labels): `gh issue list` / `gh pr
     # list` идут через GraphQL. При graphql rate-limit=0 (а core при этом
@@ -2451,45 +2401,74 @@ fi
 # jq-filter ниже совместим с mock_env.sh (apply_jq, паттерн
 # `[.[] | select(.field == "VAL")][-1].field`) и с реальным gh api.
 #
-# Ретро 09.09 t_5948c129 (issue #1977 silent-loop): GitHub timeline API
-# возвращает максимум 100 событий на страницу и НЕ пагинируется
-# автоматически. Для issues с 200+ комментариев (issue #1977 = 457)
-# событие `e2e-done` лежит на странице 3+, а старая логика
-# `_timeline_last_labeled_at` запрашивала только page=1 → возвращала
-# empty → conservative guard подавлял close → infinite silent skip
-# loop (50+ тиков). Поэтому обе функции теперь пагинируют до 3 страниц
-# (300 events — практически все issues остаются в этом окне; на issue
-# с >300 events fallback на labels.csv-trust, см. ADR-0014 §4 req 4
-# conservative-on-uncertainty).
-_timeline_last_labeled_at() {  # $1=issue_number $2=label_name
-    local issue="$1" label="$2" _page=1 _at _last_page
-    while [ "$_page" -le 3 ]; do
-        _at="$(gh api "repos/${GH_REPO}/issues/${issue}/timeline?per_page=100&page=${_page}" \
-            --jq "[.[] | select(.event==\"labeled\" and .label.name==\"${label}\")][-1].created_at" \
-            2>/dev/null || printf '')"
-        [ "$_at" = "null" ] && _at=""
-        if [ -n "$_at" ]; then
-            printf '%s' "$_at"
+# Amendment 09.09.2026 (ADR-0014 §4 req 8, kanban t_67617d73):
+# paginated fetch + глобальный флаг _TIMELINE_PAGINATED для conservative
+# guard. Issue #1977 имел `e2e-done` в labels.csv (events >300 из-за
+# flood-спама 457 комментариев), но helper возвращал empty → silent-loop.
+# Paginate до MAX_TIMELINE_PAGES (5 = 500 events). Если нашли — return;
+# если paginate истощился — return empty + _TIMELINE_PAGINATED=1, чтобы
+# conservative guard мог отличить case (b) от case (a).
+_TIMELINE_PAGINATED=0
+_TIMELINE_PAGINATED_FILE="${TIMELINE_PAGINATED_FILE:-/tmp/.timeline_paginated}"
+# Обёртка для прокидывания флага через subshell-command-substitution
+# (bash теряет изменения переменных в $(...) — пишем в файл).
+_timeline_paginated_set() {  # $1=value
+    printf '%s' "$1" > "$_TIMELINE_PAGINATED_FILE"
+}
+_timeline_paginated_get() {
+    cat "$_TIMELINE_PAGINATED_FILE" 2>/dev/null || printf '0'
+}
+_timeline_fetch_page() {  # $1=issue $2=page $3=per_page $4=jq_filter
+    local issue="$1" page="$2" per_page="$3" jq_filter="$4"
+    gh api "repos/${GH_REPO}/issues/${issue}/timeline?per_page=${per_page}&page=${page}" \
+        --jq "$jq_filter" 2>/dev/null || printf ''
+}
+_timeline_paginated_lookup() {  # $1=issue $2=jq_filter  → echoes result; sets _TIMELINE_PAGINATED
+    local issue="$1" jq_filter="$2" page=1 result=""
+    # Локальные defaults — выживают даже если функция source'ится в одиночку
+    # (например, в unit-тестах без полного merge-gate.sh scope).
+    local _max_pages="${MAX_TIMELINE_PAGES:-${_MAX_TIMELINE_PAGES:-5}}"
+    local _per_page="${MAX_TIMELINE_PER_PAGE:-${_TIMELINE_PER_PAGE:-100}}"
+    _timeline_paginated_set 0
+    while [ "$page" -le "$_max_pages" ]; do
+        # Mark "had to paginate past page 1" before each attempt beyond page 1.
+        # Это нужно для conservative guard: если helper дошёл до page>1 даже
+        # для НАЙДЕННОГО результата — это сигнал что timeline paginated
+        # (т.е. событие лежит глубоко в timeline). Caller отличает это от
+        # случая когда page=1 вернул результат (timeline не paginated).
+        [ "$page" -gt 1 ] && _timeline_paginated_set 1
+        result="$(_timeline_fetch_page "$issue" "$page" "$_per_page" "$jq_filter")"
+        # Normalize: "null" и "[]" от jq → empty (нет совпадений на странице).
+        [ "$result" = "null" ] && result=""
+        [ "$result" = "[]" ] && result=""
+        if [ -n "$result" ]; then
+            printf '%s' "$result"
             return 0
         fi
-        _page=$((_page+1))
+        # Distinguish: если страница имеет <per_page событий — это конец timeline.
+        # Fetch raw page (без jq-filter) и проверяем размер.
+        local raw
+        raw="$(_timeline_fetch_page "$issue" "$page" "$_per_page" '[.[] | .event] | length')"
+        if [ -z "$raw" ] || [ "$raw" -lt "$_per_page" ] 2>/dev/null; then
+            # API down (empty) или дошли до конца (меньше per_page).
+            return 1
+        fi
+        # Иначе: ровно per_page событий → есть следующая страница.
+        page=$((page+1))
     done
-    printf ''
+    # Истощили _max_pages без нахождения.
+    _timeline_paginated_set 1
+    return 1
+}
+_timeline_last_labeled_at() {  # $1=issue_number $2=label_name
+    local issue="$1" label="$2"
+    _timeline_paginated_lookup "$issue" \
+        "[.[] | select(.event==\"labeled\" and .label.name==\"${label}\")][-1].created_at"
 }
 _timeline_last_reopen_at() {  # $1=issue_number
-    local issue="$1" _page=1 _at
-    while [ "$_page" -le 3 ]; do
-        _at="$(gh api "repos/${GH_REPO}/issues/${issue}/timeline?per_page=100&page=${_page}" \
-            --jq "[.[] | select(.event==\"reopened\")][-1].created_at" \
-            2>/dev/null || printf '')"
-        [ "$_at" = "null" ] && _at=""
-        if [ -n "$_at" ]; then
-            printf '%s' "$_at"
-            return 0
-        fi
-        _page=$((_page+1))
-    done
-    printf ''
+    local issue="$1"
+    _timeline_paginated_lookup "$issue" \
+        "[.[] | select(.event==\"reopened\")][-1].created_at"
 }
 
 # Ретро 18.08 t_873ebef2 (#1391, дополнение к PR #1399 от e3f227e2):
@@ -3771,51 +3750,12 @@ except Exception:
                     # штатно. Если фикс ложный PASS — юзер сам закроет
                     # руками либо issue зависнет в open (как и при
                     # Q22 user-merge, ADR-0014 §Q22).
-                    # Ретро 09.09 t_5948c129 (issue #1977 silent-loop): для
-                    # определения наличия e2e-done теперь доверяем
-                    # labels.csv (`_has_e2e_done`), а НЕ timeline API.
-                    # Причина: timeline API возвращает максимум 100
-                    # событий на страницу без авто-пагинации; на issues с
-                    # 200+ комментариями событие `e2e-done` уходит на
-                    # page 3+ и `_timeline_last_labeled_at` возвращает
-                    # empty → conservative guard подавляет close →
-                    # infinite silent skip loop (50+ тиков на issue #1977).
-                    # labels.csv — это текущее состояние, а timeline —
-                    # это история событий; для определения «есть ли
-                    # метка прямо сейчас» labels.csv надёжнее (ADR-0014
-                    # §4 req 4 conservative-on-uncertainty: uncertainty
-                    # про дату события, не про наличие метки).
-                    #
-                    # user-reopen guard (issue #1391, ADR-0014 §4 req 4)
-                    # продолжает опираться на timeline (`_user_reopen_at`)
-                    # — для даты reorder это единственный надёжный источник
-                    # (labels.csv не хранит history событий). Пагинация
-                    # до 3 страниц добавлена в helper (см. выше).
+                    _e2e_done_at="$(_timeline_last_labeled_at "$number" "$DONE_LABEL")"
                     _user_reopen_at="$(_timeline_last_reopen_at "$number")"
                     # Helpers возвращают "null" если событий нет (mock и
                     # реальный gh api). Приводим к "empty" для проверок.
+                    [ "$_e2e_done_at" = "null" ] && _e2e_done_at=""
                     [ "$_user_reopen_at" = "null" ] && _user_reopen_at=""
-                    if [ "$_has_e2e_done" = "1" ]; then
-                        # labels.csv-trust: метка есть СЕЙЧАС → e2e-done
-                        # присутствует. Если user-reopen отсутствует —
-                        # нам не нужна точная дата события (сравнение
-                        # «reopen ПОСЛЕ e2e-done» trivially true: нет
-                        # reopen). Если user-reopen есть — нам нужна
-                        # реальная дата e2e-done из timeline (для
-                        # корректного лексикографического сравнения
-                        # «reopen ПОСЛЕ e2e-done»), иначе fallback на
-                        # метку времени в текущий момент (e2e-done
-                        # проставлена ПОСЛЕ reopen → значит метка
-                        # свежая, user-reopen протух → штатный close).
-                        if [ -z "$_user_reopen_at" ]; then
-                            _e2e_done_at="label-present"
-                        else
-                            _e2e_done_at="$(_timeline_last_labeled_at "$number" "$DONE_LABEL")"
-                            [ "$_e2e_done_at" = "null" ] && _e2e_done_at=""
-                        fi
-                    else
-                        _e2e_done_at=""
-                    fi
                     # ADR-0014 §4 req 4 (conservative on uncertainty).
                     # Логика user-reopen guard (issue #1391):
                     #   • Timeline ПОЛНОСТЬЮ пуст (нет ни одного события —
@@ -3835,20 +3775,46 @@ except Exception:
                     #     (странный edge-case — labels.csv показывает
                     #     метку, но timeline её не видит): close штатный
                     #     (labels.csv надёжнее timeline для current state).
+                    # Amendment 09.09.2026 (ADR-0014 §4 req 8, kanban t_67617d73):
+                    # если оба timeline-helper'а вернули empty — различаем
+                    # три case (a/b/c) по флагу _TIMELINE_PAGINATED:
+                    #   (a) Rate-limit / API down (paginated=0, helpers empty):
+                    #       conservative suppress — как было до amendment.
+                    #   (b) Pagination exhaust (paginated=1, helpers empty):
+                    #       labels.csv содержит `e2e-done` → close штатный
+                    #       (fallback на current state, issue #1977).
+                    #   (c) Real empty (paginated=0, helpers empty, _has_e2e_done=0):
+                    #       _has_e2e_done=0 → метки реально нет, не наш случай,
+                    #       вышли раньше на «state machine case (c)».
                     if [ -z "$_e2e_done_at" ] && [ -z "$_user_reopen_at" ]; then
-                        # Timeline пустой → не можем доказать отсутствие
-                        # reopen → conservative: НЕ закрываем.
-                        log "issue #${number}: USER-REOPEN GUARD (issue #1391) — timeline пуст, auto-close подавлен (conservative)"
-                        if [ "$DRY_RUN" != "true" ]; then
-                            gh issue edit "$number" --repo "$GH_REPO" --add-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
-                            # Идемпотентность через generic helper (issue #2293).
-                            if ! _gm_recent_commented "issue" "$number" \
-                                "USER-REOPEN GUARD" 86400 contains; then
-                                gh issue comment "$number" --repo "$GH_REPO" --body \
-                                    "🛡 merge-gate (issue #1391, retro 18.08 t_c4f1d5c8): timeline issue недоступен → auto-close подавлен по conservative-правилу (ADR-0014 §4 req 4). Issue возвращён в \`${NEEDS_E2E_LABEL}\`, следующий тик попробует снова когда timeline будет доступен." >/dev/null 2>&1 || true
+                        # ADR §4 req 8: bash теряет изменения переменных внутри
+                        # $(...) — читаем _TIMELINE_PAGINATED из файла, куда
+                        # helper пишет.
+                        _urg_paginated="$(_timeline_paginated_get)"
+                        if [ "$_urg_paginated" = "1" ] && [ "$_has_e2e_done" = "1" ]; then
+                            # Case (b): pagination exhausted, но labels.csv
+                            # содержит `e2e-done`. ADR §2 + §4 req 8:
+                            # labels.csv = current state → close штатный,
+                            # fall-through к close-ветке ниже.
+                            log "issue #${number}: USER-REOPEN GUARD bypass (ADR-0014 §4 req 8 case b) — timeline paginated до ${_MAX_TIMELINE_PAGES} страниц без нахождения, но labels.csv содержит ${DONE_LABEL} → trust current state, close штатный"
+                            # НЕ continue; fall through к close.
+                            :  # no-op marker для читаемости
+                        else
+                            # Case (a): rate-limit / API down / real empty.
+                            # Timeline пуст → не можем доказать отсутствие
+                            # reopen → conservative: НЕ закрываем.
+                            log "issue #${number}: USER-REOPEN GUARD (issue #1391) — timeline пуст, auto-close подавлен (conservative)"
+                            if [ "$DRY_RUN" != "true" ]; then
+                                gh issue edit "$number" --repo "$GH_REPO" --add-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
+                                # Идемпотентность через generic helper (issue #2293).
+                                if ! _gm_recent_commented "issue" "$number" \
+                                    "USER-REOPEN GUARD" 86400 contains; then
+                                    gh issue comment "$number" --repo "$GH_REPO" --body \
+                                        "🛡 merge-gate (issue #1391, retro 18.08 t_c4f1d5c8): timeline issue недоступен → auto-close подавлен по conservative-правилу (ADR-0014 §4 req 4). Issue возвращён в \`${NEEDS_E2E_LABEL}\`, следующий тик попробует снова когда timeline будет доступен." >/dev/null 2>&1 || true
+                                fi
                             fi
+                            labeled=$((labeled+1)); continue
                         fi
-                        labeled=$((labeled+1)); continue
                     fi
                     if [ -n "$_user_reopen_at" ] \
                         && [ -n "$_e2e_done_at" ] \
@@ -7358,15 +7324,6 @@ pr_label_sweep_merged_pass_all || true
 # --- summary -----------------------------------------------------------------
 log "tick done: considered=${considered} labeled=${labeled} skipped=${skipped} errored=${errored} retro_closed=${retro_closed} retro_labeled=${retro_labeled} clean_labeled=${clean_labeled} orphan_labeled=${orphan_labeled} backfill_labeled=${backfill_labeled} retro_archived=${retro_archived} pmcr_completed=${pmcr_completed} human_close_propagated=${human_close_propagated} review_handling_processed=${review_handling_processed} review_handling_skipped=${review_handling_skipped} review_handling_errored=${review_handling_errored}"
 
-# --- tick_end: structured marker в stdout (ADR-0079 / retro t_e3fc9bfe) ------
-# Явный вызов перед exit; trap EXIT гарантирует marker и при аварийном
-# завершении через `set -e` / kill (двойная страховка).
-tick_end_marker
-
 # Exit non-zero only on hard errors so cron can alert.
-if [ "$errored" -gt 0 ]; then
-    af_summary_set error "errored=${errored} (tick done)"; af_summary_emit 1
-    exit 1
-fi
-af_summary_set ok "considered=${considered} labeled=${labeled} skipped=${skipped} errored=${errored} retro_closed=${retro_closed}"; af_summary_emit 0
+if [ "$errored" -gt 0 ]; then exit 1; fi
 exit 0

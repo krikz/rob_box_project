@@ -633,6 +633,43 @@ SWEEP_DAYS=2 bash <repo>/scripts/agent_flow/agent-flow-unlabeled-sweep.sh # ре
 
 Рекомендуемый cron: `every 12h`, no_agent=true.
 
+#### GraphQL → REST fallback при rate-limit (ретро 10.09, t_291506bf)
+
+`gh issue list --json` ходит в **GraphQL** API. У GraphQL отдельный бюджет
+(5000 points/час), выгорающий независимо от REST — при активном
+agent-flow (merge-gate каждые 5 мин, triage каждую минуту) он регулярно
+уходит в ноль на 1–3 часа в сутки:
+
+```
+$ gh api graphql -f query='{rateLimit{limit,remaining,resetAt}}'
+{"data":{"rateLimit":{"limit":5000,"remaining":0,"resetAt":"2026-09-09T22:25:38Z"}}}
+```
+
+Старый код листинга был `gh issue list ... 2>/dev/null || echo '[]'` —
+в rate-limit это давало **пустой массив, `considered=0` и exit 0**:
+скрипт рапортовал успех, ничего не сделав (silent-fail). Наблюдаемое
+последствие 10.09: PR #2340 и #2338 висели без меток `needs-e2e` /
+`no-e2e-required`, merge-gate не мог их провести.
+
+Текущее поведение:
+
+1. **GraphQL** (`gh issue list --json`) — основной путь; ответ обязан быть
+   валидным JSON-массивом (проверка `is_json_array`), иначе считается сбоем.
+2. **REST fallback** — `gh api repos/{owner}/{repo}/issues?state=open&per_page=100`
+   (свой лимит 5000 req/час, GraphQL не трогает). Ответ нормализуется в схему
+   `gh issue list --json` (`updated_at`→`updatedAt`, `created_at`→`createdAt`);
+   записи с ключом `pull_request` отбрасываются — REST `/issues` отдаёт и PR.
+   В лог пишется `WARNING: ... falling back to REST` + `issues listing source=rest`.
+3. **Оба сбоя** → `ERROR: обе ветки листинга issues отказали (...)` +
+   `tick done: ... errored=1 source=none` + **exit 1** (fail-closed).
+   Cron видит ненулевой код и может алертить, вместо тихого `considered=0`.
+
+В каждом тике теперь печатается `issues listing source=graphql|rest` — по
+логам видно, как часто мы упираемся в GraphQL-лимит.
+
+Регресс-покрытие: `tests/test_unlabeled_sweep.sh` T12 (GraphQL rate-limit →
+REST, `considered>0`, PR-записи отфильтрованы) и T12b (двойной сбой → exit 1).
+
 ### `cron-loop.sh` — низкоуровневый цикл
 
 Тонкая обёртка над cron-вызовами (используется как fallback когда

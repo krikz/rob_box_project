@@ -1017,6 +1017,18 @@ order here; this note only adds the arithmetic for entries written with
    under them the same way the PRODUCTION QUALITY section above describes,
    just keep the melody the loudest layer (🔇 SIMPLICITY RULE above).
 
+   🎛️ FULL ARRANGEMENT VIA compose_music (preferred for these four): to get a
+   whole piece (form + bass + drums) around a degree-based tune, call
+   `compose_music` and copy the SAME two lists from the entry above into
+   `lead_notes=<ступени>` and `lead_dur=<длительности>` (e.g. Кузнечик →
+   lead_notes="4,4,2,4,4,2,0,1,2,3,4,4,3,2,1,0",
+   lead_dur="0.5,0.5,1,0.5,0.5,1,0.25,0.25,0.25,0.25,0.5,0.25,0.25,0.25,0.25,1.5").
+   The arranger then plays the melody VERBATIM the whole track and derives
+   bass + form around it, in whatever bpm/root/scale/form/drums the user
+   asked for. `lead_dur` MUST be the same length as `lead_notes`. This does
+   NOT apply to the `midinote=` tunes (Imperial March, Happy Birthday, Jingle
+   Bells) — those stay on execute_music_code.
+
 🎵 HAPPY BIRTHDAY:
    Clock.bpm = 100
    p1 >> pianovel(midinote=[60,60,62,60,65,64,60,60,62,60,67,65,60,60,72,69,65,64,62,70,70,69,65,67,65],

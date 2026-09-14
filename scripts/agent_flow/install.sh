@@ -85,6 +85,11 @@ EXPECTED=(
     # из-за чего drift-detect его не контролировал и на profile-уровне
     # (devops/scripts/) его не было → cron-тик падал с «Script not found».
     agent-flow-install-daily.sh
+    # Ночной голосовой марафон (docs/e2e/night-voice-marathon.md): no-agent
+    # cron every 1h с внутренним гейтом по часу. Сценарии и раннер тянет из
+    # origin/develop сам, но САМ скрипт должен лежать в scripts_dir — иначе
+    # hermes scheduler отклонит job с «Script not found».
+    agent-flow-night-marathon.sh
     agent-flow-handoff.sh
     round_ensure.sh
     # Round-formation module (issue #2299, 09.09.2026): единый владелец
@@ -433,20 +438,60 @@ for target_dir in "${TARGET_DIRS[@]}"; do
 done
 
 # ---------------------------------------------------------------------------
-# Применение vendor-патчей к hermes-agent (ретро t_f00676f8).
+# Применение vendor-патчей к hermes-agent (ретро t_f00676f8, issue #2332).
 #
-# Проблема: локальные фиксы hermes-agent (валидация скиллов по профилю
-# t_1ab37fa8: _profile_skill_names/_validate_skills_for_assignee в
-# hermes_cli/kanban_db.py, symlink-following подсчёт скиллов в
-# hermes_cli/profiles.py) накладывались на хост руками БЕЗ сохранения в репо.
-# При `git pull`/`pip install -U hermes-agent` патчи теряются, и регресс
-# t_1ab37fa8 возвращается (карточки со скилами не из профиля падают).
+# Проблема (оригинал, t_f00676f8): локальные фиксы hermes-agent
+# (_profile_skill_names / _validate_skills_for_assignee в
+# hermes_cli/kanban_db.py, --force-scope в hermes_cli/kanban.py,
+# symlink-following подсчёт скиллов в hermes_cli/profiles.py) накладывались
+# на хост руками БЕЗ сохранения в репо. При `git pull` / `pip install -U
+# hermes-agent` патчи теряются, и регресс t_1ab37fa8 возвращается (карточки
+# со скилами не из профиля падают).
 #
-# Решение: диффы хранятся в репо как scripts/agent_flow/vendor/
-# hermes-agent-*.patch; этот скрипт применяет их идемпотентно
-# (git apply --reverse --check => уже применён; git apply --check => можно
-# применить). Вызывать ПОСЛЕ обновления hermes-agent.
+# Проблема (issue #2332, 2026-09): когда upstream включает наш фикс
+# в свой main (либо через ручной merge в dev-ветку как на этом хосте —
+# commit 6c2be533d `feat(kanban): pre-create skill-validation + scope-hint`
+# уже лежит в `z-devops/t_16a245cc-goal-mode-clean-exit-recovery`), patch
+# перестаёт применяться чисто: ``git apply --check`` падает (offsets
+# сдвинулись), ``git apply --reverse --check`` тоже падает (live tree
+# не содержит точно тех хунков, что в patch'е — upstream их переписал).
+# install.sh раньше выдавал ERROR и блокировал всю раскладку.
+#
+# Решение: трёхуровневый idempotent guard перед выходом в ERROR:
+#   1) reverse-check → patch уже применён → OK;
+#   2) SENTINEL-detect (live tree уже содержит сигнатуру фикса) → SKIP with
+#      info (issue #2332): upstream включил / devops смержил руками;
+#   3) forward-check + apply → чисто применяем.
+# Если ничего не сработало → ERROR с подсказкой регенерировать patch.
+# Только ЭТА функция валится с ERROR; остальная раскладка (TARGET_DIRS,
+# drift-detect, cron registration) продолжается — patch-failure не должен
+# блокировать весь install.
 HERMES_AGENT_DIR="${HERMES_AGENT_DIR:-/home/builder/.hermes/hermes-agent}"
+
+# Sentinel-detect (issue #2332): patch навывает "уже применён" если
+# upstream включил наш фикс или dev-ветка содержит ручной merge.
+# Sentinel — anchor-строка из канонического patch'а, который точно
+# присутствует в live tree после ручного merge upstream'а.
+#
+# Формат: "<file-relative-to-HERMES_AGENT_DIR>|<grep -F pattern>"
+# Первое совпадение → SKIP.
+declare -A HERMES_AGENT_PATCH_SENTINELS=(
+    # hermes-agent-skill-validation.patch:
+    # upstream'овский merge commit 6c2be533d / наш фикс
+    ["hermes-agent-skill-validation.patch"]="hermes_cli/kanban_db.py|def _profile_skill_names"
+)
+
+patch_already_in_live() {
+    # $1 = patch basename (e.g. hermes-agent-skill-validation.patch)
+    local name="$1"
+    local sentinel="${HERMES_AGENT_PATCH_SENTINELS[$name]:-}"
+    [ -n "$sentinel" ] || return 1
+    local sentinel_file="${sentinel%|*}"
+    local sentinel_grep="${sentinel#*|}"
+    local full="$HERMES_AGENT_DIR/$sentinel_file"
+    [ -f "$full" ] || return 1
+    grep -qF -- "$sentinel_grep" "$full"
+}
 
 apply_hermes_agent_patch() {
     local patch="$1"
@@ -458,10 +503,20 @@ apply_hermes_agent_patch() {
         echo "  SKIP hermes-agent patch ($patch not found)"
         return 0
     fi
-    echo "==> hermes-agent patch: $patch"
-    # Уже применён?
+    local patch_name
+    patch_name="$(basename "$patch")"
+    echo "==> hermes-agent patch: $patch_name"
+    # Уже применён (точная reverse-проверка)?
     if ( cd "$HERMES_AGENT_DIR" && git apply --reverse --check "$patch" >/dev/null 2>&1 ); then
         echo "  OK   patch already applied (reverse-check clean)"
+        return 0
+    fi
+    # Уже применён через upstream / dev-merge? (sentinel-detect, issue #2332)
+    if patch_already_in_live "$patch_name"; then
+        echo "  SKIP patch already in live tree (sentinel-detect: upstream or dev-merge)"
+        echo "         To re-apply, remove the sentinel from live tree and re-run install.sh"
+        echo "         or regenerate the patch via:"
+        echo "             bash scripts/agent_flow/agent-flow-regen-vendor-patch.sh $patch"
         return 0
     fi
     # Применится чисто?
@@ -479,7 +534,7 @@ apply_hermes_agent_patch() {
     fi
     echo "  ERROR patch does not apply cleanly to $HERMES_AGENT_DIR — upstream moved" >&2
     echo "         Regenerate with: bash scripts/agent_flow/agent-flow-regen-vendor-patch.sh $patch" >&2
-    echo "         See also: ретро t_f00676f8 (original) / t_49c2b63f (regen helper)" >&2
+    echo "         See also: ретро t_f00676f8 (original) / t_49c2b63f (regen helper) / issue #2332" >&2
     return 1
 }
 
@@ -917,6 +972,27 @@ ensure_nightly_review_cron() {
     ensure_cron_job devops "Agent Flow Nightly Review (ADR-0049)" "agent-flow-nightly-review.sh" "every 1h" interval
 }
 ensure_nightly_review_cron
+
+echo
+echo "==> Ensure cron job registration: night voice marathon (docs/e2e/night-voice-marathon.md)"
+# Проблема: 117-шаговый голосовой марафон (10 актов, ~4 часа) физически не
+# влезает ни в один раунд ротации — «L: E2E Voice Test» имеет
+# timeout-minutes: 45. Запускать его руками означает не запускать никогда.
+#
+# Решение: ensure_night_marathon_cron() — та же схема, что у ночного ревью:
+# interval-job (every 1h) в devops-профиле, no_agent, а час старта зашит
+# ВНУТРЬ скрипта (окно [NIGHT_MARATHON_HOUR, +WINDOW_HOURS), sentinel на
+# сутки). Марафон стартует в 21:00 local и обязан закончиться до
+# NIGHTLY_REVIEW_HOUR (02:00) — иначе его акты попадут в дайджест следующих
+# суток, то есть через день после поломки.
+#
+# Развязка с ротацией — не через расписание, а через sentinel
+# $HERMES_HOME/state/robot-busy (гейт G3.5 в agent-flow-e2e-process.sh):
+# робот один, и параллельный e2e слушал бы чужие команды.
+ensure_night_marathon_cron() {
+    ensure_cron_job devops "Agent Flow Night Voice Marathon" "agent-flow-night-marathon.sh" "every 1h" interval
+}
+ensure_night_marathon_cron
 
 echo
 echo "==> Ensure cron job registration: decomposed-children wake-up watchdog (ADR-AF-0052, ретро t_bfd19ffb)"

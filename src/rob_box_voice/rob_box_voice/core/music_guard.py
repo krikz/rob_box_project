@@ -35,9 +35,8 @@ from enum import Enum
 from typing import Optional, Tuple
 
 from .dialogue_guards import (
-    GENERATED_MUSIC_TOOLS,
     MUSIC_HARD_STOP_TOOLS,
-    RENARDO_MUSIC_TOOLS,
+    MUSIC_STARTING_TOOLS,
     USER_MUSIC_SATISFYING_TOOLS,
     is_music_stop_command,
     is_vocal_request,
@@ -252,7 +251,7 @@ class MusicGuard:
         # Issue #1392 follow-up: MiniMax AI-генерация тоже «запустила музыку».
         # Без этого Bug C ретраил «сгенерируй трек про X» (не-vocal, без
         # execute_music_code) → retry-prompt гнал LLM в фантомный handle_music.
-        _music_started = tools_set & (RENARDO_MUSIC_TOOLS | GENERATED_MUSIC_TOOLS)
+        _music_started = tools_set & MUSIC_STARTING_TOOLS
         if _music_started:
             # Success — reset both budgets so a future failure gets a
             # fresh allocation. Mirrors the legacy 2787/2788 reset.

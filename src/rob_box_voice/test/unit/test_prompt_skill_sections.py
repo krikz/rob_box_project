@@ -296,7 +296,7 @@ _KNOWN_FOREIGN_MENTIONS: dict[str, dict[str, str]] = {
         "execute_music_code": "маршрут в composer, когда генерация недоступна",
     },
     "### DJ MODE": {
-        "execute_music_code": "ТРЕБУЕТСЯ диджею: свежий трек пишется кодом",
+        "compose_music": "ТРЕБУЕТСЯ диджею: свежий трек через compose_music (форма)",
         "search_samples": "ТРЕБУЕТСЯ диджею: сэмплы под стиль",
         "load_track": "запрет: «НЕ вызывай load_track в DJ-режиме»",
         "list_tracks": "запрет: там же",

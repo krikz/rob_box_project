@@ -99,6 +99,21 @@ class TestSlicePolicyPackaging:
             f"package_data {patterns}"
         )
 
+    def test_rtttl_archive_exists_and_is_packaged(self):
+        """Архив мелодий (10460 RTTTL) обязан доезжать до install-дерева."""
+        assert (_DATA_DIR / "rtttl_melodies.jsonl.gz").is_file(), (
+            "rtttl_melodies.jsonl.gz пропал из data/ — lookup_melody и "
+            "search_melody не найдут ни одной мелодии"
+        )
+        kwargs = _setup_kwargs()
+        patterns = ast.literal_eval(kwargs["package_data"])["rob_box_mcp_tools.data"]
+        assert any(
+            p.endswith(".jsonl.gz") or p.endswith("*.jsonl.gz") for p in patterns
+        ), (
+            f"package_data['rob_box_mcp_tools.data'] = {patterns} — "
+            "архив rtttl_melodies.jsonl.gz не покрыт"
+        )
+
     def test_not_zip_safe(self):
         """zip-egg ломает чтение ресурсов с диска на части путей установки."""
         kwargs = _setup_kwargs()

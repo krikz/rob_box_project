@@ -210,13 +210,20 @@ jobs:
           # → run_step дефолтит на "cycle" вместо "backlog"/"wake-gated".
           # Симптом: voice_core_suite_v1 ds01/ds02 (expect=backlog) валятся
           # с "FAIL no_accept" вместо корректной backlog-проверки.
+          #
+          # bug(run 34408526453, 09.09.2026): третий файл того же рода —
+          # e2e_tool_match.py. Оба acceptance-чекера импортируют из него
+          # tool_invoked() через PYTHONPATH="$SCRIPT_DIR_E2E". Без файла
+          # heredoc падает на ImportError, acceptance.json остаётся пустым
+          # и GATE-1 краснеет с невнятным «parse error».
           chmod +x .github/workflows/scripts/e2e_voice_test.sh
           chmod +x .github/workflows/scripts/e2e_voice_lib.sh
           chmod +x .github/workflows/scripts/e2e_voice_wake_gate.sh
           sshpass -e scp -o StrictHostKeyChecking=no .github/workflows/scripts/e2e_voice_test.sh ros2@10.1.1.249:/tmp/e2e_voice_test.sh
           sshpass -e scp -o StrictHostKeyChecking=no .github/workflows/scripts/e2e_voice_lib.sh ros2@10.1.1.249:/tmp/e2e_voice_lib.sh
           sshpass -e scp -o StrictHostKeyChecking=no .github/workflows/scripts/e2e_voice_wake_gate.sh ros2@10.1.1.249:/tmp/e2e_voice_wake_gate.sh
-          sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "ls -la /tmp/e2e_voice_test.sh /tmp/e2e_voice_lib.sh /tmp/e2e_voice_wake_gate.sh && echo HARNESS_PUSHED"
+          sshpass -e scp -o StrictHostKeyChecking=no .github/workflows/scripts/e2e_tool_match.py ros2@10.1.1.249:/tmp/e2e_tool_match.py
+          sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "ls -la /tmp/e2e_voice_test.sh /tmp/e2e_voice_lib.sh /tmp/e2e_voice_wake_gate.sh /tmp/e2e_tool_match.py && echo HARNESS_PUSHED"
           # CRLF sanitization (single-line): отрезаем \r и \n от начала/конца.
           # Внутри значения CR/LF недопустимы для имён файлов/путей.
           SCENARIO_FILE_CLEAN=$(printf '%s' "$SCENARIO_FILE" | tr -d '\r\n')

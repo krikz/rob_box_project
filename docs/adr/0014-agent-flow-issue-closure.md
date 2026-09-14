@@ -230,7 +230,36 @@ follow-up PR после закрытия должен иметь новую issu
 переходный механизм. После внедрения этого ADR он не должен использоваться как
 нормальный способ расширять завершённый scope.
 
+### 6.1. Label conflict `needs-e2e + e2e-done` semantics (Amendment 1)
+
+> **См. `0014-amendment-1-label-conflict.md`** для полного обоснования и
+> rollout. Краткая суть:
+
+Одновременное присутствие `needs-e2e` и `e2e-done` на одной issue — это
+**invariant violation (data race)**, а не user override. User intent
+выражается через timeline events (reopened, явный manual signal) и
+через whitelist label `user-reopened-this`, а не через наличие `needs-e2e`.
+
+### 6.2. Data race handling (Amendment 1)
+
+Если merge-gate видит `needs-e2e + e2e-done + OPEN`:
+
+- **PR MERGED:** strip `needs-e2e`, audit-коммент (24h dedup), close
+  issue `reason=completed`. User-reopen guard **пропускается**.
+- **PR OPEN:** strip `needs-e2e`, audit-коммент, leave OPEN
+  (defer к штатному e2e-done path).
+- **Whitelist `user-reopened-this`:** audit-коммент «whitelist overrides»,
+  ничего не снимаем, close подавлен.
+
+Логика вынесена в helper `_conflict_sweep_resolve` и используется
+как merge-gate'ом (при processing каждой issue), так и отдельным
+conflict-sweep cron'ом (для issues без `hermes`-метки или при
+pagination/rate-limit edge-cases).
+
 ## 7. Acceptance criteria для devops-реализации
+
+Сценарии §3.1 (включая новые C1–C6 для label conflict) покрываются
+автотестами `tests/test_merge_gate_conflict_sweep.sh` (Amendment 1).
 
 ### Автоматические тесты
 

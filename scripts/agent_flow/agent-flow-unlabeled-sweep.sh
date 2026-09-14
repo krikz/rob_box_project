@@ -197,12 +197,84 @@ log "tick start: GH_REPO=$GH_REPO stale1=${STALE_HOURS_1}h stale2=${STALE_HOURS_
 # Не фильтруем по меткам — будем фильтровать внутри, чтобы иметь
 # complete view (для сообщения 'никого нет'). Но лаг API ~5–10s на 200 —
 # это OK для cron раз в час.
-all_json="$(gh issue list \
+# --- GraphQL → REST fallback (ретро t_291506bf) ------------------------------
+# `gh issue list --json` ходит в GraphQL. У GraphQL СВОЙ бюджет 5000
+# points/час, и он выгорает независимо от REST. Старый код был:
+#   gh issue list ... 2>/dev/null || echo '[]'
+# → при "API rate limit already exceeded" скрипт получал пустой массив,
+#   считал considered=0 и рапортовал exit 0 — silent-fail: PR/issues
+#   висели без меток часами (наблюдение 10.09: #2340, #2338).
+# Теперь: GraphQL первый, при ошибке/невалидном JSON — REST
+# (`/repos/{owner}/{repo}/issues?state=open`, отдельный лимит 5000 req/h),
+# при отказе ОБОИХ — ERROR в лог + exit 1 (fail-closed), НЕ considered=0.
+
+# Нормализация REST-ответа в схему `gh issue list --json`:
+#   updated_at → updatedAt, created_at → createdAt, PR-записи отбрасываем
+#   (REST /issues отдаёт и pull requests — у них есть ключ pull_request).
+normalize_rest_issues() {  # stdin=REST json, stdout=gh-like json | rc=1 если не JSON/не массив
+  python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+if not isinstance(data, list):
+    sys.exit(1)
+out = []
+for it in data:
+    if not isinstance(it, dict) or "pull_request" in it:
+        continue
+    out.append({
+        "number": it.get("number"),
+        "title": it.get("title") or "",
+        "labels": it.get("labels") or [],
+        "updatedAt": it.get("updated_at") or "",
+        "createdAt": it.get("created_at") or "",
+    })
+json.dump(out, sys.stdout)
+'
+}
+
+# Валидатор: непустой JSON-массив на входе?
+is_json_array() { python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+sys.exit(0 if isinstance(d, list) else 1)
+'; }
+
+all_json=""
+issues_source=""
+gql_err=""
+
+if gql_out="$(gh issue list \
     --repo "$GH_REPO" \
     --state open \
     --limit "$SWEEP_LIMIT" \
-    --json number,title,labels,updatedAt,createdAt 2>/dev/null || echo '[]')"
+    --json number,title,labels,updatedAt,createdAt 2>/tmp/.unlabeled-sweep-gql.err)" \
+   && printf '%s' "$gql_out" | is_json_array; then
+  all_json="$gql_out"
+  issues_source="graphql"
+else
+  gql_err="$(tr '\n' ' ' < /tmp/.unlabeled-sweep-gql.err 2>/dev/null | cut -c1-300)"
+  log "WARNING: gh issue list (GraphQL) failed or returned non-JSON — falling back to REST. err: ${gql_err:-<empty>}"
+  if rest_out="$(gh api "repos/${GH_REPO}/issues?state=open&per_page=100" 2>/tmp/.unlabeled-sweep-rest.err)" \
+     && rest_norm="$(printf '%s' "$rest_out" | normalize_rest_issues)"; then
+    all_json="$rest_norm"
+    issues_source="rest"
+    log "REST fallback OK: $(printf '%s' "$all_json" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))' 2>/dev/null || echo '?') open issues"
+  else
+    rest_err="$(tr '\n' ' ' < /tmp/.unlabeled-sweep-rest.err 2>/dev/null | cut -c1-300)"
+    log "ERROR: обе ветки листинга issues отказали (GraphQL: ${gql_err:-<empty>} | REST: ${rest_err:-<empty>}) — fail-closed, exit 1"
+    log "tick done: considered=0 fresh=0 labeled=0 closed=0 un_staled=0 skipped=0 errored=1 source=none"
+    exit 1
+  fi
+fi
+rm -f /tmp/.unlabeled-sweep-gql.err /tmp/.unlabeled-sweep-rest.err 2>/dev/null || true
 if [ -z "$all_json" ]; then all_json='[]'; fi
+log "issues listing source=${issues_source}"
 
 # --- helpers -----------------------------------------------------------------
 has_label() {  # $1=labels_csv(lowercase)  $2=label_name

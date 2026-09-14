@@ -418,6 +418,8 @@ SKILL_TOOLS: dict[str, tuple[str, ...]] = {
         "execute_music_code",
         "set_vibe_preset",
         "search_samples",
+        "lookup_melody",
+        "search_melody",
         "get_music_state",
         "stop_music",
     ),
@@ -467,7 +469,6 @@ SKILL_TOOLS: dict[str, tuple[str, ...]] = {
         "list_tts_voices",
         "set_tts_provider",
         "estimate_tts_duration",
-        "say",
     ),
     "memory": (
         "memory_save",
@@ -485,11 +486,6 @@ SKILL_TOOLS: dict[str, tuple[str, ...]] = {
         "faq_search",
     ),
     "scheduler": ("task_delta",),
-    "operator.admin": (  # ADR-0051 §6 — ТАРС diagnostics (issue #2001)
-        "ros2_node_status",
-        "read_logs",
-        "container_status",
-    ),
 }
 
 
@@ -562,6 +558,8 @@ def extract_tools() -> list[dict[str, Any]]:
                 "read_only": False,
                 "destructive": True,
                 "idempotent": False,
+                "starts_music": False,
+                "satisfies_user_music": False,
                 "execution_type": "medium",
             }
             params: list[dict[str, Any]] | None = None
@@ -574,7 +572,14 @@ def extract_tools() -> list[dict[str, Any]]:
                     entry["description"] = _returned_literal(fn)
                 elif fn.name == "parameters":
                     params = _extract_parameters(fn, cls.name, source.name)
-                elif fn.name in ("read_only", "destructive", "idempotent", "llm_visible"):
+                elif fn.name in (
+                    "read_only",
+                    "destructive",
+                    "idempotent",
+                    "llm_visible",
+                    "starts_music",
+                    "satisfies_user_music",
+                ):
                     value = _returned_literal(fn)
                     if isinstance(value, bool):
                         entry[fn.name] = value

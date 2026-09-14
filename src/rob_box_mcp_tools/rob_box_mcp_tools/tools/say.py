@@ -52,6 +52,11 @@ class SayTool(MCPTool):
         return "say"
 
     @property
+    def llm_visible(self) -> bool:
+        # ТАРС-только (operator.speech): личность использует speak_text.
+        return False
+
+    @property
     def description(self) -> str:
         return (
             "Произнести текст голосом от имени оператора робота. "

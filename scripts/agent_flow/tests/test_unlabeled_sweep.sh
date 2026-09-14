@@ -713,6 +713,116 @@ else
 fi
 
 # ----------------------------------------------------------------------------
+# T12: GraphQL rate-limit → REST fallback (ретро t_291506bf)
+# ----------------------------------------------------------------------------
+echo
+echo "--- T12: gh issue list (GraphQL) rate-limited → fall back to gh api (REST) ---"
+
+# Общий шаблон runner'а: $1=файл, $2=режим REST ('ok' | 'fail')
+emit_gql_fallback_runner() {
+  local out_file="$1" rest_mode="$2"
+  cat > "$out_file" <<EOF
+#!/bin/bash
+set -o pipefail
+export UNLABELED_SWEEP_TEST_MODE=1
+export GH_REPO='krikz/rob_box_project'
+export STALE_HOURS_1='1'
+export STALE_HOURS_2='1'
+export DRY_RUN='true'
+export LOCK_FILE='/tmp/test-unlabeled-sweep-gqlfb.lock'
+export SWEEP_LIMIT=200
+export HOME=/tmp
+
+REST_MODE='${rest_mode}'
+export REST_MODE
+
+gh() {
+  case "\$1" in
+    auth) return 0 ;;
+    issue)
+      case "\${2:-}" in
+        list)
+          # GraphQL-путь мёртв: rate limit (точный текст gh CLI)
+          echo 'GraphQL: API rate limit already exceeded for user ID 5272634.' >&2
+          return 1
+          ;;
+        edit|comment|close) return 0 ;;
+      esac
+      return 0 ;;
+    api)
+      local path="\${2:-}"
+      case "\$path" in
+        *"issues?state=open"*)
+          if [ "\$REST_MODE" = "fail" ]; then
+            echo 'HTTP 403: API rate limit exceeded' >&2
+            return 1
+          fi
+          # REST-схема: updated_at/created_at + PR-запись, которую надо
+          # отфильтровать (у REST /issues есть pull_request key).
+          printf '%s' '[{"number":4242,"title":"REST fallback issue","labels":[],"updated_at":"$(date -u -d '30 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)","created_at":"2026-01-01T00:00:00Z"},{"number":4243,"title":"a pull request","labels":[],"pull_request":{"url":"x"},"updated_at":"2026-01-01T00:00:00Z","created_at":"2026-01-01T00:00:00Z"}]'
+          return 0
+          ;;
+        *timeline*) printf '[]'; return 0 ;;
+        *comments*) printf '[]'; return 0 ;;
+      esac
+      printf '[]'; return 0 ;;
+  esac
+  return 1
+}
+export -f gh
+
+bash '${SCRIPT_UNDER_TEST}'
+EOF
+  chmod +x "$out_file"
+}
+
+T12_RUNNER="$WORK_DIR/run_t12_rest_ok.sh"
+emit_gql_fallback_runner "$T12_RUNNER" "ok"
+T12_OUT="$(bash "$T12_RUNNER" 2>&1)"; T12_RC=$?
+
+if echo "$T12_OUT" | grep -q 'falling back to REST'; then
+  PASS=$((PASS+1)); echo "  ✓ WARNING о переходе на REST в логе"
+else
+  FAIL=$((FAIL+1)); FAILED_CASES+=("T12: нет WARNING о REST-fallback")
+  echo "  ✗ нет WARNING о REST-fallback. Output:"; echo "$T12_OUT" | tail -5
+fi
+
+if echo "$T12_OUT" | grep -q 'source=rest'; then
+  PASS=$((PASS+1)); echo "  ✓ issues listing source=rest"
+else
+  FAIL=$((FAIL+1)); FAILED_CASES+=("T12: source != rest")
+  echo "  ✗ ожидался source=rest"
+fi
+
+# Главное: considered > 0 — скрипт НЕ ослеп.
+T12_CONSIDERED="$(echo "$T12_OUT" | grep -o 'considered=[0-9]*' | tail -1 | cut -d= -f2)"
+assert_greater "${T12_CONSIDERED:-0}" "0" "T12: considered>0 через REST fallback (не silent-0)"
+assert_eq "$T12_RC" "0" "T12: exit 0 при успешном REST fallback"
+
+# PR-запись (pull_request key) должна быть отфильтрована → considered ровно 1
+assert_eq "${T12_CONSIDERED:-0}" "1" "T12: REST pull_request-запись отфильтрована (considered=1)"
+
+echo
+echo "--- T12b: GraphQL + REST оба отказали → exit 1 (fail-closed), НЕ silent considered=0 ---"
+T12B_RUNNER="$WORK_DIR/run_t12_rest_fail.sh"
+emit_gql_fallback_runner "$T12B_RUNNER" "fail"
+T12B_OUT="$(bash "$T12B_RUNNER" 2>&1)"; T12B_RC=$?
+
+assert_eq "$T12B_RC" "1" "T12b: exit 1 при отказе обеих веток (fail-closed)"
+if echo "$T12B_OUT" | grep -q 'ERROR: обе ветки листинга issues отказали'; then
+  PASS=$((PASS+1)); echo "  ✓ ERROR в логе при двойном отказе"
+else
+  FAIL=$((FAIL+1)); FAILED_CASES+=("T12b: нет ERROR-строки")
+  echo "  ✗ нет ERROR-строки. Output:"; echo "$T12B_OUT" | tail -5
+fi
+if echo "$T12B_OUT" | grep -q 'errored=1 source=none'; then
+  PASS=$((PASS+1)); echo "  ✓ tick done репортует errored=1 source=none"
+else
+  FAIL=$((FAIL+1)); FAILED_CASES+=("T12b: tick done не помечен errored=1 source=none")
+  echo "  ✗ tick done не помечен errored=1 source=none"
+fi
+
+# ----------------------------------------------------------------------------
 # Summary
 # ----------------------------------------------------------------------------
 echo

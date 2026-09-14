@@ -114,7 +114,7 @@ def _load_mcp_server_module():
         m.group(1)
         for m in _re.finditer(r"^\s+([A-Z]\w+Tool),\s*$", _src, flags=_re.M)
     ))
-    _extra_tools = ["MusicManager", "TrackLibrary"]
+    _extra_tools = ["MusicManager", "TrackLibrary", "RtttlLibrary"]
     # Plus the Gen* tools from the inner try-import (different pattern):
     _gen_names = sorted(set(
         m.group(1)

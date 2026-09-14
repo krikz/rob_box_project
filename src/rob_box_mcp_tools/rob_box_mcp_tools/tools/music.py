@@ -15,7 +15,6 @@ music.py - Инструменты для управления музыкой в 
 - DeleteTrackTool: Удалить трек из медиатеки
 """
 
-import ast
 import json
 import os
 import re
@@ -26,7 +25,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, cast
 
 from rob_box_voice.core.music_stack_validation import (
     MusicStackStatus,
@@ -44,18 +43,9 @@ from ..core.arranger import (
     render,
     spec_from_flat,
 )
-
-# ---------------------------------------------------------------------------
-# Safety filter — compiled once at import time
-# ---------------------------------------------------------------------------
-
-_BLOCKED_TOKENS = re.compile(
-    r"\b("
-    r"import|os|sys|subprocess|shutil|socket|requests|urllib|http|ftplib|"
-    r"importlib|builtins|__import__|__builtins__|__class__|__subclasses__|"
-    r"open|exec|eval|compile|globals|locals|vars|delattr"
-    r")\b"
-)
+from ..core import renardo_sanitizer
+from ..core.rtttl_compose import melody_to_compose_params, rtttl_to_melody
+from ..core.rtttl_library import RtttlLibrary
 
 # Live 13.08 — символы сэмплов в play("x-o-") для предзагрузки буферов.
 _PLAY_SYMBOLS_RE = re.compile(r'play\(\s*"([^"]*)"')
@@ -79,76 +69,12 @@ _RENARDO_PLAYER_NAMES: frozenset = frozenset(
 #: comments or whitespace can survive this.
 _PATTERN_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,31}$")
 
-#: Reflection builtins that stay allowed (legitimate Renardo use — e.g.
-#: ``Clock.future(8, lambda: setattr(Clock, "bpm", 170))``) but only when the
-#: attribute name is a plain string literal, never a computed one.
-_LITERAL_ATTR_BUILTINS: frozenset = frozenset({"getattr", "setattr", "hasattr"})
-
-# ---------------------------------------------------------------------------
-# Issue #1016 — music-quality guardrail (dramaturgy validator)
-# ---------------------------------------------------------------------------
-# The safety filter above blocks *dangerous system tokens*. This separate
-# guardrail validates *musical quality* before the code reaches Renardo so
-# the LLM cannot regenerate a static 4-8 note loop:
-#
-#   1. Absolute frequencies (freq=440 / hz=220 / midinote=69) are rejected
-#      — Renardo wants scale *degrees* (p1 >> pluck([0,4,7])), not Hz.
-#   2. Every non-play player must carry an explicit ``dur=`` — otherwise
-#      the pattern defaults to a staccato click-train.
-#   3. (soft) A multi-part track without any developing pattern
-#      (``.every`` / ``Pvar`` / ``linvar`` / ``Clock.future``) is a static
-#      loop — warn so the LLM can fix it before the user hears it.
-#
-# Errors block execution; warnings are appended to the result message.
-
-_ABSOLUTE_FREQ_RE = re.compile(
-    r"\b(?:freq|frequency|hz|midinote|note)\s*=\s*(\d+(?:\.\d+)?)"
-)
-# Player creation lines: `p1 >> pluck([0,2,4], dur=0.5)` / `d1 >> play("x-o-")`
-#
-# 🔴 FIX (live 02.09): аргументы захватываются ДО КОНЦА СТРОКИ, а не до
-# первой закрывающей скобки. С `[^)]*` любая вложенная скобка обрывала
-# захват, и всё, что за ней, для валидатора не существовало. Аккорд пэда —
-# PGroup, то есть круглые скобки (`p3 >> warmpad((0, 2, 4), dur=4, ...)`):
-# захват обрывался на `(0, 2, 4)`, dur= в аргументы не попадал, и правило
-# «у каждого не-play плеера должен быть dur» ругалось на строку, где dur
-# есть. Та же слепота касалась inline `var(...)`/`Pvar(...)`.
-_PLAYER_LINE_RE = re.compile(r"^\s*(\w+)\s*>>\s*(\w+)\s*\((.*)\)\s*$", re.MULTILINE)
-# Developing patterns that break a static loop (issue #1016).
-_DEV_PATTERN_RE = re.compile(
-    r"\.every\(|Pvar\(|pvar\(|linvar\(|var\(|Clock\.future|chop=|stutter|shuffle|reverse"
-)
-# Hard-blocked hardware constraints (live 20.08): deepseek игнорирует
-# промпт-запреты, поэтому ловим на уровне кода. chop= (не 0) → щелчки на
-# 16 kHz DAC; spack= (не 0) → сырые глитчевые сэмплы pitchglitch-пака.
-_CHOP_RE = re.compile(r"\bchop\s*=\s*(?!0\b)")
-_SPACK_NONZERO_RE = re.compile(r"\bspack\s*=\s*[1-9]")
-
-# Issue #1804 — на роботе физически смонтированы только d1-d3/p1-p3.
-# Токен слева от ``>>`` в форме [dpsl]+цифра — это renardo-плеер; если он
-# вне допустимой шестёрки, код обязан переставить слой в свободный слот
-# (см. ``_remap_illegal_slots``), а не молча дать модели написать в d4/p5.
-_ALLOWED_PLAYER_SLOTS: Tuple[str, ...] = ("d1", "d2", "d3", "p1", "p2", "p3")
-_ALLOWED_PLAYER_SLOTS_SET: frozenset = frozenset(_ALLOWED_PLAYER_SLOTS)
-_PLAYER_ASSIGN_RE = re.compile(
-    r"^(?P<indent>[ \t]*)(?P<name>[dpsl]\d+)(?P<arrow>\s*>>\s*)(?P<synth>\w+)\s*\(",
-    re.MULTILINE,
-)
-
-# Issue #1803 — длина рисунка play("...") задаёт его период; если она не
-# делит такт, рисунок плывёт относительно соседних слоёв на каждом
-# повторе (см. ``_fix_pattern_length``).
-_PLAY_PATTERN_LEN_RE = re.compile(r"play\((\s*)(['\"])([^'\"]*)\2")
+# Код-санация Renardo вынесена в core/renardo_sanitizer (единый seam).
 
 
 # ---------------------------------------------------------------------------
 # MusicManager
 # ---------------------------------------------------------------------------
-
-
-def _is_dunder(name: str) -> bool:
-    """``True`` для ``__name__``-подобных имён (см. :meth:`MusicManager._filter_code_ast`)."""
-    return name.startswith("__") and name.endswith("__")
 
 
 # 🔴 FIX (live 30.08): этот список ОБЯЗАН покрывать всю палитру,
@@ -181,6 +107,16 @@ CRITICAL_SYNTHS: tuple = (
     # не в палитре, но используются напрямую
     "bass", "gong", "pluck", "saw", "square", "faim", "viola",
     "noise", "scatter", "orient", "creep", "play1", "play2",
+)
+
+#: Мелодические синты для известных мелодий (compose_music.lead_synth).
+#: Только «поющие» инструменты с артикуляцией: духовые, фортепиано, молоточки,
+#: струнные. Сюда НЕ входят грубые sustained-стены (supersawlead, saw) и
+#: басовые синты — на плотном рингтонном луп они звучат «непрерывной хуйней».
+MELODIC_LEAD_SYNTHS: tuple = (
+    "imperialbrass", "brass", "flute", "soprano", "eoboe", "organ",
+    "pianovel", "epiano", "rhpiano", "karp", "sitar", "marimba", "bell",
+    "strings", "viola", "cs80lead", "pluck", "blip", "arpy",
 )
 
 
@@ -439,10 +375,12 @@ class MusicManager:
         # stats — surfaced via get_state() for the AgentCore safety-net
         self._auto_stop_count: int = 0
         # ------------------------------------------------------------------
-        # Issue #1000 — DJ mode flag. When True, ``execute_code`` strips
-        # ``Clock.future(outro/Clock.clear())`` patterns because the LLM
-        # keeps planning its own stop (banned by contract #992) — only the
-        # system clock + watchdog should stop DJ transitions.
+        # DJ mode flag — единственный владелец: ``set_dj_mode()`` (см.
+        # ниже). Ставится двумя адаптерами одного шва: ``SetDjModeTool``
+        # (напрямую) и ``MCPServer._on_dj_mode`` (из топика /voice/dj_mode,
+        # который dialogue_node публикует в stop-fallback). Читается в
+        # ``auto_stop_idle_music``: пока DJ включён, segments-дедлайн #990
+        # не должен гасить непрерывный сет.
         # ------------------------------------------------------------------
         self._dj_mode_enabled: bool = False
         # ------------------------------------------------------------------
@@ -461,11 +399,12 @@ class MusicManager:
 
     @property
     def dj_mode_enabled(self) -> bool:
-        """True when DJ mode is active — ``Clock.future`` stop patterns are stripped."""
+        """True when DJ mode is active — ``auto_stop_idle_music`` skips the segments-deadline."""
         return self._dj_mode_enabled
 
     def set_dj_mode(self, enabled: bool) -> None:
-        """Set DJ mode flag. Called by :class:`SetDjModeTool`."""
+        """Единственная точка записи DJ-флага. Called by :class:`SetDjModeTool`
+        and :meth:`MCPServer._on_dj_mode`."""
         self._dj_mode_enabled = bool(enabled)
 
     # ------------------------------------------------------------------
@@ -1085,379 +1024,41 @@ class MusicManager:
         return self._master_gain
 
     # ------------------------------------------------------------------
-    # Code safety filter
+    # Code safety filter — логика вынесена в core/renardo_sanitizer
+    # (единый seam). Обёртки ниже оставлены для обратной совместимости
+    # тестов, которые зовут приватные методы напрямую.
     # ------------------------------------------------------------------
 
     def _filter_code(self, code: str) -> Tuple[bool, str]:
-        """Проверить код на наличие опасных конструкций.
-
-        Двухслойная проверка:
-
-        1. Текстовый blocklist (``_BLOCKED_TOKENS``) — быстрый отсев
-           очевидных ``import`` / ``os`` / ``eval``.
-        2. AST-проход (:meth:`_filter_code_ast`) — закрывает классические
-           обходы текстового фильтра: доступ к dunder-атрибутам
-           (``__class__`` / ``__globals__`` / ``__subclasses__``) и
-           ``getattr``/``setattr`` с вычисляемым (собранным из строк)
-           именем атрибута. Литеральные ``setattr(Clock, "bpm", 170)``
-           остаются разрешены — они нужны для ``Clock.future()``.
-
-        Args:
-            code: Строка кода для проверки.
-
-        Returns:
-            (is_safe, error_message) — (True, "") если код безопасен.
-        """
-        match = _BLOCKED_TOKENS.search(code)
-        if match:
-            return False, f"Запрещённый токен в коде: '{match.group()}'"
-        return self._filter_code_ast(code)
+        return renardo_sanitizer._filter_code(code)
 
     @staticmethod
     def _filter_code_ast(code: str) -> Tuple[bool, str]:
-        """AST-слой фильтра безопасности (см. :meth:`_filter_code`).
-
-        Текстовый blocklist сравнивает слова с исходником, поэтому его
-        обходит любое имя, собранное во время выполнения
-        (``getattr(x, "__cla" + "ss__")``) или добытое через dunder-цепочку
-        (``().__class__.__subclasses__()``). Здесь мы смотрим на реальную
-        структуру кода, а не на текст.
-
-        Args:
-            code: Строка кода для проверки.
-
-        Returns:
-            (is_safe, error_message) — (True, "") если код безопасен.
-        """
-        try:
-            tree = ast.parse(code)
-        except SyntaxError as exc:
-            return False, f"Синтаксическая ошибка в коде: {exc.msg}"
-
-        for node in ast.walk(tree):
-            # ``().__class__`` / ``p1.__globals__`` — цепочка побега из
-            # песочницы всегда проходит через dunder-атрибут.
-            if isinstance(node, ast.Attribute) and _is_dunder(node.attr):
-                return False, f"Запрещённый доступ к dunder-атрибуту: '{node.attr}'"
-            if isinstance(node, ast.Name) and _is_dunder(node.id):
-                return False, f"Запрещённое dunder-имя: '{node.id}'"
-            # ``getattr(x, name)`` с невычислимым именем — это обход
-            # текстового фильтра. Литеральное имя разрешаем (но не dunder).
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-                if node.func.id in _LITERAL_ATTR_BUILTINS and len(node.args) >= 2:
-                    attr_arg = node.args[1]
-                    if not isinstance(attr_arg, ast.Constant) or not isinstance(
-                        attr_arg.value, str
-                    ):
-                        return False, (
-                            f"'{node.func.id}' допустим только со строковым "
-                            "литералом в качестве имени атрибута"
-                        )
-                    if _is_dunder(attr_arg.value):
-                        return False, (
-                            f"Запрещённый доступ к dunder-атрибуту: "
-                            f"'{attr_arg.value}'"
-                        )
-        return True, ""
+        return renardo_sanitizer._filter_code_ast(code)
 
     # ------------------------------------------------------------------
     # Issue #1016 — music-quality guardrail (dramaturgy validator)
     # ------------------------------------------------------------------
 
     def _validate_music_code(self, code: str) -> Tuple[List[str], List[str]]:
-        """Проверить музыкальное качество кода перед отправкой в Renardo.
-
-        Отличается от :meth:`_filter_code` (безопасность): этот валидатор
-        ловит *музыкальные* ошибки LLM, из-за которых трек звучит как
-        статичный луп (issue #1016):
-
-        1. Абсолютные частоты (``freq=440`` / ``hz=220`` / ``midinote=69``)
-           — Renardo ожидает ступени (``p1 >> pluck([0,4,7])``), а не Hz.
-           → HARD error, выполнение блокируется.
-        2. ``dur=`` у каждого не-play плеера — без него паттерн играет
-           staccato-щелчками (дефолтный dur=1 с sus=0).
-           → WARNING (play() имеет собственный dur из паттерна).
-        3. (soft) Многоголосный трек без развивающих паттернов
-           (``.every`` / ``Pvar`` / ``linvar`` / ``Clock.future``)
-           — статичный повтор 4-8 нот.
-           → WARNING, чтобы LLM исправила до того, как юзер услышит.
-
-        Returns:
-            (errors, warnings) — списки строк. errors блокируют выполнение,
-            warnings добавляются в result message (LLM их увидит).
-        """
-        errors: List[str] = []
-        warnings: List[str] = []
-
-        # 1. Абсолютные частоты — жёсткий запрет (только ступени).
-        freq_match = _ABSOLUTE_FREQ_RE.search(code)
-        if freq_match:
-            errors.append(
-                "Абсолютные частоты запрещены (Renardo ожидает ступени): "
-                f"'{freq_match.group(0)}'. Используй степени, например "
-                "p1 >> pluck([0,4,7]) или p1 >> pluck([0,4,7], oct=3)."
-            )
-
-        # 1b. chop= (не ноль) — щелчки на 16 kHz DAC вместо sidechain.
-        if _CHOP_RE.search(code):
-            errors.append(
-                "chop= запрещён — на 16 kHz DAC даёт щелчки, а не sidechain. "
-                "Для дакинга используй amplify=var([1,0.3],[0.5,0.5])."
-            )
-
-        # 1c. spack= с ненулевым паком — сырые глитчевые сэмплы.
-        if _SPACK_NONZERO_RE.search(code):
-            errors.append(
-                "spack=1 (пак 1_pitchglitch_samples) запрещён — сырые "
-                "глитчевые сэмплы звучат как «звук из базы». Используй "
-                "дефолтный пак (без spack=) или sample=P[0,1,2,3]."
-            )
-
-        # 2. dur= у каждого не-play плеера — soft warning.
-        players = list(_PLAYER_LINE_RE.finditer(code))
-        for m in players:
-            player_name, synth, args = m.group(1), m.group(2), m.group(3)
-            if synth == "play":
-                continue  # play() имеет dur из строки паттерна
-            if "dur" not in args:
-                warnings.append(
-                    f"У '{player_name} >> {synth}(...)' нет dur= — паттерн "
-                    "будет звучать как staccato-щелчки. Добавь dur (например "
-                    "dur=0.5 или dur=[0.5,0.25])."
-                )
-
-        # 3. Многоголосный трек без развития — soft warning.
-        if len(players) >= 2 and not _DEV_PATTERN_RE.search(code):
-            warnings.append(
-                "В коде нет развивающих паттернов (.every/Pvar/linvar/"
-                "Clock.future) — трек будет звучать как статичный луп из "
-                "4-8 нот. Добавь хотя бы один: .every(4, 'stutter'), "
-                "lpf=linvar([500,4000], 16) или Pvar-гармонию."
-            )
-
-        return errors, warnings
+        return renardo_sanitizer._validate_music_code(code)
 
     # ------------------------------------------------------------------
     # Issue #1804 — d4+/p4+ не звучат на роботе, кода-стражи не было
     # ------------------------------------------------------------------
 
     def _remap_illegal_slots(self, code: str) -> Tuple[str, Optional[str]]:
-        """Переставить d4+/p4+/s*/l* в свободный d1-d3/p1-p3 (issue #1804).
-
-        🔴 FIX (live 31.08, «в траве сидел кузнечик»): модель написала
-
-            p1 >> blip([0,2,4,7,9,7,4,2], dur=0.25, amp=0.4)
-            p2 >> dub([0,0,0,-2], dur=0.5, oct=3, amp=0.35)
-            p3 >> play("X..X..X.", amp=0.25)
-            p4 >> play("..o...o.", amp=0.2)     ← не звучит
-
-        Малый барабан пропал без единой ошибки в логах — на роботе physически
-        подключены только d1-d3/p1-p3, а p4/d4+ существуют в самом Renardo
-        и потому `execute_code` их молча принимал. В промпте это записано
-        прямым текстом ("Stay within d1-d3 and p1-p3"), но маленькие модели
-        такие правила регулярно нарушают — играть в угадайку с промптом
-        больше нельзя, слой должен либо спастись, либо честно провалиться.
-
-        Правило переназначения: play(...) — это обычно барабаны/перкуссия
-        → предпочитаем d-слот; любой другой синт (мелодия/бас/пэд) →
-        предпочитаем p-слот. Так совпадает с разводкой ролей в
-        ``core/arranger.ROLE_PROFILE``. Если предпочитаемая категория уже
-        занята — пробуем вторую перед тем, как сдаться. Один и тот же
-        недопустимый токен (например, второе упоминание ``p4``) всегда
-        переезжает в один и тот же новый слот, чтобы не расщепить один
-        логический слой на два разных плеера.
-
-        Returns:
-            ``(код, None)`` если всё поместилось в 6 слотов, либо
-            ``(исходный_код, сообщение_об_ошибке)`` если слотов не хватило
-            — исходный код НЕ должен уходить в Renardo в этом случае.
-        """
-        occupied: set = {
-            m.group("name")
-            for m in _PLAYER_ASSIGN_RE.finditer(code)
-            if m.group("name") in _ALLOWED_PLAYER_SLOTS_SET
-        }
-        remapped: Dict[str, str] = {}
-        errors: List[str] = []
-
-        def _remap(m: re.Match) -> str:
-            name = m.group("name")
-            synth = m.group("synth")
-            if name in _ALLOWED_PLAYER_SLOTS_SET:
-                return m.group(0)
-            if name in remapped:
-                new_name = remapped[name]
-            else:
-                preferred = (
-                    _ALLOWED_PLAYER_SLOTS
-                    if synth == "play"
-                    else _ALLOWED_PLAYER_SLOTS[3:] + _ALLOWED_PLAYER_SLOTS[:3]
-                )
-                free = next((slot for slot in preferred if slot not in occupied), None)
-                if free is None:
-                    errors.append(
-                        f"'{name} >> {synth}(...)' вне d1-d3/p1-p3, а все "
-                        "6 слотов уже заняты — слой некуда переставить. "
-                        "Убери один из существующих слоёв или объедини "
-                        "паттерны."
-                    )
-                    return m.group(0)
-                occupied.add(free)
-                remapped[name] = free
-                new_name = free
-            return f"{m.group('indent')}{new_name}{m.group('arrow')}{synth}("
-
-        fixed_code = _PLAYER_ASSIGN_RE.sub(_remap, code)
-        if errors:
-            return code, "⛔ Недопустимые слоты плееров: " + " ".join(errors)
-        return fixed_code, None
+        return renardo_sanitizer._remap_illegal_slots(code)
 
     # ------------------------------------------------------------------
     # Issue #1803 — рисунок play(...), который не делит такт, плывёт
     # ------------------------------------------------------------------
 
     def _fix_pattern_length(self, code: str) -> str:
-        """Достроить рисунок play("...") до степени двойки (issue #1803).
-
-        🔴 FIX (живые прогоны 30-31.08, четыре трека подряд): модель писала
-        рисунки, чья длина не делит такт —
-
-            d1 >> play("X..X.o...")   9 шагов
-            d2 >> play("=..=...=")    8 шагов
-
-        9 не кратно 8: уже со второго повтора d1 и d2 расходятся по фазе
-        друг с другом, и грув «плывёт» — это особенно слышно в жанрах,
-        где сетка обязана стоять намертво (диско, метал). Модель символы
-        не считает и считать не научится — длина приводится к ближайшей
-        СВЕРХУ степени двойки. Округление вверх, а не вниз: степень
-        двойки всегда кратна всем меньшим степеням двойки, поэтому
-        дополненный рисунок остаётся в фазе с любым другим рисунком той
-        же природы, а округление вниз обрезало бы последний удар модели.
-
-        🔴 FIX (ревью после первого прохода): добивка ставилась символом
-        ``-``. Это НЕ пауза в FoxDot/Renardo — ``-`` маппится на реальный
-        сэмпл (``"hyphen"``, ``renardo_gatherer/collections.py``) и лежит
-        в каждом сэмпл-паке (``samples/0_foxdot_default/_/hyphen``), т.е.
-        это звучащий хэт. Семь ``-`` на конце девятишагового рисунка
-        добавляли модели семь ударов, которых она не писала — грув менялся
-        сильнее, чем исходное уползание по фазе, которое чинил этот метод.
-        Настоящая пауза — ``.`` (для неё сэмпл-каталога нет ни в одном
-        паке); ею и добиваем.
-        """
-
-        def _pow2_at_least(value: int) -> int:
-            target = 1
-            while target < value:
-                target *= 2
-            return target
-
-        def _pad(m: re.Match) -> str:
-            ws, quote, pattern = m.group(1), m.group(2), m.group(3)
-            if len(pattern) <= 1:
-                return m.group(0)
-
-            # 🔴 FIX (live 01.09): сначала снять ХВОСТОВЫЕ ПАУЗЫ, потом
-            # округлять. Иначе типовой промах модели удваивал такт:
-            # 'X..o.X.o.' (9) → 'X..o.X.o........' (16). Девятый символ —
-            # пауза; отбросив её, получаем ровно 8, готовый грув нужной
-            # плотности. Добивка же растягивала такт вдвое, бочка начинала
-            # бить в половину задуманного темпа, а вторую половину такта
-            # занимала тишина — то есть лекарство от уползания по фазе
-            # портило грув сильнее самой болезни.
-            #
-            # Паузы снимаем ПООДИНОЧКЕ, до первой же степени двойки. Все
-            # подряд снимать нельзя: 'X.....' — это «бочка раз в шесть
-            # шагов», обрезка до 'X' заставила бы её бить на каждом шаге.
-            trimmed = pattern
-            while (
-                len(trimmed) > 1
-                and _pow2_at_least(len(trimmed)) != len(trimmed)
-                and trimmed[-1] == "."
-            ):
-                trimmed = trimmed[:-1]
-
-            target = _pow2_at_least(len(trimmed))
-            if target == len(trimmed):
-                if trimmed == pattern:
-                    return m.group(0)
-                return f"play({ws}{quote}{trimmed}{quote}"
-
-            padded = trimmed + "." * (target - len(trimmed))
-            return f"play({ws}{quote}{padded}{quote}"
-
-        return _PLAY_PATTERN_LEN_RE.sub(_pad, code)
+        return renardo_sanitizer._fix_pattern_length(code)
 
     def _cap_amp(self, code: str) -> str:
-        """Ограничить громкость/октаву в коде до безопасных пределов.
-
-        Issue #1000 — phase-3.2 anti-click caps:
-        - ``amp=0.9``               → ``amp=0.7`` (если max_amp=0.7)
-        - ``amp=P[0.5, 1.0]``       → ``amp=P[0.5, 0.7]``
-        - ``amp=1``                 → ``amp=0.7``
-        - ``amplify=var([1,0.3])``  → ``amplify=var([0.7,0.3])``
-        - ``amplify=0.8``           → ``amplify=0.7``
-        - ``oct=9``                 → ``oct=6`` (санитарный потолок)
-
-        Октавный потолок (RC2 в docs/analysis/2026-08-30-music-quality-audit.md):
-        раньше здесь стояло ``max_oct = 4`` с обоснованием «oct=5 очень
-        резкое/громкое» (issue #1000). Резкость oct=5 — это алиасинг на
-        16 kHz, а не громкость. Кап до 4 при этом схлопывал бас (oct=3) и
-        лид в соседние октавы: аранжировка без регистрового разделения на
-        слух и есть «одна мелодия, которая повторяется».
-
-        🔴 FIX (live 31.08): потолок был поднят до 6 в расчёте на то, что
-        алиасинг срежет LPF внутри ``masterlimiter``. Лимитер снят (он
-        выдавал NaN и глушил весь выход), и расчёт вместе с ним рухнул.
-        Живой прогон: модель написала ``bell(..., oct=7)``, кап опустил до
-        6 — и робот засвистел. Обертоны колокола на шестой октаве лежат
-        выше Найквиста (8 kHz) и зеркалятся обратно негармоничным визгом;
-        ``fuzz(drive=0.6)`` и ``play(rate=1.2)`` в том же коде добавляли
-        своих.
-
-        Потолок 5 покрывает регистры аранжировщика целиком (бас 3, пэд 4,
-        мелодия 5) — режется только то, что модель пишет от руки выше них.
-        Вернуть 6 можно, когда на мастер-шине снова будет анти-алиасинговый
-        фильтр — но уже с защитой от NaN.
-        """
-        max_amp = self._max_amp
-        max_oct = 5
-
-        # 1. Сначала P[...] паттерны (более специфичный случай)
-        def _cap_p(m: re.Match) -> str:
-            def _cap_num(n: re.Match) -> str:
-                return f"{min(float(n.group()), max_amp):.3g}"
-            return "amp=P[" + re.sub(r"\b\d+(?:\.\d*)?\b", _cap_num, m.group(1)) + "]"
-
-        code = re.sub(r"amp\s*=\s*P\[([^\]]+)\]", _cap_p, code)
-
-        # 2. amp= простые числа
-        def _cap_n(m: re.Match) -> str:
-            return f"amp={min(float(m.group(1)), max_amp):.3g}"
-
-        code = re.sub(r"amp\s*=\s*(\d+(?:\.\d*)?)", _cap_n, code)
-
-        # 3. amplify=var([...]) — ограничиваем числа внутри var() (issue #1000)
-        def _cap_amplify_var(m: re.Match) -> str:
-            inner = m.group(1)
-            def _cap_num(n: re.Match) -> str:
-                return f"{min(float(n.group()), max_amp):.3g}"
-            inner = re.sub(r"\b\d+(?:\.\d*)?\b", _cap_num, inner)
-            return f"amplify=var({inner})"
-
-        code = re.sub(r"amplify\s*=\s*var\(([^)]+)\)", _cap_amplify_var, code)
-
-        # 4. amplify= простые числа
-        def _cap_amplify_n(m: re.Match) -> str:
-            return f"amplify={min(float(m.group(1)), max_amp):.3g}"
-
-        code = re.sub(r"amplify\s*=\s*(\d+(?:\.\d*)?)", _cap_amplify_n, code)
-
-        # 5. oct= — ограничиваем до max_oct (issue #1000)
-        def _cap_oct(m: re.Match) -> str:
-            return f"oct={min(int(m.group(1)), max_oct)}"
-
-        code = re.sub(r"oct\s*=\s*(\d+)", _cap_oct, code)
-        return code
+        return renardo_sanitizer._cap_amp(code, self._max_amp)
 
     # ------------------------------------------------------------------
     # Issue #990 — segments safety-net
@@ -1558,48 +1159,24 @@ class MusicManager:
         Returns:
             dict с ключами ``success``, ``message`` (или ``error``), ``code``.
         """
-        is_safe, filter_error = self._filter_code(code)
-        if not is_safe:
-            return {"success": False, "error": filter_error}
-
-        # Issue #1016 — music-quality guardrail: блокируем абсолютные
-        # частоты (только ступени), предупреждаем про dur= и статичные
-        # лупы. errors → код НЕ уходит в Renardo; warnings → LLM увидит
-        # их в result message и исправит следующим вызовом.
-        quality_errors, quality_warnings = self._validate_music_code(code)
-        if quality_errors:
+        # Единый seam очистки (core/renardo_sanitizer): безопасность →
+        # музыкальный валидатор → перестановка слотов → pianovel→rhpiano →
+        # длина рисунка → кап amp. Порядок и сообщения сохранены байт-в-байт.
+        sanitized = renardo_sanitizer.sanitize_renando(code, self._max_amp)
+        if sanitized.security_error:
+            return {"success": False, "error": sanitized.security_error}
+        if sanitized.quality_errors:
             return {
                 "success": False,
                 "error": "⛔ Код отклонён музыкальным валидатором: "
-                + " ".join(quality_errors),
-                "code": code,
+                + " ".join(sanitized.quality_errors),
+                "code": sanitized.code,
             }
+        if sanitized.slot_error:
+            return {"success": False, "error": sanitized.slot_error, "code": sanitized.code}
 
-        # Issue #1804 — d4+/p4+ физически не звучат на роботе. Переставляем
-        # слой в свободный d1-d3/p1-p3; если свободных слотов не осталось —
-        # честная ошибка вместо тихо потерянного слоя (см. #1804 и
-        # ``_remap_illegal_slots`` выше).
-        code, slot_error = self._remap_illegal_slots(code)
-        if slot_error:
-            return {"success": False, "error": slot_error, "code": code}
-
-        # 🔴 FIX (live 11:41 «цоканье»): автозамена pianovel/piano → rhpiano
-        # (обе используют MdaPiano физмодель — цокает/щёлкает; rhpiano —
-        # компилируемый и чистый). LLM продолжает писать pianovel несмотря
-        # на запрет в промпте → защита на уровне кода. Взято из ветки
-        # phase-3.2-music-testing (проверено в live-экспериментах юзера).
-        if "pianovel" in code:
-            code = code.replace("pianovel", "rhpiano")
-        # piano заменяем только если это отдельное слово (не rhpiano, pianovel и т.д.)
-        code = re.sub(r"(?<![a-zA-Z])piano(?![a-zA-Z])", "rhpiano", code)
-
-        # Issue #1803 — рисунок play(...), чья длина не делит такт, плывёт
-        # относительно соседних слоёв на каждом повторе (см.
-        # ``_fix_pattern_length`` выше).
-        code = self._fix_pattern_length(code)
-
-        # Ограничиваем amp до максимально допустимого значения
-        code = self._cap_amp(code)
+        code = sanitized.code
+        quality_warnings = list(sanitized.warnings)
 
         # 🔴 DEBUG (live 15:44 «Error in Player: 'amp'»): полный код ПОСЛЕ
         # всех трансформаций (pianovel→rhpiano, amp-caps) — чтобы видеть,
@@ -2175,10 +1752,10 @@ class MusicManager:
         # 🔴 FIX (live 10:13 DJ): при активном DJ-режиме дедлайн
         # ИГНОРИРУЕТСЯ — DJ-сет непрерывен (переходы каждые 30-120с),
         # segments-дедлайн #990 (~30с) убивал музыку посреди сета.
-        # DJ-флаг приходит из mcp_server (подписка на /voice/dj_mode).
+        # DJ-флаг ставится через set_dj_mode() (одна точка записи).
         deadline = self._music_deadline_at
         if deadline is not None and now_m >= deadline:
-            if getattr(self, "_dj_active", False):
+            if self.dj_mode_enabled:
                 # DJ живёт по idle-TTL; сбросим дедлайн — следующий
                 # переход продлит сессию.
                 self._music_deadline_at = None
@@ -2269,10 +1846,12 @@ class ExecuteMusicCodeTool(MCPTool):
     @property
     def description(self) -> str:
         return (
-            "Выполнить Renardo-код для создания или изменения музыкального паттерна в реальном времени. "
-            "Код выполняется в контексте Renardo (FoxDot-совместимый синтаксис). "
+            "Выполнить готовый Renardo-код. ТОЛЬКО для точного воспроизведения "
+            "известной мелодии нота-в-ноту или короткого сырого бита — НЕ для "
+            "сочинения новой музыки (для этого вызывай compose_music: у него "
+            "есть форма и развитие). Код выполняется в контексте Renardo "
+            "(FoxDot-совместимый синтаксис). "
             "Пример: 'p1 >> pluck([0, 2, 4], dur=0.5, amp=0.8)'. "
-            "Перед выполнением проверяется доступность SuperCollider. "
             "Опасные системные команды автоматически блокируются. "
             "Укажи pattern_name чтобы паттерн можно было остановить или изменить позже."
         )
@@ -2328,6 +1907,10 @@ class ExecuteMusicCodeTool(MCPTool):
     def destructive(self) -> bool:
         return False
 
+    @property
+    def starts_music(self) -> bool:
+        return True
+
     def execute(
         self,
         code: str,
@@ -2379,9 +1962,15 @@ class ComposeMusicTool(MCPTool):
         "bass_synth", "drums", "drums_sample", "hats_sample", "form",
     )
 
-    def __init__(self, node, manager: MusicManager) -> None:
+    def __init__(
+        self,
+        node,
+        manager: MusicManager,
+        rtttl_library: Optional[RtttlLibrary] = None,
+    ) -> None:
         super().__init__(node)
         self._manager = manager
+        self._rtttl_library = rtttl_library
         #: Плоские параметры предыдущего успешного вызова. Нужны только для
         #: обратной связи модели: она не видит своих прошлых tool-вызовов
         #: настолько подробно, чтобы заметить, что третий трек подряд идёт
@@ -2417,6 +2006,17 @@ class ComposeMusicTool(MCPTool):
             "слышится как один длинный трек."
         )
 
+    def _resolve_melody(self, name: str, variants: Optional[List[str]]) -> Optional[Dict[str, Any]]:
+        """Найти RTTTL-мелодию по имени (name → variants) в библиотеке."""
+        if self._rtttl_library is None:
+            return None
+        candidates = [name] + [v for v in (variants or []) if v]
+        for candidate in candidates:
+            rec = self._rtttl_library.get(candidate)
+            if rec is not None:
+                return rec
+        return None
+
     @property
     def name(self) -> str:
         return "compose_music"
@@ -2429,26 +2029,61 @@ class ComposeMusicTool(MCPTool):
             "МАТЕРИАЛ — темп, тональность, лад и по несколько нот для баса, "
             "мелодии и подклада; форму и то, когда какой слой вступает и "
             "уходит, система строит сама. Используй ЭТОТ инструмент для "
-            "любой просьбы сыграть музыку, трек, бит или сет. "
-            "execute_music_code нужен только для точного воспроизведения "
-            "известной мелодии по нотам."
+            "любой просьбы сыграть музыку, трек, бит или сет. Для ИЗВЕСТНОЙ "
+            "мелодии по имени («гимн СССР», «имперский марш», «happy "
+            "birthday») передай name (и variants) — система сама найдёт "
+            "точные ноты в базе RTTTL и построит аранжировку вокруг них. "
+            "execute_music_code нужен только для точного ручного кода."
         )
 
     @property
     def parameters(self) -> List[MCPToolParameter]:
         return [
             MCPToolParameter(
+                name="name",
+                type="string",
+                description=(
+                    "Название известной мелодии, которую юзер просит сыграть "
+                    "(английским или транслитом): «гимн СССР» → \"soviet "
+                    "anthem\", «имперский марш» → \"imperial march\", "
+                    "«happy birthday», «jingle bells». Когда name задан, "
+                    "композитор сам находит ТОЧНЫЕ ноты в базе RTTTL и "
+                    "строит аранжировку вокруг них — bpm/root/scale/"
+                    "lead_notes указывать не нужно и не импровизируй ноты "
+                    "по памяти."
+                ),
+                required=False,
+            ),
+            MCPToolParameter(
+                name="variants",
+                type="array",
+                description=(
+                    "Дополнительные варианты названия мелодии (английским/"
+                    "транслитом), которые пробовать по порядку, если name не "
+                    "найдётся. Например name=\"imperial march\", "
+                    "variants=[\"darth vader\", \"star wars theme\"]."
+                ),
+                required=False,
+                items=MCPToolParameter(
+                    name="variant",
+                    type="string",
+                    description="Альтернативное написание/название мелодии.",
+                ),
+            ),
+            MCPToolParameter(
                 name="bpm",
                 type="number",
                 description="Темп, 60-180. Медленное и лиричное 70-95, "
-                "грув 100-120, танцевальное 124-140.",
-                required=True,
+                "грув 100-120, танцевальное 124-140. Не нужен при name: "
+                "темп возьмётся из мелодии.",
+                required=False,
             ),
             MCPToolParameter(
                 name="root",
                 type="string",
-                description="Тоника: C, D, E, F, G, A, B (можно с #).",
-                required=True,
+                description="Тоника: C, D, E, F, G, A, B (можно с #). "
+                "Не нужна при name: тональность определится по нотам.",
+                required=False,
                 enum=list(VALID_ROOTS),
                 enum_strict=False,
             ),
@@ -2456,8 +2091,9 @@ class ComposeMusicTool(MCPTool):
                 name="scale",
                 type="string",
                 description="Лад: minor, major, dorian, mixolydian, lydian, "
-                "phrygian, majorPentatonic, harmonicMinor.",
-                required=True,
+                "phrygian, majorPentatonic, harmonicMinor. Не нужен при "
+                "name: лад определится по нотам.",
+                required=False,
             ),
             MCPToolParameter(
                 name="form",
@@ -2549,9 +2185,13 @@ class ComposeMusicTool(MCPTool):
             MCPToolParameter(
                 name="lead_synth",
                 type="string",
-                description="Синт мелодии: blip, arpy, supersawlead, karp, "
-                "sitar, marimba, bell, cs80lead, pluck, keys.",
+                description="Синт мелодии. Подбирай под характер: марш/гимн → "
+                "imperialbrass или brass, классика → pianovel/epiano, игра/чиптюн "
+                "→ blip/arpy, спокойное → bell/marimba. НЕ бери supersawlead/saw "
+                "— это грубая «стена» звука, а не мелодия.",
                 required=False,
+                enum=list(MELODIC_LEAD_SYNTHS),
+                enum_strict=False,
             ),
             MCPToolParameter(
                 name="lead_notes",
@@ -2560,6 +2200,17 @@ class ComposeMusicTool(MCPTool):
                 "чисел. Это МОТИВ, а не гамма: нужен скачок и ответ на "
                 "него, а не пробег по соседним ступеням вверх-вниз. "
                 "Сочиняй под тему и жанр каждого трека заново.",
+                required=False,
+            ),
+            MCPToolParameter(
+                name="lead_dur",
+                type="string",
+                description="Ритм мелодии в битах через запятую, ТОЙ ЖЕ "
+                "длины, что lead_notes (например 0.5,0.5,1). Задавай только "
+                "для ТОЧНОГО воспроизведения известной темы — тогда "
+                "мелодия играется дословно весь трек, а бас и форму "
+                "система строит вокруг неё сама. Для сочинённой с нуля "
+                "музыки пропусти: ритм подберёт аранжировщик.",
                 required=False,
             ),
             MCPToolParameter(
@@ -2622,11 +2273,160 @@ class ComposeMusicTool(MCPTool):
     def destructive(self) -> bool:
         return False
 
+    @property
+    def starts_music(self) -> bool:
+        return True
+
+    @staticmethod
+    def _missing_arrangement_fields(
+        lead_synth: Optional[str],
+        drums: Optional[str],
+        bass_synth: Optional[str],
+        bass_notes: Optional[str],
+        pad_synth: Optional[str],
+        pad_notes: Optional[str],
+    ) -> List[str]:
+        """Поля аранжировки, которых не хватает поверх найденной RTTTL-темы."""
+        missing: List[str] = []
+        if not lead_synth:
+            missing.append("lead_synth")
+        if not drums:
+            missing.append("drums")
+        if not (bass_synth and bass_notes):
+            missing.append("bass_synth + bass_notes")
+        if not (pad_synth and pad_notes):
+            missing.append("pad_synth + pad_notes")
+        return missing
+
+    def _resolve_rtttl_params(
+        self,
+        name: Optional[str],
+        variants: Optional[List[str]],
+        bpm: Optional[float],
+        root: Optional[str],
+        scale: Optional[str],
+        lead_synth: Optional[str],
+        drums: Optional[str],
+        bass_synth: Optional[str],
+        bass_notes: Optional[str],
+        pad_synth: Optional[str],
+        pad_notes: Optional[str],
+    ) -> Tuple[
+        Optional[MCPToolResult],
+        Any,
+        Any,
+        Any,
+        Optional[str],
+        Optional[str],
+        Optional[str],
+    ]:
+        """Подтянуть параметры темы из RTTTL по имени.
+
+        Возвращает ``(error, bpm, root, scale, lead_midi, lead_dur,
+        melody_title)``. Если первый элемент — ``MCPToolResult``, вызов
+        завершается ошибкой, остальные поля None.
+        """
+        if not name:
+            return None, bpm, root, scale, None, None, None
+        rec = self._resolve_melody(name, variants)
+        if rec is None:
+            return (
+                MCPToolResult(
+                    success=False,
+                    error=(
+                        f"Мелодия {name!r} не найдена в библиотеке. Скажи "
+                        "юзеру честно, что не знаешь точных нот, и предложи "
+                        "сыграть что-то в похожем духе — НЕ выдавай "
+                        "импровизацию за оригинал."
+                    ),
+                ),
+                None, None, None, None, None, None,
+            )
+        try:
+            params = melody_to_compose_params(rtttl_to_melody(rec["rtttl"]))
+        except ValueError as exc:
+            return (
+                MCPToolResult(
+                    success=False,
+                    error=f"Не удалось разобрать RTTTL мелодии {name!r}: {exc}",
+                ),
+                None, None, None, None, None, None,
+            )
+        melody_title = str(rec.get("title") or rec.get("name") or name)
+        resolved_bpm: Any = bpm if bpm is not None else params["bpm"]
+        resolved_root: Any = root if root is not None else params["root"]
+        resolved_scale: Any = scale if scale is not None else params["scale"]
+        lead_midi_resolved: Optional[str] = cast(Optional[str], params["lead_midi"])
+        lead_dur_resolved: Optional[str] = cast(Optional[str], params["lead_dur"])
+        return (
+            None,
+            resolved_bpm,
+            resolved_root,
+            resolved_scale,
+            lead_midi_resolved,
+            lead_dur_resolved,
+            melody_title,
+        )
+
+    def _build_compose_result_data(
+        self, spec: Any, raw_result: Dict[str, Any], duration_s: float
+    ) -> Dict[str, Any]:
+        """Обогатить результат execute_code полями ``form`` и ``duration_seconds``."""
+        raw_result["form"] = form_summary(spec.form)
+        # Issue #1811 follow-up (live 02.09): диджей ставил
+        # next_transition_sec=45, а форма играет 96-190 секунд — дроп и
+        # кульминация не звучали НИ РАЗУ за 30 часов лога. Длительность
+        # считается ровно той же арифметикой, что и Clock.future в render(),
+        # поэтому её можно просто отдать модели.
+        raw_result["duration_seconds"] = round(duration_s, 1)
+        return raw_result
+
+    def _apply_form_deadline(self, spec: Any) -> None:
+        """Issue #1812 — non-repeating трек: защита watchdog'ом от cut-off."""
+        if spec.repeat:
+            self._manager.clear_form_deadline()
+        else:
+            self._manager.set_form_deadline(
+                form_duration_seconds(spec.form, spec.bpm)
+            )
+
+    @staticmethod
+    def _format_compose_message(
+        melody_title: Optional[str],
+        form_text: str,
+        duration_s: float,
+        repeat_warning: str,
+    ) -> str:
+        """Префикс + подсказки для модели (DJ-тайминг, стоп-сигнал)."""
+        if melody_title:
+            prefix = (
+                f"Играю «{melody_title}» по точным нотам из базы "
+                f"({form_text}). "
+            )
+        else:
+            prefix = f"Играю композицию: {form_text}. "
+        # Явный стоп-сигнал в сообщении, а не только в промпте: live 30.08
+        # модель вызвала compose_music и следом execute_music_code со своим
+        # кодом. Любой музыкальный вызов начинается с Clock.clear(), поэтому
+        # второй вызов стирает только что построенную аранжировку — трёх-
+        # минутная композиция превращается в четырёхтактовый луп.
+        return (
+            prefix
+            + f"Полная форма звучит {duration_s:.0f} секунд — столько же "
+            "ставь в next_transition_sec, если это DJ-переход: "
+            "переключение раньше срезает кульминацию, и все треки "
+            "сета слышатся как одинаковые вступления. "
+            "Музыка уже звучит — НЕ вызывай execute_music_code после "
+            "этого, иначе аранжировка будет стёрта." + repeat_warning
+        )
+
     def execute(
         self,
-        bpm: float,
-        root: str,
-        scale: str,
+        name: Optional[str] = None,
+        variants: Optional[List[str]] = None,
+        bpm: Optional[float] = None,
+        root: Optional[str] = None,
+        scale: Optional[str] = None,
         form: Optional[str] = None,
         drums: Optional[str] = None,
         drums_sample: int = 0,
@@ -2638,12 +2438,46 @@ class ComposeMusicTool(MCPTool):
         bass_notes: Optional[str] = None,
         lead_synth: Optional[str] = None,
         lead_notes: Optional[str] = None,
+        lead_dur: Optional[str] = None,
         pad_synth: Optional[str] = None,
         pad_notes: Optional[str] = None,
         progression: Optional[str] = None,
         repeat: bool = False,
         swing: float = 0.0,
     ) -> MCPToolResult:
+        # Известная мелодия по имени: ищем в RTTTL-библиотеке, конвертируем
+        # ноты в параметры композитора и заполняем ими вызов.
+        err, bpm, root, scale, lead_midi, lead_dur, melody_title = (
+            self._resolve_rtttl_params(
+                name, variants, bpm, root, scale,
+                lead_synth, drums, bass_synth, bass_notes, pad_synth, pad_notes,
+            )
+        )
+        if err is not None:
+            return err
+
+        # Аранжировку даёт LLM (не подставляем дефолты): без drums + bass +
+        # pad + lead_synth тема звучит голым одиночным синтом или вообще
+        # «пиканьем». Просим модель дополнить вызов (live 11.09).
+        if name:
+            missing = self._missing_arrangement_fields(
+                lead_synth, drums, bass_synth, bass_notes, pad_synth, pad_notes,
+            )
+            if missing:
+                return MCPToolResult(
+                    success=False,
+                    error=(
+                        f"Мелодия {name!r} найдена, но не задана аранжировка: "
+                        f"не хватает {', '.join(missing)}. Вызови compose_music "
+                        f"ещё раз с теми же name/variants и добавь "
+                        f"{', '.join(missing)}."
+                    ),
+                )
+
+        bpm = float(bpm) if bpm is not None else 120.0
+        root = root or "C"
+        scale = scale or "minor"
+
         try:
             spec = spec_from_flat(
                 bpm=bpm,
@@ -2660,6 +2494,8 @@ class ComposeMusicTool(MCPTool):
                 bass_notes=bass_notes,
                 lead_synth=lead_synth,
                 lead_notes=lead_notes,
+                lead_dur=lead_dur,
+                lead_midi=lead_midi,
                 pad_synth=pad_synth,
                 pad_notes=pad_notes,
                 progression=progression,
@@ -2677,51 +2513,24 @@ class ComposeMusicTool(MCPTool):
         if not result["success"]:
             return MCPToolResult(success=False, error=result["error"])
 
-        # Issue #1812 — a non-repeating track has a computable finite
-        # length; arm the watchdog's form-end protection so idle dialogue
-        # (the normal "listening in silence" case) can't cut it off before
-        # its one pass of the form has actually played out. A looping track
-        # (repeat=True) has no natural end, so the idle TTL alone governs
-        # it — make sure no stale deadline from a previous track lingers.
-        if spec.repeat:
-            self._manager.clear_form_deadline()
-        else:
-            self._manager.set_form_deadline(form_duration_seconds(spec.form, spec.bpm))
-
+        self._apply_form_deadline(spec)
         self._notify_music_state()
-        result["form"] = form_summary(spec.form)
-        # Issue #1811 follow-up (live 02.09): диджей ставил
-        # next_transition_sec=45, а форма играет 96-190 секунд — дроп и
-        # кульминация не звучали НИ РАЗУ за 30 часов лога. Длительность
-        # считается ровно той же арифметикой, что и Clock.future в render(),
-        # поэтому её можно просто отдать модели.
         duration_s = form_duration_seconds(spec.form, spec.bpm)
-        result["duration_seconds"] = round(duration_s, 1)
+        self._build_compose_result_data(spec, result, duration_s)
         flat = {
             "bpm": bpm, "root": root, "scale": scale, "form": form or "arc",
             "drums": drums, "drums_sample": drums_sample,
             "hats_sample": hats_sample, "bass_synth": bass_synth,
             "lead_synth": lead_synth, "lead_notes": lead_notes,
-            "progression": progression,
+            "progression": progression, "name": name,
         }
         repeat_warning = self._repeat_warning(flat)
         self._last_flat = flat
-        # Явный стоп-сигнал в сообщении, а не только в промпте: live 30.08
-        # модель вызвала compose_music и следом execute_music_code со своим
-        # кодом. Любой музыкальный вызов начинается с Clock.clear(), поэтому
-        # второй вызов стирает только что построенную аранжировку — трёх-
-        # минутная композиция превращается в четырёхтактовый луп.
         return MCPToolResult(
             success=True,
             data=result,
-            message=(
-                f"Играю композицию: {form_summary(spec.form)}. "
-                f"Полная форма звучит {duration_s:.0f} секунд — столько же "
-                "ставь в next_transition_sec, если это DJ-переход: "
-                "переключение раньше срезает кульминацию, и все треки "
-                "сета слышатся как одинаковые вступления. "
-                "Музыка уже звучит — НЕ вызывай execute_music_code после "
-                "этого, иначе аранжировка будет стёрта." + repeat_warning
+            message=self._format_compose_message(
+                melody_title, form_summary(spec.form), duration_s, repeat_warning,
             ),
         )
 
@@ -3201,6 +3010,48 @@ class TrackLibrary:
         full["play_count"] += 1  # reflect incremented value
         return {"success": True, "code": code, "track": full}
 
+    def find_melody(self, query: str) -> Optional[Dict[str, Any]]:
+        """Найти известную мелодию (``type='melody'``) по имени/заголовку/тегу.
+
+        Ищет регистро-независимо по ``name`` (slug), ``title`` и ``tags``
+        (алиасы). Точное совпадение slug (через транслитерацию :meth:`_slug`)
+        имеет приоритет над подстрочным совпадением.
+
+        Args:
+            query: Что юзер назвал («кузнечик», «имперский марш»).
+
+        Returns:
+            Запись мелодии с ``code``, либо ``None`` если не нашлось или
+            колонка ``type`` ещё не добавлена (миграция 006 не применена).
+        """
+        q = (query or "").strip().lower()
+        if not q:
+            return None
+        slug = self._slug(query)
+        with self._lock:
+            try:
+                rows = self._conn.execute(
+                    "SELECT * FROM music_tracks WHERE type = 'melody'"
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return None
+        entries = [self._row_to_dict(r, include_code=True) for r in rows]
+        # Точное совпадение slug — приоритет.
+        for entry in entries:
+            if slug and slug == entry.get("name"):
+                return entry
+        # Подстрочное совпадение по name/title/tags.
+        for entry in entries:
+            names = [
+                entry.get("name") or "",
+                entry.get("title") or "",
+                *(entry.get("tags") or []),
+            ]
+            hay = " ".join(str(n).lower() for n in names)
+            if q in hay:
+                return entry
+        return None
+
     def delete_track(self, name: str) -> Dict[str, Any]:
         """Удалить трек из медиатеки.
 
@@ -3221,6 +3072,210 @@ class TrackLibrary:
         if not deleted:
             return {"success": False, "error": f"Трек '{slug}' не найден"}
         return {"success": True, "message": f"Трек '{slug}' удалён из медиатеки"}
+
+
+class LookupMelodyTool(MCPTool):
+    """Найти известную мелодию по имени и вернуть её ТОЧНЫЕ ноты.
+
+    Ищет в RTTTL-библиотеке (архив ``data/rtttl_melodies.jsonl.gz``,
+    10461 готовых мелодий) и возвращает СЫРУЮ RTTTL-строку в
+    ``data['rtttl']`` — БЕЗ воспроизведения и БЕЗ конвертации. Ноты
+    разбирает и играет сама модель (формат описан в системном промпте).
+    Фолбэк — курируемые мелодии ``music_tracks`` (012). Не допускает
+    ошибку #1810 — сыграть гамму и назвать её «кузнечиком».
+    """
+
+    def __init__(
+        self,
+        node,
+        library: TrackLibrary,
+        manager: MusicManager,
+        rtttl_library: Optional[RtttlLibrary] = None,
+    ) -> None:
+        super().__init__(node)
+        self._library = library
+        self._manager = manager
+        self._rtttl_library = rtttl_library
+
+    @property
+    def name(self) -> str:
+        return "lookup_melody"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Найти известную мелодию по имени и вернуть её ТОЧНЫЕ ноты сырой "
+            "RTTTL-строкой в data['rtttl'], НИЧЕГО не играя. Вызывай ПЕРВЫМ "
+            "делом, когда юзер просит сыграть конкретную мелодию: посмотри на "
+            "ноты и подбери аранжировку (lead_synth, form, drums, bass, pad). "
+            "Затем СЫГРАЙ через compose_music(name=..., lead_synth=..., "
+            "drums=..., bass_synth=..., bass_notes=..., pad_synth=..., "
+            "pad_notes=..., form=...). lead_synth подбирай под характер "
+            "мелодии (марш → imperialbrass, классика → pianovel, игра → blip). "
+            "НЕ конвертируй RTTTL вручную в execute_music_code. Имя ищи на "
+            "АНГЛИЙСКОМ или транслитом («имперский марш» → \"imperial march\"). "
+            "Если не нашлось — честно скажи, что не знаешь точных нот."
+        )
+
+    @property
+    def parameters(self) -> List[MCPToolParameter]:
+        return [
+            MCPToolParameter(
+                name="name",
+                type="string",
+                description="Название мелодии (английским или транслитом): "
+                "«имперский марш» → \"imperial march\", «кузнечик» → "
+                "\"grasshopper\", «happy birthday», «jingle bells»…",
+                required=True,
+            ),
+            MCPToolParameter(
+                name="variants",
+                type="array",
+                description=(
+                    "Дополнительные варианты названия (английским/транслитом), "
+                    "которые пробовать по порядку, если name не найдётся. "
+                    "Например name=\"imperial march\", variants=[\"darth vader\", "
+                    "\"star wars theme\"]."
+                ),
+                required=False,
+                items=MCPToolParameter(
+                    name="variant",
+                    type="string",
+                    description="Альтернативное написание/название мелодии.",
+                ),
+            ),
+        ]
+
+    @property
+    def execution_type(self) -> ToolExecutionType:
+        return ToolExecutionType.FAST
+
+    @property
+    def read_only(self) -> bool:
+        return True
+
+    @property
+    def destructive(self) -> bool:
+        return False
+
+    def execute(
+        self,
+        name: str,
+        variants: Optional[List[str]] = None,
+    ) -> MCPToolResult:
+        """Найти ноты и вернуть сырую RTTTL-строку (без воспроизведения)."""
+        candidates = [name] + [v for v in (variants or []) if v]
+        # 1. RTTTL-библиотека — приоритет.
+        if self._rtttl_library is not None:
+            for candidate in candidates:
+                rec = self._rtttl_library.get(candidate)
+                if rec is not None:
+                    return MCPToolResult(
+                        success=True,
+                        data={
+                            "name": rec.get("name"),
+                            "title": rec.get("title"),
+                            "rtttl": rec.get("rtttl"),
+                        },
+                        message=(
+                            f"Нашёл «{rec.get('title')}». Точные ноты в "
+                            "data['rtttl'] (формат RTTTL, как разбирать — в "
+                            "системном промпте). Сыграй эти ноты сам, не импровизируй."
+                        ),
+                    )
+        # 2. Фолбэк — курируемые мелодии в SQLite (type='melody', миграция 012).
+        entry = self._library.find_melody(name)
+        if entry is None:
+            return MCPToolResult(
+                success=False,
+                error=(
+                    f"Мелодия {name!r} не найдена в библиотеке. Скажи юзеру "
+                    "честно, что не знаешь точных нот, и предложи сыграть "
+                    "что-то в похожем духе — НЕ выдавай импровизацию за оригинал."
+                ),
+            )
+        return MCPToolResult(
+            success=True,
+            data={
+                "name": entry.get("name"),
+                "title": entry.get("title"),
+                "code": entry.get("code"),
+            },
+            message=f"Нашёл «{entry.get('title')}» (готовый Renardo-код в data['code']).",
+        )
+
+
+class SearchMelodyTool(MCPTool):
+    """Поиск по RTTTL-библиотеке (10460 готовых мелодий) по имени/жанру/тегу.
+
+    Возвращает кандидатов (метаданные, без нот). Ноты конкретной мелодии
+    берутся через lookup_melody. Нужен, когда юзер хочет не одну мелодию, а
+    выбор: «найди новогодние», «что есть из игр?».
+    """
+
+    def __init__(self, node, library: RtttlLibrary) -> None:
+        super().__init__(node)
+        self._library = library
+
+    @property
+    def name(self) -> str:
+        return "search_melody"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Найти мелодии в RTTTL-библиотеке по названию/жанру/тегу "
+            "(английским или транслитом: «новогодние» → \"christmas\", "
+            "«игры» → \"game\"). Возвращает до limit кандидатов с "
+            "названием, артистом и тегами. Поиск идёт по названию, "
+            "исполнителю, тегам и имени внутри формата мелодии. "
+            "Чтобы СЫГРАТЬ конкретную — вызови lookup_melody(name=...)."
+        )
+
+    @property
+    def parameters(self) -> List[MCPToolParameter]:
+        return [
+            MCPToolParameter(
+                name="query",
+                type="string",
+                description="Строка поиска: имя, артист, жанр или тег.",
+                required=True,
+            ),
+            MCPToolParameter(
+                name="limit",
+                type="integer",
+                description="Сколько кандидатов вернуть (по умолчанию 20).",
+                required=False,
+            ),
+        ]
+
+    @property
+    def execution_type(self) -> ToolExecutionType:
+        return ToolExecutionType.FAST
+
+    @property
+    def destructive(self) -> bool:
+        return False
+
+    def execute(self, query: str, limit: int = 20) -> MCPToolResult:
+        try:
+            limit = max(1, min(50, int(limit or 20)))
+        except (TypeError, ValueError):
+            limit = 20
+        hits = self._library.search(query, limit=limit)
+        if not hits:
+            return MCPToolResult(
+                success=False,
+                error=(
+                    f"По запросу {query!r} ничего не найдено в RTTTL-библиотеке. "
+                    "Скажи честно и предложи поискать по-другому."
+                ),
+            )
+        return MCPToolResult(
+            success=True,
+            data={"melodies": hits, "total": len(hits)},
+            message=f"Найдено {len(hits)} мелодий по запросу {query!r}.",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -3460,6 +3515,10 @@ class LoadTrackTool(MCPTool):
     def destructive(self) -> bool:
         return False
 
+    @property
+    def satisfies_user_music(self) -> bool:
+        return True
+
     def execute(self, name: str) -> MCPToolResult:
         """Загрузить и воспроизвести трек."""
         load_result = self._library.load_track(name)
@@ -3682,8 +3741,12 @@ class SearchSamplesTool(MCPTool):
 class SetDjModeTool(MCPTool):
     """Включить или выключить режим DJ — автономные плавные переходы между треками."""
 
-    def __init__(self, node) -> None:
+    def __init__(self, node, manager: Optional[Any] = None) -> None:
         super().__init__(node)
+        # Один владелец DJ-флага — MusicManager. Тул ставит флаг напрямую
+        # (без round-trip через топик) и параллельно публикует /voice/dj_mode
+        # для DJModeController в dialogue_node.
+        self._manager = manager
         from std_msgs.msg import String as _String
         self._dj_mode_pub = node.create_publisher(_String, "/voice/dj_mode", 10)
 
@@ -3767,32 +3830,81 @@ class SetDjModeTool(MCPTool):
     def destructive(self) -> bool:
         return False
 
-    def execute(self, enabled: bool, next_transition_sec: Optional[int] = None, theme: Optional[str] = None, transition_seconds: Optional[int] = None, persona: Optional[str] = None, plan: Optional[str] = None) -> MCPToolResult:
-        """Опубликовать команду включения/выключения DJ-режима."""
-        from std_msgs.msg import String as _String
-        # LLM иногда шлёт transition_seconds вместо next_transition_sec
+    @staticmethod
+    def _coerce_transition_seconds(
+        next_transition_sec: Optional[int],
+        transition_seconds: Optional[int],
+    ) -> Optional[int]:
+        """LLM иногда шлёт ``transition_seconds`` вместо ``next_transition_sec``."""
         if transition_seconds is not None and next_transition_sec is None:
-            next_transition_sec = transition_seconds
-        payload: dict = {"enabled": enabled}
+            return transition_seconds
+        return next_transition_sec
+
+    @staticmethod
+    def _build_dj_payload(
+        enabled: bool,
+        next_transition_sec: Optional[int],
+        theme: Optional[str],
+        persona: Optional[str],
+        plan: Optional[str],
+    ) -> Dict[str, Any]:
+        """Собрать JSON-payload для /voice/dj_mode из аргументов LLM.
+
+        Все текстовые поля — strip(), все отсутствующие опускаются (не
+        шлём «None»-строки наверх).
+        """
+        payload: Dict[str, Any] = {"enabled": enabled}
         if next_transition_sec is not None:
-            payload["next_transition_sec"] = max(15, min(300, int(next_transition_sec)))
-        if theme and isinstance(theme, str) and theme.strip():
-            payload["theme"] = theme.strip()
+            payload["next_transition_sec"] = max(
+                15, min(300, int(next_transition_sec))
+            )
         # 🔴 FIX (live 10:13 DJ): персона юзера («ты диджей Пёс») —
         # пробрасываем в DJState, чтобы автопромпты не перезаписывали
         # её дефолтом «ДиДжей РОббокс».
+        if theme and isinstance(theme, str) and theme.strip():
+            payload["theme"] = theme.strip()
         if persona and isinstance(persona, str) and persona.strip():
             payload["persona"] = persona.strip()
         # 🔴 FIX (live 15:30 06.08): план сета — DJ проходит по плану и
         # корректно завершается с финальным объявлением, а не молча по лимиту.
         if plan and isinstance(plan, str) and plan.strip():
             payload["plan"] = plan.strip()
+        return payload
+
+    @staticmethod
+    def _format_log_suffix(
+        next_transition_sec: Optional[int],
+        enabled: bool,
+        persona: Optional[str],
+        plan: Optional[str],
+    ) -> str:
+        """Хвост строки лога/сообщения: интервал, персона, план."""
+        parts: List[str] = []
+        if next_transition_sec and enabled:
+            parts.append(f" (следующий через {next_transition_sec}с)")
+        if persona:
+            parts.append(f", персона: {persona}")
+        if plan:
+            parts.append(f", план: {len(plan.splitlines())} треков")
+        return "".join(parts)
+
+    def execute(self, enabled: bool, next_transition_sec: Optional[int] = None, theme: Optional[str] = None, transition_seconds: Optional[int] = None, persona: Optional[str] = None, plan: Optional[str] = None) -> MCPToolResult:
+        """Опубликовать команду включения/выключения DJ-режима."""
+        from std_msgs.msg import String as _String
+        next_transition_sec = self._coerce_transition_seconds(
+            next_transition_sec, transition_seconds
+        )
+        payload = self._build_dj_payload(
+            enabled, next_transition_sec, theme, persona, plan
+        )
         msg = _String()
         msg.data = json.dumps(payload)
         self._dj_mode_pub.publish(msg)
+        if self._manager is not None:
+            self._manager.set_dj_mode(enabled)
         action = "включён" if enabled else "выключен"
-        interval_info = f" (следующий через {next_transition_sec}с)" if next_transition_sec and enabled else ""
-        persona_info = f", персона: {persona}" if persona else ""
-        plan_info = f", план: {len(plan.splitlines())} треков" if plan else ""
-        self.log_info(f"🎧 DJ-режим {action}{interval_info}{persona_info}{plan_info}")
-        return MCPToolResult(success=True, message=f"DJ-режим {action}{interval_info}{persona_info}{plan_info}")
+        log_suffix = self._format_log_suffix(
+            next_transition_sec, enabled, persona, plan
+        )
+        self.log_info(f"🎧 DJ-режим {action}{log_suffix}")
+        return MCPToolResult(success=True, message=f"DJ-режим {action}{log_suffix}")

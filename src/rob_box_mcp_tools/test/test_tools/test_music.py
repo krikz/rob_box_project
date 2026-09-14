@@ -42,6 +42,7 @@ from rob_box_mcp_tools.tools.music import (  # noqa: E402
     StopMusicTool,
     SetVibePresetTool,
     GetMusicStateTool,
+    LookupMelodyTool,
     TrackLibrary,
 )
 
@@ -2207,6 +2208,99 @@ class TestComposeMusicToolFormDeadline:
         assert result.get("held_reason") == "form_not_finished"
 
 
+class TestComposeMusicToolMelodyByName:
+    """``compose_music(name=...)`` сам ищет мелодию в RTTTL-библиотеке и
+    конвертирует ноты в абсолютные MIDI. Аранжировку (drums/bass/pad/form)
+    даёт LLM — без неё вызов отклоняется (голое «пиканье» запрещено)."""
+
+    def _make_tool(self, mock_node, rtttl_library=None):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        return ComposeMusicTool(mock_node, mgr, rtttl_library), mgr
+
+    _ARR = dict(
+        lead_synth="blip",
+        drums="X..o.X.o",
+        bass_synth="dub",
+        bass_notes="0, 0, 4, 0",
+        pad_synth="warmpad",
+        pad_notes="0, 2, 4",
+    )
+
+    def test_name_lookup_builds_arrangement_around_exact_notes(self, mock_node):
+        rtttl_library = Mock()
+        rtttl_library.get.return_value = {
+            "name": "fifth",
+            "title": "Beethoven's Fifth",
+            "rtttl": "fifth:d=4,o=5,b=63:8p,8g5,8g5,8g5,2d#5",
+        }
+        tool, mgr = self._make_tool(mock_node, rtttl_library)
+        mgr.execute_code = Mock(return_value={"success": True})
+        result = tool.execute(name="fifth", **self._ARR)
+        assert result.success is True
+        code = mgr.execute_code.call_args.args[0]
+        assert "midinote=[None, 79, 79, 79, 75]" in code
+        assert "Clock.bpm = 63" in code
+        assert "Beethoven's Fifth" in result.message
+        # Аранжировка LLM дошла до кода.
+        assert "dub" in code
+        assert "warmpad" in code
+        assert "X..o.X.o" in code
+
+    def test_name_without_arrangement_is_rejected(self, mock_node):
+        rtttl_library = Mock()
+        rtttl_library.get.return_value = {
+            "name": "fifth",
+            "title": "Beethoven's Fifth",
+            "rtttl": "fifth:d=4,o=5,b=63:8p,8g5,8g5,8g5,2d#5",
+        }
+        tool, mgr = self._make_tool(mock_node, rtttl_library)
+        mgr.execute_code = Mock(return_value={"success": True})
+        result = tool.execute(name="fifth")
+        assert result.success is False
+        assert "аранжировка" in result.error
+        assert "drums" in result.error
+        assert "lead_synth" in result.error
+        assert not mgr.execute_code.called
+
+    def test_name_not_found_is_honest_failure(self, mock_node):
+        rtttl_library = Mock()
+        rtttl_library.get.return_value = None
+        tool, mgr = self._make_tool(mock_node, rtttl_library)
+        result = tool.execute(name="nonexistent", **self._ARR)
+        assert result.success is False
+        assert "не найдена" in result.error
+
+    def test_name_tries_variants_in_order(self, mock_node):
+        rtttl_library = Mock()
+        rtttl_library.get.side_effect = [
+            None,
+            {
+                "name": "imperial",
+                "title": "Imperial March",
+                "rtttl": "imperial:d=4,o=5,b=80:8g5,8g5,8g5",
+            },
+        ]
+        tool, mgr = self._make_tool(mock_node, rtttl_library)
+        mgr.execute_code = Mock(return_value={"success": True})
+        result = tool.execute(
+            name="imperial march", variants=["darth vader"], **self._ARR
+        )
+        assert result.success is True
+        assert [c.args[0] for c in rtttl_library.get.call_args_list] == [
+            "imperial march",
+            "darth vader",
+        ]
+
+    def test_without_name_the_normal_path_is_unchanged(self, mock_node):
+        tool, mgr = self._make_tool(mock_node, rtttl_library=None)
+        mgr.execute_code = Mock(return_value={"success": True})
+        result = tool.execute(bpm=100, root="C", scale="minor", lead_synth="blip", lead_notes="0,2,4,7")
+        assert result.success is True
+        code = mgr.execute_code.call_args.args[0]
+        assert "midinote=" not in code
+        assert "blip" in code
+
+
 # ---------------------------------------------------------------------------
 # StopMusicTool
 # ---------------------------------------------------------------------------
@@ -2405,6 +2499,93 @@ class TestGetMusicStateTool:
         assert result.success is True
         assert "SuperCollider" in result.message
         assert "Renardo" in result.message
+
+
+class TestLookupMelodyTool:
+    """Тул поиска известной мелодии — возвращает ноты, НЕ играет."""
+
+    def _make_tool(self, mock_node, library=None, manager=None) -> LookupMelodyTool:
+        library = library if library is not None else Mock()
+        manager = manager if manager is not None else Mock()
+        return LookupMelodyTool(mock_node, library, manager)
+
+    def test_tool_name(self, mock_node):
+        assert self._make_tool(mock_node).name == "lookup_melody"
+
+    def test_tool_is_not_destructive(self, mock_node):
+        assert self._make_tool(mock_node).destructive is False
+
+    def test_tool_is_read_only(self, mock_node):
+        assert self._make_tool(mock_node).read_only is True
+
+    def test_found_melody_returns_raw_rtttl_without_playing(self, mock_node):
+        rtttl_library = Mock()
+        rtttl_library.get.return_value = {
+            "name": "starwars_3",
+            "title": "Imperial March",
+            "rtttl": "StarWars:d=4,o=5,b=80:8d",
+        }
+        manager = Mock()
+        tool = LookupMelodyTool(mock_node, Mock(), manager, rtttl_library)
+
+        result = tool.execute("imperial march")
+
+        assert result.success is True
+        assert result.data["rtttl"] == "StarWars:d=4,o=5,b=80:8d"
+        assert result.data["title"] == "Imperial March"
+        manager.execute_code.assert_not_called()  # lookup ничего не играет
+
+    def test_miss_returns_honest_error(self, mock_node):
+        library = Mock()
+        library.find_melody.return_value = None
+        tool = self._make_tool(mock_node, library=library)
+        result = tool.execute("шопен")
+        assert result.success is False
+        assert "не знаешь точных нот" in result.error
+
+    def test_variants_are_tried_in_order(self, mock_node):
+        """LLM может дать несколько вариантов названия — пробуем по порядку."""
+        library = Mock()
+        library.find_melody.return_value = None
+        rtttl_library = Mock()
+        rtttl_library.get.side_effect = [
+            None,  # primary name не нашёлся
+            {"name": "starwars_3", "title": "Imperial March", "rtttl": "x:d=4,o=5,b=80:c"},
+        ]
+        manager = Mock()
+        tool = LookupMelodyTool(mock_node, library, manager, rtttl_library)
+
+        result = tool.execute("imperial march", variants=["darth vader", "star wars"])
+
+        assert result.success is True
+        assert result.data["name"] == "starwars_3"
+        # Останавливаемся на первом совпадении — третий вариант не нужен.
+        assert [c.args[0] for c in rtttl_library.get.call_args_list] == [
+            "imperial march",
+            "darth vader",
+        ]
+        manager.execute_code.assert_not_called()
+
+
+def test_find_melody_resolves_slug_title_and_tag(tmp_path):
+    """find_melody ищет по slug (транслит), title и tags."""
+    lib = TrackLibrary(db_path=str(tmp_path / "melodies.db"))
+    lib._conn.execute(
+        "ALTER TABLE music_tracks ADD COLUMN type TEXT NOT NULL DEFAULT 'track'"
+    )
+    lib.save_track(
+        name="kuznechik",
+        code="p1 >> pluck([4,4,2])",
+        title="В траве сидел кузнечик",
+        tags=["кузнечик"],
+    )
+    lib._conn.execute("UPDATE music_tracks SET type='melody' WHERE name='kuznechik'")
+    lib._conn.commit()
+
+    assert lib.find_melody("кузнечик")["name"] == "kuznechik"      # tag match
+    assert lib.find_melody("Kuznechik")["name"] == "kuznechik"     # slug match
+    assert lib.find_melody("в траве")["name"] == "kuznechik"       # title substring
+    assert lib.find_melody("шопен") is None
 
 
 # ---------------------------------------------------------------------------
@@ -2649,6 +2830,26 @@ class TestMusicSessionLifecycle:
         assert result.get("stop_reason") == "segments_deadline"
         assert mgr._auto_stop_count == 1
         # stop_all cleared the deadline.
+        assert mgr._music_deadline_at is None
+        assert mgr._music_deadline_segments is None
+
+    def test_dj_mode_skips_segments_deadline(self):
+        """DJ-сет непрерывен: segments-дедлайн #990 не должен его гасить.
+
+        Один владелец DJ-флага — ``set_dj_mode()``; пока DJ включён,
+        ``auto_stop_idle_music`` сбрасывает дедлайн вместо остановки
+        (живой фикс 10:13 DJ: дедлайн убивал музыку посреди сета).
+        """
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        mgr.set_dj_mode(True)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", pattern_name="p1", segments=16)
+        assert mgr._music_deadline_at is not None
+        result = mgr.auto_stop_idle_music(
+            ttl_seconds=300, now=mgr._music_deadline_at + 1
+        )
+        assert result["stopped"] is False
+        # DJ-ветка сбрасывает дедлайн — следующий переход продлит сессию.
         assert mgr._music_deadline_at is None
         assert mgr._music_deadline_segments is None
 

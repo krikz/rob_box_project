@@ -65,6 +65,7 @@ from .tools import (
     MemoryContextTool,
     MusicManager,
     TrackLibrary,
+    RtttlLibrary,
     ExecuteMusicCodeTool,
     ComposeMusicTool,
     StopMusicTool,
@@ -76,6 +77,8 @@ from .tools import (
     DeleteTrackTool,
     SetDjModeTool,
     SearchSamplesTool,
+    LookupMelodyTool,
+    SearchMelodyTool,
     FaqSearchTool,
     SearchWebTool,
     # Issue #2113 — TARS 2 metrics panel (operator.admin). Публикует
@@ -425,7 +428,6 @@ class MCPServer(Node):
         # (~30с при segments:16) убивал музыку посреди DJ-сета:
         # «чуть музыки потом замолкает».
         try:
-            self._dj_active = False
             self._dj_mode_sub = self.create_subscription(
                 String,
                 "/voice/dj_mode",
@@ -526,19 +528,26 @@ class MCPServer(Node):
             )
 
     def _on_dj_mode(self, msg: "String") -> None:
-        """Track DJ-mode state so the watchdog doesn't kill DJ sets.
+        """Адаптер на шве /voice/dj_mode → MusicManager.set_dj_mode().
 
-        DJ-режим = непрерывный сет с переходами каждые 30-120с.
+        Один владелец DJ-флага — :meth:`MusicManager.set_dj_mode`. Топик
+        нужен только как транспорт от dialogue_node (тот публикует
+        ``enabled=false`` в stop-fallback), а сам ``SetDjModeTool`` ставит
+        флаг напрямую и публикует топик для ``DJModeController``.
+
         segments-дедлайн (#990) ставится на каждый execute_music_code
         (~30с при segments:16) — если DJ активен и мы его соблюдаем,
         музыка умирает посреди сета. Пока DJ включён — дедлайн
-        игнорируется; музыка живёт по idle-TTL (300с), а каждый
-        переход обновляет активность.
+        игнорируется; музыка живёт по idle-TTL, а каждый переход
+        обновляет активность.
         """
         try:
             data = json.loads(msg.data) if msg.data else {}
-            self._dj_active = bool(data.get("enabled", False))
-            state = "ON" if self._dj_active else "OFF"
+            enabled = bool(data.get("enabled", False))
+            manager = getattr(self, "_music_manager", None)
+            if manager is not None:
+                manager.set_dj_mode(enabled)
+            state = "ON" if enabled else "OFF"
             self.get_logger().info(f"🎧 [DJ watchdog] DJ mode: {state}")
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warning(f"⚠️ DJ mode parse failed: {exc}")
@@ -659,11 +668,6 @@ class MCPServer(Node):
         if manager is None:
             return
         try:
-            # 🔴 FIX (live 10:13 DJ): проброс DJ-флага в MusicManager —
-            # watchdog не должен убивать непрерывный DJ-сет по
-            # segments-дедлайну #990.
-            if hasattr(self, "_dj_active"):
-                manager._dj_active = bool(self._dj_active)
             # Issue #1812 — explicit TTL from the (now 30-min-default)
             # ROS-side parameter, so it always wins over whatever default
             # MusicManager picked up on construction.
@@ -931,13 +935,26 @@ class MCPServer(Node):
         # playback automatically.
         self._music_manager: Optional[MusicManager] = music_manager
         self.registry.register(ExecuteMusicCodeTool(self, music_manager))
+
+        # RTTTL-библиотека (архив data/rtttl_melodies.jsonl.gz) — независима от
+        # SQLite. Поиск по имени/жанру + конвертация RTTTL→Renardo при игре.
+        # Создаём ДО ComposeMusicTool: композитор по name= сам ищет точные
+        # ноты известной мелодии в этой библиотеке.
+        rtttl_library: Optional[RtttlLibrary] = None
+        try:
+            rtttl_library = RtttlLibrary()
+            self.registry.register(SearchMelodyTool(self, rtttl_library))
+            self.get_logger().info(f"🎵 RTTTL library: {rtttl_library.total()} мелодий")
+        except Exception as exc:
+            self.get_logger().error(f"❌ RTTTL library disabled: {exc}")
+
         # Форма трека строится кодом, а не LLM (RC4 в
         # docs/analysis/2026-08-30-music-quality-audit.md).
-        self.registry.register(ComposeMusicTool(self, music_manager))
+        self.registry.register(ComposeMusicTool(self, music_manager, rtttl_library))
         self.registry.register(StopMusicTool(self, music_manager))
         self.registry.register(SetVibePresetTool(self, music_manager))
         self.registry.register(GetMusicStateTool(self, music_manager))
-        self.registry.register(SetDjModeTool(self))
+        self.registry.register(SetDjModeTool(self, music_manager))
         self.registry.register(SearchSamplesTool(self))
 
         try:
@@ -954,6 +971,7 @@ class MCPServer(Node):
         self.registry.register(ListTracksTool(self, track_library))
         self.registry.register(LoadTrackTool(self, track_library, music_manager))
         self.registry.register(DeleteTrackTool(self, track_library))
+        self.registry.register(LookupMelodyTool(self, track_library, music_manager, rtttl_library))
 
         # Issue #1392 — MiniMax music generation + persistent library.
         # Graceful degradation: any failure (no API key, no /data volume,

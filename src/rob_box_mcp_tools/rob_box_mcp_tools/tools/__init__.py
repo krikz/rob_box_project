@@ -90,6 +90,7 @@ __all__ = [
     "ListTracksTool",
     "LoadTrackTool",
     "DeleteTrackTool",
+    "SearchMelodyTool",
     # FAQ / Event tools
     "FaqSearchTool",
     # Web search tools (issue #1101)
