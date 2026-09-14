@@ -95,6 +95,30 @@ ADR_COLLISION_COMMENT_DEDUP_HOURS="${ADR_COLLISION_COMMENT_DEDUP_HOURS:-24}"
 # Semantics identical to ADR_COLLISION_COMMENT_DEDUP_HOURS: 24h
 # comment-dedup policy.
 NEEDS_REVIEW_CONFLICT_DEDUP_HOURS="${NEEDS_REVIEW_CONFLICT_DEDUP_HOURS:-24}"
+# Ретро 2026-09-14 t_9580b71c (needs-review-no-evidence): PR помечен
+# `needs-review` через clean-pr-sweep / lint path / reconcile, но без
+# worker-evidence комментария (git log + SHA + kanban-id + e2e log +
+# acceptance + rebase log). Решение:
+#   1) СРАЗУ после add-label needs-review merge-gate шлёт шаблон
+#      worker-evidence request (pr_post_evidence_request) — 24h dedup,
+#      чтобы worker / pr-reviewer получил чёткие требования к рапорту;
+#   2) WATCHDOG проход needs_review_evidence_alert_pass_all раз в тик
+#      сканирует все OPEN PR с needs-review старше
+#      EVIDENCE_ALERT_AGE_HOURS (default 24h), у которых нет
+#      worker-evidence комментария — пост alert + метка
+#      EVIDENCE_MISSING_LABEL. Идемпотентно (24h dedup).
+# Это не gate (PR не блокируется), но даёт Шифу видимый сигнал, что PR
+# без рапорта worker-evidence завис в review queue. Процесс-фикс 10.08
+# SOUL.md («Зелёный ≠ ок — воркер ОБЯЗАН в run → voice_e2e_*.log →
+# рапортовать worker-evidence в PR»).
+EVIDENCE_REQUEST_DEDUP_HOURS="${EVIDENCE_REQUEST_DEDUP_HOURS:-24}"
+EVIDENCE_ALERT_AGE_HOURS="${EVIDENCE_ALERT_AGE_HOURS:-24}"
+EVIDENCE_ALERT_DEDUP_HOURS="${EVIDENCE_ALERT_DEDUP_HOURS:-24}"
+EVIDENCE_MISSING_LABEL="${EVIDENCE_MISSING_LABEL:-evidence-missing}"
+# Маркер в тексте комментария — substring, который ищем при проверке
+# «уже рапортовал worker-evidence?». Worker отвечает на request-коммент
+# (или пишет отдельный) с этой строкой.
+EVIDENCE_REPORT_MARKER="${EVIDENCE_REPORT_MARKER:-worker-evidence report}"
 # ADR-0013 (docs/adr/0013-incremental-delivery-over-big-bang.md): PR > 50
 # commits OR > 3000 lines is forbidden without an explicit `big-bang-override`
 # label on the issue. Шифу (товарищ) is the only one allowed to set it. We
@@ -2253,6 +2277,169 @@ pr_label_sweep_after_merge() {  # $1=pr_number [$2=context]
         fi
     done
     log "pr-label-sweep: PR #${pr_num} MERGED — снято ${_removed}/${_to_remove// /,} меток (context=${context})"
+    return 0
+}
+
+# --- pr_post_evidence_request (ретро 2026-09-14 t_9580b71c) -------------------
+# Шлёт шаблон worker-evidence request сразу после add-label needs-review.
+# Worker / pr-reviewer должен ответить комментарием, содержащим
+# EVIDENCE_REPORT_MARKER (substring «worker-evidence report»), иначе через
+# EVIDENCE_ALERT_AGE_HOURS watchdog поставит EVIDENCE_MISSING_LABEL.
+#
+# Args:
+#   $1 pr_number
+#   $2 source (lint|e2e-impossible|reconcile|...) — для диагностики в логе
+#
+# Идемпотентно через comment_recently_posted: prefix-режим, окно
+# EVIDENCE_REQUEST_DEDUP_HOURS (24h).
+pr_post_evidence_request() {
+    local _epr_pr="${1:-}"
+    local _epr_source="${2:-clean-pr-sweep}"
+    if [ -z "$_epr_pr" ] || ! printf '%s' "$_epr_pr" | grep -qE '^[0-9]+$'; then
+        return 0
+    fi
+    if [ "$DRY_RUN" = "true" ]; then
+        log "DRY-RUN would: post worker-evidence request on PR #${_epr_pr} (source=${_epr_source})"
+        return 0
+    fi
+    local _epr_window="$((EVIDENCE_REQUEST_DEDUP_HOURS * 3600))"
+    local _epr_marker="🤖 [merge-gate] **worker-evidence required** (${_epr_source})"
+    if comment_recently_posted pr "$_epr_pr" "$_epr_marker" "$_epr_window" prefix; then
+        log "evidence-request: PR #${_epr_pr} — worker-evidence request уже был в ${EVIDENCE_REQUEST_DEDUP_HOURS}h, skip"
+        return 0
+    fi
+    gh pr comment "$_epr_pr" --repo "$GH_REPO" --body "${_epr_marker}
+
+PR помечен \`needs-review\` (через \`${_epr_source}\`). Шифу ждёт **worker-evidence** перед merge — это процесс-фикс 10.08 (\"Зелёный ≠ ок — воркер ОБЯЗАН рапортовать worker-evidence в PR\"; см. ретро t_9580b71c).
+
+Прошу автора (worker / pr-reviewer) добавить ОТДЕЛЬНЫЙ комментарий с заголовком **worker-evidence report** и телом:
+1. SHA коммита в develop, от которого ответвлён PR (output: \`git log -1 origin/<head_branch>\`)
+2. Ссылка на kanban-task-id (\`t_xxxxxxxxxxxxx\`)
+3. Если есть e2e / voice_e2e_*.log — ссылка на артефакт GH run или \`/tmp/<file>\`
+4. Acceptance criteria из issue — покрыты ли (✅/❌ по каждому пункту)
+5. Если merge conflicts — rebase log (\`git log --oneline develop..HEAD\`)
+
+Без \`worker-evidence report\` PR через ${EVIDENCE_ALERT_AGE_HOURS}h будет помечен \`${EVIDENCE_MISSING_LABEL}\` автоматически (watchdog needs_review_evidence_alert_pass_all). Это не gate (PR не блокируется), но даёт Шифу видимый сигнал, что рапорт отсутствует." >/dev/null 2>&1 \
+        && log "evidence-request: posted on PR #${_epr_pr} (source=${_epr_source})" \
+        || log "evidence-request: WARNING post on PR #${_epr_pr} failed (non-fatal)"
+    return 0
+}
+
+# --- needs_review_evidence_alert_pass_all (ретро 2026-09-14 t_9580b71c) ------
+# WATCHDOG: раз в тик сканирует все OPEN PR с меткой needs-review старше
+# EVIDENCE_ALERT_AGE_HOURS (24h), у которых нет worker-evidence ответа.
+# Для каждой такой PR: постит alert-коммент (24h dedup) + ставит
+# EVIDENCE_MISSING_LABEL. Не gate: не снимает needs-review и не блокирует
+# PR — это watchdog-сигнал для Шифу и воркера.
+#
+# Контракт «worker-evidence получен» = комментарий содержит
+# EVIDENCE_REPORT_MARKER (substring «worker-evidence report»). Маркер
+# может быть в любом месте тела (contains-режим), а не только в начале.
+needs_review_evidence_alert_pass_all() {
+    local _nrea_age_seconds="$((EVIDENCE_ALERT_AGE_HOURS * 3600))"
+    local _nrea_dedup_seconds="$((EVIDENCE_ALERT_DEDUP_HOURS * 3600))"
+    local _nrea_cutoff_iso
+    _nrea_cutoff_iso="$(date -u -d "@$(( $(date -u +%s) - _nrea_age_seconds ))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+        || date -u +%Y-%m-%dT%H:%M:%SZ)"
+    log "needs-review-evidence-alert: scanning OPEN PRs with needs-review older than ${EVIDENCE_ALERT_AGE_HOURS}h (cutoff=${_nrea_cutoff_iso})"
+
+    # Один REST-запрос — все OPEN PR с needs-review (лимит 100 покрывает
+    # текущий объём rob_box_project review queue; расширяемое).
+    local _nrea_prs_json
+    _nrea_prs_json="$(gh pr list --repo "$GH_REPO" --state open --base "$DEVELOP_BRANCH" \
+        --label "$NEEDS_REVIEW_LABEL" --limit 100 \
+        --json number,createdAt,updatedAt,title,headRefName,labels 2>/dev/null || echo '[]')"
+    if [ -z "$_nrea_prs_json" ]; then
+        _nrea_prs_json='[]'
+    fi
+
+    local _nrea_alerted=0 _nrea_skipped=0 _nrea_labeled=0 _nrea_errored=0
+    while IFS=$'\t' read -r _nrea_pr _nrea_updated _nrea_title _nrea_labels _nrea_head; do
+        # updated_at < cutoff → старше порога → кандидат на alert.
+        # (updated_at вместо created_at: worker может rebase / push force,
+        # и тогда PR «освежается»; если активность свежая, alert не нужен.)
+        if [ -z "$_nrea_pr" ] || [ -z "$_nrea_updated" ]; then
+            _nrea_skipped=$((_nrea_skipped+1)); continue
+        fi
+        if ! printf '%s' "$_nrea_updated" | grep -qE '^[0-9TZ:.-]+$'; then
+            _nrea_errored=$((_nrea_errored+1)); continue
+        fi
+        # Compare ISO timestamps by EPOCH (not lexically — lexical breaks at
+        # day boundaries). If updated_at >= now - EVIDENCE_ALERT_AGE_HOURS,
+        # PR свежий → skip. Конвертим обе стороны через `date -d` (epoch).
+        local _nrea_updated_epoch _nrea_cutoff_epoch
+        _nrea_updated_epoch="$(date -u -d "$_nrea_updated" +%s 2>/dev/null || echo 0)"
+        _nrea_cutoff_epoch="$(date -u -d "$_nrea_cutoff_iso" +%s 2>/dev/null || echo 0)"
+        if [ "$_nrea_updated_epoch" = "0" ] || [ "$_nrea_cutoff_epoch" = "0" ]; then
+            _nrea_errored=$((_nrea_errored+1)); continue
+        fi
+        if [ "$_nrea_updated_epoch" -ge "$_nrea_cutoff_epoch" ]; then
+            _nrea_skipped=$((_nrea_skipped+1)); continue
+        fi
+
+        # Уже имеет worker-evidence report? → skip.
+        # Используем comment_recently_posted в contains-режиме с большим
+        # окном (10 лет) — нам нужно проверить ВСЮ историю комментариев.
+        local _huge_window="$((10 * 365 * 24 * 3600))"
+        if comment_recently_posted pr "$_nrea_pr" "$EVIDENCE_REPORT_MARKER" "$_huge_window" contains; then
+            log "needs-review-evidence-alert: PR #${_nrea_pr} — worker-evidence уже рапортован (contains '${EVIDENCE_REPORT_MARKER}'), skip"
+            _nrea_skipped=$((_nrea_skipped+1)); continue
+        fi
+
+        # Idempotent alert-comment (24h dedup, prefix-режим).
+        local _nrea_marker="🚨 [merge-gate watchdog] **evidence-missing** (t_9580b71c)"
+        if comment_recently_posted pr "$_nrea_pr" "$_nrea_marker" "$_nrea_dedup_seconds" prefix; then
+            log "needs-review-evidence-alert: PR #${_nrea_pr} — alert уже был в ${EVIDENCE_ALERT_DEDUP_HOURS}h, skip comment"
+        else
+            if [ "$DRY_RUN" = "true" ]; then
+                log "DRY-RUN would: post evidence-missing alert on PR #${_nrea_pr}"
+            else
+                local _nrea_age_h="$(( ( $(date -u +%s) - $(date -u -d "$_nrea_updated" +%s 2>/dev/null || echo 0) ) / 3600 ))"
+                gh pr comment "$_nrea_pr" --repo "$GH_REPO" --body "${_nrea_marker}
+
+PR \`#${_nrea_pr}\` (\`${_nrea_head}\`) висит с меткой \`needs-review\` уже ~${_nrea_age_h}ч, но **worker-evidence** (комментарий с заголовком «worker-evidence report») не приложен. Процесс-фикс 10.08 (ретро t_9580b71c) требует его до merge.
+
+Прошу автора (worker / pr-reviewer) добавить комментарий с:
+1. SHA develop, от которого ответвлён PR
+2. kanban-task-id (\`t_xxx\`)
+3. Ссылка на e2e/voice_e2e_*.log (если был e2e)
+4. Acceptance criteria из issue — ✅/❌
+5. Rebase log (если были merge conflicts)
+
+Если рапорт уже был — отредактируйте тело, добавив строку \`${EVIDENCE_REPORT_MARKER}\`, чтобы watchdog перестал флапать (он ищет её contains-режимом)." >/dev/null 2>&1 \
+                    && log "needs-review-evidence-alert: posted alert on PR #${_nrea_pr} (age ~${_nrea_age_h}h)" \
+                    || log "needs-review-evidence-alert: WARNING post alert on PR #${_nrea_pr} failed (non-fatal)"
+            fi
+        fi
+        _nrea_alerted=$((_nrea_alerted+1))
+
+        # Метка evidence-missing — idempotent (не снимаем needs-review, не
+        # меняем другие метки — Шифу решает).
+        if ! printf '%s' "$_nrea_labels" | tr '[:upper:]' '[:lower:]' | grep -qE "(^|,)${EVIDENCE_MISSING_LABEL}(,|$)"; then
+            if [ "$DRY_RUN" = "true" ]; then
+                log "DRY-RUN would: gh pr edit ${_nrea_pr} --repo ${GH_REPO} --add-label ${EVIDENCE_MISSING_LABEL}"
+            else
+                gh pr edit "$_nrea_pr" --repo "$GH_REPO" --add-label "$EVIDENCE_MISSING_LABEL" >/dev/null 2>&1 \
+                    && { log "needs-review-evidence-alert: PR #${_nrea_pr} → +${EVIDENCE_MISSING_LABEL}"; _nrea_labeled=$((_nrea_labeled+1)); } \
+                    || log "needs-review-evidence-alert: WARNING add ${EVIDENCE_MISSING_LABEL} on PR #${_nrea_pr} failed (non-fatal)"
+            fi
+        fi
+    done < <(printf '%s' "$_nrea_prs_json" | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+for pr in data:
+    num = str(pr.get("number", ""))
+    updated = pr.get("updatedAt") or ""
+    title = pr.get("title") or ""
+    head = pr.get("headRefName") or ""
+    labels = ",".join(sorted({l.get("name","") for l in (pr.get("labels") or []) if isinstance(l, dict)}))
+    print("%s\t%s\t%s\t%s\t%s" % (num, updated, title, labels, head))
+' 2>/dev/null)
+
+    log "needs-review-evidence-alert: alerted=${_nrea_alerted} labeled=${_nrea_labeled} skipped=${_nrea_skipped} errored=${_nrea_errored}"
     return 0
 }
 
@@ -5816,6 +6003,10 @@ print("1" if ok else "0")
         if gh pr edit "$c_pr" --repo "$GH_REPO" --add-label "$NEEDS_REVIEW_LABEL" >/dev/null 2>&1; then
             clean_labeled=$((clean_labeled+1))
             log "clean-pr-sweep: PR #${c_pr} → ${NEEDS_REVIEW_LABEL}"
+            # Ретро 2026-09-14 t_9580b71c: после add-label needs-review merge-gate
+            # шлёт шаблон worker-evidence request (24h dedup). Это ЗАМЕНЯЕТ
+            # ручную работу архитектора-надзора (ретро t_9580b71c).
+            pr_post_evidence_request "$c_pr" "clean-pr-sweep lint" || true
         else
             log "clean-pr-sweep: WARNING add ${NEEDS_REVIEW_LABEL} to PR #${c_pr} failed"
         fi
@@ -5865,6 +6056,10 @@ print("1" if ok else "0")
             "clean-pr-sweep: PR #${c_pr} functional, e2e невозможен → needs-review"
         clean_labeled=$((clean_labeled+1))
         log "clean-pr-sweep: PR #${c_pr} → ${NEEDS_REVIEW_LABEL} (e2e невозможен)"
+        # Ретро 2026-09-14 t_9580b71c: после add-label needs-review merge-gate
+        # шлёт шаблон worker-evidence request (24h dedup). Это ЗАМЕНЯЕТ
+        # ручную работу архитектора-надзора.
+        pr_post_evidence_request "$c_pr" "clean-pr-sweep e2e-impossible" || true
     else
         log "clean-pr-sweep: WARNING add ${NEEDS_REVIEW_LABEL} to PR #${c_pr} failed"
     fi
@@ -6032,6 +6227,9 @@ print("1" if ok else "0")
         "pr-orphan-reconcile: PR #${o_pr} functional + связанные issues закрыты → needs-review (e2e невозможен, retro 15.08 t_5cf0162b)"
     gh pr comment "$o_pr" --repo "$GH_REPO" --body \
         "agent-flow: 🔄 PR-side ${NEEDS_E2E_LABEL} потерял живую issue (сирота, ретро 15.08 t_5cf0162b): связанные issues закрыты/не найдены → e2e невозможен. Снят ${NEEDS_E2E_LABEL}, поставлен ${NEEDS_REVIEW_LABEL} — товарищ Шифу ревьюит напрямую." >/dev/null 2>&1 || true
+    # Ретро 2026-09-14 t_9580b71c: после add-label needs-review merge-gate
+    # шлёт шаблон worker-evidence request (24h dedup).
+    pr_post_evidence_request "$o_pr" "pr-orphan-reconcile e2e-impossible" || true
     orphan_labeled=$((orphan_labeled+1))
 done < <(printf '%s' "$_orphan_prs_json" | python3 -c '
 import json, sys, re
@@ -7025,6 +7223,9 @@ print("1" if ok else "0")
             "pr-backfill-scan: PR #${bf_pr} functional, e2e невозможен → needs-review"
         backfill_labeled=$((backfill_labeled+1))
         log "pr-backfill-scan: PR #${bf_pr} → ${NEEDS_REVIEW_LABEL} (e2e невозможен)"
+        # Ретро 2026-09-14 t_9580b71c: после add-label needs-review merge-gate
+        # шлёт шаблон worker-evidence request (24h dedup).
+        pr_post_evidence_request "$bf_pr" "pr-backfill-scan e2e-impossible" || true
     else
         log "pr-backfill-scan: WARNING add ${NEEDS_REVIEW_LABEL} to PR #${bf_pr} failed"
     fi
@@ -7411,6 +7612,17 @@ fi
 # метки на давно архивных ветках (где e2e-процесс уже завершён).
 # ============================================================================
 pr_label_sweep_merged_pass_all || true
+
+# ============================================================================
+# needs-review-evidence-alert pass (ретро 2026-09-14 t_9580b71c) ------------
+# ----------------------------------------------------------------------------
+# WATCHDOG: сканирует все OPEN PR с меткой needs-review старше
+# EVIDENCE_ALERT_AGE_HOURS (24h), у которых нет комментария с
+# EVIDENCE_REPORT_MARKER («worker-evidence report»). Постит alert-коммент
+# (24h dedup) + ставит EVIDENCE_MISSING_LABEL. Не gate.
+# Подробности — в needs_review_evidence_alert_pass_all() (выше).
+# ============================================================================
+needs_review_evidence_alert_pass_all || true
 
 # --- summary -----------------------------------------------------------------
 log "tick done: considered=${considered} labeled=${labeled} skipped=${skipped} errored=${errored} retro_closed=${retro_closed} retro_labeled=${retro_labeled} clean_labeled=${clean_labeled} orphan_labeled=${orphan_labeled} backfill_labeled=${backfill_labeled} retro_archived=${retro_archived} pmcr_completed=${pmcr_completed} human_close_propagated=${human_close_propagated} review_handling_processed=${review_handling_processed} review_handling_skipped=${review_handling_skipped} review_handling_errored=${review_handling_errored}"
