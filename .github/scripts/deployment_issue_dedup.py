@@ -268,6 +268,27 @@ CRITICAL_EXCLUDE_COMMON = [
     # `Traceback (most recent call last):` header followed by an
     # exception line that does not contain `user_input=...`).
     r"""user_input=['"]""",
+    # dialogue_node synthetic-retreat log line (deploy run 34908172365,
+    # 14.09 23:17, issue #2462 / z-{e2e}/test-round-395): the DJ Bug B
+    # synchronous retry path emits a single-shot
+    # `_dispatch_turn(raw_user_command=user_input, is_synthetic=True)`
+    # whose reminder payload is `[CRITICAL] В прошлом цикле ты НЕ вызвал
+    # compose_music` (see dialogue_node.py:_build_dj_retry_prompt).
+    # rclpy prints that user_input as a turn-start line in the form
+    # `[dialogue_node-N]   [<pid>] user: '<payload>'` (the `[<pid>]`
+    # slot is the logger's process-id formatter; the value varies per
+    # container restart). The CRITICAL_MATCH_RE `\bcritical\b` part of
+    # that line is purely the reminder text, not a deployment failure
+    # — the music guard itself is intentionally escalating the LLM
+    # (issue #992 Bug C), and a successful follow-up turn is logged a
+    # few lines later without errors. The exclusion is scoped to the
+    # `[CRITICAL]` marker + `не вызвал`/`ни один` phrasing so a real
+    # dialogue_node crash on the same container (which prints a
+    # `Traceback (most recent call last):` header followed by an
+    # exception line) is still reported. The negative test
+    # `test_dialogue_node_dj_retry_critical_reminder_still_reports_real_traceback`
+    # locks the safety net.
+    r"\[dialogue_node-\d+\]\s+\[\d+\]\s+user:\s*'\[Speaker:[^\]]+\]\s+\[CRITICAL\][^']*не вызвал",
     # Music-stack validator self-report (deploy runs 33330895761 /
     # 33335300188, 30.08 19:31 / 21:07, kanban t_fe19566c, issue
     # #1737): start_voice_assistant.sh runs validate_music_stack.py
@@ -616,6 +637,31 @@ WARNING_EXCLUDE_COMMON = [
     # (e.g. "файл не найден", "звук для триггера ... не
     # найден") stay visible to the operator.
     r"звук уже играет \(.*\), пропускаю",
+    # mcp_server ComposeMusicTool exec failure (deploy run 34908172365,
+    # 14.09 23:17, issue #2462 / z-{e2e}/test-round-395, kanban
+    # t_db1a15c8): ``ComposeMusicTool._execute`` calls
+    # ``exec(code, _renardo_context)`` to run the Renardo/FoxDot Python
+    # snippet the LLM produced. When the snippet contains an unmatched
+    # ``||`` (the Renardo pattern-parallel operator, e.g. ``a || b`` —
+    # FoxDot requires exactly two sides) the runtime raises
+    # ``ValueError: '||' delimeters must contain exactly 2 elements``
+    # which ``ComposeMusicTool._execute`` catches and re-emits as
+    # ``{"success": False, "error": "Ошибка выполнения: ..."}``.
+    # mcp_server's tool-execution wrapper then logs the line
+    # ``❌ Инструмент compose_music завершился с ошибкой: Ошибка
+    # выполнения: '||' delimeters must contain exactly 2 elements``
+    # at WARN severity (see mcp_server.py:1304). This is a model-side
+    # authoring error, not a deploy failure — the music stack comes up
+    # healthy and the next LLM turn can re-issue a corrected code
+    # block. The bash harness already gates on a successful
+    # ``Missing critical SynthDefs: none`` line for the happy path
+    # (see CRITICAL exclude above), so a transient ``||`` slip on a
+    # synthetic turn does not regress the deploy verdict. Narrow the
+    # rule to the literal ``'||' delimeters must contain exactly 2
+    # elements`` substring so other ``Ошибка выполнения`` variants
+    # (e.g. ``NameError`` from a stale ``pre-roll_msg`` f-string bug —
+    # see the voice-pipeline-hardware-debugging skill) still surface.
+    r"инструмент compose_music завершился с ошибкой.*\|\|.*delimeters must contain exactly 2 elements",
 ]
 WARNING_EXCLUDE_BY_SCOPE = {
     "main": [

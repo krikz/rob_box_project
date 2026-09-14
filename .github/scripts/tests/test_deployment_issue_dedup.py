@@ -1547,3 +1547,134 @@ def test_extract_relevant_log_line_still_catches_other_sound_node_warnings() -> 
 
     assert line is not None
     assert "не найден" in line
+
+
+def test_extract_relevant_log_line_ignores_dialogue_node_dj_retry_critical_reminder() -> None:
+    """Issue #2462, deploy run 34908172365 (14.09 23:17, kanban
+    t_db1a15c8, z-{e2e}/test-round-395).
+
+    The DJ Bug B synchronous retry path emits a single-shot
+    `_dispatch_turn(raw_user_command=user_input, is_synthetic=True)`
+    whose reminder payload is `[CRITICAL] В прошлом цикле ты НЕ
+    вызвал compose_music` (see dialogue_node.py:_build_dj_retry_prompt,
+    introduced for issue #992 Bug C). rclpy prints that user_input as
+    a turn-start line in the form
+    `[dialogue_node-N]   [<pid>] user: '<payload>'` — the `[<pid>]`
+    slot is the logger's process-id formatter and varies per
+    container restart (here it's `7`, on the next deploy it could be
+    `42`).
+
+    CRITICAL_MATCH_RE's `\bcritical\b` is triggered by the literal
+    `[CRITICAL]` marker in the reminder text, but no deploy failure
+    has happened — the music guard is intentionally escalating the
+    LLM on this turn, and a successful follow-up turn is logged a
+    few lines later. The deploy gate must stay silent; the new
+    CRITICAL_EXCLUDE_COMMON rule covers the
+    `[dialogue_node-N]   [<pid>] user: '[Speaker:...] [CRITICAL] ...не
+    вызвал...'` signature.
+    """
+    log_text = (
+        "[dialogue_node-4]   [7] user: '[Speaker:unknown] [CRITICAL] "
+        "В прошлом цикле ты НЕ вызвал ни один музыкальный тул, "
+        "хотя пользователь ЯВНО попросил музыку/генерацию.'"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="critical")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_dialogue_node_dj_retry_reminder_with_different_pid() -> None:
+    """Regression guard for the PID-slot of the DJ retry reminder
+    log line. The rclpy process-id formatter prints the actual PID
+    (here `42` to simulate a container restart) — the exclusion must
+    match regardless of the PID value, since the formatter content
+    is opaque to the deploy gate.
+    """
+    log_text = (
+        "[dialogue_node-4]   [42] user: '[Speaker:unknown] [CRITICAL] "
+        "В прошлом цикле ты НЕ вызвал compose_music — DJ-режим остался без музыки.'"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="critical")
+
+    assert line is None
+
+
+def test_dialogue_node_dj_retry_critical_reminder_still_reports_real_traceback() -> None:
+    """Negative test for the dialogue_node DJ retry reminder
+    exclusion. A real dialogue_node Python crash on the same
+    container prints a `Traceback (most recent call last):` header
+    followed by an exception line. The exclusion is anchored on
+    the literal
+    `[<pid>] user: '[Speaker:...] [CRITICAL] ...не вызвал'` reminder
+    signature, so a crash that does NOT carry that payload shape
+    (no `[<pid>] user:` prefix) keeps its severity and the
+    operator still sees the actual deploy failure.
+    """
+    log_text = (
+        "[dialogue_node-4] Traceback (most recent call last):\n"
+        '  File "/ws/install/.../dialogue_node.py", line 1234, in _run_turn\n'
+        "    raise RuntimeError(\"music_stack_broken\")\n"
+        "SomeException: error during music_stack_broken"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="critical")
+
+    assert line is not None
+    assert "error" in line
+
+
+def test_extract_relevant_log_line_ignores_mcp_server_compose_music_delimeters_warning() -> None:
+    """Issue #2462, deploy run 34908172365 (14.09 23:17, kanban
+    t_db1a15c8, z-{e2e}/test-round-395).
+
+    `ComposeMusicTool._execute` runs the LLM-produced Renardo/FoxDot
+    Python snippet via `exec(code, _renardo_context)`. When the
+    snippet contains an unmatched `||` (Renardo's pattern-parallel
+    operator — FoxDot requires exactly two sides) the runtime raises
+    `ValueError: '||' delimeters must contain exactly 2 elements`
+    which the tool re-emits as
+    `{"success": False, "error": "Ошибка выполнения: ..."}`. The
+    mcp_server tool-execution wrapper logs it at WARN severity
+    (mcp_server.py:1304). This is a model-side authoring error on
+    ONE LLM turn, not a deploy failure — the music stack comes up
+    healthy (`Missing critical SynthDefs: none` is the deploy
+    gate's happy-path signal, see CRITICAL_EXCLUDE_COMMON rules)
+    and the next LLM turn can re-issue a corrected code block.
+
+    The new WARNING_EXCLUDE_COMMON rule covers the literal
+    `❌ Инструмент compose_music завершился с ошибкой: ... '||'
+    delimeters must contain exactly 2 elements` shape so the deploy
+    gate stops filing a false-positive issue on every green run
+    that happens to include one such LLM turn.
+    """
+    log_text = (
+        "[mcp_server-10] [WARN] [1789428272.016752251] [mcp_server]: "
+        "❌ Инструмент compose_music завершился с ошибкой: "
+        "Ошибка выполнения: '||' delimeters must contain exactly 2 elements"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="warning")
+
+    assert line is None
+
+
+def test_mcp_server_other_compose_music_failure_still_reports_warning() -> None:
+    """Negative test for the `||` delimeters exclusion. The rule is
+    anchored on the literal `'||' delimeters must contain exactly 2
+    elements` substring, so a DIFFERENT ComposeMusicTool failure
+    (e.g. an `exec()` `NameError` from a stale `pre-roll_msg`
+    f-string bug — see the voice-pipeline-hardware-debugging skill)
+    still surfaces to the operator.
+    """
+    log_text = (
+        "[mcp_server-10] [WARN] [1789428272.016752251] [mcp_server]: "
+        "❌ Инструмент compose_music завершился с ошибкой: "
+        "Ошибка выполнения: name 'pre' is not defined"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="warning")
+
+    assert line is not None
+    assert "pre" in line
