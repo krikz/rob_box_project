@@ -29,14 +29,11 @@ class HEFLoader:
 
     Узел `vision_hailo_node` общается с HEF через этот интерфейс, чтобы
     тесты могли подменять его `MockHEFLoader` без условных `if CI`.
-
-    NOTE (ADR-0089, decision Q2=A): capability-probing (`is_available`)
-    намеренно НЕ часть интерфейса. На Phase 1 маршрутизация делается
-    только через фабрику `make_loader(hailo_enabled, hef_path)`, а
-    проверка реальной доступности HailoRT отложена в Phase 1.5
-    (когда `RealHEFLoader` станет настоящим и будет ясно, где
-    физически живёт это знание — в ноде, в launch, или в healthcheck).
     """
+
+    def is_available(self) -> bool:
+        """True если HailoRT инициализирован и есть хотя бы одно устройство."""
+        raise NotImplementedError
 
     def infer(self, frame_id: str, image: Any) -> List[Dict[str, Any]]:
         """Запуск инференса на одном кадре.
@@ -64,6 +61,9 @@ class StubHEFLoader(HEFLoader):
     def __init__(self, period_sec: float = 2.0) -> None:
         self._period_sec = period_sec
         self._last_emit = 0.0
+
+    def is_available(self) -> bool:
+        return True
 
     def infer(self, frame_id: str, image: Any) -> List[Dict[str, Any]]:
         now = time.monotonic()
@@ -142,19 +142,18 @@ class RealHEFLoader(HEFLoader):
             'hailortcli scan + Smoke на Vision Pi. Используйте hailo_enabled=False.'
         )
 
+    def is_available(self) -> bool:
+        try:
+            self._ensure_initialized()
+            return True
+        except (ImportError, FileNotFoundError, RuntimeError):
+            return False
+
     def infer(self, frame_id: str, image: Any) -> List[Dict[str, Any]]:
         # Контракт Phase 1: инициализация + post-processing pipeline.
         # Реализация отложена в Phase 1.5 (на железе).
         self._ensure_initialized()
         return []  # pragma: no cover
-
-    # NOTE (ADR-0089, decision Q2=A): capability-probing убран из
-    # публичного интерфейса. Маршрутизация stub/real делается в
-    # `make_loader(hailo_enabled, hef_path)` — фаза выбирается по
-    # launch-параметрам, а не по runtime-пробингу. Если в Phase 1.5
-    # понадобится runtime availability check, его следует реализовать
-    # внутри `RealHEFLoader` (приватный метод) или вынести в отдельный
-    # healthcheck-хелпер, но НЕ возвращать в `HEFLoader` interface.
 
 
 # ============================================================================
