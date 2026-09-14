@@ -20,11 +20,12 @@
 
 vision_hailo_node:
   # Real inference: true только когда HEF загружен на /opt/rob_box/models/.
-  # Phase 1 acceptance: false (smoke через stub).
+  # Phase 1.5 acceptance: hailo_enabled=true + yolov8n.hef → ≥30 FPS.
+  # Default остаётся false, чтобы smoke-test pipeline оставался воспроизводимым.
   hailo_enabled: false
 
   # Путь к HEF файлу. Игнорируется если hailo_enabled=false.
-  # Phase 1.5 пример: /opt/rob_box/models/yolov8n.hef
+  # Phase 1.5: /opt/rob_box/models/yolov8n.hef (Hailo-8L/8, HailoRT 4.18+).
   hef_path: ""
 
   # Период stub-событий (секунды). В real-режиме не используется.

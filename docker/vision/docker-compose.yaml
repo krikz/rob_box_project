@@ -674,9 +674,10 @@ services:
       - ./config:/config:ro
       - ./scripts:/ros_scripts:ro
       - ./scripts/vision-hailo:/scripts:ro
-      # Phase 1.5: HEF models монтируются read-only из host.
-      # На CI/локально — пустой volume или комментарий.
-      # - /opt/rob_box/models:/opt/rob_box/models:ro
+      # Phase 1.5: HEF models монтируются read-only из host. На CI/локально
+      # если /opt/rob_box/models отсутствует — compose упадёт; для dev-режима
+      # можно закомментировать строку ниже.
+      - /opt/rob_box/models:/opt/rob_box/models:ro
       # /dev/shm нужен для shared memory при большом inference.
       - /dev/shm:/dev/shm
     mem_limit: 1g  # HailoRT + python binding ≈ 0.5-1 GB

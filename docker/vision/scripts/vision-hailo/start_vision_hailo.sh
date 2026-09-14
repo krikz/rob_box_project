@@ -72,6 +72,30 @@ echo "[start_vision_hailo] config: HAILO_ENABLED=${HAILO_ENABLED} HEF_PATH=${HEF
 echo "[start_vision_hailo] topics: input=${INPUT_TOPIC} output=${OUTPUT_TOPIC}"
 echo "[start_vision_hailo] confidence_threshold=${CONFIDENCE_THRESHOLD} stub_period=${STUB_PERIOD_SEC}"
 
+# ---------- capability-honest mode check (ADR-0018) ----------
+# Если HAILO_ENABLED=true но HEF_PATH пуст / numpy / cv2 / hailo_platform
+# отсутствуют — узел ВСЁ РАВНО стартует, но переходит в stub-режим.
+# Это не silent degradation: логируем причину degraded mode.
+if [ "${HAILO_ENABLED}" = "true" ]; then
+    DEGRADE_REASON=""
+    if [ -z "${HEF_PATH}" ]; then
+        DEGRADE_REASON="${DEGRADE_REASON}HEF_PATH пуст; "
+    fi
+    if ! python3 -c "import numpy" 2>/dev/null; then
+        DEGRADE_REASON="${DEGRADE_REASON}numpy не установлен; "
+    fi
+    if ! python3 -c "import cv2" 2>/dev/null; then
+        DEGRADE_REASON="${DEGRADE_REASON}opencv-python не установлен; "
+    fi
+    if ! python3 -c "import hailo_platform" 2>/dev/null; then
+        DEGRADE_REASON="${DEGRADE_REASON}hailo_platform не установлен; "
+    fi
+    if [ -n "${DEGRADE_REASON}" ]; then
+        echo "[start_vision_hailo] WARN: HAILO_ENABLED=true, но degraded mode: ${DEGRADE_REASON}" >&2
+        echo "[start_vision_hailo] WARN: нода продолжит работу в stub-режиме (ADR-0018 capability-honest)" >&2
+    fi
+fi
+
 # ---------- smoke check (hailortcli) ----------
 if [ "${HAILO_ENABLED}" = "true" ]; then
     if command -v hailortcli >/dev/null 2>&1; then
