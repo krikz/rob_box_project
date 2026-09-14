@@ -30,7 +30,7 @@
       "DialogueNode._execute_tool_calls": 18,
       "DialogueNode._handle_result": 65,
       "DialogueNode._on_stt": 54,
-      "DialogueNode._run_turn": 57
+      "DialogueNode._run_turn": 58
     },
     "src/rob_box_voice/rob_box_voice/scheduler/pregen/pre_gen.py": {
       "build_pregen_task": 22
@@ -193,8 +193,8 @@
     {
       "path": "src/rob_box_voice/rob_box_voice/dialogue_node.py",
       "method": "DialogueNode._run_turn",
-      "cc": 57,
-      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+      "cc": 58,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog. CC 57->58 drift detected after PR #2448 (commit 5158bad2, fix(dj): single source of arrangement craft). Re-baseline for PR sweep #2452; follow-up tech-debt for _run_turn decomp."
     },
     {
       "path": "src/rob_box_voice/rob_box_voice/scheduler/pregen/pre_gen.py",
