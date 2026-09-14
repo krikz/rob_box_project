@@ -1,0 +1,1431 @@
+﻿2026-09-13T20:22:44.9171353Z Current runner version: '2.336.0'
+2026-09-13T20:22:44.9176605Z Runner name: 'rob-box-e2e-1'
+2026-09-13T20:22:44.9177223Z Runner group name: 'Default'
+2026-09-13T20:22:44.9177936Z Machine name: 'ros2-Katana-GF66-11UD'
+2026-09-13T20:22:44.9182282Z ##[group]GITHUB_TOKEN Permissions
+2026-09-13T20:22:44.9184185Z Actions: write
+2026-09-13T20:22:44.9184639Z ArtifactMetadata: write
+2026-09-13T20:22:44.9185098Z Attestations: write
+2026-09-13T20:22:44.9185515Z Checks: write
+2026-09-13T20:22:44.9185918Z CodeQuality: write
+2026-09-13T20:22:44.9186338Z Contents: write
+2026-09-13T20:22:44.9186758Z CopilotRequests: write
+2026-09-13T20:22:44.9187208Z Deployments: write
+2026-09-13T20:22:44.9187634Z Discussions: write
+2026-09-13T20:22:44.9188049Z Drives: write
+2026-09-13T20:22:44.9188449Z Issues: write
+2026-09-13T20:22:44.9188846Z Metadata: read
+2026-09-13T20:22:44.9189246Z Models: read
+2026-09-13T20:22:44.9189639Z Packages: write
+2026-09-13T20:22:44.9190038Z Pages: write
+2026-09-13T20:22:44.9190517Z PullRequests: write
+2026-09-13T20:22:44.9190994Z RepositoryProjects: write
+2026-09-13T20:22:44.9191456Z SecurityEvents: write
+2026-09-13T20:22:44.9192763Z Statuses: write
+2026-09-13T20:22:44.9193184Z VulnerabilityAlerts: read
+2026-09-13T20:22:44.9193632Z ##[endgroup]
+2026-09-13T20:22:44.9195264Z Secret source: Actions
+2026-09-13T20:22:44.9195943Z Cache mode: write
+2026-09-13T20:22:44.9196454Z Prepare workflow directory
+2026-09-13T20:22:44.9518625Z Prepare all required actions
+2026-09-13T20:22:44.9563054Z Getting action download info
+2026-09-13T20:22:45.6264481Z Download action repository 'actions/checkout@v7' (SHA:3d3c42e5aac5ba805825da76410c181273ba90b1)
+2026-09-13T20:22:46.6571133Z Download action repository 'actions/upload-artifact@v7' (SHA:043fb46d1a93c77aae656e7c1c64a875d1fc6a0a)
+2026-09-13T20:22:49.2601560Z Complete job name: e2e-voice
+2026-09-13T20:22:49.3162400Z ##[group]Run TBS_CLEAN=$(printf '%s' "$TRIGGERED_BY_SCRIPT" | tr -d '\r\n')
+2026-09-13T20:22:49.3163177Z [36;1mTBS_CLEAN=$(printf '%s' "$TRIGGERED_BY_SCRIPT" | tr -d '\r\n')[0m
+2026-09-13T20:22:49.3163791Z [36;1mTBA_CLEAN=$(printf '%s' "$TRIGGERED_BY_AGENT" | tr -d '\r\n')[0m
+2026-09-13T20:22:49.3164346Z [36;1mTBC_CLEAN=$(printf '%s' "$TRIGGERED_BY_CARD" | tr -d '\r\n')[0m
+2026-09-13T20:22:49.3164901Z [36;1mTBR_CLEAN=$(printf '%s' "$TRIGGERED_BY_REASON" | tr -d '\r\n')[0m
+2026-09-13T20:22:49.3165602Z [36;1mecho "🔧 Triggered by: ${TBS_CLEAN} / agent=${TBA_CLEAN} / card=${TBC_CLEAN} / reason=${TBR_CLEAN}"[0m
+2026-09-13T20:22:49.3176676Z shell: /usr/bin/bash -e {0}
+2026-09-13T20:22:49.3177285Z env:
+2026-09-13T20:22:49.3177594Z   TRIGGERED_BY_SCRIPT: run_night_marathon.sh
+2026-09-13T20:22:49.3177987Z   TRIGGERED_BY_AGENT: unknown
+2026-09-13T20:22:49.3178306Z   TRIGGERED_BY_CARD: 
+2026-09-13T20:22:49.3178746Z   TRIGGERED_BY_REASON: night marathon act 3: Кто там бубнил на фоне
+2026-09-13T20:22:49.3179207Z ##[endgroup]
+2026-09-13T20:22:49.3309355Z 🔧 Triggered by: run_night_marathon.sh / agent=unknown / card= / reason=night marathon act 3: Кто там бубнил на фоне
+2026-09-13T20:22:49.3486498Z ##[group]Run actions/checkout@v7
+2026-09-13T20:22:49.3486895Z with:
+2026-09-13T20:22:49.3487158Z   ref: refs/heads/develop
+2026-09-13T20:22:49.3487461Z   fetch-depth: 1
+2026-09-13T20:22:49.3487722Z   clean: true
+2026-09-13T20:22:49.3488005Z   repository: krikz/rob_box_project
+2026-09-13T20:22:49.3490970Z   token: ***
+2026-09-13T20:22:49.3491241Z   ssh-strict: true
+2026-09-13T20:22:49.3491506Z   ssh-user: git
+2026-09-13T20:22:49.3491865Z   persist-credentials: true
+2026-09-13T20:22:49.3492200Z   sparse-checkout-cone-mode: true
+2026-09-13T20:22:49.3492540Z   fetch-tags: false
+2026-09-13T20:22:49.3492814Z   show-progress: true
+2026-09-13T20:22:49.3493098Z   lfs: false
+2026-09-13T20:22:49.3493371Z   submodules: false
+2026-09-13T20:22:49.3493649Z   set-safe-directory: true
+2026-09-13T20:22:49.3493973Z   allow-unsafe-pr-checkout: false
+2026-09-13T20:22:49.3494297Z ##[endgroup]
+2026-09-13T20:22:49.4317475Z Syncing repository: krikz/rob_box_project
+2026-09-13T20:22:49.4318935Z ##[group]Getting Git version info
+2026-09-13T20:22:49.4319741Z Working directory is '/runner/_work/rob_box_project/rob_box_project'
+2026-09-13T20:22:49.4320463Z [command]/usr/bin/git version
+2026-09-13T20:22:49.4320773Z git version 2.50.1
+2026-09-13T20:22:49.4322095Z ##[endgroup]
+2026-09-13T20:22:49.4325647Z Copying '/root/.gitconfig' to '/runner/_work/_temp/399c2824-9f36-4d88-86f0-76aa3597c833/.gitconfig'
+2026-09-13T20:22:49.4333241Z Temporarily overriding HOME='/runner/_work/_temp/399c2824-9f36-4d88-86f0-76aa3597c833' before making global git config changes
+2026-09-13T20:22:49.4334285Z Adding repository directory to the temporary git global config as a safe directory
+2026-09-13T20:22:49.4337211Z [command]/usr/bin/git config --global --add safe.directory /runner/_work/rob_box_project/rob_box_project
+2026-09-13T20:22:49.4367070Z [command]/usr/bin/git config --local --get remote.origin.url
+2026-09-13T20:22:49.4385285Z https://github.com/krikz/rob_box_project
+2026-09-13T20:22:49.4397962Z ##[group]Removing previously created refs, to avoid conflicts
+2026-09-13T20:22:49.4401168Z [command]/usr/bin/git rev-parse --symbolic-full-name --verify --quiet HEAD
+2026-09-13T20:22:49.4416816Z refs/heads/develop
+2026-09-13T20:22:49.4424784Z [command]/usr/bin/git checkout --detach
+2026-09-13T20:22:49.4544099Z HEAD is now at 4ab3a0a ci: vision SHA tags → dev-d17e107 [skip ci]
+2026-09-13T20:22:49.4578778Z [command]/usr/bin/git branch --delete --force develop
+2026-09-13T20:22:49.4602146Z Deleted branch develop (was 4ab3a0a).
+2026-09-13T20:22:49.4660624Z ##[endgroup]
+2026-09-13T20:22:49.4664746Z [command]/usr/bin/git submodule status
+2026-09-13T20:22:49.4871008Z  afb263de605e2dd6d377001af362e8a4a478481c src/ros2leds (heads/main)
+2026-09-13T20:22:49.4920444Z  5c4c567c8882da75038fdc7a9c6c2759208cb09c src/vesc_nexus (5c4c567)
+2026-09-13T20:22:49.4928837Z ##[group]Cleaning the repository
+2026-09-13T20:22:49.4933119Z [command]/usr/bin/git clean -ffdx
+2026-09-13T20:22:49.5006223Z [command]/usr/bin/git reset --hard HEAD
+2026-09-13T20:22:49.5137430Z HEAD is now at 4ab3a0a ci: vision SHA tags → dev-d17e107 [skip ci]
+2026-09-13T20:22:49.5148782Z ##[endgroup]
+2026-09-13T20:22:49.5149906Z ##[group]Disabling automatic garbage collection
+2026-09-13T20:22:49.5154731Z [command]/usr/bin/git config --local gc.auto 0
+2026-09-13T20:22:49.5176675Z ##[endgroup]
+2026-09-13T20:22:49.5177506Z ##[group]Setting up auth
+2026-09-13T20:22:49.5178110Z Removing SSH command configuration
+2026-09-13T20:22:49.5183058Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-09-13T20:22:49.5207289Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-09-13T20:22:49.5360717Z Entering 'src/ros2leds'
+2026-09-13T20:22:49.5392991Z Entering 'src/vesc_nexus'
+2026-09-13T20:22:49.5434338Z Removing HTTP extra header
+2026-09-13T20:22:49.5438279Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-09-13T20:22:49.5461963Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-09-13T20:22:49.5616114Z Entering 'src/ros2leds'
+2026-09-13T20:22:49.5647768Z Entering 'src/vesc_nexus'
+2026-09-13T20:22:49.5687222Z Removing includeIf entries pointing to credentials config files
+2026-09-13T20:22:49.5691636Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-09-13T20:22:49.5715341Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-09-13T20:22:49.5875511Z Entering 'src/ros2leds'
+2026-09-13T20:22:49.5891596Z file:/runner/_work/rob_box_project/rob_box_project/.git/modules/src/ros2leds/config	remote.origin.url
+2026-09-13T20:22:49.5907286Z Entering 'src/vesc_nexus'
+2026-09-13T20:22:49.5924501Z file:/runner/_work/rob_box_project/rob_box_project/.git/modules/src/vesc_nexus/config	remote.origin.url
+2026-09-13T20:22:49.5954101Z [command]/usr/bin/git config --file /runner/_work/rob_box_project/rob_box_project/.git/modules/src/ros2leds/config --name-only --get-regexp ^includeIf\.gitdir:
+2026-09-13T20:22:49.5981465Z [command]/usr/bin/git config --file /runner/_work/rob_box_project/rob_box_project/.git/modules/src/vesc_nexus/config --name-only --get-regexp ^includeIf\.gitdir:
+2026-09-13T20:22:49.6015428Z [command]/usr/bin/git config --file /runner/_work/_temp/git-credentials-1e39bb34-6d2a-4b2b-8064-469b3d4fc224.config http.https://github.com/.extraheader AUTHORIZATION: basic ***
+2026-09-13T20:22:49.6057172Z [command]/usr/bin/git config --local includeIf.gitdir:/runner/_work/rob_box_project/rob_box_project/.git.path /runner/_work/_temp/git-credentials-1e39bb34-6d2a-4b2b-8064-469b3d4fc224.config
+2026-09-13T20:22:49.6089228Z [command]/usr/bin/git config --local includeIf.gitdir:/runner/_work/rob_box_project/rob_box_project/.git/worktrees/*.path /runner/_work/_temp/git-credentials-1e39bb34-6d2a-4b2b-8064-469b3d4fc224.config
+2026-09-13T20:22:49.6121722Z [command]/usr/bin/git config --local includeIf.gitdir:/github/workspace/.git.path /github/runner_temp/git-credentials-1e39bb34-6d2a-4b2b-8064-469b3d4fc224.config
+2026-09-13T20:22:49.6155835Z [command]/usr/bin/git config --local includeIf.gitdir:/github/workspace/.git/worktrees/*.path /github/runner_temp/git-credentials-1e39bb34-6d2a-4b2b-8064-469b3d4fc224.config
+2026-09-13T20:22:49.6187155Z ##[endgroup]
+2026-09-13T20:22:49.6187898Z ##[group]Fetching the repository
+2026-09-13T20:22:49.6196926Z [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin +refs/heads/develop:refs/remotes/origin/develop
+2026-09-13T20:22:50.8420441Z ##[endgroup]
+2026-09-13T20:22:50.8420956Z ##[group]Determining the checkout info
+2026-09-13T20:22:50.8421445Z ##[endgroup]
+2026-09-13T20:22:50.8425519Z [command]/usr/bin/git sparse-checkout disable
+2026-09-13T20:22:50.8488919Z [command]/usr/bin/git config --local --unset-all extensions.worktreeConfig
+2026-09-13T20:22:50.8515175Z ##[group]Checking out the ref
+2026-09-13T20:22:50.8519338Z [command]/usr/bin/git checkout --progress --force -B develop refs/remotes/origin/develop
+2026-09-13T20:22:50.8608764Z Switched to a new branch 'develop'
+2026-09-13T20:22:50.8609314Z branch 'develop' set up to track 'origin/develop'.
+2026-09-13T20:22:50.8615644Z ##[endgroup]
+2026-09-13T20:22:50.8653463Z [command]/usr/bin/git log -1 --format=%H
+2026-09-13T20:22:50.8678155Z 4ab3a0a59fa5534fa67b1ecd3349c54c9ad2e3e8
+2026-09-13T20:22:50.8792661Z ##[group]Run sudo apt-get update -qq
+2026-09-13T20:22:50.8793133Z [36;1msudo apt-get update -qq[0m
+2026-09-13T20:22:50.8793544Z [36;1msudo apt-get install -y -qq ffmpeg sshpass[0m
+2026-09-13T20:22:50.8803230Z shell: /usr/bin/bash -e {0}
+2026-09-13T20:22:50.8803571Z ##[endgroup]
+2026-09-13T20:22:53.7087379Z ##[group]Run sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "pactl info | head -3"
+2026-09-13T20:22:53.7088722Z [36;1msshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "pactl info | head -3"[0m
+2026-09-13T20:22:53.7090208Z [36;1msshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 "docker ps --filter name=voice-assistant --format '{{.Status}}'"[0m
+2026-09-13T20:22:53.7098976Z shell: /usr/bin/bash -e {0}
+2026-09-13T20:22:53.7099222Z env:
+2026-09-13T20:22:53.7099401Z   SSHPASS: open
+2026-09-13T20:22:53.7099598Z ##[endgroup]
+2026-09-13T20:22:53.9174041Z Server String: /run/user/1000/pulse/native
+2026-09-13T20:22:53.9174503Z Library Protocol Version: 35
+2026-09-13T20:22:53.9174776Z Server Protocol Version: 35
+2026-09-13T20:22:54.0969597Z bash: warning: setlocale: LC_ALL: cannot change locale (en_US.UTF-8)
+2026-09-13T20:22:54.1512213Z Up 2 days (healthy)
+2026-09-13T20:22:54.1605583Z ##[group]Run # Ключ живёт в voice-assistant контейнере на роботе (как в ensure_voice_file.sh).
+2026-09-13T20:22:54.1606947Z [36;1m# Ключ живёт в voice-assistant контейнере на роботе (как в ensure_voice_file.sh).[0m
+2026-09-13T20:22:54.1608403Z [36;1m# Достаём ключ локально на runner'е — атомарный скрипт получит его[0m
+2026-09-13T20:22:54.1609399Z [36;1m# через env (export YANDEX_API_KEY в ssh-команде ниже). НЕ копируем[0m
+2026-09-13T20:22:54.1610297Z [36;1m# на 249: scp в /tmp падал Permission denied из-за root-owned[0m
+2026-09-13T20:22:54.1611115Z [36;1m# файлов от прошлых ранов, и файл на 249 вообще не нужен.[0m
+2026-09-13T20:22:54.1611936Z [36;1mYKEY_LOCAL=/tmp/yandex_key_$$.txt[0m
+2026-09-13T20:22:54.1612700Z [36;1msshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 \[0m
+2026-09-13T20:22:54.1613766Z [36;1m  "docker exec voice-assistant printenv YANDEX_API_KEY" > "$YKEY_LOCAL"[0m
+2026-09-13T20:22:54.1614618Z [36;1mwc -c "$YKEY_LOCAL"[0m
+2026-09-13T20:22:54.1615266Z [36;1mecho "YKEY_LOCAL=$YKEY_LOCAL" >> $GITHUB_ENV[0m
+2026-09-13T20:22:54.1627215Z shell: /usr/bin/bash -e {0}
+2026-09-13T20:22:54.1627668Z env:
+2026-09-13T20:22:54.1628124Z   SSHPASS: open
+2026-09-13T20:22:54.1628570Z ##[endgroup]
+2026-09-13T20:22:54.3498558Z bash: warning: setlocale: LC_ALL: cannot change locale (en_US.UTF-8)
+2026-09-13T20:22:54.4452054Z 41 /tmp/yandex_key_622.txt
+2026-09-13T20:22:54.4571460Z ##[group]Run # bug(t_cca7c074, ретро 19.08): копируем ОБА файла харнесса — раньше
+2026-09-13T20:22:54.4574174Z [36;1m# bug(t_cca7c074, ретро 19.08): копируем ОБА файла харнесса — раньше[0m
+2026-09-13T20:22:54.4576209Z [36;1m# копировали только e2e_voice_test.sh, но он source'ит e2e_voice_lib.sh[0m
+2026-09-13T20:22:54.4578276Z [36;1m# на line 234 (`source "$SCRIPT_DIR_E2E/e2e_voice_lib.sh"`) и падал[0m
+2026-09-13T20:22:54.4580314Z [36;1m# с "No such file or directory" в каждом run. Симптом скрывался тем,[0m
+2026-09-13T20:22:54.4582447Z [36;1m# что GATE-1 падал раньше и до source не доходили.[0m
+2026-09-13T20:22:54.4583775Z [36;1m#[0m
+2026-09-13T20:22:54.4585043Z [36;1m# bug(issue #1735, live run 33248080006): e2e_voice_test.sh:329 ТАКЖЕ[0m
+2026-09-13T20:22:54.4587253Z [36;1m# source'ит e2e_voice_wake_gate.sh (ADR-0027 §5.2, classify_step_expect)[0m
+2026-09-13T20:22:54.4589502Z [36;1m# — этот файл сюда не копировался вообще. Скрипт не падает целиком[0m
+2026-09-13T20:22:54.4591384Z [36;1m# (нет set -e), но classify_step_expect не определена →[0m
+2026-09-13T20:22:54.4593469Z [36;1m# expect="$(classify_step_expect ...)" тихо резолвится в пустую строку[0m
+2026-09-13T20:22:54.4595499Z [36;1m# → run_step дефолтит на "cycle" вместо "backlog"/"wake-gated".[0m
+2026-09-13T20:22:54.4597443Z [36;1m# Симптом: voice_core_suite_v1 ds01/ds02 (expect=backlog) валятся[0m
+2026-09-13T20:22:54.4599316Z [36;1m# с "FAIL no_accept" вместо корректной backlog-проверки.[0m
+2026-09-13T20:22:54.4600749Z [36;1m#[0m
+2026-09-13T20:22:54.4601974Z [36;1m# bug(run 34408526453, 09.09.2026): третий файл того же рода —[0m
+2026-09-13T20:22:54.4603942Z [36;1m# e2e_tool_match.py. Оба acceptance-чекера импортируют из него[0m
+2026-09-13T20:22:54.4605975Z [36;1m# tool_invoked() через PYTHONPATH="$SCRIPT_DIR_E2E". Без файла[0m
+2026-09-13T20:22:54.4607907Z [36;1m# heredoc падает на ImportError, acceptance.json остаётся пустым[0m
+2026-09-13T20:22:54.4609637Z [36;1m# и GATE-1 краснеет с невнятным «parse error».[0m
+2026-09-13T20:22:54.4611164Z [36;1mchmod +x .github/workflows/scripts/e2e_voice_test.sh[0m
+2026-09-13T20:22:54.4612887Z [36;1mchmod +x .github/workflows/scripts/e2e_voice_lib.sh[0m
+2026-09-13T20:22:54.4614572Z [36;1mchmod +x .github/workflows/scripts/e2e_voice_wake_gate.sh[0m
+2026-09-13T20:22:54.4617363Z [36;1msshpass -e scp -o StrictHostKeyChecking=no .github/workflows/scripts/e2e_voice_test.sh ros2@10.1.1.249:/tmp/e2e_voice_test.sh[0m
+2026-09-13T20:22:54.4621151Z [36;1msshpass -e scp -o StrictHostKeyChecking=no .github/workflows/scripts/e2e_voice_lib.sh ros2@10.1.1.249:/tmp/e2e_voice_lib.sh[0m
+2026-09-13T20:22:54.4625151Z [36;1msshpass -e scp -o StrictHostKeyChecking=no .github/workflows/scripts/e2e_voice_wake_gate.sh ros2@10.1.1.249:/tmp/e2e_voice_wake_gate.sh[0m
+2026-09-13T20:22:54.4629128Z [36;1msshpass -e scp -o StrictHostKeyChecking=no .github/workflows/scripts/e2e_tool_match.py ros2@10.1.1.249:/tmp/e2e_tool_match.py[0m
+2026-09-13T20:22:54.4634311Z [36;1msshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "ls -la /tmp/e2e_voice_test.sh /tmp/e2e_voice_lib.sh /tmp/e2e_voice_wake_gate.sh /tmp/e2e_tool_match.py && echo HARNESS_PUSHED"[0m
+2026-09-13T20:22:54.4637978Z [36;1m# CRLF sanitization (single-line): отрезаем \r и \n от начала/конца.[0m
+2026-09-13T20:22:54.4639822Z [36;1m# Внутри значения CR/LF недопустимы для имён файлов/путей.[0m
+2026-09-13T20:22:54.4641655Z [36;1mSCENARIO_FILE_CLEAN=$(printf '%s' "$SCENARIO_FILE" | tr -d '\r\n')[0m
+2026-09-13T20:22:54.4643755Z [36;1mACCEPTANCE_FILE_CLEAN=$(printf '%s' "$ACCEPTANCE_FILE" | tr -d '\r\n')[0m
+2026-09-13T20:22:54.4645530Z [36;1m# scenario (если задан) — кладём в /tmp на 249[0m
+2026-09-13T20:22:54.4646866Z [36;1mif [ -n "$SCENARIO_FILE_CLEAN" ]; then[0m
+2026-09-13T20:22:54.4649077Z [36;1m  sshpass -e scp -o StrictHostKeyChecking=no "$SCENARIO_FILE_CLEAN" ros2@10.1.1.249:/tmp/e2e_scenario.json[0m
+2026-09-13T20:22:54.4652912Z [36;1m  sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "ls -la /tmp/e2e_scenario.json && echo SCENARIO_PUSHED"[0m
+2026-09-13T20:22:54.4655166Z [36;1melse[0m
+2026-09-13T20:22:54.4655963Z [36;1m  echo "NO_SCENARIO"[0m
+2026-09-13T20:22:54.4656879Z [36;1mfi[0m
+2026-09-13T20:22:54.4658092Z [36;1m# ADR-0022 GATE-1: acceptance.json (если задан явно) — кладём в /tmp.[0m
+2026-09-13T20:22:54.4659915Z [36;1m# Если не задан, харнесс сам ищет <scenario_dir>/acceptance.json[0m
+2026-09-13T20:22:54.4661481Z [36;1m# (auto-discovery) либо падает с gating error.[0m
+2026-09-13T20:22:54.4662972Z [36;1mif [ -n "$ACCEPTANCE_FILE_CLEAN" ]; then[0m
+2026-09-13T20:22:54.4665289Z [36;1m  sshpass -e scp -o StrictHostKeyChecking=no "$ACCEPTANCE_FILE_CLEAN" ros2@10.1.1.249:/tmp/e2e_acceptance.json[0m
+2026-09-13T20:22:54.4700833Z [36;1m  sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "ls -la /tmp/e2e_acceptance.json && echo ACCEPTANCE_PUSHED"[0m
+2026-09-13T20:22:54.4703446Z [36;1melse[0m
+2026-09-13T20:22:54.4704784Z [36;1m  echo "NO_EXPLICIT_ACCEPTANCE (auto-discovery / gating will apply)"[0m
+2026-09-13T20:22:54.4706341Z [36;1mfi[0m
+2026-09-13T20:22:54.4732012Z shell: /usr/bin/bash -e {0}
+2026-09-13T20:22:54.4732986Z env:
+2026-09-13T20:22:54.4733764Z   YKEY_LOCAL: /tmp/yandex_key_622.txt
+2026-09-13T20:22:54.4734815Z   SSHPASS: open
+2026-09-13T20:22:54.4736377Z   SCENARIO_FILE: .github/e2e/scenarios/night/night_marathon_act3_backlog_diarization_v1.json
+2026-09-13T20:22:54.4739204Z   ACCEPTANCE_FILE: .github/e2e/scenarios/night/night_marathon_act3_backlog_diarization_acceptance_v1.json
+2026-09-13T20:22:54.4741337Z   VOICE_TEXT: Робот, спой песенку про енотика
+2026-09-13T20:22:54.4742573Z   VOICE: anton
+2026-09-13T20:22:54.4743338Z   PATTERNS: 
+2026-09-13T20:22:54.4744090Z   ACCEPTANCE_CHECK: 
+2026-09-13T20:22:54.4744893Z   RETRIES: 3
+2026-09-13T20:22:54.4745617Z   REACT_WINDOW: 40
+2026-09-13T20:22:54.4746450Z   CHECK_TG_ECHO: false
+2026-09-13T20:22:54.4747271Z ##[endgroup]
+2026-09-13T20:22:55.5925178Z -rw-r--r-- 1 ros2 ros2  5957 Sep 13 23:22 /tmp/e2e_tool_match.py
+2026-09-13T20:22:55.5925980Z -rwxr-xr-x 1 ros2 ros2  5035 Sep 13 23:22 /tmp/e2e_voice_lib.sh
+2026-09-13T20:22:55.5926734Z -rwxr-xr-x 1 ros2 ros2 81445 Sep 13 23:22 /tmp/e2e_voice_test.sh
+2026-09-13T20:22:55.5927731Z -rwxr-xr-x 1 ros2 ros2 10866 Sep 13 23:22 /tmp/e2e_voice_wake_gate.sh
+2026-09-13T20:22:55.5928668Z HARNESS_PUSHED
+2026-09-13T20:22:56.0867494Z -rw-r--r-- 1 ros2 ros2 8724 Sep 13 23:22 /tmp/e2e_scenario.json
+2026-09-13T20:22:56.0868275Z SCENARIO_PUSHED
+2026-09-13T20:22:56.5276954Z -rw-r--r-- 1 ros2 ros2 1059 Sep 13 23:22 /tmp/e2e_acceptance.json
+2026-09-13T20:22:56.5277834Z ACCEPTANCE_PUSHED
+2026-09-13T20:22:56.5353544Z ##[group]Run RID="34780571796"
+2026-09-13T20:22:56.5353974Z [36;1mRID="34780571796"[0m
+2026-09-13T20:22:56.5354291Z [36;1mYKEY="$(cat "$YKEY_LOCAL")"[0m
+2026-09-13T20:22:56.5354627Z [36;1m[0m
+2026-09-13T20:22:56.5355060Z [36;1m# CRLF sanitization (single-line).[0m
+2026-09-13T20:22:56.5355734Z [36;1mSCENARIO_FILE_CLEAN=$(printf '%s' "$SCENARIO_FILE" | tr -d '\r\n')[0m
+2026-09-13T20:22:56.5356433Z [36;1mACCEPTANCE_FILE_CLEAN=$(printf '%s' "$ACCEPTANCE_FILE" | tr -d '\r\n')[0m
+2026-09-13T20:22:56.5357053Z [36;1mVOICE_CLEAN=$(printf '%s' "$VOICE" | tr -d '\r\n')[0m
+2026-09-13T20:22:56.5357585Z [36;1mRETRIES_CLEAN=$(printf '%s' "$RETRIES" | tr -d '\r\n')[0m
+2026-09-13T20:22:56.5358178Z [36;1mREACT_WINDOW_CLEAN=$(printf '%s' "$REACT_WINDOW" | tr -d '\r\n')[0m
+2026-09-13T20:22:56.5358851Z [36;1m# voice_text / patterns — multi-line, режем ТОЛЬКО \r (LF — легитимный[0m
+2026-09-13T20:22:56.5359380Z [36;1m# контент, ретро t_4cf2811e).[0m
+2026-09-13T20:22:56.5359953Z [36;1mVOICE_TEXT_CLEAN=$(printf '%s' "$VOICE_TEXT" | tr -d '\r')[0m
+2026-09-13T20:22:56.5360747Z [36;1m# patterns / acceptance_check — comma-separated; обрезка \r обязательна,[0m
+2026-09-13T20:22:56.5361378Z [36;1m# \n — допустим (на случай, если upstream переслал multi-line).[0m
+2026-09-13T20:22:56.5362021Z [36;1mPATTERNS_CLEAN=$(printf '%s' "$PATTERNS" | tr -d '\r')[0m
+2026-09-13T20:22:56.5362661Z [36;1mACCEPTANCE_CHECK_CLEAN=$(printf '%s' "$ACCEPTANCE_CHECK" | tr -d '\r')[0m
+2026-09-13T20:22:56.5363344Z [36;1mCHECK_TG_ECHO_CLEAN=$(printf '%s' "$CHECK_TG_ECHO" | tr -d '\r\n')[0m
+2026-09-13T20:22:56.5363838Z [36;1m[0m
+2026-09-13T20:22:56.5364197Z [36;1m# Формируем команду: --scenario если задан, иначе --text + --voice[0m
+2026-09-13T20:22:56.5364705Z [36;1mif [ -n "$SCENARIO_FILE_CLEAN" ]; then[0m
+2026-09-13T20:22:56.5365229Z [36;1m  CMD="/tmp/e2e_voice_test.sh --scenario /tmp/e2e_scenario.json"[0m
+2026-09-13T20:22:56.5365839Z [36;1m  # ADR-0022 GATE-1: проброс --acceptance если задан явно.[0m
+2026-09-13T20:22:56.5366401Z [36;1m  # Если не задан — харнесс сам auto-discovers /tmp/e2e_scenario.json[0m
+2026-09-13T20:22:56.5367002Z [36;1m  # рядом acceptance.json (либо gating падает с понятным сообщением).[0m
+2026-09-13T20:22:56.5367565Z [36;1m  if [ -n "$ACCEPTANCE_FILE_CLEAN" ]; then[0m
+2026-09-13T20:22:56.5368049Z [36;1m    CMD="$CMD --acceptance /tmp/e2e_acceptance.json"[0m
+2026-09-13T20:22:56.5368569Z [36;1m  fi[0m
+2026-09-13T20:22:56.5368949Z [36;1melse[0m
+2026-09-13T20:22:56.5369408Z [36;1m  CMD="/tmp/e2e_voice_test.sh --text '$VOICE_TEXT_CLEAN' --voice '$VOICE_CLEAN'"[0m
+2026-09-13T20:22:56.5369956Z [36;1mfi[0m
+2026-09-13T20:22:56.5370406Z [36;1m# patterns: если acceptance_check (legacy) задан, а patterns нет — используем его[0m
+2026-09-13T20:22:56.5370994Z [36;1mPATTERNS_VAL="$PATTERNS_CLEAN"[0m
+2026-09-13T20:22:56.5371371Z [36;1mif [ -z "$PATTERNS_VAL" ]; then[0m
+2026-09-13T20:22:56.5371939Z [36;1m  PATTERNS_VAL="$ACCEPTANCE_CHECK_CLEAN"[0m
+2026-09-13T20:22:56.5372347Z [36;1mfi[0m
+2026-09-13T20:22:56.5372720Z [36;1m[ -n "$PATTERNS_VAL" ] && CMD="$CMD --patterns '$PATTERNS_VAL'"[0m
+2026-09-13T20:22:56.5373381Z [36;1mCMD="$CMD --retries $RETRIES_CLEAN --react-window $REACT_WINDOW_CLEAN"[0m
+2026-09-13T20:22:56.5374207Z [36;1m# Issue #1196 L2 — полуавтомат-проверка эха telegram↔dialogue.[0m
+2026-09-13T20:22:56.5374742Z [36;1mif [ "$CHECK_TG_ECHO_CLEAN" = "true" ]; then[0m
+2026-09-13T20:22:56.5375160Z [36;1m  CMD="$CMD --check-tg-echo"[0m
+2026-09-13T20:22:56.5375492Z [36;1mfi[0m
+2026-09-13T20:22:56.5375724Z [36;1m[0m
+2026-09-13T20:22:56.5375965Z [36;1mecho "RUN_CMD: $CMD"[0m
+2026-09-13T20:22:56.5376447Z [36;1m# Запускаем через SSH: ключ передаём env-переменной (не в cmdline — чтобы не светить в ps).[0m
+2026-09-13T20:22:56.5377117Z [36;1m# GITHUB_RUN_ID обязателен: харнесс строит OUT_DIR=/tmp/e2e_v2_${RUN_ID}.[0m
+2026-09-13T20:22:56.5377776Z [36;1m# Без него RUN_ID=локальный timestamp (e2e_v2_<YYYYMMDD_HHMMSS>) и collect-шаг[0m
+2026-09-13T20:22:56.5378922Z [36;1m# ниже не находит primary_dir=/tmp/e2e_v2_${RID} → fallback тянул STALE legacy[0m
+2026-09-13T20:22:56.5379978Z [36;1m# каталоги (e2e_v2_20260813_031333 и т.п.) → в звуковой артефакт попадало[0m
+2026-09-13T20:22:56.5380697Z [36;1m# «что-то левое» (ретро 22.08 t_944df2c5, issue #1506).[0m
+2026-09-13T20:22:56.5381303Z [36;1msshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 \[0m
+2026-09-13T20:22:56.5382567Z [36;1m  "export YANDEX_API_KEY='${YKEY}'; export ROBOT_HOST=10.1.1.21; export SSHPASS='open'; export GITHUB_RUN_ID='${RID}'; \[0m
+2026-09-13T20:22:56.5383380Z [36;1m   ${CMD} 2>&1 | tee /tmp/e2e_atomic_out.log"[0m
+2026-09-13T20:22:56.5383767Z [36;1m[0m
+2026-09-13T20:22:56.5384016Z [36;1mecho "=== E2E stdout ==="[0m
+2026-09-13T20:22:56.5384622Z [36;1msshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "cat /tmp/e2e_atomic_out.log"[0m
+2026-09-13T20:22:56.5397600Z shell: /usr/bin/bash -e {0}
+2026-09-13T20:22:56.5398168Z env:
+2026-09-13T20:22:56.5398669Z   YKEY_LOCAL: /tmp/yandex_key_622.txt
+2026-09-13T20:22:56.5399284Z   SSHPASS: open
+2026-09-13T20:22:56.5399745Z   GITHUB_RUN_ID: 34780571796
+2026-09-13T20:22:56.5400778Z   SCENARIO_FILE: .github/e2e/scenarios/night/night_marathon_act3_backlog_diarization_v1.json
+2026-09-13T20:22:56.5402645Z   ACCEPTANCE_FILE: .github/e2e/scenarios/night/night_marathon_act3_backlog_diarization_acceptance_v1.json
+2026-09-13T20:22:56.5404122Z   VOICE_TEXT: Робот, спой песенку про енотика
+2026-09-13T20:22:56.5404817Z   VOICE: anton
+2026-09-13T20:22:56.5405281Z   PATTERNS: 
+2026-09-13T20:22:56.5405736Z   ACCEPTANCE_CHECK: 
+2026-09-13T20:22:56.5406331Z   RETRIES: 3
+2026-09-13T20:22:56.5406727Z   REACT_WINDOW: 40
+2026-09-13T20:22:56.5407156Z   CHECK_TG_ECHO: false
+2026-09-13T20:22:56.5407591Z ##[endgroup]
+2026-09-13T20:22:56.5547442Z RUN_CMD: /tmp/e2e_voice_test.sh --scenario /tmp/e2e_scenario.json --acceptance /tmp/e2e_acceptance.json --retries 3 --react-window 40
+2026-09-13T20:22:57.0325956Z >>> RECORDING: старт parec → /tmp/e2e_raw_34780571796.pcm (timeout 1995s)
+2026-09-13T20:22:58.0344208Z >>> RECORDING: pid=609047
+2026-09-13T20:22:59.1356942Z >>> === STEP n301_wake_open (safe=n301_wake_open): voice=anton text="Робот, мы тут сейчас немного пошумим, ты просто слушай и не влезай." ===
+2026-09-13T20:22:59.1358334Z >>> STEP n301_wake_open: cmd_n301_wake_open.wav отсутствует — повторный синтез (cleanup-resilience)
+2026-09-13T20:23:16.3762530Z >>> STEP n301_wake_open: робот молчит 15s — команду можно играть
+2026-09-13T20:23:16.5943475Z >>> STEP n301_wake_open: PLAY attempt 1/3
+2026-09-13T20:23:23.0494422Z >>>   PLAY_DONE
+2026-09-13T20:24:03.5989788Z >>> STEP n301_wake_open: ✅ ПОЛНЫЙ ЦИКЛ (акцепт + LLM + TTS)
+2026-09-13T20:24:04.1408923Z >>> TRANSCRIPT[n301_wake_open]: STT не вернул фразу (нет '✅ ПРИНЯТО')
+2026-09-13T20:24:04.1412629Z E2E_STEP n301_wake_open OK
+2026-09-13T20:24:04.4063203Z >>> === STEP n302_bg_sasha (safe=n302_bg_sasha): voice=anton text="Борис, я тебе точно говорю, этот блок питания гудит из-за земли, я его вчера полночи слушал и уже наизусть знаю эту ноту." ===
+2026-09-13T20:24:04.4065215Z >>> STEP n302_bg_sasha: cmd_n302_bg_sasha.wav отсутствует — повторный синтез (cleanup-resilience)
+2026-09-13T20:24:21.9069896Z >>> STEP n302_bg_sasha: робот молчит 15s — команду можно играть
+2026-09-13T20:24:22.1415203Z >>> STEP n302_bg_sasha: PLAY backlog attempt 1/3
+2026-09-13T20:24:32.5922116Z >>>   PLAY_DONE
+2026-09-13T20:25:13.0354987Z >>> STEP n302_bg_sasha: ✅ backlog accumulated (no_wake_word)
+2026-09-13T20:25:13.0355403Z E2E_STEP n302_bg_sasha OK backlog
+2026-09-13T20:25:13.5321701Z >>> TRANSCRIPT[n302_bg_sasha]: STT не вернул фразу (нет '✅ ПРИНЯТО')
+2026-09-13T20:25:13.5514897Z >>> STEP n302_bg_sasha: проверка паттернов (1): \[backlog\] accumulated \(no_wake_word\).*speaker='Саш
+2026-09-13T20:25:14.0322883Z   PATTERN_MISS: \[backlog\] accumulated \(no_wake_word\).*speaker='Саш
+2026-09-13T20:25:14.0326125Z >>> STEP n302_bg_sasha: ❌ проверка не прошла после retry (см. /tmp/e2e_v2_34780571796/acceptance.json)
+2026-09-13T20:25:14.0329201Z E2E_STEP n302_bg_sasha FAIL
+2026-09-13T20:25:14.3180335Z >>> === STEP n303_bg_boris (safe=n303_bg_boris): voice=ermil text="Да брось ты, Саша, у тебя разводка виновата, я тебе с самого начала говорил — надо было звездой разводить, а не шлейфом через всю плату." ===
+2026-09-13T20:25:14.3181962Z >>> STEP n303_bg_boris: cmd_n303_bg_boris.wav отсутствует — повторный синтез (cleanup-resilience)
+2026-09-13T20:25:31.7619525Z >>> STEP n303_bg_boris: робот молчит 15s — команду можно играть
+2026-09-13T20:25:31.9636967Z >>> STEP n303_bg_boris: PLAY backlog attempt 1/3
+2026-09-13T20:25:42.7621463Z >>>   PLAY_DONE
+2026-09-13T20:26:23.2643171Z >>> STEP n303_bg_boris: ✅ backlog accumulated (no_wake_word)
+2026-09-13T20:26:23.2643694Z E2E_STEP n303_bg_boris OK backlog
+2026-09-13T20:26:23.7821302Z >>> TRANSCRIPT[n303_bg_boris]: STT не вернул фразу (нет '✅ ПРИНЯТО')
+2026-09-13T20:26:23.8242306Z >>> STEP n303_bg_boris: проверка паттернов (1): \[backlog\] accumulated \(no_wake_word\).*speaker='Борис
+2026-09-13T20:26:24.2719301Z   PATTERN_MISS: \[backlog\] accumulated \(no_wake_word\).*speaker='Борис
+2026-09-13T20:26:24.2725077Z >>> STEP n303_bg_boris: ❌ проверка не прошла после retry (см. /tmp/e2e_v2_34780571796/acceptance.json)
+2026-09-13T20:26:24.2727274Z E2E_STEP n303_bg_boris FAIL
+2026-09-13T20:26:24.4987234Z >>> === STEP n304_bg_grisha_unknown (safe=n304_bg_grisha_unknown): voice=zahar text="Молодые люди, вы вообще спать сегодня собираетесь? Третий час ночи, у меня обход, а у вас тут свет горит и железка разговаривает." ===
+2026-09-13T20:26:24.4988347Z >>> STEP n304_bg_grisha_unknown: cmd_n304_bg_grisha_unknown.wav отсутствует — повторный синтез (cleanup-resilience)
+2026-09-13T20:26:41.8780819Z >>> STEP n304_bg_grisha_unknown: робот молчит 15s — команду можно играть
+2026-09-13T20:26:42.0805020Z >>> STEP n304_bg_grisha_unknown: PLAY backlog attempt 1/3
+2026-09-13T20:26:52.3236577Z >>>   PLAY_DONE
+2026-09-13T20:27:32.8988191Z >>> STEP n304_bg_grisha_unknown: ✅ backlog accumulated (no_wake_word)
+2026-09-13T20:27:32.8992647Z E2E_STEP n304_bg_grisha_unknown OK backlog
+2026-09-13T20:27:33.4131119Z >>> TRANSCRIPT[n304_bg_grisha_unknown]: STT не вернул фразу (нет '✅ ПРИНЯТО')
+2026-09-13T20:27:33.4450163Z >>> STEP n304_bg_grisha_unknown: проверка паттернов (1): \[backlog\] accumulated \(no_wake_word\).*speaker='незнакомец'
+2026-09-13T20:27:33.9168386Z   PATTERN_OK: \[backlog\] accumulated \(no_wake_word\).*speaker='незнакомец'
+2026-09-13T20:27:33.9169303Z >>> STEP n304_bg_grisha_unknown: ✅ паттерны найдены
+2026-09-13T20:27:33.9169850Z E2E_STEP n304_bg_grisha_unknown OK
+2026-09-13T20:27:34.1391961Z >>> === STEP n305_bg_valera_unknown (safe=n305_bg_valera_unknown): voice=filipp text="Я вообще-то курьер, мне бы подпись получить и уехать, я тут уже двадцать минут стою и слушаю ваш спор про какую-то землю." ===
+2026-09-13T20:27:34.1393754Z >>> STEP n305_bg_valera_unknown: cmd_n305_bg_valera_unknown.wav отсутствует — повторный синтез (cleanup-resilience)
+2026-09-13T20:27:51.4625394Z >>> STEP n305_bg_valera_unknown: робот молчит 15s — команду можно играть
+2026-09-13T20:27:51.6622606Z >>> STEP n305_bg_valera_unknown: PLAY backlog attempt 1/3
+2026-09-13T20:28:02.2195330Z >>>   PLAY_DONE
+2026-09-13T20:28:42.6837848Z >>> STEP n305_bg_valera_unknown: ✅ backlog accumulated (no_wake_word)
+2026-09-13T20:28:42.6838865Z E2E_STEP n305_bg_valera_unknown OK backlog
+2026-09-13T20:28:43.1766443Z >>> TRANSCRIPT[n305_bg_valera_unknown]: STT не вернул фразу (нет '✅ ПРИНЯТО')
+2026-09-13T20:28:43.2260301Z >>> STEP n305_bg_valera_unknown: проверка паттернов (1): \[backlog\] accumulated \(no_wake_word\).*speaker='незнакомец'
+2026-09-13T20:28:43.6677790Z   PATTERN_OK: \[backlog\] accumulated \(no_wake_word\).*speaker='незнакомец'
+2026-09-13T20:28:43.6680349Z >>> STEP n305_bg_valera_unknown: ✅ паттерны найдены
+2026-09-13T20:28:43.6682237Z E2E_STEP n305_bg_valera_unknown OK
+2026-09-13T20:28:43.9618479Z >>> === STEP n306_who_was_talking (safe=n306_who_was_talking): voice=anton text="Робот, ты всё это слышал. Скажи, кто сейчас говорил на фоне: кого из них ты узнал по голосу, а кого не узнал?" ===
+2026-09-13T20:28:43.9620075Z >>> STEP n306_who_was_talking: cmd_n306_who_was_talking.wav отсутствует — повторный синтез (cleanup-resilience)
+2026-09-13T20:29:01.4741008Z >>> STEP n306_who_was_talking: робот молчит 15s — команду можно играть
+2026-09-13T20:29:01.7179878Z >>> STEP n306_who_was_talking: PLAY attempt 1/3
+2026-09-13T20:29:11.1578437Z >>>   PLAY_DONE
+2026-09-13T20:29:51.7675956Z >>> ⚠️ minimax 429/quota в логах, TTS не завершился — retry (fallback deepseek)
+2026-09-13T20:29:51.7677206Z >>> STEP n306_who_was_talking: нет акцепта (attempt 1) — повтор
+2026-09-13T20:30:01.9894337Z >>> STEP n306_who_was_talking: PLAY attempt 2/3
+2026-09-13T20:30:11.4416253Z >>>   PLAY_DONE
+2026-09-13T20:30:52.0229038Z >>> STEP n306_who_was_talking: ✅ ПОЛНЫЙ ЦИКЛ (акцепт + LLM + TTS)
+2026-09-13T20:30:52.6678944Z >>> TRANSCRIPT[n306_who_was_talking]: STT не вернул фразу (нет '✅ ПРИНЯТО')
+2026-09-13T20:30:52.7013661Z >>> STEP n306_who_was_talking: проверка паттернов (1): \[backlog\] flushed to LLM backlog_handled=true
+2026-09-13T20:30:53.2186375Z   PATTERN_OK: \[backlog\] flushed to LLM backlog_handled=true
+2026-09-13T20:30:53.2189223Z >>> STEP n306_who_was_talking: ✅ паттерны найдены
+2026-09-13T20:30:53.7815448Z >>> ACCEPTANCE[n306_who_was_talking]: ✅ all checks passed
+2026-09-13T20:30:53.7816071Z >>> STEP n306_who_was_talking: ✅ acceptance PASS
+2026-09-13T20:30:53.7816386Z E2E_STEP n306_who_was_talking OK
+2026-09-13T20:30:54.0179669Z >>> === STEP n307_count_voices (safe=n307_count_voices): voice=anton text="Робот, а сколько всего человек сейчас было в комнате? Посчитай по голосам." ===
+2026-09-13T20:30:54.0180600Z >>> STEP n307_count_voices: cmd_n307_count_voices.wav отсутствует — повторный синтез (cleanup-resilience)
+2026-09-13T20:31:11.2069009Z >>> STEP n307_count_voices: робот молчит 15s — команду можно играть
+2026-09-13T20:31:11.4326323Z >>> STEP n307_count_voices: PLAY attempt 1/3
+2026-09-13T20:31:17.8075429Z >>>   PLAY_DONE
+2026-09-13T20:31:58.3698860Z >>> STEP n307_count_voices: ✅ ПОЛНЫЙ ЦИКЛ (акцепт + LLM + TTS)
+2026-09-13T20:31:58.9667391Z >>> TRANSCRIPT[n307_count_voices]: STT не вернул фразу (нет '✅ ПРИНЯТО')
+2026-09-13T20:31:58.9669378Z E2E_STEP n307_count_voices OK
+2026-09-13T20:31:59.2249087Z >>> === STEP n308_bg_command_boris (safe=n308_bg_command_boris): voice=ermil text="Слушай, включи ты уже какую-нибудь музыку, а то тишина давит на уши." ===
+2026-09-13T20:31:59.2250376Z >>> STEP n308_bg_command_boris: cmd_n308_bg_command_boris.wav отсутствует — повторный синтез (cleanup-resilience)
+2026-09-13T20:32:16.6408071Z >>> STEP n308_bg_command_boris: робот молчит 15s — команду можно играть
+2026-09-13T20:32:16.8616045Z >>> STEP n308_bg_command_boris: PLAY backlog attempt 1/3
+2026-09-13T20:32:23.5504825Z >>>   PLAY_DONE
+2026-09-13T20:33:04.0638351Z >>> STEP n308_bg_command_boris: ✅ backlog accumulated (no_wake_word)
+2026-09-13T20:33:04.0642598Z E2E_STEP n308_bg_command_boris OK backlog
+2026-09-13T20:33:04.5983832Z >>> TRANSCRIPT[n308_bg_command_boris]: STT не вернул фразу (нет '✅ ПРИНЯТО')
+2026-09-13T20:33:04.6491639Z >>> STEP n308_bg_command_boris: проверка паттернов (1): \[backlog\] accumulated \(no_wake_word\).*speaker='Борис
+2026-09-13T20:33:05.0874106Z   PATTERN_MISS: \[backlog\] accumulated \(no_wake_word\).*speaker='Борис
+2026-09-13T20:33:05.0877912Z >>> STEP n308_bg_command_boris: ❌ проверка не прошла после retry (см. /tmp/e2e_v2_34780571796/acceptance.json)
+2026-09-13T20:33:05.0880224Z E2E_STEP n308_bg_command_boris FAIL
+2026-09-13T20:33:05.3532900Z >>> === STEP n309_bg_command_valera (safe=n309_bg_command_valera): voice=filipp text="Только не электронщину, поставь что-нибудь спокойное, мне ещё ехать." ===
+2026-09-13T20:33:05.3534921Z >>> STEP n309_bg_command_valera: cmd_n309_bg_command_valera.wav отсутствует — повторный синтез (cleanup-resilience)
+2026-09-13T20:33:22.9757471Z >>> STEP n309_bg_command_valera: робот молчит 15s — команду можно играть
+2026-09-13T20:33:23.1998162Z >>> STEP n309_bg_command_valera: PLAY backlog attempt 1/3
+2026-09-13T20:33:29.5541261Z >>>   PLAY_DONE
+2026-09-13T20:34:10.0257896Z >>> STEP n309_bg_command_valera: ✅ backlog accumulated (no_wake_word)
+2026-09-13T20:34:10.0259603Z E2E_STEP n309_bg_command_valera OK backlog
+2026-09-13T20:34:10.4767009Z >>> TRANSCRIPT[n309_bg_command_valera]: STT не вернул фразу (нет '✅ ПРИНЯТО')
+2026-09-13T20:34:10.5184518Z >>> STEP n309_bg_command_valera: проверка паттернов (1): \[backlog\] accumulated \(no_wake_word\).*speaker='незнакомец'
+2026-09-13T20:34:11.0328293Z   PATTERN_OK: \[backlog\] accumulated \(no_wake_word\).*speaker='незнакомец'
+2026-09-13T20:34:11.0330808Z >>> STEP n309_bg_command_valera: ✅ паттерны найдены
+2026-09-13T20:34:11.0332785Z E2E_STEP n309_bg_command_valera OK
+2026-09-13T20:34:11.2686681Z >>> === STEP n310_execute_backlog_lru (safe=n310_execute_backlog_lru): voice=anton text="Робот, ну ты слышал, что просили. Сделай." ===
+2026-09-13T20:34:11.2687830Z >>> STEP n310_execute_backlog_lru: cmd_n310_execute_backlog_lru.wav отсутствует — повторный синтез (cleanup-resilience)
+2026-09-13T20:34:28.4317018Z >>> STEP n310_execute_backlog_lru: робот молчит 15s — команду можно играть
+2026-09-13T20:34:28.6584811Z >>> STEP n310_execute_backlog_lru: PLAY attempt 1/3
+2026-09-13T20:34:33.6173440Z >>>   PLAY_DONE
+2026-09-13T20:35:14.1331184Z >>> STEP n310_execute_backlog_lru: ✅ ПОЛНЫЙ ЦИКЛ (акцепт + LLM + TTS)
+2026-09-13T20:35:14.6687600Z >>> TRANSCRIPT[n310_execute_backlog_lru]: STT не вернул фразу (нет '✅ ПРИНЯТО')
+2026-09-13T20:35:14.6992554Z >>> STEP n310_execute_backlog_lru: проверка паттернов (2): \[backlog\] flushed to LLM backlog_handled=true execute_music_code|compose_music|set_vibe_preset|generate_music
+2026-09-13T20:35:15.2431049Z   PATTERN_OK: \[backlog\] flushed to LLM backlog_handled=true
+2026-09-13T20:35:15.2471134Z   PATTERN_OK: execute_music_code|compose_music|set_vibe_preset|generate_music
+2026-09-13T20:35:15.2472359Z >>> STEP n310_execute_backlog_lru: ✅ паттерны найдены
+2026-09-13T20:35:15.7785211Z >>> ACCEPTANCE[n310_execute_backlog_lru]: ✅ all checks passed
+2026-09-13T20:35:15.7786204Z >>> STEP n310_execute_backlog_lru: ✅ acceptance PASS
+2026-09-13T20:35:15.7786565Z E2E_STEP n310_execute_backlog_lru OK
+2026-09-13T20:35:16.0049391Z >>> === STEP n311_who_asked (safe=n311_who_asked): voice=anton text="Робот, а кто именно просил включить музыку?" ===
+2026-09-13T20:35:16.0050196Z >>> STEP n311_who_asked: cmd_n311_who_asked.wav отсутствует — повторный синтез (cleanup-resilience)
+2026-09-13T20:35:33.1495902Z >>> STEP n311_who_asked: робот молчит 15s — команду можно играть
+2026-09-13T20:35:33.3786865Z >>> STEP n311_who_asked: PLAY attempt 1/3
+2026-09-13T20:35:37.7603161Z >>>   PLAY_DONE
+2026-09-13T20:36:18.3423581Z >>> STEP n311_who_asked: нет акцепта (attempt 1) — повтор
+2026-09-13T20:36:28.5623316Z >>> STEP n311_who_asked: PLAY attempt 2/3
+2026-09-13T20:36:32.9397774Z >>>   PLAY_DONE
+2026-09-13T20:37:13.5324721Z >>> STEP n311_who_asked: нет акцепта (attempt 2) — повтор
+2026-09-13T20:37:23.7697367Z >>> STEP n311_who_asked: PLAY attempt 3/3
+2026-09-13T20:37:28.1496386Z >>>   PLAY_DONE
+2026-09-13T20:38:08.6324962Z >>> STEP n311_who_asked: нет акцепта (attempt 3) — повтор
+2026-09-13T20:38:18.6344512Z >>> STEP n311_who_asked: ❌ NO_ACCEPT после 3 попыток
+2026-09-13T20:38:18.6346229Z E2E_STEP n311_who_asked FAIL no_accept
+2026-09-13T20:38:19.2179552Z >>> TRANSCRIPT[n311_who_asked]: STT не вернул фразу (нет '✅ ПРИНЯТО')
+2026-09-13T20:38:19.4685319Z >>> === STEP n312_stop_music (safe=n312_stop_music): voice=anton text="Робот, всё, спасибо, выключай музыку, курьер уехал." ===
+2026-09-13T20:38:19.4686593Z >>> STEP n312_stop_music: cmd_n312_stop_music.wav отсутствует — повторный синтез (cleanup-resilience)
+2026-09-13T20:39:10.8521347Z >>> STEP n312_stop_music: робот молчит 15s — команду можно играть
+2026-09-13T20:39:11.0523139Z >>> STEP n312_stop_music: PLAY attempt 1/3
+2026-09-13T20:39:17.0568320Z >>>   PLAY_DONE
+2026-09-13T20:39:57.6140385Z >>> STEP n312_stop_music: ✅ ПОЛНЫЙ ЦИКЛ (акцепт + LLM + TTS)
+2026-09-13T20:39:58.1900657Z >>> TRANSCRIPT[n312_stop_music]: STT не вернул фразу (нет '✅ ПРИНЯТО')
+2026-09-13T20:39:58.7364514Z >>> ACCEPTANCE[n312_stop_music]: ✅ all checks passed
+2026-09-13T20:39:58.7366396Z >>> STEP n312_stop_music: ✅ acceptance PASS
+2026-09-13T20:39:58.7366912Z E2E_STEP n312_stop_music OK
+2026-09-13T20:39:59.0006698Z >>> === STEP n313_silence_restored (safe=n313_silence_restored): voice=anton text="Робот, теперь тихо?" ===
+2026-09-13T20:39:59.0008180Z >>> STEP n313_silence_restored: cmd_n313_silence_restored.wav отсутствует — повторный синтез (cleanup-resilience)
+2026-09-13T20:40:16.0717109Z >>> STEP n313_silence_restored: робот молчит 15s — команду можно играть
+2026-09-13T20:40:16.2727648Z >>> STEP n313_silence_restored: PLAY attempt 1/3
+2026-09-13T20:40:19.7300352Z >>>   PLAY_DONE
+2026-09-13T20:41:00.2362419Z >>> STEP n313_silence_restored: ✅ ПОЛНЫЙ ЦИКЛ (акцепт + LLM + TTS)
+2026-09-13T20:41:00.7337072Z >>> TRANSCRIPT[n313_silence_restored]: STT не вернул фразу (нет '✅ ПРИНЯТО')
+2026-09-13T20:41:01.2884899Z >>> ACCEPTANCE[n313_silence_restored]: ❌ expected tool calls not invoked: ['get_music_state']
+2026-09-13T20:41:01.2886262Z >>> STEP n313_silence_restored: ❌ проверка не прошла после retry (см. /tmp/e2e_v2_34780571796/acceptance.json)
+2026-09-13T20:41:01.2886760Z E2E_STEP n313_silence_restored FAIL
+2026-09-13T20:41:01.9043208Z [hint] GATE-1 soft-fail: voice-cycle OK but tool skipped — get_music_state
+2026-09-13T20:41:01.9269582Z >>> GATE-1: ❌ expected tool calls not invoked during run: get_music_state; voice cycle completed (TTS finished x12, speak_text x159) but expected tool call(s) skipped: get_music_state. LLM сделал verbal-only answer (RULE #MUSIC для stop_music / RULE #VOICE-MULTI для multi-voice могут не enforce). Проверь master_prompt_compact.txt и/или добавь explicit tool-call enforcement в LLM-system reminder.
+2026-09-13T20:41:01.9271461Z >>> GATE-1: ❌ aggregate acceptance FAIL (см. /tmp/e2e_v2_34780571796/acceptance.json)
+2026-09-13T20:41:01.9272000Z E2E_GATE1_FAIL
+2026-09-13T20:41:01.9938936Z >>> WARN: /tmp/e2e_v2_34780571796/recording.wav не найден — audio_metrics.json не пишется (recorder не запустился?)
+2026-09-13T20:41:01.9940596Z E2E_VERDICT FAIL
+2026-09-13T20:41:01.9940854Z E2E_FEATURE_FAIL
+2026-09-13T20:41:02.2848422Z E2E_ARTIFACTS /tmp/e2e_v2_34780571796
+2026-09-13T20:41:02.2855682Z >>> RECORDING: stop (SIGTERM pid=609047)
+2026-09-13T20:41:03.5378676Z >>> RECORDING_DONE: /tmp/e2e_v2_34780571796/recording.wav (34699658 bytes)
+2026-09-13T20:41:03.5431231Z >>> RECORDING_LINK: /tmp/dialog_e2e_34780571796.wav -> /tmp/e2e_v2_34780571796/recording.wav
+2026-09-13T20:41:03.5443696Z === E2E stdout ===
+2026-09-13T20:41:03.7594135Z >>> RECORDING: старт parec → /tmp/e2e_raw_34780571796.pcm (timeout 1995s)
+2026-09-13T20:41:03.7594767Z >>> RECORDING: pid=609047
+2026-09-13T20:41:03.7595461Z >>> === STEP n301_wake_open (safe=n301_wake_open): voice=anton text="Робот, мы тут сейчас немного пошумим, ты просто слушай и не влезай." ===
+2026-09-13T20:41:03.7597422Z >>> STEP n301_wake_open: cmd_n301_wake_open.wav отсутствует — повторный синтез (cleanup-resilience)
+2026-09-13T20:41:03.7598677Z >>> STEP n301_wake_open: робот молчит 15s — команду можно играть
+2026-09-13T20:41:03.7599231Z >>> STEP n301_wake_open: PLAY attempt 1/3
+2026-09-13T20:41:03.7599677Z >>>   PLAY_DONE
+2026-09-13T20:41:03.7600017Z >>> STEP n301_wake_open: ✅ ПОЛНЫЙ ЦИКЛ (акцепт + LLM + TTS)
+2026-09-13T20:41:03.7600520Z >>> TRANSCRIPT[n301_wake_open]: STT не вернул фразу (нет '✅ ПРИНЯТО')
+2026-09-13T20:41:03.7600926Z E2E_STEP n301_wake_open OK
+2026-09-13T20:41:03.7602643Z >>> === STEP n302_bg_sasha (safe=n302_bg_sasha): voice=anton text="Борис, я тебе точно говорю, этот блок питания гудит из-за земли, я его вчера полночи слушал и уже наизусть знаю эту ноту." ===
+2026-09-13T20:41:03.7604557Z >>> STEP n302_bg_sasha: cmd_n302_bg_sasha.wav отсутствует — повторный синтез (cleanup-resilience)
+2026-09-13T20:41:03.7605815Z >>> STEP n302_bg_sasha: робот молчит 15s — команду можно играть
+2026-09-13T20:41:03.7606197Z >>> STEP n302_bg_sasha: PLAY backlog attempt 1/3
+2026-09-13T20:41:03.7606502Z >>>   PLAY_DONE
+2026-09-13T20:41:03.7607147Z >>> STEP n302_bg_sasha: ✅ backlog accumulated (no_wake_word)
+2026-09-13T20:41:03.7607936Z E2E_STEP n302_bg_sasha OK backlog
+2026-09-13T20:41:03.7608573Z >>> TRANSCRIPT[n302_bg_sasha]: STT не вернул фразу (нет '✅ ПРИНЯТО')
+2026-09-13T20:41:03.7609287Z >>> STEP n302_bg_sasha: проверка паттернов (1): \[backlog\] accumulated \(no_wake_word\).*speaker='Саш
+2026-09-13T20:41:03.7610472Z   PATTERN_MISS: \[backlog\] accumulated \(no_wake_word\).*speaker='Саш
+2026-09-13T20:41:03.7611583Z >>> STEP n302_bg_sasha: ❌ проверка не прошла после retry (см. /tmp/e2e_v2_34780571796/acceptance.json)
+2026-09-13T20:41:03.7612255Z E2E_STEP n302_bg_sasha FAIL
+2026-09-13T20:41:03.7613096Z >>> === STEP n303_bg_boris (safe=n303_bg_boris): voice=ermil text="Да брось ты, Саша, у тебя разводка виновата, я тебе с самого начала говорил — надо было звездой разводить, а не шлейфом через всю плату." ===
+2026-09-13T20:41:03.7614047Z >>> STEP n303_bg_boris: cmd_n303_bg_boris.wav отсутствует — повторный синтез (cleanup-resilience)
+2026-09-13T20:41:03.7614788Z >>> STEP n303_bg_boris: робот молчит 15s — команду можно играть
+2026-09-13T20:41:03.7615185Z >>> STEP n303_bg_boris: PLAY backlog attempt 1/3
+2026-09-13T20:41:03.7615486Z >>>   PLAY_DONE
+2026-09-13T20:41:03.7615823Z >>> STEP n303_bg_boris: ✅ backlog accumulated (no_wake_word)
+2026-09-13T20:41:03.7616197Z E2E_STEP n303_bg_boris OK backlog
+2026-09-13T20:41:03.7616610Z >>> TRANSCRIPT[n303_bg_boris]: STT не вернул фразу (нет '✅ ПРИНЯТО')
+2026-09-13T20:41:03.7617292Z >>> STEP n303_bg_boris: проверка паттернов (1): \[backlog\] accumulated \(no_wake_word\).*speaker='Борис
+2026-09-13T20:41:03.7617929Z   PATTERN_MISS: \[backlog\] accumulated \(no_wake_word\).*speaker='Борис
+2026-09-13T20:41:03.7618571Z >>> STEP n303_bg_boris: ❌ проверка не прошла после retry (см. /tmp/e2e_v2_34780571796/acceptance.json)
+2026-09-13T20:41:03.7619017Z E2E_STEP n303_bg_boris FAIL
+2026-09-13T20:41:03.7620100Z >>> === STEP n304_bg_grisha_unknown (safe=n304_bg_grisha_unknown): voice=zahar text="Молодые люди, вы вообще спать сегодня собираетесь? Третий час ночи, у меня обход, а у вас тут свет горит и железка разговаривает." ===
+2026-09-13T20:41:03.7622055Z >>> STEP n304_bg_grisha_unknown: cmd_n304_bg_grisha_unknown.wav отсутствует — повторный синтез (cleanup-resilience)
+2026-09-13T20:41:03.7622766Z >>> STEP n304_bg_grisha_unknown: робот молчит 15s — команду можно играть
+2026-09-13T20:41:03.7623232Z >>> STEP n304_bg_grisha_unknown: PLAY backlog attempt 1/3
+2026-09-13T20:41:03.7623557Z >>>   PLAY_DONE
+2026-09-13T20:41:03.7624140Z >>> STEP n304_bg_grisha_unknown: ✅ backlog accumulated (no_wake_word)
+2026-09-13T20:41:03.7624697Z E2E_STEP n304_bg_grisha_unknown OK backlog
+2026-09-13T20:41:03.7625172Z >>> TRANSCRIPT[n304_bg_grisha_unknown]: STT не вернул фразу (нет '✅ ПРИНЯТО')
+2026-09-13T20:41:03.7625901Z >>> STEP n304_bg_grisha_unknown: проверка паттернов (1): \[backlog\] accumulated \(no_wake_word\).*speaker='незнакомец'
+2026-09-13T20:41:03.7626607Z   PATTERN_OK: \[backlog\] accumulated \(no_wake_word\).*speaker='незнакомец'
+2026-09-13T20:41:03.7627118Z >>> STEP n304_bg_grisha_unknown: ✅ паттерны найдены
+2026-09-13T20:41:03.7627444Z E2E_STEP n304_bg_grisha_unknown OK
+2026-09-13T20:41:03.7628861Z >>> === STEP n305_bg_valera_unknown (safe=n305_bg_valera_unknown): voice=filipp text="Я вообще-то курьер, мне бы подпись получить и уехать, я тут уже двадцать минут стою и слушаю ваш спор про какую-то землю." ===
+2026-09-13T20:41:03.7630172Z >>> STEP n305_bg_valera_unknown: cmd_n305_bg_valera_unknown.wav отсутствует — повторный синтез (cleanup-resilience)
+2026-09-13T20:41:03.7630870Z >>> STEP n305_bg_valera_unknown: робот молчит 15s — команду можно играть
+2026-09-13T20:41:03.7631303Z >>> STEP n305_bg_valera_unknown: PLAY backlog attempt 1/3
+2026-09-13T20:41:03.7632395Z >>>   PLAY_DONE
+2026-09-13T20:41:03.7632823Z >>> STEP n305_bg_valera_unknown: ✅ backlog accumulated (no_wake_word)
+2026-09-13T20:41:03.7633389Z E2E_STEP n305_bg_valera_unknown OK backlog
+2026-09-13T20:41:03.7633867Z >>> TRANSCRIPT[n305_bg_valera_unknown]: STT не вернул фразу (нет '✅ ПРИНЯТО')
+2026-09-13T20:41:03.7634757Z >>> STEP n305_bg_valera_unknown: проверка паттернов (1): \[backlog\] accumulated \(no_wake_word\).*speaker='незнакомец'
+2026-09-13T20:41:03.7635886Z   PATTERN_OK: \[backlog\] accumulated \(no_wake_word\).*speaker='незнакомец'
+2026-09-13T20:41:03.7636952Z >>> STEP n305_bg_valera_unknown: ✅ паттерны найдены
+2026-09-13T20:41:03.7637957Z E2E_STEP n305_bg_valera_unknown OK
+2026-09-13T20:41:03.7638823Z >>> === STEP n306_who_was_talking (safe=n306_who_was_talking): voice=anton text="Робот, ты всё это слышал. Скажи, кто сейчас говорил на фоне: кого из них ты узнал по голосу, а кого не узнал?" ===
+2026-09-13T20:41:03.7639847Z >>> STEP n306_who_was_talking: cmd_n306_who_was_talking.wav отсутствует — повторный синтез (cleanup-resilience)
+2026-09-13T20:41:03.7640513Z >>> STEP n306_who_was_talking: робот молчит 15s — команду можно играть
+2026-09-13T20:41:03.7640910Z >>> STEP n306_who_was_talking: PLAY attempt 1/3
+2026-09-13T20:41:03.7641204Z >>>   PLAY_DONE
+2026-09-13T20:41:03.7641844Z >>> ⚠️ minimax 429/quota в логах, TTS не завершился — retry (fallback deepseek)
+2026-09-13T20:41:03.7642540Z >>> STEP n306_who_was_talking: нет акцепта (attempt 1) — повтор
+2026-09-13T20:41:03.7642916Z >>> STEP n306_who_was_talking: PLAY attempt 2/3
+2026-09-13T20:41:03.7643209Z >>>   PLAY_DONE
+2026-09-13T20:41:03.7643566Z >>> STEP n306_who_was_talking: ✅ ПОЛНЫЙ ЦИКЛ (акцепт + LLM + TTS)
+2026-09-13T20:41:03.7644094Z >>> TRANSCRIPT[n306_who_was_talking]: STT не вернул фразу (нет '✅ ПРИНЯТО')
+2026-09-13T20:41:03.7644750Z >>> STEP n306_who_was_talking: проверка паттернов (1): \[backlog\] flushed to LLM backlog_handled=true
+2026-09-13T20:41:03.7645289Z   PATTERN_OK: \[backlog\] flushed to LLM backlog_handled=true
+2026-09-13T20:41:03.7645725Z >>> STEP n306_who_was_talking: ✅ паттерны найдены
+2026-09-13T20:41:03.7646155Z >>> ACCEPTANCE[n306_who_was_talking]: ✅ all checks passed
+2026-09-13T20:41:03.7646575Z >>> STEP n306_who_was_talking: ✅ acceptance PASS
+2026-09-13T20:41:03.7646892Z E2E_STEP n306_who_was_talking OK
+2026-09-13T20:41:03.7647609Z >>> === STEP n307_count_voices (safe=n307_count_voices): voice=anton text="Робот, а сколько всего человек сейчас было в комнате? Посчитай по голосам." ===
+2026-09-13T20:41:03.7648808Z >>> STEP n307_count_voices: cmd_n307_count_voices.wav отсутствует — повторный синтез (cleanup-resilience)
+2026-09-13T20:41:03.7649526Z >>> STEP n307_count_voices: робот молчит 15s — команду можно играть
+2026-09-13T20:41:03.7649941Z >>> STEP n307_count_voices: PLAY attempt 1/3
+2026-09-13T20:41:03.7650349Z >>>   PLAY_DONE
+2026-09-13T20:41:03.7650775Z >>> STEP n307_count_voices: ✅ ПОЛНЫЙ ЦИКЛ (акцепт + LLM + TTS)
+2026-09-13T20:41:03.7651289Z >>> TRANSCRIPT[n307_count_voices]: STT не вернул фразу (нет '✅ ПРИНЯТО')
+2026-09-13T20:41:03.7652067Z E2E_STEP n307_count_voices OK
+2026-09-13T20:41:03.7652804Z >>> === STEP n308_bg_command_boris (safe=n308_bg_command_boris): voice=ermil text="Слушай, включи ты уже какую-нибудь музыку, а то тишина давит на уши." ===
+2026-09-13T20:41:03.7653791Z >>> STEP n308_bg_command_boris: cmd_n308_bg_command_boris.wav отсутствует — повторный синтез (cleanup-resilience)
+2026-09-13T20:41:03.7654473Z >>> STEP n308_bg_command_boris: робот молчит 15s — команду можно играть
+2026-09-13T20:41:03.7654909Z >>> STEP n308_bg_command_boris: PLAY backlog attempt 1/3
+2026-09-13T20:41:03.7655397Z >>>   PLAY_DONE
+2026-09-13T20:41:03.7655767Z >>> STEP n308_bg_command_boris: ✅ backlog accumulated (no_wake_word)
+2026-09-13T20:41:03.7656164Z E2E_STEP n308_bg_command_boris OK backlog
+2026-09-13T20:41:03.7656631Z >>> TRANSCRIPT[n308_bg_command_boris]: STT не вернул фразу (нет '✅ ПРИНЯТО')
+2026-09-13T20:41:03.7657368Z >>> STEP n308_bg_command_boris: проверка паттернов (1): \[backlog\] accumulated \(no_wake_word\).*speaker='Борис
+2026-09-13T20:41:03.7658335Z   PATTERN_MISS: \[backlog\] accumulated \(no_wake_word\).*speaker='Борис
+2026-09-13T20:41:03.7659021Z >>> STEP n308_bg_command_boris: ❌ проверка не прошла после retry (см. /tmp/e2e_v2_34780571796/acceptance.json)
+2026-09-13T20:41:03.7659665Z E2E_STEP n308_bg_command_boris FAIL
+2026-09-13T20:41:03.7660595Z >>> === STEP n309_bg_command_valera (safe=n309_bg_command_valera): voice=filipp text="Только не электронщину, поставь что-нибудь спокойное, мне ещё ехать." ===
+2026-09-13T20:41:03.7661686Z >>> STEP n309_bg_command_valera: cmd_n309_bg_command_valera.wav отсутствует — повторный синтез (cleanup-resilience)
+2026-09-13T20:41:03.7662591Z >>> STEP n309_bg_command_valera: робот молчит 15s — команду можно играть
+2026-09-13T20:41:03.7663029Z >>> STEP n309_bg_command_valera: PLAY backlog attempt 1/3
+2026-09-13T20:41:03.7663358Z >>>   PLAY_DONE
+2026-09-13T20:41:03.7663724Z >>> STEP n309_bg_command_valera: ✅ backlog accumulated (no_wake_word)
+2026-09-13T20:41:03.7664123Z E2E_STEP n309_bg_command_valera OK backlog
+2026-09-13T20:41:03.7664600Z >>> TRANSCRIPT[n309_bg_command_valera]: STT не вернул фразу (нет '✅ ПРИНЯТО')
+2026-09-13T20:41:03.7665440Z >>> STEP n309_bg_command_valera: проверка паттернов (1): \[backlog\] accumulated \(no_wake_word\).*speaker='незнакомец'
+2026-09-13T20:41:03.7666712Z   PATTERN_OK: \[backlog\] accumulated \(no_wake_word\).*speaker='незнакомец'
+2026-09-13T20:41:03.7667227Z >>> STEP n309_bg_command_valera: ✅ паттерны найдены
+2026-09-13T20:41:03.7667550Z E2E_STEP n309_bg_command_valera OK
+2026-09-13T20:41:03.7668244Z >>> === STEP n310_execute_backlog_lru (safe=n310_execute_backlog_lru): voice=anton text="Робот, ну ты слышал, что просили. Сделай." ===
+2026-09-13T20:41:03.7676170Z >>> STEP n310_execute_backlog_lru: cmd_n310_execute_backlog_lru.wav отсутствует — повторный синтез (cleanup-resilience)
+2026-09-13T20:41:03.7677274Z >>> STEP n310_execute_backlog_lru: робот молчит 15s — команду можно играть
+2026-09-13T20:41:03.7677715Z >>> STEP n310_execute_backlog_lru: PLAY attempt 1/3
+2026-09-13T20:41:03.7678025Z >>>   PLAY_DONE
+2026-09-13T20:41:03.7678390Z >>> STEP n310_execute_backlog_lru: ✅ ПОЛНЫЙ ЦИКЛ (акцепт + LLM + TTS)
+2026-09-13T20:41:03.7678961Z >>> TRANSCRIPT[n310_execute_backlog_lru]: STT не вернул фразу (нет '✅ ПРИНЯТО')
+2026-09-13T20:41:03.7679967Z >>> STEP n310_execute_backlog_lru: проверка паттернов (2): \[backlog\] flushed to LLM backlog_handled=true execute_music_code|compose_music|set_vibe_preset|generate_music
+2026-09-13T20:41:03.7681079Z   PATTERN_OK: \[backlog\] flushed to LLM backlog_handled=true
+2026-09-13T20:41:03.7681866Z   PATTERN_OK: execute_music_code|compose_music|set_vibe_preset|generate_music
+2026-09-13T20:41:03.7682596Z >>> STEP n310_execute_backlog_lru: ✅ паттерны найдены
+2026-09-13T20:41:03.7683051Z >>> ACCEPTANCE[n310_execute_backlog_lru]: ✅ all checks passed
+2026-09-13T20:41:03.7683502Z >>> STEP n310_execute_backlog_lru: ✅ acceptance PASS
+2026-09-13T20:41:03.7683833Z E2E_STEP n310_execute_backlog_lru OK
+2026-09-13T20:41:03.7684765Z >>> === STEP n311_who_asked (safe=n311_who_asked): voice=anton text="Робот, а кто именно просил включить музыку?" ===
+2026-09-13T20:41:03.7685586Z >>> STEP n311_who_asked: cmd_n311_who_asked.wav отсутствует — повторный синтез (cleanup-resilience)
+2026-09-13T20:41:03.7686185Z >>> STEP n311_who_asked: робот молчит 15s — команду можно играть
+2026-09-13T20:41:03.7686725Z >>> STEP n311_who_asked: PLAY attempt 1/3
+2026-09-13T20:41:03.7687019Z >>>   PLAY_DONE
+2026-09-13T20:41:03.7687335Z >>> STEP n311_who_asked: нет акцепта (attempt 1) — повтор
+2026-09-13T20:41:03.7687676Z >>> STEP n311_who_asked: PLAY attempt 2/3
+2026-09-13T20:41:03.7688063Z >>>   PLAY_DONE
+2026-09-13T20:41:03.7688429Z >>> STEP n311_who_asked: нет акцепта (attempt 2) — повтор
+2026-09-13T20:41:03.7688770Z >>> STEP n311_who_asked: PLAY attempt 3/3
+2026-09-13T20:41:03.7689042Z >>>   PLAY_DONE
+2026-09-13T20:41:03.7689348Z >>> STEP n311_who_asked: нет акцепта (attempt 3) — повтор
+2026-09-13T20:41:03.7689766Z >>> STEP n311_who_asked: ❌ NO_ACCEPT после 3 попыток
+2026-09-13T20:41:03.7690091Z E2E_STEP n311_who_asked FAIL no_accept
+2026-09-13T20:41:03.7690870Z >>> TRANSCRIPT[n311_who_asked]: STT не вернул фразу (нет '✅ ПРИНЯТО')
+2026-09-13T20:41:03.7691892Z >>> === STEP n312_stop_music (safe=n312_stop_music): voice=anton text="Робот, всё, спасибо, выключай музыку, курьер уехал." ===
+2026-09-13T20:41:03.7692927Z >>> STEP n312_stop_music: cmd_n312_stop_music.wav отсутствует — повторный синтез (cleanup-resilience)
+2026-09-13T20:41:03.7693545Z >>> STEP n312_stop_music: робот молчит 15s — команду можно играть
+2026-09-13T20:41:03.7693910Z >>> STEP n312_stop_music: PLAY attempt 1/3
+2026-09-13T20:41:03.7694207Z >>>   PLAY_DONE
+2026-09-13T20:41:03.7694528Z >>> STEP n312_stop_music: ✅ ПОЛНЫЙ ЦИКЛ (акцепт + LLM + TTS)
+2026-09-13T20:41:03.7695013Z >>> TRANSCRIPT[n312_stop_music]: STT не вернул фразу (нет '✅ ПРИНЯТО')
+2026-09-13T20:41:03.7695485Z >>> ACCEPTANCE[n312_stop_music]: ✅ all checks passed
+2026-09-13T20:41:03.7695872Z >>> STEP n312_stop_music: ✅ acceptance PASS
+2026-09-13T20:41:03.7696172Z E2E_STEP n312_stop_music OK
+2026-09-13T20:41:03.7696728Z >>> === STEP n313_silence_restored (safe=n313_silence_restored): voice=anton text="Робот, теперь тихо?" ===
+2026-09-13T20:41:03.7697866Z >>> STEP n313_silence_restored: cmd_n313_silence_restored.wav отсутствует — повторный синтез (cleanup-resilience)
+2026-09-13T20:41:03.7698618Z >>> STEP n313_silence_restored: робот молчит 15s — команду можно играть
+2026-09-13T20:41:03.7699450Z >>> STEP n313_silence_restored: PLAY attempt 1/3
+2026-09-13T20:41:03.7699960Z >>>   PLAY_DONE
+2026-09-13T20:41:03.7700340Z >>> STEP n313_silence_restored: ✅ ПОЛНЫЙ ЦИКЛ (акцепт + LLM + TTS)
+2026-09-13T20:41:03.7701062Z >>> TRANSCRIPT[n313_silence_restored]: STT не вернул фразу (нет '✅ ПРИНЯТО')
+2026-09-13T20:41:03.7701965Z >>> ACCEPTANCE[n313_silence_restored]: ❌ expected tool calls not invoked: ['get_music_state']
+2026-09-13T20:41:03.7702807Z >>> STEP n313_silence_restored: ❌ проверка не прошла после retry (см. /tmp/e2e_v2_34780571796/acceptance.json)
+2026-09-13T20:41:03.7703961Z E2E_STEP n313_silence_restored FAIL
+2026-09-13T20:41:03.7704717Z [hint] GATE-1 soft-fail: voice-cycle OK but tool skipped — get_music_state
+2026-09-13T20:41:03.7707738Z >>> GATE-1: ❌ expected tool calls not invoked during run: get_music_state; voice cycle completed (TTS finished x12, speak_text x159) but expected tool call(s) skipped: get_music_state. LLM сделал verbal-only answer (RULE #MUSIC для stop_music / RULE #VOICE-MULTI для multi-voice могут не enforce). Проверь master_prompt_compact.txt и/или добавь explicit tool-call enforcement в LLM-system reminder.
+2026-09-13T20:41:03.7710918Z >>> GATE-1: ❌ aggregate acceptance FAIL (см. /tmp/e2e_v2_34780571796/acceptance.json)
+2026-09-13T20:41:03.7711869Z E2E_GATE1_FAIL
+2026-09-13T20:41:03.7712722Z >>> WARN: /tmp/e2e_v2_34780571796/recording.wav не найден — audio_metrics.json не пишется (recorder не запустился?)
+2026-09-13T20:41:03.7713594Z E2E_VERDICT FAIL
+2026-09-13T20:41:03.7713943Z E2E_FEATURE_FAIL
+2026-09-13T20:41:03.7714319Z E2E_ARTIFACTS /tmp/e2e_v2_34780571796
+2026-09-13T20:41:03.7714801Z >>> RECORDING: stop (SIGTERM pid=609047)
+2026-09-13T20:41:03.7715449Z >>> RECORDING_DONE: /tmp/e2e_v2_34780571796/recording.wav (34699658 bytes)
+2026-09-13T20:41:03.7716396Z >>> RECORDING_LINK: /tmp/dialog_e2e_34780571796.wav -> /tmp/e2e_v2_34780571796/recording.wav
+2026-09-13T20:41:03.7740908Z ##[group]Run OUT="$(sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "cat /tmp/e2e_atomic_out.log 2>/dev/null")"
+2026-09-13T20:41:03.7742291Z [36;1mOUT="$(sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "cat /tmp/e2e_atomic_out.log 2>/dev/null")"[0m
+2026-09-13T20:41:03.7742911Z [36;1mecho "$OUT" | tee /tmp/e2e_verdict.log[0m
+2026-09-13T20:41:03.7743288Z [36;1mif echo "$OUT" | grep -q "E2E_VERDICT PASS"; then[0m
+2026-09-13T20:41:03.7743632Z [36;1m  echo "✅ E2E PASS"[0m
+2026-09-13T20:41:03.7743945Z [36;1melif echo "$OUT" | grep -q "E2E_VERDICT FAIL"; then[0m
+2026-09-13T20:41:03.7744293Z [36;1m  echo "❌ E2E FAIL"[0m
+2026-09-13T20:41:03.7744527Z [36;1m  exit 1[0m
+2026-09-13T20:41:03.7744725Z [36;1melse[0m
+2026-09-13T20:41:03.7744978Z [36;1m  echo "❌ E2E verdict missing (harness crash?)"[0m
+2026-09-13T20:41:03.7745301Z [36;1m  exit 1[0m
+2026-09-13T20:41:03.7745729Z [36;1mfi[0m
+2026-09-13T20:41:03.7753367Z shell: /usr/bin/bash -e {0}
+2026-09-13T20:41:03.7753698Z env:
+2026-09-13T20:41:03.7754075Z   YKEY_LOCAL: /tmp/yandex_key_622.txt
+2026-09-13T20:41:03.7754472Z   SSHPASS: open
+2026-09-13T20:41:03.7754682Z ##[endgroup]
+2026-09-13T20:41:04.0530781Z >>> RECORDING: старт parec → /tmp/e2e_raw_34780571796.pcm (timeout 1995s)
+2026-09-13T20:41:04.0531587Z >>> RECORDING: pid=609047
+2026-09-13T20:41:04.0532445Z >>> === STEP n301_wake_open (safe=n301_wake_open): voice=anton text="Робот, мы тут сейчас немного пошумим, ты просто слушай и не влезай." ===
+2026-09-13T20:41:04.0534049Z >>> STEP n301_wake_open: cmd_n301_wake_open.wav отсутствует — повторный синтез (cleanup-resilience)
+2026-09-13T20:41:04.0534731Z >>> STEP n301_wake_open: робот молчит 15s — команду можно играть
+2026-09-13T20:41:04.0535108Z >>> STEP n301_wake_open: PLAY attempt 1/3
+2026-09-13T20:41:04.0535448Z >>>   PLAY_DONE
+2026-09-13T20:41:04.0535803Z >>> STEP n301_wake_open: ✅ ПОЛНЫЙ ЦИКЛ (акцепт + LLM + TTS)
+2026-09-13T20:41:04.0537196Z >>> TRANSCRIPT[n301_wake_open]: STT не вернул фразу (нет '✅ ПРИНЯТО')
+2026-09-13T20:41:04.0537586Z E2E_STEP n301_wake_open OK
+2026-09-13T20:41:04.0538393Z >>> === STEP n302_bg_sasha (safe=n302_bg_sasha): voice=anton text="Борис, я тебе точно говорю, этот блок питания гудит из-за земли, я его вчера полночи слушал и уже наизусть знаю эту ноту." ===
+2026-09-13T20:41:04.0539796Z >>> STEP n302_bg_sasha: cmd_n302_bg_sasha.wav отсутствует — повторный синтез (cleanup-resilience)
+2026-09-13T20:41:04.0540567Z >>> STEP n302_bg_sasha: робот молчит 15s — команду можно играть
+2026-09-13T20:41:04.0540952Z >>> STEP n302_bg_sasha: PLAY backlog attempt 1/3
+2026-09-13T20:41:04.0541268Z >>>   PLAY_DONE
+2026-09-13T20:41:04.0541710Z >>> STEP n302_bg_sasha: ✅ backlog accumulated (no_wake_word)
+2026-09-13T20:41:04.0542476Z E2E_STEP n302_bg_sasha OK backlog
+2026-09-13T20:41:04.0543210Z >>> TRANSCRIPT[n302_bg_sasha]: STT не вернул фразу (нет '✅ ПРИНЯТО')
+2026-09-13T20:41:04.0544369Z >>> STEP n302_bg_sasha: проверка паттернов (1): \[backlog\] accumulated \(no_wake_word\).*speaker='Саш
+2026-09-13T20:41:04.0545196Z   PATTERN_MISS: \[backlog\] accumulated \(no_wake_word\).*speaker='Саш
+2026-09-13T20:41:04.0546739Z >>> STEP n302_bg_sasha: ❌ проверка не прошла после retry (см. /tmp/e2e_v2_34780571796/acceptance.json)
+2026-09-13T20:41:04.0547461Z E2E_STEP n302_bg_sasha FAIL
+2026-09-13T20:41:04.0549591Z >>> === STEP n303_bg_boris (safe=n303_bg_boris): voice=ermil text="Да брось ты, Саша, у тебя разводка виновата, я тебе с самого начала говорил — надо было звездой разводить, а не шлейфом через всю плату." ===
+2026-09-13T20:41:04.0552019Z >>> STEP n303_bg_boris: cmd_n303_bg_boris.wav отсутствует — повторный синтез (cleanup-resilience)
+2026-09-13T20:41:04.0553050Z >>> STEP n303_bg_boris: робот молчит 15s — команду можно играть
+2026-09-13T20:41:04.0553791Z >>> STEP n303_bg_boris: PLAY backlog attempt 1/3
+2026-09-13T20:41:04.0554164Z >>>   PLAY_DONE
+2026-09-13T20:41:04.0554669Z >>> STEP n303_bg_boris: ✅ backlog accumulated (no_wake_word)
+2026-09-13T20:41:04.0555026Z E2E_STEP n303_bg_boris OK backlog
+2026-09-13T20:41:04.0555661Z >>> TRANSCRIPT[n303_bg_boris]: STT не вернул фразу (нет '✅ ПРИНЯТО')
+2026-09-13T20:41:04.0556341Z >>> STEP n303_bg_boris: проверка паттернов (1): \[backlog\] accumulated \(no_wake_word\).*speaker='Борис
+2026-09-13T20:41:04.0557095Z   PATTERN_MISS: \[backlog\] accumulated \(no_wake_word\).*speaker='Борис
+2026-09-13T20:41:04.0558499Z >>> STEP n303_bg_boris: ❌ проверка не прошла после retry (см. /tmp/e2e_v2_34780571796/acceptance.json)
+2026-09-13T20:41:04.0559263Z E2E_STEP n303_bg_boris FAIL
+2026-09-13T20:41:04.0560468Z >>> === STEP n304_bg_grisha_unknown (safe=n304_bg_grisha_unknown): voice=zahar text="Молодые люди, вы вообще спать сегодня собираетесь? Третий час ночи, у меня обход, а у вас тут свет горит и железка разговаривает." ===
+2026-09-13T20:41:04.0561771Z >>> STEP n304_bg_grisha_unknown: cmd_n304_bg_grisha_unknown.wav отсутствует — повторный синтез (cleanup-resilience)
+2026-09-13T20:41:04.0562626Z >>> STEP n304_bg_grisha_unknown: робот молчит 15s — команду можно играть
+2026-09-13T20:41:04.0563097Z >>> STEP n304_bg_grisha_unknown: PLAY backlog attempt 1/3
+2026-09-13T20:41:04.0563425Z >>>   PLAY_DONE
+2026-09-13T20:41:04.0563790Z >>> STEP n304_bg_grisha_unknown: ✅ backlog accumulated (no_wake_word)
+2026-09-13T20:41:04.0564188Z E2E_STEP n304_bg_grisha_unknown OK backlog
+2026-09-13T20:41:04.0564683Z >>> TRANSCRIPT[n304_bg_grisha_unknown]: STT не вернул фразу (нет '✅ ПРИНЯТО')
+2026-09-13T20:41:04.0565422Z >>> STEP n304_bg_grisha_unknown: проверка паттернов (1): \[backlog\] accumulated \(no_wake_word\).*speaker='незнакомец'
+2026-09-13T20:41:04.0566131Z   PATTERN_OK: \[backlog\] accumulated \(no_wake_word\).*speaker='незнакомец'
+2026-09-13T20:41:04.0566625Z >>> STEP n304_bg_grisha_unknown: ✅ паттерны найдены
+2026-09-13T20:41:04.0566945Z E2E_STEP n304_bg_grisha_unknown OK
+2026-09-13T20:41:04.0567862Z >>> === STEP n305_bg_valera_unknown (safe=n305_bg_valera_unknown): voice=filipp text="Я вообще-то курьер, мне бы подпись получить и уехать, я тут уже двадцать минут стою и слушаю ваш спор про какую-то землю." ===
+2026-09-13T20:41:04.0568955Z >>> STEP n305_bg_valera_unknown: cmd_n305_bg_valera_unknown.wav отсутствует — повторный синтез (cleanup-resilience)
+2026-09-13T20:41:04.0569650Z >>> STEP n305_bg_valera_unknown: робот молчит 15s — команду можно играть
+2026-09-13T20:41:04.0570475Z >>> STEP n305_bg_valera_unknown: PLAY backlog attempt 1/3
+2026-09-13T20:41:04.0570805Z >>>   PLAY_DONE
+2026-09-13T20:41:04.0571396Z >>> STEP n305_bg_valera_unknown: ✅ backlog accumulated (no_wake_word)
+2026-09-13T20:41:04.0572004Z E2E_STEP n305_bg_valera_unknown OK backlog
+2026-09-13T20:41:04.0572485Z >>> TRANSCRIPT[n305_bg_valera_unknown]: STT не вернул фразу (нет '✅ ПРИНЯТО')
+2026-09-13T20:41:04.0573214Z >>> STEP n305_bg_valera_unknown: проверка паттернов (1): \[backlog\] accumulated \(no_wake_word\).*speaker='незнакомец'
+2026-09-13T20:41:04.0573920Z   PATTERN_OK: \[backlog\] accumulated \(no_wake_word\).*speaker='незнакомец'
+2026-09-13T20:41:04.0574414Z >>> STEP n305_bg_valera_unknown: ✅ паттерны найдены
+2026-09-13T20:41:04.0574917Z E2E_STEP n305_bg_valera_unknown OK
+2026-09-13T20:41:04.0575783Z >>> === STEP n306_who_was_talking (safe=n306_who_was_talking): voice=anton text="Робот, ты всё это слышал. Скажи, кто сейчас говорил на фоне: кого из них ты узнал по голосу, а кого не узнал?" ===
+2026-09-13T20:41:04.0576824Z >>> STEP n306_who_was_talking: cmd_n306_who_was_talking.wav отсутствует — повторный синтез (cleanup-resilience)
+2026-09-13T20:41:04.0577487Z >>> STEP n306_who_was_talking: робот молчит 15s — команду можно играть
+2026-09-13T20:41:04.0577885Z >>> STEP n306_who_was_talking: PLAY attempt 1/3
+2026-09-13T20:41:04.0578183Z >>>   PLAY_DONE
+2026-09-13T20:41:04.0578577Z >>> ⚠️ minimax 429/quota в логах, TTS не завершился — retry (fallback deepseek)
+2026-09-13T20:41:04.0579105Z >>> STEP n306_who_was_talking: нет акцепта (attempt 1) — повтор
+2026-09-13T20:41:04.0579481Z >>> STEP n306_who_was_talking: PLAY attempt 2/3
+2026-09-13T20:41:04.0579779Z >>>   PLAY_DONE
+2026-09-13T20:41:04.0580138Z >>> STEP n306_who_was_talking: ✅ ПОЛНЫЙ ЦИКЛ (акцепт + LLM + TTS)
+2026-09-13T20:41:04.0580669Z >>> TRANSCRIPT[n306_who_was_talking]: STT не вернул фразу (нет '✅ ПРИНЯТО')
+2026-09-13T20:41:04.0581317Z >>> STEP n306_who_was_talking: проверка паттернов (1): \[backlog\] flushed to LLM backlog_handled=true
+2026-09-13T20:41:04.0582275Z   PATTERN_OK: \[backlog\] flushed to LLM backlog_handled=true
+2026-09-13T20:41:04.0582714Z >>> STEP n306_who_was_talking: ✅ паттерны найдены
+2026-09-13T20:41:04.0583136Z >>> ACCEPTANCE[n306_who_was_talking]: ✅ all checks passed
+2026-09-13T20:41:04.0583558Z >>> STEP n306_who_was_talking: ✅ acceptance PASS
+2026-09-13T20:41:04.0583875Z E2E_STEP n306_who_was_talking OK
+2026-09-13T20:41:04.0584578Z >>> === STEP n307_count_voices (safe=n307_count_voices): voice=anton text="Робот, а сколько всего человек сейчас было в комнате? Посчитай по голосам." ===
+2026-09-13T20:41:04.0585482Z >>> STEP n307_count_voices: cmd_n307_count_voices.wav отсутствует — повторный синтез (cleanup-resilience)
+2026-09-13T20:41:04.0586136Z >>> STEP n307_count_voices: робот молчит 15s — команду можно играть
+2026-09-13T20:41:04.0586516Z >>> STEP n307_count_voices: PLAY attempt 1/3
+2026-09-13T20:41:04.0586800Z >>>   PLAY_DONE
+2026-09-13T20:41:04.0587125Z >>> STEP n307_count_voices: ✅ ПОЛНЫЙ ЦИКЛ (акцепт + LLM + TTS)
+2026-09-13T20:41:04.0587645Z >>> TRANSCRIPT[n307_count_voices]: STT не вернул фразу (нет '✅ ПРИНЯТО')
+2026-09-13T20:41:04.0588035Z E2E_STEP n307_count_voices OK
+2026-09-13T20:41:04.0588755Z >>> === STEP n308_bg_command_boris (safe=n308_bg_command_boris): voice=ermil text="Слушай, включи ты уже какую-нибудь музыку, а то тишина давит на уши." ===
+2026-09-13T20:41:04.0589712Z >>> STEP n308_bg_command_boris: cmd_n308_bg_command_boris.wav отсутствует — повторный синтез (cleanup-resilience)
+2026-09-13T20:41:04.0590389Z >>> STEP n308_bg_command_boris: робот молчит 15s — команду можно играть
+2026-09-13T20:41:04.0590815Z >>> STEP n308_bg_command_boris: PLAY backlog attempt 1/3
+2026-09-13T20:41:04.0591135Z >>>   PLAY_DONE
+2026-09-13T20:41:04.0591510Z >>> STEP n308_bg_command_boris: ✅ backlog accumulated (no_wake_word)
+2026-09-13T20:41:04.0591964Z E2E_STEP n308_bg_command_boris OK backlog
+2026-09-13T20:41:04.0592461Z >>> TRANSCRIPT[n308_bg_command_boris]: STT не вернул фразу (нет '✅ ПРИНЯТО')
+2026-09-13T20:41:04.0593903Z >>> STEP n308_bg_command_boris: проверка паттернов (1): \[backlog\] accumulated \(no_wake_word\).*speaker='Борис
+2026-09-13T20:41:04.0595249Z   PATTERN_MISS: \[backlog\] accumulated \(no_wake_word\).*speaker='Борис
+2026-09-13T20:41:04.0596562Z >>> STEP n308_bg_command_boris: ❌ проверка не прошла после retry (см. /tmp/e2e_v2_34780571796/acceptance.json)
+2026-09-13T20:41:04.0597401Z E2E_STEP n308_bg_command_boris FAIL
+2026-09-13T20:41:04.0599426Z >>> === STEP n309_bg_command_valera (safe=n309_bg_command_valera): voice=filipp text="Только не электронщину, поставь что-нибудь спокойное, мне ещё ехать." ===
+2026-09-13T20:41:04.0600780Z >>> STEP n309_bg_command_valera: cmd_n309_bg_command_valera.wav отсутствует — повторный синтез (cleanup-resilience)
+2026-09-13T20:41:04.0602020Z >>> STEP n309_bg_command_valera: робот молчит 15s — команду можно играть
+2026-09-13T20:41:04.0602497Z >>> STEP n309_bg_command_valera: PLAY backlog attempt 1/3
+2026-09-13T20:41:04.0603205Z >>>   PLAY_DONE
+2026-09-13T20:41:04.0604124Z >>> STEP n309_bg_command_valera: ✅ backlog accumulated (no_wake_word)
+2026-09-13T20:41:04.0604550Z E2E_STEP n309_bg_command_valera OK backlog
+2026-09-13T20:41:04.0605038Z >>> TRANSCRIPT[n309_bg_command_valera]: STT не вернул фразу (нет '✅ ПРИНЯТО')
+2026-09-13T20:41:04.0605791Z >>> STEP n309_bg_command_valera: проверка паттернов (1): \[backlog\] accumulated \(no_wake_word\).*speaker='незнакомец'
+2026-09-13T20:41:04.0606516Z   PATTERN_OK: \[backlog\] accumulated \(no_wake_word\).*speaker='незнакомец'
+2026-09-13T20:41:04.0607022Z >>> STEP n309_bg_command_valera: ✅ паттерны найдены
+2026-09-13T20:41:04.0607497Z E2E_STEP n309_bg_command_valera OK
+2026-09-13T20:41:04.0608196Z >>> === STEP n310_execute_backlog_lru (safe=n310_execute_backlog_lru): voice=anton text="Робот, ну ты слышал, что просили. Сделай." ===
+2026-09-13T20:41:04.0609164Z >>> STEP n310_execute_backlog_lru: cmd_n310_execute_backlog_lru.wav отсутствует — повторный синтез (cleanup-resilience)
+2026-09-13T20:41:04.0616050Z >>> STEP n310_execute_backlog_lru: робот молчит 15s — команду можно играть
+2026-09-13T20:41:04.0616566Z >>> STEP n310_execute_backlog_lru: PLAY attempt 1/3
+2026-09-13T20:41:04.0616880Z >>>   PLAY_DONE
+2026-09-13T20:41:04.0617280Z >>> STEP n310_execute_backlog_lru: ✅ ПОЛНЫЙ ЦИКЛ (акцепт + LLM + TTS)
+2026-09-13T20:41:04.0618068Z >>> TRANSCRIPT[n310_execute_backlog_lru]: STT не вернул фразу (нет '✅ ПРИНЯТО')
+2026-09-13T20:41:04.0619678Z >>> STEP n310_execute_backlog_lru: проверка паттернов (2): \[backlog\] flushed to LLM backlog_handled=true execute_music_code|compose_music|set_vibe_preset|generate_music
+2026-09-13T20:41:04.0620495Z   PATTERN_OK: \[backlog\] flushed to LLM backlog_handled=true
+2026-09-13T20:41:04.0621021Z   PATTERN_OK: execute_music_code|compose_music|set_vibe_preset|generate_music
+2026-09-13T20:41:04.0621613Z >>> STEP n310_execute_backlog_lru: ✅ паттерны найдены
+2026-09-13T20:41:04.0622233Z >>> ACCEPTANCE[n310_execute_backlog_lru]: ✅ all checks passed
+2026-09-13T20:41:04.0622685Z >>> STEP n310_execute_backlog_lru: ✅ acceptance PASS
+2026-09-13T20:41:04.0623185Z E2E_STEP n310_execute_backlog_lru OK
+2026-09-13T20:41:04.0623799Z >>> === STEP n311_who_asked (safe=n311_who_asked): voice=anton text="Робот, а кто именно просил включить музыку?" ===
+2026-09-13T20:41:04.0624586Z >>> STEP n311_who_asked: cmd_n311_who_asked.wav отсутствует — повторный синтез (cleanup-resilience)
+2026-09-13T20:41:04.0625180Z >>> STEP n311_who_asked: робот молчит 15s — команду можно играть
+2026-09-13T20:41:04.0625542Z >>> STEP n311_who_asked: PLAY attempt 1/3
+2026-09-13T20:41:04.0625814Z >>>   PLAY_DONE
+2026-09-13T20:41:04.0626124Z >>> STEP n311_who_asked: нет акцепта (attempt 1) — повтор
+2026-09-13T20:41:04.0626463Z >>> STEP n311_who_asked: PLAY attempt 2/3
+2026-09-13T20:41:04.0626735Z >>>   PLAY_DONE
+2026-09-13T20:41:04.0627138Z >>> STEP n311_who_asked: нет акцепта (attempt 2) — повтор
+2026-09-13T20:41:04.0627486Z >>> STEP n311_who_asked: PLAY attempt 3/3
+2026-09-13T20:41:04.0627759Z >>>   PLAY_DONE
+2026-09-13T20:41:04.0628070Z >>> STEP n311_who_asked: нет акцепта (attempt 3) — повтор
+2026-09-13T20:41:04.0628501Z >>> STEP n311_who_asked: ❌ NO_ACCEPT после 3 попыток
+2026-09-13T20:41:04.0628826Z E2E_STEP n311_who_asked FAIL no_accept
+2026-09-13T20:41:04.0629252Z >>> TRANSCRIPT[n311_who_asked]: STT не вернул фразу (нет '✅ ПРИНЯТО')
+2026-09-13T20:41:04.0629992Z >>> === STEP n312_stop_music (safe=n312_stop_music): voice=anton text="Робот, всё, спасибо, выключай музыку, курьер уехал." ===
+2026-09-13T20:41:04.0630809Z >>> STEP n312_stop_music: cmd_n312_stop_music.wav отсутствует — повторный синтез (cleanup-resilience)
+2026-09-13T20:41:04.0631419Z >>> STEP n312_stop_music: робот молчит 15s — команду можно играть
+2026-09-13T20:41:04.0632224Z >>> STEP n312_stop_music: PLAY attempt 1/3
+2026-09-13T20:41:04.0632525Z >>>   PLAY_DONE
+2026-09-13T20:41:04.0632852Z >>> STEP n312_stop_music: ✅ ПОЛНЫЙ ЦИКЛ (акцепт + LLM + TTS)
+2026-09-13T20:41:04.0633343Z >>> TRANSCRIPT[n312_stop_music]: STT не вернул фразу (нет '✅ ПРИНЯТО')
+2026-09-13T20:41:04.0633822Z >>> ACCEPTANCE[n312_stop_music]: ✅ all checks passed
+2026-09-13T20:41:04.0634230Z >>> STEP n312_stop_music: ✅ acceptance PASS
+2026-09-13T20:41:04.0634525Z E2E_STEP n312_stop_music OK
+2026-09-13T20:41:04.0635082Z >>> === STEP n313_silence_restored (safe=n313_silence_restored): voice=anton text="Робот, теперь тихо?" ===
+2026-09-13T20:41:04.0635929Z >>> STEP n313_silence_restored: cmd_n313_silence_restored.wav отсутствует — повторный синтез (cleanup-resilience)
+2026-09-13T20:41:04.0636622Z >>> STEP n313_silence_restored: робот молчит 15s — команду можно играть
+2026-09-13T20:41:04.0637032Z >>> STEP n313_silence_restored: PLAY attempt 1/3
+2026-09-13T20:41:04.0637328Z >>>   PLAY_DONE
+2026-09-13T20:41:04.0637673Z >>> STEP n313_silence_restored: ✅ ПОЛНЫЙ ЦИКЛ (акцепт + LLM + TTS)
+2026-09-13T20:41:04.0638235Z >>> TRANSCRIPT[n313_silence_restored]: STT не вернул фразу (нет '✅ ПРИНЯТО')
+2026-09-13T20:41:04.0638904Z >>> ACCEPTANCE[n313_silence_restored]: ❌ expected tool calls not invoked: ['get_music_state']
+2026-09-13T20:41:04.0639663Z >>> STEP n313_silence_restored: ❌ проверка не прошла после retry (см. /tmp/e2e_v2_34780571796/acceptance.json)
+2026-09-13T20:41:04.0640173Z E2E_STEP n313_silence_restored FAIL
+2026-09-13T20:41:04.0640634Z [hint] GATE-1 soft-fail: voice-cycle OK but tool skipped — get_music_state
+2026-09-13T20:41:04.0643034Z >>> GATE-1: ❌ expected tool calls not invoked during run: get_music_state; voice cycle completed (TTS finished x12, speak_text x159) but expected tool call(s) skipped: get_music_state. LLM сделал verbal-only answer (RULE #MUSIC для stop_music / RULE #VOICE-MULTI для multi-voice могут не enforce). Проверь master_prompt_compact.txt и/или добавь explicit tool-call enforcement в LLM-system reminder.
+2026-09-13T20:41:04.0644866Z >>> GATE-1: ❌ aggregate acceptance FAIL (см. /tmp/e2e_v2_34780571796/acceptance.json)
+2026-09-13T20:41:04.0645298Z E2E_GATE1_FAIL
+2026-09-13T20:41:04.0645845Z >>> WARN: /tmp/e2e_v2_34780571796/recording.wav не найден — audio_metrics.json не пишется (recorder не запустился?)
+2026-09-13T20:41:04.0646370Z E2E_VERDICT FAIL
+2026-09-13T20:41:04.0646723Z E2E_FEATURE_FAIL
+2026-09-13T20:41:04.0646938Z E2E_ARTIFACTS /tmp/e2e_v2_34780571796
+2026-09-13T20:41:04.0647223Z >>> RECORDING: stop (SIGTERM pid=609047)
+2026-09-13T20:41:04.0647606Z >>> RECORDING_DONE: /tmp/e2e_v2_34780571796/recording.wav (34699658 bytes)
+2026-09-13T20:41:04.0648171Z >>> RECORDING_LINK: /tmp/dialog_e2e_34780571796.wav -> /tmp/e2e_v2_34780571796/recording.wav
+2026-09-13T20:41:04.0648664Z ❌ E2E FAIL
+2026-09-13T20:41:04.0658669Z ##[error]Process completed with exit code 1.
+2026-09-13T20:41:04.0760561Z ##[group]Run RID="34780571796"
+2026-09-13T20:41:04.0760950Z [36;1mRID="34780571796"[0m
+2026-09-13T20:41:04.0761226Z [36;1mART_DIR="/tmp/e2e_artifacts_${RID}"[0m
+2026-09-13T20:41:04.0761610Z [36;1mrm -rf "$ART_DIR"[0m
+2026-09-13T20:41:04.0761874Z [36;1mmkdir -p "$ART_DIR"[0m
+2026-09-13T20:41:04.0762117Z [36;1m[0m
+2026-09-13T20:41:04.0762361Z [36;1m# 1) Список найденных файлов на 249 — для диагностики[0m
+2026-09-13T20:41:04.0762883Z [36;1mecho "=== files on 10.1.1.249 matching expected patterns ==="[0m
+2026-09-13T20:41:04.0763630Z [36;1msshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 '[0m
+2026-09-13T20:41:04.0764365Z [36;1m  set +e[0m
+2026-09-13T20:41:04.0764748Z [36;1m  for f in /tmp/dialog_e2e_'"${RID}"'.wav \[0m
+2026-09-13T20:41:04.0765097Z [36;1m           /tmp/dialog_e2e_*.wav \[0m
+2026-09-13T20:41:04.0765423Z [36;1m           /tmp/e2e_atomic_out.log; do[0m
+2026-09-13T20:41:04.0765886Z [36;1m    [ -f "$f" ] && echo "FOUND $f ($(stat -c %s "$f" 2>/dev/null) bytes)" || true[0m
+2026-09-13T20:41:04.0766304Z [36;1m  done[0m
+2026-09-13T20:41:04.0766524Z [36;1m  for d in /tmp/e2e_v2_*; do[0m
+2026-09-13T20:41:04.0766827Z [36;1m    [ -d "$d" ] && echo "DIR $d" || true[0m
+2026-09-13T20:41:04.0767122Z [36;1m  done[0m
+2026-09-13T20:41:04.0767340Z [36;1m  echo "---END-LIST---"[0m
+2026-09-13T20:41:04.0767643Z [36;1m' 2>&1 | tee /tmp/e2e_collect.log || true[0m
+2026-09-13T20:41:04.0767948Z [36;1m[0m
+2026-09-13T20:41:04.0768240Z [36;1m# 2) Каталог /tmp/e2e_v2_<RID> целиком (verdict.txt, model.json,[0m
+2026-09-13T20:41:04.0768722Z [36;1m#    step_*.log, scenario_parsed.txt, scenario.json и т.п.).[0m
+2026-09-13T20:41:04.0769096Z [36;1m#[0m
+2026-09-13T20:41:04.0769389Z [36;1m#    Харнесс e2e_voice_test.sh пишет OUT_DIR=/tmp/e2e_v2_${RUN_ID}[0m
+2026-09-13T20:41:04.0769852Z [36;1m#    (line 82 e2e_voice_test.sh). Берём ТОЛЬКО этот каталог —[0m
+2026-09-13T20:41:04.0770293Z [36;1m#    legacy /tmp/e2e_v2_* от старых run'ов содержат файлы с[0m
+2026-09-13T20:41:04.0770736Z [36;1m#    кириллицей + '?' (до BUG-B t_f0612a43 не было safe_label),[0m
+2026-09-13T20:41:04.0771183Z [36;1m#    upload-artifact@v7 отвергает их с NTFS-ограничениями[0m
+2026-09-13T20:41:04.0771693Z [36;1m#    ("? < > | * : \r \n"). Тащить всю историю и фильтровать[0m
+2026-09-13T20:41:04.0772109Z [36;1m#    на runner'е нет смысла — медленнее с каждым run'ом, плюс[0m
+2026-09-13T20:41:04.0772547Z [36;1m#    sanitize не успевает за 80+ legacy каталогов (issue #1506,[0m
+2026-09-13T20:41:04.0773242Z [36;1m#    runs 162/163/165/166/167 все FAIL на одной и той же ошибке).[0m
+2026-09-13T20:41:04.0773610Z [36;1m#[0m
+2026-09-13T20:41:04.0774027Z [36;1m#    Исторически тут стоял вариант с trailing-dot в source path —[0m
+2026-09-13T20:41:04.0774778Z [36;1m#    **deprecated с OpenSSH 9.0+** (changelog: «when copying[0m
+2026-09-13T20:41:04.0775604Z [36;1m#    local files to a remote host, the path with /<dot> suffix[0m
+2026-09-13T20:41:04.0776118Z [36;1m#    for source was rejected as "unexpected filename"»). На[0m
+2026-09-13T20:41:04.0776585Z [36;1m#    runner'ах ubuntu-24.04 каждая итерация сыпала 80+ ошибок и[0m
+2026-09-13T20:41:04.0777045Z [36;1m#    никакие файлы не копировались (см. issue #1478, run #32255219770).[0m
+2026-09-13T20:41:04.0777396Z [36;1m#[0m
+2026-09-13T20:41:04.0777664Z [36;1m#    Используем `rsync -a` поверх ssh — работает на любой версии[0m
+2026-09-13T20:41:04.0778094Z [36;1m#    OpenSSH, копирует рекурсивно, трейлинг-слэш означает[0m
+2026-09-13T20:41:04.0778518Z [36;1m#    «содержимое каталога» (аналог `cp -r src/. dst/`).[0m
+2026-09-13T20:41:04.0778846Z [36;1m#[0m
+2026-09-13T20:41:04.0779123Z [36;1m#    Fallback: если /tmp/e2e_v2_<RID> не существует (например[0m
+2026-09-13T20:41:04.0779571Z [36;1m#    harness упал до mkdir), берём 2 самых свежих /tmp/e2e_v2_*[0m
+2026-09-13T20:41:04.0779985Z [36;1m#    по mtime — отладочный набор всё равно нужен.[0m
+2026-09-13T20:41:04.0780330Z [36;1mprimary_dir="/tmp/e2e_v2_${RID}"[0m
+2026-09-13T20:41:04.0780920Z [36;1mif sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 \[0m
+2026-09-13T20:41:04.0781388Z [36;1m     "[ -d '$primary_dir' ]" 2>/dev/null; then[0m
+2026-09-13T20:41:04.0781786Z [36;1m  e2e_v2_dirs="$primary_dir"[0m
+2026-09-13T20:41:04.0782092Z [36;1m  echo "  primary: $primary_dir"[0m
+2026-09-13T20:41:04.0782377Z [36;1melse[0m
+2026-09-13T20:41:04.0783093Z [36;1m  echo "  WARN: $primary_dir отсутствует на 249 — harness не создал OUT_DIR (crash до mkdir?). НЕ тяну stale legacy e2e_v2_* (ретро 22.08 t_944df2c5 — они полили звуковые артефакты файлами 08-13/08-15)"[0m
+2026-09-13T20:41:04.0783906Z [36;1m  e2e_v2_dirs=""[0m
+2026-09-13T20:41:04.0784142Z [36;1mfi[0m
+2026-09-13T20:41:04.0784511Z [36;1mif [ -n "$e2e_v2_dirs" ]; then[0m
+2026-09-13T20:41:04.0784885Z [36;1m  for d in $e2e_v2_dirs; do[0m
+2026-09-13T20:41:04.0785311Z [36;1m    bn=$(basename "$d")[0m
+2026-09-13T20:41:04.0785825Z [36;1m    mkdir -p "$ART_DIR/$bn"[0m
+2026-09-13T20:41:04.0786281Z [36;1m    echo "  rsync -a $d/ → $ART_DIR/$bn/"[0m
+2026-09-13T20:41:04.0794691Z [36;1m    sshpass -e rsync -a \[0m
+2026-09-13T20:41:04.0795083Z [36;1m      -e 'ssh -o StrictHostKeyChecking=no' \[0m
+2026-09-13T20:41:04.0795517Z [36;1m      "ros2@10.1.1.249:$d/" "$ART_DIR/$bn/" 2>&1 | tail -5 || true[0m
+2026-09-13T20:41:04.0795887Z [36;1m  done[0m
+2026-09-13T20:41:04.0796087Z [36;1melse[0m
+2026-09-13T20:41:04.0796322Z [36;1m  echo "  no /tmp/e2e_v2_* dirs on 249"[0m
+2026-09-13T20:41:04.0796625Z [36;1mfi[0m
+2026-09-13T20:41:04.0796832Z [36;1m[0m
+2026-09-13T20:41:04.0797126Z [36;1m# 2.5) Sanitize: upload-artifact@v7 запрещает символы в именах[0m
+2026-09-13T20:41:04.0797590Z [36;1m#      файлов (NTFS-ограничения: " ? < > | * : \r \n). До BUG-B[0m
+2026-09-13T20:41:04.0798055Z [36;1m#      t_f0612a43 safe_label() ещё не существовало и legacy-каталоги[0m
+2026-09-13T20:41:04.0798573Z [36;1m#      12-18.08 содержат файлы вроде `synth_Робот, что у тебя в[0m
+2026-09-13T20:41:04.0799289Z [36;1m#      музыкальной библиотеке?.log`. Если rsync принёс такие[0m
+2026-09-13T20:41:04.0800056Z [36;1m#      файлы (primary-каталог этого RID вряд ли, но fallback[0m
+2026-09-13T20:41:04.0800558Z [36;1m#      по mtime может), заменяем '?' на '_' чтобы upload[0m
+2026-09-13T20:41:04.0800957Z [36;1m#      не падал. `rename` доступен в Ubuntu/Debian через[0m
+2026-09-13T20:41:04.0801362Z [36;1m#      пакет rename (perl-based). Если нет — fallback на[0m
+2026-09-13T20:41:04.0801822Z [36;1m#      bash-цикл с mv.[0m
+2026-09-13T20:41:04.0802274Z [36;1mif [ -d "$ART_DIR" ]; then[0m
+2026-09-13T20:41:04.0802693Z [36;1m  bad_count=$(find "$ART_DIR" -depth -name '*?*' -type f 2>/dev/null | wc -l)[0m
+2026-09-13T20:41:04.0803151Z [36;1m  if [ "$bad_count" -gt 0 ]; then[0m
+2026-09-13T20:41:04.0803573Z [36;1m    echo "  sanitize: найдено $bad_count файлов с '?' в имени — заменяю на '_'"[0m
+2026-09-13T20:41:04.0804044Z [36;1m    if command -v rename >/dev/null 2>&1; then[0m
+2026-09-13T20:41:04.0804547Z [36;1m      find "$ART_DIR" -depth -name '*?*' -type f -exec rename 's/\?/_/g' {} + || true[0m
+2026-09-13T20:41:04.0804989Z [36;1m    else[0m
+2026-09-13T20:41:04.0805272Z [36;1m      # bash fallback: экранируем '?' в шаблоне find и mv[0m
+2026-09-13T20:41:04.0805743Z [36;1m      find "$ART_DIR" -depth -name '*?*' -type f | while read -r f; do[0m
+2026-09-13T20:41:04.0806148Z [36;1m        new_f="${f//\?/_}"[0m
+2026-09-13T20:41:04.0806491Z [36;1m        [ "$f" != "$new_f" ] && mv "$f" "$new_f" 2>/dev/null || true[0m
+2026-09-13T20:41:04.0806862Z [36;1m      done[0m
+2026-09-13T20:41:04.0807072Z [36;1m    fi[0m
+2026-09-13T20:41:04.0807267Z [36;1m  fi[0m
+2026-09-13T20:41:04.0807458Z [36;1mfi[0m
+2026-09-13T20:41:04.0807644Z [36;1m[0m
+2026-09-13T20:41:04.0807872Z [36;1m# 3) Полный stdout харнесса (если нет — skip)[0m
+2026-09-13T20:41:04.0808305Z [36;1mif sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 \[0m
+2026-09-13T20:41:04.0808842Z [36;1m     '[ -f /tmp/e2e_atomic_out.log ]' 2>/dev/null; then[0m
+2026-09-13T20:41:04.0809610Z [36;1m  echo "  scp /tmp/e2e_atomic_out.log"[0m
+2026-09-13T20:41:04.0810319Z [36;1m  sshpass -e scp -o StrictHostKeyChecking=no \[0m
+2026-09-13T20:41:04.0810927Z [36;1m    ros2@10.1.1.249:/tmp/e2e_atomic_out.log "$ART_DIR/e2e_atomic_out.log" 2>&1 \[0m
+2026-09-13T20:41:04.0811380Z [36;1m    | tail -5 || true[0m
+2026-09-13T20:41:04.0811707Z [36;1mfi[0m
+2026-09-13T20:41:04.0811900Z [36;1m[0m
+2026-09-13T20:41:04.0812148Z [36;1m# 4) Recording wav — ТОЛЬКО текущий прогон (RID).[0m
+2026-09-13T20:41:04.0812618Z [36;1m#    Симлинк /tmp/dialog_e2e_${RID}.wav создаёт харнесс (stop_recording,[0m
+2026-09-13T20:41:04.0813151Z [36;1m#    e2e_voice_test.sh → RECORDING_LINK). Раньше здесь был fallback на[0m
+2026-09-13T20:41:04.0813612Z [36;1m#    «самый свежий /tmp/dialog_e2e_*.wav» и glob ВСЕХ[0m
+2026-09-13T20:41:04.0814065Z [36;1m#    /tmp/e2e_v2_*/recording.wav — в звуковой артефакт попадали записи[0m
+2026-09-13T20:41:04.0814551Z [36;1m#    ДРУГИХ прогонов («робот спой песенку про енотика», ретро 22.08[0m
+2026-09-13T20:41:04.0814984Z [36;1m#    issue #1506). Теперь берём только RID-каталог этого run'а.[0m
+2026-09-13T20:41:04.0815400Z [36;1mfor src in "/tmp/dialog_e2e_${RID}.wav"; do[0m
+2026-09-13T20:41:04.0815732Z [36;1m  echo "  try scp $src"[0m
+2026-09-13T20:41:04.0816072Z [36;1m  sshpass -e scp -o StrictHostKeyChecking=no \[0m
+2026-09-13T20:41:04.0816789Z [36;1m    "ros2@10.1.1.249:$src" "$ART_DIR/$(basename $src)" 2>&1 | tail -3 || true[0m
+2026-09-13T20:41:04.0817732Z [36;1mdone[0m
+2026-09-13T20:41:04.0818115Z [36;1m# Запись этого прогона уже rsync'нута в $ART_DIR/e2e_v2_${RID}/recording.wav[0m
+2026-09-13T20:41:04.0818566Z [36;1m# (шаг 2). НЕ тянем /tmp/dialog_e2e_*.wav и НЕ глобим[0m
+2026-09-13T20:41:04.0818983Z [36;1m# /tmp/e2e_v2_*/recording.wav — это записи других прогонов.[0m
+2026-09-13T20:41:04.0819343Z [36;1m[0m
+2026-09-13T20:41:04.0819574Z [36;1mecho "ART_DIR=$ART_DIR" >> "$GITHUB_ENV"[0m
+2026-09-13T20:41:04.0819999Z [36;1mecho "=== collected e2e_artifacts_${RID}/ contents ==="[0m
+2026-09-13T20:41:04.0820519Z [36;1mfind "$ART_DIR" -type f -printf "%s\t%p\n" | sort -k2 || echo "ART_DIR empty"[0m
+2026-09-13T20:41:04.0829013Z shell: /usr/bin/bash -e {0}
+2026-09-13T20:41:04.0829270Z env:
+2026-09-13T20:41:04.0829482Z   YKEY_LOCAL: /tmp/yandex_key_622.txt
+2026-09-13T20:41:04.0829764Z   SSHPASS: open
+2026-09-13T20:41:04.0829970Z ##[endgroup]
+2026-09-13T20:41:04.0869831Z === files on 10.1.1.249 matching expected patterns ===
+2026-09-13T20:41:04.2920675Z FOUND /tmp/dialog_e2e_34780571796.wav (37 bytes)
+2026-09-13T20:41:04.2932448Z FOUND /tmp/dialog_e2e_33215991940.wav (37 bytes)
+2026-09-13T20:41:04.2943897Z FOUND /tmp/dialog_e2e_33248080006.wav (37 bytes)
+2026-09-13T20:41:04.2956853Z FOUND /tmp/dialog_e2e_33248910201.wav (37 bytes)
+2026-09-13T20:41:04.2969137Z FOUND /tmp/dialog_e2e_33250361541.wav (37 bytes)
+2026-09-13T20:41:04.2980490Z FOUND /tmp/dialog_e2e_33250747197.wav (37 bytes)
+2026-09-13T20:41:04.2992120Z FOUND /tmp/dialog_e2e_33251704187.wav (37 bytes)
+2026-09-13T20:41:04.3004134Z FOUND /tmp/dialog_e2e_33251879328.wav (37 bytes)
+2026-09-13T20:41:04.3014634Z FOUND /tmp/dialog_e2e_33321193003.wav (37 bytes)
+2026-09-13T20:41:04.3027419Z FOUND /tmp/dialog_e2e_33697728942.wav (37 bytes)
+2026-09-13T20:41:04.3038099Z FOUND /tmp/dialog_e2e_34078397885.wav (37 bytes)
+2026-09-13T20:41:04.3049777Z FOUND /tmp/dialog_e2e_34081277549.wav (37 bytes)
+2026-09-13T20:41:04.3060502Z FOUND /tmp/dialog_e2e_34084061770.wav (37 bytes)
+2026-09-13T20:41:04.3070469Z FOUND /tmp/dialog_e2e_34088297134.wav (37 bytes)
+2026-09-13T20:41:04.3081400Z FOUND /tmp/dialog_e2e_34092976825.wav (37 bytes)
+2026-09-13T20:41:04.3093783Z FOUND /tmp/dialog_e2e_34101770324.wav (37 bytes)
+2026-09-13T20:41:04.3104100Z FOUND /tmp/dialog_e2e_34104838003.wav (37 bytes)
+2026-09-13T20:41:04.3114787Z FOUND /tmp/dialog_e2e_34109180859.wav (37 bytes)
+2026-09-13T20:41:04.3125461Z FOUND /tmp/dialog_e2e_34114044059.wav (37 bytes)
+2026-09-13T20:41:04.3135132Z FOUND /tmp/dialog_e2e_34145051613.wav (37 bytes)
+2026-09-13T20:41:04.3145306Z FOUND /tmp/dialog_e2e_34149566225.wav (37 bytes)
+2026-09-13T20:41:04.3156036Z FOUND /tmp/dialog_e2e_34151682423.wav (37 bytes)
+2026-09-13T20:41:04.3166565Z FOUND /tmp/dialog_e2e_34176998537.wav (37 bytes)
+2026-09-13T20:41:04.3177144Z FOUND /tmp/dialog_e2e_34204387863.wav (37 bytes)
+2026-09-13T20:41:04.3188061Z FOUND /tmp/dialog_e2e_34215827176.wav (37 bytes)
+2026-09-13T20:41:04.3198714Z FOUND /tmp/dialog_e2e_34220140560.wav (37 bytes)
+2026-09-13T20:41:04.3209550Z FOUND /tmp/dialog_e2e_34224851694.wav (37 bytes)
+2026-09-13T20:41:04.3219726Z FOUND /tmp/dialog_e2e_34228935710.wav (37 bytes)
+2026-09-13T20:41:04.3229798Z FOUND /tmp/dialog_e2e_34257453078.wav (37 bytes)
+2026-09-13T20:41:04.3239911Z FOUND /tmp/dialog_e2e_34262726337.wav (37 bytes)
+2026-09-13T20:41:04.3250631Z FOUND /tmp/dialog_e2e_34270645246.wav (37 bytes)
+2026-09-13T20:41:04.3261052Z FOUND /tmp/dialog_e2e_34282186515.wav (37 bytes)
+2026-09-13T20:41:04.3271037Z FOUND /tmp/dialog_e2e_34285356448.wav (37 bytes)
+2026-09-13T20:41:04.3281806Z FOUND /tmp/dialog_e2e_34289951387.wav (37 bytes)
+2026-09-13T20:41:04.3292310Z FOUND /tmp/dialog_e2e_34293994215.wav (37 bytes)
+2026-09-13T20:41:04.3301846Z FOUND /tmp/dialog_e2e_34297761298.wav (37 bytes)
+2026-09-13T20:41:04.3311300Z FOUND /tmp/dialog_e2e_34301433776.wav (37 bytes)
+2026-09-13T20:41:04.3321427Z FOUND /tmp/dialog_e2e_34305709690.wav (37 bytes)
+2026-09-13T20:41:04.3331149Z FOUND /tmp/dialog_e2e_34309866562.wav (37 bytes)
+2026-09-13T20:41:04.3340737Z FOUND /tmp/dialog_e2e_34313927118.wav (37 bytes)
+2026-09-13T20:41:04.3350047Z FOUND /tmp/dialog_e2e_34332401217.wav (37 bytes)
+2026-09-13T20:41:04.3359799Z FOUND /tmp/dialog_e2e_34349601712.wav (37 bytes)
+2026-09-13T20:41:04.3369671Z FOUND /tmp/dialog_e2e_34371875136.wav (37 bytes)
+2026-09-13T20:41:04.3379870Z FOUND /tmp/dialog_e2e_34378063859.wav (37 bytes)
+2026-09-13T20:41:04.3389970Z FOUND /tmp/dialog_e2e_34385886254.wav (37 bytes)
+2026-09-13T20:41:04.3400184Z FOUND /tmp/dialog_e2e_34408526453.wav (37 bytes)
+2026-09-13T20:41:04.3410574Z FOUND /tmp/dialog_e2e_34409673801.wav (37 bytes)
+2026-09-13T20:41:04.3420019Z FOUND /tmp/dialog_e2e_34410983176.wav (37 bytes)
+2026-09-13T20:41:04.3430676Z FOUND /tmp/dialog_e2e_34412309291.wav (37 bytes)
+2026-09-13T20:41:04.3440332Z FOUND /tmp/dialog_e2e_34414065635.wav (37 bytes)
+2026-09-13T20:41:04.3449721Z FOUND /tmp/dialog_e2e_34415512162.wav (37 bytes)
+2026-09-13T20:41:04.3459759Z FOUND /tmp/dialog_e2e_34417076799.wav (37 bytes)
+2026-09-13T20:41:04.3470070Z FOUND /tmp/dialog_e2e_34419068348.wav (37 bytes)
+2026-09-13T20:41:04.3480492Z FOUND /tmp/dialog_e2e_34420601890.wav (37 bytes)
+2026-09-13T20:41:04.3491099Z FOUND /tmp/dialog_e2e_34422134870.wav (37 bytes)
+2026-09-13T20:41:04.3501877Z FOUND /tmp/dialog_e2e_34424368713.wav (37 bytes)
+2026-09-13T20:41:04.3513540Z FOUND /tmp/dialog_e2e_34425627711.wav (37 bytes)
+2026-09-13T20:41:04.3523627Z FOUND /tmp/dialog_e2e_34519484411.wav (37 bytes)
+2026-09-13T20:41:04.3534089Z FOUND /tmp/dialog_e2e_34520824199.wav (37 bytes)
+2026-09-13T20:41:04.3545247Z FOUND /tmp/dialog_e2e_34522852773.wav (37 bytes)
+2026-09-13T20:41:04.3555876Z FOUND /tmp/dialog_e2e_34524722323.wav (37 bytes)
+2026-09-13T20:41:04.3566437Z FOUND /tmp/dialog_e2e_34638767538.wav (37 bytes)
+2026-09-13T20:41:04.3577869Z FOUND /tmp/dialog_e2e_34639969797.wav (37 bytes)
+2026-09-13T20:41:04.3590777Z FOUND /tmp/dialog_e2e_34641925619.wav (37 bytes)
+2026-09-13T20:41:04.3601181Z FOUND /tmp/dialog_e2e_34643605594.wav (37 bytes)
+2026-09-13T20:41:04.3613643Z FOUND /tmp/dialog_e2e_34778720436.wav (37 bytes)
+2026-09-13T20:41:04.3624882Z FOUND /tmp/dialog_e2e_34779436302.wav (37 bytes)
+2026-09-13T20:41:04.3635718Z FOUND /tmp/dialog_e2e_34780571796.wav (37 bytes)
+2026-09-13T20:41:04.3646659Z FOUND /tmp/e2e_atomic_out.log (14708 bytes)
+2026-09-13T20:41:04.3649858Z DIR /tmp/e2e_v2_33215991940
+2026-09-13T20:41:04.3650343Z DIR /tmp/e2e_v2_33248080006
+2026-09-13T20:41:04.3650771Z DIR /tmp/e2e_v2_33248910201
+2026-09-13T20:41:04.3651197Z DIR /tmp/e2e_v2_33250361541
+2026-09-13T20:41:04.3651732Z DIR /tmp/e2e_v2_33250747197
+2026-09-13T20:41:04.3652163Z DIR /tmp/e2e_v2_33251704187
+2026-09-13T20:41:04.3652585Z DIR /tmp/e2e_v2_33251879328
+2026-09-13T20:41:04.3652902Z DIR /tmp/e2e_v2_33321193003
+2026-09-13T20:41:04.3653140Z DIR /tmp/e2e_v2_33697728942
+2026-09-13T20:41:04.3653555Z DIR /tmp/e2e_v2_34078397885
+2026-09-13T20:41:04.3653941Z DIR /tmp/e2e_v2_34081277549
+2026-09-13T20:41:04.3654320Z DIR /tmp/e2e_v2_34084061770
+2026-09-13T20:41:04.3654645Z DIR /tmp/e2e_v2_34088297134
+2026-09-13T20:41:04.3655031Z DIR /tmp/e2e_v2_34092976825
+2026-09-13T20:41:04.3655414Z DIR /tmp/e2e_v2_34101770324
+2026-09-13T20:41:04.3655810Z DIR /tmp/e2e_v2_34104838003
+2026-09-13T20:41:04.3656196Z DIR /tmp/e2e_v2_34109180859
+2026-09-13T20:41:04.3656561Z DIR /tmp/e2e_v2_34114044059
+2026-09-13T20:41:04.3656913Z DIR /tmp/e2e_v2_34145051613
+2026-09-13T20:41:04.3657310Z DIR /tmp/e2e_v2_34149566225
+2026-09-13T20:41:04.3657718Z DIR /tmp/e2e_v2_34151682423
+2026-09-13T20:41:04.3658122Z DIR /tmp/e2e_v2_34176998537
+2026-09-13T20:41:04.3658546Z DIR /tmp/e2e_v2_34204387863
+2026-09-13T20:41:04.3659152Z DIR /tmp/e2e_v2_34215827176
+2026-09-13T20:41:04.3659540Z DIR /tmp/e2e_v2_34220140560
+2026-09-13T20:41:04.3659912Z DIR /tmp/e2e_v2_34224851694
+2026-09-13T20:41:04.3660280Z DIR /tmp/e2e_v2_34228935710
+2026-09-13T20:41:04.3660652Z DIR /tmp/e2e_v2_34257453078
+2026-09-13T20:41:04.3661026Z DIR /tmp/e2e_v2_34262726337
+2026-09-13T20:41:04.3661439Z DIR /tmp/e2e_v2_34270645246
+2026-09-13T20:41:04.3662055Z DIR /tmp/e2e_v2_34282186515
+2026-09-13T20:41:04.3662461Z DIR /tmp/e2e_v2_34285356448
+2026-09-13T20:41:04.3663124Z DIR /tmp/e2e_v2_34289951387
+2026-09-13T20:41:04.3663430Z DIR /tmp/e2e_v2_34293994215
+2026-09-13T20:41:04.3663662Z DIR /tmp/e2e_v2_34297761298
+2026-09-13T20:41:04.3663893Z DIR /tmp/e2e_v2_34301433776
+2026-09-13T20:41:04.3664129Z DIR /tmp/e2e_v2_34305709690
+2026-09-13T20:41:04.3664362Z DIR /tmp/e2e_v2_34309866562
+2026-09-13T20:41:04.3664865Z DIR /tmp/e2e_v2_34313927118
+2026-09-13T20:41:04.3665102Z DIR /tmp/e2e_v2_34332401217
+2026-09-13T20:41:04.3665504Z DIR /tmp/e2e_v2_34349601712
+2026-09-13T20:41:04.3665739Z DIR /tmp/e2e_v2_34371875136
+2026-09-13T20:41:04.3665975Z DIR /tmp/e2e_v2_34378063859
+2026-09-13T20:41:04.3666212Z DIR /tmp/e2e_v2_34385886254
+2026-09-13T20:41:04.3666446Z DIR /tmp/e2e_v2_34408526453
+2026-09-13T20:41:04.3666677Z DIR /tmp/e2e_v2_34409673801
+2026-09-13T20:41:04.3666911Z DIR /tmp/e2e_v2_34410983176
+2026-09-13T20:41:04.3667142Z DIR /tmp/e2e_v2_34412309291
+2026-09-13T20:41:04.3667376Z DIR /tmp/e2e_v2_34414065635
+2026-09-13T20:41:04.3667609Z DIR /tmp/e2e_v2_34415512162
+2026-09-13T20:41:04.3667850Z DIR /tmp/e2e_v2_34417076799
+2026-09-13T20:41:04.3668091Z DIR /tmp/e2e_v2_34419068348
+2026-09-13T20:41:04.3668325Z DIR /tmp/e2e_v2_34420601890
+2026-09-13T20:41:04.3668596Z DIR /tmp/e2e_v2_34422134870
+2026-09-13T20:41:04.3669200Z DIR /tmp/e2e_v2_34424368713
+2026-09-13T20:41:04.3669489Z DIR /tmp/e2e_v2_34425627711
+2026-09-13T20:41:04.3669731Z DIR /tmp/e2e_v2_34519484411
+2026-09-13T20:41:04.3669971Z DIR /tmp/e2e_v2_34520824199
+2026-09-13T20:41:04.3670359Z DIR /tmp/e2e_v2_34522852773
+2026-09-13T20:41:04.3670613Z DIR /tmp/e2e_v2_34524722323
+2026-09-13T20:41:04.3670849Z DIR /tmp/e2e_v2_34638767538
+2026-09-13T20:41:04.3671086Z DIR /tmp/e2e_v2_34639969797
+2026-09-13T20:41:04.3671322Z DIR /tmp/e2e_v2_34641925619
+2026-09-13T20:41:04.3671619Z DIR /tmp/e2e_v2_34643605594
+2026-09-13T20:41:04.3672007Z DIR /tmp/e2e_v2_34778720436
+2026-09-13T20:41:04.3672368Z DIR /tmp/e2e_v2_34779436302
+2026-09-13T20:41:04.3672919Z DIR /tmp/e2e_v2_34780571796
+2026-09-13T20:41:04.3682817Z ---END-LIST---
+2026-09-13T20:41:04.5653680Z   primary: /tmp/e2e_v2_34780571796
+2026-09-13T20:41:04.5670564Z   rsync -a /tmp/e2e_v2_34780571796/ → /tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/
+2026-09-13T20:41:04.8964832Z   sanitize: найдено 56 файлов с '?' в имени — заменяю на '_'
+2026-09-13T20:41:05.1070635Z   scp /tmp/e2e_atomic_out.log
+2026-09-13T20:41:05.3266070Z   try scp /tmp/dialog_e2e_34780571796.wav
+2026-09-13T20:41:05.6358669Z === collected e2e_artifacts_34780571796/ contents ===
+2026-09-13T20:41:05.6375266Z 34699658	/tmp/e2e_artifacts_34780571796/dialog_e2e_34780571796.wav
+2026-09-13T20:41:05.6375873Z 14708	/tmp/e2e_artifacts_34780571796/e2e_atomic_out.log
+2026-09-13T20:41:05.6376311Z 1310	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/acceptance.json
+2026-09-13T20:41:05.6376885Z 71400	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/.acceptance_n306_who_was_talking.txt
+2026-09-13T20:41:05.6377686Z 69627	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/.acceptance_n310_execute_backlog_lru.txt
+2026-09-13T20:41:05.6378849Z 41568	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/.acceptance_n312_stop_music.txt
+2026-09-13T20:41:05.6379642Z 34441	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/.acceptance_n313_silence_restored.txt
+2026-09-13T20:41:05.6380512Z 87	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/audio_metrics.json
+2026-09-13T20:41:05.6381372Z 59	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/baseline_diff.json
+2026-09-13T20:41:05.6382415Z 205832	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/cmd_n301_wake_open_eq.wav
+2026-09-13T20:41:05.6383481Z 217446	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/cmd_n301_wake_open.wav
+2026-09-13T20:41:05.6384464Z 334006	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/cmd_n302_bg_sasha_eq.wav
+2026-09-13T20:41:05.6385259Z 394086	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/cmd_n302_bg_sasha.wav
+2026-09-13T20:41:05.6386084Z 345150	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/cmd_n303_bg_boris_eq.wav
+2026-09-13T20:41:05.6387061Z 409446	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/cmd_n303_bg_boris.wav
+2026-09-13T20:41:05.6388376Z 327318	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/cmd_n304_bg_grisha_unknown_eq.wav
+2026-09-13T20:41:05.6389484Z 384870	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/cmd_n304_bg_grisha_unknown.wav
+2026-09-13T20:41:05.6390555Z 336978	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/cmd_n305_bg_valera_unknown_eq.wav
+2026-09-13T20:41:05.6391793Z 398182	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/cmd_n305_bg_valera_unknown.wav
+2026-09-13T20:41:05.6393015Z 301682	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/cmd_n306_who_was_talking_eq.wav
+2026-09-13T20:41:05.6394088Z 349542	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/cmd_n306_who_was_talking.wav
+2026-09-13T20:41:05.6395185Z 203602	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/cmd_n307_count_voices_eq.wav
+2026-09-13T20:41:05.6395797Z 214374	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/cmd_n307_count_voices.wav
+2026-09-13T20:41:05.6396618Z 213632	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/cmd_n308_bg_command_boris_eq.wav
+2026-09-13T20:41:05.6397535Z 228198	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/cmd_n308_bg_command_boris.wav
+2026-09-13T20:41:05.6398564Z 202488	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/cmd_n309_bg_command_valera_eq.wav
+2026-09-13T20:41:05.6399695Z 212838	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/cmd_n309_bg_command_valera.wav
+2026-09-13T20:41:05.6401064Z 158276	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/cmd_n310_execute_backlog_lru_eq.wav
+2026-09-13T20:41:05.6402318Z 151910	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/cmd_n310_execute_backlog_lru.wav
+2026-09-13T20:41:05.6403229Z 139330	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/cmd_n311_who_asked_eq.wav
+2026-09-13T20:41:05.6403997Z 125798	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/cmd_n311_who_asked.wav
+2026-09-13T20:41:05.6405077Z 191342	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/cmd_n312_stop_music_eq.wav
+2026-09-13T20:41:05.6406171Z 197478	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/cmd_n312_stop_music.wav
+2026-09-13T20:41:05.6407239Z 110350	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/cmd_n313_silence_restored_eq.wav
+2026-09-13T20:41:05.6408204Z 85862	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/cmd_n313_silence_restored.wav
+2026-09-13T20:41:05.6408743Z 494	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/cycle_log.txt
+2026-09-13T20:41:05.6409225Z 481315	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/.gate1_logs.txt
+2026-09-13T20:41:05.6409748Z 792	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/health_snapshot.json
+2026-09-13T20:41:05.6410484Z 835	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/llm_quota.txt
+2026-09-13T20:41:05.6411347Z 34699658	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/recording.wav
+2026-09-13T20:41:05.6412285Z 8724	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/scenario.json
+2026-09-13T20:41:05.6413215Z 4600	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/scenario_parsed.txt
+2026-09-13T20:41:05.6414219Z 134	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/synth_n301_wake_open.log
+2026-09-13T20:41:05.6414967Z 134	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/synth_n302_bg_sasha.log
+2026-09-13T20:41:05.6415705Z 134	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/synth_n303_bg_boris.log
+2026-09-13T20:41:05.6416778Z 134	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/synth_n304_bg_grisha_unknown.log
+2026-09-13T20:41:05.6417939Z 136	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/synth_n305_bg_valera_unknown.log
+2026-09-13T20:41:05.6418992Z 134	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/synth_n306_who_was_talking.log
+2026-09-13T20:41:05.6420023Z 134	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/synth_n307_count_voices.log
+2026-09-13T20:41:05.6420717Z 134	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/synth_n308_bg_command_boris.log
+2026-09-13T20:41:05.6421317Z 136	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/synth_n309_bg_command_valera.log
+2026-09-13T20:41:05.6422570Z 134	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/synth_n310_execute_backlog_lru.log
+2026-09-13T20:41:05.6423645Z 134	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/synth_n311_who_asked.log
+2026-09-13T20:41:05.6424681Z 135	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/synth_n312_stop_music.log
+2026-09-13T20:41:05.6425757Z 132	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/synth_n313_silence_restored.log
+2026-09-13T20:41:05.6426536Z 311	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/transcript.json
+2026-09-13T20:41:05.6427363Z 5	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/verdict.txt
+2026-09-13T20:41:05.6428295Z 218	/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/wake_gate_preflight.json
+2026-09-13T20:41:05.6508442Z ##[group]Run actions/upload-artifact@v7
+2026-09-13T20:41:05.6508995Z with:
+2026-09-13T20:41:05.6509384Z   name: e2e-voice-recording-34780571796
+2026-09-13T20:41:05.6509951Z   path: /tmp/e2e_artifacts_34780571796/**/*.wav
+2026-09-13T20:41:05.6510545Z   retention-days: 7
+2026-09-13T20:41:05.6510856Z   if-no-files-found: warn
+2026-09-13T20:41:05.6511170Z   compression-level: 6
+2026-09-13T20:41:05.6511616Z   overwrite: false
+2026-09-13T20:41:05.6512033Z   include-hidden-files: false
+2026-09-13T20:41:05.6512494Z   archive: true
+2026-09-13T20:41:05.6512854Z env:
+2026-09-13T20:41:05.6513229Z   YKEY_LOCAL: /tmp/yandex_key_622.txt
+2026-09-13T20:41:05.6513781Z   ART_DIR: /tmp/e2e_artifacts_34780571796
+2026-09-13T20:41:05.6514279Z ##[endgroup]
+2026-09-13T20:41:05.7817337Z With the provided path, there will be 28 files uploaded
+2026-09-13T20:41:05.7821328Z Artifact name is valid!
+2026-09-13T20:41:05.7822324Z Root directory input is valid!
+2026-09-13T20:41:06.5001699Z Uploading artifact: e2e-voice-recording-34780571796.zip
+2026-09-13T20:41:06.5111140Z Beginning upload of artifact content to blob storage
+2026-09-13T20:41:32.6914050Z Uploaded bytes 8388608
+2026-09-13T20:41:35.7659812Z Uploaded bytes 16777216
+2026-09-13T20:41:38.2509194Z Uploaded bytes 25165824
+2026-09-13T20:41:39.0105877Z Uploaded bytes 33554432
+2026-09-13T20:41:50.3211347Z Uploaded bytes 41943040
+2026-09-13T20:41:50.9960170Z Uploaded bytes 50331648
+2026-09-13T20:41:53.3160590Z Uploaded bytes 52727847
+2026-09-13T20:41:53.5709389Z Finished uploading artifact content to blob storage!
+2026-09-13T20:41:53.5716227Z SHA256 digest of uploaded artifact is d9527b4a31187a79ca94165de933e7946608fd16ee87c5cf7d8dacd5d585e99b
+2026-09-13T20:41:53.5718802Z Finalizing artifact upload
+2026-09-13T20:41:54.3522279Z Artifact e2e-voice-recording-34780571796 successfully finalized. Artifact ID 10324848643
+2026-09-13T20:41:54.3525698Z Artifact e2e-voice-recording-34780571796 has been successfully uploaded! Final size is 52727847 bytes. Artifact ID is 10324848643
+2026-09-13T20:41:54.3538992Z Artifact download URL: https://github.com/krikz/rob_box_project/actions/runs/34780571796/artifacts/10324848643
+2026-09-13T20:41:54.3913755Z ##[group]Run actions/upload-artifact@v7
+2026-09-13T20:41:54.3914069Z with:
+2026-09-13T20:41:54.3914279Z   name: e2e-voice-logs-34780571796
+2026-09-13T20:41:54.3915341Z   path: /tmp/voice_e2e_34780571796.log
+/tmp/e2e_verdict.log
+/tmp/e2e_timing.txt
+/tmp/e2e_collect.log
+/tmp/e2e_artifacts_34780571796/e2e_atomic_out.log
+/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/*.log
+/tmp/e2e_artifacts_34780571796/e2e_v2_34780571796/*/*.log
+
+2026-09-13T20:41:54.3916416Z   retention-days: 7
+2026-09-13T20:41:54.3916637Z   if-no-files-found: warn
+2026-09-13T20:41:54.3916877Z   compression-level: 6
+2026-09-13T20:41:54.3917104Z   overwrite: false
+2026-09-13T20:41:54.3917325Z   include-hidden-files: false
+2026-09-13T20:41:54.3917569Z   archive: true
+2026-09-13T20:41:54.3917759Z env:
+2026-09-13T20:41:54.3917959Z   YKEY_LOCAL: /tmp/yandex_key_622.txt
+2026-09-13T20:41:54.3918245Z   ART_DIR: /tmp/e2e_artifacts_34780571796
+2026-09-13T20:41:54.3918516Z ##[endgroup]
+2026-09-13T20:41:54.5299422Z Multiple search paths detected. Calculating the least common ancestor of all paths
+2026-09-13T20:41:54.5301703Z The least common ancestor is /tmp. This will be the root directory of the artifact
+2026-09-13T20:41:54.5302826Z With the provided path, there will be 17 files uploaded
+2026-09-13T20:41:54.5305697Z Artifact name is valid!
+2026-09-13T20:41:54.5306115Z Root directory input is valid!
+2026-09-13T20:41:55.2125135Z Uploading artifact: e2e-voice-logs-34780571796.zip
+2026-09-13T20:41:55.2164728Z Beginning upload of artifact content to blob storage
+2026-09-13T20:41:56.1387055Z Uploaded bytes 12400
+2026-09-13T20:41:56.3343203Z Finished uploading artifact content to blob storage!
+2026-09-13T20:41:56.3346786Z SHA256 digest of uploaded artifact is 6549dd4ff51982efa2caaf0d68dc48bf22f5482e944ee788d04b068f0d847991
+2026-09-13T20:41:56.3349421Z Finalizing artifact upload
+2026-09-13T20:41:57.0440318Z Artifact e2e-voice-logs-34780571796 successfully finalized. Artifact ID 10325098255
+2026-09-13T20:41:57.0441145Z Artifact e2e-voice-logs-34780571796 has been successfully uploaded! Final size is 12400 bytes. Artifact ID is 10325098255
+2026-09-13T20:41:57.0444147Z Artifact download URL: https://github.com/krikz/rob_box_project/actions/runs/34780571796/artifacts/10325098255
+2026-09-13T20:41:57.0564219Z ##[group]Run actions/upload-artifact@v7
+2026-09-13T20:41:57.0564619Z with:
+2026-09-13T20:41:57.0564885Z   name: e2e-voice-model-34780571796
+2026-09-13T20:41:57.0565337Z   path: model.json
+/tmp/e2e_artifacts_34780571796/**/model.json
+
+2026-09-13T20:41:57.0565798Z   retention-days: 30
+2026-09-13T20:41:57.0566094Z   if-no-files-found: warn
+2026-09-13T20:41:57.0566404Z   compression-level: 6
+2026-09-13T20:41:57.0566690Z   overwrite: false
+2026-09-13T20:41:57.0566977Z   include-hidden-files: false
+2026-09-13T20:41:57.0567291Z   archive: true
+2026-09-13T20:41:57.0567633Z env:
+2026-09-13T20:41:57.0567825Z   YKEY_LOCAL: /tmp/yandex_key_622.txt
+2026-09-13T20:41:57.0568104Z   ART_DIR: /tmp/e2e_artifacts_34780571796
+2026-09-13T20:41:57.0568373Z ##[endgroup]
+2026-09-13T20:41:57.1882685Z Multiple search paths detected. Calculating the least common ancestor of all paths
+2026-09-13T20:41:57.1884215Z The least common ancestor is /. This will be the root directory of the artifact
+2026-09-13T20:41:57.1895281Z ##[warning]No files were found with the provided path: model.json
+/tmp/e2e_artifacts_34780571796/**/model.json. No artifacts will be uploaded.
+2026-09-13T20:41:57.1980870Z ##[group]Run actions/upload-artifact@v7
+2026-09-13T20:41:57.1981198Z with:
+2026-09-13T20:41:57.1981414Z   name: e2e-voice-artifacts-34780571796
+2026-09-13T20:41:57.1983183Z   path: /tmp/e2e_artifacts_34780571796/**/*.log
+/tmp/e2e_artifacts_34780571796/**/*.txt
+/tmp/e2e_artifacts_34780571796/**/*.json
+/tmp/e2e_artifacts_34780571796/**/*.jsonl
+/tmp/e2e_artifacts_34780571796/**/*.csv
+/tmp/e2e_artifacts_34780571796/**/*.md
+
+2026-09-13T20:41:57.1984197Z   retention-days: 14
+2026-09-13T20:41:57.1984429Z   if-no-files-found: error
+2026-09-13T20:41:57.1984680Z   compression-level: 6
+2026-09-13T20:41:57.1984906Z   overwrite: false
+2026-09-13T20:41:57.1985134Z   include-hidden-files: false
+2026-09-13T20:41:57.1985399Z   archive: true
+2026-09-13T20:41:57.1985594Z env:
+2026-09-13T20:41:57.1985794Z   YKEY_LOCAL: /tmp/yandex_key_622.txt
+2026-09-13T20:41:57.1986088Z   ART_DIR: /tmp/e2e_artifacts_34780571796
+2026-09-13T20:41:57.1986365Z ##[endgroup]
+2026-09-13T20:41:57.3315811Z With the provided path, there will be 25 files uploaded
+2026-09-13T20:41:57.3316331Z Artifact name is valid!
+2026-09-13T20:41:57.3316580Z Root directory input is valid!
+2026-09-13T20:41:58.0839350Z Uploading artifact: e2e-voice-artifacts-34780571796.zip
+2026-09-13T20:41:58.0876825Z Beginning upload of artifact content to blob storage
+2026-09-13T20:41:59.3520683Z Uploaded bytes 15760
+2026-09-13T20:41:59.5419720Z Finished uploading artifact content to blob storage!
+2026-09-13T20:41:59.5421961Z SHA256 digest of uploaded artifact is 7cbdd3bb00d8ff674b4092f407e3adc4fe2b9a624f0acdf038230ccbdc21900c
+2026-09-13T20:41:59.5423868Z Finalizing artifact upload
+2026-09-13T20:42:00.2246472Z Artifact e2e-voice-artifacts-34780571796 successfully finalized. Artifact ID 10325028355
+2026-09-13T20:42:00.2254858Z Artifact e2e-voice-artifacts-34780571796 has been successfully uploaded! Final size is 15760 bytes. Artifact ID is 10325028355
+2026-09-13T20:42:00.2262833Z Artifact download URL: https://github.com/krikz/rob_box_project/actions/runs/34780571796/artifacts/10325028355
+2026-09-13T20:42:00.2379187Z ##[group]Run actions/upload-artifact@v7
+2026-09-13T20:42:00.2379545Z with:
+2026-09-13T20:42:00.2379791Z   name: e2e-voice-transcripts-34780571796
+2026-09-13T20:42:00.2380150Z   path: /e2e_v2_34780571796/transcript.json
+2026-09-13T20:42:00.2380478Z   retention-days: 7
+2026-09-13T20:42:00.2380739Z   if-no-files-found: ignore
+2026-09-13T20:42:00.2381020Z   compression-level: 6
+2026-09-13T20:42:00.2381411Z   overwrite: false
+2026-09-13T20:42:00.2381964Z   include-hidden-files: false
+2026-09-13T20:42:00.2382372Z   archive: true
+2026-09-13T20:42:00.2382699Z env:
+2026-09-13T20:42:00.2382901Z   YKEY_LOCAL: /tmp/yandex_key_622.txt
+2026-09-13T20:42:00.2383186Z   ART_DIR: /tmp/e2e_artifacts_34780571796
+2026-09-13T20:42:00.2383471Z ##[endgroup]
+2026-09-13T20:42:00.3589786Z No files were found with the provided path: /e2e_v2_34780571796/transcript.json. No artifacts will be uploaded.
+2026-09-13T20:42:00.3703021Z ##[group]Run actions/upload-artifact@v7
+2026-09-13T20:42:00.3703343Z with:
+2026-09-13T20:42:00.3703570Z   name: e2e-voice-audio-metrics-34780571796
+2026-09-13T20:42:00.3703908Z   path: /e2e_v2_34780571796/audio_metrics.json
+2026-09-13T20:42:00.3704213Z   retention-days: 7
+2026-09-13T20:42:00.3704447Z   if-no-files-found: ignore
+2026-09-13T20:42:00.3704703Z   compression-level: 6
+2026-09-13T20:42:00.3704939Z   overwrite: false
+2026-09-13T20:42:00.3705172Z   include-hidden-files: false
+2026-09-13T20:42:00.3705432Z   archive: true
+2026-09-13T20:42:00.3705632Z env:
+2026-09-13T20:42:00.3705844Z   YKEY_LOCAL: /tmp/yandex_key_622.txt
+2026-09-13T20:42:00.3706140Z   ART_DIR: /tmp/e2e_artifacts_34780571796
+2026-09-13T20:42:00.3706429Z ##[endgroup]
+2026-09-13T20:42:00.4928120Z No files were found with the provided path: /e2e_v2_34780571796/audio_metrics.json. No artifacts will be uploaded.
+2026-09-13T20:42:00.5030048Z ##[group]Run actions/upload-artifact@v7
+2026-09-13T20:42:00.5030384Z with:
+2026-09-13T20:42:00.5030615Z   name: e2e-voice-baseline-diff-34780571796
+2026-09-13T20:42:00.5030964Z   path: /e2e_v2_34780571796/baseline_diff.json
+2026-09-13T20:42:00.5031278Z   retention-days: 7
+2026-09-13T20:42:00.5031600Z   if-no-files-found: ignore
+2026-09-13T20:42:00.5032304Z   compression-level: 6
+2026-09-13T20:42:00.5032704Z   overwrite: false
+2026-09-13T20:42:00.5032940Z   include-hidden-files: false
+2026-09-13T20:42:00.5033207Z   archive: true
+2026-09-13T20:42:00.5033411Z env:
+2026-09-13T20:42:00.5033626Z   YKEY_LOCAL: /tmp/yandex_key_622.txt
+2026-09-13T20:42:00.5033927Z   ART_DIR: /tmp/e2e_artifacts_34780571796
+2026-09-13T20:42:00.5034220Z ##[endgroup]
+2026-09-13T20:42:00.6275343Z No files were found with the provided path: /e2e_v2_34780571796/baseline_diff.json. No artifacts will be uploaded.
+2026-09-13T20:42:00.6381502Z ##[group]Run actions/upload-artifact@v7
+2026-09-13T20:42:00.6382200Z with:
+2026-09-13T20:42:00.6382595Z   name: e2e-voice-acceptance-34780571796
+2026-09-13T20:42:00.6382915Z   path: /e2e_v2_34780571796/acceptance.json
+2026-09-13T20:42:00.6383211Z   retention-days: 7
+2026-09-13T20:42:00.6383445Z   if-no-files-found: ignore
+2026-09-13T20:42:00.6383699Z   compression-level: 6
+2026-09-13T20:42:00.6383933Z   overwrite: false
+2026-09-13T20:42:00.6384161Z   include-hidden-files: false
+2026-09-13T20:42:00.6384419Z   archive: true
+2026-09-13T20:42:00.6384618Z env:
+2026-09-13T20:42:00.6384828Z   YKEY_LOCAL: /tmp/yandex_key_622.txt
+2026-09-13T20:42:00.6385125Z   ART_DIR: /tmp/e2e_artifacts_34780571796
+2026-09-13T20:42:00.6385411Z ##[endgroup]
+2026-09-13T20:42:00.7633750Z No files were found with the provided path: /e2e_v2_34780571796/acceptance.json. No artifacts will be uploaded.
+2026-09-13T20:42:00.7736921Z ##[group]Run actions/upload-artifact@v7
+2026-09-13T20:42:00.7737253Z with:
+2026-09-13T20:42:00.7737618Z   name: e2e-voice-timing-34780571796
+2026-09-13T20:42:00.7737920Z   path: /tmp/e2e_timing.json
+2026-09-13T20:42:00.7738201Z   retention-days: 7
+2026-09-13T20:42:00.7738438Z   if-no-files-found: ignore
+2026-09-13T20:42:00.7738700Z   compression-level: 6
+2026-09-13T20:42:00.7738936Z   overwrite: false
+2026-09-13T20:42:00.7739174Z   include-hidden-files: false
+2026-09-13T20:42:00.7739434Z   archive: true
+2026-09-13T20:42:00.7739641Z env:
+2026-09-13T20:42:00.7739855Z   YKEY_LOCAL: /tmp/yandex_key_622.txt
+2026-09-13T20:42:00.7740159Z   ART_DIR: /tmp/e2e_artifacts_34780571796
+2026-09-13T20:42:00.7740454Z ##[endgroup]
+2026-09-13T20:42:00.8966844Z With the provided path, there will be 1 file uploaded
+2026-09-13T20:42:00.8971060Z Artifact name is valid!
+2026-09-13T20:42:00.8971806Z Root directory input is valid!
+2026-09-13T20:42:01.5820651Z Uploading artifact: e2e-voice-timing-34780571796.zip
+2026-09-13T20:42:01.5930555Z Beginning upload of artifact content to blob storage
+2026-09-13T20:42:02.2908187Z Uploaded bytes 552
+2026-09-13T20:42:02.4807503Z Finished uploading artifact content to blob storage!
+2026-09-13T20:42:02.4810463Z SHA256 digest of uploaded artifact is d8544dd408b62192f2022549f3d4e21856ddb14fd9bd2e084bc2a4baee9ba2ea
+2026-09-13T20:42:02.4813431Z Finalizing artifact upload
+2026-09-13T20:42:03.1954834Z Artifact e2e-voice-timing-34780571796 successfully finalized. Artifact ID 10325058436
+2026-09-13T20:42:03.1957812Z Artifact e2e-voice-timing-34780571796 has been successfully uploaded! Final size is 552 bytes. Artifact ID is 10325058436
+2026-09-13T20:42:03.1965385Z Artifact download URL: https://github.com/krikz/rob_box_project/actions/runs/34780571796/artifacts/10325058436
+2026-09-13T20:42:03.2244580Z ##[group]Run actions/upload-artifact@v7
+2026-09-13T20:42:03.2244909Z with:
+2026-09-13T20:42:03.2245129Z   name: e2e-voice-diff-34780571796
+2026-09-13T20:42:03.2245443Z   path: /tmp/e2e_pr_diff_34780571796.patch
+2026-09-13T20:42:03.2245741Z   retention-days: 7
+2026-09-13T20:42:03.2245983Z   if-no-files-found: ignore
+2026-09-13T20:42:03.2246260Z   compression-level: 6
+2026-09-13T20:42:03.2246497Z   overwrite: false
+2026-09-13T20:42:03.2246735Z   include-hidden-files: false
+2026-09-13T20:42:03.2247002Z   archive: true
+2026-09-13T20:42:03.2247208Z env:
+2026-09-13T20:42:03.2247423Z   YKEY_LOCAL: /tmp/yandex_key_622.txt
+2026-09-13T20:42:03.2247726Z   ART_DIR: /tmp/e2e_artifacts_34780571796
+2026-09-13T20:42:03.2248017Z ##[endgroup]
+2026-09-13T20:42:03.3550247Z No files were found with the provided path: /tmp/e2e_pr_diff_34780571796.patch. No artifacts will be uploaded.
+2026-09-13T20:42:03.3704597Z Post job cleanup.
+2026-09-13T20:42:03.4411045Z [command]/usr/bin/git version
+2026-09-13T20:42:03.4442608Z git version 2.50.1
+2026-09-13T20:42:03.4469565Z Copying '/root/.gitconfig' to '/runner/_work/_temp/5adb3dec-457b-481e-bbdc-6096a6e60cd1/.gitconfig'
+2026-09-13T20:42:03.4480350Z Temporarily overriding HOME='/runner/_work/_temp/5adb3dec-457b-481e-bbdc-6096a6e60cd1' before making global git config changes
+2026-09-13T20:42:03.4481220Z Adding repository directory to the temporary git global config as a safe directory
+2026-09-13T20:42:03.4490940Z [command]/usr/bin/git config --global --add safe.directory /runner/_work/rob_box_project/rob_box_project
+2026-09-13T20:42:03.4514497Z Removing SSH command configuration
+2026-09-13T20:42:03.4519543Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-09-13T20:42:03.4545577Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-09-13T20:42:03.4701208Z Entering 'src/ros2leds'
+2026-09-13T20:42:03.4732543Z Entering 'src/vesc_nexus'
+2026-09-13T20:42:03.4774852Z Removing HTTP extra header
+2026-09-13T20:42:03.4777937Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-09-13T20:42:03.4805971Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-09-13T20:42:03.4958681Z Entering 'src/ros2leds'
+2026-09-13T20:42:03.4993068Z Entering 'src/vesc_nexus'
+2026-09-13T20:42:03.5032540Z Removing includeIf entries pointing to credentials config files
+2026-09-13T20:42:03.5037370Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-09-13T20:42:03.5056685Z includeif.gitdir:/runner/_work/rob_box_project/rob_box_project/.git.path
+2026-09-13T20:42:03.5057855Z includeif.gitdir:/runner/_work/rob_box_project/rob_box_project/.git/worktrees/*.path
+2026-09-13T20:42:03.5058815Z includeif.gitdir:/github/workspace/.git.path
+2026-09-13T20:42:03.5059550Z includeif.gitdir:/github/workspace/.git/worktrees/*.path
+2026-09-13T20:42:03.5062533Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/runner/_work/rob_box_project/rob_box_project/.git.path
+2026-09-13T20:42:03.5078909Z /runner/_work/_temp/git-credentials-1e39bb34-6d2a-4b2b-8064-469b3d4fc224.config
+2026-09-13T20:42:03.5086504Z [command]/usr/bin/git config --local --unset includeif.gitdir:/runner/_work/rob_box_project/rob_box_project/.git.path \/runner\/_work\/_temp\/git\-credentials\-1e39bb34\-6d2a\-4b2b\-8064\-469b3d4fc224\.config
+2026-09-13T20:42:03.5111146Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/runner/_work/rob_box_project/rob_box_project/.git/worktrees/*.path
+2026-09-13T20:42:03.5127749Z /runner/_work/_temp/git-credentials-1e39bb34-6d2a-4b2b-8064-469b3d4fc224.config
+2026-09-13T20:42:03.5135372Z [command]/usr/bin/git config --local --unset includeif.gitdir:/runner/_work/rob_box_project/rob_box_project/.git/worktrees/*.path \/runner\/_work\/_temp\/git\-credentials\-1e39bb34\-6d2a\-4b2b\-8064\-469b3d4fc224\.config
+2026-09-13T20:42:03.5164217Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/github/workspace/.git.path
+2026-09-13T20:42:03.5185434Z /github/runner_temp/git-credentials-1e39bb34-6d2a-4b2b-8064-469b3d4fc224.config
+2026-09-13T20:42:03.5190882Z [command]/usr/bin/git config --local --unset includeif.gitdir:/github/workspace/.git.path \/github\/runner_temp\/git\-credentials\-1e39bb34\-6d2a\-4b2b\-8064\-469b3d4fc224\.config
+2026-09-13T20:42:03.5217276Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/github/workspace/.git/worktrees/*.path
+2026-09-13T20:42:03.5235961Z /github/runner_temp/git-credentials-1e39bb34-6d2a-4b2b-8064-469b3d4fc224.config
+2026-09-13T20:42:03.5243303Z [command]/usr/bin/git config --local --unset includeif.gitdir:/github/workspace/.git/worktrees/*.path \/github\/runner_temp\/git\-credentials\-1e39bb34\-6d2a\-4b2b\-8064\-469b3d4fc224\.config
+2026-09-13T20:42:03.5268973Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-09-13T20:42:03.5421782Z Entering 'src/ros2leds'
+2026-09-13T20:42:03.5435963Z file:/runner/_work/rob_box_project/rob_box_project/.git/modules/src/ros2leds/config	remote.origin.url
+2026-09-13T20:42:03.5448316Z Entering 'src/vesc_nexus'
+2026-09-13T20:42:03.5462194Z file:/runner/_work/rob_box_project/rob_box_project/.git/modules/src/vesc_nexus/config	remote.origin.url
+2026-09-13T20:42:03.5485112Z [command]/usr/bin/git config --file /runner/_work/rob_box_project/rob_box_project/.git/modules/src/ros2leds/config --name-only --get-regexp ^includeIf\.gitdir:
+2026-09-13T20:42:03.5508058Z [command]/usr/bin/git config --file /runner/_work/rob_box_project/rob_box_project/.git/modules/src/vesc_nexus/config --name-only --get-regexp ^includeIf\.gitdir:
+2026-09-13T20:42:03.5526798Z Removing credentials config '/runner/_work/_temp/git-credentials-1e39bb34-6d2a-4b2b-8064-469b3d4fc224.config'
+2026-09-13T20:42:03.5639778Z Cleaning up orphan processes
