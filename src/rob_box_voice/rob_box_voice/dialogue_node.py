@@ -2176,6 +2176,24 @@ class DialogueNode(Node):
                 with self._speaker_lock:
                     sp = dict(getattr(self, "_current_speaker", {}) or {})
                 sp_name = sanitize_speaker_name(sp.get("name")) if sp.get("is_known") else ""
+                # Issue #2346/t_39b59d89: обратимая диагностика act3 n302/n303/n308.
+                # Даёт 100% ответ, почему `speaker='Борис'/'Саша'` пропущен в
+                # pattern-проверке harness'а: голос не опознан (`is_known=False`)?
+                # Или `name` пустой/неправильный? Не трогает ни threshold, ни
+                # attr-race — только пишет сырой dump `_current_speaker`
+                # рядом с существующим backlog-логом, чтобы в следующем
+                # прогоне (после фикса SKIPPED-шага "Collect robot logs" в
+                # workflow) сразу читать причину из docker logs / артефакта.
+                self.get_logger().info(
+                    f"robot_log(step=backlog_diag): raw_current_speaker="
+                    f"is_known={sp.get('is_known')!r} "
+                    f"name={sp.get('name')!r} "
+                    f"confidence={sp.get('confidence')!r} "
+                    f"speaker_id={str(sp.get('speaker_id') or '')[:8]!r} "
+                    f"tag_in={speaker_tag!r} "
+                    f"sanitized_name={sp_name!r} "
+                    f"text={text[:60]!r}"
+                )
                 accumulator.add(
                     text,
                     speaker_tag=speaker_tag,
