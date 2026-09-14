@@ -45,6 +45,46 @@ logger = logging.getLogger(__name__)
 
 # ── Tuning constants ─────────────────────────────────────────────────────────
 IDENTIFY_THRESHOLD: float = 0.75    # cosine similarity to accept a match
+# Issue #2348 / AC3 / issue #1101 — единая точка истины для «мусорных имён».
+# Объединяет noise-токены из dialogue.RegisterSpeakerTool._NOISE_NAMES
+# (LLM иногда передаёт служебное слово из фразы «меня зовут X» вместо X)
+# и INVALID_SPEAKER_NAMES из core.dialogue_helpers (Null/None/undefined
+# приходят из resemblyzer / битых JSON-полей). Здесь, в низкоуровневом
+# модуле записи в БД, валидация повторяется как «второй рубеж»: даже
+# если MCP-тул пропустит мусор (или кто-то вызовет db.register() в обход
+# MCP, из тестов/ноутбука/миграционного скрипта), в /data/speakers.db
+# не появится строки ``name='Зовут'``.
+_INVALID_SPEAKER_NAMES: frozenset = frozenset(
+    {
+        # — из dialogue.RegisterSpeakerTool._NOISE_NAMES (issue #1101) —
+        "зовут",
+        "имя",
+        "меня",
+        "зовут-это",
+        "зовут меня",
+        "это",
+        "называю",
+        "зовут-меня",
+        "моё",
+        "мое",
+        "моё имя",
+        "мое имя",
+        "имя мне",
+        "имя моё",
+        "имя мое",
+        # — из core.dialogue_helpers.INVALID_SPEAKER_NAMES (#1077/#1101) —
+        "null",
+        "none",
+        "undefined",
+        "unknown",
+        "",
+    }
+)
+# Issue #2348 / AC3 — короткие имена («Я», «О») и однобуквенные опечатки
+# не несут идентификационной ценности и плодят ложные дубли. Граница 2
+# символа — тест в dialogue.py использует тот же лимит для
+# ``name_too_short``.
+MIN_SPEAKER_NAME_LEN: int = 2
 # Issue W5-4 — порог для решения «дописать эмбеддинг в СУЩЕСТВУЮЩИЙ профиль
 # vs завести новый» внутри register_or_merge(). Сознательно ВЫШЕ
 # IDENTIFY_THRESHOLD: обычная идентификация ошибается дёшево (один ход
@@ -128,6 +168,38 @@ _EPITHET_COLUMNS: Tuple[Tuple[str, str], ...] = (
     ("sentiment_score", "REAL"),      # лексическая валентность [-1, 1]
     ("last_epithet_review", "REAL"),  # unix ts последнего пересмотра
 )
+
+
+# Issue #2348 / AC3 / issue #1101 — валидатор имени спикера для
+# низкоуровневого API (register / register_or_merge). Возвращает
+# санитизированное имя (с заглавной буквы, без обрамляющих пробелов) или
+# ``""``, если имя мусорное. Семантика ``""`` == «отбросить»: вызывающий
+# код решает, как реагировать (MCP-тул — MCPToolResult с error;
+# speaker_id_node — warning + skip; прямой register() — ValueError,
+# см. register()).
+def _validate_speaker_name(name: object) -> str:
+    """Normalise raw speaker name; ``""`` for junk.
+
+    Аналог ``core.dialogue_helpers.sanitize_speaker_name``, но с
+    расширенным blacklist'ом (включает русские noise-токены «зовут» /
+    «имя» / «меня» из dialogue.RegisterSpeakerTool._NOISE_NAMES,
+    issue #1101) и проверкой длины. Совпадает по контракту с
+    ``sanitize_speaker_name`` (``""`` на мусор), чтобы два слоя
+    можно было склеить без перекрёстной логики.
+    """
+    if name is None:
+        return ""
+    cleaned = str(name).strip()
+    if not cleaned:
+        return ""
+    if len(cleaned) < MIN_SPEAKER_NAME_LEN:
+        return ""
+    if cleaned.lower() in _INVALID_SPEAKER_NAMES:
+        return ""
+    # .capitalize() — «денис» → «Денис», а «илья» / «ольга» останутся
+    # узнаваемыми («Илья» / «Ольга»). .title() ломал бы «робот» в «Робот»
+    # так же, как и нужные имена, а у нас именно личные имена.
+    return cleaned.capitalize()
 
 
 class SpeakerDatabase:
@@ -308,26 +380,41 @@ class SpeakerDatabase:
         по имени, услышанному в речи» используйте ``register_or_merge()``
         — он сначала проверяет совпадение и только потом решает, создавать
         новый профиль или дописать эмбеддинг в существующий.
+
+        Issue #2348 / AC3 / issue #1101 — имя проходит через
+        ``_validate_speaker_name`` перед записью; пустое/мусорное имя
+        → ``ValueError``. Низкоуровневый Python API не делает «мягкого»
+        fallback'а: вызывающий код (тест, миграция, ноутбук) сам решает,
+        что значит «спросить у пользователя» — функция лишь гарантирует,
+        что в БД не попадёт ``name='Зовут'``.
         """
+        clean_name = _validate_speaker_name(name)
+        if not clean_name:
+            raise ValueError(
+                f"speaker_embeddings.register: invalid speaker name "
+                f"{name!r} (empty / noise token / shorter than "
+                f"{MIN_SPEAKER_NAME_LEN} chars; see _INVALID_SPEAKER_NAMES, "
+                f"issue #2348 / #1101)"
+            )
         now = time.time()
         if speaker_id is None:
             speaker_id = str(uuid.uuid4())
             self._conn.execute(
                 "INSERT OR IGNORE INTO speakers (speaker_id, name, created_at) VALUES (?, ?, ?)",
-                (speaker_id, name, now),
+                (speaker_id, clean_name, now),
             )
         else:
             # Update name in case it changed
             self._conn.execute(
                 "INSERT OR REPLACE INTO speakers (speaker_id, name, created_at) VALUES (?, ?, ?)",
-                (speaker_id, name, now),
+                (speaker_id, clean_name, now),
             )
         self._conn.execute(
             "INSERT INTO embeddings (speaker_id, embedding, created_at) VALUES (?, ?, ?)",
             (speaker_id, self._ndarray_to_blob(embedding), now),
         )
         self._conn.commit()
-        logger.info(f"Registered speaker '{name}' id={speaker_id[:8]}")
+        logger.info(f"Registered speaker '{clean_name}' id={speaker_id[:8]}")
         return speaker_id
 
     def register_or_merge(

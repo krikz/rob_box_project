@@ -73,6 +73,104 @@ def db(tmp_path):
     d.close()
 
 
+class TestRegisterNameValidation:
+    """Issue #2348 / AC3 / issue #1101 — register() / register_or_merge()
+    не должны создавать профили с мусорным именем («Зовут», «имя», «меня»,
+    пустая строка, одиночные буквы).
+
+    Acceptance карточки t_5e404c56:
+    * unit-кейс с именем «Зовут» не создаёт профиль;
+    * существующие happy-path вызовы не сломаны.
+
+    Контракт: низкоуровневый Python API кидает ``ValueError`` с понятным
+    сообщением (вызывающий код — тест/миграция/ноутбук, не LLM/MCP).
+    MCP-тул dialogue.RegisterSpeakerTool и speaker_id_node._on_register_request
+    уже отбивают мусор раньше (см. их _NOISE_NAMES / sanitize_speaker_name).
+    Здесь — второй рубеж, на случай если кто-то обошёл MCP-уровень.
+    """
+
+    @pytest.mark.parametrize(
+        "junk_name",
+        [
+            "",            # пустая строка
+            "   ",         # только пробелы
+            "Зовут",       # capitalized noise-токен из MCP _NOISE_NAMES
+            "зовут",       # lowercase
+            "имя",
+            "меня",
+            "это",
+            "моё имя",
+            "Null",        # из INVALID_SPEAKER_NAMES dialogue_helpers
+            "None",
+            "unknown",
+            "undefined",
+        ],
+    )
+    def test_register_rejects_junk_names(self, db, junk_name):
+        with pytest.raises(ValueError, match="invalid speaker name"):
+            db.register(junk_name, _random_embedding(1))
+        # БД осталась чистой
+        assert db.list_speakers() == []
+
+    def test_register_rejects_too_short_names(self, db):
+        # MIN_SPEAKER_NAME_LEN = 2 — одиночные символы (включая Unicode)
+        with pytest.raises(ValueError, match="invalid speaker name"):
+            db.register("Я", _random_embedding(1))
+        with pytest.raises(ValueError, match="invalid speaker name"):
+            db.register("О", _random_embedding(2))
+        assert db.list_speakers() == []
+
+    def test_register_accepts_minimum_length_name(self, db):
+        """Граница MIN_SPEAKER_NAME_LEN — 2 символа — ДОЛЖНА проходить.
+
+        Это минимальное «нормальное» имя (кириллица, латиница) — оставляем
+        happy-path для таких, иначе теряем реальные короткие имена.
+        """
+        sid = db.register("Ян", _random_embedding(3))
+        assert sid
+        assert db.list_speakers()[0]["name"] == "Ян"
+
+    def test_register_normalises_lowercase_name(self, db):
+        """happy-path: «денис» → «Денис», не остаётся в нижнем регистре."""
+        sid = db.register("денис", _random_embedding(4))
+        speakers = db.list_speakers()
+        assert len(speakers) == 1
+        assert speakers[0]["name"] == "Денис"
+        assert speakers[0]["id"] == sid
+
+    def test_register_strips_whitespace(self, db):
+        """happy-path: пробелы по краям снимаются."""
+        sid = db.register("  Саша  ", _random_embedding(5))
+        assert db.list_speakers()[0]["name"] == "Саша"
+        assert db.list_speakers()[0]["id"] == sid
+
+    def test_register_or_merge_also_validates_name(self, db):
+        """register_or_merge() наследует валидацию через register() —
+        тот же контракт ValueError на мусорном имени."""
+        # Создадим валидного спикера, чтобы было с чем merge
+        db.register("Денис", _random_embedding(10))
+        assert len(db.list_speakers()) == 1
+
+        with pytest.raises(ValueError, match="invalid speaker name"):
+            db.register_or_merge("Зовут", _random_embedding(11))
+        # Дубль не появился
+        assert len(db.list_speakers()) == 1
+        # Профиль Дениса — без лишних эмбеддингов
+        assert db.list_speakers()[0]["embeddings"] == 1
+
+    def test_register_happy_paths_unaffected(self, db):
+        """Регрессия: существующие happy-path вызовы (test_register_*
+        выше) не должны сломаться после добавления валидации."""
+        sid1 = db.register("Шифу", _random_embedding(20))
+        assert sid1
+        db.register("Шифу", _random_embedding(21), speaker_id=sid1)
+        # Явный speaker_id с разумным именем — тоже happy-path
+        db.register("Денис", _random_embedding(22), speaker_id=sid1)
+        speakers = db.list_speakers()
+        assert len(speakers) == 1
+        assert speakers[0]["embeddings"] == 3
+
+
 class TestRegister:
     def test_register_creates_speaker_and_embedding(self, db):
         sid = db.register("Шифу", _random_embedding(1))
