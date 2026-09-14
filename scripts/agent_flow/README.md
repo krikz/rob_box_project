@@ -700,6 +700,44 @@ running нет, а ready есть, recovery-карточка на умершег
 Reconcile делает merge-gate; этот скрипт — единственный способ увидеть,
 что тот НЕ сделал.
 
+### `agent-flow-e2e-fail-streak-watchdog.sh` — auto-escalation + auto-create issue
+
+При fail-streak ≥ `E2E_FAIL_STREAK_WARN` (default 5):
+
+1. **Comment-alert** в открытый `needs-e2e` / unlabeled-process issue (idem­po­tent по
+   `E2E_FAIL_STREAK_DEDUP_HOURS`, default 6ч).
+2. **Auto-create issue** с лейблом `e2e-fail-streak` (ADR-FS-001, kanban t_401e52de).
+   Body: timeline последних 8 failed runs (id/conclusion/createdAt/headSha[7]/headBranch),
+   develop HEAD, релевантные merged PR за 5 дней (парсятся из
+   `git log origin/develop --merges`), hypothesis `music-fix regression` со ссылками на
+   `#2246`/`#2347`. Два guard'а:
+   - **Rate-limit** (mtime `ISSUE_COOLDOWN_FILE = $HERMES_HOME/state/agent-flow-e2e-fail-streak-last-issue`):
+     если файл младше `E2E_FAIL_STREAK_ISSUE_RATE_LIMIT_HOURS` (default 4ч) — skip.
+   - **GitHub-truth**: `gh issue list --label e2e-fail-streak --state open --limit 1`
+     уже возвращает 1+ → skip (защита от дублей при потере state-файла).
+3. **Auto-pause** (при streak ≥ `E2E_FAIL_STREAK_PAUSE`, default 20) — sentinel-файл
+   `$HERMES_HOME/state/agent-flow-e2e-fail-streak-pause`, который
+   `agent-flow-e2e-process.sh` читает в начале каждого tick и пропускает round
+   creation. Manual override — удаление файла.
+
+ENV-тюнинг (все с разумными дефолтами):
+
+| Var | Default | Назначение |
+|---|---|---|
+| `E2E_FAIL_STREAK_WARN` | 5 | порог для comment + auto-create issue |
+| `E2E_FAIL_STREAK_PAUSE` | 20 | порог для pause-sentinel |
+| `E2E_FAIL_STREAK_ISSUE_THRESHOLD` | 5 | порог для auto-create issue (= WARN, можно поднять) |
+| `E2E_FAIL_STREAK_ISSUE_RATE_LIMIT_HOURS` | 4 | rate-limit создания issue |
+| `E2E_FAIL_STREAK_ISSUE_LABEL` | `e2e-fail-streak` | лейбл нового issue |
+| `E2E_FAIL_STREAK_ISSUE_ASSIGNEE` | `` (пусто) | assignee issue (опц.) |
+| `E2E_FAIL_STREAK_DEDUP_HOURS` | 6 | дедуп alert-комментариев |
+| `REPO_DIR` | `` (cwd) | путь к локальному clone репо для `git -C` (develop HEAD + merges) |
+
+Тесты: `scripts/agent_flow/tests/test_e2e_fail_streak_auto_issue.sh`
+(10 кейсов: streak<threshold, DRY-RUN, fresh/stale cooldown, existing issue,
+create-call correctness, 8-fails→1-issue acceptance, gh-failure handling,
+assignee, marker).
+
 ### `agent-flow-rotation-watchdog.sh` — жива ли e2e-ротация
 
 Только читает, в GitHub не пишет вообще. Нет ни одного cron-тика и ни
