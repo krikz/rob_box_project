@@ -639,15 +639,16 @@ services:
   # до установки реального HEF. Phase 1.5 — переключаем hailo_enabled=true,
   # монтируем /opt/rob_box/models/*.hef.
   #
-  # Profile: ["hailo"] — НЕ стартует по умолчанию (нет железа в CI). На Vision Pi:
-  #   docker compose --profile hailo up -d vision-hailo
+  # Стартует по умолчанию (как остальные сервисы): HAT установлен на Vision Pi
+  # (/dev/hailo0 присутствует). CI только собирает образ, этот compose на CI
+  # не деплоится — профильный гейт снят, чтобы update_and_restart.sh поднимал
+  # сервис обычным `docker-compose up -d`.
   #
   # Hardware: https://www.raspberrypi.com/documentation/accessories/ai-hat-plus.html
   vision-hailo:
     # Tag tracked in docker/vision/.image-versions.{env} — updated by CI after each build
     image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:vision-hailo-${ROS_DISTRO:-humble}-${VISION_HAILO_TAG:-${IMAGE_TAG}}
     container_name: vision-hailo
-    profiles: ["hailo"]
     network_mode: host
     # devices для /dev/hailo0 обязателен для real inference (Phase 1.5).
     # В Phase 1 stub-режим device не нужен, но не вредит — hailortcli scan
