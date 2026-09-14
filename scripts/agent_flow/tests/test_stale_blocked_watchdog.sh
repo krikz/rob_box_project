@@ -101,24 +101,26 @@ PYEOF
     # Mock-hermes: kanban comment → JOURNAL + запись в task_comments DB
     # (для проверки idempotency — S6 ожидает что 2-й tick не emit'ит второй
     # comment, потому что в DB уже есть marker за today).
-    cat > "$WORK/bin/hermes" <<EOF
+    cat > "$WORK/bin/hermes" <<'EOF'
 #!/bin/bash
+# Mock-hermes (top-level script, no `local` keyword — используем простые var).
 # Маршрутизация: фиксируем в журнал все вызовы kanban comment.
 # Также пишем в task_comments DB для idempotency check.
-case "\${1:-}\${2:-}\${3:-}\${4:-}" in
+case "${1:-}${2:-}${3:-}${4:-}" in
     *kanban*comment*)
-        shift  # kanban
-        shift  # --board
-        local _board="\$1"; shift
-        shift  # comment
-        local _tid="\$1"; shift
-        # Остальное — body (может быть multi-word, мы не парсим — пишем as-is).
-        echo "MOCKED: kanban comment board=\${_board} task=\${_tid} body=\$*" >> "\$HERMES_JOURNAL"
+        # argv: hermes kanban --board <board> comment <task_id> <body...>
+        _arg_kanban="$1"
+        _arg_board_flag="$2"  # --board
+        _arg_board="$3"
+        _arg_comment="$4"
+        _arg_tid="$5"
+        shift 5
+        _body="$*"
+        echo "MOCKED: kanban comment board=${_arg_board} task=${_arg_tid} body=${_body}" >> "$HERMES_JOURNAL"
         # DB write для idempotency: INSERT в task_comments с marker
-        if [ -n "\$KANBAN_DB_PATH" ] && [ -f "\$KANBAN_DB_PATH" ]; then
-            local _now
-            _now=\$(date -u +%s)
-            python3 - "\$KANBAN_DB_PATH" "\${_tid}" "\$*" "\$_now" <<'PYEOF'
+        if [ -n "$KANBAN_DB_PATH" ] && [ -f "$KANBAN_DB_PATH" ]; then
+            _now=$(date -u +%s)
+            python3 - "$KANBAN_DB_PATH" "${_arg_tid}" "${_body}" "$_now" <<'PYEOF'
 import sqlite3, sys
 db_path, task_id, body, now = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 try:
