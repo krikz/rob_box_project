@@ -2240,7 +2240,12 @@ class TestComposeMusicToolMelodyByName:
         code = mgr.execute_code.call_args.args[0]
         # Ноты позиционно (degree), НЕ через midinote= — Renardo этот
         # ключ как высоту игнорирует (регресс 14.09, см. core/rtttl.py).
+        # Тема играется дословно. Удвоения в октаву здесь нет: три
+        # восьмых и длинная нота — РЕДКАЯ тема (одна атака на бит при
+        # пороге 1.2), а удвоение и второй голос положены только плотным
+        # (harmonize::DENSE_ONSETS_PER_BEAT).
         assert "[None, 79, 79, 79, 75]" in code
+        assert "d3 >>" not in code  # второй голос редкой теме не даётся
         assert "midinote=" not in code
         assert "oct=0, root=0, scale=Scale.chromatic" in code
         assert "Clock.bpm = 63" in code

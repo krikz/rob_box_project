@@ -31,7 +31,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from statistics import median
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -43,17 +43,41 @@ __all__ = [
     "harmonize",
 ]
 
+#: Порог плотности темы: атак на один бит.
+#:
+#: 🔴 FIX (live 14.09, «Pink Panther не узнать»): плотность считалась по
+#: МЕДИАННОЙ ДЛИНЕ ноты, а это не то же самое. Тема Пантеры — пары
+#: восьмых, разделённые паузами по два бита: ноты короткие, но времени
+#: она занимает мало, и по медиане считалась «плотной». В ответ
+#: аранжировка закатывала её паузы остинато на каждую долю, басом
+#: четвертями, удвоением в октаву и вторым голосом — а именно в этих
+#: паузах весь её характер. Тему было не узнать не потому, что ноты
+#: неверные, а потому что её засыпало.
+#:
+#: Атаки на бит меряют ровно то, что нужно: насколько густо тема
+#: заполняет время. Порог выбран по контрольной выборке — марши и
+#: чиптюн дают 1.4-1.8, крадущаяся тема Пантеры 0.95.
+DENSE_ONSETS_PER_BEAT = 1.2
+
 #: Сколько 16-х в такте — сетка, на которую квантуются атаки мелодии при
 #: выводе рисунка ударных. 16-я — самая мелкая длительность, которая
 #: реально встречается в RTTTL-рингтонах как ритмическая (32-е там почти
 #: всегда «дыхательные» паузы, а не ноты).
 STEPS_PER_BAR = 16
 
-#: Октава баса и пэда в MIDI-нотах. Бас держится ниже темы, пэд — между
-#: басом и темой: это то же разделение регистров, что у ролей
-#: аранжировщика (ROLE_PROFILE), только в абсолютных нотах.
+#: Нижняя граница баса в MIDI-нотах. Ниже до-большой октавы бас на
+#: динамике робота превращается в гул без высоты.
 BASS_MIDI_FLOOR = 36   # C2
-PAD_MIDI_FLOOR = 52    # E3
+
+#: Зазор между верхней нотой подклада и самой низкой нотой темы, полутоны.
+#: Целый тон — минимум, при котором подклад перестаёт сливаться с темой в
+#: унисон и ловится слухом как отдельный слой.
+PAD_CLEARANCE = 2
+
+#: Куда опускать потолок подклада, если тема сама лежит низко. Без этого
+#: предела низкая тема (басовый рифф, мужской вокал) вдавила бы подклад в
+#: бас, и оба слоя слиплись бы в кашу.
+PAD_MIDI_FLOOR = 48    # C3
 
 #: Насколько корень аккорда весомее остальных его тонов при выборе
 #: гармонии. Без перевеса трезвучия с общими нотами (например i и VI в
@@ -69,18 +93,16 @@ _DOWNBEAT_BONUS = 0.9
 #: Штраф за смену аккорда относительно предыдущего такта. Гармония,
 #: меняющаяся каждый такт, звучит суетливо даже когда каждый отдельный
 #: выбор формально верен; инерция склеивает соседние такты в фразу.
-_CHANGE_PENALTY = 0.5
+_CHANGE_PENALTY = 0.9
 
-#: Штраф трезвучию, которое не мажорное и не минорное.
+#: Штраф аккорду, которого нет в определённом ладу темы.
 #:
-#: Терции «по ладу» на некоторых ступенях дают увеличенные и уменьшённые
-#: аккорды: в гармоническом миноре III — это F-A-C# (увеличенное), в любом
-#: миноре II — уменьшённое. Как проходящий аккорд они уместны, но пэд
-#: держит своё трезвучие ЦЕЛЫЙ такт, и неустойчивое созвучие такой длины
-#: слышится не как краска, а как фальшь. Штраф не запрещает их вовсе —
-#: если мелодия такта состоит ровно из этих нот, аккорд всё равно
-#: победит.
-_UNSTABLE_TRIAD_PENALTY = 1.1
+#: Заимствованные аккорды нужны (см. :func:`_chord_candidates`), но по
+#: умолчанию гармония обязана оставаться в тональности: без штрафа любой
+#: хроматический проход тянул бы за собой смену аккорда, и тональный
+#: центр рассыпался бы. Недиатонический аккорд выигрывает только когда
+#: объясняет ноты окна заметно лучше любого диатонического.
+_CHROMATIC_PENALTY = 0.85
 
 #: Бонус тонике в ПЕРВОМ и ПОСЛЕДНЕМ такте темы. Луп смыкается сам с
 #: собой, и если стык приходится не на тонику, каждый повтор слышится
@@ -122,6 +144,13 @@ class Harmonization:
     root: str
     scale: str
     bars: int
+    #: Атак темы на один бит. Мера того, насколько густо тема заполняет
+    #: время; ею определяется, сколько аранжировки тема выдержит.
+    density: float
+    #: ``density >= DENSE_ONSETS_PER_BEAT``. Плотной теме положен полный
+    #: наряд (остинато по долям, удвоение в октаву, второй голос), редкой
+    #: — только скелет.
+    dense: bool
     chords: Tuple[ChordWindow, ...]
     lead: Tuple[Tuple[Optional[int], float], ...]
     bass: Tuple[Tuple[Optional[int], float], ...]
@@ -206,11 +235,49 @@ def _triad_pitch_classes(
     return tuple(out)
 
 
-def _is_stable_triad(pitch_classes: Sequence[int]) -> bool:
-    """Мажорное или минорное трезвучие? (увеличенное/уменьшённое — нет)."""
-    third = (pitch_classes[1] - pitch_classes[0]) % 12
-    fifth = (pitch_classes[2] - pitch_classes[0]) % 12
-    return fifth == 7 and third in (3, 4)
+def _chord_candidates(
+    root_semitone: int, intervals: Sequence[int]
+) -> List[Tuple[Tuple[int, ...], bool]]:
+    """Все аккорды-кандидаты: ``(классы высоты, диатонический ли)``.
+
+    Кандидаты строятся на ВСЕХ ДВЕНАДЦАТИ ступенях хроматики, мажорные и
+    минорные, а не только на семи ступенях лада.
+
+    🔴 FIX (live 14.09, «Марио — восемь одинаковых аккордов»): диатоникой
+    одного лада часто нечем описать такт. Заимствованные аккорды (♭VI,
+    ♭VII), побочные доминанты и короткие отклонения — обычное дело в
+    мелодиях этой библиотеки, и без них такт сваливается на тонику по
+    умолчанию. Плюс это страховка от неточной тональности: даже когда
+    ``detect_key`` ошибся ладом, нужный аккорд остаётся достижим.
+
+    Строятся только мажорные и минорные трезвучия: увеличенные и
+    уменьшённые, которые раньше возникали сами собой из терций по ладу,
+    как выдержанный аккорд слышатся фальшью, а не краской.
+
+    Недиатонические помечаются, а не запрещаются: вызывающий добавляет им
+    штраф, чтобы они выигрывали только там, где действительно объясняют
+    ноты окна лучше диатонических.
+
+    🔴 FIX (live 14.09, «марш странно играет»): «диатонический» проверялся
+    как ПРИНАДЛЕЖНОСТЬ НОТ ЛАДУ — а это не то же самое, что «аккорд этого
+    лада». В ре гармоническом миноре трезвучие на си-бемоле мажорное
+    (A#-D-F), но си-бемоль МИНОР (A#-C#-F) тоже проходил проверку: его
+    до-диез — это повышенная седьмая ступень, она в ладу есть. И он шёл
+    без штрафа наравне с правильным, выигрывая в каждом такте, где звучит
+    до-диез, — хотя его ре-бемоль бьётся с ре, тоникой всей пьесы.
+    Теперь диатоническими считаются ровно те трезвучия, что строятся
+    терциями ПО СТУПЕНЯМ лада.
+    """
+    diatonic_sets = {
+        frozenset(_triad_pitch_classes(degree, root_semitone, intervals))
+        for degree in range(len(intervals))
+    }
+    out: List[Tuple[Tuple[int, ...], bool]] = []
+    for pc_root in range(12):
+        for third in (4, 3):  # мажорное и минорное трезвучие
+            pcs = (pc_root, (pc_root + third) % 12, (pc_root + 7) % 12)
+            out.append((pcs, frozenset(pcs) in diatonic_sets))
+    return out
 
 
 def _pick_chords(
@@ -219,57 +286,102 @@ def _pick_chords(
     root: str,
     scale: str,
 ) -> Tuple[ChordWindow, ...]:
-    """Выбрать по аккорду на каждый такт темы.
+    """Выбрать гармонию: аккорд на каждые полтакта, соседние одинаковые слить.
 
-    Кандидаты — трезвучия на всех ступенях лада. Скор такта складывается
-    из длительностей его нот, попавших в трезвучие (корень весомее),
-    бонуса за совпадение с первой нотой такта, бонуса тонике на стыке
-    лупа и штрафа за смену аккорда. Побеждает максимум.
+    Окно — ПОЛТАКТА, а не такт. Гармония живых мелодий меняется и внутри
+    такта, а окном в целый такт такая смена невидима: обе половины
+    усредняются, побеждает тоника, и тема получает один аккорд на всю
+    длину. Слияние соседних одинаковых окон возвращает целый такт там, где
+    половины согласны, — то есть частота смены гармонии определяется самой
+    мелодией, а не сеткой.
+
+    Скор окна: длительности нот, попавших в аккорд (корень весомее), бонус
+    за совпадение с первой нотой окна, бонус тонике на стыке лупа, штрафы
+    недиатоническому аккорду и смене аккорда.
     """
     intervals = SCALE_INTERVALS.get(scale, SCALE_INTERVALS["minor"])
     root_semitone = VALID_ROOTS.index(root) if root in VALID_ROOTS else 0
-    bars = max(1, int(round(total_beats / BEATS_PER_BAR)))
+    candidates = _chord_candidates(root_semitone, intervals)
+    pad_ceiling = _pad_ceiling(timed)
+    tonic_pcs = _triad_pitch_classes(0, root_semitone, intervals)
 
-    chords: List[ChordWindow] = []
-    previous: Optional[int] = None
-    for bar in range(bars):
-        start = bar * BEATS_PER_BAR
-        end = start + BEATS_PER_BAR
-        weights = _pitch_weights(timed, start, end)
-        downbeat = _first_note_in(timed, start, end)
-        is_edge = bar == 0 or bar == bars - 1
+    window = BEATS_PER_BAR / 2.0
+    count = max(1, int(round(total_beats / window)))
 
-        best_degree = 0
+    picked: List[Tuple[float, Tuple[int, ...]]] = []
+    previous: Optional[Tuple[int, ...]] = None
+    for index in range(count):
+        begin = index * window
+        weights = _pitch_weights(timed, begin, begin + window)
+        downbeat = _first_note_in(timed, begin, begin + window)
+        is_edge = index == 0 or index == count - 1
+        # Инерция и бонусы соразмерны весу окна: в почти пустом окне
+        # (хвост темы, выдержанная нота) абсолютная добавка перевешивала
+        # сами ноты и намертво тянула прошлый аккорд.
+        scale_factor = min(1.0, sum(weights.values()) / window)
+
+        best: Tuple[int, ...] = tonic_pcs
         best_score = float("-inf")
-        for degree in range(len(intervals)):
-            pcs = _triad_pitch_classes(degree, root_semitone, intervals)
+        for pcs, diatonic in candidates:
             score = sum(weights.get(pc, 0.0) for pc in pcs)
             score += (_ROOT_WEIGHT - 1.0) * weights.get(pcs[0], 0.0)
+            if not diatonic:
+                score -= _CHROMATIC_PENALTY * scale_factor
             if downbeat is not None and downbeat % 12 == pcs[0]:
-                score += _DOWNBEAT_BONUS
-            if is_edge and degree == 0:
-                score += _CADENCE_BONUS
-            if not _is_stable_triad(pcs):
-                score -= _UNSTABLE_TRIAD_PENALTY
-            if previous is not None and degree != previous:
-                score -= _CHANGE_PENALTY
+                score += _DOWNBEAT_BONUS * scale_factor
+            if is_edge and pcs == tonic_pcs:
+                score += _CADENCE_BONUS * scale_factor
+            if previous is not None and pcs != previous:
+                score -= _CHANGE_PENALTY * scale_factor
             if score > best_score:
                 best_score = score
-                best_degree = degree
+                best = pcs
+        picked.append((begin, best))
+        previous = best
 
-        pcs = _triad_pitch_classes(best_degree, root_semitone, intervals)
+    # Слияние: соседние окна с одним аккордом становятся одним окном.
+    chords: List[ChordWindow] = []
+    for begin, pcs in picked:
+        if chords and chords[-1].pitch_classes == pcs:
+            last = chords[-1]
+            chords[-1] = replace(last, beats=last.beats + window)
+            continue
         chords.append(
             ChordWindow(
-                start=float(start),
-                beats=float(BEATS_PER_BAR),
-                degree=best_degree,
+                start=float(begin),
+                beats=float(window),
+                degree=_scale_degree(pcs[0], root_semitone, intervals),
                 root_midi=_lift(pcs[0], BASS_MIDI_FLOOR),
-                tones=_stack_chord(pcs, PAD_MIDI_FLOOR),
+                tones=_stack_chord(pcs, pad_ceiling),
                 pitch_classes=pcs,
             )
         )
-        previous = best_degree
     return tuple(chords)
+
+
+def _pad_ceiling(
+    timed: Sequence[Tuple[float, Optional[int], float]],
+) -> int:
+    """Потолок подклада: на :data:`PAD_CLEARANCE` ниже самой низкой ноты темы.
+
+    Именно самой низкой, а не средней: достаточно одной ноты темы,
+    попавшей в аккорд подклада, чтобы её атака в нём утонула.
+    """
+    pitches = [midi for _onset, midi, _dur in timed if midi is not None]
+    if not pitches:
+        return PAD_MIDI_FLOOR
+    return max(PAD_MIDI_FLOOR, min(pitches) - PAD_CLEARANCE)
+
+
+def _scale_degree(
+    pitch_class: int, root_semitone: int, intervals: Sequence[int]
+) -> int:
+    """Ступень лада для корня аккорда; ``-1`` для недиатонического."""
+    offset = (pitch_class - root_semitone) % 12
+    for degree, semitones in enumerate(intervals):
+        if semitones % 12 == offset:
+            return degree
+    return -1
 
 
 def _lift(pitch_class: int, floor_midi: int) -> int:
@@ -278,20 +390,39 @@ def _lift(pitch_class: int, floor_midi: int) -> int:
     return note
 
 
-def _stack_chord(pitch_classes: Sequence[int], floor_midi: int) -> Tuple[int, ...]:
-    """Классы высоты → трезвучие, сложенное ВВЕРХ от ``floor_midi``.
+def _stack_chord(
+    pitch_classes: Sequence[int], ceiling: int
+) -> Tuple[int, ...]:
+    """Классы высоты → аккорд, уложенный ВНИЗ от ``ceiling``.
 
-    Складываем именно вверх (каждая следующая нота выше предыдущей), а не
-    берём три ближайшие ноты по отдельности: иначе трезвучие вывернется в
-    случайное обращение и пэд будет прыгать регистром от такта к такту.
+    🔴 FIX (live 14.09, «будто ноты пропускает»): аккорд складывался ВВЕРХ
+    от постоянного пола (E3), не глядя, где лежит тема. У имперского марша
+    это ставило подклад в D4-D5 — прямо в тему: 23 из 66 её нот подклад
+    играл В УНИСОН и долбил их аккордом на каждую долю. Атаки мелодии
+    тонули в этом пульсе, и на слух казалось, что тема пропускает ноты.
+
+    В оркестровке аккомпанемент стоит ПОД мелодией — это не стиль, а
+    условие того, чтобы мелодию было слышно. Поэтому укладываем вниз от
+    потолка, а потолок задаёт вызывающий по самой низкой ноте темы.
+
+    Кладём именно последовательно вниз (каждая следующая нота ниже
+    предыдущей), а не берём три ближайшие по отдельности: иначе аккорд
+    вывернется в случайное обращение и подклад будет прыгать регистром от
+    такта к такту.
+
+    Ровно три ноты, без удвоений. Удвоение корня октавой ниже тут было —
+    его добавляли ради веса, когда подклад стоял в регистре темы и звучал
+    тонко. Теперь вес даёт разделение регистров, а удвоение только роняло
+    подклад в бас (у марша — до D2, прямо в басовую партию) и стоило
+    лишнего голоса scsynth на каждой доле остинато.
     """
     out: List[int] = []
-    current = floor_midi
-    for pc in pitch_classes:
-        note = current + ((pc - current) % 12)
+    current = ceiling
+    for pc in reversed(pitch_classes):
+        note = current - ((current - pc) % 12)
         out.append(note)
-        current = note + 1
-    return tuple(out)
+        current = note - 1
+    return tuple(sorted(out))
 
 
 # ---------------------------------------------------------------------------
@@ -299,32 +430,100 @@ def _stack_chord(pitch_classes: Sequence[int], floor_midi: int) -> Tuple[int, ..
 # ---------------------------------------------------------------------------
 
 
+#: Форма басовой линии внутри одного окна гармонии: индексы тонов аккорда
+#: (0 — корень, 1 — терция, 2 — квинта) по шагам.
+#:
+#: Корень на сильных долях, квинта в середине, терция как краска. Это
+#: скелет; интереснее его делают подходы к следующему аккорду, см.
+#: :func:`_approach_note`.
+_BASS_SHAPE_DENSE = (0, 0, 2, 1)
+_BASS_SHAPE_SPARSE = (0, 2)
+
+
+def _approach_note(previous: int, target: int) -> int:
+    """Нота-подход к ``target``: полутон снизу или сверху, что ближе к ``previous``.
+
+    Подход — то, чем осмысленная басовая линия отличается от механической.
+    Без него бас просто перескакивает на новый корень, и смена гармонии
+    ничем не подготовлена; с ним последняя нота перед сменой ведёт в неё
+    за полтона, и линия слышится как ЛИНИЯ, а не как набор опор.
+
+    Сторона выбирается по близости к предыдущей ноте, чтобы бас шёл
+    плавно, а не прыгал октавами ради подхода.
+    """
+    below, above = target - 1, target + 1
+    return below if abs(below - previous) <= abs(above - previous) else above
+
+
 def _build_bass(
     chords: Sequence[ChordWindow], dense: bool
 ) -> Tuple[Tuple[Optional[int], float], ...]:
-    """Бас: корень аккорда на сильных долях, квинта — на слабых.
+    """Бас: тоны аккорда по долям, с подходом к следующему аккорду.
 
     ``dense`` (плотная тема, атака почти на каждой доле — марш, чиптюн)
     даёт бас четвертями: ровный шаг держит такую тему лучше, чем половины,
     под которыми она рассыпается. Разреженная тема получает половины,
     чтобы бас не забивал её собственное движение.
+
+    Последняя нота перед сменой гармонии заменяется на подход к корню
+    следующего аккорда (:func:`_approach_note`) — кроме случая, когда на
+    всё окно приходится одна нота: там опора важнее движения.
+
+    Окна гармонии переменной длины (см. :func:`_pick_chords`), поэтому шаг
+    раскладывается по фактической длине окна, а остаток достаётся
+    последней ноте: сумма длительностей баса обязана совпадать с темой
+    нота в ноту, иначе партии разъедутся на первом же повторе лупа.
+
+    Аккорды берутся ПО КРУГУ: тема зациклена, и последнее окно ведёт не в
+    тишину, а обратно в первое.
     """
+    step = 1.0 if dense else 2.0
+    shape = _BASS_SHAPE_DENSE if dense else _BASS_SHAPE_SPARSE
     out: List[Tuple[Optional[int], float]] = []
-    for chord in chords:
-        root = chord.root_midi
-        fifth = root + (chord.pitch_classes[2] - chord.pitch_classes[0]) % 12
-        if dense:
-            out.extend([(root, 1.0), (root, 1.0), (fifth, 1.0), (root, 1.0)])
-        else:
-            out.extend([(root, 2.0), (fifth, 2.0)])
+    previous = chords[0].root_midi if chords else BASS_MIDI_FLOOR
+    for index, chord in enumerate(chords):
+        following = chords[(index + 1) % len(chords)]
+        changes = following.pitch_classes[0] != chord.pitch_classes[0]
+        tones = tuple(
+            chord.root_midi + (pc - chord.pitch_classes[0]) % 12
+            for pc in chord.pitch_classes
+        )
+        count = max(1, int(chord.beats // step))
+        remainder = chord.beats - count * step
+        for position in range(count):
+            is_last = position == count - 1
+            if is_last and changes and count > 1:
+                note = _approach_note(previous, following.root_midi)
+            else:
+                note = tones[shape[position % len(shape)]]
+            out.append((note, step + (remainder if is_last else 0.0)))
+            previous = note
     return tuple(out)
 
 
 def _build_pad(
-    chords: Sequence[ChordWindow],
+    chords: Sequence[ChordWindow], dense: bool
 ) -> Tuple[Tuple[Optional[Tuple[int, ...]], float], ...]:
-    """Пэд: трезвучие такта, взятое целиком и выдержанное весь такт."""
-    return tuple((chord.tones, chord.beats) for chord in chords)
+    """Подклад: аккорд, ПОВТОРЯЕМЫЙ по долям, а не выдержанный весь такт.
+
+    🔴 FIX (live 14.09, «звучит плосковато, соло и фон»): здесь был один
+    аккорд на такт длиной в такт. Выдержанное созвучие под подвижной темой
+    на слух перестаёт быть партией и превращается в подложку — ровно то,
+    что слышал человек. В настоящей оркестровке марша струнные ведут
+    РИТМИЧЕСКОЕ остинато сквозь всю пьесу: повторяющаяся фигура и есть
+    маршевый шаг, а гармонию она держит заодно.
+
+    Плотная тема получает аккорд на каждой доле (маршевый шаг), разреженная
+    — на сильных долях, чтобы не забивать собственное движение темы.
+    Короткими эти удары делает ``sus`` на стороне аранжировщика: длинные
+    ноты слились бы обратно в тот же выдержанный аккорд.
+    """
+    step = 1.0 if dense else 2.0
+    out: List[Tuple[Optional[Tuple[int, ...]], float]] = []
+    for chord in chords:
+        hits = max(1, int(round(chord.beats / step)))
+        out.extend([(chord.tones, step)] * hits)
+    return tuple(out)
 
 
 def _build_counter(
@@ -395,24 +594,39 @@ def _onset_histogram(
     return hist
 
 
-def _build_drums(hist: Sequence[float]) -> str:
-    """Рисунок бочки и малого из плотности атак темы.
+def _build_drums(hist: Sequence[float], dense: bool) -> str:
+    """Рисунок бочки и малого: жёсткий каркас + синкопа от мелодии.
 
-    Бочка встаёт на первую долю (она же начало лупа) и на ту из
-    оставшихся долей, куда тема бьёт сильнее всего; малый — на
-    оставшиеся доли. Так грув повторяет собственный акцент мелодии,
-    а не навязывает ей чужой.
+    🔴 FIX (live 14.09, «ломаные ритмы»): здесь бочка ставилась на первую
+    долю и на ту из оставшихся, куда тема бьёт сильнее всего, а малый —
+    на все прочие. Правило выглядело «выводим грув из мелодии», а на деле
+    давало хромые рисунки: у Pink Panther вышло ``X...o...o...X...``
+    (бочка на 1 и 4, то есть ДВЕ БОЧКИ ПОДРЯД на стыке тактов), у Марио —
+    ``X...X...o...o...`` (бочка на 1 и 2). Ни то, ни другое не читается
+    как доля.
+
+    Обратный бит — малый на 2 и 4 — это не вкус и не свойство конкретной
+    мелодии, а то, из чего вообще складывается ощущение доли в
+    четырёхдольном размере. Поэтому каркас фиксирован: бочка на 1, малый
+    на 2 и 4. Мелодия решает ровно одно: даётся ли бочка на 3.
+
+    🔴 FIX #2 (live 14.09): вместе с починкой каркаса сюда добавлялась
+    ещё и «синкопа от мелодии» — добавочная бочка на той восьмушке между
+    долями, куда тема бьёт сильнее. Задумывалась как то, что отличает
+    грув одного трека от другого, а на деле сломала марш: он получил
+    бочку на «и» второй доли сразу после малого (``X...o.X.X...o...``),
+    и квадратный маршевый шаг превратился в хромой. Признак был негодный
+    — у марша вес распределён 40% на долях и 40% между ними, то есть он
+    вовсе не синкопирован, просто много шестнадцатых. Разнообразие грува
+    даёт выбор сэмпла и плотность хэтов; выдумывать его в рисунке бочки
+    не нужно.
     """
-    beats = [0, 4, 8, 12]
-    rest = sorted(beats[1:], key=lambda step: -hist[step])
-    kick = {0, rest[0]}
-    snare = set(beats) - kick
-
     pattern = ["."] * STEPS_PER_BAR
-    for step in kick:
-        pattern[step] = "X"
-    for step in snare:
-        pattern[step] = "o"
+    pattern[0] = "X"
+    pattern[4] = "o"
+    pattern[12] = "o"
+    if dense:
+        pattern[8] = "X"
     return "".join(pattern)
 
 
@@ -472,19 +686,22 @@ def harmonize(
     chords = _pick_chords(timed, total, root, scale)
     hist = _onset_histogram(timed)
 
-    sounding = [dur for _onset, midi, dur in timed if midi is not None]
-    dense = bool(sounding) and median(sounding) <= 0.75
+    onsets = sum(1 for _onset, midi, _dur in timed if midi is not None)
+    density = onsets / total if total > 0 else 0.0
+    dense = density >= DENSE_ONSETS_PER_BEAT
 
     return Harmonization(
         bpm=int(bpm),
         root=root,
         scale=scale,
-        bars=len(chords),
+        bars=max(1, int(round(total / BEATS_PER_BAR))),
+        density=density,
+        dense=dense,
         chords=chords,
         lead=tuple((midi, float(dur)) for midi, dur in notes),
         bass=_build_bass(chords, dense),
-        pad=_build_pad(chords),
+        pad=_build_pad(chords, dense),
         counter=_build_counter(timed, chords),
-        drums=_build_drums(hist),
+        drums=_build_drums(hist, dense),
         hats=_build_hats(timed),
     )

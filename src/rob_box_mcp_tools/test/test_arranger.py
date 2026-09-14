@@ -854,6 +854,79 @@ class TestFixedThemeMidi:
         assert "p2_motif" not in code
         assert "Pvar" not in lead
 
+    def test_bass_approaches_the_next_chord_by_a_semitone(self):
+        """Последняя нота баса перед сменой гармонии ведёт в неё за полтона.
+
+        Подход — то, чем осмысленная басовая линия отличается от
+        механической: без него бас просто перескакивает на новый корень и
+        смена гармонии ничем не подготовлена.
+        """
+        from rob_box_mcp_tools.core.harmonize import harmonize
+
+        # Два такта C, два такта G: гармония обязана смениться, и бас
+        # обязан подвести к ней.
+        notes = []
+        for pitch in (72, 76, 79, 76):          # до-мажорное трезвучие
+            notes.append((pitch, 1.0))
+        for pitch in (79, 83, 74, 83):          # соль-мажорное
+            notes.append((pitch, 1.0))
+        harmony = harmonize(notes, bpm=120, root="C", scale="major")
+
+        roots = [c.pitch_classes[0] for c in harmony.chords]
+        assert len(set(roots)) > 1, "гармония должна смениться"
+
+        bass = [n for n, _dur in harmony.bass]
+        # Нота перед сменой окна отстоит от корня следующего окна на полтона.
+        first = harmony.chords[0]
+        boundary = int(first.beats / (1.0 if harmony.dense else 2.0)) - 1
+        following_root = harmony.chords[1].root_midi
+        assert abs(bass[boundary] - following_root) == 1
+
+    def test_dense_theme_gets_octaves_and_second_voice(self):
+        """Плотная тема выдерживает полный наряд аранжировки.
+
+        Регресс 14.09 в обе стороны: сначала тема звучала одной тонкой
+        линией («монофонично, плосковато»), потом удвоение с вторым
+        голосом закатали редкую тему Pink Panther так, что её стало не
+        узнать. Наряд обязан следовать плотности темы.
+        """
+        from rob_box_mcp_tools.core.harmonize import harmonize
+
+        # Шестнадцатые подряд — атака чаще чем раз в бит.
+        notes = [(72 + (i % 5), 0.25) for i in range(32)]
+        harmony = harmonize(notes, bpm=120, root="C", scale="major")
+        assert harmony.dense is True
+
+        code = render(spec_from_flat(
+            harmony=harmony, bpm=harmony.bpm, root=harmony.root,
+            scale=harmony.scale, form="arc", lead_synth="pluck",
+            bass_synth="dub", pad_synth="warmpad",
+        ))
+        lead = next(l for l in code.splitlines() if l.startswith("p2 >>"))
+        assert "(60, 72)" in lead          # тема удвоена октавой вниз
+        assert "d3 >>" in code             # второй голос на месте
+
+    def test_sparse_theme_stays_a_single_line(self):
+        """Редкая тема играется одной линией, без удвоений и второго голоса."""
+        from rob_box_mcp_tools.core.harmonize import harmonize
+
+        # Пары восьмых с паузами по два бита — рисунок Pink Panther.
+        notes = []
+        for _ in range(4):
+            notes += [(75, 0.5), (76, 0.5), (None, 2.0), (78, 0.5), (79, 0.5)]
+        harmony = harmonize(notes, bpm=120, root="C", scale="major")
+        assert harmony.dense is False
+
+        code = render(spec_from_flat(
+            harmony=harmony, bpm=harmony.bpm, root=harmony.root,
+            scale=harmony.scale, form="arc", lead_synth="pluck",
+            bass_synth="dub", pad_synth="warmpad",
+        ))
+        lead = next(l for l in code.splitlines() if l.startswith("p2 >>"))
+        assert "(63, 75)" not in lead      # без удвоения в октаву
+        assert "75" in lead                # но сама тема дословна
+        assert "d3 >>" not in code         # без второго голоса
+
     def test_lead_midi_length_mismatch_raises(self):
         with pytest.raises(ArrangementError):
             spec_from_flat(

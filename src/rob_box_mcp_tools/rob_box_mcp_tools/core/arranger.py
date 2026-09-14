@@ -259,6 +259,11 @@ class Layer:
     midi: Optional[Sequence[Optional[int]]] = None
     sample: int = 0
     oct_shift: int = 0
+    #: Длина звучания ноты в битах, независимо от ``dur`` (шага сетки).
+    #: В Renardo ``sus`` по умолчанию равен ``dur``, то есть нота тянется
+    #: до следующей. Остинато подклада без короткого ``sus`` слипается
+    #: обратно в выдержанный аккорд и перестаёт быть ритмом.
+    sus: Optional[float] = None
 
 
 @dataclass
@@ -420,18 +425,47 @@ def _snap_plan_to_theme(
     обрывалась. Слышно это именно как «мелодия не попадает»: громкость и
     слои переключаются там, где у темы ничего не происходит.
 
-    Теперь каждая секция округляется до ближайшего целого числа повторов
-    (но не меньше одного), так что любая граница формы совпадает с
-    границей фразы. Пропорции формы при этом сохраняются: короткие секции
-    остаются короткими, длинные — длинными.
+    Считаем не по секциям, а от БЮДЖЕТА повторов: сколько раз тема
+    укладывается в форму целиком. Бюджет раздаётся секциям пропорцио-
+    нально их исходной длине (метод наибольших остатков), и секции, которым
+    не досталось ни одного повтора, выпадают.
+
+    Бюджет, а не «каждой секции минимум один повтор» — потому что в
+    библиотеке 10460 мелодий и попадаются темы по 40-79 тактов. При
+    минимуме в один повтор шесть секций растянули бы такую тему на
+    полчаса; с бюджетом длинная тема сама становится формой и играет
+    один-два раза.
     """
     if theme_bars <= 0:
         return list(plan)
-    snapped: List[Tuple[str, int, Dict[str, float]]] = []
-    for name, bars, intensities in plan:
-        repeats = max(1, int(round(float(bars) / theme_bars)))
-        snapped.append((name, repeats * theme_bars, intensities))
-    return snapped
+
+    total_bars = sum(int(bars) for _n, bars, _i in plan)
+    budget = max(1, int(round(total_bars / float(theme_bars))))
+
+    # Наибольшие остатки: сначала целые части, потом по одному повтору
+    # тем секциям, у которых дробный хвост больше. Без этого округление
+    # каждой секции по отдельности теряет или добавляет повторы, и сумма
+    # перестаёт совпадать с бюджетом.
+    shares = [budget * int(bars) / total_bars for _n, bars, _i in plan]
+    repeats = [int(share) for share in shares]
+    order = sorted(
+        range(len(plan)), key=lambda i: shares[i] - repeats[i], reverse=True
+    )
+    for i in order[: budget - sum(repeats)]:
+        repeats[i] += 1
+
+    snapped = [
+        (name, repeats[i] * theme_bars, intensities)
+        for i, (name, _bars, intensities) in enumerate(plan)
+        if repeats[i] > 0
+    ]
+    if snapped:
+        return snapped
+    # Бюджет целиком осел на секции, которых не осталось (возможно только
+    # при вырожденном плане) — играем тему один раз самой длинной секцией.
+    longest = max(range(len(plan)), key=lambda i: plan[i][1])
+    name, _bars, intensities = plan[longest]
+    return [(name, theme_bars, intensities)]
 
 
 def form_duration_seconds(
@@ -761,6 +795,8 @@ def _render_melodic_args(
             args.append(f"dur=var({_fmt_list(dur_values)}, {_fmt_list(dur_durs)})")
         else:
             args.append(f"dur={_fmt(layer.dur)}")
+    if layer.sus is not None:
+        args.append(f"sus={_fmt(layer.sus)}")
     if layer.midi is None:
         args.append(f"oct={max(2, min(7, role_oct + int(layer.oct_shift)))}")
     else:
@@ -811,7 +847,19 @@ def _render_layer(
     args.append(f"amp={amp_expr}")
     # Фильтр-свип вешаем на держащие слои. На ударные не вешаем: срезанная
     # атака бочки слышна как проваленный грув.
-    if use_filter and layer.role in ("bass", "pad", "lead"):
+    # 🔴 FIX (live 14.09, «солло не все ноты играет»): свип ездит от 700 Гц,
+    # и на нижнем краю он срезает ВСЁ, что выше. У имперского марша выше
+    # 700 Гц лежат 37% нот темы (она идёт до D6 = 1175 Гц), а бас и
+    # подклад — целиком ниже: 0 нот из 36 и 0 из 108. Поэтому аккомпанемент
+    # звучал целым, а тема циклически теряла ноты по ходу свипа.
+    #
+    # Фиксированную тему форма вправе делать тише и ярче, но не вправе
+    # стирать — тот же принцип, что у FIXED_THEME_AMP_FLOOR и что у
+    # ударных, которые исключены из свипа с самого начала (срезанная атака
+    # бочки слышна как проваленный грув). Сочинённой с нуля мелодии свип
+    # по-прежнему достаётся: там он краска, а не потеря материала.
+    fixed_theme = layer.midi is not None and layer.role in ("lead", "counter")
+    if use_filter and layer.role in ("bass", "pad", "lead") and not fixed_theme:
         args.append("lpf=gflt")
 
     line = f"{player} >> {head}, " + ", ".join(args) + ")"
@@ -1141,10 +1189,16 @@ def _add_melodic_layer(
     return True
 
 
+#: Длина удара остинато в битах. Короче шага сетки (доли) — иначе
+#: соседние аккорды смыкаются и остинато снова слышится как подложка.
+PAD_STAB_SUS = 0.4
+
+
 def _add_derived_layers(
     layers: List[Layer],
     harmony,
     *,
+    theme_octaves: bool,
     lead_synth: str,
     bass_synth: Optional[str],
     pad_synth: Optional[str],
@@ -1166,29 +1220,82 @@ def _add_derived_layers(
     _add_drum_layer_if_present(layers, "drums", harmony.drums, drums_sample)
     _add_drum_layer_if_present(layers, "hats", harmony.hats, hats_sample)
 
+    # Наряд аранжировки соразмерен плотности темы. Второй голос и удвоение
+    # в октаву делают тему ТОЛЩЕ — плотной, громкой теме (марш, гимн,
+    # чиптюн) это вес, а редкой (крадущаяся тема с паузами между фразами)
+    # это гибель: её узнают по тонкой одинокой линии и по тишине вокруг.
+    # См. harmonize::DENSE_ONSETS_PER_BEAT.
+    dense = getattr(harmony, "dense", True)
     for role, synth, part in (
         ("bass", bass_synth, harmony.bass),
         ("lead", lead_synth, harmony.lead),
         ("pad", pad_synth, harmony.pad),
-        ("counter", counter_synth, harmony.counter),
+        ("counter", counter_synth, harmony.counter if dense else ()),
     ):
         if not (synth and synth.strip()) or not part:
             continue
+        notes = [note for note, _dur in part]
+        if (
+            role == "lead"
+            and theme_octaves
+            and dense
+            and _fits_octave_double(notes)
+        ):
+            notes = [_octave_double(note) for note in notes]
         layers.append(
             Layer(
                 role=role,
                 synth=synth.strip(),
-                midi=tuple(note for note, _dur in part),
+                midi=tuple(notes),
                 durs=tuple(float(dur) for _note, dur in part),
                 dur=ROLE_DEFAULT_DUR[role],
+                # Подклад ведёт остинато: удар должен быть короче шага
+                # сетки, иначе соседние аккорды сливаются в выдержанный
+                # звук и ритм пропадает (см. harmonize::_build_pad).
+                sus=PAD_STAB_SUS if role == "pad" else None,
             )
         )
+
+
+#: Ниже этой ноты удваивать тему октавой вниз нельзя: удвоение залезет
+#: в регистр баса. Библиотека — 10460 разных мелодий, и низких среди них
+#: полно (басовые риффы, мужские вокальные темы); для них удвоение даёт
+#: не вес, а кашу на границе с басовой партией.
+MIN_MIDI_FOR_OCTAVE_DOUBLE = 60  # C4
+
+
+def _fits_octave_double(notes: Sequence[object]) -> bool:
+    """Хватает ли теме высоты, чтобы удвоить её октавой вниз?
+
+    Смотрим на САМУЮ НИЗКУЮ ноту темы, а не на среднюю: достаточно одной
+    низкой ноты, чтобы её удвоение село на бас. Тема из одних пауз
+    удвоения не получает — удваивать нечего.
+    """
+    pitches = [
+        int(n) for n in notes if isinstance(n, (int, float)) and n is not None
+    ]
+    return bool(pitches) and min(pitches) >= MIN_MIDI_FOR_OCTAVE_DOUBLE
+
+
+def _octave_double(note):
+    """Нота → она же вместе с октавой ниже (``None`` остаётся паузой).
+
+    Тема в октавах — базовый приём оркестровки: в марше её ведут низкая
+    медь и низкие струнные одновременно, и именно удвоение даёт вес.
+    Одна линия одним тембром на слух и есть «монофонично и плоско».
+    """
+    if note is None:
+        return None
+    if isinstance(note, (tuple, list)):
+        return tuple(note)
+    return (int(note) - 12, int(note))
 
 
 def spec_from_flat(
     *,
     harmony=None,
     counter_synth: Optional[str] = None,
+    theme_octaves: bool = True,
     bpm: float = 120.0,
     root: str = "C",
     scale: str = "minor",
@@ -1241,6 +1348,7 @@ def spec_from_flat(
         _add_derived_layers(
             layers,
             harmony,
+            theme_octaves=bool(theme_octaves),
             lead_synth=lead_synth,
             bass_synth=bass_synth,
             pad_synth=pad_synth,

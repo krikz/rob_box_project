@@ -30,16 +30,48 @@ __all__ = [
     "melody_to_compose_params",
 ]
 
-#: Лады для детекции тональности, в порядке приоритета при равном счёте.
-_KEY_SCALES = (
-    "major",
-    "minor",
-    "harmonicMinor",
-    "dorian",
-    "mixolydian",
-    "lydian",
-    "phrygian",
+#: Профили Крумхансл-Шмуклера: насколько «своей» слышится каждая ступень
+#: хроматики в мажоре и в миноре. Числа — усреднённые оценки слушателей
+#: из психоакустических экспериментов Кэрол Крумхансл; тоника весит
+#: больше всех, за ней доминанта и медианта.
+#:
+#: 🔴 FIX (live 14.09): здесь считалось, сколько веса нот ПОПАДАЕТ в лад.
+#: Такой счёт не различает параллельные тональности и лады-повороты в
+#: принципе: у ля-минора и до-мажора набор нот совпадает полностью, у
+#: ля-фригийского и фа-мажора тоже — счёт у них одинаков до последнего
+#: знака, и выбор решал порядок перебора, то есть монетка. «В пещере
+#: горного короля» (ля-минор) определялась как ре-мажор, «Ода к радости»
+#: (фа-мажор) — как ля-фригийский.
+#:
+#: Профиль различает их, потому что смотрит НЕ на вхождение ноты в лад, а
+#: на то, какие ступени несут вес: тема в миноре задерживается на минорной
+#: терции, тема в мажоре — на большой. Сравнение идёт корреляцией, а не
+#: суммой, чтобы результат не зависел от общей длины темы.
+_KRUMHANSL_MAJOR = (
+    6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88,
 )
+_KRUMHANSL_MINOR = (
+    6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17,
+)
+
+
+#: Штраф за долю веса, лежащую ВНЕ лада. Соразмерен корреляции (та живёт
+#: в [-1, 1]), поэтому тональность, не содержащую заметной части нот темы,
+#: он снимает, а на выбор между двумя одинаково подходящими не влияет.
+_OUT_OF_SCALE_PENALTY = 2.0
+
+
+def _correlation(xs: Sequence[float], ys: Sequence[float]) -> float:
+    """Корреляция Пирсона двух векторов одной длины (0.0 при вырождении)."""
+    n = len(xs)
+    mean_x = sum(xs) / n
+    mean_y = sum(ys) / n
+    dx = [x - mean_x for x in xs]
+    dy = [y - mean_y for y in ys]
+    denom = (sum(v * v for v in dx) * sum(v * v for v in dy)) ** 0.5
+    if denom == 0:
+        return 0.0
+    return sum(a * b for a, b in zip(dx, dy)) / denom
 
 
 @dataclass(frozen=True)
@@ -87,18 +119,47 @@ def detect_key(
             weights[pc] = weights.get(pc, 0.0) + float(dur)
     if not weights:
         return "C", "major"
-    best: Optional[Tuple[str, str]] = None
-    best_score = -1.0
-    for scale_name in _KEY_SCALES:
-        in_scale = {i % 12 for i in SCALE_INTERVALS[scale_name]}
-        for root_idx, root in enumerate(VALID_ROOTS):
-            score = sum(
-                w for pc, w in weights.items() if (pc - root_idx) % 12 in in_scale
+
+    profile = [weights.get(pc, 0.0) for pc in range(12)]
+    total = sum(profile) or 1.0
+    best_root = 0
+    best_major = True
+    best_score = float("-inf")
+    for root_idx in range(12):
+        rotated = profile[root_idx:] + profile[:root_idx]
+        for is_major, reference, scale_name in (
+            (True, _KRUMHANSL_MAJOR, "major"),
+            (False, _KRUMHANSL_MINOR, "minor"),
+        ):
+            # Корреляция объясняет ИЕРАРХИЮ ступеней, но ничего не знает о
+            # принадлежности: она не против ноты, которой в ладу нет вовсе.
+            # На коротком фрагменте этого мало — «Jingle Bells» (фа-мажор)
+            # почти не касается своей тоники и всем весом лежит на терции,
+            # из-за чего выигрывал ля-минор, где си-бемоля темы просто нет.
+            # Второй член требует, чтобы лад ещё и СОДЕРЖАЛ ноты темы.
+            in_scale = {i % 12 for i in SCALE_INTERVALS[scale_name]}
+            outside = sum(
+                w
+                for pc, w in weights.items()
+                if (pc - root_idx) % 12 not in in_scale
             )
+            score = _correlation(rotated, reference)
+            score -= _OUT_OF_SCALE_PENALTY * (outside / total)
             if score > best_score:
                 best_score = score
-                best = (root, scale_name)
-    return best if best is not None else ("C", "major")
+                best_root = root_idx
+                best_major = is_major
+
+    if best_major:
+        return VALID_ROOTS[best_root], "major"
+
+    # Натуральный минор или гармонический — решает седьмая ступень:
+    # повышенная (вводный тон) против натуральной. Это единственное, чем
+    # они отличаются, и профиль минора их не различает (он один на оба).
+    raised_seventh = weights.get((best_root + 11) % 12, 0.0)
+    natural_seventh = weights.get((best_root + 10) % 12, 0.0)
+    scale = "harmonicMinor" if raised_seventh > natural_seventh else "minor"
+    return VALID_ROOTS[best_root], scale
 
 
 def melody_to_compose_params(melody: RtttlMelody) -> Dict[str, object]:
@@ -121,7 +182,7 @@ def melody_to_compose_params(melody: RtttlMelody) -> Dict[str, object]:
     :mod:`core.harmonize`. Плоские ``lead_midi``/``lead_dur`` остаются в
     ответе для обратной совместимости и для логов.
     """
-    melody = _snap_to_bar(melody)
+    melody = _snap_to_bar(_normalize_tempo(melody))
     root, scale = detect_key(
         [m for m, _ in melody.notes],
         [d for _, d in melody.notes],
@@ -136,6 +197,51 @@ def melody_to_compose_params(melody: RtttlMelody) -> Dict[str, object]:
         "lead_dur": ", ".join(dur),
         "harmony": harmonize(melody.notes, melody.bpm, root, scale),
     }
+
+
+#: Рабочий диапазон темпа аранжировщика (совпадает с ``arranger.BPM_RANGE``).
+#: Держим копию, а не импорт, по той же причине, что и SCALE_INTERVALS:
+#: модуль остаётся независимым от деталей рендера.
+_TEMPO_RANGE = (60.0, 180.0)
+
+
+def _normalize_tempo(melody: RtttlMelody) -> RtttlMelody:
+    """Свернуть темп в рабочий диапазон, ВДВОЕ меняя и bpm, и длительности.
+
+    🔴 FIX (live 14.09): аранжировщик клампит bpm в [60, 180], а в архиве
+    1321 мелодия записана быстрее и 547 медленнее — 18% библиотеки. Кламп
+    не трогает длительности, поэтому такая мелодия играла в чужом темпе:
+    «В пещере горного короля» с ``b=260`` превращалась в 180 и шла на
+    треть медленнее, чем задумано.
+
+    Сворачивание вдвое звучит РОВНО так же: половинный темп с половинными
+    длительностями даёт то же абсолютное время (``beats/2`` при ``bpm/2``
+    — та же секунда), просто «четверть при 260» записывается как «восьмая
+    при 130». Это стандартная смена единицы записи, а не изменение музыки.
+
+    Выход из диапазона больше чем вдвое-втрое встречается (до ``b=900``),
+    поэтому свёртка идёт циклом; ограничитель шагов защищает от
+    вырожденных значений вроде ``b=0``.
+    """
+    bpm = float(melody.bpm)
+    if bpm <= 0:
+        return melody
+    factor = 1.0
+    for _ in range(8):
+        if bpm > _TEMPO_RANGE[1]:
+            bpm /= 2.0
+            factor /= 2.0
+        elif bpm < _TEMPO_RANGE[0]:
+            bpm *= 2.0
+            factor *= 2.0
+        else:
+            break
+    if factor == 1.0:
+        return melody
+    return RtttlMelody(
+        bpm=int(round(bpm)),
+        notes=tuple((midi, dur * factor) for midi, dur in melody.notes),
+    )
 
 
 def _snap_to_bar(melody: RtttlMelody) -> RtttlMelody:
