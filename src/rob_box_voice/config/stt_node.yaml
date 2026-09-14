@@ -37,3 +37,11 @@ stt_node:
     # /voice/dialogue/barge_in_policy, а не из своего YAML — иначе получим
     # тот же класс ошибки, что и с дублированием wake_words выше (#1252),
     # который и породил #1734.
+    # ===== MiniMax STT (issue #2365, Phase 1 PoC) =====
+    # Runtime-параметры ``minimax_stt_enabled`` / ``minimax_stt_api_key_env``
+    # НЕ лежат здесь — issue #1004 требует, чтобы все ключи были объявлены
+    # через ``declare_parameter`` в stt_node.py. Phase 1 PoC их не подключает
+    # в chain, чтобы не сломать прод. Полный конфиг чейна (включая
+    # ``minimax_stt_enabled``) — в config/stt_chain.yaml (документация),
+    # а в stt_node.yaml эти ключи появятся ОДНОВРЕМЕННО с declare_parameter
+    # в Phase 2 wiring (см. ADR #0090, TBD).
