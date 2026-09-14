@@ -574,6 +574,101 @@ def _dur_var(
     return _merge_adjacent(values, durations)
 
 
+def _render_drum_layer(
+    layer: Layer,
+) -> Tuple[str, List[str]]:
+    """Для ударной роли: вернуть (head, args). Паттерн обязателен."""
+    if not layer.pattern:
+        raise ArrangementError(
+            f"Роль {layer.role!r} играет сэмплами — нужен pattern, "
+            'например "X..o.X.o".'
+        )
+    head = f'play({layer.pattern!r}'
+    args: List[str] = []
+    if layer.sample:
+        args.append(f"sample={int(layer.sample)}")
+    return head, args
+
+
+def _render_melodic_player_head(
+    layer: Layer,
+    plan: Sequence[Tuple[str, int, Dict[str, float]]],
+    player: str,
+) -> Tuple[str, List[str]]:
+    """Для мелодической роли: вернуть (head, pre_lines) — игрок и его прелюдия.
+
+    Развитие материала по секциям (#1805) пишется ОТДЕЛЬНОЙ переменной
+    ``<player>_motif = Pvar(...)`` (pre_lines), а не инлайном: инлайновый
+    ``Pvar(...)`` внутри аргументов плеера ломает regex-парсер валидатора
+    качества (ищет ``dur=`` до первой закрывающей скобки — см.
+    tools/music.py::_PLAYER_LINE_RE).
+    """
+    if not layer.synth:
+        raise ArrangementError(
+            f"Роль {layer.role!r} играет синтом — нужно поле synth."
+        )
+    if not layer.degrees and layer.midi is None:
+        raise ArrangementError(
+            f"Роль {layer.role!r} без degrees — играть нечего."
+        )
+
+    pre_lines: List[str] = []
+    # Тема фиксированная (задан точный ритм) — играем дословно весь
+    # трек: никаких транспозиций/инверсий/ретроградов (#1805) и
+    # никакой смены плотности (#1806). Развитие идёт формой и слоями
+    # ВОКРУГ темы, а не внутри неё.
+    if layer.midi is not None:
+        if layer.durs is None:
+            raise ArrangementError(
+                f"Роль {layer.role!r} с midi — нужен точный ритм durs."
+            )
+        # Абсолютный MIDI: октава не применяется (midinote задаёт высоту).
+        head = f"{layer.synth}(midinote={_fmt_midi_list(layer.midi)}"
+        return head, pre_lines
+
+    if layer.durs is not None:
+        head = f"{layer.synth}({_fmt_list(layer.degrees)}"
+        return head, pre_lines
+
+    variants, variant_durs = _motif_variants(layer.role, layer.degrees, plan)
+    if len(variants) > 1:
+        motif_name = f"{player}_motif"
+        pre_lines.append(
+            f"{motif_name} = Pvar({_fmt_nested_list(variants)}, "
+            f"{_fmt_list(variant_durs)})"
+        )
+        head = f"{layer.synth}({motif_name}"
+        return head, pre_lines
+
+    if layer.role == "pad":
+        # Пэд держит гармонию — все его ступени звучат одновременно.
+        head = f"{layer.synth}({_fmt_chord(layer.degrees)}"
+    else:
+        head = f"{layer.synth}({_fmt_list(layer.degrees)}"
+    return head, pre_lines
+
+
+def _render_melodic_args(
+    layer: Layer,
+    plan: Sequence[Tuple[str, int, Dict[str, float]]],
+    role_oct: int,
+) -> List[str]:
+    """Собрать аргументы (dur / oct) для мелодической роли."""
+    args: List[str] = []
+    if layer.durs is not None:
+        args.append(f"dur={_fmt_list(layer.durs)}")
+    else:
+        # #1806 — плотность нот по секциям, не constant dur всю форму.
+        dur_values, dur_durs = _dur_var(layer.role, plan, layer.dur)
+        if len(dur_values) > 1:
+            args.append(f"dur=var({_fmt_list(dur_values)}, {_fmt_list(dur_durs)})")
+        else:
+            args.append(f"dur={_fmt(layer.dur)}")
+    if layer.midi is None:
+        args.append(f"oct={max(2, min(7, role_oct + int(layer.oct_shift)))}")
+    return args
+
+
 def _render_layer(
     layer: Layer,
     plan: Sequence[Tuple[str, int, Dict[str, float]]],
@@ -599,71 +694,11 @@ def _render_layer(
     else:
         amp_expr = f"var({_fmt_list(amps)}, {_fmt_list(durs)})"
 
-    pre_lines: List[str] = []
-    args: List[str] = []
     if layer.role in DRUM_ROLES:
-        if not layer.pattern:
-            raise ArrangementError(
-                f"Роль {layer.role!r} играет сэмплами — нужен pattern, "
-                'например "X..o.X.o".'
-            )
-        head = f'play({layer.pattern!r}'
-        if layer.sample:
-            args.append(f"sample={int(layer.sample)}")
+        head, args = _render_drum_layer(layer)
     else:
-        if not layer.synth:
-            raise ArrangementError(
-                f"Роль {layer.role!r} играет синтом — нужно поле synth."
-            )
-        if not layer.degrees and layer.midi is None:
-            raise ArrangementError(
-                f"Роль {layer.role!r} без degrees — играть нечего."
-            )
-
-        # Тема фиксированная (задан точный ритм) — играем дословно весь
-        # трек: никаких транспозиций/инверсий/ретроградов (#1805) и
-        # никакой смены плотности (#1806). Развитие идёт формой и слоями
-        # ВОКРУГ темы, а не внутри неё.
-        if layer.midi is not None:
-            if layer.durs is None:
-                raise ArrangementError(
-                    f"Роль {layer.role!r} с midi — нужен точный ритм durs."
-                )
-            # Абсолютный MIDI: октава не применяется (midinote задаёт высоту).
-            head = f"{layer.synth}(midinote={_fmt_midi_list(layer.midi)}"
-        elif layer.durs is not None:
-            head = f"{layer.synth}({_fmt_list(layer.degrees)}"
-        else:
-            # #1805 — материал по секциям, не только громкость. Пишем как
-            # отдельную переменную (тот же идиом, что и ``gflt = linvar(...)``
-            # ниже), а не инлайном: инлайновый ``Pvar(...)`` внутри аргументов
-            # плеера ломает regex-парсер валидатора качества (ищет ``dur=`` до
-            # первой закрывающей скобки — см. tools/music.py::_PLAYER_LINE_RE).
-            variants, variant_durs = _motif_variants(layer.role, layer.degrees, plan)
-            if len(variants) > 1:
-                motif_name = f"{player}_motif"
-                pre_lines.append(
-                    f"{motif_name} = Pvar({_fmt_nested_list(variants)}, "
-                    f"{_fmt_list(variant_durs)})"
-                )
-                head = f"{layer.synth}({motif_name}"
-            elif layer.role == "pad":
-                # Пэд держит гармонию — все его ступени звучат одновременно.
-                head = f"{layer.synth}({_fmt_chord(layer.degrees)}"
-            else:
-                head = f"{layer.synth}({_fmt_list(layer.degrees)}"
-
-        if layer.durs is not None:
-            args.append(f"dur={_fmt_list(layer.durs)}")
-        else:
-            # #1806 — плотность нот по секциям, не constant dur всю форму.
-            dur_values, dur_durs = _dur_var(layer.role, plan, layer.dur)
-            if len(dur_values) > 1:
-                args.append(f"dur=var({_fmt_list(dur_values)}, {_fmt_list(dur_durs)})")
-            else:
-                args.append(f"dur={_fmt(layer.dur)}")
-        if layer.midi is None:
-            args.append(f"oct={max(2, min(7, role_oct + int(layer.oct_shift)))}")
+        head, pre_lines = _render_melodic_player_head(layer, plan, player)
+        args = _render_melodic_args(layer, plan, role_oct)
 
     args.append(f"amp={amp_expr}")
     # Фильтр-свип вешаем на держащие слои. На ударные не вешаем: срезанная
@@ -672,6 +707,8 @@ def _render_layer(
         args.append("lpf=gflt")
 
     line = f"{player} >> {head}, " + ", ".join(args) + ")"
+    if layer.role in DRUM_ROLES:
+        return line
     return "\n".join(pre_lines + [line]) if pre_lines else line
 
 
@@ -900,6 +937,83 @@ def _normalize_bar_pattern(pattern: str) -> str:
     return trimmed + "." * (target - len(trimmed))
 
 
+def _add_drum_layer_if_present(
+    layers: List[Layer], role: str, pattern: Optional[str], sample: int
+) -> None:
+    """Добавить ударный слой, если есть паттерн."""
+    if not pattern or not pattern.strip():
+        return
+    layers.append(
+        Layer(
+            role=role,
+            pattern=_normalize_bar_pattern(pattern.strip()),
+            sample=int(sample or 0),
+        )
+    )
+
+
+def _add_lead_midi_layer(
+    layers: List[Layer], synth: str, lead_midi: str, lead_dur: Optional[str]
+) -> bool:
+    """Добавить lead-слоя по абсолютному MIDI (RTTTL-путь). True если добавлен."""
+    if not (lead_midi and lead_midi.strip()):
+        return False
+    midi = parse_midi(lead_midi)
+    durs = parse_notes(lead_dur) if lead_dur else None
+    if durs is None:
+        raise ArrangementError(
+            "lead_midi требует lead_dur той же длины — точный ритм темы."
+        )
+    if len(durs) != len(midi):
+        raise ArrangementError(
+            f"lead_dur должно быть той же длины, что lead_midi: "
+            f"{len(durs)} длительностей на {len(midi)} нот. "
+            "Каждой ноте темы — своя длительность."
+        )
+    layers.append(
+        Layer(
+            role="lead",
+            synth=synth.strip(),
+            midi=midi,
+            dur=ROLE_DEFAULT_DUR["lead"],
+            durs=durs,
+        )
+    )
+    return True
+
+
+def _add_melodic_layer(
+    layers: List[Layer], role: str, synth: str, notes: Optional[str],
+    lead_dur: Optional[str],
+) -> bool:
+    """Добавить мелодический слой (bass/lead/pad). True если добавлен."""
+    degrees = parse_notes(notes)
+    if not degrees:
+        return False
+    # Тема фиксированная: точный ритм даёт LLM. Без него плотность
+    # владеет аранжировщик (ROLE_DEFAULT_DUR + _dur_var) — путь
+    # для сочинённой с нуля музыки не меняется.
+    durs = None
+    if role == "lead" and lead_dur:
+        durs = parse_notes(lead_dur)
+        if len(durs) != len(degrees):
+            raise ArrangementError(
+                f"lead_dur должно быть той же длины, что lead_notes: "
+                f"{len(durs)} длительностей на {len(degrees)} нот. "
+                "Каждой ноте темы — своя длительность."
+            )
+    layers.append(
+        Layer(
+            role=role,
+            synth=synth.strip(),
+            degrees=degrees,
+            dur=ROLE_DEFAULT_DUR[role],
+            durs=durs,
+        )
+    )
+    return True
+
+
 def spec_from_flat(
     *,
     bpm: float = 120.0,
@@ -939,36 +1053,15 @@ def spec_from_flat(
     """
     layers: List[Layer] = []
 
-    if drums and drums.strip():
-        layers.append(
-            Layer(
-                role="drums",
-                pattern=_normalize_bar_pattern(drums.strip()),
-                sample=int(drums_sample or 0),
-            )
-        )
-    if hats and hats.strip():
-        # 🔴 FIX (live 31.08): здесь стояло sample=3 намертво. В библиотеке
-        # 4585 сэмплов в трёх паках, а compose_music дотягивался только до
-        # вариантов бочки через drums_sample — хэты всегда звучали одним и
-        # тем же, перкуссия наружу не выводилась вовсе. Один и тот же
-        # тембр во всех треках слышится как «однотипно» ровно так же, как
-        # одна и та же мелодия.
-        layers.append(
-            Layer(
-                role="hats",
-                pattern=_normalize_bar_pattern(hats.strip()),
-                sample=int(hats_sample or 0),
-            )
-        )
-    if perc and perc.strip():
-        layers.append(
-            Layer(
-                role="perc",
-                pattern=_normalize_bar_pattern(perc.strip()),
-                sample=int(perc_sample or 0),
-            )
-        )
+    # 🔴 FIX (live 31.08): здесь стояло sample=3 намертво. В библиотеке
+    # 4585 сэмплов в трёх паках, а compose_music дотягивался только до
+    # вариантов бочки через drums_sample — хэты всегда звучали одним и
+    # тем же, перкуссия наружу не выводилась вовсе. Один и тот же
+    # тембр во всех треках слышится как «однотипно» ровно так же, как
+    # одна и та же мелодия.
+    _add_drum_layer_if_present(layers, "drums", drums, drums_sample)
+    _add_drum_layer_if_present(layers, "hats", hats, hats_sample)
+    _add_drum_layer_if_present(layers, "perc", perc, perc_sample)
 
     for role, synth, notes in (
         ("bass", bass_synth, bass_notes),
@@ -980,54 +1073,12 @@ def spec_from_flat(
 
         # Тема абсолютным MIDI (известная мелодия из RTTTL): играем дословно,
         # в ступени лада не переводим — иначе хроматические ноты теряются.
-        if role == "lead" and lead_midi and lead_midi.strip():
-            midi = parse_midi(lead_midi)
-            durs = parse_notes(lead_dur) if lead_dur else None
-            if durs is None:
-                raise ArrangementError(
-                    "lead_midi требует lead_dur той же длины — точный ритм темы."
-                )
-            if len(durs) != len(midi):
-                raise ArrangementError(
-                    f"lead_dur должно быть той же длины, что lead_midi: "
-                    f"{len(durs)} длительностей на {len(midi)} нот. "
-                    "Каждой ноте темы — своя длительность."
-                )
-            layers.append(
-                Layer(
-                    role="lead",
-                    synth=synth.strip(),
-                    midi=midi,
-                    dur=ROLE_DEFAULT_DUR[role],
-                    durs=durs,
-                )
-            )
+        if role == "lead" and _add_lead_midi_layer(
+            layers, synth, lead_midi or "", lead_dur
+        ):
             continue
 
-        degrees = parse_notes(notes)
-        if not degrees:
-            continue
-        # Тема фиксированная: точный ритм даёт LLM. Без него плотность
-        # владеет аранжировщик (ROLE_DEFAULT_DUR + _dur_var) — путь
-        # для сочинённой с нуля музыки не меняется.
-        durs = None
-        if role == "lead" and lead_dur:
-            durs = parse_notes(lead_dur)
-            if len(durs) != len(degrees):
-                raise ArrangementError(
-                    f"lead_dur должно быть той же длины, что lead_notes: "
-                    f"{len(durs)} длительностей на {len(degrees)} нот. "
-                    "Каждой ноте темы — своя длительность."
-                )
-        layers.append(
-            Layer(
-                role=role,
-                synth=synth.strip(),
-                degrees=degrees,
-                dur=ROLE_DEFAULT_DUR[role],
-                durs=durs,
-            )
-        )
+        _add_melodic_layer(layers, role, synth, notes, lead_dur)
 
     resolved_form = (form or DEFAULT_FORM).strip()
     _autofill_bass(layers, resolved_form)
