@@ -59,6 +59,23 @@ except ImportError:
     # позволяет импортировать модуль без workspace build (для тестов).
     VisionEventMsg = None
 
+# Phase 1.5 (issue #2398): real-mode требует numpy + opencv для
+# JPEG-decode + letterbox preprocessing. На CI (где rob_box_perception
+# собирается без них — best-effort) — node продолжит работать в stub.
+try:
+    import numpy as np  # type: ignore[import-not-found]
+    _NUMPY_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    np = None  # type: ignore[assignment]
+    _NUMPY_AVAILABLE = False
+
+try:
+    import cv2  # type: ignore[import-not-found]
+    _CV2_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    cv2 = None  # type: ignore[assignment]
+    _CV2_AVAILABLE = False
+
 
 # Порог confidence ниже которого события НЕ публикуются.
 # Этот параметр общий для всех event_type — HEF-specific tuning
@@ -110,11 +127,28 @@ class VisionHailoNode(Node):
         )
 
         # ============ HEF loader ============
+        # Phase 1.5: is_real_mode = hailo_enabled + hef_path + numpy/cv2
+        # доступны. Если hailo_enabled=True но нет numpy/cv2 — нода
+        # стартует, логирует warning, использует stub. Это capability-honest
+        # (ADR-0018): не делаем silent fallback на stub, а явный degrade с
+        # видимым логом.
+        self._is_real_mode = bool(
+            self.hailo_enabled
+            and self.hef_path
+            and _NUMPY_AVAILABLE
+            and _CV2_AVAILABLE
+        )
         self._loader = make_loader(
             hailo_enabled=self.hailo_enabled,
             hef_path=self.hef_path,
             stub_period_sec=self.stub_period_sec,
         )
+
+        # Кэш последнего декодированного кадра для real-mode.
+        # Phase 1: _on_image только фиксирует факт получения. Phase 1.5:
+        # декодирует JPEG (cv2.imdecode) → numpy.ndarray, кэширует.
+        self._latest_image: Optional[Any] = None
+        self._latest_image_stamp = None  # ros Time (нода) — для stale-detection
 
         # ============ Publishers ============
         if VisionEventMsg is not None:
@@ -173,23 +207,48 @@ class VisionHailoNode(Node):
     # ----------------------------------------------------------------
 
     def _on_image(self, msg: Any) -> None:
-        """Callback входящего кадра. Phase 1 — только фиксируем факт.
+        """Callback входящего кадра. Phase 1.5 — JPEG-decode + кэш.
 
-        В stub-режиме payload не нужен — инференс выдаёт детерминированный
-        результат по таймеру. В real-режиме здесь будет вызов
-        `self._loader.infer(...)` с `numpy.frombuffer(msg.data)`.
+        Stub-mode использует этот же callback чтобы обновить
+        `_last_frame_id` (нужен для `source_camera` в stub-event'ах).
+        Real-mode дополнительно декодирует JPEG → numpy.ndarray для
+        последующего `infer(image=...)`.
         """
         self._has_received_frame = True
         self._last_frame_id = (
             msg.header.frame_id if hasattr(msg, 'header') else None
         )
+        # Real-mode требует numpy/cv2; в stub-mode пропускаем decode.
+        if not self._is_real_mode:
+            return
+        # Type narrowing: _is_real_mode=True подразумевает _CV2_AVAILABLE
+        # и _NUMPY_AVAILABLE (см. проверку в __init__).
+        if not (_NUMPY_AVAILABLE and _CV2_AVAILABLE):
+            return
+        assert cv2 is not None
+        assert np is not None
+        try:
+            data = bytes(msg.data)
+            arr = np.frombuffer(data, dtype=np.uint8)
+            img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+            if img is not None:
+                self._latest_image = img
+                # Stamp — для возможного stale-detection в _tick.
+                if hasattr(msg, 'header') and hasattr(msg.header, 'stamp'):
+                    self._latest_image_stamp = msg.header.stamp
+        except Exception as exc:  # noqa: BLE001
+            # Decode упал — capability-honest: НЕ silent fallback, а warning.
+            self.get_logger().warning(
+                f'JPEG decode failed: {exc!r}. Кэш кадра не обновлён.',
+            )
 
     def _tick(self) -> None:
         """Периодический тик: публикация VisionEvent от loader'а.
 
         В stub-режиме `_loader.infer(...)` сам решает, когда emit'ить
-        (через `stub_period_sec`). В real-режиме здесь стоит вызывать
-        `infer` на последнем кадре (Phase 1.5).
+        (через `stub_period_sec`).
+        В real-режиме (Phase 1.5) — `infer` вызывается на последнем
+        декодированном кадре (если есть).
         """
         if self._publisher is None:
             return
@@ -199,11 +258,18 @@ class VisionHailoNode(Node):
             return
 
         frame_id = self._last_frame_id or 'unknown'
+        # Real-mode: передаём последний декодированный кадр (None если нет).
+        image_for_infer = self._latest_image if self._is_real_mode else None
         try:
-            raw_events = self._loader.infer(frame_id=frame_id, image=None)
+            raw_events = self._loader.infer(
+                frame_id=frame_id,
+                image=image_for_infer,
+            )
         except Exception as exc:  # noqa: BLE001
+            # Real-mode failure (capability-honest, ADR-0018):
+            # НЕ silent fallback на stub. Логируем ошибку и пропускаем кадр.
             self.get_logger().error(
-                f'HEF loader failed: {exc!r}. Falling back to no-events.'
+                f'HEF loader failed: {exc!r}. Кадр пропущен.'
             )
             return
 

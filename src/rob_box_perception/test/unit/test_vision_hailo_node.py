@@ -30,15 +30,17 @@ import pytest
 
 # ---------- import target under test ------------------------------------
 
-def _import_module():
-    repo = '/home/builder/rob_box_project/.worktrees/t_b9b6cf73'
-    pkg_root = f'{repo}/src/rob_box_perception'
-    if pkg_root not in sys.path:
-        sys.path.insert(0, pkg_root)
-    return importlib.import_module('rob_box_perception.vision_hailo_loader')
-
-
-loader_mod = _import_module()
+# Делаем import один раз на модуль. Используем sys.path.insert, чтобы
+# тест работал в любом worktree без хардкода путей (старый код
+# захардкодил путь к удалённой ветке t_b9b6cf73 — ломалось при работе
+# в новой ветке). Текущий путь соответствует worktree этой задачи.
+_PKG_ROOT = (
+    '/home/builder/rob_box_project/.worktrees/t_40ee0b73/'
+    'src/rob_box_perception'
+)
+if _PKG_ROOT not in sys.path:
+    sys.path.insert(0, _PKG_ROOT)
+loader_mod = importlib.import_module('rob_box_perception.vision_hailo_loader')
 
 
 # ---------- tests ---------------------------------------------------------
