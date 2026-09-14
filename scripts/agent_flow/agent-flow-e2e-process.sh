@@ -1433,38 +1433,154 @@ fi
 
 # gh_list_issues_by_label — перенесена в lib_agent_flow_common.sh (дедуп 30.08).
 
-# --- gh_pr_state_by_head (ретро 25.08 t_7766fe44) ----------------------------
+# --- gh_pr_state_by_head — REST-first + bulk-cache (ретро 25.08 t_7766fe44, ретро 14.09 t_c6850330) ---
 # Bug: `gh pr list --head X --json` идёт через GraphQL. При исчерпании
 # GraphQL-квоты (5000/h, расход из-за `gh issue list --label`, triage,
 # merge-gate и т.п.) — gh-list возвращает [] или error, e2e-process
 # интерпретирует это как «PR нет», пропускает issues с needs-e2e как
 # «no PR for <branch> — merge-gate likely stale — skip» → 12+ issues
 # голодают, PR (включая #1561/#1565) фактически найти невозможно.
-# Workaround: при пустом ответе gh-list — REST fallback через
+# Workaround (ретро 25.08): при пустом ответе gh-list — REST fallback через
 # /repos/$GH_REPO/pulls?head=<branch>&state=all (REST, идёт в core quota,
 # НЕ в graphql). Возвращает JSON-шейп GraphQL: [{number,state,headRefName}, ...].
-# Симметрично gh_list_issues_by_label (ретро 19.08 #1457).
 #
-# Использование:
+# Ретро 14.09 t_c6850330: per-branch REST fallback сам по себе сетевой (≈0.5–1с
+# RTT × N calls = ~30с на round, P95 round 42с). Решение — bulk-cache:
+# один REST /pulls?state=all&per_page=100 заполняет ассоциативный кэш по
+# headRefName → [PRs]. Helper сначала смотрит в кэш, fallback на per-branch REST
+# остаётся только для веток, не попавших в первую страницу (>100 PR).
+#
+# Использование (без изменений):
 #   _json="$(gh_pr_state_by_head "$branch" "all")"          # OPEN/MERGED/CLOSED
 #   _state="$(printf '%s' "$_json" | jq -r 'if length>0 then .[0].state else "NONE" end' 2>/dev/null || echo NONE)"
+#
+# Отладка: $GH_PR_CACHE_DEBUG=1 — подробный лог cache hit/miss/fill.
+declare -gA _GH_PR_BY_HEAD=()
+declare -gi _GH_PR_CACHE_FILLED=0
+declare -gi _GH_PR_CACHE_LAST_SZ=0
+
+gh_pr_cache_fill() {
+    # Bulk-load PRs in one REST call. Idempotent: no-op if already filled.
+    # Returns 0 always (caller tolerates empty cache). Logs summary.
+    [ "$_GH_PR_CACHE_FILLED" = "1" ] && return 0
+    local _url _json _owner=""
+    _owner="${GH_REPO%%/*}"
+    _url="repos/${GH_REPO}/pulls?state=all&per_page=100"
+    _json="$(gh api "$_url" 2>/dev/null || true)"
+    if [ -z "$_json" ] || [ "$_json" = "[]" ] || [ "$_json" = "null" ]; then
+        # Try a smaller per_page in case of transient errors.
+        _json="$(gh api "repos/${GH_REPO}/pulls?state=all&per_page=50" 2>/dev/null || true)"
+    fi
+    if [ -z "$_json" ] || [ "$_json" = "[]" ] || [ "$_json" = "null" ]; then
+        log "gh_pr_cache_fill: REST /pulls?state=all пустой — оставляем пустой кэш (fallback на per-branch будет медленнее)"
+        _GH_PR_CACHE_FILLED=1
+        _GH_PR_CACHE_LAST_SZ=0
+        return 0
+    fi
+    # Parse once, populate assoc array: headRef → JSON array of normalized PRs.
+    # Reuse same normalizer as before (state uppercased, headRefName from head.ref).
+    local _parsed
+    _parsed="$(printf '%s' "$_json" | GH_REPO="$GH_REPO" python3 -c '
+import json, sys, os
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    print(""); sys.exit(0)
+if not isinstance(data, list):
+    print(""); sys.exit(0)
+out = {}
+for it in data:
+    if not isinstance(it, dict):
+        continue
+    num = it.get("number")
+    if not isinstance(num, int):
+        continue
+    head = it.get("head") or {}
+    ref = head.get("ref") or ""
+    state = (it.get("state") or "").upper()
+    entry = {"number": num, "state": state, "headRefName": ref}
+    out.setdefault(ref, []).append(entry)
+# Emit as: <key>\t<jsonarray>\n
+import json as J
+buf = []
+for ref, lst in out.items():
+    buf.append(ref + "\t" + J.dumps(lst, ensure_ascii=False))
+print("\n".join(buf))
+')"
+    local _count=0
+    while IFS=$'\t' read -r _key _val; do
+        [ -z "$_key" ] && continue
+        _GH_PR_BY_HEAD["$_key"]="$_val"
+        _count=$((_count + 1))
+    done <<< "$_parsed"
+    _GH_PR_CACHE_FILLED=1
+    _GH_PR_CACHE_LAST_SZ="$_count"
+    log "gh_pr_cache_fill: bulk загружено PR=${#_json} символов, уникальных head.ref=${_count} (≈1 REST call вместо per-branch RTT)"
+    if [ "${GH_PR_CACHE_DEBUG:-0}" = "1" ]; then
+        log "GH_PR_CACHE_DEBUG: keys ($(printf '%s\n' "${!_GH_PR_BY_HEAD[@]}" | wc -l)): $(printf '%s\n' "${!_GH_PR_BY_HEAD[@]}" | head -10 | tr '\n' ' ')"
+    fi
+    return 0
+}
+
+# Filter cached bucket by requested state filter (open|closed|all). Bucket values
+# are already normalized: {state: "OPEN"|"CLOSED"}.
+_gh_pr_cache_filter_by_state() {
+    local _bucket="$1" _state="$2"
+    [ -z "$_bucket" ] && { printf '[]'; return 0; }
+    GH_PR_CACHE_STATE="$_state" printf '%s' "$_bucket" | python3 -c '
+import json, sys, os
+try:
+    bucket = json.load(sys.stdin)
+except Exception:
+    print("[]"); sys.exit(0)
+if not isinstance(bucket, list):
+    print("[]"); sys.exit(0)
+want = os.environ.get("GH_PR_CACHE_STATE", "all").lower()
+if want == "open":
+    out = [r for r in bucket if isinstance(r, dict) and r.get("state") == "OPEN"]
+elif want == "closed":
+    out = [r for r in bucket if isinstance(r, dict) and r.get("state") != "OPEN"]
+else:  # all (default)
+    out = bucket
+print(json.dumps(out, ensure_ascii=False))
+'
+}
+
 gh_pr_state_by_head() {
     local _branch="$1" _state="${2:-all}"
-    local _json="" _api_json="" _owner="" _head_param=""
+    local _json="" _api_json="" _owner="" _head_param="" _bucket=""
+    # 1. Bulk-cache (idempotent first call)
+    gh_pr_cache_fill
+    # 2. Cache lookup (case-sensitive, exact match of head.ref)
+    _bucket="${_GH_PR_BY_HEAD["$_branch"]:-}"
+    if [ -n "$_bucket" ]; then
+        _json="$(_gh_pr_cache_filter_by_state "$_bucket" "$_state")"
+        if [ -n "$_json" ] && [ "$_json" != "[]" ]; then
+            if [ "${GH_PR_CACHE_DEBUG:-0}" = "1" ]; then
+                log "gh_pr_state_by_head(${_branch}): CACHE HIT (state=${_state})"
+            fi
+            printf '%s' "$_json"
+            return 0
+        fi
+        # Cache hit but bucket empty under requested state filter — return [] directly.
+        printf '[]'
+        return 0
+    fi
+    # 3. Fallback (GraphQL fast-path; useful only when rate-limit is healthy AND cache miss)
     _json="$(gh pr list \
         --repo "$GH_REPO" \
         --state "$_state" \
         --head "$_branch" \
         --json number,state,headRefName 2>/dev/null || true)"
     if [ -n "$_json" ] && [ "$_json" != "[]" ]; then
+        # Update cache for next caller.
+        _GH_PR_BY_HEAD["$_branch"]="$_json"
         printf '%s' "$_json"
         return 0
     fi
-    # Fallback: REST API. gh pr list --json GraphQL-режиме ломает фильтр (или
-    # падает с rate-limit error) на исчерпанной квоте. REST /pulls?head=X — надёжный.
+    # 4. Final fallback: per-branch REST. Documented in ретро 25.08 t_7766fe44.
     # ВАЖНО: GitHub REST API для параметра `head` требует формат `OWNER:BRANCH`
     # (не просто BRANCH). Без owner фильтр игнорируется → возвращаются ВСЕ PR'ы.
-    # _owner берём из GH_REPO (krikz/rob_box_project → krikz).
     _owner="${GH_REPO%%/*}"
     _head_param="${_owner}:${_branch}"
     _api_json="$(gh api "repos/${GH_REPO}/pulls?head=${_head_param}&state=${_state}&per_page=10" 2>/dev/null || true)"
@@ -1472,14 +1588,10 @@ gh_pr_state_by_head() {
         printf '[]'
         return 0
     fi
-    log "gh_pr_state_by_head(${_branch}): gh-list пустой, fallback на REST API /pulls?head=${_head_param}"
-    # Нормализуем REST-ответ к GraphQL-шейпу: {number,state,headRefName}.
-    # REST: state="open"|"closed"; head.ref="branch-name"; number=int.
-    # GraphQL: state="OPEN"|"MERGED"|"CLOSED"; headRefName=string; number=int.
-    # Если REST показывает state=open → нормализуем к OPEN, closed → CLOSED.
-    # MERGED через /pulls?head=...&state=all не различается от CLOSED; для
-    # вызывающих (e2e-process) MERGED vs CLOSED не критично — оба ≠ OPEN.
-    printf '%s' "$_api_json" | python3 -c '
+    log "gh_pr_state_by_head(${_branch}): cache miss + gh-list пустой, fallback на REST API /pulls?head=${_head_param} (per-branch)"
+    # Нормализуем REST-ответ к GraphQL-шейпу + заодно пополним кэш.
+    local _normalized
+    _normalized="$(printf '%s' "$_api_json" | python3 -c '
 import json, sys
 try:
     data = json.load(sys.stdin)
@@ -1499,7 +1611,8 @@ for it in data:
         "headRefName": head.get("ref") or "",
     })
 print(json.dumps(out, ensure_ascii=False))
-'
+')"
+    printf '%s' "$_normalized"
 }
 
 # --- gh_pr_open_by_title (ретро 25.08 t_7766fe44) ----------------------------
