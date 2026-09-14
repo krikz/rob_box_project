@@ -378,6 +378,10 @@ jobs:
           cat model.json
 
       - name: Collect robot logs
+        # ADR-0090 §2.1 (t_e8072691 blocker): всегда собирать docker logs робота,
+        # даже при verdict=failure или cancelled — иначе diag-helper не может
+        # применить decision tree (a)/(b)/(c). Аналог с шагом 17 (line 691).
+        if: ${{ always() }}
         env:
           SSHPASS: open
         run: |
