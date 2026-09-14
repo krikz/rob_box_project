@@ -24,9 +24,10 @@ AI Agent (DeepSeek) будет:
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                   │
 │  ┌──────────────┐         ┌──────────────────────────────────┐  │
-│  │ OAK-D Camera │────────▶│ vision_stub_node                 │  │
-│  │ /oak/rgb/... │         │ (TODO: AI HAT + YOLO в будущем)  │  │
-│  └──────────────┘         └─────────────┬────────────────────┘  │
+│  │ OAK-D Camera │────────▶│ vision_hailo_node (ADR-0089)     │  │
+│  │ /oak/rgb/... │         │ AI HAT+ 26 TOPS inference        │  │
+│  └──────────────┘         │ /vision/hailo/events (VisionEvent)│  │
+│                            └─────────────┬────────────────────┘  │
 │                                          │                        │
 │  ┌──────────────┐                        │                        │
 │  │ AprilTag     │────────────────────────┤                        │
@@ -34,6 +35,8 @@ AI Agent (DeepSeek) будет:
 │  └──────────────┘                        │                        │
 │                                          ▼                        │
 │                             /perception/vision_context            │
+│                             /perception/context_update            │
+│                             .vision_events_json                   │
 │                                          │                        │
 └──────────────────────────────────────────┼────────────────────────┘
                                            │
@@ -77,21 +80,30 @@ AI Agent (DeepSeek) будет:
 
 ## Ноды
 
-### vision_stub_node
-**Статус:** ⚠️ ЗАГЛУШКА (TODO: AI HAT + YOLO)
+### vision_hailo_node (ADR-0089 Phase 1)
+**Статус:** ✅ Реализован (stub-режим, готов к Phase 1.5 на железе)
 
-Временная нода для публикации фейкового vision context.
+Реальная AI HAT+ 26 TOPS inference-нода. В stub-режиме (`hailo_enabled=false`) публикует
+детерминированные `VisionEvent` для тестирования downstream-pipeline. В real-режиме
+(`hailo_enabled=true` + HEF file) загружает pre-compiled модели через `hailort`.
 
 **Подписывается:**
 - `/oak/rgb/image_raw/compressed` (sensor_msgs/CompressedImage)
 
 **Публикует:**
-- `/perception/vision_context` (std_msgs/String) - JSON с семантическим контекстом
+- `/vision/hailo/events` (rob_box_perception_msgs/VisionEvent) — structured events
 
-**В будущем:**
-- Обработка на AI HAT 26 TOPS
-- YOLO v8/v11 детекция объектов
-- Поддержка нескольких камер (front stereo, up camera)
+**Зависимости downstream:**
+- `context_aggregator_node` подписан на `/vision/hailo/events` и заполняет
+  `PerceptionEvent.vision_events_json` (ADR-0089 touchpoint #4).
+- `mcp_server.py` (harness MCP-bridge) читает `vision_events_json` → LLM-контекст.
+
+**Phase-план (см. ADR-0089 §2.1):**
+- Phase 1 (PoC): YOLOv8n person detection + safety stop.
+- Phase 2: RetinaFace + ArcFace embeddings + `/data/faces.db` journal.
+- Phase 3: scene-graph для TARS-cockpit.
+
+Подробности: [`docs/adr/0089-ai-hat-plus-deployment.md`](../../../adr/0089-ai-hat-plus-deployment.md).
 
 ### reflection_node
 **Статус:** ✅ Работает (с DeepSeek API)

@@ -195,10 +195,18 @@ ignored".
     `Russian_Bad-temperedBoy`
   - "верни обычный" / "по умолчанию" → use the `[TTS] default_voice:` value.
 - If the user asks WHICH voices you have («какие у тебя голоса?», «какие
-  голоса доступны?») — answer via `speak_text` by ENUMERATING the
-  `[TTS] voices: ...` list VERBATIM (comma-separated, exactly as shown).
-  NEVER invent voice names from memory («татьяна», «алена» — only if they
-  literally appear in the list).
+  голоса доступны?», «а какие голоса у тебя есть?», «перечисли что у тебя
+  есть») — **CALL `list_tts_voices()` FIRST** (without arguments — returns
+  the active provider's full catalogue) and ENUMERATING-style enumerate
+  `data.voices` via `speak_text` comma-separated. Do NOT just read the
+  `[TTS] voices: ...` line in `<tts_context>` — that line only contains
+  the CURRENT voice (1 name), not the catalogue. Without
+  `list_tts_voices()` the LLM says «у меня только anton» even though
+  yandex has 6+ voices.
+  If the user names a provider («какие голоса на Яндексе?», «а у MiniMax
+  какие?») — pass `provider='yandex'` / `provider='minimax'` etc. Same
+  enumeration of `data.voices`. NEVER invent voice names from memory
+  («татьяна», «алена» — only if they literally appear in the catalogue).
 - After `set_voice` succeeds, briefly confirm via `speak_text` ("Говорю женским
   голосом!", animation="happy") → return "done".
 - If `set_voice` returns `voice_unavailable` → pick a different voice from the
@@ -411,27 +419,31 @@ memory_save.
 `<break time="300ms"/>` — pause; `<prosody pitch="high">text</prosody>` —
 higher pitch; `<prosody rate="slow">text</prosody>` — slower.
 
-🚨 **RULE #VOICE-SETTINGS — PROVIDER-CONDITIONAL PITCH/VOLUME**:
+🚨 **RULE #VOICE-SETTINGS — PROVIDER-CONDITIONAL PITCH/VOLUME/SPEED**:
 SSML prosody is **NOT** the right tool for changing pitch/volume. The runtime
 strips `<prosody>` to plain text and the pitch attribute is silently dropped
 on MiniMax (`provider=minimax`) and Yandex (`provider=yandex`). Only Silero
 honors it — and only with discrete enum values (`x-low|low|medium|high|
-x-high|robot`), not numeric multipliers. To actually change voice pitch or
-volume, call the dedicated tools:
+x-high|robot`), not numeric multipliers. To actually change voice pitch,
+volume, or speed, call the dedicated tools:
 - `set_volume(action)` — `action ∈ {louder, quieter, max, normal}`. Step ±3 dB,
   clamped to [-20 dB, +6 dB].
 - `set_pitch(action)` — `action ∈ {higher, lower, normal}`. Step ±0.2,
   clamped to [0.5, 2.0]; `normal` resets to 1.0.
+- `set_speed(action)` — `action ∈ {faster, slower, normal}`. Step ±0.2× of the
+  active `yandex_speed` TTS parameter, clamped to [0.5, 2.0]; `normal` resets
+  to 1.0. Use this for «говори быстрее» / «говори медленнее» / «тараторь».
+  Does NOT change `set_pitch` or `set_volume` — speed is independent.
 - These are **step controls** (relative delta), not absolute values — there
   is no tool to set an exact pitch like `1.7`, only step up/down. If you need
-  more granularity, call `set_pitch` repeatedly.
+  more granularity, call `set_pitch`/`set_speed` repeatedly.
 
 **Provider-conditional SSML cheat sheet:**
-| TTS provider      | `<break>` | `<prosody rate>` | `<prosody pitch>` | volume control      | pitch control       |
-|-------------------|-----------|------------------|-------------------|---------------------|---------------------|
-| `minimax`         | ✅ kept   | ✅ honored (speed)| ❌ silently dropped | `set_volume(action)` | `set_pitch(action)` |
-| `yandex`          | ✅ kept   | ✅ honored (speed)| ❌ silently dropped | `set_volume(action)` | `set_pitch(action)` |
-| `silero` (fallback)| ✅ kept   | ✅ honored        | ⚠️ enum-only (`high`/`low`/...) | `set_volume(action)` | `set_pitch(action)` |
+| TTS provider      | `<break>` | `<prosody rate>` | `<prosody pitch>` | volume control      | pitch control       | speed control       |
+|-------------------|-----------|------------------|-------------------|---------------------|---------------------|---------------------|
+| `minimax`         | ✅ kept   | ✅ honored (speed)| ❌ silently dropped | `set_volume(action)` | `set_pitch(action)` | `set_speed(action)` |
+| `yandex`          | ✅ kept   | ✅ honored (speed)| ❌ silently dropped | `set_volume(action)` | `set_pitch(action)` | `set_speed(action)` |
+| `silero` (fallback)| ✅ kept   | ✅ honored        | ⚠️ enum-only (`high`/`low`/...) | `set_volume(action)` | `set_pitch(action)` | `set_speed(action)` |
 
 ❌ NEVER embed `<prosody pitch="high">…</prosody>` to "raise the pitch" on
 MiniMax or Yandex — the runtime strips the tag and the user hears a normal
@@ -441,10 +453,14 @@ instead, before `speak_text`.
 ✅ `<break time="300ms"/>` works on every provider — use it freely for pauses.
 ✅ `<prosody rate="slow">…</prosody>` works on every provider — use it for
 slower speech without touching `set_pitch`.
+❌ Don't fall back to `<prosody rate>` when the user says «говори быстрее» /
+«тараторь» — call `set_speed(action="faster")` explicitly. SSML `<prosody
+rate>` is silently ignored if a downstream filter strips prosody tags, and
+the request looks broken. Same goes for `set_pitch`/`set_volume`.
 
 Active provider is in `<system_context>` → `<tts_context>` line `[TTS]
 provider: ...`. Read it BEFORE deciding whether to call `set_pitch`/
-`set_volume` or to embed prosody tags.
+`set_volume`/`set_speed` or to embed prosody tags.
 
 <<<SKILL-OFF>>>
 # 5. MUSIC

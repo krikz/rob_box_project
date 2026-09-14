@@ -1,0 +1,64 @@
+# ADR-0089 Phase 1: SSoT для активных HEF моделей AI HAT+.
+#
+# Этот файл монтируется в vision-hailo контейнер по /config/hailo_models.yaml
+# и парсится start_vision_hailo.sh (через python3 -c с yaml.safe_load).
+# Любые изменения должны проходить через PR — НЕ править на проде руками.
+#
+# Структура:
+#   vision_hailo_node.<param>: параметры для ros2 Node.
+#   models.<model_name>: список активных HEF с метаданными (для Phase 2/3).
+#
+# Phase 1 PoC использует только vision_hailo_node.hailo_enabled = false
+# (stub-режим), чтобы протестировать downstream-pipeline до установки
+# реального HEF на Vision Pi. Реальные HEF подключаются в Phase 1.5
+# переключением hailo_enabled=true + hef_path=...
+#
+# Соответствие: docker/vision/vision-hailo/start_vision_hailo.sh
+#               docker/vision/vision-hailo/Dockerfile
+#               src/rob_box_perception/rob_box_perception/vision_hailo_node.py
+#               docs/adr/0089-ai-hat-plus-deployment.md §3 touchpoint #11
+
+vision_hailo_node:
+  # Real inference: true только когда HEF загружен на /opt/rob_box/models/.
+  # Phase 1 acceptance: false (smoke через stub).
+  hailo_enabled: false
+
+  # Путь к HEF файлу. Игнорируется если hailo_enabled=false.
+  # Phase 1.5 пример: /opt/rob_box/models/yolov8n.hef
+  hef_path: ""
+
+  # Период stub-событий (секунды). В real-режиме не используется.
+  stub_period_sec: 2.0
+
+  # Confidence threshold [0.0, 1.0]. Ниже — drop.
+  confidence_threshold: 0.5
+
+  # Подписка (Phase 1: OAK-D compressed).
+  input_topic: /oak/rgb/image_raw/compressed
+
+  # Публикация VisionEvent.
+  output_topic: /vision/hailo/events
+
+# Модели (Phase 1.5+). Phase 1 PoC оставляет список пустым.
+models:
+  # YOLOv8n — person detection. 3.5 TOPS, 100+ FPS.
+  # Источник: https://github.com/hailo-ai/hailo_model_zoo (yolov8n)
+  yolov8n_person:
+    enabled: false
+    hef: /opt/rob_box/models/yolov8n.hef
+    confidence_threshold: 0.5
+    nms_iou_threshold: 0.45
+
+  # RetinaFace — face detection. 4.6 TOPS, 50+ FPS.
+  # Источник: https://github.com/hailo-ai/hailo_model_zoo (retinaface)
+  retinaface:
+    enabled: false
+    hef: /opt/rob_box/models/retinaface_mobilenet_v1.hef
+    confidence_threshold: 0.6
+
+  # ArcFace-MobileFaceNet — face embedding. 2.8 TOPS, 60+ FPS, 128-dim.
+  # Источник: https://github.com/hailo-ai/hailo_model_zoo (arcface_mobilefacenet)
+  arcface:
+    enabled: false
+    hef: /opt/rob_box/models/arcface_mobilefacenet.hef
+    embedding_dim: 128
