@@ -67,7 +67,23 @@ set -e
 #     (ретро 13.08 t_2cae75c0: раньше список дублировался в drift-detect.sh,
 #     из-за чего kanban-retro-create.sh и ещё 2 скрипта не контролировались
 #     drift-детектором; теперь источник один).
+# Ретро 14.09 t_06956919: install.sh теперь раскладывает И САМОГО СЕБЯ.
+# Раньше EXPECTED не включал install.sh, потому что считалось что
+# install.sh на хосте — «мета», а не процессный скрипт. Это создало
+# chicken-egg: drift-detect читает список через `bash install.sh --list-files`,
+# поэтому install.sh не self-check'ился → 5 хостов катили со старой версией
+# (1b767e5) пока origin/develop уже был на ec86158 (`vendor-patch
+# upstream-move`). Когда оператор вручную тянул `git pull`, репо SOT
+# обновлялось, но `bash scripts/agent_flow/install.sh` раскладывал
+# EXPECTED (без install.sh) → на хостах оставалась старая версия.
+# Решение: install.sh первый в EXPECTED → self-replace на каждом запуске.
+# На первом запуске скрипт копирует себя под СТАРЫМ именем в TARGET_DIRS
+# (содержимое одинаковое), затем в основном цикле `for f in EXPECTED`
+# обрабатывает себя же как обычный файл (cp -al). Идемпотентно: при
+# повторных запусках _install_one сравнивает inode/содержимое и пишет
+# "OK already linked".
 EXPECTED=(
+    install.sh
     agent-flow-triage.sh
     agent-flow-merge-gate.sh
     agent-flow-completion-check.sh
