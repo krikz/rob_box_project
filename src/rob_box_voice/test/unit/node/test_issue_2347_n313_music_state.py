@@ -283,7 +283,12 @@ class TestComposerSkillMusicState:
 class TestStatePhraseContract:
     """Контракт: state-фразы должны покрываться reminder'ом и RULE."""
 
-    TRIGGERS = (
+    # Полный список 10 триггеров из спеки. RULE содержит ВСЕ 10 (как
+    # статическая память LLM на старте сессии). Напоминание в dynamic
+    # context содержит 8 representative-фраз (без «есть звук?» и «any
+    # music?» — это периферийные формулировки, для краткости текста).
+    # См. спека §2 Hunk 2.
+    RULE_TRIGGERS = (
         "тихо?",
         "тишина?",
         "тише?",
@@ -296,7 +301,19 @@ class TestStatePhraseContract:
         "any music?",
     )
 
-    def test_all_triggers_listed_in_reminder(self):
+    # То, что фактически есть в reminder'е (спек §2 Hunk 2, ровно эти 8).
+    REMINDER_TRIGGERS = (
+        "тихо?",
+        "тишина?",
+        "тише?",
+        "играет ли музыка?",
+        "что играет?",
+        "что сейчас играет?",
+        "музыка включена?",
+        "слышно что-нибудь?",
+    )
+
+    def test_all_reminder_triggers_listed_in_reminder(self):
         if _IS_PY_311_PLUS or not _DIALOGUE_NODE_IMPORT_OK:
             pytest.skip(_SKIP_REASON)
         n = _make_node()
@@ -305,11 +322,12 @@ class TestStatePhraseContract:
         reminders = re.findall(r"<reminder>(.*?)</reminder>", ctx, flags=re.DOTALL)
         assert len(reminders) >= 3
         music_state_reminder = reminders[-2]
-        # Полный список 10 триггеров в reminder'е (спек так предписывает).
-        missing = [t for t in self.TRIGGERS if t not in music_state_reminder]
-        assert not missing, f"triggers missing from get_music_state reminder: {missing}"
+        missing = [t for t in self.REMINDER_TRIGGERS if t not in music_state_reminder]
+        assert not missing, (
+            f"triggers missing from get_music_state reminder: {missing}"
+        )
 
-    def test_all_triggers_listed_in_rule(self):
+    def test_all_rule_triggers_listed_in_rule(self):
         path = _prompt_path()
         prompt = path.read_text(encoding="utf-8")
 
@@ -320,5 +338,5 @@ class TestStatePhraseContract:
         )
         assert m, "RULE #MUSIC-STATE block not followed by another RULE"
         rule = m.group(0)
-        missing = [t for t in self.TRIGGERS if t not in rule]
+        missing = [t for t in self.RULE_TRIGGERS if t not in rule]
         assert not missing, f"triggers missing from RULE #MUSIC-STATE: {missing}"
