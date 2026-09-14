@@ -76,7 +76,7 @@ PM принял следующие **дефолтные** решения и за
 > (см. `docs/p0-voice-bugs-decisions.md` §2). Если не согласен — открой issue
 > с предложенным вариантом. Текущие workaround'ы (#2131, #2137) и hotfix'ы
 > (#2132, #2136) уже в develop через PR #2153. Follow-up issue на devops-алерт
-> создан (см. issue <FOLLOUP_ISSUE_NR> ниже).
+> создан: [#2394](https://github.com/krikz/rob_box_project/issues/2394).
 >
 > Также прошу ответить: #2143 — это P0 или нет? PM-предположение «да, тот же
 > профиль».

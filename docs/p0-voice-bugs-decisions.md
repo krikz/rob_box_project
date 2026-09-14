@@ -33,8 +33,8 @@ _Owner: pm (Kanban t_cf60f006). Источник истины по решени�
 
 ## 4. Follow-up issue (devops-алерт)
 
-Создаётся в этом же проходе, title:
-`[devops] Alert stale-candidate + priority:high → #devops channel (t_cf60f006)`
+Создана в этом же проходе: **[#2394](https://github.com/krikz/rob_box_project/issues/2394)**
+— `[devops] Alert stale-candidate + priority:high → #devops channel (t_cf60f006)`.
 
 Acceptance criteria (для follow-up карточки):
 - [ ] Срабатывание `stale-candidate` + `priority:high|critical` + любой из `bug|voice|operator|quest` **дольше 60 минут** → публикация в `#devops` с @mention owner'а репо (krikz) и @shifu.
@@ -57,5 +57,6 @@ Acceptance criteria (для follow-up карточки):
 - Ретро-аналитика: `docs/reports/orphan-stale-no-agent-assign-2026-09-14.md` (artifact t_19342112).
 - ADR-0022: `docs/adr/0022-process-e2e-done-gates.md` (process-метки, GATE-2 close).
 - Phase 4 force-triage: commit `5e90c2f` в `scripts/agent_flow/agent-flow-triage.sh`.
+- Follow-up issue: [#2394](https://github.com/krikz/rob_box_project/issues/2394).
 - P0-list Шифу 11.09: упоминание в issue #2131 и комментариях от 11.09–14.09.
 - Kanban: t_cf60f006 (PM sync), t_19342112 (analyst), t_5fbd4b94 (devops triage).
