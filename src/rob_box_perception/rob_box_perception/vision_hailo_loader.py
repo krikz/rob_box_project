@@ -191,7 +191,6 @@ class RealHEFLoader(HEFLoader):
         try:
             from hailo_platform import (  # type: ignore[import-not-found]
                 VDevice,
-                HailoRTException,
             )
         except ImportError as exc:
             raise ImportError(
@@ -464,8 +463,9 @@ def _post_process_detections(
             class_ids,
             iou_threshold=nms_iou_threshold,
         )
-    except Exception:
-        # Если NMS упал — capability-honest: return empty.
+    except (ValueError, IndexError, TypeError):
+        # Если NMS упал на некорректных данных (NaN, shape mismatch) —
+        # capability-honest: return empty, не падать.
         return []
     if not keep_idx:
         return []
