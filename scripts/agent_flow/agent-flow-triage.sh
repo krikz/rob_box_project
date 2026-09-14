@@ -211,6 +211,34 @@ af_load_profile_env "$PROFILE_ENV"
 : "${BUG_ORPHAN_MARKER:=agent-flow-triage:phase3-bug-orphan}"
 : "${BUG_ORPHAN_DEDUP_MIN:=60}"
 : "${NEEDS_TRIAGE_LABEL:=needs-triage}"
+# --- Phase 4 (force-triage) defaults (ретро t_25a2b395, тикет orphan-stale-no-agent-assign) ---
+# Проблема: triage Phase 3 ловит bug-orphans только при наличии метки `bug`.
+# voice/operator-bugs с priority:high (например #1881, #2132, #2137) без метки
+# `bug` И без `agent:*` проваливаются через все фильтры — Phase 1 не видит
+# (нет hermes), Phase 2 не видит (нет source:gsd), Phase 3 не видит (нет
+# `bug`). Они висят как orphan и через 24ч закрываются sweep'ом как «not
+# planned» (ADR-0022 GATE-2).
+#
+# Решение (Phase 4 — force-triage): отдельная ветка логики, которая
+# принудительно помечает такие issue меткой `needs-triage` + дефолтным
+# `agent:<role>` и пишет комментарий с гайдом. В отличие от Phase 3,
+# force-triage МОЖЕТ менять состояние issue и без `--apply-force` (но тогда
+# только логирует кандидатов с префиксом [FORCE-TRIAGE]) — иначе тик cron
+# не видит сигнала и orphan остаются без внимания. Apply-флаг нужен как
+# safety: по умолчанию `false` → накапливает кандидатов в логе, оператор
+# смотрит, при необходимости включает `FORCE_TRIAGE_APPLY=true` (или
+# `--apply-force`).
+#
+# Фильтр: priority:high (по умолчанию) И (bug ИЛИ voice ИЛИ operator) И
+# НЕТ process-меток (тот же whitelist, что и Phase 3) И НЕТ agent:* меток.
+FORCE_TRIAGE_PRIORITY_LABEL="${FORCE_TRIAGE_PRIORITY_LABEL:-priority:high}"
+FORCE_TRIAGE_SCOPE_LABELS="${FORCE_TRIAGE_SCOPE_LABELS:-bug,voice,operator}"
+FORCE_TRIAGE_DEFAULT_AGENT="${FORCE_TRIAGE_DEFAULT_AGENT:-backend}"
+FORCE_TRIAGE_MARKER="${FORCE_TRIAGE_MARKER:-agent-flow-triage:force-triage}"
+FORCE_TRIAGE_DEDUP_MIN="${FORCE_TRIAGE_DEDUP_MIN:-60}"
+# Apply-flag: по умолчанию false → только лог; true → реально правит labels.
+# Это SAFETY: первый rollout — наблюдение (без apply), потом — apply=true.
+FORCE_TRIAGE_APPLY="${FORCE_TRIAGE_APPLY:-false}"
 # --- G10a dedup env-vars (ретро t_03977adb, issue #2171, ADR-AF-0062 follow-up) ----
 # G10a в issue #2162 начал спамить 38 одинаковых комментов за 1.5ч — каждую
 # минуту cron писал новый «file-overlap-skip», потому что в скрипте не было
@@ -2093,7 +2121,7 @@ for it in data:
         continue
     # Skip if labels include hermes (defensive — phase1_nums мог не сматчить
     # если Phase 1 упал по rate-limit, но hermes-метка всё равно есть).
-    label_names = {l.get("name") for l in it.get("labels", []) if isinstance(l, dict)}
+    label_names = set(l.get("name") for l in it.get("labels", []) if isinstance(l, dict))
     if hermes_label in label_names:
         continue
     # Skip PRs (defensive — gh issue list с --label source:gsd не должен
@@ -2256,7 +2284,7 @@ for it in data:
     # Defensive: PR
     if it.get("pull_request") is not None:
         continue
-    label_names = {l.get("name") for l in it.get("labels", []) if isinstance(l, dict)}
+    label_names = set(l.get("name") for l in it.get("labels", []) if isinstance(l, dict))
     # Skip if уже есть process-метка (в т.ч. hermes)
     if label_names & process_label_set:
         continue
@@ -2400,6 +2428,190 @@ ${_assignee_guidance}
     fi
 fi
 
+# --- Phase 4: force-triage (ретро t_25a2b395, тикет orphan-stale-no-agent-assign) ---
+# Motivation: Phase 3 (bug-orphans) ловит только issues с меткой `bug`.
+# voice/operator-bugs с priority:high, у которых нет `bug` И нет `agent:*`
+# (примеры: #1881 bug(voice), #2137 bug(operator), #2132 bug(operator P0))
+# проваливаются через все фильтры Phase 1/2/3 → orphan → закрытие sweep'ом
+# через 24ч как «not planned» (ADR-0022 GATE-2). Это второй класс проблем,
+# не покрытый Phase 3 — отдельная force-triage ветка.
+#
+# Контракт:
+#   - Фильтр: `priority:high` (или $FORCE_TRIAGE_PRIORITY_LABEL) И (bug ИЛИ
+#     voice ИЛИ operator — $FORCE_TRIAGE_SCOPE_LABELS) И НЕТ process-меток
+#     (тот же whitelist, что и Phase 3) И НЕТ `agent:*` меток.
+#   - Применение: по умолчанию DRY-RUN / observe — только логируем кандидатов
+#     с префиксом `[FORCE-TRIAGE]` и НЕ трогаем issue. С `FORCE_TRIAGE_APPLY=true`
+#     (или `--apply-force`): реально ставим `needs-triage` + `agent:<default>`
+#     и пишем комментарий с гайдом (assignee-guidance).
+#   - Дедуп в окне $FORCE_TRIAGE_DEDUP_MIN мин (default 60) по маркеру
+#     FORCE_TRIAGE_MARKER — чтобы cron every 1m не спамил один issue.
+#   - Idempotency: повторный apply в окне dedup'а — skip (marker уже есть).
+#
+# ВАЖНО: эта ветка отличается от Phase 3 тем, что (а) фильтрует по
+# scope-labels (`bug`/`voice`/`operator`), а не только `bug`; (б) имеет
+# apply-toggle (Phase 3 всегда применяет, потому что его контракт
+# безопасный — только добавляет hermes, и без apply мы orphan не
+# подберём); (в) дефолтный assignee `agent:backend` — для voice/operator
+# это натуральный выбор (Phase 3 использует default AGENT_FLOW_DEFAULT_ROLE
+# = architect, что для voice/operator-багов не подходит).
+phase4_force_candidates=0
+phase4_force_marked=0
+phase4_force_skipped=0
+phase4_force_errored=0
+
+# Берём OPEN issues с приоритетом priority:high (per-issue labels уже
+# включены в JSON). gh_list_issues_by_label имеет retest-fallback на REST
+# (ретро t_1457), как и Phase 3.
+phase4_high_json="$(gh_list_issues_by_label "$FORCE_TRIAGE_PRIORITY_LABEL" open "$ISSUE_LIMIT" 2>/dev/null || true)"
+if [ -z "$phase4_high_json" ] || [ "$phase4_high_json" = "[]" ]; then
+    log "Phase 4: force-triage (0 issues, no '${FORCE_TRIAGE_PRIORITY_LABEL}' on ${GH_REPO})"
+else
+    # Python-фильтр: scope-label (bug/voice/operator) + нет process-меток +
+    # нет agent:* меток. Output: JSON-array кандидатов.
+    phase4_filtered="$(FORCE_SCOPE="$FORCE_TRIAGE_SCOPE_LABELS" \
+        PROCESS_LABELS_PHASE4="hermes,needs-e2e,e2e-done,e2e:rejected,no-e2e-required,stale-candidate" \
+        HERMES_LABEL_PHASE4="$ISSUE_LABEL" \
+        FORCE_APPLY="$FORCE_TRIAGE_APPLY" \
+        printf '%s' "$phase4_high_json" | FORCE_SCOPE="$FORCE_TRIAGE_SCOPE_LABELS" \
+        PROCESS_LABELS_PHASE4="hermes,needs-e2e,e2e-done,e2e:rejected,no-e2e-required,stale-candidate" \
+        HERMES_LABEL_PHASE4="$ISSUE_LABEL" \
+        FORCE_APPLY="$FORCE_TRIAGE_APPLY" \
+        python3 -c '
+import os, sys, json
+scope_env = os.environ.get("FORCE_SCOPE", "bug,voice,operator")
+process_env = os.environ.get("PROCESS_LABELS_PHASE4", "hermes,needs-e2e,e2e-done,e2e:rejected,no-e2e-required,stale-candidate")
+hermes_label = os.environ.get("HERMES_LABEL_PHASE4", "hermes")
+force_apply = (os.environ.get("FORCE_APPLY", "false").lower() == "true")
+scope_set = set(s.strip() for s in scope_env.split(",") if s.strip())
+process_set = set(s.strip() for s in process_env.split(",") if s.strip())
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    print("[]"); sys.exit(0)
+if not isinstance(data, list):
+    print("[]"); sys.exit(0)
+keep = []
+for it in data:
+    if not isinstance(it, dict):
+        continue
+    if it.get("pull_request") is not None:
+        continue
+    n = it.get("number")
+    if not isinstance(n, int):
+        continue
+    label_names = set(l.get("name") for l in it.get("labels", []) if isinstance(l, dict))
+    # Skip если уже process-метка (hermes и т.д.) — Phase 1/2 уже в работе.
+    if label_names & process_set:
+        continue
+    if hermes_label in label_names:
+        continue
+    # Skip если уже есть agent:* метка — assignee определён явно.
+    if any(l.startswith("agent:") for l in label_names):
+        continue
+    # Require: scope-label (bug|voice|operator).
+    if not (label_names & scope_set):
+        continue
+    keep.append(it)
+print(json.dumps(keep, ensure_ascii=False))
+' 2>/dev/null || true)"
+
+    phase4_count="$(printf '%s' "$phase4_filtered" | python3 -c '
+import json, sys
+try: print(len(json.load(sys.stdin)))
+except Exception: print(0)
+' 2>/dev/null)"
+    phase4_force_candidates="$phase4_count"
+    log "Phase 4: force-triage (${phase4_count} candidates, ${FORCE_TRIAGE_PRIORITY_LABEL} ∩ {${FORCE_TRIAGE_SCOPE_LABELS}} without process/agent:*; apply=${FORCE_TRIAGE_APPLY})"
+
+    if [ -n "$phase4_filtered" ] && [ "$phase4_filtered" != "[]" ]; then
+        # Python pre-pass → tab-delimited rows в mktemp (избегаем pipe-subshell).
+        _p4_in="$(mktemp -t p4-force.XXXXXX 2>/dev/null || echo "/tmp/p4-force.$$")"
+        printf '%s' "$phase4_filtered" | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+for it in data:
+    if not isinstance(it, dict):
+        continue
+    n = it.get("number", "")
+    title = it.get("title", "")[:80]
+    label_names = ",".join(sorted((l.get("name") or "") for l in it.get("labels", []) if isinstance(l, dict)))
+    print(f"{n}\t{title}\t{label_names}")
+' 2>/dev/null > "$_p4_in"
+
+        # process substitution < (НЕ pipe) — счётчики outer-scope пробрасываются.
+        while IFS=$'\t' read -r p4_number p4_title p4_labels; do
+            [ -z "$p4_number" ] && continue
+
+            # DRY-RUN observe: всегда логируем кандидатов с [FORCE-TRIAGE].
+            # Это позволяет оператору видеть, что накопилось, перед apply.
+            if [ "$FORCE_TRIAGE_APPLY" != "true" ]; then
+                log "[FORCE-TRIAGE] candidate issue #${p4_number} (${p4_title:0:50}...) — labels=[${p4_labels}] (apply=false, no side-effect; set FORCE_TRIAGE_APPLY=true или --apply-force чтобы реально пометить)"
+                phase4_force_skipped=$((phase4_force_skipped+1))
+                continue
+            fi
+
+            # Apply-режим: dedup по marker'у в окне FORCE_TRIAGE_DEDUP_MIN мин.
+            dedup_since_p4="$(date -u -d "${FORCE_TRIAGE_DEDUP_MIN} minutes ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+            _p4_existing_marker_count="$(gh api "repos/${GH_REPO}/issues/${p4_number}/comments?since=${dedup_since_p4}&per_page=20" 2>/dev/null | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    print(0); sys.exit(0)
+target = sys.argv[1] if len(sys.argv) > 1 else ""
+print(sum(1 for c in data if isinstance(c.get("body"), str) and target in c["body"]))
+' "$FORCE_TRIAGE_MARKER" 2>/dev/null)" || _p4_existing_marker_count=0
+            if [ "${_p4_existing_marker_count:-0}" -gt 0 ] 2>/dev/null; then
+                log "Phase 4 issue #${p4_number}: dedup — fresh marker в ${FORCE_TRIAGE_DEDUP_MIN}min окно, skip"
+                phase4_force_skipped=$((phase4_force_skipped+1))
+                continue
+            fi
+
+            log "[FORCE-TRIAGE] applying to issue #${p4_number} (${p4_title:0:50}...) — labels=[${p4_labels}]"
+
+            # Apply: needs-triage + agent:<default>.
+            if ! gh issue edit "$p4_number" --repo "$GH_REPO" --add-label "$NEEDS_TRIAGE_LABEL" >/dev/null 2>&1; then
+                log "Phase 4 issue #${p4_number}: WARNING add-label ${NEEDS_TRIAGE_LABEL} failed — retry next tick"
+                phase4_force_errored=$((phase4_force_errored+1))
+                continue
+            fi
+            if ! gh issue edit "$p4_number" --repo "$GH_REPO" --add-label "agent:${FORCE_TRIAGE_DEFAULT_AGENT}" >/dev/null 2>&1; then
+                log "Phase 4 issue #${p4_number}: WARNING add-label agent:${FORCE_TRIAGE_DEFAULT_AGENT} failed (needs-triage уже стоит) — retry next tick"
+                phase4_force_errored=$((phase4_force_errored+1))
+                continue
+            fi
+
+            # Комментарий с маркером (дедуп) + гайд.
+            _marker_p4="<!-- ${FORCE_TRIAGE_MARKER} -->"
+            _body_p4="${_marker_p4}
+🤖 **[agent:devops] script=agent-flow-triage action=phase4-force-triage-mark**
+
+**Событие:** issue OPEN с меткой \\`${FORCE_TRIAGE_PRIORITY_LABEL}\\` И одним из scope-меток (\\`bug\\`/\\`voice\\`/\\`operator\\`) обнаружен **без** process-меток И **без** \\`agent:*\\`. Это второй класс orphan'ов, который Phase 3 (bug-orphans) не покрывает — он фильтрует только по \\`bug\\`, а voice/operator-bugs с priority:high оставались без внимания и через 24ч закрывались sweep'ом как «not planned» (ADR-0022 GATE-2).
+
+**Что сделано:** поставлены метки \\`${NEEDS_TRIAGE_LABEL}\\` + \\`agent:${FORCE_TRIAGE_DEFAULT_AGENT}\\`. Triage Phase 1 на следующем тике подхватит этот issue (после hermes — следующий шаг) и создаст kanban-карточку. Если assignee нужен другой — Шифу меняет \\`agent:${FORCE_TRIAGE_DEFAULT_AGENT}\\` на \\`agent:<role>\\` явно до следующего тика.
+
+**Что нужно (товарищ Шифу):**
+1. Если assignee не \\`${FORCE_TRIAGE_DEFAULT_AGENT}\\` — поставьте \\`agent:<role>\\` (например \\`agent:voice\\`/\\`agent:operator\\`/\\`agent:backend\\`).
+2. Если это ожидаемый orphan (false-positive фильтра) — добавьте любую process-метку (\\`hermes\\`/\\`needs-e2e\\`/\\`stale-candidate\\`), и Phase 4 его пропустит.
+3. Если fix уже в OPEN PR — добавьте label \\`branch:<name>\\` или просто \\`hermes\\`, Phase 1 подхватит.
+
+См. kanban-card t_25a2b395 (ретро-фикс orphan-stale-no-agent-assign)."
+
+            if gh issue comment "$p4_number" --repo "$GH_REPO" --body "$_body_p4" >/dev/null 2>&1; then
+                phase4_force_marked=$((phase4_force_marked+1))
+            else
+                log "Phase 4 issue #${p4_number}: WARNING comment failed (labels already set, dedup next tick)"
+                phase4_force_errored=$((phase4_force_errored+1))
+            fi
+        done < "$_p4_in"
+        rm -f "$_p4_in" 2>/dev/null || true
+    fi
+fi
+
 # Ретро-фикс (01.09, t_e1a9613d, issue #1824): ЕДИНЫЙ rollup-комментарий
 # для всех unknown-assignee issues, собранных в _unknown_assignee_records
 # из обеих фаз (Phase 1 + Phase 2). Без этого каждый тик (cron every 1m)
@@ -2408,7 +2620,7 @@ fi
 _emit_unknown_assignee_rollup || true
 
 # --- summary -----------------------------------------------------------------
-log "tick done: created=${created} skipped=${skipped} errored=${errored} dedup-skipped: ${dedup_intra_skipped} (intra-tick), ${dedup_race_skipped} (race), ${dedup_file_overlap_skipped} (file-overlap), unknown-assignee: rollup-emitted=${unknown_assignee_rollup_emitted} (dedup-hit=${unknown_assignee_rollup_dedup_hit}), phase3-bug-orphans: marked=${phase3_orphan_marked} skipped=${phase3_orphan_skipped} errored=${phase3_orphan_errored}"
+log "tick done: created=${created} skipped=${skipped} errored=${errored} dedup-skipped: ${dedup_intra_skipped} (intra-tick), ${dedup_race_skipped} (race), ${dedup_file_overlap_skipped} (file-overlap), unknown-assignee: rollup-emitted=${unknown_assignee_rollup_emitted} (dedup-hit=${unknown_assignee_rollup_dedup_hit}), phase3-bug-orphans: marked=${phase3_orphan_marked} skipped=${phase3_orphan_skipped} errored=${phase3_orphan_errored}, phase4-force-triage: candidates=${phase4_force_candidates} marked=${phase4_force_marked} skipped=${phase4_force_skipped} errored=${phase4_force_errored}"
 
 # Exit non-zero only on hard errors (G4/G5) so cron can alert.
 if [ "$errored" -gt 0 ]; then exit 1; fi
