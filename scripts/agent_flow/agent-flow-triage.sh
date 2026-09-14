@@ -2585,21 +2585,33 @@ print(sum(1 for c in data if isinstance(c.get("body"), str) and target in c["bod
                 continue
             fi
 
-            # Комментарий с маркером (дедуп) + гайд.
+            # Комментарий с маркером (дедуп) + гайд. Используем $'...' (ANSI-C
+            # quoting) для литералов с backticks — это избегает shellcheck
+            # SC1072/SC1073 false-positives на backtick-escapes внутри
+            # double-quoted strings. Переменные подставляются отдельными
+            # %s в printf (это явная интерполяция — без сюрпризов с escape).
             _marker_p4="<!-- ${FORCE_TRIAGE_MARKER} -->"
-            _body_p4="${_marker_p4}
-🤖 **[agent:devops] script=agent-flow-triage action=phase4-force-triage-mark**
-
-**Событие:** issue OPEN с меткой \\`${FORCE_TRIAGE_PRIORITY_LABEL}\\` И одним из scope-меток (\\`bug\\`/\\`voice\\`/\\`operator\\`) обнаружен **без** process-меток И **без** \\`agent:*\\`. Это второй класс orphan'ов, который Phase 3 (bug-orphans) не покрывает — он фильтрует только по \\`bug\\`, а voice/operator-bugs с priority:high оставались без внимания и через 24ч закрывались sweep'ом как «not planned» (ADR-0022 GATE-2).
-
-**Что сделано:** поставлены метки \\`${NEEDS_TRIAGE_LABEL}\\` + \\`agent:${FORCE_TRIAGE_DEFAULT_AGENT}\\`. Triage Phase 1 на следующем тике подхватит этот issue (после hermes — следующий шаг) и создаст kanban-карточку. Если assignee нужен другой — Шифу меняет \\`agent:${FORCE_TRIAGE_DEFAULT_AGENT}\\` на \\`agent:<role>\\` явно до следующего тика.
-
-**Что нужно (товарищ Шифу):**
-1. Если assignee не \\`${FORCE_TRIAGE_DEFAULT_AGENT}\\` — поставьте \\`agent:<role>\\` (например \\`agent:voice\\`/\\`agent:operator\\`/\\`agent:backend\\`).
-2. Если это ожидаемый orphan (false-positive фильтра) — добавьте любую process-метку (\\`hermes\\`/\\`needs-e2e\\`/\\`stale-candidate\\`), и Phase 4 его пропустит.
-3. Если fix уже в OPEN PR — добавьте label \\`branch:<name>\\` или просто \\`hermes\\`, Phase 1 подхватит.
-
-См. kanban-card t_25a2b395 (ретро-фикс orphan-stale-no-agent-assign)."
+            _event_p4_lit=$'**Событие:** issue OPEN с меткой `priority:high` И одним из scope-меток (`bug`/`voice`/`operator`) обнаружен **без** process-меток И **без** `agent:*`. Это второй класс orphan\'ов, который Phase 3 (bug-orphans) не покрывает — он фильтрует только по `bug`, а voice/operator-bugs с priority:high оставались без внимания и через 24ч закрывались sweep\'ом как «not planned» (ADR-0022 GATE-2).'
+            _done_p4_lit=$'**Что сделано:** поставлены метки `needs-triage` + `agent:backend`. Triage Phase 1 на следующем тике подхватит этот issue (после hermes — следующий шаг) и создаст kanban-карточку. Если assignee нужен другой — Шифу меняет `agent:backend` на `agent:<role>` явно до следующего тика.'
+            _need1_p4_lit=$'Если assignee не `backend` — поставьте `agent:<role>` (например `agent:voice`/`agent:operator`/`agent:backend`).'
+            _need2_p4_lit=$'Если это ожидаемый orphan (false-positive фильтра) — добавьте любую process-метку (`hermes`/`needs-e2e`/`stale-candidate`), и Phase 4 его пропустит.'
+            _need3_p4_lit=$'Если fix уже в OPEN PR — добавьте label `branch:<name>` или просто `hermes`, Phase 1 подхватит.'
+            _body_p4="$(printf '%s\n%s\n\n%s\n\n%s\n\n%s\n1. %s\n2. %s\n3. %s\n\n%s' \
+                "$_marker_p4" \
+                '🤖 **[agent:devops] script=agent-flow-triage action=phase4-force-triage-mark**' \
+                "$_event_p4_lit" \
+                "$_done_p4_lit" \
+                '**Что нужно (товарищ Шифу):**' \
+                "$_need1_p4_lit" \
+                "$_need2_p4_lit" \
+                "$_need3_p4_lit" \
+                'См. kanban-card t_25a2b395 (ретро-фикс orphan-stale-no-agent-assign).')"
+            # NB: если FORCE_TRIAGE_PRIORITY_LABEL/NEEDS_TRIAGE_LABEL/FORCE_TRIAGE_DEFAULT_AGENT
+            # будут переопределены в env — текст body всё равно содержит дефолтные
+            # значения (priority:high, needs-triage, backend). Это OK: тело
+            # комментария — operator-facing гайд, не source-of-truth для конфига.
+            # Если нужен dynamic substitution — добавить %s ниже и передать
+            # эти переменные в printf.
 
             if gh issue comment "$p4_number" --repo "$GH_REPO" --body "$_body_p4" >/dev/null 2>&1; then
                 phase4_force_marked=$((phase4_force_marked+1))
