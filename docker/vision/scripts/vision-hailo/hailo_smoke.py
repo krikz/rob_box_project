@@ -2,7 +2,7 @@
 """hailo_smoke.py — smoke-test для AI HAT+ (ADR-0089 Phase 1).
 
 Запуск на Vision Pi после установки AI HAT+:
-    python3 /opt/rob_box/scripts/hailo_smoke.py
+    python3 /scripts/hailo_smoke.py
 
 Что проверяем:
   1. hailortcli доступен в PATH.

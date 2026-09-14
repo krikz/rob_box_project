@@ -59,6 +59,7 @@ on:
           - apriltag
           - supervisor
           - quest
+          - vision-hailo
           # Common to both
           - zenoh-router
           # Base images
@@ -293,6 +294,18 @@ jobs:
                   SERVICE_NAME="quest"
                   IMAGE_NAME="quest"
                   DOCKERFILE="docker/vision/quest/Dockerfile"
+                  BUILD_CONTEXT="."
+                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO}"
+                  ;;
+                "vision-hailo"|"vision_hailo")
+                  # ADR-0089 Phase 1 (issue #2349): AI HAT+ 26 TOPS
+                  # inference. Stub-режим поверх ros2-zenoh базы (как quest).
+                  # HailoRT/HEF — Phase 1.5. Тег компонента в реестре —
+                  # "vision-hailo" (docker-compose.yaml: image:
+                  # ...:vision-hailo-${ROS_DISTRO}-...).
+                  SERVICE_NAME="vision_hailo"
+                  IMAGE_NAME="vision-hailo"
+                  DOCKERFILE="docker/vision/vision-hailo/Dockerfile"
                   BUILD_CONTEXT="."
                   BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO}"
                   ;;

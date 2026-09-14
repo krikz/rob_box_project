@@ -17,6 +17,7 @@ import json
 import sys
 import time
 import types
+from pathlib import Path
 from typing import Any, Callable, Dict, List
 from unittest.mock import MagicMock
 
@@ -327,8 +328,10 @@ sys.modules.setdefault('rob_box_perception.utils.node_monitor', _node_monitor)
 sys.modules.setdefault('rob_box_perception.utils.time_provider', _time_provider)
 
 # ---- import rob_box_perception.context_aggregator_node ----
-repo_root = '/home/builder/rob_box_project/.worktrees/t_b9b6cf73'
-pkg_root = f'{repo_root}/src/rob_box_perception'
+# Путь к пакету вычисляется относительно этого файла (НЕ хардкод пути
+# build-машины) — тесты должны одинаково проходить и на dev-машине,
+# и на self-hosted CI (issue: hardcoded /home/builder/... ломал прогон).
+pkg_root = str(Path(__file__).resolve().parents[2])
 if pkg_root not in sys.path:
     sys.path.insert(0, pkg_root)
 

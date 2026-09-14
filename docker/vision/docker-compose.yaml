@@ -672,7 +672,7 @@ services:
     volumes:
       - ./config:/config:ro
       - ./scripts:/ros_scripts:ro
-      - ./vision-hailo:/scripts:ro
+      - ./scripts/vision-hailo:/scripts:ro
       # Phase 1.5: HEF models монтируются read-only из host.
       # На CI/локально — пустой volume или комментарий.
       # - /opt/rob_box/models:/opt/rob_box/models:ro

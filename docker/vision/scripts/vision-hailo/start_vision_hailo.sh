@@ -26,15 +26,18 @@ OUTPUT_TOPIC="${OUTPUT_TOPIC:-/vision/hailo/events}"
 HAILO_MODELS_YAML="${HAILO_MODELS_YAML:-/config/hailo_models.yaml}"
 
 # ---------- source ROS workspace ----------
-# rob_box workspace собирается в /opt/rob_box/install через colcon.
-# Это контракт Phase 1 — Dockerfile проверяет наличие /opt/rob_box/install.
-if [ ! -f /opt/rob_box/install/setup.bash ]; then
-    echo "[start_vision_hailo] ERROR: /opt/rob_box/install/setup.bash не найден" >&2
-    echo "[start_vision_hailo] Соберите rob_box_perception через colcon перед сборкой образа." >&2
+# rob_box workspace собирается в /ws/install через colcon (см. Dockerfile).
+# Это контракт Phase 1 — Dockerfile сам собирает rob_box_perception_msgs +
+# rob_box_perception в /ws (паттерн quest/supervisor).
+if [ ! -f /ws/install/setup.bash ]; then
+    echo "[start_vision_hailo] ERROR: /ws/install/setup.bash не найден" >&2
+    echo "[start_vision_hailo] Образ vision-hailo должен собирать workspace через colcon." >&2
     exit 1
 fi
 # shellcheck disable=SC1091
-source /opt/rob_box/install/setup.bash
+source /opt/ros/${ROS_DISTRO:-humble}/setup.bash
+# shellcheck disable=SC1091
+source /ws/install/setup.bash
 
 # ---------- если есть YAML — применяем его как defaults ----------
 if [ -f "${HAILO_MODELS_YAML}" ] && command -v python3 >/dev/null 2>&1; then

@@ -23,6 +23,7 @@ from __future__ import annotations
 import importlib
 import sys
 import time
+from pathlib import Path
 from typing import Any, Dict, List
 
 import pytest
@@ -31,8 +32,10 @@ import pytest
 # ---------- import target under test ------------------------------------
 
 def _import_module():
-    repo = '/home/builder/rob_box_project/.worktrees/t_b9b6cf73'
-    pkg_root = f'{repo}/src/rob_box_perception'
+    # Путь к пакету вычисляется относительно этого файла (НЕ хардкод пути
+    # build-машины) — тесты должны одинаково проходить на dev-машине и
+    # self-hosted CI.
+    pkg_root = str(Path(__file__).resolve().parents[2])
     if pkg_root not in sys.path:
         sys.path.insert(0, pkg_root)
     return importlib.import_module('rob_box_perception.vision_hailo_loader')
