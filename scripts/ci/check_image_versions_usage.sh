@@ -4,8 +4,9 @@
 # shell script). Flags phantom env-variables that get written to .image-versions
 # but never consumed by anyone — silent tech debt (issue #2425 #2377).
 #
-# ADR-0090 §3.2 acceptance criterion: this script exits non-zero if any
-# *_TAG is unused. Called from CI as a required check.
+# ADR-0094 §3.2 acceptance criterion: this script exits non-zero if any
+# *_TAG is unused. To be wired into CI once the phantom tags are removed
+# (ADR-0094 §6, issues #2425/#2377); running it now exits 1 on develop.
 #
 # Usage:
 #   check_image_versions_usage.sh            # checks all components
@@ -94,7 +95,7 @@ if [ "$RC" -ne 0 ]; then
   echo "   (or add to IV_KNOWN_PHANTOMS if intentionally unused)" >&2
 elif [ "$WARN_COUNT" -gt 0 ]; then
   echo "" >&2
-  echo "⚠️  $WARN_COUNT whitelisted phantom(s). See ADR-0090 §3.2." >&2
+  echo "⚠️  $WARN_COUNT whitelisted phantom(s). See ADR-0094 §3.2." >&2
 fi
 
 exit "$RC"

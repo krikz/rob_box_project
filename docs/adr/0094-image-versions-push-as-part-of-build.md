@@ -159,8 +159,8 @@ SOT, чтобы:
 делается не через architecture review, а через механический CI-step.
 
 **Реализация:** новый скрипт `scripts/ci/check_image_versions_usage.sh`
-(запускается в CI как часть PR-проверки `L-Build All & Push to GHCR.yml` или
-отдельным `lint-images.yml`):
+(в этом PR скрипт только добавляется; подключение в CI — follow-up карточка
+§6 #1, вместе с чисткой phantom-тегов, чтобы не уронить CI до их удаления):
 
 ```bash
 #!/usr/bin/env bash
@@ -205,6 +205,10 @@ CI-step:
   run: bash scripts/ci/check_image_versions_usage.sh
 ```
 
+> **Не подключён в этом PR.** Шаг выше — план для follow-up карточки (§6 #1):
+> на текущем develop скрипт возвращает exit 1 (есть phantom-теги), поэтому
+> вешать его в CI сейчас = красный pipeline на каждом PR.
+
 **Scope:** только `docker/main` и `docker/vision` (как и сам build-pipeline).
 Vision-сервисы (`OAK_D_TAG`, `LED_MATRIX_TAG`, `VOICE_*_TAG` и т.д.) проверяются
 по тому же правилу.
@@ -245,9 +249,8 @@ orphan-теги. Удаление — ручное, отдельным комм�
 
 - [ ] **ADR-0094 в develop.** Этот файл закоммичен и смержен.
 - [ ] **Phantom-чекер существует.** `scripts/ci/check_image_versions_usage.sh`
-      запускается в CI и завершается с кодом 0 на текущем состоянии develop
-      (после ручного удаления `MICRO_ROS_AGENT_TAG` и других phantom-тегов —
-      отдельная карточка, см. §6).
+      добавлен и покрыт unit-тестами; подключение в CI — follow-up (§6 #1),
+      после удаления `MICRO_ROS_AGENT_TAG` и других phantom-тегов.
 - [ ] **HOTFIX.md синхронизирован.** Секция «Preventative checklist» обновлена:
       SHA-теги идут в develop, не в `ci/image-versions`. Делается в рамках
       этой же PR (одна карточка = одна сессия, см. process-rules).
@@ -292,8 +295,8 @@ HOTFIX.md. Следующие работы — отдельными карточ
   - Ожидает exit 1 и упоминание phantom-тега в stderr.
   - Удаляет fake compose → exit 1 для обоих.
   - Удаляет phantom-тег → exit 0.
-- **Shellcheck:** в CI (`L-Build All & Push to GHCR.yml` или отдельный
-  `lint-images.yml`) — `shellcheck -S warning scripts/ci/check_image_versions_usage.sh`.
+- **Shellcheck:** после подключения в CI (follow-up §6 #1) —
+  `shellcheck -S warning scripts/ci/check_image_versions_usage.sh`.
 - **Integration (out-of-scope):** ручной запуск через
   `bash scripts/ci/check_image_versions_usage.sh` после merge → должен
   сообщить о текущих phantom-тегах (см. §1.4 #1) и exit 1, пока их не удалят.
@@ -303,8 +306,8 @@ HOTFIX.md. Следующие работы — отдельными карточ
 ## 8. Rollout
 
 1. Merge этой PR → develop.
-2. CI-build на develop: lint-step провалится на phantom-тегах → отдельная
-   devops-карточка (§6 #1) чистит их → build зелёный.
+2. Follow-up devops-карточка (§6 #1): удалить phantom-теги И подключить
+   lint-step в CI в одном PR → после этого build зелёный и enforcement активен.
 3. HOTFIX.md обновлён до актуального состояния — будущие CI-workflow изменения
    ссылаются на правильный baseline.
 

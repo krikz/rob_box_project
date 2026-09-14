@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Unit test for scripts/ci/check_image_versions_usage.sh (ADR-0090 §3.2).
+# Unit test for scripts/ci/check_image_versions_usage.sh (ADR-0094 §3.2).
 #
 # Validates three behaviors:
 #   1. Phantom *_TAG → script exits 1 and prints the phantom tag name.
@@ -11,7 +11,7 @@
 #
 # Run: bash scripts/ci/tests/test_check_image_versions_usage.sh
 #
-# ADR-0090 §7 unit test entry.
+# ADR-0094 §7 unit test entry.
 
 set -euo pipefail
 
@@ -200,5 +200,5 @@ rm -rf "$TMP5"
 
 echo ""
 echo "======================================="
-echo "All 5 tests PASSED (ADR-0090 §7)"
+echo "All 5 tests PASSED (ADR-0094 §7)"
 echo "======================================="
