@@ -3185,6 +3185,23 @@ class DialogueNode(Node):
             "stop_music tool, а потом коротко подтверди; если ВСЁ stopped — "
             "verbal «уже выключено» без tool call.</reminder>"
         )
+        # Issue #2347 (n313 silence_restored) — SYSTEM REMINDER: на
+        # state-запрос LLM по умолчанию делает verbal-only ответ из
+        # <music_state> тега и пропускает get_music_state tool. e2e-гейт
+        # n313_silence_restored требует tool call в трейсе. Дублируем правило
+        # в dynamic context, чтобы LLM не «угадывал» ответ на основе stale
+        # snapshot. Ставим МЕЖДУ stop_music и time — test_issue_1777_time_format
+        # берёт reminders[-1] как time-reminder, не сдвигаем его.
+        lines.append(
+            "  <reminder>Если юзер спрашивает про состояние музыки "
+            "(«тихо?», «тишина?», «тише?», «играет ли музыка?», «что играет?», "
+            "«что сейчас играет?», «музыка включена?», «слышно что-нибудь?»): "
+            "ОБЯЗАТЕЛЬНО вызови get_music_state tool ПЕРЕД ответом, прочитай "
+            "результат и только потом отвечай через speak_text. НЕ угадывай "
+            "ответ по <music_state> тегу — он может быть stale (DJ переключился, "
+            "beat ещё держится под TTS-батчем, cleanup pending). Tool call "
+            "обязателен даже если кажется, что и так ясно.</reminder>"
+        )
         # Issue #1777 — SYSTEM REMINDER: русский формат времени. Tool
         # ``get_current_time`` уже возвращает ``formatted_time`` русской
         # прописью; LLM ДОЛЖЕН озвучивать его дословно через speak_text,
