@@ -10,6 +10,7 @@ AI Voice Assistant для автономного ровера РОББОКС с 
   - **Vosk** (offline, fast, real-time) — основной выбор
   - **Whisper** (offline, high accuracy) — альтернатива
   - **Yandex SpeechKit** (online, fallback) — для сложных случаев
+  - **MiniMax STT** *(Phase 1 PoC, PR #2369, ADR-0091)* — облачный провайдер со встроенной диаризацией. Class `MiniMaxSTTProvider` готов (`src/rob_box_voice/rob_box_voice/stt_providers/minimax_provider.py`), но в `stt_node._recognize_with_fallback` будет подключён в Phase 2. Подробности — [docs/architecture/minimax-stt-provider.md](../../docs/architecture/minimax-stt-provider.md)
 - **TTS (Text-to-Speech):**
   - **Yandex Cloud TTS** (primary, anton voice) — оригинальный голос ROBBOX
   - **Silero** (offline, fallback) — альтернатива
@@ -193,6 +194,58 @@ deepseek_api_key: "YOUR_DEEPSEEK_API_KEY"
 ```
 
 **⚠️ Не коммитить secrets.yaml в git!**
+
+### MiniMax STT (Phase 1 PoC)
+
+> Полный документ: [`docs/architecture/minimax-stt-provider.md`](../../docs/architecture/minimax-stt-provider.md).
+> ADR и контракт: [ADR-0091](../../docs/adr/0091-minimax-stt-provider.md),
+> [stt-provider-contract.md](../../docs/architecture/stt-provider-contract.md).
+
+MiniMax (`https://api.minimax.io`) — третий провайдер STT. Phase 1 (PR
+[#2369](https://github.com/krikz/rob_box_project/pull/2369)) поставляет
+класс-адаптер `MiniMaxSTTProvider`, 43 unit-теста и документационный
+SSoT [`config/stt_chain.yaml`](config/stt_chain.yaml). В Phase 2
+(issue [#2365](https://github.com/krikz/rob_box_project/issues/2365))
+этот провайдер будет включён между Vosk и Yandex в
+`stt_node._recognize_with_fallback`.
+
+Когда выбирать MiniMax STT (коротко; полный разбор — в docstring
+класса):
+
+* нужна **диаризация спикеров** (issues #2346 / #2348);
+* допустим облачный запрос и есть `MINIMAX_API_KEY`;
+* Vosk слишком шумный для аудио-условий, а Yandex — слишком
+  медленный под нагрузкой.
+
+#### Конфигурация
+
+```bash
+# Включить MiniMax STT (Phase 2 wiring подхватит автоматически)
+export MINIMAX_API_KEY="sk-..."
+
+# Отключить без правки кода — цепочка перешагнёт через MiniMax
+unset MINIMAX_API_KEY        # или:  export MINIMAX_API_KEY=""
+```
+
+Все остальные параметры (`base_url`, `model`, `language`, `timeout`)
+имеют дефолты в `stt_providers/minimax_provider.py` и могут быть
+переопределены через `MiniMaxSTTProvider.maybe_from_env(**kwargs)`,
+если Phase 2 поднимет ROS-параметры `minimax_stt_*` (issue #1004).
+
+#### Тесты
+
+```bash
+# Из src/rob_box_voice — использует package pytest.ini
+pytest test/unit/stt/test_minimax_provider.py -v
+
+# Весь unit-набор (быстрый, CI-safe)
+pytest test/unit -v
+```
+
+43 теста покрывают: успешный 200/JSON-ответ, ошибки 401/403/429/5xx,
+timeout, non-JSON, отсутствие поля `text`, фабрику `maybe_from_env()`
+с пустым ключом, ограничение 25 MB на размер аудио и стабильность
+`PROVIDER_NAME == "minimax"`.
 
 ## Запуск
 
