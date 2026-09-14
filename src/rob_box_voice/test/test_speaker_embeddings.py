@@ -235,6 +235,44 @@ class TestDuplicateVoiceBug:
         assert len(db.list_speakers()) == 1
         assert db.list_speakers()[0]["embeddings"] == 2
 
+    def test_register_or_merge_appends_embeddings_and_updates_name_at_db_level(self, db):
+        """Issue #2348 п.2 — прямой DB-уровневый тест: при merge эмбеддинг
+        ВПИСЫВАЕТСЯ в существующий профиль (новой строки в ``speakers`` нет),
+        а имя обновляется на последнее услышанное (rename-эффект внутри register).
+
+        Без этого фикса register() вызывался БЕЗ speaker_id → создавал новый
+        профиль, и БД разбухала по одному эмбеддингу на каждый вызов LLM.
+        """
+        base = _random_embedding(500)
+        first_id, _ = db.register_or_merge("Денчик", _degraded(base, 0.2, 501))
+
+        # 4 повторные регистрации того же голоса (с обновлением имени — типичный
+        # сценарий, когда LLM сначала расслышал «Эйджик», потом «Денчик», и т.д.)
+        for i, (name, alpha) in enumerate(
+            [
+                ("Эйджик", 0.25),
+                ("Денчик", 0.30),
+                ("Денчик", 0.35),
+                ("Денчик", 0.40),
+            ],
+            start=1,
+        ):
+            sid, reused = db.register_or_merge(name, _degraded(base, alpha, 600 + i))
+            assert reused is True, f"merge #{i} создал новый профиль вместо append"
+            assert sid == first_id, f"merge #{i} вернул другой speaker_id"
+
+        # Главное: профиль ВСЁ ЕЩЁ ОДИН, и в нём 5 эмбеддингов (1 + 4 append).
+        rows_speakers = db._conn.execute("SELECT COUNT(*) FROM speakers").fetchone()[0]
+        rows_embeddings = db._conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0]
+        assert rows_speakers == 1, "должна быть РОВНО одна строка в speakers"
+        assert rows_embeddings == 5, "должно быть 5 эмбеддингов, дописанных в один профиль"
+
+        # Имя обновляется на последнее услышанное (rename-эффект register(name, ..., speaker_id=...)).
+        speakers = db.list_speakers()
+        assert speakers[0]["name"] == "Денчик", (
+            "имя должно обновляться на последнее переданное в register_or_merge"
+        )
+
 
 class TestIdentifyCandidatesDiagnostics:
     """Issue W5-4 п.4 — диагностика: best_score И второй кандидат."""
