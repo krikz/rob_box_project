@@ -1273,41 +1273,98 @@ def _add_derived_layers(
     # это гибель: её узнают по тонкой одинокой линии и по тишине вокруг.
     # См. harmonize::DENSE_ONSETS_PER_BEAT.
     dense = getattr(harmony, "dense", True)
-    for role, synth, part in (
+    for role, synth, part in _derived_role_iter(
+        harmony, dense=dense,
+        lead_synth=lead_synth,
+        bass_synth=bass_synth,
+        pad_synth=pad_synth,
+        counter_synth=counter_synth,
+    ):
+        _append_role_layer(
+            layers, role, synth, part,
+            theme_octaves=theme_octaves, dense=dense,
+        )
+
+
+def _derived_role_iter(harmony, *, dense: bool, lead_synth, bass_synth, pad_synth, counter_synth):
+    """Итератор (role, synth, part) для партий, выведенных из гармонизации.
+
+    Партии, у которых нет ни синта, ни нот, в исходном коде пропускались
+    неявным ``continue`` внутри тела цикла. Здесь мы их фильтруем сразу —
+    это позволяет оставить тело ``_add_derived_layers`` плоским и
+    удержать его CC в бюджете (ADR-0021 R1).
+    """
+    candidates = (
         ("bass", bass_synth, harmony.bass),
         ("lead", lead_synth, harmony.lead),
         ("pad", pad_synth, harmony.pad),
         ("counter", counter_synth, harmony.counter if dense else ()),
-    ):
+    )
+    for role, synth, part in candidates:
         if not (synth and synth.strip()) or not part:
             continue
-        notes = [note for note, _dur in part]
-        if (
-            role == "lead"
-            and theme_octaves
-            and dense
-            and _fits_octave_double(notes)
-        ):
-            notes = [_octave_double(note) for note in notes]
-        # Последний шаг: поправка на собственное транспонирование синта.
-        # До этой строки всё выше рассуждало о ЗВУЧАЩЕЙ высоте — регистры,
-        # удвоение, потолок подклада. См. SYNTH_SEMITONE_SHIFT.
-        shift = SYNTH_SEMITONE_SHIFT.get(synth.strip(), 0)
-        if shift:
-            notes = [_compensate(note, shift) for note in notes]
-        layers.append(
-            Layer(
-                role=role,
-                synth=synth.strip(),
-                midi=tuple(notes),
-                durs=tuple(float(dur) for _note, dur in part),
-                dur=ROLE_DEFAULT_DUR[role],
-                # Подклад ведёт остинато: удар должен быть короче шага
-                # сетки, иначе соседние аккорды сливаются в выдержанный
-                # звук и ритм пропадает (см. harmonize::_build_pad).
-                sus=PAD_STAB_SUS if role == "pad" else None,
-            )
+        yield role, synth, part
+
+
+def _append_role_layer(
+    layers: List[Layer],
+    role: str,
+    synth: str,
+    part,
+    *,
+    theme_octaves: bool,
+    dense: bool,
+) -> None:
+    """Добавить один ``Layer`` для партии, прошедшей фильтр ``_derived_role_iter``.
+
+    Тяжёлая часть (octave_double + synth-shift) вынесена сюда из
+    ``_add_derived_layers``, чтобы основная функция осталась линейной.
+    """
+    notes = [note for note, _dur in part]
+    notes = _maybe_octave_double(role, notes, theme_octaves=theme_octaves, dense=dense)
+    notes = _apply_synth_shift(notes, synth.strip())
+    layers.append(
+        Layer(
+            role=role,
+            synth=synth.strip(),
+            midi=tuple(notes),
+            durs=tuple(float(dur) for _note, dur in part),
+            dur=ROLE_DEFAULT_DUR[role],
+            # Подклад ведёт остинато: удар должен быть короче шага
+            # сетки, иначе соседние аккорды сливаются в выдержанный
+            # звук и ритм пропадает (см. harmonize::_build_pad).
+            sus=PAD_STAB_SUS if role == "pad" else None,
         )
+    )
+
+
+def _maybe_octave_double(role: str, notes, *, theme_octaves: bool, dense: bool):
+    """Удвоить тему октавой вниз, если это разрешено для данной роли.
+
+    Удвоение применяется ТОЛЬКО к ведущей партии (``lead``), и только если
+    тема плотная (``dense``) и не уходит за нижний регистровый порог
+    (:data:`MIN_MIDI_FOR_OCTAVE_DOUBLE`). Остальные роли возвращаются
+    как есть.
+    """
+    if role != "lead":
+        return notes
+    if not (theme_octaves and dense):
+        return notes
+    if not _fits_octave_double(notes):
+        return notes
+    return [_octave_double(note) for note in notes]
+
+
+def _apply_synth_shift(notes, synth_name: str):
+    """Поправить высоту нот на собственное транспонирование синта.
+
+    До этой правки всё выше рассуждало о ЗВУЧАЩЕЙ высоте — регистры,
+    удвоение, потолок подклада. См. :data:`SYNTH_SEMITONE_SHIFT`.
+    """
+    shift = SYNTH_SEMITONE_SHIFT.get(synth_name, 0)
+    if not shift:
+        return notes
+    return [_compensate(note, shift) for note in notes]
 
 
 #: Ниже этой ноты удваивать тему октавой вниз нельзя: удвоение залезет
@@ -1393,12 +1450,7 @@ def spec_from_flat(
     layers: List[Layer] = []
 
     if harmony is not None:
-        if not (lead_synth and lead_synth.strip()):
-            raise ArrangementError(
-                "Для выведенной аранжировки нужен lead_synth — тема "
-                "должна чем-то играть."
-            )
-        _add_derived_layers(
+        return _spec_from_harmony(
             layers,
             harmony,
             theme_octaves=bool(theme_octaves),
@@ -1413,29 +1465,120 @@ def spec_from_flat(
             counter_synth=counter_synth or lead_synth,
             drums_sample=drums_sample,
             hats_sample=hats_sample,
-        )
-        return CompositionSpec(
             bpm=float(bpm),
-            root=(root or "C").strip(),
-            scale=(scale or "minor").strip(),
-            form=(form or DEFAULT_FORM).strip(),
-            layers=tuple(layers),
-            # Прогрессии нет намеренно: вся гармония уже записана
-            # абсолютными нотами баса и пэда. Root.default, который
-            # двигал бы ступени, для них не существует — и потому не
-            # может увести аккомпанемент от фиксированной темы.
-            progression=(),
-            theme_bars=int(harmony.bars),
+            root=root,
+            scale=scale,
+            form=form,
             repeat=bool(repeat),
             swing=float(swing or 0.0),
         )
 
-    # 🔴 FIX (live 31.08): здесь стояло sample=3 намертво. В библиотеке
-    # 4585 сэмплов в трёх паках, а compose_music дотягивался только до
-    # вариантов бочки через drums_sample — хэты всегда звучали одним и
-    # тем же, перкуссия наружу не выводилась вовсе. Один и тот же
-    # тембр во всех треках слышится как «однотипно» ровно так же, как
-    # одна и та же мелодия.
+    return _spec_from_flat_scratch(
+        layers,
+        drums=drums, drums_sample=drums_sample,
+        hats=hats, hats_sample=hats_sample,
+        perc=perc, perc_sample=perc_sample,
+        bass_synth=bass_synth, bass_notes=bass_notes,
+        lead_synth=lead_synth, lead_notes=lead_notes,
+        lead_dur=lead_dur, lead_midi=lead_midi,
+        pad_synth=pad_synth, pad_notes=pad_notes,
+        progression=progression,
+        bpm=float(bpm),
+        root=root, scale=scale,
+        form=(form or DEFAULT_FORM).strip(),
+        repeat=bool(repeat),
+        swing=float(swing or 0.0),
+    )
+
+
+def _spec_from_harmony(
+    layers: List[Layer],
+    harmony,
+    *,
+    theme_octaves: bool,
+    lead_synth: Optional[str],
+    bass_synth: Optional[str],
+    pad_synth: Optional[str],
+    counter_synth: Optional[str],
+    drums_sample: int,
+    hats_sample: int,
+    bpm: float,
+    root: str,
+    scale: str,
+    form: str,
+    repeat: bool,
+    swing: float,
+) -> CompositionSpec:
+    """Ветка ``spec_from_flat`` при переданной гармонизации.
+
+    Ноты и рисунки ударных выведены из самой темы — модель за них
+    не отвечает. ``progression`` намеренно пуст: вся гармония уже
+    записана абсолютными нотами баса и пэда, и Root.default для них
+    не существует.
+    """
+    if not (lead_synth and lead_synth.strip()):
+        raise ArrangementError(
+            "Для выведенной аранжировки нужен lead_synth — тема "
+            "должна чем-то играть."
+        )
+    _add_derived_layers(
+        layers,
+        harmony,
+        theme_octaves=theme_octaves,
+        lead_synth=lead_synth,
+        bass_synth=bass_synth,
+        pad_synth=pad_synth,
+        counter_synth=counter_synth,
+        drums_sample=drums_sample,
+        hats_sample=hats_sample,
+    )
+    return CompositionSpec(
+        bpm=bpm,
+        root=(root or "C").strip(),
+        scale=(scale or "minor").strip(),
+        form=(form or DEFAULT_FORM).strip(),
+        layers=tuple(layers),
+        progression=(),
+        theme_bars=int(harmony.bars),
+        repeat=repeat,
+        swing=swing,
+    )
+
+
+def _spec_from_flat_scratch(
+    layers: List[Layer],
+    *,
+    drums: Optional[str],
+    drums_sample: int,
+    hats: Optional[str],
+    hats_sample: int,
+    perc: Optional[str],
+    perc_sample: int,
+    bass_synth: Optional[str],
+    bass_notes: Optional[str],
+    lead_synth: Optional[str],
+    lead_notes: Optional[str],
+    lead_dur: Optional[str],
+    lead_midi: Optional[str],
+    pad_synth: Optional[str],
+    pad_notes: Optional[str],
+    progression: Optional[str],
+    bpm: float,
+    root: str,
+    scale: str,
+    form: str,
+    repeat: bool,
+    swing: float,
+) -> CompositionSpec:
+    """Ветка ``spec_from_flat``, когда LLM даёт аккомпанемент сама.
+
+    🔴 FIX (live 31.08): здесь стояло sample=3 намертво. В библиотеке
+    4585 сэмплов в трёх паках, а compose_music дотягивался только до
+    вариантов бочки через drums_sample — хэты всегда звучали одним и
+    тем же, перкуссия наружу не выводилась вовсе. Один и тот же
+    тембр во всех треках слышится как «однотипно» ровно так же, как
+    одна и та же мелодия.
+    """
     _add_drum_layer_if_present(layers, "drums", drums, drums_sample)
     _add_drum_layer_if_present(layers, "hats", hats, hats_sample)
     _add_drum_layer_if_present(layers, "perc", perc, perc_sample)
@@ -1457,18 +1600,17 @@ def spec_from_flat(
 
         _add_melodic_layer(layers, role, synth, notes, lead_dur)
 
-    resolved_form = (form or DEFAULT_FORM).strip()
-    _autofill_bass(layers, resolved_form)
+    _autofill_bass(layers, form)
 
     return CompositionSpec(
-        bpm=float(bpm),
+        bpm=bpm,
         root=(root or "C").strip(),
         scale=(scale or "minor").strip(),
-        form=resolved_form,
+        form=form,
         layers=tuple(layers),
         progression=tuple(int(v) for v in parse_notes(progression)),
-        repeat=bool(repeat),
-        swing=float(swing or 0.0),
+        repeat=repeat,
+        swing=swing,
     )
 
 

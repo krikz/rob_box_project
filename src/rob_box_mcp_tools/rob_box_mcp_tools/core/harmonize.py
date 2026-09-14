@@ -323,23 +323,16 @@ def _pick_chords(
         best: Tuple[int, ...] = tonic_pcs
         best_score = float("-inf")
         for pcs, diatonic in candidates:
-            score = sum(weights.get(pc, 0.0) for pc in pcs)
-            # Бонус за корень — ТОЛЬКО диатоническим. Он существует, чтобы
-            # разводить аккорды лада с общими нотами (i и VI в миноре — две
-            # ноты из трёх общие). Хроматическому он давал выиграть по
-            # совпадению баса: в гимне окно B(1.5)+A(0.5) забрал СИ МАЖОР,
-            # объясняющий из него одну ноту — свою же тонику, — обойдя
-            # диатонический G на 0.05 балла.
-            if diatonic:
-                score += (_ROOT_WEIGHT - 1.0) * weights.get(pcs[0], 0.0)
-            if not diatonic:
-                score -= _CHROMATIC_PENALTY * scale_factor
-            if downbeat is not None and downbeat % 12 == pcs[0]:
-                score += _DOWNBEAT_BONUS * scale_factor
-            if is_edge and pcs == tonic_pcs:
-                score += _CADENCE_BONUS * scale_factor
-            if previous is not None and pcs != previous:
-                score -= _CHANGE_PENALTY * scale_factor
+            score = _score_chord_candidate(
+                pcs,
+                diatonic,
+                weights=weights,
+                downbeat=downbeat,
+                is_edge=is_edge,
+                previous=previous,
+                scale_factor=scale_factor,
+                tonic_pcs=tonic_pcs,
+            )
             if score > best_score:
                 best_score = score
                 best = pcs
@@ -364,6 +357,47 @@ def _pick_chords(
             )
         )
     return tuple(chords)
+
+
+def _score_chord_candidate(
+    pcs: Tuple[int, ...],
+    diatonic: bool,
+    *,
+    weights,
+    downbeat: Optional[int],
+    is_edge: bool,
+    previous: Optional[Tuple[int, ...]],
+    scale_factor: float,
+    tonic_pcs: Tuple[int, ...],
+) -> float:
+    """Один аккорд-кандидат в одном окне → числовой скор.
+
+    Скоринг вынесен из ``_pick_chords``, чтобы основная функция оставалась
+    линейным двойным циклом, а правила весов жили в одном месте — это
+    удерживает оба метода в CC-бюджете (ADR-0021 R1).
+
+    Бонус за корень — ТОЛЬКО диатоническим аккордам: он существует, чтобы
+    разводить аккорды лада с общими нотами (i и VI в миноре — две ноты
+    из трёх общие). Хроматическому он давал выиграть по совпадению баса:
+    в гимне окно B(1.5)+A(0.5) забрал СИ МАЖОР, объясняющий из него одну
+    ноту — свою же тонику, — обойдя диатонический G на 0.05 балла.
+
+    ``tonic_pcs`` передаётся параметром, а не вычисляется внутри: от него
+    зависит ``_CADENCE_BONUS`` на стыке лупа, и значение зависит от
+    ``root``/``scale`` исходного вызова ``_pick_chords``.
+    """
+    score = sum(weights.get(pc, 0.0) for pc in pcs)
+    if diatonic:
+        score += (_ROOT_WEIGHT - 1.0) * weights.get(pcs[0], 0.0)
+    if not diatonic:
+        score -= _CHROMATIC_PENALTY * scale_factor
+    if downbeat is not None and downbeat % 12 == pcs[0]:
+        score += _DOWNBEAT_BONUS * scale_factor
+    if is_edge and pcs == tonic_pcs:
+        score += _CADENCE_BONUS * scale_factor
+    if previous is not None and pcs != previous:
+        score -= _CHANGE_PENALTY * scale_factor
+    return score
 
 
 def _pad_ceiling(
