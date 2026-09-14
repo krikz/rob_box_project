@@ -175,5 +175,57 @@ echo "$out" | grep -q "skip: merge-commit" \
     || fail "H" "missing skip marker; got: $out" 16
 ok "H — merge-commit SKIPPED"
 
+# === Сценарий I: pre-merge режим (PR_SCOPE_MODE=pre-merge) ===
+# Issue #2444 — pollution ловится ДО коммита через working-tree + untracked.
+echo "Scenario I: pre-merge mode — dirty working tree with junk → FAIL"
+git -C "$WORK/repo" checkout -q main
+# clean state → exit 0
+out="$(cd "$WORK/repo" && PR_SCOPE_MODE=pre-merge "$HOOK" origin/main 2>&1)"; rc=$?
+[ "$rc" = "0" ] || fail "I-clean" "expected 0 clean, got $rc; out=$out" 17
+echo "$out" | grep -q "no file changes" \
+    || fail "I-clean" "missing 'no file changes' on clean; got: $out" 18
+ok "I-clean — pre-merge clean tree OK"
+# Теперь добавляем мусор в working tree (untracked, не коммитим).
+mkdir -p "$WORK/repo/docker/vision/vision-hailo"
+echo "junk" > "$WORK/repo/docker/vision/vision-hailo/hailo_smoke.py"
+echo "junk" > "$WORK/repo/docker/vision/vision-hailo/start_vision_hailo.sh"
+mkdir -p "$WORK/repo/src/rob_box_quest/webxr_client/tests"
+echo "ts" > "$WORK/repo/src/rob_box_quest/webxr_client/tests/voice_capture_break_detection.test.ts"
+echo "ts" > "$WORK/repo/src/rob_box_quest/webxr_client/tests/voice_capture_sustained_session.test.ts"
+# + 1 легитимный файл (под allowed prefix)
+mkdir -p "$WORK/repo/docs/adr"
+echo "legit" > "$WORK/repo/docs/adr/0090-pr-pollution-detection.md"
+out="$(cd "$WORK/repo" && \
+    PR_SCOPE_MODE=pre-merge PR_ALLOWED_PREFIXES="docs/adr/" "$HOOK" origin/main 2>&1)"; rc=$?
+echo "  [debug I-dirty] rc=$rc out_first=$(printf '%s' "$out" | head -3)"
+[ "$rc" = "1" ] || fail "I-dirty" "expected 1 (junk out-of-scope), got $rc; out=$out" 19
+echo "$out" | grep -q "mode=pre-merge" \
+    || fail "I-dirty" "missing pre-merge mode marker; got: $out" 20
+echo "$out" | grep -q "docker/vision/vision-hailo/hailo_smoke.py" \
+    || fail "I-dirty" "missing hailo_smoke.py in listing; got: $out" 21
+echo "$out" | grep -q "voice_capture_sustained_session.test.ts" \
+    || fail "I-dirty" "missing voice_capture_*.test.ts in listing; got: $out" 22
+echo "$out" | grep -q "FAIL: 4 of 5 files in diff" \
+    || fail "I-dirty" "missing FAIL marker (4 of 5); got: $out" 23
+ok "I-dirty — pre-merge pollution DETECTED"
+
+# === Сценарий J: pre-merge mode + globals pollution (тот же кейс через коммит) ===
+# Проверяем, что pre-merge ловит pollution и в закоммиченной ветке.
+echo "Scenario J: pre-merge mode + committed pollution on branch → FAIL"
+git -C "$WORK/repo" checkout -q main
+git -C "$WORK/repo" checkout -q -b feat-pre-merge-j main
+mkdir -p "$WORK/repo/docker/vision/vision-hailo" "$WORK/repo/docs/adr"
+echo "junk2" > "$WORK/repo/docker/vision/vision-hailo/hailo_smoke.py"
+echo "legit2" > "$WORK/repo/docs/adr/0091-junk-branches.md"
+git -C "$WORK/repo" add -A
+git -C "$WORK/repo" commit -q -m "feat: adr 0091 + hailo pollution"
+git -C "$WORK/repo" push -q origin feat-pre-merge-j
+out="$(cd "$WORK/repo" && \
+    PR_SCOPE_MODE=pre-merge PR_ALLOWED_PREFIXES="docs/adr/" "$HOOK" origin/main 2>&1)"; rc=$?
+[ "$rc" = "1" ] || fail "J" "expected 1, got $rc; out=$out" 24
+echo "$out" | grep -q "hailo_smoke.py" \
+    || fail "J" "missing hailo_smoke.py in committed-branch case; got: $out" 25
+ok "J — pre-merge committed-branch pollution DETECTED"
+
 echo
 echo "All scenarios PASSED"
