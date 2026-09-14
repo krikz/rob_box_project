@@ -64,7 +64,10 @@
 # Теперь перед сверкой:
 #   1) `git fetch origin develop` (таймаут 30s); при недоступности origin —
 #      fallback на локальное дерево + WARN в stdout;
-#   2) эталон md5 берётся из origin/develop (git show origin/develop:...),
+#   2) эталон md5 берётся из origin/develop (git cat-file blob <ref>:<path>),
+#      раньше тут стоял `git show` в `$(...)` — command substitution trim'ил
+#      trailing newline и ломал md5/size (DRIFT=34 ложно-положительно 12+ч,
+#      ретро 14.09 t_7800c199).
 #      а не из локального дерева;
 #   3) если локальный develop != origin/develop — печатается отдельный маркер
 #      LOCAL_DESYNC (сигнал: локальное дерево устарело, install.sh из него
@@ -228,11 +231,18 @@ get_origin_meta() {
         return
     fi
     if git -C "$REPO_DIR" cat-file -e "$REF_BRANCH:scripts/agent_flow/$f" 2>/dev/null; then
-        local blob
-        blob="$(git -C "$REPO_DIR" show "$REF_BRANCH:scripts/agent_flow/$f" 2>/dev/null)"
+        # Ретро 14.09 t_7800c199: раньше тут был `git show <ref>:<path>`,
+        # чей stdout оборачивается в `$(...)`. Command substitution тримит
+        # trailing newline (POSIX), и ровно 1 потерянный \n смещал md5/size
+        # от эталона для КАЖДОГО .sh файла → DRIFT=34 ложно-положительно
+        # 24 тика подряд (12+ часов), install.sh не виноват — host-копии
+        # реально identical to origin/develop blob.
+        # Фикс: `git cat-file blob <ref>:<path>` даёт чистый blob через
+        # pipe — без trim'а и без diff-обёртки. Считаем md5/size прямо
+        # из stdin (process substitution, не `$(...)`-subshell).
         local md5 size
-        md5="$(printf '%s' "$blob" | md5sum | cut -c1-12)"
-        size="$(printf '%s' "$blob" | wc -c | tr -d ' ')"
+        md5="$(git -C "$REPO_DIR" cat-file blob "$REF_BRANCH:scripts/agent_flow/$f" 2>/dev/null | md5sum | cut -c1-12)"
+        size="$(git -C "$REPO_DIR" cat-file -s "$REF_BRANCH:scripts/agent_flow/$f" 2>/dev/null | tr -d ' ')"
         printf '%s|%s\n' "$md5" "$size"
     fi
 }
