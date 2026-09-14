@@ -1678,3 +1678,121 @@ def test_mcp_server_other_compose_music_failure_still_reports_warning() -> None:
 
     assert line is not None
     assert "pre" in line
+
+
+def test_extract_relevant_log_line_ignores_music_guard_scope_leak_echo_main() -> None:
+    r"""Issue #2466, deploy run 34909697360 (14.09 23:37, kanban
+    t_cce8616a, z-{e2e}/test-round-396).
+
+    The voice-assistant `MusicGuard` emits the warning
+    `🎵 [issue 992 Bug C] user asked for music but LLM skipped
+    execute_music_code (tools=...)` at WARN severity
+    (music_guard.py:386-388) when the LLM answers a vocal
+    request without invoking compose_music. The Main Pi's
+    perception/health_monitor subscribes to the shared /rosout
+    bus and re-echoes the same line under
+    `[WARN] dialogue_node (Ns ago): ...` — the bare `warn` token
+    in that echo trips WARNING_MATCH_RE in the main scope and
+    produces a false-positive deploy warning on every run where
+    the LLM happened to satisfy a vocal request without the
+    compose_music tool. The new WARNING_EXCLUDE_COMMON rule
+    covers the literal
+    `[issue 992 Bug C] user asked for music but LLM skipped`
+    substring (case-insensitive), so the deploy gate stays
+    silent on this healthy guard feedback.
+
+    Sister coverage: the CRITICAL pass already silences the
+    `[CRITICAL] ...не вызвал...` reminder emitted by the same DJ
+    Bug B path (PR #2465, see
+    `test_extract_relevant_log_line_ignores_dialogue_node_dj_retry_critical_reminder`).
+    This test mirrors that coverage for the WARN-severity echo
+    from health_monitor so the WARNING scan does not file a
+    parallel finding for the same healthy turn.
+    """
+    log_text = (
+        "[health_monitor-3]   [WARN] dialogue_node (0s ago): 🎵 [issue 992 Bug C] "
+        "user asked for music but LLM skipped exe"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="main", severity="warning")
+
+    assert line is None
+
+
+def test_music_guard_unrelated_llm_skipped_line_still_reports_warning() -> None:
+    """Negative test for the music_guard scope-leak exclusion.
+    The rule is anchored on the literal
+    `[issue 992 Bug C] user asked for music but LLM skipped`
+    substring, so an UNRELATED `LLM skipped` warning (e.g. an
+    LLM-side tool-call bug that genuinely breaks deploy
+    behaviour, with no `[issue 992 Bug C]` prefix) keeps its
+    WARN severity and the operator still sees the actual
+    warning.
+    """
+    log_text = (
+        "[dialogue_node-4] [WARN] [1789432123.012345678] [dialogue_node]: "
+        "LLM skipped mandatory healthcheck tool call before speaking"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="main", severity="warning")
+
+    assert line is not None
+    assert "LLM skipped" in line
+
+
+def test_extract_relevant_log_line_ignores_rtabmap_missing_visual_features_warn() -> None:
+    r"""Issue #2466, deploy run 34909697360 (14.09 23:37, kanban
+    t_cce8616a, z-{e2e}/test-round-396).
+
+    On the first frames after rtabmap starts, the visual-features
+    bag is empty (the camera frame is still warming up and the
+    SLAM module is filling its memory). rtabmap's odometry node
+    logs `[ WARN] (2026-09-14 23:44:47.894)
+    Memory.cpp:3776::computeTransform() Missing visual features
+    or missing raw data to compute them. Transform cannot be
+    estimated.` at WARN severity (upstream rtabmap_core, not our
+    code). Once enough frames have been observed (~1-2s after
+    startup), the warning disappears for the rest of the run and
+    the pipeline stays healthy (no restart, no crash). Same
+    exclusion family as the existing
+    `rtabmap\.icp_odometry.*didn't receive imu` /
+    `rtabmap\.icp_odometry.*dropping image/scan` rules: rtabmap
+    prints an informational WARN during the SLAM startup
+    handshake, deploy gate must not file a deploy-warning per-run
+    on a benign visual-feature race.
+
+    The new WARNING_EXCLUDE_BY_SCOPE['main'] rule covers the
+    literal `Memory.cpp:<line>::computeTransform() Missing visual
+    features` substring so the deploy gate stays silent on this
+    benign startup race.
+    """
+    log_text = (
+        "[rtabmap-2] [ WARN] (2026-09-14 23:44:47.894) "
+        "Memory.cpp:3776::computeTransform() Missing visual features "
+        "or missing raw data to compute them. Transform cannot be estimated."
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="main", severity="warning")
+
+    assert line is None
+
+
+def test_rtabmap_other_compute_warning_still_reports() -> None:
+    """Negative test for the rtabmap Missing visual features
+    exclusion. The rule is anchored on the literal
+    `Memory.cpp:<line>::computeTransform() Missing visual
+    features` substring, so a different rtabmap compute warning
+    (e.g. an OOM that hits `computeTransform` at a different
+    file location, or a `Memory.cpp` warning that names a
+    different missing-data field) keeps its WARN severity and
+    the operator still sees the actual warning.
+    """
+    log_text = (
+        "[rtabmap-2] [ WARN] (2026-09-14 23:44:47.894) "
+        "Memory.cpp:4502::computeTransform() Out of memory while computing transform."
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="main", severity="warning")
+
+    assert line is not None
+    assert "Out of memory" in line
