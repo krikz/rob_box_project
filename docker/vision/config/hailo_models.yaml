@@ -13,7 +13,7 @@
 # реального HEF на Vision Pi. Реальные HEF подключаются в Phase 1.5
 # переключением hailo_enabled=true + hef_path=...
 #
-# Соответствие: docker/vision/vision-hailo/start_vision_hailo.sh
+# Соответствие: docker/vision/scripts/vision-hailo/start_vision_hailo.sh
 #               docker/vision/vision-hailo/Dockerfile
 #               src/rob_box_perception/rob_box_perception/vision_hailo_node.py
 #               docs/adr/0089-ai-hat-plus-deployment.md §3 touchpoint #11
