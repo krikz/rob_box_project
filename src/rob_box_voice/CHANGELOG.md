@@ -8,6 +8,34 @@
 ## [Unreleased]
 
 ### Added
+- **MiniMax STT provider — Phase 1 PoC** (issue
+  [#2365](https://github.com/krikz/rob_box_project/issues/2365), PR
+  [#2369](https://github.com/krikz/rob_box_project/pull/2369),
+  [ADR-0091](../../docs/adr/0091-minimax-stt-provider.md)).
+  - `MiniMaxSTTProvider` (`src/rob_box_voice/rob_box_voice/stt_providers/minimax_provider.py`)
+    — sync/async обёртка над `POST https://api.minimax.io/v1/speech_to_text`,
+    реализует `STTProvider` Protocol из `stt_fallback.py`.
+    Bearer-авторизация через `MINIMAX_API_KEY`, `response_format=json`,
+    `timestamp_level=word`, типизированные
+    `MiniMaxSTTAuthError` / `MiniMaxSTTRateLimitError` /
+    `MiniMaxSTTUnavailableError` / `MiniMaxSTTInvalidResponseError`.
+    API-key redaction filter (`MiniMaxSTTRedactedLogFilter`) на
+    module + `httpx` логгерах. Фабрика
+    `MiniMaxSTTProvider.maybe_from_env(api_key_env="MINIMAX_API_KEY")`
+    возвращает `None`, если ключ не задан — цепочка пропускает
+    провайдер без warning.
+  - Документационный SSoT
+    [`config/stt_chain.yaml`](config/stt_chain.yaml) —
+    описывает предполагаемый порядок Phase 2: `vosk → minimax → yandex`.
+  - Operator-гайд
+    [`docs/architecture/minimax-stt-provider.md`](../../docs/architecture/minimax-stt-provider.md)
+    — env-var (`MINIMAX_API_KEY`), chain order, toggle on/off,
+    pytest-команды, troubleshooting.
+  - Обновлён `README.md` (этот пакет): блок STT-провайдеров и
+    подсекция «MiniMax STT (Phase 1 PoC)».
+  - Расширен class docstring
+    `MiniMaxSTTProvider` — секции «When to prefer this provider» и
+    «Configuration» (cloud + diarization trade-offs).
 - **Query Queue System** — система накопления запросов для пакетной обработки
   - Накопление нескольких быстрых запросов в очереди
   - Пакетная обработка всех накопленных запросов одним запросом к LLM
