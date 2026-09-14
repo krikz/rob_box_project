@@ -90,6 +90,44 @@ class _StubHTTPResponse:
         return self._payload
 
 
+# These are constructed *after* `httpx` is imported. On the CI shim
+# (``unit/node/conftest.py:97`` replaces ``sys.modules["httpx"]`` with
+# ``types.SimpleNamespace(Timeout=...)``) ``httpx.TimeoutException`` and
+# ``httpx.HTTPError`` are missing, so we fall back to ``MiniMaxSTTUnavailableError``
+# — that's the exception :meth:`MiniMaxSTTProvider.transcribe` *maps*
+# HTTP-layer failures to anyway, so the observable behaviour of
+# :meth:`recognize` (returns ``None``) is identical.
+try:
+    _HTTP_TIMEOUT_BASE = httpx.TimeoutException  # type: ignore[attr-defined]
+    _HTTP_ERROR_BASE = httpx.HTTPError  # type: ignore[attr-defined]
+except AttributeError:
+    _HTTP_TIMEOUT_BASE = MiniMaxSTTUnavailableError
+    _HTTP_ERROR_BASE = MiniMaxSTTUnavailableError
+
+
+class _FakeReadTimeout(_HTTP_TIMEOUT_BASE):
+    """Stand-in for ``httpx.ReadTimeout`` — SimpleNamespace-shim safe.
+
+    Some CI test envs (``unit/node/conftest.py:97``) monkey-patch
+    ``sys.modules["httpx"]`` to ``types.SimpleNamespace(Timeout=...)``,
+    which has no ``ReadTimeout`` / ``ConnectError`` / ``TimeoutException``
+    / ``HTTPError`` attributes. Using real ``httpx.ReadTimeout`` here
+    would blow up at collection time.
+
+    Subclassing ``httpx.TimeoutException`` (when available) keeps the
+    ``except`` clauses in :meth:`MiniMaxSTTProvider.transcribe` matching
+    our stub exception, so the provider's HTTP-error → typed-exception
+    mapping still fires. Under the shim, we fall back to subclassing
+    :class:`MiniMaxSTTUnavailableError` directly — which is the same
+    exception the provider raises when its ``except httpx.HTTPError``
+    branch matches, so :meth:`recognize` still returns ``None``.
+    """
+
+
+class _FakeConnectError(_HTTP_ERROR_BASE):
+    """Stand-in for ``httpx.ConnectError`` — see :class:`_FakeReadTimeout`."""
+
+
 class _StubHTTPClient:
     """Заменяет ``httpx.Client`` (или его SimpleNamespace-shim).
 
@@ -144,11 +182,25 @@ def _make_provider(
     *,
     api_key: str = "test-key-12345",
     language: Optional[str] = "ru",
-    timeout: Optional[httpx.Timeout] = None,
+    timeout: Any = None,
 ) -> MiniMaxSTTProvider:
-    """Construct a provider wired to ``stub_client`` (bypasses real httpx)."""
+    """Construct a provider wired to ``stub_client`` (bypasses real httpx).
+
+    ``timeout`` accepts either a real ``httpx.Timeout`` or any duck-typed
+    stand-in (we don't read its fields). Pass ``None`` for the default.
+    A real ``httpx.Timeout`` is used when one is available; on the CI shim
+    (``unit/node/conftest.py`` — ``httpx = types.SimpleNamespace(Timeout=...)``)
+    we fall back to a plain sentinel, since the provider only stores the
+    value and never calls methods on it during these tests.
+    """
     if timeout is None:
-        timeout = httpx.Timeout(connect=1.0, read=1.0, write=1.0, pool=1.0)
+        try:
+            timeout = httpx.Timeout(connect=1.0, read=1.0, write=1.0, pool=1.0)
+        except AttributeError:
+            # httpx shim: ``Timeout`` may be a MagicMock factory that
+            # returns something unusable. Use a plain sentinel — the
+            # provider doesn't dereference any fields in tests.
+            timeout = object()
     provider = MiniMaxSTTProvider(
         base_url=DEFAULT_BASE_URL,
         api_key=api_key,
@@ -329,8 +381,11 @@ class TestRecognizeErrorCases:
         assert provider.recognize(SILENCE_AUDIO) is None
 
     def test_timeout_translates_to_none(self):
+        # _FakeReadTimeout instead of httpx.ReadTimeout — CI shim
+        # (see unit/node/conftest.py:97) replaces httpx with a
+        # SimpleNamespace that lacks ReadTimeout / ConnectError.
         transport = _StubHTTPClient(
-            exception=httpx.ReadTimeout("read timed out")
+            exception=_FakeReadTimeout("read timed out")
         )
         provider = _make_provider(transport)
 
@@ -338,8 +393,9 @@ class TestRecognizeErrorCases:
         assert provider.recognize(SILENCE_AUDIO) is None
 
     def test_connect_error_translates_to_none(self):
+        # See _FakeReadTimeout docstring — same shim story.
         transport = _StubHTTPClient(
-            exception=httpx.ConnectError("dns failed")
+            exception=_FakeConnectError("dns failed")
         )
         provider = _make_provider(transport)
 
