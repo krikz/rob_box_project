@@ -46,6 +46,7 @@ import rclpy
 from rclpy.node import Node
 
 from rob_box_perception.vision_hailo_loader import (
+    VISION_EVENT_FIELDS,
     filter_by_confidence,
     make_loader,
     normalize_event_dict,
@@ -215,24 +216,18 @@ class VisionHailoNode(Node):
     # ----------------------------------------------------------------
 
     def _publish_event(self, event_dict: Dict[str, Any]) -> None:
+        """Собрать VisionEvent msg из normalized dict.
+
+        Контракт полей (13 штук) живёт в `vision_hailo_loader.VISION_EVENT_FIELDS` —
+        один список, общий для loader'а, ноды и aggregator'а. Изменения = одна правка.
+        """
         if self._publisher is None or VisionEventMsg is None:
             return
         msg = VisionEventMsg()
         msg.stamp = self.get_clock().now().to_msg()
         norm = normalize_event_dict(event_dict)
-        msg.source_camera = norm['source_camera']
-        msg.event_type = norm['event_type']
-        msg.class_name = norm['class_name']
-        msg.class_id = norm['class_id']
-        msg.confidence = norm['confidence']
-        msg.bbox_cx = norm['bbox_cx']
-        msg.bbox_cy = norm['bbox_cy']
-        msg.bbox_w = norm['bbox_w']
-        msg.bbox_h = norm['bbox_h']
-        msg.distance_m = norm['distance_m']
-        msg.embedding_id = norm['embedding_id']
-        msg.display_name = norm['display_name']
-        msg.attributes_json = norm['attributes_json']
+        for field in VISION_EVENT_FIELDS:
+            setattr(msg, field, norm[field])
         self._publisher.publish(msg)
 
 

@@ -49,6 +49,7 @@ from rob_box_perception.utils.internet_monitor import (
 )
 from rob_box_perception.utils.node_monitor import NodeAvailabilityMonitor
 from rob_box_perception.utils.time_provider import TimeAwarenessProvider
+from rob_box_perception.vision_hailo_loader import VISION_EVENT_FIELDS
 
 from std_msgs.msg import String
 
@@ -281,27 +282,19 @@ class ContextAggregatorNode(Node):
         `_hailo_events` (окно = `memory_window` секунд). В publish_event()
         буфер публикуется как `PerceptionEvent.vision_events_json`.
 
-        Контракт полей — VisionEvent.msg (см. rob_box_perception_msgs).
+        Контракт полей (13 штук) живёт в `vision_hailo_loader.VISION_EVENT_FIELDS` —
+        один список, общий для loader'а, ноды и aggregator'а. Изменения = одна правка.
+        `stamp` обрабатывается отдельно: у msg это builtin_interfaces/Time,
+        а в dict — `{'sec': int(...), 'nanosec': int(...)}`.
         """
-        event_dict = {
+        event_dict: Dict = {
             'stamp': {
                 'sec': int(msg.stamp.sec),
                 'nanosec': int(msg.stamp.nanosec),
             },
-            'source_camera': msg.source_camera,
-            'event_type': msg.event_type,
-            'class_name': msg.class_name,
-            'class_id': int(msg.class_id),
-            'confidence': float(msg.confidence),
-            'bbox_cx': float(msg.bbox_cx),
-            'bbox_cy': float(msg.bbox_cy),
-            'bbox_w': float(msg.bbox_w),
-            'bbox_h': float(msg.bbox_h),
-            'distance_m': float(msg.distance_m),
-            'embedding_id': msg.embedding_id,
-            'display_name': msg.display_name,
-            'attributes_json': msg.attributes_json,
         }
+        for field in VISION_EVENT_FIELDS:
+            event_dict[field] = getattr(msg, field)
         now = time.time()
         self._hailo_events.append({'time': now, 'event': event_dict})
         # Чистка старых событий (тот же memory_window что и для других типов).
