@@ -11,9 +11,39 @@ Docker compose инфраструктура для Vision Pi (Raspberry Pi 5) - 
 3. **lslidar** - LSLIDAR N10 лидар (2D сканы)
 4. **led-matrix** - Драйвер NeoPixel LED матрицы
 5. **voice-assistant** - Голосовой ассистент + анимации (ReSpeaker Mic Array v2.0)
-6. **vision-hailo** - AI inference на Raspberry Pi AI HAT+ (Hailo-8, 26 TOPS); запускает `vision_hailo_node` (см. [ADR-0089](../../docs/adr/0089-ai-hat-plus-deployment.md), Phase 1 PoC, stub-режим `HAILO_ENABLED=false`); публикует события в топик `/vision/hailo/events` (`VisionEvent[]`). Hardware: `/dev/hailo0` (обязателен для Phase 1.5 real inference).
+6. **vision-hailo** - AI inference на Raspberry Pi AI HAT+ (Hailo-8, 26 TOPS); запускает `vision_hailo_node` (см. [ADR-0089](../../docs/adr/0089-ai-hat-plus-deployment.md), Phase 1 PoC, stub-режим `HAILO_ENABLED=false`); публикует события в топик `/vision/hailo/events` (`VisionEvent[]`). Hardware: `/dev/hailo0` (обязателен для Phase 1.5 real inference). Стартует декларативно через launch-файл `src/rob_box_perception/launch/vision_hailo.launch.py` (ADR-0096) — SSoT параметров `hailo_enabled`, `hef_path`, `confidence_threshold` и др. через `LaunchConfiguration`.
 
-> **F-1 (cross-link, вне scope этой карточки):** на текущий момент `vision-hailo` **не зарегистрирован** в launch-файле, поэтому контейнер запускается, но нода не стартует — даже после исправления README. Полная интеграция (включая consumer'а `context_aggregator_node` → `/perception/context_update.vision_events_json`) закрывается отдельной задачей.
+> ADR-0089 §3 touchpoint #6 (запуск через launch) — выполнен ADR-0096 (`vision_hailo.launch.py`). Downstream consumer `context_aggregator_node` → `/perception/context_update.vision_events_json` остаётся в scope отдельной задачи.
+
+7. **ceiling-camera** - USB-потолочная MJPEG-камера (720p, ceiling context для LLM)
+8. **supervisor** / **avatar-arbiter** - Avatar state machine + floor arbitration
+   (ADR-0028, ADR-0051)
+9. **quest** - WebXR-консоль для Meta Quest 3 (ADR-0027, ADR-0086)
+10. **telegram-bot** - операторский Telegram-интерфейс
+11. **supercollider** + **voice-resources-init** - SynthDef-сервер scsynth
+    (renardo samples + synthdefs шарены с voice-assistant)
+12. **voice-action-server** - sidecar для action/PASTE control plane (Phase 4)
+13. **ollama** (profile `ai`) - локальный LLM inference (embeddings для VoiceMemory)
+14. **cadvisor** + **promtail** (profile `monitoring`) - мониторинг Vision Pi
+
+### AI HAT+ Vision (ADR-0089, ADR-0096)
+
+Сервис **vision-hailo** живёт в отдельном контейнере (Vision Pi 10.1.1.21,
+доступ к `/dev/hailo0` через `devices:` bind-mount). Стартует декларативно
+через launch-файл `src/rob_box_perception/launch/vision_hailo.launch.py`
+(ADR-0096) — SSoT параметров `hailo_enabled`, `hef_path`,
+`confidence_threshold` и др. через `LaunchConfiguration`.
+
+**Capability-honest режим** (ADR-0018): если `hailo_enabled=true`, но
+`/dev/hailo0` или HEF отсутствуют — pre-flight check (OpaqueFunction)
+логирует WARN, нода деградирует в stub-режим (события
+`event_type="stub"`). Phase 1.5 stub-filter (mcp_server) блокирует
+попадание stub-событий в LLM-контекст.
+
+Конфигурация SSoT: `docker/vision/config/hailo_models.yaml`.
+
+Контракт ADR-0089 §3 touchpoint #6 (запуск через launch) — выполнен
+ADR-0096 (vision_hailo.launch.py).
 
 ### Схема коммуникации
 
