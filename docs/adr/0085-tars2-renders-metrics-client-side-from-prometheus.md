@@ -6,7 +6,7 @@
 | Дата | 2026-09-08 |
 | Issue | [#2184](https://github.com/krikz/rob_box_project/issues/2184) («TARS 2 metrics panel: `show_metrics` не доходит до клиента»), PR [#2185](https://github.com/krikz/rob_box_project/pull/2185) |
 | Контекст | `show_metrics` починили на уровне slice-guard и регистрации в MCP (первая итерация #2185), но на экране TARS 2 оператор всё равно не видел ни одной цифры: тракт заканчивался URL'ом Grafana, который клиент рисовал текстом. |
-| Связанные | ADR-0018 (честный FAIL лучше красивого PASS), ADR-0052 §2.2 (slice guard), ADR-0074 §4.0 (размеры панелей Captain Bridge), ADR-0075 (MultiThreadedExecutor в supervisor) |
+| Связанные | ADR-0018 (честный FAIL лучше красивого PASS), ADR-0052 §2.2 (slice guard), ADR-0074 §4.0 (размеры панелей Captain Bridge), ADR-0113 (MultiThreadedExecutor в supervisor) |
 
 > **Перенумерован 2026-09-09 из ADR-0080 в ADR-0085.** Номер 0080 оказался
 > занят дважды: этот документ влит 08.09 (PR #2185), а
@@ -77,7 +77,7 @@ LLM tool call show_metrics(query)
 
 `ShowMetricsTool` подписывается на `/avatar/tars/panel_data` (своя
 `ReentrantCallbackGroup`; `mcp_server` крутится на `MultiThreadedExecutor`,
-см. ADR-0075) и блокируется на `threading.Event` до 8 s. Event
+см. ADR-0113) и блокируется на `threading.Event` до 8 s. Event
 регистрируется **до** публикации запроса — иначе быстрый ответ уходит в
 никуда.
 

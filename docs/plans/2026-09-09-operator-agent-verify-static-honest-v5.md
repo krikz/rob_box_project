@@ -307,7 +307,7 @@ ADR-0051.
 `getUserMedia` остаётся за карточкой шага 5а — но **без сегментатора
 она была бы обречена**.
 
-### N3. `MultiThreadedExecutor` для супервизора (PR #2153, ADR-0075)
+### N3. `MultiThreadedExecutor` для супервизора (PR #2153, ADR-0113)
 
 **Контекст.** Между v4 и v5 в develop влит PR #2153 — добавлен
 `MultiThreadedExecutor` в `supervisor_node` для параллельной
@@ -315,18 +315,18 @@ ADR-0051.
 
 **Доказательство (raw, статика `origin/develop` @ `546e20e6`):**
 
-`docs/adr/0075-supervisor-multithreaded-executor-for-tool-results.md`
+`docs/adr/0113-supervisor-multithreaded-executor-for-tool-results.md`
 (107 строк) — new ADR accepted.
 
 Файлы:
-- `docs/adr/0075-supervisor-multithreaded-executor-for-tool-results.md` (new, 107 LOC, accepted)
+- `docs/adr/0113-supervisor-multithreaded-executor-for-tool-results.md` (new, 107 LOC, accepted)
 - `src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py` (+16/-2)
 - `src/rob_box_mcp_tools/test/test_llm_adapter.py` (+572 — обширные тесты)
 
 **Значение для issue #2004:** прямо не относится к проверяемым
 гипотезам. Но архитектурно — это закрывает риск, который handoff
 не описывал: под нагрузкой (параллельные tool-result callback'и)
-supervisor мог голодать. ADR-0075 применён.
+supervisor мог голодать. ADR-0113 применён.
 
 **Дополнительно (ADR-collision note):** в `docs/adr/` есть три
 файла с номером **0077** (`kanban-worker-report-file`,

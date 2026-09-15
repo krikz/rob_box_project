@@ -10,7 +10,7 @@
 
 ## Контракт
 
-См. ADR-0077 (`docs/adr/0077-kanban-worker-report-file.md`).
+См. ADR-0115 (`docs/adr/0115-kanban-worker-report-file.md`).
 
 Минимальный контракт:
 
@@ -19,7 +19,7 @@
 - Коммитится (`report(<task_id>): <title>`) и пушится в ту же ветку, что и PR.
 - Скрипт-помощник: `scripts/agent_flow/kanban-report-write.sh` — вызывается воркером.
 
-## Worker workflow (issue #2438, ADR-0077 §8)
+## Worker workflow (issue #2438, ADR-0115 §8)
 
 Воркер делает rebase **дважды** за сессию, плюс отчёт:
 
@@ -55,7 +55,7 @@
 
 ## Связанные
 
-- ADR-0077 — решение и trade-offs (включая §8 Pre/Post-flight rebase).
+- ADR-0115 — решение и trade-offs (включая §8 Pre/Post-flight rebase).
 - `scripts/agent_flow/kanban-report-write.sh` — helper-скрипт (вызывает post_flight).
 - `scripts/agent_flow/worker_pre_flight.sh` — pre-work auto-rebase.
 - `scripts/agent_flow/worker_post_flight.sh` — post-work auto-rebase.

@@ -1,4 +1,4 @@
-"""ADR-0077 / issue #2138.A.3 — tests for preview-channel in tts_node.
+"""ADR-0079 / issue #2138.A.3 — tests for preview-channel in tts_node.
 
 Тесты НЕ покрывают сам синтез (он в test_tts_node_preview.py) — здесь
 только ROS-обвязка:

@@ -471,6 +471,193 @@ else
     echo "PASS [M: af-fresh-empty-baseline] (rc=$RC_M)"
 fi
 
+# --- N. amendment-pattern: AMEND:14 не путается с RT:14 (issue #2601) ---
+# Baseline: 0014-process.md + 0014-amendment-1-label-conflict.md.
+# По СТАРОЙ логике (extract_keys без AMEND-ветки) это была бы коллизия RT:14.
+# По НОВОЙ — это AMEND:14 (отдельный от RT:14), поэтому pre-PR guard
+# проходит clean.
+N_DIR="$WORK/N"
+mkdir -p "$N_DIR/docs/adr"
+cd "$N_DIR" || exit 2
+git init -q -b main
+git config user.email "test@test"
+git config user.name "test"
+git remote add origin "$N_DIR"
+echo "# ADR-0014: process" > docs/adr/0014-process.md
+echo "# ADR-0014 Amendment 1: label conflict" > docs/adr/0014-amendment-1-label-conflict.md
+git add . >/dev/null
+git commit -q -m "baseline: 0014-process + 0014-amendment"
+git checkout -q -b develop
+git push -q origin develop
+# Новый ADR с другим slug'ом, который НЕ пересекается по номерам
+cat > docs/adr/0015-fresh.md <<'EOF'
+# ADR-0015: fresh
+EOF
+(
+    cd "$N_DIR" || exit 2
+    git add . >/dev/null
+    git commit -q -m "fresh 0015 ADR"
+)
+OUT_N="$(run_validate "$N_DIR")"
+RC_N=$?
+GOT_N_CLEAN="$(printf '%s' "$OUT_N" | grep -c '^validate_adr_namespace: clean' || true)"
+if [ "$RC_N" -ne 0 ] || [ "${GOT_N_CLEAN:-0}" -lt 1 ]; then
+    fail_count=$((fail_count + 1))
+    fail_log="${fail_log}FAIL [N: amendment-not-rt-collision]: 0014-process + 0014-amendment не должны быть коллизией (AMEND:14 vs RT:14 — разные namespace).
+  rc=$RC_N
+  clean-matches=$GOT_N_CLEAN
+  output:
+$OUT_N
+"
+else
+    pass_count=$((pass_count + 1))
+    echo "PASS [N: amendment-not-rt-collision] (rc=$RC_N)"
+fi
+
+# --- O. amendment-pattern: новый amendment под занятым AMEND:N → collision ---
+# Baseline: 0022-amendment-1-a.md + 0022-amendment-2-b.md (AMEND:22 занят × 2,
+# но они СЧИТАЮТСЯ как один ключ AMEND:22 с точки зрения duplicate-collision:
+# ключ один, файлов много → коллизия в AMEND-домене).
+# Pre-PR guard должен завалить, если PR добавляет ещё один 0022-amendment-*.
+O_DIR="$WORK/O"
+mkdir -p "$O_DIR/docs/adr"
+cd "$O_DIR" || exit 2
+git init -q -b main
+git config user.email "test@test"
+git config user.name "test"
+git remote add origin "$O_DIR"
+echo "# ADR-0022 Amendment 1: a" > docs/adr/0022-amendment-1-a.md
+echo "# ADR-0022 Amendment 2: b" > docs/adr/0022-amendment-2-b.md
+git add . >/dev/null
+git commit -q -m "baseline: AMEND:22 уже занят"
+git checkout -q -b develop
+git push -q origin develop
+# Новый PR пытается добавить ещё один amendment под тем же 0022
+cat > docs/adr/0022-amendment-3-c.md <<'EOF'
+# ADR-0022 Amendment 3: c
+EOF
+(
+    cd "$O_DIR" || exit 2
+    git add . >/dev/null
+    git commit -q -m "another 0022 amendment — collision"
+)
+OUT_O="$(run_validate "$O_DIR")"
+RC_O=$?
+GOT_O_AMEND="$(printf '%s' "$OUT_O" | grep -cE 'AMEND:22.*занято' || true)"
+GOT_O_COLLIDE="$(printf '%s' "$OUT_O" | grep -cE 'ADR namespace collision detected' || true)"
+if [ "$RC_O" -ne 1 ] || [ "${GOT_O_AMEND:-0}" -lt 1 ] || [ "${GOT_O_COLLIDE:-0}" -lt 1 ]; then
+    fail_count=$((fail_count + 1))
+    fail_log="${fail_log}FAIL [O: amendment-collision]: новый 0022-amendment при занятом AMEND:22 → collision.
+  rc=$RC_O
+  amend-matches=$GOT_O_AMEND
+  collide-msg-matches=$GOT_O_COLLIDE
+  output:
+$OUT_O
+"
+else
+    pass_count=$((pass_count + 1))
+    echo "PASS [O: amendment-collision] (rc=$RC_O)"
+fi
+
+# --- P. --full режим: clean (нет дублей в каталоге) ---
+P_DIR="$WORK/P"
+mkdir -p "$P_DIR/docs/adr"
+cd "$P_DIR" || exit 2
+git init -q -b main
+git config user.email "test@test"
+git config user.name "test"
+git remote add origin "$P_DIR"
+echo "# ADR-0001: a" > docs/adr/0001-a.md
+echo "# ADR-0002: b" > docs/adr/0002-b.md
+git add . >/dev/null
+git commit -q -m "baseline: 2 ADR (clean)"
+git checkout -q -b develop
+git push -q origin develop
+# Создаём ADR в develop (но без коллизий)
+echo "# ADR-0003: c" > docs/adr/0003-c.md
+(
+    cd "$P_DIR" || exit 2
+    git add . >/dev/null
+    git commit -q -m "0003 in develop"
+)
+OUT_P="$(run_validate "$P_DIR" --full)"
+RC_P=$?
+GOT_P_FULL_CLEAN="$(printf '%s' "$OUT_P" | grep -cE 'validate_adr_namespace: --full clean' || true)"
+if [ "$RC_P" -ne 0 ] || [ "${GOT_P_FULL_CLEAN:-0}" -lt 1 ]; then
+    fail_count=$((fail_count + 1))
+    fail_log="${fail_log}FAIL [P: --full-clean]: --full в репо без коллизий → clean.
+  rc=$RC_P
+  full-clean-matches=$GOT_P_FULL_CLEAN
+  output:
+$OUT_P
+"
+else
+    pass_count=$((pass_count + 1))
+    echo "PASS [P: --full-clean] (rc=$RC_P)"
+fi
+
+# --- Q. --full режим: коллизия (AF:52 × 2 файлов в каталоге) ---
+Q_DIR="$WORK/Q"
+mkdir -p "$Q_DIR/docs/adr"
+cd "$Q_DIR" || exit 2
+git init -q -b main
+git config user.email "test@test"
+git config user.name "test"
+git remote add origin "$Q_DIR"
+echo "# ADR-AF-0052: a" > docs/adr/AF-0052-a.md
+echo "# ADR-AF-0052: b" > docs/adr/AF-0052-b.md
+git add . >/dev/null
+git commit -q -m "baseline: AF:52 × 2 (collision)"
+git checkout -q -b develop
+git push -q origin develop
+OUT_Q="$(run_validate "$Q_DIR" --full)"
+RC_Q=$?
+GOT_Q_COLLIDE="$(printf '%s' "$OUT_Q" | grep -cE '^  AF:52 ' || true)"
+GOT_Q_TITLE="$(printf '%s' "$OUT_Q" | grep -cE 'ERROR: --full mode found ADR namespace collision' || true)"
+if [ "$RC_Q" -ne 1 ] || [ "${GOT_Q_COLLIDE:-0}" -lt 1 ] || [ "${GOT_Q_TITLE:-0}" -lt 1 ]; then
+    fail_count=$((fail_count + 1))
+    fail_log="${fail_log}FAIL [Q: --full-collision]: AF:52 × 2 в develop → --full exit 1 + AF:52 line + ERROR header.
+  rc=$RC_Q
+  af-line-matches=$GOT_Q_COLLIDE
+  title-matches=$GOT_Q_TITLE
+  output:
+$OUT_Q
+"
+else
+    pass_count=$((pass_count + 1))
+    echo "PASS [Q: --full-collision] (rc=$RC_Q)"
+fi
+
+# --- R. --full режим: amendment НЕ считается коллизией с RT (тот же 0022) ---
+R_DIR="$WORK/R"
+mkdir -p "$R_DIR/docs/adr"
+cd "$R_DIR" || exit 2
+git init -q -b main
+git config user.email "test@test"
+git config user.name "test"
+git remote add origin "$R_DIR"
+echo "# ADR-0022: process" > docs/adr/0022-process.md
+echo "# ADR-0022 Amendment 1: a" > docs/adr/0022-amendment-1-a.md
+git add . >/dev/null
+git commit -q -m "0022 process + amendment (разные namespace)"
+git checkout -q -b develop
+git push -q origin develop
+OUT_R="$(run_validate "$R_DIR" --full)"
+RC_R=$?
+GOT_R_CLEAN="$(printf '%s' "$OUT_R" | grep -cE 'validate_adr_namespace: --full clean' || true)"
+if [ "$RC_R" -ne 0 ] || [ "${GOT_R_CLEAN:-0}" -lt 1 ]; then
+    fail_count=$((fail_count + 1))
+    fail_log="${fail_log}FAIL [R: --full-amendment-not-rt-collision]: 0022-process + 0022-amendment в --full → clean (AMEND:22 vs RT:22 — разные).
+  rc=$RC_R
+  full-clean-matches=$GOT_R_CLEAN
+  output:
+$OUT_R
+"
+else
+    pass_count=$((pass_count + 1))
+    echo "PASS [R: --full-amendment-not-rt-collision] (rc=$RC_R)"
+fi
+
 # --- Итог ---
 echo
 echo "=== validate_adr_namespace test summary ==="

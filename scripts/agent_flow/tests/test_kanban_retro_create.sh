@@ -22,7 +22,7 @@
 #   H. Usage: без --assignee → exit 2.
 #   I. `kanban list --json` падает → деградация: create с idempotency-key.
 #   J. --skill с категорийным именем → pass-through (guard снят в ADR-0023).
-#   --- ADR-0079 (issue #2159) — слой 4, issue-label guard ---------------
+#   --- ADR-0116 (issue #2159) — слой 4, issue-label guard ---------------
 #   K. nightly-review-* + есть открытое issue за текущую ISO-неделю → SKIP.
 #   L. nightly-review-* + issue из ПРОШЛОЙ недели → create проходит.
 #   M. nightly-review-* + gh недоступен → fail-open, create проходит.
@@ -85,7 +85,7 @@ HERMES_MOCK_EOF
 chmod +x "$TEST_TMP/bin/hermes"
 
 # --- mock gh ---------------------------------------------------------------
-# Используется слоем 4 (ADR-0079): читает $GH_ISSUE_FILE — массив JSON
+# Используется слоем 4 (ADR-0116): читает $GH_ISSUE_FILE — массив JSON
 # [{number, createdAt}, ...] открытых issues с label nightly-review.
 # Если $GH_FAIL=1 — возвращает exit 1 (имитирует недоступность gh).
 cat > "$TEST_TMP/bin/gh" <<'GH_MOCK_EOF'
@@ -338,7 +338,7 @@ run_test "G. key fallback from title (slugify)" test_G_key_fallback_from_title
 run_test "H. usage error without --assignee" test_H_usage_error
 run_test "I. list failure degradation" test_I_list_failure_degradation
 run_test "J. category-nested skill → create (guard removed)" test_J_category_skill_not_rejected
-# --- ADR-0079 (issue #2159): слой 4 — issue-label guard --------------------
+# --- ADR-0116 (issue #2159): слой 4 — issue-label guard --------------------
 # K. nightly-review-* + есть открытое issue с label nightly-review за ISO-неделю
 #    → SKIP, create НЕ вызывается (дайджест уже ушёл через issue).
 test_K_issue_label_guard_skip() {

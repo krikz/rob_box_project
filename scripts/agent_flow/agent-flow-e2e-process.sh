@@ -416,7 +416,7 @@ ensure_worktree() {
 log() { printf '%s %s %s\n' "$LOG_PREFIX" "$(date -Iseconds)" "$*" >&2; }
 run() { if [ "$DRY_RUN" = "true" ]; then printf '%s DRY-RUN %s\n' "$LOG_PREFIX" "$*" >&2; else eval "$@"; fi; }
 
-# --- tick-summary logging (ADR-0079 / retro t_e3fc9bfe, issue #1977) ---------
+# --- tick-summary logging (ADR-0116 / retro t_e3fc9bfe, issue #1977) ---------
 # Cron читает STDOUT. Скрипт исторически писал только в stderr → silent
 # (= empty stdout). Этот helper дублирует log() в stdout + per-day log-файл.
 # Marker'ы tick-start/end идут в stdout — гарантируют, что cron delivery
@@ -960,7 +960,7 @@ if [ "$_gh_auth_ok" -ne 1 ]; then
     exit 1
 fi
 
-# --- tick_start: structured marker в stdout (ADR-0079 / retro t_e3fc9bfe) ---
+# --- tick_start: structured marker в stdout (ADR-0116 / retro t_e3fc9bfe) ---
 # После G1 (MAINTENANCE) + G2 (auth) + G6 (flock), до collect_issues_json.
 # На skip-tick (gate сработал раньше) marker не появляется — там gate
 # уже пишет свой лог в stderr.
@@ -4519,7 +4519,7 @@ fi
 # --- summary -----------------------------------------------------------------
 log "tick done: processed=${processed} skipped=${skipped} errored=${errored} round=${ROUND_BRANCH}"
 
-# --- tick_end: structured marker в stdout (ADR-0079 / retro t_e3fc9bfe) ------
+# --- tick_end: structured marker в stdout (ADR-0116 / retro t_e3fc9bfe) ------
 # Явный вызов перед exit; trap EXIT гарантирует marker и при аварийном
 # завершении через `set -e` / kill. Спец-ветки (2526, 2707) делают `exit 0`
 # раньше — но trap EXIT всё равно срабатывает.

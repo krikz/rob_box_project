@@ -156,6 +156,50 @@ auth — fail-open (CI-линтер подстрахует).
 `scripts/agent_flow/tests/test_merge_gate_adr_collision.sh`
 (15/15 зелёные).
 
+### 2.4-bis Pre-PR guard: правило для amendment (issue #2601, 2026-09-15)
+
+Файл `docs/adr/NNNN-amendment-<slug>.md` — это **правка задним числом** к основному ADR-NNNN (паттерн унаследован от принятых 0014-amendment-1-label-conflict, 0022-amendment-best-effort-stale-candidate-alert, 0082-amendment-0027-meta-quest-api-drift-fix).
+
+Правила:
+
+- **Amendment — легитимный паттерн** (принят в develop до того, как AF-0030 стал enforced; легализация — отдельным пунктом, не отменой). Owner-approval не требуется для правки существующего ADR при наличии явного `amendment-N-<slug>` в имени файла и `# ADR-NNNN Amendment N: ...` в H1.
+- **Amendment НЕ участвует в основном namespace**: `extract_keys` маппит `NNNN-amendment-*.md` → ключ `AMEND:N` (отдельный namespace), а не `RT:N`. Это устраняет ложную коллизию с основным `NNNN-*.md` под тем же номером (на 2026-09-15 было 2 ложные коллизии: `RT:14` и `RT:22`).
+- **Amendment может ссылаться на основной ADR по номеру** (нормальная cross-ref), но **основной ADR НЕ ссылается на amendment** (нарушит single-source-of-truth).
+- **Amendment-файлы проверяются на дубликаты в своём namespace**: `AMEND:N` × `AMEND:N` в одном домене = коллизия (два разных amendment'а под одним N).
+
+`extract_keys` теперь выдаёт 4 типа ключей: `RT:N`, `AF:N`, `AMEND:N`, и ошибочные имена файлов пропускает (regex fail-soft, не падает).
+
+### 2.4-ter Full-scan guard: `validate_adr_namespace.sh --full` (issue #2601, 2026-09-15)
+
+Pre-PR guard проверяет **только новые ADR-файлы в diff PR** (`--diff-filter=A`). Это правильно для CI: ловит коллизию ДО мержа. Но существующие коллизии в `origin/develop` (на 2026-09-15 — `AF:66` ×5 файл под одним номером) скрипт **не видит** — они лежат в develop, пока кто-то не сделает full-scan.
+
+Режим `--full` (новый, ADR-AF-0030 §2.4-ter):
+
+- Прогоняет `extract_keys` по **всему** `git ls-tree -r "$REF" --name-only`, без `--diff-filter=A`.
+- Выдаёт список ВСЕХ коллизий в baseline (включая те, что pre-PR guard пропустил).
+- Exit code: `1` если есть коллизии, `0` если clean.
+- Назначение: ручной аудит каталога разработчиком / в рамках bug-карточек вроде #2582, #2601.
+- **НЕ вызывается из CI** (там `--full` создаст ненужный шум на каждый PR); pre-PR guard остаётся дефолтным режимом.
+
+Verify (raw, 2026-09-15, до этого PR):
+
+```
+$ git ls-tree -r origin/develop --name-only | extract_keys | sort | uniq -c | sort -rn | awk '$1 > 1'
+      5 AF:66
+      2 RT:77       # до renames 0114/0115 (0083 PR в этом PR убирает дубль)
+      2 RT:79       # до renames 0116
+      2 RT:75       # до renames 0113
+      2 RT:22       # amendment-pattern (ложная коллизия, по §2.4-bis — AMEND:22)
+      2 RT:14       # amendment-pattern (ложная коллизия, по §2.4-bis — AMEND:14)
+```
+
+После этого PR (`bash scripts/agent_flow/validate_adr_namespace.sh --full --ref origin/develop`):
+
+```
+NEXT: clean (после переименования 0113/0114/0115/0116/0117 и удаления 0076).
+НО: AF-66 × 5 — известная коллизия, вне scope этой карточки. См. `## Не делалось`.
+```
+
 ### 2.5 Ручной коммит в develop — запрещён
 
 Любой коммит в `develop` (включая ручной от Шифу) **должен** идти через feature-branch + PR, **даже если коммит единственный**. Исключений нет. Включено в `CONTRIBUTING.md` как §2d-bis.
@@ -235,6 +279,8 @@ Phase 1 cleanup **не входил** в ADR. Phase 2 (issue #2076, этот PR)
 - Не переименовываем **RT-файлы** за пределами списка §2.6 (0027-wake-gate, 0027-meta-quest остаются RT).
 - Не вводим ADR-bot / external counter — overkill.
 - Не наказываем существующих воркеров за коллизии — фикс идёт вперёд, не назад.
+- **§2.4-bis amendment: не легализуем amendment «сверху» в AF-домене**. Шаблон унаследован и не запрещён, но RT-домен остаётся «родным» для amendment'ов (они все на тему RT-ADR). Перевод amendment в AF-домен — отдельная задача, не входит в scope #2601.
+- **§2.4-ter AF:66 × 5 — вне scope #2601**. Это новая коллизия в AF-домене (5 файлов под `AF-0066`, появилась в PR #2516 и #2512 уже после issue #2582). Issue #2601 фокусируется на 0075/0077/0079 + дубль 0076; full-scan guard её обнаружит автоматически, отдельный fix-PR — задача для следующей карточки.
 
 ## 7. Ссылки
 

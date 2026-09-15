@@ -1,5 +1,7 @@
 # ADR-0077: multi-skill per profile — воркеры получают ОБЯЗАТЕЛЬНЫЙ набор skills (verification-before-completion + доменные), не один
 
+> **ADR-number: 0077** (collision-fix, 2026-09-15, issue #2582/#2601). Два соседа получили тот же номер и переехали: `0114-stt-distortion-collection-tars-helmet.md` → `ADR-0114`, `0115-kanban-worker-report-file.md` → `ADR-0115`. Этот ADR первый по merge-time, коммит `db1cb4fc9` (PR #2165).
+
 | Поле | Значение |
 |---|---|
 | Статус | Proposed (после merge → Accepted) |

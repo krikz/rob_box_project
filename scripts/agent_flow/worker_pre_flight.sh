@@ -12,7 +12,7 @@
 # больше WARN_BRANCH_BEHIND. Логирует результат в task_comments (через
 # `gh issue comment` если задан ISSUE_NUM, иначе только stderr).
 #
-# Контракт (ADR-0077 §3.3 расширение, issue #2438, фикс #2478):
+# Контракт (ADR-0115 §3.3 расширение, issue #2438, фикс #2478):
 #   - Принимает task_id и branch_name (argv $2).
 #   - branch_name ОБЯЗАН совпадать с `git rev-parse --abbrev-ref HEAD`,
 #     иначе exit 2 (fail-fast защита от «мусор на входе → silent ignore»,

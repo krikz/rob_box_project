@@ -155,4 +155,4 @@ Run: https://github.com/krikz/rob_box_project/actions/runs/34274388249
 
 ---
 
-_Сгенерировано вручную воркером перед `kanban_complete` (ADR-0077 §3, контракт отчёта)._
+_Сгенерировано вручную воркером перед `kanban_complete` (ADR-0115 §3, контракт отчёта)._

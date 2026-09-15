@@ -1,4 +1,4 @@
-"""ADR-0077 / issue #2138.A.3 — тесты supervisor'а на preview-канал.
+"""ADR-0079 / issue #2138.A.3 — тесты supervisor'а на preview-канал.
 
 Покрывают:
 1. ``_on_preview_voice`` валидный запрос → публикация в ``/avatar/tts/request``

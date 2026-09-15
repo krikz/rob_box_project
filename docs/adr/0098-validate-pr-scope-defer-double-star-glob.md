@@ -110,7 +110,7 @@ esac
 - делает ограничение **явным** (а не «TODO если спросят»);
 - указывает, **где** искать контекст (ADR-0098) — это та же
   форма, что уже используется в скрипте (`see ADR-0055`,
-  `see ADR-0077 §8`).
+  `see ADR-0115 §8`).
 
 ### 2.3 Что НЕ меняется
 
@@ -181,7 +181,7 @@ esac
   реализуется, либо превращается в issue).
 - ADR-0055 — origin `validate_pr_scope.sh` (PR #2040).
 - ADR-0095 — pre-merge mode + pollution detection (PR #2447).
-- ADR-0077 — worker report file (link format `see ADR-NNNN`).
+- ADR-0115 — worker report file (link format `see ADR-NNNN`).
 - CONTRIBUTING.md §🐉 — формальная фиксация «TODO в merged-коде
   недопустим».
 - issue #2490 — сама finding-задача.

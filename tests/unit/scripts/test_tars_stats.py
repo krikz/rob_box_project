@@ -1,4 +1,4 @@
-"""Юнит-тесты для ADR-0077 §2.3: scripts/stt/tars_stats.py.
+"""Юнит-тесты для ADR-0114 §2.3: scripts/stt/tars_stats.py.
 
 Контракт сводки (issue #2223):
 
@@ -15,7 +15,7 @@
 входящее в operator namespace — например ``расскажи``, ``мне``, ``анекдот``.
 Это шум wake-сегмента, не wake-word кандидаты.
 
-ADR-0077 §2.3 контракт: «candidates for addition» = **phonetic distortions**
+ADR-0114 §2.3 контракт: «candidates for addition» = **phonetic distortions**
 существующих wake-токенов (edit-distance ≤ 2 или SequenceMatcher.ratio ≥ 0.65).
 ``расскажи``/``мне``/``анекдот`` НЕ являются phonetic distortions от «ТАРС» и
 должны быть отфильтрованы. Слова вроде ``арс`` (1 deletion), ``тарз`` (1
@@ -239,7 +239,7 @@ class TestSummarizeWakeRate:
 
 
 class TestSummarizeTableColumns:
-    """ADR-0077 §2.3 — все 4 обязательные колонки присутствуют."""
+    """ADR-0114 §2.3 — все 4 обязательные колонки присутствуют."""
 
     def test_all_four_required_columns_present(self):
         out = _run_summarize(
@@ -522,7 +522,7 @@ def test_diff_empty_when_only_noise(fixture_yaml: Path, tmp_path: Path) -> None:
         ("тарс", "арс", 2, True),     # 1 deletion
         ("тарс", "тарз", 2, True),    # 1 substitution
         ("тарс", "тэрс", 2, True),    # 1 substitution
-        # NB: edit-distance=2 is the wake-like boundary per ADR-0077 §2.3,
+        # NB: edit-distance=2 is the wake-like boundary per ADR-0114 §2.3,
         # so «расс» (dist=2 от «тарс») IS wake-like. The strict exclusion
         # in --diff comes from the SHORTER wake tokens — dist=2 with a 4-letter
         # base covers most STT distortions but not «расскажи» (dist=6).

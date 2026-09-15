@@ -128,7 +128,7 @@ EXPECTED=(
     watchdog-provider-quick.sh
     agent-flow-drift-detect.sh
     kanban-retro-create.sh
-    # Worker-helper для контракта отчёта (ADR-0077, issue #2159, 2026-09-08):
+    # Worker-helper для контракта отчёта (ADR-0115, issue #2159, 2026-09-08):
     # воркер вызывает `bash scripts/agent_flow/kanban-report-write.sh $TASK_ID`
     # ПЕРЕД `kanban_complete` — скрипт собирает git diff/pytest/gh pr view и
     # пишет `docs/reports/kanban/<task_id>.md` (git tracked, переживает worktree GC).
@@ -323,21 +323,21 @@ EXPECTED=(
     # kanban-retro-create.sh (дедуп по key). Регистрация cron-job —
     # в ensure_nightly_review_cron ниже.
     agent-flow-nightly-review.sh
-    # Персистентность находок ночного ревью (ADR-0079):
+    # Персистентность находок ночного ревью (ADR-0116):
     # НЕ cron-job — вызывается САМИМ LLM-ревьюером перед kanban_complete
     # (инструкция в теле карточки, см. agent-flow-nightly-review.sh),
-    # тем же паттерном, что kanban-report-write.sh для ADR-0077.
+    # тем же паттерном, что kanban-report-write.sh для ADR-0115.
     #
     # ВАЖНО про issue #2159 (2026-09-14, ретро t_11e6a7e7):
     # issue #2159 = «воркеры должны сохранять полные отчёты в
-    # docs/reports/kanban/<task_id>.md» — это parent-issue для ADR-0077,
-    # НЕ для ADR-0079. ADR-0079 ссылается на #2159 в §1.2 как нарративную
+    # docs/reports/kanban/<task_id>.md» — это parent-issue для ADR-0115,
+    # НЕ для ADR-0116. ADR-0116 ссылается на #2159 в §1.2 как нарративную
     # параллель (та же эпоха, та же боль «находки теряются»), но реальный
-    # bug-триггер ADR-0079 — это дубль-карточки t_84434d4c + t_77f8ebd8
-    # (см. ADR-0079 §1.2 и §2.2). Указание #2159 рядом с ADR-0079 тут —
+    # bug-триггер ADR-0116 — это дубль-карточки t_84434d4c + t_77f8ebd8
+    # (см. ADR-0116 §1.2 и §2.2). Указание #2159 рядом с ADR-0116 тут —
     # историческое (PR #2177 буквально закрывал #2159 как umbrella), а не
-    # bug-claim. Не путай с ownership: kanban-report-write.sh = ADR-0077
-    # владеет #2159, nightly-review-record.sh = ADR-0079 свой собственный
+    # bug-claim. Не путай с ownership: kanban-report-write.sh = ADR-0115
+    # владеет #2159, nightly-review-record.sh = ADR-0116 свой собственный
     # fix-path.
     nightly-review-record.sh
     # Decomposed-children wake-up watchdog (ADR-AF-0052, nightly-review

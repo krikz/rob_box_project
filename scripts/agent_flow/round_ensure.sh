@@ -20,7 +20,7 @@
 #   round_ensure.sh --wait N   # ждать до N секунд освобождения flock
 #
 # Ретро 09.09 (issue #2299): round_ensure.sh — ТОНКАЯ ОБЁРТКА над
-# round_formation.sh (общий модуль формирования round-ветки, см. ADR-0075
+# round_formation.sh (общий модуль формирования round-ветки, см. ADR-0113
 # с defer-семантикой). Скрипт владеет:
 #   - flock + --wait N (как у agent-flow-e2e-process.sh)
 #   - env-загрузчиком profile .env
