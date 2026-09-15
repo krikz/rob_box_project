@@ -3,9 +3,10 @@
 > **Источник истины по решениям Шифу (owner) для P0 voice/operator-bugs, которые
 > оставались `stale-candidate` без `agent:*` ≥ 60 ч (ретро-ticket `orphan-stale-no-agent-assign`).**
 >
-> Дата последнего sync: **2026-09-14**.
-> Подготовил: PM @ z-pm/t_cf60f006-p0-sync.
+> Дата последнего sync: **2026-09-15** (предыдущий: 2026-09-14).
+> Подготовил: PM @ z-pm/t_cf60f006-p0-sync (14.09) + z-pm/t_870273be-p0-voice-decisions (15.09, sync #2394 alert channel).
 > Связанная ретро-таблица: `docs/retros/orphan-stale-no-agent-assign-2026-09-14.md`.
+> Follow-up issues: [#2394](https://github.com/krikz/rob_box_project/issues/2394) (alert channel).
 
 ## 1. Контекст
 
@@ -37,9 +38,15 @@
 
 ## 4. Открытые вопросы к Шифу (sync очередь)
 
+> **PM-sync от 2026-09-15 (kanban `t_870273be`):** Шифу 13ч+ не отвечает на issue
+> [#2394](https://github.com/krikz/rob_box_project/issues/2394) (alert channel for
+> `stale-candidate` + `priority:high|critical`). PM фиксирует дефолтное решение
+> исходя из существующей инфры (см. § 7 ниже), с возможностью пересмотра при
+> явном комментарии Шифу.
+
 1. **Подтверждение**: та ли четвёрка (#2131/#2132/#2136/#2137), или Шифу 11.09 имел в виду другой состав? (по ретро-валидации — совпадает, но явного GitHub-комментария от Шифу 11.09 нет.)
 2. **Решение по #2135 vs #1992**: одна карточка или две? Если две — фиксируем #2135 как P0.
-3. **Алерт в devops-канал**: Шифу подтверждает необходимость отдельного on-call-алерта при `stale-candidate` на `priority:high` + voice/operator/bug? (Заведено как follow-up issue — см. `docs/retros/orphan-stale-no-agent-assign-2026-09-14.md` § 7.)
+3. ~~**Алерт в devops-канал**: Шифу подтверждает необходимость отдельного on-call-алерта при `stale-candidate` на `priority:high` + voice/operator/bug? (Заведено как follow-up issue — см. `docs/retros/orphan-stale-no-agent-assign-2026-09-14.md` § 7.)~~ **ЗАКРЫТО 2026-09-15** (PM-default, см. § 7).
 4. **Срок по плану #2132**: когда допустимо оставить риск (принять workaround) и не фиксить до снятия #2131?
 
 ## 5. Процессные изменения, зафиксированные в ретро
@@ -53,3 +60,37 @@
 - Комментарии Шифу (GOODWORKRINKZ) на #2131 (08.09 06:29 UTC) — парный дефект с #2132.
 - PR #2153 (функциональный fix #2131, смержен в develop, ожидает e2e PASS).
 - ADR-0022 (GATE-2 stale-candidate workflow) — `docs/adr/0022-process-e2e-done-gates.md`.
+
+## 7. PM-default: alert-канал для stale-candidate (2026-09-15)
+
+**Проблема.** В репо `krikz/rob_box_project` на 2026-09-15 нет ни Slack/Discord-канала
+`#devops`, ни webhook'а — единственная существующая infra-notification это точечный
+telegram-push в `agent-flow-handoff.sh:92` (`chat_id=495039871`, notifier-profile=pm),
+который уже занят PM-хэндоффами и не подходит для on-call-алертов.
+
+**PM-решение (вариант A + setup нового канала).**
+
+- **Немедленный fallback (вариант A):** до тех пор, пока новый канал не создан,
+  alerter при `stale-candidate` + `priority:high|critical` + 60 мин висит →
+  публикует GitHub-comment в **каждый** затронутый issue с `@krikz` + `@GOODWORKRINKZ`
+  mention + ссылкой на #2394. Это работает сегодня, бесплатно, попадает в inbox Шифу.
+- **Целевой канал (после owner setup):** новый **отдельный** Telegram-чат
+  `#devops-oncall` (или канал с тем же именем — выбирает Шифу). Алерты в этот чат
+  идут мимо PM-handoff-нотификации, чтобы on-call не смешивался с PM-рутиной.
+  Идентификатор чата (после создания) фиксируется в
+  `scripts/agent_flow/stale-candidate-alerter.sh` через env `DEVOPS_ALERT_CHAT_ID`.
+
+**Создан follow-up:**
+
+- kanban-карточка `t_a1b2c3d4` (назначение: **devops**, owner: krikz) — создать
+  Telegram-чат/канал `#devops-oncall`, прописать `DEVOPS_ALERT_CHAT_ID` в
+  infra-secrets, эскалировать на Шифу для подтверждения имени. До готовности —
+  работает GitHub-comment fallback (вариант A).
+- kanban-карточка `t_fc6da8b6` (назначение: **architect**) — ADR-0022 amendment:
+  добавить в §2 «Инвариант завершения» строку «либо алерт в `#devops-oncall`
+  сработал до GATE-2 close, либо GitHub-comment @mention опубликован» (см.
+  issue #2394 acceptance).
+
+**Что требуется от Шифу:** явный комментарий на #2394 с подтверждением имени
+канала (`#devops-oncall` или иное) или альтернативного пути (Slack/Discord/webhook).
+До явного ответа — PM-default выше считается действующим.
