@@ -96,6 +96,14 @@
 # ============================================================================
 set -euo pipefail
 
+# --- shared library bootstrap ------------------------------------------------
+# Подтягиваем af_flock_guard_or_exit / af_load_profile_env / _af_log / etc.
+# (дедуп 30.08, эталонный паттерн — agent-flow-deploy-sweep.sh:53-58).
+# Source ДО определения LOCK_FILE/LOG_FILE: helper сам читает ${LOCK_FILE}.
+_LIB_DIR_HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+# shellcheck source=lib_agent_flow_common.sh
+. "$_LIB_DIR_HERE/lib_agent_flow_common.sh"
+
 DRY_RUN="${DRY_RUN:-false}"
 LOCK_FILE="${LOCK_FILE:-/tmp/agent-flow-stale-blocked-watchdog.lock}"
 LOG_FILE="${LOG_FILE:-/tmp/agent-flow-stale-blocked-watchdog.log}"
@@ -107,11 +115,11 @@ GH_REPO="${GH_REPO:-krikz/rob_box_project}"
 GH_CONFIG_DIR="${GH_CONFIG_DIR:-/home/builder/.config/gh}"
 
 # --- flock guard ------------------------------------------------------------
-exec 9>"$LOCK_FILE" || true
-if ! flock -n 9; then
-    echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] stale-blocked-watchdog: another instance running — skip" >&2
-    exit 0
-fi
+# Тело — af_flock_guard_or_exit в lib_agent_flow_common.sh. Дрейф формата
+# логов (`stale-blocked-watchdog: another instance running — skip` →
+# helper-delegated в `_af_log`) принят как documented consequence (issue
+# #2477 §«Последствия»): parse-friendly парсеры адаптируются.
+af_flock_guard_or_exit "$LOCK_FILE"
 
 # --- pre-flight: gh + python3 ----------------------------------------------
 if ! command -v python3 >/dev/null 2>&1; then
