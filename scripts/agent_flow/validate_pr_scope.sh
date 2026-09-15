@@ -160,10 +160,9 @@ while IFS= read -r f; do
     if [ "$ALLOWED" = "0" ] && [ -n "$GLOBS" ]; then
         while IFS= read -r g; do
             [ -n "$g" ] || continue
-            # bash case поддерживает *, ? — для ** нужен extglob. У нас fnmatch-
-            # не нужен (paths типа "*.md", "docs/**/*.png" → раскладываем
-            # вручную: для ** это "docs/*/*.png" и т.п. — TODO если спросят).
-            # Пока — простой wildcard через case.
+            # bash case поддерживает *, ? — простой wildcard достаточно для
+            # всех текущих PR. **-glob (например, "docs/**/*.png") НЕ
+            # поддерживается — если потребуется, см. ADR-0098 (deferred).
             case "$f" in
                 $g) ALLOWED=1; break ;;
             esac
