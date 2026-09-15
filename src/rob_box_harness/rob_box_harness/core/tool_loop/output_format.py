@@ -22,9 +22,7 @@ from __future__ import annotations
 import logging
 from typing import Callable
 
-from rob_box_harness.core.agent_core import (
-    _ToolLoopOutcome,
-)
+from rob_box_harness.core.tool_loop.outcomes import _ToolLoopOutcome
 from rob_box_llm.provider import LLMResponse
 
 _LOG = logging.getLogger(__name__)
