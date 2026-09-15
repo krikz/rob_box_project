@@ -1,4 +1,6 @@
-# ADR-0077: kanban-worker report file — воркеры ОБЯЗАНЫ сохранять `docs/reports/kanban/<task_id>.md` перед `kanban_complete`
+# ADR-0115: kanban-worker report file — воркеры ОБЯЗАНЫ сохранять `docs/reports/kanban/<task_id>.md` перед `kanban_complete`
+
+> Ранее фигурировал как ADR-0115 в коммите `a4f5eec2a` (PR #2166). Перенумерация 2026-09-15: см. issue #2582 — сосед `0077-multi-skill-per-profile.md` влит раньше (`db1cb4fc9`, PR #2165) и остался на 0077.
 
 | Поле | Значение |
 |---|---|
@@ -176,7 +178,7 @@ bash scripts/agent_flow/kanban-report-write.sh "$TASK_ID"
 - `scripts/agent_flow/install.sh` → `EXPECTED+=(kanban-report-write.sh)` (рядом с `kanban-retro-create.sh`).
 - `scripts/agent_flow/install.sh` → новая cron-job? **Нет** — это не no-agent job, это воркер-helper. Просто регистрация в EXPECTED для drift-detect.
 - `AGENTS.md` → секция «Контракт отчёта» (3 строки, см. §6).
-- `docs/reports/kanban/README.md` → описание директории, ссылка на ADR-0077.
+- `docs/reports/kanban/README.md` → описание директории, ссылка на ADR-0115.
 
 ### 3.5 Что НЕ делаем
 
@@ -212,7 +214,7 @@ bash scripts/agent_flow/kanban-report-write.sh "$TASK_ID"
 
 ## 7. Связанные (после PR)
 
-- `docs/adr/0077-kanban-worker-report-file.md` — этот документ.
+- `docs/adr/0115-kanban-worker-report-file.md` — этот документ.
 - `scripts/agent_flow/kanban-report-write.sh` — helper.
 - `scripts/agent_flow/tests/test_kanban_report_write.sh` — регресс.
 - `docs/reports/kanban/README.md` — контракт директории.
@@ -222,7 +224,7 @@ bash scripts/agent_flow/kanban-report-write.sh "$TASK_ID"
 
 ## 8. Pre/Post-flight rebase protocol (issue #2438, 2026-09-14, расширение)
 
-ADR-0077 описывает **post-work** контракт воркера (отчёт перед `kanban_complete`).
+ADR-0115 описывает **post-work** контракт воркера (отчёт перед `kanban_complete`).
 Issue #2438 («rebase-protocol неполный») добавил **pre-work** и **post-work rebase**:
 воркеры стартуют на устаревших worktree (PR #2351 — 66 коммитов behind,
 PR #2363 — add/add конфликт с merge-reconciler) и PR diverged от develop,
@@ -297,7 +299,7 @@ scope (только проверяет diff) — воркер получает a
 ### 8.5 Trade-offs / что НЕ делаем
 
 - **Не патчим `hermes-agent` dispatcher** (`kanban_db_dispatch.py`) — cross-profile
-  запрет (ADR-0077 §3.5). Воркер вызывает helper сам, как `kanban-report-write.sh`.
+  запрет (ADR-0115 §3.5). Воркер вызывает helper сам, как `kanban-report-write.sh`.
 - **Не делаем pre-flight обязательным в dispatch** — opt-in на уровне каждого
   воркера через skill `bundled/worker-rebase-protocol.md`.
 - **Не блокируем `kanban_complete` ядром** — это уже сделано косвенно через

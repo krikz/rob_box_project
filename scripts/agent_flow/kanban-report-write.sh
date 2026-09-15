@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ============================================================================
 # kanban-report-write.sh — воркер-helper: создать `docs/reports/kanban/<task_id>.md`
-# ПЕРЕД `kanban_complete` (ADR-0077, 2026-09-08).
+# ПЕРЕД `kanban_complete` (ADR-0115, 2026-09-08).
 #
 # Зачем: текущий `kanban_complete` (hermes_cli.kanban_tools) сохраняет только
 # Result (~300 символов), Summary (одно предложение) и Artifacts (список путей
@@ -364,7 +364,7 @@ fi
     printf '_Воркер: дополнить руками (caveats / что НЕ сделано / что осталось для следующей карточки)._\n\n'
 
     printf -- '---\n\n'
-    printf '_Сгенерировано `kanban-report-write.sh` (ADR-0077, 2026-09-08)._\n'
+    printf '_Сгенерировано `kanban-report-write.sh` (ADR-0115, 2026-09-08)._\n'
 } > "$REPORT_FILE"
 
 if [ ! -f "$REPORT_FILE" ]; then

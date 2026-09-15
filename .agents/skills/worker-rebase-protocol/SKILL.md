@@ -8,7 +8,7 @@ description: >
   PR #2363 diverged от develop).
 ---
 
-# Worker Rebase Protocol (issue #2438, ADR-0077 §8)
+# Worker Rebase Protocol (issue #2438, ADR-0115 §8)
 
 Воркеры agent-flow стартуют на worktree, который может отставать от
 `origin/develop` на десятки коммитов. Без rebase на свежий develop —
@@ -133,7 +133,7 @@ bash scripts/agent_flow/worker_post_flight.sh "$HERMES_KANBAN_TASK" \
 
 ## Связанные
 
-- ADR-0077 §8 — формализация контракта (`docs/adr/0077-kanban-worker-report-file.md`).
+- ADR-0115 §8 — формализация контракта (`docs/adr/0115-kanban-worker-report-file.md`).
 - `scripts/agent_flow/worker_pre_flight.sh` — pre-work auto-rebase.
 - `scripts/agent_flow/worker_post_flight.sh` — post-work auto-rebase + push + scope check.
 - `scripts/agent_flow/worker_scope_check.sh` — self-check файлов перед push (левое не коммитим).

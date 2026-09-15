@@ -169,7 +169,7 @@ class _TTSEmptyTextError(Exception):
     """
 
 
-# ── Preview-synthesis error hierarchy (ADR-0077 / issue #2138.A.3) ────
+# ── Preview-synthesis error hierarchy (ADR-0079 / issue #2138.A.3) ────
 # supervisor использует ``except PreviewSynthesisError`` чтобы отделить
 # наши ошибки от внешних (MiniMax бросает свой MiniMaxTTSError).
 # Иерархия:
@@ -254,7 +254,7 @@ def _format_to_content_type(fmt):
         # PreviewAudioResult). Если caller выбрал preview_format=pcm —
         # мы всё равно отдадим, но content_type поставим audio/L16 чтобы
         # клиент мог понять «это сырой PCM» (на практике decodeAudioData
-        # тут молча упадёт; см. ADR-0077 §грабли).
+        # тут молча упадёт; см. ADR-0079 §грабли).
         return "audio/L16"
     return "application/octet-stream"
 
@@ -983,14 +983,14 @@ class TTSNode(Node):
         # провайдер вернёт выбранный контейнер, а _synthesize_minimax_async
         # транскодирует его в int16 LE PCM через utils.audio_transcode.
         self.declare_parameter("minimax_format", "pcm")  # pcm | wav | mp3 | ogg
-        # ADR-0077 / issue #2138.A.3 — preview-synthesis формат контейнера.
+        # ADR-0079 / issue #2138.A.3 — preview-synthesis формат контейнера.
         # Отдельный от minimax_format (тот рассчитан на ALSA playback; preview
         # идёт в /avatar/preview_voice/audio → ws_server → WebAudio клиента,
         # которому нужен ЗАКОДИРОВАННЫЙ контейнер, не сырой PCM).
         # Default mp3: decodeAudioData его декодирует; ogg/opus/wav — тоже.
         # Если поставите preview_format=pcm — клиент упадёт в decodeAudioData,
         # picker покажет ошибку, но supervisor увидит честный preview_voice_error
-        # (НЕ silent-mock). См. ADR-0077 §грабли.
+        # (НЕ silent-mock). См. ADR-0079 §грабли.
         self.declare_parameter("preview_format", "mp3")  # pcm | wav | mp3 | ogg
         # Retry policy — соответствует ADR-0003 §2.6.
         self.declare_parameter("minimax_max_retries", 2)  # 0..3
@@ -1045,7 +1045,7 @@ class TTSNode(Node):
         self.declare_parameter("avatar_request_topic", "/avatar/tts/request")
         self.declare_parameter("avatar_error_topic", "/avatar/tts/error")
         self.declare_parameter("avatar_control_topic", "/avatar/tts/control")
-        # ADR-0077 / issue #2138.A.3 — preview-канал для picker'а голосов.
+        # ADR-0079 / issue #2138.A.3 — preview-канал для picker'а голосов.
         # Контракт публикаций — зеркалирует ``avatar_*``:
         #   * ``/avatar/preview_voice/audio``  — String JSON {request_id,
         #     format, content_type, audio_b64, sample_rate, duration_s}.
@@ -1231,7 +1231,7 @@ class TTSNode(Node):
         self.minimax_format = self._parse_format(
             self.get_parameter("minimax_format").value
         )
-        # ADR-0077 / issue #2138.A.3 — preview-synthesis формат контейнера.
+        # ADR-0079 / issue #2138.A.3 — preview-synthesis формат контейнера.
         # Если rob_box_llm недоступен — fallback на mp3-строку (тот же
         # graceful-degrade, что у minimax_format на line 1172).
         self.preview_format = self._parse_format(
@@ -1497,7 +1497,7 @@ class TTSNode(Node):
         # текстовая панель в Captain Bridge показывала тот же текст, что
         # идёт в динамик шлема.
         self._tars1_text_pub = self.create_publisher(String, self._tars1_text_topic, 10)
-        # ADR-0077 / issue #2138.A.3 — publishers preview-канала.
+        # ADR-0079 / issue #2138.A.3 — publishers preview-канала.
         # Заводятся ВСЕГДА (даже в мини-CI-env без preview-клиента): ws_server
         # на проде подписан на error/done/audio и шлёт picker'у через
         # ws_server.deliver_preview_*. mock-rclpy в unit-тестах
@@ -2406,7 +2406,7 @@ class TTSNode(Node):
           который остаётся deprecated-обёрткой для backward-compat с прямыми
           публикаторами в ``/avatar/tts/request``.
         * ``"preview"`` — «прослушиваемый образец» голоса для picker'а
-          оператора, см. ADR-0077 / issue #2138.A.3. Делегирует в
+          оператора, см. ADR-0079 / issue #2138.A.3. Делегирует в
           ``_on_avatar_tts_request_preview``.
 
         Любой другой ``sink`` — warning + DROP (как в ``_on_avatar_tts_request``
@@ -2712,7 +2712,7 @@ class TTSNode(Node):
         * ``"headset"`` — реплика в шлем через ``/avatar/tts/audio`` (PCM,
           ALSA-skip), см. ADR-0055.
         * ``"preview"`` — «прослушиваемый образец» голоса для picker'а
-          оператора, см. ADR-0077 / issue #2138.A.3. Чистый синтез БЕЗ
+          оператора, см. ADR-0079 / issue #2138.A.3. Чистый синтез БЕЗ
           _synthesize_and_play: НЕ идёт в FIFO/ALSA/metrics, байты
           возвращаются в mp3/wav контейнере в ``/avatar/preview_voice/audio``.
 
@@ -2752,7 +2752,7 @@ class TTSNode(Node):
             )
             return
 
-        # ADR-0055 / ADR-0077 — switch по sink. Вынесен в helper чтобы не
+        # ADR-0055 / ADR-0079 — switch по sink. Вынесен в helper чтобы не
         # раздувать CC _on_avatar_tts_request (ADR-0021).
         sink = chunk_data.get("sink", "")
         if not self._dispatch_avatar_tts_sink(chunk_data, sink):
@@ -2953,7 +2953,7 @@ class TTSNode(Node):
         # (ADR-0021). Возвращает True если sink распознан и запрос надо
         # обработать дальше (headset/preview); False если DROP.
         if sink == "preview":
-            # ADR-0077 / issue #2138.A.3 — picker'у нужен «прослушиваемый
+            # ADR-0079 / issue #2138.A.3 — picker'у нужен «прослушиваемый
             # образец» голоса. Отдельный путь: без dialogue_id/barge-in
             # защиты (preview НЕ прерывает текущую реплику личности), без
             # Unicode-guard (preview-фраза короткая и контролируемая), без
@@ -3045,7 +3045,7 @@ class TTSNode(Node):
         return False
 
     def _on_avatar_tts_request_preview(self, chunk_data: dict) -> None:
-        # ADR-0077 / issue #2138.A.3 — обработка preview-синтеза.
+        # ADR-0079 / issue #2138.A.3 — обработка preview-синтеза.
         # Прямой вызов ``synthesize_preview`` (синхронный метод, async
         # внутри через ``_run_in_tts_loop``) — НЕ идёт в
         # ThreadPoolExecutor/_synthesize_and_play, т.к. preview НЕ
@@ -3064,7 +3064,7 @@ class TTSNode(Node):
         # + preview_error, picker не должен «висеть» в ожидании.
         if not text or not text.strip():
             self.get_logger().warn(
-                f"⚠️ [ADR-0077] preview синтез: empty text/ssml, "
+                f"⚠️ [ADR-0079] preview синтез: empty text/ssml, "
                 f"DROP request_id={request_id[:8] if request_id else ''}"
             )
             self._publish_preview_error(request_id, "empty_text")
@@ -3076,18 +3076,18 @@ class TTSNode(Node):
                 timeout_s=10.0,
             )
         except PreviewSynthesisTimeoutError as exc:
-            self.get_logger().warn(f"⚠️ [ADR-0077] preview таймаут: {exc}")
+            self.get_logger().warn(f"⚠️ [ADR-0079] preview таймаут: {exc}")
             self._publish_preview_error(request_id, exc.reason)
             return
         except PreviewSynthesisUnavailableError as exc:
             self.get_logger().warn(
-                f"⚠️ [ADR-0077] preview недоступен (MiniMax opt-in): {exc}"
+                f"⚠️ [ADR-0079] preview недоступен (MiniMax opt-in): {exc}"
             )
             self._publish_preview_error(request_id, exc.reason)
             return
         except PreviewSynthesisError as exc:
             self.get_logger().warn(
-                f"⚠️ [ADR-0077] preview ошибка: {exc} (reason={exc.reason})"
+                f"⚠️ [ADR-0079] preview ошибка: {exc} (reason={exc.reason})"
             )
             self._publish_preview_error(request_id, exc.reason)
             return
@@ -3146,7 +3146,7 @@ class TTSNode(Node):
             self._preview_audio_pub.publish(payload)
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warn(
-                f"⚠️ [ADR-0077] /avatar/preview_voice/audio publish failed: {exc}"
+                f"⚠️ [ADR-0079] /avatar/preview_voice/audio publish failed: {exc}"
             )
             # Если preview_audio не дошёл — шлём error, чтобы picker
             # не висел в ожидании.
@@ -3180,14 +3180,14 @@ class TTSNode(Node):
             self._preview_result_pub.publish(payload)
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warn(
-                f"⚠️ [ADR-0077] /avatar/preview_voice/result publish failed: {exc}"
+                f"⚠️ [ADR-0079] /avatar/preview_voice/result publish failed: {exc}"
             )
 
     def _publish_preview_error(self, request_id: str, reason: str) -> None:
         # ``/avatar/preview_voice/error`` — String JSON {request_id,
         # reason, ts_ms}. ws_server форвардит ``preview_voice_error``.
         # ``reason`` — стабильная строка, публичный контракт с UI
-        # (ADR-0077 §error-reasons). Текущие reason'ы:
+        # (ADR-0079 §error-reasons). Текущие reason'ы:
         #   * preview_timeout
         #   * minimax_unavailable
         #   * preview_synthesis_failed (для прочих ошибок провайдера)
@@ -3208,7 +3208,7 @@ class TTSNode(Node):
             self._preview_error_pub.publish(payload)
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warn(
-                f"⚠️ [ADR-0077] /avatar/preview_voice/error publish failed: {exc}"
+                f"⚠️ [ADR-0079] /avatar/preview_voice/error publish failed: {exc}"
             )
 
     def _publish_tars1_text(
@@ -6333,7 +6333,7 @@ class TTSNode(Node):
 
         self._avatar_audio_pub.publish(msg)
 
-    # ── Preview-synthesis (ADR-0077 / issue #2138.A.3) ─────────────────
+    # ── Preview-synthesis (ADR-0079 / issue #2138.A.3) ─────────────────
     # Канбан-карточка t_74dd49c2: чистый синтез БЕЗ FIFO/ALSA/metrics для
     # picker'а оператора. ws_server/клиент preview'а ждут закодированный
     # контейнер (mp3/wav/opus) — см. preview_audio_sink.ts §1: WebAudio
@@ -6407,7 +6407,7 @@ class TTSNode(Node):
             provider = self._ensure_minimax_provider()
 
         # Настройки синтеза. voice — из аргумента (НЕ из self.minimax_voice).
-        # format — из preview_format (default mp3, см. ADR-0077 §tts_node).
+        # format — из preview_format (default mp3, см. ADR-0079 §tts_node).
         # sample_rate — не форсируем (MiniMax сам подберёт под формат).
         settings = TTSSettings(
             voice=voice,

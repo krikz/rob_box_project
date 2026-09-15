@@ -292,7 +292,7 @@ default `[02:00, 06:00)` по локальному времени хоста. О
 
 Обе карточки идут через `kanban-retro-create.sh` (4 слоя дедупа: pre-check
 по маркеру, idempotency-key, маркер в body, **issue-label guard для
-`nightly-review-*` / `component-review-*`** — issue #2159, ADR-0079). Слой
+`nightly-review-*` / `component-review-*`** — issue #2159, ADR-0116). Слой
 4: перед create скрипт ищет открытый GitHub issue с label `nightly-review`,
 созданный в текущей ISO-неделе (`date -u +%G-W%V` → понедельник 00:00 UTC);
 если есть — SKIP, дайджест уже ушёл через issue (читать Шифу удобнее там).
@@ -302,7 +302,7 @@ Fail-open (если `gh` недоступен / нет issue с label — про
 карточек». Скрипт НЕ чинит код, НЕ трогает метки/PR/issues и НЕ зовёт
 LLM: рассуждения живут внутри созданных карточек.
 
-**Персистентность находок (ADR-0079) — пишет ревьюер, не этот скрипт.**
+**Персистентность находок (ADR-0116) — пишет ревьюер, не этот скрипт.**
 `agent-flow-nightly-review.sh` создаёт карточку ДО того, как кто-либо
 посмотрел на код — он физически не знает, найдёт ли ревьюер дефект.
 Поэтому запись находок сделана отдельным шагом ревьюера: тело каждой
@@ -325,7 +325,7 @@ git add docs/reports/nightly-review/*.jsonl && git commit ... && git push
 `{ts, review_date, iso_week, task_id, component, files_changed,
 findings[{type, severity, file, line, symbol, fingerprint, raw}], outcome}`
 — переживает merge в git-истории и архивирование kanban-карточки. Скрипт
-НЕ коммитит и НЕ пушит — это делает воркер, как и в ADR-0077.
+НЕ коммитит и НЕ пушит — это делает воркер, как и в ADR-0115.
 
 ```bash
 # сухой прогон в любое время суток (карточки не создаются):
@@ -977,7 +977,7 @@ bash scripts/agent_flow/tests/test_e2e_fail_streak_auto_issue.sh
 comment` если задан `ISSUE_NUM`) и ДЕЛАЕТ auto-rebase. Конфликт → инструкция
 в task_comments + non-zero exit (воркер должен `kanban_block`).
 
-Контракт (ADR-0077 §3.3 расширение, issue #2438):
+Контракт (ADR-0115 §3.3 расширение, issue #2438):
 
 - Аргументы: `<task_id> <branch> [ISSUE_NUM]`. `task_id` должен матчить
   `^t_[a-f0-9]{6,}$`, иначе usage error.
@@ -1015,7 +1015,7 @@ SOT: `<repo>/scripts/agent_flow/worker_pre_flight.sh`. Раскладывает�
 нет post-work rebase → PR diverged, merge-gate ловит add/add конфликты, ретро
 PR #2363).
 
-Контракт (ADR-0077 §3.3 расширение, issue #2438):
+Контракт (ADR-0115 §3.3 расширение, issue #2438):
 
 - Аргументы: `<task_id> <branch> [ISSUE_NUM]`. Те же валидации, что в pre.
 - BEHIND == 0 → exit 0 (no-op).

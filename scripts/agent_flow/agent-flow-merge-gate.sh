@@ -1521,7 +1521,7 @@ PR #${_po_pr} (state_reason=${_po_state_reason}) ссылается на это�
 #     событие `cancelled_prereq_already_merged`.
 #   - Race-window G9c: если на той же ветке есть другая активная карточка —
 #     cancel чужих (НЕ текущей, она остаётся primary).
-#   - needs-e2e + nightly_passed (ADR-0079 JSONL) → cancel (фикс дошёл до
+#   - needs-e2e + nightly_passed (ADR-0116 JSONL) → cancel (фикс дошёл до
 #     develop через nightly-цикл).
 #   - Idempotency: если карточка уже archived — skip.
 #   - Fail-OPEN: gh-ошибки → warning-лог, карточка не трогается.

@@ -158,7 +158,7 @@ def test_voice_tts_request_with_preview_delegates_to_preview_path():
     """``sink='preview'`` в ``/voice/tts/request`` → ``_on_avatar_tts_request_preview``.
 
     Это синхронный preview-путь (НЕ ThreadPoolExecutor, НЕ barge-in,
-    НЕ dialogues), см. ADR-0077. Маршрутизация должна обходить
+    НЕ dialogues), см. ADR-0079. Маршрутизация должна обходить
     headset-путь, который публикует в ``/avatar/tts/audio``.
     """
     node = _make_voice_node()

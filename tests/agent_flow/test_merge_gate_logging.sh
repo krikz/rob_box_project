@@ -2,7 +2,7 @@
 # ============================================================================
 # test_merge_gate_logging.sh — regression test для silent-tick фикса.
 #
-# Контекст (ADR-0079 / ретро t_e3fc9bfe, issue #1977):
+# Контекст (ADR-0116 / ретро t_e3fc9bfe, issue #1977):
 #   50+ тиков merge-gate числились «silent (empty output)» при exit=0 —
 #   потому что cron читает STDOUT (hermes_cli.subcommands.cron:
 #   «Empty stdout = silent»), а скрипт исторически писал в stderr.
@@ -226,7 +226,7 @@ fi
 
 if [ "$FAIL" -eq 0 ]; then
     echo ""
-    echo "PASS: tick-summary logging works (ADR-0079 / issue #1977 fixed)"
+    echo "PASS: tick-summary logging works (ADR-0116 / issue #1977 fixed)"
     exit 0
 else
     echo "FAIL: ${FAIL} assertion(s) failed" >&2

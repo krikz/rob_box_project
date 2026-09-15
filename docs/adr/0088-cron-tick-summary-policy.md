@@ -3,7 +3,7 @@
 **Дата:** 2026-09-09
 **Статус:** Accepted
 **Автор:** товарищ architect (по карточке t_e3fc9bfe, ретро t_8fba04b9 / issue #1977)
-**Связанные ADR:** AF-0063, ADR-0079 (persistence — отдельно, про отчёты nightly-review)
+**Связанные ADR:** AF-0063, ADR-0116 (persistence — отдельно, про отчёты nightly-review)
 **Тип:** process policy (hermes-agent + scripts/agent_flow/*)
 
 ## Контекст

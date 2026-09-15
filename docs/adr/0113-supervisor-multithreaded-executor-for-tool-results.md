@@ -1,4 +1,6 @@
-# ADR-0075: avatar_supervisor использует MultiThreadedExecutor — фикс голода /mcp/result callback'а
+# ADR-0113: avatar_supervisor использует MultiThreadedExecutor — фикс голода /mcp/result callback'а
+
+> Ранее фигурировал как ADR-0075 в коммите `72c27b823` (PR #2153). Перенумерация 2026-09-15: см. issue #2582 — сосед `0075-meta-quest-tars-room-d-expansion.md` влит раньше (`79504487d`, PR #2156) и остался на 0075.
 
 | Поле | Значение |
 |---|---|

@@ -72,7 +72,7 @@ if ! gh auth status >/dev/null 2>&1; then
     exit 1
 fi
 
-# --- tick-summary logging (ADR-0079 / retro t_e3fc9bfe, issue #1977) ---------
+# --- tick-summary logging (ADR-0116 / retro t_e3fc9bfe, issue #1977) ---------
 # Cron читает STDOUT (hermes_cli.subcommands.cron: «Empty stdout = silent»).
 # Этот watchdog исторически писал в stderr только. Теперь — маркеры в
 # stdout + per-day log-файл для диагностики задним числом.
@@ -96,7 +96,7 @@ tick_end_marker() {
 }
 trap 'tick_end_marker 2>/dev/null || true' EXIT
 
-# --- tick_start: structured marker в stdout (ADR-0079 / retro t_e3fc9bfe) ---
+# --- tick_start: structured marker в stdout (ADR-0116 / retro t_e3fc9bfe) ---
 # После gh auth + flock. На skip-tick (lock busy / auth fail) marker
 # не появляется — там уже свой лог в stderr. Вызываем ПОСЛЕ определения
 # функций выше (bash не source'ит весь файл заранее — функции доступны

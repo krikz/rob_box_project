@@ -62,7 +62,7 @@ _af_log() {
 # rate-limit, gh-auth-fail, успешный tick без работы) — пустой, и Hermes cron
 # scheduler.py:5637-5646 сохраняет в output/<job-id>/...md placeholder 156 байт
 # «silent (empty output)». Это нарушает observability по ADR-0018 (honest
-# reporting) и ADR-0079 (nightly-review-persistence): человек, читающий
+# reporting) и ADR-0116 (nightly-review-persistence): человек, читающий
 # output/-каталог, не видит, какой именно gate skip'нул тик.
 #
 # Контракт: перед `exit 0/1` скрипт зовёт `af_summary_set <kind> <reason>`,

@@ -1,5 +1,7 @@
 # ADR-0079: preview-voice synthesis — канал picker'а голосов от supervisor'а до шлема
 
+> **ADR-number: 0079** (collision-fix, 2026-09-15, issue #2582/#2601). Сосед `0116-nightly-review-persistence.md` получил тот же номер и переехал в `ADR-0116`; этот ADR первый по merge-time, коммит `31c71f641` (PR #2173).
+
 | Поле | Значение |
 |---|---|
 | Статус | Proposed (после merge → Accepted) |

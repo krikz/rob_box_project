@@ -2,7 +2,7 @@
 # ============================================================================
 # test_kanban_report_write.sh — регресс-тест scripts/agent_flow/kanban-report-write.sh
 #
-# Покрывает acceptance (ADR-0077):
+# Покрывает acceptance (ADR-0115):
 #   1. usage error: пустой task_id → exit 2
 #   2. usage error: неверный формат task_id → exit 2
 #   3. вне git worktree → exit 1 + stderr содержит "not inside a git worktree"
@@ -140,7 +140,7 @@ fi
 assert_contains "header-has-task-id" "docs/reports/kanban/t_123456.md" "t_123456"
 assert_contains "header-has-section" "docs/reports/kanban/t_123456.md" "## Что сделано"
 assert_contains "ci-is-na" "docs/reports/kanban/t_123456.md" "## CI"
-assert_contains "footer-adr" "docs/reports/kanban/t_123456.md" "ADR-0077"
+assert_contains "footer-adr" "docs/reports/kanban/t_123456.md" "ADR-0115"
 cd "$WORK"
 
 # --- Сценарий 5: в worktree с tests/ → pytest секция не должна быть n/a ---

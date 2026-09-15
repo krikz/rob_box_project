@@ -26,7 +26,7 @@
 #      или прямой write DB — это на стороне impl).
 #   4. Если ни один PR не merged (хотя бы один state=open или merged=false)
 #      → guard skip, карточка продолжает жить (всё ещё ждём фикс).
-#   5. Если у карточки есть label `needs-e2e` И в nightly record (ADR-0079)
+#   5. Если у карточки есть label `needs-e2e` И в nightly record (ADR-0116)
 #      для issue есть passed e2e → тоже cancel (фикс дошёл до develop уже
 #      через nightly, не дожидаясь kanban).
 #   6. Race-window G9c: 2 тёзки на один issue → если живая карточка для
@@ -128,7 +128,7 @@ fi
 #   pr_data_json               — JSON-object: { "<n>": {"state","merged","body","labels"} }
 #   existing_card_for_branch   — "none" | "<other_card_id>" (G9c snapshot одной строкой)
 #   card_has_needs_e2e_label   — "true" | "false"
-#   nightly_passed_for_issue   — "true" | "false" (ADR-0079 JSONL lookup)
+#   nightly_passed_for_issue   — "true" | "false" (ADR-0116 JSONL lookup)
 #
 # Возвращает:
 #   "cancel:<reason>" | "skip:<reason>"
@@ -308,12 +308,12 @@ assert_prereq "C4: card=blocked + prs={2458} + card_already_cancelled=true → s
 
 # ============================================================================
 # Case 5 (тело §Кейсы-5):
-#   needs-e2e + nightly passed (ADR-0079 JSONL) → cancel (фикс уже в develop
+#   needs-e2e + nightly passed (ADR-0116 JSONL) → cancel (фикс уже в develop
 #   через nightly-цикл; ждать merge через PR не нужно).
 # ============================================================================
 echo ""
 echo "=== Case 5: needs-e2e + nightly_passed_for_issue=true → cancel ==="
-assert_prereq "C5: card=blocked + needs-e2e + nightly_passed=true (ADR-0079) → cancel" \
+assert_prereq "C5: card=blocked + needs-e2e + nightly_passed=true (ADR-0116) → cancel" \
     '{"issue_number":2406,"card_status":"blocked","merged_pr_set":[2458],"pr_data":{"2458":{"state":"closed","merged":true,"merged_at":"2026-09-14T21:48:58Z","body":"Closes #2406"}},"existing_card_for_branch":"none","card_has_needs_e2e_label":true,"nightly_passed_for_issue":true,"card_already_cancelled":false}' \
     'cancel:needs-e2e+nightly_passed prs=[2458] reason=e2e_done_via_nightly' \
 

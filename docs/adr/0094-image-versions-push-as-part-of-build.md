@@ -4,7 +4,7 @@
 **Статус:** Accepted (фиксация текущего положения + lint-чекер для phantom env-переменных)
 **Автор:** architect (карточка t_dfc688db, issue #2426, по результату ADR-сверки t_a6f2f7e5)
 **Тип:** architecture decision, recovering lost ADR
-**Связанные ADR:** ADR-AF-0030 (нумерация — два домена AF/RT), ADR-0018 (честность), ADR-0079 (nightly-review persistence), ADR-0089 (AI HAT+ deployment — соседний docker/vision overlay)
+**Связанные ADR:** ADR-AF-0030 (нумерация — два домена AF/RT), ADR-0018 (честность), ADR-0116 (nightly-review persistence), ADR-0089 (AI HAT+ deployment — соседний docker/vision overlay)
 **Связанные issues:** #1630 (первоначальный запрос — вынести push в отдельный workflow), #2425 (phantom `MICRO_ROS_AGENT_TAG`), #2377 (phantom SUPERVISOR_TAG/QUEST_TAG), #1388 (race-safe retry), #1560 (concurrency gate)
 **Заменяет:** `docs/adr/0031-sha-tag-push-out-of-build-workflow.md` (утерян при renumber 25.08, PR #1662 → `0031-gsd-orphan-triage.md`)
 

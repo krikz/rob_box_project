@@ -13,7 +13,7 @@
 # LLM-вызов `kanban create` в одном тике без проверки существующих карточек.
 # Дубль сжёг прогон воркера (archived без complete), у дубля нет своего PR.
 #
-# ADR-0079 (follow-up ADR-0049, issue #2159): nightly-review создавал
+# ADR-0116 (follow-up ADR-0049, issue #2159): nightly-review создавал
 # несколько карточек за тик (1 дайджест + N компонентных) с разными
 # --key (nightly-review-<DATE> vs component-review-<slug>-<DATE>), и две
 # параллельные карточки в одном окне обходили слой 1 (pre-check) и слой 2
@@ -33,7 +33,7 @@
 #   3. МАРКЕР В BODY: скрипт сам дописывает в конец body строку
 #      `ретро-key: <KEY>` → следующий тик (та же аномалия, тот же --key)
 #      находит карточку на шаге 1.
-#   4. ISSUE-LABEL GUARD (ADR-0079): для ключей `nightly-review-*` дополнительно
+#   4. ISSUE-LABEL GUARD (ADR-0116): для ключей `nightly-review-*` дополнительно
 #      проверяем `gh issue list --label nightly-review --state open --limit 5`;
 #      если хотя бы одно открытое issue создано в текущей ISO-неделе
 #      (`date -d "last monday" +%s` … now) — SKIP.
@@ -168,7 +168,7 @@ if [ -n "$MATCH" ]; then
     exit 0
 fi
 
-# --- слой 4 (ADR-0079): issue-label guard для nightly-review-* -------------
+# --- слой 4 (ADR-0116): issue-label guard для nightly-review-* -------------
 # Ретро issue #2159: две карточки (nightly-review-<DATE> и
 # component-review-<slug>-<DATE>) от разных тиков одного окна обходили
 # слои 1-3 (разные --key → idempotency-key тоже разный). Теперь для любого

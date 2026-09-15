@@ -1555,7 +1555,7 @@ class AvatarSupervisor(Node):
         return True, f"applied:{provider}"
 
     def _on_preview_voice(self, msg: RosString) -> None:
-        # ADR-0077 / issue #2138.A.3 — picker'у голосов нужен «прослушиваемый
+        # ADR-0079 / issue #2138.A.3 — picker'у голосов нужен «прослушиваемый
         # образец». Канал: ``/avatar/preview_voice`` (JSON, ws_server → здесь)
         # → ``/avatar/tts/request`` с ``sink="preview"`` → ``tts_node`` делает
         # pure-synth (``synthesize_preview``) → ``/avatar/preview_voice/audio``
@@ -2854,7 +2854,7 @@ class AvatarSupervisor(Node):
         ``/avatar/tts/request`` с ``sink="headset"``, чтобы попасть в шлем
         оператора через новый обратный канал (ADR-0055).
 
-        ADR-0077 / issue #2138.A.3 — preview-канал для picker'а голосов.
+        ADR-0079 / issue #2138.A.3 — preview-канал для picker'а голосов.
         ``sink="preview"`` уходит на тот же ``/avatar/tts/request``, но
         tts_node его ловит в ``_on_avatar_tts_request`` отдельной веткой и
         делает pure-synth БЕЗ _synthesize_and_play (НЕ идёт в FIFO/ALSA,

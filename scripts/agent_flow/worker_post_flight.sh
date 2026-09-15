@@ -12,7 +12,7 @@
 # rebase падает с конфликтом — пишет инструкцию в task_comments и
 # возвращает non-zero exit. Воркер НЕ должен вызывать kanban_complete.
 #
-# Контракт (ADR-0077 §3.3 расширение, issue #2438, фикс #2478):
+# Контракт (ADR-0115 §3.3 расширение, issue #2438, фикс #2478):
 #   - Принимает task_id, branch_name (argv $2) и опционально issue_num (argv $3).
 #   - branch_name ОБЯЗАН совпадать с `git rev-parse --abbrev-ref HEAD`,
 #     иначе exit 2 (fail-fast защита от silent ignore, ADR-0018).

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""tars_stats.py — эмпирическая сводка STT-семплов «ТАРС» с шлема (ADR-0077 §2.3).
+"""tars_stats.py — эмпирическая сводка STT-семплов «ТАРС» с шлема (ADR-0114 §2.3).
 
 Читает JSONL-файл, который пишет ``rob_box_voice.core.tars_sample_logger``
 когда ``ROBBOX_STT_COLLECT=1``. Делает **только** сухую сводку — никаких
 правок YAML, никакой мутации. Эта утилита — материал для решения Шифу
 о расширении operator wake-list.
 
-Контракт сводки (ADR-0077 §2.3):
+Контракт сводки (ADR-0114 §2.3):
 
 * читает JSONL, группирует по ``raw_text`` (нормализация lower + strip);
 * печатает таблицу с **частотой, длительностью, распределением
@@ -35,7 +35,7 @@
 ----------------
 
 * 2026-09-09 — issue #2223: добавлены колонки ``providers`` (y-only / y+vosk)
-  и итоговая строка ``wake_rate``. ADR-0077 §2.3 теперь выполняется полностью.
+  и итоговая строка ``wake_rate``. ADR-0114 §2.3 теперь выполняется полностью.
 """
 
 from __future__ import annotations
@@ -50,7 +50,7 @@ from pathlib import Path
 
 
 def _is_wake_like(word: str, operator_set: set[str], *, min_ratio: float = 0.65) -> bool:
-    """Похоже ли слово на любой wake-токен из operator namespace (ADR-0077 §2.3).
+    """Похоже ли слово на любой wake-токен из operator namespace (ADR-0114 §2.3).
 
     Используем SequenceMatcher.ratio() как метрику Левенштейн-подобного
     сходства (pure-stdlib). Порог 0.65 подобран под STT-искажения «ТАРС»:
@@ -122,7 +122,7 @@ def load_records(path: Path) -> list[dict]:
 def _provider_signature(attempts: list[dict] | None) -> str:
     """Классифицировать сегмент по списку attempts → 'y_only' / 'y+vosk' / 'none'.
 
-    Логика (ADR-0077 §2.2: ``attempts: [{provider, ok, reason, latency_ms}]``):
+    Логика (ADR-0114 §2.2: ``attempts: [{provider, ok, reason, latency_ms}]``):
 
     * ``y_only``  — сегмент распознан только Яндексом (vosk не подключался
       или не вернул ok=True);
@@ -145,7 +145,7 @@ def _provider_signature(attempts: list[dict] | None) -> str:
 def summarize(records: list[dict], top: int = 15) -> None:
     """Сводка по фразам (нормализованный lower + strip).
 
-    Колонки (ADR-0077 §2.3):
+    Колонки (ADR-0114 §2.3):
 
     * ``count``     — сколько раз этот raw_text встретился;
     * ``wake``      — yes/no — был ли в этом raw_text операторский wake;
@@ -214,7 +214,7 @@ def summarize(records: list[dict], top: int = 15) -> None:
 
 
 def diff_against_yaml(records: list[dict], yaml_path: Path) -> None:
-    """--diff: кандидаты на расширение operator namespace (ADR-0077 §2.3).
+    """--diff: кандидаты на расширение operator namespace (ADR-0114 §2.3).
 
     Печатает только слова, **фonetически близкие** к существующим wake-токенам
     (edit-distance ≤ 2 или SequenceMatcher.ratio ≥ 0.65). Шумовая лексика
@@ -239,7 +239,7 @@ def diff_against_yaml(records: list[dict], yaml_path: Path) -> None:
         for m in word_re.findall(text):
             counts[m] += 1
 
-    # ADR-0077 §2.3: «кандидаты на добавление» = фonetические искажения
+    # ADR-0114 §2.3: «кандидаты на добавление» = фonetические искажения
     # существующих wake-токенов (edit-distance ≤ 2), а не «любое слово не
     # в YAML». Шумовая лексика wake-сегмента («расскажи», «мне», «анекдот»)
     # отфильтрована — она не фonetически близка к «ТАРС».
