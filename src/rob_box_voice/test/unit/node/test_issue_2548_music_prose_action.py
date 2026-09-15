@@ -283,6 +283,12 @@ class TestMusicProseActionRetryDoesNotFire:
         # Issue #2549 — universal guard может выстрелить отдельно,
         # мокаем чтобы изолировать тест #2548 narrow path.
         n._check_universal_action_claim_and_retry = MagicMock(return_value=False)
+        # Issue #2559 — phantom-action guard (#2559 PR rebase exposed этот
+        # guard на develop): он расширяет Bug E до общего claim-класса без
+        # проверки домена (срабатывает на «Сделала уборку…»), поэтому в
+        # этом тесте нужен явный mock, чтобы изолировать ТОЛЬКО #2548
+        # narrow path — иначе фантомный guard съест и narrow-проверку.
+        n._check_phantom_action_and_retry = MagicMock(return_value=False)
 
         # Бытовая ситуация: «сделала уборку», нет DJ.
         result = _make_result(
