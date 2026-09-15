@@ -288,37 +288,78 @@ MOTDEOF
 }
 
 # Настройка автозапуска Docker контейнеров
+#
+# Контракт устойчивости (issue #2610 / t_51c4b1a9):
+#   - docker compose up -d без --pull never + registry offline → весь стек падает
+#     и systemd (Type=oneshot без Restart) больше не пытается.
+#   - Фикс:
+#     * ExecStartPre: best-effort `docker compose pull --ignore-pull-failures` —
+#       попытаться обновить образы, но не падать, если registry недоступен.
+#     * ExecStart: `docker compose up -d --pull never` — гарантированно работать
+#       на локальном кэше, даже если registry лежит.
+#     * ExecStartPost: логировать `docker compose ps` (exit-codes) в journal для
+#       диагностики, какие именно сервисы не поднялись.
+#     * Restart=on-failure + RestartSec=30 + StartLimitBurst=5 за 600s:
+#       при сбое systemd автоматически рестартует unit, не давая упасть всему стеку
+#       из-за одной ошибки.
+#     * ExecStop=down — корректное завершение при рестарте/reboot.
 setup_autostart() {
     log_step "Настройка автозапуска Docker контейнеров"
-    
+
     COMPOSE_DIR="$HOME/rob_box_project/docker/vision"
     SERVICE_FILE="/etc/systemd/system/robbox-vision.service"
-    
-    log_info "Создание systemd service..."
+
+    log_info "Создание systemd service (с Restart=on-failure + --pull never)..."
     sudo tee "$SERVICE_FILE" > /dev/null << SERVICEEOF
 [Unit]
 Description=ROBBOX Vision Pi Docker Containers
 After=docker.service network-online.target
 Requires=docker.service
 
+# Rate limit: не более 5 стартов за 10 минут (см. Restart=on-failure ниже).
+# Защищает от зацикливания, если registry лежит долго.
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
 [Service]
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=$COMPOSE_DIR
-ExecStart=/usr/bin/docker compose up -d
-ExecStop=/usr/bin/docker compose down
 User=$USER
+
+# Best-effort: попытаться обновить образы. Если registry недоступен —
+# игнорировать и идти дальше на локальном кэше (issue #2610).
+ExecStartPre=-/usr/bin/docker compose pull --ignore-pull-failures
+
+# Гарантированный запуск стека на локальном кэше, без сетевых pull.
+ExecStart=/usr/bin/docker compose up -d --pull never
+
+# Диагностика: после up -d логируем состояние (имя, статус, exit code).
+# Если что-то не поднялось — это видно в journalctl по exit-code.
+# Префикс '-' у ExecStartPost говорит systemd игнорировать ненулевой exit code
+# (для oneshot Type любой Exec* с ненулевым кодом приводит к Failed).
+ExecStartPost=-/usr/bin/docker compose ps --format json
+
+# Корректное завершение при рестарте/reboot.
+ExecStop=/usr/bin/docker compose down
+
+# Рестарт-политика: при падении повторить через 30s. Это даёт стеку шанс
+# восстановиться, если registry временно лежал (issue #2610: oneshot без Restart
+# = одно падение и навсегда, а с Restart=on-failure + rate-limit — устойчиво).
+Restart=on-failure
+RestartSec=30
 
 [Install]
 WantedBy=multi-user.target
 SERVICEEOF
-    
+
     log_info "Активация service..."
     sudo systemctl daemon-reload
     sudo systemctl enable robbox-vision.service
-    
+
     log_success "Автозапуск настроен!"
     log_info "Контейнеры будут автоматически запускаться при загрузке системы"
+    log_info "Restart=on-failure, --pull never, логирование docker compose ps в journal"
 }
 
 # Итоговая информация
