@@ -372,6 +372,21 @@ class MusicManager:
         # form-end protection (repeat=True composition, or raw
         # execute_music_code — the idle TTL alone governs those).
         self._music_form_deadline_at: Optional[float] = None
+        # Issue #2461 — момент конца ОДНОГО прохода формы, НЕЗАВИСИМО от
+        # repeat. ``_music_form_deadline_at`` выше умышленно остаётся
+        # None при repeat=True (watchdog'у нечего защищать — зацикленный
+        # трек сам себя не остановит), но DJ-режим играет ИМЕННО
+        # repeat=True треки, и без отдельного поля момент «форма
+        # доиграла один раз» не виден нигде за пределами одной LLM-сессии
+        # (модель должна прочитать duration_seconds из текста и сама
+        # скопировать его в next_transition_sec — issue #2461). Значение
+        # то же самое, что ушло бы в set_form_deadline при repeat=False:
+        # form_duration_seconds() не принимает repeat вообще, длительность
+        # одного прохода формы от него не зависит. Взводится безусловно
+        # в ``ComposeMusicTool._apply_form_deadline`` на каждый успешный
+        # compose_music(). None = музыка не игралась (или была остановлена/
+        # заменена — см. clear_form_deadline()).
+        self._music_form_cycle_ends_at: Optional[float] = None
         # stats — surfaced via get_state() for the AgentCore safety-net
         self._auto_stop_count: int = 0
         # ------------------------------------------------------------------
@@ -1108,6 +1123,20 @@ class MusicManager:
         """
         self._music_form_deadline_at = time.monotonic() + max(0.0, float(duration_seconds))
 
+    def set_form_cycle_end(self, duration_seconds: float) -> None:
+        """Issue #2461 — записать момент конца ОДНОГО прохода формы.
+
+        В отличие от :meth:`set_form_deadline` (только watchdog-защита от
+        cut-off, только при ``repeat=False``), это поле взводится на
+        КАЖДЫЙ успешный ``compose_music`` независимо от ``repeat`` —
+        DJ-сет всегда играет зацикленные треки, и без отдельного канала
+        момент «форма отыграла один раз» иначе виден только модели,
+        которая должна сама скопировать число в следующий вызов
+        (см. докстринг поля ``_music_form_cycle_ends_at``). Читается
+        наружу через :meth:`get_state`.
+        """
+        self._music_form_cycle_ends_at = time.monotonic() + max(0.0, float(duration_seconds))
+
     def clear_form_deadline(self) -> None:
         """Снять защиту «форма ещё не доиграла» (issue #1812).
 
@@ -1117,8 +1146,15 @@ class MusicManager:
         явно — защищать больше нечего). ``ComposeMusicTool`` включает
         защиту заново через :meth:`set_form_deadline`, если новый трек тоже
         ``repeat=False``.
+
+        Заодно сбрасывает ``_music_form_cycle_ends_at`` (issue #2461) — оба
+        поля описывают состояние ОДНОЙ формы, и на тех же двух точках
+        (новый код / явный стоп) прежняя форма перестаёт существовать.
+        ``ComposeMusicTool`` взводит его заново через
+        :meth:`set_form_cycle_end` безусловно, на любой ``repeat``.
         """
         self._music_form_deadline_at = None
+        self._music_form_cycle_ends_at = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -1692,6 +1728,19 @@ class MusicManager:
             # Issue #990 — segments safety-net deadline (None = no deadline).
             "music_deadline_at": self._music_deadline_at,
             "music_deadline_segments": self._music_deadline_segments,
+            # Issue #2461 — момент/остаток конца одного прохода формы,
+            # взводится на любой compose_music() независимо от repeat (см.
+            # докстринг ``_music_form_cycle_ends_at``). Это тот структурный
+            # канал, которого не хватало DJModeController.tick(): пока сам
+            # tick() не подписан ни на что (межпроцессный шаг issue #2461
+            # ещё не сделан), поле хотя бы читаемо в процессе mcp_server —
+            # через get_music_state и для будущего /voice/music/state.
+            "form_cycle_ends_at": self._music_form_cycle_ends_at,
+            "form_cycle_remaining_s": (
+                self._music_form_cycle_ends_at - time.monotonic()
+                if self._music_form_cycle_ends_at is not None
+                else None
+            ),
             "idle_seconds": (
                 time.monotonic() - self._last_music_activity_at
                 if self._last_music_activity_at is not None
@@ -2412,14 +2461,25 @@ class ComposeMusicTool(MCPTool):
         raw_result["duration_seconds"] = round(duration_s, 1)
         return raw_result
 
-    def _apply_form_deadline(self, spec: Any) -> None:
-        """Issue #1812 — non-repeating трек: защита watchdog'ом от cut-off."""
+    def _apply_form_deadline(self, spec: Any, duration_s: float) -> None:
+        """Взвести серверные тайминги формы для только что запущенного трека.
+
+        Issue #1812 — non-repeating трек: защита watchdog'ом от cut-off
+        (``set_form_deadline``, только ``repeat=False``).
+        Issue #2461 — момент конца ОДНОГО прохода формы (``set_form_cycle_end``)
+        взводится ВСЕГДА, независимо от ``repeat``: сама длительность формы
+        от зацикливания не зависит, а DJ-режим играет именно ``repeat=True``
+        треки — без этого поля дедлайн формы был бы виден только там, где
+        он не нужен диджею. Порядок важен: ``clear_form_deadline()`` заодно
+        сбрасывает ``_music_form_cycle_ends_at`` (issue #2461), поэтому
+        ``set_form_cycle_end`` вызывается ПОСЛЕДНИМ — иначе repeat=True
+        стирал бы то же значение, которое только что взвёл.
+        """
         if spec.repeat:
             self._manager.clear_form_deadline()
         else:
-            self._manager.set_form_deadline(
-                form_duration_seconds(spec.form, spec.bpm, getattr(spec, "theme_bars", 0))
-            )
+            self._manager.set_form_deadline(duration_s)
+        self._manager.set_form_cycle_end(duration_s)
 
     @staticmethod
     def _format_compose_message(
@@ -2552,9 +2612,9 @@ class ComposeMusicTool(MCPTool):
         if not result["success"]:
             return MCPToolResult(success=False, error=result["error"])
 
-        self._apply_form_deadline(spec)
-        self._notify_music_state()
         duration_s = form_duration_seconds(spec.form, spec.bpm, getattr(spec, "theme_bars", 0))
+        self._apply_form_deadline(spec, duration_s)
+        self._notify_music_state()
         self._build_compose_result_data(spec, result, duration_s)
         flat = {
             "bpm": bpm, "root": root, "scale": scale, "form": form or "arc",
