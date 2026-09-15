@@ -108,12 +108,19 @@ class PostTurnMusicState:
         stop_music_already_pending: ``True`` when a previous
             ``stop_music`` already armed ``pending_cleanup``; a second
             one must be ignored (issue #992 duplicate-stop deferral).
+        last_tools_called: The most recent ``DialogResult.tools_called``
+            (or ``()`` if the previous turn had no tools). Executor reads
+            this to render the legacy log message
+            ("stop_music deferred — will cleanup after TTS finishes"
+            vs. "music_cleanup deferred — waiting for TTS or 10s fallback")
+            so the diagnostic surface stays 1:1 with the pre-PR-C code.
     """
 
     pending_cleanup: bool = False
     track_mode_active: bool = False
     active_batches: int = 0
     stop_music_already_pending: bool = False
+    last_tools_called: Tuple[str, ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -130,12 +137,21 @@ class PostTurnActions:
     legacy semantics 1:1 while collapsing the original 200-line decision
     block into a single function call.
 
+    All four fields describe the **final post-turn state** the executor
+    must reach (delta from current is computed in the executor, not in
+    the policy). See :meth:`decide` for the merge of
+    ``track_mode_active`` / ``pending_cleanup`` overrides with the
+    inherited :class:`PostTurnMusicState` snapshot.
+
     Attributes:
-        track_mode_active: New value for ``state.track_mode_active``. The
-            node must write it back AFTER the executor runs (so a
-            subsequent turn sees the updated value).
-        pending_cleanup: New value for ``state.pending_cleanup``. Same
-            write-back rule as ``track_mode_active``.
+        track_mode_active: Final value for ``state.track_mode_active``.
+            ``True`` when the LLM started a TRACK (live 30.08) or a track
+            from a previous turn survives. ``False`` after ``stop_music``
+            or any non-music turn where no track survives.
+        pending_cleanup: Final value for ``state.pending_cleanup``.
+            ``True`` when the next ``tts_batch_complete`` must fire
+            ``_publish_music_cleanup`` (BACKING + 2+ speak_text, default
+            deferral, or stop_music-deferred arm).
         fire_cleanup_now: ``True`` when the catch-up branch
             (no active batches + cleanup pending) wants to fire
             ``_publish_music_cleanup(reason='tts_batch_complete')``
@@ -152,8 +168,8 @@ class PostTurnActions:
             branch inline without re-deriving the predicate.
     """
 
-    track_mode_active: Optional[bool] = None  # None = no change
-    pending_cleanup: Optional[bool] = None
+    track_mode_active: bool = False
+    pending_cleanup: bool = False
     fire_cleanup_now: bool = False
     close_session: bool = True
     skip_log: bool = False
@@ -256,6 +272,14 @@ def decide(
         # Issue #935 v3 — defer cleanup until TTS finishes. Issue #992
         # duplicate-stop: a second ``stop_music`` (already armed) is a
         # no-op. The node renders the matching log line via ``skip_log``.
+        # Issue #3108 live 31.08 — stop_music also DROPS the
+        # ``track_mode_active`` flag so the next Bug-C retry does not
+        # see «музыка играет» against an empty play queue. The legacy
+        # code did this in a separate ``if tools_now & MUSIC_STOP_TOOLS``
+        # branch (see ``dialogue_node.py:3874-3875`` pre-PR-C); here we
+        # fuse it into the ``stop_music`` arm so the executor cannot
+        # accidentally drop the reset when refactoring the dispatch.
+        track_mode_active = False
         if state.stop_music_already_pending:
             skip_log = True
         else:

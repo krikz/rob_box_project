@@ -168,6 +168,17 @@ from rob_box_voice.core.dialogue_helpers import (
     map_emotion_to_animation,
     sanitize_speaker_name,
 )
+# Issue #2627 PR-C — pure post-turn music state machine extracted from
+# ``DialogueNode._run_turn.finally``. Lives in ``core/`` (no ROS, no I/O)
+# so the BACKING-vs-TRACK discriminator (issue #992 Bug C), the double-
+# stop deferral (issue #992 Bug B), the catch-up cleanup, and the DJ-auto
+# short-circuit are unit-testable without spinning up ``DialogueNode``.
+from rob_box_voice.core.post_turn_music_policy import (  # noqa: E402
+    PostTurnActions,
+    PostTurnMusicState,
+    TurnOutcome,
+    decide as _post_turn_music_decide,
+)
 from rob_box_voice.core.music_guard import (
     MusicGuard,
     MusicGuardVerdict,
@@ -3683,135 +3694,49 @@ class DialogueNode(Node):
             # _run_task. Multiple queued phrases are glued into ONE
             # follow-up turn, never N.
             pending_queue_dispatched = self._drain_pending_user_messages()
-            # Issue #935 v3: if LLM called stop_music(), defer cleanup until
-            # TTS finishes.  Otherwise keep music playing until next dialogue.
-            # Issue #992: a second stop_music() call from a follow-up LLM
-            # turn (while a previous cleanup is still pending) must be
-            # ignored — the flag is already set and the next batch_complete
-            # for any active batch will fire cleanup.
-            if result and "stop_music" in (result.tools_called or ()):
-                if self._pending_music_cleanup:
-                    self.get_logger().debug(
-                        "🎵 [issue 992] stop_music deferred — already pending, "
-                        "ignoring duplicate"
-                    )
-                else:
-                    self._pending_music_cleanup = True
-                    self.get_logger().info(
-                        "🎵 stop_music deferred — will cleanup after TTS finishes"
-                    )
-            else:
-                # 🔴 FIX (live 09:35): если LLM в этом цикле САМА запустила
-                # музыку (execute_music_code) — НЕ убивать её по
-                # tts_batch_complete короткой прелюдии («Слушай Баха!»).
-                # Музыка, запущенная как композиция, живёт до segments
-                # или явного stop_music. Cleanup — только если музыка
-                # НЕ запускалась в этом цикле (осталась от прошлого).
-                # 🔴 FIX (issue #918): turn может быть отменён (barge-in,
-                # VAD-interrupt, silence) или упасть — тогда result=None
-                # (except-ветки выше). Без guard'а здесь AttributeError
-                # убивает finally ДО DIALOGUE_END/_publish_state → DSM
-                # навсегда остаётся в DIALOGUE, /voice/dialogue/state
-                # зависает на 'dialogue', scenario_runner.wait_for_idle
-                # таймаутит. Guard обязателен: state finalization ниже —
-                # критический контракт, music-cleanup — best-effort.
-                tools_now = set(result.tools_called or ()) if result else set()
-                # 🔴 FIX (live 12.08): load_track, set_dj_mode, set_vibe_preset
-                # тоже запускают музыку (не только execute_music_code).
-                # Без этого эмбиент/трек умолкал через ~5с после tts_batch_complete.
-                # 🔴 FIX (live 30.08): та же авария повторилась с compose_music —
-                # список имён теперь один на всю систему (dialogue_guards),
-                # чтобы следующий музыкальный инструмент не пришлось помнить
-                # добавить в двух местах.
-                # 🔴 FIX (live 02.09): та же авария в третий раз — теперь с
-                # ``gen_play_from_library`` (mp3 из AI-библиотеки). Live-кейс:
-                # «включи трек про весну» реально запустил mp3, но
-                # ``GENERATED_MUSIC_TOOLS`` тут не учитывался — флаг
-                # ``_track_mode_music_active`` не взводился, следующая
-                # реплика («ну вот ты включил уже») пришла из idle,
-                # ``_publish_music_cleanup(reason="new_dialogue")`` считал
-                # мёртвый воздух и профилактически глушил mp3 через ~14с
-                # после старта. Юзер слышал, как робот 3 хода подряд врал
-                # «уже играет» на самом деле остановленному треку.
-                _music_starters = MUSIC_STARTING_TOOLS | MUSIC_MODE_TOOLS
-                # 🔴 FIX (live 31.08): stop_music не гасил флаг «играет», а
-                # снимался он только в _publish_music_cleanup. После «выключи
-                # музыку» флаг врал, и следующий Bug-C ретрай уходил в
-                # формулировке «музыка ИГРАЕТ, измени её» — на пустоту.
-                # Модель послушно описывала изменения без вызова тула, оба
-                # ретрая выгорали, робот говорил «я растерялся».
-                if tools_now & MUSIC_STOP_TOOLS:
-                    self._track_mode_music_active = False
-                if tools_now & _music_starters:
-                    # Issue #992 TWO MUSIC MODES: BACKING (спой/рэп/песенку) —
-                    # музыка это подложка под куплеты, систему ПРОСЯТ
-                    # остановить её после финального tts_batch_complete
-                    # (master_prompt_compact: "Music stops automatically after
-                    # tts_batch_complete"; LLM НЕ зовёт stop_music). TRACK
-                    # (сыграй баха/классику) — композиция живёт до команды
-                    # юзера. Дискриминатор: BACKING = 2+ speak_text В ЭТОМ
-                    # цикле И певческий интент в тексте юзера. Без интента
-                    # (live 13.08: «наполни комнату музыкой» + приветствие +
-                    # комментарий) — это TRACK, cleanup не планируется.
-                    backing_singing = bool(result) and (
-                        getattr(result, "speak_text_count", 0) >= 2
-                    ) and _has_singing_intent(raw_user_command or user_input)
-                    # Живая музыка теперь помнит свой режим: BACKING гасится
-                    # после последнего tts_batch_complete, TRACK — живёт
-                    # (live 30.08, см. ``_track_mode_music_active``).
-                    self._track_mode_music_active = not backing_singing
-                    if backing_singing:
-                        if not self._pending_music_cleanup:
-                            self._pending_music_cleanup = True
-                            self.get_logger().info(
-                                "🎵 [issue 992] backing mode (2+ speak_text) — "
-                                "music_cleanup scheduled at tts_batch_complete"
-                            )
-                        else:
-                            self.get_logger().debug(
-                                "🎵 [issue 992] backing mode — cleanup "
-                                "already pending"
-                            )
-                    elif self._pending_music_cleanup:
-                        self._pending_music_cleanup = False
-                        self.get_logger().info(
-                            "🎵 [issue 992] LLM restarted music via "
-                            "execute_music_code — cancelled pending cleanup"
-                        )
-                    else:
-                        self.get_logger().debug(
-                            "🎵 [issue 992] LLM started music — no cleanup "
-                            "scheduled for this turn"
-                        )
-                elif getattr(self, "_track_mode_music_active", False):
-                    # 🔴 FIX (live 30.08 15:56): ход не трогал музыку, но
-                    # играет TRACK с прошлого хода — он переживает этот ход.
-                    # Иначе «продолжай лабать» (или любой вопрос посреди
-                    # трека) глушил композицию через 0.1 с после ответа.
-                    # ASCII-тег [track-mode] — чтобы e2e мог грепнуть его
-                    # без кириллицы (grep -E в check_patterns бежит по ssh,
-                    # где локаль не гарантирована).
-                    self.get_logger().info(
-                        "🎵 [track-mode] TRACK играет с прошлого хода — "
-                        "cleanup НЕ вооружаем (живёт до stop_music/watchdog)"
-                    )
-                elif not was_dj_auto and not self._pending_music_cleanup:
-                    self._pending_music_cleanup = True
-                    self.get_logger().info(
-                        "🎵 music_cleanup deferred — waiting for TTS or 10s fallback"
-                    )
-                else:
-                    self.get_logger().debug(
-                        "🎵 [issue 992] music_cleanup already pending — "
-                        "ignoring redundant re-arm"
-                    )
-            if not was_dj_auto and self._pending_music_cleanup and not self._active_batches:
-                self._pending_music_cleanup = False
-                self._publish_music_cleanup(reason="tts_batch_complete")
-                self.get_logger().info(
-                    "🎵 turn finished, no active batches — fired music_cleanup "
-                    "(issue 992 prelude-deferral catch-up)"
-                )
+            # Issue #2627 PR-C — music state machine is now a pure decision
+            # function (see ``rob_box_voice.core.post_turn_music_policy``).
+            # The dialogue node reads its own mutable flags into a
+            # :class:`PostTurnMusicState` snapshot, asks
+            # :func:`decide` for the actions, and the small executor below
+            # applies them (logging + flag writes + optional catch-up
+            # cleanup fire). Mirrors the legacy block at lines 3828-3946
+            # (pre-PR-C) one-for-one; reduces ``_run_turn`` CC by ~25 and
+            # makes the BACKING-vs-TRACK discriminator unit-testable.
+            _music_snapshot = PostTurnMusicState(
+                pending_cleanup=self._pending_music_cleanup,
+                track_mode_active=self._track_mode_music_active,
+                active_batches=len(self._active_batches),
+                stop_music_already_pending=self._pending_music_cleanup,
+                last_tools_called=tuple(
+                    result.tools_called or ()
+                ) if result is not None else (),
+            )
+            _music_actions = _post_turn_music_decide(
+                outcome=TurnOutcome(
+                    tools_called=_music_snapshot.last_tools_called,
+                    spoken_text=result.spoken_text if result is not None else "",
+                    speak_text_count=getattr(result, "speak_text_count", 0)
+                    if result is not None
+                    else 0,
+                    user_input_for_intent=raw_user_command or user_input,
+                ),
+                state=_music_snapshot,
+                was_dj_auto=was_dj_auto,
+                user_input=user_input,
+                guard_retry_pending=guard_retry_pending,
+                music_retry_dispatched=False,
+                tool_retry_dispatched=False,
+                pending_queue_dispatched=pending_queue_dispatched,
+                singing_intent_detector=_has_singing_intent_impl,
+            )
+            self._execute_post_turn_music_actions(
+                _music_actions,
+                state_snapshot=_music_snapshot,
+                was_dj_auto=was_dj_auto,
+                raw_user_command=raw_user_command,
+                user_input=user_input,
+            )
             # Issue #992 Bug B / Bug C — DJ-mode post-turn guard.
             # ``is_dj_auto`` was threaded through the dispatch path so no
             # shared flag needs to be cleared here. The guard may
@@ -3880,6 +3805,159 @@ class DialogueNode(Node):
             # here; otherwise the ROS state topic remains stuck at the
             # earlier DIALOGUE notification and scenario runners wait forever.
             self._publish_state()
+
+    # ── Issue #2627 PR-C — post-turn music actions executor ──────────────
+
+    def _execute_post_turn_music_actions(
+        self,
+        actions: PostTurnActions,
+        state_snapshot: PostTurnMusicState,
+        *,
+        was_dj_auto: bool,
+        raw_user_command: Optional[str],
+        user_input: str,
+    ) -> None:
+        """Apply :class:`PostTurnActions` from :func:`decide` to dialogue state.
+
+        The pure decision function in
+        :mod:`rob_box_voice.core.post_turn_music_policy` returns a
+        :class:`PostTurnActions` dataclass describing the four post-turn
+        music outcomes (track-mode, pending-cleanup, catch-up cleanup fire,
+        close-session). This executor mirrors the legacy block that used
+        to live at ``_run_turn.finally`` (pre-PR-C) one-for-one:
+
+        1. Write back ``actions.track_mode_active`` to
+           ``self._track_mode_music_active`` if it changed; log only on
+           transition (keep vs arm vs cancel) so log volume matches the
+           legacy code.
+        2. Write back ``actions.pending_cleanup`` to
+           ``self._pending_music_cleanup``; same transition-only logging
+           (arm / cancel / already-pending). The log text differs based
+           on ``state_snapshot.last_tools_called`` so the
+           "stop_music deferred" / "backing mode" / "music_cleanup
+           deferred" three-way split stays 1:1 with the legacy code.
+        3. Fire :meth:`_publish_music_cleanup` when
+           ``actions.fire_cleanup_now`` AND ``was_dj_auto`` is False AND
+           ``self._active_batches`` is empty (issue #992 prelude-deferral
+           catch-up).
+        4. ``close_session`` is consumed by the caller's DIALOGUE_END gate
+           — this method does NOT touch ``self._dsm`` directly. The caller
+           already has all four retry/queue flags in scope; see lines
+           around ``self._dsm.on_event(DialogueEvent.DIALOGUE_END)``
+           further down in ``_run_turn.finally``.
+
+        Args:
+            actions: The :class:`PostTurnActions` returned by
+                :func:`rob_box_voice.core.post_turn_music_policy.decide`.
+                Frozen dataclass — safe to consume multiple times if we
+                ever need to read its fields more than once.
+            state_snapshot: The :class:`PostTurnMusicState` instance the
+                caller passed to :func:`decide` (so the executor can read
+                ``last_tools_called`` without re-querying the dialogue
+                node). Frozen-by-convention at this point.
+            was_dj_auto: Mirrors :attr:`DialogueNode._run_turn.was_dj_auto`
+                so the executor can suppress the catch-up fire (DJ-mode
+                ticks live by their own rules).
+            raw_user_command: ``raw_user_command`` from :meth:`_run_turn`,
+                only used for diagnostics. The ``decide`` call already
+                embedded this into :attr:`TurnOutcome.user_input_for_intent`.
+            user_input: Effective user input (post-strip-wake-word,
+                post-speaker-tag). Mirrors :attr:`_run_turn.user_input`.
+
+        Notes:
+            * Pure side-effect executor — no return value.
+            * Logs use the same prefixes as the legacy code
+              (``🎵 [issue 992] …``, ``🎵 [track-mode] …``,
+              ``🎵 music_cleanup …``) so existing log-grep tooling and
+              e2e check-patterns keep working without modification.
+            * The single ``if actions.skip_log: return`` short-circuit
+              keeps the «already pending» branch a one-liner — mirroring
+              the legacy "skip redundant log line" pattern from issue
+              #992 duplicate-stop deferral.
+        """
+        if actions.skip_log:
+            return
+        # 1. Track-mode write-back (transition-only logging).
+        if actions.track_mode_active != self._track_mode_music_active:
+            self._track_mode_music_active = actions.track_mode_active
+            if actions.track_mode_active:
+                # TRACK arm: LLM called execute_music_code/load_track/...
+                # without singing intent — track survives the turn.
+                self.get_logger().info(
+                    "🎵 [track-mode] TRACK играет с прошлого хода — "
+                    "cleanup НЕ вооружаем (живёт до stop_music/watchdog)"
+                )
+            else:
+                # TRACK disarm: live 31.08 — stop_music must drop the flag
+                # so the next Bug-C retry does not see «музыка играет»
+                # against an empty play queue.
+                self.get_logger().debug(
+                    "🎵 [issue 992] stop_music deferred — "
+                    "_track_mode_music_active=False"
+                )
+        # 2. Pending-cleanup write-back.
+        if actions.pending_cleanup != self._pending_music_cleanup:
+            self._pending_music_cleanup = actions.pending_cleanup
+            if actions.pending_cleanup:
+                self._log_music_cleanup_armed(state_snapshot, user_input)
+            else:
+                self.get_logger().info(
+                    "🎵 [issue 992] LLM restarted music via "
+                    "execute_music_code — cancelled pending cleanup"
+                )
+        # 3. Catch-up cleanup fire (issue #992 prelude-deferral catch-up).
+        if actions.fire_cleanup_now and not self._active_batches:
+            self._pending_music_cleanup = False
+            self._publish_music_cleanup(reason="tts_batch_complete")
+            self.get_logger().info(
+                "🎵 turn finished, no active batches — fired music_cleanup "
+                "(issue 992 prelude-deferral catch-up)"
+            )
+
+    def _log_music_cleanup_armed(
+        self,
+        state_snapshot: PostTurnMusicState,
+        user_input: str,
+    ) -> None:
+        """Render the legacy ``🎵 … deferred`` log line for an arm event.
+
+        Mirrors the three-way split at ``dialogue_node.py:3823-3933``
+        (pre-PR-C):
+
+        * ``stop_music`` in ``state_snapshot.last_tools_called`` →
+          "stop_music deferred — will cleanup after TTS finishes"
+        * Otherwise, ``_has_singing_intent(user_input)`` →
+          "[issue 992] backing mode (2+ speak_text) — music_cleanup
+          scheduled at tts_batch_complete"
+        * Otherwise →
+          "music_cleanup deferred — waiting for TTS or 10s fallback"
+
+        Args:
+            state_snapshot: Frozen snapshot of the music state at
+                :func:`decide`-call time. Executor uses
+                :attr:`PostTurnMusicState.last_tools_called` only.
+            user_input: Effective user input (post-strip-wake-word).
+
+        Notes:
+            Splitting the log helper out keeps :meth:`_execute_post_turn_music_actions`
+            short (CC≤12) while preserving the exact operator-facing
+            diagnostic lines from the legacy ``finally`` block.
+        """
+        if "stop_music" in state_snapshot.last_tools_called:
+            self.get_logger().info(
+                "🎵 stop_music deferred — "
+                "will cleanup after TTS finishes"
+            )
+        elif _has_singing_intent_impl(user_input):
+            self.get_logger().info(
+                "🎵 [issue 992] backing mode (2+ speak_text) — "
+                "music_cleanup scheduled at tts_batch_complete"
+            )
+        else:
+            self.get_logger().info(
+                "🎵 music_cleanup deferred — "
+                "waiting for TTS or 10s fallback"
+            )
 
     # ── Issue #992 Bug B / Bug C — DJ-mode music guard ────────────────
 

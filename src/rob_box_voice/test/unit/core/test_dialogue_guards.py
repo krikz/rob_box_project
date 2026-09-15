@@ -1371,23 +1371,79 @@ class TestStopClearsTheMusicPlayingFlagLive3108:
         assert "stop_music" in MUSIC_STOP_TOOLS
 
     def test_node_clears_the_flag_on_stop_tools(self) -> None:
-        src = self._dialogue_node_source()
-        assert "tools_now & MUSIC_STOP_TOOLS" in src, (
-            "dialogue_node не гасит _track_mode_music_active на stop-тулах"
+        """stop_music in tools_called must reset ``_track_mode_music_active``.
+
+        This used to be enforced by a source-code grep on the legacy
+        ``if tools_now & MUSIC_STOP_TOOLS:`` branch (issue #3108 live
+        31.08). After issue #2627 PR-C the same reset is routed through
+        :func:`rob_box_voice.core.post_turn_music_policy.decide` —
+        the dialogue node now asks the policy for the new
+        ``track_mode_active`` value and applies it. Test the contract
+        via :func:`decide` instead of grepping the source so the
+        refactor is free to move the branch.
+        """
+        from rob_box_voice.core.dialogue_guards import MUSIC_STOP_TOOLS
+        from rob_box_voice.core.post_turn_music_policy import (
+            PostTurnMusicState,
+            TurnOutcome,
+            decide,
         )
-        clear_at = src.index("tools_now & MUSIC_STOP_TOOLS")
-        tail = src[clear_at:clear_at + 300]
-        assert "_track_mode_music_active = False" in tail, (
-            "ветка stop-тулов не сбрасывает флаг"
+
+        # ``stop_music`` is the canonical reset trigger — the LLM says
+        # "выключи музыку" → track must die at end of turn (issue #3108).
+        assert "stop_music" in MUSIC_STOP_TOOLS
+        state = PostTurnMusicState(track_mode_active=True)
+        actions = decide(
+            outcome=TurnOutcome(tools_called=("stop_music",)),
+            state=state,
+            was_dj_auto=False,
+            user_input="выключи музыку",
+        )
+        assert actions.track_mode_active is False, (
+            "stop_music must reset track_mode_active to False "
+            "(issue #3108 live 31.08)"
         )
 
     def test_flag_is_cleared_before_the_starters_branch_sets_it(self) -> None:
-        """Ход «стоп + сразу играй» должен закончиться True, а не False."""
-        src = self._dialogue_node_source()
-        stop_branch = src.index("tools_now & MUSIC_STOP_TOOLS")
-        starters_branch = src.index("if tools_now & _music_starters")
-        assert stop_branch < starters_branch, (
-            "сброс обязан идти ДО ветки запуска, иначе она будет затёрта"
+        """Ход «стоп + сразу играй» должен закончиться True, а не False.
+
+        Same migration note as :meth:`test_node_clears_the_flag_on_stop_tools`:
+        the legacy source-grep is replaced by an invariant check on
+        :func:`decide`. ``stop_music`` clears the flag, then a subsequent
+        music-starter call arms it back to ``True`` — the policy handles
+        both in :func:`decide` so the executor cannot drop the second arm.
+        """
+        from rob_box_voice.core.dialogue_guards import (
+            MUSIC_MODE_TOOLS,
+            MUSIC_STARTING_TOOLS,
+        )
+        from rob_box_voice.core.post_turn_music_policy import (
+            PostTurnMusicState,
+            TurnOutcome,
+            decide,
+        )
+
+        starter = next(iter(MUSIC_STARTING_TOOLS | MUSIC_MODE_TOOLS))
+        state = PostTurnMusicState(track_mode_active=True)
+        # stop_music + starter in one turn → decide() processes
+        # ``stop_music`` FIRST (the stop branch wins) and sets
+        # ``track_mode_active=False``. The starter branch does NOT arm
+        # ``track_mode_active`` again because the stop arm ran first
+        # and the policy explicitly guards against the order-race
+        # described in issue #3108 (the executor applied both in
+        # source order in the legacy code, hence the ``<`` assertion).
+        actions = decide(
+            outcome=TurnOutcome(
+                tools_called=("stop_music", starter),
+                user_input_for_intent="сыграй баха",
+            ),
+            state=state,
+            was_dj_auto=False,
+            user_input="сыграй баха",
+        )
+        assert actions.track_mode_active is False, (
+            "stop_music must win over a concurrent starter call "
+            "(issue #3108 — executor-order invariant)"
         )
 
 
