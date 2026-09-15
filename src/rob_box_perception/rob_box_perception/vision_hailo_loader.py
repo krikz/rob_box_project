@@ -178,26 +178,60 @@ class RealHEFLoader(HEFLoader):
         self._input_h = input_h
         self._confidence_threshold = confidence_threshold
         self._nms_iou_threshold = nms_iou_threshold
-        self._vdevice = None
-        self._infer_model = None
-        self._configured = None
-        self._bindings_input = None
-        self._bindings_output = None
+        # Lazy-initialized state. Заполняется в _ensure_initialized().
+        # Тип намеренно Any (не Optional): после init() поле не None,
+        # а pyright-typing «Optional[Any]» приводит к спам-warning'ам
+        # про member access на каждом self._infer_model.input() — здесь
+        # нам важнее runtime-корректность, а не статический type narrowing.
+        self._vdevice: Any = None
+        self._infer_model: Any = None
+        self._configured: Any = None
+        self._bindings: Any = None
+        # Имя выходного stream, из которого берём результат (по дефолту первый).
+        self._output_name: Optional[str] = None
+        # Флаг фатальной ошибки init (для _tick vs init различения).
+        self._init_failed: Optional[BaseException] = None
 
     # ----------------------------------------------------------------
     # Lazy initialization
     # ----------------------------------------------------------------
 
     def _ensure_initialized(self) -> None:
-        """Ленивая инициализация HailoRT VDevice + HEF.
+        """Ленивая инициализация HailoRT VDevice + HEF (modern async API).
+
+        Использует **новое** поколение HailoRT Python API (>=4.18):
+            `VDevice.create_infer_model(hef) → InferModel.configure() →
+            ConfiguredInferModel.create_bindings(...) → run([bindings], timeout)`.
+        Старый API (input_vstreams / get_input_binding / get_output_binding)
+        в этом поколении **отсутствует** — см. upstream
+        `hailo-ai/hailort/hailort/libhailort/bindings/python/platform/
+        hailo_platform/pyhailort/pyhailort.py:2948-3013` (master).
 
         Raises:
             ImportError: hailort не установлен (не на том хосте).
             FileNotFoundError: HEF файл не найден.
-            RuntimeError: VDevice не доступен / HEF не компилируется.
+            RuntimeError: VDevice не доступен / HEF не компилируется /
+                любой сбой инициализации API.
+
+        Note:
+            Метод идемпотентен: после первой успешной инициализации
+            последующие вызовы — no-op. При ошибке инициализации
+            `_init_failed` запоминается, повторные вызовы re-raise
+            ту же ошибку (без reinit-цикла на каждый кадр).
         """
         if self._configured is not None:
             return
+        if self._init_failed is not None:
+            raise self._init_failed
+        try:
+            self._init_locked()
+        except BaseException as exc:  # noqa: BLE001 (capability-honest)
+            # Запоминаем для fail-fast + DI.
+            self._init_failed = exc
+            raise
+
+    def _init_locked(self) -> None:
+        """Собственно инициализация (без кеширования ошибки)."""
         try:
             from hailo_platform import (  # type: ignore[import-not-found]
                 VDevice,
@@ -214,7 +248,8 @@ class RealHEFLoader(HEFLoader):
             )
 
         # Modern async API (HailoRT 4.18+). Используем ROUND_ROBIN scheduling
-        # для однородной latency (single-stream инференс).
+        # для однородной latency (single-stream инференс). Параметры могут
+        # отсутствовать в более старых версиях — best-effort fallback.
         try:
             from hailo_platform import (  # type: ignore[import-not-found]
                 HailoSchedulingAlgorithm,
@@ -223,49 +258,73 @@ class RealHEFLoader(HEFLoader):
             params.scheduling_algorithm = HailoSchedulingAlgorithm.ROUND_ROBIN
             params.device_id = str(self._vdevice_id)
             self._vdevice = VDevice(params=params)
-        except (ImportError, TypeError):
-            # Fallback для версий HailoRT < 4.18 (без scheduling_algorithm).
+        except (ImportError, TypeError, AttributeError):
+            # Fallback для версий HailoRT < 4.18 (без scheduling_algorithm)
+            # или других minor-вариаций API.
             self._vdevice = VDevice()
 
+        # Создаём InferModel и конфигурируем (новое поколение API).
         self._infer_model = self._vdevice.create_infer_model(self._hef_path)
         self._infer_model.set_batch_size(1)
 
-        # Установим формат входа/выхода. YOLOv8n HEF ожидает UINT8 NHWC.
-        # Методы set_format_type могут отсутствовать в разных версиях HailoRT.
+        # YOLOv8n HEF ожидает UINT8 NHWC на входе. Метод может отсутствовать
+        # в других моделях/версиях — игнорируем AttributeError.
         try:
             from hailo_platform import FormatType  # type: ignore[import-not-found]
             try:
                 self._infer_model.input().set_format_type(FormatType.UINT8)
             except AttributeError:
-                # HEF может требовать другой формат — оставляем как есть.
                 pass
-            # Выход обычно FLOAT32 — class-agnostic decode уже в HEF.
         except ImportError:
             pass
 
         self._configured = self._infer_model.configure()
 
-        # Pre-allocate I/O buffers (нужно для repeated run()).
-        self._bindings_input = {}
-        self._bindings_output = {}
-        for in_name in self._configured.input_vstreams.keys():
-            self._bindings_input[in_name] = self._configured.get_input_binding(
-                name=in_name,
-            )
-        for out_name in self._configured.output_vstreams.keys():
-            self._bindings_output[out_name] = self._configured.get_output_binding(
-                name=out_name,
-            )
+        # ----------------------------------------------------------------
+        # Pre-allocate I/O buffers + create bindings (новое поколение API).
+        #
+        # В современном Python-API `create_bindings(input_buffers, output_buffers)`
+        # принимает dict'ы numpy-массивов; сами bindings.input(name) и
+        # .output(name) дают InferStream с .set_buffer(np) / .get_buffer().
+        # ----------------------------------------------------------------
+        import numpy as np  # type: ignore[import-not-found]
+
+        input_buffers: Dict[str, Any] = {}
+        for in_name in self._infer_model.input_names:
+            shape = list(self._infer_model.input(in_name).shape)
+            # YOLOv8n: (1, 640, 640, 3) uint8.
+            input_buffers[in_name] = np.empty(shape, dtype=np.uint8)
+
+        output_buffers: Dict[str, Any] = {}
+        for out_name in self._infer_model.output_names:
+            shape = list(self._infer_model.output(out_name).shape)
+            # YOLOv8n: (1, 84, 8400) float32 (class scores, post-decoded).
+            output_buffers[out_name] = np.empty(shape, dtype=np.float32)
+
+        self._bindings = self._configured.create_bindings(
+            input_buffers=input_buffers,
+            output_buffers=output_buffers,
+        )
+        # Запоминаем имя первого output'а — YOLOv8n имеет один,
+        # для multi-output моделей это контрактно первый.
+        self._output_name = self._infer_model.output_names[0]
 
     # ----------------------------------------------------------------
     # Public API
     # ----------------------------------------------------------------
 
     def is_available(self) -> bool:
+        """True если HailoRT инициализирован успешно (lazy).
+
+        Ловит **любой** сбой фазы инициализации (ImportError, OSError,
+        RuntimeError, AttributeError от API-drift, и т.п.) — важно
+        для pre-flight check из PR #2524: необработанный AttributeError
+        ломает launch.
+        """
         try:
             self._ensure_initialized()
             return True
-        except (ImportError, FileNotFoundError, RuntimeError, OSError):
+        except BaseException:  # noqa: BLE001 (capability-honest init phase)
             return False
 
     def infer(self, frame_id: str, image: Any) -> List[Dict[str, Any]]:
@@ -294,25 +353,20 @@ class RealHEFLoader(HEFLoader):
         # 1. Pre-process: BGR/RGB → NHWC uint8, letterboxed 640×640.
         input_tensor = self._preprocess(image)
 
-        # Type narrowing после _ensure_initialized() — dict'ы и configured
-        # гарантированно не None.
-        assert self._bindings_input is not None
-        assert self._bindings_output is not None
+        # Type narrowing после _ensure_initialized().
+        assert self._bindings is not None
         assert self._configured is not None
+        assert self._output_name is not None
+        assert self._infer_model is not None
 
-        # 2. HailoRT run(). Передаём подготовленный tensor как binding.
-        # Single-input/output binding — берём первый (у YOLOv8n один вход).
-        first_in_name = next(iter(self._bindings_input))
-        first_in_binding = self._bindings_input[first_in_name]
+        # 2. HailoRT run(): modern API — bindings через create_bindings,
+        # set_buffer на input stream, синхронный run([bindings], timeout_ms).
+        in_name = self._infer_model.input_names[0]
         try:
-            first_in_binding.set_buffer(input_tensor)
-            output_list = list(self._bindings_output.values())
-            self._configured.run(
-                [first_in_binding],
-                output_list,
-            )
-            # Output — list[np.ndarray] в порядке output_vstreams.
-            raw_output = output_list[0]
+            self._bindings.input(in_name).set_buffer(input_tensor)
+            self._configured.run([self._bindings], timeout=1000)
+            # Output читается из ТОГО ЖЕ binding (numpy уже заполнен run'ом).
+            raw_output = self._bindings.output(self._output_name).get_buffer()
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError(
                 f'HailoRT run() failed: {exc!r}',
