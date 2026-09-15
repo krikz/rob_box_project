@@ -184,6 +184,7 @@ from rob_box_voice.core.dj_mode import DJHook, DJModeController
 from rob_box_voice.core.speak_helpers import (
     EffectAwaiterRegistry, build_ssml_payload, split_into_chunks,
     strip_done_marker, strip_history_marker, strip_markdown,
+    strip_meta_markers,  # Issue #2547 — strip internal section headers
     strip_speaker_tag, strip_thinking_blocks,
 )
 from rob_box_voice.startup_greeting import (
@@ -5884,6 +5885,14 @@ class DialogueNode(Node):
         # как «озвучка ответа». Strip-блоков ДО done-чекера → в TTS идёт
         # либо пусто (маркер done → тишина), либо реальный финал.
         spoken = strip_thinking_blocks(spoken)
+        # Issue #2547: strip internal section-header prefixes like
+        # ``[Мнение ассистента]``, ``[Примечание]``, ``[Note]``,
+        # ``[Answer]``, ``**Итог:**``, ``**Answer:**`` BEFORE markdown so
+        # the bold form (``**…**``) is captured intact, and BEFORE the
+        # done-marker equality check so the stripper sees only the
+        # user-facing remainder. Live 15.09: 193 cases/hour on Vision Pi
+        # DJ-set when TTS reads them as part of the reply.
+        spoken = strip_meta_markers(spoken)
         # Issue #988 (code part): strip Markdown BEFORE chunking. Chunking
         # splits on punctuation, which can cut a paired "*...*" in half;
         # strip_markdown in tts_node only removes *paired* delimiters, so a
