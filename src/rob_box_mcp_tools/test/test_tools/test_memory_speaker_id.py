@@ -6,6 +6,7 @@ Strategy: import the module file directly via importlib + spec_from_file_locatio
 bypassing the package __init__. This lets us test the speaker_id plumbing
 on CI builders that don't have rclpy installed.
 """
+import asyncio
 import importlib.util
 import os
 import sys
@@ -14,6 +15,10 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+
+from rob_box_harness.encounter import EncounterChannel, EncounterSeam
+from rob_box_harness.identity import Acquaintance, MemoryIdentitySeam
+from rob_box_harness.memory import InMemoryStore
 
 
 # ---------------------------------------------------------------------------
@@ -276,7 +281,19 @@ class _FakeMemory:
 class _FakeNode:
     def __init__(self, current_speaker_id=None) -> None:
         self.voice_memory = _FakeMemory()
-        self.current_speaker_id = current_speaker_id
+        # Issue #2442 — фоллбэк в tools/memory.py теперь читает
+        # ``EncounterSeam.current()`` вместо приватного поля
+        # ``current_speaker_id``. Идентичность — эфемерная (InMemoryStore),
+        # как и в реальном mcp_server.
+        self._encounter_seam = EncounterSeam(MemoryIdentitySeam(InMemoryStore()))
+        if current_speaker_id:
+            asyncio.run(
+                self._encounter_seam.observe(
+                    EncounterChannel.VOICE,
+                    Acquaintance(id=current_speaker_id),
+                    1.0,
+                )
+            )
         # Real ``MCPTool.log_info``/``log_error`` calls ``self.node.get_logger()``.
         self._logs: list[str] = []
 

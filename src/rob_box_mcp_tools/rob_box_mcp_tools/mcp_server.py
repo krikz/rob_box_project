@@ -19,11 +19,18 @@ from rclpy.node import Node
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from std_msgs.msg import String
+import asyncio
 import json
 import math
 import os
 import time
 from typing import Any, Dict, Optional
+
+# Issue #2442 — единый шов «Встреча» вместо самостоятельного
+# ``current_speaker_id``. См. ``_on_speaker_result`` ниже и ADR-0105 §3.
+from rob_box_harness.encounter import EncounterSeam, EncounterChannel
+from rob_box_harness.identity import Acquaintance, MemoryIdentitySeam
+from rob_box_harness.memory import InMemoryStore
 
 from .registry import MCPToolRegistry
 from .tools import (
@@ -363,11 +370,23 @@ class MCPServer(Node):
 
         # Issue #1770 — подписка на /voice/speaker/result, чтобы memory
         # tools могли фильтровать facts/turns по speaker_id без явной передачи
-        # от LLM (fallback: ``node.current_speaker_id``). speaker_id_node
-        # публикует ``{"is_known": true, "speaker_id": "...", "name": "...",
-        # "confidence": 0.93}`` после каждой распознанной реплики; нам нужен
-        # только ``speaker_id`` (UUID), всё остальное — для логов.
-        self.current_speaker_id: Optional[str] = None
+        # от LLM (fallback: см. ``tools/memory.py:_current_encounter_speaker_id``).
+        # speaker_id_node публикует ``{"is_known": true, "speaker_id": "...",
+        # "name": "...", "confidence": 0.93}`` после каждой распознанной
+        # реплики; нам нужен только ``speaker_id`` (UUID), всё остальное —
+        # для логов.
+        #
+        # Issue #2442 — раньше это был отдельный ``self.current_speaker_id:
+        # Optional[str]``, продублированный с ``dialogue_node._current_speaker``
+        # и тремя фоллбэками в ``tools/memory.py``. Теперь сигнал кормит
+        # ``EncounterSeam`` (``rob_box_harness.encounter``, тот же шов, что
+        # использует голосовой адаптер) — единственный источник «кто сейчас»
+        # для этого процесса. Идентичность здесь намеренно эфемерна
+        # (``InMemoryStore`` — ничего не пишет на диск): mcp_server и раньше
+        # не считал ``since_last_seen`` для локального кэша спикера, так что
+        # это не регрессия, а явное сохранение прежнего поведения при
+        # переходе на общий контракт шва (ADR-0105 §3.1, §2.4).
+        self._encounter_seam = EncounterSeam(MemoryIdentitySeam(InMemoryStore()))
         try:
             self._speaker_result_sub = self.create_subscription(
                 String,
@@ -512,19 +531,34 @@ class MCPServer(Node):
         )
 
     def _on_speaker_result(self, msg: "String") -> None:
-        """Issue #1770 — обновить ``current_speaker_id`` из speaker_id_node.
+        """Issue #1770 / #2442 — учесть сигнал голосовой биометрии в ``EncounterSeam``.
 
         Формат: ``{"is_known": true, "speaker_id": "<uuid>",
         "name": "Денчик", "confidence": 0.93}`` или
         ``{"is_known": false}``. ``speaker_id`` есть только при
-        ``is_known=True``; в этом случае мы сохраняем UUID и используем
-        его как fallback в MemorySaveTool/MemorySearchTool/MemoryContextTool
-        (если LLM не передал ``speaker_id`` явно).
+        ``is_known=True``; в этом случае мы кормим сигнал в
+        ``EncounterSeam.observe()`` — тот же шов, что используют
+        ``tools/memory.py`` (fallback ``speaker_id``) через
+        ``_current_encounter_speaker_id``.
 
         На событие ``{"event": "registered", "speaker_id": "..."}`` мы
-        также обновляем кэш — это значит, что прямо сейчас
+        тоже обновляем шов — это значит, что прямо сейчас
         зарегистрировали нового юзера и следующая реплика отнесётся к
-        нему.
+        нему. Это осознанное расхождение с
+        ``rob_box_harness.encounter.voice_adapter.VoiceEncounterAdapter``
+        (тот трактует ``registered`` как no-op) — поведение mcp_server
+        здесь старше и продиктовано issue #1770 («следующая реплика
+        должна найти профиль немедленно после регистрации»), сохраняем
+        его 1:1, а не подменяем общим адаптером.
+
+        ``EncounterSeam.observe`` — асинхронный метод (может дойти до
+        ``IdentitySeam.since_last_seen``). Мостик sync ROS callback →
+        async вызов — ``asyncio.run`` за один вызов: тот же приём, что
+        ``VoiceMemoryAdapter`` уже использует в этом сервисе (см.
+        ``rob_box_harness/memory/voice_memory_adapter.py``, докстрока
+        «Why a per-call asyncio.run»). Идентичность шва здесь —
+        ``InMemoryStore`` (без диска), поэтому вызов не блокируется на
+        реальном I/O и безопасен внутри ROS executor'а.
         """
         try:
             data = json.loads(msg.data or "{}")
@@ -535,16 +569,24 @@ class MCPServer(Node):
 
         is_known = bool(data.get("is_known"))
         raw_sid = data.get("speaker_id")
-        # Используем ``or`` чтобы отфильтровать пустые строки и None.
+        # Используем ``and`` чтобы отфильтровать пустые строки и None.
         new_speaker_id: Optional[str] = str(raw_sid) if (is_known and raw_sid) else None
         # ``registered`` событие несёт speaker_id даже без is_known.
         if data.get("event") == "registered" and raw_sid:
             new_speaker_id = str(raw_sid)
 
-        if new_speaker_id == self.current_speaker_id:
+        old = self._current_encounter_speaker_id()
+        if new_speaker_id == old:
             return  # без изменений — тихий return, не спамим лог
-        old = self.current_speaker_id
-        self.current_speaker_id = new_speaker_id
+
+        who = Acquaintance(id=new_speaker_id, name=data.get("name")) if new_speaker_id else None
+        try:
+            confidence = float(data.get("confidence") or 0.0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        asyncio.run(
+            self._encounter_seam.observe(EncounterChannel.VOICE, who, confidence)
+        )
         if new_speaker_id:
             self.get_logger().info(
                 f"👤 [issue 1770] current_speaker_id: {old or '∅'} → "
@@ -555,6 +597,21 @@ class MCPServer(Node):
                 f"👤 [issue 1770] current_speaker_id: {old or '∅'} → ∅ "
                 "(unknown / is_known=false)"
             )
+
+    def _current_encounter_speaker_id(self) -> Optional[str]:
+        """Issue #2442 — ``speaker_id`` текущей Встречи, или ``None``.
+
+        Единственная точка чтения ``EncounterSeam.current()`` внутри
+        mcp_server. ``tools/memory.py`` не импортирует этот метод напрямую
+        (``mcp_server`` зависит от ``tools`` — обратный импорт дал бы
+        цикл), поэтому там та же логика продублирована как модульная
+        функция ``_current_encounter_speaker_id(node)`` — оба места читают
+        ровно один и тот же атрибут узла, ``node._encounter_seam``.
+        """
+        current = self._encounter_seam.current()
+        if current is None or current.who is None:
+            return None
+        return current.who.id
 
     def _on_dj_mode(self, msg: "String") -> None:
         """Адаптер на шве /voice/dj_mode → MusicManager.set_dj_mode().

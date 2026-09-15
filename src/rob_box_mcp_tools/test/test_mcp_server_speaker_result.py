@@ -1,10 +1,17 @@
-"""Tests for MCPServer._on_speaker_result (issue #1770).
+"""Tests for MCPServer._on_speaker_result (issue #1770 / #2442).
 
 Wires the server's `/voice/speaker/result` handler so that the memory
-tools' `node.current_speaker_id` fallback gets the live speaker from
-``speaker_id_node``. Without this, every tool call (save/search/context)
-sees ``speaker_id=None`` and returns the global fact pool — Денчик
-gets Саша's facts and vice versa.
+tools' ``EncounterSeam``-backed fallback (``_current_encounter_speaker_id``
+in ``tools/memory.py``) gets the live speaker from ``speaker_id_node``.
+Without this, every tool call (save/search/context) sees
+``speaker_id=None`` and returns the global fact pool — Денчик gets
+Саша's facts and vice versa.
+
+Issue #2442 migrated the underlying storage from a bare
+``self.current_speaker_id: Optional[str]`` to ``EncounterSeam`` (the
+shared «Встреча» seam from ``rob_box_harness.encounter``) — see
+``mcp_server.py:_on_speaker_result`` / ``_current_encounter_speaker_id``.
+These tests read the same seam instead of the old attribute.
 
 These tests bypass the rclpy-aware MCPServer class and exercise the
 handler directly against a stub server — same approach as
@@ -18,8 +25,13 @@ import json
 import sys
 import types
 from pathlib import Path
+from typing import Optional
 
 import pytest
+
+from rob_box_harness.encounter import EncounterSeam
+from rob_box_harness.identity import MemoryIdentitySeam
+from rob_box_harness.memory import InMemoryStore
 
 
 # ---------------------------------------------------------------------------
@@ -207,10 +219,18 @@ class _StubNode:
 
     def __init__(self) -> None:
         self.logger = _StubLogger()
-        self.current_speaker_id = None
+        # Issue #2442 — тот же шов, что настоящий MCPServer заводит в
+        # __init__ (EncounterSeam + эфемерная identity без диска).
+        self._encounter_seam = EncounterSeam(MemoryIdentitySeam(InMemoryStore()))
 
     def get_logger(self):
         return self.logger
+
+    def _current_encounter_speaker_id(self) -> Optional[str]:
+        current = self._encounter_seam.current()
+        if current is None or current.who is None:
+            return None
+        return current.who.id
 
 
 def _bind_handler(node: _StubNode):
@@ -254,17 +274,17 @@ class TestOnSpeakerResult:
                 {"is_known": True, "speaker_id": "uuid-den-1234", "name": "Денчик", "confidence": 0.92}
             ))
         )
-        assert node.current_speaker_id == "uuid-den-1234"
+        assert node._current_encounter_speaker_id() == "uuid-den-1234"
 
     def test_unknown_speaker_clears_current_speaker_id(self) -> None:
         node = _StubNode()
         # First prime with a known speaker …
         handler = _bind_handler(node)
         handler(_msg(json.dumps({"is_known": True, "speaker_id": "uuid-1", "name": "A"})))
-        assert node.current_speaker_id == "uuid-1"
+        assert node._current_encounter_speaker_id() == "uuid-1"
         # … then send an unknown-speaker event.
         handler(_msg(json.dumps({"is_known": False})))
-        assert node.current_speaker_id is None
+        assert node._current_encounter_speaker_id() is None
 
     def test_empty_speaker_id_treated_as_unknown(self) -> None:
         """``is_known=True`` but missing/empty speaker_id ⇒ clear the cache.
@@ -277,7 +297,7 @@ class TestOnSpeakerResult:
         node = _StubNode()
         handler = _bind_handler(node)
         handler(_msg(json.dumps({"is_known": True, "speaker_id": "", "name": "ghost"})))
-        assert node.current_speaker_id is None
+        assert node._current_encounter_speaker_id() is None
 
     def test_registered_event_updates_cache(self) -> None:
         """``{event: 'registered', speaker_id: ...}`` acks set the cache too.
@@ -289,14 +309,14 @@ class TestOnSpeakerResult:
         node = _StubNode()
         handler = _bind_handler(node)
         handler(_msg(json.dumps({"event": "registered", "speaker_id": "uuid-new", "name": "Саша"})))
-        assert node.current_speaker_id == "uuid-new"
+        assert node._current_encounter_speaker_id() == "uuid-new"
 
     def test_malformed_json_does_not_raise(self) -> None:
         node = _StubNode()
         handler = _bind_handler(node)
         # Bad JSON: silently drop, do not change cache.
         handler(_msg("not-json-at-all"))
-        assert node.current_speaker_id is None
+        assert node._current_encounter_speaker_id() is None
         # Handler must not log an error (just return): JSON parse failures
         # from a noisy speaker_id_node would otherwise spam the operator.
         assert node.logger.errors == []
@@ -305,7 +325,7 @@ class TestOnSpeakerResult:
         node = _StubNode()
         handler = _bind_handler(node)
         handler(_msg(""))
-        assert node.current_speaker_id is None
+        assert node._current_encounter_speaker_id() is None
 
     def test_repeat_same_id_does_not_re_log(self) -> None:
         """Identical speaker_id → silent return (avoid log spam)."""
@@ -318,7 +338,7 @@ class TestOnSpeakerResult:
         second_log_count = sum(1 for m in node.logger.infos if "current_speaker_id" in m)
         # Only the first transition should have been logged.
         assert second_log_count == first_log_count
-        assert node.current_speaker_id == "uuid-a"
+        assert node._current_encounter_speaker_id() == "uuid-a"
 
     def test_transition_logged_once(self) -> None:
         node = _StubNode()
@@ -334,4 +354,4 @@ class TestOnSpeakerResult:
         # First log mentions new id, second log mentions both.
         assert "uuid-a" in transition_logs[0]
         assert "uuid-b" in transition_logs[1]
-        assert node.current_speaker_id == "uuid-b"
+        assert node._current_encounter_speaker_id() == "uuid-b"
