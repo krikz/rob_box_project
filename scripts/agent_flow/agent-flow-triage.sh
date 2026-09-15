@@ -1250,6 +1250,20 @@ for pr in d:
 #   - ловит и `issue: #N`, и `issue #N`, и `Issue #N` (case-insensitive на слово issue)
 #   - в карту попадают ВСЕ статусы (включая done/archived) — но downstream
 #     фильтрует по статусу (skip только если ACTIVE — running/ready/todo/blocked)
+#
+# Ретро-фикс (15.09.2026 t_60473741, ADR-AF-0067): добавлено 4-е поле —
+# branch_name из карточки. Это нужно для G9c (branch-name race-window dedup):
+# если для issue #N уже есть ЖИВАЯ карточка (running/ready/todo/blocked) с
+# тем же branch_name, что вычислил triage, новая карточка приведёт к
+# `git worktree add failed: branch is already checked out`. Карточка
+# навсегда зависнет в blocked и через 3 spawn_failed получит gave_up.
+# См. реальный кейс: t_40a610d0 (blocked, branch=z-{agent}/2406-...) →
+# t_b7fbff1c (archived, gave_up, 3x spawn_failed) → t_6535e27d (ready,
+# 2x spawn_failed) — три карточки на одну ветку за 1ч50м.
+#
+# Схема: <issue_num>\t<card_id>\t<status>\t<branch_name>
+# branch_name пуст для карточек без workspace_kind=worktree — это нормально,
+# G9c просто не сматчит (пустая строка не равна непустой вычисленной $branch).
 # shellcheck disable=SC2016  # python heredoc — $ внутри одинарных кавычек literal
 existing_by_issue="$(printf '%s' "$("$HERMES_BIN" kanban --board "$KANBAN_BOARD" list --json --archived 2>/dev/null || echo '[]')" | python3 -c '
 import json, sys, re
@@ -1264,7 +1278,14 @@ for t in tasks:
     # Слово "issue" опционально с двоеточием после — \W* съедает 0+ не-word.
     m = re.search(r"\bissue\W*#(\d+)", body, re.IGNORECASE)
     if m:
-        print("%s\t%s\t%s" % (m.group(1), t.get("id", ""), t.get("status", "")))
+        # 4 поля (ADR-AF-0067): issue_num, card_id, status, branch_name.
+        # branch_name пуст если workspace_kind != worktree или поле не заполнено.
+        print("%s\t%s\t%s\t%s" % (
+            m.group(1),
+            t.get("id", ""),
+            t.get("status", ""),
+            t.get("branch_name") or "",
+        ))
 ')"
 
 # Ретро-фикс (09.08 #1): старые done/archived карточки держат ветку через
@@ -1430,6 +1451,10 @@ process_issues_json() {
     existing_line="$(printf '%s\n' "$existing_by_issue" | awk -F'\t' -v n="$number" '$1==n {print; exit}')"
     existing_id="$(printf '%s' "$existing_line" | cut -f2)"
     existing_status="$(printf '%s' "$existing_line" | cut -f3)"
+    # ADR-AF-0067 (ретро t_60473741): 4-е поле — branch_name существующей карточки.
+    # Нужно для G9c (branch-name race-window dedup) ниже (строка 1390+).
+    # shellcheck disable=SC2034  # read via awk-scan в G9c, shellcheck не видит usage
+    existing_branch="$(printf '%s' "$existing_line" | cut -f4)"
     if [ -n "$existing_id" ]; then
         if [ "$is_reopened" = "false" ]; then
             # НЕ reopened → любая существующая карточка (active или dead) —
@@ -1567,6 +1592,105 @@ Triage **НЕ создал** kanban-карточку для этого issue —
     branch="$(branch_for "$labels" "$number" "$title")"
     max_runtime="$(runtime_for "$labels" "$body" "$title")"
     max_retries="$(max_retries_for "$labels" "$body" "$title")"
+
+    # Ретро-фикс (15.09.2026 t_60473741, ADR-AF-0067): G9c branch-name race-window dedup.
+    # G9b (ниже) проверяет, существует ли ВЕТКА в remote refs через `git ls-remote`.
+    # G9c проверяет на уровне KANBAN-карточек: если для этого issue #N уже есть
+    # ЖИВАЯ карточка (status=running/ready/todo/blocked) с тем же $branch_name,
+    # что мы вычислили, новая карточка гарантированно приведёт к:
+    #   `git worktree add failed: branch <X> is already checked out at <worktree>`
+    # и через 3 spawn_failed получит gave_up (а archived — orphaned в БД).
+    #
+    # Сценарий (реальный кейс, см. тикет):
+    #   t_40a610d0 (blocked, branch=z-{agent}/2406-...)
+    #   ↓ triage-tick через 5 мин (t_b7fbff1c)
+    #   ↓ 3x spawn_failed → gave_up → archived
+    #   ↓ ещё через 8 мин (t_6535e27d)
+    #   ↓ 2x spawn_failed → ready (ждёт следующего claim)
+    # Итого 3 карточки на одну ветку за 1ч50м, все мертвы в работе.
+    #
+    # Почему существующие guards не ловили (ретро-анализ t_60473741):
+    #   - existing_by_issue (line 1318): смотрит на issue#N, должен был поймать,
+    #     но `kanban: t_<id>` marker для t_40a610d0 НИКОГДА не был записан в
+    #     issue comments (3x comment-write fail → card created but no marker).
+    #     Snapshot карточек из БД ДОЛЖЕН был поймать через branch_name match —
+    #     но existing_by_issue возвращает только (id, status) без branch.
+    #   - branch_exists_in_remote (G9b, line 1388): ветка z-{agent}/2406-...
+    #     НЕ запушена в remote (worker работал локально, ни разу не push'нул) —
+    #     G9b возвращает 1 (branch нет в remote) → пропускает создание.
+    #   - throttle (line 1599-1636): v3 проверяет created_at за 4ч, но если
+    #     тик между карточками больше 4ч И карточка успела archived — throttle
+    #     пропускает (см. ретро t_a24ffe39, archived не блокирует).
+    #
+    # Решение: G9c — defense-in-depth. Использует branch_name из БД карточек
+    # (snapshot $existing_by_issue, поле 4 после patch в t_60473741). Сканирует
+    # ВСЕ записи для issue=$number (не только первую), фильтрует по
+    # status=running|ready|todo|blocked (живая = блокирует worker spawn), и
+    # сравнивает branch_name. Если match → skip + counter ++.
+    #
+    # Backward-compat: если existing_by_issue пуст (hermes kanban list упал),
+    # guard пропускается (мы не можем проверить, fail-OPEN). Это безопаснее,
+    # чем fail-CLOSED: в крайнем случае создаст дубль, как было до фикса.
+    #
+    # Чем G9c отличается от существующего кейса "живая карточка":
+    #   - линия 1356-1365 (case "${existing_status:-}" in): срабатывает только
+    #     ДЛЯ REOPENED issue. Для normal-issue с существующей живой карточкой
+    #     уже срабатывает line 1353 ("already has card ... — skip") — но
+    #     ЭТОТ skip ОДИН раз на issue, а в реальном кейсе marker для
+    #     t_40a610d0 не записан, поэтому existing_by_issue всё равно не матчит
+    #     (точнее, ДОЛЖЕН был сматчить по branch_name, но schema была 3-field).
+    #   - G9c делает branch_match вместо issue_match: ловит кейс, когда
+    #     existing_by_issue пуст (DB read failed), но всё-таки ловит кейс,
+    #     когда в БД несколько карточек на один issue с разными branch.
+    #
+    # Не дублирует G9b: G9b проверяет remote refs (нужен network), G9c —
+    # локальный snapshot карточек (дешёвый). G9b fail-OPEN при network fail,
+    # G9c fail-OPEN при DB fail. Оба вместе закрывают race-window надёжно.
+    if [ -n "$existing_by_issue" ] && [ -n "$branch" ]; then
+        # Сканируем ВСЕ записи для issue=$number. existing_by_issue имеет 4 поля.
+        _branch_match_id="$(
+            printf '%s\n' "$existing_by_issue" \
+                | awk -F'\t' -v n="$number" -v br="$branch" '
+                    $1 == n && br != "" && $4 == br {
+                        # Фильтруем по active status — done/archived НЕ блокируют.
+                        if ($3 == "running" || $3 == "ready" || $3 == "todo" || $3 == "blocked") {
+                            print $2; exit
+                        }
+                    }
+                '
+        )"
+        if [ -n "$_branch_match_id" ]; then
+            log "🚨 issue #${number}: G9c branch-name race-window — вычисленная ветка \`${branch}\` уже принадлежит ЖИВОЙ карточке ${_branch_match_id} (snapshot branch_name совпал). Новая карточка упадёт на \`git worktree add failed: branch is already checked out\` → skip (ретро t_60473741, ADR-AF-0067)"
+            if [ "$DRY_RUN" != "true" ]; then
+                # Комментарий + label. Дедуп не нужен (один tick → один comment,
+                # обычно G9c срабатывает не часто: только при явной попытке
+                # triage создать карточку на issue, у которого уже есть живая
+                # карточка с тем же branch — обычно после re-triage или
+                # failed-marker race; для rate-limit на issue спам не критичен).
+                gh issue comment "$number" --repo "$GH_REPO" --body \
+                    "🚨 **agent-flow-triage: G9c branch-name race-window dedup (ретро t_60473741, ADR-AF-0067)**
+
+Triage **НЕ создал** kanban-карточку для этого issue — вычисленная ветка \`${branch}\` уже принадлежит ЖИВОЙ kanban-карточке \`${_branch_match_id}\` (status в running/ready/todo/blocked). Новая карточка гарантированно упадёт на \`git worktree add failed: branch is already checked out at <worktree>\` → после 3 spawn_failed получит gave_up и уйдёт в archived (orphan в БД).
+
+**Что это значит:** для этого issue **уже идёт работа** на этой ветке (карточка \`${_branch_match_id}\` либо воркер ещё работает, либо blocked/unblocked, либо claim простаивает). Создание второй карточки на ту же ветку бессмысленно.
+
+**Почему так:** предыдущие guards не сработали:
+- G9b (\`branch_exists_in_remote\`) — ветка НЕ в remote refs (worker работал локально, ни разу не push'нул). G9b fail-OPEN здесь, как и положено.
+- existing_by_issue (issue-match) — marker \`kanban: t_<id>\` для карточки ${_branch_match_id} не записан в issue comments (3x comment-write retry failed, см. ADR-0032). Снимок карточек из БД имеет branch_name, но в схеме было только 3 поля (после фикса — 4).
+- throttle (4ч-window) — если карточка успела archived до следующего тика, throttle её пропускает.
+
+**Что делать (товарищ Шифу):**
+1. Если карточка \`${_branch_match_id}\` живая и работает — **ничего не делать**, она закроет issue.
+2. Если карточка \`${_branch_match_id}\` зависла в blocked/needs_input и не движется — **разберись в карточке** (комментарий воркера, ответь на needs_input через \`hermes kanban comment\`), либо присвой issue explicit-ветку через label \`branch:<новое-имя>\` — тогда triage использует её вместо вычисленной.
+3. Если карточка \`${_branch_match_id}\` мертва и должна быть переписана — удали ветку локально (\`git -C /home/builder/hermes-share/rob_box_project branch -D ${branch}\` или через \`git worktree remove\`) и освободи её от stale-worktree cleanup'а (см. \`free_stale_worktrees_for_branch\`), затем повторный тик создаст свежую карточку.
+
+См. ADR-AF-0067 для деталей race-scenarios и acceptance criteria." >/dev/null 2>&1 || true
+                gh issue edit "$number" --repo "$GH_REPO" --add-label "agent-flow-error" >/dev/null 2>&1 || true
+            fi
+            dedup_branch_active_skipped=$((dedup_branch_active_skipped+1))
+            skipped=$((skipped+1)); continue
+        fi
+    fi
 
     # Ретро-фикс (26.08 t_dfd3d19d, ADR-0032): G9b race-window dedup.
     # Если вычисленная ветка уже есть в remote refs — карточка создаст
@@ -2075,6 +2199,9 @@ dedup_race_skipped=0
 # Ретро-фикс (07.09 t_50a18fa9, ADR-AF-0062): третий счётчик для G10a file-overlap.
 # summary печатает «dedup-skipped: N (intra-tick), M (race), K (file-overlap)».
 dedup_file_overlap_skipped=0
+# Ретро-фикс (15.09.2026 t_60473741, ADR-AF-0067): 4-й счётчик для G9c branch-active.
+# summary печатает «..., L (branch-active)».
+dedup_branch_active_skipped=0
 # Ретро-фикс (01.09, t_e1a9613d, issue #1824): массив для unknown-assignee
 # records (number, role, title_prefix), собирается в `process_issues_json`,
 # обрабатывается в _emit_unknown_assignee_rollup после Phase 1+2.
@@ -2903,7 +3030,7 @@ fi
 _emit_unknown_assignee_rollup || true
 
 # --- summary -----------------------------------------------------------------
-log "tick done: created=${created} skipped=${skipped} errored=${errored} dedup-skipped: ${dedup_intra_skipped} (intra-tick), ${dedup_race_skipped} (race), ${dedup_file_overlap_skipped} (file-overlap), unknown-assignee: rollup-emitted=${unknown_assignee_rollup_emitted} (dedup-hit=${unknown_assignee_rollup_dedup_hit}), phase3-bug-orphans: marked=${phase3_orphan_marked} skipped=${phase3_orphan_skipped} errored=${phase3_orphan_errored}, phase4-force-triage: candidates=${phase4_force_candidates} marked=${phase4_force_marked} skipped=${phase4_force_skipped} errored=${phase4_force_errored}"
+log "tick done: created=${created} skipped=${skipped} errored=${errored} dedup-skipped: ${dedup_intra_skipped} (intra-tick), ${dedup_race_skipped} (race), ${dedup_file_overlap_skipped} (file-overlap), ${dedup_branch_active_skipped} (branch-active), unknown-assignee: rollup-emitted=${unknown_assignee_rollup_emitted} (dedup-hit=${unknown_assignee_rollup_dedup_hit}), phase3-bug-orphans: marked=${phase3_orphan_marked} skipped=${phase3_orphan_skipped} errored=${phase3_orphan_errored}, phase4-force-triage: candidates=${phase4_force_candidates} marked=${phase4_force_marked} skipped=${phase4_force_skipped} errored=${phase4_force_errored}"
 
 # Exit non-zero only on hard errors (G4/G5) so cron can alert.
 if [ "$errored" -gt 0 ]; then exit 1; fi
