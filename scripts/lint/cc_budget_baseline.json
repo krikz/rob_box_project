@@ -28,7 +28,7 @@
       "DialogueNode._continue_after_tool_calls": 22,
       "DialogueNode._do_recursive_streaming": 22,
       "DialogueNode._execute_tool_calls": 18,
-      "DialogueNode._handle_result": 75,
+      "DialogueNode._handle_result": 78,
       "DialogueNode._on_stt": 54,
       "DialogueNode._run_turn": 59
     },
@@ -181,8 +181,8 @@
     {
       "path": "src/rob_box_voice/rob_box_voice/dialogue_node.py",
       "method": "DialogueNode._handle_result",
-      "cc": 75,
-      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog; bumped 65 -> 68 for issue #2548 prose-action-claim fallback (CC-budget guard); bumped 68 -> 72 for issue #2547 strip_meta_markers pipeline + audible fallback after tools (CC-budget guard); +4 CC from one new strip_X() call site + one new conditional fallback block (4-way guard with is_dj_auto / result.error / tools_called / spoken emptiness); bumped 72 -> 75 for issue #2562 Bug F detector hook (CC-budget guard) — added 3-way if-block in _handle_result for unknown-melody-claim detection + one _dispatch_turn call + one logger.warning, all routed through helper _check_unknown_melody_claim_and_retry."
+      "cc": 78,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog; bumped 65 -> 68 for issue #2548 prose-action-claim fallback (CC-budget guard); bumped 68 -> 72 for issue #2547 strip_meta_markers pipeline + audible fallback after tools (CC-budget guard); +4 CC from one new strip_X() call site + one new conditional fallback block (4-way guard with is_dj_auto / result.error / tools_called / spoken emptiness); bumped 72 -> 75 for issue #2562 Bug F detector hook (CC-budget guard) — added 3-way if-block in _handle_result for unknown-melody-claim detection + one _dispatch_turn call + one logger.warning, all routed through helper _check_unknown_melody_claim_and_retry; bumped 75 -> 78 for issue #2560 hallucinated-MIDI guard (CC-budget guard) — added +3 CC from one new 'if spoken and _check_hallucinated_midi_and_retry' branch that calls _dispatch_turn on pe<num>le<num>f-pattern detection (composes with Bug F guard above without overlap)."
     },
     {
       "path": "src/rob_box_voice/rob_box_voice/dialogue_node.py",

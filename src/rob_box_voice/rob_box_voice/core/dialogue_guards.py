@@ -1856,3 +1856,135 @@ def build_system_regurgitate_retry_prompt(user_input: Optional[str]) -> str:
         "✅ В ЭТОМ же turn ответь обычным русским языком (без XML-обёрток "
         "и meta-маркеров), вызови нужный tool и заверши 'done'."
     )
+
+
+# ---------------------------------------------------------------------------
+# Issue #2560 — модель ВЫДУМЫВАЕТ MIDI-паттерн вместо lookup_melody.
+#
+# Round-3 live (Vision Pi, 2026-09-15, DJ-сет «Пауля Оакенфольда»):
+# юзер 8 раз подряд просил «в пещере горного короля», и модель каждый раз
+# вызывала ``execute_music_code(code="...pe8le1f...")`` — ``pe<номер>le<номер>f``
+# это фантазийный «идентификатор мелодии», НЕ настоящий MIDI и НЕ нота Peer
+# Gynt Suite №1 из RTTTL-библиотеки.
+#
+# PR #2551 добавил ``RULE #KNOWN-MELODY`` в composer.txt и
+# master_prompt_compact.txt — текстовое правило. Round-3 показал: правило
+# модель ЧИТАЕТ и тут же НАРУУГАЕТ (6 случаев за 60 минут). Поэтому нужен
+# runtime safety net на стороне dialogue_node: один CRITICAL-ретрай с явным
+# требованием «сначала lookup_melody», и Prometheus-счётчик для тревоги.
+#
+# Паттерн «pe<num>le<num>f» — FoxDot/renardo-синтаксис, который модель
+# выдумывает как «имя мелодии». Реально нот у него нет — LLM
+# hallucination. Также ловим ``pe<num>le<num>f`` внутри любых строк
+# (включая args ``execute_music_code`` и ``spoken`` описание).
+# ---------------------------------------------------------------------------
+
+#: Регулярка для обнаружения hallucinated MIDI-паттерна в тексте.
+#:
+#: ``pe<num>le<num>f`` — FoxDot/renardo pattern syntax, которым модель
+#: выдумывает «идентификатор мелодии». Ловим и в чистом тексте, и внутри
+#: ``code=...`` аргументов ``execute_music_code``.
+HALLUCINATED_MIDI_RE = re.compile(
+    r"\bpe\d{1,3}le\d{1,3}f\b",
+    re.IGNORECASE,
+)
+
+
+def detect_hallucinated_midi(text: Optional[str]) -> Optional[str]:
+    """Issue #2560 — найти hallucinated MIDI-паттерн в тексте реплики.
+
+    Паттерн «pe<num>le<num>f» (FoxDot/renardo) — выдуманный идентификатор
+    мелодии, которым модель заменяет реальные ноты известных композиторов
+    (Григ, Бетховен, Моцарт, etc.) — это тот самый баг #2550/#2560
+    «LLM выдумывает MIDI вместо lookup_melody».
+
+    Args:
+        text: текст для проверки (обычно ``result.spoken_text`` или
+            ``user_input``).
+
+    Returns:
+        Первый совпавший фрагмент вида ``pe8le1f`` (case-insensitive),
+        если паттерн есть; ``None`` если текст пуст или паттерна нет.
+        Самодный фрагмент пригодится для лога и CRITICAL-ретрая.
+
+    See also:
+        :func:`detect_hallucinated_midi_in_tools` — вариант для
+        ``tools_called``, где нужно проверить имена тулов на
+        execute_music_code.
+    """
+    if not text:
+        return None
+    match = HALLUCINATED_MIDI_RE.search(text)
+    if not match:
+        return None
+    return match.group(0)
+
+
+def detect_hallucinated_midi_in_tools(
+    *,
+    spoken: Optional[str],
+    tools_called: Tuple[str, ...],
+) -> Optional[str]:
+    """Issue #2560 — guard-фронт для ``_check_hallucinated_midi_and_retry``.
+
+    Проверяем ТОЛЬКО содержимое ``spoken`` на паттерн
+    :data:`HALLUCINATED_MIDI_RE`. ``tools_called`` — это только имена
+    тулов (``execute_music_code`` и т.п.), аргументы через этот tuple не
+    доступны; args попадают в ``result.spoken_text`` как описание.
+
+    Args:
+        spoken: текст LLM-ответа (``result.spoken_text`` после strip'ов).
+        tools_called: имена тулов, вызванных LLM в этом turn'е.
+
+    Returns:
+        Первый совпавший hallucinated MIDI-фрагмент (``pe8le1f``) или
+        ``None``. Если вернулся не-``None`` — диалог-node ОБЯЗАН
+        отправить CRITICAL-ретрай (один раз на turn, см.
+        ``_hallucinated_midi_retry_used``).
+    """
+    # Скан именно spoken: в нём модель описывает, что она «сочинила».
+    # Если в spoken есть ``pe8le1f`` — модель hallucinating.
+    return detect_hallucinated_midi(spoken)
+
+
+def build_hallucinated_midi_retry_prompt(
+    *,
+    user_input: Optional[str],
+    pattern: str,
+) -> str:
+    """Issue #2560 — синтетический CRITICAL-ретрай на hallucinated MIDI.
+
+    Модель при запросе известной мелодии (Григ, Бетховен, etc.) выдала
+    фантазийный паттерн ``pe8le1f`` (FoxDot/renardo-синтаксис) вместо
+    реальных нот из RTTTL-библиотеки. Текстовое правило
+    ``RULE #KNOWN-MELODY`` (issue #2550 / PR #2551) модель прочитала и
+    тут же нарушила — поэтому требуем ОДИН раз вызвать ``lookup_melody``
+    ДО любой попытки ``compose_music`` / ``execute_music_code``.
+
+    Args:
+        user_input: оригинальная команда юзера (для контекста в ретрае).
+        pattern: совпавший hallucinated паттерн (``pe8le1f``) для явной
+            ссылки в промпте.
+
+    Returns:
+        Текст промпта, который ``dialogue_node._dispatch_turn`` отдаст
+        LLM как ``user_input`` синтетического turn'а.
+    """
+    cleaned = _strip_trailing_critical_block(user_input or "")
+    return (
+        f"{cleaned}\n\n"
+        "[CRITICAL] В предыдущем ответе ты придумал(а) фантазийный "
+        f"MIDI-паттерн «{pattern}» (FoxDot/renardo-синтаксис) — "
+        "таких нот в RTTTL-библиотеке НЕТ, юзер услышит не ту мелодию. "
+        "Это та самая регрессия, которую RULE #KNOWN-MELODY "
+        "в composer.txt (issue #2550 / PR #2551) должен был предотвратить.\n"
+        "❌ ЗАПРЕЩЕНО выдумывать «Григ-подобный ostinato» / "
+        "«Бетховен-стайл мотив» / случайные числовые "
+        "«pe<num>le<num>f» — это hallucination нот.\n"
+        "✅ ОБЯЗАТЕЛЬНО первым делом вызови lookup_melody(name=...) "
+        "или search_melody(query=...) и возьми РЕАЛЬНЫЕ ноты из RTTTL. "
+        "Только ПОТОМ compose_music(name=...) или execute_music_code "
+        "с этими нотами. Если RTTTL пусто — скажи «не нашёл в библиотеке», "
+        "НЕ импровизируй «по памяти».\n"
+        "После вызова верни 'done'."
+    )
