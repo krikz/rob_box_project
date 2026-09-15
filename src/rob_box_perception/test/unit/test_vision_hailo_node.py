@@ -23,6 +23,7 @@ from __future__ import annotations
 import importlib
 import sys
 import time
+from pathlib import Path
 from typing import Any, Dict, List
 
 import pytest
@@ -31,15 +32,14 @@ import pytest
 # ---------- import target under test ------------------------------------
 
 # Делаем import один раз на модуль. Используем sys.path.insert, чтобы
-# тест работал в любом worktree без хардкода путей (старый код
-# захардкодил путь к удалённой ветке t_b9b6cf73 — ломалось при работе
-# в новой ветке). Текущий путь соответствует worktree этой задачи.
-_PKG_ROOT = (
-    '/home/builder/rob_box_project/.worktrees/t_40ee0b73/'
-    'src/rob_box_perception'
-)
-if _PKG_ROOT not in sys.path:
-    sys.path.insert(0, _PKG_ROOT)
+# тест работал в любом worktree без хардкода абсолютного пути.
+# `parents[2]` = .../src/rob_box_perception → содержит пакет rob_box_perception/.
+# (тот же приём, что и в test_vision_event_parity.py; ранее был захардкод
+# `/home/builder/.worktrees/t_40ee0b73/` — ломалось после cleanup этого worktree).
+_HERE = Path(__file__).resolve()
+_PKG_ROOT = _HERE.parents[2]
+if str(_PKG_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PKG_ROOT))
 loader_mod = importlib.import_module('rob_box_perception.vision_hailo_loader')
 
 

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import importlib
 import sys
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -34,13 +35,16 @@ import pytest
 
 # ---------- import target under test ------------------------------------
 
+# `parents[2]` = .../src/rob_box_perception → содержит пакет rob_box_perception/.
+# (тот же приём, что и в test_vision_event_parity.py; ранее был захардкод
+# `/home/builder/.worktrees/t_40ee0b73/` — ломалось после cleanup этого worktree).
+_HERE = Path(__file__).resolve()
+_PKG_ROOT = _HERE.parents[2]
+
+
 def _import_module():
-    pkg_root = (
-        '/home/builder/rob_box_project/.worktrees/t_40ee0b73/'
-        'src/rob_box_perception'
-    )
-    if pkg_root not in sys.path:
-        sys.path.insert(0, pkg_root)
+    if str(_PKG_ROOT) not in sys.path:
+        sys.path.insert(0, str(_PKG_ROOT))
     return importlib.import_module('rob_box_perception.vision_hailo_loader')
 
 
