@@ -210,3 +210,109 @@ def _hist_sum(name: str, labels: dict) -> float:
             ):
                 return float(sample.value)
     return 0.0
+
+
+# ---------------------------------------------------------------------------
+# Issue #2561 — record_music_retry_exhausted
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(
+    not is_metrics_enabled(),
+    reason="prometheus_client required for registry-level assertions",
+)
+class TestRecordMusicRetryExhausted:
+    """Issue #2561: проверяем, что :func:`record_music_retry_exhausted`
+    правильно инкрементирует ``voice_music_retry_exhausted_total``
+    с лейблами (guard_name, reason, user_input_kind)."""
+
+    def test_increments_counter_with_labels(self):
+        before = _counter_value(
+            "voice_music_retry_exhausted_total",
+            {
+                "guard_name": "music_user",
+                "reason": "retry_exhausted",
+                "user_input_kind": "track_name",
+            },
+        )
+        record_music_retry_exhausted(
+            guard_name="music_user",
+            reason="retry_exhausted",
+            user_input_kind="track_name",
+        )
+        after = _counter_value(
+            "voice_music_retry_exhausted_total",
+            {
+                "guard_name": "music_user",
+                "reason": "retry_exhausted",
+                "user_input_kind": "track_name",
+            },
+        )
+        assert after == before + 1
+
+    def test_distinguishes_user_input_kinds(self):
+        # Каждый лейбл — своя серия в REGISTRY.
+        record_music_retry_exhausted(
+            guard_name="music_user",
+            reason="retry_exhausted",
+            user_input_kind="genre",
+        )
+        v_genre = _counter_value(
+            "voice_music_retry_exhausted_total",
+            {
+                "guard_name": "music_user",
+                "reason": "retry_exhausted",
+                "user_input_kind": "genre",
+            },
+        )
+        record_music_retry_exhausted(
+            guard_name="music_user",
+            reason="retry_exhausted",
+            user_input_kind="general",
+        )
+        v_general = _counter_value(
+            "voice_music_retry_exhausted_total",
+            {
+                "guard_name": "music_user",
+                "reason": "retry_exhausted",
+                "user_input_kind": "general",
+            },
+        )
+        # Оба лейбла должны быть учтены (>= 1, не нули).
+        assert v_genre >= 1
+        assert v_general >= 1
+
+    def test_empty_user_input_kind_defaults_to_unknown(self):
+        record_music_retry_exhausted(
+            guard_name="music_user",
+            reason="retry_exhausted",
+            user_input_kind="",
+        )
+        # Метка с пустой строкой должна стать "unknown".
+        v_unknown = _counter_value(
+            "voice_music_retry_exhausted_total",
+            {
+                "guard_name": "music_user",
+                "reason": "retry_exhausted",
+                "user_input_kind": "unknown",
+            },
+        )
+        assert v_unknown >= 1
+
+
+@pytest.mark.skipif(
+    not is_metrics_enabled(),
+    reason="prometheus_client required for registry-level assertions",
+)
+class TestRecordMusicRetryExhaustedNoop:
+    """Без prometheus_client ``record_music_retry_exhausted`` — no-op."""
+
+    def test_noop_when_disabled(self):
+        if is_metrics_enabled():
+            pytest.skip("prometheus_client installed — no-op path not exercised")
+        # Не должно падать.
+        record_music_retry_exhausted(
+            guard_name="music_user",
+            reason="retry_exhausted",
+            user_input_kind="track_name",
+        )
