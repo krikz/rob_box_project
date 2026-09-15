@@ -204,7 +204,9 @@ from rob_box_voice.speaker_profiles import (
 from rob_box_voice.tts_voice_registry import format_tts_context
 # Issue #1787 — сборка промпта и валидация клички, придуманной LLM.
 from rob_box_voice.core import epithets
-from rob_box_voice.core.occasion import Occasion  # ADR-0101 §3.1 (PR-A, #2536)
+# ADR-0101 §3.1 — ``Occasion`` импортирован выше (PR-B, #2536); старая
+# однострочная запись из PR-A удалена как дубликат (использовалась только в
+# type-аннотации под ``from __future__ import annotations``, runtime не нужна).
 
 # Issue #1160 — Prometheus metrics (этап 1 observability).
 # ``prometheus_client`` — optional dep; если её нет, всё превращается в
