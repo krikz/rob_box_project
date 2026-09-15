@@ -40,6 +40,7 @@ from .dialogue_guards import (
     USER_MUSIC_SATISFYING_TOOLS,
     build_music_retry_exhausted_fallback,
     is_music_stop_command,
+    is_phantom_music_action,
     is_vocal_request,
     user_wants_music,
 )
@@ -222,6 +223,7 @@ class MusicGuard:
         dj_enabled: bool = False,
         build_music_retry_prompt=None,
         build_dj_retry_prompt=None,
+        spoken: Optional[str] = None,
     ) -> MusicGuardVerdict:
         """Decide what the post-turn music guard should do.
 
@@ -246,6 +248,19 @@ class MusicGuard:
             build_dj_retry_prompt: Callable ``() -> str`` for the
                 Bug B synthetic retry prompt. The adapter passes
                 ``self._build_dj_retry_prompt``.
+            spoken: Optional LLM reply text (post-TTS pre-processing).
+                Used only by issue #2565 phantom-action deferral
+                — before :attr:`MusicGuardVerdictKind.FORCE_STOP` we
+                check whether the LLM *just promised* a music action
+                without calling the matching tool. If yes, the
+                active track is NOT silenced (so the upcoming
+                :func:`_check_unbacked_action_claim_and_retry` CRITICAL
+                retry has a chance to land a real ``load_track`` /
+                ``gen_play_from_library`` call instead of the user
+                hearing silence after «Запускаю…»). ``None`` means
+                «spoken unknown yet» (e.g. ``_dispatch_dj_turn`` path
+                before the LLM ran) — deferral is skipped, FORCE_STOP
+                stays as before (back-compat).
 
         Returns:
             :class:`MusicGuardVerdict` whose ``kind`` tells the adapter
@@ -331,7 +346,39 @@ class MusicGuard:
         # доиграл до конца ещё 20 секунд после «выключена». Стоп —
         # идемпотентная операция, поэтому здесь мы не ретраим LLM, а
         # останавливаем музыку сами (адаптер публикует music_cleanup).
+        #
+        # 🔴 FIX (issue #2565, live 2026-09-15 DJ Oakenfold case): перед
+        # тем как Force-Stop'ать активную музыку, проверяем — не было ли в
+        # последнем LLM-turn-е phantom-action claim'а на ЗАПУСК нового
+        # трека («Запускаю Oakenfold-сессию…» при tools=[]). Если да —
+        # НЕ тушим, потому что модель только что пообещала действие,
+        # но не сделала его; CRITICAL-retry в
+        # :func:`_check_unbacked_action_claim_and_retry` (issue #992
+        # Bug E) сейчас же перезапросит модель с явным указанием
+        # тула, и она реально запустит трек через
+        # ``load_track`` / ``gen_play_from_library``. Если же мы
+        # сначала потушим активную музыку, юзер услышит тишину после
+        # «Запускаю…» — ровно то, что воспроизвело issue #2565.
+        # ``spoken=None`` (ещё не известно) → back-compat: Force-Stop
+        # срабатывает как раньше.
         if is_music_stop_command(user_input) and not (tools_set & MUSIC_HARD_STOP_TOOLS):
+            phantom = is_phantom_music_action(
+                user_input=user_input,
+                spoken=spoken,
+                tools_called=tuple(tools_set),
+            )
+            if phantom is not None:
+                self._log_warning(
+                    "🎵 [issue 2565] phantom-action deferral: LLM пообещала "
+                    f"{phantom.what!r} (category={phantom.category!r}, "
+                    f"tools={sorted(tools_set)!r}) — НЕ тушим активную "
+                    "музыку, дождёмся CRITICAL-retry из "
+                    "_check_unbacked_action_claim_and_retry"
+                )
+                return MusicGuardVerdict(
+                    kind=MusicGuardVerdictKind.SKIP_NOT_APPLICABLE,
+                    reason="phantom_action_defers_stop",
+                )
             self._log_warning(
                 "🎵 [issue 992 Bug F] stop-command без stop-тула "
                 f"(tools={sorted(tools_set)!r}) — принудительный стоп из кода"

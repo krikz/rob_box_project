@@ -1328,6 +1328,57 @@ def _music_context_hit(user_input: Optional[str], dj_active: bool) -> bool:
         return False
 
 
+#: Категории :data:`ACTION_CLAIM_RULES`, относящиеся к управлению музыкой.
+#: Используется :func:`is_phantom_music_action` (issue #2565), чтобы
+#: отличать «LLM пообещала запустить/остановить/изменить музыку, не
+#: вызвав тул» от прочих action-claims (waypoint, sound_info, library и
+#: т.п.). Если phantom попал в эти категории — :class:`MusicGuard` не
+#: должен глушить активную музыку, иначе :func:`_check_unbacked_action_claim_and_retry`
+#: не успеет отработать CRITICAL-retry (issue #992 Bug E) и юзер
+#: услышит тишину после «Запускаю…» (live repro — DJ Oakenfold,
+#: vision-pi 2026-09-15 12:16 MSK).
+MUSIC_PHANTOM_CATEGORIES: frozenset = frozenset({
+    "track_load",      # «запусти трек X» → «Трек играет.»
+    "track_delete",    # «удали трек X» → «удалён»
+    "music_state",     # «что играет?» → «играет X» (read-only claim)
+})
+
+
+def is_phantom_music_action(
+    *,
+    user_input: Optional[str],
+    spoken: Optional[str],
+    tools_called: Optional[Tuple[str, ...]],
+) -> Optional[ActionClaimRule]:
+    """Issue #2565 — :func:`detect_unbacked_action_claim` для музыкальных
+    категорий.
+
+    Возвращает сработавшее правило из :data:`MUSIC_PHANTOM_CATEGORIES`
+    или ``None``. Используется :meth:`MusicGuard.evaluate` ПЕРЕД
+    веткой ``FORCE_STOP``: если LLM только что пообещала запустить
+    новый трек, стоп-guard не должен глушить активную музыку —
+    иначе ``spoken="Запускаю Oakenfold-сессию…"`` уйдёт в TTS, а юзер
+    услышит тишину.
+
+    Узкая по построению (как и Bug E) — срабатывает только когда И
+    запрос юзера, И ответ LLM попадают в ОДНУ music-rule, И ни один
+    тул из её ``tools`` не был вызван. Любое сомнение → ``None``.
+    Цена ложного срабатывания: лишний round-trip к LLM. Цена пропуска:
+    воспроизведение issue #2565 — гасим музыку, на которую юзер
+    только что рассчитывал.
+    """
+    rule = detect_unbacked_action_claim(
+        user_input=user_input,
+        spoken=spoken,
+        tools_called=tools_called,
+    )
+    if rule is None:
+        return None
+    if rule.category not in MUSIC_PHANTOM_CATEGORIES:
+        return None
+    return rule
+
+
 # ---------------------------------------------------------------------------
 # Retry prompt builders
 # ---------------------------------------------------------------------------
