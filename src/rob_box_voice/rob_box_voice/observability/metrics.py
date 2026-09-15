@@ -740,3 +740,39 @@ def record_pending_queue_latency(latency_s: float) -> None:
         buckets=_PENDING_QUEUE_LATENCY_BUCKETS,
     )
     hist.observe(latency_s)
+
+
+def record_hallucinated_midi(*, source: str, action: str) -> None:
+    """Issue #2560 — учёт одного случая «модель выдумала MIDI-паттерн».
+
+    Hallucinated MIDI — режим, при котором LLM при запросе известной
+    мелодии (Григ «В пещере горного короля», Бетховен «К Элизе», etc.)
+    пишет выдуманные MIDI-ноты в ``execute_music_code(code=...)``
+    (FoxDot/renardo-синтаксис вида ``p1 >> strangerarp(...)``,
+    ``pe<номер>le<номер>f`` и т.п.) вместо того, чтобы СНАЧАЛА
+    вызвать ``lookup_melody`` и достать реальные ноты из RTTTL-библиотеки.
+
+    Текстовое правило ``RULE #KNOWN-MELODY`` в composer.txt
+    (issue #2550 → PR #2551) этот баг НЕ устранило: модель иногда
+    читает правило и тут же нарушает. ``hallucinated_midi_total`` —
+    последний рубеж: ``dialogue_node._check_hallucinated_midi_and_retry``
+    детектирует паттерн по regex ``pe[0-9]+le[0-9]+f``, требует
+    один CRITICAL-ретрай с «сначала lookup_melody» и инкрементит
+    этот счётчик. Prometheus-алерт: ``rate(...) > 0`` за 1ч
+    ⇒ расследование (issue #2560 acceptance criteria).
+
+    :param source: ``"guard"`` (сработал ``_check_hallucinated_midi_and_retry``)
+        или ``"skip"`` (бюджет исчерпан, ретрай не отправлен).
+    :param action: ``"retry"`` (CRITICAL-ретрай ушёл в LLM),
+        ``"publish"`` (юзер всё-таки услышал babble), ``"skipped"``
+        (бюджет/флаг не пустили ретрай).
+    """
+    counter = get_metric(
+        "counter",
+        "voice_composer_hallucinated_midi_total",
+        "Hallucinated MIDI patterns (FoxDot pe<num>le<num>f) emitted by LLM "
+        "instead of lookup_melody (issue #2560). Labels: source (guard|skip), "
+        "action (retry|publish|skipped).",
+        labelnames=("source", "action"),
+    )
+    counter.labels(source=source, action=action).inc()
