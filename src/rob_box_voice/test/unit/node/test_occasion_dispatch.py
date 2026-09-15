@@ -202,8 +202,9 @@ class TestGateDrivesDispatch:
         # production-код после успешного LLM-ответа; здесь — сразу).
         gate.mark_consumed(occasion, now=100.0)
 
-        # Step 4: gate.mark_consumed прописал EventDetector-уровень.
-        # Проверяем через stats().
+        # Step 4: gate.mark_consumed прописал bookkeeping (last_fire_at +
+        # last_any_at). EventDetector-зависимость убрана (#2612) — проверяем
+        # оба счётчика через stats().
         stats = gate.stats()
         assert stats["last_fire_at"]["meeting"] == 100.0
-        assert "meeting" in stats["detector_event_last_reaction"]
+        assert stats["last_any_at"] == 100.0
