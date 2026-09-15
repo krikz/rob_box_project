@@ -449,6 +449,46 @@ llm_streaming, agent-flow. В активной разработке, требу�
 
 ## [Unreleased]
 
+### Vision Pi zram-swap + ssh MemoryLow + mem_limit для всех контейнеров (issue #2621, ADR-0111, kanban t_22362046)
+
+Vision Pi под нагрузкой становилась недоступна по ssh (MemAvailable
+падал до 416 МБ за 27 минут, свопа не было — ядро не могло вытеснить
+анонимные страницы). Решение:
+
+* **zram-swap** через systemd (4 GB, zstd, swappiness=180) — даёт ядру
+  возможность вытеснять анонимные страницы при пиках. Скрипт
+  `scripts/setup/setup_vision_pi_swap.sh` (идемпотентен, команды `--auto`,
+  `--dry-run`, `--status`, `--remove`). Systemd-юнит
+  `host/vision/robbox-zram.service`. Подробности — в
+  [`ADR-0111`](docs/adr/0111-vision-pi-zram-swap-and-container-limits.md).
+* **MemoryLow=128M для sshd** через drop-in
+  `host/vision/ssh-memory-low.conf` — чтобы сессия управления
+  выживала, когда прикладные контейнеры потребляют память.
+* **`mem_limit` для всех контейнеров** в `docker/vision/docker-compose.yaml`.
+  Раньше лимиты были только у 5 из 14 контейнеров (4 GB у
+  voice-assistant, 6 GB у oak-d, 1 GB у vision-hailo/vision-face, 512 MB
+  у telegram-bot). Теперь добавлены лимиты для zenoh-router (128m),
+  led-matrix (512m), ceiling-camera (512m), supercollider (512m),
+  voice-resources-init (256m), voice-action-server (128m),
+  avatar-supervisor (512m), avatar-arbiter (512m), rob-box-quest (512m).
+  Под профилем (`cadvisor`, `promtail`, `ollama`) — намеренно без
+  лимита.
+* **19 unit-тестов** в
+  `tests/unit/scripts/test_setup_vision_pi_swap.py` (bash-syntax,
+  shellcheck, dry-run idempotency, validation strict, status без root).
+* **Документация:** `docs/deployment/VISION_PI_DEPLOYMENT.md`
+  (обновлён OOM-раздел), `docs/development/DOCKER_STANDARDS.md` §7
+  (обязательный mem_limit + ссылка на zram),
+  `host/vision/README.md` (инструкции по ручной/авто-установке).
+* **`setup_vision_pi.sh`** — добавлены шаги `setup_zram_swap` и
+  `setup_ssh_memory_low` в `main()`.
+
+**Что НЕ лечит этот PR:** root cause ~1.6 GB мёртвого груза CUDA-torch
+в `voice-assistant` — это отдельная карточка
+[issue #2609](https://github.com/krikz/rob_box_project/issues/2609)
+(профиль `agent:backend`, в работе). После неё voice-assistant будет
+~2 GB вместо 3.5 GB, и zram-swap станет страховкой, а не необходимостью.
+
 ### MiniMax STT provider (Phase 1 PoC, kanban t_7283c042 / issue #2365)
 
 Cross-package documentation polish для MiniMax Speech-to-Text провайдера,
