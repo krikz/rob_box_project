@@ -201,6 +201,7 @@ from rob_box_voice.speaker_profiles import (
 from rob_box_voice.tts_voice_registry import format_tts_context
 # Issue #1787 — сборка промпта и валидация клички, придуманной LLM.
 from rob_box_voice.core import epithets
+from rob_box_voice.core.occasion import Occasion  # ADR-0101 §3.1 (PR-A, #2536)
 
 # Issue #1160 — Prometheus metrics (этап 1 observability).
 # ``prometheus_client`` — optional dep; если её нет, всё превращается в
@@ -2836,7 +2837,15 @@ class DialogueNode(Node):
         speaker_tag: str | None = None,
         speaker_duration_s: float = 0.0,
         from_tg: bool = False,
+        occasion: "Occasion | None" = None,
     ) -> None:
+        # ADR-0101 §3.1 / #2536 — повод (ещё не подключён в wake-gate,
+        # PR-B…F); сигнатура принимает ``occasion``, логирует только при
+        # явной передаче. occasion=None → байт-в-байт прежнее поведение.
+        if occasion is not None:
+            self.get_logger().info(
+                f"🎯 [occasion] started turn occasion={occasion.kind}"
+            )
         # Issue #992 Bug A — DJ auto-transitions must NOT publish
         # ``music_cleanup`` with ``reason="new_dialogue"``. Without this
         # guard the LLM cycle is reset mid-track, which in turn trips the
