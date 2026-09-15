@@ -1706,8 +1706,9 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'satisfies_user_music': False,
         'execution_type': 'medium',
         'name': 'get_perception_context',
-        'description': 'Получить текущий контекст восприятия робота (vision, sensors, '
-                       'environment).',
+        'description': 'Получить текущий контекст восприятия робота: время суток, '
+                       'заряд батареи, температура, движение, здоровье системы, режим '
+                       'картографирования, сводка недавних событий.',
         'parameters': {   'type': 'object',
                           'properties': {},
                           'required': [],

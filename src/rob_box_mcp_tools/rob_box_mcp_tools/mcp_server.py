@@ -117,6 +117,7 @@ from .waypoint_store import WaypointStore
 from .waypoint_adapter import WaypointAdapter
 from .mapping_state import MappingState
 from .voice_state import VoiceStateStore
+from .perception_projection import project_perception_event
 
 try:
     from rob_box_voice.core.voice_memory import VoiceMemory as _VoiceMemory
@@ -1311,20 +1312,26 @@ class MCPServer(Node):
             self._publish_error(f"Внутренняя ошибка: {str(e)}", "")
 
     def on_perception_update(self, msg):
-        """Обработка обновления контекста восприятия."""
-        try:
-            # Обновляем battery tool
-            if hasattr(msg, "battery_percentage"):
-                self.battery_tool.update_battery(msg.battery_percentage)
+        """Обработка обновления контекста восприятия.
 
-            # Обновляем perception context tool
-            # Конвертируем PerceptionEvent в dict для хранения
-            context = {
-                "timestamp": msg.timestamp if hasattr(msg, "timestamp") else 0.0,
-                "internet_available": msg.internet_available if hasattr(msg, "internet_available") else False,
-                "battery_percentage": msg.battery_percentage if hasattr(msg, "battery_percentage") else 0.0,
-                "mapping_mode": msg.mapping_mode if hasattr(msg, "mapping_mode") else "unknown",
-            }
+        Проекция (issue #2532) живёт в ``perception_projection`` — что именно
+        из 27 полей ``PerceptionEvent`` видит Личность, решается там, один раз
+        и под тестом паритета с IDL. Здесь остаётся тонкий адаптер.
+
+        ``hasattr``-гвардов тут больше нет намеренно: прежде они превращали
+        расхождение имён полей с IDL в тихий ноль (батарея не доходила до LLM
+        вообще, timestamp всегда был 0). Теперь дрейф IDL — это громкая ошибка
+        в логе, а не молчаливая потеря данных.
+        """
+        try:
+            context = project_perception_event(msg)
+
+            # battery_percent = None означает «данных о батарее ещё не было»
+            # (агрегатор пишет 0.0 В по умолчанию). Не путаем с «разряжена».
+            battery_percent = context["battery_percent"]
+            if battery_percent is not None:
+                self.battery_tool.update_battery(battery_percent)
+
             self.perception_context_tool.update_context(context)
 
         except Exception as e:
