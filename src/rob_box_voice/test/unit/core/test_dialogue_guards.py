@@ -1371,7 +1371,10 @@ class TestStopClearsTheMusicPlayingFlagLive3108:
         assert "stop_music" in MUSIC_STOP_TOOLS
 
     def test_node_clears_the_flag_on_stop_tools(self) -> None:
-        src = self._dialogue_node_source()
+        # Issue #2631 / ADR-0021 R1 — cleanup-policy вынесен в
+        # ``DialogueNode._schedule_music_cleanup``. Тест ищет подстроки
+        # в определении этого helper'а, а не во всём файле.
+        src = self._schedule_music_cleanup_source()
         assert "tools_now & MUSIC_STOP_TOOLS" in src, (
             "dialogue_node не гасит _track_mode_music_active на stop-тулах"
         )
@@ -1383,12 +1386,33 @@ class TestStopClearsTheMusicPlayingFlagLive3108:
 
     def test_flag_is_cleared_before_the_starters_branch_sets_it(self) -> None:
         """Ход «стоп + сразу играй» должен закончиться True, а не False."""
-        src = self._dialogue_node_source()
+        # Issue #2631 / ADR-0021 R1 — cleanup-policy вынесен в
+        # ``_schedule_music_cleanup``.
+        src = self._schedule_music_cleanup_source()
         stop_branch = src.index("tools_now & MUSIC_STOP_TOOLS")
-        starters_branch = src.index("if tools_now & _music_starters")
+        starters_branch = src.index("if tools_now & music_starters")
         assert stop_branch < starters_branch, (
             "сброс обязан идти ДО ветки запуска, иначе она будет затёрта"
         )
+
+    def _schedule_music_cleanup_source(self) -> str:
+        """Извлечь тело ``DialogueNode._schedule_music_cleanup`` для текстовых
+        проверок контракта (issue #2631).
+        """
+        import re
+
+        full = self._dialogue_node_source()
+        # Locate ``def _schedule_music_cleanup(`` and read until the next
+        # ``def `` at the same indent (4 spaces inside class).
+        match = re.search(
+            r"^(    def _schedule_music_cleanup\(.*?\n)(?=    def |\nclass )",
+            full,
+            flags=re.MULTILINE | re.DOTALL,
+        )
+        assert match is not None, (
+            "_schedule_music_cleanup helper not found in dialogue_node.py"
+        )
+        return match.group(1)
 
 
 class TestWatchdogStopClearsTheFlagLive3108:
