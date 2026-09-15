@@ -63,18 +63,34 @@ _SPEAKER_TAG_RE = re.compile(r"^(?:\s*\[Spkr:[^\]]*\])+", flags=re.IGNORECASE)
 # * ``[Anything]`` — bracketed section header (issue #2547 live case:
 #   ``[Мнение ассистента]``, ``[Примечание]``, ``[Note]``, ``[Answer]``).
 #   Square brackets inside the marker are not allowed (the regex
-#   stops at the first ``]``), which keeps ``[Spkr:foo]`` handling
-#   isolated to :func:`strip_speaker_tag`.
+#   stops at the first ``]``).
+#
+#     **Excluded** (must remain visible to the service-text guard
+#     running downstream in ``_handle_result``):
+#
+#     * ``[CRITICAL]`` — internal retry prompt (suppressed by
+#       ``_check_babble_and_retry`` / service-text guard).
+#     * ``[SYSTEM ...]`` — internal system template regurgitated
+#       (issue #2175, suppressed by ``is_system_template_regurgitated``).
+#     * ``[Spkr:<name>]`` — speaker routing marker (owned by
+#       :func:`strip_speaker_tag` which runs first).
+#
 # * ``**Anything**`` — Markdown-bold section header (``**Итог:**``,
-#   ``**Answer:**``). Only the bold-form is stripped here; bare
-#   ``Answer:`` / ``Response:`` without bold is caught by the
-#   ``[Answer]`` form on the next loop iteration (if the LLM emits
-#   them bare they are caught as plain English/Russian text — by
-#   design: those are legitimate speech, e.g. «Answer is yes»).
+#   ``**Answer:**``).
 _META_PREFIX_RE = re.compile(
-    r"^\s*(?:\[[^\]]+\]|\*\*[^*]+\*\*)"
+    r"^\s*(?:"
+    # Bracketed meta-markers — only when the inner content is NOT one of
+    # the reserved service-text prefixes. Case-insensitive (CRITICAL /
+    # Critical / critical are all reserved).
+    r"(?!\s*\[(?:CRITICAL|Spkr:[^\]]*|SYSTEM\b)[^\]]*\])"
+    r"\[[^\]]+\]"
+    r"|"
+    # Markdown-bold meta-markers. Bold-form of CRITICAL doesn't exist
+    # in practice; no exclusion needed here.
+    r"\*\*[^*]+\*\*"
+    r")"
     r"\s*(?:[:\-—]\s*)?",
-    flags=re.UNICODE,
+    flags=re.UNICODE | re.IGNORECASE,
 )
 
 # Strip a trailing ``done`` / ``task complete`` / Russian equivalents

@@ -114,20 +114,57 @@ class TestStripMetaMarkersBracketed:
     def test_only_marker_becomes_empty(self) -> None:
         assert strip_meta_markers("[Мнение ассистента]") == ""
 
-    def test_speaker_tag_is_also_stripped_when_run_alone(self) -> None:
-        # ``strip_meta_markers`` is intentionally a superset of
-        # ``strip_speaker_tag`` — any leading ``[...]`` is consumed by
-        # the same regex. The pipeline contract (``_handle_result``)
-        # requires that ``strip_speaker_tag`` runs BEFORE
-        # ``strip_meta_markers`` so the speaker routing marker is
-        # explicitly unhooked (and a following ``[CRITICAL]`` is
-        # exposed to the service-text guard) before the broader meta
-        # strip fires. Pinning the raw-helper behaviour here keeps the
-        # helper honest — if someone ever reorders the pipeline and
-        # ``strip_meta_markers`` lands first, the speaker-tag prefix is
-        # still removed (which is acceptable: the prefix is internal
-        # routing either way).
-        assert strip_meta_markers("[Spkr:Эйджик] Привет") == "Привет"
+    def test_speaker_tag_is_NOT_stripped(self) -> None:
+        # Speaker tags are owned by ``strip_speaker_tag`` which runs
+        # BEFORE ``strip_meta_markers`` in the pipeline — this helper
+        # must NOT also strip them, because the speaker routing
+        # marker is then invisible to the service-text guard
+        # (``[Spkr:X] [CRITICAL] ...`` would collapse into
+        # ``[CRITICAL] ...`` if both strips fired). Pinning the
+        # exclusion here keeps the pipeline contract honest.
+        assert strip_meta_markers("[Spkr:Эйджик] Привет") == (
+            "[Spkr:Эйджик] Привет"
+        )
+
+    def test_critical_marker_is_NOT_stripped(self) -> None:
+        # ``[CRITICAL]`` is a service-text marker consumed by the
+        # babble-retry guard. If ``strip_meta_markers`` consumed it,
+        # the body of the retry prompt would leak into TTS.
+        assert strip_meta_markers(
+            "[CRITICAL] В прошлом цикле ты НЕ вызвал ни один тул"
+        ) == "[CRITICAL] В прошлом цикле ты НЕ вызвал ни один тул"
+
+    def test_critical_marker_case_insensitive_preserved(self) -> None:
+        # Case-insensitive match (Critical / critical / CRITICAL).
+        assert strip_meta_markers(
+            "[critical] retry"
+        ) == "[critical] retry"
+        assert strip_meta_markers(
+            "[Critical] retry"
+        ) == "[Critical] retry"
+
+    def test_system_marker_is_NOT_stripped(self) -> None:
+        # ``[SYSTEM ...]`` is consumed by the
+        # ``is_system_template_regurgitated`` guard (issue #2175).
+        assert strip_meta_markers(
+            "[SYSTEM block regurgitated]"
+        ) == "[SYSTEM block regurgitated]"
+
+    def test_stacked_speaker_tag_then_meta_marker_not_stripped(
+        self,
+    ) -> None:
+        # The ``[Spkr:X]`` prefix is in the exclusion list, so
+        # ``strip_meta_markers`` does NOT touch the input at all —
+        # the leading speaker tag is owned by ``strip_speaker_tag``
+        # which runs first in the pipeline. Pinning this behaviour
+        # protects against accidental regression: if someone widens
+        # the exclusion list and lets ``strip_meta_markers`` strip
+        # the speaker-tag prefix, the service-text guard below
+        # (``[Spkr:X] [CRITICAL] ...`` → ``[CRITICAL] ...``) would
+        # collapse the prefix into TTS-readable body content.
+        assert strip_meta_markers(
+            "[Spkr:Эйджик] [Мнение ассистента] Привет"
+        ) == "[Spkr:Эйджик] [Мнение ассистента] Привет"
 
 
 class TestStripMetaMarkersBold:
