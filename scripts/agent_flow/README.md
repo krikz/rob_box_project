@@ -174,6 +174,28 @@ issue висит open навсегда без обработчика (#1276, rou
 → триаж на следующем тике создаст kanban-карточку. Idempotent: после
 добавления `hermes` issue больше не подпадает под правило.
 
+#### ENV-тюнинг
+
+Все дефолты безопасные (24ч dedup, evidence-missing метка уже есть в
+репо). Переопределять имеет смысл только в test-сборках / расследованиях.
+
+| Var | Default | Назначение |
+|---|---|---|
+| `EVIDENCE_REQUEST_DEDUP_HOURS` | `24` | дедуп «worker-evidence request» комментариев (merge-gate шлёт шаблон сразу после `needs-review`, чтобы воркер / pr-reviewer получил чёткие требования к рапорту; см. ADR-0018 «зелёный ≠ ок»). |
+| `EVIDENCE_ALERT_AGE_HOURS` | `24` | watchdog-pass `needs_review_evidence_alert_pass_all` сканирует OPEN PR с `needs-review` старше этого порога без worker-evidence комментария → alert + метка. |
+| `EVIDENCE_ALERT_DEDUP_HOURS` | `24` | дедуп alert-комментариев watchdog'а (1 раз в окно на 1 PR). |
+| `EVIDENCE_MISSING_LABEL` | `evidence-missing` | метка, которую watchdog ставит на PR без worker-evidence рапорта (НЕ gate — PR не блокируется, это сигнал Шифу). |
+| `EVIDENCE_REPORT_MARKER` | `worker-evidence report` | substring в тексте комментария, по которому watchdog определяет «уже рапортовал» (contains-режим). Воркер отвечает на request-коммент (или пишет отдельный) с этой строкой, чтобы watchdog перестал флапать. |
+| `DEPLOY_RECONCILE_MINUTES` | `30` | возраст deployment-issue без process-меток, после которого merge-gate ставит `hermes`+`agent:devops` (backstop для label-less orphan, ретро 15.08 t_238ff3f7, #1276). |
+| `BIG_BANG_MAX_COMMITS` | `50` | ADR-0013: PR > N коммитов ИЛИ > `BIG_BANG_MAX_LINES` строк ЗАПРЕЩЕНЫ без explicit `big-bang-override` label. Enforce на двух уровнях: triage + merge-gate. |
+| `BIG_BANG_MAX_LINES` | `3000` | см. выше. |
+| `STALE_REBASE_AHEAD_THRESHOLD` | `30` | ретро 22.08 t_562a8682: ahead-of-develop > N через REST compare API → alert в карточку (2ч rate-limit) + comment на issue (24h dedup). Watchdog, не gate. |
+| `STALE_REBASE_COMMENT_DEDUP_HOURS` | `24` | дедуп comment-alert. |
+| `STALE_REBASE_REMINDER_COOLDOWN_SECONDS` | `7200` | rate-limit alert в карточку воркеру. |
+| `NEEDS_FOLLOWUP_LABEL` | `needs-followup` | ретро t_6127fb86: pr-reviewer оставил содержательный review (не approve, не request-changes) → merge-gate явно переводит PR в follow-up режим + kanban-карточка. |
+| `GH_REPO` | `krikz/rob_box_project` | owner/repo для всех `gh` вызовов (загружается из `lib_agent_flow_common.sh`). |
+| `GH_CONFIG_DIR` | `/home/builder/.config/gh` | путь к gh auth (ретро 03.09 t_a2ce09f8 — force canonical, иначе 401/404 на gh api). |
+
 ### `agent-flow-e2e-process.sh` — no_agent=true, every 60m
 
 Главный e2e-процессор. Каждый час берёт issues с label `needs-e2e`,
