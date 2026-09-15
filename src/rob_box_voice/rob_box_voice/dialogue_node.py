@@ -182,7 +182,8 @@ from rob_box_voice.core.turn import (
 from rob_box_voice.core.speech_accumulator import SpeechAccumulator
 from rob_box_voice.core.dj_mode import DJHook, DJModeController
 from rob_box_voice.core.speak_helpers import (
-    EffectAwaiterRegistry, build_ssml_payload, split_into_chunks,
+    EffectAwaiterRegistry, build_ssml_payload,
+    ensure_dj_music_response, split_into_chunks,
     strip_done_marker, strip_history_marker, strip_markdown,
     strip_meta_markers,  # Issue #2547 — strip internal section headers
     strip_speaker_tag, strip_thinking_blocks,
@@ -5990,6 +5991,45 @@ class DialogueNode(Node):
                     f"(anti-duplicate): {spoken[:80]!r}"
                 )
             return
+        # Issue #2557 (DJ live round 3, 2026-09-15, 22 cases/hour —
+        # ×4.4 vs round 2's 5/h): when LLM calls music tools
+        # (``compose_music``, ``execute_music_code``, ``set_dj_mode``, …)
+        # and returns the cycle-end marker (``done``, «готово», «всё»,
+        # …) or empty ``spoken`` WITHOUT ``speak_text``, the user
+        # hears the music start/stop but no audible acknowledgement.
+        # ``speak_text_real == 0`` → no early-return at #988 →
+        # ``spoken`` becomes empty → falls into ``if not spoken:`` /
+        # ``else: TRACK-запрос выполнен тулами — тихо завершаю`` →
+        # pure silence. 22/h on Vision Pi DJ-set 2026-09-15 round3,
+        # 10 distinct tool combinations (3 without ``speak_text``).
+        #
+        # Issue #2547 previously published a fixed ``"Сделаю."`` here,
+        # but #2549 refactor removed it (CC-budget pressure). This
+        # re-adds a narrower fallback that ONLY fires for music-tool
+        # turns (DJ set is the live bug surface) using the helper
+        # ``ensure_dj_music_response`` (single source of truth in
+        # ``core/speak_helpers.py``).
+        #
+        # Why DJ-auto is NOT excluded here: on a DJ transition
+        # ``Готово, играю.`` IS the information («трек сменился»), not
+        # noise. The 13.08 «Принял.» suppression was for the empty
+        # ``user_input`` case where the user said nothing — that path
+        # is unaffected (still gated by ``if not tools_called`` further
+        # down). We do NOT retry here (retry budget pressure #2548 /
+        # #2549); the master-prompt patch is the upstream fix.
+        if tools_called and not result.error:
+            dj_fallback = ensure_dj_music_response(
+                spoken, list(tools_called),
+            )
+            if dj_fallback != spoken:
+                self.get_logger().warning(
+                    "🎙 [issue 2557] tools_called с music-tools, "
+                    f"spoken={spoken[:60]!r} — публикую DJ fallback. "
+                    f"tools={list(tools_called)!r} "
+                    f"user_input={user_input!r} is_dj_auto={is_dj_auto}"
+                )
+                self._publish_response(dj_fallback, animation="neutral")
+                return
 # 🔴 FIX (live 02.09): «во время сочинения музыки LLM много говорит».
         # На DJ-переходе речь идёт ТОЛЬКО через speak_text (короткая
         # тематическая фраза на середине сета) или хук (прощание). Свободный
