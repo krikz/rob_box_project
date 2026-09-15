@@ -2414,8 +2414,11 @@ PR \`#${_nrea_pr}\` (\`${_nrea_head}\`) висит с меткой \`needs-revie
         _nrea_alerted=$((_nrea_alerted+1))
 
         # Метка evidence-missing — idempotent (не снимаем needs-review, не
-        # меняем другие метки — Шифу решает).
-        if ! printf '%s' "$_nrea_labels" | tr '[:upper:]' '[:lower:]' | grep -qE "(^|,)${EVIDENCE_MISSING_LABEL}(,|$)"; then
+        # меняем другие метки — Шифу решает). has_label в lib_agent_flow_common.sh
+        # ожидает lowercased CSV — lowercasing делаем один раз на итерацию.
+        local _nrea_labels_lower
+        _nrea_labels_lower="$(printf '%s' "$_nrea_labels" | tr '[:upper:]' '[:lower:]')"
+        if ! has_label "$_nrea_labels_lower" "$EVIDENCE_MISSING_LABEL"; then
             if [ "$DRY_RUN" = "true" ]; then
                 log "DRY-RUN would: gh pr edit ${_nrea_pr} --repo ${GH_REPO} --add-label ${EVIDENCE_MISSING_LABEL}"
             else
