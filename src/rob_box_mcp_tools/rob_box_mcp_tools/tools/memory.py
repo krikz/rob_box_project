@@ -14,9 +14,35 @@ instead of crashing.
 
 from __future__ import annotations
 
-from typing import List
+from typing import List, Optional
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult
+
+
+def _current_encounter_speaker_id(node: object) -> Optional[str]:
+    """Issue #2442 — единственный путь к «кто сейчас», вместо трёх копий.
+
+    Раньше все три инструмента ниже независимо повторяли один и тот же
+    ``kwargs.get("speaker_id") or getattr(self.node, "current_speaker_id",
+    None)`` — фоллбэк на приватное поле mcp_server, синхронизированное
+    вручную в его ``_on_speaker_result``. Теперь mcp_server кормит тот же
+    сигнал в ``EncounterSeam`` (``rob_box_harness.encounter``, общий шов
+    «Встреча») и хранит его в ``node._encounter_seam``; эта функция — одна
+    точка чтения ``EncounterSeam.current()`` для всех трёх тулов ниже.
+
+    Не импортирует ``mcp_server`` напрямую (тот импортирует этот модуль —
+    цикл), поэтому читает ``_encounter_seam`` через ``getattr`` по
+    контракту, а не по типу. Отсутствие шва на узле (старый fake-node в
+    тестах, узел без speaker_id_enabled) — молчаливый ``None``, как и
+    раньше при отсутствии атрибута.
+    """
+    seam = getattr(node, "_encounter_seam", None)
+    if seam is None:
+        return None
+    encounter = seam.current()
+    if encounter is None or encounter.who is None:
+        return None
+    return encounter.who.id
 
 
 class MemorySaveTool(MCPTool):
@@ -85,10 +111,11 @@ class MemorySaveTool(MCPTool):
         category = kwargs.get("category", "general")
         # Issue #1770 — LLM must scope every fact to the current speaker so
         # "что ты знаешь обо мне" doesn't return another user's data.
-        # Fallback: ``node.current_speaker_id`` if LLM forgot to pass it.
+        # Fallback: ``EncounterSeam.current()`` if LLM forgot to pass it
+        # (issue #2442 — see ``_current_encounter_speaker_id`` above).
         speaker_id = (
             kwargs.get("speaker_id")
-            or getattr(self.node, "current_speaker_id", None)
+            or _current_encounter_speaker_id(self.node)
         )
 
         if not fact:
@@ -175,7 +202,7 @@ class MemorySearchTool(MCPTool):
         # registered user cannot leak into the result pool.
         speaker_id = (
             kwargs.get("speaker_id")
-            or getattr(self.node, "current_speaker_id", None)
+            or _current_encounter_speaker_id(self.node)
         )
 
         if not query:
@@ -289,7 +316,7 @@ class MemoryContextTool(MCPTool):
         # never sees another registered user's profile.
         speaker_id = (
             kwargs.get("speaker_id")
-            or getattr(self.node, "current_speaker_id", None)
+            or _current_encounter_speaker_id(self.node)
         )
 
         try:
