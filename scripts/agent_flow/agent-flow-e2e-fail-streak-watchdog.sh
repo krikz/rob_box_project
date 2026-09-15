@@ -193,11 +193,22 @@ if [ "${_streak_info%%|*}" = "ERR" ]; then
 fi
 _streak="${_streak_info%%|*}"
 _last_success_at="${_streak_info#*|}"
+# _streak_action — финальный результат tick'а для `tick done` summary.
+# Иерархия приоритетов: PAUSE > issue-created > alert > noop.
+# Каждое присвоение — только если ещё не установлено, чтобы PAUSE не
+# downgrade'нулся обратно в alert при streak > PAUSE + alert уже отработал.
+_streak_action="noop"
 log "streak=${_streak} last_success=${_last_success_at:-NEVER} warn=${E2E_FAIL_STREAK_WARN} pause=${E2E_FAIL_STREAK_PAUSE}"
 
 # --- decide action --------------------------------------------------------
+# ВАЖНО: при streak < WARN мы НЕ делаем ранний `exit 0`, а проваливаемся
+# до финального `tick done: streak=N action=noop`. Иначе cron/log-парсеры
+# не получают heartbeat-summary и думают что watchdog умер тихо.
+# (ретро issue #2480: _streak_action никогда не присваивался + no log при
+# streak < WARN — диагностика для парсеров бесполезна).
 if [ "${_streak:-0}" -lt "$E2E_FAIL_STREAK_WARN" ] 2>/dev/null; then
     log "streak < WARN — no action"
+    log "tick done: streak=${_streak} action=${_streak_action}"
     exit 0
 fi
 
@@ -252,9 +263,11 @@ Workflow \`${E2E_WORKFLOW}\` упал ${_streak} раз подряд без SUCC
 
         if [ "$DRY_RUN" = "true" ]; then
             log "DRY-RUN would: gh issue comment ${_issue_num} (${_issue_title})"
+            [ "$_streak_action" = "noop" ] && _streak_action="alert-dry-run"
         else
             if gh issue comment "$_issue_num" --repo "$GH_REPO" --body "$_body" >/dev/null 2>&1; then
                 log "issue #${_issue_num}: alert posted (streak=${_streak})"
+                [ "$_streak_action" = "noop" ] && _streak_action="alert"
             else
                 log "issue #${_issue_num}: WARNING comment failed (will retry next tick)"
             fi
@@ -292,6 +305,7 @@ if [ "${_streak:-0}" -ge "$E2E_FAIL_STREAK_ISSUE_THRESHOLD" ] 2>/dev/null; then
         if [ "${_cooldown_age_s:-0}" -lt "${_cooldown_limit_s}" ]; then
             log "ISSUE_COOLDOWN active: ${_cooldown_age_s}s < ${_cooldown_limit_s}s — skip create"
             _cooldown_ok="false"
+            [ "$_streak_action" = "noop" ] && _streak_action="cooldown-skip"
         fi
     fi
 
@@ -301,6 +315,7 @@ if [ "${_streak:-0}" -ge "$E2E_FAIL_STREAK_ISSUE_THRESHOLD" ] 2>/dev/null; then
     if [ "${_existing_e2e_issues:-0}" -gt 0 ] 2>/dev/null; then
         log "open ${E2E_FAIL_STREAK_ISSUE_LABEL} issues: ${_existing_e2e_issues} — skip create"
         _cooldown_ok="false"
+        [ "$_streak_action" = "noop" ] && _streak_action="existing-issue-skip"
     fi
 
     if [ "$_cooldown_ok" = "true" ]; then
@@ -354,6 +369,7 @@ ${_failed_table}
 
         if [ "$DRY_RUN" = "true" ]; then
             log "DRY-RUN would: gh issue create --label ${E2E_FAIL_STREAK_ISSUE_LABEL} (streak=${_streak}, develop=${_develop_head})"
+            [ "$_streak_action" = "noop" ] && _streak_action="issue-dry-run"
         else
             _create_args=(--repo "$GH_REPO" --title "[e2e-fail-streak] L: E2E Voice Test — ${_streak} fails подряд (develop ${_develop_head})" --label "$E2E_FAIL_STREAK_ISSUE_LABEL" --body "$_create_body")
             if [ -n "${E2E_FAIL_STREAK_ISSUE_ASSIGNEE:-}" ]; then
@@ -370,6 +386,7 @@ ${_failed_table}
                 date -u +%s > "$ISSUE_COOLDOWN_FILE" 2>/dev/null \
                     && log "cooldown written: $ISSUE_COOLDOWN_FILE" \
                     || log "WARN: cannot write cooldown file $ISSUE_COOLDOWN_FILE"
+                [ "$_streak_action" = "noop" ] && _streak_action="issue-created"
             else
                 log "ERROR: gh issue create failed (rc=${_create_rc}): ${_create_out}"
             fi
@@ -383,9 +400,11 @@ if [ "${_streak:-0}" -ge "$E2E_FAIL_STREAK_PAUSE" ] 2>/dev/null; then
     mkdir -p "$(dirname "$PAUSE_SENTINEL")" 2>/dev/null || true
     if [ -f "$PAUSE_SENTINEL" ]; then
         log "pause-sentinel already exists: ${PAUSE_SENTINEL} — no-op (manual override required to resume)"
+        _streak_action="pause-sentinel"
     else
         if [ "$DRY_RUN" = "true" ]; then
             log "DRY-RUN would: touch ${PAUSE_SENTINEL}"
+            _streak_action="pause-dry-run"
         else
             cat > "$PAUSE_SENTINEL" <<EOF
 # Auto-pause: L: E2E Voice Test fail-streak=${_streak} (>${E2E_FAIL_STREAK_PAUSE})
@@ -402,6 +421,7 @@ EOF
             if [ -f "$PAUSE_SENTINEL" ]; then
                 log "🚨 PAUSE-SENTINEL CREATED: ${PAUSE_SENTINEL} (streak=${_streak})"
                 log "   e2e-process auto-rotation ЗАМОРОЖЕНА до ручного override."
+                _streak_action="pause-sentinel"
             else
                 log "ERROR: cannot create pause-sentinel ${PAUSE_SENTINEL}"
                 exit 1
@@ -410,5 +430,5 @@ EOF
     fi
 fi
 
-log "tick done: streak=${_streak} action=${_streak_action:-none}"
+log "tick done: streak=${_streak} action=${_streak_action}"
 exit 0

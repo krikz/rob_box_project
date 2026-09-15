@@ -261,11 +261,12 @@ echo '[{"number": 9999}]' > "$WORK/open_one.json"
 echo "── S1: streak=3, no create expected ──"
 run_watchdog s1 "$WORK/runs3.json" "$WORK/open_none.json" 0 absent true "" >/dev/null
 n=$(wc -l < "$WORK/calls_s1")
-if [ "$n" = "0" ]; then
-    echo "  PASS: 0 calls"
+tick_done=$(grep -E 'tick done: streak=[0-9]+ action=[a-z-]+$' "$WORK/log_s1" | tail -n1)
+if [ "$n" = "0" ] && [[ "$tick_done" == *"tick done: streak=3 action=noop"* ]]; then
+    echo "  PASS: 0 calls, tick done summary format=action=noop"
     PASS=$((PASS+1))
 else
-    echo "  FAIL: $n calls (expected 0)"
+    echo "  FAIL: calls=$n, tick_done=${tick_done:-(none)}"
     FAIL=$((FAIL+1))
 fi
 
@@ -275,11 +276,12 @@ fi
 echo "── S2: streak=5, DRY-RUN, would-log ──"
 run_watchdog s2 "$WORK/runs5.json" "$WORK/open_none.json" 0 absent true "" >/dev/null
 n=$(wc -l < "$WORK/calls_s2")
-if [ "$n" = "0" ] && grep -q "DRY-RUN would: gh issue create" "$WORK/log_s2"; then
-    echo "  PASS: DRY-RUN logged, no real call"
+tick_done=$(grep -E 'tick done: streak=[0-9]+ action=[a-z-]+$' "$WORK/log_s2" | tail -n1)
+if [ "$n" = "0" ] && grep -q "DRY-RUN would: gh issue create" "$WORK/log_s2" && [[ "$tick_done" == *"tick done: streak=5 action=issue-dry-run"* ]]; then
+    echo "  PASS: DRY-RUN logged, no real call, tick done summary format=action=issue-dry-run"
     PASS=$((PASS+1))
 else
-    echo "  FAIL: calls=$n, dry-run-log=$(grep -c 'DRY-RUN would' "$WORK/log_s2")"
+    echo "  FAIL: calls=$n, dry-run-log=$(grep -c 'DRY-RUN would' "$WORK/log_s2"), tick_done=${tick_done:-(none)}"
     FAIL=$((FAIL+1))
 fi
 
@@ -322,11 +324,12 @@ title_ok=$(grep -c '^title=\[e2e-fail-streak\]' "$WORK/body_s5")
 body_music=$(grep -c 'music-fix regression' "$WORK/body_s5")
 cooldown_written="no"
 [ -f "$WORK/cooldown_s5" ] && cooldown_written="yes"
-if [ "$n" = "1" ] && [ "$label_ok" -ge 1 ] && [ "$title_ok" -ge 1 ] && [ "$body_music" -ge 1 ] && [ "$cooldown_written" = "yes" ]; then
-    echo "  PASS: 1 create call, label/title/body correct, cooldown written"
+tick_done=$(grep -E 'tick done: streak=[0-9]+ action=[a-z-]+$' "$WORK/log_s5" | tail -n1)
+if [ "$n" = "1" ] && [ "$label_ok" -ge 1 ] && [ "$title_ok" -ge 1 ] && [ "$body_music" -ge 1 ] && [ "$cooldown_written" = "yes" ] && [[ "$tick_done" == *"tick done: streak=5 action=issue-created"* ]]; then
+    echo "  PASS: 1 create call, label/title/body correct, cooldown written, tick done summary format=action=issue-created"
     PASS=$((PASS+1))
 else
-    echo "  FAIL: n=$n label=$label_ok title=$title_ok body_music=$body_music cooldown=$cooldown_written"
+    echo "  FAIL: n=$n label=$label_ok title=$title_ok body_music=$body_music cooldown=$cooldown_written tick_done=${tick_done:-(none)}"
     head -10 "$WORK/body_s5" | sed 's/^/    | /'
     FAIL=$((FAIL+1))
 fi
@@ -384,15 +387,16 @@ PATH="$WORK/bin:/usr/bin:/bin" \
     MOCK_GH_ISSUE_CREATE_BODY_LOG='' \
     LOCK_FILE="$WORK/lock_s8b" \
     ISSUE_COOLDOWN_FILE="$WORK/cooldown_s8b" \
-    bash "$WATCHDOG_SH" >/dev/null 2>&1
+    bash "$WATCHDOG_SH" >/dev/null 2>"$WORK/log_s8b"
 rc_line=$?
 cooldown_written="no"
 [ -f "$WORK/cooldown_s8b" ] && cooldown_written="yes"
-if [ "$rc_line" = "0" ] && [ "$cooldown_written" = "no" ]; then
-    echo "  PASS: rc=0, cooldown NOT written"
+tick_done=$(grep -E 'tick done: streak=[0-9]+ action=[a-z-]+$' "$WORK/log_s8b" | tail -n1)
+if [ "$rc_line" = "0" ] && [ "$cooldown_written" = "no" ] && [[ "$tick_done" == *"tick done: streak=5 action=noop"* ]]; then
+    echo "  PASS: rc=0, cooldown NOT written, tick done summary format=action=noop"
     PASS=$((PASS+1))
 else
-    echo "  FAIL: rc=$rc_line cooldown=$cooldown_written"
+    echo "  FAIL: rc=$rc_line cooldown=$cooldown_written tick_done=${tick_done:-(none)}"
     FAIL=$((FAIL+1))
 fi
 
