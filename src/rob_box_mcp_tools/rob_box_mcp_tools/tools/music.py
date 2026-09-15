@@ -2245,10 +2245,21 @@ class ComposeMusicTool(MCPTool):
             MCPToolParameter(
                 name="lead_synth",
                 type="string",
-                description="Синт мелодии. Подбирай под характер: марш/гимн → "
-                "imperialbrass или brass, классика → pianovel/epiano, игра/чиптюн "
-                "→ blip/arpy, спокойное → bell/marimba. НЕ бери supersawlead/saw "
-                "— это грубая «стена» звука, а не мелодия.",
+                description=(
+                    "Синт мелодии. Подбирай под характер: "
+                    "солирующая мелодия (марш, гимн, классика, лирика) → "
+                    "brass, soprano, eoboe, bell, marimba, pianovel, epiano — "
+                    "это сухие соло-инструменты с коротким релизом, "
+                    "не превращающие трек в кашу; "
+                    "imperialbrass — ТОЛЬКО как секция/хоровой подклад "
+                    "(theme_octaves=False, counter_synth='none'), не как "
+                    "солирующая линия: у imperialbrass тяжёлый envelope "
+                    "(длинный релиз ~1.5 с) и при стэке lead+counter+octave "
+                    "тема звучит эхом; "
+                    "игра/чиптюн → blip/arpy, спокойное → bell/marimba. "
+                    "НЕ бери supersawlead/saw — это грубая «стена» звука, "
+                    "а не мелодия."
+                ),
                 required=False,
                 enum=list(MELODIC_LEAD_SYNTHS),
                 enum_strict=False,
@@ -2387,6 +2398,52 @@ class ComposeMusicTool(MCPTool):
     @property
     def starts_music(self) -> bool:
         return True
+
+    #: SynthDef-ы, которые НЕ подходят как солирующий lead на плотной
+    #: теме — SynthDef с тяжёлым envelope release (длинный релиз ~1.5 с),
+    #: из-за которого стэк lead+counter+theme_octaves звучит «эхом».
+    #: При ``name=`` (известная RTTTL-тема) применяется автоматически
+    #: safety net (live: Григ «hall of the mountain king» 2026-09-15,
+    #: Шифу: «эхо длинное звучит дерьмово»).
+    HEAVY_BRASS_LEAD_SYNTHS: frozenset = frozenset({"imperialbrass"})
+
+    @staticmethod
+    def _heavy_brass_safety_net(
+        *,
+        name: Optional[str],
+        lead_synth: Optional[str],
+        counter_synth: Optional[str],
+        theme_octaves: bool,
+    ) -> Tuple[Optional[str], bool, bool]:
+        """Отключить counter_synth и theme_octaves для тяжёлых брасс-лидов.
+
+        Возвращает ``(effective_counter_synth, effective_theme_octaves,
+        did_override)``. Применяется ТОЛЬКО когда:
+
+        1. ``name`` задан (известная RTTTL-тема с гармонизацией);
+        2. ``lead_synth`` входит в :data:`HEAVY_BRASS_LEAD_SYNTHS`;
+        3. counter/октава НЕ заданы явно моделью (None/True по умолчанию).
+
+        Если модель явно попросила ``counter_synth='something'`` или
+        ``theme_octaves=False``, безопас-нет НЕ перетирает её выбор.
+
+        ``did_override`` нужен тестам и логу: «safety net сработал для
+        imperialbrass + name=MountainKing».
+        """
+        if not name:
+            return counter_synth, theme_octaves, False
+        if (
+            not lead_synth
+            or lead_synth.strip().lower() not in ComposeMusicTool.HEAVY_BRASS_LEAD_SYNTHS
+        ):
+            return counter_synth, theme_octaves, False
+        # counter_synth: None/"" → 'none'; явное значение не трогаем.
+        counter_is_default = counter_synth is None or not counter_synth.strip()
+        effective_counter: Optional[str] = "none" if counter_is_default else counter_synth
+        # theme_octaves: True (default) → False; явный False не трогаем.
+        effective_octaves = False if theme_octaves else theme_octaves
+        did_override = counter_is_default or theme_octaves is True
+        return effective_counter, effective_octaves, did_override
 
     @staticmethod
     def _missing_arrangement_fields(
@@ -2605,6 +2662,25 @@ class ComposeMusicTool(MCPTool):
                         f"{', '.join(missing)}."
                     ),
                 )
+
+        # Safety net: imperialbrass + плотная тема звучит «эхом» из-за
+        # длинного envelope release и дефолтов counter_synth=lead_synth +
+        # theme_octaves=True. Если модель сама их не задала — отключаем.
+        # Live 2026-09-15: Григ «hall of the mountain king» — 3 брасс-голоса
+        # накладывались друг на друга и звучали кашей.
+        counter_synth, theme_octaves, did_override = self._heavy_brass_safety_net(
+            name=name,
+            lead_synth=lead_synth,
+            counter_synth=counter_synth,
+            theme_octaves=theme_octaves,
+        )
+        if did_override:
+            self.log_info(
+                f"[compose_music] safety net: lead_synth={lead_synth!r} + "
+                f"name={name!r} → counter_synth={counter_synth!r}, "
+                f"theme_octaves={theme_octaves} (imperialbrass оставляет "
+                f"длинный эхо-хвост, см. live 2026-09-15)"
+            )
 
         bpm = float(bpm) if bpm is not None else 120.0
         root = root or "C"
