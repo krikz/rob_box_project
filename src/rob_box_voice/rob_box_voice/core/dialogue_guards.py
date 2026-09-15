@@ -1109,23 +1109,7 @@ def detect_unbacked_action_claim(
     if not user_input or not spoken:
         return None
     called = set(tools_called or ())
-    # Контекстный гейт: music_kw_hit=True, если (а) DJ активна
-    # (тогда ВСЕ правила с requires_dj_or_music_kw=True проходят
-    # user_re-проверку опционально), либо (б) user_wants_music /
-    # MUSIC_CONTINUATION_RE матчат user_input.
-    music_kw_hit = False
-    if dj_active:
-        music_kw_hit = True
-    else:
-        try:
-            music_kw_hit = bool(user_wants_music(user_input))
-        except Exception:
-            music_kw_hit = False
-        if not music_kw_hit:
-            try:
-                music_kw_hit = bool(MUSIC_CONTINUATION_RE.search(user_input or ""))
-            except Exception:
-                music_kw_hit = False
+    music_kw_hit = _music_context_hit(user_input, dj_active)
     for rule in ACTION_CLAIM_RULES:
         if rule.requires_dj_or_music_kw and not music_kw_hit:
             continue
@@ -1147,6 +1131,28 @@ def detect_unbacked_action_claim(
             continue
         return rule
     return None
+
+
+def _music_context_hit(user_input: Optional[str], dj_active: bool) -> bool:
+    """Issue #2548 — True если user_input в music-контексте (или DJ активна).
+
+    Используется как контекстный гейт для ``ActionClaimRule.requires_dj_or_music_kw``:
+    prose-action-verb'ы («вплела», «сделала pass») слишком широкие, чтобы ретраить
+    на каждом «Сделала» в бытовом ответе. Срабатываем ТОЛЬКО когда DJ активна
+    или user_input содержит music-keyword / continuation-verb.
+    """
+    if dj_active:
+        return True
+    text = user_input or ""
+    try:
+        if user_wants_music(text):
+            return True
+    except Exception:
+        pass
+    try:
+        return bool(MUSIC_CONTINUATION_RE.search(text))
+    except Exception:
+        return False
 
 
 # ---------------------------------------------------------------------------

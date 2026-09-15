@@ -30,7 +30,7 @@ import time
 import traceback
 import uuid
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Tuple
 
 import yaml
 
@@ -5678,102 +5678,22 @@ class DialogueNode(Node):
         # удалён из медиатеки.» — всё с tools=[]. Один ретрай, тем же
         # контрактом, что и Bug D выше.
         #
-        # Issue #2548 — в DJ-сессии ``dj_active=self._dj.state.enabled``;
-        # prose-action-claim без явного command-verb в user_input
-        # («вплетай их красиво» / «давай старайся» / «пока ничего не
-        # звучит») теперь тоже триггерит одноразовый ретрай, чтобы
-        # юзер не слышал «всё готово» при неизменной музыке.
-        # is_dj_auto=False — это user-turn (не DJ-тикер); глобальный
-        # флаг активной DJ-сессии передаётся отдельно.
-        if spoken and self._check_unbacked_action_claim_and_retry(
+        # Issue #2548 — оборачиваем пару guards (action-claim retry +
+        # prose-action fallback) в один helper, чтобы не раздувать
+        # CC ``_handle_result`` (baseline 65 уже высок; +20 от моих
+        # веток было бы over-budget). Helper возвращает True, если
+        # хотя бы один guard сработал — тогда ``_handle_result``
+        # должен вернуть ``return`` (не отдавать spoken в TTS).
+        if spoken and self._run_issue_2548_guards(
             spoken=spoken,
-            user_input=raw_user_command or user_input,
-            tools_called=tools_called,
-            # Issue #2548 — в DJ-сессии ``dj_active=self._dj.state.enabled``;
-            # prose-action-claim без явного command-verb в user_input
-            # («вплетай их красиво» / «давай старайся» / «пока ничего не
-            # звучит») теперь тоже триггерит одноразовый ретрай, чтобы
-            # юзер не слышал «всё готово» при неизменной музыке.
-            # is_dj_auto=False — это user-turn (не DJ-тикер); глобальный
-            # флаг активной DJ-сессии передаётся отдельно.
-            # ``getattr(self, "_dj", None)`` для безопасности: часть
-            # node-тестов (test_issue_1343, test_service_text_leak)
-            # создают DialogueNode через ``object.__new__`` без
-            # ``_dj``, и AttributeError в нашем prod-коде быть не
-            # должно (это user-input ветка, не тестовая).
-            dj_active=bool(
-                getattr(self, "_dj", None)
-                and getattr(self._dj.state, "enabled", False)
-            ),
+            user_input=user_input,
+            raw_user_command=raw_user_command,
+            tools_called=tuple(tools_called or ()),
+            is_dj_auto=is_dj_auto,
+            has_error=result.error is not None,
+            speak_text_real=speak_text_real,
         ):
             return
-        # Issue #2548 — fallback spoken, когда ретрай уже потрачен, а
-        # action-claim повторился. Условия все ОДНОВРЕМЕННО:
-        #   1) ``_action_claim_retry_used == True`` (значит ретрай
-        #      уже стрелял в этой user-turn — на следующем ходе
-        #      guard молчит);
-        #   2) ``spoken`` содержит action-claim-verb (тот же
-        #      claim_re, что в music_prose_action);
-        #   3) ``tools_called=()`` и ``speak_text_real == 0`` (как у
-        #      других guards в этой цепочке);
-        #   4) DJ-сессия активна ИЛИ user_wants_music(user_input);
-        #   5) не is_dj_auto (на DJ auto-transition этот fallback
-        #      подавляется — там своя ветка DJ-подавления выше);
-        #   6) нет result.error (не маскируем честное сообщение
-        #      об ошибке LLM).
-        # При выполнении всех условий — заменяем spoken на
-        # констатацию «не получилось, попробую ещё раз» БЕЗ claim
-        # о выполнении. Это acceptance criterion #2: юзер НЕ
-        # слышит «всё готово» / «сделала» / «обновил» при
-        # неизменной музыке.
-        if (
-            spoken
-            and not is_dj_auto
-            and result.error is None
-            and not tools_called
-            and speak_text_real == 0
-            and getattr(self, "_action_claim_retry_used", False)
-        ):
-            dj_active = bool(
-                getattr(self, "_dj", None)
-                and getattr(self._dj.state, "enabled", False)
-            )
-            try:
-                music_ctx = dj_active or bool(
-                    user_wants_music(raw_user_command or user_input or "")
-                )
-            except Exception:
-                music_ctx = dj_active
-            if music_ctx:
-                # Проверяем, что spoken содержит тот же prose-action
-                # claim-verb, что и music_prose_action.claim_re —
-                # иначе fallback сработает на ЛЮБОЙ spoken после
-                # ретрая, что слишком широко (например, если ретрай
-                # был по waypoint-claim, а не по music-claim).
-                music_rule = next(
-                    (r for r in ACTION_CLAIM_RULES
-                     if r.category == "music_prose_action"),
-                    None,
-                )
-                if music_rule and music_rule.claim_re.search(spoken):
-                    fallback = build_music_prose_action_fallback(
-                        raw_user_command or user_input or ""
-                    )
-                    self.get_logger().warning(
-                        f"🛟 [issue 2548 fallback] action-claim повторился "
-                        f"после ретрая — публикую констатацию вместо "
-                        f"claim'а: spoken={spoken[:80]!r}"
-                    )
-                    try:
-                        self._publish_response(fallback, animation="neutral")
-                    except Exception as exc:  # noqa: BLE001
-                        try:
-                            self.get_logger().warning(
-                                f"⚠️ fallback publish failed: {exc}"
-                            )
-                        except Exception:
-                            pass
-                    return
         # 💡 Diagnostic: log the actual state before deciding what to do.
         # Helps answer "why did the robot stay silent?" without guesswork.
         self.get_logger().info(
@@ -6158,6 +6078,176 @@ class DialogueNode(Node):
             self.get_logger().warning(
                 f"⚠️ Не удалось опубликовать /mcp/music_fallback: {exc}"
             )
+
+    def _run_issue_2548_guards(
+        self,
+        *,
+        spoken: str,
+        user_input: Optional[str],
+        raw_user_command: Optional[str],
+        tools_called: Tuple[str, ...],
+        is_dj_auto: bool,
+        has_error: bool,
+        speak_text_real: int,
+    ) -> bool:
+        """Issue #2548 — пара guards в одном helper.
+
+        1. ``_check_unbacked_action_claim_and_retry`` — одноразовый
+           ретрай «LLM отчиталась о действии, не вызвав тул»
+           (Issue #992 Bug E). В DJ-сессии (``self._dj.state.enabled``)
+           расширяется ``music_prose_action`` правилом — ловит
+           prose-action-claim'ы («вплела», «сделала pass», «обновлю»)
+           даже когда ``user_input`` не содержит явный command-verb.
+
+        2. ``_publish_music_prose_action_fallback_if_needed`` —
+           fallback-spoken после НЕудачного ретрая, чтобы юзер не
+           слышал «всё готово» при неизменной музыке
+           (acceptance criterion #2).
+
+        Returns:
+            ``True`` — хотя бы один guard сработал, вызывающий
+            должен вернуть ``return`` из ``_handle_result``.
+        """
+        if self._check_unbacked_action_claim_and_retry(
+            spoken=spoken,
+            user_input=raw_user_command or user_input,
+            tools_called=tools_called,
+            dj_active=self._dj_session_active(),
+        ):
+            return True
+        if self._publish_music_prose_action_fallback_if_needed(
+            spoken=spoken,
+            tools_called=tools_called,
+            user_input=user_input,
+            raw_user_command=raw_user_command,
+            is_dj_auto=is_dj_auto,
+            has_error=has_error,
+            speak_text_real=speak_text_real,
+        ):
+            return True
+        return False
+
+    def _dj_session_active(self) -> bool:
+        """Issue #2548 — DJ-сессия активна?
+
+        ``getattr(self, "_dj", None)`` для безопасности: часть node-тестов
+        (test_issue_1343, test_service_text_leak) создают ``DialogueNode``
+        через ``object.__new__`` без ``_dj`` — AttributeError в prod-коде
+        быть не должно.
+        """
+        return bool(
+            getattr(self, "_dj", None)
+            and getattr(self._dj.state, "enabled", False)
+        )
+
+    def _music_prose_fallback_eligible(
+        self, user_input: Optional[str], dj_active: bool,
+    ) -> bool:
+        """Issue #2548 — DJ активна ИЛИ user_wants_music(user_input)?"""
+        if dj_active:
+            return True
+        try:
+            return bool(user_wants_music(user_input or ""))
+        except Exception:
+            return False
+
+    def _publish_music_prose_action_fallback_if_needed(
+        self,
+        *,
+        spoken: str,
+        tools_called: Tuple[str, ...],
+        user_input: Optional[str],
+        raw_user_command: Optional[str],
+        is_dj_auto: bool,
+        has_error: bool,
+        speak_text_real: int,
+    ) -> bool:
+        """Issue #2548 — fallback spoken после НЕудачного action-claim ретрая.
+
+        Условия все ОДНОВРЕМЕННО:
+
+        1. ``_action_claim_retry_used == True`` — ретрай уже стрелял
+           в этой user-turn (на следующем ходе guard молчит);
+        2. ``spoken`` содержит action-claim-verb (тот же ``claim_re``,
+           что и ``music_prose_action``);
+        3. ``tools_called=()`` и ``speak_text_real == 0`` (как у других
+           guards в этой цепочке);
+        4. DJ-сессия активна ИЛИ :user_wants_music(user_input);
+        5. не ``is_dj_auto`` — на DJ auto-transition этот fallback
+           подавляется (там своя ветка DJ-подавления);
+        6. нет ``result.error`` — не маскируем честное сообщение
+           об ошибке LLM.
+
+        При выполнении всех условий — заменяем spoken на констатацию
+        «не получилось, попробую ещё раз» БЕЗ claim о выполнении.
+        Это acceptance criterion #2: юзер НЕ слышит «всё готово» /
+        «сделала» / «обновил» при неизменной музыке.
+
+        Returns:
+            ``True`` — fallback опубликован, вызывающий должен
+            вернуть ``return`` из ``_handle_result`` (не отдавать
+            оригинальный spoken в TTS).
+        """
+        if (
+            is_dj_auto
+            or has_error
+            or tools_called
+            or speak_text_real != 0
+            or not getattr(self, "_action_claim_retry_used", False)
+        ):
+            return False
+        dj_active = self._dj_session_active()
+        if not self._music_prose_fallback_eligible(
+            raw_user_command or user_input, dj_active,
+        ):
+            return False
+        if not self._spoken_matches_music_prose_claim(spoken):
+            return False
+        self._emit_music_prose_action_fallback(spoken, user_input, raw_user_command)
+        return True
+
+    @staticmethod
+    def _spoken_matches_music_prose_claim(spoken: str) -> bool:
+        """Issue #2548 — spoken содержит prose-action claim-verb из music_prose_action?
+
+        Если ретрай был по waypoint-claim, а не music-claim, fallback
+        не должен срабатывать на ЛЮБОЙ spoken после ретрая.
+        """
+        music_rule = next(
+            (r for r in ACTION_CLAIM_RULES
+             if r.category == "music_prose_action"),
+            None,
+        )
+        return bool(
+            music_rule is not None
+            and music_rule.claim_re.search(spoken)
+        )
+
+    def _emit_music_prose_action_fallback(
+        self,
+        spoken: str,
+        user_input: Optional[str],
+        raw_user_command: Optional[str],
+    ) -> None:
+        """Issue #2548 — публикуем fallback-spoken + warning в лог."""
+        fallback = build_music_prose_action_fallback(
+            raw_user_command or user_input or ""
+        )
+        self.get_logger().warning(
+            f"🛟 [issue 2548 fallback] action-claim повторился после "
+            f"ретрая — публикую констатацию вместо claim'а: "
+            f"spoken={spoken[:80]!r}"
+        )
+        try:
+            self._publish_response(fallback, animation="neutral")
+        except Exception as exc:  # noqa: BLE001
+            try:
+                self.get_logger().warning(
+                    f"⚠️ fallback publish failed: {exc}"
+                )
+            except Exception:
+                pass
+
     def _speak_direct(self, text: str, language: str | None = None) -> None:
         """Озвучить текст напрямую (без AgentCore).
 
