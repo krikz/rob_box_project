@@ -13,6 +13,11 @@ services:
     # а compose при повседневном `up -d` не дёргает docker daemon registry.
     pull_policy: if_not_present
     network_mode: host
+    # mem_limit ADR-0111 (issue #2621): Vision Pi 8 GB → каждый контейнер
+    # обязан иметь лимит. Zenoh router — лёгкий процесс (64 MB RSS замер),
+    # даём 128 MB с запасом на рост локальной таблицы маршрутов.
+    mem_limit: 128m
+    memswap_limit: 128m
     environment:
       - RUST_LOG=zenoh=info
     volumes:
@@ -71,6 +76,9 @@ services:
     container_name: led-matrix
     pull_policy: if_not_present
     network_mode: host
+    # mem_limit ADR-0111 (issue #2621): 406 MB RSS замер, даём 512 MB
+    mem_limit: 512m
+    memswap_limit: 512m
     privileged: true  # Для доступа к SPI (/dev/spidev0.0)
     devices:
       - /dev/spidev0.0:/dev/spidev0.0  # SPI для NeoPixel LED
@@ -105,6 +113,9 @@ services:
     container_name: ceiling-camera
     pull_policy: if_not_present
     network_mode: host
+    # mem_limit ADR-0111 (issue #2621): 206 MB RSS замер, даём 512 MB
+    mem_limit: 512m
+    memswap_limit: 512m
     privileged: true  # Для доступа к USB camera
     devices:
       - /dev/video0:/dev/video0  # USB UVC камера
@@ -160,6 +171,9 @@ services:
     container_name: supercollider
     pull_policy: if_not_present
     network_mode: host
+    # mem_limit ADR-0111 (issue #2621): 179 MB RSS замер, даём 512 MB
+    mem_limit: 512m
+    memswap_limit: 512m
     privileged: true  # Для доступа к ALSA audio
     ipc: host      # Share host IPC namespace so dmix SHM is shared with voice-assistant
     shm_size: '256m'  # JACK использует /dev/shm для mmap (~107MB), default 64MB недостаточно
@@ -219,6 +233,11 @@ services:
     container_name: voice-resources-init
     pull_policy: if_not_present
     profiles: ["init"]
+    # ADR-0111 (issue #2621): init-контейнер с `restart: no` — лимит
+    # обязателен по стандарту DOCKER_STANDARDS.md §7, но намеренно мал,
+    # потому что процесс — однократный tar/copy, больше 256 MB не съест.
+    mem_limit: 256m
+    memswap_limit: 256m
     volumes:
       - renardo_samples:/target
     restart: "no"
@@ -369,6 +388,9 @@ services:
     container_name: voice-action-server
     pull_policy: if_not_present
     network_mode: host
+    # mem_limit ADR-0111 (issue #2621): 25 MB RSS замер, даём 128 MB
+    mem_limit: 128m
+    memswap_limit: 128m
     environment:
       - PYTHONUNBUFFERED=1
       - ACTION_SERVER_HOST=127.0.0.1
@@ -400,6 +422,9 @@ services:
     container_name: avatar-supervisor
     pull_policy: if_not_present
     network_mode: host
+    # mem_limit ADR-0111 (issue #2621): 253 MB RSS замер, даём 512 MB
+    mem_limit: 512m
+    memswap_limit: 768m
     environment:
       - ROS_DOMAIN_ID=0
       - ROS_DISTRO=humble
@@ -472,6 +497,9 @@ services:
     container_name: avatar-arbiter
     pull_policy: if_not_present
     network_mode: host
+    # mem_limit ADR-0111 (issue #2621): 230 MB RSS замер, даём 512 MB
+    mem_limit: 512m
+    memswap_limit: 512m
     environment:
       - ROS_DOMAIN_ID=0
       - ROS_DISTRO=humble
@@ -520,6 +548,9 @@ services:
     container_name: rob-box-quest
     pull_policy: if_not_present
     network_mode: host
+    # mem_limit ADR-0111 (issue #2621): 266 MB RSS замер, даём 512 MB
+    mem_limit: 512m
+    memswap_limit: 512m
     build:
       context: .
       dockerfile: docker/vision/quest/Dockerfile
