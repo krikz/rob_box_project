@@ -26,6 +26,7 @@ from rob_box_voice.core.dialogue_guards import (
     MUSIC_STOP_OVERRIDES,
     SYSTEM_TEMPLATE_REGURGITATE_RE,
     TOOL_REQUEST_PATTERNS,
+    UNKNOWN_MELODY_CLAIM_RE,  # Issue #2562 Bug F
     build_music_retry_exhausted_fallback,
     build_system_regurgitate_retry_prompt,
     is_planning_narration,
@@ -35,8 +36,10 @@ from rob_box_voice.core.dialogue_guards import (
     build_renardo_code_retry_prompt,
     build_tool_retry_prompt,
     build_unbacked_action_retry_prompt,
+    build_unknown_melody_retry_prompt,  # Issue #2562 Bug F
     detect_required_tool,
     detect_unbacked_action_claim,
+    detect_unknown_melody_claim,  # Issue #2562 Bug F
     extract_renardo_code_lines,
     is_metalanguage_babble,
     is_music_stop_command,
@@ -1778,3 +1781,282 @@ class TestBuildSystemRegurgitateRetryPrompt:
         # Только один [CRITICAL] — свежий, не дубль от прошлого ретрая
         assert prompt.count("[CRITICAL]") == 1
         assert "предыдущий блок" not in prompt
+
+
+# ---------------------------------------------------------------------------
+# Issue #2562 Bug F — «не знаю такой мелодии» без поиска.
+#
+# Round 3 live-check 15.09.2026 (Vision Pi 10.1.1.21): модель на просьбу
+# «сыграй X» дважды за час отвечала ::
+#
+#   spoken='Не знаю такой мелодии — могу сыграть что-то похожее.
+#           Что ближе — расслабленный фанк или драйв?'
+#   tools=[] finish_reason='stop'
+#
+# Тесты ниже закрывают детектор + ретрай-промпт. acceptance criteria:
+# «10 промптов с неизвестными композиторами → fallback с поиском или
+# альтернативой».
+# ---------------------------------------------------------------------------
+
+
+class TestUnknownMelodyClaimLive1509:
+    """Issue #2562 Bug F — live-примеры из round 3."""
+
+    @pytest.mark.parametrize(
+        "user_input,spoken",
+        [
+            # Дословно из лога 15.09.2026 round 3 (live check).
+            (
+                "сыграй григ в пещере горного короля",
+                "Не знаю такой мелодии — могу сыграть что-то похожее. "
+                "Что ближе — расслабленный фанк или драйв?",
+            ),
+            (
+                "включи мелодию из фильма Интерстеллар",
+                "Не знаю этой мелодии, к сожалению.",
+            ),
+            (
+                "сыграй имперский марш но в стиле регги",
+                "Не помню точно нот имперского марша в регги-стиле.",
+            ),
+            (
+                "давай тему из тетриса",
+                "Не знаю этой композиции наизусть, попробую поискать.",
+            ),
+            (
+                "сыграй саундтрек из Гарри Поттера",
+                "Нет в моей памяти точных нот.",
+            ),
+            (
+                "играй кантри-мелодию про техас",
+                "Не знаю наизусть такой мелодии.",
+            ),
+        ],
+    )
+    def test_live_round3_claim_without_tool_is_detected(
+        self, user_input: str, spoken: str
+    ) -> None:
+        """6 live-примеров из round 3 — все ловятся детектором."""
+        assert detect_unknown_melody_claim(
+            user_input=user_input,
+            spoken=spoken,
+            tools_called=(),
+        ) is True
+
+    @pytest.mark.parametrize(
+        "user_input,spoken,tools",
+        [
+            # LLM ЧЕСТНО попыталась — lookup_melody был вызван, но вернул
+            # пусто. Это легитимный «не нашёл», НЕ Bug F.
+            (
+                "сыграй григ в пещере горного короля",
+                "Не знаю такой мелодии — в RTTTL её нет.",
+                ("lookup_melody",),
+            ),
+            (
+                "сыграй какую-то супер редкую мелодию",
+                "Не знаю этой композиции. Ничего не нашлось.",
+                ("lookup_melody", "search_web"),
+            ),
+            (
+                "включи мелодию из фильма",
+                "Не знаю какой именно — в библиотеке пусто.",
+                ("gen_search_library",),
+            ),
+            # LLM нашла и играет через compose_music — это легитимный
+            # финал, даже если «не знала изначально».
+            (
+                "сыграй мелодию из Марио",
+                "Сейчас сыграю похожее в духе игры.",
+                ("compose_music",),
+            ),
+            (
+                "давай что-то в стиле кантри",
+                "Запускаю кантри-импровизацию.",
+                ("execute_music_code",),
+            ),
+        ],
+    )
+    def test_claim_with_search_or_play_tool_is_not_a_bug(
+        self, user_input: str, spoken: str, tools: tuple
+    ) -> None:
+        """Если хотя бы один поисковый/композиторский тул вызван —
+        это легитимный путь, Bug F НЕ срабатывает."""
+        assert detect_unknown_melody_claim(
+            user_input=user_input, spoken=spoken, tools_called=tools
+        ) is False
+
+    @pytest.mark.parametrize(
+        "user_input,spoken",
+        [
+            # user_input БЕЗ явной просьбы мелодии по имени — Bug F НЕ
+            # срабатывает (на «как дела?» не должно быть ретрая).
+            ("как дела", "Не знаю, что тебе рассказать."),
+            ("расскажи анекдот", "Не знаю ни одного анекдота сейчас."),
+            # «не знаю» в spoken, но user_input — не запрос мелодии.
+            ("что ты умеешь", "Не знаю, получится ли объяснить."),
+            # user_input — запрос мелодии, но spoken не содержит
+            # «не-знания» (нормальный ответ «сейчас поищу»).
+            (
+                "сыграй григ в пещере горного короля",
+                "Сейчас поищу ноты и сыграю.",
+            ),
+            # Играем уже сейчас (tools_called непуст) — Bug F не сработает,
+            # но тут tools_called=() как edge case — spoken должен быть
+            # «играю», а не «не знаю».
+            (
+                "сыграй техно",
+                "Запускаю басовый техно-бит.",
+            ),
+        ],
+    )
+    def test_no_false_positives(self, user_input: str, spoken: str) -> None:
+        """Детектор не должен ловить не-мелодийные случаи и обычные
+        «играю/ищу» ответы — иначе каждый ответ «не знаю что подарить»
+        на общий вопрос уйдёт в ретрай."""
+        assert detect_unknown_melody_claim(
+            user_input=user_input, spoken=spoken, tools_called=()
+        ) is False
+
+    def test_empty_inputs_are_safe(self) -> None:
+        """Краевые случаи: None/пусто — детектор не падает."""
+        assert (
+            detect_unknown_melody_claim(
+                user_input=None, spoken="x", tools_called=()
+            )
+            is False
+        )
+        assert (
+            detect_unknown_melody_claim(
+                user_input="x", spoken=None, tools_called=()
+            )
+            is False
+        )
+        assert (
+            detect_unknown_melody_claim(
+                user_input="", spoken="", tools_called=()
+            )
+            is False
+        )
+
+    @pytest.mark.parametrize(
+        "user_input,spoken",
+        [
+            # Acceptance criteria: 10 промптов с неизвестными композиторами
+            # → Bug F должен сработать (т.к. tools=[] и spoken содержит
+            # «не знаю»). Каждый кейс — отдельный подтип «не знаю» для
+            # разнообразия pattern matching.
+            ("сыграй Баха токкату ре минор", "Не знаю такой мелодии наизусть."),
+            ("включи Pink Floyd Time", "Не помню этой композиции."),
+            ("сыграй Рахманинова прелюдию", "Не знаю точных нот."),
+            ("давай Битлз Yesterday", "Не знаю этой мелодии, к сожалению."),
+            ("сыграй Шопена ноктюрн", "Не знаю наизусть ноктюрна Шопена."),
+            ("включи Леди Гага Poker Face", "Не припоминаю этой песни."),
+            ("играй Вивальди Времена года", "Не знаю этой мелодии из Вивальди."),
+            ("сыграй Билли Айдол", "Не знаю этого трека."),
+            ("включи Элвис Пресли Can't Help", "Не знаю этой песни."),
+            ("сыграй Виктор Цой Звезда по имени", "Не знаю этой композиции наизусть."),
+        ],
+    )
+    def test_acceptance_10_prompts_with_unknown_composers(
+        self, user_input: str, spoken: str
+    ) -> None:
+        """Issue #2562 acceptance: «10 промптов с неизвестными композиторами
+        → fallback с поиском или альтернативой». Bug F ловит ВСЕ 10 —
+        то есть НИ ОДИН из них не уйдёт в TTS как «не знаю» без ретрая."""
+        # NB: в этом тесте каждый параметризованный кейс имеет свой
+        # spoken (соответствующий стилю композитора), а не общий
+        # «Не знаю такой мелодии, могу сыграть что-то похожее.» —
+        # чтобы регексп прошёл по разным подтипам «не знаю/не помню».
+        assert detect_unknown_melody_claim(
+            user_input=user_input, spoken=spoken, tools_called=()
+        ) is True
+
+
+class TestBuildUnknownMelodyRetryPrompt:
+    """Issue #2562 Bug F — CRITICAL-ретрай «не знаю → сначала поиск»."""
+
+    def test_prompt_contains_critical_marker(self) -> None:
+        """Тот же контракт, что у babble/action-claim ретраев: префикс
+        [CRITICAL] + явное требование СНАЧАЛА искать."""
+        prompt = build_unknown_melody_retry_prompt("сыграй григ")
+        assert "[CRITICAL]" in prompt
+        assert "lookup_melody" in prompt
+        assert "search_web" in prompt
+        assert "gen_search_library" in prompt
+        assert "search_melody" in prompt
+
+    def test_prompt_echoes_original_user_input(self) -> None:
+        """Юзер-интент в ретрае — оригинальная команда (та же логика, что
+        у build_babble_retry_prompt — strip предыдущего [CRITICAL])."""
+        prompt = build_unknown_melody_retry_prompt(
+            "сыграй имперский марш но в стиле регги"
+        )
+        assert "сыграй имперский марш но в стиле регги" in prompt
+
+    def test_prompt_orders_search_tools_by_effectiveness(self) -> None:
+        """Порядок тулов в ретрае — RTTTL → search_melody → mp3-library
+        → web (от эффективного к менее надёжному). Это подсказывает
+        LLM, с чего начинать."""
+        prompt = build_unknown_melody_retry_prompt("сыграй хит 80х")
+        # lookup_melody упоминается раньше search_web (первый в списке).
+        lookup_pos = prompt.index("lookup_melody")
+        search_web_pos = prompt.index("search_web")
+        assert lookup_pos < search_web_pos, (
+            "lookup_melody (RTTTL) должен упоминаться ДО search_web — "
+            "иначе LLM не поймёт приоритет"
+        )
+
+    def test_prompt_forbids_empty_answer(self) -> None:
+        """❌ ЗАПРЕЩЕНО «не знаю» без действия — это и есть фикс."""
+        prompt = build_unknown_melody_retry_prompt("сыграй хит 80х")
+        assert "ЗАПРЕЩЕНО" in prompt
+        # Не должно быть фразы типа «можно сказать не знаю» — должен
+        # быть явный запрет.
+        assert "не знаю" in prompt.lower()
+
+    def test_prompt_offers_alternative_path(self) -> None:
+        """Если поиск пуст — LLM должна предложить альтернативы через
+        speak_text + compose_music improvisation. Эта ветка ОБЯЗАТЕЛЬНА."""
+        prompt = build_unknown_melody_retry_prompt("сыграй хит 80х")
+        assert "speak_text" in prompt
+        assert "compose_music" in prompt
+        # Альтернативы 2-3, не одна.
+        assert "2-3" in prompt or "альтернатив" in prompt.lower()
+
+    def test_prompt_handles_none_user_input(self) -> None:
+        """None / пустая строка — крайний случай, не должен падать."""
+        prompt = build_unknown_melody_retry_prompt(None)
+        assert "[CRITICAL]" in prompt
+        assert "lookup_melody" in prompt
+        prompt2 = build_unknown_melody_retry_prompt("")
+        assert "[CRITICAL]" in prompt2
+
+    def test_prompt_strips_previous_critical_block(self) -> None:
+        """Если в user_input уже есть предыдущий [CRITICAL]-блок
+        (вложенный ретрай), он обрезается — иначе модель читает
+        противоречивые инструкции. Контракт тот же, что у babble-retry
+        / regurgitate-retry."""
+        prompt = build_unknown_melody_retry_prompt(
+            "оригинал\n\n[CRITICAL] предыдущий блок"
+        )
+        assert prompt.count("[CRITICAL]") == 1
+        assert "предыдущий блок" not in prompt
+
+    def test_unknown_melody_regex_covers_all_live_variants(self) -> None:
+        """UNKNOWN_MELODY_CLAIM_RE покрывает все варианты «не знаю»
+        из реального лога 15.09.2026 — регексп не сломан."""
+        live_phrases = [
+            "Не знаю такой мелодии — могу сыграть похожее.",
+            "Не знаю этой мелодии, к сожалению.",
+            "Не помню точных нот этой композиции.",
+            "Не припоминаю этой песни.",
+            "Нет в моей памяти точных нот.",
+            "Не знаю наизусть.",
+            "Не знаю точных нот, могу сыграть в похожем духе.",
+        ]
+        for phrase in live_phrases:
+            assert UNKNOWN_MELODY_CLAIM_RE.search(phrase), (
+                f"UNKNOWN_MELODY_CLAIM_RE должен ловить {phrase!r} "
+                "— иначе Bug F не сработает в проде"
+            )
