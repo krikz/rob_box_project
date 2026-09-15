@@ -504,20 +504,21 @@ jobs:
                         | sort | xargs sha256sum 2>/dev/null | sha256sum | awk '{print $1}')
           echo "source_hash=${SOURCE_HASH}" >> "$GITHUB_OUTPUT"
 
-      - name: Fetch HailoRT wheel (ADR-0099 §2.2, Developer Zone artifact)
+      - name: Fetch HailoRT wheel + lib (ADR-0099 §2.2, Developer Zone artifact)
         run: |
-          WHEEL=hailort-4.24.0-cp310-cp310-linux_aarch64.whl
           mkdir -p docker/vision/vision-hailo/wheels
-          # Канонично — /opt/rob_box/vendor (см. docker/build/docker-compose.yaml).
-          # Fallback — /tmp (host /tmp проброшен в runner'ы как /tmp:/tmp).
-          if [ -f "/opt/rob_box/vendor/${WHEEL}" ]; then
-            cp "/opt/rob_box/vendor/${WHEEL}" docker/vision/vision-hailo/wheels/
-          elif [ -f "/tmp/${WHEEL}" ]; then
-            cp "/tmp/${WHEEL}" docker/vision/vision-hailo/wheels/
-          else
-            echo "::error::${WHEEL} не найден ни в /opt/rob_box/vendor, ни в /tmp — real inference build невозможен" >&2
-            exit 1
-          fi
+          # Канонично — /opt/rob_box/vendor. Fallback — /tmp (host /tmp проброшен
+          # в runner'ы как /tmp:/tmp). Нужны ОБА: wheel (python) + libhailort.so.
+          for f in hailort-4.24.0-cp310-cp310-linux_aarch64.whl libhailort.so.4.24.0; do
+            if [ -f "/opt/rob_box/vendor/${f}" ]; then
+              cp "/opt/rob_box/vendor/${f}" docker/vision/vision-hailo/wheels/
+            elif [ -f "/tmp/${f}" ]; then
+              cp "/tmp/${f}" docker/vision/vision-hailo/wheels/
+            else
+              echo "::error::${f} не найден ни в /opt/rob_box/vendor, ни в /tmp — real inference build невозможен" >&2
+              exit 1
+            fi
+          done
           ls -la docker/vision/vision-hailo/wheels/
 
       - name: Build vision-hailo

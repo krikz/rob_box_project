@@ -111,8 +111,9 @@ RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     --cmake-args -DCMAKE_BUILD_TYPE=Release
 
 # 7. HailoRT Python binding (hailo_platform) — Phase 1.5 real inference (ADR-0099 §2.2).
-# Wheel `hailort-4.24.0-cp310-cp310-linux_aarch64.whl` — артефакт Hailo Developer
-# Zone (аккаунт), НЕ в git. Workflow кладёт его в build-context из
+# Wheel + libhailort.so.4.24.0 — артефакты Hailo Developer Zone (аккаунт), НЕ в git.
+# Wheel бандлит python-обвязку, но НЕ libhailort.so — её извлекаем из
+# hailort_4.24.0_arm64.deb. Workflow кладёт ОБА файла в build-context из
 # /opt/rob_box/vendor/ на build-машине (см. L-Build Vision Pi Services.yml).
 # Без wheel'а (HAILO_INSTALL_BINDING != whl) нода capability-honest деградирует
 # в stub — HAILO_ENABLED=true без биндинга НЕ даёт real inference.
@@ -120,6 +121,9 @@ COPY docker/vision/vision-hailo/wheels/ /wheels/
 ARG HAILO_INSTALL_BINDING=none
 RUN if [ "${HAILO_INSTALL_BINDING}" = "whl" ]; then \
         pip3 install --no-cache-dir /wheels/hailort-4.24.0-cp310-cp310-linux_aarch64.whl && \
+        install -m 0755 /wheels/libhailort.so.4.24.0 /usr/lib/ && \
+        ln -sf libhailort.so.4.24.0 /usr/lib/libhailort.so && \
+        ldconfig && \
         python3 -c "import hailo_platform; print('hailo_platform', hailo_platform.__version__)"; \
     else \
         echo "HAILO_INSTALL_BINDING=${HAILO_INSTALL_BINDING}: hailo_platform НЕ установлен (capability-honest stub, ADR-0099 §2.2)"; \
