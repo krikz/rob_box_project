@@ -700,7 +700,7 @@ services:
       # Если источник недоступен — Publisher count остаётся 0, контейнер
       # уходит в unhealthy и docker перезапустит (или operator увидит
       # через promtail + grafana).
-      test: ["/scripts/healthcheck_frame.sh"]
+      test: ["CMD-SHELL", "/scripts/healthcheck_frame.sh"]
       interval: 30s
       timeout: 10s
       start_period: 30s  # HailoRT init медленный на cold start
