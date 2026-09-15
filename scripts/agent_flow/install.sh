@@ -126,6 +126,19 @@ EXPECTED=(
     # Делит PROVIDER_MARKERS + ту же логику recovery-волны, плюс расширен
     # маркерами HTTP 401 / Authentication Fails (DeepSeek invalid api key).
     watchdog-provider-quick.sh
+    # Cancel-stale-cards helper (ретро 15.09 t_197de62a): сканирует
+    # kanban-доски, ловит карточки с provider-exhaust сигнатурой в
+    # task_runs.summary ИЛИ tasks.last_failure_error, и блокирует их
+    # (kind=capability, idempotent через sentinel-комментарий).
+    # Дополняет watchdog-provider-quick.sh: тот реагирует на СВЕЖИЕ
+    # маркеры (worker exit code = protocol violation), этот — на
+    # исторические (когда worker crash-loop произошёл давно и стёрся
+    # из свежего окна, но signal остался в summary/last_failure_error).
+    # До этого фикса скрипт жил только в ~/.hermes/scripts/legacy и не
+    # был в SOT репо → не раскладывался в профили, не контролировался
+    # drift-detect'ом, и CRON НЕ регистрировался. Теперь — SOT +
+    # cron every 5m в devops-профиле (см. ensure_cancel_provider_exhausted_cron).
+    agent-flow-cancel-on-provider-exhausted.sh
     agent-flow-drift-detect.sh
     kanban-retro-create.sh
     # Worker-helper для контракта отчёта (ADR-0115, issue #2159, 2026-09-08):
@@ -926,6 +939,43 @@ ensure_cleanup_cron() {
 ensure_cleanup_cron
 
 echo
+echo "==> Ensure cron job registration: cancel-on-provider-exhausted helper (ретро 15.09 t_197de62a)"
+# Проблема: agent-flow-cancel-on-provider-exhausted.sh раскладывался вручную
+# в ~/.hermes/scripts/legacy, НО в SOT <repo>/scripts/agent_flow/ его не было,
+# и CRON-JOB НЕ регистрировался. Результат (ретро t_197de62a):
+#   - 7 stale-карточек с task_runs.summary='провайдер исчерпан, ждать (402/429...)'
+#     крутились в dispatcher crash-loop ready→running→crashed→ready 3+ цикла
+#     подряд (watchdog-provider-quick UNBLOCK'ал их как только видел
+#     providers_alive=True — а это могло быть от ЛЮБОГО живого воркера на
+#     обычной задаче, не от самого провайдера);
+#   - канбан-карточки блокировались только руками через
+#     `bash agent-flow-cancel-on-provider-exhausted.sh --dry-run` →
+#     `bash agent-flow-cancel-on-provider-exhausted.sh` (manual helper).
+#
+# Решение: ensure_cancel_provider_exhausted_cron() — interval-job (every 5m)
+# в devops-профиле, no_agent (скрипт = watchdog). 5m — компромисс между
+# свежестью (карточки не должны крутиться в crash-loop больше 5-10 мин)
+# и нагрузкой (скрипт сканирует ВСЕ kanban-доски sqlite3 запросом, ~1 сек
+# на доску). Дубль-guard по (script + interval + enabled).
+#
+# Каждый tick: сканирует ВСЕ kanban-доски, для каждой задачи в
+# status IN (running, ready, todo) проверяет task_runs.summary И
+# tasks.last_failure_error на provider-exhaust маркеры (HTTP 402/429,
+# MiniMax 2056, "провайдер исчерпан", ...). Кандидаты: status NOT IN
+# (blocked) И нет sentinel-marker'а → block kind=capability + comment
+# с sentinel'ом (idempotent). Ретро t_197de62a: добавлена проверка
+# last_failure_error (раньше смотрел только summary — воркеры часто
+# crashed до записи summary).
+#
+# Регистрация переживает install.sh: каждый запуск (в т.ч. auto-fix из
+# drift-detect) проверяет jobs.json и создаёт недостающий job.
+ensure_cancel_provider_exhausted_cron() {
+    ensure_cron_job devops "Agent Flow Cancel Provider Exhausted (ретро t_197de62a)" \
+        "agent-flow-cancel-on-provider-exhausted.sh" "every 5m" interval
+}
+ensure_cancel_provider_exhausted_cron
+
+echo
 echo "==> Ensure cron job registration: e2e-process auto-rotation (ретро 23.08+25.08 t_98bb3a1d/t_24e645e7)"
 # Проблема: agent-flow-e2e-process-launcher.sh раскладывался install.sh (commit
 # bd7e509d), но cron-job НЕ создавался — он создавался вручную в тикете 23.08
@@ -1293,6 +1343,7 @@ _WATCHDOG_LAUNCHER_FILES=(
     agent-flow-nightly-review.sh
     agent-flow-decomposed-watchdog.sh
     agent-flow-stale-blocked-watchdog.sh
+    agent-flow-cancel-on-provider-exhausted.sh
 )
 
 _md5_verify_fail=0

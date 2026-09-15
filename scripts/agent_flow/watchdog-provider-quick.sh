@@ -126,6 +126,23 @@ def _failure_error_matches(error: str) -> bool:
 
 PROVIDER_LOG_WINDOW = 900  # сек: лог считается «свежим» для проверки живости
 
+# Ретро 15.09 t_197de62a: cooldown после provider-exhaust block.
+# Раньше watchdog-provider-quick смотрел только на providers_alive=True
+# (любой свежий clean worker log) и сразу делал UNBLOCK, но это FALSE POSITIVE:
+# живой worker может крутить ОБЫЧНУЮ задачу на другом провайдере/модели,
+# пока MiniMax/DeepSeek продолжают возвращать 402/429. Карточки в
+# результате прыгали ready→running→crashed (crash-loop) 3-4 цикла подряд,
+# пока block_recurrences не дотягивал до BLOCK_RECURRENCE_LIMIT (triage).
+#
+# Решение: если в последние RECOVER_COOLDOWN_SEC секунд (default 30 мин)
+# карточка была заблокирована по provider-exhaust причине, не делаем
+# UNBLOCK даже при providers_alive=True. Дополнительно: считаем cooldown
+# от самого свежего task_events.kind IN ('blocked', 'block_loop_detected',
+# 'unblocked') — это даёт правильный «reset moment» при любом волатильном
+# пути (auto-block watchdog'ом / block_loop_detected dispatcher'ом / ручной
+# unblock оператором).
+RECOVER_COOLDOWN_SEC = 1800  # 30 мин
+
 def _log_path(board_dir: str, task_id: str) -> str:
     return os.path.join(board_dir, "logs", f"{task_id}.log")
 
@@ -191,11 +208,16 @@ for db in sorted(glob.glob(f"{boards_dir}/*/kanban.db")):
                     row = con.execute(
                         "SELECT block_kind, "
                         "(SELECT kind FROM task_events WHERE task_id=? "
-                        "ORDER BY id DESC LIMIT 1) AS last_ev "
-                        "FROM tasks WHERE id=?", (task_id, task_id),
+                        "ORDER BY id DESC LIMIT 1) AS last_ev, "
+                        "(SELECT MAX(created_at) FROM task_events "
+                        "  WHERE task_id=? AND kind IN "
+                        "  ('blocked','block_loop_detected','unblocked')) "
+                        "  AS last_block_evt_at "
+                        "FROM tasks WHERE id=?", (task_id, task_id, task_id),
                     ).fetchone()
-                    bk, last_ev = (row[0] if row else None,
-                                   row[1] if row else None)
+                    bk = row[0] if row else None
+                    last_ev = row[1] if row else None
+                    last_block_evt_at = (row[2] if row else None) or 0
                     # Только если блок поставил dispatcher (последний event
                     # ∈ gave_up/прочие crash-variants) ИЛИ block_kind=NULL.
                     # Если block_kind ∈ {capability, needs_input, dependency,
@@ -204,6 +226,21 @@ for db in sorted(glob.glob(f"{boards_dir}/*/kanban.db")):
                         "gave_up", "protocol_violation", "crashed",
                         "rate_limited",
                     ):
+                        # Ретро t_197de62a: cooldown после provider-exhaust
+                        # block. Если в последние RECOVER_COOLDOWN_SEC секунд
+                        # было block/block_loop/unblock событие, не делаем
+                        # UNBLOCK — providers_alive=True может быть FALSE
+                        # POSITIVE от другого живого воркера (см. RECOVER_COOLDOWN_SEC
+                        # в комментарии выше).
+                        if last_block_evt_at and (now - int(last_block_evt_at)) < RECOVER_COOLDOWN_SEC:
+                            # Тихо пропускаем, без action. Печатаем только
+                            # в stderr (no_agent cron не видит stdout).
+                            print(f"[watchdog-provider-quick] skip unblock "
+                                  f"{board}/{task_id}: cooldown "
+                                  f"({int(now - last_block_evt_at)}s < "
+                                  f"{RECOVER_COOLDOWN_SEC}s)",
+                                  file=sys.stderr)
+                            continue
                         provider_actions.append(f"unblock|{board}|{task_id}")
             elif status in ("running", "ready"):
                 # Active state — блокируем если провайдеры мертвы.
