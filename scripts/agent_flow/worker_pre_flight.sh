@@ -12,12 +12,15 @@
 # больше WARN_BRANCH_BEHIND. Логирует результат в task_comments (через
 # `gh issue comment` если задан ISSUE_NUM, иначе только stderr).
 #
-# Контракт (ADR-0077 §3.3 расширение, issue #2438):
-#   - Принимает task_id и branch_name.
-#   - Делает `git fetch origin develop --prune`.
-#   - Считает BEHIND=$(git rev-list --count HEAD..origin/develop).
+# Контракт (ADR-0077 §3.3 расширение, issue #2438, фикс #2478):
+#   - Принимает task_id и branch_name (argv $2).
+#   - branch_name ОБЯЗАН совпадать с `git rev-parse --abbrev-ref HEAD`,
+#     иначе exit 2 (fail-fast защита от «мусор на входе → silent ignore»,
+#     которая была в API до #2478 — задокументировано ≠ работало).
+#   - Делает `git fetch origin $BASE_REF --prune`.
+#   - Считает BEHIND=$(git rev-list --count HEAD..$BASE_REF).
 #   - Если BEHIND > MAX_BRANCH_BEHIND (default 30) — пишет warn в task_comments,
-#     затем ДЕЛАЕТ auto-rebase origin/develop.
+#     затем ДЕЛАЕТ auto-rebase $BASE_REF.
 #   - Если rebase падает с конфликтом — пишет инструкцию в task_comments
 #     и возвращает non-zero exit (воркер должен вызвать kanban_block).
 #   - Иначе возвращает 0.
@@ -27,6 +30,8 @@
 #
 # Env:
 #   MAX_BRANCH_BEHIND (default 30) — порог drift, выше которого warn+auto-rebase
+#   BASE_REF          (default origin/develop) — реально используется для fetch/rebase
+#                                         (до #2478 был dead variable)
 #   GITHUB_REPO       (default krikz/rob_box_project) — для gh issue comment
 #   GH_CONFIG_DIR     (default /home/builder/.config/gh) — для gh auth
 #   KANBAN_BOARD      (default robbox) — для kanban-tools
@@ -35,7 +40,7 @@
 # Exit codes:
 #   0 — success (fresh или auto-rebase успешен)
 #   1 — rebase conflict (worktree в состоянии rebase-merge, нужен ручной resolve)
-#   2 — usage error (нет task_id / branch_name, или не в git worktree)
+#   2 — usage error (нет task_id / branch_name, branch_name≠HEAD, не в git worktree)
 #
 # SOT: <repo>/scripts/agent_flow/worker_pre_flight.sh
 # На хост раскладывает install.sh EXPECTED → drift-detect контролирует.
@@ -82,9 +87,22 @@ CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)"
 WORKTREE_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 
 # ---- helpers --------------------------------------------------------------
+# log() определяется ДО fail-fast: иначе "branch mismatch" check (issue #2478)
+# не сможет залогировать сообщение и молча fail-fast'нет без следа.
 log() {
     printf '[worker_pre_flight %s] %s\n' "$TASK_ID" "$*" >&2
 }
+
+# Fail-fast: branch_name (argv $2) обязан совпадать с реальной веткой.
+# До #2478 BRANCH_NAME читался и валидировался на пустоту, но игнорировался —
+# воркеры могли передавать мусор и скрипт молча делал работу на «не той» ветке.
+# ADR-0018 (honest naming): задокументировано = работает.
+if [ -n "$BRANCH_NAME" ] && [ "$BRANCH_NAME" != "$CURRENT_BRANCH" ]; then
+    log "ERROR: branch mismatch — passed '$BRANCH_NAME', actual HEAD is '$CURRENT_BRANCH'"
+    log "  Hint: воркеры должны передавать текущую ветку или не передавать ничего."
+    log "  Refuse to operate on a different branch than caller claims (ADR-0018 honest naming, issue #2478)."
+    exit 2
+fi
 
 post_comment() {
     # post_comment <body> — пишет комментарий в issue (если ISSUE_NUM задан),
@@ -113,12 +131,15 @@ post_comment() {
 }
 
 # ---- step 1: fetch ---------------------------------------------------------
-log "fetching origin/develop in $WORKTREE_DIR"
-if ! git fetch origin develop --prune >/dev/null 2>&1; then
-    log "WARN: git fetch origin develop failed (offline? no remote?)"
+# Разделяем BASE_REF на remote и ref (default: origin/develop → origin=origin, ref=develop).
+_REMOTE="${BASE_REF%%/*}"      # "origin/develop" → "origin"
+_REMOTE_REF="${BASE_REF#*/}"   # "origin/develop" → "develop"
+log "fetching $BASE_REF in $WORKTREE_DIR"
+if ! git fetch "$_REMOTE" "$_REMOTE_REF" --prune >/dev/null 2>&1; then
+    log "WARN: git fetch $_REMOTE $_REMOTE_REF failed (offline? no remote?)"
     # Если fetch не работает — мы не можем честно оценить drift.
     # Лучше exit 0 (не блокируем воркера), но пишем warn.
-    post_comment "⚠️ [agent:devops] worker_pre_flight: git fetch origin develop FAILED.
+    post_comment "⚠️ [agent:devops] worker_pre_flight: git fetch $_REMOTE $_REMOTE_REF FAILED.
 
 Воркер не смог проверить drift (offline / no remote / 401).
 Работа продолжена, но есть риск stale worktree.
@@ -128,11 +149,12 @@ _worker_pre_flight task=$TASK_ID branch=$CURRENT_BRANCH_"
 fi
 
 # ---- step 2: behind count --------------------------------------------------
-# fetch с явным refspec — иначе origin/develop может быть stale (ретро t_730ea7b1)
-git fetch --no-tags origin "refs/heads/develop:refs/remotes/origin/develop" >/dev/null 2>&1 || true
+# fetch с явным refspec — иначе origin/<ref> может быть stale (ретро t_730ea7b1).
+git fetch --no-tags "$_REMOTE" "refs/heads/${_REMOTE_REF}:refs/remotes/${BASE_REF}" >/dev/null 2>&1 || true
 
-BEHIND="$(git rev-list --count "${CURRENT_BRANCH}..origin/develop" 2>/dev/null || echo "?")"
-AHEAD="$(git rev-list --count "origin/develop..${CURRENT_BRANCH}" 2>/dev/null || echo "?")"
+BEHIND="$(git rev-list --count "${CURRENT_BRANCH}..${BASE_REF}" 2>/dev/null || echo "?")"
+AHEAD="$(git rev-list --count "${BASE_REF}..${CURRENT_BRANCH}" 2>/dev/null || echo "?")"
+unset _REMOTE _REMOTE_REF
 
 log "drift: ahead=$AHEAD behind=$BEHIND (max=$MAX_BEHIND) branch=$CURRENT_BRANCH"
 
@@ -142,9 +164,9 @@ log "drift: ahead=$AHEAD behind=$BEHIND (max=$MAX_BEHIND) branch=$CURRENT_BRANCH
 # webxr коммиты от прошлых воркеров). Не блокируем (возможен legit resume
 # своей ветки), но показываем список — воркер должен решить, его это или нет.
 if [ "$AHEAD" != "?" ] && [ "$AHEAD" -gt 0 ] 2>/dev/null; then
-    log "WARN: branch already has $AHEAD commit(s) not in origin/develop — possible leftover from another task"
-    git log --oneline "origin/develop..${CURRENT_BRANCH}" 2>/dev/null | sed 's/^/    commit: /' >&2 || true
-    log "If these are NOT your commits — recreate branch from fresh origin/develop (see worker-rebase-protocol skill)."
+    log "WARN: branch already has $AHEAD commit(s) not in $BASE_REF — possible leftover from another task"
+    git log --oneline "${BASE_REF}..${CURRENT_BRANCH}" 2>/dev/null | sed 's/^/    commit: /' >&2 || true
+    log "If these are NOT your commits — recreate branch from fresh $BASE_REF (see worker-rebase-protocol skill)."
 fi
 
 if [ "$BEHIND" = "?" ]; then
@@ -154,7 +176,7 @@ fi
 
 # ---- step 3: no-op if fresh -----------------------------------------------
 if [ "$BEHIND" -le 0 ] 2>/dev/null; then
-    log "OK: branch is up-to-date with origin/develop (ahead=$AHEAD, behind=0)"
+    log "OK: branch is up-to-date with $BASE_REF (ahead=$AHEAD, behind=0)"
     exit 0
 fi
 
@@ -168,8 +190,8 @@ if [ "$BEHIND" -le "$MAX_BEHIND" ] 2>/dev/null; then
 fi
 
 # ---- step 5: heavy drift — warn + auto-rebase ----------------------------
-log "DRIFT $BEHIND > $MAX_BEHIND — auto-rebasing $CURRENT_BRANCH onto origin/develop"
-post_comment "⚠️ [agent:devops] worker_pre_flight: branch **$CURRENT_BRANCH** is **$BEHIND commits behind** origin/develop (max $MAX_BEHIND).
+log "DRIFT $BEHIND > $MAX_BEHIND — auto-rebasing $CURRENT_BRANCH onto $BASE_REF"
+post_comment "⚠️ [agent:devops] worker_pre_flight: branch **$CURRENT_BRANCH** is **$BEHIND commits behind** $BASE_REF (max $MAX_BEHIND).
 
 Auto-rebase started. Если rebase упадёт с конфликтом — ручной resolve требуется.
 
@@ -194,7 +216,7 @@ fi
 
 # rebase с таймаутом (нет, git rebase не имеет --timeout, но мы можем abort через timeout cmd).
 REBASE_OUT="$(mktemp)"
-if timeout 300 git rebase origin/develop >"$REBASE_OUT" 2>&1; then
+if timeout 300 git rebase "$BASE_REF" >"$REBASE_OUT" 2>&1; then
     rm -f "$REBASE_OUT"
     if [ "$STASHED" -eq 1 ]; then
         if git stash pop >/dev/null 2>&1; then
@@ -213,7 +235,7 @@ _worker_pre_flight task=$TASK_ID_"
             exit 1
         fi
     fi
-    NEW_BEHIND="$(git rev-list --count "${CURRENT_BRANCH}..origin/develop" 2>/dev/null || echo "?")"
+    NEW_BEHIND="$(git rev-list --count "${CURRENT_BRANCH}..${BASE_REF}" 2>/dev/null || echo "?")"
     log "REBASE OK: new behind=$NEW_BEHIND (was $BEHIND)"
     post_comment "✅ [agent:devops] worker_pre_flight: auto-rebase **OK**.
 

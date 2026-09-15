@@ -180,6 +180,51 @@ popd >/dev/null
 assert_exit "10_committed_out_of_scope" 1 "$rc"
 assert_output_has "10_committed_out_of_scope_names_file" "$out" "evil_webxr.ts"
 
+# --- Сценарий 11: out-of-scope + ISSUE_NUM → exit 1 + gh attempted (issue #2478) ---
+# Проверяем, что ISSUE_NUM argv реально используется: best-effort gh comment,
+# но если gh нет / auth fail / issue не существует — fallback на stderr-only,
+# exit всё равно 1.
+# Используем фейковый ISSUE_NUM=999999999 и заглушенный PATH (без gh) → exit 1.
+# Сохраняем нужные утилиты (bash, grep, sed, head, wc, mktemp, printf, command)
+# в PATH, но удаляем gh.
+SETUP11="$WORK/s11"
+make_bare "$WORK/s11_bare" "$SETUP11"
+pushd "$SETUP11" >/dev/null
+git checkout -q -b "z-test/s11-issue-num" develop
+printf 'x\n' > evil.ts
+# Подменяем PATH на каталог, где есть core utils, но НЕТ gh → best-effort fallback.
+_TMP_BIN="$(mktemp -d)"
+for _u in bash git grep sed head wc mktemp command sort tr cat cp; do
+    [ -x "$(command -v "$_u" 2>/dev/null)" ] && ln -s "$(command -v "$_u")" "$_TMP_BIN/$_u" 2>/dev/null || true
+done
+unset _u
+out=$(PR_ALLOWED_PREFIXES="scripts/" PATH="$_TMP_BIN" bash "$TARGET" "t_abc1234" "999999999" 2>&1)
+rc=$?
+popd >/dev/null
+rm -rf "$_TMP_BIN"
+assert_exit "11_out_of_scope_with_issue_num" 1 "$rc" || true
+# Должно быть сообщение про gh-not-in-PATH (stderr-only fallback).
+echo "$out" | grep -qF "gh not in PATH" \
+    || { fail_count=$((fail_count + 1)); echo "FAIL [11_issue_num_fallback]: expected 'gh not in PATH' in stderr, got: $out"; }
+
+# --- Сценарий 12: in-scope + ISSUE_NUM → exit 0 (no comment) ---
+SETUP12="$WORK/s12"
+make_bare "$WORK/s12_bare" "$SETUP12"
+pushd "$SETUP12" >/dev/null
+git checkout -q -b "z-test/s12-ok-with-issue" develop
+mkdir -p scripts
+printf 'x\n' > scripts/ok.sh
+_TMP_BIN="$(mktemp -d)"
+for _u in bash git grep sed head wc mktemp command sort tr cat cp; do
+    [ -x "$(command -v "$_u" 2>/dev/null)" ] && ln -s "$(command -v "$_u")" "$_TMP_BIN/$_u" 2>/dev/null || true
+done
+unset _u
+out=$(PR_ALLOWED_PREFIXES="scripts/" PATH="$_TMP_BIN" bash "$TARGET" "t_abc1234" "999999999" 2>&1)
+rc=$?
+popd >/dev/null
+rm -rf "$_TMP_BIN"
+assert_exit "12_in_scope_with_issue_num" 0 "$rc" || true
+
 # --- summary ---
 echo ""
 echo "==== SUMMARY ===="

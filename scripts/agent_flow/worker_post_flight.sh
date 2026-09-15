@@ -12,12 +12,14 @@
 # rebase падает с конфликтом — пишет инструкцию в task_comments и
 # возвращает non-zero exit. Воркер НЕ должен вызывать kanban_complete.
 #
-# Контракт (ADR-0077 §3.3 расширение, issue #2438):
-#   - Принимает task_id, branch_name и опционально issue_num.
-#   - Делает `git fetch origin develop --prune`.
-#   - Считает BEHIND=$(git rev-list --count HEAD..origin/develop).
+# Контракт (ADR-0077 §3.3 расширение, issue #2438, фикс #2478):
+#   - Принимает task_id, branch_name (argv $2) и опционально issue_num (argv $3).
+#   - branch_name ОБЯЗАН совпадать с `git rev-parse --abbrev-ref HEAD`,
+#     иначе exit 2 (fail-fast защита от silent ignore, ADR-0018).
+#   - Делает `git fetch origin $BASE_REF --prune`.
+#   - Считает BEHIND=$(git rev-list --count HEAD..$BASE_REF).
 #   - Если BEHIND == 0 → exit 0 (no-op).
-#   - Если BEHIND > 0 → auto-rebase. Успех → exit 0 (готов к kanban_complete).
+#   - Если BEHIND > 0 → auto-rebase $BASE_REF. Успех → exit 0 (готов к kanban_complete).
 #     Конфликт → пишет инструкцию + exit 1 (воркер должен kanban_block).
 #
 # Usage:
@@ -25,6 +27,8 @@
 #
 # Env:
 #   MAX_BRANCH_BEHIND (default 30) — порог, выше которого логируем warn
+#   BASE_REF          (default origin/develop) — реально используется для fetch/rebase
+#                                         (до #2478 был dead variable)
 #   GITHUB_REPO       (default krikz/rob_box_project) — для gh issue comment
 #   GH_CONFIG_DIR     (default /home/builder/.config/gh) — для gh auth
 #   KANBAN_BOARD      (default robbox) — для kanban-tools
@@ -33,7 +37,7 @@
 # Exit codes:
 #   0 — success (branch up-to-date или auto-rebase успешен)
 #   1 — rebase conflict (worktree в rebase-merge state, требует ручной resolve)
-#   2 — usage error (нет task_id / branch_name, или не в git worktree)
+#   2 — usage error (нет task_id / branch_name, branch_name≠HEAD, не в git worktree)
 #
 # SOT: <repo>/scripts/agent_flow/worker_post_flight.sh
 # Тест: bash scripts/agent_flow/tests/test_worker_post_flight.sh
@@ -77,9 +81,22 @@ CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)"
 WORKTREE_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 
 # ---- helpers --------------------------------------------------------------
+# log() определяется ДО fail-fast: иначе "branch mismatch" check (issue #2478)
+# не сможет залогировать сообщение и молча fail-fast'нет без следа.
 log() {
     printf '[worker_post_flight %s] %s\n' "$TASK_ID" "$*" >&2
 }
+
+# Fail-fast: branch_name (argv $2) обязан совпадать с реальной веткой.
+# До #2478 BRANCH_NAME читался, валидировался на пустоту, но игнорировался —
+# воркеры могли передавать мусор и скрипт молча делал rebase на «не той» ветке.
+# ADR-0018 (honest naming): задокументировано = работает.
+if [ -n "$BRANCH_NAME" ] && [ "$BRANCH_NAME" != "$CURRENT_BRANCH" ]; then
+    log "ERROR: branch mismatch — passed '$BRANCH_NAME', actual HEAD is '$CURRENT_BRANCH'"
+    log "  Hint: воркеры должны передавать текущую ветку или не передавать ничего."
+    log "  Refuse to operate on a different branch than caller claims (ADR-0018 honest naming, issue #2478)."
+    exit 2
+fi
 
 post_comment() {
     local body="$1"
@@ -122,11 +139,14 @@ _worker_post_flight task=$TASK_ID_"
 fi
 
 # ---- step 2: fetch --------------------------------------------------------
-log "fetching origin/develop in $WORKTREE_DIR"
-if ! git fetch origin develop --prune >/dev/null 2>&1; then
-    log "WARN: git fetch origin develop failed (offline? no remote?)"
+# Разделяем BASE_REF на remote и ref (default: origin/develop → origin=origin, ref=develop).
+_REMOTE="${BASE_REF%%/*}"
+_REMOTE_REF="${BASE_REF#*/}"
+log "fetching $BASE_REF in $WORKTREE_DIR"
+if ! git fetch "$_REMOTE" "$_REMOTE_REF" --prune >/dev/null 2>&1; then
+    log "WARN: git fetch $_REMOTE $_REMOTE_REF failed (offline? no remote?)"
     # Не блокируем воркера — fetch fail это не его вина.
-    post_comment "⚠️ [agent:devops] worker_post_flight: git fetch origin develop FAILED.
+    post_comment "⚠️ [agent:devops] worker_post_flight: git fetch $_REMOTE $_REMOTE_REF FAILED.
 
 Воркер не смог проверить drift. Работа продолжена, но есть риск stale PR.
 _worker_post_flight task=$TASK_ID branch=$CURRENT_BRANCH_"
@@ -134,7 +154,8 @@ _worker_post_flight task=$TASK_ID branch=$CURRENT_BRANCH_"
 fi
 
 # Явный fetch refspec (ретро t_730ea7b1)
-git fetch --no-tags origin "refs/heads/develop:refs/remotes/origin/develop" >/dev/null 2>&1 || true
+git fetch --no-tags "$_REMOTE" "refs/heads/${_REMOTE_REF}:refs/remotes/${BASE_REF}" >/dev/null 2>&1 || true
+unset _REMOTE _REMOTE_REF
 
 # ---- step 2.5: scope self-check (issue #2438, PR #2443) -------------------
 # Перед rebase/push — самопроверка файлов: working tree (staged + unstaged +
@@ -152,8 +173,8 @@ fi
 unset _SELF_DIR
 
 # ---- step 3: behind count ------------------------------------------------
-BEHIND="$(git rev-list --count "${CURRENT_BRANCH}..origin/develop" 2>/dev/null || echo "?")"
-AHEAD="$(git rev-list --count "origin/develop..${CURRENT_BRANCH}" 2>/dev/null || echo "?")"
+BEHIND="$(git rev-list --count "${CURRENT_BRANCH}..${BASE_REF}" 2>/dev/null || echo "?")"
+AHEAD="$(git rev-list --count "${BASE_REF}..${CURRENT_BRANCH}" 2>/dev/null || echo "?")"
 
 log "drift: ahead=$AHEAD behind=$BEHIND (max=$MAX_BEHIND) branch=$CURRENT_BRANCH"
 
@@ -164,13 +185,13 @@ fi
 
 # ---- step 4: up-to-date → no-op ------------------------------------------
 if [ "$BEHIND" -le 0 ] 2>/dev/null; then
-    log "OK: branch is up-to-date with origin/develop (ahead=$AHEAD, behind=0)"
+    log "OK: branch is up-to-date with $BASE_REF (ahead=$AHEAD, behind=0)"
     exit 0
 fi
 
 # ---- step 5: drift detected → auto-rebase --------------------------------
-log "drift $BEHIND > 0 — auto-rebasing $CURRENT_BRANCH onto origin/develop"
-post_comment "⚠️ [agent:devops] worker_post_flight: branch **$CURRENT_BRANCH** is **$BEHIND commits behind** origin/develop.
+log "drift $BEHIND > 0 — auto-rebasing $CURRENT_BRANCH onto $BASE_REF"
+post_comment "⚠️ [agent:devops] worker_post_flight: branch **$CURRENT_BRANCH** is **$BEHIND commits behind** $BASE_REF.
 
 Auto-rebase before kanban_complete. Если conflict → блокирую карточку.
 
@@ -193,7 +214,7 @@ if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; th
 fi
 
 REBASE_OUT="$(mktemp)"
-if timeout 300 git rebase origin/develop >"$REBASE_OUT" 2>&1; then
+if timeout 300 git rebase "$BASE_REF" >"$REBASE_OUT" 2>&1; then
     rm -f "$REBASE_OUT"
     if [ "$STASHED" -eq 1 ]; then
         if git stash pop >/dev/null 2>&1; then
@@ -211,7 +232,7 @@ _worker_post_flight task=$TASK_ID_"
         fi
     fi
 
-    NEW_BEHIND="$(git rev-list --count "${CURRENT_BRANCH}..origin/develop" 2>/dev/null || echo "0")"
+    NEW_BEHIND="$(git rev-list --count "${CURRENT_BRANCH}..${BASE_REF}" 2>/dev/null || echo "0")"
     REBASE_COMMITS=$((BEHIND - NEW_BEHIND))
     log "REBASE OK: rebased $REBASE_COMMITS commits (was behind=$BEHIND, now=$NEW_BEHIND)"
 
