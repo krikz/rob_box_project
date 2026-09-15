@@ -34,9 +34,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from rob_box_harness.core.agent_core import (
-    _is_pseudo_tool_call,
-)
+from rob_box_harness.core.tool_loop.text_classify import is_pseudo_tool_call  # noqa: F401 — re-export
 from rob_box_llm.provider import LLMMessage, LLMResponse
 
 if TYPE_CHECKING:
@@ -99,7 +97,7 @@ def build_silent_response_correction(response: LLMResponse) -> LLMMessage:
     help when the model wrote the call as text — it would just keep
     writing it again).
     """
-    if _is_pseudo_tool_call(response.content or ""):
+    if is_pseudo_tool_call(response.content or ""):
         return LLMMessage(
             role="user",
             content=(

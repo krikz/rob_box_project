@@ -32,6 +32,17 @@ from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping
 
 from rob_box_core.token_estimate import estimate_prompt_tokens
 from rob_box_core.tool_catalog import tools_for_skill
+from rob_box_harness.core.tool_loop import (
+    apply_babble_filter,
+    build_awaiting_confirmation_result,
+    build_outcome_from_response,
+    is_truncated_args_candidate,
+    request_silent_response_retry,
+    request_truncated_args_retry,
+)
+from rob_box_harness.core.tool_loop.outcomes import (  # noqa: F401 — re-exported
+    _ToolLoopOutcome,
+)
 from rob_box_harness.core.confirmation_policy import ConfirmationKind
 from rob_box_harness.core.dialogue_state_machine import (
     DialogueEvent,
@@ -263,9 +274,10 @@ _PSEUDO_TOOL_CALL_RE = re.compile(r"^<[^<>]{1,160}>$")
 _PENDING_RETRY_KEY: str = "reply_retracted"
 
 
-def _is_pseudo_tool_call(text: str) -> bool:
-    """Return ``True`` when ``text`` is a tool call the model WROTE instead of made."""
-    return bool(_PSEUDO_TOOL_CALL_RE.match((text or "").strip()))
+from rob_box_harness.core.tool_loop.text_classify import (  # noqa: F401 — back-compat aliases
+    _PSEUDO_TOOL_CALL_RE,
+    is_pseudo_tool_call as _is_pseudo_tool_call,
+)
 
 
 #: ``finish_reason`` values that mean "the model produced NO usable output"
@@ -407,57 +419,6 @@ class DialogResult:
     # can correlate the +6 s retry with the upstream token-budget
     # exhaustion. AgentCore itself ALSO uses the flag (see
     # ``_run_with_tools``) to ask the model for a shorter retry.
-    truncated_tool_args: bool = False
-
-
-@dataclass(frozen=True)
-class _ToolLoopOutcome:
-    """Что вернул тул-цикл :meth:`AgentCore._run_with_tools`.
-
-    Раньше это был безымянный кортеж, который вызывающая сторона
-    распаковывала одной строкой в 118 символов. Аннотация при этом
-    обещала шесть элементов, а ``return`` отдавал семь — разъехались
-    молча, потому что распаковка длину не проверяет.
-
-    Fields
-    ------
-    spoken_text:
-        Финальный текст модели. Пустая строка, когда ход подавлен
-        (babble-фильтр issue #1253).
-    tools_called:
-        Уникальные имена вызванных тулов, в порядке первого вызова.
-    finish_reason:
-        ``finish_reason`` последнего ответа — нужен ноде, чтобы отличить
-        пустой ответ от обрыва по ``length``.
-    raw_response:
-        Сырой ответ провайдера, для логов.
-    speak_text_count:
-        Сколько раз модель ЗВАЛА ``speak_text`` (issue #992: отличает
-        BACKING-ход от TRACK-хода).
-    speak_text_real_count:
-        Сколько из них несли непустой ``text`` и реально бы прозвучали
-        (issue #1343 — deepseek шлёт ``speak_text({})``).
-    spoken_via_tool:
-        Что реально произнесено через ``speak_text``, склеенное через
-        перевод строки. Пишется в историю вместо маркера «done», иначе
-        модель начинает отвечать «done» сама.
-    truncated_tool_args:
-        Issue #1899 — propagated from the last ``LLMResponse.truncated_tool_args``.
-        ``True`` when the last stream assembled tool-call arguments that
-        were cut off mid-JSON (most often ``finish_reason='length'``).
-        The agent loop already asked the model for a shorter retry
-        before falling out of the tool loop; the flag is preserved so
-        ``DialogResult`` consumers (dialogue_node / future analytics)
-        can see the upstream budget exhaustion.
-    """
-
-    spoken_text: str
-    tools_called: list[str]
-    finish_reason: str | None
-    raw_response: Any
-    speak_text_count: int
-    speak_text_real_count: int
-    spoken_via_tool: str
     truncated_tool_args: bool = False
 
 
@@ -1137,96 +1098,29 @@ class AgentCore:
             # often ``finish_reason='length'``). Do NOT execute broken
             # tool-calls; ask the model to redo with a tighter payload.
             if (
-                response.tool_calls
-                and response.truncated_tool_args
-                and not _truncated_tool_args_retried
+                not _truncated_tool_args_retried
+                and is_truncated_args_candidate(response)
             ):
                 _truncated_tool_args_retried = True
-                _names = sorted({c.name for c in response.tool_calls})
-                logging.getLogger(__name__).warning(
-                    "AgentCore [issue 1899]: tool-call arguments JSON cut "
-                    "off mid-stream (finish_reason=%r). Asking model to "
-                    "retry with shorter args. tools=%s",
-                    response.finish_reason,
-                    _names,
+                response = await request_truncated_args_retry(
+                    self, messages, response, openai_tools
                 )
-                # Record the assistant turn we received so the chat
-                # history stays valid (OpenAI requires an assistant
-                # message before the next user message when tool_calls
-                # were emitted).
-                if response.content or response.tool_calls:
-                    messages.append(
-                        LLMMessage(
-                            role="assistant",
-                            content=response.content,
-                            tool_calls=response.tool_calls,
-                        )
-                    )
-                # Issue #1899 — diagnostic via ``finish_reason`` so the
-                # next worker / live operator sees WHY the retry fired
-                # without grepping logs.
-                messages.append(
-                    LLMMessage(
-                        role="user",
-                        content=(
-                            "[SYSTEM CORRECTION] Твой предыдущий tool-call "
-                            "был ОБРЕЗАН: ответ не поместился в max_tokens "
-                            "и JSON-аргументы НЕ ЗАКРЫЛИСЬ. Инструмент "
-                            f"{_names!r} НЕ БЫЛ вызван (валидация бы упала "
-                            "на пустых/обрезанных аргументах). "
-                            "Повтори ход и вызови нужный tool снова, но "
-                            "с БОЛЕЕ КОРОТКИМИ значениями аргументов — "
-                            "короткие строки, никаких многострочных "
-                            "описаний. Если аргументов слишком много для "
-                            "бюджета токенов, разбей на несколько ходов: "
-                            "сначала вызови основной tool с минимальным "
-                            "набором полей, остальное — следующим ходом."
-                        ),
-                    )
-                )
-                response = await self._stream_response(messages, tools=openai_tools)
                 continue
 
             if not response.tool_calls:
+                # Issue #1217 — silent / pseudo-call response. One
+                # single-shot retry, same single-shot invariant as the
+                # truncated-args branch above. Helper builds the
+                # correction message and re-streams.
                 if (
                     not _silent_retried
                     and not tools_called
                     and self._is_silent_response(response)
                 ):
                     _silent_retried = True
-                    if response.content:
-                        messages.append(
-                            LLMMessage(role="assistant", content=response.content)
-                        )
-                    # live 01.09 — упрёк «ответ был пустым» на псевдо-вызов
-                    # неверен и не помогает: модель ВИДИТ, что текст был.
-                    # Ей надо объяснить, что написать вызов текстом — не
-                    # значит вызвать.
-                    if _is_pseudo_tool_call(response.content or ""):
-                        correction = (
-                            "[SYSTEM CORRECTION] Ты НАПИСАЛ вызов инструмента "
-                            "текстом: "
-                            + (response.content or "").strip()[:120]
-                            + ". Это не вызов — это строка, её никто не "
-                            "выполнил, и пользователь ничего не услышал. "
-                            "Инструменты вызываются механизмом function "
-                            "calling, а не текстом ответа. Повтори ход и "
-                            "вызови нужный tool ПО-НАСТОЯЩЕМУ, со всеми "
-                            "аргументами."
-                        )
-                    else:
-                        correction = (
-                            "[SYSTEM CORRECTION] Твой предыдущий ответ "
-                            "был пустым: ни текста, ни tool-вызова. "
-                            "Пользователь ничего не услышал, ничего не "
-                            "произошло. ОБЯЗАТЕЛЬНО в ЭТОМ ответе вызови "
-                            "нужный tool (speak_text — для речи) или дай "
-                            "содержательный текстовый ответ."
-                        )
-                    messages.append(
-                        LLMMessage(role="user", content=correction)
+                    response = await request_silent_response_retry(
+                        self, messages, response, openai_tools
                     )
-                    response = await self._stream_response(messages, tools=openai_tools)
                     continue
                 break
 
@@ -1333,21 +1227,10 @@ class AgentCore:
                     if decision.kind is ConfirmationKind.REQUIRE:
                         # Don't call the executor — gate will dispatch it
                         # later via the future scheduler (Фаза 2).
-                        results_by_call_id[call.id] = ToolResult(
-                            tool_call_id=call.id,
-                            content=json.dumps(
-                                {
-                                    "status": "awaiting_user_confirmation",
-                                    "segment_id": segment.segment_id,
-                                    "tool": call.name,
-                                    "plan_text": segment.decision.plan_text,
-                                    "confirmation_timeout_ms": int(
-                                        self._acceptance_gate.config.confirmation_timeout_ms
-                                    ),
-                                },
-                                ensure_ascii=False,
-                            ),
-                            is_error=False,
+                        results_by_call_id[call.id] = (
+                            build_awaiting_confirmation_result(
+                                call, segment, self._acceptance_gate
+                            )
                         )
                         continue
 
@@ -1437,38 +1320,25 @@ class AgentCore:
         # получился» while nothing actually happened. System transition:
         # return empty spoken so dialogue_node moves to the next round
         # instead of parroting the babble.
-        if (
-            tool_error_occurred
-            and not response.tool_calls
-            and "speak_text" not in seen
-            and response.content
-            and self._is_silent_response(response)
-        ):
-            logging.getLogger(__name__).warning(
-                "AgentCore: tool error + babble-only final answer — "
-                f"suppressing spoken text {response.content[:80]!r} "
-                "(system transition)"
-            )
-            return _ToolLoopOutcome(
-                spoken_text="",
-                tools_called=tools_called,
-                finish_reason=response.finish_reason,
-                raw_response=response.raw,
-                speak_text_count=speak_text_count,
-                speak_text_real_count=speak_text_real_count,
-                spoken_via_tool="\n".join(spoken_texts),
-                truncated_tool_args=response.truncated_tool_args,
-            )
-
-        return _ToolLoopOutcome(
-            spoken_text=response.content,
+        babble_outcome = apply_babble_filter(
+            tool_error_occurred=tool_error_occurred,
+            response=response,
+            seen_tool_names=seen,
+            is_silent_response_fn=self._is_silent_response,
             tools_called=tools_called,
-            finish_reason=response.finish_reason,
-            raw_response=response.raw,
             speak_text_count=speak_text_count,
             speak_text_real_count=speak_text_real_count,
-            spoken_via_tool="\n".join(spoken_texts),
-            truncated_tool_args=response.truncated_tool_args,
+            spoken_texts=spoken_texts,
+        )
+        if babble_outcome is not None:
+            return babble_outcome
+
+        return build_outcome_from_response(
+            response=response,
+            tools_called=tools_called,
+            speak_text_count=speak_text_count,
+            speak_text_real_count=speak_text_real_count,
+            spoken_texts=spoken_texts,
         )
 
     async def _stream_response(
