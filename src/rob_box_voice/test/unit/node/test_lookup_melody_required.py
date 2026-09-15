@@ -513,8 +513,31 @@ class TestHandleResultCCBaselineMatches:
                 head = line.split("(")[1]
                 actual_cc = int(head.rstrip(")"))
                 break
+        if actual_cc is None:
+            # Fallback: try parsing radon JSON output (used in some CI runners
+            # where stdout is wrapped). Also try without the rank marker.
+            try:
+                import json as _json
+                json_result = subprocess.run(
+                    ["python3", "-m", "radon", "cc", "-s", "-j", str(dialogue_path)],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                if json_result.returncode == 0:
+                    payload = _json.loads(json_result.stdout)
+                    for item in payload.get(str(dialogue_path), []) or payload.get(
+                        str(dialogue_path.resolve()), []
+                    ):
+                        if item.get("name") == "DialogueNode._handle_result":
+                            actual_cc = int(item["complexity"])
+                            break
+            except Exception:
+                pass
         assert actual_cc is not None, (
-            f"radon не нашёл DialogueNode._handle_result в:\n{result.stdout}"
+            f"radon не нашёл DialogueNode._handle_result в:\n"
+            f"stdout={result.stdout!r}\nstderr={result.stderr!r}\n"
+            f"rc={result.returncode}"
         )
         assert actual_cc == expected_cc, (
             f"DialogueNode._handle_result CC drift: actual={actual_cc}, "
