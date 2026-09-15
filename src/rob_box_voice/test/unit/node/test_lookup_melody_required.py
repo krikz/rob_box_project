@@ -415,11 +415,14 @@ class TestHallucinatedMidiGuardWiredIntoHandleResult:
 
     def test_guard_call_site_visible_in_handle_result(self) -> None:
         import ast
+        import importlib
         from pathlib import Path
 
         from rob_box_voice.dialogue_node import DialogueNode
 
-        dialogue_path = Path(DialogueNode.__module__.__file__)
+        dialogue_module = importlib.import_module(DialogueNode.__module__)
+        assert dialogue_module.__file__ is not None
+        dialogue_path = Path(dialogue_module.__file__)
         tree = ast.parse(dialogue_path.read_text(encoding="utf-8"))
         # Найти def _handle_result в модуле
         handle_result: ast.FunctionDef | None = None
@@ -454,18 +457,31 @@ class TestHandleResultCCBaselineMatches:
     """CC-budget guard (ADR-0021) — _handle_result CC согласован с baseline."""
 
     def test_handle_result_cc_within_baseline(self) -> None:
+        import importlib
         import json
         import subprocess
         from pathlib import Path
 
         from rob_box_voice.dialogue_node import DialogueNode
 
-        # Загружаем baseline
-        baseline_path = (
-            Path(DialogueNode.__module__.__file__).resolve().parents[4]
-            / "scripts"
-            / "lint"
-            / "cc_budget_baseline.json"
+        # Загружаем baseline. Walk upward from dialogue_node.py looking
+        # for ``scripts/lint/cc_budget_baseline.json`` — works whether the
+        # module is loaded from a worktree or from an installed copy.
+        dialogue_module = importlib.import_module(DialogueNode.__module__)
+        assert dialogue_module.__file__ is not None
+        baseline_path: Path | None = None
+        cursor = Path(dialogue_module.__file__).resolve().parent
+        for _ in range(8):  # at most 8 levels up — covers worktree + parent repo
+            candidate = cursor / "scripts" / "lint" / "cc_budget_baseline.json"
+            if candidate.is_file():
+                baseline_path = candidate
+                break
+            if cursor.parent == cursor:
+                break
+            cursor = cursor.parent
+        assert baseline_path is not None, (
+            "cc_budget_baseline.json не найден при обходе вверх от "
+            f"{dialogue_module.__file__}"
         )
         baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
         expected_cc = None
@@ -481,7 +497,7 @@ class TestHandleResultCCBaselineMatches:
         )
 
         # Измеряем radon'ом
-        dialogue_path = Path(DialogueNode.__module__.__file__)
+        dialogue_path = Path(dialogue_module.__file__)
         result = subprocess.run(
             ["python3", "-m", "radon", "cc", "-s", str(dialogue_path)],
             capture_output=True,
