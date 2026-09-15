@@ -49,6 +49,28 @@ FROM ${BASE_IMAGE} AS builder
 
 ARG ROS_DISTRO
 ARG ROS2LEDS_SHA
+ARG APT_PROXY=""
+
+# apt-cacher-ng на build-хосте. Раннер уже передаёт APT_PROXY этому сервису
+# (build-args в "L-Build Vision Pi Services.yml" / "L-Build Single Service.yml"),
+# но Dockerfile его не объявлял — build-arg молча игнорировался, и обе стадии
+# ходили напрямую в packages.ros.org. Это уронило сборку run 35027911983
+# ("Hash Sum mismatch" на Packages.gz): multi-stage гоняет apt-get update в двух
+# стадиях параллельно, и шанс поймать рассинхронизированный edge CDN удваивается.
+# Паттерн 1:1 из docker/base/Dockerfile.ros2-zenoh:17-29 — с проверкой
+# доступности прокси и тихим fallback на прямое соединение.
+RUN if [ -n "$APT_PROXY" ]; then \
+        PROXY_HOST=$(echo "$APT_PROXY" | sed 's|.*://\([^:/]*\).*|\1|'); \
+        PROXY_PORT=$(echo "$APT_PROXY" | sed 's|.*://[^:]*:\([0-9]*\).*|\1|'); \
+        if timeout 5 bash -c "cat < /dev/null > /dev/tcp/$PROXY_HOST/$PROXY_PORT" 2>/dev/null; then \
+            echo "Acquire::http::Proxy \"$APT_PROXY\";" > /etc/apt/apt.conf.d/02proxy; \
+            echo "Acquire::http::Timeout \"10\";" >> /etc/apt/apt.conf.d/02proxy; \
+            echo "Acquire::Retries \"3\";" >> /etc/apt/apt.conf.d/02proxy; \
+            echo "OK: APT proxy $APT_PROXY"; \
+        else \
+            echo "WARN: APT proxy недоступен, идём напрямую"; \
+        fi \
+    fi
 
 # Тулчейн для сборки C-расширения spidev (нет prebuilt wheel под arm64 на
 # PyPI, собирается из исходников) и для colcon build. build-essential/
@@ -135,6 +157,28 @@ RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
 FROM ${BASE_IMAGE}
 
 ARG ROS_DISTRO
+ARG APT_PROXY=""
+
+# apt-cacher-ng на build-хосте. Раннер уже передаёт APT_PROXY этому сервису
+# (build-args в "L-Build Vision Pi Services.yml" / "L-Build Single Service.yml"),
+# но Dockerfile его не объявлял — build-arg молча игнорировался, и обе стадии
+# ходили напрямую в packages.ros.org. Это уронило сборку run 35027911983
+# ("Hash Sum mismatch" на Packages.gz): multi-stage гоняет apt-get update в двух
+# стадиях параллельно, и шанс поймать рассинхронизированный edge CDN удваивается.
+# Паттерн 1:1 из docker/base/Dockerfile.ros2-zenoh:17-29 — с проверкой
+# доступности прокси и тихим fallback на прямое соединение.
+RUN if [ -n "$APT_PROXY" ]; then \
+        PROXY_HOST=$(echo "$APT_PROXY" | sed 's|.*://\([^:/]*\).*|\1|'); \
+        PROXY_PORT=$(echo "$APT_PROXY" | sed 's|.*://[^:]*:\([0-9]*\).*|\1|'); \
+        if timeout 5 bash -c "cat < /dev/null > /dev/tcp/$PROXY_HOST/$PROXY_PORT" 2>/dev/null; then \
+            echo "Acquire::http::Proxy \"$APT_PROXY\";" > /etc/apt/apt.conf.d/02proxy; \
+            echo "Acquire::http::Timeout \"10\";" >> /etc/apt/apt.conf.d/02proxy; \
+            echo "Acquire::Retries \"3\";" >> /etc/apt/apt.conf.d/02proxy; \
+            echo "OK: APT proxy $APT_PROXY"; \
+        else \
+            echo "WARN: APT proxy недоступен, идём напрямую"; \
+        fi \
+    fi
 
 # Метаданные
 LABEL org.opencontainers.image.title="LED Matrix System for Vision Pi"
