@@ -185,34 +185,105 @@ def cmd_update_baseline(files: list[Path], base_sha: str) -> int:
 
 
 def cmd_check(files: list[Path], baseline: dict) -> int:
-    """Report exceedances; fail only on entries the baseline does not cover."""
+    """Report exceedances; fail on phantom/under-baseline/growth.
+
+    Five failure modes (ADR-0021 R1 baseline + R1-r1 ratchets, issue #2626):
+
+    1. CC > limit and method not in baseline — new violation, refuse.
+    2. CC > baseline entry — grew past grandfathered value, refuse.
+    3. CC ≤ limit but method appears in baseline — recovered below
+       limit without updating baseline. R-1b: previously a soft
+       ``[info]`` that let regressions hide. Now FAIL so the author
+       is forced to refresh the baseline (or remove the exempt).
+    4. baseline has an entry for a function that does not exist in
+       the source — phantom. R-1c: this is exactly the
+       ``_build_single_provider`` shape that sat for weeks because
+       the guard only walked *measured* functions.
+    5. CC > 30 on a brand-new exempt without an ADR anchor — R-1e:
+       preempts the WSSServer._on_json_cmd / _synthesize_and_play
+       pattern (CC=107/124) where ``просто лимит + амнистия``
+       didn't stop the growth.
+    """
     exempt = baseline.get("exemptions", {})
+    HARD_EXEMPT_CC = 30  # R-1e: 2× METHOD_LIMIT, ADR anchor required above this
     violations: list[tuple[str, str, int, int]] = []
+
+    # R-1c: collect measured names per file so we can spot phantoms.
+    measured_per_file: dict[str, dict[str, int]] = {}
+
     for path in files:
         rel = _rel(path)
         allowed = exempt.get(rel, {})
         measured = measure_file(path)
+        measured_per_file[rel] = measured
         for name, cc in sorted(measured.items()):
             limit = _limit_for(name)
             if cc <= limit:
-                if name in allowed:
-                    print(f"  [info] {rel}:{name} CC={cc} recovered; refresh baseline with --update-baseline")
+                # R-1b: under-baseline recovery — fail loudly so a silent
+                # 'recovered' doesn't paper over the fact that the
+                # baseline still claims a much higher CC. Author must
+                # run ``--update-baseline`` (or remove the entry) in the
+                # same PR.
+                if name in allowed and cc < allowed[name]:
+                    violations.append((rel, name, cc, limit))
+                    print(
+                        f"  [FAIL] {rel}:{name} CC={cc} recovered below "
+                        f"baseline {allowed[name]}; refresh baseline with "
+                        f"--update-baseline in the same PR (ADR-0021-r1 R-1b)"
+                    )
                 continue
             if name in allowed and cc <= allowed[name]:
-                print(f"  [ok ] {rel}:{name} CC={cc} (limit {limit}, baseline {allowed[name]})")
+                # R-1e: even an in-baseline over-limit entry must respect
+                # the hard ceiling UNLESS the baseline already recorded
+                # it at this height (R-1e is for *new* exemptions).
+                if cc > HARD_EXEMPT_CC and allowed[name] <= HARD_EXEMPT_CC:
+                    violations.append((rel, name, cc, limit))
+                    print(
+                        f"  [FAIL] {rel}:{name} CC={cc} crossed hard ceiling "
+                        f"{HARD_EXEMPT_CC}; new exemptions above 2× limit "
+                        f"require ADR anchor (ADR-0021-r1 R-1e)"
+                    )
+                else:
+                    print(f"  [ok ] {rel}:{name} CC={cc} (limit {limit}, baseline {allowed[name]})")
             elif name not in allowed:
-                violations.append((rel, name, cc, limit))
-                print(f"  [FAIL] {rel}:{name} CC={cc} exceeds limit {limit} and is not in baseline")
+                # R-1e: a brand-new over-limit entry above the hard
+                # ceiling requires an ADR; surface as FAIL with the
+                # explicit hint.
+                if cc > HARD_EXEMPT_CC:
+                    violations.append((rel, name, cc, limit))
+                    print(
+                        f"  [FAIL] {rel}:{name} CC={cc} exceeds limit {limit} "
+                        f"and is not in baseline; CC>{HARD_EXEMPT_CC} requires "
+                        f"an ADR per ADR-0021-r1 R-1e"
+                    )
+                else:
+                    violations.append((rel, name, cc, limit))
+                    print(f"  [FAIL] {rel}:{name} CC={cc} exceeds limit {limit} and is not in baseline")
             else:
                 violations.append((rel, name, cc, limit))
                 print(f"  [FAIL] {rel}:{name} CC={cc} grew past baseline {allowed[name]}")
 
+    # R-1c phantom-detection: every (path, method) in baseline must
+    # actually exist in the scanned files. Otherwise the baseline
+    # keeps claiming protection for code that's gone — exactly the
+    # ``_build_single_provider`` blind spot.
+    for rel, allowed in sorted(exempt.items()):
+        measured = measured_per_file.get(rel, {})
+        for name, baseline_cc in sorted(allowed.items()):
+            if name not in measured:
+                violations.append((rel, name, 0, baseline_cc))
+                print(
+                    f"  [FAIL] {rel}:{name} — phantom baseline entry "
+                    f"(method not found in source); remove from "
+                    f"cc_budget_baseline.json:exemptions (ADR-0021-r1 R-1c)"
+                )
+
     total = len(violations)
     if total:
-        print(f"cc_budget: FAIL — {total} new CC violation(s); refactor or add to baseline.")
-    else:
-        print("cc_budget: OK — no new CC violations.")
-    return 1 if total else 0
+        print(f"cc_budget: FAIL — {total} violation(s); see [FAIL] lines above.")
+        return 1
+    print("cc_budget: OK — no new CC violations.")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
