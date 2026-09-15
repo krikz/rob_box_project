@@ -183,8 +183,6 @@ def _xyxy_to_cxcywh_normalized(
     Если ``letterbox_info`` None (синтетический квадратный вход в тестах) —
     считаем bbox'ы уже normalized в model-input space, возвращаем как есть.
     """
-    import numpy as np  # type: ignore[import-not-found]
-
     x1 = xyxy[:, 0]
     y1 = xyxy[:, 1]
     x2 = xyxy[:, 2]
