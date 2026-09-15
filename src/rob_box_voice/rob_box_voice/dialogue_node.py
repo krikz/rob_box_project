@@ -3898,6 +3898,13 @@ class DialogueNode(Node):
                 was_dj_auto=was_dj_auto,
                 user_input=raw_user_command or user_input,
                 tools_called=result.tools_called if result else (),
+                # Issue #2565 — phantom-action deferral needs the LLM's
+                # reply text to detect «запустил/загрузил» claims before
+                # the FORCE_STOP branch silences the active track. Pass
+                # ``spoken_text`` (post-strip-history, pre-TTS) so the
+                # :func:`is_phantom_music_action` detector sees the
+                # actual response.
+                spoken=(result.spoken_text if result else None),
             )
             # Issue #1777 / #1762 — Bug C retry для non-music tool-based
             # запросов. Раньше ретрай работал ТОЛЬКО для music (issue
@@ -4866,6 +4873,7 @@ class DialogueNode(Node):
         was_dj_auto: bool,
         user_input: str,
         tools_called: tuple,
+        spoken: Optional[str] = None,
     ) -> bool:
         """Adapter around :meth:`MusicGuard.evaluate` — keeps the ROS2
         side effects (dispatch, speak_direct, dialogue-reopen) out of
@@ -4886,6 +4894,16 @@ class DialogueNode(Node):
         acknowledgment so the user hears *something* and can repeat
         the request. We deliberately do NOT auto-pick a beat without
         user consent: that would surprise the operator.
+
+        Issue #2565 — phantom-action deferral: ``spoken`` (the LLM
+        reply text) is forwarded to the policy module so the
+        ``FORCE_STOP`` branch can check whether the LLM just *promised*
+        a music action without calling the matching tool. If so, the
+        active track is NOT silenced — the upcoming
+        :func:`_check_unbacked_action_claim_and_retry` (issue #992
+        Bug E) handles the CRITICAL retry. ``None`` means "spoken not
+        available" (e.g. ``_dispatch_dj_turn`` path before the LLM
+        ran) — deferral is skipped, FORCE_STOP behaves as before.
 
         Returns:
             ``True`` when a synchronous retry turn was dispatched — the
@@ -4915,6 +4933,7 @@ class DialogueNode(Node):
             dj_enabled=self._dj.state.enabled,
             build_music_retry_prompt=self._build_music_retry_prompt,
             build_dj_retry_prompt=self._build_dj_retry_prompt,
+            spoken=spoken,
         )
 
         if verdict.kind is MusicGuardVerdictKind.SKIP:
