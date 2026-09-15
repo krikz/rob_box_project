@@ -110,6 +110,22 @@ RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     --symlink-install \
     --cmake-args -DCMAKE_BUILD_TYPE=Release
 
+# 7. HailoRT Python binding (hailo_platform) — Phase 1.5 real inference (ADR-0099 §2.2).
+# Wheel `hailort-4.24.0-cp310-cp310-linux_aarch64.whl` — артефакт Hailo Developer
+# Zone (аккаунт), НЕ в git. Workflow кладёт его в build-context из
+# /opt/rob_box/vendor/ на build-машине (см. L-Build Vision Pi Services.yml).
+# Без wheel'а (HAILO_INSTALL_BINDING != whl) нода capability-honest деградирует
+# в stub — HAILO_ENABLED=true без биндинга НЕ даёт real inference.
+COPY docker/vision/vision-hailo/wheels/ /wheels/
+ARG HAILO_INSTALL_BINDING=none
+RUN if [ "${HAILO_INSTALL_BINDING}" = "whl" ]; then \
+        pip3 install --no-cache-dir /wheels/hailort-4.24.0-cp310-cp310-linux_aarch64.whl && \
+        python3 -c "import hailo_platform; print('hailo_platform', hailo_platform.__version__)"; \
+    else \
+        echo "HAILO_INSTALL_BINDING=${HAILO_INSTALL_BINDING}: hailo_platform НЕ установлен (capability-honest stub, ADR-0099 §2.2)"; \
+    fi && \
+    rm -rf /wheels
+
 # Source workspace
 RUN echo "source /opt/ros/${ROS_DISTRO}/setup.bash" >> /root/.bashrc && \
     echo "source /ws/install/setup.bash" >> /root/.bashrc

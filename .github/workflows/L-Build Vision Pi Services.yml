@@ -504,6 +504,16 @@ jobs:
                         | sort | xargs sha256sum 2>/dev/null | sha256sum | awk '{print $1}')
           echo "source_hash=${SOURCE_HASH}" >> "$GITHUB_OUTPUT"
 
+      - name: Fetch HailoRT wheel (ADR-0099 §2.2, Developer Zone artifact)
+        run: |
+          mkdir -p docker/vision/vision-hailo/wheels
+          cp /opt/rob_box/vendor/hailort-4.24.0-cp310-cp310-linux_aarch64.whl \
+             docker/vision/vision-hailo/wheels/ || {
+            echo "::error::hailort wheel не найден в /opt/rob_box/vendor/ — real inference build невозможен" >&2
+            exit 1
+          }
+          ls -la docker/vision/vision-hailo/wheels/
+
       - name: Build vision-hailo
         uses: ./.github/actions/l-build-service
         with:
@@ -517,6 +527,7 @@ jobs:
             APT_PROXY=http://host.docker.internal:3142
             BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh-${{ env.ROS_DISTRO }}
             SOURCE_HASH=${{ steps.source-hash.outputs.source_hash }}
+            HAILO_INSTALL_BINDING=whl
 
   update-image-versions:
     needs: [prepare, build-oak-d, build-led-matrix, build-ceiling-camera, build-voice-base, build-voice-resources, build-voice-assistant, build-telegram-bot, build-supercollider, build-supervisor, build-quest, build-vision-hailo]
