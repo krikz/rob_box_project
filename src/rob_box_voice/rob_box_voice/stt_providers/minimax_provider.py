@@ -454,7 +454,7 @@ class MiniMaxSTTProvider:
         if text is None:
             # Truly malformed response — no ``text`` key at any level.
             # An empty/whitespace string is a VALID empty result (silence
-            # recognised as empty); see ADR-0096 + ADR-0091 §7.
+            # recognised as empty); see ADR-0108 + ADR-0091 §7.
             raise MiniMaxSTTInvalidResponseError(
                 f"minimax STT: missing 'text' in response: {payload!r}"
             )
@@ -485,7 +485,7 @@ class MiniMaxSTTProvider:
 def _extract_text(payload: Any) -> Optional[str]:
     """Return the recognized text from a MiniMax STT response.
 
-    Three-state contract (ADR-0096):
+    Three-state contract (ADR-0108):
         * ``None`` — invalid response: ``text`` key is absent at both
           top-level and ``{"data": {...}}`` nested. Caller should
           raise ``MiniMaxSTTInvalidResponseError``.

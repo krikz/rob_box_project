@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""vision_hailo.launch.py — декларативный запуск vision_hailo_node (ADR-0096).
+"""vision_hailo.launch.py — декларативный запуск vision_hailo_node (ADR-0110).
 
 Этот launch — SSoT параметров ноды ``vision_hailo``. Заменяет прямой вызов
 ``ros2 run rob_box_perception vision_hailo --ros-args ...`` в bash-скрипте
@@ -47,11 +47,11 @@ degraded-режима без необходимости курить node-лог
 - Сохранена совместимость с ``docker/vision/config/hailo_models.yaml`` (SSoT).
 - Bash entrypoint ``start_vision_hailo.sh`` остаётся orchestration layer
   (YAML-парсинг, ENV override, smoke hailortcli scan), но финальный запуск
-  ноды идёт через этот launch (см. ADR-0096 §2.2).
+  ноды идёт через этот launch (см. ADR-0110 §2.2).
 
 Touchpoints:
-- ADR-0096 §3 touchpoint #1 — этот файл.
-- ADR-0089 §3 touchpoint #6 — переформулирован ADR-0096 (vision_hailo.launch.py
+- ADR-0110 §3 touchpoint #1 — этот файл.
+- ADR-0089 §3 touchpoint #6 — переформулирован ADR-0110 (vision_hailo.launch.py
   вместо internal_dialogue.launch.py).
 - ADR-0104 — gaze_source parameter (single source of truth).
 """

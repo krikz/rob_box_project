@@ -1,10 +1,12 @@
-# ADR-0097 — Identity seam: scope of "no `speaker_id[:8]`" contract (issue #2440)
+# ADR-0109 — Identity seam: scope of "no `speaker_id[:8]`" contract (issue #2440)
+
+> Previously numbered ADR-0097, commit `c1682495` (PR #2542). Renumbered 2026-09-15: see issue #2582 — sibling `0097-speaker-register-upsert-vs-update.md` merged earlier (`1ef642c0`, PR #2492) and kept 0097.
 
 - **Status**: Accepted
 - **Date**: 2026-09-15
 - **Deciders**: architect (review #2471)
 - **Source of truth for identity**: commit `8cb84bc9` (issue #2440, PR #2440)
-- **Note**: ADR-0097 chosen to avoid name clash with existing wip ADR-0096
+- **Note**: ADR-0097 (renumbered to ADR-0109, issue #2582) was chosen at the time to avoid name clash with existing wip ADR-0096
   branches (`984542ab3 wip(adr): ADR-0096 «Встреча»`,
   `658e8daec wip(adr): ADR-0096 — MiniMax STT empty-text semantics`,
   `8439b0efe wip(adr): ADR-0096 vision_hailo launch-file decoupling`).

@@ -7164,7 +7164,7 @@ class DialogueNode(Node):
         speaker_tag: object,
         text: str,
     ) -> None:
-        # Issue #2471 / ADR-0097 — diag-лог вне scope контракта #2440
+        # Issue #2471 / ADR-0109 — diag-лог вне scope контракта #2440
         # (no `speaker_id[:8]` для LLM/MCP). Полный id идёт отдельным полем
         # `speaker_id_full`, чтобы grep / e2e-flow могли однозначно
         # матчить его против UUID в voice_memory. Префикс 8 символов

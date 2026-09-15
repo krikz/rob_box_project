@@ -138,8 +138,8 @@ if [ "${HAILO_ENABLED}" = "true" ]; then
     fi
 fi
 
-# ---------- launch ROS 2 node (ADR-0096) ----------
-# ADR-0096: vision_hailo стартует декларативно через launch-файл
+# ---------- launch ROS 2 node (ADR-0110) ----------
+# ADR-0110: vision_hailo стартует декларативно через launch-файл
 # (vision_hailo.launch.py), а не через захардкоженный `ros2 run` с
 # --ros-args массивом. Преимущества:
 #   1. LaunchConfiguration — SSoT параметров в одном месте.

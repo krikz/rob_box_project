@@ -265,7 +265,7 @@ smoke-теста), но в проде должен быть `False`.
 ## 8. Перекрёстные ссылки
 
 - ADR-0089 §3 (touchpoint #3 — vision_hailo_node, #11 — HEF lifecycle).
-- ADR-0096 (vision_hailo.launch.py — choice of source).
+- ADR-0110 (vision_hailo.launch.py — choice of source).
 - ADR-0018 (capability-honest mode — mode-лог consistency, fail-fast).
 - ADR-0099 (hailort install strategy — пока в PR #2517).
 - Issue #2440 «Знакомый» (выше по стеку).
