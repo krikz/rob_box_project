@@ -68,8 +68,11 @@ fi
 
 # ---------- SHA256 check (опционально) ----------
 if [ -n "${HEF_SHA256}" ]; then
-    ACTUAL_SHA=$(sha256sum "${TMP_FILE}" | cut -d' ' -f1)
-    if [ "${ACTUAL_SHA}" != "${HEF_SHA256}" ]; then
+    # Нижний регистр с обеих сторон — см. download_retinaface_hef.sh: там
+    # заглавный прибитый хэш ронял скачивание при верном содержимом файла.
+    ACTUAL_SHA=$(sha256sum "${TMP_FILE}" | cut -d' ' -f1 | tr 'A-Z' 'a-z')
+    EXPECTED_SHA=$(printf '%s' "${HEF_SHA256}" | tr 'A-Z' 'a-z')
+    if [ "${ACTUAL_SHA}" != "${EXPECTED_SHA}" ]; then
         echo "[download_hef] ERROR: SHA256 mismatch" >&2
         echo "[download_hef]   expected: ${HEF_SHA256}" >&2
         echo "[download_hef]   actual:   ${ACTUAL_SHA}" >&2

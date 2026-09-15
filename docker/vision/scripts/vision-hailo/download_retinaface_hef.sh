@@ -65,9 +65,14 @@ else
 fi
 
 # ---------- SHA256 check ----------
+# Сравниваем в нижнем регистре: sha256sum печатает hex строчными, а прибитый
+# HEF_SHA256 записан заглавными — прямое сравнение строк не совпадало НИКОГДА,
+# и скрипт удалял корректно скачанный файл с "SHA256 mismatch" (одинаковый hex,
+# разный регистр). Норма для обеих сторон, чтобы формат источника не решал.
 if [ -n "${HEF_SHA256}" ]; then
-    ACTUAL_SHA=$(sha256sum "${TMP_FILE}" | cut -d' ' -f1)
-    if [ "${ACTUAL_SHA}" != "${HEF_SHA256}" ]; then
+    ACTUAL_SHA=$(sha256sum "${TMP_FILE}" | cut -d' ' -f1 | tr 'A-Z' 'a-z')
+    EXPECTED_SHA=$(printf '%s' "${HEF_SHA256}" | tr 'A-Z' 'a-z')
+    if [ "${ACTUAL_SHA}" != "${EXPECTED_SHA}" ]; then
         echo "[download_retinaface_hef] ERROR: SHA256 mismatch" >&2
         echo "[download_retinaface_hef]   expected: ${HEF_SHA256}" >&2
         echo "[download_retinaface_hef]   actual:   ${ACTUAL_SHA}" >&2
