@@ -478,6 +478,21 @@ jobs:
             echo "  SOURCE_HASH (supervisor + rob_box_core): ${SOURCE_HASH}"
           fi
 
+          # vision-hailo (ADR-0089 Phase 1.5): подкладываем HailoRT python
+          # wheel в build-context и включаем установку биндинга. Wheel —
+          # артефакт Hailo Developer Zone (аккаунт), лежит на build-машине
+          # в /opt/rob_box/vendor/. Совпадает с L-Build Vision Pi Services.yml.
+          if [ "${{ needs.prepare.outputs.service_name }}" = "vision_hailo" ]; then
+            mkdir -p docker/vision/vision-hailo/wheels
+            cp /opt/rob_box/vendor/hailort-4.24.0-cp310-cp310-linux_aarch64.whl \
+               docker/vision/vision-hailo/wheels/ || {
+              echo "::error::hailort wheel не найден в /opt/rob_box/vendor/ — real inference build невозможен" >&2
+              exit 1
+            }
+            BUILD_ARGS="${BUILD_ARGS} --build-arg=HAILO_INSTALL_BINDING=whl"
+            echo "  HAILO_INSTALL_BINDING=whl (hailort wheel fetched из /opt/rob_box/vendor)"
+          fi
+
           # Сборка образа
           docker buildx build \
             --platform linux/arm64 \
