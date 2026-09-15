@@ -342,8 +342,16 @@ MUSIC_GUARD_VOCAL_KEYWORDS: tuple = (
 # Ловим это парой «глагол-продолжения + музыкальное существительное» в
 # любом порядке. Пара нужна именно как пара: отдельное «бит» ловит «битва»
 # и «орбита», отдельное «продолжай» — «продолжай маршрут».
+#
+# 🔴 FIX (issue #2548): добавлены основы «обнов/обнови», «впле/вплет/вплети»
+# (live 15.09 «обнови бит» / «вплетай мелодию» — DJ-сессия, юзер просит
+# обновить/переплести существующую композицию). Эти глаголы
+# естественны для DJ-сет'а, но прежде не попадали в
+# ``_MUSIC_CONTINUE_VERBS`` — guard молчал, ретрай не срабатывал,
+# юзер получал «всё готово» без реального изменения.
 _MUSIC_CONTINUE_VERBS: str = (
     r"развива|разверни|продолж|переход|перейд|усил|добав|убер|смен|поменя|"
+    r"обнов\w*|впле\w*|вплет\w*|вплети\w*|"
     r"ускор|замедл|раскач|наращ|нарасти|дораб|доработ"
 )
 _MUSIC_NOUNS: str = (
@@ -861,6 +869,14 @@ class ActionClaimRule:
         tools: Тулы, любой из которых закрывает заявку. Пустой
             ``tools_called`` при непустом ``tools`` = баг.
         what: Человеческая формулировка для retry-промпта.
+        requires_dj_or_music_kw: Если ``True`` — правило срабатывает
+            ТОЛЬКО когда активна DJ-сессия (``dj_active=True``) ИЛИ
+            :func:`user_wants_music` / :data:`MUSIC_CONTINUATION_RE`
+            матчат ``user_input``. Это защита от ложных срабатываний
+            для prose-action-verb'ов («вплела», «сделала»), которые
+            в бытовом контексте значат «не про музыку».
+            Если ``False`` — правило срабатывает всегда (старое поведение
+            для waypoint / track_delete / library_search / read-only).
     """
 
     category: str
@@ -868,6 +884,7 @@ class ActionClaimRule:
     claim_re: "re.Pattern[str]"
     tools: frozenset
     what: str
+    requires_dj_or_music_kw: bool = False
 
 
 ACTION_CLAIM_RULES: tuple = (
@@ -982,6 +999,79 @@ ACTION_CLAIM_RULES: tuple = (
         }),
         what="запуск трека (load_track / gen_play_from_library)",
     ),
+    # ---- Issue #2548: «prose-action claim» в DJ-сессии ---------------------
+    # Live 15.09 (TG → Vision Pi, DJ-сет «Пауля Оакенфольда»): юзер в TG
+    # пишет prose без явного command-verb («вплетай их красиво» / «давай
+    # старайся» / «так что получается?»), а LLM четыре раза подряд
+    # отвечает past/future action-claim про работу с музыкой при
+    # ``tools_called=[]``:
+    #
+    #   «Вплела тему Грига как второй голос над пульсом…»
+    #   «Сделала два pass подряд…»
+    #   «…проверю состояние и перезапущу.»
+    #   «Ок, давай я снова перезапущу. Бочкинс с Григом…»
+    #
+    # Существующий ``track_load.claim_re`` ловит только
+    # «играет/звучит/запустил/включил/поставил/загрузил», «вплела» и
+    # «перезапущу» мимо. ``user_re`` ``track_load`` тоже требует явного
+    # «загрузи/включи + трек», а «вплетай/давай» мимо. Поэтому
+    # ``detect_unbacked_action_claim`` молчал, ретрая не было, юзер
+    # слышал «всё готово» при неизменной музыке.
+    #
+    # Решение — новое правило с ШИРОКИМ ``claim_re`` (prose-action-verbs
+    # прошедшего/будущего времени) и ``user_re`` в двух ветках:
+    # (a) verb + noun («вплетай мелодию», «обнови бит»), ловится
+    #     ВСЕГДА когда :func:`user_wants_music` признаёт user_input
+    #     музыкальным;
+    # (b) короткий DJ-imperative («давай», «продолжай», «ещё») БЕЗ noun,
+    #     ловится ТОЛЬКО при активной DJ-сессии (гейт
+    #     ``requires_dj_or_music_kw=True`` отсекает бытовые «давай
+    #     уберу»/«сделай уборку»).
+    ActionClaimRule(
+        category="music_prose_action",
+        user_re=re.compile(
+            r"(?:"
+            # (a) verb + (опц. что-то) + noun — работает в любом
+            # music-контексте, если user_wants_music() уже True.
+            r"(?:вплетай|вплети|впле|измени|измен|обнови|обнов|"
+            r"поменяй|поменя|сделай|сдела|развивай|разверни|"
+            r"продолж|перейд|усил|добав|убер|смен|дораб)"
+            r"\w*\W{0,20}?"
+            r"(?:музык|мелоди|тема|бит|трек|звук|"
+            r"аккорд|парти|луп|бас|барабан|темп|ритм|грув)\w*"
+            r"|"
+            # (b) короткий DJ-imperative без noun — срабатывает ТОЛЬКО
+            # при активной DJ-сессии (гейт requires_dj_or_music_kw +
+            # dj_active=True внутри detect_unbacked_action_claim).
+            # «давай старайся» / «давай ещё» / «продолжай» / «ещё».
+            r"(?:давай|ещ[её]|продолжай|сыграй|играй|давай\s+ещ[её])"
+            r")",
+            re.IGNORECASE | re.UNICODE,
+        ),
+        # Past/future action verbs + явная отсылка к музыкальному
+        # артефакту. «Дай минуту, проверю состояние и перезапущу» —
+        # отдельный вариант через «перезапущ».
+        claim_re=re.compile(
+            r"(?:вплел\w*|вплет\w*|сделал\w*|обновил\w*|обновл\w*|"
+            r"поменял\w*|изменил\w*|поменя\w*|измен\w*|"
+            r"перезапустил\w*|перезапущ\w*|перезапуст\w*|"
+            r"доработал\w*|доработ\w*|добав\w*слой|убрал\w*слой|"
+            r"подмеша\w*|подмеш\w*|развил\w*|разверн\w*|развива\w*|"
+            r"прокача\w*|усил\w*|ускор\w*|замедл\w*|"
+            r"запуст\w*|включ\w*|загруж\w*|постав\w*трек|"
+            r"включ\w*трек|запуст\w*трек)"
+            r"\b",
+            re.IGNORECASE | re.UNICODE,
+        ),
+        tools=frozenset({
+            "compose_music", "execute_music_code", "load_track",
+            "gen_play_from_library", "set_dj_mode", "set_vibe_preset",
+            "search_samples", "stop_music",
+        }),
+        what="обновление музыки/сета (compose_music / execute_music_code "
+             "/ set_dj_mode / set_vibe_preset)",
+        requires_dj_or_music_kw=True,
+    ),
 )
 
 
@@ -990,18 +1080,50 @@ def detect_unbacked_action_claim(
     user_input: Optional[str],
     spoken: Optional[str],
     tools_called: Optional[Tuple[str, ...]],
+    dj_active: bool = False,
 ) -> Optional[ActionClaimRule]:
     """Issue #992 Bug E — LLM отчиталась о действии, не вызвав тул.
 
     Возвращает сработавшее правило или ``None``. Правило считается
     сработавшим, когда запрос юзера подходит под ``user_re``, ответ LLM —
     под ``claim_re``, и ни один тул из ``rule.tools`` не был вызван.
+
+    Issue #2548: для правил с ``requires_dj_or_music_kw=True`` —
+    дополнительный контекстный гейт. Prose-action-verb'ы («вплела»,
+    «сделала pass», «обновлю») слишком широкие, чтобы ретраить на каждом
+    «Сделала» в бытовом ответе. Срабатываем только когда:
+
+    * DJ-сессия активна (``dj_active=True``) — внутри DJ-контекста
+      ретраим на любом ``claim_re`` (user_re в этом случае
+      игнорируется — иначе «вплетай их красиво» без noun не
+      матчится), ИЛИ
+    * ``user_wants_music(user_input)`` / ``MUSIC_CONTINUATION_RE`` уже
+      матчили ``user_input`` — тогда ``user_re`` тоже проверяется
+      (verb+noun ветка правила).
+
+    Это даёт полное покрытие сценария #2548 (TG-сессия DJ, юзер
+    пишет prose без noun в user_input, LLM отвечает past-tense
+    claim-verb) и НЕ даёт false-positive в быту: «сделала уборку»
+    при ``dj_active=False`` остаётся неотфильтрованным.
     """
     if not user_input or not spoken:
         return None
     called = set(tools_called or ())
+    music_kw_hit = _music_context_hit(user_input, dj_active)
     for rule in ACTION_CLAIM_RULES:
-        if not rule.user_re.search(user_input):
+        if rule.requires_dj_or_music_kw and not music_kw_hit:
+            continue
+        # В DJ-сессии user_re опционально пропускаем: иначе
+        # prose-фразы без noun («вплетай их красиво», «пока ничего
+        # не звучит», «так что получается?») проходят мимо, хотя
+        # LLM отвечает claim-verb'ом и юзер ждёт действия. Это
+        # безопаснее, чем «любой spoken», потому что claim_re всё
+        # равно фильтрует по past/future action-verb'ам —
+        # бытовое «Ок, понятно» claim_re не пройдёт.
+        skip_user_re = (
+            rule.requires_dj_or_music_kw and dj_active
+        )
+        if not skip_user_re and not rule.user_re.search(user_input):
             continue
         if not rule.claim_re.search(spoken):
             continue
@@ -1009,6 +1131,28 @@ def detect_unbacked_action_claim(
             continue
         return rule
     return None
+
+
+def _music_context_hit(user_input: Optional[str], dj_active: bool) -> bool:
+    """Issue #2548 — True если user_input в music-контексте (или DJ активна).
+
+    Используется как контекстный гейт для ``ActionClaimRule.requires_dj_or_music_kw``:
+    prose-action-verb'ы («вплела», «сделала pass») слишком широкие, чтобы ретраить
+    на каждом «Сделала» в бытовом ответе. Срабатываем ТОЛЬКО когда DJ активна
+    или user_input содержит music-keyword / continuation-verb.
+    """
+    if dj_active:
+        return True
+    text = user_input or ""
+    try:
+        if user_wants_music(text):
+            return True
+    except Exception:
+        pass
+    try:
+        return bool(MUSIC_CONTINUATION_RE.search(text))
+    except Exception:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -1219,6 +1363,28 @@ def build_unbacked_action_retry_prompt(
         "✅ В ЭТОМ же turn вызови тул: " + rule.what + ".\n"
         "Запрос юзера: «" + (user_input or "") + "».\n"
         "Если тул вернёт ошибку — скажи об ошибке честно, не выдумывай успех."
+    )
+
+
+def build_music_prose_action_fallback(user_input: str) -> str:
+    """Issue #2548 — fallback spoken после НЕудачного action-claim ретрая.
+
+    Когда ``_check_unbacked_action_claim_and_retry`` уже отстрелял один
+    ретрай (флаг ``_action_claim_retry_used=True``), и на новом ходе
+    LLM ВНОВЬ вернула ``tools_called=[]`` с action-claim — guard молчит
+    (one-shot), а ``spoken`` уходит в TTS. Юзер слышит «всё готово» при
+    неизменной музыке. Это та же самая ложь, что и до ретрая.
+
+    Эта функция возвращает ОДНУ констатацию для TTS: «не получилось,
+    пробую ещё раз» — БЕЗ claim о выполнении, БЕЗ обещания результата,
+    БЕЗ извинений (acceptance criterion #2). Используется в
+    :meth:`DialogueNode._handle_result` после того, как
+    ``_check_unbacked_action_claim_and_retry`` вернул ``False`` (значит
+    ретрай уже потрачен в этой user-turn), а spoken всё ещё содержит
+    action-claim.
+    """
+    return (
+        "Не получилось изменить музыку — попробую ещё раз."
     )
 
 # ---------------------------------------------------------------------------

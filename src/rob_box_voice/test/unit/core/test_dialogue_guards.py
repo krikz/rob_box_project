@@ -29,6 +29,7 @@ from rob_box_voice.core.dialogue_guards import (
     build_system_regurgitate_retry_prompt,
     is_planning_narration,
     build_babble_retry_prompt,
+    build_music_prose_action_fallback,
     build_music_retry_prompt,
     build_renardo_code_retry_prompt,
     build_tool_retry_prompt,
@@ -549,6 +550,235 @@ class TestUnbackedActionClaimLive3008:
         for rule in ACTION_CLAIM_RULES:
             assert rule.tools, f"{rule.category}: правило без тула бесполезно"
             assert rule.what
+
+
+class TestMusicProseActionLive1509:
+    """Issue #2548 — prose-action-claim в DJ-сессии при tools=[].
+
+    Live 15.09 (TG → Vision Pi, DJ-сет «Пауля Оакенфольда», 4 из 8
+    попыток «докрутить Григ» отвечали spoken-ом без вызова
+    инструментов). Модель отчитывалась past/future action-verb'ом о
+    работе с музыкой, но ``tools_called=[]`` — то есть музыка не
+    менялась, юзер слышал «всё готово» при неизменном бите.
+
+    Существующий ``track_load`` rule не ловит эти случаи:
+    ``track_load.user_re`` требует явный «загрузи/включи + трек» —
+    «вплетай их красиво» мимо; ``track_load.claim_re`` ловит только
+    «играет/звучит/запустил/включил/поставил/загрузил» — «вплела» и
+    «перезапущу» мимо. Новый ``music_prose_action`` rule закрывает
+    эту дыру, при этом защищён от false-positive двойным гейтом
+    (``requires_dj_or_music_kw=True`` + ``dj_active=True`` /
+    ``user_wants_music(user_input)``).
+    """
+
+    # ---- Acceptance #1: ловим 4 кейса из live-лога (DJ-сессия) ---------
+
+    @pytest.mark.parametrize(
+        "user_input,spoken",
+        [
+            (
+                "вплетай их красиво",
+                "Вплела тему Грига как второй голос над пульсом. "
+                "Бочкинса — должно звучать плотно и в кассовом ключе.",
+            ),
+            (
+                "так что получается?",
+                "Вплела тему Грига как второй голос над пульсом.",
+            ),
+            (
+                "пока ничего не звучит",
+                "Понимаю, пока не звучит — дай минуту, проверю "
+                "состояние и перезапущу.",
+            ),
+            (
+                "давай старайся",
+                "Сделала два pass подряд: сначала один темп-каркас с "
+                "heartbeat, потом второй.",
+            ),
+            (
+                "давай старайся",
+                "Ок, давай я снова перезапущу. Бочкинс с Григом "
+                "наверху — стартуя заново.",
+            ),
+        ],
+    )
+    def test_dj_active_catches_all_live_examples(
+        self, user_input: str, spoken: str
+    ) -> None:
+        """Acceptance #1: при ``dj_active=True`` ВСЕ 5 prose-claim
+        реплик из живого лога ловятся — это те 4 «промаха» из
+        карточки #2548 (восьмая попытка попадала в babble-retry)."""
+        rule = detect_unbacked_action_claim(
+            user_input=user_input,
+            spoken=spoken,
+            tools_called=(),
+            dj_active=True,
+        )
+        assert rule is not None, (
+            f"dj_active=True должен ловить prose-action claim в "
+            f"DJ-сессии, но пропустил: user={user_input!r} "
+            f"spoken={spoken[:80]!r}"
+        )
+        assert rule.category == "music_prose_action", (
+            f"должен сработать именно music_prose_action, "
+            f"получили: {rule.category}"
+        )
+
+    def test_tools_called_satisfies_claim_no_retry(self) -> None:
+        """Acceptance #2 негатив: если LLM ВСЁ-ТАКИ вызвала
+        ``compose_music``, правило молчит (action claim оправдан)."""
+        rule = detect_unbacked_action_claim(
+            user_input="давай старайся",
+            spoken="Сделала два pass подряд.",
+            tools_called=("compose_music",),
+            dj_active=True,
+        )
+        assert rule is None, (
+            f"compose_music в tools_called должен оправдывать "
+            f"action-claim, но rule={rule!r}"
+        )
+
+    # ---- Negative cases: НЕ ловим бытовые prose-action-verb'ы ---------
+
+    @pytest.mark.parametrize(
+        "user_input,spoken",
+        [
+            (
+                "давай уберу квартиру",
+                "Сделала уборку и вымыла пол.",
+            ),
+            (
+                "помой посуду",
+                "Сделала.",
+            ),
+            (
+                "что нового в магазине?",
+                "Сходила и обновила список покупок.",
+            ),
+            (
+                "как там погода?",
+                "Поменяла настройки термометра.",
+            ),
+            (
+                "перезапусти браузер",
+                "Перезапустила.",
+            ),
+        ],
+    )
+    def test_no_dj_no_music_kw_no_match(
+        self, user_input: str, spoken: str
+    ) -> None:
+        """Бытовое «сделала/обновила/поменяла/перезапустила» БЕЗ
+        DJ-сессии и БЕЗ music-keyword в user_input → правило молчит.
+        Иначе каждая бытовая реплика триггерила бы ложный ретрай."""
+        rule = detect_unbacked_action_claim(
+            user_input=user_input,
+            spoken=spoken,
+            tools_called=(),
+            dj_active=False,
+        )
+        assert rule is None, (
+            f"бытовая реплика НЕ должна ловиться action-claim guard'ом: "
+            f"user={user_input!r} spoken={spoken[:60]!r} rule={rule!r}"
+        )
+
+    def test_dj_inactive_works_for_legacy_rules(self) -> None:
+        """Существующие правила (waypoint_save и т.п.) НЕ зависят от
+        ``dj_active`` — регресс-страховка: dj_active=True не должен
+        сломать контракт legacy правил."""
+        rule = detect_unbacked_action_claim(
+            user_input="запомни эту точку как тесточка",
+            spoken="Точка сохранена.",
+            tools_called=(),
+            dj_active=True,
+        )
+        assert rule is not None
+        assert rule.category == "waypoint_save"
+
+    def test_music_kw_in_user_input_enables_match_even_without_dj(
+        self, dj_active: bool = False
+    ) -> None:
+        """Если ``user_input`` содержит явный music-keyword
+        («обнови бит»), правило срабатывает даже без DJ-сессии —
+        гейт ``user_wants_music`` снимает ограничение."""
+        rule = detect_unbacked_action_claim(
+            user_input="обнови бит пожалуйста",
+            spoken="Обновила бит — теперь звучит плотнее.",
+            tools_called=(),
+            dj_active=False,
+        )
+        assert rule is not None
+        assert rule.category == "music_prose_action"
+
+    def test_requires_dj_or_music_kw_gate_is_set(self) -> None:
+        """Сам fact, что правило помечено как требующее DJ-контекст,
+        — это часть контракта. Если кто-то случайно уберёт флаг,
+        тест напомнит: rule может сжечь бытовой «сделала»."""
+        music_rule = next(
+            r for r in ACTION_CLAIM_RULES
+            if r.category == "music_prose_action"
+        )
+        assert music_rule.requires_dj_or_music_kw is True
+
+    def test_default_dj_active_is_false_backwards_compat(self) -> None:
+        """Без явного ``dj_active=`` — поведение прежнее
+        (False). Чтобы старые call-sites, которые передают только
+        ``user_input / spoken / tools_called``, работали как раньше."""
+        rule = detect_unbacked_action_claim(
+            user_input="вплетай их красиво",
+            spoken="Вплела тему Грига.",
+            tools_called=(),
+        )
+        assert rule is None, (
+            f"по умолчанию dj_active=False → rule не должен сработать "
+            f"для prose без music-kw, но got {rule!r}"
+        )
+
+    def test_empty_inputs_safe_with_dj_active(self) -> None:
+        """С ``dj_active=True`` пустые входы тоже не падают."""
+        assert (
+            detect_unbacked_action_claim(
+                user_input=None, spoken="x", tools_called=(),
+                dj_active=True,
+            ) is None
+        )
+        assert (
+            detect_unbacked_action_claim(
+                user_input="x", spoken=None, tools_called=(),
+                dj_active=True,
+            ) is None
+        )
+
+
+class TestBuildMusicProseActionFallback:
+    """Issue #2548 — fallback spoken когда action-claim ретрай
+    уже потрачен, а claim повторился."""
+
+    def test_returns_short_honest_phrase(self) -> None:
+        text = build_music_prose_action_fallback("давай старайся")
+        # Acceptance #2: «Не получилось изменить музыку — попробую
+        # ещё раз». Без claim о выполнении, без извинений.
+        assert text == "Не получилось изменить музыку — попробую ещё раз."
+
+    def test_no_claim_of_completion(self) -> None:
+        r"""Фраза НЕ должна содержать past-tense action-verb'ов
+        (впл\w*, сдела\w*, обнов\w*, перезапущ\w*) — иначе мы
+        говорим то же, что и до фикса, просто другими словами."""
+        text = build_music_prose_action_fallback("вплетай их красиво")
+        for verb in ("вплел", "вплела", "сделал", "обновил",
+                     "перезапустил", "поменял", "изменил"):
+            assert verb not in text.lower(), (
+                f"fallback фраза содержит claim '{verb}' — "
+                f"должна быть констатацией без claim: {text!r}"
+            )
+
+    def test_no_apology_marker(self) -> None:
+        """Карточка явно требует «БЕЗ извинений». Проверяем."""
+        text = build_music_prose_action_fallback("включи музыку")
+        for apology in ("извин", "прости", "sorry", "прошу прощения"):
+            assert apology not in text.lower(), (
+                f"fallback содержит apology-маркер '{apology}': {text!r}"
+            )
 
 
 class TestExtractRenardoCodeLines:
