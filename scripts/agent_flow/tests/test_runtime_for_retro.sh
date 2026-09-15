@@ -57,9 +57,14 @@ pass() { echo "ok: $*"; }
 # из triage-скрипта. runtime_for определена ~строка 871. max_retries_for — там,
 # куда мы её добавим. Подход: source'им нужный кусок через awk.
 #
+# Также извлекаем has_label() из lib_agent_flow_common.sh — после рефакторинга
+# (issue #2491) runtime_for/max_retries_for зовут её вместо inline grep.
+#
 # Triage — большой файл (~2644 строки), main при source'е не запускается
 # (все вызовы за `if`-guard'ами в main()). Однако ради перестраховки вынесем
 # только нужные функции в standalone-источник.
+
+LIB_SH="${LIB_SH:-$TEST_DIR/../lib_agent_flow_common.sh}"
 
 extract_funcs() {
     # Извлекаем ТЕЛА runtime_for(), max_retries_for() и _is_retro_architect()
@@ -79,8 +84,20 @@ extract_funcs() {
     printf '%s' "$out"
 }
 
+# has_label() — первый standalone-блок в lib_agent_flow_common.sh после
+# секции maintenance_gate. awk-извлечение по тому же принципу.
+extract_has_label() {
+    awk '
+        $0 ~ "^has_label\\(\\)" { f=1 }
+        f { print }
+        f && /^\}/ { exit }
+    ' "$LIB_SH"
+}
+
 FUNC_BODY="$(extract_funcs)"
+HAS_LABEL_BODY="$(extract_has_label)"
 [ -n "$FUNC_BODY" ] || fail "could not extract runtime_for / max_retries_for from $TRIAGE_SH"
+[ -n "$HAS_LABEL_BODY" ] || fail "could not extract has_label from $LIB_SH"
 
 # Подгружаем функции в текущий shell. Сначала задаём defaults, как в triage.sh.
 AGENT_FLOW_MAX_RUNTIME="${AGENT_FLOW_MAX_RUNTIME:-1800}"
@@ -89,7 +106,11 @@ AGENT_FLOW_LARGE_BODY_CHARS="${AGENT_FLOW_LARGE_BODY_CHARS:-2000}"
 AGENT_FLOW_MAX_RETRIES="${AGENT_FLOW_MAX_RETRIES:-2}"
 AGENT_FLOW_MAX_RETRIES_LARGE="${AGENT_FLOW_MAX_RETRIES_LARGE:-3}"
 
+eval "$HAS_LABEL_BODY"
 eval "$FUNC_BODY"
+
+# Sanity: функции должны быть определены
+type has_label >/dev/null 2>&1 || fail "has_label not loaded"
 
 # Sanity: функции должны быть определены
 type runtime_for >/dev/null 2>&1 || fail "runtime_for not loaded"

@@ -996,7 +996,7 @@ runtime_for() {  # $1=labels_csv  $2=body  $3=title (опционально)
     local labels_lower body_len title="$3"
     labels_lower="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
     body_len="${#2}"
-    if printf '%s' "$labels_lower" | grep -Eq '(^|,)priority:p0(,|$)'; then
+    if has_label "$labels_lower" "priority:p0"; then
         printf '%s' "$AGENT_FLOW_MAX_RUNTIME_LARGE"; return
     fi
     if [ "$body_len" -ge "$AGENT_FLOW_LARGE_BODY_CHARS" ]; then
@@ -1038,7 +1038,7 @@ max_retries_for() {  # $1=labels_csv  $2=body  $3=title (опционально)
     labels_lower="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
     body_len="${#2}"
     # Ретро-архитектор ИЛИ объёмный body ИЛИ priority:P0 → +1 ретрай
-    if printf '%s' "$labels_lower" | grep -Eq '(^|,)priority:p0(,|$)'; then
+    if has_label "$labels_lower" "priority:p0"; then
         printf '%s' "${AGENT_FLOW_MAX_RETRIES_LARGE:-3}"; return
     fi
     if [ "$body_len" -ge "$AGENT_FLOW_LARGE_BODY_CHARS" ]; then
