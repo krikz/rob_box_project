@@ -38,6 +38,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from rob_box_perception.hailo_device import open_device
+
 
 # Default HailoRT VDevice id. На Vision Pi с одним AI HAT+ всегда 0.
 DEFAULT_VDEVICE_ID = 0
@@ -297,36 +299,18 @@ class RealHEFLoader(HEFLoader):
 
     def _init_locked(self) -> None:
         """Собственно инициализация (без кеширования ошибки)."""
-        try:
-            from hailo_platform import (  # type: ignore[import-not-found]
-                VDevice,
-            )
-        except ImportError as exc:
-            raise ImportError(
-                'hailo_platform не установлен. Установите HailoRT на Vision Pi '
-                'перед включением hailo_enabled=True (см. docker/vision/vision-hailo/Dockerfile).'
-            ) from exc
         if not os.path.isfile(self._hef_path):
             raise FileNotFoundError(
                 f'HEF не найден: {self._hef_path}. Скачайте из hailo_model_zoo '
                 f'(https://github.com/hailo-ai/hailo_model_zoo).'
             )
 
-        # Modern async API (HailoRT 4.18+). Используем ROUND_ROBIN scheduling
-        # для однородной latency (single-stream инференс). Параметры могут
-        # отсутствовать в более старых версиях — best-effort fallback.
-        try:
-            from hailo_platform import (  # type: ignore[import-not-found]
-                HailoSchedulingAlgorithm,
-            )
-            params = VDevice.create_params()
-            params.scheduling_algorithm = HailoSchedulingAlgorithm.ROUND_ROBIN
-            params.device_id = str(self._vdevice_id)
-            self._vdevice = VDevice(params=params)
-        except (ImportError, TypeError, AttributeError):
-            # Fallback для версий HailoRT < 4.18 (без scheduling_algorithm)
-            # или других minor-вариаций API.
-            self._vdevice = VDevice()
+        # Устройство берём через шов «Ускоритель» (hailo_device): владелец
+        # железа — hailort.service, когда его сокет достижим. Прямой
+        # VDevice здесь забирал Hailo единолично, и лицевая нода рядом
+        # падала с HAILO_OUT_OF_PHYSICAL_DEVICES(74) — issue #2599.
+        self._device = open_device(self._vdevice_id)
+        self._vdevice = self._device.vdevice
 
         # Создаём InferModel и конфигурируем (новое поколение API).
         self._infer_model = self._vdevice.create_infer_model(self._hef_path)
@@ -371,9 +355,16 @@ class RealHEFLoader(HEFLoader):
             output_buffers=output_buffers,
         )
         # Активируем async-inference pipeline. ОБЯЗАТЕЛЬНО в новом API
-        # (HailoRT 4.18+): без activate() первый run() падает
-        # HAILO_STREAM_NOT_ACTIVATED(72), и pipeline уходит в abort.
-        self._configured.activate()
+        # (HailoRT 4.18+) при единоличном владении устройством: без
+        # activate() первый run() падает HAILO_STREAM_NOT_ACTIVATED(72),
+        # и pipeline уходит в abort (#2398).
+        #
+        # Под сервисом/планировщиком — НАОБОРОТ запрещено, HailoRT отвечает
+        # дословно: "ConfiguredNetworkGroup::activate function is not
+        # supported when using multi-process service or HailoRT Scheduler"
+        # → HAILO_INVALID_OPERATION(6). Решает шов, не лоадер.
+        if self._device.must_activate:
+            self._configured.activate()
         # Запоминаем имя первого output'а — YOLOv8n имеет один,
         # для multi-output моделей это контрактно первый.
         self._output_name = self._infer_model.output_names[0]

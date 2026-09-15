@@ -680,6 +680,11 @@ services:
       - /opt/rob_box/models:/opt/rob_box/models:ro
       # /dev/shm нужен для shared memory при большом inference.
       - /dev/shm:/dev/shm
+      # Сокет hailort_service: железом владеет сервис, ноды ходят
+      # через него (issue #2599). Без этого монтирования процесс
+      # берёт /dev/hailo0 единолично и второй продюсер получает
+      # HAILO_OUT_OF_PHYSICAL_DEVICES(74) — проверено на роботе.
+      - /tmp/hailort_uds.sock:/tmp/hailort_uds.sock
     mem_limit: 1g  # HailoRT + python binding ≈ 0.5-1 GB
     memswap_limit: 1.5g
     command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_vision_hailo.sh"]
@@ -738,6 +743,11 @@ services:
       - ./scripts/vision-hailo:/scripts:ro
       - /opt/rob_box/models:/opt/rob_box/models:ro
       - /dev/shm:/dev/shm
+      # Сокет hailort_service: железом владеет сервис, ноды ходят
+      # через него (issue #2599). Без этого монтирования процесс
+      # берёт /dev/hailo0 единолично и второй продюсер получает
+      # HAILO_OUT_OF_PHYSICAL_DEVICES(74) — проверено на роботе.
+      - /tmp/hailort_uds.sock:/tmp/hailort_uds.sock
     mem_limit: 1g
     memswap_limit: 1.5g
     command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_vision_face.sh"]
