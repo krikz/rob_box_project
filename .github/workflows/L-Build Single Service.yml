@@ -483,14 +483,19 @@ jobs:
           # артефакт Hailo Developer Zone (аккаунт), лежит на build-машине
           # в /opt/rob_box/vendor/. Совпадает с L-Build Vision Pi Services.yml.
           if [ "${{ needs.prepare.outputs.service_name }}" = "vision_hailo" ]; then
+            WHEEL=hailort-4.24.0-cp310-cp310-linux_aarch64.whl
             mkdir -p docker/vision/vision-hailo/wheels
-            cp /opt/rob_box/vendor/hailort-4.24.0-cp310-cp310-linux_aarch64.whl \
-               docker/vision/vision-hailo/wheels/ || {
-              echo "::error::hailort wheel не найден в /opt/rob_box/vendor/ — real inference build невозможен" >&2
+            # Канонично — /opt/rob_box/vendor. Fallback — /tmp (проброшен в runner'ы).
+            if [ -f "/opt/rob_box/vendor/${WHEEL}" ]; then
+              cp "/opt/rob_box/vendor/${WHEEL}" docker/vision/vision-hailo/wheels/
+            elif [ -f "/tmp/${WHEEL}" ]; then
+              cp "/tmp/${WHEEL}" docker/vision/vision-hailo/wheels/
+            else
+              echo "::error::${WHEEL} не найден ни в /opt/rob_box/vendor, ни в /tmp — real inference build невозможен" >&2
               exit 1
-            }
+            fi
             BUILD_ARGS="${BUILD_ARGS} --build-arg=HAILO_INSTALL_BINDING=whl"
-            echo "  HAILO_INSTALL_BINDING=whl (hailort wheel fetched из /opt/rob_box/vendor)"
+            echo "  HAILO_INSTALL_BINDING=whl (hailort wheel fetched)"
           fi
 
           # Сборка образа
