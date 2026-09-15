@@ -762,6 +762,14 @@ class DialogueNode(Node):
         self.create_subscription(
             String, "/voice/dj_mode",
             lambda m: self._dj.handle_message(m.data), 10, callback_group=cbg)
+        # Issue #2461 — структурный канал конца прохода формы для DJ-тикера.
+        # НАРОЧНО отдельный топик, не ``/voice/music/state``: тот несёт
+        # ровно "playing"/"idle" под ТОЧНОЕ РАВЕНСТВО в audio_node
+        # (``_on_music_state``, VAD-эхоподавление, issue #989) — любой
+        # суффикс/JSON там молча ломает порог. См. ``_on_music_form``.
+        self.create_subscription(
+            String, "/voice/music/form", self._on_music_form, 10,
+            callback_group=cbg)
         # Каталог инструментов от mcp_server. Подписка latched
         # (TRANSIENT_LOCAL) — mcp_server публикует каталог один раз при
         # старте, и порядок запуска нод перестаёт иметь значение.
@@ -2542,6 +2550,40 @@ class DialogueNode(Node):
                 "🎵 [track-mode] сервер сообщил idle — снимаю флаг «играет» "
                 "(музыку остановил не диалог: watchdog/внешний стоп)"
             )
+
+    def _on_music_form(self, msg: String) -> None:
+        """Issue #2461 — конец прохода формы для DJModeController.tick().
+
+        ``/voice/music/form`` — ОТДЕЛЬНЫЙ от ``/voice/music/state`` топик
+        (mcp_server публикует оба в одном месте, ``publish_music_state()``).
+        Заводить его пришлось потому, что ``/voice/music/state`` нельзя
+        трогать: ``audio_node._on_music_state`` сравнивает payload ТОЧНЫМ
+        РАВЕНСТВОМ (``state == "playing"``) для VAD-эхоподавления — любой
+        суффикс или JSON вместо плоской строки молча ломает порог (бит
+        начинает триггерить «речь»). Здесь же — JSON
+        ``{"form_ends_at": <epoch float|null>, "playing": bool}``.
+
+        ``form_ends_at`` — уже АБСОЛЮТНОЕ стенное время: mcp_server сам
+        считает ``time.time() + form_cycle_remaining_s`` перед публикацией
+        (см. его ``publish_music_state``). Класть сюда пришлось бы
+        ``time.monotonic()``-значение из ``MusicManager`` — но
+        ``mcp_server`` и ``dialogue_node`` РАЗНЫЕ ОС-процессы
+        (``voice_assistant.launch.py``: один ``Node(...)``, другой
+        ``ExecuteProcess(...)``), и монотонные часы одного процесса ничего
+        не значат в другом. ``time.time()`` — стенные часы, общие для
+        обоих процессов на одной машине, поэтому эпоха передаётся как
+        есть, без пересчёта на этой стороне.
+        """
+        try:
+            payload = json.loads(msg.data or "{}")
+        except (json.JSONDecodeError, TypeError):
+            return
+        if not isinstance(payload, dict):
+            return
+        form_ends_at = payload.get("form_ends_at")
+        self._dj.state.form_ends_at = (
+            float(form_ends_at) if isinstance(form_ends_at, (int, float)) else None
+        )
 
     def _on_tts_batch_registered(self, msg: String) -> None:
         """Pre-register an in-flight TTS batch (issue #992).

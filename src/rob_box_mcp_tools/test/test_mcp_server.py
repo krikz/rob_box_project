@@ -1,6 +1,7 @@
 """Unit tests for MCP server startup behavior."""
 
 import importlib.util
+import json
 import os
 import sys
 import types
@@ -8,6 +9,21 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+
+
+class _FakePublisher:
+    """Captures every ``.publish(msg)`` call — no real rclpy publisher.
+
+    Issue #2461: used to assert what ``publish_music_state`` actually
+    puts on the wire for both ``/voice/music/state`` and the new
+    ``/voice/music/form``, without spinning up a real Node.
+    """
+
+    def __init__(self):
+        self.published: list = []
+
+    def publish(self, msg) -> None:
+        self.published.append(msg.data)
 
 
 class _FakeRegistry:
@@ -559,3 +575,96 @@ def test_run_music_watchdog_survives_a_manager_exception(monkeypatch):
         "Music watchdog failed" in m for m in server.get_logger().warning_messages
     )
     assert server.stop_generated_track_playback_calls == 0
+
+
+# ---------------------------------------------------------------------------
+# Issue #2461 — /voice/music/form: структурный канал конца формы для
+# DJModeController.tick(), заведённый ОТДЕЛЬНО от /voice/music/state.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_publish_music_state_keeps_the_exact_playing_idle_contract(monkeypatch):
+    """Регрессия контракта: audio_node._on_music_state (issue #989, VAD
+    эхоподавление) сравнивает payload ТОЧНЫМ равенством
+    ``state == "playing"``, не ``startswith``/JSON-парсингом. Issue #2461
+    добавил ВТОРОЙ топик (``/voice/music/form``) для конца формы именно
+    затем, чтобы не пришлось трогать этот payload. Этот тест ловит
+    будущую попытку «заодно» засунуть JSON и сюда."""
+    module = _load_mcp_server_module(monkeypatch)
+    server = _FakeServer()
+    server.music_state_pub = _FakePublisher()
+    server.music_form_pub = _FakePublisher()
+    manager = MagicMock()
+    server._music_manager = manager
+
+    manager.get_state.return_value = {
+        "active_patterns": ["p1"],
+        "music_session_active_since": 123.0,
+        "form_cycle_remaining_s": 42.0,
+    }
+    module.MCPServer.publish_music_state(server)
+    assert server.music_state_pub.published == ["playing"]
+
+    manager.get_state.return_value = {
+        "active_patterns": [],
+        "music_session_active_since": None,
+        "form_cycle_remaining_s": None,
+    }
+    module.MCPServer.publish_music_state(server)
+    assert server.music_state_pub.published == ["playing", "idle"]
+
+
+@pytest.mark.unit
+def test_publish_music_form_converts_monotonic_remaining_to_wall_clock_epoch(monkeypatch):
+    """Issue #2461: ``form_cycle_remaining_s`` считается в MusicManager
+    через ``time.monotonic()`` — публиковать его как есть в другой процесс
+    нельзя (mcp_server и dialogue_node — разные ОС-процессы, monotonic-часы
+    не сопоставимы между ними). Публикатор обязан перевести остаток в
+    epoch (``time.time() + remaining``) ДО публикации."""
+    module = _load_mcp_server_module(monkeypatch)
+    server = _FakeServer()
+    server.music_state_pub = _FakePublisher()
+    server.music_form_pub = _FakePublisher()
+    manager = MagicMock()
+    manager.get_state.return_value = {
+        "active_patterns": ["p1"],
+        "music_session_active_since": 123.0,
+        # Нарочно далеко от текущего unix-времени — так monotonic-регрессия
+        # (публикация remaining_s или monotonic-времени как есть) даёт
+        # payload, который провалит сравнение с epoch "сейчас + 42".
+        "form_cycle_remaining_s": 42.0,
+    }
+    server._music_manager = manager
+
+    before = module.time.time()
+    module.MCPServer.publish_music_state(server)
+    after = module.time.time()
+
+    assert len(server.music_form_pub.published) == 1
+    payload = json.loads(server.music_form_pub.published[0])
+    assert payload["playing"] is True
+    assert before + 42.0 <= payload["form_ends_at"] <= after + 42.0 + 1.0
+
+
+@pytest.mark.unit
+def test_publish_music_form_is_null_when_no_active_form(monkeypatch):
+    """Нет активной формы (idle, ничего не играет) — form_ends_at: null,
+    не 0/NaN/monotonic-мусор. DJModeController.tick() трактует None как
+    «данных нет» и не блокирует переход этим полем."""
+    module = _load_mcp_server_module(monkeypatch)
+    server = _FakeServer()
+    server.music_state_pub = _FakePublisher()
+    server.music_form_pub = _FakePublisher()
+    manager = MagicMock()
+    manager.get_state.return_value = {
+        "active_patterns": [],
+        "music_session_active_since": None,
+        "form_cycle_remaining_s": None,
+    }
+    server._music_manager = manager
+
+    module.MCPServer.publish_music_state(server)
+
+    payload = json.loads(server.music_form_pub.published[0])
+    assert payload == {"form_ends_at": None, "playing": False}

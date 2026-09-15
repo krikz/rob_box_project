@@ -22,6 +22,7 @@ from std_msgs.msg import String
 import json
 import math
 import os
+import time
 from typing import Any, Dict, Optional
 
 from .registry import MCPToolRegistry
@@ -165,6 +166,22 @@ except ImportError:
     _VoiceMemoryAdapter = None  # type: ignore[assignment,misc]
 
 
+def _music_form_ends_at_epoch(state: Dict[str, Any]) -> Optional[float]:
+    """``form_cycle_remaining_s`` (monotonic-остаток) → epoch (issue #2461).
+
+    Модульная функция, а не метод — она не зависит от ``self``/``Node``,
+    что делает её проверяемой юнит-тестом без поднятия ROS-паблишера или
+    даже фейкового ``MCPServer``: тест кладёт ``remaining_s`` и сверяет
+    результат против ``time.time()``, доказывая, что наружу уходит
+    стенное время, а не ``time.monotonic()`` из процесса mcp_server
+    (несопоставим с dialogue_node — см. docstring ``publish_music_state``).
+    """
+    remaining_s = state.get("form_cycle_remaining_s")
+    if not isinstance(remaining_s, (int, float)) or remaining_s <= 0:
+        return None
+    return time.time() + float(remaining_s)
+
+
 class MCPServer(Node):
     """
     MCP Server - центральная нода для управления инструментами
@@ -259,6 +276,17 @@ class MCPServer(Node):
         # тот поднимал VAD threshold при активной музыке (strict mode).
         # audio_node подписывается на /voice/music/state ("playing"/"idle").
         self.music_state_pub = self.create_publisher(String, "/voice/music/state", qos_profile)
+
+        # Issue #2461 — структурный канал конца прохода формы для
+        # DJModeController.tick() (dialogue_node). НЕ расширяем
+        # /voice/music/state этим полем: audio_node._on_music_state
+        # сравнивает его payload ТОЧНЫМ РАВЕНСТВОМ ("playing"/"idle") для
+        # VAD-эхоподавления (issue #989) — любой суффикс/JSON там молча
+        # ломает порог, музыка перестаёт считаться активной, и бит
+        # начинает триггерить «речь». Поэтому — отдельный String+JSON
+        # топик, по образцу /voice/dj_mode. Payload и его monotonic/epoch
+        # нюанс — см. docstring publish_music_state().
+        self.music_form_pub = self.create_publisher(String, "/voice/music/form", qos_profile)
 
         # 🔴 FIX (live 30.08, vision-pi 12:33): mp3-трек из
         # ``gen_play_from_library`` играет в ``sound_node``, а не в Renardo.
@@ -720,12 +748,34 @@ class MCPServer(Node):
         self.publish_music_state()
 
     def publish_music_state(self) -> None:
-        """Опубликовать /voice/music/state: "playing" если музыка активна, иначе "idle".
+        """Опубликовать /voice/music/state и /voice/music/form.
 
+        ``/voice/music/state``: "playing" если музыка активна, иначе "idle".
         Issue 989 Fix C: audio_node слушает этот топик и поднимает порог VAD
         при активной музыке, чтобы бит не триггерил «речь» (эхо-петля).
         Музыка считается активной, если у MusicManager есть открытая сессия
         (``music_session_active_since`` не None) или именованные паттерны.
+
+        ⚠️ КОНТРАКТ, НЕ ТРОГАТЬ: ``audio_node._on_music_state`` сравнивает
+        ``msg.data`` ТОЧНЫМ РАВЕНСТВОМ (``state == "playing"``), а не
+        ``startswith``/JSON-парсингом. Любой суффикс или структура вместо
+        плоской строки "playing"/"idle" молча ломает VAD-эхоподавление —
+        музыка перестанет считаться активной, порог не поднимется, бит
+        начнёт триггерить «речь». Именно поэтому конец формы (issue #2461,
+        ниже) идёт ОТДЕЛЬНЫМ топиком, а не полем здесь.
+
+        ``/voice/music/form`` (issue #2461): JSON
+        ``{"form_ends_at": <epoch float|null>, "playing": bool}`` — конец
+        текущего прохода формы для ``DJModeController.tick()`` в
+        dialogue_node. ``form_cycle_remaining_s`` из ``MusicManager.get_state()``
+        посчитан через ``time.monotonic()`` — эти часы НЕСОПОСТАВИМЫ между
+        процессами (mcp_server и dialogue_node — РАЗНЫЕ ОС-процессы, см.
+        voice_assistant.launch.py: один Node(...), другой ExecuteProcess(...)).
+        Публиковать monotonic-значение наружу нельзя — в чужом процессе оно
+        бессмысленно. Поэтому здесь остаток переводится в АБСОЛЮТНОЕ стенное
+        время (``time.time() + remaining``) ПРЯМО ПЕРЕД публикацией;
+        получатель сравнивает его со своим собственным ``time.time()`` —
+        wall-clock общий для обоих процессов на одной машине.
         """
         manager = getattr(self, "_music_manager", None)
         pub = getattr(self, "music_state_pub", None)
@@ -740,6 +790,16 @@ class MCPServer(Node):
         msg = String()
         msg.data = "playing" if playing else "idle"
         pub.publish(msg)
+
+        form_pub = getattr(self, "music_form_pub", None)
+        if form_pub is None:
+            return
+        form_msg = String()
+        form_msg.data = json.dumps({
+            "form_ends_at": _music_form_ends_at_epoch(state),
+            "playing": playing,
+        })
+        form_pub.publish(form_msg)
 
     def _init_waypoint_store(self) -> WaypointAdapter:
         """Инициализация адаптера для вейпоинтов.

@@ -22,7 +22,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 
 # States where DJ-mode should defer its transition by 15 seconds.
@@ -39,6 +39,18 @@ class DJState:
     theme: str = ""
     set_plan: str = ""
     persona: str = ""
+    # Issue #2461 — конец текущего прохода формы, АБСОЛЮТНОЕ стенное
+    # время (``time.time()``-эпоха), приходит из ``/voice/music/form``
+    # (mcp_server → dialogue_node → сюда через ``_on_music_form``).
+    # mcp_server сам переводит свой ``form_cycle_remaining_s`` (посчитанный
+    # через ``time.monotonic()`` внутри ``MusicManager``) в epoch ПЕРЕД
+    # публикацией — ``time.monotonic()`` не сопоставим между процессами
+    # (mcp_server и dialogue_node — РАЗНЫЕ ОС-процессы, см.
+    # voice_assistant.launch.py), а ``time.time()`` для обоих процессов
+    # общий (одна машина). Здесь поле хранится как получено, без
+    # пересчёта. ``None`` — данных нет (топик ещё не пришёл, форма не
+    # играет) — тогда ``tick()`` этим полем не гейтится вообще.
+    form_ends_at: Optional[float] = None
 
 
 @dataclass
@@ -210,6 +222,8 @@ class DJModeController:
         self.state.theme = ""
         self.state.set_plan = ""
         self.state.persona = ""
+        # Issue #2461 — не тащить дедлайн формы прошлого сета в следующий.
+        self.state.form_ends_at = None
         # 🔴 FIX (live 11:46): без этого enabled оставался True после
         # авто-стопа → следующий tick (5с) видел next_transition_at=0.0 и
         # запускал НОВЫЙ DJ-цикл #1 — DJ «оживал» через 5 секунд после
@@ -232,7 +246,24 @@ class DJModeController:
         if not self.state.enabled:
             return
         now = time.time()
-        if now < self.state.next_transition_at:
+        gate_at = self.state.next_transition_at
+        # Issue #2461 — форма как НИЖНЯЯ граница перехода, не единственный
+        # источник. ``next_transition_sec`` (через ``next_transition_at``)
+        # остаётся ручным перекрытием модели — она может ЗАТЯНУТЬ переход,
+        # но структурно больше не может его УКОРОТИТЬ ниже реального конца
+        # формы: живой баг (#2461) был именно в этом — next_transition_sec=45
+        # при форме на 96-190с срезал дроп на каждом сете.
+        #
+        # ``form_ends_at`` учитывается ТОЛЬКО если оно ещё не в прошлом.
+        # ``None`` (топик не пришёл/форма не играет) и протухшее значение
+        # (форма из прошлого трека, уже отыгравшая) одинаково НЕ блокируют
+        # переход — работает прежнее поведение по ``next_transition_at``.
+        # Иначе стухший сигнал (пропущенное сообщение, трек сменился без
+        # обновления) держал бы DJ замороженным навсегда.
+        form_ends_at = self.state.form_ends_at
+        if form_ends_at is not None and form_ends_at > now:
+            gate_at = max(gate_at, form_ends_at)
+        if now < gate_at:
             return
         # Don't interrupt an active dialogue or sound playback.
         if self._hook.is_dialogue_active() or self._hook.is_active():

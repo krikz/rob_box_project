@@ -842,6 +842,53 @@ class TestDialogueShell(unittest.TestCase):
         self.node._dj.tick()
         self.assertEqual(self.llm.call_count, before)
 
+    # ── Issue #2461: /voice/music/form → DJModeController.tick() ────
+
+    def test_on_music_form_stores_epoch_form_ends_at(self):
+        """``_on_music_form`` кладёт ``form_ends_at`` в ``DJState`` как
+        есть — mcp_server уже перевёл его в epoch (``time.time()``-based)
+        перед публикацией, dialogue_node ничего не пересчитывает."""
+        ends_at = time.time() + 123.0
+        self.node._on_music_form(_make_string(
+            json.dumps({"form_ends_at": ends_at, "playing": True})
+        ))
+        self.assertEqual(self.node._dj.state.form_ends_at, ends_at)
+
+    def test_on_music_form_null_form_ends_at_clears_the_gate(self):
+        self.node._dj.state.form_ends_at = time.time() + 500.0
+        self.node._on_music_form(_make_string(
+            json.dumps({"form_ends_at": None, "playing": False})
+        ))
+        self.assertIsNone(self.node._dj.state.form_ends_at)
+
+    def test_on_music_form_ignores_malformed_payload(self):
+        """Битый JSON/не-dict не должен ронять callback ни менять состояние."""
+        self.node._dj.state.form_ends_at = 42.0
+        self.node._on_music_form(_make_string("not json"))
+        self.assertEqual(self.node._dj.state.form_ends_at, 42.0)
+        self.node._on_music_form(_make_string(json.dumps([1, 2, 3])))
+        self.assertEqual(self.node._dj.state.form_ends_at, 42.0)
+
+    def test_dj_tick_waits_for_music_form_before_dispatching(self):
+        """End-to-end через реальную подписку: /voice/music/form сообщает
+        конец формы через 150с, next_transition_sec модели (45с, клэмп до
+        45) уже истёк — tick() не должен диспатчить, пока форма не
+        доиграла (живой баг #2461: переключение на 45-й секунде срезало
+        дроп на форме 96-190с)."""
+        self.node._dj.handle_message(json.dumps({
+            "enabled": True, "next_transition_sec": 45,
+        }))
+        self.node._dj.state.next_transition_at = time.time() - 1.0
+        self.node._on_music_form(_make_string(json.dumps({
+            "form_ends_at": time.time() + 150.0, "playing": True,
+        })))
+        before = self.llm.call_count
+        self.node._dj.tick()
+        self.assertEqual(
+            self.llm.call_count, before,
+            "tick() не должен был диспатчить переход раньше конца формы",
+        )
+
     # ── 6. Barge-in: new STT cancels old turn ────────────────────────
 
     def test_barge_in_cancels_active_run(self):
