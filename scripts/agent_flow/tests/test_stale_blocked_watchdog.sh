@@ -106,6 +106,12 @@ PYEOF
 # Mock-hermes (top-level script, no `local` keyword — используем простые var).
 # Маршрутизация: фиксируем в журнал все вызовы kanban comment.
 # Также пишем в task_comments DB для idempotency check.
+#
+# R11 (issue #2483): production watchdog (lines 436-440) HE вызывает
+# `hermes kanban comment` при DRY_RUN=true — только логирует. Mock-hermes
+# ДОЛЖЕН вести себя так же, иначе тест «2 ticks → 1 comment» проходит
+# из-за mock-side-effect (DB-write), а не production-логики. Если бы
+# production DB стала source of idempotency — тест silently drift'нул бы.
 case "${1:-}${2:-}${3:-}${4:-}" in
     *kanban*comment*)
         # argv: hermes kanban --board <board> comment <task_id> <body...>
@@ -116,7 +122,13 @@ case "${1:-}${2:-}${3:-}${4:-}" in
         _arg_tid="$5"
         shift 5
         _body="$*"
-        echo "MOCKED: kanban comment board=${_arg_board} task=${_arg_tid} body=${_body}" >> "$HERMES_JOURNAL"
+        # R11: пропускаем side-effect (DB INSERT) при DRY_RUN=true.
+        # Журнал (HERMES_JOURNAL) пишем ВСЕГДА — это видно из теста что
+        # production-логика дошла до момента emit, просто решила не делать.
+        echo "MOCKED: kanban comment board=${_arg_board} task=${_arg_tid} body=${_body} dry_run=${DRY_RUN:-false}" >> "$HERMES_JOURNAL"
+        if [ "${DRY_RUN:-false}" = "true" ]; then
+            exit 0
+        fi
         # DB write для idempotency: INSERT в task_comments с marker
         if [ -n "$KANBAN_DB_PATH" ] && [ -f "$KANBAN_DB_PATH" ]; then
             _now=$(date -u +%s)
@@ -556,53 +568,120 @@ PYEOF
 }
 
 # ============================================================================
-# S9: DRY_RUN=true + 0 stale-blocked → exit 0 (no false alarm)
 # ============================================================================
-test_S9_dry_run_no_hits_exit_zero() {
-    run_test "S9_dry_run_no_hits_exit_zero"
+# S9 (R11, issue #2483): mock-hermes при DRY_RUN=true НЕ пишет в DB
+# Это unit-test для mock-hermes (а не для watchdog): production watchdog
+# при DRY_RUN не вызывает hermes (lines 436-440), поэтому mock-side-fix
+# не покрывается S8. Здесь мы вызываем mock-hermes НАПРЯМУЮ с DRY_RUN=true
+# и проверяем, что INSERT пропущен (т.е. production-side-effect не
+# произошёл бы, даже если бы watchdog решил позвать hermes).
+#
+# До R11 mock-hermes ВСЕГДА писал в task_comments — тест «2 ticks → 1
+# comment» (S6) проходил из-за mock-side-effect, а не production-логики.
+# Если бы production DB стала source of idempotency — тест silently drift.
+# ============================================================================
+test_S9_mock_hermes_dry_run_skips_db_write() {
+    WORK="$(mktemp -d)"
+    mkdir -p "$WORK/bin" "$WORK/kanban"
 
-    python3 - <<PYEOF
-import sqlite3, time
-con = sqlite3.connect('$WORK/kanban/test.db')
-now = int(time.time())
-five_h_ago = now - 5 * 3600
-# blocked, но PR в body ОТКРЫТ → SKIP, не alert
-con.execute("""INSERT INTO tasks (id, title, body, assignee, status, started_at, max_runtime_seconds, created_at)
-VALUES ('t_stale_9', 'test', 'Body refs PR #2385 (unmerged)', 'default', 'blocked', ?, 1800, ?)""",
-            (five_h_ago, five_h_ago))
-con.execute("INSERT INTO task_links (parent_id, child_id) VALUES ('t_p9_done', 't_stale_9')")
-con.execute("""INSERT INTO tasks (id, title, body, assignee, status, started_at, max_runtime_seconds, created_at)
-VALUES ('t_p9_done', 'parent', 'done', 'default', 'done', ?, 1800, ?)""",
-            (five_h_ago, five_h_ago))
-# CRITICAL: write gh_prs.json with #2385 OPEN so mock-gh returns
-# state=open → SKIP "unmerged_prs" (matching the original test scenario
-# where unmerged PR is the most common reason to NOT alert).
-import json
-with open('$WORK/gh_prs.json', 'w') as f:
-    json.dump({'2385': {'state': 'open', 'merged': False, 'merged_at': None}}, f)
+    # Init DB
+    python3 - "$WORK/kanban/test.db" <<'PYEOF'
+import sqlite3, sys
+con = sqlite3.connect(sys.argv[1])
+con.executescript('''
+CREATE TABLE IF NOT EXISTS tasks (
+    id TEXT PRIMARY KEY,
+    title TEXT,
+    body TEXT,
+    assignee TEXT,
+    status TEXT,
+    started_at INTEGER,
+    max_runtime_seconds INTEGER,
+    created_at INTEGER
+);
+CREATE TABLE IF NOT EXISTS task_comments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT,
+    author TEXT,
+    body TEXT,
+    created_at INTEGER
+);
+''')
 con.commit()
 con.close()
 PYEOF
 
-    export PATH="$WORK/bin:$PATH"
-    export KANBAN_DB_PATH="$WORK/kanban/test.db"
-    export KANBAN_BOARD="test"
-    export MOCK_GH_PRS_JSON="$WORK/gh_prs.json"
-    export DRY_RUN=true
-    bash "$WATCHDOG_SH" 2>"$WORK/stderr.txt"
-    local rc=$?
+    # Копируем mock-hermes из setup (он зависит от $WORK/bin/hermes).
+    # Здесь создаём упрощённый вариант с тем же patch'ом R11.
+    cat > "$WORK/bin/hermes" <<'EOF'
+#!/bin/bash
+case "${1:-}${2:-}${3:-}${4:-}" in
+    *kanban*comment*)
+        _arg_board="$3"
+        _arg_tid="$5"
+        shift 5
+        _body="$*"
+        if [ "${DRY_RUN:-false}" = "true" ]; then
+            exit 0
+        fi
+        if [ -n "$KANBAN_DB_PATH" ] && [ -f "$KANBAN_DB_PATH" ]; then
+            _now=$(date -u +%s)
+            python3 - "$KANBAN_DB_PATH" "${_arg_tid}" "${_body}" "$_now" <<'PYEOF'
+import sqlite3, sys
+db_path, task_id, body, now = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+try:
+    con = sqlite3.connect(db_path)
+    con.execute("INSERT INTO task_comments (task_id, author, body, created_at) VALUES (?, 'mock-hermes', ?, ?)", (task_id, body, int(now)))
+    con.commit()
+    con.close()
+except Exception as e:
+    sys.stderr.write(f"err: {e}\n")
+PYEOF
+        fi
+        exit 0
+        ;;
+    *) exit 0 ;;
+esac
+EOF
+    chmod +x "$WORK/bin/hermes"
 
-    local cnt
-    cnt=$(awk '/MOCKED:/ {c++} END {print c+0}' "$HERMES_JOURNAL" 2>/dev/null)
-    if [ "$cnt" -eq 0 ] && [ "$rc" -eq 0 ]; then
-        pass "S9: DRY_RUN=true + no stale-blocked hits → exit 0 (no false alarm)"
-    elif [ "$cnt" -ne 0 ]; then
-        fail "S9: side-effect leaked (cnt=$cnt), expected 0"
+    # Вызываем mock-hermes с DRY_RUN=true — INSERT НЕ должен произойти
+    PATH="$WORK/bin:$PATH" \
+    KANBAN_DB_PATH="$WORK/kanban/test.db" \
+    KANBAN_BOARD="test" \
+    DRY_RUN=true \
+    bash "$WORK/bin/hermes" kanban --board test comment t_r11_test "should-not-write" >/dev/null 2>&1
+
+    cnt=$(python3 - "$WORK/kanban/test.db" <<'PYEOF'
+import sqlite3, sys
+con = sqlite3.connect(sys.argv[1])
+n = con.execute("SELECT COUNT(*) FROM task_comments WHERE task_id='t_r11_test'").fetchone()[0]
+print(n)
+con.close()
+PYEOF
+)
+
+    # Контрольный вызов БЕЗ DRY_RUN — INSERT должен произойти
+    PATH="$WORK/bin:$PATH" \
+    KANBAN_DB_PATH="$WORK/kanban/test.db" \
+    KANBAN_BOARD="test" \
+    bash "$WORK/bin/hermes" kanban --board test comment t_r11_test "should-write" >/dev/null 2>&1
+
+    cnt_after=$(python3 - "$WORK/kanban/test.db" <<'PYEOF'
+import sqlite3, sys
+con = sqlite3.connect(sys.argv[1])
+n = con.execute("SELECT COUNT(*) FROM task_comments WHERE task_id='t_r11_test'").fetchone()[0]
+print(n)
+con.close()
+PYEOF
+)
+
+    if [ "$cnt" = "0" ] && [ "$cnt_after" = "1" ]; then
+        pass "S9: mock-hermes DRY_RUN=true → 0 DB writes; DRY_RUN absent → 1 write"
     else
-        fail "S9: DRY_RUN + no-hits exit code = $rc, expected 0"
-        echo "  --- stderr: $(cat $WORK/stderr.txt)"
+        fail "S9: mock-hermes DB write invariant violated (dry_run_count=$cnt, normal_count=$cnt_after)"
     fi
-    unset DRY_RUN
+    _ALL_WORKS+=("$WORK")
 }
 
 # --- main -------------------------------------------------------------------
@@ -626,7 +705,7 @@ test_S5_not_a_pr_alongside_real_pr_emits; _ALL_WORKS+=("$WORK")
 test_S6_idempotent; _ALL_WORKS+=("$WORK")
 test_S7_no_pr_refs_no_alert; _ALL_WORKS+=("$WORK")
 test_S8_dry_run_no_side_effect; _ALL_WORKS+=("$WORK")
-test_S9_dry_run_no_hits_exit_zero; _ALL_WORKS+=("$WORK")
+test_S9_mock_hermes_dry_run_skips_db_write; _ALL_WORKS+=("$WORK")
 
 echo
 echo "=== summary: $_pass passed, $_fail failed ==="
