@@ -51,7 +51,6 @@ _install_all_mocks()
 
 from rob_box_voice.tts_node import TTSNode  # noqa: E402
 
-
 # ── Вспомогательные мини-классы ────────────────────────────────────────────
 
 
