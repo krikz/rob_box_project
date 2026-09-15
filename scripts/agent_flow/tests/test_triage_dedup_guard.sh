@@ -239,12 +239,14 @@ else
     fail "T9c: kanban list does NOT use --archived flag"
 fi
 
-# Verify status is now in the printed map (3 fields)
-# The python print uses % formatting with 3 %s — match the actual line format
-if grep -E '^[[:space:]]+print\("%s\\t%s\\t%s"' "$SCRIPT_UNDER_TEST" >/dev/null; then
-    pass "T9d: existing_by_issue prints status in 3rd field"
+# Verify status is now in the printed map (3 or 4 fields)
+# Ретро-фикс (15.09.2026 t_60473741, ADR-AF-0067): schema расширена до 4 полей
+# (issue, id, status, branch_name) для G9c branch-name dedup. Backward-compat:
+# branch_name может быть пустым для non-worktree карточек.
+if grep -E '^[[:space:]]+print\("%s\\t%s\\t%s\\t%s"' "$SCRIPT_UNDER_TEST" >/dev/null; then
+    pass "T9d: existing_by_issue prints 4 fields (issue, id, status, branch_name) — ADR-AF-0067"
 else
-    fail "T9d: existing_by_issue does NOT print 3rd field"
+    fail "T9d: existing_by_issue does NOT print 4 fields (branch_name missing)"
 fi
 
 # Verify the new comment block exists (ретро-фикс с ID карточки)
