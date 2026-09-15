@@ -568,8 +568,20 @@ def test_real_loader_infer_with_mock_returns_postprocessed_events(
     # теста run()→numpy→postprocess этого достаточно — нам важно, чтобы
     # входной tensor попал в bindings.input().set_buffer() и output
     # был прочитан из bindings.output().get_buffer().
+    #
+    # ADR-0101 (issue #2531 acceptance #9): _preprocess возвращает
+    # (tensor, LetterboxInfo). Mock тоже должен вернуть tuple — иначе
+    # infer() упадёт на «not enough values to unpack».
     preprocessed = np.zeros((1, 640, 640, 3), dtype=np.uint8)
-    monkeypatch.setattr(real, '_preprocess', lambda _img: preprocessed)
+    fake_letterbox = loader_mod.LetterboxInfo(
+        scale=1.0, pad_left=0, pad_top=0,
+        orig_w=640, orig_h=480,
+        letterbox_w=640, letterbox_h=640,
+    )
+    monkeypatch.setattr(
+        real, '_preprocess',
+        lambda _img: (preprocessed, fake_letterbox),
+    )
 
     # Запускаем infer() с синтетическим кадром.
     fake_img = np.zeros((480, 640, 3), dtype=np.uint8)
