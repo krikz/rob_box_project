@@ -52,7 +52,7 @@ E2E_FAIL_STREAK_ISSUE_RATE_LIMIT_HOURS="${E2E_FAIL_STREAK_ISSUE_RATE_LIMIT_HOURS
 E2E_FAIL_STREAK_ISSUE_LABEL="${E2E_FAIL_STREAK_ISSUE_LABEL:-e2e-fail-streak}"
 E2E_FAIL_STREAK_ISSUE_ASSIGNEE="${E2E_FAIL_STREAK_ISSUE_ASSIGNEE:-}"
 
-HERMES_HOME="${HERMES_HOME:-/home/builder/.hermes}"
+HERMES_HOME="${HERMES_HOME:-${HOME}/.hermes}"
 # В тестах HERMES_HOME указывает на sandbox (см. test_dryrun_fail_streak_issue.sh).
 
 ISSUE_COOLDOWN_FILE="${ISSUE_COOLDOWN_FILE:-${HERMES_HOME}/state/agent-flow-e2e-fail-streak-last-issue}"
