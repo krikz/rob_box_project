@@ -122,6 +122,7 @@ from rob_box_voice.core.dialogue_guards import (
     MUSIC_STARTING_TOOLS,
     MUSIC_RETRY_PROMPT_PREFIX,
     MUSIC_STOP_OVERRIDES,
+    build_hallucinated_midi_retry_prompt,
     build_music_prose_action_fallback,
     build_music_retry_prompt,
     build_renardo_code_retry_prompt,
@@ -129,6 +130,7 @@ from rob_box_voice.core.dialogue_guards import (
     build_unbacked_action_retry_prompt,
     build_tool_retry_prompt as build_tool_retry_prompt,
     build_unknown_melody_retry_prompt,  # Issue #2562 Bug F
+    detect_hallucinated_midi_in_tools,  # Issue #2560 hallucinated-MIDI guard
     detect_required_tool as detect_required_tool,
     detect_unbacked_action_claim,
     detect_unknown_melody_claim,  # Issue #2562 Bug F
@@ -204,6 +206,7 @@ from rob_box_voice.observability import (
     is_metrics_enabled,
     record_barge_in,
     record_fallback,
+    record_hallucinated_midi,
     record_music_retry_exhausted,
     record_pending_queue_latency,
     record_quick_decide_verdict,
@@ -908,6 +911,14 @@ class DialogueNode(Node):
         # Тот же одноразовый контракт, что у Bug E / Bug C' / Regurgitate:
         # один ретрай на user-turn, иначе LLM уходит в ping-pong.
         self._unknown_melody_retry_used: bool = False
+
+        # Issue #2560 — LLM выдумывает MIDI-паттерн «pe<num>le<num>f»
+        # (FoxDot/renardo-синтаксис) вместо lookup_melody на известных
+        # мелодиях (Григ, Бетховен, etc.). PR #2551 текстовое правило
+        # не помогло — round-3 live дал 6 случаев за 60 мин. Поэтому
+        # ОДИН CRITICAL-ретрай на turn с явным требованием «сначала
+        # lookup_melody». Иначе LLM и код уходят в пинг-понг.
+        self._hallucinated_midi_retry_used: bool = False
 
         # Issue #1881 — общий бюджет СИНТЕТИЧЕСКИХ ретраев на user-turn.
         # Раньше у каждого guard'а был свой одноразовый флаг
@@ -3496,6 +3507,7 @@ class DialogueNode(Node):
             self._tool_retry_used = False
             self._system_regurgitate_retry_used = False
             self._unknown_melody_retry_used = False  # Issue #2562 Bug F
+            self._hallucinated_midi_retry_used = False  # Issue #2560 hallucinated-MIDI guard
             self._synthetic_retries_left = self.DEFAULT_SYNTHETIC_RETRIES
             # Issue #2266 / ADR-0021 R2 — mirror the budget reset to the
             # ``core/``-side ``TurnState`` so ``begin_babble_retry`` sees a
@@ -4369,6 +4381,95 @@ class DialogueNode(Node):
         self._dispatch_turn(
             build_renardo_code_retry_prompt(code),
             is_code_retry=True,
+            is_synthetic=True,
+            raw_user_command=user_input,
+        )
+        return True
+
+    def _check_hallucinated_midi_and_retry(
+        self,
+        *,
+        spoken: str,
+        user_input: Optional[str],
+        tools_called: tuple,
+    ) -> bool:
+        """Issue #2560 — одноразовый ретрай на hallucinated MIDI-паттерн.
+
+        Round-3 live (Vision Pi, 2026-09-15, DJ-сет): юзер 8 раз подряд
+        просил «в пещере горного короля», и модель КАЖДЫЙ раз выдавала
+        фантазийный паттерн ``pe<num>le<num>f`` (FoxDot/renardo-синтаксис)
+        вместо реальных нот Peer Gynt Suite №1 из RTTTL-библиотеки.
+
+        PR #2551 (RULE #KNOWN-MELODY) — текстовое правило в
+        ``composer.txt`` / ``master_prompt_compact.txt`` — round-3 показал:
+        модель читает правило и тут же НАРУУГАЕТ (6 случаев за 60 мин).
+        Поэтому нужен runtime safety net на стороне dialogue_node: один
+        CRITICAL-ретрай с явным требованием «СНАЧАЛА lookup_melody», а
+        потом уже compose_music / execute_music_code.
+
+        Детектор :func:`detect_hallucinated_midi_in_tools` ловит паттерн
+        ``pe[0-9]+le[0-9]+f`` (case-insensitive) в ``spoken`` LLM-ответа.
+        Тот же паттерн попадает в ``code="..."`` аргумент
+        ``execute_music_code`` — именно поэтому «выдуманная мелодия»
+        звучит вместо реальной.
+
+        Returns:
+            ``True`` — ретрай отправлен, вызывающий НЕ должен публиковать
+            текст в TTS (юзер не слышит hallucinated-MIDI описание).
+        """
+        if getattr(self, "_hallucinated_midi_retry_used", False):
+            return False
+        pattern = detect_hallucinated_midi_in_tools(
+            spoken=spoken,
+            tools_called=tuple(tools_called or ()),
+        )
+        if pattern is None:
+            return False
+
+        # Тот же перевод DSM, что и в babble/renardo/action-claim ретраях:
+        # без него process_input увидит IDLE и вернёт пустой результат.
+        try:
+            if self._dsm.current_state == DialogueStateKind.IDLE:
+                self._dsm.on_event(DialogueEvent.WAKE_WORD)
+                self._publish_state()
+            self._dsm.on_event(DialogueEvent.STT_RESULT)
+            self._publish_state()
+        except ImportError:
+            pass
+
+        # Issue #1881 — общий budget декрементится рядом с поимённым
+        # флагом. Если budget == 0, ретрай НЕ отправляется.
+        if not self._consume_synthetic_retry(guard_name="hallucinated_midi"):
+            # Бюджет исчерпан — НЕ молчим: инкрементим счётчик с
+            # source=skip / action=skipped, чтобы Prometheus-алерт
+            # видел факт попытки. (см. acceptance criterion #4).
+            try:
+                record_hallucinated_midi(source="skip", action="skipped")
+            except Exception:
+                pass
+            return False
+
+        # Помечаем ДО отправки — реентрантный вызов из самого ретрая
+        # не должен уметь запустить второй.
+        self._hallucinated_midi_retry_used = True
+        self._mark_retry_dispatched()
+        # Prometheus: счётчик реально сработавшего guard'а.
+        try:
+            record_hallucinated_midi(source="guard", action="retry")
+        except Exception:
+            pass
+        self.get_logger().warning(
+            f"🎼 [issue 2560] hallucinated MIDI-паттерн «{pattern}» — "
+            f"одим CRITICAL ретрай с «сначала lookup_melody». "
+            f"tools={list(tools_called)!r}, "
+            f"spoken_head={spoken[:80]!r}"
+        )
+        self._dispatch_turn(
+            build_hallucinated_midi_retry_prompt(
+                user_input=user_input,
+                pattern=pattern,
+            ),
+            is_action_claim_retry=False,  # свой тип, чтобы не путать с Bug E
             is_synthetic=True,
             raw_user_command=user_input,
         )
@@ -5899,6 +6000,22 @@ class DialogueNode(Node):
         # вместо execute_music_code(code=...). Код НЕ читаем вслух —
         # требуем вызов тула.
         if spoken and self._check_embedded_renardo_code_and_retry(
+            spoken=spoken,
+            user_input=raw_user_command or user_input,
+            tools_called=tools_called,
+        ):
+            return
+        # Issue #2560 — модель выдумала MIDI-паттерн «pe<num>le<num>f»
+        # вместо lookup_melody на известной мелодии (Григ, Бетховен,
+        # etc.). Текстовое RULE #KNOWN-MELODY (issue #2550 / PR #2551)
+        # модель прочитала и тут же нарушила — round-3 live (Vision Pi,
+        # 2026-09-15) дал 6 случаев за 60 мин. Один CRITICAL-ретрай с
+        # явным требованием «сначала lookup_melody». Должен идти ПОСЛЕ
+        # ``_check_embedded_renardo_code_and_retry`` (Bug C') — если
+        # модель написала Renardo-код в реплику, не hallucinated-MIDI
+        # guard; и ПЕРЕД action-claim — hallucinated-MIDI это НЕ
+        # action-claim, это специфический pattern в тексте.
+        if spoken and self._check_hallucinated_midi_and_retry(
             spoken=spoken,
             user_input=raw_user_command or user_input,
             tools_called=tools_called,
