@@ -355,6 +355,13 @@ EXPECTED=(
     # install.sh best-effort после раскладки скриптов; идемпотентен.
     # Drift-detect контролирует наличие файла во всех профилях (EXPECTED).
     sync-skills.sh
+    # Owner-setup helper для отдельного Telegram-канала `#devops-oncall`
+    # (kanban t_d215c9e0, issue #2394 PM-default): через getUpdates
+    # достаёт chat_id, пишет DEVOPS_ALERT_CHAT_ID в .env.249, опционально
+    # notify-subscribe на тестовую таску. Вызывается владельцем вручную
+    # ПОСЛЕ создания канала и добавления бота; НЕ cron-автомат. См.
+    # docs/runbooks/devops-oncall-channel.md.
+    setup-devops-oncall.sh
 )
 
 # Режим --list-files: печатает EXPECTED по одному имени на строку и выходит.
