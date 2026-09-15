@@ -39,33 +39,33 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MAIN_WF = REPO_ROOT / ".github" / "workflows" / "L-Build Main Pi Services.yml"
 VISION_WF = REPO_ROOT / ".github" / "workflows" / "L-Build Vision Pi Services.yml"
+BUILD_MANIFEST = REPO_ROOT / "docker" / "build-manifest.yaml"
 
 
-# --- expected inventory (must match issue #2280 raw evidence) ----------
+# --- expected inventory --------------------------------------------------
+#
+# docs/plans/2026-09-15-service-manifest.md, Phase 1, §5 п.5 / §6 п.1:
+# раньше здесь были два захардкоженных множества EXPECTED_MAIN_JOBS /
+# EXPECTED_VISION_JOBS — независимая (седьмая по счёту, план §1.1) копия
+# знания "какие сервисы есть", которая уже успела разойтись с реальностью
+# (EXPECTED_VISION_JOBS не содержал build-vision-hailo — красный тест,
+# план §1.7). Теперь единственный источник истины — docker/build-manifest.yaml;
+# эти множества выводятся из него, а не дублируют его вручную.
 
+
+def _load_build_manifest() -> dict:
+    with BUILD_MANIFEST.open(encoding="utf-8") as fh:
+        return yaml.safe_load(fh)
+
+
+_MANIFEST = _load_build_manifest()
 
 EXPECTED_MAIN_JOBS = {
-    "build-robot-state-publisher",
-    "build-rtabmap",
-    "build-twist-mux",
-    "build-teleop",
-    "build-ros2-control",
-    "build-nav2",
-    "build-lslidar",
-    "build-perception",
+    f"build-{name}" for name in _MANIFEST["pis"]["main"]["services"]
 }
 
 EXPECTED_VISION_JOBS = {
-    "build-oak-d",
-    "build-led-matrix",
-    "build-ceiling-camera",
-    "build-voice-assistant",
-    "build-voice-resources",
-    "build-voice-base",
-    "build-telegram-bot",
-    "build-supercollider",
-    "build-supervisor",
-    "build-quest",
+    f"build-{name}" for name in _MANIFEST["pis"]["vision"]["services"]
 }
 
 
@@ -128,6 +128,7 @@ def _expected_tags(job_name: str, pi_type: str) -> list[str]:
         "supercollider": ("supercollider", "supercollider"),  # no ROS_DISTRO!
         "supervisor": ("supervisor", "supervisor"),
         "quest": ("quest", "quest"),
+        "vision-hailo": ("vision_hailo", "vision-hailo"),
     }
     svc_name, img_name = name_map[svc]
 

@@ -44,7 +44,7 @@ jobs:
       - name: Install linting tools
         run: |
           python -m pip install --upgrade pip
-          pip install black==24.4.2 flake8==7.0.0 isort==5.13.2
+          pip install black==24.4.2 flake8==7.0.0 isort==5.13.2 pyyaml pytest
 
       - name: Validate dialogue skip-reason keys
         run: |
@@ -107,6 +107,56 @@ jobs:
       - name: Test-package coverage guard self-tests
         run: |
           bash scripts/ci/tests/test_validate_test_packages.sh
+
+      # docs/plans/2026-09-15-service-manifest.md, Phase 1 / §6: guard,
+      # который сверяет docker/build-manifest.yaml с реальными
+      # ".github/workflows/L-Build {Vision,Main} Pi Services.yml" —
+      # needs:-графом зависимых сервисов, множеством сервисов в
+      # tag_and_push/verify_in_registry, множеством *_TAG-полей в sed
+      # (ловит phantom-поля вроде RTABMAP_SYNC_TAG/MICRO_ROS_AGENT_TAG) и
+      # форматом тега (ros_distro). Hard gate (no continue-on-error) —
+      # тот же паттерн, что ADR-0057 §2.1 применил для
+      # validate_adr_namespace.sh: "рядом с уже существующим guard'ом
+      # того же класса" (здесь — рядом с Test-package coverage guard).
+      # -o addopts="" отключает --cov=rob_box_harness из корневого
+      # pytest.ini — этот guard не про rob_box_harness и coverage-гейт
+      # к нему не относится (тот же приём, что в
+      # G-Quest-Caddyfile-Contract.yml).
+      - name: Service manifest sync guard (docs/plans/2026-09-15-service-manifest.md)
+        run: |
+          python -m pytest scripts/ci/tests/test_service_manifest_sync.py \
+            -v \
+            -o addopts="" \
+            -p no:cacheprovider
+
+      # Библиотечные функции scripts/ci/gen_build_matrix.py (читатель
+      # манифеста) — покрыты отдельно от guard'а выше: guard сверяет
+      # манифест с workflow, эти тесты проверяют сам генератор
+      # (load_manifest/topo_layers/independent_services/chained_services/
+      # image_versions_map) на синтетических мини-манифестах. План §4.3.
+      - name: Build-manifest generator self-tests (docs/plans/2026-09-15-service-manifest.md)
+        run: |
+          python -m pytest scripts/ci/tests/test_gen_build_matrix.py \
+            -v \
+            -o addopts="" \
+            -p no:cacheprovider
+
+      # issue #2280 acceptance / docs/plans/2026-09-15-service-manifest.md
+      # §1.7: этот regression-guard уже существовал (393 строки, 10
+      # тестов на build-job), но НИ РАЗУ не был подключён к CI — ровно
+      # тот класс дефекта, который описывает ADR-0057 ("скрипт написан,
+      # но не в CI"). До Phase 1 манифеста EXPECTED_VISION_JOBS в этом
+      # файле был жёстко вшитым множеством и не содержал
+      # build-vision-hailo — тест был бы красным. Теперь
+      # EXPECTED_{MAIN,VISION}_JOBS выводятся из docker/build-manifest.yaml,
+      # так что этот шаг заодно повторно проверяет манифест ⇔ workflow
+      # (план §6 п.1) без дублирования логики guard'а выше.
+      - name: Workflow refactor acceptance guard (issue #2280)
+        run: |
+          python -m pytest tests/unit/test_workflow_refactor_acceptance.py \
+            -v \
+            -o addopts="" \
+            -p no:cacheprovider
 
       - name: Seam-without-consumer guard self-tests (issue #2118)
         run: |

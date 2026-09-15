@@ -1,0 +1,310 @@
+# Манифест сервисов — единственный источник истины для CI-сборки docker-образов.
+#
+# Phase 1 (docs/plans/2026-09-15-service-manifest.md, §5): этот файл
+# ТОЛЬКО фиксирует текущее (2026-09-15) состояние двух матричных workflow —
+# ".github/workflows/L-Build Vision Pi Services.yml" и
+# ".github/workflows/L-Build Main Pi Services.yml". Ни один workflow пока
+# не читает этот файл (см. scripts/ci/gen_build_matrix.py — реализация
+# читателя, тоже пока не подключена к CI). Guard-тест
+# scripts/ci/tests/test_service_manifest_sync.py сверяет манифест с
+# реальными workflow построчно — расхождение красит CI.
+#
+# ВАЖНО: манифест описывает ТО, ЧТО ЕСТЬ, а не то, как «должно быть».
+# Странности реального кода (несогласованное исключение сервисов из
+# tag_and_push/verify_in_registry, отсутствие ROS_DISTRO в теге
+# supercollider и т.д.) зафиксированы как факты с комментарием — Phase 1
+# их не чинит (см. план, §11 «Открытые вопросы»).
+#
+# Словарь полей — docs/plans/2026-09-15-service-manifest.md §2.2.
+
+version: 1
+
+defaults:
+  registry:
+    ghcr: ghcr.io/krikz/rob_box
+    local: localhost:5000/krikz/rob_box
+    local_registry_host: localhost:5000
+  base_registry: localhost:5000/krikz/rob_box_base
+  ros_distro: humble
+  platform: linux/arm64
+  apt_proxy: http://host.docker.internal:3142
+
+pis:
+  # ---------------------------------------------------------------------
+  # Vision Pi — 11 build-* job'ов в "L-Build Vision Pi Services.yml"
+  # ---------------------------------------------------------------------
+  vision:
+    services:
+      oak-d:
+        dockerfile: docker/vision/oak-d/Dockerfile
+        build_context: docker/vision
+        base:
+          family: depthai
+        tag:
+          ros_distro: true
+        image_versions: OAK_D_TAG
+
+      led-matrix:
+        dockerfile: docker/vision/led_matrix/Dockerfile
+        build_context: "."
+        base:
+          family: ros2-zenoh
+        submodule_sha: src/ros2leds
+        tag:
+          ros_distro: true
+        image_versions: LED_MATRIX_TAG
+
+      ceiling-camera:
+        dockerfile: docker/vision/ceiling-camera/Dockerfile
+        build_context: docker/vision
+        base:
+          family: ros2-zenoh
+        tag:
+          ros_distro: true
+        image_versions: CEILING_CAMERA_TAG
+
+      voice-base:
+        dockerfile: docker/vision/voice_base/Dockerfile
+        build_context: docker/vision/voice_base
+        base:
+          family: rtabmap
+        tag:
+          ros_distro: true
+        # НЕ в tag_and_push/verify_in_registry/.image-versions.dev сегодня.
+        # В коде workflow нет комментария, объясняющего это исключение
+        # (в отличие от supercollider, где причина явно написана) — причина
+        # не найдена (план §1.3, §11, открытый вопрос №1). Phase 1 фиксирует
+        # факт как есть, не чинит.
+        image_versions: false
+
+      voice-resources:
+        dockerfile: docker/vision/voice_resources/Dockerfile
+        build_context: docker/vision
+        base: null
+        tag:
+          ros_distro: true
+        image_versions: VOICE_RESOURCES_TAG
+        # ADR-0111 (2026-09-15): сервис целиком подлежит удалению из прод-стека.
+        # Манифест фиксирует ТЕКУЩЕЕ состояние; удаление узла — отдельный PR
+        # после того, как devops-карточка t_ca7fa165 выберет §2.4 или §2.5
+        # ADR-0111.
+
+      voice-assistant:
+        dockerfile: docker/vision/voice_assistant/Dockerfile
+        build_context: "."
+        base:
+          service: voice-base
+        depends_on: [voice-base]
+        source_hash:
+          arg: SOURCE_HASH
+          groups:
+            - paths:
+                - src/rob_box_voice/rob_box_voice
+                - src/rob_box_animations/rob_box_animations
+                - src/rob_box_core
+              extensions: [".py"]
+        tag:
+          ros_distro: true
+        image_versions: VOICE_ASSISTANT_TAG
+
+      telegram-bot:
+        dockerfile: docker/vision/telegram_bot/Dockerfile
+        build_context: "."
+        base:
+          family: ros2-zenoh
+        source_hash:
+          arg: SOURCE_HASH
+          groups:
+            - paths:
+                - src/rob_box_telegram/rob_box_telegram
+                - src/rob_box_core
+              extensions: [".py"]
+        tag:
+          ros_distro: true
+        image_versions: TELEGRAM_BOT_TAG
+
+      supercollider:
+        dockerfile: docker/vision/supercollider/Dockerfile
+        build_context: docker/vision/supercollider
+        base: null
+        tag:
+          # Единственный сервис с нестандартным форматом тега — тег НЕ
+          # включает ROS_DISTRO ("${SERVICE}-${docker_tag}", а не
+          # "${SERVICE}-${ROS_DISTRO}-${docker_tag}"). Задокументировано в
+          # коде: "tag naming is inconsistent".
+          ros_distro: false
+        # Задокументировано в коде: "supercollider excluded: tag naming is
+        # inconsistent" — единственный сервис из четырёх, где исключение из
+        # tag_and_push/verify_in_registry объяснено комментарием.
+        image_versions: false
+
+      supervisor:
+        dockerfile: docker/vision/supervisor/Dockerfile
+        build_context: "."
+        base:
+          service: voice-assistant
+        depends_on: [voice-assistant]
+        source_hash:
+          arg: SOURCE_HASH
+          groups:
+            - paths:
+                - src/rob_box_supervisor/rob_box_supervisor
+                - src/rob_box_core
+              extensions: [".py"]
+        tag:
+          ros_distro: true
+        # НЕ в tag_and_push/verify_in_registry/.image-versions.dev сегодня.
+        # Без комментария в коде, объясняющего исключение — причина не
+        # найдена (план §1.3, §11, открытый вопрос №1).
+        image_versions: false
+
+      quest:
+        dockerfile: docker/vision/quest/Dockerfile
+        build_context: "."
+        base:
+          family: ros2-zenoh
+        source_hash:
+          arg: SOURCE_HASH
+          groups:
+            - paths: [src/rob_box_quest/rob_box_quest]
+              extensions: [".py"]
+            - paths: [src/rob_box_quest/webxr_client]
+              extensions: [".ts", ".json", ".html"]
+            - paths: [src/rob_box_core]
+              extensions: [".py"]
+        tag:
+          ros_distro: true
+        # НЕ в tag_and_push/verify_in_registry/.image-versions.dev сегодня.
+        # Без комментария в коде, объясняющего исключение — причина не
+        # найдена (план §1.3, §11, открытый вопрос №1).
+        image_versions: false
+
+      vision-hailo:
+        dockerfile: docker/vision/vision-hailo/Dockerfile
+        build_context: "."
+        base:
+          family: ros2-zenoh
+        source_hash:
+          arg: SOURCE_HASH
+          groups:
+            - paths: [src/rob_box_perception/rob_box_perception]
+              extensions: [".py"]
+            - paths: [src/rob_box_perception_msgs]
+              extensions: [".msg", "CMakeLists.txt", "package.xml"]
+        build_args:
+          HAILO_INSTALL_BINDING: whl
+        # Императивный pre-build хук (копирование HailoRT wheel/lib из
+        # /opt/rob_box/vendor с fallback на /tmp, с exit 1 при отсутствии) —
+        # сознательно НЕ выражается декларативными полями манифеста (план
+        # §2.5). Маркер факта «у сервиса есть pre-build хук», сама логика
+        # хука — код, не данные.
+        pre_build: fetch_hailort_wheel
+        tag:
+          ros_distro: true
+        image_versions: VISION_HAILO_TAG
+
+  # ---------------------------------------------------------------------
+  # Main Pi — 8 build-* job'ов в "L-Build Main Pi Services.yml"
+  # ---------------------------------------------------------------------
+  main:
+    services:
+      robot-state-publisher:
+        dockerfile: docker/main/robot_state_publisher/Dockerfile
+        build_context: "."
+        base:
+          family: ros2-zenoh
+        source_hash:
+          # Историческое расхождение имени build-arg: этот сервис считает
+          # хеш в URDF_FILES_HASH, а не в SOURCE_HASH, как остальные
+          # (план §2.4). Манифест не унифицирует имя — это было бы
+          # поведенческим изменением Dockerfile'а, вне рамок Phase 1.
+          arg: URDF_FILES_HASH
+          groups:
+            - paths: [src/rob_box_description]
+              extensions: [".xacro", ".urdf", "package.xml", "CMakeLists.txt"]
+        tag:
+          ros_distro: true
+        image_versions: ROBOT_STATE_PUBLISHER_TAG
+
+      rtabmap:
+        dockerfile: docker/main/rtabmap/Dockerfile
+        build_context: docker/main/rtabmap
+        base:
+          family: rtabmap
+        tag:
+          ros_distro: true
+        image_versions: RTABMAP_TAG
+
+      twist-mux:
+        dockerfile: docker/main/twist_mux/Dockerfile
+        build_context: docker/main/twist_mux
+        base:
+          family: ros2-zenoh
+        tag:
+          ros_distro: true
+        image_versions: TWIST_MUX_TAG
+
+      teleop:
+        dockerfile: docker/main/teleop/Dockerfile
+        build_context: "."
+        base:
+          family: ros2-zenoh
+        tag:
+          ros_distro: true
+        # Задокументировано в коде: "teleop excluded: still uses IMAGE_TAG
+        # in docker-compose" — единственное объяснённое исключение на
+        # Main Pi.
+        image_versions: false
+
+      ros2-control:
+        dockerfile: docker/main/ros2_control/Dockerfile
+        build_context: "."
+        base:
+          # Не ros2-zenoh, несмотря на имя сервиса — так в реальном коде
+          # ("L-Build Main Pi Services.yml", build-ros2-control).
+          family: rtabmap
+        submodule_sha: src/vesc_nexus
+        tag:
+          ros_distro: true
+        image_versions: ROS2_CONTROL_TAG
+
+      nav2:
+        dockerfile: docker/main/nav2/Dockerfile
+        build_context: docker/main/nav2
+        base:
+          family: ros2-zenoh
+        tag:
+          ros_distro: true
+        image_versions: NAV2_TAG
+
+      lslidar:
+        dockerfile: docker/main/lslidar/Dockerfile
+        build_context: docker/main
+        base:
+          family: pcl
+        tag:
+          ros_distro: true
+        image_versions: LSLIDAR_TAG
+
+      perception:
+        dockerfile: docker/main/perception/Dockerfile
+        build_context: "."
+        base:
+          family: ros2-zenoh
+        tag:
+          ros_distro: true
+        image_versions: PERCEPTION_TAG
+
+# Итого: 19 сервисов (11 Vision + 8 Main) — ровно те, у которых сегодня
+# есть build-* job в двух матричных workflow. "L-Build Single Service.yml"
+# и base-образы (ros2-zenoh/depthai/pcl/rtabmap как базовые образы,
+# zenoh-router) сознательно вне области Phase 1-3 этого манифеста (план
+# §11, открытый вопрос №2).
+#
+# Известные phantom-поля в docker/{vision,main}/.image-versions.* — НЕ
+# принадлежат ни одному сервису этого манифеста:
+#   - RTABMAP_SYNC_TAG (vision)     — план §1.3, не описан ни в одном ADR.
+#   - MICRO_ROS_AGENT_TAG (main)    — уже задокументирован в ADR-0094 §1.4.
+# Guard-тест (scripts/ci/tests/test_service_manifest_sync.py) обнаруживает
+# оба автоматически: они есть в sed-списке workflow, но ни у одного
+# сервиса манифеста image_versions не равен этим именам.
