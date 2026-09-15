@@ -2217,6 +2217,17 @@ class DialogueNode(Node):
         state = self._dsm.current_state
         was_idle = state == DialogueStateKind.IDLE
         backlog_pending = self._compute_backlog_pending()
+        # Lazy init so legacy test harness (``object.__new__`` without
+        # ``__init__``) can drive ``_on_stt`` without owning a pipeline
+        # instance. Production code gets the pipeline at __init__ via
+        # ``self._stt_admission = DefaultSttAdmission(...)``.
+        admission = getattr(self, "_stt_admission", None)
+        if admission is None:
+            admission = DefaultSttAdmission(
+                barge_in_policy=getattr(self, "_barge_in_policy", "replace"),
+                logger=self.get_logger(),
+            )
+            self._stt_admission = admission
         ctx = SttContext(
             raw=raw_text,
             text=text,
