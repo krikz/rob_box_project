@@ -75,6 +75,14 @@
 #   4) auto-fix: при отставании локального develop (ветка develop + чистое
 #      дерево) сначала `git merge --ff-only origin/develop`, затем install.sh —
 #      чтобы install.sh раскладывал СВЕЖИЕ скрипты, а не устаревшие.
+#   5) auto-fix fallback (ретро 15.09 t_40611e65): если FF-merge невозможен
+#      (develop+dirty worktree → try_ff_update rc=1) И host drift есть — НЕ
+#      раскладываем stale скрипты через install.sh из локального дерева, а
+#      используем wt_origin_autofix: временный worktree на origin/develop
+#      + REPO_DIR=<wt> bash <wt>/scripts/agent_flow/install.sh. Эта стратегия
+#      уже работала для BRANCH_ACTIVE (current branch != develop), теперь
+#      применена и для DIRTY_DEVELOP (current branch == develop + dirty).
+#      Без фикса FIX FAILED → create_drift_card каждые 30 мин.
 #
 # Поведение:
 #   - BRANCH_ACTIVE (current branch != develop)
@@ -376,14 +384,22 @@ else
     log "WARN: git fetch origin failed (timeout ${FETCH_TIMEOUT}s) — falling back to local-tree comparison; origin/develop drift NOT checked"
 fi
 
-# branch_active_autofix — автофикс при BRANCH_ACTIVE через временный worktree
-# на origin/develop (ретро 14.08 t_ea771b06). install.sh из worktree раскладывает
-# host-копии ИЗ origin/develop, а не из текущей z-ветки. После — md5-сверка.
-# Возврат: 0 = вылечено (или worktree недоступен — карточка всё равно создана
-# вызывающим), 1 = не вылечено.
-branch_active_autofix() {
-    local wt="${DRIFT_WT_PREFIX}$$"
-    log "BRANCH_ACTIVE auto-fix: temp worktree $wt at $REF_BRANCH"
+# wt_origin_autofix — автофикс через временный worktree на origin/develop.
+# install.sh из worktree раскладывает host-копии ИЗ origin/develop, а не из
+# локального дерева (устаревшего или веточного). Используется в двух кейсах
+# (DRY-обёртка над branch_active_autofix + dirty-develop fallback):
+#   1) BRANCH_ACTIVE (current branch != develop): воркер в z-ветке, нельзя
+#      раскладывать веточный код на хост (ретро 14.08 t_ea771b06).
+#   2) DIRTY_DEVELOP (current branch = develop, дерево грязное): FF-merge
+#      невозможен, а install.sh из устаревшего локального дерева раскладывает
+#      stale скрипты → FIX FAILED каждые 30 мин (ретро 15.09 t_40611e65).
+# После — md5-сверка; карточка создаётся ТОЛЬКО если и этот путь не помог.
+# Возврат: 0 = вылечено, 1 = не вылечено (карточка уже создана внутри).
+# Параметр $1 — логический префикс для маркера ("BRANCH_ACTIVE" / "DIRTY_DEVELOP").
+wt_origin_autofix() {
+    local ctx="${1:-WT_ORIGIN}"
+    local wt="${DRIFT_WT_PREFIX}$$${ctx:+-$ctx}"
+    log "$ctx auto-fix: temp worktree $wt at $REF_BRANCH"
     if ! git -C "$REPO_DIR" worktree add --detach "$wt" "$REF_BRANCH" >>"$ALERT_LOG" 2>&1; then
         log "FIX FAILED — git worktree add $wt $REF_BRANCH failed"
         create_drift_card
@@ -401,7 +417,7 @@ branch_active_autofix() {
         log "Auto-fix (worktree) OK. Re-checking drift..."
         compute_drift
         if [ "$DRIFT" = "0" ]; then
-            log "FIXED — drift resolved via origin/develop worktree"
+            log "FIXED — drift resolved via origin/develop worktree ($ctx)"
             git -C "$REPO_DIR" worktree remove --force "$wt" >>"$ALERT_LOG" 2>&1 || rm -rf "$wt"
             return 0
         fi
@@ -414,6 +430,9 @@ branch_active_autofix() {
     git -C "$REPO_DIR" worktree remove --force "$wt" >>"$ALERT_LOG" 2>&1 || rm -rf "$wt"
     return 1
 }
+
+# Backward-compat alias (некоторые downstream-скрипты могли полагаться на имя).
+branch_active_autofix() { wt_origin_autofix "BRANCH_ACTIVE"; }
 
 if [ -n "$CURRENT_BRANCH" ] && [ "$CURRENT_BRANCH" != "$LOCAL_BRANCH" ]; then
     echo "BRANCH_ACTIVE: $CURRENT_BRANCH"
@@ -444,7 +463,10 @@ fi
 
 # try_ff_update — подтянуть локальный develop к origin/develop, если безопасно:
 # ветка develop, чистое дерево, merge только fast-forward.
-# Возврат: 0 = healed, 1 = skip (ветка/дерево не позволяют), 2 = ff-merge failed.
+# Возврат: 0 = healed, 1 = skip (ветка/дерево не позволяют — можно fallback на
+#          временный worktree origin/develop, см. wt_origin_autofix),
+#          2 = ff-merge failed (ветка diverged — НЕЛЬЗЯ fallback, нужна ручная
+#          разборка: ручной pull или merge).
 try_ff_update() {
     [ "$DESYNC" = "1" ] || return 0
     local branch dirty new_local
@@ -455,7 +477,14 @@ try_ff_update() {
     fi
     dirty="$(git -C "$REPO_DIR" status --porcelain 2>/dev/null | head -1)"
     if [ -n "$dirty" ]; then
-        log "LOCAL_DESYNC: auto-update skipped (working tree dirty: $dirty)"
+        # Ретро 15.09 t_40611e65: при грязном worktree на develop FF-merge
+        # невозможен. Возвращаем 1 (skip, можно fallback), а не 2 — ручной
+        # разборки не требуется, автофикс через wt_origin_autofix (временный
+        # worktree на origin/develop) решает задачу без потери локальных
+        # правок. Старая логика падала тут в "WARN: continuing auto-fix with
+        # local tree as-is" — и install.sh раскладывал stale скрипты на хост,
+        # FIX FAILED → create_drift_card каждые 30 мин.
+        log "LOCAL_DESYNC: auto-update skipped (working tree dirty: $dirty) — caller may fallback to wt_origin_autofix"
         return 1
     fi
     if git -C "$REPO_DIR" merge --ff-only "$REF_BRANCH" >>"$ALERT_LOG" 2>&1; then
@@ -543,9 +572,40 @@ fi
 # === АВТОФИКС ===
 # Сначала лечим локальное дерево (чтобы install.sh раскладывал свежие скрипты),
 # если это ещё не сделано выше.
+# Ретро 15.09 t_40611e65: если try_ff_update вернул 1 (skip — грязный
+# develop worktree), FF-merge невозможен, но это НЕ повод раскладывать
+# stale скрипты на хост. Fallback: wt_origin_autofix — временный worktree
+# на origin/develop + REPO_DIR=<wt> bash <wt>/scripts/agent_flow/install.sh.
+# Эта стратегия уже работает для BRANCH_ACTIVE (current branch != develop),
+# теперь применена и для DIRTY_DEVELOP (current branch == develop + dirty).
 if [ "$DESYNC" = "1" ]; then
-    if ! try_ff_update; then
-        log "WARN: continuing auto-fix with local tree as-is (may deploy stale scripts)"
+    FF_RC=0
+    try_ff_update || FF_RC=$?
+    if [ "$FF_RC" = "1" ]; then
+        # Skip (ветка не develop, или develop+dirty) — fallback на wt_origin_autofix.
+        # Это безопасно: install.sh раскладывает из origin/develop, а не из
+        # локального дерева. ВАЖНО: до try_ff_update DESYNC=1, после — он может
+        # стать 0 (если успели залечить), но wt_origin_autofix всё равно нужен
+        # если DRIFT_FILES не пуст (install.sh из локального дерева в install-секции
+        # ниже — может опять stale, если develop не залечен).
+        # Решение: идём в wt_origin_autofix; если он тоже не помог — карточка.
+        # DRY-RUN не запускает wt_origin_autofix (как и весь auto-fix).
+        if [ "$DRY_RUN" = "1" ]; then
+            log "DRY-RUN: LOCAL_DESYNC+dirty/branch_skip, auto-fix skipped"
+            exit 1
+        fi
+        if [ -n "${DRIFT_FILES[*]:-}" ] && [ "${#DRIFT_FILES[@]}" -gt 0 ]; then
+            if wt_origin_autofix "DIRTY_DEVELOP"; then
+                exit 0
+            fi
+            # wt_origin_autofix уже создал карточку при падении.
+            exit 1
+        fi
+    elif [ "$FF_RC" = "2" ]; then
+        # Diverged — нельзя автоматически вылечить без merge/rebase.
+        log "FIX FAILED — LOCAL_DESYNC diverged (try_ff_update rc=2); manual intervention required"
+        create_drift_card
+        exit 2
     fi
 fi
 
