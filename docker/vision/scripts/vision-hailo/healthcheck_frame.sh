@@ -38,18 +38,23 @@ fi
 # publisher создаётся на старте даже у немой ноды (рекурсивный spin_once
 # блокировал executor). Проверяем ФАКТ доставки: --once выходит, как
 # только приходит первое событие (stub_period_sec=2.0 → за ~0.5-2.5s).
-if ! command -v ros2 > /dev/null 2>&1; then
-    # Если ros2 CLI недоступен (например, на минимальном образе) —
-    # fallback на pgrep-only чтобы не сломать CI smoke-тесты.
-    echo "[healthcheck_frame] WARN: ros2 CLI не найден, fallback на pgrep-only" >&2
-    exit 0
-fi
 
 # shellcheck disable=SC1091
 source /opt/ros/${ROS_DISTRO:-humble}/setup.bash 2>/dev/null || true
 
 # shellcheck disable=SC1091
 source /ws/install/setup.bash 2>/dev/null || true
+
+# source ДО проверки ros2: иначе command -v ros2 всегда fail на образе
+# без ros2 в базовом PATH → вечный fallback на pgrep-only (тот самый
+# «blind healthcheck», который issue #2602 запрещает).
+if ! command -v ros2 > /dev/null 2>&1; then
+    # Если ros2 CLI недоступен даже после source (минимальный образ без
+    # /opt/ros и /ws/install) — fallback на pgrep-only, чтобы не сломать
+    # CI smoke-тесты.
+    echo "[healthcheck_frame] WARN: ros2 CLI не найден, fallback на pgrep-only" >&2
+    exit 0
+fi
 
 # timeout 8 < docker-compose healthcheck timeout: 10s. Нода публикует
 # каждые stub_period_sec (2.0s), поэтому первого события ждём с запасом.
