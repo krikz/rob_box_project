@@ -59,6 +59,7 @@ from rob_box_perception.gaze import (
     make_source,
 )
 from rob_box_perception.vision_hailo_loader import (
+    HEFLoader,
     VISION_EVENT_FIELDS,
     filter_by_confidence,
     make_loader,
@@ -116,18 +117,28 @@ class VisionHailoNode(Node):
             honest (ADR-0104 acceptance #5); в проде оставлять False.
     """
 
+    #: Имя ROS-ноды. Переопределяется сабклассом ``vision_face_node``
+    #: (ADR-0089 Phase 2, issue #2599) без дублирования __init__.
+    NODE_NAME: str = 'vision_hailo'
+
+    #: Дефолтный confidence threshold (переопределяется сабклассом).
+    DEFAULT_CONFIDENCE_THRESHOLD: float = 0.5
+
     def __init__(self) -> None:
-        super().__init__('vision_hailo')
+        super().__init__(self.NODE_NAME)
 
         # ============ Параметры ============
         self.declare_parameter('hailo_enabled', False)
         self.declare_parameter('hef_path', '')
         self.declare_parameter('stub_period_sec', 2.0)
-        self.declare_parameter('confidence_threshold', DEFAULT_CONFIDENCE_THRESHOLD)
+        self.declare_parameter('confidence_threshold', self.DEFAULT_CONFIDENCE_THRESHOLD)
         self.declare_parameter('gaze_source', 'oak_d')
         self.declare_parameter('output_topic', '/vision/hailo/events')
         self.declare_parameter('first_frame_timeout_sec', DEFAULT_FIRST_FRAME_TIMEOUT_SEC)
         self.declare_parameter('publish_when_no_input', True)
+        # NMS IoU. Базовый YOLOv8n-нода не меняет дефолт; сабкласс
+        # vision_face_node прокидывает его в make_face_loader.
+        self.declare_parameter('nms_iou_threshold', 0.45)
 
         self.hailo_enabled = bool(self.get_parameter('hailo_enabled').value)
         hef_path_param = str(self.get_parameter('hef_path').value).strip()
@@ -135,6 +146,9 @@ class VisionHailoNode(Node):
         self.stub_period_sec = float(self.get_parameter('stub_period_sec').value)
         self.confidence_threshold = float(
             self.get_parameter('confidence_threshold').value
+        )
+        self.nms_iou_threshold = float(
+            self.get_parameter('nms_iou_threshold').value
         )
         self.gaze_source_name = str(self.get_parameter('gaze_source').value)
         self.output_topic = str(self.get_parameter('output_topic').value)
@@ -161,11 +175,9 @@ class VisionHailoNode(Node):
 
         # ============ HEF loader ============
         # Phase 1.5: stub vs real через make_loader (не зависит от gaze).
-        self._loader = make_loader(
-            hailo_enabled=self.hailo_enabled,
-            hef_path=self.hef_path,
-            stub_period_sec=self.stub_period_sec,
-        )
+        # _make_loader() — точка расширения: сабкласс vision_face_node
+        # переопределяет её под свой RetinaFaceLoader (ADR-0089 Phase 2).
+        self._loader = self._make_loader()
 
         # ============ Шов «Взгляд» (ADR-0104) ============
         # Это ЕДИНСТВЕННОЕ место, где нода знает про ROS-топики и cv2-decode.
@@ -256,6 +268,23 @@ class VisionHailoNode(Node):
             f'output_topic={self.output_topic}, '
             f'confidence_threshold={self.confidence_threshold}, '
             f'publish_when_no_input={self.publish_when_no_input})'
+        )
+
+    # ----------------------------------------------------------------
+    # Extension point
+    # ----------------------------------------------------------------
+
+    def _make_loader(self) -> HEFLoader:
+        """Создать HEF loader по параметрам ноды (точка расширения).
+
+        Сабкласс ``vision_face_node`` переопределяет под ``make_face_loader``
+        (ADR-0089 Phase 2, issue #2599).
+        """
+        return make_loader(
+            hailo_enabled=self.hailo_enabled,
+            hef_path=self.hef_path,
+            stub_period_sec=self.stub_period_sec,
+            nms_iou_threshold=self.nms_iou_threshold,
         )
 
     # ----------------------------------------------------------------

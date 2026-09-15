@@ -772,6 +772,7 @@ def make_loader(
     hailo_enabled: bool,
     hef_path: Optional[str],
     stub_period_sec: float,
+    nms_iou_threshold: float = 0.45,
 ) -> HEFLoader:
     """Вернуть правильный loader по launch-параметрам.
 
@@ -779,9 +780,13 @@ def make_loader(
         hailo_enabled: launch-параметр, разрешает использовать HailoRT.
         hef_path: путь к .hef файлу (None или пустая строка = stub).
         stub_period_sec: период публикации stub-событий.
+        nms_iou_threshold: IoU порог NMS (real-mode, YOLOv8n).
     """
     if hailo_enabled and hef_path:
-        return RealHEFLoader(hef_path=hef_path)
+        return RealHEFLoader(
+            hef_path=hef_path,
+            nms_iou_threshold=nms_iou_threshold,
+        )
     return StubHEFLoader(period_sec=stub_period_sec)
 
 

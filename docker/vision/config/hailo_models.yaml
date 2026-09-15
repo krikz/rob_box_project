@@ -61,6 +61,37 @@ vision_hailo_node:
   # Публикация VisionEvent.
   output_topic: /vision/hailo/events
 
+# Лицевая нода (ADR-0089 Phase 2, issue #2599 PR-A). Отдельный процесс
+# с retinaface_mobilenet_v1.hef. Публикует VisionEvent event_type="face"
+# на тот же output_topic (embedding_id/display_name пустые — это PR-B).
+# См. docker/vision/scripts/vision-hailo/start_vision_face.sh.
+vision_face_node:
+  # Real inference: true только когда retinaface HEF загружен.
+  # Default false — stub-режим (события помечены event_type="stub").
+  hailo_enabled: false
+
+  # Путь к retinaface_mobilenet_v1.hef. Игнорируется если hailo_enabled=false.
+  hef_path: ""
+
+  # Период stub-событий (секунды). В real-режиме не используется.
+  stub_period_sec: 2.0
+
+  # Confidence threshold для face-score (RetinaFace softmax).
+  confidence_threshold: 0.6
+
+  # IoU порог NMS (single-class).
+  nms_iou_threshold: 0.45
+
+  # Источник кадра — тот же шов «Взгляд» (ADR-0104), что у vision_hailo_node.
+  gaze_source: oak_d
+  input_topic: /camera/camera/color/image_raw
+
+  # Сколько секунд ждать первый кадр (capability-honest).
+  first_frame_timeout_sec: 10.0
+
+  # Тот же топик, что у person-детекции (issue #2599 acceptance).
+  output_topic: /vision/hailo/events
+
 # Модели (Phase 1.5+). Phase 1 PoC оставляет список пустым.
 models:
   # YOLOv8n — person detection. 3.5 TOPS, 100+ FPS.

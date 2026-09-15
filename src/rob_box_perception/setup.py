@@ -44,6 +44,10 @@ setup(
             # HEF loading is gated by the hailo_enabled launch parameter.
             'vision_hailo = '
             'rob_box_perception.vision_hailo_node:main',
+            # ADR-0089 Phase 2 (issue #2599 PR-A): face detection node
+            # (RetinaFace), отдельный процесс на том же контракте.
+            'vision_face = '
+            'rob_box_perception.vision_face_node:main',
         ],
     },
 )
