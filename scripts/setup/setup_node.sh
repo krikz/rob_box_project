@@ -586,6 +586,83 @@ SERVICEEOF
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
+# ZRAM SWAP (issue #2621)
+# ═══════════════════════════════════════════════════════════════════════════
+# Vision Pi — 8 ГБ RAM и 13 контейнеров, свопа по умолчанию нет вообще.
+# Когда MemAvailable доходит до нуля, ядру некуда вытеснять анонимные
+# страницы: узел перестаёт отвечать по ssh, и единственный выход —
+# перезагрузка, которая стирает улики. Замер 15.09.2026: MemAvailable
+# падал 1206 → 416 МБ за 27 минут, page cache вытеснялся 1230 → 513 МБ.
+#
+# zram — сжатый своп в самой RAM (zstd, ~3:1). Он НЕ лечит причину
+# (см. #2609 — 1.6 ГБ мёртвого CUDA-torch в voice-assistant), но даёт
+# окно, в котором узел тормозит, а не умирает, и его можно
+# диагностировать живьём.
+#
+# PERCENT=25 → ~2 ГБ ёмкости свопа, реально занимающих ~700 МБ RAM
+# при типичном сжатии. Сознательно консервативно: сам zram тоже живёт
+# в памяти, и на узле, который уже у края, забирать больше опасно.
+#
+# swappiness=100 — для zram намеренно высокий (дефолт 60): вытеснение
+# идёт в RAM, а не на SD-карту, поэтому оно дёшево и предпочтительнее
+# выбрасывания page cache. page-cluster=0 отключает readahead свопа:
+# zram распаковывает постранично, батчинг только тратит такты.
+
+setup_zram_swap() {
+    log_step "Настройка zram-свопа (issue #2621)"
+
+    local sysctl_file="/etc/sysctl.d/99-robbox-zram.conf"
+
+    # Идемпотентность: zram-tools уже настроен — только досогласуем sysctl.
+    if systemctl is-enabled zramswap.service &> /dev/null; then
+        log_success "zram-tools уже включён"
+    else
+        log_info "Установка zram-tools..."
+        if ! sudo apt install -y zram-tools; then
+            log_error "Не удалось установить zram-tools — узел останется без свопа"
+            log_warning "Проверьте вручную: sudo apt install zram-tools"
+            return 0   # не валим всю установку узла из-за свопа
+        fi
+    fi
+
+    log_info "Конфигурация /etc/default/zramswap (zstd, 25% RAM)..."
+    sudo tee /etc/default/zramswap > /dev/null << 'ZRAMEOF'
+# Managed by rob_box setup_node.sh (issue #2621) — правки перетираются при
+# повторном прогоне скрипта. Менять здесь: scripts/setup/setup_node.sh
+ALGO=zstd
+PERCENT=25
+PRIORITY=100
+ZRAMEOF
+
+    log_info "Конфигурация sysctl ($sysctl_file)..."
+    sudo tee "$sysctl_file" > /dev/null << 'SYSCTLEOF'
+# Managed by rob_box setup_node.sh (issue #2621)
+# Своп живёт в RAM (zram), а не на SD-карте — вытеснять дёшево.
+vm.swappiness = 100
+# zram распаковывает постранично: readahead свопа бесполезен.
+vm.page-cluster = 0
+SYSCTLEOF
+
+    sudo sysctl -p "$sysctl_file" > /dev/null 2>&1 || log_warning "sysctl -p вернул ошибку"
+
+    log_info "Перезапуск zramswap..."
+    sudo systemctl enable zramswap.service &> /dev/null || true
+    sudo systemctl restart zramswap.service || log_warning "Не удалось перезапустить zramswap"
+
+    # Проверка результата — без неё молчаливый отказ выглядит как успех.
+    if grep -q zram /proc/swaps 2>/dev/null; then
+        local zram_size
+        zram_size=$(awk '/zram/ {printf "%.1f ГБ", $3/1048576}' /proc/swaps | head -1)
+        log_success "zram-своп активен: $zram_size"
+        log_info "Проверка: cat /proc/swaps; zramctl"
+    else
+        log_error "zram-своп НЕ активен — /proc/swaps пуст"
+        log_warning "Узел остался без свопа, см. issue #2621"
+        log_warning "Диагностика: systemctl status zramswap; journalctl -u zramswap"
+    fi
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
 # СПЕЦИФИЧНАЯ НАСТРОЙКА ДЛЯ РАЗНЫХ ТИПОВ УЗЛОВ
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -748,6 +825,11 @@ setup_vision_node() {
 
     # Hailo AI HAT (PCIe)
     setup_hailo_ai_hat
+
+    # zram-своп: Vision Pi держит 13 контейнеров на 8 ГБ без свопа (#2621).
+    # Функция общая — её можно звать и из setup_main_node, если Main Pi
+    # упрётся в ту же стену.
+    setup_zram_swap
 }
 
 setup_main_node() {
