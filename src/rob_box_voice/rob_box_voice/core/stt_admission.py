@@ -606,9 +606,10 @@ class StripWakeWordStep:
     name: str = "strip_wake_word"
 
     def apply(self, ctx: SttContext, host: SttAdmissionHost) -> SttOutcome:
-        if ctx.tg_chat_id is not None:
-            # TG path doesn't strip wake words.
-            return PASS
+        # Issue #2628 fixture evidence — TG path also strips the wake
+        # word (e.g. ``[TG:42] робот привет`` → ``"привет"``). Legacy
+        # ``_on_stt`` ran ``clean = strip_wake_word(text)`` unconditionally
+        # after parse_tg_prefix; the TG-bypass was a refactor regression.
         clean = strip_wake_word(ctx.text, list(ctx.wake_words))
         if not clean:
             # Bare wake-word OR no input: drop unless backlog is
@@ -754,7 +755,10 @@ class BargeInClassifyStep:
         # REPLACE-style: cancel the in-flight turn (stop_tts depends
         # on the verdict — only REPLACE stops TTS; PENDING_LLM with
         # no queue should not cut an already-playing segment).
-        host.cancel_inflight(stop_tts=(verdict == "replace"))
+        # ``quick_decide_verdict`` returns the uppercase string form
+        # (``verdict.value`` — see :class:`QuickVerdict`) — case-fold
+        # here so the comparison is unambiguous.
+        host.cancel_inflight(stop_tts=(verdict.lower() == "replace"))
         return PASS
 
 

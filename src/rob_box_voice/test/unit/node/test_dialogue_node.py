@@ -566,26 +566,50 @@ class TestOnStt:
         # 1. Сканируем increment-сайты (производственный код, не тесты).
         import re
         from pathlib import Path
-        dialogue_node_path = (
-            Path(__file__).resolve().parents[3]
-            / "rob_box_voice"
-            / "dialogue_node.py"
+        # Issue #2628 / #2628 refactor — STT admission counters
+        # (no_wake_word, empty_after_strip, stt_rejected, silence_command,
+        # command_intent, new_session, quick_decide_ignore) now live in
+        # ``core/stt_admission.py`` and are bumped by a single
+        # ``ctx.skip_counter[key] = ctx.skip_counter.get(key, 0) + 1``
+        # in :meth:`SttAdmission.evaluate`. The keys themselves come
+        # from ``drop("reason")`` / ``handled("reason")`` literal
+        # arguments of each step. To keep ``test_counter_keys_match_constant``
+        # meaningful as a SSoT guard for #1389, scan BOTH files but
+        # collect from the literal-sources: ``drop(<name>, "k")``,
+        # ``handled(<name>, "k")`` and direct ``self._llm_skipped_counter[\"k\"] += 1`` /
+        # ``skip_counter[\"k\"] += 1``.
+        package_root = Path(__file__).resolve().parents[3] / "rob_box_voice"
+        scan_targets = (
+            package_root / "dialogue_node.py",
+            package_root / "core" / "stt_admission.py",
         )
-        # dialogue_node.py is UTF-8 and full of Cyrillic comments; the
-        # default encoding is cp1252 on Windows.
-        src = dialogue_node_path.read_text(encoding="utf-8")
-        # Только строки ``+= 1`` — не комментарии, не fixture-литералы.
         increment_keys: set[str] = set()
-        for line in src.splitlines():
-            stripped = line.lstrip()
-            if stripped.startswith("#"):
-                continue
-            m = re.search(
-                r'_llm_skipped_counter\["([^"]+)"\]\s*\+=\s*1', line
-            )
-            if m:
-                increment_keys.add(m.group(1))
-        # Sanity: должны быть все 7 production-ключей из _on_stt/etc.
+        patterns = (
+            # Legacy direct increment (still present in dialogue_node.py).
+            re.compile(r'_llm_skipped_counter\["([^"]+)"\]\s*\+=\s*1'),
+            re.compile(r'_llm_skipped_counter\["([^"]+)"\]\s*=\s*[^+]*\+\s*1'),
+            # New pipeline: explicit literal increments (none today, but
+            # be defensive in case a step ever writes the counter directly).
+            re.compile(r'skip_counter\["([^"]+)"\]\s*\+=\s*1'),
+            re.compile(r'skip_counter\["([^"]+)"\]\s*=\s*[^+]*\+\s*1'),
+            # The real source of keys under #2628: ``drop("reason")`` /
+            # ``handled("reason")`` literal in stt_admission.py. ``self.name``
+            # is the step name, the second string is the increment key.
+            re.compile(r'\b(?:drop|handled)\s*\(\s*[A-Za-z_][\w.]*\s*,\s*"([^"]+)"\s*\)'),
+        )
+        for path in scan_targets:
+            src = path.read_text(encoding="utf-8")
+            # Только строки в коде — не комментарии, не fixture-литералы.
+            for line in src.splitlines():
+                stripped = line.lstrip()
+                if stripped.startswith("#"):
+                    continue
+                for pat in patterns:
+                    m = pat.search(line)
+                    if m:
+                        increment_keys.add(m.group(1))
+                        break
+        # Sanity: должны быть все ключи из pipeline + legacy inline.
         assert "no_wake_word" in increment_keys
         assert "stt_rejected" in increment_keys
         assert "e2e_busy" not in increment_keys, (
