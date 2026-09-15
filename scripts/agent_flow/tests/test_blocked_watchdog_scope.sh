@@ -285,13 +285,105 @@ con.close()
     fi
 }
 
+# ============================================================================
+# T5: contract — stdout пуст, per-task breakdown (t_demo|...|DRY-RUN) в stderr.
+#     Regression-guard для бага "stdout vs stderr mismatch" (PR #2545 /
+#     kanban t_44092aba — тот же pattern что был в stale-blocked-watchdog.sh:200,
+#     PR #2540, issue #2482). Docstring line 64 обещает
+#     "Stderr: structured summary (for cron delivery)", и `__RECORD__` sentinels
+#     должны идти туда же, не в stdout.
+# ============================================================================
+test_record_to_stderr_not_stdout() {
+    local now
+    now="$(date -u +%s)"
+    local five_hours_ago=$(( now - 5 * 3600 ))
+
+    python3 - <<PYEOF
+import sqlite3
+con = sqlite3.connect('$WORK/kanban/test.db')
+con.execute("""
+INSERT INTO tasks (id, title, body, assignee, status, started_at, max_runtime_seconds, created_at)
+VALUES ('t_scope_e', 'mis-scope contract', 'ADR-0035 contract test', 'backend', 'running', $five_hours_ago, 1800, $five_hours_ago)
+""")
+con.commit()
+con.close()
+PYEOF
+
+    # DRY-RUN=false чтобы скрипт emit comment и сработал __RECORD__ path.
+    # Capture stdout/stderr separately (НЕ >/dev/null 2>&1 — нам нужны оба).
+    BLOCKED_WATCHDOG_SCOPE_DRY_RUN=false \
+        bash "$WATCHDOG_SH" >"$WORK/stdout.txt" 2>"$WORK/stderr.txt"
+
+    # 1. stdout должен быть пуст (никаких __RECORD__ sentinels там).
+    local stdout_bytes
+    stdout_bytes="$(wc -c <"$WORK/stdout.txt" | tr -d ' ')"
+    if [ "$stdout_bytes" -ne 0 ]; then
+        echo "  expected stdout empty (per docstring), got $stdout_bytes bytes:"
+        cat "$WORK/stdout.txt" | sed 's/^/    /'
+        return 1
+    fi
+
+    # 2. stderr должен содержать per-task breakdown с t_scope_e.
+    if ! grep -q "^  t_scope_e|" "$WORK/stderr.txt"; then
+        echo "  expected '  t_scope_e|...' line in stderr, got:"
+        cat "$WORK/stderr.txt" | sed 's/^/    /'
+        return 1
+    fi
+
+    # 3. sanity: top-level summary тоже в stderr (НЕ сломан).
+    if ! grep -q "blocked-watchdog-scope: .*done scanned=" "$WORK/stderr.txt"; then
+        echo "  expected top-level summary in stderr, got:"
+        cat "$WORK/stderr.txt" | sed 's/^/    /'
+        return 1
+    fi
+    return 0
+}
+
+# ============================================================================
+# T6: тот же контракт, но в DRY-RUN mode — sentinels тоже должны быть в stderr.
+# ============================================================================
+test_record_to_stderr_dry_run() {
+    local now
+    now="$(date -u +%s)"
+    local five_hours_ago=$(( now - 5 * 3600 ))
+
+    python3 - <<PYEOF
+import sqlite3
+con = sqlite3.connect('$WORK/kanban/test.db')
+con.execute("""
+INSERT INTO tasks (id, title, body, assignee, status, started_at, max_runtime_seconds, created_at)
+VALUES ('t_scope_f', 'mis-scope dryrun', 'ADR-0036 dryrun test', 'backend', 'running', $five_hours_ago, 1800, $five_hours_ago)
+""")
+con.commit()
+con.close()
+PYEOF
+
+    BLOCKED_WATCHDOG_SCOPE_DRY_RUN=true \
+        bash "$WATCHDOG_SH" >"$WORK/stdout.txt" 2>"$WORK/stderr.txt"
+
+    local stdout_bytes
+    stdout_bytes="$(wc -c <"$WORK/stdout.txt" | tr -d ' ')"
+    if [ "$stdout_bytes" -ne 0 ]; then
+        echo "  expected stdout empty in DRY-RUN too, got $stdout_bytes bytes:"
+        cat "$WORK/stdout.txt" | sed 's/^/    /'
+        return 1
+    fi
+
+    if ! grep -q "^  t_scope_f|" "$WORK/stderr.txt"; then
+        echo "  expected '  t_scope_f|...' line in stderr (DRY-RUN), got:"
+        cat "$WORK/stderr.txt" | sed 's/^/    /'
+        return 1
+    fi
+    return 0
+}
+
 # --- registry -------------------------------------------------------------
 fail() { echo "FAIL: $*"; exit 1; }
 pass() { echo "ok: $blocked-watchdog-scope: все кейсы прошли"; exit 0; }
 
 # Запускаем каждый тест в изоляции (отдельный WORK).
 FAILED=0
-for tn in test_overshoot_comment test_overshoot_idempotent test_overshoot_no_comment_architect test_overshoot_no_comment_no_adr; do
+for tn in test_overshoot_comment test_overshoot_idempotent test_overshoot_no_comment_architect test_overshoot_no_comment_no_adr test_record_to_stderr_not_stdout test_record_to_stderr_dry_run; do
     WORK="$(mktemp -d)"
     _test_rc=0
     _test_failed=0
@@ -387,5 +479,5 @@ if [ "$FAILED" -gt 0 ]; then
     echo "FAIL: $FAILED тестов упало"
     exit 1
 fi
-echo "ok: blocked-watchdog-scope: все 4 кейса прошли"
+echo "ok: blocked-watchdog-scope: все 6 кейсов прошли"
 exit 0

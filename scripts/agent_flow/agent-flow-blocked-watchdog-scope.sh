@@ -175,7 +175,11 @@ while IFS= read -r db_path; do
                 ;;
             __RECORD__:*)
                 # Запись для stats log (формат: t_<id>|<board>|<assignee>|<age_h>|<status>)
-                printf '  %s\n' "${line#__RECORD__:}"
+                # NB: per docstring line 64 "Stderr: structured summary (for cron delivery)" —
+                # пишем в stderr, НЕ stdout, чтобы cron увидел per-task breakdown.
+                # (fix: тот же bug pattern что был в stale-blocked-watchdog.sh:200, PR #2540,
+                #  issue #2482 / kanban t_0dd7fc6e; здесь #2545 / t_44092aba.)
+                printf '  %s\n' "${line#__RECORD__:}" >&2
                 ;;
             *)
                 # Прочий stdout (debug) — pass-through в stderr.
