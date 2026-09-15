@@ -21,6 +21,7 @@ from .utils.stderr_silence import ignore_stderr
 # Issue #1160 — Prometheus metrics (этап 1 observability).
 from rob_box_voice.observability import (
     is_metrics_enabled,
+    record_audio_input_overflow,
     start_metrics_server,
 )
 
@@ -372,9 +373,22 @@ class AudioNode(Node):
             if self.mix_channels:
                 self.get_logger().info(
                     f'✓ mix_channels={self.mix_channels} — каналы для моно-микса '
-                    f'(issue #1117 round-2: [0]=Ch1 DSP-processed ASR; ранее '
-                    f'использовался [0,1,2,3,4,5] = все 6 каналов, ошибка канала).'
+                    '(issue #1117 round-2: [0]=Ch1 DSP-processed ASR; ранее '
+                    'использовался [0,1,2,3,4,5] = все 6 каналов, ошибка канала).'
                 )
+            # Issue #2554: явно печатаем frames_per_buffer в обеих
+            # единицах (frames / байты / мс), чтобы в логах старта ноды
+            # было видно, какой размер чанка реально выставлен — и
+            # оператор не путал «49152 байт в overflow-логе» с
+            # «frames_per_buffer=49152». 4096 frames @ 16kHz mono =
+            # 256 мс; в 6-канальном режиме это 49152 байт.
+            bytes_per_chunk = self.chunk_size * self.channels * 2
+            chunk_ms = (self.chunk_size / float(self.sample_rate)) * 1000.0
+            self.get_logger().info(
+                f'✓ frames_per_buffer={self.chunk_size} frames '
+                f'({bytes_per_chunk} байт, ~{chunk_ms:.0f} мс @ {self.sample_rate}Hz '
+                f'× {self.channels} ch × 2 Б) — issue #1050/2554'
+            )
             self.publish_state('ready')
 
         except Exception as e:
@@ -503,7 +517,7 @@ class AudioNode(Node):
         return (None, pyaudio.paContinue)
 
     def _log_overflow(self, frame_count: int, in_data) -> None:
-        """Rate-limited лог paInputOverflow (issue #1050).
+        """Rate-limited лог paInputOverflow (issue #1050, расширение #2554).
 
         Статус 2 (paInputOverflow) означает, что входной буфер переполнен
         и сэмплы потеряны — обычно Python-callback не успел за периодом
@@ -512,20 +526,55 @@ class AudioNode(Node):
         чаще раза в ``_overflow_log_window_s`` секунд: строка не спамит,
         а по числу случаев и размеру чанка видно динамику после фикса
         (увеличение frames_per_buffer 1024 → 4096).
+
+        Issue #2554 (DJ live 2026-09-15): оператор смотрел в лог
+        ``chunk 49152/49152 байт`` и думал, что ``frames_per_buffer=49152``
+        — но ``49152 = 4096 frames × 6 ch × 2 байт int16``. Это просто
+        размер буфера в байтах в 6-канальном режиме, а не «столько
+        фреймов на чанк». Чтобы таких ложных выводов не было, лог
+        теперь печатает ОБЕ величины — фреймы (то, что задано в
+        ``chunk_size``) и байты (то, что получает PortAudio). Также
+        инкрементируем Prometheus-метрику
+        ``voice_audio_input_overflow_total`` (issue #1160, этап 1+2) для
+        тренда, а не только для немедленной диагностики.
         """
+        # Каждый случай — это инкремент счётчика (даже если лог
+        # rate-limited). Метрика показывает РЕАЛЬНЫЙ rate, а не частоту
+        # лог-строк.
+        record_audio_input_overflow(frames_per_buffer=int(self.chunk_size))
         self._overflow_count += 1
         now = time.monotonic()
         if now - self._overflow_last_logged < self._overflow_log_window_s:
             return
         self._overflow_last_logged = now
-        expected = frame_count * self.channels * 2
-        got = len(in_data) if in_data else 0
-        lost = max(0, expected - got)
+        # Issue #2554: ожидаемое считаем от chunk_size (то, что PortAudio
+        # ДОЛЖЕН был прислать по контракту), а не от frame_count (то, что
+        # пришло в callback). Это две разные величины:
+        #   * ``chunk_size`` (= self.chunk_size) = frames_per_buffer,
+        #     заданный при open(). На overflow PortAudio занижает
+        #     frame_count, чтобы callback не висел вечно.
+        #   * ``frame_count`` (= переданный параметр) = сколько фреймов
+        #     PortAudio реально отдал в этот callback (может быть < chunk_size).
+        # Раньше лог писал expected = frame_count × ch × 2 — это
+        # маскировало факт потери: «получил 1024 фрейма, потерял 0»
+        # когда на самом деле должно было быть 4096. Теперь видно
+        # честную разницу.
+        expected_bytes = int(self.chunk_size) * self.channels * 2
+        got_bytes = len(in_data) if in_data else 0
+        lost_bytes = max(0, expected_bytes - got_bytes)
+        # Печатаем ОБЕ величины: frames_per_buffer (chunk_size, то, что
+        # задано в YAML/параметре) и размер буфера в байтах (то, что
+        # фактически проходит через PortAudio, = frames × ch × 2).
+        # Раньше печатался только байтовый размер — оператор видел
+        # «49152» и думал, что frames_per_buffer=49152 (issue #2554).
         self.get_logger().warning(
-            f"[issue 1050] PyAudio paInputOverflow (status=2): "
+            f"[issue 1050/2554] PyAudio paInputOverflow (status=2): "
             f"{self._overflow_count} случаев за окно "
             f"{self._overflow_log_window_s:.0f}с, "
-            f"chunk {got}/{expected} байт (потеряно ~{lost} байт)"
+            f"frames_per_buffer={self.chunk_size}, "
+            f"buffer={got_bytes}/{expected_bytes} байт "
+            f"({self.chunk_size} frames × {self.channels} ch × 2 Б), "
+            f"потеряно ~{lost_bytes} байт"
         )
 
     # ------------------------------------------------------------------
