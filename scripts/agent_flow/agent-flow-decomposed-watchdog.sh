@@ -183,7 +183,7 @@ while IFS= read -r db_path; do
                 ;;
             __RECORD__:*)
                 # Запись для stats log (формат: t_<id>|<board>|<parent_id>|<age_h>|<prio_before>|<prio_after>)
-                printf '  %s\n' "${line#__RECORD__:}"
+                printf '  %s\n' "${line#__RECORD__:}" >&2
                 ;;
             *)
                 # Прочий stdout (debug) — pass-through в stderr.
