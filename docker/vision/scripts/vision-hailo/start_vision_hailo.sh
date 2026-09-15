@@ -109,19 +109,25 @@ if [ "${HAILO_ENABLED}" = "true" ]; then
     fi
 fi
 
-# ---------- launch ROS 2 node ----------
-# Собираем --ros-args массивом: пустой hef_path нельзя передавать как
-# `-p hef_path:=` — rcl падает "Couldn't parse parameter override rule".
-ROS_ARGS=(
-    -p hailo_enabled:=${HAILO_ENABLED}
-    -p stub_period_sec:=${STUB_PERIOD_SEC}
-    -p confidence_threshold:=${CONFIDENCE_THRESHOLD}
-    -p input_topic:="${INPUT_TOPIC}"
-    -p output_topic:="${OUTPUT_TOPIC}"
-    -p publish_when_no_input:=true
-)
-if [ -n "${HEF_PATH}" ]; then
-    ROS_ARGS+=( -p "hef_path:=${HEF_PATH}" )
-fi
-
-exec ros2 run rob_box_perception vision_hailo --ros-args "${ROS_ARGS[@]}"
+# ---------- launch ROS 2 node (ADR-0096) ----------
+# ADR-0096: vision_hailo стартует декларативно через launch-файл
+# (vision_hailo.launch.py), а не через захардкоженный `ros2 run` с
+# --ros-args массивом. Преимущества:
+#   1. LaunchConfiguration — SSoT параметров в одном месте.
+#   2. OpaqueFunction pre-flight check (capability-honest, ADR-0018) —
+#      оператор видит причину degraded-режима ДО старта ноды.
+#   3. Когда-нибудь можно включить через <include> в общий perception
+#      launch без рефакторинга.
+#
+# hef_path передаём через launch argument: пустой hef_path нельзя
+# передавать как `-p hef_path:=` — rcl падает "Couldn't parse parameter
+# override rule". Launch это обрабатывает корректно (см.
+# vision_hailo.launch.py:DeclareLaunchArgument('hef_path', default_value='')).
+exec ros2 launch rob_box_perception vision_hailo.launch.py \
+    hailo_enabled:=${HAILO_ENABLED} \
+    hef_path:=${HEF_PATH} \
+    stub_period_sec:=${STUB_PERIOD_SEC} \
+    confidence_threshold:=${CONFIDENCE_THRESHOLD} \
+    input_topic:=${INPUT_TOPIC} \
+    output_topic:=${OUTPUT_TOPIC} \
+    publish_when_no_input:=true
