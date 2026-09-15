@@ -43,10 +43,18 @@ source /opt/ros/${ROS_DISTRO:-humble}/setup.bash
 source /ws/install/setup.bash
 
 # ---------- если есть YAML — применяем его как defaults ----------
+# SSoT-контракт (ADR-0018 capability-honest + ADR-0089):
+#   * YAML = defaults (низкий приоритет).
+#   * ENV  = override (явный приоритет, всегда побеждает).
+#   * Если ENV задан непусто — YAML-значение SKIP'ается с WARN в лог
+#     контейнера (НЕ silent degradation: оператор видит, что значение
+#     пришло из .env, а не из YAML).
+#   * Это лечит F-2 из t_beba0869 (silent-degradation когда prod .env
+#     HAILO_ENABLED=true, а dev-YAML hailo_enabled:false).
 if [ -f "${HAILO_MODELS_YAML}" ] && command -v python3 >/dev/null 2>&1; then
     echo "[start_vision_hailo] loading SSoT config: ${HAILO_MODELS_YAML}"
     eval "$(python3 - "${HAILO_MODELS_YAML}" <<'PY'
-import sys, yaml
+import os, sys, yaml
 try:
     with open(sys.argv[1]) as f:
         cfg = yaml.safe_load(f) or {}
@@ -61,8 +69,20 @@ def emit(k, v):
     print(f'export {k.upper()}="{v}"')
 for key in ('hailo_enabled', 'hef_path', 'stub_period_sec',
             'confidence_threshold', 'input_topic', 'output_topic'):
-    if key in node:
-        emit(key, node[key])
+    if key not in node:
+        continue
+    env_name = key.upper()
+    env_val = os.environ.get(env_name, '')
+    if env_val:
+        # ENV явно задан непусто — YAML пропускаем (ENV wins).
+        # WARN в stderr контейнера, НЕ в stdout (stdout ловит eval $()).
+        print(
+            f'[start_vision_hailo] ENV override wins: {env_name} '
+            f'(env="{env_val}", yaml="{node[key]}")',
+            file=sys.stderr,
+        )
+        continue
+    emit(key, node[key])
 PY
     )"
 fi
