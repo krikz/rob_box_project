@@ -5678,17 +5678,30 @@ class DialogueNode(Node):
         # удалён из медиатеки.» — всё с tools=[]. Один ретрай, тем же
         # контрактом, что и Bug D выше.
         #
-        # Issue #2548 — оборачиваем пару guards (action-claim retry +
-        # prose-action fallback) в один helper, чтобы не раздувать
-        # CC ``_handle_result`` (baseline 65 уже высок; +20 от моих
-        # веток было бы over-budget). Helper возвращает True, если
-        # хотя бы один guard сработал — тогда ``_handle_result``
-        # должен вернуть ``return`` (не отдавать spoken в TTS).
-        if spoken and self._run_issue_2548_guards(
+        # Issue #2548 — в DJ-сессии ``dj_active=self._dj.state.enabled``;
+        # prose-action-claim без явного command-verb в user_input
+        # («вплетай их красиво» / «давай старайся» / «пока ничего не
+        # звучит») теперь тоже триггерит одноразовый ретрай, чтобы
+        # юзер не слышал «всё готово» при неизменной музыке.
+        # CC-budget: прямые вызовы здесь +3 (две ``if spoken and ...``
+        # ветки), baseline скорректирован 65 → 68. Заворачивать в
+        # helper нельзя — test_dialogue_retry_flag_wiring
+        # ::test_guard_call_sites_live_in_handle_result требует, чтобы
+        # ВСЕ guard-методы _check_*_and_retry были видны прямо из тела
+        # _handle_result через AST-обход (инцидент 30.08.2026: блок
+        # вызова Bug C′ засунули в __init__, нода не поднималась).
+        if spoken and self._check_unbacked_action_claim_and_retry(
             spoken=spoken,
+            user_input=raw_user_command or user_input,
+            tools_called=tools_called,
+            dj_active=self._dj_session_active(),
+        ):
+            return
+        if spoken and self._publish_music_prose_action_fallback_if_needed(
+            spoken=spoken,
+            tools_called=tuple(tools_called or ()),
             user_input=user_input,
             raw_user_command=raw_user_command,
-            tools_called=tuple(tools_called or ()),
             is_dj_auto=is_dj_auto,
             has_error=result.error is not None,
             speak_text_real=speak_text_real,
@@ -6078,54 +6091,6 @@ class DialogueNode(Node):
             self.get_logger().warning(
                 f"⚠️ Не удалось опубликовать /mcp/music_fallback: {exc}"
             )
-
-    def _run_issue_2548_guards(
-        self,
-        *,
-        spoken: str,
-        user_input: Optional[str],
-        raw_user_command: Optional[str],
-        tools_called: Tuple[str, ...],
-        is_dj_auto: bool,
-        has_error: bool,
-        speak_text_real: int,
-    ) -> bool:
-        """Issue #2548 — пара guards в одном helper.
-
-        1. ``_check_unbacked_action_claim_and_retry`` — одноразовый
-           ретрай «LLM отчиталась о действии, не вызвав тул»
-           (Issue #992 Bug E). В DJ-сессии (``self._dj.state.enabled``)
-           расширяется ``music_prose_action`` правилом — ловит
-           prose-action-claim'ы («вплела», «сделала pass», «обновлю»)
-           даже когда ``user_input`` не содержит явный command-verb.
-
-        2. ``_publish_music_prose_action_fallback_if_needed`` —
-           fallback-spoken после НЕудачного ретрая, чтобы юзер не
-           слышал «всё готово» при неизменной музыке
-           (acceptance criterion #2).
-
-        Returns:
-            ``True`` — хотя бы один guard сработал, вызывающий
-            должен вернуть ``return`` из ``_handle_result``.
-        """
-        if self._check_unbacked_action_claim_and_retry(
-            spoken=spoken,
-            user_input=raw_user_command or user_input,
-            tools_called=tools_called,
-            dj_active=self._dj_session_active(),
-        ):
-            return True
-        if self._publish_music_prose_action_fallback_if_needed(
-            spoken=spoken,
-            tools_called=tools_called,
-            user_input=user_input,
-            raw_user_command=raw_user_command,
-            is_dj_auto=is_dj_auto,
-            has_error=has_error,
-            speak_text_real=speak_text_real,
-        ):
-            return True
-        return False
 
     def _dj_session_active(self) -> bool:
         """Issue #2548 — DJ-сессия активна?

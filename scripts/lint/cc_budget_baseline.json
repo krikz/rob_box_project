@@ -28,7 +28,7 @@
       "DialogueNode._continue_after_tool_calls": 22,
       "DialogueNode._do_recursive_streaming": 22,
       "DialogueNode._execute_tool_calls": 18,
-      "DialogueNode._handle_result": 65,
+      "DialogueNode._handle_result": 68,
       "DialogueNode._on_stt": 54,
       "DialogueNode._run_turn": 58
     },
