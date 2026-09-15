@@ -362,6 +362,52 @@ SERVICEEOF
     log_info "Restart=on-failure, --pull never, логирование docker compose ps в journal"
 }
 
+# Настройка zram-swap (ADR-0111, issue #2621)
+setup_zram_swap() {
+    log_step "Настройка zram-swap (issue #2621, ADR-0111)"
+    log_info "Без zram ядро не может вытеснять анонимные страницы, sshd"
+    log_info "теряет память при нагрузке → 'робот недоступен'. См. ADR-0111."
+
+    SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+    SWAP_SCRIPT="$SCRIPT_DIR/setup_vision_pi_swap.sh"
+
+    if [[ ! -f "$SWAP_SCRIPT" ]]; then
+        log_error "Не найден $SWAP_SCRIPT — пропускаю zram (обновите репозиторий)"
+        return 0
+    fi
+
+    # Запускаем в --auto режиме с sudo. Идемпотентен — повторный запуск безопасен.
+    if sudo bash "$SWAP_SCRIPT" --auto; then
+        log_success "zram-swap настроен (4 GB, zstd)"
+    else
+        log_error "setup_vision_pi_swap.sh завершился с ошибкой — проверьте journalctl"
+        return 1
+    fi
+}
+
+# Настройка MemoryLow для sshd (ADR-0111 §2.2, issue #2621)
+setup_ssh_memory_low() {
+    log_step "Настройка MemoryLow для sshd (ADR-0111)"
+    SSH_DROP_IN_SRC="$SCRIPT_DIR/../../host/vision/ssh-memory-low.conf"
+    SSH_DROP_IN_DST="/etc/systemd/system/ssh.service.d/10-robbox-memory-low.conf"
+
+    if [[ ! -f "$SSH_DROP_IN_SRC" ]]; then
+        log_warning "Не найден $SSH_DROP_IN_SRC — пропускаю ssh drop-in"
+        return 0
+    fi
+
+    if [[ -f "$SSH_DROP_IN_DST" ]]; then
+        log_info "$SSH_DROP_IN_DST уже установлен — пропускаю"
+        return 0
+    fi
+
+    sudo mkdir -p /etc/systemd/system/ssh.service.d/
+    sudo cp "$SSH_DROP_IN_SRC" "$SSH_DROP_IN_DST"
+    sudo systemctl daemon-reload
+    sudo systemctl restart ssh.service || log_warning "ssh.service restart не удался — drop-in применён, но sshd не перезапущен"
+    log_success "MemoryLow=128M применён к ssh.service"
+}
+
 # Итоговая информация
 print_summary() {
     log_step "Установка завершена!"
@@ -405,10 +451,10 @@ print_summary() {
 
 main() {
     print_logo
-    
+
     log_info "Начинаем автоматическую настройку Vision Pi..."
     log_info "Скрипт выполняется от пользователя: $USER"
-    
+
     check_raspberry_pi
     install_dependencies
     install_docker
@@ -416,7 +462,11 @@ main() {
     clone_repository
     setup_motd
     setup_autostart
-    
+    # ADR-0111 / issue #2621: zram-swap + MemoryLow для sshd
+    # (поднимаем ДО docker, чтобы лимиты были корректны с первого запуска)
+    setup_zram_swap
+    setup_ssh_memory_low
+
     print_summary
 }
 
