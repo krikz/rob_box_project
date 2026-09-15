@@ -168,6 +168,14 @@ def _make_node(tts_node_cls):
     n.finished_pub = _CapturingPublisher()
     n.batch_complete_pub = _CapturingPublisher()
     n._submit_synthesis = MagicMock()
+    # Issue #2553 — babble-retry / DJ-overlap guard. Эти конкретные тесты
+    # про regurgitate-guard не трогают overlap-ветку (chunk'и скипаются ДО
+    # submit'а, поэтому _play_active_seq не меняется), но dialogue_callback
+    # теперь читает ``_pending_speech_queue`` / ``_active_batch_id`` —
+    # проставляем дефолты, чтобы AttributeError не вылез в негативных путях.
+    n._pending_speech_queue = []
+    n._play_active_seq = None
+    n._active_batch_id = None
     return n
 
 
