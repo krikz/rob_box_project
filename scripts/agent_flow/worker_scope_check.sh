@@ -16,7 +16,7 @@
 # Что проверяет:
 #   - working tree:  staged + unstaged + untracked (то, что воркер может
 #     закоммитить прямо сейчас);
-#   - committed diff: `git diff --name-only BASE_REF...HEAD` (то, что
+#   - committed diff: `git diff --name-only $BASE_REF...HEAD` (то, что
 #     пойдёт в PR).
 #   Файлы из обоих наборов сверяются с PR_ALLOWED_PREFIXES / PR_ALLOWED_GLOBS.
 #
@@ -28,8 +28,17 @@
 #   PR_ALLOWED_PREFIXES — comma-separated list of allowed path prefixes.
 #   PR_ALLOWED_GLOBS     — comma-separated list of fnmatch-style globs.
 #   SKIP_SCOPE_CHECK     — "true" → exit 0 без проверки (opt-out).
-#   BASE_REF             — default origin/develop (для committed diff).
+#   BASE_REF             — default origin/develop (реально используется
+#     для committed diff после #2478; раньше был dead variable).
 #   MAX_OUT_OF_SCOPE     — default 10 (defensive INFO-mode cap).
+#   GITHUB_REPO          — default krikz/rob_box_project (для gh issue comment
+#     при out-of-scope, если ISSUE_NUM задан).
+#   GH_CONFIG_DIR        — default /home/builder/.config/gh (для gh auth).
+#
+# ISSUE_NUM (argv $2): если задан и есть out-of-scope файлы — постит
+# комментарий в issue через `gh issue comment` (best-effort). До #2478
+# ISSUE_NUM был dead argv (задокументирован «для комментариев», но не
+# использовался внутри). Теперь — реально работает.
 #
 # Режимы:
 #   - Без PR_ALLOWED_PREFIXES/GLOBS → INFO-режим: печатает список файлов
@@ -61,9 +70,40 @@ fi
 # ---- env / paths ----------------------------------------------------------
 BASE_REF="${BASE_REF:-origin/develop}"
 MAX_OUT_OF_SCOPE="${MAX_OUT_OF_SCOPE:-10}"
+GITHUB_REPO="${GITHUB_REPO:-krikz/rob_box_project}"
+GH_CONFIG_DIR="${GH_CONFIG_DIR:-/home/builder/.config/gh}"
 
 log() {
     printf '[worker_scope_check %s] %s\n' "$TASK_ID" "$*" >&2
+}
+
+# post_scope_failure_comment <out_of_scope_files> — best-effort gh issue comment
+# при out-of-scope failure (если ISSUE_NUM задан И gh доступен).
+# ADR-0018: ISSUE_NUM был dead argv до #2478; теперь — реально используется.
+post_scope_failure_comment() {
+    local oos_files="$1"
+    if [ -z "$ISSUE_NUM" ]; then
+        log "ISSUE_NUM not set — comment only in stderr (out-of-scope files below)"
+        return 0
+    fi
+    if ! command -v gh >/dev/null 2>&1; then
+        log "gh not in PATH, falling back to stderr-only (out-of-scope files below)"
+        return 0
+    fi
+    local body
+    body="$(printf '🚨 [agent:devops] worker_scope_check: **out-of-scope files** detected in task %s.\n\n\`\`\`\n%s\n\`\`\`\n\nFix path:\n1) \`git status\` + \`git log origin/develop..HEAD\`\n2) Чужие файлы нужны? → расширь PR_ALLOWED_PREFIXES и объясни в карточке.\n3) Нет → пересоздай ветку от origin/develop и cherry-pick только свои коммиты.\n4) Opt-out: SKIP_SCOPE_CHECK=true.\n\n_worker_scope_check task=%s issue=%s_' \
+            "$TASK_ID" "$oos_files" "$TASK_ID" "$ISSUE_NUM")"
+    local tmp
+    tmp="$(mktemp)"
+    printf '%s\n' "$body" > "$tmp"
+    if GH_CONFIG_DIR="$GH_CONFIG_DIR" gh issue comment "$ISSUE_NUM" \
+            --repo "$GITHUB_REPO" --body-file "$tmp" >/dev/null 2>&1; then
+        log "commented to issue #$ISSUE_NUM"
+    else
+        log "gh comment failed (issue #$ISSUE_NUM), stderr-only"
+    fi
+    rm -f "$tmp"
+    return 0
 }
 
 if [ "${SKIP_SCOPE_CHECK:-}" = "true" ]; then
@@ -156,6 +196,11 @@ fi
 
 OUT_COUNT="$(printf '%s\n' "$OUT_OF_SCOPE" | sed '/^$/d' | wc -l | tr -d ' ')"
 TOTAL_COUNT="$(printf '%s\n' "$ALL_FILES" | wc -l | tr -d ' ')"
+
+# Формируем компактный список для issue-комментария (до 20 файлов).
+_OOS_FOR_COMMENT="$(printf '%s\n' "$OUT_OF_SCOPE" | sed '/^$/d' | head -20)"
+post_scope_failure_comment "$_OOS_FOR_COMMENT"
+unset _OOS_FOR_COMMENT
 
 log "FAIL: $OUT_COUNT of $TOTAL_COUNT files are out-of-scope" >&2
 log "  Allowed prefixes: $PREFIXES" >&2
