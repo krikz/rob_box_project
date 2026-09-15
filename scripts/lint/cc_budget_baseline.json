@@ -115,6 +115,12 @@
       "ShowMetricsTool.execute": 18
     }
   },
+  "_refactor_cards": {
+    "src/rob_box_voice/rob_box_voice/dialogue_node.py:DialogueNode._handle_result": "#2556 (handle_result decomp)",
+    "src/rob_box_voice/rob_box_voice/dialogue_node.py:DialogueNode._run_turn": "#2627 (run_turn music-state-machine decomp)",
+    "src/rob_box_voice/rob_box_voice/dialogue_node.py:DialogueNode._on_stt": "#2628 (on_stt admission pipeline)",
+    "src/rob_box_harness/rob_box_harness/core/agent_core.py:AgentCore._run_with_tools": "#2629 (run_with_tools tool-loop batch extraction)"
+  },
   "_legacy_acknowledged": [
     {
       "path": "src/rob_box_voice/rob_box_voice/audio_node.py",
@@ -169,24 +175,6 @@
       "method": "DialogueNode._execute_tool_calls",
       "cc": 18,
       "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
-    },
-    {
-      "path": "src/rob_box_voice/rob_box_voice/dialogue_node.py",
-      "method": "DialogueNode._handle_result",
-      "cc": 85,
-      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog; bumped 65 -> 68 for issue #2548 prose-action-claim fallback (CC-budget guard); bumped 68 -> 72 for issue #2547 strip_meta_markers pipeline + audible fallback after tools (CC-budget guard); +4 CC from one new strip_X() call site + one new conditional fallback block (4-way guard with is_dj_auto / result.error / tools_called / spoken emptiness); bumped 72 -> 75 for issue #2562 Bug F detector hook (CC-budget guard) — added 3-way if-block in _handle_result for unknown-melody-claim detection + one _dispatch_turn call + one logger.warning, all routed through helper _check_unknown_melody_claim_and_retry; bumped 75 -> 78 for issue #2560 hallucinated-MIDI guard (CC-budget guard, PR #2574) — added +3 CC from one new 'if spoken and _check_hallucinated_midi_and_retry' branch that calls _dispatch_turn on pe<num>le<num>f-pattern detection (composes with Bug F guard above without overlap); bumped 78 -> 79 for issue #2549 universal anti-hallucination guard (CC-budget guard, PR #2555) — added +1 CC from one new action-verb detector dispatch in _handle_result that calls _check_universal_action_claim_and_retry when spoken contains a generative verb but tools_called is empty; bumped 79 -> 82 for issue #2557 DJ-music-tools fallback (CC-budget guard, PR upcoming) — added +3 CC from one new 'if tools_called and not result.error: ensure_dj_music_response(...)' block in _handle_result that publishes a DJ-style 'Готово, играю.' fallback when LLM calls music tools without speak_text; narrowed compared to #2547's 'Сделаю.' because ensure_dj_music_response only fires for music-tool turns (DJ set is the live bug surface, 22/h on 2026-09-15 round 3); bumped 82 -> 85 for issue #2559 phantom-action universal guard (CC-budget guard, PR #2555-like) — added +3 CC from one new 'if spoken and self._check_phantom_action_and_retry(...)' branch in _handle_result that catches general (non-music) action-verb claims ('сейчас перезапущу / сделал / подложу') under tools_called=[]; helper itself is _check_phantom_action_and_retry (CC=8), composed like Bug E / F / #2549 universal / #2560 hallucinated-MIDI without overlap (is_dj_auto gate lives inside helper)."
-    },
-    {
-      "path": "src/rob_box_voice/rob_box_voice/dialogue_node.py",
-      "method": "DialogueNode._on_stt",
-      "cc": 54,
-      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
-    },
-    {
-      "path": "src/rob_box_voice/rob_box_voice/dialogue_node.py",
-      "method": "DialogueNode._run_turn",
-      "cc": 59,
-      "since": "Bumped 58->59 by #2565 (issue 2565, fix(voice): stop_command_guard deferral on phantom-action). The new `spoken=` keyword in `_apply_music_guard(...)` call inside `_run_turn` adds +1 CC (an extra branch evaluation); refactor card covered under existing _run_turn decomp backlog (ADR-0021 R1). Previous bumps: #2440 (57->58), #2448 in PR sweep #2452."
     },
     {
       "path": "src/rob_box_voice/rob_box_voice/scheduler/pregen/pre_gen.py",
@@ -288,12 +276,6 @@
       "path": "src/rob_box_harness/rob_box_harness/config.py",
       "method": "_parse_tts",
       "cc": 17,
-      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
-    },
-    {
-      "path": "src/rob_box_harness/rob_box_harness/core/agent_core.py",
-      "method": "AgentCore._run_with_tools",
-      "cc": 48,
       "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
     },
     {
