@@ -48,6 +48,35 @@ _THINK_BLOCK_RE = re.compile(r"<think>.*?</think>\s*", flags=re.DOTALL)
 # repeated leading tags in one match.
 _SPEAKER_TAG_RE = re.compile(r"^(?:\s*\[Spkr:[^\]]*\])+", flags=re.IGNORECASE)
 
+# Strip leading meta-markers the LLM occasionally emits in
+# ``spoken`` — internal section headers that were meant for the
+# assistant's own reasoning but leaked past the system prompt. TTS
+# reads ``spoken`` verbatim, so leaking these prefixes produces
+# audible noise (live 15.09: «[Мнение ассистента] Вплела тему
+# Грига…»).
+#
+# Anchored at start-of-string, optionally preceded by whitespace, and
+# consumes **one** prefix at a time — the caller (``strip_meta_markers``
+# below) loops so stacked prefixes («[Мнение ассистента] **Итог:** …»)
+# collapse cleanly. Two prefix shapes:
+#
+# * ``[Anything]`` — bracketed section header (issue #2547 live case:
+#   ``[Мнение ассистента]``, ``[Примечание]``, ``[Note]``, ``[Answer]``).
+#   Square brackets inside the marker are not allowed (the regex
+#   stops at the first ``]``), which keeps ``[Spkr:foo]`` handling
+#   isolated to :func:`strip_speaker_tag`.
+# * ``**Anything**`` — Markdown-bold section header (``**Итог:**``,
+#   ``**Answer:**``). Only the bold-form is stripped here; bare
+#   ``Answer:`` / ``Response:`` without bold is caught by the
+#   ``[Answer]`` form on the next loop iteration (if the LLM emits
+#   them bare they are caught as plain English/Russian text — by
+#   design: those are legitimate speech, e.g. «Answer is yes»).
+_META_PREFIX_RE = re.compile(
+    r"^\s*(?:\[[^\]]+\]|\*\*[^*]+\*\*)"
+    r"\s*(?:[:\-—]\s*)?",
+    flags=re.UNICODE,
+)
+
 # Strip a trailing ``done`` / ``task complete`` / Russian equivalents
 # that the LLM adds AFTER the final ``speak_text`` per the master-prompt
 # cycle-end contract. The marker is **internal** (signals turn end) and
@@ -101,6 +130,53 @@ def strip_thinking_blocks(text: str) -> str:
     if not text:
         return text
     return _THINK_BLOCK_RE.sub("", text).strip()
+
+
+def strip_meta_markers(text: str) -> str:
+    """Remove leading meta-markers (``[…]``, ``**…**``) from ``spoken`` (issue #2547).
+
+    MiniMax-M1 sometimes prefixes its reply with internal section headers
+    like ``[Мнение ассистента]``, ``[Примечание]``, ``[Note]`` or
+    ``**Итог:**``. These were meant for the assistant's own reasoning
+    (structured answer sections), but they leaked past the system prompt
+    into the ``spoken`` field that is read by TTS verbatim. The user hears
+    the prefix as part of the reply, which is confusing and breaks the
+    conversational tone (live 15.09 DJ test: 21 occurrences on a single
+    session; round 3 regression: 193 cases/hour).
+
+    Strip is applied BEFORE ``strip_markdown`` so the bold-form prefix
+    (``**…**``) is removed before markdown rules can corrupt it. The
+    bracketed-form prefix (``[Spkr:<имя>]``) is **not** matched here —
+    that one is owned by :func:`strip_speaker_tag` which runs first in
+    the pipeline (``_handle_result``).
+
+    Rules (anchored at start-of-string, looped to consume stacks):
+
+    * optional leading whitespace;
+    * one bracketed marker ``[<non-bracket>+]`` or one Markdown-bold
+      marker ``**<non-asterisk>+**``;
+    * optional trailing whitespace;
+    * optional trailing colon/dash separator (``[Мнение ассистента]:``,
+      ``**Итог** —``).
+
+    Loop is bounded to ``_MAX_STACK`` iterations — more than 4 stacked
+    meta prefixes in a single response is pathological and most likely
+    a model hallucination; falling through unchanged is the right
+    behaviour (the downstream equality check still recognises
+    done-markers and the chunking layer survives the prefix).
+
+    Pure Python — no ROS, no heavy deps. Non-string input is returned
+    as-is (matches the contract of :func:`strip_thinking_blocks`).
+    """
+    if not isinstance(text, str) or not text:
+        return text
+    out = text
+    for _ in range(4):
+        new = _META_PREFIX_RE.sub("", out, count=1).lstrip()
+        if new == out:
+            break
+        out = new
+    return out
 
 
 def strip_done_marker(text: str) -> str:
@@ -466,6 +542,7 @@ class EffectAwaiterRegistry:
 __all__ = [
     "strip_history_marker",
     "strip_markdown",
+    "strip_meta_markers",
     "strip_done_marker",
     "split_into_chunks",
     "build_ssml_payload",

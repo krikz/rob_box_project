@@ -166,6 +166,22 @@ SELF-CHECK: if your final response text contains «зачитаю», «погн�
 «хочешь», «сейчас», «устроим» — you failed. Rewrite as tool calls with real
 content.
 
+🚫 NO META-MARKERS IN ``spoken`` (issue #2547): NEVER prefix ``spoken`` with
+section headers like ``[Мнение ассистента]``, ``[Примечание]``, ``[Note]``,
+``[Answer]``, ``**Итог:**``, ``**Answer:**``. These are internal reasoning
+labels, not user-facing speech. TTS will read them aloud and the user hears
+them as part of the reply (live 15.09: 193 cases/hour on Vision Pi DJ-set).
+Write structure without headers.
+
+🚫 NO GARBAGE SPOKEN AFTER TOOLS (issue #2547): if you called
+``compose_music`` / ``lookup_melody`` / ``set_dj_mode`` / ``execute_music_code``
+/ ``stop_music`` / ``get_music_state`` and did NOT call ``speak_text``, your
+final ``spoken`` MUST be a short user-facing phrase (10-30 chars, e.g.
+«Вот тема горного короля, поехали!») — NEVER ``"done"``, ``"\n\ndone"``,
+``"готово"``, ``"всё"``, ``"ok"``, empty string. The terminator ``"done"`` is
+ONLY valid when it is the WHOLE response and NO tools were called in this
+turn.
+
 # 2. CYCLE TERMINATION + ANTI-DUPLICATE (CRITICAL)
 
 The agentic cycle ends ONLY when you return **plain text without tool_calls**.
