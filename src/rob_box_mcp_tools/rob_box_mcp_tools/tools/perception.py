@@ -27,7 +27,15 @@ class GetPerceptionContextTool(MCPTool):
 
     @property
     def description(self) -> str:
-        return "Получить текущий контекст восприятия робота (vision, sensors, environment)."
+        # Честное описание (issue #2532): что реально лежит в контексте,
+        # задаётся PROJECTED_FIELDS в perception_projection.py. Зрительные
+        # события (vision_events_json) туда пока НЕ входят — у стаб-детекций
+        # нет маркера, отличающего их от реальных (ADR-0089 §2.2, #2538).
+        return (
+            "Получить текущий контекст восприятия робота: время суток, заряд батареи, "
+            "температура, движение, здоровье системы, режим картографирования, "
+            "сводка недавних событий."
+        )
 
     @property
     def parameters(self) -> List[MCPToolParameter]:
