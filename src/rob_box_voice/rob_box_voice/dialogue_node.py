@@ -150,6 +150,7 @@ from rob_box_voice.core.dialogue_guards import (
     detect_unknown_melody_claim,  # Issue #2562 Bug F
     detect_universal_action_claim,
     extract_renardo_code_lines,
+    has_singing_intent as _has_singing_intent_impl,  # issue #2627 SSoT
     is_metalanguage_babble,
     is_music_stop_command,
     is_planning_narration,
@@ -285,15 +286,23 @@ _LLM_SKIP_REASONS: tuple[str, ...] = tuple(reason.value for reason in LLMSkipRea
 # только что запущенный TRACK сразу после tts_batch_complete
 # («наполни комнату музыкой» → музыка умолкала через ~8с).
 # Теперь BACKING требует ПЕВЧЕСКИЙ интент в тексте юзера.
-_SINGING_INTENT_RE = re.compile(
-    r"\b(?:спо[йюё]\w*|по[йюё]\w*|рэп\w*|реп\w*|песенк\w*|куплет\w*|частушк\w*|напев\w*)\b",
-    re.IGNORECASE,
-)
+# BACKING vs TRACK discriminator (issue #992 Bug C live 13.08). The regex
+# and the ``has_singing_intent`` helper live in
+# :mod:`rob_box_voice.core.dialogue_guards` (issue #2627, ADR-0021 R2 —
+# single source of truth). ``DialogueNode`` keeps the historical
+# ``_has_singing_intent`` shim so external callers do not break, but the
+# implementation now delegates to the canonical detector imported at
+# the top of the module (``_has_singing_intent_impl``).
 
 
 def _has_singing_intent(text: "str | None") -> bool:
-    """True если юзер явно просил петь/рэповать (BACKING), а не просто музыку."""
-    return bool(text) and bool(_SINGING_INTENT_RE.search(text or ""))
+    """True если юзер явно просил петь/рэповать (BACKING), а не просто музыку.
+
+    Public helper now lives in :mod:`rob_box_voice.core.dialogue_guards`;
+    this shim keeps the historical ``DialogueNode._has_singing_intent``
+    name working for any external importer. Issue #2627.
+    """
+    return _has_singing_intent_impl(text)
 
 # Issue #992 Bug D — banned metalanguage openers + performance keywords
 # live in :mod:`rob_box_voice.core.dialogue_guards` (TD-1 decomposition);
