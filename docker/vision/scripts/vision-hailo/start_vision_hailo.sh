@@ -43,10 +43,15 @@ source /opt/ros/${ROS_DISTRO:-humble}/setup.bash
 source /ws/install/setup.bash
 
 # ---------- если есть YAML — применяем его как defaults ----------
+# Прецеденс: defaults < YAML < ENV (ADR-0018 capability-honest).
+# Если ENV уже задан явно (non-empty) — YAML пропускается и логируется
+# WARN: иначе prod .env (HAILO_ENABLED=true) был бы тихо перезаписан
+# dev-poзначением hailo_enabled: false из hailo_models.yaml → silent
+# degradation на проде (issue #2496, F-2 из t_beba0869 review).
 if [ -f "${HAILO_MODELS_YAML}" ] && command -v python3 >/dev/null 2>&1; then
     echo "[start_vision_hailo] loading SSoT config: ${HAILO_MODELS_YAML}"
     eval "$(python3 - "${HAILO_MODELS_YAML}" <<'PY'
-import sys, yaml
+import os, sys, yaml
 try:
     with open(sys.argv[1]) as f:
         cfg = yaml.safe_load(f) or {}
@@ -61,6 +66,11 @@ def emit(k, v):
     print(f'export {k.upper()}="{v}"')
 for key in ('hailo_enabled', 'hef_path', 'stub_period_sec',
             'confidence_threshold', 'input_topic', 'output_topic'):
+    env_name = key.upper()
+    env_val = os.environ.get(env_name)
+    if env_val:  # non-empty ENV wins (explicit override; ADR-0018 capability-honest)
+        print(f'echo "[start_vision_hailo] INFO: ENV {env_name} already set, YAML key \'{key}\' ignored" >&2')
+        continue
     if key in node:
         emit(key, node[key])
 PY
