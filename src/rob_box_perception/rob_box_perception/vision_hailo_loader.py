@@ -370,6 +370,10 @@ class RealHEFLoader(HEFLoader):
             input_buffers=input_buffers,
             output_buffers=output_buffers,
         )
+        # Активируем async-inference pipeline. ОБЯЗАТЕЛЬНО в новом API
+        # (HailoRT 4.18+): без activate() первый run() падает
+        # HAILO_STREAM_NOT_ACTIVATED(72), и pipeline уходит в abort.
+        self._configured.activate()
         # Запоминаем имя первого output'а — YOLOv8n имеет один,
         # для multi-output моделей это контрактно первый.
         self._output_name = self._infer_model.output_names[0]

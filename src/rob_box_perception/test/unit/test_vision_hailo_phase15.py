@@ -415,6 +415,9 @@ class _FakeConfigured:
         # Современный API принимает dict'ы numpy и возвращает Bindings.
         return _FakeBindings(input_buffers or {}, output_buffers or {})
 
+    def activate(self):
+        return None
+
     def run(self, bindings, timeout):
         """Синхронный run: заполняем output_buffer «детекциями»."""
         self.run_calls.append({'bindings': bindings, 'timeout': timeout})
