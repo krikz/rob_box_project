@@ -21,7 +21,10 @@ string source_camera
 
 # Event type discriminator — Phase 1 keeps these four stable, Phase 2/3
 # may extend (e.g. "gesture_wave", "scene_change").
-# Allowed: "person" | "face" | "object" | "scene"
+# Allowed: "person" | "face" | "object" | "scene" | "stub"
+# "stub" — событие выдумано заглушкой (hailo_enabled=false), кадра за ним
+# нет. Потребители, решающие «показывать ли это Личности», обязаны его
+# отсекать — ADR-0089 §2.2, предикат vision_hailo_loader.is_stub_event.
 string event_type
 
 # Detection class label (free-form, mirrors Hailo model zoo class names).

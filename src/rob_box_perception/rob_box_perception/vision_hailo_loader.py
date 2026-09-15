@@ -55,6 +55,15 @@ DEFAULT_NUM_ANCHORS = 8400
 # Padding value (gray) для letterbox. YOLOv8n training использовал 114.
 LETTERBOX_PAD_VALUE = 114
 
+#: Маркер выдуманного события. ADR-0089 §2.2 предписывает ровно это значение
+#: как ключ, по которому stub-события отсекаются до попадания в LLM-контекст.
+#: Значение НЕ входит в набор "person"|"face"|"object"|"scene" намеренно:
+#: заглушка — это не детекция, и downstream не должен спутать её ни с чем.
+STUB_EVENT_TYPE: str = 'stub'
+
+#: source_camera выдуманного события. Камеры у него нет по определению.
+STUB_SOURCE_CAMERA: str = 'stub'
+
 
 @dataclass(frozen=True)
 class LetterboxInfo:
@@ -166,9 +175,16 @@ class StubHEFLoader(HEFLoader):
         if now - self._last_emit < self._period_sec:
             return []
         self._last_emit = now
+        # ВАЖНО (ADR-0089 §2.2): событие выдуманное, и это обязано быть
+        # видно в данных. Раньше здесь стояло event_type='person', а
+        # source_camera падал на 'stub' только при пустом frame_id — но
+        # узел зовёт infer с frame_id='unknown' (vision_hailo_node._tick),
+        # так что маркера не оставалось вообще. Любой downstream, решающий
+        # «показывать ли это Личности», обязан иметь способ отличить
+        # выдумку от детекции — см. STUB_EVENT_TYPE / is_stub_event.
         return [{
-            'source_camera': frame_id or 'stub',
-            'event_type': 'person',
+            'source_camera': STUB_SOURCE_CAMERA,
+            'event_type': STUB_EVENT_TYPE,
             'class_name': 'person',
             'class_id': 0,
             'confidence': 0.92,
@@ -764,6 +780,20 @@ def make_loader(
 # ============================================================================
 # Filter helper (без rclpy, чистый Python — тестируется отдельно)
 # ============================================================================
+
+def is_stub_event(event: Dict[str, Any]) -> bool:
+    """True, если событие выдумано заглушкой, а не получено из кадра.
+
+    Единственное место, где живёт этот вопрос. Потребители (проекция в
+    LLM-контекст, safety-логика) обязаны спрашивать здесь, а не сравнивать
+    строки у себя — иначе маркер снова разъедется с данными, как это уже
+    было с event_type='person'.
+    """
+    return (
+        event.get('event_type') == STUB_EVENT_TYPE
+        or event.get('source_camera') == STUB_SOURCE_CAMERA
+    )
+
 
 def filter_by_confidence(
     events: Iterable[Dict[str, Any]],

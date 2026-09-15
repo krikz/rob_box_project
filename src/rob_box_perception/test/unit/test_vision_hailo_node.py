@@ -83,7 +83,12 @@ def test_stub_loader_event_shape():
     missing = required - set(ev.keys())
     assert not missing, f'Отсутствуют поля: {missing}'
     # Конкретные sanity-checks на stub values.
-    assert ev['event_type'] == 'person'
+    # event_type == 'stub', а НЕ 'person' (ADR-0089 §2.2): событие выдумано,
+    # и это должно быть видно в данных, иначе downstream не отличит его от
+    # реальной детекции человека.
+    assert ev['event_type'] == loader_mod.STUB_EVENT_TYPE
+    assert ev['source_camera'] == loader_mod.STUB_SOURCE_CAMERA
+    assert loader_mod.is_stub_event(ev) is True
     assert ev['class_name'] == 'person'
     assert ev['confidence'] == pytest.approx(0.92, abs=0.01)
     assert 0.0 <= ev['bbox_cx'] <= 1.0
