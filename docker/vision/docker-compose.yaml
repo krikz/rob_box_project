@@ -4,6 +4,14 @@ services:
   zenoh-router:
     image: eclipse/zenoh:1.6.2
     container_name: zenoh-router-vision
+    # issue #2610 + GH task t_b79d0581: не пытаться рефетчить образ, который
+    # уже лежит локально. С `pull_policy: missing`/`always` compose
+    # при `up -d` без сети возвращает exit 1 и валит весь стек.
+    # `if_not_present` (= старый `never`, но явный) — компромисс: при
+    # наличии тега в registry CI перетегирование + pull делает отдельный
+    # скрипт (`scripts/build/set-docker-tags.sh` + update_and_restart.sh),
+    # а compose при повседневном `up -d` не дёргает docker daemon registry.
+    pull_policy: if_not_present
     network_mode: host
     environment:
       - RUST_LOG=zenoh=info
@@ -25,6 +33,7 @@ services:
     # Tag tracked in docker/vision/.image-versions.{env} — updated by CI after each build
     image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:oak-d-${ROS_DISTRO:-humble}-${OAK_D_TAG:-${IMAGE_TAG}}
     container_name: oak-d
+    pull_policy: if_not_present
     network_mode: host
     privileged: true
     environment:
@@ -60,6 +69,7 @@ services:
     # Tag tracked in docker/vision/.image-versions.{env} — updated by CI after each build
     image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:led-matrix-${ROS_DISTRO:-humble}-${LED_MATRIX_TAG:-${IMAGE_TAG}}
     container_name: led-matrix
+    pull_policy: if_not_present
     network_mode: host
     privileged: true  # Для доступа к SPI (/dev/spidev0.0)
     devices:
@@ -93,6 +103,7 @@ services:
     # Tag tracked in docker/vision/.image-versions.{env} — updated by CI after each build
     image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:ceiling-camera-${ROS_DISTRO:-humble}-${CEILING_CAMERA_TAG:-${IMAGE_TAG}}
     container_name: ceiling-camera
+    pull_policy: if_not_present
     network_mode: host
     privileged: true  # Для доступа к USB camera
     devices:
@@ -147,6 +158,7 @@ services:
   supercollider:
     image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:supercollider-${IMAGE_TAG:-local}
     container_name: supercollider
+    pull_policy: if_not_present
     network_mode: host
     privileged: true  # Для доступа к ALSA audio
     ipc: host      # Share host IPC namespace so dmix SHM is shared with voice-assistant
@@ -180,10 +192,22 @@ services:
 
   # non-ROS service: одноразовый init-контейнер для копирования renardo samples в volume.
   # Не использует ROS/Zenoh, network_mode не требуется.
+  #
+  # GH task t_b79d0581: помечен `profiles: [init]`, чтобы НЕ стартовать
+  # при обычном `docker compose up -d` (без `--profile init`). Downstream
+  # `supercollider` + `voice-assistant` сохраняют `depends_on:
+  # voice-resources-init condition: service_completed_successfully` —
+  # docker compose v2 трактует `condition` через depends_on на
+  # профильный сервис как no-op (downstream стартует без ожидания),
+  # когда профиль init не активирован. Это и есть требуемое поведение
+  # "стек поднимается частично, если init-образ недоступен".
+  # Ручной запуск (пополнить samples): docker compose --profile init up voice-resources-init.
   voice-resources-init:
     # Tag tracked in docker/vision/.image-versions.{env} — updated by CI after each build
     image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:voice-resources-${ROS_DISTRO:-humble}-${VOICE_RESOURCES_TAG:-${IMAGE_TAG}}
     container_name: voice-resources-init
+    pull_policy: if_not_present
+    profiles: ["init"]
     volumes:
       - renardo_samples:/target
     restart: "no"
@@ -195,6 +219,7 @@ services:
     # Format: VOICE_ASSISTANT_TAG=env-gitsha (e.g. test-abc1234) → immutable, pinned to specific build
     image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:voice-assistant-${ROS_DISTRO:-humble}-${VOICE_ASSISTANT_TAG:-${IMAGE_TAG}}
     container_name: voice-assistant
+    pull_policy: if_not_present
     network_mode: host
     privileged: true  # Для доступа к USB audio и ReSpeaker
     ipc: host      # Share host IPC namespace so dmix SHM is shared with supercollider
@@ -326,6 +351,7 @@ services:
   voice-action-server:
     image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:voice-assistant-${ROS_DISTRO:-humble}-${VOICE_ASSISTANT_TAG:-${IMAGE_TAG}}
     container_name: voice-action-server
+    pull_policy: if_not_present
     network_mode: host
     environment:
       - PYTHONUNBUFFERED=1
@@ -356,6 +382,7 @@ services:
     # Tag tracked in docker/vision/.image-versions.{env} — updated by CI after each build
     image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:supervisor-${ROS_DISTRO:-humble}-${SUPERVISOR_TAG:-${IMAGE_TAG}}
     container_name: avatar-supervisor
+    pull_policy: if_not_present
     network_mode: host
     environment:
       - ROS_DOMAIN_ID=0
@@ -427,6 +454,7 @@ services:
   avatar-arbiter:
     image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:supervisor-${ROS_DISTRO:-humble}-${SUPERVISOR_TAG:-${IMAGE_TAG}}
     container_name: avatar-arbiter
+    pull_policy: if_not_present
     network_mode: host
     environment:
       - ROS_DOMAIN_ID=0
@@ -474,6 +502,7 @@ services:
     # Tag tracked in docker/vision/.image-versions.{env} — updated by CI
     image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:quest-${ROS_DISTRO:-humble}-${QUEST_TAG:-${IMAGE_TAG}}
     container_name: rob-box-quest
+    pull_policy: if_not_present
     network_mode: host
     build:
       context: .
@@ -531,6 +560,7 @@ services:
     # Tag tracked in docker/vision/.image-versions.{env} — updated by CI after each build
     image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:telegram-bot-${ROS_DISTRO:-humble}-${TELEGRAM_BOT_TAG:-${IMAGE_TAG}}
     container_name: telegram-bot
+    pull_policy: if_not_present
     network_mode: host
     environment:
       - ROS_DOMAIN_ID=0
@@ -574,6 +604,7 @@ services:
     image: gcr.io/cadvisor/cadvisor:v0.52.1
     container_name: cadvisor-vision
     profiles: ["monitoring"]
+    pull_policy: if_not_present
     network_mode: host
     privileged: true
     devices:
@@ -599,6 +630,7 @@ services:
     image: grafana/promtail:2.9.2
     container_name: promtail-vision
     profiles: ["monitoring"]
+    pull_policy: if_not_present
     network_mode: host
     environment:
       - LOKI_HOST=${LOKI_HOST:-monitoring-machine}
@@ -621,6 +653,7 @@ services:
     image: ollama/ollama:latest
     container_name: ollama
     profiles: ["ai"]
+    pull_policy: if_not_present
     network_mode: host
     volumes:
       - ./data/ollama:/root/.ollama  # Модели хранятся между перезапусками
@@ -649,6 +682,7 @@ services:
     # Tag tracked in docker/vision/.image-versions.{env} — updated by CI after each build
     image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:vision-hailo-${ROS_DISTRO:-humble}-${VISION_HAILO_TAG:-${IMAGE_TAG}}
     container_name: vision-hailo
+    pull_policy: if_not_present
     network_mode: host
     # devices для /dev/hailo0 обязателен для real inference (Phase 1.5).
     # В Phase 1 stub-режим device не нужен, но не вредит — hailortcli scan
@@ -715,6 +749,7 @@ services:
   vision-face:
     image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:vision-hailo-${ROS_DISTRO:-humble}-${VISION_HAILO_TAG:-${IMAGE_TAG}}
     container_name: vision-face
+    pull_policy: if_not_present
     network_mode: host
     devices:
       - /dev/hailo0:/dev/hailo0
