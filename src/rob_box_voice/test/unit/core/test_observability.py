@@ -33,6 +33,7 @@ from rob_box_voice.observability import (
     get_metric,
     is_metrics_enabled,
     record_barge_in,
+    record_music_retry_exhausted,
     record_pending_queue_latency,
     record_quick_decide_verdict,
     record_session_duration,

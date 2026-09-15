@@ -38,6 +38,7 @@ from .dialogue_guards import (
     MUSIC_HARD_STOP_TOOLS,
     MUSIC_STARTING_TOOLS,
     USER_MUSIC_SATISFYING_TOOLS,
+    build_music_retry_exhausted_fallback,
     is_music_stop_command,
     is_vocal_request,
     user_wants_music,
@@ -64,6 +65,15 @@ class MusicGuardVerdictKind(str, Enum):
     #: попробуй ещё раз»). After a nudge the budget is reset so the
     #: next genuine user request gets a fresh one.
     NUDGE = "nudge"
+
+    #: Issue #2561 — babble-retry success rate ~62% (16 случаев Bug C, 38%
+    #: retry не помогает). После исчерпания USER_RETRY-budget возвращаем
+    #: :class:`MusicGuardVerdictKind.FALLBACK` — адаптер публикует
+    #: контекстную фразу-предложение альтернативы («Что-то не получается
+    #: с <название>, давай попробуем по-другому?») вместо безликого
+    #: «Я тут растерялся». Содержит ``prompt`` с этим текстом, чтобы
+    #: адаптер не строил фразу на лету.
+    FALLBACK = "fallback"
 
     #: User asked to STOP music but the LLM called no stop tool — the
     #: adapter must force the stop itself (issue #992 Bug F, live 30.08).
@@ -394,17 +404,34 @@ class MusicGuard:
                 prompt=prompt,
             )
 
-        # Budget exhausted — publish the spoken nudge and reset so the
-        # *next* genuine user request gets a fresh allocation.
+        # 🔴 FIX (issue #2561, 2026-09-15): babble-retry success rate ~62%
+        # (16 случаев Bug C за час, 38% retry не помогает — модель снова
+        # отвечает spoken-фразой с action-verb при tools_called=[]).
+        # Раньше budget=8 → после исчерпания 8 USER_RETRY публиковался
+        # безличный NUDGE «Я тут растерялся — попробуй ещё раз», что
+        # юзером читалось как отмазка. Теперь — НА КАЖДЫЙ цикл исчерпания
+        # budget публикуем FALLBACK с контекстной фразой «Что-то не
+        # получается с <название>, давай попробуем по-другому?» — это
+        # предлагает альтернативу (acceptance criterion #2). NUDGE
+        # остаётся терминальным fallback'ом для случаев, когда FALLBACK
+        # сам по какой-то причине не отработал (например, нет
+        # адаптера). Содержимое фразы строит :func:`build_music_retry_exhausted_fallback`
+        # из :mod:`dialogue_guards`; verdict несёт её в ``prompt``,
+        # чтобы адаптер не строил фразу на лету.
+        fallback_text = build_music_retry_exhausted_fallback(user_input)
         self._log_warning(
-            f"🎵 [issue 992 Bug C] user asked for music but LLM "
-            f"skipped execute_music_code (tools={sorted(tools_set)!r}); "
-            "publishing spoken nudge"
+            f"🎵 [issue 2561] user-budget exhausted "
+            f"({self._user_retry_count}/{self._max_user_retries}); "
+            f"publishing fallback with proposed alternative "
+            f"(user_input={user_input!r}, tools={sorted(tools_set)!r}, "
+            f"fallback={fallback_text!r})"
         )
+        # Reset so the *next* genuine user request gets a fresh budget.
         self._user_retry_count = 0
         return MusicGuardVerdict(
-            kind=MusicGuardVerdictKind.NUDGE,
-            reason="budget_exhausted",
+            kind=MusicGuardVerdictKind.FALLBACK,
+            reason="retry_exhausted",
+            prompt=fallback_text,
         )
 
     # ------------------------------------------------------------------

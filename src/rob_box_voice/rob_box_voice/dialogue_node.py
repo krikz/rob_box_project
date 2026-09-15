@@ -133,6 +133,7 @@ from rob_box_voice.core.dialogue_guards import (
     is_music_stop_command,
     is_planning_narration,
     is_system_template_regurgitated,
+    is_vocal_request,
     user_wants_music,
     user_wants_performance,
 )
@@ -198,6 +199,7 @@ from rob_box_voice.observability import (
     is_metrics_enabled,
     record_barge_in,
     record_fallback,
+    record_music_retry_exhausted,
     record_pending_queue_latency,
     record_quick_decide_verdict,
     record_session_duration,
@@ -4077,6 +4079,53 @@ class DialogueNode(Node):
             return True
         return False
 
+    def _classify_music_user_input_kind(self, user_input: str) -> str:
+        """Issue #2561 — грубая категоризация для Prometheus-лейбла.
+
+        Возвращает одну из меток:
+        * ``"vocal"`` — вокальный запрос («спой/пой/песня»);
+        * ``"track_name"`` — конкретное имя/трек («поставь X»,
+          «включи трек X»);
+        * ``"genre"`` — жанр/настроение («техно», «лаундж»);
+        * ``"general"`` — общий («включи музыку», «давай бит»);
+        * ``"unknown"`` — пустой ввод.
+
+        Эвристика простая и намеренно грубая: нам нужна видимость
+        «на КАКИХ запросах retry выгорает», а не точная классификация.
+        Узкая по построению, чтобы НЕ считать треком обычное
+        «включи музыку».
+        """
+        if not user_input:
+            return "unknown"
+        low = user_input.lower()
+        if is_vocal_request(user_input):
+            return "vocal"
+        # Конкретное имя — слова после префикса содержат существительное
+        # кроме жанров. Эвристика узкая.
+        track_prefixes = (
+            "поставь ", "включи ", "запусти ",
+            "играй ", "сыграй ", "давай ",
+        )
+        for prefix in track_prefixes:
+            if low.startswith(prefix):
+                tail = low[len(prefix):].strip()
+                # если в хвосте есть жанр — это жанр-запрос, не имя
+                if any(
+                    g in tail
+                    for g in (
+                        "музык", "бит", "мелоди", "трек",
+                        "техно", "хаус", "джаз", "рок",
+                        "лаундж", "лаунж", "рэп",
+                    )
+                ):
+                    if "трек" in tail or "мелоди" in tail or tail.startswith("песн"):
+                        return "track_name"
+                    return "genre"
+                return "track_name"
+        if any(g in low for g in ("музык", "бит", "мелоди", "трек")):
+            return "general"
+        return "general"
+
     # ── Issue #992 Bug D — metalanguage / babble detection ───────────
 
     def _is_metalanguage_babble(self, spoken_text: str) -> bool:
@@ -4859,12 +4908,41 @@ class DialogueNode(Node):
                 )
             return False
 
+        if verdict.kind is MusicGuardVerdictKind.FALLBACK:
+            # Issue #2561 (2026-09-15): babble-retry success rate ~62%
+            # на Bug C — после исчерпания USER_RETRY-budget
+            # публикуем FALLBACK с предложением альтернативы, а не
+            # безличный NUDGE. Текст уже собран в
+            # :func:`build_music_retry_exhausted_fallback` и лежит в
+            # ``verdict.prompt``; тут только публикация.
+            self._discard_last_music_reply()
+            fallback_text = verdict.prompt or (
+                "Что-то не получается с музыкой, "
+                "давай попробуем по-другому?"
+            )
+            self._speak_direct(fallback_text)
+            # Prometheus: считаем каждое исчерпание retry-цепочки —
+            # live 15.09 показал 6/16 = 38% Bug C-триггеров выгорают
+            # именно в этом состоянии. Лейбл ``user_input_kind``
+            # помогает понять, на каких запросах retry бесполезен.
+            try:
+                _kind = self._classify_music_user_input_kind(user_input)
+                record_music_retry_exhausted(
+                    guard_name="music_user",
+                    reason=verdict.reason or "retry_exhausted",
+                    user_input_kind=_kind,
+                )
+            except Exception as exc:  # noqa: BLE001
+                self.get_logger().warning(
+                    f"🎵 [issue 2561] Prometheus record failed: {exc}"
+                )
+            return False
+
         if verdict.kind is MusicGuardVerdictKind.NUDGE:
-            # Issue #992 — the exhausted retry's assistant reply is the
-            # same kind of unlabeled fake confirmation as above; retract
-            # it too, otherwise it sits in history right next to the
-            # honest "растерялся" (which is spoken via ``_speak_direct``
-            # and never persisted) as if it were the real answer.
+            # Legacy terminal branch. Оставлен для backward-compat —
+            # :meth:`MusicGuard.evaluate` сейчас отдаёт FALLBACK
+            # вместо NUDGE (issue #2561), но если где-то ещё живёт
+            # кастомный guard, сюда он попадёт.
             self._discard_last_music_reply()
             self._speak_direct(
                 "Я тут растерялся — бит не запустился, попробуй ещё раз."
