@@ -1,0 +1,3 @@
+services:
+  zenoh-router:
+    image: 192.0.2.1:9999/missing/eclipse-zenoh:1.6.2
