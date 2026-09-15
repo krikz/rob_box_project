@@ -493,6 +493,8 @@ jobs:
                 cp "/tmp/${f}" docker/vision/vision-hailo/wheels/
               else
                 echo "::error::${f} не найден ни в /opt/rob_box/vendor, ни в /tmp — real inference build невозможен" >&2
+                echo "::error::Это закрытый артефакт Hailo Developer Zone (нужен аккаунт), скриптом не качается." >&2
+                echo "::error::Что делать: docs/deployment/hailo-vendor-artifacts.md — §2 скачать, §3 извлечь .so из .deb, §4.1 положить в /opt/rob_box/vendor на этом build-хосте." >&2
                 exit 1
               fi
             done
