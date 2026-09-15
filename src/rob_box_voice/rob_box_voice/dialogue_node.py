@@ -179,6 +179,10 @@ from rob_box_voice.core.post_turn_music_policy import (  # noqa: E402
     TurnOutcome,
     decide as _post_turn_music_decide,
 )
+from rob_box_voice.core.turn_kind import (  # noqa: E402  (issue #2627 PR-D)
+    TurnKind,
+    _classify_turn_kind,
+)
 from rob_box_voice.core.music_guard import (
     MusicGuard,
     MusicGuardVerdict,
@@ -3646,6 +3650,29 @@ class DialogueNode(Node):
         speaker_duration_s: float = 0.0,
         from_tg: bool = False,
     ) -> None:
+        # Issue #2627 PR-D — validate the 5 mutually-exclusive flags
+        # at the dispatch boundary. ``TurnKind`` enum + ``_classify_turn_kind``
+        # live at module scope so future refactors can route on a
+        # single value instead of five bool checks; the legacy per-flag
+        # branches below stay 1:1 with the pre-PR-D code (CC-budget
+        # neutral in this PR). Raises :class:`ValueError` if more than
+        # one ``is_X_retry`` flag is set — a bug-class that the legacy
+        # code silently swallowed (the second retry would be dropped).
+        try:
+            turn_kind = _classify_turn_kind(
+                is_dj_auto=is_dj_auto,
+                is_babble_retry=is_babble_retry,
+                is_action_claim_retry=is_action_claim_retry,
+                is_code_retry=is_code_retry,
+                is_synthetic=is_synthetic,
+            )
+        except ValueError as exc:
+            self.get_logger().error(
+                f"❌ [_run_turn] invalid turn-kind flags: {exc}; "
+                "refusing to start the turn"
+            )
+            return
+        del turn_kind  # currently classification-only; future PRs will route on it
         with self._task_lock:
             self._run_task = asyncio.current_task()
         self._run_cancelled = False
