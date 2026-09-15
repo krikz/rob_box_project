@@ -34,8 +34,29 @@ vision_hailo_node:
   # Confidence threshold [0.0, 1.0]. Ниже — drop.
   confidence_threshold: 0.5
 
-  # Подписка (Phase 1: OAK-D compressed).
-  input_topic: /oak/rgb/image_raw/compressed
+  # Подписка (ADR-0101, шов «Взгляд»).
+  #
+  # Старое: жёсткая строка ``input_topic`` дублировалась в трёх местах
+  # (нода, YAML, bash) и расходилась с реальным топиком OAK-D.
+  # Теперь выбор источника — ЕДИНСТВЕННЫЙ параметр ``gaze_source``:
+  #   - oak_d           → /camera/camera/color/image_raw      (Image msg)
+  #   - ceiling_camera  → /ceiling_camera/image_raw/compressed (CompressedImage msg)
+  #   - stub            → синтетический кадр (CI/smoke)
+  # Топик/msg-type/транспорт спрятаны внутри ``rob_box_perception.gaze``
+  # (см. OakDSource, CeilingCameraSource). Согласовано с
+  # ``docker/vision/config/oak-d/oak_d_config.yaml`` (i_rs_compat:true →
+  # rgb→color, namespace=camera → /camera/camera/color/image_raw).
+  #
+  # input_topic сохранён в YAML для back-compat с уже задеплоенными
+  # инструментами (diagnose.sh, force_publish.sh и т.д.), но НЕ
+  # читается нодой напрямую.
+  gaze_source: oak_d
+  input_topic: /camera/camera/color/image_raw
+
+  # Сколько секунд ждать первый кадр от real-источника (ADR-0101,
+  # capability-honest). При hailo_enabled=true нода fail-fast'ит
+  # если источник не отдал кадр за это время.
+  first_frame_timeout_sec: 10.0
 
   # Публикация VisionEvent.
   output_topic: /vision/hailo/events
