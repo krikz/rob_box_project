@@ -312,22 +312,38 @@ class TestExtractText:
     def test_text_gets_stripped(self):
         assert _extract_text({"text": "  расскажи сказку  "}) == "расскажи сказку"
 
-    def test_empty_text_is_none(self):
-        # Пустая строка после strip → None (а не "")
-        assert _extract_text({"text": ""}) is None
-        assert _extract_text({"text": "   "}) is None
+    def test_empty_text_returns_empty_string_not_none(self):
+        # ADR-0096: valid empty result (silence recognised as empty)
+        # must NOT be coerced to None — that path would raise
+        # MiniMaxSTTInvalidResponseError downstream, semantically wrong.
+        assert _extract_text({"text": ""}) == ""
+        assert _extract_text({"text": "   "}) == ""
+
+    def test_non_string_text_returns_empty_string(self):
+        # ADR-0096: key exists but value is not a string → degraded but
+        # valid empty (we cannot extract text, but the response shape is
+        # not "invalid").
+        assert _extract_text({"text": 42}) == ""
+        assert _extract_text({"text": ["привет"]}) == ""
 
     def test_nested_data_text(self):
         # Некоторые зеркала отвечают в {"data": {"text": ...}}
         assert _extract_text({"data": {"text": "привет"}}) == "привет"
 
+    def test_nested_data_empty_text_returns_empty_string(self):
+        # ADR-0096: nested mirror with empty text → valid empty.
+        assert _extract_text({"data": {"text": ""}}) == ""
+
+    def test_nested_data_without_text_returns_empty_string(self):
+        # ADR-0096: mirror shape {"data": {}} — wrapping is valid,
+        # but no speech. Valid empty result, not invalid response.
+        assert _extract_text({"data": {}}) == ""
+
     def test_missing_text_returns_none(self):
+        # Truly malformed: no ``text`` key at any level → None signals
+        # to caller that MiniMaxSTTInvalidResponseError should be raised.
         assert _extract_text({"foo": "bar"}) is None
         assert _extract_text({}) is None
-
-    def test_non_string_text_returns_none(self):
-        # Robustness: если сервер случайно прислал {"text": 42}, не падаем.
-        assert _extract_text({"text": 42}) is None
 
     def test_non_mapping_returns_none(self):
         assert _extract_text("not a dict") is None
@@ -390,6 +406,102 @@ class TestRecognizeSuccess:
         provider = _make_provider(transport)
 
         assert provider.recognize(SILENCE_AUDIO) == "привет"
+
+
+# ---------------------------------------------------------------------------
+# recognize() — empty text (ADR-0096 + ADR-0091 §7)
+# ---------------------------------------------------------------------------
+
+
+class TestRecognizeEmpty:
+    """Полная цепочка ``recognize()`` при пустом ответе ASR.
+
+    Issue #2470: раньше ``_extract_text({"text":""}) → None → raise
+    ``MiniMaxSTTInvalidResponseError`` → ``recognize()`` отдавал
+    ``None`` через except. Это **семантически неверно** (тишина ≠
+    ошибка) и спамит WARNING в логи (alert-fatigue, issue #1193).
+
+    ADR-0096 фиксит: валидный пустой результат возвращается как
+    ``""`` и идёт в ``select_recognition`` → ``reason="empty"``
+    per ADR-0091 §7.
+    """
+
+    def test_recognize_with_empty_text_returns_empty_string(self):
+        transport = _StubHTTPClient(status=200, payload={"text": ""})
+        provider = _make_provider(transport)
+
+        result = provider.recognize(SILENCE_AUDIO)
+
+        # НЕ None (раньше был None из-за except). НЕ exception.
+        # Пустая строка = ASR честно сказал «тишина».
+        assert result == ""
+        assert result is not None
+
+    def test_recognize_with_whitespace_only_returns_empty_string(self):
+        transport = _StubHTTPClient(status=200, payload={"text": "   "})
+        provider = _make_provider(transport)
+
+        assert provider.recognize(SILENCE_AUDIO) == ""
+
+    def test_recognize_with_nested_empty_data_returns_empty_string(self):
+        # Зеркальный формат: {"data": {"text": ""}}.
+        transport = _StubHTTPClient(
+            status=200, payload={"data": {"text": ""}}
+        )
+        provider = _make_provider(transport)
+
+        assert provider.recognize(SILENCE_AUDIO) == ""
+
+    def test_recognize_with_non_string_text_returns_empty_string(self):
+        # ADR-0096: ключ есть, но значение не строка → degraded, но
+        # НЕ invalid. Робот молчит (reason="empty"), но без WARNING.
+        transport = _StubHTTPClient(status=200, payload={"text": 42})
+        provider = _make_provider(transport)
+
+        assert provider.recognize(SILENCE_AUDIO) == ""
+
+    def test_no_warning_logged_on_empty_text(self, caplog):
+        # Issue #1193: alert-fatigue. Раньше каждый пустой ответ ASR
+        # логировал WARNING через ``MiniMaxSTTInvalidResponseError``.
+        # Теперь — INFO или ничего (мы хотим отличать реальные сбои
+        # от штатной тишины).
+        transport = _StubHTTPClient(status=200, payload={"text": ""})
+        provider = _make_provider(transport)
+
+        with caplog.at_level(logging.WARNING, logger="rob_box_voice.stt_providers.minimax_provider"):
+            result = provider.recognize(SILENCE_AUDIO)
+
+        assert result == ""
+        # ``MiniMaxSTTInvalidResponseError`` НЕ должен упоминаться.
+        assert "MiniMaxSTTInvalidResponseError" not in caplog.text
+        # И никаких WARNING про missing text.
+        assert "missing text" not in caplog.text
+
+    def test_transcribe_with_empty_text_returns_response_not_raises(self):
+        # ``transcribe()`` тоже не должен raise'ить на пустом тексте —
+        # это валидный результат, не invalid response.
+        from rob_box_voice.stt_providers.minimax_provider import (
+            MiniMaxSTTResponse,
+        )
+
+        transport = _StubHTTPClient(status=200, payload={"text": ""})
+        provider = _make_provider(transport)
+
+        response = provider.transcribe(SILENCE_AUDIO)
+
+        assert isinstance(response, MiniMaxSTTResponse)
+        assert response.text == ""
+
+    def test_transcribe_with_missing_text_key_still_raises(self):
+        # Negative test (ADR-0096): действительно невалидный ответ —
+        # по-прежнему raise. Это инвариант.
+        transport = _StubHTTPClient(status=200, payload={"foo": "bar"})
+        provider = _make_provider(transport)
+
+        with pytest.raises(MiniMaxSTTInvalidResponseError) as excinfo:
+            provider.transcribe(SILENCE_AUDIO)
+
+        assert "missing 'text'" in str(excinfo.value)
 
 
 # ---------------------------------------------------------------------------

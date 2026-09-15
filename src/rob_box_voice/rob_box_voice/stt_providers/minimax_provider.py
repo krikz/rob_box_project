@@ -394,7 +394,7 @@ class MiniMaxSTTProvider:
         except MiniMaxSTTError as exc:
             _log.warning("minimax STT: %s", exc)
             return None
-        return response.text if response else None
+        return response.text
 
     def transcribe(self, audio_bytes: bytes) -> MiniMaxSTTResponse:
         """POST ``audio_bytes`` to MiniMax and return the parsed response.
@@ -452,11 +452,18 @@ class MiniMaxSTTProvider:
 
         text = _extract_text(payload)
         if text is None:
+            # Truly malformed response — no ``text`` key at any level.
+            # An empty/whitespace string is a VALID empty result (silence
+            # recognised as empty); see ADR-0096 + ADR-0091 §7.
             raise MiniMaxSTTInvalidResponseError(
                 f"minimax STT: missing 'text' in response: {payload!r}"
             )
 
-        _log.info("minimax STT: ok %dms text=%r", latency_ms, text[:80])
+        _log.info(
+            "minimax STT: ok %dms text=%r",
+            latency_ms,
+            text[:80] if text else "",
+        )
         return MiniMaxSTTResponse(
             text=text,
             language=(payload.get("language") if isinstance(payload, Mapping) else None),
@@ -478,21 +485,45 @@ class MiniMaxSTTProvider:
 def _extract_text(payload: Any) -> Optional[str]:
     """Return the recognized text from a MiniMax STT response.
 
+    Three-state contract (ADR-0096):
+        * ``None`` — invalid response: ``text`` key is absent at both
+          top-level and ``{"data": {...}}`` nested. Caller should
+          raise ``MiniMaxSTTInvalidResponseError``.
+        * ``""`` — valid empty result: server returned ``{"text":""}``
+          (silence recognised as empty, or non-string value where
+          the ``text`` key is present). Caller should treat as
+          ``reason="empty"`` per ADR-0091 §7.
+        * ``non-empty str`` — recognised text, ``.strip()`` applied.
+
     MiniMax's documented JSON shape has ``text`` at the top level. Some
     third-party mirrors wrap it as ``{"data": {"text": ...}}``; we accept
     both for robustness.
     """
     if not isinstance(payload, Mapping):
         return None
+
+    def _coerce(value: Any) -> Optional[str]:
+        """Resolve a ``text``-like value: ``str`` (stripped, "" is OK),
+        non-string with key present → "" (degraded but valid), key
+        absent → ``None`` (signal to caller: look elsewhere).
+        """
+        if isinstance(value, str):
+            return value.strip()  # may be "" — that is a valid empty result
+        return ""  # key exists but value is not a string: degraded, but valid
+
     text = payload.get("text")
-    if isinstance(text, str):
-        return text.strip() or None
+    if text is not None:
+        return _coerce(text)
+
     nested = payload.get("data")
     if isinstance(nested, Mapping):
-        text = nested.get("text")
-        if isinstance(text, str):
-            return text.strip() or None
-    return None
+        nested_text = nested.get("text")
+        if nested_text is not None:
+            return _coerce(nested_text)
+        return ""  # ``data`` mapping present, but no ``text`` inside → valid empty
+        # (degraded; mirrors that wrap but have nothing to say)
+
+    return None  # neither top-level nor nested ``text`` key present
 
 
 def _raise_for_http_status(resp: httpx.Response) -> None:
