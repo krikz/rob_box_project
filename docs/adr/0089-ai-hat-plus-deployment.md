@@ -277,7 +277,8 @@ Community ROS2-обёртки (для Phase 2 опционально): `hailo_ro
 - [ ] `hailortcli scan` на Vision Pi возвращает `hailo8` device.
 - [ ] Docker-сервис `vision-hailo` стартует через `docker compose -f docker/vision/docker-compose.yaml up vision-hailo` (smoke).
 - [ ] `ros2 topic list` показывает `/vision/hailo/events` после старта.
-- [ ] YOLOv8n FPS ≥ 30 на RGB потоке OAK-D 640×480 (измерено через `ros2 topic hz`, не «вроде работает»).
+- [ ] **Инференс-латентность** `yolov8n.hef` ≤ 15 ms/кадр на 640×640 (бенчмарк на статичном кадре; бюджет §6 ~7–10 ms, не «вроде работает»).
+- [ ] **Частота событий** `/vision/hailo/events` соответствует потоку камеры OAK-D (~5 Гц при `oak_d_config.yaml` `i_fps: 5.0`; измерено через `ros2 topic hz`, не «вроде работает»). Событий больше, чем кадров, не бывает — критерий «FPS ≥ 30» снят (issue #2602).
 - [ ] NeoPixel LED продолжает работать одновременно (не конфликт SPI/PCIe).
 - [ ] `pytest src/rob_box_perception/test/unit/test_vision_hailo_node.py` — 8/8 зелёные.
 - [ ] `context_aggregator` получает события и публикует `vision_events_json` непустой (smoke test через `ros2 topic echo`).
