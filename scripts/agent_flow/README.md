@@ -319,6 +319,100 @@ NIGHTLY_REVIEW_FORCE=true NIGHTLY_REVIEW_DATE=2026-09-02 bash scripts/agent_flow
 (`04:00-07:00` и `09:00-13:00` MSK) — там висит MAINTENANCE и тик
 пропускается. Двигаете PEAK — двигайте `NIGHTLY_REVIEW_HOUR`.
 
+### `validate_pr_scope.sh` — post-PR / pre-merge scope gate (ADR-0095, 14.09.2026)
+
+Блокирует push/PR, если в diff vs `BASE_REF` (default `origin/develop`)
+есть файлы вне allowed prefixes. Закрывает **два** класса pollution:
+
+1. **Drift** (ADR-0055, issue #2038) — воркер притащил в PR застрявшие
+   коммиты прошлых эпиков (msgpack encoder AV-17, supervisor_state,
+   status_hud, tests) — 12 «чужих» файлов в PR #2036.
+2. **Post-rebase pollution** (ADR-0095, issue #2444) — после
+   `git rebase origin/develop` в HEAD/working tree появились мусорные
+   файлы от предыдущих эпиков (#2349 hailo, #2003 pregenerate).
+   Классический симптом: 5 из 6 PR в develop содержат мусорные файлы
+   не от своего issue.
+
+**Два режима** (переключаются переменной `PR_SCOPE_MODE`):
+
+|| Режим | Diff | Когда использовать | Default |
+||-------|------|---------------------|---------|
+|| `post-PR` (по умолчанию) | `git diff BASE_REF...HEAD` (трёхточечный) | merge-gate после `gh pr create` | да |
+|| `pre-merge` (`PR_SCOPE_MODE=pre-merge`) | `git diff BASE_REF` + `git ls-files --others --exclude-standard` | воркер после `rebase origin/develop`, **до** `git push`/`gh pr create` | нет, явный opt-in |
+
+**Pre-merge режим ловит pollution ДО коммита** — типичный сценарий:
+воркер сделал `rebase`, в `git status` появились untracked файлы от
+прошлых эпиков. С `PR_SCOPE_MODE=pre-merge` скрипт возьмёт и закоммиченный
+HEAD, и staged/unstaged, и untracked — суммарно. Без него — только
+HEAD (трёхточечный diff), pollution между rebase и `git add` пройдёт
+мимо.
+
+**Регресси-тест** покрывает оба режима: `tests/test_validate_pr_scope.sh`
+(11 сценариев: A–J — OK, prefix, prefix+glob, drift, INFO, defensive
+MAX_OUT_OF_SCOPE, SKIP, bad base, merge-commit skip, **pre-merge clean,
+pre-merge dirty working tree, pre-merge committed branch**).
+
+**Env:**
+
+|| Var | Default | Что делает |
+||-----|---------|------------|
+|| `PR_ALLOWED_PREFIXES` | (пусто) | comma-separated: `"docs/adr/,src/rob_box_voice/"`. Пусто → INFO-режим (exit 0, печатает файлы). |
+|| `PR_ALLOWED_GLOBS` | (пусто) | fnmatch-style: `"*.md,docs/**/*.png"`. Дополняет prefix'ы. |
+|| `BASE_REF` | `origin/develop` | эталон; первый позиционный аргумент перекрывает. |
+|| `MAX_OUT_OF_SCOPE` | `10` | defensive guard в INFO-режиме (`> MAX` → exit 1 даже без prefixes). |
+|| `SKIP_PR_SCOPE` | `false` | opt-out (legitimate fix для смежного файла). |
+|| `PR_SCOPE_MODE` | (пусто → post-PR) | `pre-merge` — расширенный режим (working tree + index + untracked vs `BASE_REF`). |
+
+**Exit codes:**
+
+- `0` — OK (нет out-of-scope, или SKIP, или INFO-режим без drift);
+- `1` — есть out-of-scope файлы, blocking fail; в stderr — список файлов
+  и actionable «fix path» (cherry-pick / пересоздать ветку / opt-out);
+- `2` — usage error (нет git, base ref недоступен).
+
+**Использование (воркер вызывает перед `gh pr create` / push):**
+
+```bash
+# 1) post-PR gate (по умолчанию) — после коммита, перед push:
+PR_ALLOWED_PREFIXES="docs/adr/,src/rob_box_voice/" \
+    bash scripts/agent_flow/validate_pr_scope.sh origin/develop
+# → OK или FAIL со списком файлов
+
+# 2) pre-merge gate (ADR-0095) — после rebase, ДО push, чтобы поймать
+# pollution до коммита:
+PR_SCOPE_MODE=pre-merge \
+PR_ALLOWED_PREFIXES="docs/adr/" \
+    bash scripts/agent_flow/validate_pr_scope.sh origin/develop
+# → если FAIL:  git checkout origin/develop -- <junk-files>
+#                git commit --amend --no-edit
+#                git push --force-with-lease
+
+# 3) INFO-режим — без PR_ALLOWED_PREFIXES (только посмотреть, что в diff):
+bash scripts/agent_flow/validate_pr_scope.sh origin/develop
+
+# 4) Opt-out для legitimate fix'а (файл формально вне scope карточки):
+SKIP_PR_SCOPE=true bash scripts/agent_flow/validate_pr_scope.sh
+
+# 5) Тест:
+bash scripts/agent_flow/tests/test_validate_pr_scope.sh
+# ожидаемый итог: All scenarios PASSED exit 0
+```
+
+**Регистрация:** в `EXPECTED` `install.sh` → drift-detect контролирует,
+что скрипт не пропал из репо. Также см. `worker_scope_check.sh`
+(обёртка для воркеров) и `worker_post_flight.sh` (вызывает
+post-PR gate перед `gh pr create`).
+
+**См. также:**
+
+- ADR-0055 §3 — оригинальный drift-guard;
+- ADR-0095 — pollution-detection rationale + raw-evidence;
+- `analysis/diagnose-2444-pr-pollution.md` — диагностика 5/6 PR с мусором;
+- `.agents/skills/rebase-pollution-check/SKILL.md` — пошаговый ритуал
+  воркера после rebase (`git fetch origin develop` → pre-merge gate →
+  `git checkout origin/develop -- <junk-files>` → `git commit --amend`
+  → `git push --force-with-lease`).
+
 ### `validate_honesty.sh` — pre-PR check на «голословный PASS» (ADR-0018, 18.08.2026)
 
 Сканирует PR body (или файл / stdin) на claim-маркеры (`проверил`, `работает`,
