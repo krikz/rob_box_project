@@ -2318,6 +2318,107 @@ class TestComposeMusicToolMelodyByName:
         assert "blip" in code
 
 
+class TestComposeMusicToolCounterSynthAndThemeOctaves:
+    """counter_synth и theme_octaves доходят от вызова compose_music до
+    сгенерированного Renardo-кода (issue #2463).
+
+    До фикса ``arranger.spec_from_flat`` уже умел принимать оба параметра,
+    но ``ComposeMusicTool`` их не знал: ни в схеме параметров, ни в
+    сигнатуре ``execute``. В результате фолбэк ``counter_synth or
+    lead_synth`` срабатывал на КАЖДОМ вызове (второй голос всегда звучал
+    тембром темы), а ``theme_octaves`` всегда получал дефолт ``True`` и
+    удвоение в октаву нельзя было выключить.
+    """
+
+    def _make_tool(self, mock_node, rtttl_library=None):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        return ComposeMusicTool(mock_node, mgr, rtttl_library), mgr
+
+    # 16 шестнадцатых (0.25 бита каждая) на 4 бита формы — плотность 4
+    # атаки/бит, выше порога DENSE_ONSETS_PER_BEAT=1.2: второй голос и
+    # удвоение доступны. Все ноты от C5=72 — выше MIN_MIDI_FOR_OCTAVE_DOUBLE
+    # (C4=60), поэтому удвоение не блокируется регистром.
+    _DENSE_RTTTL = "dense:d=16,o=5,b=120:c,d,e,f,g,a,b,c6,c,d,e,f,g,a,b,c6"
+
+    def _dense_library(self):
+        rtttl_library = Mock()
+        rtttl_library.get.return_value = {
+            "name": "dense",
+            "title": "Dense Theme",
+            "rtttl": self._DENSE_RTTTL,
+        }
+        return rtttl_library
+
+    def test_schema_exposes_both_parameters(self, mock_node):
+        tool, _mgr = self._make_tool(mock_node)
+        by_name = {p.name: p for p in tool.parameters}
+        assert "counter_synth" in by_name
+        assert "theme_octaves" in by_name
+
+        counter = by_name["counter_synth"]
+        assert counter.type == "string"
+        assert counter.required is False
+        assert counter.enum is not None and "strings" in counter.enum
+
+        octaves = by_name["theme_octaves"]
+        assert octaves.type == "boolean"
+        assert octaves.required is False
+
+    def test_counter_synth_reaches_the_generated_code(self, mock_node):
+        """Явный counter_synth, отличный от lead_synth, звучит на слое d3
+        своим тембром, а не тембром темы (фолбэк not в силе)."""
+        tool, mgr = self._make_tool(mock_node, self._dense_library())
+        mgr.execute_code = Mock(return_value={"success": True})
+        result = tool.execute(
+            name="dense", lead_synth="blip", bass_synth="dub",
+            pad_synth="warmpad", counter_synth="strings",
+        )
+        assert result.success is True
+        code = mgr.execute_code.call_args.args[0]
+        counter_line = next(l for l in code.splitlines() if l.startswith("d3 >>"))
+        assert "strings(" in counter_line
+        assert "blip(" not in counter_line
+
+    def test_counter_synth_omitted_still_falls_back_to_lead_synth(self, mock_node):
+        """Обратная совместимость: без counter_synth второй голос звучит
+        тембром темы — старым вызовам compose_music поведение не меняется."""
+        tool, mgr = self._make_tool(mock_node, self._dense_library())
+        mgr.execute_code = Mock(return_value={"success": True})
+        result = tool.execute(
+            name="dense", lead_synth="blip", bass_synth="dub", pad_synth="warmpad",
+        )
+        assert result.success is True
+        code = mgr.execute_code.call_args.args[0]
+        counter_line = next(l for l in code.splitlines() if l.startswith("d3 >>"))
+        assert "blip(" in counter_line
+
+    def test_theme_octaves_false_removes_the_octave_doubling(self, mock_node):
+        tool, mgr = self._make_tool(mock_node, self._dense_library())
+        mgr.execute_code = Mock(return_value={"success": True})
+        result = tool.execute(
+            name="dense", lead_synth="blip", bass_synth="dub",
+            pad_synth="warmpad", theme_octaves=False,
+        )
+        assert result.success is True
+        code = mgr.execute_code.call_args.args[0]
+        lead_line = next(l for l in code.splitlines() if l.startswith("p2 >>"))
+        assert "(60, 72)" not in lead_line  # удвоение снято явным флагом
+        assert "d3 >>" in code             # второй голос никуда не делся
+
+    def test_theme_octaves_omitted_defaults_to_true(self, mock_node):
+        """Обратная совместимость: без theme_octaves удвоение на плотной
+        теме по-прежнему включено, как и до появления параметра в схеме."""
+        tool, mgr = self._make_tool(mock_node, self._dense_library())
+        mgr.execute_code = Mock(return_value={"success": True})
+        result = tool.execute(
+            name="dense", lead_synth="blip", bass_synth="dub", pad_synth="warmpad",
+        )
+        assert result.success is True
+        code = mgr.execute_code.call_args.args[0]
+        lead_line = next(l for l in code.splitlines() if l.startswith("p2 >>"))
+        assert "(60, 72)" in lead_line
+
+
 # ---------------------------------------------------------------------------
 # StopMusicTool
 # ---------------------------------------------------------------------------
