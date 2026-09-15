@@ -454,7 +454,34 @@ class TestHallucinatedMidiGuardWiredIntoHandleResult:
 
 
 class TestHandleResultCCBaselineMatches:
-    """CC-budget guard (ADR-0021) — _handle_result CC согласован с baseline."""
+    """CC-budget guard (ADR-0021) — _handle_result CC согласован с baseline.
+
+    Этот тест требует ``radon`` в PATH. Если radon не установлен
+    (например, на CI runner без dev-dependencies), тест skip'ается —
+    ADR-0021 R1 baseline остаётся source of truth, а локальный
+    ``make lint-cc`` всё равно сработает у разработчика, у которого
+    radon стоит (это часть dev-стека).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _require_radon(self) -> None:
+        import shutil
+        import subprocess
+
+        if shutil.which("radon") is None:
+            pytest.skip("radon не установлен — CC-budget тест пропущен")
+        # Также проверим, что ``python3 -m radon cc`` запускается.
+        probe = subprocess.run(
+            ["python3", "-m", "radon", "--version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if probe.returncode != 0:
+            pytest.skip(
+                f"radon не доступен через python3 -m radon: "
+                f"stderr={probe.stderr.strip()!r}"
+            )
 
     def test_handle_result_cc_within_baseline(self) -> None:
         import importlib
