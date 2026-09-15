@@ -82,14 +82,15 @@ telegram-push в `agent-flow-handoff.sh:92` (`chat_id=495039871`, notifier-profi
 
 **Создан follow-up:**
 
-- kanban-карточка `t_a1b2c3d4` (назначение: **devops**, owner: krikz) — создать
+- kanban-карточка `t_d215c9e0` (назначение: **devops**, owner: krikz) — создать
   Telegram-чат/канал `#devops-oncall`, прописать `DEVOPS_ALERT_CHAT_ID` в
   infra-secrets, эскалировать на Шифу для подтверждения имени. До готовности —
   работает GitHub-comment fallback (вариант A).
-- kanban-карточка `t_fc6da8b6` (назначение: **architect**) — ADR-0022 amendment:
-  добавить в §2 «Инвариант завершения» строку «либо алерт в `#devops-oncall`
-  сработал до GATE-2 close, либо GitHub-comment @mention опубликован» (см.
-  issue #2394 acceptance).
+- kanban-карточка `t_fc6da8b6` (назначение: **architect**, **уже создана** parent-карточкой
+  `t_6927a4c5`) — ADR-0022 §2 amendment: добавить в инвариант завершения строку
+  «либо алерт в `#devops-oncall` сработал до GATE-2 close, либо GitHub-comment
+  @mention опубликован» (см. issue #2394 acceptance). PM не дублирует эту задачу —
+  только линкует.
 
 **Что требуется от Шифу:** явный комментарий на #2394 с подтверждением имени
 канала (`#devops-oncall` или иное) или альтернативного пути (Slack/Discord/webhook).
