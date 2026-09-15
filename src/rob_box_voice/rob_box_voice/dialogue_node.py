@@ -112,6 +112,7 @@ from rob_box_voice.core.llm_skip_reasons import (
 )
 from rob_box_voice.scheduler.quick_decide import QuickVerdict, quick_decide
 from rob_box_voice.core.dialogue_guards import (
+    ACTION_CLAIM_RULES,
     BABBLE_BANNED_OPENERS as BABBLE_BANNED_OPENERS,
     BABBLE_PERFORMANCE_KEYWORDS as BABBLE_PERFORMANCE_KEYWORDS,
     MUSIC_GUARD_KEYWORDS,
@@ -121,6 +122,7 @@ from rob_box_voice.core.dialogue_guards import (
     MUSIC_STARTING_TOOLS,
     MUSIC_RETRY_PROMPT_PREFIX,
     MUSIC_STOP_OVERRIDES,
+    build_music_prose_action_fallback,
     build_music_retry_prompt,
     build_renardo_code_retry_prompt,
     build_system_regurgitate_retry_prompt,
@@ -4313,6 +4315,7 @@ class DialogueNode(Node):
         spoken: str,
         user_input: Optional[str],
         tools_called: tuple,
+        dj_active: bool = False,
     ) -> bool:
         """Issue #992 Bug E — одноразовый ретрай «сказал, но не сделал».
 
@@ -4324,6 +4327,17 @@ class DialogueNode(Node):
         должны совпасть И запрос юзера, И формулировка отчёта, И отсутствие
         нужного тула.
 
+        Issue #2548: добавлен ``dj_active`` — флаг активной DJ-сессии
+        (``self._dj.state.enabled``). В DJ-сценарии (``_handle_result``
+        вызывается из user-turn'а ``is_dj_auto=False``, но DJ включена)
+        prose-action-claim'ы без явного command-verb в ``user_input``
+        («вплетай их красиво» / «пока ничего не звучит» / «давай старайся»)
+        теперь тоже ловятся — иначе юзер четыре раза подряд слышал
+        «всё готово» при неизменной музыке (live 15.09, TG-сессия DJ,
+        карточка #2548). В бытовом контексте ``dj_active=False`` —
+        гейт ``requires_dj_or_music_kw`` отсекает ложные срабатывания
+        на «сделала уборку» / «помой посуду».
+
         Returns:
             ``True`` — ретрай отправлен, вызывающий НЕ должен публиковать
             текст в TTS (иначе юзер услышит неправду, а потом ответ ретрая).
@@ -4334,6 +4348,7 @@ class DialogueNode(Node):
             user_input=user_input,
             spoken=spoken,
             tools_called=tuple(tools_called or ()),
+            dj_active=dj_active,
         )
         if rule is None:
             return False
@@ -5662,12 +5677,89 @@ class DialogueNode(Node):
         # Live 30.08: «Точка сохранена.» / «Точка удалена.» / ««Тисбит»
         # удалён из медиатеки.» — всё с tools=[]. Один ретрай, тем же
         # контрактом, что и Bug D выше.
+        #
+        # Issue #2548 — в DJ-сессии ``dj_active=self._dj.state.enabled``;
+        # prose-action-claim без явного command-verb в user_input
+        # («вплетай их красиво» / «давай старайся» / «пока ничего не
+        # звучит») теперь тоже триггерит одноразовый ретрай, чтобы
+        # юзер не слышал «всё готово» при неизменной музыке.
+        # is_dj_auto=False — это user-turn (не DJ-тикер); глобальный
+        # флаг активной DJ-сессии передаётся отдельно.
         if spoken and self._check_unbacked_action_claim_and_retry(
             spoken=spoken,
             user_input=raw_user_command or user_input,
             tools_called=tools_called,
+            dj_active=bool(getattr(self._dj, "state", None)
+                           and self._dj.state.enabled),
         ):
             return
+        # Issue #2548 — fallback spoken, когда ретрай уже потрачен, а
+        # action-claim повторился. Условия все ОДНОВРЕМЕННО:
+        #   1) ``_action_claim_retry_used == True`` (значит ретрай
+        #      уже стрелял в этой user-turn — на следующем ходе
+        #      guard молчит);
+        #   2) ``spoken`` содержит action-claim-verb (тот же
+        #      claim_re, что в music_prose_action);
+        #   3) ``tools_called=()`` и ``speak_text_real == 0`` (как у
+        #      других guards в этой цепочке);
+        #   4) DJ-сессия активна ИЛИ user_wants_music(user_input);
+        #   5) не is_dj_auto (на DJ auto-transition этот fallback
+        #      подавляется — там своя ветка DJ-подавления выше);
+        #   6) нет result.error (не маскируем честное сообщение
+        #      об ошибке LLM).
+        # При выполнении всех условий — заменяем spoken на
+        # констатацию «не получилось, попробую ещё раз» БЕЗ claim
+        # о выполнении. Это acceptance criterion #2: юзер НЕ
+        # слышит «всё готово» / «сделала» / «обновил» при
+        # неизменной музыке.
+        if (
+            spoken
+            and not is_dj_auto
+            and result.error is None
+            and not tools_called
+            and speak_text_real == 0
+            and getattr(self, "_action_claim_retry_used", False)
+        ):
+            dj_active = bool(
+                getattr(self._dj, "state", None)
+                and self._dj.state.enabled
+            )
+            try:
+                music_ctx = dj_active or bool(
+                    user_wants_music(raw_user_command or user_input or "")
+                )
+            except Exception:
+                music_ctx = dj_active
+            if music_ctx:
+                # Проверяем, что spoken содержит тот же prose-action
+                # claim-verb, что и music_prose_action.claim_re —
+                # иначе fallback сработает на ЛЮБОЙ spoken после
+                # ретрая, что слишком широко (например, если ретрай
+                # был по waypoint-claim, а не по music-claim).
+                music_rule = next(
+                    (r for r in ACTION_CLAIM_RULES
+                     if r.category == "music_prose_action"),
+                    None,
+                )
+                if music_rule and music_rule.claim_re.search(spoken):
+                    fallback = build_music_prose_action_fallback(
+                        raw_user_command or user_input or ""
+                    )
+                    self.get_logger().warning(
+                        f"🛟 [issue 2548 fallback] action-claim повторился "
+                        f"после ретрая — публикую констатацию вместо "
+                        f"claim'а: spoken={spoken[:80]!r}"
+                    )
+                    try:
+                        self._publish_response(fallback, animation="neutral")
+                    except Exception as exc:  # noqa: BLE001
+                        try:
+                            self.get_logger().warning(
+                                f"⚠️ fallback publish failed: {exc}"
+                            )
+                        except Exception:
+                            pass
+                    return
         # 💡 Diagnostic: log the actual state before deciding what to do.
         # Helps answer "why did the robot stay silent?" without guesswork.
         self.get_logger().info(
