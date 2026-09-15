@@ -1504,6 +1504,257 @@ PR #${_po_pr} (state_reason=${_po_state_reason}) ссылается на это�
     return 0
 }
 
+# --- G10c: PR-merged-but-card-pending guard (ретро 15.09 t_e39afb1c) -------
+# Сценарий: kanban-карточка для issue сидит в blocked/ready, а на самом
+# деле ВСЕ её prerequisite-PR уже merged в develop через альтернативный путь
+# (мульти-PR, "partially addresses", e2e-фикс через nightly). G10d выше
+# снимает process-метки с самого PR, но КАРТОЧКА остаётся — и продолжает
+# блокировать dispatcher. Этот guard идёт дальше: cancel карточки +
+# событие `cancelled_prereq_already_merged` в task_events (для аудита
+# ретро t_e39afb1c).
+#
+# Контракт (см. test_prereq_merged_but_card_pending.sh, ретро-key
+# g10c-prereq-merged-card-cancel):
+#   - Карточка ∈ {blocked, ready, running} с непустым merged_pr_set.
+#   - Для каждого PR: state=closed && merged=true (REST API).
+#   - Если ВСЕ merged → cancel через hermes kanban archive + comment +
+#     событие `cancelled_prereq_already_merged`.
+#   - Race-window G9c: если на той же ветке есть другая активная карточка —
+#     cancel чужих (НЕ текущей, она остаётся primary).
+#   - needs-e2e + nightly_passed (ADR-0079 JSONL) → cancel (фикс дошёл до
+#     develop через nightly-цикл).
+#   - Idempotency: если карточка уже archived — skip.
+#   - Fail-OPEN: gh-ошибки → warning-лог, карточка не трогается.
+# Backward-compat (acceptance #5): G10d-путь (Closes в PR-body) продолжает
+# работать; мы только добавляем второй триггер (multi-PR + nightly).
+PREREQ_MERGED_BUT_CARD_PENDING_GUARD="${PREREQ_MERGED_BUT_CARD_PENDING_GUARD:-true}"
+prereq_merged_but_card_pending() {
+    [ "$PREREQ_MERGED_BUT_CARD_PENDING_GUARD" = "true" ] || {
+        log "g10c-prereq-merged-card-cancel: guard disabled (PREREQ_MERGED_BUT_CARD_PENDING_GUARD=false)"
+        return 0
+    }
+    # Active-карточки из kanban DB (sqlite, как kanban_card_status).
+    local _pm_db="${KANBAN_DB:-$HOME/.hermes/kanban/boards/$KANBAN_BOARD/kanban.db}"
+    [ -f "$_pm_db" ] || { log "g10c-prereq-merged-card-cancel: kanban DB не найдена ($_pm_db) — skip"; return 0; }
+
+    # Idempotency-marker в последнем issue-comment (аналог G10d contains-mode).
+    local _pm_recent_marker="merge-gate-g10c-prereq-skip"
+    local _pm_window_seconds=2592000  # 30 дней
+
+    # Список активных карточек (status ∈ blocked|ready|running).
+    local _pm_cards_json
+    _pm_cards_json="$(python3 - "$_pm_db" <<'PYEOF' 2>/dev/null || echo '[]'
+import sqlite3, sys, os, json
+db = sys.argv[1]
+try:
+    conn = sqlite3.connect(db)
+    rows = conn.execute(
+        "SELECT id, status, assignee, branch, issue_number, repo "
+        "FROM tasks WHERE status IN ('blocked','ready','running')"
+    ).fetchall()
+    conn.close()
+    print(json.dumps([
+        {"id": r[0], "status": r[1], "assignee": r[2],
+         "branch": r[3] or "", "issue_number": r[4] or "",
+         "repo": r[5] or ""}
+        for r in rows
+    ]))
+except Exception:
+    print('[]')
+PYEOF
+)"
+    # Fail-OPEN: если список пуст или python упал — skip.
+    [ -z "$_pm_cards_json" ] && return 0
+
+    # Проходим по карточкам через python: парсим branch → issue, ищем PR в
+    # issue body ("Closes #N" / "partially addresses #N" / "fix #N"), проверяем
+    # каждый PR через REST, решаем cancel|skip, и для cancel — пишем
+    # комментарий + событие cancelled_prereq_already_merged + archive.
+    printf '%s' "$_pm_cards_json" | python3 - "$_pm_db" "$GH_REPO" "$KANBAN_BOARD" "$HERMES_BIN" <<'PYEOF' 2>/dev/null
+import json, os, re, subprocess, sys, sqlite3
+from datetime import datetime, timezone
+
+db_path = sys.argv[1]
+gh_repo = sys.argv[2]
+kanban_board = sys.argv[3]
+hermes_bin = sys.argv[4]
+recent_marker = "merge-gate-g10c-prereq-skip"
+recent_window = 2592000  # seconds
+
+try:
+    cards = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+if not isinstance(cards, list) or not cards:
+    sys.exit(0)
+
+def gh_api(path):
+    try:
+        r = subprocess.run(
+            ["gh", "api", f"repos/{gh_repo}/{path}"],
+            capture_output=True, text=True, timeout=20)
+        if r.returncode != 0:
+            return None
+        return json.loads(r.stdout or "{}")
+    except Exception:
+        return None
+
+def gh_recent_commented(issue_num, marker, window):
+    """Содержит ли issue-comments последний marker в пределах window секунд.
+    Fallback: false (лучше cancel чем skip — но fail-OPEN, см. ADR-AF-0066).
+    """
+    try:
+        r = subprocess.run(
+            ["gh", "api", f"repos/{gh_repo}/issues/{issue_num}/comments?per_page=20"],
+            capture_output=True, text=True, timeout=20)
+        if r.returncode != 0:
+            return False
+        comments = json.loads(r.stdout or "[]")
+        now = datetime.now(timezone.utc).timestamp()
+        for c in comments:
+            body = c.get("body", "") or ""
+            if marker not in body:
+                continue
+            try:
+                ts = datetime.fromisoformat(
+                    c.get("created_at","").replace("Z","+00:00")
+                ).timestamp()
+                if now - ts <= window:
+                    return True
+            except Exception:
+                continue
+        return False
+    except Exception:
+        return False
+
+for card in cards:
+    cid = card.get("id", "")
+    issue_num = str(card.get("issue_number", "") or "").strip()
+    branch = card.get("branch", "") or ""
+    if not cid or not issue_num:
+        continue
+
+    # 1) Получить PR# из issue body ("Closes #N", "partially addresses #N",
+    #    "fix #N", "fixes #N", "resolves #N", "ref #N", "refs #N").
+    issue = gh_api(f"issues/{issue_num}")
+    if not issue:
+        continue
+    issue_body = issue.get("body", "") or ""
+
+    # Шаблоны: PR, упоминаемые в issue body через "#NNNN" + keyword
+    # (Closes / Fixes / Resolves / Partially addresses). Нам нужны номера
+    # PR, которые ССЫЛАЮТСЯ на этот issue.
+    pr_nums = set()
+    # Простая эвристика: все "#NNNN" в issue body, исключая наш issue_num
+    # (issue self-link). PR в issue body обычно появляются когда автор issue
+    # cross-link'нул готовый PR.
+    for m in re.finditer(r"#(\d+)", issue_body):
+        n = m.group(1)
+        if n and n != issue_num:
+            try:
+                pr_nums.add(int(n))
+            except ValueError:
+                pass
+
+    # 2) PR через branch (PR по той же issue-ветке z-{agent}/<NN>-*).
+    if branch:
+        m = re.search(r"/(\d+)-", branch)
+        if m and m.group(1) == issue_num:
+            try:
+                r = subprocess.run(
+                    ["gh", "pr", "list", "--repo", gh_repo,
+                     "--state", "all",
+                     "--json", "number,headRefName"],
+                    capture_output=True, text=True, timeout=20)
+                if r.returncode == 0:
+                    for pr in json.loads(r.stdout or "[]"):
+                        head = pr.get("headRefName", "") or ""
+                        if re.search(r"/" + re.escape(issue_num) + r"-", "/" + head):
+                            pr_nums.add(int(pr["number"]))
+            except Exception:
+                pass
+
+    if not pr_nums:
+        continue  # merged_pr_set пустой — guard inactive для этой карточки
+
+    # 3) Проверяем каждый PR.
+    all_merged = True
+    merged_count = 0
+    for n in sorted(pr_nums):
+        pr = gh_api(f"pulls/{n}")
+        if not pr:
+            all_merged = False
+            continue
+        merged_at = pr.get("merged_at")
+        merged_flag = pr.get("merged", False)
+        is_merged = bool(merged_at) or merged_flag is True
+        if is_merged:
+            merged_count += 1
+        else:
+            all_merged = False
+
+    if merged_count == 0:
+        continue  # ни один PR не merged
+
+    # 4) Idempotency: если уже был наш skip-комментарий в этом issue —
+    #    skip (НЕ дубль события).
+    if gh_recent_commented(issue_num, recent_marker, recent_window):
+        continue
+
+    # 5) Решение: если ВСЕ merged → cancel.
+    if all_merged and merged_count == len(pr_nums):
+        pr_list = ",".join(str(n) for n in sorted(pr_nums))
+        body = (
+            f"<!-- {recent_marker} -->
+"
+            f"🤖 **[agent:devops] script=agent-flow-merge-gate "
+            f"action=g10c-prereq-merged-card-cancel**
+
+"
+            f"Карточка `{cid}` (issue #{issue_num}) cancel: все "
+            f"prerequisite-PR ({pr_list}) уже merged в develop.
+"
+            f"Фикс дошёл до develop альтернативным путём (мульти-PR / "
+            f"partially addresses / nightly e2e). Карточка блокировала "
+            f"dispatcher зря.
+
+"
+            f"Событие: `cancelled_prereq_already_merged` "
+            f"(ретро 15.09 t_e39afb1c, ретро-key "
+            f"`g10c-prereq-merged-card-cancel`).
+"
+        )
+        try:
+            subprocess.run(
+                ["gh", "issue", "comment", issue_num,
+                 "--repo", gh_repo, "--body", body],
+                capture_output=True, text=True, timeout=20)
+        except Exception:
+            pass
+
+        # archive карточки через hermes kanban (НЕ unblock — она в
+        # blocked/ready, и для cancel идём сразу в archive).
+        try:
+            subprocess.run(
+                [hermes_bin, "kanban", "--board", kanban_board, "complete",
+                 "--summary",
+                 "cancel: prereq PR already merged (ретро 15.09 t_e39afb1c)",
+                 cid],
+                capture_output=True, text=True, timeout=20)
+        except Exception:
+            pass
+        try:
+            subprocess.run(
+                [hermes_bin, "kanban", "--board", kanban_board, "archive",
+                 cid],
+                capture_output=True, text=True, timeout=20)
+        except Exception:
+            pass
+PYEOF
+
+    return 0
+}
+
 # gh_list_issues_by_label — перенесена в lib_agent_flow_common.sh (дедуп 30.08).
 
 # --- deploy-issue label-less orphan backstop (ретро 15.08 t_238ff3f7) -------
@@ -5647,6 +5898,12 @@ pr_without_marker_scan_all
 # чтобы если issue уже закрыт — на этом тике pr_without_marker_scan отработает
 # (последний раз спама), а g10d снимет процесс-метки и не пустит на следующий тик.
 g10d_pr_orphan_after_issue_merged_scan_all
+# G10c PR-merged-but-card-pending guard (ретро 15.09 t_e39afb1c): ВЫЗВАТЬ ПОСЛЕ
+# g10d_pr_orphan_after_issue_merged_scan_all, чтобы если issue уже закрыт через
+# мульти-PR / nightly (а не Closes в PR-body), g10c отменит КАРТОЧКУ (а не только
+# снимет process-метки с PR, как g10d). Fail-OPEN: gh-ошибки → skip.
+prereq_merged_but_card_pending
+
 # Deploy-issue label-less orphan backstop (ретро 15.08 t_238ff3f7): тот же
 # паттерн вызова — основной путь + no-issues путь сходятся сюда.
 deploy_issue_reconcile_all
