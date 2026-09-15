@@ -195,6 +195,9 @@ from rob_box_voice.startup_greeting import (
     pick_finish_sound,
     pick_greeting,
 )
+# ADR-0101 §3.1 — единый шов «можно ли заговорить» (issue #2536, PR-B).
+from rob_box_voice.core.occasion import Occasion, OccasionGate, VerdictKind
+
 from rob_box_voice.speaker_profiles import (
     SpeakerTracker,
     extract_speaker_name,
@@ -203,7 +206,9 @@ from rob_box_voice.speaker_profiles import (
 from rob_box_voice.tts_voice_registry import format_tts_context
 # Issue #1787 — сборка промпта и валидация клички, придуманной LLM.
 from rob_box_voice.core import epithets
-from rob_box_voice.core.occasion import Occasion  # ADR-0101 §3.1 (PR-A, #2536)
+# ADR-0101 §3.1 — ``Occasion`` импортирован выше (PR-B, #2536); старая
+# однострочная запись из PR-A удалена как дубликат (использовалась только в
+# type-аннотации под ``from __future__ import annotations``, runtime не нужна).
 
 # Issue #1160 — Prometheus metrics (этап 1 observability).
 # ``prometheus_client`` — optional dep; если её нет, всё превращается в
@@ -1145,6 +1150,10 @@ class DialogueNode(Node):
         self.declare_parameter("faq_mode_enabled", False)
         self.declare_parameter("faq_event_config_file", "")
         self._startup_greeting_fired = False
+        # ADR-0101 §3.1 / PR-B: единый шов «можно ли заговорить» (issue #2536).
+        # Стартовый gate: глобальный дебаунс 2с, startup — one-shot,
+        # dj_tick / unclear / inactivity — резерв для PR-D/E.
+        self._occasion: OccasionGate = OccasionGate()
         # Issue #1219 — LLM voice selection: активный TTS-провайдер для
         # контекста [TTS]. Должен совпадать с tts_node.yaml provider
         # (minimax). Рядом храним current_voice (установленный set_voice),
@@ -6589,7 +6598,30 @@ class DialogueNode(Node):
         )
 
     def _on_startup_greeting_finish(self) -> None:
-        """Вторая фаза приветствия: радостный звук cute/very_cute."""
+        """Вторая фаза приветствия: радостный звук cute/very_cute.
+
+        ADR-0101 §3.3.3 / PR-B: gating через OccasionGate.may_speak.
+        Старый флаг ``_startup_greeting_fired`` остаётся как fallback
+        (двойная защита на случай сбоя OccasionGate).
+        """
+        # ADR-0101 §3.3.3 / PR-B: шов «можно ли заговорить» через Повод.
+        # Повод startup — не user-initiated, payload содержит финальную фразу.
+        verdict = self._occasion.may_speak(
+            Occasion(
+                kind="startup",
+                is_user_initiated=False,
+                payload={"text": self._startup_greeting_text},
+            )
+        )
+        if verdict.kind != VerdictKind.ALLOW:
+            # DEFER (one-shot уже consumed / кулдаун) или REFUSE (стаб).
+            self.get_logger().info(
+                f"startup greeting deferred: {verdict.reason}"
+            )
+            return
+        # Фиксируем факт «заговорили» — один раз за uptime (one-shot).
+        self._occasion.mark_consumed(Occasion(kind="startup"))
+
         self._cancel_greeting_timer()
         sfx = String()
         sfx.data = pick_finish_sound()

@@ -48,6 +48,14 @@ def node():
     n._dsm = MagicMock()
     n._dsm.current_state = DialogueStateKind.IDLE
 
+    # ADR-0101 PR-B: OccasionGate для gating _on_startup_greeting_finish.
+    # Дефолтный global_debounce_s=2.0 — НЕ влияет на тесты ниже (только
+    # _on_startup_greeting_finish вызывает may_speak с одним и тем же
+    # kind='startup', первый раз → ALLOW, далее → DEFER). Для старых
+    # тестов (один проход finish) этого достаточно.
+    from rob_box_voice.core.occasion import OccasionGate
+    n._occasion = OccasionGate()
+
     # Таймеры: запоминаем созданные (period, callback), чтобы тест мог
     # вручную вызвать следующую фазу.
     n._created_timers = []  # list[tuple[float, Callable]]
