@@ -698,16 +698,24 @@ class NewSessionStep:
 class BacklogFlushStep:
     """Step 11 — backlog hint injection.
 
-    When the backlog accumulator has buffered phrases, the next
-    user-initiated turn prepends them as a hint. ``host.flush_pending_backlog``
-    sets the ``_pending_backlog_flush`` flag; the dialogue node
-    adapter reads it inside ``_dispatch_turn``.
+    When the backlog accumulator has buffered phrases (snapshot on
+    ``ctx.backlog_pending`` is True), the next user-initiated turn
+    prepends them as a hint. ``host.flush_pending_backlog`` sets the
+    ``_pending_backlog_flush`` flag; the dialogue node adapter reads
+    it inside ``_dispatch_turn``. When ``backlog_pending`` is False
+    the step is a no-op — matches legacy L2350-2351 (``if
+    backlog_pending: self._pending_backlog_flush = True``).
     """
 
     name: str = "backlog_flush"
 
     def apply(self, ctx: SttContext, host: SttAdmissionHost) -> SttOutcome:
-        host.flush_pending_backlog()
+        # Issue #1766 — only set the flush flag when the caller-owned
+        # snapshot on ``ctx.backlog_pending`` is True. Mirrors the
+        # legacy ``if backlog_pending: self._pending_backlog_flush = True``
+        # at L2350-2351.
+        if ctx.backlog_pending:
+            host.flush_pending_backlog()
         return PASS
 
 
