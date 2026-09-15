@@ -5,6 +5,7 @@
 - **Supersedes**: частично ADR-0055 §3 (только про drift; добавляем pollution-detection)
 - **Linked issues**: #2444
 - **Related**: #2038 (closed — drift-guard predecessors), #2391 (worktree-drift ongoing), ADR-0045, PR #2443 (worker_post_flight)
+- **ADR-number**: 0095 (collision-fix, 2026-09-15: см. issue #2582 — сосед `0095-znakomyi-identity-seam.md` получил тот же номер и переехал в ADR-0106; этот ADR первый по merge-time, коммит `42cd89be` (PR #2447))
 
 ## Context
 

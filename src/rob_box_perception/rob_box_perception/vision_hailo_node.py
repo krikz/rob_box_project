@@ -39,7 +39,7 @@ filter_by_confidence — в отдельном модуле `vision_hailo_loader
 Touchpoints:
 - ADR-0089 §3 (touchpoint #3) — этот файл.
 - ADR-0104 (gaze.py, единый шов источника кадра).
-- ADR-0096 (launch-файл vision_hailo.launch.py — выбор gaze_source).
+- ADR-0110 (launch-файл vision_hailo.launch.py — выбор gaze_source).
 - ROS msg: rob_box_perception_msgs/VisionEvent
 - Aggregator: context_aggregator_node.py (подписка на /vision/hailo/events)
 

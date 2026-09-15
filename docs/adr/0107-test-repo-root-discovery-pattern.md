@@ -1,4 +1,6 @@
-# ADR-0099 — Тесты не должны хардкодить путь к worktree: `_repo_root()` helper вместо абсолютных `parents[N]`
+# ADR-0107 — Тесты не должны хардкодить путь к worktree: `_repo_root()` helper вместо абсолютных `parents[N]`
+
+> Ранее фигурировал как ADR-0099 в коммите `0cbe40d1` (PR #2518). Перенумерация 2026-09-15: см. issue #2582 — сосед `0099-vision-hailo-binding-install-strategy.md` влит раньше (`d646c3c4`, PR #2517) и остался на 0099.
 
 | Поле | Значение |
 |---|---|
@@ -215,14 +217,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "src"))
 # scripts/agent_flow/check_no_hardcoded_worktree_paths.sh
 #!/usr/bin/env bash
 # Gates PRs that hardcode an absolute worktree path in tests.
-# Complements ADR-0099.
+# Complements ADR-0107.
 set -euo pipefail
 
 pattern='/home/.*\.worktrees/'
 matches=$(grep -rnE "$pattern" src/rob_box_*/test/ 2>/dev/null || true)
 
 if [ -n "$matches" ]; then
-    echo "✖ Hardcoded worktree paths in tests (ADR-0099 violation):"
+    echo "✖ Hardcoded worktree paths in tests (ADR-0107 violation):"
     echo "$matches"
     echo ""
     echo "Replace with: repo_root() helper from src/_test_helpers/_repo_root.py"

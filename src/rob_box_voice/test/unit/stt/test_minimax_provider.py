@@ -313,14 +313,14 @@ class TestExtractText:
         assert _extract_text({"text": "  расскажи сказку  "}) == "расскажи сказку"
 
     def test_empty_text_returns_empty_string_not_none(self):
-        # ADR-0096: valid empty result (silence recognised as empty)
+        # ADR-0108: valid empty result (silence recognised as empty)
         # must NOT be coerced to None — that path would raise
         # MiniMaxSTTInvalidResponseError downstream, semantically wrong.
         assert _extract_text({"text": ""}) == ""
         assert _extract_text({"text": "   "}) == ""
 
     def test_non_string_text_returns_empty_string(self):
-        # ADR-0096: key exists but value is not a string → degraded but
+        # ADR-0108: key exists but value is not a string → degraded but
         # valid empty (we cannot extract text, but the response shape is
         # not "invalid").
         assert _extract_text({"text": 42}) == ""
@@ -331,11 +331,11 @@ class TestExtractText:
         assert _extract_text({"data": {"text": "привет"}}) == "привет"
 
     def test_nested_data_empty_text_returns_empty_string(self):
-        # ADR-0096: nested mirror with empty text → valid empty.
+        # ADR-0108: nested mirror with empty text → valid empty.
         assert _extract_text({"data": {"text": ""}}) == ""
 
     def test_nested_data_without_text_returns_empty_string(self):
-        # ADR-0096: mirror shape {"data": {}} — wrapping is valid,
+        # ADR-0108: mirror shape {"data": {}} — wrapping is valid,
         # but no speech. Valid empty result, not invalid response.
         assert _extract_text({"data": {}}) == ""
 
@@ -409,7 +409,7 @@ class TestRecognizeSuccess:
 
 
 # ---------------------------------------------------------------------------
-# recognize() — empty text (ADR-0096 + ADR-0091 §7)
+# recognize() — empty text (ADR-0108 + ADR-0091 §7)
 # ---------------------------------------------------------------------------
 
 
@@ -421,7 +421,7 @@ class TestRecognizeEmpty:
     ``None`` через except. Это **семантически неверно** (тишина ≠
     ошибка) и спамит WARNING в логи (alert-fatigue, issue #1193).
 
-    ADR-0096 фиксит: валидный пустой результат возвращается как
+    ADR-0108 фиксит: валидный пустой результат возвращается как
     ``""`` и идёт в ``select_recognition`` → ``reason="empty"``
     per ADR-0091 §7.
     """
@@ -453,7 +453,7 @@ class TestRecognizeEmpty:
         assert provider.recognize(SILENCE_AUDIO) == ""
 
     def test_recognize_with_non_string_text_returns_empty_string(self):
-        # ADR-0096: ключ есть, но значение не строка → degraded, но
+        # ADR-0108: ключ есть, но значение не строка → degraded, но
         # НЕ invalid. Робот молчит (reason="empty"), но без WARNING.
         transport = _StubHTTPClient(status=200, payload={"text": 42})
         provider = _make_provider(transport)
@@ -493,7 +493,7 @@ class TestRecognizeEmpty:
         assert response.text == ""
 
     def test_transcribe_with_missing_text_key_still_raises(self):
-        # Negative test (ADR-0096): действительно невалидный ответ —
+        # Negative test (ADR-0108): действительно невалидный ответ —
         # по-прежнему raise. Это инвариант.
         transport = _StubHTTPClient(status=200, payload={"foo": "bar"})
         provider = _make_provider(transport)

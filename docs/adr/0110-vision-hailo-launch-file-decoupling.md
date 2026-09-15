@@ -1,4 +1,6 @@
-# ADR-0096 — vision_hailo launch-файл: декларативный запуск вместо ros2 run
+# ADR-0110 — vision_hailo launch-файл: декларативный запуск вместо ros2 run
+
+> Ранее фигурировал как ADR-0096 в коммите `431eb023` (PR #2524). Перенумерация 2026-09-15: см. issue #2582 — сосед `0096-encounter-seam.md` влит раньше (`984542ab`, PR #2454) и остался на 0096.
 
 **Дата:** 2026-09-15
 **Статус:** Accepted
@@ -129,7 +131,7 @@ Bash-скрипт остаётся как orchestration layer (YAML-парсин
 
 **Стало**: "Файл `src/rob_box_perception/launch/vision_hailo.launch.py` (**NEW**) | SSoT launch-описание ноды. Параметры через LaunchConfiguration (`hailo_enabled`, `hef_path`, `stub_period_sec`, `confidence_threshold`, `input_topic`, `output_topic`). Capability-honest gate через OpaqueFunction. Bash entrypoint `start_vision_hailo.sh` переключается с `ros2 run` на `ros2 launch rob_box_perception vision_hailo.launch.py`."
 
-И добавить note: *"Touchpoint изначально планировал добавление в `internal_dialogue.launch.py`, но после Phase 1 merge `vision_hailo` живёт в отдельном Docker-сервисе на Vision Pi (AI HAT+ = Vision Pi, не Main Pi, см. ADR-0089 §1.1). Корректировка зафиксирована в ADR-0096."*
+И добавить note: *"Touchpoint изначально планировал добавление в `internal_dialogue.launch.py`, но после Phase 1 merge `vision_hailo` живёт в отдельном Docker-сервисе на Vision Pi (AI HAT+ = Vision Pi, не Main Pi, см. ADR-0089 §1.1). Корректировка зафиксирована в ADR-0110."*
 
 ---
 
@@ -139,9 +141,9 @@ Bash-скрипт остаётся как orchestration layer (YAML-парсин
 |---|---|---|
 | 1 | `src/rob_box_perception/launch/vision_hailo.launch.py` | **NEW**: декларативный launch с LaunchConfiguration параметрами + OpaqueFunction gate |
 | 2 | `docker/vision/scripts/vision-hailo/start_vision_hailo.sh` | `ros2 run` → `ros2 launch rob_box_perception vision_hailo.launch.py` с передачей параметров |
-| 3 | `docs/adr/0089-ai-hat-plus-deployment.md` §3 touchpoint #6 | Переформулировать: убрать "internal_dialogue.launch.py", заменить на vision_hailo.launch.py + note про ADR-0096 |
+| 3 | `docs/adr/0089-ai-hat-plus-deployment.md` §3 touchpoint #6 | Переформулировать: убрать "internal_dialogue.launch.py", заменить на vision_hailo.launch.py + note про ADR-0110 |
 | 4 | `docker/vision/README.md` | Сервис "vision-hailo" уже есть в списке (проверено — да, mention есть через Dockerfile); **дополнить** явным упоминанием launch-параметров и capability-honest gate (issue F-20) |
-| 5 | `src/rob_box_perception/README.md` | Раздел "Architecture" уже упоминает vision_hailo_node — **дополнить** ссылкой на launch-файл + ADR-0096 |
+| 5 | `src/rob_box_perception/README.md` | Раздел "Architecture" уже упоминает vision_hailo_node — **дополнить** ссылкой на launch-файл + ADR-0110 |
 
 **Out of scope** (явно): mcp_server consumer-side (Phase 1.5, ADR-0089 §3 touchpoints #16-21, отдельная карточка).
 
@@ -189,7 +191,7 @@ Bash-скрипт остаётся как orchestration layer (YAML-парсин
 - [ ] `docker compose -f docker/vision/docker-compose.yaml up vision-hailo` стартует, `ros2 topic list` показывает `/vision/hailo/events` (через `docker exec ... ros2 topic list` или прямой запуск).
 - [ ] Capability-honest: `hailo_enabled=true` + отсутствие `/dev/hailo0` → WARN в логе, нода в stub-режиме (не crash).
 - [ ] Capability-honest: `hailo_enabled=false` → stub-режим, события публикуются с `event_type="stub"` (поведение уже реализовано в ноде).
-- [ ] ADR-0089 §3 touchpoint #6 переформулирован, ссылка на ADR-0096 добавлена.
+- [ ] ADR-0089 §3 touchpoint #6 переформулирован, ссылка на ADR-0110 добавлена.
 - [ ] `docker/vision/README.md` и `src/rob_box_perception/README.md` дополнены упоминанием нового launch-файла.
 - [ ] Юнит-тесты существующие (`test_vision_hailo_node.py` 8/8 + `test_vision_hailo_phase15.py`) — не сломаны (запуск через launch не меняет API ноды).
 - [ ] Локальный прогон: `ros2 launch rob_box_perception vision_hailo.launch.py` стартует, `/vision/hailo/events` есть.
@@ -239,6 +241,6 @@ Bash-скрипт остаётся как orchestration layer (YAML-парсин
 
 | Дата | Автор | Изменение |
 |---|---|---|
-| 2026-09-15 | architect (t_5736df3b, issue #2498) | Initial ADR-0096. Touchpoint #6 ADR-0089 признан нереализуемым в буквальной формулировке (Vision Pi ≠ Main Pi, AI HAT+ ≠ CAN HAT). Принято: новый `vision_hailo.launch.py` + bash на `ros2 launch`. Touchpoint #6 переформулирован в ADR-0089 §3. |
+| 2026-09-15 | architect (t_5736df3b, issue #2498) | Initial ADR-0110 (при merge — ADR-0096, переименован issue #2582). Touchpoint #6 ADR-0089 признан нереализуемым в буквальной формулировке (Vision Pi ≠ Main Pi, AI HAT+ ≠ CAN HAT). Принято: новый `vision_hailo.launch.py` + bash на `ros2 launch`. Touchpoint #6 переформулирован в ADR-0089 §3. |
 
-*ADR-0096 корректирует ADR-0089 §3 #6 без изменения общей архитектуры Phase 1.*
+*ADR-0110 корректирует ADR-0089 §3 #6 без изменения общей архитектуры Phase 1.*

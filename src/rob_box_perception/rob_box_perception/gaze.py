@@ -44,7 +44,7 @@ issue #2531 acceptance #1).
 Touchpoints:
 - ADR-0104 (этот issue, docs/adr/0104-perception-gaze-seam.md).
 - ADR-0089 §3 touchpoint #3 (vision_hailo_node → Gaze).
-- ADR-0096 (launch-файл vision_hailo.launch.py — выбор источника).
+- ADR-0110 (launch-файл vision_hailo.launch.py — выбор источника).
 - Issue #2531 — «Взгляд»: единый шов источника кадра.
 """
 

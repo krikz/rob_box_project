@@ -7,6 +7,7 @@
 - **Source card:** `t_3802c39a`
 - **Affected file:** `src/rob_box_voice/rob_box_voice/utils/speaker_embeddings.py:434–443`
 - **Related:** issue #1787 (эпитеты), issue #2348 / #1101 (валидация имени), commit `12f4d22c`, PR #2370
+- **ADR-number:** 0097 (collision-fix, 2026-09-15: см. issue #2582 — сосед `0097-identity-seam-scope-boundary.md` получил тот же номер и переехал в ADR-0109; этот ADR первый по merge-time, коммит `1ef642c0` (PR #2492))
 
 ---
 

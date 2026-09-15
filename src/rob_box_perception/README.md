@@ -103,10 +103,10 @@ AI Agent (DeepSeek) будет:
 - Phase 2: RetinaFace + ArcFace embeddings + `/data/faces.db` journal.
 - Phase 3: scene-graph для TARS-cockpit.
 
-**Launch (ADR-0096):**
+**Launch (ADR-0110):**
 
 ```bash
-# SSoT launch-файл (ADR-0096, заменил захардкоженный ros2 run)
+# SSoT launch-файл (ADR-0110, заменил захардкоженный ros2 run)
 ros2 launch rob_box_perception vision_hailo.launch.py \
     hailo_enabled:=false \
     hef_path:= \
@@ -122,7 +122,7 @@ numpy / cv2 / hailo_platform → WARN-лог, нода деградирует в
 Pre-flight check через OpaqueFunction запускается ДО ноды и логирует причину.
 
 Подробности: [`docs/adr/0089-ai-hat-plus-deployment.md`](../../../adr/0089-ai-hat-plus-deployment.md),
-[`docs/adr/0096-vision-hailo-launch-file-decoupling.md`](../../../adr/0096-vision-hailo-launch-file-decoupling.md).
+[`docs/adr/0110-vision-hailo-launch-file-decoupling.md`](../../../adr/0110-vision-hailo-launch-file-decoupling.md).
 
 ### reflection_node
 **Статус:** ✅ Работает (с DeepSeek API)

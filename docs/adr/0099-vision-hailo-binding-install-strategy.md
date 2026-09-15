@@ -6,6 +6,7 @@
 **Тип:** deployment / image-build decision (vision-hailo Dockerfile cleanup)
 **Связанные ADR:** ADR-0089 (AI HAT+ Hailo-8 deployment), ADR-0018 (agent honesty culture — capability-honest)
 **Разрешает issue:** #2499 (Dockerfile pip hailort vs hailo_platform)
+**ADR-number:** 0099 (collision-fix, 2026-09-15: см. issue #2582 — сосед `0099-test-repo-root-discovery-pattern.md` получил тот же номер и переехал в ADR-0107; этот ADR первый по merge-time, коммит `d646c3c4` (PR #2517))
 
 ---
 
