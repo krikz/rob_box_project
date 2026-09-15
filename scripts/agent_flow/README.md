@@ -174,6 +174,28 @@ issue висит open навсегда без обработчика (#1276, rou
 → триаж на следующем тике создаст kanban-карточку. Idempotent: после
 добавления `hermes` issue больше не подпадает под правило.
 
+#### ENV-тюнинг
+
+Все дефолты безопасные (24ч dedup, evidence-missing метка уже есть в
+репо). Переопределять имеет смысл только в test-сборках / расследованиях.
+
+| Var | Default | Назначение |
+|---|---|---|
+| `EVIDENCE_REQUEST_DEDUP_HOURS` | `24` | дедуп «worker-evidence request» комментариев (merge-gate шлёт шаблон сразу после `needs-review`, чтобы воркер / pr-reviewer получил чёткие требования к рапорту; см. ADR-0018 «зелёный ≠ ок»). |
+| `EVIDENCE_ALERT_AGE_HOURS` | `24` | watchdog-pass `needs_review_evidence_alert_pass_all` сканирует OPEN PR с `needs-review` старше этого порога без worker-evidence комментария → alert + метка. |
+| `EVIDENCE_ALERT_DEDUP_HOURS` | `24` | дедуп alert-комментариев watchdog'а (1 раз в окно на 1 PR). |
+| `EVIDENCE_MISSING_LABEL` | `evidence-missing` | метка, которую watchdog ставит на PR без worker-evidence рапорта (НЕ gate — PR не блокируется, это сигнал Шифу). |
+| `EVIDENCE_REPORT_MARKER` | `worker-evidence report` | substring в тексте комментария, по которому watchdog определяет «уже рапортовал» (contains-режим). Воркер отвечает на request-коммент (или пишет отдельный) с этой строкой, чтобы watchdog перестал флапать. |
+| `DEPLOY_RECONCILE_MINUTES` | `30` | возраст deployment-issue без process-меток, после которого merge-gate ставит `hermes`+`agent:devops` (backstop для label-less orphan, ретро 15.08 t_238ff3f7, #1276). |
+| `BIG_BANG_MAX_COMMITS` | `50` | ADR-0013: PR > N коммитов ИЛИ > `BIG_BANG_MAX_LINES` строк ЗАПРЕЩЕНЫ без explicit `big-bang-override` label. Enforce на двух уровнях: triage + merge-gate. |
+| `BIG_BANG_MAX_LINES` | `3000` | см. выше. |
+| `STALE_REBASE_AHEAD_THRESHOLD` | `30` | ретро 22.08 t_562a8682: ahead-of-develop > N через REST compare API → alert в карточку (2ч rate-limit) + comment на issue (24h dedup). Watchdog, не gate. |
+| `STALE_REBASE_COMMENT_DEDUP_HOURS` | `24` | дедуп comment-alert. |
+| `STALE_REBASE_REMINDER_COOLDOWN_SECONDS` | `7200` | rate-limit alert в карточку воркеру. |
+| `NEEDS_FOLLOWUP_LABEL` | `needs-followup` | ретро t_6127fb86: pr-reviewer оставил содержательный review (не approve, не request-changes) → merge-gate явно переводит PR в follow-up режим + kanban-карточка. |
+| `GH_REPO` | `krikz/rob_box_project` | owner/repo для всех `gh` вызовов (загружается из `lib_agent_flow_common.sh`). |
+| `GH_CONFIG_DIR` | `/home/builder/.config/gh` | путь к gh auth (ретро 03.09 t_a2ce09f8 — force canonical, иначе 401/404 на gh api). |
+
 ### `agent-flow-e2e-process.sh` — no_agent=true, every 60m
 
 Главный e2e-процессор. Каждый час берёт issues с label `needs-e2e`,
@@ -945,6 +967,237 @@ bash scripts/agent_flow/tests/test_e2e_fail_streak_auto_issue.sh
 лежит в `mktemp -d/bin/gh` и не уходит в сеть. Это самый дешёвый способ
 проверить, что очередной refactor watchdog'а не сломал идемпотентность / DRY-RUN
 / cooldown guards.
+
+### `worker_pre_flight.sh` — rebase pre-check (issue #2438, 2026-09-14)
+
+Воркер-helper: вызывается в самом начале сессии (после `cd` в worktree)
+ПЕРЕД началом кода. Делает `git fetch origin develop --prune`, считает
+`BEHIND=$(git rev-list --count HEAD..origin/develop)`, и если BEHIND превышает
+`MAX_BRANCH_BEHIND` (default 30) — пишет warn в `task_comments` (`gh issue
+comment` если задан `ISSUE_NUM`) и ДЕЛАЕТ auto-rebase. Конфликт → инструкция
+в task_comments + non-zero exit (воркер должен `kanban_block`).
+
+Контракт (ADR-0077 §3.3 расширение, issue #2438):
+
+- Аргументы: `<task_id> <branch> [ISSUE_NUM]`. `task_id` должен матчить
+  `^t_[a-f0-9]{6,}$`, иначе usage error.
+- Если BEHIND ≤ `MAX_BRANCH_BEHIND` — no-op (exit 0).
+- Если BEHIND > `MAX_BRANCH_BEHIND` → auto-rebase origin/develop.
+- `SKIP_PRE_FLIGHT=true` → exit 0 без действий (opt-out для emergency).
+- Не вызывать вне git worktree → exit 2.
+
+#### ENV-тюнинг
+
+| Var | Default | Назначение |
+|---|---|---|
+| `MAX_BRANCH_BEHIND` | `30` | порог drift, выше которого warn + auto-rebase. PR #2351 — 66 коммитов behind, PR #2363 — add/add конфликт → были выше этого. |
+| `GITHUB_REPO` | `krikz/rob_box_project` | owner/repo для `gh issue comment` (task_comments warn). |
+| `GH_CONFIG_DIR` | `/home/builder/.config/gh` | путь к gh auth (для `gh` CLI из cron-окружения). |
+| `KANBAN_BOARD` | `robbox` | board-name для kanban-tools. |
+| `SKIP_PRE_FLIGHT` | `false` | `true` → exit 0 без fetch/rebase. Emergency opt-out. |
+
+Exit codes: `0` (success / fresh / auto-rebase OK), `1` (rebase conflict — worktree в rebase-merge, нужен manual resolve), `2` (usage error).
+
+SOT: `<repo>/scripts/agent_flow/worker_pre_flight.sh`. Раскладывается
+`install.sh` в `~/.hermes/profiles/devops/scripts/` и `~/.hermes/scripts/`.
+Дрейф на хосте ловит `agent-flow-drift-detect.sh` (файл в `EXPECTED`).
+
+Тест: `bash scripts/agent_flow/tests/test_worker_pre_flight.sh`.
+
+### `worker_post_flight.sh` — rebase post-check (issue #2438, 2026-09-14)
+
+Воркер-helper: вызывается в КОНЦЕ сессии (после `git push`, ПЕРЕД
+`kanban_complete`). Делает `git fetch origin develop --prune`, считает BEHIND,
+и если BEHIND > 0 — auto-rebase. Конфликт → инструкция в `task_comments`
++ exit 1 (воркер НЕ должен вызывать `kanban_complete` — должен `kanban_block`).
+
+Парный к `worker_pre_flight.sh` (issue #2438: «rebase-protocol неполный»,
+нет post-work rebase → PR diverged, merge-gate ловит add/add конфликты, ретро
+PR #2363).
+
+Контракт (ADR-0077 §3.3 расширение, issue #2438):
+
+- Аргументы: `<task_id> <branch> [ISSUE_NUM]`. Те же валидации, что в pre.
+- BEHIND == 0 → exit 0 (no-op).
+- BEHIND > 0 → auto-rebase. Успех → exit 0. Конфликт → инструкция + exit 1.
+- `SKIP_POST_FLIGHT=true` → exit 0 без действий.
+- Не вызывать вне git worktree → exit 2.
+
+Из скрипта **автоматически вызывается `worker_scope_check.sh`** (см. ниже) —
+pre-push scope self-check. Opt-out: `SKIP_SCOPE_CHECK=true` (см. комментарий в
+`install.sh:153`).
+
+#### ENV-тюнинг
+
+| Var | Default | Назначение |
+|---|---|---|
+| `MAX_BRANCH_BEHIND` | `30` | порог warn (для post-flight это «info»: rebase делается при любом BEHIND > 0, но warn логируется только если > этого порога). Совместимо с pre-flight. |
+| `GITHUB_REPO` | `krikz/rob_box_project` | owner/repo для `gh issue comment`. |
+| `GH_CONFIG_DIR` | `/home/builder/.config/gh` | gh auth path. |
+| `KANBAN_BOARD` | `robbox` | board-name для kanban-tools. |
+| `SKIP_POST_FLIGHT` | `false` | `true` → exit 0 без fetch/rebase. |
+| `SKIP_SCOPE_CHECK` | `false` | `true` → пропустить auto-вызов `worker_scope_check.sh`. Legitimate для смежных fix'ов, которые формально вне scope карточки. Упомянут в комментарии `install.sh:153`, но не задокументирован в ENV-таблицах — фиксируем здесь. |
+
+Exit codes: `0` (up-to-date / auto-rebase OK), `1` (rebase conflict), `2` (usage error).
+
+SOT: `<repo>/scripts/agent_flow/worker_post_flight.sh`. Раскладывается
+`install.sh` (EXPECTED). Тест: `bash scripts/agent_flow/tests/test_worker_post_flight.sh`.
+
+### `worker_scope_check.sh` — pre-push scope self-check (issue #2438, PR #2443, 2026-09-14)
+
+Воркер-helper: самопроверка файлов ПЕРЕД push и `kanban_complete`. Ловит
+«левые» файлы, которые воркер подхватил с чужого worktree или закоммитил
+по ошибке, и блокирует карточку до их разбора.
+
+Третий рубеж после freshness (`validate_branch_freshness.sh`) и post-PR
+scope (`validate_pr_scope.sh`): он проверяет ДО push/`kanban_complete`, пока
+карточку ещё можно починить дёшево.
+
+Контекст (PR #2443): PR «rebase-protocol» ушёл с 4 чужими файлами —
+`docker/vision/vision-hailo/*` (hailo, ADR-0089) и
+`src/rob_box_quest/webxr_client/tests/voice_capture_*.test.ts` (Quest,
+ADR-0027). Воркер писал поверх ветки с чужими коммитами и не смотрел
+`git status` перед push.
+
+Что проверяет:
+
+- **working tree**: staged + unstaged + untracked (`git status --porcelain`).
+- **committed diff**: `git diff --name-only BASE_REF...HEAD` (то, что пойдёт в PR).
+- Файлы из обоих наборов сверяются с `PR_ALLOWED_PREFIXES` / `PR_ALLOWED_GLOBS`
+  (контракт совместим с `validate_pr_scope.sh`).
+
+Режимы:
+
+- Без `PR_ALLOWED_PREFIXES`/`GLOBS` → **INFO-режим**: печатает список файлов
+  (воркер ВИДИТ что у него в working tree), exit 0 — но exit 1 если файлов
+  больше `MAX_OUT_OF_SCOPE` (default 10, defensive — почти наверняка drift).
+- С `prefixes`/`globs` → **блокирующий**: exit 1 если есть out-of-scope файл,
+  список нарушителей в stderr.
+
+`SKIP_SCOPE_CHECK=true` → exit 0 без проверки (opt-out для legitimate
+смежного fix'а).
+
+#### ENV-тюнинг
+
+| Var | Default | Назначение |
+|---|---|---|
+| `PR_ALLOWED_PREFIXES` | `` (пусто) | comma-separated allowed path prefixes. Те же правила, что в `validate_pr_scope.sh`: trim, empty entries skip, case-sensitive match `path.startswith(prefix)`. |
+| `PR_ALLOWED_GLOBS` | `` (пусто) | comma-separated fnmatch-style globs. Дополняют prefix'ы, обрабатываются последними. |
+| `PR_SCOPE_MODE` | `` (off) | `pre-merge` → двухточечный `git diff origin/develop` (working tree vs origin/develop). Ловит pollution ДО commit. Default OFF (как в `validate_pr_scope.sh`). |
+| `SKIP_PR_SCOPE` | `false` | `true` → exit 0 без проверки (legacy alias, оставлен для совместимости с `validate_pr_scope.sh`). |
+| `SKIP_SCOPE_CHECK` | `false` | `true` → exit 0 без проверки (canonical opt-out, используется воркерами через `worker_post_flight.sh`). |
+| `BASE_REF` | `origin/develop` | эталон для committed diff. |
+| `MAX_OUT_OF_SCOPE` | `10` | defensive INFO-mode cap: даже без prefixes при > N файлов exit 1. |
+| `GITHUB_REPO` | `krikz/rob_box_project` | owner/repo для `gh issue comment` (warn). |
+| `GH_CONFIG_DIR` | `/home/builder/.config/gh` | gh auth path. |
+| `KANBAN_BOARD` | `robbox` | board-name для kanban-tools. |
+
+Exit codes: `0` (OK / skip / INFO в пределах cap), `1` (out-of-scope файлы — блокирующий fail), `2` (usage error).
+
+SOT: `<repo>/scripts/agent_flow/worker_scope_check.sh`. Раскладывается
+`install.sh` (EXPECTED). Тест: `bash scripts/agent_flow/tests/test_worker_scope_check.sh`.
+
+### `agent-flow-stale-blocked-watchdog.sh` — cron watch для stale-blocked карточек (ретро t_55c6c882, 2026-09-14)
+
+Auto-detect blocked kanban-карточки, все prerequisites которых уже merged
+в develop, и alert'ить Шифу (без авто-unblock).
+
+Паттерн (`stale-blocked-after-prerequisites-merged`): карточка в `blocked`
+с body, ссылающимся на `PR #NNNN`, но все эти PR уже merged. Карточка висит,
+потому что:
+
+1. `block_fn` не имеет trigger на merged-PR (ручной unblock через Шифу).
+2. `blocked-watchdog-scope` не покрывает prereq-merge (он для mis-scope архитектурных).
+3. e2e-/merge-процессы НЕ имеют callback на блокирующие карточки.
+
+Контракт (per tick):
+
+1. `flock` lock.
+2. Iterate по всем kanban-доскам (если `KANBAN_DB_PATH` задан — только эта БД, test mode).
+3. SELECT blocked-tasks WHERE body LIKE `%PR #%` OR `%#NNNN%`.
+4. Для каждого кандидата: extract PR numbers из body + из последнего blocked-event payload → `gh pr view` на каждый → SKIP если хоть один open или closed-not-merged.
+5. SKIP если есть parent со status ≠ done.
+6. Иначе — match; idempotency: 1 row в task_comments за сегодня с `MARKER_TAG` → SKIP.
+7. Emit **ОДИН** alert-comment через `hermes kanban --board <board> comment <tid> <body>`.
+
+**НЕ auto-unblock'ит.** Шифу eyeball'ит, делает unblock вручную или запускает
+ручной `workflow_dispatch` / cron. Это намеренный trade-off: auto-unblock
+может пропустить карточку, которую Шифу хочет подержать blocked дольше
+(например, ожидает ручной QA). Manual step гарантирует eyeball.
+
+Stats: scanned, matched, skipped_idempotent, skipped_unmerged_pr, skipped_unfinished_parent, skipped_no_pr_ref, emitted, errors → stderr (для cron delivery).
+
+#### ENV-тюнинг
+
+| Var | Default | Назначение |
+|---|---|---|
+| `GH_REPO` | `krikz/rob_box_project` | owner/repo для `gh pr view`. |
+| `GH_CONFIG_DIR` | `~/.config/gh` | gh CLI auth path. |
+| `KANBAN_DB_PATH` | `` (пусто) | single DB override (test mode — сканирует только эту БД). |
+| `KANBAN_BOARD` | `` (пусто) | board-name для `hermes kanban comment`. |
+| `KANBAN_BOARDS_DIR` | `/home/builder/.hermes/kanban/boards` | production scan root. |
+| `DRY_RUN` | `false` | `true` → log only, no comment emit. Полезно для проверки tick'а перед прод. |
+| `AGE_THRESHOLD_SECONDS` | `3600` (1h) | карточка должна провисеть в blocked хотя бы час, чтобы не alert'ить свежезаблокированные. |
+| `MARKER_TAG` | `⚠️ stale-blocked: prerequisites merged` | marker для idempotency check (substring в тексте comment'а за сегодня → SKIP). |
+| `LOCK_FILE` | `/tmp/agent-flow-stale-blocked-watchdog.lock` | flock guard. |
+| `LOG_FILE` | `/tmp/agent-flow-stale-blocked-watchdog.log` | stats log (append). |
+| `HERMES_CLI` | `hermes` | путь к hermes binary для `hermes kanban comment`. |
+
+Exit code: `0` (тик чистый / DRY-RUN), `2` (был emit хотя бы одного alert — намеренный non-zero, чтобы cron delivery заметил).
+
+SOT: `<repo>/scripts/agent_flow/agent-flow-stale-blocked-watchdog.sh`. Раскладывается
+`install.sh` (EXPECTED). Регистрация cron-job — отдельный шаг
+(`ensure-stale-blocked-watchdog-cron` в `install.sh`, см. ~стр. 1002-1030) —
+не auto-register, Шифу явно вызывает после approve.
+
+### `dryrun_fail_streak_issue.sh` — local harness для fail-streak auto-issue (PR #2418, 2026-09-14)
+
+Детерминированный dry-run harness для auto-create-issue ветки в
+`agent-flow-e2e-fail-streak-watchdog.sh`. **НЕ модификация watchdog**,
+а зеркало его auto-create-issue ветки, которое можно гонять локально
+и в CI без gh-токена и без реальной сети.
+
+Контекст (PR #2418, merge commit a9b04981): watchdog добавил авто-создание
+issue при fail-streak ≥ `E2E_FAIL_STREAK_ISSUE_THRESHOLD` (5), rate-limited
+через mtime `ISSUE_COOLDOWN_FILE` (default 4ч). Acceptance критерий из
+карточки t_7572e7a8: «running the harness locally shows exactly one issue
+payload per >4h window, and zero on immediate re-runs».
+
+Что делает:
+
+- Поднимает sandbox `HERMES_HOME`, кладёт `ISSUE_COOLDOWN_FILE` в `$HERMES_HOME/state/`.
+- Берёт 8 fixed fail-runs (run IDs и HEAD SHAs из body карточки) как фикстуру
+  и собирает точно такой же issue-body, как watchdog (строки 296-352 a9b04981).
+- Гоняет 3 сценария с фейковым mtime cooldown-файла:
+  1. **cold start** (файл отсутствует) → 1 payload
+  2. **immediate re-run** (mtime = now) → SKIP
+  3. **advance mtime на >4h** (`touch -d "5 hours ago"`) → 1 payload
+- Каждый payload печатает РОВНО ту `gh issue create` команду с полным телом,
+  которую watchdog бы отправил, но НЕ делает реальных вызовов.
+
+Решение «skip vs create» зеркалирует watchdog строки 286-292 (mtime check)
+и 295-298 (gh-truth check, опущен — см. NOTE в коде). Тело issue — копия
+шаблона watchdog строки 311-352, с тем же набором секций и тем же
+hypothesis-блоком. Единственное намеренное отличие: вместо `gh issue
+create` печатает команду и тело в stdout.
+
+#### ENV-тюнинг (mirror watchdog)
+
+| Var | Default | Назначение |
+|---|---|---|
+| `GH_REPO` | `krikz/rob_box_project` | owner/repo для `gh issue create` payload. |
+| `E2E_WORKFLOW` | `L-E2E Voice Test.yml` | имя workflow для fail-runs. |
+| `E2E_FAIL_STREAK_ISSUE_THRESHOLD` | `5` | порог (mirror watchdog). |
+| `E2E_FAIL_STREAK_ISSUE_RATE_LIMIT_HOURS` | `4` | rate-limit (mirror watchdog). |
+| `E2E_FAIL_STREAK_ISSUE_LABEL` | `e2e-fail-streak` | лейбл нового issue. |
+| `E2E_FAIL_STREAK_ISSUE_ASSIGNEE` | `` (пусто) | assignee (опц.). |
+| `HERMES_HOME` | `/home/builder/.hermes` | sandbox root для `state/` (в тестах указывают на временную БД). |
+| `ISSUE_COOLDOWN_FILE` | `${HERMES_HOME}/state/agent-flow-e2e-fail-streak-last-issue` | mtime-target для cooldown guard (mirror watchdog). |
+
+Exit codes: `0` (все 3 сценария — ожидаемые 1/0/1 payload), `1` (нарушен инвариант; см. сводку в конце вывода).
+
+SOT: `<repo>/scripts/agent_flow/dryrun_fail_streak_issue.sh`. Раскладывается
+`install.sh` (EXPECTED). Тест: `bash scripts/agent_flow/tests/test_dryrun_fail_streak_issue.sh`.
 
 ### `agent-flow-rotation-watchdog.sh` — жива ли e2e-ротация
 
