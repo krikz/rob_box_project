@@ -125,6 +125,7 @@ from rob_box_voice.core.dialogue_guards import (
     build_hallucinated_midi_retry_prompt,
     build_music_prose_action_fallback,
     build_music_retry_prompt,
+    build_phantom_action_retry_prompt,  # Issue #2559 phantom-action
     build_renardo_code_retry_prompt,
     build_system_regurgitate_retry_prompt,
     build_unbacked_action_retry_prompt,
@@ -133,6 +134,7 @@ from rob_box_voice.core.dialogue_guards import (
     build_unknown_melody_retry_prompt,  # Issue #2562 Bug F
     detect_hallucinated_midi_in_tools,  # Issue #2560 hallucinated-MIDI guard
     detect_required_tool as detect_required_tool,
+    detect_phantom_action_claim,  # Issue #2559 phantom-action
     detect_unbacked_action_claim,
     detect_unknown_melody_claim,  # Issue #2562 Bug F
     detect_universal_action_claim,
@@ -925,13 +927,20 @@ class DialogueNode(Node):
         # один ретрай на user-turn, иначе LLM уходит в ping-pong.
         self._unknown_melody_retry_used: bool = False
 
-        # Issue #2560 — LLM выдумывает MIDI-паттерн «pe<num>le<num>f»
+# Issue #2560 — LLM выдумывает MIDI-паттерн «pe<num>le<num>f»
         # (FoxDot/renardo-синтаксис) вместо lookup_melody на известных
         # мелодиях (Григ, Бетховен, etc.). PR #2551 текстовое правило
         # не помогло — round-3 live дал 6 случаев за 60 мин. Поэтому
         # ОДИН CRITICAL-ретрай на turn с явным требованием «сначала
         # lookup_melody». Иначе LLM и код уходят в пинг-понг.
         self._hallucinated_midi_retry_used: bool = False
+        # Issue #2559 — phantom-action claim (общий, НЕ music-only):
+        # «сейчас перезапущу / сделал / подложу» при ``tools_called=[]``.
+        # Round 3 live (Vision Pi 10.1.1.21, 15.09.2026) — 6 случаев за
+        # час. Bug E (#992 / #2548) ловит только узкие music-claim'ы
+        # при ``dj_active`` или music-kw; phantom-action — расширение
+        # на ВСЕ action-verb'ы вне зависимости от контекста.
+        self._phantom_action_retry_used: bool = False
 
         # Issue #1881 — общий бюджет СИНТЕТИЧЕСКИХ ретраев на user-turn.
         # Раньше у каждого guard'а был свой одноразовый флаг
@@ -3530,6 +3539,7 @@ class DialogueNode(Node):
             self._universal_action_claim_retry_used = False
             self._unknown_melody_retry_used = False  # Issue #2562 Bug F
             self._hallucinated_midi_retry_used = False  # Issue #2560 hallucinated-MIDI guard
+            self._phantom_action_retry_used = False  # Issue #2559
             self._synthetic_retries_left = self.DEFAULT_SYNTHETIC_RETRIES
             # Issue #2266 / ADR-0021 R2 — mirror the budget reset to the
             # ``core/``-side ``TurnState`` so ``begin_babble_retry`` sees a
@@ -4736,6 +4746,91 @@ class DialogueNode(Node):
             # обрабатывается в Bug E-ветке (``_run_turn``), и Bug F
             # намеренно избегает этого флага, чтобы флаги разных guards
             # не сбрасывали друг друга (issue #1881 ping-pong fix).
+            is_action_claim_retry=False,
+            is_synthetic=True,
+            raw_user_command=user_input,
+        )
+        return True
+
+    def _check_phantom_action_and_retry(
+        self,
+        *,
+        spoken: str,
+        user_input: Optional[str],
+        tools_called: tuple,
+        is_dj_auto: bool = False,
+    ) -> bool:
+        """Issue #2559 — общий (НЕ music-only) guard «обещал, но не сделал».
+
+        Round 3 live-check 15.09.2026 (Vision Pi 10.1.1.21): 6 случаев
+        за час, когда LLM говорила «сейчас перезапущу / сделал погуще /
+        подложу слой» при ``tools_called=[]``. Существующий Bug E
+        (``_check_unbacked_action_claim_and_retry``) срабатывает только
+        в DJ-сценарии (``dj_active=True``) или при music-kw в
+        ``user_input`` — бытовые «проверю состояние и перезапущу» /
+        «подкручу / установлю голос» проходили мимо.
+
+        Условия срабатывания (см. ``detect_phantom_action_claim``):
+
+          1. ``spoken`` содержит хотя бы один ``PHANTOM_ACTION_VERBS_RE``
+             stem (сделал / запустил / перезапущу / проверю / подложу /
+             подкручу / обновлю / поменяю / изменю / доработаю и т.п.);
+          2. ``tools_called`` пуст;
+          3. ``user_input`` НЕ содержит «не буду / не надо» (защита
+             от ложного срабатывания на легитимный «не буду перезапускать»).
+
+        Гейт ``is_dj_auto=True`` живёт здесь (а не в
+        ``detect_phantom_action_claim``) по той же причине, что и в
+        Bug E: в auto-DJ тиках юзер молчал — ретрай был бы лишним
+        round-trip'ом, а юзер бы услышал «сейчас перезапущу» + потом
+        ответ ретрая поверх DJ-перехода.
+
+        Контракт ретрая (как Bug E / Bug F): один CRITICAL-ретрай на
+        user-turn, иначе LLM уходит в ping-pong (issue #1881). При
+        срабатывании возвращает ``True`` — вызывающий НЕ должен
+        публиковать текст в TTS (иначе юзер услышит «сделал» + потом
+        ответ ретрая).
+        """
+        if getattr(self, "_phantom_action_retry_used", False):
+            return False
+        # auto-DJ — юзер молчал, ретрай не нужен (Bug E contract).
+        if is_dj_auto:
+            return False
+        if not detect_phantom_action_claim(
+            user_input=user_input,
+            spoken=spoken,
+            tools_called=tuple(tools_called or ()),
+        ):
+            return False
+
+        # Тот же перевод DSM, что и в bug E / Bug F: без него
+        # process_input увидит IDLE и вернёт пустой результат.
+        try:
+            if self._dsm.current_state == DialogueStateKind.IDLE:
+                self._dsm.on_event(DialogueEvent.WAKE_WORD)
+                self._publish_state()
+            self._dsm.on_event(DialogueEvent.STT_RESULT)
+            self._publish_state()
+        except ImportError:
+            pass
+
+        # Issue #1881 — общий budget декрементится рядом с поимённым
+        # флагом. Если budget == 0, ретрай НЕ отправляется.
+        if not self._consume_synthetic_retry(guard_name="phantom_action"):
+            return False
+        self._phantom_action_retry_used = True
+        self._mark_retry_dispatched()
+        self.get_logger().warning(
+            f"🎭 [issue 2559] phantom-action claim без тула "
+            f"(tools={list(tools_called)!r}, spoken={spoken[:80]!r}) — "
+            f"один ретрай с требованием вызвать tool или убрать claim-verb"
+        )
+        self._dispatch_turn(
+            build_phantom_action_retry_prompt(user_input),
+            # Свой тип — НЕ путать с Bug E. ``is_action_claim_retry``
+            # обрабатывается в Bug E-ветке (``_run_turn``), и phantom-
+            # action намеренно избегает этого флага, чтобы флаги разных
+            # guards не сбрасывали друг друга (issue #1881 ping-pong fix).
             is_action_claim_retry=False,
             is_synthetic=True,
             raw_user_command=user_input,
@@ -6201,7 +6296,7 @@ class DialogueNode(Node):
             tools_called=tools_called,
         ):
             return
-        # Issue #2549 — широкий anti-hallucination guard для action-claim.
+# Issue #2549 — широкий anti-hallucination guard для action-claim.
         # Узкий Bug E guard выше ловит только случаи, где И запрос юзера,
         # И утверждение LLM попадают в :data:`ACTION_CLAIM_RULES`. DJ-сет
         # 2026-09-15 показал, что LLM часто отчитывается о действии в
@@ -6224,6 +6319,23 @@ class DialogueNode(Node):
                 user_input=raw_user_command or user_input,
                 tools_called=tools_called,
             )
+        ):
+            return
+        # Issue #2559 — phantom-action guard (общий, НЕ music-only).
+        # Round 3 live (15.09.2026, Vision Pi 10.1.1.21): 6 случаев за час
+        # «сейчас перезапущу / сделал / подложу» при ``tools_called=[]``.
+        # Bug E ловит только узкие music-claim'ы при ``dj_active=True``
+        # или music-kw; phantom-action закрывает ОБЩИЙ класс
+        # «обещал действие — но не вызвал тул» (issue #2559, расширение
+        # Bug E / #2548 на ВСЕ action-verb'ы). Гейт ``is_dj_auto`` живёт
+        # внутри метода (юзер молчал → ретрай лишний). CC-budget: +1
+        # прямая ветка в этом catch-site, _handle_result уже в exemptions
+        # cc_budget_baseline.json (DialogueNode._handle_result: 75).
+        if spoken and self._check_phantom_action_and_retry(
+            spoken=spoken,
+            user_input=raw_user_command or user_input,
+            tools_called=tools_called,
+            is_dj_auto=is_dj_auto,
         ):
             return
         # 💡 Diagnostic: log the actual state before deciding what to do.
