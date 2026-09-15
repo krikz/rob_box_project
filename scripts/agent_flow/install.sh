@@ -349,6 +349,16 @@ EXPECTED=(
     # НЕ создаёт карточки. Регистрация cron-job — в
     # ensure_decomposed_watchdog_cron ниже.
     agent-flow-decomposed-watchdog.sh
+    # Orphan-cards audit telemetry (ретро t_3dbde205 / 15.09): no-agent job,
+    # каждые 15м сканирует активные карточки (todo/ready/running/blocked),
+    # группирует по (issue_number, repo) и для групп ≥2 → emit alert
+    # (file/slack/gh_discussion) + INSERT task_events(kind='orphan_detected')
+    # на КАЖДОЙ карточке-тёзке. Сам cancel делает merge-gate (G10c guard,
+    # карточка t_e39afb1c). Метрика `agent_flow_orphan_cards_total`
+    # экспортируется в $ORPHAN_METRICS_FILE + опционально pushgateway.
+    # Идемпотентность: cooldown по (issue:repo:N) + (task_id, issue_key).
+    # Регистрация cron-job делается в ensure_orphan_audit_cron ниже.
+    agent-flow-orphan-audit.sh
     # Доставка repo-скиллов (.agents/skills) в профили воркеров (ретро
     # 05.09): af_skill_for_profile() маппит тип задачи (bug/feature/refactor)
     # на repo-скиллы, но без доставки профили их не видят. Вызывается из
@@ -1148,6 +1158,18 @@ ensure_e2e_rejected_watchdog_cron() {
     ensure_cron_job devops "Agent Flow E2E Rejected Watchdog (ретро t_9251fd74)" "agent-flow-e2e-rejected-watchdog.sh" "every 24h" interval
 }
 ensure_e2e_rejected_watchdog_cron
+
+# Orphan-cards audit telemetry (ретро t_3dbde205 / 15.09): every-15m no-agent
+# job в agent-flow профиле. Сканирует активные карточки канбана, группирует
+# по (issue_number, repo) и для групп ≥2 → emit alert (ORPHAN_ALERT) +
+# INSERT task_events(kind='orphan_detected') на КАЖДОЙ карточке-тёзке.
+# Идемпотентность: cooldown-state в $ORPHAN_STATE_FILE (default 1h по issue).
+# Сам cancel — в G10c guard merge-gate (карточка t_e39afb1c), этот watchdog
+# только emit alert + событие для журнала.
+ensure_orphan_audit_cron() {
+    ensure_cron_job agent-flow "Agent Flow Orphan Audit (telemetry t_3dbde205)" "agent-flow-orphan-audit.sh" "every 15m" interval
+}
+ensure_orphan_audit_cron
 
 echo
 echo "==> Ensure cron job registration: ночной ревью (ADR-0049)"
