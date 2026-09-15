@@ -5689,8 +5689,22 @@ class DialogueNode(Node):
             spoken=spoken,
             user_input=raw_user_command or user_input,
             tools_called=tools_called,
-            dj_active=bool(getattr(self._dj, "state", None)
-                           and self._dj.state.enabled),
+            # Issue #2548 — в DJ-сессии ``dj_active=self._dj.state.enabled``;
+            # prose-action-claim без явного command-verb в user_input
+            # («вплетай их красиво» / «давай старайся» / «пока ничего не
+            # звучит») теперь тоже триггерит одноразовый ретрай, чтобы
+            # юзер не слышал «всё готово» при неизменной музыке.
+            # is_dj_auto=False — это user-turn (не DJ-тикер); глобальный
+            # флаг активной DJ-сессии передаётся отдельно.
+            # ``getattr(self, "_dj", None)`` для безопасности: часть
+            # node-тестов (test_issue_1343, test_service_text_leak)
+            # создают DialogueNode через ``object.__new__`` без
+            # ``_dj``, и AttributeError в нашем prod-коде быть не
+            # должно (это user-input ветка, не тестовая).
+            dj_active=bool(
+                getattr(self, "_dj", None)
+                and getattr(self._dj.state, "enabled", False)
+            ),
         ):
             return
         # Issue #2548 — fallback spoken, когда ретрай уже потрачен, а
@@ -5721,8 +5735,8 @@ class DialogueNode(Node):
             and getattr(self, "_action_claim_retry_used", False)
         ):
             dj_active = bool(
-                getattr(self._dj, "state", None)
-                and self._dj.state.enabled
+                getattr(self, "_dj", None)
+                and getattr(self._dj.state, "enabled", False)
             )
             try:
                 music_ctx = dj_active or bool(
