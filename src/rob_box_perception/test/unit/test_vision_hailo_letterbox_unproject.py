@@ -49,6 +49,16 @@ def _import_module():
 loader_mod = _import_module()
 
 
+def _has_numpy_and_cv2_loader() -> bool:
+    """True если numpy + cv2 доступны (нужны для bbox-симуляции)."""
+    try:
+        import cv2  # noqa: F401
+        import numpy  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
 # ============================================================================
 # LetterboxInfo.unproject — pure function, 1 кейс на корректность формулы
 # ============================================================================
@@ -224,6 +234,7 @@ def test_post_process_320x240_scaled_letterbox():
     assert ev['bbox_h'] == pytest.approx(0.4167, abs=0.01)
 
 
+@pytest.mark.skipif(not _has_numpy_and_cv2_loader(), reason='требует numpy + cv2 для bbox-симуляции')
 def test_post_process_no_letterbox_info_keeps_backward_compat():
     """letterbox_info=None → bbox нормализуется на input_w/h (старое поведение).
 
@@ -260,3 +271,105 @@ def test_post_process_no_letterbox_info_keeps_backward_compat():
         assert ev_no[field] == pytest.approx(ev_yes[field], abs=1e-5), (
             f'back-compat: {field}={ev_no[field]} != {ev_yes[field]}'
         )
+
+
+# ============================================================================
+# Round-trip: bbox → letterbox-space → unproject → исходный bbox
+# ============================================================================
+
+
+def _forward_letterbox_bbox(
+    cx: float, cy: float, bw: float, bh: float,
+    orig_w: int, orig_h: int,
+    input_w: int = 640, input_h: int = 640,
+) -> tuple:
+    """Спроецировать bbox из исходного кадра в letterbox-space.
+
+    Это forward-часть для round-trip теста: должна быть инверсией
+    ``LetterboxInfo.unproject``. Используем то же соглашение, что и
+    ``Frame.as_letterbox`` / ``vision_hailo_loader._preprocess``:
+    центрированный симметричный паддинг.
+
+    Returns:
+        (cx_lb, cy_lb, bw_lb, bh_lb, LetterboxInfo)
+    """
+    scale = min(input_w / orig_w, input_h / orig_h)
+    new_w = int(round(orig_w * scale))
+    new_h = int(round(orig_h * scale))
+    pad_w = input_w - new_w
+    pad_h = input_h - new_h
+    pad_left = pad_w // 2
+    pad_top = pad_h // 2
+
+    cx_lb = cx * scale + pad_left
+    cy_lb = cy * scale + pad_top
+    bw_lb = bw * scale
+    bh_lb = bh * scale
+
+    info = loader_mod.LetterboxInfo(
+        scale=float(scale),
+        pad_left=int(pad_left),
+        pad_top=int(pad_top),
+        orig_w=int(orig_w),
+        orig_h=int(orig_h),
+        letterbox_w=int(input_w),
+        letterbox_h=int(input_h),
+    )
+    return (cx_lb, cy_lb, bw_lb, bh_lb, info)
+
+
+@pytest.mark.parametrize(
+    'orig_w, orig_h, cx, cy, bw, bh',
+    [
+        # 320×240 (альбомный, scale=2.0) — bbox в центре + bbox у края.
+        (320, 240, 160, 120, 80, 60),
+        (320, 240, 40, 30, 30, 20),
+        (320, 240, 280, 200, 50, 40),
+        # 640×480 (OAK-D, scale=1.0, вертикальный pad) — bbox в центре + у края.
+        (640, 480, 320, 240, 100, 200),
+        (640, 480, 50, 50, 20, 20),
+        (640, 480, 600, 430, 80, 100),
+        # 480×640 (портретный, scale=1.0, горизонтальный pad).
+        (480, 640, 240, 320, 100, 200),
+        (480, 640, 40, 40, 30, 30),
+        (480, 640, 440, 600, 60, 80),
+    ],
+    ids=[
+        '320x240_center', '320x240_topleft', '320x240_bottomright',
+        '640x480_center', '640x480_topleft', '640x480_bottomright',
+        '480x640_center', '480x640_topleft', '480x640_bottomright',
+    ],
+)
+def test_roundtrip_bbox_through_letterbox_unproject(
+    orig_w, orig_h, cx, cy, bw, bh,
+):
+    """Round-trip: bbox → letterbox-space → unproject == bbox (±1px).
+
+    Acceptance #9 issue #2531: bbox, спроецированный в letterbox и снятый
+    обратно через unproject, совпадает с исходным в пределах пикселя.
+    Покрывает три класса кадров: альбомный 320×240, OAK-D 640×480,
+    портретный 480×640 — и три позиции bbox в каждом (центр, верх-лево,
+    низ-право).
+    """
+    cx_lb, cy_lb, bw_lb, bh_lb, info = _forward_letterbox_bbox(
+        cx=cx, cy=cy, bw=bw, bh=bh,
+        orig_w=orig_w, orig_h=orig_h,
+    )
+    # bbox в letterbox-space должен быть внутри (input_w, input_h).
+    assert 0.0 <= cx_lb <= 640.0
+    assert 0.0 <= cy_lb <= 640.0
+
+    # Обратная проекция.
+    u_cx, u_cy, u_bw, u_bh = info.unproject(cx_lb, cy_lb, bw_lb, bh_lb)
+    assert u_cx == pytest.approx(cx, abs=1.0), (
+        f'cx round-trip: {u_cx} != {cx} (orig={orig_w}x{orig_h})'
+    )
+    assert u_cy == pytest.approx(cy, abs=1.0), (
+        f'cy round-trip: {u_cy} != {cy} (orig={orig_w}x{orig_h})'
+    )
+    assert u_bw == pytest.approx(bw, abs=1.0), (
+        f'bw round-trip: {u_bw} != {bw} (orig={orig_w}x{orig_h})'
+    )
+    assert u_bh == pytest.approx(bh, abs=1.0), (
+        f'bh round-trip: {u_bh} != {bh} (orig={orig_w}x{orig_h})'
+    )

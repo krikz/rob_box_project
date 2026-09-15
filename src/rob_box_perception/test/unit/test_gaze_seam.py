@@ -164,6 +164,42 @@ def test_frame_as_letterbox_640x480_has_vertical_pad():
     assert tensor[0, 200, :, 0].mean() == pytest.approx(128, abs=1)
 
 
+@pytest.mark.skipif(not _has_numpy_and_cv2(), reason='требует numpy + cv2 для as_letterbox')
+def test_frame_as_letterbox_480x640_has_horizontal_pad():
+    """480×640 (портретный кадр) → letterbox 640×640: scale=1.0, pad_left=80.
+
+    Кейс горизонтального (не вертикального) паддинга: кадр уже квадрата
+    по ширине (480 < 640), но не по высоте → паддинг ложится симметрично
+    слева/справа (pad_left=80, pad_left+pad_right=160). По вертикали
+    паддинга нет (new_h = 640 * 1.0 = 640) → pad_top = 0.
+
+    Этот тест покрывает вторую половину симметрии, которую не покрывает
+    ни test_frame_as_letterbox_640x480_has_vertical_pad (вертикальный
+    паддинг), ни test_letterbox_bbox_roundtrip_matches_original_within_a_pixel
+    (round-trip — неявная проверка). Если бы Frame.as_letterbox делал
+    top-left letterbox, здесь бы провалилось: pad_left == 160, pad_top == 0.
+    """
+    import numpy as np
+    rgb = np.full((640, 480, 3), 128, dtype=np.uint8)
+    frame = gaze_mod.Frame(
+        rgb=rgb, scale=1.0, pad_left=0, pad_top=0,
+        original_w=480, original_h=640,
+        frame_id='test', stamp=0.0, source_name='test',
+    )
+    tensor = frame.as_letterbox(input_w=640, input_h=640)
+    assert tensor.shape == (1, 640, 640, 3)
+    assert frame.scale == pytest.approx(1.0)
+    assert frame.pad_top == 0
+    assert frame.pad_left == 80
+    # Left-padding columns (0..79) — серые (114 = LETTERBOX_PAD_VALUE).
+    assert tensor[0, :, 0, 0].mean() == pytest.approx(114, abs=1)
+    assert tensor[0, :, 79, 0].mean() == pytest.approx(114, abs=1)
+    # Right-padding columns (560..639) — тоже серые (симметрия).
+    assert tensor[0, :, 600, 0].mean() == pytest.approx(114, abs=1)
+    # Центральные columns — исходный кадр (серый 128).
+    assert tensor[0, :, 300, 0].mean() == pytest.approx(128, abs=1)
+
+
 # ============================================================================
 # Round-trip: bbox → Frame.as_letterbox (gaze.py) → LetterboxInfo.unproject
 # (vision_hailo_loader.py) должен вернуть исходный bbox (issue #2584).
