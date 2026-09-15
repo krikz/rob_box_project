@@ -555,5 +555,197 @@ class TestGuardIssue2549Scenarios(unittest.TestCase):
         )
 
 
+# -----------------------------------------------------------------------
+# Task t_c7d707bc — расширение coverage verbs до полного списка из
+# спецификации Issue #2559 body §1.
+#
+# Issue #2559 live 15.09 18:00-19:00: робот говорил «проверю и
+# перезапущу», «установлю заново», «остановлю проигрывание», «подложу
+# второй голос», «переключу на другой режим» при tools=[]. Узкий Bug E
+# guard не ловил эти prose-фразы. PR #2555 (issue #2549) дал базовый
+# набор verbs; эта секция добавляет:
+#
+#   past: установил[аи]?, остановил[аи]?, подложил[аи]?,
+#         переключил[аи]?, починил[аи]?, перезагрузил[аи]?
+#   future: установлю, остановлю, подложу, переключу, подкручу,
+#           поправлю, починю, перезагружу
+# -----------------------------------------------------------------------
+
+
+class TestExtendedVerbsCoverage(unittest.TestCase):
+    """Task t_c7d707bc — verbs добавлены в Issue body §1."""
+
+    # ---------- PAST ----------------------------------------------------
+
+    def test_ustanovil_triggers(self):
+        from rob_box_voice.core.dialogue_guards import \
+            detect_universal_action_claim
+
+        for v in ("установил", "установила", "установили"):
+            hit = detect_universal_action_claim(
+                spoken=f"Я {v} пакет заново.",
+                tools_called=(),
+            )
+            self.assertIsNotNone(hit, f"verb {v!r} not detected (past)")
+            self.assertEqual(hit.tense, "past")
+
+    def test_ostanovil_triggers(self):
+        from rob_box_voice.core.dialogue_guards import \
+            detect_universal_action_claim
+
+        for v in ("остановил", "остановила", "остановили"):
+            hit = detect_universal_action_claim(
+                spoken=f"Я {v} проигрывание.",
+                tools_called=(),
+            )
+            self.assertIsNotNone(hit, f"verb {v!r} not detected (past)")
+            self.assertEqual(hit.tense, "past")
+
+    def test_podlozhil_triggers(self):
+        from rob_box_voice.core.dialogue_guards import \
+            detect_universal_action_claim
+
+        for v in ("подложил", "подложила", "подложили"):
+            hit = detect_universal_action_claim(
+                spoken=f"Я {v} второй голос сверху.",
+                tools_called=(),
+            )
+            self.assertIsNotNone(hit, f"verb {v!r} not detected (past)")
+
+    def test_pereklyuchil_triggers(self):
+        from rob_box_voice.core.dialogue_guards import \
+            detect_universal_action_claim
+
+        for v in ("переключил", "переключила", "переключили"):
+            hit = detect_universal_action_claim(
+                spoken=f"Я {v} режим на джангл.",
+                tools_called=(),
+            )
+            self.assertIsNotNone(hit, f"verb {v!r} not detected (past)")
+
+    def test_pochinil_triggers(self):
+        from rob_box_voice.core.dialogue_guards import \
+            detect_universal_action_claim
+
+        for v in ("починил", "починила", "починили"):
+            hit = detect_universal_action_claim(
+                spoken=f"Я {v} канал связи.",
+                tools_called=(),
+            )
+            self.assertIsNotNone(hit, f"verb {v!r} not detected (past)")
+
+    def test_perezagruzil_triggers(self):
+        from rob_box_voice.core.dialogue_guards import \
+            detect_universal_action_claim
+
+        for v in ("перезагрузил", "перезагрузила", "перезагрузили"):
+            hit = detect_universal_action_claim(
+                spoken=f"Я {v} ноду.",
+                tools_called=(),
+            )
+            self.assertIsNotNone(hit, f"verb {v!r} not detected (past)")
+
+    # ---------- FUTURE --------------------------------------------------
+
+    def test_ustanovlyu_triggers(self):
+        from rob_box_voice.core.dialogue_guards import \
+            detect_universal_action_claim
+
+        hit = detect_universal_action_claim(
+            spoken="Дай минуту, установлю пакет заново.",
+            tools_called=(),
+        )
+        assert hit is not None  # noqa: S101
+        self.assertEqual(hit.tense, "future")
+        self.assertEqual(hit.verb.lower(), "установлю")
+
+    def test_ostanovlyu_triggers(self):
+        from rob_box_voice.core.dialogue_guards import \
+            detect_universal_action_claim
+
+        hit = detect_universal_action_claim(
+            spoken="Подожди, остановлю проигрывание.",
+            tools_called=(),
+        )
+        assert hit is not None  # noqa: S101
+        self.assertEqual(hit.tense, "future")
+        self.assertEqual(hit.verb.lower(), "остановлю")
+
+    def test_podlozhu_triggers(self):
+        from rob_box_voice.core.dialogue_guards import \
+            detect_universal_action_claim
+
+        hit = detect_universal_action_claim(
+            spoken="Сейчас подложу второй голос сверху.",
+            tools_called=(),
+        )
+        assert hit is not None  # noqa: S101
+        self.assertEqual(hit.tense, "future")
+        self.assertEqual(hit.verb.lower(), "подложу")
+
+    def test_pereklyuchu_triggers(self):
+        from rob_box_voice.core.dialogue_guards import \
+            detect_universal_action_claim
+
+        hit = detect_universal_action_claim(
+            spoken="Сейчас переключу режим на джангл.",
+            tools_called=(),
+        )
+        assert hit is not None  # noqa: S101
+        self.assertEqual(hit.tense, "future")
+        self.assertEqual(hit.verb.lower(), "переключу")
+
+    def test_podkruchu_triggers(self):
+        from rob_box_voice.core.dialogue_guards import \
+            detect_universal_action_claim
+
+        hit = detect_universal_action_claim(
+            spoken="Сейчас подкручу громкость.",
+            tools_called=(),
+        )
+        assert hit is not None  # noqa: S101
+        self.assertEqual(hit.tense, "future")
+        self.assertEqual(hit.verb.lower(), "подкручу")
+
+    def test_synonyms_future_trigger(self):
+        """Issue body §1 synonyms: поправлю/починю/перезагружу."""
+        from rob_box_voice.core.dialogue_guards import \
+            detect_universal_action_claim
+
+        for v in ("поправлю", "починю", "перезагружу"):
+            hit = detect_universal_action_claim(
+                spoken=f"Дай минуту, я {v}.",
+                tools_called=(),
+            )
+            self.assertIsNotNone(hit, f"verb {v!r} not detected (future)")
+            self.assertEqual(hit.tense, "future")
+
+    # ---------- Integration: new verbs compose with tool whitelist -----
+
+    def test_new_verb_with_music_tool_does_not_trigger(self):
+        """Если LLM вызвала compose_music — guard НЕ ретраит даже на новые
+        verbs."""
+        from rob_box_voice.core.dialogue_guards import \
+            detect_universal_action_claim
+
+        hit = detect_universal_action_claim(
+            spoken="Установил пресет джангла.",
+            tools_called=("set_vibe_preset",),
+        )
+        self.assertIsNone(hit)
+
+    def test_new_verb_without_tool_triggers(self):
+        """Issue body §1 acceptance: новый verb без tool → ретрай."""
+        from rob_box_voice.core.dialogue_guards import \
+            detect_universal_action_claim
+
+        hit = detect_universal_action_claim(
+            spoken="Переключу на джангл через секунду.",
+            tools_called=(),
+        )
+        assert hit is not None  # noqa: S101
+        self.assertEqual(hit.verb.lower(), "переключу")
+
+
 if __name__ == "__main__":
     unittest.main()
