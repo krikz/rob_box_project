@@ -200,9 +200,14 @@ EOF
 # decide_and_print_scenario _scenario_name _set_mtime_fn
 # → _set_mtime_fn это имя функции, которая УСТАНАВЛИВАЕТ mtime cooldown-файла
 #   в нужное состояние ПЕРЕД проверкой (например, clear/refresh/age).
-# Зеркало watchdog строки 286-298 (mtime check). NOTE: gh-truth check
-# (строки 295-298) НЕ моделируем — он работает только если уже есть
-# реальное issue с лейблом; в сухом harness это не нужно.
+# Зеркало watchdog строки 286-304 (mtime check + gh-truth check).
+#
+# R10 (issue #2483): до этого gh-truth check НЕ моделировался — реальная
+# защита от «cooldown stale + open issue уже существует → drift 0→1» в
+# тестах не покрывалась. Теперь: если задан env GH_TRUTH_OPEN_ISSUES_JSON
+# (файл с JSON-списком открытых e2e-fail-streak issues), читаем его и
+# проверяем length. ≥1 → SKIP с явным маркером «gh-truth guard» (как в
+# production watchdog lines 298-304).
 decide_and_print_scenario() {
     local _name="$1" _set_mtime_fn="$2"
     printf '\nscenario %s\n' "$_name"
@@ -224,6 +229,31 @@ decide_and_print_scenario() {
         fi
     else
         printf '  cooldown file absent — cold start, proceed\n'
+    fi
+
+    # R10: gh-truth guard — зеркало watchdog lines 298-304. Если задан
+    # GH_TRUTH_OPEN_ISSUES_JSON (файл с JSON), читаем его и проверяем
+    # количество элементов. ≥1 → SKIP независимо от mtime state.
+    # По умолчанию env пустой → guard не активен (старое поведение).
+    if [ -n "${GH_TRUTH_OPEN_ISSUES_JSON:-}" ] && [ -f "${GH_TRUTH_OPEN_ISSUES_JSON}" ]; then
+        local _open_count
+        _open_count="$(python3 -c '
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        arr = json.load(f)
+    print(len(arr) if isinstance(arr, list) else 0)
+except Exception:
+    print(0)
+' "${GH_TRUTH_OPEN_ISSUES_JSON}" 2>/dev/null || echo 0)"
+        if [ "${_open_count:-0}" -gt 0 ] 2>/dev/null; then
+            printf '  SKIPPED: gh-truth guard — open %s issues: %s\n' \
+                "$E2E_FAIL_STREAK_ISSUE_LABEL" "$_open_count"
+            _cooldown_ok="false"
+        else
+            printf '  gh-truth guard — open %s issues: 0 (proceed)\n' \
+                "$E2E_FAIL_STREAK_ISSUE_LABEL"
+        fi
     fi
 
     if [ "$_cooldown_ok" = "true" ]; then

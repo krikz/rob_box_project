@@ -196,9 +196,67 @@ else
 fi
 
 # ----------------------------------------------------------------------------
-# T8: shellcheck (опционально, не блокирует PASS)
+# T9 (R10, issue #2483): gh-truth guard scenario
+# Прогон harness с GH_TRUTH_OPEN_ISSUES_JSON=[1 e2e-fail-streak issue].
+# Все 3 сценария должны SKIP'нуть (cooldown fresh в (i) И gh-truth guard
+# активен; в (ii) и так skip; в (iii) cooldown stale, НО gh-truth guard
+# всё равно skip'ает — этот случай был раньше НЕ покрыт).
+# Это покрывает invariant «cooldown stale + open issue уже существует →
+# drift 0→1» который до R10 был немым.
 # ----------------------------------------------------------------------------
-hdr "T8: shellcheck (optional)"
+hdr "T9: gh-truth guard — open issue prevents drift"
+TRANSCRIPT_R10="$WORK/transcript_r10.txt"
+OPEN_ISSUES_JSON="$WORK/open_e2e_issues.json"
+echo '[{"number": 4242, "title": "existing fail-streak issue"}]' > "$OPEN_ISSUES_JSON"
+
+# Ожидаемый exit: harness вызывает invariant-check (lines 283-286) и
+# возвращает rc=1 потому что total_payloads=0 != 2. Это и есть смысл
+# теста — gh-truth guard ЗАБЛОКИРОВАЛ создание. Не bad-case, просто
+# invariant violated (мы проверяем сообщение в transcript).
+GH_TRUTH_OPEN_ISSUES_JSON="$OPEN_ISSUES_JSON" \
+HERMES_HOME="$HERMES_HOME" GH_REPO="$GH_REPO" \
+bash "$HARNESS_SH" >"$TRANSCRIPT_R10" 2>"$WORK/stderr_r10.txt"
+rc_r10=$?
+if [ "$rc_r10" = "1" ]; then
+    ok "harness (gh-truth guard) exited 1 — invariant violated as expected"
+else
+    bad "harness (gh-truth guard) exited $rc_r10, expected 1 (total=0)"
+fi
+
+# Считаем сколько раз встретился gh-truth guard SKIPPED.
+gh_truth_skips=$(grep -c "SKIPPED: gh-truth guard" "$TRANSCRIPT_R10" || true)
+gh_truth_logs=$(grep -c "gh-truth guard" "$TRANSCRIPT_R10" || true)
+payloads_r10=$(grep -c 'ISSUE PAYLOAD BEGIN---' "$TRANSCRIPT_R10" || true)
+
+# Все 3 сценария должны залогировать gh-truth check, и ВСЕ должны быть SKIP.
+if [ "$gh_truth_logs" = "3" ]; then
+    ok "gh-truth guard logged in all 3 scenarios"
+else
+    bad "gh-truth guard logged $gh_truth_logs times, expected 3"
+fi
+if [ "$gh_truth_skips" = "3" ]; then
+    ok "all 3 scenarios SKIPPED by gh-truth guard"
+else
+    bad "$gh_truth_skips scenarios SKIPPED by gh-truth, expected 3"
+fi
+if [ "$payloads_r10" = "0" ]; then
+    ok "zero payloads (gh-truth guard prevents all creation)"
+else
+    bad "$payloads_r10 payloads produced (expected 0)"
+fi
+# Доп. проверка: scenario (iii) с STALE cooldown всё равно SKIP — это
+# invariant, который был немым до R10.
+if awk '/scenario \(iii\)/{flag=1} flag && /SKIPPED/{print; exit}' "$TRANSCRIPT_R10" \
+        | grep -q "gh-truth guard"; then
+    ok "scenario (iii) STALE cooldown + gh-truth guard → SKIP"
+else
+    bad "scenario (iii) did not skip on gh-truth guard"
+fi
+
+# ----------------------------------------------------------------------------
+# T10: shellcheck (опционально, не блокирует PASS)
+# ----------------------------------------------------------------------------
+hdr "T10: shellcheck (optional)"
 if command -v shellcheck >/dev/null 2>&1; then
     if shellcheck "$HARNESS_SH" >"$WORK/shellcheck.txt" 2>&1; then
         ok "shellcheck clean"
