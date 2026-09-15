@@ -178,7 +178,7 @@ from rob_box_voice.core.dj_mode import DJHook, DJModeController
 from rob_box_voice.core.speak_helpers import (
     EffectAwaiterRegistry, build_ssml_payload, split_into_chunks,
     strip_done_marker, strip_history_marker, strip_markdown,
-    strip_speaker_tag, strip_thinking_blocks,
+    strip_meta_markers, strip_speaker_tag, strip_thinking_blocks,
 )
 from rob_box_voice.startup_greeting import (
     THINKING_SOUND,
@@ -5585,6 +5585,16 @@ class DialogueNode(Node):
         # как «озвучка ответа». Strip-блоков ДО done-чекера → в TTS идёт
         # либо пусто (маркер done → тишина), либо реальный финал.
         spoken = strip_thinking_blocks(spoken)
+        # Issue #2547 (regression check round 3, 15.09.2026, 193
+        # cases/hour on Vision Pi DJ-set): MiniMax-M1 occasionally
+        # prefixes ``spoken`` with internal section headers like
+        # ``[Мнение ассистента]``, ``[Примечание]``, ``**Итог:**`` —
+        # they were meant for the assistant's own reasoning but leaked
+        # into the user-facing text. TTS reads them verbatim. Strip
+        # BEFORE markdown so the bold form (``**…**``) is captured
+        # intact, and BEFORE the done-marker equality check so the
+        # stripper sees only the user-facing remainder.
+        spoken = strip_meta_markers(spoken)
         # Issue #988 (code part): strip Markdown BEFORE chunking. Chunking
         # splits on punctuation, which can cut a paired "*...*" in half;
         # strip_markdown in tts_node only removes *paired* delimiters, so a
@@ -5681,6 +5691,42 @@ class DialogueNode(Node):
                     f"🔇 [issue 988] speak_text called — final text skipped "
                     f"(anti-duplicate): {spoken[:80]!r}"
                 )
+            return
+        # Issue #2547 (regression check round 3, 15.09.2026, 5 cases in
+        # 30 min of DJ-set logs): the LLM sometimes calls real tools
+        # (``compose_music``, ``lookup_melody``, ``set_dj_mode``, …) but
+        # writes ``spoken='\n\ndone'`` or one of the cycle-end markers
+        # (``done``, ``готово``, ``всё``, …) instead of a user-facing
+        # phrase. Per the master-prompt contract ``speak_text`` is the
+        # user-facing answer; ``done`` is the cycle terminator and is
+        # only valid as the WHOLE response. When the LLM combines both
+        # — tools called AND garbage terminator — the user gets music
+        # with no audible acknowledgement («не слышал мелодию в пещере
+        # горного короля», live 15.09: ``spoken='\n\ndone'`` after
+        # ``compose_music(name='hall of the mountain king')``).
+        #
+        # Fix: when ``tools_called`` is non-empty, ``spoken`` is empty
+        # OR equal to a known cycle-end marker, and this is NOT a
+        # DJ-auto tick — publish a one-shot fallback phrase so the user
+        # hears an audible cue. We do NOT retry here (retry budget is
+        # already under pressure from issue #2548 / #2549); the
+        # master-prompt patch (companion commit) tightens the
+        # instruction so the model stops emitting this shape in the
+        # first place. The fallback is intentionally short and
+        # neutral — it doesn't claim a specific action, only confirms
+        # «услышал».
+        if (
+            tools_called
+            and not is_dj_auto
+            and not result.error
+            and not spoken
+        ):
+            self.get_logger().warning(
+                "🎙 [issue 2547] tools_called непустые, spoken пустой — "
+                f"публикую audible fallback. tools={list(tools_called)!r} "
+                f"user_input={user_input!r}"
+            )
+            self._publish_response("Сделаю.", animation="neutral")
             return
 # 🔴 FIX (live 02.09): «во время сочинения музыки LLM много говорит».
         # На DJ-переходе речь идёт ТОЛЬКО через speak_text (короткая
