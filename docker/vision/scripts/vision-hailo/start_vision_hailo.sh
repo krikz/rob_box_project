@@ -119,15 +119,24 @@ fi
 #   3. Когда-нибудь можно включить через <include> в общий perception
 #      launch без рефакторинга.
 #
-# hef_path передаём через launch argument: пустой hef_path нельзя
-# передавать как `-p hef_path:=` — rcl падает "Couldn't parse parameter
-# override rule". Launch это обрабатывает корректно (см.
-# vision_hailo.launch.py:DeclareLaunchArgument('hef_path', default_value='')).
-exec ros2 launch rob_box_perception vision_hailo.launch.py \
-    hailo_enabled:=${HAILO_ENABLED} \
-    hef_path:=${HEF_PATH} \
-    stub_period_sec:=${STUB_PERIOD_SEC} \
-    confidence_threshold:=${CONFIDENCE_THRESHOLD} \
-    input_topic:=${INPUT_TOPIC} \
-    output_topic:=${OUTPUT_TOPIC} \
+# hef_path передаём только когда он непустой. ros2 launch CLI не
+# принимает пустые значения launch-аргументов (`hef_path:=` →
+# "malformed launch argument 'hef_path:=', expected format '<name>:=<value>'"),
+# поэтому безусловный `hef_path:=${HEF_PATH}` ломает запуск vision-hailo
+# в stub-режиме (SSoT hailo_models.yaml имеет hef_path: "" по умолчанию).
+# Это приводит к restart-loop контейнера — см. issue #2527, потерял
+# round-405 test deploy 2026-09-15. Когда hef_path не задан, launch-файл
+# использует default_value='' из DeclareLaunchArgument.
+LAUNCH_ARGS=(
+    rob_box_perception vision_hailo.launch.py
+    hailo_enabled:=${HAILO_ENABLED}
+    stub_period_sec:=${STUB_PERIOD_SEC}
+    confidence_threshold:=${CONFIDENCE_THRESHOLD}
+    input_topic:=${INPUT_TOPIC}
+    output_topic:=${OUTPUT_TOPIC}
     publish_when_no_input:=true
+)
+if [ -n "${HEF_PATH}" ]; then
+    LAUNCH_ARGS+=( hef_path:=${HEF_PATH} )
+fi
+exec ros2 launch "${LAUNCH_ARGS[@]}"
