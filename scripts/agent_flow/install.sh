@@ -256,6 +256,17 @@ EXPECTED=(
     # где labels сняли руками. Регистрация cron-job делается в
     # ensure_conflict_sweep_cron ниже.
     agent-flow-conflict-sweep.sh
+    # Provider-exhaust manual cancel (ретро 15.09 t_a7aa4e6b, P1):
+    # user-invoked helper, сканирует task_runs.summary на сигнатуры
+    # MiniMax/DeepSeek provider-exhaust (HTTP 402/429, rate limit,
+    # «провайдер исчерпан») и блокирует (kind=capability, reason=
+    # provider-budget-exhausted) + sentinel-marked comment.
+    # Идемпотентен через SENTINEL_TAG в task_comments; companion
+    # `--recover` поднимает blocked(kind=capability)+sentinel обратно
+    # в ready после пополнения бюджета.
+    # НЕ cron-job (Шифу/оператор вызывает вручную либо ad-hoc через
+    # dry-run на N-карточек, как указано в карточке).
+    agent-flow-cancel-on-provider-exhausted.sh
 # Fail-streak escalation watchdog (ретро 28.08 t_faac94b0): no-agent,
     # вызывается ИЗ launcher'а (после e2e-process.sh tick), не отдельным
     # cron-job. При streak ≥ WARN → issue-comment, при streak ≥ PAUSE →
