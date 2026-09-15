@@ -590,6 +590,43 @@ def record_telegram_message(
     counter.labels(direction=direction, type=message_type).inc()
 
 
+# ── Issue #2554: audio_node paInputOverflow (status=2) ─────────────────
+# Раньше paInputOverflow виден только через rate-limited WARN в docker
+# logs (один раз в 60с, см. audio_node.py:_log_overflow). Это удобно
+# для немедленной диагностики, но не даёт тренда: «растёт/падает»
+# непонятно, пока не смотришь логи руками. Метрика позволяет
+# dashboard'у Grafana/Prometheus алертить по «overflow rate > N/мин» и
+# видеть, помог ли рост frames_per_buffer 1024 → 4096 (issue #1050)
+# против текущей пиковой нагрузки DJ-сетов.
+#
+# Имя: ``voice_audio_input_overflow_total`` — counter (по конвенции
+# #1160 «voice_*_total»). Лейбл: ``frames_per_buffer`` — диапазон
+# (chunk_size на момент события), потому что основной сценарий
+# регрессии = кто-то выставил слишком маленькое значение и надо быстро
+# понять, в каком окружении проблема.
+
+
+def record_audio_input_overflow(*, frames_per_buffer: int) -> None:
+    """Учёт одного paInputOverflow (status=2) в audio_node.
+
+    :param frames_per_buffer: текущее значение ``chunk_size`` (фреймы
+        на чанк). Зафиксировано как label, чтобы при смене параметра
+        в проде можно было отследить корреляцию «новый frames_per_buffer
+        → больше/меньше overflow» — а не гадать «у нас сейчас сколько».
+
+    Безопасен при отсутствии ``prometheus_client`` (no-op). См. общую
+    договорённость в :mod:`rob_box_voice.observability`.
+    """
+    counter = get_metric(
+        "counter",
+        "voice_audio_input_overflow_total",
+        "PyAudio paInputOverflow (status=2) events from audio_node, "
+        "labelled by frames_per_buffer (chunk_size) at the time of event.",
+        labelnames=("frames_per_buffer",),
+    )
+    counter.labels(frames_per_buffer=str(int(frames_per_buffer))).inc()
+
+
 # ── W2-6 (issue #968, scheduler-segments-merge, фаза S12) ──────────────
 # Метрики MERGE-цепочки: quick_decide-вердикты (S4.1), применённые
 # TaskScheduler.update()-правки (S3.2) и задержка очереди отложенных

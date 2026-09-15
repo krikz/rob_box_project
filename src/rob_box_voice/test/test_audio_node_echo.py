@@ -532,13 +532,183 @@ class TestInputOverflowHandling:
         assert len(warnings) == 2
 
     def test_overflow_log_reports_lost_bytes(self, audio_node):
-        """В логе видно сколько байт ожидалось/пришло/потеряно."""
+        """В логе видно сколько байт ожидалось/пришло/потеряно.
+
+        Issue #2554: формат лога теперь явно указывает обе величины —
+        frames_per_buffer (chunk_size, то, что задано в YAML) и размер
+        буфера в байтах (то, что фактически проходит через PortAudio,
+        = frames × ch × 2). Раньше лог печатал только байты, и
+        оператор, увидев «chunk 49152/49152 байт» в 6-канальном режиме,
+        делал ложный вывод «frames_per_buffer=49152» — но 49152 = 4096
+        × 6 × 2.
+
+        Имитируем типичный overflow: chunk_size=4096, callback получил
+        только 256 сэмплов (т.е. 512 байт). Лог считает expected от
+        chunk_size (= 4096 × 1 × 2 = 8192 байт) — это то, что PortAudio
+        ДОЛЖЕН был прислать по контракту. Разница = потеря.
+        """
         audio_node.is_running = True
         warnings = self._capture_warnings(audio_node)
         audio_node.audio_callback(b"\x00\x00" * 256, 1024, {}, 2)
         assert len(warnings) == 1
-        assert "512/2048" in warnings[0]  # got/expected
-        assert "потеряно ~1536" in warnings[0]
+        # frames_per_buffer=4096 (chunk_size) явно указан в логе —
+        # это и есть главный фикс #2554 (раньше лог писал только байты).
+        assert "frames_per_buffer=4096" in warnings[0]
+        # Размер буфера в байтах: chunk_size=4096, channels=1 → 8192 байт.
+        assert "buffer=512/8192" in warnings[0]
+        # Развёрнутое объяснение: «4096 frames × 1 ch × 2 Б».
+        assert "4096 frames × 1 ch × 2" in warnings[0]
+        assert "потеряно ~7680" in warnings[0]
+        # Лог также помечает issue #2554 для grep'а по issue-тегу.
+        assert "[issue 1050/2554]" in warnings[0]
+
+
+class TestInputOverflowMetric:
+    """Issue #2554: Prometheus-метрика ``voice_audio_input_overflow_total``.
+
+    Раньше paInputOverflow был виден только через rate-limited WARN
+    в docker logs (один раз в 60с). Это удобно для немедленной
+    диагностики, но не даёт тренда. Метрика позволяет Grafana/Prometheus
+    алертить по «overflow rate > N/мин».
+
+    Проверяем:
+    - на каждый overflow (status=2) зовётся record_audio_input_overflow
+      с текущим chunk_size;
+    - без overflow (status=0) — НЕ зовётся;
+    - в rate-limited окне (между двумя логами) счётчик всё равно
+      инкрементируется — метрика показывает РЕАЛЬНЫЙ rate, а не частоту
+      лог-строк.
+    """
+
+    def _capture_record_calls(self, monkeypatch, audio_node):
+        """Подменяем ``record_audio_input_overflow`` и ловим вызовы.
+
+        Импорт из audio_node делается через прямой monkeypatch на
+        ``rob_box_voice.audio_node.record_audio_input_overflow`` —
+        audio_node импортирует его ``from rob_box_voice.observability
+        import record_audio_input_overflow``, и Python создаёт новую
+        ссылку в ``audio_node``-модуле (это import-binding). Значит,
+        надо подменять именно ссылку В МОДУЛЕ audio_node, а не в
+        observability (иначе старая ссылка останется).
+
+        Альтернатива — патчить через mock. Но ``monkeypatch.setattr``
+        на уровне модуля audio_node чище.
+        """
+        from rob_box_voice import audio_node as audio_node_module
+
+        calls = []
+
+        def _spy(*, frames_per_buffer: int) -> None:
+            calls.append(frames_per_buffer)
+
+        monkeypatch.setattr(
+            audio_node_module,
+            "record_audio_input_overflow",
+            _spy,
+        )
+        return calls
+
+    def test_overflow_increments_metric(self, monkeypatch, audio_node):
+        """Один overflow → один вызов record_audio_input_overflow
+        с текущим chunk_size (=4096)."""
+        calls = self._capture_record_calls(monkeypatch, audio_node)
+        audio_node.is_running = True
+        audio_node.audio_callback(b"\x00\x00" * 1024, 1024, {}, 2)
+        assert calls == [4096]
+
+    def test_no_metric_when_status_zero(self, monkeypatch, audio_node):
+        """status=0 (нет overflow) → метрика НЕ инкрементируется."""
+        calls = self._capture_record_calls(monkeypatch, audio_node)
+        audio_node.is_running = True
+        audio_node.audio_callback(b"\x00\x00" * 1024, 1024, {}, 0)
+        assert calls == []
+
+    def test_metric_increments_in_rate_limited_window(
+        self, monkeypatch, audio_node
+    ):
+        """В окне между двумя логами WARN rate-limited, но метрика
+        растёт — это и есть основной фикс issue #2554 (тренд
+        независимо от того, как часто спамит docker logs)."""
+        calls = self._capture_record_calls(monkeypatch, audio_node)
+        audio_node.is_running = True
+        for _ in range(50):
+            audio_node.audio_callback(b"\x00\x00" * 1024, 1024, {}, 2)
+        assert len(calls) == 50
+        assert all(c == 4096 for c in calls)
+
+    def test_metric_uses_current_chunk_size(
+        self, monkeypatch, audio_node
+    ):
+        """Если chunk_size менялся в рантайме (например, через
+        ``ros2 param set``), метрика лейблится актуальным значением,
+        а не дефолтом."""
+        calls = self._capture_record_calls(monkeypatch, audio_node)
+        audio_node.chunk_size = 8192  # operator выставил явно
+        audio_node.is_running = True
+        audio_node.audio_callback(b"\x00\x00" * 8192, 8192, {}, 2)
+        assert calls == [8192]
+
+
+class TestInputOverflowLogFormat:
+    """Issue #2554: формат overflow-лога явно указывает обе величины.
+
+    Раньше лог печатал только байты: ``chunk 49152/49152 байт`` — в
+    6-канальном режиме (``frames_per_buffer=4096``, ``channels=6``,
+    int16) оператор делал ложный вывод «frames_per_buffer=49152».
+    На самом деле 49152 = 4096 × 6 × 2 байт, а chunk_size (frames)
+    по-прежнему 4096.
+
+    Проверяем, что новый лог содержит ОБЕ величины явно.
+    """
+
+    @staticmethod
+    def _capture_warnings(audio_node):
+        warnings = []
+
+        def _logger():
+            return MagicMock(
+                info=lambda *a, **kw: None,
+                warning=lambda *a, **kw: warnings.append(a[0] if a else ""),
+                warn=lambda *a, **kw: None,
+                error=lambda *a, **kw: None,
+                debug=lambda *a, **kw: None,
+            )
+
+        audio_node.get_logger = _logger
+        return warnings
+
+    def test_log_explicitly_shows_frames_per_buffer(self, audio_node):
+        """Лог должен явно содержать ``frames_per_buffer=4096`` —
+        чтобы оператор не путал «49152 байт» с «frames_per_buffer=49152»."""
+        audio_node.is_running = True
+        audio_node.channels = 6  # 6-канальный режим Vision Pi (как в issue #2554)
+        audio_node.sample_rate = 16000
+        audio_node.chunk_size = 4096
+        warnings = self._capture_warnings(audio_node)
+        # Имитируем полный 6-канальный чанк без потерь: 4096 frames × 6 ch × 2 Б.
+        full_chunk = b"\x00\x00" * (4096 * 6)
+        audio_node.audio_callback(full_chunk, 4096, {}, 2)
+        assert len(warnings) == 1
+        line = warnings[0]
+        # frames_per_buffer явно — 4096 (НЕ 49152).
+        assert "frames_per_buffer=4096" in line
+        # Размер буфера в байтах — 4096 × 6 × 2 = 49152.
+        assert "buffer=49152/49152" in line
+        # Развёрнутое объяснение раскладки.
+        assert "4096 frames × 6 ch × 2 Б" in line
+
+    def test_log_format_at_low_load(self, audio_node):
+        """При низком канале (1 ch) frames_per_buffer=4096 → 8192 байт."""
+        audio_node.is_running = True
+        audio_node.channels = 1
+        audio_node.sample_rate = 16000
+        audio_node.chunk_size = 4096
+        warnings = self._capture_warnings(audio_node)
+        full_chunk = b"\x00\x00" * 4096
+        audio_node.audio_callback(full_chunk, 4096, {}, 2)
+        line = warnings[0]
+        assert "frames_per_buffer=4096" in line
+        assert "buffer=8192/8192" in line
 
 
 class TestMixChannels:
