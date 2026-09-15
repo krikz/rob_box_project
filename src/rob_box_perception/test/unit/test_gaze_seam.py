@@ -4,7 +4,11 @@
   1. Frame dataclass: scale/pad_left/pad_top/orig_w/orig_h
      корректно сохраняются и читаются.
   2. Frame.as_letterbox(): RGB ndarray + letterbox → NHWC uint8 +
-     метаданные scale/pad_left/pad_top в dataclass.
+     метаданные scale/pad_left/pad_top в dataclass (симметричный
+     паддинг, issue #2584 — см. docstring Frame.as_letterbox).
+  2b. Round-trip bbox → as_letterbox → LetterboxInfo.unproject
+      (vision_hailo_loader.py) для 320×240, 640×480, 480×640 — ловит
+      рассогласование соглашения о паддинге между модулями (issue #2584).
   3. StubSource: отдаёт один синтетический кадр, source_name='stub'.
   4. make_source('stub'): создаёт StubSource, не дожидается кадра.
   5. GazeSourceUnavailable: сообщение содержит source_name, topic,
@@ -121,7 +125,9 @@ def test_frame_as_letterbox_produces_nhwc_uint8_with_metadata():
     Метаданные scale/pad_left/pad_top обновляются в dataclass.
     """
     import numpy as np
-    # 320×240 RGB → letterbox 640×640: scale=2.0, pad=0,0.
+    # 320×240 RGB → resize 640×480 (scale=2.0) → letterbox 640×640:
+    # вертикальный паддинг 640-480=160 делится симметрично (issue #2584,
+    # см. docstring Frame.as_letterbox): pad_top=80, pad_left=0.
     rgb = np.full((240, 320, 3), 128, dtype=np.uint8)
     frame = gaze_mod.Frame(
         rgb=rgb, scale=1.0, pad_left=0, pad_top=0,
@@ -133,7 +139,7 @@ def test_frame_as_letterbox_produces_nhwc_uint8_with_metadata():
     assert tensor.dtype == np.uint8
     assert frame.scale == pytest.approx(2.0)
     assert frame.pad_left == 0
-    assert frame.pad_top == 0
+    assert frame.pad_top == 80
 
 
 @pytest.mark.skipif(not _has_numpy_and_cv2(), reason='требует numpy + cv2 для as_letterbox')
@@ -156,6 +162,61 @@ def test_frame_as_letterbox_640x480_has_vertical_pad():
     assert tensor[0, 79, :, 0].mean() == pytest.approx(114, abs=1)
     # Центральные rows — это исходный кадр (серый 128).
     assert tensor[0, 200, :, 0].mean() == pytest.approx(128, abs=1)
+
+
+# ============================================================================
+# Round-trip: bbox → Frame.as_letterbox (gaze.py) → LetterboxInfo.unproject
+# (vision_hailo_loader.py) должен вернуть исходный bbox (issue #2584).
+#
+# Это единственный тест, который реально гоняет bbox через ОБА места, где
+# считается letterbox (gaze.py и vision_hailo_loader.py), а не через
+# вручную посчитанные scale/pad — поэтому он ловит рассогласование
+# соглашений между ними (top-left vs симметричный паддинг), а не только
+# ошибку в одной из формул по отдельности.
+# ============================================================================
+
+@pytest.mark.skipif(not _has_numpy_and_cv2(), reason='требует numpy + cv2 для letterbox')
+@pytest.mark.parametrize('orig_w, orig_h', [(320, 240), (640, 480), (480, 640)])
+def test_letterbox_bbox_roundtrip_matches_original_within_a_pixel(orig_w, orig_h):
+    """bbox в исходном кадре → letterbox-space → unproject ≈ исходный bbox.
+
+    Кадры: 320×240 (уже квадрата, масштаб>1), 640×480 (шире квадрата,
+    паддинг сверху/снизу), 480×640 (выше квадрата, паддинг слева/справа).
+    """
+    import numpy as np
+
+    loader_mod = importlib.import_module('rob_box_perception.vision_hailo_loader')
+
+    rgb = np.full((orig_h, orig_w, 3), 128, dtype=np.uint8)
+    frame = gaze_mod.Frame(
+        rgb=rgb, scale=1.0, pad_left=0, pad_top=0,
+        original_w=orig_w, original_h=orig_h,
+        frame_id='test', stamp=0.0, source_name='test',
+    )
+    frame.as_letterbox(input_w=640, input_h=640)  # обновляет scale/pad_*.
+
+    # bbox не по центру, чтобы паддинг реально влиял на результат.
+    orig_cx, orig_cy = orig_w * 0.3, orig_h * 0.65
+    orig_bw, orig_bh = orig_w * 0.2, orig_h * 0.25
+
+    # Та же проекция, что делает as_letterbox/_preprocess: resize (*scale),
+    # потом сдвиг на pad_left/pad_top.
+    lb_cx = orig_cx * frame.scale + frame.pad_left
+    lb_cy = orig_cy * frame.scale + frame.pad_top
+    lb_bw = orig_bw * frame.scale
+    lb_bh = orig_bh * frame.scale
+
+    info = loader_mod.LetterboxInfo(
+        scale=frame.scale, pad_left=frame.pad_left, pad_top=frame.pad_top,
+        orig_w=orig_w, orig_h=orig_h,
+        letterbox_w=640, letterbox_h=640,
+    )
+    u_cx, u_cy, u_bw, u_bh = info.unproject(lb_cx, lb_cy, lb_bw, lb_bh)
+
+    assert u_cx == pytest.approx(orig_cx, abs=1.0)
+    assert u_cy == pytest.approx(orig_cy, abs=1.0)
+    assert u_bw == pytest.approx(orig_bw, abs=1.0)
+    assert u_bh == pytest.approx(orig_bh, abs=1.0)
 
 
 # ============================================================================

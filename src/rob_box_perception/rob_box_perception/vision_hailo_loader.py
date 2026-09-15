@@ -69,6 +69,14 @@ STUB_SOURCE_CAMERA: str = 'stub'
 class LetterboxInfo:
     """Метаданные letterbox, нужные для обратной проекции bbox (ADR-0101).
 
+    Соглашение о паддинге (issue #2584, то же самое что и в
+    ``gaze.py::Frame.as_letterbox``): **симметричный** letterbox — паддинг
+    делится поровну между противоположными сторонами (``pad // 2`` на одну
+    сторону, остаток — на другую), а не top-left. ``_preprocess`` ниже и
+    ``Frame.as_letterbox`` обязаны считать pad_left/pad_top одной и той же
+    формулой — иначе ``unproject`` сдвинет bbox на величину рассогласования
+    (регрессия к дефекту issue #2531 acceptance #9).
+
     Attributes:
         scale: коэффициент resize ДО паддинга (orig_w * scale = new_w).
         pad_left: пикселей паддинга слева в letterbox-тензоре.

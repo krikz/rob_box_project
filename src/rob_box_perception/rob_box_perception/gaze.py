@@ -101,6 +101,18 @@ class Frame:
     def as_letterbox(self, input_w: int, input_h: int) -> Any:
         """Привести Frame к letterbox-тензору input_w×input_h (NHWC uint8).
 
+        Соглашение о паддинге (issue #2584, зафиксировано явно): **симметричный**
+        letterbox, как в стандартном YOLOv8-препроцессинге — паддинг делится
+        поровну между противоположными сторонами (``pad // 2`` на одну сторону,
+        остаток — на другую), а НЕ top-left (весь паддинг справа/снизу).
+        Пример: кадр 320×240 → resize в 640×480 (scale=2.0) → вертикальный
+        паддинг 160px делится на pad_top=80 (сверху) и 80 (снизу), а не
+        pad_top=0/pad_bottom=160. Это соглашение обязано совпадать с
+        ``LetterboxInfo`` / ``_preprocess`` в ``vision_hailo_loader.py`` —
+        ``LetterboxInfo.unproject`` вычитает ``pad_left``/``pad_top``, и при
+        расхождении соглашений bbox систематически уезжает на величину
+        паддинга (регрессия к дефекту, закрытому issue #2531 acceptance #9).
+
         Args:
             input_w / input_h: целевой размер модели (640×640 для YOLOv8n).
 
