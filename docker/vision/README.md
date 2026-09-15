@@ -11,6 +11,9 @@ Docker compose инфраструктура для Vision Pi (Raspberry Pi 5) - 
 3. **lslidar** - LSLIDAR N10 лидар (2D сканы)
 4. **led-matrix** - Драйвер NeoPixel LED матрицы
 5. **voice-assistant** - Голосовой ассистент + анимации (ReSpeaker Mic Array v2.0)
+6. **vision-hailo** - AI inference на Raspberry Pi AI HAT+ (Hailo-8, 26 TOPS); запускает `vision_hailo_node` (см. [ADR-0089](../../docs/adr/0089-ai-hat-plus-deployment.md), Phase 1 PoC, stub-режим `HAILO_ENABLED=false`); публикует события в топик `/vision/hailo/events` (`VisionEvent[]`). Hardware: `/dev/hailo0` (обязателен для Phase 1.5 real inference).
+
+> **F-1 (cross-link, вне scope этой карточки):** на текущий момент `vision-hailo` **не зарегистрирован** в launch-файле, поэтому контейнер запускается, но нода не стартует — даже после исправления README. Полная интеграция (включая consumer'а `context_aggregator_node` → `/perception/context_update.vision_events_json`) закрывается отдельной задачей.
 
 ### Схема коммуникации
 
@@ -20,6 +23,8 @@ Vision Pi (Raspberry Pi 5)
 │   ├─ oak-d → /camera/color/image_raw, /camera/color/camera_info, /apriltag_detections
 │   ├─ lslidar → /scan
 │   ├─ led-matrix → слушает /animations/trigger
+│   ├─ vision-hailo → /vision/hailo/events (VisionEvent[])
+│   │       └─▶ (downstream) context_aggregator_node → /perception/context_update.vision_events_json
 │   └─ voice-assistant → /voice/*, /audio/*, /animations/trigger
 │
 └── Zenoh Bridge → Main Pi (WiFi/Ethernet)
