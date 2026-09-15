@@ -236,9 +236,10 @@ class VisionHailoNode(Node):
             self._publisher = None
 
         # ============ Таймер поллинга gaze source ============
-        # Gaze.frames() блокирующий итератор; в rclpy-ноде мы делаем
-        # poll через таймер (spin_once в _tick → rclpy.spin_once в
-        # OakDSource/CeilingCameraSource).
+        # Non-blocking poll (issue #2602): кадр складывается ROS-колбэком
+        # источника в поле _latest, а _poll_gaze лишь читает его через
+        # poll_latest(). Никакого rclpy.spin_once из колбэка таймера —
+        # рекурсивный spin блокировал executor и не давал _tick публиковать.
         self._poll_timer = self.create_timer(0.05, self._poll_gaze)
 
         # ============ Таймер публикации (heartbeat) ============
@@ -292,12 +293,19 @@ class VisionHailoNode(Node):
     # ----------------------------------------------------------------
 
     def _poll_gaze(self) -> None:
-        """Poll gaze.frames() — сохранить последний кадр для _tick.
+        """Poll gaze source — сохранить последний кадр для _tick.
 
         В stub-mode _poll_gaze просто no-op (StubSource сам не публикует
         события, его выдачу обрабатывает _tick через _loader.infer(image=None)).
-        В real-mode (oak_d / ceiling_camera) — сохраняем последний RGB-кадр
+        В real-mode (oak_d / ceiling_camera) — читаем последний RGB-кадр
         + метаданные letterbox для следующего infer().
+
+        Non-blocking (issue #2602): кадр обновляется ROS-колбэком источника
+        (``_on_msg`` в gaze.py, вызывается executor'ом ноды), а здесь мы
+        только читаем поле через ``poll_latest()``. Старый вызов блокирующего
+        ``frames()`` крутил ``rclpy.spin_once`` из колбэка таймера — это
+        рекурсивный spin, который блокировал executor и не давал ``_tick``
+        публиковать события.
         """
         if self.gaze_source_name == 'stub':
             # StubSource отдаёт один синтетический кадр; считаем, что
@@ -307,22 +315,13 @@ class VisionHailoNode(Node):
             self._last_frame_id = 'stub_frame'
             return
 
-        # Real-источник: пробежаться по буферу gaze.frames() пока есть
-        # новые кадры; сохранить только последний.
-        try:
-            for frame in self._gaze.frames():
-                self._latest_frame = frame
-                self._has_received_frame = True
-                self._last_frame_id = frame.frame_id
-                self._last_frame_stamp = frame.stamp
-                # Break после первого нового кадра — следующий poll
-                # возьмёт более свежий. Это даёт нам "latest wins"
-                # семантику и не блокирует таймер.
-                break
-        except Exception as exc:  # noqa: BLE001
-            self.get_logger().warning(
-                f'gaze.frames() error: {exc!r}'
-            )
+        frame = self._gaze.poll_latest()
+        if frame is None:
+            return
+        self._latest_frame = frame
+        self._has_received_frame = True
+        self._last_frame_id = frame.frame_id
+        self._last_frame_stamp = frame.stamp
 
     def _tick(self) -> None:
         """Периодический тик: публикация VisionEvent от loader'а.
