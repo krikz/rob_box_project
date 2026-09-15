@@ -455,6 +455,91 @@ def test_publish_event_empty_buffer_yields_empty_json():
     assert payload == []
 
 
+# ---------- приватность: stub не пересекает PerceptionEvent (issue #2532) --
+#
+# ADR-0089 §2.2: StubHEFLoader выдумывает "person, conf 0.92, 1 м" —
+# PR #2583 дал этому честный маркер (event_type='stub'/source_camera='stub',
+# vision_hailo_loader.is_stub_event). Архитектурное решение issue #2532:
+# фильтрация стоит здесь, в publish_event(), в момент сборки PerceptionEvent
+# — единственного продюсера этого сообщения. Личность читает
+# vision_event_count/vision_events_json ТОЛЬКО из PerceptionEvent, поэтому
+# граница на входе в него закрывает вопрос раз и навсегда.
+
+
+def test_publish_event_real_event_reaches_perception_event():
+    """Реальная детекция (без stub-маркера) доходит до PerceptionEvent."""
+    node = ContextAggregatorNode()
+    node.current_sensors = {'battery': 36.0, 'temperature': 42.0}
+    node.on_hailo_vision_event(
+        _make_vision_event(event_type='person', source_camera='oak-d',
+                           confidence=0.87)
+    )
+    node.publish_event()
+    published = node.event_pub.published[0]
+    assert published.vision_event_count == 1
+    payload = json.loads(published.vision_events_json)
+    assert len(payload) == 1
+    assert payload[0]['event_type'] == 'person'
+
+
+def test_publish_event_stub_event_never_reaches_perception_event():
+    """Выдуманное stub-событие НЕ должно попасть в PerceptionEvent вовсе."""
+    node = ContextAggregatorNode()
+    node.current_sensors = {'battery': 36.0, 'temperature': 42.0}
+    node.on_hailo_vision_event(
+        _make_vision_event(event_type='stub', source_camera='stub',
+                           class_name='person', confidence=0.92,
+                           distance_m=1.0)
+    )
+    node.publish_event()
+    published = node.event_pub.published[0]
+    assert published.vision_event_count == 0
+    payload = json.loads(published.vision_events_json)
+    assert payload == []
+
+
+def test_publish_event_mixed_stub_and_real_keeps_only_real_with_correct_count():
+    """27 выдуманных + 0 реальных -> Личность видит 0, а не 27 (issue #2532).
+
+    Здесь — упрощённая версия смеси (2 stub + 1 real), но тот же принцип:
+    счётчик и список считаются ПОСЛЕ фильтрации, не до неё.
+    """
+    node = ContextAggregatorNode()
+    node.current_sensors = {'battery': 36.0, 'temperature': 42.0}
+    node.on_hailo_vision_event(
+        _make_vision_event(event_type='stub', source_camera='stub',
+                           confidence=0.92)
+    )
+    node.on_hailo_vision_event(
+        _make_vision_event(event_type='person', source_camera='oak-d',
+                           confidence=0.81)
+    )
+    node.on_hailo_vision_event(
+        _make_vision_event(event_type='person', source_camera='stub',
+                           confidence=0.5)
+    )
+    node.publish_event()
+    published = node.event_pub.published[0]
+    assert published.vision_event_count == 1
+    payload = json.loads(published.vision_events_json)
+    assert len(payload) == 1
+    assert payload[0]['source_camera'] == 'oak-d'
+
+
+def test_publish_event_all_stub_yields_zero_not_stub_count():
+    """Буфер целиком из выдумки -> count=0, а не len(буфера)."""
+    node = ContextAggregatorNode()
+    node.current_sensors = {'battery': 36.0, 'temperature': 42.0}
+    for _ in range(3):
+        node.on_hailo_vision_event(
+            _make_vision_event(event_type='stub', source_camera='stub')
+        )
+    node.publish_event()
+    published = node.event_pub.published[0]
+    assert published.vision_event_count == 0
+    assert json.loads(published.vision_events_json) == []
+
+
 # ---- фикстура: гарантируем что у MagicMock-instance есть нужные методы ----
 
 @pytest.fixture(autouse=True)
