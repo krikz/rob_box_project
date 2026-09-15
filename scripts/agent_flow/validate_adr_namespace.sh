@@ -18,6 +18,14 @@
 #   bash scripts/agent_flow/validate_adr_namespace.sh --ref main    # другой baseline
 #   bash scripts/agent_flow/validate_adr_namespace.sh --ref <sha>    # абсолютный коммит
 #   bash scripts/agent_flow/validate_adr_namespace.sh --strict       # exit 1 на любой warn
+#   bash scripts/agent_flow/validate_adr_namespace.sh --full         # full repo scan (не только diff PR)
+#   bash scripts/agent_flow/validate_adr_namespace.sh --full --ref <sha>  # full scan по baseline
+#
+# Режимы:
+#   - default (pre-PR): смотрит NEW files в $REF...HEAD, валит на коллизии.
+#   - --full (audit): смотрит ВСЕ ADR в $REF, валит на любые коллизии в baseline.
+#     Используется для bug-карточек (#2582, #2601) и ручного аудита каталога.
+#     НЕ вызывается из CI (там pre-PR guard достаточно).
 #
 # Регистрация:
 #   - EXPECTED в scripts/agent_flow/install.sh (drift-detect контролирует).
@@ -38,12 +46,14 @@ set -euo pipefail
 # ---- CLI args ----
 REF="origin/develop"
 STRICT=0
+FULL=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --ref)    REF="${2:-}"; [ -n "$REF" ] || { echo "validate_adr_namespace: --ref требует аргумент" >&2; exit 2; }; shift 2 ;;
         --strict) STRICT=1; shift ;;
+        --full)   FULL=1; shift ;;
         -h|--help)
-            sed -n '2,38p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '2,42p' "$0" | sed 's/^# \{0,1\}//'
             exit 0 ;;
         *) echo "validate_adr_namespace: unknown arg: $1" >&2; exit 2 ;;
     esac
@@ -82,15 +92,77 @@ fi
 extract_keys() {  # stdin: list of paths (docs/adr/NNNN-*.md or docs/adr/AF-NNNN-*.md)
     # $1 = input list. Output format: "<DOMAIN>:<NNN>"
     #
-    # File layout:
-    #   docs/adr/AF-NNNN-<slug>.md  → domain AF, NNNN at chars 13..16 (1-indexed)
-    #   docs/adr/NNNN-<slug>.md     → domain RT, NNNN at chars 10..13
+    # File layout (ADR-AF-0030 §2.1, §2.4-bis):
+    #   docs/adr/AF-NNNN-<slug>.md            → domain AF,  NNNN at chars 13..16
+    #   docs/adr/NNNN-<slug>.md               → domain RT,  NNNN at chars 10..13
+    #   docs/adr/NNNN-amendment-<slug>.md     → domain AMEND (legitimate pattern,
+    #                                           не путаем с RT:N — отдельный namespace)
     #   (verified: 'docs/adr/' = 9 chars, then either 'AF-' or digit)
+    #
+    # Amendment-файлы на 2026-09-15: 0014-amendment-1-label-conflict,
+    # 0022-amendment-best-effort-stale-candidate-alert,
+    # 0082-amendment-0027-meta-quest-api-drift-fix.
     awk '
-        /^docs\/adr\/AF-[0-9]+-[a-zA-Z0-9_-]+\.md$/ { print "AF:" substr($0, 13, 4)+0; next }
-        /^docs\/adr\/[0-9]+-[a-zA-Z0-9_-]+\.md$/   { print "RT:" substr($0, 10, 4)+0; next }
+        /^docs\/adr\/AF-[0-9]+-[a-zA-Z0-9_-]+\.md$/          { print "AF:"    substr($0, 13, 4)+0; next }
+        /^docs\/adr\/[0-9]+-amendment-[a-zA-Z0-9_-]+\.md$/   { print "AMEND:" substr($0, 10, 4)+0; next }
+        /^docs\/adr\/[0-9]+-[a-zA-Z0-9_-]+\.md$/             { print "RT:"    substr($0, 10, 4)+0; next }
+        # Неподходящие имена — тихо пропускаем (не fail-closed), это
+        # позволит скрипту работать в репо с произвольным содержимым docs/adr/.
     '
 }
+
+if [ "$FULL" -eq 1 ]; then
+    # === Full-scan режим (ADR-AF-0030 §2.4-ter) ===
+    # Сканируем ВЕСЬ каталог ADR в $REF, ищем коллизии в каждом домене.
+    # Используется для bug-карточек (#2582, #2601) и ручного аудита.
+    echo "validate_adr_namespace: --full mode — scanning whole $REF (audit)"
+    ALL_KEYS=""
+    ALL_KEYS="$(git ls-tree -r "$REF" --name-only 2>/dev/null | extract_keys | sort || true)"
+    if [ -z "$ALL_KEYS" ]; then
+        echo "validate_adr_namespace: --full clean (в $REF нет ни одного ADR-файла)."
+        exit 0
+    fi
+    # Коллизия: ключ встречается > 1 раза
+    DUPES="$(printf '%s\n' "$ALL_KEYS" | uniq -d || true)"
+    if [ -z "$DUPES" ]; then
+        TOTAL="$(printf '%s\n' "$ALL_KEYS" | wc -l)"
+        echo "validate_adr_namespace: --full clean ($TOTAL ADR-файлов в $REF, коллизий нет)."
+        exit 0
+    fi
+    # Печатаем найденные коллизии: ключ + список файлов
+    echo ""
+    echo "ERROR: --full mode found ADR namespace collision(s) in $REF:"
+    while IFS= read -r key; do
+        [ -z "$key" ] && continue
+        domain="${key%%:*}"
+        num="${key#*:}"
+        if [ "$domain" = "AF" ]; then
+            files="$(git ls-tree -r "$REF" --name-only 2>/dev/null \
+                | grep -E "^docs/adr/AF-0*${num}-.*\.md$" \
+                | sed -E 's|^docs/adr/AF-0*[0-9]+-||; s|\.md$||' \
+                | paste -sd ', ' -)"
+        elif [ "$domain" = "AMEND" ]; then
+            files="$(git ls-tree -r "$REF" --name-only 2>/dev/null \
+                | grep -E "^docs/adr/0*${num}-amendment-.*\.md$" \
+                | sed -E 's|^docs/adr/0*[0-9]+-||; s|\.md$||' \
+                | paste -sd ', ' -)"
+        else
+            files="$(git ls-tree -r "$REF" --name-only 2>/dev/null \
+                | grep -E "^docs/adr/0*${num}-.*\.md$" \
+                | grep -v "amendment-" \
+                | sed -E 's|^docs/adr/0*[0-9]+-||; s|\.md$||' \
+                | paste -sd ', ' -)"
+        fi
+        printf '  %s (×N файлов): %s\n' "$key" "${files:-<нет>}" >&2
+    done <<< "$DUPES"
+    echo ""
+    echo "  Это РУЧНОЙ audit --full (ADR-AF-0030 §2.4-ter)."
+    echo "  Коллизии в baseline означают, что merge-gate их НЕ ловит (он смотрит только diff PR)."
+    echo "  Создайте отдельный fix-PR на каждую коллизию или объедините через переименование."
+    exit 1
+fi
+
+# === Default режим: pre-PR guard (существующая логика) ===
 
 NEW_KEYS=""
 NEW_KEYS="$(git diff "$REF"...HEAD --name-only --diff-filter=A 2>/dev/null | extract_keys | sort -u || true)"
@@ -173,15 +245,20 @@ fi
 declare -a COLLISION_LINES=()
 declare -a AF_NEXT_FREE=()
 declare -a RT_NEXT_FREE=()
+declare -a AMEND_NEXT_FREE=()
 # Считаем max в каждом домене отдельно
 AF_MAX_NUM="$(printf '%s\n' "$EXISTING_KEYS" | awk -F: '/^AF:/ {print $2}' | sort -n | tail -n1)"
 RT_MAX_NUM="$(printf '%s\n' "$EXISTING_KEYS" | awk -F: '/^RT:/ {print $2}' | sort -n | tail -n1)"
+AMEND_MAX_NUM="$(printf '%s\n' "$EXISTING_KEYS" | awk -F: '/^AMEND:/ {print $2}' | sort -n | tail -n1)"
 [ -z "$AF_MAX_NUM" ] && AF_MAX_NUM=0
 [ -z "$RT_MAX_NUM" ] && RT_MAX_NUM=0
+[ -z "$AMEND_MAX_NUM" ] && AMEND_MAX_NUM=0
 AF_NEXT=$((AF_MAX_NUM + 1))
 RT_NEXT=$((RT_MAX_NUM + 1))
+AMEND_NEXT=$((AMEND_MAX_NUM + 1))
 AF_NEXT_PADDED="$(printf '%04d' "$AF_NEXT" 2>/dev/null || echo "$AF_NEXT")"
 RT_NEXT_PADDED="$(printf '%04d' "$RT_NEXT" 2>/dev/null || echo "$RT_NEXT")"
+AMEND_NEXT_PADDED="$(printf '%04d' "$AMEND_NEXT" 2>/dev/null || echo "$AMEND_NEXT")"
 
 while IFS= read -r key; do
     [ -z "$key" ] && continue
@@ -224,6 +301,8 @@ done <<< "$COLLISION"
     for d in $touched_domains; do
         if [ "$d" = "AF" ]; then
             echo "  Next free в AF-домене: $AF_NEXT_PADDED"
+        elif [ "$d" = "AMEND" ]; then
+            echo "  Next free в AMEND-домене (правка задним числом, ADR-AF-0030 §2.4-bis): $AMEND_NEXT_PADDED-amendment-<slug>.md"
         else
             echo "  Next free в RT-домене: $RT_NEXT_PADDED"
         fi

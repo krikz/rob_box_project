@@ -1,6 +1,6 @@
-# ADR-0075: расширение декоративного короба ROOM_D для размещения TARS-панелей (вариант E)
+# ADR-0117: расширение декоративного короба ROOM_D для размещения TARS-панелей (вариант E)
 
-> **ADR-number: 0075** (collision-fix, 2026-09-15, issue #2582/#2601). Сосед `0113-supervisor-multithreaded-executor-for-tool-results.md` получил тот же номер и переехал в `ADR-0113`; этот ADR первый по merge-time, коммит `79504487d` (PR #2156).
+> **ADR-number: 0117** (collision-fix, 2026-09-15, issue #2601). Исторически фигурировал под номерами 0075 и 0076 как дубль (`docs/adr/0075-meta-quest-tars-room-d-expansion.md`, merge `79504487d` PR #2156; `docs/adr/0076-meta-quest-tars-room-d-expansion.md`, merge `6321dc1bb` PR #2156). Это сиротский ADR: ни по номеру, ни по slug `meta-quest-tars-room-d-expansion` на него никто не ссылается (verified raw: `git grep`). Содержимое двух клонов идентично (256 строк, отличие только в H1). Перенумерован на 0117 (следующий свободный RT-номер после 0116), дубль 0076 удалён. См. ADR-AF-0030 §2.7 (этот PR).
 
 | Поле | Значение |
 |---|---|
