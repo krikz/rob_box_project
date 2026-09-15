@@ -148,6 +148,7 @@ from rob_box_voice.core.dialogue_helpers import (
 )
 from rob_box_voice.core.music_guard import (
     MusicGuard,
+    MusicGuardVerdict,
     MusicGuardVerdictKind,
 )
 # Issue #2241 / ADR-0080 §2.4 — TurnGuards owns guard order + retry budget.
@@ -845,7 +846,14 @@ class DialogueNode(Node):
         # ``reset_for_new_user_request``; ``_dispatch_dj_turn`` resets the
         # DJ budget via ``reset_for_new_dj_transition``. No more
         # duplicated counters across the two scopes.
+        # Issue #2561 — babble-retry success rate ~62%, 38% retry не
+        # помогает (live 2026-09-15 round3). AC #3 требует: 3 retry
+        # подряд → на 4-м fallback. Дефолт класса — 8 (для обратной
+        # совместимости с прежним «нудно, пока не получится»); для
+        # продового диалога ставим 3, чтобы юзер слышал контекстное
+        # предложение альтернативы максимум после 3 раундов горения.
         self._music_guard: MusicGuard = MusicGuard(
+            max_user_retries=3,
             logger=self.get_logger(),
         )
 
@@ -4909,34 +4917,9 @@ class DialogueNode(Node):
             return False
 
         if verdict.kind is MusicGuardVerdictKind.FALLBACK:
-            # Issue #2561 (2026-09-15): babble-retry success rate ~62%
-            # на Bug C — после исчерпания USER_RETRY-budget
-            # публикуем FALLBACK с предложением альтернативы, а не
-            # безличный NUDGE. Текст уже собран в
-            # :func:`build_music_retry_exhausted_fallback` и лежит в
-            # ``verdict.prompt``; тут только публикация.
-            self._discard_last_music_reply()
-            fallback_text = verdict.prompt or (
-                "Что-то не получается с музыкой, "
-                "давай попробуем по-другому?"
+            return self._publish_music_retry_exhausted_fallback(
+                verdict=verdict, user_input=user_input
             )
-            self._speak_direct(fallback_text)
-            # Prometheus: считаем каждое исчерпание retry-цепочки —
-            # live 15.09 показал 6/16 = 38% Bug C-триггеров выгорают
-            # именно в этом состоянии. Лейбл ``user_input_kind``
-            # помогает понять, на каких запросах retry бесполезен.
-            try:
-                _kind = self._classify_music_user_input_kind(user_input)
-                record_music_retry_exhausted(
-                    guard_name="music_user",
-                    reason=verdict.reason or "retry_exhausted",
-                    user_input_kind=_kind,
-                )
-            except Exception as exc:  # noqa: BLE001
-                self.get_logger().warning(
-                    f"🎵 [issue 2561] Prometheus record failed: {exc}"
-                )
-            return False
 
         if verdict.kind is MusicGuardVerdictKind.NUDGE:
             # Legacy terminal branch. Оставлен для backward-compat —
@@ -4952,6 +4935,50 @@ class DialogueNode(Node):
         # SKIP_NOT_APPLICABLE — guard deliberately skipped (stop-command,
         # user did not request music, DJ off, etc.). Policy module already
         # logged the diagnostic.
+        return False
+
+    def _publish_music_retry_exhausted_fallback(
+        self,
+        *,
+        verdict: MusicGuardVerdict,
+        user_input: str,
+    ) -> bool:
+        """Issue #2561 — опубликовать FALLBACK с предложением альтернативы.
+
+        После исчерпания USER_RETRY-budget (3 retry подряд → на 4-м) модель
+        по-прежнему отвечает spoken-фразой при ``tools_called=[]``. Вместо
+        безличного «Я тут растерялся» публикуем контекстную фразу
+        «Что-то не получается с <название>, давай попробуем по-другому?»
+        (если в user_input распознано имя трека) или общую
+        «Что-то не получается с музыкой, …». Текст уже собран в
+        :func:`build_music_retry_exhausted_fallback` и лежит в
+        ``verdict.prompt``; тут только публикация + метрика.
+
+        Возвращает ``False`` — guard завершается терминально,
+        вызывающий код публикует результат как есть (он уже содержит
+        fallback-фразу, без второй ``speak_text``).
+        """
+        self._discard_last_music_reply()
+        fallback_text = verdict.prompt or (
+            "Что-то не получается с музыкой, "
+            "давай попробуем по-другому?"
+        )
+        self._speak_direct(fallback_text)
+        # Prometheus: считаем каждое исчерпание retry-цепочки.
+        # Live 15.09 показал 6/16 = 38% Bug C-триггеров выгорают
+        # именно в этом состоянии. Лейбл ``user_input_kind`` помогает
+        # понять, на каких запросах retry бесполезен.
+        try:
+            _kind = self._classify_music_user_input_kind(user_input)
+            record_music_retry_exhausted(
+                guard_name="music_user",
+                reason=verdict.reason or "retry_exhausted",
+                user_input_kind=_kind,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(
+                f"🎵 [issue 2561] Prometheus record failed: {exc}"
+            )
         return False
 
     def _build_music_retry_prompt(self, user_input: str) -> str:

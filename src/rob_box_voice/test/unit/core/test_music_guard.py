@@ -1070,3 +1070,71 @@ def test_logger_is_optional() -> None:
         build_dj_retry_prompt=_dj_prompt,
     )
     assert verdict.kind is MusicGuardVerdictKind.DJ_RETRY
+
+
+# ---------------------------------------------------------------------------
+# Issue #2561 — production dialogue_node.py must use max_user_retries=3
+# ---------------------------------------------------------------------------
+
+
+def test_dialogue_node_uses_max_user_retries_3_for_fallback_path() -> None:
+    """Issue #2561 AC #3: «3 retry подряд → на 4-м fallback».
+
+    Каркас ``MusicGuard`` это уже умеет (``test_user_retry_respects_custom_max``),
+    но если продовый ``DialogueNode`` создаст гард с дефолтом 8, юзер будет
+    слышать «растерялся» только на 9-й попытке. Проверяем AST, чтобы не
+    тащить в юнит-тест тяжёлый импорт ``rclpy``.
+
+    Это статический тест-инвариант. Если кто-то откатит budget обратно к 8
+    (или закомментирует kwarg), этот тест заорёт — то самое поведение,
+    которое мы зафиксировали после round3 live-инцидента.
+    """
+    import ast
+    from pathlib import Path
+
+    # test lives at src/rob_box_voice/test/unit/core/test_music_guard.py
+    # walk up 4 dirs to reach src/, then descend into the double-nested
+    # package directory.
+    src_root = Path(__file__).resolve().parents[4]
+    dialogue_node = src_root / "rob_box_voice" / "rob_box_voice" / "dialogue_node.py"
+    assert dialogue_node.exists(), (
+        f"dialogue_node.py not found at {dialogue_node} "
+        f"(resolved src_root={src_root})"
+    )
+    tree = ast.parse(dialogue_node.read_text(encoding="utf-8"))
+    found_3 = False
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "MusicGuard"
+        ):
+            for kw in node.keywords:
+                if (
+                    kw.arg == "max_user_retries"
+                    and isinstance(kw.value, ast.Constant)
+                    and kw.value.value == 3
+                ):
+                    found_3 = True
+                    break
+    assert found_3, (
+        "Issue #2561 AC #3: DialogueNode должен создавать MusicGuard с "
+        "max_user_retries=3, чтобы на 4-м фейле публиковать FALLBACK "
+        "вместо безличного NUDGE. Проверь dialogue_node.py — там должен "
+        "быть `MusicGuard(max_user_retries=3, logger=...)`."
+    )
+
+
+def test_music_guard_advertises_fallback_path_in_docstring() -> None:
+    """Issue #2561 — документируем новое поведение в docstring ``evaluate``.
+
+    Если кто-то рефакторит ``MusicGuard.evaluate`` и теряет FALLBACK-ветку
+    из docstring, легко пропустить регрессию. Тест пинит, что docstring
+    упоминает FALLBACK — это сигнал для следующего ревьюера.
+    """
+    from rob_box_voice.core.music_guard import MusicGuard
+    doc = MusicGuard.evaluate.__doc__ or ""
+    assert "FALLBACK" in doc, (
+        "MusicGuard.evaluate docstring должен явно упоминать FALLBACK — "
+        "иначе ревьюер не увидит новую ветку после рефактора."
+    )

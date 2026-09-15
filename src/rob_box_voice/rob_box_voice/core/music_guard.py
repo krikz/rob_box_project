@@ -256,6 +256,23 @@ class MusicGuard:
             Counters are advanced **here** (not by the adapter) so the
             policy and the bookkeeping cannot drift apart. The
             ``SKIP`` verdict on success resets both counters atomically.
+
+            Verdict kinds (issue #2561 added :attr:`FALLBACK`):
+
+            * ``DJ_RETRY`` / ``USER_RETRY`` — dispatch a synchronous
+              retry (Bug B / Bug C path).
+            * ``SKIP`` / ``SKIP_NOT_APPLICABLE`` — guard has nothing to
+              say this turn.
+            * ``NUDGE`` — legacy terminal fallback; still honoured by
+              the adapter for backward compat, but ``evaluate`` now
+              emits ``FALLBACK`` instead (issue #2561).
+            * ``FALLBACK`` — user-budget exhausted. The verdict carries
+              a context-aware spoken phrase in ``prompt`` (``build_music_retry_exhausted_fallback``)
+              that proposes an alternative rather than apologising.
+              Adapter publishes it via ``_speak_direct`` and increments
+              ``voice_music_retry_exhausted_total``.
+            * ``FORCE_STOP`` — user asked to stop music but LLM called
+              no stop tool.
         """
         tools_set = set(tools_called or ())
         # Issue #1392 follow-up: MiniMax AI-генерация тоже «запустила музыку».
