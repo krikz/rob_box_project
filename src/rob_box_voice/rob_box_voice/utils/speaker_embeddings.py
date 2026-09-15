@@ -44,38 +44,6 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 # ── Tuning constants ─────────────────────────────────────────────────────────
-# Issue #2348 — калибровка на основе распределений из /data/speakers.db
-# (44 эмбеддинга, 280 same-voice пар, 666 cross-voice пар, see
-# .hermes/research/cosine_distributions/REPORT.md).
-# Threshold-sweep по матрице same-vs-cross:
-#
-#   | thr | same≥thr | cross≥thr | act3 best≥thr |
-#   |-----|----------|-----------|---------------|
-#   | 0.70 |   57.5 % |    5.9 %  |    72.7 %     |
-#   | 0.72 |   56.4 % |    5.0 %  |    63.6 %     |  ← прод IDENTIFY (новый)
-#   | 0.75 |   53.2 % |    3.9 %  |    36.4 %     |  ← прод REGISTER_MATCH (новый)
-#   | 0.80 |   46.8 % |    1.4 %  |    18.2 %     |
-#   | 0.82 |   38.2 % |    0.6 %  |     9.1 %     |  ← СТАРОЕ значение обоих
-#   | 0.85 |   27.5 % |    0.3 %  |     0.0 %     |
-#
-# До калибровки (0.75/0.82) act3 best≥0.75 давал всего 36 % known — то есть
-# 7/11 production-utterances уходили в unknown, при том что у 4 из этих 7 top-1
-# был в диапазоне 0.70–0.74 (т.е. человек тот же — просто голос деградирован).
-# Новая пара 0.72/0.75:
-#   * IDENTIFY поднимает act3-known с 36 % до 63 % (+27 пп) при росте cross FPR
-#     с 3.9 до 5.0 % (+26 пар из 666, в т.ч. верхушка cross-распределения —
-#     «Борис–Шифу» 0.791 при register_match пройдёт как false positive);
-#   * REGISTER_MATCH поднимает TPR с 38.2 до 53.2 % (+15 пп), что прямо
-#     сокращает количество дублей, которые проползают через LLM-цикл
-#     register_speaker на повторных фразах одного и того же человека.
-#
-# Trade-off (явный, ADR-0024 follow-up):
-#   кросс-пара «Борис–Шифу» (cosine 0.791) остаётся ВЫШЕ ОБОИХ новых порогов.
-#   Для IDENTIFY это обратимо («Привет, Шифу!» вместо «Привет, Борис!» — следующая
-#   фраза поправит). Для REGISTER_MATCH это ЛОЖНОЕ СЛИЯНИЕ — одно срабатывание
-#   смешает факты двух разных людей. Чтобы не зарывать это в код, оставляем
-#   явное предупреждение в логе при срабатывании (>0.7) и рекомендацию
-#   разносить голоса вручную через merge_speakers() / давать эпитет.
 IDENTIFY_THRESHOLD: float = 0.72    # cosine similarity to accept a match
 # Issue #2348 / AC3 / issue #1101 — единая точка истины для «мусорных имён».
 # Объединяет noise-токены из dialogue.RegisterSpeakerTool._NOISE_NAMES
@@ -208,7 +176,7 @@ _EPITHET_COLUMNS: Tuple[Tuple[str, str], ...] = (
 # ``""``, если имя мусорное. Семантика ``""`` == «отбросить»: вызывающий
 # код решает, как реагировать (MCP-тул — MCPToolResult с error;
 # speaker_id_node — warning + skip; прямой register() — ValueError,
-# см. register()).
+# см. _check_name_or_raise ниже).
 def _validate_speaker_name(name: object) -> str:
     """Normalise raw speaker name; ``""`` for junk.
 
