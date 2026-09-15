@@ -100,6 +100,26 @@ NOWHERE="$(mktemp -d)"
 )
 rm -rf "$NOWHERE"
 
+# --- Сценарий 4a: branch mismatch → exit 2 (issue #2478) ---
+out=$(SKIP_POST_FLIGHT=false bash "$TARGET" "t_abc1234" "z-definitely-not-current-branch" 2>&1)
+rc=$?
+assert_exit "4a_branch_mismatch" 2 "$rc" || true
+echo "$out" | grep -qF "branch mismatch" || { fail_count=$((fail_count + 1)); echo "FAIL [4a_branch_mismatch]: missing 'branch mismatch' in stderr"; }
+
+# --- Сценарий 4b: branch совпадает с HEAD → exit 0 ---
+_CENT_HEAD="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)"
+out=$(SKIP_POST_FLIGHT=false bash "$TARGET" "t_abc1234" "$_CENT_HEAD" 2>&1)
+rc=$?
+assert_exit "4b_branch_match" 0 "$rc" || true
+
+# --- Сценарий 4c: custom BASE_REF (issue #2478) ---
+# BASE_REF=HEAD → trivial no-op → exit 0.
+_HEAD_SHA="$(git rev-parse HEAD 2>/dev/null)"
+out=$(SKIP_POST_FLIGHT=false BASE_REF="$_HEAD_SHA" bash "$TARGET" "t_abc1234" "$_CENT_HEAD" 2>&1)
+rc=$?
+assert_exit "4c_custom_base_ref" 0 "$rc" || true
+unset _HEAD_SHA _CENT_HEAD
+
 # --- Сценарий 5: ahead of develop → exit 0 ---
 SETUP5="$WORK/s5"
 make_bare_with_commits "$WORK/s5_bare" "$SETUP5" 0
