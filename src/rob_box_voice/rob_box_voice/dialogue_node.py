@@ -6484,12 +6484,18 @@ class DialogueNode(Node):
         speaker_tag: object,
         text: str,
     ) -> None:
+        # Issue #2471 / ADR-0097 — diag-лог вне scope контракта #2440
+        # (no `speaker_id[:8]` для LLM/MCP). Полный id идёт отдельным полем
+        # `speaker_id_full`, чтобы grep / e2e-flow могли однозначно
+        # матчить его против UUID в voice_memory. Префикс 8 символов
+        # остаётся как human-readable shortening.
         self.get_logger().info(
             f"robot_log(step=backlog_diag): raw_current_speaker="
             f"is_known={sp.get('is_known')!r} "
             f"name={sp.get('name')!r} "
             f"confidence={sp.get('confidence')!r} "
-            f"speaker_id={str(sp.get('speaker_id') or '')[:8]!r} "
+            f"speaker_id_short={str(sp.get('speaker_id') or '')[:8]!r} "
+            f"speaker_id_full={sp.get('speaker_id')!r} "
             f"tag_in={speaker_tag!r} "
             f"sanitized_name={sp_name!r} "
             f"text={text[:60]!r}"
