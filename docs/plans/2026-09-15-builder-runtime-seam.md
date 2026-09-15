@@ -711,8 +711,12 @@ ssh vision-pi "cd /path/to/docker/vision && time docker compose pull led-matrix"
 - `docker history` — слой с `build-essential`/`python3-dev`/`libffi-dev` должен **отсутствовать** в
   runtime-стадии (в `docker history` многостадийного образа видна только финальная стадия — это и есть
   прямое доказательство, что слои builder-стадии не попали в итоговый образ).
-- `dpkg -l | grep -E "build-essential|python3-dev|libffi-dev|gcc|g\+\+"` внутри контейнера — пусто (это
-  и есть acceptance-критерий раздела 9).
+- `dpkg -l | grep -E "build-essential|python3-dev|libffi-dev|gcc|g\+\+"` внутри контейнера — **НЕ пусто,
+  и не может быть пустым**. Исправлено 2026-09-16 по факту реальной сборки пилота: `build-essential`,
+  `gcc`, `g++`, `python3-dev` запечены в `ghcr.io/krikz/rob_box_base:ros2-zenoh` (наследство
+  `ros:humble-ros-base`) — ровно то, что говорит §2.1 этого же документа. Из трёх пакетов, которые
+  `led_matrix/Dockerfile` ставит явно, шов убирает только **`libffi-dev`**. Проверять надо его, а не
+  весь список.
 - Время job'а в Actions — по этапу 0 (кеширование) ожидается **улучшение** на повторных сборках того же
   коммита; по этапу 1 (multi-stage) первая сборка может быть **медленнее** (два `FROM`, больше слоёв),
   но повторные (с кешем builder-стадии) — не хуже текущих.
@@ -729,8 +733,10 @@ ssh vision-pi "cd /path/to/docker/vision && time docker compose pull led-matrix"
 - [ ] Контейнер стартует, `ros2 node list | grep -q led_matrix` — зелёный (тот же критерий, что уже в
       `HEALTHCHECK`, Dockerfile текущей версии :99-100).
 - [ ] `HEALTHCHECK` контейнера — `healthy` в `docker ps` после `start_period` (15s).
-- [ ] `docker run --rm <образ> dpkg -l | grep -E "build-essential|python3-dev|libffi-dev|gcc|g\+\+"` —
-      **пусто** в рантайм-образе.
+- [ ] `docker run --rm <образ> dpkg -l | grep libffi-dev` — **пусто** в рантайм-образе (единственный из
+      трёх явно ставящихся пакетов, который шов реально убирает). `build-essential`/`gcc`/`g++`/
+      `python3-dev` останутся — они из базового образа, см. §2.1. Прежняя формулировка требовала пустого
+      вывода по всему списку и противоречила §2.1; исправлено 2026-09-16 после реальной сборки пилота.
 - [ ] `docker run --rm <образ> which colcon` — **не найдено** (colcon — часть унаследованного из базы
       тулчейна и per §2.1 не обязан исчезнуть; если требование «нет colcon» жёстче реального технического
       предела варианта (б) — зафиксировать это явно как известное ограничение пилота, не мнимый provided).
