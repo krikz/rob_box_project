@@ -1,5 +1,22 @@
 # ADR-0066: `/dialogue/control` pause/resume — единственная связь оператора и личности
 
+> **⚠️ РЕДИРЕКТ-ЗАМЕТКА (2026-09-15, kanban `t_9d3b4421`, techwriter).**
+>
+> Этот ADR — про `/dialogue/control {pause|resume}` и не имеет отношения к «Поводу».
+> Если вы ищете ADR про **повод / occasion / право робота заговорить первым** —
+> это **ADR-0101** (концепция, [PR #2575](https://github.com/krikz/rob_box_project/pull/2575),
+> смержен `e7c9abc6`) и **ADR-0102** (API-контракт, in-process `core/occasion.py`,
+> PR #2581 от architect worker по карточке `t_38c55959`, issue #2536).
+>
+> Номер «0066» в брифах дочерних карточек после ADR-0101 merge — коллизия имён,
+> а не запрос на новый ADR с тем же номером. Подтверждено commit `4f201b487`
+> (PR #2121, ADR-0054 → ADR-0066 перенумерация) и пятью файлами
+> `docs/adr/0066-*.md` из AF-серии (deploy-issue, pr-orphan, pr-redundant,
+> worker-pre-post-flight-design, worker-pre-post-flight).
+>
+> **Менять этот файл не нужно**, редирект — единственное изменение techwriter
+> по карточке `t_9d3b4421`. Полный текст ADR без редирект-блока — в `git log`.
+
 | Поле | Значение |
 |---|---|
 | Статус | Proposed (после merge → Accepted) |
