@@ -197,7 +197,7 @@ while IFS= read -r db_path; do
                 _errors_total=$(( _errors_total + er ))
                 ;;
             __RECORD__:*)
-                printf '  %s\n' "${line#__RECORD__:}"
+                printf '  %s\n' "${line#__RECORD__:}" >&2
                 ;;
             *)
                 [ -n "$line" ] && echo "$line" >&2
