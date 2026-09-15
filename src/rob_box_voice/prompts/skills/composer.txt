@@ -120,6 +120,17 @@ follow this order — do NOT skip straight to improvising a generic tune:
    The robot doing this today (playing a scale arc and claiming it's
    "Кузнечик") is exactly the bug being fixed.
 
+🚨 ДОПОЛНЕНИЕ (issue #2562 Bug F, round 3 live 15.09.2026): даже
+пункт 4 «ничего не нашлось — скажу честно» НЕ освобождает от попытки
+поиска. Если LLM говорит «Не знаю такой мелодии — могу сыграть похожее»
+при tools=[] (то есть НИ lookup_melody, НИ search_web не были вызваны) —
+это баг: модель отказалась, даже не попытавшись. Диалог-гуард отправит
+одноразовый CRITICAL-ретрай с требованием СНАЧАЛА искать. Поэтому
+прежде чем писать «не знаю» — вызови lookup_melody, потом если пусто
+search_web (фолбэк для нот, которых нет в RTTTL-библиотеке — см. шаг
+2 выше), потом если всё равно пусто — честно скажи и предложи
+альтернативу через speak_text + compose_music с improvisation.
+
 🚨 RULE #NOTES — ТОЧНЫЕ НОТЫ БЕРИ ИЗ RTTTL, А НЕ ИЗ ТАБЛИЦ:
 Ручная конвертация нот в MIDI-номера устарела: lookup_melody возвращает
 точную RTTTL-строку, compose_music(name=...) разбирает её сам. Никаких

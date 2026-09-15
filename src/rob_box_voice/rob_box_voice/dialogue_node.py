@@ -128,8 +128,10 @@ from rob_box_voice.core.dialogue_guards import (
     build_system_regurgitate_retry_prompt,
     build_unbacked_action_retry_prompt,
     build_tool_retry_prompt as build_tool_retry_prompt,
+    build_unknown_melody_retry_prompt,  # Issue #2562 Bug F
     detect_required_tool as detect_required_tool,
     detect_unbacked_action_claim,
+    detect_unknown_melody_claim,  # Issue #2562 Bug F
     extract_renardo_code_lines,
     is_metalanguage_babble,
     is_music_stop_command,
@@ -901,6 +903,11 @@ class DialogueNode(Node):
         # одноразовый ретрай с явным требованием отвечать обычным
         # языком, иначе LLM и код уходят в пинг-понг.
         self._system_regurgitate_retry_used: bool = False
+
+        # Issue #2562 Bug F — «не знаю такой мелодии» без поиска.
+        # Тот же одноразовый контракт, что у Bug E / Bug C' / Regurgitate:
+        # один ретрай на user-turn, иначе LLM уходит в ping-pong.
+        self._unknown_melody_retry_used: bool = False
 
         # Issue #1881 — общий бюджет СИНТЕТИЧЕСКИХ ретраев на user-turn.
         # Раньше у каждого guard'а был свой одноразовый флаг
@@ -3488,6 +3495,7 @@ class DialogueNode(Node):
             self._code_speech_retry_used = False
             self._tool_retry_used = False
             self._system_regurgitate_retry_used = False
+            self._unknown_melody_retry_used = False  # Issue #2562 Bug F
             self._synthetic_retries_left = self.DEFAULT_SYNTHETIC_RETRIES
             # Issue #2266 / ADR-0021 R2 — mirror the budget reset to the
             # ``core/``-side ``TurnState`` so ``begin_babble_retry`` sees a
@@ -4439,6 +4447,78 @@ class DialogueNode(Node):
                 user_input=user_input or "", spoken=spoken, rule=rule
             ),
             is_action_claim_retry=True,
+            is_synthetic=True,
+            raw_user_command=user_input,
+        )
+        return True
+
+    def _check_unknown_melody_claim_and_retry(
+        self,
+        *,
+        spoken: str,
+        user_input: Optional[str],
+        tools_called: tuple,
+    ) -> bool:
+        """Issue #2562 Bug F — одноразовый ретрай «не знаю мелодии» без поиска.
+
+        Round 3 live-check (Vision Pi 10.1.1.21, 15.09.2026): модель дважды
+        за час на просьбу «сыграй X» отвечала «Не знаю такой мелодии — могу
+        сыграть что-то похожее. Что ближе — расслабленный фанк или драйв?»
+        при ``tools=[]``. Юзер слышит уклончивый вопрос вместо честного
+        «ищу ноты»/«сыграю похожее» — а HONESTY RULE в composer.txt это
+        прямо запрещает («NEVER say 'не знаю' without trying to search»).
+
+        Этот guard закрывает дыру тем же контрактом, что Bug E:
+          1. user_input содержит явную просьбу мелодии по имени
+             (``сыграй / играй / мелодия / трек / композиция / классика``).
+          2. spoken содержит паттерн «не знаю такой/этой мелодии / не помню /
+             нет в памяти».
+          3. ``tools_called`` пуст — то есть НИКАКОГО поиска не было
+             (если бы был — LLM честно попыталась, и это легитимный ответ).
+
+        Returns:
+            ``True`` — ретрай отправлен, вызывающий НЕ должен публиковать
+            текст в TTS (иначе юзер услышит «не знаю», а потом ответ ретрая).
+        """
+        if getattr(self, "_unknown_melody_retry_used", False):
+            return False
+        if not detect_unknown_melody_claim(
+            user_input=user_input,
+            spoken=spoken,
+            tools_called=tuple(tools_called or ()),
+        ):
+            return False
+
+        # Тот же перевод DSM, что и в bug E: без него process_input
+        # увидит IDLE и вернёт пустой результат.
+        try:
+            if self._dsm.current_state == DialogueStateKind.IDLE:
+                self._dsm.on_event(DialogueEvent.WAKE_WORD)
+                self._publish_state()
+            self._dsm.on_event(DialogueEvent.STT_RESULT)
+            self._publish_state()
+        except ImportError:
+            pass
+
+        # Issue #1881 — общий budget декрементится рядом с поимённым
+        # флагом. Если budget == 0, ретрай НЕ отправляется.
+        if not self._consume_synthetic_retry(guard_name="unknown_melody"):
+            return False
+        self._unknown_melody_retry_used = True
+        self._mark_retry_dispatched()
+        self.get_logger().warning(
+            "🎵 [issue 2562 Bug F] «не знаю мелодии» без поиска "
+            f"(tools={list(tools_called)!r}, spoken={spoken[:80]!r}) — "
+            "один ретрай с требованием сначала поискать через lookup_melody/"
+            "search_web/gen_search_library"
+        )
+        self._dispatch_turn(
+            build_unknown_melody_retry_prompt(user_input),
+            # Свой тип — НЕ путать с Bug E. ``is_action_claim_retry``
+            # обрабатывается в Bug E-ветке (``_run_turn``), и Bug F
+            # намеренно избегает этого флага, чтобы флаги разных guards
+            # не сбрасывали друг друга (issue #1881 ping-pong fix).
+            is_action_claim_retry=False,
             is_synthetic=True,
             raw_user_command=user_input,
         )
@@ -5856,6 +5936,22 @@ class DialogueNode(Node):
             is_dj_auto=is_dj_auto,
             has_error=result.error is not None,
             speak_text_real=speak_text_real,
+        ):
+            return
+        # Issue #2562 Bug F — «не знаю такой мелодии» без поиска. Round 3
+        # live-check 15.09.2026 (Vision Pi 10.1.1.21): модель дважды за час
+        # ответила «Не знаю такой мелодии — могу сыграть похожее» при
+        # tools=[]. Юзер слышит уклончивый вопрос вместо честного «ищу
+        # ноты»/«сыграю похожее». Закрываем той же логикой, что Bug E:
+        # один CRITICAL-ретрай с явным указанием СНАЧАЛА поискать через
+        # lookup_melody / search_web / gen_search_library, а если пусто —
+        # предложить альтернативы через speak_text + compose_music. Это
+        # HONESTY RULE из composer.txt, и сейчас она только прописана, но
+        # не enforced — ретрай закрывает дыру.
+        if spoken and self._check_unknown_melody_claim_and_retry(
+            spoken=spoken,
+            user_input=raw_user_command or user_input,
+            tools_called=tools_called,
         ):
             return
         # 💡 Diagnostic: log the actual state before deciding what to do.
