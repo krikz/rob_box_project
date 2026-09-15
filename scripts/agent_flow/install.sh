@@ -292,6 +292,15 @@ EXPECTED=(
     # это решение Шифу. Регистрация cron-job делается в
     # ensure_stale_blocked_watchdog_cron.
     agent-flow-stale-blocked-watchdog.sh
+    # E2E-rejected stale-watchdog (ретро 15.09 t_9251fd74): no-agent,
+    # каждые 24ч сканирует GitHub Issues с меткой `e2e:rejected`. Для
+    # issue старше STALE_DAYS (default 7) без нового PR — добавляет
+    # assignee (по `agent:<role>` label или domain-keyword) и пишет
+    # issue-comment "stale, нужна новая попытка или wontfix".
+    # Для issue старше AUTO_CLOSE_DAYS (default 30) — auto-close +
+    # label `closed:stale-rejected`. Регистрация cron-job делается в
+    # ensure_e2e_rejected_watchdog_cron ниже.
+    agent-flow-e2e-rejected-watchdog.sh
     # Ночной ревью-цикл (ADR-0049): no-agent job, раз в ночь собирает
     # дайджест за прошедшие сутки (merged PR / коммиты / issues /
     # красный CI / kanban) и заводит ОДНУ карточку «ночной ревью <дата>»
@@ -1066,6 +1075,26 @@ sys.exit(1)
     fi
 }
 ensure_stale_blocked_watchdog_cron
+
+echo
+echo "==> Ensure cron job registration: e2e-rejected watchdog (ретро 15.09 t_9251fd74)"
+# Проблема: agent-flow-e2e-process ставит label `e2e:rejected` после
+# неудачного прогона, но НЕ запускает process-cycle «rejected → новый
+# fix-PR или closing-as-wontfix». Result: 6+ issue висят с этой меткой
+# без assignee месяцами, юзер не видит «этот путь провалился, что дальше».
+#
+# Решение: ensure_e2e_rejected_watchdog_cron() — every-24h no-agent job в
+# devops-профиле. Сканирует open issues с меткой `e2e:rejected`:
+#   - age > 7d без нового PR → assignee + issue-comment «stale, нужна
+#     новая попытка или wontfix-обоснование».
+#   - age > 30d → close + label `closed:stale-rejected` (юзер может
+#     переоткрыть).
+# Идемпотентность: 24h-window на alert-comment; close идёт один раз по
+# детекции отсутствия label. Log + exit-2 для cron-delivery.
+ensure_e2e_rejected_watchdog_cron() {
+    ensure_cron_job devops "Agent Flow E2E Rejected Watchdog (ретро t_9251fd74)" "agent-flow-e2e-rejected-watchdog.sh" "every 24h" interval
+}
+ensure_e2e_rejected_watchdog_cron
 
 echo
 echo "==> Ensure cron job registration: ночной ревью (ADR-0049)"
