@@ -78,6 +78,15 @@ assert_contains() {  # $1=needle $2=haystack $3=msg
     esac
 }
 
+assert_ge() {  # $1=actual $2=expected_min $3=msg
+    if [ "$1" -ge "$2" ] 2>/dev/null; then
+        return 0
+    fi
+    printf '  %sassert fail:%s %s\n    actual:   %q\n    expected >= %q\n' \
+        "$RED" "$END" "$3" "$1" "$2" >&2
+    return 1
+}
+
 assert_not_contains() {  # $1=needle $2=haystack $3=msg
     case "$2" in
         *"$1"*)

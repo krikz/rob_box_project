@@ -962,63 +962,156 @@ PR #${_nrc_pr_num} (\\\\\`${_nrc_head}\\\\\`) → develop = **mergeable=${_nrc_m
 # добавили src/rob_box_teleop/setup.cfg (blob 66dad822). Триаж/e2e не dedup-ит
 # PR по изменяемым файлам → фикс задвоен, при merge первого второй получит
 # add/add конфликт или пустой diff.
-# Guard: тянем pulls/N/files (filename+sha) для open PR с needs-review/needs-e2e
+# Guard G10e (ретро 15.09 t_763713e6 / issue #2499 / PR #2517 vs #2526):
+# тянем pulls/N/files (filename+sha) для open PR с needs-review/needs-e2e
 # (кандидаты на ревью/мерж), ищем пару (filename, sha) в РАЗНЫХ PR →
-# инфо-коммент на оба PR (dedup 24h). НЕ блокируем CI и НЕ снимаем needs-e2e:
-# решение «какой влить, какой закрыть» — за Шифу при ревью.
+# при IDENTICAL-blob overlap между двумя needs-review/needs-e2e PR —
+# БЛОКИРУЕМ второй (label `agent-flow-block`) + comment (dedup 24ч) с
+# явной Шифу-инструкцией: какой PR canonical, какой закрыть.
+#
+# Backward-compat (acceptance #4): отключается через DUPLICATE_BLOB_GUARD=false.
+# Fail-OPEN при network/gh-ошибках (warning-лог).
+#
+# Отличие от G10b (competing_prs_block_scan_all): тот ловит ПЕРЕКРЫТИЕ правок
+# (path-overlap, разный blob), этот — IDENTICAL-blob (один и тот же контент →
+# бессмысленный merge-конфликт → один из двух PR надо закрыть).
+#
 # Вызывается рядом со stale_branch_scan_all (основной путь + no-issues путь).
+DUPLICATE_BLOB_BLOCKED_LABEL="${DUPLICATE_BLOB_BLOCKED_LABEL:-agent-flow-block}"
+DUPLICATE_BLOB_GUARD="${DUPLICATE_BLOB_GUARD:-true}"
 duplicate_file_scan_all() {
+    [ "$DUPLICATE_BLOB_GUARD" = "true" ] || { log "duplicate-file-scan: guard disabled (DUPLICATE_BLOB_GUARD=false)"; return 0; }
     _dup_prs="$(gh pr list --repo "$GH_REPO" --state open \
-        --json number,headRefName,labels 2>/dev/null || echo '[]')"
-    # Собираем (filename, sha) -> [pr...] только для needs-review/needs-e2e PR.
-    printf '%s' "$_dup_prs" | python3 -c '
-import json, sys, subprocess
-GH_REPO = sys.argv[1]
-data = json.load(sys.stdin)
-seen = {}
-for pr in data:
+        --json number,headRefName,createdAt 2>/dev/null || echo '[]')"
+    # Собираем (filename, sha) -> [(pr, createdAt, commits)] только для needs-review/needs-e2e PR.
+    # createdAt + commits count нужны для выбора canonical-PR (предпочтение: больше
+    # коммитов → позже создан → уже в needs-e2e-ротации).
+    printf '%s' "$_dup_prs" | DUPLICATE_BLOB_LABEL="$DUPLICATE_BLOB_BLOCKED_LABEL" \
+        GH_REPO_DUPLICATE="$GH_REPO" python3 -c '
+import json, os, sys, subprocess
+GH_REPO = os.environ.get("GH_REPO_DUPLICATE", "")
+BLOCK_LABEL = os.environ.get("DUPLICATE_BLOB_LABEL", "agent-flow-block")
+try:
+    PR_LIST = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+if not isinstance(PR_LIST, list):
+    sys.exit(0)
+# Filter: только needs-review/needs-e2e PR.
+relevant = []
+for pr in PR_LIST:
     labels = {l.get("name","") for l in pr.get("labels", [])}
     if not ({"needs-review", "needs-e2e"} & labels):
         continue
-    num = pr["number"]
-    r = subprocess.run(
-        ["gh", "api", f"repos/{GH_REPO}/pulls/{num}/files?per_page=100"],
-        capture_output=True, text=True)
+    relevant.append(pr)
+if len(relevant) < 2:
+    sys.exit(0)
+def get_files_and_meta(pr_num):
     try:
-        files = json.loads(r.stdout or "[]")
+        r = subprocess.run(
+            ["gh", "api", f"repos/{GH_REPO}/pulls/{pr_num}/files?per_page=100"],
+            capture_output=True, text=True, timeout=15)
+        files = json.loads(r.stdout or "[]") if r.returncode == 0 else []
     except Exception:
         files = []
-    for f in files:
-        fname = f.get("filename", "")
-        sha = f.get("sha", "")
-        if fname and sha:
-            seen.setdefault((fname, sha), []).append(num)
-# Печатаем дубли: (filename, sha) встречается в >=2 РАЗНЫХ PR.
-for (fname, sha), prs in sorted(seen.items()):
-    uniq = sorted(set(prs))
-    if len(uniq) < 2:
+    try:
+        r2 = subprocess.run(
+            ["gh", "api", f"repos/{GH_REPO}/pulls/{pr_num}?per_page=1"],
+            capture_output=True, text=True, timeout=15)
+        meta = json.loads(r2.stdout) if r2.returncode == 0 else {}
+    except Exception:
+        meta = {}
+    commits = len(meta.get("commits", []) or [])
+    # Fallback: отдельный call на /pulls/N/commits если meta пустой.
+    if commits == 0:
+        try:
+            r3 = subprocess.run(
+                ["gh", "api", f"repos/{GH_REPO}/pulls/{pr_num}/commits?per_page=100"],
+                capture_output=True, text=True, timeout=15)
+            if r3.returncode == 0:
+                commits = len(json.loads(r3.stdout or "[]"))
+        except Exception:
+            commits = 0
+    return files, commits
+pr_files = {}
+pr_meta = {}
+for pr in relevant:
+    n = pr["number"]
+    files, commits = get_files_and_meta(n)
+    pr_files[n] = files
+    pr_meta[n] = {
+        "createdAt": pr.get("createdAt", "") or "",
+        "commits": commits,
+        "labels": {l.get("name","") for l in pr.get("labels", [])},
+        "headRefName": pr.get("headRefName", "") or "",
+    }
+# Найти IDENTICAL-blob pairs: (filename, sha) встречается в >=2 РАЗНЫХ PR.
+dup_pairs = []  # [(pr_a, pr_b, filename, sha)]
+seen_keys = set()
+prs = sorted(pr_files.keys())
+for i, a in enumerate(prs):
+    for b in prs[i+1:]:
+        # Сравниваем (filename, sha) между двумя PR.
+        a_blobs = {(f.get("filename",""), f.get("sha","")) for f in pr_files[a] if f.get("filename") and f.get("sha")}
+        b_blobs = {(f.get("filename",""), f.get("sha","")) for f in pr_files[b] if f.get("filename") and f.get("sha")}
+        shared = a_blobs & b_blobs
+        for (fname, sha) in sorted(shared):
+            key = (min(a,b), max(a,b), fname, sha)
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            dup_pairs.append((a, b, fname, sha))
+if not dup_pairs:
+    sys.exit(0)
+# Выбрать canonical-PR для каждой пары (pr_a, pr_b):
+# 1. больше коммитов; 2. позже createdAt; 3. уже в needs-e2e (приоритетнее needs-review).
+def canonical_of(a, b):
+    ma, mb = pr_meta[a], pr_meta[b]
+    score = lambda m: (
+        m["commits"],
+        1 if "needs-e2e" in m["labels"] else 0,
+        m["createdAt"],
+    )
+    sa, sb = score(ma), score(mb)
+    return a if sa >= sb else b
+# Emit pairs in canonical-first order.
+emitted = set()
+for a, b, fname, sha in dup_pairs:
+    pair_key = (min(a,b), max(a,b))
+    if pair_key in emitted:
         continue
-    for i in range(len(uniq)):
-        for j in range(i+1, len(uniq)):
-            print(f"{fname}\t{sha}\t{uniq[i]}\t{uniq[j]}")
-' "$GH_REPO" 2>/dev/null | while IFS=$'\t' read -r _df _ds _dp1 _dp2; do
+    emitted.add(pair_key)
+    canonical = canonical_of(a, b)
+    other = b if canonical == a else a
+    # Определить какой PR "второй" (тот, что получит agent-flow-block метку
+    # если у него нет уже — оба получают, чтобы merge-gate не пропустил ни один).
+    print(f"{fname}\t{sha}\t{canonical}\t{other}\t{a}\t{b}")
+' 2>/dev/null | while IFS=$'\t' read -r _df _ds _dp_canonical _dp_other _dp1 _dp2; do
         [ -z "$_df" ] && continue
-        log "duplicate-file-scan: файл ${_df} (blob ${_ds}) в PR #${_dp1} и PR #${_dp2} — ИДЕНТИЧНЫЙ контент (ретро 15.08 t_20383d32)"
+        log "duplicate-blob-sibling-block: файл ${_df} (blob ${_ds}) в PR #${_dp1} и PR #${_dp2} — IDENTICAL-blob overlap, БЛОКИРУЕМ оба needs-* PR (G10e, ретро 15.09 t_763713e6 / ADR-AF-0068)"
         if [ "$DRY_RUN" = "true" ]; then
-            log "DRY-RUN would: duplicate-file comment on PR #${_dp1} и PR #${_dp2}"
+            log "DRY-RUN would: add label ${DUPLICATE_BLOB_BLOCKED_LABEL} + canonical-pick comment on PR #${_dp1} и PR #${_dp2}"
             continue
         fi
         for _pr in "$_dp1" "$_dp2"; do
             _other="$([ "$_pr" = "$_dp1" ] && echo "$_dp2" || echo "$_dp1")"
-            # Идемпотентность через generic helper (#2293): contains-mode.
+            # Идемпотентность через generic helper (#2293): contains-mode, 24h.
             if ! comment_recently_posted pr "$_pr" \
-                "duplicate file detected" 86400 contains; then
+                "duplicate blob sibling detected" 86400 contains; then
                 gh pr comment "$_pr" --repo "$GH_REPO" --body \
-                    "⚠️ **duplicate file detected** (merge-gate, ретро 15.08 t_20383d32)
+                    "🚨 **duplicate blob sibling detected** (merge-gate, G10e, ретро 15.09 t_763713e6 / ADR-AF-0068)
 
-Файл \`${_df}\` (blob \`${_ds}\`) уже изменён в открытом PR #${_other} с ИДЕНТИЧНЫМ содержимым — фикс задвоен двумя независимыми карточками.
+Файл \`${_df}\` (blob \`${_ds}\`) уже изменён в открытом PR #${_other} с **ИДЕНТИЧНЫМ** содержимым — фикс задвоен двумя независимыми карточками. Merge-tree показывает changed_in_both=0 (формально merge OK), но это ловушка: один из PR — orphan, merge второго ничего не даёт.
 
-**Что делать (при ревью Шифу):** влейте ОДИН из PR (обычно более широкий — с доп. фиксами), второй закройте как дубль или rebase на develop после merge первого. Merge-gate **НЕ блокирует** CI/e2e — это информационное предупреждение." >/dev/null 2>&1 || true
+**Что делать (товарищ Шифу):**
+1. **Выберите canonical-PR** (рекомендуется тот, у которого больше фиксов / позже создан / уже в e2e-очереди). Merge-gate определил кандидат: **PR #${_dp_canonical}**.
+2. Влейте его: \`gh pr merge #${_dp_canonical} --squash --delete-branch\`.
+3. Второй (PR #${_other}) закройте: \`gh pr close #${_other} --delete-branch\` с причиной «superseded by #${_dp_canonical}».
+4. После закрытия второго снимите метку \`${DUPLICATE_BLOB_BLOCKED_LABEL}\` с canonical-PR: \`gh pr edit #${_dp_canonical} --remove-label ${DUPLICATE_BLOB_BLOCKED_LABEL}\`.
+
+Merge-gate пометил оба PR label \`${DUPLICATE_BLOB_BLOCKED_LABEL}\` — e2e-rotation пропустит round, пока метка висит. Это **HARD-BLOCK** до явного Шифу-одобрения (в отличие от info-only duplicate-file-detected в ретро 15.08 t_20383d32)." >/dev/null 2>&1 || true
+                gh pr edit "$_pr" --repo "$GH_REPO" --add-label "$DUPLICATE_BLOB_BLOCKED_LABEL" >/dev/null 2>&1 || \
+                    log "duplicate-blob-sibling-block: WARNING add ${DUPLICATE_BLOB_BLOCKED_LABEL} on PR #${_pr} failed (non-fatal)"
             fi
         done
     done
