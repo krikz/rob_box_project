@@ -66,12 +66,20 @@ vision_hailo_node:
 # на тот же output_topic (embedding_id/display_name пустые — это PR-B).
 # См. docker/vision/scripts/vision-hailo/start_vision_face.sh.
 vision_face_node:
-  # Real inference: true только когда retinaface HEF загружен.
-  # Default false — stub-режим (события помечены event_type="stub").
-  hailo_enabled: false
+  # Real inference. HEF кладёт на хост шаг деплоя "[Vision Pi] Ensure HEF
+  # models" (download_retinaface_hef.sh). Если файла не окажется — нода
+  # логирует причину и остаётся в degraded (ADR-0018), stub-событий в
+  # real-режиме она не выдумывает.
+  #
+  # ВНИМАНИЕ: фактический режим решает ENV, а не этот файл — compose всегда
+  # передаёт HAILO_ENABLED=${FACE_HAILO_ENABLED:-false}, а
+  # start_vision_face.sh отдаёт ENV приоритет ("ENV override wins").
+  # Значение здесь держим согласованным с docker/vision/.env, чтобы SSoT
+  # не врал; выключать лицевую детекцию нужно ИМЕННО в .env.
+  hailo_enabled: true
 
   # Путь к retinaface_mobilenet_v1.hef. Игнорируется если hailo_enabled=false.
-  hef_path: ""
+  hef_path: /opt/rob_box/models/retinaface_mobilenet_v1.hef
 
   # Период stub-событий (секунды). В real-режиме не используется.
   stub_period_sec: 2.0
@@ -105,7 +113,7 @@ models:
   # RetinaFace — face detection. 4.6 TOPS, 50+ FPS.
   # Источник: https://github.com/hailo-ai/hailo_model_zoo (retinaface)
   retinaface:
-    enabled: false
+    enabled: true
     hef: /opt/rob_box/models/retinaface_mobilenet_v1.hef
     confidence_threshold: 0.6
 
