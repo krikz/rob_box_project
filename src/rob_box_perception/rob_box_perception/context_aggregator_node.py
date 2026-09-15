@@ -49,7 +49,10 @@ from rob_box_perception.utils.internet_monitor import (
 )
 from rob_box_perception.utils.node_monitor import NodeAvailabilityMonitor
 from rob_box_perception.utils.time_provider import TimeAwarenessProvider
-from rob_box_perception.vision_hailo_loader import VISION_EVENT_FIELDS
+from rob_box_perception.vision_hailo_loader import (
+    VISION_EVENT_FIELDS,
+    is_stub_event,
+)
 
 from std_msgs.msg import String
 
@@ -279,8 +282,12 @@ class ContextAggregatorNode(Node):
         """Callback VisionEvent от vision_hailo_node (ADR-0089 Phase 1).
 
         Сериализует ROS-msg в dict и кладёт в кольцевой буфер
-        `_hailo_events` (окно = `memory_window` секунд). В publish_event()
-        буфер публикуется как `PerceptionEvent.vision_events_json`.
+        `_hailo_events` (окно = `memory_window` секунд), БЕЗ фильтрации —
+        буфер хранит всё, что реально пришло с `/vision/hailo/events`,
+        включая stub-события (полезно для отладки самого топика). Фильтр
+        `is_stub_event` применяется позже, в `publish_event()`, ровно в
+        точке, где буфер превращается в `PerceptionEvent.vision_events_json`
+        — то есть в контекст Личности.
 
         Контракт полей — VisionEvent.msg (см. rob_box_perception_msgs).
         `stamp` обрабатывается отдельно от цикла по VISION_EVENT_FIELDS
@@ -528,7 +535,21 @@ class ContextAggregatorNode(Node):
         # Публикуем последние VisionEvent в JSON. vision_event_count
         # — это cache hint для downstream-консьюмеров (mcp_server.py),
         # которые могут пропустить парсинг если ничего не изменилось.
-        hailo_payload = [item['event'] for item in self._hailo_events]
+        #
+        # Приватность (ADR-0089 §2.2, issue #2532): PerceptionEvent — это
+        # граница, за которой начинается контекст Личности. StubHEFLoader
+        # публикует выдуманное "person, conf 0.92, 1 м" в /vision/hailo/events
+        # (см. vision_hailo_loader.StubHEFLoader) — этот сырой топик им и
+        # остаётся для отладки пайплайна. Но в PerceptionEvent, откуда
+        # perception_projection читает vision_event_count/vision_events_json
+        # для LLM-контекста, выдумка попадать не должна вообще — иначе
+        # Личность расскажет про несуществующего человека рядом. Отсекаем
+        # здесь, единственным способом — is_stub_event (маркер из #2583),
+        # НЕ самодельным сравнением строк (см. docstring is_stub_event).
+        hailo_payload = [
+            item['event'] for item in self._hailo_events
+            if not is_stub_event(item['event'])
+        ]
         event.vision_event_count = len(hailo_payload)
         event.vision_events_json = json.dumps(
             hailo_payload, ensure_ascii=False

@@ -31,7 +31,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Tuple
+import json
+from typing import Any, Dict, List, Tuple
 
 
 # ---------------------------------------------------------------------------
@@ -83,6 +84,11 @@ PROJECTED_FIELDS: Tuple[str, ...] = (
     'missing_nodes',
     'mapping_mode',
     'memory_summary',
+    # --- зрительные события, issue #2532 (снято после PR #2583) ---------
+    # См. комментарий у EXCLUDED_FIELDS ниже про то, ПОЧЕМУ это теперь
+    # безопасно и ГДЕ живёт сама фильтрация (не здесь).
+    'vision_event_count',
+    'vision_events_json',
 )
 
 #: Поля, которые Личность НЕ видит, и почему. Причина обязательна: если поле
@@ -104,24 +110,93 @@ EXCLUDED_FIELDS: Dict[str, str] = {
     'robot_thought_summaries': 'мёртвое поле: ни один продюсер его не заполняет',
     'vision_summaries': 'мёртвое поле; ADR-0089 резервирует его под Phase 3 scene-graph',
     'system_summaries': 'мёртвое поле: ни один продюсер его не заполняет',
-    # --- приватность, ADR-0089 §2.2 -------------------------------------
-    # Заглушка vision_hailo (StubHEFLoader) публикует ВЫДУМАННОЕ событие
-    # "person, conf 0.92, 1 м" каждые stub_period_sec, и отличить его от
-    # реальной детекции сейчас нечем: event_type == 'person' (не 'stub'),
-    # а source_camera == 'unknown' (frame_id подставляется в _tick).
-    # Пока честного маркера нет, эти два поля к LLM подключать НЕЛЬЗЯ —
-    # иначе Личность начнёт рассказывать про несуществующего человека рядом.
-    # Снять исключение можно только вместе с маркером: issue #2538 / #2531.
-    'vision_event_count': (
-        'приватность ADR-0089 §2.2: у стаб-событий нет честного маркера '
-        '(см. #2538, #2531) — даже счётчик выдаёт выдуманные детекции'
-    ),
-    'vision_events_json': (
-        'приватность ADR-0089 §2.2: стаб публикует event_type="person" и '
-        'source_camera="unknown" — отличить выдуманное событие от реального '
-        'нечем (см. #2538, #2531)'
-    ),
 }
+
+# ---------------------------------------------------------------------------
+# Приватность зрительных событий, ADR-0089 §2.2 (issue #2532)
+# ---------------------------------------------------------------------------
+# vision_event_count / vision_events_json раньше сидели в EXCLUDED_FIELDS:
+# заглушка vision_hailo (StubHEFLoader) публиковала ВЫДУМАННОЕ событие
+# "person, conf 0.92, 1 м", и отличить его от реальной детекции было нечем.
+# PR #2583 завёл честный маркер (STUB_EVENT_TYPE='stub', STUB_SOURCE_CAMERA
+# ='stub', предикат vision_hailo_loader.is_stub_event) — причина исключения
+# отпала, и это тот самый повод, который отменяет исключение выше.
+#
+# Архитектурное решение (issue #2532): маркер отсекается НЕ здесь.
+#
+#   rob_box_mcp_tools (этот пакет) НЕ зависит от rob_box_perception —
+#   проверено по package.xml/setup.py обоих пакетов: mcp_tools тянет только
+#   rob_box_perception_msgs (сообщения), а is_stub_event живёт в коде
+#   rob_box_perception.vision_hailo_loader. Импортировать его отсюда значило
+#   бы тянуть необъявленную межпакетную зависимость — то, ради чего в этом
+#   модуле и так уже нет ни одного ROS/rclpy импорта.
+#
+#   context_aggregator_node.py (rob_box_perception) — который и строит
+#   PerceptionEvent — уже импортирует vision_hailo_loader (VISION_EVENT_
+#   FIELDS), то есть зависимость там объявлена и легальна. Фильтрация
+#   is_stub_event встроена в publish_event() ИМЕННО в момент сборки
+#   PerceptionEvent: см. context_aggregator_node.py. Раз это единственный
+#   продюсер PerceptionEvent, граница "выдумка не пересекает" проведена на
+#   входе в сообщение, а не на выходе из него — сама структура на проводе
+#   уже не может солгать, и proекции здесь не нужно повторно спрашивать
+#   is_stub_event (второй копией того же условия, дублирующей источник
+#   истины).
+#
+#   Отладочная ценность выдумки (event_type='stub' виден на топике) при
+#   этом не теряется: сырой /vision/hailo/events как публиковал stub, так и
+#   публикует — это отдельный топик, PerceptionEvent.vision_events_json
+#   лишь агрегирует его для Личности, и именно на этой агрегации граница
+#   и должна стоять.
+#
+# project_perception_event() ниже поэтому просто разбирает
+# vision_events_json в структуру, удобную для промпта — без повторной
+# приватность-логики.
+
+
+def _project_vision_events(events_json: str) -> List[Dict[str, Any]]:
+    """``vision_events_json`` → то, что реально нужно Личности в промпте.
+
+    Сырой JSON-строкой в контекст — плохо (шум, читать боту нечем).
+    Личности нужно: что видно (label), с какой уверенностью, как далеко.
+
+    К моменту, когда PerceptionEvent долетает сюда, stub-события уже
+    отфильтрованы на стороне продюсера (context_aggregator_node, ADR-0089
+    §2.2) — это инвариант границы сообщения, а не этого модуля. Здесь —
+    только разбор формата, устойчивый к пустой строке и мусору в JSON.
+    """
+    if not events_json:
+        return []
+    try:
+        raw = json.loads(events_json)
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(raw, list):
+        return []
+
+    events: List[Dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        label = (
+            item.get('display_name')
+            or item.get('class_name')
+            or item.get('event_type')
+            or 'object'
+        )
+        distance = item.get('distance_m')
+        # -1 (и вообще < 0) — это "глубина неизвестна" (см. VisionEvent.msg),
+        # а не "0 метров". Отдаём None, чтобы промпт не соврал про дистанцию.
+        distance_m = (
+            float(distance)
+            if isinstance(distance, (int, float)) and distance >= 0
+            else None
+        )
+        events.append({
+            'label': str(label),
+            'confidence': float(item.get('confidence', 0.0)),
+            'distance_m': distance_m,
+        })
+    return events
 
 
 def _stamp_to_unix(stamp: Any) -> float:
@@ -140,6 +215,13 @@ def project_perception_event(msg: Any) -> Dict[str, Any]:
     ``AttributeError``, а не тихий ноль в контексте.
     """
     battery_voltage = float(msg.battery_voltage)
+    # vision_event_count здесь НЕ читается из msg.vision_event_count
+    # напрямую: он пересчитывается из фактической длины разобранного
+    # vision_events_json. Это тот же приём, что уже применён к battery/
+    # timestamp выше по файлу — не доверять отдельному полю-счётчику,
+    # который в принципе может разойтись с данными, а считать от источника
+    # истины. Так vision_event_count и vision_events всегда согласованы.
+    vision_events = _project_vision_events(msg.vision_events_json)
     return {
         'timestamp': _stamp_to_unix(msg.stamp),
         'vision_context': msg.vision_context,
@@ -157,4 +239,6 @@ def project_perception_event(msg: Any) -> Dict[str, Any]:
         'missing_nodes': list(msg.missing_nodes),
         'mapping_mode': msg.mapping_mode,
         'memory_summary': msg.memory_summary,
+        'vision_event_count': len(vision_events),
+        'vision_events': vision_events,
     }
