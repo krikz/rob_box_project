@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import os
 import time
+from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
@@ -53,6 +54,46 @@ DEFAULT_NUM_ANCHORS = 8400
 
 # Padding value (gray) для letterbox. YOLOv8n training использовал 114.
 LETTERBOX_PAD_VALUE = 114
+
+
+@dataclass(frozen=True)
+class LetterboxInfo:
+    """Метаданные letterbox, нужные для обратной проекции bbox (ADR-0101).
+
+    Attributes:
+        scale: коэффициент resize ДО паддинга (orig_w * scale = new_w).
+        pad_left: пикселей паддинга слева в letterbox-тензоре.
+        pad_top: пикселей паддинга сверху в letterbox-тензоре.
+        orig_w / orig_h: размер исходного кадра до letterbox.
+        letterbox_w / letterbox_h: размер letterbox-тензора (= input_w/h).
+    """
+
+    scale: float
+    pad_left: int
+    pad_top: int
+    orig_w: int
+    orig_h: int
+    letterbox_w: int
+    letterbox_h: int
+
+    def unproject(self, cx: float, cy: float, bw: float, bh: float) -> Tuple[float, float, float, float]:
+        """Снять letterbox с bbox: вернуть (cx, cy, bw, bh) в исходном кадре.
+
+        YOLOv8n выдаёт bbox в letterbox-space (640×640). Чтобы получить
+        bbox в исходном кадре:
+            1. (cx - pad_left, cy - pad_top) → координаты в resized-frame.
+            2. / scale → координаты в исходном кадре.
+        Это фикс issue #2531 acceptance #9 — без unproject bbox уехал
+        на размер паддинга и систематически сжат относительно объекта.
+        """
+        if self.scale <= 0.0:
+            return (cx, cy, bw, bh)
+        u_cx = (cx - self.pad_left) / self.scale
+        u_cy = (cy - self.pad_top) / self.scale
+        u_bw = bw / self.scale
+        u_bh = bh / self.scale
+        return (u_cx, u_cy, u_bw, u_bh)
+
 
 # COCO class names — нужны для маппинга class_id → class_name.
 # Полный список из hailo_model_zoo / COCO dataset.
@@ -332,8 +373,11 @@ class RealHEFLoader(HEFLoader):
 
         Args:
             frame_id: ROS header.frame_id источника.
-            image: numpy.ndarray (H×W×3, BGR или RGB). Stub вызывает
-                с image=None, real — с numpy.
+            image: numpy.ndarray (H×W×3, **RGB**). Stub вызывает
+                с image=None, real — с numpy. RGB-контракт
+                (ADR-0101, issue #2531 acceptance #8) гарантируется
+                швом «Взгляд» (``gaze.py``); loader НЕ делает
+                cvtColor (cv2.imdecode отдавал бы BGR).
 
         Returns:
             List[dict] в формате VisionEvent-полей.
@@ -350,8 +394,12 @@ class RealHEFLoader(HEFLoader):
         if image is None:
             return []
         self._ensure_initialized()
-        # 1. Pre-process: BGR/RGB → NHWC uint8, letterboxed 640×640.
-        input_tensor = self._preprocess(image)
+        # 1. Pre-process: RGB → NHWC uint8, letterboxed 640×640.
+        # ADR-0101 (issue #2531 acceptance #8): image приходит RGB
+        # (gaze.py делает cvtColor ДО сюда). YOLOv8n HEF обучен на RGB.
+        # Возвращает (tensor, LetterboxInfo) — последнее нужно для
+        # обратной проекции bbox в _post_process_detections.
+        input_tensor, letterbox_info = self._preprocess(image)
 
         # Type narrowing после _ensure_initialized().
         assert self._bindings is not None
@@ -373,6 +421,8 @@ class RealHEFLoader(HEFLoader):
             ) from exc
 
         # 3. Post-process: tensor → List[VisionEvent-dict].
+        # ADR-0101: передаём letterbox_info чтобы bbox'ы
+        # денормализовались в координаты исходного кадра (а не letterbox).
         return _post_process_detections(
             raw_output=raw_output,
             source_camera=frame_id or 'unknown',
@@ -380,17 +430,32 @@ class RealHEFLoader(HEFLoader):
             input_h=self._input_h,
             confidence_threshold=self._confidence_threshold,
             nms_iou_threshold=self._nms_iou_threshold,
+            letterbox_info=letterbox_info,
         )
 
     # ----------------------------------------------------------------
     # Pre-processing
     # ----------------------------------------------------------------
 
-    def _preprocess(self, image: Any) -> Any:
+    def _preprocess(self, image: Any) -> Tuple[Any, LetterboxInfo]:
         """BGR/RGB → NHWC uint8, letterboxed под (_input_w, _input_h).
 
         Letterbox (а не plain resize) сохраняет aspect ratio — иначе
         bbox'ы на выходе модели искажены.
+
+        ADR-0101 (issue #2531 acceptance #8): image передаётся как
+        RGB (YOLOv8n обучен на RGB). cv2.imdecode отдаёт BGR,
+        но модуль ``gaze.py`` (новый шов) делает перестановку ДО
+        сюда — поэтому мы НЕ делаем cvtColor в _preprocess, а
+        доверяем контракту: ``image`` уже в RGB. Это документировано
+        в docstring ``infer``.
+
+        Returns:
+            (tensor, LetterboxInfo): тензор формы (1, input_h, input_w, 3)
+            uint8 + метаданные letterbox для обратной проекции bbox.
+
+        Raises:
+            ImportError: opencv-python / numpy недоступны.
         """
         # Ленивый import cv2 — не требуется для CI/тестов.
         try:
@@ -435,7 +500,17 @@ class RealHEFLoader(HEFLoader):
             tensor = np.expand_dims(padded, axis=0)  # NHWC
         else:
             tensor = padded
-        return np.ascontiguousarray(tensor)
+
+        info = LetterboxInfo(
+            scale=float(scale),
+            pad_left=int(pad_left),
+            pad_top=int(pad_top),
+            orig_w=int(w),
+            orig_h=int(h),
+            letterbox_w=int(self._input_w),
+            letterbox_h=int(self._input_h),
+        )
+        return np.ascontiguousarray(tensor), info
 
 
 # ============================================================================
@@ -449,6 +524,7 @@ def _post_process_detections(
     input_h: int,
     confidence_threshold: float,
     nms_iou_threshold: float,
+    letterbox_info: Optional[LetterboxInfo] = None,
 ) -> List[Dict[str, Any]]:
     """YOLOv8n output tensor → List[VisionEvent-dict].
 
@@ -463,10 +539,15 @@ def _post_process_detections(
         input_w / input_h: letterbox space (= 640 для YOLOv8n).
         confidence_threshold: фильтр confidence.
         nms_iou_threshold: IoU threshold для NMS.
+        letterbox_info: метаданные letterbox (ADR-0101, issue #2531
+            acceptance #9). Если None — bbox'ы нормализуются в
+            letterbox-space (старое поведение, обратно совместимо для
+            unit-тестов с квадратным синтетическим входом).
 
     Returns:
         List[dict] в формате VisionEvent-полей. Bbox'ы в normalized
-        [0,1] coords (cx, cy, w, h).
+        [0,1] coords (cx, cy, w, h) **исходного кадра** (если
+        letterbox_info передан и scale>0) или letterbox-space (если нет).
     """
     try:
         import numpy as np  # type: ignore[import-not-found]
@@ -539,11 +620,30 @@ def _post_process_detections(
     confidences = confidences[keep_idx]
     class_ids = class_ids[keep_idx]
 
-    # Нормализация bbox'ов в [0, 1] для VisionEvent (cxcywh / input_w_h).
-    cx = boxes[0, :] / input_w
-    cy = boxes[1, :] / input_h
-    bw = boxes[2, :] / input_w
-    bh = boxes[3, :] / input_h
+    # Нормализация bbox'ов в [0, 1] для VisionEvent.
+    #
+    # ADR-0101 (issue #2531 acceptance #9): bbox из HEF — в letterbox-space.
+    # Чтобы получить bbox в исходном кадре, нужно сначала unproject
+    # (вычесть паддинг и разделить на scale), а потом нормализовать
+    # на (orig_w, orig_h). Если letterbox_info не передан (None) —
+    # обратная совместимость со старым unit-тестом с квадратным
+    # синтетическим входом: нормализация на letterbox (input_w, input_h).
+    if letterbox_info is not None and letterbox_info.scale > 0.0:
+        # unproject: letterbox → resized → orig, делим на (orig_w, orig_h).
+        u_cx = (boxes[0, :] - letterbox_info.pad_left) / letterbox_info.scale
+        u_cy = (boxes[1, :] - letterbox_info.pad_top) / letterbox_info.scale
+        u_bw = boxes[2, :] / letterbox_info.scale
+        u_bh = boxes[3, :] / letterbox_info.scale
+        cx = u_cx / letterbox_info.orig_w
+        cy = u_cy / letterbox_info.orig_h
+        bw = u_bw / letterbox_info.orig_w
+        bh = u_bh / letterbox_info.orig_h
+    else:
+        # Backward-compat: нормализация в letterbox-space (старые unit-тесты).
+        cx = boxes[0, :] / input_w
+        cy = boxes[1, :] / input_h
+        bw = boxes[2, :] / input_w
+        bh = boxes[3, :] / input_h
 
     events: List[Dict[str, Any]] = []
     for i in range(boxes.shape[1]):

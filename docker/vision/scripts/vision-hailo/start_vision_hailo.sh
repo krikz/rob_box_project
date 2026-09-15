@@ -24,7 +24,15 @@ HAILO_ENABLED="${HAILO_ENABLED:-false}"
 HEF_PATH="${HEF_PATH:-}"
 STUB_PERIOD_SEC="${STUB_PERIOD_SEC:-2.0}"
 CONFIDENCE_THRESHOLD="${CONFIDENCE_THRESHOLD:-0.5}"
-INPUT_TOPIC="${INPUT_TOPIC:-/oak/rgb/image_raw/compressed}"
+# ADR-0101: gaze_source — единственный SSoT выбора источника кадра.
+# Раньше INPUT_TOPIC дублировался в трёх местах (нода, YAML, bash) и
+# расходился с реальным топиком OAK-D. Теперь bash прокидывает
+# gaze_source и (для back-compat) input_topic в launch, а сам выбор
+# делает rob_box_perception.gaze по gaze_source.
+GAZE_SOURCE="${GAZE_SOURCE:-oak_d}"
+FIRST_FRAME_TIMEOUT_SEC="${FIRST_FRAME_TIMEOUT_SEC:-10.0}"
+# input_topic — back-compat (нода его НЕ использует; см. ADR-0101).
+INPUT_TOPIC="${INPUT_TOPIC:-/camera/camera/color/image_raw}"
 OUTPUT_TOPIC="${OUTPUT_TOPIC:-/vision/hailo/events}"
 HAILO_MODELS_YAML="${HAILO_MODELS_YAML:-/config/hailo_models.yaml}"
 
@@ -68,7 +76,8 @@ def emit(k, v):
         v = 'true' if v else 'false'
     print(f'export {k.upper()}="{v}"')
 for key in ('hailo_enabled', 'hef_path', 'stub_period_sec',
-            'confidence_threshold', 'input_topic', 'output_topic'):
+            'confidence_threshold', 'input_topic', 'output_topic',
+            'gaze_source', 'first_frame_timeout_sec'):
     if key not in node:
         continue
     env_name = key.upper()
@@ -152,6 +161,10 @@ LAUNCH_ARGS=(
     hailo_enabled:=${HAILO_ENABLED}
     stub_period_sec:=${STUB_PERIOD_SEC}
     confidence_threshold:=${CONFIDENCE_THRESHOLD}
+    # ADR-0101: gaze_source — единственный SSoT выбора источника.
+    gaze_source:=${GAZE_SOURCE}
+    first_frame_timeout_sec:=${FIRST_FRAME_TIMEOUT_SEC}
+    # input_topic — back-compat, нода игнорирует (ADR-0101).
     input_topic:=${INPUT_TOPIC}
     output_topic:=${OUTPUT_TOPIC}
     publish_when_no_input:=true

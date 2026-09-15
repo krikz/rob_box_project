@@ -21,6 +21,8 @@
   "subscribers_without_local_publisher": [
     "/audio/enable_reactive",
     "/avatar/tts/control",
+    "/camera/camera/color/image_raw",
+    "/ceiling_camera/image_raw/compressed",
     "/perception/vision_context",
     "/voice/current_dialogue_id",
     "/voice/speaker/merge",

@@ -1,21 +1,25 @@
 #!/usr/bin/env python3
 """vision_hailo_node — AI HAT+ 26 TOPS (Hailo-8) inference node (ADR-0089).
 
-Подписывается на ROS-топики с изображениями, прогоняет их через pre-compiled
-HEF (Hailo Executable Format) модели на NPU, публикует результат как
-`VisionEvent` массив на `/vision/hailo/events`.
+Подписывается на ROS-топики с изображениями через шов «Взгляд» (gaze.py,
+ADR-0101, issue #2531), прогоняет их через pre-compiled HEF (Hailo
+Executable Format) модели на NPU, публикует результат как `VisionEvent`
+массив на `/vision/hailo/events`.
 
-Архитектура:
-  [Camera topic] -> pre-process -> [HailoRT VDevice] -> post-process -> /vision/hailo/events
-                                                                          |
-                                                                          v
-                                                          [context_aggregator_node]
-                                                          -> PerceptionEvent.vision_events_json
-                                                          -> [mcp_server.py] -> LLM
+Архитектура (ADR-0101):
+  [Camera topic] --(Gaze source)--> [Frame rgb+letterbox-info]
+                                     --> [HEF loader]
+                                     --> [post-process with unproject]
+                                     --> /vision/hailo/events
+                                                       |
+                                                       v
+                                          [context_aggregator_node]
+                                          -> PerceptionEvent.vision_events_json
+                                          -> [mcp_server.py] -> LLM
 
 Два режима работы (выбирается через launch-параметры):
-  1. **real** (`hailo_enabled=True` + HEF file present): загружает HEF через
-     `hailort` Python binding (требует hardware + driver + TAPPAS).
+  1. **real** (`hailo_enabled=True` + HEF file present): загружает HEF
+     через `hailort` Python binding (требует hardware + driver + TAPPAS).
   2. **stub** (`hailo_enabled=False` или HEF missing): детерминированный
      цикл публикации с тестовыми `VisionEvent` сообщениями. Используется
      в CI (нет железа) и для smoke-теста на production до установки HEF.
@@ -24,15 +28,20 @@ HEF (Hailo Executable Format) модели на NPU, публикует резу
 Он публикует сценарий "person detected at 1m" каждые `stub_period_sec`
 секунд для тестирования downstream-pipeline.
 
+Шов «Взгляд» (gaze.py) скрывает: выбор ROS-топика и типа сообщения,
+JPEG/PNG decode, BGR→RGB. Нода НЕ подписывается на ROS-топики напрямую —
+это ADR-0101 acceptance #1: единый шов источника кадра.
+
 HEFLoader / Stub / Real / make_loader / normalize_event_dict /
 filter_by_confidence — в отдельном модуле `vision_hailo_loader.py`
 (без rclpy зависимости, тестируется в CI без colcon-build).
 
 Touchpoints:
-  - ADR-0089 §3 (touchpoint #3) — этот файл.
-  - ROS msg: rob_box_perception_msgs/VisionEvent
-  - Aggregator: context_aggregator_node.py (подписка на /vision/hailo/events)
-  - Launch: launch/internal_dialogue.launch.py (gated hailo_enabled)
+- ADR-0089 §3 (touchpoint #3) — этот файл.
+- ADR-0101 (gaze.py, единый шов источника кадра).
+- ADR-0096 (launch-файл vision_hailo.launch.py — выбор gaze_source).
+- ROS msg: rob_box_perception_msgs/VisionEvent
+- Aggregator: context_aggregator_node.py (подписка на /vision/hailo/events)
 
 Hardware reference: https://www.raspberrypi.com/documentation/accessories/ai-hat-plus.html
 Hailo model zoo:    https://github.com/hailo-ai/hailo_model_zoo
@@ -45,6 +54,10 @@ from typing import Any, Dict, List, Optional
 import rclpy
 from rclpy.node import Node
 
+from rob_box_perception.gaze import (
+    GazeSourceUnavailable,
+    make_source,
+)
 from rob_box_perception.vision_hailo_loader import (
     VISION_EVENT_FIELDS,
     filter_by_confidence,
@@ -59,32 +72,28 @@ except ImportError:
     # позволяет импортировать модуль без workspace build (для тестов).
     VisionEventMsg = None
 
-# Phase 1.5 (issue #2398): real-mode требует numpy + opencv для
-# JPEG-decode + letterbox preprocessing. На CI (где rob_box_perception
-# собирается без них — best-effort) — node продолжит работать в stub.
-try:
-    import numpy as np  # type: ignore[import-not-found]
-    _NUMPY_AVAILABLE = True
-except ImportError:  # pragma: no cover
-    np = None  # type: ignore[assignment]
-    _NUMPY_AVAILABLE = False
 
-try:
-    import cv2  # type: ignore[import-not-found]
-    _CV2_AVAILABLE = True
-except ImportError:  # pragma: no cover
-    cv2 = None  # type: ignore[assignment]
-    _CV2_AVAILABLE = False
+# Сколько секунд ждать первый кадр от gaze source (ADR-0101, capability-
+# honest). Если источник недоступен — нода либо fail-fast (когда
+# hailo_enabled=True), либо деградирует с WARN и переходит в stub.
+DEFAULT_FIRST_FRAME_TIMEOUT_SEC = 10.0
 
+# Сколько секунд без нового кадра считать источник «мёртвым» в real-mode.
+# Используется только для лога; healthcheck делается на уровне docker-compose
+# (см. ADR-0101 acceptance #6 — healthcheck проверяет свежесть /vision/hailo/events).
+DEFAULT_FRAME_STALE_SEC = 30.0
 
 # Порог confidence ниже которого события НЕ публикуются.
 # Этот параметр общий для всех event_type — HEF-specific tuning
 # делается через `hailo_models.yaml` в Phase 2/3.
 DEFAULT_CONFIDENCE_THRESHOLD = 0.5
 
+# Допустимые имена gaze source (ADR-0101, см. gaze.make_source).
+KNOWN_GAZE_SOURCES = ('oak_d', 'ceiling_camera', 'stub')
+
 
 class VisionHailoNode(Node):
-    """AI HAT+ inference node (ADR-0089 Phase 1).
+    """AI HAT+ inference node (ADR-0089 Phase 1 + ADR-0101).
 
     Параметры:
         hailo_enabled (bool, default False): включить реальный HEF loader.
@@ -94,11 +103,17 @@ class VisionHailoNode(Node):
         hef_path (str, default ""): путь к .hef файлу. Пустой = stub.
         stub_period_sec (float, default 2.0): период stub-событий.
         confidence_threshold (float, default 0.5): фильтр confidence.
-        input_topic (str, default "/oak/rgb/image_raw/compressed"):
-            откуда брать кадры (Phase 1 — OAK-D).
+        gaze_source (str, default "oak_d"): какой адаптер «Взгляд»
+            использовать (см. gaze.py — OakDSource, CeilingCameraSource,
+            StubSource). ADR-0101 acceptance #1: единственный шов выбора
+            источника кадра.
         output_topic (str, default "/vision/hailo/events"): куда слать.
+        first_frame_timeout_sec (float, default 10.0): сколько ждать
+            первый кадр от real-источника перед fail-fast (capability-honest).
         publish_when_no_input (bool, default True): публиковать stub-события
-            даже когда нет входящих кадров (важно для smoke-теста).
+            даже когда нет входящих кадров (важно для smoke-теста CI).
+            В real-режиме НЕ рекомендуется — это mode-mask против capability-
+            honest (ADR-0101 acceptance #5); в проде оставлять False.
     """
 
     def __init__(self) -> None:
@@ -109,8 +124,9 @@ class VisionHailoNode(Node):
         self.declare_parameter('hef_path', '')
         self.declare_parameter('stub_period_sec', 2.0)
         self.declare_parameter('confidence_threshold', DEFAULT_CONFIDENCE_THRESHOLD)
-        self.declare_parameter('input_topic', '/oak/rgb/image_raw/compressed')
+        self.declare_parameter('gaze_source', 'oak_d')
         self.declare_parameter('output_topic', '/vision/hailo/events')
+        self.declare_parameter('first_frame_timeout_sec', DEFAULT_FIRST_FRAME_TIMEOUT_SEC)
         self.declare_parameter('publish_when_no_input', True)
 
         self.hailo_enabled = bool(self.get_parameter('hailo_enabled').value)
@@ -120,35 +136,77 @@ class VisionHailoNode(Node):
         self.confidence_threshold = float(
             self.get_parameter('confidence_threshold').value
         )
-        self.input_topic = str(self.get_parameter('input_topic').value)
+        self.gaze_source_name = str(self.get_parameter('gaze_source').value)
         self.output_topic = str(self.get_parameter('output_topic').value)
+        self.first_frame_timeout_sec = float(
+            self.get_parameter('first_frame_timeout_sec').value
+        )
         self.publish_when_no_input = bool(
             self.get_parameter('publish_when_no_input').value
         )
 
+        if self.gaze_source_name not in KNOWN_GAZE_SOURCES:
+            raise ValueError(
+                f'gaze_source={self.gaze_source_name!r} не из списка '
+                f'{KNOWN_GAZE_SOURCES!r}. '
+                f'Проверьте vision_hailo.launch.py и hailo_models.yaml.'
+            )
+
+        # ============ Режим: один расчёт, не два ============
+        # ADR-0101 (issue #2531 acceptance #7): _is_real_mode — единственное
+        # определение реального режима. Лог и фактическое поведение должны
+        # использовать одну и ту же переменную. Старый код считал mode
+        # двумя разными способами и мог лгать ("mode=real" при _is_real_mode=False).
+        self._is_real_mode = bool(self.hailo_enabled and self.hef_path)
+
         # ============ HEF loader ============
-        # Phase 1.5: is_real_mode = hailo_enabled + hef_path + numpy/cv2
-        # доступны. Если hailo_enabled=True но нет numpy/cv2 — нода
-        # стартует, логирует warning, использует stub. Это capability-honest
-        # (ADR-0018): не делаем silent fallback на stub, а явный degrade с
-        # видимым логом.
-        self._is_real_mode = bool(
-            self.hailo_enabled
-            and self.hef_path
-            and _NUMPY_AVAILABLE
-            and _CV2_AVAILABLE
-        )
+        # Phase 1.5: stub vs real через make_loader (не зависит от gaze).
         self._loader = make_loader(
             hailo_enabled=self.hailo_enabled,
             hef_path=self.hef_path,
             stub_period_sec=self.stub_period_sec,
         )
 
-        # Кэш последнего декодированного кадра для real-mode.
-        # Phase 1: _on_image только фиксирует факт получения. Phase 1.5:
-        # декодирует JPEG (cv2.imdecode) → numpy.ndarray, кэширует.
-        self._latest_image: Optional[Any] = None
-        self._latest_image_stamp = None  # ros Time (нода) — для stale-detection
+        # ============ Шов «Взгляд» (ADR-0101) ============
+        # Это ЕДИНСТВЕННОЕ место, где нода знает про ROS-топики и cv2-decode.
+        # Все адаптеры скрыты за gaze.make_source().
+        #
+        # ADR-0101 acceptance #5: если real-источник не отдал кадр за
+        # first_frame_timeout_sec, нода либо fail-fast (hailo_enabled=true),
+        # либо явно логирует degraded-mode и переходит в stub.
+        try:
+            self._gaze = make_source(
+                name=self.gaze_source_name,
+                node=self,
+                timeout_sec=self.first_frame_timeout_sec,
+            )
+        except GazeSourceUnavailable as exc:
+            if self._is_real_mode:
+                # В real-режиме источник обязан быть живым (ADR-0018
+                # capability-honest) — fail-fast с понятным сообщением.
+                self.get_logger().error(
+                    f'vision_hailo: {exc}. fail-fast (real-mode обязателен, '
+                    f'gaze_source={self.gaze_source_name!r}).'
+                )
+                raise
+            # В stub-режиме — degradation с WARN, нода продолжит работу.
+            self.get_logger().warning(
+                f'vision_hailo: {exc}. Источник недоступен, нода продолжит '
+                f'работу в stub-режиме (hailo_enabled=False).'
+            )
+            self._gaze = make_source(
+                name='stub',
+                node=self,
+                timeout_sec=0.0,
+            )
+
+        # ============ Состояние кадров ============
+        # Кэш последнего кадра от gaze для infer() в _tick. Содержит уже
+        # декодированный RGB + метаданные letterbox (когда применимо).
+        self._latest_frame: Optional[Any] = None  # gaze.Frame
+        self._has_received_frame = False
+        self._last_frame_id: Optional[str] = None
+        self._last_frame_stamp: Optional[float] = None
 
         # ============ Publishers ============
         if VisionEventMsg is not None:
@@ -165,34 +223,17 @@ class VisionHailoNode(Node):
             )
             self._publisher = None
 
-        # ============ Subscribers ============
-        # Phase 1: одна подписка (OAK-D compressed). Phase 2 добавит
-        # depth topic для distance fusion.
-        self._has_received_frame = False
-        self._last_frame_id: Optional[str] = None
-        if VisionEventMsg is not None:
-            from sensor_msgs.msg import CompressedImage  # type: ignore
-            self.create_subscription(
-                CompressedImage,
-                self.input_topic,
-                self._on_image,
-                10,
-            )
-            self.get_logger().info(
-                f'Subscribed to {self.input_topic} (CompressedImage)'
-            )
-        else:
-            self.get_logger().warning(
-                'Подписка на image топик отключена — нет VisionEvent.msg'
-            )
+        # ============ Таймер поллинга gaze source ============
+        # Gaze.frames() блокирующий итератор; в rclpy-ноде мы делаем
+        # poll через таймер (spin_once в _tick → rclpy.spin_once в
+        # OakDSource/CeilingCameraSource).
+        self._poll_timer = self.create_timer(0.05, self._poll_gaze)
 
-        # ============ Таймер публикации (stub heartbeat) ============
-        # В stub-режиме публикуем события периодически, чтобы downstream
-        # (context_aggregator) видел активность. В real-режиме — публикация
-        # управляется callback'ом `_on_image`, таймер нужен только для
-        # `publish_when_no_input`.
+        # ============ Таймер публикации (heartbeat) ============
+        # Stub-mode использует self.stub_period_sec; real-mode использует
+        # фактический поток кадров через _poll_gaze → _tick.
         timer_period = max(0.1, self.stub_period_sec / 4.0)
-        self._timer = self.create_timer(timer_period, self._tick)
+        self._tick_timer = self.create_timer(timer_period, self._tick)
 
         # ============ Degraded state (issue #2538 п.6) ============
         # Если HailoRT init падает (AttributeError / RuntimeError), нода
@@ -202,52 +243,56 @@ class VisionHailoNode(Node):
         self._consecutive_failures: int = 0
         self._max_logged_failures: int = 3  # потом молчим до восстановления
 
-        mode = 'real' if self.hailo_enabled and self.hef_path else 'stub'
+        # ============ Один и тот же mode в логах и в коде ============
+        # ADR-0101 acceptance #7: лог НЕ может утверждать mode=real,
+        # если _is_real_mode=False. Один расчёт, одна строка.
+        mode = 'real' if self._is_real_mode else 'stub'
         self.get_logger().info(
-            f'Vision Hailo node started (mode={mode}, '
+            f'Vision Hailo node started '
+            f'(mode={mode}, '
             f'loader={type(self._loader).__name__}, '
+            f'gaze_source={self.gaze_source_name!r} → '
+            f'topic={self._gaze.topic!r}, '
             f'output_topic={self.output_topic}, '
-            f'confidence_threshold={self.confidence_threshold})'
+            f'confidence_threshold={self.confidence_threshold}, '
+            f'publish_when_no_input={self.publish_when_no_input})'
         )
 
     # ----------------------------------------------------------------
     # Lifecycle hooks
     # ----------------------------------------------------------------
 
-    def _on_image(self, msg: Any) -> None:
-        """Callback входящего кадра. Phase 1.5 — JPEG-decode + кэш.
+    def _poll_gaze(self) -> None:
+        """Poll gaze.frames() — сохранить последний кадр для _tick.
 
-        Stub-mode использует этот же callback чтобы обновить
-        `_last_frame_id` (нужен для `source_camera` в stub-event'ах).
-        Real-mode дополнительно декодирует JPEG → numpy.ndarray для
-        последующего `infer(image=...)`.
+        В stub-mode _poll_gaze просто no-op (StubSource сам не публикует
+        события, его выдачу обрабатывает _tick через _loader.infer(image=None)).
+        В real-mode (oak_d / ceiling_camera) — сохраняем последний RGB-кадр
+        + метаданные letterbox для следующего infer().
         """
-        self._has_received_frame = True
-        self._last_frame_id = (
-            msg.header.frame_id if hasattr(msg, 'header') else None
-        )
-        # Real-mode требует numpy/cv2; в stub-mode пропускаем decode.
-        if not self._is_real_mode:
+        if self.gaze_source_name == 'stub':
+            # StubSource отдаёт один синтетический кадр; считаем, что
+            # "кадр пришёл" — для downstream-агрегатора это сигнал, что
+            # узел жив (но детектор не настоящий, см. ADR-0018).
+            self._has_received_frame = True
+            self._last_frame_id = 'stub_frame'
             return
-        # Type narrowing: _is_real_mode=True подразумевает _CV2_AVAILABLE
-        # и _NUMPY_AVAILABLE (см. проверку в __init__).
-        if not (_NUMPY_AVAILABLE and _CV2_AVAILABLE):
-            return
-        assert cv2 is not None
-        assert np is not None
+
+        # Real-источник: пробежаться по буферу gaze.frames() пока есть
+        # новые кадры; сохранить только последний.
         try:
-            data = bytes(msg.data)
-            arr = np.frombuffer(data, dtype=np.uint8)
-            img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-            if img is not None:
-                self._latest_image = img
-                # Stamp — для возможного stale-detection в _tick.
-                if hasattr(msg, 'header') and hasattr(msg.header, 'stamp'):
-                    self._latest_image_stamp = msg.header.stamp
+            for frame in self._gaze.frames():
+                self._latest_frame = frame
+                self._has_received_frame = True
+                self._last_frame_id = frame.frame_id
+                self._last_frame_stamp = frame.stamp
+                # Break после первого нового кадра — следующий poll
+                # возьмёт более свежий. Это даёт нам "latest wins"
+                # семантику и не блокирует таймер.
+                break
         except Exception as exc:  # noqa: BLE001
-            # Decode упал — capability-honest: НЕ silent fallback, а warning.
             self.get_logger().warning(
-                f'JPEG decode failed: {exc!r}. Кэш кадра не обновлён.',
+                f'gaze.frames() error: {exc!r}'
             )
 
     def _tick(self) -> None:
@@ -262,17 +307,31 @@ class VisionHailoNode(Node):
         каждый тик (init-failure или per-frame-failure), логируем
         первые `_max_logged_failures` ошибок и дальше — пропускаем
         молча. Сбрасываем счётчик после успешного `infer`.
+
+        ADR-0101 (issue #2531 acceptance #5): в проде
+        `publish_when_no_input=False` обязателен, иначе маскируем
+        реальный источник кадра.
         """
         if self._publisher is None:
             return
         # В real-режиме ждём хотя бы один кадр (если не стоит
-        # `publish_when_no_input=True` явно — для тестов удобно).
+        # `publish_when_no_input=True` явно — для CI/smoke удобно).
+        # ADR-0101 acceptance #5: в проде `publish_when_no_input=False`
+        # обязателен, иначе маскируем реальный источник.
         if not self.publish_when_no_input and not self._has_received_frame:
             return
 
         frame_id = self._last_frame_id or 'unknown'
-        # Real-mode: передаём последний декодированный кадр (None если нет).
-        image_for_infer = self._latest_image if self._is_real_mode else None
+
+        # Real-mode: передаём последний RGB-кадр от gaze (или None если
+        # ещё ни одного). Stub-mode: image=None → _loader.infer сам знает,
+        # что делать (heartbeat по stub_period_sec).
+        image_for_infer = (
+            self._latest_frame.rgb
+            if (self._is_real_mode and self._latest_frame is not None)
+            else None
+        )
+
         try:
             raw_events = self._loader.infer(
                 frame_id=frame_id,
@@ -327,6 +386,15 @@ class VisionHailoNode(Node):
         for field in VISION_EVENT_FIELDS:
             setattr(msg, field, norm[field])
         self._publisher.publish(msg)
+
+    def destroy_node(self) -> bool:
+        """Остановить gaze source при destroy (важно для тестов)."""
+        try:
+            if self._gaze is not None:
+                self._gaze.stop()
+        except Exception:  # noqa: BLE001
+            pass
+        return super().destroy_node()
 
 
 def main(args: Optional[List[str]] = None) -> None:

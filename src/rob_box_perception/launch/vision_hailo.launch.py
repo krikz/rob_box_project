@@ -16,6 +16,26 @@
   в ``docker/vision/docker-compose.yaml`` — отдельный контейнер, доступ
   к /dev/hailo0 через ``devices:`` bind-mount.
 
+Выбор источника кадра (ADR-0101, issue #2531):
+
+Параметр ``gaze_source`` (NEW, ssoT) — имя адаптера шва «Взгляд»
+(``oak_d`` / ``ceiling_camera`` / ``stub``). Нода НЕ подписывается на
+ROS-топики напрямую — это делает ``rob_box_perception.gaze``. Подробнее:
+
+- ``oak_d`` → подписка на ``/camera/camera/color/image_raw`` (Image msg),
+  путь, который публикует ``oakd_with_apriltag.launch.py`` с
+  ``namespace='camera'`` + ``i_rs_compat: true``.
+- ``ceiling_camera`` → подписка на ``/ceiling_camera/image_raw/compressed``
+  (CompressedImage msg). Действующие потребители: ``quest_node.py:2151``,
+  ``telegram_node.py:107``. Это второй независимый сценарий, который
+  делает шов «Взгляд» настоящим, а не гипотетическим.
+- ``stub`` → синтетический кадр без ROS (для CI/smoke).
+
+Параметр ``input_topic`` оставлен для back-compat с уже выпущенным
+документированным контрактом, но НЕ используется нодой. Источник правды —
+``gaze_source``. Issue #2531 acceptance #2: устранено тройное дублирование
+дефолта ``/oak/rgb/image_raw/compressed``.
+
 Capability-honest gate (ADR-0018): если ``hailo_enabled=true``, но
 ``/dev/hailo0`` отсутствует или HEF не читается — нода запускается в
 degraded stub-режиме с WARN-логом (см. ``vision_hailo_node.py:_is_real_mode``).
@@ -33,6 +53,7 @@ Touchpoints:
 - ADR-0096 §3 touchpoint #1 — этот файл.
 - ADR-0089 §3 touchpoint #6 — переформулирован ADR-0096 (vision_hailo.launch.py
   вместо internal_dialogue.launch.py).
+- ADR-0101 — gaze_source parameter (single source of truth).
 """
 
 from __future__ import annotations
@@ -49,14 +70,23 @@ from launch_ros.actions import Node
 # SSoT defaults. Совпадают с дефолтами в vision_hailo_node.py и с дефолтами
 # в docker/vision/config/hailo_models.yaml. Поднимать только когда меняется
 # поведение ноды или YAML.
+#
+# ADR-0101: ``gaze_source`` — ЕДИНСТВЕННЫЙ выбор источника кадра.
+# ``input_topic`` — legacy, сохранён для back-compat но нодой не используется.
 _DEFAULTS: Dict[str, Any] = {
     'hailo_enabled': 'false',
     'hef_path': '',
     'stub_period_sec': '2.0',
     'confidence_threshold': '0.5',
-    'input_topic': '/oak/rgb/image_raw/compressed',
+    'gaze_source': 'oak_d',
+    # Legacy / back-compat: нода НЕ использует input_topic напрямую,
+    # источник выбирается по gaze_source (см. gaze.py → OakDSource и т.д.).
+    # Оставлено, чтобы старые скрипты / документация не сломались; нода
+    # просто игнорирует.
+    'input_topic': '/camera/camera/color/image_raw',
     'output_topic': '/vision/hailo/events',
     'publish_when_no_input': 'true',
+    'first_frame_timeout_sec': '10.0',
 }
 
 
@@ -133,9 +163,25 @@ def generate_launch_description() -> LaunchDescription:
             description='Фильтр confidence [0.0, 1.0]. События ниже порога drop.',
         ),
         DeclareLaunchArgument(
+            'gaze_source',
+            default_value=_DEFAULTS['gaze_source'],
+            description='Имя адаптера шва «Взгляд» (ADR-0101): '
+                        'oak_d | ceiling_camera | stub. oak_d подписывается на '
+                        '/camera/camera/color/image_raw (Image msg, согласовано '
+                        'с oak_d_config.yaml i_rs_compat:true).',
+        ),
+        DeclareLaunchArgument(
+            'first_frame_timeout_sec',
+            default_value=_DEFAULTS['first_frame_timeout_sec'],
+            description='Сколько секунд ждать первый кадр от real-источника '
+                        'перед fail-fast в real-mode (ADR-0101, capability-honest).',
+        ),
+        DeclareLaunchArgument(
             'input_topic',
             default_value=_DEFAULTS['input_topic'],
-            description='Подписка на compressed image (Phase 1: OAK-D).',
+            description='LEGACY / back-compat. Нода НЕ использует — выбор '
+                        'источника делается по gaze_source. Сохранён, чтобы '
+                        'старые скрипты / документация не сломались.',
         ),
         DeclareLaunchArgument(
             'output_topic',
@@ -165,7 +211,11 @@ def generate_launch_description() -> LaunchDescription:
                 'confidence_threshold': LaunchConfiguration(
                     'confidence_threshold'
                 ),
-                'input_topic': LaunchConfiguration('input_topic'),
+                'gaze_source': LaunchConfiguration('gaze_source'),
+                'first_frame_timeout_sec': LaunchConfiguration(
+                    'first_frame_timeout_sec'
+                ),
+                # input_topic — legacy, нода игнорирует (ADR-0101).
                 'output_topic': LaunchConfiguration('output_topic'),
                 'publish_when_no_input': LaunchConfiguration(
                     'publish_when_no_input'
