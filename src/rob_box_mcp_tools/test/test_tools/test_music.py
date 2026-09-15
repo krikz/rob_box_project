@@ -88,6 +88,8 @@ def _make_manager(*, sc_running: bool = False, renardo_available: bool = False) 
     mgr._music_deadline_segments = None
     # issue #1812 — non-repeating compose_music() form-end deadline
     mgr._music_form_deadline_at = None
+    # issue #2461 — form-cycle end (arms regardless of repeat)
+    mgr._music_form_cycle_ends_at = None
     # issue #1000 — DJ mode flag (default off; tests can call mgr.set_dj_mode(True))
     mgr._dj_mode_enabled = False
     mgr._check_supercollider = Mock(return_value=sc_running)
@@ -2206,6 +2208,97 @@ class TestComposeMusicToolFormDeadline:
         )
         assert result["stopped"] is False
         assert result.get("held_reason") == "form_not_finished"
+
+
+@pytest.mark.unit
+class TestComposeMusicToolFormCycleEnd:
+    """Issue #2461 — момент конца ОДНОГО прохода формы (``_music_form_cycle_ends_at``)
+    должен взводиться на любой ``compose_music``, включая ``repeat=True`` —
+    именно так DJ-режим играет треки, и до этого поля момент «форма доиграла»
+    был виден только модели, копирующей число из текста в ``next_transition_sec``.
+    Это НЕ то же самое, что ``_music_form_deadline_at`` (issue #1812,
+    watchdog-защита от cut-off) — тот и дальше обязан оставаться ``None`` при
+    ``repeat=True`` (см. ``TestComposeMusicToolFormDeadline`` выше), эти тесты
+    его не трогают.
+    """
+
+    def _make_tool(self, mock_node, **kwargs):
+        mgr = _make_manager(sc_running=True, renardo_available=True, **kwargs)
+        return ComposeMusicTool(mock_node, mgr), mgr
+
+    _COMMON_KWARGS = dict(
+        bpm=100,
+        root="C",
+        scale="minor",
+        form="arc",
+        drums="X..o.X.o",
+        bass_synth="dub",
+        bass_notes="0, 0, 3, -2",
+        lead_synth="blip",
+        lead_notes="0, 2, 4, 7",
+    )
+
+    def test_repeat_true_still_arms_the_form_cycle_end(self, mock_node):
+        tool, mgr = self._make_tool(mock_node)
+        with patch("builtins.exec"):
+            result = tool.execute(repeat=True, **self._COMMON_KWARGS)
+        assert result.success is True
+        # Watchdog-дедлайн (#1812) остаётся None при repeat=True — не сломано.
+        assert mgr._music_form_deadline_at is None
+        # Но момент конца прохода формы (#2461) взведён — DJ-сет играет
+        # именно repeat=True, и без этого поля тут не было бы ничего.
+        assert mgr._music_form_cycle_ends_at is not None
+        assert mgr._music_form_cycle_ends_at > time.monotonic()
+
+    def test_repeat_false_also_arms_the_form_cycle_end(self, mock_node):
+        """repeat=False взводит ОБА поля — они защищают/описывают одно и то же."""
+        tool, mgr = self._make_tool(mock_node)
+        with patch("builtins.exec"):
+            result = tool.execute(repeat=False, **self._COMMON_KWARGS)
+        assert result.success is True
+        assert mgr._music_form_deadline_at is not None
+        assert mgr._music_form_cycle_ends_at is not None
+
+    def test_form_cycle_end_is_the_same_regardless_of_repeat(self, mock_node):
+        """form_duration_seconds() не принимает repeat — длительность одного
+        прохода формы одинакова что при repeat=True, что при repeat=False."""
+        tool_a, mgr_a = self._make_tool(mock_node)
+        tool_b, mgr_b = self._make_tool(mock_node)
+        with patch("builtins.exec"):
+            tool_a.execute(repeat=True, **self._COMMON_KWARGS)
+        with patch("builtins.exec"):
+            tool_b.execute(repeat=False, **self._COMMON_KWARGS)
+        remaining_a = mgr_a._music_form_cycle_ends_at - time.monotonic()
+        remaining_b = mgr_b._music_form_cycle_ends_at - time.monotonic()
+        assert remaining_a == pytest.approx(remaining_b, abs=0.5)
+
+    def test_stop_all_clears_the_form_cycle_end(self, mock_node):
+        """Явный стоп снимает и watchdog-дедлайн, и момент конца формы —
+        трека, чей конец описывался бы этим полем, больше не существует."""
+        tool, mgr = self._make_tool(mock_node)
+        with patch("builtins.exec"):
+            tool.execute(repeat=True, **self._COMMON_KWARGS)
+        assert mgr._music_form_cycle_ends_at is not None
+        mgr.stop_all()
+        assert mgr._music_form_cycle_ends_at is None
+
+    def test_get_state_exposes_form_cycle_end_for_repeat_true(self, mock_node):
+        """Критерий приёмки #2461: get_state() отдаёт поле наружу после
+        compose_music(repeat=True) — раньше DJ-сет (repeat=True) не оставлял
+        в состоянии ничего, кроме None."""
+        tool, mgr = self._make_tool(mock_node)
+        with patch("builtins.exec"):
+            tool.execute(repeat=True, **self._COMMON_KWARGS)
+        state = mgr.get_state()
+        assert state["form_cycle_ends_at"] is not None
+        assert state["form_cycle_remaining_s"] is not None
+        assert state["form_cycle_remaining_s"] > 0
+
+    def test_get_state_form_cycle_end_is_none_when_no_track_played(self, mock_node):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        state = mgr.get_state()
+        assert state["form_cycle_ends_at"] is None
+        assert state["form_cycle_remaining_s"] is None
 
 
 class TestComposeMusicToolMelodyByName:
