@@ -13,6 +13,15 @@
 #
 # Phase 1 acceptance (см. ADR-0089 §9):
 #   hailortcli scan на Vision Pi возвращает `hailo8` device.
+#
+# Phase 1 binding strategy — см. ADR-0099:
+#   - hailo_platform (Python binding) **опциональный** на Phase 1 —
+#     capability-honest (ADR-0018) stub-режим. Real install — Phase 1.5
+#     (отдельная карточка, .deb/.whl от Hailo Developer Zone).
+#   - HAILO_INSTALL_C_DEV=true (default) — ставит libhailort-dev через apt
+#     как C-заголовки для Phase 1.5/2 build-wheel. На CI без Hailo apt-repo
+#     ставится best-effort || true.
+#   - HAILO_INSTALL_C_DEV=false — пропускаем apt-шаг полностью (для offline build).
 
 ARG ROS_DISTRO=humble
 ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO}
@@ -43,20 +52,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ros-${ROS_DISTRO}-control-msgs \
     && rm -rf /var/lib/apt/lists/*
 
-# HailoRT + python binding — BEST-EFFORT. На CI (arm64-эмуляция, без
-# официального Hailo apt-repo) ставиться не может — НЕ падаем: Phase 1
-# stub-режим железо не требует. RealHEFLoader импортирует hailo_platform
-# лениво, real inference — Phase 1.5 (на Vision Pi вручную).
-RUN apt-get update && \
-    (apt-get install -y --no-install-recommends libhailort-dev || true) && \
-    (pip3 install --no-cache-dir hailort==4.18.0 2>/dev/null || \
-     pip3 install --no-cache-dir hailort 2>/dev/null || \
-     echo "WARNING: hailort python binding install skipped — Phase 1 stub mode OK") && \
-    rm -rf /var/lib/apt/lists/*
+# HailoRT C-binding (libhailort-dev) — Phase 1.5/2 dep для локального build
+# Python wheel из source. Optional на CI без Hailo apt-repo (best-effort,
+# capability-honest stub). Real `hailo_platform` install — Phase 1.5 карточка
+# с .deb (HailoRT) + .whl (Python binding) от Hailo Developer Zone.
+# См. ADR-0099 §2.1 (Phase 1) и §2.2 (Phase 1.5).
+ARG HAILO_INSTALL_C_DEV=true
+RUN if [ "${HAILO_INSTALL_C_DEV}" = "true" ]; then \
+        apt-get update && \
+        apt-get install -y --no-install-recommends libhailort-dev || \
+            echo "WARN: libhailort-dev install skipped (Hailo apt-repo недоступен на CI — capability-honest, Phase 1 stub OK)"; \
+        rm -rf /var/lib/apt/lists/*; \
+    else \
+        echo "HAILO_INSTALL_C_DEV=false — пропускаем apt-шаг (offline build)"; \
+    fi
 
-# Smoke-test: hailortcli доступен? Не падаем (см. выше).
-RUN hailortcli --version 2>/dev/null || \
-    echo "WARNING: hailortcli не найден — Phase 1 stub mode OK"
+# Smoke-test `hailortcli` перенесён в start_vision_hailo.sh:100-110 — там он
+# запускается только когда HAILO_ENABLED=true, т.е. когда реально нужно проверить
+# наличие device. На CI Phase 1 (HAILO_ENABLED=false) smoke не имеет смысла.
 
 # ---------- workspace (паттерн docker/main/perception) ----------
 WORKDIR /ws
