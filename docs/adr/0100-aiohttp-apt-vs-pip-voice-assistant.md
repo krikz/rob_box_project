@@ -1,8 +1,9 @@
-# ADR-0091: aiohttp в voice-assistant — apt vs pip, разделение по версионным границам
+# ADR-0100: aiohttp в voice-assistant — apt vs pip, разделение по версионным границам
 
 **Дата:** 2026-09-15
 **Статус:** Accepted (архитектурный вердикт, architectural review issue #2568)
 **Автор:** architect worker (kanban-card `t_fa0e3ef7`, issue #2568)
+**ADR-number:** 0100 (collision-fix: ADR-0091 занят `minimax-stt-provider` в origin/develop)
 **Домен:** docker/vision (build cache, dependency pinning)
 **Severity:** MEDIUM — уточнение scope PR #2407, без правок кода
 **Тип:** dependency-strategy (architectural decision, не bug-fix)
@@ -198,9 +199,9 @@ voice_base есть, `rosdep install` больше не вызывается.
 
 | Дата | Автор | Изменение |
 |---|---|---|
-| 2026-09-15 | architect (t_fa0e3ef7, issue #2568) | Initial ADR-0091. Architectural verdict: PR #2407 достиг своей цели (убрал `rosdep install \|\| true`), pip-override aiohttp в voice_assistant — сознательное решение commit `337548a38` (2026-08-06). Ни один из двух фиксов issue #2568 не применяется. F1–F3 как follow-up. Без правок кода. |
+| 2026-09-15 | architect (t_fa0e3ef7, issue #2568) | Initial ADR-0100. Architectural verdict: PR #2407 достиг своей цели (убрал `rosdep install \|\| true`), pip-override aiohttp в voice_assistant — сознательное решение commit `337548a38` (2026-08-06). Ни один из двух фиксов issue #2568 не применяется. F1–F3 как follow-up. Без правок кода. |
 
 ---
 
-*ADR-0091 принят в рамках kanban-card `t_fa0e3ef7` (issue #2568). Все ссылки и файлы проверены
+*ADR-0100 принят в рамках kanban-card `t_fa0e3ef7` (issue #2568). Все ссылки и файлы проверены
 реальным `git show` / `git log` / чтением, не выдуманы. Issue #2568 — close with «by design».*
