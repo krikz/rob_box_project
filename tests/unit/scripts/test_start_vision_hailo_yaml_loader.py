@@ -112,21 +112,37 @@ def _exports(proc: subprocess.CompletedProcess[str]) -> dict[str, str]:
 
 
 def _env_skips(proc: subprocess.CompletedProcess[str]) -> set[str]:
-    """Parse the ENV-skip INFO markers from stdout.
+    """Parse the ENV-skip markers from stderr.
 
-    The Python block emits ``echo "[start_vision_hailo] INFO: ENV
-    XXX already set, YAML key '...' ignored" >&2`` to stdout, so bash
-    ``eval`` runs the echo with stderr redirection. We invoke the
-    Python loader directly (no bash wrapper), so the echo command
-    itself sits as a literal line in stdout. We parse those literal
-    lines here.
+    The Python block emits a marker to stderr whenever a YAML key is
+    skipped because ENV was already set non-empty. We accept both
+    pre- and post-rebase wording so this helper survives upstream
+    log-message tweaks:
+
+    * pre-rebase PR #2522 wording:
+      ``[start_vision_hailo] INFO: ENV HAILO_ENABLED already set,
+      YAML key 'hailo_enabled' ignored``
+    * develop wording (current): ``[start_vision_hailo] ENV override
+      wins: HAILO_ENABLED (env="true", yaml="False")``
+
+    The bash ``eval`` wrapper redirects the marker to stderr via
+    ``print(..., file=sys.stderr)`` (post-rebase) or ``echo ... >&2``
+    (pre-rebase, emitted as a literal line in stdout). When we invoke
+    the Python loader directly (no bash wrapper), the marker sits in
+    stderr either way, so we parse both.
     """
     out: set[str] = set()
-    pattern = re.compile(r"ENV (\w+) already set, YAML key '[^']+' ignored")
-    for line in proc.stdout.splitlines():
-        m = pattern.search(line)
-        if m:
-            out.add(m.group(1))
+    patterns = (
+        re.compile(r"ENV (\w+) already set, YAML key '[^']+' ignored"),
+        re.compile(r"ENV override wins: (\w+) \("),
+    )
+    blob = (proc.stderr or "") + "\n" + (proc.stdout or "")
+    for line in blob.splitlines():
+        for pattern in patterns:
+            m = pattern.search(line)
+            if m:
+                out.add(m.group(1))
+                break
     return out
 
 
@@ -409,5 +425,11 @@ def test_bash_eval_pipeline_env_wins_over_yaml() -> None:
         )
         # ENV wins — HAILO_ENABLED should be "true", not "false".
         assert env_lines.get("HAILO_ENABLED") == "true", env_lines
-        # And the INFO log line was emitted (via echo >&2).
-        assert "[start_vision_hailo] INFO: ENV HAILO_ENABLED" in bash_proc.stderr
+        # And the ENV-skip log line was emitted by the Python loader
+        # (develop wording: "ENV override wins: HAILO_ENABLED (...)")
+        # — captured in py_proc.stderr, NOT bash_proc.stderr, because
+        # bash doesn't re-execute the python `print(..., file=sys.stderr)`.
+        assert any(
+            "ENV override wins: HAILO_ENABLED" in line
+            for line in (py_proc.stderr or "").splitlines()
+        ), py_proc.stderr
