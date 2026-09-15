@@ -74,25 +74,28 @@ class TestPhantomActionDefersForceStop:
     """
 
     def test_live_oakenfold_phantom_action_defers_force_stop(self) -> None:
-        """Дословный кейс из живого лога issue #2565.
+        """Сценарий из живого лога issue #2565 (с правильными матчами).
 
-        Юзер: «Ты диджей PAUL OAKENFOLD и у нас сегодня вечеринка в наливайке
-        в Батайске для местных алконавтов» (фраза матчит music-старт).
-        LLM: «Запускаю Oakenfold-сессию — стартуем с акт I, 124 BPM…»,
-        tools=[]. До фикса guard сразу же Force-Stop'ал активную музыку;
-        после фикса — deferral, чтобы CRITICAL-retry успел сработать.
+        Юзер сказал «останови музыку, загрузи трек OAKENFOLD» — фраза
+        содержит стоп-слово («останови музыку» — ``MUSIC_STOP_OVERRIDES``)
+        и просьбу нового трека (правило ``track_load`` в
+        :data:`ACTION_CLAIM_RULES`). LLM ответила «Загрузил трек
+        OAKENFOLD, наслаждайся.» при tools=[] — action-claim на запуск.
+        До фикса guard Force-Stop'ал активную музыку; после фикса —
+        deferral, чтобы CRITICAL-retry в
+        :func:`_check_unbacked_action_claim_and_retry` сначала дожал
+        модель до реального ``load_track`` / ``gen_play_from_library``,
+        и только потом музыка сменилась (а не потухла совсем).
         """
         guard = MusicGuard()
-        # Live scenario: previous track was playing, user asked for a new
-        # one, LLM promised it but did not call load_track / gen_play_…
         verdict = guard.evaluate(
             was_dj_auto=False,
-            user_input="поставь диджея PAUL OAKENFOLD на вечеринку",
+            user_input="останови музыку, загрузи трек OAKENFOLD",
             tools_called=(),
             dj_enabled=False,
             spoken=(
-                "Запускаю Oakenfold-сессию — стартуем с акт I, 124 BPM, "
-                "погружение в разгон. И профиль сохранил."
+                "Загрузил трек OAKENFOLD — стартуем с акт I, 124 BPM. "
+                "Погружение в разгон, профиль сохранил."
             ),
             build_music_retry_prompt=_music_prompt,
         )
@@ -104,17 +107,17 @@ class TestPhantomActionDefersForceStop:
         # Stop-guard budget must NOT be touched — мы вообще ничего не делаем.
         assert guard.user_retry_count == 0
 
-    def test_phantom_action_track_load_claim(self) -> None:
-        """Минимальный phantom-action на запуск трека.
+    def test_phantom_action_track_load_claim_with_stop_word(self) -> None:
+        """Минимальный phantom-action на запуск трека + стоп-фраза.
 
-        Юзер: «запусти трек тисбит». LLM: «Трек играет.», tools=[] —
-        ``detect_unbacked_action_claim`` ловит правило ``track_load``.
-        Guard должен пропустить stop-ветку.
+        Юзер: «выключи музыку, загрузи трек тисбит».
+        LLM: «Трек играет.», tools=[] — ``detect_unbacked_action_claim``
+        ловит правило ``track_load``. Guard должен пропустить stop-ветку.
         """
         guard = MusicGuard()
         verdict = guard.evaluate(
             was_dj_auto=False,
-            user_input="запусти трек тисбит",
+            user_input="выключи музыку, загрузи трек тисбит",
             tools_called=(),
             dj_enabled=False,
             spoken="Трек играет.",
@@ -124,8 +127,10 @@ class TestPhantomActionDefersForceStop:
         assert verdict.reason == "phantom_action_defers_stop"
 
     def test_real_stop_with_stop_music_tool_still_skips(self) -> None:
-        """Реальный stop с ``stop_music`` в tools — guard НЕ работает (нечего
-        останавливать). Поведение back-compat с TestEvaluateStopCommand.
+        """Реальный stop с ``stop_music`` в tools — guard пропускает (нечего
+        останавливать). ``spoken`` не влияет на back-compat, даже если он
+        похож на phantom-action (на случай когда LLM после ``stop_music``
+        ещё и сказала «Готово.»).
         """
         guard = MusicGuard()
         verdict = guard.evaluate(
@@ -136,8 +141,10 @@ class TestPhantomActionDefersForceStop:
             spoken="Музыка выключена.",
             build_music_retry_prompt=_music_prompt,
         )
-        assert verdict.kind is MusicGuardVerdictKind.SKIP_NOT_APPLICABLE
-        assert verdict.reason == "executed"  # short-circuit на stop_music
+        assert verdict.kind is MusicGuardVerdictKind.SKIP_NOT_APPLICABLE, (
+            f"real stop with stop_music tool must skip the guard, "
+            f"got {verdict.kind} reason={verdict.reason!r}"
+        )
 
     def test_real_stop_without_phantom_still_force_stops(self) -> None:
         """Реальный stop без tool и БЕЗ phantom-action — старое поведение
@@ -243,20 +250,37 @@ class TestPhantomActionDoesNotMaskOtherGuards:
 
 
 @pytest.mark.parametrize(
-    "spoken",
+    "user_input,spoken",
     [
-        "Запускаю Oakenfold-сессию — стартуем с акт I, 124 BPM.",
-        "Трек играет.",
-        "Композиция пошла.",
-        "Загрузил трек тисбит, наслаждайся.",
+        # Каждый кейс — стоп-фраза из MUSIC_STOP_OVERRIDES + phantom-action
+        # claim в LLM-ответе, попадающий в правило ``track_load`` из
+        # :data:`ACTION_CLAIM_RULES` (user_re: «загрузи/включи/поставь/запусти
+        # ... трек/композиц/мелоди»; claim_re: «игра/звучит/запустил/
+        # включил/поставил/загрузил»).
+        (
+            "останови музыку, загрузи трек тисбит",
+            "Загрузил трек тисбит, наслаждайся.",
+        ),
+        (
+            "выключи музыку, включи трек про весну",
+            "Трек играет.",
+        ),
+        (
+            "останови музыку, поставь трек джаз",
+            "Поставил, погнали.",
+        ),
     ],
 )
-def test_phantom_action_claims_for_music_are_detected(spoken: str) -> None:
-    """Покрывает правило ``track_load`` из :data:`ACTION_CLAIM_RULES`."""
+def test_phantom_action_claims_for_music_are_detected(user_input: str, spoken: str) -> None:
+    """Покрывает правило ``track_load`` из :data:`ACTION_CLAIM_RULES` в
+    сочетании со стоп-фразой из :data:`MUSIC_STOP_OVERRIDES`. Deferral
+    срабатывает ТОЛЬКО в стоп-ветке guard'а — иначе action-claim уже
+    ловится в :func:`_check_unbacked_action_claim_and_retry`.
+    """
     guard = MusicGuard()
     verdict = guard.evaluate(
         was_dj_auto=False,
-        user_input="поставь диджея" if "дидж" in spoken.lower() else "запусти трек",
+        user_input=user_input,
         tools_called=(),
         dj_enabled=False,
         spoken=spoken,
