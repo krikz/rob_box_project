@@ -178,7 +178,7 @@ branch: $CURRENT_BRANCH
 behind: $BEHIND
 max: $MAX_BRANCH_BEHIND
 \`\`\`
-_workill_pre_flight task=$TASK_ID_"
+_worker_pre_flight task=$TASK_ID_"
 
 # stash локальные изменения, чтобы rebase был чистым.
 STASH_NAME="pre_flight_${TASK_ID}_$$"
