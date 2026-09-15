@@ -264,12 +264,25 @@ class TestMusicProseActionRetryDoesNotFire:
 
     def test_dj_inactive_no_retry(self) -> None:
         """Acceptance #5: ``dj_enabled=False`` + prose-action claim в
-        быту — guard молчит (нет DJ-контекста, нет music-kw в
-        user_input)."""
+        быту — #2548 narrow guard молчит (нет DJ-контекста, нет music-kw
+        в user_input).
+
+        Note (issue #2549): UNIVERSAL anti-hallucination guard (``_check_universal_action_claim_and_retry``)
+        DOES fire here — broad action-verb detector без проверки домена.
+        Это ИНТЕНЦИОНАЛЬНО: «сделала уборку» без тул-вызова = hallucination,
+        и пользователь должен услышать ретрай-ответ, а не ложное «сделала».
+
+        Сейчас тест проверяет, что ``_publish_music_prose_action_fallback_if_needed``
+        (#2548 specific path) НЕ диспатчит turn — universal #2549 может,
+        но это другой путь. Чтобы изолировать #2548, мокаем universal guard.
+        """
         n = _make_node(dj_enabled=False)
         n._dispatch_turn = MagicMock()
         n._check_babble_and_retry = MagicMock(return_value=False)
         n._check_embedded_renardo_code_and_retry = MagicMock(return_value=False)
+        # Issue #2549 — universal guard может выстрелить отдельно,
+        # мокаем чтобы изолировать тест #2548 narrow path.
+        n._check_universal_action_claim_and_retry = MagicMock(return_value=False)
 
         # Бытовая ситуация: «сделала уборку», нет DJ.
         result = _make_result(
@@ -279,9 +292,11 @@ class TestMusicProseActionRetryDoesNotFire:
         )
         n._handle_result(result, user_input="давай уберу квартиру")
 
+        # #2548 narrow path не должен диспатчить turn в не-DJ сессии.
+        # (Universal #2549 mock-нут отдельно.)
         assert not n._dispatch_turn.called, (
-            "бытовая реплика НЕ должна триггерить action-claim "
-            "retry в не-DJ-сессии"
+            "бытовая реплика НЕ должна триггерить #2548 narrow music-prose-action "
+            "retry в не-DJ-сессии (universal #2549 может, но мок-нут)"
         )
 
 
