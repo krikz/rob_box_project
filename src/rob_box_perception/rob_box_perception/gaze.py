@@ -18,7 +18,7 @@
               +-------------+-------------+
                             v
                     +---------------+
-                    |  FrameSource  |   Protocol: frames() -> Iterator[Frame]
+                    |  FrameSource  |   Protocol: poll_latest() -> Optional[Frame]
                     +-------+-------+
                             v
                     +---------------+
@@ -32,7 +32,7 @@
                     |   source_name  |
                     +---------------+
 
-Шов обязан быть **честным**: если источник недоступен, ``frames()``
+Шов обязан быть **честным**: если источник недоступен, ``wait_for_first_frame``
 должен либо отдать первый кадр за разумный таймаут, либо бросить
 ``GazeSourceUnavailable`` с указанием ожидаемого топика и затраченного
 времени. Никакого silent "жив-но-слепой" режима (ADR-0018 capability-honest,
@@ -205,15 +205,17 @@ class FrameSource(Protocol):
         - :class:`OakDSource` — реальная OAK-D камера, msg=Image.
         - :class:`CeilingCameraSource` — потолочная USB-камера, msg=CompressedImage.
 
-    Метод ``frames()`` — **блокирующий** итератор. Возвращает кадры
-    по мере поступления. Завершается только при вызове ``stop()``
-    (или при исключении).
+    Кадр складывается ROS-колбэком ``_on_msg`` в поле ``_latest``, а
+    ``poll_latest()`` просто читает это поле **без спина** (non-blocking).
+    Это фикс issue #2602: старый ``frames()`` вызывал ``rclpy.spin_once``
+    из колбэка таймера ноды — рекурсивный spin блокировал executor, и
+    нода переставала публиковать события.
     """
 
     source_name: str
     topic: str
 
-    def frames(self) -> Iterator[Frame]: ...
+    def poll_latest(self) -> Optional[Frame]: ...
     def wait_for_first_frame(self, timeout_sec: float) -> Frame: ...
     def stop(self) -> None: ...
 
@@ -344,13 +346,15 @@ class OakDSource:
             source_name=self.source_name,
         )
 
-    def frames(self) -> Iterator[Frame]:
-        """Блокирующий итератор: spin + yield новейший кадр."""
-        import rclpy  # type: ignore
-        while not self._stopped:
-            rclpy.spin_once(self._node, timeout_sec=0.05)
-            if self._latest is not None:
-                yield self._latest
+    def poll_latest(self) -> Optional[Frame]:
+        """Вернуть последний декодированный кадр **без спина**.
+
+        Кадр обновляется ROS-колбэком ``_on_msg`` (его вызывает executor
+        ноды при приходе сообщения); здесь мы только читаем поле. Это
+        фикс issue #2602: вызов ``rclpy.spin_once`` отсюда (из колбэка
+        таймера) был рекурсивным спином, блокировавшим executor.
+        """
+        return self._latest
 
     def wait_for_first_frame(self, timeout_sec: float) -> Frame:
         start = time.monotonic()
@@ -428,12 +432,9 @@ class CeilingCameraSource:
             source_name=self.source_name,
         )
 
-    def frames(self) -> Iterator[Frame]:
-        import rclpy  # type: ignore
-        while not self._stopped:
-            rclpy.spin_once(self._node, timeout_sec=0.05)
-            if self._latest is not None:
-                yield self._latest
+    def poll_latest(self) -> Optional[Frame]:
+        """Вернуть последний декодированный кадр **без спина** (issue #2602)."""
+        return self._latest
 
     def wait_for_first_frame(self, timeout_sec: float) -> Frame:
         start = time.monotonic()
@@ -477,6 +478,15 @@ class StubSource:
         self._period_sec = period_sec
         self._stopped = False
         self._emitted = 0
+
+    def poll_latest(self) -> Optional[Frame]:
+        """Stub не callback-driven — кадр для инференса не нужен.
+
+        ``vision_hailo_node`` в stub-режиме зовёт ``_loader.infer(image=None)``
+        и не читает кадр от источника, поэтому здесь честный ``None``
+        (реализация ради контракта :class:`FrameSource`).
+        """
+        return None
 
     def frames(self) -> Iterator[Frame]:
         import time as _t

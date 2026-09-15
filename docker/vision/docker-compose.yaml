@@ -694,12 +694,12 @@ services:
       # нода ни разу не получала кадров от источника (silent blindness).
       # Новый healthcheck_frame.sh проверяет два независимых условия:
       #   1) процесс vision_hailo жив (pgrep),
-      #   2) /vision/hailo/events имеет Publisher count > 0
-      #      (нода действительно опубликовала хотя бы один event).
+      #   2) на /vision/hailo/events реально приходит событие
+      #      (ros2 topic echo --once). Publisher count > 0 НЕ годится
+      #      (issue #2602): publisher создаётся на старте даже у немой ноды.
       #
-      # Если источник недоступен — Publisher count остаётся 0, контейнер
-      # уходит в unhealthy и docker перезапустит (или operator увидит
-      # через promtail + grafana).
+      # Если событий нет — контейнер уходит в unhealthy и docker
+      # перезапустит (или operator увидит через promtail + grafana).
       test: ["CMD-SHELL", "/scripts/healthcheck_frame.sh"]
       interval: 30s
       timeout: 10s

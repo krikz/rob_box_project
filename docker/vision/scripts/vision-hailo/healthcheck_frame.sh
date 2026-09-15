@@ -9,8 +9,10 @@
 # Этот скрипт делает два независимых чека:
 #
 # 1) Процесс жив: ``pgrep -f vision_hailo`` — старое поведение, fast-fail.
-# 2) Топик живой: ``ros2 topic info /vision/hailo/events`` показывает
-#    publisher count > 0 — нода опубликовала хотя бы один event.
+# 2) Топик публикует: ``ros2 topic echo ... --once`` получает хотя бы
+#    одно событие. Publisher count > 0 НЕ подходит (issue #2602): publisher
+#    создаётся на старте даже у полностью немой ноды, поэтому старый чек
+#    держал контейнер healthy при нулевом выходе событий.
 #
 # Если оба true — exit 0 (healthy).
 # Иначе — exit 1 (unhealthy, docker перезапустит по policy).
@@ -31,9 +33,11 @@ if ! pgrep -f vision_hailo > /dev/null; then
     exit 1
 fi
 
-# ---------- 2) Топик живой ----------
-# ros2 topic info показывает publisher_count. Если 0 — нода не
-# опубликовала ни одного event с момента старта.
+# ---------- 2) Топик публикует события ----------
+# issue #2602: publisher count > 0 НЕ означает, что нода публикует —
+# publisher создаётся на старте даже у немой ноды (рекурсивный spin_once
+# блокировал executor). Проверяем ФАКТ доставки: --once выходит, как
+# только приходит первое событие (stub_period_sec=2.0 → за ~0.5-2.5s).
 if ! command -v ros2 > /dev/null 2>&1; then
     # Если ros2 CLI недоступен (например, на минимальном образе) —
     # fallback на pgrep-only чтобы не сломать CI smoke-тесты.
@@ -47,20 +51,14 @@ source /opt/ros/${ROS_DISTRO:-humble}/setup.bash 2>/dev/null || true
 # shellcheck disable=SC1091
 source /ws/install/setup.bash 2>/dev/null || true
 
-# Topic info возвращает строку вида:
-#   Publisher count: 1
-# Используем timeout на случай, если ros2 daemon завис.
-TOPIC_INFO=$(timeout 5 ros2 topic info /vision/hailo/events 2>&1) || {
-    echo "[healthcheck_frame] FAIL: ros2 topic info не ответил" >&2
-    exit 1
-}
-
-if echo "${TOPIC_INFO}" | grep -qE '^Publisher count: [1-9]'; then
+# timeout 8 < docker-compose healthcheck timeout: 10s. Нода публикует
+# каждые stub_period_sec (2.0s), поэтому первого события ждём с запасом.
+if timeout 8 ros2 topic echo /vision/hailo/events rob_box_perception_msgs/msg/VisionEvent --once > /dev/null 2>&1; then
     exit 0
 fi
 
-echo "[healthcheck_frame] FAIL: /vision/hailo/events — Publisher count: 0" >&2
-echo "[healthcheck_frame] (топик жив, но нода ни разу не опубликовала event)" >&2
-echo "[healthcheck_frame] — это означает, что источник кадра (gaze_source) недоступен" >&2
-echo "[healthcheck_frame] — или нода застряла в stub-режиме без реальных кадров" >&2
+echo "[healthcheck_frame] FAIL: нет событий в /vision/hailo/events за 8s" >&2
+echo "[healthcheck_frame] — publisher создан, но нода молчит (issue #2602:" >&2
+echo "[healthcheck_frame]   рекурсивный spin_once блокировал executor)," >&2
+echo "[healthcheck_frame]   либо источник кадра (gaze_source) недоступен" >&2
 exit 1
