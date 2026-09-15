@@ -3391,6 +3391,247 @@ class DialogueNode(Node):
             )
             return None
 
+    async def _resolve_turn_speaker(
+        self,
+        *,
+        user_input: str,
+        speaker_tag: Optional[str],
+        speaker_duration_s: float,
+        from_tg: bool,
+        is_dj_auto: bool,
+        was_dj_auto: bool,
+    ) -> Tuple[Optional[str], str]:
+        """Issue #2627 PR-B — extract the three-step speaker resolution.
+
+        Combines the three branches that used to live inline in
+        :meth:`_run_turn` (pre-PR-B):
+
+        1. **Profile update** (issue #1077) — if the STT layer returned a
+           confirmed speaker tag (2+ consecutive phrases, ≥0.8s), call
+           :meth:`_handle_speaker_turn` to refresh the speaker profile
+           and harvest context (name / facts / previous-dialog count).
+           Skipped for DJ auto-turns (DJ is a different runtime) and
+           when ``speaker_tag`` is ``None`` (Vosk fallback, edge case
+           #4).
+        2. **Source tag** (issue #1195) — Telegram text is marked with a
+           ``[TG]`` prefix so the DSM-classifier does not mistake it
+           for a wake word. Biometric speaker-id is intentionally NOT
+           applied to TG text (no microphone involved).
+        3. **Biometric prefix** (issue #1077) — when the biometric
+           pipeline is enabled (``self._speaker_id_enabled``) AND the
+           turn is NOT a DJ auto-turn, call
+           :meth:`_apply_speaker_identity` to prepend
+           ``[Говорит <имя>]`` / ``[Говорит: незнакомец]`` based on the
+           resemblyzer d-vector.
+
+        All three keep their original semantics 1:1 — the helper just
+        hides the branching so :meth:`_run_turn` CC drops ~6.
+
+        Args:
+            user_input: Effective user input (post-strip-wake-word).
+                Returned unchanged unless branches 2 or 3 mutate it.
+            speaker_tag: Confirmed speaker tag from the STT pipeline
+                (Yandex; ``None`` for Vosk / no detection).
+            speaker_duration_s: Duration of the speaker-tagged audio
+                stream in seconds. Threaded into
+                :meth:`_handle_speaker_turn` so the profile freshness
+                can be evaluated.
+            from_tg: ``True`` when the message arrived via the Telegram
+                chat (no microphone involved — biometric must be
+                bypassed).
+            is_dj_auto: ``True`` for DJ auto-tick transitions
+                (dispatched from :meth:`_dispatch_dj_turn`). These
+                bypass the speaker pipeline because the DJ prompt
+                intentionally mentions «роббокс» / «диджей» which
+                would otherwise short-circuit into a no-op
+                transition (issue #992).
+            was_dj_auto: Mirrors :attr:`_run_turn.was_dj_auto`. Same as
+                ``is_dj_auto`` at this point; kept as a separate
+                parameter to document the legacy code's distinction
+                (issue #992 Bug B — flag threading prevents races
+                between DJ retries and parent turns).
+
+        Returns:
+            A ``(speaker_context, user_input)`` tuple:
+
+            * ``speaker_context``: ``str`` from
+              :meth:`_handle_speaker_turn` or ``None`` (no confirmed
+              tag / DJ turn / handler raised).
+            * ``user_input``: the original input, possibly prefixed
+              with ``[TG]`` or the biometric name.
+
+        Notes:
+            Refactor: ``user_input`` is rebinding the parameter
+            (``str`` is immutable). When the helper returns, the
+            caller (:meth:`_run_turn`) MUST use the returned tuple, not
+            the original argument — see the line
+            ``speaker_context, user_input = await self._resolve_turn_speaker(...)``
+            in :meth:`_run_turn`.
+        """
+        speaker_context: Optional[str] = None
+        if speaker_tag and not is_dj_auto:
+            speaker_context = await self._handle_speaker_turn(
+                speaker_tag,
+                user_input=user_input,
+                duration_s=speaker_duration_s,
+            )
+        if from_tg:
+            user_input = f"[TG] {user_input}"
+        elif self._speaker_id_enabled and not was_dj_auto:
+            user_input = await self._apply_speaker_identity(
+                user_input, speaker_context
+            )
+        return speaker_context, user_input
+
+    async def _invoke_agent_with_tracing(
+        self,
+        *,
+        user_input: str,
+        was_dj_auto: bool,
+        is_synthetic: bool,
+        speaker_tag: Optional[str],
+        speaker_context: Optional[str],
+        dynamic_system: str,
+    ) -> DialogResult:
+        """Issue #2627 PR-A — call AgentCore inside the LLM-call telemetry.
+
+        Wraps the OpenTelemetry span, the deterministic skill activation,
+        the actual :meth:`AgentCore.process_input` call, and the
+        Prometheus fall-through histogram into a single helper. Refactor
+        is 1:1 against the legacy block at ``dialogue_node.py:3734-3824``
+        (pre-PR-A); the ``finally`` always records the metric — even
+        when :meth:`AgentCore.process_input` raises — so the latency
+        histogram never drops the failure path.
+
+        Args:
+            user_input: Effective user input (post-speaker-tag,
+                post-[TG]-prefix).
+            was_dj_auto: DJ-auto flag threaded through the dispatch
+                path so the skill-router can force ``composer`` for DJ
+                ticks (issue #2441).
+            is_synthetic: ``True`` for guard-dispatched retries
+                (``_check_babble_and_retry`` / ``_check_unbacked_action_claim_and_retry``
+                / ``_check_hallucinated_midi_and_retry`` / etc.).
+            speaker_tag: Confirmed speaker tag from STT (Yandex;
+                ``None`` for Vosk fallback).
+            speaker_context: String from
+                :meth:`_handle_speaker_turn` (issue #1077). ``None``
+                when no confirmed tag / DJ turn.
+            dynamic_system: Two-system-prompt snapshot from
+                :meth:`_build_dynamic_system_context`.
+
+        Returns:
+            The :class:`DialogResult` from :meth:`AgentCore.process_input`.
+            On exception, the Prometheus ``finally`` still records
+            ``success=False`` and the helper re-raises so the caller's
+            ``except`` branch can apply the degraded fallback phrase.
+
+        Notes:
+            ``time.monotonic`` is used (not ``time.time``) so NTP resync
+            does not corrupt the latency histogram (issue #1160).
+            ``start_span`` is a no-op without OTel (issue #1234).
+        """
+        llm_metric_start = time.monotonic()
+        llm_provider_name = getattr(
+            self._llm, "name", type(self._llm).__name__
+        )
+        llm_metric_recorded = False
+        result: Optional[DialogResult] = None
+        try:
+            with start_span(
+                "dialogue.llm_call",
+                {
+                    "provider": llm_provider_name,
+                    "model": getattr(self._llm, "model", "")
+                    or getattr(self._llm, "_model", ""),
+                },
+            ) as llm_span:
+                # Детерминированная активация домена ДО обращения к
+                # LLM: фрагмент попадает уже в ПЕРВЫЙ запрос хода,
+                # лишнего round-trip нет. DJ_AUTO-ход форсирует
+                # composer — аранжировка живёт там, а regex-роутер по
+                # синтетическому тексту перехода ненадёжен (issue #2441).
+                self._activate_skill_for(
+                    user_input,
+                    force_skill="composer" if was_dj_auto else None,
+                )
+                result = await self._core.process_input(
+                    user_input,
+                    is_dj_auto=was_dj_auto,
+                    is_synthetic=is_synthetic,
+                    speaker_tag=speaker_tag,
+                    speaker_context=speaker_context,
+                    dynamic_system=dynamic_system,
+                    preclassified_event=DialogueEvent.STT_RESULT,
+                )
+                # Прирост «домен пришлось грузить вызовом LLM» —
+                # это и есть метрика промахов пред-роутера.
+                self._publish_skill_load_counters()
+                llm_span.set_attribute(
+                    "fallback",
+                    llm_provider_name == "HealthAwareFallbackLLM",
+                )
+                llm_span.set_attribute(
+                    "duration_s",
+                    time.monotonic() - llm_metric_start,
+                )
+        finally:
+            self._record_llm_metrics(
+                llm_provider_name=llm_provider_name,
+                llm_metric_start=llm_metric_start,
+                llm_metric_recorded=llm_metric_recorded,
+                result=result,
+            )
+        if result is None:
+            # Unreachable in practice — the helper re-raises any
+            # exception in ``try:`` above — but Pyright wants an
+            # explicit branch so the ``-> DialogResult`` return type
+            # is satisfied. Mirror the legacy AttributeError path
+            # (issue #918) and let the caller handle ``None`` as a
+            # no-LLM-response edge case.
+            raise RuntimeError(
+                "AgentCore.process_input returned no result"
+            )
+        return result
+
+    def _record_llm_metrics(
+        self,
+        *,
+        llm_provider_name: str,
+        llm_metric_start: float,
+        llm_metric_recorded: bool,
+        result: Optional[DialogResult],
+    ) -> None:
+        """Issue #1160 / #2627 PR-A — record the Prometheus voice-llm metric.
+
+        Split out of :meth:`_invoke_agent_with_tracing` so the helper
+        itself stays at CC≤10. The ``result=`` parameter is the
+        :class:`DialogResult` from the LLM call — or ``None`` when
+        :meth:`AgentCore.process_input` raised before returning.
+
+        The Prometheus ``record_voice_llm_request`` call is wrapped in
+        its own ``try/except`` because a metric write must never crash
+        the dialog (issue #1160 «metrics must not break the dialogue»).
+        """
+        if llm_metric_recorded or not is_metrics_enabled():
+            return
+        duration_s = time.monotonic() - llm_metric_start
+        success = result is not None and not result.error
+        try:
+            record_voice_llm_request(
+                llm_provider_name,
+                success=success,
+                fallback=(llm_provider_name == "HealthAwareFallbackLLM"),
+                duration_s=duration_s,
+            )
+        except Exception as exc:  # noqa: BLE001
+            # Метрики НЕ должны ломать диалог: если запись
+            # упала (например, label-конфликт в тесте) — только
+            # логируем и продолжаем.
+            self.get_logger().warning(
+                f"⚠️ [metrics] record_voice_llm_request failed: {exc!r}"
+            )
+
     async def _run_turn(
         self,
         user_input: str,
@@ -3477,41 +3718,22 @@ class DialogueNode(Node):
         # _publish_state до конца.
         result = None
         try:
-            # Issue #1077 — перед LLM-вызовом обновляем профиль спикера и
-            # собираем контекст о нём (имя, факты, число диалогов). Только
-            # для подтверждённых tags (2+ фразы подряд, >= 0.8с) — защита
-            # от нестабильных tags Yandex. Vosk fallback (tag=None) —
-            # профиль не трогаем (edge case #4).
-            speaker_context: Optional[str] = None
-            if speaker_tag and not is_dj_auto:
-                speaker_context = await self._handle_speaker_turn(
-                    speaker_tag,
-                    user_input=user_input,
-                    duration_s=speaker_duration_s,
-                )
-            # Issue #992 — DJ auto-turns must bypass the wake-word
-            # classifier so the LLM is actually called. The DJ prompt
-            # intentionally mentions "роббокс" / "диджей" which would
-            # otherwise short-circuit into a no-op transition.
-            # Issue #1077 — голосовая биометрия: префикс [Говорит <имя>] /
-            # [Говорит: незнакомец] из speaker_id_node (resemblyzer d-vector).
-            # Yandex speaker_tag присваивается per-session и не стабилен между
-            # сессиями, поэтому для ответа «как меня зовут?» полагаемся на
-            # биометрию. Session lock: первый известный спикер сессии
-            # фиксируется; чужие известные/незнакомцы в той же сессии
-            # игнорируются (TASK-048).
-            # Issue #1195 — текст из Telegram-чата ([TG:...]): голосовая
-            # биометрия НЕ применима (это не микрофон) и не должна
-            # «прилипать» от последнего распознанного голосом спикера.
-            # Помечаем источник для LLM префиксом [TG] (без wake-слов —
-            # DSM-классификатор не матчит). Роли описаны в system prompt
-            # (RULE #SRC): оператор/режиссёр vs гости в чате.
-            if from_tg:
-                user_input = f"[TG] {user_input}"
-            elif self._speaker_id_enabled and not was_dj_auto:
-                user_input = await self._apply_speaker_identity(
-                    user_input, speaker_context
-                )
+            # Issue #2627 PR-B — speaker resolution is now a single helper
+            # call. Three concerns: (a) update the speaker profile from
+            # the confirmed tag (issue #1077), (b) tag the message source
+            # for TG / biometric (issue #1195), (c) apply the speaker
+            # identity prefix when the biometric pipeline is on
+            # (issue #1077). All three were inline in ``_run_turn``
+            # before PR-B; refactor keeps semantics 1:1 while shaving
+            # ~6 CC off ``_run_turn``.
+            speaker_context, user_input = await self._resolve_turn_speaker(
+                user_input=user_input,
+                speaker_tag=speaker_tag,
+                speaker_duration_s=speaker_duration_s,
+                from_tg=from_tg,
+                is_dj_auto=is_dj_auto,
+                was_dj_auto=was_dj_auto,
+            )
             # Two-system-prompt pattern (live 10.08): собрать dynamic
             # <system_context> snapshot — текущий спикер (resemblyzer),
             # TTS provider/voice (для gender alignment в ответах),
@@ -3527,97 +3749,20 @@ class DialogueNode(Node):
                 f"🚀 [turn] calling process_input: user_input={user_input[:100]!r} "
                 f"speaker_tag={speaker_tag!r} was_dj_auto={was_dj_auto}"
             )
-            # Issue #1160 — Prometheus metrics: замер LLM-запроса.
-            # ``time.monotonic`` (а не time.time) — чтобы NTP-resync
-            # не сломал latency histogram. Провайдер берём из
-            # текущего self._llm: для одиночного провайдера это
-            # ``provider.name`` (HarnessDeepSeekProvider.name =
-            # "deepseek", MiniMaxProvider.name = "minimax"); для
-            # ``HealthAwareFallbackLLM`` это ``type(provider).__name__``
-            # (= "HealthAwareFallbackLLM"), что норм — counter
-            # ``result=fallback`` покажет сколько реально ушло на
-            # fallback, а histogram latency останется на уровне цепочки.
-            _llm_metric_start = time.monotonic()
-            _llm_provider_name = getattr(
-                self._llm, "name", type(self._llm).__name__
+            # Issue #2627 PR-A — the OpenTelemetry span, the skill
+            # activation, the AgentCore call, the OTel attributes, and
+            # the Prometheus histogram fall-through are now a single
+            # helper call. Refactor keeps the metric semantics 1:1 (the
+            # ``finally`` always records, even when process_input
+            # raises); shaves ~10 CC off ``_run_turn``.
+            result: DialogResult = await self._invoke_agent_with_tracing(
+                user_input=user_input,
+                was_dj_auto=was_dj_auto,
+                is_synthetic=is_synthetic,
+                speaker_tag=speaker_tag,
+                speaker_context=speaker_context,
+                dynamic_system=dynamic_system,
             )
-            _llm_metric_recorded = False
-            # Issue #1234 — OpenTelemetry span ``dialogue.llm_call`` (этап 2).
-            # Обёртка process_input → LLM: атрибуты provider/model/fallback/
-            # duration. ``start_span`` — no-op без OTel; с OTel httpx-вызовы
-            # LLM-провайдера (openai SDK) станут child-spans под этим span'ом.
-            try:
-                with start_span(
-                    "dialogue.llm_call",
-                    {
-                        "provider": _llm_provider_name,
-                        # Модель LLM: не все провайдеры хранят её публично —
-                        # getattr-защита, атрибут опционален (может быть пустым).
-                        "model": getattr(self._llm, "model", "")
-                        or getattr(self._llm, "_model", ""),
-                    },
-                ) as _llm_span:
-                    # Детерминированная активация домена ДО обращения к
-                    # LLM: фрагмент попадает уже в ПЕРВЫЙ запрос хода,
-                    # лишнего round-trip нет. DJ_AUTO-ход форсирует
-                    # composer — аранжировка живёт там, а regex-роутер по
-                    # синтетическому тексту перехода ненадёжен (issue #2441).
-                    self._activate_skill_for(
-                        user_input,
-                        force_skill="composer" if was_dj_auto else None,
-                    )
-                    result: DialogResult = await self._core.process_input(
-                        user_input,
-                        is_dj_auto=was_dj_auto,
-                        is_synthetic=is_synthetic,
-                        speaker_tag=speaker_tag,
-                        speaker_context=speaker_context,
-                        dynamic_system=dynamic_system,
-                        preclassified_event=DialogueEvent.STT_RESULT,
-                    )
-                    # Прирост «домен пришлось грузить вызовом LLM» —
-                    # это и есть метрика промахов пред-роутера.
-                    self._publish_skill_load_counters()
-                    _llm_span.set_attribute(
-                        "fallback",
-                        _llm_provider_name == "HealthAwareFallbackLLM",
-                    )
-                    _llm_span.set_attribute(
-                        "duration_s",
-                        time.monotonic() - _llm_metric_start,
-                    )
-            finally:
-                if not _llm_metric_recorded and is_metrics_enabled():
-                    _llm_metric_recorded = True
-                    _duration = time.monotonic() - _llm_metric_start
-                    # result может быть не определён, если process_input
-                    # упал до return — тогда success=False.
-                    _result_obj = locals().get("result")
-                    _success = _result_obj is not None and not _result_obj.error
-                    # Fallback-флажок: HealthAwareFallbackLLM.complete/stream
-                    # логирует fallback в свой [health] → можно отследить
-                    # через ``_provider_name == "HealthAwareFallbackLLM"``.
-                    # Точнее определяется через ``_last_used_provider``,
-                    # который мы не видим без патча upstream. Для этапа 1
-                    # довольствуемся ``result=fallback`` через отдельный
-                    # record_fallback() в health.py (TODO #1160, шаг 2B).
-                    try:
-                        record_voice_llm_request(
-                            _llm_provider_name,
-                            success=_success,
-                            fallback=(
-                                _llm_provider_name == "HealthAwareFallbackLLM"
-                            ),
-                            duration_s=_duration,
-                        )
-                    except Exception as _metric_exc:  # noqa: BLE001
-                        # Метрики НЕ должны ломать диалог: если запись
-                        # упала (например, label-конфликт в тесте) —
-                        # только логируем и продолжаем.
-                        self.get_logger().warning(
-                            f"⚠️ [metrics] record_voice_llm_request failed: "
-                            f"{_metric_exc!r}"
-                        )
             self.get_logger().info(
                 # Issue #1899: include ``finish_reason`` on EVERY completed
                 # stream (was previously logged only when the response was
