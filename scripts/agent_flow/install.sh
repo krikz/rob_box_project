@@ -233,6 +233,19 @@ EXPECTED=(
     # те, для которых найден MERGED PR (PATTERN «карточки-призраки»).
     # Регистрация cron-job делается в ensure_blocked_watchdog_cron ниже.
     agent-flow-blocked-watchdog.sh
+    # Periodic orphan-needs-e2e sweep (ретро t_78a6ffa3, 15.09.2026):
+    # каждый час сканирует OPEN issues с label `needs-e2e` и закрывает
+    # 3 категории сирот:
+    #   (A) MERGED PR существует → close + archive card
+    #   (B) пропускается, если есть OPEN PR (e2e-process разберётся)
+    #   (C) нет ни OPEN ни MERGED PR за NEEDS_E2E_NO_PR_DAYS (default 7)
+    #       → close reason=not_planned; НЕ трогает issues с `e2e:rejected`
+    #   (D) MERGED PR есть, но last successful develop e2e run старше
+    #       merge_date → relabel `needs-e2e` → `needs-e2e:recheck-develop`
+    # Дополняет merge-gate.sh:archive_merged_card и e2e-process.sh
+    # recovery-loop. Watchdog срабатывает даже если merge-gate пропустил
+    # из-за rate-limit / transient error / mid-merge race.
+    agent-flow-needs-e2e-orphan-watchdog.sh
     # Reactive conflict-sweep (ретро t_8fba04b9, issue #1977): no-agent
     # fallback на случай merge-gate silent path. Каждые 1h сканирует open
     # issues с ОБЕИМИ метками `needs-e2e` И `e2e-done` (data race: после
@@ -957,6 +970,27 @@ ensure_conflict_sweep_cron() {
     ensure_cron_job devops "Agent Flow Conflict Sweep (ADR-0014 fallback)" "agent-flow-conflict-sweep.sh" "every 1h" interval
 }
 ensure_conflict_sweep_cron
+echo "==> Ensure cron job registration: orphan needs-e2e sweep (ретро t_78a6ffa3)"
+# Проблема: agent-flow-needs-e2e-orphan-watchdog.sh раскладывается install.sh,
+# но cron-job НЕ создаётся автоматически. Без него паттерн «needs-e2e без PR»
+# (11 issues на 14.09: 8 never-had-PR, 3 PR merged but orphan-stale) будет
+# повторяться каждые сутки — Шифу придётся делать ручной cleanup по
+# `gh issue close` для каждого нового orphan, что нарушает «не делай руками».
+#
+# Решение: ensure_needs_e2e_orphan_cron() — идемпотентная функция,
+# регистрирующая interval-job (every 1h) в agent-flow профиле, no_agent
+# (скрипт = sweep). Дубль-guard по (script + interval + enabled).
+# Каждый тик сканирует OPEN issues с label `needs-e2e` и закрывает 3
+# категории сирот: merged-PR → close; no-PR >= N дней → close reason=not_planned
+# (НЕ трогает `e2e:rejected`); merged-PR + last-e2e-success < merge-date →
+# relabel `needs-e2e:recheck-develop`.
+#
+# Регистрация переживает install.sh: каждый запуск (в т.ч. auto-fix из
+# drift-detect) проверяет jobs.json и создаёт недостающий job.
+ensure_needs_e2e_orphan_cron() {
+    ensure_cron_job agent-flow "Agent Flow Needs-e2e Orphan Watchdog" "agent-flow-needs-e2e-orphan-watchdog.sh" "every 1h" interval
+}
+ensure_needs_e2e_orphan_cron
 echo "==> Ensure cron job registration: cron-надзор mis-scope карточек (ADR-0036 §4.3, ретро t_aa585aa7)"
 # Проблема: agent-flow-blocked-watchdog-scope.sh раскладывается install.sh
 # (commit от t_aa585aa7), но cron-job НЕ создаётся автоматически. Без него
