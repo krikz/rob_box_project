@@ -309,6 +309,376 @@ def test_real_loader_with_missing_hef_raises_on_init():
 
 
 # ============================================================================
+# RealHEFLoader: путь инициализации и run() с моком hailo_platform
+# ----------------------------------------------------------------------------
+# Issue #2538: тесты в блоке «contract (не init, не run)» выше НЕ доводили
+# до строк 230-258 (init) и 300-315 (run). Это значит, что баг
+# «смешение двух поколений HailoRT API» мог пройти CI незамеченным.
+#
+# Здесь — моки, которые доводят _ensure_initialized() до конца (включая
+# create_bindings) и проверяют, что infer() возвращает numpy в
+# _post_process_detections, а не binding-объект. При «откате» фикса
+# (возврате к input_vstreams/get_input_binding или к передаче списка
+# outputs в run()) эти тесты падают намеренно.
+# ============================================================================
+
+class _FakeInferStream:
+    """Минимальный мок для InferModel.input(name)/output(name).
+
+    Нужен shape (для np.empty в init) и set_format_type (YOLOv8n HEF).
+    """
+
+    def __init__(self, shape):
+        self._shape = list(shape)
+
+    @property
+    def shape(self):
+        return list(self._shape)
+
+    def set_format_type(self, _fmt):
+        # no-op — HailoRT реально дергает C-API, в моке безвредно.
+        return None
+
+
+class _FakeInferModel:
+    """Mock InferModel.create_infer_model().configure() chain."""
+
+    def __init__(self, input_shape=(1, 640, 640, 3), output_shape=(1, 84, 8400)):
+        self._input_shape = input_shape
+        self._output_shape = output_shape
+
+    def set_batch_size(self, _n):
+        return None
+
+    def input(self, _name=""):
+        return _FakeInferStream(self._input_shape)
+
+    def output(self, _name=""):
+        return _FakeInferStream(self._output_shape)
+
+    @property
+    def input_names(self):
+        return ['images']
+
+    @property
+    def output_names(self):
+        return ['outputs']
+
+    def configure(self):
+        return _FakeConfigured(self._input_shape, self._output_shape)
+
+
+class _FakeBindingStream:
+    """Mock для Bindings.input(name).set_buffer(np) и .output(name).get_buffer()."""
+
+    def __init__(self, np_array):
+        self._buf = np_array
+
+    def set_buffer(self, np_array):
+        self._buf = np_array
+
+    def get_buffer(self, *_args, **_kwargs):
+        return self._buf
+
+
+class _FakeBindings:
+    """Mock ConfiguredInferModel.create_bindings().Bindings."""
+
+    def __init__(self, input_buffers, output_buffers):
+        # Сохраняем исходные numpy-массивы; после run() модифицируем.
+        self._input_buffers = dict(input_buffers)
+        self._output_buffers = dict(output_buffers)
+        self._in_streams = {
+            n: _FakeBindingStream(arr) for n, arr in input_buffers.items()
+        }
+        self._out_streams = {
+            n: _FakeBindingStream(arr) for n, arr in output_buffers.items()
+        }
+
+    def input(self, name=""):
+        return self._in_streams[name]
+
+    def output(self, name=""):
+        return self._out_streams[name]
+
+
+class _FakeConfigured:
+    """Mock ConfiguredInferModel.run([bindings], timeout)."""
+
+    def __init__(self, input_shape, output_shape):
+        self._input_shape = input_shape
+        self._output_shape = output_shape
+        self.run_calls: list = []
+        self._output_filler = None  # задаётся в тесте через setattr
+
+    def create_bindings(self, input_buffers=None, output_buffers=None):
+        # Современный API принимает dict'ы numpy и возвращает Bindings.
+        return _FakeBindings(input_buffers or {}, output_buffers or {})
+
+    def run(self, bindings, timeout):
+        """Синхронный run: заполняем output_buffer «детекциями»."""
+        self.run_calls.append({'bindings': bindings, 'timeout': timeout})
+        # Эмулируем поведение HailoRT: после run() output-буферы заполнены.
+        for binding in bindings:
+            for name, stream in binding._out_streams.items():
+                if self._output_filler is not None:
+                    stream.set_buffer(self._output_filler())
+
+
+class _FakeVDevice:
+    """Mock VDevice: create_infer_model(hef_path) → InferModel."""
+
+    def __init__(self, infer_model):
+        self._infer_model = infer_model
+
+    def create_infer_model(self, hef_path):
+        assert hef_path  # Smoke-check: путь передан.
+        return self._infer_model
+
+
+class _FakeHailoPlatform:
+    """Заглушка модуля hailo_platform.
+
+    Подменяется в sys.modules под именем 'hailo_platform' для одного теста.
+    Содержит минимальный публичный API, который зовёт RealHEFLoader.
+    """
+
+    VDevice = None  # filled by _install()
+    HailoSchedulingAlgorithm = None
+    FormatType = None
+
+
+def _install_fake_hailo_platform(
+    monkeypatch,
+    fake_vdevice,
+    with_scheduling=True,
+    with_format=True,
+):
+    """Подменить `hailo_platform` в sys.modules временным модулем."""
+    import types
+
+    fake_mod = types.ModuleType('hailo_platform')
+    fake_mod.VDevice = type('VDevice', (), {
+        'create_params': staticmethod(lambda: types.SimpleNamespace(
+            scheduling_algorithm=None,
+            device_id=None,
+        )),
+        '__init__': lambda self, params=None: None,
+        '__new__': lambda cls, *a, **kw: super().__new__(cls),
+    }) if with_scheduling else None
+
+    # Реальный VDevice-объект сфабрикован снаружи (для контроля поведения).
+    fake_mod.VDevice = lambda *a, **kw: fake_vdevice
+
+    if with_scheduling:
+        fake_mod.HailoSchedulingAlgorithm = types.SimpleNamespace(
+            ROUND_ROBIN='ROUND_ROBIN',
+        )
+    if with_format:
+        fake_mod.FormatType = types.SimpleNamespace(UINT8='UINT8')
+
+    # Также подменяем submodule hailo_platform.pyhailort (lazy import).
+    fake_sub = types.ModuleType('hailo_platform.pyhailort')
+    fake_mod.pyhailort = fake_sub
+
+    monkeypatch.setitem(sys.modules, 'hailo_platform', fake_mod)
+    monkeypatch.setitem(sys.modules, 'hailo_platform.pyhailort', fake_sub)
+    return fake_mod
+
+
+def test_real_loader_init_with_mock_hailo_platform_succeeds(
+    tmp_path, monkeypatch,
+):
+    """Регрессионный тест issue #2538.
+
+    С моком `hailo_platform` _ensure_initialized() должен дойти до конца:
+        VDevice.create_infer_model(hef) → InferModel.configure() →
+        create_bindings(input_buffers, output_buffers).
+    До фикса этот путь падал на отсутствии input_vstreams/get_input_binding.
+    """
+    # HEF-файл должен существовать (FileNotFoundError иначе до mock'а).
+    hef = tmp_path / 'yolov8n.hef'
+    hef.write_bytes(b'\x00')
+
+    # Создаём согласованную цепочку моков.
+    infer_model = _FakeInferModel(
+        input_shape=(1, 640, 640, 3),
+        output_shape=(1, 84, 8400),
+    )
+    vdevice = _FakeVDevice(infer_model)
+    _install_fake_hailo_platform(monkeypatch, vdevice)
+
+    real = loader_mod.RealHEFLoader(hef_path=str(hef))
+
+    # Lazy-init: должен пройти БЕЗ ошибок.
+    real._ensure_initialized()
+
+    # Состояние сохранено: bindings есть, output_name выставлен.
+    assert real._bindings is not None, (
+        'create_bindings() не вызвана — init упал раньше. '
+        'Скорее всего вернулись к input_vstreams/get_input_binding API.'
+    )
+    assert real._output_name == 'outputs'
+    assert real._infer_model is not None
+    assert real._configured is not None
+    assert real._init_failed is None
+
+    # is_available() теперь True (нет fallback на Exception).
+    assert real.is_available() is True
+
+
+def test_real_loader_infer_with_mock_returns_postprocessed_events(
+    tmp_path, monkeypatch,
+):
+    """Полный pipeline с моком: infer() → run() → numpy → events.
+
+    Проверяет, что в post_process_detections уходит numpy.ndarray
+    формы (1, 84, 8400), а НЕ объект binding'а (это и был баг:
+    raw_output = output_list[0] возвращал binding-объект).
+    """
+    hef = tmp_path / 'yolov8n.hef'
+    hef.write_bytes(b'\x00')
+
+    # Симулируем «детекцию» в выходном тензоре.
+    fake_output = np.zeros((1, 84, 8400), dtype=np.float32)
+    # Поставим одну уверенную детекцию person в (320, 320) листа.
+    # boxes: cx=320, cy=320, w=200, h=400
+    fake_output[0, 0, 0] = 320.0
+    fake_output[0, 1, 0] = 320.0
+    fake_output[0, 2, 0] = 200.0
+    fake_output[0, 3, 0] = 400.0
+    # Class score = 0.95 для class 0 (person).
+    fake_output[0, 4, 0] = 0.95
+
+    infer_model = _FakeInferModel(
+        input_shape=(1, 640, 640, 3),
+        output_shape=(1, 84, 8400),
+    )
+    vdevice = _FakeVDevice(infer_model)
+    _install_fake_hailo_platform(monkeypatch, vdevice)
+
+    real = loader_mod.RealHEFLoader(hef_path=str(hef))
+    real._ensure_initialized()
+
+    # Подменяем filler в configured._FakeConfigured, чтобы run() заполнил
+    # output-буфер fake_output (а не np.zeros по умолчанию).
+    real._configured._output_filler = lambda: fake_output.copy()
+
+    # Мок _preprocess: реальный требует cv2, в CI-сборке его нет. Для
+    # теста run()→numpy→postprocess этого достаточно — нам важно, чтобы
+    # входной tensor попал в bindings.input().set_buffer() и output
+    # был прочитан из bindings.output().get_buffer().
+    preprocessed = np.zeros((1, 640, 640, 3), dtype=np.uint8)
+    monkeypatch.setattr(real, '_preprocess', lambda _img: preprocessed)
+
+    # Запускаем infer() с синтетическим кадром.
+    fake_img = np.zeros((480, 640, 3), dtype=np.uint8)
+    events = real.infer(frame_id='oak-d', image=fake_img)
+
+    # run() был вызван ровно один раз и с правильной сигнатурой.
+    assert len(real._configured.run_calls) == 1
+    call = real._configured.run_calls[0]
+    # bindings — list с одним объектом; timeout — int (мс).
+    assert isinstance(call['bindings'], list) and len(call['bindings']) == 1
+    assert isinstance(call['timeout'], int)
+
+    # Output — список событий с person@0.95.
+    assert isinstance(events, list)
+    assert len(events) == 1
+    ev = events[0]
+    assert ev['source_camera'] == 'oak-d'
+    assert ev['class_name'] == 'person'
+    assert ev['class_id'] == 0
+    assert abs(ev['confidence'] - 0.95) < 1e-5
+    # bbox_cx / bbox_w нормализованы в [0, 1].
+    assert 0.0 < ev['bbox_cx'] < 1.0
+    assert 0.0 < ev['bbox_w'] < 1.0
+
+
+def test_real_loader_init_failure_caches_attribute_error(monkeypatch):
+    """is_available() возвращает False при AttributeError в init.
+
+    До фикса `except (ImportError, FileNotFoundError, RuntimeError, OSError)`
+    НЕ ловил AttributeError — это и был сценарий «тишина + зелёный
+    healthcheck» в issue #2538 (Vision Pi: API-drift → AttributeError →
+    пролёт наружу → Node продолжает heartbeat).
+    """
+    # Мок, у которого create_infer_model возвращает объект без input_names
+    # (имитация API-drift). is_available() должен вернуть False, не raise.
+    class _BrokenInferModel:
+        def set_batch_size(self, _n):
+            return None
+
+        def input(self, _name=""):
+            raise AttributeError(
+                "module 'hailo_platform' has no attribute 'input_names' "
+                '(fake drift scenario)',
+            )
+
+        def configure(self):
+            return self
+
+    class _BrokenVDevice:
+        def create_infer_model(self, _hef):
+            return _BrokenInferModel()
+
+    import types
+    fake_mod = types.ModuleType('hailo_platform')
+    fake_mod.VDevice = lambda *a, **kw: _BrokenVDevice()
+    monkeypatch.setitem(sys.modules, 'hailo_platform', fake_mod)
+
+    real = loader_mod.RealHEFLoader(hef_path='/nonexistent.hef')
+    # Должен вернуть False, а НЕ raise AttributeError.
+    assert real.is_available() is False
+    # И ошибка закеширована (fail-fast при повторных вызовах).
+    assert real._init_failed is not None
+
+
+def test_real_loader_init_failure_is_not_silent_log_spam(tmp_path, monkeypatch):
+    """Инициализация с broken HEF → is_available() False, но init_failed
+    зафиксирован. Вызов infer() c фейковым кадром даст ОДНУ ошибку в логе,
+    а не бесконечный цикл «init-fail + reinit» (см. issue #2538 п.6).
+    """
+    hef = tmp_path / 'yolov8n.hef'
+    hef.write_bytes(b'\x00')
+
+    # Мок где configure() падает (имитация битого HEF).
+    class _BrokenInferModel:
+        def set_batch_size(self, _n):
+            return None
+
+        def input(self, _name=""):
+            return _FakeInferStream((1, 640, 640, 3))
+
+        def configure(self):
+            raise RuntimeError('HEF parse failed (fake)')
+
+    class _BrokenVDevice:
+        def create_infer_model(self, _hef):
+            return _BrokenInferModel()
+
+    import types
+    fake_mod = types.ModuleType('hailo_platform')
+    fake_mod.VDevice = lambda *a, **kw: _BrokenVDevice()
+    fake_mod.FormatType = types.SimpleNamespace(UINT8='UINT8')
+    monkeypatch.setitem(sys.modules, 'hailo_platform', fake_mod)
+
+    real = loader_mod.RealHEFLoader(hef_path=str(hef))
+    assert real.is_available() is False
+
+    # Повторный вызов — должна кидаться та же ошибка (кеш), а не reinit.
+    exc1 = real._init_failed
+    assert exc1 is not None, (
+        'is_available() не закешировал _init_failed — будет reinit-цикл '
+        'на каждом тике (см. issue #2538 п.6).'
+    )
+    # Второй вызов должен re-raise ту же ошибку из кеша.
+    with pytest.raises(RuntimeError, match='HEF parse failed'):
+        real._ensure_initialized()
+    assert real._init_failed is exc1
+
+
+# ============================================================================
 # make_loader factory
 # ============================================================================
 

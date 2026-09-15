@@ -194,6 +194,14 @@ class VisionHailoNode(Node):
         timer_period = max(0.1, self.stub_period_sec / 4.0)
         self._timer = self.create_timer(timer_period, self._tick)
 
+        # ============ Degraded state (issue #2538 п.6) ============
+        # Если HailoRT init падает (AttributeError / RuntimeError), нода
+        # НЕ должна спамить ERROR каждые stub_period_sec/4 секунды.
+        # Логируем один раз, дальше — degraded + rate-limited.
+        self._degraded_logged: bool = False
+        self._consecutive_failures: int = 0
+        self._max_logged_failures: int = 3  # потом молчим до восстановления
+
         mode = 'real' if self.hailo_enabled and self.hef_path else 'stub'
         self.get_logger().info(
             f'Vision Hailo node started (mode={mode}, '
@@ -249,6 +257,11 @@ class VisionHailoNode(Node):
         (через `stub_period_sec`).
         В real-режиме (Phase 1.5) — `infer` вызывается на последнем
         декодированном кадре (если есть).
+
+        Degraded-state policy (issue #2538 п.6): если `infer` падает
+        каждый тик (init-failure или per-frame-failure), логируем
+        первые `_max_logged_failures` ошибок и дальше — пропускаем
+        молча. Сбрасываем счётчик после успешного `infer`.
         """
         if self._publisher is None:
             return
@@ -266,12 +279,36 @@ class VisionHailoNode(Node):
                 image=image_for_infer,
             )
         except Exception as exc:  # noqa: BLE001
-            # Real-mode failure (capability-honest, ADR-0018):
-            # НЕ silent fallback на stub. Логируем ошибку и пропускаем кадр.
-            self.get_logger().error(
-                f'HEF loader failed: {exc!r}. Кадр пропущен.'
-            )
+            # Real-mode failure (capability-honest, ADR-0018).
+            # НЕ silent fallback на stub: нода остаётся в degraded,
+            # но НЕ спамит ERROR каждую ~0.5 c (см. issue #2538 п.6).
+            self._consecutive_failures += 1
+            if not self._degraded_logged:
+                # Первый фейл — самый информативный (traceback виден).
+                self.get_logger().error(
+                    f'HEF loader failed: {exc!r}. '
+                    f'Кадр пропущен. Нода переходит в degraded state '
+                    f'(лог повторится до {self._max_logged_failures} раз).'
+                )
+                self._degraded_logged = True
+            elif self._consecutive_failures <= self._max_logged_failures:
+                # Следующие 2 фейла — короткий лог (без traceback).
+                self.get_logger().warning(
+                    f'HEF loader всё ещё failing '
+                    f'({self._consecutive_failures}/{self._max_logged_failures}). '
+                    f'Кадр пропущен.'
+                )
+            # Дальше — тишина до первого успеха (см. ниже).
             return
+
+        # Успех — сброс счётчика и degraded-флага.
+        if self._consecutive_failures > 0 or self._degraded_logged:
+            self.get_logger().info(
+                f'HEF loader восстановился после '
+                f'{self._consecutive_failures} подряд фейлов.'
+            )
+        self._consecutive_failures = 0
+        self._degraded_logged = False
 
         filtered = filter_by_confidence(raw_events, self.confidence_threshold)
         for event_dict in filtered:
