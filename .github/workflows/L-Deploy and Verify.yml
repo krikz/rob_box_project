@@ -317,6 +317,22 @@ jobs:
             sleep 5
           done
 
+      - name: "[Vision Pi] Ensure HEF models (#2398, #2599)"
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🧠 Ensuring Hailo HEF models on Vision Pi..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          # /opt/rob_box/models монтируется в vision-hailo/vision-face как :ro,
+          # поэтому скачать модель может только хост — не контейнер. Скрипты
+          # идемпотентны (файл на месте → мгновенный OK) и сверяют SHA256
+          # (retinaface). Неудача скачивания НЕ валит деплой: нода логирует
+          # причину и остаётся в degraded (ADR-0018), restart-loop'а не будет —
+          # HEF открывается лениво, на первом кадре.
+          HEF_SCRIPTS='~/rob_box_project/docker/vision/scripts/vision-hailo'
+          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} "echo 'open' | sudo -S bash $HEF_SCRIPTS/download_yolov8n_hef.sh" || echo "⚠️  Warning: yolov8n HEF недоступен — vision-hailo уйдёт в degraded"
+          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} "echo 'open' | sudo -S bash $HEF_SCRIPTS/download_retinaface_hef.sh" || echo "⚠️  Warning: retinaface HEF недоступен — vision-face уйдёт в degraded"
+
       - name: "[Vision Pi] .image-versions — из текущей ветки (реверт #1139 v2, 15.08)"
         if: '!inputs.dry_run'
         run: |
