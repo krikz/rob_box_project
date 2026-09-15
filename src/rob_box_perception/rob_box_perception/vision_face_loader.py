@@ -50,6 +50,7 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
+from rob_box_perception.hailo_device import open_device
 from rob_box_perception.vision_hailo_loader import (
     HEFLoader,
     LETTERBOX_PAD_VALUE,
@@ -403,31 +404,18 @@ class RetinaFaceLoader(HEFLoader):
             raise
 
     def _init_locked(self) -> None:
-        try:
-            from hailo_platform import (  # type: ignore[import-not-found]
-                VDevice,
-            )
-        except ImportError as exc:
-            raise ImportError(
-                'hailo_platform не установлен. Установите HailoRT на Vision Pi '
-                'перед включением face-инференса (см. docker/vision/vision-hailo/Dockerfile).'
-            ) from exc
         if not os.path.isfile(self._hef_path):
             raise FileNotFoundError(
                 f'HEF не найден: {self._hef_path}. Скачайте из hailo_model_zoo '
                 f'(см. docker/vision/scripts/vision-hailo/download_retinaface_hef.sh).'
             )
 
-        try:
-            from hailo_platform import (  # type: ignore[import-not-found]
-                HailoSchedulingAlgorithm,
-            )
-            params = VDevice.create_params()
-            params.scheduling_algorithm = HailoSchedulingAlgorithm.ROUND_ROBIN
-            params.device_id = str(self._vdevice_id)
-            self._vdevice = VDevice(params=params)
-        except (ImportError, TypeError, AttributeError):
-            self._vdevice = VDevice()
+        # Устройство — через шов «Ускоритель» (hailo_device). Прямой
+        # VDevice тут означал «кто первый встал, тот и владеет Hailo»:
+        # 15.09.2026 на роботе person-нода и лицевая по очереди забирали
+        # устройство, а проигравшая молча жила в degraded (issue #2599).
+        self._device = open_device(self._vdevice_id)
+        self._vdevice = self._device.vdevice
 
         self._infer_model = self._vdevice.create_infer_model(self._hef_path)
         self._infer_model.set_batch_size(1)
@@ -441,6 +429,26 @@ class RetinaFaceLoader(HEFLoader):
                 self._infer_model.input().set_format_type(FormatType.UINT8)
             except AttributeError:
                 pass
+        except ImportError:
+            pass
+
+        # Выходы retinaface квантованы (uint8). Буферы ниже мы
+        # аллоцируем float32, поэтому формат обязаны запросить явно —
+        # иначе HailoRT считает размер в 4 раза меньше и отвечает
+        # HAILO_INVALID_OPERATION(6):
+        #   "Output buffer size 471040 is different than expected 117760
+        #    for output 'retinaface_mobilenet_v1/conv41'"
+        # (живой робот, 15.09.2026 — допущение «по образцу YOLOv8n»
+        # не подтвердилось).
+        try:
+            from hailo_platform import FormatType  # type: ignore[import-not-found]
+            for out_name in self._infer_model.output_names:
+                try:
+                    self._infer_model.output(out_name).set_format_type(
+                        FormatType.FLOAT32
+                    )
+                except AttributeError:
+                    pass
         except ImportError:
             pass
 
@@ -462,6 +470,13 @@ class RetinaFaceLoader(HEFLoader):
             input_buffers=input_buffers,
             output_buffers=output_buffers,
         )
+        # Активация нужна ТОЛЬКО когда устройство наше единолично
+        # (иначе первый run() → HAILO_STREAM_NOT_ACTIVATED(72), #2398).
+        # Под сервисом активацией владеет планировщик, и ручной вызов
+        # даёт HAILO_INVALID_OPERATION(6) — решение живёт в шве.
+        if self._device.must_activate:
+            self._configured.activate()
+
         # Порядок выходов принимаем равным yaml output_shape. Если HailoRT
         # отдаёт их в другом порядке — это выявляется на живом железе
         # (PR-A acceptance: «измерить и зафиксировать фактическое»).
