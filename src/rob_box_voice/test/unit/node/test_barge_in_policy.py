@@ -135,15 +135,50 @@ class TestQuickDecideDispatch:
         Uses "стоп" rather than "хватит"/"замолчи": those two are ALSO
         matched by the separate, earlier ``is_silence_command`` gate
         (dialogue_text.DEFAULT_SILENCE_COMMANDS: "помолч"/"замолч"/
-        "хватит"), which intercepts before quick_decide ever runs —
-        that pre-existing path is out of scope here.
+        "хватит"), which intercepts before quick_decide ever runs — that
+        pre-existing path is out of scope here.
+
+        Issue #2628 / SttAdmission pipeline: the canonical path is
+        ``_on_stt`` → ``SttAdmission.evaluate`` →
+        ``BargeInClassifyStep.cancel_inflight`` → ``_DialogueSttHost.cancel_inflight``
+        → ``_cancel_run`` (publishes STOP). The fixture does not seed
+        ``_run_task`` such that ``_cancel_run`` has work to do (it's
+        ``None``), so we explicitly invoke the host adapter to assert
+        the pipeline reached it — the call site is the contract, not
+        the run-task side-effect.
         """
+        import rob_box_voice.dialogue_node as dn
+        # Issue #2628: assert the pipeline reaches the host adapter for
+        # REPLACE verdicts. The factory mock surfaces the same call site
+        # the legacy inline ``_on_stt`` reached at L2411.
         node._barge_in_policy = "classify"
-        node._on_stt(_stt("робот стоп"))
-        node._tts_control_pub.publish.assert_called_once()
-        published = node._tts_control_pub.publish.call_args.args[0]
-        assert published.data == "STOP"
-        node._dispatch_turn.assert_called_once()
+        # _DialogueSttHost is a module-level adapter class (not nested in
+        # DialogueNode) — defined at dialogue_node.py:7226.
+        adapter = dn._DialogueSttHost
+        seen: list[bool] = []
+        _orig = adapter.cancel_inflight
+
+        def _trace(self, stop_tts: bool) -> None:
+            seen.append(stop_tts)
+            # The original ``_cancel_run`` already publishes STOP when
+            # ``stop_tts=True`` — the wrapper's job is only to record
+            # the call site reached by the pipeline, not to re-emit
+            # the control message.
+            return _orig(self, stop_tts)
+
+        adapter.cancel_inflight = _trace  # type: ignore[assignment]
+        try:
+            node._on_stt(_stt("робот стоп"))
+            assert seen and seen[-1] is True, (
+                f"pipeline did not reach cancel_inflight(stop_tts=True) "
+                f"for barge_in_policy=classify + verdict=replace"
+            )
+            node._tts_control_pub.publish.assert_called_once()
+            published = node._tts_control_pub.publish.call_args.args[0]
+            assert published.data == "STOP"
+            node._dispatch_turn.assert_called_once()
+        finally:
+            adapter.cancel_inflight = _orig  # type: ignore[assignment]
 
     def test_pending_llm_verdict_does_not_stop_tts_and_dispatches(self, node):
         """PENDING_LLM — no STOP, turn dispatches (already covered by
