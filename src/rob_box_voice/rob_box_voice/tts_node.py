@@ -76,7 +76,7 @@ from rclpy.qos import (
 )
 from std_msgs.msg import String
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from .audio_playback_manager import AudioPlaybackManager
 from .utils.stderr_silence import ignore_stderr
@@ -1657,6 +1657,33 @@ class TTSNode(Node):
         # врезка ≠ прерывание — активный чанк никогда не трогается).
         self._pending_seqs: Dict[str, int] = {}
         self._play_active_seq: Optional[int] = None
+        # Issue #2553 — batch_id чанка, который сейчас играет (или ``None``,
+        # если ``_play_active_seq`` тоже ``None``). Хранится отдельно от
+        # ``_play_active_seq`` чтобы babble-retry / DJ-overlap guard в
+        # ``dialogue_callback`` мог проверить «активный chunk — из ДРУГОГО
+        # batch_id?» без чтения из ``_pending_seqs`` (где seq уже отвязан
+        # от batch). Сбрасывается вместе с ``_play_active_seq`` в
+        # ``_release_play_seq``.
+        self._active_batch_id: Optional[str] = None
+
+        # Issue #2553 — очередь отложенных speak'ов: если новый chunk
+        # приходит во время воспроизведения batch из ДРУГОГО turn'а
+        # (babble-retry, DJ auto-transition), не даём ему стартовать сразу —
+        # иначе он прерывает активное воспроизведение через barge-in STOP /
+        # очередь FIFO-gate переполняется. Буферизуем и достаём из очереди
+        # после ``batch_complete`` активного batch.
+        #
+        # Сценарий-инвариант:
+        # * FIFO: chunk'и внутри ОДНОГО batch идут по порядку (это контракт
+        #   batch_complete — issue #980).
+        # * FIFO: разные batch'и — НЕ гарантируется, но в DJ/babble-retry
+        #   случае это и не нужно — пользователь и так слышит фразу
+        #   «Сет запущен» поверх «Новый бит в стиле фанк», и обе фразы
+        #   должны быть произнесены без обрыва середины первой.
+        # * MAX: 8 chunk'ов в очереди — больше означает, что upstream
+        #   (dialogue_node / DJModeController) спамит, и пора залогировать
+        #   warning + drop лишние (без бесконечной памяти).
+        self._pending_speech_queue: List[Dict[str, Any]] = []
 
         # (The synthesis executor block itself was moved earlier in
         # ``__init__`` so that ``_start_silero_warm_load`` does not
@@ -2620,6 +2647,97 @@ class TTSNode(Node):
                     f"claim_pregen failed (treating as no-pregen): {exc!r}"
                 )
                 prebaked_audio = None
+
+            # Issue #2553 — babble-retry / DJ-overlap guard. Если сейчас
+            # играет chunk из ДРУГОГО batch_id (babble-retry поверх DJ-сета,
+            # DJ auto-transition #N+1 поверх turn #N), откладываем новый
+            # chunk в ``_pending_speech_queue`` и достаём его через
+            # ``_drain_pending_speech_queue`` после batch_complete активного
+            # batch'а. Без этого FIFO-gate принимает новый submit сразу,
+            # он уходит в play_seq=K, но turn #N+1 уже триггерит STOP
+            # (DJ-tick / barge-in) и режет первую фразу.
+            #
+            # Условие «отложить»: активный batch_id задан И не равен
+            # batch_id нового chunk'а И новый chunk НЕ operator-приоритета
+            # (issue #1996 invariant 8a: operator-плашки ВСЕГДА врезаются
+            # за активным chunk, см. ``_assign_priority_play_seq``).
+            # Если оба None (legacy single-chunk без batch_id) — пускаем
+            # по-старому, FIFO-gate их упорядочит сам.
+            _guard_check = (
+                self._play_active_seq is not None,
+                self._active_batch_id is not None,
+                batch_id is not None,
+                batch_id != self._active_batch_id,
+                priority not in _TTS_PRIORITY_PREEMPTS,
+            )
+            import os as _os
+            if _os.environ.get("TTS_DEBUG_2553"):
+                self.get_logger().warn(
+                    f"[issue 2553 guard] {_guard_check!r} "
+                    f"active_seq={self._play_active_seq} "
+                    f"active_batch={self._active_batch_id!r} "
+                    f"new_batch={batch_id!r} "
+                    f"priority={priority!r}"
+                )
+            if all(_guard_check):
+                if self._enqueue_pending_speech(
+                    speech_id=speech_id,
+                    batch_id=batch_id,
+                    batch_index=batch_index,
+                    batch_total=batch_total,
+                    ssml=ssml,
+                    text=text,
+                    dialogue_id=dialogue_id,
+                    ssml_attributes=ssml_attributes,
+                    voice=voice,
+                    language=language,
+                    priority=priority,
+                ):
+                    # Подтверждаем upstream, что chunk принят в обработку,
+                    # но НЕ публикуем «batch_complete» side-channel —
+                    # реальное завершение придёт ПОСЛЕ drain + реального
+                    # playback (см. ``_drain_pending_speech_queue`` →
+                    # submit → synth → ``_publish_tts_finished`` с тем же
+                    # ``batch_id``). Иначе dialogue_node триггерит
+                    # ``music_cleanup`` слишком рано и следующий turn
+                    # может услышать обрыв (issue #2553, см. живой баг
+                    # DJ-сет 2026-09-15).
+                    #
+                    # ``queued=True`` помечает finished как «в очереди», а
+                    # не «произнесено» — dialogue_node использует этот
+                    # флаг, чтобы НЕ делать music_cleanup раньше времени
+                    # (если умеет) и/или игнорировать finished до
+                    # реального batch_complete.
+                    self._publish_tts_finished(
+                        speech_id,
+                        success=True,
+                        batch_id=batch_id,
+                        batch_index=batch_index,
+                        batch_total=batch_total,
+                        dialogue_id=dialogue_id,
+                        queued=True,
+                    )
+                else:
+                    # overflow — отдаём finished с ошибкой, чтобы upstream
+                    # узнал, что chunk не будет произнесён (и не висел).
+                    # ``queued=True`` гарантирует, что НЕ триггерим
+                    # ``batch_complete`` side-channel (он бы дренил
+                    # очередь и потерял старые chunk'и). Без
+                    # ``batch_complete`` upstream получает failure и
+                    # корректно отрабатывает (speak_text не висит —
+                    # mcp_server видит success=False, error=overflow).
+                    self._publish_tts_finished(
+                        speech_id,
+                        success=False,
+                        error="pending_queue_overflow",
+                        batch_id=batch_id,
+                        batch_index=batch_index,
+                        batch_total=batch_total,
+                        dialogue_id=dialogue_id,
+                        queued=True,
+                    )
+                return
+
             self._submit_synthesis(
                 self._run_synthesis_worker,
                 speech_id,
@@ -3620,6 +3738,10 @@ class TTSNode(Node):
                     self._pending_seqs.pop(speech_id, None)
                 if self._play_active_seq == play_seq:
                     self._play_active_seq = None
+                    # Issue #2553 — параллельно сбрасываем
+                    # ``_active_batch_id`` чтобы babble-retry guard видел
+                    # «TTS idle» и не блокировал следующий chunk.
+                    self._active_batch_id = None
                 self._play_order_cond.notify_all()
 
     # ── Issue #2003 / ADR-0056 — speculative pre-generation API ─────────
@@ -5159,6 +5281,11 @@ class TTSNode(Node):
         if play_seq is not None:
             with self._play_order_cond:
                 self._play_active_seq = play_seq
+                # Issue #2553 — вместе с seq помним batch_id активного
+                # чанка, чтобы dialogue_callback мог отличить «новый chunk
+                # из ТОГО ЖЕ batch (продолжение)» от «новый chunk из
+                # ДРУГОГО batch (babble-retry / DJ-overlap)».
+                self._active_batch_id = batch_id
         try:
             with ignore_stderr(enable=True):
                 self.current_stream = True  # Маркер что воспроизведение идёт
@@ -6608,6 +6735,7 @@ class TTSNode(Node):
         batch_total: Optional[int] = None,
         batch_started_at: Optional[float] = None,
         dialogue_id: Optional[str] = None,
+        queued: bool = False,
     ) -> None:
         """Publish ``/voice/tts/finished`` (and possibly ``/voice/tts/batch_complete``).
 
@@ -6615,10 +6743,23 @@ class TTSNode(Node):
         that batch metadata stays consistent across the success/stopped/error
         branches and the batch_complete fire rule (``batch_index == batch_total``)
         doesn't drift between code paths.
+
+        Issue #2553 — ``queued=True`` отмечает finished как «chunk принят в
+        ``_pending_speech_queue``, но НЕ проигран и НЕ завершён». В этом
+        режиме НЕ публикуем ``/voice/tts/batch_complete`` side-channel и
+        НЕ дреним очередь — реальное завершение придёт ПОСЛЕ drain +
+        submit + playback, когда ``_publish_tts_finished`` вызовется от
+        имени дренированного chunk'а без ``queued=True``. Это разрывает
+        порочный круг «babble-retry publish finished → batch_complete →
+        drain → submit babble-retry → ещё один finished → ...».
         """
         if not speech_id:
             return
         payload: Dict[str, Any] = {"speech_id": speech_id, "success": success}
+        if queued:
+            # Маркер, который dialogue_node / mcp_server может
+            # использовать, чтобы отличить «в очереди» от «произнесено».
+            payload["queued"] = True
         if error is not None:
             payload["error"] = error
         if duration_sec is not None:
@@ -6632,6 +6773,14 @@ class TTSNode(Node):
         finished_msg = String()
         finished_msg.data = json.dumps(payload, ensure_ascii=False)
         self.finished_pub.publish(finished_msg)
+
+        # Issue #2553 — queued finished НЕ триггерит batch_complete:
+        # иначе dialogue_node триггерит music_cleanup раньше времени и
+        # следующий turn услышит обрыв активного chunk'а. Реальное
+        # закрытие batch'а придёт ПОСЛЕ drain + реального playback
+        # дренированного chunk'а (где ``queued=False``).
+        if queued:
+            return
 
         # Batch-complete side-channel — fires once per turn after the last
         # chunk so dialogue_node can drive music_cleanup deterministically.
@@ -6674,6 +6823,133 @@ class TTSNode(Node):
             # the depth; downstream subscribers are designed to be idempotent
             # on ``batch_complete``.)
             self.finished_pub.publish(finished_msg)
+
+            # Issue #2553 — после закрытия batch'а достаём из
+            # ``_pending_speech_queue`` отложенные chunk'и (babble-retry,
+            # DJ auto-transition, etc.) и переотправляем их в обычный
+            # FIFO-gate. К моменту ``batch_complete`` активного batch
+            # ``_play_active_seq`` уже сброшен в ``None`` (см.
+            # ``_synthesize_and_play`` / ``_release_play_seq``), поэтому
+            # следующий submit сразу станет head'ом FIFO.
+            self._drain_pending_speech_queue(reason=f"batch_complete:{batch_id[:8]}")
+
+    # ── Issue #2553 — pending speech queue (babble-retry / DJ overlap) ────
+
+    #: Жёсткий предел отложенных chunk'ов в очереди. Больше — upstream
+    #: спамит (dialogue_node / DJModeController), и лучше залогировать
+    #: warning + drop, чем уйти в бесконечный рост памяти.
+    _PENDING_SPEECH_QUEUE_MAX = 8
+
+    def _enqueue_pending_speech(
+        self,
+        *,
+        speech_id: Optional[str],
+        batch_id: Optional[str],
+        batch_index: Optional[int],
+        batch_total: Optional[int],
+        ssml: str,
+        text: str,
+        dialogue_id: Optional[str],
+        ssml_attributes: Optional[Dict[str, Any]],
+        voice: Optional[str],
+        language: Optional[str],
+        priority: str,
+    ) -> bool:
+        """Issue #2553 — отложить chunk в ``_pending_speech_queue``.
+
+        Returns ``True`` если chunk добавлен, ``False`` если очередь
+        переполнена и chunk дропнут (с предупреждением в логе).
+
+        Вызывается из :meth:`dialogue_callback` когда новый batch
+        приходит во время воспроизведения ДРУГОГО batch'а (babble-retry
+        поверх DJ-сета, DJ auto-transition #N+1 поверх turn #N, и т.п.).
+        ``speech_id`` сохраняется для корреляции в логах.
+        """
+        if len(self._pending_speech_queue) >= self._PENDING_SPEECH_QUEUE_MAX:
+            self.get_logger().warning(
+                "⚠️ [issue 2553] _pending_speech_queue переполнена "
+                f"({self._PENDING_SPEECH_QUEUE_MAX}); дропаю chunk "
+                f"speech_id={(speech_id or '')[:8]}, batch_id="
+                f"{(batch_id or '')[:8]} — upstream спамит?"
+            )
+            return False
+        self._pending_speech_queue.append(
+            {
+                "speech_id": speech_id,
+                "batch_id": batch_id,
+                "batch_index": batch_index,
+                "batch_total": batch_total,
+                "ssml": ssml,
+                "text": text,
+                "dialogue_id": dialogue_id,
+                "ssml_attributes": ssml_attributes,
+                "voice": voice,
+                "language": language,
+                "priority": priority,
+            }
+        )
+        self.get_logger().info(
+            "⏸ [issue 2553] speak отложен в _pending_speech_queue "
+            f"(speech_id={(speech_id or '')[:8]}, "
+            f"batch_id={(batch_id or '')[:8]}, "
+            f"queue_size={len(self._pending_speech_queue)})"
+        )
+        return True
+
+    def _drain_pending_speech_queue(self, *, reason: str = "batch_complete") -> int:
+        """Issue #2553 — достать chunk'и из очереди и переотправить их.
+
+        Каждый отложенный chunk проходит заново через
+        :meth:`_submit_synthesis` со СВОИМИ оригинальными параметрами.
+        Внутри batch'а FIFO-порядок сохраняется — ``_pending_seqs``
+        получит последовательные ``play_seq``.
+
+        Args:
+            reason: человекочитаемое описание триггера (для логов).
+
+        Returns:
+            Число chunk'ов, которые удалось переотправить (исключения
+            НЕ считаются успехом). ``0`` если очередь была пуста или
+            все submit'ы упали.
+        """
+        if not self._pending_speech_queue:
+            return 0
+        drained = len(self._pending_speech_queue)
+        pending = self._pending_speech_queue
+        # Переприсваиваем ДО submit'а, чтобы реентрантный
+        # ``batch_complete`` (для дренируемого chunk'а внутри того же
+        # drain'а) не зациклился на старом списке.
+        self._pending_speech_queue = []
+        self.get_logger().info(
+            f"▶️ [issue 2553] drain _pending_speech_queue: "
+            f"{drained} chunk(s) (reason={reason})"
+        )
+        success_count = 0
+        for entry in pending:
+            try:
+                self._submit_synthesis(
+                    self._run_synthesis_worker,
+                    entry["speech_id"],
+                    entry["ssml"],
+                    entry["text"],
+                    entry["dialogue_id"],
+                    entry["ssml_attributes"],
+                    entry["speech_id"],
+                    entry["batch_id"],
+                    entry["batch_index"],
+                    entry["batch_total"],
+                    voice=entry["voice"],
+                    language=entry["language"],
+                    priority=entry["priority"],
+                )
+                success_count += 1
+            except Exception as exc:  # noqa: BLE001 — не валить drain
+                self.get_logger().warning(
+                    f"⚠️ [issue 2553] re-submit pending chunk failed: "
+                    f"speech_id={(entry.get('speech_id') or '')[:8]}, "
+                    f"err={exc!r}"
+                )
+        return success_count
 
     def _log_voice_param_applied(
         self, display_name: str, provider: str, voice: str
