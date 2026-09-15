@@ -467,15 +467,36 @@ jobs:
           # К моменту старта остальных сервисов voice-resources-init
           # гарантированно отсутствует в ps -a →
           # `depends_on: service_completed_successfully` satisfied без race.
+          #
+          # Issue #2499 / deploy run #34920120730 (round-403): race в docker daemon
+          # name-slot release после `compose down`. Логика фикса:
+          # 1) Stop Containers делает `docker compose down --remove-orphans` — daemon
+          #    маркирует контейнеры как Removed, но name-slot для container_name
+          #    (zenoh-router-vision, supercollider, …) иногда остаётся зарезервированным
+          #    на короткое окно (3-4 сек в нашем случае: Removed в 02:10:53,
+          #    новый `compose up -d` в 02:13:29 → Conflict «already in use by ca436eff…»).
+          # 2) `docker container prune -f` НЕ освобождает name-slot удалённых
+          #    контейнеров (reclaimed 0B, что и видим в логе).
+          # 3) Фикс: явный `docker rm -f` для ВСЕХ контейнеров с compose-label
+          #    ПЕРЕД `compose up`. Через `label=com.docker.compose.project` —
+          #    универсально, не зависит от списка container_name в yaml
+          #    (а их 16 на vision, 11 на main — хардкод хрупкий и будет рассинхрон).
+          #    Fallback `docker network rm vision_default` остаётся на случай,
+          #    если daemon держит сеть после неудачного recreate.
+          # 4) `docker ps -a --filter` идёт ПОСЛЕ prune, чтобы не удалить
+          #    контейнеры, которые уже удалены (prune их не трогает, но
+          #    `docker rm -f` на missing — это OK благодаря || true).
           sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
             "cd ~/rob_box_project/docker/vision && \
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
-             if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
-             echo '🔧 retro t_d01fe536+t_9d35468d: cleanup stale containers/networks'; \
+             if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
+             echo '🔧 retro t_d01fe536+t_9d35468d+round-403: cleanup stale containers/networks'; \
              docker rm -f voice-resources-init 2>/dev/null || true; \
              docker network rm vision_default 2>/dev/null || true; \
              docker container prune -f 2>/dev/null || true; \
+             echo '🔧 round-403 fix #2499: явный rm для всех compose-контейнеров (name-slot release)'; \
+             docker ps -a --filter 'label=com.docker.compose.project=vision' --format '{{.ID}}' | xargs -r docker rm -f 2>/dev/null || true; \
              echo '🚀 compose up (--scale voice-resources-init=0 — init уже выполнен в предыдущем шаге)'; \
              docker compose up -d --force-recreate --pull never --remove-orphans --scale voice-resources-init=0"
 
@@ -574,6 +595,15 @@ jobs:
           # Ретро 18.08 t_9d35468d: на Vision Pi был race на name-slot после `docker rm -f`
           # (docker daemon удерживает имя ~5-6s). Защищаем Main Pi тем же набором:
           # `docker container prune -f` + `--force-recreate` (Stop Containers уже сделал down).
+          #
+          # Issue #2499 / deploy run #34920120730 (round-403): на Vision Pi
+          # увидели, что prune+down НЕ освобождают name-slot для удалённого
+          # контейнера (reclaimed 0B, но Conflict «already in use» пришёл на
+          # следующий `compose up`). Применяем явный `docker rm -f` для всех
+          # compose-контейнеров здесь — defense-in-depth, чтобы Main Pi не
+          # словил тот же race (container_name: zenoh-router, twist-mux и т.д.).
+          # `label=com.docker.compose.project=main` фильтрует только контейнеры
+          # этого compose-проекта, не трогает чужие.
           sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
             "cd ~/rob_box_project/docker/main && \
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
@@ -581,6 +611,8 @@ jobs:
              if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
              echo '🔧 retro t_9d35468d: prune stale containers + force-recreate'; \
              docker container prune -f 2>/dev/null || true; \
+             echo '🔧 round-403 fix #2499: явный rm для всех compose-контейнеров (name-slot release)'; \
+             docker ps -a --filter 'label=com.docker.compose.project=main' --format '{{.ID}}' | xargs -r docker rm -f 2>/dev/null || true; \
              docker compose up -d --force-recreate --pull never"
 
       # ==================== INITIALIZATION WAIT ====================
