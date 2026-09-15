@@ -1380,6 +1380,193 @@ def is_phantom_music_action(
 
 
 # ---------------------------------------------------------------------------
+# Issue #2549 — универсальный anti-hallucination guard.
+#
+# Live DJ-сет 2026-09-15: LLM выдавала ``spoken`` вида
+# ``«Сделала два pass подряд: сначала один темп-каркас с heartbeat'ом и
+# пульсом Бочкинса, потом второй…»`` / ``«Вплела тему Грига как второй
+# голос над пульсом Бочкинса…»`` / ``«Проверю состояние и перезапущу.»``
+# при ``tools_called=()``. Существующий Bug E guard для таких фраз НЕ
+# срабатывает: его таблица :data:`ACTION_CLAIM_RULES` узкая, требует
+# совпадения И в ``user_input``, И в ``spoken``. Здесь же юзер просил
+# абстрактно «докрутить музыку» без явного «сделай/запусти» — а LLM
+# всё равно отчитывается о действии.
+#
+# Защита — широкий fallback: если в ``spoken`` есть глагол действия в
+# прошедшем или будущем времени (с учётом русских родовых окончаний) И
+# ни один тул из :data:`CLAIM_JUSTIFYING_TOOLS` не был вызван — это
+# action hallucination. Требуем ОДИН одноразовый ретрай.
+#
+# Решение НЕ пытается угадать КАКОЙ тул нужен (как Bug C/D guard'ы).
+# LLM сама выберет по контексту в CRITICAL-промпте — мы только требуем,
+# чтобы ретрай состоялся и заявление ушло в TTS не напрямую, а после
+# реального вызова.
+# ---------------------------------------------------------------------------
+
+# Глаголы действия в прошедшем времени с опциональными родовыми
+# окончаниями (а/и/ась/ись). Покрывает основные категории:
+# сделал/а/и, запустил/а/и, включил/а/и, выключил/а/и, поменял/а/и,
+# изменил/а/и, перезапустил/а/и, заменил/а/и, обновил/а/и, проверил/а/и,
+# сохранил/а/и, удалил/а/и, настроил/а/и, поставил/а/и, добавил/а/и,
+# отрегулировал/а/и, подкрутил/а/и, подобрал/а/и.
+_ACTION_VERBS_PAST = re.compile(
+    r"\b("
+    r"сделал[аи]?|запустил[аи]?|включил[аи]?|включил[аи]?сь|"
+    r"выключил[аи]?|поменял[аи]?|изменил[аи]?|включ[аи]?л[аи]?|"
+    r"вплел[аи]?|вплетал[аи]?|перезапустил[аи]?|заменил[аи]?|"
+    r"обновил[аи]?|проверил[аи]?|сохранил[аи]?|удалил[аи]?|"
+    r"настроил[аи]?|поставил[аи]?|добавил[аи]?|отрегулировал[аи]?|"
+    r"подкрутил[аи]?|подобрал[аи]?|поправил[аи]?"
+    r")\b",
+    re.IGNORECASE | re.UNICODE,
+)
+
+# Глаголы действия в будущем времени — те же корни, 1-е лицо ед.ч.
+_ACTION_VERBS_FUTURE = re.compile(
+    r"\b("
+    r"сделаю|запущу|включу|выключу|поменяю|изменю|включу|"
+    r"вплету|перезапущу|заменю|обновлю|проверю|сохраню|удалил|"
+    r"настрою|поставлю|добавлю|отрегулирую|попробую|выберу|подберу"
+    r")\b",
+    re.IGNORECASE | re.UNICODE,
+)
+
+# Whitelist тулов, которые ОПРАВДЫВАЮТ action-claim в spoken. Если хотя
+# бы один из них был вызван — guard НЕ срабатывает: LLM имеет право
+# отчитаться о выполненном действии.
+#
+# Категории из существующего кода:
+#   - music (compose_music, execute_music_code, set_dj_mode, set_vibe_preset,
+#     search_samples, lookup_melody, load_track, stop_music, save_track,
+#     delete_track, list_tracks, play_sound, play_animation)
+#   - nav (navigate_to_waypoint, navigate_to_coordinates, move_direction,
+#     start_mapping, stop_mapping, save_waypoint)
+#   - sensors / state (get_music_state, get_battery_level, get_current_time,
+#     get_robot_status, get_current_pose, list_waypoints, get_sound_info,
+#     list_tts_voices)
+#   - config (set_volume, set_voice, set_speed, set_pitch, set_tts_provider)
+#   - memory (memory_save, memory_search, memory_context, register_speaker)
+CLAIM_JUSTIFYING_TOOLS: frozenset = frozenset({
+    # music
+    "compose_music", "execute_music_code", "set_dj_mode",
+    "set_vibe_preset", "search_samples", "lookup_melody",
+    "load_track", "stop_music", "save_track", "delete_track",
+    "list_tracks", "play_sound", "play_animation",
+    "generate_music", "gen_play_from_library", "gen_delete_from_library",
+    "gen_search_library", "gen_list_library", "gen_get_track_info",
+    # nav
+    "navigate_to_waypoint", "navigate_to_coordinates", "move_direction",
+    "start_mapping", "stop_mapping", "save_waypoint",
+    "delete_waypoint", "clear_waypoints",
+    # sensors / state
+    "get_music_state", "get_battery_level", "get_current_time",
+    "get_robot_status", "get_current_pose", "list_waypoints",
+    "get_sound_info", "list_tts_voices",
+    # config
+    "set_volume", "set_voice", "set_speed", "set_pitch",
+    "set_tts_provider",
+    # memory / speaker
+    "memory_save", "memory_search", "memory_context",
+    "register_speaker", "faq_search", "search_web",
+})
+
+
+@dataclass(frozen=True)
+class UniversalActionClaimHit:
+    """Срабатывание широкого anti-hallucination guard'а.
+
+    Attributes:
+        verb: пойманный глагол (для лога).
+        tense: ``"past"`` или ``"future"`` — для диагностики.
+        excerpt: первые ~80 символов ``spoken`` — для лога.
+    """
+
+    verb: str
+    tense: str
+    excerpt: str
+
+
+def detect_universal_action_claim(
+    *,
+    spoken: Optional[str],
+    tools_called: Optional[Tuple[str, ...]],
+) -> Optional[UniversalActionClaimHit]:
+    """Issue #2549 — широкий детектор «spoken заявляет действие, tools пуст».
+
+    В отличие от :func:`detect_unbacked_action_claim`, НЕ смотритт на
+    ``user_input``: ретрай должен сработать даже когда юзер просил
+    абстрактно («докрути», «что-то сделай»), а LLM выдала конкретное
+    заявление («сделала pass», «проверю и перезапущу»).
+
+    Триггер — ТОЛЬКО в :data:`spoken`. Условия:
+      1. ``spoken`` содержит action-verb в past или future (см.
+         :data:`_ACTION_VERBS_PAST` / :data:`_ACTION_VERBS_FUTURE`).
+      2. ``tools_called`` ∩ :data:`CLAIM_JUSTIFYING_TOOLS`` == ∅.
+
+    Если оба — возвращает :class:`UniversalActionClaimHit`, иначе ``None``.
+    """
+    if not spoken:
+        return None
+    called = set(tools_called or ())
+    if called & CLAIM_JUSTIFYING_TOOLS:
+        # LLM вызвал тул, который оправдывает заявление — НЕ вмешиваемся.
+        return None
+
+    # Past tense — приоритет, чаще в спонтанных ответах.
+    past_match = _ACTION_VERBS_PAST.search(spoken)
+    if past_match:
+        return UniversalActionClaimHit(
+            verb=past_match.group(1),
+            tense="past",
+            excerpt=spoken[:80],
+        )
+
+    future_match = _ACTION_VERBS_FUTURE.search(spoken)
+    if future_match:
+        return UniversalActionClaimHit(
+            verb=future_match.group(1),
+            tense="future",
+            excerpt=spoken[:80],
+        )
+
+    return None
+
+
+def build_universal_action_claim_retry_prompt(
+    *, user_input: Optional[str], spoken: str, hit: "UniversalActionClaimHit"
+) -> str:
+    """Issue #2549 — синтетический CRITICAL-ретрай на action hallucination.
+
+    Тот же контракт, что у :func:`build_unbacked_action_retry_prompt` /
+    :func:`build_babble_retry_prompt`: одна попытка, текст промпта прямо
+    называет заявление и запрещает его без вызова тула.
+    """
+    cleaned = _strip_trailing_critical_block(user_input or "")
+    verb_hint = (
+        "Если ты НЕ уверен, что действие произошло — не говори «"
+        + hit.verb
+        + "», говори «проверяю», «попробую»."
+    )
+    return (
+        f"{cleaned}\n\n"
+        "[CRITICAL] В прошлом цикле ты в spoken описал действие ("
+        "«запустил/сделал/включил/проверю/обновлю/перезапущу» — поймано «"
+        + hit.verb
+        + "», tense="
+        + hit.tense
+        + "), но НЕ вызвал НИ ОДНОГО инструмента (tools=[]). "
+        "Пользователь слышит твои слова, но изменений не произойдёт.\n"
+        "❌ ЗАПРЕЩЕНО отчитываться о выполненном действии без вызова тула.\n"
+        "✅ ОБЯЗАТЕЛЬНО: в ЭТОМ же turn вызови соответствующий инструмент "
+        "(compose_music / execute_music_code / load_track / set_vibe_preset "
+        "/ set_volume / set_voice / save_waypoint / get_music_state / "
+        "memory_save / и т.д. по контексту). "
+        + verb_hint
+        + " После вызова верни 'done' или speak_text с результатом."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Retry prompt builders
 # ---------------------------------------------------------------------------
 

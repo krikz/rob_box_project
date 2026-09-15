@@ -128,12 +128,14 @@ from rob_box_voice.core.dialogue_guards import (
     build_renardo_code_retry_prompt,
     build_system_regurgitate_retry_prompt,
     build_unbacked_action_retry_prompt,
+    build_universal_action_claim_retry_prompt,
     build_tool_retry_prompt as build_tool_retry_prompt,
     build_unknown_melody_retry_prompt,  # Issue #2562 Bug F
     detect_hallucinated_midi_in_tools,  # Issue #2560 hallucinated-MIDI guard
     detect_required_tool as detect_required_tool,
     detect_unbacked_action_claim,
     detect_unknown_melody_claim,  # Issue #2562 Bug F
+    detect_universal_action_claim,
     extract_renardo_code_lines,
     is_metalanguage_babble,
     is_music_stop_command,
@@ -182,7 +184,8 @@ from rob_box_voice.core.dj_mode import DJHook, DJModeController
 from rob_box_voice.core.speak_helpers import (
     EffectAwaiterRegistry, build_ssml_payload, split_into_chunks,
     strip_done_marker, strip_history_marker, strip_markdown,
-    strip_meta_markers, strip_speaker_tag, strip_thinking_blocks,
+    strip_meta_markers,  # Issue #2547 — strip internal section headers
+    strip_speaker_tag, strip_thinking_blocks,
 )
 from rob_box_voice.startup_greeting import (
     THINKING_SOUND,
@@ -907,7 +910,15 @@ class DialogueNode(Node):
         # языком, иначе LLM и код уходят в пинг-понг.
         self._system_regurgitate_retry_used: bool = False
 
-        # Issue #2562 Bug F — «не знаю такой мелодии» без поиска.
+        # Issue #2549 — универсальный anti-hallucination guard (см.
+        # :func:`detect_universal_action_claim`). Срабатывает когда в
+        # ``spoken`` есть action-verb (сделал/запустил/включил/проверю/
+        # обновлю/перезапущу/…), но ``tools_called`` пустой. Существующий
+        # Bug E guard слишком узкий для DJ-кейсов («сделала два pass»,
+        # «вплела тему Грига» — user_input не содержит «сделай»).
+        # Тот же одноразовый контракт: один ретрай на turn.
+        self._universal_action_claim_retry_used: bool = False
+        # Issue #2562 Bug F — «не знаю мелодии» без поиска.
         # Тот же одноразовый контракт, что у Bug E / Bug C' / Regurgitate:
         # один ретрай на user-turn, иначе LLM уходит в ping-pong.
         self._unknown_melody_retry_used: bool = False
@@ -3506,6 +3517,7 @@ class DialogueNode(Node):
             self._code_speech_retry_used = False
             self._tool_retry_used = False
             self._system_regurgitate_retry_used = False
+            self._universal_action_claim_retry_used = False
             self._unknown_melody_retry_used = False  # Issue #2562 Bug F
             self._hallucinated_midi_retry_used = False  # Issue #2560 hallucinated-MIDI guard
             self._synthetic_retries_left = self.DEFAULT_SYNTHETIC_RETRIES
@@ -4555,6 +4567,94 @@ class DialogueNode(Node):
                 user_input=user_input or "", spoken=spoken, rule=rule
             ),
             is_action_claim_retry=True,
+            is_synthetic=True,
+            raw_user_command=user_input,
+        )
+        return True
+
+    def _check_universal_action_claim_and_retry(
+        self,
+        *,
+        spoken: str,
+        user_input: Optional[str],
+        tools_called: tuple,
+    ) -> bool:
+        """Issue #2549 — широкий anti-hallucination guard.
+
+        Live DJ-сет 2026-09-15: LLM выдавала ``spoken`` вида::
+
+            «Сделала два pass подряд: сначала один темп-каркас с
+            heartbeat'ом и пульсом Бочкинса, потом второй…»
+            «Вплела тему Грига как второй голос над пульсом Бочкинса…»
+            «Проверю состояние и перезапущу.»
+            «Ок, давай я снова перезапущу. Бочкинс с Григом наверху —
+            стартую заново.»
+
+        Все четыре — при ``tools_called=()``. Существующий Bug E
+        guard (:func:`detect_unbacked_action_claim`) для таких фраз НЕ
+        срабатывает: его таблица узкая, требует совпадения И в
+        ``user_input``, И в ``spoken``. Здесь же юзер просил абстрактно
+        («докрути музыку») без явного «сделай/запусти» — а LLM всё
+        равно отчитывается о действии.
+
+        Защита: если в ``spoken`` есть action-verb в past или future и
+        ни один тул из :data:`CLAIM_JUSTIFYING_TOOLS` не был вызван —
+        это action hallucination. Требуем ОДИН одноразовый CRITICAL-
+        ретрай (тот же контракт, что у Bug E выше).
+
+        Returns:
+            ``True`` — ретрай отправлен, вызывающий НЕ должен публиковать
+            текст в TTS (иначе юзер услышит ложное «сделала/запустил/»,
+            а потом ответ ретрая).
+        """
+        if not spoken:
+            return False
+        if getattr(self, "_universal_action_claim_retry_used", False):
+            return False
+        if getattr(self, "_retry_dispatched_in_turn", False):
+            # Другой guard уже отправил ретрай в этом turn (babble /
+            # action-claim Bug E / renardo / tool) — параллельный
+            # CRITICAL-тур вызовет пинг-понг.
+            return False
+
+        hit = detect_universal_action_claim(
+            spoken=spoken,
+            tools_called=tuple(tools_called or ()),
+        )
+        if hit is None:
+            return False
+
+        # Тот же перевод DSM, что и в babble/renardo/action-claim
+        # ретраях: без него process_input увидит IDLE и вернёт пустой
+        # результат.
+        try:
+            if self._dsm.current_state == DialogueStateKind.IDLE:
+                self._dsm.on_event(DialogueEvent.WAKE_WORD)
+                self._publish_state()
+            self._dsm.on_event(DialogueEvent.STT_RESULT)
+            self._publish_state()
+        except ImportError:
+            pass
+
+        # Issue #1881 — общий budget декрементится рядом с поимённым
+        # флагом. Если budget == 0, ретрай НЕ отправляется.
+        if not self._consume_synthetic_retry(
+            guard_name="universal_action_claim"
+        ):
+            return False
+        self._universal_action_claim_retry_used = True
+        self._mark_retry_dispatched()
+        self.get_logger().warning(
+            "🧾 [issue 2549] anti-hallucination guard: spoken содержит "
+            f"action-verb «{hit.verb}» ({hit.tense}), tools пуст — "
+            f"head={hit.excerpt!r}, user_input={user_input!r}, "
+            f"tools={list(tools_called)!r}"
+        )
+        self._dispatch_turn(
+            build_universal_action_claim_retry_prompt(
+                user_input=user_input, spoken=spoken, hit=hit
+            ),
+            is_action_claim_retry=False,  # свой тип, чтобы не путать с Bug E
             is_synthetic=True,
             raw_user_command=user_input,
         )
@@ -5785,15 +5885,13 @@ class DialogueNode(Node):
         # как «озвучка ответа». Strip-блоков ДО done-чекера → в TTS идёт
         # либо пусто (маркер done → тишина), либо реальный финал.
         spoken = strip_thinking_blocks(spoken)
-        # Issue #2547 (regression check round 3, 15.09.2026, 193
-        # cases/hour on Vision Pi DJ-set): MiniMax-M1 occasionally
-        # prefixes ``spoken`` with internal section headers like
-        # ``[Мнение ассистента]``, ``[Примечание]``, ``**Итог:**`` —
-        # they were meant for the assistant's own reasoning but leaked
-        # into the user-facing text. TTS reads them verbatim. Strip
-        # BEFORE markdown so the bold form (``**…**``) is captured
-        # intact, and BEFORE the done-marker equality check so the
-        # stripper sees only the user-facing remainder.
+        # Issue #2547: strip internal section-header prefixes like
+        # ``[Мнение ассистента]``, ``[Примечание]``, ``[Note]``,
+        # ``[Answer]``, ``**Итог:**``, ``**Answer:**`` BEFORE markdown so
+        # the bold form (``**…**``) is captured intact, and BEFORE the
+        # done-marker equality check so the stripper sees only the
+        # user-facing remainder. Live 15.09: 193 cases/hour on Vision Pi
+        # DJ-set when TTS reads them as part of the reply.
         spoken = strip_meta_markers(spoken)
         # Issue #988 (code part): strip Markdown BEFORE chunking. Chunking
         # splits on punctuation, which can cut a paired "*...*" in half;
@@ -5891,42 +5989,6 @@ class DialogueNode(Node):
                     f"🔇 [issue 988] speak_text called — final text skipped "
                     f"(anti-duplicate): {spoken[:80]!r}"
                 )
-            return
-        # Issue #2547 (regression check round 3, 15.09.2026, 5 cases in
-        # 30 min of DJ-set logs): the LLM sometimes calls real tools
-        # (``compose_music``, ``lookup_melody``, ``set_dj_mode``, …) but
-        # writes ``spoken='\n\ndone'`` or one of the cycle-end markers
-        # (``done``, ``готово``, ``всё``, …) instead of a user-facing
-        # phrase. Per the master-prompt contract ``speak_text`` is the
-        # user-facing answer; ``done`` is the cycle terminator and is
-        # only valid as the WHOLE response. When the LLM combines both
-        # — tools called AND garbage terminator — the user gets music
-        # with no audible acknowledgement («не слышал мелодию в пещере
-        # горного короля», live 15.09: ``spoken='\n\ndone'`` after
-        # ``compose_music(name='hall of the mountain king')``).
-        #
-        # Fix: when ``tools_called`` is non-empty, ``spoken`` is empty
-        # OR equal to a known cycle-end marker, and this is NOT a
-        # DJ-auto tick — publish a one-shot fallback phrase so the user
-        # hears an audible cue. We do NOT retry here (retry budget is
-        # already under pressure from issue #2548 / #2549); the
-        # master-prompt patch (companion commit) tightens the
-        # instruction so the model stops emitting this shape in the
-        # first place. The fallback is intentionally short and
-        # neutral — it doesn't claim a specific action, only confirms
-        # «услышал».
-        if (
-            tools_called
-            and not is_dj_auto
-            and not result.error
-            and not spoken
-        ):
-            self.get_logger().warning(
-                "🎙 [issue 2547] tools_called непустые, spoken пустой — "
-                f"публикую audible fallback. tools={list(tools_called)!r} "
-                f"user_input={user_input!r}"
-            )
-            self._publish_response("Сделаю.", animation="neutral")
             return
 # 🔴 FIX (live 02.09): «во время сочинения музыки LLM много говорит».
         # На DJ-переходе речь идёт ТОЛЬКО через speak_text (короткая
@@ -6088,6 +6150,31 @@ class DialogueNode(Node):
             spoken=spoken,
             user_input=raw_user_command or user_input,
             tools_called=tools_called,
+        ):
+            return
+        # Issue #2549 — широкий anti-hallucination guard для action-claim.
+        # Узкий Bug E guard выше ловит только случаи, где И запрос юзера,
+        # И утверждение LLM попадают в :data:`ACTION_CLAIM_RULES`. DJ-сет
+        # 2026-09-15 показал, что LLM часто отчитывается о действии в
+        # свободной форме («сделала два pass», «вплела тему Грига»,
+        # «проверю состояние и перезапущу») при пустом ``tools_called``.
+        # Это guard-fallback по action-глаголам в spoken (см.
+        # :func:`detect_universal_action_claim`).
+        #
+        # Сужающие условия:
+        #  * ``is_dj_auto`` — на DJ auto-transition spoken-action без tool
+        #    допустимо (юзер молчал, фантомное действие не вредит);
+        #  * ``result.error is not None`` — на ошибке LLM не ретраим
+        #    (Babble/Action guard'ы ниже тоже смотрят на это).
+        if (
+            spoken
+            and not is_dj_auto
+            and result.error is None
+            and self._check_universal_action_claim_and_retry(
+                spoken=spoken,
+                user_input=raw_user_command or user_input,
+                tools_called=tools_called,
+            )
         ):
             return
         # 💡 Diagnostic: log the actual state before deciding what to do.
