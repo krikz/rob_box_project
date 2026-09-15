@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# download_yolov8n_hef.sh — скачать yolov8n.hef из hailo_model_zoo (ADR-0101).
+# download_yolov8n_hef.sh — скачать yolov8n.hef из hailo_model_zoo (ADR-0104).
 #
 # Issue #2531 acceptance #10: до этого фикса HEF lifecycle был полностью
 # ручной ("если /opt/rob_box/models/yolov8n.hef не существует, compose
@@ -19,7 +19,7 @@
 #
 # Touchpoints:
 # - ADR-0089 §3 touchpoint #11 (HEF lifecycle).
-# - ADR-0101 (HEF lifecycle script, issue #2531 acceptance #10).
+# - ADR-0104 (HEF lifecycle script, issue #2531 acceptance #10).
 # - docker/vision/docker-compose.yaml:677-680 (монтирование /opt/rob_box/models).
 
 set -eo pipefail

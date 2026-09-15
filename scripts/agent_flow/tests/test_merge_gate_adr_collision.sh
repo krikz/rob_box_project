@@ -164,6 +164,7 @@ assert_eq() {
         printf '    %sassert fail:%s want=%q got=%q (%s)\n' "$RED" "$END" "$want" "$got" "$msg" >&2
         return 1
     fi
+    return 0
 }
 
 assert_ge() {
@@ -172,6 +173,7 @@ assert_ge() {
         printf '    %sassert fail:%s want>=%s got=%s (%s)\n' "$RED" "$END" "$want" "$actual" "$msg" >&2
         return 1
     fi
+    return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -373,6 +375,169 @@ run_test "F_comment_dedup_24h"              test_F_comment_dedup_24h
 run_test "G_files_empty_fails_open"         test_G_files_empty_fails_open
 run_test "H_develop_empty_fails_open"       test_H_develop_empty_fails_open
 run_test "I_edit_while_another_exists_blocks" test_I_edit_while_another_exists_blocks
+
+# ============================================================================
+# ADR-AF-0068 / issue #2582 / ретро t_3f086e23:
+# pre-merge guard не видел параллельные PR в полёте. Три соседних PR'а
+# (#2572/#2575/#2578) прошли каждый свой guard чисто и легли в develop под
+# одним номером 0101. Минимальный фикс — INFLIGHT-check внутри
+# check_adr_number_collision (дополнение к develop-проверке).
+#
+# Кейсы J..O (ADR-AF-0068 §3):
+#   J. PR-A и PR-B (другой открытый PR) оба приносят 0033-foo с разными
+#      slug'ами → REJECT (inflight clashes). Это ГЛАВНЫЙ сценарий, который
+#      и провалился в #2582.
+#   K. PR-A приносит 0033-foo, develop пуст по 0033, других открытых PR нет
+#      → PASS (clean).
+#   L. PR-A приносит 0033-foo, в develop уже 0033-bar (другой slug) +
+#      inflight PR-B приносит 0033-baz (третий slug) → REJECT (оба: develop
+#      AND inflight).
+#   M. Self-overlap: PR-A переименовывает 0033-foo в 0034-bar в одном PR
+#      (т.е. в PR-A есть и 0033-foo.md, и 0034-bar.md) → inflight-check
+#      не должен считать self-self за коллизию.
+#   N. INFLIGHT только с self-PR (текущий PR) → не считается inflight.
+#   O. Fail-open без gh auth: даже если inflight нельзя проверить, develop-
+#      проверка всё равно работает. (gh auth всегда exit 0 в моке, поэтому
+#      здесь проверяем «empty gh pr list output» через пустой fixture.)
+# ============================================================================
+
+# --- J. inflight collision (главный сценарий issue #2582) ---
+test_J_inflight_collision_blocks() {
+    install_mocks_for_test
+    set_state DEV_ADR_FILES "0027-baz.md
+0028-baz.md
+0030-foo.md"
+    set_pr_files 4102 '["docs/adr/0033-foo.md"]'
+    set_issue_state 4101 "" "[]"
+    # PR #4200 (другой) открыт и приносит 0033-other-adr.md
+    set_state PR_LIST_ALL_OPEN_JSON '[{"number":4200,"files":[{"path":"docs/adr/0033-other-adr.md"}]}]'
+
+    local rc=0
+    # Redirect stderr → per-test file: log() merge-gate пишет туда, assert'ы
+    # смотрят в stderr.log (НЕ в GH_JOURNAL, куда пишутся только mock-gh calls).
+    (check_adr_number_collision 4102 4101 "") 2>"$TEST_TMP/stderr.log" || rc=$?
+
+    assert_eq "1" "$rc" "guard returns 1 (inflight collision)"
+    local n_comments
+    n_comments="$(grep -c 'gh issue comment 4101' "$GH_JOURNAL" || true)"
+    assert_ge "$n_comments" "1" "collision comment posted"
+    local n_labels
+    n_labels="$(grep -c 'gh issue edit 4101 --add-label agent-flow:adr-collision' "$GH_JOURNAL" || true)"
+    assert_ge "$n_labels" "1" "block-label added"
+    # В log merge-gate (stderr.log) должна быть фраза "inflight clashes"
+    # и slug 0033-other-adr.
+    local log_has_inflight
+    log_has_inflight="$(grep -c 'inflight clashes: 0033-other-adr' "$TEST_TMP/stderr.log" || true)"
+    assert_ge "$log_has_inflight" "1" "log mentions inflight clash slug"
+}
+
+# --- K. inflight нет — clean ---
+test_K_no_inflight_clean() {
+    install_mocks_for_test
+    set_state DEV_ADR_FILES "0027-baz.md
+0028-baz.md
+0030-foo.md"
+    set_pr_files 4112 '["docs/adr/0033-foo.md"]'
+    set_issue_state 4111 "" "[]"
+    # Открытые PR есть, но ни один не приносит ADR
+    set_state PR_LIST_ALL_OPEN_JSON '[{"number":4300,"files":[{"path":"docs/e2e/foo.md"}]}]'
+
+    local rc=0
+    check_adr_number_collision 4112 4111 "" || rc=$?
+
+    assert_eq "0" "$rc" "guard returns 0 (no inflight collision)"
+    local n_comments
+    n_comments="$(grep -c 'gh issue comment 4111' "$GH_JOURNAL" || true)"
+    assert_eq "0" "$n_comments" "no comment posted"
+}
+
+# --- L. inflight + develop одновременно ---
+test_L_inflight_and_develop_collision() {
+    install_mocks_for_test
+    set_state DEV_ADR_FILES "0033-in-develop.md
+0028-baz.md"
+    set_pr_files 4122 '["docs/adr/0033-foo.md"]'
+    set_issue_state 4121 "" "[]"
+    # PR-B приносит 0033-other-adr.md
+    set_state PR_LIST_ALL_OPEN_JSON '[{"number":4400,"files":[{"path":"docs/adr/0033-other-adr.md"}]}]'
+
+    local rc=0
+    (check_adr_number_collision 4122 4121 "") 2>"$TEST_TMP/stderr.log" || rc=$?
+
+    assert_eq "1" "$rc" "guard returns 1 (both develop + inflight)"
+    local log_has_dev
+    log_has_dev="$(grep -c 'develop clashes: 0033-in-develop' "$TEST_TMP/stderr.log" || true)"
+    assert_ge "$log_has_dev" "1" "log mentions develop clash"
+    local log_has_inf
+    log_has_inf="$(grep -c 'inflight clashes: 0033-other-adr' "$TEST_TMP/stderr.log" || true)"
+    assert_ge "$log_has_inf" "1" "log mentions inflight clash"
+}
+
+# --- M. self-overlap не считается инфлайт-коллизией ---
+# Симулируем rename 0033-foo.md → 0034-bar.md внутри одного PR.
+# inflight содержит PR-B с тем же 0033-foo.md (потому что PR-A его трогает).
+# Guard должен пропустить, потому что «конфликт сам с собой» — не коллизия.
+test_M_self_overlap_in_inflight_does_not_block() {
+    install_mocks_for_test
+    set_state DEV_ADR_FILES "0027-baz.md
+0028-baz.md"
+    set_pr_files 4132 '["docs/adr/0033-foo.md","docs/adr/0034-bar.md"]'
+    set_issue_state 4131 "" "[]"
+    # PR-B тоже трогает 0033-foo.md (например, тоже его правит). Не наш PR (4132) — другой.
+    set_state PR_LIST_ALL_OPEN_JSON '[{"number":4500,"files":[{"path":"docs/adr/0033-foo.md"}]}]'
+
+    local rc=0
+    check_adr_number_collision 4132 4131 "" || rc=$?
+
+    # Self-path (0033-foo.md) — это тоже наш файл, inflight-PR его трогает.
+    # По дизайну guard'а: self-path отфильтровывается через
+    # `printf '%s' "$pr_files_json" | grep -qF "docs/adr/${inf}"` → continue.
+    # НО 0034-bar.md в develop нет, других inflight с 0034 нет → clean.
+    # 0033-foo.md self-overlap не должен давать inflight-collision.
+    assert_eq "0" "$rc" "guard returns 0 (self-overlap не коллизия)"
+}
+
+# --- N. inflight содержит ТЕКУЩИЙ PR (по номеру) — отфильтровываем ---
+test_N_self_pr_filtered_from_inflight() {
+    install_mocks_for_test
+    set_state DEV_ADR_FILES "0027-baz.md"
+    set_pr_files 4142 '["docs/adr/0033-foo.md"]'
+    set_issue_state 4141 "" "[]"
+    # PR_LIST содержит ТЕКУЩИЙ PR (4142) с 0033-foo.md. Он не должен попасть в inflight_adrs.
+    set_state PR_LIST_ALL_OPEN_JSON '[{"number":4142,"files":[{"path":"docs/adr/0033-foo.md"}]}]'
+
+    local rc=0
+    check_adr_number_collision 4142 4141 "" || rc=$?
+
+    assert_eq "0" "$rc" "guard returns 0 (self PR filtered out)"
+}
+
+# --- O. fail-open без gh (симулируем пустой gh pr list — нет открытых) ---
+# Здесь проверяем: если gh pr list вернул пустой массив, inflight пуст, и
+# develop-проверка работает как обычно (находит collision в develop).
+test_O_empty_inflight_still_checks_develop() {
+    install_mocks_for_test
+    set_state DEV_ADR_FILES "0033-in-develop.md"
+    set_pr_files 4152 '["docs/adr/0033-foo.md"]'
+    set_issue_state 4151 "" "[]"
+    # Никаких открытых PR — inflight пустой
+    set_state PR_LIST_ALL_OPEN_JSON '[]'
+
+    local rc=0
+    (check_adr_number_collision 4152 4151 "") 2>"$TEST_TMP/stderr.log" || rc=$?
+
+    assert_eq "1" "$rc" "guard returns 1 (develop collision, inflight empty)"
+    local log_has_dev
+    log_has_dev="$(grep -c 'develop clashes: 0033-in-develop' "$TEST_TMP/stderr.log" || true)"
+    assert_ge "$log_has_dev" "1" "log mentions develop clash"
+}
+
+run_test "J_inflight_collision_blocks"          test_J_inflight_collision_blocks
+run_test "K_no_inflight_clean"                  test_K_no_inflight_clean
+run_test "L_inflight_and_develop_collision"     test_L_inflight_and_develop_collision
+run_test "M_self_overlap_in_inflight_does_not_block" test_M_self_overlap_in_inflight_does_not_block
+run_test "N_self_pr_filtered_from_inflight"     test_N_self_pr_filtered_from_inflight
+run_test "O_empty_inflight_still_checks_develop" test_O_empty_inflight_still_checks_develop
 
 printf '\n%s==== Summary ====%s\n' "$YEL" "$END"
 printf 'total:  %d\n' "$TESTS_TOTAL"

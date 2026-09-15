@@ -688,7 +688,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
-      # ADR-0101 (issue #2531 acceptance #6): capability-honest healthcheck.
+      # ADR-0104 (issue #2531 acceptance #6): capability-honest healthcheck.
       #
       # Старый ``pgrep -f vision_hailo`` давал Up (healthy) даже когда
       # нода ни разу не получала кадров от источника (silent blindness).

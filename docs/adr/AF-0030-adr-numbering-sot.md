@@ -120,6 +120,42 @@ printf '%04d\n' "$NEXT"
 
 Ратилиция: `scripts/agent_flow/tests/test_validate_adr_namespace.sh` (13/13 регресс-тестов: 10 Phase 1 + 3 Phase 2 для AF-домена и cross-domain).
 
+**§2.4-amendment 2026-09-15 (issue #2582 / ADR-AF-0069): учитывай параллельные PR.**
+
+CI-линтер `validate_adr_namespace.sh` сверяет NNNN **только** против
+`origin/develop`. Но сосед в **параллельном открытом PR** может брать
+тот же NNNN — и тогда CI-линтер обоих PR'ов пройдёт чисто, а в
+develop окажутся два файла под одним номером.
+
+Реальный пример (15.09.2026, три PR одновременно):
+
+| Файл | PR | Merge-time |
+| --- | --- | --- |
+| `0101-robot-id-compose-default-pattern.md`     | #2572 | 13:31:41Z |
+| `0101-occasion-unified-turn-entry.md`          | #2575 | 13:37:41Z |
+| `0101-perception-gaze-seam.md`                 | #2578 | 13:52:44Z |
+
+**Минимальный фикс:** при выборе NNNN проверять **не только `git
+ls-tree origin/develop`**, но и **открытые PR** через:
+
+```bash
+gh pr list --state open --limit 100 --json number,files \
+    --jq '.[] | .files[].path | select(test("^docs/adr/(AF-)?[0-9]{4}-.*\\.md$"))'
+```
+
+Если NNNN уже занят в **другом** открытом PR (с **другим slug'ом**) —
+это та же коллизия, что в §2.4 baseline, и NNNN выбирать нельзя.
+
+**Полная защита реализована в merge-gate INFLIGHT-check**
+(`agent-flow-merge-gate.sh` → `check_adr_number_collision`,
+ADR-AF-0069 §1): собирает inflight через `gh pr list`, фильтрует self
+по **номеру PR**, проверяет каждый NNNN из `pr_new_adrs`. Без gh / без
+auth — fail-open (CI-линтер подстрахует).
+
+Регресс-тесты J..O в
+`scripts/agent_flow/tests/test_merge_gate_adr_collision.sh`
+(15/15 зелёные).
+
 ### 2.5 Ручной коммит в develop — запрещён
 
 Любой коммит в `develop` (включая ручной от Шифу) **должен** идти через feature-branch + PR, **даже если коммит единственный**. Исключений нет. Включено в `CONTRIBUTING.md` как §2d-bis.

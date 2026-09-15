@@ -3279,6 +3279,65 @@ for n in sorted(nums):
         return 0
     fi
 
+    # ---- INFLIGHT-collision check (ADR-AF-0068, issue #2582) ----------------
+    # Ретро 15.09 t_3f086e23: pre-merge guard видел только origin/develop,
+    # но НЕ ВИДЕЛ параллельные PR в полёте. Результат — #2572/0101-robot-id
+    # (merge 13:31:41Z), #2575/0101-occasion (13:37:41Z), #2578/0101-perception
+    # (13:52:44Z) прошли каждый свой guard чисто, в develop оказалось три
+    # разных ADR под одним номером 0101.
+    #
+    # Это та же гонка, что ADR-AF-0065 описывает для spawn-карточек:
+    # "проверка на pre-merge состоянии не видит того, что произойдёт после
+    # merge соседа". Минимальный фикс — добавить сюда INFLIGHT-проверку
+    # через gh pr list (как в validate_adr_namespace.sh L120-152, ADR-AF-0030
+    # Phase 2): собрать все открытые PR, кроме текущего, и для каждого
+    # NNNN из pr_new_adrs проверить, не приносит ли сосед такой же NNNN с
+    # другим slug'ом.
+    #
+    # Без gh или без auth — fail-open (return 0) и явное логирование; коллизия
+    # никуда не денется — её поймает следующий тик ИЛИ validate_adr_namespace.sh
+    # в CI самого PR (defence in depth).
+    local inflight_adrs=""
+        if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+            # Без сложного --jq (apply_jq в mock_env.sh не поддерживает select/as);
+            # просим gh отдать JSON как есть и парсим через python3 (он уже
+            # используется выше для pr_new_adrs — переиспользуем тот же подход).
+            # Выход: "<NNNN>-<slug>.md\n" на каждый ADR-файл в любом открытом PR,
+            # КРОМЕ текущего. Дубликаты отфильтрованы (для целей collision важно
+            # только «номер занят кем-то ещё», а не кем именно).
+            local inflight_raw
+            inflight_raw="$(gh pr list --state open --limit 100 --json number,files \
+                2>/dev/null || true)"
+            if [ -n "$inflight_raw" ] && [ "$inflight_raw" != "null" ]; then
+                inflight_adrs="$(printf '%s' "$inflight_raw" | python3 -c '
+import json, re, sys
+try:
+    arr = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+adr_re = re.compile(r"^docs/adr/(0[0-9]{3})-.*\.md$")
+self_pr = sys.argv[1]
+seen = set()
+out = []
+for pr in arr:
+    if not isinstance(pr, dict): continue
+    if str(pr.get("number", "")) == self_pr: continue
+    for f in pr.get("files", []) or []:
+        p = f.get("path") if isinstance(f, dict) else None
+        if not isinstance(p, str): continue
+        m = adr_re.match(p)
+        if not m: continue
+        leaf = p[len("docs/adr/"):]
+        if leaf in seen: continue
+        seen.add(leaf)
+        out.append(leaf)
+print("\n".join(out))
+' -- "$pr_number" 2>/dev/null || true)"
+            fi
+        else
+            log "issue #${number}: PR #${pr_number} ADR-collision INFLIGHT-check: gh недоступен/не авторизован — fail-open (validate_adr_namespace в CI подстрахует)"
+        fi
+
     # Ищем коллизию: для каждого NNNN из pr_new_adrs проверяем, есть ли в
     # develop другой файл с тем же NNNN. «Другой» = basename не входит в
     # список изменённых файлов этого PR.
@@ -3291,14 +3350,35 @@ for n in sorted(nums):
         # Убрать файлы, которые ЭТОТ ЖЕ PR тоже трогает (rename 0028 → 0030:
         # удаление 0028 в develop не коллизия, если 0028-х в PR changes).
         while IFS= read -r df; do
-            [ -z "$df" ] && continue
+            [ -z "$df" ] || [ "$df" = "$nnnn" ] && continue
             # Файл в develop: "NNNN-name.md". В PR: "docs/adr/NNNN-name.md".
             if ! printf '%s' "$pr_files_json" | grep -qF "docs/adr/${df}"; then
                 clashing="${clashing}${df}, "
             fi
         done <<< "$dev_files"
+        # INFLIGHT: если этот же NNNN приносит другой открытый PR — коллизия
+        # (даже если develop чист по этому NNNN). Отсекаем self-файлы PR (не
+        # могут конфликтовать сами с собой).
+        local inflight_clashing=""
+        if [ -n "$inflight_adrs" ]; then
+            local inflight_for_nnnn
+            inflight_for_nnnn="$(printf '%s\n' "$inflight_adrs" | grep -E "^${nnnn}-" || true)"
+            while IFS= read -r inf; do
+                [ -z "$inf" ] && continue
+                # self-файл — это файл, который ЭТОТ PR тоже трогает (rename-цепочка).
+                # Для простоты: считаем self только по path, не по NNNN (NNNN совпадают,
+                # иначе мы бы здесь не были — это фильтр выше).
+                if printf '%s' "$pr_files_json" | grep -qF "docs/adr/${inf}"; then
+                    continue
+                fi
+                inflight_clashing="${inflight_clashing}${inf}, "
+            done <<< "$inflight_for_nnnn"
+        fi
         if [ -n "$clashing" ]; then
-            collision_detail="${collision_detail}${nnnn} (clashes: ${clashing%, }), "
+            collision_detail="${collision_detail}${nnnn} (develop clashes: ${clashing%, }), "
+        fi
+        if [ -n "$inflight_clashing" ]; then
+            collision_detail="${collision_detail}${nnnn} (inflight clashes: ${inflight_clashing%, }), "
         fi
     done <<< "$pr_new_adrs"
 

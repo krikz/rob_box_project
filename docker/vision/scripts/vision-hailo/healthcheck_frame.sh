@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# healthcheck_frame.sh — capability-honest healthcheck vision-hailo (ADR-0101).
+# healthcheck_frame.sh — capability-honest healthcheck vision-hailo (ADR-0104).
 #
 # Старый healthcheck (``pgrep -f vision_hailo``) отвечал ``Up (healthy)``
 # даже когда нода никогда не получала кадров от источника. Это маскировало

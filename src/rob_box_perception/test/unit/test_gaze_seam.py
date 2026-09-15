@@ -1,4 +1,4 @@
-"""Unit-тесты для модуля «Взгляд» (gaze.py, ADR-0101, issue #2531).
+"""Unit-тесты для модуля «Взгляд» (gaze.py, ADR-0104, issue #2531).
 
 Что покрываем (всё pure-Python, без rclpy):
   1. Frame dataclass: scale/pad_left/pad_top/orig_w/orig_h

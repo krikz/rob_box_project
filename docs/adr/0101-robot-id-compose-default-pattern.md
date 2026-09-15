@@ -3,6 +3,7 @@
 **Дата:** 2026-09-15
 **Статус:** Accepted (architect verdict, fix handed off to backend)
 **Автор:** architect worker (карточка t_be87cd1d, issue #2569)
+**ADR-number:** 0101 (collision-fix, 2026-09-15: см. issue #2582, ADR-AF-0068 — два соседних PR #2575/«Повод» и #2578/«Взгляд» получили 0101 независимо; этот ADR — первый по merge-time `9485018f`, остальные переехали в 0103 и 0104)
 **Тип:** Configuration / developer-experience decision
 
 ## Контекст

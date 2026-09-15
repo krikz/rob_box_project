@@ -8,7 +8,7 @@
 > src/` → 0 совпадений, 2026-09-15 13:55 CEST).
 >
 > **Автор:** tester (kanban t_7f1a4919, parent t_38c55959).
-> **Родительский ADR:** ADR-0101 (`e7c9abc6`), ADR-0102 (PR #2581, draft).
+> **Родительский ADR:** ADR-0103 (`e7c9abc6`), ADR-0102 (PR #2581, draft).
 > **Issue:** #2536.
 
 ---
@@ -34,13 +34,13 @@ occasion=...)` → `_run_turn` → TTS-реплика «о, привет, Ден
 
 || Артефакт | Где проверять | Статус на 2026-09-15 |
 |---|---|---|---|
-| ADR-0101 смержен | `git merge-base --is-ancestor e7c9abc6 HEAD` → exit 0 | ✅ merged 2026-09-15 13:37 |
+| ADR-0103 смержен | `git merge-base --is-ancestor e7c9abc6 HEAD` → exit 0 | ✅ merged 2026-09-15 13:37 |
 | ADR-0102 принят | `docs/adr/0102-turn-occasion-api-contract.md` в `develop` | ⏳ PR #2581 OPEN |
 | `core/occasion.py` существует | `git ls-files src/rob_box_voice/rob_box_voice/core/occasion.py` | ❌ нет (после PR-A) |
 | `OccasionGate.may_speak` импортируется | `python -c "from rob_box_voice.core.occasion import OccasionGate"` | ❌ нет (после PR-A) |
-| `EventDetector` имеет прода-импортёра | `git grep "from rob_box_perception.core.event_detector import EventDetector" -- src/ \| wc -l` → ≥2 (тест + `core/occasion.py`) | ⏳ (после PR-A, ADR-0101 §6.9) |
+| `EventDetector` имеет прода-импортёра | `git grep "from rob_box_perception.core.event_detector import EventDetector" -- src/ \| wc -l` → ≥2 (тест + `core/occasion.py`) | ⏳ (после PR-A, ADR-0103 §6.9) |
 | `_on_meeting_signal` callback существует | `git grep "_on_meeting_signal" src/rob_box_voice/rob_box_voice/dialogue_node.py` → ≥1 | ❌ нет (PR-F) |
-| `_dispatch_turn(..., occasion=...)` kwarg | `git grep "def _dispatch_turn" src/rob_box_voice/rob_box_voice/dialogue_node.py` → сигнатура с `occasion` | ❌ нет (после PR-A, ADR-0101 §3.3.2) |
+| `_dispatch_turn(..., occasion=...)` kwarg | `git grep "def _dispatch_turn" src/rob_box_voice/rob_box_voice/dialogue_node.py` → сигнатура с `occasion` | ❌ нет (после PR-A, ADR-0103 §3.3.2) |
 
 **Критерий PASS для запуска теста:** все строки таблицы = ✅.
 Сейчас (2026-09-15) — 1 ✅, 6 ⏳ / ❌. Тест **не активен**.
@@ -129,7 +129,7 @@ sequenceDiagram
 
     V->>CA: /vision/hailo/events (VisionEvent)
     V->>DN: /vision/hailo/events → _on_meeting_signal
-    Note over DN: шов РЕШЕНИЕ (ADR-0101 §3.1 п.6)
+    Note over DN: шов РЕШЕНИЕ (ADR-0103 §3.1 п.6)
     DN->>DN: occasion = Occasion(MEETING, payload={...})
     DN->>OG: may_speak(occasion)
     OG->>OG: stub_filter: event_type=person, source_camera=realsense_front → PASS
@@ -172,7 +172,7 @@ TTS должен произнести фразу вида:
 (это реплика робота, не пользовательская), никакая
 `startup_greeting_text` («Я на связи, все системы в норме!» — этот
 флаг уже отстрелян до теста, иначе отрабатывает один раз за uptime
-и сбивает ожидания, см. ADR-0101 §1.2 п.4).
+и сбивает ожидания, см. ADR-0103 §1.2 п.4).
 
 ---
 
@@ -194,7 +194,7 @@ TTS должен произнести фразу вида:
 **Бриф карточки** формулирует: «`TurnOccasion.reason` равен
 `person_recognized`». Это **устаревшая формулировка**, дочерняя от
 ранней версии брифа (когда `TurnOccasion` ещё планировался как
-ROS-сообщение). После принятия ADR-0101 и ADR-0102 §3.3 истинный
+ROS-сообщение). После принятия ADR-0103 и ADR-0102 §3.3 истинный
 контракт:
 
 - `Occasion` — Python-объект, не `.msg`.
@@ -217,14 +217,14 @@ ROS-сообщение). После принятия ADR-0101 и ADR-0102 §3.3 
 
 | § ADR | Что фиксирует | Где в этом сценарии |
 |---|---|---|
-| ADR-0101 §3.1 | API `OccasionGate.may_speak` | §2.2 шаг 3-7 |
-| ADR-0101 §3.2 | `EventDetector` per-source cooldown | §2.2 шаг 5 |
-| ADR-0101 §3.3.1 | wake-word байт-в-байт эквивалентен | §2.3 (NO regression) |
-| ADR-0101 §3.3.2 | `occasion=...` kwarg в `_dispatch_turn` | §3 P4 |
-| ADR-0101 §3.3.3 | `_startup_greeting_fired` остаётся (PR-B) | §2.4 (не путать с тестом) |
-| ADR-0101 §3.3.5 | DJ-тик не меняется в PR-A | §2.3 (другой источник повода) |
-| ADR-0101 §3.5 п.4 | миграция `_startup_greeting_fired` в PR-B | §2.4 замечание |
-| ADR-0101 §3.5 | стаб-фильтр для vision | §2.2 шаг 4, P7 |
+| ADR-0103 §3.1 | API `OccasionGate.may_speak` | §2.2 шаг 3-7 |
+| ADR-0103 §3.2 | `EventDetector` per-source cooldown | §2.2 шаг 5 |
+| ADR-0103 §3.3.1 | wake-word байт-в-байт эквивалентен | §2.3 (NO regression) |
+| ADR-0103 §3.3.2 | `occasion=...` kwarg в `_dispatch_turn` | §3 P4 |
+| ADR-0103 §3.3.3 | `_startup_greeting_fired` остаётся (PR-B) | §2.4 (не путать с тестом) |
+| ADR-0103 §3.3.5 | DJ-тик не меняется в PR-A | §2.3 (другой источник повода) |
+| ADR-0103 §3.5 п.4 | миграция `_startup_greeting_fired` в PR-B | §2.4 замечание |
+| ADR-0103 §3.5 | стаб-фильтр для vision | §2.2 шаг 4, P7 |
 | ADR-0102 §3.2 | почему `/voice/turn_occasion` НЕ используется | §2.3, §3 P5 |
 | ADR-0102 §3.3 | контракт `Occasion/Verdict/SourceKind` | §2.2, §3 |
 | ADR-0102 §3.4 | разделение шва данных vs решения | §2.2 (две подписки на `/vision/hailo/events` не нужны: одна для данных, одна для решения — `_on_meeting_signal` обрабатывает события, `_on_perception_event` обновляет кэш) |
@@ -366,7 +366,7 @@ ROS-сообщение). После принятия ADR-0101 и ADR-0102 §3.3 
 ## 8. Что НЕ делает этот сценарий
 
 - НЕ тестирует **другие** источники повода: wake-word (уже покрыто
-  ADR-0101 §6.1), DJ-tick (уже покрыто отдельной карточкой, ADR-0101
+  ADR-0103 §6.1), DJ-tick (уже покрыто отдельной карточкой, ADR-0103
   §3.3.5), startup (PR-B, отдельная карточка). Каждый источник =
   отдельный сценарий.
 - НЕ тестирует LLM-качество реплики (LLM может сказать «привет,
@@ -374,9 +374,9 @@ ROS-сообщение). После принятия ADR-0101 и ADR-0102 §3.3 
   это другой gate).
 - НЕ тестирует vision inference (стаб vs real) — это §1.1
   предусловие, не сам тест. Стаб-фильтр проверяется unit-тестом
-  ADR-0101 §6.5.
+  ADR-0103 §6.5.
 - НЕ тестирует scenario «двое в кадре» (только один человек) —
-  ADR-0101 §3.5 п.1 допускает несколько людей, но это **отдельная**
+  ADR-0103 §3.5 п.1 допускает несколько людей, но это **отдельная**
   проблема (multiface → несколько `embedding_id` → какой выбрать?),
   выходит за scope #2536.
 

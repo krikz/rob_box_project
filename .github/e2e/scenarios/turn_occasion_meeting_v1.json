@@ -59,7 +59,7 @@
         "_dispatch_turn.*occasion=Occasion"
       ],
       "wait_for_log_timeout_s": 3.0,
-      "_comment": "ADR-0101 §3.3.2 + ADR-0102 §3.5: is_synthetic=True + occasion=Occasion(MEETING) — валидная комбинация."
+      "_comment": "ADR-0103 §3.3.2 + ADR-0102 §3.5: is_synthetic=True + occasion=Occasion(MEETING) — валидная комбинация."
     },
     {
       "label": "to04_expect_tts_phrase",

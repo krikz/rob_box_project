@@ -34,7 +34,7 @@ vision_hailo_node:
   # Confidence threshold [0.0, 1.0]. Ниже — drop.
   confidence_threshold: 0.5
 
-  # Подписка (ADR-0101, шов «Взгляд»).
+  # Подписка (ADR-0104, шов «Взгляд»).
   #
   # Старое: жёсткая строка ``input_topic`` дублировалась в трёх местах
   # (нода, YAML, bash) и расходилась с реальным топиком OAK-D.
@@ -53,7 +53,7 @@ vision_hailo_node:
   gaze_source: oak_d
   input_topic: /camera/camera/color/image_raw
 
-  # Сколько секунд ждать первый кадр от real-источника (ADR-0101,
+  # Сколько секунд ждать первый кадр от real-источника (ADR-0104,
   # capability-honest). При hailo_enabled=true нода fail-fast'ит
   # если источник не отдал кадр за это время.
   first_frame_timeout_sec: 10.0
