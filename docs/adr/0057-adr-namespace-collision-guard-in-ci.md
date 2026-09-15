@@ -168,6 +168,77 @@ rc=1
 - Не разрешаем существующие 13 коллизий в этом PR — отдельная карточка, требует §2.6 ADR-AF-0030.
 - Не вводим ADR-bot — overkill.
 
+## 7. Почему pre-merge проверки недостаточны (amendment 2026-09-15, issue #2582 / ADR-AF-0069)
+
+Этот ADR был заведён под класс дефектов «глобальная ADR-коллизия».
+На момент написания (07.09) существовал ровно один структурный
+источник: обход guard'а через rebase/service-action-merge (см. §1.2).
+
+**Второй источник обнаружен 15.09 в issue #2582** и зафиксирован
+отдельным ADR-AF-0069: **race-condition между параллельными PR**.
+
+### 7.1 Что произошло (raw)
+
+На `origin/develop` 15.09.2026 одновременно лежат **три разных ADR с
+номером 0101**, влитых параллельно за ~20 минут:
+
+| Файл                                           | PR    | Merge-time |
+| --- | --- | --- |
+| `0101-robot-id-compose-default-pattern.md`     | #2572 | 13:31:41Z  |
+| `0101-occasion-unified-turn-entry.md`          | #2575 | 13:37:41Z  |
+| `0101-perception-gaze-seam.md`                 | #2578 | 13:52:44Z  |
+
+Каждый PR по отдельности **прошёл свой guard чисто** (и CI-линтер
+per-PR, и merge-gate `check_adr_number_collision`), потому что на
+момент проверки **ни один из соседей ещё не был влит**. Коллизия
+возникла **в момент merge**, не на pre-merge.
+
+### 7.2 Почему это — структурный дефект pre-merge
+
+Pre-merge проверка (любая — хоть `validate_adr_namespace.sh` в CI,
+хоть `check_adr_number_collision()` в merge-gate) сверяет NNNN
+против **`origin/develop` на момент проверки**. Но если сосед в
+**параллельном PR** берёт тот же NNNN — pre-merge не видит этого,
+потому что:
+
+1. CI-линтер в PR-A смотрит только `git ls-tree origin/develop`. PR-B
+   ещё не влит — его файлов в develop нет.
+2. merge-gate `check_adr_number_collision` для PR-A смотрит то же
+   самое (`git ls-tree origin/develop`). PR-B ещё не влит.
+3. После merge PR-A — develop содержит `0101-robot-id`. Pre-merge
+   проверка PR-B **не перезапускается** — она уже отработала в момент
+   тика merge-gate.
+
+Это тот же класс гонки, что ADR-AF-0065 описывает для spawn-карточек
+merge-gate: «проверка на pre-merge состоянии не видит того, что
+произойдёт после merge соседа».
+
+### 7.3 Фикс — ADR-AF-0069
+
+Добавлен INFLIGHT-check в `check_adr_number_collision()`: сбор всех
+открытых PR через `gh pr list --state open --json number,files`,
+парсинг через inline python (тот же паттерн что для `pr_new_adrs`),
+проверка каждого NNNN из `pr_new_adrs` против inflight.
+
+**Без gh / без auth** — fail-open (validate_adr_namespace в CI
+подстрахует, defence-in-depth).
+
+Регресс-тесты J..O (15/15 зелёные).
+
+Подробности — в `docs/adr/AF-0069-merge-gate-adr-collision-inflight-check.md`.
+
+### 7.4 Урок
+
+Этот amendment закрывает **конкретный** race-condition (pre-merge vs
+inflight PR), но **не** все возможные гонки. Чек-лист на будущее (для
+ADR-AF-0030 §2.4):
+
+- Pre-merge vs сосед в полёте → INFLIGHT-check (этот PR, AF-0069)
+- Pre-merge vs service-action обход → CI-линтер обязателен (этот ADR, §2.1)
+- Pre-merge vs rebase-merge обход → CI-линтер обязателен (этот ADR, §2.1)
+- Pre-merge vs «родительская ветка не догнала develop» →
+  `git fetch --no-tags origin develop` (ADR-AF-0030 §2.4 + этот ADR §2.1)
+
 ## 8. Ссылки
 
 - ADR-AF-0030 §2.4 (pre-merge guard), §2.5 (запрет ручного коммита), §2.6 (cleanup коллизий)
