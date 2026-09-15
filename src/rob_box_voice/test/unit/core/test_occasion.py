@@ -300,13 +300,6 @@ class TestTypeShape:
         assert s["last_any_at"] == 101.0
         assert s["last_fire_at"] == {"dj_tick": 100.0, "startup": 101.0}
         assert s["consumed_one_shot"] == ["startup"]
-        # EventDetector оживлён: после ``mark_consumed`` для обоих kind'ов
-        # он содержит timestamp'ы. NB: EventDetector использует
-        # ``time.time()`` (wall-clock), а gate — ``time.monotonic()`` /
-        # переданный ``now``, поэтому сравниваем только KEYS, не значения.
-        last_reaction = s["detector_event_last_reaction"]
-        assert set(last_reaction.keys()) == {"dj_tick", "startup"}
-        assert all(isinstance(v, float) for v in last_reaction.values())
 
 
 # ---------------------------------------------------------------------------
@@ -322,3 +315,32 @@ class TestEmptyGateAllowsAll:
         for kind in ("dj_tick", "meeting", "startup"):
             assert gate.may_speak(Occasion(kind=kind), now=100.0).kind == VerdictKind.ALLOW
             gate.mark_consumed(Occasion(kind=kind), now=100.0)
+
+
+# ---------------------------------------------------------------------------
+# Регресс live 2026-09-15: occasion не должен зависеть от rob_box_perception
+# ---------------------------------------------------------------------------
+
+
+class TestNoPerceptionDependency:
+    """dialogue_node падал на старте voice-образа: ``ModuleNotFoundError:
+    No module named 'rob_box_perception'``. rob_box_perception — отдельный
+    сервис (Main Pi / vision-hailo), в voice-assistant образе его нет;
+    cross-service связь — по топикам, не по Python-импорту (ADR-0103 §3.1 п.6)."""
+
+    def test_occasion_module_does_not_import_perception(self) -> None:
+        from pathlib import Path
+
+        from rob_box_voice.core import occasion as occasion_mod
+
+        source = Path(occasion_mod.__file__).read_text(encoding="utf-8")
+        imports = [
+            line.strip()
+            for line in source.splitlines()
+            if line.lstrip().startswith(("import ", "from "))
+        ]
+        bad = [line for line in imports if "rob_box_perception" in line]
+        assert not bad, (
+            "occasion.py не должен импортировать rob_box_perception "
+            "(отдельный сервис, его нет в voice-образе): " + repr(bad)
+        )

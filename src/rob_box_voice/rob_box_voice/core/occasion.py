@@ -10,11 +10,14 @@ Issue #2536, ADR-0101 §3.1, ADR-0102 §5. PR-A: каркас + регресси
 - per-source кулдаун (настраивается через ``source_cooldowns``)
 - глобальный дебаунс (любые-два повода ближе N секунд → DEFER)
 
-Использует живой :class:`rob_box_perception.core.event_detector.EventDetector`
-как хранилище факта «когда последний раз реагировали» — это оживляет тот модуль
-(до PR-A его единственным импортёром был собственный юнит-тест).
-
 Чистая функция от ``(state, occasion)``: тестируется без ROS2.
+
+Зависимости: НИЧЕГО из ``rob_box_perception``. perception — отдельный сервис
+(Main Pi / vision-hailo), которого НЕТ в voice-assistant образе; cross-service
+связь voice↔perception — только по топикам, не по Python-импорту (ADR-0103 §3.1 п.6).
+Первый черновик PR-A импортировал ``rob_box_perception.core.event_detector``
+на уровне модуля → dialogue_node падал на старте voice-образа
+(ModuleNotFoundError). Гейт ведёт собственный ``_last_any_at`` (см. __init__).
 """
 
 from __future__ import annotations
@@ -23,8 +26,6 @@ import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
-
-from rob_box_perception.core.event_detector import EventDetector
 
 
 class VerdictKind(str, Enum):
@@ -128,17 +129,12 @@ class OccasionGate:
         self._stub_source_cameras = frozenset(stub_source_cameras)
         self._one_shot_kinds = frozenset(one_shot_kinds)
 
-        # Bookkeeping. Используем два независимых счётчика:
-        #   self._last_fire_at[kind] — per-source (для source_cooldowns).
-        #   self._detector.event_last_reaction — EventDetector-уровень
-        #     (используется как «глобальный last any» в маркер-стиле).
-        # Это оживляет EventDetector и одновременно сохраняет per-source
-        # детализацию (EventDetector сам по себе не умеет разные кулдауны
-        # на разные event_name — у него одно cooldown_interval на всё).
+        # Bookkeeping. Два независимых счётчика:
+        #   self._last_fire_at[kind] — per-source (для source_cooldowns);
+        #   self._last_any_at — «глобальный last any» (для глобального дебаунса).
         self._last_fire_at: dict[str, float] = {}
         self._last_any_at: float = 0.0
         self._consumed_one_shot: set[str] = set()
-        self._detector = EventDetector(cooldown_interval=self._global_debounce_s)
 
     # ------------------------------------------------------------------ may_speak
 
@@ -218,18 +214,12 @@ class OccasionGate:
 
         Обновляет:
         - ``last_fire_at[kind]`` — для per-source кулдауна.
-        - ``last_any_at`` + ``EventDetector.mark_event_reacted(kind)`` —
-          для глобального дебаунса (оживляет EventDetector).
+        - ``last_any_at`` — для глобального дебаунса.
         - ``consumed_one_shot`` — для одноразовых kind'ов (startup).
         """
         now_val = now if now is not None else time.monotonic()
         self._last_fire_at[occasion.kind] = now_val
         self._last_any_at = now_val
-        # Подключаем EventDetector — каждый успешный ход продлевает
-        # last-reaction timestamp для этого event_name. Сам по себе
-        # EventDetector сейчас не делает cooldown-проверок для gate
-        # (мы считаем их в may_speak), но он теперь жив и фиксирует факт.
-        self._detector.mark_event_reacted(occasion.kind)
         if occasion.kind in self._one_shot_kinds:
             self._consumed_one_shot.add(occasion.kind)
 
@@ -241,9 +231,6 @@ class OccasionGate:
             "last_fire_at": dict(self._last_fire_at),
             "last_any_at": self._last_any_at,
             "consumed_one_shot": sorted(self._consumed_one_shot),
-            "detector_event_last_reaction": dict(
-                self._detector.event_last_reaction
-            ),
         }
 
 
