@@ -58,9 +58,12 @@
 #
 # Выходы:
 #   - Stderr: structured summary (для cron delivery).
-#   - Exit 0 — всё ok (даже если не alert'или).
+#   - Exit 0 — НИЧЕГО не нашли (или фатальные сбои подавлены flock/preflight).
 #   - Exit 1 — критичный сбой (нет gh auth, нет python3, нет sqlite3).
-#   - Exit 2 — найдены stale-blocked карточки (alert для cron).
+#   - Exit 2 — нашли ≥1 stale-blocked карточку. Alert для cron.
+#             Это ДЕТЕКТ-signal; НЕ зависит от DRY_RUN — даже в DRY_RUN=true
+#             скрипт выходит с 2, чтобы cron alert'ил оператора при dryrun-
+#             тестах (иначе false-sense-of-safety, см. issue #2481).
 #
 # Что НЕ делаем (явно):
 #   - НЕ auto-unblock — это решение Шифу (потеря контекста карточки).
@@ -494,7 +497,13 @@ mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
 } >> "$LOG_FILE" 2>/dev/null || true
 
 # --- exit code -------------------------------------------------------------
-if [ "$_emitted_total" -gt 0 ] && [ "$DRY_RUN" != "true" ]; then
+# Exit 2 = хотя бы одна stale-blocked карточка найдена и заalert'ена (или
+# WOULD-была в DRY_RUN). Это ДЕТЕКТ-сignal для cron, не зависит от DRY_RUN
+# (DRY_RUN влияет только на emit-side-effects: пишем ли реальный comment в
+# kanban.DB или нет). Exit code == fact-of-detection; DRY_RUN == fact-of-mutation.
+# Issue #2481: раньше DRY_RUN=true глушил exit 2 → cron не alert'ил оператора
+# при dryrun-тестах (false-sense-of-safety).
+if [ "$_emitted_total" -gt 0 ]; then
     exit 2
 fi
 exit 0

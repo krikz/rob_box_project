@@ -510,6 +510,7 @@ PYEOF
 
 # ============================================================================
 # S8: DRY_RUN=true → 0 actual side-effect (но __RECORD__ sentinels в stderr)
+#   + exit 2 (issue #2481: ДЕТЕКТ-signal independent of DRY_RUN)
 # ============================================================================
 test_S8_dry_run_no_side_effect() {
     run_test "S8_dry_run_no_side_effect"
@@ -538,13 +539,68 @@ PYEOF
     export MOCK_GH_PRS_JSON="$WORK/gh_prs.json"
     export DRY_RUN=true
     bash "$WATCHDOG_SH" 2>"$WORK/stderr.txt"
+    local rc=$?
 
     local cnt
     cnt=$(awk '/MOCKED:/ {c++} END {print c+0}' "$HERMES_JOURNAL" 2>/dev/null)
     if [ "$cnt" -eq 0 ] && grep -q "DRY-RUN" "$WORK/stderr.txt"; then
-        pass "S8: DRY_RUN=true → no side-effect, DRY-RUN in stderr"
+        if [ "$rc" -eq 2 ]; then
+            pass "S8: DRY_RUN=true → no side-effect, DRY-RUN in stderr, exit 2 (detect-signal)"
+        else
+            fail "S8: DRY_RUN exit code = $rc, expected 2 (issue #2481: ДЕТЕКТ-signal independent of DRY_RUN)"
+        fi
     else
         fail "S8: DRY_RUN failed (cnt=$cnt, dry-run-stderr=$(grep DRY-RUN $WORK/stderr.txt | head -1))"
+    fi
+    unset DRY_RUN
+}
+
+# ============================================================================
+# S9: DRY_RUN=true + 0 stale-blocked → exit 0 (no false alarm)
+# ============================================================================
+test_S9_dry_run_no_hits_exit_zero() {
+    run_test "S9_dry_run_no_hits_exit_zero"
+
+    python3 - <<PYEOF
+import sqlite3, time
+con = sqlite3.connect('$WORK/kanban/test.db')
+now = int(time.time())
+five_h_ago = now - 5 * 3600
+# blocked, но PR в body ОТКРЫТ → SKIP, не alert
+con.execute("""INSERT INTO tasks (id, title, body, assignee, status, started_at, max_runtime_seconds, created_at)
+VALUES ('t_stale_9', 'test', 'Body refs PR #2385 (unmerged)', 'default', 'blocked', ?, 1800, ?)""",
+            (five_h_ago, five_h_ago))
+con.execute("INSERT INTO task_links (parent_id, child_id) VALUES ('t_p9_done', 't_stale_9')")
+con.execute("""INSERT INTO tasks (id, title, body, assignee, status, started_at, max_runtime_seconds, created_at)
+VALUES ('t_p9_done', 'parent', 'done', 'default', 'done', ?, 1800, ?)""",
+            (five_h_ago, five_h_ago))
+# CRITICAL: write gh_prs.json with #2385 OPEN so mock-gh returns
+# state=open → SKIP "unmerged_prs" (matching the original test scenario
+# where unmerged PR is the most common reason to NOT alert).
+import json
+with open('$WORK/gh_prs.json', 'w') as f:
+    json.dump({'2385': {'state': 'open', 'merged': False, 'merged_at': None}}, f)
+con.commit()
+con.close()
+PYEOF
+
+    export PATH="$WORK/bin:$PATH"
+    export KANBAN_DB_PATH="$WORK/kanban/test.db"
+    export KANBAN_BOARD="test"
+    export MOCK_GH_PRS_JSON="$WORK/gh_prs.json"
+    export DRY_RUN=true
+    bash "$WATCHDOG_SH" 2>"$WORK/stderr.txt"
+    local rc=$?
+
+    local cnt
+    cnt=$(awk '/MOCKED:/ {c++} END {print c+0}' "$HERMES_JOURNAL" 2>/dev/null)
+    if [ "$cnt" -eq 0 ] && [ "$rc" -eq 0 ]; then
+        pass "S9: DRY_RUN=true + no stale-blocked hits → exit 0 (no false alarm)"
+    elif [ "$cnt" -ne 0 ]; then
+        fail "S9: side-effect leaked (cnt=$cnt), expected 0"
+    else
+        fail "S9: DRY_RUN + no-hits exit code = $rc, expected 0"
+        echo "  --- stderr: $(cat $WORK/stderr.txt)"
     fi
     unset DRY_RUN
 }
@@ -570,6 +626,7 @@ test_S5_not_a_pr_alongside_real_pr_emits; _ALL_WORKS+=("$WORK")
 test_S6_idempotent; _ALL_WORKS+=("$WORK")
 test_S7_no_pr_refs_no_alert; _ALL_WORKS+=("$WORK")
 test_S8_dry_run_no_side_effect; _ALL_WORKS+=("$WORK")
+test_S9_dry_run_no_hits_exit_zero; _ALL_WORKS+=("$WORK")
 
 echo
 echo "=== summary: $_pass passed, $_fail failed ==="
