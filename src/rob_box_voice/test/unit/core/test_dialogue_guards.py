@@ -26,6 +26,7 @@ from rob_box_voice.core.dialogue_guards import (
     MUSIC_STOP_OVERRIDES,
     SYSTEM_TEMPLATE_REGURGITATE_RE,
     TOOL_REQUEST_PATTERNS,
+    build_music_retry_exhausted_fallback,
     build_system_regurgitate_retry_prompt,
     is_planning_narration,
     build_babble_retry_prompt,
@@ -251,6 +252,106 @@ class TestBuildMusicRetryPrompt:
     def test_empty_user_input(self) -> None:
         prompt = build_music_retry_prompt("")
         assert "[CRITICAL]" in prompt
+
+
+class TestBuildMusicRetryExhaustedFallback:
+    """Issue #2561 — фраза-fallback после исчерпания USER_RETRY-budget.
+
+    Текст должен:
+    * упоминать конкретное имя трека, если оно распознано;
+    * НЕ содержать извинений;
+    * НЕ содержать claim'ов о выполнении;
+    * предлагать альтернативу («по-другому»).
+    """
+
+    def test_empty_input_returns_generic_text(self) -> None:
+        """Пустой ввод → общая фраза без выдуманного имени."""
+        assert build_music_retry_exhausted_fallback("") == (
+            "Что-то не получается с музыкой, давай попробуем "
+            "по-другому?"
+        )
+
+    def test_none_input_returns_generic_text(self) -> None:
+        """``None`` → общая фраза (defensive)."""
+        assert build_music_retry_exhausted_fallback(None) == (
+            "Что-то не получается с музыкой, давай попробуем "
+            "по-другому?"
+        )
+
+    def test_track_name_is_quoted(self) -> None:
+        """«сыграй кисс» → «кисс» попадает в кавычки."""
+        text = build_music_retry_exhausted_fallback("сыграй кисс")
+        assert "«кисс»" in text
+        assert "по-другому" in text
+
+    def test_no_apology_in_text(self) -> None:
+        """Никаких извинений в любых формах."""
+        for q in (
+            "включи музыку",
+            "сыграй кисс",
+            "поставь трек тисбит",
+            "запусти лаундж",
+            "",
+        ):
+            text = build_music_retry_exhausted_fallback(q).lower()
+            for marker in ("извини", "прости", "sorry", "прошу прощения"):
+                assert marker not in text, (
+                    f"fallback for {q!r} не должен содержать "
+                    f"{marker!r}: {text!r}"
+                )
+
+    def test_no_completion_claim_in_text(self) -> None:
+        """Никаких claim'ов о выполнении (это враньё — ретраи выгорели)."""
+        for q in (
+            "включи музыку",
+            "сыграй кисс",
+            "поставь трек тисбит",
+            "",
+        ):
+            text = build_music_retry_exhausted_fallback(q).lower()
+            for marker in (
+                "запустил", "поставил", "включил", "сделал",
+                "готово", "запустила", "поставила",
+            ):
+                assert marker not in text, (
+                    f"fallback for {q!r} не должен содержать "
+                    f"{marker!r}: {text!r}"
+                )
+
+    def test_proposes_alternative(self) -> None:
+        """Фраза содержит «по-другому» — предлагает альтернативу."""
+        for q in (
+            "",
+            "включи музыку",
+            "сыграй кисс",
+            "поставь трек тисбит",
+            "запусти что-нибудь спокойное",
+        ):
+            text = build_music_retry_exhausted_fallback(q)
+            assert "по-другому" in text.lower(), (
+                f"fallback for {q!r} должен предлагать альтернативу"
+            )
+
+    def test_long_input_is_truncated(self) -> None:
+        """Хвост длиннее 60 символов обрезается до последнего слова."""
+        long_q = "сыграй " + " ".join(["к"] * 30)  # ~36 chars, but with letters
+        # Use something with words to test the truncation logic
+        long_q = "сыграй " + "слово " * 20  # 7*20=140 chars after prefix
+        text = build_music_retry_exhausted_fallback(long_q)
+        # Хвост должен быть обрезан до 60 символов.
+        # Извлекаем содержимое кавычек:
+        import re
+        match = re.search(r"«([^»]+)»", text)
+        assert match is not None
+        assert len(match.group(1)) <= 60, (
+            f"track hint должен быть <=60 chars, got {len(match.group(1))}"
+        )
+
+    def test_track_hint_no_trailing_punctuation(self) -> None:
+        """Хвост без висящих знаков препинания."""
+        text = build_music_retry_exhausted_fallback("сыграй кисс!!!")
+        assert "кисс" in text
+        assert "кисс!" not in text  # знаки препинания отрезаны
 
 
 # ---------------------------------------------------------------------------
