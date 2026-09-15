@@ -67,7 +67,7 @@ STUB_SOURCE_CAMERA: str = 'stub'
 
 @dataclass(frozen=True)
 class LetterboxInfo:
-    """Метаданные letterbox, нужные для обратной проекции bbox (ADR-0101).
+    """Метаданные letterbox, нужные для обратной проекции bbox (ADR-0104).
 
     Attributes:
         scale: коэффициент resize ДО паддинга (orig_w * scale = new_w).
@@ -391,7 +391,7 @@ class RealHEFLoader(HEFLoader):
             frame_id: ROS header.frame_id источника.
             image: numpy.ndarray (H×W×3, **RGB**). Stub вызывает
                 с image=None, real — с numpy. RGB-контракт
-                (ADR-0101, issue #2531 acceptance #8) гарантируется
+                (ADR-0104, issue #2531 acceptance #8) гарантируется
                 швом «Взгляд» (``gaze.py``); loader НЕ делает
                 cvtColor (cv2.imdecode отдавал бы BGR).
 
@@ -411,7 +411,7 @@ class RealHEFLoader(HEFLoader):
             return []
         self._ensure_initialized()
         # 1. Pre-process: RGB → NHWC uint8, letterboxed 640×640.
-        # ADR-0101 (issue #2531 acceptance #8): image приходит RGB
+        # ADR-0104 (issue #2531 acceptance #8): image приходит RGB
         # (gaze.py делает cvtColor ДО сюда). YOLOv8n HEF обучен на RGB.
         # Возвращает (tensor, LetterboxInfo) — последнее нужно для
         # обратной проекции bbox в _post_process_detections.
@@ -437,7 +437,7 @@ class RealHEFLoader(HEFLoader):
             ) from exc
 
         # 3. Post-process: tensor → List[VisionEvent-dict].
-        # ADR-0101: передаём letterbox_info чтобы bbox'ы
+        # ADR-0104: передаём letterbox_info чтобы bbox'ы
         # денормализовались в координаты исходного кадра (а не letterbox).
         return _post_process_detections(
             raw_output=raw_output,
@@ -459,7 +459,7 @@ class RealHEFLoader(HEFLoader):
         Letterbox (а не plain resize) сохраняет aspect ratio — иначе
         bbox'ы на выходе модели искажены.
 
-        ADR-0101 (issue #2531 acceptance #8): image передаётся как
+        ADR-0104 (issue #2531 acceptance #8): image передаётся как
         RGB (YOLOv8n обучен на RGB). cv2.imdecode отдаёт BGR,
         но модуль ``gaze.py`` (новый шов) делает перестановку ДО
         сюда — поэтому мы НЕ делаем cvtColor в _preprocess, а
@@ -555,7 +555,7 @@ def _post_process_detections(
         input_w / input_h: letterbox space (= 640 для YOLOv8n).
         confidence_threshold: фильтр confidence.
         nms_iou_threshold: IoU threshold для NMS.
-        letterbox_info: метаданные letterbox (ADR-0101, issue #2531
+        letterbox_info: метаданные letterbox (ADR-0104, issue #2531
             acceptance #9). Если None — bbox'ы нормализуются в
             letterbox-space (старое поведение, обратно совместимо для
             unit-тестов с квадратным синтетическим входом).
@@ -638,7 +638,7 @@ def _post_process_detections(
 
     # Нормализация bbox'ов в [0, 1] для VisionEvent.
     #
-    # ADR-0101 (issue #2531 acceptance #9): bbox из HEF — в letterbox-space.
+    # ADR-0104 (issue #2531 acceptance #9): bbox из HEF — в letterbox-space.
     # Чтобы получить bbox в исходном кадре, нужно сначала unproject
     # (вычесть паддинг и разделить на scale), а потом нормализовать
     # на (orig_w, orig_h). Если letterbox_info не передан (None) —

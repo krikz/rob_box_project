@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""gaze.py — модуль «Взгляд» (ADR-0101, issue #2531).
+"""gaze.py — модуль «Взгляд» (ADR-0104, issue #2531).
 
 Единый шов получения кадра из любого поддерживаемого источника. Скрывает:
 - выбор ROS-топика и типа сообщения (CompressedImage vs Image),
@@ -42,7 +42,7 @@ issue #2531 acceptance #1).
 (``gaze.py`` тестируется в CI без colcon-build).
 
 Touchpoints:
-- ADR-0101 (этот issue, docs/adr/0101-perception-gaze-seam.md).
+- ADR-0104 (этот issue, docs/adr/0104-perception-gaze-seam.md).
 - ADR-0089 §3 touchpoint #3 (vision_hailo_node → Gaze).
 - ADR-0096 (launch-файл vision_hailo.launch.py — выбор источника).
 - Issue #2531 — «Взгляд»: единый шов источника кадра.

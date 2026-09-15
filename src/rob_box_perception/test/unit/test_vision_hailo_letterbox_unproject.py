@@ -1,4 +1,4 @@
-"""Unit-тесты для асимметричного letterbox + ADR-0101 bbox-денормализации.
+"""Unit-тесты для асимметричного letterbox + ADR-0104 bbox-денормализации.
 
 Зачем этот файл (issue #2531 acceptance #9):
 
@@ -7,7 +7,7 @@
 кадре (640×480 — OAK-D, ceiling-camera) letterbox добавляет вертикальный
 паддинг, и bbox оказывался смещённым и сжатым относительно объекта.
 
-ADR-0101 (этот issue) вводит LetterboxInfo и unproject: bbox сначала
+ADR-0104 (этот issue) вводит LetterboxInfo и unproject: bbox сначала
 переводится из letterbox-space в resized-space (вычитаем pad_left/top),
 потом из resized-space в исходный кадр (делим на scale), и только
 потом нормализуется на orig_w/orig_h.

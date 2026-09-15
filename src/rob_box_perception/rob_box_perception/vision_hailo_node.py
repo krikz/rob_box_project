@@ -2,11 +2,11 @@
 """vision_hailo_node — AI HAT+ 26 TOPS (Hailo-8) inference node (ADR-0089).
 
 Подписывается на ROS-топики с изображениями через шов «Взгляд» (gaze.py,
-ADR-0101, issue #2531), прогоняет их через pre-compiled HEF (Hailo
+ADR-0104, issue #2531), прогоняет их через pre-compiled HEF (Hailo
 Executable Format) модели на NPU, публикует результат как `VisionEvent`
 массив на `/vision/hailo/events`.
 
-Архитектура (ADR-0101):
+Архитектура (ADR-0104):
   [Camera topic] --(Gaze source)--> [Frame rgb+letterbox-info]
                                      --> [HEF loader]
                                      --> [post-process with unproject]
@@ -30,7 +30,7 @@ Executable Format) модели на NPU, публикует результат 
 
 Шов «Взгляд» (gaze.py) скрывает: выбор ROS-топика и типа сообщения,
 JPEG/PNG decode, BGR→RGB. Нода НЕ подписывается на ROS-топики напрямую —
-это ADR-0101 acceptance #1: единый шов источника кадра.
+это ADR-0104 acceptance #1: единый шов источника кадра.
 
 HEFLoader / Stub / Real / make_loader / normalize_event_dict /
 filter_by_confidence — в отдельном модуле `vision_hailo_loader.py`
@@ -38,7 +38,7 @@ filter_by_confidence — в отдельном модуле `vision_hailo_loader
 
 Touchpoints:
 - ADR-0089 §3 (touchpoint #3) — этот файл.
-- ADR-0101 (gaze.py, единый шов источника кадра).
+- ADR-0104 (gaze.py, единый шов источника кадра).
 - ADR-0096 (launch-файл vision_hailo.launch.py — выбор gaze_source).
 - ROS msg: rob_box_perception_msgs/VisionEvent
 - Aggregator: context_aggregator_node.py (подписка на /vision/hailo/events)
@@ -73,14 +73,14 @@ except ImportError:
     VisionEventMsg = None
 
 
-# Сколько секунд ждать первый кадр от gaze source (ADR-0101, capability-
+# Сколько секунд ждать первый кадр от gaze source (ADR-0104, capability-
 # honest). Если источник недоступен — нода либо fail-fast (когда
 # hailo_enabled=True), либо деградирует с WARN и переходит в stub.
 DEFAULT_FIRST_FRAME_TIMEOUT_SEC = 10.0
 
 # Сколько секунд без нового кадра считать источник «мёртвым» в real-mode.
 # Используется только для лога; healthcheck делается на уровне docker-compose
-# (см. ADR-0101 acceptance #6 — healthcheck проверяет свежесть /vision/hailo/events).
+# (см. ADR-0104 acceptance #6 — healthcheck проверяет свежесть /vision/hailo/events).
 DEFAULT_FRAME_STALE_SEC = 30.0
 
 # Порог confidence ниже которого события НЕ публикуются.
@@ -88,12 +88,12 @@ DEFAULT_FRAME_STALE_SEC = 30.0
 # делается через `hailo_models.yaml` в Phase 2/3.
 DEFAULT_CONFIDENCE_THRESHOLD = 0.5
 
-# Допустимые имена gaze source (ADR-0101, см. gaze.make_source).
+# Допустимые имена gaze source (ADR-0104, см. gaze.make_source).
 KNOWN_GAZE_SOURCES = ('oak_d', 'ceiling_camera', 'stub')
 
 
 class VisionHailoNode(Node):
-    """AI HAT+ inference node (ADR-0089 Phase 1 + ADR-0101).
+    """AI HAT+ inference node (ADR-0089 Phase 1 + ADR-0104).
 
     Параметры:
         hailo_enabled (bool, default False): включить реальный HEF loader.
@@ -105,7 +105,7 @@ class VisionHailoNode(Node):
         confidence_threshold (float, default 0.5): фильтр confidence.
         gaze_source (str, default "oak_d"): какой адаптер «Взгляд»
             использовать (см. gaze.py — OakDSource, CeilingCameraSource,
-            StubSource). ADR-0101 acceptance #1: единственный шов выбора
+            StubSource). ADR-0104 acceptance #1: единственный шов выбора
             источника кадра.
         output_topic (str, default "/vision/hailo/events"): куда слать.
         first_frame_timeout_sec (float, default 10.0): сколько ждать
@@ -113,7 +113,7 @@ class VisionHailoNode(Node):
         publish_when_no_input (bool, default True): публиковать stub-события
             даже когда нет входящих кадров (важно для smoke-теста CI).
             В real-режиме НЕ рекомендуется — это mode-mask против capability-
-            honest (ADR-0101 acceptance #5); в проде оставлять False.
+            honest (ADR-0104 acceptance #5); в проде оставлять False.
     """
 
     def __init__(self) -> None:
@@ -153,7 +153,7 @@ class VisionHailoNode(Node):
             )
 
         # ============ Режим: один расчёт, не два ============
-        # ADR-0101 (issue #2531 acceptance #7): _is_real_mode — единственное
+        # ADR-0104 (issue #2531 acceptance #7): _is_real_mode — единственное
         # определение реального режима. Лог и фактическое поведение должны
         # использовать одну и ту же переменную. Старый код считал mode
         # двумя разными способами и мог лгать ("mode=real" при _is_real_mode=False).
@@ -167,11 +167,11 @@ class VisionHailoNode(Node):
             stub_period_sec=self.stub_period_sec,
         )
 
-        # ============ Шов «Взгляд» (ADR-0101) ============
+        # ============ Шов «Взгляд» (ADR-0104) ============
         # Это ЕДИНСТВЕННОЕ место, где нода знает про ROS-топики и cv2-decode.
         # Все адаптеры скрыты за gaze.make_source().
         #
-        # ADR-0101 acceptance #5: если real-источник не отдал кадр за
+        # ADR-0104 acceptance #5: если real-источник не отдал кадр за
         # first_frame_timeout_sec, нода либо fail-fast (hailo_enabled=true),
         # либо явно логирует degraded-mode и переходит в stub.
         try:
@@ -244,7 +244,7 @@ class VisionHailoNode(Node):
         self._max_logged_failures: int = 3  # потом молчим до восстановления
 
         # ============ Один и тот же mode в логах и в коде ============
-        # ADR-0101 acceptance #7: лог НЕ может утверждать mode=real,
+        # ADR-0104 acceptance #7: лог НЕ может утверждать mode=real,
         # если _is_real_mode=False. Один расчёт, одна строка.
         mode = 'real' if self._is_real_mode else 'stub'
         self.get_logger().info(
@@ -308,7 +308,7 @@ class VisionHailoNode(Node):
         первые `_max_logged_failures` ошибок и дальше — пропускаем
         молча. Сбрасываем счётчик после успешного `infer`.
 
-        ADR-0101 (issue #2531 acceptance #5): в проде
+        ADR-0104 (issue #2531 acceptance #5): в проде
         `publish_when_no_input=False` обязателен, иначе маскируем
         реальный источник кадра.
         """
@@ -316,7 +316,7 @@ class VisionHailoNode(Node):
             return
         # В real-режиме ждём хотя бы один кадр (если не стоит
         # `publish_when_no_input=True` явно — для CI/smoke удобно).
-        # ADR-0101 acceptance #5: в проде `publish_when_no_input=False`
+        # ADR-0104 acceptance #5: в проде `publish_when_no_input=False`
         # обязателен, иначе маскируем реальный источник.
         if not self.publish_when_no_input and not self._has_received_frame:
             return

@@ -16,7 +16,7 @@
   в ``docker/vision/docker-compose.yaml`` — отдельный контейнер, доступ
   к /dev/hailo0 через ``devices:`` bind-mount.
 
-Выбор источника кадра (ADR-0101, issue #2531):
+Выбор источника кадра (ADR-0104, issue #2531):
 
 Параметр ``gaze_source`` (NEW, ssoT) — имя адаптера шва «Взгляд»
 (``oak_d`` / ``ceiling_camera`` / ``stub``). Нода НЕ подписывается на
@@ -53,7 +53,7 @@ Touchpoints:
 - ADR-0096 §3 touchpoint #1 — этот файл.
 - ADR-0089 §3 touchpoint #6 — переформулирован ADR-0096 (vision_hailo.launch.py
   вместо internal_dialogue.launch.py).
-- ADR-0101 — gaze_source parameter (single source of truth).
+- ADR-0104 — gaze_source parameter (single source of truth).
 """
 
 from __future__ import annotations
@@ -71,7 +71,7 @@ from launch_ros.actions import Node
 # в docker/vision/config/hailo_models.yaml. Поднимать только когда меняется
 # поведение ноды или YAML.
 #
-# ADR-0101: ``gaze_source`` — ЕДИНСТВЕННЫЙ выбор источника кадра.
+# ADR-0104: ``gaze_source`` — ЕДИНСТВЕННЫЙ выбор источника кадра.
 # ``input_topic`` — legacy, сохранён для back-compat но нодой не используется.
 _DEFAULTS: Dict[str, Any] = {
     'hailo_enabled': 'false',
@@ -165,7 +165,7 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument(
             'gaze_source',
             default_value=_DEFAULTS['gaze_source'],
-            description='Имя адаптера шва «Взгляд» (ADR-0101): '
+            description='Имя адаптера шва «Взгляд» (ADR-0104): '
                         'oak_d | ceiling_camera | stub. oak_d подписывается на '
                         '/camera/camera/color/image_raw (Image msg, согласовано '
                         'с oak_d_config.yaml i_rs_compat:true).',
@@ -174,7 +174,7 @@ def generate_launch_description() -> LaunchDescription:
             'first_frame_timeout_sec',
             default_value=_DEFAULTS['first_frame_timeout_sec'],
             description='Сколько секунд ждать первый кадр от real-источника '
-                        'перед fail-fast в real-mode (ADR-0101, capability-honest).',
+                        'перед fail-fast в real-mode (ADR-0104, capability-honest).',
         ),
         DeclareLaunchArgument(
             'input_topic',
@@ -215,7 +215,7 @@ def generate_launch_description() -> LaunchDescription:
                 'first_frame_timeout_sec': LaunchConfiguration(
                     'first_frame_timeout_sec'
                 ),
-                # input_topic — legacy, нода игнорирует (ADR-0101).
+                # input_topic — legacy, нода игнорирует (ADR-0104).
                 'output_topic': LaunchConfiguration('output_topic'),
                 'publish_when_no_input': LaunchConfiguration(
                     'publish_when_no_input'
