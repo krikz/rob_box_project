@@ -169,6 +169,13 @@ class SttContext:
             avoid leaking the FSM enum into ``core/``.
         is_silenced: Convenience flag — ``True`` when state==SILENCED.
         wake_words: Frozen tuple of wake-word strings (snapshot).
+        backlog_pending: ``True`` when the no-wake-word backlog
+            accumulator has buffered phrases to inject as a hint.
+            Computed **once** before admission (the caller owns the
+            accumulator); :class:`BacklogFlushStep` sets the matching
+            flag on the host, :class:`StripWakeWordStep` reads the
+            snapshot to decide whether a bare wake-word preserves the
+            original text instead of dropping with ``empty_after_strip``.
         skip_counter: Mutable dict of skip-reason counters (e.g.
             ``{"no_wake_word": 3}``). Steps increment the counter that
             matches the reason they drop on; orchestrator does not
@@ -184,6 +191,7 @@ class SttContext:
     state_name: str = "IDLE"
     is_silenced: bool = False
     wake_words: Tuple[str, ...] = ()
+    backlog_pending: bool = False
     skip_counter: Dict[str, int] = field(default_factory=dict)
 
     def with_text(self, new_text: str) -> "SttContext":
@@ -305,16 +313,39 @@ class SttAdmissionHost(Protocol):
         """
         ...
 
-    def handle_command_intent(self, text: str) -> bool:
-        """Issue #1279 — when ``command_parser`` recognises a non-LLM
-        intent (NAVIGATE/STOP/STATUS/MAP/...), run it via command_node
-        and cancel the LLM turn. Returns ``True`` when handled.
+    def is_music_stop_command(self, text_lower: str) -> bool:
+        """Issue #1279 — ``True`` when the silence-shaped phrase is
+        actually a music-stop request («хватит диджеить», «стоп
+        музыку»). The adapter wraps
+        :func:`rob_box_voice.core.dialogue_text.is_music_stop_command`
+        so the rule lives next to the silence matcher and the
+        :data:`MUSIC_STOP_OVERRIDES` list. ``SilenceCommandStep``
+        consults this to decide whether to drop (genuine silence)
+        or fall through to LLM (music-stop).
         """
         ...
 
-    def reset_session(self) -> bool:
-        """Issue #XXXX — «новая сессия» / «сбрось всё» / «/clear».
-        Returns ``True`` when reset ran.
+    def handle_command_intent(self, text: str, text_lower: str) -> bool:
+        """Issue #1279 — when ``command_parser`` recognises a non-LLM
+        intent (NAVIGATE/STOP/STATUS/MAP/...), run it via command_node
+        and cancel the LLM turn. Returns ``True`` when handled. The
+        adapter owns the ``_command_intent_gate_enabled`` flag and the
+        ``_command_parser.parse(...)`` call; ``text_lower`` is needed
+        to honour :data:`MUSIC_STOP_OVERRIDES` (music-stop phrases must
+        reach LLM, not the command gate).
+        """
+        ...
+
+    def reset_session(
+        self,
+        text: str,
+        text_lower: str,
+        tg_chat_id: Optional[int],
+    ) -> bool:
+        """Issue #XXXX — «новая сессия» / «сбрось всё» / TG «/clear».
+        The adapter wraps :meth:`DialogueNode._is_new_session_command`
+        (which depends on ``_new_session_phrases`` — not a core/
+        concern). Returns ``True`` when reset ran.
         """
         ...
 
@@ -566,8 +597,10 @@ class StripWakeWordStep:
 
     Issue #989 fix + #2346 — the LLM input must not include the wake
     word itself; the bare wake word with no follow-up drops with
-    ``empty_after_strip`` unless a backlog hint is pending (in which
-    case the bare wake word is preserved as a signal).
+    ``empty_after_strip`` **unless** a backlog hint is pending (in
+    which case the bare wake word is preserved as a signal — the
+    original ``_on_stt`` behaviour: ``clean = text`` when
+    ``backlog_pending``).
     """
 
     name: str = "strip_wake_word"
@@ -578,9 +611,14 @@ class StripWakeWordStep:
             return PASS
         clean = strip_wake_word(ctx.text, list(ctx.wake_words))
         if not clean:
-            # Bare wake-word OR no input: drop unless the host has a
-            # backlog pending. The host tracks that via a separate
-            # ``backlog_pending`` boolean (see ``host.flush_pending_backlog``).
+            # Bare wake-word OR no input: drop unless backlog is
+            # pending. The caller-owned snapshot on ``ctx.backlog_pending``
+            # preserves the legacy byte-for-byte fallback.
+            if ctx.backlog_pending:
+                return SttOutcome(
+                    kind=SttOutcomeKind.PASS,
+                    new_context=ctx.with_text(ctx.raw),
+                )
             return drop(self.name, "empty_after_strip")
         return SttOutcome(
             kind=SttOutcomeKind.PASS,
@@ -594,14 +632,19 @@ class SilenceCommandStep:
 
     Issue #1279 follow-up — «хватит диджеить» is NOT a silence, it's
     a music-stop command that must reach LLM. This step only handles
-    the genuine silence phrase; the music-stop detection is owned by
-    :class:`DialogueNode` (which calls into ``dialogue_text``).
+    the genuine silence phrase; the music-stop detection is delegated
+    to ``host.is_music_stop_command(text_lower)`` — the dialogue node
+    adapter imports ``is_music_stop_command`` from
+    :mod:`rob_box_voice.core.dialogue_text` so the rule stays in core/.
     """
 
     name: str = "silence_command"
 
     def apply(self, ctx: SttContext, host: SttAdmissionHost) -> SttOutcome:
         if not is_silence_command(ctx.text_lower):
+            return PASS
+        if host.is_music_stop_command(ctx.text_lower):
+            # Music-stop override — phrase must reach LLM.
             return PASS
         if host.handle_silence_command():
             return handled(self.name, "silence_command")
@@ -626,7 +669,7 @@ class CommandIntentGateStep:
             # TG path bypasses the gate — chat input is conversational
             # by default.
             return PASS
-        if host.handle_command_intent(ctx.text):
+        if host.handle_command_intent(ctx.text, ctx.text_lower):
             return handled(self.name, "command_intent")
         return PASS
 
@@ -646,7 +689,7 @@ class NewSessionStep:
         # The host owns the ``_is_new_session_command(...)`` check
         # (it depends on the ``_new_session_phrases`` parameter, which
         # is not a core/ concern).
-        if host.reset_session():
+        if host.reset_session(ctx.text, ctx.text_lower, ctx.tg_chat_id):
             return handled(self.name, "new_session")
         return PASS
 
