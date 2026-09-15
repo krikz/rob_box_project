@@ -19,6 +19,16 @@ real-inference pipeline поверх HailoRT modern async API:
 Failure policy (ADR-0018 capability-honest): любой сбой HailoRT
 (init / run / post-process) propagates как exception. Узел
 логирует и пропускает кадр — НЕ silent fallback на stub.
+
+Binding install strategy — см. ADR-0099:
+  - Phase 1 (current default): `hailo_platform` опциональный, lazy import.
+    На CI без Hailo apt-repo / Developer Zone wheel — ImportError → путь
+    stub. Тесты (test_real_loader_init_failure_is_available_false в
+    test_vision_hailo_phase15.py:292-296) зафиксированы на этот контракт.
+  - Phase 1.5 (отдельная карточка): install через Hailo Developer Zone
+    .deb (HailoRT) + .whl (Python binding). Тогда же делается fatal
+    `import hailo_platform` в Dockerfile и acceptance §9 расширяется
+    проверкой `is_available() → True`.
 """
 
 from __future__ import annotations
