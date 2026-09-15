@@ -1,23 +1,36 @@
 #!/usr/bin/env python3
-"""Self-tests for scripts/lint/cc_budget_refs.py (issue #2186, ADR-0021 R1).
+"""Self-tests for scripts/lint/cc_budget_refs.py (issue #2186, #2626).
 
 The cc_budget_refs guard exists to plug the "silent baseline growth" hole
 that allowed ``WSSServer._on_json_cmd`` to balloon to CC=107 undetected
-(issue #2186). The guard itself is non-trivial (legacy-photo, ref-card
-syntax, dangling-link detection, remote verify). Per the convention set
-by ``test_seam_without_consumer.py`` (issue #2118): the same "no silent
+(issue #2186). After #2626, the guard also enforces ADR-0021-r1:
+
+* R-1a — legacy-cc is immutable: bump or shrink above legacy.cc → FAIL.
+* R-1d — ``--verify-remote`` requires issue to be **state=open**, not
+  merely labeled ``type:tech-debt``.
+* R-1f — final message is honest: «долг под контролем, но НЕ покрыт»
+  beats the lie «OK — все имеют ref-cards» when ref-cards are empty.
+
+The guard itself is non-trivial. Per the convention set by
+``test_seam_without_consumer.py`` (issue #2118): the same "no silent
 regression hiding behind coverage elsewhere" rule that produced this
 guard must apply to the guard's own code. If a future refactor breaks
 detection of one of the historical patterns below, the test should
 fail loudly here, not three days after the next real regression.
 
-Two kinds of coverage:
+Coverage matrix:
 
-* Unit tests for the structural checks (``check_local``) against
-  synthetic baseline fixtures: missing ref-card, dangling ref-card,
-  bad ref format, legacy-with-ref cleanup hint, legacy-photo drift
-  (cc mismatch, missing-from-exemptions).
-* Smoke test for ``_legacy_keys`` / ``_exempt_keys`` helpers.
+| Дефект | Тест | ADR-0021-r1 |
+|---|---|---|
+| #2186 baseline-bump без ref-card | test_fails_when_exempt_missing_ref | — |
+| #2186 dangling ref-card | test_fails_on_dangling_ref_card | — |
+| #2186 bad ref format | test_fails_on_bad_ref_format | — |
+| #2626 #1 — bump legacy-cc | test_fails_on_legacy_cc_growth | R-1a |
+| #2626 #1 — снижение legacy-cc | test_fails_on_legacy_cc_shrink | R-1a |
+| #2626 #2 — verify-remote не видит closed issue | (network-only, exercise_remote) | R-1d |
+| #2626 #3 — phantom baseline entry | test_fails_on_dangling_ref_card (legacy-paths) | R-1c |
+| #2626 #4 — recovered без обновления baseline | (covered by ``cc_budget.py`` test, not here) | R-1b |
+| #2626 #5 — честное сообщение | test_main_prints_breakdown | R-1f |
 
 Run:
     python -m unittest scripts.lint.test_cc_budget_refs -v
@@ -26,6 +39,7 @@ Run:
 
 from __future__ import annotations
 
+import io
 import sys
 import unittest
 from pathlib import Path
@@ -90,6 +104,56 @@ class LegacyKeysTests(unittest.TestCase):
             ]
         )
         self.assertEqual(refs._legacy_keys(baseline), {"src/a/a.py:X.y"})
+
+    def test_legacy_index_first_wins_on_duplicates(self) -> None:
+        # Если кто-то задвоил entries (бывает при ручной правке),
+        # ``_legacy_index`` берёт первый — это важно, потому что
+        # ``check_local`` использует его для cc-сравнения.
+        baseline = _baseline(
+            legacy=[
+                {"path": "src/a/a.py", "method": "X.y", "cc": 18, "since": "first"},
+                {"path": "src/a/a.py", "method": "X.y", "cc": 19, "since": "second"},
+            ]
+        )
+        self.assertEqual(
+            refs._legacy_index(baseline),
+            {"src/a/a.py:X.y": {"path": "src/a/a.py", "method": "X.y", "cc": 18, "since": "first"}},
+        )
+
+
+class LegacySinceExtractionTests(unittest.TestCase):
+    """R-1d: парсинг ``#NNNN`` из поля ``since:`` legacy-entry."""
+
+    def test_extracts_single_issue_ref(self) -> None:
+        self.assertEqual(
+            refs._extract_legacy_refs(
+                {
+                    "since": "cc_budget_baseline.json created 2026-09-08; "
+                    "legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+                }
+            ),
+            {1984, 2077},
+        )
+
+    def test_extracts_multiple_issue_refs_from_long_since(self) -> None:
+        # Ровно тот текст из baseline.json: «bumped 65 → 68 … 82 → 85»
+        # содержит семь ссылок на issues.
+        entry = {
+            "since": (
+                "cc_budget_baseline.json created 2026-09-08; legacy grandfather — "
+                "parent gate #1984 / #2077 covers decomp backlog; "
+                "bumped 65 -> 68 for issue #2548 prose-action-claim fallback (CC-budget guard); "
+                "bumped 68 -> 72 for issue #2547 strip_meta_markers pipeline; "
+                "bumped 79 -> 82 for issue #2557 DJ-music-tools fallback"
+            )
+        }
+        self.assertEqual(refs._extract_legacy_refs(entry), {1984, 2077, 2548, 2547, 2557})
+
+    def test_returns_empty_when_no_issue_refs(self) -> None:
+        self.assertEqual(refs._extract_legacy_refs({"since": "no refs here"}), set())
+
+    def test_returns_empty_when_since_is_empty(self) -> None:
+        self.assertEqual(refs._extract_legacy_refs({}), set())
 
 
 class RefFormatTests(unittest.TestCase):
@@ -187,17 +251,38 @@ class LocalCheckTests(unittest.TestCase):
         violations = refs.check_local(baseline)
         self.assertTrue(any("не похоже" in v for v in violations))
 
-    def test_fails_on_legacy_photo_drift_cc_mismatch(self) -> None:
-        # The photo's cc no longer matches the actual exempt cc. Either
-        # somebody hand-edited one side, or the guard's been bypassed
-        # with --update-baseline. Either way: FAIL loudly so the next
-        # reader doesn't trust a stale photo.
+    def test_fails_on_legacy_cc_growth(self) -> None:
+        # Issue #2626, defect #1 (R-1a, ADR-0021-r1): bump ``cc`` сверх
+        # legacy.cc без переноса в _refactor_cards — то, чем #2186 не
+        # ловил. Восемь сентябрьских bump'ов именно так и выглядели.
         baseline = _baseline(
-            exemptions={"src/a/a.py": {"X.y": 20}},
+            exemptions={"src/a/a.py": {"X.y": 22}},  # было 17, bump'нули до 22
             legacy=[{"path": "src/a/a.py", "method": "X.y", "cc": 17}],
         )
         violations = refs.check_local(baseline)
-        self.assertTrue(any("не совпадает с exemptions cc" in v for v in violations))
+        self.assertTrue(
+            any("рост legacy-записи" in v and "R-1a" in v for v in violations),
+            msg=f"expected R-1a growth-FAIL, got: {violations}",
+        )
+
+    def test_fails_on_legacy_cc_shrink(self) -> None:
+        # Симметрично: снижение cc (например, после частичного refactor)
+        # не должно «освобождать» от обязательства либо убрать из
+        # legacy, либо завести _refactor_cards. Иначе legacy.cc —
+        # ложь, и мы не узнаем, какой реально cc был унаследован.
+        baseline = _baseline(
+            exemptions={"src/a/a.py": {"X.y": 14}},  # было 17, снизили до 14
+            legacy=[{"path": "src/a/a.py", "method": "X.y", "cc": 17}],
+        )
+        violations = refs.check_local(baseline)
+        self.assertTrue(
+            any("снижение" in v for v in violations),
+            msg=f"expected R-1a shrink-FAIL, got: {violations}",
+        )
+        self.assertTrue(
+            any("R-1a" in v for v in violations),
+            msg=f"expected R-1a reference in any violation, got: {violations}",
+        )
 
     def test_fails_on_legacy_photo_pointing_to_nothing(self) -> None:
         # Legacy entry references a method that has been removed from
@@ -225,6 +310,71 @@ class LocalCheckTests(unittest.TestCase):
             [],
             msg=f"real baseline should pass check_local, got: {violations}",
         )
+
+
+class MainOutputTests(unittest.TestCase):
+    """R-1f: финальное сообщение main() — честная разбивка, не «OK»."""
+
+    def _run_main_with(self, baseline: dict, argv: list[str] | None = None) -> tuple[int, str]:
+        import tempfile
+
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
+            import json as _json
+
+            fh.write(_json.dumps(baseline))
+            tmp = Path(fh.name)
+        old_argv = sys.argv
+        try:
+            sys.argv = ["cc_budget_refs.py", "--baseline", str(tmp)] + (argv or [])
+            buf = io.StringIO()
+            old_stdout = sys.stdout
+            sys.stdout = buf
+            try:
+                rc = refs.main()
+            finally:
+                sys.stdout = old_stdout
+            return rc, buf.getvalue()
+        finally:
+            sys.argv = old_argv
+            tmp.unlink(missing_ok=True)
+
+    def test_breakdown_printed_in_header(self) -> None:
+        # При пустых карточках печатаем «0 с ref-card, N legacy» —
+        # это видно по grep'у в ночном мониторинге.
+        baseline = _baseline(
+            exemptions={"src/a/a.py": {"X.y": 17}},
+            legacy=[{"path": "src/a/a.py", "method": "X.y", "cc": 17}],
+        )
+        rc, out = self._run_main_with(baseline)
+        self.assertEqual(rc, 0)
+        self.assertIn("0 с ref-card", out)
+        self.assertIn("1 legacy", out)
+        # Честный текст: legacy — это долг, не «ок».
+        self.assertIn("долг под контролем", out)
+        self.assertNotIn("OK — все exemptions имеют ref-cards", out)
+
+    def test_breakdown_with_zero_legacy_says_no_debt(self) -> None:
+        baseline = _baseline(
+            exemptions={"src/a/a.py": {"X.y": 17}},
+            refactor_cards={"src/a/a.py:X.y": "#1234"},
+        )
+        rc, out = self._run_main_with(baseline)
+        self.assertEqual(rc, 0)
+        self.assertIn("OK — все exemptions имеют ref-cards; долга нет", out)
+
+    def test_breakdown_counts_phantoms(self) -> None:
+        # Phantom-ref (ref-card на ключ, которого нет в exemptions)
+        # должен быть посчитан и помечен в разбивке как «N фантомных».
+        baseline = _baseline(
+            exemptions={"src/a/a.py": {"X.y": 17}},
+            refactor_cards={
+                "src/a/a.py:X.y": "#1234",
+                "src/a/a.py:Z.w": "#1235",  # phantom
+            },
+        )
+        rc, out = self._run_main_with(baseline)
+        self.assertNotEqual(rc, 0)  # phantom → FAIL
+        self.assertIn("1 фантомных", out)
 
 
 if __name__ == "__main__":

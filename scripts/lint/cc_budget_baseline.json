@@ -24,7 +24,6 @@
     },
     "src/rob_box_voice/rob_box_voice/dialogue_node.py": {
       "DialogueNode._build_dynamic_system_context": 24,
-      "DialogueNode._build_single_provider": 23,
       "DialogueNode._continue_after_tool_calls": 22,
       "DialogueNode._do_recursive_streaming": 22,
       "DialogueNode._execute_tool_calls": 18,
@@ -56,10 +55,9 @@
       "TTSNode._synthesize_and_play": 19,
       "TTSNode._synthesize_silero": 23,
       "TTSNode._synthesize_yandex": 18,
-      "TTSNode.dialogue_callback": 29
+      "TTSNode.dialogue_callback": 22
     },
     "src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py": {
-      "AvatarSupervisor._build_operator_llm": 16,
       "AvatarSupervisor._on_avatar_command": 17,
       "AvatarSupervisor._run_agent_sync": 19
     },
@@ -80,7 +78,7 @@
       "AsyncToolExecutor.execute_tools_parallel": 22
     },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/core/arranger.py": {
-      "spec_from_flat": 19
+      "spec_from_flat": 16
     },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/core/minimax_music_client.py": {
       "MinimaxMusicClient.generate": 25
@@ -100,9 +98,9 @@
       "GenSaveToLibraryTool.execute": 18
     },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/music.py": {
-      "MusicManager.execute_code": 23,
+      "MusicManager.execute_code": 22,
       "MusicManager.stop_all": 16,
-      "SetDjModeTool.execute": 18
+      "SetDjModeTool.execute": 3
     },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/sound.py": {
       "GetSoundInfoTool.execute": 19
@@ -152,12 +150,6 @@
       "path": "src/rob_box_voice/rob_box_voice/dialogue_node.py",
       "method": "DialogueNode._build_dynamic_system_context",
       "cc": 24,
-      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
-    },
-    {
-      "path": "src/rob_box_voice/rob_box_voice/dialogue_node.py",
-      "method": "DialogueNode._build_single_provider",
-      "cc": 23,
       "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
     },
     {
@@ -277,14 +269,8 @@
     {
       "path": "src/rob_box_voice/rob_box_voice/tts_node.py",
       "method": "TTSNode.dialogue_callback",
-      "cc": 29,
-      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
-    },
-    {
-      "path": "src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py",
-      "method": "AvatarSupervisor._build_operator_llm",
-      "cc": 16,
-      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+      "cc": 22,
+      "since": "Bumped 29->22 after refactor in #2626 (CC-budget guard) — decomposed _synthesize_and_play call into a helper. ADR-0021-r1 R-1a/b: legacy-cc cannot be shrunk in place; this entry remains in _legacy_acknowledged so the upstream refactor card can pick it up. Track: PR landed 2026-09-15, baseline refreshed as part of issue #2626 acceptance."
     },
     {
       "path": "src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py",
@@ -337,8 +323,8 @@
     {
       "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/core/arranger.py",
       "method": "spec_from_flat",
-      "cc": 19,
-      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+      "cc": 16,
+      "since": "Bumped 19->16 after refactor in #2626 (CC-budget guard) — extracted flat-spec normalization helper. ADR-0021-r1 R-1a/b: legacy-cc cannot be shrunk in place; this entry remains in _legacy_acknowledged so the upstream refactor card can pick it up. Track: PR landed 2026-09-15, baseline refreshed as part of issue #2626 acceptance."
     },
     {
       "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/core/minimax_music_client.py",
@@ -385,8 +371,8 @@
     {
       "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/music.py",
       "method": "MusicManager.execute_code",
-      "cc": 23,
-      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+      "cc": 22,
+      "since": "Bumped 23->22 after refactor in #2626 (CC-budget guard) — extracted volume-decision helper. ADR-0021-r1 R-1a/b: legacy-cc cannot be shrunk in place; this entry remains in _legacy_acknowledged so the upstream refactor card can pick it up. Track: PR landed 2026-09-15, baseline refreshed as part of issue #2626 acceptance."
     },
     {
       "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/music.py",
@@ -397,8 +383,8 @@
     {
       "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/music.py",
       "method": "SetDjModeTool.execute",
-      "cc": 18,
-      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+      "cc": 3,
+      "since": "Bumped 18->3 after refactor in #2626 (CC-budget guard) — extracted DJ-mode apply path. ADR-0021-r1 R-1a/b: legacy-cc cannot be shrunk in place; this entry remains in _legacy_acknowledged so the upstream refactor card can pick it up. Track: PR landed 2026-09-15, baseline refreshed as part of issue #2626 acceptance."
     },
     {
       "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/sound.py",
