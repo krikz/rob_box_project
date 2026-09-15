@@ -20,8 +20,18 @@ Docker compose инфраструктура для Vision Pi (Raspberry Pi 5) - 
    (ADR-0028, ADR-0051)
 9. **quest** - WebXR-консоль для Meta Quest 3 (ADR-0027, ADR-0086)
 10. **telegram-bot** - операторский Telegram-интерфейс
-11. **supercollider** + **voice-resources-init** - SynthDef-сервер scsynth
-    (renardo samples + synthdefs шарены с voice-assistant)
+11. **supercollider** + **voice-resources-init** (profile `init`) - SynthDef-сервер
+    scsynth (renardo samples + synthdefs шарены с voice-assistant).
+    `voice-resources-init` — одноразовый init-контейнер, помечен
+    `profiles: [init]`, чтобы обычный `docker compose up -d` его
+    НЕ дёргал (избегаем падения стека при сбоях pull; см.
+    GH task t_b79d0581). downstream `supercollider` и
+    `voice-assistant` декларируют `depends_on:
+    voice-resources-init { condition: service_completed_successfully,
+    required: false }` — стартуют без samples, если init не запущен.
+    Запуск init вручную: `docker compose --profile init up --rm
+    voice-resources-init`. Dep-script: `update_and_restart.sh` сам
+    вызывает init после `up -d`.
 12. **voice-action-server** - sidecar для action/PASTE control plane (Phase 4)
 13. **ollama** (profile `ai`) - локальный LLM inference (embeddings для VoiceMemory)
 14. **cadvisor** + **promtail** (profile `monitoring`) - мониторинг Vision Pi

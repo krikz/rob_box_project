@@ -54,6 +54,17 @@ docker-compose up -d
 echo "✅ Контейнеры запущены"
 echo ""
 
+# GH task t_b79d0581: voice-resources-init помечен profiles: [init]
+# и обычным `up -d` НЕ запускается. Это нужно, чтобы падение по сети
+# при pull не валило весь стек. Но значит renardo_samples volume
+# может быть пустым после деплоя → запускаем init вручную здесь.
+# `up --rm` гарантирует, что init-контейнер не останется висеть
+# (он всё равно помечен restart: "no" в compose, но --rm надёжнее).
+echo "🎵 Заполняем voice resources (renardo samples)..."
+docker-compose --profile init up --rm voice-resources-init || \
+  echo "   ⚠️  voice-resources-init недоступен; music будет без samples"
+echo ""
+
 # Показываем статус
 echo "📊 Статус контейнеров:"
 docker-compose ps

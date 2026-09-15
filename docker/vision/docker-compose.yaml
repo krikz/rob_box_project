@@ -178,8 +178,19 @@ services:
       - sc_synthdefs:/root/.local/share/SuperCollider/synthdefs
     command: ["/scripts/start_supercollider.sh"]
     depends_on:
+      # GH task t_b79d0581: voice-resources-init в профиле [init] →
+      # `condition: service_completed_successfully` через `required: false`
+      # означает "жди если init запущен, иначе стартуй с пустыми volume и
+      # смирись с тем что MusicSkill не сможет найти samples". Это и есть
+      # "частичный" запуск стека, требуемый acceptance #2:
+      #   docker compose up -d (без --profile init) поднимает
+      #   supercollider даже когда voice-resources-init недоступен.
+      # Запуск с заполненными samples:
+      #   docker compose --profile init up voice-resources-init
+      #   docker compose up -d supercollider voice-assistant
       voice-resources-init:
         condition: service_completed_successfully
+        required: false
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pgrep scsynth || exit 1"]
@@ -334,8 +345,13 @@ services:
         condition: service_healthy
       supercollider:
         condition: service_healthy
+      # GH task t_b79d0581: required: false — см. комментарий в
+      # supercollider.depends_on выше. voice-assistant стартует даже когда
+      # voice-resources-init (profile [init]) недоступен; MusicSkill
+      # сообщит "samples not found" но dialogue/STT/TTS не сломаются.
       voice-resources-init:
         condition: service_completed_successfully
+        required: false
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pgrep -f 'python3.*voice' || exit 1"]
