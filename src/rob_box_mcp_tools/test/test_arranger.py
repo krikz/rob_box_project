@@ -927,6 +927,52 @@ class TestFixedThemeMidi:
         assert "75" in lead                # но сама тема дословна
         assert "d3 >>" not in code         # без второго голоса
 
+    def test_counter_synth_overrides_the_unison_default(self):
+        """counter_synth задаёт контрастный тембр второго голоса (issue #2463).
+
+        По умолчанию (``counter_synth=None``) второй голос звучит тембром
+        темы — фолбэк ``counter_synth or lead_synth`` в spec_from_flat.
+        Явный ``counter_synth`` обязан долетать до сгенерированного кода
+        отдельным тембром, а не быть съеденным этим фолбэком.
+        """
+        from rob_box_mcp_tools.core.harmonize import harmonize
+
+        notes = [(72 + (i % 5), 0.25) for i in range(32)]
+        harmony = harmonize(notes, bpm=120, root="C", scale="major")
+        assert harmony.dense is True
+
+        code = render(spec_from_flat(
+            harmony=harmony, bpm=harmony.bpm, root=harmony.root,
+            scale=harmony.scale, form="arc", lead_synth="pluck",
+            bass_synth="dub", pad_synth="warmpad", counter_synth="strings",
+        ))
+        counter = next(l for l in code.splitlines() if l.startswith("d3 >>"))
+        assert "strings(" in counter       # контрастный тембр дошёл до кода
+        assert "pluck(" not in counter     # а не тембр темы (фолбэк не сработал)
+
+    def test_theme_octaves_false_disables_doubling_on_a_dense_theme(self):
+        """theme_octaves=False снимает удвоение даже на плотной теме.
+
+        Зеркало к test_dense_theme_gets_octaves_and_second_voice: та же
+        плотная тема, но с явно выключенным флагом — удвоения в октаву
+        быть не должно, хотя второй голос (counter) остаётся, потому что
+        theme_octaves управляет только удвоением роли lead.
+        """
+        from rob_box_mcp_tools.core.harmonize import harmonize
+
+        notes = [(72 + (i % 5), 0.25) for i in range(32)]
+        harmony = harmonize(notes, bpm=120, root="C", scale="major")
+        assert harmony.dense is True
+
+        code = render(spec_from_flat(
+            harmony=harmony, bpm=harmony.bpm, root=harmony.root,
+            scale=harmony.scale, form="arc", lead_synth="pluck",
+            bass_synth="dub", pad_synth="warmpad", theme_octaves=False,
+        ))
+        lead = next(l for l in code.splitlines() if l.startswith("p2 >>"))
+        assert "(60, 72)" not in lead      # удвоения нет несмотря на dense=True
+        assert "d3 >>" in code             # второй голос никуда не делся
+
     def test_lead_midi_length_mismatch_raises(self):
         with pytest.raises(ArrangementError):
             spec_from_flat(

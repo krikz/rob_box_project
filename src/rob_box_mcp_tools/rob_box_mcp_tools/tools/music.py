@@ -2316,6 +2316,44 @@ class ComposeMusicTool(MCPTool):
                 required=False,
             ),
             MCPToolParameter(
+                name="counter_synth",
+                type="string",
+                description=(
+                    "Тембр ВТОРОГО голоса (контрмелодии), который звучит "
+                    "ВМЕСТЕ с темой, а не вместо неё. Имеет смысл ТОЛЬКО "
+                    "при заданном name: второй голос строится гармоническим "
+                    "анализом точных нот известной мелодии, в свободно "
+                    "сочинённой музыке (без name) такого слоя нет вообще. "
+                    "Даже при name он звучит, только если тема плотная — "
+                    "марш/гимн/чиптюн, частые атаки; на разреженной, "
+                    "тихой теме второго голоса нет, и параметр окажется "
+                    "no-op. По умолчанию — тот же тембр, что lead_synth: "
+                    "унисон в терцию, безопасный вариант. Контрастный "
+                    "тембр звучит богаче — тема медью (imperialbrass), "
+                    "второй голос струнными (strings), а не тем же "
+                    "imperialbrass."
+                ),
+                required=False,
+                enum=list(MELODIC_LEAD_SYNTHS),
+                enum_strict=False,
+            ),
+            MCPToolParameter(
+                name="theme_octaves",
+                type="boolean",
+                description=(
+                    "Удвоение темы октавой вниз — вес, характерный для "
+                    "марша/гимна. Как и counter_synth, действует ТОЛЬКО "
+                    "при заданном name и только на плотной теме; на "
+                    "разреженной теме или теме с нотами ниже C4 удвоения "
+                    "не будет независимо от значения флага. По умолчанию "
+                    "true (включено). Поставь false, если удвоение "
+                    "делает тему слишком грузной там, где нужна тонкая "
+                    "одинокая линия — например лиричная минорная тема, "
+                    "где монофоничность часть характера."
+                ),
+                required=False,
+            ),
+            MCPToolParameter(
                 name="repeat",
                 type="boolean",
                 description="true — форма зацикливается БЕСКОНЕЧНО, до "
@@ -2533,6 +2571,8 @@ class ComposeMusicTool(MCPTool):
         pad_synth: Optional[str] = None,
         pad_notes: Optional[str] = None,
         progression: Optional[str] = None,
+        counter_synth: Optional[str] = None,
+        theme_octaves: bool = True,
         repeat: bool = False,
         swing: float = 0.0,
     ) -> MCPToolResult:
@@ -2598,6 +2638,8 @@ class ComposeMusicTool(MCPTool):
                 pad_synth=pad_synth,
                 pad_notes=pad_notes,
                 progression=progression,
+                counter_synth=counter_synth,
+                theme_octaves=theme_octaves,
                 repeat=repeat,
                 swing=swing,
             )
