@@ -1,0 +1,101 @@
+{
+  "name": "turn_occasion_meeting_v1",
+  "stability": "expected-red-until-pr-f",
+  "_comment": [
+    "Сценарий зависит от PR-A (каркас src/rob_box_voice/rob_box_voice/core/occasion.py)",
+    "и PR-F (_on_meeting_signal + test_meeting_inject режим).",
+    "До merge обоих — статус expected-red. После PR-F сценарий становится",
+    "acceptance-критерием для issue #2536 и ADR-0102 §9.6.",
+    "НЕ ставить в блокирующий gate CI, пока PR-A не в develop.",
+    "Спецификация — docs/e2e/turn_occasion_scenario.md (tester, t_7f1a4919).",
+    "ADR-0102: §9.6 (e2e-маркер), §3.4 (шейп данных vs решения), §3.5 (is_synthetic+occasion)."
+  ],
+  "description": "Воспроизводит сценарий «Денис входит в мастерскую → робот говорит первым» через тестовый адаптер VisionEvent (после PR-F). До PR-F сценарий красный по design.",
+  "preconditions": {
+    "code": [
+      "git ls-files src/rob_box_voice/rob_box_voice/core/occasion.py | wc -l  # >= 1",
+      "git grep -c 'from rob_box_perception.core.event_detector import EventDetector' -- src/  # >= 2 (тест + core/occasion.py)"
+    ],
+    "config": [
+      "docker/vision/config/wake_words.yaml содержит personality с 'роб бокс' (ADR-0065 SSoT)"
+    ],
+    "runtime": [
+      "ros2 node info /dialogue_node показывает подписку на /vision/hailo/events",
+      "ros2 topic info /vision/hailo/events -v: Publisher count >= 1, тип rob_box_perception_msgs/VisionEvent",
+      ">= 5 минут от старта dialogue_node (cold-start VAD калибровка, ADR-0029)"
+    ]
+  },
+  "steps": [
+    {
+      "label": "to01_inject_meeting_event",
+      "action": "ros2_topic_pub",
+      "topic": "/vision/hailo/events",
+      "msg_type": "rob_box_perception_msgs/VisionEvent",
+      "payload": {
+        "source_camera": "realsense_front",
+        "event_type": "person",
+        "class_name": "person",
+        "confidence": 0.94,
+        "embedding_id": "denis_test_inject",
+        "display_name": "Денис"
+      },
+      "qos": {"durability": "transient_local", "reliability": "reliable"},
+      "wait_after_s": 3.0,
+      "_comment": "Тестовый адаптер PR-F. Без него — живой человек в кадре (запрещено в CI). Используется синтетический embedding_id, чтобы не путать с реальным зарегистрированным человеком."
+    },
+    {
+      "label": "to02_expect_occasion_log",
+      "wait_for_log_patterns": [
+        "occasion.*ALLOW.*reason=person_recognized",
+        "Occasion.*MEETING.*display_name"
+      ],
+      "wait_for_log_timeout_s": 5.0,
+      "_comment": "Проверка: _on_meeting_signal построил Occasion(MEETING) и may_speak вернул ALLOW с reason='person_recognized' (ADR-0102 §9.6 + спецификация §3.1)."
+    },
+    {
+      "label": "to03_expect_dispatch_turn_synthetic",
+      "wait_for_log_patterns": [
+        "_dispatch_turn.*is_synthetic=True",
+        "_dispatch_turn.*occasion=Occasion"
+      ],
+      "wait_for_log_timeout_s": 3.0,
+      "_comment": "ADR-0101 §3.3.2 + ADR-0102 §3.5: is_synthetic=True + occasion=Occasion(MEETING) — валидная комбинация."
+    },
+    {
+      "label": "to04_expect_tts_phrase",
+      "wait_for_log_patterns": [
+        "/voice/tts/say.*привет",
+        "/voice/tts/say.*Денчик"
+      ],
+      "wait_for_log_timeout_s": 15.0,
+      "_comment": "Точная фраза зависит от LLM. Паттерн допускает вариации ('о, привет, Денчик' / 'привет, Денчик' / 'о, привет'). LLM-качество — отдельный gate, не этот сценарий."
+    },
+    {
+      "label": "to05_expect_no_wake_word_required",
+      "wait_for_log_negative_patterns": [
+        "_llm_skipped_counter\\[no_wake_word\\].*\\+1",
+        "skip summary.*no_wake_word.*>= 1"
+      ],
+      "wait_for_log_timeout_s": 3.0,
+      "_comment": "Ключевая post-condition брифа: LLM-цикл запустился БЕЗ wake-word и БЕЗ нового STT-текста. _llm_skipped_counter['no_wake_word'] не инкрементируется."
+    },
+    {
+      "label": "to06_expect_no_new_ros2_topics",
+      "action": "shell",
+      "command": "test -z \"$(ros2 topic list | grep -E 'turn_occasion|/voice/occasion')\"",
+      "expect_exit_code": 0,
+      "_comment": "ADR-0102 §9.2: NO new ROS2 topics /voice/turn_occasion, /voice/occasion/*. Сегодня 0 таких топиков, должно остаться 0 и после PR-A/PR-F."
+    }
+  ],
+  "postconditions": {
+    "llm_skipped_counter_delta": 0,
+    "verdict_reason_expected": "person_recognized",
+    "occasion_source_expected": "MEETING",
+    "tts_recording_min_duration_s": 1.5,
+    "tts_recording_min_rms_db": -30,
+    "ros2_topics_added": []
+  },
+  "expected_tool_calls": [],
+  "must_not_call": [],
+  "_expected_tool_calls_comment": "Сценарий не ожидает конкретных MCP-тулов. LLM может вызвать speak_text через _publish_response, но это деталь имплементации — НЕ блокирующий критерий для этого сценария. Если после PR-F наблюдается стабильный вызов speak_text — добавить в expected_tool_calls в acceptance-варианте."
+}
