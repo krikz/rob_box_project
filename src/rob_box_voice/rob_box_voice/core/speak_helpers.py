@@ -230,6 +230,98 @@ def strip_done_marker(text: str) -> str:
     return _DONE_MARKER_RE.sub("", text).rstrip()
 
 
+# Issue #2557 (DJ live round 3, 2026-09-15): the LLM sometimes returns
+# ``spoken='done'`` (or ``\n\ndone`` / «готово» / «всё» / …) AFTER calling
+# music tools WITHOUT ``speak_text`` — the user hears music start but no
+# audible acknowledgement. The cycle-end equality check in
+# ``_handle_result`` correctly suppresses the marker from auto-TTS, but
+# the user is left with silence after a music action. The DJ fallback
+# (issue #2547) only fired when ``spoken`` was already empty post-strip
+# AND the turn was NOT ``is_dj_auto`` — which is exactly the opposite of
+# what we want here: on a DJ transition the announcement IS the
+# information (track changed), not noise. This helper is called by
+# ``_handle_result`` to replace the spoken text with a short
+# DJ-appropriate phrase when the model called music tools but produced
+# a degenerate (``done`` / empty) answer.
+#
+# The set below mirrors ``agent_core._MUSIC_LAUNCH_TOOLS`` plus the
+# pure-DJ controls (``set_dj_mode``, ``stop_music``, ``lookup_melody``,
+# ``load_skill``). Keep both lists in sync when adding a new music
+# tool — otherwise the fallback won't fire and the user will hear
+# silence again.
+_DJ_MUSIC_TOOLS: frozenset[str] = frozenset({
+    # Music launchers (agent_core._MUSIC_LAUNCH_TOOLS).
+    "execute_music_code", "generate_music",
+    "gen_play_from_library", "set_vibe_preset", "load_track",
+    # Pure-DJ controls.
+    "compose_music", "set_dj_mode", "stop_music",
+    "lookup_melody", "load_skill",
+})
+#: Degenerate marker that the master-prompt cycle-end contract tells the
+#: LLM to emit after the LAST ``speak_text``. Same set as the equality
+#: check in ``_handle_result`` (``done`` / «готово» / «всё» / …). Used
+#: here to recognise the «tools called but marker only» shape that
+#: falls through to silence.
+_DJ_DEGENERATE_MARKERS: frozenset[str] = frozenset({
+    "done", "task complete", "task_complete",
+    "готово", "готов", "готова",
+    "всё", "выполнено", "завершено", "завершена",
+})
+#: Short DJ announcement when the model changed the music without
+#: speaking. Tuned to be informative without claiming a specific
+#: action: «Готово, играю.» confirms the music change reached TTS, then
+#: the rest of the ``spoken`` (when present and non-degenerate) follows.
+#: No emoji / no exclamation — keeps the tone neutral and matches the
+#: other DJ hooks (``Принял.``, «Понял.»).
+_DJ_FALLBACK_PHRASE: str = "Готово, играю."
+
+
+def ensure_dj_music_response(
+    spoken: str,
+    tools_called: Optional[List[str]],
+) -> str:
+    """Return a DJ-style fallback when music tools ran without real
+    user-facing text (issue #2557).
+
+    Contract:
+
+    * ``spoken`` is the post-strip, post-cycle-marker-equal text
+      (already passed through ``strip_done_marker`` etc.). May be
+      empty, whitespace, or one of :data:`_DJ_DEGENERATE_MARKERS`.
+    * ``tools_called`` is the list of tool names the LLM called this
+      turn (may be ``None``).
+
+    Returns the cleaned ``spoken`` if it looks like a real reply;
+    otherwise returns the DJ fallback phrase (``"Готово, играю."``)
+    when ``tools_called`` intersects :data:`_DJ_MUSIC_TOOLS`.
+
+    Pure / no ROS, no side effects — caller decides whether to publish.
+    Designed to be the single source of truth so the dialogue_node
+    change is a one-liner and stays under the CC budget.
+    """
+    if tools_called is None:
+        return spoken
+    # Defensive: mirror ``strip_done_marker`` contract — non-string
+    # ``spoken`` is the caller's problem (the dialogue_node already
+    # does ``result.spoken_text or ""`` upstream), but if it slips
+    # through here we pass it through untouched rather than crash on
+    # ``.strip()``.
+    if not isinstance(spoken, str):
+        return spoken
+    called = set(tools_called)
+    if not (called & _DJ_MUSIC_TOOLS):
+        return spoken
+    # Real user-facing reply? Leave it alone — the master-prompt contract
+    # allows the model to call music tools AND speak (e.g. «Запускаю
+    # Баха!»). Only intervene when the reply is empty or one of the
+    # cycle-end markers the LLM uses to signal turn end without
+    # producing speech.
+    stripped = spoken.strip()
+    if stripped and stripped.lower() not in _DJ_DEGENERATE_MARKERS:
+        return spoken
+    return _DJ_FALLBACK_PHRASE
+
+
 #: Regexes applied by :func:`strip_markdown` in order. Each tuple is
 #: ``(compiled_pattern, replacement)``. The emphasis patterns intentionally
 #: require *paired* delimiters so a lone ``*`` or ``_`` (e.g. ``2 * 3``,
