@@ -25,7 +25,7 @@ class CameraCache:
 
     def __init__(self, ttl: float = 5.0):
         self._frames: Dict[str, Tuple[bytes, float]] = {}
-        self._lock = threading.Lock()
+        self._lock = threading.Condition()
         self.ttl = ttl
 
     def update(self, topic: str, jpeg_data: bytes) -> None:
@@ -37,6 +37,7 @@ class CameraCache:
         """
         with self._lock:
             self._frames[topic] = (jpeg_data, time.monotonic())
+            self._lock.notify_all()
 
     def get(self, topic: str) -> Optional[bytes]:
         """Get the latest frame if it's still fresh.
@@ -56,6 +57,23 @@ class CameraCache:
                 logger.debug("Frame for %s is stale (%.1fs old)", topic, time.monotonic() - ts)
                 return None
             return jpeg_data
+
+    def wait_for(self, topic: str, timeout_s: float) -> Optional[bytes]:
+        """Wait up to ``timeout_s`` for a fresh frame on ``topic``.
+
+        Returns:
+            JPEG bytes or None if nothing fresh arrived in time.
+        """
+        deadline = time.monotonic() + timeout_s
+        with self._lock:
+            while True:
+                entry = self._frames.get(topic)
+                if entry is not None and time.monotonic() - entry[1] <= self.ttl:
+                    return entry[0]
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                self._lock.wait(remaining)
 
     def get_age(self, topic: str) -> Optional[float]:
         """Get the age of the cached frame in seconds.

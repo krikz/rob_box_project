@@ -12,7 +12,8 @@ After Phase 6 v2 / W7 this module is a *thin transport*:
   pipeline (``dialogue_node``) can decide what to do with it.
 
 All handlers receive ``context.bot_data["node"]`` — our TelegramNode
-instance which exposes ROS 2 publishers and the camera cache.
+instance which exposes ROS 2 publishers and on-demand camera frames
+(``fetch_camera_frame``).
 """
 
 import io
@@ -237,7 +238,7 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     node = _node(context)
     topic = node.camera_topic
 
-    jpeg_data = node.camera_cache.get(topic)
+    jpeg_data = await node.fetch_camera_frame(topic)
     if jpeg_data is None:
         age = node.camera_cache.get_age(topic)
         if age is not None:
@@ -258,7 +259,7 @@ async def photo_up_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     node = _node(context)
     topic = node.camera_up_topic
 
-    jpeg_data = node.camera_cache.get(topic)
+    jpeg_data = await node.fetch_camera_frame(topic)
     if jpeg_data is None:
         await update.message.reply_text("⚠️ Нет кадров с потолочной камеры.")
         return
@@ -356,7 +357,7 @@ async def photo_depth_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     node = _node(context)
     topic = node.camera_depth_topic
 
-    raw = node.camera_cache.get(topic)
+    raw = await node.fetch_camera_frame(topic)
     if raw is None:
         age = node.camera_cache.get_age(topic)
         if age is not None:

@@ -11,6 +11,9 @@ telegram_bot:
     camera_topic: "/camera/rgb/image_raw/compressed"
     camera_up_topic: "/camera_up/rgb/image_raw/compressed"
     camera_cache_ttl: 5.0      # seconds — discard frames older than this
+    # Камеры — только по запросу фото (OAK-D/потолочная не крутятся впустую)
+    camera_wait_s: 5.0        # сколько ждать первый кадр после подписки
+    camera_linger_s: 10.0     # держать подписку после последнего запроса
 
     # LLM
     llm_provider: "deepseek"   # deepseek | mimo
