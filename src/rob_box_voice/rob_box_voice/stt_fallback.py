@@ -78,6 +78,11 @@ class STTProvider(Protocol):
     просто передаются как объекты с методом ``recognize(audio_bytes) -> str | None``.
     Провайдер ОБЯЗАН вернуть ``None`` или пустую строку, если не смог
     распознать (timeout/error маппятся нами в ``FallbackReason``).
+
+    Необязательный метод ``prepare()`` вызывается один раз, когда очередь
+    дошла до провайдера, и НЕ входит в ``timeout_s`` — там лениво грузится
+    модель (Vosk, issue #2609), иначе первая фраза после отказа облака
+    отбрасывалась по таймауту.
     """
 
     name: str
@@ -209,6 +214,13 @@ def select_recognition(
         # только усугубит. Вместо этого сразу идём к следующему.
         attempts_left = max_retries if not is_fallback else 0
         total_attempts = attempts_left + 1
+
+        prepare = getattr(provider, "prepare", None)
+        if callable(prepare):
+            try:
+                prepare()
+            except Exception:  # recognize() сам решит, что делать
+                logging.getLogger(__name__).warning("STT provider %s: prepare() failed", provider.name, exc_info=True)
 
         for attempt_idx in range(total_attempts):
             if attempt_idx > 0:

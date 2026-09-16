@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import time
 from unittest.mock import MagicMock
 
 import pytest
@@ -1464,3 +1465,25 @@ class TestVoskLazyLoad:
         node = _make_stt_node_stub()
         assert node._vosk_available is False
         assert node._recognize_vosk(b"\x00" * 8000) is None
+
+
+def test_vosk_adapter_prepare_loads_model_outside_timeout(monkeypatch):
+    """Issue #2609 — загрузка Vosk не должна съедать таймаут первой фразы."""
+    monkeypatch.setattr("os.path.isdir", lambda _p: True)
+    node = _make_stt_node_stub()
+    from rob_box_voice import stt_node as mod
+
+    node.yandex_stub = None
+    node.yandex_timeout_s = 0.2
+    mod.KaldiRecognizer.return_value.FinalResult.return_value = '{"text": "привет робот"}'
+
+    real_model = mod.Model
+
+    def _slow_model(*a, **kw):
+        time.sleep(0.4)
+        return real_model(*a, **kw)
+
+    monkeypatch.setattr(mod, "Model", _slow_model)
+    text, attempts = node._recognize_with_fallback(b"\x00" * 8000)
+    assert text == "привет робот"
+    assert [(a.provider, a.reason) for a in attempts] == [("vosk", "ok")]
