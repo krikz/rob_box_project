@@ -1,4 +1,4 @@
-"""Regression tests for vision-face ENV-namespace consistency (ADR-0113).
+"""Regression tests for vision-face ENV-namespace consistency (ADR-0120).
 
 Issue #2655 (F-1 from t_4b487ef8 component review 2026-09-15):
 
@@ -144,7 +144,7 @@ def test_vision_face_compose_does_not_use_face_namespace():
     assert re.search(r'\$\{FACE_HAILO[A-Z0-9_]*', block) is None, (
         'vision-face compose uses ${FACE_HAILO_*} ENV substitution — but '
         'start_vision_face.sh reads HAILO_ENABLED (no prefix). '
-        'Reintroducing silently-broken integration (ADR-0113).'
+        'Reintroducing silently-broken integration (ADR-0120).'
     )
     assert re.search(r'\$\{FACE_HEF[A-Z0-9_]*', block) is None, (
         'vision-face compose uses ${FACE_HEF_*} ENV substitution — but '
@@ -171,7 +171,7 @@ def test_vision_face_compose_maps_hailo_enabled_and_hef_path():
 
 
 def test_vision_face_and_vision_hailo_use_same_env_names():
-    """ADR-0113 §2.2: все vision-* сервисы используют ОБЩИЕ имена.
+    """ADR-0120 §2.2: все vision-* сервисы используют ОБЩИЕ имена.
 
     ``HAILO_ENABLED`` / ``HEF_PATH``. Namespace-префиксы запрещены.
     """
@@ -187,7 +187,7 @@ def test_vision_face_and_vision_hailo_use_same_env_names():
         )
         assert name in face_text, (
             f'{name} not present in start_vision_face.sh — divergence '
-            'from vision-hailo baseline (ADR-0113 §2.2).'
+            'from vision-hailo baseline (ADR-0120 §2.2).'
         )
 
 
@@ -204,11 +204,11 @@ def test_face_namespace_not_introduced_anywhere_in_compose():
     # Match ``${FACE_HAILO_ENABLED:-...}`` etc. — actual ENV mapping.
     assert re.search(r'\$\{FACE_HAILO[A-Z0-9_]*', text) is None, (
         'FACE_HAILO namespace re-introduced as an ENV substitution in '
-        'compose — re-breaks F-1 fix (ADR-0113).'
+        'compose — re-breaks F-1 fix (ADR-0120).'
     )
     assert re.search(r'\$\{FACE_HEF[A-Z0-9_]*', text) is None, (
         'FACE_HEF namespace re-introduced as an ENV substitution in '
-        'compose — re-breaks F-1 fix (ADR-0113).'
+        'compose — re-breaks F-1 fix (ADR-0120).'
     )
 
 

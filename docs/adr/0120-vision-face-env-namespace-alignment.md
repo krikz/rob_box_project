@@ -1,4 +1,4 @@
-# ADR-0113 — vision-face: согласование имён ENV с vision-hailo (убрать `FACE_*` namespace)
+# ADR-0120 — vision-face: согласование имён ENV с vision-hailo (убрать `FACE_*` namespace)
 
 **Дата:** 2026-09-15
 **Статус:** Accepted (issue #2655, F-1 из component review 2026-09-15, t_4b487ef8)
@@ -141,7 +141,7 @@ ENV-префиксы.
 - **F-1.2 (отдельная карточка, architect):** capability-honest smoke-test —
   `docker compose -f docker/vision/docker-compose.yaml config | grep HAILO_ENABLED`
   + git blame pre-receive hook на будущие расхождения namespace.
-- **F-1.3 (отдельная карточка, devops):** ADR-0113 → line в
+- **F-1.3 (отдельная карточка, devops):** ADR-0120 → line в
   `docs/development/AI_DEVELOPMENT_REVIEW.md` и `KNOWN_OPERATIONAL_WARNINGS.md` —
   «все vision-* сервисы используют общие имена ENV».
 
