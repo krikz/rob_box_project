@@ -103,6 +103,17 @@ from rob_box_voice.observability import (
     start_span,
 )
 
+# ADR-0101 §3.3.5 / Issue #2536 / PR-E: «unclear cooldown» живёт в
+# едином OccasionGate (см. core/occasion.py). Импортируем типы на
+# уровне модуля: ``OccasionGate`` создаётся в ``__init__`` (default, если
+# kwarg не передан), а ``Occasion`` / ``VerdictKind`` нужны в
+# ``_maybe_speak_unclear`` напрямую.
+from rob_box_voice.core.occasion import (
+    Occasion,
+    OccasionGate,
+    VerdictKind,
+)
+
 # #1990 (оператор-agent 05) — источники аудио для wake-роутера (_process_audio).
 # Namespace вейк-слов привязан к источнику, а не только к тексту (целевая §7.1).
 _SRC_RESPEAKER = "respeaker"  # /audio/speech_audio → /voice/stt/result (личность)
@@ -179,7 +190,14 @@ except ImportError:
 class STTNode(Node):
     """Нода для распознавания речи: Yandex STT gRPC v3 (primary) + Vosk (fallback)."""
 
-    def __init__(self):
+    def __init__(self, *, occasion_gate: OccasionGate | None = None) -> None:
+        # ADR-0101 §3.3.5 / Issue #2536 / PR-E: «unclear cooldown» идёт
+        # через единый ``OccasionGate``. ``occasion_gate`` — optional kwarg:
+        # если передан (dialogue_node создаёт и прокидывает в ноду),
+        # ``_maybe_speak_unclear`` спрашивает у gate (OccasionGate.may_speak)
+        # и фиксирует ``mark_consumed``. Если НЕ передан (legacy-тесты /
+        # standalone запуск) — создаём default-инстанс ниже с cooldown'ом
+        # из ``unclear_cooldown_s``.
         super().__init__("stt_node")
 
         # Issue #1234 — OpenTelemetry traces (этап 2). STT-нода не создаёт
@@ -305,6 +323,20 @@ class STTNode(Node):
         self.unclear_cooldown_s: float = float(self.get_parameter("unclear_cooldown_s").value)
         self.tts_grace_s: float = float(self.get_parameter("tts_grace_s").value)
         self._last_unclear_at: float = 0.0  # монотонное время последней фразы «не расслышал»
+        # ADR-0101 §3.3.5 (PR-E): единый gate для всех поводов. Если
+        # ``occasion_gate`` не передан (типичный случай — ROS launch
+        # передаёт только YAML-параметры, kwargs не доходят), создаём
+        # gate локально с cooldown'ом из ``unclear_cooldown_s``. Внешний
+        # wiring (kwarg) остаётся для юнит-тестов и случаев, когда
+        # gate живёт в другом Python-процессе/классе.
+        self._occasion_gate: OccasionGate | None = occasion_gate
+        if self._occasion_gate is None:
+            self._occasion_gate = OccasionGate(
+                global_debounce_s=2.0,
+                source_cooldowns={
+                    "unclear_acknowledgement": self.unclear_cooldown_s,
+                },
+            )
         # Issue #1251 — ранний «бульк».
         self.early_boop_enabled: bool = bool(self.get_parameter("early_boop_enabled").value)
         self.early_boop_trigger: str = str(self.get_parameter("early_boop_trigger").value)
@@ -879,21 +911,41 @@ class STTNode(Node):
         Ограничение по времени (``unclear_cooldown_s``) защищает от петли:
         робот говорит фразу → микрофон слышит эхо → VAD триггерит новую
         фразу → снова неясный результат → снова «не расслышал»...
+
+        ADR-0101 §3.3.5 / Issue #2536 (PR-E): решение принимает
+        ``OccasionGate`` — ``Occasion(kind="unclear_acknowledgement")``
+        → ``may_speak`` → ``ALLOW``/``DEFER``. На ``ALLOW`` публикуем
+        SSML-payload, вызываем ``mark_consumed`` и обновляем
+        ``self._last_unclear_at`` (метрика, уйдёт в PR-F когда выпилим
+        прямое чтение ``unclear_cooldown_s``).
         """
         if not self.unclear_phrase:
             return
-        now = time.monotonic()
-        if now - self._last_unclear_at < self.unclear_cooldown_s:
+
+        assert self._occasion_gate is not None  # создаётся в __init__
+
+        occasion = Occasion(
+            kind="unclear_acknowledgement",
+            payload={"text": self.unclear_phrase},
+        )
+        verdict = self._occasion_gate.may_speak(occasion)
+        if verdict.kind is not VerdictKind.ALLOW:
             self.get_logger().info(
-                f"🔕 Пропуск «не расслышал» (cooldown {self.unclear_cooldown_s}s активен)"
+                f"unclear ack deferred: {verdict.reason}"
             )
             return
-        self._last_unclear_at = now
+
+        # ALLOW → публикуем и фиксируем факт отправки.
+        now = time.monotonic()
+        self._last_unclear_at = now  # метрика (PR-F выпилит)
+        self._occasion_gate.mark_consumed(occasion)
         payload = build_ssml_payload(self.unclear_phrase, animation="confused")
         msg = String()
         msg.data = payload
         self.tts_request_pub.publish(msg)
-        self.get_logger().info(f"🗣️ Неясный результат → говорю: {self.unclear_phrase!r}")
+        self.get_logger().info(
+            f"🗣️ Неясный результат → говорю: {self.unclear_phrase!r}"
+        )
 
     def _recognize_with_fallback(self, audio_bytes: bytes) -> "tuple[Optional[str], list]":
         """Прогоняем фразу через Yandex (primary, retry) + Vosk (fallback).
