@@ -180,10 +180,10 @@ class TestFirstVoiceCyclePosition:
         )
         pos = first_voice_cycle_position(log)
         assert pos is not None
-        # Самый ранний маркер — `'speak_text'` внутри tools=...
-        assert log[pos:].startswith("tools=")
-        # Уточняем: позиция указывает именно на "'speak_text'" (а не "tts finished").
-        assert log[pos:].startswith("tools=['speak_text'")
+        # Самый ранний execution-маркер в этом логе — "'speak_text'" внутри
+        # tools=... (поиск идёт по подстроке, поэтому вернёт позицию
+        # открывающей кавычки перед speak_text, а не саму 'tools=').
+        assert log[pos:].startswith("'speak_text'")
 
 
 # ── TestDiscoveryStepAcceptance (per-step validator) ───────────────────────
