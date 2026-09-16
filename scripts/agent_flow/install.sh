@@ -345,6 +345,26 @@ EXPECTED=(
     # label `closed:stale-rejected`. Регистрация cron-job делается в
     # ensure_e2e_rejected_watchdog_cron ниже.
     agent-flow-e2e-rejected-watchdog.sh
+    # Orphan-watchdog detector (ретро 16.09 t_6687a024,
+    # pattern stale-conflicting-watchdog-not-scheduled): no-agent,
+    # каждые 24ч проверяет, что КАЖДЫЙ `agent-flow-*-watchdog.sh` из
+    # EXPECTED[] install.sh имеет enabled interval-job в jobs.json
+    # devops-профиля. Для orphan'ов emit'ит:
+    #   1) строку в /tmp/agent-flow-drift.alert.log (общий канал с
+    #      drift-detect), чтобы оператор увидел в утреннем обзоре;
+    #   2) gh-issue (label `agent-flow-watchdog-orphan`) с перечнем
+    #      пострадавших watchdog'ов — idempotent 24h dedup window;
+    #   3) PR CI-guard (G-Agent-Flow-Process-Checks.yml, ADR-0116)
+    #      блокирует новые watchdog-сироты на merge-time.
+    # Сам orphan-watchdog регистрируется в ensure_orphan_watchdog_cron
+    # ниже (every 24h). Это страховка на случай CI-bypass / hotfix-push
+    # в develop вне PR-flow (pattern повторялся уже 2 раза: t_197de62a
+    # cancel-on-provider-exhausted + t_6687a024 stale-conflicting).
+    # Имя файла выбрано с суффиксом -watchdog.sh ровно один раз в конце,
+    # чтобы CI-guard (G-Agent-Flow-Process-Checks) корректно вывел
+    # func_name=ensure_orphan_watchdog_cron по алгоритму
+    # `${base#agent-flow-}` + `${slug%-watchdog.sh}` + replace -/_.
+    agent-flow-orphan-watchdog.sh
     # Ночной ревью-цикл (ADR-0049): no-agent job, раз в ночь собирает
     # дайджест за прошедшие сутки (merged PR / коммиты / issues /
     # красный CI / kanban) и заводит ОДНУ карточку «ночной ревью <дата>»
@@ -1294,6 +1314,37 @@ ensure_e2e_rejected_watchdog_cron() {
     ensure_cron_job devops "Agent Flow E2E Rejected Watchdog (ретро t_9251fd74)" "agent-flow-e2e-rejected-watchdog.sh" "every 24h" interval
 }
 ensure_e2e_rejected_watchdog_cron
+
+echo
+echo "==> Ensure cron job registration: orphan-watchdog (ретро 16.09 t_6687a024)"
+# Проблема: паттерн «PR вливает agent-flow-*-watchdog.sh в develop, но
+# НЕ регистрирует cron-job в install.sh» повторялся уже 2 раза:
+#   - t_197de62a — cancel-on-provider-exhausted.sh лежал orphan до ручного
+#     фикса (добавили в install.sh);
+#   - t_6687a024 — stale-conflicting-watchdog.sh провисел ~6ч без cron-job,
+#     PR #2671 в CONFLICTING всё это время, никто не заметил.
+# При этом PR CI-guard (G-Agent-Flow-Process-Checks.yml, ADR-0116) ловит
+# новые watchdog-sироты на merge-time, НО не покрывает:
+#   - hotfix-push в develop вне PR-flow;
+#   - случаи, когда CI отключён или bypass'нут;
+#   - регрессии после merge (теоретически).
+#
+# Решение: ensure_orphan_watchdog_cron() — every-24h no-agent
+# job в devops-профиле (страховка). Каждый tick:
+#   1) читает EXPECTED[] install.sh через `bash install.sh --list-files`;
+#   2) фильтрует `agent-flow-*-watchdog.sh`;
+#   3) для каждого проверяет наличие enabled interval-job в jobs.json;
+#   4) для orphan'ов пишет в /tmp/agent-flow-drift.alert.log + gh-issue
+#      с label `agent-flow-watchdog-orphan` (idempotent 24h dedup).
+# Сам orphan-watchdog регистрируется интервал-job'ом — interval-guard
+# (по script+enabled), как и другие watchdog'и.
+#
+# Поведение по cron-доставке: exit 2 при missing → alert в
+# cron-delivery; 24h-окно между повторными alert'ами.
+ensure_orphan_watchdog_cron() {
+    ensure_cron_job devops "Agent Flow Orphan Watchdog (ретро t_6687a024)" "agent-flow-orphan-watchdog.sh" "every 24h" interval
+}
+ensure_orphan_watchdog_cron
 
 # Orphan-cards audit telemetry (ретро t_3dbde205 / 15.09): every-15m no-agent
 # job в agent-flow профиле. Сканирует активные карточки канбана, группирует

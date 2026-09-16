@@ -1,0 +1,263 @@
+name: "G: Agent Flow Process Checks"
+
+# Ретро 16.09 t_6687a024 / t_a7d642cd (pattern stale-conflicting-watchdog-not-scheduled):
+# дважды повторился баг «PR вливает agent-flow-*-watchdog.sh в develop, но НЕ
+# регистрирует cron-job в install.sh — watchdog лежит orphan'ом на диске».
+#
+# Этот workflow — блокирующий CI-guard:
+#   - HARD FAIL  если PR добавляет новый scripts/agent_flow/agent-flow-*-watchdog.sh
+#     и НЕ меняет scripts/agent_flow/install.sh. Подсказка: «зарегистрируйте
+#     ensure_<name>_watchdog_cron() и её вызов в install.sh, иначе watchdog
+#     окажется на диске без cron-job (orphan)».
+#   - SOFT WARN  если PR добавляет новый watchdog И меняет install.sh, но в нём
+#     нет соответствующего ensure_<basename-prefix>_watchdog_cron() + вызова.
+#   - SOFT WARN  если PR удаляет watchdog без удаления ensure_*_watchdog_cron().
+#
+# Тонкости:
+#   - «Новый» = файл появляется в diff develop..HEAD (только added; renamed
+#     трактуется как новый; modified — игнорируем).
+#   - Имя watchdog-файла матчится регэкспом `agent-flow-.*-watchdog\.sh$`.
+#   - Привязка watchdog → cron-функция: префикс имени вычисляется из
+#     basename без .sh + "stale-conflicting" → "stale_conflicting" (sed).
+#     Это даёт ensure_stale_conflicting_watchdog_cron().
+#
+# ADR-0116 (follow-up ADR-0049).
+on:
+  pull_request:
+    branches:
+      - develop
+      - main
+    paths:
+      - 'scripts/agent_flow/install.sh'
+      - 'scripts/agent_flow/agent-flow-*-watchdog.sh'
+  push:
+    branches:
+      - develop
+      - main
+    paths:
+      - 'scripts/agent_flow/install.sh'
+      - 'scripts/agent_flow/agent-flow-*-watchdog.sh'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  watchdog-cron-registration-guard:
+    name: Watchdog cron-registration guard (ADR-0116)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          fetch-depth: 0  # need full history for diff against base
+
+      # Гарантируем, что origin/<base> существует в локальном репо
+      # (на PR runner checkout иногда не fetch'ит base автоматически).
+      - name: Fetch base branch
+        run: |
+          BASE="${GITHUB_BASE_REF:-develop}"
+          echo "Fetching origin/$BASE for diff base"
+          git fetch --no-tags origin "$BASE:$BASE" || {
+            echo "::warning::Could not fetch origin/$BASE — guard will skip diff and just PASS"
+            echo "GUARD_SKIP=1" >> "$GITHUB_ENV"
+          }
+
+      - name: Detect added/removed watchdog scripts vs base
+        id: detect
+        run: |
+          if [ "${GUARD_SKIP:-0}" = "1" ]; then
+            echo "added=[]" >> "$GITHUB_OUTPUT"
+            echo "removed=[]" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          BASE="${GITHUB_BASE_REF:-develop}"
+          # diff по именам файлов: A = added, D = deleted, M/R = modified/renamed
+          mapfile -t CHANGES < <(git diff --name-status "$BASE"...HEAD -- 'scripts/agent_flow/')
+          added=()
+          removed=()
+          for line in "${CHANGES[@]}"; do
+            status="${line%%	*}"
+            rest="${line#*	}"
+            # R100 old new — берём new
+            case "$status" in
+              R*) path="${rest##*	}" ;;
+              *)   path="$rest" ;;
+            esac
+            base="$(basename "$path")"
+            case "$base" in
+              agent-flow-*-watchdog.sh)
+                case "$status" in
+                  A|R*) added+=("$base") ;;
+                  D)     removed+=("$base") ;;
+                esac
+                ;;
+            esac
+          done
+          {
+            echo "added<<EOF"
+            printf '%s\n' "${added[@]:-}"
+            echo "EOF"
+            echo "removed<<EOF"
+            printf '%s\n' "${removed[@]:-}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Decide guard result
+        id: decide
+        run: |
+          # На push в develop/main «base» не определён через GITHUB_BASE_REF —
+          # в этом случае проверяем diff против HEAD~1..HEAD, иначе guard
+          # срабатывает на каждый merge и ломает develop.
+          if [ "${GUARD_SKIP:-0}" = "1" ]; then
+            echo "result=skip" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -z "${GITHUB_BASE_REF:-}" ] || [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+            BASE_REF="HEAD~1"
+            echo "::notice::Push event or no GITHUB_BASE_REF — using $BASE_REF as diff base"
+          else
+            BASE_REF="${GITHUB_BASE_REF}"
+          fi
+          # Re-evaluate added/removed against chosen base
+          mapfile -t CHANGES < <(git diff --name-status "$BASE_REF"...HEAD -- 'scripts/agent_flow/' 2>/dev/null || true)
+          added=()
+          removed=()
+          for line in "${CHANGES[@]}"; do
+            status="${line%%	*}"
+            rest="${line#*	}"
+            case "$status" in
+              R*) path="${rest##*	}" ;;
+              *)   path="$rest" ;;
+            esac
+            base="$(basename "$path")"
+            case "$base" in
+              agent-flow-*-watchdog.sh)
+                case "$status" in
+                  A|R*) added+=("$base") ;;
+                  D)     removed+=("$base") ;;
+                esac
+                ;;
+            esac
+          done
+          # Проверяем, менялся ли install.sh
+          install_sh_changed=0
+          for line in "${CHANGES[@]}"; do
+            status="${line%%	*}"
+            rest="${line#*	}"
+            case "$status" in
+              R*) path="${rest##*	}" ;;
+              *)   path="$rest" ;;
+            esac
+            if [ "$path" = "scripts/agent_flow/install.sh" ]; then
+              install_sh_changed=1
+              break
+            fi
+          done
+
+          echo "::notice::Detected added watchdog scripts: ${added[*]:-<none>}"
+          echo "::notice::Detected removed watchdog scripts: ${removed[*]:-<none>}"
+          echo "::notice::install.sh changed: $install_sh_changed"
+
+          result="ok"
+          missing_funcs=()
+          orphan_funcs=()
+
+          if [ "${#added[@]}" -gt 0 ] && [ "$install_sh_changed" -eq 0 ]; then
+            # HARD FAIL: PR добавляет watchdog без правки install.sh
+            {
+                  echo "result=fail" >> "$GITHUB_OUTPUT"
+                  echo "reason=added watchdog scripts without touching scripts/agent_flow/install.sh" >> "$GITHUB_OUTPUT"
+                  echo "missing_funcs<<EOF" >> "$GITHUB_OUTPUT"
+                  printf '%s\n' "${added[@]}" >> "$GITHUB_OUTPUT"
+                  echo "EOF" >> "$GITHUB_OUTPUT"
+                } || true
+            exit 0
+          fi
+
+          if [ "${#added[@]}" -gt 0 ] && [ "$install_sh_changed" -eq 1 ]; then
+            # SOFT WARN: проверяем, что в install.sh появилась ensure_*_watchdog_cron
+            for base in "${added[@]}"; do
+              # basename: agent-flow-<slug>-watchdog.sh → ensure_<slug>_watchdog_cron
+              slug="${base#agent-flow-}"
+              slug="${slug%-watchdog.sh}"
+              func_name="ensure_${slug//-/_}_watchdog_cron"
+              call_site="${func_name}()"
+              # В install.sh должна быть и определение функции, и её вызов
+              if ! grep -qE "^${func_name}\(\)" scripts/agent_flow/install.sh \
+                 || ! grep -qE "^${func_name}\$" scripts/agent_flow/install.sh; then
+                missing_funcs+=("$func_name (for $base)")
+              fi
+            done
+            if [ "${#missing_funcs[@]}" -gt 0 ]; then
+              {
+                echo "result=warn" >> "$GITHUB_OUTPUT"
+                echo "reason=install.sh changed but no ensure_*_watchdog_cron() definition+call found" >> "$GITHUB_OUTPUT"
+                echo "missing_funcs<<EOF" >> "$GITHUB_OUTPUT"
+                printf '%s\n' "${missing_funcs[@]}" >> "$GITHUB_OUTPUT"
+                echo "EOF" >> "$GITHUB_OUTPUT"
+              } || true
+              exit 0
+            fi
+          fi
+
+          if [ "${#removed[@]}" -gt 0 ]; then
+            # SOFT WARN: PR удаляет watchdog — должно быть удалено ensure_*_watchdog_cron
+            for base in "${removed[@]}"; do
+              slug="${base#agent-flow-}"
+              slug="${slug%-watchdog.sh}"
+              func_name="ensure_${slug//-/_}_watchdog_cron"
+              if grep -qE "^${func_name}\(\)" scripts/agent_flow/install.sh; then
+                orphan_funcs+=("$func_name (for removed $base)")
+              fi
+            done
+            if [ "${#orphan_funcs[@]}" -gt 0 ]; then
+              {
+                echo "result=warn" >> "$GITHUB_OUTPUT"
+                echo "reason=removed watchdog but its ensure_*_watchdog_cron() remains in install.sh" >> "$GITHUB_OUTPUT"
+                echo "missing_funcs<<EOF" >> "$GITHUB_OUTPUT"
+                printf '%s\n' "${orphan_funcs[@]}" >> "$GITHUB_OUTPUT"
+                echo "EOF" >> "$GITHUB_OUTPUT"
+              } || true
+              exit 0
+            fi
+          fi
+
+          echo "result=ok" >> "$GITHUB_OUTPUT"
+
+      - name: Report
+        run: |
+          result="$(grep '^result=' <<<"${{ steps.detect.outputs.added }}" 2>/dev/null || true)"
+          # Надёжный путь — читаем result из step output
+          result="${{ steps.decide.outputs.result }}"
+          reason="${{ steps.decide.outputs.reason }}"
+          missing="${{ steps.decide.outputs.missing_funcs }}"
+
+          echo "## 🛡 Watchdog cron-registration guard (ADR-0116)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Поле | Значение |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-------|---------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Result | \`$result\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Reason | $reason |" >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$missing" ] && [ "$missing" != "<EOF>" ]; then
+            echo "| Missing | \`\`\`\n$missing\n\`\`\` |" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          case "$result" in
+            fail)
+              echo "::error title=Watchdog cron-registration guard::PR adds watchdog script(s) but doesn't update scripts/agent_flow/install.sh — watchdog will sit on disk as orphan (no cron-job). Add an \`ensure_*_watchdog_cron()\` function and call it in install.sh. See ADR-0116 and retro t_6687a024."
+              exit 1
+              ;;
+            warn)
+              echo "::warning title=Watchdog cron-registration guard::$reason"
+              ;;
+            ok|skip)
+              echo "::notice::Guard passed ($result)"
+              ;;
+            *)
+              echo "::error::Unexpected guard result: '$result'"
+              exit 1
+              ;;
+          esac
