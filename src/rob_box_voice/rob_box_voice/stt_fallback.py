@@ -169,6 +169,17 @@ def _measure(call: Callable[[], Optional[str]], timeout_s: float) -> tuple[Optio
     return result, elapsed_ms, None
 
 
+def _prepare_provider(provider: STTProvider) -> None:
+    """Вызвать необязательный ``provider.prepare()`` вне soft-timeout."""
+    prepare = getattr(provider, "prepare", None)
+    if not callable(prepare):
+        return
+    try:
+        prepare()
+    except Exception:  # recognize() сам решит, что делать
+        logging.getLogger(__name__).warning("STT provider %s: prepare() failed", provider.name, exc_info=True)
+
+
 def select_recognition(
     providers: Sequence[STTProvider],
     audio_bytes: bytes,
@@ -215,12 +226,7 @@ def select_recognition(
         attempts_left = max_retries if not is_fallback else 0
         total_attempts = attempts_left + 1
 
-        prepare = getattr(provider, "prepare", None)
-        if callable(prepare):
-            try:
-                prepare()
-            except Exception:  # recognize() сам решит, что делать
-                logging.getLogger(__name__).warning("STT provider %s: prepare() failed", provider.name, exc_info=True)
+        _prepare_provider(provider)
 
         for attempt_idx in range(total_attempts):
             if attempt_idx > 0:
