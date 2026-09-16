@@ -15,8 +15,9 @@
         "expected_tool_calls": [
           "register_speaker"
         ],
+        "discovery_tools": ["register_speaker"],
         "must_not_call": [],
-        "_comment": "Длинная реплика (~15 c речи) — условие устойчивого d-vector. expect=cycle: первый шаг акта пробивает wake-gate."
+        "_comment": "Длинная реплика (~15 c речи) — условие устойчивого d-vector. expect=cycle: первый шаг акта пробивает wake-gate. issue #2406: discovery_tools — register_speaker должен быть вызван ДО голосового ответа (regression guard)."
       },
       "expect": "cycle",
       "retry_acceptance": 1
@@ -52,7 +53,9 @@
         "expected_tool_calls": [
           "register_speaker"
         ],
-        "must_not_call": []
+        "discovery_tools": ["register_speaker"],
+        "must_not_call": [],
+        "_comment": "issue #2406: discovery_tools — register_speaker должен быть вызван ДО голосового ответа (regression guard)."
       },
       "retry_acceptance": 1
     },
