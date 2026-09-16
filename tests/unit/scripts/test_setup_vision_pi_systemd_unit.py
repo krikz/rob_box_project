@@ -197,6 +197,103 @@ def test_unit_template_has_exec_stop() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# 1b. t_5ab5e44a — health-monitoring (observability/alerts на failed boot)
+# --------------------------------------------------------------------------- #
+
+
+def test_unit_template_logs_to_journal_standard_output_error() -> None:
+    """StandardOutput=journal / StandardError=journal (п.3 acceptance).
+
+    Без этого journalctl не показывает stdout/stderr от ExecStartPost
+    (диагностика partial-up теряется).
+    """
+    body = _extract_unit_template()
+    assert re.search(r"^StandardOutput=journal$", body, re.MULTILINE), (
+        "StandardOutput=journal отсутствует — stdout от Exec* не попадёт в journal"
+    )
+    assert re.search(r"^StandardError=journal$", body, re.MULTILINE), (
+        "StandardError=journal отсутствует — stderr от Exec* не попадёт в journal"
+    )
+
+
+def test_unit_template_has_log_level_max_info() -> None:
+    """LogLevelMax=info — ограничить уровень логирования (п.3 acceptance).
+
+    Дефолт systemd — debug, что раздувает journal на INFO-сообщениях
+    от docker compose (не наши сообщения, а встроенный вывод).
+    """
+    body = _extract_unit_template()
+    assert re.search(r"^LogLevelMax=info$", body, re.MULTILINE), (
+        "LogLevelMax=info отсутствует — journal будет раздуваться debug-логами "
+        "от docker compose / dependency services"
+    )
+
+
+def test_unit_template_has_exec_start_post_health_check() -> None:
+    """ExecStartPost должен вызывать robbox_vision_health_check.sh (п.3 acceptance).
+
+    Это второй ExecStartPost (первый — docker compose ps, для journal).
+    Health-check пишет summary «что поднялось / что нет» в
+    /var/log/robbox-vision-boot.log.
+    """
+    body = _extract_unit_template()
+    posts = re.findall(r"^ExecStartPost=(-?)(.+)$", body, re.MULTILINE)
+    assert len(posts) >= 2, (
+        f"Ожидалось ≥2 ExecStartPost (docker compose ps + health-check), "
+        f"найдено {len(posts)}: {posts}"
+    )
+    # Найти ExecStartPost, который вызывает robbox_vision_health_check.sh
+    health_post = next(
+        (cmd for _prefix, cmd in posts if "robbox_vision_health_check" in cmd),
+        None,
+    )
+    assert health_post is not None, (
+        f"Среди ExecStartPost нет вызова robbox_vision_health_check.sh: "
+        f"{[cmd for _, cmd in posts]}"
+    )
+    # Префикс '-' обязателен: если скрипт неожиданно упал, не должен уронить
+    # основной unit.
+    assert "robbox_vision_health_check.sh" in health_post, (
+        f"ExecStartPost должен вызывать robbox_vision_health_check.sh: "
+        f"{health_post!r}"
+    )
+
+
+def test_setup_script_defines_setup_health_monitor() -> None:
+    """Функция setup_health_monitor должна быть в setup_vision_pi.sh.
+
+    Это функция, которая создаёт robbox-vision-health.timer/service
+    и ставит SSoT-скрипт в /usr/local/bin.
+    """
+    text = SCRIPT.read_text(encoding="utf-8")
+    assert re.search(r"^setup_health_monitor\s*\(\)\s*\{", text, re.MULTILINE), (
+        "setup_health_monitor() не определена в setup_vision_pi.sh — "
+        "health-timer не будет создан при fresh install"
+    )
+
+
+def test_setup_script_invokes_setup_health_monitor_in_main() -> None:
+    """setup_health_monitor должен вызываться из main() (после setup_autostart)."""
+    text = SCRIPT.read_text(encoding="utf-8")
+    # Извлечь тело main()
+    main_match = re.search(r"^main\s*\(\)\s*\{(.*?)^\}", text, re.MULTILINE | re.DOTALL)
+    assert main_match is not None, "main() не найдена"
+    main_body = main_match.group(1)
+    # setup_health_monitor должен быть ПОСЛЕ setup_autostart (так
+    # закомментировано в коде: «t_5ab5e44a: health-monitor ставим ПОСЛЕ
+    # setup_autostart»).
+    autostart_pos = main_body.find("setup_autostart")
+    health_pos = main_body.find("setup_health_monitor")
+    assert autostart_pos >= 0, "setup_autostart не вызывается в main()"
+    assert health_pos >= 0, "setup_health_monitor не вызывается в main()"
+    assert health_pos > autostart_pos, (
+        "setup_health_monitor должен вызываться ПОСЛЕ setup_autostart — "
+        "иначе ExecStartPost из robbox-vision.service упадёт (нет /var/log/"
+        "robbox-vision-boot.log и нет SSoT-скрипта в /usr/local/bin)"
+    )
+
+
+# --------------------------------------------------------------------------- #
 # 2. Материализованный unit проходит systemd-analyze verify
 # --------------------------------------------------------------------------- #
 
