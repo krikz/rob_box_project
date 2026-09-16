@@ -959,6 +959,11 @@ class STTNode(Node):
             def __init__(self, outer: "STTNode"):
                 self._outer = outer
 
+            def prepare(self) -> None:
+                # Загрузка модели (~4 с на Pi) не должна съедать таймаут
+                # распознавания — см. stt_fallback.STTProvider.
+                self._outer._ensure_vosk_loaded()
+
             def recognize(self, data: bytes) -> Optional[str]:
                 return self._outer._recognize_vosk(data)
 

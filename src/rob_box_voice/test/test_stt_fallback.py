@@ -508,3 +508,46 @@ class TestAcceptanceE2E:
                 successes += 1
         # 9 из 10 → 90% > 80% acceptance
         assert successes >= 8  # 80% acceptance
+
+
+class _PreparingProvider(FakeProvider):
+    """Fallback с медленной подготовкой (ленивый Vosk, issue #2609)."""
+
+    def __init__(self, *a, prepare_delay: float = 0.0, prepare_exc=None, **kw):
+        super().__init__(*a, **kw)
+        self.prepare_calls = 0
+        self._prepare_delay = prepare_delay
+        self._prepare_exc = prepare_exc
+
+    def prepare(self) -> None:
+        self.prepare_calls += 1
+        time.sleep(self._prepare_delay)
+        if self._prepare_exc is not None:
+            raise self._prepare_exc
+
+
+class TestProviderPrepare:
+    def test_prepare_time_not_counted_in_timeout(self):
+        primary = FakeProvider("yandex", [None], exceptions=[RuntimeError("PERMISSION_DENIED")])
+        vosk = _PreparingProvider("vosk", ["привет робот"], prepare_delay=0.3)
+        text, attempts = select_recognition(
+            [primary, vosk], b"\x00", timeout_s=0.2, max_retries=0, retry_backoff_s=0
+        )
+        assert text == "привет робот"
+        assert attempts[-1].provider == "vosk"
+        assert attempts[-1].reason == "ok"
+
+    def test_prepare_not_called_when_primary_succeeds(self):
+        primary = FakeProvider("yandex", ["привет робот"])
+        vosk = _PreparingProvider("vosk", [])
+        text, _ = select_recognition([primary, vosk], b"\x00", max_retries=0)
+        assert text == "привет робот"
+        assert vosk.prepare_calls == 0
+
+    def test_prepare_failure_still_calls_recognize(self):
+        primary = FakeProvider("yandex", [None])
+        vosk = _PreparingProvider("vosk", [None], prepare_exc=RuntimeError("broken model"))
+        text, attempts = select_recognition([primary, vosk], b"\x00", max_retries=0, retry_backoff_s=0)
+        assert text is None
+        assert vosk.prepare_calls == 1
+        assert [a.provider for a in attempts] == ["yandex", "vosk"]
