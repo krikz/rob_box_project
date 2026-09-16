@@ -451,8 +451,8 @@ jobs:
              docker rm -f voice-resources-init 2>/dev/null || true; \
              docker network rm vision_default 2>/dev/null || true; \
              docker container prune -f 2>/dev/null || true; \
-             echo '🚀 running voice-resources-init synchronously (no -d)'; \
-             docker compose up voice-resources-init && \
+             echo '🚀 running voice-resources-init synchronously (no -d) via --profile init'; \
+             docker compose --profile init up voice-resources-init && \
              echo '⏳ waiting up to 15s for init to leave ps -a (prune/rm подбирает exited-контейнер)'; \
              for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do \
                if ! docker ps -a --filter name=voice-resources-init --format '{{.ID}}' | grep -q .; then \
@@ -484,13 +484,24 @@ jobs:
           # `depends_on: service_completed_successfully` — окно race
           # возвращалось, просто init прогонялся дважды.
           #
-          # Этот шаг ИСКЛЮЧАЕТ voice-resources-init из основного `up -d`:
-          # `--scale voice-resources-init=0` (compose-флаг, accepted by `up`)
-          # говорит compose не создавать этот сервис. Длинные/хрупкие
-          # списки сервисов через позиционные аргументы не используем —
-          # они рассинхронизируются с compose-файлом при добавлении
-          # нового сервиса (--scale — общий флаг, не зависит от
-          # конкретного набора service-имён).
+          # GH task t_ef685c2e / round-423 deploys #35065892261 #35065300912
+          # #35064587769 #35066617063: фикс v2 (`--scale voice-resources-init=0`)
+          # СЛОМАЛСЯ после PR #2634 (t_b79d0581): voice-resources-init теперь
+          # объявлен с `profiles: ["init"]` → в основном `docker compose up -d`
+          # (без `--profile init`) compose **не знает про этот сервис**, и
+          # `--scale voice-resources-init=0` падает с
+          #   `no such service: voice-resources-init: disabled`
+          # Нужное поведение достигается БЕЗ `--scale`: профиль `init`
+          # автоматически исключает сервис из default `up -d`. Init-контейнер
+          # гарантированно прогоняется в предыдущем sync-шаге
+          # (`Run voice-resources-init (sync, before main up)`) и удаляется
+          # явным `docker rm -f` ниже.
+          #
+          # Длинные/хрупкие списки сервисов через позиционные аргументы
+          # `docker compose up -d svc1 svc2 …` не используем — они
+          # рассинхронизируются с compose-файлом при добавлении нового
+          # сервиса. profile `init` (PR #2634) делает то же самое
+          # без хрупких списков.
           #
           # Параллельно уточняем причину «No such container: <HASH>»:
           # docker daemon НЕ удаляет exited-контейнер сам по себе
@@ -532,8 +543,8 @@ jobs:
              docker container prune -f 2>/dev/null || true; \
              echo '🔧 round-403 fix #2499: явный rm для всех compose-контейнеров (name-slot release)'; \
              docker ps -a --filter 'label=com.docker.compose.project=vision' --format '{{.ID}}' | xargs -r docker rm -f 2>/dev/null || true; \
-             echo '🚀 compose up (--scale voice-resources-init=0 — init уже выполнен в предыдущем шаге)'; \
-             docker compose up -d --force-recreate --pull never --remove-orphans --scale voice-resources-init=0"
+             echo '🚀 compose up (init уже выполнен в предыдущем sync-шаге; profile init в compose-файле автоматически исключает voice-resources-init из этого up -d)'; \
+             docker compose up -d --force-recreate --pull never --remove-orphans"
 
       # ==================== MAIN PI DEPLOYMENT ====================
 
