@@ -484,3 +484,25 @@ def test_tts_node_init_does_not_touch_torch_attribute() -> None:
         "directly — issue #2609 acceptance. The lazy import lives "
         "inside _load_silero_model only."
     )
+
+
+# ── Layer 4: the DEPLOYED configs actually turn the warm-loads off ──────────
+
+_DOCKER_VOICE_CONFIG = _REPO_ROOT / "docker" / "vision" / "config" / "voice_assistant"
+
+
+def test_deployed_tts_yaml_disables_silero_warm_load() -> None:
+    """Issue #2609 — the robot launches with docker/vision/config, not
+    src/rob_box_voice/config. Without the key there, tts_node falls back to
+    the code default (``silero_warm_load=True``) and loads torch on boot."""
+    import yaml
+
+    data = yaml.safe_load((_DOCKER_VOICE_CONFIG / "tts_node.yaml").read_text(encoding="utf-8"))
+    assert data["tts_node"]["ros__parameters"].get("silero_warm_load") is False
+
+
+def test_deployed_stt_yaml_defers_vosk() -> None:
+    import yaml
+
+    data = yaml.safe_load((_DOCKER_VOICE_CONFIG / "stt_node.yaml").read_text(encoding="utf-8"))
+    assert data["stt_node"]["ros__parameters"].get("vosk_preload") is False

@@ -7,6 +7,9 @@ stt_node:
   ros__parameters:
     model_path: /models/vosk-model-small-ru-0.22
     sample_rate: 16000
+    # Issue #2609 — Vosk (~400 МБ RSS) нужен только когда Yandex не ответил:
+    # грузим модель при первом fallback, а не на старте.
+    vosk_preload: false
     # AEC mode: 'hardware' = доверяем XVF-3000 (можно перебивать робота!)
     #           'software' = выкидываем фразы пока TTS играет
     aec_mode: hardware
