@@ -327,6 +327,17 @@ RemainAfterExit=yes
 WorkingDirectory=$COMPOSE_DIR
 User=$USER
 
+# Логирование: всё в journal. Это даёт `journalctl -u robbox-vision.service`
+# единый источник stdout/stderr юнита + ExecStartPre/ExecStart/ExecStartPost.
+# t_5ab5e44a: явно фиксируем, чтобы избежать silent drop в syslog
+# на дистрибутивах с nojournald (хотя на Vision Pi journal всегда есть).
+StandardOutput=journal
+StandardError=journal
+# LogLevelMax=info: поднимаем с дефолтного debug до info, чтобы journal
+# не раздувался на INFO от docker compose. Префикс '-' в Exec* гасит
+# exit-code, но уровень логирования — независимая директива (т_5ab5e44а).
+LogLevelMax=info
+
 # Best-effort: попытаться обновить образы. Если registry недоступен —
 # игнорировать и идти дальше на локальном кэше (issue #2610).
 # --policy always: иначе pull_policy: if_not_present в compose пропускает
@@ -340,7 +351,16 @@ ExecStart=/usr/bin/docker compose up -d --pull never
 # Если что-то не поднялось — это видно в journalctl по exit-code.
 # Префикс '-' у ExecStartPost говорит systemd игнорировать ненулевой exit code
 # (для oneshot Type любой Exec* с ненулевым кодом приводит к Failed).
+#
+# t_5ab5e44a: первый ExecStartPost — компактный JSON-дамп `docker compose ps`
+# в journal (быстрый просмотр exit-кодов).
 ExecStartPost=-/usr/bin/docker compose ps --format json
+# Второй ExecStartPost (t_5ab5e44a, п.3 acceptance): summary «что поднялось /
+# что нет» в /var/log/robbox-vision-boot.log. Используется SSoT-скрипт
+# robbox_vision_health_check.sh, который также запускается из
+# robbox-vision-health.timer. Префикс '-' чтобы не валить unit, если
+# скрипт по какой-то причине упал.
+ExecStartPost=-/usr/local/bin/robbox_vision_health_check.sh --json
 
 # Корректное завершение при рестарте/reboot.
 ExecStop=/usr/bin/docker compose down
@@ -362,6 +382,90 @@ SERVICEEOF
     log_success "Автозапуск настроен!"
     log_info "Контейнеры будут автоматически запускаться при загрузке системы"
     log_info "Restart=on-failure, --pull never, логирование docker compose ps в journal"
+}
+
+# Настройка systemd-timer'а для health-check'а Vision Pi стека (t_5ab5e44a).
+#
+# Контракт:
+#   - Timer `robbox-vision-health.timer` запускает раз в 5 минут
+#     `robbox_vision_health_check.sh` (см. scripts/monitoring/).
+#   - Если скрипт возвращает exit≠0 (verdict=alert), сервис уходит в Failed,
+#     и OnFailure= может слать алерт (внешняя интеграция на стороне
+#     katana/monitoring).
+#   - Сам скрипт пишет метрику `robbox_vision_running_containers` в
+#     ~/.local/state/robbox_vision_health.prom (textfile для Prometheus
+#     node_exporter) и алерт-event в ~/.local/state/robbox_vision_alerts.log.
+#
+# Идемпотентен — повторный запуск безопасен (overwrite файлов).
+setup_health_monitor() {
+    log_step "Настройка health-мониторинга (timer + SSoT-скрипт, t_5ab5e44a)"
+
+    SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+    HEALTH_SCRIPT_SRC="$SCRIPT_DIR/../monitoring/robbox_vision_health_check.sh"
+    HEALTH_SCRIPT_DST="/usr/local/bin/robbox_vision_health_check.sh"
+    TIMER_DST="/etc/systemd/system/robbox-vision-health.timer"
+    SERVICE_DST="/etc/systemd/system/robbox-vision-health.service"
+
+    # 1. Скопировать SSoT-скрипт (он в репо, нужно установить в /usr/local/bin,
+    #    чтобы timer ссылался на стабильный путь).
+    if [[ ! -f "$HEALTH_SCRIPT_SRC" ]]; then
+        log_error "Не найден $HEALTH_SCRIPT_SRC — обновите репозиторий"
+        return 1
+    fi
+    sudo install -m 0755 "$HEALTH_SCRIPT_SRC" "$HEALTH_SCRIPT_DST"
+    log_info "SSoT-скрипт установлен: $HEALTH_SCRIPT_DST"
+
+    # 2. Создать /var/log/robbox-vision-boot.log с правильными правами
+    #    (нужно для ExecStartPost из robbox-vision.service — пишет summary).
+    sudo touch /var/log/robbox-vision-boot.log
+    sudo chown "$USER:$USER" /var/log/robbox-vision-boot.log
+    sudo chmod 0644 /var/log/robbox-vision-boot.log
+
+    # 3. systemd service-файл (запускает скрипт; user-mode без sudo).
+    sudo tee "$SERVICE_DST" > /dev/null << SERVICEEOF
+[Unit]
+Description=ROBBOX Vision Pi Stack Health Check
+# Не требуем docker.service — health-check обязан корректно отвечать даже
+# когда docker daemon лежит (verdict=infra_error, не alert).
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=$USER
+Environment="ROBBOX_VISION_BOOT_LOG=/var/log/robbox-vision-boot.log"
+# HOME пользователя нужен для дефолтных путей textfile.
+Environment="HOME=/home/$USER"
+ExecStart=$HEALTH_SCRIPT_DST --json
+# Не рестартим автоматически — если алерт сработал, это сигнал для оператора,
+# а не повод рефрешить timer. OnFailure= цепочку настраивает внешний
+# monitoring-стек на katana (issue #2610 разделил scope).
+SERVICEEOF
+
+    # 4. systemd timer-файл (5 минут, persistent — переживёт downtime).
+    sudo tee "$TIMER_DST" > /dev/null << TIMEREOF
+[Unit]
+Description=ROBBOX Vision Pi Stack Health Check Timer
+
+[Timer]
+# Каждые 5 минут. Persistent=true: после reboot догоним пропущенные запуски
+# (если машина лежала < 1 час, systemd запустит health-check сразу).
+OnBootSec=2min
+OnUnitActiveSec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+TIMEREOF
+
+    # 5. Активация.
+    sudo systemctl daemon-reload
+    sudo systemctl enable robbox-vision-health.timer
+    sudo systemctl restart robbox-vision-health.timer
+
+    log_success "Health-мониторинг настроен (timer + SSoT + boot-log)"
+    log_info "Проверить: systemctl list-timers robbox-vision-health"
+    log_info "Логи: journalctl -u robbox-vision-health.service -n 50"
+    log_info "Алерты: tail -f ~/.local/state/robbox_vision_alerts.log"
 }
 
 # Настройка zram-swap (ADR-0111, issue #2621)
@@ -424,6 +528,7 @@ print_summary() {
     echo -e "  ${GREEN}✓${NC} Репозиторий rob_box_project склонирован в ~/rob_box_project"
     echo -e "  ${GREEN}✓${NC} Кастомный MOTD с логотипом РОББОКС настроен"
     echo -e "  ${GREEN}✓${NC} Автозапуск Docker контейнеров настроен"
+    echo -e "  ${GREEN}✓${NC} Health-мониторинг стека (timer + SSoT-скрипт)"
     echo ""
     echo -e "${YELLOW}Следующие шаги:${NC}"
     echo ""
@@ -464,6 +569,9 @@ main() {
     clone_repository
     setup_motd
     setup_autostart
+    # t_5ab5e44a: health-monitor ставим ПОСЛЕ setup_autostart, чтобы
+    # ExecStartPost из robbox-vision.service уже мог писать в /var/log.
+    setup_health_monitor
     # ADR-0111 / issue #2621: zram-swap + MemoryLow для sshd
     # (поднимаем ДО docker, чтобы лимиты были корректны с первого запуска)
     setup_zram_swap
