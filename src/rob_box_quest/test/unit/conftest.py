@@ -103,6 +103,30 @@ class _StubTwist:
         self.angular = _StubVector3()
 
 
+class _StubQuaternion:
+    def __init__(self) -> None:
+        # Достаточно для issue #2618: quest_node #2618 вычитывает q.w/q.x/q.y/q.z
+        # в _on_localization_pose; ставим нулевую ориентацию по умолчанию.
+        self.x = 0.0
+        self.y = 0.0
+        self.z = 0.0
+        self.w = 1.0
+
+
+class _StubPose:
+    def __init__(self) -> None:
+        self.position = _StubVector3()
+        self.orientation = _StubQuaternion()
+
+
+class _StubPoseStamped:
+    def __init__(self) -> None:
+        self.pose = _StubPose()
+        # header не используется в тестах _on_localization_pose, но если
+        # кто-то начнёт — пусть будет MagicMock-friendly атрибутом.
+        self.header = _StubMsg()
+
+
 class _StubString:
     def __init__(self) -> None:
         self.data = ""
@@ -125,7 +149,10 @@ _STUB_ATTRS = {
         "ReliabilityPolicy": object,
     },
     "audio_common_msgs.msg": {"AudioData": _StubAudioData},
-    "geometry_msgs.msg": {"Twist": _StubTwist},
+    "geometry_msgs.msg": {
+        "Twist": _StubTwist,
+        "PoseStamped": _StubPoseStamped,
+    },
     "nav_msgs.msg": {"OccupancyGrid": _StubMsg, "Odometry": _StubMsg},
     "sensor_msgs.msg": {"CompressedImage": _StubMsg, "LaserScan": _StubMsg},
     "std_msgs.msg": {"String": _StubString},
