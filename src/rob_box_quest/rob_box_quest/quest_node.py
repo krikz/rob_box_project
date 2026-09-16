@@ -41,7 +41,7 @@ _KIND_RELEASE_FLOOR: int = 2
 _KIND_SET_AVATAR_MODE: int = 3
 
 from audio_common_msgs.msg import AudioData
-from geometry_msgs.msg import PoseStamped, Twist
+from geometry_msgs.msg import PoseWithCovarianceStamped, Twist
 from nav_msgs.msg import OccupancyGrid, Odometry
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
@@ -2096,7 +2096,7 @@ class QuestNode(Node):
         # пробуждал rclpy executor на этой ноде + пересобирал WaitSet на
         # rmw_zenoh. Получался busy-loop в покое: ~62% одного ядра (см. py-spy
         # top из issue #2618). Теперь лёгкая подписка только на
-        # ``/rtabmap/localization_pose`` (PoseStamped, ~1 Гц при стоящем
+        # ``/rtabmap/localization_pose`` (PoseWithCovarianceStamped, ~1 Гц при стоящем
         # роботе, эпизодически чаще при SLAM-локализации). Подход зеркалит
         # fix в rob_box_mcp_tools/mcp_server.py e90f8a4ff (там — /odom;
         # здесь — /rtabmap/localization_pose, потому что quest нужен
@@ -2106,8 +2106,13 @@ class QuestNode(Node):
         self._latest_map_pose: Optional[tuple[float, float, float, float]] = (
             None
         )  # (x, y, yaw, ts_monotonic); ``None`` пока rtabmap не прислал ни одной локализации.
+        # Тип — PoseWithCovarianceStamped: именно им публикует rtabmap
+        # (замер на роботе 16.09). ``ros2 topic info`` показывает на топике
+        # ещё и PoseStamped, но это лишь подписка context_aggregator, а не
+        # второй издатель. Подписка PoseStamped на rmw_zenoh не получит ни
+        # одного сообщения, и карта в Quest останется без позы.
         self._localization_pose_sub = self.create_subscription(
-            PoseStamped,
+            PoseWithCovarianceStamped,
             "/rtabmap/localization_pose",
             self._on_localization_pose,
             _RE,
@@ -2214,7 +2219,7 @@ class QuestNode(Node):
         """ROS /rtabmap/map → map_2d (0x1103): PNG решётки + поза робота."""
         self.bridge.on_map(msg, self._map_pose())
 
-    def _on_localization_pose(self, msg: PoseStamped) -> None:
+    def _on_localization_pose(self, msg: PoseWithCovarianceStamped) -> None:
         """Лёгкий callback /rtabmap/localization_pose (issue #2618).
 
         Сохраняем последний снимок ``(x, y, yaw, ts_monotonic)`` для ``_map_pose``.
@@ -2223,8 +2228,9 @@ class QuestNode(Node):
         (≈1 Гц на стоящем роботе; эпизодически чаще при движении/SLAM).
         """
         try:
-            pos = msg.pose.position
-            q = msg.pose.orientation
+            pose = msg.pose.pose
+            pos = pose.position
+            q = pose.orientation
             yaw = math.atan2(
                 2.0 * (q.w * q.z + q.x * q.y),
                 1.0 - 2.0 * (q.y * q.y + q.z * q.z),

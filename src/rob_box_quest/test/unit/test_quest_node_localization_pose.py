@@ -4,7 +4,7 @@
 Контракт:
 
 * ``_on_localization_pose`` обновляет ``_latest_map_pose`` (x, y, yaw, ts)
-  из ``PoseStamped``-сообщения;
+  из ``PoseWithCovarianceStamped``-сообщения (``msg.pose.pose``);
 * ``_map_pose`` возвращает ``None`` пока ни одной локализации не пришло;
 * ``_map_pose`` после локализации возвращает ``(x, y, yaw)``-tuple
   с правильно посчитанным yaw (кватернион → atan2);
@@ -40,23 +40,23 @@ def _make_pose_stamped(
     qy: float = 0.0,
     qz: float = 0.0,
 ):
-    """Минимальный PoseStamped-эквивалент для ``_on_localization_pose``.
+    """Минимальный PoseWithCovarianceStamped-эквивалент для ``_on_localization_pose``.
 
     Внутри callback-а используются:
-    * ``msg.pose.position.x/y/z``
-    * ``msg.pose.orientation.{w,x,y,z}``
+    * ``msg.pose.pose.position.x/y/z``
+    * ``msg.pose.pose.orientation.{w,x,y,z}``
 
     Остальное (header, frame_id) callback-у не нужно — поэтому делаем
     MagicMock с минимально нужными атрибутами.
     """
     msg = MagicMock()
-    msg.pose.position.x = x
-    msg.pose.position.y = y
-    msg.pose.position.z = 0.0
-    msg.pose.orientation.w = qw
-    msg.pose.orientation.x = qx
-    msg.pose.orientation.y = qy
-    msg.pose.orientation.z = qz
+    msg.pose.pose.position.x = x
+    msg.pose.pose.position.y = y
+    msg.pose.pose.position.z = 0.0
+    msg.pose.pose.orientation.w = qw
+    msg.pose.pose.orientation.x = qx
+    msg.pose.pose.orientation.y = qy
+    msg.pose.pose.orientation.z = qz
     return msg
 
 
@@ -176,7 +176,7 @@ def test_on_localization_pose_malformed_msg_keeps_previous_snapshot(quest_node_m
     # Теперь «плохое» сообщение: ``pose`` — MagicMock, у которого
     # ``position`` при первом обращении к ``.x`` падает с AttributeError.
     bad = MagicMock()
-    bad.pose.position.x = property(  # type: ignore[assignment]
+    bad.pose.pose.position.x = property(  # type: ignore[assignment]
         lambda _self: (_ for _ in ()).throw(AttributeError("simulated malformed msg"))
     )
 
@@ -220,7 +220,7 @@ def test_no_tf2_state_on_node_after_fix(quest_node_mod):
 
 
 def test_localization_pose_subscription_uses_correct_topic(quest_node_mod):
-    """Фикс подписывается на ``/rtabmap/localization_pose`` (PoseStamped).
+    """Фикс подписывается на ``/rtabmap/localization_pose`` (PoseWithCovarianceStamped).
 
     Альтернативы (типа ``/odom`` или ``/pose``) дают позу в ``odom``-фрейме
     или вообще отсутствуют на роботе — поэтому выбран именно
@@ -234,6 +234,9 @@ def test_localization_pose_subscription_uses_correct_topic(quest_node_mod):
         "fix regressed: подписка на /rtabmap/localization_pose обязательна "
         "для map_2d-позы (issue #2618)"
     )
-    assert "PoseStamped" in text, (
-        "fix regressed: type подписки должен быть PoseStamped"
+    # rtabmap публикует PoseWithCovarianceStamped; подписка PoseStamped
+    # на rmw_zenoh молча не получает ничего (замер на роботе 16.09).
+    assert "PoseWithCovarianceStamped,\n" in text, (
+        "fix regressed: type подписки должен быть PoseWithCovarianceStamped"
     )
+
