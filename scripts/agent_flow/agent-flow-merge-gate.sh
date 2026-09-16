@@ -4259,9 +4259,19 @@ except Exception:
         if has_label "$_current_labels_norm" "$NO_E2E_LABEL"; then
             _has_no_e2e="1"
         fi
+        # Retro 16.09 t_4a242e15 (issue #2487): PR MERGED into develop while
+        # issue still carries `e2e:rejected` label — current 0.1a/0.1b paths
+        # skip this state (0.1a needs no-e2e-required, 0.1b needs Closes
+        # keyword in PR-body; PRs often use Refs:#N instead). Pre-compute
+        # so the OPEN-state branch can decide. Mirror the no-e2e-required
+        # semantics (explicit process signal, not e2e-PASS provenance).
+        _has_e2e_rejected="0"
+        if has_label "$_current_labels_norm" "$REJECTED_LABEL"; then
+            _has_e2e_rejected="1"
+        fi
         _issue_state="$(gh issue view "$number" --repo "$GH_REPO" --json state \
             --jq '.state' 2>/dev/null || echo '')"
-        log "issue #${number}: pre-close state=${_issue_state} e2e-done=${_has_e2e_done} no-e2e=${_has_no_e2e}"
+        log "issue #${number}: pre-close state=${_issue_state} e2e-done=${_has_e2e_done} no-e2e=${_has_no_e2e} e2e-rejected=${_has_e2e_rejected}"
 
         # 0.1a) Early short-circuit for no-e2e-required (retro 19.08 #79779a21,
         # ADR-0022 §4.2). Worker explicitly opted out of e2e — the PR
@@ -4375,42 +4385,133 @@ except Exception:
                 # Matches «Closes», «closes», «FIXES», «Resolves», etc.
                 # Boundary `\b#${number}\b` предотвращает match на похожих
                 # номерах (#1234 vs #123).
+                #
+                # Retro 16.09 t_4a242e15 (issue #2487): keyword-not-found
+                # БОЛЬШЕ НЕ делает `continue` — fall-through до case 0.1c,
+                # чтобы e2e-rejected-путь тоже имел шанс сработать. Вся
+                # audit/whoami/close-логика внутри `then` (только при наличии
+                # keyword). pre-ретро код имел `if ! grep ... continue` —
+                # 0.1b «съедал» прогресс и 0.1c никогда не достигался.
                 _fb_kw_pat="(closes|fixes|resolves)[[:space:]]+#${number}\b"
-                if ! printf '%s' "$_fb_pr_body" | grep -qiE "$_fb_kw_pat"; then
+                if printf '%s' "$_fb_pr_body" | grep -qiE "$_fb_kw_pat"; then
+                    # === Keyword match → собственно fallback auto-close ===
+                    # Audit-коммент (6h dedup). Маркер «🔁 fallback auto-close
+                    # (ADR-AF-0063 §4.1)» уникален — не путаем с «✅ ретро-путь»
+                    # или «🛠 merge-gate (ретро 13.08)».
+                    # Идемпотентность через generic helper (issue #2293).
+                    if ! _gm_recent_commented "issue" "$number" \
+                        "🔁 fallback auto-close (ADR-AF-0063 §4.1)" 21600 contains \
+                        && [ "$DRY_RUN" != "true" ]; then
+                        gh issue comment "$number" --repo "$GH_REPO" --body \
+"🔁 fallback auto-close (ADR-AF-0063 §4.1): PR #${pr_number} смержен в ${DEVELOP_BRANCH}, PR-body содержит keyword \`Closes/Fixes/Resolves #${number}\`, но squash-merge commit-message потерял body (\`squash_merge_commit_message: COMMIT_MESSAGES\`). Issue закрыта как fallback — основной путь по \`e2e-done\`/\`no-e2e-required\` не сработал, потому что worker обошёл e2e-rotation (архитектурный / docs / ADR PR)." >/dev/null 2>&1 || true
+                    fi
+                    # issue #1534: self-id whoami BEFORE close — helper
+                    # идемпотентный (2h окно, skip если уже публиковал такой же
+                    # marker для этого issue). Записываем audit-маркер.
+                    whoami_close_issue "$number" "fallback auto-close (ADR-AF-0063 §4.1): PR #${pr_number} MERGED into ${DEVELOP_BRANCH} with Closes keyword in PR-body"
+                    if [ "$DRY_RUN" = "true" ]; then
+                        log "DRY-RUN would auto-close issue #${number} via fallback path (ADR-AF-0063 §4.1)"
+                        _closed_this_tick=1
+                        _issue_state="CLOSED"
+                    elif gh issue close "$number" --repo "$GH_REPO" --reason completed >/dev/null 2>&1; then
+                        _closed_this_tick=1
+                        log "issue #${number}: CLOSED (reason=completed, fallback path ADR-AF-0063 §4.1)"
+                        # Reflect state для case ниже → CLOSED-ветка →
+                        # idempotent skip-close + destructive cleanup.
+                        _issue_state="CLOSED"
+                        # Ретро 01.09 t_fd604461: снять process-метки с MERGED PR.
+                        pr_label_sweep_after_merge "${pr_number}" "fallback auto-close (ADR-AF-0063 §4.1)" || true
+                    else
+                        log "issue #${number}: WARNING gh issue close failed (fallback path, ADR-AF-0063 §4.1) — retry next tick"
+                        labeled=$((labeled+1)); continue
+                    fi
+                else
                     # Нет keyword для ЭТОГО issue в PR-body → fallback не для нас.
                     # Это reference-only PR (issue упомянута без intent close)
                     # или другой-issue PR. По дизайну (§6) оставляем OPEN.
-                    log "issue #${number}: fallback path (ADR-AF-0063 §4.1) — PR-body has no Closes/Fixes/Resolves keyword for #${number}, no auto-close (likely reference-only)"
-                    labeled=$((labeled+1)); continue
+                    # Retro 16.09 t_4a242e15 (issue #2487): fall through до
+                    # case 0.1c, где проверяется `e2e:rejected` label.
+                    log "issue #${number}: fallback path (ADR-AF-0063 §4.1) — PR-body has no Closes/Fixes/Resolves keyword for #${number} (likely reference-only); falling through to 0.1c e2e-rejected check"
+                    # НЕ continue — пускай 0.1c тоже проверит issue.
                 fi
-                # Audit-коммент (6h dedup). Маркер «🔁 fallback auto-close
-                # (ADR-AF-0063 §4.1)» уникален — не путаем с «✅ ретро-путь»
-                # или «🛠 merge-gate (ретро 13.08)».
-                # Идемпотентность через generic helper (issue #2293).
+            fi
+        fi
+
+        # 0.1c) Retro 16.09 t_4a242e15 (issue #2487, PR #2495): when issue
+        # still carries `e2e:rejected` after the canonical PR was MERGED
+        # into develop, current 0.1a/0.1b paths skip this state:
+        #   - 0.1a needs `no-e2e-required` (worker explicitly opted out),
+        #   - 0.1b needs `Closes|Fixes|Resolves #N` keyword in PR-body
+        #     (suffers SQUASH-LOSS, but worker typically uses `Refs:#N`
+        #     in the body so the keyword is absent — see PR #2495).
+        # Result: issue sits OPEN with `e2e:rejected` forever (until 30d
+        # auto-close by e2e-rejected-watchdog). Worker who already
+        # delivered the fix needs explicit signal that the issue is closed
+        # by the act of merging (analogous to no-e2e-required).
+        #
+        # Decision: when `e2e:rejected` is set, no e2e-done / no-e2e-required,
+        # and PR MERGED into develop → strip e2e:rejected + close with
+        # reason=completed (auto-close path, audit-marker in comment).
+        #
+        # Guards (defensive):
+        #   - whitelist `user-reopened-this` → skip (user intent wins,
+        #     ADR-0014 #1391).
+        #   - recent user-reopen → skip (ADR-0014 #1391 supplement;
+        #     per-issue_user_reopen recency check is owned by
+        #     `_issue_reopened_recently` helper).
+        #   - branch-deleted on remote → skip auto-close here, defer to
+        #     Q22-orphan path (same defensive pattern as 0.1b §issue-2123).
+        #
+        # Idempotent: повторный тик находит state=CLOSED → case 0.2 CLOSED →
+        # idempotent skip-close + destructive cleanup.
+        #
+        # NOT touching `needs-e2e` here — by definition `e2e:rejected`
+        # implies no needs-e2e (e2e-process снял его перед reject).
+        if [ "$pr_state" = "MERGED" ] && [ "$pr_base" = "$DEVELOP_BRANCH" ] \
+            && [ "$_issue_state" = "OPEN" ] \
+            && [ "$_has_e2e_done" = "0" ] \
+            && [ "$_has_no_e2e" = "0" ] \
+            && [ "$_has_e2e_rejected" = "1" ]; then
+            # Whitelist guard (ADR-0014 #1391 supplement).
+            if [ -n "${USER_REOPEN_AUDIT_LABEL:-}" ] \
+                && has_label "${_current_labels_norm:-}" "$USER_REOPEN_AUDIT_LABEL"; then
+                log "issue #${number}: e2e-rejected+Merged path (retro 16.09 t_4a242e15), whitelist ${USER_REOPEN_AUDIT_LABEL} → skip auto-close"
+                labeled=$((labeled+1)); continue
+            fi
+            # User-reopen recency guard (same as 0.1b).
+            if _issue_reopened_recently "$number"; then
+                log "issue #${number}: e2e-rejected+Merged path (retro 16.09 t_4a242e15), recent user-reopen → skip auto-close (ADR-0014 #1391)"
+                labeled=$((labeled+1)); continue
+            fi
+            # Branch-deleted defensive: if ветка PR уже удалена → defer to Q22-orphan.
+            if ! git ls-remote --heads "https://github.com/$GH_REPO.git" "$branch" 2>/dev/null | grep -q "$branch"; then
+                log "issue #${number}: e2e-rejected+Merged path (retro 16.09 t_4a242e15) — branch ${branch} deleted on remote, defer to Q22-orphan path"
+            else
+                # === e2e:rejected + MERGED + branch alive → собственно auto-close ===
+                # Audit-коммент (6h dedup через generic helper #2293). Маркер
+                # «🔁 e2e:rejected auto-close (retro 16.09 t_4a242e15)» уникален —
+                # не путаем с fallback path «🔁 fallback auto-close (ADR-AF-0063 §4.1)»
+                # или e2e-done path.
                 if ! _gm_recent_commented "issue" "$number" \
-                    "🔁 fallback auto-close (ADR-AF-0063 §4.1)" 21600 contains \
+                    "🔁 e2e:rejected auto-close (retro 16.09 t_4a242e15)" 21600 contains \
                     && [ "$DRY_RUN" != "true" ]; then
                     gh issue comment "$number" --repo "$GH_REPO" --body \
-"🔁 fallback auto-close (ADR-AF-0063 §4.1): PR #${pr_number} смержен в ${DEVELOP_BRANCH}, PR-body содержит keyword \`Closes/Fixes/Resolves #${number}\`, но squash-merge commit-message потерял body (\`squash_merge_commit_message: COMMIT_MESSAGES\`). Issue закрыта как fallback — основной путь по \`e2e-done\`/\`no-e2e-required\` не сработал, потому что worker обошёл e2e-rotation (архитектурный / docs / ADR PR)." >/dev/null 2>&1 || true
+"🔁 e2e:rejected auto-close (retro 16.09 t_4a242e15, issue #2487/#2495): PR #${pr_number} смержен в ${DEVELOP_BRANCH}, issue всё ещё несла \\`e2e:rejected\\` (предыдущий e2e-прогон не прошёл, новый PR был аддитивным фиксом, не e2e-rotation). Path 0.1a (no-e2e-required) не сработал (worker не выставил эту метку), path 0.1b (Closes keyword in PR-body) не сработал (PR-body использовал \\`Refs:#N\\` без keyword, либо keyword потерян при squash-merge). Issue автоматически закрыта, метка \\`e2e:rejected\\` снята с issue и PR — фикс признан доставленным по факту merge." >/dev/null 2>&1 || true
                 fi
-                # issue #1534: self-id whoami BEFORE close — helper
-                # идемпотентный (2h окно, skip если уже публиковал такой же
-                # marker для этого issue). Записываем audit-маркер.
-                whoami_close_issue "$number" "fallback auto-close (ADR-AF-0063 §4.1): PR #${pr_number} MERGED into ${DEVELOP_BRANCH} with Closes keyword in PR-body"
+                # whoami before close (issue #1534, helper идемпотентный 2h).
+                whoami_close_issue "$number" "e2e:rejected auto-close (retro 16.09 t_4a242e15): PR #${pr_number} MERGED into ${DEVELOP_BRANCH} while issue still had ${REJECTED_LABEL}"
                 if [ "$DRY_RUN" = "true" ]; then
-                    log "DRY-RUN would auto-close issue #${number} via fallback path (ADR-AF-0063 §4.1)"
+                    log "DRY-RUN would auto-close issue #${number} via e2e-rejected+Merged path (retro 16.09 t_4a242e15)"
                     _closed_this_tick=1
                     _issue_state="CLOSED"
                 elif gh issue close "$number" --repo "$GH_REPO" --reason completed >/dev/null 2>&1; then
                     _closed_this_tick=1
-                    log "issue #${number}: CLOSED (reason=completed, fallback path ADR-AF-0063 §4.1)"
-                    # Reflect state для case ниже → CLOSED-ветка →
-                    # idempotent skip-close + destructive cleanup.
+                    log "issue #${number}: CLOSED (reason=completed, e2e-rejected+Merged path, retro 16.09 t_4a242e15)"
                     _issue_state="CLOSED"
                     # Ретро 01.09 t_fd604461: снять process-метки с MERGED PR.
-                    pr_label_sweep_after_merge "${pr_number}" "fallback auto-close (ADR-AF-0063 §4.1)" || true
+                    pr_label_sweep_after_merge "${pr_number}" "e2e-rejected auto-close (retro 16.09 t_4a242e15)" || true
                 else
-                    log "issue #${number}: WARNING gh issue close failed (fallback path, ADR-AF-0063 §4.1) — retry next tick"
+                    log "issue #${number}: WARNING gh issue close failed (e2e-rejected+Merged path) — retry next tick"
                     labeled=$((labeled+1)); continue
                 fi
             fi

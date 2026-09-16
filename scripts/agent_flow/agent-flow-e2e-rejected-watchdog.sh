@@ -280,7 +280,14 @@ if already_alerted:
     sys.exit(0)
 
 # 1. Check for pending PR (Closes #N). Any open OR closed-not-merged → skip.
+# Special case: closed-and-MERGED PR → фикс уже доставлен, watchdog не должен
+# писать escalation-коммент «новый PR нужен» (это обман пользователя —
+# человек видит «open new PR» после успешного merge). Вместо этого
+# выходим в новый MERGED-PR path (ниже): strip `e2e:rejected` + close
+# issue with reason=completed (retro 16.09 t_4a242e15, issue #2487/#2495).
 has_pending_pr = False
+merged_pr_found = False
+merged_pr_number = ""
 pr_state_descr = ""
 try:
     proc = subprocess.run(
@@ -321,6 +328,11 @@ try:
                             has_pending_pr = True
                             pr_state_descr = f"closed-not-merged PR #{pn}"
                             break
+                        # Retro 16.09 t_4a242e15: closed+MERGED PR — фикс доставлен.
+                        # Запоминаем для последующего auto-strip+close, но НЕ брейкаем
+                        # outer loop — другие PR с Closes #N могут быть open/closed-not-merged.
+                        merged_pr_found = True
+                        merged_pr_number = str(pn) if pn else ""
             except (json.JSONDecodeError, KeyError) as e:
                 log(f"WARN: PR parse err: {e}")
                 continue
@@ -330,6 +342,57 @@ except subprocess.TimeoutExpired:
 if has_pending_pr:
     log(f"SKIP pending_pr={pr_state_descr}")
     print(f"SKIPPED:pending_pr:{number}")
+    sys.exit(0)
+
+# 1b. Retro 16.09 t_4a242e15 (issue #2487, PR #2495): MERGED PR с Closes #N →
+# фикс уже в develop, watchdog больше не должен ждать 30d для auto-close и не
+# должен слать escalation-коммент «open new PR». Вместо этого: strip
+# `e2e:rejected` + close issue с reason=completed (audit-marker).
+# Mirror of merge-gate path 0.1c (ADR-AF-0063 §4.1 family) — но для случаев,
+# когда issue был пойман watchdog'ом раньше, чем merge-gate tick успел.
+# Idempotent: повторный тик увидит state=CLOSED (через gh api search/issues
+# фильтр is:open) → issue не попадёт в candidates → no-op.
+if merged_pr_found:
+    if dry_run:
+        log(f"[DRY-RUN] would strip e2e:rejected + close issue (merged PR #{merged_pr_number})")
+        print(f"CLOSED:{number}|dry-run|merged_pr={merged_pr_number}")
+        sys.exit(0)
+    rc = 0
+    try:
+        # Strip e2e:rejected label (creates removal).
+        p1 = subprocess.run(
+            ["gh", "issue", "edit", str(number),
+             "--repo", gh_repo, "--remove-label", "e2e:rejected"],
+            capture_output=True, text=True, timeout=15, check=False,
+        )
+        if p1.returncode != 0:
+            log(f"WARN: remove-label rc={p1.returncode}: {p1.stderr.strip()[:200]}")
+        # Audit-comment.
+        p2 = subprocess.run(
+            ["gh", "issue", "comment", str(number), "--repo", gh_repo, "-b",
+             f"🤖 e2e-rejected-watchdog: PR #{merged_pr_number} с `Closes #{number}` уже MERGED в develop — фикс признан доставленным. Снимаю `e2e:rejected` и закрываю issue. (retro 16.09 t_4a242e15)"],
+            capture_output=True, text=True, timeout=15, check=False,
+        )
+        if p2.returncode != 0:
+            log(f"WARN: comment rc={p2.returncode}: {p2.stderr.strip()[:200]}")
+        # Close.
+        p3 = subprocess.run(
+            ["gh", "issue", "close", str(number), "--repo", gh_repo,
+             "--reason", "completed"],
+            capture_output=True, text=True, timeout=15, check=False,
+        )
+        if p3.returncode != 0:
+            log(f"WARN: close rc={p3.returncode}: {p3.stderr.strip()[:200]}")
+            rc = p3.returncode
+    except subprocess.TimeoutExpired:
+        log("ERROR: timeout during merged-pr cleanup")
+        print(f"ERROR:close_timeout:{number}")
+        sys.exit(0)
+    if rc == 0:
+        log(f"CLOSED (merged-pr path, PR #{merged_pr_number})")
+        print(f"CLOSED:{number}|merged_pr={merged_pr_number}|age_days={age_days:.1f}")
+    else:
+        print(f"ERROR:close_rc:{number}|rc={rc}")
     sys.exit(0)
 
 # 2. Decide action based on age.
