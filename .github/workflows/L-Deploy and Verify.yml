@@ -369,6 +369,10 @@ jobs:
         if: '!inputs.dry_run && inputs.registry_source != ''skip'''
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          # --policy always обязателен: у сервисов vision стоит
+          # pull_policy: if_not_present (#2634, чтобы up -d работал без сети),
+          # и голый `compose pull` молча пропускает уже скачанный :dev —
+          # робот оставался на старых образах (issue #2609, 16.09).
           echo "📦 Pulling Docker images on Vision Pi..."
           echo "   Registry: ${{ env.registry_display }}"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -378,7 +382,7 @@ jobs:
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
              if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
-             docker compose pull --ignore-pull-failures" \
+             docker compose pull --policy always --ignore-pull-failures" \
             || echo "⚠️  Warning: Some images may not be available"
 
       # ==================== TIME SYNC ====================
@@ -598,7 +602,7 @@ jobs:
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
              if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
-             docker compose pull --ignore-pull-failures" \
+             docker compose pull --policy always --ignore-pull-failures" \
             || echo "⚠️  Warning: Some images may not be available"
 
       # ==================== TIME SYNC ====================
