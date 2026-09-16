@@ -293,7 +293,7 @@ MOTDEOF
 #   - docker compose up -d без --pull never + registry offline → весь стек падает
 #     и systemd (Type=oneshot без Restart) больше не пытается.
 #   - Фикс:
-#     * ExecStartPre: best-effort `docker compose pull --ignore-pull-failures` —
+#     * ExecStartPre: best-effort `docker compose pull --policy always --ignore-pull-failures` —
 #       попытаться обновить образы, но не падать, если registry недоступен.
 #     * ExecStart: `docker compose up -d --pull never` — гарантированно работать
 #       на локальном кэше, даже если registry лежит.
@@ -329,7 +329,9 @@ User=$USER
 
 # Best-effort: попытаться обновить образы. Если registry недоступен —
 # игнорировать и идти дальше на локальном кэше (issue #2610).
-ExecStartPre=-/usr/bin/docker compose pull --ignore-pull-failures
+# --policy always: иначе pull_policy: if_not_present в compose пропускает
+# уже скачанные теги и образы никогда не обновляются.
+ExecStartPre=-/usr/bin/docker compose pull --policy always --ignore-pull-failures
 
 # Гарантированный запуск стека на локальном кэше, без сетевых pull.
 ExecStart=/usr/bin/docker compose up -d --pull never
