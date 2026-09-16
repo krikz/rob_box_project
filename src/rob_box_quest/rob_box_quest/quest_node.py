@@ -41,7 +41,7 @@ _KIND_RELEASE_FLOOR: int = 2
 _KIND_SET_AVATAR_MODE: int = 3
 
 from audio_common_msgs.msg import AudioData
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import PoseWithCovarianceStamped, Twist
 from nav_msgs.msg import OccupancyGrid, Odometry
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
@@ -2111,19 +2111,36 @@ class QuestNode(Node):
         # чаще карты. Он ~130 байт, это дешевле, чем гонять PNG.
         self._map_pose_timer = self.create_timer(0.2, self._on_map_pose_timer)
 
-        # tf map → base_link: единственный источник позы робота на карте.
-        # /rtabmap/localization_pose для этого не годится — на роботе он
-        # объявлен сразу двумя типами (PoseStamped и PoseWithCovarianceStamped),
-        # подписка на такой топик неоднозначна.
-        try:
-            from tf2_ros import Buffer, TransformListener  # локальный импорт
-
-            self._tf_buffer = Buffer()
-            self._tf_listener = TransformListener(self._tf_buffer, self)
-        except Exception as e:  # noqa: BLE001  # pragma: no cover
-            self.get_logger().warning(f"tf2 unavailable — map_2d без позы: {e}")
-            self._tf_buffer = None
-            self._tf_listener = None
+        # quest_node #2618: убрали tf2_ros.Buffer + TransformListener.
+        # Раньше ``Buffer()`` подписывался на ``/tf`` + ``/tf_static`` (15–100 Гц
+        # на роботе — base_controller, IMU, camera_link), и каждый tf-кадр
+        # пробуждал rclpy executor на этой ноде + пересобирал WaitSet на
+        # rmw_zenoh. Получался busy-loop в покое: ~62% одного ядра (см. py-spy
+        # top из issue #2618). Теперь лёгкая подписка только на
+        # ``/rtabmap/localization_pose`` (PoseWithCovarianceStamped, ~1 Гц при стоящем
+        # роботе, эпизодически чаще при SLAM-локализации). Подход зеркалит
+        # fix в rob_box_mcp_tools/mcp_server.py e90f8a4ff (там — /odom;
+        # здесь — /rtabmap/localization_pose, потому что quest нужен
+        # поза в ``map`` frame для наложения на PNG-карту, а не в ``odom``).
+        self._tf_buffer = None
+        self._tf_listener = None
+        self._latest_map_pose: Optional[tuple[float, float, float, float]] = (
+            None
+        )  # (x, y, yaw, ts_monotonic); ``None`` пока rtabmap не прислал ни одной локализации.
+        # Тип — PoseWithCovarianceStamped: именно им публикует rtabmap
+        # (замер на роботе 16.09). ``ros2 topic info`` показывает на топике
+        # ещё и PoseStamped, но это лишь подписка context_aggregator, а не
+        # второй издатель. Подписка PoseStamped на rmw_zenoh не получит ни
+        # одного сообщения, и карта в Quest останется без позы.
+        self._localization_pose_sub = self.create_subscription(
+            PoseWithCovarianceStamped,
+            "/rtabmap/localization_pose",
+            self._on_localization_pose,
+            _RE,
+        )
+        self.get_logger().info(
+            "📍 map_2d поза → лёгкая подписка на /rtabmap/localization_pose (без tf2)"
+        )
 
         # Запуск aiohttp отложен до first timer callback (rclpy init
         # уже произошёл к этому моменту).
@@ -2223,29 +2240,43 @@ class QuestNode(Node):
         """ROS /rtabmap/map → map_2d (0x1103): PNG решётки + поза робота."""
         self.bridge.on_map(msg, self._map_pose())
 
-    def _map_pose(self) -> Optional[tuple[float, float, float]]:
-        """Поза робота на карте из tf ``map → base_link``: (x, y, yaw).
+    def _on_localization_pose(self, msg: PoseWithCovarianceStamped) -> None:
+        """Лёгкий callback /rtabmap/localization_pose (issue #2618).
 
-        ``None``, если tf ещё не собрался (карта тогда не показывается —
-        класть её «куда-нибудь» хуже, чем не класть вовсе).
+        Сохраняем последний снимок ``(x, y, yaw, ts_monotonic)`` для ``_map_pose``.
+        Никаких tf lookup'ов, никакого Buffer — это убивает busy-loop в покое.
+        Callback дёргается только когда rtabmap реально обновляет локализацию
+        (≈1 Гц на стоящем роботе; эпизодически чаще при движении/SLAM).
         """
-        if self._tf_buffer is None:
-            return None
         try:
-            import rclpy.time
+            pose = msg.pose.pose
+            pos = pose.position
+            q = pose.orientation
+            yaw = math.atan2(
+                2.0 * (q.w * q.z + q.x * q.y),
+                1.0 - 2.0 * (q.y * q.y + q.z * q.z),
+            )
+            self._latest_map_pose = (
+                float(pos.x),
+                float(pos.y),
+                float(yaw),
+                time.monotonic(),
+            )
+        except Exception as exc:  # noqa: BLE001 — best-effort, не валим ROS-callback
+            self.get_logger().debug(
+                f"_on_localization_pose: malformed msg ({exc}); keep previous snapshot"
+            )
 
-            tr = self._tf_buffer.lookup_transform(
-                "map", "base_link", rclpy.time.Time()
-            ).transform
-        except Exception:  # noqa: BLE001 — TF ещё не готов / нет цепочки
+    def _map_pose(self) -> Optional[tuple[float, float, float]]:
+        """Поза робота на карте из последнего /rtabmap/localization_pose: (x, y, yaw).
+
+        ``None``, если rtabmap ещё не прислал ни одной локализации (карта тогда
+        не показывается — класть её «куда-нибудь» хуже, чем не класть вовсе).
+        """
+        snap = self._latest_map_pose
+        if snap is None:
             return None
-        q = tr.rotation
-        # Плоский робот: берём только yaw из кватерниона.
-        yaw = math.atan2(
-            2.0 * (q.w * q.z + q.x * q.y),
-            1.0 - 2.0 * (q.y * q.y + q.z * q.z),
-        )
-        return (tr.translation.x, tr.translation.y, yaw)
+        return (snap[0], snap[1], snap[2])
 
     def _on_map_pose_timer(self) -> None:
         """5 Гц: лёгкий map_2d-кадр «только поза» (без PNG)."""
