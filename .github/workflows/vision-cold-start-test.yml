@@ -31,7 +31,7 @@ on:
     paths:
       - 'docker/vision/docker-compose.yaml'
       - 'docker/vision/voice_resources/**'
-      - 'docker/vision/scripts/setup_vision_pi.sh'
+      - 'scripts/setup/setup_vision_pi.sh'
       - 'scripts/tests/override-bad-registry*.yaml'
       - 'tests/vision/cold_start/**'
       - '.github/workflows/vision-cold-start-test.yml'
@@ -39,6 +39,12 @@ on:
 
 permissions:
   contents: read
+
+# pipefail: без него `docker build ... | tail` и `docker run ... | tee`
+# отдают наружу код tail/tee, и упавшая сборка проходит как зелёная.
+defaults:
+  run:
+    shell: bash -eo pipefail {0}
 
 env:
   COMPOSE_DIR: docker/vision
@@ -137,10 +143,6 @@ jobs:
             -f docker/vision/voice_resources/Dockerfile.offline \
             -t voice-resources-cold-start:test \
             . 2>&1 | tail -25
-          if [ $? -ne 0 ]; then
-            echo "❌ offline build voice-resources упал"
-            exit 1
-          fi
           echo "✅ voice-resources собирается без сети"
 
       - name: Verify voice-resources-cold-start runs init_resources.sh
