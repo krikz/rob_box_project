@@ -23,7 +23,7 @@
 #         заметил).
 #   - Решение этой карточки: двойная защита —
 #     1. CI-guard `.github/workflows/G-Agent-Flow-Process-Checks.yml`
-#        (ADR-0116) — блокирует PR с новым watchdog без правки install.sh;
+#        (ретро t_6687a024) — блокирует PR с новым watchdog без правки install.sh;
 #     2. этот скрипт — реактивный страховочный sweep, чтобы ловить
 #        случаи, которые CI-guard пропустил (CI disabled, merge bypass,
 #        hotfix push в develop вне PR).

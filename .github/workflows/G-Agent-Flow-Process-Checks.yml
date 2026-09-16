@@ -21,7 +21,7 @@ name: "G: Agent Flow Process Checks"
 #     basename без .sh + "stale-conflicting" → "stale_conflicting" (sed).
 #     Это даёт ensure_stale_conflicting_watchdog_cron().
 #
-# ADR-0116 (follow-up ADR-0049).
+# Отдельного ADR нет: решение зафиксировано в ретро t_6687a024.
 on:
   pull_request:
     branches:
@@ -45,7 +45,7 @@ permissions:
 
 jobs:
   watchdog-cron-registration-guard:
-    name: Watchdog cron-registration guard (ADR-0116)
+    name: Watchdog cron-registration guard (retro t_6687a024)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -235,7 +235,7 @@ jobs:
           reason="${{ steps.decide.outputs.reason }}"
           missing="${{ steps.decide.outputs.missing_funcs }}"
 
-          echo "## 🛡 Watchdog cron-registration guard (ADR-0116)" >> "$GITHUB_STEP_SUMMARY"
+          echo "## 🛡 Watchdog cron-registration guard (retro t_6687a024)" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "| Поле | Значение |" >> "$GITHUB_STEP_SUMMARY"
           echo "|-------|---------|" >> "$GITHUB_STEP_SUMMARY"
@@ -247,7 +247,7 @@ jobs:
 
           case "$result" in
             fail)
-              echo "::error title=Watchdog cron-registration guard::PR adds watchdog script(s) but doesn't update scripts/agent_flow/install.sh — watchdog will sit on disk as orphan (no cron-job). Add an \`ensure_*_watchdog_cron()\` function and call it in install.sh. See ADR-0116 and retro t_6687a024."
+              echo "::error title=Watchdog cron-registration guard::PR adds watchdog script(s) but doesn't update scripts/agent_flow/install.sh — watchdog will sit on disk as orphan (no cron-job). Add an \`ensure_*_watchdog_cron()\` function and call it in install.sh. See retro t_6687a024."
               exit 1
               ;;
             warn)

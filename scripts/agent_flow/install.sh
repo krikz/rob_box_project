@@ -354,7 +354,7 @@ EXPECTED=(
     #      drift-detect), чтобы оператор увидел в утреннем обзоре;
     #   2) gh-issue (label `agent-flow-watchdog-orphan`) с перечнем
     #      пострадавших watchdog'ов — idempotent 24h dedup window;
-    #   3) PR CI-guard (G-Agent-Flow-Process-Checks.yml, ADR-0116)
+    #   3) PR CI-guard (G-Agent-Flow-Process-Checks.yml)
     #      блокирует новые watchdog-сироты на merge-time.
     # Сам orphan-watchdog регистрируется в ensure_orphan_watchdog_cron
     # ниже (every 24h). Это страховка на случай CI-bypass / hotfix-push
@@ -1323,7 +1323,7 @@ echo "==> Ensure cron job registration: orphan-watchdog (ретро 16.09 t_6687
 #     фикса (добавили в install.sh);
 #   - t_6687a024 — stale-conflicting-watchdog.sh провисел ~6ч без cron-job,
 #     PR #2671 в CONFLICTING всё это время, никто не заметил.
-# При этом PR CI-guard (G-Agent-Flow-Process-Checks.yml, ADR-0116) ловит
+# При этом PR CI-guard (G-Agent-Flow-Process-Checks.yml) ловит
 # новые watchdog-sироты на merge-time, НО не покрывает:
 #   - hotfix-push в develop вне PR-flow;
 #   - случаи, когда CI отключён или bypass'нут;
