@@ -334,7 +334,28 @@ services:
       - ../../local_test/RENARDO_REFERENCE.md:/renardo_ref/RENARDO_REFERENCE.md:ro
       # DB migrations (applied idempotently at startup by WaypointStore, TrackLibrary, etc.)
       - ../../migrations:/migrations:ro
-    mem_limit: 4g  # Voice Assistant + Animations
+    mem_limit: 5g  # Voice Assistant + Animations
+    memswap_limit: 6g  # RAM 5 GB + swap до 1 GB (issue #2676, ADR-0122)
+    # 5 GiB (↑ с 4 GiB после #2676) потому что при cold-start всех 9 нод
+    # одновременно + Silero v5 warm-load + Yandex gRPC + PyTorch + Vosk
+    # RSS прыгает в 3.4-3.9 GB с пиками до 99.6% от 4 GB (см. ADR-0122,
+    # issue #2676: docker stats показывал MEM USAGE 3.417 GiB / 4 GiB =
+    # 85.42%, ПРЫГАЛО до 99.64% → каскадные SIGKILL exit code -9 у
+    # tts_node / stt_node / speaker_id_node каждые ~30 с).
+    #
+    # memswap_limit: 6g разрешает контейнеру занять до 5 GB RAM + 1 GB
+    # swap поверх. На Vision Pi сейчас dphys-swapfile 2 GB (file-based,
+    # медленный), zram-swap по ADR-0111 ещё не поднят — но даже file-based
+    # swap даёт буфер на короткие пики, чтобы OOM-killer не убивал ноды
+    # сразу. После раскатки zram (ADR-0111, issue #2621) этот лимит станет
+    # более эффективным; до тех пор это страховка от каскадных SIGKILL.
+    #
+    # Долгосрочное решение (НЕ в этой карточке — backend work, см.
+    # issue #2676 "Proposed fix §2"): вынести тяжёлые ноды (Vosk STT,
+    # Silero, MiniMax T2A, mcp_server) в отдельные контейнеры с
+    # собственными лимитами → конкуренция за RAM внутри одного
+    # cgroup уйдёт.
+    #
     # 4 GiB because the container hosts 9 respawn-able nodes including:
     #   - audio_node (PyAudio + ReSpeaker 6ch buffers)
     #   - stt_node (Vosk model ~200-500 MB)
@@ -354,10 +375,11 @@ services:
     # so the model is resident for the entire container lifetime while
     # Yandex is primary.  Net RSS effect vs old lazy-load: roughly the
     # same peak (model is ~150-200 MB either way) but the user no longer
-    # hears the cold-load pause on first fallback.  The 4 GiB ceiling
-    # comfortably holds Yandex gRPC client (negligible) + warm Silero
-    # (~200 MB) + the other 8 nodes; no further increase needed.
-    memswap_limit: 4.5g
+    # hears the cold-load pause on first fallback.  The 5 GiB ceiling
+    # (raised from 4 GiB per ADR-0122 / issue #2676) comfortably holds
+    # Yandex gRPC client (negligible) + warm Silero (~200 MB) + the other
+    # 8 nodes with ~1 GiB headroom for dialogue bursts; memswap_limit=6g
+    # adds a 1 GB swap cushion against transient spikes.
     command: ["/ros_scripts/ros_with_namespace.sh", "/bin/bash", "/scripts/start_voice_assistant.sh"]
     depends_on:
       zenoh-router:
