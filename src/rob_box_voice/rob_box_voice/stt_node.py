@@ -17,6 +17,7 @@ ReSpeaker игнорируется, вейк личности из микроф�
 
 import json
 import os
+import threading
 import time
 from typing import Optional
 
@@ -191,9 +192,14 @@ class STTNode(Node):
         # Параметры Vosk (fallback)
         self.declare_parameter("model_path", "/models/vosk-model-small-ru-0.22")
         self.declare_parameter("sample_rate", 16000)
+        # Issue #2609 — Vosk держит ~400 МБ RSS, а нужен только когда Yandex
+        # не ответил. По умолчанию модель грузится при первом fallback
+        # (платим ~1-2 с один раз); ``true`` возвращает загрузку на старте.
+        self.declare_parameter("vosk_preload", False)
 
         self.model_path = self.get_parameter("model_path").value
         self.sample_rate = self.get_parameter("sample_rate").value
+        self.vosk_preload = bool(self.get_parameter("vosk_preload").value)
 
         # Параметры Yandex STT (primary)
         self.declare_parameter("yandex_api_key", "")
@@ -420,6 +426,10 @@ class STTNode(Node):
         # Vosk модель и распознаватель
         self.model: Optional[Model] = None
         self.recognizer: Optional[KaldiRecognizer] = None
+        # Модель на диске прошла проверку, но в память может быть ещё не
+        # загружена (issue #2609) — см. _ensure_vosk_loaded.
+        self._vosk_available = False
+        self._vosk_load_lock = threading.Lock()
 
         # Состояние
         self.is_robot_speaking = False  # Флаг: робот говорит (только для aec_mode=software)
@@ -484,9 +494,12 @@ class STTNode(Node):
         files' from the Vosk C++ binding) when it isn't there, pointing the
         operator at the docs.
 
-        Set the env var ROS_VOSK_DISABLE=1 (or declare the
-        ``enable_vosk`` ROS param as False) to skip Vosk entirely —
+        Set the env var ROS_VOSK_DISABLE=1 to skip Vosk entirely —
         stt_node will then use only the Yandex gRPC provider.
+
+        Issue #2609: here we only check that the model is on disk. The model
+        itself is loaded on the first fallback (``_ensure_vosk_loaded``)
+        unless ``vosk_preload`` is true.
         """
         # Operator opt-out — useful when the model isn't available and we
         # explicitly want a Yandex-only deploy.
@@ -514,13 +527,39 @@ class STTNode(Node):
             self.publish_state("error")
             return
 
+        self._vosk_available = True
+        if not self.vosk_preload:
+            self.get_logger().info(
+                "🪶 Vosk загрузится при первом fallback " "(issue #2609: vosk_preload=false)"
+            )
+            self.publish_state("ready")
+            return
+        if self._ensure_vosk_loaded():
+            self.publish_state("ready")
+
+    def _ensure_vosk_loaded(self) -> bool:
+        """Загрузить Vosk в память, если ещё не загружен (issue #2609)."""
+        if self.recognizer is not None:
+            return True
+        if not self._vosk_available:
+            return False
+        with self._vosk_load_lock:
+            if self.recognizer is not None:
+                return True
+            return self._load_vosk_model()
+
+    def _load_vosk_model(self) -> bool:
         try:
+            t0 = time.monotonic()
             self.get_logger().info(f"Загрузка Vosk модели из {self.model_path}...")
             self.model = Model(self.model_path)
-            self.recognizer = KaldiRecognizer(self.model, self.sample_rate)
-            self.recognizer.SetWords(True)  # Получать разметку по словам
-            self.get_logger().info("✅ Vosk модель загружена (fallback)")
-            self.publish_state("ready")
+            recognizer = KaldiRecognizer(self.model, self.sample_rate)
+            recognizer.SetWords(True)  # Получать разметку по словам
+            self.recognizer = recognizer
+            self.get_logger().info(
+                f"✅ Vosk модель загружена (fallback, {time.monotonic() - t0:.1f} с)"
+            )
+            return True
         except Exception as e:
             # Defensive: even after the isdir() check above, the model files
             # inside the directory could still be missing/corrupt (e.g. a
@@ -531,7 +570,9 @@ class STTNode(Node):
                 f"   See docker/vision/voice_base/Dockerfile — the model "
                 f"should be bundled at build time."
             )
+            self._vosk_available = False
             self.publish_state("error")
+            return False
 
     def tts_state_callback(self, msg: String):
         """Отслеживание состояния TTS.
@@ -924,7 +965,7 @@ class STTNode(Node):
         providers = []
         if self.yandex_stub is not None:
             providers.append(_YandexAdapter(self))
-        if self.recognizer is not None:
+        if self.recognizer is not None or self._vosk_available:
             providers.append(_VoskAdapter(self))
 
         if not providers:
@@ -950,7 +991,7 @@ class STTNode(Node):
                     self.get_logger().info(f'✅ Yandex STT: "{text}"')
             except Exception as e:
                 self.get_logger().error(f"⚠️  Yandex STT ошибка: {e}, fallback на Vosk")
-        if not text and self.recognizer:
+        if not text and (self.recognizer is not None or self._vosk_available):
             text = self._recognize_vosk(audio_bytes)
             if text:
                 self.get_logger().info(f'✅ Vosk (fallback): "{text}"')
@@ -1238,6 +1279,8 @@ class STTNode(Node):
         # Issue #1077 — Vosk не даёт speaker_analysis: tag=None, профиль
         # спикера не создаётся (edge case #4).
         self._last_speaker_tag = None
+        if not self._ensure_vosk_loaded():
+            return None
         # Кормим Vosk по кусочкам, как Yandex (4KB chunks)
         # Это важно! Vosk работает в streaming режиме и не может обработать всю фразу сразу
         chunk_size = 4096

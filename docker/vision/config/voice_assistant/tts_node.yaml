@@ -14,6 +14,10 @@ tts_node:
     pregenerate_enabled: true
     pregenerate_confidence_floor: 0.6
     pregenerate_history_window: 10
+    # Issue #2609 — Silero только аварийный fallback; без этого ключа
+    # срабатывал дефолт кода (true) и tts_node грузил torch + модель на
+    # каждом старте, хотя в src/rob_box_voice/config он давно выключен.
+    silero_warm_load: false
     silero_speaker: aidar
     silero_sample_rate: 48000
     synthesis_max_workers: 2

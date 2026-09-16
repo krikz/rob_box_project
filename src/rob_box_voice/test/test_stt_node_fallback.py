@@ -1404,3 +1404,63 @@ class TestTelemetryPhraseToAccept:
             if "phrase_to_accept_ms=" in r.getMessage()
         ]
         assert telemetry == []
+
+
+class TestVoskLazyLoad:
+    """Issue #2609 — Vosk грузится при первом fallback, а не на старте.
+
+    Модель держит ~400 МБ RSS в stt_node, а на Vision Pi (8 ГБ) нужна только
+    когда Yandex не ответил.
+    """
+
+    @staticmethod
+    def _node_with_model_on_disk(monkeypatch):
+        monkeypatch.setattr("os.path.isdir", lambda _p: True)
+        node = _make_stt_node_stub()
+        from rob_box_voice import stt_node as stt_node_module
+
+        return node, stt_node_module
+
+    def test_model_not_loaded_at_startup(self, monkeypatch):
+        node, mod = self._node_with_model_on_disk(monkeypatch)
+        assert node._vosk_available is True
+        assert node.recognizer is None
+        mod.Model.assert_not_called()
+
+    def test_first_vosk_call_loads_model_once(self, monkeypatch):
+        node, mod = self._node_with_model_on_disk(monkeypatch)
+        mod.KaldiRecognizer.return_value.FinalResult.return_value = '{"text": "привет"}'
+
+        assert node._recognize_vosk(b"\x00" * 8000) == "привет"
+        assert node._recognize_vosk(b"\x00" * 8000) == "привет"
+        assert mod.Model.call_count == 1
+
+    def test_fallback_offers_vosk_before_it_is_loaded(self, monkeypatch):
+        node, _mod = self._node_with_model_on_disk(monkeypatch)
+        node.yandex_stub = None
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(node, "_recognize_vosk", MagicMock(return_value="привет робот"))
+            text, attempts = node._recognize_with_fallback(b"\x00" * 8000)
+        assert text == "привет робот"
+        assert [a.provider for a in attempts] == ["vosk"]
+
+    def test_preload_loads_model_at_init(self, monkeypatch):
+        node, mod = self._node_with_model_on_disk(monkeypatch)
+        node.vosk_preload = True
+        node.initialize_vosk()
+        assert node.recognizer is not None
+        assert mod.Model.call_count == 1
+
+    def test_load_failure_disables_vosk(self, monkeypatch):
+        node, mod = self._node_with_model_on_disk(monkeypatch)
+        mod.Model.side_effect = RuntimeError("broken model")
+        assert node._recognize_vosk(b"\x00" * 8000) is None
+        assert node._vosk_available is False
+        assert node._recognize_vosk(b"\x00" * 8000) is None
+        assert mod.Model.call_count == 1
+
+    def test_missing_model_dir_leaves_vosk_unavailable(self, monkeypatch):
+        monkeypatch.setattr("os.path.isdir", lambda _p: False)
+        node = _make_stt_node_stub()
+        assert node._vosk_available is False
+        assert node._recognize_vosk(b"\x00" * 8000) is None
