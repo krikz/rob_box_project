@@ -1,4 +1,4 @@
-# ADR-0112 — `EncounterSeam.current_speaker_id()`: единственная точка чтения «кто сейчас» в шве «Встреча»
+# ADR-0119 — `EncounterSeam.current_speaker_id()`: единственная точка чтения «кто сейчас» в шве «Встреча»
 
 **Дата:** 2026-09-16
 **Статус:** Accepted (planned — реализация в Phase 1 на следующем цикле компонентного ревью `rob_box_harness`)
@@ -76,7 +76,7 @@ def current_speaker_id(self, *, now: Optional[float] = None) -> Optional[str]:
     Используется :class:`rob_box_mcp_tools.MCPServer` и
     :mod:`rob_box_mcp_tools.tools.memory` вместо независимого
     дублирования ``self._encounter_seam.current().who.id`` — см.
-    ADR-0112 §1.1 (issue #2649).
+    ADR-0119 §1.1 (issue #2649).
 
     :returns: ``Acquaintance.id`` текущей Встречи, или ``None`` если
         Встречи нет, или она истекла по таймауту, или ``who is None``
@@ -98,7 +98,7 @@ def current_speaker_id(self, *, now: Optional[float] = None) -> Optional[str]:
 def _current_encounter_speaker_id(self) -> Optional[str]:
     """Issue #2442 — ``speaker_id`` текущей Встречи, или ``None``.
 
-    Делегирует :meth:`EncounterSeam.current_speaker_id`. См. ADR-0112 —
+    Делегирует :meth:`EncounterSeam.current_speaker_id`. См. ADR-0119 —
     шов один, читателей больше одного, метод шва — единственная точка
     чтения ``Acquaintance.id``.
     """
@@ -112,7 +112,7 @@ def _current_encounter_speaker_id(node: object) -> Optional[str]:
     """Issue #2442 — единственный путь к «кто сейчас», вместо трёх копий.
 
     Тонкая обёртка над ``node._encounter_seam.current_speaker_id()``
-    (ADR-0112): модуль ``tools/memory`` не импортирует :class:`MCPServer`
+    (ADR-0119): модуль ``tools/memory`` не импортирует :class:`MCPServer`
     напрямую (тот импортирует этот модуль — цикл), поэтому читает seam
     через ``getattr`` по контракту. Сам seam — общий пакет
     ``rob_box_harness.encounter``, импорт не циклит. Отсутствие шва на
@@ -153,7 +153,7 @@ def _current_encounter_speaker_id(self) -> Optional[str]:
 | 1 | `src/rob_box_harness/rob_box_harness/encounter/base.py` | **NEW**: метод `EncounterSeam.current_speaker_id()` — делегирует `current()` |
 | 2 | `src/rob_box_mcp_tools/rob_box_mcp_tools/mcp_server.py:601-614` | заменить тело `MCPServer._current_encounter_speaker_id` на вызов seam-метода |
 | 3 | `src/rob_box_mcp_tools/rob_box_mcp_tools/tools/memory.py:22-45` | заменить тело модульной `_current_encounter_speaker_id` на вызов seam-метода через getattr |
-| 4 | `src/rob_box_mcp_tools/test/test_mcp_server_speaker_result.py:229-233` | заменить дубль в `_StubNode` на вызов seam-метода; комментарий обновить ссылкой на ADR-0112 |
+| 4 | `src/rob_box_mcp_tools/test/test_mcp_server_speaker_result.py:229-233` | заменить дубль в `_StubNode` на вызов seam-метода; комментарий обновить ссылкой на ADR-0119 |
 | 5 | `src/rob_box_mcp_tools/test/test_tools/test_memory_speaker_id.py` | комментарий в `_FakeNode` дополнить ссылкой на `EncounterSeam.current_speaker_id` (кода менять не надо — фабрика уже работает через шов) |
 | 6 | `docs/adr/0105-encounter-in-process-first.md` §3 «Контракт шва» | дополнить список операций: `current_speaker_id()` (read-only convenience над `current()`) |
 
@@ -173,7 +173,7 @@ def _current_encounter_speaker_id(self) -> Optional[str]:
 
 - **Плюсы**: «правильная» типизация вместо `getattr`.
 - **Минусы**: **создаёт цикл импортов**, от которого текущий код защищается через `getattr`. `mcp_server` импортирует `tools/memory` через `from .tools import (...)`, а обратный импорт `mcp_server.MCPServer` в `tools/memory.py` — это `ImportError` при первой попытке. Текущее решение через `getattr` — корректное.
-- **Вердикт**: ❌ отвергнуто — вводит цикл, который ADR-0112 явно избегает.
+- **Вердикт**: ❌ отвергнуто — вводит цикл, который ADR-0119 явно избегает.
 
 ### Альтернатива C: вынести «read Acquaintance.id» в free function в `rob_box_harness.encounter`
 
@@ -244,7 +244,7 @@ def current_speaker_id_of(seam: Optional[EncounterSeam]) -> Optional[str]:
    *Решение (предложение)*: оставить методом, как `current()`.
 
 2. **Стоит ли добавить симметричный `current_speaker() -> Optional[Acquaintance]`?** Параллельный getter, чтобы потребители, которым нужен весь `Acquaintance` (например, для `display_name` в будущем), не лазили в `.current().who` снова.
-   *Решение (предложение)*: НЕ в этой карточке — YAGNI. Когда появится конкретный потребитель `Acquaintance` (не только id), добавим отдельной фазой и пересмотрим ADR-0112.
+   *Решение (предложение)*: НЕ в этой карточке — YAGNI. Когда появится конкретный потребитель `Acquaintance` (не только id), добавим отдельной фазой и пересмотрим ADR-0119.
 
 3. **Когда обновлять ADR-0105 §3 «Контракт шва»?** Там сейчас перечислены только `current()` (read) и `observe()` (write). `current_speaker_id()` — третья операция шва. Это не breaking change, но список операций должен быть полным — touchpoint #6 в §3.
 
@@ -254,6 +254,6 @@ def current_speaker_id_of(seam: Optional[EncounterSeam]) -> Optional[str]:
 
 | Дата | Автор | Изменение |
 |---|---|---|
-| 2026-09-16 | architect (t_cae53268, issue #2649) | Initial ADR-0112. Принят план: `EncounterSeam.current_speaker_id()` как единственная точка чтения «кто сейчас». Дубль в `mcp_server.py` и `tools/memory.py` (плюс тестовый стаб) заменяется вызовом seam-метода. Phase 2 (распространение на `dialogue_node`) — отдельная карточка. |
+| 2026-09-16 | architect (t_cae53268, issue #2649) | Initial ADR-0119. Принят план: `EncounterSeam.current_speaker_id()` как единственная точка чтения «кто сейчас». Дубль в `mcp_server.py` и `tools/memory.py` (плюс тестовый стаб) заменяется вызовом seam-метода. Phase 2 (распространение на `dialogue_node`) — отдельная карточка. |
 
-*ADR-0112 расширяет API существующего seam'а (ADR-0105) без изменения архитектуры.*
+*ADR-0119 расширяет API существующего seam'а (ADR-0105) без изменения архитектуры.*
