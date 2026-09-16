@@ -113,8 +113,7 @@
     }
   },
   "_refactor_cards": {
-    "src/rob_box_voice/rob_box_voice/dialogue_node.py:DialogueNode._handle_result": "#2556 (handle_result decomp)",
-    "src/rob_box_harness/rob_box_harness/core/agent_core.py:AgentCore._run_with_tools": "#2629 (run_with_tools tool-loop batch extraction)"
+    "src/rob_box_voice/rob_box_voice/dialogue_node.py:DialogueNode._handle_result": "#2556 (handle_result decomp)"
   },
   "_legacy_acknowledged": [
     {
