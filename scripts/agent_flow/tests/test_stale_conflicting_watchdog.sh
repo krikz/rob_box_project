@@ -48,7 +48,7 @@ pass() { echo "  ok: $1"; _pass=$((_pass+1)); }
 fail() { echo "  FAIL: $1"; _fail=$((_fail+1)); }
 
 # Эта переменная пересоздаётся в каждом test_* функции через MOCK_GH_PRS_JSON env.
-# Формат: JSON array, как отдаёт gh pr list --json number,mergeable,mergeableState,
+# Формат: JSON array, как отдаёт gh pr list --json number,mergeable,mergeStateStatus,
 #   headRefName,baseRefName,updatedAt,title
 
 # Подготовка mock-hermes (отдельный от test_stale_blocked_watchdog, потому
@@ -227,7 +227,7 @@ test_S2_fresh_pr_not_dirty() {
     MOCK_GH_PRS_JSON="$WORK/s2.json"; export MOCK_GH_PRS_JSON
     _updated="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     cat > "$MOCK_GH_PRS_JSON" <<EOF
-[{"number":2647,"mergeable":true,"mergeableState":"clean","headRefName":"z-architect/abc","baseRefName":"develop","updatedAt":"$_updated","title":"docs only"}]
+[{"number":2647,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefName":"z-architect/abc","baseRefName":"develop","updatedAt":"$_updated","title":"docs only"}]
 EOF
     set +e
     DRY_RUN=false bash "$WATCHDOG_SH" STALE_THRESHOLD_HOURS=4 >/tmp/s2.out 2>/tmp/s2.err
@@ -254,7 +254,7 @@ test_S3_dirty_but_fresh() {
     MOCK_GH_PRS_JSON="$WORK/s3.json"; export MOCK_GH_PRS_JSON
     _updated="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     cat > "$MOCK_GH_PRS_JSON" <<EOF
-[{"number":2647,"mergeable":false,"mergeableState":"dirty","headRefName":"z-{agent}/2630","baseRefName":"develop","updatedAt":"$_updated","title":"harness refactor"}]
+[{"number":2647,"mergeable":"CONFLICTING","mergeStateStatus":"DIRTY","headRefName":"z-{agent}/2630","baseRefName":"develop","updatedAt":"$_updated","title":"harness refactor"}]
 EOF
     set +e
     DRY_RUN=false bash "$WATCHDOG_SH" STALE_THRESHOLD_HOURS=4 >/tmp/s3.out 2>/tmp/s3.err
@@ -281,7 +281,7 @@ test_S4_stale_dirty_no_card_emits() {
     MOCK_GH_PRS_JSON="$WORK/s4.json"; export MOCK_GH_PRS_JSON
     _updated="$(date -u -d '10 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
     cat > "$MOCK_GH_PRS_JSON" <<EOF
-[{"number":2639,"mergeable":false,"mergeableState":"dirty","headRefName":"z-{agent}/2630-refactor-harness-agentcore","baseRefName":"develop","updatedAt":"$_updated","title":"refactor(harness) AgentCore CC"}]
+[{"number":2639,"mergeable":"CONFLICTING","mergeStateStatus":"DIRTY","headRefName":"z-{agent}/2630-refactor-harness-agentcore","baseRefName":"develop","updatedAt":"$_updated","title":"refactor(harness) AgentCore CC"}]
 EOF
     set +e
     DRY_RUN=false bash "$WATCHDOG_SH" STALE_THRESHOLD_HOURS=4 >/tmp/s4.out 2>/tmp/s4.err
@@ -335,7 +335,7 @@ PYEOF
     MOCK_GH_PRS_JSON="$WORK/s5.json"; export MOCK_GH_PRS_JSON
     _updated="$(date -u -d '10 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
     cat > "$MOCK_GH_PRS_JSON" <<EOF
-[{"number":2639,"mergeable":false,"mergeableState":"dirty","headRefName":"z-{agent}/2630-refactor-harness-agentcore","baseRefName":"develop","updatedAt":"$_updated","title":"refactor(harness) AgentCore CC"}]
+[{"number":2639,"mergeable":"CONFLICTING","mergeStateStatus":"DIRTY","headRefName":"z-{agent}/2630-refactor-harness-agentcore","baseRefName":"develop","updatedAt":"$_updated","title":"refactor(harness) AgentCore CC"}]
 EOF
     set +e
     DRY_RUN=false bash "$WATCHDOG_SH" STALE_THRESHOLD_HOURS=4 >/tmp/s5.out 2>/tmp/s5.err
@@ -362,7 +362,7 @@ test_S6_dry_run() {
     MOCK_GH_PRS_JSON="$WORK/s6.json"; export MOCK_GH_PRS_JSON
     _updated="$(date -u -d '10 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
     cat > "$MOCK_GH_PRS_JSON" <<EOF
-[{"number":2640,"mergeable":false,"mergeableState":"dirty","headRefName":"z-{agent}/2627","baseRefName":"develop","updatedAt":"$_updated","title":"refactor(voice) DialogueNode"}]
+[{"number":2640,"mergeable":"CONFLICTING","mergeStateStatus":"DIRTY","headRefName":"z-{agent}/2627","baseRefName":"develop","updatedAt":"$_updated","title":"refactor(voice) DialogueNode"}]
 EOF
     set +e
     DRY_RUN=true bash "$WATCHDOG_SH" STALE_THRESHOLD_HOURS=4 >/tmp/s6.out 2>/tmp/s6.err
@@ -389,7 +389,7 @@ test_S7_behind_state_ignored() {
     MOCK_GH_PRS_JSON="$WORK/s7.json"; export MOCK_GH_PRS_JSON
     _updated="$(date -u -d '10 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
     cat > "$MOCK_GH_PRS_JSON" <<EOF
-[{"number":2640,"mergeable":false,"mergeableState":"behind","headRefName":"z-{agent}/2627","baseRefName":"develop","updatedAt":"$_updated","title":"behind-state PR"}]
+[{"number":2640,"mergeable":"MERGEABLE","mergeStateStatus":"BEHIND","headRefName":"z-{agent}/2627","baseRefName":"develop","updatedAt":"$_updated","title":"behind-state PR"}]
 EOF
     set +e
     DRY_RUN=false bash "$WATCHDOG_SH" STALE_THRESHOLD_HOURS=4 >/tmp/s7.out 2>/tmp/s7.err
@@ -418,7 +418,7 @@ test_S8_sqlite_db_missing_fail_open() {
     MOCK_GH_PRS_JSON="$WORK/s8.json"; export MOCK_GH_PRS_JSON
     _updated="$(date -u -d '10 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
     cat > "$MOCK_GH_PRS_JSON" <<EOF
-[{"number":2642,"mergeable":false,"mergeableState":"dirty","headRefName":"z-{agent}/2631","baseRefName":"develop","updatedAt":"$_updated","title":"refactor(voice) DialogueNode run_turn"}]
+[{"number":2642,"mergeable":"CONFLICTING","mergeStateStatus":"DIRTY","headRefName":"z-{agent}/2631","baseRefName":"develop","updatedAt":"$_updated","title":"refactor(voice) DialogueNode run_turn"}]
 EOF
     set +e
     DRY_RUN=false bash "$WATCHDOG_SH" STALE_THRESHOLD_HOURS=4 >/tmp/s8.out 2>/tmp/s8.err
@@ -445,7 +445,7 @@ test_S9_multi_stale_dirty() {
     MOCK_GH_PRS_JSON="$WORK/s9.json"; export MOCK_GH_PRS_JSON
     _updated="$(date -u -d '10 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
     cat > "$MOCK_GH_PRS_JSON" <<EOF
-[{"number":2647,"mergeable":false,"mergeableState":"dirty","headRefName":"z-architect/2627","baseRefName":"develop","updatedAt":"$_updated","title":"ADR post-turn-music finalizer"},{"number":2644,"mergeable":false,"mergeableState":"dirty","headRefName":"z-{agent}/2609-fix-voice-torch","baseRefName":"develop","updatedAt":"$_updated","title":"torch CPU-only"},{"number":2642,"mergeable":false,"mergeableState":"dirty","headRefName":"z-{agent}/2631","baseRefName":"develop","updatedAt":"$_updated","title":"DialogueNode CC"}]
+[{"number":2647,"mergeable":"CONFLICTING","mergeStateStatus":"DIRTY","headRefName":"z-architect/2627","baseRefName":"develop","updatedAt":"$_updated","title":"ADR post-turn-music finalizer"},{"number":2644,"mergeable":"CONFLICTING","mergeStateStatus":"DIRTY","headRefName":"z-{agent}/2609-fix-voice-torch","baseRefName":"develop","updatedAt":"$_updated","title":"torch CPU-only"},{"number":2642,"mergeable":"CONFLICTING","mergeStateStatus":"DIRTY","headRefName":"z-{agent}/2631","baseRefName":"develop","updatedAt":"$_updated","title":"DialogueNode CC"}]
 EOF
     set +e
     DRY_RUN=false bash "$WATCHDOG_SH" STALE_THRESHOLD_HOURS=4 >/tmp/s9.out 2>/tmp/s9.err
@@ -480,7 +480,7 @@ test_S10_per_pr_idempotency_key() {
     MOCK_GH_PRS_JSON="$WORK/s10.json"; export MOCK_GH_PRS_JSON
     _updated="$(date -u -d '10 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
     cat > "$MOCK_GH_PRS_JSON" <<EOF
-[{"number":2639,"mergeable":false,"mergeableState":"dirty","headRefName":"z-{agent}/2630","baseRefName":"develop","updatedAt":"$_updated","title":"harness refactor"}]
+[{"number":2639,"mergeable":"CONFLICTING","mergeStateStatus":"DIRTY","headRefName":"z-{agent}/2630","baseRefName":"develop","updatedAt":"$_updated","title":"harness refactor"}]
 EOF
     # spy на argv kanban-retro-create.sh: чтобы проверить передаваемые --key
     # мы подменяем её на shell-traceable stub.

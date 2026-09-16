@@ -40,8 +40,9 @@
 #
 # Контракт (per tick):
 #   1. flock lock (не два тика одновременно)
-#   2. gh pr list --state open --json number,mergeable,mergeableState,headRefName,baseRefName,updatedAt,title
-#   3. Для каждого PR с mergeableState='dirty' & updated_at < now-STALE_THRESHOLD:
+#   2. gh pr list --state open --json number,mergeable,mergeStateStatus,headRefName,baseRefName,updatedAt,title
+#      (gh CLI возвращает mergeStateStatus UPPERCASE: 'CLEAN'/'DIRTY'/'BLOCKED'/...)
+#   3. Для каждого PR с mergeStateStatus='DIRTY' & updated_at < now-STALE_THRESHOLD:
 #        a) ищем активную карточку в kanban (sqlite scan по body LIKE '%PR #N%'
 #           И status in (running, todo)) — если есть, SKIP (worker уже
 #           взялся).
@@ -157,7 +158,7 @@ fi
 
 # --- get open PRs -----------------------------------------------------------
 _prs_json="$(gh pr list --repo "$GH_REPO" --state open \
-    --json number,mergeable,mergeableState,headRefName,baseRefName,updatedAt,title \
+    --json number,mergeable,mergeStateStatus,headRefName,baseRefName,updatedAt,title \
     --limit 50 2>/dev/null || echo '[]')"
 
 _threshold_epoch=$(( $(date -u +%s) - STALE_THRESHOLD_HOURS * 3600 ))
@@ -189,13 +190,15 @@ for pr in data:
         continue
     n = pr.get("number")
     upd = (pr.get("updatedAt") or "").strip()
-    state = (pr.get("mergeableState") or "").strip()
+    state = (pr.get("mergeStateStatus") or "").strip().upper()
+    mergeable = (pr.get("mergeable") or "").strip().upper()
     head = pr.get("headRefName") or ""
     base = pr.get("baseRefName") or ""
     title = (pr.get("title") or "").strip()
-    # mergeableState='dirty' — единственный наш целевой сигнал;
-    # null (cold cache) и 'behind' пропускаем.
-    if n is None or not upd or state != "dirty":
+    # mergeStateStatus='DIRTY' — единственный наш целевой сигнал;
+    # 'CLEAN'/'BLOCKED'/'BEHIND'/'UNSTABLE'/null — пропускаем.
+    # Доп.гард: mergeable=='CONFLICTING' (подтверждение от REST).
+    if n is None or not upd or state != "DIRTY" or mergeable != "CONFLICTING":
         continue
     # Title sanitization: pipe ('|') — наш field delimiter; заменяем на '/'.
     safe_title = title.replace("|", "/").replace("\n", " ")
