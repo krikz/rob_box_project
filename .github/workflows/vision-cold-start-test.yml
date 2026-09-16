@@ -67,7 +67,7 @@ jobs:
       - name: Install dependencies (PyYAML, pytest)
         run: |
           python3 -m pip install --quiet --upgrade pip
-          python3 -m pip install --quiet PyYAML pytest pytest-asyncio
+          python3 -m pip install --quiet PyYAML pytest pytest-asyncio pytest-cov
 
       - name: Run cold-start unit tests
         run: |
