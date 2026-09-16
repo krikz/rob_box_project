@@ -68,12 +68,14 @@ services:
       - zenoh-router
     restart: unless-stopped
     # t_5ab5e44a (наблюдаемость): healthcheck, чтобы `docker ps` показывал
-    # реальный статус, а не «висит на init». ROS-нода oakd запускается
-    # через `ros2 launch oakd_with_apriltag.launch.py` — имя процесса в
-    # pgrep стабильно. start_period 30s даём на холодный старт стека +
-    # USB-инициализацию DepthAI.
+    # реальный статус, а не «висит на init». Проверяем сам драйвер
+    # depthai camera_node, а не `ros2 launch`: launch — это PID 1, он жив,
+    # пока жив контейнер, даже если дочерняя нода упала (USB error -71).
+    # Скобки в `[d]epthai` не дают pgrep найти собственный `sh -c`,
+    # в командной строке которого тоже есть шаблон. start_period 60s даём
+    # на холодный старт стека + USB-инициализацию DepthAI.
     healthcheck:
-      test: ["CMD-SHELL", "pgrep -f 'oakd_with_apriltag' || exit 1"]
+      test: ["CMD-SHELL", "pgrep -f '[d]epthai_ros_driver/camera_node' || exit 1"]
       interval: 30s
       timeout: 10s
       start_period: 60s
@@ -150,11 +152,13 @@ services:
       - zenoh-router
     restart: unless-stopped
     # t_5ab5e44a (наблюдаемость): healthcheck для usb_cam ноды — pgrep
-    # по имени исполняемого файла. На cold start ждём USB-инициализацию
-    # (start_period 30s), иначе healthcheck fail'ит пока устройство не
-    # прокинулось.
+    # по пути исполняемого файла. PID 1 здесь `ros2 run usb_cam
+    # usb_cam_node_exe`, поэтому ищем `lib/usb_cam/...`, которого в его
+    # командной строке нет; скобки `[l]ib` исключают собственный `sh -c`.
+    # На cold start ждём USB-инициализацию (start_period 30s), иначе
+    # healthcheck fail'ит пока устройство не прокинулось.
     healthcheck:
-      test: ["CMD-SHELL", "pgrep -f 'usb_cam_node_exe' || exit 1"]
+      test: ["CMD-SHELL", "pgrep -f '[l]ib/usb_cam/usb_cam_node_exe' || exit 1"]
       interval: 30s
       timeout: 10s
       start_period: 30s
