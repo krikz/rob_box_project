@@ -1,21 +1,23 @@
-"""Regression tests for vision-face ENV-namespace consistency (ADR-0120).
+"""Regression tests for vision-face ENV wiring (ADR-0120 §8).
 
-Issue #2655 (F-1 from t_4b487ef8 component review 2026-09-15):
+History:
 
-    docker-compose.yaml for ``vision-face`` exported
-    ``HAILO_ENABLED=${FACE_HAILO_ENABLED:-false}``,
-    but ``start_vision_face.sh`` read ``HAILO_ENABLED`` (no prefix).
-    Result: ``FACE_HAILO_ENABLED=true`` in operator's ``.env`` never reached
-    the node — vision-face always started in stub-mode, even when the
-    operator explicitly opted into real inference (silently-broken
-    integration, masks a stub, violates ADR-0018 capability-honest).
+* #2660 replaced ``HAILO_ENABLED=${FACE_HAILO_ENABLED:-false}`` with the
+  shared ``HAILO_ENABLED=${HAILO_ENABLED:-false}`` / ``HEF_PATH=${HEF_PATH:-}``,
+  believing the ``FACE_*`` flag never reached the node. It did — the prefix
+  was only on the host variable.
+* As a result vision-face received vision-hailo's host ``HEF_PATH``
+  (``yolov8n.hef``) instead of RetinaFace (robot, 2026-09-16).
 
-These tests guard against the namespace misalignment coming back. They
-parse the compose YAML (text scan, not a real loader — keep test
-dependencies minimal) and the bash entrypoint, then assert that the
-``HAILO_ENABLED`` / ``HEF_PATH`` ENV names that the compose file maps
-into the container match the names the bash script reads. If they
-diverge again, this test fails BEFORE deploy.
+Contract guarded here:
+
+1. vision-face reads its OWN host variables (``FACE_HAILO_ENABLED`` /
+   ``FACE_HEF_PATH``) and never vision-hailo's ``HAILO_ENABLED`` / ``HEF_PATH``.
+2. Inside the container the names stay ``HAILO_ENABLED`` / ``HEF_PATH`` —
+   those are what ``start_vision_face.sh`` reads.
+3. Compose defaults are empty, so ``config/hailo_models.yaml`` decides.
+4. ``start_vision_face.sh`` applies its own defaults only AFTER the YAML block;
+   otherwise an empty ENV becomes an exported ``false`` that beats the YAML.
 
 Pure text scan, no docker runtime required.
 """
@@ -25,55 +27,26 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-# Test is in src/rob_box_perception/test/unit/; REPO_ROOT is 5 levels up:
 # unit -> test -> perception -> src -> REPO_ROOT.
 REPO_ROOT = Path(__file__).resolve().parents[4]
 COMPOSE = REPO_ROOT / 'docker' / 'vision' / 'docker-compose.yaml'
-START_FACE = (
-    REPO_ROOT
-    / 'docker'
-    / 'vision'
-    / 'scripts'
-    / 'vision-hailo'
-    / 'start_vision_face.sh'
-)
-START_HAILO = (
-    REPO_ROOT
-    / 'docker'
-    / 'vision'
-    / 'scripts'
-    / 'vision-hailo'
-    / 'start_vision_hailo.sh'
-)
+SCRIPTS = REPO_ROOT / 'docker' / 'vision' / 'scripts' / 'vision-hailo'
+START_FACE = SCRIPTS / 'start_vision_face.sh'
+HAILO_MODELS_YAML = REPO_ROOT / 'docker' / 'vision' / 'config' / 'hailo_models.yaml'
 
 
-def _vision_face_env_block():
-    """Return the text of the ``vision-face:`` service block in compose.
-
-    The block starts at the ``vision-face:`` line and runs through the
-    next sibling key (line whose leading indentation is shallower than
-    ``vision-face:``'s own indent). We slice on string index rather than
-    depending on PyYAML so the test has zero deps.
-
-    Handles both top-level (``vision-face:``) and indented
-    (``  vision-face:`` under ``services:``) keys.
-    """
-    text = COMPOSE.read_text()
-    lines = text.splitlines()
-    start = None
-    start_indent = None
+def _service_block(name):
+    """Return the text of a top-level compose service block (no PyYAML)."""
+    lines = COMPOSE.read_text(encoding='utf-8').splitlines()
+    start = start_indent = None
     for i, line in enumerate(lines):
         stripped = line.lstrip()
-        if stripped.startswith('vision-face:') and stripped.endswith(':'):
+        if stripped == f'{name}:':
             start = i
             start_indent = len(line) - len(stripped)
             break
-    assert start is not None, 'vision-face: service not found in compose'
-    # start_indent is now an int (we just found a line).
-    assert start_indent is not None
+    assert start is not None, f'{name}: service not found in compose'
 
-    # Walk forward; the block ends when we hit a line at the SAME or
-    # SHALLOWER indent that is not a list-dash continuation.
     block = []
     for line in lines[start + 1:]:
         if not line.strip():
@@ -86,143 +59,68 @@ def _vision_face_env_block():
     return '\n'.join(block)
 
 
-def _compose_env_exports_for_service(service_block):
-    """Parse ``- KEY=${SOURCE:-default}`` lines from a compose service block.
-
-    Returns ``{KEY: SOURCE_OR_LITERAL}``. If SOURCE is absent (literal
-    default), the value is the literal default string.
-    """
+def _env_exports(block):
+    """Parse ``- KEY=${SOURCE:-default}`` lines → ``{KEY: (SOURCE, default)}``."""
     out = {}
-    for raw in service_block.splitlines():
-        # Compose scalar form: "- KEY=${SRC:-default}"
+    for raw in block.splitlines():
         m = re.match(
             r'^\s*-\s*([A-Z_][A-Z0-9_]*)=\$\{([A-Z_][A-Z0-9_]*):-(.*?)\}\s*$',
             raw,
         )
         if m:
-            out[m.group(1)] = m.group(2)
-            continue
-        # Literal (no substitution).
-        m = re.match(r'^\s*-\s*([A-Z_][A-Z0-9_]*)=(\S*)\s*$', raw)
-        if m:
-            out[m.group(1)] = m.group(2)
+            out[m.group(1)] = (m.group(2), m.group(3))
     return out
 
 
-def _bash_reads(script):
-    """Return the set of ENV names a bash script reads via ``${NAME:-...}``.
-
-    Only top-level (non-quoted, non-heredoc) substitutions. We use a
-    conservative regex — false positives don't hurt (we only assert that
-    the compose-provided names are read).
-    """
-    text = script.read_text()
-    names = set()
-    for raw in text.splitlines():
-        # Skip pure-comment lines.
-        stripped = raw.lstrip()
-        if stripped.startswith('#'):
-            continue
-        # Match ``${NAME:-default}`` (read with default) and ``${NAME}`` (read).
-        for m in re.finditer(r'\$\{([A-Z_][A-Z0-9_]*)(:-[^}]*)?\}', raw):
-            names.add(m.group(1))
-    return names
+def test_vision_face_reads_its_own_host_variables():
+    exports = _env_exports(_service_block('vision-face'))
+    assert exports.get('HAILO_ENABLED', (None,))[0] == 'FACE_HAILO_ENABLED'
+    assert exports.get('HEF_PATH', (None,))[0] == 'FACE_HEF_PATH'
 
 
-def test_vision_face_compose_does_not_use_face_namespace():
-    """Regression for F-1 (issue #2655).
-
-    ``FACE_HAILO_ENABLED`` / ``FACE_HEF_PATH`` are NOT used by any
-    consumer (start_vision_face.sh reads plain ``HAILO_ENABLED`` /
-    ``HEF_PATH``). Compose must not invent a ``FACE_*`` namespace that
-    the rest of the pipeline ignores.
-
-    We only forbid USE as an ENV substitution (``${FACE_*...}``), not as
-    a substring — ``VISION_HAILO_TAG`` in image tags is unrelated.
-    """
-    block = _vision_face_env_block()
-    assert re.search(r'\$\{FACE_HAILO[A-Z0-9_]*', block) is None, (
-        'vision-face compose uses ${FACE_HAILO_*} ENV substitution — but '
-        'start_vision_face.sh reads HAILO_ENABLED (no prefix). '
-        'Reintroducing silently-broken integration (ADR-0120).'
-    )
-    assert re.search(r'\$\{FACE_HEF[A-Z0-9_]*', block) is None, (
-        'vision-face compose uses ${FACE_HEF_*} ENV substitution — but '
-        'start_vision_face.sh reads HEF_PATH (no prefix).'
-    )
+def test_vision_face_does_not_share_vision_hailo_host_variables():
+    """The regression: vision-face got vision-hailo's yolov8n.hef."""
+    face = _env_exports(_service_block('vision-face'))
+    hailo = _env_exports(_service_block('vision-hailo'))
+    for key in ('HAILO_ENABLED', 'HEF_PATH'):
+        assert face[key][0] != hailo[key][0], (
+            f'vision-face and vision-hailo take {key} from the same host '
+            f'variable {face[key][0]!r} — the face node would load the '
+            'person-detection model (ADR-0120 §8).'
+        )
 
 
-def test_vision_face_compose_maps_hailo_enabled_and_hef_path():
-    """Compose MUST map ``HAILO_ENABLED`` / ``HEF_PATH`` for vision-face.
-
-    No ``FACE_`` indirection. Otherwise the bash script never receives
-    the operator's intent.
-    """
-    block = _vision_face_env_block()
-    exports = _compose_env_exports_for_service(block)
-    assert 'HAILO_ENABLED' in exports, (
-        'vision-face compose does not export HAILO_ENABLED — start script '
-        'cannot activate real inference.'
-    )
-    assert 'HEF_PATH' in exports, (
-        'vision-face compose does not export HEF_PATH — start script '
-        'cannot load HEF model.'
-    )
+def test_vision_face_compose_defaults_are_empty():
+    """Empty defaults let hailo_models.yaml (RetinaFace) decide."""
+    exports = _env_exports(_service_block('vision-face'))
+    assert exports['HAILO_ENABLED'][1] == ''
+    assert exports['HEF_PATH'][1] == ''
 
 
-def test_vision_face_and_vision_hailo_use_same_env_names():
-    """ADR-0120 §2.2: все vision-* сервисы используют ОБЩИЕ имена.
+def test_yaml_points_face_node_at_retinaface():
+    text = HAILO_MODELS_YAML.read_text(encoding='utf-8')
+    after = text.split('\nvision_face_node:', 1)[1]
+    # the section ends at the next top-level key
+    section = re.split(r'\n(?=[A-Za-z_])', after, maxsplit=1)[0]
+    assert re.search(r'^\s*hailo_enabled:\s*true\b', section, re.M)
+    assert re.search(r'^\s*hef_path:\s*\S*retinaface\S*\.hef', section, re.M)
 
-    ``HAILO_ENABLED`` / ``HEF_PATH``. Namespace-префиксы запрещены.
-    """
-    hailo_text = START_HAILO.read_text()
-    face_text = START_FACE.read_text()
 
-    # Both scripts must read HAILO_ENABLED and HEF_PATH (the canonical
-    # contract).
+def test_start_script_reads_container_names():
+    text = START_FACE.read_text(encoding='utf-8')
     for name in ('HAILO_ENABLED', 'HEF_PATH'):
-        assert name in hailo_text, (
-            f'{name} not present in start_vision_hailo.sh — baseline '
-            'contract broken.'
+        assert re.search(r'\$\{' + name + r'(:-[^}]*)?\}', text), name
+    assert 'FACE_' not in text
+
+
+def test_start_script_defaults_come_after_yaml():
+    """An early ``${HAILO_ENABLED:-false}`` exports "false" and beats the YAML."""
+    text = START_FACE.read_text(encoding='utf-8')
+    yaml_block = text.index('<<\'PY\'')
+    for name in ('HAILO_ENABLED', 'HEF_PATH'):
+        m = re.search(r'^' + name + r'="\$\{' + name + r':-', text, re.M)
+        assert m, f'{name} default not found in start_vision_face.sh'
+        assert m.start() > yaml_block, (
+            f'{name} default is applied before the YAML block — an empty '
+            'ENV from compose would override hailo_models.yaml.'
         )
-        assert name in face_text, (
-            f'{name} not present in start_vision_face.sh — divergence '
-            'from vision-hailo baseline (ADR-0120 §2.2).'
-        )
-
-
-def test_face_namespace_not_introduced_anywhere_in_compose():
-    """Last-line defence: scan the entire compose file for any ENV substitution.
-
-    ``${FACE_HAILO...}`` / ``${FACE_HEF...}`` substitution — that is,
-    real USE of the broken namespace in environment mappings. Comments
-    explaining the fix are allowed.
-
-    Even one occurrence means someone re-added the broken namespace.
-    """
-    text = COMPOSE.read_text()
-    # Match ``${FACE_HAILO_ENABLED:-...}`` etc. — actual ENV mapping.
-    assert re.search(r'\$\{FACE_HAILO[A-Z0-9_]*', text) is None, (
-        'FACE_HAILO namespace re-introduced as an ENV substitution in '
-        'compose — re-breaks F-1 fix (ADR-0120).'
-    )
-    assert re.search(r'\$\{FACE_HEF[A-Z0-9_]*', text) is None, (
-        'FACE_HEF namespace re-introduced as an ENV substitution in '
-        'compose — re-breaks F-1 fix (ADR-0120).'
-    )
-
-
-def test_vision_face_compose_hailo_enabled_no_substitution():
-    """Operator must be able to flip real inference with a plain ``HAILO_ENABLED=true``.
-
-    Compose's ``${HAILO_ENABLED:-false}`` is the exact form that makes
-    this work.
-    """
-    block = _vision_face_env_block()
-    exports = _compose_env_exports_for_service(block)
-    src = exports.get('HAILO_ENABLED', '')
-    assert src == 'HAILO_ENABLED', (
-        f'HAILO_ENABLED should be sourced directly from HAILO_ENABLED, '
-        f'got {src!r}. Operator expects plain HAILO_ENABLED=true to '
-        'flip on real inference (matches vision-hailo).'
-    )
