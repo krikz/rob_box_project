@@ -318,6 +318,15 @@ EXPECTED=(
     # это решение Шифу. Регистрация cron-job делается в
     # ensure_stale_blocked_watchdog_cron.
     agent-flow-stale-blocked-watchdog.sh
+    # Stale-CONFLICTING PR watchdog (ретро 16.09 t_a7d642cd, pattern
+    # wip-conflict-wave-after-cc-budget): no-agent, ежечасно сканирует
+    # OPEN PR'ы с mergeableState='dirty' старше STALE_THRESHOLD_HOURS (4h)
+    # И не имеющие активной running/todo kanban-карточки на rebase. Emit'ит
+    # карточки `rebase PR #N` через kanban-retro-create.sh с idempotency-key
+    # `retro:rebase-pr-<N>` (повторный тик = SKIP). НЕ rebase'ит сам,
+    # НЕ merge'ит — только рекомендация, assignee=devops. Регистрация
+    # cron-job делается в ensure_stale_conflicting_watchdog_cron ниже.
+    agent-flow-stale-conflicting-watchdog.sh
     # E2E-rejected stale-watchdog (ретро 15.09 t_9251fd74): no-agent,
     # каждые 24ч сканирует GitHub Issues с меткой `e2e:rejected`. Для
     # issue старше STALE_DAYS (default 7) без нового PR — добавляет
@@ -1188,6 +1197,74 @@ sys.exit(1)
     fi
 }
 ensure_stale_blocked_watchdog_cron
+echo "==> Ensure cron job registration: stale-CONFLICTING PR watchdog (ретро t_a7d642cd)"
+# Проблема (ретро 16.09 t_a7d642cd, wip-conflict-wave-after-cc-budget):
+# После волны merge PR #2633/#2638/#2641/#2643 в develop 5+ воркерских
+# `z-{agent}/` PR остаются в CONFLICTING 12-18 часов. Работник, который
+# пушит, обычно не делает rebase перед push — wip-коммиты там остаются,
+# PR создаётся, и никто не возвращается к rebase. merge-gate видит эти
+# CONFLICTING, видит daily-report без видимого владельца, блокируется
+# на ожидании.
+#
+# Решение: ensure_stale_conflicting_watchdog_cron() — every-1h no-agent
+# job в devops-профиле. Сканирует OPEN PR с mergeableState='dirty'
+# старше STALE_THRESHOLD_HOURS (4h) И без активной running/todo kanban-
+# карточки на rebase → emit ОДНОЙ recommend-карточки на kanban (через
+# kanban-retro-create.sh с idempotency-key `retro:rebase-pr-<N>`).
+# Идемпотентность: на тике-повторе pre-check уже находит существующую
+# карточку → SKIP. НЕ rebase'ит сам (assignee карточки выполняет rebase
+# в worktree, у него контекст wip-коммитов).
+ensure_stale_conflicting_watchdog_cron() {
+    local profile_dir="/home/builder/.hermes/profiles/devops"
+    local jobs_file="$profile_dir/cron/jobs.json"
+    local job_name="Agent Flow Stale Conflicting Watchdog (ретро t_a7d642cd)"
+    local job_script="agent-flow-stale-conflicting-watchdog.sh"
+    local job_schedule="every 1h"
+
+    if ! command -v hermes >/dev/null 2>&1; then
+        echo "  SKIP ensure-stale-conflicting-watchdog-cron: hermes CLI not on PATH (nothing to register)"
+        return 0
+    fi
+    if [ ! -f "$jobs_file" ]; then
+        echo "  SKIP ensure-stale-conflicting-watchdog-cron: $jobs_file not present (devops profile not set up here)"
+        return 0
+    fi
+
+    # Guard: уже есть interval-job на этот script.
+    if python3 -c "
+import json, sys
+try:
+    with open('$jobs_file') as f:
+        d = json.load(f)
+except Exception:
+    sys.exit(0)
+for j in d.get('jobs', []):
+    if j.get('script') == '$job_script' and j.get('schedule', {}).get('kind') == 'interval' and j.get('enabled'):
+        sys.exit(0)
+sys.exit(1)
+" 2>/dev/null; then
+        echo "  OK   cron job '$job_name' already registered (interval, enabled)"
+        return 0
+    fi
+
+    echo "  ADD  registering cron job '$job_name' (devops, $job_schedule, no_agent)"
+    if $DRY_RUN; then
+        echo "  [DRY] hermes --profile devops cron create '$job_schedule' --name '$job_name' --script '$job_script' --no-agent --deliver local --workdir '$REPO_DIR'"
+        return 0
+    fi
+    if hermes --profile devops cron create "$job_schedule" \
+        --name "$job_name" \
+        --script "$job_script" \
+        --no-agent \
+        --deliver local \
+        --workdir "$REPO_DIR" >/dev/null 2>&1; then
+        echo "  ADD  cron job created: $job_name ($job_script, $job_schedule)"
+    else
+        echo "  WARN cron job creation failed (non-fatal): $job_name — register manually:"
+        echo "       hermes --profile devops cron create '$job_schedule' --name '$job_name' --script '$job_script' --no-agent --deliver local --workdir $REPO_DIR"
+    fi
+}
+ensure_stale_conflicting_watchdog_cron
 
 echo
 echo "==> Ensure cron job registration: e2e-rejected watchdog (ретро 15.09 t_9251fd74)"
