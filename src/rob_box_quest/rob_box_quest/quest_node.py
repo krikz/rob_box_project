@@ -73,6 +73,7 @@ from .streams.depth import depth_compressed_to_jpeg
 from .streams.occupancy import encode_map_2d, grid_to_png
 from .streams.provider import CameraFrame, CameraProvider
 from .streams.registry import STREAM_CATALOG
+from .streams.ros_demand import DemandDrivenSubscriptions
 from .streams.status import StatusAggregator
 from .streams.voice_state import normalize_voice_state
 from .streams.voice_picker import pick_voice
@@ -1910,24 +1911,33 @@ class QuestNode(Node):
         self._scan_sub = self.create_subscription(
             LaserScan, "/scan", self._on_scan, _RE
         )
+        # Камеры подписываются только пока шлем смотрит соответствующий
+        # стрим (см. streams/ros_demand.py): постоянная подписка держала
+        # OAK-D и потолочную камеру включёнными (lazy publisher) — ~90% CPU
+        # в oak-d и ~10 МБ/с zenoh без подключённого шлема.
+        #
         # camera_rear (0x1001): OAK-D color JPEG (image_transport compressed) →
         # форвардим bytes as-is в WS. Лёгкий путь: без cv2/numpy/перекодирования,
         # сеть грузится ~300 KB/s вместо raw ~13.5 MB/s.
-        self._camera_rear_sub = self.create_subscription(
-            CompressedImage,
-            "/camera/camera/color/image_raw/compressed",
-            self._on_camera_image,
-            _CAMERA_QOS,
-        )
+        def _camera_rear_sub():
+            return self.create_subscription(
+                CompressedImage,
+                "/camera/camera/color/image_raw/compressed",
+                self._on_camera_image,
+                _CAMERA_QOS,
+            )
+
         # camera_ceiling (0x1005): usb_cam публикует потолочную камеру в
         # /ceiling_camera/image_raw/compressed. Форвардим JPEG as-is — тот
         # же лёгкий путь, что у camera_rear.
-        self._camera_ceiling_sub = self.create_subscription(
-            CompressedImage,
-            "/ceiling_camera/image_raw/compressed",
-            self._on_ceiling_image,
-            _CAMERA_QOS,
-        )
+        def _camera_ceiling_sub():
+            return self.create_subscription(
+                CompressedImage,
+                "/ceiling_camera/image_raw/compressed",
+                self._on_ceiling_image,
+                _CAMERA_QOS,
+            )
+
         # camera_oak_depth (0x1004): OAK-D depth из oak-d ROS-контейнера.
         # Тот же паттерн, что у camera_ceiling: capture-поток через depthai
         # в образе rob-box-quest не работает (depthai отсутствует → поток
@@ -1936,12 +1946,19 @@ class QuestNode(Node):
         # из ROS-топика compressedDepth (PNG-кодированный mono16 depth,
         # формат тот же, что в telegram_node:101). Клиент Quest рендерит
         # их как есть (см. docs/architecture/meta-quest-api.md §4.4).
-        self._camera_oak_depth_sub = self.create_subscription(
-            CompressedImage,
-            "/camera/camera/depth/image_rect_raw/compressedDepth",
-            self._on_depth_image,
-            _CAMERA_QOS,
-        )
+        def _camera_oak_depth_sub():
+            return self.create_subscription(
+                CompressedImage,
+                "/camera/camera/depth/image_rect_raw/compressedDepth",
+                self._on_depth_image,
+                _CAMERA_QOS,
+            )
+
+        self._camera_factories = {
+            "camera_rear": _camera_rear_sub,
+            "camera_ceiling": _camera_ceiling_sub,
+            "camera_oak_depth": _camera_oak_depth_sub,
+        }
         # map_2d (0x1103): SLAM-карта rtabmap. Публикуется TRANSIENT_LOCAL
         # (latched) — подписка обязана совпадать, иначе уже опубликованная
         # карта не придёт до следующего обновления, а оно может быть через
@@ -2034,6 +2051,10 @@ class QuestNode(Node):
         )
         # Replace NoOpBridge на реальный (после создания обоих).
         self.ws_server.bridge = self.bridge
+        self._camera_subs = DemandDrivenSubscriptions(
+            self, self._camera_factories, self.ws_server.has_subscribers
+        )
+        self._camera_demand_timer = self.create_timer(1.0, self._camera_subs.tick)
         if log_pin:
             self.get_logger().warning(
                 f"🔑 Quest PIN: {ACTIVE_PIN} "

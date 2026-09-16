@@ -150,6 +150,15 @@ def _install_fake_rclpy() -> None:
             self._created_subscriptions.append(sub)
             return sub
 
+        def destroy_subscription(self, sub):
+            self._created_subscriptions.remove(sub)
+            return True
+
+        def create_timer(self, period, callback, callback_group=None, **_):
+            timer = MagicMock(name=f"Timer[{period}]")
+            timer.callback = callback
+            return timer
+
         def _record_publish(self, topic):
             calls: list = []
 
@@ -575,6 +584,9 @@ class TestTelegramBridge(unittest.IsolatedAsyncioTestCase):
 
         cache = self.node.camera_cache
         self.assertEqual(cache.topics, [])
+        subs = self.node.camera_subscriptions
+        for topic in (self.node.camera_topic, self.node.camera_depth_topic, self.node.camera_up_topic):
+            subs.request(topic, timeout_s=0)
 
         front = self._subscription_for(self.node.camera_topic).callback
         depth = self._subscription_for(self.node.camera_depth_topic).callback
@@ -595,6 +607,24 @@ class TestTelegramBridge(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cache.get(self.node.camera_topic), b"\xff\xd8front")
         self.assertEqual(cache.get(self.node.camera_depth_topic), b"\xff\xd8depth")
         self.assertEqual(cache.get(self.node.camera_up_topic), b"\xff\xd8up")
+
+    def test_no_camera_subscription_until_photo_requested(self) -> None:
+        """Постоянная подписка держала камеры включёнными (lazy publisher)."""
+        topics = {s.topic for s in self.node._created_subscriptions}
+        for topic in (self.node.camera_topic, self.node.camera_depth_topic, self.node.camera_up_topic):
+            self.assertNotIn(topic, topics)
+
+    async def test_fetch_camera_frame_subscribes_and_waits(self) -> None:
+        topic = self.node.camera_topic
+
+        async def _publish_later():
+            await asyncio.sleep(0.1)
+            self._subscription_for(topic).callback(_compressed_image(b"\xff\xd8late"))
+
+        publisher = asyncio.create_task(_publish_later())
+        frame = await self.node.fetch_camera_frame(topic)
+        await publisher
+        self.assertEqual(frame, b"\xff\xd8late")
 
     def test_map_grid_subscription_records_payload(self) -> None:
         """Map subscription stores the latest OccupancyGrid on the node."""
