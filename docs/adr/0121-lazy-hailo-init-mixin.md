@@ -1,4 +1,4 @@
-# ADR-0112: `_LazyHailoInit` mixin для дублирующейся ленивой инициализации Hailo loader'ов
+# ADR-0121: `_LazyHailoInit` mixin для дублирующейся ленивой инициализации Hailo loader'ов
 
 - Status: Proposed
 - Date: 2026-09-16
