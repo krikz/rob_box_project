@@ -413,6 +413,27 @@ def test_on_hailo_vision_event_respects_memory_window():
     assert 'old' not in sources
 
 
+def test_publish_event_drops_stale_events_without_new_arrivals():
+    """Человек ушёл из кадра — старые детекции не доезжают до Личности.
+
+    Живой случай 16.09.2026: лицо пропало, новых VisionEvent не было, и
+    чистка в on_hailo_vision_event не срабатывала — PerceptionEvent ещё
+    6 минут нёс 88 событий `face`, робот говорил «вижу тебя» пустому кадру.
+    """
+    node = ContextAggregatorNode()
+    node.memory_window = 1.0
+    node.current_sensors = {'battery': 36.0, 'temperature': 42.0}
+    node._hailo_events.append({
+        'time': time.time() - 100.0,
+        'event': {'source_camera': 'oak-d', 'event_type': 'face'},
+    })
+    node.publish_event()
+    published = node.event_pub.published[0]
+    assert published.vision_event_count == 0
+    assert json.loads(published.vision_events_json) == []
+    assert node._hailo_events == []
+
+
 def test_publish_event_includes_vision_event_count_and_json():
     """publish_event публикует vision_event_count + vision_events_json."""
     node = ContextAggregatorNode()
