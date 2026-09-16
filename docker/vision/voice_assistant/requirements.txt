@@ -55,18 +55,32 @@ pyusb
 # that bloat RSS by ~800 MB per torch-using node (tts_node + speaker_id_node
 # = ~1.6 GiB мёртвого груза, OOM kill в 4 GB voice-assistant mem_limit).
 #
-# `--index-url https://download.pytorch.org/whl/cpu` forces the CPU-only
-# channel; there `torch-2.14.0+cpu` (aarch64) is published and `+cu130`
-# doesn't exist on this index. Resolves to a wheel without
-# `torch.cuda.is_available()` (`torch.version.cuda is None`).
-# `+cpu` suffix keeps the pin compatible with any future 2.14.x CPU release
-# (`>=2.14.0+cpu,<3.0.0`) — pip accepts local version labels in version
-# specifiers. Verified on develop/dev-87f3818 (2026-09-15): tts_node RSS
-# after pin drops from 866 MB → ~70 MB (torch CPU-only) at node startup.
+# `--extra-index-url https://download.pytorch.org/whl/cpu` ДОБАВЛЯЕТ CPU-канал
+# рядом с PyPI. Именно `--extra-index-url`, а НЕ `--index-url`: последний —
+# глобальная опция pip, она заменяет PyPI целиком для ВСЕГО файла (независимо
+# от того, на какой строке стоит), и тогда с pytorch-индекса начали бы искаться
+# vosk / resemblyzer / renardo-lib / ddgs / yandex-cloud-ml-sdk / pyaudio и
+# прочие — их там нет, build падает на `No matching distribution found`.
+# Оба Dockerfile ставят файл одной командой `pip3 install -r requirements.txt`,
+# так что область действия опции — весь список.
+#
+# Пин ТОЧНЫЙ (`==2.14.0+cpu`), а не диапазон: с двумя индексами под
+# `>=2.14.0+cpu,<3.0.0` подходит и PyPI'шный `2.14.0` (это и есть +cu130-сборка
+# для aarch64), и resolver волен взять его — вся экономия пропадает. Local
+# version label `+cpu` существует только на pytorch-индексе, поэтому точный пин
+# однозначно выбирает CPU-wheel: `torch.version.cuda is None`.
+#
+# Наличие колёс проверено на индексе (2026-09-16):
+#   torch-2.14.0+cpu-cp310-cp310-manylinux_2_28_aarch64.whl
+#   torchaudio-2.11.0+cpu-cp310-cp310-manylinux_2_28_aarch64.whl
+# (база ROS2 Humble / Ubuntu 22.04 = cp310).
+#
+# Замер до пина (2026-09-15, dev-87f3818): tts_node RSS 866 MB, из них ~800 MB
+# — libtorch_cuda.so / libc10_cuda.so / libnvpl_blas_* / libarm_compute*.
 # =============================================================================
---index-url https://download.pytorch.org/whl/cpu
-torch>=2.14.0+cpu,<3.0.0
-torchaudio>=2.11.0+cpu,<3.0.0
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.14.0+cpu
+torchaudio==2.11.0+cpu
 scipy
 
 # =============================================================================

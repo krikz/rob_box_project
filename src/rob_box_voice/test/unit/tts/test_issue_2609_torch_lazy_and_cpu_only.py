@@ -23,8 +23,8 @@ both disk and CPU startup time).
 This test module enforces the three-layer fix:
 
   1. **CPU-only torch pin** in ``docker/vision/voice_*/requirements.txt``
-     via ``--index-url https://download.pytorch.org/whl/cpu`` and the
-     ``+cpu`` version suffix (``torch>=2.14.0+cpu,<3.0.0``).
+     via ``--extra-index-url https://download.pytorch.org/whl/cpu`` and an
+     exact pin on the local version label (``torch==2.14.0+cpu``).
   2. **Lazy ``import torch``** in ``tts_node.py`` — module no longer
      imports torch at load time; the import is deferred to
      ``_load_silero_model`` which is only called when a real Silero
@@ -104,23 +104,24 @@ def test_requirements_pin_torch_with_cpu_label(path: Path) -> None:
     variant) on the dedicated CPU index.
     """
     text = path.read_text(encoding="utf-8")
-    # Match ``torch>=X.Y.Z+cpu`` (with optional upper-bound pin).
+    # Match an EXACT pin ``torch==X.Y.Z+cpu``.
     match = re.search(
-        r"^torch\s*>=\s*\d+\.\d+\.\d+\+cpu(?:,<[^,]+)?\s*$",
+        r"^torch\s*==\s*\d+\.\d+\.\d+\+cpu\s*$",
         text,
         re.MULTILINE,
     )
     assert match, (
-        f"{path.relative_to(_REPO_ROOT)} must pin torch with the +cpu "
-        f"local version label, e.g. ``torch>=2.14.0+cpu,<3.0.0``. "
-        f"Without +cpu, pip picks the highest available torch on the "
-        f"CPU index which is still CUDA-buildable (issue #2609)."
+        f"{path.relative_to(_REPO_ROOT)} must pin torch EXACTLY with the "
+        f"+cpu local version label, e.g. ``torch==2.14.0+cpu``. A range "
+        f"like ``>=2.14.0+cpu`` is not enough: with --extra-index-url the "
+        f"PyPI ``2.14.0`` (that IS the +cu130 aarch64 build) also satisfies "
+        f"it, and the resolver may take it (issue #2609)."
     )
     # Also pin torchaudio for symmetry — silero doesn't use it but the
     # package is in requirements.txt and we don't want a future +cu130
     # torchaudio to slip through.
     ta_match = re.search(
-        r"^torchaudio\s*>=\s*\d+\.\d+\.\d+\+cpu(?:,<[^,]+)?\s*$",
+        r"^torchaudio\s*==\s*\d+\.\d+\.\d+\+cpu\s*$",
         text,
         re.MULTILINE,
     )
@@ -137,9 +138,10 @@ def test_requirements_no_legacy_torch_pin_without_cpu_label() -> None:
     """
     for path in _DOCKER_REQUIREMENTS_FILES:
         text = path.read_text(encoding="utf-8")
-        # Match bare pin like ``torch>=2.13.0`` — anything missing +cpu.
+        # Match a bare pin like ``torch>=2.13.0`` / ``torch==2.14.0`` —
+        # anything missing the +cpu label.
         bare = re.search(
-            r"^torch\s*>=\s*\d+\.\d+\.\d+(?!\+cpu)\s*$",
+            r"^torch\s*[=>]=\s*\d+\.\d+\.\d+(?!\+cpu)\s*$",
             text,
             re.MULTILINE,
         )
@@ -427,44 +429,33 @@ def test_importing_tts_node_does_not_import_torch() -> None:
 
 
 def test_requirements_have_pytorch_cpu_index_url() -> None:
-    """The pytorch CPU-only index URL must appear in each requirements file
-    as a ``--index-url`` directive somewhere in the file (a global pip
-    option that scopes the rest of the file).
+    """The pytorch CPU-only channel must be declared as an EXTRA index, and
+    never as ``--index-url``.
 
-    We don't require it to be the first non-comment line — other deps
-    (pyyaml, requests, etc.) can come before it. The only thing that
-    matters for #2609 is that the resolver doesn't pull +cu130 wheels.
+    ``--index-url`` is a global pip option that REPLACES PyPI for the whole
+    file (regardless of the line it sits on). Both Dockerfiles install these
+    files with a single ``pip3 install -r requirements.txt``, so a bare
+    ``--index-url`` would send vosk / resemblyzer / renardo-lib / ddgs /
+    yandex-cloud-ml-sdk / pyaudio / ... to download.pytorch.org too — they
+    are not published there and the image build dies on ``No matching
+    distribution found``. ``--extra-index-url`` adds the channel next to
+    PyPI instead; the exact ``+cpu`` pin is what keeps the CUDA wheel out.
     """
     for path in _DOCKER_REQUIREMENTS_FILES:
         text = path.read_text(encoding="utf-8")
-        assert "--index-url https://download.pytorch.org/whl/cpu" in text, (
+        lines = [ln.strip() for ln in text.splitlines()]
+        assert "--extra-index-url https://download.pytorch.org/whl/cpu" in lines, (
             f"{path.relative_to(_REPO_ROOT)} must declare "
-            f"``--index-url https://download.pytorch.org/whl/cpu`` as a "
-            f"global pip option, so the resolver stays on the CPU-only "
-            f"PyTorch channel (issue #2609)."
+            f"``--extra-index-url https://download.pytorch.org/whl/cpu`` so "
+            f"the CPU-only PyTorch channel is available alongside PyPI "
+            f"(issue #2609)."
         )
-        # Find the line index of the --index-url directive and verify
-        # there's a torch pin within ~5 lines AFTER it (so the index
-        # scope applies to the torch line). This is what makes the
-        # pinning actually take effect — a --index-url AFTER the torch
-        # pin would not change resolver behaviour for that line.
-        lines = text.splitlines()
-        idx_url_line = None
-        for i, ln in enumerate(lines):
-            if ln.strip() == "--index-url https://download.pytorch.org/whl/cpu":
-                idx_url_line = i
-                break
-        assert idx_url_line is not None, (
-            f"{path.relative_to(_REPO_ROOT)}: --index-url line not found "
-            f"(sanity; the assert above already covers the content check)."
-        )
-        # The torch line should appear within 8 lines after the index-url
-        # directive (other deps may sit between, but not many).
-        torch_window = "\n".join(lines[idx_url_line : idx_url_line + 12])
-        assert re.search(r"^torch\s*>=", torch_window, re.MULTILINE), (
-            f"{path.relative_to(_REPO_ROOT)}: torch pin must appear "
-            f"within 12 lines after the --index-url directive so the "
-            f"resolver actually uses the CPU-only channel for it."
+        offenders = [ln for ln in lines if ln.startswith("--index-url")]
+        assert not offenders, (
+            f"{path.relative_to(_REPO_ROOT)} uses {offenders[0]!r}. "
+            f"``--index-url`` replaces PyPI for the ENTIRE file, so every "
+            f"other dependency here would be looked up on the PyTorch index "
+            f"and the image build fails. Use --extra-index-url instead."
         )
 
 
