@@ -32,6 +32,17 @@ from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping
 
 from rob_box_core.token_estimate import estimate_prompt_tokens
 from rob_box_core.tool_catalog import tools_for_skill
+from rob_box_harness.core.tool_loop import (
+    apply_babble_filter,
+    build_awaiting_confirmation_result,
+    build_outcome_from_response,
+    is_truncated_args_candidate,
+    request_silent_response_retry,
+    request_truncated_args_retry,
+)
+from rob_box_harness.core.tool_loop.outcomes import (  # noqa: F401 — re-exported
+    _ToolLoopOutcome,
+)
 from rob_box_harness.core.confirmation_policy import ConfirmationKind
 from rob_box_harness.core.dialogue_state_machine import (
     DialogueEvent,
@@ -263,9 +274,10 @@ _PSEUDO_TOOL_CALL_RE = re.compile(r"^<[^<>]{1,160}>$")
 _PENDING_RETRY_KEY: str = "reply_retracted"
 
 
-def _is_pseudo_tool_call(text: str) -> bool:
-    """Return ``True`` when ``text`` is a tool call the model WROTE instead of made."""
-    return bool(_PSEUDO_TOOL_CALL_RE.match((text or "").strip()))
+from rob_box_harness.core.tool_loop.text_classify import (  # noqa: F401 — back-compat aliases
+    _PSEUDO_TOOL_CALL_RE,
+    is_pseudo_tool_call as _is_pseudo_tool_call,
+)
 
 
 #: ``finish_reason`` values that mean "the model produced NO usable output"
@@ -410,60 +422,28 @@ class DialogResult:
     truncated_tool_args: bool = False
 
 
-@dataclass(frozen=True)
-class _ToolLoopOutcome:
-    """Что вернул тул-цикл :meth:`AgentCore._run_with_tools`.
-
-    Раньше это был безымянный кортеж, который вызывающая сторона
-    распаковывала одной строкой в 118 символов. Аннотация при этом
-    обещала шесть элементов, а ``return`` отдавал семь — разъехались
-    молча, потому что распаковка длину не проверяет.
-
-    Fields
-    ------
-    spoken_text:
-        Финальный текст модели. Пустая строка, когда ход подавлен
-        (babble-фильтр issue #1253).
-    tools_called:
-        Уникальные имена вызванных тулов, в порядке первого вызова.
-    finish_reason:
-        ``finish_reason`` последнего ответа — нужен ноде, чтобы отличить
-        пустой ответ от обрыва по ``length``.
-    raw_response:
-        Сырой ответ провайдера, для логов.
-    speak_text_count:
-        Сколько раз модель ЗВАЛА ``speak_text`` (issue #992: отличает
-        BACKING-ход от TRACK-хода).
-    speak_text_real_count:
-        Сколько из них несли непустой ``text`` и реально бы прозвучали
-        (issue #1343 — deepseek шлёт ``speak_text({})``).
-    spoken_via_tool:
-        Что реально произнесено через ``speak_text``, склеенное через
-        перевод строки. Пишется в историю вместо маркера «done», иначе
-        модель начинает отвечать «done» сама.
-    truncated_tool_args:
-        Issue #1899 — propagated from the last ``LLMResponse.truncated_tool_args``.
-        ``True`` when the last stream assembled tool-call arguments that
-        were cut off mid-JSON (most often ``finish_reason='length'``).
-        The agent loop already asked the model for a shorter retry
-        before falling out of the tool loop; the flag is preserved so
-        ``DialogResult`` consumers (dialogue_node / future analytics)
-        can see the upstream budget exhaustion.
-    """
-
-    spoken_text: str
-    tools_called: list[str]
-    finish_reason: str | None
-    raw_response: Any
-    speak_text_count: int
-    speak_text_real_count: int
-    spoken_via_tool: str
-    truncated_tool_args: bool = False
-
-
 # ---------------------------------------------------------------------------
 # AgentCore
 # ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _CorrectionRetryOutcome:
+    """Result of :meth:`AgentCore._maybe_request_correction_retry`.
+
+    ``retried=True`` ⇒ the helper triggered one of the two retries and
+    ``next_response`` is the re-streamed response. The caller copies
+    the two ``*_retried`` flags back into its own locals so the
+    single-shot invariant is preserved across iterations.
+
+    ``retried=False`` ⇒ no retry fired; ``next_response`` is the input
+    response unchanged and the ``*_retried`` flags echo the inputs.
+    """
+
+    retried: bool
+    next_response: LLMResponse
+    truncated_tool_args_retried: bool
+    silent_retried: bool
 
 
 class AgentCore:
@@ -1132,102 +1112,28 @@ class AgentCore:
         _truncated_tool_args_retried = False
 
         for _ in range(_MAX_TOOL_ITERATIONS):
-            # Issue #1899 — truncated tool-call arguments. The model
-            # asked for tools but the JSON was cut off mid-stream (most
-            # often ``finish_reason='length'``). Do NOT execute broken
-            # tool-calls; ask the model to redo with a tighter payload.
-            if (
-                response.tool_calls
-                and response.truncated_tool_args
-                and not _truncated_tool_args_retried
-            ):
-                _truncated_tool_args_retried = True
-                _names = sorted({c.name for c in response.tool_calls})
-                logging.getLogger(__name__).warning(
-                    "AgentCore [issue 1899]: tool-call arguments JSON cut "
-                    "off mid-stream (finish_reason=%r). Asking model to "
-                    "retry with shorter args. tools=%s",
-                    response.finish_reason,
-                    _names,
+            # Issue #1899 — truncated tool-call arguments, AND
+            # issue #1217 — silent / pseudo-call response. Both are
+            # single-shot retries with the same shape: detect,
+            # re-stream, continue. See ``_maybe_request_correction_retry``.
+            correction = await self._maybe_request_correction_retry(
+                agent=self,
+                response=response,
+                tools_called=tools_called,
+                truncated_tool_args_retried=_truncated_tool_args_retried,
+                silent_retried=_silent_retried,
+                messages=messages,
+                openai_tools=openai_tools,
+            )
+            if correction.retried:
+                _truncated_tool_args_retried = (
+                    correction.truncated_tool_args_retried
                 )
-                # Record the assistant turn we received so the chat
-                # history stays valid (OpenAI requires an assistant
-                # message before the next user message when tool_calls
-                # were emitted).
-                if response.content or response.tool_calls:
-                    messages.append(
-                        LLMMessage(
-                            role="assistant",
-                            content=response.content,
-                            tool_calls=response.tool_calls,
-                        )
-                    )
-                # Issue #1899 — diagnostic via ``finish_reason`` so the
-                # next worker / live operator sees WHY the retry fired
-                # without grepping logs.
-                messages.append(
-                    LLMMessage(
-                        role="user",
-                        content=(
-                            "[SYSTEM CORRECTION] Твой предыдущий tool-call "
-                            "был ОБРЕЗАН: ответ не поместился в max_tokens "
-                            "и JSON-аргументы НЕ ЗАКРЫЛИСЬ. Инструмент "
-                            f"{_names!r} НЕ БЫЛ вызван (валидация бы упала "
-                            "на пустых/обрезанных аргументах). "
-                            "Повтори ход и вызови нужный tool снова, но "
-                            "с БОЛЕЕ КОРОТКИМИ значениями аргументов — "
-                            "короткие строки, никаких многострочных "
-                            "описаний. Если аргументов слишком много для "
-                            "бюджета токенов, разбей на несколько ходов: "
-                            "сначала вызови основной tool с минимальным "
-                            "набором полей, остальное — следующим ходом."
-                        ),
-                    )
-                )
-                response = await self._stream_response(messages, tools=openai_tools)
+                _silent_retried = correction.silent_retried
+                response = correction.next_response
                 continue
 
             if not response.tool_calls:
-                if (
-                    not _silent_retried
-                    and not tools_called
-                    and self._is_silent_response(response)
-                ):
-                    _silent_retried = True
-                    if response.content:
-                        messages.append(
-                            LLMMessage(role="assistant", content=response.content)
-                        )
-                    # live 01.09 — упрёк «ответ был пустым» на псевдо-вызов
-                    # неверен и не помогает: модель ВИДИТ, что текст был.
-                    # Ей надо объяснить, что написать вызов текстом — не
-                    # значит вызвать.
-                    if _is_pseudo_tool_call(response.content or ""):
-                        correction = (
-                            "[SYSTEM CORRECTION] Ты НАПИСАЛ вызов инструмента "
-                            "текстом: "
-                            + (response.content or "").strip()[:120]
-                            + ". Это не вызов — это строка, её никто не "
-                            "выполнил, и пользователь ничего не услышал. "
-                            "Инструменты вызываются механизмом function "
-                            "calling, а не текстом ответа. Повтори ход и "
-                            "вызови нужный tool ПО-НАСТОЯЩЕМУ, со всеми "
-                            "аргументами."
-                        )
-                    else:
-                        correction = (
-                            "[SYSTEM CORRECTION] Твой предыдущий ответ "
-                            "был пустым: ни текста, ни tool-вызова. "
-                            "Пользователь ничего не услышал, ничего не "
-                            "произошло. ОБЯЗАТЕЛЬНО в ЭТОМ ответе вызови "
-                            "нужный tool (speak_text — для речи) или дай "
-                            "содержательный текстовый ответ."
-                        )
-                    messages.append(
-                        LLMMessage(role="user", content=correction)
-                    )
-                    response = await self._stream_response(messages, tools=openai_tools)
-                    continue
                 break
 
             # Record unique tool names actually invoked, and count
@@ -1246,17 +1152,14 @@ class AgentCore:
             # uses this to skip auto-TTS only when speech REALLY
             # happened (issue #988 anti-duplicate), not when the LLM
             # merely *named* speak_text.
-            for call in response.tool_calls:
-                if call.name == "speak_text":
-                    speak_text_count += 1
-                    args = call.arguments or {}
-                    text = args.get("text", "") if isinstance(args, Mapping) else ""
-                    if isinstance(text, str) and text.strip():
-                        speak_text_real_count += 1
-                        spoken_texts.append(text.strip())
-                if call.name not in seen:
-                    seen.add(call.name)
-                    tools_called.append(call.name)
+            counts = self._record_tool_calls(
+                response.tool_calls,
+                seen=seen,
+                tools_called=tools_called,
+            )
+            speak_text_count, speak_text_real_count = counts[:2]
+            for text in counts[2]:
+                spoken_texts.append(text)
 
             # Append the assistant turn that contained the tool_calls
             # (required by OpenAI Chat-Completions ordering rules).
@@ -1304,11 +1207,7 @@ class AgentCore:
             # non-vocal request («сыграй бит про колобка в нига стайле»
             # — instrumental). Walk the message list in reverse: the
             # LAST user-role entry is the current turn.
-            _current_user_input: str = ""
-            for _msg in reversed(messages):
-                if _msg.role == "user" and _msg.content:
-                    _current_user_input = str(_msg.content)
-                    break
+            _current_user_input = self._find_last_user_input(messages)
             # Music tools that appear ANYWHERE in this LLM batch (both
             # before and after the candidate speak_text). The order
             # inside the batch doesn't matter for the guard — the LLM
@@ -1323,96 +1222,44 @@ class AgentCore:
                 if call.name in _MUSIC_LAUNCH_TOOLS
             }
             results_by_call_id: dict[str, ToolResult] = {}
-            for call in execution_order:
-                if self._acceptance_gate is not None:
-                    segment, decision = self._acceptance_gate.submit(
-                        tool=call.name,
-                        args=dict(call.arguments or {}),
-                        call_id=call.id,
-                    )
-                    if decision.kind is ConfirmationKind.REQUIRE:
-                        # Don't call the executor — gate will dispatch it
-                        # later via the future scheduler (Фаза 2).
-                        results_by_call_id[call.id] = ToolResult(
-                            tool_call_id=call.id,
-                            content=json.dumps(
-                                {
-                                    "status": "awaiting_user_confirmation",
-                                    "segment_id": segment.segment_id,
-                                    "tool": call.name,
-                                    "plan_text": segment.decision.plan_text,
-                                    "confirmation_timeout_ms": int(
-                                        self._acceptance_gate.config.confirmation_timeout_ms
-                                    ),
-                                },
-                                ensure_ascii=False,
-                            ),
-                            is_error=False,
-                        )
-                        continue
+            suppressed_texts = await self._execute_tool_batch(
+                response=response,
+                execution_order=execution_order,
+                same_batch_music_calls=frozenset(same_batch_music_calls),
+                current_user_input=_current_user_input,
+                results_by_call_id=results_by_call_id,
+            )
+            # Counter bookkeeping: the suppressed call must NOT
+            # count toward speak_text_count / speak_text_real_count
+            # (otherwise issue #988 anti-duplicate skips the
+            # final ``done`` text — silent user experience) and
+            # MUST NOT count toward ``spoken_texts`` (otherwise
+            # honest history records a phrase that was never
+            # voiced, biasing future turns).
+            for text in suppressed_texts:
+                speak_text_count = max(0, speak_text_count - 1)
+                speak_text_real_count = max(0, speak_text_real_count - 1)
+                # spoken_texts is appended above for every
+                # real speak_text — pop the last matching
+                # entry so the honest-history path stays
+                # honest. The list is small (<= N where N
+                # is the LLM batch size), linear scan is
+                # fine.
+                try:
+                    spoken_texts.remove(text)
+                except ValueError:
+                    pass
 
-                # Issue #1708 — drop hallucinated lyrics after a music
-                # tool. The check runs AFTER acceptance-gate but BEFORE
-                # the real executor: a suppressed speak_text never
-                # reaches the MCP tool, so the user hears no TTS for
-                # it. The LLM still gets a sentinel result so it can
-                # learn from the rejection on its next iteration.
-                if _is_hallucinated_speak_text(
-                    call=call,
-                    same_batch_music_calls=frozenset(same_batch_music_calls),
-                    user_input=_current_user_input,
-                ):
-                    logging.getLogger(__name__).warning(
-                        "AgentCore [issue 1708]: suppressing "
-                        "speak_text in batch with %s — hallucinated "
-                        "lyrics would override music. text=%r user_input=%r",
-                        sorted(same_batch_music_calls),
-                        _extract_speak_text(call.arguments)[:80],
-                        _current_user_input[:80],
-                    )
-                    results_by_call_id[call.id] = _suppressed_speak_text_result(call)
-                    # Counter bookkeeping: the suppressed call must NOT
-                    # count toward speak_text_count / speak_text_real_count
-                    # (otherwise issue #988 anti-duplicate skips the
-                    # final ``done`` text — silent user experience) and
-                    # MUST NOT count toward ``spoken_texts`` (otherwise
-                    # honest history records a phrase that was never
-                    # voiced, biasing future turns).
-                    if call.name == "speak_text":
-                        speak_text_count -= 1
-                        text = _extract_speak_text(call.arguments)
-                        if text:
-                            speak_text_real_count -= 1
-                            # spoken_texts is appended above for every
-                            # real speak_text — pop the last matching
-                            # entry so the honest-history path stays
-                            # honest. The list is small (<= N where N
-                            # is the LLM batch size), linear scan is
-                            # fine.
-                            try:
-                                spoken_texts.remove(text)
-                            except ValueError:
-                                pass
-                    continue
-
-                if call.name == LOAD_SKILL_TOOL:
-                    results_by_call_id[call.id] = self._handle_load_skill(call)
-                    continue
-
-                results_by_call_id[call.id] = await self._tools.execute(call)
-
-            for call in response.tool_calls:
-                tool_result = results_by_call_id[call.id]
-                if tool_result.is_error:
-                    tool_error_occurred = True
-                messages.append(
-                    LLMMessage(
-                        role="tool",
-                        content=tool_result.content,
-                        tool_call_id=tool_result.tool_call_id,
-                        tool_result=tool_result,
-                    )
-                )
+            self._append_tool_results(
+                response.tool_calls,
+                results_by_call_id,
+                messages,
+            )
+            tool_error_occurred = self._update_tool_error_flag(
+                response.tool_calls,
+                results_by_call_id,
+                tool_error_occurred,
+            )
 
             # load_skill мог сменить домен — пересобираем набор, иначе
             # загрузка скилла была бы бессмысленной: текст пришёл, а
@@ -1437,39 +1284,308 @@ class AgentCore:
         # получился» while nothing actually happened. System transition:
         # return empty spoken so dialogue_node moves to the next round
         # instead of parroting the babble.
-        if (
-            tool_error_occurred
-            and not response.tool_calls
-            and "speak_text" not in seen
-            and response.content
-            and self._is_silent_response(response)
-        ):
-            logging.getLogger(__name__).warning(
-                "AgentCore: tool error + babble-only final answer — "
-                f"suppressing spoken text {response.content[:80]!r} "
-                "(system transition)"
-            )
-            return _ToolLoopOutcome(
-                spoken_text="",
-                tools_called=tools_called,
-                finish_reason=response.finish_reason,
-                raw_response=response.raw,
-                speak_text_count=speak_text_count,
-                speak_text_real_count=speak_text_real_count,
-                spoken_via_tool="\n".join(spoken_texts),
-                truncated_tool_args=response.truncated_tool_args,
-            )
-
-        return _ToolLoopOutcome(
-            spoken_text=response.content,
+        return self._finalize_outcome(
+            response=response,
             tools_called=tools_called,
-            finish_reason=response.finish_reason,
-            raw_response=response.raw,
             speak_text_count=speak_text_count,
             speak_text_real_count=speak_text_real_count,
-            spoken_via_tool="\n".join(spoken_texts),
-            truncated_tool_args=response.truncated_tool_args,
+            spoken_texts=spoken_texts,
+            seen=seen,
+            tool_error_occurred=tool_error_occurred,
         )
+
+    def _record_tool_calls(
+        self,
+        tool_calls: list[ToolCall],
+        *,
+        seen: set[str],
+        tools_called: list[str],
+    ) -> tuple[int, int, list[str]]:
+        """Count this batch's ``speak_text`` calls and unique tool names.
+
+        Issue #2630 — extracted from :meth:`_run_with_tools` to keep
+        the main loop's CC≤15 (ADR-0021 R1). Issues captured here:
+
+        * #992 — raw ``speak_text`` count distinguishes BACKING sing/rap
+          turns from TRACK composition turns (unique names can't).
+        * #1343 — REAL ``speak_text`` count (non-empty ``text`` arg)
+          lets dialogue_node skip auto-TTS only when speech actually
+          happened.
+
+        Returns
+        -------
+        (speak_text_count, speak_text_real_count, new_spoken_texts)
+            The first two are deltas (relative to zero — caller adds
+            them to its running totals). ``new_spoken_texts`` is the
+            list of non-empty ``speak_text`` arguments this batch; the
+            caller appends them to its own ``spoken_texts`` accumulator.
+        """
+        speak_count = 0
+        real_count = 0
+        new_spoken: list[str] = []
+        for call in tool_calls:
+            if call.name == "speak_text":
+                speak_count += 1
+                args = call.arguments or {}
+                text = args.get("text", "") if isinstance(args, Mapping) else ""
+                if isinstance(text, str) and text.strip():
+                    real_count += 1
+                    new_spoken.append(text.strip())
+            if call.name not in seen:
+                seen.add(call.name)
+                tools_called.append(call.name)
+        return speak_count, real_count, new_spoken
+
+    @staticmethod
+    def _append_tool_results(
+        tool_calls: list[ToolCall],
+        results_by_call_id: dict[str, ToolResult],
+        messages: list[LLMMessage],
+    ) -> None:
+        """Append ``tool``-role messages to ``messages`` for each batch call.
+
+        Required by OpenAI Chat-Completions ordering — every tool call
+        must be followed by exactly one ``tool`` message before the
+        next ``assistant`` / ``user`` message lands.
+        """
+        for call in tool_calls:
+            tool_result = results_by_call_id[call.id]
+            messages.append(
+                LLMMessage(
+                    role="tool",
+                    content=tool_result.content,
+                    tool_call_id=tool_result.tool_call_id,
+                    tool_result=tool_result,
+                )
+            )
+
+    @staticmethod
+    def _update_tool_error_flag(
+        tool_calls: list[ToolCall],
+        results_by_call_id: dict[str, ToolResult],
+        tool_error_occurred: bool,
+    ) -> bool:
+        """Return ``True`` if any tool returned ``is_error=True`` this batch."""
+        for call in tool_calls:
+            if results_by_call_id[call.id].is_error:
+                tool_error_occurred = True
+        return tool_error_occurred
+
+    @staticmethod
+    def _find_last_user_input(messages: list[LLMMessage]) -> str:
+        """Return the content of the most recent user-role message.
+
+        Issue #1708 hallucinated-lyrics guard uses this to distinguish a
+        vocal request («спой куплет» → backing mode legitimately calls
+        ``speak_text`` many times) from an instrumental request («сыграй
+        бит про колобка в нига стайле» — instrumental, ``speak_text``
+        after music-tool is hallucinated).
+
+        Walking in reverse keeps the operation O(distance to last user
+        message) instead of O(N) over the full history.
+        """
+        for msg in reversed(messages):
+            if msg.role == "user" and msg.content:
+                return str(msg.content)
+        return ""
+
+    @classmethod
+    async def _maybe_request_correction_retry(
+        cls,
+        *,
+        agent: "AgentCore",
+        response: LLMResponse,
+        tools_called: list[str],
+        truncated_tool_args_retried: bool,
+        silent_retried: bool,
+        messages: list[LLMMessage],
+        openai_tools: list[dict],
+    ) -> _CorrectionRetryOutcome:
+        """Run a single-shot correction retry if any of the two triggers fire.
+
+        Two triggers (issue #2630 PR-B — see
+        :mod:`rob_box_harness.core.tool_loop.retry`):
+
+        * **#1899** truncated tool-call arguments — model JSON cut off
+          mid-stream. Detect ``is_truncated_args_candidate`` BEFORE
+          execution so we don't waste ~6 s on a broken-validation
+          executor call.
+        * **#1217** silent / pseudo-call response — empty payload or
+          function-call DESCRIBED in text instead of emitted. Detect
+          via :meth:`AgentCore._is_silent_response`. Only when no tool
+          ran this turn (``not tools_called``) — a final «done» AFTER
+          ``speak_text`` is legitimate and must not be retried.
+
+        Both triggers are single-shot, gated by their respective flags.
+        The truncated-args branch fires first because it's a transport
+        problem (can't execute a broken call); silent-response fires
+        only AFTER we've confirmed the call didn't even attempt to
+        call a tool.
+        """
+        no_op = _CorrectionRetryOutcome(
+            retried=False,
+            next_response=response,
+            truncated_tool_args_retried=truncated_tool_args_retried,
+            silent_retried=silent_retried,
+        )
+        # Truncated-args comes first (issue #1899) — broken JSON can't
+        # be executed at all.
+        if (
+            not truncated_tool_args_retried
+            and is_truncated_args_candidate(response)
+        ):
+            next_response = await request_truncated_args_retry(
+                agent, messages, response, openai_tools
+            )
+            return _CorrectionRetryOutcome(
+                retried=True,
+                next_response=next_response,
+                truncated_tool_args_retried=True,
+                silent_retried=silent_retried,
+            )
+        # Silent / pseudo-call (issue #1217) — only when NO tool ran
+        # this turn. ``agent._is_silent_response`` is bound at call
+        # time so subclasses / tests can override it without poking
+        # module globals.
+        if (
+            not silent_retried
+            and not tools_called
+            and not response.tool_calls
+            and agent._is_silent_response(response)
+        ):
+            next_response = await request_silent_response_retry(
+                agent, messages, response, openai_tools
+            )
+            return _CorrectionRetryOutcome(
+                retried=True,
+                next_response=next_response,
+                truncated_tool_args_retried=truncated_tool_args_retried,
+                silent_retried=True,
+            )
+        return no_op
+
+    def _finalize_outcome(
+        self,
+        *,
+        response: LLMResponse,
+        tools_called: list[str],
+        speak_text_count: int,
+        speak_text_real_count: int,
+        spoken_texts: list[str],
+        seen: set[str],
+        tool_error_occurred: bool,
+    ) -> _ToolLoopOutcome:
+        """Run the babble filter (issue #1253) and assemble the outcome.
+
+        Two paths:
+
+        * **Babble** (tool error + word-only final answer + ``speak_text``
+          never called): return an outcome with ``spoken_text=""`` so
+          dialogue_node advances to the next round instead of voicing
+          «дан» / «бит не получился».
+        * **Happy path**: assemble ``_ToolLoopOutcome`` from the live
+          counters and the last ``LLMResponse``.
+
+        Issue #2630 — extracted from :meth:`_run_with_tools` (PR-C in
+        the per-policy breakdown).
+        """
+        babble_outcome = apply_babble_filter(
+            tool_error_occurred=tool_error_occurred,
+            response=response,
+            seen_tool_names=seen,
+            is_silent_response_fn=self._is_silent_response,
+            tools_called=tools_called,
+            speak_text_count=speak_text_count,
+            speak_text_real_count=speak_text_real_count,
+            spoken_texts=spoken_texts,
+        )
+        if babble_outcome is not None:
+            return babble_outcome
+        return build_outcome_from_response(
+            response=response,
+            tools_called=tools_called,
+            speak_text_count=speak_text_count,
+            speak_text_real_count=speak_text_real_count,
+            spoken_texts=spoken_texts,
+        )
+
+    async def _execute_tool_batch(
+        self,
+        *,
+        response: LLMResponse,
+        execution_order: list[ToolCall],
+        same_batch_music_calls: frozenset[str],
+        current_user_input: str,
+        results_by_call_id: dict[str, ToolResult],
+    ) -> list[str]:
+        """Dispatch one LLM batch through the per-call policy chain.
+
+        Issue #2630 PR-D — выделено из :meth:`_run_with_tools` чтобы
+        убрать ~6 CC из основного метода (ADR-0021 R1, ADR-0013).
+        Возвращает список текстов, которые были подавлены гиардом
+        hallucinated-lyrics (issue #1708) — caller декрементит
+        ``speak_text_count`` и ``spoken_texts`` соответственно.
+
+        Порядок политик (важен — не переставлять!):
+
+        1. Acceptance gate (``REQUIRE`` → sentinel result, не блокирует
+           LLM-цикл, см. issue #968 §8).
+        2. Hallucinated-lyrics guard (issue #1708): ``speak_text`` после
+           music-tool подавляется, если текст НЕ vocal-request.
+        3. ``load_skill`` — синхронная обработка через
+           :meth:`_handle_load_skill`.
+        4. ``await self._tools.execute(call)`` — иначе.
+        """
+        suppressed_texts: list[str] = []
+        for call in execution_order:
+            if self._acceptance_gate is not None:
+                segment, decision = self._acceptance_gate.submit(
+                    tool=call.name,
+                    args=dict(call.arguments or {}),
+                    call_id=call.id,
+                )
+                if decision.kind is ConfirmationKind.REQUIRE:
+                    # Don't call the executor — gate will dispatch it
+                    # later via the future scheduler (Фаза 2).
+                    results_by_call_id[call.id] = (
+                        build_awaiting_confirmation_result(
+                            call, segment, self._acceptance_gate
+                        )
+                    )
+                    continue
+
+            # Issue #1708 — drop hallucinated lyrics after a music
+            # tool. The check runs AFTER acceptance-gate but BEFORE
+            # the real executor: a suppressed speak_text never
+            # reaches the MCP tool, so the user hears no TTS for
+            # it. The LLM still gets a sentinel result so it can
+            # learn from the rejection on its next iteration.
+            if _is_hallucinated_speak_text(
+                call=call,
+                same_batch_music_calls=same_batch_music_calls,
+                user_input=current_user_input,
+            ):
+                logging.getLogger(__name__).warning(
+                    "AgentCore [issue 1708]: suppressing "
+                    "speak_text in batch with %s — hallucinated "
+                    "lyrics would override music. text=%r user_input=%r",
+                    sorted(same_batch_music_calls),
+                    _extract_speak_text(call.arguments)[:80],
+                    current_user_input[:80],
+                )
+                results_by_call_id[call.id] = _suppressed_speak_text_result(call)
+                if call.name == "speak_text":
+                    text = _extract_speak_text(call.arguments)
+                    if text:
+                        suppressed_texts.append(text)
+                continue
+
+            if call.name == LOAD_SKILL_TOOL:
+                results_by_call_id[call.id] = self._handle_load_skill(call)
+                continue
+
+            results_by_call_id[call.id] = await self._tools.execute(call)
+        return suppressed_texts
 
     async def _stream_response(
         self,

@@ -231,6 +231,15 @@ EXPECTED=(
     # `gh pr create` и его terminal-guard --body flag). Идемпотентен:
     # если PR для head+base уже OPEN — возвращает его номер.
     gh-pr-create-via-gh-api.sh
+    # Provisioning-failure watchdog (card t_c2ab8db9, retro t_34f33289):
+    # upstream-loop guard — ловит карточки, попавшие в gate-by-giveup-pattern
+    # (cf >= 3 за 30 мин + provider-exhausted signature + нет open PR) или
+    # loop-no-progress (≥ 5 spawned + ≥ 1 gave_up за 1ч), БЛОКИРУЕТ их ДО
+    # того, как dispatcher начнёт kill'ить через enforce_max_runtime SIGKILL.
+    # Регистрация cron-job делается в ensure_runtime_overshoot_cron ниже
+    # (every 2m — горячий цикл, потому что underlying spawn-loop может
+    # съесть 1-2ч CPU/RAM менее чем за 30 мин на 5 параллельных карточках).
+    agent-flow-runtime-overshoot-loop.sh
     # Cross-task archive sweeper (ADR-AF-0060 / ретро 22.08 t_d9b4c600): watchdog,
     # архивирующий blocked-карточки devops после успешного PR/issue.
     # Зависит от python3 helper'ов _cross_task_archive_sweeper_{scan,archive}.py
@@ -318,6 +327,15 @@ EXPECTED=(
     # это решение Шифу. Регистрация cron-job делается в
     # ensure_stale_blocked_watchdog_cron.
     agent-flow-stale-blocked-watchdog.sh
+    # Stale-CONFLICTING PR watchdog (ретро 16.09 t_a7d642cd, pattern
+    # wip-conflict-wave-after-cc-budget): no-agent, ежечасно сканирует
+    # OPEN PR'ы с mergeableState='dirty' старше STALE_THRESHOLD_HOURS (4h)
+    # И не имеющие активной running/todo kanban-карточки на rebase. Emit'ит
+    # карточки `rebase PR #N` через kanban-retro-create.sh с idempotency-key
+    # `retro:rebase-pr-<N>` (повторный тик = SKIP). НЕ rebase'ит сам,
+    # НЕ merge'ит — только рекомендация, assignee=devops. Регистрация
+    # cron-job делается в ensure_stale_conflicting_watchdog_cron ниже.
+    agent-flow-stale-conflicting-watchdog.sh
     # E2E-rejected stale-watchdog (ретро 15.09 t_9251fd74): no-agent,
     # каждые 24ч сканирует GitHub Issues с меткой `e2e:rejected`. Для
     # issue старше STALE_DAYS (default 7) без нового PR — добавляет
@@ -1188,6 +1206,74 @@ sys.exit(1)
     fi
 }
 ensure_stale_blocked_watchdog_cron
+echo "==> Ensure cron job registration: stale-CONFLICTING PR watchdog (ретро t_a7d642cd)"
+# Проблема (ретро 16.09 t_a7d642cd, wip-conflict-wave-after-cc-budget):
+# После волны merge PR #2633/#2638/#2641/#2643 в develop 5+ воркерских
+# `z-{agent}/` PR остаются в CONFLICTING 12-18 часов. Работник, который
+# пушит, обычно не делает rebase перед push — wip-коммиты там остаются,
+# PR создаётся, и никто не возвращается к rebase. merge-gate видит эти
+# CONFLICTING, видит daily-report без видимого владельца, блокируется
+# на ожидании.
+#
+# Решение: ensure_stale_conflicting_watchdog_cron() — every-1h no-agent
+# job в devops-профиле. Сканирует OPEN PR с mergeableState='dirty'
+# старше STALE_THRESHOLD_HOURS (4h) И без активной running/todo kanban-
+# карточки на rebase → emit ОДНОЙ recommend-карточки на kanban (через
+# kanban-retro-create.sh с idempotency-key `retro:rebase-pr-<N>`).
+# Идемпотентность: на тике-повторе pre-check уже находит существующую
+# карточку → SKIP. НЕ rebase'ит сам (assignee карточки выполняет rebase
+# в worktree, у него контекст wip-коммитов).
+ensure_stale_conflicting_watchdog_cron() {
+    local profile_dir="/home/builder/.hermes/profiles/devops"
+    local jobs_file="$profile_dir/cron/jobs.json"
+    local job_name="Agent Flow Stale Conflicting Watchdog (ретро t_a7d642cd)"
+    local job_script="agent-flow-stale-conflicting-watchdog.sh"
+    local job_schedule="every 1h"
+
+    if ! command -v hermes >/dev/null 2>&1; then
+        echo "  SKIP ensure-stale-conflicting-watchdog-cron: hermes CLI not on PATH (nothing to register)"
+        return 0
+    fi
+    if [ ! -f "$jobs_file" ]; then
+        echo "  SKIP ensure-stale-conflicting-watchdog-cron: $jobs_file not present (devops profile not set up here)"
+        return 0
+    fi
+
+    # Guard: уже есть interval-job на этот script.
+    if python3 -c "
+import json, sys
+try:
+    with open('$jobs_file') as f:
+        d = json.load(f)
+except Exception:
+    sys.exit(0)
+for j in d.get('jobs', []):
+    if j.get('script') == '$job_script' and j.get('schedule', {}).get('kind') == 'interval' and j.get('enabled'):
+        sys.exit(0)
+sys.exit(1)
+" 2>/dev/null; then
+        echo "  OK   cron job '$job_name' already registered (interval, enabled)"
+        return 0
+    fi
+
+    echo "  ADD  registering cron job '$job_name' (devops, $job_schedule, no_agent)"
+    if $DRY_RUN; then
+        echo "  [DRY] hermes --profile devops cron create '$job_schedule' --name '$job_name' --script '$job_script' --no-agent --deliver local --workdir '$REPO_DIR'"
+        return 0
+    fi
+    if hermes --profile devops cron create "$job_schedule" \
+        --name "$job_name" \
+        --script "$job_script" \
+        --no-agent \
+        --deliver local \
+        --workdir "$REPO_DIR" >/dev/null 2>&1; then
+        echo "  ADD  cron job created: $job_name ($job_script, $job_schedule)"
+    else
+        echo "  WARN cron job creation failed (non-fatal): $job_name — register manually:"
+        echo "       hermes --profile devops cron create '$job_schedule' --name '$job_name' --script '$job_script' --no-agent --deliver local --workdir $REPO_DIR"
+    fi
+}
+ensure_stale_conflicting_watchdog_cron
 
 echo
 echo "==> Ensure cron job registration: e2e-rejected watchdog (ретро 15.09 t_9251fd74)"
@@ -1259,6 +1345,19 @@ ensure_night_marathon_cron() {
     ensure_cron_job devops "Agent Flow Night Voice Marathon" "agent-flow-night-marathon.sh" "every 1h" interval
 }
 ensure_night_marathon_cron
+
+echo
+echo "==> Ensure cron job registration: runtime-overshoot-loop watchdog (t_c2ab8db9 / retro t_34f33289)"
+# Карточка t_c2ab8db9: добавлен новый watchdog, который должен реагировать
+# БЫСТРЕЕ чем остальные (every 2m), потому что underlying give-up-loop
+# сжигает 1-2ч CPU/RAM менее чем за 30 мин на 5 параллельных карточках
+# (retro t_34f33289: 120+ signal-9 SIGKILL после provider-exhausted).
+# Регистрация interval-job в devops-профиле, no_agent, дубль-guard по
+# (script + interval + enabled). Применяется идемпотентно.
+ensure_runtime_overshoot_cron() {
+    ensure_cron_job devops "Agent Flow Runtime Overshoot Loop (t_c2ab8db9)" "agent-flow-runtime-overshoot-loop.sh" "every 2m" interval
+}
+ensure_runtime_overshoot_cron
 
 echo
 echo "==> Ensure cron job registration: decomposed-children wake-up watchdog (ADR-AF-0052, ретро t_bfd19ffb)"
@@ -1344,6 +1443,11 @@ _WATCHDOG_LAUNCHER_FILES=(
     agent-flow-decomposed-watchdog.sh
     agent-flow-stale-blocked-watchdog.sh
     agent-flow-cancel-on-provider-exhausted.sh
+    # t_c2ab8db9 / ретро t_34f33289: hot-path (every 2m) watchdog для
+    # upstream-loop guard (gate-by-giveup + loop-no-progress detectors).
+    # md5-дrift по 6 копиям должен сразу ловиться (ставлен в этот список
+    # явно, чтобы _md5_verify_fail детектил отставание host-копий).
+    agent-flow-runtime-overshoot-loop.sh
 )
 
 _md5_verify_fail=0

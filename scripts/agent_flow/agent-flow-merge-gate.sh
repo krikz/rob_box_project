@@ -88,6 +88,33 @@ STALE_BRANCH_REUSE_LABEL="${STALE_BRANCH_REUSE_LABEL:-stale-branch-reuse}"
 ADR_COLLISION_OVERRIDE_LABEL="${ADR_COLLISION_OVERRIDE_LABEL:-adr-collision-override}"
 ADR_COLLISION_BLOCKED_LABEL="${ADR_COLLISION_BLOCKED_LABEL:-agent-flow:adr-collision}"
 ADR_COLLISION_COMMENT_DEDUP_HOURS="${ADR_COLLISION_COMMENT_DEDUP_HOURS:-24}"
+# Ретро 16.09 t_d13a5c65 (issue #2627 race ADR-only vs impl): PR с меткой
+# `adr-only` (только docs/adr/*) от архитектора не должен мержиться раньше
+# открытой impl-PR с agent:<backend|devops|frontend>, иначе ADR фиксирует
+# design для метода, который ещё не написан → инвариант «design before
+# implementation» сломан, ретроспективная легитимация PR #2640 (#2627
+# baseline-bump был ложным: ADR обещал CC=31 после PR #2640, реально
+# CC=33).
+#
+# G11 (ADR-only ordering guard): если у PR есть `adr-only` И
+# `agent:architect` → блокируем merge пока у ЛЮБОЙ из linked issue
+# есть ОТКРЫТАЯ impl-PR (`agent:backend|devops|frontend`) со статусом
+# `OPEN` и `mergeStateStatus=CLEAN|MERGEABLE`. Override = метка
+# `retro` на issue (ad-hoc обход, как ADR_COLLISION_OVERRIDE_LABEL).
+ADR_ONLY_LABEL="${ADR_ONLY_LABEL:-adr-only}"
+# Implementation-метки, чьи OPEN-mergeable PR блокируют merge ADR-only PR.
+# Порядок важен только для сообщения (первый совпавший — в лог).
+ADR_ONLY_BLOCKING_AGENT_LABELS="${ADR_ONLY_BLOCKING_AGENT_LABELS:-agent:backend,agent:devops,agent:frontend,agent:developer,agent:llm-expert}"
+# Признак «PR меняет ТОЛЬКО дизайн» — для классификации, которая
+# раньше опиралась только на title (`docs(adr ...)` → lint). G11
+# формализует это как явную метку (ставит архитектор при открытии PR).
+# Шаблон имени папки docs/adr/, который мы считаем «чисто дизайном»
+# при отсутствии метки (fallback на случай, если архитектор забудет
+# поставить `adr-only`, но PR очевидно design-only).
+ADR_ONLY_PATH_PATTERN="${ADR_ONLY_PATH_PATTERN:-^docs/adr/}"
+ADR_ONLY_ORDERING_OVERRIDE_LABEL="${ADR_ONLY_ORDERING_OVERRIDE_LABEL:-retro}"
+ADR_ONLY_ORDERING_BLOCKED_LABEL="${ADR_ONLY_ORDERING_BLOCKED_LABEL:-agent-flow:adr-ordering-blocked}"
+ADR_ONLY_ORDERING_DEDUP_HOURS="${ADR_ONLY_ORDERING_DEDUP_HOURS:-24}"
 # Retro 03.09 t_a2ce09f8 (issue #1973): comment-dedup window for needs-review
 # + CONFLICTING reconcile (used in needs_review_conflict_reconcile_all).
 # Without default, script crashes under `set -u` around the use site
@@ -3678,6 +3705,300 @@ Merge-gate **НЕ поставит ${NEEDS_E2E_LABEL}** пока коллизи�
     return 1  # КОЛЛИЗИЯ → caller продолжает main-cycle без needs-e2e
 }
 
+# ============================================================================
+# G11: ADR-only-PR ordering guard (ретро 16.09 t_d13a5c65, issue #2627)
+# ----------------------------------------------------------------------------
+# Превращение скрытого правила «ADR-only PR не должен мержиться раньше
+# открытой impl-PR, иначе design-before-impl инвариант сломан» в явный
+# merge-gate gate. Race наблюдался третий раз (#2453, #2626/#2627) в окне
+# CC-budget рефакторинга — без process-fix ад-инфинитум.
+#
+# Контракт (вызывается из main-loop после check_adr_number_collision):
+#   $1 = pr_number
+#   $2 = issue_number (главная issue PR'а — то, на которую PR ссылается
+#        через Closes/Fixes/Resolves/Refs или z-{agent}/<n>-* branch)
+#   $3 = pr_kind ("lint" | "functional")
+#   $4 = labels_csv (lower-cased, comma-separated)
+#   $5 = pr_files_json (компактный JSON-массив path'ов из `gh pr view --json files`)
+#   $6 = pr_state ("OPEN" | ...)
+#   $7 = pr_mergeable (true/false — для инфологирования)
+#
+# Возвращает:
+#   0 — OK (нет блокирующих impl-PR или override/чистый ADR)
+#   1 — БЛОКИРОВКА: ADR-only PR ждёт impl-PR; caller должен continue
+#
+# Правила:
+#   - PR считается «adr-only», если у него `adr-only` метка ИЛИ ВСЕ его
+#     meaningful-файлы лежат под docs/adr/ (fallback для случая, когда
+#     архитектор забыл поставить метку). Условие «agent:architect»
+#     обязательно — это защищает от того, чтобы gate не сработал на чужих
+#     design-PR (например, frontend-дизайнер тоже может писать docs).
+#   - Если PR не adr-only → return 0 (gate не его).
+#   - Override: метка `retro` на issue (= `ADR_ONLY_ORDERING_OVERRIDE_LABEL`)
+#     — return 0 с явным логом.
+#   - Если linked issue (issue_number $2) имеет OPEN impl-PR с одной из
+#     меток ${ADR_ONLY_BLOCKING_AGENT_LABELS} (`agent:backend`,
+#     `agent:devops`, `agent:frontend`, `agent:developer`,
+#     `agent:llm-expert`) И mergeStateStatus=CLEAN|MERGEABLE →
+#     return 1 с side-effects (label, comment-dedup).
+#
+# Side effects при блокировке:
+#   - comment на issue (24h dedup), в нём: номера и ссылки на impl-PR,
+#     объяснение, что нужен merge impl-PR первым
+#   - label ${ADR_ONLY_ORDERING_BLOCKED_LABEL} на issue (best-effort)
+#   - НИКОГДА не ставит needs-e2e / needs-review — PR остаётся висеть OPEN
+#     до merge/close блокирующего impl-PR (или override)
+#
+# Fail-open: если API упало — return 0 (gate не должен ломать весь тик
+# из-за flake; ретрай на следующем 5м-тике).
+# ============================================================================
+check_adr_only_ordering() {  # $1=pr_number $2=issue_number $3=pr_kind $4=labels_csv_lc $5=pr_files_json $6=pr_state $7=pr_mergeable
+    local pr_number="$1" number="$2" pr_kind="$3" labels_lc="$4" pr_files_json="$5" pr_state="$6" pr_mergeable="$7"
+
+    # Gate срабатывает ТОЛЬКО для PR с `adr-only` (явная метка архитектора)
+    # или для всех файлов под docs/adr/ (fallback, когда метка забыта).
+    # Без `agent:architect` gate не срабатывает — другие профили тоже могут
+    # писать design (например, frontend-дизайнер), но ADR-only ordering
+    # в ретро-инциденте относился именно к architect-PR.
+    local has_adr_only_label=0
+    if has_label "$labels_lc" "$ADR_ONLY_LABEL"; then
+        has_adr_only_label=1
+    fi
+    local has_architect_label=0
+    if has_label "$labels_lc" "agent:architect"; then
+        has_architect_label=1
+    fi
+
+    # Fallback: PR меняет только docs/adr/* + agent:architect → считаем adr-only.
+    local all_files_in_adr=0
+    if [ -n "$pr_files_json" ] && [ "$pr_files_json" != "null" ]; then
+        all_files_in_adr="$(printf '%s' "$pr_files_json" | python3 -c '
+import json, re, sys, os
+try:
+    arr = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+if not isinstance(arr, list) or not arr:
+    sys.exit(1)
+adr_re = re.compile(sys.argv[1])
+nons = 0; total = 0
+for f in arr:
+    if not isinstance(f, str):
+        continue
+    total += 1
+    if not adr_re.search(f):
+        nons += 1
+# Если есть не-ADR файлы — не считаем adr-only.
+print("0" if nons > 0 or total == 0 else "1")
+' "$ADR_ONLY_PATH_PATTERN" 2>/dev/null || echo 0)"
+    fi
+
+    local is_adr_only=0
+    if [ "$has_adr_only_label" = "1" ]; then
+        is_adr_only=1
+    elif [ "$has_architect_label" = "1" ] && [ "$all_files_in_adr" = "1" ]; then
+        is_adr_only=1
+    fi
+    if [ "$is_adr_only" != "1" ]; then
+        return 0  # Не adr-only → gate не его.
+    fi
+
+    # Override Шифу через метку `retro` на issue (ad-hoc обход).
+    # PR labels уже в $labels_lc, но override-метка смотрится на issue.
+    local _issue_labels_csv
+    _issue_labels_csv="$(gh issue view "$number" --repo "$GH_REPO" --json labels \
+        --jq '[.labels[].name] | join(",")' 2>/dev/null || echo '')"
+    local _issue_labels_norm
+    _issue_labels_norm="$(printf '%s' "$_issue_labels_csv" | tr '[:upper:]' '[:lower:]')"
+    if has_label "$_issue_labels_norm" "$ADR_ONLY_ORDERING_OVERRIDE_LABEL"; then
+        log "issue #${number}: PR #${pr_number} G11 ADR-ordering override (${ADR_ONLY_ORDERING_OVERRIDE_LABEL} на issue) — пропускаем guard"
+        return 0
+    fi
+
+    # Если у PR есть `no-e2e-required` (= явный opt-out воркера) — G11 не
+    # нужен: ADR-only PR не пойдёт в e2e, и blocking-impl-PR семантика
+    # неприменима (Шифу уже явно сказал «без e2e», значит и без ordering
+    # race). Считаем это мини-override: фиксируется явным логом для трассировки.
+    if has_label "$labels_lc" "$NO_E2E_LABEL"; then
+        log "issue #${number}: PR #${pr_number} G11 skip — PR имеет ${NO_E2E_LABEL} (явный e2e opt-out, ordering-guard не нужен)"
+        return 0
+    fi
+
+    # PR уже не mergeable (CONFLICTING/DIRTY/UNKNOWN) — gate тоже не его.
+    # Race-условие «ADR-only мержится раньше impl-PR» физически невозможно,
+    # когда PR не mergeable. Возвращаем 0 — обычная downstream-логика (watchdog)
+    # разберётся с CONFLICTING.
+    # Значения pr_mergeable: "MERGEABLE" | "CONFLICTING" | "UNKNOWN" (через
+    # python helper `pr_mergeable=str(pr.get('mergeable',''))` на ~строке 4252).
+    # Сравнение case-insensitive: данные от GH приходят как MERGEABLE,
+    # но `set -u` ловит пустые переменные → нормализуем.
+    local _pm_norm
+    _pm_norm="$(printf '%s' "$pr_mergeable" | tr '[:upper:]' '[:lower:]')"
+    if [ "$_pm_norm" != "mergeable" ] && [ "$_pm_norm" != "true" ]; then
+        log "issue #${number}: PR #${pr_number} G11 skip — PR не mergeable (state=${pr_state} mergeable=${pr_mergeable})"
+        return 0
+    fi
+
+    # Fail-open при flake: если API упал — return 0 (не ломаем тик).
+    # Достаём список OPEN impl-PR по issue через gh pr list + grep.
+    local _impl_prs_json
+    _impl_prs_json="$(gh pr list --repo "$GH_REPO" --state open \
+        --search "${number} in:title" \
+        --json number,headRefName,labels,mergeStateStatus,state,title 2>/dev/null || echo '[]')"
+    if [ -z "$_impl_prs_json" ] || [ "$_impl_prs_json" = "null" ]; then
+        log "issue #${number}: PR #${pr_number} G11 fail-open — gh pr list empty (retry next tick)"
+        return 0
+    fi
+
+    # Ищем блокирующие impl-PR. На каждый такой PR — запись через \t:
+    #   impl_pr_number \t blocking_label \t merge_state \t head_ref \t blocking_source
+    # blocking_source ∈ {"pr", "issue"} — откуда пришла блокирующая метка
+    # (на самом PR или на issue).
+    #
+    # Семантика: в этом репо `agent:*` метки живут на ISSUE, а не на PR
+    # (см. PR #2640 — пустые labels, но issue #2627 имеет `agent:backend`).
+    # Проверяем ОБА источника:
+    #   1. метка `agent:*` на самом impl-PR (если воркер явно продублировал);
+    #   2. метка `agent:*` на issue impl-PR (репо-конвенция: одна issue может
+    #      иметь несколько impl-PR, метка живёт на issue).
+    # PR квалифицируется как блокирующий, если у него или у его issue есть
+    # хотя бы одна метка из ADR_ONLY_BLOCKING_AGENT_LABELS.
+    #
+    # Сначала вытаскиваем issue-метки для каждого PR (через title-search:
+    # `gh pr list --search "<n> in:title"` — даёт PR'ы с номером issue в title;
+    # для каждого PR дополнительно смотрим его собственные issue refs).
+    # Простая эвристика: gh search `in:title` ловит все PR по этому issue
+    # через conventional `[domain N]` префикс в title. Уже работает для
+    # #2627 → [PR #2640] и [PR #2647] (см. `_drift_pr_json` на ~строке 3796).
+    local _issue_labels_json
+    _issue_labels_json="$(gh issue view "$number" --repo "$GH_REPO" --json labels 2>/dev/null || echo '{}')"
+    local _blocking_list
+    _blocking_list="$(printf '%s\t%s\n' "$_impl_prs_json" "$_issue_labels_json" | python3 -c '
+import json, sys
+raw = sys.stdin.read()
+parts = raw.split("\t", 1)
+if len(parts) != 2:
+    sys.exit(0)
+try:
+    arr = json.loads(parts[0])
+except Exception:
+    sys.exit(0)
+try:
+    issue_lab_doc = json.loads(parts[1])
+except Exception:
+    issue_lab_doc = {}
+issue_agent_labels = set()
+if isinstance(issue_lab_doc, dict):
+    for lab in (issue_lab_doc.get("labels") or []):
+        if isinstance(lab, dict):
+            nm = (lab.get("name") or "").lower()
+            if nm.startswith("agent:"):
+                issue_agent_labels.add(nm)
+if not isinstance(arr, list):
+    sys.exit(0)
+self_pr = sys.argv[1]
+blocking_labels = set(b.strip().lower() for b in sys.argv[2].split(",") if b.strip())
+mergeable_states = {"CLEAN", "MERGEABLE", "UNSTABLE"}  # UNSTABLE — GH подсветит красным, но PR формально mergeable.
+seen_blocks = set()
+for pr in arr:
+    if not isinstance(pr, dict):
+        continue
+    num = str(pr.get("number", ""))
+    if num == self_pr or not num:
+        continue
+    if num in seen_blocks:
+        continue
+    st = (pr.get("state") or "").upper()
+    if st != "OPEN":
+        continue
+    ms = (pr.get("mergeStateStatus") or "").upper()
+    if ms not in mergeable_states:
+        continue
+    # Сначала проверяем метки самого PR.
+    pr_agent_label = ""
+    pr_labels = pr.get("labels") or []
+    for lab in pr_labels:
+        if not isinstance(lab, dict):
+            continue
+        nm = (lab.get("name") or "").lower()
+        if nm in blocking_labels:
+            pr_agent_label = nm
+            break
+    # Затем — пересечение issue-agent-labels с blocking_labels.
+    issue_match_label = ""
+    if issue_agent_labels and issue_agent_labels & blocking_labels:
+        # Берём первую совпадающую (порядок из sys.argv[2]).
+        for bl in blocking_labels:
+            if bl in issue_agent_labels:
+                issue_match_label = bl
+                break
+    blocking_label = pr_agent_label or issue_match_label
+    if not blocking_label:
+        continue
+    head = pr.get("headRefName") or ""
+    title = (pr.get("title") or "").replace("\t", " ").replace("\n", " ")
+    source = "pr" if pr_agent_label else "issue"
+    print("%s\t%s\t%s\t%s\t%s\t%s" % (num, blocking_label, ms, head, title[:80], source))
+    seen_blocks.add(num)
+' "$pr_number" "$ADR_ONLY_BLOCKING_AGENT_LABELS" 2>/dev/null || true)"
+
+    if [ -z "$_blocking_list" ]; then
+        log "issue #${number}: PR #${pr_number} G11 OK — нет OPEN impl-PR (или они не mergeable) с меткой ${ADR_ONLY_BLOCKING_AGENT_LABELS}"
+        return 0
+    fi
+
+    # Готовим список блокирующих PR для комментария (TSEP-разделённые номера).
+    local _blocking_nums=""
+    local _blocking_details=""
+    while IFS=$'\t' read -r _b_num _b_label _b_state _b_head _b_title _b_source; do
+        [ -z "$_b_num" ] && continue
+        if [ -z "$_blocking_nums" ]; then
+            _blocking_nums="#${_b_num}"
+        else
+            _blocking_nums="${_blocking_nums}, #${_b_num}"
+        fi
+        _blocking_details="${_blocking_details}- PR #${_b_num} (blocking_label=${_b_label} via ${_b_source:-pr}, mergeStateStatus=${_b_state}, head=${_b_head}): ${_b_title}
+"
+    done <<< "$_blocking_list"
+
+    log "issue #${number}: PR #${pr_number} G11 БЛОКИРОВКА — ADR-only PR ждёт impl-PR ${_blocking_nums} (issue #${number})"
+
+    # Side effect 1: метка на issue (best-effort, как ADR_COLLISION_BLOCKED_LABEL).
+    if [ "$DRY_RUN" != "true" ]; then
+        gh issue edit "$number" --repo "$GH_REPO" --add-label "$ADR_ONLY_ORDERING_BLOCKED_LABEL" >/dev/null 2>&1 \
+            && log "issue #${number}: ${ADR_ONLY_ORDERING_BLOCKED_LABEL} added" \
+            || log "WARNING: failed to add ${ADR_ONLY_ORDERING_BLOCKED_LABEL} to issue #${number}"
+    else
+        log "DRY-RUN would: add ${ADR_ONLY_ORDERING_BLOCKED_LABEL} to issue #${number}"
+    fi
+
+    # Side effect 2: comment на issue (24h dedup).
+    local _dedup_window=$(( ADR_ONLY_ORDERING_DEDUP_HOURS * 3600 ))
+    if [ "$DRY_RUN" = "true" ]; then
+        log "DRY-RUN would: post G11 ADR-ordering comment on issue #${number} (dedup ${ADR_ONLY_ORDERING_DEDUP_HOURS}h)"
+    elif ! _gm_recent_commented issue "$number" \
+        "🚧 **PR #${pr_number} ADR-ORDERING-BLOCKED" "$_dedup_window" prefix; then
+        gh issue comment "$number" --repo "$GH_REPO" --body \
+            "🚧 **PR #${pr_number} ADR-ORDERING-BLOCKED** (merge-gate G11, ретро 16.09 t_d13a5c65, $(date -u +%H:%M:%SZ))
+
+PR #${pr_number} помечен \`${ADR_ONLY_LABEL}\` (только docs/adr/*) — это **design-only PR от архитектора**, и merge-gate блокирует его слияние пока открыта impl-PR по этой же issue:
+
+${_blocking_details}Почему блокируем: ADR-only PR фиксирует design для метода, который ещё не написан — нарушает инвариант «design before implementation». Ретро-инцидент (#2453, #2626/#2627) показал: ADR обещал CC=31 после impl-PR, реально в develop получилось CC=33, и ADR задним числом легитимизировал неверный baseline.
+
+**Что делать:**
+- **merge/close блокирующих impl-PR первыми** → следующий тик merge-gate G11 разблокирует #${pr_number}.
+- **или @Шифу ставит \`${ADR_ONLY_ORDERING_OVERRIDE_LABEL}\` (= \`retro\`) на issue #${number}** для ad-hoc обхода.
+
+Side effects: PR #${pr_number} остаётся OPEN MERGEABLE CLEAN без \`needs-e2e\`/\`needs-review\` (gate не пускает его в e2e-rotation). См. ADR-AF-0065 (race spawn-карточек) и ADR-AF-0068 (inflight-collision guard)." >/dev/null 2>&1 \
+            && log "issue #${number}: G11 ADR-ordering comment posted (dedup ${ADR_ONLY_ORDERING_DEDUP_HOURS}h)" \
+            || log "WARNING: failed to post G11 comment on issue #${number}"
+    else
+        log "issue #${number}: G11 ADR-ordering comment already posted (за ${ADR_ONLY_ORDERING_DEDUP_HOURS}h) — dedup skip"
+    fi
+
+    return 1  # БЛОКИРОВКА → caller продолжает main-cycle без needs-e2e
+}
+
 # --- process each issue ------------------------------------------------------
 
 # free_stale_worktrees_for — перенесена в lib_agent_flow_common.sh (дедуп 30.08).
@@ -4259,9 +4580,19 @@ except Exception:
         if has_label "$_current_labels_norm" "$NO_E2E_LABEL"; then
             _has_no_e2e="1"
         fi
+        # Retro 16.09 t_4a242e15 (issue #2487): PR MERGED into develop while
+        # issue still carries `e2e:rejected` label — current 0.1a/0.1b paths
+        # skip this state (0.1a needs no-e2e-required, 0.1b needs Closes
+        # keyword in PR-body; PRs often use Refs:#N instead). Pre-compute
+        # so the OPEN-state branch can decide. Mirror the no-e2e-required
+        # semantics (explicit process signal, not e2e-PASS provenance).
+        _has_e2e_rejected="0"
+        if has_label "$_current_labels_norm" "$REJECTED_LABEL"; then
+            _has_e2e_rejected="1"
+        fi
         _issue_state="$(gh issue view "$number" --repo "$GH_REPO" --json state \
             --jq '.state' 2>/dev/null || echo '')"
-        log "issue #${number}: pre-close state=${_issue_state} e2e-done=${_has_e2e_done} no-e2e=${_has_no_e2e}"
+        log "issue #${number}: pre-close state=${_issue_state} e2e-done=${_has_e2e_done} no-e2e=${_has_no_e2e} e2e-rejected=${_has_e2e_rejected}"
 
         # 0.1a) Early short-circuit for no-e2e-required (retro 19.08 #79779a21,
         # ADR-0022 §4.2). Worker explicitly opted out of e2e — the PR
@@ -4375,42 +4706,133 @@ except Exception:
                 # Matches «Closes», «closes», «FIXES», «Resolves», etc.
                 # Boundary `\b#${number}\b` предотвращает match на похожих
                 # номерах (#1234 vs #123).
+                #
+                # Retro 16.09 t_4a242e15 (issue #2487): keyword-not-found
+                # БОЛЬШЕ НЕ делает `continue` — fall-through до case 0.1c,
+                # чтобы e2e-rejected-путь тоже имел шанс сработать. Вся
+                # audit/whoami/close-логика внутри `then` (только при наличии
+                # keyword). pre-ретро код имел `if ! grep ... continue` —
+                # 0.1b «съедал» прогресс и 0.1c никогда не достигался.
                 _fb_kw_pat="(closes|fixes|resolves)[[:space:]]+#${number}\b"
-                if ! printf '%s' "$_fb_pr_body" | grep -qiE "$_fb_kw_pat"; then
+                if printf '%s' "$_fb_pr_body" | grep -qiE "$_fb_kw_pat"; then
+                    # === Keyword match → собственно fallback auto-close ===
+                    # Audit-коммент (6h dedup). Маркер «🔁 fallback auto-close
+                    # (ADR-AF-0063 §4.1)» уникален — не путаем с «✅ ретро-путь»
+                    # или «🛠 merge-gate (ретро 13.08)».
+                    # Идемпотентность через generic helper (issue #2293).
+                    if ! _gm_recent_commented "issue" "$number" \
+                        "🔁 fallback auto-close (ADR-AF-0063 §4.1)" 21600 contains \
+                        && [ "$DRY_RUN" != "true" ]; then
+                        gh issue comment "$number" --repo "$GH_REPO" --body \
+"🔁 fallback auto-close (ADR-AF-0063 §4.1): PR #${pr_number} смержен в ${DEVELOP_BRANCH}, PR-body содержит keyword \`Closes/Fixes/Resolves #${number}\`, но squash-merge commit-message потерял body (\`squash_merge_commit_message: COMMIT_MESSAGES\`). Issue закрыта как fallback — основной путь по \`e2e-done\`/\`no-e2e-required\` не сработал, потому что worker обошёл e2e-rotation (архитектурный / docs / ADR PR)." >/dev/null 2>&1 || true
+                    fi
+                    # issue #1534: self-id whoami BEFORE close — helper
+                    # идемпотентный (2h окно, skip если уже публиковал такой же
+                    # marker для этого issue). Записываем audit-маркер.
+                    whoami_close_issue "$number" "fallback auto-close (ADR-AF-0063 §4.1): PR #${pr_number} MERGED into ${DEVELOP_BRANCH} with Closes keyword in PR-body"
+                    if [ "$DRY_RUN" = "true" ]; then
+                        log "DRY-RUN would auto-close issue #${number} via fallback path (ADR-AF-0063 §4.1)"
+                        _closed_this_tick=1
+                        _issue_state="CLOSED"
+                    elif gh issue close "$number" --repo "$GH_REPO" --reason completed >/dev/null 2>&1; then
+                        _closed_this_tick=1
+                        log "issue #${number}: CLOSED (reason=completed, fallback path ADR-AF-0063 §4.1)"
+                        # Reflect state для case ниже → CLOSED-ветка →
+                        # idempotent skip-close + destructive cleanup.
+                        _issue_state="CLOSED"
+                        # Ретро 01.09 t_fd604461: снять process-метки с MERGED PR.
+                        pr_label_sweep_after_merge "${pr_number}" "fallback auto-close (ADR-AF-0063 §4.1)" || true
+                    else
+                        log "issue #${number}: WARNING gh issue close failed (fallback path, ADR-AF-0063 §4.1) — retry next tick"
+                        labeled=$((labeled+1)); continue
+                    fi
+                else
                     # Нет keyword для ЭТОГО issue в PR-body → fallback не для нас.
                     # Это reference-only PR (issue упомянута без intent close)
                     # или другой-issue PR. По дизайну (§6) оставляем OPEN.
-                    log "issue #${number}: fallback path (ADR-AF-0063 §4.1) — PR-body has no Closes/Fixes/Resolves keyword for #${number}, no auto-close (likely reference-only)"
-                    labeled=$((labeled+1)); continue
+                    # Retro 16.09 t_4a242e15 (issue #2487): fall through до
+                    # case 0.1c, где проверяется `e2e:rejected` label.
+                    log "issue #${number}: fallback path (ADR-AF-0063 §4.1) — PR-body has no Closes/Fixes/Resolves keyword for #${number} (likely reference-only); falling through to 0.1c e2e-rejected check"
+                    # НЕ continue — пускай 0.1c тоже проверит issue.
                 fi
-                # Audit-коммент (6h dedup). Маркер «🔁 fallback auto-close
-                # (ADR-AF-0063 §4.1)» уникален — не путаем с «✅ ретро-путь»
-                # или «🛠 merge-gate (ретро 13.08)».
-                # Идемпотентность через generic helper (issue #2293).
+            fi
+        fi
+
+        # 0.1c) Retro 16.09 t_4a242e15 (issue #2487, PR #2495): when issue
+        # still carries `e2e:rejected` after the canonical PR was MERGED
+        # into develop, current 0.1a/0.1b paths skip this state:
+        #   - 0.1a needs `no-e2e-required` (worker explicitly opted out),
+        #   - 0.1b needs `Closes|Fixes|Resolves #N` keyword in PR-body
+        #     (suffers SQUASH-LOSS, but worker typically uses `Refs:#N`
+        #     in the body so the keyword is absent — see PR #2495).
+        # Result: issue sits OPEN with `e2e:rejected` forever (until 30d
+        # auto-close by e2e-rejected-watchdog). Worker who already
+        # delivered the fix needs explicit signal that the issue is closed
+        # by the act of merging (analogous to no-e2e-required).
+        #
+        # Decision: when `e2e:rejected` is set, no e2e-done / no-e2e-required,
+        # and PR MERGED into develop → strip e2e:rejected + close with
+        # reason=completed (auto-close path, audit-marker in comment).
+        #
+        # Guards (defensive):
+        #   - whitelist `user-reopened-this` → skip (user intent wins,
+        #     ADR-0014 #1391).
+        #   - recent user-reopen → skip (ADR-0014 #1391 supplement;
+        #     per-issue_user_reopen recency check is owned by
+        #     `_issue_reopened_recently` helper).
+        #   - branch-deleted on remote → skip auto-close here, defer to
+        #     Q22-orphan path (same defensive pattern as 0.1b §issue-2123).
+        #
+        # Idempotent: повторный тик находит state=CLOSED → case 0.2 CLOSED →
+        # idempotent skip-close + destructive cleanup.
+        #
+        # NOT touching `needs-e2e` here — by definition `e2e:rejected`
+        # implies no needs-e2e (e2e-process снял его перед reject).
+        if [ "$pr_state" = "MERGED" ] && [ "$pr_base" = "$DEVELOP_BRANCH" ] \
+            && [ "$_issue_state" = "OPEN" ] \
+            && [ "$_has_e2e_done" = "0" ] \
+            && [ "$_has_no_e2e" = "0" ] \
+            && [ "$_has_e2e_rejected" = "1" ]; then
+            # Whitelist guard (ADR-0014 #1391 supplement).
+            if [ -n "${USER_REOPEN_AUDIT_LABEL:-}" ] \
+                && has_label "${_current_labels_norm:-}" "$USER_REOPEN_AUDIT_LABEL"; then
+                log "issue #${number}: e2e-rejected+Merged path (retro 16.09 t_4a242e15), whitelist ${USER_REOPEN_AUDIT_LABEL} → skip auto-close"
+                labeled=$((labeled+1)); continue
+            fi
+            # User-reopen recency guard (same as 0.1b).
+            if _issue_reopened_recently "$number"; then
+                log "issue #${number}: e2e-rejected+Merged path (retro 16.09 t_4a242e15), recent user-reopen → skip auto-close (ADR-0014 #1391)"
+                labeled=$((labeled+1)); continue
+            fi
+            # Branch-deleted defensive: if ветка PR уже удалена → defer to Q22-orphan.
+            if ! git ls-remote --heads "https://github.com/$GH_REPO.git" "$branch" 2>/dev/null | grep -q "$branch"; then
+                log "issue #${number}: e2e-rejected+Merged path (retro 16.09 t_4a242e15) — branch ${branch} deleted on remote, defer to Q22-orphan path"
+            else
+                # === e2e:rejected + MERGED + branch alive → собственно auto-close ===
+                # Audit-коммент (6h dedup через generic helper #2293). Маркер
+                # «🔁 e2e:rejected auto-close (retro 16.09 t_4a242e15)» уникален —
+                # не путаем с fallback path «🔁 fallback auto-close (ADR-AF-0063 §4.1)»
+                # или e2e-done path.
                 if ! _gm_recent_commented "issue" "$number" \
-                    "🔁 fallback auto-close (ADR-AF-0063 §4.1)" 21600 contains \
+                    "🔁 e2e:rejected auto-close (retro 16.09 t_4a242e15)" 21600 contains \
                     && [ "$DRY_RUN" != "true" ]; then
                     gh issue comment "$number" --repo "$GH_REPO" --body \
-"🔁 fallback auto-close (ADR-AF-0063 §4.1): PR #${pr_number} смержен в ${DEVELOP_BRANCH}, PR-body содержит keyword \`Closes/Fixes/Resolves #${number}\`, но squash-merge commit-message потерял body (\`squash_merge_commit_message: COMMIT_MESSAGES\`). Issue закрыта как fallback — основной путь по \`e2e-done\`/\`no-e2e-required\` не сработал, потому что worker обошёл e2e-rotation (архитектурный / docs / ADR PR)." >/dev/null 2>&1 || true
+"🔁 e2e:rejected auto-close (retro 16.09 t_4a242e15, issue #2487/#2495): PR #${pr_number} смержен в ${DEVELOP_BRANCH}, issue всё ещё несла \\`e2e:rejected\\` (предыдущий e2e-прогон не прошёл, новый PR был аддитивным фиксом, не e2e-rotation). Path 0.1a (no-e2e-required) не сработал (worker не выставил эту метку), path 0.1b (Closes keyword in PR-body) не сработал (PR-body использовал \\`Refs:#N\\` без keyword, либо keyword потерян при squash-merge). Issue автоматически закрыта, метка \\`e2e:rejected\\` снята с issue и PR — фикс признан доставленным по факту merge." >/dev/null 2>&1 || true
                 fi
-                # issue #1534: self-id whoami BEFORE close — helper
-                # идемпотентный (2h окно, skip если уже публиковал такой же
-                # marker для этого issue). Записываем audit-маркер.
-                whoami_close_issue "$number" "fallback auto-close (ADR-AF-0063 §4.1): PR #${pr_number} MERGED into ${DEVELOP_BRANCH} with Closes keyword in PR-body"
+                # whoami before close (issue #1534, helper идемпотентный 2h).
+                whoami_close_issue "$number" "e2e:rejected auto-close (retro 16.09 t_4a242e15): PR #${pr_number} MERGED into ${DEVELOP_BRANCH} while issue still had ${REJECTED_LABEL}"
                 if [ "$DRY_RUN" = "true" ]; then
-                    log "DRY-RUN would auto-close issue #${number} via fallback path (ADR-AF-0063 §4.1)"
+                    log "DRY-RUN would auto-close issue #${number} via e2e-rejected+Merged path (retro 16.09 t_4a242e15)"
                     _closed_this_tick=1
                     _issue_state="CLOSED"
                 elif gh issue close "$number" --repo "$GH_REPO" --reason completed >/dev/null 2>&1; then
                     _closed_this_tick=1
-                    log "issue #${number}: CLOSED (reason=completed, fallback path ADR-AF-0063 §4.1)"
-                    # Reflect state для case ниже → CLOSED-ветка →
-                    # idempotent skip-close + destructive cleanup.
+                    log "issue #${number}: CLOSED (reason=completed, e2e-rejected+Merged path, retro 16.09 t_4a242e15)"
                     _issue_state="CLOSED"
                     # Ретро 01.09 t_fd604461: снять process-метки с MERGED PR.
-                    pr_label_sweep_after_merge "${pr_number}" "fallback auto-close (ADR-AF-0063 §4.1)" || true
+                    pr_label_sweep_after_merge "${pr_number}" "e2e-rejected auto-close (retro 16.09 t_4a242e15)" || true
                 else
-                    log "issue #${number}: WARNING gh issue close failed (fallback path, ADR-AF-0063 §4.1) — retry next tick"
+                    log "issue #${number}: WARNING gh issue close failed (e2e-rejected+Merged path) — retry next tick"
                     labeled=$((labeled+1)); continue
                 fi
             fi
@@ -5688,6 +6110,24 @@ git rev-list --left-right --count origin/${DEVELOP_BRANCH}...${branch}
         # КОЛЛИЗИЯ: needs-e2e НЕ ставим, в scan-all-prs PR не попадёт
         # (там фильтр по OPEN+mergeable, не по label). PR остаётся висеть
         # OPEN — Шифу увидит alert в issue и либо fix rename, либо override.
+        labeled=$((labeled+1)); continue
+    fi
+
+    # --- G11: ADR-only-PR ordering guard (ретро 16.09 t_d13a5c65) ------------
+    # ADR-only PR (только docs/adr/* от архитектора) не должен мержиться
+    # раньше открытой impl-PR (agent:backend|devops|frontend|...); иначе
+    # ADR фиксирует design для метода, который ещё не написан, и baseline
+    # в ADR задним числом легитимизирует неверные метрики (как в #2627,
+    # где ADR обещал CC=31, реально получилось CC=33).
+    #
+    # Шаблон ровно как у check_adr_number_collision выше: вызов перед
+    # big-bang-override/lint path, чтобы структурный guard имел приоритет.
+    # Side effects (label, comment-dedup) — внутри helper'а; здесь только
+    # if-not-pass → continue (PR остаётся OPEN без needs-e2e/needs-review).
+    _pr_files_for_g11="$(gh pr view "$pr_number" --repo "$GH_REPO" --json files \
+        --jq '[.files[].path]' 2>/dev/null || echo '[]')"
+    if ! check_adr_only_ordering "$pr_number" "$number" "$pr_kind" \
+        "$labels_norm" "$_pr_files_for_g11" "$pr_state" "${pr_mergeable:-false}"; then
         labeled=$((labeled+1)); continue
     fi
 

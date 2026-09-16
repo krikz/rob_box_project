@@ -29,7 +29,7 @@ Docker compose инфраструктура для Vision Pi (Raspberry Pi 5) - 
     `voice-assistant` декларируют `depends_on:
     voice-resources-init { condition: service_completed_successfully,
     required: false }` — стартуют без samples, если init не запущен.
-    Запуск init вручную: `docker compose --profile init up --rm
+    Запуск init вручную: `docker compose --profile init up
     voice-resources-init`. Dep-script: `update_and_restart.sh` сам
     вызывает init после `up -d`.
 12. **voice-action-server** - sidecar для action/PASTE control plane (Phase 4)

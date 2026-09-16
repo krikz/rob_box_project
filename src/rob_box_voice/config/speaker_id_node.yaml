@@ -20,4 +20,11 @@ speaker_id_node:
     # Issue #2440 — harness-БД фактов для склейки профилей через шов
     # идентичности (тот же файл, что sqlite_db_path у dialogue_node).
     memory_db_path: "/data/harness_voice.db"
+    # Issue #2609 — defer resemblyzer warm-load to first real embed_audio.
+    # Default False: cold-load is 2-3 s on first inference, acceptable for
+    # the biometric cold path (зарегистрироваться / опознать нового
+    # собеседника). Eager warm-load at startup costs ~70 MB RSS (CPU-only
+    # wheel) on every container restart even when nobody speaks. Set True
+    # only if you want the legacy "always-hot model" behaviour.
+    resemblyzer_warmup_on_start: false
     sample_rate: 16000

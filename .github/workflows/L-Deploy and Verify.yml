@@ -446,7 +446,7 @@ jobs:
             "cd ~/rob_box_project/docker/vision && \
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
-             if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
+             if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
              echo '🧹 pre-init cleanup (retro t_d01fe536+t_9d35468d): stale containers + network'; \
              docker rm -f voice-resources-init 2>/dev/null || true; \
              docker network rm vision_default 2>/dev/null || true; \
@@ -484,24 +484,18 @@ jobs:
           # `depends_on: service_completed_successfully` — окно race
           # возвращалось, просто init прогонялся дважды.
           #
-          # GH task t_ef685c2e / round-423 deploys #35065892261 #35065300912
-          # #35064587769 #35066617063: фикс v2 (`--scale voice-resources-init=0`)
-          # СЛОМАЛСЯ после PR #2634 (t_b79d0581): voice-resources-init теперь
-          # объявлен с `profiles: ["init"]` → в основном `docker compose up -d`
-          # (без `--profile init`) compose **не знает про этот сервис**, и
-          # `--scale voice-resources-init=0` падает с
-          #   `no such service: voice-resources-init: disabled`
-          # Нужное поведение достигается БЕЗ `--scale`: профиль `init`
-          # автоматически исключает сервис из default `up -d`. Init-контейнер
-          # гарантированно прогоняется в предыдущем sync-шаге
-          # (`Run voice-resources-init (sync, before main up)`) и удаляется
-          # явным `docker rm -f` ниже.
+          # Этот шаг ИСКЛЮЧАЕТ voice-resources-init из основного `up -d`.
           #
-          # Длинные/хрупкие списки сервисов через позиционные аргументы
-          # `docker compose up -d svc1 svc2 …` не используем — они
-          # рассинхронизируются с compose-файлом при добавлении нового
-          # сервиса. profile `init` (PR #2634) делает то же самое
-          # без хрупких списков.
+          # Раньше это делал флаг `--scale voice-resources-init=0`.
+          # После PR #2634 (t_b79d0581) сервис помечен `profiles: [init]`, а при
+          # неактивном профиле compose считает его disabled — `--scale` по
+          # такому имени падает с `no such service: voice-resources-init:
+          # disabled` (deploy run #35067150565, шаг [Vision Pi] Start Containers).
+          # Флаг убран: обычный `up -d` без `--profile init` и так не создаёт
+          # этот сервис, а downstream (supercollider / voice-assistant) зависит
+          # от него через `required: false` — то есть ожидание становится no-op.
+          # Списки сервисов позиционными аргументами по-прежнему не используем —
+          # они рассинхронизируются с compose-файлом при добавлении сервиса.
           #
           # Параллельно уточняем причину «No such container: <HASH>»:
           # docker daemon НЕ удаляет exited-контейнер сам по себе
@@ -543,7 +537,7 @@ jobs:
              docker container prune -f 2>/dev/null || true; \
              echo '🔧 round-403 fix #2499: явный rm для всех compose-контейнеров (name-slot release)'; \
              docker ps -a --filter 'label=com.docker.compose.project=vision' --format '{{.ID}}' | xargs -r docker rm -f 2>/dev/null || true; \
-             echo '🚀 compose up (init уже выполнен в предыдущем sync-шаге; profile init в compose-файле автоматически исключает voice-resources-init из этого up -d)'; \
+             echo '🚀 compose up (voice-resources-init в profile init — не стартует, init уже выполнен в предыдущем шаге)'; \
              docker compose up -d --force-recreate --pull never --remove-orphans"
 
       # ==================== MAIN PI DEPLOYMENT ====================

@@ -192,3 +192,101 @@ gh issue create --title "[ID] description" \
 - [`docs/guides/MINIMAX.md`](docs/guides/MINIMAX.md) — MiniMax LLM user-guide
 - [`docs/guides/MINIMAX_TTS_GETTING_STARTED.md`](docs/guides/MINIMAX_TTS_GETTING_STARTED.md) — MiniMax TTS getting-started
 - [`docs/architecture/minimax-provider.md`](docs/architecture/minimax-provider.md) — архитектурный обзор MiniMax
+
+---
+
+## 7. Cold-start / deploy: Vision Pi при недоступных образах (issue #2610, ADR-0111)
+
+**Контекст.** До фикса `robbox-vision.service` после ребута Vision Pi **не поднимал ни одного контейнера**: `docker compose up -d` шёл в `10.1.1.249:5000` (katana, build-host, см. `.env`), и если katana offline — pull fail `dial tcp 10.1.1.249:5000: connect: no route to host` → systemd exit 1. Все 11 образов были закэшированы на Pi — фиксу сеть не нужна. Подробности и raw-evidence — [`docs/architecture/diagnostics/2026-09-15-robbox-vision-pull-failure.md`](docs/architecture/diagnostics/2026-09-15-robbox-vision-pull-failure.md).
+
+**Статус (на момент правки, 2026-09-16):** фиксы готовы в виде открытых PR, ещё не смёржены в `develop`:
+
+- [PR #2619](https://github.com/krikz/rob_box_project/pull/2619) — ADR-0111 (merged).
+- [PR #2617](https://github.com/krikz/rob_box_project/pull/2617) — диагностика `2026-09-15-robbox-vision-pull-failure.md`.
+- [PR #2634](https://github.com/krikz/rob_box_project/pull/2634) — `docker/vision/docker-compose.yaml`: `pull_policy: missing` ×17, `voice-resources-init` под `profiles:[init]`, downstream с `condition: service_completed_successfully, required: false`.
+- [PR #2635](https://github.com/krikz/rob_box_project/pull/2635) — `scripts/setup/setup_vision_pi.sh`: systemd-юнит `robbox-vision.service` с `Restart=on-failure` + `StartLimitBurst=5` + `StartLimitIntervalSec=600` + `--pull never` best-effort.
+
+До мержа поведение прежнее (см. «До фикса» в [диагностике](docs/architecture/diagnostics/2026-09-15-robbox-vision-pull-failure.md)).
+
+**Принятое поведение** (после мержа фиксов):
+
+- Vision Pi **поднимает стек частично**, а не валится целиком, если один из образов недоступен (registry offline, отсутствует тег, переключение DNS, нестартующий init-контейнер).
+- `Restart=on-failure` + `RestartSec=60` + `StartLimitBurst=5` + `StartLimitIntervalSec=600` в `robbox-vision.service` — systemd сам поднимет юнит после транзитных сбоев.
+- `pull_policy: missing` для всех image-based сервисов + `--pull never` через override (или `--ignore-pull-failures` в deploy-шаге) — compose не пытается рефетчить то, что уже локально.
+- `profiles: [init]` на `voice-resources-init` — переходная мера: init-контейнер не стартует при обычном `docker compose up -d`, поднимается явно через `--profile init up -d`.
+- Renardo-сэмплы бейкаются в `voice-base` ([ADR-0111 §2.4](docs/adr/0111-voice-resources-image-sourcing.md#24-альтернатива-а-bake-в-voice-base)), init-логика переезжает в `voice-assistant` ([ADR-0111 §2.2](docs/adr/0111-voice-resources-image-sourcing.md#22-что-меняется-в-compose)). После bake — `voice-resources` как image-based init-сервис в проде ликвидируется ([ADR-0111 §2.1](docs/adr/0111-voice-resources-image-sourcing.md#21-voice-resources-больше-не-отдельный-образ)).
+
+### Что делать, если образ недоступен
+
+1. **Определить, какие сервисы не стартовали:**
+
+    ```bash
+    docker compose -f ~/rob_box_project/docker/vision/docker-compose.yaml ps --format json \
+      | jq -r '.[] | select(.State != "running") | "\(.Name)\t\(.State)\t\(.ExitCode // "-")\t\(.Error // "-")"'
+    ```
+
+2. **Посмотреть логи конкретного сервиса:**
+
+    ```bash
+    docker compose logs --tail=200 <service-name>
+    ```
+
+3. **Проверить статус systemd-юнита:**
+
+    ```bash
+    sudo systemctl status robbox-vision --no-pager -l
+    ```
+
+4. **Поднять стек без `voice-resources-init`** (без профиля `init`) — это нормальный повседневный старт, init поднимется позже когда registry доступен:
+
+    ```bash
+    docker compose --pull never up -d   # без --profile
+    ```
+
+6. **Поднять только `voice-resources-init`** (когда профиль `init` ещё используется):
+
+    ```bash
+    docker compose --profile init up -d voice-resources-init
+    ```
+
+### Сценарии «один образ недоступен»
+
+| Сценарий | Что происходит | Что делать |
+|----------|---------------|-----------|
+| `voice-resources-init` образ не скачался (registry offline) | downstream-сервисы (`supercollider`, `voice-assistant`) поднимаются в `synth-only mode`, init можно поднять позже | `docker compose --profile init up -d voice-resources-init` когда registry доступен |
+| Один из 10 базовых сервисов не скачался | Остальные 9 работают; systemd рестартует юнит, повторный `pull` сделает best-effort | Дождаться registry или поднять руками: `docker compose --pull never up -d <service>` |
+| Нужен полный сброс `voice-resources` (новые сэмплы) | Удалить маркер + volume, перезапустить `voice-assistant` (post-bake: init-логика в `voice-assistant` сама заполнит volume) | `docker compose down && docker volume rm vision_renardo_samples && docker compose up -d` |
+
+### Профили compose (Vision Pi)
+
+- **`default`** (без `--profile`): все основные сервисы, **без** `voice-resources-init`. Используется в `robbox-vision.service` для повседневного старта.
+- **`init`**: только `voice-resources-init` (один, для разовой инициализации volume `renardo_samples`). Транзитный профиль — после bake Renardo-сэмплов в `voice-base` будет не нужен ([ADR-0111 §2.1](docs/adr/0111-voice-resources-image-sourcing.md#21-voice-resources-больше-не-отдельный-образ)).
+- **`with-music`**: альтернативный набор downstream-сервисов, зависящих от сэмплов. Использовать только если хочется строгий контракт «есть сэмплы → можно играть музыку».
+- **`monitoring`** (без изменений): `cadvisor-vision`, `promtail-vision`.
+- **`ai`** (без изменений): `ollama`.
+
+### Главный инвариант
+
+Стек **всегда** поднимает 9–10 базовых сервисов, даже если `voice-resources-init` отсутствует. Это следствие [ADR-0111 §2.1](docs/adr/0111-voice-resources-image-sourcing.md#21-voice-resources-больше-не-отдельный-образ): `voice-resources` как image-based init-сервис в проде ликвидируется, сэмплы бейкаются в `voice-base` ([ADR-0111 §2.4](docs/adr/0111-voice-resources-image-sourcing.md#24-альтернатива-а-bake-в-voice-base)). Defense-in-depth: `--ignore-pull-failures` (`.github/workflows/L-Deploy and Verify.yml:381`) + `pull_policy: missing` (compose) + `Restart=on-failure` (systemd) — независимые слои защиты от каскадного краша.
+
+### Какие сервисы считаются критичными, а какие — опциональными
+
+| Категория | Сервисы | Что произойдёт, если образ недоступен |
+|-----------|---------|---------------------------------------|
+| **Критичные** (без них стек бесполезен) | `ros2_bridge`, `zenoh-router`, `hailo`, `vision_node` (лицевая/person), `avatar-arbiter` | Робот «глух и слеп» — голос и зрение не работают. Но **стек всё равно поднимется**, systemd рестартует и логи покажут причину. |
+| **Опциональные** (можно без них) | `voice-resources-init` (init Renardo-сэмплов), `supercollider` (если init не отработал → `synth-only mode`), `monitoring`-профиль, `ai`-профиль | `voice-assistant` стартует в `synth-only mode` (без музыки), `cadvisor`/`promtail`/`ollama` просто не поднимаются, остальное работает. |
+
+### Обоснование выбора (ADR-0111 §4)
+
+Рассматривались альтернативы: (a) поднять registry на Vision Pi — отклонено (attack surface + disk usage + operational overhead, [ADR-0111 §4.A](docs/adr/0111-voice-resources-image-sourcing.md#4a-поднять-registry-на-vision-pi-вариант-c-из-body-карточки)); (b) GHCR + fallback на katana — отклонено (production не должен зависеть от dev-окружения, [ADR-0111 §4.B](docs/adr/0111-voice-resources-image-sourcing.md#4b-ghcr-по-умолчанию--опциональный-fallback-на-katana)); (c) оставить `voice-resources-init` + `pull_policy: missing` + cached bundle — отклонено (не убирает архитектурный SPOF, не решает first-boot, [ADR-0111 §4.C](docs/adr/0111-voice-resources-image-sourcing.md#4c-оставить-voice-resources-init--pull_policy-missing--cached-bundle-на-pi)); (d) bake в supercollider — отклонено (исторически только runtime scsynth, не должен знать про Renardo pipeline, [ADR-0111 §4.D](docs/adr/0111-voice-resources-image-sourcing.md#4d-bake-сэмплы-в-supercollider-образ)).
+
+**Принятое решение (из тела карточки t_ca7fa165, шаг 3 — «вынесение/не вынесение данных из образа»):** [ADR-0111 §2.1](docs/adr/0111-voice-resources-image-sourcing.md#21-voice-resources-больше-не-отдельный-образ) зафиксировал **ликвидацию `voice-resources` как image-based init-сервиса** (а не его локальную сборку). Сэмплы Renardo бейкаются в `voice-base` ([§2.4](docs/adr/0111-voice-resources-image-sourcing.md#24-альтернатива-а-bake-в-voice-base)), init-логика копирования переезжает в `voice-assistant` ([§2.2](docs/adr/0111-voice-resources-image-sourcing.md#22-что-меняется-в-compose)). До завершения bake — действует переходная мера `profiles: [init]` для `voice-resources-init` (см. таблицу профилей выше).
+
+### Референсы
+
+- Issue: [#2610](https://github.com/krikz/rob_box_project/issues/2610) (Vision Pi не поднимается без katana)
+- ADR: [`docs/adr/0111-voice-resources-image-sourcing.md`](docs/adr/0111-voice-resources-image-sourcing.md)
+- Диагностика: [`docs/architecture/diagnostics/2026-09-15-robbox-vision-pull-failure.md`](docs/architecture/diagnostics/2026-09-15-robbox-vision-pull-failure.md)
+- Реализация: PR #2617 (диагностика), PR #2634 (compose), PR #2635 (systemd unit), PR #2619 (ADR-0111)
+- Финальная сборка всего в один PR: PR (планируется, ветка `wt/t_ef836b9c`)
+- Связанные: issue #2095 / retro `t_d01fe536+t_9d35468d` (race-condition в init), ADR-0094 (`.image-versions.*` SHA-tag push), ADR-0018 (честность)
