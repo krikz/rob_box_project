@@ -145,11 +145,12 @@
         "expected_tool_calls": [
           "get_music_state"
         ],
+        "discovery_tools": ["get_music_state"],
         "must_not_call": [
           "execute_music_code",
           "stop_music"
         ],
-        "_comment": "Возврат к якорю тишины из акта 1 — акт не оставляет хвостов."
+        "_comment": "Возврат к якорю тишины из акта 1 — акт не оставляет хвостов. issue #2406: discovery_tools — get_music_state должен быть вызван ДО голосового ответа (regression guard, тот же класс багов что и issue #2347)."
       }
     }
   ]
