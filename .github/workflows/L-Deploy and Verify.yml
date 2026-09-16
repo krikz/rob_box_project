@@ -451,8 +451,8 @@ jobs:
              docker rm -f voice-resources-init 2>/dev/null || true; \
              docker network rm vision_default 2>/dev/null || true; \
              docker container prune -f 2>/dev/null || true; \
-             echo '🚀 running voice-resources-init synchronously (no -d)'; \
-             docker compose up voice-resources-init && \
+             echo '🚀 running voice-resources-init synchronously (no -d) via --profile init'; \
+             docker compose --profile init up voice-resources-init && \
              echo '⏳ waiting up to 15s for init to leave ps -a (prune/rm подбирает exited-контейнер)'; \
              for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do \
                if ! docker ps -a --filter name=voice-resources-init --format '{{.ID}}' | grep -q .; then \
