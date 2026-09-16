@@ -254,6 +254,22 @@ af_load_profile_env "$PROFILE_ENV"
 : "${E2E_ROBOT_HOST:=10.1.1.21}"
 : "${E2E_ROBOT_USER:=ros2}"
 : "${E2E_ROBOT_PASS:=}"   # пароль из окружения, в скрипт не пишем; пусто → pre-flight SKIP с warn
+# Ретро 15.09 (t_2b4af5db, issue #2648): pre-check ping+ssh на целевой хост ДО
+# триггера build. Если хост лежит — не жечь 40 мин build+deploy, а degraded:
+# round завершается с пометкой DEGRADED, issue НЕ закрывается, требуется
+# ручное подтверждение. Настраивается списком хостов через пробел. По
+# умолчанию проверяем и робота (10.1.1.21), и build-machine (10.1.1.249) —
+# оба критичны для round'а; любой лежит → degraded.
+: "${E2E_PRECHECK_HOSTS:=${E2E_ROBOT_HOST} 10.1.1.249}"
+: "${E2E_PRECHECK_PING_TIMEOUT:=2}"
+: "${E2E_PRECHECK_SSH_TIMEOUT:=4}"
+# Prometheus-экспортёр (текст-файл). Counter `e2e_target_unreachable_total`
+# с лейблами {target_host, phase}. Файл переживает MAINTENANCE (как
+# round-counter), парсер монитора читает его в формате Prometheus exposition.
+: "${E2E_TARGET_UNREACHABLE_FILE:=${HERMES_HOME:-/home/builder/.hermes}/state/agent-flow-e2e-target-unreachable.prom}"
+# Метка для degraded-issue'ов — отличается от e2e:rejected (фатальная ошибка
+# раунда) и e2e:infra-fail (CI/инфра); требует ручного подтверждения.
+: "${DEGRADED_LABEL:=e2e:degraded}"
 # Manual override: если true — detect_known_blocker возвращает пусто (ротация
 # не блокируется известными сигнатурами). Используется только для экстренной
 # разблокировки (например, когда фильтр ложно-положительный из-за старого
@@ -415,6 +431,117 @@ ensure_worktree() {
 # --- helpers -----------------------------------------------------------------
 log() { printf '%s %s %s\n' "$LOG_PREFIX" "$(date -Iseconds)" "$*" >&2; }
 run() { if [ "$DRY_RUN" = "true" ]; then printf '%s DRY-RUN %s\n' "$LOG_PREFIX" "$*" >&2; else eval "$@"; fi; }
+
+# --- pre-check ping+ssh на целевой хост (t_2b4af5db, issue #2648) -----------
+# Если хост лежит — не жечь 40 мин build+deploy, а degraded-counter +
+# метка e2e:degraded на issue. Round завершается DEGRADED (НЕ FAILURE),
+# требуется ручное подтверждение (issue НЕ закрывается автоматически).
+#
+# Использует sshpass для ssh-проверки (тот же стек, что и pre-flight ниже
+# на строке ~3636) — единый контракт creds через E2E_ROBOT_PASS; если
+# пароль не задан, ssh-этап пропускается и остаётся только ping (best-
+# effort). Экспорт counter `e2e_target_unreachable_total{target_host,phase}`
+# в Prometheus textfile (default $HERMES_HOME/state/...prom) — переживает
+# MAINTENANCE как round-counter.
+#
+# Возвращает 0 если хост доступен (ping AND ssh), 1 если недоступен.
+e2e_target_pre_check() {
+    local target_host="$1" phase="${2:-deploy}"
+    local ping_rc=0 ssh_rc=0 ssh_args="" _ping_out _ssh_out
+    # ping -c 1 -W <timeout> <host>; exit 0 если ответил
+    _ping_out="$(ping -c 1 -W "${E2E_PRECHECK_PING_TIMEOUT:-2}" "$target_host" 2>&1)" || ping_rc=$?
+    if [ "$ping_rc" -ne 0 ]; then
+        log "pre-check: target ${target_host} (${phase}) UNREACHABLE — ping failed (rc=${ping_rc})"
+        e2e_target_unreachable_inc "$target_host" "$phase"
+        return 1
+    fi
+    # ssh -o BatchMode=yes -o ConnectTimeout=<s> <host> true
+    # BatchMode=yes запрещает password prompt — на ssh-key auth сразу проверяем,
+    # что sshd жив. Если creds через sshpass заданы (E2E_ROBOT_PASS) — используем
+    # их для batch ssh (sshpass передаёт пароль в ssh через env SSHPASS).
+    ssh_args=(-o "StrictHostKeyChecking=no" -o "ConnectTimeout=${E2E_PRECHECK_SSH_TIMEOUT:-4}" -o "BatchMode=yes")
+    if [ -n "${E2E_ROBOT_PASS:-}" ] && command -v sshpass >/dev/null 2>&1; then
+        SSHPASS="$E2E_ROBOT_PASS" _ssh_out="$(sshpass -e ssh "${ssh_args[@]}" \
+            "${E2E_ROBOT_USER:-ros2}@${target_host}" true 2>&1)" || ssh_rc=$?
+    else
+        _ssh_out="$(ssh "${ssh_args[@]}" "${E2E_ROBOT_USER:-ros2}@${target_host}" true 2>&1)" || ssh_rc=$?
+    fi
+    if [ "$ssh_rc" -ne 0 ]; then
+        log "pre-check: target ${target_host} (${phase}) UNREACHABLE — ssh true failed (rc=${ssh_rc}): $(printf '%s' "$_ssh_out" | head -c 200)"
+        e2e_target_unreachable_inc "$target_host" "$phase"
+        return 1
+    fi
+    return 0
+}
+
+# Бамп counter `e2e_target_unreachable_total{target_host,phase}` в textfile
+# формата Prometheus exposition. Файл создаётся при первом инкременте с
+# header `# HELP` и `# TYPE counter`. Перезаписывается полностью при
+# каждом вызове (counter'ов немного, десятки; формат plain-text).
+#
+# Аргументы: $1=target_host $2=phase (deploy|build|e2e|...)
+#
+# Формат хранения: `host|phase=N` (split через `|` для host/phase и `=`
+# для value — hostnames/phase не содержат `=`, поэтому split однозначный;
+# при наличиии нескольких `|` в строке parameter expansion `${x##*=}`
+# всё равно даёт последнее поле после `=`, а `${x%%|*}` — первое до `|`).
+e2e_target_unreachable_inc() {
+    local target_host="$1" phase="$2"
+    [ -z "$target_host" ] && { log "WARNING: e2e_target_unreachable_inc: empty target_host"; return 1; }
+    [ -z "$phase" ] && phase="unknown"
+    local file="${E2E_TARGET_UNREACHABLE_FILE}"
+    if [ "$DRY_RUN" = "true" ]; then
+        log "DRY-RUN would: inc ${file} {target_host=\"${target_host}\",phase=\"${phase}\"}"
+        return 0
+    fi
+    mkdir -p "$(dirname "$file")" 2>/dev/null || true
+    local _counters_file="${file}.counters"
+    local _key="${target_host}|${phase}" _cur=0 _next=0 _line _th _ph _v
+    : > "${_counters_file}.tmp"
+    if [ -f "$_counters_file" ]; then
+        _seen_this_key=0
+        while IFS= read -r _line; do
+            [ -z "$_line" ] && continue
+            # Формат строки: "host|phase=1" — split вручную.
+            _th="${_line%%|*}"                          # до первой |
+            local _rest="${_line#*|}"                   # после первой |
+            _ph="${_rest%%=*}"                          # до первого =
+            _v="${_rest##*=}"                           # после последнего =
+            if [ "$_th|$_ph" = "$_key" ]; then
+                _cur="${_v:-0}"
+                _next=$((_cur + 1))
+                printf '%s|%s=%s\n' "$_th" "$_ph" "$_next" >> "${_counters_file}.tmp"
+                _seen_this_key=1
+            else
+                printf '%s|%s=%s\n' "$_th" "$_ph" "${_v:-0}" >> "${_counters_file}.tmp"
+            fi
+        done < "$_counters_file"
+    fi
+    if [ "${_seen_this_key:-0}" -eq 0 ]; then
+        printf '%s=1\n' "$_key" >> "${_counters_file}.tmp"
+    fi
+    mv "${_counters_file}.tmp" "$_counters_file" 2>/dev/null || {
+        log "WARNING: cannot persist unreachable counter ${_counters_file}"; return 1; }
+    # Рендер Prometheus textfile
+    {
+        printf '# HELP e2e_target_unreachable_total Total pre-check failures (ping+ssh) per target host\n'
+        printf '# TYPE e2e_target_unreachable_total counter\n'
+        while IFS= read -r _line; do
+            [ -z "$_line" ] && continue
+            local _th="${_line%%|*}"
+            local _rest="${_line#*|}"
+            local _ph="${_rest%%=*}"
+            local _v="${_rest##*=}"
+            # Seed строка всегда имеет value (мы пишем `=1` явно) — пустой
+            # _v означает битый формат, skip (страховка от дрейфа).
+            [ -z "${_v}" ] && continue
+            printf 'e2e_target_unreachable_total{target_host="%s",phase="%s"} %s\n' \
+                "$_th" "$_ph" "${_v:-0}"
+        done < "$_counters_file"
+    } > "${file}.tmp" 2>/dev/null && mv "${file}.tmp" "$file" 2>/dev/null || \
+        log "WARNING: cannot write prom file ${file}"
+    log "pre-check metric: e2e_target_unreachable_total{target_host=\"${target_host}\",phase=\"${phase}\"}++ (file=${file})"
+}
 
 # --- tick-summary logging (ADR-0116 / retro t_e3fc9bfe, issue #1977) ---------
 # Cron читает STDOUT. Скрипт исторически писал только в stderr → silent
@@ -2814,6 +2941,7 @@ log "round branch: ${ROUND_BRANCH}"
 processed=0
 errored=0
 skipped=0
+degraded=0   # Ретро 15.09 (t_2b4af5db): counter pre-check UNREACHABLE — НЕ errored++
 # Post-round sweep (ретро 12.08 t_8af6bf29) уже выполнен ВЫШЕ, ДО pre-round
 # guard и round_ensure (ретро 13.08 t_fe266643) — иначе sweep того же тика
 # снимал кандидата ПОСЛЕ создания round-ветки → пустой round без единого
@@ -2924,6 +3052,50 @@ while IFS=$'\t' read -r number title labels body source branch; do
     fi
     # Параметры с приоритетом: body > env > скрипт-дефолт
     [ -n "$e2e_volume" ] && E2E_VOLUME="$e2e_volume"
+
+    # Ретро 15.09 (t_2b4af5db, issue #2648): pre-check ping+ssh на целевой хост
+    # ДО триггера build/deploy. Если хост лежит — не жечь 40 мин build+deploy,
+    # а degraded: round завершается DEGRADED (НЕ FAILURE), issue НЕ закрывается,
+    # требуется ручное подтверждение (issue помечается DEGRADED_LABEL).
+    #
+    # Параметры из `## e2e` блока issue body (контракт для воркеров):
+    #   skip_robot_pre_check: 1   — пропустить pre-check (Phase 1/2 perception-only,
+    #                               Vision Pi НЕ участвует, тест идёт штатно)
+    #
+    # Поведение: проверяем ВСЕ хосты из E2E_PRECHECK_HOSTS (default: робот +
+    # build-machine). Если ЛЮБОЙ лежит — degraded++; continue (НЕ errored++,
+    # чтобы НЕ триггерить fail-streak watchdog).
+    e2e_skip_robot_pre_check="$(printf '%s' "${body_real}" | grep -iE '^[[:space:]]*skip_robot_pre_check[[:space:]]*:' | head -1 | sed -E 's/^[[:space:]]*skip_robot_pre_check[[:space:]]*:[[:space:]]*//' || true)"
+    if [ "${e2e_skip_robot_pre_check:-0}" = "1" ] || [ "${E2E_FORCE_PRECHECK_SKIP:-0}" = "1" ]; then
+        log "issue #${number}: pre-check SKIPPED (skip_robot_pre_check=${e2e_skip_robot_pre_check:-0}, phase perception-only / FORCE_PRECHECK_SKIP)"
+    elif [ -z "${E2E_PRECHECK_HOSTS:-}" ]; then
+        log "issue #${number}: pre-check SKIPPED (E2E_PRECHECK_HOSTS пуст)"
+    else
+        _precheck_failed=0 _precheck_failed_hosts=""
+        for _h in ${E2E_PRECHECK_HOSTS}; do
+            [ -z "$_h" ] && continue
+            if ! e2e_target_pre_check "$_h" "deploy"; then
+                _precheck_failed=1
+                _precheck_failed_hosts="${_precheck_failed_hosts:+${_precheck_failed_hosts},}${_h}"
+            fi
+        done
+        if [ "$_precheck_failed" -ne 0 ]; then
+            degraded=$((degraded+1))
+            # Метка DEGRADED_LABEL — отличается от e2e:rejected (фатальная
+            # ошибка) и e2e:infra-fail (CI); требует ручного подтверждения
+            # Шифу'ом (issue НЕ закрывается автоматически).
+            whoami_add_label "$number" "$DEGRADED_LABEL" \
+                "pre-check FAILED on ${_precheck_failed_hosts} — требуется ручное подтверждение (round=DEGRADED)" \
+                "pr=N/A" >/dev/null 2>&1 || \
+                log "WARNING: cannot add ${DEGRADED_LABEL} to issue #${number}"
+            gh issue comment "$number" --repo "$GH_REPO" --body \
+                "agent-flow: ⚠️ degraded — pre-check UNREACHABLE на ${_precheck_failed_hosts} (ping+ssh true). Build/deploy/e2e НЕ запущены (round=DEGRADED). Требуется ручное подтверждение после восстановления хоста." >/dev/null 2>&1 || \
+                log "WARNING: cannot post degraded-comment to issue #${number}"
+            log "issue #${number}: degraded — pre-check UNREACHABLE на ${_precheck_failed_hosts} (label=${DEGRADED_LABEL})"
+            continue
+        fi
+        log "issue #${number}: pre-check OK on ${E2E_PRECHECK_HOSTS}"
+    fi
 
     # Look up agent PR. Allow either OPEN (CI green per merge-gate) or MERGED.
     # Ретро 25.08 t_7766fe44: gh_pr_state_by_head() с REST fallback (GraphQL rate-limit
@@ -4517,7 +4689,7 @@ if [ "${ROUND_CREATED:-0}" = "1" ] && [ -n "$ROUND_BRANCH" ]; then
 fi
 
 # --- summary -----------------------------------------------------------------
-log "tick done: processed=${processed} skipped=${skipped} errored=${errored} round=${ROUND_BRANCH}"
+log "tick done: processed=${processed} skipped=${skipped} errored=${errored} degraded=${degraded:-0} round=${ROUND_BRANCH}"
 
 # --- tick_end: structured marker в stdout (ADR-0116 / retro t_e3fc9bfe) ------
 # Явный вызов перед exit; trap EXIT гарантирует marker и при аварийном
@@ -4543,8 +4715,16 @@ if [ "$_run_now_triggered" = "1" ] || git -C "$REPO_DIR" show "origin/${MAINTENA
 fi
 
 if [ "$errored" -gt 0 ]; then
-    af_summary_set error "processed=${processed} skipped=${skipped} errored=${errored} round=${ROUND_BRANCH}"; af_summary_emit 1
+    af_summary_set error "processed=${processed} skipped=${skipped} errored=${errored} degraded=${degraded:-0} round=${ROUND_BRANCH}"; af_summary_emit 1
     exit 1
+fi
+# Ретро 15.09 (t_2b4af5db, issue #2648): degraded tick — итог 'DEGRADED' (НЕ
+# FAILURE), но требует ручного подтверждения (issue помечены DEGRADED_LABEL,
+# следующий тик НЕ будет автоматически retry пока хост не восстановят).
+# exit 0 — чтобы cron не краснел; видимый сигнал — af_summary DEGRADED.
+if [ "${degraded:-0}" -gt 0 ]; then
+    af_summary_set degraded "processed=${processed} skipped=${skipped} errored=${errored} degraded=${degraded} round=${ROUND_BRANCH} — pre-check UNREACHABLE на ${E2E_PRECHECK_HOSTS}"; af_summary_emit 0
+    exit 0
 fi
 af_summary_set ok "processed=${processed} skipped=${skipped} errored=${errored} round=${ROUND_BRANCH}"; af_summary_emit 0
 exit 0
