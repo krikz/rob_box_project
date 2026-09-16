@@ -259,6 +259,8 @@ Community ROS2-обёртки (для Phase 2 опционально): `hailo_ro
 
 ## 8. Privacy (только для Phase 2)
 
+> **Заменено ADR-0123** (`0123-face-privacy-modes.md`, 2026-09-16): приватность лица задаётся режимом `workshop`/`exhibition`/`strict`; ниже — исходный текст, он соответствует режиму `strict`.
+
 **Принципы** (обязательно до merge Phase 2):
 - Raw images **не хранятся** на диске ни в каком виде (только в RAM во время инференса).
 - В БД `/data/faces.db` только: `embedding BLOB (128-dim float32)`, `name TEXT`, `created_at`, `confidence_avg`. Поля `last_seen_at`/`seen_count` сюда **не** заводятся — они принадлежат шву идентичности (issue #2440, `note_seen`/`since_last_seen`), а не лицевому индексу.
