@@ -70,7 +70,7 @@ def _parse_bytes(value: str | int | float) -> int:
 def compose_doc() -> dict:
     """Парсит docker/vision/docker-compose.yaml один раз на модуль."""
     assert COMPOSE_FILE.exists(), f"compose file missing: {COMPOSE_FILE}"
-    with COMPOSE_FILE.open() as f:
+    with COMPOSE_FILE.open(encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
@@ -169,7 +169,7 @@ def test_memswap_exceeds_mem_limit_by_about_1g(compose_doc: dict) -> None:
 def test_voice_assistant_comment_mentions_adr0122(compose_doc: dict) -> None:
     """Sanity: в docker-compose.yaml должен быть ADR-0122 / issue #2676
     рядом с mem_limit — чтобы будущий разработчик понимал контекст."""
-    raw = COMPOSE_FILE.read_text()
+    raw = COMPOSE_FILE.read_text(encoding="utf-8")
     # Найти блок voice-assistant (грубо — до следующего top-level ключа)
     m = re.search(
         r"^  voice-assistant:\n(?:\s+.*\n)+?(?=^  [a-z]|\Z)", raw, re.MULTILINE
