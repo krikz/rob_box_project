@@ -163,3 +163,29 @@ ENV-префиксы.
 - ADR-0110 (vision-hailo launch decoupling — тот же контракт имён).
 - Issue #2655 (component review 2026-09-15, t_4b487ef8).
 - Issue #2599 (PR-A face detection — этот фикс блокирует активацию real inference).
+
+## 8. Поправка 2026-09-16: диагноз §1 был неверным, решение отменено
+
+Исходный маппинг `HAILO_ENABLED=${FACE_HAILO_ENABLED:-false}` работал: префикс
+`FACE_` был только у **хостовой** переменной, а внутри контейнера имя
+`HAILO_ENABLED` совпадало с тем, что читает `start_vision_face.sh`. Оператор на
+роботе держал в `.env` `FACE_HAILO_ENABLED=true` и
+`FACE_HEF_PATH=/opt/rob_box/models/retinaface_mobilenet_v1.hef`.
+
+После перехода на общие имена vision-face стал получать хостовые
+`HAILO_ENABLED` / `HEF_PATH` от vision-hailo — то есть `yolov8n.hef` вместо
+RetinaFace. В логе это видно только как
+`ENV override wins: HEF_PATH (env="/opt/rob_box/models/yolov8n.hef", yaml=".../retinaface_mobilenet_v1.hef")`.
+
+Решение:
+
+- compose: `HAILO_ENABLED=${FACE_HAILO_ENABLED:-}`, `HEF_PATH=${FACE_HEF_PATH:-}` —
+  у каждого vision-* сервиса свои хостовые переменные, внутри контейнера имена общие.
+- дефолт — пустой, а не `false`: пустое значение уступает секции
+  `vision_face_node` в `config/hailo_models.yaml` (там `hailo_enabled: true` и
+  RetinaFace).
+- `start_vision_face.sh` подставляет свои дефолты **после** чтения YAML, иначе
+  пустой ENV превращался в экспортированное `false` и перебивал YAML.
+- `test_vision_face_env_namespace.py` переписан под этот контракт.
+
+Пункты §2, §5 и §6 выше считать отменёнными.

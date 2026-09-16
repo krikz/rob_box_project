@@ -11,15 +11,10 @@
 
 set -eo pipefail
 
-# ---------- defaults (override через ENV или YAML) ----------
-HAILO_ENABLED="${HAILO_ENABLED:-false}"
-HEF_PATH="${HEF_PATH:-}"
-STUB_PERIOD_SEC="${STUB_PERIOD_SEC:-2.0}"
-CONFIDENCE_THRESHOLD="${CONFIDENCE_THRESHOLD:-0.6}"
-NMS_IOU_THRESHOLD="${NMS_IOU_THRESHOLD:-0.45}"
-GAZE_SOURCE="${GAZE_SOURCE:-oak_d}"
-FIRST_FRAME_TIMEOUT_SEC="${FIRST_FRAME_TIMEOUT_SEC:-10.0}"
-OUTPUT_TOPIC="${OUTPUT_TOPIC:-/vision/hailo/events}"
+# Порядок: непустой ENV → YAML → дефолты ниже (ADR-0120 §8). Дефолты
+# ставятся ПОСЛЕ чтения YAML: compose передаёт HAILO_ENABLED/HEF_PATH
+# пустыми, и ранний `${HAILO_ENABLED:-false}` превращал пустое значение в
+# экспортированное "false", которое затем перебивало YAML.
 HAILO_MODELS_YAML="${HAILO_MODELS_YAML:-/config/hailo_models.yaml}"
 
 # ---------- source ROS workspace ----------
@@ -66,6 +61,16 @@ for key in ('hailo_enabled', 'hef_path', 'stub_period_sec',
 PY
     )"
 fi
+
+# ---------- defaults (если ни ENV, ни YAML не задали) ----------
+HAILO_ENABLED="${HAILO_ENABLED:-false}"
+HEF_PATH="${HEF_PATH:-}"
+STUB_PERIOD_SEC="${STUB_PERIOD_SEC:-2.0}"
+CONFIDENCE_THRESHOLD="${CONFIDENCE_THRESHOLD:-0.6}"
+NMS_IOU_THRESHOLD="${NMS_IOU_THRESHOLD:-0.45}"
+GAZE_SOURCE="${GAZE_SOURCE:-oak_d}"
+FIRST_FRAME_TIMEOUT_SEC="${FIRST_FRAME_TIMEOUT_SEC:-10.0}"
+OUTPUT_TOPIC="${OUTPUT_TOPIC:-/vision/hailo/events}"
 
 # ---------- summary ----------
 echo "[start_vision_face] config: HAILO_ENABLED=${HAILO_ENABLED} HEF_PATH=${HEF_PATH:-<none>}"

@@ -815,13 +815,13 @@ services:
       - ROBOT_ID=${ROBOT_ID}
       - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5
       - PYTHONUNBUFFERED=1
-      # ADR-0120 (issue #2655 F-1): vision-face использует ОБЩИЕ имена
-      # `HAILO_ENABLED` / `HEF_PATH` (как vision-hailo), а не `FACE_*` namespace.
-      # Раньше был `FACE_HAILO_ENABLED`, но start_vision_face.sh читал
-      # `HAILO_ENABLED` (без префикса) → FACE_*-флаг никогда не доходил до
-      # ноды, real inference не активировался (silently-broken integration).
-      - HAILO_ENABLED=${HAILO_ENABLED:-false}
-      - HEF_PATH=${HEF_PATH:-}
+      # ADR-0120 §8: у vision-face СВОИ хостовые переменные. Общие
+      # HAILO_ENABLED / HEF_PATH принадлежат vision-hailo — через них в
+      # vision-face приезжал yolov8n.hef вместо RetinaFace. Внутри контейнера
+      # имена прежние (их читает start_vision_face.sh); пусто → берётся
+      # секция vision_face_node из config/hailo_models.yaml.
+      - HAILO_ENABLED=${FACE_HAILO_ENABLED:-}
+      - HEF_PATH=${FACE_HEF_PATH:-}
       - HAILO_MODELS_YAML=/config/hailo_models.yaml
     volumes:
       - ./config:/config:ro
