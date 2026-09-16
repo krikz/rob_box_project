@@ -836,6 +836,36 @@ def is_vocal_request(user_input: str) -> bool:
     return any(kw in low for kw in MUSIC_GUARD_VOCAL_KEYWORDS)
 
 
+# Issue #2627 — BACKING vs TRACK discriminator (issue #992 Bug C live 13.08).
+# Narrow by design: only explicit *vocal* intent (sing/rap/verse/песня) marks
+# BACKING. Plain «сыграй баха» / «включи трек» is TRACK and must NOT arm the
+# deferred cleanup, even though the broad ``BABBLE_PERFORMANCE_KEYWORDS``
+# matches it. This regex mirrors the legacy inline
+# ``DialogueNode._has_singing_intent`` (dialogue_node.py:270-278) so the
+# ``PostTurnMusicPolicy`` decision and the dialogue-node adapter agree 1:1.
+_SINGING_INTENT_RE = re.compile(
+    r"\b(?:спо[йюё]\w*|по[йюё]\w*|рэп\w*|реп\w*|песенк\w*|куплет\w*|частушк\w*|напев\w*)\b",
+    re.IGNORECASE,
+)
+
+
+def has_singing_intent(user_input: Optional[str]) -> bool:
+    """Issue #992 Bug C / #2627 — does the user input mark a sing-along?
+
+    Returns ``True`` only for explicit vocal intent (``спой``, ``пой``,
+    ``рэп``, ``песенку``, ``куплет``, ``частушки``, ``напев``). Plain
+    «сыграй баха» / «включи трек» returns ``False`` — those are TRACK
+    requests, not BACKING. Empty / ``None`` input returns ``False``
+    (matches legacy ``DialogueNode._has_singing_intent`` semantics).
+
+    This is the public, testable counterpart of the legacy
+    ``DialogueNode._has_singing_intent``. Used by
+    :class:`rob_box_voice.core.post_turn_music_policy.decide` to drive
+    the BACKING-vs-TRACK split.
+    """
+    return bool(user_input) and bool(_SINGING_INTENT_RE.search(user_input))
+
+
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 # Issue #2562 — «не знаю такой мелодии» без поиска и без инструмента.

@@ -150,6 +150,7 @@ from rob_box_voice.core.dialogue_guards import (
     detect_unknown_melody_claim,  # Issue #2562 Bug F
     detect_universal_action_claim,
     extract_renardo_code_lines,
+    has_singing_intent as _has_singing_intent_impl,  # issue #2627 SSoT
     is_metalanguage_babble,
     is_music_stop_command,
     is_planning_narration,
@@ -166,6 +167,21 @@ from rob_box_voice.core.dialogue_helpers import (
     generate_fallback_response,
     map_emotion_to_animation,
     sanitize_speaker_name,
+)
+# Issue #2627 PR-C — pure post-turn music state machine extracted from
+# ``DialogueNode._run_turn.finally``. Lives in ``core/`` (no ROS, no I/O)
+# so the BACKING-vs-TRACK discriminator (issue #992 Bug C), the double-
+# stop deferral (issue #992 Bug B), the catch-up cleanup, and the DJ-auto
+# short-circuit are unit-testable without spinning up ``DialogueNode``.
+from rob_box_voice.core.post_turn_music_policy import (  # noqa: E402
+    PostTurnActions,
+    PostTurnMusicState,
+    TurnOutcome,
+    decide as _post_turn_music_decide,
+)
+from rob_box_voice.core.turn_kind import (  # noqa: E402  (issue #2627 PR-D)
+    TurnKind,
+    _classify_turn_kind,
 )
 from rob_box_voice.core.music_guard import (
     MusicGuard,
@@ -285,15 +301,23 @@ _LLM_SKIP_REASONS: tuple[str, ...] = tuple(reason.value for reason in LLMSkipRea
 # только что запущенный TRACK сразу после tts_batch_complete
 # («наполни комнату музыкой» → музыка умолкала через ~8с).
 # Теперь BACKING требует ПЕВЧЕСКИЙ интент в тексте юзера.
-_SINGING_INTENT_RE = re.compile(
-    r"\b(?:спо[йюё]\w*|по[йюё]\w*|рэп\w*|реп\w*|песенк\w*|куплет\w*|частушк\w*|напев\w*)\b",
-    re.IGNORECASE,
-)
+# BACKING vs TRACK discriminator (issue #992 Bug C live 13.08). The regex
+# and the ``has_singing_intent`` helper live in
+# :mod:`rob_box_voice.core.dialogue_guards` (issue #2627, ADR-0021 R2 —
+# single source of truth). ``DialogueNode`` keeps the historical
+# ``_has_singing_intent`` shim so external callers do not break, but the
+# implementation now delegates to the canonical detector imported at
+# the top of the module (``_has_singing_intent_impl``).
 
 
 def _has_singing_intent(text: "str | None") -> bool:
-    """True если юзер явно просил петь/рэповать (BACKING), а не просто музыку."""
-    return bool(text) and bool(_SINGING_INTENT_RE.search(text or ""))
+    """True если юзер явно просил петь/рэповать (BACKING), а не просто музыку.
+
+    Public helper now lives in :mod:`rob_box_voice.core.dialogue_guards`;
+    this shim keeps the historical ``DialogueNode._has_singing_intent``
+    name working for any external importer. Issue #2627.
+    """
+    return _has_singing_intent_impl(text)
 
 # Issue #992 Bug D — banned metalanguage openers + performance keywords
 # live in :mod:`rob_box_voice.core.dialogue_guards` (TD-1 decomposition);
@@ -3371,6 +3395,247 @@ class DialogueNode(Node):
             )
             return None
 
+    async def _resolve_turn_speaker(
+        self,
+        *,
+        user_input: str,
+        speaker_tag: Optional[str],
+        speaker_duration_s: float,
+        from_tg: bool,
+        is_dj_auto: bool,
+        was_dj_auto: bool,
+    ) -> Tuple[Optional[str], str]:
+        """Issue #2627 PR-B — extract the three-step speaker resolution.
+
+        Combines the three branches that used to live inline in
+        :meth:`_run_turn` (pre-PR-B):
+
+        1. **Profile update** (issue #1077) — if the STT layer returned a
+           confirmed speaker tag (2+ consecutive phrases, ≥0.8s), call
+           :meth:`_handle_speaker_turn` to refresh the speaker profile
+           and harvest context (name / facts / previous-dialog count).
+           Skipped for DJ auto-turns (DJ is a different runtime) and
+           when ``speaker_tag`` is ``None`` (Vosk fallback, edge case
+           #4).
+        2. **Source tag** (issue #1195) — Telegram text is marked with a
+           ``[TG]`` prefix so the DSM-classifier does not mistake it
+           for a wake word. Biometric speaker-id is intentionally NOT
+           applied to TG text (no microphone involved).
+        3. **Biometric prefix** (issue #1077) — when the biometric
+           pipeline is enabled (``self._speaker_id_enabled``) AND the
+           turn is NOT a DJ auto-turn, call
+           :meth:`_apply_speaker_identity` to prepend
+           ``[Говорит <имя>]`` / ``[Говорит: незнакомец]`` based on the
+           resemblyzer d-vector.
+
+        All three keep their original semantics 1:1 — the helper just
+        hides the branching so :meth:`_run_turn` CC drops ~6.
+
+        Args:
+            user_input: Effective user input (post-strip-wake-word).
+                Returned unchanged unless branches 2 or 3 mutate it.
+            speaker_tag: Confirmed speaker tag from the STT pipeline
+                (Yandex; ``None`` for Vosk / no detection).
+            speaker_duration_s: Duration of the speaker-tagged audio
+                stream in seconds. Threaded into
+                :meth:`_handle_speaker_turn` so the profile freshness
+                can be evaluated.
+            from_tg: ``True`` when the message arrived via the Telegram
+                chat (no microphone involved — biometric must be
+                bypassed).
+            is_dj_auto: ``True`` for DJ auto-tick transitions
+                (dispatched from :meth:`_dispatch_dj_turn`). These
+                bypass the speaker pipeline because the DJ prompt
+                intentionally mentions «роббокс» / «диджей» which
+                would otherwise short-circuit into a no-op
+                transition (issue #992).
+            was_dj_auto: Mirrors :attr:`_run_turn.was_dj_auto`. Same as
+                ``is_dj_auto`` at this point; kept as a separate
+                parameter to document the legacy code's distinction
+                (issue #992 Bug B — flag threading prevents races
+                between DJ retries and parent turns).
+
+        Returns:
+            A ``(speaker_context, user_input)`` tuple:
+
+            * ``speaker_context``: ``str`` from
+              :meth:`_handle_speaker_turn` or ``None`` (no confirmed
+              tag / DJ turn / handler raised).
+            * ``user_input``: the original input, possibly prefixed
+              with ``[TG]`` or the biometric name.
+
+        Notes:
+            Refactor: ``user_input`` is rebinding the parameter
+            (``str`` is immutable). When the helper returns, the
+            caller (:meth:`_run_turn`) MUST use the returned tuple, not
+            the original argument — see the line
+            ``speaker_context, user_input = await self._resolve_turn_speaker(...)``
+            in :meth:`_run_turn`.
+        """
+        speaker_context: Optional[str] = None
+        if speaker_tag and not is_dj_auto:
+            speaker_context = await self._handle_speaker_turn(
+                speaker_tag,
+                user_input=user_input,
+                duration_s=speaker_duration_s,
+            )
+        if from_tg:
+            user_input = f"[TG] {user_input}"
+        elif self._speaker_id_enabled and not was_dj_auto:
+            user_input = await self._apply_speaker_identity(
+                user_input, speaker_context
+            )
+        return speaker_context, user_input
+
+    async def _invoke_agent_with_tracing(
+        self,
+        *,
+        user_input: str,
+        was_dj_auto: bool,
+        is_synthetic: bool,
+        speaker_tag: Optional[str],
+        speaker_context: Optional[str],
+        dynamic_system: str,
+    ) -> DialogResult:
+        """Issue #2627 PR-A — call AgentCore inside the LLM-call telemetry.
+
+        Wraps the OpenTelemetry span, the deterministic skill activation,
+        the actual :meth:`AgentCore.process_input` call, and the
+        Prometheus fall-through histogram into a single helper. Refactor
+        is 1:1 against the legacy block at ``dialogue_node.py:3734-3824``
+        (pre-PR-A); the ``finally`` always records the metric — even
+        when :meth:`AgentCore.process_input` raises — so the latency
+        histogram never drops the failure path.
+
+        Args:
+            user_input: Effective user input (post-speaker-tag,
+                post-[TG]-prefix).
+            was_dj_auto: DJ-auto flag threaded through the dispatch
+                path so the skill-router can force ``composer`` for DJ
+                ticks (issue #2441).
+            is_synthetic: ``True`` for guard-dispatched retries
+                (``_check_babble_and_retry`` / ``_check_unbacked_action_claim_and_retry``
+                / ``_check_hallucinated_midi_and_retry`` / etc.).
+            speaker_tag: Confirmed speaker tag from STT (Yandex;
+                ``None`` for Vosk fallback).
+            speaker_context: String from
+                :meth:`_handle_speaker_turn` (issue #1077). ``None``
+                when no confirmed tag / DJ turn.
+            dynamic_system: Two-system-prompt snapshot from
+                :meth:`_build_dynamic_system_context`.
+
+        Returns:
+            The :class:`DialogResult` from :meth:`AgentCore.process_input`.
+            On exception, the Prometheus ``finally`` still records
+            ``success=False`` and the helper re-raises so the caller's
+            ``except`` branch can apply the degraded fallback phrase.
+
+        Notes:
+            ``time.monotonic`` is used (not ``time.time``) so NTP resync
+            does not corrupt the latency histogram (issue #1160).
+            ``start_span`` is a no-op without OTel (issue #1234).
+        """
+        llm_metric_start = time.monotonic()
+        llm_provider_name = getattr(
+            self._llm, "name", type(self._llm).__name__
+        )
+        llm_metric_recorded = False
+        result: Optional[DialogResult] = None
+        try:
+            with start_span(
+                "dialogue.llm_call",
+                {
+                    "provider": llm_provider_name,
+                    "model": getattr(self._llm, "model", "")
+                    or getattr(self._llm, "_model", ""),
+                },
+            ) as llm_span:
+                # Детерминированная активация домена ДО обращения к
+                # LLM: фрагмент попадает уже в ПЕРВЫЙ запрос хода,
+                # лишнего round-trip нет. DJ_AUTO-ход форсирует
+                # composer — аранжировка живёт там, а regex-роутер по
+                # синтетическому тексту перехода ненадёжен (issue #2441).
+                self._activate_skill_for(
+                    user_input,
+                    force_skill="composer" if was_dj_auto else None,
+                )
+                result = await self._core.process_input(
+                    user_input,
+                    is_dj_auto=was_dj_auto,
+                    is_synthetic=is_synthetic,
+                    speaker_tag=speaker_tag,
+                    speaker_context=speaker_context,
+                    dynamic_system=dynamic_system,
+                    preclassified_event=DialogueEvent.STT_RESULT,
+                )
+                # Прирост «домен пришлось грузить вызовом LLM» —
+                # это и есть метрика промахов пред-роутера.
+                self._publish_skill_load_counters()
+                llm_span.set_attribute(
+                    "fallback",
+                    llm_provider_name == "HealthAwareFallbackLLM",
+                )
+                llm_span.set_attribute(
+                    "duration_s",
+                    time.monotonic() - llm_metric_start,
+                )
+        finally:
+            self._record_llm_metrics(
+                llm_provider_name=llm_provider_name,
+                llm_metric_start=llm_metric_start,
+                llm_metric_recorded=llm_metric_recorded,
+                result=result,
+            )
+        if result is None:
+            # Unreachable in practice — the helper re-raises any
+            # exception in ``try:`` above — but Pyright wants an
+            # explicit branch so the ``-> DialogResult`` return type
+            # is satisfied. Mirror the legacy AttributeError path
+            # (issue #918) and let the caller handle ``None`` as a
+            # no-LLM-response edge case.
+            raise RuntimeError(
+                "AgentCore.process_input returned no result"
+            )
+        return result
+
+    def _record_llm_metrics(
+        self,
+        *,
+        llm_provider_name: str,
+        llm_metric_start: float,
+        llm_metric_recorded: bool,
+        result: Optional[DialogResult],
+    ) -> None:
+        """Issue #1160 / #2627 PR-A — record the Prometheus voice-llm metric.
+
+        Split out of :meth:`_invoke_agent_with_tracing` so the helper
+        itself stays at CC≤10. The ``result=`` parameter is the
+        :class:`DialogResult` from the LLM call — or ``None`` when
+        :meth:`AgentCore.process_input` raised before returning.
+
+        The Prometheus ``record_voice_llm_request`` call is wrapped in
+        its own ``try/except`` because a metric write must never crash
+        the dialog (issue #1160 «metrics must not break the dialogue»).
+        """
+        if llm_metric_recorded or not is_metrics_enabled():
+            return
+        duration_s = time.monotonic() - llm_metric_start
+        success = result is not None and not result.error
+        try:
+            record_voice_llm_request(
+                llm_provider_name,
+                success=success,
+                fallback=(llm_provider_name == "HealthAwareFallbackLLM"),
+                duration_s=duration_s,
+            )
+        except Exception as exc:  # noqa: BLE001
+            # Метрики НЕ должны ломать диалог: если запись
+            # упала (например, label-конфликт в тесте) — только
+            # логируем и продолжаем.
+            self.get_logger().warning(
+                f"⚠️ [metrics] record_voice_llm_request failed: {exc!r}"
+            )
+
     async def _run_turn(
         self,
         user_input: str,
@@ -3385,6 +3650,29 @@ class DialogueNode(Node):
         speaker_duration_s: float = 0.0,
         from_tg: bool = False,
     ) -> None:
+        # Issue #2627 PR-D — validate the 5 mutually-exclusive flags
+        # at the dispatch boundary. ``TurnKind`` enum + ``_classify_turn_kind``
+        # live at module scope so future refactors can route on a
+        # single value instead of five bool checks; the legacy per-flag
+        # branches below stay 1:1 with the pre-PR-D code (CC-budget
+        # neutral in this PR). Raises :class:`ValueError` if more than
+        # one ``is_X_retry`` flag is set — a bug-class that the legacy
+        # code silently swallowed (the second retry would be dropped).
+        try:
+            turn_kind = _classify_turn_kind(
+                is_dj_auto=is_dj_auto,
+                is_babble_retry=is_babble_retry,
+                is_action_claim_retry=is_action_claim_retry,
+                is_code_retry=is_code_retry,
+                is_synthetic=is_synthetic,
+            )
+        except ValueError as exc:
+            self.get_logger().error(
+                f"❌ [_run_turn] invalid turn-kind flags: {exc}; "
+                "refusing to start the turn"
+            )
+            return
+        del turn_kind  # currently classification-only; future PRs will route on it
         with self._task_lock:
             self._run_task = asyncio.current_task()
         self._run_cancelled = False
@@ -3457,41 +3745,22 @@ class DialogueNode(Node):
         # _publish_state до конца.
         result = None
         try:
-            # Issue #1077 — перед LLM-вызовом обновляем профиль спикера и
-            # собираем контекст о нём (имя, факты, число диалогов). Только
-            # для подтверждённых tags (2+ фразы подряд, >= 0.8с) — защита
-            # от нестабильных tags Yandex. Vosk fallback (tag=None) —
-            # профиль не трогаем (edge case #4).
-            speaker_context: Optional[str] = None
-            if speaker_tag and not is_dj_auto:
-                speaker_context = await self._handle_speaker_turn(
-                    speaker_tag,
-                    user_input=user_input,
-                    duration_s=speaker_duration_s,
-                )
-            # Issue #992 — DJ auto-turns must bypass the wake-word
-            # classifier so the LLM is actually called. The DJ prompt
-            # intentionally mentions "роббокс" / "диджей" which would
-            # otherwise short-circuit into a no-op transition.
-            # Issue #1077 — голосовая биометрия: префикс [Говорит <имя>] /
-            # [Говорит: незнакомец] из speaker_id_node (resemblyzer d-vector).
-            # Yandex speaker_tag присваивается per-session и не стабилен между
-            # сессиями, поэтому для ответа «как меня зовут?» полагаемся на
-            # биометрию. Session lock: первый известный спикер сессии
-            # фиксируется; чужие известные/незнакомцы в той же сессии
-            # игнорируются (TASK-048).
-            # Issue #1195 — текст из Telegram-чата ([TG:...]): голосовая
-            # биометрия НЕ применима (это не микрофон) и не должна
-            # «прилипать» от последнего распознанного голосом спикера.
-            # Помечаем источник для LLM префиксом [TG] (без wake-слов —
-            # DSM-классификатор не матчит). Роли описаны в system prompt
-            # (RULE #SRC): оператор/режиссёр vs гости в чате.
-            if from_tg:
-                user_input = f"[TG] {user_input}"
-            elif self._speaker_id_enabled and not was_dj_auto:
-                user_input = await self._apply_speaker_identity(
-                    user_input, speaker_context
-                )
+            # Issue #2627 PR-B — speaker resolution is now a single helper
+            # call. Three concerns: (a) update the speaker profile from
+            # the confirmed tag (issue #1077), (b) tag the message source
+            # for TG / biometric (issue #1195), (c) apply the speaker
+            # identity prefix when the biometric pipeline is on
+            # (issue #1077). All three were inline in ``_run_turn``
+            # before PR-B; refactor keeps semantics 1:1 while shaving
+            # ~6 CC off ``_run_turn``.
+            speaker_context, user_input = await self._resolve_turn_speaker(
+                user_input=user_input,
+                speaker_tag=speaker_tag,
+                speaker_duration_s=speaker_duration_s,
+                from_tg=from_tg,
+                is_dj_auto=is_dj_auto,
+                was_dj_auto=was_dj_auto,
+            )
             # Two-system-prompt pattern (live 10.08): собрать dynamic
             # <system_context> snapshot — текущий спикер (resemblyzer),
             # TTS provider/voice (для gender alignment в ответах),
@@ -3507,97 +3776,20 @@ class DialogueNode(Node):
                 f"🚀 [turn] calling process_input: user_input={user_input[:100]!r} "
                 f"speaker_tag={speaker_tag!r} was_dj_auto={was_dj_auto}"
             )
-            # Issue #1160 — Prometheus metrics: замер LLM-запроса.
-            # ``time.monotonic`` (а не time.time) — чтобы NTP-resync
-            # не сломал latency histogram. Провайдер берём из
-            # текущего self._llm: для одиночного провайдера это
-            # ``provider.name`` (HarnessDeepSeekProvider.name =
-            # "deepseek", MiniMaxProvider.name = "minimax"); для
-            # ``HealthAwareFallbackLLM`` это ``type(provider).__name__``
-            # (= "HealthAwareFallbackLLM"), что норм — counter
-            # ``result=fallback`` покажет сколько реально ушло на
-            # fallback, а histogram latency останется на уровне цепочки.
-            _llm_metric_start = time.monotonic()
-            _llm_provider_name = getattr(
-                self._llm, "name", type(self._llm).__name__
+            # Issue #2627 PR-A — the OpenTelemetry span, the skill
+            # activation, the AgentCore call, the OTel attributes, and
+            # the Prometheus histogram fall-through are now a single
+            # helper call. Refactor keeps the metric semantics 1:1 (the
+            # ``finally`` always records, even when process_input
+            # raises); shaves ~10 CC off ``_run_turn``.
+            result: DialogResult = await self._invoke_agent_with_tracing(
+                user_input=user_input,
+                was_dj_auto=was_dj_auto,
+                is_synthetic=is_synthetic,
+                speaker_tag=speaker_tag,
+                speaker_context=speaker_context,
+                dynamic_system=dynamic_system,
             )
-            _llm_metric_recorded = False
-            # Issue #1234 — OpenTelemetry span ``dialogue.llm_call`` (этап 2).
-            # Обёртка process_input → LLM: атрибуты provider/model/fallback/
-            # duration. ``start_span`` — no-op без OTel; с OTel httpx-вызовы
-            # LLM-провайдера (openai SDK) станут child-spans под этим span'ом.
-            try:
-                with start_span(
-                    "dialogue.llm_call",
-                    {
-                        "provider": _llm_provider_name,
-                        # Модель LLM: не все провайдеры хранят её публично —
-                        # getattr-защита, атрибут опционален (может быть пустым).
-                        "model": getattr(self._llm, "model", "")
-                        or getattr(self._llm, "_model", ""),
-                    },
-                ) as _llm_span:
-                    # Детерминированная активация домена ДО обращения к
-                    # LLM: фрагмент попадает уже в ПЕРВЫЙ запрос хода,
-                    # лишнего round-trip нет. DJ_AUTO-ход форсирует
-                    # composer — аранжировка живёт там, а regex-роутер по
-                    # синтетическому тексту перехода ненадёжен (issue #2441).
-                    self._activate_skill_for(
-                        user_input,
-                        force_skill="composer" if was_dj_auto else None,
-                    )
-                    result: DialogResult = await self._core.process_input(
-                        user_input,
-                        is_dj_auto=was_dj_auto,
-                        is_synthetic=is_synthetic,
-                        speaker_tag=speaker_tag,
-                        speaker_context=speaker_context,
-                        dynamic_system=dynamic_system,
-                        preclassified_event=DialogueEvent.STT_RESULT,
-                    )
-                    # Прирост «домен пришлось грузить вызовом LLM» —
-                    # это и есть метрика промахов пред-роутера.
-                    self._publish_skill_load_counters()
-                    _llm_span.set_attribute(
-                        "fallback",
-                        _llm_provider_name == "HealthAwareFallbackLLM",
-                    )
-                    _llm_span.set_attribute(
-                        "duration_s",
-                        time.monotonic() - _llm_metric_start,
-                    )
-            finally:
-                if not _llm_metric_recorded and is_metrics_enabled():
-                    _llm_metric_recorded = True
-                    _duration = time.monotonic() - _llm_metric_start
-                    # result может быть не определён, если process_input
-                    # упал до return — тогда success=False.
-                    _result_obj = locals().get("result")
-                    _success = _result_obj is not None and not _result_obj.error
-                    # Fallback-флажок: HealthAwareFallbackLLM.complete/stream
-                    # логирует fallback в свой [health] → можно отследить
-                    # через ``_provider_name == "HealthAwareFallbackLLM"``.
-                    # Точнее определяется через ``_last_used_provider``,
-                    # который мы не видим без патча upstream. Для этапа 1
-                    # довольствуемся ``result=fallback`` через отдельный
-                    # record_fallback() в health.py (TODO #1160, шаг 2B).
-                    try:
-                        record_voice_llm_request(
-                            _llm_provider_name,
-                            success=_success,
-                            fallback=(
-                                _llm_provider_name == "HealthAwareFallbackLLM"
-                            ),
-                            duration_s=_duration,
-                        )
-                    except Exception as _metric_exc:  # noqa: BLE001
-                        # Метрики НЕ должны ломать диалог: если запись
-                        # упала (например, label-конфликт в тесте) —
-                        # только логируем и продолжаем.
-                        self.get_logger().warning(
-                            f"⚠️ [metrics] record_voice_llm_request failed: "
-                            f"{_metric_exc!r}"
-                        )
             self.get_logger().info(
                 # Issue #1899: include ``finish_reason`` on EVERY completed
                 # stream (was previously logged only when the response was
@@ -3674,135 +3866,49 @@ class DialogueNode(Node):
             # _run_task. Multiple queued phrases are glued into ONE
             # follow-up turn, never N.
             pending_queue_dispatched = self._drain_pending_user_messages()
-            # Issue #935 v3: if LLM called stop_music(), defer cleanup until
-            # TTS finishes.  Otherwise keep music playing until next dialogue.
-            # Issue #992: a second stop_music() call from a follow-up LLM
-            # turn (while a previous cleanup is still pending) must be
-            # ignored — the flag is already set and the next batch_complete
-            # for any active batch will fire cleanup.
-            if result and "stop_music" in (result.tools_called or ()):
-                if self._pending_music_cleanup:
-                    self.get_logger().debug(
-                        "🎵 [issue 992] stop_music deferred — already pending, "
-                        "ignoring duplicate"
-                    )
-                else:
-                    self._pending_music_cleanup = True
-                    self.get_logger().info(
-                        "🎵 stop_music deferred — will cleanup after TTS finishes"
-                    )
-            else:
-                # 🔴 FIX (live 09:35): если LLM в этом цикле САМА запустила
-                # музыку (execute_music_code) — НЕ убивать её по
-                # tts_batch_complete короткой прелюдии («Слушай Баха!»).
-                # Музыка, запущенная как композиция, живёт до segments
-                # или явного stop_music. Cleanup — только если музыка
-                # НЕ запускалась в этом цикле (осталась от прошлого).
-                # 🔴 FIX (issue #918): turn может быть отменён (barge-in,
-                # VAD-interrupt, silence) или упасть — тогда result=None
-                # (except-ветки выше). Без guard'а здесь AttributeError
-                # убивает finally ДО DIALOGUE_END/_publish_state → DSM
-                # навсегда остаётся в DIALOGUE, /voice/dialogue/state
-                # зависает на 'dialogue', scenario_runner.wait_for_idle
-                # таймаутит. Guard обязателен: state finalization ниже —
-                # критический контракт, music-cleanup — best-effort.
-                tools_now = set(result.tools_called or ()) if result else set()
-                # 🔴 FIX (live 12.08): load_track, set_dj_mode, set_vibe_preset
-                # тоже запускают музыку (не только execute_music_code).
-                # Без этого эмбиент/трек умолкал через ~5с после tts_batch_complete.
-                # 🔴 FIX (live 30.08): та же авария повторилась с compose_music —
-                # список имён теперь один на всю систему (dialogue_guards),
-                # чтобы следующий музыкальный инструмент не пришлось помнить
-                # добавить в двух местах.
-                # 🔴 FIX (live 02.09): та же авария в третий раз — теперь с
-                # ``gen_play_from_library`` (mp3 из AI-библиотеки). Live-кейс:
-                # «включи трек про весну» реально запустил mp3, но
-                # ``GENERATED_MUSIC_TOOLS`` тут не учитывался — флаг
-                # ``_track_mode_music_active`` не взводился, следующая
-                # реплика («ну вот ты включил уже») пришла из idle,
-                # ``_publish_music_cleanup(reason="new_dialogue")`` считал
-                # мёртвый воздух и профилактически глушил mp3 через ~14с
-                # после старта. Юзер слышал, как робот 3 хода подряд врал
-                # «уже играет» на самом деле остановленному треку.
-                _music_starters = MUSIC_STARTING_TOOLS | MUSIC_MODE_TOOLS
-                # 🔴 FIX (live 31.08): stop_music не гасил флаг «играет», а
-                # снимался он только в _publish_music_cleanup. После «выключи
-                # музыку» флаг врал, и следующий Bug-C ретрай уходил в
-                # формулировке «музыка ИГРАЕТ, измени её» — на пустоту.
-                # Модель послушно описывала изменения без вызова тула, оба
-                # ретрая выгорали, робот говорил «я растерялся».
-                if tools_now & MUSIC_STOP_TOOLS:
-                    self._track_mode_music_active = False
-                if tools_now & _music_starters:
-                    # Issue #992 TWO MUSIC MODES: BACKING (спой/рэп/песенку) —
-                    # музыка это подложка под куплеты, систему ПРОСЯТ
-                    # остановить её после финального tts_batch_complete
-                    # (master_prompt_compact: "Music stops automatically after
-                    # tts_batch_complete"; LLM НЕ зовёт stop_music). TRACK
-                    # (сыграй баха/классику) — композиция живёт до команды
-                    # юзера. Дискриминатор: BACKING = 2+ speak_text В ЭТОМ
-                    # цикле И певческий интент в тексте юзера. Без интента
-                    # (live 13.08: «наполни комнату музыкой» + приветствие +
-                    # комментарий) — это TRACK, cleanup не планируется.
-                    backing_singing = bool(result) and (
-                        getattr(result, "speak_text_count", 0) >= 2
-                    ) and _has_singing_intent(raw_user_command or user_input)
-                    # Живая музыка теперь помнит свой режим: BACKING гасится
-                    # после последнего tts_batch_complete, TRACK — живёт
-                    # (live 30.08, см. ``_track_mode_music_active``).
-                    self._track_mode_music_active = not backing_singing
-                    if backing_singing:
-                        if not self._pending_music_cleanup:
-                            self._pending_music_cleanup = True
-                            self.get_logger().info(
-                                "🎵 [issue 992] backing mode (2+ speak_text) — "
-                                "music_cleanup scheduled at tts_batch_complete"
-                            )
-                        else:
-                            self.get_logger().debug(
-                                "🎵 [issue 992] backing mode — cleanup "
-                                "already pending"
-                            )
-                    elif self._pending_music_cleanup:
-                        self._pending_music_cleanup = False
-                        self.get_logger().info(
-                            "🎵 [issue 992] LLM restarted music via "
-                            "execute_music_code — cancelled pending cleanup"
-                        )
-                    else:
-                        self.get_logger().debug(
-                            "🎵 [issue 992] LLM started music — no cleanup "
-                            "scheduled for this turn"
-                        )
-                elif getattr(self, "_track_mode_music_active", False):
-                    # 🔴 FIX (live 30.08 15:56): ход не трогал музыку, но
-                    # играет TRACK с прошлого хода — он переживает этот ход.
-                    # Иначе «продолжай лабать» (или любой вопрос посреди
-                    # трека) глушил композицию через 0.1 с после ответа.
-                    # ASCII-тег [track-mode] — чтобы e2e мог грепнуть его
-                    # без кириллицы (grep -E в check_patterns бежит по ssh,
-                    # где локаль не гарантирована).
-                    self.get_logger().info(
-                        "🎵 [track-mode] TRACK играет с прошлого хода — "
-                        "cleanup НЕ вооружаем (живёт до stop_music/watchdog)"
-                    )
-                elif not was_dj_auto and not self._pending_music_cleanup:
-                    self._pending_music_cleanup = True
-                    self.get_logger().info(
-                        "🎵 music_cleanup deferred — waiting for TTS or 10s fallback"
-                    )
-                else:
-                    self.get_logger().debug(
-                        "🎵 [issue 992] music_cleanup already pending — "
-                        "ignoring redundant re-arm"
-                    )
-            if not was_dj_auto and self._pending_music_cleanup and not self._active_batches:
-                self._pending_music_cleanup = False
-                self._publish_music_cleanup(reason="tts_batch_complete")
-                self.get_logger().info(
-                    "🎵 turn finished, no active batches — fired music_cleanup "
-                    "(issue 992 prelude-deferral catch-up)"
-                )
+            # Issue #2627 PR-C — music state machine is now a pure decision
+            # function (see ``rob_box_voice.core.post_turn_music_policy``).
+            # The dialogue node reads its own mutable flags into a
+            # :class:`PostTurnMusicState` snapshot, asks
+            # :func:`decide` for the actions, and the small executor below
+            # applies them (logging + flag writes + optional catch-up
+            # cleanup fire). Mirrors the legacy block at lines 3828-3946
+            # (pre-PR-C) one-for-one; reduces ``_run_turn`` CC by ~25 and
+            # makes the BACKING-vs-TRACK discriminator unit-testable.
+            _music_snapshot = PostTurnMusicState(
+                pending_cleanup=self._pending_music_cleanup,
+                track_mode_active=self._track_mode_music_active,
+                active_batches=len(self._active_batches),
+                stop_music_already_pending=self._pending_music_cleanup,
+                last_tools_called=tuple(
+                    result.tools_called or ()
+                ) if result is not None else (),
+            )
+            _music_actions = _post_turn_music_decide(
+                outcome=TurnOutcome(
+                    tools_called=_music_snapshot.last_tools_called,
+                    spoken_text=result.spoken_text if result is not None else "",
+                    speak_text_count=getattr(result, "speak_text_count", 0)
+                    if result is not None
+                    else 0,
+                    user_input_for_intent=raw_user_command or user_input,
+                ),
+                state=_music_snapshot,
+                was_dj_auto=was_dj_auto,
+                user_input=user_input,
+                guard_retry_pending=guard_retry_pending,
+                music_retry_dispatched=False,
+                tool_retry_dispatched=False,
+                pending_queue_dispatched=pending_queue_dispatched,
+                singing_intent_detector=_has_singing_intent_impl,
+            )
+            self._execute_post_turn_music_actions(
+                _music_actions,
+                state_snapshot=_music_snapshot,
+                was_dj_auto=was_dj_auto,
+                raw_user_command=raw_user_command,
+                user_input=user_input,
+            )
             # Issue #992 Bug B / Bug C — DJ-mode post-turn guard.
             # ``is_dj_auto`` was threaded through the dispatch path so no
             # shared flag needs to be cleared here. The guard may
@@ -3871,6 +3977,159 @@ class DialogueNode(Node):
             # here; otherwise the ROS state topic remains stuck at the
             # earlier DIALOGUE notification and scenario runners wait forever.
             self._publish_state()
+
+    # ── Issue #2627 PR-C — post-turn music actions executor ──────────────
+
+    def _execute_post_turn_music_actions(
+        self,
+        actions: PostTurnActions,
+        state_snapshot: PostTurnMusicState,
+        *,
+        was_dj_auto: bool,
+        raw_user_command: Optional[str],
+        user_input: str,
+    ) -> None:
+        """Apply :class:`PostTurnActions` from :func:`decide` to dialogue state.
+
+        The pure decision function in
+        :mod:`rob_box_voice.core.post_turn_music_policy` returns a
+        :class:`PostTurnActions` dataclass describing the four post-turn
+        music outcomes (track-mode, pending-cleanup, catch-up cleanup fire,
+        close-session). This executor mirrors the legacy block that used
+        to live at ``_run_turn.finally`` (pre-PR-C) one-for-one:
+
+        1. Write back ``actions.track_mode_active`` to
+           ``self._track_mode_music_active`` if it changed; log only on
+           transition (keep vs arm vs cancel) so log volume matches the
+           legacy code.
+        2. Write back ``actions.pending_cleanup`` to
+           ``self._pending_music_cleanup``; same transition-only logging
+           (arm / cancel / already-pending). The log text differs based
+           on ``state_snapshot.last_tools_called`` so the
+           "stop_music deferred" / "backing mode" / "music_cleanup
+           deferred" three-way split stays 1:1 with the legacy code.
+        3. Fire :meth:`_publish_music_cleanup` when
+           ``actions.fire_cleanup_now`` AND ``was_dj_auto`` is False AND
+           ``self._active_batches`` is empty (issue #992 prelude-deferral
+           catch-up).
+        4. ``close_session`` is consumed by the caller's DIALOGUE_END gate
+           — this method does NOT touch ``self._dsm`` directly. The caller
+           already has all four retry/queue flags in scope; see lines
+           around ``self._dsm.on_event(DialogueEvent.DIALOGUE_END)``
+           further down in ``_run_turn.finally``.
+
+        Args:
+            actions: The :class:`PostTurnActions` returned by
+                :func:`rob_box_voice.core.post_turn_music_policy.decide`.
+                Frozen dataclass — safe to consume multiple times if we
+                ever need to read its fields more than once.
+            state_snapshot: The :class:`PostTurnMusicState` instance the
+                caller passed to :func:`decide` (so the executor can read
+                ``last_tools_called`` without re-querying the dialogue
+                node). Frozen-by-convention at this point.
+            was_dj_auto: Mirrors :attr:`DialogueNode._run_turn.was_dj_auto`
+                so the executor can suppress the catch-up fire (DJ-mode
+                ticks live by their own rules).
+            raw_user_command: ``raw_user_command`` from :meth:`_run_turn`,
+                only used for diagnostics. The ``decide`` call already
+                embedded this into :attr:`TurnOutcome.user_input_for_intent`.
+            user_input: Effective user input (post-strip-wake-word,
+                post-speaker-tag). Mirrors :attr:`_run_turn.user_input`.
+
+        Notes:
+            * Pure side-effect executor — no return value.
+            * Logs use the same prefixes as the legacy code
+              (``🎵 [issue 992] …``, ``🎵 [track-mode] …``,
+              ``🎵 music_cleanup …``) so existing log-grep tooling and
+              e2e check-patterns keep working without modification.
+            * The single ``if actions.skip_log: return`` short-circuit
+              keeps the «already pending» branch a one-liner — mirroring
+              the legacy "skip redundant log line" pattern from issue
+              #992 duplicate-stop deferral.
+        """
+        if actions.skip_log:
+            return
+        # 1. Track-mode write-back (transition-only logging).
+        if actions.track_mode_active != self._track_mode_music_active:
+            self._track_mode_music_active = actions.track_mode_active
+            if actions.track_mode_active:
+                # TRACK arm: LLM called execute_music_code/load_track/...
+                # without singing intent — track survives the turn.
+                self.get_logger().info(
+                    "🎵 [track-mode] TRACK играет с прошлого хода — "
+                    "cleanup НЕ вооружаем (живёт до stop_music/watchdog)"
+                )
+            else:
+                # TRACK disarm: live 31.08 — stop_music must drop the flag
+                # so the next Bug-C retry does not see «музыка играет»
+                # against an empty play queue.
+                self.get_logger().debug(
+                    "🎵 [issue 992] stop_music deferred — "
+                    "_track_mode_music_active=False"
+                )
+        # 2. Pending-cleanup write-back.
+        if actions.pending_cleanup != self._pending_music_cleanup:
+            self._pending_music_cleanup = actions.pending_cleanup
+            if actions.pending_cleanup:
+                self._log_music_cleanup_armed(state_snapshot, user_input)
+            else:
+                self.get_logger().info(
+                    "🎵 [issue 992] LLM restarted music via "
+                    "execute_music_code — cancelled pending cleanup"
+                )
+        # 3. Catch-up cleanup fire (issue #992 prelude-deferral catch-up).
+        if actions.fire_cleanup_now and not self._active_batches:
+            self._pending_music_cleanup = False
+            self._publish_music_cleanup(reason="tts_batch_complete")
+            self.get_logger().info(
+                "🎵 turn finished, no active batches — fired music_cleanup "
+                "(issue 992 prelude-deferral catch-up)"
+            )
+
+    def _log_music_cleanup_armed(
+        self,
+        state_snapshot: PostTurnMusicState,
+        user_input: str,
+    ) -> None:
+        """Render the legacy ``🎵 … deferred`` log line for an arm event.
+
+        Mirrors the three-way split at ``dialogue_node.py:3823-3933``
+        (pre-PR-C):
+
+        * ``stop_music`` in ``state_snapshot.last_tools_called`` →
+          "stop_music deferred — will cleanup after TTS finishes"
+        * Otherwise, ``_has_singing_intent(user_input)`` →
+          "[issue 992] backing mode (2+ speak_text) — music_cleanup
+          scheduled at tts_batch_complete"
+        * Otherwise →
+          "music_cleanup deferred — waiting for TTS or 10s fallback"
+
+        Args:
+            state_snapshot: Frozen snapshot of the music state at
+                :func:`decide`-call time. Executor uses
+                :attr:`PostTurnMusicState.last_tools_called` only.
+            user_input: Effective user input (post-strip-wake-word).
+
+        Notes:
+            Splitting the log helper out keeps :meth:`_execute_post_turn_music_actions`
+            short (CC≤12) while preserving the exact operator-facing
+            diagnostic lines from the legacy ``finally`` block.
+        """
+        if "stop_music" in state_snapshot.last_tools_called:
+            self.get_logger().info(
+                "🎵 stop_music deferred — "
+                "will cleanup after TTS finishes"
+            )
+        elif _has_singing_intent_impl(user_input):
+            self.get_logger().info(
+                "🎵 [issue 992] backing mode (2+ speak_text) — "
+                "music_cleanup scheduled at tts_batch_complete"
+            )
+        else:
+            self.get_logger().info(
+                "🎵 music_cleanup deferred — "
+                "waiting for TTS or 10s fallback"
+            )
 
     # ── Issue #992 Bug B / Bug C — DJ-mode music guard ────────────────
 

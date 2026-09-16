@@ -24,11 +24,13 @@
     },
     "src/rob_box_voice/rob_box_voice/dialogue_node.py": {
       "DialogueNode._build_dynamic_system_context": 24,
+      "DialogueNode._build_single_provider": 23,
       "DialogueNode._continue_after_tool_calls": 22,
       "DialogueNode._do_recursive_streaming": 22,
       "DialogueNode._execute_tool_calls": 18,
       "DialogueNode._handle_result": 85,
-      "DialogueNode._run_turn": 59
+"DialogueNode._on_stt": 54,
+      "DialogueNode._run_turn": 33
     },
     "src/rob_box_voice/rob_box_voice/scheduler/pregen/pre_gen.py": {
       "build_pregen_task": 22
@@ -54,9 +56,10 @@
       "TTSNode._synthesize_and_play": 19,
       "TTSNode._synthesize_silero": 23,
       "TTSNode._synthesize_yandex": 18,
-      "TTSNode.dialogue_callback": 22
+      "TTSNode.dialogue_callback": 29
     },
     "src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py": {
+      "AvatarSupervisor._build_operator_llm": 16,
       "AvatarSupervisor._on_avatar_command": 17,
       "AvatarSupervisor._run_agent_sync": 19
     },
@@ -77,7 +80,7 @@
       "AsyncToolExecutor.execute_tools_parallel": 22
     },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/core/arranger.py": {
-      "spec_from_flat": 16
+      "spec_from_flat": 19
     },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/core/minimax_music_client.py": {
       "MinimaxMusicClient.generate": 25
@@ -97,9 +100,9 @@
       "GenSaveToLibraryTool.execute": 18
     },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/music.py": {
-      "MusicManager.execute_code": 22,
+      "MusicManager.execute_code": 23,
       "MusicManager.stop_all": 16,
-      "SetDjModeTool.execute": 3
+      "SetDjModeTool.execute": 18
     },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/sound.py": {
       "GetSoundInfoTool.execute": 19
@@ -114,7 +117,7 @@
       "ShowMetricsTool.execute": 18
     }
   },
-  "_refactor_cards": {
+"_refactor_cards": {
     "src/rob_box_voice/rob_box_voice/dialogue_node.py:DialogueNode._handle_result": "#2556 (handle_result decomp)",
     "src/rob_box_voice/rob_box_voice/dialogue_node.py:DialogueNode._run_turn": "#2627 (run_turn music-state-machine decomp)",
     "src/rob_box_harness/rob_box_harness/core/agent_core.py:AgentCore._run_with_tools": "#2629 (run_with_tools tool-loop batch extraction)"
@@ -158,6 +161,12 @@
     },
     {
       "path": "src/rob_box_voice/rob_box_voice/dialogue_node.py",
+      "method": "DialogueNode._build_single_provider",
+      "cc": 23,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_voice/rob_box_voice/dialogue_node.py",
       "method": "DialogueNode._continue_after_tool_calls",
       "cc": 22,
       "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
@@ -173,6 +182,24 @@
       "method": "DialogueNode._execute_tool_calls",
       "cc": 18,
       "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_voice/rob_box_voice/dialogue_node.py",
+      "method": "DialogueNode._handle_result",
+      "cc": 85,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog; bumped 65 -> 68 for issue #2548 prose-action-claim fallback (CC-budget guard); bumped 68 -> 72 for issue #2547 strip_meta_markers pipeline + audible fallback after tools (CC-budget guard); +4 CC from one new strip_X() call site + one new conditional fallback block (4-way guard with is_dj_auto / result.error / tools_called / spoken emptiness); bumped 72 -> 75 for issue #2562 Bug F detector hook (CC-budget guard) — added 3-way if-block in _handle_result for unknown-melody-claim detection + one _dispatch_turn call + one logger.warning, all routed through helper _check_unknown_melody_claim_and_retry; bumped 75 -> 78 for issue #2560 hallucinated-MIDI guard (CC-budget guard, PR #2574) — added +3 CC from one new 'if spoken and _check_hallucinated_midi_and_retry' branch that calls _dispatch_turn on pe<num>le<num>f-pattern detection (composes with Bug F guard above without overlap); bumped 78 -> 79 for issue #2549 universal anti-hallucination guard (CC-budget guard, PR #2555) — added +1 CC from one new action-verb detector dispatch in _handle_result that calls _check_universal_action_claim_and_retry when spoken contains a generative verb but tools_called is empty; bumped 79 -> 82 for issue #2557 DJ-music-tools fallback (CC-budget guard, PR upcoming) — added +3 CC from one new 'if tools_called and not result.error: ensure_dj_music_response(...)' block in _handle_result that publishes a DJ-style 'Готово, играю.' fallback when LLM calls music tools without speak_text; narrowed compared to #2547's 'Сделаю.' because ensure_dj_music_response only fires for music-tool turns (DJ set is the live bug surface, 22/h on 2026-09-15 round 3); bumped 82 -> 85 for issue #2559 phantom-action universal guard (CC-budget guard, PR #2555-like) — added +3 CC from one new 'if spoken and self._check_phantom_action_and_retry(...)' branch in _handle_result that catches general (non-music) action-verb claims ('сейчас перезапущу / сделал / подложу') under tools_called=[]; helper itself is _check_phantom_action_and_retry (CC=8), composed like Bug E / F / #2549 universal / #2560 hallucinated-MIDI without overlap (is_dj_auto gate lives inside helper)."
+    },
+    {
+      "path": "src/rob_box_voice/rob_box_voice/dialogue_node.py",
+      "method": "DialogueNode._on_stt",
+      "cc": 54,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_voice/rob_box_voice/dialogue_node.py",
+      "method": "DialogueNode._run_turn",
+      "cc": 33,
+      "since": "Bumped 58->59 by #2565 (issue 2565, fix(voice): stop_command_guard deferral on phantom-action). The new `spoken=` keyword in `_apply_music_guard(...)` call inside `_run_turn` adds +1 CC (an extra branch evaluation). refactor card covered under existing _run_turn decomp backlog (ADR-0021 R1). Previous bumps: #2440 (57->58), #2448 in PR sweep #2452. Issue #2627 PR-A + PR-B + PR-C reduced 59->31 (-28) by extracting _resolve_turn_speaker / _invoke_agent_with_tracing / _record_llm_metrics / _execute_post_turn_music_actions / _log_music_cleanup_armed; PostTurnMusicPolicy moved to core/post_turn_music_policy.py (decision function + 22 unit tests, no ROS). PR-D added TurnKind enum + _classify_turn_kind in core/turn_kind.py (closes the multi-retry-flags bug-class, +11 unit tests, CC-neutral this PR — future PRs will route on TurnKind). CC target ≤15 not yet reached (-15 remaining); current legacy grandparent reflects in-progress refactor (issue #2627)."
     },
     {
       "path": "src/rob_box_voice/rob_box_voice/scheduler/pregen/pre_gen.py",
@@ -255,8 +282,14 @@
     {
       "path": "src/rob_box_voice/rob_box_voice/tts_node.py",
       "method": "TTSNode.dialogue_callback",
-      "cc": 22,
-      "since": "Bumped 29->22 after refactor in #2626 (CC-budget guard) — decomposed _synthesize_and_play call into a helper. ADR-0021-r1 R-1a/b: legacy-cc cannot be shrunk in place; this entry remains in _legacy_acknowledged so the upstream refactor card can pick it up. Track: PR landed 2026-09-15, baseline refreshed as part of issue #2626 acceptance."
+      "cc": 29,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py",
+      "method": "AvatarSupervisor._build_operator_llm",
+      "cc": 16,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
     },
     {
       "path": "src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py",
@@ -274,6 +307,12 @@
       "path": "src/rob_box_harness/rob_box_harness/config.py",
       "method": "_parse_tts",
       "cc": 17,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
+    },
+    {
+      "path": "src/rob_box_harness/rob_box_harness/core/agent_core.py",
+      "method": "AgentCore._run_with_tools",
+      "cc": 48,
       "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
     },
     {
@@ -303,8 +342,8 @@
     {
       "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/core/arranger.py",
       "method": "spec_from_flat",
-      "cc": 16,
-      "since": "Bumped 19->16 after refactor in #2626 (CC-budget guard) — extracted flat-spec normalization helper. ADR-0021-r1 R-1a/b: legacy-cc cannot be shrunk in place; this entry remains in _legacy_acknowledged so the upstream refactor card can pick it up. Track: PR landed 2026-09-15, baseline refreshed as part of issue #2626 acceptance."
+      "cc": 19,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
     },
     {
       "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/core/minimax_music_client.py",
@@ -351,8 +390,8 @@
     {
       "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/music.py",
       "method": "MusicManager.execute_code",
-      "cc": 22,
-      "since": "Bumped 23->22 after refactor in #2626 (CC-budget guard) — extracted volume-decision helper. ADR-0021-r1 R-1a/b: legacy-cc cannot be shrunk in place; this entry remains in _legacy_acknowledged so the upstream refactor card can pick it up. Track: PR landed 2026-09-15, baseline refreshed as part of issue #2626 acceptance."
+      "cc": 23,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
     },
     {
       "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/music.py",
@@ -363,8 +402,8 @@
     {
       "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/music.py",
       "method": "SetDjModeTool.execute",
-      "cc": 3,
-      "since": "Bumped 18->3 after refactor in #2626 (CC-budget guard) — extracted DJ-mode apply path. ADR-0021-r1 R-1a/b: legacy-cc cannot be shrunk in place; this entry remains in _legacy_acknowledged so the upstream refactor card can pick it up. Track: PR landed 2026-09-15, baseline refreshed as part of issue #2626 acceptance."
+      "cc": 18,
+      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
     },
     {
       "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/sound.py",
