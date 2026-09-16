@@ -22,13 +22,14 @@ Touchpoints:
 
 from __future__ import annotations
 
-import os
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+
+from rob_box_perception.preflight import make_preflight_check
 
 
 _DEFAULTS: Dict[str, Any] = {
@@ -42,41 +43,6 @@ _DEFAULTS: Dict[str, Any] = {
     'output_topic': '/vision/hailo/events',
     'publish_when_no_input': 'true',
 }
-
-
-def _preflight_check(context, *args, **kwargs) -> List[Any]:
-    """Pre-flight check для capability-honest mode (ADR-0018).
-
-    Логирует доступность /dev/hailo0, hef_path и python-deps при
-    hailo_enabled=true. Не блокирует запуск.
-    """
-    hailo_enabled = LaunchConfiguration('hailo_enabled').perform(context)
-    hef_path = LaunchConfiguration('hef_path').perform(context)
-
-    messages: List[str] = []
-    if hailo_enabled.lower() == 'true':
-        if not os.path.exists('/dev/hailo0'):
-            messages.append(
-                'vision_face.preflight: /dev/hailo0 отсутствует — '
-                'нода деградирует в stub-режим (ADR-0018 capability-honest).'
-            )
-        if hef_path and not os.path.isfile(hef_path):
-            messages.append(
-                f'vision_face.preflight: hef_path={hef_path!r} '
-                'не является файлом — нода деградирует в stub-режим.'
-            )
-        for dep in ('numpy', 'cv2', 'hailo_platform'):
-            try:
-                __import__(dep)
-            except ImportError:
-                messages.append(
-                    f'vision_face.preflight: {dep} не установлен — '
-                    'нода деградирует в stub-режим.'
-                )
-
-    for msg in messages:
-        print(f'[WARN] {msg}')
-    return []
 
 
 def generate_launch_description() -> LaunchDescription:
@@ -130,7 +96,7 @@ def generate_launch_description() -> LaunchDescription:
             description='В stub-режиме публиковать события без кадров.',
         ),
 
-        OpaqueFunction(function=_preflight_check),
+        OpaqueFunction(function=make_preflight_check('vision_face')),
 
         Node(
             package='rob_box_perception',

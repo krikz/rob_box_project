@@ -1,0 +1,1 @@
+{"ts": "2026-09-16T00:41:41Z", "review_date": "2026-09-15", "iso_week": "2026-W38", "task_id": "t_fe32261c", "component": "nightly", "files_changed": ["scripts/agent_flow/nightly-review-record.sh", "docs/adr/0049-nightly-review-cycle.md", "docs/adr/0079-nightly-review-persistence.md"], "findings": [], "outcome": "no-real-defect"}

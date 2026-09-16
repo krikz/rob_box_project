@@ -58,13 +58,14 @@ Touchpoints:
 
 from __future__ import annotations
 
-import os
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+
+from rob_box_perception.preflight import make_preflight_check
 
 
 # SSoT defaults. Совпадают с дефолтами в vision_hailo_node.py и с дефолтами
@@ -88,53 +89,6 @@ _DEFAULTS: Dict[str, Any] = {
     'publish_when_no_input': 'true',
     'first_frame_timeout_sec': '10.0',
 }
-
-
-def _preflight_check(context, *args, **kwargs) -> List[Any]:
-    """Pre-flight check для capability-honest mode (ADR-0018).
-
-    Если ``hailo_enabled=true``, логируем доступность:
-    - /dev/hailo0 (PCIe device file)
-    - hef_path (если указан — readable ли файл)
-    - numpy/cv2/hailo_platform (Python deps для real mode)
-
-    Не блокирует запуск — это только информационный WARN (узел сам
-    деградирует в stub-mode если что-то отсутствует, см.
-    vision_hailo_node.py:_is_real_mode).
-    """
-    hailo_enabled = LaunchConfiguration('hailo_enabled').perform(context)
-    hef_path = LaunchConfiguration('hef_path').perform(context)
-
-    messages: List[str] = []
-
-    if hailo_enabled.lower() == 'true':
-        if not os.path.exists('/dev/hailo0'):
-            messages.append(
-                'vision_hailo.preflight: /dev/hailo0 отсутствует — '
-                'нода деградирует в stub-режим (ADR-0018 capability-honest).'
-            )
-        if hef_path and not os.path.isfile(hef_path):
-            messages.append(
-                f'vision_hailo.preflight: hef_path={hef_path!r} '
-                'не является файлом — нода деградирует в stub-режим.'
-            )
-        # Python deps. Не фатально если их нет — узел логирует подробнее.
-        for dep in ('numpy', 'cv2', 'hailo_platform'):
-            try:
-                __import__(dep)
-            except ImportError:
-                messages.append(
-                    f'vision_hailo.preflight: {dep} не установлен — '
-                    'нода деградирует в stub-режим.'
-                )
-
-    if messages:
-        # Launch system сам выведет эти сообщения в stdout. Оператор видит
-        # причину degraded-режима ДО старта ноды, что упрощает триаж.
-        for msg in messages:
-            print(f'[WARN] {msg}')
-
-    return []
 
 
 def generate_launch_description() -> LaunchDescription:
@@ -196,7 +150,7 @@ def generate_launch_description() -> LaunchDescription:
         ),
 
         # ============ Pre-flight check (ADR-0018) ============
-        OpaqueFunction(function=_preflight_check),
+        OpaqueFunction(function=make_preflight_check('vision_hailo')),
 
         # ============ Node ============
         Node(
