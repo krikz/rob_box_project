@@ -65,7 +65,14 @@ import grpc
 import numpy as np
 import rclpy
 import sounddevice as sd
-import torch
+# Issue #2609 — torch is NOT imported at module load. The voice-assistant
+# container runs 9 nodes; tts_node only uses torch for Silero TTS (offline
+# fallback). At startup the primary provider is `minimax` or `yandex` —
+# torch is dead weight. Defer the import to ``_load_silero_model`` so that
+# minimax/yandex nodes don't pay the ~700 MB RSS cost (CPU-only wheel; the
+# old `+cu130` build was ~1.6 GiB across both tts_node and speaker_id_node).
+# The CPU-only wheel itself is pinned in ``docker/vision/voice_*/requirements.txt``
+# — `--index-url https://download.pytorch.org/whl/cpu`. See issue #2609.
 from audio_common_msgs.msg import AudioData
 from rclpy.node import Node
 from rclpy.qos import (
@@ -1322,7 +1329,15 @@ class TTSNode(Node):
         # Silero TTS модель (lazy loading - загружается только при первом использовании)
         self.silero_model = None
         self.silero_loading = False
-        self.device = torch.device("cpu")
+        # Issue #2609 — defer ``torch.device`` creation until the Silero
+        # fallback actually runs. At node startup we don't know yet whether
+        # torch will be needed (provider=yandex/minimax ⇒ no), and the
+        # device object is only used inside ``_load_silero_model`` /
+        # ``self.silero_model.to(self.device)``. Keep a placeholder so that
+        # ``self.device is not None`` ⇒ torch has been imported at least
+        # once, and ``_load_silero_model`` can lazily create the real
+        # ``torch.device("cpu")`` on first use.
+        self.device = None  # type: ignore[assignment]
 
         # Warm-load coordination (gap G-933-B): when Yandex is the primary
         # provider, Silero is just a fallback. Cold-loading the ~10 MB
@@ -1829,6 +1844,15 @@ class TTSNode(Node):
         из синхронного пути (``provider=silero`` в ``__init__``), это
         делает ``__init__``; когда из background warm-load — обёртка
         ``_silero_warm_loader``.
+
+        Issue #2609 — torch is imported HERE, not at module scope. The
+        node's primary provider is `minimax` (or `yandex`); torch is only
+        pulled in when a real Silero fallback actually runs. The CPU-only
+        wheel (pinned in docker/vision/voice_*/requirements.txt via
+        `--index-url https://download.pytorch.org/whl/cpu`) keeps RSS in
+        check: ~70 MB for torch itself vs the old ~700 MB (CUDA build on
+        ARM64 Pi). Without this guard, tts_node would pay ~700 MB RSS at
+        every boot even though Silero is the offline-only fallback.
         """
         if self.silero_model is not None:
             return  # Уже загружена
@@ -1839,6 +1863,32 @@ class TTSNode(Node):
 
         self.silero_loading = True
         self.get_logger().info("🔄 Загрузка Silero TTS v5...")
+
+        # Issue #2609 — lazy torch import. CPU-only wheel is pinned via
+        # `--index-url https://download.pytorch.org/whl/cpu` in
+        # docker/vision/voice_{base,assistant}/requirements.txt — at this
+        # point in the node's lifetime the operator has either chosen
+        # provider=silero (in which case we ARE in the fallback path and
+        # torch is required) or hit a Yandex/MiniMax→Silero fallback.
+        try:
+            import torch  # noqa: PLC0415 — lazy import by design
+        except ImportError as exc:
+            # The CPU-only wheel should always be available in the
+            # voice-assistant image; if it isn't, surface the error loudly
+            # rather than silently turning the fallback into silence.
+            self.silero_loading = False
+            self.get_logger().error(
+                f"❌ Issue #2609: torch import failed (Silero fallback "
+                f"unavailable): {exc}. Verify that the voice_assistant image "
+                f"installed the CPU-only wheel from "
+                f"https://download.pytorch.org/whl/cpu."
+            )
+            raise
+        # CPU device — Silero is CPU-only on ARM64 Pi; lazy because
+        # ``self.device`` was a ``None`` placeholder in ``__init__`` to
+        # avoid creating a torch.device object before the import.
+        if self.device is None:
+            self.device = torch.device("cpu")
 
         # ⚡ КРИТИЧНЫЕ НАСТРОЙКИ ДЛЯ ARM64! ⚡
         torch.set_num_threads(4)

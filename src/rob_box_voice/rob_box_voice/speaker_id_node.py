@@ -86,6 +86,19 @@ class SpeakerIdNode(Node):
         # оставались висеть под старым id). Тот же файл, что у dialogue_node
         # (sqlite_db_path) — WAL допускает второе подключение на запись.
         self.declare_parameter("memory_db_path", "/data/harness_voice.db")
+        # Issue #2609 — defer resemblyzer warm-load to first real inference
+        # unless explicitly opted in. Default False: at boot the robot
+        # almost never needs speaker ID on the first few utterances
+        # (silence / VAD-only noise → embed_audio returns None anyway),
+        # and the warm-load costs ~600 MB RSS (torch + GE2E model). With
+        # the CPU-only torch wheel (pinned in
+        # docker/vision/voice_*/requirements.txt), the cold-load on first
+        # ``embed_audio`` is ~2-3 s — acceptable for a biometric
+        # emergency path (зарегистрироваться / опознать нового
+        # собеседника), but unacceptable for an always-on warm-load that
+        # pays the cost on EVERY container restart even when nobody
+        # speaks. Set True to restore legacy behaviour (warm at startup).
+        self.declare_parameter("resemblyzer_warmup_on_start", False)
 
         self._enabled: bool = self.get_parameter("enabled").value
         self._sample_rate: int = self.get_parameter("sample_rate").value
@@ -132,8 +145,26 @@ class SpeakerIdNode(Node):
 
         # ── Thread pool for inference (non-blocking ROS callbacks) ────────────
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="speaker_id")
-        # Warm up resemblyzer model immediately so first real inference is fast
-        self._executor.submit(self._warmup)
+        # Issue #2609 — gate the eager warm-load on a parameter (default
+        # False). The warmup call below triggers resemblyzer's
+        # ``VoiceEncoder(device="cpu")`` which loads torch + the GE2E
+        # model (~600 MB RSS with the old `+cu130` wheel; ~70 MB now after
+        # the CPU-only pin in docker/vision/voice_*/requirements.txt).
+        # On a robot container that runs 9 nodes sharing 4 GB mem_limit,
+        # paying that cost on EVERY boot even when nobody speaks is
+        # wasteful — the lazy path (first real embed_audio) is fine for
+        # biometric, which is a cold path (user explicitly asks
+        # "запомни мой голос" or LLM calls register_speaker). Operators
+        # that want the legacy "warm at startup" behaviour set
+        # ``resemblyzer_warmup_on_start: true`` in speaker_id_node.yaml.
+        if bool(self.get_parameter("resemblyzer_warmup_on_start").value):
+            # Warm up resemblyzer model immediately so first real inference is fast
+            self._executor.submit(self._warmup)
+        else:
+            self.get_logger().info(
+                "🪶 resemblyzer warmup deferred to first embed_audio "
+                "(issue #2609: saves ~70 MB RSS on every container restart)"
+            )
 
         # ── QoS ───────────────────────────────────────────────────────────────
         best_effort_qos = QoSProfile(
