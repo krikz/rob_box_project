@@ -27,8 +27,7 @@
       "DialogueNode._continue_after_tool_calls": 22,
       "DialogueNode._do_recursive_streaming": 22,
       "DialogueNode._execute_tool_calls": 18,
-      "DialogueNode._handle_result": 85,
-      "DialogueNode._run_turn": 59
+      "DialogueNode._handle_result": 85
     },
     "src/rob_box_voice/rob_box_voice/scheduler/pregen/pre_gen.py": {
       "build_pregen_task": 22
@@ -116,7 +115,6 @@
   },
   "_refactor_cards": {
     "src/rob_box_voice/rob_box_voice/dialogue_node.py:DialogueNode._handle_result": "#2556 (handle_result decomp)",
-    "src/rob_box_voice/rob_box_voice/dialogue_node.py:DialogueNode._run_turn": "#2627 (run_turn music-state-machine decomp)",
     "src/rob_box_harness/rob_box_harness/core/agent_core.py:AgentCore._run_with_tools": "#2629 (run_with_tools tool-loop batch extraction)"
   },
   "_legacy_acknowledged": [
