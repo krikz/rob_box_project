@@ -335,10 +335,10 @@ services:
       # DB migrations (applied idempotently at startup by WaypointStore, TrackLibrary, etc.)
       - ../../migrations:/migrations:ro
     mem_limit: 5g  # Voice Assistant + Animations
-    memswap_limit: 6g  # RAM 5 GB + swap до 1 GB (issue #2676, ADR-0118)
+    memswap_limit: 6g  # RAM 5 GB + swap до 1 GB (issue #2676, ADR-0122)
     # 5 GiB (↑ с 4 GiB после #2676) потому что при cold-start всех 9 нод
     # одновременно + Silero v5 warm-load + Yandex gRPC + PyTorch + Vosk
-    # RSS прыгает в 3.4-3.9 GB с пиками до 99.6% от 4 GB (см. ADR-0118,
+    # RSS прыгает в 3.4-3.9 GB с пиками до 99.6% от 4 GB (см. ADR-0122,
     # issue #2676: docker stats показывал MEM USAGE 3.417 GiB / 4 GiB =
     # 85.42%, ПРЫГАЛО до 99.64% → каскадные SIGKILL exit code -9 у
     # tts_node / stt_node / speaker_id_node каждые ~30 с).
@@ -376,7 +376,7 @@ services:
     # Yandex is primary.  Net RSS effect vs old lazy-load: roughly the
     # same peak (model is ~150-200 MB either way) but the user no longer
     # hears the cold-load pause on first fallback.  The 5 GiB ceiling
-    # (raised from 4 GiB per ADR-0118 / issue #2676) comfortably holds
+    # (raised from 4 GiB per ADR-0122 / issue #2676) comfortably holds
     # Yandex gRPC client (negligible) + warm Silero (~200 MB) + the other
     # 8 nodes with ~1 GiB headroom for dialogue bursts; memswap_limit=6g
     # adds a 1 GB swap cushion against transient spikes.

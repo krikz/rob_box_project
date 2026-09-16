@@ -5,7 +5,7 @@ Issue #2676 — voice-assistant контейнер жонглировал RSS 3.
 лимите 4 GB, пики до 99.6% → каскадные SIGKILL exit code -9 у tts_node /
 stt_node / speaker_id_node каждые ~30с.
 
-Фикс (ADR-0118, kanban t_880acd3a):
+Фикс (ADR-0122, kanban t_880acd3a):
 * ``mem_limit: 5g`` (↑ с 4g) — даёт ~1 GB headroom для cold-start всех 9
   нод + Silero warm-load + всплески диалогового трафика
 * ``memswap_limit: 6g`` — разрешает 1 GB swap cushion на короткие пики
@@ -18,7 +18,7 @@ stt_node / speaker_id_node каждые ~30с.
 
 Refs:
     * issue #2676 — root cause
-    * ADR-0118 — этот фикс
+    * ADR-0122 — этот фикс
     * ADR-0111 — zram-swap (ещё не задеплоен, но ожидается)
     * #929 — предыдущий OOM-kill, бампнули 2g → 4g
 """
@@ -88,13 +88,13 @@ def test_voice_assistant_has_mem_limit(compose_doc: dict) -> None:
     svc = compose_doc["services"]["voice-assistant"]
     assert "mem_limit" in svc, "voice-assistant must have mem_limit (ADR-0111)"
     assert "memswap_limit" in svc, (
-        "voice-assistant must have memswap_limit (ADR-0118, "
+        "voice-assistant must have memswap_limit (ADR-0122, "
         "issue #2676 — без swap cushion SIGKILL каскадирует)"
     )
 
 
-def test_mem_limit_is_5g_per_adr0118(compose_doc: dict) -> None:
-    """mem_limit должен быть 5g (↑ с 4g после issue #2676, ADR-0118).
+def test_mem_limit_is_5g_per_adr0122(compose_doc: dict) -> None:
+    """mem_limit должен быть 5g (↑ с 4g после issue #2676, ADR-0122).
 
     Регрессия issue #2676: 4g → 3.9 GB RSS в пике → 99.6% → SIGKILL.
     """
@@ -102,7 +102,7 @@ def test_mem_limit_is_5g_per_adr0118(compose_doc: dict) -> None:
     mem_limit = _parse_bytes(svc["mem_limit"])
     expected = _parse_bytes("5g")
     assert mem_limit == expected, (
-        f"voice-assistant mem_limit should be 5g per ADR-0118; "
+        f"voice-assistant mem_limit should be 5g per ADR-0122; "
         f"got {svc['mem_limit']!r} = {mem_limit} bytes "
         f"(expected {expected} = 5 GiB)"
     )
@@ -119,11 +119,11 @@ def test_mem_limit_not_regressed_to_4g(compose_doc: dict) -> None:
     not_allowed_4g = _parse_bytes("4g")
     assert mem_limit != not_allowed_4g, (
         "voice-assistant mem_limit regressed to 4g — issue #2676 "
-        "requires 5g (ADR-0118)"
+        "requires 5g (ADR-0122)"
     )
 
 
-def test_memswap_limit_is_6g_per_adr0118(compose_doc: dict) -> None:
+def test_memswap_limit_is_6g_per_adr0122(compose_doc: dict) -> None:
     """memswap_limit должен быть 6g (5g RAM + 1g swap cushion).
 
     swap cushion защищает от OOM-killer при кратковременных пиках пока
@@ -133,7 +133,7 @@ def test_memswap_limit_is_6g_per_adr0118(compose_doc: dict) -> None:
     memswap_limit = _parse_bytes(svc["memswap_limit"])
     expected = _parse_bytes("6g")
     assert memswap_limit == expected, (
-        f"voice-assistant memswap_limit should be 6g per ADR-0118; "
+        f"voice-assistant memswap_limit should be 6g per ADR-0122; "
         f"got {svc['memswap_limit']!r} = {memswap_limit} bytes "
         f"(expected {expected} = 6 GiB)"
     )
@@ -142,7 +142,7 @@ def test_memswap_limit_is_6g_per_adr0118(compose_doc: dict) -> None:
 def test_memswap_exceeds_mem_limit_by_about_1g(compose_doc: dict) -> None:
     """memswap_limit ≥ mem_limit + 1 GB.
 
-    Логика (ADR-0118 §2.3):
+    Логика (ADR-0122 §2.3):
     - memswap_limit = mem_limit: нет cushion, OOM-killer при первом пике
     - memswap_limit = mem_limit + 1 GB: 1 GB swap cushion
     - memswap_limit >> mem_limit: container может сожрать весь swap
@@ -155,7 +155,7 @@ def test_memswap_exceeds_mem_limit_by_about_1g(compose_doc: dict) -> None:
     # Допуск ±10% на случай если кто-то поставит 5.5g memswap_limit
     assert delta >= int(one_gb * 0.9), (
         f"memswap_limit ({memswap}) - mem_limit ({mem}) = {delta} bytes; "
-        f"expected ≥ ~1 GB cushion (ADR-0118 §2.3)"
+        f"expected ≥ ~1 GB cushion (ADR-0122 §2.3)"
     )
     # И не должно быть слишком большим (≤ mem_limit + 2 GB)
     two_gb = _parse_bytes("2g")
@@ -166,8 +166,8 @@ def test_memswap_exceeds_mem_limit_by_about_1g(compose_doc: dict) -> None:
     )
 
 
-def test_voice_assistant_comment_mentions_adr0118(compose_doc: dict) -> None:
-    """Sanity: в docker-compose.yaml должен быть ADR-0118 / issue #2676
+def test_voice_assistant_comment_mentions_adr0122(compose_doc: dict) -> None:
+    """Sanity: в docker-compose.yaml должен быть ADR-0122 / issue #2676
     рядом с mem_limit — чтобы будущий разработчик понимал контекст."""
     raw = COMPOSE_FILE.read_text()
     # Найти блок voice-assistant (грубо — до следующего top-level ключа)
@@ -176,7 +176,7 @@ def test_voice_assistant_comment_mentions_adr0118(compose_doc: dict) -> None:
     )
     assert m, "could not extract voice-assistant block from compose"
     block = m.group(0)
-    assert "ADR-0118" in block or "issue #2676" in block, (
-        "voice-assistant block should reference ADR-0118 or issue #2676 "
+    assert "ADR-0122" in block or "issue #2676" in block, (
+        "voice-assistant block should reference ADR-0122 or issue #2676 "
         "next to mem_limit (regression guard for #929-style context loss)"
     )

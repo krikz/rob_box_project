@@ -1,4 +1,4 @@
-# ADR-0118 — voice-assistant: mem_limit 4g → 5g + memswap_limit=6g (страховка от каскадных OOM kill)
+# ADR-0122 — voice-assistant: mem_limit 4g → 5g + memswap_limit=6g (страховка от каскадных OOM kill)
 
 | Поле | Значение |
 |---|---|
@@ -85,7 +85,7 @@ $ free -h
 
 ```yaml
     mem_limit: 5g  # было 4g
-    memswap_limit: 6g  # RAM 5 GB + swap до 1 GB (issue #2676, ADR-0118)
+    memswap_limit: 6g  # RAM 5 GB + swap до 1 GB (issue #2676, ADR-0122)
 ```
 
 - `mem_limit: 5g` — даёт ~1 GB headroom для cold-start всех 9 нод + Silero
