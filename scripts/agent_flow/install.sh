@@ -231,6 +231,15 @@ EXPECTED=(
     # `gh pr create` и его terminal-guard --body flag). Идемпотентен:
     # если PR для head+base уже OPEN — возвращает его номер.
     gh-pr-create-via-gh-api.sh
+    # Provisioning-failure watchdog (card t_c2ab8db9, retro t_34f33289):
+    # upstream-loop guard — ловит карточки, попавшие в gate-by-giveup-pattern
+    # (cf >= 3 за 30 мин + provider-exhausted signature + нет open PR) или
+    # loop-no-progress (≥ 5 spawned + ≥ 1 gave_up за 1ч), БЛОКИРУЕТ их ДО
+    # того, как dispatcher начнёт kill'ить через enforce_max_runtime SIGKILL.
+    # Регистрация cron-job делается в ensure_runtime_overshoot_cron ниже
+    # (every 2m — горячий цикл, потому что underlying spawn-loop может
+    # съесть 1-2ч CPU/RAM менее чем за 30 мин на 5 параллельных карточках).
+    agent-flow-runtime-overshoot-loop.sh
     # Cross-task archive sweeper (ADR-AF-0060 / ретро 22.08 t_d9b4c600): watchdog,
     # архивирующий blocked-карточки devops после успешного PR/issue.
     # Зависит от python3 helper'ов _cross_task_archive_sweeper_{scan,archive}.py
@@ -1338,6 +1347,19 @@ ensure_night_marathon_cron() {
 ensure_night_marathon_cron
 
 echo
+echo "==> Ensure cron job registration: runtime-overshoot-loop watchdog (t_c2ab8db9 / retro t_34f33289)"
+# Карточка t_c2ab8db9: добавлен новый watchdog, который должен реагировать
+# БЫСТРЕЕ чем остальные (every 2m), потому что underlying give-up-loop
+# сжигает 1-2ч CPU/RAM менее чем за 30 мин на 5 параллельных карточках
+# (retro t_34f33289: 120+ signal-9 SIGKILL после provider-exhausted).
+# Регистрация interval-job в devops-профиле, no_agent, дубль-guard по
+# (script + interval + enabled). Применяется идемпотентно.
+ensure_runtime_overshoot_cron() {
+    ensure_cron_job devops "Agent Flow Runtime Overshoot Loop (t_c2ab8db9)" "agent-flow-runtime-overshoot-loop.sh" "every 2m" interval
+}
+ensure_runtime_overshoot_cron
+
+echo
 echo "==> Ensure cron job registration: decomposed-children wake-up watchdog (ADR-AF-0052, ретро t_bfd19ffb)"
 # Проблема (ADR-AF-0052 §1.1): декомпозиция эпика через kanban create оставляет
 # детей со started_at=NULL, status=todo/triage, и dispatcher их не поднимает
@@ -1421,6 +1443,11 @@ _WATCHDOG_LAUNCHER_FILES=(
     agent-flow-decomposed-watchdog.sh
     agent-flow-stale-blocked-watchdog.sh
     agent-flow-cancel-on-provider-exhausted.sh
+    # t_c2ab8db9 / ретро t_34f33289: hot-path (every 2m) watchdog для
+    # upstream-loop guard (gate-by-giveup + loop-no-progress detectors).
+    # md5-дrift по 6 копиям должен сразу ловиться (ставлен в этот список
+    # явно, чтобы _md5_verify_fail детектил отставание host-копий).
+    agent-flow-runtime-overshoot-loop.sh
 )
 
 _md5_verify_fail=0
