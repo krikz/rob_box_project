@@ -1,4 +1,4 @@
-# ADR-0112: `VoiceEncounterAdapter.on_registered` — закрыть расхождение `mcp_server` ↔ адаптер по `event="registered"`
+# ADR-0118: `VoiceEncounterAdapter.on_registered` — закрыть расхождение `mcp_server` ↔ адаптер по `event="registered"`
 
 | Поле | Значение |
 |---|---|
