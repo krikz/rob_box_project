@@ -218,8 +218,31 @@ def test_real_vision_event_reaches_context():
     ctx = project_perception_event(msg)
     assert ctx['vision_event_count'] == 1
     assert ctx['vision_events'] == [
-        {'label': 'person', 'confidence': pytest.approx(0.87), 'distance_m': pytest.approx(1.4)}
+        {
+            'label': 'person',
+            'confidence': pytest.approx(0.87),
+            'distance_m': pytest.approx(1.4),
+            'age_s': None,
+        }
     ]
+
+
+def test_vision_event_age_is_relative_to_context_stamp():
+    """Личность видит, насколько детекция старая.
+
+    Живой случай 16.09.2026: человек ушёл, а робот продолжал «видеть» его
+    лицо — в контексте не было ничего, что отличало бы старую детекцию от
+    свежей. Возраст считается от stamp самого PerceptionEvent, а не от
+    часов mcp_server — так он не зависит от рассинхрона хостов.
+    """
+    msg = _FakePerceptionEvent(
+        vision_events_json=(
+            '[{"event_type": "face", "confidence": 0.99, '
+            '"stamp": {"sec": 1699999958, "nanosec": 0}}]'
+        ),
+    )
+    ctx = project_perception_event(msg)
+    assert ctx['vision_events'][0]['age_s'] == pytest.approx(42.5)
 
 
 def test_stub_event_that_reaches_projection_is_not_filtered_here():

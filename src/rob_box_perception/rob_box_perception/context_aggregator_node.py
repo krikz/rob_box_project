@@ -303,10 +303,17 @@ class ContextAggregatorNode(Node):
                 for field in VISION_EVENT_FIELDS
             },
         }
-        now = time.time()
-        self._hailo_events.append({'time': now, 'event': event_dict})
-        # Чистка старых событий (тот же memory_window что и для других типов).
-        cutoff = now - self.memory_window
+        self._hailo_events.append({'time': time.time(), 'event': event_dict})
+        self._prune_hailo_events()
+
+    def _prune_hailo_events(self) -> None:
+        """Выбросить VisionEvent старше memory_window секунд.
+
+        Зовётся и при приходе события, и при публикации: когда объект уходит
+        из кадра, новых событий нет, и без чистки в publish_event() старые
+        детекции жили бы в контексте Личности вечно.
+        """
+        cutoff = time.time() - self.memory_window
         self._hailo_events = [
             e for e in self._hailo_events if e['time'] > cutoff
         ]
@@ -546,6 +553,7 @@ class ContextAggregatorNode(Node):
         # Личность расскажет про несуществующего человека рядом. Отсекаем
         # здесь, единственным способом — is_stub_event (маркер из #2583),
         # НЕ самодельным сравнением строк (см. docstring is_stub_event).
+        self._prune_hailo_events()
         hailo_payload = [
             item['event'] for item in self._hailo_events
             if not is_stub_event(item['event'])

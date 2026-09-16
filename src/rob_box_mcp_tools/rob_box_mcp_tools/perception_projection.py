@@ -153,7 +153,7 @@ EXCLUDED_FIELDS: Dict[str, str] = {
 # приватность-логики.
 
 
-def _project_vision_events(events_json: str) -> List[Dict[str, Any]]:
+def _project_vision_events(events_json: str, now: float) -> List[Dict[str, Any]]:
     """``vision_events_json`` → то, что реально нужно Личности в промпте.
 
     Сырой JSON-строкой в контекст — плохо (шум, читать боту нечем).
@@ -163,6 +163,10 @@ def _project_vision_events(events_json: str) -> List[Dict[str, Any]]:
     отфильтрованы на стороне продюсера (context_aggregator_node, ADR-0089
     §2.2) — это инвариант границы сообщения, а не этого модуля. Здесь —
     только разбор формата, устойчивый к пустой строке и мусору в JSON.
+
+    ``age_s`` — сколько секунд прошло от детекции до ``now`` (stamp самого
+    PerceptionEvent). Без него Личность не отличала старую детекцию от
+    свежей и «видела» ушедшего человека всё окно памяти агрегатора.
     """
     if not events_json:
         return []
@@ -195,8 +199,20 @@ def _project_vision_events(events_json: str) -> List[Dict[str, Any]]:
             'label': str(label),
             'confidence': float(item.get('confidence', 0.0)),
             'distance_m': distance_m,
+            'age_s': _event_age(item.get('stamp'), now),
         })
     return events
+
+
+def _event_age(stamp: Any, now: float) -> Any:
+    """Возраст детекции в секундах (с точностью 0.1) или None без stamp."""
+    if not isinstance(stamp, dict):
+        return None
+    try:
+        at = float(stamp['sec']) + float(stamp.get('nanosec', 0)) * 1e-9
+    except (KeyError, TypeError, ValueError):
+        return None
+    return round(max(now - at, 0.0), 1)
 
 
 def _stamp_to_unix(stamp: Any) -> float:
@@ -221,9 +237,10 @@ def project_perception_event(msg: Any) -> Dict[str, Any]:
     # timestamp выше по файлу — не доверять отдельному полю-счётчику,
     # который в принципе может разойтись с данными, а считать от источника
     # истины. Так vision_event_count и vision_events всегда согласованы.
-    vision_events = _project_vision_events(msg.vision_events_json)
+    timestamp = _stamp_to_unix(msg.stamp)
+    vision_events = _project_vision_events(msg.vision_events_json, timestamp)
     return {
-        'timestamp': _stamp_to_unix(msg.stamp),
+        'timestamp': timestamp,
         'vision_context': msg.vision_context,
         'is_moving': bool(msg.is_moving),
         'battery_voltage': battery_voltage,
