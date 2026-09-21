@@ -139,6 +139,7 @@ class VisionFaceNode(VisionHailoNode):
         self.declare_parameter('face_identify_threshold', 0.45)
         self.declare_parameter('min_track_sec', 2.0)
         self.declare_parameter('min_face_px', 48.0)
+        self.declare_parameter('max_embeds_per_frame', 2)
         self.declare_parameter('max_embeddings', 20)
         self.declare_parameter('keep_encounters', 10)
         self.declare_parameter('max_strangers', 500)
@@ -228,6 +229,9 @@ class VisionFaceNode(VisionHailoNode):
             embedder=embedder,
             store=store,
             tracker=tracker,
+            max_embeds_per_frame=int(
+                self.get_parameter('max_embeds_per_frame').value
+            ),
             store_snapshots=(mode != 'strict'),
             log_fn=self._recognizer_log,
         )

@@ -53,6 +53,13 @@ class MeetingMarker:
     encounter_count: int
     face_px: float
     privacy_mode: str
+    #: Реальный источник кадра из VisionEvent. Нужен не для красоты:
+    #: ``OccasionGate`` держит СВОЙ стаб-фильтр по ``source_camera``, и
+    #: если подставить сюда постоянное «oak_d», этот фильтр перестанет
+    #: работать — останется только наш собственный (см.
+    #: ``parse_meeting_marker``). Два независимых заслона от выдуманных
+    #: людей лучше одного.
+    source_camera: str = ''
 
     @property
     def is_named(self) -> bool:
@@ -101,6 +108,7 @@ def parse_meeting_marker(
         encounter_count=int(payload.get('encounter_count') or 0),
         face_px=float(payload.get('face_px') or 0.0),
         privacy_mode=str(payload.get('privacy_mode') or ''),
+        source_camera=source_camera,
     )
 
 

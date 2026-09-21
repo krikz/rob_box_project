@@ -56,6 +56,8 @@ FACE_RECOGNITION_PARAMS = {
     # Правило Встречи (ADR-0123 §3): мелькнувшее лицо встречей не станет.
     'min_track_sec': '2.0',
     'min_face_px': '48.0',
+    # Бюджет NPU: ArcFace ~230-260 мс на лицо, тик ноды 0.5 с.
+    'max_embeds_per_frame': '2',
     'max_embeddings': '20',
     'keep_encounters': '10',
     'max_strangers': '500',

@@ -52,7 +52,8 @@ for key in ('hailo_enabled', 'hef_path', 'stub_period_sec',
             # FACE_STORE_ROOT, FACE_PRIVACY_MODE, FACE_IDENTIFY_THRESHOLD).
             'arcface_enabled', 'arcface_hef_path', 'face_store_root',
             'face_privacy_mode', 'face_identify_threshold',
-            'min_track_sec', 'min_face_px', 'max_embeddings',
+            'min_track_sec', 'min_face_px', 'max_embeds_per_frame',
+            'max_embeddings',
             'keep_encounters', 'max_strangers'):
     if key not in node:
         continue
@@ -90,6 +91,7 @@ FACE_PRIVACY_MODE="${FACE_PRIVACY_MODE:-workshop}"
 FACE_IDENTIFY_THRESHOLD="${FACE_IDENTIFY_THRESHOLD:-0.45}"
 MIN_TRACK_SEC="${MIN_TRACK_SEC:-2.0}"
 MIN_FACE_PX="${MIN_FACE_PX:-48.0}"
+MAX_EMBEDS_PER_FRAME="${MAX_EMBEDS_PER_FRAME:-2}"
 MAX_EMBEDDINGS="${MAX_EMBEDDINGS:-20}"
 KEEP_ENCOUNTERS="${KEEP_ENCOUNTERS:-10}"
 MAX_STRANGERS="${MAX_STRANGERS:-500}"
@@ -100,7 +102,7 @@ echo "[start_vision_face] topics: output=${OUTPUT_TOPIC}"
 echo "[start_vision_face] confidence_threshold=${CONFIDENCE_THRESHOLD} nms_iou=${NMS_IOU_THRESHOLD}"
 echo "[start_vision_face] arcface: ARCFACE_ENABLED=${ARCFACE_ENABLED} ARCFACE_HEF_PATH=${ARCFACE_HEF_PATH:-<none>}"
 echo "[start_vision_face] face store: root=${FACE_STORE_ROOT} privacy_mode=${FACE_PRIVACY_MODE} identify_threshold=${FACE_IDENTIFY_THRESHOLD}"
-echo "[start_vision_face] face limits: min_track_sec=${MIN_TRACK_SEC} min_face_px=${MIN_FACE_PX} max_embeddings=${MAX_EMBEDDINGS} keep_encounters=${KEEP_ENCOUNTERS} max_strangers=${MAX_STRANGERS}"
+echo "[start_vision_face] face limits: min_track_sec=${MIN_TRACK_SEC} min_face_px=${MIN_FACE_PX} max_embeds_per_frame=${MAX_EMBEDS_PER_FRAME} max_embeddings=${MAX_EMBEDDINGS} keep_encounters=${KEEP_ENCOUNTERS} max_strangers=${MAX_STRANGERS}"
 
 if [ "${ARCFACE_ENABLED}" = "true" ] && [ -z "${ARCFACE_HEF_PATH}" ]; then
     echo "[start_vision_face] WARN: ARCFACE_ENABLED=true, но ARCFACE_HEF_PATH пуст — узнавание уйдёт в degraded (ADR-0018)" >&2
@@ -155,6 +157,7 @@ LAUNCH_ARGS=(
     face_identify_threshold:=${FACE_IDENTIFY_THRESHOLD}
     min_track_sec:=${MIN_TRACK_SEC}
     min_face_px:=${MIN_FACE_PX}
+    max_embeds_per_frame:=${MAX_EMBEDS_PER_FRAME}
     max_embeddings:=${MAX_EMBEDDINGS}
     keep_encounters:=${KEEP_ENCOUNTERS}
     max_strangers:=${MAX_STRANGERS}

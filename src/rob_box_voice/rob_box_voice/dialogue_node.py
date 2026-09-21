@@ -6736,8 +6736,12 @@ class DialogueNode(Node):
                 kind="meeting",
                 is_user_initiated=False,
                 payload={
+                    # Настоящие значения из VisionEvent, а не константы:
+                    # у OccasionGate свой стаб-фильтр по этим двум полям,
+                    # и подставлять в них «правильные» значения — значит
+                    # его отключить (ADR-0089 §2.2, #2583).
                     "event_type": "face",
-                    "source_camera": "oak_d",
+                    "source_camera": marker.source_camera,
                     "person_id": marker.person_id,
                     "name": marker.name,
                     "is_new": marker.is_new,

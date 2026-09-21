@@ -63,6 +63,24 @@ DEFAULT_MIN_EMBED_PX = 32.0
 #: имя к тому, кто зашёл следом.
 DEFAULT_VOICE_MERGE_WINDOW_SEC = 6.0
 
+#: Сколько лиц эмбеддить за один кадр.
+#:
+#: Бюджет, замеренный на Vision Pi 22.09.2026: один ArcFace-прогон стоит
+#: ~230–260 мс (в основном — переключение network group планировщиком
+#: HailoRT между RetinaFace и ArcFace), а тик ноды идёт раз в 0.5 с
+#: (``vision_hailo_node``: ``max(0.1, stub_period_sec / 4)``). То есть на
+#: кадр помещается ОДНО лицо с запасом и два — уже впритык; при трёх нода
+#: начнёт отставать от камеры и Встречи поедут.
+#:
+#: Поэтому эмбеддим только N самых крупных лиц в кадре. Крупных — потому
+#: что у них выше шанс дать годный эмбеддинг (ADR-0123 §3: на Встречу и
+#: так выбираются кадры покрупнее), а мелкое лицо на заднем плане всё
+#: равно отсеется порогом ``min_face_px``.
+#:
+#: Значение стартовое и подлежит замеру на живом потоке — см. счётчик
+#: ``embed_ms_avg`` в :meth:`FaceRecognizer.stats`.
+DEFAULT_MAX_EMBEDS_PER_FRAME = 2
+
 
 class FaceRecognizer:
     """Оркестратор узнавания: детекции → Встреча → имя.
@@ -92,6 +110,7 @@ class FaceRecognizer:
         crop_margin: float = DEFAULT_CROP_MARGIN,
         min_embed_px: float = DEFAULT_MIN_EMBED_PX,
         voice_merge_window_sec: float = DEFAULT_VOICE_MERGE_WINDOW_SEC,
+        max_embeds_per_frame: int = DEFAULT_MAX_EMBEDS_PER_FRAME,
         store_snapshots: bool = True,
         log_fn: Optional[Any] = None,
     ) -> None:
@@ -101,6 +120,7 @@ class FaceRecognizer:
         self._crop_margin = float(crop_margin)
         self._min_embed_px = float(min_embed_px)
         self._voice_merge_window_sec = float(voice_merge_window_sec)
+        self._max_embeds_per_frame = max(1, int(max_embeds_per_frame))
         self._store_snapshots = bool(store_snapshots)
         self._log_fn = log_fn
 
@@ -116,6 +136,9 @@ class FaceRecognizer:
         self._recognized_total = 0
         self._new_people_total = 0
         self._voice_merges_total = 0
+        self._embed_calls = 0
+        self._embed_ms_total = 0.0
+        self._embed_skipped_budget = 0
 
     # ------------------------------------------------------------------
     # Логирование
@@ -199,7 +222,7 @@ class FaceRecognizer:
         frame_h: int,
     ) -> Tuple[List[Any], List[float]]:
         """Кропы лиц с запасом + размер лица в пикселях."""
-        crops: List[Any] = []
+        bboxes: List[Any] = []
         face_px_list: List[float] = []
         for det in detections:
             bbox = (
@@ -208,11 +231,26 @@ class FaceRecognizer:
                 float(det.get('bbox_w', 0.0)),
                 float(det.get('bbox_h', 0.0)),
             )
+            bboxes.append(bbox)
             # Короткая сторона лица в пикселях — по ней решается и
             # «эмбеддить ли», и «годится ли на Встречу» (ADR-0123 §3).
-            face_px = min(bbox[2] * frame_w, bbox[3] * frame_h)
-            face_px_list.append(float(face_px))
-            if face_px < self._min_embed_px:
+            face_px_list.append(float(min(bbox[2] * frame_w, bbox[3] * frame_h)))
+
+        # Бюджет NPU: кропим (а значит и эмбеддим) только N самых крупных
+        # лиц — см. DEFAULT_MAX_EMBEDS_PER_FRAME. Остальные в этом кадре
+        # останутся без эмбеддинга; их треки живут дальше и получат его на
+        # следующем кадре, когда порядок по размеру может смениться.
+        eligible = [
+            i for i, px in enumerate(face_px_list) if px >= self._min_embed_px
+        ]
+        eligible.sort(key=lambda i: face_px_list[i], reverse=True)
+        chosen = set(eligible[: self._max_embeds_per_frame])
+        if len(eligible) > len(chosen):
+            self._embed_skipped_budget += len(eligible) - len(chosen)
+
+        crops: List[Any] = []
+        for idx, bbox in enumerate(bboxes):
+            if idx not in chosen:
                 crops.append(None)
                 continue
             crops.append(crop_face(image, bbox, margin=self._crop_margin))
@@ -223,6 +261,7 @@ class FaceRecognizer:
         wanted = [c for c in crops if c is not None]
         if not wanted:
             return [None] * len(crops)
+        started = time.monotonic()
         try:
             vectors = self._embedder.embed(wanted)
         except Exception as exc:  # noqa: BLE001
@@ -236,6 +275,13 @@ class FaceRecognizer:
                     f'(попытка {self._embed_failures}).',
                 )
             return [None] * len(crops)
+
+        # Замер стоимости ArcFace на живом потоке: бюджет тика — 0.5 с,
+        # и если среднее подберётся к нему, надо резать
+        # max_embeds_per_frame (или эмбеддить не каждый кадр).
+        elapsed_ms = (time.monotonic() - started) * 1000.0 / max(1, len(wanted))
+        self._embed_calls += len(wanted)
+        self._embed_ms_total += elapsed_ms * len(wanted)
 
         out: List[Any] = []
         it = iter(vectors)
@@ -513,6 +559,11 @@ class FaceRecognizer:
             'new_people_total': self._new_people_total,
             'voice_merges_total': self._voice_merges_total,
             'embed_failures': self._embed_failures,
+            'embed_calls': self._embed_calls,
+            'embed_ms_avg': round(
+                self._embed_ms_total / self._embed_calls, 1
+            ) if self._embed_calls else 0.0,
+            'embed_skipped_budget': self._embed_skipped_budget,
             'active_tracks': self._tracker.active_track_count(),
             'store': store_stats,
         }

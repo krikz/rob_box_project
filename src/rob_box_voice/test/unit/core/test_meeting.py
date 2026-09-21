@@ -107,6 +107,9 @@ class TestParseMeetingMarker:
             encounter_count=3,
             face_px=120.0,
             privacy_mode='workshop',
+            # Источник кадра переносится в маркер как есть: у OccasionGate
+            # свой стаб-фильтр по этому полю (ADR-0089 §2.2, #2583).
+            source_camera='main_camera',
         )
         assert marker.is_named is True
 
