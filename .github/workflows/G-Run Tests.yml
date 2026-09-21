@@ -135,17 +135,33 @@ jobs:
           python3 -m pip install --quiet --no-cache-dir requests pyyaml pytz 2>/dev/null || true
 
           # ── rob_box_voice ───────────────────────────────────────────────────
-          # pytest hangs for ~4 min AFTER all tests complete
-          # (639 passed, 8 skipped).  Root cause is an unresolved
-          # daemon-thread / event-loop leak in the test suite.
+          # pytest may hang for ~4 min AFTER all tests complete.  Root cause
+          # is an unresolved daemon-thread / event-loop leak in the suite.
+          # That hang happens *after* pytest has written junitxml and
+          # returned, i.e. during interpreter shutdown — no pytest-level
+          # timeout can catch it, only an external `timeout` backstop can.
           #
-          # Strategy: run pytest with `timeout 240`.  If it completes
-          # under the limit: green.  If `timeout` kills it (rc=124)
-          # BUT the junitxml report shows 0 failures: treat as green
-          # with a warning (the hang is post-test shutdown).
-          echo "=== pytest: rob_box_voice (timeout 60s) ==="
+          # Strategy: run pytest under `timeout $VOICE_TIMEOUT`.  If it
+          # completes under the limit: green.  If `timeout` kills it
+          # (rc=124) BUT the junitxml report shows 0 failures: treat as
+          # green with a warning (the hang is post-test shutdown).
+          #
+          # ВАЖНО про бюджет (не срезать его снова!).  Он был опущен до 60s
+          # в 942d850d2 под лозунгом «tests take 8s» — на той версии сьюта
+          # это было правдой.  С тех пор сьют вырос до ~3100 тестов и идёт
+          # ~48s (run 35654649855, attempt 2: «3068 passed, 23 skipped …
+          # in 47.68s»).  Запас был ~20%, и на первой же медленной машине
+          # его не хватило: в attempt 1 того же run pytest прибили на 99%
+          # пройденных тестов.  junitxml пишется в pytest_sessionfinish,
+          # то есть ДО него файла ещё нет — спасательная ветка rc=124 не
+          # срабатывала, и job краснел с «FAILED (rc=124)», хотя ни один
+          # тест не упал (диф PR #2730 не трогал src/rob_box_voice/ вообще).
+          # 240s дают ~5x запаса и совпадают с бюджетом соседних пакетов
+          # (rob_box_core / rob_box_supervisor ниже по файлу).
+          VOICE_TIMEOUT=240
+          echo "=== pytest: rob_box_voice (timeout ${VOICE_TIMEOUT}s) ==="
           PYTEST_RC=0
-          timeout 60 python3 -m pytest \
+          timeout "$VOICE_TIMEOUT" python3 -m pytest \
             -p no:launch_testing \
             -p no:ament_flake8 -p no:ament_pep257 \
             -p no:ament_copyright -p no:ament_xmllint \
@@ -158,10 +174,20 @@ jobs:
 
           XML="${{ github.workspace }}/test_ws/build/rob_box_voice/pytest.xml"
           if [ "$PYTEST_RC" = "124" ] && [ -f "$XML" ]; then
-            echo "pytest timed out (240s) - checking junitxml..."
+            echo "pytest timed out (${VOICE_TIMEOUT}s) - checking junitxml..."
             python3 -c "import xml.etree.ElementTree as ET; t=ET.parse('${XML}').getroot(); f=int(t.attrib.get('failures','0')); e=int(t.attrib.get('errors','0')); exit(0 if f==0 and e==0 else 1)" \
               && echo "✅ rob_box_voice passed (tests OK, shutdown hung)" \
               || { echo "❌ rob_box_voice FAILED"; exit 1; }
+          elif [ "$PYTEST_RC" = "124" ]; then
+            # Убиты ДО pytest_sessionfinish — junitxml не существует, судить
+            # по нему нечего.  Это НЕ «тесты упали»: это сам прогон не
+            # влез в бюджет.  Красим в красный (молча зеленить нельзя —
+            # реально вечный тест выглядел бы так же), но говорим прямо,
+            # что это таймаут без отчёта, а не падение теста.
+            echo "❌ rob_box_voice: pytest killed at ${VOICE_TIMEOUT}s before writing junitxml"
+            echo "   (no test failed — the run itself did not fit the budget)"
+            echo "   Суммарное время сьюта растёт; подними VOICE_TIMEOUT или разбей прогон."
+            exit 1
           elif [ "$PYTEST_RC" != "0" ]; then
             echo "❌ rob_box_voice FAILED (rc=$PYTEST_RC)"
             exit 1
