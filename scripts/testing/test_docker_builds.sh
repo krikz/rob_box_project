@@ -104,18 +104,7 @@ echo -e "${YELLOW}Testing Main Pi Services${NC}"
 echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 
-# 1. vesc_nexus
-if build_image "vesc_nexus" \
-    "docker/main/vesc_nexus/Dockerfile" \
-    "." \
-    "--build-arg ROS_DISTRO=${ROS_DISTRO} --build-arg IMAGE_TAG=latest"; then
-    RESULTS+=("✅ vesc_nexus")
-else
-    RESULTS+=("❌ vesc_nexus")
-fi
-echo ""
-
-# 2. nav2
+# 1. nav2
 if build_image "nav2" \
     "docker/main/nav2/Dockerfile" \
     "." \
@@ -126,7 +115,7 @@ else
 fi
 echo ""
 
-# 3. robot_state_publisher
+# 2. robot_state_publisher
 if build_image "robot_state_publisher" \
     "docker/main/robot_state_publisher/Dockerfile" \
     "." \
@@ -142,7 +131,7 @@ echo -e "${YELLOW}Testing Vision Pi Services${NC}"
 echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 
-# 4. led_matrix
+# 3. led_matrix
 if build_image "led_matrix" \
     "docker/vision/led_matrix/Dockerfile" \
     "." \

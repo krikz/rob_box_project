@@ -73,7 +73,6 @@ check_dockerfile() {
 # Проверяем проблемные Dockerfiles
 echo "=== Main Services ==="
 check_dockerfile "docker/main/nav2/Dockerfile"
-check_dockerfile "docker/main/vesc_nexus/Dockerfile"
 check_dockerfile "docker/main/robot_state_publisher/Dockerfile"
 
 echo "=== Vision Services ==="

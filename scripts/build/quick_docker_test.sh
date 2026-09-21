@@ -53,13 +53,10 @@ quick_build() {
 }
 
 # Тестируем только исправленные образы
-echo -e "${BLUE}1/3 Testing vesc_nexus (rosidl + rosdep fix)${NC}"
-quick_build "vesc_nexus" "docker/main/vesc_nexus/Dockerfile"
-
-echo -e "${BLUE}2/3 Testing nav2 (removed nav2-recoveries)${NC}"
+echo -e "${BLUE}1/2 Testing nav2 (removed nav2-recoveries)${NC}"
 quick_build "nav2" "docker/main/nav2/Dockerfile"
 
-echo -e "${BLUE}3/3 Testing led_matrix (pip upgrade fix)${NC}"
+echo -e "${BLUE}2/2 Testing led_matrix (pip upgrade fix)${NC}"
 quick_build "led_matrix" "docker/vision/led_matrix/Dockerfile"
 
 echo -e "${GREEN}╔═══════════════════════════════════════════╗${NC}"

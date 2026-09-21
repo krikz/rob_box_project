@@ -1039,6 +1039,50 @@ RUN с `rosdep`.
   отсутствует в `docker/build-manifest.yaml` — половину Этапа 3 CI не
   проверит в принципе. Судьбу этого образа надо решить отдельно.
 
+  **РЕШЕНО (21.09.2026): образ признан мёртвым и удалён** вместе со ссылками
+  в `scripts/` (`build/quick_docker_test.sh`, `testing/test_docker_builds.sh`,
+  `testing/test_docker_local_arm64.sh`,
+  `testing/test_submodule_cache_invalidation.sh`,
+  `testing/validate_dockerfiles.sh`) и в `docs/development/LOCAL_BUILD.md`.
+  Из двух вариантов — завести сервис в манифест или удалить — выбран второй.
+  Основания, проверенные на живом стенде, а не только по коду:
+
+  1. **Его никогда не собирал ни один workflow.** `git log -S
+     "main/vesc_nexus/Dockerfile" --all -- .github/` пуст по всей истории —
+     это не регрессия конвейера, образ не был подключён никогда.
+  2. **Его нет в `docker/main/docker-compose.yaml`.** В стеке Main Pi 11
+     сервисов, `vesc-nexus` среди них отсутствует.
+  3. **Его нет на роботе.** `docker ps` на `RPNAV` (`ros2@10.1.1.10`): 9
+     контейнеров, `vesc-nexus` нет. `docker images | grep -i vesc` — пусто,
+     образ не просто не запущен, его нет на диске.
+  4. **Его нет в локальном registry** `10.1.1.249:5000` (`/v2/.../tags/list`
+     не содержит ни одного vesc-тега) — то есть он не собирался и вручную.
+  5. **Он в принципе не смог бы стартовать.** `CMD` звал
+     `ros2 launch vesc_nexus vesc_nexus_node.launch.py`, но в установленном
+     пакете нет каталога `launch/` вообще: апстримный `vesc_nexus` отдаёт
+     только pluginlib-плагин (`lib/libvesc_hardware_interface.so` +
+     `share/vesc_nexus/vesc_nexus_plugins.xml`), отдельной ноды не существует.
+     Проверено внутри работающего контейнера `ros2-control`:
+     `ls /ws/install/vesc_nexus/share/vesc_nexus/` — `cmake`, `environment`,
+     `hook`, `tools`, `package.xml`, `vesc_nexus_plugins.xml`, и ничего больше.
+  6. **Его содержимое — строгое подмножество `ros2_control`.** Оба образа
+     компилируют `vesc_msgs` + `vesc_nexus` из одного субмодуля; `ros2_control`
+     дополнительно собирает `rob_box_description`. Ровно та дублирующая
+     компиляция, которую фиксирует шапка `docker/main/ros2_control/Dockerfile`
+     (§4.3): «VESC Nexus работает как hardware_interface плагин внутри
+     controller_manager, а НЕ как отдельная нода».
+
+  Почему не вариант «подключить в манифест»: это оплачивало бы arm64-сборку
+  под qemu (сегодня самый дорогой участок конвейера — см. §13.1 и ловушку
+  `Pipeline-Depth 0`) ради образа, который никто не тянет, никто не
+  запускает и который падает на старте. Единственное, что реально
+  проверял бы такой job, — компиляцию `vesc_msgs`/`vesc_nexus`, а её уже
+  проверяет `build-ros2-control`.
+
+  **Что осталось у `VESC_NEXUS_SHA`:** единственный потребитель — теперь
+  `docker/main/ros2_control/Dockerfile`; `submodule_sha: src/vesc_nexus` в
+  манифесте у сервиса `ros2-control` остаётся как есть.
+
 ### 13.5. Статус этапов
 
 | Этап | Статус |

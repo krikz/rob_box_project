@@ -28,17 +28,8 @@ docker buildx build \
   --load \
   . || echo "❌ FAILED"
 
-# vesc-nexus
-echo "2️⃣  Building vesc-nexus..."
-docker buildx build \
-  --platform linux/arm64 \
-  --file docker/main/vesc_nexus/Dockerfile \
-  --tag rob_box_test:vesc-nexus \
-  --load \
-  . || echo "❌ FAILED"
-
 # led-matrix
-echo "3️⃣  Building led-matrix..."
+echo "2️⃣  Building led-matrix..."
 docker buildx build \
   --platform linux/arm64 \
   --file docker/vision/led_matrix/Dockerfile \
