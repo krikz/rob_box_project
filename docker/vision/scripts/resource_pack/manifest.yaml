@@ -98,8 +98,14 @@ resources:
   # моделей») и весили ~227 МиБ на диске (измерено 21.09.2026 на Vision Pi:
   # vosk 88 МиБ распакованный + silero 139 МиБ). Теперь их кладёт на хост этот
   # манифест, а контейнер видит их через bind-mount /opt/rob_box/models:/models:ro
-  # (docker-compose.yaml, сервис voice-assistant). Пути ВНУТРИ контейнера не
-  # изменились — ни один Python-файл трогать не потребовалось.
+  # (docker-compose.yaml, сервисы voice-assistant и telegram-bot). Пути ВНУТРИ
+  # контейнера не изменились — ни один Python-файл трогать не потребовалось.
+  #
+  # Vosk у этого шва ДВА потребителя в разных контейнерах. telegram-bot
+  # подключён вторым, 21.09.2026: его Dockerfile качал ту же модель своей
+  # ступенью сборки — пятый путь доставки, которого не было в реестре плана
+  # §1.1 (ADR-0125 §8 п.3). Теперь обоих кормит одна запись манифеста, и
+  # версия модели не может разъехаться между образами молча.
   - name: vosk-ru-small
     type: open
     kind: model-zip
@@ -128,9 +134,13 @@ resources:
     degrade_note: >
       Без модели stt_node не стартует: «Folder does not contain model files».
       Распознавание речи недоступно целиком, деградации «частично» тут нет.
+      У второго потребителя, telegram_node, последствие мягче (бот живёт,
+      теряется офлайн-фолбэк STT при недоступном Yandex) — но required
+      определяется по худшему последствию, поэтому hard.
     consumers:
       - "stt_node (model_path, docker/vision/config/voice_assistant/stt_node.yaml:8)"
       - "stt_node (src/rob_box_voice/config/stt_node.yaml:14)"
+      - "telegram_node, VOSK_MODEL_PATH по умолчанию (src/rob_box_telegram/rob_box_telegram/voice_processor.py:40)"
 
   - name: silero-tts-v5-ru
     type: open
