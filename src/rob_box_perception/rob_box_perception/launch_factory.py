@@ -66,6 +66,9 @@ _DEFAULTS: Dict[str, Any] = {
     'input_topic': '/camera/camera/color/image_raw',
     'output_topic': '/vision/hailo/events',
     'publish_when_no_input': 'true',
+    # issue #2703/#2704: пустая строка = нода сама вычисляет
+    # /tmp/{executable}_heartbeat (см. utils.heartbeat.default_heartbeat_path).
+    'heartbeat_path': '',
 }
 
 
@@ -226,6 +229,16 @@ def make_hailo_node_launch(
             description='В stub-режиме публиковать события даже без входящих '
                         'кадров (true = smoke-test, false = production).',
         ),
+        DeclareLaunchArgument(
+            'heartbeat_path',
+            default_value=_DEFAULTS['heartbeat_path'],
+            description=(
+                'Путь к файлу-heartbeat живости (issue #2703/#2704). Пустая '
+                'строка = авто /tmp/{executable}_heartbeat. Обновляется '
+                'после каждого успешного infer() — healthcheck-скрипт в '
+                'контейнере проверяет его возраст вместо ros2 topic echo.'
+            ),
+        ),
     ])
 
     node_parameters: Dict[str, Any] = {
@@ -239,6 +252,7 @@ def make_hailo_node_launch(
         ),
         'output_topic': LaunchConfiguration('output_topic'),
         'publish_when_no_input': LaunchConfiguration('publish_when_no_input'),
+        'heartbeat_path': LaunchConfiguration('heartbeat_path'),
     }
     if include_nms_iou:
         node_parameters['nms_iou_threshold'] = LaunchConfiguration(

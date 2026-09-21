@@ -214,6 +214,183 @@ def test_post_process_empty_input():
 
 
 # ============================================================================
+# Ragged on-chip NMS output (issue #2703)
+# ============================================================================
+#
+# raw-лог 17.09.2026 (vision_hailo_loader.py:581): VisibleDeprecationWarning
+# "Creating an ndarray from ragged nested sequences" на np.asarray(raw_output).
+# Гипотеза: HEF с on-chip NMS postprocessing (штатная поставка yolov8n.hef
+# из hailo_model_zoo) отдаёт get_buffer() как List[np.ndarray] длины
+# num_classes, где raw_output[class_id] — (n, 5) [y_min, x_min, y_max,
+# x_max, score], разной длины по классам -> ragged. Старый код падал в
+# ветку "unknown shape" -> детекции молча схлопывались в []. Формат НЕ
+# проверен эмпирически на живом HAT+ (нет доступа к железу в этой среде) —
+# см. docstring _is_nms_postprocessed_output/_post_process_nms_output.
+
+def _make_empty_ragged_output(n_classes: int = loader_mod.DEFAULT_NUM_CLASSES):
+    """Список из n_classes пустых (0, 5) массивов — валидный "0 детекций"."""
+    return [np.zeros((0, 5), dtype=np.float32) for _ in range(n_classes)]
+
+
+def test_post_process_ragged_nms_output_is_detected():
+    """Эвристика _is_nms_postprocessed_output различает ragged list от dense tensor."""
+    ragged = _make_empty_ragged_output()
+    ragged[0] = np.array([[0.1, 0.1, 0.5, 0.5, 0.9]], dtype=np.float32)
+    assert loader_mod._is_nms_postprocessed_output(ragged) is True
+
+    dense = _make_fake_output()  # (84, 8400) numpy ndarray
+    assert loader_mod._is_nms_postprocessed_output(dense) is False
+
+    # Все-пустой список — тоже валидный NMS output (0 детекций везде).
+    assert loader_mod._is_nms_postprocessed_output(_make_empty_ragged_output()) is True
+
+    # Не список/не ndarray (например, обычный int) — не NMS output.
+    assert loader_mod._is_nms_postprocessed_output(42) is False
+    assert loader_mod._is_nms_postprocessed_output([]) is False
+
+
+def test_post_process_ragged_nms_output_yolov8n_person():
+    """Регресс issue #2703: ragged NMS output НЕ должен схлопываться в []."""
+    raw = _make_empty_ragged_output()
+    # person (class_id=0): letterbox-space [0,1] bbox + score.
+    raw[0] = np.array([[0.2, 0.3, 0.8, 0.7, 0.87]], dtype=np.float32)
+
+    events = loader_mod._post_process_detections(
+        raw_output=raw,
+        source_camera='oak-d',
+        input_w=loader_mod.DEFAULT_INPUT_W,
+        input_h=loader_mod.DEFAULT_INPUT_H,
+        confidence_threshold=0.5,
+        nms_iou_threshold=0.45,
+    )
+    assert len(events) == 1, (
+        f'ragged NMS output схлопнулся: events={events!r} '
+        f'(issue #2703 regression — np.asarray() на per-class ragged list '
+        f'терял детекции без предупреждения вызывающему коду).'
+    )
+    ev = events[0]
+    assert ev['class_name'] == 'person'
+    assert ev['event_type'] == 'person'
+    assert ev['class_id'] == 0
+    assert ev['confidence'] == pytest.approx(0.87, abs=1e-4)
+    assert 0.0 < ev['bbox_cx'] < 1.0
+    assert 0.0 < ev['bbox_w'] < 1.0
+    assert ev['distance_m'] == -1.0
+
+
+def test_post_process_ragged_nms_output_confidence_filter():
+    """Ragged NMS путь тоже уважает confidence_threshold."""
+    raw = _make_empty_ragged_output()
+    raw[0] = np.array([[0.2, 0.3, 0.8, 0.7, 0.3]], dtype=np.float32)  # ниже 0.5
+    events = loader_mod._post_process_detections(
+        raw_output=raw,
+        source_camera='oak-d',
+        input_w=loader_mod.DEFAULT_INPUT_W,
+        input_h=loader_mod.DEFAULT_INPUT_H,
+        confidence_threshold=0.5,
+        nms_iou_threshold=0.45,
+    )
+    assert events == []
+
+
+def test_post_process_ragged_nms_output_all_empty_returns_empty():
+    """Ragged NMS output, все классы без детекций -> [] (не raise, не warning)."""
+    raw = _make_empty_ragged_output()
+    events = loader_mod._post_process_detections(
+        raw_output=raw,
+        source_camera='oak-d',
+        input_w=loader_mod.DEFAULT_INPUT_W,
+        input_h=loader_mod.DEFAULT_INPUT_H,
+        confidence_threshold=0.5,
+        nms_iou_threshold=0.45,
+    )
+    assert events == []
+
+
+def test_post_process_ragged_nms_output_multi_class():
+    """Несколько классов с детекциями в ragged NMS output — все доходят."""
+    raw = _make_empty_ragged_output()
+    raw[0] = np.array([[0.1, 0.1, 0.5, 0.5, 0.9]], dtype=np.float32)    # person
+    raw[41] = np.array([[0.6, 0.6, 0.9, 0.9, 0.75]], dtype=np.float32)  # cup
+    events = loader_mod._post_process_detections(
+        raw_output=raw,
+        source_camera='oak-d',
+        input_w=loader_mod.DEFAULT_INPUT_W,
+        input_h=loader_mod.DEFAULT_INPUT_H,
+        confidence_threshold=0.5,
+        nms_iou_threshold=0.45,
+    )
+    names = sorted(ev['class_name'] for ev in events)
+    assert names == ['cup', 'person']
+
+
+def test_post_process_ragged_nms_output_multi_detection_same_class():
+    """Несколько детекций одного класса в ragged NMS output — обе доходят.
+
+    NMS уже применён HailoRT на чипе — постпроцессинг здесь НЕ должен
+    повторно подавлять пересекающиеся боксы (в отличие от dense-пути,
+    где _nms_per_class ещё нужен).
+    """
+    raw = _make_empty_ragged_output()
+    raw[0] = np.array([
+        [0.1, 0.1, 0.4, 0.4, 0.9],
+        [0.5, 0.5, 0.9, 0.9, 0.8],
+    ], dtype=np.float32)
+    events = loader_mod._post_process_detections(
+        raw_output=raw,
+        source_camera='oak-d',
+        input_w=loader_mod.DEFAULT_INPUT_W,
+        input_h=loader_mod.DEFAULT_INPUT_H,
+        confidence_threshold=0.5,
+        nms_iou_threshold=0.45,
+    )
+    assert len(events) == 2
+    confidences = sorted(ev['confidence'] for ev in events)
+    assert confidences == pytest.approx([0.8, 0.9], abs=1e-4)
+
+
+def test_post_process_ragged_nms_output_with_letterbox_unproject():
+    """Ragged NMS путь unproject'ит bbox через LetterboxInfo так же, как dense-путь."""
+    raw = _make_empty_ragged_output()
+    # Детекция занимает весь letterbox-кадр (0..1 по обеим осям).
+    raw[0] = np.array([[0.0, 0.0, 1.0, 1.0, 0.9]], dtype=np.float32)
+    letterbox_info = loader_mod.LetterboxInfo(
+        scale=1.0, pad_left=80, pad_top=0,
+        orig_w=480, orig_h=640, letterbox_w=640, letterbox_h=640,
+    )
+    events = loader_mod._post_process_detections(
+        raw_output=raw,
+        source_camera='oak-d',
+        input_w=loader_mod.DEFAULT_INPUT_W,
+        input_h=loader_mod.DEFAULT_INPUT_H,
+        confidence_threshold=0.5,
+        nms_iou_threshold=0.45,
+        letterbox_info=letterbox_info,
+    )
+    assert len(events) == 1
+    ev = events[0]
+    # letterbox px: x in [0,640], cx_px=320; unproject: (320-80)/1=240;
+    # normalize: 240/480=0.5.
+    assert ev['bbox_cx'] == pytest.approx(0.5, abs=1e-3)
+
+
+def test_post_process_ragged_nms_output_row_as_plain_list():
+    """raw_output элементы могут прийти как обычные Python list (не ndarray)."""
+    raw = [[] for _ in range(loader_mod.DEFAULT_NUM_CLASSES)]
+    raw[0] = [[0.2, 0.3, 0.8, 0.7, 0.87]]
+    events = loader_mod._post_process_detections(
+        raw_output=raw,
+        source_camera='oak-d',
+        input_w=loader_mod.DEFAULT_INPUT_W,
+        input_h=loader_mod.DEFAULT_INPUT_H,
+        confidence_threshold=0.5,
+        nms_iou_threshold=0.45,
+    )
+    assert len(events) == 1
+    assert events[0]['class_name'] == 'person'
+
+
+# ============================================================================
 # _nms_per_class
 # ============================================================================
 
