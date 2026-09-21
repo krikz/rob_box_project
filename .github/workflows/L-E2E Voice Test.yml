@@ -137,7 +137,17 @@ jobs:
     # react_window=40s + TTS synthesis per step реально занимает 25-35 мин.
     # Старый 15 мин таймаут резал прогон в середине ds01/ds02 (backlog-фаза).
     # 45 мин — запас на 3x retry, backlog-фразу (анекдот), и 2 музыкальных шага.
-    timeout-minutes: 45
+    #
+    # 22.09.2026 поднято до 60. Акт 2 night-marathon вырос с 11 до 19 шагов:
+    # его реплики регистрации (201-251 символ, 26-32с синтеза) не влезали в
+    # окно VAD робота (speech_max_duration=15.0) и не проигрывались НИКОГДА,
+    # поэтому их разбили на короткие. По замеру из run_night_marathon.sh
+    # (run 34385886254: 11 шагов = 26.5 мин, т.е. ~2.4 мин/шаг) 19 шагов в
+    # худшем случае упираются в 45 мин. Упереться — значит получить
+    # «cancelled» без единого маркера шага: худший исход для разбора,
+    # непонятно даже, докуда дошли. Лучше дать запас, чем гадать по
+    # обрезанному логу.
+    timeout-minutes: 60
 
     steps:
       - name: Trigger source (issue #1527)
@@ -706,16 +716,57 @@ jobs:
             echo "❌ dialogue_node: touch_speaker/профиль не найден в логе"
             FAIL="${FAIL:+$FAIL,}no-profile"
           fi
-          # 3) SQLite: факт scope=speaker:<tag> реально сохранён (самое честное доказательство)
-          DB_SPEAKER="$(sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 \
-            "docker exec voice-assistant python3 -c \"import sqlite3; c=sqlite3.connect('/root/.rob_box/voice.db'); rows=c.execute(\\\"SELECT scope,key,value FROM facts WHERE scope LIKE 'speaker:%' ORDER BY created_at DESC LIMIT 5\\\").fetchall(); print(chr(10).join(str(r) for r in rows))\" 2>/dev/null || true")"
-          if [ -n "$DB_SPEAKER" ]; then
-            echo "✅ SQLite: факты scope=speaker:<tag> найдены в voice.db"
-            echo "SQLITE_SPEAKER_FACTS=ok" >> "$ACCEPT_FILE"
-            echo "$DB_SPEAKER" >> "$ACCEPT_FILE"
+          # 3) SQLite: факты реально сохранены (самое честное доказательство).
+          #    bug(разбор 35658231116, 22.09.2026): запрос ходил в
+          #    '/root/.rob_box/voice.db', в таблицу `facts` с колонками
+          #    scope/key/value. Проверено на роботе:
+          #        ls /root/.rob_box/     -> No such file or directory
+          #        SELECT ... FROM facts  -> sqlite3.OperationalError:
+          #                                  no such table: facts
+          #    Реальность: /data/voice_memory.db, таблица voice_facts
+          #    (id, fact, category, created_at, speaker_id). Проверка была
+          #    СТРУКТУРНО неспособна пройти, а `2>/dev/null || true` прятал
+          #    ошибку: шаг всегда писал «факты НЕ найдены» и валил job с
+          #    no-sqlite-facts. Классический FAIL, указывающий не туда.
+          #
+          #    Запрос ОДНОЙ строкой намеренно: heredoc внутри блочного
+          #    скаляра YAML требует нулевой колонки и ломает отступы файла.
+          #    Числа тянем grep'ом без обратных ссылок sed — они не переживают
+          #    двойное экранирование через ssh.
+          #    stderr НЕ глушим: по нему отличаем сбой запроса от «фактов нет».
+          DB_ERR="/tmp/e2e_dbfacts_err_${RID}.txt"
+          DB_OUT="$(sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 \
+            "docker exec voice-assistant python3 -c \"import json,sqlite3; c=sqlite3.connect('file:/data/voice_memory.db?mode=ro',uri=True); t=c.execute('SELECT COUNT(*) FROM voice_facts').fetchone()[0]; b=c.execute('SELECT COUNT(*) FROM voice_facts WHERE speaker_id IS NOT NULL').fetchone()[0]; r=c.execute('SELECT id,fact,category,speaker_id FROM voice_facts ORDER BY created_at DESC LIMIT 5').fetchall(); print(json.dumps({'total':t,'speaker_bound':b,'recent':[[str(x) for x in q] for q in r]},ensure_ascii=False))\"" 2>"$DB_ERR")" || DB_OUT=""
+          if [ -z "$DB_OUT" ]; then
+            # Пусто — значит мы НЕ СПРОСИЛИ, а не «фактов нет». Разные вещи,
+            # и раньше обе давали одну и ту же пустую строку.
+            echo "⚠️ SQLite: запрос на роботе не выполнился — ИНФРА (ssh / docker exec / схема), не регресс памяти."
+            echo "   stderr: $(tail -5 "$DB_ERR" 2>/dev/null | tr '\n' ' ')"
+            echo "   По этому шагу баг на voice-стек НЕ заводим."
+            echo "SQLITE_SPEAKER_FACTS=infra_error" >> "$ACCEPT_FILE"
+            tail -20 "$DB_ERR" 2>/dev/null >> "$ACCEPT_FILE" || true
           else
-            echo "❌ SQLite: факты scope=speaker:<tag> НЕ найдены в voice.db"
-            FAIL="${FAIL:+$FAIL,}no-sqlite-facts"
+            echo "$DB_OUT"
+            echo "$DB_OUT" >> "$ACCEPT_FILE"
+            DB_BOUND="$(printf '%s' "$DB_OUT" | grep -oE '"speaker_bound": *[0-9]+' | grep -oE '[0-9]+' | tail -1)"
+            DB_TOTAL="$(printf '%s' "$DB_OUT" | grep -oE '"total": *[0-9]+' | grep -oE '[0-9]+' | tail -1)"
+            case "$DB_BOUND" in ''|*[!0-9]*) DB_BOUND=0 ;; esac
+            case "$DB_TOTAL" in ''|*[!0-9]*) DB_TOTAL=0 ;; esac
+            if [ "$DB_BOUND" -gt 0 ]; then
+              echo "✅ SQLite: фактов, привязанных к диктору — $DB_BOUND из $DB_TOTAL (voice_memory.db)"
+              echo "SQLITE_SPEAKER_FACTS=ok" >> "$ACCEPT_FILE"
+            elif [ "$DB_TOTAL" -gt 0 ]; then
+              # Состояние на 22.09.2026: 96 фактов, из них 0 с speaker_id.
+              # memory_save отрабатывает, связка факт<->диктор — нет. Отдельный
+              # исход нужен затем, что иначе «нет привязанных» читается как
+              # «память не работает», и разбор уходит не туда.
+              echo "❌ SQLite: фактов $DB_TOTAL, но НИ ОДИН не привязан к диктору (speaker_id IS NULL)."
+              echo "   memory_save отрабатывает, а связка факт<->диктор — нет. Копать speaker_id в memory_save, а не память целиком."
+              echo "SQLITE_SPEAKER_FACTS=not_speaker_bound" >> "$ACCEPT_FILE"
+              FAIL="${FAIL:+$FAIL,}facts-not-speaker-bound"
+            else
+              echo "❌ SQLite: в voice_facts нет ни одного факта — память не сохранила ничего"
+              FAIL="${FAIL:+$FAIL,}no-sqlite-facts"
           fi
           echo "--- acceptance evidence ---"
           cat "$ACCEPT_FILE"

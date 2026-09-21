@@ -9,60 +9,125 @@
     {
       "label": "n201_sasha_intro_long",
       "voice": "anton",
-      "text": "Робот, привет, давай знакомиться как следует. Меня зовут Саша, я твой ночной инженер, я собирал тебе блок питания и переделывал левый мотор. Запомни мой голос как следует, потому что ночью я буду говорить с тобой чаще всех остальных в этой мастерской.",
+      "text": "Робот, привет, давай знакомиться как следует. Меня зовут Саша, я твой ночной инженер.",
       "patterns": [],
       "acceptance": {
         "expected_tool_calls": [
           "register_speaker"
         ],
-        "discovery_tools": ["register_speaker"],
+        "discovery_tools": [
+          "register_speaker"
+        ],
         "must_not_call": [],
-        "_comment": "Длинная реплика (~15 c речи) — условие устойчивого d-vector. expect=cycle: первый шаг акта пробивает wake-gate. issue #2406: discovery_tools — register_speaker должен быть вызван ДО голосового ответа (regression guard)."
+        "_comment": "Разбито на n201/n201b/n201c: audio_node режет речь длиннее 15с VAD-окна (run 35658231116, ❌ Речь отклонена: 17.37с), исходная реплика ~25с не доходила до STT. Имя и register_speaker остаются на этом шаге. expect=cycle: первый шаг акта пробивает wake-gate. issue #2406: discovery_tools — register_speaker должен быть вызван ДО голосового ответа (regression guard)."
       },
       "expect": "cycle",
       "retry_acceptance": 1
     },
     {
-      "label": "n202_sasha_warmup",
+      "label": "n201b_sasha_backstory",
       "voice": "anton",
-      "text": "Робот, слушай дальше и запоминай, как я звучу. Вчера я всю ночь паял этот несчастный блок питания, и он всё равно гудит как трансформатор на подстанции, а я так и не понял, земля виновата или дроссель.",
+      "text": "Я собирал тебе блок питания и переделывал левый мотор. Запомни мой голос как следует.",
+      "patterns": [],
+      "_why": "Продолжение n201_sasha_intro_long — см. why там (run 35658231116, лимит VAD 15с). Суммарная длина речи сохранена для устойчивого d-vector."
+    },
+    {
+      "label": "n201c_sasha_voice_note",
+      "voice": "anton",
+      "text": "Потому что ночью я буду говорить с тобой чаще всех остальных в этой мастерской.",
+      "patterns": [],
+      "_why": "Хвост n201_sasha_intro_long — см. n201b."
+    },
+    {
+      "label": "n202a_sasha_warmup",
+      "voice": "anton",
+      "text": "Робот, слушай дальше и запоминай, как я звучу.",
       "patterns": [
         "Speaker|identify candidates|speaker_id"
       ],
-      "_why": "Прогрев №2. Паттерн мягкий: ловим ЛЮБОЙ след биометрии в логах."
+      "_why": "n202 разбит на три шага: 15с VAD-окно (run 35658231116) не пропускало исходную реплику ~20с. Паттерн мягкий: ловим ЛЮБОЙ след биометрии в логах, поэтому держим его на каждой части."
+    },
+    {
+      "label": "n202b_sasha_warmup_hum",
+      "voice": "anton",
+      "text": "Вчера я всю ночь паял этот несчастный блок питания, и он всё равно гудит как трансформатор.",
+      "patterns": [
+        "Speaker|identify candidates|speaker_id"
+      ]
+    },
+    {
+      "label": "n202c_sasha_warmup_guess",
+      "voice": "anton",
+      "text": "А я так и не понял, земля виновата или дроссель.",
+      "patterns": [
+        "Speaker|identify candidates|speaker_id"
+      ]
     },
     {
       "label": "n203_sasha_memory_tea",
       "voice": "anton",
-      "text": "Робот, запомни про меня важное: я пью только зелёный чай без сахара, а лук я не ем ни в каком виде, даже жареный.",
+      "text": "Робот, запомни: я пью только зелёный чай без сахара и совсем не ем лук, даже жареный.",
       "patterns": [],
       "acceptance": {
         "expected_tool_calls": [
           "memory_save"
         ],
         "must_not_call": [],
-        "_comment": "Факт понадобится в акте 9 (рецепт борща без лука) и в акте 10 (память переживает сброс сессии)."
+        "_comment": "Сокращено под бюджет VAD 15с (run 35658231116), оба факта (зелёный чай без сахара, не ест лук) сохранены — нужны в акте 9 (рецепт борща без лука) и в акте 10 (память переживает сброс сессии)."
       }
     },
     {
       "label": "n204_boris_intro_long",
       "voice": "ermil",
-      "text": "Робот, добрый вечер, а меня зовут Борис, я друг Саши и прихожу сюда с пиццей примерно раз в неделю. Запомни мой голос отдельно от Сашиного, мы очень по-разному звучим, и я не хочу, чтобы ты нас путал, когда мы оба будем тебе что-то говорить.",
+      "text": "Робот, добрый вечер, меня зовут Борис, я друг Саши и прихожу с пиццей примерно раз в неделю.",
       "patterns": [],
       "acceptance": {
         "expected_tool_calls": [
           "register_speaker"
         ],
-        "discovery_tools": ["register_speaker"],
+        "discovery_tools": [
+          "register_speaker"
+        ],
         "must_not_call": [],
-        "_comment": "issue #2406: discovery_tools — register_speaker должен быть вызван ДО голосового ответа (regression guard)."
+        "_comment": "Разбито на n204/n204b/n204c: audio_node режет речь длиннее 15с VAD-окна (run 35658231116) — исходная реплика ~24с не доходила до STT. Имя и register_speaker остаются на этом шаге. issue #2406: discovery_tools — register_speaker должен быть вызван ДО голосового ответа (regression guard)."
       },
       "retry_acceptance": 1
     },
     {
-      "label": "n205_boris_warmup",
+      "label": "n204b_boris_voice_note",
       "voice": "ermil",
-      "text": "Робот, продолжаю говорить, чтобы ты привык к моему голосу. Я болею за Спартак с девяносто восьмого года, и Саша каждый раз надо мной смеётся, хотя сам вообще футбол не смотрит и путает вратаря с защитником.",
+      "text": "Запомни мой голос отдельно от Сашиного, мы очень по-разному звучим.",
+      "patterns": [],
+      "_why": "Продолжение n204_boris_intro_long — см. why там (run 35658231116, лимит VAD 15с)."
+    },
+    {
+      "label": "n204c_boris_voice_reason",
+      "voice": "ermil",
+      "text": "Я не хочу, чтобы ты нас путал, когда мы оба будем тебе что-то говорить.",
+      "patterns": [],
+      "_why": "Хвост n204_boris_intro_long — см. n204b."
+    },
+    {
+      "label": "n205a_boris_warmup",
+      "voice": "ermil",
+      "text": "Робот, продолжаю говорить, чтобы ты привык к моему голосу.",
+      "patterns": [
+        "Speaker|identify candidates|speaker_id"
+      ],
+      "_why": "n205 разбит на три шага: 15с VAD-окно (run 35658231116) не пропускало исходную реплику ~20с. Паттерн держим на каждой части."
+    },
+    {
+      "label": "n205b_boris_warmup_spartak",
+      "voice": "ermil",
+      "text": "Я болею за Спартак с девяносто восьмого года, и Саша каждый раз надо мной смеётся.",
+      "patterns": [
+        "Speaker|identify candidates|speaker_id"
+      ]
+    },
+    {
+      "label": "n205c_boris_warmup_tease",
+      "voice": "ermil",
+      "text": "Хотя сам вообще футбол не смотрит и путает вратаря с защитником.",
       "patterns": [
         "Speaker|identify candidates|speaker_id"
       ]
@@ -124,14 +189,14 @@
     {
       "label": "n210_grisha_no_name",
       "voice": "zahar",
-      "text": "Робот, я тут мимо шёл, а тебя знаю? Имя своё я тебе называть не буду, я человек старой закалки и не доверяю железкам.",
+      "text": "Робот, я мимо шёл. Имя своё я тебе называть не буду, я старой закалки и не доверяю железкам.",
       "patterns": [],
       "acceptance": {
         "must_not_call": [
           "register_speaker"
         ],
         "expected_tool_calls": [],
-        "_comment": "КОНТРОЛЬНАЯ ГРУППА для акта 3. Робот НЕ должен регистрировать профиль без имени: register_speaker с пустым/мусорным name засоряет /data/speakers.db (см. dialogue.py:1021)."
+        "_comment": "Сокращено под бюджет VAD 15с (run 35658231116), отказ называть имя сохранён. КОНТРОЛЬНАЯ ГРУППА для акта 3. Робот НЕ должен регистрировать профиль без имени: register_speaker с пустым/мусорным name засоряет /data/speakers.db (см. dialogue.py:1021)."
       }
     },
     {
