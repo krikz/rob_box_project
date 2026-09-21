@@ -317,30 +317,45 @@ jobs:
             sleep 5
           done
 
-      - name: "[Vision Pi] Ensure HEF models (#2398, #2599)"
+      - name: "[Vision Pi] Ensure HEF models (#2398, #2599) — Ресурсный пак"
         if: '!inputs.dry_run'
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "🧠 Ensuring Hailo HEF models on Vision Pi..."
+          echo "🧠 Ресурсный пак: HEF-модели на Vision Pi..."
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          # Этап 2 плана docs/plans/2026-09-15-resource-pack.md §7: вместо цикла
+          # по двум почти дословно одинаковым download_*_hef.sh — один вызов
+          # apply_resource_pack.sh с манифестом. Шестой ресурс добавляется
+          # записью в manifest.yaml и НЕ требует правки этого workflow.
+          #
           # /opt/rob_box/models монтируется в vision-hailo/vision-face как :ro,
-          # поэтому скачать модель может только хост — не контейнер. Скрипты
-          # идемпотентны (файл на месте → мгновенный OK) и сверяют SHA256
-          # (retinaface). Неудача скачивания НЕ валит деплой: нода логирует
-          # причину и остаётся в degraded (ADR-0018), restart-loop'а не будет —
-          # HEF открывается лениво, на первом кадре.
-          # Результат скачивания проверяем ОТДЕЛЬНО (test -f), а не по коду
-          # возврата скрипта: `|| echo warning` красил шаг зелёным, и 15.09
-          # деплой отрапортовал success, пока retinaface не встал вовсе
-          # (SHA-сравнение падало на регистре). Деплой по-прежнему не валим —
-          # нода честно уходит в degraded (ADR-0018) — но промах виден как
-          # GitHub-аннотация, а не только в сыром логе шага.
-          HEF_SCRIPTS='~/rob_box_project/docker/vision/scripts/vision-hailo'
+          # поэтому скачать модель может только хост — не контейнер. Скрипт
+          # идемпотентен: файл на месте + sha256 совпал → no-op без сети.
+          #
+          # Что значит код возврата скрипта (см. его шапку):
+          #   0 — всё на месте ЛИБО soft-ресурс не встал: это ОБЪЯВЛЕННАЯ
+          #       деградация, нода честно уходит в stub (ADR-0018),
+          #       restart-loop'а не будет — HEF открывается лениво, на первом
+          #       кадре. Деплой такой промах НЕ валит, как и раньше.
+          #   1 — sha256 не совпал (на диске/скачалось НЕ то) или не встал
+          #       hard-ресурс.
+          #   2 — сломан манифест или вызов.
+          # Коды 1/2 деплой ВАЛЯТ, и это осознанное изменение поведения:
+          # «скачалось не то» — не деградация, а неизвестное состояние робота,
+          # и узнавать о нём из логов через неделю мы уже пробовали.
+          #
+          # Факт наличия файла проверяем ОТДЕЛЬНО (test -f), а не только по коду
+          # возврата: `|| echo warning` красил шаг зелёным, и 15.09 деплой
+          # отрапортовал success, пока retinaface не встал вовсе (SHA-сравнение
+          # падало на регистре). Промах виден как GitHub-аннотация, а не только
+          # в сыром логе шага.
+          RESOURCE_PACK='~/rob_box_project/docker/vision/scripts/resource_pack/apply_resource_pack.sh'
+          rp_rc=0
+          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
+            "echo 'open' | sudo -S bash $RESOURCE_PACK --only yolov8n-hef,retinaface-hef" || rp_rc=$?
+
           HEF_MISSING=""
-          for pair in "yolov8n.hef:download_yolov8n_hef.sh" "retinaface_mobilenet_v1.hef:download_retinaface_hef.sh"; do
-            hef="${pair%%:*}"
-            script="${pair##*:}"
-            sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} "echo 'open' | sudo -S bash $HEF_SCRIPTS/$script" || true
+          for hef in "yolov8n.hef" "retinaface_mobilenet_v1.hef"; do
             if sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} "test -f /opt/rob_box/models/$hef"; then
               echo "✅ $hef на месте"
             else
@@ -350,6 +365,108 @@ jobs:
           done
           if [ -n "$HEF_MISSING" ]; then
             echo "⚠️  Отсутствуют HEF:$HEF_MISSING — проверить [Vision Pi] Check Container Logs на 'HEF loader failed'"
+          fi
+          if [ "$rp_rc" -ne 0 ]; then
+            echo "::error title=Resource pack failed::apply_resource_pack.sh exit=$rp_rc — sha256 mismatch или сломанный манифест, см. вывод шага выше"
+            exit "$rp_rc"
+          fi
+
+      - name: "[Vision Pi] Ensure STT/TTS models (Ресурсный пак, Этап 3)"
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🗣  Ресурсный пак: Vosk + Silero на Vision Pi..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          # Этап 3 плана docs/plans/2026-09-15-resource-pack.md §7.
+          # РАНЬШЕ обе модели (~227 МиБ на диске, измерено на Vision Pi
+          # 21.09.2026 — не «113 МБ», как говорили комментарии) лежали
+          # ВНУТРИ образа voice-base:
+          # их качала ступень сборки, и сборка падала целиком при недоступной
+          # сети. Теперь их кладёт на хост этот шаг, а voice-assistant видит
+          # их через bind-mount /opt/rob_box/models:/models:ro. Пути внутри
+          # контейнера не изменились (stt_node.yaml:8, tts_node.py:1853).
+          #
+          # ОТДЕЛЬНЫЙ шаг от HEF намеренно: у HEF записи soft (нет модели →
+          # нода в stub, деплой жив), у Vosk/Silero — hard (без модели
+          # stt_node не стартует вовсе). Разные последствия должны и падать
+          # по-разному, иначе в логе непонятно, что именно случилось.
+          #
+          # Шаг обязан отработать ДО `docker compose up` (он ниже) — иначе
+          # voice-assistant стартует с пустым /models.
+          RESOURCE_PACK='~/rob_box_project/docker/vision/scripts/resource_pack/apply_resource_pack.sh'
+          rp_rc=0
+          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
+            "echo 'open' | sudo -S bash $RESOURCE_PACK --only vosk-ru-small,silero-tts-v5-ru" || rp_rc=$?
+
+          # Проверяем ФАКТ наличия, а не только код возврата (§11.5 плана):
+          # sentinel-файлы те же, что проверял Dockerfile до переезда.
+          MODELS_MISSING=""
+          for probe in \
+            "/opt/rob_box/models/vosk-model-small-ru-0.22/README" \
+            "/opt/rob_box/models/silero/v5_ru.pt"; do
+            if sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} "test -f $probe"; then
+              echo "✅ $probe на месте"
+            else
+              MODELS_MISSING="$MODELS_MISSING $probe"
+              echo "::error title=Model missing::$probe не встал на Vision Pi — stt_node/tts_node не поднимутся"
+            fi
+          done
+
+          if [ "$rp_rc" -ne 0 ] || [ -n "$MODELS_MISSING" ]; then
+            echo "::error title=Resource pack failed::STT/TTS модели не разложены (exit=$rp_rc, missing:$MODELS_MISSING)"
+            echo "Откат: см. docs/plans/2026-09-15-resource-pack.md §7 Этап 3 — вернуть ступень скачивания в voice_base/Dockerfile."
+            exit 1
+          fi
+
+      - name: "[Vision Pi] Ensure Renardo samples (Ресурсный пак, хук)"
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🎵 Ресурсный пак: Renardo/FoxDot сэмплы на Vision Pi..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          # РАНЬШЕ сэмплы (~600 МБ) ехали ОТДЕЛЬНЫМ образом voice-resources:
+          # его тянул с registry one-shot контейнер voice-resources-init при
+          # каждом деплое и раскладывал в named-volume renardo_samples. Образ,
+          # init-контейнер, volume и предыдущий шаг «Run voice-resources-init»
+          # удалены: сэмплы кладёт на хост этот шаг, а supercollider и
+          # voice-assistant видят их bind-mount'ом /opt/rob_box/samples.
+          # Пути ВНУТРИ контейнеров не изменились.
+          #
+          # ОТДЕЛЬНЫЙ шаг от STT/TTS-моделей намеренно, по той же причине, по
+          # которой HEF отделён от моделей: у сэмплов запись soft (нет сэмплов
+          # → музыка в synth-only, диалог/STT/TTS живы), у Vosk/Silero — hard
+          # (нет модели → stt_node не стартует вовсе). Слить их в один --only
+          # значило бы либо ронять деплой из-за музыки, либо перестать ронять
+          # его из-за распознавания речи: шаг выше проверяет наличие каждого
+          # своего sentinel-файла через `exit 1`, и сэмплы в этом списке вели
+          # бы себя как hard-ресурс вопреки манифесту.
+          #
+          # Шаг обязан отработать ДО `docker compose up` (он ниже) — иначе
+          # первый старт стека получит пустой bind-mount.
+          #
+          # Первый прогон на «чистом» роботе качает ~600 МБ и идёт долго;
+          # дальше это no-op по маркеру 0_foxdot_default/downloaded_at.txt,
+          # без единого сетевого запроса.
+          RESOURCE_PACK='~/rob_box_project/docker/vision/scripts/resource_pack/apply_resource_pack.sh'
+          rp_rc=0
+          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }}             "echo 'open' | sudo -S bash $RESOURCE_PACK --only renardo-samples" || rp_rc=$?
+
+          # Факт наличия проверяем отдельно от кода возврата (§11.5 плана):
+          # маркер тот же, на котором стоит идемпотентность фетчера.
+          SAMPLES_MARKER="/opt/rob_box/samples/0_foxdot_default/downloaded_at.txt"
+          if sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} "test -f $SAMPLES_MARKER"; then
+            echo "✅ Renardo сэмплы на месте ($SAMPLES_MARKER)"
+          else
+            echo "::warning title=Renardo samples missing::сэмплы не разложены — музыка уйдёт в synth-only (MusicSkill не найдёт WAV, scsynth не прочитает буферы). Диалог/STT/TTS не затронуты."
+            echo "⚠️  Проверить: [Vision Pi] Check Container Logs на 'samples not found' / 'Buffer UGen: no buffer data'"
+          fi
+
+          # exit 1 только на 1/2 от самого скрипта (сломанный манифест,
+          # неизвестный хук). Отсутствие soft-ресурса скрипт кодом 0 и
+          # отдаёт — деплой из-за музыки не падает.
+          if [ "$rp_rc" -ne 0 ]; then
+            echo "::error title=Resource pack failed::apply_resource_pack.sh exit=$rp_rc на renardo-samples — сломан манифест или вызов, см. вывод выше"
+            exit "$rp_rc"
           fi
 
       - name: "[Vision Pi] .image-versions — из текущей ветки (реверт #1139 v2, 15.08)"
@@ -409,68 +526,6 @@ jobs:
              fi" \
             || echo "⚠️  Warning: time sync failed on Vision Pi"
 
-      - name: "[Vision Pi] Run voice-resources-init (sync, before main up)"
-        if: '!inputs.dry_run'
-        run: |
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "🧩 Running voice-resources-init (one-shot) on Vision Pi..."
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-          # Issue #2095 / deploy run #34144648195: race между Exited voice-resources-init
-          # и post-startup health-check (supercollider / voice-assistant) с
-          # depends_on: service_completed_successfully. Прежний workaround
-          # (docker rm -f + network rm + container prune + --force-recreate)
-          # убирал stale-слот ДО запуска, но race возникал ВНУТРИ одного
-          # `docker compose up`: init exit'нул, supercollider через ~6 сек
-          # пошёл в Healthy, в этот момент compose инспектирует init по ID —
-          # «No such container: <HASH>», exit 1.
-          #
-          # Фикс v2 (товарищ Шифу, комментарий к PR #2120, 2026-09-08):
-          # v1 выносил init в отдельный sync-шаг, но забыл исключить init
-          # из основного `docker compose up -d` — `voice-resources-init`
-          # обычный service в compose-файле, и `--force-recreate` пересоздавал
-          # его внутри основного up, после чего voice-assistant снова ждал
-          # по depends_on (окно race возвращалось). v2 + следующий шаг
-          # (`Start Containers` с `--scale voice-resources-init=0`)
-          # гарантируют, что init прогоняется РОВНО ОДИН раз — здесь.
-          #
-          # Кто реально удаляет exited init-контейнер (товарищ Шифу спросил):
-          # docker daemon сам по себе НЕ удаляет exited-контейнеры
-          # (без --rm/autoremove они лежат в `docker ps -a` бесконечно).
-          # Удаляет их `docker container prune -f` (выполнен ниже) +
-          # явный `docker rm -f voice-resources-init` в финальном
-          # fallback'е — оба сбрасывают name-slot. Цикл `docker ps -a
-          # --filter` проверяет, что prune реально вычистил init
-          # к моменту старта основного `up -d`.
-          #
-          # Защита от сбоя init (ненулевой exit): падаем весь шаг, deploy fail —
-          # лучше красный deploy, чем молча работающий робот без renardo-сэмплов
-          # (supercollider тогда начнёт падать на «Buffer UGen: no buffer data»).
-          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
-            "cd ~/rob_box_project/docker/vision && \
-             export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
-             export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
-             if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
-             echo '🧹 pre-init cleanup (retro t_d01fe536+t_9d35468d): stale containers + network'; \
-             docker rm -f voice-resources-init 2>/dev/null || true; \
-             docker network rm vision_default 2>/dev/null || true; \
-             docker container prune -f 2>/dev/null || true; \
-             echo '🚀 running voice-resources-init synchronously (no -d) via --profile init'; \
-             docker compose --profile init up voice-resources-init && \
-             echo '⏳ waiting up to 15s for init to leave ps -a (prune/rm подбирает exited-контейнер)'; \
-             for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do \
-               if ! docker ps -a --filter name=voice-resources-init --format '{{.ID}}' | grep -q .; then \
-                 echo \"  ✓ init container no longer in ps -a after \${i}s (prune отработал)\"; \
-                 break; \
-               fi; \
-               sleep 1; \
-             done && \
-             if docker ps -a --filter name=voice-resources-init --format '{{.ID}}' | grep -q .; then \
-               echo '⚠️  init container still listed by daemon after 15s — forcing rm'; \
-               docker rm -f voice-resources-init 2>/dev/null || true; \
-               sleep 2; \
-             fi"
-
       - name: "[Vision Pi] Start Containers"
         if: '!inputs.dry_run'
         run: |
@@ -478,39 +533,17 @@ jobs:
           echo "🚀 Starting Vision Pi containers..."
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-          # Issue #2095 / товарищ Шифу (комментарий к PR #2120, 2026-09-08):
-          # предыдущая версия этого фикса выносила `docker compose up
-          # voice-resources-init` в отдельный sync-шаг, но в основном `up -d`
-          # оставляла compose-файл как есть — а `voice-resources-init` объявлен
-          # в docker-compose.yaml как обычный service. `--force-recreate`
-          # пересоздавал init внутри основного up, после чего
-          # `voice-assistant` / `supercollider` снова ждали по
-          # `depends_on: service_completed_successfully` — окно race
-          # возвращалось, просто init прогонялся дважды.
-          #
-          # Этот шаг ИСКЛЮЧАЕТ voice-resources-init из основного `up -d`.
-          #
-          # Раньше это делал флаг `--scale voice-resources-init=0`.
-          # После PR #2634 (t_b79d0581) сервис помечен `profiles: [init]`, а при
-          # неактивном профиле compose считает его disabled — `--scale` по
-          # такому имени падает с `no such service: voice-resources-init:
-          # disabled` (deploy run #35067150565, шаг [Vision Pi] Start Containers).
-          # Флаг убран: обычный `up -d` без `--profile init` и так не создаёт
-          # этот сервис, а downstream (supercollider / voice-assistant) зависит
-          # от него через `required: false` — то есть ожидание становится no-op.
+          # ИСТОРИЯ (issue #2095, PR #2120, PR #2634): здесь годами жил фикс
+          # гонки вокруг one-shot контейнера voice-resources-init — его
+          # выносили в отдельный sync-шаг, исключали из основного `up -d`
+          # (сначала `--scale voice-resources-init=0`, потом `profiles: [init]`),
+          # вычищали exited-контейнер, чтобы `depends_on:
+          # service_completed_successfully` не ловил «No such container: <HASH>».
+          # Всей этой конструкции больше нет: сэмплы приезжают на хост
+          # шагом «Ensure Renardo samples» ДО старта стека, init-контейнер и
+          # его образ удалены, ждать в compose нечего.
           # Списки сервисов позиционными аргументами по-прежнему не используем —
           # они рассинхронизируются с compose-файлом при добавлении сервиса.
-          #
-          # Параллельно уточняем причину «No such container: <HASH>»:
-          # docker daemon НЕ удаляет exited-контейнер сам по себе
-          # (без --rm/autoremove exited-контейнеры лежат в `docker ps -a`
-          # бесконечно). Удаляет их шаг выше (`docker container prune -f`)
-          # + явный `docker rm -f voice-resources-init` — оба сбрасывают
-          # name-slot, и цикл `docker ps -a --filter` в предыдущем шаге
-          # проверяет, что после exit init-а prune реально его вычистил.
-          # К моменту старта остальных сервисов voice-resources-init
-          # гарантированно отсутствует в ps -a →
-          # `depends_on: service_completed_successfully` satisfied без race.
           #
           # Issue #2499 / deploy run #34920120730 (round-403): race в docker daemon
           # name-slot release после `compose down`. Логика фикса:
@@ -536,12 +569,11 @@ jobs:
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
              if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
              echo '🔧 retro t_d01fe536+t_9d35468d+round-403: cleanup stale containers/networks'; \
-             docker rm -f voice-resources-init 2>/dev/null || true; \
              docker network rm vision_default 2>/dev/null || true; \
              docker container prune -f 2>/dev/null || true; \
              echo '🔧 round-403 fix #2499: явный rm для всех compose-контейнеров (name-slot release)'; \
              docker ps -a --filter 'label=com.docker.compose.project=vision' --format '{{.ID}}' | xargs -r docker rm -f 2>/dev/null || true; \
-             echo '🚀 compose up (voice-resources-init в profile init — не стартует, init уже выполнен в предыдущем шаге)'; \
+             echo '🚀 compose up'; \
              docker compose up -d --force-recreate --pull never --remove-orphans"
 
       # ==================== MAIN PI DEPLOYMENT ====================

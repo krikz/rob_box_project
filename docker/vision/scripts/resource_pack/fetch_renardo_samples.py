@@ -1,20 +1,49 @@
-"""Download Renardo/FoxDot sample packs during Docker build.
+"""Хук-фетчер Ресурсного пака: Renardo/FoxDot сэмплы (~600 МБ) на ХОСТ.
 
-Run during Docker image build to bake samples into the layer.
-Packages: 0_foxdot_default (drums/perc), 1_pitchglitch_samples (extended timbres).
-On failure — just warns, build continues (synth-only fallback).
+Паки: ``0_foxdot_default`` (drums/perc), ``1_pitchglitch_samples``
+(расширенные тембры). Источник — ``collections.renardo.org``, дерево
+файлов описано ``collection_index.json`` (не один архив, а несколько
+тысяч отдельных .wav) — поэтому это НЕ запись ``url:`` в манифесте, а
+именованный хук: манифест хранит ФАКТ наличия хука, логика остаётся
+кодом (тот же приём, что ``pre_build: fetch_hailort_wheel`` в
+docker/build-manifest.yaml, см. docs/plans/2026-09-15-service-manifest.md §2.5).
+
+Вызывающий — ``apply_resource_pack.sh`` по записи ``renardo-samples``
+манифеста ``manifest.yaml``. Раньше этот же файл жил в
+``docker/vision/voice_assistant/download_samples.py`` и запускался на
+этапе СБОРКИ образа ``voice-resources``; образ удалён, сэмплы приезжают
+на хост рядом с моделями (``/opt/rob_box/samples``) и монтируются в
+контейнеры bind-mount'ом.
+
+Куда качать (по убыванию приоритета):
+  1. ``--target <dir>``
+  2. env ``RENARDO_SAMPLES_DIR``
+  3. ``SAMPLES_DIR_PATH`` — прежнее поведение (``~/.config/renardo/samples``
+     либо то, что подставит установленный ``renardo_gatherer``).
+
+Идемпотентность: маркер ``<dir>/0_foxdot_default/downloaded_at.txt`` +
+пофайловая проверка «уже скачан и непустой» внутри ``download_collection``.
+
+Зависимости: только stdlib. ``renardo_gatherer`` используется, если он
+есть (тогда берём его константы), но на Vision Pi его НЕТ — фолбэк ниже
+обязан оставаться рабочим.
+
+Exit codes: 0 — сэмплы на месте; 1 — что-то не скачалось.
 """
 
 from __future__ import annotations
 
+import argparse
 import json
+import os
 import pathlib
 import shutil
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from http.client import RemoteDisconnected
-from typing import Iterator
+from typing import Iterator, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlparse
 from urllib.request import Request, urlopen
@@ -24,15 +53,23 @@ try:
         DEFAULT_SAMPLES_PACK_NAME,
         SAMPLES_DIR_PATH,
         SAMPLES_DOWNLOAD_SERVER,
-        is_default_spack_initialized,
     )
 except ImportError:
     DEFAULT_SAMPLES_PACK_NAME = "0_foxdot_default"
     SAMPLES_DIR_PATH = pathlib.Path.home() / ".config" / "renardo" / "samples"
     SAMPLES_DOWNLOAD_SERVER = "https://collections.renardo.org/samples"
 
-    def is_default_spack_initialized() -> bool:
-        return (SAMPLES_DIR_PATH / DEFAULT_SAMPLES_PACK_NAME / "downloaded_at.txt").exists()
+# NB: ``renardo_gatherer.collections.is_default_spack_initialized`` больше не
+# импортируется. Он проверяет маркер в СВОЁМ ``SAMPLES_DIR_PATH`` и про
+# ``--target``/``RENARDO_SAMPLES_DIR`` ничего не знает: с переездом на
+# /opt/rob_box/samples он отвечал бы про другой каталог и молча разрешал
+# «уже скачано» там, где пусто. Проверка маркера — три строки, и она обязана
+# смотреть ровно в тот каталог, куда мы качаем.
+MARKER_FILENAME = "downloaded_at.txt"
+
+# Env-переменная целевого каталога. То же имя читает docker-compose и шаг
+# деплоя, чтобы «куда легли сэмплы» было ровно одним словом во всех местах.
+SAMPLES_DIR_ENV = "RENARDO_SAMPLES_DIR"
 
 
 PACKS_TO_DOWNLOAD = (
@@ -181,54 +218,115 @@ def download_collection(
     return remaining_failures
 
 
-def is_pack_present(pack_name: str) -> bool:
-    pack_dir = pathlib.Path(SAMPLES_DIR_PATH) / pack_name
+def resolve_samples_dir(target: str | None = None) -> pathlib.Path:
+    """--target > env RENARDO_SAMPLES_DIR > SAMPLES_DIR_PATH (прежнее поведение).
+
+    Пустая строка в env трактуется как «не задано»: ``RENARDO_SAMPLES_DIR=``
+    в .env-файле не должен молча уронить сэмплы в текущий каталог.
+    """
+    if target:
+        return pathlib.Path(target).expanduser()
+    env_value = os.environ.get(SAMPLES_DIR_ENV, "").strip()
+    if env_value:
+        return pathlib.Path(env_value).expanduser()
+    return pathlib.Path(SAMPLES_DIR_PATH)
+
+
+def is_default_spack_initialized(samples_dir: pathlib.Path) -> bool:
+    return (pathlib.Path(samples_dir) / DEFAULT_SAMPLES_PACK_NAME / MARKER_FILENAME).exists()
+
+
+def is_pack_present(pack_name: str, samples_dir: pathlib.Path) -> bool:
+    pack_dir = pathlib.Path(samples_dir) / pack_name
     return pack_dir.exists() and any(pack_dir.iterdir())
 
 
-def write_default_pack_marker(logger: Logger) -> None:
-    marker_file = pathlib.Path(SAMPLES_DIR_PATH) / DEFAULT_SAMPLES_PACK_NAME / "downloaded_at.txt"
+def write_default_pack_marker(logger: Logger, samples_dir: pathlib.Path) -> None:
+    marker_file = pathlib.Path(samples_dir) / DEFAULT_SAMPLES_PACK_NAME / MARKER_FILENAME
     marker_file.parent.mkdir(parents=True, exist_ok=True)
     marker_file.write_text(str(datetime.now()), encoding="utf-8")
     logger.write_line(f"Updated {marker_file.name} for {DEFAULT_SAMPLES_PACK_NAME}")
 
 
-def download_pack(pack_name: str, logger: Logger) -> list[tuple[str, pathlib.Path]]:
+def download_pack(
+    pack_name: str,
+    logger: Logger,
+    samples_dir: pathlib.Path,
+) -> list[tuple[str, pathlib.Path]]:
     json_url = f"{SAMPLES_DOWNLOAD_SERVER}/{pack_name}/collection_index.json"
     return download_collection(
         json_url=json_url,
-        download_dir=pathlib.Path(SAMPLES_DIR_PATH),
+        download_dir=pathlib.Path(samples_dir),
         logger=logger,
         max_workers=MAX_WORKERS,
     )
 
 
-def main() -> None:
-    logger = Logger()
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="fetch_renardo_samples.py",
+        description=(
+            "Скачать Renardo/FoxDot сэмпл-паки в целевой каталог. "
+            "Хук Ресурсного пака (запись renardo-samples в manifest.yaml)."
+        ),
+    )
+    parser.add_argument(
+        "--target",
+        default=None,
+        metavar="DIR",
+        help=(
+            "куда класть паки. По умолчанию — "
+            f"${SAMPLES_DIR_ENV}, а если и он не задан — {SAMPLES_DIR_PATH}"
+        ),
+    )
+    return parser
 
-    if is_default_spack_initialized():
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = build_arg_parser().parse_args(argv)
+    logger = Logger()
+    samples_dir = resolve_samples_dir(args.target)
+
+    print(f"Renardo samples target: {samples_dir}", flush=True)
+
+    if is_default_spack_initialized(samples_dir):
         print(f"{DEFAULT_SAMPLES_PACK_NAME}: already present, skipping", flush=True)
     else:
         print(f"Downloading {DEFAULT_SAMPLES_PACK_NAME}...", flush=True)
-        default_failures = download_pack(DEFAULT_SAMPLES_PACK_NAME, logger)
+        default_failures = download_pack(DEFAULT_SAMPLES_PACK_NAME, logger, samples_dir)
         if default_failures:
-            raise RuntimeError(f"{DEFAULT_SAMPLES_PACK_NAME}: {len(default_failures)} files failed to download")
-        write_default_pack_marker(logger)
+            print(
+                f"ERROR: {DEFAULT_SAMPLES_PACK_NAME}: "
+                f"{len(default_failures)} files failed to download",
+                file=sys.stderr,
+                flush=True,
+            )
+            return 1
+        # Маркер пишем ТОЛЬКО после успеха: полускачанный пак, помеченный как
+        # готовый, — это молчаливо сломанная музыка при следующем прогоне.
+        write_default_pack_marker(logger, samples_dir)
         print(f"{DEFAULT_SAMPLES_PACK_NAME}: done", flush=True)
 
     for pack_name in PACKS_TO_DOWNLOAD:
         if pack_name == DEFAULT_SAMPLES_PACK_NAME:
             continue
-        if is_pack_present(pack_name):
+        if is_pack_present(pack_name, samples_dir):
             print(f"{pack_name}: already present, skipping", flush=True)
             continue
 
         print(f"Downloading {pack_name}...", flush=True)
-        failures = download_pack(pack_name, logger)
+        failures = download_pack(pack_name, logger, samples_dir)
         if failures:
-            raise RuntimeError(f"{pack_name}: {len(failures)} files failed to download")
+            print(
+                f"ERROR: {pack_name}: {len(failures)} files failed to download",
+                file=sys.stderr,
+                flush=True,
+            )
+            return 1
         print(f"{pack_name}: done", flush=True)
+
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

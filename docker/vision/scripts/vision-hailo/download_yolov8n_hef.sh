@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 # download_yolov8n_hef.sh — скачать yolov8n.hef из hailo_model_zoo (ADR-0104).
 #
+# ⚠️ ЗАМЕНЕНО РЕСУРСНЫМ ПАКОМ (Этап 2, docs/plans/2026-09-15-resource-pack.md).
+#    Деплой (`L-Deploy and Verify.yml`, шаг «[Vision Pi] Ensure HEF models»)
+#    этот скрипт больше НЕ вызывает — вместо него
+#    docker/vision/scripts/resource_pack/apply_resource_pack.sh
+#    --only yolov8n-hef,retinaface-hef (запись yolov8n-hef в manifest.yaml).
+#    Скрипт оставлен на один релиз-цикл как быстрый откат (план §7 Этап 2 п.2)
+#    и подлежит удалению Этапом 5 после N успешных прогонов деплоя.
+#    Ручной откат: вызвать этот скрипт напрямую на Vision Pi.
+#
 # Issue #2531 acceptance #10: до этого фикса HEF lifecycle был полностью
 # ручной ("если /opt/rob_box/models/yolov8n.hef не существует, compose
 # упадёт"). Этот скрипт:

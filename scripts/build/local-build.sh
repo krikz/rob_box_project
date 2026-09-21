@@ -21,7 +21,7 @@ NC='\033[0m' # No Color
 
 # Конфигурация
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 DOCKER_DIR="$PROJECT_ROOT/docker"
 ROS_DISTRO=${ROS_DISTRO:-humble}
 IMAGE_TAG=${IMAGE_TAG:-local}
@@ -99,7 +99,7 @@ build_vision_services() {
     fi
     
     # LSLIDAR N10
-    if build_service "lslidar" "$DOCKER_DIR/vision" "$DOCKER_DIR/vision/lslidar/Dockerfile"; then
+    if build_service "lslidar" "$DOCKER_DIR/main" "$DOCKER_DIR/main/lslidar/Dockerfile"; then
         ((success++))
     else
         ((failed++))
@@ -127,7 +127,7 @@ build_vision_services() {
     fi
     
     # Perception
-    if build_service "perception" "$PROJECT_ROOT" "$DOCKER_DIR/vision/perception/Dockerfile"; then
+    if build_service "perception" "$PROJECT_ROOT" "$DOCKER_DIR/main/perception/Dockerfile"; then
         ((success++))
     else
         ((failed++))
@@ -167,13 +167,6 @@ build_main_services() {
     
     # Twist Mux
     if build_service "twist-mux" "$DOCKER_DIR/main/twist_mux" "$DOCKER_DIR/main/twist_mux/Dockerfile"; then
-        ((success++))
-    else
-        ((failed++))
-    fi
-    
-    # Micro-ROS Agent
-    if build_service "micro-ros-agent" "$PROJECT_ROOT" "$DOCKER_DIR/main/micro_ros_agent/Dockerfile"; then
         ((success++))
     else
         ((failed++))
@@ -245,7 +238,7 @@ case "$SERVICE" in
         ;;
     
     "lslidar")
-        build_service "lslidar" "$DOCKER_DIR/vision" "$DOCKER_DIR/vision/lslidar/Dockerfile"
+        build_service "lslidar" "$DOCKER_DIR/main" "$DOCKER_DIR/main/lslidar/Dockerfile"
         ;;
     
     "apriltag")
@@ -261,7 +254,7 @@ case "$SERVICE" in
         ;;
     
     "perception")
-        build_service "perception" "$PROJECT_ROOT" "$DOCKER_DIR/vision/perception/Dockerfile"
+        build_service "perception" "$PROJECT_ROOT" "$DOCKER_DIR/main/perception/Dockerfile"
         ;;
     
     "robot-state-publisher")
@@ -274,10 +267,6 @@ case "$SERVICE" in
     
     "twist-mux")
         build_service "twist-mux" "$DOCKER_DIR/main/twist_mux" "$DOCKER_DIR/main/twist_mux/Dockerfile"
-        ;;
-    
-    "micro-ros-agent")
-        build_service "micro-ros-agent" "$PROJECT_ROOT" "$DOCKER_DIR/main/micro_ros_agent/Dockerfile"
         ;;
     
     "ros2-control")
@@ -303,7 +292,6 @@ case "$SERVICE" in
         echo "  robot-state-publisher  - Robot state publisher"
         echo "  rtabmap                - RTAB-Map SLAM"
         echo "  twist-mux              - Twist multiplexer"
-        echo "  micro-ros-agent        - Micro-ROS agent"
         echo "  ros2-control           - ROS2 Control + VESC"
         echo "  nav2                   - Nav2 navigation stack"
         echo ""

@@ -2,7 +2,7 @@
 # Быстрая проверка сборки проблемных образов под ARM64
 
 set -e
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 
 echo "🚀 Testing Docker Builds (ARM64)"
 echo ""
@@ -19,17 +19,8 @@ echo ""
 echo "🏗️  Building images..."
 echo ""
 
-# micro-ros-agent
-echo "1️⃣  Building micro-ros-agent..."
-docker buildx build \
-  --platform linux/arm64 \
-  --file docker/main/micro_ros_agent/Dockerfile \
-  --tag rob_box_test:micro-ros-agent \
-  --load \
-  . || echo "❌ FAILED"
-
 # nav2
-echo "2️⃣  Building nav2..."
+echo "1️⃣  Building nav2..."
 docker buildx build \
   --platform linux/arm64 \
   --file docker/main/nav2/Dockerfile \
@@ -37,17 +28,8 @@ docker buildx build \
   --load \
   . || echo "❌ FAILED"
 
-# vesc-nexus
-echo "3️⃣  Building vesc-nexus..."
-docker buildx build \
-  --platform linux/arm64 \
-  --file docker/main/vesc_nexus/Dockerfile \
-  --tag rob_box_test:vesc-nexus \
-  --load \
-  . || echo "❌ FAILED"
-
 # led-matrix
-echo "4️⃣  Building led-matrix..."
+echo "2️⃣  Building led-matrix..."
 docker buildx build \
   --platform linux/arm64 \
   --file docker/vision/led_matrix/Dockerfile \

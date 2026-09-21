@@ -210,26 +210,27 @@ services:
     volumes:
       - ./scripts/supercollider:/scripts:ro
       - ./config/audio/asound.conf:/etc/asound.conf:ro  # dmix config для совместного использования ALSA
-      # Shared renardo samples — supercollider должен читать WAV файлы по тому же пути что renardo
-      - renardo_samples:/root/.config/renardo/samples:ro
+      # Renardo samples — supercollider должен читать WAV файлы по тому же пути,
+      # что и renardo в voice-assistant. Раньше это был named-volume
+      # renardo_samples, который наполнял init-контейнер из отдельного образа
+      # voice-resources; теперь сэмплы кладёт на хост Ресурсный пак (запись
+      # renardo-samples в scripts/resource_pack/manifest.yaml, тот же шаг
+      # деплоя, что и STT/TTS-модели), а сюда они приходят bind-mount'ом.
+      # Путь ВНУТРИ контейнера не изменился.
+      # :ro — сэмплы меняет только хост; scsynth туда писать незачем.
+      - /opt/rob_box/samples:/root/.config/renardo/samples:ro
       # Shared synthdefs — sclang/Renardo в voice-assistant компилирует .scsyndef сюда,
       # scsynth должен читать их по тому же пути (иначе "bassguitar.scsyndef could not be opened")
       - sc_synthdefs:/root/.local/share/SuperCollider/synthdefs
     command: ["/scripts/start_supercollider.sh"]
-    depends_on:
-      # GH task t_b79d0581: voice-resources-init в профиле [init] →
-      # `condition: service_completed_successfully` через `required: false`
-      # означает "жди если init запущен, иначе стартуй с пустыми volume и
-      # смирись с тем что MusicSkill не сможет найти samples". Это и есть
-      # "частичный" запуск стека, требуемый acceptance #2:
-      #   docker compose up -d (без --profile init) поднимает
-      #   supercollider даже когда voice-resources-init недоступен.
-      # Запуск с заполненными samples:
-      #   docker compose --profile init up voice-resources-init
-      #   docker compose up -d supercollider voice-assistant
-      voice-resources-init:
-        condition: service_completed_successfully
-        required: false
+    # depends_on НЕТ осознанно. Раньше здесь висел
+    # `voice-resources-init: {condition: service_completed_successfully,
+    # required: false}` — ожидание one-shot init-контейнера, который тянул
+    # с registry отдельный образ с сэмплами (issue #2610, PR #2634).
+    # Сэмплы теперь лежат на хосте до `docker compose up`, ждать нечего:
+    # bind-mount либо наполнен, либо пуст, и во втором случае музыка честно
+    # уходит в synth-only — ровно то же поведение, что давал `required: false`,
+    # но без обращения к registry на старте стека.
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pgrep scsynth || exit 1"]
@@ -240,34 +241,11 @@ services:
     labels:
       logging: "promtail"
 
-  # non-ROS service: одноразовый init-контейнер для копирования renardo samples в volume.
-  # Не использует ROS/Zenoh, network_mode не требуется.
-  #
-  # GH task t_b79d0581: помечен `profiles: [init]`, чтобы НЕ стартовать
-  # при обычном `docker compose up -d` (без `--profile init`). Downstream
-  # `supercollider` + `voice-assistant` сохраняют `depends_on:
-  # voice-resources-init condition: service_completed_successfully` —
-  # docker compose v2 трактует `condition` через depends_on на
-  # профильный сервис как no-op (downstream стартует без ожидания),
-  # когда профиль init не активирован. Это и есть требуемое поведение
-  # "стек поднимается частично, если init-образ недоступен".
-  # Ручной запуск (пополнить samples): docker compose --profile init up voice-resources-init.
-  voice-resources-init:
-    # Tag tracked in docker/vision/.image-versions.{env} — updated by CI after each build
-    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:voice-resources-${ROS_DISTRO:-humble}-${VOICE_RESOURCES_TAG:-${IMAGE_TAG}}
-    container_name: voice-resources-init
-    pull_policy: if_not_present
-    profiles: ["init"]
-    # ADR-0111 (issue #2621): init-контейнер с `restart: no` — лимит
-    # обязателен по стандарту DOCKER_STANDARDS.md §7, но намеренно мал,
-    # потому что процесс — однократный tar/copy, больше 256 MB не съест.
-    mem_limit: 256m
-    memswap_limit: 256m
-    volumes:
-      - renardo_samples:/target
-    restart: "no"
-    labels:
-      logging: "promtail"
+  # Здесь был `voice-resources-init` — one-shot init-контейнер, который
+  # копировал сэмплы из образа voice-resources в named-volume
+  # renardo_samples. Удалён вместе с образом: сэмплы кладёт на хост
+  # Ресурсный пак (шаг деплоя «Ensure STT/TTS models + Renardo samples»),
+  # потребители видят их bind-mount'ом /opt/rob_box/samples.
 
   voice-assistant:
     # Tag tracked in docker/vision/.image-versions.{env} — updated by CI after each build
@@ -348,10 +326,26 @@ services:
       - ./config/audio/asound.conf:/etc/asound.conf:ro
       # Sound pack
       - ../../sound_pack:/ws/sound_pack:ro
+      # STT/TTS модели с хоста (Ресурсный пак, Этап 3 —
+      # docs/plans/2026-09-15-resource-pack.md §6.1).
+      # РАНЬШЕ Vosk (44 МиБ) и Silero v5 (139 МиБ) были запечены в образ
+      # voice-base ступенью скачивания в его Dockerfile. Теперь их кладёт на
+      # хост apply_resource_pack.sh (шаг деплоя «Ensure STT/TTS models»), а
+      # сюда они приходят bind-mount'ом. Путь ВНУТРИ контейнера не изменился:
+      # stt_node.yaml:8 (`/models/vosk-model-small-ru-0.22`) и tts_node.py:1853
+      # (`/models/silero/v5_ru.pt`) читают то же самое место.
+      # :ro — модели меняет только хост; контейнеру писать туда незачем.
+      # Каталог тот же, что уже монтируется в vision-hailo/vision-face
+      # (ниже, :820 и :889) — третий host-каталог не заводим (план §5).
+      - /opt/rob_box/models:/models:ro
       # VoiceMemory persistent storage
       - ./data/voice:/data
-      # Shared renardo samples — предварительно заполняются one-shot контейнером voice-resources-init
-      - renardo_samples:/root/.config/renardo/samples
+      # Renardo samples — кладёт на хост Ресурсный пак (запись renardo-samples
+      # в scripts/resource_pack/manifest.yaml), сюда приходят bind-mount'ом.
+      # Путь ВНУТРИ контейнера не изменился. БЕЗ :ro, в отличие от
+      # supercollider: renardo_gatherer/FoxDot при инициализации пишет в этот
+      # каталог свои служебные файлы.
+      - /opt/rob_box/samples:/root/.config/renardo/samples
       # Shared synthdefs — sclang/Renardo компилирует SynthDefs сюда, scsynth в контейнере
       # supercollider читает их по тому же пути (issue 986)
       - sc_synthdefs:/root/.local/share/SuperCollider/synthdefs
@@ -411,13 +405,10 @@ services:
         condition: service_healthy
       supercollider:
         condition: service_healthy
-      # GH task t_b79d0581: required: false — см. комментарий в
-      # supercollider.depends_on выше. voice-assistant стартует даже когда
-      # voice-resources-init (profile [init]) недоступен; MusicSkill
-      # сообщит "samples not found" но dialogue/STT/TTS не сломаются.
-      voice-resources-init:
-        condition: service_completed_successfully
-        required: false
+      # Зависимости на voice-resources-init больше нет: init-контейнер и его
+      # образ удалены, сэмплы приезжают на хост до старта стека. Если их там
+      # нет — MusicSkill скажет "samples not found", а dialogue/STT/TTS
+      # не заметят (ровно прежняя деградация, но без pull с registry).
     restart: unless-stopped
     # Issue #2701: старый healthcheck (`pgrep -f 'python3.*voice'`) отвечал
     # healthy даже когда audio_node молчал часами — PortAudio переставал
@@ -679,6 +670,16 @@ services:
       - ./config:/config:ro
       - ./scripts:/ros_scripts:ro
       - ./scripts/telegram_bot:/scripts:ro
+      # Vosk-модель с хоста (Ресурсный пак, ADR-0125) — тот же том, что у
+      # voice-assistant (:362). До 21.09.2026 telegram_bot/Dockerfile качал
+      # ЭТУ ЖЕ модель на этапе сборки своего образа: одна модель жила в двух
+      # образах, а сборка падала целиком при недоступном alphacephei.com.
+      # Путь ВНУТРИ контейнера не изменился — voice_processor.py:40 читает
+      # `/models/vosk-model-small-ru-0.22` (дефолт VOSK_MODEL_PATH).
+      # :ro — модели кладёт только хост (шаг деплоя «Ensure STT/TTS models»).
+      # Без тома бот стартует, но Vosk-фолбэк недоступен: STT остаётся на
+      # одном Yandex, и об этом есть строка в логе (не молчаливая деградация).
+      - /opt/rob_box/models:/models:ro
     mem_limit: 512m
     memswap_limit: 640m
     command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_telegram_bot.sh"]
@@ -916,10 +917,9 @@ services:
 
 # Named volumes
 volumes:
-  # Shared renardo sample packs between voice-assistant (renardo) and supercollider (scsynth).
-  # Without this, scsynth can't find WAV files by path → "Buffer UGen: no buffer data".
-  # Initialized by one-shot voice-resources-init container from bundled sample image.
-  renardo_samples:
+  # Здесь был named-volume renardo_samples. Сэмплы больше не живут в volume:
+  # их кладёт на хост Ресурсный пак в /opt/rob_box/samples, а оба потребителя
+  # (voice-assistant и supercollider) монтируют этот каталог bind-mount'ом.
   # Shared SuperCollider synthdefs between voice-assistant (sclang/Renardo compiles .scsyndef)
   # and supercollider (scsynth reads them). Without this, scsynth can't find SynthDefs by name
   # → "bassguitar.scsyndef could not be opened" + negative node IDs (issue 986).

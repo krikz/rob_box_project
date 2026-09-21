@@ -132,9 +132,12 @@ def _load_vosk_model():
 
     if not os.path.isdir(VOSK_MODEL_PATH):
         logger.error(
-            'Vosk model not found at "%s" — bundle it in the telegram-bot '
-            "image (see docker/vision/telegram_bot/Dockerfile) or set "
-            "VOSK_MODEL_PATH. Local STT fallback unavailable.",
+            'Vosk model not found at "%s" — the model lives on the HOST at '
+            "/opt/rob_box/models and reaches this container through the "
+            "/opt/rob_box/models:/models:ro bind-mount (Resource Pack, "
+            "ADR-0125). Check that the volume is mounted and that the deploy "
+            "step 'Ensure STT/TTS models' ran, or set VOSK_MODEL_PATH. "
+            "Local STT fallback unavailable.",
             VOSK_MODEL_PATH,
         )
         return None

@@ -2,7 +2,6 @@
 # Managed automatically by CI (L-Build Single Service workflow)
 
 TWIST_MUX_TAG=dev-1d79ae2
-MICRO_ROS_AGENT_TAG=dev-1d79ae2
 ROBOT_STATE_PUBLISHER_TAG=dev-1d79ae2
 RTABMAP_TAG=dev-1d79ae2
 ROS2_CONTROL_TAG=dev-1d79ae2

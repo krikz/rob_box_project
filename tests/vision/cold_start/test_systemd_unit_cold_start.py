@@ -23,7 +23,9 @@ Issue #2610 + PR #2635 — после ребута Vision Pi systemd-юнит
 Refs:
     * issue #2610 — корневая проблема
     * PR #2635 — фикс юнита
-    * ADR-0111 — voice-resources как image-based init
+    * ADR-0111 — ликвидация отдельного образа voice-resources (образа и его
+      init-контейнера больше нет; Renardo-сэмплы кладёт на хост Ресурсный пак
+      в /opt/rob_box/samples, см. docker/vision/scripts/resource_pack/)
 """
 from __future__ import annotations
 

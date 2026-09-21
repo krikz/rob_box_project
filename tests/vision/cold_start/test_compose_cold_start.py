@@ -6,13 +6,20 @@ Issue #2610 + PR #2634 — после ребута Vision Pi весь стек �
 1. Все сервисы (default + profiled) обязаны иметь ``pull_policy`` —
    иначе compose применит дефолт (always на старых версиях / missing
    на новых), и при недоступном registry любой старт зависнет на pull.
-2. ``voice-resources-init`` помечен ``profiles: [init]`` — НЕ стартует
-   в default ``up -d`` (поскольку init-образ может быть локально
-   не собран и katana offline).
-3. Downstream ``supercollider`` + ``voice-assistant`` зависят от
-   ``voice-resources-init`` через ``condition: service_completed_successfully``
-   с ``required: false`` — то есть compose нормально стартует их,
-   даже если init-сервис не активирован профилем.
+2. Renardo-сэмплы приходят bind-mount'ом с хоста, а не из образа.
+3. Ни один сервис не ждёт one-shot init-контейнера.
+
+Пункты 2-3 раньше формулировались иначе: ``voice-resources-init`` в
+``profiles: [init]`` + ``depends_on ... required: false`` у обоих
+потребителей. Это был обход проблемы, а не её решение — init-контейнер
+всё равно тянул с registry отдельный ~600-МБ образ, и вся конструкция
+существовала только чтобы этот pull не ронял стек. Образ, init-контейнер
+и named-volume ``renardo_samples`` удалены: сэмплы кладёт на хост
+Ресурсный пак (``/opt/rob_box/samples``) на шаге деплоя, до
+``docker compose up``. Теперь недоступность katana на старте не влияет
+на сэмплы вообще — проверять «стартует ли стек без init-образа» стало
+нечего, поэтому проверяем инвариант, который пришёл на смену:
+потребители читают host-каталог и никого не ждут.
 
 Эти проверки чисто-статические: парсим YAML напрямую и валидируем
 структуру. Запуск ``docker compose config`` оставлен для интеграционного
@@ -90,9 +97,11 @@ def _services_in_profile(profile: str | None) -> dict[str, dict[str, Any]]:
 
 
 @pytest.mark.parametrize(
+    # Профиль "init" ушёл вместе с voice-resources-init — в нём больше нет
+    # ни одного сервиса, и параметр падал бы на «profile returned no services».
     "profile",
-    [None, "init", "monitoring", "ai"],
-    ids=["default", "init", "monitoring", "ai"],
+    [None, "monitoring", "ai"],
+    ids=["default", "monitoring", "ai"],
 )
 def test_every_service_has_pull_policy(profile: str | None) -> None:
     """Каждый сервис (в любом профиле) обязан объявлять ``pull_policy``.
@@ -118,92 +127,91 @@ def test_every_service_has_pull_policy(profile: str | None) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 2. voice-resources-init в профиле [init] и не в default
+# 2. Renardo-сэмплы приходят с хоста, а не из образа
 # --------------------------------------------------------------------------- #
 
+SAMPLES_HOST_DIR = "/opt/rob_box/samples"
+SAMPLES_CONTAINER_DIR = "/root/.config/renardo/samples"
 
-def test_voice_resources_init_only_in_init_profile() -> None:
-    """``voice-resources-init`` помечен ``profiles: [init]``.
 
-    Гарантирует: ``docker compose up -d`` без ``--profile init`` НЕ
-    пытается стартовать init-контейнер (чей образ может быть ещё
-    не собран в registry → при offline registry это снова стоп).
+def test_no_voice_resources_init_service() -> None:
+    """Init-контейнера с сэмплами в compose быть не должно.
+
+    Он тянул с registry отдельный ~600-МБ образ при каждом деплое. Его
+    возвращение означало бы, что старт стека снова зависит от katana —
+    ровно та проблема, из-за которой появился issue #2610.
     """
     all_services = _all_services_with_profiles()
-    assert "voice-resources-init" in all_services, (
-        "voice-resources-init удалён из compose — это регрессия PR #2634. "
-        "Сервис обязан оставаться в profiles: [init] (см. ADR-0111)."
-    )
-    cfg = all_services["voice-resources-init"]
-    profiles = cfg.get("profiles") or []
-    assert "init" in profiles, (
-        f"voice-resources-init.profiles = {profiles!r}, expected ['init']. "
-        f"Без этого default 'up -d' запустит init-контейнер и упадёт на "
-        f"недоступном registry."
-    )
-
-    # Явная анти-проверка: в default он НЕ должен попадать.
-    default_services = _services_in_profile(None)
-    assert "voice-resources-init" not in default_services, (
-        "voice-resources-init попал в default-профиль — это регрессия. "
-        "Он обязан быть только в profiles: [init]."
+    assert "voice-resources-init" not in all_services, (
+        "voice-resources-init вернулся в compose. Сэмплы должны приезжать "
+        "на хост Ресурсным паком (запись renardo-samples в "
+        "docker/vision/scripts/resource_pack/manifest.yaml), а не образом."
     )
 
 
-# --------------------------------------------------------------------------- #
-# 3. Downstream supercollider + voice-assistant → voice-resources-init
-#    через required: false (partial startup)
-# --------------------------------------------------------------------------- #
+def test_renardo_samples_named_volume_is_gone() -> None:
+    """named-volume ``renardo_samples`` удалён — наполнять его больше некому."""
+    data = _load_raw_compose()
+    volumes = data.get("volumes") or {}
+    assert "renardo_samples" not in volumes, (
+        "named-volume renardo_samples вернулся. Пустой volume без "
+        "init-контейнера — это молча немая музыка: bind-mount с хоста "
+        "хотя бы видно в `docker inspect`."
+    )
 
 
 @pytest.mark.parametrize(
-    "service_name",
-    ["supercollider", "voice-assistant"],
+    ("service_name", "read_only"),
+    [("supercollider", True), ("voice-assistant", False)],
 )
-def test_downstream_uses_required_false_on_voice_resources_init(
-    service_name: str,
-) -> None:
-    """Downstream-зависимость на voice-resources-init — partial-startup-safe.
+def test_samples_come_from_host_bind_mount(service_name: str, read_only: bool) -> None:
+    """Оба потребителя монтируют один host-каталог по прежнему пути внутри.
 
-    compose v2 трактует ``depends_on.<svc>.condition`` как no-op, если
-    ``<svc>`` объявлен в профиле, который не активирован. Без явного
-    ``required: false`` это поведение зависит от версии compose, что
-    для нас регрессионно-нестабильно. Фикс: ``required: false``
-    явно говорит "если init-сервис не запускался, просто стартуй
-    downstream как обычно" (см. PR #2634).
+    Путь ВНУТРИ контейнера не менялся при переезде — именно поэтому ни один
+    Python-файл (sample_search.py, foxdot_init.sc) трогать не потребовалось.
+    supercollider получает каталог ``:ro`` — сэмплы меняет только хост.
     """
     services = _all_services_with_profiles()
-    cfg = services[service_name]
-    deps = cfg.get("depends_on") or {}
-    if not isinstance(deps, dict):
-        pytest.skip(
-            f"{service_name} использует list-form depends_on (старая форма), "
-            "формат ключей не совпадает с длинной формой condition. "
-            "Проверь вручную, что voice-resources-init стартует с "
-            "required: false (см. docker-compose.yaml)."
-        )
+    volumes = services[service_name].get("volumes") or []
+    expected = f"{SAMPLES_HOST_DIR}:{SAMPLES_CONTAINER_DIR}"
+    if read_only:
+        expected += ":ro"
 
-    assert "voice-resources-init" in deps, (
-        f"{service_name} не имеет depends_on на voice-resources-init. "
-        f"Без этого compose не сможет отслеживать готовность init-volume "
-        f"при запуске с --profile init (issue #2610)."
+    assert expected in volumes, (
+        f"{service_name} не монтирует {expected!r}. Найдено: {volumes!r}. "
+        f"Без этого монтирования сэмплы, разложенные Ресурсным паком на "
+        f"хосте, до контейнера не доедут — музыка уйдёт в synth-only."
     )
-    dep = deps["voice-resources-init"]
-    assert isinstance(dep, dict), (
-        f"{service_name}.depends_on.voice-resources-init = {dep!r}, "
-        "ожидалась длинная форма с condition и required."
-    )
-    assert dep.get("required") is False, (
-        f"{service_name}.depends_on.voice-resources-init.required = "
-        f"{dep.get('required')!r}, expected False. Без required: false "
-        f"compose v2 может упасть, если init-сервис не активирован "
-        f"профилем (регрессия issue #2610)."
-    )
-    assert dep.get("condition") == "service_completed_successfully", (
-        f"{service_name}.depends_on.voice-resources-init.condition = "
-        f"{dep.get('condition')!r}, expected service_completed_successfully. "
-        "Иначе supercollider стартанёт ДО того, как init-volume будет "
-        "заполнен samples (MusicSkill не сможет найти wav)."
+
+
+# --------------------------------------------------------------------------- #
+# 3. Ни один сервис не ждёт one-shot init-контейнера
+# --------------------------------------------------------------------------- #
+
+
+def test_nobody_waits_for_a_one_shot_init_container() -> None:
+    """``service_completed_successfully`` в compose быть не должно.
+
+    Это условие имело смысл только для init-контейнера с сэмплами и стоило
+    трёх итераций фиксов гонки (issue #2095, PR #2120, PR #2634): compose
+    инспектировал уже удалённый exited-контейнер и валил деплой с
+    «No such container: <HASH>». Init-контейнера нет — и условия быть не
+    должно; если оно появится снова, вернётся и гонка.
+    """
+    offenders: list[str] = []
+    for name, cfg in _all_services_with_profiles().items():
+        deps = cfg.get("depends_on") or {}
+        if not isinstance(deps, dict):
+            continue
+        for dep_name, dep_cfg in deps.items():
+            if isinstance(dep_cfg, dict) and (
+                dep_cfg.get("condition") == "service_completed_successfully"
+            ):
+                offenders.append(f"{name} → {dep_name}")
+
+    assert not offenders, (
+        "Появилось ожидание one-shot контейнера: " + ", ".join(offenders) +
+        ". Это возвращает гонку «No such container: <HASH>» из issue #2095."
     )
 
 
@@ -278,7 +286,7 @@ def test_ros_services_use_network_mode_host() -> None:
 
 
 def test_total_service_count_matches_known_inventory() -> None:
-    """17 сервисов всего (default + init + monitoring + ai).
+    """Порядка 16 сервисов всего (default + monitoring + ai).
 
     Это значение зафиксировано в PR #2634 acceptance-критерии #1.
     Если кто-то добавит/удалит сервис и не обновит инвентарь —
@@ -287,13 +295,12 @@ def test_total_service_count_matches_known_inventory() -> None:
     """
     all_services = _all_services_with_profiles()
     total = len(all_services)
-    # default + init + monitoring + ai должны давать 17 уникальных
-    # имён. Допускаем ±2 для будущих PR с обоснованным изменением.
+    # Было 17, стало 16: voice-resources-init удалён вместе с образом.
+    # Допускаем ±2 для будущих PR с обоснованным изменением.
     assert 15 <= total <= 19, (
-        f"обнаружено {total} сервисов в compose, ожидалось ~17 (PR #2634). "
+        f"обнаружено {total} сервисов в compose, ожидалось ~16. "
         f"Сервисы: {sorted(all_services.keys())}. "
-        f"Если это намеренное изменение — обновите этот guard и acceptance "
-        f"тест в scripts/tests/test_t_b79d0581_compose_acceptance.py."
+        f"Если это намеренное изменение — обновите этот guard."
     )
 
 

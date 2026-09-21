@@ -52,7 +52,6 @@ on:
           - led-matrix
           - ceiling-camera
           - voice-base
-          - voice-resources
           - voice-assistant
           - telegram-bot
           - supercollider
@@ -234,13 +233,6 @@ jobs:
                   DOCKERFILE="docker/vision/voice_base/Dockerfile"
                   BUILD_CONTEXT="docker/vision/voice_base"
                   BASE_IMAGE="localhost:5000/krikz/rob_box_base:rtabmap-${ROS_DISTRO}"
-                  ;;
-                "voice-resources"|"voice_resources")
-                  SERVICE_NAME="voice_resources"
-                  IMAGE_NAME="voice-resources"
-                  DOCKERFILE="docker/vision/voice_resources/Dockerfile"
-                  BUILD_CONTEXT="docker/vision"
-                  BASE_IMAGE=""
                   ;;
                 "apriltag")
                   SERVICE_NAME="apriltag"
@@ -493,6 +485,8 @@ jobs:
                 cp "/tmp/${f}" docker/vision/vision-hailo/wheels/
               else
                 echo "::error::${f} не найден ни в /opt/rob_box/vendor, ни в /tmp — real inference build невозможен" >&2
+                echo "::error::Это закрытый артефакт Hailo Developer Zone (нужен аккаунт), скриптом не качается." >&2
+                echo "::error::Что делать: docs/deployment/hailo-vendor-artifacts.md — §2 скачать, §3 извлечь .so из .deb, §4.1 положить в /opt/rob_box/vendor на этом build-хосте." >&2
                 exit 1
               fi
             done
@@ -548,20 +542,12 @@ jobs:
           # Acceptance B (#1482): verify SHA-image is in registry BEFORE
           # committing it into per-service .image-versions.{tag}. Иначе
           # deploy тянет несуществующий тег, робот не обновляется.
+          # Тело проверки живёт в scripts/ci/verify-image-in-registry.sh:
+          # копий этой функции было ТРИ (оба L-Build + Single Service), и они
+          # уже разъехались на одну строку сообщения. План
+          # docs/plans/2026-09-15-image-versions-seam.md §7.4.
           verify_in_registry() {
-            local TAG="$1"
-            local REPO="krikz/rob_box"
-            local URL="http://${LOCAL_REGISTRY}/v2/${REPO}/manifests/${TAG}"
-            local HTTP_CODE
-            HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
-              -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' \
-              "$URL" || echo "000")
-            if [ "$HTTP_CODE" != "200" ]; then
-              echo "❌ Verify FAIL: ${TAG} missing in registry (HTTP ${HTTP_CODE})" >&2
-              return 1
-            fi
-            echo "✅ Verify OK: ${TAG} present in registry"
-            return 0
+            bash scripts/ci/verify-image-in-registry.sh "${LOCAL_REGISTRY}" "$1"
           }
           if ! verify_in_registry "${SHA_TAG}"; then
             echo "   ⚠️  .image-versions НЕ будет обновлён этим коммитом" >&2
@@ -570,13 +556,19 @@ jobs:
 
           # Map service_name to .image-versions env var name
           case "$SERVICE_NAME" in
-            voice_resources)       VERSION_VAR="VOICE_RESOURCES_TAG" ;;
             voice_assistant)       VERSION_VAR="VOICE_ASSISTANT_TAG" ;;
             telegram_bot)          VERSION_VAR="TELEGRAM_BOT_TAG" ;;
             oak-d)                 VERSION_VAR="OAK_D_TAG" ;;
             led_matrix)            VERSION_VAR="LED_MATRIX_TAG" ;;
             ceiling-camera)        VERSION_VAR="CEILING_CAMERA_TAG" ;;
-            rtabmap) [ "$PI_TYPE" = "vision" ] && VERSION_VAR="RTABMAP_SYNC_TAG" || VERSION_VAR="RTABMAP_TAG" ;;
+            # rtabmap собирается ТОЛЬКО на Main Pi: job build-rtabmap есть
+            # в L-Build Main Pi Services.yml и отсутствует в Vision. Ветка
+            # PI_TYPE=vision писала сюда RTABMAP_SYNC_TAG — phantom-поле без
+            # владельца, его не читал ни compose, ни скрипты (проверено
+            # scripts/ci/check_image_versions_usage.sh). Поле удалено из
+            # .image-versions.*, и эта ветка удалена вместе с ним: иначе
+            # один запуск Single Service вернул бы его обратно.
+            rtabmap)               VERSION_VAR="RTABMAP_TAG" ;;
             twist_mux)             VERSION_VAR="TWIST_MUX_TAG" ;;
             robot_state_publisher) VERSION_VAR="ROBOT_STATE_PUBLISHER_TAG" ;;
             ros2_control)          VERSION_VAR="ROS2_CONTROL_TAG" ;;
@@ -655,7 +647,6 @@ jobs:
           echo "  - led-matrix (led_matrix)"
           echo "  - ceiling-camera"
           echo "  - voice-base (voice_base)"
-          echo "  - voice-resources (voice_resources)"
           echo "  - voice-assistant (voice_assistant)"
           echo "  - supercollider"
           echo "  - apriltag"

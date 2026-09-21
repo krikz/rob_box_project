@@ -9,8 +9,10 @@ name: "G: Vision Pi Cold-Start Tests"
 #      (compose-структура, systemd-юнит, override-bad-registry, offline-build).
 #   2. Проверяет, что ``docker compose config`` с override-bad-registry
 #      парсится без ошибок (override-механика PR #2634 жива).
-#   3. Проверяет, что voice-resources собирается offline (для cold-start e2e
-#      на железе).
+#   3. (удалено) offline-сборка образа voice-resources. Образ и его
+#      init-контейнер удалены: Renardo-сэмплы кладёт на хост Ресурсный
+#      пак (/opt/rob_box/samples), и на старте стека registry больше не нужен
+#      вообще — проверять «собирается ли он без сети» стало нечего.
 #   4. Артефакты: логи `docker compose ps`, `docker compose logs` —
 #      прикладываются для диагностики, если тесты красные.
 #
@@ -30,7 +32,7 @@ on:
       - main
     paths:
       - 'docker/vision/docker-compose.yaml'
-      - 'docker/vision/voice_resources/**'
+      - 'docker/vision/scripts/resource_pack/**'
       - 'scripts/setup/setup_vision_pi.sh'
       - 'scripts/tests/override-bad-registry*.yaml'
       - 'tests/vision/cold_start/**'
@@ -135,35 +137,6 @@ jobs:
             exit 1
           fi
 
-      - name: voice-resources offline build (cold-start e2e подготовка)
-        run: |
-          echo "=== docker build --network=none voice-resources-cold-start ==="
-          docker build \
-            --network=none \
-            -f docker/vision/voice_resources/Dockerfile.offline \
-            -t voice-resources-cold-start:test \
-            . 2>&1 | tail -25
-          echo "✅ voice-resources собирается без сети"
-
-      - name: Verify voice-resources-cold-start runs init_resources.sh
-        run: |
-          echo "=== Запуск voice-resources-cold-start: проверяем init_resources.sh ==="
-          # Создаём временный volume для имитации renardo_samples
-          docker run --rm \
-            -v cold-start-test-vol:/target \
-            voice-resources-cold-start:test 2>&1 | tee /tmp/init-resources.log
-          # Должно быть "Renardo samples already initialized" ИЛИ
-          # "WARNING: bundled Renardo samples not found — leaving volume empty"
-          if grep -qE "(Renardo samples already initialized|WARNING: bundled Renardo samples not found)" /tmp/init-resources.log; then
-            echo "✅ init_resources.sh отработал корректно"
-          else
-            echo "❌ init_resources.sh не отработал ожидаемо"
-            cat /tmp/init-resources.log
-            exit 1
-          fi
-          # Cleanup
-          docker volume rm cold-start-test-vol 2>/dev/null || true
-
       - name: Upload diagnostic artifacts (compose ps/logs)
         if: always()
         run: |
@@ -172,7 +145,6 @@ jobs:
           touch .env.secrets
           echo "=== docker compose config (без override) ===" > /tmp/cold-start-artifacts/README.txt
           docker compose -f docker-compose.yaml config --services > /tmp/cold-start-artifacts/services-default.txt 2>&1 || true
-          docker compose --profile init -f docker-compose.yaml config --services > /tmp/cold-start-artifacts/services-init.txt 2>&1 || true
           docker compose --profile monitoring -f docker-compose.yaml config --services > /tmp/cold-start-artifacts/services-monitoring.txt 2>&1 || true
           docker compose --profile ai -f docker-compose.yaml config --services > /tmp/cold-start-artifacts/services-ai.txt 2>&1 || true
           # cold-start override

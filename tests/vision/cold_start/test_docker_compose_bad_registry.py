@@ -7,16 +7,21 @@ exit≠0 и не поднимет стек.
 
 Реальные сценарии, которые мы покрываем:
   1. ``docker compose config`` (default) парсится без ошибок.
-  2. ``docker compose --profile init config`` парсится без ошибок.
-  3. ``docker compose config`` с ``-f override-bad-registry.yaml``
+  2. ``docker compose config`` с ``-f override-bad-registry.yaml``
      подменяет ``SERVICE_IMAGE_PREFIX`` на TEST-NET-1 (RFC 5737)
      и тоже парсится без ошибок — то есть наш override
      синтаксически валиден и override-механика работает.
-  4. ``docker compose config --services --profile init`` выводит
-     ожидаемый список сервисов (включая ``voice-resources-init``,
-     которого нет в default).
-  5. ``docker compose config --services`` НЕ содержит
-     ``voice-resources-init`` (default-профиль не активирует init).
+  3. Список сервисов default-профиля сходится со статическим
+     парсером из test_compose_cold_start.py.
+
+БЫЛО, НО УШЛО: проверки про ``--profile init`` и
+``voice-resources-init``. Образ с Renardo-сэмплами и его init-контейнер
+удалены — сэмплы кладёт на хост Ресурсный пак
+(``/opt/rob_box/samples``), и профиля ``init`` больше нет ни у одного
+сервиса. Проверять «стартует ли стек без init-образа» стало нечего:
+старт стека больше не ходит в registry за сэмплами вообще. Структурный
+инвариант, пришедший на смену (bind-mount вместо volume, никто не ждёт
+one-shot контейнера), проверяет test_compose_cold_start.py.
 
 Эти тесты требуют ``docker`` CLI в PATH. На CI без Docker они
 пропускаются с пометкой reason. Локально на dev-машине
@@ -189,8 +194,7 @@ def test_compose_config_with_service_image_prefix_override() -> None:
     services = parsed.get("services") or {}
 
     # Найдём хотя бы один сервис с in-house image, который должен был
-    # подмениться. Не все сервисы в default (voice-resources-init в
-    # профиле init). Проверяем voice-assistant, supercollider,
+    # подмениться. Проверяем voice-assistant, supercollider,
     # oak-d — точно in-house.
     inhouse_services = ["voice-assistant", "supercollider", "oak-d"]
     bad: list[str] = []
@@ -211,67 +215,7 @@ def test_compose_config_with_service_image_prefix_override() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 3. profile init: voice-resources-init присутствует
-# --------------------------------------------------------------------------- #
-
-
-def test_profile_init_includes_voice_resources_init() -> None:
-    """``--profile init`` ДОЛЖЕН включать voice-resources-init.
-
-    Acceptance #2 карточки t_b79d0581: voice-resources-init стартует
-    ТОЛЬКО с ``--profile init``, чтобы default ``up -d`` не пытался
-    его поднять (и не упал на отсутствующем registry).
-    """
-    env_secrets = COMPOSE_DIR / ".env.secrets"
-    env_secrets.touch(exist_ok=True)
-    result = subprocess.run(
-        ["docker", "compose", "--profile", "init", "-f", str(COMPOSE_FILE),
-         "config", "--services"],
-        cwd=COMPOSE_DIR,
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    assert result.returncode == 0, (
-        f"docker compose --profile init config exit={result.returncode}.\n"
-        f"STDERR:\n{result.stderr[-1000:]}"
-    )
-    services_list = result.stdout.strip().split("\n")
-    assert "voice-resources-init" in services_list, (
-        f"voice-resources-init не появился в --profile init. "
-        f"Сервисы: {services_list}"
-    )
-
-
-# --------------------------------------------------------------------------- #
-# 4. default profile: voice-resources-init НЕ включается
-# --------------------------------------------------------------------------- #
-
-
-def test_default_profile_excludes_voice_resources_init() -> None:
-    """Default profile (без ``--profile init``) НЕ должен включать voice-resources-init."""
-    env_secrets = COMPOSE_DIR / ".env.secrets"
-    env_secrets.touch(exist_ok=True)
-    result = subprocess.run(
-        ["docker", "compose", "-f", str(COMPOSE_FILE), "config", "--services"],
-        cwd=COMPOSE_DIR,
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    assert result.returncode == 0, (
-        f"docker compose config --services exit={result.returncode}.\n"
-        f"STDERR:\n{result.stderr[-1000:]}"
-    )
-    services_list = result.stdout.strip().split("\n")
-    assert "voice-resources-init" not in services_list, (
-        f"voice-resources-init попал в default-профиль (регрессия PR #2634). "
-        f"Сервисы: {services_list}"
-    )
-
-
-# --------------------------------------------------------------------------- #
-# 5. Полный список сервисов по профилям сходится с inventory из static-теста
+# 3. Полный список сервисов по профилям сходится с inventory из static-теста
 # --------------------------------------------------------------------------- #
 
 
@@ -293,7 +237,8 @@ def test_profile_inventory_matches_static_test() -> None:
     env_secrets.touch(exist_ok=True)
 
     # Соберём все сервисы из всех профилей через docker compose.
-    profiles = [None, "init", "monitoring", "ai"]
+    # Профиль "init" ушёл вместе с voice-resources-init.
+    profiles = [None, "monitoring", "ai"]
     dynamic_set: set[str] = set()
     for profile in profiles:
         cmd = ["docker", "compose"]

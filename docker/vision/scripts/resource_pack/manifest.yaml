@@ -1,0 +1,322 @@
+# ============================================================================
+# manifest.yaml — Ресурсный пак Vision Pi (SSoT версий/URL/sha256)
+# ============================================================================
+# План: docs/plans/2026-09-15-resource-pack.md §3 (формат), §5 (раскладка).
+# Потребитель: docker/vision/scripts/resource_pack/apply_resource_pack.sh
+#
+# Этот файл — ЕДИНСТВЕННЫЙ источник правды о том, какой бинарный ресурс
+# нужен роботу, откуда его взять, как проверить и куда положить. Смена
+# версии модели = правка одной строки здесь, а не Dockerfile + скрипт +
+# комментарий россыпью.
+#
+# ---------------------------------------------------------------------------
+# Поля записи
+# ---------------------------------------------------------------------------
+#   name          — уникальный идентификатор (им же оперирует --only).
+#   type          — open   : публичный URL, скрипт умеет скачать сам.
+#                   gated  : закрытый вендорный артефакт (Hailo Developer
+#                            Zone). Скрипт НЕ скачивает, только проверяет
+#                            наличие + sha256 и честно говорит, чего нет.
+#                   build-time / git : в доставку НЕ входит, запись только
+#                            для полноты реестра (см. §6.3, §6.4 плана).
+#   kind          — hef | model-file | model-zip | sample-pack | deb |
+#                   wheel | shared-lib.
+#   url           — для type: open, если ресурс — ОДИН файл по прямому URL.
+#   fetch_hook    — для type: open, если ресурс одним URL не описывается
+#                   (дерево из тысяч файлов, свой индекс, свои ретраи).
+#                   Значение — ИМЯ хука, а не команда: манифест хранит ФАКТ
+#                   наличия хука, логика остаётся кодом скрипта (тот же
+#                   приём, что pre_build: fetch_hailort_wheel в
+#                   docker/build-manifest.yaml — план service-manifest §2.5).
+#                   Неизвестное имя хука = невалидный манифест (exit 2), а не
+#                   тихий пропуск. url и fetch_hook взаимоисключающи.
+#   vendor_file   — для type: gated, имя файла в /opt/rob_box/vendor.
+#   version       — для type: gated, версия вендорного пака.
+#   sha256        — hex, регистр не важен. ПУСТАЯ строка означает
+#                   «эталон не зафиксирован» — скрипт в этом случае громко
+#                   предупреждает, что целостность НЕ проверена (ADR-0018:
+#                   молчаливая непроверка хуже честной надписи «не проверено»).
+#   size_bytes    — справочно, скриптом не проверяется.
+#   unpack        — none | zip.
+#   verify_file   — для unpack: zip и для fetch_hook, относительный путь
+#                   внутри target, наличие которого доказывает, что
+#                   распаковалось/скачалось то самое.
+#   target        — абсолютный путь на хосте (под /opt/rob_box — тогда его
+#                   можно переопределить через RESOURCE_PACK_ROOT) либо путь
+#                   относительно корня репозитория (build-context на katana).
+#   target_host   — для type: gated: vision-pi | katana. Запись проверяется
+#                   только если скрипту передали соответствующий --host.
+#   required      — hard : отсутствие роняет деплой (exit 1).
+#                   soft : отсутствие = объявленная деградация, деплой жив.
+#   on_missing    — fail-deploy | degrade | degrade-build (пояснение к
+#                   required, человекочитаемое).
+#   degrade_note  — что именно деградирует. Печатается в лог при промахе.
+#   consumers     — кто это читает (file:line на момент записи).
+#
+# ВАЖНО про sha256: несовпадение sha256 — ВСЕГДА hard-ошибка, даже для
+# required: soft. Отсутствие ресурса — это деградация (её можно объявить
+# честно). Файл с другим содержимым — это НЕ деградация, а неизвестное
+# состояние: непонятно, что именно лежит на диске и что оно сделает с
+# роботом. Скрипт в этом случае падает и ничего не устанавливает.
+# ============================================================================
+version: 1
+
+resources:
+  # ---------- открытые: Hailo HEF (Этап 1-2) ----------
+  # До Ресурсного пака их качали два почти дословно одинаковых скрипта
+  # docker/vision/scripts/vision-hailo/download_{yolov8n,retinaface}_hef.sh.
+  - name: yolov8n-hef
+    type: open
+    kind: hef
+    url: https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v2.14.0/hailo8/yolov8n.hef
+    # Hailo официально не публикует sha256 для compiled .hef — ровно как и
+    # в download_yolov8n_hef.sh:31-33 (HEF_SHA256="" по умолчанию).
+    # Открытый вопрос плана §13.4: кто и когда снимает эталон с известно
+    # хорошего файла. До этого момента скрипт честно пишет «не проверено».
+    sha256: ""
+    unpack: none
+    target: /opt/rob_box/models/yolov8n.hef
+    required: soft
+    on_missing: degrade
+    degrade_note: >
+      vision-hailo остаётся в stub-режиме (capability-honest, ADR-0018);
+      /vision/hailo/events публикуется, но пуст. Деплой не блокируется.
+    consumers:
+      - "vision-hailo (HEF_PATH env, docker/vision/config/hailo_models.yaml:26-28)"
+
+  - name: retinaface-hef
+    type: open
+    kind: hef
+    url: https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v2.14.0/hailo8/retinaface_mobilenet_v1.hef
+    # Единственный ресурс, у которого эталон уже был зафиксирован (issue
+    # #2599). Записан строчными: сравнение в скрипте регистронезависимое,
+    # но хранить лучше в том же регистре, что печатает sha256sum — на этом
+    # заглавном хексе уже один раз сгорел download_retinaface_hef.sh.
+    sha256: "1fbc7be2554cceba18986cefa73983a59057ac5457bc75173fb2e09457bff472"
+    size_bytes: 5993660
+    unpack: none
+    target: /opt/rob_box/models/retinaface_mobilenet_v1.hef
+    required: soft
+    on_missing: degrade
+    degrade_note: "vision-face остаётся в stub, лицевая детекция недоступна."
+    consumers:
+      - "vision-face (FACE_HEF_PATH env, docker-compose.yaml:795)"
+
+  # ---------- открытые: STT/TTS модели (Этап 3) ----------
+  # До Этапа 3 обе модели качались на этапе СБОРКИ образа voice-base
+  # (docker/vision/voice_base/Dockerfile, ступень «Скачивание STT/TTS
+  # моделей») и весили ~227 МиБ на диске (измерено 21.09.2026 на Vision Pi:
+  # vosk 88 МиБ распакованный + silero 139 МиБ). Теперь их кладёт на хост этот
+  # манифест, а контейнер видит их через bind-mount /opt/rob_box/models:/models:ro
+  # (docker-compose.yaml, сервисы voice-assistant и telegram-bot). Пути ВНУТРИ
+  # контейнера не изменились — ни один Python-файл трогать не потребовалось.
+  #
+  # Vosk у этого шва ДВА потребителя в разных контейнерах. telegram-bot
+  # подключён вторым, 21.09.2026: его Dockerfile качал ту же модель своей
+  # ступенью сборки — пятый путь доставки, которого не было в реестре плана
+  # §1.1 (ADR-0125 §8 п.3). Теперь обоих кормит одна запись манифеста, и
+  # версия модели не может разъехаться между образами молча.
+  - name: vosk-ru-small
+    type: open
+    kind: model-zip
+    url: https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip
+    # ПУСТО ОСОЗНАННО: эталона нет нигде в репозитории (в Dockerfile его тоже
+    # не было). Кто и когда снимает его с известно хорошего файла — открытый
+    # вопрос плана §13.4. До этого момента скрипт при каждом скачивании
+    # громко пишет «целостность НЕ проверена», а не делает вид, что проверил.
+    # Снято 21.09.2026 с фактически скачанного архива (curl на katana). Это
+    # НЕ «официальная контрольная сумма вендора» — alphacephei её не публикует,
+    # — а фиксация того, что реально приехало и реально заработало на роботе.
+    # Смысл поля тут: заметить подмену/обновление апстрима, а не подтвердить
+    # подлинность. Если alphacephei выложит новую сборку модели, деплой
+    # упадёт красным — и это правильнее, чем молча подсунуть роботу другую
+    # модель распознавания.
+    sha256: "961d5ff98a17f4aa6de69864d0aa71fa5bac682301d2b5d17a3f24c5c99a46d4"
+    size_bytes: 46236750  # 44 МиБ, измерено, а не из комментария Dockerfile
+    unpack: zip
+    # Тот же sentinel, что стоял в Dockerfile: `test -f .../README`. Именно
+    # он однажды поймал распаковку не туда (комментарий Dockerfile про
+    # переименование в /models/vosk-model-ru).
+    verify_file: README
+    target: /opt/rob_box/models/vosk-model-small-ru-0.22
+    required: hard
+    on_missing: fail-deploy
+    degrade_note: >
+      Без модели stt_node не стартует: «Folder does not contain model files».
+      Распознавание речи недоступно целиком, деградации «частично» тут нет.
+      У второго потребителя, telegram_node, последствие мягче (бот живёт,
+      теряется офлайн-фолбэк STT при недоступном Yandex) — но required
+      определяется по худшему последствию, поэтому hard.
+    consumers:
+      - "stt_node (model_path, docker/vision/config/voice_assistant/stt_node.yaml:8)"
+      - "stt_node (src/rob_box_voice/config/stt_node.yaml:14)"
+      - "telegram_node, VOSK_MODEL_PATH по умолчанию (src/rob_box_telegram/rob_box_telegram/voice_processor.py:40)"
+
+  - name: silero-tts-v5-ru
+    type: open
+    kind: model-file
+    url: https://models.silero.ai/models/tts/ru/v5_ru.pt
+    # Снято 21.09.2026 с файла, реально разложенного на Vision Pi этим же
+    # скриптом (см. комментарий у vosk-ru-small про смысл поля).
+    sha256: "7ba04d42340fe0398042eed2e0d12d62e23096d626b1b9feff4dcb1309197ab4"
+    # ИЗМЕРЕНО: 145 382 211 байт (139 МиБ), а НЕ ~68 МБ, как утверждал
+    # комментарий в voice_base/Dockerfile и план. Ошибка вдвое.
+    size_bytes: 145382211
+    unpack: none
+    target: /opt/rob_box/models/silero/v5_ru.pt
+    required: hard
+    on_missing: fail-deploy
+    degrade_note: >
+      tts_node теряет кандидатный путь №1. Остаются fallback'и (/cache/tts,
+      torch.hub), но это именно fallback'и — молчаливо полагаться на них
+      нельзя, поэтому запись hard.
+    consumers:
+      - "tts_node (tts_node.py:1850-1854, кандидатный путь №1)"
+
+  # ---------- открытые: Renardo/FoxDot сэмплы (через хук-фетчер) ----------
+  # До этой записи сэмплы доставлялись ОТДЕЛЬНЫМ образом voice-resources:
+  # Dockerfile качал их на этапе сборки, init-контейнер voice-resources-init
+  # копировал их в named-volume renardo_samples при каждом деплое, а оба
+  # потребителя монтировали этот volume. Образ, init-контейнер и volume
+  # удалены: сэмплы приезжают на хост тем же швом и в тот же момент, что и
+  # STT/TTS-модели, а в контейнеры попадают bind-mount'ом
+  # /opt/rob_box/samples. Пути ВНУТРИ контейнеров не изменились
+  # (/root/.config/renardo/samples) — ни одного Python-файла трогать не
+  # потребовалось.
+  #
+  # Это расходится с ADR-0111 §2.1 в части «сэмплы печь в voice-base»:
+  # ADR-0111 ликвидировал отдельный образ (это сделано здесь), но выбрал
+  # bake-in, а не host-доставку. Решение владельца репозитория от
+  # 21.09.2026 — host-доставка. Формально это фиксирует отдельный ADR;
+  # здесь запись только о механике.
+  - name: renardo-samples
+    type: open
+    kind: sample-pack
+    # url НЕТ осознанно: пак — это не файл, а дерево из тысяч .wav,
+    # описанное collection_index.json на collections.renardo.org, со своим
+    # обходом, своим пулом потоков и двухуровневыми ретраями. Выразить это
+    # полями YAML значило бы замаскировать императивную логику под данные.
+    # Манифест хранит ФАКТ наличия хука; сам хук — код рядом:
+    # docker/vision/scripts/resource_pack/fetch_renardo_samples.py
+    fetch_hook: fetch_renardo_samples
+    # ПУСТО ОСОЗНАННО и иначе, чем у vosk/silero: там эталон не снят, но
+    # снять его можно. Здесь снимать нечего в принципе — target это каталог
+    # на ~600 МБ и тысячи файлов, а не один архив. Скрипт честно пишет
+    # «целостность НЕ проверена», а не делает вид, что проверил (ADR-0018).
+    sha256: ""
+    # ОЦЕНКА, не измерение: «~600 МБ» из ADR-0111 §6 и плана §1.2. Поле
+    # справочное, скриптом не проверяется; заменить на измеренное после
+    # первого прогона на роботе.
+    size_bytes: 629145600
+    # Тот же маркер, на котором стояла идемпотентность фетчера с самого
+    # начала. Есть маркер → пак скачан целиком (фетчер пишет его ТОЛЬКО
+    # после успеха), нет маркера → качаем.
+    verify_file: 0_foxdot_default/downloaded_at.txt
+    target: /opt/rob_box/samples
+    required: soft
+    on_missing: degrade
+    degrade_note: >
+      Музыка уходит в synth-only: MusicSkill/Renardo не находит WAV,
+      scsynth не может прочитать буферы. Диалог, STT и TTS не затронуты —
+      это уже задокументированная деградация (ADR-0111 §2.7), поэтому
+      soft: деплой из-за сэмплов падать не должен.
+    consumers:
+      - "supercollider (WAV buffers, /root/.config/renardo/samples:ro)"
+      - "voice-assistant Renardo (src/rob_box_voice/rob_box_voice/core/sample_search.py)"
+
+  # ---------- закрытые (gated): Hailo Developer Zone 4.24.0 ----------
+  # ЭТАП 4 ВЫПОЛНЕН ЧАСТИЧНО (21.09.2026): sha256 снят у двух записей
+  # katana, у двух записей vision-pi снять НЕ С ЧЕГО — см. комментарии
+  # внутри этих записей.
+  #
+  # sha256 заполняется ВРУЧНУЮ человеком: файлы
+  # лежат только на katana и на Vision Pi, скрипту (и тем более CI) они
+  # недоступны, скачать их автоматически нельзя — нужен аккаунт Developer
+  # Zone. Процедура: docs/deployment/hailo-vendor-artifacts.md,
+  # план §4.1, §7 Этап 4 п.1.
+  #
+  # Пока RESOURCE_PACK_HOST/--host не передан, apply_resource_pack.sh эти
+  # записи ПРОПУСКАЕТ (а не делает вид, что проверил): один и тот же
+  # каталог /opt/rob_box/vendor на katana и на Pi содержит РАЗНОЕ, и
+  # угадывать, на какой машине идёт прогон, скрипт не имеет права.
+  - name: hailort-pcie-driver-deb
+    type: gated
+    kind: deb
+    vendor_file: hailort-pcie-driver_4.24.0_all.deb
+    version: "4.24.0"
+    # ЭТАП 4, ПРОВЕРЕНО 21.09.2026: sha256 снять НЕ С ЧЕГО. На Vision Pi
+    # каталога /opt/rob_box/vendor не существует вовсе (ls → No such file),
+    # а сам пакет УЖЕ УСТАНОВЛЕН: dpkg -l → "ii hailort-pcie-driver 4.24.0
+    # all". То есть .deb был применён и не сохранён — зеркала у закрытых
+    # артефактов нет ни на роботе, ни в репозитории (план §4.1/§4.3).
+    # Поле остаётся пустым не потому, что «не дошли руки», а потому, что
+    # эталон физически утрачен: его вернёт только повторная выгрузка из
+    # Developer Zone.
+    sha256: ""
+    target_host: vision-pi
+    target: /opt/rob_box/vendor/hailort-pcie-driver_4.24.0_all.deb
+    required: soft
+    on_missing: degrade
+    degrade_note: "Hailo AI HAT не настраивается, vision-hailo/vision-face — stub."
+    consumers:
+      - "scripts/setup/setup_node.sh:setup_hailo_ai_hat() (host driver, DKMS)"
+
+  - name: hailort-arm64-deb
+    type: gated
+    kind: deb
+    vendor_file: hailort_4.24.0_arm64.deb
+    version: "4.24.0"
+    # ЭТАП 4, ПРОВЕРЕНО 21.09.2026: то же, что у hailort-pcie-driver-deb —
+    # файла на Vision Pi нет, пакет установлен (dpkg -l → "ii hailort
+    # 4.24.0 arm64"). Эталон снять не с чего.
+    sha256: ""
+    target_host: vision-pi
+    target: /opt/rob_box/vendor/hailort_4.24.0_arm64.deb
+    required: soft
+    on_missing: degrade
+    degrade_note: "hailortcli недоступен; источник libhailort.so отсутствует."
+    consumers:
+      - "scripts/setup/setup_node.sh:setup_hailo_ai_hat()"
+
+  - name: hailort-whl
+    type: gated
+    kind: wheel
+    vendor_file: hailort-4.24.0-cp310-cp310-linux_aarch64.whl
+    version: "4.24.0"
+    # Снято 21.09.2026 с /opt/rob_box/vendor на katana (9 956 553 байта).
+    sha256: "99da327b06a64ab8e5c87f09fc95cc68d2542d0f49b72369048ac003dc578e2a"
+    target_host: katana
+    target: docker/vision/vision-hailo/wheels/hailort-4.24.0-cp310-cp310-linux_aarch64.whl
+    required: soft
+    on_missing: degrade-build
+    degrade_note: >
+      Сборка vision-hailo с HAILO_INSTALL_BINDING=whl невозможна. NB: сегодня
+      это НЕ деградация, а exit 1 в L-Build Vision Pi Services.yml:518-519 —
+      расхождение зафиксировано в плане §11.4 и открыто в §13.3.
+    consumers:
+      - "docker/vision/vision-hailo/Dockerfile:120-131 (HAILO_INSTALL_BINDING=whl)"
+      - "L-Build Vision Pi Services.yml:507-522 (Fetch HailoRT wheel + lib)"
+
+  - name: libhailort-so
+    type: gated
+    kind: shared-lib
+    vendor_file: libhailort.so.4.24.0
+    version: "4.24.0"
+    # Снято 21.09.2026 с /opt/rob_box/vendor на katana (11 665 304 байта).
+    sha256: "5fb8e54bb9945a3566930701af8dfc600edb5a15a7aca328b59cc18ce8d5a12c"
+    target_host: katana
+    target: docker/vision/vision-hailo/wheels/libhailort.so.4.24.0
+    required: soft
+    on_missing: degrade-build
+    degrade_note: "Рантайм-библиотека HailoRT не попадёт в образ vision-hailo."
+    consumers:
+      - "docker/vision/vision-hailo/Dockerfile:124"
+
+  # ---------- вне доставки Ресурсного пака, только для реестра ----------
+  - name: sound-pack
+    type: git
+    note: >
+      Сознательно НЕ включён в host-доставку — 884 КБ, уже в репозитории,
+      уже надёжно доставляется git reset --hard вместе с кодом. План §6.4.
+    consumers:
+      - "sound.py:PlaySoundTool (5 кандидатных путей, sound.py:43-49)"

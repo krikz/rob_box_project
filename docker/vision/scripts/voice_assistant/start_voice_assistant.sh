@@ -23,15 +23,17 @@ fi
 echo "Проверка аудио устройств..."
 arecord -l | grep -i "respeaker" || echo "⚠ ReSpeaker audio не найден"
 
-# Проверка shared volume renardo семплов.
-# Инициализация теперь выполняется отдельным one-shot контейнером voice-resources-init.
-SAMPLES_VOLUME=/root/.config/renardo/samples
-if [ -f "${SAMPLES_VOLUME}/.initialized" ]; then
-    echo "✓ Renardo samples volume initialized ($(find "${SAMPLES_VOLUME}" -name '*.wav' | wc -l) WAV files)"
-elif [ -d "${SAMPLES_VOLUME}" ] && [ -n "$(find "${SAMPLES_VOLUME}" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
-    echo "✓ Renardo samples volume present without marker ($(find "${SAMPLES_VOLUME}" -name '*.wav' | wc -l) WAV files)"
+# Проверка renardo-сэмплов. Раньше это был named-volume, который заливал
+# one-shot контейнер voice-resources-init (маркер .initialized); теперь это
+# bind-mount хостового /opt/rob_box/samples, который наполняет Ресурсный пак
+# на деплое, а маркером служит downloaded_at.txt самого фетчера.
+SAMPLES_DIR=/root/.config/renardo/samples
+if [ -f "${SAMPLES_DIR}/0_foxdot_default/downloaded_at.txt" ]; then
+    echo "✓ Renardo samples ready ($(find "${SAMPLES_DIR}" -name '*.wav' | wc -l) WAV files)"
+elif [ -d "${SAMPLES_DIR}" ] && [ -n "$(find "${SAMPLES_DIR}" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
+    echo "✓ Renardo samples present without marker ($(find "${SAMPLES_DIR}" -name '*.wav' | wc -l) WAV files)"
 else
-    echo "⚠ Renardo samples volume is empty — synth-only mode"
+    echo "⚠ Renardo samples missing (/opt/rob_box/samples на хосте пуст) — synth-only mode"
 fi
 
 # Создать директорию для ТТС кэша

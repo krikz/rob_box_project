@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 # download_retinaface_hef.sh — скачать retinaface_mobilenet_v1.hef (ADR-0089 Phase 2).
 #
+# ⚠️ ЗАМЕНЕНО РЕСУРСНЫМ ПАКОМ (Этап 2, docs/plans/2026-09-15-resource-pack.md).
+#    Деплой (`L-Deploy and Verify.yml`, шаг «[Vision Pi] Ensure HEF models»)
+#    этот скрипт больше НЕ вызывает — вместо него
+#    docker/vision/scripts/resource_pack/apply_resource_pack.sh
+#    --only yolov8n-hef,retinaface-hef (запись retinaface-hef в manifest.yaml,
+#    тот же sha256, сверяется тестом tests/unit/docker/test_resource_pack.py).
+#    Скрипт оставлен на один релиз-цикл как быстрый откат (план §7 Этап 2 п.2)
+#    и подлежит удалению Этапом 5 после N успешных прогонов деплоя.
+#    Ручной откат: вызвать этот скрипт напрямую на Vision Pi.
+#
 # Issue #2599 PR-A: лицевая детекция без идентификации. Скрипт — 1:1 по образцу
 # download_yolov8n_hef.sh (ADR-0104, issue #2531 acceptance #10):
 #
