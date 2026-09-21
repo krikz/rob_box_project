@@ -48,6 +48,14 @@ LAZY_WHITELIST = frozenset({
     # ломается. Lazy — чтобы unit-тесты, не поднимающие scheduler, не
     # зависели от опциональной инфраструктуры.
     "rob_box_voice.scheduler",
+    # rob_box_perception_msgs.msg — лицевой повод «Встреча» (issue #2599
+    # PR-C). Того же рода optional, что rob_box_mcp_tools выше: в
+    # package.xml у rob_box_voice этой зависимости НЕТ и быть не должно —
+    # dialogue_node ездит и на Main Pi, где лицевой ноды нет вовсе, а
+    # голосовой диалог обязан работать без лица. Импорт стоит в
+    # try/except внутри ``_subscribe_vision_events``: не собралось —
+    # WARN в лог и работаем как раньше.
+    "rob_box_perception_msgs.msg",
 })
 
 # Эти модули ОБЯЗАНЫ быть top-of-file.
