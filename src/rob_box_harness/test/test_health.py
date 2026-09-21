@@ -145,6 +145,38 @@ def test_is_auth_failure_detects_auth_error_and_401_403() -> None:
     assert is_auth_failure(RateLimitError(_QUOTA_MSG)) is False
 
 
+def test_is_auth_failure_detects_grpc_permission_denied_and_unauthenticated() -> None:
+    """Issue #2702 — Yandex TTS wraps grpc.RpcError into a generic
+    Exception whose message embeds ``e.code()`` (real prod log,
+    2026-09-17): "Yandex gRPC error: StatusCode.PERMISSION_DENIED - ...".
+    Such an error is exactly as permanent as a bad API key (ADR-0124:
+    the Yandex folder is missing an IAM role, not a transient network
+    hiccup) and must get the long TTL, not the 30s transient one.
+    """
+    assert (
+        is_auth_failure(
+            ProviderError(
+                "Yandex gRPC error: StatusCode.PERMISSION_DENIED - "
+                "account has no permission"
+            )
+        )
+        is True
+    )
+    assert (
+        is_auth_failure(
+            ProviderError("Yandex gRPC error: StatusCode.UNAUTHENTICATED - bad token")
+        )
+        is True
+    )
+    # A genuinely transient gRPC code must NOT be reclassified as permanent.
+    assert (
+        is_auth_failure(
+            ProviderError("Yandex gRPC error: StatusCode.UNAVAILABLE - connection reset")
+        )
+        is False
+    )
+
+
 # ---------------------------------------------------------------------------
 # HealthCache
 # ---------------------------------------------------------------------------
