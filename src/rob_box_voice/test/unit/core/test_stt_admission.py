@@ -31,6 +31,7 @@ Pure-Python — no ROS2, no rclpy. Covers:
 from __future__ import annotations
 
 import logging
+import sys
 from typing import Dict, List, Optional, Tuple
 
 import pytest
@@ -840,3 +841,107 @@ def test_default_barge_in_policy_is_replace() -> None:
     # Mirrors the legacy ``getattr(self, "_barge_in_policy", "replace")``
     # default. A change here is a regression.
     assert DEFAULT_BARGE_IN_POLICY == "replace"
+
+
+# ---------------------------------------------------------------------------
+# Issue #2713 — logger severity must not vary per call-site
+# ---------------------------------------------------------------------------
+#
+# rclpy's ``RcutilsLogger.log()`` caches the logging severity **by
+# call-site** (the caller's file/line/function) and raises
+# ``ValueError('Logger severity cannot be changed between calls.')`` if
+# the same call-site is later hit with a different severity. A plain
+# ``Mock()``/``logging.Logger`` does not reproduce that contract at all
+# (that is exactly why the bug shipped — the real unit tests used
+# ``logging.Logger``, which has no such cache). ``_RcutilsLikeLogger``
+# below reproduces the cache so a regression here would fail loudly,
+# the same way it did on the robot on 2026-09-21.
+
+
+class _RcutilsLikeLogger:
+    """Minimal stand-in for ``rclpy.impl.rcutils_logger.RcutilsLogger``.
+
+    Reproduces the one behaviour that matters for issue #2713: a given
+    call-site (the caller's ``(filename, lineno, function)``) is only
+    ever allowed one severity for its lifetime. A second call from the
+    *same* line with a *different* severity raises ``ValueError`` —
+    mirroring the real crash from the robot's traceback.
+    """
+
+    def __init__(self) -> None:
+        self.records: List[Tuple[str, str]] = []
+        self._severity_by_site: Dict[Tuple[str, int, str], str] = {}
+
+    def _log(self, severity: str, message: str) -> None:
+        # Frame 0 = this method, frame 1 = the .info()/.warning()
+        # wrapper below, frame 2 = whoever actually wrote
+        # ``self.logger.info(...)`` / ``self.logger.warning(...)`` —
+        # i.e. the real call-site, exactly what rcutils keys on.
+        caller = sys._getframe(2)
+        site = (caller.f_code.co_filename, caller.f_lineno, caller.f_code.co_name)
+        prev = self._severity_by_site.get(site)
+        if prev is not None and prev != severity:
+            raise ValueError("Logger severity cannot be changed between calls.")
+        self._severity_by_site[site] = severity
+        self.records.append((severity, message))
+
+    def info(self, message: str) -> None:
+        self._log("INFO", message)
+
+    def warning(self, message: str) -> None:
+        self._log("WARNING", message)
+
+
+class TestIssue2713LoggerSeverityCallSite:
+    def test_handled_then_drop_same_admission_no_crash(self) -> None:
+        # First a HANDLED (-> WARNING), then a DROP (-> INFO) through
+        # the SAME SttAdmission/logger — the exact sequence seen on
+        # the robot (a run of "handled: step=wake_word" WARNs followed
+        # by a DROP that used to crash the node).
+        logger = _RcutilsLikeLogger()
+        admission = _admission(logger=logger)
+
+        handled_ctx = _ctx(
+            text="робот замолчи", text_lower="робот замолчи",
+            raw="робот замолчи", skip_counter={},
+        )
+        out1 = admission.evaluate(handled_ctx, _RecordingHost(handle_silence=True))
+        assert out1.kind is SttOutcomeKind.HANDLED
+
+        drop_ctx = _ctx(text="", text_lower="", skip_counter={})
+        out2 = admission.evaluate(drop_ctx, _RecordingHost())
+        assert out2.kind is SttOutcomeKind.DROP
+
+        assert [sev for sev, _ in logger.records] == ["WARNING", "INFO"]
+
+    def test_drop_then_handled_same_admission_no_crash(self) -> None:
+        # Reverse order — DROP first, then HANDLED.
+        logger = _RcutilsLikeLogger()
+        admission = _admission(logger=logger)
+
+        drop_ctx = _ctx(text="", text_lower="", skip_counter={})
+        out1 = admission.evaluate(drop_ctx, _RecordingHost())
+        assert out1.kind is SttOutcomeKind.DROP
+
+        handled_ctx = _ctx(
+            text="робот замолчи", text_lower="робот замолчи",
+            raw="робот замолчи", skip_counter={},
+        )
+        out2 = admission.evaluate(handled_ctx, _RecordingHost(handle_silence=True))
+        assert out2.kind is SttOutcomeKind.HANDLED
+
+        assert [sev for sev, _ in logger.records] == ["INFO", "WARNING"]
+
+    def test_stub_logger_actually_detects_shared_call_site(self) -> None:
+        # Sanity check on the stub itself: if HANDLED and DROP were
+        # (incorrectly) logged from the same line, the stub must raise
+        # — otherwise the two tests above would be false negatives.
+        logger = _RcutilsLikeLogger()
+
+        def _shared_call_site(severity: str) -> None:
+            log_fn = logger.warning if severity == "WARNING" else logger.info
+            log_fn("same line for both severities")
+
+        _shared_call_site("WARNING")
+        with pytest.raises(ValueError, match="severity cannot be changed"):
+            _shared_call_site("INFO")
