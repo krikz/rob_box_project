@@ -53,12 +53,20 @@ from typing import (
 from .dialogue_guards import (
     ActionClaimRule,
     build_babble_retry_prompt,
+    build_hallucinated_midi_retry_prompt,
+    build_phantom_action_retry_prompt,
     build_renardo_code_retry_prompt,
     build_system_regurgitate_retry_prompt,
     build_tool_retry_prompt,
     build_unbacked_action_retry_prompt,
+    build_universal_action_claim_retry_prompt,
+    build_unknown_melody_retry_prompt,
+    detect_hallucinated_midi_in_tools,
+    detect_phantom_action_claim,
     detect_required_tool,
     detect_unbacked_action_claim,
+    detect_universal_action_claim,
+    detect_unknown_melody_claim,
     extract_renardo_code_lines,
     is_metalanguage_babble,
     is_planning_narration,
@@ -112,12 +120,20 @@ class TurnContext:
             command, not the synthetic CRITICAL prompt (issue #1204).
         is_dj_auto: ``True`` for DJ-mode tick transitions (Bug B path). The
             music guard uses it; everything else ignores it.
+        has_error: ``True`` when ``DialogResult.error is not None`` for this
+            turn. Issue #2549 — :class:`UniversalActionClaimGuard` must NOT
+            retry on an already-errored turn (mirrors the legacy
+            ``result.error is None`` gate at the ``_handle_result`` call
+            site). Added alongside the guard itself (issue #2556) rather
+            than threading a raw ``DialogResult`` through the orchestrator,
+            which would leak a dialogue_node-specific type into ``core/``.
         speech_id: Optional speech-id for log correlation. Not interpreted by
             guards; carried for diagnostics.
     """
 
     user_input: str
     is_dj_auto: bool = False
+    has_error: bool = False
     speech_id: Optional[str] = None
 
 
@@ -775,9 +791,236 @@ class PlanningNarrationHardMute:
         )
 
 
+@dataclass(frozen=True)
+class HallucinatedMidiGuard:
+    """Issue #2560 — LLM invents a fantasy MIDI pattern ``pe<n>le<n>f``.
+
+    Ported from ``DialogueNode._check_hallucinated_midi_and_retry``
+    (dialogue_node.py) as part of issue #2556 — logic moved AS-IS, only
+    the DSM-transition / budget-consumption / one-shot-flag side effects
+    stay behind in the dialogue_node adapter for now (same split as the
+    six guards above: the adapter still owns ROS-bound effects until a
+    follow-up card migrates the per-guard one-shot flags into
+    :class:`TurnState`, see the docstring on that field).
+
+    Wraps :func:`detect_hallucinated_midi_in_tools`, which scans
+    ``spoken`` for the ``pe[0-9]+le[0-9]+f`` FoxDot/renardo pattern the
+    model hallucinates instead of calling ``lookup_melody`` for a known
+    tune (Grieg, Beethoven, ...). Must run AFTER
+    :class:`EmbeddedRenardoCodeGuard` and BEFORE
+    :class:`UnbackedActionClaimGuard` — see the legacy comment this guard
+    is ported from (dialogue_node.py, "#2560 ... Должен идти ПОСЛЕ
+    _check_embedded_renardo_code_and_retry ... и ПЕРЕД action-claim") and
+    :data:`DEFAULT_GUARD_ORDER` below, which now encodes that requirement
+    as position rather than prose.
+    """
+
+    name: str = "hallucinated_midi"
+
+    def evaluate(self, ctx: GuardContext) -> Optional[Verdict]:
+        if not ctx.reply.spoken:
+            return None
+        pattern = detect_hallucinated_midi_in_tools(
+            spoken=ctx.reply.spoken,
+            tools_called=ctx.reply.tools_called,
+        )
+        if pattern is None:
+            return None
+        prompt = build_hallucinated_midi_retry_prompt(
+            user_input=ctx.turn.user_input,
+            pattern=pattern,
+        )
+        return Verdict(
+            kind=VerdictKind.RETRY,
+            guard_name=self.name,
+            prompt=prompt,
+        )
+
+
+@dataclass(frozen=True)
+class UnknownMelodyClaimGuard:
+    """Issue #2562 Bug F — LLM claims "I don't know that melody" without
+    ever calling a search tool.
+
+    Ported from ``DialogueNode._check_unknown_melody_claim_and_retry``
+    (issue #2556). Wraps :func:`detect_unknown_melody_claim`: fires only
+    when the user asked for a named melody/track, ``spoken`` matches the
+    "don't know / don't remember" pattern, AND ``tools_called`` is empty
+    (no search was even attempted — see the HONESTY RULE in
+    ``composer.txt``). Must run AFTER :class:`UnbackedActionClaimGuard`
+    (Bug E) — same "narrower guard first" contract the legacy call site
+    used (Bug E's music-fallback nudge runs before this one).
+    """
+
+    name: str = "unknown_melody_claim"
+
+    def evaluate(self, ctx: GuardContext) -> Optional[Verdict]:
+        if not ctx.reply.spoken:
+            return None
+        if not detect_unknown_melody_claim(
+            user_input=ctx.turn.user_input,
+            spoken=ctx.reply.spoken,
+            tools_called=ctx.reply.tools_called,
+        ):
+            return None
+        prompt = build_unknown_melody_retry_prompt(ctx.turn.user_input)
+        return Verdict(
+            kind=VerdictKind.RETRY,
+            guard_name=self.name,
+            prompt=prompt,
+        )
+
+
+@dataclass(frozen=True)
+class UniversalActionClaimGuard:
+    """Issue #2549 — wide anti-hallucination guard: ``spoken`` claims an
+    action verb (past OR future tense) but no justifying tool was called.
+
+    Ported from ``DialogueNode._check_universal_action_claim_and_retry``
+    (issue #2556). Unlike :class:`UnbackedActionClaimGuard` (Bug E, which
+    requires BOTH ``user_input`` and ``spoken`` to match a narrow rule
+    table), this one only looks at ``spoken`` — it catches "проверю и
+    перезапущу" / "сделала два pass" even when the user's request was
+    abstract ("докрути музыку").
+
+    Two gates that live in the guard itself (mirroring the legacy call
+    site's inline conditions, dialogue_node.py's ``_handle_result``):
+
+    * ``ctx.turn.is_dj_auto`` — DJ auto-transitions are never retried
+      here (the user said nothing; a phantom claim is harmless noise).
+    * ``ctx.turn.has_error`` — never retry an already-errored turn (the
+      legacy site checks ``result.error is None`` before calling this
+      guard).
+    """
+
+    name: str = "universal_action_claim"
+
+    def evaluate(self, ctx: GuardContext) -> Optional[Verdict]:
+        if not ctx.reply.spoken:
+            return None
+        if ctx.turn.is_dj_auto:
+            return None
+        if ctx.turn.has_error:
+            return None
+        hit = detect_universal_action_claim(
+            spoken=ctx.reply.spoken,
+            tools_called=ctx.reply.tools_called,
+        )
+        if hit is None:
+            return None
+        prompt = build_universal_action_claim_retry_prompt(
+            user_input=ctx.turn.user_input,
+            spoken=ctx.reply.spoken,
+            hit=hit,
+        )
+        return Verdict(
+            kind=VerdictKind.RETRY,
+            guard_name=self.name,
+            prompt=prompt,
+        )
+
+
+@dataclass(frozen=True)
+class PhantomActionGuard:
+    """Issue #2559 — general (NOT music-only) "promised but didn't call a
+    tool" guard.
+
+    Ported from ``DialogueNode._check_phantom_action_and_retry`` (issue
+    #2556). Broader than Bug E: Bug E only fires in a DJ/music context
+    (``dj_active`` or a music keyword in ``user_input``); this one fires
+    on ANY phantom action-verb stem ("перезапущу", "подкручу",
+    "обновлю", ...) with empty ``tools_called``, gated only by
+    :func:`detect_phantom_action_claim`'s own negation check ("не буду"
+    in ``user_input``).
+
+    ``ctx.turn.is_dj_auto`` gate lives here, matching the legacy
+    call site (``is_dj_auto=True`` → the user said nothing → a retry
+    would be a wasted round-trip).
+    """
+
+    name: str = "phantom_action"
+
+    def evaluate(self, ctx: GuardContext) -> Optional[Verdict]:
+        if not ctx.reply.spoken:
+            return None
+        if ctx.turn.is_dj_auto:
+            return None
+        if not detect_phantom_action_claim(
+            user_input=ctx.turn.user_input,
+            spoken=ctx.reply.spoken,
+            tools_called=ctx.reply.tools_called,
+        ):
+            return None
+        prompt = build_phantom_action_retry_prompt(ctx.turn.user_input)
+        return Verdict(
+            kind=VerdictKind.RETRY,
+            guard_name=self.name,
+            prompt=prompt,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Convenience: default order for the dialogue_node
 # ---------------------------------------------------------------------------
+
+
+#: Canonical, explicit guard order — the single source of truth for "who
+#: runs before whom" (issue #2556). Excludes the music-guard slot, which
+#: :func:`default_guards` splices in right after ``SystemRegurgitateGuard``
+#: (its historical position — see the docstring below).
+#:
+#: This list is a real, importable object specifically so a regression
+#: test (``test_turn.py::TestGuardOrderInvariant``) can assert on it
+#: directly — inserting guard #N in the wrong slot now fails a test
+#: instead of silently shipping (issue #2556 acceptance criterion).
+#:
+#: Hard invariant (comment at ``dialogue_node.py``'s legacy
+#: ``_handle_result``, next to the ``#2175`` call site — "должен идти ДО
+#: babble/renardo/action-claim"): ``SystemRegurgitateGuard`` MUST be
+#: first among these (before the music slot too — a regurgitated
+#: ``<system>`` template is never a music request) so a regurgitated
+#: template never gets the babble CRITICAL pasted on top of it, and never
+#: gets treated as an action-claim hallucination.
+#:
+#: The four newest guards (:class:`HallucinatedMidiGuard`,
+#: :class:`UnknownMelodyClaimGuard`, :class:`UniversalActionClaimGuard`,
+#: :class:`PhantomActionGuard`) are placed to match the ACTUAL order they
+#: run in today inside ``DialogueNode._handle_result`` (verified against
+#: the live call sites, not just the prose comments):
+#: ``embedded_renardo_code`` → ``hallucinated_midi`` (#2560, "должен идти
+#: ПОСЛЕ Bug C' и ПЕРЕД action-claim") → ``unbacked_action_claim`` (Bug
+#: E) → ``unknown_melody_claim`` (#2562 Bug F, after Bug E's music-prose
+#: fallback) → ``universal_action_claim`` (#2549, the wide fallback) →
+#: ``phantom_action`` (#2559, the widest / last-resort fallback).
+#:
+#: NOT included here: ``PlanningNarrationHardMute`` is kept in its
+#: existing (last) slot from before issue #2556 — that matches this
+#: registry's pre-existing test coverage, but does NOT match the
+#: position the equivalent inline check has TODAY in
+#: ``DialogueNode._handle_result`` (there it runs FIRST, before even
+#: ``system_regurgitate`` — see issue #2556 PR body for the discovered
+#: discrepancy). Reconciling that is a prerequisite for ever flipping
+#: ``_use_turn_guards`` for this catch site; it is intentionally left
+#: unresolved here rather than silently "fixed" without full behavioural
+#: verification.
+#:
+#: Also NOT included: the DJ-music-tools fallback (#2557,
+#: ``ensure_dj_music_response`` at the legacy call site) — it does not
+#: fit the ``Accept | Retry | Discard`` :class:`Verdict` shape (it wants
+#: to PUBLISH A MODIFIED TEXT, which none of the three kinds express).
+#: See issue #2556 PR body.
+DEFAULT_GUARD_ORDER: Tuple[type, ...] = (
+    SystemRegurgitateGuard,
+    ToolSkippedGuard,
+    BabbleGuard,
+    EmbeddedRenardoCodeGuard,
+    HallucinatedMidiGuard,
+    UnbackedActionClaimGuard,
+    UnknownMelodyClaimGuard,
+    UniversalActionClaimGuard,
+    PhantomActionGuard,
+    PlanningNarrationHardMute,
+)
 
 
 def default_guards(
@@ -787,8 +1030,10 @@ def default_guards(
 ) -> List[Any]:
     """Return the canonical guard list for the dialogue_node.
 
-    Order matches the legacy prose at ``dialogue_node.py:3934-3936``,
-    hardened to a real list:
+    Built from :data:`DEFAULT_GUARD_ORDER` — that constant is the single
+    source of truth for the order; this function only splices in the
+    ``music_guard`` slot right after ``SystemRegurgitateGuard`` (its
+    historical position, issue #2556):
 
     1. :class:`SystemRegurgitateGuard` — must fire BEFORE babble so the
        regurgitated template doesn't get the babble CRITICAL pasted on top
@@ -800,36 +1045,39 @@ def default_guards(
     3. :class:`ToolSkippedGuard` — non-music tool retry (issue #1777).
     4. :class:`BabbleGuard` — metalanguage / planning narration.
     5. :class:`EmbeddedRenardoCodeGuard` — Renardo code in text.
-    6. :class:`UnbackedActionClaimGuard` — claimed but didn't call.
-    7. :class:`PlanningNarrationHardMute` — hard-mute (DISCARD).
+    6. :class:`HallucinatedMidiGuard` — fantasy MIDI pattern (issue #2560).
+    7. :class:`UnbackedActionClaimGuard` — claimed but didn't call (Bug E).
+    8. :class:`UnknownMelodyClaimGuard` — "don't know" without search
+       (issue #2562 Bug F).
+    9. :class:`UniversalActionClaimGuard` — wide action-claim fallback
+       (issue #2549).
+    10. :class:`PhantomActionGuard` — widest action-claim fallback (issue
+        #2559).
+    11. :class:`PlanningNarrationHardMute` — hard-mute (DISCARD).
 
     The dialogue_node adapter passes its already-constructed
     :class:`MusicGuard` instance via ``music_guard=...``. If it is ``None``
-    (e.g. in tests), the music slot is omitted — guards 3..7 still produce
-    a coherent verdict stream for any non-music reply.
+    (e.g. in tests), the music slot is omitted — the rest of the guards
+    still produce a coherent verdict stream for any non-music reply.
     """
-    out: List[Any] = [SystemRegurgitateGuard()]
-    if music_guard is not None:
-        # If the caller passed a raw MusicGuard, wrap it for them so the
-        # orchestrator never sees MusicGuard's surface. If they already
-        # passed a Guard (e.g. ``music_guard_adapter(...)`` result), keep
-        # it as-is — both are accepted.
-        if not hasattr(music_guard, "name") or not callable(
-            getattr(music_guard, "evaluate", None)
-        ):
-            raise TypeError(
-                "default_guards(music_guard=...) expects a Guard-like "
-                "object (with .name and .evaluate) — wrap raw MusicGuard "
-                "instances with rob_box_voice.core.turn.music_guard_adapter"
-            )
-        out.append(music_guard)
-    out.extend([
-        ToolSkippedGuard(),
-        BabbleGuard(),
-        EmbeddedRenardoCodeGuard(),
-        UnbackedActionClaimGuard(),
-        PlanningNarrationHardMute(),
-    ])
+    out: List[Any] = []
+    for guard_cls in DEFAULT_GUARD_ORDER:
+        out.append(guard_cls())
+        if guard_cls is SystemRegurgitateGuard and music_guard is not None:
+            # If the caller passed a raw MusicGuard, wrap it for them so
+            # the orchestrator never sees MusicGuard's surface. If they
+            # already passed a Guard (e.g. ``music_guard_adapter(...)``
+            # result), keep it as-is — both are accepted.
+            if not hasattr(music_guard, "name") or not callable(
+                getattr(music_guard, "evaluate", None)
+            ):
+                raise TypeError(
+                    "default_guards(music_guard=...) expects a Guard-like "
+                    "object (with .name and .evaluate) — wrap raw "
+                    "MusicGuard instances with "
+                    "rob_box_voice.core.turn.music_guard_adapter"
+                )
+            out.append(music_guard)
     return out
 
 
@@ -935,6 +1183,7 @@ def music_guard_adapter(
 
 __all__ = [
     "ACCEPT",
+    "DEFAULT_GUARD_ORDER",
     "DEFAULT_MAX_SYNTHETIC_RETRIES",
     "Guard",
     "GuardContext",
@@ -943,7 +1192,11 @@ __all__ = [
     "BabbleGuard",
     "BabbleRetryDecision",
     "EmbeddedRenardoCodeGuard",
+    "HallucinatedMidiGuard",
+    "PhantomActionGuard",
     "UnbackedActionClaimGuard",
+    "UniversalActionClaimGuard",
+    "UnknownMelodyClaimGuard",
     "PlanningNarrationHardMute",
     "SystemRegurgitateGuard",
     "TurnContext",
