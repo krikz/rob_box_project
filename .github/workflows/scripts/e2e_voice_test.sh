@@ -338,6 +338,32 @@ log() { echo ">>> $*"; }
 
 # mark_fail_kind() — запоминает самую информативную причину FAIL.
 # Приоритет: feature > llm_error > synth > no_reaction (feature не понижается).
+# emit_step() — единственная точка публикации результата шага.
+# Кроме stdout-маркера (контракт пост-валидатора, ADR-0015) дописывает строку
+# в steps.jsonl. Раньше счёта шагов не существовало вообще: любой FAIL ронял
+# весь прогон через `PASS=0; break`, а сколько шагов реально прошло — нигде не
+# сохранялось. Человек видел только PASS/FAIL и не мог отличить «робот умер на
+# первом шаге» от «10 из 11 прошло, споткнулись на последнем».
+#
+# Дубли по label — норма: run_step печатает свой FAIL, а scenario-цикл потом
+# печатает итог шага. Сводка берёт ПОСЛЕДНЮЮ запись на label (см. write_summary).
+emit_step() {  # $1="<label> <STATUS> [detail]"
+    echo "E2E_STEP $1"
+    ensure_outdir
+    python3 - "$1" "$OUT_DIR/steps.jsonl" <<'PY'
+import sys, json, time
+parts = sys.argv[1].split(None, 2)
+record = {
+    "label": parts[0] if parts else "",
+    "status": parts[1] if len(parts) > 1 else "",
+    "detail": parts[2] if len(parts) > 2 else "",
+    "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+}
+with open(sys.argv[2], "a", encoding="utf-8") as fh:
+    fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+PY
+}
+
 mark_fail_kind() {  # $1=kind
     local kind="$1"
     case "$kind" in
@@ -1197,7 +1223,7 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
     #    симптом cold-start flake, а не acceptance flake.
     if [ "$expect" = "wake-gated" ] && [ "${WAKE_GATE_CLEARED:-0}" != "1" ]; then
         log "STEP ${label}: SKIP [skip:wake-gate-cold-start] — ${WAKE_GATE_PREFLIGHT_REASON:-cold-start not cleared}"
-        echo "E2E_STEP ${label} SKIP wake-gate-cold-start"
+        emit_step "${label} SKIP wake-gate-cold-start"
         # Не помечаем fail_kind — это не fail. Возвращаем специальный
         # код 3, который callers (scenario loop) интерпретируют как
         # «пропущен по systemic, не считать в aggregate FAIL».
@@ -1213,7 +1239,7 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
     fi
     if ! synth_command "$text" "$voice" "$OUT_DIR/cmd_${safe}.wav" > "$OUT_DIR/synth_${safe}.log" 2>&1; then
         log "STEP ${label}: FAIL — синтез ${E2E_TTS_PROVIDER_RESOLVED:-$E2E_TTS_PROVIDER} упал ($(tail -1 "$OUT_DIR/synth_${safe}.log"))"
-        echo "E2E_STEP ${label} FAIL synth"
+        emit_step "${label} FAIL synth"
         mark_fail_kind synth
         return 1
     fi
@@ -1258,14 +1284,14 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
             sleep "$E2E_REACTION_WINDOW"
             if check_backlog_accumulated "$BEFORE"; then
                 log "STEP ${label}: ✅ backlog accumulated (no_wake_word)"
-                echo "E2E_STEP ${label} OK backlog"
+                emit_step "${label} OK backlog"
                 return 0
             fi
             log "STEP ${label}: backlog-маркер не найден (attempt ${battempt}) — повтор"
             sleep "$E2E_RETRY_PAUSE"
         done
         log "STEP ${label}: ❌ backlog accumulation не подтверждён после ${E2E_MAX_ATTEMPTS} попыток"
-        echo "E2E_STEP ${label} FAIL backlog_miss"
+        emit_step "${label} FAIL backlog_miss"
         mark_fail_kind feature
         return 1
     fi
@@ -1286,7 +1312,7 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
             log "STEP ${label}: cmd_${safe}_eq.wav отсутствует перед play — пере-синтез (cleanup-resilience)"
             ensure_outdir
             synth_command "$text" "$voice" "$OUT_DIR/cmd_${safe}.wav" > "$OUT_DIR/synth_${safe}.log" 2>&1 \
-                || { log "STEP ${label}: FAIL — повторный синтез ${E2E_TTS_PROVIDER_RESOLVED:-$E2E_TTS_PROVIDER} упал ($(tail -1 "$OUT_DIR/synth_${safe}.log"))"; echo "E2E_STEP ${label} FAIL synth"; mark_fail_kind synth; return 1; }
+                || { log "STEP ${label}: FAIL — повторный синтез ${E2E_TTS_PROVIDER_RESOLVED:-$E2E_TTS_PROVIDER} упал ($(tail -1 "$OUT_DIR/synth_${safe}.log"))"; emit_step "${label} FAIL synth"; mark_fail_kind synth; return 1; }
             ensure_outdir
             ffmpeg -nostdin -y -i "$OUT_DIR/cmd_${safe}.wav" -af "highpass=f=100,volume=3.0,alimiter=limit=0.98,adelay=1500|all=1" -ac 1 -ar 16000 "$OUT_DIR/cmd_${safe}_eq.wav" 2>/dev/null
         fi
@@ -1301,7 +1327,7 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
             break
         elif [ "$rc" = "2" ]; then
             log "STEP ${label}: ❌ LLM/TTS ERROR — тест красный, не чиним"
-            echo "E2E_STEP ${label} FAIL llm_error (см. $OUT_DIR/llm_error.txt)"
+            emit_step "${label} FAIL llm_error (см. $OUT_DIR/llm_error.txt)"
             mark_fail_kind llm_error
             return 2
         fi
@@ -1311,7 +1337,7 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
 
     if [ "$reaction" != "1" ]; then
         log "STEP ${label}: ❌ NO_ACCEPT после ${E2E_MAX_ATTEMPTS} попыток"
-        echo "E2E_STEP ${label} FAIL no_accept"
+        emit_step "${label} FAIL no_accept"
         mark_fail_kind no_reaction
         return 1
     fi
@@ -1351,17 +1377,38 @@ parse_transcript() {  # $1=label $2=before_rfc3339
     local lang
     lang="$(printf '%s' "$logs" | grep -oE 'language=ru-RU|язык: [a-zA-Z-]+|lang=ru-RU' | head -1 | tr -d '\n' || true)"
     if [ -z "$lang" ]; then lang="ru-RU"; fi
-    cat > "$OUT_DIR/transcript.json" <<EOF
-{
-  "label": "${label:-single}",
-  "expected": ${expected:-null},
-  "recognized": "${text:-}",
-  "lang": "${lang:-ru-RU}",
-  "duration_s": ${duration_s:-null},
-  "stt_latency_ms": ${stt_latency_ms:-null},
-  "raw_phrase_line": "$(printf '%s' "$phrase_line" | head -c 200 | sed 's/"/\\"/g')"
+    # JSON собирает python, а не heredoc. В heredoc `"expected": ${expected}`
+    # подставлялся БЕЗ кавычек, и живой артефакт выглядел так:
+    #     "expected": Робот, стоп музыку,
+    # то есть transcript.json был невалидным JSON на каждом прогоне с текстом.
+    # Его читает e2e_baseline_diff.py:203 под `except: pass` — поэтому
+    # keyword_match_pct молча не считался никогда. Распознанная фраза приходит
+    # из логов робота и тоже может содержать кавычки, так что эскейпить надо и
+    # её: единственный надёжный способ — отдать сериализацию json.dumps.
+    python3 - "$OUT_DIR/transcript.json" "${label:-single}" "${expected:-}" \
+             "${text:-}" "${lang:-ru-RU}" "${duration_s:-}" "$phrase_line" <<'PY'
+import sys, json
+out, label, expected, text, lang, duration_s, phrase_line = sys.argv[1:8]
+
+def num_or_none(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+payload = {
+    "label": label,
+    "expected": expected or None,
+    "recognized": text,
+    "lang": lang or "ru-RU",
+    "duration_s": num_or_none(duration_s),
+    "stt_latency_ms": None,
+    "raw_phrase_line": phrase_line[:200],
 }
-EOF
+with open(out, "w", encoding="utf-8") as fh:
+    json.dump(payload, fh, ensure_ascii=False, indent=2)
+    fh.write("\n")
+PY
     if [ -n "$text" ]; then
         log "TRANSCRIPT[${label}]: ожидалось «${expected:-?}», распознано «${text}»"
     else
@@ -1396,6 +1443,122 @@ write_artifacts_audio() {
     else
         echo '{"error":"recording.wav not found, baseline diff skipped"}' > "$OUT_DIR/baseline_diff.json"
     fi
+}
+
+# write_summary() — сводит прогон в ОДИН машиночитаемый файл summary.json
+# и печатает человекочитаемый блок в stdout.
+#
+# Зачем: метрики (timing/audio/baseline/acceptance) считались и раньше, но
+# лежали по разным zip-артефактам, которые надо скачать и открыть руками.
+# В GitHub UI и в комментарии к issue человек видел только PASS/FAIL, поэтому
+# «расчёт качества» существовал на бумаге и не существовал на практике.
+# summary.json — то, что рендерится в Step Summary и попадает людям на глаза.
+#
+# Вердикт остаётся БИНАРНЫМ (ADR-0015): счётчик шагов здесь — доказательство,
+# а не новая шкала. «9/11 OK» не превращает FAIL в PASS.
+write_summary() {
+    ensure_outdir
+    [ -f "$OUT_DIR/steps.jsonl" ] || : > "$OUT_DIR/steps.jsonl"
+    python3 - "$OUT_DIR" "${PASS:-0}" "${E2E_FAIL_KIND:-}" \
+             "${E2E_TTS_PROVIDER_RESOLVED:-${E2E_TTS_PROVIDER:-}}" "${RUN_ID:-}" <<'PY'
+import json, os, sys, time
+
+out_dir, passed, fail_kind, tts_provider, run_id = sys.argv[1:6]
+
+def read_json(name):
+    path = os.path.join(out_dir, name)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception:
+        return None
+
+# Итог шага = ПОСЛЕДНЯЯ запись на label: run_step печатает промежуточный FAIL,
+# scenario-цикл потом печатает финальный вердикт того же шага.
+steps = {}
+order = []
+try:
+    with open(os.path.join(out_dir, "steps.jsonl"), encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            label = rec.get("label", "")
+            if label not in steps:
+                order.append(label)
+            steps[label] = rec
+except OSError:
+    pass
+
+counts = {"OK": 0, "FAIL": 0, "SKIP": 0}
+for label in order:
+    status = (steps[label].get("status") or "").upper()
+    if status in counts:
+        counts[status] += 1
+total = len(order)
+
+acceptance = read_json("acceptance.json") or {}
+audio = read_json("audio_metrics.json") or {}
+baseline = read_json("baseline_diff.json") or {}
+
+summary = {
+    "run_id": run_id,
+    "verdict": "PASS" if passed == "1" else "FAIL",
+    "fail_kind": fail_kind or None,
+    "tts_provider": tts_provider or None,
+    "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    "steps": {
+        "total": total,
+        "ok": counts["OK"],
+        "fail": counts["FAIL"],
+        "skip": counts["SKIP"],
+        "failed_labels": [
+            l for l in order if (steps[l].get("status") or "").upper() == "FAIL"
+        ],
+    },
+    "gate1": {
+        "pass": acceptance.get("pass"),
+        "reason": acceptance.get("reason"),
+        "missing_expected_calls": acceptance.get("missing_expected_calls"),
+        "forbidden_calls": acceptance.get("forbidden_calls"),
+    },
+    # Метрики качества: None означает «не посчиталось», и это видно, а не
+    # тонет в тексте ошибки внутри отдельного артефакта.
+    "audio": {
+        "error": audio.get("error"),
+        "rms_db": audio.get("rms_db"),
+        "peak_db": audio.get("peak_db"),
+        "silence_ratio": audio.get("silence_ratio"),
+    },
+    "baseline": {
+        "error": baseline.get("error"),
+        "pass": baseline.get("pass"),
+        "keyword_match_pct": baseline.get("keyword_match_pct"),
+    },
+}
+
+with open(os.path.join(out_dir, "summary.json"), "w", encoding="utf-8") as fh:
+    json.dump(summary, fh, ensure_ascii=False, indent=2)
+    fh.write("\n")
+
+st = summary["steps"]
+print(">>> E2E_SUMMARY verdict=%s steps=%d/%d ok fail=%d skip=%d provider=%s"
+      % (summary["verdict"], st["ok"], st["total"], st["fail"], st["skip"],
+         summary["tts_provider"] or "?"))
+if st["failed_labels"]:
+    print(">>> E2E_SUMMARY failed: %s" % ", ".join(st["failed_labels"]))
+if summary["audio"]["error"]:
+    print(">>> E2E_SUMMARY audio metrics: %s" % summary["audio"]["error"])
+else:
+    print(">>> E2E_SUMMARY audio: rms_db=%s peak_db=%s silence_ratio=%s"
+          % (summary["audio"]["rms_db"], summary["audio"]["peak_db"],
+             summary["audio"]["silence_ratio"]))
+PY
+    log "ARTIFACTS: summary.json written"
 }
 
 # Возвращает 0 если acceptance-чек PASS, 1 если FAIL.
@@ -1760,12 +1923,12 @@ for p in json.load(sys.stdin):
             # ('E2E_STEP <label> SKIP wake-gate-cold-start').
             :
         elif [ "$step_ok" = "1" ]; then
-            echo "E2E_STEP ${label} OK"
+            emit_step "${label} OK"
         else
             PASS=0
             mark_fail_kind feature
             log "STEP ${label}: ❌ проверка не прошла после retry (см. $OUT_DIR/acceptance.json)"
-            echo "E2E_STEP ${label} FAIL"
+            emit_step "${label} FAIL"
         fi
     done < "$OUT_DIR/scenario_parsed.txt"
 
@@ -1814,17 +1977,17 @@ else
         PASS=0
         log "single: wake-gated SKIP — это flake для single-text, помечаем как no_reaction"
         mark_fail_kind no_reaction
-        echo "E2E_STEP single FAIL no_reaction (wake-gated SKIP)"
-    elif [ "$rc" != "0" ]; then PASS=0; echo "E2E_STEP single FAIL"; else echo "E2E_STEP single OK"; fi
+        emit_step "single FAIL no_reaction (wake-gated SKIP)"
+    elif [ "$rc" != "0" ]; then PASS=0; emit_step "single FAIL"; else emit_step "single OK"; fi
     # Дополнительные паттерны (--patterns "a,b,c") — проверяем после цикла
     if [ "$rc" = "0" ] && [ -n "$PATTERNS" ]; then
         log "single: проверка паттернов: $PATTERNS"
         IFS=',' read -r -a pat_arr <<< "$PATTERNS"
         check_patterns "$STEP_BEFORE" "${pat_arr[@]}"
         if [ $? != 0 ]; then
-            PASS=0; mark_fail_kind feature; echo "E2E_STEP single FAIL patterns"
+            PASS=0; mark_fail_kind feature; emit_step "single FAIL patterns"
         else
-            echo "E2E_STEP single OK patterns"
+            emit_step "single OK patterns"
         fi
     fi
 fi
@@ -1837,7 +2000,17 @@ if [ -n "$SCENARIO_FILE" ]; then
 else
     FINAL_VOICE_TEXT="$TEXT"
 fi
+# Запись ОБЯЗАНА быть сконвертирована до замеров: audio_metrics/baseline_diff
+# читают $OUT_DIR/recording.wav, а создаёт его stop_recording, который висит на
+# `trap ... EXIT` — то есть отрабатывал ПОЗЖЕ. В итоге в каждом прогоне (в том
+# числе зелёном 34928781542) оба артефакта содержали ровно это:
+#     {"error":"recording.wav not found"}
+# при том что сам recording.wav лежал рядом в архиве. Единственная в проекте
+# метрика качества звука не посчиталась ни разу. stop_recording идемпотентен
+# (ранний выход при пустом REC_PID), так что trap ниже остаётся как страховка.
+stop_recording
 write_artifacts_audio "$FINAL_VOICE_TEXT"
+write_summary
 
 if [ "$PASS" = "1" ]; then
     echo "E2E_VERDICT PASS"
