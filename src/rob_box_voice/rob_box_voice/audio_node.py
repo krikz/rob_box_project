@@ -593,6 +593,46 @@ class AudioNode(Node):
         self.publish_state('error_stall')
         self._schedule_audio_retry()
 
+    def _note_speech_accepted(self) -> None:
+        """Issue #2701 п.2: успешная фраза сбрасывает empty-speech streak.
+
+        Захват точно живой — буфер только что реально наполнился и прошёл
+        проверку длительности. Вынесено из check_vad_and_doa как отдельный
+        метод (ADR-0021 R1 CC-budget guard, ``cc_budget_baseline.json``
+        грандфазерил check_vad_and_doa на CC=19): каждый вызов оттуда
+        безусловный, поэтому сам check_vad_and_doa не набирает лишний CC
+        за счёт ветвления, которое теперь живёт здесь.
+        """
+        self._empty_speech_streak = 0
+
+    def _note_empty_speech(self, buf_len: int) -> None:
+        """Issue #2701 п.2: детектор «речь по HID, буфер захвата пуст».
+
+        Вызывается безусловно из check_vad_and_doa на каждый отказ фразы
+        (см. комментарий в _note_speech_accepted про ADR-0021 R1) — вся
+        ветвящаяся логика (пустой ли буфер, дотянул ли счётчик до порога,
+        лог, переоткрытие) сосредоточена здесь.
+
+        VAD увидел речь по USB HID (иначе is_speeching не включился бы), а
+        буфер захвата пуст — audio_callback не наполнял его, значит поток
+        завис (тот же симптом, что и 17.09.2026: «Речь отклонена: 0.00с»
+        10 раз подряд, дальше от захвата ни одного сообщения). Длинные/
+        короткие-но-непустые фразы счётчик НЕ трогают — это штатные
+        срабатывания VAD, не признак зависания.
+        """
+        if buf_len != 0:
+            return
+        self._empty_speech_streak += 1
+        if self._empty_speech_streak < self.audio_stall_empty_speech_count:
+            return
+        self.get_logger().warning(
+            f'⚠️ [issue 2701] {self._empty_speech_streak} фраз(ы) '
+            f'подряд «0.00с» (VAD видит речь по HID, буфер '
+            f'захвата пуст) — похоже, захват завис. '
+            f'Переоткрываю поток.'
+        )
+        self._reopen_audio_stream()
+
     def audio_callback(self, in_data, frame_count, time_info, status):
         """Callback для PyAudio stream."""
         if status:
@@ -975,27 +1015,20 @@ class AudioNode(Node):
                     msg.data = list(buf)
                     self.speech_audio_pub.publish(msg)
                     # Issue #2701: первая успешная фраза сбрасывает счётчик
-                    # empty-speech детектора — захват точно живой.
-                    self._empty_speech_streak = 0
+                    # empty-speech детектора — захват точно живой. Вынесено
+                    # в отдельный метод (ADR-0021 R1 CC-budget guard, см.
+                    # _note_speech_accepted).
+                    self._note_speech_accepted()
                 else:
                     self.get_logger().warn(f'❌ Речь отклонена: {duration:.2f}с (min={self.speech_min_duration}, max={self.speech_max_duration})')
-                    # Issue #2701 п.2: VAD увидел речь по USB HID (иначе
-                    # is_speeching не включился бы), а буфер захвата пуст —
-                    # audio_callback не наполнял его, значит поток завис
-                    # (тот же симптом, что и 17.09: «Речь отклонена: 0.00с»
-                    # 10 раз подряд, дальше от захвата ни одного сообщения).
-                    # Длинные/короткие-но-непустые фразы счётчик НЕ трогают —
-                    # это штатные срабатывания VAD, не признак зависания.
-                    if len(buf) == 0:
-                        self._empty_speech_streak += 1
-                        if self._empty_speech_streak >= self.audio_stall_empty_speech_count:
-                            self.get_logger().warning(
-                                f'⚠️ [issue 2701] {self._empty_speech_streak} фраз(ы) '
-                                f'подряд «0.00с» (VAD видит речь по HID, буфер '
-                                f'захвата пуст) — похоже, захват завис. '
-                                f'Переоткрываю поток.'
-                            )
-                            self._reopen_audio_stream()
+                    # Issue #2701 п.2: детектор «VAD видит речь по HID, буфер
+                    # захвата пуст» K раз подряд — вынесен в отдельный метод
+                    # (ADR-0021 R1 CC-budget guard: два новых `if` внутри
+                    # check_vad_and_doa подняли бы CC этого грандфазеренного
+                    # метода с 19 до 21; сам детектор со своей веточной
+                    # логикой живёт в _note_empty_speech, здесь — безусловный
+                    # вызов).
+                    self._note_empty_speech(len(buf))
 
             # DoA - читаем с обработкой ошибок
             try:
