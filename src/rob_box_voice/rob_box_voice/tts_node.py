@@ -163,6 +163,79 @@ except ImportError:  # pragma: no cover — only triggered if rob_box_llm not bu
     MiniMaxTTSBadRequestError = Exception  # type: ignore[assignment,misc]
     MiniMaxTTSRateLimitError = Exception  # type: ignore[assignment,misc]
 
+# Issue #2702 — общий health-кэш LLM-провайдеров (rob_box_harness.health).
+# MiniMax Token Plan общий для чата (LLM) и синтеза речи (T2A): если
+# dialogue_node/supervisor уже узнали «minimax unavailable (quota)»,
+# tts_node не должен повторно платить тем же честным HTTP-таймаутом —
+# он должен УВИДЕТЬ то же самое состояние и сразу пойти к следующему
+# провайдеру. Импорт мягкий (тот же паттерн, что у MiniMax выше): узел
+# может жить на машине без rob_box_harness (минимальная сборка) — тогда
+# просто работаем только со своим локальным ``_provider_dead_until``,
+# как до этого issue.
+try:
+    from rob_box_harness.health import (
+        HealthCache as _SharedHealthCache,
+        is_auth_failure as _harness_is_auth_failure,
+    )
+
+    HARNESS_HEALTH_AVAILABLE = True
+except ImportError:  # pragma: no cover — harness может быть не установлен на узле
+    HARNESS_HEALTH_AVAILABLE = False
+    _SharedHealthCache = None  # type: ignore[assignment]
+
+    def _harness_is_auth_failure(exc: BaseException) -> bool:  # type: ignore[misc]
+        """Деградация без rob_box_harness — та же логика, что в health.py.
+
+        Дублирование намеренное (issue #2702): цель — не уронить узел
+        без harness, а не «переиспользовать код» ценой жёсткой
+        зависимости. См. ``rob_box_harness.health.is_auth_failure``.
+        """
+        text = str(exc).lower()
+        return (
+            "401" in text
+            or "403" in text
+            or "invalid api key" in text
+            or "permission_denied" in text
+            or "unauthenticated" in text
+        )
+
+
+def _yandex_is_permanent_failure(provider_name: str, error: BaseException) -> bool:
+    """True для Yandex-ошибок, которые не «рассосутся» за секунды (issue #2702 п.2).
+
+    ``PERMISSION_DENIED``/``UNAUTHENTICATED`` (права на папку/протухший
+    ключ, ADR-0124) — это ровно тот же класс отказа, что и MiniMax
+    auth/quota: нужен длинный TTL (``provider_dead_ttl_s``), а не
+    транзиентная лестница. ``_synthesize_yandex_single`` оборачивает
+    ``grpc.RpcError`` в обычный ``Exception`` с кодом в тексте
+    (см. модульный docstring ``_synthesize_yandex_single``).
+
+    Классификация в ДВА слоя:
+    1. ``rob_box_harness.health.is_auth_failure`` — общий классификатор,
+       которым уже пользуется LLM-сторона (issue #2702: «переиспользуй,
+       не копипасть»);
+    2. локальная подстраховка на те же два gRPC-кода — на случай, если в
+       конкретном деплое ``rob_box_harness`` собран из версии ДО этого
+       issue (voice/vision-образы собираются по отдельности, см.
+       docker/*/Dockerfile — рассинхрон версий пакетов внутри одного репо
+       технически возможен). Оба слоя проверяют один и тот же факт;
+       второй — просто явная гарантия, что Yandex auth-классификация в
+       tts_node не тихо деградирует до транзиентной, если где-то в парке
+       контейнеров окажется чуть более старый harness.
+    """
+    if provider_name != "yandex":
+        return False
+    try:
+        if bool(_harness_is_auth_failure(error)):
+            return True
+    except Exception:  # noqa: BLE001 — классификатор не должен ронять TTS
+        pass
+    try:
+        text = str(error).lower()
+    except Exception:  # noqa: BLE001 — экзотический __str__ не должен ронять TTS
+        return False
+    return "permission_denied" in text or "unauthenticated" in text
+
 
 class _TTSEmptyTextError(Exception):
     """Issue #2096 — пустой ``text`` дошёл до ``_synthesize_and_play``.
@@ -913,6 +986,21 @@ class TTSNode(Node):
         # в кэше — не долбим его на каждый ход (см. _mark_provider_dead).
         self.declare_parameter("provider_dead_ttl_s", 300.0)
         self.declare_parameter("provider_dead_ttl_transient_s", 30.0)
+        # Issue #2702 — путь к ОБЩЕМУ с LLM-стороной health-кэшу
+        # (rob_box_harness.health.HealthCache). Совпадает по умолчанию с
+        # dialogue_node.health_cache_path — один файл на машину, один
+        # источник правды про MiniMax (Token Plan общий для LLM и T2A).
+        # Пустая строка отключает общий кэш (узел живёт только своим
+        # локальным ``_provider_dead_until``, как до этого issue).
+        self.declare_parameter("health_cache_path", "~/.rob_box/llm_health.json")
+        self.declare_parameter("health_ttl_s", 300.0)
+        # Issue #2702 п.4 — суммарный бюджет времени (сек) на ВСЮ облачную
+        # часть цепочки (minimax + yandex, включая их собственные retry).
+        # Превышен → остальные облачные провайдеры пропускаются, сразу
+        # Silero. НЕ прерывает уже начатый HTTP/gRPC-запрос (нет
+        # cancellation-инфраструктуры, тот же честный компромисс, что в
+        # stt_fallback._measure) — ограничивает число ДАЛЬНЕЙШИХ попыток.
+        self.declare_parameter("cloud_tts_budget_s", 8.0)
         # Issue #1229 — файл персистентного состояния фактического
         # провайдера TTS (переживает рестарт контейнера; пустая строка =
         # отключено). tts_node пишет {provider, dead_until_ts, ...} при
@@ -1184,6 +1272,12 @@ class TTSNode(Node):
         # MiniMax не заканчивается за время рестарта) — LLM-контекст не врёт
         # с первого хода.
         self._load_persisted_provider_state()
+
+        # Issue #2702 — общий health-кэш, облачный TTS-бюджет, fail-streak.
+        # Вынесено в отдельный метод (ADR-0021 R1 / cc_budget): три
+        # ``x.value or default`` фолбэка на ROS-параметрах здесь считаются
+        # decision points CC-метрикой и толкали __init__ выше baseline.
+        self._init_provider_health()
 
         # Yandex Cloud TTS gRPC v3
         self.yandex_api_key = self.get_parameter("yandex_api_key").value or os.getenv(
@@ -4084,15 +4178,147 @@ class TTSNode(Node):
         deduped.append("silero")
         return deduped
 
+    @staticmethod
+    def _build_shared_health_cache(
+        path: str,
+        ttl_s: float,
+        logger: Any = None,
+    ) -> Any:
+        """Открыть общий health-кэш LLM-провайдеров (issue #2702).
+
+        Мягкая деградация в ДВУХ независимых случаях:
+        * ``rob_box_harness`` не установлен на узле (``HARNESS_HEALTH_AVAILABLE
+          =False``) — минимальная сборка voice-стека без harness;
+        * путь пуст, или файл недоступен (права/диск) — общий кэш просто
+          не открывается.
+        В обоих случаях возвращаем ``None`` и узел работает только со своим
+        локальным ``_provider_dead_until``, как до этого issue — TTS никогда
+        не должен падать из-за отсутствующей/битой общей инфраструктуры.
+        """
+        if not HARNESS_HEALTH_AVAILABLE or not path:
+            return None
+        try:
+            return _SharedHealthCache(ttl_s=ttl_s, persist_path=Path(path).expanduser())
+        except Exception as exc:  # noqa: BLE001 — общий кэш не критичен для TTS
+            if logger is not None:
+                try:
+                    logger.warn(
+                        f"⚠️ [issue 2702] общий health-кэш {path!r} недоступен "
+                        f"({exc}) — работаю только с локальным кэшем"
+                    )
+                except Exception:  # noqa: BLE001 — логгер тоже не должен ронять TTS
+                    pass
+            return None
+
+    def _init_provider_health(self) -> None:
+        """Инициализировать общий health-кэш, облачный бюджет и fail-streak
+        (issue #2702). Вызывается ровно один раз из ``__init__``.
+
+        Вынесено из ``__init__`` отдельным методом (ADR-0021 R1 / cc_budget
+        guard): каждый ``x.value or default`` фолбэк на ROS-параметре ниже
+        считается decision-point'ом в CC-метрике cc_budget.py (``BoolOp``),
+        и три таких фолбэка в одном месте толкали CC ``__init__`` выше
+        baseline. Сама по себе эта инициализация безусловна и линейна —
+        разбивка на метод убирает лишние decision points из CC ``__init__``,
+        не пряча их (метод сам по себе далеко не приближается к лимиту).
+        """
+        # Issue #2702 — общий health-кэш (ключ провайдера "minimax" совпадает
+        # с тем, что использует LLM-сторона в HealthAwareFallbackLLM/
+        # dialogue_node — Token Plan общий). Провайдеры, помеченные
+        # unavailable ОТТУДА, тоже пропускаются здесь (см. _provider_is_dead);
+        # а падения minimax отсюда зеркалятся туда (см. _mark_provider_dead).
+        self._shared_health_cache = TTSNode._build_shared_health_cache(
+            str(self.get_parameter("health_cache_path").value or ""),
+            float(self.get_parameter("health_ttl_s").value or 300.0),
+            logger=self.get_logger(),
+        )
+        self.cloud_tts_budget_s = max(
+            0.5, float(self.get_parameter("cloud_tts_budget_s").value or 8.0)
+        )
+        # Streak транзиентных (не quota/auth) отказов подряд, по провайдеру —
+        # питает эскалацию TTL 30 → 120 → 300с (issue #2702 п.3).
+        self._provider_transient_streak: Dict[str, int] = {}
+
     def _provider_is_dead(self, provider_name: str) -> bool:
         """True, если провайдер лежит в кэше «мёртвых» (TTL не истёк).
 
         Кэш «мёртвых» (как в LLM-health): если MiniMax ответил квотой 2056
         (или сеть/таймаут), не долбим его на каждый ход — пропускаем до
         истечения TTL, затем пробуем снова (провайдер мог «ожить»).
+
+        Issue #2702 — MiniMax дополнительно сверяется с ОБЩИМ health-кэшем
+        (``_shared_health_cache``): Token Plan общий для LLM и T2A, поэтому
+        если dialogue_node/supervisor уже увидели quota-отказ, T2A не должен
+        честно ждать свой собственный таймаут, чтобы узнать то же самое.
+        Только чтение — запись в общий кэш происходит в
+        :meth:`_mark_provider_dead`.
         """
         until = getattr(self, "_provider_dead_until", {}).get(provider_name, 0.0)
-        return time.monotonic() < until
+        if time.monotonic() < until:
+            return True
+        if provider_name == "minimax":
+            shared = getattr(self, "_shared_health_cache", None)
+            if shared is not None:
+                try:
+                    if shared.is_unavailable(provider_name):
+                        return True
+                except Exception:  # noqa: BLE001 — общий кэш не должен ронять TTS
+                    pass
+        return False
+
+    def _transient_ttl_for_streak(self, provider_name: str) -> float:
+        """TTL для ОЧЕРЕДНОГО транзиентного отказа этого провайдера (issue #2702 п.3).
+
+        Лестница эскалации: 1-й отказ подряд → ``provider_dead_ttl_transient_s``
+        (default 30с), 2-й → 120с, 3-й и далее → ``provider_dead_ttl_s``
+        (default 300с). Сброс — при первом успехе или при auth/quota-отказе
+        (см. :meth:`_reset_provider_fail_streak`). Считает КАЖДЫЙ вызов —
+        вызывающая сторона (:meth:`_mark_provider_dead`) обязана звать это
+        ровно один раз на отказ.
+        """
+        streaks = getattr(self, "_provider_transient_streak", None)
+        if streaks is None:
+            streaks = {}
+            self._provider_transient_streak = streaks
+        streak = streaks.get(provider_name, 0) + 1
+        streaks[provider_name] = streak
+        base = getattr(self, "provider_dead_ttl_transient_s", 30.0)
+        long_ttl = getattr(self, "provider_dead_ttl_s", 300.0)
+        # mid зажат между base и long_ttl — оператор мог настроить
+        # provider_dead_ttl_transient_s > 120 или provider_dead_ttl_s < 120,
+        # лестница должна оставаться монотонной при любой конфигурации.
+        mid = min(max(120.0, base), long_ttl)
+        ladder = (base, mid, long_ttl)
+        return ladder[min(streak, len(ladder)) - 1]
+
+    def _reset_provider_fail_streak(self, provider_name: str) -> None:
+        """Сбросить счётчик подряд-идущих транзиентных отказов (issue #2702 п.3).
+
+        Зовётся на первом успешном синтезе этим провайдером
+        (``_sap_synthesize_minimax``/``_sap_synthesize_yandex``) и при
+        классификации отказа как auth/quota (эскалация — только для
+        транзиентных, «рассасывающихся» отказов).
+        """
+        streaks = getattr(self, "_provider_transient_streak", None)
+        if streaks is not None:
+            streaks.pop(provider_name, None)
+
+    def _sap_reset_provider_fail_streak(self, provider_name: str) -> None:
+        """``_reset_provider_fail_streak`` за getattr-guard'ом (issue #2702 п.3).
+
+        Bare-стабы в тестах (``_playback_node()`` без ``_bind_dead_cache``)
+        не несут ``_reset_provider_fail_streak`` — вызывать его напрямую
+        уронило бы их с ``AttributeError`` на первом же успешном синтезе.
+        Метод в ``_SAP_HELPER_NAMES``, поэтому ``_bind_sap_helpers_for_stub``
+        привязывает ЕГО САМОГО к любому стабу безусловно; сам он внутри уже
+        решает, звать ли настоящий сброс. Вынесено отдельным методом (а не
+        инлайн ``if`` в ``_sap_synthesize_minimax``/``_sap_synthesize_yandex``)
+        по требованию cc_budget (ADR-0021 R1) — inline-guard добавлял decision
+        point в CC вызывающих методов.
+        """
+        reset = getattr(self, "_reset_provider_fail_streak", None)
+        if reset is not None:
+            reset(provider_name)
 
     def _mark_provider_dead(
         self,
@@ -4103,18 +4329,42 @@ class TTSNode(Node):
         """Пометить провайдера мёртвым на ttl_s секунд (по умолчанию —
         из параметра provider_dead_ttl_s). Сохраняем причину для лога.
 
-        Классификация TTL (issue #1083):
-        * quota/auth (2056 Token Plan limit, 401/403) → длинный TTL
-          (provider_dead_ttl_s, default 300 с) — квота не кончится за секунды;
-        * всё остальное (сеть/таймаут/5xx) → короткий TTL
-          (provider_dead_ttl_transient_s, default 30 с).
+        Классификация TTL:
+        * quota/auth MiniMax (2056 Token Plan limit, 401/403,
+          ``MiniMaxTTSAuthError``/``MiniMaxTTSRateLimitError``) → длинный TTL
+          (``provider_dead_ttl_s``, default 300 с) — issue #1083;
+        * Yandex ``PERMISSION_DENIED``/``UNAUTHENTICATED`` → тоже длинный TTL
+          (issue #2702 п.2, ADR-0124) — права на папку не «рассосутся» за
+          30 секунд, как и протухший ключ;
+        * всё остальное (сеть/таймаут/5xx) → эскалирующая лестница
+          30 → 120 → 300с по числу подряд-идущих транзиентных отказов ЭТОГО
+          провайдера (issue #2702 п.3, :meth:`_transient_ttl_for_streak`).
+
+        Issue #2702 п.1 — падение MiniMax зеркалится в ОБЩИЙ health-кэш
+        (``_shared_health_cache``): LLM-сторона делит тот же Token Plan,
+        так что должна узнать об отказе T2A без собственного отдельного
+        таймаута (и наоборот, см. :meth:`_provider_is_dead`).
         """
+        permanent = False
         if ttl_s is None:
             if isinstance(error, (MiniMaxTTSAuthError, MiniMaxTTSRateLimitError)):
                 ttl_s = getattr(self, "provider_dead_ttl_s", 300.0)
+                permanent = True
+            elif _yandex_is_permanent_failure(provider_name, error):
+                ttl_s = getattr(self, "provider_dead_ttl_s", 300.0)
+                permanent = True
             else:
-                ttl_s = getattr(self, "provider_dead_ttl_transient_s", 30.0)
+                escalate = getattr(self, "_transient_ttl_for_streak", None)
+                ttl_s = (
+                    escalate(provider_name)
+                    if escalate is not None
+                    else getattr(self, "provider_dead_ttl_transient_s", 30.0)
+                )
         assert ttl_s is not None
+        if permanent:
+            reset = getattr(self, "_reset_provider_fail_streak", None)
+            if reset is not None:
+                reset(provider_name)
         dead_until = getattr(self, "_provider_dead_until", None)
         if dead_until is None:
             dead_until = {}
@@ -4129,6 +4379,16 @@ class TTSNode(Node):
             f"💀 {provider_name} помечен мёртвым на {ttl_s:.0f}s "
             f"({type(error).__name__}: {error})"
         )
+        # Issue #2702 п.1 — зеркалим MiniMax в общий кэш (запись).
+        if provider_name == "minimax":
+            shared = getattr(self, "_shared_health_cache", None)
+            if shared is not None:
+                try:
+                    shared.mark_unavailable(
+                        provider_name, reason=str(error)[:300], ttl_s=ttl_s
+                    )
+                except Exception:  # noqa: BLE001 — общий кэш не должен ронять TTS
+                    pass
         # Issue #1229 — провайдер упал → публикуем фактического провайдера
         # (первый «живой» в цепочке после падения).
         publish = getattr(self, "_publish_provider_state", None)
@@ -4572,6 +4832,7 @@ class TTSNode(Node):
         "_sap_publish_finished_failure",
         "_sap_finalize_after_playback",
         "_sap_handle_synthesis_error",
+        "_sap_reset_provider_fail_streak",
     )
 
     def _bind_sap_helpers_for_stub(self) -> None:
@@ -4690,6 +4951,12 @@ class TTSNode(Node):
             provider_chain = TTSNode._chain_from_provider(
                 getattr(self, "provider", "minimax")
             )
+        # Issue #2702 п.4 — единый дедлайн на всю облачную часть цепочки
+        # (minimax + yandex, включая retries). Считается один раз ЗДЕСЬ
+        # (не пересчитывается на каждого провайдера), чтобы бюджет
+        # действительно был суммарным, а не «per-provider».
+        cloud_budget_s = getattr(self, "cloud_tts_budget_s", 8.0)
+        cloud_deadline = time.monotonic() + cloud_budget_s
         for provider_name in provider_chain:
             # Кэш «мёртвых» (issue #1083): не долбим провайдера, который
             # недавно упал (квота/сеть/таймаут) — пропускаем до TTL.
@@ -4701,6 +4968,15 @@ class TTSNode(Node):
                     f"(ещё {self._provider_dead_until_s(provider_name):.0f}s) — пропускаю"
                 )
                 continue
+            if provider_name in ("minimax", "yandex") and time.monotonic() >= cloud_deadline:
+                # Issue #2702 п.4 — предыдущие облачные попытки (retries
+                # MiniMax/Yandex) уже съели весь бюджет: не начинаем ещё
+                # один честный HTTP/gRPC-таймаут, сразу уходим на Silero.
+                self.get_logger().warn(
+                    f"⏱️ [issue 2702] облачный TTS-бюджет ({cloud_budget_s:.1f}s) "
+                    f"исчерпан — пропускаю {provider_name}, сразу Silero"
+                )
+                break
             if provider_name == "minimax":
                 self._sap_synthesize_minimax(
                     voice,
@@ -4710,6 +4986,7 @@ class TTSNode(Node):
                     sink,
                     provider_chain,
                     ctx,
+                    budget_deadline=cloud_deadline,
                 )
             elif provider_name == "yandex":
                 self._sap_synthesize_yandex(
@@ -4736,10 +5013,17 @@ class TTSNode(Node):
         sink: str,
         provider_chain: list,
         ctx: Dict[str, Any],
+        budget_deadline: float | None = None,
     ) -> None:
         """Синтез через MiniMax (HTTP или streaming).  При успехе заполняет
         ``ctx``; при ошибке помечает провайдера «мёртвым» и логирует
         переключение на следующего в цепочке (issue #1083 acceptance log).
+
+        ``budget_deadline`` (issue #2702 п.4) — ``time.monotonic()``-дедлайн
+        облачного TTS-бюджета; в HTTP-режиме прокидывается в retry-loop
+        (:meth:`_synthesize_minimax_with_retry`), чтобы не жечь retries
+        после исчерпания бюджета. Streaming-режим не ретраит внутри себя
+        (единственная попытка), поэтому дедлайн ему не нужен.
         """
         self.publish_state("synthesizing")
         # Issue #1160 — Prometheus metrics: замер MiniMax-synthesis.
@@ -4794,7 +5078,11 @@ class TTSNode(Node):
             else:
                 self.get_logger().info("🔊 Синтез через MiniMax T2A v2 (HTTP)...")
                 result = self._synthesize_minimax(
-                    text, ssml_attributes, voice=_mm_voice, language=language
+                    text,
+                    ssml_attributes,
+                    voice=_mm_voice,
+                    language=language,
+                    budget_deadline=budget_deadline,
                 )
             ctx["audio_np"] = result["audio_np"]
             ctx["sample_rate"] = result["sample_rate"]
@@ -4806,6 +5094,10 @@ class TTSNode(Node):
                 f"(model={self.minimax_model}, voice={_mm_voice}, voice_used={_mm_voice})"
             )
             _minimax_succeeded = True
+            # Issue #2702 п.3 — успех сбрасывает эскалацию транзиентных TTL
+            # (следующий отказ снова начинает лестницу с 30с, а не с той
+            # ступени, на которой она остановилась в прошлый раз).
+            self._sap_reset_provider_fail_streak("minimax")
         except Exception as e:
             mark_dead = getattr(self, "_mark_provider_dead", None)
             if mark_dead is not None:
@@ -4923,6 +5215,8 @@ class TTSNode(Node):
             ctx["used_provider"] = "yandex"
             ctx["used_voice"] = _yandex_voice
             _yandex_succeeded = True
+            # Issue #2702 п.3 — успех сбрасывает эскалацию транзиентных TTL.
+            self._sap_reset_provider_fail_streak("yandex")
         except Exception as e:
             mark_dead = getattr(self, "_mark_provider_dead", None)
             if mark_dead is not None:
@@ -6069,6 +6363,7 @@ class TTSNode(Node):
         ssml_attributes: dict = None,
         voice: str = None,
         language: str = None,
+        budget_deadline: float | None = None,
     ) -> dict:
         """Обёртка с retry-loop над :meth:`_synthesize_minimax_async`.
 
@@ -6082,12 +6377,22 @@ class TTSNode(Node):
         Args:
             text: текст для синтеза.
             ssml_attributes: словарь с SSML-атрибутами (rate/pitch).
+            budget_deadline: issue #2702 п.4 — ``time.monotonic()``-дедлайн
+                облачного TTS-бюджета (``cloud_tts_budget_s``). Проверяется
+                ПЕРЕД каждым retry (не перед первой попыткой — та должна
+                случиться безусловно, раз уж цепочка решила звать MiniMax):
+                если бюджет уже исчерпан, дальнейшие retry отменяются и
+                последнее исключение поднимается немедленно — экономит
+                время для следующего провайдера в цепочке (Yandex/Silero).
+                ``None`` (default) — поведение прежнее, retry не ограничены
+                бюджетом (только своим ``minimax_max_retries``).
 
         Returns:
             см. ``_synthesize_minimax_async``.
 
         Raises:
-            Последнее исключение после исчерпания retry budget.
+            Последнее исключение после исчерпания retry budget (или после
+            исчерпания облачного бюджета — см. ``budget_deadline``).
         """
         configured_retries = min(max(0, int(self.minimax_max_retries)), 3)
         max_attempts = configured_retries + 1  # 0 retries → 1 attempt
@@ -6119,6 +6424,17 @@ class TTSNode(Node):
                 if attempt >= retry_budget:
                     self.get_logger().error(
                         f"MiniMax exhausted {attempt + 1}/{retry_budget + 1} attempts: {exc}"
+                    )
+                    raise
+                if budget_deadline is not None and time.monotonic() >= budget_deadline:
+                    # Issue #2702 п.4 — облачный бюджет уже исчерпан (эта
+                    # ПЕРВАЯ попытка сама по себе его съела, например честным
+                    # httpx-таймаутом): не ретраим, следующий провайдер
+                    # (Yandex/Silero) должен успеть получить свой шанс.
+                    self.get_logger().warn(
+                        f"⏱️ [issue 2702] MiniMax retry {attempt + 1}/{retry_budget} "
+                        f"отменён — облачный TTS-бюджет исчерпан "
+                        f"({type(exc).__name__}: {exc})"
                     )
                     raise
                 delay = (backoff_ms / 1000.0) * (2**attempt)
@@ -6218,6 +6534,7 @@ class TTSNode(Node):
         ssml_attributes: dict = None,
         voice: str = None,
         language: str = None,
+        budget_deadline: float | None = None,
     ) -> dict:
         """Sync-обёртка над :meth:`_synthesize_minimax_with_retry`.
 
@@ -6227,9 +6544,16 @@ class TTSNode(Node):
         Теперь ВСЕ вызовы идут через процесс-глобальный вечный loop
         (``_run_in_tts_loop``) — retry внутри одного синтеза и
         последующие синтезы переиспользуют тот же loop.
+
+        ``budget_deadline`` — issue #2702 п.4, см.
+        :meth:`_synthesize_minimax_with_retry`.
         """
         coro = self._synthesize_minimax_with_retry(
-            text, ssml_attributes, voice=voice, language=language
+            text,
+            ssml_attributes,
+            voice=voice,
+            language=language,
+            budget_deadline=budget_deadline,
         )
         return _run_in_tts_loop(coro)
 

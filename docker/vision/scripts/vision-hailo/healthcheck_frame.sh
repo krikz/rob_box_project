@@ -1,21 +1,47 @@
 #!/usr/bin/env bash
-# healthcheck_frame.sh — capability-honest healthcheck vision-hailo (ADR-0104).
+# healthcheck_frame.sh — capability-honest healthcheck vision-hailo
+# (ADR-0104, issue #2703).
 #
-# Старый healthcheck (``pgrep -f vision_hailo``) отвечал ``Up (healthy)``
-# даже когда нода никогда не получала кадров от источника. Это маскировало
-# реальный режим работы (issue #2531 acceptance #6): контейнер мог быть
-# "здоровым" вечно, не получая ни одного кадра с OAK-D.
+# История: старый healthcheck (``pgrep -f vision_hailo``) отвечал
+# ``Up (healthy)`` даже когда нода никогда не получала кадров от источника
+# (issue #2531 acceptance #6). Фикс #2608/ADR-0104 перешёл на
+# ``ros2 topic echo /vision/hailo/events --once`` — но это оказалось ДВОЙНОЙ
+# ложью в другую сторону (issue #2703, raw-лог 17.09.2026):
 #
-# Этот скрипт делает два независимых чека:
+#   1) демон ros2cli на Vision Pi падает под rmw_zenoh
+#      (``xmlrpc.client.Fault: !rclpy.ok()``) — ``ros2 topic echo`` без
+#      ``--no-daemon`` фейлится НЕЗАВИСИМО от состояния ноды;
+#   2) в real-режиме тишина в топике — норма: нода публикует только
+#      события выше confidence_threshold (``filter_by_confidence``,
+#      vision_hailo_node.py::_tick), heartbeat по stub_period_sec есть
+#      только у stub-loader'а. Пустая сцена (нода жива, infer выполняется,
+#      0 детекций) красила контейнер unhealthy — подтверждено деплоем
+#      17.09.2026 (issue #2707).
 #
-# 1) Процесс жив: ``pgrep -f vision_hailo`` — старое поведение, fast-fail.
-# 2) Топик публикует: ``ros2 topic echo ... --once`` получает хотя бы
-#    одно событие. Publisher count > 0 НЕ подходит (issue #2602): publisher
-#    создаётся на старте даже у полностью немой ноды, поэтому старый чек
-#    держал контейнер healthy при нулевом выходе событий.
+# Новый чек:
+#   1) процесс жив (``pgrep -f vision_hailo``) — fast-fail.
+#   2) heartbeat-файл (issue #2703/#2704): нода обновляет его ПОСЛЕ
+#      каждого успешного infer() — НЕ по факту публикации события
+#      (rob_box_perception.utils.heartbeat.FileHeartbeat). Возраст файла
+#      < HEARTBEAT_STALE_SEC → healthy. Пустая сцена не отличается от
+#      "детекция была" — обе обновляют heartbeat одинаково, обе healthy.
 #
-# Если оба true — exit 0 (healthy).
-# Иначе — exit 1 (unhealthy, docker перезапустит по policy).
+# ros2cli (если где-то всё же нужен, например для ручной диагностики) —
+# ТОЛЬКО с ``--no-daemon`` (issue #2703 п.1: демон падает под rmw_zenoh).
+# Сам healthcheck больше НЕ зовёт ros2 CLI вообще — heartbeat-файл читается
+# через ``stat``, без ROS/DDS зависимостей, поэтому быстрее и не подвержен
+# падению демона.
+#
+# ENV:
+#   HEARTBEAT_PATH      — путь к heartbeat-файлу
+#                         (default /tmp/vision_hailo_heartbeat, должен
+#                         совпадать с heartbeat_path launch-параметром
+#                         ноды — см. utils/heartbeat.py::default_heartbeat_path).
+#   HEARTBEAT_STALE_SEC — порог "протухания" в секундах (default 30 —
+#                         совпадает с DEFAULT_FRAME_STALE_SEC в
+#                         vision_hailo_node.py; при stub_period_sec=2.0
+#                         тик идёт каждые ~0.5s, так что 30s — большой
+#                         запас на единичный медленный infer).
 #
 # Использование в docker-compose.yaml:
 #   healthcheck:
@@ -27,43 +53,38 @@
 
 set -eo pipefail
 
+HEARTBEAT_PATH="${HEARTBEAT_PATH:-/tmp/vision_hailo_heartbeat}"
+HEARTBEAT_STALE_SEC="${HEARTBEAT_STALE_SEC:-30}"
+
 # ---------- 1) Процесс жив ----------
 if ! pgrep -f vision_hailo > /dev/null; then
     echo "[healthcheck_frame] FAIL: процесс vision_hailo не найден" >&2
     exit 1
 fi
 
-# ---------- 2) Топик публикует события ----------
-# issue #2602: publisher count > 0 НЕ означает, что нода публикует —
-# publisher создаётся на старте даже у немой ноды (рекурсивный spin_once
-# блокировал executor). Проверяем ФАКТ доставки: --once выходит, как
-# только приходит первое событие (stub_period_sec=2.0 → за ~0.5-2.5s).
-
-# shellcheck disable=SC1091
-source /opt/ros/${ROS_DISTRO:-humble}/setup.bash 2>/dev/null || true
-
-# shellcheck disable=SC1091
-source /ws/install/setup.bash 2>/dev/null || true
-
-# source ДО проверки ros2: иначе command -v ros2 всегда fail на образе
-# без ros2 в базовом PATH → вечный fallback на pgrep-only (тот самый
-# «blind healthcheck», который issue #2602 запрещает).
-if ! command -v ros2 > /dev/null 2>&1; then
-    # Если ros2 CLI недоступен даже после source (минимальный образ без
-    # /opt/ros и /ws/install) — fallback на pgrep-only, чтобы не сломать
-    # CI smoke-тесты.
-    echo "[healthcheck_frame] WARN: ros2 CLI не найден, fallback на pgrep-only" >&2
-    exit 0
+# ---------- 2) Heartbeat свежий ----------
+# issue #2703: живость по факту успешного infer(), НЕ по наличию событий
+# в топике — пустая сцена не должна читаться как смерть ноды.
+if [ ! -f "${HEARTBEAT_PATH}" ]; then
+    echo "[healthcheck_frame] FAIL: heartbeat-файл ${HEARTBEAT_PATH} не найден" >&2
+    echo "[healthcheck_frame] — нода ещё ни разу не выполнила успешный infer()," >&2
+    echo "[healthcheck_frame]   либо gaze_source недоступен (see issue #2703)" >&2
+    exit 1
 fi
 
-# timeout 8 < docker-compose healthcheck timeout: 10s. Нода публикует
-# каждые stub_period_sec (2.0s), поэтому первого события ждём с запасом.
-if timeout 8 ros2 topic echo /vision/hailo/events rob_box_perception_msgs/msg/VisionEvent --once > /dev/null 2>&1; then
-    exit 0
+NOW_EPOCH=$(date +%s)
+HEARTBEAT_EPOCH=$(stat -c %Y "${HEARTBEAT_PATH}" 2>/dev/null || stat -f %m "${HEARTBEAT_PATH}" 2>/dev/null) || {
+    echo "[healthcheck_frame] FAIL: не удалось прочитать mtime ${HEARTBEAT_PATH}" >&2
+    exit 1
+}
+AGE=$(( NOW_EPOCH - HEARTBEAT_EPOCH ))
+
+if [ "${AGE}" -lt 0 ] || [ "${AGE}" -gt "${HEARTBEAT_STALE_SEC}" ]; then
+    echo "[healthcheck_frame] FAIL: heartbeat устарел (${AGE}s > ${HEARTBEAT_STALE_SEC}s)" >&2
+    echo "[healthcheck_frame] — _tick/infer не выполнялся дольше порога:" >&2
+    echo "[healthcheck_frame]   либо нода зависла, либо HEF loader в degraded" >&2
+    echo "[healthcheck_frame]   state (см. vision_hailo_node.py::_tick except)" >&2
+    exit 1
 fi
 
-echo "[healthcheck_frame] FAIL: нет событий в /vision/hailo/events за 8s" >&2
-echo "[healthcheck_frame] — publisher создан, но нода молчит (issue #2602:" >&2
-echo "[healthcheck_frame]   рекурсивный spin_once блокировал executor)," >&2
-echo "[healthcheck_frame]   либо источник кадра (gaze_source) недоступен" >&2
-exit 1
+exit 0

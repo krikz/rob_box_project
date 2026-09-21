@@ -491,16 +491,31 @@ class SttAdmission:
                 ctx.skip_counter[key] = ctx.skip_counter.get(key, 0) + 1
             label = f"{outcome.step_name} ({outcome.reason})" if outcome.reason else outcome.step_name
             if self.logger is not None:
-                log_fn = self.logger.warning if outcome.kind is SttOutcomeKind.HANDLED else self.logger.info
-                log_fn(
-                    f"🚦 [stt-admission] {outcome.kind.value}: "
-                    f"step={label} text={ctx.text[:60]!r}"
-                )
+                self._log_outcome(outcome, ctx, label)
             return outcome
         return SttOutcome(
             kind=SttOutcomeKind.PASS,
             new_context=current,
         )
+
+    def _log_outcome(self, outcome: SttOutcome, ctx: SttContext, label: str) -> None:
+        """Log the DROP/HANDLED verdict at the right severity (issue #2713).
+
+        Two physically distinct ``self.logger.*`` call-sites on purpose:
+        ``rclpy.impl.rcutils_logger.RcutilsLogger.log()`` caches the
+        severity **by call-site** (caller's file/line) and raises
+        ``ValueError('Logger severity cannot be changed between calls.')``
+        if the same call-site is later hit with a different severity. A
+        single ``log_fn(...)`` line shared between the HANDLED and DROP
+        branches defeated that cache the moment both outcomes occurred
+        in the same node lifetime — split them into separate lines here
+        so ``evaluate`` keeps one unconditional call (CC budget, ADR-0021 R1).
+        """
+        message = f"🚦 [stt-admission] {outcome.kind.value}: step={label} text={ctx.text[:60]!r}"
+        if outcome.kind is SttOutcomeKind.HANDLED:
+            self.logger.warning(message)
+        else:
+            self.logger.info(message)
 
 
 # ---------------------------------------------------------------------------

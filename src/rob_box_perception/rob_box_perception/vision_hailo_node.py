@@ -58,6 +58,10 @@ from rob_box_perception.gaze import (
     GazeSourceUnavailable,
     make_source,
 )
+from rob_box_perception.utils.heartbeat import (
+    FileHeartbeat,
+    default_heartbeat_path,
+)
 from rob_box_perception.vision_hailo_loader import (
     HEFLoader,
     VISION_EVENT_FIELDS,
@@ -115,6 +119,15 @@ class VisionHailoNode(Node):
             даже когда нет входящих кадров (важно для smoke-теста CI).
             В real-режиме НЕ рекомендуется — это mode-mask против capability-
             honest (ADR-0104 acceptance #5); в проде оставлять False.
+        heartbeat_path (str, default ""): путь к файлу-heartbeat живости
+            (issue #2703, #2704). Пустая строка = авто
+            (``/tmp/{NODE_NAME}_heartbeat``, см.
+            ``utils.heartbeat.default_heartbeat_path``). Обновляется ПОСЛЕ
+            каждого успешного ``infer()`` — НЕ по факту публикации события,
+            иначе пустая сцена (0 детекций, infer успешен) снова читается
+            healthcheck'ом как смерть ноды. Docker healthcheck
+            (``healthcheck_frame.sh`` / ``healthcheck_face_frame.sh``)
+            проверяет возраст этого файла вместо ``ros2 topic echo``.
     """
 
     #: Имя ROS-ноды. Переопределяется сабклассом ``vision_face_node``
@@ -139,6 +152,9 @@ class VisionHailoNode(Node):
         # NMS IoU. Базовый YOLOv8n-нода не меняет дефолт; сабкласс
         # vision_face_node прокидывает его в make_face_loader.
         self.declare_parameter('nms_iou_threshold', 0.45)
+        # Heartbeat живости (issue #2703, #2704). Пустая строка = авто
+        # (/tmp/{NODE_NAME}_heartbeat).
+        self.declare_parameter('heartbeat_path', '')
 
         self.hailo_enabled = bool(self.get_parameter('hailo_enabled').value)
         hef_path_param = str(self.get_parameter('hef_path').value).strip()
@@ -158,6 +174,15 @@ class VisionHailoNode(Node):
         self.publish_when_no_input = bool(
             self.get_parameter('publish_when_no_input').value
         )
+        heartbeat_path_param = str(
+            self.get_parameter('heartbeat_path').value
+        ).strip()
+        self.heartbeat_path = heartbeat_path_param or default_heartbeat_path(
+            self.NODE_NAME
+        )
+        # issue #2703/#2704: heartbeat живости, независимый от детекций.
+        # Обновляется в _tick() ПОСЛЕ успешного infer() (см. beat() ниже).
+        self._heartbeat = FileHeartbeat(self.heartbeat_path)
 
         if self.gaze_source_name not in KNOWN_GAZE_SOURCES:
             raise ValueError(
@@ -268,7 +293,8 @@ class VisionHailoNode(Node):
             f'topic={self._gaze.topic!r}, '
             f'output_topic={self.output_topic}, '
             f'confidence_threshold={self.confidence_threshold}, '
-            f'publish_when_no_input={self.publish_when_no_input})'
+            f'publish_when_no_input={self.publish_when_no_input}, '
+            f'heartbeat_path={self.heartbeat_path!r})'
         )
 
     # ----------------------------------------------------------------
@@ -396,6 +422,14 @@ class VisionHailoNode(Node):
             )
         self._consecutive_failures = 0
         self._degraded_logged = False
+
+        # issue #2703/#2704: heartbeat — ПО ФАКТУ успешного infer(), а НЕ
+        # по факту публикации события. Пустая сцена (raw_events == [] или
+        # все ниже confidence_threshold) — это ЗДОРОВАЯ нода, а не мёртвая.
+        # Если бы heartbeat стоял ниже (после filter_by_confidence + publish
+        # loop), пустая комната снова красила бы контейнер unhealthy — ровно
+        # регресс issue #2703.
+        self._heartbeat.beat()
 
         filtered = filter_by_confidence(raw_events, self.confidence_threshold)
         for event_dict in filtered:

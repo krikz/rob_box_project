@@ -72,3 +72,20 @@ audio_node:
     # (-26 dBFS в начале) режется → STT даёт «обот» / «меня зовут саша».
     # 1 = 70 Hz cut-off — сохраняет «Р» (≈60 Hz основной тон + гармоники).
     hpf_on: 1                  # 0=OFF, 1=70Hz, 2=125Hz, 3=180Hz (default firmware)
+
+    # ====== Watchdog захвата (issue #2701) ======
+    # Ретрай audio_retry_period (выше) лечит только «поток не открылся на
+    # старте». Здесь — «поток открыт, но PortAudio молча перестал звать
+    # audio_callback» (ReSpeaker завис на ходу, 17.09.2026, робот простоял
+    # ночь и не слышал голос до ручного docker restart).
+    # audio_stall_timeout_s: сколько секунд без audio_callback считается
+    # зависанием.
+    audio_stall_timeout_s: 5.0
+    # audio_stall_empty_speech_count: второй признак того же зависания —
+    # VAD видит речь по USB HID (независимый канал), а буфер захвата пуст
+    # («Речь отклонена: 0.00с») K раз подряд.
+    audio_stall_empty_speech_count: 3
+    # audio_heartbeat_file: файл для healthcheck контейнера (docker/vision/
+    # scripts/voice_assistant/healthcheck_audio.sh) — пустая строка
+    # отключает запись.
+    audio_heartbeat_file: /tmp/rob_box_audio_heartbeat

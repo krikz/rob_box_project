@@ -167,7 +167,12 @@ LAUNCH_ARGS=(
     # input_topic — back-compat, нода игнорирует (ADR-0104).
     input_topic:=${INPUT_TOPIC}
     output_topic:=${OUTPUT_TOPIC}
-    publish_when_no_input:=true
+    # ADR-0104 acceptance #5 (issue #2703): в проде обязан быть false —
+    # true маскирует недоступность источника кадра (нода бы публиковала
+    # stub-события бесконечно, даже когда gaze_source мёртв). launch_factory
+    # default остаётся 'true' — он предназначен для CI/smoke без ROS/железа
+    # (тест ros2 launch без реального источника кадра), сюда НЕ трогать.
+    publish_when_no_input:=false
 )
 if [ -n "${HEF_PATH}" ]; then
     LAUNCH_ARGS+=( hef_path:=${HEF_PATH} )

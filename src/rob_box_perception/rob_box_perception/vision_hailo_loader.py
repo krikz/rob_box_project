@@ -536,6 +536,142 @@ class RealHEFLoader(HEFLoader):
 # Post-processing (pure-function, тестируется без hailo_platform)
 # ============================================================================
 
+def _is_nms_postprocessed_output(raw_output: Any) -> bool:
+    """True если ``raw_output`` — уже NMS'нутый (on-chip) выход HailoRT.
+
+    Issue #2703 (raw-лог 17.09.2026, ``vision_hailo_loader.py:581``):
+    ``VisibleDeprecationWarning: Creating an ndarray from ragged nested
+    sequences`` на ``np.asarray(raw_output)``. Причина: HEF, скомпилированный
+    с on-chip NMS postprocessing (штатная поставка ``yolov8n.hef`` из
+    ``hailo_model_zoo``), возвращает ``get_buffer()`` не как единый тензор,
+    а как ``List[np.ndarray]`` длины ``num_classes``, где
+    ``raw_output[class_id]`` — массив формы ``(n_detections, 5)``:
+    ``[y_min, x_min, y_max, x_max, score]`` (нормализовано [0, 1],
+    letterbox-space). Число детекций отличается по классам → список
+    ragged по построению.
+
+    ПРИМЕЧАНИЕ (честность, ADR-0018): точный layout HailoRT-буфера для
+    on-chip NMS не был эмпирически проверен на живом AI HAT+ — в этой
+    среде нет доступа к железу/hailo_platform. Формат
+    ``[y_min, x_min, y_max, x_max, score]`` — задокументированное лучшее
+    понимание по публичному описанию hailo_model_zoo NMS postprocessing
+    (тот же TF-style конвеншн, что и стандартный NMS box-order). Issue
+    #2703 acceptance #3 ("человек в кадре → confidence >= 0.5") остаётся
+    открытым до живой проверки на роботе.
+
+    Эвристика: ``raw_output`` НЕ ndarray, а list/tuple, где каждый
+    непустой элемент приводится к 2D-массиву с последней размерностью 5.
+    """
+    try:
+        import numpy as np  # type: ignore[import-not-found]
+    except ImportError:
+        return False
+
+    if isinstance(raw_output, np.ndarray):
+        return False
+    if not isinstance(raw_output, (list, tuple)):
+        return False
+    if len(raw_output) == 0:
+        return False
+    for cls_entry in raw_output:
+        entry_arr = (
+            cls_entry if isinstance(cls_entry, np.ndarray)
+            else np.asarray(cls_entry)
+        )
+        if entry_arr.size == 0:
+            continue
+        if entry_arr.ndim != 2 or entry_arr.shape[-1] != 5:
+            return False
+    return True
+
+
+def _post_process_nms_output(
+    raw_output: Any,
+    source_camera: str,
+    confidence_threshold: float,
+    letterbox_info: Optional[LetterboxInfo],
+    input_w: int,
+    input_h: int,
+) -> List[Dict[str, Any]]:
+    """Разбор уже-NMS'нутого (on-chip) выхода HailoRT в VisionEvent-dict'ы.
+
+    ``raw_output[class_id]`` — ndarray ``(n, 5)`` с
+    ``[y_min, x_min, y_max, x_max, score]``, нормализовано [0, 1] в
+    letterbox-space. NMS уже применён HailoRT на чипе — здесь только
+    confidence-фильтр и unproject bbox в координаты исходного кадра
+    (переиспользует ``LetterboxInfo.unproject``, ту же формулу, что и
+    dense-путь в ``_post_process_detections``, — см. docstring
+    ``_is_nms_postprocessed_output`` про честность формата).
+    """
+    import numpy as np  # type: ignore[import-not-found]
+
+    lb_w = letterbox_info.letterbox_w if letterbox_info is not None else input_w
+    lb_h = letterbox_info.letterbox_h if letterbox_info is not None else input_h
+
+    events: List[Dict[str, Any]] = []
+    for cls_id, cls_entry in enumerate(raw_output):
+        entry_arr = (
+            cls_entry if isinstance(cls_entry, np.ndarray)
+            else np.asarray(cls_entry, dtype=float)
+        )
+        if entry_arr.size == 0:
+            continue
+        entry_arr = entry_arr.reshape(-1, 5)
+
+        cls_name = (
+            COCO_CLASS_NAMES[cls_id]
+            if 0 <= cls_id < len(COCO_CLASS_NAMES) else ''
+        )
+        if cls_name == 'person':
+            ev_type = 'person'
+        elif cls_name:
+            ev_type = 'object'
+        else:
+            ev_type = 'scene'
+
+        for row in entry_arr:
+            y_min, x_min, y_max, x_max, score = (float(v) for v in row[:5])
+            if score < confidence_threshold:
+                continue
+
+            # Normalized [0,1] letterbox-space → letterbox-space pixels.
+            x_min_px, x_max_px = x_min * lb_w, x_max * lb_w
+            y_min_px, y_max_px = y_min * lb_h, y_max * lb_h
+            cx_px = (x_min_px + x_max_px) / 2.0
+            cy_px = (y_min_px + y_max_px) / 2.0
+            bw_px = x_max_px - x_min_px
+            bh_px = y_max_px - y_min_px
+
+            if letterbox_info is not None and letterbox_info.scale > 0.0:
+                u_cx, u_cy, u_bw, u_bh = letterbox_info.unproject(
+                    cx_px, cy_px, bw_px, bh_px
+                )
+                cx = u_cx / letterbox_info.orig_w
+                cy = u_cy / letterbox_info.orig_h
+                bw = u_bw / letterbox_info.orig_w
+                bh = u_bh / letterbox_info.orig_h
+            else:
+                cx, cy = cx_px / lb_w, cy_px / lb_h
+                bw, bh = bw_px / lb_w, bh_px / lb_h
+
+            events.append({
+                'source_camera': source_camera,
+                'event_type': ev_type,
+                'class_name': cls_name,
+                'class_id': cls_id,
+                'confidence': score,
+                'bbox_cx': float(cx),
+                'bbox_cy': float(cy),
+                'bbox_w': float(bw),
+                'bbox_h': float(bh),
+                'distance_m': -1.0,
+                'embedding_id': '',
+                'display_name': '',
+                'attributes_json': '',
+            })
+    return events
+
+
 def _post_process_detections(
     raw_output: Any,
     source_camera: str,
@@ -553,7 +689,11 @@ def _post_process_detections(
         - каналы 4..84: per-class scores (sigmoid'ed или linear)
 
     Args:
-        raw_output: numpy.ndarray формы (1, 84, 8400) или (84, 8400).
+        raw_output: numpy.ndarray формы (1, 84, 8400) или (84, 8400) —
+            "сырой" (без on-chip NMS) HEF-выход. Либо, если HEF собран
+            с on-chip NMS postprocessing (issue #2703): list/tuple длины
+            num_classes с per-class ndarray (n, 5) — маршрутизируется в
+            ``_post_process_nms_output`` через ``_is_nms_postprocessed_output``.
         source_camera: подставляется в VisionEvent.source_camera.
         input_w / input_h: letterbox space (= 640 для YOLOv8n).
         confidence_threshold: фильтр confidence.
@@ -577,6 +717,23 @@ def _post_process_detections(
 
     if raw_output is None:
         return []
+
+    # issue #2703: HEF со встроенным (on-chip) NMS postprocessing (штатная
+    # поставка yolov8n.hef из hailo_model_zoo) отдаёт НЕ единый (1, 84, 8400)
+    # тензор, а per-class список разной длины — см. _is_nms_postprocessed_output
+    # docstring. np.asarray() на нём в старом коде кидал
+    # VisibleDeprecationWarning и падал в ветку "unknown shape" → детекции
+    # молча схлопывались в []. Раз-регресс: test_post_process_ragged_nms_*
+    # в test_vision_hailo_phase15.py.
+    if _is_nms_postprocessed_output(raw_output):
+        return _post_process_nms_output(
+            raw_output,
+            source_camera=source_camera,
+            confidence_threshold=confidence_threshold,
+            letterbox_info=letterbox_info,
+            input_w=input_w,
+            input_h=input_h,
+        )
 
     arr = np.asarray(raw_output)
     if arr.ndim == 3:

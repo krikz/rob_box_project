@@ -25,6 +25,7 @@ import logging
 import math
 import os
 import re
+import sys
 import threading
 import time
 import traceback
@@ -7561,15 +7562,26 @@ def main(args: Optional[List[str]] = None) -> None:
     node = DialogueNode()
     executor = rclpy.executors.MultiThreadedExecutor()
     executor.add_node(node)
+    exit_code = 0
     try:
         executor.spin()
     except KeyboardInterrupt:
         pass
+    except Exception:  # noqa: BLE001 — issue #2713: an uncaught spin()
+        # exception used to escape main() silently, leaving a zombie
+        # process the container healthcheck reports as healthy. Log
+        # and exit non-zero so launch/docker observe the death instead.
+        logging.getLogger(__name__).exception(
+            "dialogue_node: executor.spin() crashed, exiting"
+        )
+        exit_code = 1
     try:
         node.shutdown_asyncio_loop(wait=False)
     except Exception:  # noqa: BLE001
         logging.getLogger(__name__).exception("dialogue_node: shutdown failed")
     rclpy.shutdown()
+    if exit_code:
+        sys.exit(exit_code)
 
 if __name__ == "__main__":
     main()
