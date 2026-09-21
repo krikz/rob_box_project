@@ -1514,8 +1514,18 @@ parse_transcript() {  # $1=label $2=before_rfc3339
     logs="$(${ROBOT_SSH} "docker logs voice-assistant --since '${before}' 2>&1" 2>/dev/null || echo '')"
     local text duration_s expected
     expected="$3"
-    # «✅ ПРИНЯТО: <текст>» — основной маркер распознанной фразы (stt_node.py:534)
-    text="$(printf '%s' "$logs" | grep -oE '✅ ПРИНЯТО:\s*[^[:space:]].*' | head -1 | sed -E 's/^✅ ПРИНЯТО:\s*//' | tr -d '\r')"
+    # «✅ ПРИНЯТО (<source>): <текст>» — основной маркер распознанной фразы.
+    # stt_node.py:923: self.get_logger().info(f"✅ ПРИНЯТО ({source}): {text}")
+    #
+    # bug(run 35658231116, 22.09.2026): паттерн был '✅ ПРИНЯТО:' — без тега
+    # источника, который появился в 6e016325f (#2011). Совпадений ноль, поэтому
+    # "recognized" в transcript.json всегда пустой, а в лог каждого шага шло
+    # «TRANSCRIPT[...]: STT не вернул фразу (нет '✅ ПРИНЯТО')» — даже там, где
+    # сам харнесс строкой выше отчитался «✅ ПОЛНЫЙ ЦИКЛ (акцепт + LLM + TTS)».
+    # Два взаимно противоречащих утверждения в одном логе; check_cycle грепает
+    # просто "ПРИНЯТО" (без двоеточия) и потому работал.
+    # Тег делаем опциональным — старые логи роботов до #2011 тоже читаются.
+    text="$(printf '%s' "$logs" | grep -oE '✅ ПРИНЯТО( \([^)]*\))?:[[:space:]]*[^[:space:]].*' | head -1 | sed -E 's/^✅ ПРИНЯТО( \([^)]*\))?:[[:space:]]*//' | tr -d '\r')"
     # Длительность STT-сегмента: «Получена фраза: X.XXс» (stt_node.py:456)
     local phrase_line
     phrase_line="$(printf '%s' "$logs" | grep 'Получена фраза' | tail -1 || true)"
@@ -1804,7 +1814,10 @@ voice_changed_req = bool(acc.get("voice_changed", False))
 response_max_ms = acc.get("response_max_ms", 0) or 0
 
 recognized = ""
-m = re.search(r"✅ ПРИНЯТО:\s*(.+)", logs)
+# stt_node.py:923 печатает `✅ ПРИНЯТО ({source}): {text}` — тег источника
+# добавлен в 6e016325f (#2011), а паттерн остался без него, поэтому recognized
+# был пуст на каждом прогоне (35658231116). Тег опционален — старые логи тоже.
+m = re.search(r"✅ ПРИНЯТО(?: \([^)]*\))?:\s*(.+)", logs)
 if m:
     recognized = m.group(1).strip()
 # Ключевые слова ищем по ВСЕМ логам шага (признанная фраза + LLM OUTPUT /

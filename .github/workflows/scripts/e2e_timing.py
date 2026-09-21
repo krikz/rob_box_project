@@ -61,7 +61,13 @@ def collect_metrics(log: str) -> dict:
 
     recognized = ""
     for line in log.splitlines():
-        m = re.search(r"✅ ПРИНЯТО:\s*(.+)", line)
+        # stt_node.py:923 — `✅ ПРИНЯТО ({source}): {text}`. Тег источника
+        # появился в 6e016325f (#2011); без него в паттерне recognized был
+        # пуст на каждом прогоне (разбор 35658231116), и в timing.json/
+        # step summary распознанная фраза не показывалась никогда.
+        # accept_t выше грепает "✅ ПРИНЯТО" без двоеточия и потому работал —
+        # поэтому времянки были правдой, а текст рядом с ними отсутствовал.
+        m = re.search(r"✅ ПРИНЯТО(?: \([^)]*\))?:\s*(.+)", line)
         if m:
             recognized = m.group(1).strip()
 
