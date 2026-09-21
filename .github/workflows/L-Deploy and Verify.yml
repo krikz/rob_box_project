@@ -317,30 +317,45 @@ jobs:
             sleep 5
           done
 
-      - name: "[Vision Pi] Ensure HEF models (#2398, #2599)"
+      - name: "[Vision Pi] Ensure HEF models (#2398, #2599) — Ресурсный пак"
         if: '!inputs.dry_run'
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "🧠 Ensuring Hailo HEF models on Vision Pi..."
+          echo "🧠 Ресурсный пак: HEF-модели на Vision Pi..."
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          # Этап 2 плана docs/plans/2026-09-15-resource-pack.md §7: вместо цикла
+          # по двум почти дословно одинаковым download_*_hef.sh — один вызов
+          # apply_resource_pack.sh с манифестом. Шестой ресурс добавляется
+          # записью в manifest.yaml и НЕ требует правки этого workflow.
+          #
           # /opt/rob_box/models монтируется в vision-hailo/vision-face как :ro,
-          # поэтому скачать модель может только хост — не контейнер. Скрипты
-          # идемпотентны (файл на месте → мгновенный OK) и сверяют SHA256
-          # (retinaface). Неудача скачивания НЕ валит деплой: нода логирует
-          # причину и остаётся в degraded (ADR-0018), restart-loop'а не будет —
-          # HEF открывается лениво, на первом кадре.
-          # Результат скачивания проверяем ОТДЕЛЬНО (test -f), а не по коду
-          # возврата скрипта: `|| echo warning` красил шаг зелёным, и 15.09
-          # деплой отрапортовал success, пока retinaface не встал вовсе
-          # (SHA-сравнение падало на регистре). Деплой по-прежнему не валим —
-          # нода честно уходит в degraded (ADR-0018) — но промах виден как
-          # GitHub-аннотация, а не только в сыром логе шага.
-          HEF_SCRIPTS='~/rob_box_project/docker/vision/scripts/vision-hailo'
+          # поэтому скачать модель может только хост — не контейнер. Скрипт
+          # идемпотентен: файл на месте + sha256 совпал → no-op без сети.
+          #
+          # Что значит код возврата скрипта (см. его шапку):
+          #   0 — всё на месте ЛИБО soft-ресурс не встал: это ОБЪЯВЛЕННАЯ
+          #       деградация, нода честно уходит в stub (ADR-0018),
+          #       restart-loop'а не будет — HEF открывается лениво, на первом
+          #       кадре. Деплой такой промах НЕ валит, как и раньше.
+          #   1 — sha256 не совпал (на диске/скачалось НЕ то) или не встал
+          #       hard-ресурс.
+          #   2 — сломан манифест или вызов.
+          # Коды 1/2 деплой ВАЛЯТ, и это осознанное изменение поведения:
+          # «скачалось не то» — не деградация, а неизвестное состояние робота,
+          # и узнавать о нём из логов через неделю мы уже пробовали.
+          #
+          # Факт наличия файла проверяем ОТДЕЛЬНО (test -f), а не только по коду
+          # возврата: `|| echo warning` красил шаг зелёным, и 15.09 деплой
+          # отрапортовал success, пока retinaface не встал вовсе (SHA-сравнение
+          # падало на регистре). Промах виден как GitHub-аннотация, а не только
+          # в сыром логе шага.
+          RESOURCE_PACK='~/rob_box_project/docker/vision/scripts/resource_pack/apply_resource_pack.sh'
+          rp_rc=0
+          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
+            "echo 'open' | sudo -S bash $RESOURCE_PACK --only yolov8n-hef,retinaface-hef" || rp_rc=$?
+
           HEF_MISSING=""
-          for pair in "yolov8n.hef:download_yolov8n_hef.sh" "retinaface_mobilenet_v1.hef:download_retinaface_hef.sh"; do
-            hef="${pair%%:*}"
-            script="${pair##*:}"
-            sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} "echo 'open' | sudo -S bash $HEF_SCRIPTS/$script" || true
+          for hef in "yolov8n.hef" "retinaface_mobilenet_v1.hef"; do
             if sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} "test -f /opt/rob_box/models/$hef"; then
               echo "✅ $hef на месте"
             else
@@ -350,6 +365,10 @@ jobs:
           done
           if [ -n "$HEF_MISSING" ]; then
             echo "⚠️  Отсутствуют HEF:$HEF_MISSING — проверить [Vision Pi] Check Container Logs на 'HEF loader failed'"
+          fi
+          if [ "$rp_rc" -ne 0 ]; then
+            echo "::error title=Resource pack failed::apply_resource_pack.sh exit=$rp_rc — sha256 mismatch или сломанный манифест, см. вывод шага выше"
+            exit "$rp_rc"
           fi
 
       - name: "[Vision Pi] .image-versions — из текущей ветки (реверт #1139 v2, 15.08)"
