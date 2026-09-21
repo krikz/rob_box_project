@@ -168,16 +168,48 @@ Hot-reload цепочки тоже отменяется: ROS-параметры 
 - `MiniMaxSTTProvider.recognize()` и семантика ADR-0108 не меняются.
 - Старый вызов `select_recognition` без `policies`/`dead_cache` работает ровно как раньше.
 
+## 4.4 Что показал живой прогон 21.09.2026 (Vision Pi)
+
+Цепочка поехала и Vosk отвечает, но первый же прогон вскрыл, что **классификация отказа по HTTP-статусу недостаточна**.
+
+Проба `/v1/speech_to_text` прямо из контейнера при непродлённой подписке:
+
+```
+HTTP_STATUS: 500
+BODY: {"type":"error","error":{"type":"server_error",
+       "message":"your current token plan not support model, asr-1.0 (2061)",
+       "http_code":"500"}}
+```
+
+То есть MiniMax сообщает про **план** через HTTP 500, а про исчерпанную квоту — через HTTP 200 с `base_resp.status_code=2056` (этот конверт уже разбирает `rob_box_llm.providers.minimax_tts`). Оба случая попадали в `MiniMaxSTTUnavailableError` → транзиентный TTL 30с вместо 300с. В логе это выглядело как `dead={'minimax': 11.3}`, и робот переспрашивал облако каждые полминуты, платя ~1.6с на фразу (две попытки).
+
+**Решение:** `_raise_for_http_status` сначала разбирает **тело** (`_body_error_message`, оба конверта) и сверяет сообщение с `QUOTA_HINTS` (`2056`/`2061`/`1008`/`token plan`/`usage limit`/`insufficient balance`/`not support model`) — зеркало `rob_box_harness.health.QUOTA_EXHAUSTED_HINTS`. Совпало → `MiniMaxSTTRateLimitError` → `STTQuotaError` → длинный TTL и без повтора.
+
+Второе, что вскрылось: у Yandex в метрике стояло голое `reason=error` за 50мс и **ни одной** строки `grpc error`. Причина — `except grpc.RpcError` обёрнут вокруг вызова `RecognizeStreaming()`, который лишь открывает стрим; реальная ошибка прилетает при **итерации** по `responses`, а цикл обёрнут не был (это поведение старше ADR-0124). Код статуса не доходил ни до лога, ни до кэша. Цикл обёрнут, ошибка идёт через `_map_grpc_error`.
+
+Настоящая причина отказа Yandex STT на роботе — не деньги:
+
+```
+GRPC_CODE: StatusCode.UNAVAILABLE
+GRPC_DETAILS: failed to connect to all addresses; last error: FAILED_PRECONDITION:
+  ipv6:[2a0d:d6c1:0:1c::27b]:443: connect failed: Network is unreachable
+```
+
+`stt.api.cloud.yandex.net` резолвится в IPv6, маршрута у робота нет. Yandex TTS при этом работает. Это инфраструктурная проблема вне рамок ADR-0124 — заводится отдельной карточкой; транзиентный TTL 30с для неё корректен (проба стоит 50мс).
+
+Третье: `log_attempts` печатал `reason=error`, но **выбрасывал** `STTAttempt.error`, хотя строка уже лежала в объекте. Именно поэтому, чтобы узнать, что ответили облака, пришлось лезть на робота двумя пробниками. Теперь `error=` печатается в метрике попытки.
+
 ## 5. Что реализовано в этом PR
 
 | Файл | Что |
 |---|---|
 | `src/rob_box_voice/rob_box_voice/stt_fallback.py` | `ProviderPolicy`, `ProviderDeadCache`, `STTAuthError`, `STTQuotaError`, `is_permanent_failure`, `reason="dead"`, декомпозиция `select_recognition` |
 | `src/rob_box_voice/rob_box_voice/stt_node.py` | цепочка, `_normalize_provider_chain`, адаптеры провайдеров, `_recognize_minimax`, `_provider_policies`, `_log_provider_state` + персистентность, `_map_grpc_error` |
-| `src/rob_box_voice/rob_box_voice/stt_providers/minimax_provider.py` | `ensure_wav_container` + `sample_rate` |
+| `src/rob_box_voice/rob_box_voice/stt_providers/minimax_provider.py` | `ensure_wav_container` + `sample_rate`, `QUOTA_HINTS` / `_body_error_message` / `looks_like_quota_problem` (§4.4) |
 | `src/rob_box_voice/config/stt_node.yaml`, `docker/vision/config/voice_assistant/stt_node.yaml` | новые ключи |
 | `src/rob_box_voice/config/stt_chain.yaml` | удалён (§2.6) |
 | `src/rob_box_voice/test/test_stt_dead_cache.py` | новый файл, 31 тест |
+| — | плюс тесты на живые тела ответов с робота (§4.4) и на `_map_grpc_error` |
 | `src/rob_box_voice/test/test_stt_node_fallback.py` | +32 теста на цепочку, provider_state, маппинг ошибок |
 
 ## 6. Границы решения
@@ -189,6 +221,7 @@ Hot-reload цепочки тоже отменяется: ROS-параметры 
 - `STTResult` / `recognize_result()` из ADR-0091 §2.1 — не понадобились для цепочки, откладываются до диаризации.
 - Объединение health-кэшей STT/TTS/LLM — issue #2702.
 - Ре-калибровка порогов speaker-id — issue #2348.
+- IPv6-недоступность `stt.api.cloud.yandex.net` с робота — инфраструктура, отдельная карточка (§4.4).
 - e2e-сценарий на фолбек STT — отдельная карточка после мержа.
 - Изменение формата `/voice/stt/result` — ЗАПРЕЩЕНО (инвариант P0).
 

@@ -633,7 +633,13 @@ def log_attempts(
     # только одну строку — поэтому f-string.
     for a in attempts:
         a_text = f"'{a.text[:30]}'" if a.text else "-"
+        # ``error`` печатаем обязательно: 21.09.2026 на роботе в логе стояло
+        # голое ``reason=error``, и чтобы узнать, ЧТО именно ответили облака,
+        # пришлось лезть на робота двумя пробниками. Строка уже лежала в
+        # STTAttempt.error — её просто выбрасывали.
+        a_error = f" error='{a.error[:120]}'" if a.error else ""
         logger.info(
             f"[stt_attempt_metric] provider={a.provider} reason={a.reason} "
-            f"latency_ms={a.latency_ms} attempt={a.attempt_index} text={a_text}"
+            f"latency_ms={a.latency_ms} attempt={a.attempt_index} "
+            f"text={a_text}{a_error}"
         )
