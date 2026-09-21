@@ -21,11 +21,12 @@ LABEL org.opencontainers.image.source="https://github.com/krikz/rob_box_project"
 # содержит; ffmpeg стоит только в voice_base, от которого этот
 # контейнер НЕ наследуется. Без этой строки _find_ffmpeg() бросает
 # VoiceTranscodeError на первом же голосовом с робота.
+# wget/unzip отсюда убраны вместе со ступенью скачивания Vosk (см. ниже):
+# больше их в этом образе не использовал никто — ни start_telegram_bot.sh,
+# ни healthcheck, ни код ноды.
 RUN apt-get update && apt-get install -y \
     python3-pip \
     ffmpeg \
-    wget \
-    unzip \
     && rm -rf /var/lib/apt/lists/*
 
 # Python зависимости
@@ -42,16 +43,36 @@ RUN pip3 install --no-cache-dir \
     vosk>=0.3.45 \
     && pip3 cache purge
 
-# Vosk-модель (45 МБ, ru) — тот же артефакт, что voice_base/Dockerfile
-# распаковывает для stt_node.py, путь по умолчанию совпадает
-# (/models/vosk-model-small-ru-0.22), так что VOSK_MODEL_PATH менять не
-# нужно ни там, ни тут.
-RUN mkdir -p /models && \
-    wget -q -O /tmp/vosk-model.zip \
-        https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip && \
-    unzip -q -o /tmp/vosk-model.zip -d /models/ && \
-    test -f /models/vosk-model-small-ru-0.22/README && \
-    rm /tmp/vosk-model.zip
+# ============================================================================
+# Vosk-модель — БОЛЬШЕ НЕ ЗДЕСЬ (Ресурсный пак, ADR-0125)
+# ============================================================================
+# Здесь была ступень скачивания vosk-model-small-ru-0.22 (архив 44 МиБ,
+# 88 МиБ распакованный) — ровно тот же артефакт, который до 21.09.2026 качал
+# и voice_base/Dockerfile. Две сборки ходили за одной моделью, два образа
+# хранили её копии.
+#
+# Почему удалена: сборка telegram-bot ходила в сеть и падала ЦЕЛИКОМ при
+# недоступном alphacephei.com (цепочка `wget && unzip && test -f` без
+# `|| true`), а версия модели в этой строке могла молча разъехаться с
+# манифестом Ресурсного пака. Это был пятый путь доставки, не описанный
+# нигде: реестр docs/plans/2026-09-15-resource-pack.md §1.1 перечислял
+# четыре (ADR-0125 §8 п.3, план §16.5).
+#
+# Куда переехало: docker/vision/scripts/resource_pack/manifest.yaml, запись
+# `vosk-ru-small` (required: hard). Файл кладёт на ХОСТ шаг деплоя
+# «[Vision Pi] Ensure STT/TTS models», контейнер получает его bind-mount'ом
+# `/opt/rob_box/models:/models:ro` (docker-compose.yaml, telegram-bot — тот
+# же том, что уже был у voice-assistant).
+#
+# Путь ВНУТРИ контейнера не изменился: voice_processor.py:40 читает
+# `/models/vosk-model-small-ru-0.22` (дефолт VOSK_MODEL_PATH) — ни одна
+# строка Python не правилась.
+#
+# `mkdir -p /models` тоже не нужен: каталог создаёт bind-mount.
+#
+# NB: запуск контейнера БЕЗ этого тома — не молчаливая поломка:
+# _load_vosk_model() пишет в лог «Vosk model not found at ...» и возвращает
+# None (voice_processor.py:133-140), STT остаётся на одном Yandex.
 
 # Копируем ROS 2 пакеты
 # rob_box_core — AV-13/AV-28 (avatar_command): telegram_node импортирует

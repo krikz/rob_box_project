@@ -940,9 +940,9 @@ docker logs voice-assistant 2>&1 | grep -i "Folder does not contain model files"
   заведением его надо перепроверить: соседние PR берут номера параллельно.
 - Подключить `tests/unit/docker/` к CI: каталог сегодня не гоняется ни
   одним workflow (сосед `test_voice_assistant_mem_limit.py` — тоже).
-- Найдено попутно, не чинилось: `docker/vision/telegram_bot/Dockerfile:47-53`
+- ~~Найдено попутно, не чинилось: `docker/vision/telegram_bot/Dockerfile:47-53`
   качает ту же Vosk-модель на этапе сборки своего образа — пятый путь
-  доставки, которого нет в реестре §1.1.
+  доставки, которого нет в реестре §1.1.~~ Починено 21.09.2026 — см. §18.
 - Стало неточным: `docs/deployment/VOICE_ASSISTANT_DOCKER.md:17` и
   `docs/development/DOCKER_BUILD_OPTIMIZATION.md` описывают Vosk как
   bundled in the image.
@@ -997,3 +997,82 @@ silero — `7ba04d42…97ab4` (снято с файла, разложенног�
   контейнер `voice-assistant` видит `/models` через bind-mount и что
   `stt_node`/`tts_node` поднимаются с моделями с хоста. Это остаётся
   обязательным условием, чтобы считать Этап 3 готовым.
+
+---
+
+## 18. Пятый путь доставки закрыт: telegram-bot, 21.09.2026
+
+§16.5 фиксировал находку, которую тогда не чинили:
+`docker/vision/telegram_bot/Dockerfile:47-53` качал **ту же самую**
+`vosk-model-small-ru-0.22`, что и `voice_base`, своей ступенью сборки. Этот
+путь доставки не значился ни в реестре §1.1 (там было четыре), ни в
+манифесте — то есть SSoT версий моделей знал не про все места, где эта
+версия записана.
+
+### 18.1. Что стоило сегодняшнее состояние
+
+| Цена | Механизм |
+|---|---|
+| одна модель в двух образах | `voice-base` (до Этапа 3) и `telegram-bot` качали и хранили по своей копии, 88 МиБ распакованных каждая |
+| сборка бота зависела от сети | `wget && unzip && test -f` без `\|\| true` — недоступен `alphacephei.com`, и весь образ `telegram-bot` красный, хотя к боту модель отношения не имеет |
+| версия могла разъехаться молча | строка URL в Dockerfile против записи `vosk-ru-small` в манифесте; ничто их не сверяло |
+
+### 18.2. Что сделано
+
+- `telegram_bot/Dockerfile`: ступень скачивания удалена (6 исполняемых строк
+  → 0), на её месте комментарий, куда всё переехало. Заодно из `apt-get
+  install` ушли `wget` и `unzip` — в образе их не использовал больше никто
+  (проверено по `start_telegram_bot.sh`, healthcheck и коду ноды). Пакет
+  `vosk` из pip остался: с хоста приезжает **модель**, а не библиотека.
+- `docker-compose.yaml`, сервис `telegram-bot`: добавлен
+  `/opt/rob_box/models:/models:ro` — ровно тот же том, что уже был у
+  `voice-assistant` (третий host-каталог не заводим, §5 / ADR-0125 §2.4).
+- `manifest.yaml`: у записи `vosk-ru-small` в `consumers` появился
+  `telegram_node`; `degrade_note` честно разделяет последствия — у
+  `stt_node` нет модели → нода не стартует вовсе, у `telegram_node` →
+  теряется офлайн-фолбэк STT, а бот живёт. `required` остаётся `hard`,
+  потому что определяется по худшему последствию.
+- Шаг деплоя **не менялся**: «[Vision Pi] Ensure STT/TTS models» уже кладёт
+  `vosk-ru-small` на хост и проверяет sentinel
+  `/opt/rob_box/models/vosk-model-small-ru-0.22/README`. Второму потребителю
+  той же модели не нужен второй шаг — это и есть смысл единого шва.
+- Тесты: `test_container_paths_did_not_move` теперь проверяет **оба**
+  сервиса и дефолт `VOSK_MODEL_PATH`; добавлены
+  `test_telegram_bot_no_longer_downloads_vosk` и
+  `test_manifest_lists_telegram_bot_as_vosk_consumer`.
+
+### 18.3. Путь внутри контейнера не изменился — проверено, а не предположено
+
+`src/rob_box_telegram/rob_box_telegram/voice_processor.py:40`:
+
+```python
+VOSK_MODEL_PATH = os.getenv("VOSK_MODEL_PATH", "/models/vosk-model-small-ru-0.22")
+```
+
+`target` манифеста — `/opt/rob_box/models/vosk-model-small-ru-0.22`, том —
+`/opt/rob_box/models:/models:ro`, значит внутри контейнера путь тот же
+`/models/vosk-model-small-ru-0.22`. Ни одной строки логики в Python не
+правилось. Правился только текст ошибки в `_load_vosk_model()`: он звал
+«положи модель в образ, см. telegram_bot/Dockerfile» — после переезда это
+отправило бы дежурного чинить не туда.
+
+### 18.4. Чем это отличается от Этапа 3 по последствиям
+
+У `voice-assistant` отсутствие модели — отказ ноды. У `telegram-bot` —
+объявленная деградация: `_load_vosk_model()` пишет в лог
+`Vosk model not found at ...`, возвращает `None`, бот продолжает работать на
+одном Yandex. Это ровно тот сценарий 2026-09-03 (у Yandex кончился баланс,
+голосовые молчали), ради которого Vosk в бота и завезли, — поэтому
+«деградация» тут не значит «неважно».
+
+### 18.5. Что НЕ проверено на момент записи
+
+Сборка образа `telegram-bot` после удаления ступени и поведение бота на
+Vision Pi с томом вместо запечённой модели — стенд на момент правки был
+занят двумя очередями (`L: Build Vision Pi Services` + диагностика раннера
+на `feature/cicd-pipeline-redesign`). Что прогнать:
+
+```bash
+docker exec telegram-bot ls /models/vosk-model-small-ru-0.22/README
+docker logs telegram-bot 2>&1 | grep -i "Vosk model not found"   # ожидание: пусто
+```

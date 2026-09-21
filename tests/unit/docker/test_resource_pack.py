@@ -669,6 +669,30 @@ def test_container_paths_did_not_move() -> None:
     ).read_text(encoding="utf-8")
     assert "/models/vosk-model-small-ru-0.22" in stt_cfg
 
+    # telegram-bot — второй потребитель той же модели (ADR-0125 §8 п.3).
+    # Его Dockerfile качал её сам; том обязан быть ровно тем же, иначе бот
+    # молча теряет офлайн-фолбэк STT (и падает обратно на один Yandex —
+    # ровно тот сценарий 2026-09-03, ради которого Vosk сюда и завезли).
+    tg_volumes = compose["services"]["telegram-bot"]["volumes"]
+    assert "/opt/rob_box/models:/models:ro" in tg_volumes, (
+        "telegram-bot не монтирует host-каталог моделей: после удаления "
+        "ступени скачивания из telegram_bot/Dockerfile Vosk-фолбэка в боте "
+        "не будет"
+    )
+
+    voice_proc = (
+        REPO_ROOT
+        / "src"
+        / "rob_box_telegram"
+        / "rob_box_telegram"
+        / "voice_processor.py"
+    ).read_text(encoding="utf-8")
+    assert '"/models/vosk-model-small-ru-0.22"' in voice_proc, (
+        "дефолт VOSK_MODEL_PATH разъехался с target манифеста — переезд "
+        "«образ → host bind-mount» не имел права менять путь ВНУТРИ "
+        "контейнера"
+    )
+
 
 def test_voice_base_no_longer_downloads_models() -> None:
     """Ступень скачивания моделей ушла из образа (deletion test, план §8)."""
@@ -691,6 +715,50 @@ def test_voice_base_no_longer_downloads_models() -> None:
             f"это ровно то, что Ресурсный пак (Этап 3) убрал: сборка не должна "
             f"зависеть от сети, а модели приходят с хоста"
         )
+
+
+def test_telegram_bot_no_longer_downloads_vosk() -> None:
+    """Пятый путь доставки закрыт: образ бота больше не качает Vosk сам.
+
+    ADR-0125 §8 п.3 / план §16.5: ``telegram_bot/Dockerfile`` качал ТУ ЖЕ
+    модель, что и voice_base, своей ступенью сборки. Следствия были три:
+    модель лежала в двух образах, сборка бота ходила в сеть и падала целиком
+    при недоступном alphacephei, а версия в Dockerfile могла разъехаться с
+    манифестом молча — потому что манифест о ней не знал.
+    """
+    dockerfile = (
+        REPO_ROOT / "docker" / "vision" / "telegram_bot" / "Dockerfile"
+    ).read_text(encoding="utf-8")
+    active = [
+        line
+        for line in dockerfile.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    body = "\n".join(active)
+    assert "alphacephei.com/vosk/models" not in body, (
+        "telegram_bot/Dockerfile снова качает Vosk на этапе сборки — модель "
+        "приходит с хоста через /opt/rob_box/models:/models:ro, а её версия "
+        "живёт в manifest.yaml, и только там"
+    )
+    # pip-пакет `vosk` в образе остаётся — с хоста приезжает МОДЕЛЬ, а не
+    # библиотека. Тест не должен запрещать её заодно.
+    assert "vosk>=" in body, "из образа пропал сам пакет vosk — это уже не модель"
+
+
+def test_manifest_lists_telegram_bot_as_vosk_consumer() -> None:
+    """Реестр обязан знать обоих потребителей, а не одного.
+
+    Смысл манифеста — быть SSoT. Пока telegram_node в ``consumers`` не
+    записан, следующий, кто будет менять версию Vosk, узнает о втором
+    контейнере только по отсутствию распознавания в боте.
+    """
+    data = yaml.safe_load(MANIFEST.read_text(encoding="utf-8"))
+    vosk = {r["name"]: r for r in data["resources"]}["vosk-ru-small"]
+    joined = " ".join(vosk["consumers"])
+    assert "telegram" in joined.lower(), (
+        "vosk-ru-small в манифесте не упоминает telegram_node, хотя тот "
+        "читает ту же модель (voice_processor.py:40)"
+    )
 
 
 def test_env_vars_are_honoured(tmp_path: Path, http_root: Path, http_base: str) -> None:
