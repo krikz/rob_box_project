@@ -49,41 +49,74 @@ print(slug)
 PY
 }
 
-# observe_step() — advisory robot-health snapshot; never affects PASS/FAIL.
-observe_step() {
-    local step="${1:-functional}" output rc=0
-    output="$(STEP_NAME="$step" ROBOT_SSH="${ROBOT_SSH:-}" bash -c '
-        set +e
-        printf "{\\\"step\\\":\\\"%s\\\",\\\"checked_at\\\":\\\"%s\\\",\\\"docker_ps\\\":\\\"" "$STEP_NAME" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-        if [ -n "$ROBOT_SSH" ]; then $ROBOT_SSH "docker ps --format '\''{{.Names}}|{{.Status}}'\''" 2>&1; else printf "ROBOT_SSH_UNSET"; fi
-        printf "\\\",\\\"scan_hz\\\":\\\""
-        if [ -n "$ROBOT_SSH" ]; then $ROBOT_SSH "timeout 8 ros2 topic hz /scan --window 3" 2>&1; else printf "ROBOT_SSH_UNSET"; fi
-        printf "\\\",\\\"odom_hz\\\":\\\""
-        if [ -n "$ROBOT_SSH" ]; then $ROBOT_SSH "timeout 8 ros2 topic hz /odom --window 3" 2>&1; else printf "ROBOT_SSH_UNSET"; fi
-        printf "\\\"}\\n"
-    ' 2>&1)" || rc=$?
-    python3 - "$step" "$rc" "$output" <<'PY2'
-import json, sys
-step, rc, raw = sys.argv[1], int(sys.argv[2]), sys.argv[3]
-try: snapshot = json.loads(raw)
-except json.JSONDecodeError: snapshot = {"step": step, "probe_error": raw[-4000:], "probe_rc": rc}
-print(json.dumps(snapshot, ensure_ascii=False, indent=2))
-PY2
-    return 0
-}
-
-
-# observe_step() — advisory robot-health snapshot; never affects PASS/FAIL.
-observe_step() {
-    local step="${1:-functional}" output rc=0
-    output="$(printf '%s' "$ROBOT_SSH" | sed 's/[[:space:]]*$//' >/dev/null; \
-        ${ROBOT_SSH:-true} "docker ps --format '{{.Names}}|{{.Status}}'" 2>&1; \
-        ${ROBOT_SSH:-true} "timeout 8 ros2 topic hz /scan --window 3" 2>&1; \
-        ${ROBOT_SSH:-true} "timeout 8 ros2 topic hz /odom --window 3" 2>&1)" || rc=$?
-    python3 - "$step" "$rc" "$output" <<'PY2'
-import json, sys
-step, rc, raw = sys.argv[1], int(sys.argv[2]), sys.argv[3]
-print(json.dumps({"step": step, "probe_rc": rc, "raw": raw[-12000:]}, ensure_ascii=False, indent=2))
-PY2
-    return 0
+# map_tts_voice() — голос сценария → голос выбранного TTS-провайдера.
+#
+# Сценарии (.github/e2e/scenarios/*.json) называют голоса ПО-ЯНДЕКСОВСКИ
+# ("anton"/"ermil"/"zahar"/"filipp") — это исторический контракт, менять
+# его в 250+ шагах нельзя. Когда команда синтезируется не Yandex'ом
+# (E2E_TTS_PROVIDER=silero|minimax, см. e2e_voice_test.sh), имя голоса надо
+# перевести в каталог целевого провайдера, иначе провайдер молча возьмёт
+# свой дефолт и ВСЕ шаги зазвучат одним голосом.
+#
+# Почему это важно именно для e2e: act2/act3 night-marathon проверяют
+# диаризацию (speaker_tag A vs B) — там в одном сценарии живут все четыре
+# яндексовских голоса, и они ОБЯЗАНЫ остаться четырьмя разными голосами
+# после перевода. Поэтому таблица ниже — не «ближайший по полу», а
+# «гарантированно различимый»: anton/ermil/zahar/filipp → четыре разных
+# speaker'а у каждого провайдера (у Silero ради этого берутся и женские —
+# различимость важнее совпадения пола, робот всё равно слышит синтетику).
+#
+# Каталоги-источники — src/rob_box_voice/rob_box_voice/tts_voice_registry.py
+# (PROVIDER_VOICES). Голос, который уже native для провайдера, не трогаем:
+# так можно задать --voice aidar / --voice Russian_CrazyQueen напрямую.
+#
+# Примеры:
+#   map_tts_voice yandex  anton  → anton
+#   map_tts_voice silero  anton  → aidar
+#   map_tts_voice silero  zahar  → baya
+#   map_tts_voice minimax ermil  → Russian_HandsomeChildhoodFriend
+#   map_tts_voice silero  aidar  → aidar      (уже native)
+#   map_tts_voice silero  ""     → aidar      (дефолт провайдера)
+map_tts_voice() {
+    # $1=provider $2=voice. Печатает голос провайдера в stdout.
+    local provider="$1" voice="$2"
+    case "$provider" in
+        yandex)
+            # Yandex — исходный каталог сценариев, перевод не нужен.
+            printf '%s' "${voice:-anton}"
+            return 0
+            ;;
+        silero)
+            case "$voice" in
+                aidar|baya|kseniya|xenia|eugene) printf '%s' "$voice"; return 0 ;;
+                anton|kostya|"")                 printf 'aidar' ;;
+                ermil|madirus)                   printf 'eugene' ;;
+                zahar|arina)                     printf 'baya' ;;
+                filipp|jane)                     printf 'xenia' ;;
+                alena)                           printf 'kseniya' ;;
+                omazh|rush)                      printf 'xenia' ;;
+                *)                               printf 'aidar' ;;
+            esac
+            return 0
+            ;;
+        minimax)
+            case "$voice" in
+                Russian_*|male-qn-qingse|female-shaonv) printf '%s' "$voice"; return 0 ;;
+                anton|"")        printf 'Russian_ReliableMan' ;;
+                ermil|madirus)   printf 'Russian_HandsomeChildhoodFriend' ;;
+                zahar)           printf 'Russian_Bad-temperedBoy' ;;
+                filipp|kostya)   printf 'Russian_AttractiveGuy' ;;
+                alena)           printf 'Russian_BrightHeroine' ;;
+                jane)            printf 'Russian_AmbitiousWoman' ;;
+                arina)           printf 'Russian_PessimisticGirl' ;;
+                omazh|rush)      printf 'Russian_CrazyQueen' ;;
+                *)               printf 'Russian_ReliableMan' ;;
+            esac
+            return 0
+            ;;
+        *)
+            printf '%s' "$voice"
+            return 0
+            ;;
+    esac
 }

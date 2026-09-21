@@ -67,6 +67,34 @@ if [ -n "${ROBOT_SSH_OVERRIDE:-}" ]; then
 fi
 YANDEX_TTS_VOICE="${YANDEX_TTS_VOICE:-anton}"       # голос по умолчанию
 YANDEX_SPEED="${YANDEX_SPEED:-1.0}"
+
+# --- Провайдер синтеза КОМАНД харнесса -------------------------------------
+# ВАЖНО: это провайдер, которым БИЛД-МАШИНА озвучивает команду в колонку, а
+# НЕ провайдер, которым отвечает робот (тот живёт в tts_node на роботе).
+# Исторически харнесс умел только Yandex, и когда доступ к папке Yandex Cloud
+# отвалился (PERMISSION_DENIED на folder), КАЖДЫЙ шаг КАЖДОГО прогона падал
+# "FAIL synth" — робота при этом никто даже не спрашивал (run 35533542706).
+#
+#   yandex  — gRPC SpeechKit v3, нужен YANDEX_API_KEY (историческое поведение);
+#   minimax — HTTP T2A v2, нужен MINIMAX_API_KEY;
+#   silero  — ЛОКАЛЬНЫЙ torch-синтез на билд-машине, ключ не нужен вообще.
+#
+# auto (дефолт) = пройтись по E2E_TTS_PROVIDER_ORDER и взять первого, кто
+# реально синтезирует пробную фразу. Проба делается ОДИН раз за прогон, до
+# первого шага: иначе 40-шаговый сценарий 40 раз ждал бы таймаут мёртвого
+# провайдера. silero стоит последним и не требует ключа — это гарантированный
+# донор, поэтому «облака легли» больше не равно «e2e красный».
+E2E_TTS_PROVIDER="${E2E_TTS_PROVIDER:-auto}"
+E2E_TTS_PROVIDER_ORDER="${E2E_TTS_PROVIDER_ORDER:-yandex,minimax,silero}"
+# Результат резолва (заполняется resolve_tts_provider, кэш на весь прогон).
+E2E_TTS_PROVIDER_RESOLVED=""
+# MiniMax T2A v2 — те же дефолты, что у tts_node (config/tts_node.yaml).
+MINIMAX_TTS_MODEL="${MINIMAX_TTS_MODEL:-speech-02-hd}"
+MINIMAX_TTS_BASE_URL="${MINIMAX_TTS_BASE_URL:-https://api.minimax.io}"
+# Silero v5/v4 ru: torch.package-файл. Пути — как в tts_node (/models/silero),
+# плюс кеши билд-машины; последний шанс — скачать через torch.hub.
+E2E_SILERO_MODEL="${E2E_SILERO_MODEL:-}"
+E2E_SILERO_SAMPLE_RATE="${E2E_SILERO_SAMPLE_RATE:-48000}"
 # Причина FAIL (для пост-валидатора и e2e-process::detect_fail_kind).
 # feature > llm_error > synth > no_reaction. feature всегда побеждает:
 # если фича-ассерт (patterns/acceptance/GATE-1) зафейлился — это баг кода,
@@ -279,13 +307,27 @@ while [ $# -gt 0 ]; do
         --patterns) PATTERNS="$2"; shift 2 ;;
         --retries)  E2E_MAX_ATTEMPTS="$2"; shift 2 ;;
         --react-window) E2E_REACTION_WINDOW="$2"; shift 2 ;;
+        --tts-provider) E2E_TTS_PROVIDER="$2"; shift 2 ;;
         --check-tg-echo) CHECK_TG_ECHO=1; shift 1 ;;
         *) echo "unknown arg: $1" >&2; exit 2 ;;
     esac
 done
 
-if [ -z "${YANDEX_API_KEY:-}" ]; then
-    echo "E2E_FATAL: YANDEX_API_KEY не задан" >&2; exit 2
+case "$E2E_TTS_PROVIDER" in
+    auto|yandex|minimax|silero) ;;
+    *) echo "E2E_FATAL: --tts-provider='$E2E_TTS_PROVIDER' — ожидается auto|yandex|minimax|silero" >&2; exit 2 ;;
+esac
+# Ключ требуем ТОЛЬКО у явно выбранного облачного провайдера. В auto отсутствие
+# ключа — это не фатал, а «этот кандидат пропускается» (см. resolve_tts_provider):
+# silero в конце очереди не требует ключей вообще, и прогон всё равно состоится.
+if [ "$E2E_TTS_PROVIDER" = "yandex" ] && [ -z "${YANDEX_API_KEY:-}" ]; then
+    echo "E2E_FATAL: YANDEX_API_KEY не задан (--tts-provider=yandex)" >&2; exit 2
+fi
+if [ "$E2E_TTS_PROVIDER" = "minimax" ] && [ -z "${MINIMAX_API_KEY:-}" ]; then
+    echo "E2E_FATAL: MINIMAX_API_KEY не задан (--tts-provider=minimax)" >&2; exit 2
+fi
+if [ "$E2E_TTS_PROVIDER" = "auto" ] && [ -z "${YANDEX_API_KEY:-}" ] && [ -z "${MINIMAX_API_KEY:-}" ]; then
+    echo "E2E_WARN: ни YANDEX_API_KEY, ни MINIMAX_API_KEY не заданы — auto пойдёт сразу в silero" >&2
 fi
 if [ -z "$TEXT" ] && [ -z "$SCENARIO_FILE" ]; then
     echo "E2E_FATAL: нужен --text или --scenario" >&2; exit 2
@@ -676,6 +718,292 @@ except Exception as e:
 PY
 }
 
+# Синтез MiniMax T2A v2 (HTTP): text + voice → out_wav.
+# Тот же контракт, что tts_node._synthesize_minimax → rob_box_llm
+# MiniMaxTTSProvider (POST /v1/t2a_v2, hex-кодированное audio в data.audio).
+# Просим сразу wav: харнесс не ресемплит сам, ffmpeg-EQ ниже разберётся.
+#
+# Классификация ошибок зеркалит minimax_tts.py:933-954 и НЕ читается по
+# HTTP-статусу: «план не поддерживает модель» приезжает 500-м, а исчерпанная
+# квота — 200-м с base_resp.status_code=2056. Поэтому проверяем ОБА канала.
+synth_minimax() {  # $1=text $2=voice $3=out_wav
+    local text="$1" voice="$2" out="$3"
+    python3 - "$text" "$voice" "$out" <<'PY'
+import sys, os, json, time
+text, voice, out = sys.argv[1], sys.argv[2], sys.argv[3]
+key = os.environ.get("MINIMAX_API_KEY", "")
+start = time.monotonic()
+
+def fail(err_class, detail, http_code=None):
+    payload = {
+        "provider": "minimax", "voice": voice, "result": "fail",
+        "error_class": err_class, "detail": str(detail)[:500],
+        "latency_ms": int((time.monotonic() - start) * 1000),
+    }
+    if http_code is not None:
+        payload["http_code"] = http_code
+    sys.stderr.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    sys.exit("MINIMAX_" + err_class.upper())
+
+if not key:
+    fail("AuthError", "MINIMAX_API_KEY не задан")
+try:
+    import requests
+except ImportError as exc:
+    fail("PythonError", "requests не установлен: %s" % exc)
+
+payload = {
+    "model": os.environ.get("MINIMAX_TTS_MODEL", "speech-02-hd"),
+    "text": text,
+    "stream": False,
+    "voice_setting": {
+        "voice_id": voice,
+        "speed": float(os.environ.get("YANDEX_SPEED", "1.0")),
+    },
+    "audio_setting": {
+        "sample_rate": 32000, "bitrate": 128000, "format": "wav", "channel": 1,
+    },
+}
+base = os.environ.get("MINIMAX_TTS_BASE_URL", "https://api.minimax.io").rstrip("/")
+try:
+    r = requests.post(
+        base + "/v1/t2a_v2",
+        headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"},
+        json=payload, timeout=60,
+    )
+except Exception as exc:
+    fail("NetworkError", "%s: %s" % (type(exc).__name__, exc))
+
+try:
+    body = r.json()
+except Exception:
+    fail("BadResponse", "HTTP %s, не JSON: %s" % (r.status_code, r.text[:200]), r.status_code)
+
+# Канал 1: HTTP >= 400 (тело — {"error": {"message": ...}}).
+# Канал 2: HTTP 200 + base_resp.status_code != 0 (так приезжает квота).
+base_resp = body.get("base_resp") or {}
+status = int(base_resp.get("status_code", 0) or 0)
+msg = str(base_resp.get("status_msg", "") or "")
+if r.status_code >= 400 or status != 0:
+    if not msg:
+        msg = str((body.get("error") or {}).get("message", "") or r.text[:200])
+    low = msg.lower()
+    if "auth" in low or "key" in low or "token" in low or "plan" in low:
+        err_class = "AuthError"
+    elif "quota" in low or "rate" in low or "limit" in low or "balance" in low:
+        err_class = "QuotaError"
+    elif "invalid" in low or "param" in low or "voice" in low:
+        err_class = "BadRequest"
+    else:
+        err_class = "ApiError"
+    fail(err_class, "minimax API error %s: %s" % (status, msg), r.status_code)
+
+audio_hex = (body.get("data") or {}).get("audio") or ""
+if not audio_hex:
+    fail("EmptyResponse", "minimax ответил без data.audio", r.status_code)
+try:
+    data = bytes.fromhex(audio_hex)
+except ValueError as exc:
+    fail("BadResponse", "data.audio не hex: %s" % exc, r.status_code)
+with open(out, "wb") as f:
+    f.write(data)
+print("MINIMAX_SYNTH_OK %d bytes voice=%s" % (len(data), voice))
+sys.stderr.write(json.dumps({
+    "provider": "minimax", "voice": voice, "result": "ok",
+    "bytes": len(data), "http_code": r.status_code,
+    "latency_ms": int((time.monotonic() - start) * 1000),
+}, ensure_ascii=False) + "\n")
+PY
+}
+
+# Синтез Silero (локальный torch на билд-машине): text + voice → out_wav.
+# Ключей не требует и в сеть не ходит — это тот самый «всегда живой» донор,
+# ради которого затевался выбор провайдера.
+#
+# Модель — torch.package (НЕ torch.jit), как в tts_node:2007. Путь ищем в том
+# же порядке, что нода, плюс кеши билд-машины; если нигде нет — тянем через
+# torch.hub (один раз, дальше он кеширует в ~/.cache/torch/hub).
+# Загрузка модели ~0.6s + синтез ~2s на фразу (замер на 10.1.1.249): дешевле
+# сетевого round-trip, поэтому держать модель между шагами смысла нет.
+synth_silero() {  # $1=text $2=voice $3=out_wav
+    local text="$1" voice="$2" out="$3"
+    python3 - "$text" "$voice" "$out" <<'PY'
+import sys, os, json, time, wave, traceback
+text, voice, out = sys.argv[1], sys.argv[2], sys.argv[3]
+start = time.monotonic()
+
+def fail(err_class, detail):
+    sys.stderr.write(json.dumps({
+        "provider": "silero", "voice": voice, "result": "fail",
+        "error_class": err_class, "detail": str(detail)[:500],
+        "latency_ms": int((time.monotonic() - start) * 1000),
+    }, ensure_ascii=False) + "\n")
+    sys.exit("SILERO_" + err_class.upper())
+
+def warn(detail):
+    sys.stderr.write(json.dumps({
+        "provider": "silero", "result": "warn", "detail": str(detail)[:500],
+    }, ensure_ascii=False) + "\n")
+
+try:
+    import torch
+    import numpy as np
+except ImportError as exc:
+    fail("PythonError", "torch/numpy недоступны на билд-машине: %s" % exc)
+
+torch.set_grad_enabled(False)
+torch.set_num_threads(int(os.environ.get("E2E_SILERO_THREADS", "4")))
+
+home = os.path.expanduser("~")
+candidates = [c for c in [
+    os.environ.get("E2E_SILERO_MODEL") or "",
+    "/models/silero/v5_ru.pt",
+    "/cache/tts/silero_v5_ru.pt",
+    home + "/.cache/rob_box_voice/tts_models/v5_ru.pt",
+    home + "/.cache/rob_box_voice/tts_models/v4_ru.pt",
+    home + "/.cache/torch/hub/snakers4_silero-models_master/src/silero/model/v4_ru.pt",
+] if c]
+
+model = None
+used = ""
+for path in candidates:
+    if not os.path.exists(path):
+        continue
+    try:
+        model = torch.package.PackageImporter(path).load_pickle("tts_models", "model")
+        used = path
+        break
+    except Exception as exc:
+        warn("%s: %s: %s" % (path, type(exc).__name__, exc))
+if model is None:
+    try:
+        model, _ = torch.hub.load(
+            repo_or_dir="snakers4/silero-models", model="silero_tts",
+            language="ru", speaker="v5_ru",
+        )
+        used = "torch.hub:v5_ru"
+    except Exception as exc:
+        fail("ModelMissing", "нет локальной модели %s и torch.hub упал: %s" % (candidates, exc))
+model.to(torch.device("cpu"))
+
+# Голос, которого нет у модели, Silero встречает исключением — подставляем
+# дефолт ноды (aidar), а не роняем шаг: сценарий всё равно будет озвучен.
+speakers = list(getattr(model, "speakers", []) or [])
+if speakers and voice not in speakers:
+    warn("голос %r не в каталоге %s — беру aidar" % (voice, speakers))
+    voice = "aidar" if "aidar" in speakers else speakers[0]
+
+rate = int(os.environ.get("E2E_SILERO_SAMPLE_RATE", "48000"))
+try:
+    audio = model.apply_tts(
+        ssml_text='<speak><prosody pitch="medium">' + text + "</prosody></speak>",
+        speaker=voice, sample_rate=rate,
+        put_accent=True, put_yo=True,
+    )
+except Exception as exc:
+    fail("SynthError", "%s: %s | %s" % (type(exc).__name__, exc, traceback.format_exc()[:300]))
+
+samples = audio.numpy()
+if samples.size == 0:
+    fail("EmptyResponse", "Silero вернул пустой тензор")
+pcm = (np.clip(samples, -1.0, 1.0) * 32767).astype(np.int16)
+with wave.open(out, "wb") as w:
+    w.setnchannels(1)
+    w.setsampwidth(2)
+    w.setframerate(rate)
+    w.writeframes(pcm.tobytes())
+size = os.path.getsize(out)
+print("SILERO_SYNTH_OK %d bytes voice=%s model=%s" % (size, voice, used))
+sys.stderr.write(json.dumps({
+    "provider": "silero", "voice": voice, "result": "ok",
+    "bytes": size, "model": used,
+    "latency_ms": int((time.monotonic() - start) * 1000),
+}, ensure_ascii=False) + "\n")
+PY
+}
+
+# tts_probe_provider() — «этот провайдер вообще живой?». Синтезирует короткую
+# фразу во временный файл. 0 = живой, 1 = нет.
+tts_probe_provider() {  # $1=provider
+    local provider="$1" probe_wav probe_log rc=0
+    probe_wav="$(mktemp -u /tmp/e2e_tts_probe_XXXXXX.wav)"
+    probe_log="$(mktemp -u /tmp/e2e_tts_probe_XXXXXX.log)"
+    case "$provider" in
+        yandex)
+            [ -n "${YANDEX_API_KEY:-}" ] || { log "TTS probe yandex: пропуск — нет YANDEX_API_KEY"; return 1; }
+            synth_yandex "проверка связи" "anton" "$probe_wav" > "$probe_log" 2>&1 || rc=$?
+            ;;
+        minimax)
+            [ -n "${MINIMAX_API_KEY:-}" ] || { log "TTS probe minimax: пропуск — нет MINIMAX_API_KEY"; return 1; }
+            synth_minimax "проверка связи" "Russian_ReliableMan" "$probe_wav" > "$probe_log" 2>&1 || rc=$?
+            ;;
+        silero)
+            synth_silero "проверка связи" "aidar" "$probe_wav" > "$probe_log" 2>&1 || rc=$?
+            ;;
+        *)
+            log "TTS probe: неизвестный провайдер '$provider' — пропуск"
+            return 1
+            ;;
+    esac
+    if [ "$rc" != "0" ] || [ ! -s "$probe_wav" ]; then
+        log "TTS probe ${provider}: FAIL $(tail -1 "$probe_log" 2>/dev/null)"
+        rm -f "$probe_wav" "$probe_log"
+        return 1
+    fi
+    log "TTS probe ${provider}: OK $(head -1 "$probe_log" 2>/dev/null)"
+    rm -f "$probe_wav" "$probe_log"
+    return 0
+}
+
+# resolve_tts_provider() — один раз за прогон выбирает провайдера синтеза и
+# кладёт его в E2E_TTS_PROVIDER_RESOLVED. Явно заданный провайдер НЕ
+# пробуется: если запросили yandex — падаем на yandex'е, а не уезжаем тихо на
+# silero (иначе прогон «зелёный», но проверяли не то, что просили).
+resolve_tts_provider() {
+    [ -n "$E2E_TTS_PROVIDER_RESOLVED" ] && return 0
+    if [ "$E2E_TTS_PROVIDER" != "auto" ]; then
+        E2E_TTS_PROVIDER_RESOLVED="$E2E_TTS_PROVIDER"
+        log "TTS provider: ${E2E_TTS_PROVIDER_RESOLVED} (задан явно, без пробы)"
+        echo "E2E_TTS_PROVIDER ${E2E_TTS_PROVIDER_RESOLVED} explicit"
+        return 0
+    fi
+    local candidate
+    log "TTS provider: auto — пробую по очереди ${E2E_TTS_PROVIDER_ORDER}"
+    IFS=',' read -r -a _tts_order <<< "$E2E_TTS_PROVIDER_ORDER"
+    for candidate in "${_tts_order[@]}"; do
+        candidate="$(printf '%s' "$candidate" | tr -d '[:space:]')"
+        [ -n "$candidate" ] || continue
+        if tts_probe_provider "$candidate"; then
+            E2E_TTS_PROVIDER_RESOLVED="$candidate"
+            log "TTS provider: выбран ${candidate} (auto)"
+            echo "E2E_TTS_PROVIDER ${candidate} auto"
+            return 0
+        fi
+    done
+    log "TTS provider: ни один кандидат из ${E2E_TTS_PROVIDER_ORDER} не синтезирует"
+    echo "E2E_TTS_PROVIDER none auto"
+    return 1
+}
+
+# synth_command() — единственная точка синтеза команды для run_step.
+# Резолвит провайдера (лениво, один раз), переводит голос сценария в каталог
+# провайдера (map_tts_voice из e2e_voice_lib.sh) и диспатчит.
+synth_command() {  # $1=text $2=voice $3=out_wav
+    local text="$1" voice="$2" out="$3" provider native
+    if ! resolve_tts_provider; then
+        echo '{"provider": "none", "result": "fail", "error_class": "NoProvider", "detail": "ни один TTS-провайдер не доступен"}' >&2
+        return 1
+    fi
+    provider="$E2E_TTS_PROVIDER_RESOLVED"
+    native="$(map_tts_voice "$provider" "$voice")"
+    case "$provider" in
+        yandex)  synth_yandex  "$text" "$native" "$out" ;;
+        minimax) synth_minimax "$text" "$native" "$out" ;;
+        silero)  synth_silero  "$text" "$native" "$out" ;;
+        *)       echo "{\"provider\": \"$provider\", \"result\": \"fail\", \"error_class\": \"UnknownProvider\"}" >&2; return 1 ;;
+    esac
+}
+
 # Проверка полного цикла в логах робота с момента BEFORE.
 # Возвращает: 0 = полный цикл (акцепт+LLM+TTS в ПРАВИЛЬНОМ ПОРЯДКЕ),
 #             1 = нет акцепта, 2 = LLM/TTS error
@@ -883,8 +1211,8 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
         # пере-синтезируем, а не падаем с paplay open(): No such file.
         log "STEP ${label}: cmd_${safe}.wav отсутствует — повторный синтез (cleanup-resilience)"
     fi
-    if ! synth_yandex "$text" "$voice" "$OUT_DIR/cmd_${safe}.wav" > "$OUT_DIR/synth_${safe}.log" 2>&1; then
-        log "STEP ${label}: FAIL — синтез Yandex упал ($(tail -1 "$OUT_DIR/synth_${safe}.log"))"
+    if ! synth_command "$text" "$voice" "$OUT_DIR/cmd_${safe}.wav" > "$OUT_DIR/synth_${safe}.log" 2>&1; then
+        log "STEP ${label}: FAIL — синтез ${E2E_TTS_PROVIDER_RESOLVED:-$E2E_TTS_PROVIDER} упал ($(tail -1 "$OUT_DIR/synth_${safe}.log"))"
         echo "E2E_STEP ${label} FAIL synth"
         mark_fail_kind synth
         return 1
@@ -957,8 +1285,8 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
         if [ ! -f "$OUT_DIR/cmd_${safe}_eq.wav" ]; then
             log "STEP ${label}: cmd_${safe}_eq.wav отсутствует перед play — пере-синтез (cleanup-resilience)"
             ensure_outdir
-            synth_yandex "$text" "$voice" "$OUT_DIR/cmd_${safe}.wav" > "$OUT_DIR/synth_${safe}.log" 2>&1 \
-                || { log "STEP ${label}: FAIL — повторный синтез Yandex упал ($(tail -1 "$OUT_DIR/synth_${safe}.log"))"; echo "E2E_STEP ${label} FAIL synth"; mark_fail_kind synth; return 1; }
+            synth_command "$text" "$voice" "$OUT_DIR/cmd_${safe}.wav" > "$OUT_DIR/synth_${safe}.log" 2>&1 \
+                || { log "STEP ${label}: FAIL — повторный синтез ${E2E_TTS_PROVIDER_RESOLVED:-$E2E_TTS_PROVIDER} упал ($(tail -1 "$OUT_DIR/synth_${safe}.log"))"; echo "E2E_STEP ${label} FAIL synth"; mark_fail_kind synth; return 1; }
             ensure_outdir
             ffmpeg -nostdin -y -i "$OUT_DIR/cmd_${safe}.wav" -af "highpass=f=100,volume=3.0,alimiter=limit=0.98,adelay=1500|all=1" -ac 1 -ar 16000 "$OUT_DIR/cmd_${safe}_eq.wav" 2>/dev/null
         fi
@@ -1267,6 +1595,25 @@ PY
     fi
     return $rc
 }
+
+# --- выбор TTS-провайдера для синтеза команд -----------------------------
+# Резолвим ДО записи и ДО первого шага по двум причинам:
+#   1) выбор виден в самом начале лога, а не посреди сценария;
+#   2) «ни один провайдер не отвечает» — это один понятный отказ
+#      на весь прогон, а не 40 одинаковых "FAIL synth" подряд (run
+#      35533542706 читался именно так — 11 шагов, одна причина).
+# Не фатал: падаем штатным путём через mark_fail_kind synth ниже,
+# чтобы артефакты и verdict.txt всё равно были собраны.
+ensure_outdir
+resolve_tts_provider || mark_fail_kind synth
+cat > "$OUT_DIR/tts_provider.json" <<TTSJSON
+{
+  "requested": "${E2E_TTS_PROVIDER}",
+  "order": "${E2E_TTS_PROVIDER_ORDER}",
+  "resolved": "${E2E_TTS_PROVIDER_RESOLVED:-none}",
+  "resolved_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+TTSJSON
 
 # --- сценарий или одиночная команда ----------------------------------------
 # Issue #1353: запись микрофона охватывает ВЕСЬ retry-цикл (все шаги, все
