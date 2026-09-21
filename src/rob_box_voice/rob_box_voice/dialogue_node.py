@@ -817,31 +817,10 @@ class DialogueNode(Node):
             String, "/voice/music/form", self._on_music_form, 10,
             callback_group=cbg)
         # Issue #2599 PR-C — лицевой канал как повод заговорить.
-        #
-        # Топик общий с person-детекцией и сыплет ~5 событий в секунду на
-        # человека, поэтому подписка ЛЁГКАЯ: колбэк отсеивает всё, кроме
-        # маркера ``{"encounter": "start"}`` в ``attributes_json``, и
-        # только он доходит до OccasionGate (ADR-0123 §3).
-        #
-        # Импорт сообщения — локальный и защищённый: ``rob_box_voice``
-        # не зависит от ``rob_box_perception_msgs`` в package.xml, и на
-        # Main Pi (где лицевой ноды нет) этого типа может не быть. Без
-        # лица диалог обязан работать как раньше.
-        try:
-            from rob_box_perception_msgs.msg import VisionEvent as _VisionEvent
-
-            self.create_subscription(
-                _VisionEvent, "/vision/hailo/events",
-                self._on_vision_event, 10, callback_group=cbg)
-            self.get_logger().info(
-                "👁 [issue 2599] подписка на /vision/hailo/events — "
-                "робот может заговорить первым при появлении человека"
-            )
-        except Exception as exc:  # noqa: BLE001
-            self.get_logger().warning(
-                f"⚠️ [issue 2599] лицевой повод недоступен ({exc!r}): "
-                f"робот продолжит отвечать только на голос"
-            )
+        # Отдельным методом, а не инлайном: try/except здесь упирал
+        # DialogueNode.__init__ в потолок цикломатической сложности
+        # (ADR-0021, cc_budget: CC=21 при лимите 20).
+        self._subscribe_vision_events(cbg)
         # Каталог инструментов от mcp_server. Подписка latched
         # (TRANSIENT_LOCAL) — mcp_server публикует каталог один раз при
         # старте, и порядок запуска нод перестаёт иметь значение.
@@ -6684,6 +6663,35 @@ class DialogueNode(Node):
     # ------------------------------------------------------------------
     # Встреча лицом — робот заговаривает первым (issue #2599 PR-C)
     # ------------------------------------------------------------------
+
+    def _subscribe_vision_events(self, cbg: Any) -> None:
+        """Подписка на лицевые события — источник повода «Встреча».
+
+        Топик общий с person-детекцией и сыплет ~5 событий в секунду на
+        человека, поэтому подписка ЛЁГКАЯ: колбэк отсеивает всё, кроме
+        маркера ``{"encounter": "start"}`` в ``attributes_json``, и
+        только он доходит до OccasionGate (ADR-0123 §3).
+
+        Импорт сообщения — локальный и защищённый: ``rob_box_voice`` не
+        зависит от ``rob_box_perception_msgs`` в package.xml, и на Main
+        Pi (где лицевой ноды нет) этого типа может не быть. Без лица
+        диалог обязан работать как раньше.
+        """
+        try:
+            from rob_box_perception_msgs.msg import VisionEvent as _VisionEvent
+
+            self.create_subscription(
+                _VisionEvent, "/vision/hailo/events",
+                self._on_vision_event, 10, callback_group=cbg)
+            self.get_logger().info(
+                "👁 [issue 2599] подписка на /vision/hailo/events — "
+                "робот может заговорить первым при появлении человека"
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(
+                f"⚠️ [issue 2599] лицевой повод недоступен ({exc!r}): "
+                f"робот продолжит отвечать только на голос"
+            )
 
     def _on_vision_event(self, msg: Any) -> None:
         """Отсеять всё, кроме маркера начала Встречи.
