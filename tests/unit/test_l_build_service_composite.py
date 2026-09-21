@@ -52,16 +52,48 @@ def _extract_build_step_bash(action: dict) -> str:
     return textwrap.dedent(build_step["run"])
 
 
-def _fake_docker(monkeypatch, tmp_path: Path) -> Path:
+def _fake_docker(
+    monkeypatch,
+    tmp_path: Path,
+    *,
+    builder_driver: str = "docker-container",
+    containerd_store: bool = False,
+) -> Path:
     """Replace `docker` with a fake that records its argv to a file.
 
     Returns the path of the recording file (the caller inspects argv via
     `cat <path>`). The fake exits 0 always (we're not testing error paths).
+
+    Two read-only probes are answered instead of being recorded, because the
+    cache block (план 2026-09-15-builder-runtime-seam.md §6) asks the real
+    docker whether the current buildx driver can export cache:
+
+      * `docker buildx inspect`     → "Driver: <builder_driver>"
+      * `docker info --format ...`  → DriverStatus, optionally containerd
+
+    They are deliberately NOT appended to the argv log so that `_invocations`
+    keeps returning exactly the build + push calls the older tests expect.
     """
     log = tmp_path / "docker_argv.log"
     fake = tmp_path / "docker"
+    driver_status = (
+        "[[driver-type io.containerd.snapshotter.v1]]"
+        if containerd_store
+        else "[[Backing Filesystem extfs] [Supports d_type true]]"
+    )
     fake.write_text(
         "#!/usr/bin/env bash\n"
+        # Probe 1: `docker buildx inspect` (no build subcommand) — answer with
+        # a Driver: line in the same shape real buildx prints.
+        'if [ "$1" = "buildx" ] && [ "$2" = "inspect" ]; then\n'
+        f"  printf 'Name:          fake\\nDriver:        {builder_driver}\\n'\n"
+        "  exit 0\n"
+        "fi\n"
+        # Probe 2: `docker info --format {{ .DriverStatus }}`.
+        'if [ "$1" = "info" ]; then\n'
+        f"  printf '%s\\n' '{driver_status}'\n"
+        "  exit 0\n"
+        "fi\n"
         f"printf '%s\\n' \"$@\" >> \"{log}\"\n"
         # Marker line so tests can split the log back into per-invocation argv.
         f"printf '%s\\n' '#DOCKER-CALL#' >> \"{log}\"\n"
@@ -133,6 +165,8 @@ def _run_build_step(
     add_host: str = "host.docker.internal:host-gateway",
     progress: str = "plain",
     local_registry: str = "localhost:5000",
+    cache: str = "true",
+    cache_ref: str = "",
 ) -> subprocess.CompletedProcess:
     """Substitute `${{ inputs.* }}` placeholders in bash_body with values.
 
@@ -152,6 +186,8 @@ def _run_build_step(
         "${{ inputs.add-host }}": add_host,
         "${{ inputs.progress }}": progress,
         "${{ inputs.local-registry }}": local_registry,
+        "${{ inputs.cache }}": cache,
+        "${{ inputs.cache-ref }}": cache_ref,
     }
     expanded = bash_body
     for placeholder, value in substitutions.items():
@@ -374,3 +410,209 @@ def test_multi_line_build_args_each_get_their_own_build_arg_flag(
     assert "BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh-humble" in build_arg_values
     assert "APT_PROXY=http://host.docker.internal:3142" in build_arg_values
     assert "URDF_FILES_HASH=deadbeef" in build_arg_values
+
+
+# --- registry cache tests ----------------------------------------------
+#
+# docs/plans/2026-09-15-builder-runtime-seam.md §6 / Этап 0: до этого
+# изменения action.yml не содержал ни --cache-from, ни --cache-to (§6.1),
+# поэтому cold build после `docker builder prune` / переустановки раннера
+# платил полную цену пересборки (§6.5).
+
+
+def _flag_values(argv: list[str], flag: str) -> list[str]:
+    """Values of a repeated `--flag value` pair in an argv list."""
+    return [argv[i + 1] for i, x in enumerate(argv) if x == flag and i + 1 < len(argv)]
+
+
+def _build_argv(log: Path) -> list[str]:
+    """argv of the single `docker buildx build` invocation in the fake log."""
+    return next(c for c in _invocations(log.read_text()) if c[:2] == ["buildx", "build"])
+
+
+TAGS_TWO = (
+    "ghcr.io/krikz/rob_box:led-matrix-humble-test\n"
+    "localhost:5000/krikz/rob_box:led-matrix-humble-test"
+)
+
+
+def test_cache_ref_defaults_to_local_registry_buildcache_tag(monkeypatch, tmp_path):
+    """Default cache-ref is derived from the LOCAL tag, not hardcoded (§6.4).
+
+    localhost:5000/krikz/rob_box:led-matrix-humble-test
+      → localhost:5000/krikz/rob_box:led-matrix-buildcache
+    The repo part (krikz/rob_box) comes from the tag the workflow passed
+    (env.LOCAL_PREFIX), so the action never duplicates it.
+    """
+    log = _fake_docker(monkeypatch, tmp_path)
+    bash_body = _extract_build_step_bash(_load_action_yaml())
+    cp = _run_build_step(bash_body, service_name="led-matrix", tags=TAGS_TWO)
+    assert cp.returncode == 0, f"build script failed:\n{cp.stderr}\n{cp.stdout}"
+    build = _build_argv(log)
+    expected_ref = "localhost:5000/krikz/rob_box:led-matrix-buildcache"
+    assert _flag_values(build, "--cache-from") == [
+        f"type=registry,ref={expected_ref}"
+    ], build
+    assert _flag_values(build, "--cache-to") == [
+        f"type=registry,ref={expected_ref},mode=max,ignore-error=true"
+    ], build
+
+
+def test_cache_to_uses_mode_max(monkeypatch, tmp_path):
+    """mode=max is mandatory (§6.3).
+
+    Without it BuildKit exports only the FINAL image's layers, so the
+    intermediate builder stages of a multi-stage build are not cached at
+    all — which is exactly what stages 1+ of the plan need.
+    """
+    log = _fake_docker(monkeypatch, tmp_path)
+    bash_body = _extract_build_step_bash(_load_action_yaml())
+    cp = _run_build_step(bash_body, service_name="led-matrix", tags=TAGS_TWO)
+    assert cp.returncode == 0, f"build script failed:\n{cp.stderr}\n{cp.stdout}"
+    cache_to = _flag_values(_build_argv(log), "--cache-to")
+    assert cache_to and "mode=max" in cache_to[0], cache_to
+
+
+def test_cache_to_sets_ignore_error(monkeypatch, tmp_path):
+    """ignore-error=true so the FIRST run does not fail.
+
+    Verified against real buildx v0.17.1 with an unreachable registry:
+    `--cache-to type=registry,...` without ignore-error exits 1 ("error
+    writing layer blob"), with ignore-error=true it exits 0 and the --load
+    image still lands in the daemon. `--cache-from` on a missing ref is
+    harmless on its own (exit 0).
+    """
+    log = _fake_docker(monkeypatch, tmp_path)
+    bash_body = _extract_build_step_bash(_load_action_yaml())
+    cp = _run_build_step(bash_body, service_name="led-matrix", tags=TAGS_TWO)
+    assert cp.returncode == 0, f"build script failed:\n{cp.stderr}\n{cp.stdout}"
+    cache_to = _flag_values(_build_argv(log), "--cache-to")
+    assert cache_to and "ignore-error=true" in cache_to[0], cache_to
+
+
+def test_cache_ref_is_a_separate_tag_from_the_image_tags(monkeypatch, tmp_path):
+    """The cache manifest must NOT overwrite the image in the registry.
+
+    `<service>-buildcache` never collides with `<service>-<distro>-<tag>`.
+    """
+    log = _fake_docker(monkeypatch, tmp_path)
+    bash_body = _extract_build_step_bash(_load_action_yaml())
+    cp = _run_build_step(bash_body, service_name="led-matrix", tags=TAGS_TWO)
+    assert cp.returncode == 0, f"build script failed:\n{cp.stderr}\n{cp.stdout}"
+    build = _build_argv(log)
+    image_tags = set(_flag_values(build, "--tag"))
+    for spec in _flag_values(build, "--cache-from") + _flag_values(build, "--cache-to"):
+        ref = spec.split("ref=", 1)[1].split(",", 1)[0]
+        assert ref not in image_tags, f"cache ref {ref} collides with an image tag"
+
+
+def test_cache_does_not_break_load_and_local_push(monkeypatch, tmp_path):
+    """§6.5: caching is orthogonal to --load + `docker push` of LOCAL tags.
+
+    The image must still be exported into the local docker daemon (needed by
+    update-image-versions' `docker tag`) and only the localhost:5000 tag may
+    be pushed — GHCR stays unauthorized (issue #1503).
+    """
+    log = _fake_docker(monkeypatch, tmp_path)
+    bash_body = _extract_build_step_bash(_load_action_yaml())
+    cp = _run_build_step(bash_body, service_name="led-matrix", tags=TAGS_TWO)
+    assert cp.returncode == 0, f"build script failed:\n{cp.stderr}\n{cp.stdout}"
+    calls = _invocations(log.read_text())
+    build = _build_argv(log)
+    assert "--load" in build, build
+    assert "--push" not in build, build
+    pushes = [c for c in calls if c and c[0] == "push"]
+    assert pushes == [["push", "localhost:5000/krikz/rob_box:led-matrix-humble-test"]], pushes
+
+
+def test_cache_false_disables_all_cache_flags(monkeypatch, tmp_path):
+    """cache=false → no cache flags at all (forced-rebuild escape hatch)."""
+    log = _fake_docker(monkeypatch, tmp_path)
+    bash_body = _extract_build_step_bash(_load_action_yaml())
+    cp = _run_build_step(
+        bash_body, service_name="led-matrix", tags=TAGS_TWO, cache="false"
+    )
+    assert cp.returncode == 0, f"build script failed:\n{cp.stderr}\n{cp.stdout}"
+    build = _build_argv(log)
+    assert "--cache-from" not in build, build
+    assert "--cache-to" not in build, build
+
+
+def test_explicit_cache_ref_overrides_the_derived_default(monkeypatch, tmp_path):
+    """An explicit cache-ref wins over the tag-derived default.
+
+    Needed by stages 3-4 of the plan: vesc_nexus + ros2_control are meant to
+    SHARE one builder cache ref, which cannot be derived per-service.
+    """
+    log = _fake_docker(monkeypatch, tmp_path)
+    bash_body = _extract_build_step_bash(_load_action_yaml())
+    cp = _run_build_step(
+        bash_body,
+        service_name="vesc-nexus",
+        tags=TAGS_TWO,
+        cache_ref="localhost:5000/krikz/rob_box:shared-builder-buildcache",
+    )
+    assert cp.returncode == 0, f"build script failed:\n{cp.stderr}\n{cp.stdout}"
+    build = _build_argv(log)
+    assert _flag_values(build, "--cache-from") == [
+        "type=registry,ref=localhost:5000/krikz/rob_box:shared-builder-buildcache"
+    ], build
+    assert _flag_values(build, "--cache-to") == [
+        "type=registry,ref=localhost:5000/krikz/rob_box:shared-builder-buildcache"
+        ",mode=max,ignore-error=true"
+    ], build
+
+
+def test_cache_export_skipped_on_plain_docker_driver(monkeypatch, tmp_path):
+    """Default `docker` buildx driver cannot export cache — skip --cache-to.
+
+    Real buildx v0.17.1 refuses BEFORE the build even starts: "Cache export
+    is not supported for the docker driver" (exit 1), and ignore-error=true
+    does NOT rescue it — that option is handled inside buildkit, while this
+    is a buildx driver-feature check. So the action probes the driver and
+    keeps only --cache-from, which is always safe.
+    """
+    log = _fake_docker(monkeypatch, tmp_path, builder_driver="docker")
+    bash_body = _extract_build_step_bash(_load_action_yaml())
+    cp = _run_build_step(bash_body, service_name="led-matrix", tags=TAGS_TWO)
+    assert cp.returncode == 0, f"build script failed:\n{cp.stderr}\n{cp.stdout}"
+    build = _build_argv(log)
+    assert "--cache-to" not in build, build
+    assert _flag_values(build, "--cache-from") == [
+        "type=registry,ref=localhost:5000/krikz/rob_box:led-matrix-buildcache"
+    ], build
+    assert "cache export" in cp.stdout, cp.stdout
+
+
+def test_cache_export_enabled_on_docker_driver_with_containerd_store(
+    monkeypatch, tmp_path
+):
+    """`docker` driver + containerd image store CAN export cache → --cache-to."""
+    log = _fake_docker(
+        monkeypatch, tmp_path, builder_driver="docker", containerd_store=True
+    )
+    bash_body = _extract_build_step_bash(_load_action_yaml())
+    cp = _run_build_step(bash_body, service_name="led-matrix", tags=TAGS_TWO)
+    assert cp.returncode == 0, f"build script failed:\n{cp.stderr}\n{cp.stdout}"
+    assert _flag_values(_build_argv(log), "--cache-to") == [
+        "type=registry,ref=localhost:5000/krikz/rob_box:led-matrix-buildcache"
+        ",mode=max,ignore-error=true"
+    ], _build_argv(log)
+
+
+def test_cache_disabled_when_no_local_tag_to_derive_from(monkeypatch, tmp_path):
+    """No localhost:5000 tag → nothing to derive a ref from → no cache flags.
+
+    Fail-soft: the build still runs, with a warning instead of a bogus ref.
+    """
+    log = _fake_docker(monkeypatch, tmp_path)
+    bash_body = _extract_build_step_bash(_load_action_yaml())
+    cp = _run_build_step(
+        bash_body,
+        service_name="led-matrix",
+        tags="ghcr.io/krikz/rob_box:led-matrix-humble-test",
+    )
+    assert cp.returncode == 0, f"build script failed:\n{cp.stderr}\n{cp.stdout}"
+    build = _build_argv(log)
+    assert "--cache-from" not in build, build
+    assert "--cache-to" not in build, build

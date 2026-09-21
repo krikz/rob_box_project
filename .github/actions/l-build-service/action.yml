@@ -21,6 +21,12 @@ description: >-
   Если нужен только образ в daemon без пуша в registry (например, для `docker run`
   в том же job'е) — input `load=true` → buildx build --load без docker push.
 
+  Кеш: registry-кеш buildx (--cache-from/--cache-to type=registry,mode=max) в
+  localhost:5000 по ОТДЕЛЬНОМУ тегу <service>-buildcache. Переживает между
+  ранами (локальный build-кеш демона — нет) и кеширует ВСЕ стадии multi-stage
+  сборки (для этого и нужен mode=max). Выключается input'ом cache=false.
+  См. docs/plans/2026-09-15-builder-runtime-seam.md §6 (Этап 0).
+
   Acceptance: см. issue #2280 (arch review 2026-09-09, кандидат 4).
 
 inputs:
@@ -108,6 +114,31 @@ inputs:
     required: false
     default: 'host.docker.internal:host-gateway'
 
+  # ---- registry-кеш buildx (Этап 0, docs/plans/2026-09-15-builder-runtime-seam.md §6) ----
+  # Локальный build-кеш docker daemon'а на katana переживает только до
+  # `docker builder prune` / перезапуска демона и НЕ переживает между ранами,
+  # если раннер переустановили (§6.5). Registry-кеш пишется в тот же
+  # постоянный localhost:5000 на том же хосте и переживает такие события.
+  cache:
+    description: >-
+      Включить registry-кеш buildx (--cache-from / --cache-to type=registry,mode=max).
+      'false' → полностью выключить кеш-флаги (например, для forced-rebuild job'а,
+      по аналогии с --no-cache в L-Build Base Images.yml).
+    required: false
+    default: 'true'
+
+  cache-ref:
+    description: >-
+      Ref кеша для --cache-from / --cache-to. Если пусто (по умолчанию) —
+      выводится из ПЕРВОГО тега в `tags`, который лежит в local-registry:
+      <local-registry>/<repo>:<service-name>-buildcache. Это ОТДЕЛЬНЫЙ тег,
+      он не пересекается с тегами образа (<service>-<ros_distro>-<docker_tag>),
+      поэтому кеш-манифест не затирает образ в registry (§6.4). Репо-часть
+      (krikz/rob_box) берётся из самого тега, а не хардкодится здесь.
+      Пустое значение + отсутствие local-тега → кеш выключается (с warning).
+    required: false
+    default: ''
+
   # Полный вывод buildx в лог job'а, по умолчанию ON (раньше тоже было видно).
   # Progress оставлен plain для краткости лога (раньше тоже не использовали --progress=json).
   progress:
@@ -176,6 +207,92 @@ runs:
           BUILD_ARG_ARGS+=(--build-arg="${SHA_VAR}=${SHA_VAL}")
         fi
 
+        # ---- Registry-кеш (план 2026-09-15-builder-runtime-seam.md §6, Этап 0) ----
+        # Кеш НЕ трогает ни --load, ни docker push локальных тегов (§6.5):
+        # --cache-from/--cache-to — независимые от экспортёра образа флаги,
+        # образ всё так же уезжает в локальный docker daemon через --load
+        # (проверено локально: при провалившемся cache-export с
+        # ignore-error=true `docker image inspect` находит собранный тег).
+        CACHE_ARGS=()
+        CACHE_REF="${{ inputs.cache-ref }}"
+        if [ "${{ inputs.cache }}" = "false" ]; then
+          CACHE_REF=""
+          echo "  Cache: disabled (cache=false)"
+        elif [ -z "$CACHE_REF" ]; then
+          # Дефолт выводим из первого тега локального registry: из
+          # localhost:5000/krikz/rob_box:oak-d-humble-test получаем
+          # localhost:5000/krikz/rob_box:oak-d-buildcache. Так репо-часть
+          # не дублируется в action'е и остаётся единственным источником
+          # правды в вызывающем workflow (env.LOCAL_PREFIX).
+          while IFS= read -r tag || [ -n "$tag" ]; do
+            [ -z "$tag" ] && continue
+            case "$tag" in
+              "${{ inputs.local-registry }}"/*)
+                # Отрезаем :<tag> только если после последнего ':' нет '/':
+                # иначе это порт registry (тег без :tag-части) — такой вход
+                # оставляем без кеша, чтобы не сконструировать мусорный ref.
+                case "${tag##*:}" in
+                  */*) : ;;
+                  *) CACHE_REF="${tag%:*}:${{ inputs.service-name }}-buildcache" ;;
+                esac
+                break
+                ;;
+            esac
+          done < "$TAGS_TMP"
+          if [ -z "$CACHE_REF" ]; then
+            echo "  ⚠️ Cache: disabled — в tags нет тега ${{ inputs.local-registry }}/<repo>:<tag>," \
+                 "не из чего вывести cache-ref (передайте cache-ref явно)"
+          fi
+        fi
+
+        if [ -n "$CACHE_REF" ]; then
+          # --cache-from на НЕсуществующий ref безопасен: buildx печатает
+          # ошибку импорта манифеста и продолжает сборку с кодом 0 (проверено
+          # на buildx v0.17.1 с заведомо недоступным registry). Поэтому первый
+          # прогон, когда кеша в registry ещё нет, не падает.
+          CACHE_ARGS+=(--cache-from "type=registry,ref=${CACHE_REF}")
+
+          # --cache-to — другое дело, и по ДВУМ независимым причинам:
+          #
+          # (1) Драйвер buildx. На дефолтном драйвере `docker` (без containerd
+          #     image store) buildx отказывает ещё ДО старта сборки:
+          #     "Cache export is not supported for the docker driver".
+          #     ignore-error=true тут НЕ помогает — это проверка фич драйвера
+          #     в самом buildx, а не ошибка экспорта внутри buildkit
+          #     (проверено локально, buildx v0.17.1: exit 1). Поэтому
+          #     спрашиваем драйвер и добавляем --cache-to только если он умеет
+          #     экспорт: любой не-`docker` драйвер (docker-container/remote/
+          #     kubernetes) умеет, `docker` — только с containerd image store.
+          # (2) Доступность registry. Если localhost:5000 лежит/не принимает
+          #     манифест, экспорт кеша роняет весь build (проверено: exit 1).
+          #     ignore-error=true превращает это в warning (exit 0), а образ
+          #     всё равно оказывается в daemon через --load.
+          #
+          # mode=max обязателен (§6.3): без него в кеш попадают только слои
+          # ФИНАЛЬНОГО образа, а промежуточные стадии multi-stage сборки — нет,
+          # т.е. будущее builder/runtime-разделение (Этапы 1+) кеша не увидит.
+          CACHE_DRIVER="$(docker buildx inspect 2>/dev/null \
+            | awk -F':[[:space:]]*' '/^Driver:/ {print $2; exit}' || true)"
+          if [ -n "$CACHE_DRIVER" ] && [ "$CACHE_DRIVER" != "docker" ]; then
+            CACHE_EXPORT_OK="true"
+          elif docker info --format '{{ .DriverStatus }}' 2>/dev/null | grep -q 'io.containerd.snapshotter'; then
+            CACHE_EXPORT_OK="true"
+          else
+            CACHE_EXPORT_OK="false"
+          fi
+
+          if [ "$CACHE_EXPORT_OK" = "true" ]; then
+            CACHE_ARGS+=(--cache-to "type=registry,ref=${CACHE_REF},mode=max,ignore-error=true")
+            echo "  Cache: ${CACHE_REF} (from + to, mode=max, ignore-error, driver=${CACHE_DRIVER:-unknown})"
+          else
+            echo "  Cache: ${CACHE_REF} (from only)"
+            echo "  ⚠️ cache export пропущен: buildx-драйвер '${CACHE_DRIVER:-unknown}' не умеет" \
+                 "--cache-to type=registry. Чтобы кеш реально писался, на раннере нужен драйвер" \
+                 "docker-container (docker buildx create --driver docker-container --use) или" \
+                 "containerd image store."
+          fi
+        fi
+
         # Режим load vs load+push-local. buildx --push НЕ используем — причины
         # в комментарии над шагом и в description (GHCR unauthorized + daemon
         # нужен update-image-versions'у).
@@ -202,6 +319,7 @@ runs:
           --load \
           --add-host="${{ inputs.add-host }}" \
           "${BUILD_ARG_ARGS[@]}" \
+          "${CACHE_ARGS[@]}" \
           --progress="${{ inputs.progress }}" \
           "${{ inputs.build-context }}"
 

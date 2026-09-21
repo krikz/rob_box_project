@@ -158,6 +158,24 @@ jobs:
             -o addopts="" \
             -p no:cacheprovider
 
+      # Тот же класс дефекта, что у guard'а выше (ADR-0057 "скрипт написан,
+      # но не в CI"): tests/unit/test_l_build_service_composite.py лежал в
+      # репозитории с момента issue #2280 и не запускался ни одним workflow.
+      # Он парсит bash-шаг .github/actions/l-build-service/action.yml и
+      # прогоняет его с фейковым docker — то есть это единственная проверка,
+      # что composite собирает корректную командную строку buildx: --load +
+      # docker push ТОЛЬКО localhost:5000 (issue #1503) и registry-кеш
+      # (--cache-from/--cache-to type=registry,mode=max,ignore-error=true,
+      # docs/plans/2026-09-15-builder-runtime-seam.md §6, Этап 0).
+      # Нужен bash (ubuntu-latest его имеет) и НЕ нужен docker: docker в тесте
+      # подменяется shell-шимом.
+      - name: L-Build composite action guard (issue #2280, план §6)
+        run: |
+          python -m pytest tests/unit/test_l_build_service_composite.py \
+            -v \
+            -o addopts="" \
+            -p no:cacheprovider
+
       - name: Seam-without-consumer guard self-tests (issue #2118)
         run: |
           python -m unittest scripts.lint.test_seam_without_consumer -v
