@@ -176,6 +176,35 @@ jobs:
             -o addopts="" \
             -p no:cacheprovider
 
+      # scripts/ci/verify-image-in-registry.sh — вынесен из ТРЁХ копий функции
+      # verify_in_registry (оба L-Build + Single Service), которые уже успели
+      # разъехаться на строку сообщения (docs/plans/2026-09-15-image-versions-seam.md
+      # §7.4). Последний тест файла — guard: он падает, если workflow снова
+      # начнёт сам ходить в Registry API вместо общего скрипта.
+      # Реестр в тестах поднимается настоящим http.server на 127.0.0.1,
+      # нужен только curl (на ubuntu-latest есть).
+      - name: Registry-verify script guard (план image-versions §7.4)
+        run: |
+          python -m pytest scripts/ci/tests/test_verify_image_in_registry.py \
+            -v \
+            -o addopts="" \
+            -p no:cacheprovider
+
+      # Третий случай того же дефекта: каталог tests/unit/docker/ не гонялся
+      # НИ ОДНИМ workflow. Там живут проверки compose (mem_limit, issue #2621)
+      # и Ресурсного пака (docs/plans/2026-09-15-resource-pack.md) — последние
+      # прогоняют настоящий apply_resource_pack.sh на фикстуре через локальный
+      # HTTP-сервер на 127.0.0.1, боевые URL Hailo/Vosk/Silero не дёргаются.
+      # Нужны bash + curl + unzip (на ubuntu-latest всё есть), docker НЕ нужен.
+      # Отдельным шагом, а не через G-Run Tests: тот поднимает ROS-контейнер и
+      # coverage-гейт rob_box_harness, к этим тестам отношения не имеющий.
+      - name: Docker/compose + resource-pack guards
+        run: |
+          python -m pytest tests/unit/docker \
+            -v \
+            -o addopts="" \
+            -p no:cacheprovider
+
       - name: Seam-without-consumer guard self-tests (issue #2118)
         run: |
           python -m unittest scripts.lint.test_seam_without_consumer -v

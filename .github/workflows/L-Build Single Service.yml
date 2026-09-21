@@ -550,20 +550,12 @@ jobs:
           # Acceptance B (#1482): verify SHA-image is in registry BEFORE
           # committing it into per-service .image-versions.{tag}. Иначе
           # deploy тянет несуществующий тег, робот не обновляется.
+          # Тело проверки живёт в scripts/ci/verify-image-in-registry.sh:
+          # копий этой функции было ТРИ (оба L-Build + Single Service), и они
+          # уже разъехались на одну строку сообщения. План
+          # docs/plans/2026-09-15-image-versions-seam.md §7.4.
           verify_in_registry() {
-            local TAG="$1"
-            local REPO="krikz/rob_box"
-            local URL="http://${LOCAL_REGISTRY}/v2/${REPO}/manifests/${TAG}"
-            local HTTP_CODE
-            HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
-              -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' \
-              "$URL" || echo "000")
-            if [ "$HTTP_CODE" != "200" ]; then
-              echo "❌ Verify FAIL: ${TAG} missing in registry (HTTP ${HTTP_CODE})" >&2
-              return 1
-            fi
-            echo "✅ Verify OK: ${TAG} present in registry"
-            return 0
+            bash scripts/ci/verify-image-in-registry.sh "${LOCAL_REGISTRY}" "$1"
           }
           if ! verify_in_registry "${SHA_TAG}"; then
             echo "   ⚠️  .image-versions НЕ будет обновлён этим коммитом" >&2
