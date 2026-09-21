@@ -26,6 +26,7 @@
 from __future__ import annotations
 
 import importlib
+import logging
 import sys
 from pathlib import Path
 
@@ -970,3 +971,327 @@ def test_post_process_keeps_multiple_classes():
     )
     classes = sorted(ev['class_name'] for ev in events)
     assert classes == ['cup', 'person']
+
+
+# ============================================================================
+# HAILO_STREAM_ABORT(63) recovery (issue #2625)
+# ============================================================================
+#
+# ADR-0112 §5 п.1: hailort.service не изолирует клиентов друг от друга —
+# грязная смерть ЛЮБОГО другого процесса на /dev/hailo0 утаскивает пайплайн
+# живой ноды в HAILO_STREAM_ABORT(63). До этого фикса `_init_failed`
+# кешировался навсегда после ЛЮБОГО сбоя — включая abort уже поднятого
+# пайплайна — и переинициализация не происходила в принципе (процесс жив,
+# контейнер healthy, событий нет, лечится только `docker restart`).
+#
+# ЧЕСТНОСТЬ (ADR-0018): тесты ниже используют фейковый `hailo_platform` —
+# ни реального железа, ни реального класса исключения HailoRT здесь нет
+# (см. docstring `_is_recoverable_stream_abort`). Симулируем сигнатуру
+# через `RuntimeError('...HAILO_STREAM_ABORT(63)...')`, ровно как
+# `RealHEFLoader.infer()` реально видит её после оборачивания в
+# `except Exception as exc` — это НЕ проверено на живом HAT+.
+#
+# Карточка issue #2625 указывает как "фейк уже есть" на
+# `test_hailo_device.py`, но тот файл фейкает только `hailo_device.open_device()`
+# (выбор service/exclusive/legacy) — там нет ни `run()`, ни `InferModel`,
+# ни `Configured`. Фейк, который умеет `create_infer_model → configure →
+# create_bindings → run()`, живёт здесь, в `test_vision_hailo_phase15.py`
+# (`_FakeInferModel`/`_FakeConfigured`/`_FakeBindings`/
+# `_install_fake_hailo_platform`, см. выше) — тесты abort-recovery
+# расширяют ИМЕННО этот, уже существующий набор фейков, а не заводят
+# новый. См. PR-описание issue #2625 для развёрнутого объяснения.
+
+
+class _AbortOnceInferModel(_FakeInferModel):
+    """Fake InferModel, чей `run()` кидает `HAILO_STREAM_ABORT(63)` один раз.
+
+    `configure_count` считает вызовы `configure()` (= число (ре)инициализаций
+    пайплайна). `_total_runs` — сквозной (через reinit) счётчик вызовов
+    `run()`; после `abort_after_n_runs`-го успешного вызова кидается ОДИН
+    abort, дальше `run()` снова успешен — эмулирует «сосед по /dev/hailo0
+    умер один раз, дальше железо снова доступно».
+    """
+
+    def __init__(
+        self,
+        *,
+        abort_after_n_runs: int,
+        output_shape=(1, 84, 8400),
+        input_shape=(1, 640, 640, 3),
+    ) -> None:
+        super().__init__(input_shape=input_shape, output_shape=output_shape)
+        self.configure_count = 0
+        self._abort_after_n_runs = abort_after_n_runs
+        self._total_runs = 0
+        self._abort_raised = False
+
+    def configure(self):
+        self.configure_count += 1
+        configured = _FakeConfigured(self._input_shape, self._output_shape)
+        model = self
+        original_run = configured.run
+
+        def run(bindings, timeout):
+            model._total_runs += 1
+            if (
+                not model._abort_raised
+                and model._total_runs == model._abort_after_n_runs
+            ):
+                model._abort_raised = True
+                raise RuntimeError(
+                    '[HailoRT] [error] CHECK_SUCCESS failed with '
+                    'status=HAILO_STREAM_ABORT(63) - Can\'t handle '
+                    'inference request since pipeline status is '
+                    'HAILO_STREAM_ABORT(63).'
+                )
+            return original_run(bindings, timeout)
+
+        configured.run = run
+        return configured
+
+
+class _FlakyVDeviceForReinit:
+    """VDevice, чей `create_infer_model()` падает на заданных по номеру вызовах.
+
+    Используется для проверки backoff'а reinit-попыток после abort'а:
+    первый вызов (исходная успешная инициализация) не в `fail_on_calls`,
+    последующие reinit-попытки — падают, пока не «починится».
+    """
+
+    def __init__(self, infer_model, fail_on_calls) -> None:
+        self._infer_model = infer_model
+        self._fail_on_calls = set(fail_on_calls)
+        self.create_calls = 0
+
+    def create_infer_model(self, hef_path):
+        assert hef_path
+        self.create_calls += 1
+        if self.create_calls in self._fail_on_calls:
+            raise RuntimeError(
+                f'fake create_infer_model failure at call #{self.create_calls}'
+            )
+        return self._infer_model
+
+
+def _real_loader_for_abort_test(tmp_path, monkeypatch, vdevice):
+    """Общий setup: HEF-файл + RealHEFLoader с замоканным `_preprocess`."""
+    hef = tmp_path / 'yolov8n.hef'
+    hef.write_bytes(b'\x00')
+    _install_fake_hailo_platform(monkeypatch, vdevice)
+
+    real = loader_mod.RealHEFLoader(hef_path=str(hef))
+    preprocessed = np.zeros((1, 640, 640, 3), dtype=np.uint8)
+    fake_letterbox = loader_mod.LetterboxInfo(
+        scale=1.0, pad_left=0, pad_top=0,
+        orig_w=640, orig_h=480,
+        letterbox_w=640, letterbox_h=640,
+    )
+    monkeypatch.setattr(
+        real, '_preprocess', lambda _img: (preprocessed, fake_letterbox)
+    )
+    return real
+
+
+def test_is_recoverable_stream_abort_detects_hailort_signature():
+    """`_is_recoverable_stream_abort` матчит формат HailoRT из issue #2625."""
+    exc = RuntimeError(
+        "[HailoRT] [error] CHECK_SUCCESS failed with "
+        "status=HAILO_STREAM_ABORT(63)"
+    )
+    assert loader_mod._is_recoverable_stream_abort(exc) is True
+
+    # Оборачивание в infer()'овский RuntimeError(f'... {exc!r}') не должно
+    # ломать детекцию — repr() сохраняет исходный текст внутри.
+    wrapped = RuntimeError(f'HailoRT run() failed: {exc!r}')
+    assert loader_mod._is_recoverable_stream_abort(wrapped) is True
+
+    # Другие ошибки — НЕ abort (не должны триггерить recovery-путь).
+    assert loader_mod._is_recoverable_stream_abort(
+        RuntimeError('HAILO_OUT_OF_PHYSICAL_DEVICES(74)')
+    ) is False
+    assert loader_mod._is_recoverable_stream_abort(FileNotFoundError('x')) is False
+    assert loader_mod._is_recoverable_stream_abort(RuntimeError('boom')) is False
+
+
+def test_next_reinit_backoff_sec_grows_and_caps():
+    """Backoff: 0 → INITIAL, дальше геометрический рост до MAX (issue #2625 п.2)."""
+    b0 = loader_mod._next_reinit_backoff_sec(0.0)
+    assert b0 == loader_mod.REINIT_BACKOFF_INITIAL_SEC
+
+    b1 = loader_mod._next_reinit_backoff_sec(b0)
+    assert b1 == pytest.approx(
+        loader_mod.REINIT_BACKOFF_INITIAL_SEC * loader_mod.REINIT_BACKOFF_MULTIPLIER
+    )
+
+    # Рост зажат потолком.
+    huge = loader_mod._next_reinit_backoff_sec(loader_mod.REINIT_BACKOFF_MAX_SEC * 10)
+    assert huge == loader_mod.REINIT_BACKOFF_MAX_SEC
+
+
+def test_real_loader_recovers_after_stream_abort(tmp_path, monkeypatch):
+    """issue #2625 п.1/4: abort на N-ном `run()` → следующий кадр
+    переинициализируется, а НЕ уходит в вечный `_init_failed`-degraded.
+    """
+    infer_model = _AbortOnceInferModel(abort_after_n_runs=2)
+    vdevice = _FakeVDevice(infer_model)
+    real = _real_loader_for_abort_test(tmp_path, monkeypatch, vdevice)
+    fake_img = np.zeros((480, 640, 3), dtype=np.uint8)
+
+    # Кадр 1: run() успешен (total_runs=1). Инициализация — раз.
+    events1 = real.infer(frame_id='oak-d', image=fake_img)
+    assert isinstance(events1, list)
+    assert infer_model.configure_count == 1
+    assert real._init_failed is None
+    assert real._recovering_from_abort is False
+
+    # Кадр 2: run() бросает abort (total_runs=2) → RuntimeError наружу
+    # (кадр пропущен, как и раньше — узел это уже умеет логировать/считать).
+    with pytest.raises(RuntimeError, match=r'HailoRT run\(\) failed'):
+        real.infer(frame_id='oak-d', image=fake_img)
+
+    # ГЛАВНАЯ ПРОВЕРКА (issue #2625 п.1): abort — НЕ фатальный init failure.
+    assert real._init_failed is None, (
+        'abort не должен кешироваться в _init_failed — иначе '
+        '_ensure_initialized() re-raise\'ит его навсегда, и пайплайн '
+        'никогда не переинициализируется (issue #2625, "лечится только '
+        'docker restart").'
+    )
+    assert real._recovering_from_abort is True
+    assert real._configured is None
+    assert real._bindings is None
+    assert real._infer_model is None
+
+    # Кадр 3: следующий вызов ДОЛЖЕН переинициализироваться (configure() #2)
+    # и успешно инференснуть, а не повторно упасть в degraded.
+    events3 = real.infer(frame_id='oak-d', image=fake_img)
+    assert isinstance(events3, list)
+    assert infer_model.configure_count == 2, (
+        'lazy init не переинициализировался на следующем кадре после abort '
+        '(issue #2625 п.1 — "дать ленивой инициализации подняться заново").'
+    )
+    assert real._recovering_from_abort is False
+    assert real._init_failed is None
+
+
+def test_real_loader_logs_explicit_recovery_after_abort(tmp_path, monkeypatch, caplog):
+    """issue #2625 п.3: явный лог восстановления, не тихое состояние."""
+    infer_model = _AbortOnceInferModel(abort_after_n_runs=1)
+    vdevice = _FakeVDevice(infer_model)
+    real = _real_loader_for_abort_test(tmp_path, monkeypatch, vdevice)
+    fake_img = np.zeros((480, 640, 3), dtype=np.uint8)
+
+    with caplog.at_level(
+        logging.WARNING, logger='rob_box_perception.vision_hailo_loader'
+    ):
+        with pytest.raises(RuntimeError, match=r'HailoRT run\(\) failed'):
+            real.infer(frame_id='oak-d', image=fake_img)
+        real.infer(frame_id='oak-d', image=fake_img)  # reinit + успешный run()
+
+    messages = [rec.message for rec in caplog.records]
+    assert any('abort' in m.lower() for m in messages), (
+        f'нет лога обнаружения abort: {messages!r}'
+    )
+    assert any('переподнят после' in m for m in messages), (
+        f'нет явного лога восстановления пайплайна: {messages!r} '
+        '(issue #2625 п.3 — иначе снова тихое состояние, "тихо-хорошее").'
+    )
+
+
+def test_real_loader_reinit_backoff_gates_retries_and_grows(tmp_path, monkeypatch):
+    """issue #2625 п.2: reinit после abort не молотит каждый кадр — backoff.
+
+    Сценарий: abort → 1-я reinit-попытка немедленная и падает (backoff
+    растёт до INITIAL) → повторный кадр ДО истечения backoff НЕ должен
+    трогать железо снова → после истечения backoff — 2-я попытка (снова
+    падает, backoff растёт до INITIAL*MULTIPLIER) → после истечения —
+    3-я попытка успешна → recovery.
+    """
+    infer_model = _AbortOnceInferModel(abort_after_n_runs=2)
+    # Call #1 = исходная успешная инициализация (не в fail-списке).
+    # Call #2, #3 = первые две reinit-попытки после abort — падают.
+    # Call #4 = третья reinit-попытка — успешна.
+    vdevice = _FlakyVDeviceForReinit(infer_model, fail_on_calls={2, 3})
+    real = _real_loader_for_abort_test(tmp_path, monkeypatch, vdevice)
+    fake_img = np.zeros((480, 640, 3), dtype=np.uint8)
+
+    fake_now = [1_000.0]
+    monkeypatch.setattr(loader_mod.time, 'monotonic', lambda: fake_now[0])
+
+    # Кадр 1: успешная инициализация (create_infer_model call #1).
+    real.infer(frame_id='oak-d', image=fake_img)
+    assert vdevice.create_calls == 1
+
+    # Кадр 2: run() абортит → reset, recovering=True, backoff=0 (немедленно).
+    with pytest.raises(RuntimeError, match=r'HailoRT run\(\) failed'):
+        real.infer(frame_id='oak-d', image=fake_img)
+    assert real._recovering_from_abort is True
+    assert real._reinit_backoff_sec == 0.0
+
+    # Кадр 3: backoff=0 → немедленная попытка reinit (call #2) → падает
+    # (fake create_infer_model failure), backoff становится INITIAL.
+    with pytest.raises(RuntimeError, match='fake create_infer_model failure'):
+        real.infer(frame_id='oak-d', image=fake_img)
+    assert vdevice.create_calls == 2
+    assert real._reinit_backoff_sec == pytest.approx(
+        loader_mod.REINIT_BACKOFF_INITIAL_SEC
+    )
+    not_before_1 = real._reinit_not_before
+
+    # Кадр 4, часы НЕ продвинуты: backoff активен → железо НЕ трогаем снова.
+    with pytest.raises(RuntimeError, match='backoff'):
+        real.infer(frame_id='oak-d', image=fake_img)
+    assert vdevice.create_calls == 2, (
+        'reinit не должен молотить каждый кадр внутри backoff-окна '
+        '(issue #2625 п.2 — "переинициализация не молотит каждые ~0.5с").'
+    )
+
+    # Продвигаем часы за not_before_1 → 2-я reinit-попытка (call #3),
+    # снова падает, backoff растёт геометрически.
+    fake_now[0] = not_before_1 + 0.01
+    with pytest.raises(RuntimeError, match='fake create_infer_model failure'):
+        real.infer(frame_id='oak-d', image=fake_img)
+    assert vdevice.create_calls == 3
+    assert real._reinit_backoff_sec == pytest.approx(
+        loader_mod.REINIT_BACKOFF_INITIAL_SEC * loader_mod.REINIT_BACKOFF_MULTIPLIER
+    )
+    not_before_2 = real._reinit_not_before
+    assert not_before_2 > not_before_1
+
+    # Продвигаем часы за not_before_2 → 3-я reinit-попытка (call #4) успешна.
+    fake_now[0] = not_before_2 + 0.01
+    events = real.infer(frame_id='oak-d', image=fake_img)
+    assert isinstance(events, list)
+    assert vdevice.create_calls == 4
+    assert real._recovering_from_abort is False
+    assert real._reinit_backoff_sec == 0.0
+    assert real._init_failed is None
+
+
+def test_real_loader_init_failure_still_caches_permanently(tmp_path, monkeypatch):
+    """Контроль: ПЕРВАЯ (never-succeeded) инициализация НЕ путается с
+    abort-recovery — остаётся permanent `_init_failed` (issue #2625:
+    "разведи два случая честно"). Регресс-дублёр
+    `test_real_loader_init_failure_is_not_silent_log_spam`, но с фокусом
+    именно на неизменности старого контракта после этого фикса.
+    """
+    hef = tmp_path / 'yolov8n.hef'
+    hef.write_bytes(b'\x00')
+
+    class _AlwaysBrokenVDevice:
+        def create_infer_model(self, _hef):
+            raise RuntimeError('HEF parse failed (fake, not an abort)')
+
+    import types
+    fake_mod = types.ModuleType('hailo_platform')
+    fake_mod.VDevice = lambda *a, **kw: _AlwaysBrokenVDevice()
+    monkeypatch.setitem(sys.modules, 'hailo_platform', fake_mod)
+
+    real = loader_mod.RealHEFLoader(hef_path=str(hef))
+    assert real.is_available() is False
+    assert real._init_failed is not None
+    assert real._recovering_from_abort is False
+
+    # Повторный вызов — re-raise закешированной ошибки, БЕЗ повторной
+    # попытки создать infer_model (в отличие от abort-recovery пути).
+    with pytest.raises(RuntimeError, match='HEF parse failed'):
+        real._ensure_initialized()

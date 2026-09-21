@@ -47,7 +47,9 @@ Touchpoints:
 
 from __future__ import annotations
 
+import logging
 import os
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from rob_box_perception.hailo_device import open_device
@@ -56,7 +58,11 @@ from rob_box_perception.vision_hailo_loader import (
     LETTERBOX_PAD_VALUE,
     LetterboxInfo,
     StubHEFLoader,
+    _is_recoverable_stream_abort,
+    _next_reinit_backoff_sec,
 )
+
+_LOG = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Константы модели (hailo_model_zoo retinaface_mobilenet_v1)
@@ -387,6 +393,18 @@ class RetinaFaceLoader(HEFLoader):
         self._bindings: Any = None
         self._output_names: List[str] = []
         self._init_failed: Optional[BaseException] = None
+        # ---- HAILO_STREAM_ABORT(63) recovery state (issue #2625) ----
+        # Тот же паттерн, что RealHEFLoader (vision_hailo_loader.py) —
+        # см. docstring там для полного обоснования. Общий код (детекция
+        # abort'а + расчёт backoff) переиспользован через импорт
+        # `_is_recoverable_stream_abort`/`_next_reinit_backoff_sec`;
+        # само reset/retry-состояние копируется по месту (ADR-0121
+        # предлагает вынести общий lazy-init в миксин, но остаётся
+        # Proposed — сейчас код следует уже принятому в модуле паттерну
+        # дублирования `_init_failed`/`_ensure_initialized`/`_init_locked`).
+        self._recovering_from_abort: bool = False
+        self._reinit_backoff_sec: float = 0.0
+        self._reinit_not_before: float = 0.0
 
     # ----------------------------------------------------------------
     # Lazy initialization
@@ -397,11 +415,72 @@ class RetinaFaceLoader(HEFLoader):
             return
         if self._init_failed is not None:
             raise self._init_failed
+        if self._recovering_from_abort:
+            self._retry_after_abort()
+            return
         try:
             self._init_locked()
         except BaseException as exc:  # noqa: BLE001 (capability-honest)
             self._init_failed = exc
             raise
+
+    def _retry_after_abort(self) -> None:
+        """Reinit после `HAILO_STREAM_ABORT(63)` с backoff (issue #2625).
+
+        1:1 паттерн ``RealHEFLoader._retry_after_abort`` — см. его docstring.
+        Не кеширует неудачу в ``_init_failed`` (transient, не фатальный
+        отказ инициализации).
+        """
+        now = time.monotonic()
+        if now < self._reinit_not_before:
+            remaining = self._reinit_not_before - now
+            raise RuntimeError(
+                f'HailoRT pipeline recovering from HAILO_STREAM_ABORT(63): '
+                f'backoff активен ещё {remaining:.1f}s (issue #2625).'
+            )
+        try:
+            self._init_locked()
+        except BaseException as exc:  # noqa: BLE001 (capability-honest)
+            self._reinit_backoff_sec = _next_reinit_backoff_sec(
+                self._reinit_backoff_sec
+            )
+            self._reinit_not_before = time.monotonic() + self._reinit_backoff_sec
+            _LOG.warning(
+                'Переинициализация RetinaFace после HAILO_STREAM_ABORT(63) '
+                f'снова не удалась: {exc!r}. Следующая попытка через '
+                f'{self._reinit_backoff_sec:.1f}s (issue #2625).'
+            )
+            raise
+        _LOG.warning(
+            'RetinaFace HailoRT пайплайн переподнят после '
+            'HAILO_STREAM_ABORT(63) (issue #2625) — реинициализация '
+            'прошла успешно.'
+        )
+        self._recovering_from_abort = False
+        self._reinit_backoff_sec = 0.0
+        self._reinit_not_before = 0.0
+
+    def _reset_after_stream_abort(self, exc: BaseException) -> None:
+        """Сбросить lazy-init состояние после abort'а (issue #2625 п.1).
+
+        1:1 паттерн ``RealHEFLoader._reset_after_stream_abort``.
+        """
+        _LOG.warning(
+            'RetinaFace HailoRT pipeline abort обнаружен '
+            f'(HAILO_STREAM_ABORT(63) pattern): {exc!r}. Сбрасываю '
+            'состояние лоадера для переинициализации на следующем кадре '
+            '(issue #2625, ADR-0112 §5 п.1).'
+        )
+        self._configured = None
+        self._bindings = None
+        self._infer_model = None
+        self._init_failed = None
+        self._vdevice = None
+        self._device = None
+        self._output_names = []
+        self._recovering_from_abort = True
+        self._reinit_backoff_sec = 0.0
+        self._reinit_not_before = 0.0
 
     def _init_locked(self) -> None:
         if not os.path.isfile(self._hef_path):
@@ -522,6 +601,8 @@ class RetinaFaceLoader(HEFLoader):
             self._bindings.input(in_name).set_buffer(input_tensor)
             self._configured.run([self._bindings], timeout=1000)
         except Exception as exc:  # noqa: BLE001
+            if _is_recoverable_stream_abort(exc):
+                self._reset_after_stream_abort(exc)
             raise RuntimeError(f'HailoRT run() failed: {exc!r}') from exc
 
         raw_outputs: List[Any] = []
