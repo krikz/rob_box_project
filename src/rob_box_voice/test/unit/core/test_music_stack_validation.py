@@ -101,6 +101,63 @@ Server running: true
     assert result.oscdef_registered is True
 
 
+def test_classify_sclang_log_recognizes_current_synth_in_scsynth_marker():
+    """Live fix 30.08 (commit 30199b306) changed the log phrase from
+    ``SynthDef preload ok: <name>`` to ``SynthDef in scsynth: <name>``
+    so the marker is only printed after Server.sync. The validator must
+    recognize the current phrase, otherwise every deploy reports all 53+
+    startup SynthDefs as missing (issue #2716).
+    """
+
+    log_text = """
+FoxDot OSCdef registered. Ready to compile SynthDefs.
+Server running: true
+SynthDef preload finished: 64 defs
+SynthDef in scsynth: ambi
+SynthDef in scsynth: strings
+SynthDef in scsynth: wobblebass
+SynthDef in scsynth: pianovel
+SynthDef in scsynth: warmpad
+SynthDef in scsynth: retrobass
+SynthDef in scsynth: supersawlead
+SynthDef in scsynth: imperialbrass
+SynthDef in scsynth: marchstrings
+SynthDef in scsynth: strangerpulsepad
+SynthDef in scsynth: strangerarp
+SynthDef in scsynth: strangerbrass
+"""
+
+    critical = [
+        "strings", "wobblebass", "pianovel", "warmpad", "retrobass",
+        "supersawlead", "imperialbrass", "marchstrings", "strangerpulsepad",
+        "strangerarp", "strangerbrass",
+    ]
+    result = classify_sclang_log(log_text, critical_synths=critical)
+
+    assert result.is_healthy is True
+    assert result.oscdef_registered is True
+    assert result.missing_synths == ()
+    assert result.fatal_errors == ()
+
+
+def test_classify_sclang_log_still_recognizes_legacy_preload_ok_marker():
+    """Renardo upstream binaries older than the 30.08 fix still print
+    ``SynthDef preload ok: <name>``. Keep the regex permissive so an
+    environment that never picks up the live fix still validates green.
+    """
+
+    log_text = """
+FoxDot OSCdef registered
+SynthDef preload ok: strings
+SynthDef preload ok: wobblebass
+"""
+
+    result = classify_sclang_log(log_text, critical_synths=["strings", "wobblebass"])
+
+    assert result.is_healthy is True
+    assert result.missing_synths == ()
+
+
 def test_classify_sclang_log_reports_degraded_runtime():
     log_text = """
 FoxDot OSCdef registered. Ready to compile SynthDefs.

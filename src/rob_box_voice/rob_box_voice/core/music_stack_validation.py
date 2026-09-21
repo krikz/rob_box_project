@@ -28,7 +28,16 @@ _MERGE_CONFLICT_START_RE = re.compile(r"^<{7}(?:\s|$)")
 _MERGE_CONFLICT_MID_RE = re.compile(r"^={7}$")
 _MERGE_CONFLICT_END_RE = re.compile(r"^>{7}(?:\s|$)")
 _MISSING_SYNTH_RE = re.compile(r"SynthDef\s+([A-Za-z0-9_]+)\s+not found", re.IGNORECASE)
-_LOADED_SYNTH_RE = re.compile(r"SynthDef\s+preload\s+ok:\s*([A-Za-z0-9_]+)", re.IGNORECASE)
+# Match both the legacy and current renardo/foxdot_init.sc log phrases:
+#   * "SynthDef preload ok: <name>"      (renardo upstream, pre-fix)
+#   * "SynthDef in scsynth: <name>"      (live fix 30.08 / commit 30199b306 —
+#     "SynthDef" + name printed only AFTER path.load + Server.default.sync,
+#     so this marker really means "scsynth accepted the def", not just
+#     "sclang compiled the source").
+_LOADED_SYNTH_RE = re.compile(
+    r"SynthDef\s+(?:preload\s+ok|in\s+scsynth):\s*([A-Za-z0-9_]+)",
+    re.IGNORECASE,
+)
 _FATAL_LOG_PATTERNS = (
     "syntax error",
     "Class not defined",

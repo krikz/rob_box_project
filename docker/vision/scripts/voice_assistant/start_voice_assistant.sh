@@ -135,8 +135,15 @@ if command -v sclang > /dev/null 2>&1; then
         if [ "${MUSIC_STACK_RC}" -eq 0 ]; then
             echo "✓ Music stack validation passed"
         else
-            echo "⚠ Music stack validation found non-critical errors (degraded but usable)"
+            # Не выдаём «degraded but usable» — для тембров, на которых
+            # построены пресеты (включая strangerpulsepad / strangerarp /
+            # strangerbrass, imperial march и т.п.), «тембр не скомпилирован»
+            # означает «пресет молча не зазвучит». Даём оператору честный
+            # сигнал и прямой путь к причине (лог + строка grep для поиска
+            # ERROR / WARN).
+            echo "✗ Music stack validation FAILED (music tools will produce silent notes)"
             echo "  └─ Подробности: /tmp/sclang.log"
+            echo "  └─ Диагностика: grep -E 'ERROR|SynthDef in scsynth' /tmp/sclang.log"
         fi
     fi
     echo "sclang готов"
