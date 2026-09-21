@@ -62,11 +62,15 @@ def test_is_plugin_dependent_synthdef_detects_extension_ugens(synthdef_source: s
 
 
 def test_classify_sclang_log_reports_healthy_runtime():
+    # RAW-формат живого лога (foxdot_init.sc:179, с live-фикса 30.08) —
+    # НЕ "SynthDef preload ok: X" (см. test_classify_sclang_log_accepts_legacy_preload_ok_format
+    # для старого формата отдельно).
     log_text = """
 FoxDot OSCdef registered. Ready to compile SynthDefs.
 Server running: true
-SynthDef preload ok: strings
-SynthDef preload ok: wobblebass
+SynthDef in scsynth: strings
+SynthDef in scsynth: wobblebass
+SynthDef preload finished: 63 defs
 """
 
     result = classify_sclang_log(log_text, critical_synths=["strings", "wobblebass"])
@@ -80,13 +84,75 @@ def test_classify_sclang_log_requires_positive_confirmation_for_each_critical_sy
     log_text = """
 FoxDot OSCdef registered. Ready to compile SynthDefs.
 Server running: true
-SynthDef preload ok: strings
+SynthDef in scsynth: strings
 """
 
     result = classify_sclang_log(log_text, critical_synths=["strings", "wobblebass"])
 
     assert result.is_healthy is False
     assert result.missing_synths == ("wobblebass",)
+
+
+def test_classify_sclang_log_accepts_legacy_preload_ok_format():
+    """Обратная совместимость со старым (до live-фикса 30.08) форматом лога.
+
+    Живых логов в этом формате на роботе уже нет, но regex дёшево держит
+    оба варианта — держим тест, чтобы обратную совместимость никто не
+    сломал следующей правкой не глядя.
+    """
+    log_text = """
+FoxDot OSCdef registered. Ready to compile SynthDefs.
+Server running: true
+SynthDef preload ok: strings
+SynthDef preload ok: wobblebass
+"""
+
+    result = classify_sclang_log(log_text, critical_synths=["strings", "wobblebass"])
+
+    assert result.is_healthy is True
+    assert result.missing_synths == ()
+
+
+def test_classify_sclang_log_matches_actual_foxdot_init_log_format():
+    """Регресс на дрейф между foxdot_init.sc и _LOADED_SYNTH_RE (issue 21.09.2026).
+
+    RAW-инцидент на Vision Pi: .sc-файл сменил печатаемую строку с
+    "SynthDef preload ok: X" на "SynthDef in scsynth: X" (live-фикс 30.08),
+    а regex в music_stack_validation.py остался на старом тексте. Юнит-тесты
+    были зелёными (гоняли фикстуры со старой строкой), а на роботе валидатор
+    рапортовал ВСЕ критичные SynthDef-ы как missing, хотя все 63 были
+    загружены и /tmp/sclang.log содержал ровно новую строку — grep -x
+    "SynthDef in scsynth: <name>" nashёл все 11 "отсутствующих" на месте.
+
+    Этот тест читает РЕАЛЬНЫЙ .sc-файл и падает, если кто-то поменяет
+    формат postln-строки, не тронув эту фикстуру и regex одновременно.
+    """
+    sc_path = (
+        Path(__file__).resolve().parents[5]
+        / "docker"
+        / "vision"
+        / "voice_assistant"
+        / "foxdot_init.sc"
+    )
+    sc_source = sc_path.read_text(encoding="utf-8")
+    assert '"SynthDef in scsynth: " ++ name).postln' in sc_source, (
+        "foxdot_init.sc сменил формат лога преload-подтверждения — обнови "
+        "_LOADED_SYNTH_RE в music_stack_validation.py, а затем эту фикстуру."
+    )
+
+    log_text = "\n".join(
+        [
+            "FoxDot OSCdef registered. Ready to compile SynthDefs.",
+            "SynthDef in scsynth: strings",
+            "SynthDef in scsynth: wobblebass",
+            "SynthDef preload finished: 63 defs",
+        ]
+    )
+
+    result = classify_sclang_log(log_text, critical_synths=["strings", "wobblebass"])
+
+    assert result.is_healthy is True
+    assert result.missing_synths == ()
 
 
 def test_classify_sclang_log_accepts_variant_readiness_phrase():
@@ -117,7 +183,7 @@ ERROR: syntax error, unexpected BINOP, expecting $end
 
 def test_format_music_stack_report_for_healthy_runtime():
     status = classify_sclang_log(
-        "Booting\nFoxDot OSCdef ready\nSynthDef preload ok: strings\n",
+        "Booting\nFoxDot OSCdef ready\nSynthDef in scsynth: strings\n",
         critical_synths=["strings"],
     )
 
@@ -285,9 +351,10 @@ def test_load_sclang_health_returns_healthy_when_log_clean(tmp_path, monkeypatch
         "\n".join([
             "Booting sclang...",
             "FoxDot OSCdef registered. Ready to compile SynthDefs.",
-            "SynthDef preload ok: strings",
-            "SynthDef preload ok: wobblebass",
-            "SynthDef preload ok: warmpad",
+            "SynthDef in scsynth: strings",
+            "SynthDef in scsynth: wobblebass",
+            "SynthDef in scsynth: warmpad",
+            "SynthDef preload finished: 63 defs",
             "",
         ]),
         encoding="utf-8",

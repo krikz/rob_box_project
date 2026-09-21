@@ -71,3 +71,68 @@ def test_soft_warnings_survive_to_the_result():
     assert result.warnings
     assert result.security_error is None
     assert result.quality_errors == ()
+
+
+# ---------------------------------------------------------------------------
+# Live-инцидент 21.09.2026 — compose_music(bass_synth='supersaw') принимал
+# несуществующий синт, execute_code() рапортовал success=True, а бас молча
+# пропадал (реальная ошибка scsynth видна только в docker logs supercollider).
+# ---------------------------------------------------------------------------
+
+
+KNOWN_SYNTHS = frozenset({"pluck", "strings", "wobblebass", "supersawlead", "blip"})
+
+
+def test_known_synths_none_disables_the_check_entirely():
+    """Обратная совместимость: без known_synths поведение не меняется."""
+    result = sanitize_renando("p1 >> totallymadeupname([0, 2, 4], dur=0.5)", MAX_AMP)
+    assert result.quality_errors == ()
+    assert result.security_error is None
+
+
+def test_unknown_synth_is_a_hard_quality_error_when_known_synths_given():
+    result = sanitize_renando(
+        "p1 >> supersaw([38, 43, 39], dur=[2, 2, 2], amp=0.4)",
+        MAX_AMP,
+        known_synths=KNOWN_SYNTHS,
+    )
+    assert result.quality_errors
+    assert any("supersaw" in e for e in result.quality_errors)
+
+
+def test_unknown_synth_error_suggests_the_closest_real_name():
+    """RAW-инцидент 21.09.2026: bass_synth='supersaw' → должен предложить 'supersawlead'."""
+    result = sanitize_renando(
+        "p1 >> supersaw([38, 43, 39], dur=[2, 2, 2], amp=0.4)",
+        MAX_AMP,
+        known_synths=KNOWN_SYNTHS,
+    )
+    assert any("supersawlead" in e for e in result.quality_errors)
+
+
+def test_known_synth_passes_when_known_synths_given():
+    result = sanitize_renando(
+        "p1 >> supersawlead([0, 2, 4], dur=0.5, amp=0.4)",
+        MAX_AMP,
+        known_synths=KNOWN_SYNTHS,
+    )
+    assert result.quality_errors == ()
+
+
+def test_play_sample_pattern_is_never_validated_as_a_synth():
+    """play() — сэмплер по символам, не SynthDef; не должен ловиться проверкой."""
+    result = sanitize_renando(
+        'd1 >> play("x-o-", amp=0.4)',
+        MAX_AMP,
+        known_synths=KNOWN_SYNTHS,
+    )
+    assert result.quality_errors == ()
+
+
+def test_unknown_synth_check_is_case_insensitive():
+    result = sanitize_renando(
+        "p1 >> SUPERSAWLEAD([0, 2, 4], dur=0.5, amp=0.4)",
+        MAX_AMP,
+        known_synths=KNOWN_SYNTHS,
+    )
+    assert result.quality_errors == ()
