@@ -44,8 +44,23 @@
     `declare_parameter` + `config/stt_node.yaml` (issue #1004).
   - `select_recognition` разложена на `_classify_attempt` / `_policy_for`
     / `_live_providers` / `_run_provider`: CC 18 → 6 (ADR-0021).
-  - Тесты: новый `test/test_stt_dead_cache.py` (31) + 32 теста цепочки,
-    `provider_state` и маппинга ошибок в `test/test_stt_node_fallback.py`.
+  - **По следам живого прогона на Vision Pi 21.09.2026** (ADR-0124 §4.4):
+    - MiniMax сообщает про план/квоту в **теле** ответа, а не статусом:
+      HTTP 500 + `"...token plan not support model, asr-1.0 (2061)"` и
+      HTTP 200 + `base_resp.status_code=2056`. Оба уходили в
+      транзиентный TTL 30с вместо 300с — робот переспрашивал облако
+      каждые полминуты по ~1.6с. `_raise_for_http_status` теперь
+      разбирает тело (`_body_error_message`) и сверяет с `QUOTA_HINTS`
+      (зеркало `rob_box_harness.health.QUOTA_EXHAUSTED_HINTS`).
+    - gRPC-ошибка стрима Yandex прилетает при **итерации** по
+      `responses`, а `except grpc.RpcError` обёрнут был только вокруг
+      `RecognizeStreaming()`. Код статуса не доходил ни до лога, ни до
+      кэша — в метрике стояло голое `reason=error` за 50мс. Цикл обёрнут.
+    - `log_attempts` печатал `reason`, но выбрасывал `STTAttempt.error`.
+      Теперь `error=` есть в строке `[stt_attempt_metric]`.
+  - Тесты: новый `test/test_stt_dead_cache.py` (31) + тесты цепочки,
+    состояния провайдера, маппинга ошибок и живых тел ответов с робота
+    в `test/test_stt_node_fallback.py` и `test/unit/stt/`.
 - **MiniMax STT provider — Phase 1 PoC** (issue
   [#2365](https://github.com/krikz/rob_box_project/issues/2365), PR
   [#2369](https://github.com/krikz/rob_box_project/pull/2369),

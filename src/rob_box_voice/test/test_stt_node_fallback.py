@@ -1855,3 +1855,124 @@ class TestMiniMaxErrorMapping:
         stt_node._ensure_minimax_provider = lambda: provider
 
         assert stt_node._recognize_minimax(b"\x00" * 100) == "робот привет"
+
+
+class TestDeadCacheTtlOnRealRobotErrors:
+    """Отказы, снятые с робота 21.09.2026 — проверяем класс TTL.
+
+    Симптом до фикса: `dead={'minimax': 11.3}` в логе — то есть 30с
+    вместо 300с, и облако переспрашивалось каждые полминуты.
+    """
+
+    @staticmethod
+    def _chain(node):
+        node.provider_chain = ["minimax", "yandex", "vosk"]
+        node.minimax_stt_enabled = True
+        node.minimax_stt_api_key = "FAKE"
+        node.yandex_stub = MagicMock()
+        node.recognizer = MagicMock()
+        node.retry_backoff_s = 0.0
+        node._ensure_vosk_loaded = MagicMock(return_value=True)
+        node._recognize_vosk = MagicMock(return_value="робот как дела")
+        return node
+
+    def test_minimax_plan_error_gets_long_ttl_and_no_retry(self, stt_node):
+        """HTTP 500 + код 2061 = план, а не «сервер моргнул»."""
+        from rob_box_voice.stt_providers.minimax_provider import (
+            MiniMaxSTTRateLimitError,
+        )
+
+        node = self._chain(stt_node)
+        node.minimax_stt_max_retries = 1
+        provider = MagicMock()
+        provider.transcribe.side_effect = MiniMaxSTTRateLimitError(
+            "minimax STT: minimax API error: your current token plan "
+            "not support model, asr-1.0 (2061)"
+        )
+        node._ensure_minimax_provider = lambda: provider
+        node._recognize_yandex = MagicMock(return_value=None)
+
+        node._recognize_with_fallback(b"\x00" * 1000)
+
+        # Повтора не было — квоту ретраить бессмысленно.
+        assert provider.transcribe.call_count == 1
+        # И TTL длинный: через 30с (транзиентный порог) всё ещё мёртв.
+        assert node._provider_dead_cache.remaining_s("minimax") > 100
+
+    def test_yandex_network_error_gets_short_ttl(self, stt_node):
+        """UNAVAILABLE (на роботе — нет IPv6-маршрута) = транзиентный."""
+        node = self._chain(stt_node)
+        node.minimax_stt_enabled = False
+        node.yandex_max_retries = 0
+        node._recognize_yandex = MagicMock(
+            side_effect=RuntimeError("failed to connect to all addresses")
+        )
+
+        node._recognize_with_fallback(b"\x00" * 1000)
+
+        remaining = node._provider_dead_cache.remaining_s("yandex")
+        assert 0 < remaining <= 30
+
+
+class TestGrpcErrorMapping:
+    """gRPC-код Yandex → типизированная ошибка (для кэша «мёртвых»)."""
+
+    @staticmethod
+    def _rpc_error(code, details="boom"):
+        """Заглушка gRPC-ошибки.
+
+        ``spec=grpc.RpcError`` здесь не годится: в этом модуле ``grpc``
+        подменён моком (как и rclpy), а замокать мок нельзя.
+        ``_map_grpc_error`` смотрит только на ``code()``/``details()``.
+        """
+
+        class _Err(Exception):
+            def code(self):
+                return code
+
+            def details(self):
+                return details
+
+        return _Err()
+
+    def test_deadline_exceeded_becomes_timeout(self):
+        import grpc as _grpc
+
+        from rob_box_voice.stt_node import _map_grpc_error
+
+        mapped = _map_grpc_error(
+            self._rpc_error(_grpc.StatusCode.DEADLINE_EXCEEDED), 12.0
+        )
+        assert isinstance(mapped, STTTimeoutError)
+
+    def test_unauthenticated_becomes_auth_error(self):
+        import grpc as _grpc
+
+        from rob_box_voice.stt_node import _map_grpc_error
+
+        mapped = _map_grpc_error(
+            self._rpc_error(_grpc.StatusCode.UNAUTHENTICATED), 12.0
+        )
+        assert isinstance(mapped, STTAuthError)
+
+    def test_resource_exhausted_becomes_quota_error(self):
+        import grpc as _grpc
+
+        from rob_box_voice.stt_node import _map_grpc_error
+
+        mapped = _map_grpc_error(
+            self._rpc_error(_grpc.StatusCode.RESOURCE_EXHAUSTED), 12.0
+        )
+        assert isinstance(mapped, STTQuotaError)
+
+    def test_unavailable_is_passed_through_as_transient(self):
+        """«Network is unreachable» — сеть, а не деньги: короткий TTL."""
+        import grpc as _grpc
+
+        from rob_box_voice.stt_node import _map_grpc_error
+
+        original = self._rpc_error(
+            _grpc.StatusCode.UNAVAILABLE, "Network is unreachable"
+        )
+        mapped = _map_grpc_error(original, 12.0)
+        assert mapped is original
