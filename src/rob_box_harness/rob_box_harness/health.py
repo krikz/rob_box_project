@@ -141,6 +141,23 @@ DEFAULT_HEALTH_TTL_S: float = 300.0
 #: enough to escape the provider.
 TRANSIENT_TTL_S: float = 30.0
 
+#: Per-provider TTL escalation ladder for repeated *transient* failures
+#: (issue #2718). A single 30 s blow-off is too short when the provider
+#: is actually dead (no quota, hung upstream) but still responding to
+#: each individual request after 20-30 s — the fallback chain would
+#: re-probe it after 30 s, burn another full timeout, switch again, and
+#: the user pays 30-60 s of latency per turn. The ladder escalates the
+#: "skip window" after each consecutive transient failure: the Nth
+#: failure in a row (N = 1-based index into this tuple) uses the Nth
+#: value; once N exceeds ``len(STEPS)-1``, we cap at the last value.
+#: Streak resets on the first successful call OR when the failure
+#: classifies as quota/auth (different failure class — not the same
+#: "the network is flaky" story).
+#:
+#: Mirrors the TTS-side ladder from PR #2712 (``_transient_ttl_for_streak``):
+#: same shape, same semantics, just owned by the LLM ``HealthCache``.
+TRANSIENT_TTL_STEPS: tuple[float, ...] = (30.0, 120.0, 300.0)
+
 #: Substrings in the MiniMax error message that identify a quota /
 #: balance exhaustion (a *long* usage window, NOT a one-minute burst).
 #: ``2056`` = Token Plan usage limit reached; ``1008`` = insufficient
@@ -230,6 +247,14 @@ class HealthCache:
     ) -> None:
         self.ttl_s = ttl_s
         self._records: dict[str, HealthRecord] = {}
+        # Per-provider count of CONSECUTIVE transient failures. Issue #2718:
+        # a single 30 s skip is too short when a provider is *consistently*
+        # dead — we escalate the TTL on each additional blow-off so the
+        # fallback chain doesn't keep paying the full per-request timeout.
+        # Reset by ``reset_transient_streak`` on the first success / quota /
+        # auth classification. Never persisted to disk: a process restart
+        # already gives the provider a fresh shot.
+        self._transient_streak: dict[str, int] = {}
         self._lock = threading.Lock()
         self._persist_path = Path(persist_path) if persist_path else None
         self._clock = clock
@@ -293,6 +318,59 @@ class HealthCache:
             ttl_s=self.ttl_s if ttl_s is None else ttl_s,
         )
         return self._store(rec)
+
+    # ---- transient-failure streak (issue #2718) -----------------------
+
+    def note_transient_failure(self, provider: str) -> int:
+        """Increment the consecutive-transient-failure counter.
+
+        Returns the NEW streak length (so callers can log / choose the
+        right TTL step). A first-time failure returns 1.
+
+        Called by :class:`HealthAwareFallbackLLM` every time a provider
+        blows up with a *transient* error (rate-limit / timeout). The
+        wrapper then asks :meth:`transient_ttl_for_streak` what TTL to
+        apply.
+        """
+        with self._lock:
+            n = self._transient_streak.get(provider, 0) + 1
+            self._transient_streak[provider] = n
+            return n
+
+    def reset_transient_streak(self, provider: str) -> None:
+        """Clear the consecutive-transient-failure counter.
+
+        Called on the first successful call after a streak, AND when a
+        failure classifies as quota / auth (different failure class —
+        the streak of "the network is flaky" doesn't apply to a hard
+        2056 quota exhaustion).
+        """
+        with self._lock:
+            self._transient_streak.pop(provider, None)
+
+    def transient_streak(self, provider: str) -> int:
+        """Current consecutive-transient-failure count (0 if none)."""
+        with self._lock:
+            return self._transient_streak.get(provider, 0)
+
+    def transient_ttl_for_streak(
+        self, provider: str, *, base: float | None = None
+    ) -> float:
+        """Pick the right transient TTL based on the current streak.
+
+        ``base`` is the floor: the result is at least ``base`` (or
+        :data:`TRANSIENT_TTL_S` when ``base`` is ``None``). The ladder
+        in :data:`TRANSIENT_TTL_STEPS` escalates from there on
+        consecutive failures; once the streak exceeds the ladder length,
+        we cap at the last step (no further escalation — there's no
+        evidence a longer skip would help).
+        """
+        n = self.transient_streak(provider)
+        steps = TRANSIENT_TTL_STEPS
+        if n <= 0:
+            return base if base is not None else TRANSIENT_TTL_S
+        idx = min(n - 1, len(steps) - 1)
+        return steps[idx]
 
     # ---- persistence ---------------------------------------------------
 
@@ -635,6 +713,11 @@ class HealthAwareFallbackLLM(LLMProvider):  # type: ignore[misc]
     ) -> None:
         """Actual failure classification (split for try/except safety)."""
         if is_quota_exhausted(exc):
+            # Quota/auth are different failure CLASSES from a flaky
+            # network — a streak of "transient timeouts" does not
+            # apply. Reset the streak so the next genuine transient
+            # failure starts counting from zero.
+            self._cache.reset_transient_streak(name)
             self._cache.mark_unavailable(
                 name, reason=str(exc)[:300], ttl_s=self._cache.ttl_s
             )
@@ -645,6 +728,7 @@ class HealthAwareFallbackLLM(LLMProvider):  # type: ignore[misc]
                 self._cache.ttl_s,
             )
         elif is_auth_failure(exc):
+            self._cache.reset_transient_streak(name)
             self._cache.mark_unavailable(
                 name, reason=f"auth: {exc}"[:300], ttl_s=self._cache.ttl_s
             )
@@ -656,26 +740,41 @@ class HealthAwareFallbackLLM(LLMProvider):  # type: ignore[misc]
                 self._cache.ttl_s,
             )
         elif isinstance(exc, (RateLimitError, LLMTimeoutError)):
+            # Issue #2718: per-provider transient TTL escalation.
+            # The first blow-off uses TRANSIENT_TTL_S (30 s); consecutive
+            # blow-offs escalate through TRANSIENT_TTL_STEPS so we don't
+            # burn another full per-request timeout on a provider that's
+            # clearly dead (e.g. MiniMax hanging for 30 s on each chunk).
+            new_streak = self._cache.note_transient_failure(name)
+            ttl = self._cache.transient_ttl_for_streak(name)
             self._cache.mark_unavailable(
-                name, reason=str(exc)[:300], ttl_s=TRANSIENT_TTL_S
+                name, reason=str(exc)[:300], ttl_s=ttl
             )
             self._log.warning(
-                "[health] provider=%s transient error (%s) → short unavailable (TTL %.0fs)",
+                "[health] provider=%s transient error (%s) → short unavailable "
+                "(streak=%d TTL %.0fs)",
                 name,
                 exc,
-                TRANSIENT_TTL_S,
+                new_streak,
+                ttl,
             )
             # 🔴 FIX (issue #1082 follow-up): метрика переключения на
             # fallback-провайдера из-за per-request 429 rate-limit (НЕ
             # quota) — по аналогии с [stt_attempt_metric] из #1083.
             # Single-string f-string: RcutilsLogger не принимает
-            # %s-аргументы.
+            # %s-аргументы. Streak+TTL добавлены (issue #2718) для
+            # диагностики «сколько уже раз обожглись на этом провайдере».
             self._log.info(
                 f"[llm_fallback_metric] provider={name} "
                 f"reason={'rate_limit' if isinstance(exc, RateLimitError) else 'timeout'} "
-                f"action=fallback ttl_s={TRANSIENT_TTL_S:.0f}"
+                f"action=fallback streak={new_streak} ttl_s={ttl:.0f}"
             )
         else:
+            # Unclassified failures don't bump the transient streak either
+            # — we don't know that they're "the network is flaky", and the
+            # next transient failure (if any) should still start counting
+            # from zero so we don't conflate error classes.
+            self._cache.reset_transient_streak(name)
             self._log.warning(
                 "[health] provider=%s UNCLASSIFIED failure [%s: %s] — пробуем следующий",
                 name,
@@ -717,6 +816,12 @@ class HealthAwareFallbackLLM(LLMProvider):  # type: ignore[misc]
                 result = await provider.complete(
                     messages, tools=tools, settings=provider_settings
                 )
+                # Issue #2718: a successful call cancels any in-flight
+                # transient-failure streak for this provider. (Quota /
+                # auth resets happen inside ``_handle_failure`` on a
+                # *different* failure class, so they don't touch the
+                # counter we're clearing here.)
+                self._cache.reset_transient_streak(name)
                 self._log.info("[health] ← answered by provider=%s", name)
                 return result
             except Exception as exc:  # noqa: BLE001 — any provider error ⇒ next
@@ -763,6 +868,10 @@ class HealthAwareFallbackLLM(LLMProvider):  # type: ignore[misc]
                     messages, tools=tools, settings=provider_settings
                 ):
                     yield chunk
+                # Issue #2718: same as ``complete`` — the stream
+                # completed without an error, so any transient-failure
+                # streak for this provider is cleared.
+                self._cache.reset_transient_streak(name)
                 self._log.info("[health] ← stream finished by provider=%s", name)
                 return
             except Exception as exc:  # noqa: BLE001 — any provider error ⇒ next
@@ -814,5 +923,6 @@ __all__ = [
     "is_auth_failure",
     "DEFAULT_HEALTH_TTL_S",
     "TRANSIENT_TTL_S",
+    "TRANSIENT_TTL_STEPS",
     "QUOTA_EXHAUSTED_HINTS",
 ]

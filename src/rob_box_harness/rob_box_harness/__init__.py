@@ -106,6 +106,7 @@ from rob_box_harness.health import (
     HealthRecord,
     ProviderStatus,
     TRANSIENT_TTL_S,
+    TRANSIENT_TTL_STEPS,
     check_deepseek_balance,
     is_auth_failure,
     is_quota_exhausted,
@@ -190,6 +191,7 @@ __all__ = [
     "is_auth_failure",
     "DEFAULT_HEALTH_TTL_S",
     "TRANSIENT_TTL_S",
+    "TRANSIENT_TTL_STEPS",
     # Errors
     "HarnessError",
     "ConfigError",
