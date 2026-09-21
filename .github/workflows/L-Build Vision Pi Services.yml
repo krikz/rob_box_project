@@ -33,10 +33,33 @@ jobs:
     runs-on: [self-hosted, rob-box]
     outputs:
       docker_tag: ${{ steps.set-config.outputs.docker_tag }}
+      # Состав сборки — данные (docker/build-manifest.yaml), а не текст этого
+      # файла (план §5 Phase 2): matrix — независимые сервисы, chained —
+      # участники графа зависимостей по именам, services — все сервисы Pi.
+      matrix: ${{ steps.gen-matrix.outputs.matrix }}
+      chained: ${{ steps.gen-matrix.outputs.chained }}
+      services: ${{ steps.gen-matrix.outputs.services }}
     steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
+      - name: Checkout repository
+        # Нужен только ради scripts/ci/gen_build_matrix.py и
+        # docker/build-manifest.yaml — субмодули здесь не требуются
+        # (как в update-image-versions).
+        uses: actions/checkout@v7
+        with:
+          submodules: false
+          clean: true
+
       - name: Set build configuration
         id: set-config
         run: |
+          # shellcheck disable=SC1083  # z-{e2e}/* и z-{agent}/* — фигурные скобки
+          # здесь ЛИТЕРАЛЬНЫЕ символы паттерна bash, не подстановка (см. ниже).
           # Issue #1041: на refs/tags/vX.Y.Z... strip refs/heads/ даёт refs/tags/v...,
           # что не матчит ни одну ветку — попадает в else → DOCKER_TAG=local,
           # а файла docker/vision/.image-versions.local не существует.
@@ -75,28 +98,94 @@ jobs:
               DOCKER_TAG="local"
             fi
           fi
-          echo "docker_tag=${DOCKER_TAG}" >> $GITHUB_OUTPUT
+          echo "docker_tag=${DOCKER_TAG}" >> "$GITHUB_OUTPUT"
           echo "Docker Tag: $DOCKER_TAG"
 
-  # Параллельная сборка всех сервисов Vision Pi (до 8 одновременно)
-# Issue #2280 (arch review 2026-09-09, кандидат 4): buildx-сборка вынесена
-  # в composite action ./.github/actions/l-build-service (см. action.yml).
-  # ВАЖНО (fix run #34366133083): composite — buildx-only. GitHub требует,
-  # чтобы репозиторий был зачекаутен ДО вызова локального composite action
-  # (иначе раннер не найдёт action.yml → "Did you forget to run
-  # actions/checkout"). Поэтому каждый build-job начинается с clean-stale
-  # submodules + checkout (как и до рефакторинга), затем опциональный
-  # pre-step для специфичных cache-invalidation хешей (SOURCE_HASH —
-  # per-job, зависит от сервиса) и уже потом composite-call. Внутри
-  # composite: buildx --load (образ в daemon — нужен update-image-versions)
-  # + docker push ТОЛЬКО локального registry. GHCR не пушим на локальных
-  # test/dev сборках (runner не залогинен в ghcr.io, issue #1503; buildx
-  # --push по GHCR-тегу падал unauthorized — run #34368750126).
-  # См. acceptance #2280.
+      - name: Ensure PyYAML (зависимость scripts/ci/gen_build_matrix.py)
+        # Генератор читает YAML-манифест. На self-hosted раннере PyYAML обычно
+        # стоит системным пакетом; если нет — ставим в --user и ФЕЙЛИМ шаг,
+        # если и это не вышло. Молчаливый фолбэк здесь недопустим: пустая
+        # matrix означала бы "собрано 0 сервисов" при зелёном workflow.
+        run: |
+          python3 -c "import yaml" 2>/dev/null && exit 0
+          python3 -m pip install --quiet --no-cache-dir --user pyyaml \
+            || python3 -m pip install --quiet --no-cache-dir --user --break-system-packages pyyaml \
+            || true
+          python3 -c "import yaml; print('PyYAML', yaml.__version__)"
 
-  build-oak-d:
+      - name: Generate build matrix from docker/build-manifest.yaml
+        # docs/plans/2026-09-15-service-manifest.md §5 Phase 2. Состав сборки,
+        # пути к Dockerfile'ам, формула тега и build-args больше НЕ живут в
+        # тексте этого файла — они вычисляются из манифеста. Единственное
+        # место правки при добавлении/удалении сервиса — docker/build-manifest.yaml
+        # (guard scripts/ci/tests/test_service_manifest_sync.py следит, что
+        # workflow действительно читает манифест, а не копию списка).
+        id: gen-matrix
+        env:
+          DOCKER_TAG: ${{ steps.set-config.outputs.docker_tag }}
+        run: |
+          GEN=(python3 scripts/ci/gen_build_matrix.py
+            --manifest docker/build-manifest.yaml
+            --pi vision
+            --docker-tag "$DOCKER_TAG"
+            --ros-distro "$ROS_DISTRO"
+            --image-prefix "$IMAGE_PREFIX"
+            --local-prefix "$LOCAL_PREFIX")
+          MATRIX="$("${GEN[@]}" --mode matrix)"
+          CHAINED="$("${GEN[@]}" --mode chained)"
+          SERVICES="$("${GEN[@]}" --mode services --format shell)"
+          {
+            echo "matrix=${MATRIX}"
+            echo "chained=${CHAINED}"
+            echo "services=${SERVICES}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Docker Tag:        ${DOCKER_TAG}"
+          echo "Manifest services: ${SERVICES}"
+          echo "Matrix JSON:       ${MATRIX}"
+          echo "Chained JSON:      ${CHAINED}"
+
+  # ======================================================================
+  # Сборка сервисов Vision Pi. Состав, Dockerfile'ы, build-args и формула тега —
+  # docker/build-manifest.yaml (docs/plans/2026-09-15-service-manifest.md,
+  # Phase 2). Списка сервисов в этом файле больше НЕТ: 8 независимых собираются
+  # одной matrix-job из fromJSON(needs.prepare.outputs.matrix), а три участника
+  # цепочки voice-base → voice-assistant → supervisor остаются ИМЕНОВАННЫМИ
+  # job'ами — `needs:` ссылается на job ID и не умеет ссылаться на элемент
+  # матрицы (план §3.1), поэтому цель ребра обязана быть отдельным job'ом.
+  # Тело у всех четырёх job'ов — один и тот же шаблон шагов, отличается только
+  # источник данных матрицы (guard сверяет их пошагово).
+  #
+  # Issue #2280: buildx-сборка — в composite ./.github/actions/l-build-service.
+  # ВАЖНО (fix run #34366133083): composite — buildx-only, GitHub требует
+  # checkout ДО вызова локального action (иначе "Did you forget to run
+  # actions/checkout"). Поэтому каждый build-job: clean-stale + checkout →
+  # опциональные pre-step'ы (source-hash, pre_build-хук) → composite. Внутри
+  # composite: buildx --load (образ в daemon — нужен update-image-versions) +
+  # docker push ТОЛЬКО локального registry; GHCR не пушим (issue #1503,
+  # run #34368750126).
+  #
+  # Заметки по сервисам, пережившие переход на matrix (раньше — комментарии
+  # над своими job'ами):
+  #   quest         — Phase 1.6 / ADR-0027: WebXR-консоль Meta Quest. ARCH-quest
+  #                   (#2278): наследует rob_box_base:ros2-zenoh, НЕ voice-assistant.
+  #   vision-hailo  — ADR-0089 Phase 1 (#2349): AI HAT+ 26 TOPS inference поверх
+  #                   ros2-zenoh; hailort-wheel приносит pre_build-хук.
+  #   supercollider — тег БЕЗ ROS_DISTRO ("tag naming is inconsistent"),
+  #                   в манифесте это tag.ros_distro: false.
+  # ======================================================================
+
+  build:
+    name: build-${{ matrix.name }}
     needs: prepare
     runs-on: [self-hosted, rob-box]
+    strategy:
+      # fail-fast: false — воспроизводим прежнее поведение 1:1: до Phase 2
+      # каждый сервис был отдельным job'ом, и падение одного НЕ отменяло
+      # остальные. С дефолтным fail-fast: true первый упавший сервис
+      # отменял бы ещё не закончившиеся — это было бы изменением поведения.
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     steps:
       - name: Clean stale submodules
         run: |
@@ -110,164 +199,51 @@ jobs:
           submodules: recursive
           clean: true
 
-      - name: Build oak-d
-        uses: ./.github/actions/l-build-service
-        with:
-          service-name: oak-d
-          dockerfile-path: docker/vision/oak-d/Dockerfile
-          build-context: docker/vision
-          tags: |
-            ${{ env.IMAGE_PREFIX }}:oak-d-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
-            ${{ env.LOCAL_PREFIX }}:oak-d-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
-          build-args: |
-            BASE_IMAGE=localhost:5000/krikz/rob_box_base:depthai-${{ env.ROS_DISTRO }}
-            APT_PROXY=http://host.docker.internal:3142
-
-  build-led-matrix:
-    needs: prepare
-    runs-on: [self-hosted, rob-box]
-    steps:
-      - name: Clean stale submodules
-        run: |
-          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
-          git sparse-checkout disable 2>/dev/null || true
-          git checkout --force HEAD 2>/dev/null || true
-
-      - name: Checkout repository
-        uses: actions/checkout@v7
-        with:
-          submodules: recursive
-          clean: true
-
-      - name: Build led-matrix
-        uses: ./.github/actions/l-build-service
-        with:
-          service-name: led-matrix
-          dockerfile-path: docker/vision/led_matrix/Dockerfile
-          build-context: '.'
-          tags: |
-            ${{ env.IMAGE_PREFIX }}:led-matrix-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
-            ${{ env.LOCAL_PREFIX }}:led-matrix-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
-          # ros2leds submodule → composite action сам посчитает SHA и
-          # подмешает ROS2LEDS_SHA=<sha> для Dockerfile cache invalidation.
-          compute-submodule-sha: src/ros2leds
-          build-args: |
-            BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh-${{ env.ROS_DISTRO }}
-            APT_PROXY=http://host.docker.internal:3142
-
-  build-ceiling-camera:
-    needs: prepare
-    runs-on: [self-hosted, rob-box]
-    steps:
-      - name: Clean stale submodules
-        run: |
-          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
-          git sparse-checkout disable 2>/dev/null || true
-          git checkout --force HEAD 2>/dev/null || true
-
-      - name: Checkout repository
-        uses: actions/checkout@v7
-        with:
-          submodules: recursive
-          clean: true
-
-      - name: Build ceiling-camera
-        uses: ./.github/actions/l-build-service
-        with:
-          service-name: ceiling-camera
-          dockerfile-path: docker/vision/ceiling-camera/Dockerfile
-          build-context: docker/vision
-          tags: |
-            ${{ env.IMAGE_PREFIX }}:ceiling-camera-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
-            ${{ env.LOCAL_PREFIX }}:ceiling-camera-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
-          build-args: |
-            BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh-${{ env.ROS_DISTRO }}
-            APT_PROXY=http://host.docker.internal:3142
-
-  build-voice-assistant:
-    needs: [prepare, build-voice-base]
-    runs-on: [self-hosted, rob-box]
-    steps:
-      - name: Clean stale submodules
-        run: |
-          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
-          git sparse-checkout disable 2>/dev/null || true
-          git checkout --force HEAD 2>/dev/null || true
-
-      - name: Checkout repository
-        uses: actions/checkout@v7
-        with:
-          submodules: recursive
-          clean: true
-
-      - name: Compute Python sources hash (cache invalidation)
-        # Per-service hash: rob_box_voice + rob_box_animations (точные пути
-        # зависят от сервиса — supervisor берёт rob_box_supervisor, quest
-        # добавляет webxr_client). Считаем здесь, передаём через build-args.
-        #
-        # Issue #2314 (devops): регрессия avatar_command повторялась потому,
-        # SOURCE_HASH не покрывал src/rob_box_core, а voice_assistant/Dockerfile
-        # делает `COPY src/rob_box_core/rob_box_core /ws/src/.../rob_box_core`.
-        # Когда в rob_box_core добавляется новый модуль (avatar_command.py
-        # добавлен 02.09.2026 в 824f3e34, мерж в 4386bb92), слой COPY
-        # не инвалидируется → buildx переиспользует старый слой →
-        # avatar_command.py не попадает в image → ModuleNotFoundError
-        # на старте quest_node (restart loop на Vision Pi).
-        # Лечение: включаем src/rob_box_core в SOURCE_HASH. rob_box_voice
-        # импортирует rob_box_core (dialogue_node.py), avatar_command
-        # handlers — добавление rob_box_core в hash обязательно.
+      - name: Compute sources hash (cache invalidation)
+        # Пути/расширения — из docker/build-manifest.yaml (source_hash.groups),
+        # формула — scripts/ci/source_hash.sh (одна на все сервисы, побайтово
+        # та же, что была в шести скопированных pre-step'ах; issue #2314).
         id: source-hash
+        if: matrix.source_hash_arg != ''
+        env:
+          SOURCE_HASH_ARG: ${{ matrix.source_hash_arg }}
+          SOURCE_HASH_SPEC: ${{ matrix.source_hash_spec }}
         run: |
-          SOURCE_HASH=$(find src/rob_box_voice/rob_box_voice src/rob_box_animations/rob_box_animations src/rob_box_core \
-            -type f -name "*.py" 2>/dev/null | sort | xargs sha256sum | sha256sum | awk '{print $1}')
-          echo "source_hash=${SOURCE_HASH}" >> "$GITHUB_OUTPUT"
+          HASH="$(bash scripts/ci/source_hash.sh "$SOURCE_HASH_SPEC")"
+          echo "  ${SOURCE_HASH_ARG}=${HASH}"
+          echo "build_arg=${SOURCE_HASH_ARG}=${HASH}" >> "$GITHUB_OUTPUT"
 
-      - name: Build voice-assistant
+      - name: Run pre_build hook ${{ matrix.pre_build }}
+        # План §2.5: манифест хранит только ФАКТ наличия хука, логика — код
+        # (scripts/ci/fetch_hailort_wheel.sh), а не данные.
+        if: matrix.pre_build == 'fetch_hailort_wheel'
+        run: bash scripts/ci/fetch_hailort_wheel.sh
+
+      - name: Build ${{ matrix.name }}
         uses: ./.github/actions/l-build-service
         with:
-          service-name: voice-assistant
-          dockerfile-path: docker/vision/voice_assistant/Dockerfile
-          build-context: '.'
+          service-name: ${{ matrix.name }}
+          dockerfile-path: ${{ matrix.dockerfile }}
+          build-context: ${{ matrix.build_context }}
+          compute-submodule-sha: ${{ matrix.submodule_sha }}
           tags: |
-            ${{ env.IMAGE_PREFIX }}:voice-assistant-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
-            ${{ env.LOCAL_PREFIX }}:voice-assistant-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
+            ${{ matrix.tags }}
           build-args: |
-            BASE_IMAGE=${{ env.LOCAL_PREFIX }}:voice-base-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
-            APT_PROXY=http://host.docker.internal:3142
-            SOURCE_HASH=${{ steps.source-hash.outputs.source_hash }}
-
-  build-voice-resources:
-    needs: prepare
-    runs-on: [self-hosted, rob-box]
-    steps:
-      - name: Clean stale submodules
-        run: |
-          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
-          git sparse-checkout disable 2>/dev/null || true
-          git checkout --force HEAD 2>/dev/null || true
-
-      - name: Checkout repository
-        uses: actions/checkout@v7
-        with:
-          submodules: recursive
-          clean: true
-
-      - name: Build voice-resources
-        uses: ./.github/actions/l-build-service
-        with:
-          service-name: voice-resources
-          dockerfile-path: docker/vision/voice_resources/Dockerfile
-          build-context: docker/vision
-          tags: |
-            ${{ env.IMAGE_PREFIX }}:voice-resources-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
-            ${{ env.LOCAL_PREFIX }}:voice-resources-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
-          # voice-resources не зависит от BASE_IMAGE (нет --build-arg BASE_IMAGE)
-          build-args: |
-            APT_PROXY=http://host.docker.internal:3142
+            ${{ matrix.build_args }}
+            ${{ steps.source-hash.outputs.build_arg }}
 
   build-voice-base:
+    name: build-${{ matrix.name }}
     needs: prepare
     runs-on: [self-hosted, rob-box]
+    strategy:
+      fail-fast: false
+      matrix:
+        # Тот же шаблон, что у общего matrix-job'а, но с одним элементом —
+        # своим. Обращение по ИМЕНИ, а не по индексу списка: индекс поехал
+        # бы при добавлении сервиса в цепочку, и job молча собрал бы чужой
+        # сервис (план §5 Phase 2 п.3 требует дословно тот же шаблон).
+        include: "${{ fromJSON(needs.prepare.outputs.chained)['voice-base'] }}"
     steps:
       - name: Clean stale submodules
         run: |
@@ -281,63 +257,51 @@ jobs:
           submodules: recursive
           clean: true
 
-      - name: Build voice-base
-        uses: ./.github/actions/l-build-service
-        with:
-          service-name: voice-base
-          dockerfile-path: docker/vision/voice_base/Dockerfile
-          build-context: docker/vision/voice_base
-          tags: |
-            ${{ env.IMAGE_PREFIX }}:voice-base-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
-            ${{ env.LOCAL_PREFIX }}:voice-base-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
-          build-args: |
-            BASE_IMAGE=localhost:5000/krikz/rob_box_base:rtabmap-${{ env.ROS_DISTRO }}
-            APT_PROXY=http://host.docker.internal:3142
-
-  build-telegram-bot:
-    needs: prepare
-    runs-on: [self-hosted, rob-box]
-    steps:
-      - name: Clean stale submodules
-        run: |
-          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
-          git sparse-checkout disable 2>/dev/null || true
-          git checkout --force HEAD 2>/dev/null || true
-
-      - name: Checkout repository
-        uses: actions/checkout@v7
-        with:
-          submodules: recursive
-          clean: true
-
-      - name: Compute Python sources hash (cache invalidation)
-        # Issue #2314: telegram_node.py импортирует rob_box_core
-        # (AV-22 handlers) — добавляем rob_box_core в SOURCE_HASH, чтобы
-        # изменения в rob_box_core (avatar_command и др.) инвалидировали
-        # слой COPY в telegram-bot/Dockerfile.
+      - name: Compute sources hash (cache invalidation)
+        # Пути/расширения — из docker/build-manifest.yaml (source_hash.groups),
+        # формула — scripts/ci/source_hash.sh (одна на все сервисы, побайтово
+        # та же, что была в шести скопированных pre-step'ах; issue #2314).
         id: source-hash
+        if: matrix.source_hash_arg != ''
+        env:
+          SOURCE_HASH_ARG: ${{ matrix.source_hash_arg }}
+          SOURCE_HASH_SPEC: ${{ matrix.source_hash_spec }}
         run: |
-          SOURCE_HASH=$(find src/rob_box_telegram/rob_box_telegram src/rob_box_core -type f -name "*.py" 2>/dev/null \
-            | sort | xargs sha256sum | sha256sum | awk '{print $1}')
-          echo "source_hash=${SOURCE_HASH}" >> "$GITHUB_OUTPUT"
+          HASH="$(bash scripts/ci/source_hash.sh "$SOURCE_HASH_SPEC")"
+          echo "  ${SOURCE_HASH_ARG}=${HASH}"
+          echo "build_arg=${SOURCE_HASH_ARG}=${HASH}" >> "$GITHUB_OUTPUT"
 
-      - name: Build telegram-bot
+      - name: Run pre_build hook ${{ matrix.pre_build }}
+        # План §2.5: манифест хранит только ФАКТ наличия хука, логика — код
+        # (scripts/ci/fetch_hailort_wheel.sh), а не данные.
+        if: matrix.pre_build == 'fetch_hailort_wheel'
+        run: bash scripts/ci/fetch_hailort_wheel.sh
+
+      - name: Build ${{ matrix.name }}
         uses: ./.github/actions/l-build-service
         with:
-          service-name: telegram-bot
-          dockerfile-path: docker/vision/telegram_bot/Dockerfile
-          build-context: '.'
+          service-name: ${{ matrix.name }}
+          dockerfile-path: ${{ matrix.dockerfile }}
+          build-context: ${{ matrix.build_context }}
+          compute-submodule-sha: ${{ matrix.submodule_sha }}
           tags: |
-            ${{ env.IMAGE_PREFIX }}:telegram-bot-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
-            ${{ env.LOCAL_PREFIX }}:telegram-bot-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
+            ${{ matrix.tags }}
           build-args: |
-            BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh-${{ env.ROS_DISTRO }}
-            APT_PROXY=http://host.docker.internal:3142
-            SOURCE_HASH=${{ steps.source-hash.outputs.source_hash }}
+            ${{ matrix.build_args }}
+            ${{ steps.source-hash.outputs.build_arg }}
 
-  build-supercollider:
-    needs: prepare
+  build-voice-assistant:
+    name: build-${{ matrix.name }}
+    needs: [prepare, build-voice-base]
     runs-on: [self-hosted, rob-box]
+    strategy:
+      fail-fast: false
+      matrix:
+        # Тот же шаблон, что у общего matrix-job'а, но с одним элементом —
+        # своим. Обращение по ИМЕНИ, а не по индексу списка: индекс поехал
+        # бы при добавлении сервиса в цепочку, и job молча собрал бы чужой
+        # сервис (план §5 Phase 2 п.3 требует дословно тот же шаблон).
+        include: "${{ fromJSON(needs.prepare.outputs.chained)['voice-assistant'] }}"
     steps:
       - name: Clean stale submodules
         run: |
@@ -351,37 +315,58 @@ jobs:
           submodules: recursive
           clean: true
 
-      - name: Build supercollider
+      - name: Compute sources hash (cache invalidation)
+        # Пути/расширения — из docker/build-manifest.yaml (source_hash.groups),
+        # формула — scripts/ci/source_hash.sh (одна на все сервисы, побайтово
+        # та же, что была в шести скопированных pre-step'ах; issue #2314).
+        id: source-hash
+        if: matrix.source_hash_arg != ''
+        env:
+          SOURCE_HASH_ARG: ${{ matrix.source_hash_arg }}
+          SOURCE_HASH_SPEC: ${{ matrix.source_hash_spec }}
+        run: |
+          HASH="$(bash scripts/ci/source_hash.sh "$SOURCE_HASH_SPEC")"
+          echo "  ${SOURCE_HASH_ARG}=${HASH}"
+          echo "build_arg=${SOURCE_HASH_ARG}=${HASH}" >> "$GITHUB_OUTPUT"
+
+      - name: Run pre_build hook ${{ matrix.pre_build }}
+        # План §2.5: манифест хранит только ФАКТ наличия хука, логика — код
+        # (scripts/ci/fetch_hailort_wheel.sh), а не данные.
+        if: matrix.pre_build == 'fetch_hailort_wheel'
+        run: bash scripts/ci/fetch_hailort_wheel.sh
+
+      - name: Build ${{ matrix.name }}
         uses: ./.github/actions/l-build-service
         with:
-          service-name: supercollider
-          # ⚠️ tag naming inconsistent: supercollider не использует ROS_DISTRO
-          # в теге (см. update-image-versions ниже — он исключён из SHA-push).
-          # Сохраняем прежнее поведение 1:1 (см. исходный build-supercollider).
-          dockerfile-path: docker/vision/supercollider/Dockerfile
-          build-context: docker/vision/supercollider
+          service-name: ${{ matrix.name }}
+          dockerfile-path: ${{ matrix.dockerfile }}
+          build-context: ${{ matrix.build_context }}
+          compute-submodule-sha: ${{ matrix.submodule_sha }}
           tags: |
-            ${{ env.IMAGE_PREFIX }}:supercollider-${{ needs.prepare.outputs.docker_tag }}
-            ${{ env.LOCAL_PREFIX }}:supercollider-${{ needs.prepare.outputs.docker_tag }}
+            ${{ matrix.tags }}
           build-args: |
-            APT_PROXY=http://host.docker.internal:3142
+            ${{ matrix.build_args }}
+            ${{ steps.source-hash.outputs.build_arg }}
 
-  # AV-9 (issue #1603): Avatar Supervisor (Phase 1 monitor).
-  # Dockerfile наследует voice-assistant image и пересобирает только
-  # rob_box_supervisor через `colcon build --packages-select` (минуты,
-  # не часы — pytorch/renardo не трогаем).
+  # AV-9 (issue #1603): Avatar Supervisor. Dockerfile наследует voice-assistant
+  # image и пересобирает только rob_box_supervisor.
+  # needs build-voice-assistant (не только prepare!): без этой зависимости
+  # supervisor может собраться раньше, чем voice-assistant допушит свежий
+  # образ → наследует СТАРЫЙ rob_box_core → ModuleNotFoundError (было с
+  # rob_box_core.utterance 09.09.2026, 10 минут гонки). Ровно поэтому цепочка
+  # voice-base → voice-assistant → supervisor не растворяется в общей matrix.
   build-supervisor:
-    # needs build-voice-assistant (не только prepare!): supervisor
-    # наследует BASE_IMAGE=...:voice-assistant-... из локального реестра
-    # (строка ниже). Без этой зависимости джобы гонятся параллельно, и
-    # supervisor может собраться раньше, чем voice-assistant допушит
-    # свежий образ — тогда supervisor наследует СТАРЫЙ rob_box_core и
-    # падает ModuleNotFoundError на любом новом модуле (было с
-    # rob_box_core.utterance 09.09.2026: build-supervisor захватил layers
-    # "already exists" в 10:56, build-voice-assistant допушил новое только
-    # в 11:06 — 10 минут гонки).
+    name: build-${{ matrix.name }}
     needs: [prepare, build-voice-assistant]
     runs-on: [self-hosted, rob-box]
+    strategy:
+      fail-fast: false
+      matrix:
+        # Тот же шаблон, что у общего matrix-job'а, но с одним элементом —
+        # своим. Обращение по ИМЕНИ, а не по индексу списка: индекс поехал
+        # бы при добавлении сервиса в цепочку, и job молча собрал бы чужой
+        # сервис (план §5 Phase 2 п.3 требует дословно тот же шаблон).
+        include: "${{ fromJSON(needs.prepare.outputs.chained)['supervisor'] }}"
     steps:
       - name: Clean stale submodules
         run: |
@@ -395,151 +380,44 @@ jobs:
           submodules: recursive
           clean: true
 
-      - name: Compute Python sources hash (cache invalidation)
-        # Issue #2314: supervisor_node.py импортирует rob_box_core
-        # (avatar_command handlers) — добавляем rob_box_core в SOURCE_HASH,
-        # иначе изменения в rob_box_core не инвалидируют COPY-слой в
-        # supervisor/Dockerfile (тот же класс багов, что с voice-assistant).
+      - name: Compute sources hash (cache invalidation)
+        # Пути/расширения — из docker/build-manifest.yaml (source_hash.groups),
+        # формула — scripts/ci/source_hash.sh (одна на все сервисы, побайтово
+        # та же, что была в шести скопированных pre-step'ах; issue #2314).
         id: source-hash
+        if: matrix.source_hash_arg != ''
+        env:
+          SOURCE_HASH_ARG: ${{ matrix.source_hash_arg }}
+          SOURCE_HASH_SPEC: ${{ matrix.source_hash_spec }}
         run: |
-          SOURCE_HASH=$(find src/rob_box_supervisor/rob_box_supervisor src/rob_box_core -type f -name "*.py" 2>/dev/null \
-            | sort | xargs sha256sum | sha256sum | awk '{print $1}')
-          echo "source_hash=${SOURCE_HASH}" >> "$GITHUB_OUTPUT"
+          HASH="$(bash scripts/ci/source_hash.sh "$SOURCE_HASH_SPEC")"
+          echo "  ${SOURCE_HASH_ARG}=${HASH}"
+          echo "build_arg=${SOURCE_HASH_ARG}=${HASH}" >> "$GITHUB_OUTPUT"
 
-      - name: Build supervisor
+      - name: Run pre_build hook ${{ matrix.pre_build }}
+        # План §2.5: манифест хранит только ФАКТ наличия хука, логика — код
+        # (scripts/ci/fetch_hailort_wheel.sh), а не данные.
+        if: matrix.pre_build == 'fetch_hailort_wheel'
+        run: bash scripts/ci/fetch_hailort_wheel.sh
+
+      - name: Build ${{ matrix.name }}
         uses: ./.github/actions/l-build-service
         with:
-          service-name: supervisor
-          dockerfile-path: docker/vision/supervisor/Dockerfile
-          build-context: '.'
+          service-name: ${{ matrix.name }}
+          dockerfile-path: ${{ matrix.dockerfile }}
+          build-context: ${{ matrix.build_context }}
+          compute-submodule-sha: ${{ matrix.submodule_sha }}
           tags: |
-            ${{ env.IMAGE_PREFIX }}:supervisor-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
-            ${{ env.LOCAL_PREFIX }}:supervisor-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
+            ${{ matrix.tags }}
           build-args: |
-            BASE_IMAGE=${{ env.LOCAL_PREFIX }}:voice-assistant-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
-            APT_PROXY=http://host.docker.internal:3142
-            SOURCE_HASH=${{ steps.source-hash.outputs.source_hash }}
-
-  # Phase 1.6 (ADR-0027): Meta Quest WebXR-консоль — caddy:2-alpine +
-  # aiohttp WSS-сервер rob_box_quest. Не зависит от voice-assistant (нет
-  # pytorch/Renardo). Зависит от webxr_client/ (Phase 1.5) — build упадёт
-  # с понятной ошибкой если путь отсутствует (явный сигнал зависимости,
-  # не silent degradation).
-  build-quest:
-    needs: prepare
-    runs-on: [self-hosted, rob-box]
-    steps:
-      - name: Clean stale submodules
-        run: |
-          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
-          git sparse-checkout disable 2>/dev/null || true
-          git checkout --force HEAD 2>/dev/null || true
-
-      - name: Checkout repository
-        uses: actions/checkout@v7
-        with:
-          submodules: recursive
-          clean: true
-
-      - name: Compute Python + TS sources hash (cache invalidation)
-        # WebXR-клиент — TS/JSON/HTML, rob_box_quest — Python. ОБЕ
-        # директории должны быть в hash (иначе правка webxr_client не
-        # инвалидирует кэш → не пересоберёт образ). См. док по L-Build
-        # Single Service.yml (там тот же hash в job prepare).
-        # Issue #2314: добавляем src/rob_box_core — quest_node.py импортирует
-        # rob_box_core (avatar_command). Без этого изменения в rob_box_core
-        # не инвалидируют COPY-слой в quest/Dockerfile, avatar_command.py
-        # не попадает в image → ModuleNotFoundError на старте.
-        id: source-hash
-        run: |
-          SOURCE_HASH=$( (find src/rob_box_quest/rob_box_quest -type f -name "*.py"; \
-                          find src/rob_box_quest/webxr_client -type f \( -name "*.ts" -o -name "*.json" -o -name "*.html" \); \
-                          find src/rob_box_core -type f -name "*.py") \
-                        | sort | xargs sha256sum 2>/dev/null | sha256sum | awk '{print $1}')
-          echo "source_hash=${SOURCE_HASH}" >> "$GITHUB_OUTPUT"
-
-      - name: Build quest
-        uses: ./.github/actions/l-build-service
-        with:
-          service-name: quest
-          dockerfile-path: docker/vision/quest/Dockerfile
-          build-context: '.'
-          tags: |
-            ${{ env.IMAGE_PREFIX }}:quest-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
-            ${{ env.LOCAL_PREFIX }}:quest-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
-          build-args: |
-            APT_PROXY=http://host.docker.internal:3142
-            BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh-${{ env.ROS_DISTRO }}
-            SOURCE_HASH=${{ steps.source-hash.outputs.source_hash }}
-
-  # ADR-0089 Phase 1 (issue #2349): AI HAT+ 26 TOPS inference. Stub-режим —
-  # собирается поверх ros2-zenoh базы (НЕ voice-assistant: hailort/HEF ещё
-  # не ставим до Phase 1.5). Образ содержит rob_box_perception_msgs +
-  # rob_box_perception (vision_hailo console_script). См. Dockerfile.
-  build-vision-hailo:
-    needs: prepare
-    runs-on: [self-hosted, rob-box]
-    steps:
-      - name: Clean stale submodules
-        run: |
-          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
-          git sparse-checkout disable 2>/dev/null || true
-          git checkout --force HEAD 2>/dev/null || true
-
-      - name: Checkout repository
-        uses: actions/checkout@v7
-        with:
-          submodules: recursive
-          clean: true
-
-      - name: Compute Python sources hash (cache invalidation)
-        # vision-hailo/Dockerfile COPY'ит src/rob_box_perception +
-        # src/rob_box_perception_msgs (IDL). Оба пути в hash — иначе
-        # правка .msg/.py не инвалидирует COPY-слой → stale-образ
-        # (тот же класс багов, что issue #2314 для rob_box_core).
-        id: source-hash
-        run: |
-          SOURCE_HASH=$( (find src/rob_box_perception/rob_box_perception -type f \( -name "*.py" \); \
-                          find src/rob_box_perception_msgs -type f \( -name "*.msg" -o -name "CMakeLists.txt" -o -name "package.xml" \)) \
-                        | sort | xargs sha256sum 2>/dev/null | sha256sum | awk '{print $1}')
-          echo "source_hash=${SOURCE_HASH}" >> "$GITHUB_OUTPUT"
-
-      - name: Fetch HailoRT wheel + lib (ADR-0099 §2.2, Developer Zone artifact)
-        run: |
-          mkdir -p docker/vision/vision-hailo/wheels
-          # Канонично — /opt/rob_box/vendor. Fallback — /tmp (host /tmp проброшен
-          # в runner'ы как /tmp:/tmp). Нужны ОБА: wheel (python) + libhailort.so.
-          for f in hailort-4.24.0-cp310-cp310-linux_aarch64.whl libhailort.so.4.24.0; do
-            if [ -f "/opt/rob_box/vendor/${f}" ]; then
-              cp "/opt/rob_box/vendor/${f}" docker/vision/vision-hailo/wheels/
-            elif [ -f "/tmp/${f}" ]; then
-              cp "/tmp/${f}" docker/vision/vision-hailo/wheels/
-            else
-              echo "::error::${f} не найден ни в /opt/rob_box/vendor, ни в /tmp — real inference build невозможен" >&2
-              echo "::error::Это закрытый артефакт Hailo Developer Zone (нужен аккаунт), скриптом не качается." >&2
-              echo "::error::Что делать: docs/deployment/hailo-vendor-artifacts.md — §2 скачать, §3 извлечь .so из .deb, §4.1 положить в /opt/rob_box/vendor на этом build-хосте." >&2
-              exit 1
-            fi
-          done
-          ls -la docker/vision/vision-hailo/wheels/
-
-      - name: Build vision-hailo
-        uses: ./.github/actions/l-build-service
-        with:
-          service-name: vision-hailo
-          dockerfile-path: docker/vision/vision-hailo/Dockerfile
-          build-context: '.'
-          tags: |
-            ${{ env.IMAGE_PREFIX }}:vision-hailo-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
-            ${{ env.LOCAL_PREFIX }}:vision-hailo-${{ env.ROS_DISTRO }}-${{ needs.prepare.outputs.docker_tag }}
-          build-args: |
-            APT_PROXY=http://host.docker.internal:3142
-            BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh-${{ env.ROS_DISTRO }}
-            SOURCE_HASH=${{ steps.source-hash.outputs.source_hash }}
-            HAILO_INSTALL_BINDING=whl
+            ${{ matrix.build_args }}
+            ${{ steps.source-hash.outputs.build_arg }}
 
   update-image-versions:
-    needs: [prepare, build-oak-d, build-led-matrix, build-ceiling-camera, build-voice-base, build-voice-resources, build-voice-assistant, build-telegram-bot, build-supercollider, build-supervisor, build-quest, build-vision-hailo]
+    # needs: вместо списка сервисов — job'ы, которые их собирают: matrix-job
+    # `build` завершается только когда закончились ВСЕ его элементы, поэтому
+    # порядок гарантий тот же, что был при 11/8 отдельных job'ах.
+    needs: [prepare, build, build-voice-base, build-voice-assistant, build-supervisor]
     runs-on: [self-hosted, rob-box]
     if: success() && inputs.push_to_registry != false
     # Issue #t_dd49849b: 2.7h+ hang observed on concurrent runs (round-224+225+develop)
@@ -560,6 +438,14 @@ jobs:
           clean: true
           fetch-depth: 0
 
+      - name: Ensure PyYAML (зависимость scripts/ci/gen_build_matrix.py)
+        run: |
+          python3 -c "import yaml" 2>/dev/null && exit 0
+          python3 -m pip install --quiet --no-cache-dir --user pyyaml \
+            || python3 -m pip install --quiet --no-cache-dir --user --break-system-packages pyyaml \
+            || true
+          python3 -c "import yaml; print('PyYAML', yaml.__version__)"
+
       - name: Tag with SHA and update .image-versions
         # Bugfix issue #1482: вместо `git rev-parse --short HEAD` используем
         # `${GITHUB_SHA::7}` — это commit, который ТРИГГЕРНУЛ workflow run,
@@ -573,6 +459,28 @@ jobs:
           SHORT_SHA="${GITHUB_SHA::7}"
           NEW_TAG="${DOCKER_TAG}-${SHORT_SHA}"
 
+          # Какие образы получают SHA-тег и запись в .image-versions.* —
+          # docker/build-manifest.yaml (Phase 3 плана
+          # docs/plans/2026-09-15-service-manifest.md §5). Вывод: строка на
+          # сервис, "<ИМЯ_ПЕРЕМЕННОЙ> <тег без префикса реестра>".
+          # Сервисы с image_versions: false в манифест-описании сюда не
+          # попадают — это ровно прежние исключения этого job'а (в том числе
+          # тот, у которого тег не содержит ROS_DISTRO: "tag naming is
+          # inconsistent"; остальные три исключения Vision Pi остались без
+          # объяснения ещё до манифеста — план §11, открытый вопрос №1).
+          TAG_MAP="$(python3 scripts/ci/gen_build_matrix.py \
+            --manifest docker/build-manifest.yaml \
+            --pi vision \
+            --mode tags --format shell \
+            --docker-tag "$DOCKER_TAG" \
+            --ros-distro "$ROS_DISTRO")"
+          if [ -z "$TAG_MAP" ]; then
+            echo "::error::gen_build_matrix вернул пустой список тегов — нечего тегировать" >&2
+            exit 1
+          fi
+          echo "Теги из манифеста:"
+          echo "$TAG_MAP"
+
           # Tag and push SHA-immutable images to LOCAL registry only.
           # GHCR push убран — локальные develop/test сборки больше не публикуются
           # в ghcr.io (issue #1503 решён иначе: deploy читает из local registry
@@ -584,14 +492,10 @@ jobs:
             echo "✅ local  $LOCAL_SHA"
           }
 
-          tag_and_push "${LOCAL_PREFIX}:oak-d-${ROS_DISTRO}-${DOCKER_TAG}"
-          tag_and_push "${LOCAL_PREFIX}:led-matrix-${ROS_DISTRO}-${DOCKER_TAG}"
-          tag_and_push "${LOCAL_PREFIX}:ceiling-camera-${ROS_DISTRO}-${DOCKER_TAG}"
-          tag_and_push "${LOCAL_PREFIX}:voice-resources-${ROS_DISTRO}-${DOCKER_TAG}"
-          tag_and_push "${LOCAL_PREFIX}:voice-assistant-${ROS_DISTRO}-${DOCKER_TAG}"
-          tag_and_push "${LOCAL_PREFIX}:telegram-bot-${ROS_DISTRO}-${DOCKER_TAG}"
-          tag_and_push "${LOCAL_PREFIX}:vision-hailo-${ROS_DISTRO}-${DOCKER_TAG}"
-          # supercollider excluded: tag naming is inconsistent (no ROS_DISTRO prefix)
+          while read -r VERSION_VAR SERVICE_TAG; do
+            [ -z "$VERSION_VAR" ] && continue
+            tag_and_push "${LOCAL_PREFIX}:${SERVICE_TAG}"
+          done <<< "$TAG_MAP"
 
           # Acceptance B (#1482): verify voice-assistant SHA-image is actually
           # present in the local registry BEFORE writing it to .image-versions.
@@ -617,19 +521,16 @@ jobs:
           # Проверяем КАЖДЫЙ service-tag, который пишем в .image-versions. Если
           # хотя бы один отсутствует → fail job, чтобы мерж-гейт поймал проблему
           # ДО того, как deploy потянет stale-тег.
+          # Тот же набор тегов, что и у tag_and_push выше, плюс SHA-суффикс:
+          # SERVICE_TAG = "<сервис>-<ros_distro>-<docker_tag>",
+          # NEW_TAG     = "<docker_tag>-<short_sha>".
           VERIFY_FAILED=0
-          for SVC_TAG in \
-            "voice-assistant-${ROS_DISTRO}-${NEW_TAG}" \
-            "voice-resources-${ROS_DISTRO}-${NEW_TAG}" \
-            "telegram-bot-${ROS_DISTRO}-${NEW_TAG}" \
-            "oak-d-${ROS_DISTRO}-${NEW_TAG}" \
-            "led-matrix-${ROS_DISTRO}-${NEW_TAG}" \
-            "ceiling-camera-${ROS_DISTRO}-${NEW_TAG}" \
-            "vision-hailo-${ROS_DISTRO}-${NEW_TAG}"; do
-            if ! verify_in_registry "$SVC_TAG"; then
+          while read -r VERSION_VAR SERVICE_TAG; do
+            [ -z "$VERSION_VAR" ] && continue
+            if ! verify_in_registry "${SERVICE_TAG}-${SHORT_SHA}"; then
               VERIFY_FAILED=1
             fi
-          done
+          done <<< "$TAG_MAP"
           if [ "$VERIFY_FAILED" -eq 1 ]; then
             echo "❌ Registry verify failed для одного или нескольких SHA-тегов" >&2
             echo "   .image-versions.test НЕ будет обновлён (round останется на прежнем SHA)" >&2
@@ -639,16 +540,18 @@ jobs:
           # Update .image-versions file
           VERSIONS_FILE="docker/vision/.image-versions.${DOCKER_TAG}"
           if [ -f "$VERSIONS_FILE" ]; then
-            sed -i \
-              -e "s|^OAK_D_TAG=.*|OAK_D_TAG=${NEW_TAG}|" \
-              -e "s|^RTABMAP_SYNC_TAG=.*|RTABMAP_SYNC_TAG=${NEW_TAG}|" \
-              -e "s|^LED_MATRIX_TAG=.*|LED_MATRIX_TAG=${NEW_TAG}|" \
-              -e "s|^CEILING_CAMERA_TAG=.*|CEILING_CAMERA_TAG=${NEW_TAG}|" \
-              -e "s|^VOICE_RESOURCES_TAG=.*|VOICE_RESOURCES_TAG=${NEW_TAG}|" \
-              -e "s|^VOICE_ASSISTANT_TAG=.*|VOICE_ASSISTANT_TAG=${NEW_TAG}|" \
-              -e "s|^TELEGRAM_BOT_TAG=.*|TELEGRAM_BOT_TAG=${NEW_TAG}|" \
-              -e "s|^VISION_HAILO_TAG=.*|VISION_HAILO_TAG=${NEW_TAG}|" \
-              "$VERSIONS_FILE"
+            # Поля .image-versions.* — те же, что в TAG_MAP: одно поле на
+            # сервис манифеста с image_versions != false. Поля, которых нет
+            # ни у одного сервиса (phantom, ADR-0094 §1.4), теперь просто не
+            # переписываются — раньше sed обновлял их наравне с настоящими,
+            # хотя их никто не читает. Удаление самих полей — отдельный PR по
+            # процедуре ADR-0094 §3.3.
+            SED_ARGS=()
+            while read -r VERSION_VAR SERVICE_TAG; do
+              [ -z "$VERSION_VAR" ] && continue
+              SED_ARGS+=(-e "s|^${VERSION_VAR}=.*|${VERSION_VAR}=${NEW_TAG}|")
+            done <<< "$TAG_MAP"
+            sed -i "${SED_ARGS[@]}" "$VERSIONS_FILE"
 
             git config user.email "ci@rob-box.local"
             git config user.name "Rob Box CI"
@@ -687,11 +590,16 @@ jobs:
 
   # Итоговая сводка
   summary:
-    needs: [prepare, build-oak-d, build-led-matrix, build-ceiling-camera, build-voice-base, build-voice-resources, build-voice-assistant, build-telegram-bot, build-supercollider, build-supervisor, build-quest, build-vision-hailo]
+    # needs: вместо списка сервисов — job'ы, которые их собирают: matrix-job
+    # `build` завершается только когда закончились ВСЕ его элементы, поэтому
+    # порядок гарантий тот же, что был при 11/8 отдельных job'ах.
+    needs: [prepare, build, build-voice-base, build-voice-assistant, build-supervisor]
     runs-on: [self-hosted, rob-box]
     if: always()
     steps:
       - name: Build Summary
+        env:
+          SERVICES: ${{ needs.prepare.outputs.services }}
         run: |
           echo "🎉 Vision Pi Services Build Complete!"
           echo ""
@@ -700,13 +608,9 @@ jobs:
           echo "  Push to Registry: ${{ inputs.push_to_registry }}"
           echo ""
           echo "Services built:"
-          echo "  ✅ oak-d"
-          echo "  ✅ led-matrix"
-          echo "  ✅ ceiling-camera"
-          echo "  ✅ voice-base"
-          echo "  ✅ voice-resources"
-          echo "  ✅ voice-assistant"
-          echo "  ✅ telegram-bot"
-          echo "  ✅ supercollider"
-          echo "  ✅ supervisor"
-          echo "  ✅ vision-hailo"
+          # Список сервисов — из docker/build-manifest.yaml через prepare
+          # (раньше здесь был ещё один, восьмой по счёту, ручной список —
+          # и он уже разошёлся: на Vision Pi в нём не было quest).
+          for SVC in $SERVICES; do
+            echo "  ✅ $SVC"
+          done

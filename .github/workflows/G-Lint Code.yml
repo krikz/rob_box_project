@@ -290,6 +290,33 @@ jobs:
           echo "::endgroup::"
         continue-on-error: true
 
+      # docs/plans/2026-09-15-service-manifest.md §8 (acceptance Phase 2):
+      # actionlint над двумя build-workflow, которые Phase 2 перевела на
+      # динамическую matrix (`strategy.matrix.include: fromJSON(...)`). Это
+      # новый для репозитория механизм (прецедента не было — план §3.2), и
+      # опечатка в нём — ссылка на несуществующий job/output, кривое
+      # выражение — проявилась бы только на реальном прогоне, а build-стенд
+      # один и медленный. actionlint ловит это статически.
+      #
+      # Hard gate (без continue-on-error), но ОБЛАСТЬ — только эти два файла:
+      # репозиторий целиком actionlint сегодня не проходит (на 21.09.2026 —
+      # ~190 замечаний, из них 75 в "L-Deploy and Verify.yml"; почти всё —
+      # shellcheck внутри run:). Расширять область имеет смысл отдельной
+      # задачей, разгребая файлы по одному. Делать шаг warn-only смысла нет:
+      # ADR-0057 §1.2 прямо фиксирует, что soft-warning в этом репозитории
+      # уже пробовали и он не работает.
+      #
+      # Метки self-hosted раннеров (rob-box, e2e) объявлены в
+      # .github/actionlint.yaml — без этого файла actionlint считает ошибкой
+      # каждый `runs-on: [self-hosted, rob-box]`.
+      - name: actionlint (build workflows, hard gate)
+        run: |
+          echo "::group::actionlint"
+          docker run --rm -v "${PWD}:/repo" -w /repo rhysd/actionlint:1.7.7 -color \
+            ".github/workflows/L-Build Vision Pi Services.yml" \
+            ".github/workflows/L-Build Main Pi Services.yml"
+          echo "::endgroup::"
+
   # ============================================================================
   # Dockerfile Linting
   # ============================================================================
