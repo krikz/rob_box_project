@@ -1991,10 +1991,13 @@ class TTSNode(Node):
 
         try:
             # Приоритет путей для модели Silero v5:
-            # 1. /models/silero/v5_ru.pt - встроено в Docker образ (основной путь)
+            # 1. /models/silero/v5_ru.pt — приезжает Ресурсным паком на ХОСТ
+            #    (/opt/rob_box/models) и виден bind-mount'ом. НЕ запечён в
+            #    образ: ступень скачивания удалена из voice_base/Dockerfile,
+            #    см. ADR-0125 и resource-pack §6.1/§7 Этап 3.
             # 2. /cache/tts/silero_v5_ru.pt - персистентный volume (fallback/legacy)
             model_paths = [
-                "/models/silero/v5_ru.pt",  # Основной путь в Docker образе
+                "/models/silero/v5_ru.pt",  # Ресурсный пак → bind-mount с хоста
                 "/cache/tts/silero_v5_ru.pt",  # Legacy путь (volume)
             ]
 
@@ -2015,19 +2018,32 @@ class TTSNode(Node):
                     break
 
             if not model_loaded:
-                # Fallback на онлайн загрузку через torch.hub
-                self.get_logger().warn(
-                    f"⚠️ Модель не найдена в {model_paths}, загружаем через torch.hub"
-                )
-                self.silero_model, _ = torch.hub.load(
-                    repo_or_dir="snakers4/silero-models",
-                    model="silero_tts",
-                    language="ru",
-                    speaker="v5_ru",
-                )
-                self.silero_model.to(self.device)
-                self.get_logger().info(
-                    "✅ Silero TTS v5 загружен из GitHub (ARM64 оптимизация)"
+                # ADR-0018 (честный FAIL лучше красивого PASS): раньше здесь
+                # стоял `torch.hub.load('snakers4/silero-models')` — третий,
+                # СЕТЕВОЙ уровень fallback'а. Удалён осознанно, три причины:
+                #
+                # 1. Он не мог сработать штатно. В manifest.yaml silero-tts-v5-ru
+                #    объявлен `required: hard` / `on_missing: fail-deploy` —
+                #    деплой ПАДАЕТ, если модели нет на хосте. То есть ветка
+                #    достижима только в состоянии, которое деплой не выпускает.
+                # 2. Ref не закреплён: `repo_or_dir` тянул HEAD чужого
+                #    GitHub-репозитория и ИСПОЛНЯЛ его код в рантайме на живом
+                #    роботе. Невоспроизводимо и небезопасно (resource-pack §1.1,
+                #    открытый вопрос §5 — закрыт здесь в пользу «убрать вовсе»).
+                # 3. Молчаливая деградация: нода тянулась в сеть вместо того,
+                #    чтобы сказать, что ресурсный пак не доехал.
+                #
+                # Теперь — громкий отказ с указанием, что чинить. Silero это
+                # fallback-провайдер TTS, поэтому нода продолжает жить на
+                # Yandex/MiniMax; молча уйти в сеть она больше не может.
+                raise FileNotFoundError(
+                    f"Silero v5 не найден ни в одном из путей: {model_paths}. "
+                    "Модель доставляет Ресурсный пак (ADR-0125) в "
+                    "/opt/rob_box/models/silero/v5_ru.pt на хосте Vision Pi, "
+                    "откуда она приходит в контейнер bind-mount'ом /models. "
+                    "Проверь шаг деплоя «Ensure STT/TTS models» и вывод "
+                    "apply_resource_pack.sh --only silero-tts-v5-ru. "
+                    "Сетевой fallback (torch.hub) удалён намеренно."
                 )
         except Exception as e:
             self.get_logger().error(f"❌ Ошибка загрузки Silero: {e}")

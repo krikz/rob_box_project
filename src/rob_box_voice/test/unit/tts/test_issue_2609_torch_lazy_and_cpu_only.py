@@ -506,3 +506,68 @@ def test_deployed_stt_yaml_defers_vosk() -> None:
 
     data = yaml.safe_load((_DOCKER_VOICE_CONFIG / "stt_node.yaml").read_text(encoding="utf-8"))
     assert data["stt_node"]["ros__parameters"].get("vosk_preload") is False
+
+
+# ---------------------------------------------------------------------------
+# Ресурсный пак (ADR-0125) — сетевой fallback Silero удалён
+#
+# Третьим уровнем загрузки Silero стоял
+# ``torch.hub.load('snakers4/silero-models')``: незакреплённый ref, то есть
+# HEAD чужого GitHub-репозитория, код которого ИСПОЛНЯЛСЯ в рантайме на живом
+# роботе. После перехода на Ресурсный пак ветка стала ещё и недостижимой
+# штатно — в ``manifest.yaml`` запись ``silero-tts-v5-ru`` объявлена
+# ``required: hard`` / ``on_missing: fail-deploy``, деплой падает раньше.
+#
+# Удаление закрывает открытый вопрос №5 плана
+# ``docs/plans/2026-09-15-resource-pack.md`` в пользу «убрать вовсе».
+# Тесты ниже стерегут, чтобы фолбэк не вернулся незаметно: дрейф между
+# .sc-файлом и его Python-валидатором уже однажды прожил три недели
+# незамеченным именно потому, что гварда не было.
+# ---------------------------------------------------------------------------
+
+
+def test_tts_node_has_no_torch_hub_network_fallback() -> None:
+    """``tts_node.py`` не должен тянуть модель из сети ни при каких условиях."""
+
+    # Ищем ИМЕННО ВЫЗОВ через AST, а не подстроку: ссылка на
+    # ``torch.hub.load`` живӑт рядом в комментарии-объяснении, и греп по тексту
+    # ловил бы его же — гвард, падающий на собственной документации,
+    # быстро отключают.
+    tree = _parse_module(_TTS_NODE_SRC)
+    calls = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not isinstance(func, ast.Attribute) or func.attr != "load":
+            continue
+        hub = func.value
+        if (
+            isinstance(hub, ast.Attribute)
+            and hub.attr == "hub"
+            and isinstance(hub.value, ast.Name)
+            and hub.value.id == "torch"
+        ):
+            calls.append(f"torch.hub.load at line {node.lineno}")
+    assert not calls, (
+        "Сетевой fallback Silero вернулся в tts_node.py: "
+        f"{calls}. Модель доставляет Ресурсный пак (ADR-0125) в "
+        "/opt/rob_box/models/silero/v5_ru.pt; запись в manifest.yaml — hard, "
+        "деплой падает при её отсутствии, поэтому сеть в рантайме не нужна."
+    )
+
+
+def test_tts_node_raises_actionable_error_when_silero_missing() -> None:
+    """Отсутствие модели должно быть громким и объяснять, что чинить."""
+
+    text = _TTS_NODE_SRC.read_text(encoding="utf-8")
+    assert "raise FileNotFoundError(" in text, (
+        "Пропажа Silero обязана приводить к явному исключению, а не к "
+        "молчаливой деградации (ADR-0018)."
+    )
+    # Сообщение обязано вести к месту починки, иначе оно бесполезно дежурному.
+    for marker in ("apply_resource_pack.sh", "/opt/rob_box/models"):
+        assert marker in text, (
+            f"В сообщении об отсутствии Silero нет ориентира {marker!r} — "
+            "без него дежурный не найдёт, где чинить."
+        )
