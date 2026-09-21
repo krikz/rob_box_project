@@ -599,6 +599,73 @@ def test_registry_only_types_are_skipped(tmp_path: Path) -> None:
     assert result.stdout.count("доставляется не этим швом") == 2
 
 
+def test_manifest_covers_stt_tts_models() -> None:
+    """Этап 3: Vosk/Silero обязаны быть в манифесте, иначе их никто не положит.
+
+    До Этапа 3 их качала ступень сборки voice-base. Ступень удалена — если
+    запись исчезнет и отсюда, модели не появятся вообще нигде, а узнаем мы об
+    этом по «Folder does not contain model files» на роботе.
+    """
+    data = yaml.safe_load(MANIFEST.read_text(encoding="utf-8"))
+    by_name = {r["name"]: r for r in data["resources"]}
+
+    vosk = by_name["vosk-ru-small"]
+    assert vosk["target"] == "/opt/rob_box/models/vosk-model-small-ru-0.22"
+    assert vosk["unpack"] == "zip" and vosk["verify_file"] == "README"
+    assert vosk["required"] == "hard", "без Vosk stt_node не стартует — это не soft"
+
+    silero = by_name["silero-tts-v5-ru"]
+    assert silero["target"] == "/opt/rob_box/models/silero/v5_ru.pt"
+    assert silero["required"] == "hard"
+
+
+def test_container_paths_did_not_move() -> None:
+    """Переезд «образ → host bind-mount» не должен менять путь ВНУТРИ контейнера.
+
+    Весь смысл §6.1 плана: ни один Python-файл не правится, потому что
+    /models/... остаётся /models/... — меняется только, чем он наполнен.
+    """
+    compose = yaml.safe_load(
+        (REPO_ROOT / "docker" / "vision" / "docker-compose.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    volumes = compose["services"]["voice-assistant"]["volumes"]
+    assert "/opt/rob_box/models:/models:ro" in volumes, (
+        "voice-assistant не монтирует host-каталог моделей: после удаления "
+        "ступени скачивания из voice_base/Dockerfile контейнер останется "
+        "без Vosk и Silero"
+    )
+
+    stt_cfg = (
+        REPO_ROOT / "docker" / "vision" / "config" / "voice_assistant" / "stt_node.yaml"
+    ).read_text(encoding="utf-8")
+    assert "/models/vosk-model-small-ru-0.22" in stt_cfg
+
+
+def test_voice_base_no_longer_downloads_models() -> None:
+    """Ступень скачивания моделей ушла из образа (deletion test, план §8)."""
+    dockerfile = (
+        REPO_ROOT / "docker" / "vision" / "voice_base" / "Dockerfile"
+    ).read_text(encoding="utf-8")
+    active = [
+        line
+        for line in dockerfile.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    body = "\n".join(active)
+    for needle in (
+        "alphacephei.com/vosk/models",
+        "models.silero.ai",
+        "torch.hub.load",
+    ):
+        assert needle not in body, (
+            f"voice_base/Dockerfile снова качает {needle} на этапе сборки — "
+            f"это ровно то, что Ресурсный пак (Этап 3) убрал: сборка не должна "
+            f"зависеть от сети, а модели приходят с хоста"
+        )
+
+
 def test_env_vars_are_honoured(tmp_path: Path, http_root: Path, http_base: str) -> None:
     """RESOURCE_PACK_MANIFEST / _ROOT / _FORCE — интерфейс из плана §2.2."""
     payload = b"ENVPATH\n"

@@ -92,6 +92,55 @@ resources:
     consumers:
       - "vision-face (FACE_HEF_PATH env, docker-compose.yaml:795)"
 
+  # ---------- открытые: STT/TTS модели (Этап 3) ----------
+  # До Этапа 3 обе модели качались на этапе СБОРКИ образа voice-base
+  # (docker/vision/voice_base/Dockerfile, ступень «Скачивание STT/TTS
+  # моделей») и весили ~113 МБ внутри образа. Теперь их кладёт на хост этот
+  # манифест, а контейнер видит их через bind-mount /opt/rob_box/models:/models:ro
+  # (docker-compose.yaml, сервис voice-assistant). Пути ВНУТРИ контейнера не
+  # изменились — ни один Python-файл трогать не потребовалось.
+  - name: vosk-ru-small
+    type: open
+    kind: model-zip
+    url: https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip
+    # ПУСТО ОСОЗНАННО: эталона нет нигде в репозитории (в Dockerfile его тоже
+    # не было). Кто и когда снимает его с известно хорошего файла — открытый
+    # вопрос плана §13.4. До этого момента скрипт при каждом скачивании
+    # громко пишет «целостность НЕ проверена», а не делает вид, что проверил.
+    sha256: ""
+    size_bytes: 47185920  # ~45 МБ, из комментария Dockerfile
+    unpack: zip
+    # Тот же sentinel, что стоял в Dockerfile: `test -f .../README`. Именно
+    # он однажды поймал распаковку не туда (комментарий Dockerfile про
+    # переименование в /models/vosk-model-ru).
+    verify_file: README
+    target: /opt/rob_box/models/vosk-model-small-ru-0.22
+    required: hard
+    on_missing: fail-deploy
+    degrade_note: >
+      Без модели stt_node не стартует: «Folder does not contain model files».
+      Распознавание речи недоступно целиком, деградации «частично» тут нет.
+    consumers:
+      - "stt_node (model_path, docker/vision/config/voice_assistant/stt_node.yaml:8)"
+      - "stt_node (src/rob_box_voice/config/stt_node.yaml:14)"
+
+  - name: silero-tts-v5-ru
+    type: open
+    kind: model-file
+    url: https://models.silero.ai/models/tts/ru/v5_ru.pt
+    sha256: ""  # см. комментарий у vosk-ru-small: эталон не зафиксирован (план §13.4)
+    size_bytes: 71303168  # ~68 МБ
+    unpack: none
+    target: /opt/rob_box/models/silero/v5_ru.pt
+    required: hard
+    on_missing: fail-deploy
+    degrade_note: >
+      tts_node теряет кандидатный путь №1. Остаются fallback'и (/cache/tts,
+      torch.hub), но это именно fallback'и — молчаливо полагаться на них
+      нельзя, поэтому запись hard.
+    consumers:
+      - "tts_node (tts_node.py:1850-1854, кандидатный путь №1)"
+
   # ---------- закрытые (gated): Hailo Developer Zone 4.24.0 ----------
   # ЗАГОТОВКИ ДЛЯ ЭТАПА 4, СЕГОДНЯ НЕ АКТИВНЫ.
   #

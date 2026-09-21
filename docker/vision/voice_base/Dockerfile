@@ -124,45 +124,30 @@ RUN echo 'SUBSYSTEM=="usb", ATTR{idVendor}=="2886", ATTR{idProduct}=="0018", MOD
     > /etc/udev/rules.d/60-respeaker.rules
 
 # ============================================================================
-# Скачивание STT/TTS моделей (offline inference)
+# STT/TTS модели — БОЛЬШЕ НЕ ЗДЕСЬ (Ресурсный пак, Этап 3)
 # ============================================================================
-RUN --mount=type=cache,target=/root/.cache,sharing=locked \
-    mkdir -p /models /root/.cache/models /models/silero && \
-    VOSK_MODEL_FILE="vosk-model-small-ru-0.22.zip" && \
-    VOSK_MODEL_URL="https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip" && \
-    SILERO_MODEL_FILE="v5_ru.pt" && \
-    SILERO_MODEL_URL="https://models.silero.ai/models/tts/ru/v5_ru.pt" && \
-    # Vosk model is bundled in the image (Architect decision G-VOSK, option A —
-    # offline-capable robot). Path MUST match model_path in
-    # src/rob_box_voice/config/stt_node.yaml (per-node, issue #1004) and the
-    # default in stt_node.py: /models/vosk-model-small-ru-0.22
-    # Earlier mishap: this Dockerfile unzipped into /models/vosk-model-small-ru-0.22
-    # and then mv'd it to /models/vosk-model-ru, while every consumer (stt_node,
-    # voice_assistant.yaml, scripts, README) still pointed at the original
-    # canonical path. Result: 'Folder does not contain model files' at runtime.
-    # Fix: drop the rename — keep the unpacked directory at its canonical path.
-    if [ -f "/root/.cache/models/${VOSK_MODEL_FILE}" ]; then \
-        echo "✅ Using cached Vosk model"; \
-        cp "/root/.cache/models/${VOSK_MODEL_FILE}" /tmp/vosk-model.zip; \
-    else \
-        echo "⬇️ Downloading Vosk model (45 MB)..."; \
-        wget -q -O /tmp/vosk-model.zip "${VOSK_MODEL_URL}" && \
-        cp /tmp/vosk-model.zip "/root/.cache/models/${VOSK_MODEL_FILE}"; \
-    fi && \
-    unzip -q -o /tmp/vosk-model.zip -d /models/ && \
-    test -f /models/vosk-model-small-ru-0.22/README && \
-    rm /tmp/vosk-model.zip && \
-    if [ -f "/root/.cache/models/${SILERO_MODEL_FILE}" ]; then \
-        echo "✅ Using cached Silero model"; \
-        cp "/root/.cache/models/${SILERO_MODEL_FILE}" /models/silero/v5_ru.pt; \
-    else \
-        echo "⬇️ Downloading Silero v5 model (68 MB)..."; \
-        wget -q -O /models/silero/v5_ru.pt "${SILERO_MODEL_URL}" && \
-        cp /models/silero/v5_ru.pt "/root/.cache/models/${SILERO_MODEL_FILE}"; \
-    fi && \
-    echo "⬇️ Pre-downloading Silero repository for torch.hub..." && \
-    python3 -c "import torch; torch.hub.load(repo_or_dir='snakers4/silero-models', model='silero_tts', language='ru', speaker='v5_ru', source='github')" || true && \
-    echo "✅ STT/TTS models ready: Vosk (45 MB at /models/vosk-model-small-ru-0.22) + Silero v5 (68 MB)"
+# Здесь была ступень скачивания Vosk (45 МБ) + Silero v5 (68 МБ) + прогрев
+# torch.hub. Удалена по docs/plans/2026-09-15-resource-pack.md §6.1/§7 Этап 3.
+#
+# Почему: сборка образа делала два сетевых запроса, и при недоступной сети
+# падала целиком (цепочка `wget ... && unzip ... && test -f` без `|| true`),
+# а ошибка тонула в стандартном выводе wget. Плюс 113 МБ моделей лежали в
+# слое образа, который тянет каждый холодный `docker pull` на Vision Pi.
+#
+# Куда переехало: docker/vision/scripts/resource_pack/manifest.yaml, записи
+# `vosk-ru-small` и `silero-tts-v5-ru`. Файлы кладёт на ХОСТ шаг деплоя
+# «[Vision Pi] Ensure STT/TTS models», контейнер получает их bind-mount'ом
+# `/opt/rob_box/models:/models:ro` (docker-compose.yaml, voice-assistant).
+# Пути ВНУТРИ контейнера не изменились — stt_node.yaml:8 и tts_node.py:1853
+# читают тот же `/models/...`, поэтому ни один Python-файл не правился.
+#
+# `mkdir -p /models` тоже не нужен: каталог создаёт bind-mount.
+#
+# Прогрев `torch.hub.load('snakers4/silero-models')` уехал вместе со ступенью
+# и НЕ заменён ничем: это был fallback третьего уровня (tts_node.py:1874-1879)
+# без pin на коммит, тянувший HEAD чужого репозитория. Если он сработает в
+# рантайме — полезет в сеть на первом вызове. Судьба этого fallback'а —
+# открытый вопрос плана §13.5, отдельным решением.
 
 # ============================================================================
 # Клонирование и сборка audio_common_msgs

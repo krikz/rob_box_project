@@ -348,6 +348,18 @@ services:
       - ./config/audio/asound.conf:/etc/asound.conf:ro
       # Sound pack
       - ../../sound_pack:/ws/sound_pack:ro
+      # STT/TTS модели с хоста (Ресурсный пак, Этап 3 —
+      # docs/plans/2026-09-15-resource-pack.md §6.1).
+      # РАНЬШЕ Vosk (45 МБ) и Silero v5 (68 МБ) были запечены в образ
+      # voice-base ступенью скачивания в его Dockerfile. Теперь их кладёт на
+      # хост apply_resource_pack.sh (шаг деплоя «Ensure STT/TTS models»), а
+      # сюда они приходят bind-mount'ом. Путь ВНУТРИ контейнера не изменился:
+      # stt_node.yaml:8 (`/models/vosk-model-small-ru-0.22`) и tts_node.py:1853
+      # (`/models/silero/v5_ru.pt`) читают то же самое место.
+      # :ro — модели меняет только хост; контейнеру писать туда незачем.
+      # Каталог тот же, что уже монтируется в vision-hailo/vision-face
+      # (ниже, :820 и :889) — третий host-каталог не заводим (план §5).
+      - /opt/rob_box/models:/models:ro
       # VoiceMemory persistent storage
       - ./data/voice:/data
       # Shared renardo samples — предварительно заполняются one-shot контейнером voice-resources-init
