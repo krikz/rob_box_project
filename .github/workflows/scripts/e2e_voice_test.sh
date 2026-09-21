@@ -393,6 +393,11 @@ WAKE_GATE_CLEARED=0   # 1 = cold-start cleared, 0 = not cleared, 2 = probe error
 # в run_step: без него непройденный гейт уводил в SKIP ВСЕ wake-gated шаги,
 # потому что акцепта, который его откроет, взяться было неоткуда.
 WAKE_GATE_PROBE_SPENT=0
+# Сколько шагов РЕАЛЬНО пропущено из-за непройденного wake-gate. Именно это, а
+# не сам факт «гейт не прогрелся», оправдывает пропуск агрегатного GATE-1:
+# иначе оправдание применяется там, где оправдывать нечего (см. блок GATE-1
+# SKIP-логики ниже и разбор прогона 35665111906).
+WAKE_GATE_SKIPPED_STEPS=0
 WAKE_GATE_PREFLIGHT_REASON=""
 # Под set -u SCENARIO_FILE может быть не задан (single-text mode). Используем
 # ${SCENARIO_FILE:-} для безопасного обращения.
@@ -2114,6 +2119,10 @@ PY
             # не должен фейлить на этом шаге.
             if [ "$rc" = "3" ]; then
                 step_skipped=1
+                # Счётчик РЕАЛЬНЫХ пропусков — только он оправдывает пропуск
+                # агрегатного GATE-1 ниже (разбор прогона 35665111906: гейт
+                # пропускался при НУЛЕ пропущенных шагов).
+                WAKE_GATE_SKIPPED_STEPS=$((WAKE_GATE_SKIPPED_STEPS + 1))
                 log "STEP ${label}: wake-gated SKIP (cold-start not cleared) — см. $WAKE_GATE_PREFLIGHT_FILE"
                 break
             fi
@@ -2231,9 +2240,25 @@ for p in json.load(sys.stdin):
     # GATE-1 не должен фейлить — это by-design поведение backlog-аккумулятора
     # (см. retro t_be491fba). Фиксируем это в $OUT_DIR/gate1_skip_reason.json
     # и выводим явный маркер E2E_GATE1_SKIP_WAKE_GATE для пост-валидатора.
-    if [ "${WAKE_GATE_CLEARED:-0}" != "1" ] && [ -n "${SCENARIO_FILE:-}" ]; then
-        printf '{\n  "skip_reason": "wake-gate cold-start not cleared",\n  "preflight_artifact": "wake_gate_preflight.json",\n  "scenarios_steps_classified": "wake-gated steps SKIP by design (backlog-accumulator design)",\n  "retro": "t_be491fba (cold-start wake-gate misdiagnosis)"\n}\n' > "$OUT_DIR/gate1_skip_reason.json"
-        log "GATE-1: ⏭ SKIP — wake-gate cold-start not cleared (см. wake_gate_preflight.json)"
+    # bug(живой прогон 35665111906, 22.09.2026 — регресс, внесённый этой же
+    # серией правок). Условие было `WAKE_GATE_CLEARED != 1`. Пока preflight
+    # был мёртвым кодом, он ВСЕГДА уходил в else-ветку и форсил
+    # WAKE_GATE_CLEARED=1, поэтому агрегатный GATE-1 выполнялся всегда. Как
+    # только preflight заработал, scenario-ветка честно сообщила «cold-start
+    # NOT cleared» — и агрегатный GATE-1 (ADR-0022, главный гард против
+    # smoke-false-PASS) стал ПРОПУСКАТЬСЯ на каждом scenario-прогоне.
+    # В логе акта 1 это видно как `E2E_GATE1_SKIP_WAKE_GATE` при 9/10 OK и
+    # нулевом числе SKIP-шагов: оправдание применялось там, где оправдывать
+    # было нечего.
+    #
+    # Честное правило: пропускать GATE-1 можно только если шаги РЕАЛЬНО были
+    # пропущены из-за wake-gate. Ни одного такого шага — гейт обязан считаться.
+    # Сам факт «гейт не прогрелся» ничего не оправдывает, если он никому не
+    # помешал отыграться.
+    if [ "${WAKE_GATE_SKIPPED_STEPS:-0}" -gt 0 ] && [ -n "${SCENARIO_FILE:-}" ]; then
+        printf '{\n  "skip_reason": "wake-gate cold-start not cleared",\n  "skipped_steps": %s,\n  "preflight_artifact": "wake_gate_preflight.json",\n  "scenarios_steps_classified": "wake-gated steps SKIP by design (backlog-accumulator design)",\n  "retro": "t_be491fba (cold-start wake-gate misdiagnosis)"\n}\n' \
+            "${WAKE_GATE_SKIPPED_STEPS:-0}" > "$OUT_DIR/gate1_skip_reason.json"
+        log "GATE-1: ⏭ SKIP — ${WAKE_GATE_SKIPPED_STEPS} шаг(ов) пропущено по wake-gate cold-start (см. wake_gate_preflight.json)"
         echo "E2E_GATE1_SKIP_WAKE_GATE"
     else
         # --- ADR-0022 GATE-1: top-level aggregate acceptance check -----------
