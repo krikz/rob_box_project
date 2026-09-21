@@ -59,6 +59,7 @@ def _fake_docker(
     builder_driver: str = "docker-container",
     containerd_store: bool = False,
     builder_exists: bool = True,
+    bridge_gateway: str = "172.17.0.1",
 ) -> Path:
     """Replace `docker` with a fake that records its argv to a file.
 
@@ -101,6 +102,12 @@ def _fake_docker(
         # `buildx use` — тоже проба, не записываем: иначе старые тесты,
         # считающие ровно build+push вызовы, начнут видеть лишний.
         'if [ "$1" = "buildx" ] && [ "$2" = "use" ]; then\n'
+        "  exit 0\n"
+        "fi\n"
+        # Probe 3: `docker network inspect bridge --format ...` — IP шлюза,
+        # которым подменяется host-gateway на драйверах, его не понимающих.
+        'if [ "$1" = "network" ] && [ "$2" = "inspect" ]; then\n'
+        f"  printf '%s\\n' '{bridge_gateway}'\n"
         "  exit 0\n"
         "fi\n"
         # Probe 2: `docker info --format {{ .DriverStatus }}`.
@@ -617,6 +624,39 @@ def test_buildx_builder_is_reused_when_present(monkeypatch, tmp_path):
     cp = _run_build_step(bash_body, service_name="led-matrix", tags=TAGS_TWO)
     assert cp.returncode == 0, f"build script failed:\n{cp.stderr}\n{cp.stdout}"
     assert _buildx_create_argv(log) == [], "билдер пересоздан, хотя уже был"
+
+
+def test_host_gateway_is_resolved_for_docker_container_driver(monkeypatch, tmp_path):
+    """host-gateway — фича демона docker, docker-container её не понимает.
+
+    Поймано на katana, run 35626403139: билдер впервые стал docker-container,
+    и все 8 job'ов упали за две минуты с
+      ERROR: unable to derive the IP value for host-gateway:
+             host-gateway is not supported by the docker-container driver
+    Поэтому на таком драйвере host-gateway заменяется реальным IP шлюза
+    bridge-сети — apt-прокси на хосте остаётся достижимым.
+    """
+    log = _fake_docker(
+        monkeypatch, tmp_path, builder_driver="docker-container", bridge_gateway="172.17.0.1"
+    )
+    bash_body = _extract_build_step_bash(_load_action_yaml())
+    cp = _run_build_step(bash_body, service_name="led-matrix", tags=TAGS_TWO)
+    assert cp.returncode == 0, f"build script failed:\n{cp.stderr}\n{cp.stdout}"
+
+    build = _build_argv(log)
+    assert "--add-host=host.docker.internal:172.17.0.1" in build, build
+    assert "host-gateway" not in " ".join(build), build
+
+
+def test_host_gateway_is_kept_on_plain_docker_driver(monkeypatch, tmp_path):
+    """На дефолтном драйвере host-gateway работает и подменять его нечем."""
+    log = _fake_docker(monkeypatch, tmp_path, builder_driver="docker")
+    bash_body = _extract_build_step_bash(_load_action_yaml())
+    cp = _run_build_step(bash_body, service_name="led-matrix", tags=TAGS_TWO)
+    assert cp.returncode == 0, f"build script failed:\n{cp.stderr}\n{cp.stdout}"
+
+    build = _build_argv(log)
+    assert "--add-host=host.docker.internal:host-gateway" in build, build
 
 
 def test_cache_export_skipped_on_plain_docker_driver(monkeypatch, tmp_path):

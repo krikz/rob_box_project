@@ -207,6 +207,18 @@ runs:
           BUILD_ARG_ARGS+=(--build-arg="${SHA_VAR}=${SHA_VAL}")
         fi
 
+        # --add-host по умолчанию — host.docker.internal:host-gateway. Это
+        # ФИЧА ДЕМОНА docker, и драйвер docker-container её не понимает:
+        #   ERROR: unable to derive the IP value for host-gateway:
+        #          host-gateway is not supported by the docker-container driver
+        # (поймано на katana, run 35626403139 — все 8 job'ов упали за 2 минуты
+        # после того, как билдер впервые стал docker-container). Поэтому ниже,
+        # когда драйвер оказывается docker-container, host-gateway заменяется
+        # на реальный IP шлюза bridge-сети. Если IP не вычислился — оставляем
+        # как есть: apt-прокси в Dockerfile'ах и так проверяется на
+        # доступность и честно деградирует в «идём напрямую».
+        ADD_HOST_VALUE="${{ inputs.add-host }}"
+
         # ---- Registry-кеш (план 2026-09-15-builder-runtime-seam.md §6, Этап 0) ----
         # Кеш НЕ трогает ни --load, ни docker push локальных тегов (§6.5):
         # --cache-from/--cache-to — независимые от экспортёра образа флаги,
@@ -312,6 +324,22 @@ runs:
 
           CACHE_DRIVER="$(docker buildx inspect 2>/dev/null \
             | awk -F':[[:space:]]*' '/^Driver:/ {print $2; exit}' || true)"
+          # host-gateway → реальный IP, если драйвер его не понимает (см.
+          # комментарий к ADD_HOST_VALUE выше).
+          case "$CACHE_DRIVER:$ADD_HOST_VALUE" in
+            docker:*) : ;;                      # дефолтный драйвер умеет host-gateway
+            *:*host-gateway)
+              GW_IP="$(docker network inspect bridge \
+                --format '{{ (index .IPAM.Config 0).Gateway }}' 2>/dev/null || true)"
+              if [ -n "$GW_IP" ]; then
+                ADD_HOST_VALUE="${ADD_HOST_VALUE%:host-gateway}:${GW_IP}"
+                echo "  add-host: host-gateway → ${GW_IP} (драйвер ${CACHE_DRIVER} не умеет host-gateway)"
+              else
+                echo "  ⚠️ add-host: не удалось вычислить IP шлюза bridge — оставляю host-gateway как есть"
+              fi
+              ;;
+          esac
+
           if [ -n "$CACHE_DRIVER" ] && [ "$CACHE_DRIVER" != "docker" ]; then
             CACHE_EXPORT_OK="true"
           elif docker info --format '{{ .DriverStatus }}' 2>/dev/null | grep -q 'io.containerd.snapshotter'; then
@@ -356,7 +384,7 @@ runs:
           --file "${{ inputs.dockerfile-path }}" \
           "${TAG_ARGS[@]}" \
           --load \
-          --add-host="${{ inputs.add-host }}" \
+          --add-host="${ADD_HOST_VALUE}" \
           "${BUILD_ARG_ARGS[@]}" \
           "${CACHE_ARGS[@]}" \
           --progress="${{ inputs.progress }}" \
