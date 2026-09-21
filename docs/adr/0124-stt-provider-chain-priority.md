@@ -187,15 +187,22 @@ BODY: {"type":"error","error":{"type":"server_error",
 
 Второе, что вскрылось: у Yandex в метрике стояло голое `reason=error` за 50мс и **ни одной** строки `grpc error`. Причина — `except grpc.RpcError` обёрнут вокруг вызова `RecognizeStreaming()`, который лишь открывает стрим; реальная ошибка прилетает при **итерации** по `responses`, а цикл обёрнут не был (это поведение старше ADR-0124). Код статуса не доходил ни до лога, ни до кэша. Цикл обёрнут, ошибка идёт через `_map_grpc_error`.
 
-Настоящая причина отказа Yandex STT на роботе — не деньги:
+Настоящая причина отказа Yandex STT на роботе — **не деньги и не сеть, а закрытая папка Yandex Cloud**:
 
 ```
-GRPC_CODE: StatusCode.UNAVAILABLE
-GRPC_DETAILS: failed to connect to all addresses; last error: FAILED_PRECONDITION:
-  ipv6:[2a0d:d6c1:0:1c::27b]:443: connect failed: Network is unreachable
+GRPC_CODE: StatusCode.PERMISSION_DENIED
+GRPC_DETAILS: Permission to [resource-manager.folder b1gfmjogjodcgff82pjd,
+  resource-manager.cloud b1g1s54gba2kdlp4fune,
+  organization-manager.organization bpf691j509jibhoolgu1] denied
 ```
 
-`stt.api.cloud.yandex.net` резолвится в IPv6, маршрута у робота нет. Yandex TTS при этом работает. Это инфраструктурная проблема вне рамок ADR-0124 — заводится отдельной карточкой; транзиентный TTL 30с для неё корректен (проба стоит 50мс).
+Это та самая папка `b1gfmjogjodcgff82pjd`, которую ADR-0091 §1 уже называл «в архиве». `PERMISSION_DENIED` → `STTAuthError` → длинный TTL: архивная папка не откроется за 30 секунд.
+
+> **Поправка к первой редакции этого раздела.** Первый пробник 21.09 вернул `UNAVAILABLE ... ipv6:[2a0d:d6c1:0:1c::27b]:443: Network is unreachable`, и §4.4 сначала утверждал, что причина — отсутствие IPv6-маршрута. Это было разовое срабатывание gRPC-резолвера: он пробовал IPv6 и не доходил до сервера вообще. После редеплоя тот же пробник соединяется за ~1с и получает чистый `PERMISSION_DENIED`. IPv6 чинить не нужно — нужно восстановить доступ к папке (или завести новую и обновить `YANDEX_API_KEY`).
+>
+> Мораль для отладки: по одному пробнику нельзя объявлять корневую причину, если ошибка сетевого уровня могла замаскировать прикладную. Отсюда же ценность пункта «третье» ниже — с `error=` в логе этот разбор виден без походов на робота.
+
+Асимметрия, замеченная попутно: `tts_node` на тот же `PERMISSION_DENIED` ставит Yandex мёртвым на **30с** (транзиентная классификация), STT — на 300с (auth). Права на архивную папку за 30с не появятся, так что STT здесь корректнее; выравнивание — в issue #2702 вместе с объединением кэшей.
 
 Третье: `log_attempts` печатал `reason=error`, но **выбрасывал** `STTAttempt.error`, хотя строка уже лежала в объекте. Именно поэтому, чтобы узнать, что ответили облака, пришлось лезть на робота двумя пробниками. Теперь `error=` печатается в метрике попытки.
 
@@ -221,7 +228,7 @@ GRPC_DETAILS: failed to connect to all addresses; last error: FAILED_PRECONDITIO
 - `STTResult` / `recognize_result()` из ADR-0091 §2.1 — не понадобились для цепочки, откладываются до диаризации.
 - Объединение health-кэшей STT/TTS/LLM — issue #2702.
 - Ре-калибровка порогов speaker-id — issue #2348.
-- IPv6-недоступность `stt.api.cloud.yandex.net` с робота — инфраструктура, отдельная карточка (§4.4).
+- Закрытая папка Yandex Cloud `b1gfmjogjodcgff82pjd` (`PERMISSION_DENIED`) — организационная проблема, не код; отдельная карточка (§4.4).
 - e2e-сценарий на фолбек STT — отдельная карточка после мержа.
 - Изменение формата `/voice/stt/result` — ЗАПРЕЩЕНО (инвариант P0).
 
