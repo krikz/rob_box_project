@@ -61,6 +61,7 @@ import io
 import logging
 import os
 import time
+import wave
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional
 
@@ -102,11 +103,50 @@ DEFAULT_LANGUAGE: Optional[str] = "ru"
 #: Provider name used in metrics / logs. Stable string for grep / dashboards.
 PROVIDER_NAME: str = "minimax"
 
+#: Sample rate of the PCM the STT chain feeds us. ``audio_node`` publishes
+#: 16 kHz mono int16 LE on ``/audio/speech_audio`` and ``stt_node`` passes
+#: those bytes straight through, so the WAV header we synthesise in
+#: :func:`ensure_wav_container` must declare the same rate.
+DEFAULT_SAMPLE_RATE: int = 16000
+
 #: Upper bound for a single audio payload. MiniMax documentation does
 #: not pin a hard limit for /v1/speech_to_text; 25 MB is a conservative
 #: engineering ceiling that matches typical ASR services (Whisper,
 #: Deepgram, AssemblyAI all advertise 25 MB max upload).
 MAX_AUDIO_BYTES: int = 25 * 1024 * 1024
+
+
+def ensure_wav_container(
+    audio_bytes: bytes, *, sample_rate: int = DEFAULT_SAMPLE_RATE
+) -> bytes:
+    """Wrap headerless PCM int16 LE mono into a RIFF/WAVE container.
+
+    Phase 1 posted the chain's raw bytes under the filename ``audio.wav``
+    with content-type ``audio/wav``. That is a lie for our input: the STT
+    chain carries **headerless** PCM (``audio_node`` publishes raw int16 LE
+    frames on ``/audio/speech_audio``), so MiniMax received a "wav" with no
+    RIFF header and no way to know the sample rate. It never mattered while
+    the provider sat outside the chain (issue #2365 Phase 1 shipped it
+    disabled); it matters the moment Phase 2 wires it in.
+
+    Already-containerised input (``RIFF....WAVE``) is passed through
+    untouched, so callers that hand us a real WAV keep working.
+    """
+    if not audio_bytes:
+        return audio_bytes
+    if audio_bytes[:4] == b"RIFF" and audio_bytes[8:12] == b"WAVE":
+        return audio_bytes
+    if len(audio_bytes) % 2:
+        # Odd byte count cannot be int16 frames — hand it over as-is and let
+        # the server complain, rather than silently truncating a sample.
+        return audio_bytes
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as writer:
+        writer.setnchannels(1)
+        writer.setsampwidth(2)
+        writer.setframerate(int(sample_rate))
+        writer.writeframes(audio_bytes)
+    return buffer.getvalue()
 
 
 # ---------------------------------------------------------------------------
@@ -302,6 +342,7 @@ class MiniMaxSTTProvider:
         language: Optional[str] = DEFAULT_LANGUAGE,
         timeout: httpx.Timeout = DEFAULT_TIMEOUT,
         client: Optional[httpx.Client] = None,
+        sample_rate: int = DEFAULT_SAMPLE_RATE,
     ) -> None:
         if not api_key:
             # Phase 2 will use ROS params; for now we just refuse to start.
@@ -314,6 +355,7 @@ class MiniMaxSTTProvider:
         self._model = model
         self._language = language
         self._timeout = timeout
+        self._sample_rate = int(sample_rate)
         self._owns_client = client is None
         self._client: Optional[httpx.Client] = client
 
@@ -411,7 +453,9 @@ class MiniMaxSTTProvider:
             )
 
         url = f"{self._base_url}/v1/speech_to_text"
-        files = {"file": ("audio.wav", io.BytesIO(audio_bytes), "audio/wav")}
+        # Headerless PCM → real WAV (see :func:`ensure_wav_container`).
+        payload = ensure_wav_container(audio_bytes, sample_rate=self._sample_rate)
+        files = {"file": ("audio.wav", io.BytesIO(payload), "audio/wav")}
         data: dict[str, str] = {
             "model": self._model,
             "response_format": "json",
@@ -553,7 +597,9 @@ __all__ = [
     "PROVIDER_NAME",
     "DEFAULT_BASE_URL",
     "DEFAULT_MODEL",
+    "DEFAULT_SAMPLE_RATE",
     "DEFAULT_TIMEOUT",
+    "ensure_wav_container",
     "MAX_AUDIO_BYTES",
     "MiniMaxSTTProvider",
     "MiniMaxSTTResponse",

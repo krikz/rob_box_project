@@ -18,7 +18,9 @@ Phase 1 PoC (issue #2365). Никаких сетевых вызовов — то
 
 from __future__ import annotations
 
+import io
 import logging
+import wave
 from typing import Any, Optional
 
 import httpx
@@ -36,6 +38,7 @@ from rob_box_voice.stt_providers.minimax_provider import (
     MiniMaxSTTRateLimitError,
     MiniMaxSTTUnavailableError,
     _extract_text,
+    ensure_wav_container,
 )
 
 
@@ -390,7 +393,26 @@ class TestRecognizeSuccess:
         assert data["response_format"] == "json"
         assert data["language"] == "ru"
         assert files["file"][0] == "audio.wav"
-        assert files["file"][1] == SILENCE_AUDIO
+        # Issue #2365 Phase 2: цепочка отдаёт headerless PCM, а поле
+        # называется audio.wav с content-type audio/wav — провайдер обязан
+        # дорисовать RIFF-заголовок, иначе MiniMax не знает sample rate.
+        sent = files["file"][1]
+        assert sent[:4] == b"RIFF" and sent[8:12] == b"WAVE"
+        with wave.open(io.BytesIO(sent), "rb") as reader:
+            assert reader.getnchannels() == 1
+            assert reader.getsampwidth() == 2
+            assert reader.getframerate() == 16000
+            assert reader.readframes(reader.getnframes()) == SILENCE_AUDIO
+
+    def test_already_wav_input_is_not_double_wrapped(self):
+        """Готовый WAV пропускаем как есть — не оборачиваем второй раз."""
+        transport = _StubHTTPClient(status=200, payload={"text": "ок"})
+        provider = _make_provider(transport)
+        wav = ensure_wav_container(SILENCE_AUDIO, sample_rate=16000)
+
+        provider.recognize(wav)
+
+        assert transport.calls[0]["files"]["file"][1] == wav
 
     def test_language_none_omits_language_field(self):
         transport = _StubHTTPClient(status=200, payload={"text": "ок"})

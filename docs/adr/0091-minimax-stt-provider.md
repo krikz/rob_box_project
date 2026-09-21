@@ -7,7 +7,7 @@
 | Автор        | architect (Hermes Agent)                                                |
 | Контекст     | Kanban task `t_646e797d`, issue [#2365](https://github.com/krikz/rob_box_project/issues/2365) |
 | Заменяет     | — (расширяет ADR-0002 на STT-домен)                                     |
-| Заменяется   | —                                                                       |
+| Заменяется   | §2.2, §2.3 и §5 — [ADR-0124](0124-stt-provider-chain-priority.md) (порядок `minimax → yandex → vosk`, конфиг через ROS-параметры) |
 | Связанные    | ADR-0002 (MiniMax TTS capability-segregated design), ADR-0018, ADR-0070, [#2346](https://github.com/krikz/rob_box_project/issues/2346), [#2348](https://github.com/krikz/rob_box_project/issues/2348) |
 | Спецификация | [`docs/architecture/stt-provider-contract.md`](../architecture/stt-provider-contract.md) |
 | Дочерние таски | `t_223f93db` (Phase 1: `minimax_provider.py`), `t_99e504d2` (Phase 2: wiring), `t_7283c042` (docs) |
@@ -118,6 +118,11 @@ audio → yandex (primary + 1 retry, 12s) → vosk (offline, 0 retry)
 
 ### 2.2 Новый порядок цепочки: `vosk → minimax → yandex`
 
+> **⚠️ ЗАМЕНЕНО [ADR-0124](0124-stt-provider-chain-priority.md) (21.09.2026).**
+> Действующий порядок — `minimax → yandex → vosk`, и он задаётся
+> ROS-параметром `stt_provider_chain`, а не YAML-файлом. Раздел ниже
+> сохранён как историческая мотивировка Vosk-first; реализован он не был.
+
 | Позиция | Провайдер | Retry | Soft-timeout | Speaker info |
 |---|---|---|---|---|
 | 0 (primary) | Vosk | 0 | n/a (offline) | нет |
@@ -143,6 +148,11 @@ audio → yandex (primary + 1 retry, 12s) → vosk (offline, 0 retry)
 - остаётся как fallback для случая «MiniMax API лежит».
 
 ### 2.3 Конфигурация: `src/rob_box_voice/config/stt_chain.yaml`
+
+> **⚠️ ЗАМЕНЕНО [ADR-0124](0124-stt-provider-chain-priority.md) §2.6.**
+> Файл удалён: второй YAML-источник для того же значения — класс ошибки
+> issue #1252 / #1734. Конфигурация цепочки живёт в `declare_parameter`
+> + `config/stt_node.yaml` (issue #1004).
 
 Новый файл с YAML-описанием цепочки и per-provider параметров.
 Hot reload нодой через ROS-параметр `stt_chain_file` (Phase 2,
@@ -387,7 +397,10 @@ ADR-0002 (MiniMax TTS) установил:
    - Маппинг API → `STTResult` (см. §4 спеки).
    - `stt_chain.yaml` + loader в `stt_node.py`.
    - Unit-тесты с `MockTransport`.
-2. **Phase 2 (integration, `t_99e504d2`, backend)**:
+2. **Phase 2 (integration, `t_99e504d2`, backend)** — ✅ сделано 21.09.2026,
+   см. [ADR-0124](0124-stt-provider-chain-priority.md) (порядок и конфиг
+   изменены относительно плана ниже; `/voice/stt/segments` и
+   `recognize_result()` отложены):
    - `_recognize_with_fallback` читает YAML и формирует
      список провайдеров в порядке `vosk → minimax → yandex`.
    - `/voice/stt/segments` публикация.

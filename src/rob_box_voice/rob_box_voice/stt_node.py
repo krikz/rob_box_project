@@ -34,9 +34,15 @@ from vosk import KaldiRecognizer, Model
 # было гонять в юнит-тестах без ROS-окружения.
 try:
     from rob_box_voice.stt_fallback import (
+        DEFAULT_DEAD_TTL_S,
+        DEFAULT_DEAD_TTL_TRANSIENT_S,
         DEFAULT_MIN_TEXT_CHARS,
         DEFAULT_YANDEX_MAX_RETRIES,
         DEFAULT_YANDEX_TIMEOUT_S,
+        ProviderDeadCache,
+        ProviderPolicy,
+        STTAuthError,
+        STTQuotaError,
         STTTimeoutError,
         is_short_phrase,
         log_attempts,
@@ -49,9 +55,81 @@ except ImportError:  # pragma: no cover — модуль всегда есть �
     DEFAULT_MIN_TEXT_CHARS = 3
     DEFAULT_YANDEX_MAX_RETRIES = 1
     DEFAULT_YANDEX_TIMEOUT_S = 5.0
+    DEFAULT_DEAD_TTL_S = 300.0
+    DEFAULT_DEAD_TTL_TRANSIENT_S = 30.0
+    ProviderDeadCache = None  # type: ignore[assignment]
+    ProviderPolicy = None  # type: ignore[assignment]
 
     class STTTimeoutError(TimeoutError):  # type: ignore[no-redef]
         pass
+
+    class STTAuthError(Exception):  # type: ignore[no-redef]
+        pass
+
+    class STTQuotaError(Exception):  # type: ignore[no-redef]
+        pass
+
+
+# Issue #2365 Phase 2 — цепочка STT-провайдеров по приоритету.
+#
+# Порядок minimax → yandex → vosk выбран владельцем репо 21.09.2026 и
+# зафиксирован в ADR-0124 (он же заменяет порядок vosk → minimax → yandex
+# из ADR-0091 §2.2). Логика та же, что у TTS (``tts_node``:
+# minimax → yandex → silero) и у LLM (``rob_box_harness.health``):
+# облака вперёд за качеством, локальная модель — последний рубеж,
+# который работает всегда.
+DEFAULT_STT_PROVIDER_CHAIN = ["minimax", "yandex", "vosk"]
+
+# Провайдеры, которые нода умеет собирать. Всё остальное в
+# ``stt_provider_chain`` — опечатка оператора, молча игнорируем с warning.
+KNOWN_STT_PROVIDERS = frozenset({"minimax", "yandex", "vosk"})
+
+# Vosk — офлайновый последний рубеж: он единственный работает без сети и
+# без денег на счету. Инвариант «vosk всегда последний» — прямой аналог
+# «silero всегда последний» в ``tts_node._normalize_provider_chain``.
+_LAST_RESORT_PROVIDER = "vosk"
+
+
+class _NodeSTTAdapter:
+    """``STTProvider``-адаптер поверх метода ноды (issue #2365 Phase 2).
+
+    Раньше адаптеры были локальными классами внутри
+    ``_recognize_with_fallback`` — с тремя провайдерами и кэшем «мёртвых»
+    это перестало читаться. Здесь тот же контракт: ``name`` для метрик,
+    ``recognize`` — работа, ``prepare`` — ленивая загрузка вне таймаута
+    (issue #2609, Vosk).
+    """
+
+    __slots__ = ("name", "_recognize", "_prepare")
+
+    def __init__(self, name, recognize, prepare=None):
+        self.name = name
+        self._recognize = recognize
+        self._prepare = prepare
+
+    def prepare(self) -> None:
+        if self._prepare is not None:
+            self._prepare()
+
+    def recognize(self, data: bytes) -> Optional[str]:
+        return self._recognize(data)
+
+
+def _map_grpc_error(exc: "grpc.RpcError", timeout_s: float) -> BaseException:
+    """gRPC-код Yandex → типизированная ошибка ``stt_fallback``.
+
+    Нужно кэшу «мёртвых»: по строке ошибки нельзя отличить «кончились
+    деньги» (RESOURCE_EXHAUSTED — лежит надолго) от «моргнула сеть»
+    (UNAVAILABLE — лежит секунды).
+    """
+    code = exc.code()
+    if code == grpc.StatusCode.DEADLINE_EXCEEDED:
+        return STTTimeoutError(f"Yandex STT deadline exceeded ({timeout_s}s)")
+    if code in (grpc.StatusCode.UNAUTHENTICATED, grpc.StatusCode.PERMISSION_DENIED):
+        return STTAuthError(f"Yandex STT auth failure: {code} {exc.details()}")
+    if code == grpc.StatusCode.RESOURCE_EXHAUSTED:
+        return STTQuotaError(f"Yandex STT quota exhausted: {code} {exc.details()}")
+    return exc
 
 # Issue #2158, ADR-0076 — сбор STT-семплов с wake-сегментов шлема для
 # эмпирического пополнения wake-листа ТАРС. Kill-switch через переменную
@@ -257,6 +335,42 @@ class STTNode(Node):
         self.declare_parameter("retry_backoff_s", 1.0)
         self.declare_parameter("min_text_chars", DEFAULT_MIN_TEXT_CHARS)
 
+        # ===== Цепочка STT-провайдеров (issue #2365 Phase 2, ADR-0124) =====
+        # Порядок = приоритет. [0] — primary, дальше фолбеки. Vosk
+        # принудительно переносится в конец (см. _normalize_provider_chain):
+        # он офлайновый и работает, когда не работает ничего.
+        #
+        # Почему ROS-параметр, а не config/stt_chain.yaml: issue #1004 и
+        # #1252/#1734 — второй YAML-источник для того же значения уже
+        # дважды стоил нам инцидента. Единственный источник истины —
+        # declare_parameter + stt_node.yaml.
+        self.declare_parameter("stt_provider_chain", list(DEFAULT_STT_PROVIDER_CHAIN))
+        # MiniMax STT (issue #2365). Ключ берётся из ENV (приоритет) или
+        # из параметра; без ключа провайдер просто не попадает в цепочку —
+        # без шумных ошибок (ADR-0091 §5.2).
+        self.declare_parameter("minimax_stt_enabled", True)
+        self.declare_parameter("minimax_stt_api_key", "")
+        self.declare_parameter("minimax_stt_api_key_env", "MINIMAX_API_KEY")
+        self.declare_parameter("minimax_stt_base_url", "https://api.minimax.io")
+        self.declare_parameter("minimax_stt_model", "asr-1.0")
+        self.declare_parameter("minimax_stt_language", "ru")
+        # 5с — бюджет MiniMax по ADR-0091 §2.2 (мягче Yandex, он второй
+        # в очереди и не должен съедать весь бюджет фразы).
+        self.declare_parameter("minimax_stt_timeout_s", 5.0)
+        self.declare_parameter("minimax_stt_max_retries", 1)
+
+        # ===== Кэш «мёртвых» провайдеров (issue #2365 Phase 2) =====
+        # Те же имена и дефолты, что в tts_node (issue #1083/#1229), чтобы
+        # оператор не держал в голове две разные модели одного поведения.
+        self.declare_parameter("provider_dead_ttl_s", DEFAULT_DEAD_TTL_S)
+        self.declare_parameter(
+            "provider_dead_ttl_transient_s", DEFAULT_DEAD_TTL_TRANSIENT_S
+        )
+        # Персистентность кэша: рестарт ноды (а их много — см. #2676 OOM)
+        # не должен снова слать фразу в облако, про которое мы уже знаем,
+        # что оно лежит. Пустая строка отключает файл.
+        self.declare_parameter("provider_state_file", "/data/stt_provider_state.json")
+
         # Issue #1160 — Prometheus metrics endpoint. 9111 — STT-нода в voice
         # (recognize counter). 0 = отключить старт сервера.
         self.declare_parameter("metrics_port", 9111)
@@ -325,6 +439,11 @@ class STTNode(Node):
         self.yandex_max_retries: int = int(self.get_parameter("yandex_max_retries").value)
         self.retry_backoff_s: float = float(self.get_parameter("retry_backoff_s").value)
         self.min_text_chars: int = int(self.get_parameter("min_text_chars").value)
+        # ── Issue #2365 Phase 2: цепочка провайдеров + кэш «мёртвых» ──
+        # Вынесено в хелпер: ADR-0021 держит __init__ в CC-бюджете 20,
+        # а одних только `or`-дефолтов у цепочки набирается на полтора
+        # десятка ветвей.
+        self._init_provider_chain_params()
         self.unclear_phrase: str = str(self.get_parameter("unclear_phrase").value)
         self.unclear_cooldown_s: float = float(self.get_parameter("unclear_cooldown_s").value)
         self.tts_grace_s: float = float(self.get_parameter("tts_grace_s").value)
@@ -496,6 +615,8 @@ class STTNode(Node):
         )
         self.initialize_yandex()
         self.initialize_vosk()
+        self._load_persisted_provider_state()
+        self._log_provider_state("startup")
 
     def initialize_yandex(self):
         """Инициализация Yandex STT gRPC v3."""
@@ -988,54 +1109,385 @@ class STTNode(Node):
             f"🗣️ Неясный результат → говорю: {self.unclear_phrase!r}"
         )
 
-    def _recognize_with_fallback(self, audio_bytes: bytes) -> "tuple[Optional[str], list]":
-        """Прогоняем фразу через Yandex (primary, retry) + Vosk (fallback).
+    # ── Issue #2365 Phase 2: цепочка minimax → yandex → vosk (ADR-0124) ────
 
-        Возвращаем ``(text, attempts)``. Используем локальные адаптеры,
-        чтобы не тянуть протокол/STTAttempt наружу из speech_audio_callback.
+    def _init_provider_chain_params(self) -> None:
+        """Прочитать параметры цепочки и собрать кэш «мёртвых».
+
+        Отдельный метод, а не кусок ``__init__``: ADR-0021 держит
+        ``__init__`` в CC-бюджете 20, а дефолты цепочки и MiniMax сами по
+        себе дают полтора десятка ветвей.
         """
+        self.provider_chain: list = self._normalize_provider_chain(
+            [str(p) for p in (self.get_parameter("stt_provider_chain").value or [])],
+            logger=self.get_logger(),
+        )
+        self.minimax_stt_enabled: bool = bool(
+            self.get_parameter("minimax_stt_enabled").value
+        )
+        self.minimax_stt_api_key_env: str = str(
+            self.get_parameter("minimax_stt_api_key_env").value or "MINIMAX_API_KEY"
+        )
+        # ENV имеет приоритет над YAML: ключи приезжают из docker/vision/.env,
+        # а не лежат в репозитории.
+        self.minimax_stt_api_key: str = str(
+            os.environ.get(self.minimax_stt_api_key_env, "")
+            or self.get_parameter("minimax_stt_api_key").value
+            or ""
+        ).strip()
+        self.minimax_stt_base_url: str = str(
+            self.get_parameter("minimax_stt_base_url").value or "https://api.minimax.io"
+        )
+        self.minimax_stt_model: str = str(
+            self.get_parameter("minimax_stt_model").value or "asr-1.0"
+        )
+        self.minimax_stt_language: str = str(
+            self.get_parameter("minimax_stt_language").value or "ru"
+        )
+        self.minimax_stt_timeout_s: float = float(
+            self.get_parameter("minimax_stt_timeout_s").value or 5.0
+        )
+        self.minimax_stt_max_retries: int = int(
+            self.get_parameter("minimax_stt_max_retries").value or 0
+        )
+        self.provider_dead_ttl_s: float = float(
+            self.get_parameter("provider_dead_ttl_s").value or DEFAULT_DEAD_TTL_S
+        )
+        self.provider_dead_ttl_transient_s: float = float(
+            self.get_parameter("provider_dead_ttl_transient_s").value
+            or DEFAULT_DEAD_TTL_TRANSIENT_S
+        )
+        self.provider_state_file: str = str(
+            self.get_parameter("provider_state_file").value or ""
+        )
+        self._provider_dead_cache = (
+            ProviderDeadCache(
+                ttl_s=self.provider_dead_ttl_s,
+                transient_ttl_s=self.provider_dead_ttl_transient_s,
+            )
+            if ProviderDeadCache is not None
+            else None
+        )
+        # MiniMax-клиент создаётся лениво — при первом обращении к
+        # провайдеру, а не на старте (httpx.Client держит сокеты, а
+        # нода может вообще не дойти до MiniMax: Vosk-only режим).
+        self._minimax_stt_provider = None
+        self._minimax_stt_lock = threading.Lock()
+        self._minimax_stt_initialized = False
+        self._last_effective_provider: Optional[str] = None
 
-        # Lazy-адаптеры: name нужен для метрик, recognize вызывает наш метод.
-        class _YandexAdapter:
-            name = "yandex"
+    @staticmethod
+    def _normalize_provider_chain(chain, logger=None) -> list:
+        """Привести цепочку к инвариантам (аналог tts_node, issue #1083).
 
-            def __init__(self, outer: "STTNode"):
-                self._outer = outer
+        Инварианты:
 
-            def recognize(self, data: bytes) -> Optional[str]:
-                return self._outer._recognize_yandex(data)
+        * только известные провайдеры (:data:`KNOWN_STT_PROVIDERS`);
+        * без дубликатов, порядок первого вхождения сохраняется;
+        * ``vosk`` — всегда последний (офлайновый последний рубеж);
+        * пустая/битая цепочка → :data:`DEFAULT_STT_PROVIDER_CHAIN`.
 
-        class _VoskAdapter:
-            name = "vosk"
+        Осознанное исключение: цепочка ровно из одного ``vosk`` —
+        легитимный офлайн-режим (робот в поле без сети), её не трогаем.
+        """
+        deduped: list = []
+        for name in chain or []:
+            name = str(name).strip().lower()
+            if name not in KNOWN_STT_PROVIDERS:
+                if name and logger is not None:
+                    logger.warning(
+                        f"⚠️ stt_provider_chain: неизвестный провайдер "
+                        f"{name!r} — игнорирую "
+                        f"(известные: {sorted(KNOWN_STT_PROVIDERS)})"
+                    )
+                continue
+            if name not in deduped:
+                deduped.append(name)
+        if not deduped:
+            return list(DEFAULT_STT_PROVIDER_CHAIN)
+        if deduped == [_LAST_RESORT_PROVIDER]:
+            return deduped
+        if _LAST_RESORT_PROVIDER in deduped:
+            deduped.remove(_LAST_RESORT_PROVIDER)
+        deduped.append(_LAST_RESORT_PROVIDER)
+        return deduped
 
-            def __init__(self, outer: "STTNode"):
-                self._outer = outer
+    def _ensure_minimax_provider(self):
+        """Лениво собрать MiniMax STT-клиент. ``None`` — провайдер не настроен.
 
-            def prepare(self) -> None:
-                # Загрузка модели (~4 с на Pi) не должна съедать таймаут
-                # распознавания — см. stt_fallback.STTProvider.
-                self._outer._ensure_vosk_loaded()
+        Отсутствие ключа — не ошибка: MiniMax просто выпадает из цепочки
+        (ADR-0091 §5.2 «enabled: false + нет ключа → тихо пропускаем»).
+        Импорт тоже ленивый: без ключа мы не тянем httpx-клиент в память
+        на Pi, где за каждый мегабайт RSS идёт бой (issue #2676).
+        """
+        if self._minimax_stt_initialized:
+            return self._minimax_stt_provider
+        with self._minimax_stt_lock:
+            if self._minimax_stt_initialized:
+                return self._minimax_stt_provider
+            self._minimax_stt_initialized = True
+            if not self.minimax_stt_enabled or not self.minimax_stt_api_key:
+                return None
+            try:
+                from rob_box_voice.stt_providers.minimax_provider import (
+                    MiniMaxSTTProvider,
+                )
 
-            def recognize(self, data: bytes) -> Optional[str]:
-                return self._outer._recognize_vosk(data)
+                self._minimax_stt_provider = MiniMaxSTTProvider(
+                    base_url=self.minimax_stt_base_url,
+                    api_key=self.minimax_stt_api_key,
+                    model=self.minimax_stt_model,
+                    language=self.minimax_stt_language or None,
+                    sample_rate=self.sample_rate,
+                )
+                self.get_logger().info(
+                    f"✅ MiniMax STT инициализирован "
+                    f"(model={self.minimax_stt_model}, "
+                    f"language={self.minimax_stt_language})"
+                )
+            except Exception as exc:  # noqa: BLE001 — провайдер опционален
+                self.get_logger().warning(
+                    f"⚠️ MiniMax STT недоступен ({exc!r}) — цепочка пойдёт дальше"
+                )
+                self._minimax_stt_provider = None
+        return self._minimax_stt_provider
 
-        providers = []
-        if self.yandex_stub is not None:
-            providers.append(_YandexAdapter(self))
-        if self.recognizer is not None or self._vosk_available:
-            providers.append(_VoskAdapter(self))
+    def _recognize_minimax(self, audio_bytes: bytes) -> Optional[str]:
+        """Распознавание через MiniMax STT (cloud, issue #2365).
 
+        В отличие от ``MiniMaxSTTProvider.recognize()``, который глушит все
+        ошибки в ``None``, здесь они пробрасываются ТИПИЗИРОВАННЫМИ: кэш
+        «мёртвых» обязан отличить «кончились деньги» (на 5 минут) от
+        «моргнула сеть» (на 30 секунд), а по ``None`` это неразличимо —
+        он выглядит как «тишина» (``reason="empty"``).
+        """
+        provider = self._ensure_minimax_provider()
+        if provider is None:
+            return None
+        from rob_box_voice.stt_providers.minimax_provider import (
+            MiniMaxSTTAuthError,
+            MiniMaxSTTRateLimitError,
+            MiniMaxSTTUnavailableError,
+        )
+
+        try:
+            return provider.transcribe(audio_bytes).text
+        except MiniMaxSTTAuthError as exc:
+            raise STTAuthError(str(exc)) from exc
+        except MiniMaxSTTRateLimitError as exc:
+            raise STTQuotaError(str(exc)) from exc
+        except MiniMaxSTTUnavailableError as exc:
+            if str(exc).startswith("timeout"):
+                raise STTTimeoutError(str(exc)) from exc
+            raise
+
+    def _build_provider_chain(self) -> list:
+        """Собрать адаптеры в порядке приоритета, пропустив ненастроенных.
+
+        Кэш «мёртвых» здесь НЕ применяется — это забота
+        ``select_recognition`` (он же залогирует пропуск как
+        ``reason="dead"``, чтобы оператор видел причину в одной строке).
+        """
+        builders = {
+            "minimax": self._minimax_adapter,
+            "yandex": self._yandex_adapter,
+            "vosk": self._vosk_adapter,
+        }
+        providers: list = []
+        for name in self.provider_chain:
+            builder = builders.get(name)
+            if builder is None:
+                continue
+            adapter = builder()
+            if adapter is not None:
+                providers.append(adapter)
+        return providers
+
+    def _minimax_adapter(self):
+        """Адаптер MiniMax или ``None``, если провайдер не настроен."""
+        if not self.minimax_stt_enabled or not self.minimax_stt_api_key:
+            return None
+        return _NodeSTTAdapter("minimax", self._recognize_minimax)
+
+    def _yandex_adapter(self):
+        """Адаптер Yandex или ``None``, если gRPC-стаб не поднялся."""
+        if self.yandex_stub is None:
+            return None
+        return _NodeSTTAdapter("yandex", self._recognize_yandex)
+
+    def _vosk_adapter(self):
+        """Адаптер Vosk или ``None``, если модели нет на диске.
+
+        ``prepare`` грузит модель ВНЕ soft-timeout распознавания —
+        иначе первая фраза после отказа облака отбрасывалась по таймауту
+        (issue #2609).
+        """
+        if self.recognizer is None and not self._vosk_available:
+            return None
+        return _NodeSTTAdapter(
+            "vosk", self._recognize_vosk, prepare=self._ensure_vosk_loaded
+        )
+
+    def _provider_policies(self) -> dict:
+        """Per-provider бюджет таймаута/повторов (issue #2365 Phase 2).
+
+        До Phase 2 бюджет был один на всех, и retry доставались только
+        первому в цепочке. С тремя провайдерами это неверно: у MiniMax
+        свой таймаут (5с), у Yandex свой (12с, issue #1477), а Vosk
+        офлайновый — ему ни таймаут, ни повтор не нужны.
+        """
+        if ProviderPolicy is None:  # pragma: no cover — без stt_fallback
+            return {}
+        return {
+            "minimax": ProviderPolicy(
+                timeout_s=self.minimax_stt_timeout_s,
+                max_retries=self.minimax_stt_max_retries,
+                retry_backoff_s=self.retry_backoff_s,
+            ),
+            "yandex": ProviderPolicy(
+                timeout_s=self.yandex_timeout_s,
+                max_retries=self.yandex_max_retries,
+                retry_backoff_s=self.retry_backoff_s,
+            ),
+            # Vosk: повтор мусора даст тот же мусор. Таймаут берём
+            # с запасом — на Pi холодный прогон бывает ~2-4с.
+            "vosk": ProviderPolicy(
+                timeout_s=max(self.yandex_timeout_s, 10.0),
+                max_retries=0,
+                retry_backoff_s=self.retry_backoff_s,
+            ),
+        }
+
+    def _recognize_with_fallback(self, audio_bytes: bytes) -> "tuple[Optional[str], list]":
+        """Прогнать фразу по цепочке провайдеров (ADR-0124).
+
+        Порядок — из ``stt_provider_chain`` (дефолт minimax → yandex →
+        vosk), бюджеты — из ``_provider_policies``, пропуск лежащих
+        облаков — через кэш «мёртвых».
+
+        Возвращает ``(text, attempts)``.
+        """
+        providers = self._build_provider_chain()
         if not providers:
-            self.get_logger().warning("⚠️  Нет ни одного STT-провайдера (Yandex и Vosk отключены)")
+            self.get_logger().warning(
+                "⚠️  Нет ни одного STT-провайдера "
+                f"(цепочка {self.provider_chain}: MiniMax без ключа, "
+                "Yandex без стаба, Vosk без модели)"
+            )
             return None, []
 
-        return select_recognition(
+        text, attempts = select_recognition(
             providers,
             audio_bytes,
             timeout_s=self.yandex_timeout_s,
             max_retries=self.yandex_max_retries,
             retry_backoff_s=self.retry_backoff_s,
             min_text_chars=self.min_text_chars,
+            policies=self._provider_policies(),
+            dead_cache=self._provider_dead_cache,
+        )
+        self._log_provider_state("recognize", attempts=attempts)
+        return text, attempts
+
+    # ── Issue #2365 Phase 2: фактический провайдер + персистентный кэш ────
+
+    def _effective_provider(self) -> Optional[str]:
+        """Первый «живой» провайдер цепочки — то, что реально слушает робота.
+
+        Аналог ``tts_node._effective_provider`` (issue #1229): номинальный
+        порядок из параметра и фактический после фолбека — разные вещи, и
+        оператору нужен второй.
+        """
+        chain = getattr(self, "provider_chain", None) or list(
+            DEFAULT_STT_PROVIDER_CHAIN
+        )
+        cache = getattr(self, "_provider_dead_cache", None)
+        if cache is None:
+            return chain[0] if chain else None
+        for name in chain:
+            if not cache.is_dead(name):
+                return name
+        return chain[-1] if chain else None
+
+    def _load_persisted_provider_state(self) -> None:
+        """Восстановить кэш «мёртвых» из файла (аналог tts_node, issue #1229).
+
+        Зачем: voice-assistant перезапускается чаще, чем хотелось бы
+        (#2676 — OOM и каскадные рестарты). Без персистентности каждый
+        рестарт снова платит полный таймаут мёртвому облаку.
+        """
+        cache = getattr(self, "_provider_dead_cache", None)
+        path = getattr(self, "provider_state_file", "") or ""
+        if cache is None or not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError, TypeError):
+            return  # нет файла / битый JSON — не мешаем старту
+        if not isinstance(data, dict):
+            return
+        dead = data.get("dead_providers") or {}
+        if not isinstance(dead, dict):
+            return
+        restored = cache.restore_wall(dead)
+        if restored:
+            self.get_logger().info(
+                f"💾 Восстановлен кэш мёртвых STT-провайдеров из {path}: "
+                f"{restored}"
+            )
+
+    def _persist_provider_state(self, payload: dict) -> None:
+        """Записать состояние провайдеров в файл (best-effort)."""
+        path = getattr(self, "provider_state_file", "") or ""
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh, ensure_ascii=False)
+        except OSError as exc:  # noqa: BLE001 — файл не критичен для STT
+            self.get_logger().debug(
+                f"⚠️ Не удалось записать stt provider_state {path}: {exc}"
+            )
+
+    def _log_provider_state(self, reason: str, attempts=None) -> None:
+        """Зафиксировать смену фактического провайдера: лог + файл состояния.
+
+        У TTS аналогичное состояние уезжает в топик
+        ``/voice/tts/provider_state`` (issue #1229) — там у него четыре
+        потребителя (mcp_server, dialogue_node, quest_node, supervisor).
+        У STT потребителя пока нет, а топик без потребителя — ровно то,
+        что ловит сторож issue #2118, поэтому здесь только лог и
+        персистентный файл. Появится потребитель — топик добавляется
+        одной строкой рядом.
+
+        Пишем только при СМЕНЕ эффективного провайдера (или на
+        ``startup``): иначе строка сыпалась бы на каждую фразу.
+        """
+        effective = self._effective_provider()
+        if effective is None:
+            return
+        if reason != "startup" and effective == self._last_effective_provider:
+            return
+        self._last_effective_provider = effective
+        cache = getattr(self, "_provider_dead_cache", None)
+        dead = {
+            name: round(cache.remaining_s(name), 1)
+            for name in self.provider_chain
+            if cache is not None and cache.is_dead(name)
+        }
+        self.get_logger().info(
+            f"🎧 STT provider → '{effective}' "
+            f"(chain={self.provider_chain}, dead={dead}, reason={reason}, "
+            f"last_attempt={attempts[-1].provider if attempts else None})"
+        )
+        self._persist_provider_state(
+            {
+                "provider": effective,
+                "dead_providers": (
+                    cache.snapshot_wall() if cache is not None else {}
+                ),
+            }
         )
 
     def _recognize_legacy(self, audio_bytes: bytes) -> Optional[str]:
@@ -1256,18 +1708,12 @@ class STTNode(Node):
                 timeout=self.yandex_timeout_s,
             )
         except grpc.RpcError as e:
-            if e.code() == grpc.StatusCode.DEADLINE_EXCEEDED:
-                self.get_logger().warning(
-                    f"⏱️ [issue 1477] phase={phase} DEADLINE_EXCEEDED "
-                    f"({self.yandex_timeout_s}s)"
-                )
-                raise STTTimeoutError(
-                    f"Yandex STT deadline exceeded ({self.yandex_timeout_s}s)"
-                )
             self.get_logger().warning(
                 f"⚠️ [issue 1477] phase={phase} grpc error: {e.code()} {e.details()}"
             )
-            raise
+            # Issue #2365 Phase 2 — типизируем код gRPC, чтобы кэш «мёртвых»
+            # отличил кончившуюся квоту от моргнувшей сети (_map_grpc_error).
+            raise _map_grpc_error(e, self.yandex_timeout_s)
 
         # Обрабатываем ответы
         final_text = None
