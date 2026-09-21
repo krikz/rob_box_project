@@ -110,7 +110,10 @@ LAUNCH_ARGS=(
     gaze_source:=${GAZE_SOURCE}
     first_frame_timeout_sec:=${FIRST_FRAME_TIMEOUT_SEC}
     output_topic:=${OUTPUT_TOPIC}
-    publish_when_no_input:=true
+    # ADR-0104 acceptance #5 (issue #2703): в проде обязан быть false —
+    # см. тот же комментарий в start_vision_hailo.sh. launch_factory
+    # default остаётся 'true' (CI/smoke), сюда не трогать.
+    publish_when_no_input:=false
 )
 if [ -n "${HEF_PATH}" ]; then
     LAUNCH_ARGS+=( hef_path:=${HEF_PATH} )

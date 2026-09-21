@@ -17,6 +17,7 @@ import json
 import sys
 import time
 import types
+from pathlib import Path
 from typing import Any, Callable, Dict, List
 from unittest.mock import MagicMock
 
@@ -312,8 +313,19 @@ sys.modules.setdefault('rob_box_perception_msgs', _perception_msgs)
 sys.modules.setdefault('rob_box_perception_msgs.msg', _perception_msgs_msg)
 
 # ---- utils stubs (просто чтобы import работал) ----
+# issue #2703/#2704 фикс-побочка: __path__ раньше был [] (пустой). Это
+# ГЛОБАЛЬНО (через sys.modules.setdefault — без teardown) "запирало" имя
+# rob_box_perception.utils на этот фейковый пакет до конца pytest-сессии,
+# и ЛЮБОЙ новый submodule (например utils/heartbeat.py, добавленный для
+# vision_hailo_node.py) переставал импортироваться из ЛЮБОГО файла,
+# который коллектится ПОСЛЕ этого, — даже если реальный файл на диске
+# существует. Указываем реальную директорию utils/ как fallback __path__:
+# явно застабленные submodule'и (internet_monitor/node_monitor/
+# time_provider — ниже) резолвятся из sys.modules как раньше (Python
+# сначала проверяет sys.modules), а НЕ застабленные ищутся на диске.
+_REAL_UTILS_DIR = str(Path(__file__).resolve().parents[2] / 'rob_box_perception' / 'utils')
 _utils_pkg = types.ModuleType('rob_box_perception.utils')
-_utils_pkg.__path__ = []
+_utils_pkg.__path__ = [_REAL_UTILS_DIR]
 _internet_monitor = types.ModuleType('rob_box_perception.utils.internet_monitor')
 _internet_monitor.InternetConnectivityMonitor = MagicMock
 _node_monitor = types.ModuleType('rob_box_perception.utils.node_monitor')

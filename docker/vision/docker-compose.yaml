@@ -821,17 +821,20 @@ services:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
-      # ADR-0104 (issue #2531 acceptance #6): capability-honest healthcheck.
+      # ADR-0104 + issue #2703: capability-honest healthcheck, БЕЗ ros2 CLI.
       #
-      # Старый ``pgrep -f vision_hailo`` давал Up (healthy) даже когда
-      # нода ни разу не получала кадров от источника (silent blindness).
-      # Новый healthcheck_frame.sh проверяет два независимых условия:
+      # История: pgrep-only (silent blindness) -> ros2 topic echo --once
+      # (issue #2531/#2608) -> ЭТОТ вариант (issue #2703), потому что
+      # "ros2 topic echo" оказался ложью в обе стороны: (1) ros2cli-демон
+      # на Vision Pi падает под rmw_zenoh независимо от состояния ноды,
+      # (2) тишина в топике в real-режиме — норма (пустая сцена), а не
+      # признак смерти. Новый healthcheck_frame.sh проверяет:
       #   1) процесс vision_hailo жив (pgrep),
-      #   2) на /vision/hailo/events реально приходит событие
-      #      (ros2 topic echo --once). Publisher count > 0 НЕ годится
-      #      (issue #2602): publisher создаётся на старте даже у немой ноды.
+      #   2) heartbeat-файл (/tmp/vision_hailo_heartbeat) свежий —
+      #      нода обновляет его после каждого успешного infer(), НЕ по
+      #      факту публикации события (rob_box_perception.utils.heartbeat).
       #
-      # Если событий нет — контейнер уходит в unhealthy и docker
+      # Если heartbeat протух — контейнер уходит в unhealthy и docker
       # перезапустит (или operator увидит через promtail + grafana).
       test: ["CMD-SHELL", "/scripts/healthcheck_frame.sh"]
       interval: 30s
@@ -889,6 +892,12 @@ services:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
+      # issue #2704: старый чек уходил в fallback pgrep-only ВСЕГДА
+      # (command -v ros2 до source setup.bash -> ros2 CLI не в PATH).
+      # Новый healthcheck_face_frame.sh — heartbeat СВОЕЙ ноды
+      # (/tmp/vision_face_heartbeat), не Publisher count общего топика
+      # /vision/hailo/events (issue #2602 — этот признак непригоден,
+      # топик общий с vision-hailo). Тот же механизм, что у vision-hailo.
       test: ["CMD-SHELL", "/scripts/healthcheck_face_frame.sh"]
       interval: 30s
       timeout: 10s
