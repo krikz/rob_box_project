@@ -2179,8 +2179,46 @@ for p in json.load(sys.stdin):
                     step_ok=0
                     last_fail_what="${last_fail_what:+$last_fail_what+}acceptance"
                 else
-                    acc_ok_any=1
-                    log "STEP ${label}: ✅ acceptance PASS"
+                    # Регистрация диктора, которая СКЛЕИЛАСЬ с чужим профилем,
+                    # не является регистрацией.
+                    #
+                    # bug(живой прогон 35667281570, акт 2, 22.09.2026). Шаг
+                    # n204_boris_intro_long получил OK, потому что acceptance
+                    # проверяет только факт вызова register_speaker. А в логах
+                    # робота за то же окно:
+                    #   user_input='[Spkr:Саша] ... Меня зовут Борис ...'
+                    #   🔗 Speaker 'Борис' merged into existing profile
+                    #      (id=dc417cef) — voice matched an already-known speaker
+                    #   ✅ [issue 1077] Speaker registered: 'Борис' id=dc417cef
+                    # То есть голос Бориса опознан как Саша, Борис склеен в
+                    # профиль Саши, а профиль ПЕРЕИМЕНОВАН — Саша исчез.
+                    # В /data/speakers.db после акта остался ОДИН диктор
+                    # «Борис» с двумя эмбеддингами вместо двух дикторов.
+                    # Текст шага при этом прямо просит «Запомни мой голос
+                    # ОТДЕЛЬНО от Сашиного... я не хочу, чтобы ты нас путал».
+                    # Зелёный шаг поверх потерянной личности — ровно тот
+                    # красивый PASS, против которого ADR-0018.
+                    case "$acceptance_json" in
+                        *register_speaker*)
+                            _merge_log="$(${ROBOT_SSH} "docker logs voice-assistant --since '${STEP_BEFORE}' 2>&1" 2>/dev/null \
+                                | grep -oE "Speaker '[^']*' merged into existing profile \(id=[0-9a-f]*\)" | tail -1)"
+                            if [ -n "$_merge_log" ]; then
+                                step_ok=0
+                                last_fail_what="${last_fail_what:+$last_fail_what+}speaker_merged"
+                                log "STEP ${label}: ❌ регистрация СКЛЕИЛАСЬ с уже известным диктором: ${_merge_log}"
+                                log "STEP ${label}: это НЕ новый профиль — существующий переименован, прежняя личность потеряна. Шаг просит запомнить голос ОТДЕЛЬНО, значит проверка не пройдена."
+                                log "STEP ${label}: смотреть register_match_threshold в speaker_id_node и различимость голосов TTS-провайдера ${E2E_TTS_PROVIDER_RESOLVED:-$E2E_TTS_PROVIDER} (у minimax Russian_ReliableMan и Russian_HandsomeChildhoodFriend неразличимы для resemblyzer)."
+                                printf '%s\n' "STEP ${label}: ${_merge_log}" >> "$OUT_DIR/speaker_merges.log" 2>/dev/null || true
+                            else
+                                acc_ok_any=1
+                                log "STEP ${label}: ✅ acceptance PASS"
+                            fi
+                            ;;
+                        *)
+                            acc_ok_any=1
+                            log "STEP ${label}: ✅ acceptance PASS"
+                            ;;
+                    esac
                 fi
             fi
             # Retry при FAIL patterns/acceptance (если разрешён сценарием)
