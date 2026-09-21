@@ -61,7 +61,7 @@ Main Pi (10.1.1.22) **не подходит**: его HAT-слот занят CA
 - **Применение**: dynamic obstacle avoidance (блокер из ROADMAP, Tier A), разблокирует "робот-гид".
 
 **Phase 2 (~3–4 недели) — face detection + recognition + journal**:
-- Модели: `retinaface_mobilenet_v1.hef` (4.6 TOPS, 50+ FPS) + `arcface_mobilefacenet.hef` (2.8 TOPS, 60+ FPS, 128-dim embedding).
+- Модели: `retinaface_mobilenet_v1.hef` (4.6 TOPS, 50+ FPS) + `arcface_mobilefacenet.hef` (2.8 TOPS, 60+ FPS, **512**-dim embedding — «128» было ошибкой со страницы model zoo, замерено на роботе 22.09.2026, см. ADR-0123 §4.1).
 - БД: SQLite `/data/faces.db` + FAISS-cpu индекс.
 - Нода: `vision_face_node` (Phase 2 дополнение `vision_hailo_node`, либо отдельный процесс — решим в Phase 2).
 - **Обязательная точка интеграции (issue #2440)**: `vision_face_node` реализует шов идентичности `rob_box_harness.identity` — `resolve()` с лицевым сигналом, `note_seen`/`since_last_seen` поверх общего памятного слоя (`harness_voice.db`). **НЕ** заводить параллельные `last_seen_at`/`seen_count` в отдельном `/data/faces.db` — журнал «кто заходил» и возраст знакомства живут в шве, иначе голос+лицо снова разойдутся по трём несвязанным ключам (тот же дефект, что закрывает #2440 для голоса).
@@ -263,7 +263,7 @@ Community ROS2-обёртки (для Phase 2 опционально): `hailo_ro
 
 **Принципы** (обязательно до merge Phase 2):
 - Raw images **не хранятся** на диске ни в каком виде (только в RAM во время инференса).
-- В БД `/data/faces.db` только: `embedding BLOB (128-dim float32)`, `name TEXT`, `created_at`, `confidence_avg`. Поля `last_seen_at`/`seen_count` сюда **не** заводятся — они принадлежат шву идентичности (issue #2440, `note_seen`/`since_last_seen`), а не лицевому индексу.
+- В БД `/data/faces.db` только: `embedding BLOB (512-dim float32 — см. правку размерности в ADR-0123 §4.1)`, `name TEXT`, `created_at`, `confidence_avg`. Поля `last_seen_at`/`seen_count` сюда **не** заводятся — они принадлежат шву идентичности (issue #2440, `note_seen`/`since_last_seen`), а не лицевому индексу.
 - **Enrollment** — только по явной голосовой команде ("Робот, запомни меня как Маша") + подтверждение через LLM.
 - **Retention**: embeddings без `last_seen_at` обновления > 90 дней — авто-удаление (cron).
 - **No external send**: embeddings не покидают Vision Pi, никакой облачной синхронизации.

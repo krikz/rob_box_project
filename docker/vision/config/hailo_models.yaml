@@ -101,6 +101,73 @@ vision_face_node:
   # Тот же топик, что у person-детекции (issue #2599 acceptance).
   output_topic: /vision/hailo/events
 
+  # ---- ArcFace-узнавание (ADR-0123, issue #2599 PR-B) ----
+  # Отдельный HEF от детекции: RetinaFace (hef_path выше) находит лицо на
+  # кадре, ArcFace на кропе лица считает эмбеддинг для узнавания. Отдельная
+  # пара enabled/path, а не переиспользование hailo_enabled/hef_path выше —
+  # это два разных инференса на одном устройстве, каждый может деградировать
+  # независимо (ADR-0018): без ArcFace нода остаётся с детекцией, но без
+  # узнавания.
+  #
+  # ENV override — те же хостовые переменные ADR-0120 §8, что у
+  # HAILO_ENABLED/HEF_PATH: FACE_ARCFACE_ENABLED / FACE_ARCFACE_HEF_PATH в
+  # docker/vision/.env, внутри контейнера ARCFACE_ENABLED/ARCFACE_HEF_PATH
+  # ("ENV override wins", start_vision_face.sh).
+  arcface_enabled: true
+
+  # Путь к arcface_mobilefacenet.hef. Кладёт на хост шаг деплоя
+  # "[Vision Pi] Ensure HEF models" (Ресурсный пак, запись arcface-hef в
+  # scripts/resource_pack/manifest.yaml). Если файла нет — нода остаётся без
+  # узнавания, RetinaFace-детекция не затронута (degrade, не fail-deploy).
+  arcface_hef_path: /opt/rob_box/models/arcface_mobilefacenet.hef
+
+  # ---- Хранилище лиц (ADR-0123 §4-5) ----
+  # FaceStore — единственный модуль, который пишет сюда. Каталог смонтирован
+  # как отдельный persistent-том в docker-compose.yaml (./data/faces →
+  # /data/faces), а НЕ печётся в образ: должен пережить пересоздание
+  # контейнера (ADR-0123 §4, "не в образе").
+  face_store_root: /data/faces
+
+  # Режим приватности (ADR-0123 §2, таблица режимов). workshop — решение
+  # владельца от 16.09.2026: эмбеддинги+снимки пишутся на диск для ВСЕХ,
+  # включая незнакомцев (нужно для отладки узнавания в мастерской). Это
+  # заменяет строгую политику ADR-0089 §8 (только эмбеддинг+имя, без снимков) —
+  # см. заметку "face-privacy-workshop-mode". Другие значения:
+  # exhibition (незнакомцы только в памяти) и strict (снимки не хранятся).
+  # Переключение — вручную владельцем, робот сам площадку не определяет.
+  face_privacy_mode: workshop
+
+  # Порог узнавания (ADR-0123 §6, косинусное сходство эмбеддингов).
+  # НЕ ОТКАЛИБРОВАН на реальных данных — стартовое значение, как голосовой
+  # identify до sweep-таблицы (issue #2348). Калибровка — отдельная карточка.
+  face_identify_threshold: 0.45
+
+  # Встреча, а не кадр (ADR-0123 §3): при ~5 VisionEvent/сек с одного лица
+  # писать на каждое событие нельзя. Лицевой трекер склеивает детекции в
+  # трек; трек становится встречей, когда лицо было в кадре не меньше
+  # min_track_sec и хотя бы в одном кадре не меньше min_face_px по короткой
+  # стороне. Стартовые значения владельца от 16.09.2026.
+  min_track_sec: 2.0
+  min_face_px: 48.0
+
+  # Сколько лиц эмбеддить за кадр. Бюджет замерен на Vision Pi
+  # 22.09.2026 с ОБОИМИ HEF в одном процессе: после прогрева детекция
+  # 120-150 мс, эмбеддинг 8-25 мс на лицо, тик ноды 0.5 с. То есть NPU
+  # тут не узкое место (влезает десяток лиц) — ограничение про то, что
+  # хвост мелких лиц на заднем плане только пачкает галерею. Эмбеддятся
+  # САМЫЕ КРУПНЫЕ лица; мелкие и так отсекает min_face_px.
+  max_embeds_per_frame: 4
+
+  # Лимиты хранилища (ADR-0123 §4.1, §10). Стартовые значения владельца:
+  # max_embeddings — векторов на одного человека в галерее (при переполнении
+  # вытесняется самый похожий на остальные); keep_encounters — снимков
+  # встреч на человека (старые удаляются); max_strangers — записей
+  # незнакомцев суммарно в workshop (при переполнении вытесняется самый
+  # давний). Ничего из этого пока не откалибровано на реальных данных.
+  max_embeddings: 20
+  keep_encounters: 10
+  max_strangers: 500
+
 # Модели (Phase 1.5+). Phase 1 PoC оставляет список пустым.
 models:
   # YOLOv8n — person detection. 3.5 TOPS, 100+ FPS.
@@ -118,9 +185,15 @@ models:
     hef: /opt/rob_box/models/retinaface_mobilenet_v1.hef
     confidence_threshold: 0.6
 
-  # ArcFace-MobileFaceNet — face embedding. 2.8 TOPS, 60+ FPS, 128-dim.
+  # ArcFace-MobileFaceNet — face embedding. 2.8 TOPS, 60+ FPS.
   # Источник: https://github.com/hailo-ai/hailo_model_zoo (arcface_mobilefacenet)
   arcface:
-    enabled: false
+    enabled: true
     hef: /opt/rob_box/models/arcface_mobilefacenet.hef
-    embedding_dim: 128
+    # ВНИМАНИЕ: 512, не 128. embedding_dim: 128 было ошибкой (взято со
+    # страницы model zoo не глядя на устройство) и в этом виде разошлось по
+    # ADR-0089/ADR-0106/ADR-0123 §4.1 — там пока не поправлено. ЗАМЕРЕНО на
+    # реальном Vision Pi 22.09.2026: вход (112,112,3) UINT8, выход fc1
+    # (512,) UINT8. Если правишь это число — сверяйся с устройством
+    # (hailortcli parse-hef), а не с документацией model zoo.
+    embedding_dim: 512

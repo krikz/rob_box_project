@@ -226,6 +226,46 @@ def test_retinaface_sha_is_the_known_good_value() -> None:
     )
 
 
+def test_manifest_covers_arcface_hef() -> None:
+    """Issue #2599 PR-B / ADR-0123: ArcFace HEF обязана быть в манифесте.
+
+    sha256/size сняты вручную на живом роботе 22.09.2026, тем же вечером,
+    когда HEF был скопирован в /opt/rob_box/models/ (ручной акт, который эта
+    запись делает воспроизводимым). Без записи здесь скрипт не положит файл
+    ни при одном прогоне деплоя.
+    """
+    data = yaml.safe_load(MANIFEST.read_text(encoding="utf-8"))
+    entry = next(r for r in data["resources"] if r["name"] == "arcface-hef")
+    assert entry["type"] == "open"
+    assert entry["url"].endswith("/arcface_mobilefacenet.hef")
+    assert entry["sha256"] == (
+        "c75fc63241383f7b346db54e3fa5d1cc89b85799152f5121ed0fcca9c057ddc7"
+    )
+    assert entry["size_bytes"] == 3505142
+    assert entry["target"] == "/opt/rob_box/models/arcface_mobilefacenet.hef"
+    # Та же деградация, что у retinaface-hef: отсутствие модели не должно
+    # ронять деплой, только вырубать узнавание (детекция остаётся живой).
+    assert entry["required"] == "soft"
+    assert entry["on_missing"] == "degrade"
+
+
+def test_arcface_sha_is_the_known_good_value() -> None:
+    """Регресс: эталон arcface не должен тихо разъехаться.
+
+    Сверяется с зафиксированным значением напрямую, а не с откатным
+    скриптом: к моменту этой карточки Этап 5 плана уже выполнен (#2731),
+    и ``download_*_hef.sh`` больше нет — доставку целиком закрывают
+    манифест и ``--only`` в деплое. Значение замерено на живом Vision Pi
+    22.09.2026 (issue #2599 PR-B): 3505142 байта, вход (112,112,3) UINT8,
+    выход fc1 (512,).
+    """
+    data = yaml.safe_load(MANIFEST.read_text(encoding="utf-8"))
+    entry = next(r for r in data["resources"] if r["name"] == "arcface-hef")
+    assert entry["sha256"].lower() == (
+        "c75fc63241383f7b346db54e3fa5d1cc89b85799152f5121ed0fcca9c057ddc7"
+    )
+
+
 def test_crlf_manifest_is_parsed_in_full(tmp_path: Path, http_base: str) -> None:
     """Манифест с CRLF обязан разбираться целиком, а не частично.
 

@@ -45,7 +45,16 @@ def emit(k, v):
     print(f'export {k.upper()}="{v}"')
 for key in ('hailo_enabled', 'hef_path', 'stub_period_sec',
             'confidence_threshold', 'nms_iou_threshold', 'gaze_source',
-            'first_frame_timeout_sec', 'output_topic'):
+            'first_frame_timeout_sec', 'output_topic',
+            # ArcFace-узнавание + FaceStore (ADR-0123, issue #2599 PR-B).
+            # Тот же приём "ENV override wins", ключи YAML совпадают с
+            # именами контейнерных ENV после .upper() — см. compose (ARCFACE_*,
+            # FACE_STORE_ROOT, FACE_PRIVACY_MODE, FACE_IDENTIFY_THRESHOLD).
+            'arcface_enabled', 'arcface_hef_path', 'face_store_root',
+            'face_privacy_mode', 'face_identify_threshold',
+            'min_track_sec', 'min_face_px', 'max_embeds_per_frame',
+            'max_embeddings',
+            'keep_encounters', 'max_strangers'):
     if key not in node:
         continue
     env_name = key.upper()
@@ -72,10 +81,32 @@ GAZE_SOURCE="${GAZE_SOURCE:-oak_d}"
 FIRST_FRAME_TIMEOUT_SEC="${FIRST_FRAME_TIMEOUT_SEC:-10.0}"
 OUTPUT_TOPIC="${OUTPUT_TOPIC:-/vision/hailo/events}"
 
+# ArcFace-узнавание + FaceStore (ADR-0123, issue #2599 PR-B). Дефолты те же,
+# что в docker/vision/config/hailo_models.yaml — держим на случай, если ни
+# ENV, ни YAML файл недоступны (config not mounted).
+ARCFACE_ENABLED="${ARCFACE_ENABLED:-false}"
+ARCFACE_HEF_PATH="${ARCFACE_HEF_PATH:-}"
+FACE_STORE_ROOT="${FACE_STORE_ROOT:-/data/faces}"
+FACE_PRIVACY_MODE="${FACE_PRIVACY_MODE:-workshop}"
+FACE_IDENTIFY_THRESHOLD="${FACE_IDENTIFY_THRESHOLD:-0.45}"
+MIN_TRACK_SEC="${MIN_TRACK_SEC:-2.0}"
+MIN_FACE_PX="${MIN_FACE_PX:-48.0}"
+MAX_EMBEDS_PER_FRAME="${MAX_EMBEDS_PER_FRAME:-4}"
+MAX_EMBEDDINGS="${MAX_EMBEDDINGS:-20}"
+KEEP_ENCOUNTERS="${KEEP_ENCOUNTERS:-10}"
+MAX_STRANGERS="${MAX_STRANGERS:-500}"
+
 # ---------- summary ----------
 echo "[start_vision_face] config: HAILO_ENABLED=${HAILO_ENABLED} HEF_PATH=${HEF_PATH:-<none>}"
 echo "[start_vision_face] topics: output=${OUTPUT_TOPIC}"
 echo "[start_vision_face] confidence_threshold=${CONFIDENCE_THRESHOLD} nms_iou=${NMS_IOU_THRESHOLD}"
+echo "[start_vision_face] arcface: ARCFACE_ENABLED=${ARCFACE_ENABLED} ARCFACE_HEF_PATH=${ARCFACE_HEF_PATH:-<none>}"
+echo "[start_vision_face] face store: root=${FACE_STORE_ROOT} privacy_mode=${FACE_PRIVACY_MODE} identify_threshold=${FACE_IDENTIFY_THRESHOLD}"
+echo "[start_vision_face] face limits: min_track_sec=${MIN_TRACK_SEC} min_face_px=${MIN_FACE_PX} max_embeds_per_frame=${MAX_EMBEDS_PER_FRAME} max_embeddings=${MAX_EMBEDDINGS} keep_encounters=${KEEP_ENCOUNTERS} max_strangers=${MAX_STRANGERS}"
+
+if [ "${ARCFACE_ENABLED}" = "true" ] && [ -z "${ARCFACE_HEF_PATH}" ]; then
+    echo "[start_vision_face] WARN: ARCFACE_ENABLED=true, но ARCFACE_HEF_PATH пуст — узнавание уйдёт в degraded (ADR-0018)" >&2
+fi
 
 # ---------- capability-honest mode check (ADR-0018) ----------
 if [ "${HAILO_ENABLED}" = "true" ]; then
@@ -99,8 +130,14 @@ if [ "${HAILO_ENABLED}" = "true" ]; then
 fi
 
 # ---------- launch ROS 2 node ----------
-# hef_path передаём только когда непустой (см. issue #2527 — пустой
-# ``hef_path:=`` ломает ros2 launch).
+# hef_path/arcface_hef_path передаём только когда непустые (см. issue #2527
+# — пустой ``hef_path:=`` ломает ros2 launch: без значения после `:=` токен
+# доезжает до ros2 launch как "hef_path:=" без value и парсер спотыкается).
+#
+# Остальные arcface_*/face_* аргументы (ADR-0123, issue #2599 PR-B)
+# объявлены в vision_face.launch.py через extra_params
+# (rob_box_perception.launch_factory.make_hailo_node_launch) — без этого
+# объявления ros2 launch отклонил бы незнакомые key:=value.
 LAUNCH_ARGS=(
     rob_box_perception vision_face.launch.py
     hailo_enabled:=${HAILO_ENABLED}
@@ -114,8 +151,21 @@ LAUNCH_ARGS=(
     # см. тот же комментарий в start_vision_hailo.sh. launch_factory
     # default остаётся 'true' (CI/smoke), сюда не трогать.
     publish_when_no_input:=false
+    arcface_enabled:=${ARCFACE_ENABLED}
+    face_store_root:=${FACE_STORE_ROOT}
+    face_privacy_mode:=${FACE_PRIVACY_MODE}
+    face_identify_threshold:=${FACE_IDENTIFY_THRESHOLD}
+    min_track_sec:=${MIN_TRACK_SEC}
+    min_face_px:=${MIN_FACE_PX}
+    max_embeds_per_frame:=${MAX_EMBEDS_PER_FRAME}
+    max_embeddings:=${MAX_EMBEDDINGS}
+    keep_encounters:=${KEEP_ENCOUNTERS}
+    max_strangers:=${MAX_STRANGERS}
 )
 if [ -n "${HEF_PATH}" ]; then
     LAUNCH_ARGS+=( hef_path:=${HEF_PATH} )
+fi
+if [ -n "${ARCFACE_HEF_PATH}" ]; then
+    LAUNCH_ARGS+=( arcface_hef_path:=${ARCFACE_HEF_PATH} )
 fi
 exec ros2 launch "${LAUNCH_ARGS[@]}"

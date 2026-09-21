@@ -39,7 +39,7 @@ Touchpoints:
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
@@ -139,6 +139,7 @@ def make_hailo_node_launch(
     preflight_prefix: str,
     include_nms_iou: bool = False,
     include_input_topic: bool = False,
+    extra_params: Optional[Dict[str, str]] = None,
 ) -> LaunchDescription:
     """Собрать LaunchDescription для vision_* ноды (ADR-0110, issue #2658).
 
@@ -156,6 +157,14 @@ def make_hailo_node_launch(
         NMS нужен), False для vision_hailo (yolo, NMS — внутри HEF).
       include_input_topic: True для vision_hailo (legacy/back-compat
         аргумент, ADR-0104), False для vision_face (никогда не объявлялся).
+      extra_params: дополнительные ``{имя: строковый_дефолт}``, которые
+        объявляются как launch-аргументы и уезжают в ``parameters``
+        ноды как есть. Нужны vision_face под узнавание лица (issue
+        #2599 PR-B, ADR-0123): ``arcface_*``, ``face_*``, пороги Встречи.
+        Держать их здесь, а не отдельным блоком в launch-файле, — то же
+        требование DRY, ради которого появилась сама фабрика (ADR-0110).
+        Тип параметра выводит launch_ros из строки, ровно как у
+        ``hailo_enabled`` ('false' → bool) — своего парсинга не заводим.
     """
     args: List[Any] = [
         DeclareLaunchArgument(
@@ -258,6 +267,17 @@ def make_hailo_node_launch(
         node_parameters['nms_iou_threshold'] = LaunchConfiguration(
             'nms_iou_threshold'
         )
+
+    # Дополнительные параметры (узнавание лица — issue #2599 PR-B).
+    # Объявляем после основных, чтобы порядок аргументов в `ros2 launch
+    # --show-args` оставался прежним для уже задеплоенных инструментов.
+    for _name, _default in (extra_params or {}).items():
+        args.append(DeclareLaunchArgument(
+            _name,
+            default_value=_default,
+            description=f'Параметр узнавания лица (см. hailo_models.yaml: {_name}).',
+        ))
+        node_parameters[_name] = LaunchConfiguration(_name)
 
     return LaunchDescription([
         *args,

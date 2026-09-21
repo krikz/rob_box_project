@@ -324,9 +324,13 @@ jobs:
           echo "🧠 Ресурсный пак: HEF-модели на Vision Pi..."
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           # Этап 2 плана docs/plans/2026-09-15-resource-pack.md §7: вместо цикла
-          # по двум почти дословно одинаковым download_*_hef.sh — один вызов
-          # apply_resource_pack.sh с манифестом. Шестой ресурс добавляется
-          # записью в manifest.yaml и НЕ требует правки этого workflow.
+          # по нескольким почти дословно одинаковым download_*_hef.sh — один
+          # вызов apply_resource_pack.sh с манифестом. НЕВЕРНО, ЧТО «новый
+          # HEF не требует правки этого workflow»: --only ниже и цикл
+          # HEF_MISSING перечисляют имена явно (issue #2599 PR-B, ArcFace —
+          # третий пример после yolov8n/retinaface). Новую запись в
+          # manifest.yaml обязательно добавить и сюда, иначе
+          # apply_resource_pack.sh её просто не тронет.
           #
           # /opt/rob_box/models монтируется в vision-hailo/vision-face как :ro,
           # поэтому скачать модель может только хост — не контейнер. Скрипт
@@ -352,10 +356,10 @@ jobs:
           RESOURCE_PACK='~/rob_box_project/docker/vision/scripts/resource_pack/apply_resource_pack.sh'
           rp_rc=0
           sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
-            "echo 'open' | sudo -S bash $RESOURCE_PACK --only yolov8n-hef,retinaface-hef" || rp_rc=$?
+            "echo 'open' | sudo -S bash $RESOURCE_PACK --only yolov8n-hef,retinaface-hef,arcface-hef" || rp_rc=$?
 
           HEF_MISSING=""
-          for hef in "yolov8n.hef" "retinaface_mobilenet_v1.hef"; do
+          for hef in "yolov8n.hef" "retinaface_mobilenet_v1.hef" "arcface_mobilefacenet.hef"; do
             if sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} "test -f /opt/rob_box/models/$hef"; then
               echo "✅ $hef на месте"
             else

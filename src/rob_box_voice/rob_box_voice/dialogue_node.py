@@ -209,6 +209,11 @@ from rob_box_voice.startup_greeting import (
 )
 # ADR-0101 §3.1 — единый шов «можно ли заговорить» (issue #2536, PR-B).
 from rob_box_voice.core.occasion import Occasion, OccasionGate, VerdictKind
+from rob_box_voice.core.meeting import (
+    MeetingGreeter,
+    MeetingMarker,
+    parse_meeting_marker,
+)
 
 from rob_box_voice.speaker_profiles import (
     SpeakerTracker,
@@ -811,6 +816,11 @@ class DialogueNode(Node):
         self.create_subscription(
             String, "/voice/music/form", self._on_music_form, 10,
             callback_group=cbg)
+        # Issue #2599 PR-C — лицевой канал как повод заговорить.
+        # Отдельным методом, а не инлайном: try/except здесь упирал
+        # DialogueNode.__init__ в потолок цикломатической сложности
+        # (ADR-0021, cc_budget: CC=21 при лимите 20).
+        self._subscribe_vision_events(cbg)
         # Каталог инструментов от mcp_server. Подписка latched
         # (TRANSIENT_LOCAL) — mcp_server публикует каталог один раз при
         # старте, и порядок запуска нод перестаёт иметь значение.
@@ -1172,7 +1182,19 @@ class DialogueNode(Node):
         # ADR-0101 §3.1 / PR-B: единый шов «можно ли заговорить» (issue #2536).
         # Стартовый gate: глобальный дебаунс 2с, startup — one-shot,
         # dj_tick / unclear / inactivity — резерв для PR-D/E.
-        self._occasion: OccasionGate = OccasionGate()
+        self._occasion: OccasionGate = OccasionGate(
+            # Issue #2599 PR-C: «meeting» — повод, который поднимает
+            # лицевая нода, когда трек стал Встречей (ADR-0123 §3).
+            # Кулдаун на сам повод короткий: не давать двум людям,
+            # вошедшим вместе, слипнуться в одно приветствие. За то,
+            # чтобы не здороваться с ОДНИМ человеком по десять раз,
+            # отвечает per-person кулдаун в ``MeetingGreeter``.
+            source_cooldowns={"meeting": 5.0},
+        )
+        # Issue #2599 PR-C — «Денис входит в мастерскую → робот
+        # заговаривает первым». Фраза собирается без LLM: приветствие
+        # обязано звучать даже когда у облака кончились деньги.
+        self._meeting_greeter: MeetingGreeter = MeetingGreeter()
         # Issue #1219 — LLM voice selection: активный TTS-провайдер для
         # контекста [TTS]. Должен совпадать с tts_node.yaml provider
         # (minimax). Рядом храним current_voice (установленный set_voice),
@@ -6637,6 +6659,126 @@ class DialogueNode(Node):
         phrase = pick_greeting(self._startup_greeting_text)
         self.get_logger().info(f"🗣 Startup greeting: {phrase!r}")
         self._publish_response(phrase)
+
+    # ------------------------------------------------------------------
+    # Встреча лицом — робот заговаривает первым (issue #2599 PR-C)
+    # ------------------------------------------------------------------
+
+    def _subscribe_vision_events(self, cbg: Any) -> None:
+        """Подписка на лицевые события — источник повода «Встреча».
+
+        Топик общий с person-детекцией и сыплет ~5 событий в секунду на
+        человека, поэтому подписка ЛЁГКАЯ: колбэк отсеивает всё, кроме
+        маркера ``{"encounter": "start"}`` в ``attributes_json``, и
+        только он доходит до OccasionGate (ADR-0123 §3).
+
+        Импорт сообщения — локальный и защищённый: ``rob_box_voice`` не
+        зависит от ``rob_box_perception_msgs`` в package.xml, и на Main
+        Pi (где лицевой ноды нет) этого типа может не быть. Без лица
+        диалог обязан работать как раньше.
+        """
+        try:
+            from rob_box_perception_msgs.msg import VisionEvent as _VisionEvent
+
+            self.create_subscription(
+                _VisionEvent, "/vision/hailo/events",
+                self._on_vision_event, 10, callback_group=cbg)
+            self.get_logger().info(
+                "👁 [issue 2599] подписка на /vision/hailo/events — "
+                "робот может заговорить первым при появлении человека"
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(
+                f"⚠️ [issue 2599] лицевой повод недоступен ({exc!r}): "
+                f"робот продолжит отвечать только на голос"
+            )
+
+    def _on_vision_event(self, msg: Any) -> None:
+        """Отсеять всё, кроме маркера начала Встречи.
+
+        Колбэк горячий: топик общий с person-детекцией и сыплет ~5
+        событий в секунду на человека. Поэтому здесь только дешёвая
+        проверка, а вся логика — в :meth:`_handle_meeting`.
+        """
+        marker = parse_meeting_marker(
+            event_type=getattr(msg, "event_type", "") or "",
+            attributes_json=getattr(msg, "attributes_json", "") or "",
+            source_camera=getattr(msg, "source_camera", "") or "",
+        )
+        if marker is None:
+            return
+        try:
+            self._handle_meeting(marker)
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(
+                f"⚠️ [issue 2599] обработка Встречи упала: {exc!r}"
+            )
+
+    def _handle_meeting(self, marker: MeetingMarker) -> None:
+        """Решить и сказать: «Денис вошёл → робот здоровается первым».
+
+        Три независимых фильтра, в порядке дешевизны:
+
+        1. **Диалог не идёт.** Приветствие — для IDLE. Перебивать
+           человека, который уже говорит, хуже, чем промолчать (та же
+           логика, что у startup-приветствия).
+        2. **Не частим с ЭТИМ человеком** (``MeetingGreeter``,
+           per-person кулдаун): вышел покурить и вернулся — это не
+           новая встреча.
+        3. **Повод** (``OccasionGate``, ADR-0102): глобальный дебаунс и
+           стаб-фильтр. Единственная точка решения «можно ли заговорить
+           без слова пользователя» — своей копии правил здесь нет.
+        """
+        if self._dsm.current_state != DialogueStateKind.IDLE:
+            self.get_logger().info(
+                f"👤 [встреча] {marker.name or 'незнакомец'} — диалог "
+                f"активен ({self._dsm.current_state}), не перебиваю"
+            )
+            return
+
+        if not self._meeting_greeter.should_greet(marker):
+            return
+
+        verdict = self._occasion.may_speak(
+            Occasion(
+                kind="meeting",
+                is_user_initiated=False,
+                payload={
+                    # Настоящие значения из VisionEvent, а не константы:
+                    # у OccasionGate свой стаб-фильтр по этим двум полям,
+                    # и подставлять в них «правильные» значения — значит
+                    # его отключить (ADR-0089 §2.2, #2583).
+                    "event_type": "face",
+                    "source_camera": marker.source_camera,
+                    "person_id": marker.person_id,
+                    "name": marker.name,
+                    "is_new": marker.is_new,
+                },
+            )
+        )
+        if verdict.kind != VerdictKind.ALLOW:
+            self.get_logger().info(
+                f"👤 [встреча] {marker.name or 'незнакомец'} — повод "
+                f"отклонён: {verdict.reason}"
+            )
+            return
+
+        phrase = self._meeting_greeter.greet(marker)
+        if not phrase:
+            return
+
+        self.get_logger().info(
+            "🗣 [встреча] %s (person=%s sim=%.3f new=%s встреч=%d): %r"
+            % (
+                marker.name or "незнакомец",
+                marker.person_id[:8],
+                marker.similarity,
+                marker.is_new,
+                marker.encounter_count,
+                phrase,
+            )
+        )
+        self._publish_response(phrase, animation="happy")
 
     def _cancel_greeting_timer(self) -> None:
         """Отменить одноразовый таймер приветствия, если он создан."""
