@@ -249,16 +249,20 @@ def test_manifest_covers_arcface_hef() -> None:
     assert entry["on_missing"] == "degrade"
 
 
-def test_arcface_sha_matches_legacy_script() -> None:
-    """Эталон не должен разойтись между манифестом и откатным скриптом."""
-    legacy = (
-        REPO_ROOT
-        / "docker" / "vision" / "scripts" / "vision-hailo" / "download_arcface_hef.sh"
-    ).read_text(encoding="utf-8")
+def test_arcface_sha_is_the_known_good_value() -> None:
+    """Регресс: эталон arcface не должен тихо разъехаться.
+
+    Сверяется с зафиксированным значением напрямую, а не с откатным
+    скриптом: к моменту этой карточки Этап 5 плана уже выполнен (#2731),
+    и ``download_*_hef.sh`` больше нет — доставку целиком закрывают
+    манифест и ``--only`` в деплое. Значение замерено на живом Vision Pi
+    22.09.2026 (issue #2599 PR-B): 3505142 байта, вход (112,112,3) UINT8,
+    выход fc1 (512,).
+    """
     data = yaml.safe_load(MANIFEST.read_text(encoding="utf-8"))
     entry = next(r for r in data["resources"] if r["name"] == "arcface-hef")
-    assert entry["sha256"].lower() in legacy.lower(), (
-        "sha256 arcface в манифесте разошёлся с download_arcface_hef.sh"
+    assert entry["sha256"].lower() == (
+        "c75fc63241383f7b346db54e3fa5d1cc89b85799152f5121ed0fcca9c057ddc7"
     )
 
 
