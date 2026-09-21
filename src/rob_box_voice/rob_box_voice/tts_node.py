@@ -1273,22 +1273,11 @@ class TTSNode(Node):
         # с первого хода.
         self._load_persisted_provider_state()
 
-        # Issue #2702 — общий health-кэш (ключ провайдера "minimax" совпадает
-        # с тем, что использует LLM-сторона в HealthAwareFallbackLLM/
-        # dialogue_node — Token Plan общий). Провайдеры, помеченные
-        # unavailable ОТТУДА, тоже пропускаются здесь (см. _provider_is_dead);
-        # а падения minimax отсюда зеркалятся туда (см. _mark_provider_dead).
-        self._shared_health_cache = TTSNode._build_shared_health_cache(
-            str(self.get_parameter("health_cache_path").value or ""),
-            float(self.get_parameter("health_ttl_s").value or 300.0),
-            logger=self.get_logger(),
-        )
-        self.cloud_tts_budget_s = max(
-            0.5, float(self.get_parameter("cloud_tts_budget_s").value or 8.0)
-        )
-        # Streak транзиентных (не quota/auth) отказов подряд, по провайдеру —
-        # питает эскалацию TTL 30 → 120 → 300с (issue #2702 п.3).
-        self._provider_transient_streak: Dict[str, int] = {}
+        # Issue #2702 — общий health-кэш, облачный TTS-бюджет, fail-streak.
+        # Вынесено в отдельный метод (ADR-0021 R1 / cc_budget): три
+        # ``x.value or default`` фолбэка на ROS-параметрах здесь считаются
+        # decision points CC-метрикой и толкали __init__ выше baseline.
+        self._init_provider_health()
 
         # Yandex Cloud TTS gRPC v3
         self.yandex_api_key = self.get_parameter("yandex_api_key").value or os.getenv(
@@ -4221,6 +4210,35 @@ class TTSNode(Node):
                     pass
             return None
 
+    def _init_provider_health(self) -> None:
+        """Инициализировать общий health-кэш, облачный бюджет и fail-streak
+        (issue #2702). Вызывается ровно один раз из ``__init__``.
+
+        Вынесено из ``__init__`` отдельным методом (ADR-0021 R1 / cc_budget
+        guard): каждый ``x.value or default`` фолбэк на ROS-параметре ниже
+        считается decision-point'ом в CC-метрике cc_budget.py (``BoolOp``),
+        и три таких фолбэка в одном месте толкали CC ``__init__`` выше
+        baseline. Сама по себе эта инициализация безусловна и линейна —
+        разбивка на метод убирает лишние decision points из CC ``__init__``,
+        не пряча их (метод сам по себе далеко не приближается к лимиту).
+        """
+        # Issue #2702 — общий health-кэш (ключ провайдера "minimax" совпадает
+        # с тем, что использует LLM-сторона в HealthAwareFallbackLLM/
+        # dialogue_node — Token Plan общий). Провайдеры, помеченные
+        # unavailable ОТТУДА, тоже пропускаются здесь (см. _provider_is_dead);
+        # а падения minimax отсюда зеркалятся туда (см. _mark_provider_dead).
+        self._shared_health_cache = TTSNode._build_shared_health_cache(
+            str(self.get_parameter("health_cache_path").value or ""),
+            float(self.get_parameter("health_ttl_s").value or 300.0),
+            logger=self.get_logger(),
+        )
+        self.cloud_tts_budget_s = max(
+            0.5, float(self.get_parameter("cloud_tts_budget_s").value or 8.0)
+        )
+        # Streak транзиентных (не quota/auth) отказов подряд, по провайдеру —
+        # питает эскалацию TTL 30 → 120 → 300с (issue #2702 п.3).
+        self._provider_transient_streak: Dict[str, int] = {}
+
     def _provider_is_dead(self, provider_name: str) -> bool:
         """True, если провайдер лежит в кэше «мёртвых» (TTL не истёк).
 
@@ -4284,6 +4302,23 @@ class TTSNode(Node):
         streaks = getattr(self, "_provider_transient_streak", None)
         if streaks is not None:
             streaks.pop(provider_name, None)
+
+    def _sap_reset_provider_fail_streak(self, provider_name: str) -> None:
+        """``_reset_provider_fail_streak`` за getattr-guard'ом (issue #2702 п.3).
+
+        Bare-стабы в тестах (``_playback_node()`` без ``_bind_dead_cache``)
+        не несут ``_reset_provider_fail_streak`` — вызывать его напрямую
+        уронило бы их с ``AttributeError`` на первом же успешном синтезе.
+        Метод в ``_SAP_HELPER_NAMES``, поэтому ``_bind_sap_helpers_for_stub``
+        привязывает ЕГО САМОГО к любому стабу безусловно; сам он внутри уже
+        решает, звать ли настоящий сброс. Вынесено отдельным методом (а не
+        инлайн ``if`` в ``_sap_synthesize_minimax``/``_sap_synthesize_yandex``)
+        по требованию cc_budget (ADR-0021 R1) — inline-guard добавлял decision
+        point в CC вызывающих методов.
+        """
+        reset = getattr(self, "_reset_provider_fail_streak", None)
+        if reset is not None:
+            reset(provider_name)
 
     def _mark_provider_dead(
         self,
@@ -4797,6 +4832,7 @@ class TTSNode(Node):
         "_sap_publish_finished_failure",
         "_sap_finalize_after_playback",
         "_sap_handle_synthesis_error",
+        "_sap_reset_provider_fail_streak",
     )
 
     def _bind_sap_helpers_for_stub(self) -> None:
@@ -5061,9 +5097,7 @@ class TTSNode(Node):
             # Issue #2702 п.3 — успех сбрасывает эскалацию транзиентных TTL
             # (следующий отказ снова начинает лестницу с 30с, а не с той
             # ступени, на которой она остановилась в прошлый раз).
-            reset_streak = getattr(self, "_reset_provider_fail_streak", None)
-            if reset_streak is not None:
-                reset_streak("minimax")
+            self._sap_reset_provider_fail_streak("minimax")
         except Exception as e:
             mark_dead = getattr(self, "_mark_provider_dead", None)
             if mark_dead is not None:
@@ -5182,9 +5216,7 @@ class TTSNode(Node):
             ctx["used_voice"] = _yandex_voice
             _yandex_succeeded = True
             # Issue #2702 п.3 — успех сбрасывает эскалацию транзиентных TTL.
-            reset_streak = getattr(self, "_reset_provider_fail_streak", None)
-            if reset_streak is not None:
-                reset_streak("yandex")
+            self._sap_reset_provider_fail_streak("yandex")
         except Exception as e:
             mark_dead = getattr(self, "_mark_provider_dead", None)
             if mark_dead is not None:
