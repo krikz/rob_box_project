@@ -184,6 +184,47 @@ if notes:
     for n in notes:
         print(f"  ⚠️  {n}")
 
+# --- CHECK 4: реплика без wake-слова не может ждать полного цикла ----------
+# bug(живой прогон 35667281570, акт 2, 22.09.2026). Разбивая длинные реплики
+# регистрации, я получил продолжения, которые НЕ начинаются с «Робот»:
+#     "Вчера я всю ночь паял этот несчастный блок питания, ..."
+# dialogue_node совершенно правильно кладёт такую фразу в бэклог:
+#     🗒️ [backlog] accumulated (no_wake_word) speaker='Саша'
+# полного LLM-цикла не будет по определению. А харнесс по умолчанию ждёт
+# cycle и отдаёт `FAIL no_accept` — диагноз, указывающий на робота, хотя
+# робот сделал ровно то, что должен. Восемь шагов акта 2 так и покраснели.
+#
+# Правило: нет wake-слова — значит либо expect="backlog", либо
+# expect="wake-gated"; молчаливый cycle запрещён.
+print("CHECK 4: реплика без wake-слова не объявлена как cycle")
+WAKE_RE = re.compile(r"^\s*(Робот|Робокс)", re.I)
+no_wake_bad = 0
+for path in scenarios:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        continue
+    for idx, step in enumerate(data.get("steps") or []):
+        if not isinstance(step, dict):
+            continue
+        text = step.get("text") or ""
+        if not text or WAKE_RE.match(text):
+            continue
+        expect = step.get("expect", "")
+        if expect in ("backlog", "wake-gated", "wake_gated"):
+            continue
+        no_wake_bad += 1
+        sid = step.get("label") or step.get("id") or f"#{idx}"
+        fails.append(
+            f"{path.relative_to(repo)} шаг {sid}: реплика без wake-слова, "
+            f'а expect={expect!r}. dialogue_node положит её в бэклог '
+            f"(no_wake_word), полного цикла не будет, и харнесс отдаст "
+            f'FAIL no_accept — диагноз на робота вместо сценария. Поставь '
+            f'expect="backlog" (или добавь wake-слово в текст).'
+        )
+if not no_wake_bad:
+    print("  ✅ все реплики без wake-слова объявлены как backlog/wake-gated")
+
 if fails:
     print("\nПроблемы:")
     for f in fails:

@@ -299,6 +299,7 @@ act(
             "Я собирал тебе блок питания и переделывал левый мотор. Запомни мой "
             "голос как следует.",
             voice=SASHA,
+            expect="backlog",
             why="Продолжение n201_sasha_intro_long — см. why там (run 35658231116, "
             "лимит VAD 15с). Суммарная длина речи сохранена для устойчивого "
             "d-vector.",
@@ -308,6 +309,7 @@ act(
             "Потому что ночью я буду говорить с тобой чаще всех остальных в "
             "этой мастерской.",
             voice=SASHA,
+            expect="backlog",
             why="Хвост n201_sasha_intro_long — см. n201b.",
         ),
         step(
@@ -325,12 +327,14 @@ act(
             "гудит как трансформатор.",
             voice=SASHA,
             patterns=["Speaker|identify candidates|speaker_id"],
+            expect="backlog",
         ),
         step(
             "n202c_sasha_warmup_guess",
             "А я так и не понял, земля виновата или дроссель.",
             voice=SASHA,
             patterns=["Speaker|identify candidates|speaker_id"],
+            expect="backlog",
         ),
         step(
             "n203_sasha_memory_tea",
@@ -361,6 +365,7 @@ act(
             "n204b_boris_voice_note",
             "Запомни мой голос отдельно от Сашиного, мы очень по-разному звучим.",
             voice=BORIS,
+            expect="backlog",
             why="Продолжение n204_boris_intro_long — см. why там (run "
             "35658231116, лимит VAD 15с).",
         ),
@@ -369,6 +374,7 @@ act(
             "Я не хочу, чтобы ты нас путал, когда мы оба будем тебе что-то "
             "говорить.",
             voice=BORIS,
+            expect="backlog",
             why="Хвост n204_boris_intro_long — см. n204b.",
         ),
         step(
@@ -385,12 +391,14 @@ act(
             "надо мной смеётся.",
             voice=BORIS,
             patterns=["Speaker|identify candidates|speaker_id"],
+            expect="backlog",
         ),
         step(
             "n205c_boris_warmup_tease",
             "Хотя сам вообще футбол не смотрит и путает вратаря с защитником.",
             voice=BORIS,
             patterns=["Speaker|identify candidates|speaker_id"],
+            expect="backlog",
         ),
         step(
             "n206_boris_memory",

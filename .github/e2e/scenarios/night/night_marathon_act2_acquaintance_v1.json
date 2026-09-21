@@ -29,6 +29,7 @@
       "voice": "anton",
       "text": "Я собирал тебе блок питания и переделывал левый мотор. Запомни мой голос как следует.",
       "patterns": [],
+      "expect": "backlog",
       "_why": "Продолжение n201_sasha_intro_long — см. why там (run 35658231116, лимит VAD 15с). Суммарная длина речи сохранена для устойчивого d-vector."
     },
     {
@@ -36,6 +37,7 @@
       "voice": "anton",
       "text": "Потому что ночью я буду говорить с тобой чаще всех остальных в этой мастерской.",
       "patterns": [],
+      "expect": "backlog",
       "_why": "Хвост n201_sasha_intro_long — см. n201b."
     },
     {
@@ -53,7 +55,8 @@
       "text": "Вчера я всю ночь паял этот несчастный блок питания, и он всё равно гудит как трансформатор.",
       "patterns": [
         "Speaker|identify candidates|speaker_id"
-      ]
+      ],
+      "expect": "backlog"
     },
     {
       "label": "n202c_sasha_warmup_guess",
@@ -61,7 +64,8 @@
       "text": "А я так и не понял, земля виновата или дроссель.",
       "patterns": [
         "Speaker|identify candidates|speaker_id"
-      ]
+      ],
+      "expect": "backlog"
     },
     {
       "label": "n203_sasha_memory_tea",
@@ -98,6 +102,7 @@
       "voice": "ermil",
       "text": "Запомни мой голос отдельно от Сашиного, мы очень по-разному звучим.",
       "patterns": [],
+      "expect": "backlog",
       "_why": "Продолжение n204_boris_intro_long — см. why там (run 35658231116, лимит VAD 15с)."
     },
     {
@@ -105,6 +110,7 @@
       "voice": "ermil",
       "text": "Я не хочу, чтобы ты нас путал, когда мы оба будем тебе что-то говорить.",
       "patterns": [],
+      "expect": "backlog",
       "_why": "Хвост n204_boris_intro_long — см. n204b."
     },
     {
@@ -122,7 +128,8 @@
       "text": "Я болею за Спартак с девяносто восьмого года, и Саша каждый раз надо мной смеётся.",
       "patterns": [
         "Speaker|identify candidates|speaker_id"
-      ]
+      ],
+      "expect": "backlog"
     },
     {
       "label": "n205c_boris_warmup_tease",
@@ -130,7 +137,8 @@
       "text": "Хотя сам вообще футбол не смотрит и путает вратаря с защитником.",
       "patterns": [
         "Speaker|identify candidates|speaker_id"
-      ]
+      ],
+      "expect": "backlog"
     },
     {
       "label": "n206_boris_memory",
