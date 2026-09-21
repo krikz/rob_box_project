@@ -60,7 +60,7 @@ KANBAN_BIN="${KANBAN_BIN:-hermes}"
 KANBAN_BOARD="${KANBAN_BOARD:-robbox}"
 KANBAN_DB="${KANBAN_DB:-$HOME/.hermes/kanban/boards/$KANBAN_BOARD/kanban.db}"
 GH_REPO="${GH_REPO:-krikz/rob_box_project}"
-HERMES_HOME="${HERMES_HOME:-/home/builder/.hermes}"
+HERMES_HOME="${HERMES_HOME:-${HOME}/.hermes}"
 
 # Worktree detection: должны быть внутри git-репо.
 if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then

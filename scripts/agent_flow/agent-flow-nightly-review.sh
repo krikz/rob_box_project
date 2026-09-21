@@ -104,7 +104,7 @@ PREFIX="[agent-flow-nightly-review]"
 # HERMES_HOME/HOME нужны ДО первого вызова af_load_profile_env: библиотека
 # читает ${HERMES_HOME} напрямую, а cron может звать нас без них — под
 # `set -u` это падение «unbound variable» на первой же строке гейтов.
-HERMES_HOME="${HERMES_HOME:-/home/builder/.hermes}"
+HERMES_HOME="${HERMES_HOME:-${HOME}/.hermes}"
 export HOME="${HOME:-/home/builder}"
 
 REPO_DIR="${REPO_DIR:-/home/builder/hermes-share/rob_box_project}"

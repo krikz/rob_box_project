@@ -40,7 +40,7 @@ GH_REPO="${GH_REPO:-krikz/rob_box_project}"
 # принадлежит root, `>> "$LOG_FILE"` под `set -euo pipefail` роняет тик с
 # «Permission denied» ещё до вывода summary. Пишем туда же, куда остальные
 # вотчдоги, — под HERMES_HOME.
-HERMES_HOME="${HERMES_HOME:-/home/builder/.hermes}"
+HERMES_HOME="${HERMES_HOME:-${HOME}/.hermes}"
 LOG_FILE="${LOG_FILE:-${HERMES_HOME}/logs/agent-flow-e2e-drift-watchdog.log}"
 DRIFT_THRESHOLD="${DRIFT_THRESHOLD:-30}"
 WATCHDOG_DRY_RUN="${WATCHDOG_DRY_RUN:-false}"

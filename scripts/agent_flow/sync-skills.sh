@@ -53,7 +53,7 @@ SKILLS_SRC="$REPO_DIR/.agents/skills"
 
 # Канонические пути профилей. Переопределяются HERMES_HOME (как и весь
 # agent-flow) и SKILL_SYNC_PROFILES (space-separated) для тестов.
-HERMES_HOME="${HERMES_HOME:-/home/builder/.hermes}"
+HERMES_HOME="${HERMES_HOME:-${HOME}/.hermes}"
 if [ -n "${SKILL_SYNC_PROFILES:-}" ]; then
     # shellcheck disable=SC2206
     SKILL_TARGET_PROFILES=( ${SKILL_SYNC_PROFILES} )

@@ -74,8 +74,8 @@
 # --- defaults (env may override) --------------------------------------------
 : "${FOUNDATION_BRANCH:=develop}"
 : "${TEST_ROUND_PREFIX:=z-{e2e}/test-round-}"
-: "${ROUND_COUNTER_FILE:=${HERMES_HOME:-/home/builder/.hermes}/state/agent-flow-e2e-round-counter}"
-: "${GHOST_ROUNDS_TOTAL_FILE:=${HERMES_HOME:-/home/builder/.hermes}/state/agent-flow-e2e-ghost-rounds-total}"
+: "${ROUND_COUNTER_FILE:=${HERMES_HOME:-${HOME}/.hermes}/state/agent-flow-e2e-round-counter}"
+: "${GHOST_ROUNDS_TOTAL_FILE:=${HERMES_HOME:-${HOME}/.hermes}/state/agent-flow-e2e-ghost-rounds-total}"
 : "${DRY_RUN:=false}"
 : "${GIT_PUSH_FN:=git_push_with_cred_fallback}"
 

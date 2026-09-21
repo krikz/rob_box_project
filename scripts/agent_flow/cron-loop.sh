@@ -12,7 +12,7 @@
 # Простой цикл для cron-задач Hermes — пока нет gateway.
 # Каждые 60с вызывает hermes cron tick, который запускает due jobs.
 # Запускать вручную: nohup cron-loop.sh > /home/builder/.hermes/logs/cron-loop.log 2>&1 &
-HERMES_HOME="${HERMES_HOME:-/home/builder/.hermes}"
+HERMES_HOME="${HERMES_HOME:-${HOME}/.hermes}"
 UVX="$HERMES_HOME/bin/uvx"
 LOG="$HERMES_HOME/logs/cron-tick.log"
 mkdir -p "$(dirname "$LOG")"

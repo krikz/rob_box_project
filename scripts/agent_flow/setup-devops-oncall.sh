@@ -81,14 +81,14 @@ if [[ -z "$ENV_FILE" ]]; then
   exit 2
 fi
 
-HERMES_HOME="${HERMES_HOME:-/home/builder/.hermes}"
+HERMES_HOME="${HERMES_HOME:-${HOME}/.hermes}"
 HERMES_BIN="${HERMES_BIN:-${HERMES_HOME}/hermes-agent/venv/bin/hermes}"
 BOARD="${KANBAN_BOARD:-robbox}"
 
-# Per-profile gateway задаёт HERMES_HOME=/home/builder/.hermes/profiles/<p>;
-# default gateway задаёт HERMES_HOME=/home/builder/.hermes. Нормализуем к корню:
+# Per-profile gateway задаёт HERMES_HOME=<hermes-root>/profiles/<p>;
+# default gateway задаёт HERMES_HOME=<hermes-root>. Нормализуем к корню:
 if [[ "${HERMES_HOME}" == */profiles/* ]]; then
-  HERMES_HOME="/home/builder/.hermes"
+  HERMES_HOME="${HOME}/.hermes"
 fi
 
 # --- 1. Resolve TELEGRAM_BOT_TOKEN ----------------------------------------

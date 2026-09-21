@@ -53,7 +53,7 @@ PREFIX="[agent-flow-night-marathon]"
 
 # HERMES_HOME/HOME нужны ДО af_load_profile_env — библиотека читает
 # ${HERMES_HOME} напрямую, а cron зовёт нас без них (под set -u это падение).
-HERMES_HOME="${HERMES_HOME:-/home/builder/.hermes}"
+HERMES_HOME="${HERMES_HOME:-${HOME}/.hermes}"
 export HOME="${HOME:-/home/builder}"
 REPO_DIR="${REPO_DIR:-/home/builder/hermes-share/rob_box_project}"
 GH_BIN="${GH_BIN:-gh}"

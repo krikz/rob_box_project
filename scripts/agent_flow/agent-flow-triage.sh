@@ -54,16 +54,17 @@
 set -euo pipefail
 
 # --- defaults (overridden by env / .env) -------------------------------------
-# NOTE: hardcode /home/builder/.hermes — this script is owned by the host
-# hermes install, not by the calling profile's $HOME (cron may spawn us from
-# the agent-flow profile where $HOME is profile-relative).
-HERMES_HOME="${HERMES_HOME:-/home/builder/.hermes}"
-HERMES_BIN="${HERMES_BIN:-/home/builder/.hermes/hermes-agent/venv/bin/hermes}"
-
-# Force HOME=/home/builder so that gh CLI and hermes binaries (which look in
-# $HOME/.config/gh and $HOME/.hermes respectively) resolve to the real user
-# install, not the per-profile $HOME that cron sets via build_subprocess_env.
+# Force HOME=/home/builder FIRST so that gh CLI and hermes binaries (which
+# look in $HOME/.config/gh and $HOME/.hermes respectively) resolve to the
+# real user install, not the per-profile $HOME that cron sets via
+# build_subprocess_env — this script is owned by the host hermes install,
+# not by the calling profile's $HOME (cron may spawn us from the agent-flow
+# profile where $HOME is profile-relative). HERMES_HOME default below must
+# be computed AFTER this line, otherwise ${HOME}/.hermes would resolve
+# against the profile-relative $HOME instead of the real host install.
 export HOME=/home/builder
+HERMES_HOME="${HERMES_HOME:-${HOME}/.hermes}"
+HERMES_BIN="${HERMES_BIN:-/home/builder/.hermes/hermes-agent/venv/bin/hermes}"
 ISSUE_LABEL="${ISSUE_LABEL:-hermes}"
 DONE_LABEL="${DONE_LABEL:-e2e-done}"
 KANBAN_BOARD="${KANBAN_BOARD:-robbox}"

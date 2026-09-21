@@ -45,7 +45,7 @@ set -euo pipefail
 
 # --- defaults (env-overridable) ---------------------------------------------
 export HOME=/home/builder
-HERMES_HOME="${HERMES_HOME:-/home/builder/.hermes}"
+HERMES_HOME="${HERMES_HOME:-${HOME}/.hermes}"
 GH_REPO="${GH_REPO:-krikz/rob_box_project}"
 DEVELOP_BRANCH="${DEVELOP_BRANCH:-develop}"
 MAINTENANCE_FILE="${MAINTENANCE_FILE:-MAINTENANCE}"

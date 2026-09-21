@@ -1191,7 +1191,7 @@ create` печатает команду и тело в stdout.
 | `E2E_FAIL_STREAK_ISSUE_RATE_LIMIT_HOURS` | `4` | rate-limit (mirror watchdog). |
 | `E2E_FAIL_STREAK_ISSUE_LABEL` | `e2e-fail-streak` | лейбл нового issue. |
 | `E2E_FAIL_STREAK_ISSUE_ASSIGNEE` | `` (пусто) | assignee (опц.). |
-| `HERMES_HOME` | `/home/builder/.hermes` | sandbox root для `state/` (в тестах указывают на временную БД). |
+| `HERMES_HOME` | `~/.hermes` | sandbox root для `state/` (в тестах указывают на временную БД). |
 | `ISSUE_COOLDOWN_FILE` | `${HERMES_HOME}/state/agent-flow-e2e-fail-streak-last-issue` | mtime-target для cooldown guard (mirror watchdog). |
 
 Exit codes: `0` (все 3 сценария — ожидаемые 1/0/1 payload), `1` (нарушен инвариант; см. сводку в конце вывода).

@@ -79,7 +79,7 @@ _LIB_DIR_HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 # /home/builder/.hermes/profiles/<profile>/, что не подходит для абсолютного
 # KANBAN_DB). Используем $HOME/.hermes/ для абсолютного пути.
 export HOME=/home/builder
-HERMES_HOME="${HERMES_HOME:-/home/builder/.hermes}"
+HERMES_HOME="${HERMES_HOME:-${HOME}/.hermes}"
 
 KANBAN_BOARD="${KANBAN_BOARD:-robbox}"
 KANBAN_DB="${KANBAN_DB:-$HOME/.hermes/kanban/boards/$KANBAN_BOARD/kanban.db}"

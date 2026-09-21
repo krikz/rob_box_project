@@ -104,9 +104,11 @@ REPO_DIR="${REPO_DIR:-/home/builder/hermes-share/rob_box_project}"
 # а hermes-profile-root. Если оставить как есть, JOBS_FILE получится
 # .../profiles/devops/profiles/devops/cron/jobs.json (404).
 # Гард: если путь не содержит "profiles/<profile>" в финале — fallback
-# на canonical /home/builder/.hermes.
+# на canonical ${HOME}/.hermes (issue #2487: дефолт следует за $HOME, а
+# не хардкодит /home/builder, — тот же контракт, что у остальных
+# agent_flow-скриптов).
 if [ -z "${HERMES_HOME:-}" ] || [[ "$HERMES_HOME" == */profiles/* ]]; then
-    HERMES_HOME="/home/builder/.hermes"
+    HERMES_HOME="${HOME}/.hermes"
 fi
 GH_REPO="${GH_REPO:-krikz/rob_box_project}"
 GH_CONFIG_DIR="${GH_CONFIG_DIR:-/home/builder/.config/gh}"
