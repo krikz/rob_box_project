@@ -29,13 +29,13 @@ docker buildx inspect --bootstrap
 
 ```bash
 # Запустить тест всех проблемных образов
-sudo ./scripts/test_docker_local_arm64.sh
+sudo ./scripts/testing/test_docker_local_arm64.sh
 
 # Или отдельный образ:
 docker buildx build \
   --platform linux/arm64 \
-  --file docker/main/micro_ros_agent/Dockerfile \
-  --tag rob_box_test:micro-ros-agent \
+  --file docker/main/ros2_control/Dockerfile \
+  --tag rob_box_test:ros2-control \
   . 
 ```
 
@@ -56,29 +56,19 @@ docker buildx build \
 
 ```bash
 cd /путь/к/rob_box_project  # ← Корень!
-docker buildx build -f docker/main/micro_ros_agent/Dockerfile .
-#                                                              ^ точка = корень
+docker buildx build -f docker/main/ros2_control/Dockerfile .
+#                                                          ^ точка = корень
 ```
 
 **НЕ делайте так:**
 ```bash
 # ❌ НЕПРАВИЛЬНО
-cd docker/main/micro_ros_agent
+cd docker/main/ros2_control
 docker build .  
-# COPY src/robot_sensor_hub_msg не найдет файлы!
+# COPY src/rob_box_description не найдет файлы!
 ```
 
 ## Проверка конкретного образа
-
-### micro-ros-agent
-```bash
-docker buildx build \
-  --platform linux/arm64 \
-  --file docker/main/micro_ros_agent/Dockerfile \
-  --tag test-micro-ros:local \
-  --progress=plain \
-  .
-```
 
 ### nav2
 ```bash
@@ -121,7 +111,7 @@ docker buildx build \
 ### Остановка на первой ошибке
 ```bash
 docker buildx build \
-  --file docker/main/micro_ros_agent/Dockerfile \
+  --file docker/main/ros2_control/Dockerfile \
   --platform linux/arm64 \
   --progress=plain \
   . 2>&1 | tee build.log
@@ -130,7 +120,7 @@ docker buildx build \
 ### Сохранение промежуточных слоев
 ```bash
 docker buildx build \
-  --file docker/main/micro_ros_agent/Dockerfile \
+  --file docker/main/ros2_control/Dockerfile \
   --platform linux/arm64 \
   --progress=plain \
   --no-cache \
@@ -154,7 +144,7 @@ RUN ls -la /ws/src  # Проверить что файлы скопирован�
 ```bash
 # Только для проверки синтаксиса Dockerfile
 docker build \
-  --file docker/main/micro_ros_agent/Dockerfile \
+  --file docker/main/ros2_control/Dockerfile \
   --platform linux/amd64 \
   --target=build_stage \  # Если есть multi-stage
   .
