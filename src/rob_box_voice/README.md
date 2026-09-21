@@ -6,11 +6,15 @@ AI Voice Assistant для автономного ровера РОББОКС с 
 
 Модульная ROS2 система голосового управления роботом с интеграцией:
 - **ReSpeaker Mic Array v2.0** — захват аудио, VAD, DOA, LED индикация
-- **STT (Speech-to-Text):**
-  - **Vosk** (offline, fast, real-time) — основной выбор
-  - **Whisper** (offline, high accuracy) — альтернатива
-  - **Yandex SpeechKit** (online, fallback) — для сложных случаев
-  - **MiniMax STT** *(Phase 1 PoC, PR #2369, ADR-0091)* — облачный провайдер со встроенной диаризацией. Class `MiniMaxSTTProvider` готов (`src/rob_box_voice/rob_box_voice/stt_providers/minimax_provider.py`), но в `stt_node._recognize_with_fallback` будет подключён в Phase 2. Подробности — [docs/architecture/minimax-stt-provider.md](../../docs/architecture/minimax-stt-provider.md)
+- **STT (Speech-to-Text)** — цепочка `minimax → yandex → vosk` (ADR-0124, порядок = приоритет):
+  - **MiniMax STT** (online) — первый в цепочке; пунктуированный текст, диаризация (пока не потребляется)
+  - **Yandex SpeechKit** (online) — второй; даёт `speaker_tag` (issue #1077)
+  - **Vosk** (offline, CPU) — последний рубеж, работает без сети и без денег на счету; переносится в конец цепочки принудительно
+  - **Whisper** (offline, high accuracy) — альтернатива, в цепочку не подключён
+
+  Отказавший провайдер пропускается по TTL (квота — 300с, сеть — 30с) и
+  возвращается сам после успешного ответа. Детали и разбор ошибок —
+  [docs/architecture/minimax-stt-provider.md](../../docs/architecture/minimax-stt-provider.md).
 - **TTS (Text-to-Speech):**
   - **Yandex Cloud TTS** (primary, anton voice) — оригинальный голос ROBBOX
   - **Silero** (offline, fallback) — альтернатива

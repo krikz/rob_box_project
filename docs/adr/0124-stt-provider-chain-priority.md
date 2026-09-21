@@ -1,7 +1,7 @@
 # ADR-0124 — Приоритет и фолбек STT-провайдеров: `minimax → yandex → vosk` (заменяет ADR-0091 §2.2, §2.3, §5)
 
 **Дата:** 2026-09-21
-**Статус:** Proposed (решение владельца от 21.09.2026, реализация — в этом же PR)
+**Статус:** Accepted — реализовано и проверено на роботе 21.09.2026 (PR #2706 wiring, PR #2708 классификация отказов; подтверждение — §4.5)
 **Автор:** владелец + Claude Code
 **Заменяет:** ADR-0091 §2.2 (порядок `vosk → minimax → yandex`), §2.3 (`stt_chain.yaml` как конфиг цепочки), §5 спеки `stt-provider-contract.md`
 **Связанные:** issue [#2365](https://github.com/krikz/rob_box_project/issues/2365) (Phase 2 wiring, карточка `t_99e504d2`), ADR-0091 (контракт MiniMax STT), ADR-0108 (empty-text семантика MiniMax), issue #1083 (цепочка TTS), issue #1082 (`HealthCache` для LLM), issue #1229 (`/voice/tts/provider_state`), issue #1252 / #1734 (дублирование конфига), issue #1004 (`declare_parameter` как SSoT), issue #2702 (общий health-кэш облаков)
@@ -187,17 +187,65 @@ BODY: {"type":"error","error":{"type":"server_error",
 
 Второе, что вскрылось: у Yandex в метрике стояло голое `reason=error` за 50мс и **ни одной** строки `grpc error`. Причина — `except grpc.RpcError` обёрнут вокруг вызова `RecognizeStreaming()`, который лишь открывает стрим; реальная ошибка прилетает при **итерации** по `responses`, а цикл обёрнут не был (это поведение старше ADR-0124). Код статуса не доходил ни до лога, ни до кэша. Цикл обёрнут, ошибка идёт через `_map_grpc_error`.
 
-Настоящая причина отказа Yandex STT на роботе — не деньги:
+Настоящая причина отказа Yandex STT на роботе — **не деньги и не сеть, а закрытая папка Yandex Cloud**:
 
 ```
-GRPC_CODE: StatusCode.UNAVAILABLE
-GRPC_DETAILS: failed to connect to all addresses; last error: FAILED_PRECONDITION:
-  ipv6:[2a0d:d6c1:0:1c::27b]:443: connect failed: Network is unreachable
+GRPC_CODE: StatusCode.PERMISSION_DENIED
+GRPC_DETAILS: Permission to [resource-manager.folder b1gfmjogjodcgff82pjd,
+  resource-manager.cloud b1g1s54gba2kdlp4fune,
+  organization-manager.organization bpf691j509jibhoolgu1] denied
 ```
 
-`stt.api.cloud.yandex.net` резолвится в IPv6, маршрута у робота нет. Yandex TTS при этом работает. Это инфраструктурная проблема вне рамок ADR-0124 — заводится отдельной карточкой; транзиентный TTL 30с для неё корректен (проба стоит 50мс).
+Это та самая папка `b1gfmjogjodcgff82pjd`, которую ADR-0091 §1 уже называл «в архиве». `PERMISSION_DENIED` → `STTAuthError` → длинный TTL: архивная папка не откроется за 30 секунд.
+
+> **Поправка к первой редакции этого раздела.** Первый пробник 21.09 вернул `UNAVAILABLE ... ipv6:[2a0d:d6c1:0:1c::27b]:443: Network is unreachable`, и §4.4 сначала утверждал, что причина — отсутствие IPv6-маршрута. Это было разовое срабатывание gRPC-резолвера: он пробовал IPv6 и не доходил до сервера вообще. После редеплоя тот же пробник соединяется за ~1с и получает чистый `PERMISSION_DENIED`. IPv6 чинить не нужно — нужно восстановить доступ к папке (или завести новую и обновить `YANDEX_API_KEY`).
+>
+> Мораль для отладки: по одному пробнику нельзя объявлять корневую причину, если ошибка сетевого уровня могла замаскировать прикладную. Отсюда же ценность пункта «третье» ниже — с `error=` в логе этот разбор виден без походов на робота.
+
+Асимметрия, замеченная попутно: `tts_node` на тот же `PERMISSION_DENIED` ставит Yandex мёртвым на **30с** (транзиентная классификация), STT — на 300с (auth). Права на архивную папку за 30с не появятся, так что STT здесь корректнее; выравнивание — в issue #2702 вместе с объединением кэшей.
 
 Третье: `log_attempts` печатал `reason=error`, но **выбрасывал** `STTAttempt.error`, хотя строка уже лежала в объекте. Именно поэтому, чтобы узнать, что ответили облака, пришлось лезть на робота двумя пробниками. Теперь `error=` печатается в метрике попытки.
+
+## 4.5 Подтверждение после редеплоя (Vision Pi, 21.09.2026)
+
+Все три правки из §4.4 проверены на живом роботе, и заодно — главный сценарий ADR: **провайдер вернулся сам, без рестарта ноды**.
+
+TTL стал длинным там, где должен:
+
+```
+🎧 STT provider → 'vosk' (chain=['minimax','yandex','vosk'],
+   dead={'minimax': 293.5, 'yandex': 294.5}, reason=recognize, last_attempt=vosk)
+```
+
+Причина отказа теперь читается прямо из лога, без походов на робота пробниками:
+
+```
+[stt_attempt_metric] provider=minimax reason=error latency_ms=1334 attempt=0 text=-
+  error='STTQuotaError('minimax STT: minimax API error: your current token plan
+  not support model, asr-1.0 (2061)')'
+[stt_attempt_metric] provider=yandex reason=error latency_ms=1026 attempt=0 text=-
+  error='STTAuthError('Yandex STT auth failure: StatusCode.PERMISSION_DENIED ...')'
+```
+
+Повтора у MiniMax на квоте больше нет — одна попытка вместо двух (`attempt=0` и сразу следующий провайдер).
+
+Затем владелец включил подписку MiniMax **в середине сессии**, ничего не перезапуская:
+
+```
+17:01  minimax reason=error   STTQuotaError(... asr-1.0 (2061))
+17:01  minimax reason=dead    dead 293s more
+17:02  minimax reason=dead    dead 279s more
+       ... TTL истёк, провайдер переспрошен ...
+17:10  minimax reason=ok      latency_ms=3093  'Робокс, расскажи, ник дот?'
+17:11  minimax reason=ok      latency_ms=3159  'Робот, расскажи анекдот.'
+```
+
+Файл состояния вернулся в `{"provider": "minimax", "dead_providers": {}}` — отметку снял первый же успешный ответ (§2.3, «успешное распознавание снимает отметку»). Цепочка снова останавливается на первом провайдере.
+
+Два наблюдения на будущее:
+
+* **Latency MiniMax ~3.1с** против ~1.5–2.2с у Vosk, при бюджете `minimax_stt_timeout_s=5.0`. Запас ~1.9с; на длинных фразах (в логах были 6–7-секундные) есть риск упереться в таймаут и заплатить 5с прежде чем уйти дальше. Признак — `minimax:timeout` в логе; лечится параметром, без пересборки.
+* **MiniMax отдаёт текст с заглавной буквы и пунктуацией** («Робот, расскажи анекдот.»), в отличие от Vosk. Wake-роутер это переживает — проверено: `🎯 Wake word detected: "Робот, расскажи анекдот."`, `strip_wake_word` дал `расскажи анекдот.`.
 
 ## 5. Что реализовано в этом PR
 
@@ -221,7 +269,7 @@ GRPC_DETAILS: failed to connect to all addresses; last error: FAILED_PRECONDITIO
 - `STTResult` / `recognize_result()` из ADR-0091 §2.1 — не понадобились для цепочки, откладываются до диаризации.
 - Объединение health-кэшей STT/TTS/LLM — issue #2702.
 - Ре-калибровка порогов speaker-id — issue #2348.
-- IPv6-недоступность `stt.api.cloud.yandex.net` с робота — инфраструктура, отдельная карточка (§4.4).
+- Закрытая папка Yandex Cloud `b1gfmjogjodcgff82pjd` (`PERMISSION_DENIED`) — организационная проблема, не код; отдельная карточка (§4.4).
 - e2e-сценарий на фолбек STT — отдельная карточка после мержа.
 - Изменение формата `/voice/stt/result` — ЗАПРЕЩЕНО (инвариант P0).
 
