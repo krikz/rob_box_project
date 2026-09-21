@@ -1721,40 +1721,52 @@ class STTNode(Node):
         speaker_tag: Optional[str] = None
         eou_events = 0
         partial_count = 0
-        for response in responses:
-            event_type = response.WhichOneof("Event")
+        # Issue #2365 Phase 2: gRPC-ошибка стрима прилетает ЗДЕСЬ, при
+        # итерации, а не на вызове RecognizeStreaming — тот лишь открывает
+        # стрим. До 21.09.2026 цикл не был обёрнут, поэтому реальный код
+        # (на роботе — UNAVAILABLE «Network is unreachable», Yandex STT
+        # резолвится в IPv6, которого у робота нет) не доходил ни до лога,
+        # ни до кэша «мёртвых» — в метрике стояло голое reason=error.
+        try:
+            for response in responses:
+                event_type = response.WhichOneof("Event")
 
-            if event_type == "partial":
-                partial_count += 1
-                if response.partial.alternatives:
-                    _pt = response.partial.alternatives[0].text
-                    if _pt and _pt.strip():
-                        last_partial = _pt
-                        self._maybe_fire_early_boop(_pt)
-                continue
+                if event_type == "partial":
+                    partial_count += 1
+                    if response.partial.alternatives:
+                        _pt = response.partial.alternatives[0].text
+                        if _pt and _pt.strip():
+                            last_partial = _pt
+                            self._maybe_fire_early_boop(_pt)
+                    continue
 
-            elif event_type == "speaker_analysis":
-                sa = response.speaker_analysis
-                tag = getattr(sa, "speaker_tag", None)
-                if tag is not None and str(tag) != "":
-                    speaker_tag = str(tag)
-                continue
+                elif event_type == "speaker_analysis":
+                    sa = response.speaker_analysis
+                    tag = getattr(sa, "speaker_tag", None)
+                    if tag is not None and str(tag) != "":
+                        speaker_tag = str(tag)
+                    continue
 
-            elif event_type == "conversation_analysis":
-                continue
+                elif event_type == "conversation_analysis":
+                    continue
 
-            elif event_type == "end_of_utterance":
-                eou_events += 1
-                continue
+                elif event_type == "end_of_utterance":
+                    eou_events += 1
+                    continue
 
-            elif event_type == "final":
-                if response.final.alternatives:
-                    final_text = response.final.alternatives[0].text
+                elif event_type == "final":
+                    if response.final.alternatives:
+                        final_text = response.final.alternatives[0].text
 
-            elif event_type == "final_refinement":
-                if response.final_refinement.normalized_text:
-                    final_text = response.final_refinement.normalized_text.alternatives[0].text
-                    break
+                elif event_type == "final_refinement":
+                    if response.final_refinement.normalized_text:
+                        final_text = response.final_refinement.normalized_text.alternatives[0].text
+                        break
+        except grpc.RpcError as e:
+            self.get_logger().warning(
+                f"⚠️ [issue 1477] phase={phase} stream error: {e.code()} {e.details()}"
+            )
+            raise _map_grpc_error(e, self.yandex_timeout_s)
 
         # Issue #1477 — телеметрия по фазе: partials/finals/eou.
         self.get_logger().debug(

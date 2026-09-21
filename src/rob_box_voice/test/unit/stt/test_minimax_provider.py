@@ -39,6 +39,7 @@ from rob_box_voice.stt_providers.minimax_provider import (
     MiniMaxSTTUnavailableError,
     _extract_text,
     ensure_wav_container,
+    looks_like_quota_problem,
 )
 
 
@@ -810,3 +811,103 @@ class TestLogRedaction:
         )
         assert redactor.filter(record) is True
         assert secret not in record.getMessage()
+
+
+# ---------------------------------------------------------------------------
+# Issue #2365 Phase 2 — план/квота приезжают в ТЕЛЕ, а не в HTTP-статусе
+# ---------------------------------------------------------------------------
+
+
+class TestQuotaInResponseBody:
+    """Живые ответы MiniMax, снятые с робота 21.09.2026.
+
+    Оба случая раньше классифицировались как транзиентный сбой и держали
+    провайдера мёртвым 30 секунд вместо 300: робот заново долбился в
+    облако каждые полминуты, платя ~1.6с на фразу.
+    """
+
+    #: HTTP 500 + код 2061 — ровно то, что вернул /v1/speech_to_text на
+    #: роботе при непродлённой подписке (probe 21.09.2026).
+    PLAN_500 = {
+        "type": "error",
+        "error": {
+            "type": "server_error",
+            "message": "your current token plan not support model, asr-1.0 (2061)",
+            "http_code": "500",
+        },
+        "request_id": "070063c026998daff337dde937328d4c",
+    }
+
+    #: HTTP 200 + base_resp 2056 — конверт T2A, тот же класс проблемы
+    #: (его уже разбирает rob_box_llm.providers.minimax_tts).
+    QUOTA_200 = {
+        "base_resp": {
+            "status_code": 2056,
+            "status_msg": (
+                "Token Plan usage limit reached: Upgrade your Token Plan "
+                "or purchase Credits for more usage."
+            ),
+        }
+    }
+
+    def test_http_500_with_plan_code_is_rate_limit_not_server_error(self):
+        transport = _StubHTTPClient(status=500, payload=self.PLAN_500)
+        provider = _make_provider(transport)
+
+        with pytest.raises(MiniMaxSTTRateLimitError) as exc:
+            provider.transcribe(SILENCE_AUDIO)
+
+        assert "2061" in str(exc.value)
+
+    def test_http_200_with_base_resp_quota_is_rate_limit(self):
+        transport = _StubHTTPClient(status=200, payload=self.QUOTA_200)
+        provider = _make_provider(transport)
+
+        with pytest.raises(MiniMaxSTTRateLimitError) as exc:
+            provider.transcribe(SILENCE_AUDIO)
+
+        assert "2056" in str(exc.value)
+
+    def test_plain_500_without_body_stays_unavailable(self):
+        """Обычный 5xx без разбираемого тела — по-прежнему транзиентный."""
+        transport = _StubHTTPClient(status=500, payload={})
+        provider = _make_provider(transport)
+
+        with pytest.raises(MiniMaxSTTUnavailableError):
+            provider.transcribe(SILENCE_AUDIO)
+
+    def test_api_error_not_about_quota_is_invalid_response(self):
+        transport = _StubHTTPClient(
+            status=400,
+            payload={"error": {"message": "invalid audio format"}},
+        )
+        provider = _make_provider(transport)
+
+        with pytest.raises(MiniMaxSTTInvalidResponseError):
+            provider.transcribe(SILENCE_AUDIO)
+
+    def test_success_body_is_untouched(self):
+        """base_resp.status_code=0 — это успех, не ошибка."""
+        transport = _StubHTTPClient(
+            status=200,
+            payload={"text": "робот привет", "base_resp": {"status_code": 0}},
+        )
+        provider = _make_provider(transport)
+
+        assert provider.transcribe(SILENCE_AUDIO).text == "робот привет"
+
+    @pytest.mark.parametrize(
+        "message,expected",
+        [
+            ("your current token plan not support model, asr-1.0 (2061)", True),
+            ("Token Plan usage limit reached", True),
+            ("insufficient balance", True),
+            ("minimax API error 1008: no money", True),
+            ("invalid audio format", False),
+            ("internal server error", False),
+            ("", False),
+            (None, False),
+        ],
+    )
+    def test_quota_hint_matching(self, message, expected):
+        assert looks_like_quota_problem(message) is expected
