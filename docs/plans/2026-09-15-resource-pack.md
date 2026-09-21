@@ -1076,3 +1076,77 @@ Vision Pi с томом вместо запечённой модели — ст�
 docker exec telegram-bot ls /models/vosk-model-small-ru-0.22/README
 docker logs telegram-bot 2>&1 | grep -i "Vosk model not found"   # ожидание: пусто
 ```
+
+---
+
+## 19. Этап 5 выполнен: `download_*_hef.sh` удалены, 21.09.2026
+
+Условие §7 Этапа 5 («после N успешных деплоев») выполнено: первый живой
+деплой на Vision Pi (run `35645507502`) прогнан и проверен владельцем на
+роботе — RAW из деплоя:
+
+```
+[resource_pack] yolov8n-hef: OK no-op — /opt/rob_box/models/yolov8n.hef на месте (5155491 байт)
+[resource_pack] retinaface-hef: OK no-op — /opt/rob_box/models/retinaface_mobilenet_v1.hef на месте, sha256 совпал
+[resource_pack] итог: установлено 0, без изменений 2, пропущено 0, hard-провалов 0
+```
+
+Оба HEF едут Ресурсным паком, старые скрипты в этом прогоне не
+участвовали.
+
+### 19.1. Перед удалением — доказательство отсутствия живых ссылок
+
+Прогреб весь репозиторий (`grep -rln`) по обоим именам файлов ДО удаления.
+Нашлось девять мест; каждое проверено вручную:
+
+| Файл | Характер ссылки |
+|---|---|
+| `docker/vision/scripts/vision-hailo/download_{yolov8n,retinaface}_hef.sh` | сами файлы |
+| `docker/vision/.env:37` | комментарий, описывающий откуда берётся HEF — устарел (правлен) |
+| `docker/vision/config/hailo_models.yaml:70` | комментарий, то же — устарел (правлен) |
+| `docker/vision/scripts/resource_pack/apply_resource_pack.sh:237` (было) | комментарий про историю бага #2599 — исторический, оставлен |
+| `docker/vision/scripts/resource_pack/manifest.yaml` | комментарии про «до Ресурсного пака качали...» — исторические, дополнены |
+| `docs/adr/0104-perception-gaze-seam.md:223` | touchpoint-таблица «✅ done» — правлен (план §11.2 это предвидел) |
+| `docs/adr/0125-resource-pack-host-delivery-seam.md` | описание решения — правлен (таблица §3) |
+| `docs/plans/2026-09-15-resource-pack.md` (этот файл) | план — это и есть журнал |
+| `docs/plans/2026-09-21-cicd-pipeline-handoff.md` | хендофф Opus 5, датированная запись — оставлен как есть (исторический снимок, не живая ссылка на файл) |
+| `src/rob_box_perception/rob_box_perception/vision_face_loader.py:410` | текст исключения `FileNotFoundError`, звавший чинить не туда — правлен |
+| `tests/unit/docker/test_resource_pack.py` | `test_retinaface_sha_matches_legacy_script` читал легаси-скрипт как эталон — переписан на прямое значение (`test_retinaface_sha_is_the_known_good_value`) |
+| `tests/unit/scripts/test_download_hef_sha_case.py` | тест целиком гонял оба легаси-скрипта — удалён вместе с ними |
+
+Ни одного workflow, compose-файла, Makefile или setup-скрипта, который бы
+**вызывал** эти файлы, не нашлось — оба HEF-шага `L-Deploy and Verify.yml`
+уже вызывают `apply_resource_pack.sh` с Этапа 2 (§7).
+
+### 19.2. Что сделано
+
+- `git rm docker/vision/scripts/vision-hailo/download_yolov8n_hef.sh
+  docker/vision/scripts/vision-hailo/download_retinaface_hef.sh
+  tests/unit/scripts/test_download_hef_sha_case.py` — 193 строки скриптов +
+  тест, гонявший только их.
+- Комментарии-указатели (`.env`, `hailo_models.yaml`,
+  `vision_face_loader.py`) переведены на Ресурсный пак — раньше они звали
+  чинить/смотреть в файл, которого больше нет.
+- `test_resource_pack.py::test_retinaface_sha_matches_legacy_script` →
+  `test_retinaface_sha_is_the_known_good_value` — тот же регресс (эталон
+  retinaface не должен тихо разъехаться), без зависимости от удалённого
+  файла.
+- `docs/adr/0104-perception-gaze-seam.md` touchpoint #10 и
+  `docs/adr/0125-resource-pack-host-delivery-seam.md` §3 — косметика,
+  предвиденная планом §11.2 и §7 Этапа 5.
+
+### 19.3. Проверка после удаления (RAW)
+
+```
+$ grep -rln "download_yolov8n_hef\.sh\|download_retinaface_hef\.sh" --include="*" . | grep -v "\.git/"
+./docker/vision/scripts/resource_pack/apply_resource_pack.sh
+./docker/vision/scripts/resource_pack/manifest.yaml
+./docs/adr/0104-perception-gaze-seam.md
+./docs/adr/0125-resource-pack-host-delivery-seam.md
+./docs/plans/2026-09-15-resource-pack.md
+./docs/plans/2026-09-21-cicd-pipeline-handoff.md
+./tests/unit/docker/test_resource_pack.py
+```
+
+Все оставшиеся упоминания — прошедшее время / журнал изменений, ни одно не
+требует существования файла для работы кода.

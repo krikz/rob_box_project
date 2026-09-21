@@ -406,8 +406,9 @@ class RetinaFaceLoader(HEFLoader):
     def _init_locked(self) -> None:
         if not os.path.isfile(self._hef_path):
             raise FileNotFoundError(
-                f'HEF не найден: {self._hef_path}. Скачайте из hailo_model_zoo '
-                f'(см. docker/vision/scripts/vision-hailo/download_retinaface_hef.sh).'
+                f'HEF не найден: {self._hef_path}. Кладёт его на хост Ресурсный '
+                f'пак (docker/vision/scripts/resource_pack/apply_resource_pack.sh '
+                f'--only retinaface-hef, docker/vision/scripts/resource_pack/manifest.yaml).'
             )
 
         # Устройство — через шов «Ускоритель» (hailo_device). Прямой

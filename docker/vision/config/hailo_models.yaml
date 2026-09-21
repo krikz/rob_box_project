@@ -67,7 +67,8 @@ vision_hailo_node:
 # См. docker/vision/scripts/vision-hailo/start_vision_face.sh.
 vision_face_node:
   # Real inference. HEF кладёт на хост шаг деплоя "[Vision Pi] Ensure HEF
-  # models" (download_retinaface_hef.sh). Если файла не окажется — нода
+  # models" — Ресурсный пак (docker/vision/scripts/resource_pack/,
+  # запись retinaface-hef в manifest.yaml). Если файла не окажется — нода
   # логирует причину и остаётся в degraded (ADR-0018), stub-событий в
   # real-режиме она не выдумывает.
   #

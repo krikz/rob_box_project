@@ -58,6 +58,25 @@ CRITICAL_EXCLUDE_COMMON = [
     # healthy variant; the lookahead `(?!none\b)` keeps the
     # healthy-positive case caught by that earlier rule and excludes
     # every non-empty missing-list echo.
+    #
+    # 🔴 UPDATE (live incident 21.09.2026, Vision Pi): the underlying race
+    # had a SECOND root cause beyond the 30s-cap timing above — the
+    # start_voice_assistant.sh wait loop only waited for "FoxDot OSCdef
+    # registered" + a blind 3s sleep, but the actual preload (63 SynthDefs,
+    # ~0.3-0.8s each with a Server.sync after every one) can take far
+    # longer than 3s and starts right after that marker. On top of that,
+    # music_stack_validation.py's _LOADED_SYNTH_RE was still matching the
+    # OLD log line "SynthDef preload ok: X" — foxdot_init.sc had switched
+    # to "SynthDef in scsynth: X" back on the 30.08 live-fix — so the
+    # validator reported every loaded critical SynthDef as missing even on
+    # a full, successful preload. Both are fixed now: the wait loop polls
+    # for the real completion marker "SynthDef preload finished:" (cap
+    # raised to 60s), and the regex accepts both log formats (see
+    # music_stack_validation.py::_LOADED_SYNTH_RE). This exclusion stays as
+    # a harmless defence-in-depth layer for the remaining legitimate race
+    # (sclang still mid-preload when validate_music_stack.py runs on an
+    # exceptionally slow cold start) — it should fire far less often now
+    # that the actual root causes are gone.
     r"missing critical synthdefs: (?!none\b)",
     # Same race (issue #1520): validate_music_stack.py prints
     # `Log file not found: <path>` when sclang hasn't yet written
@@ -67,6 +86,10 @@ CRITICAL_EXCLUDE_COMMON = [
     # new failure mode. Excluded so the deploy gate only sees the
     # post-sclang-warning content, which is what the operator
     # actually needs to triage.
+    #
+    # Same 21.09.2026 update as above applies here — still kept as
+    # defence-in-depth, expected to fire only on genuinely slow cold starts
+    # now that the wait loop waits for the real preload-finished marker.
     r"log file not found: .*sclang\.log",
     # BrokenPipeError from `ros2 topic list | head` in start_nav2_direct.sh:
     # head closes the pipe after the first line, ros2cli prints a traceback —

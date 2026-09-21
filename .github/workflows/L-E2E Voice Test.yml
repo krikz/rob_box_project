@@ -699,6 +699,7 @@ jobs:
           echo "✅ ACCEPTANCE ПРОШЁЛ: speaker_tag → профиль scope=speaker:<tag> в SQLite"
 
       - name: E2E timing metrics (response speed)
+        if: ${{ always() }}
         env:
           # Ретро t_4cf2811e: voice_text может нести trailing \r. Sanitize.
           VOICE_TEXT: ${{ inputs.voice_text }}
@@ -853,6 +854,12 @@ jobs:
           # (шаг 2). НЕ тянем /tmp/dialog_e2e_*.wav и НЕ глобим
           # /tmp/e2e_v2_*/recording.wav — это записи других прогонов.
 
+          # model.json с runner'а (шаг Write model.json) кладём ВНУТРЬ ART_DIR.
+          # Иначе upload-artifact получает два пути с разными корнями
+          # (workspace + /tmp) и сохраняет файл по полному пути раннера —
+          # в артефакте это выглядело как runner/_work/rob_box_project/...
+          if [ -f model.json ]; then cp -f model.json "$ART_DIR/model.json"; fi
+
           echo "ART_DIR=$ART_DIR" >> "$GITHUB_ENV"
           echo "=== collected e2e_artifacts_${RID}/ contents ==="
           find "$ART_DIR" -type f -printf "%s\t%p\n" | sort -k2 || echo "ART_DIR empty"
@@ -868,25 +875,6 @@ jobs:
           path: /tmp/e2e_artifacts_${{ github.run_id }}/**/*.wav
           retention-days: 7
           if-no-files-found: warn
-
-      - name: Upload harness artifacts (issue #1353)
-        uses: actions/upload-artifact@v7
-        with:
-          # Issue #1353: подбираем ВСЕ артефакты харнесса — recording.wav,
-          # cmd_*.wav, synth_*.log, cycle_log.txt, scenario.json, verdict.txt.
-          # Извлекаем OUT_DIR из последней строки E2E_ARTIFACTS в
-          # /tmp/e2e_atomic_out.log (там харнесс печатает "E2E_ARTIFACTS
-          # /tmp/e2e_v2_<run_id>"). Это даёт доступ к полному набору
-          # для ретро/дебага: послушать что говорил робот, увидеть что
-          # синтезировалось и какие ошибки вылезли.
-          name: e2e-voice-harness-artifacts-${{ github.run_id }}
-          # Ретро 22.08 t_944df2c5: раньше путь указывал на /tmp/e2e_v2_<RID>
-          # на RUNNER-е — но харнесс выполняется на билд-машине (249), и
-          # collect-шаг кладёт OUT_DIR в /tmp/e2e_artifacts_<RID>/e2e_v2_<RID>/.
-          # Поэтому артефакт всегда был пустым (if-no-files-found: ignore).
-          path: /tmp/e2e_artifacts_${{ github.run_id }}/e2e_v2_${{ github.run_id }}
-          retention-days: 7
-          if-no-files-found: ignore
 
       - name: Upload logs
         if: ${{ always() }}
@@ -921,9 +909,7 @@ jobs:
           #    который skip'ается при FAIL).
           # 2) build machine: /tmp/e2e_v2_*/model.json (всегда пишется atomic harness).
           # Берём оба — найдётся хотя бы один.
-          path: |
-            model.json
-            /tmp/e2e_artifacts_${{ github.run_id }}/**/model.json
+          path: /tmp/e2e_artifacts_${{ github.run_id }}/**/model.json
           retention-days: 30
           if-no-files-found: warn
 
@@ -965,47 +951,11 @@ jobs:
           path: /tmp/e2e_acceptance_${{ github.run_id }}.txt
           retention-days: 7
 
-      # Issue #1396: расширенный набор артефактов e2e.
-      # Каждый — ОТДЕЛЬНЫЙ artifact (по условию приёмки issue).
-      - name: Upload transcript (ASR — issue #1396)
-        if: ${{ always() }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: e2e-voice-transcripts-${{ github.run_id }}
-          # Ретро 22.08 t_944df2c5: файлы харнесса лежат в /tmp/e2e_artifacts_<RID>/e2e_v2_<RID>/
-          # (collect-шаг rsync'ит OUT_DIR билд-машины в подкаталог). Раньше путь был
-          # плоским ($LOCAL_ART_DIR/transcript.json) — файла там нет → пустой артефакт.
-          path: ${{ env.LOCAL_ART_DIR }}/e2e_v2_${{ github.run_id }}/transcript.json
-          retention-days: 7
-          if-no-files-found: ignore
-
-      - name: Upload audio metrics (RMS — issue #1396)
-        if: ${{ always() }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: e2e-voice-audio-metrics-${{ github.run_id }}
-          path: ${{ env.LOCAL_ART_DIR }}/e2e_v2_${{ github.run_id }}/audio_metrics.json
-          retention-days: 7
-          if-no-files-found: ignore
-
-      - name: Upload baseline diff (golden vs recording — issue #1396)
-        if: ${{ always() }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: e2e-voice-baseline-diff-${{ github.run_id }}
-          path: ${{ env.LOCAL_ART_DIR }}/e2e_v2_${{ github.run_id }}/baseline_diff.json
-          retention-days: 7
-          if-no-files-found: ignore
-
-      - name: Upload acceptance file (tool calls/keywords — issue #1396)
-        if: ${{ always() }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: e2e-voice-acceptance-${{ github.run_id }}
-          path: ${{ env.LOCAL_ART_DIR }}/e2e_v2_${{ github.run_id }}/acceptance.json
-          retention-days: 7
-          if-no-files-found: ignore
-
+      # Issue #1396: расширенный набор артефактов e2e. Отдельными
+      # артефактами остались только те, что НЕ дублируют
+      # e2e-voice-artifacts-<rid> (timing живёт на runner'е, diff —
+      # на PR-контексте). transcript/audio_metrics/baseline_diff/
+      # acceptance лежат внутри общего архива — см. ретро по дублям.
       - name: Upload timing breakdown (JSON — issue #1396)
         if: ${{ always() }}
         uses: actions/upload-artifact@v7
@@ -1030,7 +980,89 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+      - name: E2E quality summary (Step Summary)
+        # Цифры, которые до этого существовали только внутри скачиваемых
+        # zip-артефактов: сколько шагов прошло, что сказал GATE-1, какой RMS у
+        # записи, сошлась ли она с golden, сколько миллисекунд занял цикл.
+        # `if: always()` обязателен: на FAIL это единственный способ увидеть,
+        # ЧТО именно не прошло, не скачивая архив.
+        if: ${{ always() }}
+        run: |
+          RID="${{ github.run_id }}"
+          SUMMARY_JSON="/tmp/e2e_artifacts_${RID}/e2e_v2_${RID}/summary.json"
+          if [ ! -f "$SUMMARY_JSON" ]; then
+            echo "## E2E: сводка недоступна" >> "$GITHUB_STEP_SUMMARY"
+            echo "Харнесс не оставил \`summary.json\` (упал до конца прогона или на 249 старая версия)." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          python3 - "$SUMMARY_JSON" /tmp/e2e_timing.json >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json, sys
+
+
+          def load(path):
+              try:
+                  with open(path, encoding="utf-8") as fh:
+                      return json.load(fh)
+              except Exception:
+                  return {}
+
+
+          summary = load(sys.argv[1])
+          timing = load(sys.argv[2]).get("metrics_ms") or {}
+          steps = summary.get("steps") or {}
+          gate1 = summary.get("gate1") or {}
+          audio = summary.get("audio") or {}
+          baseline = summary.get("baseline") or {}
+
+          mark = "PASS" if summary.get("verdict") == "PASS" else "FAIL"
+          print("## E2E %s" % mark)
+          print("")
+          print("| | |")
+          print("|---|---|")
+          print("| Вердикт | **%s**%s |" % (
+              mark,
+              " (%s)" % summary["fail_kind"] if summary.get("fail_kind") else "",
+          ))
+          print("| Шаги | %s из %s OK, %s FAIL, %s SKIP |" % (
+              steps.get("ok", "?"), steps.get("total", "?"),
+              steps.get("fail", "?"), steps.get("skip", "?"),
+          ))
+          print("| Синтез команд | %s |" % (summary.get("tts_provider") or "?"))
+          if gate1.get("pass") is not None:
+              print("| GATE-1 | %s — %s |" % (
+                  "OK" if gate1["pass"] else "FAIL", gate1.get("reason") or "",
+              ))
+          if audio.get("error"):
+              print("| Звук | не посчитан: %s |" % audio["error"])
+          else:
+              print("| Звук | RMS %s dB, peak %s dB, тишина %s |" % (
+                  audio.get("rms_db"), audio.get("peak_db"), audio.get("silence_ratio"),
+              ))
+          if baseline.get("error"):
+              print("| Сверка с golden | не посчитана: %s |" % baseline["error"])
+          else:
+              print("| Сверка с golden | %s, keyword match %s%% |" % (
+                  "OK" if baseline.get("pass") else "расхождение",
+                  baseline.get("keyword_match_pct"),
+              ))
+          if timing:
+              print("| Задержка ответа | %s ms (STT→LLM %s, LLM→TTS %s) |" % (
+                  timing.get("total_latency_ms"), timing.get("stt_to_llm_ms"),
+                  timing.get("llm_to_tts_start_ms"),
+              ))
+
+          failed = steps.get("failed_labels") or []
+          if failed:
+              print("")
+              print("**Упали шаги:** %s" % ", ".join("`%s`" % f for f in failed))
+          missing = gate1.get("missing_expected_calls") or []
+          if missing:
+              print("")
+              print("**Не вызваны ожидаемые тулы:** %s" % ", ".join("`%s`" % m for m in missing))
+          PY
+
       - name: Summary
+        if: ${{ always() }}
         env:
           # Ретро t_4cf2811e: $GITHUB_STEP_SUMMARY — markdown; сырой \r ломает
           # layout таблиц. Прогоняем input через env (shell сам уберёт \r для

@@ -709,33 +709,50 @@ jobs:
 
       # ==================== POST-DEPLOY CLEANUP ====================
 
-      - name: "[Vision Pi] Cleanup Docker Artifacts"
+      - name: "[Vision Pi + Main Pi] Cleanup Docker Artifacts (parallel)"
         if: '!inputs.dry_run'
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "🧹 Cleaning up unused Docker artifacts on Vision Pi..."
+          echo "🧹 Cleaning up unused Docker artifacts on both Pi (parallel)..."
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
+          # Разбор тайминга деплоя run 35645507502 (16m41s vs обычных ~8-9м,
+          # docs/plans/2026-09-21-cicd-pipeline-handoff.md): два этих шага были
+          # последовательными (Vision 56с + Main 7с в этом прогоне) при том, что
+          # это две независимые SSH-сессии на два разных хоста — ни один не
+          # читает вывод другого, ни один более поздний шаг не смотрит на
+          # id/outputs этих двух (в отличие от Check Container Status ниже,
+          # чьи outputs разбирает "Deployment Summary" — те НЕ трогаем).
+          # Объединение меняет только время выполнения (сумма → максимум),
+          # не поведение: обе ветки по-прежнему `|| warning`, шаг по-прежнему
+          # никогда не проваливает деплой сам по себе.
           sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
             "docker system df && \
              docker image prune -af && \
              docker builder prune -af && \
              docker system df" \
-            || echo "⚠️  Warning: Docker cleanup failed on Vision Pi"
-
-      - name: "[Main Pi] Cleanup Docker Artifacts"
-        if: '!inputs.dry_run'
-        run: |
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "🧹 Cleaning up unused Docker artifacts on Main Pi..."
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            > "${RUNNER_TEMP}/cleanup_vision.log" 2>&1 \
+            || echo "⚠️  Warning: Docker cleanup failed on Vision Pi" >> "${RUNNER_TEMP}/cleanup_vision.log" &
+          VISION_CLEANUP_PID=$!
 
           sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
             "docker system df && \
              docker image prune -af && \
              docker builder prune -af && \
              docker system df" \
-            || echo "⚠️  Warning: Docker cleanup failed on Main Pi"
+            > "${RUNNER_TEMP}/cleanup_main.log" 2>&1 \
+            || echo "⚠️  Warning: Docker cleanup failed on Main Pi" >> "${RUNNER_TEMP}/cleanup_main.log" &
+          MAIN_CLEANUP_PID=$!
+
+          # wait на каждый PID отдельно и без учёта кода возврата — как и
+          # раньше, провал очистки только предупреждает (`|| echo warning`
+          # уже внутри каждой фоновой ветки), деплой из-за неё не падает.
+          wait "$VISION_CLEANUP_PID" || true
+          wait "$MAIN_CLEANUP_PID" || true
+
+          echo "--- [Vision Pi] ---"
+          cat "${RUNNER_TEMP}/cleanup_vision.log"
+          echo "--- [Main Pi] ---"
+          cat "${RUNNER_TEMP}/cleanup_main.log"
 
       # ==================== HEALTH CHECKS ====================
 

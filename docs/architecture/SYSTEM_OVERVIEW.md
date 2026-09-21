@@ -497,7 +497,6 @@ docker/
     ├── led-matrix/                  # 381 NeoPixel LEDs
     ├── ceiling-camera/              # USB ceiling camera
     ├── supercollider/               # Audio synthesis server
-    ├── voice-resources-init/        # One-shot sample loader
     ├── voice-assistant/
     └── telegram_bot/                # Telegram operator interface
 ```
@@ -519,7 +518,7 @@ docker/
 | `cadvisor` *(profile: monitoring)* | Container metrics → Prometheus | — |
 | `promtail` *(profile: monitoring)* | Log shipping → Loki | — |
 
-#### Vision Pi — сервисы (11)
+#### Vision Pi — сервисы (10 в этом срезе; актуальный полный список и их зависимости — `docker/vision/README.md`)
 
 | Контейнер | Назначение | Зависит от |
 |-----------|-----------|------------|
@@ -527,9 +526,8 @@ docker/
 | `oak-d` | OAK-D Lite driver + встроенный AprilTag detector | `zenoh-router-vision` |
 | `led-matrix` | LED matrix controller (381 NeoPixel LEDs) | `zenoh-router-vision` |
 | `ceiling-camera` | USB потолочная камера 720p, локализация | `zenoh-router-vision` |
-| `supercollider` | Audio synthesis server (JACK/ALSA) | — |
-| `voice-resources-init` | One-shot: загрузка renardo samples в volume | — |
-| `voice-assistant` | Vosk STT, TTS, LLM dialogue | `zenoh-router-vision`, `supercollider` |
+| `supercollider` | Audio synthesis server (JACK/ALSA); renardo-сэмплы приходят bind-mount'ом с хоста (Ресурсный пак, ADR-0125/ADR-0126), не из отдельного образа/init-контейнера | — |
+| `voice-assistant` | Vosk STT, TTS, LLM dialogue; Vosk/Silero — bind-mount `/opt/rob_box/models` (ADR-0125), не запечены в образ | `zenoh-router-vision`, `supercollider` |
 | `telegram-bot` | Telegram operator interface с LLM и голосом | `zenoh-router-vision` |
 | `ollama` *(profile: ai)* | Local LLM inference | — |
 | `cadvisor-vision` *(profile: monitoring)* | Container metrics → Prometheus | — |
@@ -569,9 +567,8 @@ Vision Pi:
   ├─ oak-d (with integrated AprilTag detection)
   ├─ led-matrix
   ├─ ceiling-camera
-  ├─ supercollider
-  ├─ voice-resources-init (one-shot)
-  ├─ voice-assistant ──── depends: supercollider, voice-resources-init
+  ├─ supercollider (samples: bind-mount с хоста, ADR-0125/ADR-0126 — не init-контейнер)
+  ├─ voice-assistant ──── depends: supercollider
   ├─ telegram-bot
   └─ ollama [profile: ai]
 ```
