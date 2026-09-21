@@ -317,8 +317,13 @@ def _ctx(**overrides: object) -> SttContext:
 
 def _admission(
     steps: Optional[List[object]] = None,
-    logger: Optional[logging.Logger] = None,
+    logger: Optional[object] = None,
 ) -> SttAdmission:
+    # ``logger`` is duck-typed: in production this is an
+    # ``rclpy.impl.rcutils_logger.RcutilsLogger``, but the existing
+    # ``SttAdmission.logger`` annotation is ``Optional[Any]``. Tests use
+    # either a stdlib ``logging.Logger`` (old tests) or
+    # ``_RclpyStyleLogger`` (issue #2713 regression).
     return SttAdmission(
         steps=steps if steps is not None else default_steps(),  # type: ignore[arg-type]
         logger=logger,
@@ -840,3 +845,180 @@ def test_default_barge_in_policy_is_replace() -> None:
     # Mirrors the legacy ``getattr(self, "_barge_in_policy", "replace")``
     # default. A change here is a regression.
     assert DEFAULT_BARGE_IN_POLICY == "replace"
+
+
+# ---------------------------------------------------------------------------
+# Regression — issue #2713: rclpy caches per-call-site severity.
+# ---------------------------------------------------------------------------
+
+
+class _RclpyStyleLogger:
+    """Fake rclpy ``RcutilsLogger`` for tests that reproduces issue #2713.
+
+    rclpy's ``RcutilsLogger.log()`` keys its per-call-site cache by the
+    caller frame (``file_path``/``line_number``/``function_name``) and
+    raises ``ValueError("Logger severity cannot be changed between
+    calls.")`` if the same call-site is invoked with a different
+    severity. Stdlib ``logging.Logger`` does NOT do that, so the existing
+    ``test_logger_warns_on_handled`` test missed the bug.
+
+    We mirror the relevant contract: track the severity we last saw for
+    a given ``(file, line)`` and raise on mismatch. Each call goes
+    through a single ``info``/``warning``/``error``/``fatal``/``debug``
+    shim that records into ``self.records``.
+    """
+
+    def __init__(self) -> None:
+        self.records: List[Tuple[str, str]] = []
+        self._seen_severity: Dict[Tuple[str, int], str] = {}
+
+    def _emit(self, severity: str, message: str) -> None:
+        # Mirror rclpy's rclpy.impl.rcutils_logger.RcutilsLogger.log: it
+        # uses ``CallerId()`` which is the equivalent of
+        # ``inspect.stack()[1]`` — i.e. the immediate caller of the
+        # ``info``/``warning`` wrapper. The call chain is:
+        #
+        #   user_code   -> self.warning(msg)
+        #   self.warning -> self._emit(sev, msg)
+        #
+        # so frame.f_back.f_back is the user's call-site. Each
+        # ``self.logger.warning(...)`` / ``self.logger.info(...)`` in
+        # user code lives on its own source line; if the user collapses
+        # both onto one line via ``log_fn = ...; log_fn(msg)`` the key
+        # is shared and we reproduce the rclpy crash.
+        import inspect
+
+        frame = inspect.currentframe()
+        assert frame is not None and frame.f_back is not None
+        caller = frame.f_back.f_back  # skip the info/warning wrapper
+        assert caller is not None
+        key = (caller.f_code.co_filename, caller.f_lineno)
+        prev = self._seen_severity.get(key)
+        if prev is not None and prev != severity:
+            raise ValueError(
+                f"Logger severity cannot be changed between calls. "
+                f"({key[0]}:{key[1]} saw {prev!r}, now {severity!r})"
+            )
+        self._seen_severity[key] = severity
+        self.records.append((severity, message))
+
+    def debug(self, message: str) -> None:
+        self._emit("DEBUG", message)
+
+    def info(self, message: str) -> None:
+        self._emit("INFO", message)
+
+    def warning(self, message: str) -> None:
+        self._emit("WARN", message)
+
+    def error(self, message: str) -> None:
+        self._emit("ERROR", message)
+
+    def fatal(self, message: str) -> None:
+        self._emit("FATAL", message)
+
+
+class TestIssue2713LoggerCallSites:
+    """Regression for issue #2713.
+
+    ``SttAdmission.evaluate`` used to bind ``log_fn = self.logger.warning
+    if HANDLED else self.logger.info`` and then call ``log_fn(msg)`` from
+    a single source line. rclpy's per-call-site severity cache keyed on
+    (file, line) collapsed both branches onto that line, so the very
+    first time a DROP followed a HANDLED (or vice versa) the node raised
+    ``ValueError: Logger severity cannot be changed between calls.``
+    inside ``executor.spin()``, leaving dialogue_node as a zombie.
+
+    These tests prove the fix: each severity now lives on its own source
+    line, and the orchestrator can emit any interleaving of DROP/HANDLED
+    against a real rclpy-style logger without raising.
+    """
+
+    def test_handled_then_drop_does_not_raise(self) -> None:
+        # HANDLED followed by DROP must NOT raise
+        # "Logger severity cannot be changed between calls."
+        logger = _RclpyStyleLogger()
+        host_silence = _RecordingHost(handle_silence=True)
+        host_drop = _RecordingHost(accumulate=False)
+
+        # HANDLED — silence_command.
+        ctx_handled = _ctx(
+            text="робот замолчи",
+            text_lower="робот замолчи",
+            raw="робот замолчи",
+            skip_counter={},
+        )
+        out1 = _admission(logger=logger).evaluate(ctx_handled, host_silence)
+        assert out1.kind is SttOutcomeKind.HANDLED
+        assert out1.step_name == "silence_command"
+
+        # DROP — wake_word missing.
+        ctx_drop = _ctx(text="фон", text_lower="фон", skip_counter={})
+        out2 = _admission(logger=logger).evaluate(ctx_drop, host_drop)
+        assert out2.kind is SttOutcomeKind.DROP
+        assert out2.step_name == "wake_word"
+
+        severities = [s for s, _ in logger.records]
+        assert severities == ["WARN", "INFO"]
+
+    def test_drop_then_handled_does_not_raise(self) -> None:
+        # Reverse order: DROP first, then HANDLED.
+        logger = _RclpyStyleLogger()
+
+        host_drop = _RecordingHost(accumulate=False)
+        ctx_drop = _ctx(text="фон", text_lower="фон", skip_counter={})
+        out1 = _admission(logger=logger).evaluate(ctx_drop, host_drop)
+        assert out1.kind is SttOutcomeKind.DROP
+
+        host_silence = _RecordingHost(handle_silence=True)
+        ctx_handled = _ctx(
+            text="робот замолчи",
+            text_lower="робот замолчи",
+            raw="робот замолчи",
+            skip_counter={},
+        )
+        out2 = _admission(logger=logger).evaluate(ctx_handled, host_silence)
+        assert out2.kind is SttOutcomeKind.HANDLED
+
+        severities = [s for s, _ in logger.records]
+        assert severities == ["INFO", "WARN"]
+
+    def test_many_alternations_do_not_raise(self) -> None:
+        # Stress: hammer the logger with alternating severities on the
+        # same call-site. Old code raised on the 2nd call; new code must
+        # never raise.
+        logger = _RclpyStyleLogger()
+        for i in range(10):
+            if i % 2 == 0:
+                host = _RecordingHost(handle_silence=True)
+                ctx = _ctx(
+                    text="робот замолчи",
+                    text_lower="робот замолчи",
+                    raw="робот замолчи",
+                    skip_counter={},
+                )
+                out = _admission(logger=logger).evaluate(ctx, host)
+                assert out.kind is SttOutcomeKind.HANDLED
+            else:
+                host = _RecordingHost(accumulate=False)
+                ctx = _ctx(text="фон", text_lower="фон", skip_counter={})
+                out = _admission(logger=logger).evaluate(ctx, host)
+                assert out.kind is SttOutcomeKind.DROP
+
+        severities = [s for s, _ in logger.records]
+        assert severities == ["WARN", "INFO"] * 5
+
+    def test_logger_none_still_silences_orchestrator(self) -> None:
+        # The fix must not regress the ``logger=None`` test — silence
+        # must still work.
+        logger = _RclpyStyleLogger()  # never touched
+        ctx = _ctx(
+            text="робот замолчи",
+            text_lower="робот замолчи",
+            raw="робот замолчи",
+            skip_counter={},
+        )
+        host = _RecordingHost(handle_silence=True)
+        out = _admission(logger=None).evaluate(ctx, host)
+        assert out.kind is SttOutcomeKind.HANDLED
+        assert logger.records == []  # never called

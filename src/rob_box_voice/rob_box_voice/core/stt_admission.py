@@ -491,11 +491,23 @@ class SttAdmission:
                 ctx.skip_counter[key] = ctx.skip_counter.get(key, 0) + 1
             label = f"{outcome.step_name} ({outcome.reason})" if outcome.reason else outcome.step_name
             if self.logger is not None:
-                log_fn = self.logger.warning if outcome.kind is SttOutcomeKind.HANDLED else self.logger.info
-                log_fn(
+                # IMPORTANT: keep each severity on its OWN source line.
+                # rclpy's RcutilsLogger caches call-site (file/line/function)
+                # and raises ``ValueError("Logger severity cannot be changed
+                # between calls.")`` if the same call-site is invoked with a
+                # different severity. A dynamic ``log_fn`` indirection
+                # collapses both branches onto line 495 (or whichever line
+                # the lambda resolves to) and trips the cache as soon as a
+                # HANDLED follows a DROP — which used to zombie-process
+                # dialogue_node. See issue #2713.
+                msg = (
                     f"🚦 [stt-admission] {outcome.kind.value}: "
                     f"step={label} text={ctx.text[:60]!r}"
                 )
+                if outcome.kind is SttOutcomeKind.HANDLED:
+                    self.logger.warning(msg)
+                else:
+                    self.logger.info(msg)
             return outcome
         return SttOutcome(
             kind=SttOutcomeKind.PASS,

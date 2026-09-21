@@ -25,6 +25,7 @@ import logging
 import math
 import os
 import re
+import sys
 import threading
 import time
 import traceback
@@ -7556,20 +7557,38 @@ class _DialogueSttHost:
         node._sound_trigger_pub.publish(sfx)
 
 
-def main(args: Optional[List[str]] = None) -> None:
+def main(args: Optional[List[str]] = None) -> int:
     rclpy.init(args=args)
     node = DialogueNode()
     executor = rclpy.executors.MultiThreadedExecutor()
     executor.add_node(node)
+    exit_code = 0
     try:
         executor.spin()
     except KeyboardInterrupt:
         pass
+    except BaseException as exc:  # noqa: BLE001
+        # Issue #2713 — let ``launch`` / docker see the death instead of
+        # turning dialogue_node into a zombie that healthcheck still rates
+        # "healthy". Anything other than KeyboardInterrupt is a bug; log
+        # loudly and return non-zero.
+        logging.getLogger(__name__).exception(
+            "dialogue_node: unexpected exception escaped spin(): %r", exc
+        )
+        exit_code = 1
     try:
         node.shutdown_asyncio_loop(wait=False)
     except Exception:  # noqa: BLE001
         logging.getLogger(__name__).exception("dialogue_node: shutdown failed")
-    rclpy.shutdown()
+        if exit_code == 0:
+            exit_code = 1
+    try:
+        rclpy.shutdown()
+    except Exception:  # noqa: BLE001
+        logging.getLogger(__name__).exception("dialogue_node: rclpy.shutdown failed")
+        if exit_code == 0:
+            exit_code = 1
+    return exit_code
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
