@@ -1399,11 +1399,25 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
     #    приветствие идёт через 12s после старта и может перебить команду).
     #    Ждём пока в логах нет свежих TTS-событий последние E2E_SILENCE_WAIT сек.
     E2E_SILENCE_WAIT="${E2E_SILENCE_WAIT:-15}"
-    local quiet_start quiet_end
+    # Абсолютный предел ожидания. Окно тишины СБРАСЫВАЕТСЯ каждый раз, когда
+    # робот заговорил, поэтому без такого предела цикл не завершается никогда:
+    # зависший greeting/announce-луп, либо `docker logs --since 20s`, который
+    # из-за гранулярности и расхождения часов продолжает отдавать те же старые
+    # строки, — и шаг висит до внешнего таймаута job'а (45 мин). На выходе
+    # «cancelled» без единого маркера шага, что для разбора хуже любого FAIL.
+    E2E_SILENCE_WAIT_MAX="${E2E_SILENCE_WAIT_MAX:-$((E2E_SILENCE_WAIT * 6))}"
+    local quiet_start quiet_end loop_start
     quiet_start="$(date -u +%s)"
+    loop_start="$quiet_start"
     while true; do
         quiet_end="$(date -u +%s)"
         if [ $((quiet_end - quiet_start)) -ge "$E2E_SILENCE_WAIT" ]; then
+            break
+        fi
+        if [ $((quiet_end - loop_start)) -ge "$E2E_SILENCE_WAIT_MAX" ]; then
+            log "STEP ${label}: ⚠️ робот не замолчал за ${E2E_SILENCE_WAIT_MAX}s — играю команду поверх. Если шаг упадёт, смотри сюда: возможен зависший TTS-луп на роботе, а не регресс в обработке команды."
+            printf 'STEP %s: silence wait exceeded %ss\n' "$label" "$E2E_SILENCE_WAIT_MAX" \
+                >> "$OUT_DIR/silence_wait_exceeded.log" 2>/dev/null || true
             break
         fi
         local tts_recent
@@ -2029,7 +2043,26 @@ PY
         step_ok=0
         cycle_failed=0
         step_skipped=0
+        # Кто именно провалился на ПОСЛЕДНЕЙ попытке и кто проходил хоть раз.
+        # bug(run 35658231116, 22.09.2026): step_ok пересчитывается с нуля на
+        # каждой попытке, поэтому паттерны и acceptance обязаны сойтись в ОДНОЙ.
+        # У n306_who_was_talking они сошлись в РАЗНЫХ:
+        #   попытка 1: PATTERN_OK + ACCEPTANCE ❌ (нет ключевого слова «Борис»)
+        #   попытка 2: PATTERN_MISS + ACCEPTANCE ✅ all checks passed
+        # Итог — `FAIL` с текстом «см. acceptance.json», а в acceptance.json
+        # лежит «✅ all checks passed»: артефакт прямо противоречит вердикту.
+        # Причина в том, что паттерн шага ловит ОДНОРАЗОВЫЙ переход состояния
+        # («[backlog] flushed to LLM backlog_handled=true»): на первой попытке
+        # бэклог уже слит, на повторе сливать нечего, и паттерн не может
+        # совпасть больше никогда. Такой шаг в принципе неретраебельный, и
+        # молчать об этом нельзя — иначе разбор уходит в dialogue_node.
+        last_fail_what=""
+        pat_ok_any=0
+        acc_ok_any=0
+        pat_checked=0
+        acc_checked=0
         while :; do
+            last_fail_what=""
             STEP_BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
             run_step "$text" "$voice" "$label" "$expect"
             rc=$?
@@ -2077,21 +2110,27 @@ PY
 for p in json.load(sys.stdin):
     print(p.replace("\n", " "))' | tr -d '\015')
                 log "STEP ${label}: проверка паттернов (${#_pats_arr[@]}): ${_pats_arr[*]}"
+                pat_checked=1
                 check_patterns "$STEP_BEFORE" "${_pats_arr[@]}"
                 if [ $? != 0 ]; then
                     step_ok=0
+                    last_fail_what="patterns"
                 else
+                    pat_ok_any=1
                     log "STEP ${label}: ✅ паттерны найдены"
                 fi
             fi
             # Acceptance-чек (issue #1396): если в шаге задан блок acceptance,
             # пишем acceptance.json и (если ERROR) — FAIL (хотя цикл прошёл).
             if [ -n "$acceptance_json" ] && [ "$acceptance_json" != "{}" ]; then
+                acc_checked=1
                 OUT_DIR="$OUT_DIR" STEP_LABEL="$label" \
                     check_acceptance "$label" "$acceptance_json" "$STEP_BEFORE"
                 if [ $? != 0 ]; then
                     step_ok=0
+                    last_fail_what="${last_fail_what:+$last_fail_what+}acceptance"
                 else
+                    acc_ok_any=1
                     log "STEP ${label}: ✅ acceptance PASS"
                 fi
             fi
@@ -2119,8 +2158,31 @@ for p in json.load(sys.stdin):
         else
             PASS=0
             mark_fail_kind feature
-            log "STEP ${label}: ❌ проверка не прошла после retry (см. $OUT_DIR/acceptance.json)"
-            emit_step "${label} FAIL"
+            # Указываем на ТО, что реально провалилось на последней попытке.
+            # Раньше текст всегда отправлял в acceptance.json — даже когда
+            # провалились паттерны, а acceptance в том же прогоне прошёл, и
+            # файл содержал «✅ all checks passed» (n306, run 35658231116).
+            case "$last_fail_what" in
+                patterns)   _where="паттерны шага (acceptance тут ни при чём)" ;;
+                acceptance) _where="acceptance (см. $OUT_DIR/acceptance.json)" ;;
+                *acceptance) _where="паттерны И acceptance (см. $OUT_DIR/acceptance.json)" ;;
+                *)          _where="проверка шага (см. $OUT_DIR/acceptance.json)" ;;
+            esac
+            # Улики разъехались по попыткам: каждая подпроверка проходила хотя
+            # бы раз, но ни разу вместе. Как правило это значит, что паттерн
+            # шага ловит ОДНОРАЗОВЫЙ переход состояния (например
+            # «[backlog] flushed to LLM») — на повторе его уже не будет,
+            # и шаг не может пройти ни при каком числе ретраев.
+            if [ "$pat_checked" = "1" ] && [ "$acc_checked" = "1" ] \
+               && [ "$pat_ok_any" = "1" ] && [ "$acc_ok_any" = "1" ]; then
+                log "STEP ${label}: ❌ улики разъехались по попыткам: паттерны проходили в одной попытке, acceptance — в другой, вместе ни разу."
+                log "STEP ${label}: почти наверняка паттерн шага ловит ОДНОРАЗОВОЕ событие (напр. «[backlog] flushed to LLM»), которое на повторе не повторяется. Шаг как написан НЕ проверяем ретраем — это дефект СЦЕНАРИЯ, а не робота: либо убери retry_acceptance, либо перенеси одноразовый паттерн в отдельный шаг без ретрая."
+                log "STEP ${label}: ❌ провалилось на последней попытке: ${_where}"
+                emit_step "${label} FAIL retry_split_evidence"
+            else
+                log "STEP ${label}: ❌ проверка не прошла после retry — ${_where}"
+                emit_step "${label} FAIL"
+            fi
         fi
     done < "$OUT_DIR/scenario_parsed.txt"
 
