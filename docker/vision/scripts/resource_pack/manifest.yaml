@@ -1,0 +1,185 @@
+# ============================================================================
+# manifest.yaml — Ресурсный пак Vision Pi (SSoT версий/URL/sha256)
+# ============================================================================
+# План: docs/plans/2026-09-15-resource-pack.md §3 (формат), §5 (раскладка).
+# Потребитель: docker/vision/scripts/resource_pack/apply_resource_pack.sh
+#
+# Этот файл — ЕДИНСТВЕННЫЙ источник правды о том, какой бинарный ресурс
+# нужен роботу, откуда его взять, как проверить и куда положить. Смена
+# версии модели = правка одной строки здесь, а не Dockerfile + скрипт +
+# комментарий россыпью.
+#
+# ---------------------------------------------------------------------------
+# Поля записи
+# ---------------------------------------------------------------------------
+#   name          — уникальный идентификатор (им же оперирует --only).
+#   type          — open   : публичный URL, скрипт умеет скачать сам.
+#                   gated  : закрытый вендорный артефакт (Hailo Developer
+#                            Zone). Скрипт НЕ скачивает, только проверяет
+#                            наличие + sha256 и честно говорит, чего нет.
+#                   build-time / git : в доставку НЕ входит, запись только
+#                            для полноты реестра (см. §6.3, §6.4 плана).
+#   kind          — hef | model-file | model-zip | deb | wheel | shared-lib.
+#   url           — для type: open.
+#   vendor_file   — для type: gated, имя файла в /opt/rob_box/vendor.
+#   version       — для type: gated, версия вендорного пака.
+#   sha256        — hex, регистр не важен. ПУСТАЯ строка означает
+#                   «эталон не зафиксирован» — скрипт в этом случае громко
+#                   предупреждает, что целостность НЕ проверена (ADR-0018:
+#                   молчаливая непроверка хуже честной надписи «не проверено»).
+#   size_bytes    — справочно, скриптом не проверяется.
+#   unpack        — none | zip.
+#   verify_file   — для unpack: zip, относительный путь внутри target,
+#                   наличие которого доказывает, что распаковалось то самое.
+#   target        — абсолютный путь на хосте (под /opt/rob_box — тогда его
+#                   можно переопределить через RESOURCE_PACK_ROOT) либо путь
+#                   относительно корня репозитория (build-context на katana).
+#   target_host   — для type: gated: vision-pi | katana. Запись проверяется
+#                   только если скрипту передали соответствующий --host.
+#   required      — hard : отсутствие роняет деплой (exit 1).
+#                   soft : отсутствие = объявленная деградация, деплой жив.
+#   on_missing    — fail-deploy | degrade | degrade-build (пояснение к
+#                   required, человекочитаемое).
+#   degrade_note  — что именно деградирует. Печатается в лог при промахе.
+#   consumers     — кто это читает (file:line на момент записи).
+#
+# ВАЖНО про sha256: несовпадение sha256 — ВСЕГДА hard-ошибка, даже для
+# required: soft. Отсутствие ресурса — это деградация (её можно объявить
+# честно). Файл с другим содержимым — это НЕ деградация, а неизвестное
+# состояние: непонятно, что именно лежит на диске и что оно сделает с
+# роботом. Скрипт в этом случае падает и ничего не устанавливает.
+# ============================================================================
+version: 1
+
+resources:
+  # ---------- открытые: Hailo HEF (Этап 1-2) ----------
+  # До Ресурсного пака их качали два почти дословно одинаковых скрипта
+  # docker/vision/scripts/vision-hailo/download_{yolov8n,retinaface}_hef.sh.
+  - name: yolov8n-hef
+    type: open
+    kind: hef
+    url: https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v2.14.0/hailo8/yolov8n.hef
+    # Hailo официально не публикует sha256 для compiled .hef — ровно как и
+    # в download_yolov8n_hef.sh:31-33 (HEF_SHA256="" по умолчанию).
+    # Открытый вопрос плана §13.4: кто и когда снимает эталон с известно
+    # хорошего файла. До этого момента скрипт честно пишет «не проверено».
+    sha256: ""
+    unpack: none
+    target: /opt/rob_box/models/yolov8n.hef
+    required: soft
+    on_missing: degrade
+    degrade_note: >
+      vision-hailo остаётся в stub-режиме (capability-honest, ADR-0018);
+      /vision/hailo/events публикуется, но пуст. Деплой не блокируется.
+    consumers:
+      - "vision-hailo (HEF_PATH env, docker/vision/config/hailo_models.yaml:26-28)"
+
+  - name: retinaface-hef
+    type: open
+    kind: hef
+    url: https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v2.14.0/hailo8/retinaface_mobilenet_v1.hef
+    # Единственный ресурс, у которого эталон уже был зафиксирован (issue
+    # #2599). Записан строчными: сравнение в скрипте регистронезависимое,
+    # но хранить лучше в том же регистре, что печатает sha256sum — на этом
+    # заглавном хексе уже один раз сгорел download_retinaface_hef.sh.
+    sha256: "1fbc7be2554cceba18986cefa73983a59057ac5457bc75173fb2e09457bff472"
+    size_bytes: 5993660
+    unpack: none
+    target: /opt/rob_box/models/retinaface_mobilenet_v1.hef
+    required: soft
+    on_missing: degrade
+    degrade_note: "vision-face остаётся в stub, лицевая детекция недоступна."
+    consumers:
+      - "vision-face (FACE_HEF_PATH env, docker-compose.yaml:795)"
+
+  # ---------- закрытые (gated): Hailo Developer Zone 4.24.0 ----------
+  # ЗАГОТОВКИ ДЛЯ ЭТАПА 4, СЕГОДНЯ НЕ АКТИВНЫ.
+  #
+  # sha256 у всех четырёх ПУСТОЙ и ЗАПОЛНЯЕТСЯ ВРУЧНУЮ человеком: файлы
+  # лежат только на katana и на Vision Pi, скрипту (и тем более CI) они
+  # недоступны, скачать их автоматически нельзя — нужен аккаунт Developer
+  # Zone. Процедура: docs/deployment/hailo-vendor-artifacts.md,
+  # план §4.1, §7 Этап 4 п.1.
+  #
+  # Пока RESOURCE_PACK_HOST/--host не передан, apply_resource_pack.sh эти
+  # записи ПРОПУСКАЕТ (а не делает вид, что проверил): один и тот же
+  # каталог /opt/rob_box/vendor на katana и на Pi содержит РАЗНОЕ, и
+  # угадывать, на какой машине идёт прогон, скрипт не имеет права.
+  - name: hailort-pcie-driver-deb
+    type: gated
+    kind: deb
+    vendor_file: hailort-pcie-driver_4.24.0_all.deb
+    version: "4.24.0"
+    sha256: ""  # ЗАПОЛНЯЕТСЯ ВРУЧНУЮ (Этап 4): sha256sum на Vision Pi
+    target_host: vision-pi
+    target: /opt/rob_box/vendor/hailort-pcie-driver_4.24.0_all.deb
+    required: soft
+    on_missing: degrade
+    degrade_note: "Hailo AI HAT не настраивается, vision-hailo/vision-face — stub."
+    consumers:
+      - "scripts/setup/setup_node.sh:setup_hailo_ai_hat() (host driver, DKMS)"
+
+  - name: hailort-arm64-deb
+    type: gated
+    kind: deb
+    vendor_file: hailort_4.24.0_arm64.deb
+    version: "4.24.0"
+    sha256: ""  # ЗАПОЛНЯЕТСЯ ВРУЧНУЮ (Этап 4): sha256sum на Vision Pi
+    target_host: vision-pi
+    target: /opt/rob_box/vendor/hailort_4.24.0_arm64.deb
+    required: soft
+    on_missing: degrade
+    degrade_note: "hailortcli недоступен; источник libhailort.so отсутствует."
+    consumers:
+      - "scripts/setup/setup_node.sh:setup_hailo_ai_hat()"
+
+  - name: hailort-whl
+    type: gated
+    kind: wheel
+    vendor_file: hailort-4.24.0-cp310-cp310-linux_aarch64.whl
+    version: "4.24.0"
+    sha256: ""  # ЗАПОЛНЯЕТСЯ ВРУЧНУЮ (Этап 4): sha256sum на katana
+    target_host: katana
+    target: docker/vision/vision-hailo/wheels/hailort-4.24.0-cp310-cp310-linux_aarch64.whl
+    required: soft
+    on_missing: degrade-build
+    degrade_note: >
+      Сборка vision-hailo с HAILO_INSTALL_BINDING=whl невозможна. NB: сегодня
+      это НЕ деградация, а exit 1 в L-Build Vision Pi Services.yml:518-519 —
+      расхождение зафиксировано в плане §11.4 и открыто в §13.3.
+    consumers:
+      - "docker/vision/vision-hailo/Dockerfile:120-131 (HAILO_INSTALL_BINDING=whl)"
+      - "L-Build Vision Pi Services.yml:507-522 (Fetch HailoRT wheel + lib)"
+
+  - name: libhailort-so
+    type: gated
+    kind: shared-lib
+    vendor_file: libhailort.so.4.24.0
+    version: "4.24.0"
+    sha256: ""  # ЗАПОЛНЯЕТСЯ ВРУЧНУЮ (Этап 4): sha256sum на katana
+    target_host: katana
+    target: docker/vision/vision-hailo/wheels/libhailort.so.4.24.0
+    required: soft
+    on_missing: degrade-build
+    degrade_note: "Рантайм-библиотека HailoRT не попадёт в образ vision-hailo."
+    consumers:
+      - "docker/vision/vision-hailo/Dockerfile:124"
+
+  # ---------- вне доставки Ресурсного пака, только для реестра ----------
+  - name: renardo-samples
+    type: build-time
+    note: >
+      НЕ доставляется этим модулем. ADR-0111 решил печь сэмплы в voice-base
+      на этапе сборки, без host-скачивания. Запись оставлена для полноты
+      реестра ресурсов робота — план §11.1.
+    consumers:
+      - "supercollider (WAV buffers)"
+      - "voice-assistant Renardo (search_renardo_samples, synth-only fallback)"
+
+  - name: sound-pack
+    type: git
+    note: >
+      Сознательно НЕ включён в host-доставку — 884 КБ, уже в репозитории,
+      уже надёжно доставляется git reset --hard вместе с кодом. План §6.4.
+    consumers:
+      - "sound.py:PlaySoundTool (5 кандидатных путей, sound.py:43-49)"
