@@ -364,13 +364,29 @@ jobs:
              ${CMD} 2>&1 | tee /tmp/e2e_atomic_out.log"
 
           echo "=== E2E stdout ==="
-          sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "cat /tmp/e2e_atomic_out.log"
+          # `|| true`: этот повторный cat — ЧИСТО косметический, он только
+          # перекладывает лог в job log viewer и ни во что не читается
+          # (вердикт разбирает следующий шаг, из своего ssh). Шаги Actions
+          # идут под `bash -e`, поэтому сетевой чих на этом cat'е ронял
+          # весь шаг ПОСЛЕ успешно завершённого прогона робота, а вместе с
+          # ним — все шаги без if: always(). Полностью зелёный прогон
+          # превращался в красный CI без единого отличимого признака.
+          sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "cat /tmp/e2e_atomic_out.log" || true
 
       - name: Verdict from atomic harness
         env:
           SSHPASS: open
         run: |
-          OUT="$(sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "cat /tmp/e2e_atomic_out.log 2>/dev/null")"
+          # Под `bash -e` падение команды в подстановке роняет шаг молча.
+          # Разделяем «ssh не дошёл» и «харнесс не дал вердикта»: первое —
+          # инфра и требует отдельной формулировки, второе — настоящий
+          # красный. До этого оба выглядели как «verdict missing».
+          OUT="$(sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "cat /tmp/e2e_atomic_out.log 2>/dev/null")" || OUT=""
+          if [ -z "$OUT" ]; then
+            echo "❌ не удалось прочитать /tmp/e2e_atomic_out.log с 10.1.1.249 (ssh/scp или пустой лог)."
+            echo "   Это ИНФРА билд-машины, а не регресс робота — не заводи баг на voice-стек по этому шагу."
+            exit 1
+          fi
           echo "$OUT" | tee /tmp/e2e_verdict.log
           # Кем озвучивались команды — первым делом в лог шага: без этого
           # «FAIL synth» читался как баг робота, а не как мёртвый провайдер.
@@ -389,6 +405,13 @@ jobs:
           fi
 
       - name: Write model.json (multi-model provenance)
+        # Без if: always() шаг пропускался при FAIL, а «Upload model.json»
+        # ниже (if: always()) всё равно запускался и оставлял в job'е аннотацию
+        # `No files were found with the provided path: model.json` — она видна
+        # в прогоне 35650107068. Файл собирается из одних inputs, робот для
+        # него не нужен, так что писать его при падении не только можно, но и
+        # нужно: provenance важнее всего как раз на красном прогоне.
+        if: ${{ always() }}
         env:
           # Ретро t_4cf2811e: JSON-сериализация в heredoc небезопасна, если
           # input содержит сырые CR/LF/кавычки — сломанный JSON. Прогоняем
@@ -444,52 +467,36 @@ jobs:
             echo "Failed" > "$LOG"
           echo "Log lines: $(wc -l < "$LOG")"
 
-      - name: Collect e2e artifacts from build machine
-        env:
-          SSHPASS: open
-        run: |
-          RID="${{ github.run_id }}"
-          LOCAL_ART_DIR="/tmp/e2e_artifacts_${RID}"
-          mkdir -p "$LOCAL_ART_DIR"
-          # ADR-AF-0024 (harness-verdict-sot): сначала ищем канонический каталог
-          # текущего run'а /tmp/e2e_v2_<RID>. Харнесс пишет OUT_DIR по GITHUB_RUN_ID
-          # (issue #1353), и этот путь — single source of truth для verdict.txt.
-          # Только если его нет (harness упал до ensure_outdir), берём самый свежий
-          # /tmp/e2e_v2_* по mtime — отладочный набор всё равно нужен.
-          PRIMARY_DIR="/tmp/e2e_v2_${RID}"
-          if sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 \
-               "[ -d '$PRIMARY_DIR' ]" 2>/dev/null; then
-            REMOTE_OUT_DIR="$PRIMARY_DIR"
-            echo "Remote OUT_DIR (primary, by RID) = $REMOTE_OUT_DIR"
-          else
-            echo "WARN: $PRIMARY_DIR не существует на 249 — harness упал до ensure_outdir?"
-            REMOTE_OUT_DIR="$(sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 \
-              "ls -1dt /tmp/e2e_v2_* 2>/dev/null | head -1" 2>/dev/null || echo '')"
-            if [ -n "$REMOTE_OUT_DIR" ]; then
-              echo "Remote OUT_DIR (fallback, by mtime) = $REMOTE_OUT_DIR — может быть stale (не наш RID)"
-            fi
-          fi
-          if [ -z "$REMOTE_OUT_DIR" ]; then
-            echo "No /tmp/e2e_v2_*/ on build machine — e2e harness didn't run"
-          else
-            # Исторически тут был `scp -r` с trailing-dot в source path —
-            # deprecated с OpenSSH 9.0+ (changelog: «path with /<dot>
-            # suffix for source was rejected as "unexpected filename"»).
-            # Используем rsync -a через ssh — см. issue #1478, run #32255219770.
-            sshpass -e rsync -a \
-              -e 'ssh -o StrictHostKeyChecking=no' \
-              "${REMOTE_OUT_DIR}/" "$LOCAL_ART_DIR/" 2>/dev/null || true
-            ls -la "$LOCAL_ART_DIR" 2>&1 | head -25
-          fi
-          # Сохраняем абсолютный путь к артефакт-диру для последующих шагов.
-          echo "LOCAL_ART_DIR=$LOCAL_ART_DIR" >> "$GITHUB_ENV"
-          # Артефакт-каталог локально доступен workflow'у через $LOCAL_ART_DIR.
-          echo "ARTIFACTS_COLLECTED $(ls "$LOCAL_ART_DIR" 2>/dev/null | wc -l) files"
+      # ⚠️ Здесь был ВТОРОЙ шаг «Collect e2e artifacts from build machine»
+      # (одноимённый с тем, что ниже). Удалён 22.09.2026 по разбору прогона
+      # 35658231116. Он собирал rsync'ом /tmp/e2e_v2_<RID> в тот же самый
+      # путь /tmp/e2e_artifacts_<RID>, который нижний шаг открывает с
+      # `rm -rf` — то есть вся его работа гарантированно стиралась через
+      # несколько шагов. При этом у него не было `if: always()`, так что на
+      # красных прогонах он и вовсе не запускался: полезной работы — ноль,
+      # а один лишний ssh+rsync к 249 внутри 45-минутного бюджета — был.
+      # Хуже: «E2E timing metrics» между двумя шагами копировал timing.json
+      # в $LOCAL_ART_DIR «для единого скачивания», и этот файл тем же
+      # `rm -rf` удалялся, а нижний шаг его не добавлял. Подшивка timing.json
+      # перенесена в нижний шаг, после того как он сформирует свой ART_DIR.
+      # Ещё он содержал fallback «взять самый свежий /tmp/e2e_v2_* по mtime»,
+      # который ниже удалён намеренно (ретро 22.08 t_944df2c5, issue #1506 —
+      # тянул чужие прогоны в звуковые артефакты).
 
       # Issue #1396: PR diff — «что нового в этом PR» для ретро-инженера.
       # Если задан вход pr_number — скачиваем его; иначе берём текущий PR
       # ветки (если HEAD запушено из PR — workflow refs фигурирует).
-      - name: Upload PR diff (issue #1396)
+      - name: Compute PR diff (issue #1396)
+        # Переименован: шаг НИЧЕГО не загружает, он готовит $DIFF_FILE —
+        # загрузкой занимается одноимённый (до этой правки) шаг
+        # `actions/upload-artifact` в конце job'а. Два разных шага с одним
+        # именем в UI Actions читались как повтор одной работы.
+        #
+        # if: always() — без него шаг пропускался при FAIL, DIFF_FILE не
+        # создавался, а upload-шаг с `if-no-files-found: ignore` молча
+        # проглатывал пропажу. То есть артефакт «что изменилось в этом PR»
+        # отсутствовал ровно на красных прогонах, где он и нужен для разбора.
+        if: ${{ always() }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Ретро t_4cf2811e: pr_number / ref могут содержать CR (upstream JSON
@@ -529,6 +536,17 @@ jobs:
           wc -l "$DIFF_FILE"
           echo "DIFF_FILE=$DIFF_FILE" >> "$GITHUB_ENV"
       - name: Validate e2e result (real robot response)
+        # bug(run 35658231116, 22.09.2026): без if: always() этот шаг был
+        # МЁРТВЫМ КОДОМ на каждом реальном падении. Шаг «Verdict from atomic
+        # harness» выше делает `exit 1` при E2E_VERDICT FAIL, а у этого шага
+        # условия не было — GitHub Actions по умолчанию ставит success(), и
+        # ~115 строк классификации (feature-fail / llm-error / infra-fail /
+        # no-reaction, ADR-AF-0024 verdict.txt как SoT) НЕ выполнялись ровно
+        # в том случае, для которого написаны. Классификация работала только
+        # когда харнесс уже сказал PASS.
+        # Читающий job'у видел название шага и думал, что падение
+        # классифицировано; шага в логе не было вообще.
+        if: ${{ always() }}
         env:
           SSHPASS: open
         run: |
@@ -728,10 +746,12 @@ jobs:
             | tee /tmp/e2e_timing.txt
           python3 .github/workflows/scripts/e2e_timing.py "/tmp/voice_e2e_${RID}.log" "${VTXT}" --json \
             > /tmp/e2e_timing.json 2>/dev/null || echo '{"error":"timing json failed","partial_data":true}' > /tmp/e2e_timing.json
-          # Также кладём JSON в локальный артефакт-дир (для единого скачивания)
-          if [ -d "$LOCAL_ART_DIR" ]; then
-            cp /tmp/e2e_timing.json "$LOCAL_ART_DIR/timing.json" 2>/dev/null || true
-          fi
+          # Подшивка в единый артефакт-дир НЕ здесь: шаг «Collect e2e
+          # artifacts from build machine» ниже начинается с `rm -rf`
+          # /tmp/e2e_artifacts_<RID>, поэтому копия, положенная тут, всегда
+          # удалялась (разбор прогона 35658231116). Копирование перенесено
+          # в конец того шага. Здесь только /tmp/e2e_timing.json, который
+          # забирает отдельный upload-артефакт.
           # Дублируем в step summary (видно в сводке run, не только в логе)
           {
             echo "### ⏱ Response timing (команда → ответ)"
@@ -874,6 +894,15 @@ jobs:
           # (workspace + /tmp) и сохраняет файл по полному пути раннера —
           # в артефакте это выглядело как runner/_work/rob_box_project/...
           if [ -f model.json ]; then cp -f model.json "$ART_DIR/model.json"; fi
+
+          # timing.json — сюда, а не в шаге «E2E timing metrics» выше: этот шаг
+          # начинается с `rm -rf "$ART_DIR"`, поэтому копия, положенная до него,
+          # всегда удалялась и в единый артефакт timing.json не попадал НИ РАЗУ
+          # (разбор прогона 35658231116). Шаг timing идёт раньше и тоже
+          # if: always(), так что файл к этому моменту уже есть.
+          if [ -f /tmp/e2e_timing.json ]; then
+            cp -f /tmp/e2e_timing.json "$ART_DIR/timing.json"
+          fi
 
           echo "ART_DIR=$ART_DIR" >> "$GITHUB_ENV"
           echo "=== collected e2e_artifacts_${RID}/ contents ==="

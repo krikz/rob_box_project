@@ -1335,6 +1335,66 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
     ensure_outdir
     ffmpeg -nostdin -y -i "$OUT_DIR/cmd_${safe}.wav" -af "highpass=f=100,volume=3.0,alimiter=limit=0.98,adelay=1500|all=1" -ac 1 -ar 16000 "$OUT_DIR/cmd_${safe}_eq.wav" 2>/dev/null
 
+    # 1b. Реплика влезает в окно VAD робота?
+    #
+    # bug(run 35658231116, 22.09.2026). Реплика n303_bg_boris в синтезе
+    # minimax звучит 17.37с, окно audio_node — speech_max_duration=15.0.
+    # audio_node выбрасывал фразу ДО STT, а харнесс тратил на неё две
+    # попытки по react_window и отчитывался `FAIL backlog_miss`, то есть
+    # обвинял dialogue_node. Соседний n305 прошёл на 14.81с — зазор 0.19с,
+    # так что «зелёный» шаг был лотереей на скорости речи провайдера.
+    #
+    # Здесь wav уже синтезирован — мерим ФАКТ, а не оцениваем по символам.
+    # Отдаём вердикт сразу: это дешевле (не жжём retry-окна) и честнее
+    # (называем настоящую причину, а не симптом на конце цепочки).
+    #
+    # Мерим ИМЕННО _eq.wav — это файл, который реально уходит в paplay.
+    # И сравниваем НЕ с speech_max_duration напрямую: audio_node мерит не
+    # длину файла, а окно от первой речи до последней, с VAD-hangover'ом.
+    # Замеры на прогоне 35658231116 (eq-длительность → что насчитал VAD):
+    #     n301  6.23 → 9.95    n302  9.81 → 12.51   n303 14.84 → 17.37 ❌
+    #     n304 13.39 → 16.09❌  n305 12.41 → 15.07❌ n306  9.13 → 13.28
+    #     n307  6.27 →  8.67   n308  7.42 →  9.95
+    # Накладка стабильна и лежит в 2.4-4.2s. Берём минимум наблюдённого
+    # (2.5s) — это самый мягкий порог, который всё ещё правильно
+    # классифицирует все восемь шагов выше (n303/n304/n305 ловятся,
+    # n302/n306 не ловятся). Порог по файлу = speech_max_duration - 2.5.
+    #
+    # Дефолты синхронизированы с docker/vision/config/voice_assistant/
+    # audio_node.yaml → audio_node → ros__parameters → speech_max_duration.
+    # Рассинхрон дефолта и конфига ловит
+    # scripts/testing/test_e2e_scenario_playable.sh.
+    E2E_VAD_MAX_DURATION="${E2E_VAD_MAX_DURATION:-15.0}"
+    E2E_VAD_OVERHEAD="${E2E_VAD_OVERHEAD:-2.5}"
+    local cmd_dur vad_budget
+    cmd_dur="$(ffprobe -v error -show_entries format=duration -of csv=p=0 \
+        "$OUT_DIR/cmd_${safe}_eq.wav" 2>/dev/null | head -1)"
+    vad_budget="$(awk -v m="$E2E_VAD_MAX_DURATION" -v o="$E2E_VAD_OVERHEAD" 'BEGIN{printf "%.2f", m-o}')"
+    case "$cmd_dur" in
+        ''|*[!0-9.]*)
+            # ffprobe нет или ответил мусором — молча пропускаем проверку.
+            # Это advisory-гейт: он не имеет права сам ронять прогон.
+            log "STEP ${label}: длительность реплики не измерена (ffprobe недоступен) — проверка окна VAD пропущена" ;;
+        *)
+            if awk -v d="$cmd_dur" -v b="$vad_budget" 'BEGIN{exit !(d>b)}'; then
+                log "STEP ${label}: ❌ реплика ${cmd_dur}s не влезает в окно VAD робота (бюджет ${vad_budget}s = speech_max_duration ${E2E_VAD_MAX_DURATION}s - VAD-накладка ${E2E_VAD_OVERHEAD}s)"
+                log "STEP ${label}: audio_node отбросит её до STT — играть бессмысленно. Это баг СЦЕНАРИЯ (реплику надо разбить), не робота."
+                emit_step "${label} FAIL scenario_too_long (${cmd_dur}s > ${vad_budget}s)"
+                printf 'STEP %s: eq=%ss > budget %ss (speech_max_duration=%s, overhead=%s, provider=%s voice=%s)\n' \
+                    "$label" "$cmd_dur" "$vad_budget" "$E2E_VAD_MAX_DURATION" "$E2E_VAD_OVERHEAD" \
+                    "${E2E_TTS_PROVIDER_RESOLVED:-$E2E_TTS_PROVIDER}" "$voice" \
+                    >> "$OUT_DIR/vad_rejects.log" 2>/dev/null || true
+                mark_fail_kind infra
+                return 1
+            fi
+            # Меньше секунды запаса — шаг лотерея: пройдёт или нет, зависит от
+            # скорости речи провайдера. Молчать об этом нельзя: n305 набрал
+            # 12.41s при бюджете 12.50s и в первой попытке всё равно отвалился.
+            if awk -v d="$cmd_dur" -v b="$vad_budget" 'BEGIN{exit !(b-d<1.0)}'; then
+                log "STEP ${label}: ⚠️ реплика ${cmd_dur}s при бюджете ${vad_budget}s — запас < 1s, шаг на грани отказа"
+            fi ;;
+    esac
+
     # 2. Ждём тишины: робот не должен говорить перед командой (greeting/
     #    приветствие идёт через 12s после старта и может перебить команду).
     #    Ждём пока в логах нет свежих TTS-событий последние E2E_SILENCE_WAIT сек.
