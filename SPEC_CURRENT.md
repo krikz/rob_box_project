@@ -199,22 +199,29 @@ gh issue create --title "[ID] description" \
 
 **Контекст.** До фикса `robbox-vision.service` после ребута Vision Pi **не поднимал ни одного контейнера**: `docker compose up -d` шёл в `10.1.1.249:5000` (katana, build-host, см. `.env`), и если katana offline — pull fail `dial tcp 10.1.1.249:5000: connect: no route to host` → systemd exit 1. Все 11 образов были закэшированы на Pi — фиксу сеть не нужна. Подробности и raw-evidence — [`docs/architecture/diagnostics/2026-09-15-robbox-vision-pull-failure.md`](docs/architecture/diagnostics/2026-09-15-robbox-vision-pull-failure.md).
 
-**Статус (на момент правки, 2026-09-16):** фиксы готовы в виде открытых PR, ещё не смёржены в `develop`:
+**Статус (обновлено 2026-09-21):** фиксы смёржены в `develop`. Пункт
+ADR-0111 §2.1 про bake Renardo-сэмплов в `voice-base` **не реализован так,
+как описан ниже в истории PR** — вместо bake-in-образ выбран другой
+механизм: [ADR-0125](docs/adr/0125-resource-pack-host-delivery-seam.md)
+(Ресурсный пак) и [ADR-0126](docs/adr/0126-renardo-samples-host-delivery.md)
+(уточняет ADR-0111 §2.1). Образ `voice-resources` и init-контейнер
+`voice-resources-init` удалены целиком, `profiles: [init]` в compose больше
+нет. Сэмплы и STT/TTS-модели (Vosk, Silero) кладёт на хост Vision Pi
+(`/opt/rob_box/samples`, `/opt/rob_box/models`) шаг деплоя, контейнеры видят
+их bind-mount'ом. Проверено на роботе 21.09.2026 (raw: `docker inspect`
+bind-mount, `ls` моделей/сэмплов внутри контейнера, прогрев Vosk/Silero).
 
 - [PR #2619](https://github.com/krikz/rob_box_project/pull/2619) — ADR-0111 (merged).
 - [PR #2617](https://github.com/krikz/rob_box_project/pull/2617) — диагностика `2026-09-15-robbox-vision-pull-failure.md`.
-- [PR #2634](https://github.com/krikz/rob_box_project/pull/2634) — `docker/vision/docker-compose.yaml`: `pull_policy: missing` ×17, `voice-resources-init` под `profiles:[init]`, downstream с `condition: service_completed_successfully, required: false`.
+- [PR #2634](https://github.com/krikz/rob_box_project/pull/2634) — `docker/vision/docker-compose.yaml`: `pull_policy: missing` ×17 (исходная версия компоуза с `voice-resources-init` под `profiles:[init]` позже заменена по ADR-0126).
 - [PR #2635](https://github.com/krikz/rob_box_project/pull/2635) — `scripts/setup/setup_vision_pi.sh`: systemd-юнит `robbox-vision.service` с `Restart=on-failure` + `StartLimitBurst=5` + `StartLimitIntervalSec=600` + `--pull never` best-effort.
 
-До мержа поведение прежнее (см. «До фикса» в [диагностике](docs/architecture/diagnostics/2026-09-15-robbox-vision-pull-failure.md)).
+**Принятое поведение** (текущее):
 
-**Принятое поведение** (после мержа фиксов):
-
-- Vision Pi **поднимает стек частично**, а не валится целиком, если один из образов недоступен (registry offline, отсутствует тег, переключение DNS, нестартующий init-контейнер).
+- Vision Pi **поднимает стек частично**, а не валится целиком, если один из образов недоступен (registry offline, отсутствует тег, переключение DNS).
 - `Restart=on-failure` + `RestartSec=60` + `StartLimitBurst=5` + `StartLimitIntervalSec=600` в `robbox-vision.service` — systemd сам поднимет юнит после транзитных сбоев.
 - `pull_policy: missing` для всех image-based сервисов + `--pull never` через override (или `--ignore-pull-failures` в deploy-шаге) — compose не пытается рефетчить то, что уже локально.
-- `profiles: [init]` на `voice-resources-init` — переходная мера: init-контейнер не стартует при обычном `docker compose up -d`, поднимается явно через `--profile init up -d`.
-- Renardo-сэмплы бейкаются в `voice-base` ([ADR-0111 §2.4](docs/adr/0111-voice-resources-image-sourcing.md#24-альтернатива-а-bake-в-voice-base)), init-логика переезжает в `voice-assistant` ([ADR-0111 §2.2](docs/adr/0111-voice-resources-image-sourcing.md#22-что-меняется-в-compose)). После bake — `voice-resources` как image-based init-сервис в проде ликвидируется ([ADR-0111 §2.1](docs/adr/0111-voice-resources-image-sourcing.md#21-voice-resources-больше-не-отдельный-образ)).
+- Никакого init-профиля для сэмплов/моделей больше нет: Ресурсный пак кладёт их на хост ДО `docker compose up` (ADR-0125/ADR-0126), compose про registry для этих ресурсов не знает.
 
 ### Что делать, если образ недоступен
 
@@ -237,50 +244,49 @@ gh issue create --title "[ID] description" \
     sudo systemctl status robbox-vision --no-pager -l
     ```
 
-4. **Поднять стек без `voice-resources-init`** (без профиля `init`) — это нормальный повседневный старт, init поднимется позже когда registry доступен:
+4. **Пополнить Ресурсный пак** (если сэмплы/модели на хосте не на месте — сеть нужна ЕМУ, не `docker compose`):
 
     ```bash
-    docker compose --pull never up -d   # без --profile
+    sudo bash docker/vision/scripts/resource_pack/apply_resource_pack.sh --dry-run  # план, без сети
+    sudo bash docker/vision/scripts/resource_pack/apply_resource_pack.sh           # применить
     ```
 
-6. **Поднять только `voice-resources-init`** (когда профиль `init` ещё используется):
+5. **Полный cold-start с гарантией использования локального кэша:**
 
     ```bash
-    docker compose --profile init up -d voice-resources-init
+    docker compose --pull never up -d
     ```
 
-### Сценарии «один образ недоступен»
+### Сценарии «один образ/ресурс недоступен»
 
 | Сценарий | Что происходит | Что делать |
 |----------|---------------|-----------|
-| `voice-resources-init` образ не скачался (registry offline) | downstream-сервисы (`supercollider`, `voice-assistant`) поднимаются в `synth-only mode`, init можно поднять позже | `docker compose --profile init up -d voice-resources-init` когда registry доступен |
-| Один из 10 базовых сервисов не скачался | Остальные 9 работают; systemd рестартует юнит, повторный `pull` сделает best-effort | Дождаться registry или поднять руками: `docker compose --pull never up -d <service>` |
-| Нужен полный сброс `voice-resources` (новые сэмплы) | Удалить маркер + volume, перезапустить `voice-assistant` (post-bake: init-логика в `voice-assistant` сама заполнит volume) | `docker compose down && docker volume rm vision_renardo_samples && docker compose up -d` |
+| `/opt/rob_box/samples` или `/opt/rob_box/models` пусты/отсутствуют | `supercollider`/`voice-assistant` поднимаются в `synth-only mode` (без музыки), STT/TTS без моделей не стартуют | `sudo bash docker/vision/scripts/resource_pack/apply_resource_pack.sh` когда сеть доступна |
+| Один из образов не скачался | Остальные сервисы работают; systemd рестартует юнит, повторный `pull` сделает best-effort | Дождаться registry или поднять руками: `docker compose --pull never up -d <service>` |
+| Нужно обновить сэмплы Renardo | Ресурсный пак идемпотентен (sha256/marker) — повторный прогон no-op, если манифест не менялся | `sudo bash docker/vision/scripts/resource_pack/apply_resource_pack.sh --only renardo-samples` |
 
 ### Профили compose (Vision Pi)
 
-- **`default`** (без `--profile`): все основные сервисы, **без** `voice-resources-init`. Используется в `robbox-vision.service` для повседневного старта.
-- **`init`**: только `voice-resources-init` (один, для разовой инициализации volume `renardo_samples`). Транзитный профиль — после bake Renardo-сэмплов в `voice-base` будет не нужен ([ADR-0111 §2.1](docs/adr/0111-voice-resources-image-sourcing.md#21-voice-resources-больше-не-отдельный-образ)).
-- **`with-music`**: альтернативный набор downstream-сервисов, зависящих от сэмплов. Использовать только если хочется строгий контракт «есть сэмплы → можно играть музыку».
+- **`default`** (без `--profile`): все основные сервисы. Используется в `robbox-vision.service` для повседневного старта. Init-профиля для сэмплов/моделей больше нет — их кладёт на хост Ресурсный пак ДО `docker compose up` (ADR-0125/ADR-0126).
 - **`monitoring`** (без изменений): `cadvisor-vision`, `promtail-vision`.
 - **`ai`** (без изменений): `ollama`.
 
 ### Главный инвариант
 
-Стек **всегда** поднимает 9–10 базовых сервисов, даже если `voice-resources-init` отсутствует. Это следствие [ADR-0111 §2.1](docs/adr/0111-voice-resources-image-sourcing.md#21-voice-resources-больше-не-отдельный-образ): `voice-resources` как image-based init-сервис в проде ликвидируется, сэмплы бейкаются в `voice-base` ([ADR-0111 §2.4](docs/adr/0111-voice-resources-image-sourcing.md#24-альтернатива-а-bake-в-voice-base)). Defense-in-depth: `--ignore-pull-failures` (`.github/workflows/L-Deploy and Verify.yml:381`) + `pull_policy: missing` (compose) + `Restart=on-failure` (systemd) — независимые слои защиты от каскадного краша.
+Стек **всегда** поднимает базовые сервисы без обращения к registry за сэмплами/моделями — они уже на хосте до `docker compose up` (ADR-0125, ADR-0126, уточняют [ADR-0111 §2.1](docs/adr/0111-voice-resources-image-sourcing.md#21-voice-resources-больше-не-отдельный-образ)). Образ `voice-resources` и init-контейнер удалены целиком. Defense-in-depth: `--ignore-pull-failures` (`.github/workflows/L-Deploy and Verify.yml:381`) + `pull_policy: missing` (compose) + `Restart=on-failure` (systemd) — независимые слои защиты от каскадного краша.
 
 ### Какие сервисы считаются критичными, а какие — опциональными
 
 | Категория | Сервисы | Что произойдёт, если образ недоступен |
 |-----------|---------|---------------------------------------|
 | **Критичные** (без них стек бесполезен) | `ros2_bridge`, `zenoh-router`, `hailo`, `vision_node` (лицевая/person), `avatar-arbiter` | Робот «глух и слеп» — голос и зрение не работают. Но **стек всё равно поднимется**, systemd рестартует и логи покажут причину. |
-| **Опциональные** (можно без них) | `voice-resources-init` (init Renardo-сэмплов), `supercollider` (если init не отработал → `synth-only mode`), `monitoring`-профиль, `ai`-профиль | `voice-assistant` стартует в `synth-only mode` (без музыки), `cadvisor`/`promtail`/`ollama` просто не поднимаются, остальное работает. |
+| **Опциональные** (можно без них) | `supercollider` (без сэмплов на хосте → `synth-only mode`), `monitoring`-профиль, `ai`-профиль | `voice-assistant` стартует в `synth-only mode` (без музыки), `cadvisor`/`promtail`/`ollama` просто не поднимаются, остальное работает. |
 
-### Обоснование выбора (ADR-0111 §4)
+### Обоснование выбора (ADR-0111 §4, механика доставки позже уточнена ADR-0125/ADR-0126)
 
 Рассматривались альтернативы: (a) поднять registry на Vision Pi — отклонено (attack surface + disk usage + operational overhead, [ADR-0111 §4.A](docs/adr/0111-voice-resources-image-sourcing.md#4a-поднять-registry-на-vision-pi-вариант-c-из-body-карточки)); (b) GHCR + fallback на katana — отклонено (production не должен зависеть от dev-окружения, [ADR-0111 §4.B](docs/adr/0111-voice-resources-image-sourcing.md#4b-ghcr-по-умолчанию--опциональный-fallback-на-katana)); (c) оставить `voice-resources-init` + `pull_policy: missing` + cached bundle — отклонено (не убирает архитектурный SPOF, не решает first-boot, [ADR-0111 §4.C](docs/adr/0111-voice-resources-image-sourcing.md#4c-оставить-voice-resources-init--pull_policy-missing--cached-bundle-на-pi)); (d) bake в supercollider — отклонено (исторически только runtime scsynth, не должен знать про Renardo pipeline, [ADR-0111 §4.D](docs/adr/0111-voice-resources-image-sourcing.md#4d-bake-сэмплы-в-supercollider-образ)).
 
-**Принятое решение (из тела карточки t_ca7fa165, шаг 3 — «вынесение/не вынесение данных из образа»):** [ADR-0111 §2.1](docs/adr/0111-voice-resources-image-sourcing.md#21-voice-resources-больше-не-отдельный-образ) зафиксировал **ликвидацию `voice-resources` как image-based init-сервиса** (а не его локальную сборку). Сэмплы Renardo бейкаются в `voice-base` ([§2.4](docs/adr/0111-voice-resources-image-sourcing.md#24-альтернатива-а-bake-в-voice-base)), init-логика копирования переезжает в `voice-assistant` ([§2.2](docs/adr/0111-voice-resources-image-sourcing.md#22-что-меняется-в-compose)). До завершения bake — действует переходная мера `profiles: [init]` для `voice-resources-init` (см. таблицу профилей выше).
+**Принятое решение (из тела карточки t_ca7fa165, шаг 3 — «вынесение/не вынесение данных из образа»):** [ADR-0111 §2.1](docs/adr/0111-voice-resources-image-sourcing.md#21-voice-resources-больше-не-отдельный-образ) зафиксировал **ликвидацию `voice-resources` как image-based init-сервиса**. Вариант "bake в `voice-base`" из §2.4, описанный там как принятый, на практике заменён другим механизмом — Ресурсным паком на хосте ([ADR-0125](docs/adr/0125-resource-pack-host-delivery-seam.md), [ADR-0126](docs/adr/0126-renardo-samples-host-delivery.md)): сэмплы и модели не запекаются ни в один образ, их кладёт на хост шаг деплоя, контейнеры получают bind-mount'ом.
 
 ### Референсы
 

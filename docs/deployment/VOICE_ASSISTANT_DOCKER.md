@@ -14,13 +14,16 @@
   - Audio libraries (PyAudio, PortAudio, ALSA)
   - ReSpeaker drivers (usb_4_mic_array, pixel_ring)
   - **STT (Offline-First):**
-    - Vosk (vosk-model-small-ru-0.22, 45 MB) - основной
+    - Vosk (vosk-model-small-ru-0.22) - основной. Модель в образ больше НЕ
+      запекается: её кладёт на хост Ресурсный пак (ADR-0125) в
+      `/opt/rob_box/models`, контейнер получает bind-mount'ом `/models`
     - Whisper base (74 MB) - альтернатива
     - Yandex SpeechKit - fallback
   - **TTS (Offline-First):**
     - Piper (ru_RU-dmitri-medium, 63 MB) - основной
     - Piper (ru_RU-irina-medium, 63 MB) - женский голос
-    - Silero TTS (torch-based) - альтернатива
+    - Silero TTS (torch-based) - альтернатива. Веса (`v5_ru.pt`) тоже едут
+      Ресурсным паком (ADR-0125), не запекаются в образ
     - Yandex Cloud TTS - fallback
   - rob_box_voice package (7 nodes)
   - rob_box_animations package

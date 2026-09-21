@@ -99,7 +99,7 @@ gh workflow run "L-Deploy and Verify.yml" \
 **Опции:**
 - `github` (default) - GitHub Container Registry (ghcr.io/krikz/rob_box)
   - Используется для production деплоя
-  - Образы собраны через GitHub Actions (G-Build workflows)
+  - Образы собраны через GitHub Actions (L-Build workflows)
 - `local` - Local Build Machine Registry (localhost:5000/krikz/rob_box)
   - Используется для быстрого локального тестирования
   - Образы собраны на локальной build machine (L-Build workflows)
@@ -444,7 +444,7 @@ git checkout -b feature/my-feature
 git push
 
 # 2. Собрать образы на локальной build machine через L-Build workflow
-gh workflow run "L-Build All Services.yml"
+gh workflow run "L-Build-All-Services.yml"
 
 # 3. Развернуть на test окружение из локального registry
 gh workflow run "L-Deploy and Verify.yml" \
