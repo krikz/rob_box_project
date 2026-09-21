@@ -86,12 +86,49 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# CHECK 3. Масштаб: сколько шагов зависит от этого гарда.
-#          Тест не требует «мало wake-gated шагов» — он лишь не даёт
-#          забыть, что гард распространяется почти на весь марафон.
+# CHECK 3. Цепочка «JSON → парсер → classify_step_expect» согласована.
+#
+# ВАЖНО, и я сам на этом ошибся 22.09.2026. Между scenario.json и
+# classify_step_expect стоит парсер, и он подставляет отсутствующему expect
+# ЛИТЕРАЛ 'cycle':
+#     exp = s.get('expect', 'cycle')
+# а classify_step_expect при ЯВНОМ 'cycle' намеренно НЕ авто-повышает шаг
+# («trust caller'а»). Авто-повышение до wake-gated срабатывает только на
+# ПУСТОЙ строке. Поэтому в scenario-режиме сейчас wake-gated не появляется
+# вообще, и SKIP-гард не может сработать ни на одном сценарии репозитория.
+#
+# Я сначала посчитал «нет expect + префикс Робот → wake-gated» и заявил
+# 101 шаг из 125 под SKIP. Это было НЕВЕРНО: дефолт парсера я пропустил.
+# Тест теперь проверяет саму цепочку, а не пересказывает мою ошибку.
 # ---------------------------------------------------------------------------
-printf 'CHECK 3: масштаб влияния гарда на сценарии\n'
-python3 - "$REPO_ROOT" <<'PY'
+printf 'CHECK 3: цепочка JSON → парсер → classify_step_expect согласована\n'
+PARSER_DEFAULT="$(grep -oE "s\.get\('expect', *'[a-z-]*'\)" "$HARNESS" | head -1 | grep -oE "'[a-z-]*'\)" | tr -d "')")"
+if [ -z "$PARSER_DEFAULT" ]; then
+    bad "не нашёл дефолт expect в парсере сценария — он нужен, чтобы понимать, включено ли авто-повышение"
+else
+    ok "парсер подставляет отсутствующему expect: '$PARSER_DEFAULT'"
+fi
+# shellcheck source=/dev/null
+source "$WAKE"
+CLS_DEFAULT="$(classify_step_expect "$PARSER_DEFAULT" "Робот, как дела")"
+CLS_EMPTY="$(classify_step_expect "" "Робот, как дела")"
+printf '  classify(%s, «Робот, ...») = %s   classify(пусто, «Робот, ...») = %s\n' \
+    "'$PARSER_DEFAULT'" "$CLS_DEFAULT" "$CLS_EMPTY"
+if [ "$CLS_EMPTY" != "wake-gated" ]; then
+    bad "авто-повышение по wake-префиксу сломано: classify(пусто) = '$CLS_EMPTY', ждали wake-gated. Гард ADR-0027 §5.2 перестал быть достижимым вообще."
+else
+    ok "авто-повышение по wake-префиксу живо (для пустого expect)"
+fi
+if [ "$CLS_DEFAULT" = "wake-gated" ]; then
+    # Дефолт парсера сменили на пустую строку — авто-повышение включилось
+    # для сотен шагов сразу. Это ровно тот случай, ради которого написаны
+    # перепроба и каскад-гард из CHECK 1.
+    printf '  ⚠️  дефолт парсера теперь даёт wake-gated: авто-повышение включено для всех шагов без expect.\n'
+    printf '      Перепроба и каскад-гард (CHECK 1) обязаны быть на месте, иначе прогон уйдёт в массовый SKIP.\n'
+else
+    ok "дефолт парсера '$PARSER_DEFAULT' не авто-повышает — SKIP-гард применим только к явному expect"
+fi
+python3 - "$REPO_ROOT" "$PARSER_DEFAULT" <<'PY'
 import glob, json, os, re, sys
 
 for stream in (sys.stdout, sys.stderr):
@@ -100,8 +137,8 @@ for stream in (sys.stdout, sys.stderr):
     except (AttributeError, ValueError):
         pass
 
-root = sys.argv[1]
-total = auto = 0
+root, parser_default = sys.argv[1], sys.argv[2]
+total = explicit_wg = latent = 0
 pattern = os.path.join(root, ".github", "e2e", "scenarios", "**", "*.json")
 for path in sorted(glob.glob(pattern, recursive=True)):
     base = os.path.basename(path)
@@ -112,20 +149,21 @@ for path in sorted(glob.glob(pattern, recursive=True)):
     except json.JSONDecodeError:
         continue
     for step in data.get("steps", []) or []:
-        if not isinstance(step, dict):
-            continue
-        text = step.get("text") or ""
-        if not text:
+        if not isinstance(step, dict) or not step.get("text"):
             continue
         total += 1
-        # classify_step_expect: пустой expect + wake-префикс → wake-gated.
-        if not step.get("expect") and re.match(r"^\s*(Робот|Робокс)", text, re.I):
-            auto += 1
-share = (100.0 * auto / total) if total else 0.0
-print("  под авто-wake-gated: %d из %d реплик (%.0f%%)" % (auto, total, share))
-if share > 50:
-    print("  ⚠️  больше половины сценариев зависит от этого гарда — "
-          "любая ошибка в нём обнуляет прогон целиком, а не портит один шаг")
+        raw = step.get("expect", parser_default)
+        if raw in ("wake-gated", "wake_gated"):
+            explicit_wg += 1
+        elif raw == "" and re.match(r"^\s*(Робот|Робокс)", step["text"], re.I):
+            latent += 1
+
+print("  шагов всего: %d | явный wake-gated: %d | авто-повышаемых сейчас: %d"
+      % (total, explicit_wg, latent))
+if explicit_wg == 0 and latent == 0:
+    print("  ℹ️  сейчас SKIP-гард недостижим ни на одном сценарии (все шаги -> cycle/backlog).")
+    print("     Правки из CHECK 1 — защита на будущее: они снимают ловушку, в которой")
+    print("     гард сам себя подтверждал, а не исправляют текущую поломку прогонов.")
 PY
 
 printf '\n'
