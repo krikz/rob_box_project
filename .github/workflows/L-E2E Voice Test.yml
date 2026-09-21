@@ -239,6 +239,19 @@ jobs:
           # tool_invoked() через PYTHONPATH="$SCRIPT_DIR_E2E". Без файла
           # heredoc падает на ImportError, acceptance.json остаётся пустым
           # и GATE-1 краснеет с невнятным «parse error».
+          # bug(run 35658231116, 22.09.2026): ПЯТЫЙ и ШЕСТОЙ файлы того же
+          # класса — e2e_audio_metrics.py и e2e_baseline_diff.py. Харнесс звал
+          # их repo-relative путём (.github/workflows/scripts/...), а на 249 он
+          # лежит одиночным файлом в /tmp и CWD у ssh-сессии = $HOME ros2.
+          # python3 не находил скрипт НИ РАЗУ за всю историю: audio_metrics.json
+          # был 36-байтной заглушкой {"error":"audio_metrics.py failed"} в каждом
+          # прогоне (проверено на 35658231116), то есть звуковая метрика e2e
+          # не считалась вообще никогда. Теперь путь через $SCRIPT_DIR_E2E,
+          # а файлы копируются сюда наравне с остальными.
+          #
+          # ⚠️ Добавляешь новый файл, который харнесс source'ит/зовёт —
+          # добавь его И СЮДА, И в scripts/testing/test_e2e_harness_deploy.sh
+          # (тест сверяет список scp-команд с тем, что харнесс реально зовёт).
           chmod +x .github/workflows/scripts/e2e_voice_test.sh
           chmod +x .github/workflows/scripts/e2e_voice_lib.sh
           chmod +x .github/workflows/scripts/e2e_voice_wake_gate.sh
@@ -246,7 +259,9 @@ jobs:
           sshpass -e scp -o StrictHostKeyChecking=no .github/workflows/scripts/e2e_voice_lib.sh ros2@10.1.1.249:/tmp/e2e_voice_lib.sh
           sshpass -e scp -o StrictHostKeyChecking=no .github/workflows/scripts/e2e_voice_wake_gate.sh ros2@10.1.1.249:/tmp/e2e_voice_wake_gate.sh
           sshpass -e scp -o StrictHostKeyChecking=no .github/workflows/scripts/e2e_tool_match.py ros2@10.1.1.249:/tmp/e2e_tool_match.py
-          sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "ls -la /tmp/e2e_voice_test.sh /tmp/e2e_voice_lib.sh /tmp/e2e_voice_wake_gate.sh /tmp/e2e_tool_match.py && echo HARNESS_PUSHED"
+          sshpass -e scp -o StrictHostKeyChecking=no .github/workflows/scripts/e2e_audio_metrics.py ros2@10.1.1.249:/tmp/e2e_audio_metrics.py
+          sshpass -e scp -o StrictHostKeyChecking=no .github/workflows/scripts/e2e_baseline_diff.py ros2@10.1.1.249:/tmp/e2e_baseline_diff.py
+          sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "ls -la /tmp/e2e_voice_test.sh /tmp/e2e_voice_lib.sh /tmp/e2e_voice_wake_gate.sh /tmp/e2e_tool_match.py /tmp/e2e_audio_metrics.py /tmp/e2e_baseline_diff.py && echo HARNESS_PUSHED"
           # CRLF sanitization (single-line): отрезаем \r и \n от начала/конца.
           # Внутри значения CR/LF недопустимы для имён файлов/путей.
           SCENARIO_FILE_CLEAN=$(printf '%s' "$SCENARIO_FILE" | tr -d '\r\n')

@@ -121,53 +121,6 @@ mkdir -p "$OUT_DIR"
 # контейнера робота) до первого шага.
 E2E_RUN_BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-# --- ADR-0027 §5.2: wake-gate pre-flight probe ----------------------------
-# Retro t_be491fba: rounds 215-222 voice_core_suite_v1 показали fail-streak
-# 3/3+ на cold-start wake-gate. dj02_stop_music шаг имеет ✅ ПОЛНЫЙ ЦИКЛ
-# (акцепт + LLM + TTS) + PATTERN_MISS stop_music → aggregate GATE-1 фейлит
-# "expected tool calls not invoked: stop_music". Root cause = cold-start
-# wake-gate (TRANSCRIPT[dj02] = «стоп музыка» без «Робот»), а не LLM race
-# как было misdiagnosed в t_9d229634.
-#
-# Probe: проверяем docker logs с момента E2E_RUN_BEFORE — есть ли ЛЮБОЕ
-# ПРИНЯТО с wake-prefix (Робот/Робокс). Если нет → cold-start не пройден →
-# step.expect="wake-gated" помечаются SKIP, не FAIL (backlog-аккумулятор
-# копит «обот»/«как дела» без wake — это by design, не bug).
-#
-# Артефакт: $OUT_DIR/wake_gate_preflight.json — verdict, checked_at, before,
-# reason, error. CI / ревью читают его для доказательства «это cold-start
-# flake, а не acceptance fail».
-WAKE_GATE_PREFLIGHT_FILE="${OUT_DIR}/wake_gate_preflight.json"
-WAKE_GATE_CLEARED=0   # 1 = cold-start cleared, 0 = not cleared, 2 = probe error
-WAKE_GATE_PREFLIGHT_REASON=""
-# Под set -u SCENARIO_FILE может быть не задан (single-text mode). Используем
-# ${SCENARIO_FILE:-} для безопасного обращения.
-if [ -n "${SCENARIO_FILE:-}" ]; then
-    log "WAKE-GATE-PREFLIGHT: probe before=${E2E_RUN_BEFORE}"
-    run_wake_gate_preflight "$E2E_RUN_BEFORE" "$WAKE_GATE_PREFLIGHT_FILE"
-    case $? in
-        0)  WAKE_GATE_CLEARED=1
-            WAKE_GATE_PREFLIGHT_REASON="cold-start cleared"
-            log "WAKE-GATE-PREFLIGHT: ✅ cold-start cleared" ;;
-        1)  WAKE_GATE_CLEARED=0
-            WAKE_GATE_PREFLIGHT_REASON="cold-start NOT cleared"
-            log "WAKE-GATE-PREFLIGHT: ⚠️ cold-start NOT cleared — wake-gated steps will SKIP" ;;
-        2)  WAKE_GATE_CLEARED=2
-            WAKE_GATE_PREFLIGHT_REASON="probe error"
-            log "WAKE-GATE-PREFLIGHT: ❌ probe error (no ROBOT_SSH / docker logs) — treating as not-cleared" ;;
-    esac
-else
-    # single-text mode: preflight не применим (одиночный wake-step не
-    # требует cold-start gate — он и ЕСТЬ cold-start probe). Пишем
-    # минимальный JSON, чтобы артефакт всегда был.
-    WAKE_GATE_CLEARED=1
-    mkdir -p "$OUT_DIR"
-    printf '{\n  "cleared": true,\n  "checked_at": "%s",\n  "before": "%s",\n  "reason": "single-text mode — preflight N/A (per-step wake-gated handled by run_step retry loop)",\n  "error": null\n}\n' \
-        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-        "$E2E_RUN_BEFORE" \
-        > "$WAKE_GATE_PREFLIGHT_FILE"
-fi
-
 # --- самовосстановление артефакт-дира (ретро 11.08 t_26a6d362) -------------
 # Параллельный infra-cleanup на 249 (t_0a5d65af) удалял /tmp/e2e_v2_* ВО ВРЕМЯ
 # прогона → paplay open(): No such file → ложный FAIL (round-49, run 31544057593).
@@ -337,7 +290,8 @@ fi
 log() { echo ">>> $*"; }
 
 # mark_fail_kind() — запоминает самую информативную причину FAIL.
-# Приоритет: feature > llm_error > synth > no_reaction (feature не понижается).
+# Приоритет: feature > infra > llm_error > synth > no_reaction
+# (feature не понижается).
 # emit_step() — единственная точка публикации результата шага.
 # Кроме stdout-маркера (контракт пост-валидатора, ADR-0015) дописывает строку
 # в steps.jsonl. Раньше счёта шагов не существовало вообще: любой FAIL ронял
@@ -368,8 +322,15 @@ mark_fail_kind() {  # $1=kind
     local kind="$1"
     case "$kind" in
         feature)     E2E_FAIL_KIND="feature" ;;
-        llm_error)   [ "$E2E_FAIL_KIND" = "feature" ] || E2E_FAIL_KIND="llm_error" ;;
-        synth)       { [ "$E2E_FAIL_KIND" = "feature" ] || [ "$E2E_FAIL_KIND" = "llm_error" ]; } || E2E_FAIL_KIND="synth" ;;
+        # infra — звук не доехал до STT (audio_node отбросил фразу по длине /
+        # захват мёртв / нет ReSpeaker). Ставится выше llm_error/synth/
+        # no_reaction, потому что при таком отказе робот-логика вообще не
+        # исполнялась и обвинять её нельзя (run 35658231116: `FAIL backlog_miss`
+        # при `Речь отклонена: 17.37с`). Ниже feature: если в том же прогоне
+        # есть настоящий acceptance-фейл, он актуальнее для разбора.
+        infra)       [ "$E2E_FAIL_KIND" = "feature" ] || E2E_FAIL_KIND="infra" ;;
+        llm_error)   { [ "$E2E_FAIL_KIND" = "feature" ] || [ "$E2E_FAIL_KIND" = "infra" ]; } || E2E_FAIL_KIND="llm_error" ;;
+        synth)       { [ "$E2E_FAIL_KIND" = "feature" ] || [ "$E2E_FAIL_KIND" = "infra" ] || [ "$E2E_FAIL_KIND" = "llm_error" ]; } || E2E_FAIL_KIND="synth" ;;
         no_reaction) [ -z "$E2E_FAIL_KIND" ] && E2E_FAIL_KIND="no_reaction" ;;
     esac
 }
@@ -395,6 +356,68 @@ source "$SCRIPT_DIR_E2E/e2e_voice_lib.sh"
 # only — никакого main flow, никакого чтения ENV.
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR_E2E/e2e_voice_wake_gate.sh"
+
+# bug(run 35658231116, 22.09.2026): этот блок стоял на строке ~124 — ДО
+# парсинга аргументов (--scenario разбирается ниже, ~300) и ДО source
+# e2e_voice_wake_gate.sh (~397). Под set -u обращение ${SCENARIO_FILE:-}
+# не падало, а молча резолвилось в пустую строку, поэтому условие
+# `[ -n "${SCENARIO_FILE:-}" ]` было ВСЕГДА ложным: любой scenario-прогон
+# уходил в else-ветку, форсил WAKE_GATE_CLEARED=1 и писал в артефакт
+# "single-text mode — preflight N/A". Проверено на живом прогоне
+# 35658231116 (запуск был --scenario, а wake_gate_preflight.json содержал
+# именно этот single-text reason). Следствие: SKIP-гард для
+# expect="wake-gated" (ADR-0027 §5.2) не срабатывал никогда, и cold-start
+# wake-gate флак краснел как acceptance/feature-fail — ровно тот
+# misdiagnosis, против которого фича и делалась (ретро t_be491fba).
+# Второй слой той же ошибки: run_wake_gate_preflight определяется в либе
+# строкой выше — из старого места она была ещё и не видна.
+# --- ADR-0027 §5.2: wake-gate pre-flight probe ----------------------------
+# Retro t_be491fba: rounds 215-222 voice_core_suite_v1 показали fail-streak
+# 3/3+ на cold-start wake-gate. dj02_stop_music шаг имеет ✅ ПОЛНЫЙ ЦИКЛ
+# (акцепт + LLM + TTS) + PATTERN_MISS stop_music → aggregate GATE-1 фейлит
+# "expected tool calls not invoked: stop_music". Root cause = cold-start
+# wake-gate (TRANSCRIPT[dj02] = «стоп музыка» без «Робот»), а не LLM race
+# как было misdiagnosed в t_9d229634.
+#
+# Probe: проверяем docker logs с момента E2E_RUN_BEFORE — есть ли ЛЮБОЕ
+# ПРИНЯТО с wake-prefix (Робот/Робокс). Если нет → cold-start не пройден →
+# step.expect="wake-gated" помечаются SKIP, не FAIL (backlog-аккумулятор
+# копит «обот»/«как дела» без wake — это by design, не bug).
+#
+# Артефакт: $OUT_DIR/wake_gate_preflight.json — verdict, checked_at, before,
+# reason, error. CI / ревью читают его для доказательства «это cold-start
+# flake, а не acceptance fail».
+WAKE_GATE_PREFLIGHT_FILE="${OUT_DIR}/wake_gate_preflight.json"
+WAKE_GATE_CLEARED=0   # 1 = cold-start cleared, 0 = not cleared, 2 = probe error
+WAKE_GATE_PREFLIGHT_REASON=""
+# Под set -u SCENARIO_FILE может быть не задан (single-text mode). Используем
+# ${SCENARIO_FILE:-} для безопасного обращения.
+if [ -n "${SCENARIO_FILE:-}" ]; then
+    log "WAKE-GATE-PREFLIGHT: probe before=${E2E_RUN_BEFORE}"
+    run_wake_gate_preflight "$E2E_RUN_BEFORE" "$WAKE_GATE_PREFLIGHT_FILE"
+    case $? in
+        0)  WAKE_GATE_CLEARED=1
+            WAKE_GATE_PREFLIGHT_REASON="cold-start cleared"
+            log "WAKE-GATE-PREFLIGHT: ✅ cold-start cleared" ;;
+        1)  WAKE_GATE_CLEARED=0
+            WAKE_GATE_PREFLIGHT_REASON="cold-start NOT cleared"
+            log "WAKE-GATE-PREFLIGHT: ⚠️ cold-start NOT cleared — wake-gated steps will SKIP" ;;
+        2)  WAKE_GATE_CLEARED=2
+            WAKE_GATE_PREFLIGHT_REASON="probe error"
+            log "WAKE-GATE-PREFLIGHT: ❌ probe error (no ROBOT_SSH / docker logs) — treating as not-cleared" ;;
+    esac
+else
+    # single-text mode: preflight не применим (одиночный wake-step не
+    # требует cold-start gate — он и ЕСТЬ cold-start probe). Пишем
+    # минимальный JSON, чтобы артефакт всегда был.
+    WAKE_GATE_CLEARED=1
+    mkdir -p "$OUT_DIR"
+    printf '{\n  "cleared": true,\n  "checked_at": "%s",\n  "before": "%s",\n  "reason": "single-text mode — preflight N/A (per-step wake-gated handled by run_step retry loop)",\n  "error": null\n}\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        "$E2E_RUN_BEFORE" \
+        > "$WAKE_GATE_PREFLIGHT_FILE"
+fi
+
 
 # --- ADR-0022 GATE-1 acceptance.json (gating only) -------------------------
 # Issue #2300 (09.09.2026): auto-discovery списка кандидатов
@@ -1195,6 +1218,71 @@ check_backlog_accumulated() {  # $1=before_rfc3339
     printf '%s' "$logs" | grep -qE '\[backlog\] accumulated \(no_wake_word\)'
 }
 
+# vad_reject_reason() — почему шаг НЕ доехал до STT (issue: ложный диагноз).
+#
+# bug(run 35658231116, 22.09.2026). Шаги n303_bg_boris / n304_bg_grisha_unknown
+# отчитались `FAIL backlog_miss` — «backlog accumulation не подтверждён», то
+# есть обвинили фичу бэклога. В docker logs робота за то же окно лежало:
+#
+#   ❌ Речь отклонена: 17.37с (min=0.3, max=15.0)
+#
+# audio_node выбросил фразу ПО ДЛИНЕ, ещё до STT: реплики этих шагов в
+# синтезе minimax звучат 16-17.4с против speech_max_duration=15.0. Ни бэклог,
+# ни диаризация, ни LLM в этом не участвовали вообще. Рядом n305 прошёл на
+# 14.81с — то есть сценарий был лотереей с зазором 0.19с, а не проверкой.
+#
+# Диагноз «backlog_miss» отправлял ретро-инженера искать регресс в
+# dialogue_node, которого там нет. По ADR-0018 честный FAIL обязан называть
+# настоящую причину: возвращаем её отдельным kind'ом (vad_rejected), с
+# измеренной длительностью и лимитом в тексте шага.
+#
+# Печатает в stdout человекочитаемую причину и возвращает 0, если фраза была
+# отброшена до STT. Если отказа не было — печатает пусто и возвращает 1.
+vad_reject_reason() {  # $1=before_rfc3339
+    local before="$1" logs hit
+    logs="$(${ROBOT_SSH} "docker logs voice-assistant --since '${before}' 2>&1" 2>/dev/null || echo '')"
+    # ВАЖЕН ПОРЯДОК: 0.00с проверяем ДО общего «вне окна», иначе общая ветка
+    # перехватывает пустой буфер и теряет подсказку про restart (поймано
+    # тестом scripts/testing/test_e2e_vad_reject_diagnosis.sh, CASE 4).
+    #
+    # Захват аудио мёртв (ретро 17.09: «простоял ночь — не слышит голос»):
+    # 0.00с означает, что буфер пуст, а не что фраза короткая.
+    if printf '%s' "$logs" | grep -qE 'Речь отклонена: 0\.00с'; then
+        printf 'vad_rejected — audio_node отдаёт пустой буфер (Речь отклонена: 0.00с): захват микрофона мёртв, лечится docker restart voice-assistant'
+        return 0
+    fi
+    # Длина вне окна VAD (главный случай — слишком длинная реплика сценария).
+    hit="$(printf '%s' "$logs" | grep -oE 'Речь отклонена: [0-9.]+с \(min=[0-9.]+, max=[0-9.]+\)' | tail -1)"
+    if [ -n "$hit" ]; then
+        printf 'vad_rejected — audio_node отбросил фразу ДО STT: %s' "$hit"
+        return 0
+    fi
+    if printf '%s' "$logs" | grep -qE 'устройство не найдено'; then
+        printf 'vad_rejected — audio_node не нашёл ReSpeaker (устройство не найдено): инфра, не робот-логика'
+        return 0
+    fi
+    return 1
+}
+
+# emit_step_fail_or_vad() — единая точка вердикта для шагов, которые «не
+# долетели». Если audio_node отбросил звук до STT, пишем настоящую причину;
+# иначе — исходный kind, как было.
+#   $1=label  $2=before_rfc3339  $3=fallback_marker  $4=fallback_kind
+emit_step_fail_or_vad() {
+    local label="$1" before="$2" fallback_marker="$3" fallback_kind="$4" reason
+    if reason="$(vad_reject_reason "$before")"; then
+        log "STEP ${label}: ❌ ${reason}"
+        log "STEP ${label}: это НЕ регресс робота — фраза сценария не доехала до STT"
+        emit_step "${label} FAIL vad_rejected"
+        printf '%s\n' "$reason" >> "$OUT_DIR/vad_rejects.log" 2>/dev/null || true
+        mark_fail_kind infra
+        return 1
+    fi
+    emit_step "${label} ${fallback_marker}"
+    mark_fail_kind "$fallback_kind"
+    return 1
+}
+
 # --- один атомарный шаг -----------------------------------------------------
 # Ожидаемое поведение определяется параметром $4 (expect_kind):
 #   cycle       — полный цикл STT→LLM→TTS (по дефолту)
@@ -1290,9 +1378,13 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
             log "STEP ${label}: backlog-маркер не найден (attempt ${battempt}) — повтор"
             sleep "$E2E_RETRY_PAUSE"
         done
+        # Прежде чем обвинить бэклог — проверяем, доехал ли звук до STT вообще.
+        # run 35658231116: n303/n304 отчитались backlog_miss, а в логах робота
+        # лежало `Речь отклонена: 17.37с (max=15.0)` — audio_node выбросил
+        # фразу по длине, dialogue_node её не видел. BEFORE здесь — окно
+        # последней попытки, ровно то, что нас интересует.
         log "STEP ${label}: ❌ backlog accumulation не подтверждён после ${E2E_MAX_ATTEMPTS} попыток"
-        emit_step "${label} FAIL backlog_miss"
-        mark_fail_kind feature
+        emit_step_fail_or_vad "$label" "$BEFORE" "FAIL backlog_miss" feature
         return 1
     fi
 
@@ -1336,9 +1428,11 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
     done
 
     if [ "$reaction" != "1" ]; then
+        # Та же развилка, что и в backlog-ветке: «робот не ответил» и «робот
+        # не услышал, потому что audio_node отбросил звук до STT» — разные
+        # диагнозы, и второй не имеет права выглядеть как первый.
         log "STEP ${label}: ❌ NO_ACCEPT после ${E2E_MAX_ATTEMPTS} попыток"
-        emit_step "${label} FAIL no_accept"
-        mark_fail_kind no_reaction
+        emit_step_fail_or_vad "$label" "$BEFORE" "FAIL no_accept" no_reaction
         return 1
     fi
 
@@ -1423,9 +1517,26 @@ write_artifacts_audio() {
     local voice_text="${1:-}"
     local wav="$OUT_DIR/recording.wav"
     if [ -f "$wav" ]; then
-        python3 .github/workflows/scripts/e2e_audio_metrics.py "$wav" \
-            > "$OUT_DIR/audio_metrics.json" 2>/dev/null \
-            || echo '{"error":"audio_metrics.py failed"}' > "$OUT_DIR/audio_metrics.json"
+        # bug(run 35658231116): путь был repo-relative (.github/workflows/...),
+        # а харнесс на 249 живёт одиночным файлом в /tmp с CWD=$HOME ros2 —
+        # python3 не находил скрипт НИ РАЗУ, и audio_metrics.json всегда был
+        # 36-байтной заглушкой {"error":"audio_metrics.py failed"}. Тот же
+        # класс, что и потерянные e2e_voice_lib.sh / e2e_voice_wake_gate.sh /
+        # e2e_tool_match.py (см. комментарий в L-E2E Voice Test.yml): зовём
+        # через $SCRIPT_DIR_E2E, а workflow обязан скопировать файл рядом.
+        if [ ! -f "$SCRIPT_DIR_E2E/e2e_audio_metrics.py" ]; then
+            echo '{"error":"e2e_audio_metrics.py not deployed","expected_at":"'"$SCRIPT_DIR_E2E/e2e_audio_metrics.py"'"}' \
+                > "$OUT_DIR/audio_metrics.json"
+        elif python3 "$SCRIPT_DIR_E2E/e2e_audio_metrics.py" "$wav" \
+                > "$OUT_DIR/audio_metrics.json" 2>"$OUT_DIR/audio_metrics.stderr"; then
+            :
+        else
+            # Не прячем stderr в /dev/null: до фикса причина отказа была
+            # невидима и «метрика не считалась» списывалось на recorder.
+            printf '{"error":"audio_metrics.py failed","stderr":%s}\n' \
+                "$(python3 -c 'import json,sys;print(json.dumps(open(sys.argv[1],encoding="utf-8",errors="replace").read()[-2000:],ensure_ascii=False))' "$OUT_DIR/audio_metrics.stderr" 2>/dev/null || echo '"<unreadable>"')" \
+                > "$OUT_DIR/audio_metrics.json"
+        fi
         log "ARTIFACTS: audio_metrics.json written ($(stat -c%s "$OUT_DIR/audio_metrics.json") bytes)"
     else
         log "WARN: $wav не найден — audio_metrics.json не пишется (recorder не запустился?)"
@@ -1436,9 +1547,17 @@ write_artifacts_audio() {
     local td="$OUT_DIR/transcript.json"
     [ ! -f "$td" ] && echo '{}' > "$td"
     if [ -f "$wav" ]; then
-        python3 .github/workflows/scripts/e2e_baseline_diff.py "$wav" "" "$voice_text" "$td" \
-            > "$OUT_DIR/baseline_diff.json" 2>/dev/null \
-            || echo '{"error":"baseline_diff.py failed"}' > "$OUT_DIR/baseline_diff.json"
+        if [ ! -f "$SCRIPT_DIR_E2E/e2e_baseline_diff.py" ]; then
+            echo '{"error":"e2e_baseline_diff.py not deployed","expected_at":"'"$SCRIPT_DIR_E2E/e2e_baseline_diff.py"'"}' \
+                > "$OUT_DIR/baseline_diff.json"
+        elif python3 "$SCRIPT_DIR_E2E/e2e_baseline_diff.py" "$wav" "" "$voice_text" "$td" \
+                > "$OUT_DIR/baseline_diff.json" 2>"$OUT_DIR/baseline_diff.stderr"; then
+            :
+        else
+            printf '{"error":"baseline_diff.py failed","stderr":%s}\n' \
+                "$(python3 -c 'import json,sys;print(json.dumps(open(sys.argv[1],encoding="utf-8",errors="replace").read()[-2000:],ensure_ascii=False))' "$OUT_DIR/baseline_diff.stderr" 2>/dev/null || echo '"<unreadable>"')" \
+                > "$OUT_DIR/baseline_diff.json"
+        fi
         log "ARTIFACTS: baseline_diff.json written"
     else
         echo '{"error":"recording.wav not found, baseline diff skipped"}' > "$OUT_DIR/baseline_diff.json"
