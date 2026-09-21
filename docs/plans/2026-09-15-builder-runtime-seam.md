@@ -940,3 +940,120 @@ Docker/CI). Предлагается добавить новую секцию `#
   `--cache-from type=registry` только в `L-Build Base Images.yml:76,116,156,197`, единственный `type=gha`
   в `B-Build CI Image.yml:62-63`, self-hosted `[self-hosted, rob-box]`, `linux/arm64`) — **все
   подтверждены** прямым чтением файлов, номера строк совпали с точностью до строки.
+
+---
+
+## 13. Ретро (Этап 2 плана) — что шов дал на самом деле, 21.09.2026
+
+Этап 2 требовал «снять урок с пилота и скорректировать шаблон». Уроков
+набралось на шесть файлов (led_matrix, vesc_nexus, ros2_control, lslidar,
+perception, vision-hailo), и главный из них — про ожидания.
+
+### 13.1. Экономия размера оказалась на порядок меньше обещанной
+
+| файл | ожидание плана | факт |
+|---|---|---|
+| led_matrix (пилот) | ~13 МБ (оценка на amd64) | **~6 МБ** (arm64, run 35028743625) |
+| perception | «средний выигрыш» за счёт rosidl | **~9 МБ** (842 → 833 МБ, amd64-проба) |
+| vision-hailo | «средний выигрыш» | тот же порядок |
+| ros2_control | «абсолютная экономия сопоставима с vesc_nexus» | **≈ 0** |
+| vesc_nexus | самый крупный кандидат | ~55 MiB (`ros-dev-tools`, 59 пакетов) |
+| lslidar | — | Boost-заголовки + клон драйвера |
+
+Причины, каждая подтверждена измерением, а не рассуждением:
+
+1. **§2.1 сильнее, чем казалось.** `dpkg -l` внутри `ros:humble-ros-base`:
+   `ament-cmake`, `ament-cmake-python`, `rosidl-default-generators`,
+   `rosidl-default-runtime`, `nav-msgs` уже стоят в базе. Для
+   perception/vision-hailo шов **не убирает с уровня apt ничего** — §1.2 и §3
+   п.4-5 оценивали выигрыш неверно.
+2. **Данные пересекают шов в обе стороны.** `rob_box_description/models` — 59 МБ,
+   и `install(DIRECTORY models ...)` тащит их в `share/` при любом раскладе.
+   Сегодня `--symlink-install` держал их симлинками на `/ws/src` (байты лежали
+   один раз), после шва это настоящие копии в `/ws/install`, зато `/ws/src`
+   уходит. Нетто по ros2_control ≈ ноль.
+3. Реально шов убирает `/ws/src`, `/ws/build`, `/ws/log` и промежуточные
+   артефакты pip — единицы мегабайт, если сервис не ставит своего тулчейна.
+
+**Вывод для следующих этапов:** мерить выигрыш надо не «сколько весит
+тулчейн», а «сколько этот Dockerfile ставит СВЕРХ базы». Там, где ответ
+«ничего», шов даёт корректность и изоляцию, но не байты, и продавать его
+как экономию нельзя.
+
+### 13.2. `--symlink-install` ломает шов ТИХО — и это главный риск, а не размер
+
+Проверено экспериментом (сборка с флагом и без, amd64, настоящий
+`rob_box_description`):
+
+```
+--- битые symlink в /ws/install (--symlink-install): ---
+/ws/install/rob_box_description/share/ament_index/resource_index/packages/rob_box_description
+/ws/install/rob_box_description/share/rob_box_description/models/.../whiteboard.jpg
+--- source /ws/install/setup.bash ---
+not found: ".../local_setup.bash"
+source вернул 0                 <-- падения НЕТ
+--- ros2 pkg prefix rob_box_description ---
+Package not found
+```
+
+В perception таких симлинков наружу **91**. То есть «образ собрался» и даже
+«контейнер запустился» этот класс регрессии не ловят: `source setup.bash`
+возвращает 0, падает уже нода. §9 (acceptance) обязан требовать
+`ros2 pkg prefix` / импорт — и теперь это не формальность, а единственная
+проверка, которая работает.
+
+### 13.3. Поправка, которую нашёл только реальный CI: `apt-get update` перед rosdep
+
+Run 35617451547, `build-ros2-control`:
+
+```
+E: Unable to locate package ros-humble-xacro
+ERROR: the following rosdeps failed to install
+```
+
+Apt-блок builder-стадии заканчивается `rm -rf /var/lib/apt/lists/*`, а
+`rosdep install` внутри вызывает `apt-get install`. До шва этого не было
+видно: `xacro` ставился явным apt-блоком того же образа, и rosdep'у нечего
+было доустанавливать; шов увёл его в рантайм-стадию. В четырёх других
+файлах (включая смерженный пилот) rosdep стоит с `|| true` — там эта же
+дыра молча превращала его в no-op. Починено везде.
+
+**В шаблон §5 добавлено обязательное:** `apt-get update &&` первой строкой
+RUN с `rosdep`.
+
+### 13.4. Что ещё вылезло
+
+- **APT_PROXY отсутствовал во ВСЕХ пяти файлах**, хотя раннер его передаёт
+  (та же дыра, что чинил `dc7ed68a2` в пилоте). build-arg молча
+  игнорировался, apt ходил напрямую в packages.ros.org.
+- **Зависимости, приходившие транзитивно через `rosdep`, через шов не
+  проходят** и требуют явного объявления в рантайм-стадии:
+  `rclcpp-lifecycle`, `std-msgs`, `robot-state-publisher`, `nav-msgs`,
+  `libboost-thread1.74.0`.
+- **pip-layout:** у ament_cmake+rosidl пакетов
+  `/ws/install/<pkg>/local/lib/python3.10/dist-packages`, у ament_python —
+  `/ws/install/<pkg>/lib/python3.10/site-packages`. Оба резолвятся через
+  `setup.bash`; в `/opt/ros`, `/usr/lib/python3/dist-packages` и `/usr/local`
+  не осело ничего.
+- **`docker/main/vesc_nexus/Dockerfile` не собирается ни одним workflow** и
+  отсутствует в `docker/build-manifest.yaml` — половину Этапа 3 CI не
+  проверит в принципе. Судьбу этого образа надо решить отдельно.
+
+### 13.5. Статус этапов
+
+| Этап | Статус |
+|---|---|
+| 0 — кеширование | Сделан. `--cache-from` работает, `--cache-to` на katana пропускается: драйвер buildx `docker` не умеет экспорт кеша. Нужен `docker-container` на раннере — решение владельца стенда, не кода. |
+| 1 — пилот led_matrix | Сделан и смержен ранее. |
+| 2 — ретро | Этот раздел. |
+| 3 — vesc_nexus + ros2_control | Локальные builder-стадии сделаны. Общий builder-образ для пары — НЕ сделан. |
+| 4 — perception + vision-hailo | Локальные builder-стадии сделаны. Общий builder — НЕ сделан. |
+| 5 — lslidar | Сделан, сборка на katana зелёная. |
+| 6 — teleop, telegram_bot | Не делался (низкий приоритет, §3 п.7). |
+
+**Про общий builder-образ (§4.3) — аргумент сменился.** Раз локальный шов для
+пар даёт ~9 МБ и ноль на уровне apt, общий builder надо оценивать как
+**экономию CI-времени** (повторная компиляция rosidl — минуты под qemu), а не
+размера образа: размер он не изменит вовсе. Осложнение: `perception` и
+`vision-hailo` собираются в РАЗНЫХ workflow, значит это отдельный job + тег +
+`--cache-from` поверх Этапа 0.
