@@ -215,6 +215,33 @@ def test_retinaface_sha_matches_legacy_script() -> None:
     )
 
 
+def test_crlf_manifest_is_parsed_in_full(tmp_path: Path, http_base: str) -> None:
+    """Манифест с CRLF обязан разбираться целиком, а не частично.
+
+    Поймано 21.09.2026 на живой Vision Pi: файл, приехавший с Windows-машины
+    с \r на конце строк, awk-парсер разобрал как ОДНУ запись из десяти и
+    молча продолжил. Молчаливо неполный манифест хуже явной ошибки — деплой
+    разложил бы часть ресурсов и отчитался об успехе.
+    """
+    lf = write_manifest(
+        tmp_path / "lf.yaml",
+        [
+            hef_entry("one", f"{http_base}/one.hef", "", required="soft"),
+            hef_entry("two", f"{http_base}/two.hef", "", required="soft"),
+            hef_entry("three", f"{http_base}/three.hef", "", required="soft"),
+        ],
+    )
+    crlf = tmp_path / "crlf.yaml"
+    crlf.write_bytes(lf.read_bytes().replace(b"\n", b"\r\n"))
+
+    result = run_pack(crlf, tmp_path / "root", "--dry-run")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "записей:   3" in result.stdout, result.stdout
+    for name in ("one", "two", "three"):
+        assert name in result.stdout, result.stdout
+
+
 def test_script_is_executable_bash_and_syntactically_valid() -> None:
     assert SCRIPT.read_text(encoding="utf-8").startswith("#!/usr/bin/env bash")
     result = subprocess.run([BASH, "-n", str(SCRIPT)], capture_output=True, text=True)
