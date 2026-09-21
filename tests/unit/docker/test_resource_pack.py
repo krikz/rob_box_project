@@ -211,16 +211,18 @@ def test_sha256_fields_are_lowercase_hex_or_empty() -> None:
         )
 
 
-def test_retinaface_sha_matches_legacy_script() -> None:
-    """Единственный уже зафиксированный эталон не должен потеряться при переезде."""
-    legacy = (
-        REPO_ROOT
-        / "docker" / "vision" / "scripts" / "vision-hailo" / "download_retinaface_hef.sh"
-    ).read_text(encoding="utf-8")
+def test_retinaface_sha_is_the_known_good_value() -> None:
+    """Регресс: эталон retinaface не должен тихо разъехаться.
+
+    ДО Этапа 5 (21.09.2026) этот тест сверял манифест с легаси-скриптом
+    ``download_retinaface_hef.sh`` — тот удалён (план §7 Этап 5, §19; live
+    деплой run 35645507502 подтвердил sha256 на роботе). Эталон теперь
+    зафиксирован здесь напрямую, значением из issue #2599 / ADR-0125 §7.
+    """
     data = yaml.safe_load(MANIFEST.read_text(encoding="utf-8"))
     entry = next(r for r in data["resources"] if r["name"] == "retinaface-hef")
-    assert entry["sha256"].lower() in legacy.lower(), (
-        "sha256 retinaface в манифесте разошёлся с download_retinaface_hef.sh"
+    assert entry["sha256"].lower() == (
+        "1fbc7be2554cceba18986cefa73983a59057ac5457bc75173fb2e09457bff472"
     )
 
 

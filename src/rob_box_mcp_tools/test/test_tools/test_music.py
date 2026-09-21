@@ -1698,6 +1698,96 @@ class TestMusicManagerExecuteCode:
 
 
 # ---------------------------------------------------------------------------
+# MusicManager.known_synth_names() — live-инцидент 21.09.2026
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestMusicManagerKnownSynthNames:
+    """``known_synth_names()`` — источник истины для валидации синтов."""
+
+    def test_returns_none_when_synthdefs_added_is_empty(self):
+        """Renardo ещё не инициализирован (или тест создал mgr через __new__)
+        → None, а не пустое множество, иначе валидатор запретил бы ЛЮБОЙ
+        синт до конца инициализации."""
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        assert mgr._synthdefs_added == set()
+        assert mgr.known_synth_names() is None
+
+    def test_includes_default_and_custom_synths(self):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        mgr._synthdefs_added = {"pluck", "strings", "wobblebass"}
+        known = mgr.known_synth_names()
+        assert known is not None
+        assert {"pluck", "strings", "wobblebass"} <= known
+        # CUSTOM_SC_ONLY_SYNTH_NAMES — кастомные .scd, которые
+        # foxdot_init.sc грузит напрямую в sclang (не через sdef.add()).
+        assert "supersawlead" in known
+        assert "imperialbrass" in known
+
+    def test_master_bus_synths_are_not_playable_instruments(self):
+        """masterlimiter/masterfilter — служебные шины, не тембры для
+        lead_synth/bass_synth/pad_synth — не должны попадать в known set."""
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        mgr._synthdefs_added = {"pluck"}
+        known = mgr.known_synth_names()
+        assert "masterlimiter" not in known
+        assert "masterfilter" not in known
+
+
+# ---------------------------------------------------------------------------
+# MusicManager.execute_code — валидация имён синтов (live-инцидент 21.09.2026)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestMusicManagerExecuteCodeSynthValidation:
+    """RAW-инцидент: compose_music(bass_synth='supersaw') — нет такого синта,
+    есть 'supersawlead'. execute_code() рапортовал success=True, а scsynth
+    в СВОЁМ логе 54 раза ответил "SynthDef supersaw not found" — бас
+    молча пропал из трека. Проверяем, что теперь это HARD error ДО exec()."""
+
+    def test_unknown_synth_is_rejected_before_exec(self):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        mgr._synthdefs_added = {"pluck", "strings", "wobblebass", "supersawlead"}
+
+        with patch("builtins.exec") as mock_exec:
+            result = mgr.execute_code(
+                "p1 >> supersaw([38, 43, 39], dur=[2, 2, 2], amp=0.4)"
+            )
+
+        assert result["success"] is False
+        assert "supersaw" in result["error"]
+        assert "supersawlead" in result["error"]  # ближайшее реальное имя
+        mock_exec.assert_not_called()
+
+    def test_known_synth_executes_normally(self):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        mgr._synthdefs_added = {"pluck", "strings", "wobblebass", "supersawlead"}
+
+        with patch("builtins.exec") as mock_exec:
+            result = mgr.execute_code(
+                "p1 >> supersawlead([0, 2, 4], dur=0.5, amp=0.4)"
+            )
+
+        assert result["success"] is True
+        mock_exec.assert_called_once()
+
+    def test_validation_is_skipped_before_renardo_initialization(self):
+        """_synthdefs_added ещё пуст (как в свежесозданном mgr из фикстуры)
+        → known_synth_names() is None → проверка не блокирует произвольный
+        код (существующее поведение не должно измениться)."""
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        assert mgr._synthdefs_added == set()
+
+        with patch("builtins.exec") as mock_exec:
+            result = mgr.execute_code("p1 >> totallymadeupname([0, 2, 4], dur=0.5)")
+
+        assert result["success"] is True
+        mock_exec.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
 # MusicManager — stop_pattern / stop_all
 # ---------------------------------------------------------------------------
 
@@ -2510,6 +2600,55 @@ class TestComposeMusicToolCounterSynthAndThemeOctaves:
         code = mgr.execute_code.call_args.args[0]
         lead_line = next(l for l in code.splitlines() if l.startswith("p2 >>"))
         assert "(60, 72)" in lead_line
+
+
+@pytest.mark.unit
+class TestComposeMusicToolRejectsUnknownSynths:
+    """RAW-инцидент 21.09.2026 (диджей-сет 19:55-19:56): LLM вызвал
+    ``compose_music(bass_synth='supersaw')`` — синта 'supersaw' не
+    существует, есть 'supersawlead'. Аранжировщик всё равно построил код
+    ``p1 >> supersaw(...)``, execute_code() вернул success=True, а scsynth
+    в СВОЁМ контейнерном логе ответил 54 раза "SynthDef supersaw not
+    found" — бас молча пропал из трека, пользователь не узнал почему.
+
+    Эти тесты идут через РЕАЛЬНЫЙ (не замоканный) ``execute_code``, чтобы
+    доказать сквозной путь: compose_music → render() → sanitize_renando()
+    → MusicManager.known_synth_names() → honest HARD error до exec().
+    """
+
+    def test_unknown_bass_synth_is_rejected_before_exec(self, mock_node):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        mgr._synthdefs_added = {
+            "pluck", "strings", "wobblebass", "supersawlead", "blip", "warmpad",
+        }
+        tool = ComposeMusicTool(mock_node, mgr)
+
+        with patch("builtins.exec") as mock_exec:
+            result = tool.execute(
+                bass_synth="supersaw", bass_notes="0,4,7",
+                lead_synth="blip", lead_notes="0,2,4,7",
+            )
+
+        assert result.success is False
+        assert "supersaw" in result.error
+        assert "supersawlead" in result.error  # ближайшее реальное имя
+        mock_exec.assert_not_called()
+
+    def test_known_bass_synth_plays_normally(self, mock_node):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        mgr._synthdefs_added = {
+            "pluck", "strings", "wobblebass", "supersawlead", "blip", "warmpad",
+        }
+        tool = ComposeMusicTool(mock_node, mgr)
+
+        with patch("builtins.exec") as mock_exec:
+            result = tool.execute(
+                bass_synth="supersawlead", bass_notes="0,4,7",
+                lead_synth="blip", lead_notes="0,2,4,7",
+            )
+
+        assert result.success is True
+        mock_exec.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

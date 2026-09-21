@@ -220,7 +220,7 @@ smoke-теста), но в проде должен быть `False`.
 | 7   | Убрать расхождение _is_real_mode vs лог mode                                                      | ✅ done (один расчёт, см. vision_hailo_node.py:202) |
 | 8   | Добавить BGR→RGB в путь декодирования                                                            | ✅ done (gaze._decode_*_to_rgb + Frame.rgb) |
 | 9   | Прокинуть scale/pad_left/pad_top в _post_process_detections                                       | ✅ done (LetterboxInfo + unproject) |
-| 10  | HEF lifecycle: скрипт скачивания                                                                  | ✅ done (download_yolov8n_hef.sh) |
+| 10  | HEF lifecycle: скрипт скачивания                                                                  | ✅ done (косметика 21.09.2026: `download_yolov8n_hef.sh` заменён Ресурсным паком, ADR-0125, `apply_resource_pack.sh` + `manifest.yaml`, скрипт удалён Этапом 5) |
 | 11  | Stub-filter / event_type=«stub» (PR #2524) — out of scope                                         | ⏳ отдельная карточка (не в этом issue) |
 | 12  | Принято на живом роботе                                                                          | 🟡 live-acceptance через e2e-process |
 

@@ -31,7 +31,10 @@ from rob_box_voice.core.music_stack_validation import (
     MusicStackStatus,
     load_sclang_health,
 )
-from rob_box_voice.core.sc_only_custom_synthdefs import register_sc_only_custom_synthdefs
+from rob_box_voice.core.sc_only_custom_synthdefs import (
+    CUSTOM_SC_ONLY_SYNTH_NAMES,
+    register_sc_only_custom_synthdefs,
+)
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 from ..core.arranger import (
@@ -853,6 +856,42 @@ class MusicManager:
         return bool(self._renardo_available)
 
     # ------------------------------------------------------------------
+    # Live-инцидент 21.09.2026 — реально загруженные SynthDef-ы (для
+    # валидации имён синтов в renardo_sanitizer._validate_synth_names)
+    # ------------------------------------------------------------------
+
+    def known_synth_names(self) -> Optional[frozenset]:
+        """Множество SynthDef-имён, реально загруженных в scsynth.
+
+        Источники:
+        (a) ``self._synthdefs_added`` — renardo-дефолтная палитра, которую
+            ``_initialize_renardo`` отправила через ``sdef.add()`` (плюс
+            то, что ``_verify_and_retry_synthdefs`` досослала при UDP-
+            потерях, live 12.08);
+        (b) ``CUSTOM_SC_ONLY_SYNTH_NAMES`` — кастомные .scd (warmpad,
+            retrobass, supersawlead, imperialbrass, marchstrings,
+            strangerpulsepad, strangerarp, strangerbrass), которые
+            ``foxdot_init.sc`` грузит напрямую в sclang, а
+            ``register_sc_only_custom_synthdefs`` оборачивает
+            Python-стороной. ``masterlimiter``/``masterfilter`` туда
+            намеренно НЕ входят — это служебные шины мастер-тракта, не
+            тембры для ``lead_synth``/``bass_synth``/``pad_synth``.
+
+        Returns:
+            ``None``, пока ``_synthdefs_added`` пуст (Renardo ещё не
+            инициализирован, или тест создал ``MusicManager`` через
+            ``__new__`` в обход ``__init__``) — вызывающая сторона должна
+            трактовать это как «набор неизвестен», а не «ничего не
+            разрешено», иначе валидатор блокировал бы ЛЮБОЙ синт до
+            завершения инициализации. Иначе — frozenset реально
+            загруженных имён (нижний регистр — как их печатает sclang).
+        """
+        added = getattr(self, "_synthdefs_added", None)
+        if not added:
+            return None
+        return frozenset(added) | frozenset(CUSTOM_SC_ONLY_SYNTH_NAMES)
+
+    # ------------------------------------------------------------------
     # Music-stack health (issue G-MUSIC, architect review v3)
     # ------------------------------------------------------------------
 
@@ -1196,9 +1235,13 @@ class MusicManager:
             dict с ключами ``success``, ``message`` (или ``error``), ``code``.
         """
         # Единый seam очистки (core/renardo_sanitizer): безопасность →
-        # музыкальный валидатор → перестановка слотов → pianovel→rhpiano →
-        # длина рисунка → кап amp. Порядок и сообщения сохранены байт-в-байт.
-        sanitized = renardo_sanitizer.sanitize_renando(code, self._max_amp)
+        # музыкальный валидатор (+ существование синтов, live 21.09.2026,
+        # известное множество приходит из known_synth_names()) →
+        # перестановка слотов → pianovel→rhpiano → длина рисунка → кап amp.
+        # Порядок и сообщения сохранены байт-в-байт.
+        sanitized = renardo_sanitizer.sanitize_renando(
+            code, self._max_amp, known_synths=self.known_synth_names()
+        )
         if sanitized.security_error:
             return {"success": False, "error": sanitized.security_error}
         if sanitized.quality_errors:

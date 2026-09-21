@@ -28,7 +28,24 @@ _MERGE_CONFLICT_START_RE = re.compile(r"^<{7}(?:\s|$)")
 _MERGE_CONFLICT_MID_RE = re.compile(r"^={7}$")
 _MERGE_CONFLICT_END_RE = re.compile(r"^>{7}(?:\s|$)")
 _MISSING_SYNTH_RE = re.compile(r"SynthDef\s+([A-Za-z0-9_]+)\s+not found", re.IGNORECASE)
-_LOADED_SYNTH_RE = re.compile(r"SynthDef\s+preload\s+ok:\s*([A-Za-z0-9_]+)", re.IGNORECASE)
+# 🔴 FIX (живой инцидент 21.09.2026, Vision Pi): foxdot_init.sc поменял
+# формат подтверждения ещё в live-фиксе 30.08 ("SynthDef preload ok: X" →
+# "SynthDef in scsynth: X", см. docker/vision/voice_assistant/foxdot_init.sc
+# :159-179 — старая строка печаталась сразу после path.load(), то есть
+# подтверждала лишь то, что sclang СКОМПИЛИРОВАЛ .scd, а не что scsynth его
+# принял; Server.sync дал правдивое "ok", но заодно сменил текст лога).
+# Этот regex остался на старом тексте — 21.09.2026 валидатор рапортовал
+# "Missing critical SynthDefs: ..." на ВСЕ 11 критичных синтов, хотя
+# /tmp/sclang.log содержал ровно "SynthDef in scsynth: <name>" для каждого
+# из них (подтверждено grep -x на роботе). Тесты были зелёными, потому что
+# гоняли старую строку, которую sclang больше не печатает — см.
+# test_classify_sclang_log_matches_actual_foxdot_init_log_format ниже.
+# Оставляем ОБА варианта в одном regex — старый формат дёшево сохранить
+# для обратной совместимости (например, для логов, снятых до 30.08).
+_LOADED_SYNTH_RE = re.compile(
+    r"SynthDef\s+(?:preload\s+ok|in\s+scsynth):\s*([A-Za-z0-9_]+)",
+    re.IGNORECASE,
+)
 _FATAL_LOG_PATTERNS = (
     "syntax error",
     "Class not defined",

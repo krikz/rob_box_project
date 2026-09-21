@@ -74,20 +74,26 @@ ssh pi@vision-pi 'cat ~/.local/state/robbox_vision_health.prom'
 3. Если registry недоступен **долго** (>30 минут) — пинговать
    katana-владельца или проверить firewall.
 
-### B. «Образы есть, но init-профиль voice-resources упал»
+### B. «Образы есть, но сэмплов/моделей на хосте нет (Ресурсный пак не применён)»
 
-**Симптомы:** `voice-resources-init` в профиле `[init]` не запускался,
-`supercollider` и `voice-assistant` стартанули с пустыми volume,
-в логах supercollider: `bassball.scsyndef could not be opened`.
+**Симптомы:** `supercollider` и `voice-assistant` стартанули с пустым
+bind-mount'ом `/opt/rob_box/samples`, в логах supercollider:
+`bassball.scsyndef could not be opened`. STT/TTS без `/opt/rob_box/models`
+не грузят Vosk/Silero.
+
+Начиная с ADR-0125/ADR-0126 (21.09.2026) образа `voice-resources` и
+init-контейнера **больше нет вовсе** — сэмплы и модели кладёт на хост шаг
+деплоя «Ensure STT/TTS models + Renardo samples» ДО `docker compose up`,
+compose про registry для этих ресурсов не знает и от него не зависит.
 
 **Что делать:**
 
-1. Это **нормальный частичный запуск** (принято в issue #2610,
-   ADR-0111). Музыкальные сэмплы не работают, но диалог/зрение — да.
-2. Когда registry/katana вернётся:
+1. Это **нормальный частичный запуск** (issue #2610, ADR-0111 §2.1,
+   уточнено ADR-0126). Музыкальные сэмплы не работают, но диалог/зрение — да.
+2. Догнать Ресурсный пак на хосте (сеть нужна ЕМУ, не docker compose):
    ```bash
-   ssh pi@vision-pi 'cd ~/rob_box_project/docker/vision && \
-     docker compose --profile init up voice-resources-init && \
+   ssh pi@vision-pi 'sudo bash ~/rob_box_project/docker/vision/scripts/resource_pack/apply_resource_pack.sh && \
+     cd ~/rob_box_project/docker/vision && \
      docker compose restart supercollider voice-assistant'
    ```
 3. НЕ алертить как failed-boot — это известный degraded-mode.

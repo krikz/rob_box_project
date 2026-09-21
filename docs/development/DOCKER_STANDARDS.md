@@ -112,8 +112,6 @@ docker/
     │   └── Dockerfile
     ├── voice_base/              # ✅ Base image, не compose-сервис
     │   └── Dockerfile
-    ├── voice_resources/         # ✅ Resource image для one-shot инициализации volume
-    │   └── Dockerfile
     ├── telegram_bot/            # ✅ ТОЛЬКО Dockerfile
     │   └── Dockerfile
     ├── led_matrix/              # ✅ ТОЛЬКО Dockerfile

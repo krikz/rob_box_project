@@ -19,9 +19,10 @@
 from __future__ import annotations
 
 import ast
+import difflib
 import re
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, FrozenSet, List, Optional, Tuple
 
 # ---------------------------------------------------------------------------
 # Safety filter — compiled once at import time
@@ -251,6 +252,70 @@ def _validate_music_code(code: str) -> Tuple[List[str], List[str]]:
 
 
 # ---------------------------------------------------------------------------
+# Live-инцидент 21.09.2026 — compose_music принимал несуществующие синты
+# ---------------------------------------------------------------------------
+# RAW-доказательство с живого диджей-сета (21.09.2026 19:55-19:56): LLM
+# вызвал compose_music(bass_synth='supersaw') — такого SynthDef-а нет, есть
+# 'supersawlead'. Аранжировщик всё равно построил код `p1 >> supersaw(...)`,
+# execute_code() прогнал exec() без ошибок и вернул success=True ("Код
+# выполнен успешно"), а scsynth в СВОЁМ контейнерном логе (supercollider,
+# куда никто не смотрит при разборе) ответил 54 раза "SynthDef supersaw not
+# found" — вся басовая партия трека молча пропала, слушатель не узнал почему.
+#
+# ADR-0018 «честный FAIL лучше красивого PASS»: невалидный синт — это та же
+# болезнь, что и молчаливая деградация звука, только на шаг раньше. Решение —
+# HARD error здесь, ДО exec(), а не тихая подстановка ближайшего имени:
+# подстановка за LLM — это ещё одна форма "красивого PASS" (звук изменился
+# без объяснения, юзер услышал не то, что просил). Вместо этого сообщение
+# называет реальную причину и подсказывает ближайшее валидное имя
+# (difflib) — LLM обычно исправляется сама со второй попытки, без участия
+# человека, и это НЕ требует, чтобы модель заранее знала весь список синтов.
+_NON_SYNTHDEF_PLAYER_CALLS: frozenset = frozenset({"play"})
+
+
+def _validate_synth_names(code: str, known_synths: Optional[FrozenSet[str]]) -> List[str]:
+    """Проверить, что каждый ``<слот> >> <синт>(`` — реально загруженный SynthDef.
+
+    Переиспользует ``_PLAYER_ASSIGN_RE`` (тот же паттерн, что перестановка
+    слотов ниже использует для поиска ``d1-d9/p1-p9/s1-s9/l1-l9 >> имя(``),
+    поэтому ловит и сгенерированный ``compose_music`` код (``p1 >>
+    supersaw(...)``), и написанный вручную для ``execute_music_code``.
+    ``play(...)`` — сэмплер по символам паттерна, не SynthDef — исключён.
+
+    Args:
+        code: Renardo-код.
+        known_synths: множество реально загруженных имён (регистр не важен,
+            см. :meth:`MusicManager.known_synth_names`). ``None`` означает
+            «набор ещё не известен» (Renardo не инициализирован / модуль
+            тестируется в изоляции от рантайма) — проверка тогда ВЫКЛЮЧЕНА,
+            а не «ничего не разрешено».
+
+    Returns:
+        Список сообщений об ошибках (пусто — все синты на месте).
+    """
+    if known_synths is None:
+        return []
+    known_lower = {name.lower() for name in known_synths}
+    errors: List[str] = []
+    seen: set = set()
+    for match in _PLAYER_ASSIGN_RE.finditer(code):
+        synth = match.group("synth")
+        if synth in _NON_SYNTHDEF_PLAYER_CALLS or synth in seen:
+            continue
+        seen.add(synth)
+        if synth.lower() in known_lower:
+            continue
+        suggestion = difflib.get_close_matches(synth.lower(), known_lower, n=1, cutoff=0.5)
+        hint = f" Возможно, имелся в виду {suggestion[0]!r}?" if suggestion else ""
+        errors.append(
+            f"Синта {synth!r} не существует в scsynth.{hint} Используй "
+            "только тембры из палитры промпта — придуманное имя не звучит, "
+            "а слой молча пропадает."
+        )
+    return errors
+
+
+# ---------------------------------------------------------------------------
 # Issue #1804 — d4+/p4+ не звучат на роботе, кода-стражи не было
 # ---------------------------------------------------------------------------
 
@@ -409,16 +474,25 @@ def _cap_amp(code: str, max_amp: float) -> str:
 # ---------------------------------------------------------------------------
 
 
-def sanitize_renando(code: str, max_amp: float) -> SanitizeResult:
+def sanitize_renando(
+    code: str,
+    max_amp: float,
+    known_synths: Optional[FrozenSet[str]] = None,
+) -> SanitizeResult:
     """Прогнать код через весь pipeline очистки за один вызов.
 
     Порядок байт-в-байт повторяет прежнюю ручную цепочку в
-    ``MusicManager.execute_code``: безопасность → музыкальный валидатор →
+    ``MusicManager.execute_code``: безопасность → музыкальный валидатор
+    (+ существование синтов, если известен ``known_synths``) →
     перестановка слотов → pianovel/piano→rhpiano → длина рисунка → кап amp.
 
     Args:
         code: строка Renardo-кода.
         max_amp: санитарный потолок амплитуды ОДНОГО слоя (0.0-1.0).
+        known_synths: реально загруженные в scsynth имена SynthDef-ов (см.
+            :meth:`MusicManager.known_synth_names`). ``None`` (по умолчанию)
+            выключает проверку — используется, когда набор ещё не известен,
+            и в юнит-тестах этого модуля, которым рантайм не нужен.
 
     Returns:
         :class:`SanitizeResult` с отсанированным кодом и ошибками/варнингами.
@@ -428,6 +502,7 @@ def sanitize_renando(code: str, max_amp: float) -> SanitizeResult:
         return SanitizeResult(code=code, security_error=security_error)
 
     quality_errors, warnings = _validate_music_code(code)
+    quality_errors = list(quality_errors) + _validate_synth_names(code, known_synths)
     if quality_errors:
         return SanitizeResult(
             code=code,

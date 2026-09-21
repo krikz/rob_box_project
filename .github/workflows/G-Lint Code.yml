@@ -176,6 +176,20 @@ jobs:
             -o addopts="" \
             -p no:cacheprovider
 
+      # Хендофф 2026-09-21 §8 (Phase 4, docs/plans/2026-09-15-service-manifest.md):
+      # "L-Build Single Service.yml" не использовал composite ВООБЩЕ — свой
+      # `docker buildx build`, мимо registry-кеша/docker-container билдера/
+      # host-gateway. Guard паркует ровно этот факт: build-service job обязан
+      # звать ./.github/actions/l-build-service, иначе кто-то откатит одиночную
+      # сборку назад на inline buildx (тот же класс дрейфа, что уже случился с
+      # verify_in_registry — три копии разъехались на строку сообщения).
+      - name: L-Build Single Service composite guard (хендофф 2026-09-21 §8)
+        run: |
+          python -m pytest tests/unit/test_l_build_single_service_composite.py \
+            -v \
+            -o addopts="" \
+            -p no:cacheprovider
+
       # ADR-0094 §3.2 завёл этот скрипт и честно написал «в этом PR только
       # добавляется, подключение — follow-up вместе с чисткой phantom-тегов,
       # чтобы не уронить CI до их удаления». Phantom-теги удалены
@@ -331,20 +345,25 @@ jobs:
         continue-on-error: true
 
       # docs/plans/2026-09-15-service-manifest.md §8 (acceptance Phase 2):
-      # actionlint над двумя build-workflow, которые Phase 2 перевела на
-      # динамическую matrix (`strategy.matrix.include: fromJSON(...)`). Это
-      # новый для репозитория механизм (прецедента не было — план §3.2), и
+      # actionlint над build-workflow, которые Phase 2/Phase 4 перевели на
+      # composite/динамическую matrix (`strategy.matrix.include: fromJSON(...)`).
+      # Это новый для репозитория механизм (прецедента не было — план §3.2), и
       # опечатка в нём — ссылка на несуществующий job/output, кривое
       # выражение — проявилась бы только на реальном прогоне, а build-стенд
       # один и медленный. actionlint ловит это статически.
       #
-      # Hard gate (без continue-on-error), но ОБЛАСТЬ — только эти два файла:
+      # Hard gate (без continue-on-error), но ОБЛАСТЬ — только эти три файла:
       # репозиторий целиком actionlint сегодня не проходит (на 21.09.2026 —
       # ~190 замечаний, из них 75 в "L-Deploy and Verify.yml"; почти всё —
       # shellcheck внутри run:). Расширять область имеет смысл отдельной
       # задачей, разгребая файлы по одному. Делать шаг warn-only смысла нет:
       # ADR-0057 §1.2 прямо фиксирует, что soft-warning в этом репозитории
       # уже пробовали и он не работает.
+      # "L-Build Single Service.yml" добавлен в область хендоффом 2026-09-21
+      # §8 (Phase 4) вместе с переводом сборки на composite — до этого файл
+      # actionlint не проходил (9 замечаний shellcheck SC2086/SC2129 в
+      # job'е prepare, не связанных с этим PR, но раз файл уже трогается —
+      # почищены заодно, чтобы не заводить гейт на заведомо красном файле).
       #
       # Метки self-hosted раннеров (rob-box, e2e) объявлены в
       # .github/actionlint.yaml — без этого файла actionlint считает ошибкой
@@ -354,7 +373,8 @@ jobs:
           echo "::group::actionlint"
           docker run --rm -v "${PWD}:/repo" -w /repo rhysd/actionlint:1.7.7 -color \
             ".github/workflows/L-Build Vision Pi Services.yml" \
-            ".github/workflows/L-Build Main Pi Services.yml"
+            ".github/workflows/L-Build Main Pi Services.yml" \
+            ".github/workflows/L-Build Single Service.yml"
           echo "::endgroup::"
 
   # ============================================================================

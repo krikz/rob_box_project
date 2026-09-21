@@ -99,24 +99,31 @@ if command -v sclang > /dev/null 2>&1; then
     # напечатать даже "sclang started") → load_sclang_health рапортует
     # "Log file not found" и ВСЕ критичные SynthDefs как missing,
     # хотя через несколько секунд sclang доходит до конца прелоада
-    # и music stack становится healthy. Цикл ниже ждёт появления
-    # маркера "FoxDot OSCdef registered" (значит SystemClock.sched
-    # отработал и пошла загрузка SynthDef'ов) или таймаут 30с, что
-    # покрывает даже самые медленные cold-start self-hosted runner'ы.
-    SCLANG_BOOT_TIMEOUT=30
+    # и music stack становится healthy.
+    #
+    # 🔴 FIX (живой инцидент 21.09.2026): первая версия этого цикла ждала
+    # только "FoxDot OSCdef registered" + фиксированные 3с — но прелоад
+    # (63 синта: 53 renardo + 10 custom, ~0.3-0.8с КАЖДЫЙ с Server.sync
+    # после каждого, см. foxdot_init.sc) СТАРТУЕТ сразу после этого
+    # маркера и может занимать до ~50с. 3с хватало не всегда: на роботе
+    # /tmp/sclang.log существовал (подтверждено ls -la), но валидатор
+    # ловил его ДО того, как прелоад дописал строки про конкретные синты
+    # — "Missing critical SynthDefs" на все 11 критичных при живых 63
+    # defs в scsynth. Ждём явный маркер конца прелоада
+    # ("SynthDef preload finished:", foxdot_init.sc:189) вместо слепой
+    # паузы — таймаут поднят до 60с, чтобы покрыть медленный cold-start
+    # self-hosted runner + весь прелоад с запасом.
+    SCLANG_BOOT_TIMEOUT=60
     SCLANG_BOOT_ELAPSED=0
     while [ "${SCLANG_BOOT_ELAPSED}" -lt "${SCLANG_BOOT_TIMEOUT}" ]; do
-        if [ -f /tmp/sclang.log ] && grep -q "FoxDot OSCdef registered" /tmp/sclang.log; then
-            # Даём ещё 3с чтобы sclang дофлашил последние "SynthDef preload
-            # ok: <name>" строки в лог перед тем, как validate их прочитает.
-            sleep 3
+        if [ -f /tmp/sclang.log ] && grep -q "SynthDef preload finished:" /tmp/sclang.log; then
             break
         fi
         sleep 1
         SCLANG_BOOT_ELAPSED=$((SCLANG_BOOT_ELAPSED + 1))
     done
     if [ "${SCLANG_BOOT_ELAPSED}" -ge "${SCLANG_BOOT_TIMEOUT}" ]; then
-        echo "⚠ sclang не зарегистрировал OSCdef за ${SCLANG_BOOT_TIMEOUT}с — продолжаем с тем, что есть"
+        echo "⚠ sclang не завершил прелоад SynthDef'ов за ${SCLANG_BOOT_TIMEOUT}с — продолжаем с тем, что есть"
     fi
     if [ -f /ws/src/rob_box_voice/scripts/validate_music_stack.py ]; then
         echo "Проверка music stack readiness..."

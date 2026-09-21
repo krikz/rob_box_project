@@ -114,7 +114,6 @@ oak-d
 led-matrix              (led_matrix)
 ceiling-camera
 voice-base              (voice_base)
-voice-resources         (voice_resources)
 voice-assistant         (voice_assistant)
 telegram-bot            (telegram_bot)
 supercollider
@@ -130,8 +129,10 @@ zenoh-router
 > component name. Keep this list in sync with the `service` choice options
 > in `.github/workflows/L-Build Single Service.yml` whenever a Vision Pi
 > service is added there — this doc has drifted before (this file didn't
-> even list `voice-base`/`voice-resources`/`telegram-bot`/`supercollider`
-> until `quest`/`supervisor` were added here).
+> even list `voice-base`/`telegram-bot`/`supercollider` until
+> `quest`/`supervisor` were added here). `voice-resources` was removed
+> entirely (image + build job) by ADR-0126 (2026-09-21) — Renardo samples
+> now arrive via the host-side Resource Pack, not a built image.
 
 ### Base Images
 

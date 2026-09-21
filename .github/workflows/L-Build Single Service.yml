@@ -16,6 +16,16 @@ name: "L: Build Single Service"
 # image: ...:<component>-${ROS_DISTRO}-<tag>), а не с container_name —
 # разъедешься здесь и deploy молча возьмёт старый образ (см. quest:
 # container_name=rob-box-quest, но тег компонента — "quest").
+#
+# Хендофф 2026-09-21 §8 (Phase 4 плана docs/plans/2026-09-15-service-manifest.md):
+# job `build-service` собирает через ./.github/actions/l-build-service — то же
+# действие, что используют L-Build Main/Vision Pi Services.yml. Раньше здесь
+# был собственный `docker buildx build`, и registry-кеш/docker-container
+# билдер/подмена host-gateway на одиночные сборки не распространялись.
+# `docker/build-manifest.yaml` эту сборку НЕ покрывает (base-образы,
+# zenoh-router — вне манифеста, план §11 вопрос №2), поэтому case-конфигурация
+# ниже остаётся ручной; композиту передаются уже готовые параметры job'а
+# `prepare`, а не элемент matrix.
 on:
   workflow_dispatch:  # Ручной запуск
     inputs:
@@ -96,6 +106,14 @@ jobs:
     outputs:
       docker_tag: ${{ steps.set-config.outputs.docker_tag }}
       service_name: ${{ steps.set-config.outputs.service_name }}
+      # image_name — hyphenated component name (== IMAGE_NAME, часть тега:
+      # ...:<image_name>-${ROS_DISTRO}-<tag>). Передаётся в composite как
+      # service-name, чтобы registry-кеш одиночной сборки делил ОДИН
+      # buildcache-тег с L-Build Main/Vision Pi Services.yml (там
+      # service-name == matrix.name == тот же hyphenated идентификатор,
+      # docker/build-manifest.yaml). service_name (underscored) — отдельно,
+      # он завязан на Dockerfile/ROS-пакет и .image-versions VERSION_VAR.
+      image_name: ${{ steps.set-config.outputs.image_name }}
       dockerfile_path: ${{ steps.set-config.outputs.dockerfile_path }}
       build_context: ${{ steps.set-config.outputs.build_context }}
       base_image: ${{ steps.set-config.outputs.base_image }}
@@ -127,7 +145,7 @@ jobs:
             DOCKER_TAG="local"
           fi
 
-          echo "docker_tag=${DOCKER_TAG}" >> $GITHUB_OUTPUT
+          echo "docker_tag=${DOCKER_TAG}" >> "$GITHUB_OUTPUT"
           echo "Docker Tag: $DOCKER_TAG"
 
           # Конфигурация для разных типов Pi
@@ -368,12 +386,15 @@ jobs:
             LOCAL_TAG="${LOCAL_PREFIX}:${IMAGE_NAME}-${ROS_DISTRO}-${DOCKER_TAG}"
           fi
 
-          echo "service_name=${SERVICE_NAME}" >> $GITHUB_OUTPUT
-          echo "dockerfile_path=${DOCKERFILE}" >> $GITHUB_OUTPUT
-          echo "build_context=${BUILD_CONTEXT}" >> $GITHUB_OUTPUT
-          echo "base_image=${BASE_IMAGE}" >> $GITHUB_OUTPUT
-          echo "image_tag=${GHCR_TAG}" >> $GITHUB_OUTPUT
-          echo "local_tag=${LOCAL_TAG}" >> $GITHUB_OUTPUT
+          {
+            echo "service_name=${SERVICE_NAME}"
+            echo "image_name=${IMAGE_NAME}"
+            echo "dockerfile_path=${DOCKERFILE}"
+            echo "build_context=${BUILD_CONTEXT}"
+            echo "base_image=${BASE_IMAGE}"
+            echo "image_tag=${GHCR_TAG}"
+            echo "local_tag=${LOCAL_TAG}"
+          } >> "$GITHUB_OUTPUT"
 
           echo ""
           echo "📋 Build Configuration:"
@@ -399,123 +420,129 @@ jobs:
           clean: true
           fetch-depth: 0
 
-      - name: Build ${{ needs.prepare.outputs.service_name }}
+      - name: Fetch Hailo vendor artifacts (vision-hailo only)
+        # ADR-0089 Phase 1.5: HailoRT python wheel + libhailort.so — закрытые
+        # артефакты Hailo Developer Zone, скриптом не качаются. Совпадает 1:1
+        # с pre_build-хуком fetch_hailort_wheel в docker/build-manifest.yaml /
+        # scripts/ci/fetch_hailort_wheel.sh (L-Build Vision Pi Services.yml),
+        # оставлен здесь inline: манифест не покрывает Single Service (план
+        # docs/plans/2026-09-15-service-manifest.md §11 вопрос №2).
+        if: needs.prepare.outputs.service_name == 'vision_hailo'
         run: |
-          echo "🏗️ Building ${{ needs.prepare.outputs.service_name }}..."
-          echo ""
-          echo "Configuration:"
-          echo "  Branch: ${{ inputs.branch }}"
-          echo "  Pi Type: ${{ inputs.pi_type }}"
-          echo "  Service: ${{ needs.prepare.outputs.service_name }}"
-          echo "  Dockerfile: ${{ needs.prepare.outputs.dockerfile_path }}"
-          echo "  Build Context: ${{ needs.prepare.outputs.build_context }}"
-          echo "  Base Image: ${{ needs.prepare.outputs.base_image }}"
-          echo "  Image Tag: ${{ needs.prepare.outputs.image_tag }}"
-          echo "  Local Tag: ${{ needs.prepare.outputs.local_tag }}"
-          echo ""
+          mkdir -p docker/vision/vision-hailo/wheels
+          # Канонично — /opt/rob_box/vendor. Fallback — /tmp (проброшен в runner'ы).
+          # Нужны ОБА: wheel (python) + libhailort.so.4.24.0 (из .deb).
+          for f in hailort-4.24.0-cp310-cp310-linux_aarch64.whl libhailort.so.4.24.0; do
+            if [ -f "/opt/rob_box/vendor/${f}" ]; then
+              cp "/opt/rob_box/vendor/${f}" docker/vision/vision-hailo/wheels/
+            elif [ -f "/tmp/${f}" ]; then
+              cp "/tmp/${f}" docker/vision/vision-hailo/wheels/
+            else
+              echo "::error::${f} не найден ни в /opt/rob_box/vendor, ни в /tmp — real inference build невозможен" >&2
+              echo "::error::Это закрытый артефакт Hailo Developer Zone (нужен аккаунт), скриптом не качается." >&2
+              echo "::error::Что делать: docs/deployment/hailo-vendor-artifacts.md — §2 скачать, §3 извлечь .so из .deb, §4.1 положить в /opt/rob_box/vendor на этом build-хосте." >&2
+              exit 1
+            fi
+          done
 
-          # Подготовка аргументов сборки
-          BUILD_ARGS=""
-          if [ -n "${{ needs.prepare.outputs.base_image }}" ]; then
-            BUILD_ARGS="--build-arg=BASE_IMAGE=${{ needs.prepare.outputs.base_image }}"
-          fi
+      - name: Compute build-args for ${{ needs.prepare.outputs.service_name }}
+        # Хендофф 2026-09-21 §8 (Phase 4): этот job раньше заканчивался
+        # собственным `docker buildx build` мимо ./.github/actions/l-build-service —
+        # registry-кеш, docker-container билдер и подмена host-gateway,
+        # заведённые в композите (issue #2280), на одиночную сборку не
+        # распространялись (проверочная сборка led-matrix через этот workflow
+        # не показывала в логе ни одной строки "Cache:"). Здесь собираются
+        # только build-args/submodule-sha input'ы композита; сам buildx-вызов —
+        # шагом ниже, целиком внутри действия.
+        id: extra
+        env:
+          SERVICE_NAME: ${{ needs.prepare.outputs.service_name }}
+          BASE_IMAGE: ${{ needs.prepare.outputs.base_image }}
+        run: |
+          {
+            echo "build_args<<BUILD_ARGS_EOF"
+            if [ -n "$BASE_IMAGE" ]; then
+              echo "BASE_IMAGE=${BASE_IMAGE}"
+            fi
+            echo "APT_PROXY=http://host.docker.internal:3142"
 
-          # Добавляем SHA субмодулей для инвалидации кэша Docker
-          # ros2-control использует субмодуль vesc_nexus
-          if [ "${{ needs.prepare.outputs.service_name }}" = "ros2_control" ]; then
-            VESC_NEXUS_SHA=$(git submodule status src/vesc_nexus | awk '{print $1}' | sed 's/^[+-]//')
-            BUILD_ARGS="${BUILD_ARGS} --build-arg=VESC_NEXUS_SHA=${VESC_NEXUS_SHA}"
-            echo "  VESC_NEXUS_SHA: ${VESC_NEXUS_SHA}"
-          fi
+            # vision-hailo (ADR-0089 Phase 1.5): совпадает с build_args.
+            # HAILO_INSTALL_BINDING в docker/build-manifest.yaml / build-vision-hailo.
+            if [ "$SERVICE_NAME" = "vision_hailo" ]; then
+              echo "HAILO_INSTALL_BINDING=whl"
+            fi
 
-          # led_matrix использует субмодуль ros2leds
-          if [ "${{ needs.prepare.outputs.service_name }}" = "led_matrix" ]; then
-            ROS2LEDS_SHA=$(git submodule status src/ros2leds | awk '{print $1}' | sed 's/^[+-]//')
-            BUILD_ARGS="${BUILD_ARGS} --build-arg=ROS2LEDS_SHA=${ROS2LEDS_SHA}"
-            echo "  ROS2LEDS_SHA: ${ROS2LEDS_SHA}"
-          fi
+            # quest: hash Python-исходников rob_box_quest И TS/JSON/HTML
+            # исходников webxr_client (шлем-клиент — часть образа, копируется
+            # Dockerfile'ом на стадии webxr-builder). Формула — общая
+            # scripts/ci/source_hash.sh (та же, что использует matrix-job
+            # Vision Pi через docker/build-manifest.yaml source_hash.groups),
+            # группы путей — те же, что у build-quest. Issue #2314:
+            # rob_box_core обязан быть в хеше — иначе изменения
+            # avatar_command.py не инвалидируют COPY-слой.
+            if [ "$SERVICE_NAME" = "quest" ]; then
+              QUEST_SPEC="$(printf '%s\t%s\n%s\t%s\n%s\t%s\n' \
+                "src/rob_box_quest/rob_box_quest" "*.py" \
+                "src/rob_box_quest/webxr_client" "*.ts *.json *.html" \
+                "src/rob_box_core" "*.py")"
+              SOURCE_HASH="$(bash scripts/ci/source_hash.sh "$QUEST_SPEC")"
+              echo "SOURCE_HASH=${SOURCE_HASH}"
+              echo "  SOURCE_HASH (quest, rob_box_quest+webxr_client+rob_box_core): ${SOURCE_HASH}" >&2
+            fi
 
-          # quest (ADR-0027): BASE_IMAGE передаётся общим блоком выше
-          # (см. case "quest" в job prepare). Совпадает с build-quest в
-          # L-Build Vision Pi Services.yml.
+            # supervisor (AV-9): hash Python-исходников rob_box_supervisor +
+            # rob_box_core (supervisor_node.py импортирует avatar_command
+            # handlers — issue #2314). Совпадает с build-supervisor.
+            if [ "$SERVICE_NAME" = "supervisor" ]; then
+              SUPERVISOR_SPEC="$(printf '%s\t%s\n' \
+                "src/rob_box_supervisor/rob_box_supervisor src/rob_box_core" "*.py")"
+              SOURCE_HASH="$(bash scripts/ci/source_hash.sh "$SUPERVISOR_SPEC")"
+              echo "SOURCE_HASH=${SOURCE_HASH}"
+              echo "  SOURCE_HASH (supervisor + rob_box_core): ${SOURCE_HASH}" >&2
+            fi
+            echo "BUILD_ARGS_EOF"
 
-          # quest: hash Python-исходников rob_box_quest И TS/JSON/HTML
-          # исходников webxr_client (шлем-клиент — часть образа, копируется
-          # Dockerfile'ом на стадии webxr-builder). Хэш ОБЯЗАН покрывать обе
-          # директории — иначе правка webxr_client не инвалидирует кэш и не
-          # пересоберёт образ. Совпадает 1:1 с build-quest в
-          # L-Build Vision Pi Services.yml.
-          if [ "${{ needs.prepare.outputs.service_name }}" = "quest" ]; then
-            # Issue #2314: добавляем src/rob_box_core в SOURCE_HASH, чтобы
-            # изменения в rob_box_core (avatar_command и др.) инвалидировали
-            # COPY-слой в quest/Dockerfile. rob_box_core явно COPY'ится
-            # (issue #2081) — без инвалидации слоя avatar_command.py не
-            # доедет до image при Quest-Dockerfile-cache hit.
-            SOURCE_HASH=$( (find src/rob_box_quest/rob_box_quest -type f -name "*.py"; \
-                            find src/rob_box_quest/webxr_client -type f \( -name "*.ts" -o -name "*.json" -o -name "*.html" \); \
-                            find src/rob_box_core -type f -name "*.py") \
-                          | sort | xargs sha256sum 2>/dev/null | sha256sum | awk '{print $1}')
-            BUILD_ARGS="${BUILD_ARGS} --build-arg=SOURCE_HASH=${SOURCE_HASH}"
-            echo "  SOURCE_HASH (quest, rob_box_quest+webxr_client+rob_box_core): ${SOURCE_HASH}"
-          fi
+            # Субмодули для инвалидации кэша Docker — считает сам композит
+            # (input compute-submodule-sha, action.yml), не вручную здесь:
+            # ros2-control → src/vesc_nexus → build-arg VESC_NEXUS_SHA,
+            # led_matrix → src/ros2leds → build-arg ROS2LEDS_SHA.
+            case "$SERVICE_NAME" in
+              ros2_control) echo "submodule_sha=src/vesc_nexus" ;;
+              led_matrix)   echo "submodule_sha=src/ros2leds" ;;
+              *)            echo "submodule_sha=" ;;
+            esac
+          } >> "$GITHUB_OUTPUT"
 
-          # supervisor (AV-9): hash Python-исходников rob_box_supervisor.
-          # Совпадает с build-supervisor в L-Build Vision Pi Services.yml.
-          # Issue #2314: добавляем rob_box_core — supervisor_node.py его
-          # импортирует (avatar_command handlers), COPY-слой должен
-          # инвалидироваться при правках rob_box_core.
-          if [ "${{ needs.prepare.outputs.service_name }}" = "supervisor" ]; then
-            SOURCE_HASH=$(find src/rob_box_supervisor/rob_box_supervisor src/rob_box_core -type f -name "*.py" 2>/dev/null | sort | xargs sha256sum | sha256sum | awk '{print $1}')
-            BUILD_ARGS="${BUILD_ARGS} --build-arg=SOURCE_HASH=${SOURCE_HASH}"
-            echo "  SOURCE_HASH (supervisor + rob_box_core): ${SOURCE_HASH}"
-          fi
-
-          # vision-hailo (ADR-0089 Phase 1.5): подкладываем HailoRT python
-          # wheel в build-context и включаем установку биндинга. Wheel —
-          # артефакт Hailo Developer Zone (аккаунт), лежит на build-машине
-          # в /opt/rob_box/vendor/. Совпадает с L-Build Vision Pi Services.yml.
-          if [ "${{ needs.prepare.outputs.service_name }}" = "vision_hailo" ]; then
-            mkdir -p docker/vision/vision-hailo/wheels
-            # Канонично — /opt/rob_box/vendor. Fallback — /tmp (проброшен в runner'ы).
-            # Нужны ОБА: wheel (python) + libhailort.so.4.24.0 (из .deb).
-            for f in hailort-4.24.0-cp310-cp310-linux_aarch64.whl libhailort.so.4.24.0; do
-              if [ -f "/opt/rob_box/vendor/${f}" ]; then
-                cp "/opt/rob_box/vendor/${f}" docker/vision/vision-hailo/wheels/
-              elif [ -f "/tmp/${f}" ]; then
-                cp "/tmp/${f}" docker/vision/vision-hailo/wheels/
-              else
-                echo "::error::${f} не найден ни в /opt/rob_box/vendor, ни в /tmp — real inference build невозможен" >&2
-                echo "::error::Это закрытый артефакт Hailo Developer Zone (нужен аккаунт), скриптом не качается." >&2
-                echo "::error::Что делать: docs/deployment/hailo-vendor-artifacts.md — §2 скачать, §3 извлечь .so из .deb, §4.1 положить в /opt/rob_box/vendor на этом build-хосте." >&2
-                exit 1
-              fi
-            done
-            BUILD_ARGS="${BUILD_ARGS} --build-arg=HAILO_INSTALL_BINDING=whl"
-            echo "  HAILO_INSTALL_BINDING=whl (hailort wheel + lib fetched)"
-          fi
-
-          # Сборка образа
-          docker buildx build \
-            --platform linux/arm64 \
-            --file "${{ needs.prepare.outputs.dockerfile_path }}" \
-            --tag "${{ needs.prepare.outputs.image_tag }}" \
-            --tag "${{ needs.prepare.outputs.local_tag }}" \
-            --load \
-            --add-host=host.docker.internal:host-gateway \
-            ${BUILD_ARGS} \
-            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
-            "${{ needs.prepare.outputs.build_context }}"
-
-          echo ""
-          echo "✅ Build complete!"
-
-          # Push в локальный registry
-          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
-            echo ""
-            echo "📤 Pushing to local registry..."
-            docker push "${{ needs.prepare.outputs.local_tag }}"
-            echo "✅ Push complete!"
-          fi
+      - name: Build ${{ needs.prepare.outputs.service_name }}
+        # Композит — единственное место с docker buildx build для одиночной
+        # сборки теперь тоже (было: свой buildx-вызов мимо действия). Даёт те
+        # же гарантии, что уже есть у L-Build Main/Vision Pi Services.yml:
+        # registry-кеш (--cache-from/--cache-to, mode=max), билдер
+        # docker-container, заведённый шагом внутри композита (раннеры на
+        # katana — контейнеры myoung34/github-runner с проброшенным
+        # docker.sock, docker buildx create с хоста им не виден), подмену
+        # --add-host host-gateway → реальный IP шлюза bridge-сети на
+        # драйверах, которые host-gateway не понимают (action.yml — детали).
+        uses: ./.github/actions/l-build-service
+        with:
+          # image_name (hyphenated), не service_name (underscored): так
+          # cache-ref (<service-name>-buildcache) совпадает с тем, что
+          # использует matrix-job Main/Vision Pi для того же сервиса —
+          # одиночная сборка делит registry-кеш с пакетной, а не заводит свой.
+          service-name: ${{ needs.prepare.outputs.image_name }}
+          dockerfile-path: ${{ needs.prepare.outputs.dockerfile_path }}
+          build-context: ${{ needs.prepare.outputs.build_context }}
+          compute-submodule-sha: ${{ steps.extra.outputs.submodule_sha }}
+          tags: |
+            ${{ needs.prepare.outputs.image_tag }}
+            ${{ needs.prepare.outputs.local_tag }}
+          build-args: |
+            ${{ steps.extra.outputs.build_args }}
+          # push_to_registry=false → load=true (образ только в daemon, без
+          # docker push). push_to_registry=true (default) → load=false: тот
+          # же режим "buildx --load + docker push ТОЛЬКО localhost:5000", что
+          # уже используют Main/Vision — GHCR не пушится (issue #1503).
+          load: ${{ !inputs.push_to_registry }}
 
       - name: Tag with SHA and update .image-versions
         if: inputs.push_to_registry == 'true' && needs.prepare.outputs.docker_tag != 'local'
