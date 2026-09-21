@@ -37,15 +37,12 @@ else
     exit 1
 fi
 
-# Проверяем vesc_nexus Dockerfile
-if grep -q "ARG VESC_NEXUS_SHA" docker/main/vesc_nexus/Dockerfile; then
-    echo -e "   ${GREEN}✓${NC} vesc_nexus Dockerfile содержит ARG VESC_NEXUS_SHA"
-else
-    echo -e "   ${RED}✗${NC} vesc_nexus Dockerfile НЕ содержит ARG VESC_NEXUS_SHA"
-    exit 1
-fi
-
-# Проверяем ros2_control Dockerfile
+# Проверяем ros2_control Dockerfile.
+# Это ЕДИНСТВЕННЫЙ образ, который компилирует vesc_msgs/vesc_nexus:
+# docker/main/vesc_nexus/Dockerfile удалён как мёртвый (его никогда не
+# собирал ни один workflow, в compose и на роботе его нет, а его CMD
+# звал несуществующий vesc_nexus_node.launch.py — апстрим отдаёт только
+# pluginlib-плагин). См. docs/plans/2026-09-15-builder-runtime-seam.md §13.4.
 if grep -q "ARG VESC_NEXUS_SHA" docker/main/ros2_control/Dockerfile; then
     echo -e "   ${GREEN}✓${NC} ros2_control Dockerfile содержит ARG VESC_NEXUS_SHA"
 else
@@ -62,13 +59,6 @@ if grep -q 'RUN echo "Building with ros2leds SHA: \${ROS2LEDS_SHA}"' docker/visi
     echo -e "   ${GREEN}✓${NC} led_matrix Dockerfile использует ROS2LEDS_SHA в RUN echo"
 else
     echo -e "   ${RED}✗${NC} led_matrix Dockerfile НЕ использует ROS2LEDS_SHA в RUN echo"
-    exit 1
-fi
-
-if grep -q 'RUN echo "Building with vesc_nexus SHA: \${VESC_NEXUS_SHA}"' docker/main/vesc_nexus/Dockerfile; then
-    echo -e "   ${GREEN}✓${NC} vesc_nexus Dockerfile использует VESC_NEXUS_SHA в RUN echo"
-else
-    echo -e "   ${RED}✗${NC} vesc_nexus Dockerfile НЕ использует VESC_NEXUS_SHA в RUN echo"
     exit 1
 fi
 
