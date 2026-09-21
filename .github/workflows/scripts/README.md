@@ -70,6 +70,49 @@ ssh ros2@10.1.1.249 bash /tmp/e2e_voice_test.sh --scenario /tmp/scenario.json \
 agent-flow — env `E2E_TTS_PROVIDER`. Прочие ручки: `E2E_TTS_PROVIDER_ORDER`,
 `MINIMAX_TTS_MODEL`, `E2E_SILERO_MODEL`, `E2E_SILERO_SAMPLE_RATE`.
 
+#### Что прогон оставляет после себя
+
+Харнесс пишет в `OUT_DIR` (`/tmp/e2e_v2_<run_id>`):
+
+| файл | что внутри |
+|---|---|
+| `verdict.txt` | `PASS`/`FAIL` — вердикт, бинарный по ADR-0015 |
+| `steps.jsonl` | по строке на шаг: `label`, `status`, `detail`, время |
+| `summary.json` | сводка: шаги N/M, GATE-1, RMS/тишина, сверка с golden |
+| `acceptance.json` | GATE-1: ожидаемые/вызванные тулы, ключевые слова |
+| `audio_metrics.json` | RMS/peak/silence по записи |
+| `baseline_diff.json` | сверка записи с golden + `keyword_match_pct` |
+| `transcript.json` | что просили сказать vs что распознал STT |
+| `recording.wav`, `cmd_*.wav` | запись микрофона и синтезированные команды |
+
+`summary.json` — то, что рендерится в GitHub Step Summary шагом
+**E2E quality summary**. Вердикт при этом остаётся бинарным: счётчик
+«9 из 11 OK» — доказательство, а не новая шкала, FAIL от него не теплеет.
+
+Три места, где эти цифры раньше терялись, и почему их важно не сломать обратно:
+
+1. **Замеры шли раньше, чем появлялся файл.** `audio_metrics`/`baseline_diff`
+   читают `recording.wav`, а создавал его `stop_recording`, висевший только на
+   `trap ... EXIT`. В каждом прогоне (включая зелёные) оба артефакта содержали
+   `{"error":"recording.wav not found"}`. Теперь `stop_recording` вызывается
+   явно перед замерами; trap остался страховкой.
+2. **`transcript.json` был невалидным JSON** — `"expected"` подставлялся без
+   кавычек. Его читает `e2e_baseline_diff.py` под `except: pass`, поэтому
+   `keyword_match_pct` молча не считался. Сборка JSON ушла в `json.dumps`.
+3. **На FAIL сводка скипалась.** У шага без `if:` действует неявное
+   `if: success()`, а `Verdict from atomic harness` падает без
+   `continue-on-error` — всё, что ниже, отменялось ровно на тех прогонах, где
+   отчёт и нужен. Шаги отчётности теперь под `if: always()`.
+
+Артефактов workflow'а — семь, и они не пересекаются: `e2e-voice-recording`
+(все wav), `e2e-voice-artifacts` (полный бандл логов и json), `e2e-voice-logs`,
+`e2e-voice-model`, `e2e-voice-timing`, `e2e-voice-diff` и условный
+`e2e-acceptance`. Раньше их было одиннадцать: `transcript`/`audio-metrics`/
+`baseline-diff`/`acceptance` дублировали файлы из общего бандла побайтово, а
+`harness-artifacts` тянул каталог целиком и уносил вторую копию всех wav
+(+26 МБ на прогон). Guard на это — `tests/unit/e2e_scripts/
+test_issue_1429_no_recording_wav_dupe.py`.
+
 ### `e2e_remote.sh` — 🟡 deprecated (шляпа)
 
 Старый e2e-харнесс (проигрывает .ogg и пишет wav; не проверяет полный цикл
