@@ -102,6 +102,30 @@ resources:
     consumers:
       - "vision-face (FACE_HEF_PATH env, docker-compose.yaml:795)"
 
+  - name: arcface-hef
+    type: open
+    kind: hef
+    url: https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v2.14.0/hailo8/arcface_mobilefacenet.hef
+    # Публичная модель, аккаунт Hailo Developer Zone НЕ нужен (проверено
+    # 22.09.2026 — прямая ссылка отдаёт файл анонимно, как у retinaface/yolov8n
+    # выше). sha256/size сняты вручную на живом роботе тем же вечером после
+    # ручного копирования HEF в /opt/rob_box/models/ (issue #2599 PR-B,
+    # ADR-0123). Реальные тензоры устройства: вход (112,112,3) UINT8, выход
+    # fc1 (512,) UINT8 — эмбеддинг 512-dim, а НЕ 128 (см. также исправленный
+    # embedding_dim в docker/vision/config/hailo_models.yaml — 128 было
+    # ошибкой со страницы model zoo, унаследованной ADR-0089/ADR-0106/ADR-0123).
+    sha256: "c75fc63241383f7b346db54e3fa5d1cc89b85799152f5121ed0fcca9c057ddc7"
+    size_bytes: 3505142
+    unpack: none
+    target: /opt/rob_box/models/arcface_mobilefacenet.hef
+    required: soft
+    on_missing: degrade
+    degrade_note: >
+      vision-face остаётся с одной RetinaFace-детекцией: лица находятся, но
+      не узнаются (нет эмбеддинга) — ADR-0123 §6 недоступен, ADR-0018.
+    consumers:
+      - "vision-face (FACE_ARCFACE_HEF_PATH env, docker/vision/config/hailo_models.yaml:vision_face_node.arcface_hef_path)"
+
   # ---------- открытые: STT/TTS модели (Этап 3) ----------
   # До Этапа 3 обе модели качались на этапе СБОРКИ образа voice-base
   # (docker/vision/voice_base/Dockerfile, ступень «Скачивание STT/TTS

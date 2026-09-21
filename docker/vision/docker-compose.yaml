@@ -882,6 +882,18 @@ services:
       - HAILO_ENABLED=${FACE_HAILO_ENABLED:-}
       - HEF_PATH=${FACE_HEF_PATH:-}
       - HAILO_MODELS_YAML=/config/hailo_models.yaml
+      # ArcFace-узнавание (ADR-0123, issue #2599 PR-B). Тот же приём хостовых
+      # переменных, что у HAILO_ENABLED/HEF_PATH выше: пусто → берётся
+      # секция vision_face_node из config/hailo_models.yaml.
+      - ARCFACE_ENABLED=${FACE_ARCFACE_ENABLED:-}
+      - ARCFACE_HEF_PATH=${FACE_ARCFACE_HEF_PATH:-}
+      # Хранилище лиц и режим приватности (ADR-0123 §2/§4-5). Имена
+      # хостовых и контейнерных переменных совпадают: коллизии с
+      # vision-hailo нет (тот их не читает вовсе), namespacing ADR-0120 §8
+      # тут не нужен.
+      - FACE_STORE_ROOT=${FACE_STORE_ROOT:-}
+      - FACE_PRIVACY_MODE=${FACE_PRIVACY_MODE:-}
+      - FACE_IDENTIFY_THRESHOLD=${FACE_IDENTIFY_THRESHOLD:-}
     volumes:
       - ./config:/config:ro
       - ./scripts:/ros_scripts:ro
@@ -893,6 +905,12 @@ services:
       # берёт /dev/hailo0 единолично и второй продюсер получает
       # HAILO_OUT_OF_PHYSICAL_DEVICES(74) — проверено на роботе.
       - /tmp/hailort_uds.sock:/tmp/hailort_uds.sock
+      # FaceStore (ADR-0123 §4): "не в образе, переживает пересоздание
+      # контейнера". Тот же приём, что у VoiceMemory (voice-assistant,
+      # ./data/voice:/data выше) — отдельный host-каталог под docker/vision,
+      # НЕ под /opt/rob_box (там живут только read-only модели Ресурсного
+      # пака). Без :ro — FaceStore пишет сюда эмбеддинги, снимки, meta.json.
+      - ./data/faces:/data/faces
     mem_limit: 1g
     memswap_limit: 1.5g
     command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_vision_face.sh"]

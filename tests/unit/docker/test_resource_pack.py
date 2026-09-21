@@ -224,6 +224,42 @@ def test_retinaface_sha_matches_legacy_script() -> None:
     )
 
 
+def test_manifest_covers_arcface_hef() -> None:
+    """Issue #2599 PR-B / ADR-0123: ArcFace HEF обязана быть в манифесте.
+
+    sha256/size сняты вручную на живом роботе 22.09.2026, тем же вечером,
+    когда HEF был скопирован в /opt/rob_box/models/ (ручной акт, который эта
+    запись делает воспроизводимым). Без записи здесь скрипт не положит файл
+    ни при одном прогоне деплоя.
+    """
+    data = yaml.safe_load(MANIFEST.read_text(encoding="utf-8"))
+    entry = next(r for r in data["resources"] if r["name"] == "arcface-hef")
+    assert entry["type"] == "open"
+    assert entry["url"].endswith("/arcface_mobilefacenet.hef")
+    assert entry["sha256"] == (
+        "c75fc63241383f7b346db54e3fa5d1cc89b85799152f5121ed0fcca9c057ddc7"
+    )
+    assert entry["size_bytes"] == 3505142
+    assert entry["target"] == "/opt/rob_box/models/arcface_mobilefacenet.hef"
+    # Та же деградация, что у retinaface-hef: отсутствие модели не должно
+    # ронять деплой, только вырубать узнавание (детекция остаётся живой).
+    assert entry["required"] == "soft"
+    assert entry["on_missing"] == "degrade"
+
+
+def test_arcface_sha_matches_legacy_script() -> None:
+    """Эталон не должен разойтись между манифестом и откатным скриптом."""
+    legacy = (
+        REPO_ROOT
+        / "docker" / "vision" / "scripts" / "vision-hailo" / "download_arcface_hef.sh"
+    ).read_text(encoding="utf-8")
+    data = yaml.safe_load(MANIFEST.read_text(encoding="utf-8"))
+    entry = next(r for r in data["resources"] if r["name"] == "arcface-hef")
+    assert entry["sha256"].lower() in legacy.lower(), (
+        "sha256 arcface в манифесте разошёлся с download_arcface_hef.sh"
+    )
+
+
 def test_crlf_manifest_is_parsed_in_full(tmp_path: Path, http_base: str) -> None:
     """Манифест с CRLF обязан разбираться целиком, а не частично.
 
