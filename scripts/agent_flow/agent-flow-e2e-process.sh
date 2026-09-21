@@ -2494,6 +2494,11 @@ vision_default на Pi — перед up добавлен 'docker rm -f voice-re
     [ -n "$e2e_llm" ] && e2e_args+=(-f "llm=$e2e_llm")
     [ -n "$e2e_tts" ] && e2e_args+=(-f "tts=$e2e_tts")
     [ -n "$e2e_stt" ] && e2e_args+=(-f "stt=$e2e_stt")
+    # Кто озвучивает КОМАНДУ на билд-машине (не ответ робота).
+    # По умолчанию workflow берёт auto (yandex -> minimax -> silero),
+    # поэтому передаём ТОЛЬКО явно заданный провайдер — чтобы можно
+    # было прибить флот к silero одной env-переменной, не трогая скрипты.
+    [ -n "${E2E_TTS_PROVIDER:-}" ] && e2e_args+=(-f "tts_provider=$E2E_TTS_PROVIDER")
     [ -n "$e2e_acceptance_check" ] && e2e_args+=(-f "acceptance_check=$e2e_acceptance_check")
     # bug(e2e #1375/#1421) ретро 18.08: передаём scenario_file в workflow. Без
     # этого L-E2E Voice Test.yml берёт дефолт voice_text='Робот, спой песенку про
