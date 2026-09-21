@@ -176,6 +176,17 @@ jobs:
             -o addopts="" \
             -p no:cacheprovider
 
+      # ADR-0094 §3.2 завёл этот скрипт и честно написал «в этом PR только
+      # добавляется, подключение — follow-up вместе с чисткой phantom-тегов,
+      # чтобы не уронить CI до их удаления». Phantom-теги удалены
+      # (MICRO_ROS_AGENT_TAG — issue #2425, RTABMAP_SYNC_TAG — вместе с
+      # мёртвой веткой PI_TYPE=vision в Single Service), значит блокер снят
+      # и follow-up закрывается: docs/plans/2026-09-15-image-versions-seam.md §7.3.
+      # Hard gate: новое поле в .image-versions.*, которое никто не читает,
+      # обязано ронять lint, а не жить годами как phantom.
+      - name: Image-versions phantom guard (ADR-0094 §3.2)
+        run: bash scripts/ci/check_image_versions_usage.sh
+
       # scripts/ci/verify-image-in-registry.sh — вынесен из ТРЁХ копий функции
       # verify_in_registry (оба L-Build + Single Service), которые уже успели
       # разъехаться на строку сообщения (docs/plans/2026-09-15-image-versions-seam.md

@@ -570,7 +570,14 @@ jobs:
             oak-d)                 VERSION_VAR="OAK_D_TAG" ;;
             led_matrix)            VERSION_VAR="LED_MATRIX_TAG" ;;
             ceiling-camera)        VERSION_VAR="CEILING_CAMERA_TAG" ;;
-            rtabmap) [ "$PI_TYPE" = "vision" ] && VERSION_VAR="RTABMAP_SYNC_TAG" || VERSION_VAR="RTABMAP_TAG" ;;
+            # rtabmap собирается ТОЛЬКО на Main Pi: job build-rtabmap есть
+            # в L-Build Main Pi Services.yml и отсутствует в Vision. Ветка
+            # PI_TYPE=vision писала сюда RTABMAP_SYNC_TAG — phantom-поле без
+            # владельца, его не читал ни compose, ни скрипты (проверено
+            # scripts/ci/check_image_versions_usage.sh). Поле удалено из
+            # .image-versions.*, и эта ветка удалена вместе с ним: иначе
+            # один запуск Single Service вернул бы его обратно.
+            rtabmap)               VERSION_VAR="RTABMAP_TAG" ;;
             twist_mux)             VERSION_VAR="TWIST_MUX_TAG" ;;
             robot_state_publisher) VERSION_VAR="ROBOT_STATE_PUBLISHER_TAG" ;;
             ros2_control)          VERSION_VAR="ROS2_CONTROL_TAG" ;;

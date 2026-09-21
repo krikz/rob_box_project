@@ -354,35 +354,47 @@ def test_update_image_versions_reads_tags_from_manifest(pi):
 
 
 @pytest.mark.parametrize("pi", ["vision", "main"])
-def test_known_phantom_tags_are_no_longer_written(pi):
-    """Phantom-поля .image-versions.* (план §1.3/§1.4, ADR-0094 §1.4).
+def test_known_phantom_tags_are_gone(pi):
+    """Phantom-поля .image-versions.* удалены (план §1.3/§1.4, ADR-0094 §1.4, §3.3).
 
-    RTABMAP_SYNC_TAG (vision) и MICRO_ROS_AGENT_TAG (main) не принадлежат ни
-    одному сервису манифеста. До Phase 3 sed писал их наравне с настоящими;
-    теперь цикл идёт по манифесту, поэтому они просто перестают обновляться
-    (план §5 Phase 3: «генератор их не пишет — это САМО ПО СЕБЕ фиксирует их
-    как phantom без отдельного PR»). Удаление самих полей из
-    docker/*/.image-versions.* — отдельный PR по процедуре ADR-0094 §3.3.
+    RTABMAP_SYNC_TAG (vision) и MICRO_ROS_AGENT_TAG (main) не принадлежали ни
+    одному сервису манифеста: rtabmap собирается только на Main Pi, а
+    micro-ros-agent не собирается вовсе. До Phase 3 sed писал их наравне с
+    настоящими; Phase 3 перестала их обновлять, а этот шаг
+    (docs/plans/2026-09-15-image-versions-seam.md §7.2) удалил сами поля.
 
-    Тест держит факт видимым: поля ещё лежат в .image-versions.*, их никто
-    не обновляет, и ни один сервис манифеста их не объявляет.
+    Предыдущая версия теста держала обратный факт — «поля ещё лежат, их никто
+    не обновляет» — и прямо просила переписать себя, когда phantom вычистят.
+    Переписана: теперь guard стоит с другой стороны и ловит их возвращение.
+    Вернуть phantom можно ровно двумя способами, оба закрыты:
+    дописать поле руками в .image-versions.* или вернуть ветку
+    PI_TYPE=vision у rtabmap в L-Build Single Service.yml.
     """
     phantoms = {
         "vision": {"RTABMAP_SYNC_TAG"},
         "main": {"MICRO_ROS_AGENT_TAG"},
     }[pi]
     body = _strip_comments(PI_TO_WORKFLOW[pi])
-    versions_file = REPO_ROOT / "docker" / pi / ".image-versions.dev"
-    versions_text = versions_file.read_text(encoding="utf-8")
+    single_service = _strip_comments(
+        REPO_ROOT / ".github" / "workflows" / "L-Build Single Service.yml"
+    )
 
     for var in phantoms:
-        assert f"{var}=" in versions_text, (
-            f"{pi}: {var} исчез из {versions_file.name} — значит phantom уже "
-            f"вычищен, убери его из этого теста (guard не должен держать "
-            f"мёртвые исключения)"
-        )
+        for suffix in ("dev", "test", "latest"):
+            versions_file = REPO_ROOT / "docker" / pi / f".image-versions.{suffix}"
+            if not versions_file.exists():
+                continue
+            assert f"{var}=" not in versions_file.read_text(encoding="utf-8"), (
+                f"{pi}: {var} снова в {versions_file.name} — это поле никто не "
+                f"читает (scripts/ci/check_image_versions_usage.sh), удалено "
+                f"по ADR-0094 §3.3"
+            )
         assert var not in body, (
             f"{pi}: {var} снова появился в исполняемом тексте workflow"
+        )
+        assert var not in single_service, (
+            f"{pi}: {var} вернулся в L-Build Single Service.yml — один запуск "
+            f"этого workflow допишет phantom обратно в .image-versions.*"
         )
 
     manifest_vars = set(gen_build_matrix.image_versions_map(_services(pi)))
@@ -390,7 +402,6 @@ def test_known_phantom_tags_are_no_longer_written(pi):
         f"{pi}: phantom-поля {sorted(phantoms & manifest_vars)} внезапно обрели "
         f"владельца в манифесте — обнови этот тест"
     )
-
 
 @pytest.mark.parametrize("pi", ["vision", "main"])
 def test_image_versions_file_has_a_field_for_every_manifest_service(pi):
