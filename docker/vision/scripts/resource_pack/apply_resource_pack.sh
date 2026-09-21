@@ -24,6 +24,11 @@
 #  5. Открытые vs закрытые. open — скрипт качает сам. gated — скрипт только
 #     проверяет (наличие + sha256) и говорит, чего не хватает и что делать;
 #     кладёт файл человек, один раз (docs/deployment/hailo-vendor-artifacts.md).
+#  6. Хуки. Запись type: open может вместо url нести fetch_hook: <имя> —
+#     тогда скачивает не этот скрипт, а именованный хук рядом. Имя хука
+#     разрешается в код ЗДЕСЬ (run_fetch_hook), а не берётся из манифеста
+#     как команда: манифест — данные, исполняемая логика — код. Неизвестное
+#     имя = exit 2 (невалидный манифест), а не тихий пропуск.
 #
 # Несовпадение sha256 — ВСЕГДА hard-ошибка, даже для required: soft.
 # Отсутствие ресурса это объявленная деградация; файл с другим содержимым —
@@ -335,9 +340,22 @@ missing_resource() {  # $1 = name, $2 = required, $3 = degrade_note, $4... = п�
 ensure_open() {  # $1 = индекс записи
     local i="$1"
     local name url sha unpack target required note verify tpath tdir expected actual tmp
+    local hook
 
     name="$(field "$i" name)"
     url="$(field "$i" url)"
+    hook="$(field "$i" fetch_hook)"
+
+    # url и fetch_hook взаимоисключающи: запись с обоими — не «мы дадим два
+    # способа», а «непонятно, какой из них истина».
+    if [ -n "$hook" ] && [ -n "$url" ]; then
+        err "${name}: заданы и url, и fetch_hook — манифест невалиден (выберите один источник)"
+        exit 2
+    fi
+    if [ -n "$hook" ]; then
+        ensure_hook "$i"
+        return 0
+    fi
     sha="$(lower "$(field "$i" sha256)")"
     unpack="$(field "$i" unpack)"
     [ -n "$unpack" ] || unpack="none"
@@ -469,6 +487,114 @@ ensure_open() {  # $1 = индекс записи
     mv -f "$tmp" "$tpath"
     chmod 0644 "$tpath" 2>/dev/null || true
     log "${name}: OK установлен — ${tpath} ($(file_size "$tpath") байт)"
+    INSTALLED=$((INSTALLED + 1))
+}
+
+# ---------------------------------------------------------------------------
+# open-ресурс с fetch_hook: качает не этот скрипт, а именованный хук
+# ---------------------------------------------------------------------------
+# Зачем отдельная ветка, а не ещё один url в манифесте: Renardo-пак — это не
+# файл, а дерево из тысяч .wav, описанное collection_index.json, со своим
+# обходом, пулом потоков и двухуровневыми ретраями. Разложить это по полям
+# YAML — замаскировать императивную логику под данные (тот же вывод, что у
+# pre_build: fetch_hailort_wheel, план service-manifest §2.5).
+#
+# Имя хука → путь к коду разрешается ЗДЕСЬ. Манифест не может подсунуть
+# произвольную команду: он называет хук, а не запускает его.
+run_fetch_hook() {  # $1 = имя хука, $2 = целевой каталог; 0 = успех
+    local hook="$1" tdir="$2"
+
+    case "$hook" in
+        fetch_renardo_samples)
+            if ! command -v python3 >/dev/null 2>&1; then
+                err "хук ${hook}: python3 не найден — скачать сэмплы нечем"
+                return 127
+            fi
+            # stdlib-only, renardo_gatherer на Vision Pi не установлен —
+            # у фетчера для этого есть фолбэк на свои константы.
+            python3 "${SCRIPT_DIR}/fetch_renardo_samples.py" --target "$tdir"
+            return $?
+            ;;
+        *)
+            err "неизвестный fetch_hook='${hook}' — манифест невалиден."
+            err "  Хук — это имя, которое разрешается в код apply_resource_pack.sh"
+            err "  (функция run_fetch_hook), а не команда из манифеста."
+            exit 2
+            ;;
+    esac
+}
+
+ensure_hook() {  # $1 = индекс записи
+    local i="$1"
+    local name hook target required note verify sha tpath rc
+
+    name="$(field "$i" name)"
+    hook="$(field "$i" fetch_hook)"
+    target="$(field "$i" target)"
+    required="$(field "$i" required)"
+    note="$(field "$i" degrade_note)"
+    verify="$(field "$i" verify_file)"
+    sha="$(lower "$(field "$i" sha256)")"
+
+    if [ -z "$target" ] || [ -z "$required" ]; then
+        err "${name}: запись с fetch_hook без target/required — манифест невалиден"
+        exit 2
+    fi
+    case "$required" in hard|soft) : ;; *)
+        err "${name}: required='${required}', ожидается hard|soft"; exit 2 ;;
+    esac
+    if [ -n "$sha" ]; then
+        err "${name}: у записи с fetch_hook задан sha256='${sha}', а проверять нечего:"
+        err "${name}:   target — каталог с тысячами файлов, а не один артефакт."
+        err "${name}:   Непроверяемое поле хуже пустого: оно выглядит как гарантия."
+        exit 2
+    fi
+
+    tpath="$(resolve_target "$target")"
+
+    # --- уже на месте? ---
+    # Критерий тот же, что у самого фетчера: маркер verify_file. Ни размер,
+    # ни «каталог непустой» тут не годятся — полускачанный пак выглядел бы
+    # как готовый.
+    local present=0
+    if [ -d "$tpath" ] && { [ -z "$verify" ] || [ -f "${tpath}/${verify}" ]; }; then
+        present=1
+    fi
+
+    if [ "$present" -eq 1 ] && [ "$FORCE" != "1" ]; then
+        log "${name}: OK no-op — ${tpath} на месте${verify:+ (${verify} найден)}"
+        warn "${name}: sha256 у каталога-пака не бывает — целостность НЕ проверена, только маркер"
+        NOOP=$((NOOP + 1))
+        return 0
+    fi
+
+    if [ "$DRY_RUN" -eq 1 ]; then
+        log "${name}: DRY-RUN — запустил бы хук ${hook} → ${tpath}"
+        SKIPPED=$((SKIPPED + 1))
+        return 0
+    fi
+
+    if ! mkdir -p "$tpath" 2>/dev/null; then
+        missing_resource "$name" "$required" "$note" "не создать каталог ${tpath} (права?)"
+        return 0
+    fi
+
+    log "${name}: запускаю хук ${hook} → ${tpath}"
+    rc=0
+    run_fetch_hook "$hook" "$tpath" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        missing_resource "$name" "$required" "$note" "хук ${hook} завершился с кодом ${rc} (сеть/источник?)"
+        return 0
+    fi
+
+    # Код возврата 0 — ещё не факт наличия. Проверяем маркер (§11.5 плана).
+    if [ -n "$verify" ] && [ ! -f "${tpath}/${verify}" ]; then
+        missing_resource "$name" "$required" "$note" "хук отработал, но ${tpath}/${verify} не появился"
+        return 0
+    fi
+
+    log "${name}: OK установлен — ${tpath}${verify:+ (${verify} на месте)}"
+    warn "${name}: sha256 у каталога-пака не бывает — целостность НЕ проверена, только маркер"
     INSTALLED=$((INSTALLED + 1))
 }
 

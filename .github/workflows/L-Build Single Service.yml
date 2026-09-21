@@ -52,7 +52,6 @@ on:
           - led-matrix
           - ceiling-camera
           - voice-base
-          - voice-resources
           - voice-assistant
           - telegram-bot
           - supercollider
@@ -234,13 +233,6 @@ jobs:
                   DOCKERFILE="docker/vision/voice_base/Dockerfile"
                   BUILD_CONTEXT="docker/vision/voice_base"
                   BASE_IMAGE="localhost:5000/krikz/rob_box_base:rtabmap-${ROS_DISTRO}"
-                  ;;
-                "voice-resources"|"voice_resources")
-                  SERVICE_NAME="voice_resources"
-                  IMAGE_NAME="voice-resources"
-                  DOCKERFILE="docker/vision/voice_resources/Dockerfile"
-                  BUILD_CONTEXT="docker/vision"
-                  BASE_IMAGE=""
                   ;;
                 "apriltag")
                   SERVICE_NAME="apriltag"
@@ -564,7 +556,6 @@ jobs:
 
           # Map service_name to .image-versions env var name
           case "$SERVICE_NAME" in
-            voice_resources)       VERSION_VAR="VOICE_RESOURCES_TAG" ;;
             voice_assistant)       VERSION_VAR="VOICE_ASSISTANT_TAG" ;;
             telegram_bot)          VERSION_VAR="TELEGRAM_BOT_TAG" ;;
             oak-d)                 VERSION_VAR="OAK_D_TAG" ;;
@@ -656,7 +647,6 @@ jobs:
           echo "  - led-matrix (led_matrix)"
           echo "  - ceiling-camera"
           echo "  - voice-base (voice_base)"
-          echo "  - voice-resources (voice_resources)"
           echo "  - voice-assistant (voice_assistant)"
           echo "  - supercollider"
           echo "  - apriltag"

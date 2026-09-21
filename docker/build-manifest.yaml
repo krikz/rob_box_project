@@ -77,17 +77,13 @@ pis:
         # факт как есть, не чинит.
         image_versions: false
 
-      voice-resources:
-        dockerfile: docker/vision/voice_resources/Dockerfile
-        build_context: docker/vision
-        base: null
-        tag:
-          ros_distro: true
-        image_versions: VOICE_RESOURCES_TAG
-        # ADR-0111 (2026-09-15): сервис целиком подлежит удалению из прод-стека.
-        # Манифест фиксирует ТЕКУЩЕЕ состояние; удаление узла — отдельный PR
-        # после того, как devops-карточка t_ca7fa165 выберет §2.4 или §2.5
-        # ADR-0111.
+      # Здесь был узел voice-resources (образ с Renardo/FoxDot сэмплами,
+      # ~600 МБ, VOICE_RESOURCES_TAG). Удалён: сэмплы больше не едут образом,
+      # их кладёт на хост Ресурсный пак (запись renardo-samples в
+      # docker/vision/scripts/resource_pack/manifest.yaml), а контейнеры
+      # видят их bind-mount'ом /opt/rob_box/samples. Вместе с узлом ушли
+      # его job в обоих build-workflow и VOICE_RESOURCES_TAG из
+      # .image-versions.*.
 
       voice-assistant:
         dockerfile: docker/vision/voice_assistant/Dockerfile

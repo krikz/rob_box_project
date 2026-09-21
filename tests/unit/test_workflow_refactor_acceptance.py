@@ -330,8 +330,9 @@ def test_submodule_sha_delegated_to_composite(pi, service, submodule):
 def test_base_image_arg_matches_manifest_base(pi, service):
     """BASE_IMAGE есть ровно у тех сервисов, у которых в манифесте есть base.
 
-    Исключения (base: null) — voice-resources и supercollider: у них в
-    прежнем коде тоже не было --build-arg BASE_IMAGE.
+    Исключение (base: null) — supercollider: у него в прежнем коде
+    тоже не было --build-arg BASE_IMAGE. Вторым таким сервисом был
+    voice-resources — его узел удалён вместе с образом.
     """
     _, services = PI_DATA[pi]
     entry = _entry(pi, service)

@@ -165,7 +165,16 @@ def test_open_entries_have_contract_fields() -> None:
     for res in data["resources"]:
         if res.get("type") != "open":
             continue
-        for key in ("url", "target", "required", "on_missing"):
+        # Источник — ЛИБО прямой url, ЛИБО именованный хук, но не оба сразу:
+        # запись с двумя источниками не «даёт выбор», а не отвечает на вопрос,
+        # откуда файл на самом деле.
+        has_url = "url" in res
+        has_hook = "fetch_hook" in res
+        assert has_url != has_hook, (
+            f"{res['name']}: ожидается ровно одно из url / fetch_hook "
+            f"(url={has_url}, fetch_hook={has_hook})"
+        )
+        for key in ("target", "required", "on_missing"):
             assert key in res, f"{res['name']}: нет обязательного поля {key}"
         assert res["required"] in ("hard", "soft"), res["name"]
         assert res["target"].startswith("/opt/rob_box/"), (
@@ -613,17 +622,245 @@ def test_dry_run_does_not_download(tmp_path: Path, http_root: Path, http_base: s
 
 
 def test_registry_only_types_are_skipped(tmp_path: Path) -> None:
-    """build-time/git записи — реестр, а не доставка (план §6.3/§6.4)."""
+    """build-time/git записи — реестр, а не доставка (план §6.4)."""
     manifest = write_manifest(
         tmp_path / "m.yaml",
         [
-            {"name": "renardo", "type": "build-time", "note": "ADR-0111"},
+            {"name": "baked", "type": "build-time", "note": "печётся в образ"},
             {"name": "sounds", "type": "git", "note": "git reset --hard"},
         ],
     )
     result = run_pack(manifest, tmp_path / "opt")
     assert result.returncode == 0, result.stdout + result.stderr
     assert result.stdout.count("доставляется не этим швом") == 2
+
+
+# ===========================================================================
+# 4a. open-записи с fetch_hook (Renardo-сэмплы)
+# ===========================================================================
+def hook_entry(required: str = "soft", **overrides) -> dict:
+    entry = {
+        "name": "samples",
+        "type": "open",
+        "kind": "sample-pack",
+        "fetch_hook": "fetch_renardo_samples",
+        "sha256": "",
+        "verify_file": "0_foxdot_default/downloaded_at.txt",
+        "target": "/opt/rob_box/samples",
+        "required": required,
+        "on_missing": "fail-deploy" if required == "hard" else "degrade",
+        "degrade_note": "фикстура: музыка ушла бы в synth-only",
+    }
+    entry.update(overrides)
+    return entry
+
+
+def test_hook_entry_present_marker_is_noop(tmp_path: Path) -> None:
+    """Маркер на месте → хук не запускается (иначе каждый деплой качал бы 600 МБ)."""
+    manifest = write_manifest(tmp_path / "m.yaml", [hook_entry()])
+    root = tmp_path / "opt"
+    marker = root / "samples" / "0_foxdot_default" / "downloaded_at.txt"
+    marker.parent.mkdir(parents=True)
+    marker.write_text("2026-09-21", encoding="utf-8")
+
+    result = run_pack(manifest, root, "--only", "samples")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "OK no-op" in result.stdout
+    assert "запускаю хук" not in result.stdout
+
+
+def test_hook_entry_says_integrity_is_not_checked(tmp_path: Path) -> None:
+    """sha256 у каталога-пака не бывает — говорим это вслух (ADR-0018)."""
+    manifest = write_manifest(tmp_path / "m.yaml", [hook_entry()])
+    root = tmp_path / "opt"
+    marker = root / "samples" / "0_foxdot_default" / "downloaded_at.txt"
+    marker.parent.mkdir(parents=True)
+    marker.write_text("2026-09-21", encoding="utf-8")
+
+    result = run_pack(manifest, root, "--only", "samples")
+
+    assert "целостность НЕ проверена" in result.stderr
+
+
+def test_hook_entry_dry_run_does_not_run_hook(tmp_path: Path) -> None:
+    manifest = write_manifest(tmp_path / "m.yaml", [hook_entry()])
+    root = tmp_path / "opt"
+
+    result = run_pack(manifest, root, "--only", "samples", "--dry-run")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "DRY-RUN" in result.stdout
+    assert not (root / "samples" / "0_foxdot_default").exists()
+
+
+def test_unknown_hook_name_is_manifest_error(tmp_path: Path) -> None:
+    """Имя хука разрешается в КОД. Неизвестное имя = exit 2, не тихий пропуск."""
+    manifest = write_manifest(
+        tmp_path / "m.yaml", [hook_entry(fetch_hook="fetch_something_else")]
+    )
+
+    result = run_pack(manifest, tmp_path / "opt", "--only", "samples")
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "неизвестный fetch_hook" in result.stderr
+
+
+def test_hook_entry_with_both_url_and_hook_is_manifest_error(tmp_path: Path) -> None:
+    manifest = write_manifest(
+        tmp_path / "m.yaml", [hook_entry(url="https://example.invalid/pack.zip")]
+    )
+
+    result = run_pack(manifest, tmp_path / "opt", "--only", "samples")
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "url, и fetch_hook" in result.stderr
+
+
+def test_hook_entry_with_sha256_is_manifest_error(tmp_path: Path) -> None:
+    """Непроверяемый sha256 хуже пустого: он выглядит как гарантия."""
+    manifest = write_manifest(tmp_path / "m.yaml", [hook_entry(sha256="ab" * 32)])
+
+    result = run_pack(manifest, tmp_path / "opt", "--only", "samples")
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "проверять нечего" in result.stderr
+
+
+def test_hook_failure_on_soft_resource_degrades_not_fails(tmp_path: Path) -> None:
+    """Хук упал → exit 0 + громкая деградация: сэмплы деплой не роняют.
+
+    Хук подменяем через PATH: настоящий python3 не должен уйти в сеть за
+    600 МБ ради теста. Скрипт зовёт ``python3 <фетчер> --target ...``, поэтому
+    достаточно подсунуть python3, который всегда падает.
+    """
+    manifest = write_manifest(tmp_path / "m.yaml", [hook_entry(required="soft")])
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_python = fake_bin / "python3"
+    fake_python.write_text(
+        "#!/bin/sh\necho 'ERROR: collections.renardo.org unreachable' >&2\nexit 1\n",
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o755)
+
+    result = run_pack(
+        manifest,
+        tmp_path / "opt",
+        "--only",
+        "samples",
+        env_extra={"PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"},
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "ДЕГРАДАЦИЯ" in result.stderr
+    assert "synth-only" in result.stderr
+
+
+def test_hook_failure_on_hard_resource_fails_deploy(tmp_path: Path) -> None:
+    """Семантика required не меняется от того, что источник — хук."""
+    manifest = write_manifest(tmp_path / "m.yaml", [hook_entry(required="hard")])
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_python = fake_bin / "python3"
+    fake_python.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    fake_python.chmod(0o755)
+
+    result = run_pack(
+        manifest,
+        tmp_path / "opt",
+        "--only",
+        "samples",
+        env_extra={"PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"},
+    )
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "HARD FAIL" in result.stderr
+
+
+def test_hook_success_without_marker_is_reported_as_missing(tmp_path: Path) -> None:
+    """exit 0 у хука — ещё не факт наличия. Проверяем маркер (план §11.5)."""
+    manifest = write_manifest(tmp_path / "m.yaml", [hook_entry(required="soft")])
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_python = fake_bin / "python3"
+    fake_python.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_python.chmod(0o755)
+
+    result = run_pack(
+        manifest,
+        tmp_path / "opt",
+        "--only",
+        "samples",
+        env_extra={"PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"},
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "не появился" in result.stderr
+
+
+def test_manifest_covers_renardo_samples() -> None:
+    """Сэмплы доставляет этот шов, а не отдельный образ voice-resources."""
+    data = yaml.safe_load(MANIFEST.read_text(encoding="utf-8"))
+    entry = next(r for r in data["resources"] if r["name"] == "renardo-samples")
+
+    assert entry["type"] == "open", (
+        "renardo-samples снова помечена как не-доставляемая: образ "
+        "voice-resources удалён, положить сэмплы больше некому"
+    )
+    assert entry["fetch_hook"] == "fetch_renardo_samples"
+    assert entry["target"] == "/opt/rob_box/samples"
+    assert entry["required"] == "soft", (
+        "нет сэмплов → музыка в synth-only, диалог/STT/TTS живы: это "
+        "объявленная деградация, а не повод ронять деплой"
+    )
+    assert entry["on_missing"] == "degrade"
+    assert entry["sha256"] == ""
+
+
+def test_fetch_hook_script_exists_for_every_declared_hook() -> None:
+    """Каждое имя хука из манифеста обязано разрешаться в реальный код."""
+    data = yaml.safe_load(MANIFEST.read_text(encoding="utf-8"))
+    script = SCRIPT.read_text(encoding="utf-8")
+    for res in data["resources"]:
+        hook = res.get("fetch_hook")
+        if not hook:
+            continue
+        assert f"{hook})" in script, (
+            f"{res['name']}: apply_resource_pack.sh не знает хук {hook!r} — "
+            f"деплой упал бы с 'неизвестный fetch_hook'"
+        )
+        assert (PACK_DIR / f"{hook}.py").exists(), (
+            f"{res['name']}: нет {PACK_DIR / (hook + '.py')}"
+        )
+
+
+def test_samples_are_not_delivered_by_an_image_anymore() -> None:
+    """Deletion test: образ voice-resources и его init-контейнер удалены."""
+    assert not (REPO_ROOT / "docker" / "vision" / "voice_resources").exists(), (
+        "каталог docker/vision/voice_resources вернулся — сэмплы снова "
+        "доставляются двумя способами сразу"
+    )
+    compose = yaml.safe_load(
+        (REPO_ROOT / "docker" / "vision" / "docker-compose.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert "voice-resources-init" not in compose["services"]
+    assert "renardo_samples" not in (compose.get("volumes") or {}), (
+        "named-volume renardo_samples вернулся в compose — сэмплы должны "
+        "приходить bind-mount'ом из /opt/rob_box/samples"
+    )
+
+    mount = "/opt/rob_box/samples:/root/.config/renardo/samples"
+    assert f"{mount}:ro" in compose["services"]["supercollider"]["volumes"]
+    assert mount in compose["services"]["voice-assistant"]["volumes"]
+
+    for service in ("supercollider", "voice-assistant"):
+        deps = compose["services"][service].get("depends_on") or {}
+        assert "voice-resources-init" not in deps, (
+            f"{service} всё ещё ждёт удалённый init-контейнер"
+        )
 
 
 def test_manifest_covers_stt_tts_models() -> None:

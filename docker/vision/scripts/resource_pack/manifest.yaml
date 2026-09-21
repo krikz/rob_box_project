@@ -19,8 +19,17 @@
 #                            наличие + sha256 и честно говорит, чего нет.
 #                   build-time / git : в доставку НЕ входит, запись только
 #                            для полноты реестра (см. §6.3, §6.4 плана).
-#   kind          — hef | model-file | model-zip | deb | wheel | shared-lib.
-#   url           — для type: open.
+#   kind          — hef | model-file | model-zip | sample-pack | deb |
+#                   wheel | shared-lib.
+#   url           — для type: open, если ресурс — ОДИН файл по прямому URL.
+#   fetch_hook    — для type: open, если ресурс одним URL не описывается
+#                   (дерево из тысяч файлов, свой индекс, свои ретраи).
+#                   Значение — ИМЯ хука, а не команда: манифест хранит ФАКТ
+#                   наличия хука, логика остаётся кодом скрипта (тот же
+#                   приём, что pre_build: fetch_hailort_wheel в
+#                   docker/build-manifest.yaml — план service-manifest §2.5).
+#                   Неизвестное имя хука = невалидный манифест (exit 2), а не
+#                   тихий пропуск. url и fetch_hook взаимоисключающи.
 #   vendor_file   — для type: gated, имя файла в /opt/rob_box/vendor.
 #   version       — для type: gated, версия вендорного пака.
 #   sha256        — hex, регистр не важен. ПУСТАЯ строка означает
@@ -29,8 +38,9 @@
 #                   молчаливая непроверка хуже честной надписи «не проверено»).
 #   size_bytes    — справочно, скриптом не проверяется.
 #   unpack        — none | zip.
-#   verify_file   — для unpack: zip, относительный путь внутри target,
-#                   наличие которого доказывает, что распаковалось то самое.
+#   verify_file   — для unpack: zip и для fetch_hook, относительный путь
+#                   внутри target, наличие которого доказывает, что
+#                   распаковалось/скачалось то самое.
 #   target        — абсолютный путь на хосте (под /opt/rob_box — тогда его
 #                   можно переопределить через RESOURCE_PACK_ROOT) либо путь
 #                   относительно корня репозитория (build-context на katana).
@@ -153,6 +163,57 @@ resources:
     consumers:
       - "tts_node (tts_node.py:1850-1854, кандидатный путь №1)"
 
+  # ---------- открытые: Renardo/FoxDot сэмплы (через хук-фетчер) ----------
+  # До этой записи сэмплы доставлялись ОТДЕЛЬНЫМ образом voice-resources:
+  # Dockerfile качал их на этапе сборки, init-контейнер voice-resources-init
+  # копировал их в named-volume renardo_samples при каждом деплое, а оба
+  # потребителя монтировали этот volume. Образ, init-контейнер и volume
+  # удалены: сэмплы приезжают на хост тем же швом и в тот же момент, что и
+  # STT/TTS-модели, а в контейнеры попадают bind-mount'ом
+  # /opt/rob_box/samples. Пути ВНУТРИ контейнеров не изменились
+  # (/root/.config/renardo/samples) — ни одного Python-файла трогать не
+  # потребовалось.
+  #
+  # Это расходится с ADR-0111 §2.1 в части «сэмплы печь в voice-base»:
+  # ADR-0111 ликвидировал отдельный образ (это сделано здесь), но выбрал
+  # bake-in, а не host-доставку. Решение владельца репозитория от
+  # 21.09.2026 — host-доставка. Формально это фиксирует отдельный ADR;
+  # здесь запись только о механике.
+  - name: renardo-samples
+    type: open
+    kind: sample-pack
+    # url НЕТ осознанно: пак — это не файл, а дерево из тысяч .wav,
+    # описанное collection_index.json на collections.renardo.org, со своим
+    # обходом, своим пулом потоков и двухуровневыми ретраями. Выразить это
+    # полями YAML значило бы замаскировать императивную логику под данные.
+    # Манифест хранит ФАКТ наличия хука; сам хук — код рядом:
+    # docker/vision/scripts/resource_pack/fetch_renardo_samples.py
+    fetch_hook: fetch_renardo_samples
+    # ПУСТО ОСОЗНАННО и иначе, чем у vosk/silero: там эталон не снят, но
+    # снять его можно. Здесь снимать нечего в принципе — target это каталог
+    # на ~600 МБ и тысячи файлов, а не один архив. Скрипт честно пишет
+    # «целостность НЕ проверена», а не делает вид, что проверил (ADR-0018).
+    sha256: ""
+    # ОЦЕНКА, не измерение: «~600 МБ» из ADR-0111 §6 и плана §1.2. Поле
+    # справочное, скриптом не проверяется; заменить на измеренное после
+    # первого прогона на роботе.
+    size_bytes: 629145600
+    # Тот же маркер, на котором стояла идемпотентность фетчера с самого
+    # начала. Есть маркер → пак скачан целиком (фетчер пишет его ТОЛЬКО
+    # после успеха), нет маркера → качаем.
+    verify_file: 0_foxdot_default/downloaded_at.txt
+    target: /opt/rob_box/samples
+    required: soft
+    on_missing: degrade
+    degrade_note: >
+      Музыка уходит в synth-only: MusicSkill/Renardo не находит WAV,
+      scsynth не может прочитать буферы. Диалог, STT и TTS не затронуты —
+      это уже задокументированная деградация (ADR-0111 §2.7), поэтому
+      soft: деплой из-за сэмплов падать не должен.
+    consumers:
+      - "supercollider (WAV buffers, /root/.config/renardo/samples:ro)"
+      - "voice-assistant Renardo (src/rob_box_voice/rob_box_voice/core/sample_search.py)"
+
   # ---------- закрытые (gated): Hailo Developer Zone 4.24.0 ----------
   # ЭТАП 4 ВЫПОЛНЕН ЧАСТИЧНО (21.09.2026): sha256 снят у двух записей
   # katana, у двух записей vision-pi снять НЕ С ЧЕГО — см. комментарии
@@ -242,16 +303,6 @@ resources:
       - "docker/vision/vision-hailo/Dockerfile:124"
 
   # ---------- вне доставки Ресурсного пака, только для реестра ----------
-  - name: renardo-samples
-    type: build-time
-    note: >
-      НЕ доставляется этим модулем. ADR-0111 решил печь сэмплы в voice-base
-      на этапе сборки, без host-скачивания. Запись оставлена для полноты
-      реестра ресурсов робота — план §11.1.
-    consumers:
-      - "supercollider (WAV buffers)"
-      - "voice-assistant Renardo (search_renardo_samples, synth-only fallback)"
-
   - name: sound-pack
     type: git
     note: >

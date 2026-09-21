@@ -54,17 +54,14 @@ docker-compose up -d
 echo "✅ Контейнеры запущены"
 echo ""
 
-# GH task t_b79d0581: voice-resources-init помечен profiles: [init]
-# и обычным `up -d` НЕ запускается. Это нужно, чтобы падение по сети
-# при pull не валило весь стек. Но значит renardo_samples volume
-# может быть пустым после деплоя → запускаем init вручную здесь.
-# У `compose up` нет флага `--rm` (это флаг `compose run`) — с ним команда
-# падает на `unknown flag`, а `|| echo` глотает ошибку — самплы молча не заливаются.
-# Инит-контейнер и без того не перезапускается: restart: "no" в compose.
-echo "🎵 Заполняем voice resources (renardo samples)..."
-docker-compose --profile init up voice-resources-init || \
-  echo "   ⚠️  voice-resources-init недоступен; music будет без samples"
-echo ""
+# Здесь запускался `docker-compose --profile init up voice-resources-init`,
+# который заливал Renardo-сэмплы из образа в named-volume. Образ,
+# init-контейнер и volume удалены: сэмплы лежат на хосте в
+# /opt/rob_box/samples и приходят в контейнеры bind-mount'ом. Пополнить их
+# вручную:
+#   sudo bash scripts/resource_pack/apply_resource_pack.sh --only renardo-samples
+# (из ~/rob_box_project/docker/vision). Если каталог пуст — музыка честно
+# уходит в synth-only, стек при этом поднимается.
 
 # Показываем статус
 echo "📊 Статус контейнеров:"

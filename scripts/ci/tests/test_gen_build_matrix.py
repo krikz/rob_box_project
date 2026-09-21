@@ -235,12 +235,14 @@ def test_image_versions_map_skips_false():
 @pytest.mark.skipif(
     not REAL_MANIFEST.exists(), reason="docker/build-manifest.yaml ещё не создан"
 )
-def test_real_manifest_parses_and_has_19_services():
+def test_real_manifest_parses_and_has_18_services():
     manifest = gen_build_matrix.load_manifest(REAL_MANIFEST)
     vision = gen_build_matrix.services_for_pi(manifest, "vision")
     main = gen_build_matrix.services_for_pi(manifest, "main")
 
-    assert len(vision) == 11, f"expected 11 Vision Pi services, got {sorted(vision)}"
+    # Было 11: узел voice-resources удалён вместе с образом — Renardo-сэмплы
+    # кладёт на хост Ресурсный пак, а не собирает CI.
+    assert len(vision) == 10, f"expected 10 Vision Pi services, got {sorted(vision)}"
     assert len(main) == 8, f"expected 8 Main Pi services, got {sorted(main)}"
 
     # Двухуровневая цепочка должна разрешиться без ошибок и в правильном
@@ -395,7 +397,9 @@ def test_base_service_resolves_to_local_prefix_tag_of_that_service():
 
 def test_service_without_base_gets_no_base_image_arg():
     services, ctx = _real("vision")
-    for name in ("voice-resources", "supercollider"):
+    # voice-resources тут был вторым примером сервиса без base; узел удалён
+    # вместе с образом (сэмплы едут Ресурсным паком на хост).
+    for name in ("supercollider",):
         entry = gen_build_matrix.matrix_entry(name, services, ctx)
         assert entry["build_args"] == "APT_PROXY=http://host.docker.internal:3142", (
             f"{name}: ожидался только APT_PROXY, получено {entry['build_args']!r}"
