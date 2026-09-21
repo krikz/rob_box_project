@@ -389,6 +389,10 @@ source "$SCRIPT_DIR_E2E/e2e_voice_wake_gate.sh"
 # flake, а не acceptance fail».
 WAKE_GATE_PREFLIGHT_FILE="${OUT_DIR}/wake_gate_preflight.json"
 WAKE_GATE_CLEARED=0   # 1 = cold-start cleared, 0 = not cleared, 2 = probe error
+# 1 = первый wake-gated шаг уже отыгран как cold-start проба. См. каскад-гард
+# в run_step: без него непройденный гейт уводил в SKIP ВСЕ wake-gated шаги,
+# потому что акцепта, который его откроет, взяться было неоткуда.
+WAKE_GATE_PROBE_SPENT=0
 WAKE_GATE_PREFLIGHT_REASON=""
 # Под set -u SCENARIO_FILE может быть не задан (single-text mode). Используем
 # ${SCENARIO_FILE:-} для безопасного обращения.
@@ -1310,12 +1314,48 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
     #    вызова LLM. Acceptance fail (missing stop_music) — это
     #    симптом cold-start flake, а не acceptance flake.
     if [ "$expect" = "wake-gated" ] && [ "${WAKE_GATE_CLEARED:-0}" != "1" ]; then
-        log "STEP ${label}: SKIP [skip:wake-gate-cold-start] — ${WAKE_GATE_PREFLIGHT_REASON:-cold-start not cleared}"
-        emit_step "${label} SKIP wake-gate-cold-start"
-        # Не помечаем fail_kind — это не fail. Возвращаем специальный
-        # код 3, который callers (scenario loop) интерпретируют как
-        # «пропущен по systemic, не считать в aggregate FAIL».
-        return 3
+        # ПЕРЕПРОБА перед пропуском.
+        #
+        # bug(22.09.2026, поймано на живом прогоне 35664554084 до того, как
+        # испортило марафон). Preflight зовёт wake_gate_cleared_since
+        # "$E2E_RUN_BEFORE", а это `docker logs --since <старт прогона>`:
+        # в момент старта окно ПУСТО по определению, поэтому ответ всегда
+        # «cold-start NOT cleared». Пока preflight был мёртвым кодом, это
+        # никого не трогало. Как только он заработал, гард начал резать всё:
+        # в night-marathon 101 шаг из 125 не имеет явного expect и начинается
+        # с «Робот», а classify_step_expect авто-повышает такие шаги до
+        # wake-gated. То есть прогон отдал бы 101 SKIP и выглядел «не
+        # красным», не проверив ничего. Это хуже любого FAIL.
+        #
+        # Семантика гарда — «робот ещё не проснулся», а не «прогон только
+        # начался». К моменту, когда до wake-gated шага дошла очередь,
+        # предыдущие шаги акта уже отдали свои «✅ ПРИНЯТО (respeaker): Робот,
+        # ...», и окно с E2E_RUN_BEFORE больше не пусто. Поэтому спрашиваем
+        # ЗАНОВО, здесь и сейчас, и пропускаем шаг только если гейт всё ещё
+        # не пройден.
+        if wake_gate_cleared_since "$E2E_RUN_BEFORE"; then
+            WAKE_GATE_CLEARED=1
+            WAKE_GATE_PREFLIGHT_REASON="cold-start cleared (перепроба на шаге ${label})"
+            log "STEP ${label}: wake-gate прогрелся к этому моменту (перепроба) — шаг выполняется, не пропускается"
+        elif [ "${WAKE_GATE_PROBE_SPENT:-0}" != "1" ]; then
+            # Каскад-гард. Если первый же wake-gated шаг акта пропустить,
+            # акцепта не появится никогда, следующая перепроба снова будет
+            # пустой — и весь акт уйдёт в SKIP, ничего не проверив.
+            # Разрываем это тем же доводом, что уже записан в single-text
+            # ветке preflight'а: одиночный wake-шаг НЕ требует гейта, он и
+            # ЕСТЬ cold-start проба. Поэтому ПЕРВЫЙ wake-gated шаг прогона
+            # всегда играем, а гейт применяем к следующим — когда у нас уже
+            # есть настоящий ответ, прогрелся робот или нет.
+            WAKE_GATE_PROBE_SPENT=1
+            log "STEP ${label}: wake-gate ещё не пройден, но это ПЕРВЫЙ wake-gated шаг прогона — играем его как cold-start пробу (пропускать нечего: без акцепта гейт не пройдёт никогда)"
+        else
+            log "STEP ${label}: SKIP [skip:wake-gate-cold-start] — ${WAKE_GATE_PREFLIGHT_REASON:-cold-start not cleared} (перепроба подтвердила, cold-start проба уже израсходована)"
+            emit_step "${label} SKIP wake-gate-cold-start"
+            # Не помечаем fail_kind — это не fail. Возвращаем специальный
+            # код 3, который callers (scenario loop) интерпретируют как
+            # «пропущен по systemic, не считать в aggregate FAIL».
+            return 3
+        fi
     fi
 
     # 1. Синтез команды
