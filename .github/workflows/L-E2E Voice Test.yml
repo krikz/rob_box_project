@@ -17,10 +17,24 @@ on:
         default: 'Робот, спой песенку про енотика'
         type: string
       voice:
-        description: Yandex TTS voice (anton, ermil, jane, omazh, zahar, dasha)
+        description: Voice for the synthesized command (scenario names it Yandex-style; mapped to the chosen provider)
         required: false
         default: 'anton'
         type: string
+      tts_provider:
+        description: >-
+          Who synthesizes the COMMAND on the build machine (not the robot's own
+          TTS). auto = probe yandex -> minimax -> silero once and take the first
+          that answers. silero is local and needs no key, so a dead cloud no
+          longer turns every step into "FAIL synth".
+        required: false
+        default: 'auto'
+        type: choice
+        options:
+          - auto
+          - silero
+          - minimax
+          - yandex
       voice_file:
         description: 'DEPRECATED (atomic harness synthesizes on the fly). Kept for backward compat.'
         required: false
@@ -162,20 +176,29 @@ jobs:
           sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "pactl info | head -3"
           sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 "docker ps --filter name=voice-assistant --format '{{.Status}}'"
 
-      - name: Ensure YANDEX_API_KEY on build machine
+      - name: Ensure TTS keys on build machine
         env:
           SSHPASS: open
         run: |
-          # Ключ живёт в voice-assistant контейнере на роботе (как в ensure_voice_file.sh).
-          # Достаём ключ локально на runner'е — атомарный скрипт получит его
-          # через env (export YANDEX_API_KEY в ssh-команде ниже). НЕ копируем
-          # на 249: scp в /tmp падал Permission denied из-за root-owned
-          # файлов от прошлых ранов, и файл на 249 вообще не нужен.
+          # Ключи живут в voice-assistant контейнере на роботе (как в ensure_voice_file.sh).
+          # Достаём их локально на runner'е — атомарный скрипт получит их
+          # через env (export ... в ssh-команде ниже). НЕ копируем на 249:
+          # scp в /tmp падал Permission denied из-за root-owned файлов от
+          # прошлых ранов, и файл на 249 вообще не нужен.
+          #
+          # Отсутствие ключа БОЛЬШЕ НЕ ФАТАЛ: харнесс умеет silero
+          # локально, без ключей вообще. Поэтому `|| true` и пустой
+          # файл — валидное состояние, а не повод валить весь прогон.
           YKEY_LOCAL=/tmp/yandex_key_$$.txt
+          MMKEY_LOCAL=/tmp/minimax_key_$$.txt
           sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 \
-            "docker exec voice-assistant printenv YANDEX_API_KEY" > "$YKEY_LOCAL"
-          wc -c "$YKEY_LOCAL"
+            "docker exec voice-assistant printenv YANDEX_API_KEY" > "$YKEY_LOCAL" || true
+          sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 \
+            "docker exec voice-assistant printenv MINIMAX_API_KEY" > "$MMKEY_LOCAL" || true
+          echo "yandex key bytes:  $(wc -c < "$YKEY_LOCAL")"
+          echo "minimax key bytes: $(wc -c < "$MMKEY_LOCAL")"
           echo "YKEY_LOCAL=$YKEY_LOCAL" >> $GITHUB_ENV
+          echo "MMKEY_LOCAL=$MMKEY_LOCAL" >> $GITHUB_ENV
 
       - name: Push atomic harness + scenario to build machine
         env:
@@ -245,9 +268,11 @@ jobs:
           RETRIES: ${{ inputs.retries }}
           REACT_WINDOW: ${{ inputs.react_window }}
           CHECK_TG_ECHO: ${{ inputs.check_tg_echo }}
+          TTS_PROVIDER: ${{ inputs.tts_provider }}
         run: |
           RID="${{ github.run_id }}"
-          YKEY="$(cat "$YKEY_LOCAL")"
+          YKEY="$(cat "$YKEY_LOCAL" 2>/dev/null || true)"
+          MMKEY="$(cat "$MMKEY_LOCAL" 2>/dev/null || true)"
 
           # CRLF sanitization (single-line).
           SCENARIO_FILE_CLEAN=$(printf '%s' "$SCENARIO_FILE" | tr -d '\r\n')
@@ -263,6 +288,8 @@ jobs:
           PATTERNS_CLEAN=$(printf '%s' "$PATTERNS" | tr -d '\r')
           ACCEPTANCE_CHECK_CLEAN=$(printf '%s' "$ACCEPTANCE_CHECK" | tr -d '\r')
           CHECK_TG_ECHO_CLEAN=$(printf '%s' "$CHECK_TG_ECHO" | tr -d '\r\n')
+          TTS_PROVIDER_CLEAN=$(printf '%s' "$TTS_PROVIDER" | tr -d '\r\n')
+          [ -n "$TTS_PROVIDER_CLEAN" ] || TTS_PROVIDER_CLEAN=auto
 
           # Формируем команду: --scenario если задан, иначе --text + --voice
           if [ -n "$SCENARIO_FILE_CLEAN" ]; then
@@ -283,6 +310,10 @@ jobs:
           fi
           [ -n "$PATTERNS_VAL" ] && CMD="$CMD --patterns '$PATTERNS_VAL'"
           CMD="$CMD --retries $RETRIES_CLEAN --react-window $REACT_WINDOW_CLEAN"
+          # Кто озвучивает команду на 249. auto = проба yandex -> minimax ->
+          # silero один раз за прогон; явно заданный провайдер не
+          # подменяется (иначе «зелёный» прогон проверял бы не то, что просили).
+          CMD="$CMD --tts-provider $TTS_PROVIDER_CLEAN"
           # Issue #1196 L2 — полуавтомат-проверка эха telegram↔dialogue.
           if [ "$CHECK_TG_ECHO_CLEAN" = "true" ]; then
             CMD="$CMD --check-tg-echo"
@@ -296,7 +327,7 @@ jobs:
           # каталоги (e2e_v2_20260813_031333 и т.п.) → в звуковой артефакт попадало
           # «что-то левое» (ретро 22.08 t_944df2c5, issue #1506).
           sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 \
-            "export YANDEX_API_KEY='${YKEY}'; export ROBOT_HOST=10.1.1.21; export SSHPASS='open'; export GITHUB_RUN_ID='${RID}'; \
+            "export YANDEX_API_KEY='${YKEY}'; export MINIMAX_API_KEY='${MMKEY}'; export ROBOT_HOST=10.1.1.21; export SSHPASS='open'; export GITHUB_RUN_ID='${RID}'; \
              ${CMD} 2>&1 | tee /tmp/e2e_atomic_out.log"
 
           echo "=== E2E stdout ==="
@@ -308,6 +339,12 @@ jobs:
         run: |
           OUT="$(sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "cat /tmp/e2e_atomic_out.log 2>/dev/null")"
           echo "$OUT" | tee /tmp/e2e_verdict.log
+          # Кем озвучивались команды — первым делом в лог шага: без этого
+          # «FAIL synth» читался как баг робота, а не как мёртвый провайдер.
+          echo "$OUT" | grep -E "^E2E_TTS_PROVIDER |TTS probe " || echo "ℹ️  TTS provider marker не найден (старый харнесс на 249?)"
+          if echo "$OUT" | grep -q "E2E_TTS_PROVIDER none"; then
+            echo "❌ Ни один TTS-провайдер не синтезирует команды — это инфра, не робот."
+          fi
           if echo "$OUT" | grep -q "E2E_VERDICT PASS"; then
             echo "✅ E2E PASS"
           elif echo "$OUT" | grep -q "E2E_VERDICT FAIL"; then
