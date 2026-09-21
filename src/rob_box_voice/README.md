@@ -195,19 +195,67 @@ deepseek_api_key: "YOUR_DEEPSEEK_API_KEY"
 
 **⚠️ Не коммитить secrets.yaml в git!**
 
-### MiniMax STT (Phase 1 PoC)
+### Цепочка STT-провайдеров: `minimax → yandex → vosk`
 
-> Полный документ: [`docs/architecture/minimax-stt-provider.md`](../../docs/architecture/minimax-stt-provider.md).
-> ADR и контракт: [ADR-0091](../../docs/adr/0091-minimax-stt-provider.md),
-> [stt-provider-contract.md](../../docs/architecture/stt-provider-contract.md).
+> ADR: [ADR-0124](../../docs/adr/0124-stt-provider-chain-priority.md)
+> (заменяет ADR-0091 §2.2/§2.3/§5).
+> Операторский гайд по MiniMax: [`docs/architecture/minimax-stt-provider.md`](../../docs/architecture/minimax-stt-provider.md).
 
-MiniMax (`https://api.minimax.io`) — третий провайдер STT. Phase 1 (PR
-[#2369](https://github.com/krikz/rob_box_project/pull/2369)) поставляет
-класс-адаптер `MiniMaxSTTProvider`, 43 unit-теста и документационный
-SSoT [`config/stt_chain.yaml`](config/stt_chain.yaml). В Phase 2
-(issue [#2365](https://github.com/krikz/rob_box_project/issues/2365))
-этот провайдер будет включён между Vosk и Yandex в
-`stt_node._recognize_with_fallback`.
+Порядок = приоритет, задаётся ROS-параметром `stt_provider_chain`
+(`config/stt_node.yaml` — единственное зеркало, отдельного
+`stt_chain.yaml` больше нет):
+
+| # | Провайдер | Тип | timeout | retries | Когда работает |
+|---|---|---|---|---|---|
+| 1 | `minimax` | cloud HTTPS | 5с | 1 | есть `MINIMAX_API_KEY` и деньги на счету |
+| 2 | `yandex` | cloud gRPC v3 | 12с | 1 | есть `YANDEX_API_KEY`; даёт `speaker_tag` |
+| 3 | `vosk` | offline CPU | — | 0 | всегда — последний рубеж, без сети и без денег |
+
+`vosk` **всегда** переносится в конец цепочки, что бы ни стояло в
+параметре: он единственный работает офлайн, и конфигом нельзя сделать
+робота глухим. Цепочка ровно из одного `vosk` — легитимный офлайн-режим.
+
+#### Фолбек и кэш «мёртвых» провайдеров
+
+Отказавший провайдер помечается мёртвым и пропускается, пока не истечёт
+TTL — тот же приём, что у TTS (`tts_node`, issue #1083) и LLM
+(`rob_box_harness.health`, issue #1082):
+
+| Класс отказа | TTL | Параметр |
+|---|---|---|
+| квота / ключ (401/403/429, `RESOURCE_EXHAUSTED`) | 300с | `provider_dead_ttl_s` |
+| сеть / 5xx / таймаут (`DEADLINE_EXCEEDED`) | 30с | `provider_dead_ttl_transient_s` |
+
+Без кэша при пустом балансе обоих облаков робот платил бы таймаут
+каждому из них на **каждой** фразе. С кэшем — один раз за TTL, дальше
+сразу Vosk. Успешный ответ снимает отметку (баланс пополнили). Если
+мёртвыми оказались все — кэш игнорируется и цепочка идёт целиком:
+глухой робот хуже медленного.
+
+Кэш переживает рестарт ноды через `provider_state_file`
+(`/data/stt_provider_state.json`).
+
+Фактический провайдер (первый живой в цепочке) виден в логе при каждой
+смене и лежит в том же `provider_state_file`:
+
+```
+🎧 STT provider → 'vosk' (chain=['minimax', 'yandex', 'vosk'],
+   dead={'minimax': 287.4, 'yandex': 291.1}, reason=recognize, last_attempt=vosk)
+```
+
+```bash
+docker exec voice-assistant cat /data/stt_provider_state.json
+# {"provider": "vosk", "dead_providers": {"minimax": 1758413100.0, ...}}
+```
+
+Отдельного топика `/voice/stt/provider_state` нет — у него пока нет ни
+одного потребителя (см. ADR-0124 §2.5 и сторож issue #2118).
+
+В логе ноды пропуск мёртвого провайдера виден в той же строке попыток:
+
+```
+[stt_attempt] minimax:dead(0ms)->yandex:dead(0ms)->vosk:ok(180ms) -> accepted '...'
+```
 
 Когда выбирать MiniMax STT (коротко; полный разбор — в docstring
 класса):
@@ -220,7 +268,7 @@ SSoT [`config/stt_chain.yaml`](config/stt_chain.yaml). В Phase 2
 #### Конфигурация
 
 ```bash
-# Включить MiniMax STT (Phase 2 wiring подхватит автоматически)
+# Включить MiniMax STT (провайдер сам встанет первым в цепочке)
 export MINIMAX_API_KEY="sk-..."
 
 # Отключить без правки кода — цепочка перешагнёт через MiniMax
