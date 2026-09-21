@@ -142,9 +142,11 @@ resources:
       - "tts_node (tts_node.py:1850-1854, кандидатный путь №1)"
 
   # ---------- закрытые (gated): Hailo Developer Zone 4.24.0 ----------
-  # ЗАГОТОВКИ ДЛЯ ЭТАПА 4, СЕГОДНЯ НЕ АКТИВНЫ.
+  # ЭТАП 4 ВЫПОЛНЕН ЧАСТИЧНО (21.09.2026): sha256 снят у двух записей
+  # katana, у двух записей vision-pi снять НЕ С ЧЕГО — см. комментарии
+  # внутри этих записей.
   #
-  # sha256 у всех четырёх ПУСТОЙ и ЗАПОЛНЯЕТСЯ ВРУЧНУЮ человеком: файлы
+  # sha256 заполняется ВРУЧНУЮ человеком: файлы
   # лежат только на katana и на Vision Pi, скрипту (и тем более CI) они
   # недоступны, скачать их автоматически нельзя — нужен аккаунт Developer
   # Zone. Процедура: docs/deployment/hailo-vendor-artifacts.md,
@@ -159,7 +161,15 @@ resources:
     kind: deb
     vendor_file: hailort-pcie-driver_4.24.0_all.deb
     version: "4.24.0"
-    sha256: ""  # ЗАПОЛНЯЕТСЯ ВРУЧНУЮ (Этап 4): sha256sum на Vision Pi
+    # ЭТАП 4, ПРОВЕРЕНО 21.09.2026: sha256 снять НЕ С ЧЕГО. На Vision Pi
+    # каталога /opt/rob_box/vendor не существует вовсе (ls → No such file),
+    # а сам пакет УЖЕ УСТАНОВЛЕН: dpkg -l → "ii hailort-pcie-driver 4.24.0
+    # all". То есть .deb был применён и не сохранён — зеркала у закрытых
+    # артефактов нет ни на роботе, ни в репозитории (план §4.1/§4.3).
+    # Поле остаётся пустым не потому, что «не дошли руки», а потому, что
+    # эталон физически утрачен: его вернёт только повторная выгрузка из
+    # Developer Zone.
+    sha256: ""
     target_host: vision-pi
     target: /opt/rob_box/vendor/hailort-pcie-driver_4.24.0_all.deb
     required: soft
@@ -173,7 +183,10 @@ resources:
     kind: deb
     vendor_file: hailort_4.24.0_arm64.deb
     version: "4.24.0"
-    sha256: ""  # ЗАПОЛНЯЕТСЯ ВРУЧНУЮ (Этап 4): sha256sum на Vision Pi
+    # ЭТАП 4, ПРОВЕРЕНО 21.09.2026: то же, что у hailort-pcie-driver-deb —
+    # файла на Vision Pi нет, пакет установлен (dpkg -l → "ii hailort
+    # 4.24.0 arm64"). Эталон снять не с чего.
+    sha256: ""
     target_host: vision-pi
     target: /opt/rob_box/vendor/hailort_4.24.0_arm64.deb
     required: soft
@@ -187,7 +200,8 @@ resources:
     kind: wheel
     vendor_file: hailort-4.24.0-cp310-cp310-linux_aarch64.whl
     version: "4.24.0"
-    sha256: ""  # ЗАПОЛНЯЕТСЯ ВРУЧНУЮ (Этап 4): sha256sum на katana
+    # Снято 21.09.2026 с /opt/rob_box/vendor на katana (9 956 553 байта).
+    sha256: "99da327b06a64ab8e5c87f09fc95cc68d2542d0f49b72369048ac003dc578e2a"
     target_host: katana
     target: docker/vision/vision-hailo/wheels/hailort-4.24.0-cp310-cp310-linux_aarch64.whl
     required: soft
@@ -205,7 +219,8 @@ resources:
     kind: shared-lib
     vendor_file: libhailort.so.4.24.0
     version: "4.24.0"
-    sha256: ""  # ЗАПОЛНЯЕТСЯ ВРУЧНУЮ (Этап 4): sha256sum на katana
+    # Снято 21.09.2026 с /opt/rob_box/vendor на katana (11 665 304 байта).
+    sha256: "5fb8e54bb9945a3566930701af8dfc600edb5a15a7aca328b59cc18ce8d5a12c"
     target_host: katana
     target: docker/vision/vision-hailo/wheels/libhailort.so.4.24.0
     required: soft
