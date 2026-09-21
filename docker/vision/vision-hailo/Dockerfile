@@ -132,7 +132,16 @@ COPY src/rob_box_perception_msgs/package.xml /ws/src/rob_box_perception_msgs/
 COPY src/rob_box_perception/package.xml /ws/src/rob_box_perception/
 
 # 2. rosdep (best-effort — apt-зависимости явно установлены выше)
+# apt-get update ОБЯЗАТЕЛЕН перед rosdep: apt-блок выше заканчивается
+# `rm -rf /var/lib/apt/lists/*`, а rosdep install внутри вызывает
+# `apt-get install` — без списков он падает с «Unable to locate package»
+# (реально поймано на katana, run 35617451547, build-ros2-control:
+# E: Unable to locate package ros-humble-xacro). До шва этого не было
+# видно: xacro ставился явным apt-блоком, и rosdep'у нечего было
+# доустанавливать. Там, где rosdep стоит с `|| true`, эта же дыра молча
+# превращала его в no-op.
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
+    apt-get update && \
     rosdep update || true; \
     rosdep install --from-paths src --ignore-src -r -y || true
 

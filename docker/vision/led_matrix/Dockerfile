@@ -113,7 +113,16 @@ COPY src/ros2leds/led_matrix_driver/package.xml /ws/src/led_matrix_driver/
 COPY src/ros2leds/led_matrix_compositor/package.xml /ws/src/led_matrix_compositor/
 
 # 2. Установка ROS зависимостей через rosdep (кэшируется если package.xml не изменился)
+# apt-get update ОБЯЗАТЕЛЕН перед rosdep: apt-блок выше заканчивается
+# `rm -rf /var/lib/apt/lists/*`, а rosdep install внутри вызывает
+# `apt-get install` — без списков он падает с «Unable to locate package»
+# (реально поймано на katana, run 35617451547, build-ros2-control:
+# E: Unable to locate package ros-humble-xacro). До шва этого не было
+# видно: xacro ставился явным apt-блоком, и rosdep'у нечего было
+# доустанавливать. Там, где rosdep стоит с `|| true`, эта же дыра молча
+# превращала его в no-op.
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
+    apt-get update && \
     rosdep update && \
     rosdep install --from-paths src --ignore-src -r -y || true
 

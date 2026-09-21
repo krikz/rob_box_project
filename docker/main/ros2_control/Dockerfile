@@ -108,7 +108,16 @@ ENV ROS_DISTRO=humble
 # Через шов идёт только /ws/install: без /ws/src URDF/xacro у
 # rob_box_description оказались бы битыми ссылками, а без /ws/build ломается
 # сам `source /ws/install/setup.bash`. Без флага colcon кладёт настоящие копии.
+# apt-get update ОБЯЗАТЕЛЕН перед rosdep: apt-блок выше заканчивается
+# `rm -rf /var/lib/apt/lists/*`, а rosdep install внутри вызывает
+# `apt-get install` — без списков он падает с «Unable to locate package»
+# (реально поймано на katana, run 35617451547, build-ros2-control:
+# E: Unable to locate package ros-humble-xacro). До шва этого не было
+# видно: xacro ставился явным apt-блоком, и rosdep'у нечего было
+# доустанавливать. Там, где rosdep стоит с `|| true`, эта же дыра молча
+# превращала его в no-op.
 RUN . /opt/ros/humble/setup.sh && \
+    apt-get update && \
     rosdep update && \
     rosdep install --from-paths src --ignore-src -r -y \
         --skip-keys "rviz2 joint_state_publisher joint_state_publisher_gui serial_driver" && \

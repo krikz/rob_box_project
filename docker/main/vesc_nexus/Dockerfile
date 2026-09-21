@@ -94,7 +94,16 @@ COPY src/vesc_nexus/src/vesc_msgs/package.xml /ws/src/vesc_msgs/
 COPY src/vesc_nexus/src/vesc_nexus/package.xml /ws/src/vesc_nexus/
 
 # 2. Установка ROS зависимостей через rosdep (кэшируется если package.xml не изменился)
+# apt-get update ОБЯЗАТЕЛЕН перед rosdep: apt-блок выше заканчивается
+# `rm -rf /var/lib/apt/lists/*`, а rosdep install внутри вызывает
+# `apt-get install` — без списков он падает с «Unable to locate package»
+# (реально поймано на katana, run 35617451547, build-ros2-control:
+# E: Unable to locate package ros-humble-xacro). До шва этого не было
+# видно: xacro ставился явным apt-блоком, и rosdep'у нечего было
+# доустанавливать. Там, где rosdep стоит с `|| true`, эта же дыра молча
+# превращала его в no-op.
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
+    apt-get update && \
     rosdep update && \
     rosdep install --from-paths src --ignore-src -r -y \
     --skip-keys "serial_driver joint_state_publisher joint_state_publisher_gui rviz2" || true
