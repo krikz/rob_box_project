@@ -18,7 +18,9 @@ Phase 1 PoC (issue #2365). Никаких сетевых вызовов — то
 
 from __future__ import annotations
 
+import io
 import logging
+import wave
 from typing import Any, Optional
 
 import httpx
@@ -36,6 +38,8 @@ from rob_box_voice.stt_providers.minimax_provider import (
     MiniMaxSTTRateLimitError,
     MiniMaxSTTUnavailableError,
     _extract_text,
+    ensure_wav_container,
+    looks_like_quota_problem,
 )
 
 
@@ -390,7 +394,26 @@ class TestRecognizeSuccess:
         assert data["response_format"] == "json"
         assert data["language"] == "ru"
         assert files["file"][0] == "audio.wav"
-        assert files["file"][1] == SILENCE_AUDIO
+        # Issue #2365 Phase 2: цепочка отдаёт headerless PCM, а поле
+        # называется audio.wav с content-type audio/wav — провайдер обязан
+        # дорисовать RIFF-заголовок, иначе MiniMax не знает sample rate.
+        sent = files["file"][1]
+        assert sent[:4] == b"RIFF" and sent[8:12] == b"WAVE"
+        with wave.open(io.BytesIO(sent), "rb") as reader:
+            assert reader.getnchannels() == 1
+            assert reader.getsampwidth() == 2
+            assert reader.getframerate() == 16000
+            assert reader.readframes(reader.getnframes()) == SILENCE_AUDIO
+
+    def test_already_wav_input_is_not_double_wrapped(self):
+        """Готовый WAV пропускаем как есть — не оборачиваем второй раз."""
+        transport = _StubHTTPClient(status=200, payload={"text": "ок"})
+        provider = _make_provider(transport)
+        wav = ensure_wav_container(SILENCE_AUDIO, sample_rate=16000)
+
+        provider.recognize(wav)
+
+        assert transport.calls[0]["files"]["file"][1] == wav
 
     def test_language_none_omits_language_field(self):
         transport = _StubHTTPClient(status=200, payload={"text": "ок"})
@@ -788,3 +811,103 @@ class TestLogRedaction:
         )
         assert redactor.filter(record) is True
         assert secret not in record.getMessage()
+
+
+# ---------------------------------------------------------------------------
+# Issue #2365 Phase 2 — план/квота приезжают в ТЕЛЕ, а не в HTTP-статусе
+# ---------------------------------------------------------------------------
+
+
+class TestQuotaInResponseBody:
+    """Живые ответы MiniMax, снятые с робота 21.09.2026.
+
+    Оба случая раньше классифицировались как транзиентный сбой и держали
+    провайдера мёртвым 30 секунд вместо 300: робот заново долбился в
+    облако каждые полминуты, платя ~1.6с на фразу.
+    """
+
+    #: HTTP 500 + код 2061 — ровно то, что вернул /v1/speech_to_text на
+    #: роботе при непродлённой подписке (probe 21.09.2026).
+    PLAN_500 = {
+        "type": "error",
+        "error": {
+            "type": "server_error",
+            "message": "your current token plan not support model, asr-1.0 (2061)",
+            "http_code": "500",
+        },
+        "request_id": "070063c026998daff337dde937328d4c",
+    }
+
+    #: HTTP 200 + base_resp 2056 — конверт T2A, тот же класс проблемы
+    #: (его уже разбирает rob_box_llm.providers.minimax_tts).
+    QUOTA_200 = {
+        "base_resp": {
+            "status_code": 2056,
+            "status_msg": (
+                "Token Plan usage limit reached: Upgrade your Token Plan "
+                "or purchase Credits for more usage."
+            ),
+        }
+    }
+
+    def test_http_500_with_plan_code_is_rate_limit_not_server_error(self):
+        transport = _StubHTTPClient(status=500, payload=self.PLAN_500)
+        provider = _make_provider(transport)
+
+        with pytest.raises(MiniMaxSTTRateLimitError) as exc:
+            provider.transcribe(SILENCE_AUDIO)
+
+        assert "2061" in str(exc.value)
+
+    def test_http_200_with_base_resp_quota_is_rate_limit(self):
+        transport = _StubHTTPClient(status=200, payload=self.QUOTA_200)
+        provider = _make_provider(transport)
+
+        with pytest.raises(MiniMaxSTTRateLimitError) as exc:
+            provider.transcribe(SILENCE_AUDIO)
+
+        assert "2056" in str(exc.value)
+
+    def test_plain_500_without_body_stays_unavailable(self):
+        """Обычный 5xx без разбираемого тела — по-прежнему транзиентный."""
+        transport = _StubHTTPClient(status=500, payload={})
+        provider = _make_provider(transport)
+
+        with pytest.raises(MiniMaxSTTUnavailableError):
+            provider.transcribe(SILENCE_AUDIO)
+
+    def test_api_error_not_about_quota_is_invalid_response(self):
+        transport = _StubHTTPClient(
+            status=400,
+            payload={"error": {"message": "invalid audio format"}},
+        )
+        provider = _make_provider(transport)
+
+        with pytest.raises(MiniMaxSTTInvalidResponseError):
+            provider.transcribe(SILENCE_AUDIO)
+
+    def test_success_body_is_untouched(self):
+        """base_resp.status_code=0 — это успех, не ошибка."""
+        transport = _StubHTTPClient(
+            status=200,
+            payload={"text": "робот привет", "base_resp": {"status_code": 0}},
+        )
+        provider = _make_provider(transport)
+
+        assert provider.transcribe(SILENCE_AUDIO).text == "робот привет"
+
+    @pytest.mark.parametrize(
+        "message,expected",
+        [
+            ("your current token plan not support model, asr-1.0 (2061)", True),
+            ("Token Plan usage limit reached", True),
+            ("insufficient balance", True),
+            ("minimax API error 1008: no money", True),
+            ("invalid audio format", False),
+            ("internal server error", False),
+            ("", False),
+            (None, False),
+        ],
+    )
+    def test_quota_hint_matching(self, message, expected):
+        assert looks_like_quota_problem(message) is expected

@@ -38,6 +38,7 @@ from rob_box_core.avatar_command import (
 from rob_box_core.utterance import Sink, Utterance
 
 from .camera_cache import CameraCache
+from .camera_on_demand import OnDemandCameraSubscriptions
 from .handlers import commands as _cmds
 from .handlers.callbacks import callback_handler
 from .handlers.messages import text_message_handler, voice_message_handler
@@ -107,6 +108,10 @@ class TelegramNode(Node):
             "camera_up_topic", "/ceiling_camera/image_raw/compressed"
         )
         self.declare_parameter("camera_cache_ttl", 5.0)
+        # Подписка на камеры только по запросу фото: сколько ждать первый
+        # кадр и сколько держать подписку после последнего запроса.
+        self.declare_parameter("camera_wait_s", 5.0)
+        self.declare_parameter("camera_linger_s", 10.0)
         # Issue #1160 — Prometheus metrics endpoint. 9101 — telegram-bot.
         self.declare_parameter("metrics_port", 9101)
         # AV-10 — режим клиента супервизора: ``monitor`` (default,
@@ -142,12 +147,21 @@ class TelegramNode(Node):
         self._response_queue: Optional[asyncio.Queue] = None
         self._echo_task: Optional[asyncio.Task] = None
         g = ReentrantCallbackGroup()
-        for topic, cb in (
-            (self.camera_topic, self._on_camera_front),
-            (self.camera_depth_topic, self._on_camera_depth),
-            (self.camera_up_topic, self._on_camera_up),
-        ):
-            self.create_subscription(CompressedImage, topic, cb, _BE, callback_group=g)
+        # Камеры — только по запросу: постоянная подписка держала OAK-D и
+        # потолочную камеру включёнными (lazy publisher) — ~90% CPU и
+        # ~10 МБ/с zenoh на Vision Pi без единого запроса фото.
+        self.camera_wait_s = float(p("camera_wait_s").value)
+        self.camera_subscriptions = OnDemandCameraSubscriptions(
+            self,
+            self.camera_cache,
+            CompressedImage,
+            _BE,
+            callback_group=g,
+            linger_s=float(p("camera_linger_s").value),
+        )
+        self._camera_reap_timer = self.create_timer(
+            2.0, self.camera_subscriptions.reap, callback_group=g
+        )
         self.create_subscription(
             OccupancyGrid, "/rtabmap/grid_prob_map", self._on_map, _TL, callback_group=g
         )
@@ -254,14 +268,12 @@ class TelegramNode(Node):
             f"{supervisor_mode} (AV-10)"
         )
 
-    def _on_camera_front(self, m):
-        self.camera_cache.update(self.camera_topic, bytes(m.data))
-
-    def _on_camera_depth(self, m):
-        self.camera_cache.update(self.camera_depth_topic, bytes(m.data))
-
-    def _on_camera_up(self, m):
-        self.camera_cache.update(self.camera_up_topic, bytes(m.data))
+    async def fetch_camera_frame(self, topic: str) -> Optional[bytes]:
+        """Свежий кадр с камеры; подписывается на топик на время запроса."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None, self.camera_subscriptions.request, topic, self.camera_wait_s
+        )
 
     def _on_map(self, m):
         self.latest_map_grid = m

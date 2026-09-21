@@ -330,21 +330,46 @@ docker exec voice-assistant env | grep ROS_DOMAIN_ID
 
 ### Out of Memory (OOM)
 
-```bash
-# Проверить память
-free -h
-docker stats
+С 2026-09-15 Vision Pi использует **zram-swap** (4 GB, zstd) вместо
+файлового swap на SD. Это даёт ядру возможность вытеснять анонимные
+страницы при пиках нагрузки, не доводя до «робот недоступен».
 
-# Увеличить swap (если нужно)
-sudo dphys-swapfile swapoff
-sudo nano /etc/dphys-swapfile  # CONF_SWAPSIZE=2048
-sudo dphys-swapfile setup
-sudo dphys-swapfile swapon
+См. подробности в `docs/adr/0111-vision-pi-zram-swap-and-container-limits.md`
+и `host/vision/README.md`.
+
+```bash
+# Проверить состояние zram
+bash scripts/setup/setup_vision_pi_swap.sh --status
+
+# Переустановить с другими параметрами
+sudo ROBBOX_ZRAM_SIZE_MB=2048 bash scripts/setup/setup_vision_pi_swap.sh --auto
+
+# Полностью отключить (если нужно отладить)
+sudo bash scripts/setup/setup_vision_pi_swap.sh --remove
+
+# Dry-run без изменений
+bash scripts/setup/setup_vision_pi_swap.sh --dry-run
+```
+
+Если память всё равно уходит в ноль — проверьте:
+
+```bash
+# Топ-контейнеры по памяти (cgroup)
+docker stats --no-stream --format '{{.Name}}\t{{.MemUsage}}\t{{.MemPerc}}' | sort -k 3 -h
+
+# Текущая доступная память и своп
+free -h && cat /proc/swaps
+
+# Нет ли лимитов, которые можно поднять (см. ADR-0111 §2.3)
+docker inspect voice-assistant | grep -E "Memory|Memswap"
 
 # Уменьшить memory limit в docker-compose.yaml
 # mem_limit: 1.5g
 # memswap_limit: 2g
 ```
+
+Если картина повторяется — см. issue #2609 (torch CPU-only, профиль
+`agent:backend`) и ADR-0111 §4.2 (backlog отдельных карточек).
 
 ### TTS кэш переполнен
 

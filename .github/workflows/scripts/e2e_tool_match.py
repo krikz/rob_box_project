@@ -70,7 +70,23 @@ from __future__ import annotations
 
 import re
 
-__all__ = ["TOOL_NAME_RE", "invocation_markers", "tool_invoked"]
+__all__ = ["TOOL_NAME_RE", "invocation_markers", "tool_invoked",
+           "first_invocation_position", "VOICE_CYCLE_MARKERS"]
+
+# Маркеры голосового ответа (любой из них обозначает «робот начал говорить»).
+# Используются для assertion «discovery tool был вызван ДО голосового ответа»
+# (issue #2406 — verbal-only LLM answers на discovery/inquiry-шагах).
+# Все маркеры — lower-case: вызывающий сравнивает с логом в lower-case.
+VOICE_CYCLE_MARKERS = (
+    # Финальная строка dialogue_node после LLM/TTS цикла (есть spoken='...').
+    "✅ [turn] process_input returned:",
+    # tool_calls перечисление (speak_text = голосовой ответ, не молчание).
+    "'speak_text'",
+    # mcp_server финальный ack по speak_text.
+    "инструмент speak_text выполнен",
+    # TTS ack от yandex_tts / minimax_tts.
+    "tts finished",
+)
 
 #: Как выглядит имя тула. Все 56 зарегистрированных тулов —
 #: snake_case из ``def name(self) -> str`` в rob_box_mcp_tools/tools/*.py.
@@ -107,3 +123,49 @@ def tool_invoked(logs: str, frag: str) -> bool:
         # свободный текст (кусок строки лога) — поведение как было
         return frag_l in low
     return any(m in low for m in invocation_markers(frag_l))
+
+
+def first_invocation_position(logs: str, tool: str) -> int | None:
+    """Позиция первого РЕАЛЬНОГО вызова ``tool`` в ``logs`` (lower-case
+    индекс первого символа матча), или ``None`` если тул не вызывался.
+
+    Используется для assertion «discovery tool был вызван ДО голосового
+    ответа» (issue #2406, ретро n313). Возвращаем позицию (int), чтобы
+    вызывающий мог сравнить её с позицией первого voice-cycle маркера.
+
+    Не-имя тула (free text) — функция НЕ поддерживает, контракт ``TOOL_NAME_RE``.
+    Вызывающий валидирует имя до вызова.
+    """
+    if not tool or not TOOL_NAME_RE.match(tool.lower()):
+        return None
+    low = logs.lower()
+    return _first_marker_position(low, invocation_markers(tool.lower()))
+
+
+def _first_marker_position(lowered_logs: str, markers: list[str] | tuple[str]) -> int | None:
+    """Helper: индекс первого вхождения любой из подстрок в lower-case логе.
+
+    Возвращает ``None`` если ни один маркер не найден. Раньше аналогичный
+    код был inline в check_acceptance, теперь — общий хелпер.
+    """
+    earliest: int | None = None
+    for m in markers:
+        idx = lowered_logs.find(m)
+        if idx == -1:
+            continue
+        if earliest is None or idx < earliest:
+            earliest = idx
+    return earliest
+
+
+def first_voice_cycle_position(logs: str) -> int | None:
+    """Позиция первого маркера голосового цикла в ``logs`` (lower-case индекс),
+    или ``None`` если голосового ответа ещё не было.
+
+    Используется для assertion «discovery tool был вызван ДО первого
+    голосового ответа» (issue #2406). Маркеры те же, что в soft-hint
+    ``check_gate1_aggregate``: 'tts finished' / 'speak_text' в списке tools=
+    или финальная строка ``✅ [turn] process_input returned:``.
+    """
+    low = logs.lower()
+    return _first_marker_position(low, list(VOICE_CYCLE_MARKERS))

@@ -7,6 +7,9 @@ stt_node:
   ros__parameters:
     model_path: /models/vosk-model-small-ru-0.22
     sample_rate: 16000
+    # Issue #2609 — Vosk (~400 МБ RSS) нужен только когда Yandex не ответил:
+    # грузим модель при первом fallback, а не на старте.
+    vosk_preload: false
     # AEC mode: 'hardware' = доверяем XVF-3000 (можно перебивать робота!)
     #           'software' = выкидываем фразы пока TTS играет
     aec_mode: hardware
@@ -20,6 +23,30 @@ stt_node:
     yandex_max_retries: 1
     retry_backoff_s: 1.0
     min_text_chars: 3
+    # ===== Цепочка STT-провайдеров (issue #2365 Phase 2, ADR-0124) =====
+    # Порядок = приоритет. Vosk принудительно последний: он единственный
+    # работает офлайн и без денег на счету — это последний рубеж.
+    # Единственный источник истины для порядка (config/stt_chain.yaml
+    # удалён: второй YAML для того же значения — класс ошибки #1252/#1734).
+    stt_provider_chain: [minimax, yandex, vosk]
+    # MiniMax STT. Ключ приезжает из ENV MINIMAX_API_KEY (тот же, что у
+    # TTS/LLM — см. docker/vision/.env). Без ключа провайдер тихо
+    # выпадает из цепочки, робот работает на Yandex + Vosk.
+    minimax_stt_enabled: true
+    minimax_stt_api_key_env: MINIMAX_API_KEY
+    minimax_stt_base_url: https://api.minimax.io
+    minimax_stt_model: asr-1.0
+    minimax_stt_language: ru
+    minimax_stt_timeout_s: 5.0
+    minimax_stt_max_retries: 1
+    # Кэш «мёртвых» провайдеров (те же дефолты, что у tts_node).
+    # Без него при пустом балансе робот платил бы таймаут обоим облакам
+    # на КАЖДОЙ фразе, прежде чем дойти до Vosk.
+    provider_dead_ttl_s: 300.0
+    provider_dead_ttl_transient_s: 30.0
+    # /data — тот же том, что у tts_provider_state.json (issue #1229):
+    # рестарт ноды не должен заново платить таймаут мёртвому облаку.
+    provider_state_file: /data/stt_provider_state.json
     unclear_phrase: Не расслышал, скажи ещё раз
     unclear_cooldown_s: 5.0
     tts_grace_s: 2.5

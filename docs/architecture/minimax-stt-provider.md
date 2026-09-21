@@ -1,183 +1,238 @@
-# MiniMax STT provider — operator notes (issue #2365, ADR-0091)
+# MiniMax STT provider — operator notes (issue #2365, ADR-0124)
 
 > **Audience.** Operator / integrator running the `rob_box_voice` STT
-> chain and wanting to know when MiniMax STT kicks in, what env
-> variables / keys it needs, and how to toggle it on or off.
+> chain: when MiniMax STT kicks in, what it needs, how to toggle it, and
+> what its failures look like in the log.
 >
-> **Status.** Phase 1 PoC merged via PR #2369 (commit `490918d1f`,
-> Sep 2026). Phase 2 wiring (`stt_node._recognize_with_fallback`,
-> ROS parameters) is **not** in the merge — see §4.
+> **Status.** **Live.** Phase 1 (the adapter) merged via PR #2369; Phase 2
+> (chain wiring, per-provider budgets, dead-provider cache) via PR #2706,
+> with follow-up fixes in PR #2708. Verified on Vision Pi 21.09.2026 —
+> see §6.
 
 Related documents:
 
-* ADR-0091 — `docs/adr/0091-minimax-stt-provider.md`
-* STT provider contract — `docs/architecture/stt-provider-contract.md`
+* **ADR-0124** — `docs/adr/0124-stt-provider-chain-priority.md`
+  (chain order, dead cache, config SSoT). **Supersedes ADR-0091
+  §2.2/§2.3/§5.**
+* ADR-0091 — `docs/adr/0091-minimax-stt-provider.md` (provider contract,
+  diarization side-channel; chain sections superseded)
+* ADR-0108 — empty-text semantics
+* Config — `src/rob_box_voice/config/stt_node.yaml` and
+  `docker/vision/config/voice_assistant/stt_node.yaml`.
+  There is **no** `stt_chain.yaml` — it was deleted in ADR-0124 §2.6.
 * LLM-side MiniMax operator guide — `docs/guides/MINIMAX.md`
-* Config reference — `src/rob_box_voice/config/stt_chain.yaml`
 * Unit tests — `src/rob_box_voice/test/unit/stt/test_minimax_provider.py`
 
-## 1. What MiniMax brings to the chain
+## 1. Where MiniMax sits in the chain
 
-After ADR-0091 the STT chain has **three** providers. The Phase 2 order
-is `vosk → minimax → yandex` (offline-first, then cloud, then primary):
+Order is `minimax → yandex → vosk` — cloud first for quality, local last
+as the thing that always works:
 
-| Position | Provider | Class / wrapper | Endpoint / mode | What it gives |
-|----------|----------|-----------------|------------------|---------------|
-| 1 (offline) | Vosk | `stt_node._recognize_vosk` | local CPU, no network | Fastest (~0.3–0.8 s), no quotas, no diarization |
-| 2 (cloud + diarization) | **MiniMax** | `MiniMaxSTTProvider` | `POST https://api.minimax.io/v1/speech_to_text` (HTTPS, multipart) | Streaming + speaker diarization (`segments[*].speaker`) |
-| 3 (primary cloud) | Yandex gRPC v3 | `stt_node._recognize_yandex` | Yandex Cloud STT streaming | Highest quality for `ru-RU`, soft-timeout 12 s |
+| # | Provider | Wrapper | Mode | Timeout / retries | Notes |
+|---|----------|---------|------|-------------------|-------|
+| 1 | **MiniMax** | `MiniMaxSTTProvider` | `POST https://api.minimax.io/v1/speech_to_text` (HTTPS multipart) | 5.0 s / 1 | Punctuated, capitalised text; diarization available but not yet consumed |
+| 2 | Yandex gRPC v3 | `stt_node._recognize_yandex` | Yandex Cloud STT streaming | 12.0 s / 1 | Gives `speaker_tag` (issue #1077) |
+| 3 | Vosk | `stt_node._recognize_vosk` | local CPU, no network | — / 0 | Offline last resort, no quotas, no diarization |
 
-The current Phase 1 deployment still uses the pre-ADR order (Yandex
-primary + Vosk fallback). The MiniMax class is **shipped but not yet
-inserted into the chain** — flipping the chain is Phase 2.
+`vosk` is **always** forced to the end of the chain regardless of
+configuration (`_normalize_provider_chain`): it is the only provider that
+works with no network and no money, so no config change may make the
+robot deaf.
 
 ## 2. Configuration
 
-### 2.1 Required environment variables
+All keys are ROS parameters declared in `stt_node.py` and mirrored in
+`stt_node.yaml`. Issue #1004 forbids YAML keys that aren't declared, and
+ADR-0124 §2.6 forbids a second YAML source for the same value.
 
-| Variable | Required? | Purpose |
-|----------|-----------|---------|
-| `MINIMAX_API_KEY` | Yes, to enable | Bearer token for `POST /v1/speech_to_text` |
-| `MINIMAX_API_BASE_URL` | No | Override `https://api.minimax.io` (tests only) |
+### 2.1 Chain
 
-If `MINIMAX_API_KEY` is **unset**, `MiniMaxSTTProvider.maybe_from_env()`
-returns `None` and the chain skips MiniMax silently — no warning, no
-retry, no ROS noise. This is intentional so that pre-ADR chains keep
-running without touching configuration.
-
-### 2.2 Optional parameters
-
-The constructor in `stt_providers/minimax_provider.py` accepts:
-
-* `base_url` — defaults to `https://api.minimax.io`.
-* `model` — defaults to `asr-1.0` (MiniMax-M3 STT).
-* `language` — defaults to `"ru"` for rob_box's Russian-first chain;
-  set to `None` to let MiniMax auto-detect.
-* `timeout` — default `connect=5.0, read=15.0, write=10.0, pool=5.0`.
-
-All values used today are in module-level constants and overridable
-through the constructor or `maybe_from_env(**kwargs)`.
-
-### 2.3 ROS parameters (Phase 2, not live yet)
-
-Per `docs/adr/0091-minimax-stt-provider.md` §3 and issue #1004, Phase 2
-will declare these ROS parameters in `stt_node` via `declare_parameter`:
-
-* `minimax_stt_enabled` (bool, default `False` until parity proven)
-* `minimax_stt_api_key_env` (string, default `"MINIMAX_API_KEY"`)
-* `minimax_stt_position` (string, default `"between"`)
-
-`src/rob_box_voice/config/stt_node.yaml` already carries a comment
-placeholder for these flags; the keys themselves are intentionally
-**not** declared in Phase 1 (issue #1004 forbids YAML keys that aren't
-declared in `declare_parameter`).
-
-## 3. Capability summary (when to prefer MiniMax)
-
-Mirrors the `MiniMaxSTTProvider` class docstring; kept here so an
-operator can decide without diving into Python.
-
-Prefer MiniMax when **one or more** of these hold:
-
-* **Cloud is acceptable** — outbound HTTPS + `MINIMAX_API_KEY`.
-* **Speaker diarization needed** (issues #2346, #2348) — MiniMax returns
-  per-utterance `speaker` labels inside `segments[*]`. Vosk returns
-  none; Yandex gives a single `speaker_tag` per utterance.
-* **Latency-sensitive barge-in** but Vosk is too noisy — MiniMax comes
-  in at ~800–1300 ms per call (see probe in `stt_fallback.py`), much
-  faster than Yandex's 1500–4000 ms under load.
-* **Cost-sensitive cloud path** — cheaper than Yandex for short
-  utterances (see `asr-1.0` pricing).
-
-Avoid MiniMax when:
-
-* Hot path requires strict offline operation → use Vosk first.
-* Only Russian-language recognition is needed and Yandex parity
-  numbers exist → Yandex remains primary.
-
-## 4. How to toggle MiniMax on / off
-
-Today (Phase 1) the toggle is **environment-level only**:
-
-```bash
-# Enable MiniMax STT in the chain (Phase 2 wiring picks it up)
-export MINIMAX_API_KEY="sk-..."
-
-# Disable without touching code — leave the variable empty
-unset MINIMAX_API_KEY        # or: export MINIMAX_API_KEY=""
+```yaml
+stt_provider_chain: [minimax, yandex, vosk]
 ```
 
-After Phase 2 lands, the same toggle will be exposed via ROS parameter
-(see §2.3). Until then, `maybe_from_env()` and `stt_chain.yaml` are the
-canonical knobs.
+### 2.2 MiniMax
 
-To disable permanently (eg. an air-gapped robot), simply do not export
-`MINIMAX_API_KEY`. The constructor refuses to instantiate without the
-key, so the chain falls back to Vosk / Yandex as before.
+| Parameter | Default | Purpose |
+|---|---|---|
+| `minimax_stt_enabled` | `true` | Hard off-switch |
+| `minimax_stt_api_key_env` | `MINIMAX_API_KEY` | Which env var holds the key |
+| `minimax_stt_api_key` | `""` | Fallback if the env var is unset (ENV wins) |
+| `minimax_stt_base_url` | `https://api.minimax.io` | Override for tests |
+| `minimax_stt_model` | `asr-1.0` | **Plan-dependent** — see §6 |
+| `minimax_stt_language` | `ru` | Empty → server auto-detects |
+| `minimax_stt_timeout_s` | `5.0` | Soft timeout per call |
+| `minimax_stt_max_retries` | `1` | Retries on transient failure |
+
+Without a key the provider is skipped silently — no warning, no retry.
+That is the intended way to run a robot without MiniMax.
+
+### 2.3 Dead-provider cache
+
+Shared behaviour with TTS (issue #1083) and LLM (issue #1082): a failing
+provider is skipped until its TTL expires, instead of costing a timeout
+on every phrase.
+
+| Parameter | Default | Applies to |
+|---|---|---|
+| `provider_dead_ttl_s` | `300.0` | Quota / plan / key (`2056`, `2061`, 401/403/429, gRPC `PERMISSION_DENIED`, `RESOURCE_EXHAUSTED`) |
+| `provider_dead_ttl_transient_s` | `30.0` | Network, 5xx, timeout, `DEADLINE_EXCEEDED` |
+| `provider_state_file` | `/data/stt_provider_state.json` | Survives node restarts; `""` disables |
+
+Rules worth knowing as an operator:
+
+* A **successful** recognition clears the mark — top up the balance and
+  the provider returns on its own, no restart needed (observed live, §6).
+* `empty` and `low_confidence` do **not** mark a provider dead: the cloud
+  answered, it just had nothing to say.
+* If **every** provider is marked dead, the cache is ignored and the full
+  chain runs. A deaf robot is worse than a slow one.
+
+## 3. Reading the log
+
+One summary line plus one line per attempt:
+
+```
+[stt_attempt] minimax:ok(3159ms 'Робот, расскажи анек') -> accepted 'Робот, расскажи анекдот.'
+[stt_attempt_metric] provider=minimax reason=ok latency_ms=3159 attempt=0 text='Робот, расскажи анекдот.'
+```
+
+When a cloud is down:
+
+```
+[stt_attempt] minimax:dead(0ms)->yandex:dead(0ms)->vosk:ok(1848ms 'провод ты меня слыши') -> accepted
+[stt_attempt_metric] provider=minimax reason=dead latency_ms=0 attempt=0 text=- error='dead 279s more: STTQuotaError(...)'
+```
+
+`reason` values: `ok`, `empty`, `low_confidence`, `timeout`, `error`,
+`dead` (skipped by the cache). **`error=` always carries the provider's
+own message** — read it before guessing at the cause.
+
+The effective provider is logged whenever it changes, and mirrored in the
+state file:
+
+```
+🎧 STT provider → 'vosk' (chain=['minimax','yandex','vosk'],
+   dead={'minimax': 293.5, 'yandex': 294.5}, reason=recognize, last_attempt=vosk)
+```
+
+```bash
+docker exec voice-assistant cat /data/stt_provider_state.json
+```
+
+There is deliberately **no** `/voice/stt/provider_state` topic: nothing
+subscribes to one, and an unconsumed topic is what the
+`seam_without_consumer` guard (issue #2118) exists to catch. ADR-0124
+§2.5 has the payload shape ready if a consumer ever appears.
+
+## 4. Toggling MiniMax
+
+```bash
+# Off, keeping the key (ROS parameter):
+#   minimax_stt_enabled: false   in stt_node.yaml
+#
+# Off by removing the key — the chain skips it silently:
+unset MINIMAX_API_KEY
+
+# Reorder without touching code:
+#   stt_provider_chain: [yandex, minimax, vosk]
+```
+
+`stt_provider_chain` accepts any order; unknown names are dropped with a
+warning, duplicates collapse, and `vosk` is moved to the end. A chain of
+exactly `[vosk]` is a legitimate offline-only mode.
 
 ## 5. Tests
 
-Unit tests live in `src/rob_box_voice/test/unit/stt/test_minimax_provider.py`
-(43 cases per PR #2369). They are pure-Python, no network, no ROS2,
-no audio hardware:
+54 pure-Python cases, no network, no ROS2, no audio hardware:
 
 ```bash
-# From src/rob_box_voice (uses package pytest.ini)
+# From src/rob_box_voice
 pytest test/unit/stt/test_minimax_provider.py -v
 
-# Whole unit directory (fast, CI-safe)
-pytest test/unit -v
-
-# Coverage of the new module
-pytest test/unit/stt/test_minimax_provider.py \
-    --cov=rob_box_voice.stt_providers.minimax_provider \
-    --cov-report=term-missing
+# Chain, dead cache and error mapping
+pytest test/test_stt_dead_cache.py test/test_stt_node_fallback.py -v
 ```
 
-What the suite covers:
+Coverage includes the **real response bodies captured from the robot**
+(`TestQuotaInResponseBody.PLAN_500` / `QUOTA_200`), the chain-order
+invariants, dead-cache TTL classification, and gRPC status mapping.
 
-* `recognize()` returns text on 200/JSON; returns `None` on 401 / 403 /
-  429 / 5xx / timeout / non-JSON / missing `text` field.
-* `MiniMaxSTTProvider.maybe_from_env()` returns `None` without the
-  env-var key.
-* Empty / oversized audio_bytes are rejected before any HTTP call.
-* `_extract_text` understands both response shapes
-  (`{"text": ...}` and `{"data": {"text": ...}}`).
-* `name` is stable (`PROVIDER_NAME == "minimax"`) so dashboards
-  keyed on it don't break.
-
-If you need a fake HTTP server for an end-to-end check (outside the
-unit suite), see `tools/mock_minimax_server.py` — a minimal aiohttp
-app that returns canned `verbose_json` payloads.
+`tools/mock_minimax_server.py` provides a canned HTTP server for
+end-to-end checks outside the unit suite.
 
 ## 6. Troubleshooting
 
-| Symptom | First thing to check |
-|---------|----------------------|
-| `MiniMaxSTTProvider.maybe_from_env()` returns `None` | `echo "$MINIMAX_API_KEY"` — empty means it returns `None` (intentional, not a bug). |
-| Construction raises `MiniMaxSTTUnavailableError` | Same root cause as above. |
-| 401/403 in logs | Key has been revoked or restricted. Rotate in MiniMax console; restart `stt_node`. |
-| 429 / latency spikes | Yandex / MiniMax quotas may be sharing a project. Back off, or temporarily disable the provider (`unset MINIMAX_API_KEY`). |
-| `MINIMAX_API_KEY=eyJh...` appears in logs | Should never happen — `MiniMaxSTTRedactedLogFilter` is attached to the module + `httpx` loggers. If it does, file an issue and roll the key. |
-| Phase 2 wiring questions (chain order, ROS params) | Re-read `docs/adr/0091-minimax-stt-provider.md`; do not edit `stt_node.yaml` until Phase 2 lands (issue #1004). |
+MiniMax reports **application errors in the response body, not in the
+HTTP status**. Both shapes below are parsed and classified as a plan /
+quota problem (`QUOTA_HINTS` in `minimax_provider.py`):
+
+| What you see | Meaning | What to do |
+|---|---|---|
+| HTTP 500, `"your current token plan not support model, asr-1.0 (2061)"` | The **plan** does not include that model. Topping up the balance may not be enough. | Upgrade the plan, or point `minimax_stt_model` at a model the plan includes (ROS parameter — no rebuild). |
+| HTTP 200, `base_resp.status_code=2056` "Token Plan usage limit reached" | Quota exhausted | Top up. The provider returns by itself within `provider_dead_ttl_s`. |
+| `reason=dead` for minutes on end | Working as designed — the cache is skipping a known-dead cloud | `error=` in the same line names the original failure. |
+| `minimax:timeout` | Phrase exceeded `minimax_stt_timeout_s` | Live latency is ~3.1 s on a normal phrase against a 5 s budget; long phrases can exceed it. Raise `minimax_stt_timeout_s`. |
+| `MiniMaxSTTProvider.maybe_from_env()` → `None` | `MINIMAX_API_KEY` empty | Intentional, not a bug. |
+| API key visible in logs | Should never happen — `MiniMaxSTTRedactedLogFilter` covers the module and `httpx` loggers | File an issue and roll the key. |
+
+Probing the endpoint directly from the robot is the fastest way to
+separate "our code" from "their service":
+
+```bash
+docker exec voice-assistant python3 - <<'PY'
+import io, os, wave, httpx
+buf = io.BytesIO()
+with wave.open(buf, "wb") as w:
+    w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
+    w.writeframes(b"\x00\x00" * 16000)
+r = httpx.post("https://api.minimax.io/v1/speech_to_text",
+               headers={"Authorization": "Bearer " + os.environ["MINIMAX_API_KEY"]},
+               files={"file": ("audio.wav", io.BytesIO(buf.getvalue()), "audio/wav")},
+               data={"model": "asr-1.0", "response_format": "json", "language": "ru"},
+               timeout=20.0)
+print(r.status_code, r.text[:400])
+PY
+```
+
+A healthy answer for silence is `200 {"text":"","duration":1,...}`.
+
+### 6.1 Verified on Vision Pi, 21.09.2026
+
+With the plan disabled, then re-enabled mid-session, the chain behaved as
+designed with no restart:
+
+```
+17:01  minimax reason=error  error='STTQuotaError(...not support model, asr-1.0 (2061))'
+17:01  minimax reason=dead   error='dead 293s more: ...'
+       ... TTL expired, provider re-probed ...
+17:10  minimax reason=ok     latency_ms=3093
+```
+
+The state file went back to `{"provider": "minimax", "dead_providers": {}}`
+on the first success. Wake-word routing works on MiniMax's punctuated,
+capitalised output (`🎯 Wake word detected: "Робот, расскажи анекдот."`).
+
+Note that Yandex was simultaneously returning `PERMISSION_DENIED` on
+folder `b1gfmjogjodcgff82pjd` (archived) for both STT and TTS — so the
+middle of the chain was empty and the fallback went straight to Vosk.
 
 ## 7. What is **not** in this doc
 
-This file is intentionally operator-focused. The following live
-elsewhere and are linked at the top:
-
-* STTResult / STTSegment value objects and the extended
-  `STTProvider` Protocol — `docs/architecture/stt-provider-contract.md`.
-* The ADR that fixed the chain order and the diarization side-channel
-  invariant — `docs/adr/0091-minimax-stt-provider.md`.
+* `STTResult` / `STTSegment` and the extended Protocol —
+  `docs/architecture/stt-provider-contract.md` (not implemented; the
+  chain did not need them).
+* Diarization / `/voice/stt/segments` — ADR-0091 §2.4, no consumer yet.
 * LLM-side MiniMax (text + vision + tools) — `docs/guides/MINIMAX.md`.
+* Unifying the STT / TTS / LLM health caches — issue #2702.
 
 ## 8. References
 
-* MiniMax Speech-to-Text API reference:
+* MiniMax Speech-to-Text API:
   <https://platform.minimax.io/docs/api-reference/speech-to-text>
-* Issue #2365 — original feature request for MiniMax STT.
-* ADR-0002 — capability-segregated MiniMax design (LLM-side).
-* ADR-0091 — MiniMax STT chain design and choice of provider order.
-* PR #2369 — Phase 1 implementation (43 unit tests, env-driven
-  factory, redaction filter, chain config stub).
+* Issue #2365 — original feature request
+* ADR-0002 — capability-segregated MiniMax design (LLM-side)
+* ADR-0091 — provider contract (chain sections superseded by ADR-0124)
+* ADR-0124 — chain order, per-provider budgets, dead cache
+* PR #2369 — Phase 1 adapter; PR #2706 — Phase 2 wiring;
+  PR #2708 — body-level error classification and gRPC stream fix

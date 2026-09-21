@@ -407,6 +407,12 @@ import json, os, re, sys
 # «тул вызван» != «тул есть в списке доступных»: dialogue_node печатает
 # tools(56) и системный промпт на каждом ходе (см. e2e_tool_match.py).
 from e2e_tool_match import tool_invoked
+# Issue #2406: для discovery-тул ассерта нужен порядок «tool ДО voice».
+from e2e_tool_match import (
+    first_invocation_position,
+    first_voice_cycle_position,
+    TOOL_NAME_RE,
+)
 
 acc_path = os.environ["ACCEPTANCE_FILE"]
 with open(os.environ["LOGS_FILE"], encoding="utf-8", errors="replace") as _f:
@@ -451,6 +457,44 @@ found_expected = [c for c in expected_call if has(c)]
 missing_expected = [c for c in expected_call if not has(c)]
 forbidden_called = [c for c in must_not if has(c)]
 
+# Issue #2406: discovery-tools order check (top-level aggregate).
+# Семантика та же, что в per-step check_acceptance, но работает по
+# агрегированным логам всего прогона. Применяется только если
+# acceptance.json верхнего уровня объявляет discovery_tools.
+discovery_tools_raw = acc.get("discovery_tools", []) or []
+discovery_tools = []
+discovery_tool_errors = []
+for _dt in discovery_tools_raw:
+    if not isinstance(_dt, str) or not TOOL_NAME_RE.match(_dt.lower()):
+        discovery_tool_errors.append(
+            f"discovery_tools entry {repr(_dt)} is not a tool name "
+            f"(must match ^[a-z][a-z0-9_]*$)"
+        )
+        continue
+    discovery_tools.append(_dt)
+discovery_failures = []
+discovery_records = []
+voice_pos = first_voice_cycle_position(logs) if discovery_tools else None
+for _dt in discovery_tools:
+    tool_pos = first_invocation_position(logs, _dt)
+    rec = {
+        "tool": _dt,
+        "first_invocation_pos": tool_pos,
+        "first_voice_pos": voice_pos,
+    }
+    if tool_pos is None:
+        discovery_failures.append(
+            f"discovery tool {_dt!r} was NOT invoked during run "
+            f"(issue #2406: LLM bypassed the required tool call)"
+        )
+    elif voice_pos is not None and tool_pos > voice_pos:
+        discovery_failures.append(
+            f"discovery tool {_dt!r} invoked at pos {tool_pos}, "
+            f"AFTER verbal answer at pos {voice_pos} "
+            f"(issue #2406: verbal-only LLM answer before required tool)"
+        )
+    discovery_records.append(rec)
+
 failures = []
 if missing_expected:
     failures.append(
@@ -462,6 +506,13 @@ if forbidden_called:
         "forbidden tool calls invoked during run: "
         + ", ".join(forbidden_called)
     )
+# Issue #2406: discovery_tools — то же что в per-step check_acceptance, но
+# для top-level aggregate. Порядок «тул ДО voice» ассертится через
+# first_invocation_position vs first_voice_cycle_position.
+if discovery_tool_errors:
+    failures.extend(discovery_tool_errors)
+if discovery_failures:
+    failures.extend(discovery_failures)
 
 # Ретро 22.08 t_c7761956 (A3): voice-cycle-but-no-tool-call hint.
 # Если TTS finished есть (LLM ответил голосом), но expected_tool_calls
@@ -505,6 +556,10 @@ result = {
     "forbidden_calls": forbidden_called,
     "voice_cycle_count": tts_finished_count,
     "speak_text_count": speak_text_count,
+    # Issue #2406: discovery-step enforcement (top-level aggregate).
+    "discovery_tools": discovery_tools,
+    "discovery_records": discovery_records,
+    "discovery_first_voice_pos": voice_pos,
     "soft_hints": soft_hints,
     "pass": not failures,
     "reason": "; ".join(failures + soft_hints) if (failures or soft_hints) else "all checks passed",
@@ -1024,6 +1079,9 @@ write_artifacts_audio() {
 #   voice_changed:        bool       — set_voice сменил голос с дефолта
 #   response_max_ms:      int        — T_total не должен превышать (если
 #                                     найден e2e_timing.json)
+#   discovery_tools:      list[str]  — issue #2406: каждый tool должен быть
+#                                     вызван ДО первого голосового ответа
+#                                     (verbal-only LLM answer regression guard)
 # Пишет acceptance.json в OUT_DIR.
 check_acceptance() {  # $1=label $2=acceptance_json_string $3=before_rfc3339
     local label="$1" acc_json="$2" before="$3"
@@ -1042,6 +1100,12 @@ import json, os, re, sys
 # «тул вызван» != «тул есть в списке доступных»: dialogue_node печатает
 # tools(56) и системный промпт на каждом ходе (см. e2e_tool_match.py).
 from e2e_tool_match import tool_invoked
+# Issue #2406: для discovery-тул ассерта нужен порядок «tool ДО voice».
+from e2e_tool_match import (
+    first_invocation_position,
+    first_voice_cycle_position,
+    TOOL_NAME_RE,
+)
 acc = json.loads(os.environ["ACC_JSON"])
 with open(os.environ["LOGS_FILE"], encoding="utf-8", errors="replace") as _f:
     logs = _f.read()
@@ -1050,6 +1114,22 @@ def has(s, frag):
 expected_call = acc.get("expected_tool_calls", []) or []
 must_not = acc.get("must_not_call", []) or []
 expected_kw = acc.get("expected_keywords", []) or []
+# Issue #2406: discovery_tools — список тулов, которые ОБЯЗАНЫ быть вызваны
+# ДО первого голосового ответа. Если в acceptance.json шага есть это поле —
+# ассертим порядок, иначе — старый чек (только факт вызова).
+# Каждый tool должен соответствовать TOOL_NAME_RE (snake_case имя тула),
+# иначе — soft FAIL с подсказкой.
+discovery_tools_raw = acc.get("discovery_tools", []) or []
+discovery_tools = []
+discovery_tool_errors = []
+for _dt in discovery_tools_raw:
+    if not isinstance(_dt, str) or not TOOL_NAME_RE.match(_dt.lower()):
+        discovery_tool_errors.append(
+            f"discovery_tools entry {repr(_dt)} is not a tool name "
+            f"(must match ^[a-z][a-z0-9_]*$)"
+        )
+        continue
+    discovery_tools.append(_dt)
 voice_changed_req = bool(acc.get("voice_changed", False))
 response_max_ms = acc.get("response_max_ms", 0) or 0
 
@@ -1072,6 +1152,36 @@ missing_expected = [c for c in expected_call if not has(logs, c)]
 forbidden_called = [c for c in must_not if has(logs, c)]
 found_keywords = [k for k in expected_kw if k.lower() in logs_low]
 missing_keywords = [k for k in expected_kw if not k.lower() in logs_low]
+
+# Issue #2406: discovery-tools order check. Для каждого discovery-тула:
+# - позиция первого execution-маркера в логе
+# - позиция первого voice-cycle маркера (любого)
+# Требование: tool_pos < voice_pos (тул вызван ДО голосового ответа).
+# Если тул не вызван — отдельный FAIL (подобно missing_expected).
+# Если голосовой цикл уже случился раньше вызова тула — отдельный FAIL
+# с подсказкой про verbal-only LLM answer.
+discovery_failures = []
+discovery_records = []
+voice_pos = first_voice_cycle_position(logs) if discovery_tools else None
+for _dt in discovery_tools:
+    tool_pos = first_invocation_position(logs, _dt)
+    rec = {
+        "tool": _dt,
+        "first_invocation_pos": tool_pos,
+        "first_voice_pos": voice_pos,
+    }
+    if tool_pos is None:
+        discovery_failures.append(
+            f"discovery tool {_dt!r} was NOT invoked at all "
+            f"(issue #2406: LLM bypassed the required tool call)"
+        )
+    elif voice_pos is not None and tool_pos > voice_pos:
+        discovery_failures.append(
+            f"discovery tool {_dt!r} invoked at pos {tool_pos}, "
+            f"AFTER verbal answer at pos {voice_pos} "
+            f"(issue #2406: verbal-only LLM answer before required tool)"
+        )
+    discovery_records.append(rec)
 
 # voice_changed: set_voice был вызван с голосом, отличным от дефолта.
 # Лог: `[set_voice] voice='X' provider=... default=Y`. Если set_voice вернул
@@ -1112,6 +1222,10 @@ if forbidden_called:
     failures.append(f"forbidden tool calls invoked: {forbidden_called}")
 if expected_kw and missing_keywords:
     failures.append(f"expected keywords missing in logs: {missing_keywords}")
+if discovery_tool_errors:
+    failures.extend(discovery_tool_errors)
+if discovery_failures:
+    failures.extend(discovery_failures)
 if not voice_change_ok:
     failures.append(voice_change_detail)
 if response_max_ms and measured_ms and measured_ms > response_max_ms:
@@ -1126,6 +1240,13 @@ result = {
     "recognized": recognized,
     "found_keywords": found_keywords,
     "missing_keywords": missing_keywords,
+    # Issue #2406: discovery-step enforcement (per-step).
+    # discovery_tools содержит имена тулов, которые ОБЯЗАНЫ быть вызваны
+    # ДО первого голосового ответа. discovery_records — массив позиций
+    # для трассировки (tool_pos vs voice_pos), см. test_issue_2406_*_step_enforcement.py.
+    "discovery_tools": discovery_tools,
+    "discovery_records": discovery_records,
+    "discovery_first_voice_pos": voice_pos,
     "voice_changed": voice_changed_req,
     "voice_change_ok": voice_change_ok,
     "voice_change_detail": voice_change_detail,
@@ -1167,6 +1288,8 @@ if [ -n "$SCENARIO_FILE" ]; then
     #           "acceptance":{"expected_tool_calls":["generate_music"],
     #                         "must_not_call":["execute_music_code"],
     #                         "expected_keywords":["песня"],
+    #                         # issue #2406: тул ДО голосового ответа
+    #                         "discovery_tools":["register_speaker"],
     #                         "response_max_ms":60000}}]}
     cp "$SCENARIO_FILE" "$OUT_DIR/scenario.json"
     # Парсим в .tsv: idx \t label \t text \t voice \t patterns_json \t acceptance_json \t expect_raw \t retry_acceptance

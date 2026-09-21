@@ -15,7 +15,9 @@
         "expected_tool_calls": [
           "list_tts_voices"
         ],
-        "must_not_call": []
+        "discovery_tools": ["list_tts_voices"],
+        "must_not_call": [],
+        "_comment": "issue #2406: discovery_tools — list_tts_voices должен быть вызван ДО голосового ответа (regression guard, run 365 / n401 из issue #2406)."
       },
       "expect": "cycle"
     },

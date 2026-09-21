@@ -1,0 +1,51 @@
+# Offline-friendly Dockerfile for voice-resources cold-start test (issue #2610).
+#
+# Это облегчённая версия ``Dockerfile``, которая собирается БЕЗ сети
+# (после того, как зависимости уже скачаны в base image). Используется
+# для e2e cold-start теста на железе:
+#
+#   docker build -f docker/vision/voice_resources/Dockerfile.offline \
+#                -t voice-resources-cold-start:test .
+#
+# Сценарий проверки: после ребута Vision Pi registry (katana build-host)
+# недоступен → init-контейнер voice-resources-init не сможет стянуть
+# полный образ с samples. Этот Dockerfile собирает "пустой" образ с
+# тем же entrypoint, но без samples — init отработает, оставит volume
+# пустым, downstream supercollider + voice-assistant стартанут
+# (благодаря required: false, PR #2634), MusicSkill просто не найдёт
+# samples. Это и есть ожидаемое поведение cold-start при offline
+# registry (issue #2610 acceptance #3).
+#
+# ⚠️ Это НЕ замена основного Dockerfile — production-образ
+# voice-resources продолжает собираться через полный Dockerfile.
+# Этот файл — только для cold-start e2e-сценария.
+
+FROM python:3.11-slim-bookworm
+
+ARG BUILD_VERSION=2026-09-16-cold-start-offline
+
+LABEL org.opencontainers.image.title="Voice Resources (offline build, cold-start)"
+LABEL org.opencontainers.image.description="Offline-buildable voice-resources for cold-start e2e tests (issue #2610). No network access during build."
+LABEL org.opencontainers.image.source="https://github.com/krikz/rob_box_project"
+
+ENV PYTHONUNBUFFERED=1
+
+# НЕ делаем pip install (требует PyPI). Вместо этого кладём пустой
+# stub, который имитирует renardo_lib — entrypoint init_resources.sh
+# всё равно проверяет, есть ли samples, и при их отсутствии пишет
+# WARNING и завершается с 0 (см. voice_resources/init_resources.sh).
+
+# Создаём /renardo_samples_bundle как ПУСТУЮ директорию — это легитимное
+# состояние для cold-start (MusicSkill просто не найдёт wav).
+# НЕ требует ни pip, ни download_samples.py — собирается полностью offline.
+RUN mkdir -p /renardo_samples_bundle
+
+# Копируем ТОЛЬКО init_resources.sh (он маленький, без сетевых
+# зависимостей). Не копируем download_samples.py и не вызываем его.
+COPY docker/vision/voice_resources/init_resources.sh /usr/local/bin/init_voice_resources.sh
+RUN chmod +x /usr/local/bin/init_voice_resources.sh
+
+# Маленький healthcheck для интеграции с downstream
+HEALTHCHECK NONE
+
+ENTRYPOINT ["/usr/local/bin/init_voice_resources.sh"]

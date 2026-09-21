@@ -126,6 +126,19 @@ EXPECTED=(
     # Делит PROVIDER_MARKERS + ту же логику recovery-волны, плюс расширен
     # маркерами HTTP 401 / Authentication Fails (DeepSeek invalid api key).
     watchdog-provider-quick.sh
+    # Cancel-stale-cards helper (ретро 15.09 t_197de62a): сканирует
+    # kanban-доски, ловит карточки с provider-exhaust сигнатурой в
+    # task_runs.summary ИЛИ tasks.last_failure_error, и блокирует их
+    # (kind=capability, idempotent через sentinel-комментарий).
+    # Дополняет watchdog-provider-quick.sh: тот реагирует на СВЕЖИЕ
+    # маркеры (worker exit code = protocol violation), этот — на
+    # исторические (когда worker crash-loop произошёл давно и стёрся
+    # из свежего окна, но signal остался в summary/last_failure_error).
+    # До этого фикса скрипт жил только в ~/.hermes/scripts/legacy и не
+    # был в SOT репо → не раскладывался в профили, не контролировался
+    # drift-detect'ом, и CRON НЕ регистрировался. Теперь — SOT +
+    # cron every 5m в devops-профиле (см. ensure_cancel_provider_exhausted_cron).
+    agent-flow-cancel-on-provider-exhausted.sh
     agent-flow-drift-detect.sh
     kanban-retro-create.sh
     # Worker-helper для контракта отчёта (ADR-0115, issue #2159, 2026-09-08):
@@ -218,6 +231,15 @@ EXPECTED=(
     # `gh pr create` и его terminal-guard --body flag). Идемпотентен:
     # если PR для head+base уже OPEN — возвращает его номер.
     gh-pr-create-via-gh-api.sh
+    # Provisioning-failure watchdog (card t_c2ab8db9, retro t_34f33289):
+    # upstream-loop guard — ловит карточки, попавшие в gate-by-giveup-pattern
+    # (cf >= 3 за 30 мин + provider-exhausted signature + нет open PR) или
+    # loop-no-progress (≥ 5 spawned + ≥ 1 gave_up за 1ч), БЛОКИРУЕТ их ДО
+    # того, как dispatcher начнёт kill'ить через enforce_max_runtime SIGKILL.
+    # Регистрация cron-job делается в ensure_runtime_overshoot_cron ниже
+    # (every 2m — горячий цикл, потому что underlying spawn-loop может
+    # съесть 1-2ч CPU/RAM менее чем за 30 мин на 5 параллельных карточках).
+    agent-flow-runtime-overshoot-loop.sh
     # Cross-task archive sweeper (ADR-AF-0060 / ретро 22.08 t_d9b4c600): watchdog,
     # архивирующий blocked-карточки devops после успешного PR/issue.
     # Зависит от python3 helper'ов _cross_task_archive_sweeper_{scan,archive}.py
@@ -305,6 +327,15 @@ EXPECTED=(
     # это решение Шифу. Регистрация cron-job делается в
     # ensure_stale_blocked_watchdog_cron.
     agent-flow-stale-blocked-watchdog.sh
+    # Stale-CONFLICTING PR watchdog (ретро 16.09 t_a7d642cd, pattern
+    # wip-conflict-wave-after-cc-budget): no-agent, ежечасно сканирует
+    # OPEN PR'ы с mergeableState='dirty' старше STALE_THRESHOLD_HOURS (4h)
+    # И не имеющие активной running/todo kanban-карточки на rebase. Emit'ит
+    # карточки `rebase PR #N` через kanban-retro-create.sh с idempotency-key
+    # `retro:rebase-pr-<N>` (повторный тик = SKIP). НЕ rebase'ит сам,
+    # НЕ merge'ит — только рекомендация, assignee=devops. Регистрация
+    # cron-job делается в ensure_stale_conflicting_watchdog_cron ниже.
+    agent-flow-stale-conflicting-watchdog.sh
     # E2E-rejected stale-watchdog (ретро 15.09 t_9251fd74): no-agent,
     # каждые 24ч сканирует GitHub Issues с меткой `e2e:rejected`. Для
     # issue старше STALE_DAYS (default 7) без нового PR — добавляет
@@ -314,6 +345,26 @@ EXPECTED=(
     # label `closed:stale-rejected`. Регистрация cron-job делается в
     # ensure_e2e_rejected_watchdog_cron ниже.
     agent-flow-e2e-rejected-watchdog.sh
+    # Orphan-watchdog detector (ретро 16.09 t_6687a024,
+    # pattern stale-conflicting-watchdog-not-scheduled): no-agent,
+    # каждые 24ч проверяет, что КАЖДЫЙ `agent-flow-*-watchdog.sh` из
+    # EXPECTED[] install.sh имеет enabled interval-job в jobs.json
+    # devops-профиля. Для orphan'ов emit'ит:
+    #   1) строку в /tmp/agent-flow-drift.alert.log (общий канал с
+    #      drift-detect), чтобы оператор увидел в утреннем обзоре;
+    #   2) gh-issue (label `agent-flow-watchdog-orphan`) с перечнем
+    #      пострадавших watchdog'ов — idempotent 24h dedup window;
+    #   3) PR CI-guard (G-Agent-Flow-Process-Checks.yml)
+    #      блокирует новые watchdog-сироты на merge-time.
+    # Сам orphan-watchdog регистрируется в ensure_orphan_watchdog_cron
+    # ниже (every 24h). Это страховка на случай CI-bypass / hotfix-push
+    # в develop вне PR-flow (pattern повторялся уже 2 раза: t_197de62a
+    # cancel-on-provider-exhausted + t_6687a024 stale-conflicting).
+    # Имя файла выбрано с суффиксом -watchdog.sh ровно один раз в конце,
+    # чтобы CI-guard (G-Agent-Flow-Process-Checks) корректно вывел
+    # func_name=ensure_orphan_watchdog_cron по алгоритму
+    # `${base#agent-flow-}` + `${slug%-watchdog.sh}` + replace -/_.
+    agent-flow-orphan-watchdog.sh
     # Ночной ревью-цикл (ADR-0049): no-agent job, раз в ночь собирает
     # дайджест за прошедшие сутки (merged PR / коммиты / issues /
     # красный CI / kanban) и заводит ОДНУ карточку «ночной ревью <дата>»
@@ -926,6 +977,43 @@ ensure_cleanup_cron() {
 ensure_cleanup_cron
 
 echo
+echo "==> Ensure cron job registration: cancel-on-provider-exhausted helper (ретро 15.09 t_197de62a)"
+# Проблема: agent-flow-cancel-on-provider-exhausted.sh раскладывался вручную
+# в ~/.hermes/scripts/legacy, НО в SOT <repo>/scripts/agent_flow/ его не было,
+# и CRON-JOB НЕ регистрировался. Результат (ретро t_197de62a):
+#   - 7 stale-карточек с task_runs.summary='провайдер исчерпан, ждать (402/429...)'
+#     крутились в dispatcher crash-loop ready→running→crashed→ready 3+ цикла
+#     подряд (watchdog-provider-quick UNBLOCK'ал их как только видел
+#     providers_alive=True — а это могло быть от ЛЮБОГО живого воркера на
+#     обычной задаче, не от самого провайдера);
+#   - канбан-карточки блокировались только руками через
+#     `bash agent-flow-cancel-on-provider-exhausted.sh --dry-run` →
+#     `bash agent-flow-cancel-on-provider-exhausted.sh` (manual helper).
+#
+# Решение: ensure_cancel_provider_exhausted_cron() — interval-job (every 5m)
+# в devops-профиле, no_agent (скрипт = watchdog). 5m — компромисс между
+# свежестью (карточки не должны крутиться в crash-loop больше 5-10 мин)
+# и нагрузкой (скрипт сканирует ВСЕ kanban-доски sqlite3 запросом, ~1 сек
+# на доску). Дубль-guard по (script + interval + enabled).
+#
+# Каждый tick: сканирует ВСЕ kanban-доски, для каждой задачи в
+# status IN (running, ready, todo) проверяет task_runs.summary И
+# tasks.last_failure_error на provider-exhaust маркеры (HTTP 402/429,
+# MiniMax 2056, "провайдер исчерпан", ...). Кандидаты: status NOT IN
+# (blocked) И нет sentinel-marker'а → block kind=capability + comment
+# с sentinel'ом (idempotent). Ретро t_197de62a: добавлена проверка
+# last_failure_error (раньше смотрел только summary — воркеры часто
+# crashed до записи summary).
+#
+# Регистрация переживает install.sh: каждый запуск (в т.ч. auto-fix из
+# drift-detect) проверяет jobs.json и создаёт недостающий job.
+ensure_cancel_provider_exhausted_cron() {
+    ensure_cron_job devops "Agent Flow Cancel Provider Exhausted (ретро t_197de62a)" \
+        "agent-flow-cancel-on-provider-exhausted.sh" "every 5m" interval
+}
+ensure_cancel_provider_exhausted_cron
+
+echo
 echo "==> Ensure cron job registration: e2e-process auto-rotation (ретро 23.08+25.08 t_98bb3a1d/t_24e645e7)"
 # Проблема: agent-flow-e2e-process-launcher.sh раскладывался install.sh (commit
 # bd7e509d), но cron-job НЕ создавался — он создавался вручную в тикете 23.08
@@ -1138,6 +1226,74 @@ sys.exit(1)
     fi
 }
 ensure_stale_blocked_watchdog_cron
+echo "==> Ensure cron job registration: stale-CONFLICTING PR watchdog (ретро t_a7d642cd)"
+# Проблема (ретро 16.09 t_a7d642cd, wip-conflict-wave-after-cc-budget):
+# После волны merge PR #2633/#2638/#2641/#2643 в develop 5+ воркерских
+# `z-{agent}/` PR остаются в CONFLICTING 12-18 часов. Работник, который
+# пушит, обычно не делает rebase перед push — wip-коммиты там остаются,
+# PR создаётся, и никто не возвращается к rebase. merge-gate видит эти
+# CONFLICTING, видит daily-report без видимого владельца, блокируется
+# на ожидании.
+#
+# Решение: ensure_stale_conflicting_watchdog_cron() — every-1h no-agent
+# job в devops-профиле. Сканирует OPEN PR с mergeableState='dirty'
+# старше STALE_THRESHOLD_HOURS (4h) И без активной running/todo kanban-
+# карточки на rebase → emit ОДНОЙ recommend-карточки на kanban (через
+# kanban-retro-create.sh с idempotency-key `retro:rebase-pr-<N>`).
+# Идемпотентность: на тике-повторе pre-check уже находит существующую
+# карточку → SKIP. НЕ rebase'ит сам (assignee карточки выполняет rebase
+# в worktree, у него контекст wip-коммитов).
+ensure_stale_conflicting_watchdog_cron() {
+    local profile_dir="/home/builder/.hermes/profiles/devops"
+    local jobs_file="$profile_dir/cron/jobs.json"
+    local job_name="Agent Flow Stale Conflicting Watchdog (ретро t_a7d642cd)"
+    local job_script="agent-flow-stale-conflicting-watchdog.sh"
+    local job_schedule="every 1h"
+
+    if ! command -v hermes >/dev/null 2>&1; then
+        echo "  SKIP ensure-stale-conflicting-watchdog-cron: hermes CLI not on PATH (nothing to register)"
+        return 0
+    fi
+    if [ ! -f "$jobs_file" ]; then
+        echo "  SKIP ensure-stale-conflicting-watchdog-cron: $jobs_file not present (devops profile not set up here)"
+        return 0
+    fi
+
+    # Guard: уже есть interval-job на этот script.
+    if python3 -c "
+import json, sys
+try:
+    with open('$jobs_file') as f:
+        d = json.load(f)
+except Exception:
+    sys.exit(0)
+for j in d.get('jobs', []):
+    if j.get('script') == '$job_script' and j.get('schedule', {}).get('kind') == 'interval' and j.get('enabled'):
+        sys.exit(0)
+sys.exit(1)
+" 2>/dev/null; then
+        echo "  OK   cron job '$job_name' already registered (interval, enabled)"
+        return 0
+    fi
+
+    echo "  ADD  registering cron job '$job_name' (devops, $job_schedule, no_agent)"
+    if $DRY_RUN; then
+        echo "  [DRY] hermes --profile devops cron create '$job_schedule' --name '$job_name' --script '$job_script' --no-agent --deliver local --workdir '$REPO_DIR'"
+        return 0
+    fi
+    if hermes --profile devops cron create "$job_schedule" \
+        --name "$job_name" \
+        --script "$job_script" \
+        --no-agent \
+        --deliver local \
+        --workdir "$REPO_DIR" >/dev/null 2>&1; then
+        echo "  ADD  cron job created: $job_name ($job_script, $job_schedule)"
+    else
+        echo "  WARN cron job creation failed (non-fatal): $job_name — register manually:"
+        echo "       hermes --profile devops cron create '$job_schedule' --name '$job_name' --script '$job_script' --no-agent --deliver local --workdir $REPO_DIR"
+    fi
+}
+ensure_stale_conflicting_watchdog_cron
 
 echo
 echo "==> Ensure cron job registration: e2e-rejected watchdog (ретро 15.09 t_9251fd74)"
@@ -1158,6 +1314,37 @@ ensure_e2e_rejected_watchdog_cron() {
     ensure_cron_job devops "Agent Flow E2E Rejected Watchdog (ретро t_9251fd74)" "agent-flow-e2e-rejected-watchdog.sh" "every 24h" interval
 }
 ensure_e2e_rejected_watchdog_cron
+
+echo
+echo "==> Ensure cron job registration: orphan-watchdog (ретро 16.09 t_6687a024)"
+# Проблема: паттерн «PR вливает agent-flow-*-watchdog.sh в develop, но
+# НЕ регистрирует cron-job в install.sh» повторялся уже 2 раза:
+#   - t_197de62a — cancel-on-provider-exhausted.sh лежал orphan до ручного
+#     фикса (добавили в install.sh);
+#   - t_6687a024 — stale-conflicting-watchdog.sh провисел ~6ч без cron-job,
+#     PR #2671 в CONFLICTING всё это время, никто не заметил.
+# При этом PR CI-guard (G-Agent-Flow-Process-Checks.yml) ловит
+# новые watchdog-sироты на merge-time, НО не покрывает:
+#   - hotfix-push в develop вне PR-flow;
+#   - случаи, когда CI отключён или bypass'нут;
+#   - регрессии после merge (теоретически).
+#
+# Решение: ensure_orphan_watchdog_cron() — every-24h no-agent
+# job в devops-профиле (страховка). Каждый tick:
+#   1) читает EXPECTED[] install.sh через `bash install.sh --list-files`;
+#   2) фильтрует `agent-flow-*-watchdog.sh`;
+#   3) для каждого проверяет наличие enabled interval-job в jobs.json;
+#   4) для orphan'ов пишет в /tmp/agent-flow-drift.alert.log + gh-issue
+#      с label `agent-flow-watchdog-orphan` (idempotent 24h dedup).
+# Сам orphan-watchdog регистрируется интервал-job'ом — interval-guard
+# (по script+enabled), как и другие watchdog'и.
+#
+# Поведение по cron-доставке: exit 2 при missing → alert в
+# cron-delivery; 24h-окно между повторными alert'ами.
+ensure_orphan_watchdog_cron() {
+    ensure_cron_job devops "Agent Flow Orphan Watchdog (ретро t_6687a024)" "agent-flow-orphan-watchdog.sh" "every 24h" interval
+}
+ensure_orphan_watchdog_cron
 
 # Orphan-cards audit telemetry (ретро t_3dbde205 / 15.09): every-15m no-agent
 # job в agent-flow профиле. Сканирует активные карточки канбана, группирует
@@ -1209,6 +1396,19 @@ ensure_night_marathon_cron() {
     ensure_cron_job devops "Agent Flow Night Voice Marathon" "agent-flow-night-marathon.sh" "every 1h" interval
 }
 ensure_night_marathon_cron
+
+echo
+echo "==> Ensure cron job registration: runtime-overshoot-loop watchdog (t_c2ab8db9 / retro t_34f33289)"
+# Карточка t_c2ab8db9: добавлен новый watchdog, который должен реагировать
+# БЫСТРЕЕ чем остальные (every 2m), потому что underlying give-up-loop
+# сжигает 1-2ч CPU/RAM менее чем за 30 мин на 5 параллельных карточках
+# (retro t_34f33289: 120+ signal-9 SIGKILL после provider-exhausted).
+# Регистрация interval-job в devops-профиле, no_agent, дубль-guard по
+# (script + interval + enabled). Применяется идемпотентно.
+ensure_runtime_overshoot_cron() {
+    ensure_cron_job devops "Agent Flow Runtime Overshoot Loop (t_c2ab8db9)" "agent-flow-runtime-overshoot-loop.sh" "every 2m" interval
+}
+ensure_runtime_overshoot_cron
 
 echo
 echo "==> Ensure cron job registration: decomposed-children wake-up watchdog (ADR-AF-0052, ретро t_bfd19ffb)"
@@ -1293,6 +1493,12 @@ _WATCHDOG_LAUNCHER_FILES=(
     agent-flow-nightly-review.sh
     agent-flow-decomposed-watchdog.sh
     agent-flow-stale-blocked-watchdog.sh
+    agent-flow-cancel-on-provider-exhausted.sh
+    # t_c2ab8db9 / ретро t_34f33289: hot-path (every 2m) watchdog для
+    # upstream-loop guard (gate-by-giveup + loop-no-progress detectors).
+    # md5-дrift по 6 копиям должен сразу ловиться (ставлен в этот список
+    # явно, чтобы _md5_verify_fail детектил отставание host-копий).
+    agent-flow-runtime-overshoot-loop.sh
 )
 
 _md5_verify_fail=0

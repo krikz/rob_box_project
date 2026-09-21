@@ -13,6 +13,9 @@ stt_node:
     metrics_port: 9111  # issue #1160 — Prometheus metrics endpoint
     model_path: /models/vosk-model-small-ru-0.22
     sample_rate: 16000
+    # Issue #2609 — Vosk (~400 МБ RSS) нужен только когда Yandex не ответил:
+    # грузим модель при первом fallback, а не на старте.
+    vosk_preload: false
     # wake_words намеренно НЕ здесь: списки — в docker/vision/config/wake_words.yaml
     # (SSoT, issue #1990). Нода читает его через wake_words_file; пусто здесь =
     # dev-env без файла → кодовый фолбек DEFAULT_WAKE_WORDS (байт-в-байт тот же).
@@ -37,11 +40,39 @@ stt_node:
     # /voice/dialogue/barge_in_policy, а не из своего YAML — иначе получим
     # тот же класс ошибки, что и с дублированием wake_words выше (#1252),
     # который и породил #1734.
-    # ===== MiniMax STT (issue #2365, Phase 1 PoC) =====
-    # Runtime-параметры ``minimax_stt_enabled`` / ``minimax_stt_api_key_env``
-    # НЕ лежат здесь — issue #1004 требует, чтобы все ключи были объявлены
-    # через ``declare_parameter`` в stt_node.py. Phase 1 PoC их не подключает
-    # в chain, чтобы не сломать прод. Полный конфиг чейна (включая
-    # ``minimax_stt_enabled``) — в config/stt_chain.yaml (документация),
-    # а в stt_node.yaml эти ключи появятся ОДНОВРЕМЕННО с declare_parameter
-    # в Phase 2 wiring (см. ADR #0090, TBD).
+    # ===== Цепочка STT-провайдеров (issue #2365 Phase 2, ADR-0124) =====
+    # Порядок = приоритет: первый — primary, остальные — фолбеки.
+    # Vosk принудительно переносится в конец (_normalize_provider_chain):
+    # он единственный работает офлайн и без денег на счету, поэтому он
+    # последний рубеж, а не первый эшелон.
+    #
+    # Это ЕДИНСТВЕННЫЙ источник истины для порядка. Файла
+    # config/stt_chain.yaml больше нет: второй YAML для того же значения
+    # уже дважды стоил нам инцидента (issue #1252 → #1734), а issue #1004
+    # требует, чтобы каждый ключ был объявлен через declare_parameter.
+    stt_provider_chain: [minimax, yandex, vosk]
+
+    # ===== MiniMax STT (issue #2365) =====
+    # Ключ берётся из ENV MINIMAX_API_KEY (приоритет) или из
+    # minimax_stt_api_key. Без ключа провайдер тихо выпадает из цепочки —
+    # это штатный режим dev-окружения, а не ошибка.
+    minimax_stt_enabled: true
+    minimax_stt_api_key: ""
+    minimax_stt_api_key_env: MINIMAX_API_KEY
+    minimax_stt_base_url: https://api.minimax.io
+    minimax_stt_model: asr-1.0
+    minimax_stt_language: ru
+    # 5с — мягче яндексовых 12с: MiniMax стоит первым и не должен съедать
+    # весь бюджет фразы, если облако тупит (ADR-0091 §2.2).
+    minimax_stt_timeout_s: 5.0
+    minimax_stt_max_retries: 1
+
+    # ===== Кэш «мёртвых» провайдеров (issue #2365 Phase 2) =====
+    # Те же имена и дефолты, что у TTS (tts_node.yaml, issue #1083/#1229).
+    # Квота/ключ (402/429/401) → длинный TTL: баланс не появится за 30с.
+    # Сеть/5xx/таймаут → короткий: сеть могла просто моргнуть.
+    provider_dead_ttl_s: 300.0
+    provider_dead_ttl_transient_s: 30.0
+    # Персистентность кэша между рестартами ноды (их много — см. #2676).
+    # Пустая строка отключает файл (dev-окружение без /data).
+    provider_state_file: ""

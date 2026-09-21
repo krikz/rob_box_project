@@ -61,6 +61,7 @@ import io
 import logging
 import os
 import time
+import wave
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional
 
@@ -102,11 +103,74 @@ DEFAULT_LANGUAGE: Optional[str] = "ru"
 #: Provider name used in metrics / logs. Stable string for grep / dashboards.
 PROVIDER_NAME: str = "minimax"
 
+#: Sample rate of the PCM the STT chain feeds us. ``audio_node`` publishes
+#: 16 kHz mono int16 LE on ``/audio/speech_audio`` and ``stt_node`` passes
+#: those bytes straight through, so the WAV header we synthesise in
+#: :func:`ensure_wav_container` must declare the same rate.
+DEFAULT_SAMPLE_RATE: int = 16000
+
+#: Substrings that identify a plan / quota / balance problem in a MiniMax
+#: error message. MiniMax does NOT use HTTP status codes for these: a
+#: exhausted Token Plan comes back as HTTP 200 with
+#: ``base_resp.status_code=2056``, and an unsupported model as **HTTP 500**
+#: with ``{"error": {"message": "your current token plan not support model,
+#: asr-1.0 (2061)"}}`` (observed live on the robot 21.09.2026).
+#:
+#: Classifying these as ordinary 5xx would mark the provider dead for the
+#: *transient* TTL (30 s) and re-probe it forever, paying ~1.6 s per phrase
+#: — which is exactly what the robot did before this list existed.
+#:
+#: Mirrors ``rob_box_harness.health.QUOTA_EXHAUSTED_HINTS`` (the LLM side of
+#: the same problem); the two lists merge when issue #2702 unifies the
+#: health caches.
+QUOTA_HINTS: tuple[str, ...] = (
+    "2056",  # Token Plan usage limit reached
+    "2061",  # current token plan does not support the requested model
+    "1008",  # insufficient balance
+    "token plan",
+    "usage limit",
+    "insufficient balance",
+    "not support model",
+)
+
 #: Upper bound for a single audio payload. MiniMax documentation does
 #: not pin a hard limit for /v1/speech_to_text; 25 MB is a conservative
 #: engineering ceiling that matches typical ASR services (Whisper,
 #: Deepgram, AssemblyAI all advertise 25 MB max upload).
 MAX_AUDIO_BYTES: int = 25 * 1024 * 1024
+
+
+def ensure_wav_container(
+    audio_bytes: bytes, *, sample_rate: int = DEFAULT_SAMPLE_RATE
+) -> bytes:
+    """Wrap headerless PCM int16 LE mono into a RIFF/WAVE container.
+
+    Phase 1 posted the chain's raw bytes under the filename ``audio.wav``
+    with content-type ``audio/wav``. That is a lie for our input: the STT
+    chain carries **headerless** PCM (``audio_node`` publishes raw int16 LE
+    frames on ``/audio/speech_audio``), so MiniMax received a "wav" with no
+    RIFF header and no way to know the sample rate. It never mattered while
+    the provider sat outside the chain (issue #2365 Phase 1 shipped it
+    disabled); it matters the moment Phase 2 wires it in.
+
+    Already-containerised input (``RIFF....WAVE``) is passed through
+    untouched, so callers that hand us a real WAV keep working.
+    """
+    if not audio_bytes:
+        return audio_bytes
+    if audio_bytes[:4] == b"RIFF" and audio_bytes[8:12] == b"WAVE":
+        return audio_bytes
+    if len(audio_bytes) % 2:
+        # Odd byte count cannot be int16 frames — hand it over as-is and let
+        # the server complain, rather than silently truncating a sample.
+        return audio_bytes
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as writer:
+        writer.setnchannels(1)
+        writer.setsampwidth(2)
+        writer.setframerate(int(sample_rate))
+        writer.writeframes(audio_bytes)
+    return buffer.getvalue()
 
 
 # ---------------------------------------------------------------------------
@@ -302,6 +366,7 @@ class MiniMaxSTTProvider:
         language: Optional[str] = DEFAULT_LANGUAGE,
         timeout: httpx.Timeout = DEFAULT_TIMEOUT,
         client: Optional[httpx.Client] = None,
+        sample_rate: int = DEFAULT_SAMPLE_RATE,
     ) -> None:
         if not api_key:
             # Phase 2 will use ROS params; for now we just refuse to start.
@@ -314,6 +379,7 @@ class MiniMaxSTTProvider:
         self._model = model
         self._language = language
         self._timeout = timeout
+        self._sample_rate = int(sample_rate)
         self._owns_client = client is None
         self._client: Optional[httpx.Client] = client
 
@@ -411,7 +477,9 @@ class MiniMaxSTTProvider:
             )
 
         url = f"{self._base_url}/v1/speech_to_text"
-        files = {"file": ("audio.wav", io.BytesIO(audio_bytes), "audio/wav")}
+        # Headerless PCM → real WAV (see :func:`ensure_wav_container`).
+        payload = ensure_wav_container(audio_bytes, sample_rate=self._sample_rate)
+        files = {"file": ("audio.wav", io.BytesIO(payload), "audio/wav")}
         data: dict[str, str] = {
             "model": self._model,
             "response_format": "json",
@@ -441,6 +509,8 @@ class MiniMaxSTTProvider:
             raise MiniMaxSTTUnavailableError(f"http error: {exc}") from exc
 
         latency_ms = int((time.monotonic() - started) * 1000)
+        # Проверяет и тело, и статус: 2056 приезжает с HTTP 200 (см.
+        # QUOTA_HINTS), поэтому вызываем всегда, а не только на не-2xx.
         _raise_for_http_status(resp)
 
         try:
@@ -526,17 +596,76 @@ def _extract_text(payload: Any) -> Optional[str]:
     return None  # neither top-level nor nested ``text`` key present
 
 
+def looks_like_quota_problem(text: Optional[str]) -> bool:
+    """True when a MiniMax message is about the plan / quota / balance.
+
+    See :data:`QUOTA_HINTS` for why this cannot be decided from the HTTP
+    status alone.
+    """
+    if not text:
+        return False
+    lowered = text.lower()
+    return any(hint in lowered for hint in QUOTA_HINTS)
+
+
+def _body_error_message(resp: httpx.Response) -> Optional[str]:
+    """Extract MiniMax's API-level error message, in either envelope.
+
+    Two shapes seen in the wild:
+
+    * ``{"base_resp": {"status_code": 2056, "status_msg": "..."}}`` —
+      the T2A/TTS envelope (see ``rob_box_llm.providers.minimax_tts``);
+    * ``{"type": "error", "error": {"message": "...", "type": "..."}}`` —
+      what ``/v1/speech_to_text`` returned on the robot 21.09.2026.
+
+    Returns ``None`` when the body is not JSON or carries no error.
+    """
+    try:
+        payload = resp.json()
+    except ValueError:
+        return None
+    if not isinstance(payload, Mapping):
+        return None
+
+    base_resp = payload.get("base_resp")
+    if isinstance(base_resp, Mapping):
+        code = base_resp.get("status_code", 0)
+        if code:
+            return f"minimax API error {code}: {base_resp.get('status_msg', 'unknown')}"
+
+    error = payload.get("error")
+    if isinstance(error, Mapping):
+        message = error.get("message")
+        if message:
+            return f"minimax API error: {message}"
+
+    return None
+
+
 def _raise_for_http_status(resp: httpx.Response) -> None:
-    """Translate a non-2xx response into a typed :class:`MiniMaxSTTError`.
+    """Translate a failed response into a typed :class:`MiniMaxSTTError`.
+
+    Checks the **body** before the status: MiniMax reports plan/quota
+    problems through its own error envelope, with HTTP 200 (code 2056)
+    or even HTTP 500 (code 2061), so the status alone would misclassify
+    them as transient server trouble (:data:`QUOTA_HINTS`).
 
     Kept as a separate helper so :meth:`MiniMaxSTTProvider.transcribe`
     stays under the ADR-0021 cyclomatic-complexity budget (CC<=15).
     """
+    body_error = _body_error_message(resp)
+    if body_error is not None and looks_like_quota_problem(body_error):
+        # Не ретраим и помечаем мёртвым надолго: план не изменится за 30с.
+        raise MiniMaxSTTRateLimitError(f"minimax STT: {body_error}")
+
     status = resp.status_code
     if status in (401, 403):
         raise MiniMaxSTTAuthError(f"minimax STT: auth failure (HTTP {status})")
     if status == 429:
         raise MiniMaxSTTRateLimitError("minimax STT: rate-limited (HTTP 429)")
+    if body_error is not None:
+        # API-level ошибка не про квоту (битые параметры, внутренний сбой).
+        raise MiniMaxSTTInvalidResponseError(f"minimax STT: {body_error}")
     if status >= 500:
         raise MiniMaxSTTUnavailableError(
             f"minimax STT: server error (HTTP {status})"
@@ -553,7 +682,11 @@ __all__ = [
     "PROVIDER_NAME",
     "DEFAULT_BASE_URL",
     "DEFAULT_MODEL",
+    "DEFAULT_SAMPLE_RATE",
     "DEFAULT_TIMEOUT",
+    "QUOTA_HINTS",
+    "ensure_wav_container",
+    "looks_like_quota_problem",
     "MAX_AUDIO_BYTES",
     "MiniMaxSTTProvider",
     "MiniMaxSTTResponse",

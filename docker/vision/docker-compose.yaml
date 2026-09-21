@@ -13,6 +13,11 @@ services:
     # а compose при повседневном `up -d` не дёргает docker daemon registry.
     pull_policy: if_not_present
     network_mode: host
+    # mem_limit ADR-0111 (issue #2621): Vision Pi 8 GB → каждый контейнер
+    # обязан иметь лимит. Zenoh router — лёгкий процесс (64 MB RSS замер),
+    # даём 128 MB с запасом на рост локальной таблицы маршрутов.
+    mem_limit: 128m
+    memswap_limit: 128m
     environment:
       - RUST_LOG=zenoh=info
     volumes:
@@ -62,6 +67,19 @@ services:
     depends_on:
       - zenoh-router
     restart: unless-stopped
+    # t_5ab5e44a (наблюдаемость): healthcheck, чтобы `docker ps` показывал
+    # реальный статус, а не «висит на init». Проверяем сам драйвер
+    # depthai camera_node, а не `ros2 launch`: launch — это PID 1, он жив,
+    # пока жив контейнер, даже если дочерняя нода упала (USB error -71).
+    # Скобки в `[d]epthai` не дают pgrep найти собственный `sh -c`,
+    # в командной строке которого тоже есть шаблон. start_period 60s даём
+    # на холодный старт стека + USB-инициализацию DepthAI.
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f '[d]epthai_ros_driver/camera_node' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
     labels:
       logging: "promtail"
 
@@ -71,6 +89,9 @@ services:
     container_name: led-matrix
     pull_policy: if_not_present
     network_mode: host
+    # mem_limit ADR-0111 (issue #2621): 406 MB RSS замер, даём 512 MB
+    mem_limit: 512m
+    memswap_limit: 512m
     privileged: true  # Для доступа к SPI (/dev/spidev0.0)
     devices:
       - /dev/spidev0.0:/dev/spidev0.0  # SPI для NeoPixel LED
@@ -105,6 +126,9 @@ services:
     container_name: ceiling-camera
     pull_policy: if_not_present
     network_mode: host
+    # mem_limit ADR-0111 (issue #2621): 206 MB RSS замер, даём 512 MB
+    mem_limit: 512m
+    memswap_limit: 512m
     privileged: true  # Для доступа к USB camera
     devices:
       - /dev/video0:/dev/video0  # USB UVC камера
@@ -127,6 +151,18 @@ services:
     depends_on:
       - zenoh-router
     restart: unless-stopped
+    # t_5ab5e44a (наблюдаемость): healthcheck для usb_cam ноды — pgrep
+    # по пути исполняемого файла. PID 1 здесь `ros2 run usb_cam
+    # usb_cam_node_exe`, поэтому ищем `lib/usb_cam/...`, которого в его
+    # командной строке нет; скобки `[l]ib` исключают собственный `sh -c`.
+    # На cold start ждём USB-инициализацию (start_period 30s), иначе
+    # healthcheck fail'ит пока устройство не прокинулось.
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f '[l]ib/usb_cam/usb_cam_node_exe' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
     labels:
       logging: "promtail"
 
@@ -160,6 +196,9 @@ services:
     container_name: supercollider
     pull_policy: if_not_present
     network_mode: host
+    # mem_limit ADR-0111 (issue #2621): 179 MB RSS замер, даём 512 MB
+    mem_limit: 512m
+    memswap_limit: 512m
     privileged: true  # Для доступа к ALSA audio
     ipc: host      # Share host IPC namespace so dmix SHM is shared with voice-assistant
     shm_size: '256m'  # JACK использует /dev/shm для mmap (~107MB), default 64MB недостаточно
@@ -219,6 +258,11 @@ services:
     container_name: voice-resources-init
     pull_policy: if_not_present
     profiles: ["init"]
+    # ADR-0111 (issue #2621): init-контейнер с `restart: no` — лимит
+    # обязателен по стандарту DOCKER_STANDARDS.md §7, но намеренно мал,
+    # потому что процесс — однократный tar/copy, больше 256 MB не съест.
+    mem_limit: 256m
+    memswap_limit: 256m
     volumes:
       - renardo_samples:/target
     restart: "no"
@@ -315,7 +359,28 @@ services:
       - ../../local_test/RENARDO_REFERENCE.md:/renardo_ref/RENARDO_REFERENCE.md:ro
       # DB migrations (applied idempotently at startup by WaypointStore, TrackLibrary, etc.)
       - ../../migrations:/migrations:ro
-    mem_limit: 4g  # Voice Assistant + Animations
+    mem_limit: 5g  # Voice Assistant + Animations
+    memswap_limit: 6g  # RAM 5 GB + swap до 1 GB (issue #2676, ADR-0122)
+    # 5 GiB (↑ с 4 GiB после #2676) потому что при cold-start всех 9 нод
+    # одновременно + Silero v5 warm-load + Yandex gRPC + PyTorch + Vosk
+    # RSS прыгает в 3.4-3.9 GB с пиками до 99.6% от 4 GB (см. ADR-0122,
+    # issue #2676: docker stats показывал MEM USAGE 3.417 GiB / 4 GiB =
+    # 85.42%, ПРЫГАЛО до 99.64% → каскадные SIGKILL exit code -9 у
+    # tts_node / stt_node / speaker_id_node каждые ~30 с).
+    #
+    # memswap_limit: 6g разрешает контейнеру занять до 5 GB RAM + 1 GB
+    # swap поверх. На Vision Pi сейчас dphys-swapfile 2 GB (file-based,
+    # медленный), zram-swap по ADR-0111 ещё не поднят — но даже file-based
+    # swap даёт буфер на короткие пики, чтобы OOM-killer не убивал ноды
+    # сразу. После раскатки zram (ADR-0111, issue #2621) этот лимит станет
+    # более эффективным; до тех пор это страховка от каскадных SIGKILL.
+    #
+    # Долгосрочное решение (НЕ в этой карточке — backend work, см.
+    # issue #2676 "Proposed fix §2"): вынести тяжёлые ноды (Vosk STT,
+    # Silero, MiniMax T2A, mcp_server) в отдельные контейнеры с
+    # собственными лимитами → конкуренция за RAM внутри одного
+    # cgroup уйдёт.
+    #
     # 4 GiB because the container hosts 9 respawn-able nodes including:
     #   - audio_node (PyAudio + ReSpeaker 6ch buffers)
     #   - stt_node (Vosk model ~200-500 MB)
@@ -335,10 +400,11 @@ services:
     # so the model is resident for the entire container lifetime while
     # Yandex is primary.  Net RSS effect vs old lazy-load: roughly the
     # same peak (model is ~150-200 MB either way) but the user no longer
-    # hears the cold-load pause on first fallback.  The 4 GiB ceiling
-    # comfortably holds Yandex gRPC client (negligible) + warm Silero
-    # (~200 MB) + the other 8 nodes; no further increase needed.
-    memswap_limit: 4.5g
+    # hears the cold-load pause on first fallback.  The 5 GiB ceiling
+    # (raised from 4 GiB per ADR-0122 / issue #2676) comfortably holds
+    # Yandex gRPC client (negligible) + warm Silero (~200 MB) + the other
+    # 8 nodes with ~1 GiB headroom for dialogue bursts; memswap_limit=6g
+    # adds a 1 GB swap cushion against transient spikes.
     command: ["/ros_scripts/ros_with_namespace.sh", "/bin/bash", "/scripts/start_voice_assistant.sh"]
     depends_on:
       zenoh-router:
@@ -369,6 +435,9 @@ services:
     container_name: voice-action-server
     pull_policy: if_not_present
     network_mode: host
+    # mem_limit ADR-0111 (issue #2621): 25 MB RSS замер, даём 128 MB
+    mem_limit: 128m
+    memswap_limit: 128m
     environment:
       - PYTHONUNBUFFERED=1
       - ACTION_SERVER_HOST=127.0.0.1
@@ -400,6 +469,9 @@ services:
     container_name: avatar-supervisor
     pull_policy: if_not_present
     network_mode: host
+    # mem_limit ADR-0111 (issue #2621): 253 MB RSS замер, даём 512 MB
+    mem_limit: 512m
+    memswap_limit: 768m
     environment:
       - ROS_DOMAIN_ID=0
       - ROS_DISTRO=humble
@@ -472,6 +544,9 @@ services:
     container_name: avatar-arbiter
     pull_policy: if_not_present
     network_mode: host
+    # mem_limit ADR-0111 (issue #2621): 230 MB RSS замер, даём 512 MB
+    mem_limit: 512m
+    memswap_limit: 512m
     environment:
       - ROS_DOMAIN_ID=0
       - ROS_DISTRO=humble
@@ -520,6 +595,9 @@ services:
     container_name: rob-box-quest
     pull_policy: if_not_present
     network_mode: host
+    # mem_limit ADR-0111 (issue #2621): 266 MB RSS замер, даём 512 MB
+    mem_limit: 512m
+    memswap_limit: 512m
     build:
       context: .
       dockerfile: docker/vision/quest/Dockerfile
@@ -784,8 +862,12 @@ services:
       - ROBOT_ID=${ROBOT_ID}
       - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5
       - PYTHONUNBUFFERED=1
-      # Независимое от vision-hailo включение реальной лицевой детекции.
-      - HAILO_ENABLED=${FACE_HAILO_ENABLED:-false}
+      # ADR-0120 §8: у vision-face СВОИ хостовые переменные. Общие
+      # HAILO_ENABLED / HEF_PATH принадлежат vision-hailo — через них в
+      # vision-face приезжал yolov8n.hef вместо RetinaFace. Внутри контейнера
+      # имена прежние (их читает start_vision_face.sh); пусто → берётся
+      # секция vision_face_node из config/hailo_models.yaml.
+      - HAILO_ENABLED=${FACE_HAILO_ENABLED:-}
       - HEF_PATH=${FACE_HEF_PATH:-}
       - HAILO_MODELS_YAML=/config/hailo_models.yaml
     volumes:

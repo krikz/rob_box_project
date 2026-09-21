@@ -867,6 +867,17 @@ class WSSServer:
     def get_active_sessions(self) -> int:
         return sum(1 for s in self._sessions.values() if s.is_open())
 
+    def has_subscribers(self, ui_name: str) -> bool:
+        """Есть ли открытая сессия, подписанная на ``ui_name``.
+
+        Зовётся из ROS-потока (DemandDrivenSubscriptions.tick) — читаем
+        снимок, сессии меняет aiohttp-поток.
+        """
+        return any(
+            s.is_open() and ui_name in s.subscribed
+            for s in list(self._sessions.values())
+        )
+
     def set_send_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         """Установить aiohttp-loop для потокобезопасной отправки кадров."""
         self._send_loop = loop

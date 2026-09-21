@@ -369,6 +369,10 @@ jobs:
         if: '!inputs.dry_run && inputs.registry_source != ''skip'''
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          # --policy always обязателен: у сервисов vision стоит
+          # pull_policy: if_not_present (#2634, чтобы up -d работал без сети),
+          # и голый `compose pull` молча пропускает уже скачанный :dev —
+          # робот оставался на старых образах (issue #2609, 16.09).
           echo "📦 Pulling Docker images on Vision Pi..."
           echo "   Registry: ${{ env.registry_display }}"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -378,7 +382,7 @@ jobs:
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
              if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
-             docker compose pull --ignore-pull-failures" \
+             docker compose pull --policy always --ignore-pull-failures" \
             || echo "⚠️  Warning: Some images may not be available"
 
       # ==================== TIME SYNC ====================
@@ -446,13 +450,13 @@ jobs:
             "cd ~/rob_box_project/docker/vision && \
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
-             if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
+             if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
              echo '🧹 pre-init cleanup (retro t_d01fe536+t_9d35468d): stale containers + network'; \
              docker rm -f voice-resources-init 2>/dev/null || true; \
              docker network rm vision_default 2>/dev/null || true; \
              docker container prune -f 2>/dev/null || true; \
-             echo '🚀 running voice-resources-init synchronously (no -d)'; \
-             docker compose up voice-resources-init && \
+             echo '🚀 running voice-resources-init synchronously (no -d) via --profile init'; \
+             docker compose --profile init up voice-resources-init && \
              echo '⏳ waiting up to 15s for init to leave ps -a (prune/rm подбирает exited-контейнер)'; \
              for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do \
                if ! docker ps -a --filter name=voice-resources-init --format '{{.ID}}' | grep -q .; then \
@@ -484,13 +488,18 @@ jobs:
           # `depends_on: service_completed_successfully` — окно race
           # возвращалось, просто init прогонялся дважды.
           #
-          # Этот шаг ИСКЛЮЧАЕТ voice-resources-init из основного `up -d`:
-          # `--scale voice-resources-init=0` (compose-флаг, accepted by `up`)
-          # говорит compose не создавать этот сервис. Длинные/хрупкие
-          # списки сервисов через позиционные аргументы не используем —
-          # они рассинхронизируются с compose-файлом при добавлении
-          # нового сервиса (--scale — общий флаг, не зависит от
-          # конкретного набора service-имён).
+          # Этот шаг ИСКЛЮЧАЕТ voice-resources-init из основного `up -d`.
+          #
+          # Раньше это делал флаг `--scale voice-resources-init=0`.
+          # После PR #2634 (t_b79d0581) сервис помечен `profiles: [init]`, а при
+          # неактивном профиле compose считает его disabled — `--scale` по
+          # такому имени падает с `no such service: voice-resources-init:
+          # disabled` (deploy run #35067150565, шаг [Vision Pi] Start Containers).
+          # Флаг убран: обычный `up -d` без `--profile init` и так не создаёт
+          # этот сервис, а downstream (supercollider / voice-assistant) зависит
+          # от него через `required: false` — то есть ожидание становится no-op.
+          # Списки сервисов позиционными аргументами по-прежнему не используем —
+          # они рассинхронизируются с compose-файлом при добавлении сервиса.
           #
           # Параллельно уточняем причину «No such container: <HASH>»:
           # docker daemon НЕ удаляет exited-контейнер сам по себе
@@ -532,8 +541,8 @@ jobs:
              docker container prune -f 2>/dev/null || true; \
              echo '🔧 round-403 fix #2499: явный rm для всех compose-контейнеров (name-slot release)'; \
              docker ps -a --filter 'label=com.docker.compose.project=vision' --format '{{.ID}}' | xargs -r docker rm -f 2>/dev/null || true; \
-             echo '🚀 compose up (--scale voice-resources-init=0 — init уже выполнен в предыдущем шаге)'; \
-             docker compose up -d --force-recreate --pull never --remove-orphans --scale voice-resources-init=0"
+             echo '🚀 compose up (voice-resources-init в profile init — не стартует, init уже выполнен в предыдущем шаге)'; \
+             docker compose up -d --force-recreate --pull never --remove-orphans"
 
       # ==================== MAIN PI DEPLOYMENT ====================
 
@@ -593,7 +602,7 @@ jobs:
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
              if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
-             docker compose pull --ignore-pull-failures" \
+             docker compose pull --policy always --ignore-pull-failures" \
             || echo "⚠️  Warning: Some images may not be available"
 
       # ==================== TIME SYNC ====================

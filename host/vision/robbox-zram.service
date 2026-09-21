@@ -1,0 +1,53 @@
+# ROBBOX Vision Pi — zram-swap unit
+#
+# Скопировать в /etc/systemd/system/robbox-zram.service и выполнить
+# `systemctl daemon-reload && systemctl enable --now robbox-zram.service`.
+#
+# Полная инсталляция (включая создание этого файла): см.
+#   scripts/setup/setup_vision_pi_swap.sh --auto
+#
+# ADR: docs/adr/0111-vision-pi-zram-swap-and-container-limits.md
+# Issue: #2621
+#
+# Этот unit можно установить вручную ДО setup-скрипта, если оператор
+# предпочитает не запускать bash-установщик с правами root напрямую.
+# В этом случае:
+#   1. Скопировать файл:  sudo cp host/vision/robbox-zram.service /etc/systemd/system/
+#   2. Создать /opt/rob_box_project/ на этом Pi (или указать путь в ExecStart)
+#   3. Скопировать скрипт:  sudo cp scripts/setup/setup_vision_pi_swap.sh /usr/local/bin/robbox-zram-setup.sh
+#      и сделать его исполняемым (sudo chmod +x /usr/local/bin/robbox-zram-setup.sh)
+#   4. Активировать:  sudo systemctl daemon-reload && sudo systemctl enable --now robbox-zram.service
+#
+# Параметры (override через /etc/default/robbox-zram):
+#   ROBBOX_ZRAM_SIZE_MB=4096   # 4 GB на 8 GB Pi
+#   ROBBOX_ZRAM_ALGO=zstd      # zstd|lzo|lz4|lz4hc|deflate|842
+#   ROBBOX_ZRAM_PRIORITY=5     # swapon -p, выше = приоритетнее
+#   ROBBOX_ZRAM_SWAPPINESS=180 # рекомендация для zram
+
+[Unit]
+Description=ROBBOX Vision Pi — zram-swap (issue #2621, ADR-0111)
+Documentation=https://github.com/krikz/rob_box_project/blob/develop/docs/adr/0111-vision-pi-zram-swap-and-container-limits.md
+After=systemd-modules-load.service local-fs.target
+Before=docker.service robbox-vision.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=-/etc/default/robbox-zram
+ExecStart=/bin/bash -c '\
+  ROBBOX_ZRAM_SIZE_MB=${ROBBOX_ZRAM_SIZE_MB:-4096} \
+  ROBBOX_ZRAM_ALGO=${ROBBOX_ZRAM_ALGO:-zstd} \
+  ROBBOX_ZRAM_PRIORITY=${ROBBOX_ZRAM_PRIORITY:-5} \
+  ROBBOX_ZRAM_SWAPPINESS=${ROBBOX_ZRAM_SWAPPINESS:-180} \
+  exec /opt/rob_box_project/scripts/setup/setup_vision_pi_swap.sh --auto'
+ExecStop=/sbin/swapoff /dev/zram0
+ExecReload=/bin/bash -c '\
+  ROBBOX_ZRAM_SIZE_MB=${ROBBOX_ZRAM_SIZE_MB:-4096} \
+  ROBBOX_ZRAM_ALGO=${ROBBOX_ZRAM_ALGO:-zstd} \
+  ROBBOX_ZRAM_PRIORITY=${ROBBOX_ZRAM_PRIORITY:-5} \
+  ROBBOX_ZRAM_SWAPPINESS=${ROBBOX_ZRAM_SWAPPINESS:-180} \
+  exec /opt/rob_box_project/scripts/setup/setup_vision_pi_swap.sh --auto'
+TimeoutSec=30
+
+[Install]
+WantedBy=multi-user.target

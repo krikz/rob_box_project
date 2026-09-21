@@ -103,10 +103,14 @@ AI Agent (DeepSeek) будет:
 - Phase 2: RetinaFace + ArcFace embeddings + `/data/faces.db` journal.
 - Phase 3: scene-graph для TARS-cockpit.
 
-**Launch (ADR-0110):**
+**Launch (ADR-0110, issue #2658):**
 
 ```bash
-# SSoT launch-файл (ADR-0110, заменил захардкоженный ros2 run)
+# SSoT launch-файл (ADR-0110, заменил захардкоженный ros2 run).
+# vision_face.launch.py и vision_hailo.launch.py — шимы над общей
+# factory rob_box_perception.launch_factory.make_hailo_node_launch;
+# вся launch-конструкция (DeclareLaunchArgument + OpaqueFunction + Node)
+# живёт ровно в одном месте.
 ros2 launch rob_box_perception vision_hailo.launch.py \
     hailo_enabled:=false \
     hef_path:= \

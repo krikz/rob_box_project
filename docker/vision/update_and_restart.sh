@@ -58,10 +58,11 @@ echo ""
 # и обычным `up -d` НЕ запускается. Это нужно, чтобы падение по сети
 # при pull не валило весь стек. Но значит renardo_samples volume
 # может быть пустым после деплоя → запускаем init вручную здесь.
-# `up --rm` гарантирует, что init-контейнер не останется висеть
-# (он всё равно помечен restart: "no" в compose, но --rm надёжнее).
+# У `compose up` нет флага `--rm` (это флаг `compose run`) — с ним команда
+# падает на `unknown flag`, а `|| echo` глотает ошибку — самплы молча не заливаются.
+# Инит-контейнер и без того не перезапускается: restart: "no" в compose.
 echo "🎵 Заполняем voice resources (renardo samples)..."
-docker-compose --profile init up --rm voice-resources-init || \
+docker-compose --profile init up voice-resources-init || \
   echo "   ⚠️  voice-resources-init недоступен; music будет без samples"
 echo ""
 

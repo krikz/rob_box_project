@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import logging
 import sys
+import time
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -202,6 +204,9 @@ from rob_box_voice.stt_fallback import (  # noqa: E402
     DEFAULT_YANDEX_MAX_RETRIES,
     DEFAULT_YANDEX_TIMEOUT_S,
     STTAttempt,
+    STTAuthError,
+    STTQuotaError,
+    STTTimeoutError,
     select_recognition,
 )
 
@@ -239,6 +244,20 @@ def _make_stt_node_stub(**param_overrides):
         # Issue #1251 — ранний «бульк»
         early_boop_enabled=True,
         early_boop_trigger="boop",
+        # Issue #2365 Phase 2 — цепочка провайдеров. MiniMax по умолчанию
+        # ВЫКЛЮЧЕН в тестах намеренно: иначе у разработчика с живым
+        # MINIMAX_API_KEY в окружении юнит-тесты полезут в сеть и станут
+        # флаки. Тесты MiniMax включают его явно.
+        stt_provider_chain=["yandex", "vosk"],
+        minimax_stt_enabled=False,
+        minimax_stt_api_key="",
+        minimax_stt_api_key_env="MINIMAX_API_KEY_UNSET_FOR_TESTS",
+        minimax_stt_timeout_s=5.0,
+        minimax_stt_max_retries=1,
+        provider_dead_ttl_s=300.0,
+        provider_dead_ttl_transient_s=30.0,
+        # Пустая строка — не писать файл состояния с юнит-теста.
+        provider_state_file="",
     )
     defaults.update(param_overrides)
 
@@ -275,6 +294,12 @@ def _make_stt_node_stub(**param_overrides):
     # param_overrides нужно форсировать после __init__)
     for k, v in defaults.items():
         setattr(node, k, v)
+    # ``stt_provider_chain`` — имя ROS-параметра, а нода хранит уже
+    # нормализованную цепочку в ``provider_chain``; цикл выше про это не
+    # знает, поэтому пересобираем её так же, как это делает __init__.
+    node.provider_chain = stt_node_module.STTNode._normalize_provider_chain(
+        list(defaults["stt_provider_chain"])
+    )
     # Mock publishers/subscribers/loggers
     node.result_pub = MagicMock()
     node.state_pub = MagicMock()
@@ -1404,3 +1429,550 @@ class TestTelemetryPhraseToAccept:
             if "phrase_to_accept_ms=" in r.getMessage()
         ]
         assert telemetry == []
+
+
+class TestVoskLazyLoad:
+    """Issue #2609 — Vosk грузится при первом fallback, а не на старте.
+
+    Модель держит ~400 МБ RSS в stt_node, а на Vision Pi (8 ГБ) нужна только
+    когда Yandex не ответил.
+    """
+
+    @staticmethod
+    def _node_with_model_on_disk(monkeypatch):
+        monkeypatch.setattr("os.path.isdir", lambda _p: True)
+        node = _make_stt_node_stub()
+        from rob_box_voice import stt_node as stt_node_module
+
+        return node, stt_node_module
+
+    def test_model_not_loaded_at_startup(self, monkeypatch):
+        node, mod = self._node_with_model_on_disk(monkeypatch)
+        assert node._vosk_available is True
+        assert node.recognizer is None
+        mod.Model.assert_not_called()
+
+    def test_first_vosk_call_loads_model_once(self, monkeypatch):
+        node, mod = self._node_with_model_on_disk(monkeypatch)
+        mod.KaldiRecognizer.return_value.FinalResult.return_value = '{"text": "привет"}'
+
+        assert node._recognize_vosk(b"\x00" * 8000) == "привет"
+        assert node._recognize_vosk(b"\x00" * 8000) == "привет"
+        assert mod.Model.call_count == 1
+
+    def test_fallback_offers_vosk_before_it_is_loaded(self, monkeypatch):
+        node, _mod = self._node_with_model_on_disk(monkeypatch)
+        node.yandex_stub = None
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(node, "_recognize_vosk", MagicMock(return_value="привет робот"))
+            text, attempts = node._recognize_with_fallback(b"\x00" * 8000)
+        assert text == "привет робот"
+        assert [a.provider for a in attempts] == ["vosk"]
+
+    def test_preload_loads_model_at_init(self, monkeypatch):
+        node, mod = self._node_with_model_on_disk(monkeypatch)
+        node.vosk_preload = True
+        node.initialize_vosk()
+        assert node.recognizer is not None
+        assert mod.Model.call_count == 1
+
+    def test_load_failure_disables_vosk(self, monkeypatch):
+        node, mod = self._node_with_model_on_disk(monkeypatch)
+        mod.Model.side_effect = RuntimeError("broken model")
+        assert node._recognize_vosk(b"\x00" * 8000) is None
+        assert node._vosk_available is False
+        assert node._recognize_vosk(b"\x00" * 8000) is None
+        assert mod.Model.call_count == 1
+
+    def test_missing_model_dir_leaves_vosk_unavailable(self, monkeypatch):
+        monkeypatch.setattr("os.path.isdir", lambda _p: False)
+        node = _make_stt_node_stub()
+        assert node._vosk_available is False
+        assert node._recognize_vosk(b"\x00" * 8000) is None
+
+
+def test_vosk_adapter_prepare_loads_model_outside_timeout(monkeypatch):
+    """Issue #2609 — загрузка Vosk не должна съедать таймаут первой фразы."""
+    monkeypatch.setattr("os.path.isdir", lambda _p: True)
+    node = _make_stt_node_stub()
+    from rob_box_voice import stt_node as mod
+
+    node.yandex_stub = None
+    node.yandex_timeout_s = 0.2
+    mod.KaldiRecognizer.return_value.FinalResult.return_value = '{"text": "привет робот"}'
+
+    real_model = mod.Model
+
+    def _slow_model(*a, **kw):
+        time.sleep(0.4)
+        return real_model(*a, **kw)
+
+    monkeypatch.setattr(mod, "Model", _slow_model)
+    text, attempts = node._recognize_with_fallback(b"\x00" * 8000)
+    assert text == "привет робот"
+    assert [(a.provider, a.reason) for a in attempts] == [("vosk", "ok")]
+
+
+# ---------------------------------------------------------------------------
+# Issue #2365 Phase 2 (ADR-0124): цепочка minimax → yandex → vosk
+# ---------------------------------------------------------------------------
+
+
+class TestProviderChainNormalization:
+    """Инварианты ``_normalize_provider_chain`` (аналог tts_node, #1083)."""
+
+    @staticmethod
+    def _normalize(chain, logger=None):
+        from rob_box_voice.stt_node import STTNode
+
+        return STTNode._normalize_provider_chain(chain, logger=logger)
+
+    def test_default_order_is_minimax_yandex_vosk(self):
+        from rob_box_voice.stt_node import DEFAULT_STT_PROVIDER_CHAIN
+
+        assert DEFAULT_STT_PROVIDER_CHAIN == ["minimax", "yandex", "vosk"]
+
+    def test_empty_chain_falls_back_to_default(self):
+        assert self._normalize([]) == ["minimax", "yandex", "vosk"]
+
+    def test_vosk_is_forced_last(self):
+        """Vosk в середине — переносится в конец: он последний рубеж."""
+        assert self._normalize(["vosk", "minimax", "yandex"]) == [
+            "minimax",
+            "yandex",
+            "vosk",
+        ]
+
+    def test_vosk_appended_when_missing(self):
+        """Без Vosk цепочка оставила бы робота глухим при мёртвых облаках."""
+        assert self._normalize(["minimax", "yandex"]) == [
+            "minimax",
+            "yandex",
+            "vosk",
+        ]
+
+    def test_duplicates_removed_keeping_first_position(self):
+        assert self._normalize(["yandex", "minimax", "yandex"]) == [
+            "yandex",
+            "minimax",
+            "vosk",
+        ]
+
+    def test_vosk_only_is_a_legitimate_offline_mode(self):
+        assert self._normalize(["vosk"]) == ["vosk"]
+
+    def test_unknown_provider_is_dropped_with_warning(self):
+        logger = MagicMock()
+        assert self._normalize(["whisper", "yandex"], logger=logger) == [
+            "yandex",
+            "vosk",
+        ]
+        assert logger.warning.called
+
+    def test_garbage_chain_falls_back_to_default(self):
+        assert self._normalize(["whisper", "azure"]) == [
+            "minimax",
+            "yandex",
+            "vosk",
+        ]
+
+    def test_case_and_whitespace_tolerated(self):
+        assert self._normalize([" MiniMax ", "YANDEX"]) == [
+            "minimax",
+            "yandex",
+            "vosk",
+        ]
+
+
+class TestProviderChainWiring:
+    """``_build_provider_chain`` — кого и в каком порядке реально зовём."""
+
+    def test_chain_order_follows_parameter(self, stt_node):
+        stt_node.provider_chain = ["minimax", "yandex", "vosk"]
+        stt_node.minimax_stt_enabled = True
+        stt_node.minimax_stt_api_key = "FAKE"
+        stt_node.yandex_stub = MagicMock()
+        stt_node.recognizer = MagicMock()
+
+        names = [p.name for p in stt_node._build_provider_chain()]
+
+        assert names == ["minimax", "yandex", "vosk"]
+
+    def test_minimax_skipped_without_key(self, stt_node):
+        """Нет ключа — MiniMax тихо выпадает (ADR-0091 §5.2), без ошибок."""
+        stt_node.provider_chain = ["minimax", "yandex", "vosk"]
+        stt_node.minimax_stt_enabled = True
+        stt_node.minimax_stt_api_key = ""
+        stt_node.yandex_stub = MagicMock()
+        stt_node.recognizer = MagicMock()
+
+        names = [p.name for p in stt_node._build_provider_chain()]
+
+        assert names == ["yandex", "vosk"]
+
+    def test_minimax_skipped_when_disabled(self, stt_node):
+        stt_node.provider_chain = ["minimax", "yandex", "vosk"]
+        stt_node.minimax_stt_enabled = False
+        stt_node.minimax_stt_api_key = "FAKE"
+        stt_node.yandex_stub = MagicMock()
+        stt_node.recognizer = MagicMock()
+
+        names = [p.name for p in stt_node._build_provider_chain()]
+
+        assert names == ["yandex", "vosk"]
+
+    def test_yandex_skipped_without_stub(self, stt_node):
+        stt_node.provider_chain = ["minimax", "yandex", "vosk"]
+        stt_node.minimax_stt_enabled = True
+        stt_node.minimax_stt_api_key = "FAKE"
+        stt_node.yandex_stub = None
+        stt_node.recognizer = MagicMock()
+
+        names = [p.name for p in stt_node._build_provider_chain()]
+
+        assert names == ["minimax", "vosk"]
+
+    def test_vosk_prepare_is_wired(self, stt_node):
+        """Vosk грузит модель через prepare() — вне таймаута (#2609)."""
+        stt_node.provider_chain = ["vosk"]
+        stt_node.recognizer = MagicMock()
+        stt_node._ensure_vosk_loaded = MagicMock(return_value=True)
+
+        chain = stt_node._build_provider_chain()
+        chain[0].prepare()
+
+        assert stt_node._ensure_vosk_loaded.called
+
+    def test_per_provider_policies(self, stt_node):
+        stt_node.minimax_stt_timeout_s = 5.0
+        stt_node.minimax_stt_max_retries = 1
+        stt_node.yandex_timeout_s = 12.0
+        stt_node.yandex_max_retries = 1
+
+        policies = stt_node._provider_policies()
+
+        assert policies["minimax"].timeout_s == 5.0
+        assert policies["minimax"].max_retries == 1
+        assert policies["yandex"].timeout_s == 12.0
+        # Vosk офлайновый: повтор мусора даст тот же мусор.
+        assert policies["vosk"].max_retries == 0
+
+
+class TestRecognizeChainEndToEnd:
+    """Полный прогон ``_recognize_with_fallback`` по новой цепочке."""
+
+    @staticmethod
+    def _prepare(node):
+        node.provider_chain = ["minimax", "yandex", "vosk"]
+        node.minimax_stt_enabled = True
+        node.minimax_stt_api_key = "FAKE"
+        node.yandex_stub = MagicMock()
+        node.recognizer = MagicMock()
+        node.retry_backoff_s = 0.0
+        node.minimax_stt_max_retries = 0
+        node.yandex_max_retries = 0
+        node._ensure_vosk_loaded = MagicMock(return_value=True)
+        return node
+
+    def test_minimax_wins_when_alive(self, stt_node):
+        node = self._prepare(stt_node)
+        node._recognize_minimax = MagicMock(return_value="робот расскажи анекдот")
+        node._recognize_yandex = MagicMock(return_value="яндекс не нужен")
+        node._recognize_vosk = MagicMock(return_value="воск не нужен")
+
+        text, attempts = node._recognize_with_fallback(b"\x00" * 1000)
+
+        assert text == "робот расскажи анекдот"
+        assert attempts[0].provider == "minimax"
+        assert node._recognize_yandex.called is False
+        assert node._recognize_vosk.called is False
+
+    def test_falls_through_to_yandex_then_vosk(self, stt_node):
+        node = self._prepare(stt_node)
+        node._recognize_minimax = MagicMock(side_effect=STTQuotaError("2056"))
+        node._recognize_yandex = MagicMock(side_effect=STTQuotaError("RESOURCE_EXHAUSTED"))
+        node._recognize_vosk = MagicMock(return_value="робот расскажи анекдот")
+
+        text, attempts = node._recognize_with_fallback(b"\x00" * 1000)
+
+        assert text == "робот расскажи анекдот"
+        assert [a.provider for a in attempts] == ["minimax", "yandex", "vosk"]
+        assert [a.reason for a in attempts] == ["error", "error", "ok"]
+
+    def test_dead_clouds_are_skipped_on_next_phrase(self, stt_node):
+        """Сценарий 21.09: оба облака без денег — вторая фраза идёт в Vosk сразу."""
+        node = self._prepare(stt_node)
+        node._recognize_minimax = MagicMock(side_effect=STTQuotaError("2056"))
+        node._recognize_yandex = MagicMock(side_effect=STTQuotaError("RESOURCE_EXHAUSTED"))
+        node._recognize_vosk = MagicMock(return_value="робот расскажи анекдот")
+
+        node._recognize_with_fallback(b"\x00" * 1000)
+        text, attempts = node._recognize_with_fallback(b"\x00" * 1000)
+
+        assert node._recognize_minimax.call_count == 1
+        assert node._recognize_yandex.call_count == 1
+        assert node._recognize_vosk.call_count == 2
+        assert text == "робот расскажи анекдот"
+        assert [a.reason for a in attempts] == ["dead", "dead", "ok"]
+
+    def test_no_providers_returns_none(self, stt_node):
+        stt_node.provider_chain = ["minimax", "yandex", "vosk"]
+        stt_node.minimax_stt_enabled = False
+        stt_node.yandex_stub = None
+        stt_node.recognizer = None
+        stt_node._vosk_available = False
+
+        text, attempts = stt_node._recognize_with_fallback(b"\x00" * 1000)
+
+        assert text is None
+        assert attempts == []
+
+
+class TestEffectiveProvider:
+    """Фактический провайдер после фолбека (лог + файл состояния)."""
+
+    def test_effective_is_head_of_chain_when_all_alive(self, stt_node):
+        stt_node.provider_chain = ["minimax", "yandex", "vosk"]
+        assert stt_node._effective_provider() == "minimax"
+
+    def test_effective_skips_dead_providers(self, stt_node):
+        stt_node.provider_chain = ["minimax", "yandex", "vosk"]
+        stt_node._provider_dead_cache.mark_dead("minimax", "quota", transient=False)
+        assert stt_node._effective_provider() == "yandex"
+
+    def test_effective_is_last_when_everyone_dead(self, stt_node):
+        stt_node.provider_chain = ["minimax", "yandex", "vosk"]
+        for name in stt_node.provider_chain:
+            stt_node._provider_dead_cache.mark_dead(name, "dead", transient=False)
+        assert stt_node._effective_provider() == "vosk"
+
+    def test_state_persisted_only_on_change(self, stt_node, tmp_path):
+        """Строка в логе и запись в файл — только при СМЕНЕ провайдера."""
+        stt_node.provider_chain = ["minimax", "yandex", "vosk"]
+        stt_node.provider_state_file = str(tmp_path / "state.json")
+        stt_node._last_effective_provider = None
+        stt_node._persist_provider_state = MagicMock()
+
+        stt_node._log_provider_state("startup")
+        assert stt_node._persist_provider_state.call_count == 1
+
+        stt_node._log_provider_state("recognize")  # ничего не изменилось
+        assert stt_node._persist_provider_state.call_count == 1
+
+        stt_node._provider_dead_cache.mark_dead("minimax", "quota", transient=False)
+        stt_node._log_provider_state("recognize")
+        assert stt_node._persist_provider_state.call_count == 2
+
+    def test_persisted_payload_names_provider_and_dead(self, stt_node):
+        stt_node.provider_chain = ["minimax", "yandex", "vosk"]
+        stt_node._last_effective_provider = None
+        stt_node._persist_provider_state = MagicMock()
+        stt_node._provider_dead_cache.mark_dead("minimax", "quota", transient=False)
+
+        stt_node._log_provider_state("startup")
+
+        payload = stt_node._persist_provider_state.call_args[0][0]
+        assert payload["provider"] == "yandex"
+        assert "minimax" in payload["dead_providers"]
+
+
+class TestPersistedProviderState:
+    """Рестарт ноды не должен снова платить таймаут мёртвому облаку (#2676)."""
+
+    def test_round_trip_through_file(self, stt_node, tmp_path):
+        state_file = tmp_path / "stt_provider_state.json"
+        stt_node.provider_state_file = str(state_file)
+        stt_node.provider_chain = ["minimax", "yandex", "vosk"]
+        stt_node._last_effective_provider = None
+        stt_node._provider_dead_cache.mark_dead("minimax", "quota", transient=False)
+
+        stt_node._log_provider_state("startup")
+        assert state_file.exists()
+
+        fresh = _make_stt_node_stub(provider_state_file=str(state_file))
+        fresh.provider_state_file = str(state_file)
+        fresh._load_persisted_provider_state()
+
+        assert fresh._provider_dead_cache.is_dead("minimax") is True
+
+    def test_missing_file_does_not_break_startup(self, stt_node, tmp_path):
+        stt_node.provider_state_file = str(tmp_path / "nope.json")
+        stt_node._load_persisted_provider_state()  # не должно бросить
+
+    def test_broken_json_does_not_break_startup(self, stt_node, tmp_path):
+        broken = tmp_path / "broken.json"
+        broken.write_text("{не json", encoding="utf-8")
+        stt_node.provider_state_file = str(broken)
+        stt_node._load_persisted_provider_state()  # не должно бросить
+
+
+class TestMiniMaxErrorMapping:
+    """MiniMax-исключения → типизированные ошибки цепочки (для кэша)."""
+
+    @staticmethod
+    def _node_with_provider(stt_node, exc):
+        provider = MagicMock()
+        provider.transcribe.side_effect = exc
+        stt_node._ensure_minimax_provider = lambda: provider
+        return stt_node
+
+    def test_auth_error_becomes_stt_auth_error(self, stt_node):
+        from rob_box_voice.stt_providers.minimax_provider import MiniMaxSTTAuthError
+
+        node = self._node_with_provider(stt_node, MiniMaxSTTAuthError("HTTP 401"))
+        with pytest.raises(STTAuthError):
+            node._recognize_minimax(b"\x00" * 100)
+
+    def test_rate_limit_becomes_quota_error(self, stt_node):
+        from rob_box_voice.stt_providers.minimax_provider import (
+            MiniMaxSTTRateLimitError,
+        )
+
+        node = self._node_with_provider(
+            stt_node, MiniMaxSTTRateLimitError("HTTP 429")
+        )
+        with pytest.raises(STTQuotaError):
+            node._recognize_minimax(b"\x00" * 100)
+
+    def test_timeout_becomes_stt_timeout_error(self, stt_node):
+        from rob_box_voice.stt_providers.minimax_provider import (
+            MiniMaxSTTUnavailableError,
+        )
+
+        node = self._node_with_provider(
+            stt_node, MiniMaxSTTUnavailableError("timeout: read")
+        )
+        with pytest.raises(STTTimeoutError):
+            node._recognize_minimax(b"\x00" * 100)
+
+    def test_unconfigured_provider_returns_none(self, stt_node):
+        stt_node._ensure_minimax_provider = lambda: None
+        assert stt_node._recognize_minimax(b"\x00" * 100) is None
+
+    def test_text_is_returned_on_success(self, stt_node):
+        provider = MagicMock()
+        provider.transcribe.return_value = SimpleNamespace(text="робот привет")
+        stt_node._ensure_minimax_provider = lambda: provider
+
+        assert stt_node._recognize_minimax(b"\x00" * 100) == "робот привет"
+
+
+class TestDeadCacheTtlOnRealRobotErrors:
+    """Отказы, снятые с робота 21.09.2026 — проверяем класс TTL.
+
+    Симптом до фикса: `dead={'minimax': 11.3}` в логе — то есть 30с
+    вместо 300с, и облако переспрашивалось каждые полминуты.
+    """
+
+    @staticmethod
+    def _chain(node):
+        node.provider_chain = ["minimax", "yandex", "vosk"]
+        node.minimax_stt_enabled = True
+        node.minimax_stt_api_key = "FAKE"
+        node.yandex_stub = MagicMock()
+        node.recognizer = MagicMock()
+        node.retry_backoff_s = 0.0
+        node._ensure_vosk_loaded = MagicMock(return_value=True)
+        node._recognize_vosk = MagicMock(return_value="робот как дела")
+        return node
+
+    def test_minimax_plan_error_gets_long_ttl_and_no_retry(self, stt_node):
+        """HTTP 500 + код 2061 = план, а не «сервер моргнул»."""
+        from rob_box_voice.stt_providers.minimax_provider import (
+            MiniMaxSTTRateLimitError,
+        )
+
+        node = self._chain(stt_node)
+        node.minimax_stt_max_retries = 1
+        provider = MagicMock()
+        provider.transcribe.side_effect = MiniMaxSTTRateLimitError(
+            "minimax STT: minimax API error: your current token plan "
+            "not support model, asr-1.0 (2061)"
+        )
+        node._ensure_minimax_provider = lambda: provider
+        node._recognize_yandex = MagicMock(return_value=None)
+
+        node._recognize_with_fallback(b"\x00" * 1000)
+
+        # Повтора не было — квоту ретраить бессмысленно.
+        assert provider.transcribe.call_count == 1
+        # И TTL длинный: через 30с (транзиентный порог) всё ещё мёртв.
+        assert node._provider_dead_cache.remaining_s("minimax") > 100
+
+    def test_yandex_network_error_gets_short_ttl(self, stt_node):
+        """UNAVAILABLE (на роботе — нет IPv6-маршрута) = транзиентный."""
+        node = self._chain(stt_node)
+        node.minimax_stt_enabled = False
+        node.yandex_max_retries = 0
+        node._recognize_yandex = MagicMock(
+            side_effect=RuntimeError("failed to connect to all addresses")
+        )
+
+        node._recognize_with_fallback(b"\x00" * 1000)
+
+        remaining = node._provider_dead_cache.remaining_s("yandex")
+        assert 0 < remaining <= 30
+
+
+class TestGrpcErrorMapping:
+    """gRPC-код Yandex → типизированная ошибка (для кэша «мёртвых»)."""
+
+    @staticmethod
+    def _rpc_error(code, details="boom"):
+        """Заглушка gRPC-ошибки.
+
+        ``spec=grpc.RpcError`` здесь не годится: в этом модуле ``grpc``
+        подменён моком (как и rclpy), а замокать мок нельзя.
+        ``_map_grpc_error`` смотрит только на ``code()``/``details()``.
+        """
+
+        class _Err(Exception):
+            def code(self):
+                return code
+
+            def details(self):
+                return details
+
+        return _Err()
+
+    def test_deadline_exceeded_becomes_timeout(self):
+        import grpc as _grpc
+
+        from rob_box_voice.stt_node import _map_grpc_error
+
+        mapped = _map_grpc_error(
+            self._rpc_error(_grpc.StatusCode.DEADLINE_EXCEEDED), 12.0
+        )
+        assert isinstance(mapped, STTTimeoutError)
+
+    def test_unauthenticated_becomes_auth_error(self):
+        import grpc as _grpc
+
+        from rob_box_voice.stt_node import _map_grpc_error
+
+        mapped = _map_grpc_error(
+            self._rpc_error(_grpc.StatusCode.UNAUTHENTICATED), 12.0
+        )
+        assert isinstance(mapped, STTAuthError)
+
+    def test_resource_exhausted_becomes_quota_error(self):
+        import grpc as _grpc
+
+        from rob_box_voice.stt_node import _map_grpc_error
+
+        mapped = _map_grpc_error(
+            self._rpc_error(_grpc.StatusCode.RESOURCE_EXHAUSTED), 12.0
+        )
+        assert isinstance(mapped, STTQuotaError)
+
+    def test_unavailable_is_passed_through_as_transient(self):
+        """«Network is unreachable» — сеть, а не деньги: короткий TTL."""
+        import grpc as _grpc
+
+        from rob_box_voice.stt_node import _map_grpc_error
+
+        original = self._rpc_error(
+            _grpc.StatusCode.UNAVAILABLE, "Network is unreachable"
+        )
+        mapped = _map_grpc_error(original, 12.0)
+        assert mapped is original

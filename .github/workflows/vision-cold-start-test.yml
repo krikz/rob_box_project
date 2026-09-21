@@ -1,0 +1,195 @@
+name: "G: Vision Pi Cold-Start Tests"
+
+# Регрессионные тесты для issue #2610: Vision Pi должен подниматься после
+# ребута даже при недоступном build-registry, и падение одного образа
+# не должно валить весь стек.
+#
+# Этот workflow:
+#   1. Прогоняет unit/integration тесты tests/vision/cold_start/
+#      (compose-структура, systemd-юнит, override-bad-registry, offline-build).
+#   2. Проверяет, что ``docker compose config`` с override-bad-registry
+#      парсится без ошибок (override-механика PR #2634 жива).
+#   3. Проверяет, что voice-resources собирается offline (для cold-start e2e
+#      на железе).
+#   4. Артефакты: логи `docker compose ps`, `docker compose logs` —
+#      прикладываются для диагностики, если тесты красные.
+#
+# Триггеры:
+#   - pull_request в develop/main (paths: изменения в docker/vision/, тестах
+#     cold_start, setup_vision_pi.sh, override-файлах)
+#   - workflow_dispatch для ручного прогона
+#
+# Не является заменой реального e2e на железе — это
+# structural/configuration-level guard. Реальный cold-start (Pi reboot
+# с offline registry) делает e2e-process по завершении merge.
+
+on:
+  pull_request:
+    branches:
+      - develop
+      - main
+    paths:
+      - 'docker/vision/docker-compose.yaml'
+      - 'docker/vision/voice_resources/**'
+      - 'scripts/setup/setup_vision_pi.sh'
+      - 'scripts/tests/override-bad-registry*.yaml'
+      - 'tests/vision/cold_start/**'
+      - '.github/workflows/vision-cold-start-test.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# pipefail: без него `docker build ... | tail` и `docker run ... | tee`
+# отдают наружу код tail/tee, и упавшая сборка проходит как зелёная.
+defaults:
+  run:
+    shell: bash -eo pipefail {0}
+
+env:
+  COMPOSE_DIR: docker/vision
+  TEST_DIR: tests/vision/cold_start
+  ROS_DISTRO: humble
+  IMAGE_TAG: cold-start-test
+  # TEST-NET-1 (RFC 5737) — гарантированно не маршрутизируемый диапазон.
+  # Используется для override-bad-registry сценария.
+  BAD_REGISTRY_PREFIX: 192.0.2.1:9999/missing
+
+jobs:
+  cold-start-tests:
+    name: Cold-start unit + integration tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies (PyYAML, pytest)
+        run: |
+          python3 -m pip install --quiet --upgrade pip
+          python3 -m pip install --quiet PyYAML pytest pytest-asyncio pytest-cov
+
+      - name: Run cold-start unit tests
+        run: |
+          echo "=== Cold-start: structural & unit tests ==="
+          # pytest.ini в корне проекта имеет coverage gate 85% для harness
+          # — для этих тестов он не нужен, override:
+          python3 -m pytest tests/vision/cold_start/ \
+            -v \
+            --override-ini="addopts=-ra --tb=short" \
+            --no-cov \
+            -p no:cacheprovider
+
+      - name: Compose config with override-bad-registry
+        run: |
+          echo "=== docker compose config с TEST-NET-1 override ==="
+          cd "$COMPOSE_DIR"
+          touch .env.secrets
+          docker compose \
+            -f docker-compose.yaml \
+            -f ../../scripts/tests/override-bad-registry-cold-start.yaml \
+            config > /tmp/cold-start-config.out 2> /tmp/cold-start-config.err
+          exit_code=$?
+          echo "exit=$exit_code"
+          if [ $exit_code -ne 0 ]; then
+            echo "❌ compose config упал с exit=$exit_code"
+            cat /tmp/cold-start-config.err
+            exit $exit_code
+          fi
+          # Проверяем, что override реально применился
+          if grep -q "192.0.2.1" /tmp/cold-start-config.out; then
+            echo "✅ override применился (192.0.2.1 найден в image)"
+          else
+            echo "❌ override не применился — TEST-NET-1 не найден"
+            exit 1
+          fi
+
+      - name: Compose config with SERVICE_IMAGE_PREFIX override (cold-start)
+        run: |
+          echo "=== docker compose config с SERVICE_IMAGE_PREFIX=TEST-NET-1 ==="
+          cd "$COMPOSE_DIR"
+          touch .env.secrets
+          SERVICE_IMAGE_PREFIX="$BAD_REGISTRY_PREFIX" \
+            docker compose \
+              -f docker-compose.yaml \
+              config > /tmp/cold-start-prefix.out 2> /tmp/cold-start-prefix.err
+          exit_code=$?
+          echo "exit=$exit_code"
+          if [ $exit_code -ne 0 ]; then
+            echo "❌ compose config с SERVICE_IMAGE_PREFIX override упал с exit=$exit_code"
+            cat /tmp/cold-start-prefix.err
+            exit $exit_code
+          fi
+          # Проверяем, что in-house образы подменились
+          if grep -q "192.0.2.1:9999/missing:" /tmp/cold-start-prefix.out; then
+            echo "✅ SERVICE_IMAGE_PREFIX применился ко всем in-house образам"
+          else
+            echo "❌ SERVICE_IMAGE_PREFIX не подменил in-house образы"
+            head -50 /tmp/cold-start-prefix.out
+            exit 1
+          fi
+
+      - name: voice-resources offline build (cold-start e2e подготовка)
+        run: |
+          echo "=== docker build --network=none voice-resources-cold-start ==="
+          docker build \
+            --network=none \
+            -f docker/vision/voice_resources/Dockerfile.offline \
+            -t voice-resources-cold-start:test \
+            . 2>&1 | tail -25
+          echo "✅ voice-resources собирается без сети"
+
+      - name: Verify voice-resources-cold-start runs init_resources.sh
+        run: |
+          echo "=== Запуск voice-resources-cold-start: проверяем init_resources.sh ==="
+          # Создаём временный volume для имитации renardo_samples
+          docker run --rm \
+            -v cold-start-test-vol:/target \
+            voice-resources-cold-start:test 2>&1 | tee /tmp/init-resources.log
+          # Должно быть "Renardo samples already initialized" ИЛИ
+          # "WARNING: bundled Renardo samples not found — leaving volume empty"
+          if grep -qE "(Renardo samples already initialized|WARNING: bundled Renardo samples not found)" /tmp/init-resources.log; then
+            echo "✅ init_resources.sh отработал корректно"
+          else
+            echo "❌ init_resources.sh не отработал ожидаемо"
+            cat /tmp/init-resources.log
+            exit 1
+          fi
+          # Cleanup
+          docker volume rm cold-start-test-vol 2>/dev/null || true
+
+      - name: Upload diagnostic artifacts (compose ps/logs)
+        if: always()
+        run: |
+          mkdir -p /tmp/cold-start-artifacts
+          cd "$COMPOSE_DIR"
+          touch .env.secrets
+          echo "=== docker compose config (без override) ===" > /tmp/cold-start-artifacts/README.txt
+          docker compose -f docker-compose.yaml config --services > /tmp/cold-start-artifacts/services-default.txt 2>&1 || true
+          docker compose --profile init -f docker-compose.yaml config --services > /tmp/cold-start-artifacts/services-init.txt 2>&1 || true
+          docker compose --profile monitoring -f docker-compose.yaml config --services > /tmp/cold-start-artifacts/services-monitoring.txt 2>&1 || true
+          docker compose --profile ai -f docker-compose.yaml config --services > /tmp/cold-start-artifacts/services-ai.txt 2>&1 || true
+          # cold-start override
+          SERVICE_IMAGE_PREFIX="$BAD_REGISTRY_PREFIX" \
+            docker compose -f docker-compose.yaml config > /tmp/cold-start-artifacts/config-bad-registry.yaml 2>&1 || true
+          # Артефакты для архивирования
+          echo "Артефакты cold-start тестов" > /tmp/cold-start-artifacts/README.txt
+          echo "Эти логи нужны для диагностики, если cold-start test упал." >> /tmp/cold-start-artifacts/README.txt
+          echo "Дата: $(date -u)" >> /tmp/cold-start-artifacts/README.txt
+          echo "PR: ${{ github.event.pull_request.number }}" >> /tmp/cold-start-artifacts/README.txt
+        shell: bash
+
+      - name: Archive diagnostic logs
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: vision-cold-start-logs
+          path: /tmp/cold-start-artifacts/
+          retention-days: 7
+          if-no-files-found: ignore

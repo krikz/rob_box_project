@@ -147,6 +147,23 @@ Bash-скрипт остаётся как orchestration layer (YAML-парсин
 
 **Out of scope** (явно): mcp_server consumer-side (Phase 1.5, ADR-0089 §3 touchpoints #16-21, отдельная карточка).
 
+### 3.1. Update 2026-09-15 — DRY-рефакторинг launch_factory (issue #2658)
+
+К моменту Phase 2 (issue #2599, добавление `vision_face`) появился второй launch-файл `vision_face.launch.py`, который побуквенно копировал `vision_hailo.launch.py` (~110 строк launch-конструкции). Вынесена общая фабрика в `src/rob_box_perception/rob_box_perception/launch_factory.py` (`make_hailo_node_launch(executable, confidence_threshold_default, include_nms_iou, include_input_topic, preflight_prefix)`). Оба launch-файла превратились в шимы по 40-48 строк.
+
+**Где живёт factory** — в Python-пакете `rob_box_perception/`, не в `launch/`: `setup.py` устанавливает `launch/*.launch.py` как `data_files` через `ament_index`, не как Python-пакет (импорт через `importlib.util` хрупок при сборке). Существующий паттерн `from rob_box_perception import X` уже работает между модулями этого пакета (см. `vision_face_node.py`, `vision_hailo_node.py`).
+
+**Touchpoints**:
+
+| # | Файл | Что меняется |
+|---|---|---|
+| 1a | `src/rob_box_perception/rob_box_perception/launch_factory.py` | **NEW**: единая factory `make_hailo_node_launch`. SSoT launch-конструкции (11 `DeclareLaunchArgument` + `OpaqueFunction` + `Node`). |
+| 1b | `src/rob_box_perception/launch/vision_hailo.launch.py` | 225 → 48 строк: шим над factory с `include_input_topic=True` (back-compat), `preflight_prefix='vision_hailo'`. |
+| 1c | `src/rob_box_perception/launch/vision_face.launch.py` | 158 → 40 строк: шим над factory с `include_nms_iou=True` (RetinaFace NMS), `preflight_prefix='vision_face'`. |
+| 1d | `src/rob_box_perception/test/test_launch_factory_static.py` | **NEW**: AST-тесты — `0` настоящих `DeclareLaunchArgument` в `launch/`, `≤40` значимых конструкций в каждом шиме. Не требует `launch` пакета, проходит на любой dev-машине. |
+| 1e | `src/rob_box_perception/test/test_launch_factory.py` | **NEW**: runtime-тесты — `make_hailo_node_launch` возвращает корректный `LaunchDescription`, набор аргументов соответствует вызову. Скипается без `launch` пакета (есть в CI-образе `ghcr.io/krikz/rob-box-ci:humble`). |
+| 1f | `src/rob_box_perception/README.md` | Раздел "Launch" — упоминание общего factory + issue #2658. |
+
 ---
 
 ## 4. Альтернативы, которые отвергли
@@ -242,5 +259,6 @@ Bash-скрипт остаётся как orchestration layer (YAML-парсин
 | Дата | Автор | Изменение |
 |---|---|---|
 | 2026-09-15 | architect (t_5736df3b, issue #2498) | Initial ADR-0110 (при merge — ADR-0096, переименован issue #2582). Touchpoint #6 ADR-0089 признан нереализуемым в буквальной формулировке (Vision Pi ≠ Main Pi, AI HAT+ ≠ CAN HAT). Принято: новый `vision_hailo.launch.py` + bash на `ros2 launch`. Touchpoint #6 переформулирован в ADR-0089 §3. |
+| 2026-09-15 | architect (t_8cfecf68, issue #2658) | DRY-рефакторинг: вынесена `rob_box_perception/launch_factory.py`. vision_hailo.launch.py и vision_face.launch.py стали шимами по 40-48 строк. Acceptance: AST-тесты + runtime-тесты. Touchpoints §3.1. |
 
 *ADR-0110 корректирует ADR-0089 §3 #6 без изменения общей архитектуры Phase 1.*

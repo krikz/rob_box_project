@@ -251,6 +251,12 @@ endpoint его игнорирует или возвращает пустые `s
 
 ## 5. Цепочка `vosk → minimax → yandex` — chain policy
 
+> **⚠️ ЗАМЕНЕНО [ADR-0124](../adr/0124-stt-provider-chain-priority.md)
+> (21.09.2026).** Действующий порядок — `minimax → yandex → vosk`, с
+> per-provider бюджетом (`ProviderPolicy`) и кэшем «мёртвых»
+> (`ProviderDeadCache`). Раздел ниже сохранён как историческая
+> мотивировка Vosk-first; в таком виде он реализован не был.
+
 `select_recognition()` в `stt_fallback.py` **не меняется**. Логика
 остаётся: первый провайдер — primary + 1 retry, остальные — без
 retry. Меняется **порядок провайдеров в списке**, который формирует
@@ -370,6 +376,14 @@ segments (если есть) → publish /voice/stt/segments (NEW, Phase 2)
 ```
 
 ## 6. Конфигурация цепочки
+
+> **⚠️ ЗАМЕНЕНО [ADR-0124](../adr/0124-stt-provider-chain-priority.md) §2.6.**
+> `config/stt_chain.yaml` удалён. Цепочка и параметры провайдеров —
+> ROS-параметры (`stt_provider_chain`, `minimax_stt_*`,
+> `provider_dead_ttl_*`, `provider_state_file`), объявленные через
+> `declare_parameter` и зеркалируемые в `config/stt_node.yaml`
+> (issue #1004). Hot-reload по таймеру отменён: ROS-параметры и так
+> меняются на лету.
 
 `src/rob_box_voice/config/stt_chain.yaml` — НОВЫЙ файл. До сих пор
 порядок провайдеров был hardcoded в `_recognize_with_fallback`

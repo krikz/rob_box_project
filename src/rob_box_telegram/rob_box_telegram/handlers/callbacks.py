@@ -156,14 +156,14 @@ async def _handle_quick(query, context, action: str) -> None:
     import io
 
     if action == "photo":
-        jpeg_data = node.camera_cache.get(node.camera_topic)
+        jpeg_data = await node.fetch_camera_frame(node.camera_topic)
         if jpeg_data:
             await query.message.reply_photo(photo=io.BytesIO(jpeg_data), caption="📸 Фронтальная камера")
         else:
             await query.message.reply_text("⚠️ Нет кадров с камеры")
 
     elif action == "photo_up":
-        jpeg_data = node.camera_cache.get(node.camera_up_topic)
+        jpeg_data = await node.fetch_camera_frame(node.camera_up_topic)
         if jpeg_data:
             await query.message.reply_photo(photo=io.BytesIO(jpeg_data), caption="📸 Потолочная камера")
         else:
@@ -172,7 +172,7 @@ async def _handle_quick(query, context, action: str) -> None:
     elif action == "photo_depth":
         from .commands import _depth_compressed_to_jpeg
 
-        raw = node.camera_cache.get(node.camera_depth_topic)
+        raw = await node.fetch_camera_frame(node.camera_depth_topic)
         if raw:
             try:
                 jpeg = _depth_compressed_to_jpeg(raw)
