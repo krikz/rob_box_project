@@ -10,7 +10,15 @@ on:
       - 'src/*/**.py'
       - 'src/*/test/**.py'
       - 'src/*/package.xml'
-      - '.github/workflows/test.yml'
+      # '.github/workflows/test.yml' — файла с таким именем в репозитории нет
+      # (этот workflow называется 'G-Run Tests.yml'), то есть правка самого
+      # workflow'а его не триггерила. Заодно добавлены пути, от которых
+      # зависит job e2e-contract-guards: без них правка харнесса, гарда или
+      # сценария не поднимала проверки на push в develop.
+      - '.github/workflows/G-Run Tests.yml'
+      - '.github/workflows/scripts/**'
+      - 'scripts/testing/**'
+      - '.github/e2e/scenarios/**'
   pull_request:
     branches:
       - develop
@@ -492,12 +500,90 @@ jobs:
             --return-code-on-test-failure
 
   # ============================================================================
+  # E2E Contract Guards (shell)
+  # ============================================================================
+  # ЗАЧЕМ ОТДЕЛЬНЫМ JOB'ОМ. 22.09.2026 обнаружено, что каталог
+  # scripts/testing/*.sh не запускался НИ ОДНИМ workflow'ом — единственное
+  # упоминание во всём .github было в комментарии. То есть
+  # test_e2e_voice_safe_label.sh и test_e2e_health_probe.sh лежали в репозитории
+  # как декорация: они не могли поймать регресс, потому что их никто не звал.
+  # Ровно в этот зазор и уехали баги, которые чинит PR #2736 (потерянная
+  # мёржем observe_step, repo-relative пути к скриптам метрик, слепые grep'ы
+  # по «✅ ПРИНЯТО», непроигрываемые реплики сценариев).
+  #
+  # Гейт дешёвый: ubuntu-latest без ROS-контейнера, ни ssh, ни робота, ни
+  # билд-машины, ни docker. Секунды, а не минуты.
+  #
+  # Список ЯВНЫЙ, а не scripts/testing/*.sh: в том каталоге живут и тесты,
+  # которым нужен docker (test_docker_builds.sh, test_docker_smoke.sh,
+  # test_docker_local_arm64.sh) — их здесь гонять нельзя. Добавляешь новый
+  # офлайновый гард — вписывай его сюда, иначе он тоже станет декорацией.
+  e2e-contract-guards:
+    name: E2E Contract Guards (shell)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Run offline e2e contract guards
+        run: |
+          # UTF-8 обязателен: гарды печатают кириллицу и читают сценарии с ней.
+          export LANG=C.UTF-8 LC_ALL=C.UTF-8 PYTHONIOENCODING=utf-8
+          python3 -m pip install --quiet --no-cache-dir pyyaml 2>/dev/null || true
+
+          GUARDS="
+          scripts/testing/test_e2e_harness_deploy.sh
+          scripts/testing/test_e2e_vad_reject_diagnosis.sh
+          scripts/testing/test_e2e_log_marker_contract.sh
+          scripts/testing/test_e2e_wake_gate_no_mass_skip.sh
+          scripts/testing/test_e2e_scenario_playable.sh
+          scripts/testing/test_e2e_health_probe.sh
+          scripts/testing/test_e2e_voice_safe_label.sh
+          "
+          rc=0
+          {
+            echo "## 🛡 E2E Contract Guards"
+            echo ""
+            echo "| Guard | Status |"
+            echo "|-------|--------|"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          for g in $GUARDS; do
+            if [ ! -f "$g" ]; then
+              echo "❌ $g — файла нет (переименовали и забыли поправить список?)"
+              echo "| \`$(basename "$g")\` | ❌ missing |" >> "$GITHUB_STEP_SUMMARY"
+              rc=1
+              continue
+            fi
+            echo "::group::$g"
+            if bash "$g"; then
+              echo "| \`$(basename "$g")\` | ✅ |" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "| \`$(basename "$g")\` | ❌ |" >> "$GITHUB_STEP_SUMMARY"
+              rc=1
+            fi
+            echo "::endgroup::"
+          done
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$rc" -ne 0 ]; then
+            echo "⚠️ Контракт e2e-харнесса нарушен — см. группы выше." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "✅ Все контракты e2e-харнесса соблюдены." >> "$GITHUB_STEP_SUMMARY"
+
+  # ============================================================================
   # Test Summary
   # ============================================================================
   test-summary:
     name: Test Summary
     runs-on: ubuntu-latest
-    needs: [unit-tests]
+    needs: [unit-tests, e2e-contract-guards]
     if: always()
 
     steps:
@@ -508,9 +594,11 @@ jobs:
           echo "| Test Suite | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|------------|--------|" >> $GITHUB_STEP_SUMMARY
           echo "| Unit Tests | ${{ needs.unit-tests.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| E2E Contract Guards | ${{ needs.e2e-contract-guards.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          if [ "${{ needs.unit-tests.result }}" != "success" ]; then
+          if [ "${{ needs.unit-tests.result }}" != "success" ] \
+             || [ "${{ needs.e2e-contract-guards.result }}" != "success" ]; then
             echo "⚠️ **Tests failed!** Check logs above for details." >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "### 🔧 Quick Debug" >> $GITHUB_STEP_SUMMARY
