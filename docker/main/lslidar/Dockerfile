@@ -44,6 +44,14 @@ RUN if [ -n "$APT_PROXY" ]; then \
             echo "Acquire::http::Proxy \"$APT_PROXY\";" > /etc/apt/apt.conf.d/02proxy; \
             echo "Acquire::http::Timeout \"10\";" >> /etc/apt/apt.conf.d/02proxy; \
             echo "Acquire::Retries \"3\";" >> /etc/apt/apt.conf.d/02proxy; \
+            # Pipeline-Depth 0 обязателен под qemu: с включённым
+            # конвейером (по умолчанию 10 и у apt, и у apt-cacher-ng)
+            # метод apt зависает намертво. Поймано 21.09.2026 на katana:
+            # apt-get висел 68 минут с НУЛЁМ секунд CPU, два сокета к
+            # прокси в CLOSE-WAIT с Recv-Q=1, процесс
+            # qemu-binfmt/aarch64 /usr/lib/apt/methods/store — живой, но
+            # ничего не делает.
+            echo "Acquire::http::Pipeline-Depth \"0\";" >> /etc/apt/apt.conf.d/02proxy; \
             echo "OK: APT proxy $APT_PROXY"; \
         else \
             echo "WARN: APT proxy недоступен, идём напрямую"; \
@@ -109,6 +117,14 @@ RUN if [ -n "$APT_PROXY" ]; then \
             echo "Acquire::http::Proxy \"$APT_PROXY\";" > /etc/apt/apt.conf.d/02proxy; \
             echo "Acquire::http::Timeout \"10\";" >> /etc/apt/apt.conf.d/02proxy; \
             echo "Acquire::Retries \"3\";" >> /etc/apt/apt.conf.d/02proxy; \
+            # Pipeline-Depth 0 обязателен под qemu: с включённым
+            # конвейером (по умолчанию 10 и у apt, и у apt-cacher-ng)
+            # метод apt зависает намертво. Поймано 21.09.2026 на katana:
+            # apt-get висел 68 минут с НУЛЁМ секунд CPU, два сокета к
+            # прокси в CLOSE-WAIT с Recv-Q=1, процесс
+            # qemu-binfmt/aarch64 /usr/lib/apt/methods/store — живой, но
+            # ничего не делает.
+            echo "Acquire::http::Pipeline-Depth \"0\";" >> /etc/apt/apt.conf.d/02proxy; \
             echo "OK: APT proxy $APT_PROXY"; \
         else \
             echo "WARN: APT proxy недоступен, идём напрямую"; \
