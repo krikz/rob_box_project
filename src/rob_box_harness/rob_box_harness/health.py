@@ -378,11 +378,26 @@ def is_auth_failure(exc: BaseException) -> bool:
 
     Retrying it is pointless; the provider should go to the end of the
     chain (marked unavailable) so the robot uses a working provider.
+
+    Also matches gRPC's auth status codes (``PERMISSION_DENIED`` /
+    ``UNAUTHENTICATED``) by their string representation — issue #2702:
+    Yandex TTS wraps ``grpc.RpcError`` into a generic ``Exception`` whose
+    message embeds ``e.code()`` (e.g. ``"StatusCode.PERMISSION_DENIED"``),
+    so callers outside this module (``rob_box_voice.tts_node``) can reuse
+    this single classifier instead of re-implementing it. A permissions
+    error on a storage folder (see ADR-0124) is exactly as permanent as a
+    bad API key — both need the long TTL, not the transient one.
     """
     if isinstance(exc, AuthError):
         return True
     text = str(exc).lower()
-    return "401" in text or "403" in text or "invalid api key" in text
+    return (
+        "401" in text
+        or "403" in text
+        or "invalid api key" in text
+        or "permission_denied" in text
+        or "unauthenticated" in text
+    )
 
 
 # ---------------------------------------------------------------------------
