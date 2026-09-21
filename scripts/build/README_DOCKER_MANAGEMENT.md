@@ -103,7 +103,6 @@ Image tag: dev
 - `robot-state-publisher` - Robot state publisher
 - `rtabmap` - RTAB-Map SLAM
 - `twist-mux` - Twist multiplexer
-- `micro-ros-agent` - Micro-ROS agent
 - `ros2-control` - ROS2 Control + VESC
 - `nav2` - Nav2 navigation stack
 
