@@ -78,6 +78,35 @@ def format_music_stack_report(status: MusicStackStatus) -> str:
     return "\n".join(lines)
 
 
+def missing_log_hint(status: MusicStackStatus, log_path: str | Path) -> str | None:
+    """Return the "Log file not found" operator hint, or ``None``.
+
+    Issue #2716 (RAW from the Vision Pi, 22.09.2026): the sclang runtime was
+    healthy — ``/tmp/sclang.log`` existed and was read fine, 11 critical
+    SynthDefs simply had not confirmed into scsynth yet (or were reported
+    missing) — yet ``validate_music_stack.py`` printed ``Log file not
+    found: /tmp/sclang.log`` right below the report. The old condition in
+    that script's ``main()`` was ``not status.is_healthy and not
+    status.fatal_errors``: true for ANY degraded reason that isn't a fatal
+    sclang error, not just a missing file, so it fired even when the log
+    was right there with useful content. The operator followed the hint,
+    found the file present and non-empty, and had no idea the message was
+    simply wrong.
+
+    This helper makes the check honest: the hint only fires when the log
+    file is actually absent from disk. ``format_music_stack_report`` already
+    surfaces the "Missing sclang log file: ..." fatal error in that case
+    (see :func:`load_sclang_health`); this is the short, operator-facing
+    echo of the same fact, not an independent diagnosis.
+    """
+
+    if status.is_healthy:
+        return None
+    if Path(log_path).exists():
+        return None
+    return f"Log file not found: {log_path}"
+
+
 def contains_merge_conflict_markers(content: str) -> bool:
     """Return True when .scd content still contains git conflict markers."""
 

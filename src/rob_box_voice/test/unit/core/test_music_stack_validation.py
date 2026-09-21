@@ -11,6 +11,7 @@ from rob_box_voice.core.music_stack_validation import (
     format_music_stack_report,
     is_plugin_dependent_synthdef,
     load_sclang_health,
+    missing_log_hint,
 )
 from rob_box_voice.core.renardo_synthdef_patches import (
     patch_organ_scd_content,
@@ -386,3 +387,60 @@ def test_load_sclang_health_explicit_log_path_overrides_env(tmp_path, monkeypatc
     status = load_sclang_health(log_path=explicit_log)
 
     assert status.is_healthy is True
+
+
+# ---------------------------------------------------------------------------
+# missing_log_hint — issue #2716 regression
+# ---------------------------------------------------------------------------
+#
+# RAW from the Vision Pi (22.09.2026): validate_music_stack.py reported
+# "Missing critical SynthDefs: strings, wobblebass, ..." (11 names) AND
+# "Log file not found: /tmp/sclang.log" in the SAME run, while the report
+# line right above both of them said "OSCdef ready: yes" — which can only
+# be true if the log file existed and was read. The old condition in
+# validate_music_stack.py::main() was `not status.is_healthy and not
+# status.fatal_errors`, which is true for ANY degraded reason that isn't a
+# fatal sclang syntax error — not just a genuinely missing file. These
+# tests pin the corrected, file-existence-based condition.
+
+
+def test_missing_log_hint_is_none_when_healthy():
+    status = classify_sclang_log(
+        "FoxDot OSCdef registered. Ready to compile SynthDefs.\n"
+        "SynthDef in scsynth: strings\n"
+        "SynthDef preload finished: 1 defs\n",
+        critical_synths=["strings"],
+    )
+
+    assert missing_log_hint(status, "/tmp/sclang.log") is None
+
+
+def test_missing_log_hint_is_none_when_log_file_exists_but_synths_missing(tmp_path):
+    """The exact #2716 regression: file present + readable, just degraded.
+
+    Must NOT claim the log is missing — that sent operators looking in the
+    wrong place for three weeks (see the identical live incident fixed for
+    the regex itself in afdabdd80 / issue history for #2716).
+    """
+
+    log_path = tmp_path / "sclang.log"
+    log_path.write_text(
+        "FoxDot OSCdef registered. Ready to compile SynthDefs.\n"
+        "SynthDef preload finished: 0 defs\n",
+        encoding="utf-8",
+    )
+    status = classify_sclang_log(log_path.read_text(encoding="utf-8"), critical_synths=["strings"])
+
+    assert status.is_healthy is False
+    assert status.fatal_errors == ()
+    assert missing_log_hint(status, log_path) is None
+
+
+def test_missing_log_hint_reports_path_when_log_file_genuinely_absent(tmp_path):
+    log_path = tmp_path / "absent.log"
+    status = load_sclang_health(log_path, critical_synths=["strings"])
+
+    assert status.is_healthy is False
+    hint = missing_log_hint(status, log_path)
+
+    assert hint == f"Log file not found: {log_path}"

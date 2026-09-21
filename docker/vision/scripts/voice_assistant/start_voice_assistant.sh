@@ -144,8 +144,13 @@ if command -v sclang > /dev/null 2>&1; then
         if [ "${MUSIC_STACK_RC}" -eq 0 ]; then
             echo "✓ Music stack validation passed"
         else
-            echo "⚠ Music stack validation found non-critical errors (degraded but usable)"
+            # Issue #2716: раньше здесь был текст, называвший это "usable
+            # degradation" — но тембр, не подтвердившийся в scsynth, играет
+            # ТИШИНОЙ (ReplaceOut на несуществующий synth), а не музыкой
+            # чуть похуже. Честный статус — FAILED, с прямым путём к причине.
+            echo "✗ Music stack validation FAILED (music tools will produce silent notes)"
             echo "  └─ Подробности: /tmp/sclang.log"
+            echo "  └─ Диагностика: grep -E 'ERROR|SynthDef in scsynth|SynthDef preload finished' /tmp/sclang.log"
         fi
     fi
     echo "sclang готов"
