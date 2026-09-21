@@ -1168,9 +1168,16 @@ HTTP-конвейер: и apt, и apt-cacher-ng по умолчанию держ
 `/etc/apt/apt.conf.d/02proxy`.
 
 `Acquire::http::Pipeline-Depth "0"` добавлен во все 13 стадий семи сервисных
-Dockerfile'ов. Базовые образы (`docker/base/Dockerfile.*`) сознательно НЕ
-тронуты: ловушка там та же, но правка инвалидирует кеш всех потребителей —
-отдельной карточкой.
+Dockerfile'ов. Базовые образы (`docker/base/Dockerfile.*`) в тот заход
+сознательно НЕ тронуты: ловушка там та же, но правка инвалидирует кеш всех
+потребителей (voice_base тянет за собой ~10 ГБ пересборки) — отдельной
+карточкой.
+
+Карточка закрыта следом: та же строка добавлена в блок APT_PROXY четырёх
+базовых образов — `Dockerfile.ros2-zenoh`, `Dockerfile.rtabmap`,
+`Dockerfile.depthai`, `Dockerfile.pcl`. Теперь `Pipeline-Depth "0"` стоит во
+всех местах, где пишется `02proxy`, кроме `docker/build/test/Dockerfile` — он
+ни на один workflow не завязан и под qemu не собирается.
 
 ### 15.3. Результат
 
