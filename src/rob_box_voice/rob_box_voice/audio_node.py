@@ -57,6 +57,21 @@ class AudioNode(Node):
         self.declare_parameter('publish_rate', 10)
         self.declare_parameter('device_index', -1)  # -1 = auto-detect
         self.declare_parameter('audio_retry_period', 5.0)  # сек между попытками открыть захват
+        # Issue #2701: watchdog захвата. audio_retry_period (выше) чинит
+        # только «поток не открылся на старте» — здесь поток ОТКРЫТ, но
+        # PortAudio перестал звать audio_callback без исключения (ReSpeaker
+        # молча завис на ходу, 17.09.2026). audio_stall_timeout_s — сколько
+        # секунд без audio_callback считается зависанием.
+        self.declare_parameter('audio_stall_timeout_s', 5.0)
+        # Второй признак того же зависания: VAD видит речь по USB HID
+        # (отдельный канал, продолжает работать), а буфер захвата пуст —
+        # «Речь отклонена: 0.00с» K раз ПОДРЯД. Счётчик сбрасывается на
+        # первой успешно принятой фразе (см. check_vad_and_doa).
+        self.declare_parameter('audio_stall_empty_speech_count', 3)
+        # Heartbeat-файл для healthcheck контейнера (docker/vision/scripts/
+        # voice_assistant/healthcheck_audio.sh) — issue #2701 п.3. Пустая
+        # строка отключает запись (на случай окружений без /tmp, тесты).
+        self.declare_parameter('audio_heartbeat_file', '/tmp/rob_box_audio_heartbeat')
         self.declare_parameter('device_name', 'ReSpeaker 4 Mic Array')
 
         # Issue 989 Fix B: grace period после окончания TTS — не начинать
@@ -99,6 +114,16 @@ class AudioNode(Node):
         self.publish_rate = self.get_parameter('publish_rate').value
         self.device_index = self.get_parameter('device_index').value
         self.device_name = self.get_parameter('device_name').value
+        # Issue #2701: параметры watchdog'а захвата.
+        self.audio_stall_timeout_s = float(
+            self.get_parameter('audio_stall_timeout_s').value or 5.0
+        )
+        self.audio_stall_empty_speech_count = int(
+            self.get_parameter('audio_stall_empty_speech_count').value or 3
+        )
+        self.audio_heartbeat_file = str(
+            self.get_parameter('audio_heartbeat_file').value or ''
+        )
         # Issue 989: параметры анти-эхо.
         self.tts_grace_s = float(self.get_parameter('tts_grace_s').value)
         self.music_vad_threshold = float(self.get_parameter('music_vad_threshold').value)
@@ -152,6 +177,14 @@ class AudioNode(Node):
         self._audio_retry_quiet_every: int = max(
             1, int(60.0 / self._audio_retry_period)
         )
+
+        # Issue #2701: состояние watchdog'а захвата (поток открыт, но
+        # молчит) и empty-speech детектора (VAD=речь по HID, буфер пуст).
+        # Оба признака ведут к одному и тому же переоткрытию потока —
+        # см. _reopen_audio_stream.
+        self._last_audio_data_monotonic: Optional[float] = None
+        self._empty_speech_streak: int = 0
+        self._audio_stall_reopen_count: int = 0
 
         # Состояние
         self.is_running = False
@@ -231,6 +264,11 @@ class AudioNode(Node):
 
         # Таймер для VAD/DoA (после sleep(5) безопасно!)
         self.timer = self.create_timer(1.0 / self.publish_rate, self.check_vad_and_doa)
+
+        # Issue #2701: watchdog захвата — отдельный таймер 1Hz, не зависит
+        # от respeaker.is_connected() (в отличие от check_vad_and_doa),
+        # потому что зависание потока никак не связано с USB HID VAD/DoA.
+        self.audio_watchdog_timer = self.create_timer(1.0, self._check_audio_watchdog)
 
         # Issue #1160 — Prometheus metrics server (этап 1).
         # Порт 9113 — стандартный для audio_node (barge-in, session).
@@ -452,12 +490,126 @@ class AudioNode(Node):
             self._audio_retry_timer = None
         self.open_audio_stream()
 
+    # ------------------------------------------------------------------
+    # Issue #2701: watchdog захвата — «поток открыт, но замолчал на ходу».
+    #
+    # _schedule_audio_retry/_on_audio_retry (выше) лечат только «поток не
+    # открылся на старте»: open_audio_stream() возвращается немедленно,
+    # если self.stream уже не None. Здесь ситуация другая — PortAudio
+    # перестаёт звать audio_callback БЕЗ исключения (17.09.2026, лог
+    # обрывается на «⚠️ ReSpeaker не принял threshold 3.5 dB», дальше
+    # тишина), контейнер остаётся Up (healthy), потому что процесс жив.
+    #
+    # Два независимых признака зависания ведут в один и тот же
+    # _reopen_audio_stream:
+    #   1) _check_audio_watchdog (таймер 1Hz) — возраст последнего
+    #      audio_callback с данными превысил audio_stall_timeout_s.
+    #   2) check_vad_and_doa — K подряд «Речь отклонена: 0.00с» при
+    #      VAD=речь (речь пришла по USB HID, а буфер захвата пуст).
+    # ------------------------------------------------------------------
+
+    def _check_audio_watchdog(self) -> None:
+        """Watchdog-тик: жив ли поток, зовёт ли PortAudio audio_callback.
+
+        Проверяем именно ФАКТ вызова callback (см. комментарий в
+        audio_callback), а не «была ли речь» — во время TTS-мута (issue
+        #993) VAD подавлен программно, но callback продолжает штатно
+        публиковать /audio/audio, поэтому ложных срабатываний тут быть
+        не должно.
+        """
+        if self.stream is None:
+            # Поток ещё не открыт — этим занимается обычный retry
+            # (_schedule_audio_retry), watchdog тут ни при чём.
+            return
+        if self._last_audio_data_monotonic is None:
+            # Поток только что открылся, ни одного callback ещё не было —
+            # рано делать выводы (даём шанс первому чанку прийти).
+            return
+
+        age = time.monotonic() - self._last_audio_data_monotonic
+        if age < self.audio_stall_timeout_s:
+            # Поток жив — обновляем heartbeat для healthcheck контейнера.
+            self._touch_audio_heartbeat()
+            return
+
+        self.get_logger().warning(
+            f'⚠️ [issue 2701] Захват завис: audio_callback молчит '
+            f'{age:.1f}с (таймаут {self.audio_stall_timeout_s}с). '
+            f'Переоткрываю поток.'
+        )
+        self._reopen_audio_stream()
+
+    def _touch_audio_heartbeat(self) -> None:
+        """Обновить heartbeat-файл для healthcheck контейнера (issue #2701 п.3).
+
+        docker/vision/scripts/voice_assistant/healthcheck_audio.sh
+        проверяет возраст этого файла; если захват завис дольше
+        audio_stall_timeout_s, файл не обновляется, и healthcheck
+        возвращает unhealthy вместо молчаливого «healthy». Полноценная
+        интеграция через /diagnostics — за рамками этого PR (issue #2701
+        п.3 оставлен открытым в части «через /diagnostics»).
+        """
+        if not self.audio_heartbeat_file:
+            return
+        try:
+            with open(self.audio_heartbeat_file, 'w', encoding='utf-8') as fh:
+                fh.write(str(time.time()))
+        except OSError as exc:  # noqa: BLE001 — heartbeat не должен ронять ноду
+            self.get_logger().debug(
+                f'[issue 2701] Не удалось обновить heartbeat-файл: {exc!r}'
+            )
+
+    def _reopen_audio_stream(self) -> None:
+        """Закрыть зависший stream/PyAudio и запланировать переоткрытие.
+
+        Общий путь для watchdog'а (audio_callback молчит) и empty-speech
+        детектора («Речь отклонена: 0.00с» K раз подряд). Переиспользует
+        _schedule_audio_retry — тот же путь ретрая, что и «устройство не
+        найдено на старте» (issue #2701 п.1/п.2).
+        """
+        self._audio_stall_reopen_count += 1
+        self.is_running = False
+        try:
+            if self.stream is not None:
+                self.stream.stop_stream()
+                self.stream.close()
+        except Exception as exc:  # noqa: BLE001 — переоткрытие не должно падать
+            self.get_logger().warning(
+                f'⚠️ [issue 2701] Не удалось корректно закрыть зависший '
+                f'поток: {exc!r}'
+            )
+        self.stream = None
+        # Индекс мог устареть (ReSpeaker отвалился и переехал на другой
+        # индекс при повторном перечислении PortAudio, ту же логику
+        # использует ветка "Ошибка открытия" в open_audio_stream) — ищем
+        # заново на ретрае, а не жёстко держимся за старый.
+        self.device_index = self._device_index_param
+        self._last_audio_data_monotonic = None
+        self._empty_speech_streak = 0
+        self.get_logger().warning(
+            f'🔁 [issue 2701] Переоткрытие захвата #{self._audio_stall_reopen_count} '
+            f'(watchdog/empty-speech детектор зависания ReSpeaker).'
+        )
+        self.publish_state('error_stall')
+        self._schedule_audio_retry()
+
     def audio_callback(self, in_data, frame_count, time_info, status):
         """Callback для PyAudio stream."""
         if status:
             # Issue 1050: status=2 (paInputOverflow) — входной буфер
             # переполнен, сэмплы потеряны. Rate-limited лог + диагностика.
             self._log_overflow(frame_count, in_data)
+
+        if in_data:
+            # Issue #2701: watchdog смотрит на ФАКТ вызова callback с
+            # данными, а не на то, была ли распознана речь — во время
+            # TTS-мута (issue #993) VAD подавлен, но PortAudio продолжает
+            # звать этот callback штатно, так что здесь ложных пропусков
+            # быть не должно. Пишем ДО проверки is_running: даже если
+            # нода в процессе остановки, факт «PortAudio жив» важен сам
+            # по себе (is_running гейтит только публикацию/буферизацию
+            # ниже).
+            self._last_audio_data_monotonic = time.monotonic()
 
         # Публиковать RAW аудио данные
         if in_data and self.is_running:
@@ -822,8 +974,28 @@ class AudioNode(Node):
                     msg = AudioData()
                     msg.data = list(buf)
                     self.speech_audio_pub.publish(msg)
+                    # Issue #2701: первая успешная фраза сбрасывает счётчик
+                    # empty-speech детектора — захват точно живой.
+                    self._empty_speech_streak = 0
                 else:
                     self.get_logger().warn(f'❌ Речь отклонена: {duration:.2f}с (min={self.speech_min_duration}, max={self.speech_max_duration})')
+                    # Issue #2701 п.2: VAD увидел речь по USB HID (иначе
+                    # is_speeching не включился бы), а буфер захвата пуст —
+                    # audio_callback не наполнял его, значит поток завис
+                    # (тот же симптом, что и 17.09: «Речь отклонена: 0.00с»
+                    # 10 раз подряд, дальше от захвата ни одного сообщения).
+                    # Длинные/короткие-но-непустые фразы счётчик НЕ трогают —
+                    # это штатные срабатывания VAD, не признак зависания.
+                    if len(buf) == 0:
+                        self._empty_speech_streak += 1
+                        if self._empty_speech_streak >= self.audio_stall_empty_speech_count:
+                            self.get_logger().warning(
+                                f'⚠️ [issue 2701] {self._empty_speech_streak} фраз(ы) '
+                                f'подряд «0.00с» (VAD видит речь по HID, буфер '
+                                f'захвата пуст) — похоже, захват завис. '
+                                f'Переоткрываю поток.'
+                            )
+                            self._reopen_audio_stream()
 
             # DoA - читаем с обработкой ошибок
             try:

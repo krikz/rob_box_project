@@ -419,8 +419,16 @@ services:
         condition: service_completed_successfully
         required: false
     restart: unless-stopped
+    # Issue #2701: старый healthcheck (`pgrep -f 'python3.*voice'`) отвечал
+    # healthy даже когда audio_node молчал часами — PortAudio переставал
+    # звать audio_callback без исключения, процесс жил, ReSpeaker был
+    # виден в lsusb. healthcheck_audio.sh (docker/vision/scripts/
+    # voice_assistant/, смонтирован в /scripts выше) добавляет к
+    # pgrep-проверке возраст heartbeat-файла, который audio_node
+    # обновляет, пока захват реально жив (см.
+    # AudioNode._touch_audio_heartbeat, audio_stall_timeout_s=5.0 default).
     healthcheck:
-      test: ["CMD-SHELL", "pgrep -f 'python3.*voice' || exit 1"]
+      test: ["CMD-SHELL", "/scripts/healthcheck_audio.sh"]
       interval: 15s
       timeout: 5s
       start_period: 20s
