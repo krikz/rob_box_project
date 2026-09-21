@@ -297,6 +297,15 @@ pis:
 # zenoh-router) сознательно вне области Phase 1-3 этого манифеста (план
 # §11, открытый вопрос №2).
 #
+# Почему в манифесте НЕТ сервиса vesc-nexus, хотя есть субмодуль
+# src/vesc_nexus: образ docker/main/vesc_nexus/Dockerfile удалён 21.09.2026
+# как мёртвый — его не собирал ни один workflow за всю историю, его не было
+# ни в docker-compose, ни на роботе, ни в registry, а его CMD звал
+# несуществующий vesc_nexus_node.launch.py (апстрим отдаёт pluginlib-плагин
+# hardware_interface, а не ноду). vesc_msgs/vesc_nexus компилируются внутри
+# сервиса ros2-control — у него и стоит submodule_sha: src/vesc_nexus.
+# Полное обоснование: docs/plans/2026-09-15-builder-runtime-seam.md §13.4.
+#
 # Известные phantom-поля в docker/{vision,main}/.image-versions.* — НЕ
 # принадлежат ни одному сервису этого манифеста:
 #   - RTABMAP_SYNC_TAG (vision)     — план §1.3, не описан ни в одном ADR.

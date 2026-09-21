@@ -662,6 +662,16 @@ services:
       - ./config:/config:ro
       - ./scripts:/ros_scripts:ro
       - ./scripts/telegram_bot:/scripts:ro
+      # Vosk-модель с хоста (Ресурсный пак, ADR-0125) — тот же том, что у
+      # voice-assistant (:362). До 21.09.2026 telegram_bot/Dockerfile качал
+      # ЭТУ ЖЕ модель на этапе сборки своего образа: одна модель жила в двух
+      # образах, а сборка падала целиком при недоступном alphacephei.com.
+      # Путь ВНУТРИ контейнера не изменился — voice_processor.py:40 читает
+      # `/models/vosk-model-small-ru-0.22` (дефолт VOSK_MODEL_PATH).
+      # :ro — модели кладёт только хост (шаг деплоя «Ensure STT/TTS models»).
+      # Без тома бот стартует, но Vosk-фолбэк недоступен: STT остаётся на
+      # одном Yandex, и об этом есть строка в логе (не молчаливая деградация).
+      - /opt/rob_box/models:/models:ro
     mem_limit: 512m
     memswap_limit: 640m
     command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_telegram_bot.sh"]
