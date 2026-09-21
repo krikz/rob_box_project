@@ -58,6 +58,7 @@ def _fake_docker(
     *,
     builder_driver: str = "docker-container",
     containerd_store: bool = False,
+    builder_exists: bool = True,
 ) -> Path:
     """Replace `docker` with a fake that records its argv to a file.
 
@@ -86,7 +87,20 @@ def _fake_docker(
         # Probe 1: `docker buildx inspect` (no build subcommand) — answer with
         # a Driver: line in the same shape real buildx prints.
         'if [ "$1" = "buildx" ] && [ "$2" = "inspect" ]; then\n'
-        f"  printf 'Name:          fake\\nDriver:        {builder_driver}\\n'\n"
+        # `buildx inspect <name>` — проверка «а есть ли такой билдер».
+        # Отсутствующий билдер обязан отвечать ненулевым кодом, иначе ветку
+        # создания билдера (docker-container для registry-кеша) не проверить.
+        + (
+            ""
+            if builder_exists
+            else '  if [ -n "$3" ]; then exit 1; fi\n'
+        )
+        + f"  printf 'Name:          fake\\nDriver:        {builder_driver}\\n'\n"
+        "  exit 0\n"
+        "fi\n"
+        # `buildx use` — тоже проба, не записываем: иначе старые тесты,
+        # считающие ровно build+push вызовы, начнут видеть лишний.
+        'if [ "$1" = "buildx" ] && [ "$2" = "use" ]; then\n'
         "  exit 0\n"
         "fi\n"
         # Probe 2: `docker info --format {{ .DriverStatus }}`.
@@ -561,6 +575,48 @@ def test_explicit_cache_ref_overrides_the_derived_default(monkeypatch, tmp_path)
         "type=registry,ref=localhost:5000/krikz/rob_box:shared-builder-buildcache"
         ",mode=max,ignore-error=true"
     ], build
+
+
+def _buildx_create_argv(log: Path) -> list[str]:
+    """argv единственного вызова `docker buildx create`, [] если его не было."""
+    for call in _invocations(log.read_text(encoding="utf-8") if log.exists() else ""):
+        if call[:2] == ["buildx", "create"]:
+            return call
+    return []
+
+
+def test_buildx_builder_is_created_when_missing(monkeypatch, tmp_path):
+    """Билдер docker-container заводится самим action'ом, а не руками на хосте.
+
+    Раннеры на katana — контейнеры (myoung34/github-runner с проброшенным
+    docker.sock), у каждого свой ~/.docker. Билдер, созданный руками на хосте,
+    им не виден; созданный внутри контейнера — умирает вместе с ним. Поэтому
+    единственное место, которое переживает и то и другое, — этот шаг.
+    """
+    log = _fake_docker(monkeypatch, tmp_path, builder_exists=False)
+    bash_body = _extract_build_step_bash(_load_action_yaml())
+    cp = _run_build_step(bash_body, service_name="led-matrix", tags=TAGS_TWO)
+    assert cp.returncode == 0, f"build script failed:\n{cp.stderr}\n{cp.stdout}"
+
+    create = _buildx_create_argv(log)
+    assert create, "docker buildx create не был вызван"
+    assert "--driver" in create and "docker-container" in create, create
+    # network=host: иначе buildkit в своём контейнере не увидит ни
+    # localhost:5000 (куда пишется кеш), ни apt-прокси.
+    assert "network=host" in create, create
+    # --config: локальный registry без TLS, без buildkitd.toml экспорт кеша
+    # молча уходил бы в ignore-error-warning.
+    assert "--config" in create, create
+    assert "--bootstrap" in create, create
+
+
+def test_buildx_builder_is_reused_when_present(monkeypatch, tmp_path):
+    """Существующий билдер не пересоздаётся на каждой сборке."""
+    log = _fake_docker(monkeypatch, tmp_path, builder_exists=True)
+    bash_body = _extract_build_step_bash(_load_action_yaml())
+    cp = _run_build_step(bash_body, service_name="led-matrix", tags=TAGS_TWO)
+    assert cp.returncode == 0, f"build script failed:\n{cp.stderr}\n{cp.stdout}"
+    assert _buildx_create_argv(log) == [], "билдер пересоздан, хотя уже был"
 
 
 def test_cache_export_skipped_on_plain_docker_driver(monkeypatch, tmp_path):

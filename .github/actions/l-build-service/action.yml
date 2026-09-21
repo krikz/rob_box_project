@@ -271,6 +271,45 @@ runs:
           # mode=max обязателен (§6.3): без него в кеш попадают только слои
           # ФИНАЛЬНОГО образа, а промежуточные стадии multi-stage сборки — нет,
           # т.е. будущее builder/runtime-разделение (Этапы 1+) кеша не увидит.
+          # Сам драйвер мы теперь не просто спрашиваем, а заводим: раннеры на
+          # katana — это КОНТЕЙНЕРЫ (myoung34/github-runner, docker.sock с
+          # хоста), у каждого свой ~/.docker, поэтому `docker buildx create`,
+          # сделанный руками на хосте, им не виден, а сделанный внутри
+          # контейнера — теряется при его пересоздании. Единственное место,
+          # где это переживает и то и другое, — вот этот шаг.
+          #
+          # network=host обязателен: buildkit в отдельном контейнере иначе не
+          # увидит ни localhost:5000 (куда пишется кеш), ни apt-прокси.
+          # buildkitd.toml с http=true — потому что локальный registry без TLS,
+          # иначе экспорт кеша тихо уходил бы в ignore-error-warning.
+          # Имя билдера завязано на hostname: у каждого раннер-контейнера свой,
+          # два параллельных job'а не дерутся за один buildkit-контейнер.
+          BUILDER_NAME="robbox-$(hostname)"
+          if ! docker buildx inspect "$BUILDER_NAME" >/dev/null 2>&1; then
+            BUILDKITD_TOML="$(mktemp)"
+            # printf, а не heredoc: тело heredoc'а обязано начинаться с нулевой
+            # колонки, а мы внутри YAML-блока `run: |` — нулевая колонка тут
+            # ломает разбор самого workflow.
+            {
+              printf '[registry."%s"]\n' "${{ inputs.local-registry }}"
+              printf '  http = true\n'
+              printf '  insecure = true\n'
+            } > "$BUILDKITD_TOML"
+            echo "  buildx: создаю билдер $BUILDER_NAME (docker-container, network=host)"
+            docker buildx create \
+              --name "$BUILDER_NAME" \
+              --driver docker-container \
+              --driver-opt network=host \
+              --config "$BUILDKITD_TOML" \
+              --bootstrap >/dev/null 2>&1 \
+              || echo "  ⚠️ buildx: не удалось создать $BUILDER_NAME — остаёмся на текущем билдере"
+            rm -f "$BUILDKITD_TOML"
+          fi
+          # Если билдер не создался — молча остаёмся на дефолтном `docker`:
+          # сборка важнее кеша, а ниже мы всё равно спросим драйвер и не
+          # добавим --cache-to, если экспорт не поддерживается.
+          docker buildx use "$BUILDER_NAME" >/dev/null 2>&1 || true
+
           CACHE_DRIVER="$(docker buildx inspect 2>/dev/null \
             | awk -F':[[:space:]]*' '/^Driver:/ {print $2; exit}' || true)"
           if [ -n "$CACHE_DRIVER" ] && [ "$CACHE_DRIVER" != "docker" ]; then
