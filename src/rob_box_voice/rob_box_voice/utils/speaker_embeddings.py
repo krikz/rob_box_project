@@ -407,6 +407,9 @@ class RegisterOutcome(tuple):
         conflict_name: Optional[str] = None,
         conflict_speaker_id: Optional[str] = None,
         conflict_score: Optional[float] = None,
+        twin_name: Optional[str] = None,
+        twin_speaker_id: Optional[str] = None,
+        twin_score: Optional[float] = None,
     ) -> "RegisterOutcome":
         """Собрать кортеж ``(speaker_id, reused)`` и навесить причину."""
         obj = super().__new__(cls, (speaker_id, reused))
@@ -415,12 +418,44 @@ class RegisterOutcome(tuple):
         obj.conflict_name = conflict_name
         obj.conflict_speaker_id = conflict_speaker_id
         obj.conflict_score = conflict_score
+        obj.twin_name = twin_name
+        obj.twin_speaker_id = twin_speaker_id
+        obj.twin_score = twin_score
         return obj
 
     @property
     def name_conflict(self) -> bool:
         """``True``, если голос совпал, но имя другое — профиль отдельный."""
         return self.conflict_speaker_id is not None
+
+    @property
+    def name_twin(self) -> bool:
+        """``True``, если имя совпало, а голос НЕ дотянул до слияния.
+
+        Зеркало :attr:`name_conflict`. Тот случай разбирал ADR-0127:
+        голос похож, имя другое — значит скорее всего разные люди, и
+        сливать нельзя. Здесь ровно наоборот: человек назвался именем,
+        которое в базе уже есть, но голос не дотянул до
+        ``REGISTER_MATCH_THRESHOLD``, и по одному голосу не понять, тот
+        же это человек или тёзка.
+
+        Почему нельзя решить молча, ни так, ни эдак:
+
+        * слить по имени — значит в мастерской, где есть два Саши,
+          второй унаследует факты первого. Эпитеты (внутренние клички
+          для различения тёзок) заведены именно потому, что тёзки —
+          ожидаемый случай, а не экзотика;
+        * завести новый профиль — то, что делалось до сих пор, и это
+          наблюдалось живьём 22.09.2026: человек, которого перестали
+          узнавать, представился заново, и пара профилей «Дэнчик»,
+          слитая вручную двумя часами ранее, восстановилась за
+          пятнадцать минут разговора.
+
+        Поэтому по умолчанию профиль всё же создаётся (данные целы, как
+        требует ADR-0127), но наружу уезжает повод ПЕРЕСПРОСИТЬ. Решает
+        человек, а не косинус.
+        """
+        return self.twin_speaker_id is not None
 
 
 class SpeakerDatabase:
@@ -918,10 +953,72 @@ class SpeakerDatabase:
                 conflict_score=match.confidence,
             )
 
+        # Тёзка (issue #2747, продолжение ADR-0127). Голос до порога
+        # слияния не дотянул — значит по биометрии это «незнакомец». Но
+        # если человек назвался именем, которое в базе УЖЕ есть, молча
+        # заводить второй профиль нельзя: именно так 22.09.2026 пара
+        # профилей «Дэнчик», слитая вручную двумя часами ранее,
+        # восстановилась за пятнадцать минут разговора. И слить молча
+        # тоже нельзя — в мастерской бывают настоящие тёзки, ради них и
+        # заведены эпитеты.
+        #
+        # Поэтому: профиль создаём (данные целы — инвариант ADR-0127),
+        # но на исход вешаем повод переспросить. Решает человек.
+        twin = self._find_by_name(name)
+        twin_score = None
+        if twin is not None:
+            twin_score = self._score_for(embedding, twin[0])
         new_id = self.register(
             name, embedding, speaker_id=None, duration_sec=duration_sec
         )
+        if twin is not None:
+            logger.info(
+                f"👥 register_or_merge: имя '{name}' уже есть у "
+                f"id={twin[0][:8]}, но голос не дотянул до "
+                f"{REGISTER_MATCH_THRESHOLD} (score="
+                f"{twin_score if twin_score is None else round(twin_score, 3)}) — "
+                f"завёл отдельный профиль id={new_id[:8]} и прошу переспросить"
+            )
+            return RegisterOutcome(
+                new_id,
+                False,
+                twin_name=twin[1],
+                twin_speaker_id=twin[0],
+                twin_score=twin_score,
+            )
         return RegisterOutcome(new_id, False)
+
+    def _find_by_name(self, name: str) -> Optional[Tuple[str, str]]:
+        """Профиль с таким же именем: ``(speaker_id, name)`` или ``None``.
+
+        Сравнение в Python, а не в SQL: ``LOWER()`` в SQLite умеет только
+        ASCII, и «Дэнчик» с «дэнчик» он не свёл бы (тот же приём и по той
+        же причине, что в :meth:`rename_by_name`). Берётся САМЫЙ СВЕЖИЙ
+        из совпавших — если тёзок уже несколько, переспрашивать логично
+        про последнего, с кем разговаривали.
+        """
+        wanted = _validate_speaker_name(name)
+        if not wanted:
+            return None
+        rows = self._conn.execute(
+            "SELECT speaker_id, name FROM speakers ORDER BY created_at DESC"
+        ).fetchall()
+        for sid, existing in rows:
+            if _same_speaker_name(existing, wanted):
+                return (sid, existing)
+        return None
+
+    def _score_for(self, embedding: np.ndarray, speaker_id: str) -> Optional[float]:
+        """Косинус эмбеддинга против галереи КОНКРЕТНОГО профиля.
+
+        Нужен, чтобы в поводе переспросить стояло число, а не «похоже/не
+        похоже»: оператор по логу должен видеть, насколько близко было
+        решение. ``None``, если у профиля пустая галерея.
+        """
+        for sid, _name, score, _size in self._score_all(embedding):
+            if sid == speaker_id:
+                return float(score)
+        return None
 
     def merge_speakers(self, src_id: str, dst_id: str) -> int:
         """Слить два профиля одного человека (issue W5-4).
