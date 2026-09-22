@@ -52,7 +52,7 @@ for key in ('hailo_enabled', 'hef_path', 'stub_period_sec',
             # FACE_STORE_ROOT, FACE_PRIVACY_MODE, FACE_IDENTIFY_THRESHOLD).
             'arcface_enabled', 'arcface_hef_path', 'face_store_root',
             'face_privacy_mode', 'face_identify_threshold',
-            'face_enroll_threshold',
+            'face_enroll_threshold', 'face_gallery_warmup_size',
             'min_track_sec', 'min_face_px',
             # Ворота качества кропа (issue #2749) — см. комментарий у
             # min_crop_mean/min_crop_contrast в hailo_models.yaml.
@@ -100,6 +100,12 @@ FACE_PRIVACY_MODE="${FACE_PRIVACY_MODE:-workshop}"
 # опознана как «Деньчик» при score=0.483).
 FACE_IDENTIFY_THRESHOLD="${FACE_IDENTIFY_THRESHOLD:-0.6}"
 FACE_ENROLL_THRESHOLD="${FACE_ENROLL_THRESHOLD:-0.75}"
+# Прогрев галереи (issue #2771): пока в записи меньше стольких векторов,
+# дозапись идёт по факту узнавания, без второго порога FACE_ENROLL_
+# THRESHOLD. Без прогрева галерея не растёт дальше семени — живой замер
+# 22.09.2026 дал внутриперсонные косинусы 0.538/0.582/0.461, то есть ВЕСЬ
+# разброс ниже 0.75, и каждый новый ракурс заводил нового «человека».
+FACE_GALLERY_WARMUP_SIZE="${FACE_GALLERY_WARMUP_SIZE:-5}"
 MIN_TRACK_SEC="${MIN_TRACK_SEC:-2.0}"
 MIN_FACE_PX="${MIN_FACE_PX:-48.0}"
 # Ворота качества кропа (issue #2749) — обоснование чисел см. в
@@ -117,7 +123,7 @@ echo "[start_vision_face] config: HAILO_ENABLED=${HAILO_ENABLED} HEF_PATH=${HEF_
 echo "[start_vision_face] topics: output=${OUTPUT_TOPIC}"
 echo "[start_vision_face] confidence_threshold=${CONFIDENCE_THRESHOLD} nms_iou=${NMS_IOU_THRESHOLD}"
 echo "[start_vision_face] arcface: ARCFACE_ENABLED=${ARCFACE_ENABLED} ARCFACE_HEF_PATH=${ARCFACE_HEF_PATH:-<none>}"
-echo "[start_vision_face] face store: root=${FACE_STORE_ROOT} privacy_mode=${FACE_PRIVACY_MODE} identify_threshold=${FACE_IDENTIFY_THRESHOLD} enroll_threshold=${FACE_ENROLL_THRESHOLD}"
+echo "[start_vision_face] face store: root=${FACE_STORE_ROOT} privacy_mode=${FACE_PRIVACY_MODE} identify_threshold=${FACE_IDENTIFY_THRESHOLD} enroll_threshold=${FACE_ENROLL_THRESHOLD} gallery_warmup_size=${FACE_GALLERY_WARMUP_SIZE}"
 echo "[start_vision_face] face limits: min_track_sec=${MIN_TRACK_SEC} min_face_px=${MIN_FACE_PX} min_crop_mean=${MIN_CROP_MEAN} min_crop_contrast=${MIN_CROP_CONTRAST} max_embeds_per_frame=${MAX_EMBEDS_PER_FRAME} max_embeddings=${MAX_EMBEDDINGS} keep_encounters=${KEEP_ENCOUNTERS} max_strangers=${MAX_STRANGERS}"
 
 if [ "${ARCFACE_ENABLED}" = "true" ] && [ -z "${ARCFACE_HEF_PATH}" ]; then
@@ -172,6 +178,7 @@ LAUNCH_ARGS=(
     face_privacy_mode:=${FACE_PRIVACY_MODE}
     face_identify_threshold:=${FACE_IDENTIFY_THRESHOLD}
     face_enroll_threshold:=${FACE_ENROLL_THRESHOLD}
+    face_gallery_warmup_size:=${FACE_GALLERY_WARMUP_SIZE}
     min_track_sec:=${MIN_TRACK_SEC}
     min_face_px:=${MIN_FACE_PX}
     min_crop_mean:=${MIN_CROP_MEAN}

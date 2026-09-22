@@ -141,6 +141,11 @@ def _base_stats(**overrides: Any) -> Dict[str, Any]:
             'named': 0,
             'gallery_cohesion': None,
             'enroll_rejected_total': 0,
+            # issue #2771 — прогрев галереи. На том прогоне его ещё не
+            # было; здесь он в нуле именно потому, что все три записи
+            # застряли на семени и ни один эмбеддинг не дописался.
+            'enroll_warmup_total': 0,
+            'gallery_warmup_size': 5,
         },
     }
     stats.update(overrides)
@@ -228,6 +233,11 @@ def test_log_stats_reproduces_robot_incident_line():
             'named': 2,
             'gallery_cohesion': None,
             'enroll_rejected_total': 0,
+            # issue #2771 — прогрев галереи. На том прогоне его ещё не
+            # было; ноль здесь не «не сработал», а «не существовал»: все
+            # записи застряли на семени, дозаписей не случалось вовсе.
+            'enroll_warmup_total': 0,
+            'gallery_warmup_size': 5,
         },
     )
     node = _FakeNode(stats)
@@ -244,7 +254,7 @@ def test_log_stats_reproduces_robot_incident_line():
         '(пропуски: голос_не_опознан=2 нет_лица=1 конфликт_профилей=1) '
         'ошибок_эмбеддинга=0 кропов_отброшено=59 (clipped=51 blurry=8) '
         'треков=0 | в базе: людей=3 с_именем=2 gallery_cohesion=н/д '
-        'enroll_отклонено=0'
+        'enroll_отклонено=0 прогрев=0/5'
     ) == summary
 
     assert diagnostics == (

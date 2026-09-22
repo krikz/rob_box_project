@@ -58,6 +58,11 @@ FACE_RECOGNITION_PARAMS = {
     # см. докстринг конструктора FaceStore.__init__).
     'face_identify_threshold': '0.6',
     'face_enroll_threshold': '0.75',
+    # Прогрев галереи (issue #2771): пока векторов меньше, дозапись идёт
+    # по факту узнавания — иначе галерея не выходит из размера 1 и каждый
+    # ракурс заводит нового «человека». См. face_store.
+    # DEFAULT_GALLERY_WARMUP_SIZE.
+    'face_gallery_warmup_size': '5',
     # Правило Встречи (ADR-0123 §3): мелькнувшее лицо встречей не станет.
     'min_track_sec': '2.0',
     'min_face_px': '48.0',

@@ -245,6 +245,12 @@ class VisionFaceNode(VisionHailoNode):
         # #2772) — см. докстринг конструктора FaceStore.
         self.declare_parameter('face_identify_threshold', 0.6)
         self.declare_parameter('face_enroll_threshold', 0.75)
+        # issue #2771: сколько эмбеддингов запись набирает по одному лишь
+        # факту узнавания, пока галерея молодая. См. большой комментарий
+        # у face_store.DEFAULT_GALLERY_WARMUP_SIZE — без прогрева галерея
+        # не может вырасти дальше семени, и каждый новый ракурс заводит
+        # нового «человека».
+        self.declare_parameter('face_gallery_warmup_size', 5)
         self.declare_parameter('min_track_sec', 2.0)
         self.declare_parameter('min_face_px', 48.0)
         # Ворота качества кропа (issue #2749): почти чёрный/плоский кроп
@@ -335,6 +341,9 @@ class VisionFaceNode(VisionHailoNode):
             mode=mode,
             identify_threshold=identify_threshold,
             enroll_threshold=enroll_threshold,
+            gallery_warmup_size=int(
+                self.get_parameter('face_gallery_warmup_size').value
+            ),
             max_embeddings=int(self.get_parameter('max_embeddings').value),
             keep_encounters=int(self.get_parameter('keep_encounters').value),
             max_strangers=int(self.get_parameter('max_strangers').value),
@@ -501,7 +510,7 @@ class VisionFaceNode(VisionHailoNode):
             '[лицо] режим=%s встреч=%d узнано=%d новых=%d слияний=%d%s '
             'ошибок_эмбеддинга=%d кропов_отброшено=%d%s треков=%d | '
             'в базе: людей=%s с_именем=%s gallery_cohesion=%s '
-            'enroll_отклонено=%d'
+            'enroll_отклонено=%d прогрев=%d/%s'
             % (
                 store.get('mode', '?'),
                 stats.get('encounters_total', 0),
@@ -517,6 +526,8 @@ class VisionFaceNode(VisionHailoNode):
                 store.get('named', '?'),
                 cohesion_str,
                 store.get('enroll_rejected_total', 0),
+                store.get('enroll_warmup_total', 0),
+                store.get('gallery_warmup_size', '?'),
             )
         )
         # Issue #2777 — вторая строка, отдельно от «сколько встреч/узнано»:
