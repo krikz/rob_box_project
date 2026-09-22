@@ -33,6 +33,23 @@ Issue #2599 PR-B, ADR-0123 §3/§4/§6.
 **Выдумка не доезжает до Личности** (ADR-0089 §2.2, #2583): в stub-режиме
 детектор публикует ``event_type="stub"``, а не ``"face"``, и сюда такие
 события просто не попадают — узнавать нечего, записи не создаются.
+
+**Ворота качества кропа** (issue #2749): ``confidence_threshold`` и
+``min_face_px`` проверяют только геометрию детекции, а не то, что внутри
+бокса. RetinaFace может полчаса честно детектировать тень в тёмной
+комнате — бокс большой, confidence высокий, а кроп почти чёрный; ArcFace
+на таком входе не падает, а стабильно отдаёт один и тот же вырожденный
+эмбеддинг, который ложится в галерею как "человек". Поэтому здесь же, в
+:meth:`FaceRecognizer._crop_all`, кроп проверяется на яркость/контраст
+(:func:`~rob_box_perception.face_embedding.crop_brightness_contrast`,
+``DEFAULT_MIN_CROP_MEAN``/``DEFAULT_MIN_CROP_CONTRAST``) ДО эмбеддинга —
+отбракованный кроп трактуется как отсутствующий (тот же путь, что и
+мелкое лицо ниже ``min_embed_px``): не эмбеддится, не идёт в снимок,
+трек без единого годного кадра просто не даёт эмбеддинга на Встрече
+(см. ``_on_encounter``) и запись в ``FaceStore`` не создаётся. Это
+согласуется с границей ``FaceStore`` (ADR-0123 §5: хранилище снимки
+принципиально не разглядывает) — фильтр стоит строго ВЫШЕ неё, пока
+кроп ещё живой массив, а не готовые JPEG-байты.
 """
 
 from __future__ import annotations
@@ -42,6 +59,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from rob_box_perception.face_embedding import (
+    crop_brightness_contrast,
     crop_face,
     encode_jpeg,
     sharpness,
@@ -57,6 +75,33 @@ DEFAULT_CROP_MARGIN = 0.4
 #: Смысл не в приватности, а в цене: ArcFace на мелком кропе даёт шум,
 #: который только пачкает галерею, а NPU тратится на каждом кадре.
 DEFAULT_MIN_EMBED_PX = 32.0
+
+#: Порог средней яркости кропа (0..255, см. ``face_embedding.
+#: crop_brightness_contrast``) — ворота качества кропа перед эмбеддингом
+#: (issue #2749). Ниже него кроп не эмбеддится и не идёт в снимок встречи:
+#: трактуется так же, как мелкое лицо (см. ``DEFAULT_MIN_EMBED_PX``) —
+#: наблюдение остаётся, эмбеддинга у него нет.
+#:
+#: Число — живой замер на Vision Pi 22.09.2026 (issue #2749): фантомная
+#: запись ``8ffc2641-...`` (тень в тёмной комнате, детектор держал её
+#: полчаса, 130 "встреч") — mean 6.4–7.4/255 по 11 снимкам подряд; та же
+#: база, живой человек (``b49470e1-...``) — mean 76.6–185.4/255 по 10
+#: снимкам. Порог 20 садится с большим запасом ОТ ОБЕИХ границ: втрое
+#: выше максимума фантома и вчетверо ниже минимума живого кропа.
+DEFAULT_MIN_CROP_MEAN = 20.0
+
+#: Порог контраста кропа (``p95 - p5``, 0..255) — второй, независимый от
+#: яркости сигнал ворот качества (issue #2749). Ловит другой отказ, чем
+#: ``DEFAULT_MIN_CROP_MEAN``: не "слишком тёмный", а "плоский" кроп —
+#: пересвеченная в сплошной белый кадром матрица, где средняя яркость в
+#: норме, а разброса нет вовсе. Для замеренного 22.09.2026 фантома
+#: (``8ffc2641-...``) контраст 28–31 — ЧУТЬ ВЫШЕ этого порога (``p5``
+#: там упирается в шумовой пол матрицы 0, а не в настоящий чёрный, отсюда
+#: обманчиво не такой уж маленький разброс); именно эту фантомную запись
+#: останавливает ``DEFAULT_MIN_CROP_MEAN``, а не этот порог — контраст
+#: остаётся про другой (пока не пойманный вживую) случай отказа. Живой
+#: человек в той же базе (``b49470e1-...``) — контраст 170–208.
+DEFAULT_MIN_CROP_CONTRAST = 25.0
 
 #: Окно, внутри которого голосовое опознание считается относящимся к
 #: лицу в кадре (ADR-0123 §6 «в окне встречи»). Шире — и робот привяжет
@@ -100,6 +145,10 @@ class FaceRecognizer:
         tracker: :class:`~rob_box_perception.face_tracker.FaceTracker`.
         crop_margin: запас вокруг bbox'а (см. ``DEFAULT_CROP_MARGIN``).
         min_embed_px: ниже этого размера лицо не эмбеддится.
+        min_crop_mean: ворота качества кропа — порог средней яркости
+            (issue #2749, см. ``DEFAULT_MIN_CROP_MEAN``).
+        min_crop_contrast: ворота качества кропа — порог контраста
+            ``p95-p5`` (issue #2749, см. ``DEFAULT_MIN_CROP_CONTRAST``).
         voice_merge_window_sec: окно слияния с голосом (ADR-0123 §6).
         store_snapshots: писать ли снимок встречи. Решение «лечь ли ему
             на диск» всё равно принимает ``FaceStore`` по режиму — здесь
@@ -115,6 +164,8 @@ class FaceRecognizer:
         tracker: Optional[FaceTracker] = None,
         crop_margin: float = DEFAULT_CROP_MARGIN,
         min_embed_px: float = DEFAULT_MIN_EMBED_PX,
+        min_crop_mean: float = DEFAULT_MIN_CROP_MEAN,
+        min_crop_contrast: float = DEFAULT_MIN_CROP_CONTRAST,
         voice_merge_window_sec: float = DEFAULT_VOICE_MERGE_WINDOW_SEC,
         max_embeds_per_frame: int = DEFAULT_MAX_EMBEDS_PER_FRAME,
         store_snapshots: bool = True,
@@ -125,6 +176,8 @@ class FaceRecognizer:
         self._tracker = tracker if tracker is not None else FaceTracker()
         self._crop_margin = float(crop_margin)
         self._min_embed_px = float(min_embed_px)
+        self._min_crop_mean = float(min_crop_mean)
+        self._min_crop_contrast = float(min_crop_contrast)
         self._voice_merge_window_sec = float(voice_merge_window_sec)
         self._max_embeds_per_frame = max(1, int(max_embeds_per_frame))
         self._store_snapshots = bool(store_snapshots)
@@ -145,6 +198,10 @@ class FaceRecognizer:
         self._embed_calls = 0
         self._embed_ms_total = 0.0
         self._embed_skipped_budget = 0
+        #: Кропы, отброшенные воротами качества (issue #2749) — почти
+        #: чёрные/плоские, не дошли даже до эмбеддера. Отдельно от
+        #: ``embed_failures`` (там ArcFace/HailoRT реально падает).
+        self._crop_rejected_total = 0
 
     # ------------------------------------------------------------------
     # Логирование
@@ -259,8 +316,35 @@ class FaceRecognizer:
             if idx not in chosen:
                 crops.append(None)
                 continue
-            crops.append(crop_face(image, bbox, margin=self._crop_margin))
+            crop = crop_face(image, bbox, margin=self._crop_margin)
+            if crop is not None and not self._crop_quality_ok(crop):
+                # Ворота качества (issue #2749): кроп живой, но почти
+                # чёрный/плоский — не эмбеддим и не кладём в снимок,
+                # трактуем как отсутствующий кроп (тот же путь, что и
+                # бюджетный пропуск выше).
+                self._crop_rejected_total += 1
+                crop = None
+            crops.append(crop)
         return crops, face_px_list
+
+    def _crop_quality_ok(self, crop: Any) -> bool:
+        """Ворота качества кропа перед эмбеддингом (issue #2749).
+
+        Фильтровать нужно ЗДЕСЬ, пока кроп ещё живой numpy-массив:
+        ``FaceStore`` ниже по стеку принципиально не разглядывает снимки
+        (ADR-0123 §5, см. его докстринг) — граница режимов приватности
+        проведена там намеренно, и нарушать её нельзя; а после кодирования
+        в JPEG для записи встречи уже поздно — пиксели надо смотреть
+        раньше. Возвращает ``True``, если метрики посчитать не удалось
+        (cv2 недоступен, см. ``crop_brightness_contrast``) — деградировать
+        до "не эмбеддим вообще" из-за отсутствующего cv2 хуже, чем
+        пропустить один некалиброванный кроп через ворота.
+        """
+        metrics = crop_brightness_contrast(crop)
+        if metrics is None:
+            return True
+        mean, contrast = metrics
+        return mean >= self._min_crop_mean and contrast >= self._min_crop_contrast
 
     def _embed_all(self, crops: List[Any]) -> List[Any]:
         """Один батч в ArcFace на кадр, а не по вызову на лицо."""
@@ -570,6 +654,7 @@ class FaceRecognizer:
                 self._embed_ms_total / self._embed_calls, 1
             ) if self._embed_calls else 0.0,
             'embed_skipped_budget': self._embed_skipped_budget,
+            'crop_rejected_total': self._crop_rejected_total,
             'active_tracks': self._tracker.active_track_count(),
             'store': store_stats,
         }
