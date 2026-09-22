@@ -119,7 +119,10 @@ class TestRegisterOrMergeSameVoice:
             f"тест ловит не тот сценарий"
         )
 
-        second_name = "Эйджик"  # LLM «передумал» про имя — не должно влиять на merge
+        # ADR-0127: имя обязано совпасть, иначе слияния не будет (см.
+        # TestNameConflictKeepsBothProfiles ниже). Здесь — сценарий «тот же
+        # человек, то же имя, вторая фраза», ради которого merge и заводился.
+        second_name = "Денчик"
         second_sid, second_reused = db.register_or_merge(second_name, second_emb)
 
         # ── Assert (Acceptance) ──
@@ -150,13 +153,8 @@ class TestRegisterOrMergeSameVoice:
 
         # 4) id/имя профиля совпадают с первым вызовом
         assert target["id"] == first_sid
-        # имя: register_or_merge в текущей реализации перезаписывает имя
-        # через register(..., speaker_id=match.speaker_id) при merge
-        # (см. register_or_merge в speaker_embeddings.py), поэтому второй
-        # вызов с другим именем обновляет name — фиксируем наблюдаемое
-        # поведение, чтобы любой регресс был виден явно.
-        assert target["name"] in {first_name, second_name}, (
-            f"имя профиля должно быть одним из переданных имён; "
+        assert target["name"] == first_name, (
+            f"имя профиля не должно меняться при слиянии; "
             f"получено {target['name']!r}"
         )
 
@@ -180,7 +178,7 @@ class TestRegisterOrMergeSameVoice:
         )
 
         sid1, _ = db.register_or_merge("Денчик", base)
-        sid2, reused = db.register_or_merge("Эйджик", emb)
+        sid2, reused = db.register_or_merge("Денчик", emb)
 
         assert sid2 == sid1, "merge на границе порога должен сработать"
         assert reused is True
@@ -215,6 +213,107 @@ class TestRegisterOrMergeSameVoice:
         assert len(speakers) == 1
         assert speakers[0]["embeddings"] == 4
         assert speakers[0]["id"] == first_sid
+
+
+# ── ADR-0127: конфликт имён при совпавшем голосе ──────────────────────────
+
+
+class TestNameConflictKeepsBothProfiles:
+    """ADR-0127 — похожий голос под ДРУГИМ именем не склеивается.
+
+    Боевой случай: night-marathon 22.09.2026 (run 35667281570, акт 2).
+    Саша (TTS anton) и Борис (TTS ermil) звучат для resemblyzer на
+    cos=0.846 — выше REGISTER_MATCH_THRESHOLD. Старое поведение
+    («слить и переименовать») оставляло в /data/speakers.db ОДИН профиль,
+    и тот под именем Бориса: Саша как личность исчезал вместе со своими
+    фактами, хотя шаг сценария прямо просил «запомни мой голос отдельно
+    от Сашиного».
+
+    Контракт после фикса: имя не совпало → профили РАЗНЫЕ. Лишний дубль
+    оператор склеит ``merge_speakers()``, а затёртое имя не вернёт никто —
+    поэтому из двух ошибок выбираем обратимую.
+    """
+
+    def test_similar_voice_different_name_creates_separate_profile(self, db):
+        base = _unit(seed=6000)
+        # alpha=0.62 → cos ~0.85, как у пары anton/ermil на роботе.
+        similar = _degraded(base, alpha=0.62, noise_seed=6001)
+        cos = _cos(base, similar)
+        assert cos > REGISTER_MATCH_THRESHOLD, (
+            f"фикстура должна имитировать «похожие голоса»: cos={cos:.3f}"
+        )
+
+        sid_sasha, _ = db.register_or_merge("Саша", base)
+        outcome = db.register_or_merge("Борис", similar)
+        sid_boris, reused = outcome
+
+        assert reused is False, "конфликт имён не должен считаться слиянием"
+        assert sid_boris != sid_sasha, "Борис обязан получить свой профиль"
+
+        by_name = {s["name"]: s for s in db.list_speakers()}
+        assert set(by_name) == {"Саша", "Борис"}, (
+            f"в БД должны остаться ОБА имени, получено {sorted(by_name)}"
+        )
+        assert by_name["Саша"]["id"] == sid_sasha, "Сашу нельзя переименовывать"
+        assert by_name["Саша"]["embeddings"] == 1
+        assert by_name["Борис"]["embeddings"] == 1
+
+    def test_conflict_is_reported_to_caller(self, db):
+        """Нода должна получить, ЧТО именно похоже — иначе оператор слеп."""
+        base = _unit(seed=6100)
+        similar = _degraded(base, alpha=0.62, noise_seed=6101)
+        sid_sasha, _ = db.register_or_merge("Саша", base)
+
+        outcome = db.register_or_merge("Борис", similar)
+
+        assert outcome.name_conflict is True
+        assert outcome.conflict_name == "Саша"
+        assert outcome.conflict_speaker_id == sid_sasha
+        assert outcome.conflict_score == pytest.approx(_cos(base, similar), abs=1e-4)
+        # Старый контракт (sid, reused) обязан продолжать работать.
+        sid, reused = outcome
+        assert (sid, reused) == (outcome.speaker_id, False)
+
+    def test_no_conflict_fields_on_plain_registration(self, db):
+        outcome = db.register_or_merge("Иван", _unit(seed=6200))
+        assert outcome.name_conflict is False
+        assert outcome.conflict_name is None
+        assert outcome.conflict_speaker_id is None
+        assert outcome.conflict_score is None
+
+    def test_name_comparison_ignores_case_and_spaces(self, db):
+        """«саша» и « Саша » — одно имя: merge, а не третий профиль."""
+        base = _unit(seed=6300)
+        sid, _ = db.register_or_merge("Саша", base)
+        sid2, reused = db.register_or_merge(
+            "  саша ", _degraded(base, alpha=0.3, noise_seed=6301)
+        )
+        assert (sid2, reused) == (sid, True)
+        speakers = db.list_speakers()
+        assert len(speakers) == 1
+        assert speakers[0]["name"] == "Саша", (
+            "каноническое написание имени в БД не должно дёргаться"
+        )
+
+    def test_duplicate_from_conflict_is_repairable_by_merge_speakers(self, db):
+        """Цена решения — дубль; он обязан чиниться штатной склейкой.
+
+        Это и есть аргумент ADR-0127: ошибка «лишний профиль» обратима
+        одним вызовом, ошибка «затёртое имя» — необратима.
+        """
+        base = _unit(seed=6400)
+        similar = _degraded(base, alpha=0.62, noise_seed=6401)
+        sid_denis, _ = db.register_or_merge("Денис", base)
+        sid_denchik, _ = db.register_or_merge("Денчик", similar)
+
+        moved = db.merge_speakers(sid_denchik, sid_denis)
+
+        assert moved == 1
+        speakers = db.list_speakers()
+        assert len(speakers) == 1
+        assert speakers[0]["id"] == sid_denis
+        assert speakers[0]["name"] == "Денис"
+        assert speakers[0]["embeddings"] == 2
 
 
 # ── Регрессия: контрастные сценарии должны вести себя иначе ───────────────

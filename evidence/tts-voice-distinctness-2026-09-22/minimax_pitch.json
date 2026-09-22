@@ -1,0 +1,235 @@
+{
+  "provider": "minimax",
+  "identify_threshold": 0.72,
+  "register_match_threshold": 0.75,
+  "voices": [
+    "Russian_ReliableMan",
+    "Russian_ReliableMan[p-6,s1]",
+    "Russian_ReliableMan[p+6,s1]",
+    "Russian_HandsomeChildhoodFriend",
+    "Russian_HandsomeChildhoodFriend[p-6,s1]",
+    "Russian_HandsomeChildhoodFriend[p+6,s1]"
+  ],
+  "intra_voice_min_cos": {
+    "Russian_ReliableMan": 0.9479525685310364,
+    "Russian_ReliableMan[p-6,s1]": 0.9713891744613647,
+    "Russian_ReliableMan[p+6,s1]": 0.9524132013320923,
+    "Russian_HandsomeChildhoodFriend": 0.9685983657836914,
+    "Russian_HandsomeChildhoodFriend[p-6,s1]": 0.9627633690834045,
+    "Russian_HandsomeChildhoodFriend[p+6,s1]": 0.9700443744659424
+  },
+  "inter_voice_max_cos": {
+    "Russian_ReliableMan|Russian_ReliableMan[p-6,s1]": 0.6344656348228455,
+    "Russian_ReliableMan|Russian_ReliableMan[p+6,s1]": 0.6132992506027222,
+    "Russian_ReliableMan|Russian_HandsomeChildhoodFriend": 0.7032501101493835,
+    "Russian_ReliableMan|Russian_HandsomeChildhoodFriend[p-6,s1]": 0.5973429679870605,
+    "Russian_ReliableMan|Russian_HandsomeChildhoodFriend[p+6,s1]": 0.5960521697998047,
+    "Russian_ReliableMan[p-6,s1]|Russian_ReliableMan[p+6,s1]": 0.5139604210853577,
+    "Russian_ReliableMan[p-6,s1]|Russian_HandsomeChildhoodFriend": 0.6277591586112976,
+    "Russian_ReliableMan[p-6,s1]|Russian_HandsomeChildhoodFriend[p-6,s1]": 0.7685638666152954,
+    "Russian_ReliableMan[p-6,s1]|Russian_HandsomeChildhoodFriend[p+6,s1]": 0.6341400742530823,
+    "Russian_ReliableMan[p+6,s1]|Russian_HandsomeChildhoodFriend": 0.42417994141578674,
+    "Russian_ReliableMan[p+6,s1]|Russian_HandsomeChildhoodFriend[p-6,s1]": 0.4806794822216034,
+    "Russian_ReliableMan[p+6,s1]|Russian_HandsomeChildhoodFriend[p+6,s1]": 0.6659101247787476,
+    "Russian_HandsomeChildhoodFriend|Russian_HandsomeChildhoodFriend[p-6,s1]": 0.7159963250160217,
+    "Russian_HandsomeChildhoodFriend|Russian_HandsomeChildhoodFriend[p+6,s1]": 0.6682920455932617,
+    "Russian_HandsomeChildhoodFriend[p-6,s1]|Russian_HandsomeChildhoodFriend[p+6,s1]": 0.6134588718414307
+  },
+  "scenario_pairs": [
+    {
+      "scenario_voices": [
+        "anton",
+        "anton"
+      ],
+      "provider_voices": [
+        "Russian_ReliableMan",
+        "Russian_ReliableMan[p-6,s1]"
+      ],
+      "cos": 0.6344656348228455,
+      "merges_on_register": false,
+      "identified_as_same": false
+    },
+    {
+      "scenario_voices": [
+        "anton",
+        "anton"
+      ],
+      "provider_voices": [
+        "Russian_ReliableMan",
+        "Russian_ReliableMan[p+6,s1]"
+      ],
+      "cos": 0.6132992506027222,
+      "merges_on_register": false,
+      "identified_as_same": false
+    },
+    {
+      "scenario_voices": [
+        "anton",
+        "ermil"
+      ],
+      "provider_voices": [
+        "Russian_ReliableMan",
+        "Russian_HandsomeChildhoodFriend"
+      ],
+      "cos": 0.7032501101493835,
+      "merges_on_register": false,
+      "identified_as_same": false
+    },
+    {
+      "scenario_voices": [
+        "anton",
+        "ermil"
+      ],
+      "provider_voices": [
+        "Russian_ReliableMan",
+        "Russian_HandsomeChildhoodFriend[p-6,s1]"
+      ],
+      "cos": 0.5973429679870605,
+      "merges_on_register": false,
+      "identified_as_same": false
+    },
+    {
+      "scenario_voices": [
+        "anton",
+        "ermil"
+      ],
+      "provider_voices": [
+        "Russian_ReliableMan",
+        "Russian_HandsomeChildhoodFriend[p+6,s1]"
+      ],
+      "cos": 0.5960521697998047,
+      "merges_on_register": false,
+      "identified_as_same": false
+    },
+    {
+      "scenario_voices": [
+        "anton",
+        "anton"
+      ],
+      "provider_voices": [
+        "Russian_ReliableMan[p-6,s1]",
+        "Russian_ReliableMan[p+6,s1]"
+      ],
+      "cos": 0.5139604210853577,
+      "merges_on_register": false,
+      "identified_as_same": false
+    },
+    {
+      "scenario_voices": [
+        "anton",
+        "ermil"
+      ],
+      "provider_voices": [
+        "Russian_ReliableMan[p-6,s1]",
+        "Russian_HandsomeChildhoodFriend"
+      ],
+      "cos": 0.6277591586112976,
+      "merges_on_register": false,
+      "identified_as_same": false
+    },
+    {
+      "scenario_voices": [
+        "anton",
+        "ermil"
+      ],
+      "provider_voices": [
+        "Russian_ReliableMan[p-6,s1]",
+        "Russian_HandsomeChildhoodFriend[p-6,s1]"
+      ],
+      "cos": 0.7685638666152954,
+      "merges_on_register": true,
+      "identified_as_same": true
+    },
+    {
+      "scenario_voices": [
+        "anton",
+        "ermil"
+      ],
+      "provider_voices": [
+        "Russian_ReliableMan[p-6,s1]",
+        "Russian_HandsomeChildhoodFriend[p+6,s1]"
+      ],
+      "cos": 0.6341400742530823,
+      "merges_on_register": false,
+      "identified_as_same": false
+    },
+    {
+      "scenario_voices": [
+        "anton",
+        "ermil"
+      ],
+      "provider_voices": [
+        "Russian_ReliableMan[p+6,s1]",
+        "Russian_HandsomeChildhoodFriend"
+      ],
+      "cos": 0.42417994141578674,
+      "merges_on_register": false,
+      "identified_as_same": false
+    },
+    {
+      "scenario_voices": [
+        "anton",
+        "ermil"
+      ],
+      "provider_voices": [
+        "Russian_ReliableMan[p+6,s1]",
+        "Russian_HandsomeChildhoodFriend[p-6,s1]"
+      ],
+      "cos": 0.4806794822216034,
+      "merges_on_register": false,
+      "identified_as_same": false
+    },
+    {
+      "scenario_voices": [
+        "anton",
+        "ermil"
+      ],
+      "provider_voices": [
+        "Russian_ReliableMan[p+6,s1]",
+        "Russian_HandsomeChildhoodFriend[p+6,s1]"
+      ],
+      "cos": 0.6659101247787476,
+      "merges_on_register": false,
+      "identified_as_same": false
+    },
+    {
+      "scenario_voices": [
+        "ermil",
+        "ermil"
+      ],
+      "provider_voices": [
+        "Russian_HandsomeChildhoodFriend",
+        "Russian_HandsomeChildhoodFriend[p-6,s1]"
+      ],
+      "cos": 0.7159963250160217,
+      "merges_on_register": false,
+      "identified_as_same": false
+    },
+    {
+      "scenario_voices": [
+        "ermil",
+        "ermil"
+      ],
+      "provider_voices": [
+        "Russian_HandsomeChildhoodFriend",
+        "Russian_HandsomeChildhoodFriend[p+6,s1]"
+      ],
+      "cos": 0.6682920455932617,
+      "merges_on_register": false,
+      "identified_as_same": false
+    },
+    {
+      "scenario_voices": [
+        "ermil",
+        "ermil"
+      ],
+      "provider_voices": [
+        "Russian_HandsomeChildhoodFriend[p-6,s1]",
+        "Russian_HandsomeChildhoodFriend[p+6,s1]"
+      ],
+      "cos": 0.6134588718414307,
+      "merges_on_register": false,
+      "identified_as_same": false
+    }
+  ]
+}
