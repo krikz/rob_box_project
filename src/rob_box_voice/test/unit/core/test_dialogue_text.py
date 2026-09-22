@@ -190,3 +190,64 @@ def test_default_tuples_are_non_empty() -> None:
     assert len(DEFAULT_WAKE_WORDS) > 0
     assert len(DEFAULT_SILENCE_COMMANDS) > 0
     assert len(DEFAULT_UNSILENCE_COMMANDS) > 0
+
+# ---------------------------------------------------------------------------
+# «Робота» — винительный падеж от STT (прогон 35734532425, шаг n209)
+# ---------------------------------------------------------------------------
+
+
+class TestAccusativeRobota:
+    """Регрессия: «Робота, про меня что помнишь?» обязана будить робота.
+
+    Живой прогон 35734532425 (акт 2 «Знакомство»): vosk трижды подряд
+    распознал обращение «Робот,» как «Робота,», has_wake_word вернул False
+    (``\b``-матчинг не видит «робот» внутри «робота»), робот промолчал, шаг
+    упал с ``FAIL no_accept``. Диктор при этом был опознан верно — потерян
+    был именно вейк, а не голос.
+    """
+
+    def test_accusative_wakes(self) -> None:
+        assert has_wake_word("робота, про меня что помнишь?", DEFAULT_WAKE_WORDS) is True
+
+    def test_accusative_stripped_cleanly(self) -> None:
+        assert (
+            strip_wake_word("Робота, про меня что помнишь?", DEFAULT_WAKE_WORDS)
+            == "про меня что помнишь?"
+        )
+
+    def test_nominative_still_wakes(self) -> None:
+        assert has_wake_word("робот, привет", DEFAULT_WAKE_WORDS) is True
+
+    def test_rabotaet_still_not_a_wake_word(self) -> None:
+        """Гард #1292 не должен пострадать: «работает» — не вейк."""
+        assert has_wake_word("он работает уже час", DEFAULT_WAKE_WORDS) is False
+
+
+# ---------------------------------------------------------------------------
+# Синхронность кодового списка и docker/vision/config/wake_words.yaml
+# ---------------------------------------------------------------------------
+
+
+def test_wake_words_yaml_matches_code_list() -> None:
+    """YAML на роботе и DEFAULT_WAKE_WORDS — один список, а не два.
+
+    Инвариант заявлен в шапке ``wake_words.yaml`` («байт-в-байт копия»), но
+    до сих пор держался только комментарием: автотеста не было, и правка в
+    одном месте молча расходилась со вторым. На роботе читается ИМЕННО
+    YAML (bind-mount), кодовый список — фолбек для dev-env и тестов, так
+    что расхождение означает «в тестах зелено, на роботе глухо».
+    """
+    from pathlib import Path
+
+    import yaml
+
+    repo_root = Path(__file__).resolve().parents[5]
+    cfg = repo_root / "docker" / "vision" / "config" / "wake_words.yaml"
+    assert cfg.exists(), f"конфиг вейк-слов не найден: {cfg}"
+
+    personality = yaml.safe_load(cfg.read_text(encoding="utf-8"))["personality"]
+    assert list(personality) == list(DEFAULT_WAKE_WORDS), (
+        "personality из wake_words.yaml разошёлся с DEFAULT_WAKE_WORDS — "
+        "правь ОБА места в одном коммите: на роботе действует YAML, "
+        "в юнит-тестах кодовый список"
+    )
