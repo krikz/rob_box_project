@@ -644,6 +644,15 @@ class TestUnbackedActionClaimLive3008:
                 "«Тисбит» удалён из медиатеки.",
                 "track_delete",
             ),
+            # Issue #2755: раньше этот кейс лежал в test_no_false_positives
+            # с пометкой «факт в память — не точка». Верно только про
+            # точку: сам факт тоже требует тула (memory_save), иначе он
+            # не доживёт до следующей сессии — прогон 35699257202, акт 2.
+            (
+                "запомни что я люблю зеленый чай без сахара",
+                "Запомнила.",
+                "fact_memory_save",
+            ),
         ],
     )
     def test_claim_without_tool_is_detected(
@@ -685,8 +694,9 @@ class TestUnbackedActionClaimLive3008:
     @pytest.mark.parametrize(
         "user_input,spoken",
         [
-            # Факт в память — не точка; save_waypoint тут ни при чём.
-            ("запомни что я люблю зеленый чай без сахара", "Запомнила."),
+            # NB: «запомни что я люблю зеленый чай» переехало в
+            # test_claim_without_tool_is_detected (issue #2755) — это
+            # ТОЖЕ баг, просто тул там memory_save, а не save_waypoint.
             # NB: «перечисли точки» переехало в TestReadOnlyClaims... —
             # e2e 33251879328 показал, что это ТОЖЕ баг: робот отвечал
             # «Точек пока нет» при tools=[], хотя точка уже сохранялась.
