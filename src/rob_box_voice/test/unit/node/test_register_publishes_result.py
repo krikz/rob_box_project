@@ -40,8 +40,9 @@ docstring test_gallery_warmup.py). Теперь галерея растёт по
 Тот же приём, что в test_epithet_wiring.py: ``SpeakerIdNode.__init__`` не
 вызывается (там ROS-параметры, ThreadPool, resemblyzer warmup) — нода
 собирается через ``object.__new__`` и получает только те поля, которые
-нужны проверяемому коду. ``embed_audio`` подменяется на фиксированный
-вектор — resemblyzer недоступен на dev-машине / в CI.
+нужны проверяемому коду. ``embed_audio_ex`` подменяется на фиксированный
+вектор с явной длительностью речи (issue #2747) — resemblyzer недоступен
+на dev-машине / в CI.
 """
 
 from __future__ import annotations
@@ -73,6 +74,29 @@ for _hw in ("pyaudio", "usb", "usb.core", "usb.util", "sounddevice"):
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from rob_box_voice import speaker_id_node as sid_node  # noqa: E402
+
+
+class _Embed:
+    """Заглушка ``EmbedResult`` из ``speaker_embeddings`` (issue #2747).
+
+    Нода теперь берёт у БД не голый вектор, а вектор ВМЕСТЕ с
+    длительностью РЕЧИ после VAD: гейт регистрации обязан мерить речь, а
+    не длину окна записи. Свой мини-класс, а не импорт настоящего, — по
+    той же причине, что и остальные заглушки в этом файле: тянуть модуль
+    ради трёх полей значит тянуть resemblyzer, которого на dev-машине и
+    в CI нет.
+    """
+
+    def __init__(self, embedding, voiced_sec: float = 5.0) -> None:
+        self.embedding = embedding
+        self.voiced_sec = voiced_sec
+        self.raw_sec = max(voiced_sec, 0.0)
+
+    @property
+    def voiced_ratio(self) -> float:
+        return (self.voiced_sec / self.raw_sec) if self.raw_sec > 0 else 0.0
+
+
 from rob_box_voice.utils.speaker_embeddings import SpeakerDatabase  # noqa: E402
 
 
@@ -279,7 +303,7 @@ def test_growth_session_grows_gallery_even_when_identify_fails(node):
 
     alpha = float((1.0 / 0.523 ** 2 - 1.0) ** 0.5)
     second = _degraded(base, alpha=alpha, noise_seed=11)
-    node._db.embed_audio = MagicMock(return_value=second)
+    node._db.embed_audio_ex = MagicMock(return_value=_Embed(second))
 
     node._process_utterance(b"\x00\x00" * 1000)
 
@@ -300,7 +324,7 @@ def test_growth_session_stops_at_warmup_size_cap(node):
         node._db.register("Деньчик", _degraded(base, 0.1, 2000 + i), speaker_id=sid)
     assert node._db.gallery_size(sid) == 5
 
-    node._db.embed_audio = MagicMock(return_value=_degraded(base, 0.1, 2999))
+    node._db.embed_audio_ex = MagicMock(return_value=_Embed(_degraded(base, 0.1, 2999)))
     node._process_utterance(b"\x00\x00" * 1000)
 
     assert node._db.gallery_size(sid) == 5, "галерея не должна расти после потолка"
@@ -318,7 +342,7 @@ def test_growth_session_closes_after_gap_timeout(node, monkeypatch):
     # Отматываем "последнюю реплику сессии" далеко в прошлое.
     node._growth_session["last_utterance_at"] -= node._growth_session_gap_sec + 1.0
 
-    node._db.embed_audio = MagicMock(return_value=_degraded(base, 0.1, 2500))
+    node._db.embed_audio_ex = MagicMock(return_value=_Embed(_degraded(base, 0.1, 2500)))
     node._process_utterance(b"\x00\x00" * 1000)
 
     assert node._db.gallery_size(sid) == 1, "разрыв больше окна — рост не должен случиться"
@@ -341,7 +365,7 @@ def test_growth_session_vetoed_by_confident_different_speaker(node):
     # по калиброванному порогу на его собственный (почти идентичный) голос.
     node._result_pub.messages.clear()
 
-    node._db.embed_audio = MagicMock(return_value=other_base)
+    node._db.embed_audio_ex = MagicMock(return_value=_Embed(other_base))
     node._process_utterance(b"\x00\x00" * 1000)
 
     assert node._db.gallery_size(sid_anchor) == 1, "чужая реплика не должна попасть в Деньчика"
@@ -366,7 +390,7 @@ def test_no_growth_without_active_session(node):
     sid = node._db.register("Саша", _embedding(50))
     assert node._growth_session is None
 
-    node._db.embed_audio = MagicMock(return_value=_degraded(_embedding(50), 0.1, 51))
+    node._db.embed_audio_ex = MagicMock(return_value=_Embed(_degraded(_embedding(50), 0.1, 51)))
     node._process_utterance(b"\x00\x00" * 1000)
 
     assert node._db.gallery_size(sid) == 1, "без активной сессии рост не должен случиться"
@@ -379,7 +403,7 @@ def test_no_growth_without_active_session(node):
 
 def test_pending_name_registration_publishes_exactly_one_known_result(node):
     emb = _embedding(40)
-    node._db.embed_audio = MagicMock(return_value=emb)
+    node._db.embed_audio_ex = MagicMock(return_value=_Embed(emb))
     node._pending_register_name = "Эйджик"
 
     # Issue #2769 — pending_name идёт через _do_register(duration_sec=...),
@@ -399,12 +423,39 @@ def test_pending_name_registration_publishes_exactly_one_known_result(node):
     assert node._pending_register_name is None
 
 
+def test_long_window_with_short_speech_is_rejected(node):
+    """issue #2747 — гейт мерит РЕЧЬ, а не длину окна записи.
+
+    Регресс, который этим чинится: окно 4.6с, в котором человек говорил
+    полсекунды, проходило трёхсекундный порог (проверялась длина буфера,
+    а не результат VAD) и становилось эталоном профиля. Замер на роботе
+    22.09.2026: скоры одного человека против его же свежесозданного
+    профиля скакали 0.908 / 0.550 / 0.820 / 0.556, при том что
+    сохранённые эталоны внутри одной сессии держались 0.65–0.91 —
+    нестабилен был не эмбеддер, а то, что в него попадало.
+    """
+    emb = _embedding(77)
+    # Буфер длинный — 4.6с, как типичная реплика на роботе; речи в нём
+    # всего 0.8с. Раньше решала первая цифра, теперь вторая.
+    node._db.embed_audio_ex = MagicMock(return_value=_Embed(emb, voiced_sec=0.8))
+    node._pending_register_name = "Эйджик"
+
+    node._process_utterance(bytes(2 * 36800))  # окно 4.6с окна
+
+    assert node._db.list_speakers() == [], (
+        'окно длинное, но речи в нём меньше порога — профиль создавать нельзя'
+    )
+    error_acks = [m for m in node._result_pub.messages if m.get("event") == "register_error"]
+    assert len(error_acks) == 1
+    assert error_acks[0]["error"] == "too_short"
+
+
 def test_pending_name_registration_rejected_when_audio_too_short(node):
     """Issue #2769 — end-to-end путь ``_process_utterance`` (не только
     ``_do_register`` напрямую): реплика короче 3.0с в pending_name-ветке
     не создаёт профиль и не публикует is_known=true."""
     emb = _embedding(41)
-    node._db.embed_audio = MagicMock(return_value=emb)
+    node._db.embed_audio_ex = MagicMock(return_value=_Embed(emb, voiced_sec=0.0625))
     node._pending_register_name = "Эйджик"
 
     # 2000 bytes / 16000 Hz / 2 bytes = 0.0625s — заведомо короче порога.

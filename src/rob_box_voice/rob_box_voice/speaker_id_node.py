@@ -459,12 +459,26 @@ class SpeakerIdNode(Node):
         t0 = time.monotonic()
         # Issue #2769 — длительность нужна ОТДЕЛЬНО от identify()-гейта
         # embed_audio(): register_or_merge() проверяет её против более
-        # строгого MIN_REGISTER_AUDIO_DURATION_SEC. Формула — как в логе
-        # "🎤 Received speech audio" (_on_speech_audio) — int16 моно, 2 байта
-        # на сэмпл.
-        duration_sec = len(pcm_bytes) / self._sample_rate / 2
-
-        embedding = self._db.embed_audio(pcm_bytes, self._sample_rate)
+        # строгого MIN_REGISTER_AUDIO_DURATION_SEC.
+        #
+        # Issue #2747 — и меряется она теперь по РЕЧИ, а не по длине окна.
+        # Раньше здесь стояло len(pcm_bytes)/sample_rate/2, то есть размер
+        # буфера; окно 4.6с, в котором говорили полсекунды, проходило
+        # трёхсекундный порог и становилось эталоном профиля. Замер на
+        # роботе 22.09.2026: скоры одного человека против его же
+        # свежесозданного профиля скакали 0.908 / 0.550 / 0.820 / 0.556 —
+        # качели, а не деградация, при том что сохранённые эталоны внутри
+        # одной сессии держались 0.65–0.91. Нестабилен был не эмбеддер, а
+        # то, что в него попадало.
+        embed = self._db.embed_audio_ex(pcm_bytes, self._sample_rate)
+        embedding = embed.embedding if embed is not None else None
+        # voiced_sec — сколько осталось после VAD-обрезки внутри
+        # preprocess_wav. Именно это число уходит в гейт регистрации.
+        duration_sec = (
+            embed.voiced_sec
+            if embed is not None
+            else len(pcm_bytes) / self._sample_rate / 2
+        )
         if embedding is None:
             # resemblyzer unavailable or audio too short — publish unknown
             self.get_logger().warning(
@@ -527,7 +541,7 @@ class SpeakerIdNode(Node):
             return
 
         match = self._db.identify(embedding)
-        self._log_identify_candidates(embedding)
+        self._log_identify_candidates(embedding, voiced_sec=duration_sec)
         # Issue #2747 — рост галереи НЕ зависит от исхода identify() выше
         # (см. большой комментарий у speaker_embeddings.GALLERY_WARMUP_SIZE:
         # акустический гейт для этого решения отклонён — same/cross-voice
@@ -625,7 +639,9 @@ class SpeakerIdNode(Node):
             f"/{_se_mod.GALLERY_WARMUP_SIZE})"
         )
 
-    def _log_identify_candidates(self, embedding: np.ndarray) -> None:
+    def _log_identify_candidates(
+        self, embedding: np.ndarray, voiced_sec: Optional[float] = None
+    ) -> None:
         """Issue W5-4 п.4 — диагностика: best_score И второй кандидат.
 
         Без этого лога в проде виден только булев результат identify()
@@ -634,10 +650,21 @@ class SpeakerIdNode(Node):
         близко было решение и с кем именно конкурировал победитель. Лог
         уровня INFO — намеренно (не debug): это ровно то, что нужно
         вытащить из логов робота при разборе жалобы «опознал не того».
+
+        Issue #2747 — сюда же приписывается ``речь=<сек>``: сколько в
+        реплике оказалось РЕЧИ после VAD. Без этого числа строка отвечает
+        «насколько похоже», но не отвечает «а было ли из чего судить», и
+        низкий score невозможно отличить от «человек молчал». Именно по
+        паре (score, речь) считается порог в
+        ``scripts/maintenance/voice_threshold_sweep.py`` — там же замер
+        r(duration, score) = 0.88 на этом пайплайне.
         """
         candidates = self._db.identify_candidates(embedding, top_n=2)
         if not candidates:
             return
+        # Суффикс пустой, когда длительность неизвестна (старые вызовы,
+        # тесты): молча не врём числом, которого не измеряли.
+        voiced = f" | речь={voiced_sec:.2f}s" if voiced_sec is not None else ""
         best = candidates[0]
         if len(candidates) > 1:
             second = candidates[1]
@@ -645,12 +672,14 @@ class SpeakerIdNode(Node):
             self.get_logger().info(
                 f"🔍 identify candidates: best='{best.name}'({best.speaker_id[:8]}) "
                 f"score={best.confidence:.3f} | second='{second.name}'"
-                f"({second.speaker_id[:8]}) score={second.confidence:.3f} | gap={gap:.3f}"
+                f"({second.speaker_id[:8]}) score={second.confidence:.3f} | "
+                f"gap={gap:.3f}{voiced}"
             )
         else:
             self.get_logger().info(
                 f"🔍 identify candidates: best='{best.name}'({best.speaker_id[:8]}) "
-                f"score={best.confidence:.3f} | (единственный известный спикер в БД)"
+                f"score={best.confidence:.3f} | "
+                f"(единственный известный спикер в БД){voiced}"
             )
 
     def _on_rename_request(self, msg: String) -> None:

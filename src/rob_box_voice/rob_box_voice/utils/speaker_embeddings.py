@@ -326,6 +326,32 @@ def _same_speaker_name(existing: object, incoming: object) -> bool:
     return left.casefold() == right.casefold()
 
 
+@dataclass(frozen=True)
+class EmbedResult:
+    """Эмбеддинг вместе с тем, СКОЛЬКО В НЁМ РЕЧИ (issue #2747).
+
+    ``raw_sec`` — длина окна записи, как её видел вызывающий код всегда.
+    ``voiced_sec`` — сколько осталось после ``preprocess_wav``, то есть
+    после VAD-обрезки тишины и шума. Разница между ними и есть слепое
+    пятно, из-за которого мусорная реплика попадала в эталон: окно 4.6с
+    с полусекундой речи проходило любой порог длительности.
+
+    Отдельный тип, а не кортеж, именно ради ``voiced_ratio``: доля речи
+    в окне — то число, по которому в логе сразу видно, «человек говорил»
+    или «микрофон записал тишину», и его не хочется пересчитывать в
+    каждом месте заново.
+    """
+
+    embedding: np.ndarray
+    raw_sec: float
+    voiced_sec: float
+
+    @property
+    def voiced_ratio(self) -> float:
+        """Доля речи в окне, 0.0–1.0. Ноль при пустом окне (не деление на ноль)."""
+        return (self.voiced_sec / self.raw_sec) if self.raw_sec > 0 else 0.0
+
+
 class AudioTooShortError(ValueError):
     """Issue #2769 — реплика короче ``MIN_REGISTER_AUDIO_DURATION_SEC``.
 
@@ -462,10 +488,35 @@ class SpeakerDatabase:
 
     # ── Core API ──────────────────────────────────────────────────────────────
 
-    def embed_audio(self, pcm_bytes: bytes, sample_rate: int = 16000) -> Optional[np.ndarray]:
-        """Convert raw PCM int16 bytes → 256-dim d-vector (numpy float32 array).
+    def embed_audio_ex(
+        self, pcm_bytes: bytes, sample_rate: int = 16000
+    ) -> Optional["EmbedResult"]:
+        """PCM int16 → d-vector ВМЕСТЕ с длительностью речи (issue #2747).
 
-        Returns None if resemblyzer is unavailable or the audio is too short.
+        Зачем отдельно от :meth:`embed_audio`: длительность, по которой
+        судят о пригодности реплики, обязана мериться ПОСЛЕ ``preprocess_
+        wav`` — тот режет тишину и шум по VAD. Раньше все гейты смотрели
+        на ``len(pcm)/sample_rate``, то есть на длину ОКНА записи, а не на
+        количество речи в нём. Окно 4.6с, где речи полсекунды, проходило
+        любой порог и уезжало в эмбеддер, давая вектор, который потом
+        сравнивали с эталоном как полноценный.
+
+        Замер на роботе 22.09.2026, откуда это видно. Скоры одного и того
+        же человека против только что созданного профиля скачут от
+        реплики к реплике: 0.908, 0.550, 0.820, 0.556 — не плавная
+        деградация, а качели. При этом попарные косинусы между
+        СОХРАНЁННЫМИ эталонами того же человека внутри одной сессии
+        держатся 0.65–0.91, то есть сам эмбеддер стабилен. Разброс
+        вносит не модель, а то, что в неё попадает.
+
+        Связано с уже задокументированным здесь же замером
+        ``evidence/duration-vs-score-2026-09-22/``: r(duration, score) =
+        0.88 на этом самом пайплайне. Эта функция даёт мерить ту сторону
+        длительности, которая имеет смысл, — речь, а не окно.
+
+        Возвращает ``None`` по тем же причинам, что и раньше
+        (resemblyzer недоступен, аудио короче ``MIN_AUDIO_DURATION_SEC``,
+        ошибка) — чтобы вызывающий код не пришлось переписывать.
         """
         if not _load_resemblyzer():
             return None
@@ -477,7 +528,10 @@ class SpeakerDatabase:
             pcm = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
             duration = len(pcm) / sample_rate
             if duration < MIN_AUDIO_DURATION_SEC:
-                logger.info(f"⏭️ Audio too short for embedding: {duration:.2f}s < {MIN_AUDIO_DURATION_SEC}s — skipped")
+                logger.info(
+                    f"⏭️ Audio too short for embedding: {duration:.2f}s < "
+                    f"{MIN_AUDIO_DURATION_SEC}s — skipped"
+                )
                 return None
 
             # Resample to 16 kHz if needed
@@ -487,15 +541,37 @@ class SpeakerDatabase:
                 pcm = scipy.signal.resample_poly(pcm, SAMPLE_RATE, sample_rate)
 
             wav = preprocess_wav(pcm, source_sr=SAMPLE_RATE)
+            voiced = len(wav) / SAMPLE_RATE
             embedding = _encoder.embed_utterance(wav)
+            ratio = (voiced / duration * 100.0) if duration else 0.0
             logger.info(
                 f"✅ embed_audio: {len(pcm_bytes)} bytes → "
-                f"{len(embedding)}-dim vector (norm={float((embedding**2).sum()**0.5):.3f})"
+                f"{len(embedding)}-dim vector "
+                f"(norm={float((embedding**2).sum()**0.5):.3f}, "
+                f"окно={duration:.2f}s речь={voiced:.2f}s {ratio:.0f}%)"
             )
-            return embedding.astype(np.float32)
+            return EmbedResult(
+                embedding=embedding.astype(np.float32),
+                raw_sec=float(duration),
+                voiced_sec=float(voiced),
+            )
         except Exception as exc:
             logger.error(f"embed_audio failed: {type(exc).__name__}: {exc}")
             return None
+
+    def embed_audio(self, pcm_bytes: bytes, sample_rate: int = 16000) -> Optional[np.ndarray]:
+        """Convert raw PCM int16 bytes → 256-dim d-vector (numpy float32 array).
+
+        Returns None if resemblyzer is unavailable or the audio is too short.
+
+        Тонкая обёртка над :meth:`embed_audio_ex` — оставлена, потому что
+        подавляющему большинству вызывающих нужен только вектор, и
+        заставлять их распаковывать результат было бы шумом. Там, где
+        решают судьбу эталона, зовут ``embed_audio_ex`` и смотрят на
+        ``voiced_sec``.
+        """
+        result = self.embed_audio_ex(pcm_bytes, sample_rate=sample_rate)
+        return result.embedding if result is not None else None
 
     def _score_all(self, embedding: np.ndarray) -> List[Tuple[str, str, float, int]]:
         """Посчитать best-of-pool cosine similarity для КАЖДОГО известного спикера.
