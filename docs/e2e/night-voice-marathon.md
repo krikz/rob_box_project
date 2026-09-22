@@ -276,11 +276,16 @@ $HERMES_HOME/state/robot-busy` — это «руки прочь от робот�
 ### Перед прогоном
 
 ```bash
-ros2 param set /dialogue_node barge_in_policy classify
+ssh <robot> "docker exec voice-assistant bash -lc 'source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; ros2 param set /dialogue_node barge_in_policy classify --no-daemon'"
 ```
 
 В проде стоит `replace` — с ним акт 8 не отличит «стоп» от новой темы и
 его красный ничего не будет означать.
+
+⚠️ `ros2` есть **только внутри контейнера** (`/ws/install`), на хосте
+Vision Pi ROS не установлен. Форма `ssh <robot> 'ros2 param set ...'`
+возвращает rc=127 и не меняет ничего — именно так изоляция БД дикторов
+из #2759 не срабатывала ни разу (issue #2763).
 
 ### Сколько это стоит по времени
 
