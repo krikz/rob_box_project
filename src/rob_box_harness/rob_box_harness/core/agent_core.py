@@ -274,9 +274,13 @@ _PSEUDO_TOOL_CALL_RE = re.compile(r"^<[^<>]{1,160}>$")
 _PENDING_RETRY_KEY: str = "reply_retracted"
 
 
+from rob_box_harness.core.tool_loop.markup_recovery import (  # Issue #2760
+    parse_tool_call_markup,
+)
 from rob_box_harness.core.tool_loop.text_classify import (  # noqa: F401 — back-compat aliases
     _PSEUDO_TOOL_CALL_RE,
     is_pseudo_tool_call as _is_pseudo_tool_call,
+    is_tool_call_markup,  # Issue #2760
 )
 
 
@@ -942,7 +946,16 @@ class AgentCore:
         # live 01.09 — заглушка вида ``<compose_music composition here>``.
         # Юзер её не слышал (ход ничего не сделал), а в истории она работает
         # как обучающий пример: следующий ход модель копирует её дословно.
-        return _is_pseudo_tool_call(spoken or "")
+        if _is_pseudo_tool_call(spoken or ""):
+            return True
+        # Issue #2760 — тот же механизм, но в полном синтаксисе протокола:
+        # ``<function_calls><invoke name="memory_save">…``. Штатный путь —
+        # восстановление намерения в цикле тулов (``parse_tool_call_markup``),
+        # сюда текст доезжает только если имя тула не опознано. Записать его
+        # в историю нельзя: прогон 35704637846 показал ровно этот механизм —
+        # разметка легла ходом ``[13] assistant`` и модель скопировала её на
+        # следующем шаге (n204 → n206).
+        return is_tool_call_markup(spoken or "")
 
     async def discard_last_reply(self) -> bool:
         """Retract the most recently persisted assistant turn for this user.
@@ -1133,6 +1146,14 @@ class AgentCore:
                 response = correction.next_response
                 continue
 
+            # Issue #2760 — MiniMax-M3 иногда отправляет решение не в канал
+            # function-calling, а текстом: ``<function_calls><invoke
+            # name="memory_save">…``. Тулы мы предложили, стрим разобрали
+            # штатно, finish_reason='stop' — это выбор модели, не наша
+            # ошибка. Намерение известно точно, поэтому восстанавливаем его
+            # здесь, а не платим за ретрай двумя ходами позже (разбор и
+            # границы дозволенного — в :mod:`.tool_loop.markup_recovery`).
+            response = _recover_written_tool_calls(response, openai_tools)
             if not response.tool_calls:
                 break
 
@@ -2016,6 +2037,47 @@ def _suppressed_speak_text_result(call: ToolCall) -> ToolResult:
             "Верни 'done' сразу после execute_music_code."
         ),
         is_error=True,
+    )
+
+
+def _recover_written_tool_calls(
+    response: "LLMResponse", openai_tools: list[dict]
+) -> "LLMResponse":
+    """Issue #2760 — вернуть ответ с вызовами, которые модель НАПИСАЛА.
+
+    Живой прогон 35704637846 (акт 2, шаги n204/n206 — оба про сохранение
+    факта): MiniMax-M3 вернула ``content`` с разметкой протокола и пустым
+    ``tool_calls``. Тулы у MiniMax вызываются XML-ом штатно, и их
+    ``docs/tool_calling_guide.md`` прямо предлагает разбирать сырой вывод
+    самостоятельно — этим здесь и занимаемся.
+
+    Ответ с настоящими ``tool_calls`` возвращается КАК ЕСТЬ. Если
+    восстанавливать нечего — тоже как есть: вызывающий по-прежнему видит
+    пустой ``tool_calls`` и завершает цикл, а не звучащие теги ловят
+    guard'ы на стороне voice.
+
+    ``content`` у восстановленного ответа опустошается намеренно: это
+    была разметка, а не речь — озвучивать нечего, и в историю ей попадать
+    нельзя (в прогоне именно история воспроизводила баг дальше).
+    """
+    if response.tool_calls:
+        return response
+    recovered = parse_tool_call_markup(response.content, tools=openai_tools)
+    if not recovered:
+        return response
+    logging.getLogger(__name__).warning(
+        "[issue 2760] модель написала вызов тула текстом (%s) — "
+        "восстанавливаю намерение: %s",
+        (response.content or "")[:80],
+        [name for name, _ in recovered],
+    )
+    return replace(
+        response,
+        content="",
+        tool_calls=tuple(
+            ToolCall(id=f"recovered_{idx}", name=name, arguments=args)
+            for idx, (name, args) in enumerate(recovered)
+        ),
     )
 
 

@@ -238,10 +238,18 @@ def test_guard_call_sites_live_in_handle_result() -> None:
     """
     methods = _methods()
     handle_result = methods["_handle_result"]
+    # Issue #2760: guard может быть не вызван по имени, а положен в список
+    # и вызван в цикле (``for _pre_speech_guard in (self._check_a, …)``) —
+    # так два ранних guard'а не добавляют ветвлений в и без того тяжёлый
+    # ``_handle_result`` (cc_budget). Для инцидента №2 это ничего не
+    # ослабляет: проверка по-прежнему требует, чтобы имя guard'а
+    # упоминалось ИМЕННО внутри ``_handle_result``, а не в ``__init__``
+    # или ``_on_stt``. Поэтому собираем любые ``self.<guard>`` — и вызовы,
+    # и ссылки.
     called_in_handle_result = {
-        node.func.attr
+        node.attr
         for node in ast.walk(handle_result)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        if isinstance(node, ast.Attribute)
     }
     guards = {
         name for name in methods

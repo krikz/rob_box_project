@@ -140,6 +140,7 @@ from rob_box_voice.core.dialogue_guards import (
     build_phantom_action_retry_prompt,  # Issue #2559 phantom-action
     build_renardo_code_retry_prompt,
     build_system_regurgitate_retry_prompt,
+    build_tool_call_markup_retry_prompt,  # Issue #2760
     build_unbacked_action_retry_prompt,
     build_universal_action_claim_retry_prompt,
     build_tool_retry_prompt as build_tool_retry_prompt,
@@ -155,6 +156,7 @@ from rob_box_voice.core.dialogue_guards import (
     is_music_stop_command,
     is_planning_narration,
     is_system_template_regurgitated,
+    is_tool_call_markup,  # Issue #2760
     is_vocal_request,
     user_wants_music,
     user_wants_performance,
@@ -947,6 +949,11 @@ class DialogueNode(Node):
         # одноразовый ретрай с явным требованием отвечать обычным
         # языком, иначе LLM и код уходят в пинг-понг.
         self._system_regurgitate_retry_used: bool = False
+
+        # Issue #2760 — LLM печатает вызов тула текстом
+        # (``<function_calls><invoke name=...>``) вместо настоящего
+        # tool-call, и разметка уходит в TTS. Один одноразовый ретрай.
+        self._tool_call_markup_retry_used: bool = False
 
         # Issue #2549 — универсальный anti-hallucination guard (см.
         # :func:`detect_universal_action_claim`). Срабатывает когда в
@@ -4486,6 +4493,74 @@ class DialogueNode(Node):
         )
         return True
 
+    def _check_tool_call_markup_and_retry(
+        self,
+        *,
+        spoken: str,
+        user_input: Optional[str],
+        tools_called: tuple,
+        speak_text_real: int = 0,
+    ) -> bool:
+        """Issue #2760 — одноразовый ретрай на «вызов тула написан текстом».
+
+        Live Vision Pi, прогон 35704637846 (акт 2, ``n204_boris_intro_long``):
+        модель вернула в ``spoken`` разметку протокола tool-calls при
+        ``tools=[]``, и tts_node прочитал её вслух двумя чанками::
+
+            spoken='<function_calls>\\n<invoke name="register_speaker">…'
+            🔊 TTS: batch=9b15b85e 1/2, text='<functioncalls>…'
+
+        Проверка стоит ПЕРВОЙ среди post-turn guard'ов — до #2175 и
+        babble: разметка не является ни regurgitates системного шаблона,
+        ни мета-обещанием, и любой другой guard либо промолчит, либо
+        наклеит на неё свой CRITICAL и отправит в TTS вместе с тегами.
+
+        Условия ретрая — те же три, что у
+        :meth:`_check_system_template_regurgitate_and_retry`:
+        ``speak_text`` реально не звучала, флаг ещё не взведён, общий
+        budget синтетических ретраев не исчерпан.
+
+        Returns:
+            ``True`` — ретрай отправлен, вызывающий НЕ публикует текст в
+            TTS.
+        """
+        if speak_text_real > 0:
+            return False
+        if not spoken:
+            return False
+        if getattr(self, "_tool_call_markup_retry_used", False):
+            return False
+        if not is_tool_call_markup(spoken):
+            return False
+
+        # Тот же перевод DSM, что и в остальных синтетических ретраях:
+        # без него process_input увидит IDLE и вернёт пустой результат.
+        try:
+            if self._dsm.current_state == DialogueStateKind.IDLE:
+                self._dsm.on_event(DialogueEvent.WAKE_WORD)
+                self._publish_state()
+            self._dsm.on_event(DialogueEvent.STT_RESULT)
+            self._publish_state()
+        except ImportError:
+            pass
+
+        if not self._consume_synthetic_retry(guard_name="tool_call_markup"):
+            return False
+        self._tool_call_markup_retry_used = True
+        self._mark_retry_dispatched()
+        self.get_logger().warning(
+            "🏷️ [issue 2760] LLM написала вызов тула ТЕКСТОМ вместо "
+            f"tool-call (head={spoken[:120]!r}) — один ретрай, "
+            f"user_input={user_input!r}, tools={list(tools_called)!r}"
+        )
+        self._dispatch_turn(
+            build_tool_call_markup_retry_prompt(user_input),
+            is_action_claim_retry=False,  # свой тип, как и у #2175
+            is_synthetic=True,
+            raw_user_command=user_input,
+        )
+        return True
+
     def _check_system_template_regurgitate_and_retry(
         self,
         *,
@@ -4853,6 +4928,7 @@ class DialogueNode(Node):
         self._code_speech_retry_used = False
         self._tool_retry_used = False
         self._system_regurgitate_retry_used = False
+        self._tool_call_markup_retry_used = False  # Issue #2760
         self._universal_action_claim_retry_used = False
         self._unknown_melody_retry_used = False  # Issue #2562 Bug F
         self._hallucinated_midi_retry_used = False  # Issue #2560 hallucinated-MIDI guard
@@ -6216,17 +6292,33 @@ class DialogueNode(Node):
                 f"speaking nothing (head={spoken[:120]!r})"
             )
             return
-        # Issue #2175 — MiniMax-M3 regurgitates ``<system>...</system>``
-        # template вместо user-facing ответа. Один одноразовый CRITICAL-
-        # ретрай ДО babble/renardo/action-claim — чтобы regurgitates НЕ
-        # прошли в TTS (Yandex→MiniMax fallback озвучивал их на роботе).
-        if spoken and self._check_system_template_regurgitate_and_retry(
-            spoken=spoken,
-            user_input=raw_user_command or user_input,
-            tools_called=tools_called,
-            speak_text_real=speak_text_real,
+        # Два guard'а, которые обязаны отработать ДО babble/renardo/
+        # action-claim: их вход — не речь вообще, и остальные детекторы
+        # его не узнают (ищут глаголы или мета-обещания).
+        #
+        # * #2760 — модель написала вызов тула ТЕКСТОМ
+        #   (``<function_calls><invoke name="register_speaker">…``) при
+        #   tools=[]. Первым: прогон 35704637846 показал, как разметка
+        #   уходит в TTS двумя чанками. Штатно её разбирает цикл тулов
+        #   (``markup_recovery``), сюда она доезжает, только если имя
+        #   тула не опознано.
+        # * #2175 — MiniMax regurgitates ``<system>...</system>`` вместо
+        #   ответа; без ретрая Yandex→MiniMax fallback озвучивал шаблон.
+        #
+        # Список, а не две ветки подряд: порядок виден одной строкой, и
+        # третий такой guard не добавляет ветвления в и без того тяжёлый
+        # ``_handle_result`` (ADR-0021, cc_budget).
+        for _pre_speech_guard in (
+            self._check_tool_call_markup_and_retry,
+            self._check_system_template_regurgitate_and_retry,
         ):
-            return
+            if _pre_speech_guard(
+                spoken=spoken,
+                user_input=raw_user_command or user_input,
+                tools_called=tools_called,
+                speak_text_real=speak_text_real,
+            ):
+                return
         # Issue #992 Bug D — metalanguage / babble detector. Fires ONE
         # synchronous retry with a CRITICAL prompt reminder when the
         # LLM replied with meta-talk instead of performing the request.
