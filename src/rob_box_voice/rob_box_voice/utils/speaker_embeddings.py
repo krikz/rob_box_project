@@ -404,6 +404,24 @@ class SpeakerDatabase:
         self._db_path = db_path
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
+        # issue #2794: в схеме `embeddings` объявлен
+        # `REFERENCES speakers(speaker_id) ON DELETE CASCADE`, но SQLite
+        # держит внешние ключи ВЫКЛЮЧЕННЫМИ по умолчанию и включает их
+        # ОТДЕЛЬНО НА КАЖДОЕ СОЕДИНЕНИЕ. Без этой строки объявленный
+        # каскад — мёртвая декларация: `delete_speaker()` удаляет строку
+        # из `speakers`, а эмбеддинги остаются сиротами навсегда.
+        #
+        # Замер на боевой БД 22.09.2026: после удаления трёх профилей
+        # E2E-сценария в таблице `embeddings` осталось 9 векторов с
+        # несуществующими speaker_id. На узнавание это не влияло
+        # (`_score_all` берёт их через `JOIN speakers`, который сирот
+        # отбрасывает), но попарная диагностика `speaker_db_admin.py
+        # list` читает `embeddings` напрямую и показывала удалённые
+        # профили как «возможные дубли одного человека» — посреди чистки,
+        # когда по этой самой таблице и решают, кого с кем сливать.
+        #
+        # PRAGMA обязана идти ДО первого запроса на этом соединении.
+        self._conn.execute("PRAGMA foreign_keys = ON")
         self._conn.executescript(_CREATE_SQL)
         self._conn.commit()
         self._migrate_epithet_columns()
@@ -907,10 +925,34 @@ class SpeakerDatabase:
         ]
 
     def delete_speaker(self, speaker_id: str) -> bool:
-        """Remove a speaker and all their embeddings."""
+        """Remove a speaker and all their embeddings.
+
+        Эмбеддинги уходят каскадом (`ON DELETE CASCADE` в схеме), но
+        только потому, что соединение открыто с `PRAGMA foreign_keys =
+        ON` — см. `__init__`. Явного `DELETE FROM embeddings` здесь
+        сознательно нет: два места, удаляющих одно и то же, разъезжаются
+        при первом же изменении схемы. Вместо этого есть тест, который
+        падает, если каскад перестанет работать (issue #2794).
+        """
         cur = self._conn.execute("DELETE FROM speakers WHERE speaker_id=?", (speaker_id,))
         self._conn.commit()
         return cur.rowcount > 0
+
+    def orphaned_embedding_count(self) -> int:
+        """Сколько эмбеддингов ссылается на несуществующий профиль.
+
+        Ноль на здоровой БД. Ненулевое значение означает, что строки
+        пережили удаление профиля — так выглядела боевая база до #2794,
+        когда каскад не работал. Нужно инструментам обслуживания
+        (`scripts/maintenance/speaker_db_admin.py`), чтобы расхождение
+        было видно числом, а не маскировалось под «дубли» в попарной
+        диагностике.
+        """
+        row = self._conn.execute(
+            "SELECT COUNT(*) FROM embeddings "
+            "WHERE speaker_id NOT IN (SELECT speaker_id FROM speakers)"
+        ).fetchone()
+        return int(row[0]) if row else 0
 
     def rename_by_name(self, old_name: str, new_name: str) -> Optional[str]:
         """Find speaker by ``old_name`` and rename to ``new_name``.

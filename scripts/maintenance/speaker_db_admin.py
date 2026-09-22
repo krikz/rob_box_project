@@ -597,6 +597,12 @@ def cmd_list(args: argparse.Namespace) -> int:
     db = se.SpeakerDatabase(args.db_path)
     try:
         speakers = db.list_speakers()
+        # issue #2794 — читаем ЗДЕСЬ, пока соединение живо: ниже оно уже
+        # закрыто, и обращение к нему падает `ProgrammingError`.
+        try:
+            orphans = db.orphaned_embedding_count()
+        except AttributeError:
+            orphans = 0  # старая сборка БД-модуля без счётчика — не падаем
     finally:
         db.close()
 
@@ -615,6 +621,21 @@ def cmd_list(args: argparse.Namespace) -> int:
         )
     print('-' * len(header))
     print(f'итого: {len(speakers)} профилей.')
+
+    # issue #2794 — осиротевшие эмбеддинги. Показываем ДО попарной
+    # диагностики ниже, потому что именно она на них и спотыкается:
+    # матрица похожести читает таблицу `embeddings` напрямую, и векторы
+    # удалённых профилей всплывают в ней как «возможные дубли одного
+    # человека» с голым UUID вместо имени. Без этой строки оператор
+    # видит загадочные дубли и не понимает, что это мусор, а не люди.
+    if orphans:
+        print(
+            f'⚠ осиротевших эмбеддингов: {orphans} — это векторы удалённых '
+            f'профилей. На узнавание они не влияют (identify берёт их через '
+            f'JOIN speakers), но портят попарную диагностику ниже. Убрать: '
+            f'DELETE FROM embeddings WHERE speaker_id NOT IN '
+            f'(SELECT speaker_id FROM speakers);'
+        )
 
     if args.no_similarity:
         print('Попарное сравнение галерей пропущено (--no-similarity).')
