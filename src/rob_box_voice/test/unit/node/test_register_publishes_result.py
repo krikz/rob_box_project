@@ -394,6 +394,37 @@ def test_growth_session_closes_after_gap_timeout(node, monkeypatch):
     assert node._growth_session is None, "сессия обязана закрыться по таймауту"
 
 
+def test_tts_finished_resets_gap_so_robot_monologue_is_not_idle(node):
+    """Речь робота НЕ должна засчитываться человеку в простой (issue #2747).
+
+    Регрессия на прогон 35781881888: галереи Саши и Бориса остались по
+    одному вектору при потолке 5, потому что разрыв мерился от прошлой
+    реплики ЧЕЛОВЕКА и включал время, пока робот произносил ответ
+    («закрыта по таймауту 33.7s > 30.0s» и «61.7s > 30.0s»).
+    """
+    base = _embedding(26)
+    node._do_register("Деньчик", base, speaker_id=None)
+    sid = node._growth_session["speaker_id"]
+
+    # Робот говорил дольше, чем всё окно разрыва, и только потом договорил.
+    node._growth_session["last_utterance_at"] -= node._growth_session_gap_sec + 1.0
+    node._on_tts_finished(types.SimpleNamespace(data="speech-id-не-важен"))
+
+    node._db.embed_audio_ex = MagicMock(return_value=_Embed(_degraded(base, 0.1, 2500)))
+    node._process_utterance(b"\x00\x00" * 1000)
+
+    assert node._growth_session is not None, "сессия не должна закрыться из-за речи робота"
+    assert node._db.gallery_size(sid) == 2, "после ответа робота реплика обязана дописаться"
+
+
+def test_tts_finished_without_session_is_noop(node):
+    """Речь робота сама по себе не открывает growth-сессию: она ничего не
+    говорит о том, КТО стоит у микрофона."""
+    assert node._growth_session is None
+    node._on_tts_finished(types.SimpleNamespace(data="speech-id"))
+    assert node._growth_session is None
+
+
 def test_growth_session_vetoed_by_confident_different_speaker(node):
     """Реплика уверенно (калиброванный порог) опознана как ДРУГОЙ, уже
     известный спикер — сильное прямое свидетельство против якоря. Рост не
