@@ -2029,7 +2029,23 @@ PY
 # Возвращает 0 если acceptance-чек PASS, 1 если FAIL.
 # Acceptance-блок в scenario описывает ожидаемое поведение робота:
 #   expected_tool_calls: list[str]  — должны быть вызваны (ищется в логах)
-#   must_not_call:        list[str]  — НЕ должны быть вызваны
+#   must_not_call:        list[str]  — НЕ должны быть вызваны. ⚠️ Свободный
+#                                     (не-snake_case) фрагмент здесь ищется
+#                                     подстрокой по ВСЕМУ логу шага
+#                                     (tool_invoked() fallback) — включая
+#                                     служебные строки биометрии/диагностики.
+#                                     Для «робот не должен ПРОИЗНЕСТИ X» это
+#                                     тавтологически красное поле (issue
+#                                     #2779: «Борис» есть в
+#                                     `identify candidates:` независимо от
+#                                     того, что сказал робот) — используйте
+#                                     must_not_say ниже.
+#   must_not_say:         list[str]  — issue #2779: НЕ должно звучать в РЕЧИ
+#                                     робота (та же область, что и
+#                                     expected_keywords — robot_speech(),
+#                                     БЕЗ строк биометрии/пользовательского
+#                                     ввода). Тот же формат альтернации
+#                                     "А|Б|В", что и expected_keywords.
 #   expected_keywords:    list[str]  — должны быть в логах шага (признанная
 #                                     фраза ИЛИ LLM OUTPUT / spoken=). Ключ
 #                                     вида "Борис|Спартак|пицц" — это
@@ -2077,6 +2093,15 @@ def has(s, frag):
 expected_call = acc.get("expected_tool_calls", []) or []
 must_not = acc.get("must_not_call", []) or []
 expected_kw = acc.get("expected_keywords", []) or []
+# Issue #2779 — must_not_say: отдельное от must_not_call поле для «этого
+# не должно ЗВУЧАТЬ». must_not_call свободным текстом матчит ВЕСЬ лог шага
+# (tool_invoked() fallback), а в этот лог гарантированно попадают строки
+# голосовой биометрии (`identify candidates: best='Борис'...`,
+# `Speaker: 'Борис'`, `[Spkr:Борис]`) независимо от того, что робот
+# ответил — тавтологическое КРАСНОЕ для проверки «незнакомцу не сказали
+# чужое имя» (см. n210_grisha_no_name). must_not_say ищет ТОЛЬКО в
+# robot_speech() — том же канале, что и expected_keywords (issue #2764).
+must_not_say = acc.get("must_not_say", []) or []
 # Issue #2406: discovery_tools — список тулов, которые ОБЯЗАНЫ быть вызваны
 # ДО первого голосового ответа. Если в acceptance.json шага есть это поле —
 # ассертим порядок, иначе — старый чек (только факт вызова).
@@ -2138,6 +2163,12 @@ def _keyword_hit(kw):
 
 found_keywords = [k for k in expected_kw if _keyword_hit(k)]
 missing_keywords = [k for k in expected_kw if not _keyword_hit(k)]
+# Issue #2779 — зеркало found/missing_keywords, но для «не должно звучать».
+# _keyword_hit() тот же самый (robot_speech()-scoped), значит фраза
+# засчитывается только если её реально ПРОИЗНЁС робот — служебные строки
+# биометрии (`identify candidates`, `Speaker: 'Борис'`, `[Spkr:Борис]`)
+# в robot_speech() не попадают (см. e2e_tool_match.py:robot_speech).
+forbidden_said = [k for k in must_not_say if _keyword_hit(k)]
 # Диагностика в артефакт: без неё красный keyword-шаг неотличим от
 # «робот вообще молчал» — а это разные починки.
 robot_said = robot_speech(logs)
@@ -2211,6 +2242,8 @@ if forbidden_called:
     failures.append(f"forbidden tool calls invoked: {forbidden_called}")
 if expected_kw and missing_keywords:
     failures.append(f"expected keywords missing in logs: {missing_keywords}")
+if forbidden_said:
+    failures.append(f"forbidden phrases spoken by robot: {forbidden_said}")
 if discovery_tool_errors:
     failures.extend(discovery_tool_errors)
 if discovery_failures:
@@ -2230,6 +2263,9 @@ result = {
     "recognized": recognized,
     "found_keywords": found_keywords,
     "missing_keywords": missing_keywords,
+    # Issue #2779 — must_not_say verdict (robot_speech-scoped, see above).
+    "must_not_say": must_not_say,
+    "forbidden_said": forbidden_said,
     # Issue #2406: discovery-step enforcement (per-step).
     # discovery_tools содержит имена тулов, которые ОБЯЗАНЫ быть вызваны
     # ДО первого голосового ответа. discovery_records — массив позиций
