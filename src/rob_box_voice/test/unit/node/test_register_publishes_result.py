@@ -10,13 +10,30 @@ issue #2747 (растущая галерея) и issue #2748 (имя доезж�
     ``is_known=true`` в ``/voice/speaker/result`` и в момент регистрации
     его никогда не получал (issue #2748).
 
+ВАЖНО про механизм роста галереи (изменилось в PR #2757 после ревью):
+первая версия растила галерею по акустике (успешный identify() при мягком
+адаптивном пороге). Она была ОТКЛОНЕНА после проверки на реальных данных
+робота — same-voice/cross-voice cosine пересекаются целиком, любой
+акустический порог либо не узнаёт хозяина, либо принимает ~90% чужих (см.
+docstring test_gallery_warmup.py). Теперь галерея растёт по НЕПРЕРЫВНОСТИ
+СЕССИИ: ``_do_register()`` открывает ``_growth_session`` (после явной
+регистрации — «человек только что представился»), и
+``_apply_growth_session()`` дописывает эмбеддинг в КАЖДУЮ следующую реплику,
+пока сессия не прервалась разрывом (``gallery_growth_session_gap_sec``),
+не упёрлась в потолок (``GALLERY_WARMUP_SIZE``) или не встретила
+уверенное (обычный identify(), калиброванный порог) опознание ДРУГОГО,
+уже известного спикера (вето поверх якоря).
+
 Тесты здесь — про НОДУ (в отличие от test_gallery_warmup.py, который
 проверяет чистую логику SpeakerDatabase):
     1. ``_do_register()`` публикует ДВА сообщения: ack (не тронут) и новый
-       SpeakerMatch с ``is_known=true``, ``source="register"``.
-    2. ``_process_utterance()`` при обычном (не pending) успешном identify()
-       дописывает эмбеддинг в галерею, пока она маленькая.
-    3. ``_process_utterance()`` в ветке ``pending_name`` НЕ публикует
+       SpeakerMatch с ``is_known=true``, ``source="register"``, и открывает
+       growth-сессию.
+    2. ``_process_utterance()`` растит галерею по сессии НЕЗАВИСИМО от
+       исхода identify() (в т.ч. когда голос НЕ узнан обычным путём).
+    3. Growth-сессия закрывается по таймауту разрыва, по потолку галереи
+       и по вето (уверенное опознание другого человека).
+    4. ``_process_utterance()`` в ветке ``pending_name`` НЕ публикует
        второе, потенциально расходящееся сообщение — доверяет
        ``_do_register()``.
 
@@ -94,7 +111,6 @@ def node(tmp_path, monkeypatch):
     monkeypatch.setattr(se_mod, "IDENTIFY_THRESHOLD", 0.72)
     monkeypatch.setattr(se_mod, "REGISTER_MATCH_THRESHOLD", 0.75)
     monkeypatch.setattr(se_mod, "GALLERY_WARMUP_SIZE", 5)
-    monkeypatch.setattr(se_mod, "GALLERY_WARMUP_SOFT_THRESHOLD", 0.45)
 
     instance = object.__new__(sid_node.SpeakerIdNode)
     instance._db = SpeakerDatabase(str(tmp_path / "speakers.db"))
@@ -110,6 +126,9 @@ def node(tmp_path, monkeypatch):
     # epithet_request publisher — _ensure_epithet -> _assign_epithet ->
     # _request_llm_epithet его читает через getattr(..., None).
     instance._epithet_request_pub = None
+    # Issue #2747 — growth-сессия (session-anchor рост галереи).
+    instance._growth_session_gap_sec = 30.0
+    instance._growth_session = None
     yield instance
     instance._db.close()
 
@@ -151,6 +170,19 @@ def test_do_register_ack_message_unchanged_shape(node):
     assert ack["reused_profile"] is False
 
 
+def test_do_register_opens_growth_session(node):
+    """Issue #2747 — регистрация открывает growth-сессию для этого speaker_id."""
+    emb = _embedding(3)
+    node._do_register("Шифу", emb, speaker_id=None)
+
+    session = node._growth_session
+    assert session is not None
+    assert session["name"] == "Шифу"
+    assert session["count"] == 0
+    match_msgs = [m for m in node._result_pub.messages if m.get("is_known") is True]
+    assert session["speaker_id"] == match_msgs[0]["speaker_id"]
+
+
 def test_do_register_on_name_conflict_still_publishes_own_match(node):
     """ADR-0127: конфликт имён заводит ОТДЕЛЬНЫЙ профиль — is_known=true
     обязан указывать на НОВЫЙ профиль (Борис), а не на чужой (Саша)."""
@@ -170,17 +202,25 @@ def test_do_register_on_name_conflict_still_publishes_own_match(node):
 
 
 # ---------------------------------------------------------------------------
-# 2. _process_utterance: growing gallery на обычном (не pending) identify()
+# 2. _process_utterance / _apply_growth_session: рост галереи по якорю
+#    непрерывности сессии, НЕ по акустике (issue #2747, PR #2757 ревью)
 # ---------------------------------------------------------------------------
 
 
-def test_process_utterance_grows_gallery_on_successful_identify(node):
-    base = _embedding(10)
-    sid = node._db.register("Деньчик", base)
-    assert node._db.gallery_size(sid) == 1
+def test_growth_session_grows_gallery_even_when_identify_fails(node):
+    """КЛЮЧЕВОЙ тест новой версии: рост НЕ зависит от исхода identify().
 
-    # cos~0.523 к единственному эталону — то самое измерение issue #2747,
-    # проходит адаптивный порог (0.45 при gallery_size=1).
+    Калиброванный порог 0.72 НЕ пропускает cos~0.523 (то самое измерение
+    issue #2747) — обычная идентификация даёт unknown. Но раз growth-сессия
+    открыта (после явной регистрации), эмбеддинг всё равно дописывается в
+    галерею — потому что личность подтверждена НЕПРЕРЫВНОСТЬЮ сессии, а не
+    похожестью голоса."""
+    base = _embedding(10)
+    node._do_register("Деньчик", base, speaker_id=None)
+    sid = node._growth_session["speaker_id"]
+    assert node._db.gallery_size(sid) == 1
+    node._result_pub.messages.clear()
+
     alpha = float((1.0 / 0.523 ** 2 - 1.0) ** 0.5)
     second = _degraded(base, alpha=alpha, noise_seed=11)
     node._db.embed_audio = MagicMock(return_value=second)
@@ -188,20 +228,18 @@ def test_process_utterance_grows_gallery_on_successful_identify(node):
     node._process_utterance(b"\x00\x00" * 1000)
 
     assert node._db.gallery_size(sid) == 2, (
-        "успешный identify() на маленькой галерее обязан дописать эмбеддинг "
-        "(issue #2747)"
+        "growth-сессия обязана дописать эмбеддинг НЕЗАВИСИМО от identify()"
     )
-    match_msgs = [m for m in node._result_pub.messages if m.get("is_known") is True]
-    assert len(match_msgs) == 1
-    assert match_msgs[0]["name"] == "Деньчик"
-    assert "source" not in match_msgs[0], (
-        "обычная идентификация не должна помечаться source='register'"
-    )
+    # identify() на калиброванном пороге реплику не узнал — is_known=false,
+    # рост галереи никак не подделывает результат обычной идентификации.
+    assert node._result_pub.messages == [{"is_known": False}]
+    assert node._growth_session["count"] == 1
 
 
-def test_process_utterance_stops_growing_once_warmup_size_reached(node):
+def test_growth_session_stops_at_warmup_size_cap(node):
     base = _embedding(20)
-    sid = node._db.register("Деньчик", base)
+    node._do_register("Деньчик", base, speaker_id=None)
+    sid = node._growth_session["speaker_id"]
     for i in range(1, 5):
         node._db.register("Деньчик", _degraded(base, 0.1, 2000 + i), speaker_id=sid)
     assert node._db.gallery_size(sid) == 5
@@ -209,16 +247,73 @@ def test_process_utterance_stops_growing_once_warmup_size_reached(node):
     node._db.embed_audio = MagicMock(return_value=_degraded(base, 0.1, 2999))
     node._process_utterance(b"\x00\x00" * 1000)
 
-    assert node._db.gallery_size(sid) == 5, "галерея не должна расти после WARMUP_SIZE"
+    assert node._db.gallery_size(sid) == 5, "галерея не должна расти после потолка"
+    assert node._growth_session is None, "сессия обязана закрыться на потолке"
+
+
+def test_growth_session_closes_after_gap_timeout(node, monkeypatch):
+    """Разрыв дольше gallery_growth_session_gap_sec — сессия закрывается,
+    следующая реплика в галерею НЕ дописывается."""
+    base = _embedding(25)
+    node._do_register("Деньчик", base, speaker_id=None)
+    sid = node._growth_session["speaker_id"]
+    assert node._db.gallery_size(sid) == 1
+
+    # Отматываем "последнюю реплику сессии" далеко в прошлое.
+    node._growth_session["last_utterance_at"] -= node._growth_session_gap_sec + 1.0
+
+    node._db.embed_audio = MagicMock(return_value=_degraded(base, 0.1, 2500))
+    node._process_utterance(b"\x00\x00" * 1000)
+
+    assert node._db.gallery_size(sid) == 1, "разрыв больше окна — рост не должен случиться"
+    assert node._growth_session is None, "сессия обязана закрыться по таймауту"
+
+
+def test_growth_session_vetoed_by_confident_different_speaker(node):
+    """Реплика уверенно (калиброванный порог) опознана как ДРУГОЙ, уже
+    известный спикер — сильное прямое свидетельство против якоря. Рост не
+    должен случиться, сессия должна закрыться (issue #2747, PR #2757
+    ревью: «высокий косинус — дополнительное условие ПОВЕРХ якоря, вето,
+    а не самостоятельный порог доверия»)."""
+    anchor_base = _embedding(30)
+    node._do_register("Деньчик", anchor_base, speaker_id=None)
+    sid_anchor = node._growth_session["speaker_id"]
+
+    other_base = _embedding(31)  # ортогональный голос — другой человек
+    sid_other = node._db.register("Пётр", other_base)
+    # Достаточно эмбеддингов, чтобы обычный identify() уверенно узнал Петра
+    # по калиброванному порогу на его собственный (почти идентичный) голос.
+    node._result_pub.messages.clear()
+
+    node._db.embed_audio = MagicMock(return_value=other_base)
+    node._process_utterance(b"\x00\x00" * 1000)
+
+    assert node._db.gallery_size(sid_anchor) == 1, "чужая реплика не должна попасть в Деньчика"
+    assert node._db.gallery_size(sid_other) == 1, "вето не дописывает и в профиль Петра"
+    assert node._growth_session is None, "сессия обязана закрыться при опровержении якоря"
+    match_msgs = [m for m in node._result_pub.messages if m.get("is_known") is True]
+    assert match_msgs[0]["name"] == "Пётр", "обычная идентификация продолжает работать как раньше"
 
 
 def test_process_utterance_publishes_unknown_for_unmatched_voice(node):
-    node._db.register("Саша", _embedding(30))
-    node._db.embed_audio = MagicMock(return_value=_embedding(31))  # ортогональный голос
+    node._db.register("Саша", _embedding(40))
+    node._db.embed_audio = MagicMock(return_value=_embedding(41))  # ортогональный голос
 
     node._process_utterance(b"\x00\x00" * 1000)
 
     assert node._result_pub.messages == [{"is_known": False}]
+
+
+def test_no_growth_without_active_session(node):
+    """Без предшествующей регистрации (нет growth-сессии) обычные реплики
+    никогда не растят чужую/случайную галерею."""
+    sid = node._db.register("Саша", _embedding(50))
+    assert node._growth_session is None
+
+    node._db.embed_audio = MagicMock(return_value=_degraded(_embedding(50), 0.1, 51))
+    node._process_utterance(b"\x00\x00" * 1000)
+
+    assert node._db.gallery_size(sid) == 1, "без активной сессии рост не должен случиться"
 
 
 # ---------------------------------------------------------------------------
