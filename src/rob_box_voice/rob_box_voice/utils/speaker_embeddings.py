@@ -25,6 +25,13 @@ REGISTER_MATCH_THRESHOLD) и, при совпадении, дописывает 
 СУЩЕСТВУЮЩИЙ профиль вместо создания нового. ``merge_speakers()`` —
 ручная склейка уже расползшихся дублей (например, найденных оператором
 в списке спикеров).
+
+ADR-0127 (night-marathon 22.09.2026, run 35667281570): слияние при
+регистрации происходит ТОЛЬКО если совпало и имя. Похожий голос под
+ДРУГИМ именем — это конфликт: заводится отдельный профиль, прежнее имя
+остаётся у прежнего профиля. Регистрация больше никогда не переименовывает
+чужой профиль и (ADR-0097 / issue #2469) не стирает его эпитет, теги и
+``created_at``.
 """
 
 from __future__ import annotations
@@ -200,6 +207,66 @@ def _validate_speaker_name(name: object) -> str:
     # узнаваемыми («Илья» / «Ольга»). .title() ломал бы «робот» в «Робот»
     # так же, как и нужные имена, а у нас именно личные имена.
     return cleaned.capitalize()
+
+
+def _same_speaker_name(existing: object, incoming: object) -> bool:
+    """ADR-0127 — «это то же самое имя?» для решения о слиянии профилей.
+
+    Сравниваются НОРМАЛИЗОВАННЫЕ имена (``_validate_speaker_name`` +
+    casefold): «саша» / «  Саша » / «САША» — одно имя, «Саша» и «Борис» —
+    разные. Мусорное имя (``""`` после валидации) не совпадает ни с чем,
+    включая другое мусорное: профиль с легаси-именем «Зовут» не должен
+    молча собирать в себя чужие эмбеддинги.
+    """
+    left = _validate_speaker_name(existing)
+    right = _validate_speaker_name(incoming)
+    if not left or not right:
+        return False
+    return left.casefold() == right.casefold()
+
+
+class RegisterOutcome(tuple):
+    """Результат ``register_or_merge()``: ``(speaker_id, reused)`` + причина.
+
+    Это ДВУХэлементный кортеж — весь существующий код вида
+    ``sid, reused = db.register_or_merge(...)`` продолжает работать без
+    правок (контракт ADR-0097 §5.5). Дополнительные поля живут атрибутами,
+    а не третьим элементом, именно поэтому.
+
+    Зачем поля ``conflict_*``: решение «не сливать из-за конфликта имён»
+    принимается здесь, в модуле БД, а рассказать о нём оператору может
+    только ROS-нода — модульный ``logging`` в ``docker logs`` робота не
+    виден (проверено на run 35667281570: строка ``🔗 register_or_merge:``
+    из этого файла в логах отсутствует, видна только строка от
+    ``node.get_logger()``). Поэтому ноде нужен машиночитаемый повод
+    написать своё предупреждение и положить его в ack.
+
+    * ``conflict_name`` / ``conflict_speaker_id`` — чей голос похож;
+    * ``conflict_score`` — косинус (>= REGISTER_MATCH_THRESHOLD);
+    * все три ``None``, если конфликта не было.
+    """
+
+    def __new__(
+        cls,
+        speaker_id: str,
+        reused: bool,
+        conflict_name: Optional[str] = None,
+        conflict_speaker_id: Optional[str] = None,
+        conflict_score: Optional[float] = None,
+    ) -> "RegisterOutcome":
+        """Собрать кортеж ``(speaker_id, reused)`` и навесить причину."""
+        obj = super().__new__(cls, (speaker_id, reused))
+        obj.speaker_id = speaker_id
+        obj.reused = reused
+        obj.conflict_name = conflict_name
+        obj.conflict_speaker_id = conflict_speaker_id
+        obj.conflict_score = conflict_score
+        return obj
+
+    @property
+    def name_conflict(self) -> bool:
+        """``True``, если голос совпал, но имя другое — профиль отдельный."""
+        return self.conflict_speaker_id is not None
 
 
 class SpeakerDatabase:
@@ -400,15 +467,47 @@ class SpeakerDatabase:
         if speaker_id is None:
             speaker_id = str(uuid.uuid4())
             self._conn.execute(
-                "INSERT OR IGNORE INTO speakers (speaker_id, name, created_at) VALUES (?, ?, ?)",
+                "INSERT INTO speakers (speaker_id, name, created_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(speaker_id) DO NOTHING",
                 (speaker_id, clean_name, now),
             )
         else:
-            # Update name in case it changed
-            self._conn.execute(
-                "INSERT OR REPLACE INTO speakers (speaker_id, name, created_at) VALUES (?, ?, ?)",
-                (speaker_id, clean_name, now),
-            )
+            # ADR-0097 / issue #2469 — НЕ ``INSERT OR REPLACE``. В SQLite
+            # REPLACE — это DELETE + INSERT: все колонки, не перечисленные
+            # в запросе, возвращаются к дефолту. Здесь это молча стирало
+            # ``epithet`` / ``epithet_history`` / ``tags`` /
+            # ``sentiment_score`` / ``last_epithet_review`` (issue #1787,
+            # добавлены миграцией) и переписывало ``created_at`` на «сейчас»,
+            # то есть КАЖДАЯ повторная регистрация уже известного голоса
+            # обнуляла накопленный профиль. UPDATE трогает ровно одну
+            # колонку; ``created_at`` — «когда профиль создан», а не
+            # «когда его последний раз трогали», поэтому не обновляется.
+            prev = self._conn.execute(
+                "SELECT name FROM speakers WHERE speaker_id=?", (speaker_id,)
+            ).fetchone()
+            if prev is None:
+                # Явный id, которого ещё нет в БД (тест / миграция /
+                # восстановление): создаём строку, иначе FK-ссылка из
+                # embeddings повиснет на несуществующего спикера.
+                self._conn.execute(
+                    "INSERT INTO speakers (speaker_id, name, created_at) VALUES (?, ?, ?) "
+                    "ON CONFLICT(speaker_id) DO NOTHING",
+                    (speaker_id, clean_name, now),
+                )
+            elif prev[0] != clean_name:
+                # Переименование по ЯВНО переданному id — вызывающий код
+                # утверждает, что это тот же человек (rename-поток). Логируем
+                # на WARNING: имя профиля — единственное, что связывает
+                # биометрию с человеком, и его потеря необратима (ADR-0127).
+                logger.warning(
+                    f"register(speaker_id={speaker_id[:8]}): имя профиля "
+                    f"{prev[0]!r} → {clean_name!r} (явный id, переименование "
+                    f"по требованию вызывающего кода)"
+                )
+                self._conn.execute(
+                    "UPDATE speakers SET name=? WHERE speaker_id=?",
+                    (clean_name, speaker_id),
+                )
         self._conn.execute(
             "INSERT INTO embeddings (speaker_id, embedding, created_at) VALUES (?, ?, ?)",
             (speaker_id, self._ndarray_to_blob(embedding), now),
@@ -419,7 +518,7 @@ class SpeakerDatabase:
 
     def register_or_merge(
         self, name: str, embedding: np.ndarray, speaker_id: Optional[str] = None
-    ) -> Tuple[str, bool]:
+    ) -> "RegisterOutcome":
         """Зарегистрировать эмбеддинг, избегая создания дубля (issue W5-4).
 
         Если ``speaker_id`` передан явно — поведение как у ``register()``
@@ -428,29 +527,75 @@ class SpeakerDatabase:
         Иначе сначала проверяется, похож ли голос на уже известного
         спикера (``identify(embedding, threshold=REGISTER_MATCH_THRESHOLD)``
         — порог строже обычной идентификации, см. комментарий у константы).
-        При совпадении эмбеддинг дописывается в НАЙДЕННЫЙ профиль (имя
-        обновляется на переданное ``name`` — это же путь, которым раньше
-        шёл ``rename``), новый профиль не создаётся. Иначе — обычная
-        регистрация нового профиля.
+        Дальше решает ИМЯ (ADR-0127):
 
-        Возвращает ``(speaker_id, reused)``: ``reused=True``, если
-        эмбеддинг присоединён к уже существующему профилю.
+        * имя совпадает с именем найденного профиля → эмбеддинг
+          дописывается в него (``reused=True``), имя в БД не трогаем;
+        * имя ДРУГОЕ → конфликт. Слияния НЕ происходит: заводится
+          отдельный профиль (``reused=False``, заполнены поля
+          ``conflict_*``), а прежнее имя остаётся при прежнем профиле.
+
+        Почему так — night-marathon 22.09.2026, run 35667281570, акт 2:
+        Саша (TTS anton) и Борис (TTS ermil) звучат для resemblyzer на
+        cos=0.846 (замер по /data/speakers.db робота), то есть ВЫШЕ любого
+        рабочего порога слияния. Старое поведение «слить и переименовать»
+        стирало Сашу как личность: в БД оставался один профиль, и тот под
+        именем Бориса. Дубль чинится ``merge_speakers()`` постфактум,
+        потерянное имя — ничем.
+
+        Возвращает :class:`RegisterOutcome` — распаковывается как
+        ``(speaker_id, reused)`` (обратная совместимость с прежним
+        контрактом), но дополнительно несёт на себе ``conflict_name`` /
+        ``conflict_speaker_id`` / ``conflict_score`` — чтобы вызывающий
+        код (speaker_id_node) мог сказать оператору, ЧТО именно похоже и
+        как склеить вручную, если это всё-таки один человек.
         """
         if speaker_id is not None:
-            return self.register(name, embedding, speaker_id=speaker_id), False
+            return RegisterOutcome(
+                self.register(name, embedding, speaker_id=speaker_id), False
+            )
 
         match = self.identify(embedding, threshold=REGISTER_MATCH_THRESHOLD)
-        if match is not None:
+        if match is not None and _same_speaker_name(match.name, name):
             logger.info(
                 f"🔗 register_or_merge: голос похож на уже известного "
                 f"'{match.name}' (score={match.confidence:.3f} >= "
-                f"{REGISTER_MATCH_THRESHOLD}) — дописываю в id={match.speaker_id[:8]} "
-                f"вместо нового профиля"
+                f"{REGISTER_MATCH_THRESHOLD}) и имя то же — дописываю в "
+                f"id={match.speaker_id[:8]} вместо нового профиля"
             )
-            return self.register(name, embedding, speaker_id=match.speaker_id), True
+            # Пишем ИМЯ ИЗ БД, а не переданное: имена равны с точностью до
+            # регистра/пробелов, и профиль не должен «дёргаться» между
+            # «Саша» и «саша» на каждой реплике.
+            return RegisterOutcome(
+                self.register(match.name, embedding, speaker_id=match.speaker_id), True
+            )
+
+        if match is not None:
+            # ADR-0127 — конфликт имён. Отличить «LLM расслышал имя иначе»
+            # от «пришёл другой человек с похожим голосом» на этом уровне
+            # НЕЧЕМ: у обоих случаев одна и та же наблюдаемая картина
+            # (высокий cos + новое имя). Выбираем ошибку, которая
+            # ОБРАТИМА: лишний профиль оператор склеит merge_speakers(),
+            # а затёртое имя не восстановит никто.
+            logger.warning(
+                f"⚠️ register_or_merge: голос похож на '{match.name}' "
+                f"(id={match.speaker_id[:8]}, score={match.confidence:.3f} >= "
+                f"{REGISTER_MATCH_THRESHOLD}), но регистрируют как {name!r} — "
+                f"конфликт имён, слияния НЕ делаю, завожу отдельный профиль "
+                f"(ADR-0127). Если это один человек — склеить вручную: "
+                f"merge_speakers(src=<новый>, dst={match.speaker_id})"
+            )
+            new_id = self.register(name, embedding, speaker_id=None)
+            return RegisterOutcome(
+                new_id,
+                False,
+                conflict_name=match.name,
+                conflict_speaker_id=match.speaker_id,
+                conflict_score=match.confidence,
+            )
 
         new_id = self.register(name, embedding, speaker_id=None)
-        return new_id, False
+        return RegisterOutcome(new_id, False)
 
     def merge_speakers(self, src_id: str, dst_id: str) -> int:
         """Слить два профиля одного человека (issue W5-4).

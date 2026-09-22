@@ -61,10 +61,39 @@ PY
 # Почему это важно именно для e2e: act2/act3 night-marathon проверяют
 # диаризацию (speaker_tag A vs B) — там в одном сценарии живут все четыре
 # яндексовских голоса, и они ОБЯЗАНЫ остаться четырьмя разными голосами
-# после перевода. Поэтому таблица ниже — не «ближайший по полу», а
-# «гарантированно различимый»: anton/ermil/zahar/filipp → четыре разных
-# speaker'а у каждого провайдера (у Silero ради этого берутся и женские —
-# различимость важнее совпадения пола, робот всё равно слышит синтетику).
+# после перевода.
+#
+# ИЗМЕРЕНО 22.09.2026 (до этого таблица утверждала «гарантированно
+# различимые», не имея ни одного замера, — и это было неправдой).
+# Методика и сырые данные: scripts/e2e/measure_tts_voice_distinctness.py,
+# evidence/tts-voice-distinctness-2026-09-22/. «Различимы» = max-cos
+# resemblyzer-эмбеддингов НИЖЕ порога опознания IDENTIFY_THRESHOLD=0.72
+# (порог слияния профилей REGISTER_MATCH_THRESHOLD=0.75 — см.
+# src/rob_box_voice/rob_box_voice/utils/speaker_embeddings.py). Для
+# ориентира: один и тот же голос на двух разных фразах даёт 0.95-0.98.
+#
+#   minimax, СТАРАЯ таблица: anton/ermil = 0.739, ermil/filipp = 0.810 —
+#     НЕ различимы. На живом роботе та же пара anton/ermil дала 0.846
+#     (микрофонный канал поднимает косинус), и акт 2 склеил Сашу с Борисом
+#     в один профиль — run 35667281570.
+#   minimax, таблица ниже: худшая пара 0.684, anton/ermil = 0.527.
+#   silero, СТАРАЯ таблица: zahar/filipp (baya/xenia) = 0.722 — ровно на
+#     границе, baya/kseniya = 0.788. Ниже baya отдан alena, а zahar получил
+#     kseniya: худшая пара 0.678 (anton/ermil = aidar/eugene).
+#   yandex — НЕ ИЗМЕРЕН: ключ на роботе отвечает PERMISSION_DENIED (та же
+#     архивная папка, из-за которой падает synth_yandex). Мерить, когда
+#     ключ починят: measure_tts_voice_distinctness.py --provider yandex.
+#
+# Подкрутку питча/темпа как альтернативу смене голосов ПРОВЕРИЛИ И
+# ОТКЛОНИЛИ. Фиксированный сдвиг питча за говорящим действительно разводит
+# эмбеддинги (anton[+6] vs ermil: 0.70 → 0.42, intra-voice не страдает,
+# 0.95+), но ломает распознавание: vosk на тех же файлах даёт WER 0.79 при
+# pitch=-6 и 0.26 при pitch=+3 против 0.05-0.16 без сдвига. Менять голос
+# дешевле, чем менять диагноз с «не различил дикторов» на «не расслышал».
+#
+# Гендер намеренно НЕ сохраняется: различимость важнее совпадения пола,
+# робот всё равно слышит синтетику. У Silero так было с самого начала,
+# теперь так же и у minimax (Борису достался женский голос).
 #
 # Каталоги-источники — src/rob_box_voice/rob_box_voice/tts_voice_registry.py
 # (PROVIDER_VOICES). Голос, который уже native для провайдера, не трогаем:
@@ -73,8 +102,8 @@ PY
 # Примеры:
 #   map_tts_voice yandex  anton  → anton
 #   map_tts_voice silero  anton  → aidar
-#   map_tts_voice silero  zahar  → baya
-#   map_tts_voice minimax ermil  → Russian_HandsomeChildhoodFriend
+#   map_tts_voice silero  zahar  → kseniya
+#   map_tts_voice minimax ermil  → Russian_PessimisticGirl
 #   map_tts_voice silero  aidar  → aidar      (уже native)
 #   map_tts_voice silero  ""     → aidar      (дефолт провайдера)
 map_tts_voice() {
@@ -91,9 +120,9 @@ map_tts_voice() {
                 aidar|baya|kseniya|xenia|eugene) printf '%s' "$voice"; return 0 ;;
                 anton|kostya|"")                 printf 'aidar' ;;
                 ermil|madirus)                   printf 'eugene' ;;
-                zahar|arina)                     printf 'baya' ;;
+                zahar|arina)                     printf 'kseniya' ;;
                 filipp|jane)                     printf 'xenia' ;;
-                alena)                           printf 'kseniya' ;;
+                alena)                           printf 'baya' ;;
                 omazh|rush)                      printf 'xenia' ;;
                 *)                               printf 'aidar' ;;
             esac
@@ -103,85 +132,12 @@ map_tts_voice() {
             case "$voice" in
                 Russian_*|male-qn-qingse|female-shaonv) printf '%s' "$voice"; return 0 ;;
                 anton|"")        printf 'Russian_ReliableMan' ;;
-                ermil|madirus)   printf 'Russian_HandsomeChildhoodFriend' ;;
-                zahar)           printf 'Russian_Bad-temperedBoy' ;;
+                ermil|madirus)   printf 'Russian_PessimisticGirl' ;;
+                zahar|arina)     printf 'Russian_CrazyQueen' ;;
                 filipp|kostya)   printf 'Russian_AttractiveGuy' ;;
                 alena)           printf 'Russian_BrightHeroine' ;;
                 jane)            printf 'Russian_AmbitiousWoman' ;;
-                arina)           printf 'Russian_PessimisticGirl' ;;
-                omazh|rush)      printf 'Russian_CrazyQueen' ;;
-                *)               printf 'Russian_ReliableMan' ;;
-            esac
-            return 0
-            ;;
-        *)
-            printf '%s' "$voice"
-            return 0
-            ;;
-    esac
-}
-
-# map_tts_voice() — голос сценария → голос выбранного TTS-провайдера.
-#
-# Сценарии (.github/e2e/scenarios/*.json) называют голоса ПО-ЯНДЕКСОВСКИ
-# ("anton"/"ermil"/"zahar"/"filipp") — это исторический контракт, менять
-# его в 250+ шагах нельзя. Когда команда синтезируется не Yandex'ом
-# (E2E_TTS_PROVIDER=silero|minimax, см. e2e_voice_test.sh), имя голоса надо
-# перевести в каталог целевого провайдера, иначе провайдер молча возьмёт
-# свой дефолт и ВСЕ шаги зазвучат одним голосом.
-#
-# Почему это важно именно для e2e: act2/act3 night-marathon проверяют
-# диаризацию (speaker_tag A vs B) — там в одном сценарии живут все четыре
-# яндексовских голоса, и они ОБЯЗАНЫ остаться четырьмя разными голосами
-# после перевода. Поэтому таблица ниже — не «ближайший по полу», а
-# «гарантированно различимый»: anton/ermil/zahar/filipp → четыре разных
-# speaker'а у каждого провайдера (у Silero ради этого берутся и женские —
-# различимость важнее совпадения пола, робот всё равно слышит синтетику).
-#
-# Каталоги-источники — src/rob_box_voice/rob_box_voice/tts_voice_registry.py
-# (PROVIDER_VOICES). Голос, который уже native для провайдера, не трогаем:
-# так можно задать --voice aidar / --voice Russian_CrazyQueen напрямую.
-#
-# Примеры:
-#   map_tts_voice yandex  anton  → anton
-#   map_tts_voice silero  anton  → aidar
-#   map_tts_voice silero  zahar  → baya
-#   map_tts_voice minimax ermil  → Russian_HandsomeChildhoodFriend
-#   map_tts_voice silero  aidar  → aidar      (уже native)
-#   map_tts_voice silero  ""     → aidar      (дефолт провайдера)
-map_tts_voice() {
-    # $1=provider $2=voice. Печатает голос провайдера в stdout.
-    local provider="$1" voice="$2"
-    case "$provider" in
-        yandex)
-            # Yandex — исходный каталог сценариев, перевод не нужен.
-            printf '%s' "${voice:-anton}"
-            return 0
-            ;;
-        silero)
-            case "$voice" in
-                aidar|baya|kseniya|xenia|eugene) printf '%s' "$voice"; return 0 ;;
-                anton|kostya|"")                 printf 'aidar' ;;
-                ermil|madirus)                   printf 'eugene' ;;
-                zahar|arina)                     printf 'baya' ;;
-                filipp|jane)                     printf 'xenia' ;;
-                alena)                           printf 'kseniya' ;;
-                omazh|rush)                      printf 'xenia' ;;
-                *)                               printf 'aidar' ;;
-            esac
-            return 0
-            ;;
-        minimax)
-            case "$voice" in
-                Russian_*|male-qn-qingse|female-shaonv) printf '%s' "$voice"; return 0 ;;
-                anton|"")        printf 'Russian_ReliableMan' ;;
-                ermil|madirus)   printf 'Russian_HandsomeChildhoodFriend' ;;
-                zahar)           printf 'Russian_Bad-temperedBoy' ;;
-                filipp|kostya)   printf 'Russian_AttractiveGuy' ;;
-                alena)           printf 'Russian_BrightHeroine' ;;
-                jane)            printf 'Russian_AmbitiousWoman' ;;
-                arina)           printf 'Russian_PessimisticGirl' ;;
-                omazh|rush)      printf 'Russian_CrazyQueen' ;;
+                omazh|rush)      printf 'Russian_Bad-temperedBoy' ;;
                 *)               printf 'Russian_ReliableMan' ;;
             esac
             return 0

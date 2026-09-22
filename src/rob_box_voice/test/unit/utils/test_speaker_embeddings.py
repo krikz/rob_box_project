@@ -19,6 +19,7 @@ import importlib.util
 import os
 import sqlite3
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -293,12 +294,37 @@ class TestDuplicateVoiceBug:
         assert reused1 is False  # первая регистрация — новый профиль, это ок
 
         # Тот же человек, деградированная запись (шум/дистанция/громкость) —
-        # LLM снова вызывает register_speaker с (возможно) другим именем.
-        sid2, reused2 = db.register_or_merge("Эйджик", _degraded(base, 0.45, 202))
+        # LLM снова вызывает register_speaker под тем же именем. ADR-0127:
+        # merge происходит именно на совпадении имени; кейс «другое имя»
+        # живёт в TestNameConflictADR0127 ниже.
+        sid2, reused2 = db.register_or_merge("Денчик", _degraded(base, 0.45, 202))
 
         assert reused2 is True, "деградированная запись ТОГО ЖЕ голоса должна слиться с профилем"
         assert sid2 == sid1, "не должно появиться второго speaker_id для одного голоса"
         assert len(db.list_speakers()) == 1, "в БД должен остаться ОДИН профиль, а не два"
+
+    def test_register_or_merge_appends_embeddings_at_db_level(self, db):
+        """Issue #2348 п.2 — DB-уровневый тест: merge ДОПИСЫВАЕТ эмбеддинг.
+
+        Новой строки в ``speakers`` не появляется, имя профиля остаётся
+        прежним (ADR-0127 — регистрация не переименовывает).
+
+        Без фикса W5-4 register() вызывался БЕЗ speaker_id → создавал новый
+        профиль, и БД разбухала по одному эмбеддингу на каждый вызов LLM.
+        """
+        base = _random_embedding(500)
+        first_id, _ = db.register_or_merge("Денчик", _degraded(base, 0.2, 501))
+
+        for i, alpha in enumerate([0.25, 0.30, 0.35, 0.40], start=1):
+            sid, reused = db.register_or_merge("Денчик", _degraded(base, alpha, 600 + i))
+            assert reused is True, f"merge #{i} создал новый профиль вместо append"
+            assert sid == first_id, f"merge #{i} вернул другой speaker_id"
+
+        rows_speakers = db._conn.execute("SELECT COUNT(*) FROM speakers").fetchone()[0]
+        rows_embeddings = db._conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0]
+        assert rows_speakers == 1, "должна быть РОВНО одна строка в speakers"
+        assert rows_embeddings == 5, "должно быть 5 эмбеддингов, дописанных в один профиль"
+        assert db.list_speakers()[0]["name"] == "Денчик"
 
     def test_register_or_merge_does_not_drift_across_repeated_degraded_utterances(self, db):
         """Симптом «они дальше расходятся»: серия деградированных фраз ОДНОГО
@@ -332,6 +358,125 @@ class TestDuplicateVoiceBug:
         assert reused is False  # explicit path — не "нашли похожего", а "сказали явно"
         assert len(db.list_speakers()) == 1
         assert db.list_speakers()[0]["embeddings"] == 2
+
+
+class TestNameConflictADR0127:
+    """ADR-0127 — похожий голос под ДРУГИМ именем не склеивается и не
+    переименовывает существующий профиль.
+
+    Боевой случай: night-marathon 22.09.2026 (run 35667281570, акт 2).
+    Саша (TTS anton) и Борис (TTS ermil) дают cos=0.846 — выше порога
+    слияния; старое поведение оставляло в /data/speakers.db ОДИН профиль
+    под именем Бориса, с эмбеддингом Саши внутри.
+    """
+
+    def test_similar_voice_with_other_name_is_not_merged(self, db):
+        base = _random_embedding(700)
+        similar = _degraded(base, 0.6, 701)   # cos ~0.86
+        assert float(base @ similar) > REGISTER_MATCH_THRESHOLD
+
+        sid_sasha, _ = db.register_or_merge("Саша", base)
+        sid_boris, reused = db.register_or_merge("Борис", similar)
+
+        assert reused is False
+        assert sid_boris != sid_sasha
+        names = {s["name"]: s["id"] for s in db.list_speakers()}
+        assert names == {"Саша": sid_sasha, "Борис": sid_boris}
+
+    def test_conflict_details_are_returned(self, db):
+        base = _random_embedding(710)
+        similar = _degraded(base, 0.6, 711)
+        sid_sasha, _ = db.register_or_merge("Саша", base)
+
+        outcome = db.register_or_merge("Борис", similar)
+
+        assert outcome.name_conflict is True
+        assert outcome.conflict_name == "Саша"
+        assert outcome.conflict_speaker_id == sid_sasha
+        assert outcome.conflict_score >= REGISTER_MATCH_THRESHOLD
+        assert tuple(outcome) == (outcome.speaker_id, False)
+
+    def test_merge_keeps_stored_spelling_of_the_name(self, db):
+        """«саша» → merge в «Саша»; каноническое написание не дёргается."""
+        base = _random_embedding(720)
+        sid, _ = db.register_or_merge("Саша", base)
+        sid2, reused = db.register_or_merge("саша", _degraded(base, 0.3, 721))
+        assert (sid2, reused) == (sid, True)
+        assert db.list_speakers()[0]["name"] == "Саша"
+
+    def test_legacy_junk_name_profile_does_not_absorb_new_speakers(self, db):
+        """Профиль с легаси-именем «Зовут» не должен собирать чужие голоса.
+
+        Такие строки лежат в проде (бэкап
+        /data/speakers.db.bak-20260921T224624Z — два профиля «Зовут» из 44).
+        Валидатор имён (issue #2348) не даёт создать новые, но старые никуда
+        не делись: ``_same_speaker_name`` обязан считать мусорное имя
+        «ни с чем не совпадающим».
+        """
+        base = _random_embedding(730)
+        db._conn.execute(
+            "INSERT INTO speakers (speaker_id, name, created_at) VALUES (?, ?, ?)",
+            ("junk-id", "Зовут", 0.0),
+        )
+        db._conn.execute(
+            "INSERT INTO embeddings (speaker_id, embedding, created_at) VALUES (?, ?, ?)",
+            ("junk-id", db._ndarray_to_blob(base), 0.0),
+        )
+        db._conn.commit()
+
+        sid, reused = db.register_or_merge("Денис", _degraded(base, 0.3, 731))
+
+        assert reused is False, "мусорное имя не должно считаться совпадением"
+        assert sid != "junk-id"
+        assert {s["name"] for s in db.list_speakers()} == {"Зовут", "Денис"}
+
+
+class TestRegisterPreservesProfileMetadata:
+    """ADR-0097 / issue #2469 — повторная регистрация не обнуляет профиль.
+
+    ``INSERT OR REPLACE`` в SQLite — это DELETE + INSERT: колонки, не
+    перечисленные в запросе, возвращаются к дефолту. Через merge-путь
+    (``register(..., speaker_id=...)``) это молча стирало эпитет, историю
+    кличек, теги и sentiment, а ``created_at`` переписывало на «сейчас».
+    """
+
+    def test_explicit_id_preserves_epithet_and_stats(self, db):
+        sid = db.register("Иван", _random_embedding(801))
+        db.set_epithet(sid, "Гроссмейстер", reason="llm_assigned")
+        db.update_speaker_stats(sid, tags=["шахматы"], sentiment_score=0.3)
+
+        db.register("Иван", _random_embedding(802), speaker_id=sid)
+
+        profile = db.get_speaker_profile(sid)
+        assert profile["epithet"] == "Гроссмейстер"
+        assert profile["tags"] == ["шахматы"]
+        assert profile["sentiment_score"] == pytest.approx(0.3)
+        assert profile["epithet_history"], "история кличек не должна стираться"
+
+    def test_explicit_id_does_not_overwrite_created_at(self, db):
+        sid = db.register("Иван", _random_embedding(811))
+        before = db.get_speaker_profile(sid)["created_at"]
+        time.sleep(0.05)
+        db.register("Иван", _random_embedding(812), speaker_id=sid)
+        after = db.get_speaker_profile(sid)["created_at"]
+        assert after == pytest.approx(before, abs=1e-6)
+
+    def test_merge_path_preserves_epithet(self, db):
+        """Тот же инвариант через register_or_merge — боевой путь ноды."""
+        base = _random_embedding(820)
+        sid, _ = db.register_or_merge("Иван", base)
+        db.set_epithet(sid, "Гроссмейстер", reason="llm_assigned")
+
+        sid2, reused = db.register_or_merge("Иван", _degraded(base, 0.3, 821))
+
+        assert (sid2, reused) == (sid, True)
+        assert db.get_speaker_profile(sid)["epithet"] == "Гроссмейстер"
+
+    def test_explicit_id_still_renames(self, db):
+        """Явный speaker_id — документированный rename-поток, он остаётся."""
+        sid = db.register("Иван", _random_embedding(831))
+        db.register("Пётр", _random_embedding(832), speaker_id=sid)
+        assert db.list_speakers()[0]["name"] == "Пётр"
 
 
 class TestRegisterOrMergeBelowThreshold:

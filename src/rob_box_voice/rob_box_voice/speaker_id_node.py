@@ -565,17 +565,37 @@ class SpeakerIdNode(Node):
         ``register()``: если ``speaker_id`` не передан явно (обычный путь
         от LLM-тула register_speaker), сначала проверяется, не похож ли
         голос на уже известный профиль (порог REGISTER_MATCH_THRESHOLD,
-        строже обычной идентификации) — и, при совпадении, эмбеддинг
+        строже обычной идентификации) — и, при совпадении ИМЕНИ, эмбеддинг
         дописывается в существующий профиль вместо создания дубля. Именно
         отсутствие этой проверки было причиной бага «один голос — два
         профиля» (денчик/эйджик): раньше КАЖДЫЙ вызов register_speaker
         создавал новый speaker_id безусловно.
+
+        ADR-0127 — если голос похож, а имя ДРУГОЕ, слияния не будет:
+        заводится отдельный профиль, а сюда приезжают поля ``conflict_*``.
+        Предупреждение печатает именно нода: ``logging``-строки из
+        ``utils.speaker_embeddings`` в ``docker logs voice-assistant`` не
+        попадают (run 35667281570 — в логе видно только то, что пишет
+        ``self.get_logger()``), а оператору нужно увидеть, что робот
+        принял двух людей за одного.
         """
-        sid, reused = self._db.register_or_merge(name, embedding, speaker_id=speaker_id)
+        outcome = self._db.register_or_merge(name, embedding, speaker_id=speaker_id)
+        sid, reused = outcome
         if reused:
             self.get_logger().info(
                 f"🔗 Speaker '{name}' merged into existing profile (id={sid[:8]}) "
                 "— voice matched an already-known speaker, no duplicate created"
+            )
+        elif outcome.name_conflict:
+            self.get_logger().warning(
+                f"⚠️ Speaker '{name}' (id={sid[:8]}) — голос похож на уже "
+                f"известного '{outcome.conflict_name}' "
+                f"(id={outcome.conflict_speaker_id[:8]}, "
+                f"score={outcome.conflict_score:.3f} >= порога слияния), но имя "
+                f"другое: завожу ОТДЕЛЬНЫЙ профиль и НЕ переименовываю чужой "
+                f"(ADR-0127). Если это один человек — склеить вручную через "
+                f"/voice/speaker/merge {{\"src_speaker_id\": \"{sid}\", "
+                f"\"dst_speaker_id\": \"{outcome.conflict_speaker_id}\"}}"
             )
         else:
             self.get_logger().info(f"✅ Speaker '{name}' registered (id={sid[:8]})")
@@ -583,10 +603,22 @@ class SpeakerIdNode(Node):
         self._ensure_epithet(sid)
         # Publish a registration-ack so dialogue_node can confirm verbally
         ack = String()
-        ack.data = json.dumps(
-            {"event": "registered", "name": name, "speaker_id": sid, "reused_profile": reused},
-            ensure_ascii=False,
-        )
+        ack_payload = {
+            "event": "registered",
+            "name": name,
+            "speaker_id": sid,
+            "reused_profile": reused,
+        }
+        if outcome.name_conflict:
+            # ADR-0127 — dialogue_node получает повод переспросить («я уже
+            # знаю голос, похожий на твой — вы разные люди?»), а разбор
+            # прогона получает машиночитаемый след конфликта.
+            ack_payload["voice_conflict"] = {
+                "name": outcome.conflict_name,
+                "speaker_id": outcome.conflict_speaker_id,
+                "score": round(float(outcome.conflict_score), 4),
+            }
+        ack.data = json.dumps(ack_payload, ensure_ascii=False)
         self._result_pub.publish(ack)
 
     # ── Эпитеты (issue #1787) ─────────────────────────────────────────────────
