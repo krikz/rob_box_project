@@ -29,12 +29,15 @@ import pytest
 
 from rob_box_voice.core.turn import (
     ACCEPT,
+    DEFAULT_GUARD_ORDER,
     DEFAULT_MAX_SYNTHETIC_RETRIES,
     BabbleGuard,
     BabbleRetryDecision,
     EmbeddedRenardoCodeGuard,
     Guard,
     GuardContext,
+    HallucinatedMidiGuard,
+    PhantomActionGuard,
     PlanningNarrationHardMute,
     Reply,
     SystemRegurgitateGuard,
@@ -43,6 +46,8 @@ from rob_box_voice.core.turn import (
     TurnGuards,
     TurnState,
     UnbackedActionClaimGuard,
+    UniversalActionClaimGuard,
+    UnknownMelodyClaimGuard,
     Verdict,
     VerdictKind,
     begin_babble_retry,
@@ -506,6 +511,219 @@ class TestPlanningNarrationHardMute:
 
 
 # ---------------------------------------------------------------------------
+# 5b. Issue #2556 — the four guards ported from DialogueNode._handle_result
+#     (#2560 hallucinated MIDI, Bug F unknown melody, #2549 universal
+#     action-claim, #2559 phantom action). Same shape as the guards above:
+#     pure ``evaluate(ctx) -> Optional[Verdict]``, logic copied AS-IS from
+#     the legacy ``_check_*_and_retry`` methods (only the DSM / budget /
+#     one-shot-flag side effects stay behind in dialogue_node for now).
+# ---------------------------------------------------------------------------
+
+
+class TestHallucinatedMidiGuard:
+    def test_fires_on_hallucinated_midi_pattern(self) -> None:
+        g = HallucinatedMidiGuard()
+        v = g.evaluate(
+            GuardContext(
+                reply=_reply(
+                    spoken="Сыграю pe8le1f — вот эта тема.",
+                    tools_called=("execute_music_code",),
+                ),
+                turn=_turn(user_input="сыграй в пещере горного короля"),
+                state=_state(),
+            )
+        )
+        assert v is not None, "guard did not fire on hallucinated MIDI pattern"
+        assert v.kind is VerdictKind.RETRY
+        assert v.guard_name == "hallucinated_midi"
+        assert v.prompt and "pe8le1f" in v.prompt
+
+    def test_defers_when_no_pattern(self) -> None:
+        g = HallucinatedMidiGuard()
+        v = g.evaluate(
+            GuardContext(
+                reply=_reply(
+                    spoken="Играю Грига через lookup_melody.",
+                    tools_called=("lookup_melody",),
+                ),
+                turn=_turn(user_input="сыграй грига"),
+                state=_state(),
+            )
+        )
+        assert v is None
+
+    def test_defers_when_spoken_empty(self) -> None:
+        g = HallucinatedMidiGuard()
+        v = g.evaluate(
+            GuardContext(
+                reply=_reply(spoken=""),
+                turn=_turn(user_input="сыграй грига"),
+                state=_state(),
+            )
+        )
+        assert v is None
+
+
+class TestUnknownMelodyClaimGuard:
+    def test_fires_on_unknown_melody_claim_without_search(self) -> None:
+        g = UnknownMelodyClaimGuard()
+        v = g.evaluate(
+            GuardContext(
+                reply=_reply(
+                    spoken="Не знаю такой мелодии — могу сыграть похожее."
+                ),
+                turn=_turn(
+                    user_input="сыграй григ в пещере горного короля"
+                ),
+                state=_state(),
+            )
+        )
+        assert v is not None, "guard did not fire on unknown-melody claim"
+        assert v.kind is VerdictKind.RETRY
+        assert v.guard_name == "unknown_melody_claim"
+
+    def test_defers_when_search_tool_was_called(self) -> None:
+        """LLM honestly tried a search tool first — legitimate 'not found'."""
+        g = UnknownMelodyClaimGuard()
+        v = g.evaluate(
+            GuardContext(
+                reply=_reply(
+                    spoken="Не знаю такой мелодии — в RTTTL её нет.",
+                    tools_called=("lookup_melody",),
+                ),
+                turn=_turn(
+                    user_input="сыграй григ в пещере горного короля"
+                ),
+                state=_state(),
+            )
+        )
+        assert v is None
+
+    def test_defers_when_user_did_not_ask_for_named_melody(self) -> None:
+        g = UnknownMelodyClaimGuard()
+        v = g.evaluate(
+            GuardContext(
+                reply=_reply(spoken="Не знаю, что тебе рассказать."),
+                turn=_turn(user_input="как дела"),
+                state=_state(),
+            )
+        )
+        assert v is None
+
+
+class TestUniversalActionClaimGuard:
+    def test_fires_on_past_tense_action_claim_without_tool(self) -> None:
+        g = UniversalActionClaimGuard()
+        v = g.evaluate(
+            GuardContext(
+                reply=_reply(spoken="Сделала два pass подряд с новым битом."),
+                turn=_turn(user_input="докрути музыку"),
+                state=_state(),
+            )
+        )
+        assert v is not None, "guard did not fire on universal action claim"
+        assert v.kind is VerdictKind.RETRY
+        assert v.guard_name == "universal_action_claim"
+
+    def test_defers_when_justifying_tool_was_called(self) -> None:
+        g = UniversalActionClaimGuard()
+        v = g.evaluate(
+            GuardContext(
+                reply=_reply(
+                    spoken="Сделала два pass подряд с новым битом.",
+                    tools_called=("compose_music",),
+                ),
+                turn=_turn(user_input="докрути музыку"),
+                state=_state(),
+            )
+        )
+        assert v is None
+
+    def test_defers_on_dj_auto_transition(self) -> None:
+        """Issue #2549 — DJ auto-tick: the user said nothing, a phantom
+        claim is harmless noise, retrying it would waste a round-trip."""
+        g = UniversalActionClaimGuard()
+        v = g.evaluate(
+            GuardContext(
+                reply=_reply(spoken="Сделала два pass подряд с новым битом."),
+                turn=_turn(user_input="", is_dj_auto=True),
+                state=_state(),
+            )
+        )
+        assert v is None
+
+    def test_defers_when_turn_already_errored(self) -> None:
+        """Mirrors the legacy ``result.error is None`` gate at the
+        ``_handle_result`` call site (issue #2556)."""
+        g = UniversalActionClaimGuard()
+        v = g.evaluate(
+            GuardContext(
+                reply=_reply(spoken="Сделала два pass подряд с новым битом."),
+                turn=TurnContext(
+                    user_input="докрути музыку", has_error=True
+                ),
+                state=_state(),
+            )
+        )
+        assert v is None
+
+
+class TestPhantomActionGuard:
+    def test_fires_on_phantom_action_verb_without_tool(self) -> None:
+        g = PhantomActionGuard()
+        v = g.evaluate(
+            GuardContext(
+                reply=_reply(
+                    spoken="Дай минуту, проверю состояние и перезапущу."
+                ),
+                turn=_turn(user_input="что там с музыкой"),
+                state=_state(),
+            )
+        )
+        assert v is not None, "guard did not fire on phantom action claim"
+        assert v.kind is VerdictKind.RETRY
+        assert v.guard_name == "phantom_action"
+
+    def test_defers_when_tool_was_called(self) -> None:
+        g = PhantomActionGuard()
+        v = g.evaluate(
+            GuardContext(
+                reply=_reply(
+                    spoken="Перезапущу роутер через минуту.",
+                    tools_called=("restart_router",),
+                ),
+                turn=_turn(user_input="проверь как сделано"),
+                state=_state(),
+            )
+        )
+        assert v is None
+
+    def test_defers_on_dj_auto_transition(self) -> None:
+        g = PhantomActionGuard()
+        v = g.evaluate(
+            GuardContext(
+                reply=_reply(
+                    spoken="Дай минуту, проверю состояние и перезапущу."
+                ),
+                turn=_turn(user_input="", is_dj_auto=True),
+                state=_state(),
+            )
+        )
+        assert v is None
+
+    def test_defers_when_user_negated(self) -> None:
+        g = PhantomActionGuard()
+        v = g.evaluate(
+            GuardContext(
+                reply=_reply(spoken="Хорошо, перезапущу позже."),
+                turn=_turn(user_input="не надо перезапускать"),
+                state=_state(),
+            )
+        )
+        assert v is None
+
+
+# ---------------------------------------------------------------------------
 # 6. Music guard adapter
 # ---------------------------------------------------------------------------
 
@@ -680,6 +898,102 @@ class TestDefaultGuardsFactory:
             VerdictKind.RETRY,
             VerdictKind.DISCARD,
         }
+
+
+# ---------------------------------------------------------------------------
+# 8b. Issue #2556 — lock the guard order so guard #N can't be inserted in
+#     the wrong slot silently. ``DEFAULT_GUARD_ORDER`` is the single
+#     source of truth (see its docstring in turn.py); this test asserts
+#     against it directly AND re-derives the same list from
+#     ``default_guards()`` so a future edit that touches one without the
+#     other fails loudly.
+# ---------------------------------------------------------------------------
+
+
+class TestGuardOrderInvariant:
+    def test_default_guard_order_is_exactly_this_sequence(self) -> None:
+        """Pin the full order. Inserting a new guard anywhere requires a
+        deliberate edit to this test — that's the point (issue #2556)."""
+        assert [cls.__name__ for cls in DEFAULT_GUARD_ORDER] == [
+            "SystemRegurgitateGuard",
+            "ToolSkippedGuard",
+            "BabbleGuard",
+            "EmbeddedRenardoCodeGuard",
+            "HallucinatedMidiGuard",
+            "UnbackedActionClaimGuard",
+            "UnknownMelodyClaimGuard",
+            "UniversalActionClaimGuard",
+            "PhantomActionGuard",
+            "PlanningNarrationHardMute",
+        ]
+
+    def test_system_regurgitate_is_first(self) -> None:
+        """Hard invariant from the legacy ``_handle_result`` comment next
+        to the #2175 call site: system_regurgitate must run BEFORE
+        babble / renardo / any action-claim guard, so a regurgitated
+        ``<system>`` template never gets the babble CRITICAL pasted on
+        top of it, and is never mistaken for an action-claim
+        hallucination."""
+        assert DEFAULT_GUARD_ORDER[0] is SystemRegurgitateGuard
+
+    @pytest.mark.parametrize(
+        "later_guard",
+        [
+            BabbleGuard,
+            EmbeddedRenardoCodeGuard,
+            HallucinatedMidiGuard,
+            UnbackedActionClaimGuard,
+            UnknownMelodyClaimGuard,
+            UniversalActionClaimGuard,
+            PhantomActionGuard,
+        ],
+    )
+    def test_system_regurgitate_precedes_every_babble_renardo_action_guard(
+        self, later_guard: type
+    ) -> None:
+        order = list(DEFAULT_GUARD_ORDER)
+        assert order.index(SystemRegurgitateGuard) < order.index(
+            later_guard
+        ), (
+            f"{later_guard.__name__} must run AFTER SystemRegurgitateGuard "
+            "(#2175) — see DEFAULT_GUARD_ORDER's docstring."
+        )
+
+    def test_embedded_renardo_code_precedes_hallucinated_midi(self) -> None:
+        """Issue #2560's own comment: hallucinated-MIDI must run AFTER
+        Bug C' (embedded Renardo code) — if the model wrote Renardo code
+        into the reply, that's Bug C', not hallucinated-MIDI."""
+        order = list(DEFAULT_GUARD_ORDER)
+        assert order.index(EmbeddedRenardoCodeGuard) < order.index(
+            HallucinatedMidiGuard
+        )
+
+    def test_hallucinated_midi_precedes_unbacked_action_claim(self) -> None:
+        """Issue #2560's own comment: hallucinated-MIDI must run BEFORE
+        the action-claim guards — it's a specific text pattern, not a
+        generic action claim."""
+        order = list(DEFAULT_GUARD_ORDER)
+        assert order.index(HallucinatedMidiGuard) < order.index(
+            UnbackedActionClaimGuard
+        )
+
+    def test_default_guards_output_matches_default_guard_order(self) -> None:
+        """``default_guards()`` must not silently diverge from the
+        registry it's supposed to be built from."""
+        guards = default_guards()
+        assert [type(g) for g in guards] == list(DEFAULT_GUARD_ORDER)
+
+    def test_default_guards_with_music_does_not_change_the_rest(self) -> None:
+        def _fake_evaluate(turn, reply):
+            return None
+
+        adapter = music_guard_adapter(_fake_evaluate)
+        guards = default_guards(music_guard=adapter)
+        types = [type(g) for g in guards]
+        # music is spliced in right after SystemRegurgitateGuard; every
+        # other guard keeps its relative order from DEFAULT_GUARD_ORDER.
+        without_music = [t for t in types if t is not type(adapter)]
+        assert without_music == list(DEFAULT_GUARD_ORDER)
 
 
 # ---------------------------------------------------------------------------
