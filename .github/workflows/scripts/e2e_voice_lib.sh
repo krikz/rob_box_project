@@ -137,6 +137,7 @@ map_tts_voice() {
                 filipp|kostya)   printf 'Russian_AttractiveGuy' ;;
                 alena)           printf 'Russian_BrightHeroine' ;;
                 jane)            printf 'Russian_AmbitiousWoman' ;;
+                arina)           printf 'Russian_PessimisticGirl' ;;
                 omazh|rush)      printf 'Russian_Bad-temperedBoy' ;;
                 *)               printf 'Russian_ReliableMan' ;;
             esac
@@ -147,4 +148,31 @@ map_tts_voice() {
             return 0
             ;;
     esac
+}
+
+# observe_step() — advisory health snapshot робота (issue #2313).
+#
+# Утеряна при разрешении конфликта в мёрже ace46a372 ("Merge branch
+# 'restore/develop' into develop"): та же правка оставила ДВЕ копии
+# map_tts_voice и не оставила ни одной observe_step. Харнесс звал её на
+# e2e_voice_test.sh:1788 и каждый прогон падал на
+# `line 1788: observe_step: command not found` (run 35658231116) —
+# health_snapshot.json оставался пустым. Регресс закрыт тестом
+# scripts/testing/test_e2e_lib_contract.sh (все функции, которые харнесс
+# зовёт из либы, обязаны быть определены после source).
+#
+# Контракт (scripts/testing/test_e2e_health_probe.sh): всегда печатает
+# валидный JSON с полями step/probe_rc/raw и ВСЕГДА возвращает 0 —
+# проба advisory и не имеет права влиять на PASS/FAIL прогона.
+observe_step() {
+    local step="${1:-functional}" output rc=0
+    output="$(${ROBOT_SSH:-true} "docker ps --format '{{.Names}}|{{.Status}}'" 2>&1; \
+        ${ROBOT_SSH:-true} "timeout 8 ros2 topic hz /scan --window 3" 2>&1; \
+        ${ROBOT_SSH:-true} "timeout 8 ros2 topic hz /odom --window 3" 2>&1)" || rc=$?
+    python3 - "$step" "$rc" "$output" <<'PY2'
+import json, sys
+step, rc, raw = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+print(json.dumps({"step": step, "probe_rc": rc, "raw": raw[-12000:]}, ensure_ascii=False, indent=2))
+PY2
+    return 0
 }

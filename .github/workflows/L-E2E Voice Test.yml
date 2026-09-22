@@ -137,7 +137,17 @@ jobs:
     # react_window=40s + TTS synthesis per step реально занимает 25-35 мин.
     # Старый 15 мин таймаут резал прогон в середине ds01/ds02 (backlog-фаза).
     # 45 мин — запас на 3x retry, backlog-фразу (анекдот), и 2 музыкальных шага.
-    timeout-minutes: 45
+    #
+    # 22.09.2026 поднято до 60. Акт 2 night-marathon вырос с 11 до 19 шагов:
+    # его реплики регистрации (201-251 символ, 26-32с синтеза) не влезали в
+    # окно VAD робота (speech_max_duration=15.0) и не проигрывались НИКОГДА,
+    # поэтому их разбили на короткие. По замеру из run_night_marathon.sh
+    # (run 34385886254: 11 шагов = 26.5 мин, т.е. ~2.4 мин/шаг) 19 шагов в
+    # худшем случае упираются в 45 мин. Упереться — значит получить
+    # «cancelled» без единого маркера шага: худший исход для разбора,
+    # непонятно даже, докуда дошли. Лучше дать запас, чем гадать по
+    # обрезанному логу.
+    timeout-minutes: 60
 
     steps:
       - name: Trigger source (issue #1527)
@@ -239,6 +249,19 @@ jobs:
           # tool_invoked() через PYTHONPATH="$SCRIPT_DIR_E2E". Без файла
           # heredoc падает на ImportError, acceptance.json остаётся пустым
           # и GATE-1 краснеет с невнятным «parse error».
+          # bug(run 35658231116, 22.09.2026): ПЯТЫЙ и ШЕСТОЙ файлы того же
+          # класса — e2e_audio_metrics.py и e2e_baseline_diff.py. Харнесс звал
+          # их repo-relative путём (.github/workflows/scripts/...), а на 249 он
+          # лежит одиночным файлом в /tmp и CWD у ssh-сессии = $HOME ros2.
+          # python3 не находил скрипт НИ РАЗУ за всю историю: audio_metrics.json
+          # был 36-байтной заглушкой {"error":"audio_metrics.py failed"} в каждом
+          # прогоне (проверено на 35658231116), то есть звуковая метрика e2e
+          # не считалась вообще никогда. Теперь путь через $SCRIPT_DIR_E2E,
+          # а файлы копируются сюда наравне с остальными.
+          #
+          # ⚠️ Добавляешь новый файл, который харнесс source'ит/зовёт —
+          # добавь его И СЮДА, И в scripts/testing/test_e2e_harness_deploy.sh
+          # (тест сверяет список scp-команд с тем, что харнесс реально зовёт).
           chmod +x .github/workflows/scripts/e2e_voice_test.sh
           chmod +x .github/workflows/scripts/e2e_voice_lib.sh
           chmod +x .github/workflows/scripts/e2e_voice_wake_gate.sh
@@ -246,7 +269,9 @@ jobs:
           sshpass -e scp -o StrictHostKeyChecking=no .github/workflows/scripts/e2e_voice_lib.sh ros2@10.1.1.249:/tmp/e2e_voice_lib.sh
           sshpass -e scp -o StrictHostKeyChecking=no .github/workflows/scripts/e2e_voice_wake_gate.sh ros2@10.1.1.249:/tmp/e2e_voice_wake_gate.sh
           sshpass -e scp -o StrictHostKeyChecking=no .github/workflows/scripts/e2e_tool_match.py ros2@10.1.1.249:/tmp/e2e_tool_match.py
-          sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "ls -la /tmp/e2e_voice_test.sh /tmp/e2e_voice_lib.sh /tmp/e2e_voice_wake_gate.sh /tmp/e2e_tool_match.py && echo HARNESS_PUSHED"
+          sshpass -e scp -o StrictHostKeyChecking=no .github/workflows/scripts/e2e_audio_metrics.py ros2@10.1.1.249:/tmp/e2e_audio_metrics.py
+          sshpass -e scp -o StrictHostKeyChecking=no .github/workflows/scripts/e2e_baseline_diff.py ros2@10.1.1.249:/tmp/e2e_baseline_diff.py
+          sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "ls -la /tmp/e2e_voice_test.sh /tmp/e2e_voice_lib.sh /tmp/e2e_voice_wake_gate.sh /tmp/e2e_tool_match.py /tmp/e2e_audio_metrics.py /tmp/e2e_baseline_diff.py && echo HARNESS_PUSHED"
           # CRLF sanitization (single-line): отрезаем \r и \n от начала/конца.
           # Внутри значения CR/LF недопустимы для имён файлов/путей.
           SCENARIO_FILE_CLEAN=$(printf '%s' "$SCENARIO_FILE" | tr -d '\r\n')
@@ -349,13 +374,29 @@ jobs:
              ${CMD} 2>&1 | tee /tmp/e2e_atomic_out.log"
 
           echo "=== E2E stdout ==="
-          sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "cat /tmp/e2e_atomic_out.log"
+          # `|| true`: этот повторный cat — ЧИСТО косметический, он только
+          # перекладывает лог в job log viewer и ни во что не читается
+          # (вердикт разбирает следующий шаг, из своего ssh). Шаги Actions
+          # идут под `bash -e`, поэтому сетевой чих на этом cat'е ронял
+          # весь шаг ПОСЛЕ успешно завершённого прогона робота, а вместе с
+          # ним — все шаги без if: always(). Полностью зелёный прогон
+          # превращался в красный CI без единого отличимого признака.
+          sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "cat /tmp/e2e_atomic_out.log" || true
 
       - name: Verdict from atomic harness
         env:
           SSHPASS: open
         run: |
-          OUT="$(sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "cat /tmp/e2e_atomic_out.log 2>/dev/null")"
+          # Под `bash -e` падение команды в подстановке роняет шаг молча.
+          # Разделяем «ssh не дошёл» и «харнесс не дал вердикта»: первое —
+          # инфра и требует отдельной формулировки, второе — настоящий
+          # красный. До этого оба выглядели как «verdict missing».
+          OUT="$(sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "cat /tmp/e2e_atomic_out.log 2>/dev/null")" || OUT=""
+          if [ -z "$OUT" ]; then
+            echo "❌ не удалось прочитать /tmp/e2e_atomic_out.log с 10.1.1.249 (ssh/scp или пустой лог)."
+            echo "   Это ИНФРА билд-машины, а не регресс робота — не заводи баг на voice-стек по этому шагу."
+            exit 1
+          fi
           echo "$OUT" | tee /tmp/e2e_verdict.log
           # Кем озвучивались команды — первым делом в лог шага: без этого
           # «FAIL synth» читался как баг робота, а не как мёртвый провайдер.
@@ -374,6 +415,13 @@ jobs:
           fi
 
       - name: Write model.json (multi-model provenance)
+        # Без if: always() шаг пропускался при FAIL, а «Upload model.json»
+        # ниже (if: always()) всё равно запускался и оставлял в job'е аннотацию
+        # `No files were found with the provided path: model.json` — она видна
+        # в прогоне 35650107068. Файл собирается из одних inputs, робот для
+        # него не нужен, так что писать его при падении не только можно, но и
+        # нужно: provenance важнее всего как раз на красном прогоне.
+        if: ${{ always() }}
         env:
           # Ретро t_4cf2811e: JSON-сериализация в heredoc небезопасна, если
           # input содержит сырые CR/LF/кавычки — сломанный JSON. Прогоняем
@@ -429,52 +477,36 @@ jobs:
             echo "Failed" > "$LOG"
           echo "Log lines: $(wc -l < "$LOG")"
 
-      - name: Collect e2e artifacts from build machine
-        env:
-          SSHPASS: open
-        run: |
-          RID="${{ github.run_id }}"
-          LOCAL_ART_DIR="/tmp/e2e_artifacts_${RID}"
-          mkdir -p "$LOCAL_ART_DIR"
-          # ADR-AF-0024 (harness-verdict-sot): сначала ищем канонический каталог
-          # текущего run'а /tmp/e2e_v2_<RID>. Харнесс пишет OUT_DIR по GITHUB_RUN_ID
-          # (issue #1353), и этот путь — single source of truth для verdict.txt.
-          # Только если его нет (harness упал до ensure_outdir), берём самый свежий
-          # /tmp/e2e_v2_* по mtime — отладочный набор всё равно нужен.
-          PRIMARY_DIR="/tmp/e2e_v2_${RID}"
-          if sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 \
-               "[ -d '$PRIMARY_DIR' ]" 2>/dev/null; then
-            REMOTE_OUT_DIR="$PRIMARY_DIR"
-            echo "Remote OUT_DIR (primary, by RID) = $REMOTE_OUT_DIR"
-          else
-            echo "WARN: $PRIMARY_DIR не существует на 249 — harness упал до ensure_outdir?"
-            REMOTE_OUT_DIR="$(sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 \
-              "ls -1dt /tmp/e2e_v2_* 2>/dev/null | head -1" 2>/dev/null || echo '')"
-            if [ -n "$REMOTE_OUT_DIR" ]; then
-              echo "Remote OUT_DIR (fallback, by mtime) = $REMOTE_OUT_DIR — может быть stale (не наш RID)"
-            fi
-          fi
-          if [ -z "$REMOTE_OUT_DIR" ]; then
-            echo "No /tmp/e2e_v2_*/ on build machine — e2e harness didn't run"
-          else
-            # Исторически тут был `scp -r` с trailing-dot в source path —
-            # deprecated с OpenSSH 9.0+ (changelog: «path with /<dot>
-            # suffix for source was rejected as "unexpected filename"»).
-            # Используем rsync -a через ssh — см. issue #1478, run #32255219770.
-            sshpass -e rsync -a \
-              -e 'ssh -o StrictHostKeyChecking=no' \
-              "${REMOTE_OUT_DIR}/" "$LOCAL_ART_DIR/" 2>/dev/null || true
-            ls -la "$LOCAL_ART_DIR" 2>&1 | head -25
-          fi
-          # Сохраняем абсолютный путь к артефакт-диру для последующих шагов.
-          echo "LOCAL_ART_DIR=$LOCAL_ART_DIR" >> "$GITHUB_ENV"
-          # Артефакт-каталог локально доступен workflow'у через $LOCAL_ART_DIR.
-          echo "ARTIFACTS_COLLECTED $(ls "$LOCAL_ART_DIR" 2>/dev/null | wc -l) files"
+      # ⚠️ Здесь был ВТОРОЙ шаг «Collect e2e artifacts from build machine»
+      # (одноимённый с тем, что ниже). Удалён 22.09.2026 по разбору прогона
+      # 35658231116. Он собирал rsync'ом /tmp/e2e_v2_<RID> в тот же самый
+      # путь /tmp/e2e_artifacts_<RID>, который нижний шаг открывает с
+      # `rm -rf` — то есть вся его работа гарантированно стиралась через
+      # несколько шагов. При этом у него не было `if: always()`, так что на
+      # красных прогонах он и вовсе не запускался: полезной работы — ноль,
+      # а один лишний ssh+rsync к 249 внутри 45-минутного бюджета — был.
+      # Хуже: «E2E timing metrics» между двумя шагами копировал timing.json
+      # в $LOCAL_ART_DIR «для единого скачивания», и этот файл тем же
+      # `rm -rf` удалялся, а нижний шаг его не добавлял. Подшивка timing.json
+      # перенесена в нижний шаг, после того как он сформирует свой ART_DIR.
+      # Ещё он содержал fallback «взять самый свежий /tmp/e2e_v2_* по mtime»,
+      # который ниже удалён намеренно (ретро 22.08 t_944df2c5, issue #1506 —
+      # тянул чужие прогоны в звуковые артефакты).
 
       # Issue #1396: PR diff — «что нового в этом PR» для ретро-инженера.
       # Если задан вход pr_number — скачиваем его; иначе берём текущий PR
       # ветки (если HEAD запушено из PR — workflow refs фигурирует).
-      - name: Upload PR diff (issue #1396)
+      - name: Compute PR diff (issue #1396)
+        # Переименован: шаг НИЧЕГО не загружает, он готовит $DIFF_FILE —
+        # загрузкой занимается одноимённый (до этой правки) шаг
+        # `actions/upload-artifact` в конце job'а. Два разных шага с одним
+        # именем в UI Actions читались как повтор одной работы.
+        #
+        # if: always() — без него шаг пропускался при FAIL, DIFF_FILE не
+        # создавался, а upload-шаг с `if-no-files-found: ignore` молча
+        # проглатывал пропажу. То есть артефакт «что изменилось в этом PR»
+        # отсутствовал ровно на красных прогонах, где он и нужен для разбора.
+        if: ${{ always() }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Ретро t_4cf2811e: pr_number / ref могут содержать CR (upstream JSON
@@ -514,6 +546,17 @@ jobs:
           wc -l "$DIFF_FILE"
           echo "DIFF_FILE=$DIFF_FILE" >> "$GITHUB_ENV"
       - name: Validate e2e result (real robot response)
+        # bug(run 35658231116, 22.09.2026): без if: always() этот шаг был
+        # МЁРТВЫМ КОДОМ на каждом реальном падении. Шаг «Verdict from atomic
+        # harness» выше делает `exit 1` при E2E_VERDICT FAIL, а у этого шага
+        # условия не было — GitHub Actions по умолчанию ставит success(), и
+        # ~115 строк классификации (feature-fail / llm-error / infra-fail /
+        # no-reaction, ADR-AF-0024 verdict.txt как SoT) НЕ выполнялись ровно
+        # в том случае, для которого написаны. Классификация работала только
+        # когда харнесс уже сказал PASS.
+        # Читающий job'у видел название шага и думал, что падение
+        # классифицировано; шага в логе не было вообще.
+        if: ${{ always() }}
         env:
           SSHPASS: open
         run: |
@@ -673,16 +716,57 @@ jobs:
             echo "❌ dialogue_node: touch_speaker/профиль не найден в логе"
             FAIL="${FAIL:+$FAIL,}no-profile"
           fi
-          # 3) SQLite: факт scope=speaker:<tag> реально сохранён (самое честное доказательство)
-          DB_SPEAKER="$(sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 \
-            "docker exec voice-assistant python3 -c \"import sqlite3; c=sqlite3.connect('/root/.rob_box/voice.db'); rows=c.execute(\\\"SELECT scope,key,value FROM facts WHERE scope LIKE 'speaker:%' ORDER BY created_at DESC LIMIT 5\\\").fetchall(); print(chr(10).join(str(r) for r in rows))\" 2>/dev/null || true")"
-          if [ -n "$DB_SPEAKER" ]; then
-            echo "✅ SQLite: факты scope=speaker:<tag> найдены в voice.db"
-            echo "SQLITE_SPEAKER_FACTS=ok" >> "$ACCEPT_FILE"
-            echo "$DB_SPEAKER" >> "$ACCEPT_FILE"
+          # 3) SQLite: факты реально сохранены (самое честное доказательство).
+          #    bug(разбор 35658231116, 22.09.2026): запрос ходил в
+          #    '/root/.rob_box/voice.db', в таблицу `facts` с колонками
+          #    scope/key/value. Проверено на роботе:
+          #        ls /root/.rob_box/     -> No such file or directory
+          #        SELECT ... FROM facts  -> sqlite3.OperationalError:
+          #                                  no such table: facts
+          #    Реальность: /data/voice_memory.db, таблица voice_facts
+          #    (id, fact, category, created_at, speaker_id). Проверка была
+          #    СТРУКТУРНО неспособна пройти, а `2>/dev/null || true` прятал
+          #    ошибку: шаг всегда писал «факты НЕ найдены» и валил job с
+          #    no-sqlite-facts. Классический FAIL, указывающий не туда.
+          #
+          #    Запрос ОДНОЙ строкой намеренно: heredoc внутри блочного
+          #    скаляра YAML требует нулевой колонки и ломает отступы файла.
+          #    Числа тянем grep'ом без обратных ссылок sed — они не переживают
+          #    двойное экранирование через ssh.
+          #    stderr НЕ глушим: по нему отличаем сбой запроса от «фактов нет».
+          DB_ERR="/tmp/e2e_dbfacts_err_${RID}.txt"
+          DB_OUT="$(sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 \
+            "docker exec voice-assistant python3 -c \"import json,sqlite3; c=sqlite3.connect('file:/data/voice_memory.db?mode=ro',uri=True); t=c.execute('SELECT COUNT(*) FROM voice_facts').fetchone()[0]; b=c.execute('SELECT COUNT(*) FROM voice_facts WHERE speaker_id IS NOT NULL').fetchone()[0]; r=c.execute('SELECT id,fact,category,speaker_id FROM voice_facts ORDER BY created_at DESC LIMIT 5').fetchall(); print(json.dumps({'total':t,'speaker_bound':b,'recent':[[str(x) for x in q] for q in r]},ensure_ascii=False))\"" 2>"$DB_ERR")" || DB_OUT=""
+          if [ -z "$DB_OUT" ]; then
+            # Пусто — значит мы НЕ СПРОСИЛИ, а не «фактов нет». Разные вещи,
+            # и раньше обе давали одну и ту же пустую строку.
+            echo "⚠️ SQLite: запрос на роботе не выполнился — ИНФРА (ssh / docker exec / схема), не регресс памяти."
+            echo "   stderr: $(tail -5 "$DB_ERR" 2>/dev/null | tr '\n' ' ')"
+            echo "   По этому шагу баг на voice-стек НЕ заводим."
+            echo "SQLITE_SPEAKER_FACTS=infra_error" >> "$ACCEPT_FILE"
+            tail -20 "$DB_ERR" 2>/dev/null >> "$ACCEPT_FILE" || true
           else
-            echo "❌ SQLite: факты scope=speaker:<tag> НЕ найдены в voice.db"
-            FAIL="${FAIL:+$FAIL,}no-sqlite-facts"
+            echo "$DB_OUT"
+            echo "$DB_OUT" >> "$ACCEPT_FILE"
+            DB_BOUND="$(printf '%s' "$DB_OUT" | grep -oE '"speaker_bound": *[0-9]+' | grep -oE '[0-9]+' | tail -1)"
+            DB_TOTAL="$(printf '%s' "$DB_OUT" | grep -oE '"total": *[0-9]+' | grep -oE '[0-9]+' | tail -1)"
+            case "$DB_BOUND" in ''|*[!0-9]*) DB_BOUND=0 ;; esac
+            case "$DB_TOTAL" in ''|*[!0-9]*) DB_TOTAL=0 ;; esac
+            if [ "$DB_BOUND" -gt 0 ]; then
+              echo "✅ SQLite: фактов, привязанных к диктору — $DB_BOUND из $DB_TOTAL (voice_memory.db)"
+              echo "SQLITE_SPEAKER_FACTS=ok" >> "$ACCEPT_FILE"
+            elif [ "$DB_TOTAL" -gt 0 ]; then
+              # Состояние на 22.09.2026: 96 фактов, из них 0 с speaker_id.
+              # memory_save отрабатывает, связка факт<->диктор — нет. Отдельный
+              # исход нужен затем, что иначе «нет привязанных» читается как
+              # «память не работает», и разбор уходит не туда.
+              echo "❌ SQLite: фактов $DB_TOTAL, но НИ ОДИН не привязан к диктору (speaker_id IS NULL)."
+              echo "   memory_save отрабатывает, а связка факт<->диктор — нет. Копать speaker_id в memory_save, а не память целиком."
+              echo "SQLITE_SPEAKER_FACTS=not_speaker_bound" >> "$ACCEPT_FILE"
+              FAIL="${FAIL:+$FAIL,}facts-not-speaker-bound"
+            else
+              echo "❌ SQLite: в voice_facts нет ни одного факта — память не сохранила ничего"
+              FAIL="${FAIL:+$FAIL,}no-sqlite-facts"
           fi
           echo "--- acceptance evidence ---"
           cat "$ACCEPT_FILE"
@@ -713,10 +797,12 @@ jobs:
             | tee /tmp/e2e_timing.txt
           python3 .github/workflows/scripts/e2e_timing.py "/tmp/voice_e2e_${RID}.log" "${VTXT}" --json \
             > /tmp/e2e_timing.json 2>/dev/null || echo '{"error":"timing json failed","partial_data":true}' > /tmp/e2e_timing.json
-          # Также кладём JSON в локальный артефакт-дир (для единого скачивания)
-          if [ -d "$LOCAL_ART_DIR" ]; then
-            cp /tmp/e2e_timing.json "$LOCAL_ART_DIR/timing.json" 2>/dev/null || true
-          fi
+          # Подшивка в единый артефакт-дир НЕ здесь: шаг «Collect e2e
+          # artifacts from build machine» ниже начинается с `rm -rf`
+          # /tmp/e2e_artifacts_<RID>, поэтому копия, положенная тут, всегда
+          # удалялась (разбор прогона 35658231116). Копирование перенесено
+          # в конец того шага. Здесь только /tmp/e2e_timing.json, который
+          # забирает отдельный upload-артефакт.
           # Дублируем в step summary (видно в сводке run, не только в логе)
           {
             echo "### ⏱ Response timing (команда → ответ)"
@@ -859,6 +945,15 @@ jobs:
           # (workspace + /tmp) и сохраняет файл по полному пути раннера —
           # в артефакте это выглядело как runner/_work/rob_box_project/...
           if [ -f model.json ]; then cp -f model.json "$ART_DIR/model.json"; fi
+
+          # timing.json — сюда, а не в шаге «E2E timing metrics» выше: этот шаг
+          # начинается с `rm -rf "$ART_DIR"`, поэтому копия, положенная до него,
+          # всегда удалялась и в единый артефакт timing.json не попадал НИ РАЗУ
+          # (разбор прогона 35658231116). Шаг timing идёт раньше и тоже
+          # if: always(), так что файл к этому моменту уже есть.
+          if [ -f /tmp/e2e_timing.json ]; then
+            cp -f /tmp/e2e_timing.json "$ART_DIR/timing.json"
+          fi
 
           echo "ART_DIR=$ART_DIR" >> "$GITHUB_ENV"
           echo "=== collected e2e_artifacts_${RID}/ contents ==="

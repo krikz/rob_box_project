@@ -147,53 +147,6 @@ mkdir -p "$OUT_DIR"
 # контейнера робота) до первого шага.
 E2E_RUN_BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-# --- ADR-0027 §5.2: wake-gate pre-flight probe ----------------------------
-# Retro t_be491fba: rounds 215-222 voice_core_suite_v1 показали fail-streak
-# 3/3+ на cold-start wake-gate. dj02_stop_music шаг имеет ✅ ПОЛНЫЙ ЦИКЛ
-# (акцепт + LLM + TTS) + PATTERN_MISS stop_music → aggregate GATE-1 фейлит
-# "expected tool calls not invoked: stop_music". Root cause = cold-start
-# wake-gate (TRANSCRIPT[dj02] = «стоп музыка» без «Робот»), а не LLM race
-# как было misdiagnosed в t_9d229634.
-#
-# Probe: проверяем docker logs с момента E2E_RUN_BEFORE — есть ли ЛЮБОЕ
-# ПРИНЯТО с wake-prefix (Робот/Робокс). Если нет → cold-start не пройден →
-# step.expect="wake-gated" помечаются SKIP, не FAIL (backlog-аккумулятор
-# копит «обот»/«как дела» без wake — это by design, не bug).
-#
-# Артефакт: $OUT_DIR/wake_gate_preflight.json — verdict, checked_at, before,
-# reason, error. CI / ревью читают его для доказательства «это cold-start
-# flake, а не acceptance fail».
-WAKE_GATE_PREFLIGHT_FILE="${OUT_DIR}/wake_gate_preflight.json"
-WAKE_GATE_CLEARED=0   # 1 = cold-start cleared, 0 = not cleared, 2 = probe error
-WAKE_GATE_PREFLIGHT_REASON=""
-# Под set -u SCENARIO_FILE может быть не задан (single-text mode). Используем
-# ${SCENARIO_FILE:-} для безопасного обращения.
-if [ -n "${SCENARIO_FILE:-}" ]; then
-    log "WAKE-GATE-PREFLIGHT: probe before=${E2E_RUN_BEFORE}"
-    run_wake_gate_preflight "$E2E_RUN_BEFORE" "$WAKE_GATE_PREFLIGHT_FILE"
-    case $? in
-        0)  WAKE_GATE_CLEARED=1
-            WAKE_GATE_PREFLIGHT_REASON="cold-start cleared"
-            log "WAKE-GATE-PREFLIGHT: ✅ cold-start cleared" ;;
-        1)  WAKE_GATE_CLEARED=0
-            WAKE_GATE_PREFLIGHT_REASON="cold-start NOT cleared"
-            log "WAKE-GATE-PREFLIGHT: ⚠️ cold-start NOT cleared — wake-gated steps will SKIP" ;;
-        2)  WAKE_GATE_CLEARED=2
-            WAKE_GATE_PREFLIGHT_REASON="probe error"
-            log "WAKE-GATE-PREFLIGHT: ❌ probe error (no ROBOT_SSH / docker logs) — treating as not-cleared" ;;
-    esac
-else
-    # single-text mode: preflight не применим (одиночный wake-step не
-    # требует cold-start gate — он и ЕСТЬ cold-start probe). Пишем
-    # минимальный JSON, чтобы артефакт всегда был.
-    WAKE_GATE_CLEARED=1
-    mkdir -p "$OUT_DIR"
-    printf '{\n  "cleared": true,\n  "checked_at": "%s",\n  "before": "%s",\n  "reason": "single-text mode — preflight N/A (per-step wake-gated handled by run_step retry loop)",\n  "error": null\n}\n' \
-        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-        "$E2E_RUN_BEFORE" \
-        > "$WAKE_GATE_PREFLIGHT_FILE"
-fi
-
 # --- самовосстановление артефакт-дира (ретро 11.08 t_26a6d362) -------------
 # Параллельный infra-cleanup на 249 (t_0a5d65af) удалял /tmp/e2e_v2_* ВО ВРЕМЯ
 # прогона → paplay open(): No such file → ложный FAIL (round-49, run 31544057593).
@@ -363,7 +316,8 @@ fi
 log() { echo ">>> $*"; }
 
 # mark_fail_kind() — запоминает самую информативную причину FAIL.
-# Приоритет: feature > llm_error > synth > no_reaction (feature не понижается).
+# Приоритет: feature > infra > llm_error > synth > no_reaction
+# (feature не понижается).
 # emit_step() — единственная точка публикации результата шага.
 # Кроме stdout-маркера (контракт пост-валидатора, ADR-0015) дописывает строку
 # в steps.jsonl. Раньше счёта шагов не существовало вообще: любой FAIL ронял
@@ -394,8 +348,15 @@ mark_fail_kind() {  # $1=kind
     local kind="$1"
     case "$kind" in
         feature)     E2E_FAIL_KIND="feature" ;;
-        llm_error)   [ "$E2E_FAIL_KIND" = "feature" ] || E2E_FAIL_KIND="llm_error" ;;
-        synth)       { [ "$E2E_FAIL_KIND" = "feature" ] || [ "$E2E_FAIL_KIND" = "llm_error" ]; } || E2E_FAIL_KIND="synth" ;;
+        # infra — звук не доехал до STT (audio_node отбросил фразу по длине /
+        # захват мёртв / нет ReSpeaker). Ставится выше llm_error/synth/
+        # no_reaction, потому что при таком отказе робот-логика вообще не
+        # исполнялась и обвинять её нельзя (run 35658231116: `FAIL backlog_miss`
+        # при `Речь отклонена: 17.37с`). Ниже feature: если в том же прогоне
+        # есть настоящий acceptance-фейл, он актуальнее для разбора.
+        infra)       [ "$E2E_FAIL_KIND" = "feature" ] || E2E_FAIL_KIND="infra" ;;
+        llm_error)   { [ "$E2E_FAIL_KIND" = "feature" ] || [ "$E2E_FAIL_KIND" = "infra" ]; } || E2E_FAIL_KIND="llm_error" ;;
+        synth)       { [ "$E2E_FAIL_KIND" = "feature" ] || [ "$E2E_FAIL_KIND" = "infra" ] || [ "$E2E_FAIL_KIND" = "llm_error" ]; } || E2E_FAIL_KIND="synth" ;;
         no_reaction) [ -z "$E2E_FAIL_KIND" ] && E2E_FAIL_KIND="no_reaction" ;;
     esac
 }
@@ -421,6 +382,77 @@ source "$SCRIPT_DIR_E2E/e2e_voice_lib.sh"
 # only — никакого main flow, никакого чтения ENV.
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR_E2E/e2e_voice_wake_gate.sh"
+
+# bug(run 35658231116, 22.09.2026): этот блок стоял на строке ~124 — ДО
+# парсинга аргументов (--scenario разбирается ниже, ~300) и ДО source
+# e2e_voice_wake_gate.sh (~397). Под set -u обращение ${SCENARIO_FILE:-}
+# не падало, а молча резолвилось в пустую строку, поэтому условие
+# `[ -n "${SCENARIO_FILE:-}" ]` было ВСЕГДА ложным: любой scenario-прогон
+# уходил в else-ветку, форсил WAKE_GATE_CLEARED=1 и писал в артефакт
+# "single-text mode — preflight N/A". Проверено на живом прогоне
+# 35658231116 (запуск был --scenario, а wake_gate_preflight.json содержал
+# именно этот single-text reason). Следствие: SKIP-гард для
+# expect="wake-gated" (ADR-0027 §5.2) не срабатывал никогда, и cold-start
+# wake-gate флак краснел как acceptance/feature-fail — ровно тот
+# misdiagnosis, против которого фича и делалась (ретро t_be491fba).
+# Второй слой той же ошибки: run_wake_gate_preflight определяется в либе
+# строкой выше — из старого места она была ещё и не видна.
+# --- ADR-0027 §5.2: wake-gate pre-flight probe ----------------------------
+# Retro t_be491fba: rounds 215-222 voice_core_suite_v1 показали fail-streak
+# 3/3+ на cold-start wake-gate. dj02_stop_music шаг имеет ✅ ПОЛНЫЙ ЦИКЛ
+# (акцепт + LLM + TTS) + PATTERN_MISS stop_music → aggregate GATE-1 фейлит
+# "expected tool calls not invoked: stop_music". Root cause = cold-start
+# wake-gate (TRANSCRIPT[dj02] = «стоп музыка» без «Робот»), а не LLM race
+# как было misdiagnosed в t_9d229634.
+#
+# Probe: проверяем docker logs с момента E2E_RUN_BEFORE — есть ли ЛЮБОЕ
+# ПРИНЯТО с wake-prefix (Робот/Робокс). Если нет → cold-start не пройден →
+# step.expect="wake-gated" помечаются SKIP, не FAIL (backlog-аккумулятор
+# копит «обот»/«как дела» без wake — это by design, не bug).
+#
+# Артефакт: $OUT_DIR/wake_gate_preflight.json — verdict, checked_at, before,
+# reason, error. CI / ревью читают его для доказательства «это cold-start
+# flake, а не acceptance fail».
+WAKE_GATE_PREFLIGHT_FILE="${OUT_DIR}/wake_gate_preflight.json"
+WAKE_GATE_CLEARED=0   # 1 = cold-start cleared, 0 = not cleared, 2 = probe error
+# 1 = первый wake-gated шаг уже отыгран как cold-start проба. См. каскад-гард
+# в run_step: без него непройденный гейт уводил в SKIP ВСЕ wake-gated шаги,
+# потому что акцепта, который его откроет, взяться было неоткуда.
+WAKE_GATE_PROBE_SPENT=0
+# Сколько шагов РЕАЛЬНО пропущено из-за непройденного wake-gate. Именно это, а
+# не сам факт «гейт не прогрелся», оправдывает пропуск агрегатного GATE-1:
+# иначе оправдание применяется там, где оправдывать нечего (см. блок GATE-1
+# SKIP-логики ниже и разбор прогона 35665111906).
+WAKE_GATE_SKIPPED_STEPS=0
+WAKE_GATE_PREFLIGHT_REASON=""
+# Под set -u SCENARIO_FILE может быть не задан (single-text mode). Используем
+# ${SCENARIO_FILE:-} для безопасного обращения.
+if [ -n "${SCENARIO_FILE:-}" ]; then
+    log "WAKE-GATE-PREFLIGHT: probe before=${E2E_RUN_BEFORE}"
+    run_wake_gate_preflight "$E2E_RUN_BEFORE" "$WAKE_GATE_PREFLIGHT_FILE"
+    case $? in
+        0)  WAKE_GATE_CLEARED=1
+            WAKE_GATE_PREFLIGHT_REASON="cold-start cleared"
+            log "WAKE-GATE-PREFLIGHT: ✅ cold-start cleared" ;;
+        1)  WAKE_GATE_CLEARED=0
+            WAKE_GATE_PREFLIGHT_REASON="cold-start NOT cleared"
+            log "WAKE-GATE-PREFLIGHT: ⚠️ cold-start NOT cleared — wake-gated steps will SKIP" ;;
+        2)  WAKE_GATE_CLEARED=2
+            WAKE_GATE_PREFLIGHT_REASON="probe error"
+            log "WAKE-GATE-PREFLIGHT: ❌ probe error (no ROBOT_SSH / docker logs) — treating as not-cleared" ;;
+    esac
+else
+    # single-text mode: preflight не применим (одиночный wake-step не
+    # требует cold-start gate — он и ЕСТЬ cold-start probe). Пишем
+    # минимальный JSON, чтобы артефакт всегда был.
+    WAKE_GATE_CLEARED=1
+    mkdir -p "$OUT_DIR"
+    printf '{\n  "cleared": true,\n  "checked_at": "%s",\n  "before": "%s",\n  "reason": "single-text mode — preflight N/A (per-step wake-gated handled by run_step retry loop)",\n  "error": null\n}\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        "$E2E_RUN_BEFORE" \
+        > "$WAKE_GATE_PREFLIGHT_FILE"
+fi
+
 
 # --- ADR-0022 GATE-1 acceptance.json (gating only) -------------------------
 # Issue #2300 (09.09.2026): auto-discovery списка кандидатов
@@ -1228,6 +1260,71 @@ check_backlog_accumulated() {  # $1=before_rfc3339
     printf '%s' "$logs" | grep -qE '\[backlog\] accumulated \(no_wake_word\)'
 }
 
+# vad_reject_reason() — почему шаг НЕ доехал до STT (issue: ложный диагноз).
+#
+# bug(run 35658231116, 22.09.2026). Шаги n303_bg_boris / n304_bg_grisha_unknown
+# отчитались `FAIL backlog_miss` — «backlog accumulation не подтверждён», то
+# есть обвинили фичу бэклога. В docker logs робота за то же окно лежало:
+#
+#   ❌ Речь отклонена: 17.37с (min=0.3, max=15.0)
+#
+# audio_node выбросил фразу ПО ДЛИНЕ, ещё до STT: реплики этих шагов в
+# синтезе minimax звучат 16-17.4с против speech_max_duration=15.0. Ни бэклог,
+# ни диаризация, ни LLM в этом не участвовали вообще. Рядом n305 прошёл на
+# 14.81с — то есть сценарий был лотереей с зазором 0.19с, а не проверкой.
+#
+# Диагноз «backlog_miss» отправлял ретро-инженера искать регресс в
+# dialogue_node, которого там нет. По ADR-0018 честный FAIL обязан называть
+# настоящую причину: возвращаем её отдельным kind'ом (vad_rejected), с
+# измеренной длительностью и лимитом в тексте шага.
+#
+# Печатает в stdout человекочитаемую причину и возвращает 0, если фраза была
+# отброшена до STT. Если отказа не было — печатает пусто и возвращает 1.
+vad_reject_reason() {  # $1=before_rfc3339
+    local before="$1" logs hit
+    logs="$(${ROBOT_SSH} "docker logs voice-assistant --since '${before}' 2>&1" 2>/dev/null || echo '')"
+    # ВАЖЕН ПОРЯДОК: 0.00с проверяем ДО общего «вне окна», иначе общая ветка
+    # перехватывает пустой буфер и теряет подсказку про restart (поймано
+    # тестом scripts/testing/test_e2e_vad_reject_diagnosis.sh, CASE 4).
+    #
+    # Захват аудио мёртв (ретро 17.09: «простоял ночь — не слышит голос»):
+    # 0.00с означает, что буфер пуст, а не что фраза короткая.
+    if printf '%s' "$logs" | grep -qE 'Речь отклонена: 0\.00с'; then
+        printf 'vad_rejected — audio_node отдаёт пустой буфер (Речь отклонена: 0.00с): захват микрофона мёртв, лечится docker restart voice-assistant'
+        return 0
+    fi
+    # Длина вне окна VAD (главный случай — слишком длинная реплика сценария).
+    hit="$(printf '%s' "$logs" | grep -oE 'Речь отклонена: [0-9.]+с \(min=[0-9.]+, max=[0-9.]+\)' | tail -1)"
+    if [ -n "$hit" ]; then
+        printf 'vad_rejected — audio_node отбросил фразу ДО STT: %s' "$hit"
+        return 0
+    fi
+    if printf '%s' "$logs" | grep -qE 'устройство не найдено'; then
+        printf 'vad_rejected — audio_node не нашёл ReSpeaker (устройство не найдено): инфра, не робот-логика'
+        return 0
+    fi
+    return 1
+}
+
+# emit_step_fail_or_vad() — единая точка вердикта для шагов, которые «не
+# долетели». Если audio_node отбросил звук до STT, пишем настоящую причину;
+# иначе — исходный kind, как было.
+#   $1=label  $2=before_rfc3339  $3=fallback_marker  $4=fallback_kind
+emit_step_fail_or_vad() {
+    local label="$1" before="$2" fallback_marker="$3" fallback_kind="$4" reason
+    if reason="$(vad_reject_reason "$before")"; then
+        log "STEP ${label}: ❌ ${reason}"
+        log "STEP ${label}: это НЕ регресс робота — фраза сценария не доехала до STT"
+        emit_step "${label} FAIL vad_rejected"
+        printf '%s\n' "$reason" >> "$OUT_DIR/vad_rejects.log" 2>/dev/null || true
+        mark_fail_kind infra
+        return 1
+    fi
+    emit_step "${label} ${fallback_marker}"
+    mark_fail_kind "$fallback_kind"
+    return 1
+}
+
 # --- один атомарный шаг -----------------------------------------------------
 # Ожидаемое поведение определяется параметром $4 (expect_kind):
 #   cycle       — полный цикл STT→LLM→TTS (по дефолту)
@@ -1255,12 +1352,48 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
     #    вызова LLM. Acceptance fail (missing stop_music) — это
     #    симптом cold-start flake, а не acceptance flake.
     if [ "$expect" = "wake-gated" ] && [ "${WAKE_GATE_CLEARED:-0}" != "1" ]; then
-        log "STEP ${label}: SKIP [skip:wake-gate-cold-start] — ${WAKE_GATE_PREFLIGHT_REASON:-cold-start not cleared}"
-        emit_step "${label} SKIP wake-gate-cold-start"
-        # Не помечаем fail_kind — это не fail. Возвращаем специальный
-        # код 3, который callers (scenario loop) интерпретируют как
-        # «пропущен по systemic, не считать в aggregate FAIL».
-        return 3
+        # ПЕРЕПРОБА перед пропуском.
+        #
+        # bug(22.09.2026, поймано на живом прогоне 35664554084 до того, как
+        # испортило марафон). Preflight зовёт wake_gate_cleared_since
+        # "$E2E_RUN_BEFORE", а это `docker logs --since <старт прогона>`:
+        # в момент старта окно ПУСТО по определению, поэтому ответ всегда
+        # «cold-start NOT cleared». Пока preflight был мёртвым кодом, это
+        # никого не трогало. Как только он заработал, гард начал резать всё:
+        # в night-marathon 101 шаг из 125 не имеет явного expect и начинается
+        # с «Робот», а classify_step_expect авто-повышает такие шаги до
+        # wake-gated. То есть прогон отдал бы 101 SKIP и выглядел «не
+        # красным», не проверив ничего. Это хуже любого FAIL.
+        #
+        # Семантика гарда — «робот ещё не проснулся», а не «прогон только
+        # начался». К моменту, когда до wake-gated шага дошла очередь,
+        # предыдущие шаги акта уже отдали свои «✅ ПРИНЯТО (respeaker): Робот,
+        # ...», и окно с E2E_RUN_BEFORE больше не пусто. Поэтому спрашиваем
+        # ЗАНОВО, здесь и сейчас, и пропускаем шаг только если гейт всё ещё
+        # не пройден.
+        if wake_gate_cleared_since "$E2E_RUN_BEFORE"; then
+            WAKE_GATE_CLEARED=1
+            WAKE_GATE_PREFLIGHT_REASON="cold-start cleared (перепроба на шаге ${label})"
+            log "STEP ${label}: wake-gate прогрелся к этому моменту (перепроба) — шаг выполняется, не пропускается"
+        elif [ "${WAKE_GATE_PROBE_SPENT:-0}" != "1" ]; then
+            # Каскад-гард. Если первый же wake-gated шаг акта пропустить,
+            # акцепта не появится никогда, следующая перепроба снова будет
+            # пустой — и весь акт уйдёт в SKIP, ничего не проверив.
+            # Разрываем это тем же доводом, что уже записан в single-text
+            # ветке preflight'а: одиночный wake-шаг НЕ требует гейта, он и
+            # ЕСТЬ cold-start проба. Поэтому ПЕРВЫЙ wake-gated шаг прогона
+            # всегда играем, а гейт применяем к следующим — когда у нас уже
+            # есть настоящий ответ, прогрелся робот или нет.
+            WAKE_GATE_PROBE_SPENT=1
+            log "STEP ${label}: wake-gate ещё не пройден, но это ПЕРВЫЙ wake-gated шаг прогона — играем его как cold-start пробу (пропускать нечего: без акцепта гейт не пройдёт никогда)"
+        else
+            log "STEP ${label}: SKIP [skip:wake-gate-cold-start] — ${WAKE_GATE_PREFLIGHT_REASON:-cold-start not cleared} (перепроба подтвердила, cold-start проба уже израсходована)"
+            emit_step "${label} SKIP wake-gate-cold-start"
+            # Не помечаем fail_kind — это не fail. Возвращаем специальный
+            # код 3, который callers (scenario loop) интерпретируют как
+            # «пропущен по systemic, не считать в aggregate FAIL».
+            return 3
+        fi
     fi
 
     # 1. Синтез команды
@@ -1280,15 +1413,89 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
     ensure_outdir
     ffmpeg -nostdin -y -i "$OUT_DIR/cmd_${safe}.wav" -af "highpass=f=100,volume=3.0,alimiter=limit=0.98,adelay=1500|all=1" -ac 1 -ar 16000 "$OUT_DIR/cmd_${safe}_eq.wav" 2>/dev/null
 
+    # 1b. Реплика влезает в окно VAD робота?
+    #
+    # bug(run 35658231116, 22.09.2026). Реплика n303_bg_boris в синтезе
+    # minimax звучит 17.37с, окно audio_node — speech_max_duration=15.0.
+    # audio_node выбрасывал фразу ДО STT, а харнесс тратил на неё две
+    # попытки по react_window и отчитывался `FAIL backlog_miss`, то есть
+    # обвинял dialogue_node. Соседний n305 прошёл на 14.81с — зазор 0.19с,
+    # так что «зелёный» шаг был лотереей на скорости речи провайдера.
+    #
+    # Здесь wav уже синтезирован — мерим ФАКТ, а не оцениваем по символам.
+    # Отдаём вердикт сразу: это дешевле (не жжём retry-окна) и честнее
+    # (называем настоящую причину, а не симптом на конце цепочки).
+    #
+    # Мерим ИМЕННО _eq.wav — это файл, который реально уходит в paplay.
+    # И сравниваем НЕ с speech_max_duration напрямую: audio_node мерит не
+    # длину файла, а окно от первой речи до последней, с VAD-hangover'ом.
+    # Замеры на прогоне 35658231116 (eq-длительность → что насчитал VAD):
+    #     n301  6.23 → 9.95    n302  9.81 → 12.51   n303 14.84 → 17.37 ❌
+    #     n304 13.39 → 16.09❌  n305 12.41 → 15.07❌ n306  9.13 → 13.28
+    #     n307  6.27 →  8.67   n308  7.42 →  9.95
+    # Накладка стабильна и лежит в 2.4-4.2s. Берём минимум наблюдённого
+    # (2.5s) — это самый мягкий порог, который всё ещё правильно
+    # классифицирует все восемь шагов выше (n303/n304/n305 ловятся,
+    # n302/n306 не ловятся). Порог по файлу = speech_max_duration - 2.5.
+    #
+    # Дефолты синхронизированы с docker/vision/config/voice_assistant/
+    # audio_node.yaml → audio_node → ros__parameters → speech_max_duration.
+    # Рассинхрон дефолта и конфига ловит
+    # scripts/testing/test_e2e_scenario_playable.sh.
+    E2E_VAD_MAX_DURATION="${E2E_VAD_MAX_DURATION:-15.0}"
+    E2E_VAD_OVERHEAD="${E2E_VAD_OVERHEAD:-2.5}"
+    local cmd_dur vad_budget
+    cmd_dur="$(ffprobe -v error -show_entries format=duration -of csv=p=0 \
+        "$OUT_DIR/cmd_${safe}_eq.wav" 2>/dev/null | head -1)"
+    vad_budget="$(awk -v m="$E2E_VAD_MAX_DURATION" -v o="$E2E_VAD_OVERHEAD" 'BEGIN{printf "%.2f", m-o}')"
+    case "$cmd_dur" in
+        ''|*[!0-9.]*)
+            # ffprobe нет или ответил мусором — молча пропускаем проверку.
+            # Это advisory-гейт: он не имеет права сам ронять прогон.
+            log "STEP ${label}: длительность реплики не измерена (ffprobe недоступен) — проверка окна VAD пропущена" ;;
+        *)
+            if awk -v d="$cmd_dur" -v b="$vad_budget" 'BEGIN{exit !(d>b)}'; then
+                log "STEP ${label}: ❌ реплика ${cmd_dur}s не влезает в окно VAD робота (бюджет ${vad_budget}s = speech_max_duration ${E2E_VAD_MAX_DURATION}s - VAD-накладка ${E2E_VAD_OVERHEAD}s)"
+                log "STEP ${label}: audio_node отбросит её до STT — играть бессмысленно. Это баг СЦЕНАРИЯ (реплику надо разбить), не робота."
+                emit_step "${label} FAIL scenario_too_long (${cmd_dur}s > ${vad_budget}s)"
+                printf 'STEP %s: eq=%ss > budget %ss (speech_max_duration=%s, overhead=%s, provider=%s voice=%s)\n' \
+                    "$label" "$cmd_dur" "$vad_budget" "$E2E_VAD_MAX_DURATION" "$E2E_VAD_OVERHEAD" \
+                    "${E2E_TTS_PROVIDER_RESOLVED:-$E2E_TTS_PROVIDER}" "$voice" \
+                    >> "$OUT_DIR/vad_rejects.log" 2>/dev/null || true
+                mark_fail_kind infra
+                return 1
+            fi
+            # Меньше секунды запаса — шаг лотерея: пройдёт или нет, зависит от
+            # скорости речи провайдера. Молчать об этом нельзя: n305 набрал
+            # 12.41s при бюджете 12.50s и в первой попытке всё равно отвалился.
+            if awk -v d="$cmd_dur" -v b="$vad_budget" 'BEGIN{exit !(b-d<1.0)}'; then
+                log "STEP ${label}: ⚠️ реплика ${cmd_dur}s при бюджете ${vad_budget}s — запас < 1s, шаг на грани отказа"
+            fi ;;
+    esac
+
     # 2. Ждём тишины: робот не должен говорить перед командой (greeting/
     #    приветствие идёт через 12s после старта и может перебить команду).
     #    Ждём пока в логах нет свежих TTS-событий последние E2E_SILENCE_WAIT сек.
     E2E_SILENCE_WAIT="${E2E_SILENCE_WAIT:-15}"
-    local quiet_start quiet_end
+    # Абсолютный предел ожидания. Окно тишины СБРАСЫВАЕТСЯ каждый раз, когда
+    # робот заговорил, поэтому без такого предела цикл не завершается никогда:
+    # зависший greeting/announce-луп, либо `docker logs --since 20s`, который
+    # из-за гранулярности и расхождения часов продолжает отдавать те же старые
+    # строки, — и шаг висит до внешнего таймаута job'а (45 мин). На выходе
+    # «cancelled» без единого маркера шага, что для разбора хуже любого FAIL.
+    E2E_SILENCE_WAIT_MAX="${E2E_SILENCE_WAIT_MAX:-$((E2E_SILENCE_WAIT * 6))}"
+    local quiet_start quiet_end loop_start
     quiet_start="$(date -u +%s)"
+    loop_start="$quiet_start"
     while true; do
         quiet_end="$(date -u +%s)"
         if [ $((quiet_end - quiet_start)) -ge "$E2E_SILENCE_WAIT" ]; then
+            break
+        fi
+        if [ $((quiet_end - loop_start)) -ge "$E2E_SILENCE_WAIT_MAX" ]; then
+            log "STEP ${label}: ⚠️ робот не замолчал за ${E2E_SILENCE_WAIT_MAX}s — играю команду поверх. Если шаг упадёт, смотри сюда: возможен зависший TTS-луп на роботе, а не регресс в обработке команды."
+            printf 'STEP %s: silence wait exceeded %ss\n' "$label" "$E2E_SILENCE_WAIT_MAX" \
+                >> "$OUT_DIR/silence_wait_exceeded.log" 2>/dev/null || true
             break
         fi
         local tts_recent
@@ -1323,9 +1530,13 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
             log "STEP ${label}: backlog-маркер не найден (attempt ${battempt}) — повтор"
             sleep "$E2E_RETRY_PAUSE"
         done
+        # Прежде чем обвинить бэклог — проверяем, доехал ли звук до STT вообще.
+        # run 35658231116: n303/n304 отчитались backlog_miss, а в логах робота
+        # лежало `Речь отклонена: 17.37с (max=15.0)` — audio_node выбросил
+        # фразу по длине, dialogue_node её не видел. BEFORE здесь — окно
+        # последней попытки, ровно то, что нас интересует.
         log "STEP ${label}: ❌ backlog accumulation не подтверждён после ${E2E_MAX_ATTEMPTS} попыток"
-        emit_step "${label} FAIL backlog_miss"
-        mark_fail_kind feature
+        emit_step_fail_or_vad "$label" "$BEFORE" "FAIL backlog_miss" feature
         return 1
     fi
 
@@ -1369,9 +1580,11 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
     done
 
     if [ "$reaction" != "1" ]; then
+        # Та же развилка, что и в backlog-ветке: «робот не ответил» и «робот
+        # не услышал, потому что audio_node отбросил звук до STT» — разные
+        # диагнозы, и второй не имеет права выглядеть как первый.
         log "STEP ${label}: ❌ NO_ACCEPT после ${E2E_MAX_ATTEMPTS} попыток"
-        emit_step "${label} FAIL no_accept"
-        mark_fail_kind no_reaction
+        emit_step_fail_or_vad "$label" "$BEFORE" "FAIL no_accept" no_reaction
         return 1
     fi
 
@@ -1393,8 +1606,18 @@ parse_transcript() {  # $1=label $2=before_rfc3339
     logs="$(${ROBOT_SSH} "docker logs voice-assistant --since '${before}' 2>&1" 2>/dev/null || echo '')"
     local text duration_s expected
     expected="$3"
-    # «✅ ПРИНЯТО: <текст>» — основной маркер распознанной фразы (stt_node.py:534)
-    text="$(printf '%s' "$logs" | grep -oE '✅ ПРИНЯТО:\s*[^[:space:]].*' | head -1 | sed -E 's/^✅ ПРИНЯТО:\s*//' | tr -d '\r')"
+    # «✅ ПРИНЯТО (<source>): <текст>» — основной маркер распознанной фразы.
+    # stt_node.py:923: self.get_logger().info(f"✅ ПРИНЯТО ({source}): {text}")
+    #
+    # bug(run 35658231116, 22.09.2026): паттерн был '✅ ПРИНЯТО:' — без тега
+    # источника, который появился в 6e016325f (#2011). Совпадений ноль, поэтому
+    # "recognized" в transcript.json всегда пустой, а в лог каждого шага шло
+    # «TRANSCRIPT[...]: STT не вернул фразу (нет '✅ ПРИНЯТО')» — даже там, где
+    # сам харнесс строкой выше отчитался «✅ ПОЛНЫЙ ЦИКЛ (акцепт + LLM + TTS)».
+    # Два взаимно противоречащих утверждения в одном логе; check_cycle грепает
+    # просто "ПРИНЯТО" (без двоеточия) и потому работал.
+    # Тег делаем опциональным — старые логи роботов до #2011 тоже читаются.
+    text="$(printf '%s' "$logs" | grep -oE '✅ ПРИНЯТО( \([^)]*\))?:[[:space:]]*[^[:space:]].*' | head -1 | sed -E 's/^✅ ПРИНЯТО( \([^)]*\))?:[[:space:]]*//' | tr -d '\r')"
     # Длительность STT-сегмента: «Получена фраза: X.XXс» (stt_node.py:456)
     local phrase_line
     phrase_line="$(printf '%s' "$logs" | grep 'Получена фраза' | tail -1 || true)"
@@ -1456,9 +1679,26 @@ write_artifacts_audio() {
     local voice_text="${1:-}"
     local wav="$OUT_DIR/recording.wav"
     if [ -f "$wav" ]; then
-        python3 .github/workflows/scripts/e2e_audio_metrics.py "$wav" \
-            > "$OUT_DIR/audio_metrics.json" 2>/dev/null \
-            || echo '{"error":"audio_metrics.py failed"}' > "$OUT_DIR/audio_metrics.json"
+        # bug(run 35658231116): путь был repo-relative (.github/workflows/...),
+        # а харнесс на 249 живёт одиночным файлом в /tmp с CWD=$HOME ros2 —
+        # python3 не находил скрипт НИ РАЗУ, и audio_metrics.json всегда был
+        # 36-байтной заглушкой {"error":"audio_metrics.py failed"}. Тот же
+        # класс, что и потерянные e2e_voice_lib.sh / e2e_voice_wake_gate.sh /
+        # e2e_tool_match.py (см. комментарий в L-E2E Voice Test.yml): зовём
+        # через $SCRIPT_DIR_E2E, а workflow обязан скопировать файл рядом.
+        if [ ! -f "$SCRIPT_DIR_E2E/e2e_audio_metrics.py" ]; then
+            echo '{"error":"e2e_audio_metrics.py not deployed","expected_at":"'"$SCRIPT_DIR_E2E/e2e_audio_metrics.py"'"}' \
+                > "$OUT_DIR/audio_metrics.json"
+        elif python3 "$SCRIPT_DIR_E2E/e2e_audio_metrics.py" "$wav" \
+                > "$OUT_DIR/audio_metrics.json" 2>"$OUT_DIR/audio_metrics.stderr"; then
+            :
+        else
+            # Не прячем stderr в /dev/null: до фикса причина отказа была
+            # невидима и «метрика не считалась» списывалось на recorder.
+            printf '{"error":"audio_metrics.py failed","stderr":%s}\n' \
+                "$(python3 -c 'import json,sys;print(json.dumps(open(sys.argv[1],encoding="utf-8",errors="replace").read()[-2000:],ensure_ascii=False))' "$OUT_DIR/audio_metrics.stderr" 2>/dev/null || echo '"<unreadable>"')" \
+                > "$OUT_DIR/audio_metrics.json"
+        fi
         log "ARTIFACTS: audio_metrics.json written ($(stat -c%s "$OUT_DIR/audio_metrics.json") bytes)"
     else
         log "WARN: $wav не найден — audio_metrics.json не пишется (recorder не запустился?)"
@@ -1469,9 +1709,17 @@ write_artifacts_audio() {
     local td="$OUT_DIR/transcript.json"
     [ ! -f "$td" ] && echo '{}' > "$td"
     if [ -f "$wav" ]; then
-        python3 .github/workflows/scripts/e2e_baseline_diff.py "$wav" "" "$voice_text" "$td" \
-            > "$OUT_DIR/baseline_diff.json" 2>/dev/null \
-            || echo '{"error":"baseline_diff.py failed"}' > "$OUT_DIR/baseline_diff.json"
+        if [ ! -f "$SCRIPT_DIR_E2E/e2e_baseline_diff.py" ]; then
+            echo '{"error":"e2e_baseline_diff.py not deployed","expected_at":"'"$SCRIPT_DIR_E2E/e2e_baseline_diff.py"'"}' \
+                > "$OUT_DIR/baseline_diff.json"
+        elif python3 "$SCRIPT_DIR_E2E/e2e_baseline_diff.py" "$wav" "" "$voice_text" "$td" \
+                > "$OUT_DIR/baseline_diff.json" 2>"$OUT_DIR/baseline_diff.stderr"; then
+            :
+        else
+            printf '{"error":"baseline_diff.py failed","stderr":%s}\n' \
+                "$(python3 -c 'import json,sys;print(json.dumps(open(sys.argv[1],encoding="utf-8",errors="replace").read()[-2000:],ensure_ascii=False))' "$OUT_DIR/baseline_diff.stderr" 2>/dev/null || echo '"<unreadable>"')" \
+                > "$OUT_DIR/baseline_diff.json"
+        fi
         log "ARTIFACTS: baseline_diff.json written"
     else
         echo '{"error":"recording.wav not found, baseline diff skipped"}' > "$OUT_DIR/baseline_diff.json"
@@ -1663,7 +1911,10 @@ voice_changed_req = bool(acc.get("voice_changed", False))
 response_max_ms = acc.get("response_max_ms", 0) or 0
 
 recognized = ""
-m = re.search(r"✅ ПРИНЯТО:\s*(.+)", logs)
+# stt_node.py:923 печатает `✅ ПРИНЯТО ({source}): {text}` — тег источника
+# добавлен в 6e016325f (#2011), а паттерн остался без него, поэтому recognized
+# был пуст на каждом прогоне (35658231116). Тег опционален — старые логи тоже.
+m = re.search(r"✅ ПРИНЯТО(?: \([^)]*\))?:\s*(.+)", logs)
 if m:
     recognized = m.group(1).strip()
 # Ключевые слова ищем по ВСЕМ логам шага (признанная фраза + LLM OUTPUT /
@@ -1886,7 +2137,26 @@ PY
         step_ok=0
         cycle_failed=0
         step_skipped=0
+        # Кто именно провалился на ПОСЛЕДНЕЙ попытке и кто проходил хоть раз.
+        # bug(run 35658231116, 22.09.2026): step_ok пересчитывается с нуля на
+        # каждой попытке, поэтому паттерны и acceptance обязаны сойтись в ОДНОЙ.
+        # У n306_who_was_talking они сошлись в РАЗНЫХ:
+        #   попытка 1: PATTERN_OK + ACCEPTANCE ❌ (нет ключевого слова «Борис»)
+        #   попытка 2: PATTERN_MISS + ACCEPTANCE ✅ all checks passed
+        # Итог — `FAIL` с текстом «см. acceptance.json», а в acceptance.json
+        # лежит «✅ all checks passed»: артефакт прямо противоречит вердикту.
+        # Причина в том, что паттерн шага ловит ОДНОРАЗОВЫЙ переход состояния
+        # («[backlog] flushed to LLM backlog_handled=true»): на первой попытке
+        # бэклог уже слит, на повторе сливать нечего, и паттерн не может
+        # совпасть больше никогда. Такой шаг в принципе неретраебельный, и
+        # молчать об этом нельзя — иначе разбор уходит в dialogue_node.
+        last_fail_what=""
+        pat_ok_any=0
+        acc_ok_any=0
+        pat_checked=0
+        acc_checked=0
         while :; do
+            last_fail_what=""
             STEP_BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
             run_step "$text" "$voice" "$label" "$expect"
             rc=$?
@@ -1898,6 +2168,10 @@ PY
             # не должен фейлить на этом шаге.
             if [ "$rc" = "3" ]; then
                 step_skipped=1
+                # Счётчик РЕАЛЬНЫХ пропусков — только он оправдывает пропуск
+                # агрегатного GATE-1 ниже (разбор прогона 35665111906: гейт
+                # пропускался при НУЛЕ пропущенных шагов).
+                WAKE_GATE_SKIPPED_STEPS=$((WAKE_GATE_SKIPPED_STEPS + 1))
                 log "STEP ${label}: wake-gated SKIP (cold-start not cleared) — см. $WAKE_GATE_PREFLIGHT_FILE"
                 break
             fi
@@ -1934,22 +2208,66 @@ PY
 for p in json.load(sys.stdin):
     print(p.replace("\n", " "))' | tr -d '\015')
                 log "STEP ${label}: проверка паттернов (${#_pats_arr[@]}): ${_pats_arr[*]}"
+                pat_checked=1
                 check_patterns "$STEP_BEFORE" "${_pats_arr[@]}"
                 if [ $? != 0 ]; then
                     step_ok=0
+                    last_fail_what="patterns"
                 else
+                    pat_ok_any=1
                     log "STEP ${label}: ✅ паттерны найдены"
                 fi
             fi
             # Acceptance-чек (issue #1396): если в шаге задан блок acceptance,
             # пишем acceptance.json и (если ERROR) — FAIL (хотя цикл прошёл).
             if [ -n "$acceptance_json" ] && [ "$acceptance_json" != "{}" ]; then
+                acc_checked=1
                 OUT_DIR="$OUT_DIR" STEP_LABEL="$label" \
                     check_acceptance "$label" "$acceptance_json" "$STEP_BEFORE"
                 if [ $? != 0 ]; then
                     step_ok=0
+                    last_fail_what="${last_fail_what:+$last_fail_what+}acceptance"
                 else
-                    log "STEP ${label}: ✅ acceptance PASS"
+                    # Регистрация диктора, которая СКЛЕИЛАСЬ с чужим профилем,
+                    # не является регистрацией.
+                    #
+                    # bug(живой прогон 35667281570, акт 2, 22.09.2026). Шаг
+                    # n204_boris_intro_long получил OK, потому что acceptance
+                    # проверяет только факт вызова register_speaker. А в логах
+                    # робота за то же окно:
+                    #   user_input='[Spkr:Саша] ... Меня зовут Борис ...'
+                    #   🔗 Speaker 'Борис' merged into existing profile
+                    #      (id=dc417cef) — voice matched an already-known speaker
+                    #   ✅ [issue 1077] Speaker registered: 'Борис' id=dc417cef
+                    # То есть голос Бориса опознан как Саша, Борис склеен в
+                    # профиль Саши, а профиль ПЕРЕИМЕНОВАН — Саша исчез.
+                    # В /data/speakers.db после акта остался ОДИН диктор
+                    # «Борис» с двумя эмбеддингами вместо двух дикторов.
+                    # Текст шага при этом прямо просит «Запомни мой голос
+                    # ОТДЕЛЬНО от Сашиного... я не хочу, чтобы ты нас путал».
+                    # Зелёный шаг поверх потерянной личности — ровно тот
+                    # красивый PASS, против которого ADR-0018.
+                    case "$acceptance_json" in
+                        *register_speaker*)
+                            _merge_log="$(${ROBOT_SSH} "docker logs voice-assistant --since '${STEP_BEFORE}' 2>&1" 2>/dev/null \
+                                | grep -oE "Speaker '[^']*' merged into existing profile \(id=[0-9a-f]*\)" | tail -1)"
+                            if [ -n "$_merge_log" ]; then
+                                step_ok=0
+                                last_fail_what="${last_fail_what:+$last_fail_what+}speaker_merged"
+                                log "STEP ${label}: ❌ регистрация СКЛЕИЛАСЬ с уже известным диктором: ${_merge_log}"
+                                log "STEP ${label}: это НЕ новый профиль — существующий переименован, прежняя личность потеряна. Шаг просит запомнить голос ОТДЕЛЬНО, значит проверка не пройдена."
+                                log "STEP ${label}: смотреть register_match_threshold в speaker_id_node и различимость голосов TTS-провайдера ${E2E_TTS_PROVIDER_RESOLVED:-$E2E_TTS_PROVIDER} (у minimax Russian_ReliableMan и Russian_HandsomeChildhoodFriend неразличимы для resemblyzer)."
+                                printf '%s\n' "STEP ${label}: ${_merge_log}" >> "$OUT_DIR/speaker_merges.log" 2>/dev/null || true
+                            else
+                                acc_ok_any=1
+                                log "STEP ${label}: ✅ acceptance PASS"
+                            fi
+                            ;;
+                        *)
+                            acc_ok_any=1
+                            log "STEP ${label}: ✅ acceptance PASS"
+                            ;;
+                    esac
                 fi
             fi
             # Retry при FAIL patterns/acceptance (если разрешён сценарием)
@@ -1976,8 +2294,31 @@ for p in json.load(sys.stdin):
         else
             PASS=0
             mark_fail_kind feature
-            log "STEP ${label}: ❌ проверка не прошла после retry (см. $OUT_DIR/acceptance.json)"
-            emit_step "${label} FAIL"
+            # Указываем на ТО, что реально провалилось на последней попытке.
+            # Раньше текст всегда отправлял в acceptance.json — даже когда
+            # провалились паттерны, а acceptance в том же прогоне прошёл, и
+            # файл содержал «✅ all checks passed» (n306, run 35658231116).
+            case "$last_fail_what" in
+                patterns)   _where="паттерны шага (acceptance тут ни при чём)" ;;
+                acceptance) _where="acceptance (см. $OUT_DIR/acceptance.json)" ;;
+                *acceptance) _where="паттерны И acceptance (см. $OUT_DIR/acceptance.json)" ;;
+                *)          _where="проверка шага (см. $OUT_DIR/acceptance.json)" ;;
+            esac
+            # Улики разъехались по попыткам: каждая подпроверка проходила хотя
+            # бы раз, но ни разу вместе. Как правило это значит, что паттерн
+            # шага ловит ОДНОРАЗОВЫЙ переход состояния (например
+            # «[backlog] flushed to LLM») — на повторе его уже не будет,
+            # и шаг не может пройти ни при каком числе ретраев.
+            if [ "$pat_checked" = "1" ] && [ "$acc_checked" = "1" ] \
+               && [ "$pat_ok_any" = "1" ] && [ "$acc_ok_any" = "1" ]; then
+                log "STEP ${label}: ❌ улики разъехались по попыткам: паттерны проходили в одной попытке, acceptance — в другой, вместе ни разу."
+                log "STEP ${label}: почти наверняка паттерн шага ловит ОДНОРАЗОВОЕ событие (напр. «[backlog] flushed to LLM»), которое на повторе не повторяется. Шаг как написан НЕ проверяем ретраем — это дефект СЦЕНАРИЯ, а не робота: либо убери retry_acceptance, либо перенеси одноразовый паттерн в отдельный шаг без ретрая."
+                log "STEP ${label}: ❌ провалилось на последней попытке: ${_where}"
+                emit_step "${label} FAIL retry_split_evidence"
+            else
+                log "STEP ${label}: ❌ проверка не прошла после retry — ${_where}"
+                emit_step "${label} FAIL"
+            fi
         fi
     done < "$OUT_DIR/scenario_parsed.txt"
 
@@ -1986,9 +2327,25 @@ for p in json.load(sys.stdin):
     # GATE-1 не должен фейлить — это by-design поведение backlog-аккумулятора
     # (см. retro t_be491fba). Фиксируем это в $OUT_DIR/gate1_skip_reason.json
     # и выводим явный маркер E2E_GATE1_SKIP_WAKE_GATE для пост-валидатора.
-    if [ "${WAKE_GATE_CLEARED:-0}" != "1" ] && [ -n "${SCENARIO_FILE:-}" ]; then
-        printf '{\n  "skip_reason": "wake-gate cold-start not cleared",\n  "preflight_artifact": "wake_gate_preflight.json",\n  "scenarios_steps_classified": "wake-gated steps SKIP by design (backlog-accumulator design)",\n  "retro": "t_be491fba (cold-start wake-gate misdiagnosis)"\n}\n' > "$OUT_DIR/gate1_skip_reason.json"
-        log "GATE-1: ⏭ SKIP — wake-gate cold-start not cleared (см. wake_gate_preflight.json)"
+    # bug(живой прогон 35665111906, 22.09.2026 — регресс, внесённый этой же
+    # серией правок). Условие было `WAKE_GATE_CLEARED != 1`. Пока preflight
+    # был мёртвым кодом, он ВСЕГДА уходил в else-ветку и форсил
+    # WAKE_GATE_CLEARED=1, поэтому агрегатный GATE-1 выполнялся всегда. Как
+    # только preflight заработал, scenario-ветка честно сообщила «cold-start
+    # NOT cleared» — и агрегатный GATE-1 (ADR-0022, главный гард против
+    # smoke-false-PASS) стал ПРОПУСКАТЬСЯ на каждом scenario-прогоне.
+    # В логе акта 1 это видно как `E2E_GATE1_SKIP_WAKE_GATE` при 9/10 OK и
+    # нулевом числе SKIP-шагов: оправдание применялось там, где оправдывать
+    # было нечего.
+    #
+    # Честное правило: пропускать GATE-1 можно только если шаги РЕАЛЬНО были
+    # пропущены из-за wake-gate. Ни одного такого шага — гейт обязан считаться.
+    # Сам факт «гейт не прогрелся» ничего не оправдывает, если он никому не
+    # помешал отыграться.
+    if [ "${WAKE_GATE_SKIPPED_STEPS:-0}" -gt 0 ] && [ -n "${SCENARIO_FILE:-}" ]; then
+        printf '{\n  "skip_reason": "wake-gate cold-start not cleared",\n  "skipped_steps": %s,\n  "preflight_artifact": "wake_gate_preflight.json",\n  "scenarios_steps_classified": "wake-gated steps SKIP by design (backlog-accumulator design)",\n  "retro": "t_be491fba (cold-start wake-gate misdiagnosis)"\n}\n' \
+            "${WAKE_GATE_SKIPPED_STEPS:-0}" > "$OUT_DIR/gate1_skip_reason.json"
+        log "GATE-1: ⏭ SKIP — ${WAKE_GATE_SKIPPED_STEPS} шаг(ов) пропущено по wake-gate cold-start (см. wake_gate_preflight.json)"
         echo "E2E_GATE1_SKIP_WAKE_GATE"
     else
         # --- ADR-0022 GATE-1: top-level aggregate acceptance check -----------
