@@ -15,6 +15,9 @@ Acceptance map:
   NUDGE after budget exhausted.
 * :class:`TestEvaluateStopCommand` — stop-commands skip the guard entirely
   (regression for the 06.08 live bug).
+* :class:`TestMusicStateQueryE2E35665111906` — вопрос о состоянии, на
+  который LLM ответила read-only тулом, не нудится (шаг
+  ``n110_silence_baseline``).
 * :class:`TestBudgetsIndependent` — DJ budget vs user budget do not
   interact; ``reset_for_new_user_request`` does not reset DJ counter.
 * :class:`TestRegressionIssue1204` — sync retry must land on a non-IDLE
@@ -366,6 +369,158 @@ class TestEvaluateUserMusicVocal:
             build_music_retry_prompt=_music_prompt,
         )
         assert verdict.kind is MusicGuardVerdictKind.USER_RETRY
+
+
+# ---------------------------------------------------------------------------
+# State query — вопрос о состоянии закрывается read-only тулом
+# ---------------------------------------------------------------------------
+
+
+class TestMusicStateQueryE2E35665111906:
+    """Ночной марафон, акт 1, шаг ``n110_silence_baseline`` (якорь тишины).
+
+    Живой лог робота::
+
+        ✅ [turn] spoken='Проверил — музыка сейчас не играет, активных
+                  паттернов нет, AI и диджей стоят' tools=['get_music_state']
+        [WARN] 🎵 [issue 992 Bug C] user asked for music but LLM skipped
+               execute_music_code (tools=['get_music_state']); retry 1/3
+
+    Ответ был ПРАВИЛЬНЫЙ, а гуард требовал ``execute_music_code`` — тул,
+    который шаг держит в ``must_not_call``. Ход размазывался на три
+    попытки, харнесс не видел чистого акцепта → FAIL no_accept.
+    """
+
+    LIVE_PHRASE = "Робот, у тебя сейчас играет какая-нибудь музыка?"
+
+    def test_live_phrase_with_get_music_state_is_satisfied(self) -> None:
+        guard = MusicGuard()
+        verdict = guard.evaluate(
+            was_dj_auto=False,
+            user_input=self.LIVE_PHRASE,
+            tools_called=("get_music_state",),
+            dj_enabled=False,
+            build_music_retry_prompt=_music_prompt,
+        )
+        assert verdict.kind is MusicGuardVerdictKind.SKIP_NOT_APPLICABLE
+        assert verdict.reason == "state_query_satisfied"
+        # Вердикт различим в логах и НЕ несёт CRITICAL-промпта.
+        assert verdict.prompt is None
+        assert guard.user_retry_count == 0
+
+    @pytest.mark.parametrize(
+        "tool",
+        [
+            "get_music_state",
+            "list_tracks",
+            "gen_list_library",
+            "gen_search_library",
+            "gen_get_track_info",
+        ],
+    )
+    def test_any_read_only_music_tool_satisfies_the_query(self, tool: str) -> None:
+        """Состояние можно посмотреть не только через get_music_state —
+        «какой трек?» модель законно закрывает и листингом библиотеки."""
+        guard = MusicGuard()
+        verdict = guard.evaluate(
+            was_dj_auto=False,
+            user_input="какой трек сейчас играет",
+            tools_called=(tool,),
+            dj_enabled=False,
+            build_music_retry_prompt=_music_prompt,
+        )
+        assert verdict.kind is MusicGuardVerdictKind.SKIP_NOT_APPLICABLE
+        assert verdict.reason == "state_query_satisfied"
+
+    def test_state_query_without_tools_still_nudges(self) -> None:
+        """Без тулов поведение НЕ меняется.
+
+        Иначе исключение замаскирует настоящий Bug C — «LLM вообще ничего
+        не вызвала», то есть ответ о живом состоянии по памяти модели.
+        """
+        guard = MusicGuard()
+        verdict = guard.evaluate(
+            was_dj_auto=False,
+            user_input=self.LIVE_PHRASE,
+            tools_called=(),
+            dj_enabled=False,
+            build_music_retry_prompt=_music_prompt,
+        )
+        assert verdict.kind is MusicGuardVerdictKind.USER_RETRY
+        assert verdict.reason == "bug_c"
+        assert guard.user_retry_count == 1
+
+    def test_state_query_with_speak_text_only_still_nudges(self) -> None:
+        """``speak_text`` — не проверка состояния, а рассказ по памяти."""
+        guard = MusicGuard()
+        verdict = guard.evaluate(
+            was_dj_auto=False,
+            user_input=self.LIVE_PHRASE,
+            tools_called=("speak_text",),
+            dj_enabled=False,
+            build_music_retry_prompt=_music_prompt,
+        )
+        assert verdict.kind is MusicGuardVerdictKind.USER_RETRY
+        assert verdict.reason == "bug_c"
+
+    @pytest.mark.parametrize(
+        "phrase",
+        [
+            "включи музыку",
+            "поставь трек",
+            "включи следующий трек",
+            "сыграй джаз",
+        ],
+    )
+    def test_start_command_with_get_music_state_still_nudges(
+        self, phrase: str
+    ) -> None:
+        """Регресс-гард: исключение не должно стать слишком широким.
+
+        «Включи музыку» + один только ``get_music_state`` — музыка не
+        пошла, Bug C обязан дожать до реального запуска.
+        """
+        guard = MusicGuard()
+        verdict = guard.evaluate(
+            was_dj_auto=False,
+            user_input=phrase,
+            tools_called=("get_music_state",),
+            dj_enabled=False,
+            build_music_retry_prompt=_music_prompt,
+        )
+        assert verdict.kind is MusicGuardVerdictKind.USER_RETRY
+        assert verdict.reason == "bug_c"
+
+    def test_stop_command_keeps_its_own_verdict(self) -> None:
+        """Порядок исключений не сдвинулся: стоп остаётся стопом.
+
+        «Выключи диджея» — единственный класс стопов, который доходит до
+        ветки ``stop_command`` (совпадает и с ``MUSIC_GUARD_KEYWORDS``, и с
+        ``MUSIC_STOP_OVERRIDES``); новая ветка вопроса стоит ПОСЛЕ неё.
+        """
+        guard = MusicGuard()
+        verdict = guard.evaluate(
+            was_dj_auto=False,
+            user_input="выключи диджея",
+            tools_called=("stop_music", "get_music_state"),
+            dj_enabled=False,
+            build_music_retry_prompt=_music_prompt,
+        )
+        assert verdict.kind is MusicGuardVerdictKind.SKIP_NOT_APPLICABLE
+        assert verdict.reason == "stop_command"
+
+    def test_playback_tool_still_wins_over_state_query(self) -> None:
+        """«что играет» + реальный запуск — это executed_via_library,
+        а не state_query_satisfied: ветка воспроизведения выше."""
+        guard = MusicGuard()
+        verdict = guard.evaluate(
+            was_dj_auto=False,
+            user_input="что сейчас играет",
+            tools_called=("gen_play_from_library",),
+            dj_enabled=False,
+            build_music_retry_prompt=_music_prompt,
+        )
+        assert verdict.kind is MusicGuardVerdictKind.SKIP
 
 
 # ---------------------------------------------------------------------------

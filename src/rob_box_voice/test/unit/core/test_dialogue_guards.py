@@ -45,6 +45,7 @@ from rob_box_voice.core.dialogue_guards import (
     detect_unknown_melody_claim,  # Issue #2562 Bug F
     extract_renardo_code_lines,
     is_metalanguage_babble,
+    is_music_state_query,  # e2e 35665111906 n110_silence_baseline
     is_music_stop_command,
     is_planning_narration,
     is_state_question,
@@ -550,6 +551,81 @@ class TestStateQuestionLive3008:
     def test_answer_still_looks_like_babble_in_isolation(self) -> None:
         """Опенер сам по себе не изменился — фильтрует именно запрос."""
         assert is_metalanguage_babble("Сейчас тишина — ничего не играет.") is True
+
+
+class TestMusicStateQueryE2E35665111906:
+    """«Робот, у тебя сейчас играет какая-нибудь музыка?» — это ВОПРОС.
+
+    Ночной марафон, акт 1, шаг ``n110_silence_baseline`` (якорь тишины):
+    робот обязан ПОСМОТРЕТЬ состояние, а ``execute_music_code`` у шага
+    лежит в ``must_not_call``. ``user_wants_music`` на этой фразе True
+    (пара «играет … музыка» ловится ``MUSIC_CONTINUATION_RE``), поэтому
+    Bug C требовал запуска музыки на правильном ответе.
+    """
+
+    def test_live_n110_phrase_is_a_state_query(self) -> None:
+        phrase = "Робот, у тебя сейчас играет какая-нибудь музыка?"
+        assert is_music_state_query(phrase) is True
+        # Контекст бага: именно из-за True здесь гуард и доходил до Bug C.
+        assert user_wants_music(phrase) is True
+
+    @pytest.mark.parametrize(
+        "phrase",
+        [
+            "играет ли сейчас музыка",
+            "что играет",
+            "что сейчас играет",
+            "что сейчас звучит",
+            "что там играет",
+            "какая музыка сейчас",
+            "какой трек",
+            "что за трек играет",
+            "музыка играет?",
+            "трек всё ещё играет",
+            "играет что-нибудь",
+            "у тебя играет что-то",
+            "звучит ли что-нибудь",
+        ],
+    )
+    def test_state_query_phrasings(self, phrase: str) -> None:
+        assert is_music_state_query(phrase) is True
+
+    @pytest.mark.parametrize(
+        "phrase",
+        [
+            # Императив запуска — не вопрос, Bug C обязан остаться.
+            "включи музыку",
+            "включи какую-нибудь музыку",
+            "поставь что-нибудь",
+            "поставь мелодию",
+            "вруби трек погромче",
+            "включи следующий трек",
+            "сыграй джаз",
+            "замути кайфовый джаз",
+            "сгенерируй трек про космос",
+            "спой песенку про котика",
+            "зачитай рэп",
+            "пусть музыка играет",
+            # Просьба развить уже играющее — тоже не вопрос о состоянии.
+            "продолжай развивать этот бит",
+            "переходи в джангл",
+            "добавь барабанов",
+            # Стоп-команды и обычный chit-chat.
+            "выключи музыку",
+            "останови музыку",
+            "что делаешь",
+            "что нового",
+            "как дела",
+            "какая погода в москве",
+            "который час",
+            "поехали вперёд на метр",
+        ],
+    )
+    def test_not_a_state_query(self, phrase: str) -> None:
+        assert is_music_state_query(phrase) is False
+
+    def test_empty_input(self) -> None:
+        assert is_music_state_query("") is False
 
 
 class TestUnbackedActionClaimLive3008:

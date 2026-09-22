@@ -23,9 +23,10 @@ Owns:
 See also:
 
 * :mod:`rob_box_voice.core.dialogue_guards` — keyword heuristics
-  (``user_wants_music``, ``is_music_stop_command``, ``is_vocal_request``)
-  used here, kept in the guards module so future bug-D-style fixes can
-  extend the keyword lists without touching the policy module.
+  (``user_wants_music``, ``is_music_stop_command``, ``is_vocal_request``,
+  ``is_music_state_query``) used here, kept in the guards module so future
+  bug-D-style fixes can extend the keyword lists without touching the
+  policy module.
 * ARCH-review #1405 / ADR-0021.
 """
 
@@ -37,8 +38,10 @@ from typing import Optional, Tuple
 from .dialogue_guards import (
     MUSIC_HARD_STOP_TOOLS,
     MUSIC_STARTING_TOOLS,
+    MUSIC_STATE_QUERY_TOOLS,
     USER_MUSIC_SATISFYING_TOOLS,
     build_music_retry_exhausted_fallback,
+    is_music_state_query,
     is_music_stop_command,
     is_phantom_music_action,
     is_vocal_request,
@@ -233,7 +236,8 @@ class MusicGuard:
             user_input: The original user command (or DJ auto-prompt
                 for tick transitions). Used by the keyword detectors
                 (``user_wants_music``, ``is_music_stop_command``,
-                ``is_vocal_request``) and by the Bug C retry prompt.
+                ``is_vocal_request``, ``is_music_state_query``) and by the
+                Bug C retry prompt.
             tools_called: Tuple of tool names the LLM invoked this
                 turn. ``"execute_music_code"`` presence short-circuits
                 the guard to ``SKIP``.
@@ -444,6 +448,28 @@ class MusicGuard:
             return MusicGuardVerdict(
                 kind=MusicGuardVerdictKind.SKIP_NOT_APPLICABLE,
                 reason="vocal_satisfied",
+            )
+
+        # 🔴 FIX (e2e 35665111906, night-marathon акт 1, шаг
+        # n110_silence_baseline): ВОПРОС о состоянии («у тебя сейчас играет
+        # какая-нибудь музыка?») — не просьба включить. LLM правильно
+        # вызвала ``get_music_state`` и ответила «музыка не играет», а Bug C
+        # требовал ``execute_music_code`` — ровно тот тул, который шаг
+        # держит в ``must_not_call``. Ретрай уводил ход в трёхкратный цикл
+        # с CRITICAL-промптом, и харнесс не видел чистого акцепта.
+        #
+        # Read-only музыкальный тул ОТВЕЧАЕТ на такой вопрос, значит просьба
+        # удовлетворена. Без тулов nudge остаётся как был: иначе мы
+        # замаскируем настоящий случай «LLM вообще ничего не вызвала».
+        _state_answered = tools_set & MUSIC_STATE_QUERY_TOOLS
+        if _state_answered and is_music_state_query(user_input):
+            self._log_debug(
+                "🎵 [issue 992 Bug C] state query, LLM answered via "
+                f"{sorted(_state_answered)!r} — no nudge needed"
+            )
+            return MusicGuardVerdict(
+                kind=MusicGuardVerdictKind.SKIP_NOT_APPLICABLE,
+                reason="state_query_satisfied",
             )
 
         if self._user_retry_count < self._max_user_retries:
