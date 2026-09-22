@@ -2350,18 +2350,26 @@ class DialogueNode(Node):
         Issue #2628 — extracted because the orchestrator stops at the
         LAST PASS step (typically :class:`DispatchTriggerStep`, which
         runs the FSM transitions + thinking SFX). Everything below
-        builds the final user-turn text: backlog hint injection,
-        DJ preamble, verbose log, ``_dispatch_turn``. The thinking SFX
-        is **already** published inside :class:`DispatchTriggerStep`
-        via :meth:`_DialogueSttHost.trigger_thinking_sfx`, so we do
-        not publish it again here.
+        builds the final user-turn text: DJ preamble, verbose log,
+        ``_dispatch_turn``. The thinking SFX is **already** published
+        inside :class:`DispatchTriggerStep` via
+        :meth:`_DialogueSttHost.trigger_thinking_sfx`, so we do not
+        publish it again here.
+
+        Issue #2779 — backlog-hint injection used to happen HERE, right
+        after STT, using whatever ``_current_speaker`` happened to hold
+        at that instant. That is BEFORE :meth:`_apply_speaker_identity`
+        has waited for the (slower) voice-biometry inference of THIS
+        very utterance to land — so the snapshot is frequently stale
+        (still the *previous* speaker). Injecting the hint that early
+        is exactly how a backlog entry mislabelled with a stale name
+        leaked into the prompt verbatim. The hint is now built in
+        :meth:`_prepare_user_input_context`, AFTER that wait, so the
+        speaker-mismatch filter (:meth:`SpeechAccumulator.format_user_hint`)
+        sees the real current speaker. ``backlog_pending`` is threaded
+        through ``_dispatch_turn`` → ``_run_turn`` for that purpose.
         """
         raw_user_command = clean
-        accumulator = getattr(self, "_speech_accumulator", None)
-        if backlog_pending and accumulator is not None:
-            hint = accumulator.format_user_hint()
-            if hint:
-                clean = f"{clean}\n{hint}"
         if self._dj.state.enabled:
             clean = self._dj.preamble() + clean
         if self._verbose_llm:
@@ -2370,8 +2378,9 @@ class DialogueNode(Node):
         if backlog_pending:
             self.get_logger().info(
                 f"📥 LLM INPUT backlog_pending=true backlog_handled=false "
-                f"(backlog_hint injected into user-turn; "
-                f"backlog_handled=true появится при _build_dynamic_system_context)"
+                f"(backlog_hint injected later, post speaker-resolution, "
+                f"in _prepare_user_input_context; backlog_handled=true "
+                f"появится при _build_dynamic_system_context)"
             )
         # Issue #live 12:45 — Bug C guard sees the *raw* command, not
         # the DJ-preamble wrapper. ``raw_user_command`` keeps it.
@@ -2382,6 +2391,7 @@ class DialogueNode(Node):
             speaker_tag=speaker_tag,
             speaker_duration_s=speaker_duration_s,
             from_tg=from_tg,
+            backlog_pending=backlog_pending,
         )
 
     def _on_tts_finished(self, msg: String) -> None:
@@ -2779,6 +2789,7 @@ class DialogueNode(Node):
         speaker_duration_s: float = 0.0,
         from_tg: bool = False,
         occasion: "Occasion | None" = None,
+        backlog_pending: bool = False,
     ) -> None:
         # ADR-0101 §3.1 / #2536 — повод (ещё не подключён в wake-gate,
         # PR-B…F); сигнатура принимает ``occasion``, логирует только при
@@ -2829,6 +2840,7 @@ class DialogueNode(Node):
                 speaker_tag=speaker_tag,
                 speaker_duration_s=speaker_duration_s,
                 from_tg=from_tg,
+                backlog_pending=backlog_pending,
             ),
             self._loop,
         )
@@ -3182,6 +3194,20 @@ class DialogueNode(Node):
             lines.append(f"    <name>{sp_name}</name>")
         else:
             lines.append("    <name>unknown</name>")
+            # Issue #2779 — незнакомец получил факты и имя Бориса: биометрия
+            # верно сказала unknown, но LLM всё равно нашла в истории
+            # диалога/памяти данные ПРЕДЫДУЩЕГО известного собеседника и
+            # адресовала их новому человеку. Явный запрет прямо рядом с
+            # <name>unknown</name> — LLM не должна домысливать личность по
+            # истории/памяти, когда биометрия честно говорит «не знаю».
+            lines.append(
+                "    <privacy_note>Текущий собеседник НЕ опознан голосом. "
+                "НЕ обращайся к нему по имени другого (даже недавнего) "
+                "диктора и не пересказывай факты/предпочтения, "
+                "относящиеся к другому диктору — ни из истории этого "
+                "диалога, ни из долговременной памяти. Отвечай по сути "
+                "вопроса, не приписывая его чужой личности.</privacy_note>"
+            )
         if sp_conf:
             lines.append(f"    <voice_confidence>{sp_conf:.2f}</voice_confidence>")
         # Issue #2440 — полный id, без усечения до 8 символов: 8 символов не
@@ -3301,18 +3327,37 @@ class DialogueNode(Node):
             self._pending_backlog_flush = False
             acc = getattr(self, "_speech_accumulator", None)
             if acc is not None:
-                block = acc.format_block()
+                # Issue #2779 — фильтруем по ТЕКУЩЕМУ (уже разрешённому
+                # биометрией) собеседнику: ``sp``/``sp_name`` выше в этой
+                # же функции — тот самый снимок ``_current_speaker``,
+                # ради актуальности которого ``_apply_speaker_identity``
+                # уже подождал inference. Запись чужого (по имени)
+                # диктора в блок не попадает и НЕ вычищается —
+                # см. ``discard_visible``.
+                # Issue #2779 — не ``sp_name or None``: лишний ``BoolOp``
+                # разрастил бы CC этого метода мимо cc_budget baseline
+                # (ADR-0021 R1). ``_is_entry_foreign`` короткозамыкает на
+                # ``current_known`` и никогда не смотрит на имя, когда
+                # ``current_known`` ложно, так что "" здесь эквивалентно
+                # ``None`` по итоговому поведению.
+                current_known = bool(sp.get("is_known"))
+                current_name = sp_name
+                block = acc.format_block(
+                    current_speaker_known=current_known,
+                    current_speaker_name=current_name,
+                )
                 if block:
-                    # Кол-во записей уже учтено в block (format_block → prune).
-                    # Берём ДО clear() — это счётчик «сколько фраз было в
-                    # бэклоге при сливе», операторский/e2e-маркер.
-                    n_entries = len(acc._entries)  # noqa: SLF001 — diagnostic
+                    # Кол-во ФАКТИЧЕСКИ слитых записей (не всех, что лежали
+                    # в аккумуляторе — чужие остаются для своего часа).
+                    n_entries = len(
+                        acc._visible_entries(current_known, current_name)  # noqa: SLF001 — diagnostic
+                    )
                     lines.append(block)
                     self.get_logger().info(
                         f"🗒️ [backlog] flushed to LLM backlog_handled=true "
                         f"entries={n_entries} block={block[:200]!r}"
                     )
-                acc.clear()
+                acc.discard_visible(current_known, current_name)
         lines.append("</system_context>")
         # W7c (issue #968): активные задачи планировщика (voice/music/anim
         # каналы) — LLM видит «что сейчас исполняется» перед каждым ходом
@@ -3438,6 +3483,7 @@ class DialogueNode(Node):
         speaker_tag: str | None = None,
         speaker_duration_s: float = 0.0,
         from_tg: bool = False,
+        backlog_pending: bool = False,
     ) -> None:
         with self._task_lock:
             self._run_task = asyncio.current_task()
@@ -3509,6 +3555,7 @@ class DialogueNode(Node):
                 from_tg=from_tg,
                 was_dj_auto=was_dj_auto,
                 speaker_context=speaker_context,
+                backlog_pending=backlog_pending,
             )
             # 🔴 FIX (issue #1101): _on_stt уже сделал DSM-переход
             # IDLE→LISTENING→DIALOGUE через WAKE_WORD+STT_RESULT. Передаём
@@ -5281,6 +5328,7 @@ class DialogueNode(Node):
         from_tg: bool,
         was_dj_auto: bool,
         speaker_context: Optional[str],
+        backlog_pending: bool = False,
     ) -> tuple[str, Any]:
         """Issue #992 / #1077 / #1195 / live 10.08 — user_input prelude.
 
@@ -5290,6 +5338,14 @@ class DialogueNode(Node):
         * Telegram-источник → префикс ``[TG] `` (issue #1195).
         * Голосовая биометрия → :meth:`_apply_speaker_identity` (issue #1077).
           DJ-auto — без биометрии (там нет живого юзера).
+        * Issue #2779 — backlog-хинт (``[URGENT_BACKLOG]``) собирается
+          ЗДЕСЬ, ПОСЛЕ ``_apply_speaker_identity`` — та дожидается
+          inference голосовой биометрии для ТЕКУЩЕЙ фразы, так что
+          ``self._current_speaker`` тут уже точен, а не устаревший
+          снимок с прошлой реплики. Раньше хинт строился в
+          ``_dispatch_cleaned`` сразу после STT, до этого ожидания —
+          именно там утекала запись бэклога с чужим (устаревшим) именем
+          (см. issue #2779, критерий приёмки §1–2).
         * Two-system-prompt snapshot → :meth:`_build_dynamic_system_context`
           (live 10.08). Используется как второй system-message в
           ``messages[]``.
@@ -5302,8 +5358,35 @@ class DialogueNode(Node):
             user_input = await self._apply_speaker_identity(
                 user_input, speaker_context
             )
+        if backlog_pending:
+            user_input = self._inject_backlog_hint(user_input)
         dynamic_system = self._build_dynamic_system_context()
         return user_input, dynamic_system
+
+    def _inject_backlog_hint(self, user_input: str) -> str:
+        """Issue #2779 — добавить ``[URGENT_BACKLOG]`` хинт в user-turn.
+
+        Читает ``self._current_speaker`` — на этот момент (вызывается
+        ПОСЛЕ ``_apply_speaker_identity``) он уже отражает биометрию
+        ИМЕННО текущей фразы, а не устаревший снимок. Запись бэклога,
+        помеченная ИМЕНЕМ другого диктора (не текущего), в хинт не
+        попадает — она остаётся в аккумуляторе дожидаться своего
+        собеседника (см. ``SpeechAccumulator._is_entry_foreign``).
+        """
+        accumulator = getattr(self, "_speech_accumulator", None)
+        if accumulator is None:
+            return user_input
+        with self._speaker_lock:
+            sp = dict(self._current_speaker)
+        current_known = bool(sp.get("is_known"))
+        current_name = sanitize_speaker_name(str(sp.get("name") or "")) or None
+        hint = accumulator.format_user_hint(
+            current_speaker_known=current_known,
+            current_speaker_name=current_name,
+        )
+        if hint:
+            user_input = f"{user_input}\n{hint}"
+        return user_input
 
     def _apply_music_guard(
         self,

@@ -84,8 +84,13 @@ class TestWakeFlushes:
         assert node._pending_backlog_flush is True
         dispatched = node._dispatch_turn.call_args.args[0]
         assert dispatched.startswith("робот")
-        assert "ФОНОВЫЙ ЗАПРОС" in dispatched
-        assert "расскажи про погоду" in dispatched
+        # Issue #2779 — хинт больше НЕ встраивается здесь: он собирается
+        # позже, в _prepare_user_input_context/_inject_backlog_hint, ПОСЛЕ
+        # того как разрешится биометрия текущей фразы (иначе хинт мог
+        # унести устаревшее/чужое имя из бэклога в LLM-контекст — см.
+        # TestInjectBacklogHintSpeakerFilter ниже). _dispatch_turn получает
+        # флаг, а не готовый текст.
+        assert node._dispatch_turn.call_args.kwargs.get("backlog_pending") is True
         node._dispatch_turn.assert_called_once()
 
     def test_wake_with_real_command_injects_hint(self, node):
@@ -93,8 +98,7 @@ class TestWakeFlushes:
         node._on_stt(_stt(node, "робот включи свет"))
         dispatched = node._dispatch_turn.call_args.args[0]
         assert dispatched.startswith("включи свет")
-        assert "ФОНОВЫЙ ЗАПРОС" in dispatched
-        assert "расскажи про погоду" in dispatched
+        assert node._dispatch_turn.call_args.kwargs.get("backlog_pending") is True
         node._dispatch_turn.assert_called_once()
 
     def test_vague_follow_up_injects_hint(self, node):
@@ -102,8 +106,7 @@ class TestWakeFlushes:
         node._on_stt(_stt(node, "робот может ты"))
         dispatched = node._dispatch_turn.call_args.args[0]
         assert dispatched.startswith("может ты")
-        assert "ФОНОВЫЙ ЗАПРОС" in dispatched
-        assert "расскажи про погоду" in dispatched
+        assert node._dispatch_turn.call_args.kwargs.get("backlog_pending") is True
         node._dispatch_turn.assert_called_once()
 
     def test_empty_backlog_no_flag(self, node):
@@ -189,3 +192,91 @@ class TestBuildDynamicContextFlushes:
             if c.args and "backlog_pending=true" in str(c.args[0])
         ]
         assert not calls, f"Unexpected backlog_pending=true: {calls!r}"
+
+
+# Issue #2779 — регресс: живой прогон обратился к незнакомцу («дядя Гриша»,
+# явно отказавшемуся называть себя) по имени «Борис» и пересказал ему факты
+# Бориса. Биометрия дважды подряд честно сказала ``Speaker: unknown`` — утечка
+# шла через бэклог-хинт, собранный СРАЗУ после STT (до того как биометрия
+# текущей фразы успевала разрешиться), с записью, помеченной устаревшим
+# именем «Борис». Критерий приёмки: при Speaker: unknown личность не
+# обращается по имени предыдущего диктора и не пересказывает его факты — ни
+# из истории, ни из бэклога.
+class TestInjectBacklogHintSpeakerFilter:
+    def test_foreign_named_entry_excluded_when_current_unknown(self, node):
+        """Speaker: unknown + бэклог с чужим (по имени) диктором →
+        в user-turn хинте нет ни имени, ни текста этой записи."""
+        node._speech_accumulator.add(
+            "про меня что помнишь",
+            speaker_tag="0",
+            speaker_name="Борис",
+        )
+        node._current_speaker = {"is_known": False}
+        user_input = node._inject_backlog_hint("я мимо шёл")
+        assert "Борис" not in user_input
+        assert "про меня что помнишь" not in user_input
+        assert user_input == "я мимо шёл"
+        # Запись не потеряна — она остаётся ждать РЕАЛЬНОГО Бориса, а не
+        # выдаётся первому встречному.
+        assert not node._speech_accumulator.is_empty()
+
+    def test_matching_named_entry_included_when_current_speaker_matches(self, node):
+        """Тот же диктор (по имени) вернулся — хинт нормально проходит."""
+        node._speech_accumulator.add(
+            "включи трек про весну",
+            speaker_tag="0",
+            speaker_name="Борис",
+        )
+        node._current_speaker = {
+            "is_known": True,
+            "name": "Борис",
+            "speaker_id": "05ff0881",
+        }
+        user_input = node._inject_backlog_hint("робот")
+        assert "Борис" in user_input
+        assert "включи трек про весну" in user_input
+
+    def test_anonymous_entry_always_included(self, node):
+        """Анонимная запись («незнакомец») не считается чужой личностью —
+        не блокируется, даже если текущий собеседник тоже unknown."""
+        node._speech_accumulator.add("привет", speaker_tag=None, speaker_name=None)
+        node._current_speaker = {"is_known": False}
+        user_input = node._inject_backlog_hint("робот")
+        assert "привет" in user_input
+
+
+class TestBuildDynamicContextForeignSpeaker:
+    def test_foreign_named_entry_not_flushed_from_system_context(self, node):
+        """Тот же регресс на уровне <system_context>: чужая (по имени)
+        запись не попадает в блок и не вычищается насовсем."""
+        node._speech_accumulator.add(
+            "про меня что помнишь",
+            speaker_tag="0",
+            speaker_name="Борис",
+        )
+        node._pending_backlog_flush = True
+        node._current_speaker = {"is_known": False}
+        ctx = node._build_dynamic_system_context()
+        assert "Борис" not in ctx
+        assert "про меня что помнишь" not in ctx
+        assert "<speech_backlog>" not in ctx
+        assert node._pending_backlog_flush is False
+        # Не вычищена — ждёт своего собеседника (в отличие от старого
+        # безусловного acc.clear()).
+        assert not node._speech_accumulator.is_empty()
+
+    def test_matching_named_entry_flushed_and_cleared(self, node):
+        node._speech_accumulator.add(
+            "включи трек про весну",
+            speaker_tag="0",
+            speaker_name="Борис",
+        )
+        node._pending_backlog_flush = True
+        node._current_speaker = {
+            "is_known": True,
+            "name": "Борис",
+            "speaker_id": "05ff0881",
+        }
+        ctx = node._build_dynamic_system_context()
+        assert "включи трек про весну" in ctx
+        assert node._speech_accumulator.is_empty()
