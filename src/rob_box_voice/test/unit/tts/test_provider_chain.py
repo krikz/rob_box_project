@@ -326,7 +326,17 @@ def test_chain_provider_yandex_backcompat_skips_minimax() -> None:
 
 
 def test_chain_ttl_expiry_retries_minimax_first() -> None:
-    """Edge: MiniMax recovers (TTL expired) → tried first again."""
+    """Edge: MiniMax recovers (TTL expired) → tried first again.
+
+    Same flake as `test_dead_cache_expires_after_ttl`, missed when that one
+    was fixed: `ttl_s=0.01` plus `time.sleep(0.02)` against a
+    `time.monotonic()` that ticks every 15.6 ms on Windows
+    (`GetTickCount64`). If the tick landed between the mark and the check
+    below, the deadline was already in the past and the freshly-killed
+    provider read back as live — `assert ... is True` failed about one run
+    in twenty, in a full suite run and standalone alike. Expiry is a
+    comparison, so move the deadline instead of waiting for it.
+    """
     node = _playback_node()
     _bind_dead_cache(node)
     node.yandex_stub = object()
@@ -336,10 +346,12 @@ def test_chain_ttl_expiry_retries_minimax_first() -> None:
         return_value={"audio_np": np.zeros(800, dtype=np.float32), "sample_rate": 32000}
     )
 
-    # Mark MiniMax dead with a very short TTL, then let it expire.
-    TTSNode._mark_provider_dead(node, "minimax", RuntimeError("quota"), ttl_s=0.01)
+    # Mark MiniMax dead with a real TTL, then expire it by moving the
+    # deadline into the past — no wall-clock waiting.
+    TTSNode._mark_provider_dead(node, "minimax", RuntimeError("quota"), ttl_s=60.0)
     assert TTSNode._provider_is_dead(node, "minimax") is True
-    time.sleep(0.02)
+    node._provider_dead_until["minimax"] = time.monotonic() - 1.0
+    assert TTSNode._provider_is_dead(node, "minimax") is False
 
     _run_and_play(node)
 
