@@ -17,6 +17,19 @@ speaker_id_node:
     # REGISTER_MATCH_THRESHOLD (тест test_yaml_param_consistency.py).
     identify_threshold: 0.72
     register_match_threshold: 0.75
+    # Issue #2747 — растущая галерея БЕЗ адаптивного порога. Первая версия
+    # этой правки смягчала identify_threshold по размеру галереи — ОТКАЧЕНО
+    # после проверки на реальных данных робота (speakers.db.bak-20260921):
+    # same-voice и cross-voice cosine пересекаются целиком (same p50=0.786,
+    # cross p50=0.536, cross >= 0.45 у 90% пар) — акустического порога,
+    # который отделял бы «своего» от «чужого» на одиночном эмбеддинге, не
+    # существует. Вместо порога — растим галерею по непрерывности диалога:
+    # gallery_warmup_size — потолок числа эмбеддингов за одну growth-сессию,
+    # gallery_growth_session_gap_sec — максимальный разрыв между репликами
+    # внутри неё. Подробности — speaker_embeddings.GALLERY_WARMUP_SIZE,
+    # speaker_id_node._apply_growth_session.
+    gallery_warmup_size: 5
+    gallery_growth_session_gap_sec: 30.0
     # Issue #2440 — harness-БД фактов для склейки профилей через шов
     # идентичности (тот же файл, что sqlite_db_path у dialogue_node).
     memory_db_path: "/data/harness_voice.db"

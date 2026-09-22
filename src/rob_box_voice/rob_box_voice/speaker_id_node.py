@@ -34,20 +34,36 @@ guard" в ADR-0128):
         / ``_apply_e2e_mode``.
 
 Parameters:
-    db_path                  (str)   — path to SQLite DB       [/data/speakers.db]
-    e2e_db_path               (str)   — изолированная БД для E2E-режима (issue
-                                       #2750), переключается параметром
-                                       e2e_mode выше [/data/speakers.e2e.db]
-    identify_threshold       (float) — cosine similarity gate  [0.72]
-    register_match_threshold (float) — порог слияния при регистрации (issue
-                                       W5-4 + #2348; строже identify_threshold —
-                                       см. speaker_embeddings.REGISTER_MATCH_THRESHOLD) [0.75]
-    memory_db_path            (str)   — harness_voice.db, факты через шов
-                                       идентичности (issue #2440) [/data/harness_voice.db]
-    voice_facts_db_path       (str)   — voice_memory.db, второй писатель
-                                       фактов (issue #2751) [/data/voice_memory.db]
-    sample_rate              (int)   — PCM sample rate         [16000]
-    enabled                  (bool)  — enable/disable node     [true]
+    db_path                    (str)   — path to SQLite DB       [/data/speakers.db]
+    e2e_db_path                (str)   — изолированная БД для E2E-режима (issue
+                                        #2750), переключается параметром
+                                        e2e_mode выше [/data/speakers.e2e.db]
+    identify_threshold         (float) — cosine similarity gate, НЕ зависит от
+                                        размера галереи (issue #2747 —
+                                        адаптивный порог по gallery_size
+                                        опробован и отклонён на реальных
+                                        данных, см. speaker_embeddings.
+                                        GALLERY_WARMUP_SIZE) [0.72]
+    register_match_threshold   (float) — порог слияния при регистрации (issue
+                                        W5-4 + #2348; строже identify_threshold —
+                                        см. speaker_embeddings.REGISTER_MATCH_THRESHOLD) [0.75]
+    gallery_warmup_size        (int)   — issue #2747: потолок числа
+                                        эмбеддингов, которые growth-сессия
+                                        (см. _apply_growth_session) может
+                                        дописать в галерею за один
+                                        непрерывный разговор после
+                                        register_speaker [5]
+    gallery_growth_session_gap_sec (float) — issue #2747: максимальный
+                                        разрыв между репликами внутри
+                                        growth-сессии — больше этого считаем,
+                                        что человек мог уйти и сессия
+                                        прервана [30.0]
+    memory_db_path              (str)   — harness_voice.db, факты через шов
+                                        идентичности (issue #2440) [/data/harness_voice.db]
+    voice_facts_db_path         (str)   — voice_memory.db, второй писатель
+                                        фактов (issue #2751) [/data/voice_memory.db]
+    sample_rate                (int)   — PCM sample rate         [16000]
+    enabled                    (bool)  — enable/disable node     [true]
 """
 
 import collections
@@ -66,6 +82,7 @@ from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPo
 from std_msgs.msg import String
 
 from .core import epithets
+from .utils import speaker_embeddings as _se_mod
 from .utils.speaker_embeddings import SpeakerDatabase, SpeakerMatch
 
 # Issue #1160 — Prometheus metrics (этап 1 observability).
@@ -94,6 +111,21 @@ class SpeakerIdNode(Node):
         # 0.75 даёт TPR 53 % / FPR 3.9 % — компромисс между «поймать дубль» и
         # «не склеить разных людей»). См. speaker_embeddings.REGISTER_MATCH_THRESHOLD.
         self.declare_parameter("register_match_threshold", 0.75)
+        # Issue #2747 — растущая галерея БЕЗ адаптивного порога (порог по
+        # cosine пробовали и откатили — см. speaker_embeddings.
+        # GALLERY_WARMUP_SIZE: same-voice/cross-voice распределения на
+        # реальных данных робота пересекаются целиком, порог не разделяет).
+        # Рост галереи теперь держится на непрерывности сессии диалога, а
+        # не на похожести голоса — см. _apply_growth_session.
+        self.declare_parameter("gallery_warmup_size", 5)
+        # Issue #2747 — сколько секунд тишины между репликами ещё считается
+        # «тот же непрерывный разговор» для growth-сессии. Значение — то же
+        # 30 c, что уже используется этой нодой в другом месте для похожего
+        # суждения «эмбеддинг ещё свежий/относится к текущему
+        # взаимодействию» (``_MAX_EMBED_AGE_SEC``, ``_on_register_request``)
+        # — переиспользуем существующую калибровку, а не придумываем новое
+        # число.
+        self.declare_parameter("gallery_growth_session_gap_sec", 30.0)
         self.declare_parameter("sample_rate", 16000)
         self.declare_parameter("enabled", True)
         # Issue #1160 — Prometheus metrics endpoint. 9112 — speaker_id_node.
@@ -147,6 +179,10 @@ class SpeakerIdNode(Node):
         db_path: str = self.get_parameter("db_path").value
         threshold: float = self.get_parameter("identify_threshold").value
         register_threshold: float = self.get_parameter("register_match_threshold").value
+        gallery_warmup_size: int = int(self.get_parameter("gallery_warmup_size").value)
+        self._growth_session_gap_sec: float = float(
+            self.get_parameter("gallery_growth_session_gap_sec").value
+        )
 
         if not self._enabled:
             self.get_logger().info("⚠️ speaker_id_node disabled via parameter")
@@ -167,14 +203,18 @@ class SpeakerIdNode(Node):
         self._e2e_mode_active: bool = False
         self._db_lock = threading.Lock()
         self._db = SpeakerDatabase(db_path)
-        # Patch thresholds from parameters
-        import rob_box_voice.utils.speaker_embeddings as _se_mod
-
+        # Patch thresholds from parameters (модуль импортирован один раз на
+        # уровне файла — как ``_se_mod``, так и ``SpeakerDatabase`` /
+        # ``SpeakerMatch`` из того же объекта модуля, см. импорты вверху).
         _se_mod.IDENTIFY_THRESHOLD = threshold
         _se_mod.REGISTER_MATCH_THRESHOLD = register_threshold
+        # Issue #2747 — см. declare_parameter выше.
+        _se_mod.GALLERY_WARMUP_SIZE = gallery_warmup_size
         self.get_logger().info(
             f"✅ SpeakerDatabase opened: {db_path} "
-            f"identify_threshold={threshold} register_match_threshold={register_threshold}"
+            f"identify_threshold={threshold} register_match_threshold={register_threshold} "
+            f"gallery_warmup_size={gallery_warmup_size} "
+            f"gallery_growth_session_gap_sec={self._growth_session_gap_sec}"
         )
         # Issue #2750 — тот же шаблон, что dialogue_node (barge_in_policy)
         # и tts_node (volume_db и др.): валидирующий Humble-колбэк, тело
@@ -187,6 +227,14 @@ class SpeakerIdNode(Node):
         # возвращает успех/провал вызывающему в exit-коде — сильнее топика
         # даже без учёта сторожа.
         self.add_on_set_parameters_callback(self.parameters_callback)
+
+        # Issue #2747 — growth-сессия: непрерывность диалога как якорь для
+        # роста галереи ВМЕСТО акустического порога (см. большой
+        # комментарий у speaker_embeddings.GALLERY_WARMUP_SIZE — порог по
+        # cosine пробовали и откатили). Устанавливается в _do_register(),
+        # продлевается/закрывается в _apply_growth_session(). None — нет
+        # активной сессии (ничего не растим).
+        self._growth_session: Optional[dict] = None
 
         # ── Pending registration ───────────────────────────────────────────────
         # Set when user says "запомни мой голос как [name]" via /voice/speaker/register.
@@ -418,24 +466,38 @@ class SpeakerIdNode(Node):
             self._pending_register_name = None
 
         if pending_name:
+            # Issue #2748 — _do_register() теперь САМ публикует полноценный
+            # SpeakerMatch (is_known=true, source="register") на
+            # /voice/speaker/result, поэтому второй, отдельный
+            # identify()+publish() здесь больше не нужен — раньше он был
+            # ЕДИНСТВЕННЫМ источником такого сигнала для этой ветки, но для
+            # ветки _on_register_request (без pending, с сразу доступным
+            # эмбеддингом — обычный путь LLM-тула register_speaker) его не
+            # было вовсе, что и было причиной бага #2748 («имя не доезжает
+            # до лица»). Дублировать здесь identify() с адаптивным порогом
+            # (issue #2747) избыточно и может дать РАСХОДЯЩИЙСЯ результат
+            # (например, is_known=false из-за шумной первой фразы сразу
+            # после регистрации), перезаписав только что опубликованный
+            # источник истины «человек сам назвал своё имя».
             self._do_register(pending_name, embedding, speaker_id=None)
-            # After registration, also publish as a known speaker result
-            match = self._db.identify(embedding)
-            self._publish_result(match)
             self.get_logger().info(
-                f"✅ Registered & identified '{pending_name}' "
-                f"(inference {elapsed:.0f} ms)"
+                f"✅ Registered '{pending_name}' (inference {elapsed:.0f} ms)"
             )
             # Issue #1160 — Prometheus metrics: только что зарегистрированный
-            # спикер считается known.
-            record_speaker_recognize(
-                known=True,
-                confidence=match.confidence if match else None,
-            )
+            # спикер считается known. confidence=1.0 — эмбеддинг только что
+            # записан как ЭТАЛОН для profile, self-similarity максимальна
+            # (см. _do_register).
+            record_speaker_recognize(known=True, confidence=1.0)
             return
 
         match = self._db.identify(embedding)
         self._log_identify_candidates(embedding)
+        # Issue #2747 — рост галереи НЕ зависит от исхода identify() выше
+        # (см. большой комментарий у speaker_embeddings.GALLERY_WARMUP_SIZE:
+        # акустический гейт для этого решения отклонён — same/cross-voice
+        # распределения пересекаются целиком на реальных данных робота).
+        # Якорь — непрерывность growth-сессии, открытой в _do_register().
+        self._apply_growth_session(embedding, match)
         if match:
             self.get_logger().info(
                 f"👤 Speaker: '{match.name}' confidence={match.confidence:.3f} "
@@ -450,6 +512,82 @@ class SpeakerIdNode(Node):
             confidence=match.confidence if match else None,
         )
         self._publish_result(match)
+
+    def _apply_growth_session(
+        self, embedding: np.ndarray, match: Optional[SpeakerMatch]
+    ) -> None:
+        """Issue #2747 — дописать эмбеддинг в галерею по якорю сессии.
+
+        НЕ акустический гейт (см. speaker_embeddings.GALLERY_WARMUP_SIZE —
+        порог по cosine пробовали и отклонили на реальных данных робота:
+        same-voice/cross-voice распределения пересекаются целиком, порог их
+        не разделяет). Якорь — непрерывность: ``_do_register()`` открывает
+        growth-сессию сразу после явной регистрации («человек только что
+        представился»), и, пока реплики идут подряд без большого разрыва,
+        они считаются принадлежащими тому же человеку — тот же принцип,
+        которым уже пользуется ``mcp_server._on_speaker_result`` для
+        события ``event="registered"``.
+
+        Условия закрытия сессии (ADR-0127-стиль: ошибаться дёшево — здесь
+        просто НЕ дописываем эмбеддинг, профиль не портится):
+          * разрыв с прошлой репликой сессии > ``_growth_session_gap_sec``
+            — человек мог уйти, сессия прервана;
+          * галерея уже доросла до ``GALLERY_WARMUP_SIZE`` — потолок;
+          * ЭТА реплика уверенно (обычный ``identify()``, калиброванный
+            порог) опознана как ДРУГОЙ, уже известный спикер — сильное
+            прямое свидетельство, что якорь больше не в кадре/у микрофона
+            (высокий косинус используется здесь как ДОПОЛНИТЕЛЬНОЕ условие
+            ПОВЕРХ якоря — вето, а не самостоятельный порог доверия).
+        """
+        session = self._growth_session
+        if session is None:
+            return
+        now = time.time()
+
+        if now - session["last_utterance_at"] > self._growth_session_gap_sec:
+            self.get_logger().info(
+                f"🌙 [issue #2747] growth-сессия '{session['name']}' закрыта "
+                f"по таймауту ({now - session['last_utterance_at']:.1f}s > "
+                f"{self._growth_session_gap_sec}s без реплик)"
+            )
+            self._growth_session = None
+            return
+
+        if match is not None and match.speaker_id != session["speaker_id"]:
+            # Реплика уверенно опознана как ДРУГОЙ человек — якорь больше не
+            # актуален (кто-то другой заговорил / подошёл). Не дописываем и
+            # закрываем сессию: продолжать доверять якорю после прямого
+            # акустического опровержения нельзя.
+            self.get_logger().info(
+                f"🌙 [issue #2747] growth-сессия '{session['name']}' закрыта: "
+                f"реплика уверенно опознана как '{match.name}' "
+                f"(score={match.confidence:.3f}) — другой человек у микрофона"
+            )
+            self._growth_session = None
+            return
+
+        if not self._db.append_reference_embedding(
+            session["speaker_id"], session["name"], embedding
+        ):
+            # Потолок GALLERY_WARMUP_SIZE достигнут — сессии больше нечего
+            # делать, закрываем её (не ошибка, штатное завершение роста).
+            self.get_logger().info(
+                f"🌱 [issue #2747] growth-сессия '{session['name']}' "
+                f"завершена: галерея достигла {_se_mod.GALLERY_WARMUP_SIZE} "
+                f"эмбеддингов"
+            )
+            self._growth_session = None
+            return
+
+        session["last_utterance_at"] = now
+        session["count"] += 1
+        self.get_logger().info(
+            f"🌱 [issue #2747] Галерея '{session['name']}' "
+            f"({session['speaker_id'][:8]}) пополнена по якорю сессии: "
+            f"+1 эмбеддинг (всего добавлено в сессии: {session['count']}, "
+            f"gallery_size={self._db.gallery_size(session['speaker_id'])}"
+            f"/{_se_mod.GALLERY_WARMUP_SIZE})"
+        )
 
     def _log_identify_candidates(self, embedding: np.ndarray) -> None:
         """Issue W5-4 п.4 — диагностика: best_score И второй кандидат.
@@ -822,6 +960,54 @@ class SpeakerIdNode(Node):
         ack.data = json.dumps(ack_payload, ensure_ascii=False)
         self._result_pub.publish(ack)
 
+        # Issue #2748 — до этой правки нода НИЧЕГО не публиковала в момент
+        # регистрации, КРОМЕ служебного ack выше (``event: "registered"``),
+        # который dialogue_node и
+        # rob_box_harness.encounter.voice_adapter.VoiceEncounterAdapter
+        # намеренно трактуют как «не сигнал присутствия» (см. их код) — то
+        # есть vision_face_node._on_speaker_result (гейт на
+        # ``payload.get('is_known')``) никогда не видел момент регистрации,
+        # и имя не долетало до лицевой записи, даже когда в кадре было
+        # ровно одно лицо. Публикуем ВТОРЫМ, отдельным сообщением полноценный
+        # SpeakerMatch с ``source="register"`` — по форме неотличимый от
+        # обычного identify()-результата (совместим с dialogue_node /
+        # mcp_server / vision_face_node без правок их парсинга), но с
+        # пометкой источника: имя названо самим человеком, доверия к нему
+        # больше, чем к косинусу (issue #2747 — тот же самый голос сразу
+        # после регистрации сам по себе НЕ всегда набирает калиброванный
+        # identify_threshold).
+        #
+        # threshold=0.0 — принудительно берём self-similarity: embedding
+        # только что записан В ГАЛЕРЕЮ sid (внутри register_or_merge →
+        # register() чуть выше), поэтому лучший кандидат — ГАРАНТИРОВАННО
+        # sid с cosine≈1.0 (сравнение вектора с самим собой).
+        self_match = self._db.identify(embedding, threshold=0.0)
+        if self_match is not None:
+            self._publish_result(self_match, source="register")
+            # Issue #2747 — открываем growth-сессию: следующие реплики,
+            # идущие подряд без большого разрыва (см.
+            # _apply_growth_session), будут считаться принадлежащими
+            # ЭТОМУ спикеру и дописываться в его галерею — не по похожести
+            # голоса, а по факту «только что явно представился». Имя берём
+            # из ``self_match.name`` (каноническое написание из БД), а не
+            # из аргумента ``name`` — при reuse-слиянии (ADR-0127) они
+            # могут отличаться регистром/пробелами, и register() внутри
+            # append_reference_embedding() иначе залогировал бы это как
+            # неожиданное переименование.
+            self._growth_session = {
+                "speaker_id": sid,
+                "name": self_match.name,
+                "last_utterance_at": time.time(),
+                "count": 0,
+            }
+        else:  # pragma: no cover — не должно происходить: sid только что создан
+            self.get_logger().warning(
+                f"⚠️ [issue #2748] Не удалось получить self-match для только "
+                f"что зарегистрированного '{name}' (id={sid[:8]}) — "
+                f"is_known=true не опубликован, слияние с лицом пропущено, "
+                f"growth-сессия не открыта"
+            )
+
     # ── Эпитеты (issue #1787) ─────────────────────────────────────────────────
 
     def _on_observe_request(self, msg: String) -> None:
@@ -1038,8 +1224,20 @@ class SpeakerIdNode(Node):
                 f"{speaker_id[:8]}: {type(exc).__name__}: {exc}"
             )
 
-    def _publish_result(self, match: Optional[SpeakerMatch]) -> None:
-        """Serialise and publish the speaker identification result."""
+    def _publish_result(
+        self, match: Optional[SpeakerMatch], source: Optional[str] = None
+    ) -> None:
+        """Serialise and publish the speaker identification result.
+
+        Issue #2748 — ``source`` — необязательная метка происхождения
+        сигнала. Обычная идентификация по фразе её не ставит (совместимость
+        со старым форматом payload, который уже читают dialogue_node /
+        mcp_server / vision_face_node). ``source="register"`` ставит
+        ``_do_register()`` — сигнал «имя названо человеком при регистрации»,
+        а не «косинус посчитал похожим»; vision_face_node принимает его
+        наравне с обычным узнаванием (см. ``_on_speaker_result`` там —
+        гейт только на ``is_known``, поле ``source`` не проверяется).
+        """
         if match:
             payload = {
                 "is_known": True,
@@ -1050,9 +1248,12 @@ class SpeakerIdNode(Node):
                 # (профиль из старой БД) — потребитель обязан это терпеть.
                 "epithet": match.epithet,
             }
+            if source:
+                payload["source"] = source
             self.get_logger().info(
                 f"📢 Publishing: is_known=true name={match.name!r} "
                 f"epithet={match.epithet!r} conf={match.confidence:.3f}"
+                + (f" source={source!r}" if source else "")
             )
         else:
             payload = {"is_known": False}

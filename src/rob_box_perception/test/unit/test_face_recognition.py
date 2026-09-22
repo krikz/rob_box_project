@@ -536,6 +536,98 @@ def test_voice_merge_speaker_bound_to_different_person_no_merge_and_warns():
 
 
 # ============================================================================
+# 8b. Причины пропуска слияния — issue #2748 («слияний=0» само по себе не
+#     говорит, ПОЧЕМУ). Каждый ранний return из note_voice_identification()
+#     обязан инкрементировать СВОЙ, отдельный счётчик в stats().
+# ============================================================================
+
+
+def test_voice_merge_skip_counted_as_multi_face():
+    tracker = FaceTracker(min_track_sec=1000.0)
+    store = FakeStore()
+    rec = FaceRecognizer(embedder=FakeEmbedder(), store=store, tracker=tracker)
+    _prime_last_frame(rec, store, ['p1', 'p2'], now=10.0)
+
+    rec.note_voice_identification(speaker_id='spk-1', name='Денис', now=11.0)
+
+    s = rec.stats()
+    assert s['voice_merge_skip_multi_face'] == 1
+    assert s['voice_merge_skip_no_face'] == 0
+    assert s['voice_merge_skip_stale'] == 0
+    assert s['voice_merge_skip_conflict'] == 0
+
+
+def test_voice_merge_skip_counted_as_no_face():
+    tracker = FaceTracker(min_track_sec=1000.0)
+    store = FakeStore()
+    rec = FaceRecognizer(embedder=FakeEmbedder(), store=store, tracker=tracker)
+    rec.process([], make_frame(), now=10.0)
+
+    rec.note_voice_identification(speaker_id='spk-1', name='Денис', now=11.0)
+
+    s = rec.stats()
+    assert s['voice_merge_skip_no_face'] == 1
+    assert s['voice_merge_skip_multi_face'] == 0
+
+
+def test_voice_merge_skip_counted_as_stale():
+    tracker = FaceTracker(min_track_sec=1000.0)
+    store = FakeStore()
+    rec = FaceRecognizer(embedder=FakeEmbedder(), store=store, tracker=tracker, voice_merge_window_sec=6.0)
+    _prime_last_frame(rec, store, ['p1'], now=10.0)
+
+    rec.note_voice_identification(speaker_id='spk-1', name='Денис', now=110.0)
+
+    s = rec.stats()
+    assert s['voice_merge_skip_stale'] == 1
+    assert s['voice_merge_skip_no_face'] == 0
+
+
+def test_voice_merge_skip_counted_as_conflict():
+    tracker = FaceTracker(min_track_sec=1000.0)
+    store = FakeStore()
+    store.find_by_speaker_map = {'spk-1': 'other-person'}
+    rec = FaceRecognizer(embedder=FakeEmbedder(), store=store, tracker=tracker)
+    _prime_last_frame(rec, store, ['p1'], now=10.0)
+
+    rec.note_voice_identification(speaker_id='spk-1', name='Денис', now=11.0)
+
+    s = rec.stats()
+    assert s['voice_merge_skip_conflict'] == 1
+
+
+def test_voice_merge_skip_counters_accumulate_across_calls():
+    """Несколько пропусков ПОДРЯД суммируются, а не перезаписываются —
+    иначе periodic-сводка (раз в 60с) видела бы только последнюю причину."""
+    tracker = FaceTracker(min_track_sec=1000.0)
+    store = FakeStore()
+    rec = FaceRecognizer(embedder=FakeEmbedder(), store=store, tracker=tracker)
+
+    rec.process([], make_frame(), now=10.0)
+    rec.note_voice_identification(speaker_id='spk-1', name='Денис', now=11.0)
+    rec.note_voice_identification(speaker_id='spk-1', name='Денис', now=11.5)
+
+    assert rec.stats()['voice_merge_skip_no_face'] == 2
+
+
+def test_successful_merge_does_not_touch_skip_counters():
+    tracker = FaceTracker(min_track_sec=1000.0)
+    store = FakeStore()
+    rec = FaceRecognizer(embedder=FakeEmbedder(), store=store, tracker=tracker, voice_merge_window_sec=6.0)
+    _prime_last_frame(rec, store, ['p1'], now=10.0)
+
+    result = rec.note_voice_identification(speaker_id='spk-1', name='Денис', now=11.0)
+
+    assert result == 'p1'
+    s = rec.stats()
+    assert s['voice_merges_total'] == 1
+    assert s['voice_merge_skip_no_face'] == 0
+    assert s['voice_merge_skip_multi_face'] == 0
+    assert s['voice_merge_skip_stale'] == 0
+    assert s['voice_merge_skip_conflict'] == 0
+
+
+# ============================================================================
 # 9. stats() — форма и устойчивость к падению store.stats()
 # ============================================================================
 

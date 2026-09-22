@@ -106,6 +106,57 @@ REGISTER_MATCH_THRESHOLD: float = 0.75
 MIN_AUDIO_DURATION_SEC: float = 0.3  # minimum speech length for reliable embedding
 SAMPLE_RATE: int = 16000            # resemblyzer expects 16 kHz mono float32
 
+# ── Растущая галерея (issue #2747) — БЕЗ адаптивного порога ─────────────────
+#
+# ИСТОРИЯ РЕШЕНИЯ (важно не повторить дважды, issue #2747 обсуждение в PR
+# #2757): первая версия этой правки вводила ``adaptive_identify_threshold()``
+# — мягкий порог 0.45 на ``gallery_size==1``, линейно ужесточающийся до
+# калиброванного 0.72. Идея была в том, что 0.45 пропускает 7 из 8 живых
+# реплик одного человека из замера issue #2747 (0.283-0.584 против
+# единственного эталона). Эта идея была ОТКЛОНЕНА после проверки на реальных
+# данных робота (``speakers.db.bak-20260921T224624Z``, 44 профиля, 45
+# эмбеддингов, тот же пайплайн и микрофон, попарные косинусы):
+#
+#     ОДНО имя (один человек):    n=277  min=0.329 p50=0.786 p90=0.903
+#                                  доля >= 0.45: 92.4%   доля >= 0.72: 57.0%
+#     РАЗНЫЕ имена (чужие):       n=669  min=0.293 p50=0.536 p90=0.658
+#                                  доля >= 0.45: 90.0%   доля >= 0.72:  4.9%
+#
+# При пороге 0.45 проходит 90% ЧУЖИХ пар — не «повышенный риск», а «почти
+# всегда». Сведя с замером живого голоса из #2747 (один и тот же человек
+# против своего профиля: 0.283-0.584, медиана чужих пар здесь: 0.536) —
+# распределения «свой»/«чужой» не просто пересекаются, они лежат друг на
+# друге. НИКАКОЕ значение порога их не разделяет: 0.45 впускает чужих,
+# 0.72 не впускает хозяина. Порог — не рычаг для этой задачи.
+#
+# ОГОВОРКА О ДАННЫХ (честно, чтобы не выглядело точнее, чем есть): 44
+# профиля бэкапа — в основном синтетические e2e-дикторы (23 «Саша», TTS
+# anton/ermil и т.п.), голоса TTS звучат друг на друга похоже сильнее живых
+# людей, так что «90% чужих проходит» — вероятно ВЕРХНЯЯ оценка ложного
+# приёма. Косинус между двумя РЕАЛЬНЫМИ людьми на этом микрофоне и пайплайне
+# никто не мерил (десять минут работы вдвоём, когда стенд освободится от
+# E2E-марафона) — нижней оценки пока нет ни у кого.
+#
+# ЧТО ДЕЛАЕМ ВМЕСТО ПОРОГА: ``identify()`` остаётся на калиброванном
+# IDENTIFY_THRESHOLD ВСЕГДА (адаптации по умолчанию больше нет — см. ниже).
+# Галерея растёт не там, где косинус случайно высокий, а там, где личность
+# подтверждена ВНЕШНИМ свидетельством — непрерывностью присутствия/диалога:
+# реплики, идущие подряд без разрыва сразу после ``register_speaker``,
+# принадлежат тому, кто только что представился (тот же принцип уже
+# используется в ``mcp_server._on_speaker_result`` для события
+# ``event="registered"`` — «прямо сейчас зарегистрировали юзера и следующая
+# реплика относится к нему»). Эта логика живёт в speaker_id_node
+# (``_growth_session`` + ``_apply_growth_session``, НЕ здесь) — модуль БД
+# знает только про numeric cap (:data:`GALLERY_WARMUP_SIZE`) и не участвует
+# в решении «это тот же человек».
+#
+# GALLERY_WARMUP_SIZE = 5: не изменилось — из лога issue #2747 реплики шли
+# с интервалом ~60-70 c (10:03→10:11 на 8 реплик), пять реплик — одна-две
+# минуты обычного разговора. Теперь это ПОТОЛОК числа эмбеддингов, которые
+# сессионный якорь может дописать в галерею за один непрерывный разговор —
+# не связан с порогом identify() никак.
+GALLERY_WARMUP_SIZE: int = 5
+
 
 @dataclass
 class SpeakerMatch:
@@ -120,6 +171,13 @@ class SpeakerMatch:
     # различает тёзок. None, пока профиль её не получил (старые записи до
     # миграции + спикеры, зарегистрированные вне speaker_id_node).
     epithet: Optional[str] = None
+    # Issue #2747 — сколько эмбеддингов сейчас в галерее этого спикера (ДО
+    # возможного дозаписывания текущей реплики). ЧИСТО диагностическое поле
+    # (лог, "score X при пуле из Y") — НЕ используется для выбора порога
+    # identify() (адаптивный порог по gallery_size отклонён, см. комментарий
+    # у GALLERY_WARMUP_SIZE): один и тот же score означает разную степень
+    # доверия при пуле из 1 и из 5, полезно видеть в логах при разборе.
+    gallery_size: int = 0
 
 
 # ── Lazy import of resemblyzer (not available at build time on CI) ────────────
@@ -351,14 +409,17 @@ class SpeakerDatabase:
             logger.error(f"embed_audio failed: {type(exc).__name__}: {exc}")
             return None
 
-    def _score_all(self, embedding: np.ndarray) -> List[Tuple[str, str, float]]:
+    def _score_all(self, embedding: np.ndarray) -> List[Tuple[str, str, float, int]]:
         """Посчитать best-of-pool cosine similarity для КАЖДОГО известного спикера.
 
-        Возвращает список ``(speaker_id, name, score)``, отсортированный по
-        убыванию score. ``score`` — MAX косинусной близости по всем
-        сохранённым эмбеддингам спикера (не mean — устойчивее к разнородному
-        пулу: шум/громкость/дистанция одной "плохой" фразы не размывают уже
-        подтверждённое совпадение с лучшей референсной записью).
+        Возвращает список ``(speaker_id, name, score, gallery_size)``,
+        отсортированный по убыванию score. ``score`` — MAX косинусной
+        близости по всем сохранённым эмбеддингам спикера (не mean —
+        устойчивее к разнородному пулу: шум/громкость/дистанция одной
+        "плохой" фразы не размывают уже подтверждённое совпадение с лучшей
+        референсной записью). ``gallery_size`` — сколько эмбеддингов сейчас
+        в пуле этого спикера (issue #2747 — чисто диагностическое поле, см.
+        docstring у ``SpeakerMatch.gallery_size``).
 
         Общий метод для ``identify()`` (порог IDENTIFY_THRESHOLD) и
         ``identify_candidates()`` (диагностика без порога, issue W5-4 п.4).
@@ -377,7 +438,9 @@ class SpeakerDatabase:
         # numpy-only cosine similarity — не тянем sklearn как обязательную
         # зависимость (issue #1077).
         speaker_scores: dict[str, Tuple[str, float]] = {}
+        speaker_counts: dict[str, int] = {}
         for speaker_id, name, blob in rows:
+            speaker_counts[speaker_id] = speaker_counts.get(speaker_id, 0) + 1
             ref = self._blob_to_ndarray(blob).reshape(1, -1)
             if ref.shape[1] != query.shape[1]:
                 continue
@@ -388,7 +451,10 @@ class SpeakerDatabase:
                 speaker_scores[speaker_id] = (name, sim)
 
         ranked = sorted(
-            ((sid, name, score) for sid, (name, score) in speaker_scores.items()),
+            (
+                (sid, name, score, speaker_counts[sid])
+                for sid, (name, score) in speaker_scores.items()
+            ),
             key=lambda t: -t[2],
         )
         return ranked
@@ -399,16 +465,21 @@ class SpeakerDatabase:
         """Find the closest known speaker.  Returns None if confidence < threshold.
 
         ``threshold`` по умолчанию — модульный ``IDENTIFY_THRESHOLD``
-        (обычное распознавание на ход диалога). Вызывающий код может
-        передать более строгий порог — например, ``register_or_merge()``
-        использует ``REGISTER_MATCH_THRESHOLD`` для решения «слить с
-        существующим профилем vs завести новый» (issue W5-4).
+        (калиброванный, НЕ зависит от размера галереи — см. большой
+        комментарий у ``GALLERY_WARMUP_SIZE`` про то, почему адаптивный
+        порог по gallery_size был опробован и отклонён на реальных данных
+        робота: same-voice и cross-voice распределения косинуса
+        пересекаются настолько, что ни одно значение порога их не
+        разделяет). Вызывающий код может передать ЯВНЫЙ порог для ДРУГОГО
+        решения — например, ``register_or_merge()`` передаёт
+        ``REGISTER_MATCH_THRESHOLD`` (решение «слить с существующим
+        профилем vs завести новый», issue W5-4 / ADR-0127).
         """
         ranked = self._score_all(embedding)
         if not ranked:
             return None
+        best_id, best_name, best_score, gallery_size = ranked[0]
         thr = IDENTIFY_THRESHOLD if threshold is None else threshold
-        best_id, best_name, best_score = ranked[0]
 
         if best_score < thr:
             logger.debug(f"Best match {best_name!r} score={best_score:.3f} below threshold {thr}")
@@ -419,6 +490,7 @@ class SpeakerDatabase:
             name=best_name,
             confidence=best_score,
             epithet=self.get_epithet(best_id),
+            gallery_size=gallery_size,
         )
 
     def identify_candidates(
@@ -434,9 +506,49 @@ class SpeakerDatabase:
         """
         ranked = self._score_all(embedding)[: max(0, top_n)]
         return [
-            SpeakerMatch(speaker_id=sid, name=name, confidence=score)
-            for sid, name, score in ranked
+            SpeakerMatch(speaker_id=sid, name=name, confidence=score, gallery_size=size)
+            for sid, name, score, size in ranked
         ]
+
+    def gallery_size(self, speaker_id: str) -> int:
+        """Сколько эмбеддингов сейчас в профиле ``speaker_id`` (issue #2747)."""
+        row = self._conn.execute(
+            "SELECT COUNT(*) FROM embeddings WHERE speaker_id=?", (speaker_id,)
+        ).fetchone()
+        return int(row[0]) if row else 0
+
+    def append_reference_embedding(
+        self, speaker_id: str, name: str, embedding: np.ndarray
+    ) -> bool:
+        """Issue #2747 — дописать эмбеддинг в профиль, пока галерея маленькая.
+
+        ЧИСТО численный guard: проверяет только
+        ``gallery_size(speaker_id) < GALLERY_WARMUP_SIZE`` и не более того.
+        Этот метод НЕ решает, «тот ли это человек» — то есть НЕ смотрит на
+        cosine similarity эмбеддинга вообще. Причина — см. большой
+        комментарий у ``GALLERY_WARMUP_SIZE``: попытка гейтить дозапись
+        косинусом (адаптивный порог, первая версия этой правки) была
+        отклонена, потому что на реальных данных робота same-voice и
+        cross-voice распределения перекрываются целиком, и порог,
+        пропускающий live-голос хозяина, пропускает вместе с ним ~90%
+        чужих пар (см. PR #2757, комментарий с измерением бэкапа
+        ``speakers.db.bak-20260921T224624Z``).
+
+        Решение «этот эмбеддинг принадлежит ``speaker_id``» вызывающий код
+        (``speaker_id_node._apply_growth_session``) принимает ДО вызова
+        этого метода — на основании непрерывности сессии/присутствия
+        (внешнее свидетельство: только что был явный ``register_speaker``,
+        и реплики идут подряд без разрыва), а не на основании похожести
+        голоса. Здесь только защита от неограниченного роста галереи.
+
+        Возвращает ``True``, если эмбеддинг дописан, ``False`` — если
+        галерея уже достигла ``GALLERY_WARMUP_SIZE`` (потолок роста, не
+        связан с identify_threshold).
+        """
+        if self.gallery_size(speaker_id) >= GALLERY_WARMUP_SIZE:
+            return False
+        self.register(name, embedding, speaker_id=speaker_id)
+        return True
 
     def register(self, name: str, embedding: np.ndarray, speaker_id: Optional[str] = None) -> str:
         """Create a new speaker (or add another embedding to existing speaker_id).

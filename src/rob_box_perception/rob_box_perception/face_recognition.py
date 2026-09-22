@@ -203,6 +203,15 @@ class FaceRecognizer:
         #: ``embed_failures`` (там ArcFace/HailoRT реально падает).
         self._crop_rejected_total = 0
 
+        # Issue #2748 — «слияний=0» само по себе не говорит, ПОЧЕМУ: некого
+        # было сливать (голос не опознан) или не с чем (в кадре не одно
+        # лицо). Раздельные счётчики причин пропуска note_voice_identification
+        # — см. докстринг метода и periodic-сводку vision_face_node._log_stats.
+        self._voice_merge_skip_no_face = 0
+        self._voice_merge_skip_multi_face = 0
+        self._voice_merge_skip_stale = 0
+        self._voice_merge_skip_conflict = 0
+
     # ------------------------------------------------------------------
     # Логирование
     # ------------------------------------------------------------------
@@ -585,6 +594,11 @@ class FaceRecognizer:
         нет; это открытый вопрос ADR-0105 §3 п.4, и здесь он не решается.
         Иначе в галерею Дениса однажды попадёт лицо того, кто стоял рядом.
 
+        Issue #2748 — каждый ранний ``return None`` инкрементирует счётчик
+        причины (``_voice_merge_skip_*``), чтобы periodic-сводка ноды могла
+        сказать не просто «слияний=0», а ПОЧЕМУ: нет свежего кадра / не
+        одно лицо в кадре / голос уже привязан к другому лицу.
+
         Args:
             speaker_id: стабильный биометрический id голоса.
             name: имя из голосового профиля.
@@ -596,13 +610,25 @@ class FaceRecognizer:
         ts = time.monotonic() if now is None else float(now)
 
         if not name or not speaker_id:
+            # Голос не опознан (is_known=false) — на этот уровень такой
+            # payload вообще не должен доходить (vision_face_node фильтрует
+            # по is_known до вызова), поэтому счётчика здесь нет: это
+            # программная ошибка вызывающего кода, а не штатный «нечего
+            # сливать». См. VisionFaceNode._speaker_unknown_total — ИМЕННО
+            # там считается «голос без опознанного имени».
             return None
         if ts - self._last_frame_ts > self._voice_merge_window_sec:
+            self._voice_merge_skip_stale += 1
             return None  # голос без свежего кадра — не с чем сливать
-        if len(self._last_frame_person_ids) != 1:
-            return None  # ноль или двое в кадре — см. докстринг
+        if len(self._last_frame_person_ids) == 0:
+            self._voice_merge_skip_no_face += 1
+            return None  # никого в кадре — сливать некого
+        if len(self._last_frame_person_ids) > 1:
+            self._voice_merge_skip_multi_face += 1
+            return None  # двое и больше в кадре — см. докстринг (ADR-0105 §3 п.4)
         person_id = self._last_frame_person_ids[0]
         if person_id is None:
+            self._voice_merge_skip_no_face += 1
             return None
 
         # Уже привязан к другому голосу — не перебиваем: разбор дублей
@@ -610,6 +636,7 @@ class FaceRecognizer:
         try:
             existing = self._store.find_by_speaker(speaker_id)
             if existing is not None and existing != person_id:
+                self._voice_merge_skip_conflict += 1
                 self._log(
                     'warn',
                     f'Голос {speaker_id[:8]} уже привязан к лицу '
@@ -648,6 +675,13 @@ class FaceRecognizer:
             'recognized_total': self._recognized_total,
             'new_people_total': self._new_people_total,
             'voice_merges_total': self._voice_merges_total,
+            # Issue #2748 — причины, по которым note_voice_identification()
+            # НЕ привязала имя, чтобы «слияний=0» в сводке ноды не было
+            # немым нулём (см. VisionFaceNode._log_stats).
+            'voice_merge_skip_no_face': self._voice_merge_skip_no_face,
+            'voice_merge_skip_multi_face': self._voice_merge_skip_multi_face,
+            'voice_merge_skip_stale': self._voice_merge_skip_stale,
+            'voice_merge_skip_conflict': self._voice_merge_skip_conflict,
             'embed_failures': self._embed_failures,
             'embed_calls': self._embed_calls,
             'embed_ms_avg': round(

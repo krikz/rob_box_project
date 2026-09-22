@@ -116,6 +116,13 @@ class VisionFaceNode(VisionHailoNode):
         self._recognizer: Any = getattr(self._loader, 'recognizer', None)
         self._speaker_sub: Any = None
         self._stats_timer: Any = None
+        # Issue #2748 — «слияний=0» в сводке не отличало «некого сливать»
+        # (голос ещё не опознан / is_known=false) от «не с чем» (причины
+        # внутри note_voice_identification — считает face_recognition.py).
+        # Этот счётчик — та самая недостающая ПЕРВАЯ причина: она
+        # обрывается ЗДЕСЬ, до вызова note_voice_identification, поэтому
+        # recognizer её никогда не видит.
+        self._speaker_unknown_total: int = 0
 
         if self._recognizer is not None:
             self._subscribe_speaker_result()
@@ -307,12 +314,31 @@ class VisionFaceNode(VisionHailoNode):
             payload = json.loads(msg.data)
         except (ValueError, AttributeError):
             return
-        if not isinstance(payload, dict) or not payload.get('is_known'):
+        if not isinstance(payload, dict):
+            return
+        # Registration-ack (``{"event": "registered", ...}``) без is_known —
+        # служебное сообщение speaker_id_node, не сигнал присутствия
+        # (тот же контракт, что у dialogue_node/voice_adapter). Не считаем
+        # его как «голос не опознан» — это отдельный, третий случай.
+        if payload.get('event') == 'registered':
+            return
+        if not payload.get('is_known'):
+            # Issue #2748 — причина №1, почему «слияний=0»: голос ЕЩЁ не
+            # опознан (обычное identify() ниже порога, issue #2747) —
+            # note_voice_identification() в этом случае вообще не
+            # вызывается, поэтому считаем здесь, а не там.
+            self._speaker_unknown_total += 1
             return
         speaker_id = str(payload.get('speaker_id') or '')
         name = str(payload.get('name') or '')
         if not speaker_id or not name:
             return
+        # Issue #2748 — источник ``source="register"`` (speaker_id_node,
+        # момент регистрации) принимается НАРАВНЕ с обычным узнаванием:
+        # имя названо самим человеком, доверия к нему больше, чем к
+        # косинусу identify(). Условие «ровно одно лицо в кадре»
+        # (ADR-0105 §3 п.4) не отличает источники — оно живёт внутри
+        # note_voice_identification() и остаётся строгим для ОБОИХ.
         try:
             self._recognizer.note_voice_identification(
                 speaker_id=speaker_id, name=name
@@ -336,8 +362,24 @@ class VisionFaceNode(VisionHailoNode):
         # качества (почти чёрные/плоские) ДО эмбеддинга — без счётчика в
         # сводке тихий фильтр стал бы вторым источником "робот меня не
         # видит" (см. докстринг FaceRecognizer._crop_quality_ok).
+        #
+        # Issue #2748 — «слияний=0» само по себе не говорит, ПОЧЕМУ. Причины
+        # печатаем ТОЛЬКО когда есть хоть один пропуск — чтобы в спокойном
+        # режиме (слияния идут штатно) строка не разбухала диагностикой,
+        # которая никому не нужна.
+        skip_reasons = (
+            ('голос_не_опознан', self._speaker_unknown_total),
+            ('нет_лица', stats.get('voice_merge_skip_no_face', 0)),
+            ('два+_лица', stats.get('voice_merge_skip_multi_face', 0)),
+            ('устарело', stats.get('voice_merge_skip_stale', 0)),
+            ('конфликт_профилей', stats.get('voice_merge_skip_conflict', 0)),
+        )
+        skip_suffix = ''
+        active_reasons = [f'{label}={count}' for label, count in skip_reasons if count]
+        if active_reasons:
+            skip_suffix = ' (пропуски: ' + ' '.join(active_reasons) + ')'
         self.get_logger().info(
-            '[лицо] режим=%s встреч=%d узнано=%d новых=%d слияний=%d '
+            '[лицо] режим=%s встреч=%d узнано=%d новых=%d слияний=%d%s '
             'ошибок_эмбеддинга=%d кропов_отброшено=%d треков=%d | '
             'в базе: людей=%s с_именем=%s'
             % (
@@ -346,6 +388,7 @@ class VisionFaceNode(VisionHailoNode):
                 stats.get('recognized_total', 0),
                 stats.get('new_people_total', 0),
                 stats.get('voice_merges_total', 0),
+                skip_suffix,
                 stats.get('embed_failures', 0),
                 stats.get('crop_rejected_total', 0),
                 stats.get('active_tracks', 0),

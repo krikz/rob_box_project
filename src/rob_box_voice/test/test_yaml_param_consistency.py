@@ -181,6 +181,31 @@ def _speaker_threshold_constants() -> tuple:
     return mod.IDENTIFY_THRESHOLD, mod.REGISTER_MATCH_THRESHOLD
 
 
+def _gallery_warmup_size_constant() -> int:
+    """Issue #2747 — то же самое, но для GALLERY_WARMUP_SIZE.
+
+    Адаптивный акустический порог (``GALLERY_WARMUP_SOFT_THRESHOLD``) был
+    в первой версии этой правки и отклонён после проверки на реальных
+    данных робота (PR #2757, комментарий с измерением бэкапа
+    speakers.db) — same-voice/cross-voice cosine пересекаются целиком,
+    порог не разделяет «своего» и «чужого». ``GALLERY_WARMUP_SIZE``
+    остался — теперь это потолок числа эмбеддингов на growth-сессию
+    (issue #2747, speaker_id_node._apply_growth_session), не связан с
+    identify_threshold.
+    """
+    import importlib.util
+    import sys
+
+    path = NODE_SRC / "utils" / "speaker_embeddings.py"
+    spec = importlib.util.spec_from_file_location(
+        "rob_box_voice.utils.speaker_embeddings", path
+    )
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["rob_box_voice.utils.speaker_embeddings"] = mod
+    spec.loader.exec_module(mod)
+    return mod.GALLERY_WARMUP_SIZE
+
+
 def test_speaker_thresholds_match_module_constants():
     """issue #2440 — пороги в YAML должны совпадать со значениями модуля.
 
@@ -209,4 +234,28 @@ def test_speaker_thresholds_match_module_constants():
             f"{params['register_match_threshold']!r} не совпадает с "
             f"speaker_embeddings.REGISTER_MATCH_THRESHOLD={register_thr} "
             f"(issue #2440, дефект A)"
+        )
+
+
+def test_gallery_warmup_size_matches_module_constant():
+    """Issue #2747 — тот же регресс-паттерн (issue #2440, дефект A), но для
+    gallery_warmup_size: YAML может протухнуть независимо от кода, и
+    declare_parameter() тихо продолжит работать на дефолте.
+
+    ``gallery_growth_session_gap_sec`` НЕ сверяется с модульной константой
+    — у него её нет (это чисто узловой параметр непрерывности сессии, не
+    акустическая калибровка speaker_embeddings.py, см. её докстринг)."""
+    pytest.importorskip("numpy")
+    warmup_size = _gallery_warmup_size_constant()
+
+    for path in (SRC_CONFIG / "speaker_id_node.yaml",
+                 DOCKER_CONFIG / "speaker_id_node.yaml"):
+        if not path.exists():
+            pytest.skip(f"{path} not found")
+        cfg = _load_config(path, "speaker_id_node")
+        params = cfg["speaker_id_node"]["ros__parameters"]
+        assert int(params["gallery_warmup_size"]) == warmup_size, (
+            f"{path.name}: gallery_warmup_size={params['gallery_warmup_size']!r} "
+            f"не совпадает с speaker_embeddings.GALLERY_WARMUP_SIZE="
+            f"{warmup_size} (issue #2747)"
         )
