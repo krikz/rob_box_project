@@ -77,13 +77,39 @@ YANDEX_SPEED="${YANDEX_SPEED:-1.0}"
 #
 #   yandex  — gRPC SpeechKit v3, нужен YANDEX_API_KEY (историческое поведение);
 #   minimax — HTTP T2A v2, нужен MINIMAX_API_KEY;
-#   silero  — ЛОКАЛЬНЫЙ torch-синтез на билд-машине, ключ не нужен вообще.
+#   silero  — ЛОКАЛЬНЫЙ torch-синтез, ключ не нужен вообще.
+#
+# ГДЕ ИСПОЛНЯЕТСЯ ЭТОТ ФАЙЛ (22.09.2026): не в раннер-контейнере, а на ХОСТЕ
+# katana — ros2@10.1.1.249. Job `runs-on: e2e` только scp'ит харнесс туда и
+# дёргает его по ssh (L-E2E Voice Test.yml, шаг «Push atomic harness»). Поэтому
+# зависимости silero живут на ХОСТЕ, а не внутри build-github-runner-*: во всех
+# девяти раннер-контейнерах (образ myoung34/github-runner) стоит python 3.8 БЕЗ
+# torch и numpy — и это нормально, synth_silero там не выполняется никогда.
+# `docker exec build-github-runner-e2e python3 -c "import torch"` проверяет НЕ ТУ
+# машину; правильная проверка —
+#   ssh ros2@10.1.1.249 'python3 -c "import torch, numpy; print(torch.__version__)"'
+#
+# Состояние 249 на 22.09.2026: python 3.10.12, torch 2.8.0+cu128, numpy 2.2.6
+# (в ~ros2/.local), модель — ~/.cache/rob_box_voice/tts_models/v4_ru.pt (40 МБ,
+# ПЯТЫЙ кандидат списка в synth_silero; v5_ru на katana нет, он только на
+# роботе). Голоса v4_ru — aidar/baya/kseniya/xenia/eugene, ровно тот набор, в
+# который переводит map_tts_voice silero, так что подмена на дефолт не нужна.
 #
 # auto (дефолт) = пройтись по E2E_TTS_PROVIDER_ORDER и взять первого, кто
 # реально синтезирует пробную фразу. Проба делается ОДИН раз за прогон, до
 # первого шага: иначе 40-шаговый сценарий 40 раз ждал бы таймаут мёртвого
 # провайдера. silero стоит последним и не требует ключа — это гарантированный
 # донор, поэтому «облака легли» больше не равно «e2e красный».
+#
+# Проверено вживую 22.09.2026 при мёртвом Yandex (PERMISSION_DENIED на folder)
+# и без MINIMAX_API_KEY: probe yandex FAIL → minimax «пропуск — нет ключа» →
+# probe silero OK за 3.9 s → «E2E_TTS_PROVIDER silero auto». Фолбек рабочий.
+#
+# Чем гарантия держится: torch и модель на 249 поставлены РУКАМИ и в репозитории
+# ничем не воспроизводятся. Если их смоют (переустановка хоста, чистка ~/.local),
+# synth_silero упадёт в fail("PythonError") → probe FAIL → «E2E_TTS_PROVIDER
+# none», и шаг разбора вердикта напечатает «это инфра, не робот»
+# (L-E2E Voice Test.yml:363) — тихо зелёным прогон при этом не станет.
 E2E_TTS_PROVIDER="${E2E_TTS_PROVIDER:-auto}"
 E2E_TTS_PROVIDER_ORDER="${E2E_TTS_PROVIDER_ORDER:-yandex,minimax,silero}"
 # Результат резолва (заполняется resolve_tts_provider, кэш на весь прогон).
@@ -842,7 +868,8 @@ sys.stderr.write(json.dumps({
 PY
 }
 
-# Синтез Silero (локальный torch на билд-машине): text + voice → out_wav.
+# Синтез Silero (локальный torch на ХОСТЕ katana 10.1.1.249, НЕ в раннер-
+# контейнере — см. блок про E2E_TTS_PROVIDER_ORDER): text + voice → out_wav.
 # Ключей не требует и в сеть не ходит — это тот самый «всегда живой» донор,
 # ради которого затевался выбор провайдера.
 #
@@ -875,7 +902,13 @@ try:
     import torch
     import numpy as np
 except ImportError as exc:
-    fail("PythonError", "torch/numpy недоступны на билд-машине: %s" % exc)
+    # hostname у раннер-контейнеров совпадает с хостовым, поэтому диагностируем
+    # по интерпретатору: на 249 это /usr/bin/python3 3.10 с ~ros2/.local.
+    fail("PythonError",
+         "torch/numpy недоступны (%s). python=%s %s. Харнесс должен исполняться "
+         "на ХОСТЕ katana 10.1.1.249, где они стоят в ~ros2/.local; внутри "
+         "build-github-runner-* их нет и быть не должно."
+         % (exc, sys.executable, sys.version.split()[0]))
 
 torch.set_grad_enabled(False)
 torch.set_num_threads(int(os.environ.get("E2E_SILERO_THREADS", "4")))
