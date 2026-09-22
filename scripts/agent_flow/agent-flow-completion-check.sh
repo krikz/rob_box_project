@@ -43,7 +43,7 @@ if [ -z "$pr" ] || ! printf '%s' "$pr" | grep -qE '^[0-9]+$'; then
     exit 2
 fi
 
-HERMES_HOME="${HERMES_HOME:-/home/builder/.hermes}"
+HERMES_HOME="${HERMES_HOME:-${HOME}/.hermes}"
 KANBAN_BOARD="${KANBAN_BOARD:-robbox}"
 KANBAN_DB="${KANBAN_DB:-$HOME/.hermes/kanban/boards/$KANBAN_BOARD/kanban.db}"
 # Ретро 12.08: merge-gate форсит HOME=/home/builder для gh credentials.

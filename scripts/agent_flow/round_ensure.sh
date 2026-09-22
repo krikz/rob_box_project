@@ -34,8 +34,10 @@
 # ============================================================================
 set -euo pipefail
 
-HERMES_HOME="${HERMES_HOME:-/home/builder/.hermes}"
+# HOME forced FIRST — HERMES_HOME default below relies on it resolving to
+# the real host install, not a per-profile $HOME (см. agent-flow-triage.sh).
 export HOME=/home/builder
+HERMES_HOME="${HERMES_HOME:-${HOME}/.hermes}"
 GH_REPO="${GH_REPO:-}"
 REPO_DIR="${REPO_DIR:-}"
 KANBAN_BOARD="${KANBAN_BOARD:-robbox}"

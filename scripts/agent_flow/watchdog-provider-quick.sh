@@ -48,7 +48,7 @@
 
 set -euo pipefail
 
-HERMES_HOME="${HERMES_HOME:-/home/builder/.hermes}"
+HERMES_HOME="${HERMES_HOME:-${HOME}/.hermes}"
 KANBAN_BOARDS_DIR="$HERMES_HOME/kanban/boards"
 HERMES_BIN="${HERMES_BIN:-/home/builder/.hermes/hermes-agent/venv/bin/hermes}"
 LOCK_FILE="${LOCK_FILE:-$HERMES_HOME/state/watchdog-provider-quick.lock}"

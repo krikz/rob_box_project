@@ -59,7 +59,7 @@ set -euo pipefail
 
 # -------- paths / env --------
 SCRIPT_NAME="$(basename "$0")"
-HERMES_HOME="${HERMES_HOME:-/home/builder/.hermes}"
+HERMES_HOME="${HERMES_HOME:-${HOME}/.hermes}"
 KANBAN_BOARDS_DIR="${KANBAN_BOARDS_DIR:-$HERMES_HOME/kanban/boards}"
 HERMES_BIN="${HERMES_BIN:-/home/builder/.hermes/hermes-agent/venv/bin/hermes}"
 GH_CONFIG_DIR="${GH_CONFIG_DIR:-/home/builder/.config/gh}"

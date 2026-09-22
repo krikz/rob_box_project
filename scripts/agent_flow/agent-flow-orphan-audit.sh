@@ -94,7 +94,7 @@ _LIB_DIR_HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 # Force HOME=/home/builder — cron от per-profile gateway ставит HOME = profile-dir,
 # а gh CLI ищет credentials в $HOME/.config/gh (см. ADR-0024 / hermes_github.sh).
 export HOME="${HOME:-/home/builder}"
-HERMES_HOME="${HERMES_HOME:-/home/builder/.hermes}"
+HERMES_HOME="${HERMES_HOME:-${HOME}/.hermes}"
 
 KANBAN_BOARD="${KANBAN_BOARD:-robbox}"
 KANBAN_DB="${KANBAN_DB:-$HOME/.hermes/kanban/boards/$KANBAN_BOARD/kanban.db}"

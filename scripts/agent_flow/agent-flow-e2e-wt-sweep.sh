@@ -37,7 +37,7 @@
 
 set -uo pipefail  # без -e — sweep должен быть максимально tolerant
 
-HERMES_HOME="${HERMES_HOME:-/home/builder/.hermes}"
+HERMES_HOME="${HERMES_HOME:-${HOME}/.hermes}"
 REPO_DIR="${REPO_DIR:-/home/builder/hermes-share/rob_box_project}"
 E2E_WT_TTL_DAYS="${E2E_WT_TTL_DAYS:-7}"
 DRY_RUN="${DRY_RUN:-false}"

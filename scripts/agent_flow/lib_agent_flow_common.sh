@@ -406,7 +406,7 @@ af_skill_for_profile() {  # $1=assignee  $2=labels_csv (optional)
     local _assignee="${1:-}" _labels="${2:-}" _hermes_home _skills_dir _cand
     local _role_candidate _task_candidate _labels_lower
     [ -n "$_assignee" ] || { return 0; }
-    _hermes_home="${HERMES_HOME:-/home/builder/.hermes}"
+    _hermes_home="${HERMES_HOME:-${HOME}/.hermes}"
     _skills_dir="${_hermes_home}/profiles/${_assignee}/skills"
     if [ ! -d "$_skills_dir" ]; then
         return 0
@@ -495,7 +495,7 @@ af_skills_for_profile() {  # $1=assignee  $2=labels_csv  $3=pr_flag
     local _skills_out=()
 
     [ -n "$_assignee" ] || return 0
-    _hermes_home="${HERMES_HOME:-/home/builder/.hermes}"
+    _hermes_home="${HERMES_HOME:-${HOME}/.hermes}"
     _skills_dir="${_hermes_home}/profiles/${_assignee}/skills"
     [ -d "$_skills_dir" ] || return 0
 
@@ -698,7 +698,7 @@ af_role_for() {  # $1=labels_csv  $2=fallback (default AGENT_FLOW_DEFAULT_ROLE|a
     # errored++ / skip; merge-gate и e2e-process принимают fallback как есть.
     # Парсим по тому же regex что и load_valid_profiles в triage.sh, плюс
     # strip ведущего `◆` (active profile marker в hermes profile list).
-    _hermes_home="${HERMES_HOME:-/home/builder/.hermes}"
+    _hermes_home="${HERMES_HOME:-${HOME}/.hermes}"
     if [ -x "${HERMES_BIN:-}" ]; then
         _valid_profiles_csv="$("${HERMES_BIN}" profile list 2>/dev/null \
             | awk '

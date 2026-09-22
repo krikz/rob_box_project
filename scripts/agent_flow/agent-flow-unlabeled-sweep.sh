@@ -69,7 +69,7 @@
 # ============================================================================
 set -euo pipefail
 
-HERMES_HOME="${HERMES_HOME:-/home/builder/.hermes}"
+HERMES_HOME="${HERMES_HOME:-${HOME}/.hermes}"
 export HOME="${HOME:-/home/builder}"
 
 STALE_HOURS_1="${STALE_HOURS_1:-24}"

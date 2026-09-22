@@ -36,7 +36,7 @@
 set -euo pipefail
 
 GH_REPO="${GH_REPO:-krikz/rob_box_project}"
-HERMES_HOME="${HERMES_HOME:-/home/builder/.hermes}"
+HERMES_HOME="${HERMES_HOME:-${HOME}/.hermes}"
 REPO_DIR="${REPO_DIR:-/home/builder/hermes-share/rob_box_project}"
 ROTATION_DEAD_MIN="${ROTATION_DEAD_MIN:-120}"
 WATCHDOG_DRY_RUN="${WATCHDOG_DRY_RUN:-false}"

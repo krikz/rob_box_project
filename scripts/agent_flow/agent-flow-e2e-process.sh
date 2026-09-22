@@ -266,7 +266,7 @@ af_load_profile_env "$PROFILE_ENV"
 # Prometheus-экспортёр (текст-файл). Counter `e2e_target_unreachable_total`
 # с лейблами {target_host, phase}. Файл переживает MAINTENANCE (как
 # round-counter), парсер монитора читает его в формате Prometheus exposition.
-: "${E2E_TARGET_UNREACHABLE_FILE:=${HERMES_HOME:-/home/builder/.hermes}/state/agent-flow-e2e-target-unreachable.prom}"
+: "${E2E_TARGET_UNREACHABLE_FILE:=${HERMES_HOME:-${HOME}/.hermes}/state/agent-flow-e2e-target-unreachable.prom}"
 # Метка для degraded-issue'ов — отличается от e2e:rejected (фатальная ошибка
 # раунда) и e2e:infra-fail (CI/инфра); требует ручного подтверждения.
 : "${DEGRADED_LABEL:=e2e:degraded}"

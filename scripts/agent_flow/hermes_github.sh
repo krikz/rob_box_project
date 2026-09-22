@@ -85,11 +85,13 @@
 set -euo pipefail
 
 # --- guards ----------------------------------------------------------------
-[ -n "${HERMES_HOME:-}" ] || HERMES_HOME=/home/builder/.hermes
-# Force HOME=/home/builder — same reason as in merge-gate / e2e-process:
+# Force HOME=/home/builder FIRST — same reason as in merge-gate / e2e-process:
 # cron от per-profile gateway ставит $HOME = profile-dir, а gh CLI ищет
-# credentials в $HOME/.config/gh (не в profile-dir/.config/gh).
+# credentials в $HOME/.config/gh (не в profile-dir/.config/gh). HERMES_HOME
+# default below must be computed AFTER this line, иначе ${HOME}/.hermes
+# резолвится в profile-dir, а не в реальный hermes install.
 export HOME="${HOME:-/home/builder}"
+[ -n "${HERMES_HOME:-}" ] || HERMES_HOME="${HOME}/.hermes"
 
 # --- config ----------------------------------------------------------------
 HERMES_AGENT_ROLE="${HERMES_AGENT_ROLE:-agent:devops}"

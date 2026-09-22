@@ -24,7 +24,7 @@
 
 set -euo pipefail
 
-HERMES_HOME="${HERMES_HOME:-/home/builder/.hermes}"
+HERMES_HOME="${HERMES_HOME:-${HOME}/.hermes}"
 KANBAN_BOARDS_DIR="$HERMES_HOME/kanban/boards"
 HEARTBEAT_STALE_SECONDS=600   # 10 min
 TELEGRAM_STUCK_MINUTES=15     # reconnect-loop detection window (retro 12.08 t_5af222ea)

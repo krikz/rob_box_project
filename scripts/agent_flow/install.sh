@@ -1685,7 +1685,7 @@ echo "==> Sync repo skills to worker profiles (retro 05.09)"
 # Best-effort: сбой доставки НЕ валит install.sh (exit-код sync-skills.sh
 # логируется отдельно; drift-detect тоже контролирует наличие файла).
 if [ -f "$SCRIPT_DIR/sync-skills.sh" ]; then
-    REPO_DIR="$REPO_DIR" HERMES_HOME="${HERMES_HOME:-/home/builder/.hermes}" \
+    REPO_DIR="$REPO_DIR" HERMES_HOME="${HERMES_HOME:-${HOME}/.hermes}" \
         bash "$SCRIPT_DIR/sync-skills.sh" || echo "  WARN skills sync failed (non-fatal, see output above)"
 else
     echo "  SKIP sync-skills.sh not present in $SCRIPT_DIR"

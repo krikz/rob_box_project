@@ -65,7 +65,7 @@
 set -euo pipefail
 
 # --- guards ----------------------------------------------------------------
-HERMES_HOME="${HERMES_HOME:-/home/builder/.hermes}"
+HERMES_HOME="${HERMES_HOME:-${HOME}/.hermes}"
 HERMES_AGENT_ROLE="${HERMES_AGENT_ROLE:-agent:devops}"
 GH_CONFIG_DIR="${GH_CONFIG_DIR:-/home/builder/.config/gh}"
 GH_REPO="${GH_REPO:-krikz/rob_box_project}"

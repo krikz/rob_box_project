@@ -95,7 +95,7 @@ MARKER_TAG="${MARKER_TAG:-🤖 e2e-rejected-watchdog}"
 GH_REPO="${GH_REPO:-krikz/rob_box_project}"
 GH_CONFIG_DIR="${GH_CONFIG_DIR:-/home/builder/.config/gh}"
 AGENT_FLOW_DEFAULT_ROLE="${AGENT_FLOW_DEFAULT_ROLE:-architect}"
-HERMES_HOME="${HERMES_HOME:-/home/builder/.hermes}"
+HERMES_HOME="${HERMES_HOME:-${HOME}/.hermes}"
 LIB_PATH="${HERMES_HOME}/scripts/lib_agent_flow_common.sh"
 
 # --- flock guard ----------------------------------------------------------
