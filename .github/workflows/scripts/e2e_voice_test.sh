@@ -1599,7 +1599,12 @@ PY
 #   expected_tool_calls: list[str]  — должны быть вызваны (ищется в логах)
 #   must_not_call:        list[str]  — НЕ должны быть вызваны
 #   expected_keywords:    list[str]  — должны быть в логах шага (признанная
-#                                     фраза ИЛИ LLM OUTPUT / spoken=)
+#                                     фраза ИЛИ LLM OUTPUT / spoken=). Ключ
+#                                     вида "Борис|Спартак|пицц" — это
+#                                     АЛЬТЕРНАЦИЯ: достаточно любого варианта
+#                                     (issue #2753). Регэксп НЕ поддержан:
+#                                     сравнение идёт подстрокой по каждому
+#                                     варианту, знаки ? . ( ) значат себя.
 #   voice_changed:        bool       — set_voice сменил голос с дефолта
 #   response_max_ms:      int        — T_total не должен превышать (если
 #                                     найден e2e_timing.json)
@@ -1674,8 +1679,19 @@ for c in (expected_call + must_not):
 found_expected = [c for c in expected_call if has(logs, c)]
 missing_expected = [c for c in expected_call if not has(logs, c)]
 forbidden_called = [c for c in must_not if has(logs, c)]
-found_keywords = [k for k in expected_kw if k.lower() in logs_low]
-missing_keywords = [k for k in expected_kw if not k.lower() in logs_low]
+# Issue #2753 — ключ вида "Борис|Спартак|пицц" сценарии пишут как
+# АЛЬТЕРНАЦИЮ, по аналогии с соседним полем patterns (оно идёт через grep -E).
+# Сравнение целой строкой искало её вместе с палками и не находило никогда:
+# n209_recall_boris в run 35699257202 покраснел при идеальном ответе робота
+# («…приходишь примерно раз в неделю с пиццей. Болеешь за Спартак…»), и так же
+# вечно краснели n1002/n1009 в финальном акте. Разбиваем по "|" и ищем any-of,
+# а НЕ включаем полноценный регэксп: иначе существующие ключи со знаком ?,
+# точкой или скобками молча поменяли бы смысл.
+def _keyword_hit(kw):
+    return any(v.strip() and v.strip() in logs_low for v in kw.lower().split("|"))
+
+found_keywords = [k for k in expected_kw if _keyword_hit(k)]
+missing_keywords = [k for k in expected_kw if not _keyword_hit(k)]
 
 # Issue #2406: discovery-tools order check. Для каждого discovery-тула:
 # - позиция первого execution-маркера в логе
