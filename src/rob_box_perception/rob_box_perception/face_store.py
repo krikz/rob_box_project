@@ -94,6 +94,24 @@ DEFAULT_ROOT = '/data/faces'
 # старте после апгрейда, без ручной чистки диска.
 CURRENT_EMBEDDING_VERSION = 2
 
+#: Сколько эмбеддингов запись набирает «по прогреву» — то есть по одному
+#: лишь факту узнавания, без второго, более строгого порога
+#: ``enroll_threshold`` (issue #2771, см. ``FaceStore._should_enroll``).
+#:
+#: Пять — не подбор по данным, а наименьшее число, при котором галерея
+#: перестаёт быть одним ракурсом: анфас, пол-оборота влево и вправо,
+#: голова выше и ниже камеры. Ровно столько же берёт голосовой тракт
+#: этого репозитория (``speaker_embeddings.GALLERY_WARMUP_SIZE = 5``),
+#: и по той же причине — чтобы у профиля появился разброс раньше, чем
+#: к нему начнут применять строгие пороги.
+#:
+#: Живой замер 22.09.2026, который и потребовал прогрева: три записи
+#: ОДНОГО человека, снятые за пять минут, дали попарные косинусы 0.538 /
+#: 0.582 / 0.461 — весь внутриперсонный разброс ниже ``enroll_threshold``
+#: (0.75). Ни одна галерея не выросла дальше семени, и каждый новый
+#: ракурс заводил нового «человека».
+DEFAULT_GALLERY_WARMUP_SIZE = 5
+
 _META_FILENAME = 'meta.json'
 _EMBEDDINGS_FILENAME = 'embeddings.npy'
 _REFERENCE_FILENAME = 'reference.jpg'
@@ -255,6 +273,7 @@ class FaceStore:
         *,
         identify_threshold: float = 0.6,
         enroll_threshold: float = 0.75,
+        gallery_warmup_size: int = DEFAULT_GALLERY_WARMUP_SIZE,
         max_embeddings: int = 20,
         keep_encounters: int = 10,
         max_strangers: int = 500,
@@ -271,6 +290,7 @@ class FaceStore:
         self._mode = mode
         self._identify_threshold = identify_threshold
         self._enroll_threshold = enroll_threshold
+        self._gallery_warmup_size = max(1, int(gallery_warmup_size))
         self._max_embeddings = max(1, int(max_embeddings))
         self._keep_encounters = max(0, int(keep_encounters))
         self._max_strangers = max(0, int(max_strangers))
@@ -285,6 +305,14 @@ class FaceStore:
         # identify/enroll разошлись с реальными данными сильнее, чем
         # рассчитывали (или в кадре реально часто мелькают чужие).
         self._enroll_rejected_total = 0
+        # issue #2771: сколько эмбеддингов дописано ПО ПРОГРЕВУ, то есть
+        # по одному лишь факту узнавания, пока галерея не набрала
+        # ``gallery_warmup_size``. Пара к ``enroll_rejected_total``:
+        # вместе они показывают, в каком режиме живёт база. Если растёт
+        # только прогрев, а отказы стоят на нуле — галереи ещё молодые;
+        # если прогрев замер, а отказы растут — галереи созрели и
+        # работает строгий режим #2772.
+        self._enroll_warmup_total = 0
         self._load_from_disk()
 
     # ── Свойства/статистика ──────────────────────────────────────────────
@@ -333,6 +361,8 @@ class FaceStore:
                 'embeddings': embeddings,
                 'gallery_cohesion': gallery_cohesion,
                 'enroll_rejected_total': self._enroll_rejected_total,
+                'enroll_warmup_total': self._enroll_warmup_total,
+                'gallery_warmup_size': self._gallery_warmup_size,
                 'disk_bytes': disk_bytes,
             }
 
@@ -652,7 +682,41 @@ class FaceStore:
            сама себя убедила дописать тёщу поверх собственного мусора.
 
         Первый эмбеддинг НОВОЙ записи сюда не попадает вовсе — он сеется
-        безусловно, см. вызывающий код в ``record_encounter``."""
+        безусловно, см. вызывающий код в ``record_encounter``.
+
+        ПРОГРЕВ ГАЛЕРЕИ (issue #2771, живой замер 22.09.2026)
+        -----------------------------------------------------
+        Двойное согласие выше защищает ЗРЕЛУЮ галерею, но молодую оно
+        убивает: пока в записи один вектор, «медоид» — это он сам, и
+        оба условия вырождаются в одно и то же сравнение с
+        единственным ракурсом. Замер на роботе: три записи одного
+        человека, снятые за пять минут, дали попарные косинусы 0.538
+        (анфас против опущенной головы), 0.582 (анфас против тёмных
+        очков) и 0.461. Весь внутриперсонный разброс лёг НИЖЕ
+        ``enroll_threshold`` (0.75), поэтому ``_should_enroll``
+        отказывал всегда, галерея у всех трёх записей осталась
+        размером 1 — и следующий ракурс не дотягивал уже до
+        ``identify_threshold``, заводя очередного «нового человека».
+        Петля замыкалась сама на себе: галерея из одного вектора →
+        промах → новая запись → снова галерея из одного вектора.
+
+        Поэтому пока галерея меньше ``gallery_warmup_size``, дозапись
+        идёт по факту УЗНАВАНИЯ, без второго, более строгого порога.
+        Это не ослабление защиты от отравления, а тот же приём, что уже
+        принят в этом репозитории для голоса (``speaker_embeddings``:
+        галерея растёт по якорю сессии, а не по косинусу): доверяем
+        решению, которое уже принято — ``record_encounter`` зовёт
+        ``_should_enroll`` ТОЛЬКО после того, как ``best_score`` прошёл
+        ``identify_threshold``. Отравить запись этим можно ровно в той
+        же мере, в какой можно ошибиться самим узнаванием, — нового
+        класса ошибок прогрев не добавляет, а вот выйти из петли
+        позволяет. Как только галерея набрала ``gallery_warmup_size``
+        векторов, двойное согласие возвращается в полную силу и дальше
+        работает как раньше (issue #2772).
+        """
+        if len(rec.embeddings) < self._gallery_warmup_size:
+            self._enroll_warmup_total += 1
+            return True
         if best_score < self._enroll_threshold:
             return False
         medoid = self._medoid(rec.embeddings)

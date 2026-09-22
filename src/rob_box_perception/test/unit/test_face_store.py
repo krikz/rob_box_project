@@ -176,10 +176,18 @@ class TestIdentifyEnrollThresholdSplit:
         до enroll_threshold: встреча называется по имени (и засчитывается),
         но эмбеддинг НЕ попадает в галерею — это и есть фикс #2772
         (раньше один и тот же порог одновременно называл имя и дописывал
-        чужое лицо в эталон)."""
+        чужое лицо в эталон).
+
+        ``gallery_warmup_size=1`` выключает прогрев (issue #2771) — этот
+        тест про СТРОГИЙ режим, который действует на созревшей галерее.
+        На молодой галерее поведение теперь другое и проверяется в
+        ``TestGalleryWarmup`` ниже: пока векторов мало, дозапись идёт по
+        факту узнавания, иначе запись не может вырасти дальше семени.
+        """
         store = fs.FaceStore(
             root=str(tmp_path), mode=fs.MODE_WORKSHOP,
             identify_threshold=0.6, enroll_threshold=0.9,
+            gallery_warmup_size=1,
         )
         seed = store.record_encounter(_combo(0.0))
         store.attach_name(seed.person_id, 'Деньчик')
@@ -208,6 +216,33 @@ class TestIdentifyEnrollThresholdSplit:
         assert len(store.gallery(seed.person_id)) == 2
         assert store.stats()['enroll_rejected_total'] == 0
 
+    def test_mature_gallery_still_rejects_below_enroll(self, tmp_path):
+        """Прогрев не отменяет защиту #2772, а откладывает её: как только
+        галерея набрала ``gallery_warmup_size``, двойное согласие снова
+        обязательно."""
+        store = fs.FaceStore(
+            root=str(tmp_path), mode=fs.MODE_WORKSHOP,
+            identify_threshold=0.6, enroll_threshold=0.9,
+            gallery_warmup_size=3,
+        )
+        # Ракурсы разносим шагом 0.5 рад: соседи дают cos(0.5)=0.878 —
+        # выше identify (0.6), ниже enroll (0.9). Шаг обязателен: если
+        # слать один и тот же вектор, он после первой же дозаписи совпадёт
+        # сам с собой и best-of-gallery станет 1.0, что проверяло бы
+        # артефакт теста, а не строгий режим.
+        seed = store.record_encounter(_combo(0.0))
+        store.record_encounter(_combo(0.5))
+        store.record_encounter(_combo(1.0))
+        assert len(store.gallery(seed.person_id)) == 3, 'прогрев набрал галерею'
+        assert store.stats()['enroll_rejected_total'] == 0
+
+        # Галерея созрела — такой же по величине косинус теперь отвергается.
+        store.record_encounter(_combo(1.5))
+        assert len(store.gallery(seed.person_id)) == 3, (
+            'после прогрева двойное согласие снова в силе'
+        )
+        assert store.stats()['enroll_rejected_total'] == 1
+
     def test_first_embedding_of_new_record_is_always_seeded(self, tmp_path):
         """Новая запись сеется первым эмбеддингом безусловно — enroll_threshold
         к семени не применяется (сравнивать ещё не с чем)."""
@@ -218,6 +253,103 @@ class TestIdentifyEnrollThresholdSplit:
         assert match.is_new is True
         assert len(store.gallery(match.person_id)) == 1
         assert store.stats()['enroll_rejected_total'] == 0
+
+
+# ============================================================================
+# 1b. Прогрев галереи (issue #2771)
+# ============================================================================
+
+
+class TestGalleryWarmup:
+    """Пока галерея молодая, дозапись идёт по факту УЗНАВАНИЯ.
+
+    Почему это вообще понадобилось — живой замер на Vision Pi 22.09.2026.
+    Один человек за пять минут превратился в ТРИ записи: анфас, опущенная
+    голова и тёмные очки. Попарные косинусы между сохранёнными векторами —
+    0.538, 0.582 и 0.461, то есть ВЕСЬ внутриперсонный разброс лёг ниже
+    ``enroll_threshold`` (0.75). Ни одна галерея не выросла дальше семени
+    (`gal=1` у всех трёх), и в сводке ноды копился ``enroll_отклонено``.
+
+    Ключевой момент, который эти тесты и стерегут: запись, которую УЖЕ
+    узнали (``sim=0.737`` в живом логе), не попадала в галерею только
+    из-за второго порога — 0.737 < 0.75. Именно этот отказ и держал
+    галерею размером 1, а галерея размером 1 не переживает смену ракурса.
+    """
+
+    def test_warmup_enrolls_score_below_enroll_threshold(self, tmp_path):
+        """Косинус между identify и enroll: на молодой галерее дописываем."""
+        store = fs.FaceStore(
+            root=str(tmp_path), mode=fs.MODE_WORKSHOP,
+            identify_threshold=0.6, enroll_threshold=0.75,
+            gallery_warmup_size=5,
+        )
+        seed = store.record_encounter(_combo(0.0))
+        # 0.737 — ровно тот скор, который живой робот отверг 22.09.2026.
+        theta = float(np.arccos(0.737))
+        match = store.record_encounter(_combo(theta))
+
+        assert match.is_new is False, 'узнали того же человека'
+        assert match.person_id == seed.person_id
+        assert len(store.gallery(seed.person_id)) == 2, (
+            'на прогреве узнанный эмбеддинг обязан попасть в галерею'
+        )
+        assert store.stats()['enroll_rejected_total'] == 0
+        assert store.stats()['enroll_warmup_total'] == 1
+
+    def test_warmup_stops_at_cap(self, tmp_path):
+        """Прогрев не бесконечен — ровно ``gallery_warmup_size`` векторов."""
+        store = fs.FaceStore(
+            root=str(tmp_path), mode=fs.MODE_WORKSHOP,
+            identify_threshold=0.6, enroll_threshold=0.99,
+            gallery_warmup_size=4,
+        )
+        # Шаг 0.2 рад: ближайший сосед даёт cos(0.2)=0.980 — identify
+        # (0.6) проходит всегда, enroll (0.99) не проходит никогда, так
+        # что после потолка каждая встреча обязана быть отвергнутой.
+        #
+        # Верхняя граница k подобрана так, чтобы САМЫЙ дальний ракурс всё
+        # ещё узнавался галереей, застывшей на [0, 0.2, 0.4, 0.6]:
+        # cos(1.4 - 0.6) = 0.697 > identify. Уехав дальше, тест перестал бы
+        # проверять прогрев одного человека и начал бы заводить второго —
+        # чей прогрев подмешался бы в тот же счётчик. Поэтому ниже стоит и
+        # явная проверка, что человек в базе ровно один.
+        seed = store.record_encounter(_combo(0.0))
+        for k in range(1, 8):
+            store.record_encounter(_combo(0.2 * k))
+
+        stats = store.stats()
+        assert stats['people'] == 1, 'все встречи — один и тот же человек'
+        assert len(store.gallery(seed.person_id)) == 4
+        assert stats['enroll_warmup_total'] == 3, 'семя прогревом не считается'
+        assert stats['enroll_rejected_total'] == 4, 'после потолка — строгий режим'
+
+    def test_warmup_does_not_apply_to_identify(self, tmp_path):
+        """Прогрев трогает ТОЛЬКО дозапись. Порог узнавания не ослабляется:
+        кандидат ниже ``identify_threshold`` по-прежнему заводит новую
+        запись, даже если галерея молодая. Это сознательная граница —
+        иначе прогрев начал бы склеивать разных людей, а не наращивать
+        ракурсы одного."""
+        store = fs.FaceStore(
+            root=str(tmp_path), mode=fs.MODE_WORKSHOP,
+            identify_threshold=0.6, enroll_threshold=0.75,
+            gallery_warmup_size=5,
+        )
+        seed = store.record_encounter(_combo(0.0))
+        theta = float(np.arccos(0.50))  # ниже identify_threshold
+        match = store.record_encounter(_combo(theta))
+
+        assert match.is_new is True, 'ниже identify — это другой человек'
+        assert match.person_id != seed.person_id
+        assert len(store.gallery(seed.person_id)) == 1
+        assert store.stats()['enroll_warmup_total'] == 0
+
+    def test_warmup_size_is_reported_in_stats(self, tmp_path):
+        """Размер прогрева видно в сводке — иначе по логу не отличить
+        «галереи молодые» от «прогрев выключен конфигом»."""
+        store = fs.FaceStore(
+            root=str(tmp_path), mode=fs.MODE_WORKSHOP, gallery_warmup_size=7,
+        )
+        assert store.stats()['gallery_warmup_size'] == 7
 
 
 # ============================================================================
