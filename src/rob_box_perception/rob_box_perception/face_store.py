@@ -71,6 +71,29 @@ VALID_MODES = (MODE_WORKSHOP, MODE_EXHIBITION, MODE_STRICT)
 # контейнера.
 DEFAULT_ROOT = '/data/faces'
 
+# Версия схемы эмбеддинга (issue #2772, #2773). Инкрементируется КАЖДЫЙ
+# раз, когда меняется то, ЧТО именно превращается в вектор — кроп,
+# выравнивание, препроцессинг перед ArcFace HEF. Старые векторы после
+# такой смены живут в другом пространстве и молча сравнивать их с
+# новыми нельзя — тот же класс ошибки, что сравнить 128-dim с 512-dim
+# эмбеддингом (см. предупреждение про embedding_dim в hailo_models.yaml).
+#
+#   1 — невыровненный кроп: bbox детектора + resize до входа ArcFace,
+#       без выравнивания по landmark'ам (весь период до #2773). Именно
+#       на этой версии отравилась живая галерея «Деньчика» (#2772) —
+#       разные ракурсы одного и того же кропа давали разъезжающиеся
+#       вектора, и порог 0.45 не мог их отличить от чужого лица.
+#   2 — кроп выровнен по landmark'ам перед ArcFace (issue #2773).
+#
+# При загрузке записи с диска несовпадение версии (в т.ч. её отсутствие
+# — meta.json старее этого поля) НЕ ронятет запись целиком: имя,
+# speaker_id, эталонный снимок и встречи остаются (это по-прежнему тот
+# же человек), но галерея эмбеддингов отбрасывается — см.
+# ``FaceStore._load_one_record``. Побочный эффект, который и нужен:
+# отравленная галерея с реального робота вычищается сама на первом
+# старте после апгрейда, без ручной чистки диска.
+CURRENT_EMBEDDING_VERSION = 2
+
 _META_FILENAME = 'meta.json'
 _EMBEDDINGS_FILENAME = 'embeddings.npy'
 _REFERENCE_FILENAME = 'reference.jpg'
@@ -84,6 +107,16 @@ class FaceMatch:
     ``similarity`` — косинусная близость к галерее совпавшей записи;
     для только что созданной записи (``is_new=True``) по определению
     1.0 (сравнивать не с чем — сама с собой).
+
+    ``runner_up_person_id``/``runner_up_similarity`` — второй кандидат
+    по ``_score_all`` и его score (issue #2771: «логировать не только
+    победителя, но и второго кандидата с зазором — как уже делает
+    ``speaker_id_node``», см. его ``🔍 identify candidates: best=...
+    second=... gap=...``). ``None``, если известных записей меньше двух
+    (не с кем сравнивать) — в т.ч. когда ``scored`` вообще пуст. Поля
+    добавлены в конец и с дефолтом ``None`` намеренно: это не новый
+    контракт, а необязательная диагностика, старые вызывающие вправе её
+    игнорировать.
     """
 
     person_id: str
@@ -91,6 +124,8 @@ class FaceMatch:
     similarity: float
     is_new: bool
     encounter_count: int
+    runner_up_person_id: Optional[str] = None
+    runner_up_similarity: Optional[float] = None
 
 
 @dataclass
@@ -115,6 +150,11 @@ class _Record:
     encounters: List[Dict[str, Any]] = field(default_factory=list)
     has_reference_snapshot: bool = False
     persisted: bool = False
+    # Версия схемы эмбеддингов, которым ЭТА галерея сейчас соответствует
+    # (issue #2772/#2773) — см. CURRENT_EMBEDDING_VERSION выше. Не путать
+    # с версией конкретного вектора: FaceStore не хранит смешанные
+    # версии в одной галерее, поэтому одного поля на запись достаточно.
+    embedding_version: int = CURRENT_EMBEDDING_VERSION
 
 
 def _normalize(vec: np.ndarray) -> np.ndarray:
@@ -173,10 +213,34 @@ class FaceStore:
     """Единственная точка входа для записи/чтения лицевых данных на диск.
 
     Параметры порогов и лимитов — стартовые значения из ADR-0123 §4.1/§10
-    (``max_embeddings=20``, ``keep_encounters=10``, ``max_strangers=500``);
-    ``identify_threshold`` калибруется на реальных данных отдельной
-    карточкой (§6 — «как голосовой в #2348, таблица sweep»), здесь —
-    только разумный дефолт для тестов и первого запуска.
+    (``max_embeddings=20``, ``keep_encounters=10``, ``max_strangers=500``).
+
+    Два РАЗНЫХ порога узнавания (issue #2772 — раньше это был один и тот
+    же порог, и это была ошибка):
+
+    * ``identify_threshold`` — «похож достаточно, чтобы НАЗВАТЬ имя».
+      Best-of-gallery score (``_score_all``) должен пройти этот порог,
+      чтобы ``record_encounter``/``identify`` сочли эмбеддинг известным
+      человеком.
+    * ``enroll_threshold`` — «похож достаточно, чтобы ДОПИСАТЬ эмбеддинг
+      в галерею» этого человека. Заметно строже ``identify_threshold`` и
+      требует согласия ДВУХ проверок (``_should_enroll``): best-of-gallery
+      score и косинус к медоиду галереи. Встреча, прошедшая ``identify``,
+      но не ``enroll``, всё равно называется по имени и считается
+      встречей — просто не расширяет и не пачкает галерею.
+
+    Оба значения — 0.6/0.75 — ЗАГЛУШКА до настоящего sweep по ADR-0123
+    §6 (issue #2771), не калиброванные числа. Прежний дефолт 0.45 пускал
+    чужих: на живом роботе 22.09.2026 тёща владельца была опознана как
+    «Деньчик» при score=0.483 (issue #2771), а запись «Деньчика» — уже
+    отравленная этим же режимом (issue #2772) — после апгрейда версии
+    эмбеддинга (см. ``CURRENT_EMBEDDING_VERSION``) начнёт копить галерею
+    заново уже под этими порогами.
+
+    ``embedding_version`` — версия схемы эмбеддинга, которую ожидает ЭТОТ
+    инстанс (см. модульную ``CURRENT_EMBEDDING_VERSION``). Записи на
+    диске с другой версией (или без поля вовсе) при загрузке теряют
+    галерею, но не имя — см. ``_load_one_record``.
 
     ``clock`` — инъекция времени для тестов (по умолчанию ``time.time``);
     используется только для служебного ``last_encounter_ts`` (см.
@@ -189,10 +253,12 @@ class FaceStore:
         root: str = DEFAULT_ROOT,
         mode: str = MODE_WORKSHOP,
         *,
-        identify_threshold: float = 0.45,
+        identify_threshold: float = 0.6,
+        enroll_threshold: float = 0.75,
         max_embeddings: int = 20,
         keep_encounters: int = 10,
         max_strangers: int = 500,
+        embedding_version: int = CURRENT_EMBEDDING_VERSION,
         clock=time.time,
     ) -> None:
         if mode not in VALID_MODES:
@@ -204,13 +270,21 @@ class FaceStore:
         self._root.mkdir(parents=True, exist_ok=True)
         self._mode = mode
         self._identify_threshold = identify_threshold
+        self._enroll_threshold = enroll_threshold
         self._max_embeddings = max(1, int(max_embeddings))
         self._keep_encounters = max(0, int(keep_encounters))
         self._max_strangers = max(0, int(max_strangers))
+        self._embedding_version = int(embedding_version)
         self._clock = clock
         self._lock = threading.Lock()
         self._records: Dict[str, _Record] = {}
         self._embedding_dim: Optional[int] = None
+        # issue #2772: сколько раз встреча назвала имя (identify прошёл),
+        # но эмбеддинг НЕ попал в галерею (enroll не прошёл). Живой
+        # диагностический сигнал — если счётчик растёт быстро, порог
+        # identify/enroll разошлись с реальными данными сильнее, чем
+        # рассчитывали (или в кадре реально часто мелькают чужие).
+        self._enroll_rejected_total = 0
         self._load_from_disk()
 
     # ── Свойства/статистика ──────────────────────────────────────────────
@@ -221,11 +295,28 @@ class FaceStore:
 
     def stats(self) -> Dict[str, Any]:
         """Сводка для ``/perception/health`` (ADR-0123 §2: «робот обязан
-        уметь сказать, в каком он режиме»)."""
+        уметь сказать, в каком он режиме»).
+
+        ``gallery_cohesion`` — медиана per-записи ``gallery_cohesion``
+        (см. ``people()``/``_gallery_cohesion``) по всем записям с ≥2
+        эмбеддингами; ``None``, если таких записей нет. Это главный
+        диагностический показатель отравления галереи (issue #2772,
+        #2775): у живой отравленной записи «Деньчика» он был 0.302,
+        должен быть ~0.9. ``enroll_rejected_total`` — счётчик встреч,
+        которые назвали имя, но не расширили галерею (issue #2772,
+        см. докстринг конструктора)."""
         with self._lock:
             named = sum(1 for r in self._records.values() if r.name is not None)
             strangers = len(self._records) - named
             embeddings = sum(len(r.embeddings) for r in self._records.values())
+            cohesions = [
+                c for c in (
+                    self._gallery_cohesion(r.embeddings)
+                    for r in self._records.values()
+                )
+                if c is not None
+            ]
+            gallery_cohesion = float(np.median(cohesions)) if cohesions else None
             disk_bytes = 0
             if self._root.exists():
                 for p in self._root.rglob('*'):
@@ -240,6 +331,8 @@ class FaceStore:
                 'named': named,
                 'strangers': strangers,
                 'embeddings': embeddings,
+                'gallery_cohesion': gallery_cohesion,
+                'enroll_rejected_total': self._enroll_rejected_total,
                 'disk_bytes': disk_bytes,
             }
 
@@ -275,15 +368,40 @@ class FaceStore:
         if data.get('person_id') != person_id:
             raise ValueError('person_id в meta.json не совпадает с именем каталога')
 
+        # issue #2772/#2773: галерея грузится с диска ТОЛЬКО если её
+        # версия совпадает с текущей (``self._embedding_version``).
+        # Отсутствие поля (meta.json старее, чем это поле) трактуется
+        # как несовпадение, а не как «версия 1 по умолчанию» — молчаливое
+        # угадывание тут опаснее честного сброса галереи.
+        stored_version = data.get('embedding_version')
+        version_matches = stored_version == self._embedding_version
+
         embeddings: List[np.ndarray] = []
         emb_path = person_dir / _EMBEDDINGS_FILENAME
         if emb_path.exists():
             arr = np.load(emb_path)
             if arr.ndim == 1:
                 arr = arr.reshape(1, -1)
-            embeddings = [row.astype(np.float32) for row in arr]
-            if embeddings and self._embedding_dim is None:
-                self._embedding_dim = int(embeddings[0].size)
+            if version_matches:
+                embeddings = [row.astype(np.float32) for row in arr]
+                if embeddings and self._embedding_dim is None:
+                    self._embedding_dim = int(embeddings[0].size)
+            elif arr.shape[0] > 0:
+                # Имя/speaker_id/эталон/встречи — сохраняются ниже как
+                # есть, это по-прежнему тот же человек. Только галерея
+                # эмбеддингов отбрасывается: сравнивать вектора из
+                # разных версий препроцессинга молча нельзя (см.
+                # CURRENT_EMBEDDING_VERSION). Именно так после апгрейда
+                # на выравнивание по landmark'ам (#2773) самоочистится
+                # отравленная живая галерея «Деньчика» (#2772).
+                logger.warning(
+                    'face_store: person_id=%s embedding_version на диске=%r, '
+                    'текущая=%d (issue #2772/#2773) — %d эмбеддингов '
+                    'отброшены, галерея начнётся заново; имя/speaker_id/'
+                    'эталон/встречи сохранены',
+                    person_id, stored_version, self._embedding_version,
+                    arr.shape[0],
+                )
 
         return _Record(
             person_id=person_id,
@@ -296,6 +414,11 @@ class FaceStore:
             encounters=list(data.get('encounters', [])),
             has_reference_snapshot=bool(data.get('has_reference_snapshot', False)),
             persisted=True,
+            # Начиная с этой загрузки запись живёт под версией ЭТОГО
+            # инстанса: либо галерея реально ей соответствует
+            # (version_matches), либо она пуста и следующий же
+            # ``record_encounter`` засеет её заново под текущей версией.
+            embedding_version=self._embedding_version,
         )
 
     # ── Пути на диске ────────────────────────────────────────────────────
@@ -334,7 +457,14 @@ class FaceStore:
         """Best-of-gallery косинусная близость к каждой известной записи,
         отсортировано по убыванию (тот же приём, что ``SpeakerDatabase.
         _score_all`` в голосовом аналоге — max, а не mean: одна неудачная
-        встреча не должна размывать уже подтверждённое совпадение)."""
+        встреча не должна размывать уже подтверждённое совпадение).
+
+        Намеренно НЕ переведено на медоид/медиану в этой карточке —
+        issue #2772 просит развести пороги и вытеснение, а смена самого
+        скоринга (max → медоид) обсуждается отдельно, с sweep по
+        реальным данным (issue #2771 «Счёт по медоиду/медиане, а не по
+        max — обсуждаемо»). Разводить обе смены в одном PR — терять
+        возможность откатить одну независимо от другой."""
         scored = []
         for person_id, rec in self._records.items():
             if not rec.embeddings:
@@ -356,12 +486,17 @@ class FaceStore:
                 return None
             person_id, sim = scored[0]
             rec = self._records[person_id]
+            runner_up_person_id, runner_up_similarity = (
+                scored[1] if len(scored) > 1 else (None, None)
+            )
             return FaceMatch(
                 person_id=person_id,
                 name=rec.name,
                 similarity=sim,
                 is_new=False,
                 encounter_count=rec.encounter_count,
+                runner_up_person_id=runner_up_person_id,
+                runner_up_similarity=runner_up_similarity,
             )
 
     def record_encounter(
@@ -388,6 +523,9 @@ class FaceStore:
                 person_id, sim = scored[0]
                 rec = self._records[person_id]
                 is_new = False
+                runner_up_person_id, runner_up_similarity = (
+                    scored[1] if len(scored) > 1 else (None, None)
+                )
             else:
                 # Незнакомец. ADR-0123 §2: workshop — на диск как знакомый,
                 # без имени; exhibition — только в памяти сессии; strict —
@@ -401,11 +539,21 @@ class FaceStore:
                         encounter_count=1,
                     )
                 person_id = str(uuid.uuid4())
-                rec = _Record(person_id=person_id, created_at=now)
+                rec = _Record(
+                    person_id=person_id, created_at=now,
+                    embedding_version=self._embedding_version,
+                )
                 rec.persisted = self._mode == MODE_WORKSHOP
                 self._records[person_id] = rec
                 is_new = True
                 sim = 1.0
+                # Не «нет второго кандидата» — лучший ИЗВЕСТНЫЙ, пусть и
+                # не прошедший identify_threshold. Диагностически ценно:
+                # именно так выглядела бы предупреждающая строка «чуть не
+                # ложное отклонение» (issue #2771).
+                runner_up_person_id, runner_up_similarity = (
+                    scored[0] if scored else (None, None)
+                )
                 if rec.persisted:
                     self._person_dir(person_id).mkdir(parents=True, exist_ok=True)
 
@@ -415,9 +563,19 @@ class FaceStore:
             if self._mode == MODE_STRICT:
                 # §4.1: у знакомых в strict — один центроид, не галерея.
                 self._fold_into_centroid(rec, emb)
-            else:
+            elif is_new:
+                # Первый эмбеддинг новой записи — семя галереи, кладётся
+                # безусловно (сравнивать не с чем, см. докстринг FaceMatch).
                 rec.embeddings.append(emb)
-                self._evict_most_redundant(rec)
+                self._evict_most_distant_from_medoid(rec)
+            elif self._should_enroll(rec, emb, sim):
+                rec.embeddings.append(emb)
+                self._evict_most_distant_from_medoid(rec)
+            else:
+                # issue #2772: identify прошёл (имя будет названо и встреча
+                # засчитана ниже), а enroll — нет. Галерея НЕ растёт и НЕ
+                # пачкается этим эмбеддингом.
+                self._enroll_rejected_total += 1
 
             self._maybe_store_snapshots(rec, snapshot, body_snapshot, meta, now)
 
@@ -433,24 +591,100 @@ class FaceStore:
                 similarity=sim,
                 is_new=is_new,
                 encounter_count=rec.encounter_count,
+                runner_up_person_id=runner_up_person_id,
+                runner_up_similarity=runner_up_similarity,
             )
 
     # ── Галерея эмбеддингов ──────────────────────────────────────────────
 
-    def _evict_most_redundant(self, rec: _Record) -> None:
-        """ADR-0123 §4.1: при переполнении ``max_embeddings`` вытесняется
-        САМЫЙ ПОХОЖИЙ на остальные (он несёт меньше всего новой информации)
-        — не самый старый. Похожесть на «остальных» — средняя косинусная
-        близость к каждому другому эмбеддингу галереи."""
+    def _medoid(self, embeddings: List[np.ndarray]) -> np.ndarray:
+        """Эмбеддинг галереи с максимальной суммой косинусных сходств к
+        остальным — канонический, наиболее «согласованный со всеми»
+        ракурс. В отличие от геометрического центроида (среднего вектора,
+        который может не совпадать ни с одним реальным эмбеддингом),
+        медоид — это конкретная, когда-то реально записанная встреча,
+        поэтому годится и как точка допуска в галерею (``_should_enroll``),
+        и как якорь при вытеснении (``_evict_most_distant_from_medoid``).
+        Для галереи из одного элемента медоид — он сам."""
+        if len(embeddings) == 1:
+            return embeddings[0]
+        n = len(embeddings)
+        sums = [
+            sum(_cosine(embeddings[i], embeddings[j]) for j in range(n) if j != i)
+            for i in range(n)
+        ]
+        best_idx = max(range(n), key=lambda i: sums[i])
+        return embeddings[best_idx]
+
+    def _gallery_cohesion(self, embeddings: List[np.ndarray]) -> Optional[float]:
+        """Медиана попарного косинуса внутри галереи — единственный
+        числовой показатель «эта запись описывает одного человека, а не
+        нескольких» (issue #2772, #2775 — нужен и для ``/perception/health``,
+        и для инструмента чистки). Здоровая запись держится в районе
+        ~0.9; живая отравленная галерея «Деньчика» (#2772, до фикса) —
+        медиана 0.302, min −0.007. Для 0-1 эмбеддингов попарных пар нет
+        — ``None``, а не 0.0/1.0 (оба значения были бы враньём об
+        измерении, которого не существует)."""
+        n = len(embeddings)
+        if n < 2:
+            return None
+        sims = [
+            _cosine(embeddings[i], embeddings[j])
+            for i in range(n)
+            for j in range(i + 1, n)
+        ]
+        return float(np.median(sims))
+
+    def _should_enroll(self, rec: _Record, emb: np.ndarray, best_score: float) -> bool:
+        """issue #2772: дописывать эмбеддинг в СУЩЕСТВУЮЩУЮ галерею только
+        при двойном согласии — одного порога мало.
+
+        1. ``best_score`` (уже посчитан в ``_score_all``, тот же
+           best-of-gallery score, что дал совпадение identify) обязан
+           пройти ``enroll_threshold`` — заметно строже
+           ``identify_threshold``.
+        2. Новый вектор обязан быть похож на МЕДОИД галереи (канонический
+           ракурс), а не просто оказаться чуть ближе к чьему-то одному
+           случайно затесавшемуся туда вектору. Проверка только по (1)
+           именно так и ломалась на живых данных: best-of-gallery
+           («максимум по галерее») можно превысить, попав рядом с уже
+           присутствующим мусорным эмбеддингом — так галерея «Деньчика»
+           сама себя убедила дописать тёщу поверх собственного мусора.
+
+        Первый эмбеддинг НОВОЙ записи сюда не попадает вовсе — он сеется
+        безусловно, см. вызывающий код в ``record_encounter``."""
+        if best_score < self._enroll_threshold:
+            return False
+        medoid = self._medoid(rec.embeddings)
+        return _cosine(emb, medoid) >= self._enroll_threshold
+
+    def _evict_most_distant_from_medoid(self, rec: _Record) -> None:
+        """ADR-0123 §4.1, issue #2772: при переполнении ``max_embeddings``
+        вытесняется вектор, ДАЛЬШЕ ВСЕХ от медоида галереи (эмбеддинг с
+        максимальной суммой сходств к остальным) — не самый похожий на
+        остальные, и не самый старый.
+
+        Раньше (см. историю метода — ``_evict_most_redundant``)
+        вытеснялся САМЫЙ ТИПИЧНЫЙ эмбеддинг под лозунгом «несёт меньше
+        всего новой информации». Для датасета, который должен покрывать
+        разнообразие, это разумная цель. Галерея личности — не датасет,
+        а эталон ОДНОГО человека: цель здесь — ЧИСТОТА личности, а не
+        разнообразие ракурсов. Многократно подтверждённый, типичный
+        ракурс — это якорь, который держит запись рядом с её настоящим
+        владельцем; выброс (случайный чужой кадр, неудачный угол,
+        промах трекера) — и есть та примесь, которая размывает запись.
+        Старое правило систематически сносило якорь и берегло примесь:
+        живая галерея «Деньчика» (issue #2772) при ``max_embeddings=20``
+        накопила внутренний попарный косинус медиана 0.302 (min −0.007)
+        вместо ожидаемых ~0.9 — потому что именно типичные,
+        подтверждающие личность векторы вымывались первыми, а случайные
+        примеси оставались и множились."""
         while len(rec.embeddings) > self._max_embeddings:
+            medoid = self._medoid(rec.embeddings)
             n = len(rec.embeddings)
-            avg_sims = []
-            for i in range(n):
-                others = [rec.embeddings[j] for j in range(n) if j != i]
-                avg_sims.append(
-                    sum(_cosine(rec.embeddings[i], o) for o in others) / len(others)
-                )
-            worst_idx = max(range(n), key=lambda i: avg_sims[i])
+            worst_idx = min(
+                range(n), key=lambda i: _cosine(rec.embeddings[i], medoid)
+            )
             rec.embeddings.pop(worst_idx)
 
     def _fold_into_centroid(self, rec: _Record, emb: np.ndarray) -> None:
@@ -567,6 +801,7 @@ class FaceStore:
             'has_reference_snapshot': rec.has_reference_snapshot,
             'encounters': rec.encounters,
             'mode_recorded': self._mode,
+            'embedding_version': rec.embedding_version,
         }
         _atomic_write_json(person_dir / _META_FILENAME, meta)
         dim = self._embedding_dim or 0
@@ -647,7 +882,7 @@ class FaceStore:
             if self._mode == MODE_STRICT:
                 self._fold_all_into_one_centroid(keep)
             else:
-                self._evict_most_redundant(keep)
+                self._evict_most_distant_from_medoid(keep)
 
             if drop.persisted:
                 self._migrate_snapshot_files(keep, drop)
@@ -728,6 +963,9 @@ class FaceStore:
                     'is_stranger': rec.name is None,
                     'persisted': rec.persisted,
                     'embeddings': len(rec.embeddings),
+                    # issue #2772/#2775: главный диагностический показатель
+                    # здоровья галереи, см. докстринг _gallery_cohesion.
+                    'gallery_cohesion': self._gallery_cohesion(rec.embeddings),
                 }
                 for rec in self._records.values()
             ]
@@ -783,6 +1021,7 @@ __all__ = [
     'MODE_STRICT',
     'VALID_MODES',
     'DEFAULT_ROOT',
+    'CURRENT_EMBEDDING_VERSION',
     'FaceMatch',
     'FaceStore',
 ]

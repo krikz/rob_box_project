@@ -143,7 +143,14 @@ class VisionFaceNode(VisionHailoNode):
         self.declare_parameter('arcface_hef_path', '')
         self.declare_parameter('face_store_root', '/data/faces')
         self.declare_parameter('face_privacy_mode', 'workshop')
-        self.declare_parameter('face_identify_threshold', 0.45)
+        # ЗАГЛУШКА до sweep по ADR-0123 §6 (issue #2771), не калиброванные
+        # числа. Прежний дефолт 0.45 пускал чужих (тёща опознана как
+        # «Деньчик» при score=0.483, issue #2771). identify — «похож
+        # достаточно, чтобы назвать имя»; enroll — заметно строже,
+        # «похож достаточно, чтобы дописать эмбеддинг в галерею» (issue
+        # #2772) — см. докстринг конструктора FaceStore.
+        self.declare_parameter('face_identify_threshold', 0.6)
+        self.declare_parameter('face_enroll_threshold', 0.75)
         self.declare_parameter('min_track_sec', 2.0)
         self.declare_parameter('min_face_px', 48.0)
         # Ворота качества кропа (issue #2749): почти чёрный/плоский кроп
@@ -221,6 +228,9 @@ class VisionFaceNode(VisionHailoNode):
         identify_threshold = float(
             self.get_parameter('face_identify_threshold').value
         )
+        enroll_threshold = float(
+            self.get_parameter('face_enroll_threshold').value
+        )
         min_track_sec = float(self.get_parameter('min_track_sec').value)
         min_face_px = float(self.get_parameter('min_face_px').value)
         min_crop_mean = float(self.get_parameter('min_crop_mean').value)
@@ -230,6 +240,7 @@ class VisionFaceNode(VisionHailoNode):
             root=root,
             mode=mode,
             identify_threshold=identify_threshold,
+            enroll_threshold=enroll_threshold,
             max_embeddings=int(self.get_parameter('max_embeddings').value),
             keep_encounters=int(self.get_parameter('keep_encounters').value),
             max_strangers=int(self.get_parameter('max_strangers').value),
@@ -255,13 +266,15 @@ class VisionFaceNode(VisionHailoNode):
 
         self.get_logger().info(
             'Узнавание лица включено: hef=%s, режим приватности=%s, '
-            'хранилище=%s, порог=%.2f, Встреча≥%.1fс и ≥%.0fpx '
+            'хранилище=%s, identify_threshold=%.2f enroll_threshold=%.2f '
+            '(заглушка до sweep #2771), Встреча≥%.1fс и ≥%.0fpx '
             '(ADR-0123). Людей в базе: %s.'
             % (
                 arcface_hef,
                 mode,
                 root,
                 identify_threshold,
+                enroll_threshold,
                 min_track_sec,
                 min_face_px,
                 store.stats().get('people', '?'),
@@ -378,10 +391,16 @@ class VisionFaceNode(VisionHailoNode):
         active_reasons = [f'{label}={count}' for label, count in skip_reasons if count]
         if active_reasons:
             skip_suffix = ' (пропуски: ' + ' '.join(active_reasons) + ')'
+        # gallery_cohesion (issue #2772/#2775): медиана попарного косинуса
+        # внутри галерей — сторожевой показатель отравления. None ("н/д")
+        # значит «пока нет ни одной записи с ≥2 эмбеддингами», а не ошибку.
+        cohesion = store.get('gallery_cohesion')
+        cohesion_str = f'{cohesion:.3f}' if cohesion is not None else 'н/д'
         self.get_logger().info(
             '[лицо] режим=%s встреч=%d узнано=%d новых=%d слияний=%d%s '
             'ошибок_эмбеддинга=%d кропов_отброшено=%d треков=%d | '
-            'в базе: людей=%s с_именем=%s'
+            'в базе: людей=%s с_именем=%s gallery_cohesion=%s '
+            'enroll_отклонено=%d'
             % (
                 store.get('mode', '?'),
                 stats.get('encounters_total', 0),
@@ -394,6 +413,8 @@ class VisionFaceNode(VisionHailoNode):
                 stats.get('active_tracks', 0),
                 store.get('people', '?'),
                 store.get('named', '?'),
+                cohesion_str,
+                store.get('enroll_rejected_total', 0),
             )
         )
 

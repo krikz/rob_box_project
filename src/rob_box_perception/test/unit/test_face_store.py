@@ -29,6 +29,8 @@ from __future__ import annotations
 
 import importlib
 import json
+import logging
+import math
 import sys
 from pathlib import Path
 
@@ -131,20 +133,113 @@ class TestIdentifyAndDedup:
         store.record_encounter(_basis(0))
         assert store.identify(_basis(2)) is None
 
+    def test_identify_reports_runner_up_candidate(self, tmp_path):
+        """issue #2771: identify() должен отдавать второго кандидата с
+        его score — та же диагностика, что speaker_id_node уже печатает
+        для голоса (``best=... second=... gap=...``)."""
+        store = fs.FaceStore(root=str(tmp_path), mode=fs.MODE_WORKSHOP)
+        alice = store.record_encounter(_combo(0.0))
+        store.attach_name(alice.person_id, 'Алиса')
+        bob = store.record_encounter(_combo(1.2))
+        store.attach_name(bob.person_id, 'Боб')
+
+        # Запрос ближе к Алисе (theta=0.1), но не идентичен — Боб (theta=1.2,
+        # далеко) должен остаться единственным «вторым кандидатом», раз
+        # других записей в базе больше нет.
+        match = store.identify(_combo(0.1))
+        assert match is not None
+        assert match.person_id == alice.person_id
+        assert match.runner_up_person_id == bob.person_id
+        assert match.runner_up_similarity == pytest.approx(
+            math.cos(1.2 - 0.1), abs=1e-5
+        )
+
+    def test_identify_runner_up_is_none_with_single_known_person(self, tmp_path):
+        store = fs.FaceStore(root=str(tmp_path), mode=fs.MODE_WORKSHOP)
+        store.record_encounter(_basis(0))
+        match = store.identify(_noisy_copy(_basis(0)))
+        assert match is not None
+        assert match.runner_up_person_id is None
+        assert match.runner_up_similarity is None
+
 
 # ============================================================================
-# 2. Рост галереи и вытеснение самого избыточного (ADR-0123 §4.1)
+# 1b. Развод порогов identify/enroll (issue #2772)
+# ============================================================================
+
+class TestIdentifyEnrollThresholdSplit:
+
+    def test_score_between_identify_and_enroll_names_but_does_not_enroll(
+        self, tmp_path,
+    ):
+        """Косинус, который проходит identify_threshold, но не дотягивает
+        до enroll_threshold: встреча называется по имени (и засчитывается),
+        но эмбеддинг НЕ попадает в галерею — это и есть фикс #2772
+        (раньше один и тот же порог одновременно называл имя и дописывал
+        чужое лицо в эталон)."""
+        store = fs.FaceStore(
+            root=str(tmp_path), mode=fs.MODE_WORKSHOP,
+            identify_threshold=0.6, enroll_threshold=0.9,
+        )
+        seed = store.record_encounter(_combo(0.0))
+        store.attach_name(seed.person_id, 'Деньчик')
+
+        theta = float(np.arccos(0.75))  # между identify (0.6) и enroll (0.9)
+        match = store.record_encounter(_combo(theta))
+
+        assert match.is_new is False
+        assert match.person_id == seed.person_id
+        assert match.name == 'Деньчик', 'имя называется — identify прошёл'
+        assert match.similarity == pytest.approx(0.75, abs=1e-3)
+        assert len(store.gallery(seed.person_id)) == 1, (
+            'enroll не прошёл — галерея не должна вырасти'
+        )
+        assert store.stats()['enroll_rejected_total'] == 1
+
+    def test_score_above_enroll_threshold_does_enroll(self, tmp_path):
+        store = fs.FaceStore(
+            root=str(tmp_path), mode=fs.MODE_WORKSHOP,
+            identify_threshold=0.6, enroll_threshold=0.9,
+        )
+        seed = store.record_encounter(_combo(0.0))
+        theta = float(np.arccos(0.95))  # выше enroll_threshold
+        store.record_encounter(_combo(theta))
+
+        assert len(store.gallery(seed.person_id)) == 2
+        assert store.stats()['enroll_rejected_total'] == 0
+
+    def test_first_embedding_of_new_record_is_always_seeded(self, tmp_path):
+        """Новая запись сеется первым эмбеддингом безусловно — enroll_threshold
+        к семени не применяется (сравнивать ещё не с чем)."""
+        store = fs.FaceStore(
+            root=str(tmp_path), mode=fs.MODE_WORKSHOP, enroll_threshold=0.99,
+        )
+        match = store.record_encounter(_basis(0))
+        assert match.is_new is True
+        assert len(store.gallery(match.person_id)) == 1
+        assert store.stats()['enroll_rejected_total'] == 0
+
+
+# ============================================================================
+# 2. Рост галереи и вытеснение самого далёкого от медоида (issue #2772)
 # ============================================================================
 
 class TestGalleryEviction:
 
-    def test_evicts_most_similar_to_rest_not_oldest(self, tmp_path):
+    def test_evicts_farthest_from_medoid_not_most_typical(self, tmp_path):
+        """issue #2772: старое правило вытесняло самый ТИПИЧНЫЙ вектор
+        («несёт меньше всего новой информации») — ровно наоборот тому,
+        что нужно галерее одной личности. Новое правило вытесняет
+        вектор, дальше всех от медоида галереи (выброс), а якорь
+        (типичный, многократно подтверждённый ракурс) остаётся.
+
+        Углы подобраны так же, как в прежнем тесте на вытеснение: при
+        4 элементах медоид — theta=0.05 (index 2, максимальная сумма
+        сходств к остальным трём), а дальше всех от него — theta=0.20
+        (index 3, единственный «выброс» на отшибе кластера)."""
         store = fs.FaceStore(
             root=str(tmp_path), mode=fs.MODE_WORKSHOP, max_embeddings=3,
         )
-        # Углы подобраны так, что при переполнении до 4 элементов у
-        # theta=0.05 (index 2) строго наибольшая средняя близость к
-        # остальным трём — см. расчёт в docstring карточки/PR.
         thetas = [0.0, 0.03, 0.05, 0.20]
         embeddings = [_combo(t) for t in thetas]
 
@@ -162,10 +257,12 @@ class TestGalleryEviction:
 
         assert _contains(embeddings[0])
         assert _contains(embeddings[1])
-        assert _contains(embeddings[3])
-        assert not _contains(embeddings[2]), (
-            'theta=0.05 несёт меньше всего новой информации и должен '
-            'быть вытеснен первым (ADR-0123 §4.1)'
+        assert _contains(embeddings[2]), (
+            'theta=0.05 — медоид галереи (якорь), должен остаться'
+        )
+        assert not _contains(embeddings[3]), (
+            'theta=0.20 — дальше всех от медоида (выброс), должен быть '
+            'вытеснен первым (issue #2772)'
         )
 
 
@@ -472,6 +569,12 @@ class TestCorruptMetadata:
                 'has_reference_snapshot': False,
                 'encounters': [],
                 'mode_recorded': 'workshop',
+                # issue #2772/#2773: без совпадающей версии галерея этой
+                # записи была бы отброшена при загрузке (см.
+                # TestEmbeddingVersion ниже) — этот тест проверяет ДРУГОЕ
+                # поведение (устойчивость к битым СОСЕДНИМ записям), поэтому
+                # версия здесь намеренно актуальная.
+                'embedding_version': fs.CURRENT_EMBEDDING_VERSION,
             }),
             encoding='utf-8',
         )
@@ -495,6 +598,198 @@ class TestCorruptMetadata:
         assert found is not None
         assert found.person_id == 'good-person'
         assert found.name == 'Денис'
+
+
+# ============================================================================
+# 11. Версия эмбеддинга (issue #2772, #2773)
+# ============================================================================
+
+def _write_legacy_meta(person_dir: Path, person_id: str, **overrides: object) -> None:
+    """Записать meta.json «руками», как лежал бы он на диске ДО этой
+    карточки — помогает тестам подделать старую/отсутствующую версию
+    эмбеддинга, не проходя через актуальный ``FaceStore._persist_record``
+    (который теперь всегда пишет ``embedding_version`` сам)."""
+    payload = {
+        'person_id': person_id,
+        'name': 'Деньчик',
+        'speaker_id': 'sp-denchik',
+        'created_at': 1.0,
+        'encounter_count': 23,
+        'last_encounter_ts': 5.0,
+        'has_reference_snapshot': True,
+        'encounters': [],
+        'mode_recorded': 'workshop',
+    }
+    payload.update(overrides)
+    (person_dir / 'meta.json').write_text(
+        json.dumps(payload), encoding='utf-8',
+    )
+
+
+class TestEmbeddingVersion:
+
+    def test_stale_version_drops_gallery_keeps_identity(self, tmp_path, caplog):
+        """issue #2772/#2773: запись с версией эмбеддинга, не совпадающей
+        с текущей, теряет ГАЛЕРЕЮ (несравнимые вектора), но сохраняет имя,
+        speaker_id, эталонный снимок и счётчик встреч — это по-прежнему
+        тот же человек, просто без (пока ещё) ни одного вектора в новой
+        системе координат."""
+        person_dir = tmp_path / 'b49470e1'
+        person_dir.mkdir()
+        _write_legacy_meta(person_dir, 'b49470e1', embedding_version=1)
+        np.save(
+            person_dir / 'embeddings.npy',
+            np.stack([_basis(0), _basis(1), _basis(2)]),
+        )
+        (person_dir / 'reference.jpg').write_bytes(_jpeg('ref'))
+
+        with caplog.at_level(logging.WARNING):
+            store = fs.FaceStore(
+                root=str(tmp_path), mode=fs.MODE_WORKSHOP,
+                embedding_version=2,
+            )
+
+        people = store.people()
+        assert len(people) == 1
+        person = people[0]
+        assert person['person_id'] == 'b49470e1'
+        assert person['name'] == 'Деньчик'
+        assert person['has_snapshot'] is True
+        assert person['embeddings'] == 0
+        assert person['gallery_cohesion'] is None
+        assert store.gallery('b49470e1') == []
+        assert store.find_by_speaker('sp-denchik') == 'b49470e1'
+        assert (person_dir / 'reference.jpg').exists()
+        assert any(
+            'b49470e1' in rec.message and '1' in rec.message and '2' in rec.message
+            for rec in caplog.records
+        ), 'предупреждение обязано называть person_id и обе версии'
+
+    def test_missing_version_field_is_treated_as_stale(self, tmp_path):
+        """meta.json старее самого поля ``embedding_version`` (до этой
+        карточки) — трактуется как несовпадение, не как «версия 1 по
+        умолчанию»: угадывать здесь опаснее, чем честно сбросить галерею."""
+        person_dir = tmp_path / 'legacy-no-field'
+        person_dir.mkdir()
+        _write_legacy_meta(person_dir, 'legacy-no-field')  # без embedding_version
+        np.save(person_dir / 'embeddings.npy', _basis(0).reshape(1, -1))
+
+        store = fs.FaceStore(root=str(tmp_path), mode=fs.MODE_WORKSHOP)
+
+        person = store.people()[0]
+        assert person['person_id'] == 'legacy-no-field'
+        assert person['name'] == 'Деньчик'
+        assert person['embeddings'] == 0
+
+    def test_matching_version_keeps_gallery(self, tmp_path):
+        person_dir = tmp_path / 'fresh-person'
+        person_dir.mkdir()
+        _write_legacy_meta(
+            person_dir, 'fresh-person', embedding_version=fs.CURRENT_EMBEDDING_VERSION,
+        )
+        np.save(person_dir / 'embeddings.npy', _basis(0).reshape(1, -1))
+
+        store = fs.FaceStore(root=str(tmp_path), mode=fs.MODE_WORKSHOP)
+
+        person = store.people()[0]
+        assert person['embeddings'] == 1
+        assert store.identify(_basis(0)) is not None
+
+    def test_record_survives_restart_with_empty_gallery_after_drop(self, tmp_path):
+        """После сброса галереи (версия устарела) запись не мертва и не
+        теряется на следующей загрузке: имя/speaker_id/эталон пережили
+        и первый, и повторный рестарт — пустая галерея персистентна, а
+        не «забывается» откатом к диску. Заново копить эмбеддинги в неё
+        может либо обычный ``record_encounter`` с достаточно похожим
+        вектором (сработает как для любой галереи из 0 элементов — она
+        не участвует в ``_score_all``, поэтому первая же встреча после
+        сброса заведёт СВОЙ person_id, а не допишется сюда сама по
+        себе), либо явный ``merge()`` от шва «Знакомый» — то и другое
+        вне контракта этого теста."""
+        person_dir = tmp_path / 'b49470e1'
+        person_dir.mkdir()
+        _write_legacy_meta(person_dir, 'b49470e1', embedding_version=1)
+        np.save(person_dir / 'embeddings.npy', _basis(0).reshape(1, -1))
+
+        store = fs.FaceStore(root=str(tmp_path), mode=fs.MODE_WORKSHOP)
+        assert store.gallery('b49470e1') == []
+
+        restarted = fs.FaceStore(root=str(tmp_path), mode=fs.MODE_WORKSHOP)
+        person = restarted.people()[0]
+        assert person['person_id'] == 'b49470e1'
+        assert person['embeddings'] == 0
+        assert person['name'] == 'Деньчик'
+
+
+# ============================================================================
+# 12. gallery_cohesion (issue #2772, #2775)
+# ============================================================================
+
+class TestGalleryCohesion:
+
+    def test_none_for_zero_or_one_embeddings(self, tmp_path):
+        store = fs.FaceStore(root=str(tmp_path), mode=fs.MODE_WORKSHOP)
+        store.record_encounter(_basis(0))
+
+        person = store.people()[0]
+        assert person['gallery_cohesion'] is None
+        assert store.stats()['gallery_cohesion'] is None
+
+    def test_is_median_pairwise_cosine(self, tmp_path):
+        store = fs.FaceStore(
+            root=str(tmp_path), mode=fs.MODE_WORKSHOP, enroll_threshold=0.5,
+        )
+        thetas = [0.0, 0.1, 0.2]
+        store.record_encounter(_combo(thetas[0]))
+        for t in thetas[1:]:
+            store.record_encounter(_combo(t))
+
+        # Косинус между _combo(a) и _combo(b) — ровно cos(a - b) (см.
+        # докстринг _combo), независимая от модуля формула для ожидания.
+        pairwise = sorted([
+            math.cos(thetas[1] - thetas[0]),
+            math.cos(thetas[2] - thetas[0]),
+            math.cos(thetas[2] - thetas[1]),
+        ])
+        expected_median = pairwise[1]
+
+        person = store.people()[0]
+        assert person['gallery_cohesion'] == pytest.approx(expected_median, abs=1e-5)
+        assert store.stats()['gallery_cohesion'] == pytest.approx(
+            expected_median, abs=1e-5
+        )
+
+    def test_healthy_vs_poisoned_gallery_cohesion_contrast(self, tmp_path):
+        """Синтетическая версия живого разбора issue #2772: здоровая
+        галерея (один и тот же человек, микро-шум) должна давать
+        cohesion в районе ~0.9+, отравленная (несколько ортогональных
+        «личностей» под одним именем) — заметно ниже. Числа взяты из
+        карточки: здоровая ~0.9, отравленная ~0.3."""
+        healthy = fs.FaceStore(
+            root=str(tmp_path / 'healthy'), mode=fs.MODE_WORKSHOP,
+            enroll_threshold=0.5,
+        )
+        healthy.record_encounter(_basis(0))
+        for seed in range(1, 6):
+            healthy.record_encounter(_noisy_copy(_basis(0), scale=0.01, seed=seed))
+        healthy_cohesion = healthy.people()[0]['gallery_cohesion']
+
+        poisoned = fs.FaceStore(
+            root=str(tmp_path / 'poisoned'), mode=fs.MODE_WORKSHOP,
+            identify_threshold=0.0, enroll_threshold=0.0,
+        )
+        # identify_threshold=0.0 заставляет ВСЁ подряд матчиться в одну
+        # запись — синтетическая имитация «трёх разных людей под одним
+        # именем» из живого разбора #2772 (там порог 0.45 сделал то же
+        # самое на реальных лицах).
+        poisoned.record_encounter(_basis(0))
+        poisoned.record_encounter(_basis(1))
+        poisoned.record_encounter(_basis(2))
+        poisoned_cohesion = poisoned.people()[0]['gallery_cohesion']
+
+        assert healthy_cohesion > 0.9
+        assert poisoned_cohesion < 0.3
+        assert healthy_cohesion > poisoned_cohesion
 
 
 # ============================================================================
