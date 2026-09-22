@@ -242,10 +242,18 @@ class SpeakerIdNode(Node):
         self._pending_register_name: Optional[str] = None
         self._pending_register_lock = threading.Lock()
 
-        # Recent embeddings ring-buffer: (timestamp, embedding) — keep last 20 utterances
-        # LLM may take 2-5s to call register_speaker, so a single _last_embedding
-        # can be overwritten by ambient noise. Keep a window instead.
-        self._recent_embeddings: Deque[Tuple[float, np.ndarray]] = collections.deque(maxlen=20)
+        # Recent embeddings ring-buffer: (timestamp, embedding, duration_sec) —
+        # keep last 20 utterances. LLM may take 2-5s to call register_speaker,
+        # so a single _last_embedding can be overwritten by ambient noise.
+        # Keep a window instead. Issue #2769 — duration_sec хранится вместе с
+        # эмбеддингом, чтобы register_speaker (приходит позже, отдельным
+        # топиком) мог передать ЕЁ в register_or_merge(duration_sec=...) —
+        # без этого поля гейт MIN_REGISTER_AUDIO_DURATION_SEC нечем было бы
+        # проверить на этом пути (в отличие от pending_name-ветки, где
+        # длительность известна сразу в _process_utterance).
+        self._recent_embeddings: Deque[Tuple[float, np.ndarray, float]] = collections.deque(
+            maxlen=20
+        )
         self._MAX_EMBED_AGE_SEC: float = 30.0
 
         # Issue #1787 — окно последних реплик КАЖДОГО спикера: на нём
@@ -419,14 +427,20 @@ class SpeakerIdNode(Node):
         with self._pending_register_lock:
             # Find most recent embedding within MAX_EMBED_AGE_SEC
             best_embedding = None
+            best_duration: Optional[float] = None
             best_ts = 0.0
-            for ts, emb in reversed(self._recent_embeddings):
+            for ts, emb, dur in reversed(self._recent_embeddings):
                 if now - ts <= self._MAX_EMBED_AGE_SEC and ts > best_ts:
                     best_embedding = emb
+                    best_duration = dur
                     best_ts = ts
             if best_embedding is not None:
                 self._executor.submit(
-                    self._do_register, name, best_embedding, speaker_id_hint
+                    self._do_register,
+                    name,
+                    best_embedding,
+                    speaker_id_hint,
+                    best_duration,
                 )
                 self.get_logger().info(
                     f"📝 Registering '{name}' from embedding {now - best_ts:.1f}s ago"
@@ -443,6 +457,12 @@ class SpeakerIdNode(Node):
     def _process_utterance(self, pcm_bytes: bytes) -> None:
         """Compute embedding and identify (or register) speaker.  Runs in thread."""
         t0 = time.monotonic()
+        # Issue #2769 — длительность нужна ОТДЕЛЬНО от identify()-гейта
+        # embed_audio(): register_or_merge() проверяет её против более
+        # строгого MIN_REGISTER_AUDIO_DURATION_SEC. Формула — как в логе
+        # "🎤 Received speech audio" (_on_speech_audio) — int16 моно, 2 байта
+        # на сэмпл.
+        duration_sec = len(pcm_bytes) / self._sample_rate / 2
 
         embedding = self._db.embed_audio(pcm_bytes, self._sample_rate)
         if embedding is None:
@@ -461,7 +481,7 @@ class SpeakerIdNode(Node):
 
         # Store as latest embedding for possible registration
         with self._pending_register_lock:
-            self._recent_embeddings.append((time.time(), embedding))
+            self._recent_embeddings.append((time.time(), embedding, duration_sec))
             pending_name = self._pending_register_name
             self._pending_register_name = None
 
@@ -479,15 +499,31 @@ class SpeakerIdNode(Node):
             # (например, is_known=false из-за шумной первой фразы сразу
             # после регистрации), перезаписав только что опубликованный
             # источник истины «человек сам назвал своё имя».
-            self._do_register(pending_name, embedding, speaker_id=None)
-            self.get_logger().info(
-                f"✅ Registered '{pending_name}' (inference {elapsed:.0f} ms)"
+            registered = self._do_register(
+                pending_name, embedding, speaker_id=None, duration_sec=duration_sec
             )
-            # Issue #1160 — Prometheus metrics: только что зарегистрированный
-            # спикер считается known. confidence=1.0 — эмбеддинг только что
-            # записан как ЭТАЛОН для profile, self-similarity максимальна
-            # (см. _do_register).
-            record_speaker_recognize(known=True, confidence=1.0)
+            # Issue #2769 — _do_register() возвращает False, если реплика
+            # оказалась короче MIN_REGISTER_AUDIO_DURATION_SEC: профиль НЕ
+            # создан, ack event="register_error" уже отправлен изнутри.
+            # Метрика и лог "✅ Registered" здесь были бы ложью — заявляли
+            # бы известного спикера с confidence=1.0 для эталона, которого
+            # не существует.
+            if registered:
+                self.get_logger().info(
+                    f"✅ Registered '{pending_name}' (inference {elapsed:.0f} ms)"
+                )
+                # Issue #1160 — Prometheus metrics: только что
+                # зарегистрированный спикер считается known. confidence=1.0
+                # — эмбеддинг только что записан как ЭТАЛОН для profile,
+                # self-similarity максимальна (см. _do_register).
+                record_speaker_recognize(known=True, confidence=1.0)
+            else:
+                self.get_logger().warning(
+                    f"⚠️ [issue #2769] Registration of '{pending_name}' "
+                    f"rejected — audio too short ({duration_sec:.2f}s, "
+                    f"inference {elapsed:.0f} ms)"
+                )
+                record_speaker_recognize(known=False, confidence=None)
             return
 
         match = self._db.identify(embedding)
@@ -897,7 +933,8 @@ class SpeakerIdNode(Node):
         name: str,
         embedding: np.ndarray,
         speaker_id: Optional[str],
-    ) -> None:
+        duration_sec: Optional[float] = None,
+    ) -> bool:
         """Persist speaker embedding to DB and acknowledge.
 
         Issue W5-4 — использует ``register_or_merge()`` вместо голого
@@ -917,8 +954,46 @@ class SpeakerIdNode(Node):
         попадают (run 35667281570 — в логе видно только то, что пишет
         ``self.get_logger()``), а оператору нужно увидеть, что робот
         принял двух людей за одного.
+
+        Issue #2769 — ``duration_sec`` уходит в
+        ``register_or_merge(duration_sec=...)``: если реплика короче
+        ``MIN_REGISTER_AUDIO_DURATION_SEC``, тот бросает
+        :class:`speaker_embeddings.AudioTooShortError` ДО записи в БД.
+        Здесь это исключение — единственная точка перехвата на пути от
+        LLM-тула register_speaker до диска: профиль НЕ создаётся, вместо
+        обычного ack публикуется ``{"event": "register_error", "error":
+        "too_short", ...}`` на тот же ``/voice/speaker/result`` (тем же
+        каналом, которым уходит ``event="registered"`` — dialogue_node
+        слушает оба и просит пользователя повторить фразу, см.
+        ``_on_speaker_result``). Возвращает ``False`` в этом случае,
+        ``True`` — если профиль реально создан/дополнен, чтобы вызывающий
+        код (``_process_utterance`` / ``_on_register_request``) не считал
+        отказ успешной регистрацией в логах и метриках.
         """
-        outcome = self._db.register_or_merge(name, embedding, speaker_id=speaker_id)
+        try:
+            outcome = self._db.register_or_merge(
+                name, embedding, speaker_id=speaker_id, duration_sec=duration_sec
+            )
+        except _se_mod.AudioTooShortError as exc:
+            self.get_logger().warning(
+                f"⚠️ [issue #2769] Registration of '{name}' rejected — "
+                f"audio too short for a reliable anchor: "
+                f"{exc.duration_sec:.2f}s < {exc.min_required_sec:.1f}s "
+                "required. Профиль НЕ создан — прошу повторить фразу."
+            )
+            ack = String()
+            ack.data = json.dumps(
+                {
+                    "event": "register_error",
+                    "error": "too_short",
+                    "name": name,
+                    "duration_s": round(exc.duration_sec, 2),
+                    "min_required_s": exc.min_required_sec,
+                },
+                ensure_ascii=False,
+            )
+            self._result_pub.publish(ack)
+            return False
         sid, reused = outcome
         if reused:
             self.get_logger().info(
@@ -1007,6 +1082,7 @@ class SpeakerIdNode(Node):
                 f"is_known=true не опубликован, слияние с лицом пропущено, "
                 f"growth-сессия не открыта"
             )
+        return True
 
     # ── Эпитеты (issue #1787) ─────────────────────────────────────────────────
 

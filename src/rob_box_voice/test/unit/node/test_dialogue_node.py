@@ -422,6 +422,76 @@ class TestBuildDynamicSystemContext:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+#  _on_speaker_result — issue #2769: честный отказ на короткой реплике при
+#  регистрации доезжает до пользователя голосом, а не тонет в логах ноды.
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestOnSpeakerResultRegisterError:
+    def _msg(self, payload: dict):
+        return type("Msg", (), {"data": json.dumps(payload, ensure_ascii=False)})()
+
+    def test_registered_event_is_logged_and_not_treated_as_match(self):
+        n = _make_node()
+        n._on_speaker_result(self._msg({"event": "registered", "name": "Саша", "speaker_id": "abc123"}))
+        # Старое поведение не сломано: current_speaker не тронут.
+        assert n._current_speaker == {"is_known": False}
+
+    def test_register_error_too_short_speaks_reask_and_does_not_touch_speaker(self):
+        n = _make_node()
+        n._speak_direct = MagicMock()
+
+        n._on_speaker_result(
+            self._msg(
+                {
+                    "event": "register_error",
+                    "error": "too_short",
+                    "name": "Шифу",
+                    "duration_s": 1.2,
+                    "min_required_s": 3.0,
+                }
+            )
+        )
+
+        n._speak_direct.assert_called_once()
+        spoken = n._speak_direct.call_args[0][0]
+        assert isinstance(spoken, str) and spoken.strip()
+        # current_speaker не должен обновляться служебным событием ошибки —
+        # это не результат identify(), а отказ регистрации.
+        assert n._current_speaker == {"is_known": False}
+
+    def test_register_error_other_than_too_short_is_ignored_by_reask_path(self):
+        """Документирует контракт: обрабатываем именно ``error=="too_short"``
+        — неизвестный код ошибки не должен внезапно начать что-то озвучивать
+        (защита от расширения ack в будущем без синхронной правки здесь)."""
+        n = _make_node()
+        n._speak_direct = MagicMock()
+
+        n._on_speaker_result(
+            self._msg({"event": "register_error", "error": "something_else", "name": "Шифу"})
+        )
+
+        n._speak_direct.assert_not_called()
+
+    def test_register_error_speak_failure_does_not_raise(self):
+        """Честный отказ не должен уронить обработчик, если TTS-паблишер
+        временно недоступен — та же защита, что и у _on_command_feedback."""
+        n = _make_node()
+        n._speak_direct = MagicMock(side_effect=RuntimeError("tts down"))
+
+        n._on_speaker_result(
+            self._msg(
+                {
+                    "event": "register_error",
+                    "error": "too_short",
+                    "name": "Шифу",
+                    "duration_s": 0.5,
+                    "min_required_s": 3.0,
+                }
+            )
+        )  # must not raise
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 #  System prompt (legacy: test_system_prompt_injection)
 # ─────────────────────────────────────────────────────────────────────────────
 
