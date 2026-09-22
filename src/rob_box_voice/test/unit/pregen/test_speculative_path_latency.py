@@ -48,12 +48,42 @@ Implementation notes
   — exactly mirroring the production dispatch in
   ``_dispatch_synthesis``. This means the speculative launch really
   does overlap with the playback wait.
+* Both sides of every comparison run under ``asyncio.run`` and use
+  the *same* primitives — ``asyncio.to_thread`` for the provider
+  call, ``asyncio.sleep`` for playback. See ``_run_serial`` and
+  point 2 of "Measuring wall-clock" below.
 * Tolerance is ``15 %`` of the speedup margin. Tight enough to
   catch a regression that loses the parallelism (would be ~0 %
   speedup), loose enough to survive CI jitter. The theoretical
   speedup ceiling is ~33 % (one synth delay hidden in parallel with
   the previous playback) — we set the floor at 15 % to leave
-  headroom for asyncio scheduler overhead.
+  headroom for asyncio scheduler overhead. Measured worst case over
+  24 consecutive local runs of the tightest parametrisation (50 ms
+  synth delay, theoretical speedup 22.9 %): 20.9 %.
+
+Measuring wall-clock
+--------------------
+
+Two things made these tests flake on a Windows dev host, both
+artefacts of the *measurement* rather than of the code under test:
+
+1. ``time.monotonic()`` is ``GetTickCount64()`` on Windows — a
+   15.625 ms tick (``time.get_clock_info("monotonic").resolution``).
+   Every interval measured here is 50–500 ms, so the clock alone
+   moved each reading by up to a full tick: two ``sleep(50 ms)``
+   read back as anything from 94 ms to 125 ms. We measure with
+   ``_now`` (``time.perf_counter`` — ``QueryPerformanceCounter()``,
+   sub-microsecond) everywhere instead.
+2. The baseline was modelled with ``time.sleep`` while the
+   speculative path waited with ``asyncio.sleep``. The loop
+   schedules timers against ``loop.time()`` (= ``time.monotonic()``),
+   so on Windows every ``await`` overshoots by up to one 15.6 ms
+   tick, while ``time.sleep`` (3.11+ uses a high-resolution
+   waitable timer) does not. That charged the speculative side
+   ~10–30 ms the baseline never paid — a one-sided bias worth
+   ~10 percentage points of "speedup" at the smallest delay, which
+   is what pushed ``[0.05-0.15]`` under its floor. Both sides now
+   use the same primitives, so the granularity cancels out.
 """
 from __future__ import annotations
 
@@ -80,6 +110,16 @@ _SINE_AMPLITUDE = 0.5
 # Mock TTS provider latency. Big enough to dominate asyncio overhead,
 # small enough to keep the test fast.
 _SYNTH_DELAY_S = 0.10  # 100 ms
+
+# Every wall-clock reading in this file goes through ``_now``, never
+# through ``time.monotonic`` — see "Measuring wall-clock" above.
+_now = time.perf_counter
+
+# Absolute slack for a whole scenario's worth of sleeps: OS
+# scheduling, GC, and (on Windows) up to one 15.625 ms event-loop
+# timer tick per await. Generous on purpose — the upper bounds it
+# guards are order-of-magnitude checks, not latency budgets.
+_TIMING_SLACK_S = 0.10
 
 
 def _sine_audio() -> np.ndarray:
@@ -129,21 +169,28 @@ def _warm_history(executor: SpeculativeExecutor, n: int = 5) -> None:
         )
 
 
-def _wait_for_completion(
+async def _await_completion(
     executor: SpeculativeExecutor, speech_id: str, timeout_s: float = 5.0
 ) -> PreGenResult:
     """Poll the executor until the speculative task lands in ``_results``.
 
     Returns the cached :class:`PreGenResult` or raises if the timeout
     elapses before completion.
+
+    The poll is ``await``-ed, not slept through: the speculative work
+    is an :class:`asyncio.Task`, so blocking the loop with
+    ``time.sleep`` starves the very task we are waiting for (it only
+    ever worked because the preceding playback ``await`` had already
+    let it finish) and charges the poll interval to the measured
+    speculative time.
     """
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
+    deadline = _now() + timeout_s
+    while _now() < deadline:
         if speech_id not in executor._active:
             result = executor.claim(speech_id)
             if result is not None:
                 return result
-        time.sleep(0.005)
+        await asyncio.sleep(0.001)
     raise AssertionError(
         f"speculative task for {speech_id!r} did not complete within {timeout_s}s"
     )
@@ -163,6 +210,29 @@ def _playback_wait_ms(audio_duration_s: float) -> float:
     return max(1.0, (audio_duration_s * 1000.0) - 1.0)
 
 
+# One playback wait, in seconds. Shared by both sides of every
+# comparison so the two measurements differ only in the thing under
+# test (the parallel kickoff).
+_PLAYBACK_S = _playback_wait_ms(_SINE_DURATION_S) / 1000.0
+
+
+async def _run_serial(synth) -> tuple[dict, dict]:
+    """Model the baseline: synth → play → synth → play, no overlap.
+
+    Runs on the event loop and uses the same primitives as the
+    speculative scenario (``asyncio.to_thread`` for the provider
+    call, ``asyncio.sleep`` for playback), which is also how the
+    production orchestrator waits. Modelling the baseline with plain
+    ``time.sleep`` instead would hand it an unearned head start of
+    one timer tick per wait — see "Measuring wall-clock".
+    """
+    first = await asyncio.to_thread(synth, "x", "x", {}, "anton", "ru")
+    await asyncio.sleep(_PLAYBACK_S)
+    second = await asyncio.to_thread(synth, "y", "y", {}, "anton", "ru")
+    await asyncio.sleep(_PLAYBACK_S)
+    return first, second
+
+
 # ---------------------------------------------------------------------------
 # Headline test — required by task body / DoD.
 # ---------------------------------------------------------------------------
@@ -173,7 +243,9 @@ def test_speculative_path_faster_than_baseline():
 
     Baseline:    chunk_1 synth (≈100 ms) → play chunk_1 (≈60 ms)
                  → chunk_2 synth (≈100 ms) → play chunk_2 (≈60 ms)
-                 Total wall-clock ≈ 320 ms.
+                 Total wall-clock ≈ 320 ms. Modelled by
+                 :func:`_run_serial` — on the same event loop, with
+                 the same primitives as the speculative path.
 
     Speculative: chunk_1 synth (≈100 ms) + chunk_2 kickoff (parallel)
                  → play chunk_1 (≈60 ms) → claim chunk_2 → play chunk_2 (≈60 ms)
@@ -188,26 +260,12 @@ def test_speculative_path_faster_than_baseline():
     works.
     """
     synth_delay_s = _SYNTH_DELAY_S
-    audio_ms = _SINE_DURATION_S * 1000.0  # 60 ms
 
     # --- baseline: serial synthesis of two chunks ---
-    baseline_start = time.monotonic()
-
-    # Synth chunk 1.
-    baseline_synth_1 = _make_slow_synth(delay_s=synth_delay_s)
-    audio1 = baseline_synth_1("x", "x", {}, "anton", "ru")
-
-    # Playback (mimicked by sleep).
-    time.sleep(_playback_wait_ms(_SINE_DURATION_S) / 1000.0)
-
-    # Synth chunk 2.
-    baseline_synth_2 = _make_slow_synth(delay_s=synth_delay_s)
-    audio2 = baseline_synth_2("y", "y", {}, "anton", "ru")
-
-    # Playback.
-    time.sleep(_playback_wait_ms(_SINE_DURATION_S) / 1000.0)
-
-    baseline_elapsed_ms = (time.monotonic() - baseline_start) * 1000.0
+    baseline_synth = _make_slow_synth(delay_s=synth_delay_s)
+    baseline_start = _now()
+    audio1, audio2 = asyncio.run(_run_serial(baseline_synth))
+    baseline_elapsed_ms = (_now() - baseline_start) * 1000.0
     assert audio1["audio_np"] is not None
     assert audio2["audio_np"] is not None
 
@@ -215,7 +273,7 @@ def test_speculative_path_faster_than_baseline():
     executor = SpeculativeExecutor(synth_callable=_make_slow_synth(synth_delay_s))
     _warm_history(executor)
 
-    spec_start = time.monotonic()
+    spec_start = _now()
 
     async def _speculative_scenario():
         # Kickoff speculative for chunk_2 while chunk_1 is playing.
@@ -230,20 +288,20 @@ def test_speculative_path_faster_than_baseline():
 
         # "Playback" chunk_1 — wait long enough for the asyncio loop
         # to drive the speculative task to completion.
-        await asyncio.sleep(_playback_wait_ms(_SINE_DURATION_S) / 1000.0)
+        await asyncio.sleep(_PLAYBACK_S)
 
         # Claim chunk_2 — must be prebaked; if not, the timing test
         # is meaningless.
-        result = _wait_for_completion(executor, "next")
+        result = await _await_completion(executor, "next")
         assert result is not None
         assert result.decision.value == "accept"
 
         # "Playback" chunk_2.
-        await asyncio.sleep(_playback_wait_ms(_SINE_DURATION_S) / 1000.0)
+        await asyncio.sleep(_PLAYBACK_S)
         return result
 
     asyncio.run(_speculative_scenario())
-    spec_elapsed_ms = (time.monotonic() - spec_start) * 1000.0
+    spec_elapsed_ms = (_now() - spec_start) * 1000.0
 
     # --- assert: speculative < baseline ---
     speedup_ms = baseline_elapsed_ms - spec_elapsed_ms
@@ -276,17 +334,17 @@ def test_speculative_eliminates_second_synth_wait():
         launched = await executor.kickoff(_make_chunk("a", "b"))
         assert launched == "b"
         # Wait for completion.
-        deadline = time.monotonic() + 2.0
-        while time.monotonic() < deadline:
+        deadline = _now() + 2.0
+        while _now() < deadline:
             await asyncio.sleep(0.01)
             if "b" not in executor._active:
                 break
         result = executor.claim("b")
         assert result is not None
         # The claim itself is O(1); no further latency is paid.
-        claim_start = time.monotonic()
+        claim_start = _now()
         result_again = executor.claim("b")  # already claimed → None
-        claim_elapsed_ms = (time.monotonic() - claim_start) * 1000.0
+        claim_elapsed_ms = (_now() - claim_start) * 1000.0
         assert result_again is None
         assert claim_elapsed_ms < 5.0  # well below the synth delay
         return result
@@ -301,20 +359,26 @@ def test_baseline_two_chunks_in_serial():
 
     This is the *regression guard* for the timing claim — if a CI
     runner suddenly takes 10x longer per sleep, we'd want to know
-    the baseline figure changed first.
+    the baseline figure changed first. Deliberately an
+    order-of-magnitude check: the upper bound carries a flat
+    ``_TIMING_SLACK_S`` rather than a tight percentage, because it
+    has to survive an OS scheduler that can add a tick or two per
+    sleep. Anything this guard exists to catch (a serialised extra
+    synth, a 10x slower runner) overshoots it by hundreds of
+    milliseconds.
     """
     delay_s = 0.05
-    start = time.monotonic()
+    start = _now()
 
     s = _make_slow_synth(delay_s=delay_s)
     s("x", "x", {}, "v", "ru")
     s("y", "y", {}, "v", "ru")
 
-    elapsed_s = time.monotonic() - start
-    # At least 2*delay, generously tolerate scheduler overhead.
+    elapsed_s = _now() - start
+    # Both sleeps really happened, and they happened in serial.
     assert elapsed_s >= 2 * delay_s * 0.95
-    # No surprise: upper bound is 2*delay + 50 ms overhead.
-    assert elapsed_s < 2 * delay_s + 0.05
+    # ...and nothing else did.
+    assert elapsed_s < 2 * delay_s + _TIMING_SLACK_S
 
 
 @pytest.mark.parametrize(
@@ -339,32 +403,27 @@ def test_speculative_speedup_holds_across_latencies(
     particular latency (e.g. asyncio.to_thread pool exhaustion at
     high latency).
     """
-    audio_ms = _SINE_DURATION_S * 1000.0
-
     # Baseline.
-    baseline_start = time.monotonic()
-    s = _make_slow_synth(delay_s=synth_delay_s)
-    s("x", "x", {}, "v", "ru")
-    time.sleep(audio_ms / 1000.0)
-    s("y", "y", {}, "v", "ru")
-    time.sleep(audio_ms / 1000.0)
-    baseline_ms = (time.monotonic() - baseline_start) * 1000.0
+    baseline_synth = _make_slow_synth(delay_s=synth_delay_s)
+    baseline_start = _now()
+    asyncio.run(_run_serial(baseline_synth))
+    baseline_ms = (_now() - baseline_start) * 1000.0
 
     # Speculative.
     executor = SpeculativeExecutor(synth_callable=_make_slow_synth(synth_delay_s))
     _warm_history(executor)
 
-    spec_start = time.monotonic()
+    spec_start = _now()
 
     async def scenario():
         await executor.kickoff(_make_chunk("cur", "next"))
         await asyncio.to_thread(executor._synth, "x", "x", {}, "v", "ru")
-        await asyncio.sleep(audio_ms / 1000.0)
-        _wait_for_completion(executor, "next")
-        await asyncio.sleep(audio_ms / 1000.0)
+        await asyncio.sleep(_PLAYBACK_S)
+        await _await_completion(executor, "next")
+        await asyncio.sleep(_PLAYBACK_S)
 
     asyncio.run(scenario())
-    spec_ms = (time.monotonic() - spec_start) * 1000.0
+    spec_ms = (_now() - spec_start) * 1000.0
 
     speedup_pct = (baseline_ms - spec_ms) / baseline_ms
     assert speedup_pct >= expected_speedup_at_least, (
