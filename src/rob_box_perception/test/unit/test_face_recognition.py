@@ -25,6 +25,11 @@
      "выдумка не доезжает до Личности" (ADR-0089 §2.2).
   8. Слияние с голосом (ADR-0123 §6) — самая ценная группа тестов.
   9. ``stats()`` — форма и устойчивость к падению ``store.stats()``.
+  10. Ворота качества кропа (issue #2749): почти чёрный кроп не доезжает
+      до эмбеддера, не создаёт запись в ``FaceStore`` даже если трек
+      промоутится геометрией (воспроизводит фантомную запись из 130
+      "встреч" тени в тёмной комнате), счётчик ``crop_rejected_total``
+      растёт, пороги настраиваемы через параметры конструктора.
 """
 
 from __future__ import annotations
@@ -137,7 +142,35 @@ class RecordingLog:
 # ============================================================================
 
 def make_frame(size: int = 200) -> np.ndarray:
-    """RGB uint8 кадр size x size — cv2 не нужен, ``crop_face`` — чистый numpy."""
+    """RGB uint8 кадр size x size с детерминированным шумом.
+
+    Раньше это был чистый чёрный кадр (``np.zeros``) — годился, пока
+    ``FaceRecognizer`` не смотрел в пиксели кропа вообще. После ворот
+    качества кропа (issue #2749, ``_crop_quality_ok``) чёрный кроп
+    отбраковывается ПО ЗАМЫСЛУ (это и есть фильтруемый случай) — чёрный
+    кадр как "нейтральный" фикстур больше не годится, иначе он ломает
+    все тесты, не имеющие отношения к воротам качества.
+
+    Шум с фиксированным seed — не ``np.zeros`` и не случайный: даёт
+    высокую яркость/контраст в ЛЮБОМ кропе кадра независимо от его
+    размера и положения (в отличие, например, от плавного градиента,
+    где узкий кроп у края мог бы случайно оказаться низкоконтрастным), и
+    при этом воспроизводим между запусками тестов.
+    """
+    rng = np.random.RandomState(20260922)
+    return rng.randint(0, 256, size=(size, size, 3)).astype(np.uint8)
+
+
+def make_black_frame(size: int = 200) -> np.ndarray:
+    """RGB uint8 кадр size x size, полностью чёрный.
+
+    Имитирует фантомную детекцию issue #2749 (тень/забитая экспозиция в
+    тёмной комнате). Живые цифры на Vision Pi 22.09.2026: mean 6.4-7.4 из
+    255, контраст (p95-p5) 28-31 — здесь используется предельный случай
+    0/0, который заведомо дальше за обоими порогами по умолчанию
+    (``DEFAULT_MIN_CROP_MEAN=20``, ``DEFAULT_MIN_CROP_CONTRAST=25``) и не
+    требует точной имитации шумового пола матрицы.
+    """
     return np.zeros((size, size, 3), dtype=np.uint8)
 
 
@@ -532,3 +565,95 @@ def test_stats_survives_store_stats_exception():
 
     assert s['store'] == {}
     assert 'active_tracks' in s
+
+
+# ============================================================================
+# 10. Ворота качества кропа (issue #2749)
+# ============================================================================
+#
+# Контекст: на живом Vision Pi 22.09.2026 RetinaFace полчаса детектировал
+# тень в тёмной комнате (confidence/размер бокса в норме, сам кроп
+# почти чёрный) — ArcFace на таком входе стабильно отдавал один и тот же
+# вырожденный эмбеддинг, и в базу легла запись из 130 "встреч" с попарной
+# близостью эмбеддингов 0.90+ (настоящий человек в той же базе — 0.17-0.81).
+# Ворота ``_crop_quality_ok`` ловят это ДО эмбеддера, на живом numpy-массиве
+# кропа, не трогая границу ``FaceStore`` (ADR-0123 §5).
+
+def test_black_crop_rejected_before_embedder():
+    embedder = FakeEmbedder()
+    store = FakeStore()
+    rec = FaceRecognizer(embedder=embedder, store=store)
+    frame = make_black_frame()
+
+    dets = [make_detection(w=0.5, h=0.5)]
+    rec.process(dets, frame, now=0.0)
+
+    assert embedder.embed_calls == [], 'почти чёрный кроп не должен доезжать до ArcFace'
+    assert rec.stats()['crop_rejected_total'] == 1
+
+
+def test_normal_crop_not_rejected_by_quality_gate():
+    embedder = FakeEmbedder()
+    store = FakeStore()
+    rec = FaceRecognizer(embedder=embedder, store=store)
+    frame = make_frame()  # шумный кадр — по умолчанию проходит ворота
+
+    dets = [make_detection(w=0.5, h=0.5)]
+    rec.process(dets, frame, now=0.0)
+
+    assert embedder.embed_calls == [1], 'годный кроп обязан дойти до ArcFace'
+    assert rec.stats()['crop_rejected_total'] == 0
+
+
+def test_phantom_shadow_track_never_records_encounter():
+    """Прямое воспроизведение issue #2749: трек промоутится геометрией
+    (Встреча состоялась по правилам ADR-0123 §3), но ни один кроп трека
+    не проходит ворота качества -> эмбеддинга у Встречи нет -> запись в
+    FaceStore не создаётся ("выдумка не доезжает до Личности").
+    """
+    tracker = FaceTracker(min_track_sec=1.0, min_face_px=48.0, max_gap_sec=5.0)
+    embedder = FakeEmbedder()
+    store = FakeStore()
+    log = RecordingLog()
+    rec = FaceRecognizer(embedder=embedder, store=store, tracker=tracker, log_fn=log)
+    frame = make_black_frame()
+
+    for t in (0.0, 0.5, 1.0):
+        rec.process([make_detection(w=0.5, h=0.5)], frame, now=t)
+
+    assert store.record_encounter_calls == [], (
+        'фантом issue #2749: почти чёрный кроп не должен родить запись в базе'
+    )
+    assert rec.stats()['encounters_total'] == 1, 'трек всё же промоутнулся геометрией'
+    assert rec.stats()['crop_rejected_total'] >= 1
+    assert log.has('warn')
+
+
+def test_crop_rejected_total_accumulates_across_frames():
+    embedder = FakeEmbedder()
+    store = FakeStore()
+    rec = FaceRecognizer(embedder=embedder, store=store)
+    frame = make_black_frame()
+
+    for t in (0.0, 0.5, 1.0):
+        rec.process([make_detection(w=0.5, h=0.5)], frame, now=t)
+
+    assert rec.stats()['crop_rejected_total'] == 3
+
+
+def test_crop_quality_thresholds_are_configurable_not_hardcoded():
+    """Пороги — параметры конструктора (issue #2749), а не константа в
+    коде: выставив их в 0, даже чёрный кроп обязан пройти ворота.
+    """
+    embedder = FakeEmbedder()
+    store = FakeStore()
+    rec = FaceRecognizer(
+        embedder=embedder, store=store, min_crop_mean=0.0, min_crop_contrast=0.0,
+    )
+    frame = make_black_frame()
+
+    dets = [make_detection(w=0.5, h=0.5)]
+    rec.process(dets, frame, now=0.0)
+
+    assert embedder.embed_calls == [1], 'при min_crop_mean=0/min_crop_contrast=0 ворота открыты'
+    assert rec.stats()['crop_rejected_total'] == 0

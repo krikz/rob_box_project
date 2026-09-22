@@ -16,6 +16,9 @@ Hailo-слой в тестах ArcFaceEmbedder подменяется фейко
   4. Отсутствующий HEF -> FileNotFoundError с путём в сообщении.
   5. prepare_arcface_input / sharpness / encode_jpeg — cv2-зависимые
      проверки (importorskip('cv2')).
+  6. crop_brightness_contrast — метрика ворот качества кропа (issue #2749):
+     почти чёрный кроп даёт низкие mean/контраст, светлый/контрастный —
+     нет; ``None`` при вырожденном/пустом кропе (cv2-зависимые проверки).
 """
 
 from __future__ import annotations
@@ -277,3 +280,61 @@ def test_encode_jpeg_roundtrip_produces_bytes():
 
 def test_encode_jpeg_none_on_none_input():
     assert face_mod.encode_jpeg(None) is None
+
+
+# ---------- crop_brightness_contrast (ворота качества кропа, issue #2749) --
+#
+# Пороговые значения (DEFAULT_MIN_CROP_MEAN=20, DEFAULT_MIN_CROP_CONTRAST=25
+# в face_recognition.py) подобраны по живому замеру на Vision Pi 22.09.2026:
+# фантомная запись (тень в тёмной комнате) — mean 6.4-7.4/255,
+# контраст(p95-p5) 28-31; живой человек в той же базе — mean 76.6-185.4/255,
+# контраст 170-208. Тесты ниже проверяют саму функцию метрики, не пороги
+# (пороги и их обоснование — в test_face_recognition.py, раздел 10).
+
+def test_crop_brightness_contrast_near_black_crop_is_dim_and_flat():
+    pytest.importorskip('cv2')
+    # Не буквальный 0 — воспроизводим шумовой пол матрицы, как в реальном
+    # фантоме issue #2749 (mean ~7/255), а не идеализированный чёрный.
+    rng = np.random.RandomState(1)
+    crop = rng.randint(0, 8, size=(80, 80, 3)).astype(np.uint8)
+
+    result = face_mod.crop_brightness_contrast(crop)
+
+    assert result is not None
+    mean, contrast = result
+    assert mean < 20.0, 'почти чёрный кроп обязан давать низкую среднюю яркость'
+    assert mean == pytest.approx(3.5, abs=2.0)
+
+
+def test_crop_brightness_contrast_bright_textured_crop_passes():
+    pytest.importorskip('cv2')
+    rng = np.random.RandomState(2)
+    crop = rng.randint(0, 256, size=(80, 80, 3)).astype(np.uint8)
+
+    result = face_mod.crop_brightness_contrast(crop)
+
+    assert result is not None
+    mean, contrast = result
+    assert mean > 100.0
+    assert contrast > 100.0, 'равномерный шум 0..255 обязан давать контраст сильно выше порога 25'
+
+
+def test_crop_brightness_contrast_flat_gray_crop_has_zero_contrast():
+    """Пересвеченный/плоский кроп: яркость в норме, а разброса нет —
+    второй, независимый от mean сигнал ворот (см. DEFAULT_MIN_CROP_CONTRAST).
+    """
+    pytest.importorskip('cv2')
+    crop = np.full((80, 80, 3), 200, dtype=np.uint8)
+
+    result = face_mod.crop_brightness_contrast(crop)
+
+    assert result is not None
+    mean, contrast = result
+    assert mean == pytest.approx(200.0, abs=1.0)
+    assert contrast == pytest.approx(0.0, abs=1.0)
+
+
+def test_crop_brightness_contrast_none_on_empty_or_none_crop():
+    empty = np.zeros((0, 10, 3), dtype=np.uint8)
+    assert face_mod.crop_brightness_contrast(empty) is None
+    assert face_mod.crop_brightness_contrast(None) is None

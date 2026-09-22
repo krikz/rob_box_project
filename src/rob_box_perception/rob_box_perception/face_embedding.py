@@ -576,6 +576,58 @@ def sharpness(crop_rgb: Any) -> float:
     return float(np.var(laplacian))
 
 
+def crop_brightness_contrast(crop_rgb: Any) -> Optional[Tuple[float, float]]:
+    """Средняя яркость и контраст (``p95 - p5``) кропа, шкала 0..255.
+
+    Ворота качества кропа перед эмбеддингом (issue #2749, ADR-0123 §3/§5).
+    Проблема, которую это ловит: RetinaFace иногда полчаса держит
+    детекцию на тени в тёмной комнате — confidence и размер бокса при
+    этом честные (пороги ``confidence_threshold``/``min_face_px`` не
+    срабатывают), а сам кроп почти чёрный. ArcFace на таком входе не
+    падает и не шумит — он ДЕТЕРМИНИРОВАННО отдаёт один и тот же
+    вырожденный вектор, который ложится в галерею как "человек" с
+    аномально однородной (0.90+) попарной близостью эмбеддингов — то,
+    что предохранитель ``confidence``/``min_face_px`` в принципе не может
+    заметить, потому что смотрит на геометрию детекции, а не на пиксели
+    кропа.
+
+    Числа замерены на живом Vision Pi 22.09.2026 (issue #2749):
+      - фантомная запись ``8ffc2641-...`` (тень в тёмной комнате, 130
+        встреч): ``mean`` 6.4–7.4/255, ``p95-p5`` 28–31 (``p5`` упирается
+        в 0 — это шумовой пол матрицы в темноте, не настоящий контраст);
+      - живой человек в той же базе (``b49470e1-...``): ``mean``
+        76.6–185.4/255, ``p95-p5`` 170–208.
+
+    Args:
+        crop_rgb: RGB uint8 ndarray произвольного размера.
+
+    Returns:
+        ``(mean, p95 - p5)`` в шкале 0..255, либо ``None``, если cv2
+        недоступен или кроп пуст/вырожден. ``None`` — это "не смогли
+        посчитать", а не "кроп плохой": вызывающий код (см.
+        ``face_recognition.FaceRecognizer._crop_quality_ok``) обязан
+        трактовать его как "пропустить ворота", иначе окружение без cv2
+        молча похоронит все встречи разом, а не только фантомные.
+    """
+    if crop_rgb is None:
+        return None
+    if crop_rgb.shape[0] <= 0 or crop_rgb.shape[1] <= 0:
+        return None
+
+    try:
+        import cv2  # type: ignore[import-not-found]
+        import numpy as np  # type: ignore[import-not-found]
+    except ImportError:
+        _LOG.warning('cv2/numpy недоступны — оценка качества кропа невозможна')
+        return None
+
+    gray = cv2.cvtColor(crop_rgb, cv2.COLOR_RGB2GRAY)
+    mean = float(np.mean(gray))
+    p5 = float(np.percentile(gray, 5))
+    p95 = float(np.percentile(gray, 95))
+    return mean, p95 - p5
+
+
 def cosine_similarity(a: Any, b: Any) -> float:
     """Косинусное сходство двух 1-D векторов. 0.0 при несовпадении формы/нулевой норме.
 

@@ -139,6 +139,12 @@ class VisionFaceNode(VisionHailoNode):
         self.declare_parameter('face_identify_threshold', 0.45)
         self.declare_parameter('min_track_sec', 2.0)
         self.declare_parameter('min_face_px', 48.0)
+        # Ворота качества кропа (issue #2749): почти чёрный/плоский кроп
+        # не эмбеддится и не пишется в FaceStore — см. докстринг и
+        # DEFAULT_MIN_CROP_MEAN/DEFAULT_MIN_CROP_CONTRAST в
+        # face_recognition.py про то, откуда взяты числа 20.0/25.0.
+        self.declare_parameter('min_crop_mean', 20.0)
+        self.declare_parameter('min_crop_contrast', 25.0)
         self.declare_parameter('max_embeds_per_frame', 4)
         self.declare_parameter('max_embeddings', 20)
         self.declare_parameter('keep_encounters', 10)
@@ -210,6 +216,8 @@ class VisionFaceNode(VisionHailoNode):
         )
         min_track_sec = float(self.get_parameter('min_track_sec').value)
         min_face_px = float(self.get_parameter('min_face_px').value)
+        min_crop_mean = float(self.get_parameter('min_crop_mean').value)
+        min_crop_contrast = float(self.get_parameter('min_crop_contrast').value)
 
         store = FaceStore(
             root=root,
@@ -232,6 +240,8 @@ class VisionFaceNode(VisionHailoNode):
             max_embeds_per_frame=int(
                 self.get_parameter('max_embeds_per_frame').value
             ),
+            min_crop_mean=min_crop_mean,
+            min_crop_contrast=min_crop_contrast,
             store_snapshots=(mode != 'strict'),
             log_fn=self._recognizer_log,
         )
@@ -322,9 +332,14 @@ class VisionFaceNode(VisionHailoNode):
         except Exception:  # noqa: BLE001
             return
         store = stats.get('store', {}) or {}
+        # crop_rejected_total (issue #2749): кропы, отброшенные воротами
+        # качества (почти чёрные/плоские) ДО эмбеддинга — без счётчика в
+        # сводке тихий фильтр стал бы вторым источником "робот меня не
+        # видит" (см. докстринг FaceRecognizer._crop_quality_ok).
         self.get_logger().info(
             '[лицо] режим=%s встреч=%d узнано=%d новых=%d слияний=%d '
-            'ошибок_эмбеддинга=%d треков=%d | в базе: людей=%s с_именем=%s'
+            'ошибок_эмбеддинга=%d кропов_отброшено=%d треков=%d | '
+            'в базе: людей=%s с_именем=%s'
             % (
                 store.get('mode', '?'),
                 stats.get('encounters_total', 0),
@@ -332,6 +347,7 @@ class VisionFaceNode(VisionHailoNode):
                 stats.get('new_people_total', 0),
                 stats.get('voice_merges_total', 0),
                 stats.get('embed_failures', 0),
+                stats.get('crop_rejected_total', 0),
                 stats.get('active_tracks', 0),
                 store.get('people', '?'),
                 store.get('named', '?'),
