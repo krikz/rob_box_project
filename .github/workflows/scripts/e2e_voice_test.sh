@@ -324,14 +324,35 @@ fi
 # версия этой правки заводила /voice/speaker/e2e_mode, но
 # scripts/lint/seam_without_consumer.py (ADR-0021) справедливо пометил его
 # новым швом без потребителя — паблишер живёт здесь, в bash, а Python-сканер
-# топиков видит только src/. ros2 param set — тот же приём, что уже
-# используется в этом файле/README для barge_in_policy у dialogue_node:
-# синхронный, с exit-кодом, без отдельного канала сообщений. Включение
-# ГАРАНТИРУЕТ пустую e2e-базу (узел сам стирает e2e_db_path на переходе
-# false→true — см. speaker_id_node.py:_apply_e2e_mode), боевая db_path не
-# открывается на запись, пока режим включён. deactivate — из trap EXIT: что
-# бы ни случилось со сценарием (PASS/FAIL/обрыв), робот обязан вернуться на
-# боевую БД для мастерской.
+# топиков видит только src/. Включение ГАРАНТИРУЕТ пустую e2e-базу (узел сам
+# стирает e2e_db_path на переходе false→true — см.
+# speaker_id_node.py:_apply_e2e_mode), боевая db_path не открывается на
+# запись, пока режим включён. deactivate — из trap EXIT: что бы ни случилось
+# со сценарием (PASS/FAIL/обрыв), робот обязан вернуться на боевую БД для
+# мастерской.
+#
+# ⚠️ ГДЕ ЖИВЁТ ros2 (issue #2763, замер на Vision Pi 22.09.2026)
+# ------------------------------------------------------------------
+# Первая редакция звала ``${ROBOT_SSH} "ros2 param set ..."`` — то есть на
+# ХОСТ Vision Pi. ROS на хосте НЕТ вообще:
+#
+#   ls /opt/ros            → No such file or directory
+#   bash -lc 'ros2 --help' → FAIL
+#
+# Команда возвращала rc=127, активация уходила в ветку предупреждения, и
+# акт 2 спокойно ехал по боевой /data/speakers.db — ровно то, что issue
+# #2750 закрывал. Защита не срабатывала НИ РАЗУ с момента мержа #2759:
+# 22.09 в боевой базе мастерской нашлись синтетические «Саша» и «Борис» от
+# утренних прогонов рядом с профилем живого человека.
+#
+# ROS живёт только внутри контейнера, в /ws/install (НЕ /ros2_ws/install).
+# Все прочие два десятка обращений в этом файле уже обёрнуты в
+# ``docker exec voice-assistant`` — эти два были единственным исключением.
+# ``--no-daemon`` — потому что демон ros2cli на роботе периодически умирает
+# и роняет CLI в ``Fault 1: !rclpy.ok()`` (видели в vision-hailo, #2703).
+robot_ros() {
+    ${ROBOT_SSH} "docker exec voice-assistant bash -lc 'source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; $*'"
+}
 is_acquaintance_scenario() {
     case "$1" in
         *night_marathon_act2_acquaintance*) return 0 ;;
@@ -339,23 +360,50 @@ is_acquaintance_scenario() {
     esac
 }
 E2E_SPEAKER_DB_ACTIVATED=0
+
+# Режим ЧИТАЕТСЯ обратно, а не берётся из exit-кода: ros2cli печатает
+# «Set parameter failed» при отказе parameters_callback и всё равно может
+# выйти с 0, а цена ошибки здесь — боевая БД мастерской с профилями живых
+# людей. Единственное честное подтверждение — значение параметра на узле.
+# Проверять надо ИМЕННО e2e_mode: ``db_path`` не меняется, он остаётся
+# путём боевой базы (узел переключает активное соединение, а не параметр).
+_read_e2e_mode() {
+    robot_ros "ros2 param get /speaker_id_node e2e_mode --no-daemon" 2>/dev/null \
+        | grep -aoE 'Boolean value is: (True|False)' | tail -1
+}
 activate_e2e_speaker_db() {
-    if ${ROBOT_SSH} "ros2 param set /speaker_id_node e2e_mode true" \
-            >/dev/null 2>&1; then
-        E2E_SPEAKER_DB_ACTIVATED=1
-        log "🧪 speaker_id_node: e2e_mode=true — боевая /data/speakers.db не тронута"
-    else
-        log "⚠️ не удалось включить e2e_mode для speaker_id_node — акт 2 рискует писать в боевую speakers.db!"
-    fi
+    robot_ros "ros2 param set /speaker_id_node e2e_mode true --no-daemon" >/dev/null 2>&1
+    case "$(_read_e2e_mode)" in
+        *True*)
+            E2E_SPEAKER_DB_ACTIVATED=1
+            log "🧪 speaker_id_node: e2e_mode=true — боевая /data/speakers.db не тронута"
+            ;;
+        *)
+            # НЕ предупреждение, а фатал. Акт «Знакомство» регистрирует
+            # настоящие голосовые профили; без изоляции он пишет их в базу,
+            # которой пользуются живые люди в мастерской. Лучше не прогнать
+            # акт совсем, чем прогнать его по боевой базе (issue #2750).
+            echo "E2E_FATAL: не удалось включить e2e_mode у speaker_id_node — акт «Знакомство» писал бы в боевую /data/speakers.db" >&2
+            echo "           проверь вручную: ssh <robot> \"docker exec voice-assistant bash -lc 'source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; ros2 param get /speaker_id_node e2e_mode --no-daemon'\"" >&2
+            exit 2
+            ;;
+    esac
 }
 deactivate_e2e_speaker_db() {
     [ "$E2E_SPEAKER_DB_ACTIVATED" = "1" ] || return 0
-    if ${ROBOT_SSH} "ros2 param set /speaker_id_node e2e_mode false" \
-            >/dev/null 2>&1; then
-        log "🧪 speaker_id_node: e2e_mode=false — вернулись на боевую /data/speakers.db"
-    else
-        log "❌ ВНИМАНИЕ: не удалось вернуть speaker_id_node на боевую speakers.db — проверь вручную (ros2 param set /speaker_id_node e2e_mode false)"
-    fi
+    robot_ros "ros2 param set /speaker_id_node e2e_mode false --no-daemon" >/dev/null 2>&1
+    case "$(_read_e2e_mode)" in
+        *False*)
+            log "🧪 speaker_id_node: e2e_mode=false — вернулись на боевую /data/speakers.db"
+            ;;
+        *)
+            # Робот остался на e2e-базе: в мастерской он перестанет узнавать
+            # живых людей и будет писать их эмбеддинги в тестовую БД. Это
+            # обязано быть видно в отчёте прогона, а не только в логах.
+            log "❌ ВНИМАНИЕ: speaker_id_node НЕ вернулся на боевую speakers.db — робот сейчас на e2e-базе и не узнаёт живых людей!"
+            log "   почини вручную: ssh <robot> \"docker exec voice-assistant bash -lc 'source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; ros2 param set /speaker_id_node e2e_mode false --no-daemon'\""
+            ;;
+    esac
 }
 
 # --- helpers ----------------------------------------------------------------
@@ -1933,6 +1981,8 @@ from e2e_tool_match import (
     first_voice_cycle_position,
     TOOL_NAME_RE,
 )
+# Issue #2764: expected_keywords матчатся по речи робота, не по всему логу.
+from e2e_tool_match import keyword_hit, robot_speech
 acc = json.loads(os.environ["ACC_JSON"])
 with open(os.environ["LOGS_FILE"], encoding="utf-8", errors="replace") as _f:
     logs = _f.read()
@@ -1967,9 +2017,18 @@ recognized = ""
 m = re.search(r"✅ ПРИНЯТО(?: \([^)]*\))?:\s*(.+)", logs)
 if m:
     recognized = m.group(1).strip()
-# Ключевые слова ищем по ВСЕМ логам шага (признанная фраза + LLM OUTPUT /
-# spoken=). Раньше искали только в recognised — «Красная» vs STT «красную»
-# давал false-negative при корректно рассказанной сказке (mv03, run 32595628905).
+# Ключевые слова ищем в РЕЧИ РОБОТА (TTS text + аргумент speak_text +
+# spoken=), а не по всему логу шага — см. robot_speech/keyword_hit в
+# e2e_tool_match.py и issue #2764.
+#
+# Историю важно не откатить: когда-то ключи искались только в recognised
+# (распознанной фразе), и «Красная» vs STT «красную» давал false-negative
+# при корректно рассказанной сказке (mv03, run 32595628905). Починили это
+# расширением на ВЕСЬ лог — но вместе с ответом робота в поиск попали
+# реплика говорящего и подпись диктора '[Spkr:Саша]', и keyword-проверки
+# стали проходить сами по себе. robot_speech даёт ровно ту область,
+# которую хотел mv03 (LLM OUTPUT / spoken= / то, что ушло в синтез),
+# без пользовательского ввода.
 logs_low = logs.lower()
 
 actual_calls = []
@@ -1989,10 +2048,13 @@ forbidden_called = [c for c in must_not if has(logs, c)]
 # а НЕ включаем полноценный регэксп: иначе существующие ключи со знаком ?,
 # точкой или скобками молча поменяли бы смысл.
 def _keyword_hit(kw):
-    return any(v.strip() and v.strip() in logs_low for v in kw.lower().split("|"))
+    return keyword_hit(logs, kw)
 
 found_keywords = [k for k in expected_kw if _keyword_hit(k)]
 missing_keywords = [k for k in expected_kw if not _keyword_hit(k)]
+# Диагностика в артефакт: без неё красный keyword-шаг неотличим от
+# «робот вообще молчал» — а это разные починки.
+robot_said = robot_speech(logs)
 
 # Issue #2406: discovery-tools order check. Для каждого discovery-тула:
 # - позиция первого execution-маркера в логе
@@ -2078,6 +2140,7 @@ result = {
     "missing_expected_calls": missing_expected,
     "forbidden_calls": forbidden_called,
     "expected_keywords": expected_kw,
+    "robot_speech": robot_said,
     "recognized": recognized,
     "found_keywords": found_keywords,
     "missing_keywords": missing_keywords,

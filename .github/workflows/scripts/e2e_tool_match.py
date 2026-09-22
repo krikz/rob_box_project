@@ -169,3 +169,72 @@ def first_voice_cycle_position(logs: str) -> int | None:
     """
     low = logs.lower()
     return _first_marker_position(low, list(VOICE_CYCLE_MARKERS))
+
+
+# =============================================================================
+# Issue #2764: expected_keywords искались по ВСЕМУ логу шага
+# =============================================================================
+# Та же болезнь, что вылечена выше для имён тулов, только в другом канале.
+# ``check_acceptance`` матчил ``expected_keywords`` подстрокой по всему
+# ``docker logs voice-assistant --since <шаг>``. А в этот лог попадает и
+# реплика САМОГО ГОВОРЯЩЕГО, и подпись диктора, которую ставит
+# speaker_id_node:
+#
+#   dialogue_node: user_input='[Spkr:Саша] привет, давай знакомиться...'
+#   dialogue_node: 👤 [issue 1077] Speaker: 'Саша' conf=0.81
+#
+# Из-за этого три из четырёх keyword-проверок акта 2 были тавтологиями —
+# зелёными независимо от поведения робота (замер 22.09.2026):
+#
+#   n207_recall_sasha      KW=['Саш']                 говорит Саша → «Саш» в логе всегда
+#   n209_recall_boris      KW=['Борис|Спартак|пицц']  говорит Борис → «Борис» в логе всегда
+#   n211_who_do_you_know   KW=['Саш', 'Борис']        половина ключа бесплатная
+#
+# А шаг n207 при этом объявлен в сценарии как проверка связки
+# «голос → профиль → факты, а не просто вежливый ответ». Проверки не было.
+#
+# Лечение: ключевые слова ищутся ТОЛЬКО в том, что робот произнёс.
+# Три канала, все три реально встречаются в логе живого робота
+# (замер 22.09.2026, Vision Pi):
+#
+#   tts_node:    🔊 TTS: speech_id=..., voice=default, lang=default, text='Добрый день, Денис!'
+#   mcp_server:  📥 Запрос выполнения: speak_text с параметрами {'text': 'Лицо знакомое...', 'animation': 'happy'}
+#   dialogue_node: ✅ [turn] process_input returned: spoken='Привет! У меня всё отлично...'[:60]
+#
+# Третий канал обрезан до 60 символов — он идёт последним и нужен как
+# подстраховка, когда TTS не доехал (например, guard заглушил синтез).
+_SPEECH_PATTERNS = (
+    # 🔊 TTS: ... text='...'  — text идёт последним полем строки
+    re.compile(r"🔊 TTS:.*?\btext='(.*?)'\s*$", re.MULTILINE),
+    # Запрос выполнения: speak_text с параметрами {'text': '...', ...}
+    re.compile(r"speak_text с параметрами \{'text':\s*'(.*?)'\s*[,}]"),
+    # process_input returned: spoken='...'[:60]  /  spoken='...' (len=NN)
+    re.compile(r"spoken='(.*?)'(?:\[:\d+\]|\s*\(len=\d+\))"),
+)
+
+
+def robot_speech(logs: str) -> str:
+    """Только то, что робот ПРОИЗНЁС, склеенное в одну строку.
+
+    Пустая строка означает «робот в этом окне не сказал ничего» — это
+    валидный (красный) исход шага, а не сбой парсера: молчащий робот не
+    должен проходить keyword-проверку.
+    """
+    if not logs:
+        return ""
+    out: list[str] = []
+    for pat in _SPEECH_PATTERNS:
+        out.extend(pat.findall(logs))
+    return "\n".join(out)
+
+
+def keyword_hit(logs: str, kw: str) -> bool:
+    """``kw`` (алтернативы через ``|``) найден в РЕЧИ робота.
+
+    Контракт совпадает со старым ``_keyword_hit``: регистронезависимо,
+    ``|`` — это ИЛИ, пустые альтернативы игнорируются.
+    """
+    speech = robot_speech(logs).lower()
+    if not speech:
+        return False
+    return any(v.strip() and v.strip() in speech for v in kw.lower().split("|"))

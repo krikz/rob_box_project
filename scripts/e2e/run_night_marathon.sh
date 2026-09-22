@@ -30,7 +30,12 @@
 #              не диагностичны, они просто утонут в no_accept.
 #
 # ПЕРЕД ПРОГОНОМ (иначе акт 8 не диагностичен):
-#   ssh <robot> 'ros2 param set /dialogue_node barge_in_policy classify'
+#   ROS_ENV='source /opt/ros/humble/setup.bash; source /ws/install/setup.bash;'
+#   ssh <robot> "docker exec voice-assistant bash -lc '$ROS_ENV ros2 param set /dialogue_node barge_in_policy classify --no-daemon'"
+#   ⚠️ именно через docker exec: на ХОСТЕ Vision Pi ros2 нет вообще
+#   (ls /opt/ros → No such file or directory). Форма `ssh <robot> 'ros2 ...'`
+#   молча возвращает rc=127 — из-за этого изоляция БД дикторов из #2759
+#   не срабатывала ни разу с момента мержа, см. issue #2763.
 # =============================================================================
 set -u
 
