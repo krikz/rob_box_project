@@ -101,6 +101,13 @@ def _install_fake_mcp_server_dependencies(monkeypatch):
     rclpy_node = types.ModuleType("rclpy.node")
     rclpy_callback_groups = types.ModuleType("rclpy.callback_groups")
     rclpy_qos = types.ModuleType("rclpy.qos")
+    # Issue #2781 — mcp_server.py gained ``from rcl_interfaces.msg import
+    # SetParametersResult`` for the voice_memory e2e_mode parameters
+    # callback (same pattern speaker_id_node already uses for its own
+    # e2e_mode). Real ``rcl_interfaces`` needs a live ROS2 install, so it
+    # gets the same module-stub treatment as ``rclpy``/``std_msgs`` here.
+    rcl_interfaces = types.ModuleType("rcl_interfaces")
+    rcl_interfaces_msg = types.ModuleType("rcl_interfaces.msg")
     std_msgs = types.ModuleType("std_msgs")
     std_msgs_msg = types.ModuleType("std_msgs.msg")
     registry_module = types.ModuleType("rob_box_mcp_tools.registry")
@@ -110,6 +117,11 @@ def _install_fake_mcp_server_dependencies(monkeypatch):
 
     class Node:
         pass
+
+    class SetParametersResult:
+        def __init__(self, successful: bool = True, reason: str = ""):
+            self.successful = successful
+            self.reason = reason
 
     class ReentrantCallbackGroup:
         pass
@@ -236,6 +248,7 @@ def _install_fake_mcp_server_dependencies(monkeypatch):
     rclpy_qos.ReliabilityPolicy = ReliabilityPolicy
     rclpy_qos.HistoryPolicy = HistoryPolicy
     rclpy_qos.DurabilityPolicy = DurabilityPolicy
+    rcl_interfaces_msg.SetParametersResult = SetParametersResult
     std_msgs_msg.String = String
     registry_module.MCPToolRegistry = MCPToolRegistry
     waypoint_store_module.WaypointStore = WaypointStore
@@ -245,6 +258,8 @@ def _install_fake_mcp_server_dependencies(monkeypatch):
     monkeypatch.setitem(sys.modules, "rclpy.node", rclpy_node)
     monkeypatch.setitem(sys.modules, "rclpy.callback_groups", rclpy_callback_groups)
     monkeypatch.setitem(sys.modules, "rclpy.qos", rclpy_qos)
+    monkeypatch.setitem(sys.modules, "rcl_interfaces", rcl_interfaces)
+    monkeypatch.setitem(sys.modules, "rcl_interfaces.msg", rcl_interfaces_msg)
     monkeypatch.setitem(sys.modules, "std_msgs", std_msgs)
     monkeypatch.setitem(sys.modules, "std_msgs.msg", std_msgs_msg)
     monkeypatch.setitem(sys.modules, "rob_box_mcp_tools.registry", registry_module)

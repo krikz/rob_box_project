@@ -432,6 +432,66 @@ deactivate_e2e_speaker_db() {
     esac
 }
 
+# --- issue #2781: изоляция БД долгосрочной памяти (voice_facts) ------------
+# Изоляция дикторов выше (#2750/#2763) накрывает ТОЛЬКО speakers.db. Акт
+# «Знакомство» ночного марафона и регистрирует голоса (register_speaker,
+# изолировано), И называет LLM факты через memory_save (НЕ изолировано было
+# до этой правки) — замер на Vision Pi 22.09.2026 нашёл 59 из 116 фактов
+# боевой /data/voice_memory.db, упоминающих синтезированный каст марафона
+# ("Саша не ест лук", "Борис болеет за Спартак") вперемешку с фактами живых
+# людей мастерской (часть — с speaker_id=NULL, неотличимы по одному полю).
+#
+# Тот же паттерн, что у спикеров: якорь — СОДЕРЖИМОЕ сценария (memory_save
+# упоминается в тексте сценария), не имя файла (issue #2763 — воркфлоу
+# копирует сценарий под фиксированным /tmp/e2e_scenario.json, имя не несёт
+# информации об авторе). Владелец параметра — mcp_server (нода, которая
+# реально исполняет memory_save, см. tools/memory.py:MemorySaveTool),
+# отдельный от speaker_id_node bool-параметр e2e_mode (issue #2781,
+# mcp_server.py:_apply_e2e_mode) — тот же ros2 param set, не топик.
+scenario_writes_memory() {
+    [ -f "$1" ] || return 1
+    grep -q 'memory_save' "$1"
+}
+E2E_MEMORY_DB_ACTIVATED=0
+
+# Как и у _read_e2e_mode выше — читаем значение параметра ОБРАТНО, не
+# верим exit-коду ros2cli (может быть 0 даже когда parameters_callback
+# отклонил значение). Цена ошибки — боевая долгосрочная память мастерской.
+_read_mcp_e2e_mode() {
+    robot_ros "ros2 param get /mcp_server e2e_mode --no-daemon" 2>/dev/null \
+        | grep -aoE 'Boolean value is: (True|False)' | tail -1
+}
+activate_e2e_memory_db() {
+    robot_ros "ros2 param set /mcp_server e2e_mode true --no-daemon" >/dev/null 2>&1
+    case "$(_read_mcp_e2e_mode)" in
+        *True*)
+            E2E_MEMORY_DB_ACTIVATED=1
+            log "🧪 mcp_server: e2e_mode=true — боевая /data/voice_memory.db не тронута"
+            ;;
+        *)
+            # ФАТАЛ, не предупреждение — как и у изоляции дикторов: лучше не
+            # прогнать акт, чем засорить боевую долгосрочную память
+            # мастерской синтезированными фактами каста марафона.
+            echo "E2E_FATAL: не удалось включить e2e_mode у mcp_server — сценарий писал бы факты memory_save в боевую /data/voice_memory.db" >&2
+            echo "           проверь вручную: ssh <robot> \"docker exec voice-assistant bash -lc 'source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; ros2 param get /mcp_server e2e_mode --no-daemon'\"" >&2
+            exit 2
+            ;;
+    esac
+}
+deactivate_e2e_memory_db() {
+    [ "$E2E_MEMORY_DB_ACTIVATED" = "1" ] || return 0
+    robot_ros "ros2 param set /mcp_server e2e_mode false --no-daemon" >/dev/null 2>&1
+    case "$(_read_mcp_e2e_mode)" in
+        *False*)
+            log "🧪 mcp_server: e2e_mode=false — вернулись на боевую /data/voice_memory.db"
+            ;;
+        *)
+            log "❌ ВНИМАНИЕ: mcp_server НЕ вернулся на боевую voice_memory.db — робот сейчас пишет долгосрочную память в e2e-базу!"
+            log "   почини вручную: ssh <robot> \"docker exec voice-assistant bash -lc 'source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; ros2 param set /mcp_server e2e_mode false --no-daemon'\""
+            ;;
+    esac
+}
+
 # --- helpers ----------------------------------------------------------------
 log() { echo ">>> $*"; }
 
@@ -2227,16 +2287,20 @@ start_recording
 observe_step "${SCENARIO_FILE:+scenario}${SCENARIO_FILE:-single}" > "$OUT_DIR/health_snapshot.json" || true
 
 # Issue #2750 — акт «Знакомство» получает изолированную БД дикторов ДО
-# первого шага. Проверяем по имени файла сценария, а не по номеру акта:
-# манифест может переупорядочить акты, а имя файла — самый стабильный якорь.
+# первого шага. Якорь — СОДЕРЖИМОЕ сценария (issue #2763), не имя файла.
 if [ -n "$SCENARIO_FILE" ] && scenario_registers_speakers "$SCENARIO_FILE"; then
     activate_e2e_speaker_db
 fi
+# Issue #2781 — тот же сценарий (или другой) может писать долгосрочную
+# память через memory_save — отдельная изоляция, отдельный узел (mcp_server).
+if [ -n "$SCENARIO_FILE" ] && scenario_writes_memory "$SCENARIO_FILE"; then
+    activate_e2e_memory_db
+fi
 
-# Гарантированная остановка записи и возврат speaker_id_node на боевую БД
-# при любом завершении (PASS/FAIL/ошибка). Оба хелпера идемпотентны:
-# повторный вызов — noop (пустой REC_PID / E2E_SPEAKER_DB_ACTIVATED=0).
-trap 'deactivate_e2e_speaker_db; stop_recording' EXIT
+# Гарантированная остановка записи и возврат speaker_id_node/mcp_server на
+# боевые БД при любом завершении (PASS/FAIL/ошибка). Все хелперы идемпотентны:
+# повторный вызов — noop (пустой REC_PID / E2E_*_DB_ACTIVATED=0).
+trap 'deactivate_e2e_speaker_db; deactivate_e2e_memory_db; stop_recording' EXIT
 
 PASS=1
 if [ -n "$SCENARIO_FILE" ]; then
