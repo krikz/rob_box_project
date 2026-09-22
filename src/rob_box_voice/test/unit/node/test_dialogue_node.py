@@ -426,6 +426,103 @@ class TestBuildDynamicSystemContext:
 #  регистрации доезжает до пользователя голосом, а не тонет в логах ноды.
 # ─────────────────────────────────────────────────────────────────────────────
 
+class TestIdentityClarification:
+    """issue #2747 + отложенный шаг ADR-0127 — робот переспрашивает.
+
+    Поле ``voice_conflict`` нода клала в ack с самого ADR-0127, но читать
+    его было некому: «правильное поведение продукта и, вероятно,
+    следующий шаг» так и осталось следующим шагом. Здесь появляется
+    потребитель, сразу для обоих зеркальных случаев.
+    """
+
+    def _msg(self, payload: dict):
+        return type("Msg", (), {"data": json.dumps(payload, ensure_ascii=False)})()
+
+    def test_name_twin_asks_whether_same_person(self):
+        """Имя совпало, голос не дотянул — спрашиваем, тот же ли человек.
+
+        Живой случай 22.09.2026: человека перестали узнавать (медиана
+        косинуса 0.502 при пороге 0.72), он представился заново, и пара
+        профилей «Дэнчик», слитая вручную двумя часами ранее,
+        восстановилась за пятнадцать минут разговора.
+        """
+        n = _make_node()
+        n._speak_direct = MagicMock()
+
+        n._on_speaker_result(self._msg({
+            "event": "registered", "name": "Дэнчик", "speaker_id": "new123",
+            "name_twin": {"name": "Дэнчик", "speaker_id": "old456", "score": 0.5},
+        }))
+
+        n._speak_direct.assert_called_once()
+        spoken = n._speak_direct.call_args[0][0]
+        assert "Дэнчик" in spoken
+        assert "?" in spoken, "это должен быть вопрос, а не констатация"
+        assert n._current_speaker == {"is_known": False}, (
+            "служебный ack не обновляет current_speaker"
+        )
+
+    def test_voice_conflict_asks_whether_different_people(self):
+        """Голос похож, имя другое — случай ADR-0127 (Саша и Борис на 0.846)."""
+        n = _make_node()
+        n._speak_direct = MagicMock()
+
+        n._on_speaker_result(self._msg({
+            "event": "registered", "name": "Саша", "speaker_id": "s1",
+            "voice_conflict": {"name": "Борис", "speaker_id": "b1", "score": 0.85},
+        }))
+
+        n._speak_direct.assert_called_once()
+        spoken = n._speak_direct.call_args[0][0]
+        assert "Борис" in spoken
+        assert "?" in spoken
+
+    def test_plain_registration_asks_nothing(self):
+        """Обычная регистрация без неоднозначности — молчим.
+
+        Защита от болтливости: если робот начнёт переспрашивать на каждом
+        знакомстве, люди перестанут отвечать.
+        """
+        n = _make_node()
+        n._speak_direct = MagicMock()
+
+        n._on_speaker_result(self._msg({
+            "event": "registered", "name": "Саша", "speaker_id": "s1",
+        }))
+
+        n._speak_direct.assert_not_called()
+
+    def test_twin_without_name_asks_nothing(self):
+        """Повод пришёл, но имени в нём нет — вопрос без имени бессмыслен.
+
+        Лучше промолчать, чем спросить «ты тот самый или другой?» про
+        неизвестно кого.
+        """
+        n = _make_node()
+        n._speak_direct = MagicMock()
+
+        n._on_speaker_result(self._msg({
+            "event": "registered", "name": "", "speaker_id": "s1",
+            "name_twin": {"name": "", "speaker_id": "old", "score": 0.4},
+        }))
+
+        n._speak_direct.assert_not_called()
+
+    def test_speak_failure_does_not_raise(self):
+        """Не смогли озвучить — регистрация всё равно состоялась.
+
+        Вопрос это улучшение, а не условие работы: падение TTS не должно
+        рушить обработку ack.
+        """
+        n = _make_node()
+        n._speak_direct = MagicMock(side_effect=RuntimeError("tts dead"))
+
+        n._on_speaker_result(self._msg({
+            "event": "registered", "name": "Дэнчик", "speaker_id": "new",
+            "name_twin": {"name": "Дэнчик", "speaker_id": "old", "score": 0.5},
+        }))
+
+
 class TestOnSpeakerResultRegisterError:
     def _msg(self, payload: dict):
         return type("Msg", (), {"data": json.dumps(payload, ensure_ascii=False)})()

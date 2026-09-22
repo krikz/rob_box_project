@@ -1032,6 +1032,29 @@ class SpeakerIdNode(Node):
                 "speaker_id": outcome.conflict_speaker_id,
                 "score": round(float(outcome.conflict_score), 4),
             }
+        if outcome.name_twin:
+            # Issue #2747 — зеркальный повод: имя совпало, голос не
+            # дотянул. Профиль заведён отдельный (данные целы, инвариант
+            # ADR-0127), но по одному голосу не понять, тот же это человек
+            # или тёзка, — пусть спросит вслух.
+            self.get_logger().warning(
+                f"👥 имя '{name}' уже есть у профиля "
+                f"id={outcome.twin_speaker_id[:8]}, но голос не дотянул до "
+                f"порога слияния (score="
+                f"{'н/д' if outcome.twin_score is None else round(outcome.twin_score, 3)}"
+                f") — завёл отдельный id={sid[:8]}. Если это один человек, "
+                f"склеить: ros2 topic pub /voice/speaker/merge std_msgs/String "
+                f"'{{\"src_speaker_id\": \"{sid}\", "
+                f"\"dst_speaker_id\": \"{outcome.twin_speaker_id}\"}}'"
+            )
+            ack_payload["name_twin"] = {
+                "name": outcome.twin_name,
+                "speaker_id": outcome.twin_speaker_id,
+                "score": (
+                    None if outcome.twin_score is None
+                    else round(float(outcome.twin_score), 4)
+                ),
+            }
         ack.data = json.dumps(ack_payload, ensure_ascii=False)
         self._result_pub.publish(ack)
 
