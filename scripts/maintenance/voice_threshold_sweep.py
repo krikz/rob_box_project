@@ -87,6 +87,11 @@ _CANDIDATE_RE = re.compile(
 #: Отметка времени ROS в квадратных скобках — epoch с наносекундами.
 _TS_RE = re.compile(r'\[(?P<ts>\d{10}\.\d+)\]')
 
+#: Длительность РЕЧИ в реплике (после VAD) — приписывается к той же строке
+#: с момента #2747. На старых логах её нет, и это нормально: тогда отчёт
+#: просто не покажет разрез по длительности, вместо того чтобы врать.
+_VOICED_RE = re.compile(r'речь=(?P<voiced>[0-9.]+)s')
+
 #: Шаблон окна в аргументе --speaker: хвост строки «ЧЧ:ММ-ЧЧ:ММ».
 _SPAN_RE = re.compile(
     r'(?P<h1>\d{1,2}):(?P<m1>\d{2})\s*-\s*(?P<h2>\d{1,2}):(?P<m2>\d{2})\s*$'
@@ -108,6 +113,12 @@ class Samples:
 
     intra: List[float] = field(default_factory=list)
     inter: List[float] = field(default_factory=list)
+    #: (речь в секундах, косинус против своего профиля) — только для тех
+    #: реплик, где нода напечатала ``речь=``. Нужна, чтобы отделить «порог
+    #: высоковат» от «человеку нечего было сказать»: замер на этом же
+    #: пайплайне даёт r(duration, score) = 0.88, так что низкий score на
+    #: короткой речи — не повод трогать порог.
+    intra_by_voiced: List[Tuple[float, float]] = field(default_factory=list)
 
 
 def parse_window(spec: str) -> Window:
@@ -187,10 +198,14 @@ def collect(
             unlabelled += 1
             continue
         per_speaker[speaker] = per_speaker.get(speaker, 0) + 1
+        vm = _VOICED_RE.search(line)
+        voiced = float(vm.group('voiced')) if vm else None
         for cm in _CANDIDATE_RE.finditer(lm.group('body')):
             score = float(cm.group('score'))
             if same_person(cm.group('name'), speaker):
                 samples.intra.append(score)
+                if voiced is not None:
+                    samples.intra_by_voiced.append((voiced, score))
             else:
                 samples.inter.append(score)
     return samples, per_speaker, unlabelled
@@ -215,6 +230,34 @@ def describe(name: str, values: List[float]) -> str:
         f'медиана={quantile(v, 0.5):.3f}  p95={quantile(v, 0.95):.3f}  '
         f'max={v[-1]:.3f}'
     )
+
+
+def report_by_voiced(points: List[Tuple[float, float]]) -> str:
+    """Разрез «сколько было речи → какой вышел скор».
+
+    Главный вопрос, на который отвечает таблица: низкий скор это «порог
+    высоковат» или «говорить было нечего». Если короткие реплики дают
+    заметно худший медианный скор, чем длинные, чинить надо сбор аудио, а
+    не порог — и наоборот, ровная картина по длительностям означает, что
+    дело действительно в пороге.
+
+    Границы корзин выбраны по тому, что реально приходит роботу (замер:
+    4.3–5.6с), плюс отдельная корзина для длинных реплик, где по
+    имеющимся данным скор заметно выше.
+    """
+    edges = [(0.0, 2.0), (2.0, 4.0), (4.0, 6.0), (6.0, 100.0)]
+    lines = ['Скор в разрезе по длительности РЕЧИ:']
+    for lo, hi in edges:
+        vals = sorted(s for v, s in points if lo <= v < hi)
+        if not vals:
+            continue
+        mid = vals[len(vals) // 2]
+        label = f'{lo:.0f}-{hi:.0f}s' if hi < 100 else f'{lo:.0f}s+'
+        lines.append(
+            f'  речь {label:>8}: n={len(vals):<4} медиана={mid:.3f}  '
+            f'min={vals[0]:.3f} max={vals[-1]:.3f}'
+        )
+    return "\n".join(lines)
 
 
 def sweep(samples: Samples, step: float = 0.01) -> List[Tuple[float, float, float]]:
@@ -327,6 +370,17 @@ def main(argv: Optional[List[str]] = None) -> int:
     print(describe('свой голос  (intra)', samples.intra))
     print(describe('чужой голос (inter)', samples.inter))
     print()
+
+    if samples.intra_by_voiced:
+        print(report_by_voiced(samples.intra_by_voiced))
+        print()
+    else:
+        print(
+            'В логе нет пометок «речь=» — значит он снят до #2747. Разрез по '
+            'длительности пропущен; на свежем логе он покажет, сколько '
+            'отказов на самом деле объясняются короткой речью, а не порогом.'
+        )
+        print()
 
     if not samples.inter:
         print(
