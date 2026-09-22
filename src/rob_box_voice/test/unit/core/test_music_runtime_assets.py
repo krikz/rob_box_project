@@ -87,6 +87,20 @@ def test_start_voice_assistant_validates_expanded_stranger_things_sc_only_custom
 
     assert "--critical-synth strangerpulsepad" in content
     assert "--critical-synth strangerarp" in content
+
+
+def test_start_voice_assistant_reports_honest_failure_not_degraded_but_usable() -> None:
+    """Issue #2716: a critical SynthDef that never confirmed into scsynth
+    means the preset built on it plays silently, not "a bit worse". Calling
+    that "non-critical errors (degraded but usable)" hid the failure behind
+    a reassuring label and let it ride along in deploy auto-reports for
+    weeks (#2693, #2707) instead of getting looked at.
+    """
+    content = START_VOICE_ASSISTANT_PATH.read_text(encoding="utf-8")
+
+    assert "degraded but usable" not in content
+    assert "non-critical errors" not in content
+    assert "Music stack validation FAILED" in content
     assert "--critical-synth strangerbrass" in content
 
 
