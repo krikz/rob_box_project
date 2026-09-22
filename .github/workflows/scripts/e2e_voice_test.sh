@@ -362,15 +362,23 @@ fi
 # --- issue #2750: изоляция БД дикторов для акта «Знакомство» ---------------
 # Акт 2 ночного марафона (night_marathon_act2_acquaintance_*) по сценарию
 # регистрирует НАСТОЯЩИЕ голосовые профили ("Саша"/"Борис") в speakers.db.
-# Раньше чистую базу под это получали ssh-командой СНАРУЖИ кода: бэкап
-# боевой /data/speakers.db в .bak-<UTC>Z + очистка таблицы speakers — эта
-# логика не найдена ни на одной ветке репозитория, и один раз стёрла
-# профиль живого человека через 19 минут после регистрации (issue #2750).
-# Замена — топик /voice/speaker/e2e_mode (speaker_id_node.py,
-# _on_e2e_mode_request): узел переключается на отдельный файл
-# e2e_db_path и НИКОГДА не открывает боевую на запись, пока включён.
-# deactivate вызывается из trap EXIT — что бы ни случилось со сценарием
-# (PASS/FAIL/обрыв), робот обязан вернуться на боевую БД для мастерской.
+# Раньше чистую базу под это получали ssh-командой СНАРУЖИ кода перед каждым
+# прогоном (подтверждено владельцем в issue #2750): бэкап боевой
+# /data/speakers.db в .bak-<UTC>Z + DELETE FROM embeddings/speakers — и один
+# раз это стёрло профиль живого человека через 19 минут после регистрации.
+#
+# Замена — параметр узла speaker_id_node (e2e_mode, bool), НЕ топик: первая
+# версия этой правки заводила /voice/speaker/e2e_mode, но
+# scripts/lint/seam_without_consumer.py (ADR-0021) справедливо пометил его
+# новым швом без потребителя — паблишер живёт здесь, в bash, а Python-сканер
+# топиков видит только src/. ros2 param set — тот же приём, что уже
+# используется в этом файле/README для barge_in_policy у dialogue_node:
+# синхронный, с exit-кодом, без отдельного канала сообщений. Включение
+# ГАРАНТИРУЕТ пустую e2e-базу (узел сам стирает e2e_db_path на переходе
+# false→true — см. speaker_id_node.py:_apply_e2e_mode), боевая db_path не
+# открывается на запись, пока режим включён. deactivate — из trap EXIT: что
+# бы ни случилось со сценарием (PASS/FAIL/обрыв), робот обязан вернуться на
+# боевую БД для мастерской.
 is_acquaintance_scenario() {
     case "$1" in
         *night_marathon_act2_acquaintance*) return 0 ;;
@@ -379,7 +387,7 @@ is_acquaintance_scenario() {
 }
 E2E_SPEAKER_DB_ACTIVATED=0
 activate_e2e_speaker_db() {
-    if ${ROBOT_SSH} "ros2 topic pub -1 /voice/speaker/e2e_mode std_msgs/String \"data: 'true'\"" \
+    if ${ROBOT_SSH} "ros2 param set /speaker_id_node e2e_mode true" \
             >/dev/null 2>&1; then
         E2E_SPEAKER_DB_ACTIVATED=1
         log "🧪 speaker_id_node: e2e_mode=true — боевая /data/speakers.db не тронута"
@@ -389,11 +397,11 @@ activate_e2e_speaker_db() {
 }
 deactivate_e2e_speaker_db() {
     [ "$E2E_SPEAKER_DB_ACTIVATED" = "1" ] || return 0
-    if ${ROBOT_SSH} "ros2 topic pub -1 /voice/speaker/e2e_mode std_msgs/String \"data: 'false'\"" \
+    if ${ROBOT_SSH} "ros2 param set /speaker_id_node e2e_mode false" \
             >/dev/null 2>&1; then
         log "🧪 speaker_id_node: e2e_mode=false — вернулись на боевую /data/speakers.db"
     else
-        log "❌ ВНИМАНИЕ: не удалось вернуть speaker_id_node на боевую speakers.db — проверь вручную (ros2 topic pub -1 /voice/speaker/e2e_mode std_msgs/String \"data: 'false'\"))"
+        log "❌ ВНИМАНИЕ: не удалось вернуть speaker_id_node на боевую speakers.db — проверь вручную (ros2 param set /speaker_id_node e2e_mode false)"
     fi
 }
 
