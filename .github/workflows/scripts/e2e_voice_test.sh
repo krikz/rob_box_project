@@ -353,11 +353,37 @@ fi
 robot_ros() {
     ${ROBOT_SSH} "docker exec voice-assistant bash -lc 'source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; $*'"
 }
-is_acquaintance_scenario() {
-    case "$1" in
-        *night_marathon_act2_acquaintance*) return 0 ;;
-        *) return 1 ;;
-    esac
+# ⚠️ ЯКОРЬ — СОДЕРЖИМОЕ СЦЕНАРИЯ, А НЕ ЕГО ИМЯ (issue #2763, инцидент
+# 22.09.2026, run 35729958215)
+# ------------------------------------------------------------------
+# Первая редакция матчилась по имени файла:
+#
+#     case "$1" in *night_marathon_act2_acquaintance*) return 0 ;;
+#
+# Но воркфлоу копирует сценарий на билд-машину под ФИКСИРОВАННЫМ именем
+# (шаг «Push atomic harness + scenario to build machine»):
+#
+#     CMD="/tmp/e2e_voice_test.sh --scenario /tmp/e2e_scenario.json"
+#
+# то есть $SCENARIO_FILE здесь ВСЕГДА /tmp/e2e_scenario.json. Шаблон не
+# совпадал никогда, activate_e2e_speaker_db не вызывался ни разу — молча,
+# без строки в логе (отсутствие И «🧪 e2e_mode=true», И E2E_FATAL — это и
+# есть симптом). Акт «Знакомство» прогона 35729958215 записал
+# синтетических «Сашу» и «Бориса» в боевую /data/speakers.db рядом с
+# профилями живых людей мастерской — ровно то, что закрывал issue #2750.
+#
+# Имя файла тут вообще не якорь: его назначает воркфлоу, а не автор
+# сценария. Признак берём семантический — сценарий РЕГИСТРИРУЕТ дикторов.
+# Изоляция нужна любому такому сценарию, а не конкретному акту по
+# названию. Ошибиться в плюс безопасно (лишняя изоляция ничего не портит),
+# в минус — нет: это запись в боевую БД мастерской.
+#
+# На 22.09.2026 register_speaker встречается ровно в одном сценарии
+# марафона (act2_acquaintance, 8 упоминаний) — поведение то же, что
+# задумывал #2759, но теперь оно действительно срабатывает.
+scenario_registers_speakers() {
+    [ -f "$1" ] || return 1
+    grep -q 'register_speaker' "$1"
 }
 E2E_SPEAKER_DB_ACTIVATED=0
 
@@ -2203,7 +2229,7 @@ observe_step "${SCENARIO_FILE:+scenario}${SCENARIO_FILE:-single}" > "$OUT_DIR/he
 # Issue #2750 — акт «Знакомство» получает изолированную БД дикторов ДО
 # первого шага. Проверяем по имени файла сценария, а не по номеру акта:
 # манифест может переупорядочить акты, а имя файла — самый стабильный якорь.
-if [ -n "$SCENARIO_FILE" ] && is_acquaintance_scenario "$SCENARIO_FILE"; then
+if [ -n "$SCENARIO_FILE" ] && scenario_registers_speakers "$SCENARIO_FILE"; then
     activate_e2e_speaker_db
 fi
 
