@@ -91,7 +91,17 @@ entry point ``vision_face``) грузит ``/data/faces`` в память при
 -------------------------------
 ::
 
-    docker exec vision-face python3 <путь внутри контейнера> list
+    docker exec vision-face bash -c \
+        "source /opt/ros/humble/setup.bash && source /ws/install/setup.bash && \
+         python3 /tmp/face_store_admin.py list"
+
+Команда ОБЯЗАНА быть полной, с ОБОИМИ ``source`` — без них
+``rob_box_perception`` не найден ВООБЩЕ, независимо от подкоманды: живой
+прогон агента (issue #2775), доставившего файл голым ``docker cp`` и
+запустившего голым ``python3 /tmp/face_store_admin.py list`` без
+``source``, упал с ``ModuleNotFoundError: No module named
+'rob_box_perception'`` ровно по этой причине — это не баг скрипта, а
+недостающий шаг в инструкции по запуску (исправлено здесь же).
 
 Путь ВНУТРИ контейнера и путь НА ХОСТЕ — разные вещи:
 
@@ -105,16 +115,29 @@ entry point ``vision_face``) грузит ``/data/faces`` в память при
   смонтировать волюмом, либо скопировать внутрь разовым
   ``docker cp face_store_admin.py vision-face:/tmp/face_store_admin.py``
   и запускать оттуда — сам скрипт от этого не страдает (см. ниже,
-  почему он вообще не требует ``rob_box_perception`` быть pip-installed);
+  почему он вообще не требует ``rob_box_perception`` быть pip-installed).
+  ВАЖНО (issue #2775, живой прогон агента 22.09.2026): скопированный в
+  ``/tmp`` файл лежит НЕ на той глубине вложенности, что в чекауте
+  репозитория (``<repo>/scripts/maintenance/<файл>``) — импорт НИКОГДА
+  не вычисляет путь к пакету из глубины вложенности ЭТОГО файла
+  заранее/безусловно именно из-за этого: сперва всегда пробуется обычный
+  ``import rob_box_perception.face_store`` (который срабатывает сам,
+  если ``source`` выполнен — пакет уже на ``PYTHONPATH``), и только если
+  он не сработал, скрипт пытается достроить путь от чекаута — а если и
+  это невозможно (нет ``git``-чекаута рядом, как для копии в ``/tmp``),
+  честно поднимается обычный ``ModuleNotFoundError``, а не
+  ``IndexError`` (см. ``_guess_pkg_root``/``_import_face_store`` ниже);
 * ROS-окружение ВНУТРИ контейнера ``vision-face`` живёт в
   ``/ws/install`` (см. ``docker/vision/scripts/vision-hailo/
   start_vision_face.sh``: ``source /ws/install/setup.bash``), а НЕ в
   ``/ros2_ws/install`` — это другой контейнер/другой сервис в этом
-  репозитории, не путать при отладке ``PYTHONPATH``. Впрочем, ``list``/
-  ``forget``/``reset-gallery`` этого скрипта ROS вообще не трогают
-  (см. ниже) — ``/ws/install`` важен ТОЛЬКО для ``rebuild``, которому
-  нужен ``rob_box_perception.face_embedding`` (а тот, в свою очередь,
-  нужен только внутри контейнера, где есть Hailo).
+  репозитории, не путать при отладке ``PYTHONPATH``. ``list``/
+  ``forget``/``reset-gallery`` этого скрипта не трогают ROS-РАНТАЙМ
+  (``rclpy``/Hailo) — но САМ ПАКЕТ ``rob_box_perception`` в контейнере
+  всё равно лежит только в ``/ws/install`` и без ``source`` не виден
+  вообще, для ЛЮБОЙ подкоманды, включая ``list``. ``/ws/install``
+  дополнительно важен для ``rebuild``, которому нужен ещё и
+  ``rob_box_perception.face_embedding`` (Hailo).
 * том с данными внутри контейнера смонтирован как ``/data/faces``
   (``docker/vision/docker-compose.yaml``: ``./data/faces:/data/faces``
   относительно каталога ``docker/vision``) — то есть на хосте это
@@ -171,15 +194,61 @@ import numpy as np
 # приём"). НЕ импортируем ROS/cv2/Hailo здесь — face_store.py сам по себе
 # на них не завязан (см. его модульный docstring), значит и этот файл не
 # завязан транзитивно.
+#
+# ВАЖНО (issue #2775, живой прогон агента 22.09.2026): раньше здесь БЕЗУСЛОВНО
+# вычислялся ``_HERE.parents[2]`` как корень репозитория — предполагая, что
+# файл лежит РОВНО по пути ``<repo>/scripts/maintenance/face_store_admin.py``.
+# При доставке документированным ``docker cp .../tmp/face_store_admin.py``
+# (см. докстринг модуля выше) у файла в ``/tmp`` нет двух предков-каталогов —
+# ``parents[2]`` кидал ``IndexError`` ДО разбора argparse, то есть падение
+# происходило даже на ``--help``. Порядок исправлен на обратный: СНАЧАЛА
+# пробуем обычный импорт (внутри контейнера ``rob_box_perception`` уже виден
+# на ``PYTHONPATH`` после ``source /opt/ros/humble/setup.bash && source
+# /ws/install/setup.bash`` — sys.path вообще не нужен), и ТОЛЬКО если он не
+# сработал, пытаемся достроить путь от расположения этого файла — а если
+# посчитать этот путь невозможно (как для копии в ``/tmp`` — предков не
+# хватает), просто пропускаем эту попытку и даём обычному импорту поднять
+# честный ``ModuleNotFoundError`` вместо ``IndexError``.
 # ---------------------------------------------------------------------------
 _HERE = Path(__file__).resolve()
-_REPO_ROOT = _HERE.parents[2]
-_PKG_ROOT = _REPO_ROOT / 'src' / 'rob_box_perception'
+
+
+def _guess_pkg_root(here: Path, pkg_dir_name: str) -> Optional[Path]:
+    """``<repo_root>/src/<pkg_dir_name>``, ЕСЛИ ``here`` лежит по своему
+    обычному пути ``<repo>/scripts/maintenance/<файл>`` (то есть ровно на
+    два уровня вложенности под корнем репозитория). Возвращает ``None``
+    вместо ``IndexError``, если предков не хватает (файл доставлен отдельно
+    от чекаута, например ``docker cp`` в ``/tmp`` — см. большой комментарий
+    выше). Чистая функция (не трогает sys.path) — специально ради теста
+    без реального копирования файла на диск, см. test_face_store_admin.py.
+    """
+    parents = here.parents
+    if len(parents) <= 2:
+        return None
+    return parents[2] / 'src' / pkg_dir_name
 
 
 def _import_face_store():
-    if str(_PKG_ROOT) not in sys.path:
-        sys.path.insert(0, str(_PKG_ROOT))
+    """Импортировать ``rob_box_perception.face_store``.
+
+    Порядок вызовов — суть исправления issue #2775: обычный импорт ПЕРВЫЙ
+    (работает без вычисления вообще каких-либо путей, если пакет уже на
+    ``PYTHONPATH`` — ровно так внутри контейнера после ``source``, см.
+    докстринг модуля), достройка ``sys.path`` от расположения ЭТОГО файла —
+    только запасной вариант для локального запуска из чекаута репозитория
+    без ROS вообще (тесты, разработка). Если даже это невозможно (путь не
+    вычислить — см. ``_guess_pkg_root``) или пакета всё равно нет — наружу
+    уходит обычный ``ModuleNotFoundError`` от финального ``import_module``,
+    а не самодельная ошибка: сообщение Python'а само по себе достаточно
+    понятно ("No module named 'rob_box_perception'") и не маскирует причину.
+    """
+    try:
+        return importlib.import_module('rob_box_perception.face_store')
+    except ModuleNotFoundError:
+        pass
+    pkg_root = _guess_pkg_root(_HERE, 'rob_box_perception')
+    if pkg_root is not None and str(pkg_root) not in sys.path:
+        sys.path.insert(0, str(pkg_root))
     return importlib.import_module('rob_box_perception.face_store')
 
 
@@ -816,10 +885,15 @@ def build_parser() -> argparse.ArgumentParser:
         prog='face_store_admin',
         description=(
             'CLI поверх публичного API FaceStore для ремонта лицевых записей '
-            '/data/faces (issue #2775) — не rm -rf. См. docstring модуля для '
-            'важных оговорок (живая нода держит данные в памяти; путь внутри '
-            'контейнера vision-face vs на хосте Vision Pi; ROS там сидит в '
-            '/ws/install, не /ros2_ws/install).'
+            '/data/faces (issue #2775) — не rm -rf. Запуск ВНУТРИ контейнера '
+            'ОБЯЗАН включать оба source, иначе "ModuleNotFoundError: No '
+            "module named 'rob_box_perception'\" (пакет живёт в /ws/install, "
+            'не /ros2_ws/install, и без source его нет на PYTHONPATH ни для '
+            'одной подкоманды): docker exec vision-face bash -c "source '
+            '/opt/ros/humble/setup.bash && source /ws/install/setup.bash && '
+            'python3 /tmp/face_store_admin.py list". См. docstring модуля '
+            'для остальных оговорок (живая нода держит данные в памяти; '
+            'путь внутри контейнера vision-face vs на хосте Vision Pi).'
         ),
     )
     parser.add_argument(

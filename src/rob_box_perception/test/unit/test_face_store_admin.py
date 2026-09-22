@@ -39,6 +39,7 @@ Pi — см. отчёт агента в PR (issue #2775: «на живом ро�
 
 from __future__ import annotations
 
+import importlib.machinery
 import importlib.util
 import json
 import sys
@@ -563,3 +564,86 @@ class TestConfirm:
 
         monkeypatch.setattr('builtins.input', _raise_eof)
         assert admin._confirm('irrelevant', assume_yes=False) is False
+
+
+# ============================================================================
+# 7. Доставка docker cp в /tmp — регрессия issue #2775 (живой прогон агента
+#    22.09.2026): _HERE.parents[2] считался БЕЗУСЛОВНО при импорте модуля,
+#    и файл, скопированный в /tmp (как и предписывает докстринг модуля),
+#    падал IndexError ещё до разбора argparse — "list"/"--help", что угодно.
+#    Исправление: _guess_pkg_root() возвращает None вместо IndexError, когда
+#    предков не хватает, и _import_face_store() сначала пробует ОБЫЧНЫЙ
+#    импорт (работает, если пакет уже на PYTHONPATH — ровно так после
+#    `source /opt/ros/humble/setup.bash && source /ws/install/setup.bash`
+#    внутри контейнера) и достраивает sys.path только запасным вариантом.
+# ============================================================================
+
+class TestShallowLocationImport:
+    """Гоняет РЕАЛЬНЫЙ face_store_admin.py под ПОДДЕЛЬНЫМ мелким __file__:
+    лоадер читает настоящие байты с диска (``_SCRIPT_PATH``), а атрибут
+    ``__file__`` исполняемого модуля переопределён на путь без нужной
+    глубины вложенности ДО ``exec_module`` — то есть воспроизводит форму
+    пути из живого инцидента (``/tmp/face_store_admin.py``, один
+    предок-каталог) без реального копирования файла в корень диска
+    (небезопасно/непортируемо для тестового набора на CI)."""
+
+    @staticmethod
+    def _exec_with_fake_file(module_name: str, fake_file: str):
+        loader = importlib.machinery.SourceFileLoader(module_name, str(_SCRIPT_PATH))
+        spec = importlib.util.spec_from_loader(module_name, loader, origin=fake_file)
+        mod = importlib.util.module_from_spec(spec)
+        mod.__file__ = fake_file  # переопределяем ДО exec — именно на него
+        # смотрит `_HERE = Path(__file__).resolve()` внутри face_store_admin.py.
+        sys.modules[module_name] = mod
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_guess_pkg_root_returns_none_for_shallow_path_not_indexerror(self):
+        # Ровно форма пути из живого инцидента: один каталог-предок,
+        # второго ("parents[2]") не существует — раньше здесь падал IndexError.
+        shallow = Path('/tmp/face_store_admin.py')
+        assert admin._guess_pkg_root(shallow, 'rob_box_perception') is None
+
+    def test_guess_pkg_root_resolves_normal_checkout_layout(self):
+        # Обычный чекаут: <repo>/scripts/maintenance/face_store_admin.py —
+        # parents[2] существует и указывает на корень репозитория.
+        assert admin._guess_pkg_root(_SCRIPT_PATH, 'rob_box_perception') == (
+            _REPO_ROOT / 'src' / 'rob_box_perception'
+        )
+
+    def test_shallow_copy_reaches_arg_parsing_when_package_already_importable(self):
+        """Симулирует контейнер с source'нутым ROS-окружением:
+        rob_box_perception.face_store УЖЕ на sys.path (этот тестовый модуль
+        сам его так импортировал в шапке файла, см. `import
+        rob_box_perception.face_store as fs` выше) — face_store_admin.py,
+        "скопированный" в мелкий путь, обязан не просто не упасть, а дойти
+        до build_parser()/parse_args(), используя ОБЫЧНЫЙ импорт первым
+        (sys.path вообще не трогается в этой ветке)."""
+        assert 'rob_box_perception.face_store' in sys.modules, (
+            'предусловие теста: модуль уже должен быть импортирован шапкой '
+            'этого test-файла — иначе тест ничего не проверяет'
+        )
+        fake_file = str(Path(_SCRIPT_PATH.anchor) / 'face_store_admin.py')
+        module_name = 'face_store_admin_shallow_probe'
+        try:
+            shallow_mod = self._exec_with_fake_file(module_name, fake_file)
+            parsed = shallow_mod.build_parser().parse_args(['list'])
+            assert parsed.command == 'list'
+            assert shallow_mod.DEFAULT_ROOT == admin.DEFAULT_ROOT
+        finally:
+            sys.modules.pop(module_name, None)
+
+    def test_import_face_store_skips_path_guessing_when_plain_import_succeeds(self, monkeypatch):
+        """Порядок — суть исправления: обычный импорт пробуется ПЕРВЫМ, и
+        если он сработал (пакет уже виден, как в контейнере после source),
+        _guess_pkg_root вообще не должен вызываться."""
+        called = {'n': 0}
+
+        def _boom(here, pkg_dir_name):
+            called['n'] += 1
+            raise AssertionError('_guess_pkg_root не должен зваться, когда обычный импорт уже сработал')
+
+        monkeypatch.setattr(admin, '_guess_pkg_root', _boom)
+        result = admin._import_face_store()
+        assert result is sys.modules['rob_box_perception.face_store']
+        assert called['n'] == 0
