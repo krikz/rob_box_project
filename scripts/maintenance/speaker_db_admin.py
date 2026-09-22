@@ -297,8 +297,20 @@ def _load_speaker_embeddings_module():
     """``rob_box_voice.utils.speaker_embeddings`` — SpeakerDatabase и
     пороги. Нужен для ``list``/``merge``/``delete``."""
     try:
-        import rob_box_voice.utils.speaker_embeddings as se  # type: ignore
-        return se
+        # importlib.import_module, а НЕ `import a.b.c as se`: второе
+        # связывает имя с АТРИБУТОМ родительского пакета
+        # (`rob_box_voice.utils.speaker_embeddings`), а не с
+        # `sys.modules['rob_box_voice.utils.speaker_embeddings']`. Обычно
+        # это один объект, но под colcon symlink-install тот же файл
+        # достижим двумя путями, и если кто-то в процессе уже подменил
+        # запись в sys.modules (например, фолбеком
+        # `_load_module_from_file` ниже), атрибут родителя останется
+        # указывать на ПЕРВУЮ копию. Тогда в процессе живут два модуля с
+        # одинаковым __name__ и раздельным состоянием уровня модуля.
+        # import_module отдаёт ровно объект из sys.modules, то есть
+        # канонический, — тем же способом это сделано в соседнем
+        # scripts/maintenance/face_store_admin.py.
+        return importlib.import_module('rob_box_voice.utils.speaker_embeddings')
     except ImportError:
         pass
     if 'rob_box_voice.utils.speaker_embeddings' in sys.modules:
@@ -331,8 +343,10 @@ def _load_identity_seam_module():
     ``speaker_embeddings``/``legacy_voice_facts``) — нужен ТОЛЬКО для
     ``merge`` (единственная подкоманда, которой нужны факты/harness)."""
     try:
-        import rob_box_voice.utils.identity_seam as ism  # type: ignore
-        return ism
+        # importlib.import_module по той же причине, что в
+        # _load_speaker_embeddings_module выше — канонический объект из
+        # sys.modules, а не атрибут родительского пакета.
+        return importlib.import_module('rob_box_voice.utils.identity_seam')
     except ImportError:
         pass
     if 'rob_box_voice.utils.identity_seam' in sys.modules:

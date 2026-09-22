@@ -591,6 +591,55 @@ class TestShallowLocationImport:
         finally:
             sys.modules.pop(module_name, None)
 
+    def test_loader_returns_sys_modules_object_not_parent_attribute(self, monkeypatch):
+        """Загрузчик обязан отдавать объект из ``sys.modules``, а не атрибут
+        родительского пакета (CI-провал PR #2790).
+
+        `import a.b.c as x` связывает `x` с АТРИБУТОМ родителя (`a.b.c`),
+        а не с `sys.modules['a.b.c']`. Обычно это один объект, поэтому на
+        dev-машине всё проходило. Но под colcon symlink-install тот же
+        файл достижим двумя путями, и если запись в sys.modules успели
+        подменить второй копией, атрибут родителя остаётся указывать на
+        первую — в процессе живут два модуля с одинаковым ``__name__`` и
+        раздельным состоянием уровня модуля. В логе CI это выглядело
+        абсурдно: ``assert X is X`` падал при визуально одинаковых repr,
+        потому что repr модуля копии не различает.
+
+        Иерархия здесь СИНТЕТИЧЕСКАЯ целиком: три записи в sys.modules
+        (`rob_box_voice`, `.utils`, `.utils.speaker_embeddings`), поэтому
+        ни настоящий пакет, ни pyaudio, ни colcon не нужны и тест идёт в
+        любом окружении, а не только в CI. `importlib.import_module`
+        находит имя уже в sys.modules и до файловой системы не доходит.
+        """
+        import types
+
+        name = 'rob_box_voice.utils.speaker_embeddings'
+        pkg = types.ModuleType('rob_box_voice')
+        pkg.__path__ = []
+        utils = types.ModuleType('rob_box_voice.utils')
+        utils.__path__ = []
+        canonical = types.ModuleType(name)
+        stale = types.ModuleType(name)      # «первая копия» из другого пути
+
+        monkeypatch.setitem(sys.modules, 'rob_box_voice', pkg)
+        monkeypatch.setitem(sys.modules, 'rob_box_voice.utils', utils)
+        monkeypatch.setitem(sys.modules, name, canonical)
+        pkg.utils = utils
+        utils.speaker_embeddings = stale    # атрибут родителя разошёлся
+
+        # Страховка от ложного прохождения: копии обязаны быть
+        # неразличимы по repr — иначе тест не воспроизводит CI-ситуацию.
+        assert repr(canonical) == repr(stale)
+
+        result = admin._load_speaker_embeddings_module()
+
+        assert result is canonical, (
+            'загрузчик вернул атрибут родительского пакета вместо записи '
+            'в sys.modules — значит вернулся `import a.b.c as x` вместо '
+            'importlib.import_module (PR #2790)'
+        )
+        assert result is not stale
+
     def test_load_speaker_embeddings_module_skips_path_guessing_when_plain_import_succeeds(self, monkeypatch):
         called = {'n': 0}
 
