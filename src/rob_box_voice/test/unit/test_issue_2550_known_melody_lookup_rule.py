@@ -221,16 +221,20 @@ def test_known_melody_rule_handles_empty_lookup_result() -> None:
     )
 
 
-def test_known_melody_rule_references_issue_2550() -> None:
-    """Правило ссылается на issue #2550 для трассировки.
+def test_known_melody_rule_is_traceable_to_issue_2550() -> None:
+    """Правило нельзя снести как «осиротевшее» — его держит этот тест.
 
-    Будущие cleanup-агенты увидят «orphaned rule» и удалят. Issue-ссылка
-    делает правило принадлежностью bug-report, а не «находкой».
+    Раньше трассировка жила строкой «issue #2550» внутри самого промпта,
+    но промпт уезжает в LLM на каждом запросе, и номер карточки для неё —
+    шум (#2765). Привязка к bug-report теперь в имени этого файла и в
+    имени теста: удаление правила из composer.txt роняет
+    test_issue_2550_known_melody_lookup_rule, и cleanup-агент увидит,
+    какая карточка за него отвечает.
     """
     block = _known_melody_rule_block_in_composer()
-    assert "#2550" in block, (
-        "RULE #KNOWN-MELODY must reference issue #2550 — otherwise future "
-        "cleanup agents may treat it as orphaned and remove it"
+    assert "lookup_melody" in block, (
+        "RULE #KNOWN-MELODY must keep lookup_melody as the mandatory first "
+        "step — this test is the anchor that ties it to issue #2550"
     )
 
 

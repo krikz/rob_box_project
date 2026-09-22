@@ -115,7 +115,10 @@ class TestPromptMusicStateRule:
     def test_rule_music_state_block_present(self, prompt_text: str):
         """В prompt есть RULE #MUSIC-STATE — заголовок виден LLM при старте."""
         assert "RULE #MUSIC-STATE" in prompt_text
-        assert "n313_silence_restored" in prompt_text
+        # Имя e2e-гейта из промпта убрано (#2765): идентификаторы прогонов,
+        # шагов и карточек уезжают в LLM на каждом запросе и ничего ей не
+        # говорят. Правило проверяем по тексту, а не по ссылке на гейт.
+        assert "get_music_state" in prompt_text
 
     def test_rule_lists_state_trigger_phrases(self, prompt_text: str):
         """Ключевые триггер-слова из acceptance перечислены в rule."""

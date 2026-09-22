@@ -110,12 +110,18 @@ def test_response_format_rule_explains_clarify_question_alternative() -> None:
 
 
 def test_response_format_rule_warns_about_live_bug() -> None:
-    """Правило должно ссылаться на issue #2175 — оператор/ревьюер
-    должны видеть в коде, ЗАЧЕМ оно появилось."""
+    """Правило объясняет САМ баг, а не номер карточки.
+
+    Номер #2175 из промпта убран (#2765): он уезжает в LLM на каждом
+    запросе и ничего ей не говорит. Зачем правило появилось, теперь видно
+    из имени этого файла, а в промпте остаётся описание самого отказа —
+    модель регургитирует системные шаблоны в ответ юзеру.
+    """
     block = _response_format_rule_block()
-    assert "#2175" in block or "2175" in block, (
-        "RULE #RESPONSE-FORMAT must reference issue #2175 so a future "
-        "cleanup knows the root cause and won't drop the rule again"
+    assert "regurgitate" in block.lower(), (
+        "RULE #RESPONSE-FORMAT must describe the actual failure (model "
+        "regurgitating system templates) — that is what teaches the model, "
+        "while issue traceability lives in this test file's name"
     )
 
 
