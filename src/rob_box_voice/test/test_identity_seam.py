@@ -141,3 +141,105 @@ def test_voice_seam_merge_moves_embeddings_and_facts(tmp_path):
 
     db.close()
     _run(mem.teardown())
+
+
+def test_voice_seam_merge_also_moves_legacy_voice_facts(tmp_path):
+    """Issue #2751: merge() без ``legacy_facts_db_path`` теряет живые факты.
+
+    ``harness_voice.db`` (переданный конструктору ``mem``) — не единственный
+    писатель фактов на проде: MCP-инструмент ``memory_save`` пишет в
+    ``voice_facts`` отдельного файла (``voice_memory.db``), про который шов
+    ничего не знает, если ему не передать ``legacy_facts_db_path``. Тест
+    воспроизводит ровно замер issue #2751 в миниатюре: 1 факт в
+    harness-БД (переживший из старого сценария) + 2 живых факта в
+    voice_facts — оба писателя должны быть перенесены одним ``merge()``.
+    """
+    import sqlite3
+
+    speakers_db = str(tmp_path / "speakers.db")
+    memory_db = str(tmp_path / "memory.db")  # harness_voice.db
+    voice_memory_db = str(tmp_path / "voice_memory.db")  # легаси MCP-писатель
+
+    db = SpeakerDatabase(speakers_db)
+    mem = SQLiteVoiceMemory(db_path=memory_db)
+    _run(mem.init())
+
+    # Легаси-БД: та же схема voice_facts, что core/voice_memory.py создаёт
+    # в проде (см. test_legacy_voice_facts.py — единственное поле нам
+    # важное здесь: speaker_id).
+    conn = sqlite3.connect(voice_memory_db)
+    conn.executescript(
+        """
+        CREATE TABLE voice_facts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            fact TEXT NOT NULL,
+            category TEXT NOT NULL DEFAULT 'general',
+            speaker_id TEXT,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL
+        );
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    seam = VoiceIdentitySeam(db, mem, legacy_facts_db_path=voice_memory_db)
+
+    src = seam.register(_random_embedding(11), "Саша")
+    dst = seam.register(_random_embedding(12), "Борис")
+    _run(seam.note_seen(src, now=100.0))  # 1 факт в harness_voice.db
+
+    conn = sqlite3.connect(voice_memory_db)
+    conn.execute(
+        "INSERT INTO voice_facts (fact, category, speaker_id, created_at, updated_at) "
+        "VALUES ('не ест лук', 'general', ?, 0, 0)",
+        (src.id,),
+    )
+    conn.execute(
+        "INSERT INTO voice_facts (fact, category, speaker_id, created_at, updated_at) "
+        "VALUES ('пьёт чай без сахара', 'general', ?, 0, 0)",
+        (src.id,),
+    )
+    conn.commit()
+    conn.close()
+
+    emb_moved, facts_moved = _run(seam.merge(src.id, dst.id))
+
+    assert emb_moved == 1
+    assert facts_moved == 3, (
+        "ожидали 1 (harness profile-факт) + 2 (voice_facts) = 3 — "
+        "живые факты не должны теряться при склейке (issue #2751)"
+    )
+
+    conn = sqlite3.connect(voice_memory_db)
+    rows = conn.execute("SELECT speaker_id FROM voice_facts").fetchall()
+    conn.close()
+    assert {r[0] for r in rows} == {dst.id}, (
+        "voice_facts должны принадлежать dst после merge — src оставил хвост"
+    )
+
+    db.close()
+    _run(mem.teardown())
+
+
+def test_voice_seam_merge_without_legacy_path_stays_backward_compatible(tmp_path):
+    """``legacy_facts_db_path=None`` (по умолчанию) — старое поведение,
+    без него не ходит: тест-акцептанс issue #2440 не должен ломаться."""
+    speakers_db = str(tmp_path / "speakers.db")
+    memory_db = str(tmp_path / "memory.db")
+
+    db = SpeakerDatabase(speakers_db)
+    mem = SQLiteVoiceMemory(db_path=memory_db)
+    _run(mem.init())
+    seam = VoiceIdentitySeam(db, mem)  # без legacy_facts_db_path
+
+    src = seam.register(_random_embedding(21), "Денчик")
+    dst = seam.register(_random_embedding(22), "Эйджик")
+    _run(seam.note_seen(src, now=100.0))
+
+    emb_moved, facts_moved = _run(seam.merge(src.id, dst.id))
+    assert emb_moved == 1
+    assert facts_moved == 1
+
+    db.close()
+    _run(mem.teardown())

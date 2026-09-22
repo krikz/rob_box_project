@@ -312,6 +312,52 @@ if [ -z "$TEXT" ] && [ -z "$SCENARIO_FILE" ]; then
     echo "E2E_FATAL: нужен --text или --scenario" >&2; exit 2
 fi
 
+# --- issue #2750: изоляция БД дикторов для акта «Знакомство» ---------------
+# Акт 2 ночного марафона (night_marathon_act2_acquaintance_*) по сценарию
+# регистрирует НАСТОЯЩИЕ голосовые профили ("Саша"/"Борис") в speakers.db.
+# Раньше чистую базу под это получали ssh-командой СНАРУЖИ кода перед каждым
+# прогоном (подтверждено владельцем в issue #2750): бэкап боевой
+# /data/speakers.db в .bak-<UTC>Z + DELETE FROM embeddings/speakers — и один
+# раз это стёрло профиль живого человека через 19 минут после регистрации.
+#
+# Замена — параметр узла speaker_id_node (e2e_mode, bool), НЕ топик: первая
+# версия этой правки заводила /voice/speaker/e2e_mode, но
+# scripts/lint/seam_without_consumer.py (ADR-0021) справедливо пометил его
+# новым швом без потребителя — паблишер живёт здесь, в bash, а Python-сканер
+# топиков видит только src/. ros2 param set — тот же приём, что уже
+# используется в этом файле/README для barge_in_policy у dialogue_node:
+# синхронный, с exit-кодом, без отдельного канала сообщений. Включение
+# ГАРАНТИРУЕТ пустую e2e-базу (узел сам стирает e2e_db_path на переходе
+# false→true — см. speaker_id_node.py:_apply_e2e_mode), боевая db_path не
+# открывается на запись, пока режим включён. deactivate — из trap EXIT: что
+# бы ни случилось со сценарием (PASS/FAIL/обрыв), робот обязан вернуться на
+# боевую БД для мастерской.
+is_acquaintance_scenario() {
+    case "$1" in
+        *night_marathon_act2_acquaintance*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+E2E_SPEAKER_DB_ACTIVATED=0
+activate_e2e_speaker_db() {
+    if ${ROBOT_SSH} "ros2 param set /speaker_id_node e2e_mode true" \
+            >/dev/null 2>&1; then
+        E2E_SPEAKER_DB_ACTIVATED=1
+        log "🧪 speaker_id_node: e2e_mode=true — боевая /data/speakers.db не тронута"
+    else
+        log "⚠️ не удалось включить e2e_mode для speaker_id_node — акт 2 рискует писать в боевую speakers.db!"
+    fi
+}
+deactivate_e2e_speaker_db() {
+    [ "$E2E_SPEAKER_DB_ACTIVATED" = "1" ] || return 0
+    if ${ROBOT_SSH} "ros2 param set /speaker_id_node e2e_mode false" \
+            >/dev/null 2>&1; then
+        log "🧪 speaker_id_node: e2e_mode=false — вернулись на боевую /data/speakers.db"
+    else
+        log "❌ ВНИМАНИЕ: не удалось вернуть speaker_id_node на боевую speakers.db — проверь вручную (ros2 param set /speaker_id_node e2e_mode false)"
+    fi
+}
+
 # --- helpers ----------------------------------------------------------------
 log() { echo ">>> $*"; }
 
@@ -2087,9 +2133,17 @@ start_recording
 # Keep it in the run artifact so e2e reports expose infrastructure health.
 observe_step "${SCENARIO_FILE:+scenario}${SCENARIO_FILE:-single}" > "$OUT_DIR/health_snapshot.json" || true
 
-# Гарантированная остановка записи при любом завершении (PASS/FAIL/ошибка).
-# stop_recording сам идемпотентен: повторный вызов с пустым REC_PID — noop.
-trap 'stop_recording' EXIT
+# Issue #2750 — акт «Знакомство» получает изолированную БД дикторов ДО
+# первого шага. Проверяем по имени файла сценария, а не по номеру акта:
+# манифест может переупорядочить акты, а имя файла — самый стабильный якорь.
+if [ -n "$SCENARIO_FILE" ] && is_acquaintance_scenario "$SCENARIO_FILE"; then
+    activate_e2e_speaker_db
+fi
+
+# Гарантированная остановка записи и возврат speaker_id_node на боевую БД
+# при любом завершении (PASS/FAIL/ошибка). Оба хелпера идемпотентны:
+# повторный вызов — noop (пустой REC_PID / E2E_SPEAKER_DB_ACTIVATED=0).
+trap 'deactivate_e2e_speaker_db; stop_recording' EXIT
 
 PASS=1
 if [ -n "$SCENARIO_FILE" ]; then

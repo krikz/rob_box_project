@@ -14,11 +14,13 @@
 
 from __future__ import annotations
 
-from typing import Any
+import asyncio
+from typing import Any, Optional
 
 from rob_box_harness.identity import Acquaintance, IdentitySeam
 from rob_box_harness.memory import MemoryStore, merge_speaker_facts
 
+from .legacy_voice_facts import merge_legacy_voice_facts
 from .speaker_embeddings import SpeakerDatabase
 
 
@@ -28,12 +30,27 @@ class VoiceIdentitySeam(IdentitySeam):
     :param speaker_db: ``SpeakerDatabase`` (``/data/speakers.db``) — слой
         биометрии. Используется «как есть», без изменения самого класса.
     :param memory: ``MemoryStore`` — памятный слой (профили/факты знакомых
-        под ``speaker_scope(<id>)``).
+        под ``speaker_scope(<id>)``). На роботе это ``harness_voice.db``.
+    :param legacy_facts_db_path: путь к ``voice_memory.db`` — второй, более
+        старый писатель фактов (MCP-инструмент ``memory_save``, таблица
+        ``voice_facts``). Issue #2751: пока обе БД живы (миграция #2000
+        не доведена до конца — см. ADR-0128), ``merge()`` без этого пути
+        переносил бы только факты из ``harness_voice.db`` и молча пропускал
+        бы живые факты из ``voice_facts``. ``None`` (по умолчанию)
+        отключает перенос — используется в тестах, которые не поднимают
+        вторую БД.
     """
 
-    def __init__(self, speaker_db: SpeakerDatabase, memory: MemoryStore) -> None:
+    def __init__(
+        self,
+        speaker_db: SpeakerDatabase,
+        memory: MemoryStore,
+        *,
+        legacy_facts_db_path: Optional[str] = None,
+    ) -> None:
         super().__init__(memory)
         self._db = speaker_db
+        self._legacy_facts_db_path = legacy_facts_db_path
 
     def resolve(self, signal: Any) -> Acquaintance | None:
         """Опознать голосовой сигнал → знакомый с биометрическим id."""
@@ -69,9 +86,25 @@ class VoiceIdentitySeam(IdentitySeam):
         по единому биометрическому ключу, поэтому ручной маппинг
         tag↔uuid (которого раньше не существовало) больше не нужен —
         дефект C из issue #2440 закрыт архитектурно.
+
+        ``facts_moved`` — сумма по ОБОИМ писателям фактов (issue #2751):
+        ``harness_voice.db`` (``self._memory``, через ``merge_speaker_facts``)
+        и, если задан ``legacy_facts_db_path``, ``voice_facts`` в
+        ``voice_memory.db`` (через ``merge_legacy_voice_facts``). Без
+        второго слагаемого склейка двух профилей одного человека переносила
+        бы только facts из harness-БД (в проде на 22.09.2026 — 10 старых
+        строк) и молча теряла бы живые факты MCP-инструментов (100 строк).
         """
         embeddings_moved = self._db.merge_speakers(src_id, dst_id)
         facts_moved = await merge_speaker_facts(self._memory, src_id, dst_id)
+        if self._legacy_facts_db_path:
+            legacy_moved = await asyncio.to_thread(
+                merge_legacy_voice_facts,
+                self._legacy_facts_db_path,
+                src_id,
+                dst_id,
+            )
+            facts_moved += legacy_moved
         return embeddings_moved, facts_moved
 
 
