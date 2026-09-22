@@ -217,6 +217,67 @@ class MusicGuard:
     # :meth:`DialogueNode._apply_music_guard`.
     # ------------------------------------------------------------------
 
+    def _user_music_already_satisfied(
+        self, user_input: str, tools_set: set
+    ) -> Optional[str]:
+        """Bug C — это вообще не просьба включить музыку, либо она закрыта?
+
+        Три исключения одного класса, каждое родилось из живого лога.
+        Возвращает ``reason``-тег для ``SKIP_NOT_APPLICABLE`` или ``None``,
+        если Bug C должен работать как обычно (ретрай/nudge).
+
+        Живёт отдельным методом, а не цепочкой ``if`` внутри
+        :meth:`evaluate`: cc_budget (ADR-0021 R1) держит ``evaluate`` на
+        baseline CC=17, и третье исключение уже не влезало. Декомпозиция
+        вместо бампа baseline — ровно то, чего требует R1.
+
+        Порядок веток значим: стоп-команда проверяется первой, чтобы
+        «выключи диджея» не утекло в ветку вопроса о состоянии.
+        """
+        # 🔴 FIX (live 06.08): stop-commands («хватит диджеить»,
+        # «выключи музыку») must NOT trigger a music retry — they ask
+        # to STOP music, not START it. Bug C previously mis-classified
+        # them as music requests and re-enabled music via the retry.
+        # Сюда доходят только стопы, которые LLM уже отработала тулом
+        # (безтуловые перехвачены веткой FORCE_STOP выше).
+        if is_music_stop_command(user_input):
+            self._log_debug(
+                "🎵 [issue 992 Bug C] stop-command — skipping music "
+                "guard entirely"
+            )
+            return "stop_command"
+
+        # 🔴 FIX (live 10:00): vocal requests («спой/пой/песня») — when
+        # the LLM did ANY tool (speak_text, etc.) it has honoured the
+        # request. Only nudge when the LLM did literally nothing.
+        if is_vocal_request(user_input) and tools_set:
+            self._log_debug(
+                "🎵 [issue 992 Bug C] vocal request, LLM replied "
+                f"(tools={sorted(tools_set)!r}) — no nudge needed"
+            )
+            return "vocal_satisfied"
+
+        # 🔴 FIX (e2e 35665111906, night-marathon акт 1, шаг
+        # n110_silence_baseline): ВОПРОС о состоянии («у тебя сейчас играет
+        # какая-нибудь музыка?») — не просьба включить. LLM правильно
+        # вызвала ``get_music_state`` и ответила «музыка не играет», а Bug C
+        # требовал ``execute_music_code`` — ровно тот тул, который шаг
+        # держит в ``must_not_call``. Ретрай уводил ход в трёхкратный цикл
+        # с CRITICAL-промптом, и харнесс не видел чистого акцепта.
+        #
+        # Read-only музыкальный тул ОТВЕЧАЕТ на такой вопрос, значит просьба
+        # удовлетворена. Без тулов nudge остаётся как был: иначе мы
+        # замаскируем настоящий случай «LLM вообще ничего не вызвала».
+        _state_answered = tools_set & MUSIC_STATE_QUERY_TOOLS
+        if _state_answered and is_music_state_query(user_input):
+            self._log_debug(
+                "🎵 [issue 992 Bug C] state query, LLM answered via "
+                f"{sorted(_state_answered)!r} — no nudge needed"
+            )
+            return "state_query_satisfied"
+
+        return None
+
     def evaluate(
         self,
         *,
@@ -421,55 +482,11 @@ class MusicGuard:
                 reason="not_music_request",
             )
 
-        # 🔴 FIX (live 06.08): stop-commands («хватит диджеить»,
-        # «выключи музыку») must NOT trigger a music retry — they ask
-        # to STOP music, not START it. Bug C previously mis-classified
-        # them as music requests and re-enabled music via the retry.
-        # Сюда доходят только стопы, которые LLM уже отработала тулом
-        # (безтуловые перехвачены веткой FORCE_STOP выше).
-        if is_music_stop_command(user_input):
-            self._log_debug(
-                "🎵 [issue 992 Bug C] stop-command — skipping music "
-                "guard entirely"
-            )
+        _skip_reason = self._user_music_already_satisfied(user_input, tools_set)
+        if _skip_reason is not None:
             return MusicGuardVerdict(
                 kind=MusicGuardVerdictKind.SKIP_NOT_APPLICABLE,
-                reason="stop_command",
-            )
-
-        # 🔴 FIX (live 10:00): vocal requests («спой/пой/песня») — when
-        # the LLM did ANY tool (speak_text, etc.) it has honoured the
-        # request. Only nudge when the LLM did literally nothing.
-        if is_vocal_request(user_input) and tools_set:
-            self._log_debug(
-                "🎵 [issue 992 Bug C] vocal request, LLM replied "
-                f"(tools={sorted(tools_set)!r}) — no nudge needed"
-            )
-            return MusicGuardVerdict(
-                kind=MusicGuardVerdictKind.SKIP_NOT_APPLICABLE,
-                reason="vocal_satisfied",
-            )
-
-        # 🔴 FIX (e2e 35665111906, night-marathon акт 1, шаг
-        # n110_silence_baseline): ВОПРОС о состоянии («у тебя сейчас играет
-        # какая-нибудь музыка?») — не просьба включить. LLM правильно
-        # вызвала ``get_music_state`` и ответила «музыка не играет», а Bug C
-        # требовал ``execute_music_code`` — ровно тот тул, который шаг
-        # держит в ``must_not_call``. Ретрай уводил ход в трёхкратный цикл
-        # с CRITICAL-промптом, и харнесс не видел чистого акцепта.
-        #
-        # Read-only музыкальный тул ОТВЕЧАЕТ на такой вопрос, значит просьба
-        # удовлетворена. Без тулов nudge остаётся как был: иначе мы
-        # замаскируем настоящий случай «LLM вообще ничего не вызвала».
-        _state_answered = tools_set & MUSIC_STATE_QUERY_TOOLS
-        if _state_answered and is_music_state_query(user_input):
-            self._log_debug(
-                "🎵 [issue 992 Bug C] state query, LLM answered via "
-                f"{sorted(_state_answered)!r} — no nudge needed"
-            )
-            return MusicGuardVerdict(
-                kind=MusicGuardVerdictKind.SKIP_NOT_APPLICABLE,
-                reason="state_query_satisfied",
+                reason=_skip_reason,
             )
 
         if self._user_retry_count < self._max_user_retries:
