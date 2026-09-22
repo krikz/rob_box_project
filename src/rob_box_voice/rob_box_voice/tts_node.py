@@ -2557,6 +2557,44 @@ class TTSNode(Node):
         source = payload.get("source", "unknown")
         self._apply_set_voice(param_name, display_name, provider, voice_id, source)
 
+    def _refuse_ssml_chunk(
+        self,
+        *,
+        speech_id: str,
+        chunk_data: dict,
+        dialogue_id,
+        error: str,
+        why: str,
+        ssml: str,
+    ) -> None:
+        """Отказаться синтезировать чанк и честно закрыть речь (issue #2760).
+
+        Общий хвост для проверок «это вообще не речь» в
+        :meth:`dialogue_callback`. Проверки смотрят на СЫРОЙ SSML: после
+        ``_extract_text_from_ssml`` теги исчезают и содержимое выглядит
+        обычным текстом — отличить его тогда уже не от чего.
+
+        ``/voice/tts/finished(success=False)`` обязателен: без него
+        вызывающий ждёт конца речи, которой не будет.
+        """
+        self.get_logger().warning(
+            f"🚫 {why}: speech_id={speech_id[:8]}, "
+            f"voice={chunk_data.get('voice') or 'default'}, "
+            f"ssml={ssml[:200]!r}"
+        )
+        _publish_finished = getattr(self, "_publish_tts_finished", None)
+        if _publish_finished is None:
+            return
+        _publish_finished(
+            speech_id,
+            success=False,
+            error=error,
+            batch_id=chunk_data.get("batch_id"),
+            batch_index=chunk_data.get("batch_index"),
+            batch_total=chunk_data.get("batch_total"),
+            dialogue_id=dialogue_id,
+        )
+
     def dialogue_callback(self, msg: String):
         """Обработка JSON chunks от ``/voice/tts/request`` — ЕДИНЫЙ вход синтезатора.
 
@@ -2621,48 +2659,37 @@ class TTSNode(Node):
             # На роботе 08.09 (14:52) юзер слышал «получатель ответа забыл
             # указать антропоморфные атрибуты» — Yandex→MiniMax fallback
             # озвучивал metaинструкцию.
-            if _is_system_template_regurgitated_ssml(ssml):
-                self.get_logger().warning(
-                    "🚫 [issue 2175] TTS refused — MiniMax regurgitated "
-                    f"system-template (raw SSML match): speech_id={speech_id[:8]}, "
-                    f"voice={chunk_data.get('voice') or 'default'}, "
-                    f"ssml={ssml!r}"
-                )
-                _publish_finished = getattr(self, "_publish_tts_finished", None)
-                if _publish_finished is not None:
-                    _publish_finished(
-                        speech_id,
-                        success=False,
-                        error="system_template_regurgitated",
-                        batch_id=chunk_data.get("batch_id"),
-                        batch_index=chunk_data.get("batch_index"),
-                        batch_total=chunk_data.get("batch_total"),
+            # Обе проверки — про вход, который НЕ речь. Таблица, а не две
+            # ветки подряд: третий такой случай добавляется строкой и не
+            # утяжеляет ``dialogue_callback`` (ADR-0021, cc_budget).
+            #
+            # * #2175 — regurgitates ``<system>...</system>``; на роботе
+            #   08.09 (14:52) юзер слышал «получатель ответа забыл указать
+            #   антропоморфные атрибуты» через Yandex→MiniMax fallback.
+            # * #2760 — разметка протокола tool-calls; прогон 35704637846,
+            #   прочитана вслух двумя чанками.
+            for _predicate, _error, _why in (
+                (
+                    _is_system_template_regurgitated_ssml,
+                    "system_template_regurgitated",
+                    "[issue 2175] MiniMax regurgitated system-template",
+                ),
+                (
+                    _is_tool_call_markup,
+                    "tool_call_markup",
+                    "[issue 2760] LLM написала вызов тула текстом",
+                ),
+            ):
+                if _predicate(ssml):
+                    self._refuse_ssml_chunk(
+                        speech_id=speech_id,
+                        chunk_data=chunk_data,
                         dialogue_id=dialogue_id,
+                        error=_error,
+                        why=_why,
+                        ssml=ssml,
                     )
-                return
-
-            # Issue #2760 — defense-in-depth: разметку вызова тулов не
-            # синтезируем никогда. На роботе (прогон 35704637846) она
-            # прошла весь тракт и была прочитана вслух.
-            if _is_tool_call_markup(ssml):
-                self.get_logger().warning(
-                    "🚫 [issue 2760] TTS refused — LLM написала вызов тула "
-                    f"текстом: speech_id={speech_id[:8]}, "
-                    f"voice={chunk_data.get('voice') or 'default'}, "
-                    f"ssml={ssml[:200]!r}"
-                )
-                _publish_finished = getattr(self, "_publish_tts_finished", None)
-                if _publish_finished is not None:
-                    _publish_finished(
-                        speech_id,
-                        success=False,
-                        error="tool_call_markup",
-                        batch_id=chunk_data.get("batch_id"),
-                        batch_index=chunk_data.get("batch_index"),
-                        batch_total=chunk_data.get("batch_total"),
-                        dialogue_id=dialogue_id,
-                    )
-                return
+                    return
 
             # Извлекаем текст из SSML
             text = self._extract_text_from_ssml(ssml)

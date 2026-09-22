@@ -6292,29 +6292,33 @@ class DialogueNode(Node):
                 f"speaking nothing (head={spoken[:120]!r})"
             )
             return
-        # Issue #2760 — модель написала вызов тула текстом
-        # (``<function_calls><invoke name="register_speaker">…``) при
-        # tools=[]. Стоит ПЕРВЫМ: разметка протокола не речь ни в каком
-        # смысле, и ни один следующий guard её не распознаёт — прогон
-        # 35704637846 показал, как она уходит в TTS двумя чанками.
-        if spoken and self._check_tool_call_markup_and_retry(
-            spoken=spoken,
-            user_input=raw_user_command or user_input,
-            tools_called=tools_called,
-            speak_text_real=speak_text_real,
+        # Два guard'а, которые обязаны отработать ДО babble/renardo/
+        # action-claim: их вход — не речь вообще, и остальные детекторы
+        # его не узнают (ищут глаголы или мета-обещания).
+        #
+        # * #2760 — модель написала вызов тула ТЕКСТОМ
+        #   (``<function_calls><invoke name="register_speaker">…``) при
+        #   tools=[]. Первым: прогон 35704637846 показал, как разметка
+        #   уходит в TTS двумя чанками. Штатно её разбирает цикл тулов
+        #   (``markup_recovery``), сюда она доезжает, только если имя
+        #   тула не опознано.
+        # * #2175 — MiniMax regurgitates ``<system>...</system>`` вместо
+        #   ответа; без ретрая Yandex→MiniMax fallback озвучивал шаблон.
+        #
+        # Список, а не две ветки подряд: порядок виден одной строкой, и
+        # третий такой guard не добавляет ветвления в и без того тяжёлый
+        # ``_handle_result`` (ADR-0021, cc_budget).
+        for _pre_speech_guard in (
+            self._check_tool_call_markup_and_retry,
+            self._check_system_template_regurgitate_and_retry,
         ):
-            return
-        # Issue #2175 — MiniMax-M3 regurgitates ``<system>...</system>``
-        # template вместо user-facing ответа. Один одноразовый CRITICAL-
-        # ретрай ДО babble/renardo/action-claim — чтобы regurgitates НЕ
-        # прошли в TTS (Yandex→MiniMax fallback озвучивал их на роботе).
-        if spoken and self._check_system_template_regurgitate_and_retry(
-            spoken=spoken,
-            user_input=raw_user_command or user_input,
-            tools_called=tools_called,
-            speak_text_real=speak_text_real,
-        ):
-            return
+            if _pre_speech_guard(
+                spoken=spoken,
+                user_input=raw_user_command or user_input,
+                tools_called=tools_called,
+                speak_text_real=speak_text_real,
+            ):
+                return
         # Issue #992 Bug D — metalanguage / babble detector. Fires ONE
         # synchronous retry with a CRITICAL prompt reminder when the
         # LLM replied with meta-talk instead of performing the request.

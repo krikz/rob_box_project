@@ -1146,45 +1146,16 @@ class AgentCore:
                 response = correction.next_response
                 continue
 
+            # Issue #2760 — MiniMax-M3 иногда отправляет решение не в канал
+            # function-calling, а текстом: ``<function_calls><invoke
+            # name="memory_save">…``. Тулы мы предложили, стрим разобрали
+            # штатно, finish_reason='stop' — это выбор модели, не наша
+            # ошибка. Намерение известно точно, поэтому восстанавливаем его
+            # здесь, а не платим за ретрай двумя ходами позже (разбор и
+            # границы дозволенного — в :mod:`.tool_loop.markup_recovery`).
+            response = _recover_written_tool_calls(response, openai_tools)
             if not response.tool_calls:
-                # Issue #2760 — MiniMax-M3 иногда отправляет решение не в
-                # канал function-calling, а текстом:
-                # ``<function_calls><invoke name="memory_save">…``. Тулы мы
-                # предложили, стрим разобрали штатно, finish_reason='stop' —
-                # это выбор модели, не наша ошибка (разбор в
-                # :mod:`.tool_loop.markup_recovery`).
-                #
-                # Намерение известно точно, поэтому восстанавливаем его, а не
-                # платим за ретрай. Прав это не расширяет: исполняются только
-                # тулы из ``openai_tools`` этого же запроса. Не разобралось —
-                # уходим дальше по общему пути (guard'ы на стороне voice не
-                # дадут тегам прозвучать).
-                recovered = parse_tool_call_markup(
-                    response.content, tools=openai_tools
-                )
-                if recovered:
-                    logging.getLogger(__name__).warning(
-                        "[issue 2760] модель написала вызов тула текстом "
-                        "(%s) — восстанавливаю намерение: %s",
-                        (response.content or "")[:80],
-                        [name for name, _ in recovered],
-                    )
-                    response = replace(
-                        response,
-                        # Текст был разметкой, а не речью: озвучивать его
-                        # нечего, и в историю он попасть не должен.
-                        content="",
-                        tool_calls=tuple(
-                            ToolCall(
-                                id=f"recovered_{idx}",
-                                name=name,
-                                arguments=args,
-                            )
-                            for idx, (name, args) in enumerate(recovered)
-                        ),
-                    )
-                else:
-                    break
+                break
 
             # Record unique tool names actually invoked, and count
             # speak_text occurrences (issue #992 — the raw count lets
@@ -2066,6 +2037,47 @@ def _suppressed_speak_text_result(call: ToolCall) -> ToolResult:
             "Верни 'done' сразу после execute_music_code."
         ),
         is_error=True,
+    )
+
+
+def _recover_written_tool_calls(
+    response: "LLMResponse", openai_tools: list[dict]
+) -> "LLMResponse":
+    """Issue #2760 — вернуть ответ с вызовами, которые модель НАПИСАЛА.
+
+    Живой прогон 35704637846 (акт 2, шаги n204/n206 — оба про сохранение
+    факта): MiniMax-M3 вернула ``content`` с разметкой протокола и пустым
+    ``tool_calls``. Тулы у MiniMax вызываются XML-ом штатно, и их
+    ``docs/tool_calling_guide.md`` прямо предлагает разбирать сырой вывод
+    самостоятельно — этим здесь и занимаемся.
+
+    Ответ с настоящими ``tool_calls`` возвращается КАК ЕСТЬ. Если
+    восстанавливать нечего — тоже как есть: вызывающий по-прежнему видит
+    пустой ``tool_calls`` и завершает цикл, а не звучащие теги ловят
+    guard'ы на стороне voice.
+
+    ``content`` у восстановленного ответа опустошается намеренно: это
+    была разметка, а не речь — озвучивать нечего, и в историю ей попадать
+    нельзя (в прогоне именно история воспроизводила баг дальше).
+    """
+    if response.tool_calls:
+        return response
+    recovered = parse_tool_call_markup(response.content, tools=openai_tools)
+    if not recovered:
+        return response
+    logging.getLogger(__name__).warning(
+        "[issue 2760] модель написала вызов тула текстом (%s) — "
+        "восстанавливаю намерение: %s",
+        (response.content or "")[:80],
+        [name for name, _ in recovered],
+    )
+    return replace(
+        response,
+        content="",
+        tool_calls=tuple(
+            ToolCall(id=f"recovered_{idx}", name=name, arguments=args)
+            for idx, (name, args) in enumerate(recovered)
+        ),
     )
 
 
