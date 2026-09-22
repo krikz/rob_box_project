@@ -213,6 +213,51 @@ def test_do_register_on_name_conflict_still_publishes_own_match(node):
 # ---------------------------------------------------------------------------
 
 
+def test_do_register_publishes_name_twin_in_ack(node):
+    """issue #2747 — середина цепочки: нода обязана пробросить повод наружу.
+
+    Концы цепочки проверены отдельно (БД находит тёзку —
+    ``test_issue_2747_name_twin.py``; диалог переспрашивает —
+    ``test_dialogue_node.py::TestIdentityClarification``). Без этого теста
+    середина оставалась бы непокрытой: если поле не доедет до ack, обе
+    половины останутся зелёными, а робот молча заведёт второго «Дэнчика» —
+    ровно то, что наблюдалось живьём 22.09.2026.
+    """
+    base = _embedding(900)
+    # Голос заметно НИЖЕ порога слияния, имя то же — это тёзка, а не
+    # обычное слияние. alpha=1.8 даёт cos ~= 1/sqrt(1+alpha^2) ~= 0.49:
+    # больший alpha — БОЛЬШЕ шума и МЕНЬШЕ косинус (см. _degraded выше),
+    # поэтому здесь он больше, чем 0.6 в тесте voice_conflict, а не меньше.
+    far = _degraded(base, alpha=1.8, noise_seed=901)
+
+    node._do_register("Дэнчик", base, speaker_id=None)
+    first = node._db.list_speakers()[0]["id"]
+    node._result_pub.messages.clear()
+
+    node._do_register("Дэнчик", far, speaker_id=None)
+
+    assert len(node._db.list_speakers()) == 2, (
+        "профиль заводится отдельный — данные целы (инвариант ADR-0127)"
+    )
+    ack = next(m for m in node._result_pub.messages if m.get("event") == "registered")
+    assert "name_twin" in ack, "повод переспросить обязан доехать до dialogue_node"
+    assert ack["name_twin"]["speaker_id"] == first
+    assert ack["name_twin"]["name"] == "Дэнчик"
+    assert isinstance(ack["name_twin"]["score"], float), (
+        "в поводе стоит число — оператор должен видеть, насколько близко "
+        "было решение"
+    )
+
+
+def test_do_register_plain_registration_has_no_twin_in_ack(node):
+    """Незнакомое имя — ack чистый, переспрашивать не о чем."""
+    node._do_register("Шифу", _embedding(902), speaker_id=None)
+
+    ack = next(m for m in node._result_pub.messages if m.get("event") == "registered")
+    assert "name_twin" not in ack
+    assert "voice_conflict" not in ack
+
+
 def test_do_register_rejects_audio_shorter_than_register_floor(node):
     emb = _embedding(800)
 
