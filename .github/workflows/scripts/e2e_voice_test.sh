@@ -1855,11 +1855,15 @@ summary = {
     },
     # Метрики качества: None означает «не посчиталось», и это видно, а не
     # тонет в тексте ошибки внутри отдельного артефакта.
+    # Имена ключей — ровно как в e2e_audio_metrics.py (rms_dbfs/peak_dbfs,
+    # НЕ rms_db). Разъехавшись, сводка показывает null при полностью живых
+    # метриках; поймано прогоном 35658231116 на билд-машине.
     "audio": {
         "error": audio.get("error"),
-        "rms_db": audio.get("rms_db"),
-        "peak_db": audio.get("peak_db"),
+        "rms_dbfs": audio.get("rms_dbfs"),
+        "peak_dbfs": audio.get("peak_dbfs"),
         "silence_ratio": audio.get("silence_ratio"),
+        "mic_working": audio.get("mic_working"),
     },
     "baseline": {
         "error": baseline.get("error"),
@@ -1881,9 +1885,9 @@ if st["failed_labels"]:
 if summary["audio"]["error"]:
     print(">>> E2E_SUMMARY audio metrics: %s" % summary["audio"]["error"])
 else:
-    print(">>> E2E_SUMMARY audio: rms_db=%s peak_db=%s silence_ratio=%s"
-          % (summary["audio"]["rms_db"], summary["audio"]["peak_db"],
-             summary["audio"]["silence_ratio"]))
+    print(">>> E2E_SUMMARY audio: rms=%s dBFS peak=%s dBFS silence=%s mic_working=%s"
+          % (summary["audio"]["rms_dbfs"], summary["audio"]["peak_dbfs"],
+             summary["audio"]["silence_ratio"], summary["audio"]["mic_working"]))
 PY
     log "ARTIFACTS: summary.json written"
 }

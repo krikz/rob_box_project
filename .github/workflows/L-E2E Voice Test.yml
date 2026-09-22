@@ -1130,8 +1130,10 @@ jobs:
           if audio.get("error"):
               print("| Звук | не посчитан: %s |" % audio["error"])
           else:
-              print("| Звук | RMS %s dB, peak %s dB, тишина %s |" % (
-                  audio.get("rms_db"), audio.get("peak_db"), audio.get("silence_ratio"),
+              print("| Звук | RMS %s dBFS, peak %s dBFS, тишина %s, микрофон %s |" % (
+                  audio.get("rms_dbfs"), audio.get("peak_dbfs"),
+                  audio.get("silence_ratio"),
+                  "ок" if audio.get("mic_working") else "подозрительно",
               ))
           if baseline.get("error"):
               print("| Сверка с golden | не посчитана: %s |" % baseline["error"])

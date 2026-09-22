@@ -213,15 +213,34 @@ class TestSummaryContent:
                 'printf \'%s\' \'{"pass": false, "reason": "no calls", '
                 '"missing_expected_calls": ["stop_music"], "forbidden_calls": []}\''
                 ' > "$OUT_DIR/acceptance.json"',
-                'printf \'%s\' \'{"rms_db": -21.5, "peak_db": -3.1, '
-                '"silence_ratio": 0.42}\' > "$OUT_DIR/audio_metrics.json"',
+                # Ключи — ровно те, что пишет e2e_audio_metrics.py
+                # (rms_dbfs/peak_dbfs). Первая версия сводки читала rms_db и
+                # показывала null при живых метриках — поймано прогоном на 249.
+                'printf \'%s\' \'{"rms_dbfs": -21.5, "peak_dbfs": -3.1, '
+                '"silence_ratio": 0.42, "mic_working": true}\''
+                ' > "$OUT_DIR/audio_metrics.json"',
                 'printf \'%s\' \'{"pass": true, "keyword_match_pct": 87.5}\''
                 ' > "$OUT_DIR/baseline_diff.json"',
             ],
         )
         assert data["gate1"]["missing_expected_calls"] == ["stop_music"]
-        assert data["audio"]["rms_db"] == -21.5
+        assert data["audio"]["rms_dbfs"] == -21.5
         assert data["baseline"]["keyword_match_pct"] == 87.5
+
+    def test_audio_keys_match_the_producer_script(self):
+        """Сводка обязана читать те же имена, что пишет e2e_audio_metrics.py.
+
+        Первая версия читала ``rms_db``, а скрипт пишет ``rms_dbfs`` — сводка
+        показывала null при полностью живых метриках. Тест сверяет две стороны
+        напрямую, а не по памяти.
+        """
+        producer = (
+            REPO_ROOT / ".github" / "workflows" / "scripts" / "e2e_audio_metrics.py"
+        ).read_text(encoding="utf-8")
+        consumer = E2E_SCRIPT.read_text(encoding="utf-8")
+        for key in ("rms_dbfs", "peak_dbfs", "silence_ratio", "mic_working"):
+            assert '"%s"' % key in producer, ("не пишется скриптом", key)
+            assert 'audio.get("%s")' % key in consumer, ("не читается сводкой", key)
 
     def test_missing_metrics_surface_as_error_not_silence(self):
         """«Не посчиталось» должно быть видно, а не выглядеть как ноль."""
@@ -233,7 +252,7 @@ class TestSummaryContent:
             ],
         )
         assert data["audio"]["error"] == "recording.wav not found"
-        assert data["audio"]["rms_db"] is None
+        assert data["audio"]["rms_dbfs"] is None
 
 
 # --- transcript.json --------------------------------------------------------
