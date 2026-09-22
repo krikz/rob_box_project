@@ -39,6 +39,9 @@ SpeakerDatabase = _se.SpeakerDatabase
 SpeakerMatch = _se.SpeakerMatch
 IDENTIFY_THRESHOLD = _se.IDENTIFY_THRESHOLD
 REGISTER_MATCH_THRESHOLD = _se.REGISTER_MATCH_THRESHOLD
+MIN_AUDIO_DURATION_SEC = _se.MIN_AUDIO_DURATION_SEC
+MIN_REGISTER_AUDIO_DURATION_SEC = _se.MIN_REGISTER_AUDIO_DURATION_SEC
+AudioTooShortError = _se.AudioTooShortError
 
 
 def _random_embedding(seed: int = 0, dim: int = 256) -> np.ndarray:
@@ -698,6 +701,113 @@ class TestEmbedAudio:
         monkeypatch.setattr(_se, "_resemblyzer_loaded", True)
         # 0.1s < MIN_AUDIO_DURATION_SEC (0.3)
         assert db.embed_audio(b"\x00\x00" * 1600, sample_rate=16000) is None
+
+
+class TestRegisterAudioDurationGate:
+    """Issue #2769 — эталон профиля не должен строиться на реплике короче
+    ``MIN_REGISTER_AUDIO_DURATION_SEC`` (3.0с), при этом ``identify()``
+    остаётся мягким (``MIN_AUDIO_DURATION_SEC`` = 0.3с — только пол
+    ``embed_audio()``, не гейт качества).
+
+    Acceptance issue #2769:
+      * короткая реплика на ``register()``/``register_or_merge()`` —
+        отказ (``AudioTooShortError``), профиль НЕ создан;
+      * та же короткая реплика на ``identify()`` — работает как раньше
+        (порог у ``identify()`` не про длительность вообще, а про
+        cosine similarity уже готового эмбеддинга).
+    """
+
+    def test_register_rejects_audio_shorter_than_register_floor(self, db):
+        with pytest.raises(_se.AudioTooShortError, match="too short"):
+            db.register("Денис", _random_embedding(1), duration_sec=0.3)
+        assert db.list_speakers() == []
+
+    def test_register_accepts_audio_at_register_floor(self, db):
+        # Граница — MIN_REGISTER_AUDIO_DURATION_SEC ровно — ДОЛЖНА проходить
+        # (гейт строго "<", не "<=").
+        sid = db.register(
+            "Денис", _random_embedding(2), duration_sec=MIN_REGISTER_AUDIO_DURATION_SEC
+        )
+        assert sid
+        assert db.list_speakers()[0]["embeddings"] == 1
+
+    def test_register_without_duration_is_not_gated(self, db):
+        """Обратная совместимость: вызывающий код, который не знает
+        длительность (тесты/миграции/старый код), НЕ должен внезапно
+        начать падать — гейт активируется только явной передачей
+        ``duration_sec``."""
+        sid = db.register("Денис", _random_embedding(3))
+        assert sid
+        assert db.list_speakers()[0]["embeddings"] == 1
+
+    def test_audio_too_short_error_carries_duration_info(self, db):
+        try:
+            db.register("Денис", _random_embedding(4), duration_sec=1.2)
+        except _se.AudioTooShortError as exc:
+            assert exc.duration_sec == pytest.approx(1.2)
+            assert exc.min_required_sec == pytest.approx(MIN_REGISTER_AUDIO_DURATION_SEC)
+        else:
+            pytest.fail("AudioTooShortError не был поднят")
+
+    def test_register_or_merge_rejects_short_audio_new_profile(self, db):
+        """Короткая реплика без похожего голоса в базе — тоже отказ
+        (проверка идёт ДО поиска похожих, см. комментарий в коде)."""
+        with pytest.raises(_se.AudioTooShortError):
+            db.register_or_merge("Денис", _random_embedding(10), duration_sec=1.0)
+        assert db.list_speakers() == []
+
+    def test_register_or_merge_rejects_short_audio_even_when_voice_matches(self, db):
+        """Короткая реплика ПОХОЖЕГО (даже совпадающего) голоса тоже не
+        должна дописаться в галерею — issue #2769 п.2 не делает исключения
+        для merge-пути: плохой эмбеддинг портит пул независимо от того,
+        новый это профиль или существующий."""
+        base = _random_embedding(20)
+        sid, _ = db.register_or_merge("Денис", base)
+        before = db.list_speakers()[0]["embeddings"]
+
+        with pytest.raises(_se.AudioTooShortError):
+            db.register_or_merge("Денис", base, duration_sec=2.9)
+
+        after = db.list_speakers()[0]["embeddings"]
+        assert after == before, "короткая реплика не должна дописаться в галерею"
+
+    def test_register_or_merge_rejects_short_audio_with_explicit_speaker_id(self, db):
+        """Явный speaker_id (growth-session append из ноды, rename-поток)
+        тоже подчиняется гейту, если вызывающий код передал duration_sec —
+        ``append_reference_embedding`` сознательно НЕ передаёт его (issue
+        #2769 п.2 ограничивает жёсткий гейт явной регистрацией через
+        register_speaker), но это тест самого register_or_merge()."""
+        sid = db.register("Саша", _random_embedding(30))
+        with pytest.raises(_se.AudioTooShortError):
+            db.register_or_merge(
+                "Саша", _random_embedding(31), speaker_id=sid, duration_sec=0.5
+            )
+        assert db.list_speakers()[0]["embeddings"] == 1
+
+    def test_identify_unaffected_by_register_duration_floor(self, db):
+        """Ключевой acceptance-кейс: identify() ничего не знает о
+        MIN_REGISTER_AUDIO_DURATION_SEC — у него нет параметра
+        ``duration_sec`` вообще, короткая реплика (в терминах породившего
+        её аудио) продолжает опознаваться, как только эмбеддинг посчитан
+        (низкий порог живёт в embed_audio(), не здесь)."""
+        base = _random_embedding(40)
+        db.register("Саша", base)  # эталон — обычная (не короткая) регистрация
+
+        # "Короткая" query-реплика для identify() — это просто эмбеддинг,
+        # identify() не спрашивает, из скольких секунд аудио он получен.
+        match = db.identify(base)
+        assert match is not None
+        assert match.name == "Саша"
+
+    def test_append_reference_embedding_not_gated_by_default(self, db):
+        """Growth-session append (issue #2747) не передаёт duration_sec —
+        поведение роста галереи не меняется этой правкой (см. docstring
+        append_reference_embedding, issue #2769 п.2 ограничивает жёсткий
+        гейт созданием/дозаписью через явный register_speaker)."""
+        base = _random_embedding(50)
+        sid = db.register("Саша", base)
+        assert db.append_reference_embedding(sid, "Саша", _random_embedding(51)) is True
+        assert db.gallery_size(sid) == 2
 
 
 if __name__ == "__main__":

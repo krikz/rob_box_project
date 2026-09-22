@@ -32,6 +32,20 @@ ADR-0127 (night-marathon 22.09.2026, run 35667281570): слияние при
 остаётся у прежнего профиля. Регистрация больше никогда не переименовывает
 чужой профиль и (ADR-0097 / issue #2469) не стирает его эпитет, теги и
 ``created_at``.
+
+Issue #2769: у ``identify()`` и у ``register()``/``register_or_merge()``
+ТЕПЕРЬ РАЗНЫЕ пороги длительности речи. ``MIN_AUDIO_DURATION_SEC`` (0.3с) —
+общий низкий пол в ``embed_audio()``, ниже него эмбеддинг просто не
+считается (identify() сознательно остаётся мягким — лучше слабый матч, чем
+никакого). ``MIN_REGISTER_AUDIO_DURATION_SEC`` (3.0с, целевое 5.0с) —
+отдельный, более строгий гейт ТОЛЬКО для создания/дозаписи эталона:
+``register()``/``register_or_merge()`` бросают :class:`AudioTooShortError`,
+если передан ``duration_sec`` короче него — эталон профиля не должен
+строиться на реплике, для которой сам resemblyzer (README: 5-30с/профиль) и
+внешние замеры (CEUR Vol-4164, arXiv 1810.10884/2002.06033) не гарантируют
+надёжности. См. evidence/duration-vs-score-2026-09-22/ — измерение на
+логах робота, подтверждающее чувствительность score к длительности на этом
+самом пайплайне.
 """
 
 from __future__ import annotations
@@ -103,7 +117,36 @@ MIN_SPEAKER_NAME_LEN: int = 2
 # проходит только 38 % same-voice повторов, а это и есть основной путь
 # появления дублей из бага W5-4.
 REGISTER_MATCH_THRESHOLD: float = 0.75
-MIN_AUDIO_DURATION_SEC: float = 0.3  # minimum speech length for reliable embedding
+# Issue #2769 — НИЗКИЙ пол для embed_audio() вообще (identify() и любой
+# другой потребитель эмбеддинга). НЕ обещает надёжности — просто минимум,
+# ниже которого preprocess_wav/embed_utterance на очень коротком клипе
+# либо падает, либо возвращает вырожденный вектор. Для identify() низкий
+# порог — сознательный выбор (issue #2769 п.2 / карточка): лучше слабый
+# матч, чем никакого, а решение «доверять ли score» всё равно принимает
+# IDENTIFY_THRESHOLD выше. Раньше комментарий здесь гласил «for reliable
+# embedding» — это было принятие желаемого за действительное: см.
+# MIN_REGISTER_AUDIO_DURATION_SEC ниже и evidence/duration-vs-score-2026-09-22/
+# — 0.3с НИКОГДА не было надёжным порогом, просто никто не проверял.
+MIN_AUDIO_DURATION_SEC: float = 0.3
+# Issue #2769 — ОТДЕЛЬНЫЙ, более строгий пол ТОЛЬКО для создания/дозаписи
+# эталона (register() / register_or_merge()). Обоснование:
+#   * README resemblyzer: профиль стоит строить «from a few seconds of
+#     speech (5s - 30s)»;
+#   * CEUR Vol-4164 (оценка resemblyzer на коротких записях): надёжная
+#     аутентификация — от 2.63с, клипы 1-1.5с «less dependable»;
+#   * arXiv 1810.10884 / 2002.06033: EER растёт в 3-4 раза при укорочении
+#     тестовой реплики с ~20/3.6с до ~2/2с.
+#   * evidence/duration-vs-score-2026-09-22/ — замер на живых логах робота
+#     (тот же микрофон/пайплайн, диапазон 4.3-10.7с, n=13): pearson
+#     r(duration, best_score)=0.88; ОДИН И ТОТ ЖЕ профиль давал score
+#     0.92-0.95 на репликах ~9-10с и 0.57-0.67 на репликах ~4.3-4.6с —
+#     прямое (хоть и не покрывающее диапазон <3с из-за потери исторических
+#     логов при пересоздании контейнера, см. README там же) подтверждение
+#     чувствительности score к длительности на этом самом пайплайне.
+# 3.0с — жёсткий гейт (AudioTooShortError), 5.0с — целевое (не гейтится,
+# просто то, что советует README resemblyzer как нижнюю границу диапазона).
+MIN_REGISTER_AUDIO_DURATION_SEC: float = 3.0
+TARGET_REGISTER_AUDIO_DURATION_SEC: float = 5.0
 SAMPLE_RATE: int = 16000            # resemblyzer expects 16 kHz mono float32
 
 # ── Растущая галерея (issue #2747) — БЕЗ адаптивного порога ─────────────────
@@ -281,6 +324,33 @@ def _same_speaker_name(existing: object, incoming: object) -> bool:
     if not left or not right:
         return False
     return left.casefold() == right.casefold()
+
+
+class AudioTooShortError(ValueError):
+    """Issue #2769 — реплика короче ``MIN_REGISTER_AUDIO_DURATION_SEC``.
+
+    Честный отказ вместо тихой записи мусорного эталона: ``register()`` /
+    ``register_or_merge()`` бросают это исключение ДО любой записи в БД
+    (ни строки в ``speakers``, ни в ``embeddings``). Отдельный от обычного
+    ``ValueError`` невалидного имени (``_validate_speaker_name``) тип —
+    вызывающий код (``speaker_id_node._do_register``) должен ответить
+    ПО-РАЗНОМУ: на мусорное имя нет смысла переспрашивать голосом (имя
+    просто плохое), а на короткую реплику — есть (попросить сказать ещё
+    пару слов и повторить попытку).
+
+    ``duration_sec`` / ``min_required_sec`` — для формирования
+    машиночитаемого ack (``{"error": "too_short", ...}``, по аналогии с
+    ``{"error": "noise_name"}`` в ``dialogue.RegisterSpeakerTool``).
+    """
+
+    def __init__(self, duration_sec: float, min_required_sec: float) -> None:
+        self.duration_sec = duration_sec
+        self.min_required_sec = min_required_sec
+        super().__init__(
+            f"speaker_embeddings.register: audio too short for a reliable "
+            f"anchor: {duration_sec:.2f}s < {min_required_sec:.1f}s required "
+            f"(issue #2769, see evidence/duration-vs-score-2026-09-22/)"
+        )
 
 
 class RegisterOutcome(tuple):
@@ -550,7 +620,13 @@ class SpeakerDatabase:
         self.register(name, embedding, speaker_id=speaker_id)
         return True
 
-    def register(self, name: str, embedding: np.ndarray, speaker_id: Optional[str] = None) -> str:
+    def register(
+        self,
+        name: str,
+        embedding: np.ndarray,
+        speaker_id: Optional[str] = None,
+        duration_sec: Optional[float] = None,
+    ) -> str:
         """Create a new speaker (or add another embedding to existing speaker_id).
 
         ⚠️ Issue W5-4: эта функция ВСЕГДА создаёт новый профиль, если
@@ -566,6 +642,18 @@ class SpeakerDatabase:
         fallback'а: вызывающий код (тест, миграция, ноутбук) сам решает,
         что значит «спросить у пользователя» — функция лишь гарантирует,
         что в БД не попадёт ``name='Зовут'``.
+
+        Issue #2769 — ``duration_sec`` (опционально) — длительность речи,
+        породившей ``embedding``. Если передан и короче
+        ``MIN_REGISTER_AUDIO_DURATION_SEC``, функция бросает
+        :class:`AudioTooShortError` ДО любой записи в БД (второй рубеж,
+        аналогичный ``_validate_speaker_name`` — «второй рубеж» на случай,
+        если кто-то обошёл более ранний гейт). ``None`` (по умолчанию) —
+        гейт не применяется: вызывающий код либо не знает длительность
+        (тесты/миграции синтетических эмбеддингов), либо сознательно её не
+        проверяет (``append_reference_embedding`` — рост уже существующей
+        галереи, не создание нового эталона, issue #2769 п.2 ограничивает
+        гейт именно созданием/дозаписью через ``register_speaker``).
         """
         clean_name = _validate_speaker_name(name)
         if not clean_name:
@@ -575,6 +663,8 @@ class SpeakerDatabase:
                 f"{MIN_SPEAKER_NAME_LEN} chars; see _INVALID_SPEAKER_NAMES, "
                 f"issue #2348 / #1101)"
             )
+        if duration_sec is not None and duration_sec < MIN_REGISTER_AUDIO_DURATION_SEC:
+            raise AudioTooShortError(duration_sec, MIN_REGISTER_AUDIO_DURATION_SEC)
         now = time.time()
         if speaker_id is None:
             speaker_id = str(uuid.uuid4())
@@ -629,7 +719,11 @@ class SpeakerDatabase:
         return speaker_id
 
     def register_or_merge(
-        self, name: str, embedding: np.ndarray, speaker_id: Optional[str] = None
+        self,
+        name: str,
+        embedding: np.ndarray,
+        speaker_id: Optional[str] = None,
+        duration_sec: Optional[float] = None,
     ) -> "RegisterOutcome":
         """Зарегистрировать эмбеддинг, избегая создания дубля (issue W5-4).
 
@@ -661,10 +755,26 @@ class SpeakerDatabase:
         ``conflict_speaker_id`` / ``conflict_score`` — чтобы вызывающий
         код (speaker_id_node) мог сказать оператору, ЧТО именно похоже и
         как склеить вручную, если это всё-таки один человек.
+
+        Issue #2769 — ``duration_sec`` пробрасывается в КАЖДЫЙ внутренний
+        вызов ``register()`` ниже (явный id / merge / конфликт / новый
+        профиль) — во всех этих ветках эмбеддинг становится (частью)
+        эталона профиля, поэтому гейт единый. Короткая реплика бросает
+        :class:`AudioTooShortError` до первого обращения к БД: явная
+        проверка здесь же (в дополнение к проверке внутри ``register()``)
+        экономит бесполезный ``identify()`` по кандидатам на слияние —
+        если реплика заведомо отбракуется, незачем искать, с кем её
+        мог бы слить.
         """
+        if duration_sec is not None and duration_sec < MIN_REGISTER_AUDIO_DURATION_SEC:
+            raise AudioTooShortError(duration_sec, MIN_REGISTER_AUDIO_DURATION_SEC)
+
         if speaker_id is not None:
             return RegisterOutcome(
-                self.register(name, embedding, speaker_id=speaker_id), False
+                self.register(
+                    name, embedding, speaker_id=speaker_id, duration_sec=duration_sec
+                ),
+                False,
             )
 
         match = self.identify(embedding, threshold=REGISTER_MATCH_THRESHOLD)
@@ -679,7 +789,13 @@ class SpeakerDatabase:
             # регистра/пробелов, и профиль не должен «дёргаться» между
             # «Саша» и «саша» на каждой реплике.
             return RegisterOutcome(
-                self.register(match.name, embedding, speaker_id=match.speaker_id), True
+                self.register(
+                    match.name,
+                    embedding,
+                    speaker_id=match.speaker_id,
+                    duration_sec=duration_sec,
+                ),
+                True,
             )
 
         if match is not None:
@@ -697,7 +813,9 @@ class SpeakerDatabase:
                 f"(ADR-0127). Если это один человек — склеить вручную: "
                 f"merge_speakers(src=<новый>, dst={match.speaker_id})"
             )
-            new_id = self.register(name, embedding, speaker_id=None)
+            new_id = self.register(
+                name, embedding, speaker_id=None, duration_sec=duration_sec
+            )
             return RegisterOutcome(
                 new_id,
                 False,
@@ -706,7 +824,9 @@ class SpeakerDatabase:
                 conflict_score=match.confidence,
             )
 
-        new_id = self.register(name, embedding, speaker_id=None)
+        new_id = self.register(
+            name, embedding, speaker_id=None, duration_sec=duration_sec
+        )
         return RegisterOutcome(new_id, False)
 
     def merge_speakers(self, src_id: str, dst_id: str) -> int:

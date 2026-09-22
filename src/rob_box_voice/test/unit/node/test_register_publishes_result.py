@@ -111,13 +111,18 @@ def node(tmp_path, monkeypatch):
     monkeypatch.setattr(se_mod, "IDENTIFY_THRESHOLD", 0.72)
     monkeypatch.setattr(se_mod, "REGISTER_MATCH_THRESHOLD", 0.75)
     monkeypatch.setattr(se_mod, "GALLERY_WARMUP_SIZE", 5)
+    # Issue #2769 — фиксируем явно, чтобы тест не зависел от того, что
+    # значение по умолчанию когда-нибудь изменится.
+    monkeypatch.setattr(se_mod, "MIN_REGISTER_AUDIO_DURATION_SEC", 3.0)
 
     instance = object.__new__(sid_node.SpeakerIdNode)
     instance._db = SpeakerDatabase(str(tmp_path / "speakers.db"))
     instance._speech_log = {}
     instance._speech_log_lock = threading.Lock()
     instance._sample_rate = 16000
-    instance._recent_embeddings: Deque[Tuple[float, np.ndarray]] = collections.deque(maxlen=20)
+    instance._recent_embeddings: Deque[Tuple[float, np.ndarray, float]] = collections.deque(
+        maxlen=20
+    )
     instance._MAX_EMBED_AGE_SEC = 30.0
     instance._pending_register_name: Optional[str] = None
     instance._pending_register_lock = threading.Lock()
@@ -199,6 +204,57 @@ def test_do_register_on_name_conflict_still_publishes_own_match(node):
     assert match_msgs[0]["name"] == "Борис"
     ack = next(m for m in node._result_pub.messages if m.get("event") == "registered")
     assert "voice_conflict" in ack
+
+
+# ---------------------------------------------------------------------------
+# 1b. issue #2769 — _do_register отклоняет реплику короче
+#     MIN_REGISTER_AUDIO_DURATION_SEC: профиль не создаётся, вместо
+#     обычного ack публикуется event="register_error".
+# ---------------------------------------------------------------------------
+
+
+def test_do_register_rejects_audio_shorter_than_register_floor(node):
+    emb = _embedding(800)
+
+    result = node._do_register("Шифу", emb, speaker_id=None, duration_sec=1.0)
+
+    assert result is False, "_do_register должен сообщить о неудаче вызывающему коду"
+    assert node._db.list_speakers() == [], "короткая реплика не должна создать профиль"
+    assert node._growth_session is None, "growth-сессия не должна открыться на отказе"
+
+    error_acks = [m for m in node._result_pub.messages if m.get("event") == "register_error"]
+    assert len(error_acks) == 1
+    ack = error_acks[0]
+    assert ack["error"] == "too_short"
+    assert ack["name"] == "Шифу"
+    assert ack["duration_s"] == pytest.approx(1.0)
+    assert ack["min_required_s"] == pytest.approx(3.0)
+
+    # Никакого is_known=true — эталон не был создан, self-match невозможен.
+    assert [m for m in node._result_pub.messages if m.get("is_known") is True] == []
+
+
+def test_do_register_accepts_audio_at_or_above_register_floor(node):
+    """Регрессия: обычный (долгий) путь не должен был сломаться правкой."""
+    emb = _embedding(801)
+
+    result = node._do_register("Шифу", emb, speaker_id=None, duration_sec=5.0)
+
+    assert result is True
+    assert len(node._db.list_speakers()) == 1
+    assert node._growth_session is not None
+
+
+def test_do_register_without_duration_is_not_gated(node):
+    """Вызовы без duration_sec (например, из _on_register_request, когда
+    в буфере почему-то не оказалось значения) сохраняют старое поведение —
+    не начинают внезапно отказывать."""
+    emb = _embedding(802)
+
+    result = node._do_register("Шифу", emb, speaker_id=None)
+
+    assert result is True
+    assert len(node._db.list_speakers()) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -326,7 +382,11 @@ def test_pending_name_registration_publishes_exactly_one_known_result(node):
     node._db.embed_audio = MagicMock(return_value=emb)
     node._pending_register_name = "Эйджик"
 
-    node._process_utterance(b"\x00\x00" * 1000)
+    # Issue #2769 — pending_name идёт через _do_register(duration_sec=...),
+    # буфер должен быть >= MIN_REGISTER_AUDIO_DURATION_SEC (3.0s), иначе
+    # регистрация отклонится (см. test_pending_name_registration_rejected_
+    # when_audio_too_short ниже). 100000 bytes / 16000 Hz / 2 bytes = 3.125s.
+    node._process_utterance(b"\x00\x00" * 50000)
 
     match_msgs = [m for m in node._result_pub.messages if m.get("is_known") is True]
     assert len(match_msgs) == 1, (
@@ -336,6 +396,28 @@ def test_pending_name_registration_publishes_exactly_one_known_result(node):
     assert match_msgs[0]["source"] == "register"
     assert match_msgs[0]["name"] == "Эйджик"
     # pending сброшен, чтобы следующая реплика не перерегистрировалась.
+    assert node._pending_register_name is None
+
+
+def test_pending_name_registration_rejected_when_audio_too_short(node):
+    """Issue #2769 — end-to-end путь ``_process_utterance`` (не только
+    ``_do_register`` напрямую): реплика короче 3.0с в pending_name-ветке
+    не создаёт профиль и не публикует is_known=true."""
+    emb = _embedding(41)
+    node._db.embed_audio = MagicMock(return_value=emb)
+    node._pending_register_name = "Эйджик"
+
+    # 2000 bytes / 16000 Hz / 2 bytes = 0.0625s — заведомо короче порога.
+    node._process_utterance(b"\x00\x00" * 1000)
+
+    assert node._db.list_speakers() == [], "короткая реплика не должна создать профиль"
+    assert [m for m in node._result_pub.messages if m.get("is_known") is True] == []
+    error_acks = [m for m in node._result_pub.messages if m.get("event") == "register_error"]
+    assert len(error_acks) == 1
+    assert error_acks[0]["error"] == "too_short"
+    assert error_acks[0]["name"] == "Эйджик"
+    # pending сброшен ДАЖЕ на отказе — иначе следующая обычная реплика
+    # (без вызова register_speaker) тоже попыталась бы зарегистрироваться.
     assert node._pending_register_name is None
 
 

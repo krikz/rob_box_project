@@ -2080,6 +2080,30 @@ class DialogueNode(Node):
                 f"{data.get('name')!r} id={str(data.get('speaker_id', ''))[:8]}"
             )
             return
+        # Issue #2769 — speaker_id_node отклонил регистрацию: реплика короче
+        # MIN_REGISTER_AUDIO_DURATION_SEC, эталон не создан (см.
+        # speaker_id_node._do_register / speaker_embeddings.AudioTooShortError).
+        # Честный отказ вместо тихого мусора в /data/speakers.db — робот сам
+        # просит повторить фразу, а не ждёт, пока LLM додумается переспросить
+        # по обрывку ack, который она никогда не видит (register_speaker —
+        # fire-and-forget публикация в топик, а не синхронный tool-result).
+        if data.get("event") == "register_error" and data.get("error") == "too_short":
+            name = data.get("name")
+            self.get_logger().warning(
+                f"⚠️ [issue #2769] Регистрация '{name}' отклонена — реплика "
+                f"{data.get('duration_s')}с короче требуемых "
+                f"{data.get('min_required_s')}с"
+            )
+            try:
+                self._speak_direct(
+                    "Не расслышала — скажи, пожалуйста, ещё пару слов, "
+                    "чтобы я запомнила твой голос."
+                )
+            except Exception as exc:  # noqa: BLE001
+                self.get_logger().warning(
+                    f"⚠️ [issue #2769] Не удалось озвучить просьбу повторить: {exc}"
+                )
+            return
         with self._speaker_lock:
             self._current_speaker = data
 
