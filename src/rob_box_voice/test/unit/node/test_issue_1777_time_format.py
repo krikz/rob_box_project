@@ -123,9 +123,21 @@ class TestPromptTimeFormatRule:
         return prompt_path.read_text(encoding="utf-8")
 
     def test_rule_time_format_block_present(self, prompt_text: str):
-        """В §1 есть RULE #TIME-FORMAT — заголовок виден LLM при старте."""
+        """В §1 есть RULE #TIME-FORMAT — заголовок виден LLM при старте.
+
+        Раньше здесь же проверялось, что в промпте стоит строка «issue
+        #1777». Номер карточки модели ничего не объясняет, а место в
+        контексте занимает и рискует всплыть в реплике робота (#2765),
+        поэтому из промпта он убран. Якорем трассировки стало ТРЕБОВАНИЕ
+        правила, а не его учётный номер: читать `formatted_time`
+        дословно — это и есть суть #1777, и если оно пропадёт из
+        промпта, тест покраснеет ровно там, где нужно.
+        """
         assert "RULE #TIME-FORMAT" in prompt_text
-        assert "issue #1777" in prompt_text
+        assert "formatted_time" in prompt_text, (
+            "RULE #TIME-FORMAT must keep the demand to read `formatted_time` "
+            "verbatim — this is the anchor that ties it to issue #1777"
+        )
 
     def test_rule_mentions_get_current_time(self, prompt_text: str):
         """Tool указан явно — без него LLM не знает, что вызывать."""

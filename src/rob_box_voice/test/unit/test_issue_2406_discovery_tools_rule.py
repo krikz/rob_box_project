@@ -137,22 +137,20 @@ def test_discovery_rule_bans_verbal_only_answers() -> None:
     )
 
 
-def test_discovery_rule_references_issue_2406_run_numbers() -> None:
-    """Правило ссылается на issue #2406 и конкретные run-номера для трассировки.
+def test_discovery_rule_is_traceable_to_issue_2406() -> None:
+    """Правило нельзя снести как «избыточное» — его держит этот тест.
 
-    Это помогает будущим ревьюерам / cleaning-агентам связать правило с
-    исходным bug-report и не удалить его «как избыточное».
+    Раньше в промпте стояли «issue #2406» и номера трёх упавших прогонов
+    (363/364/365) плюс commit sha. Всё это уезжало в LLM на каждом запросе
+    и не помогало ей ничем (#2765). Номера прогонов живут в карточке,
+    связь правила с bug-report — в имени этого файла, а в промпте остаётся
+    сам запрет: verbal-only ответ на discovery-вопрос.
     """
     block = _discovery_rule_block()
-    assert "#2406" in block, (
-        "RULE #DISCOVERY-TOOLS must reference issue #2406 — otherwise "
-        "future cleanup agents may treat it as orphaned"
+    assert "BANNED" in block, (
+        "RULE #DISCOVERY-TOOLS must keep the explicit ban on a verbal-only "
+        "answer — this test is the anchor that ties it to issue #2406"
     )
-    for run in ("363", "364", "365"):
-        assert run in block, (
-            f"RULE #DISCOVERY-TOOLS must reference run {run} — these are "
-            f"the 3 fail-runs that motivated issue #2406"
-        )
 
 
 def test_discovery_rule_placed_after_lang_rule() -> None:

@@ -129,8 +129,16 @@ class TestPromptRegisterRule:
             "RULE #REGISTER должен явно ссылаться на n201/n204 "
             "(иначе при ревью будет непонятно, зачем этот RULE)"
         )
-        # Связь с issue #2406 — для traceability.
-        assert "#2406" in block or "2406" in block
+        # Связь с issue #2406 — для traceability. Раньше здесь искался сам
+        # номер карточки, но из промпта он убран (#2765): модели он ничего
+        # не говорит, а утечь в реплику может. Якорем стал ЗАПРЕТ, ради
+        # которого правило писалось, — не отвечать приветствием по одному
+        # лишь тегу, который может быть stale.
+        assert "stale" in block, (
+            "RULE #REGISTER must keep the explicit warning that the "
+            "<name> tag may be stale — this is the anchor that ties it "
+            "to issue #2406"
+        )
 
     def test_rule_lists_intro_trigger_phrases(self, prompt_text: str):
         """Ключевые триггер-слова из acceptance перечислены в rule."""
