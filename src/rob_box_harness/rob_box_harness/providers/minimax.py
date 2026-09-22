@@ -136,6 +136,23 @@ MINIMAX_API_KEY_ENV: str = "MINIMAX_API_KEY"
 #: ~11с на 3 попытках × 3 SDK-ретрая (инцидент 10.08.2026).
 CONSECUTIVE_429_LIMIT: int = 3
 
+#: Таймаут на ПОЛУЧЕНИЕ ПЕРВОГО БАЙТА / ПЕРВОГО ЧАНКА от провайдера
+#: (issue #2718). Зачем отдельный от общего request-timeout:
+#: ``httpx.Timeout(read=20.0, write=10.0)`` ограничивает весь стрим
+#: (свойство read действует на чтение между событиями, а не до первого
+#: байта HTTP-ответа). При мёртвом MiniMax (Token Plan исчерпан, API
+#: просто молча висит) робот ждёт ~30с три попытки подряд — суммарно
+#: ~90с до честного 429 и переключения на deepseek. Это слишком
+#: долго: первая реплика «извините, подождите» нужна за ≤5-10с, иначе
+#: оператор решает, что робот завис.
+#:
+#: 10 с — компромисс: достаточно для обычного холодного старта
+#: upstream SDK / TLS handshake на первой реплике дня (3-7 с в наших
+#: логах), но слишком мало чтобы провайдер, который реально генерит
+#: ответ (TTFT ~3-5 с для наших моделей), мог «успеть» — если за 10 с
+#: ни одного чанка нет, провайдер с высокой вероятностью висит.
+DEFAULT_FIRST_CHUNK_TIMEOUT_S: float = 10.0
+
 
 
 # ---------------------------------------------------------------------------
@@ -178,6 +195,13 @@ class HarnessMiniMaxProvider(LLMProvider):  # type: ignore[misc]
     retry:
         :class:`RetryPolicy` for transient failures. Pass
         ``RetryPolicy(max_attempts=1)`` to disable retries.
+    first_chunk_timeout_s:
+        Maximum wait for the FIRST byte of a non-streaming response /
+        the FIRST chunk of a streaming response (issue #2718). When
+        exceeded, the call raises :class:`TimeoutError` immediately
+        so the health-aware fallback chain can switch provider
+        without burning the full ``timeout`` budget. ``None`` (default)
+        uses :data:`DEFAULT_FIRST_CHUNK_TIMEOUT_S` (10 s).
     client:
         Optional pre-built ``AsyncOpenAI`` client. Useful for tests
         that need to inject a mock transport.
@@ -197,6 +221,7 @@ class HarnessMiniMaxProvider(LLMProvider):  # type: ignore[misc]
         base_url: str = DEFAULT_BASE_URL,
         timeout: float = 30.0,
         retry: RetryPolicy | None = None,
+        first_chunk_timeout_s: float | None = DEFAULT_FIRST_CHUNK_TIMEOUT_S,
         client: AsyncOpenAI | None = None,
         thinking: Mapping[str, str] | None = DEFAULT_THINKING_POLICY,
     ) -> None:
@@ -229,6 +254,12 @@ class HarnessMiniMaxProvider(LLMProvider):  # type: ignore[misc]
         # этот turn (по аналогии с TTS-цепочкой minimax→yandex→silero
         # из #1083). Сбрасывается на успешном ответе.
         self._consecutive_429s: int = 0
+        # 🔴 FIX (issue #2718): таймаут до первого байта/чанка. Когда
+        # провайдер висит (Token Plan исчерпан, upstream молчит) —
+        # upstream httpx-таймаут тратится целиком, и пользователь ждёт
+        # ~30с × N попыток. Первый-чанк-таймаут даёт быстрый выход в
+        # fallback-цепочку БЕЗ полного request-таймаута.
+        self._first_chunk_timeout_s: float | None = first_chunk_timeout_s
         # Track a close flag so ``aclose`` is idempotent. The inner
         # provider closes its own client; we just memoize here.
         self._closed: bool = False
@@ -322,6 +353,50 @@ class HarnessMiniMaxProvider(LLMProvider):  # type: ignore[misc]
             self._inner.complete, messages, tools=tools, settings=settings
         )
 
+    async def _wrap_first_chunk(
+        self, awaitable: Any, *, op: str
+    ) -> Any:
+        """Race the FIRST byte/chunk against ``first_chunk_timeout_s``.
+
+        Issue #2718: ``httpx.Timeout(read=20.0)`` — это таймаут между
+        чтениями, он НЕ срабатывает когда upstream молча висит без
+        единого байта. На мёртвом MiniMax робот ждёт ~30с × N попыток,
+        и пользователь видит «зависло». ``asyncio.wait_for`` здесь
+        ограничивает именно ожидание первого байта, после чего мы
+        бросаем :class:`TimeoutError` и идём в fallback.
+
+        ``op`` — метка для лога (``complete`` / ``stream.peek``), чтобы
+        можно было отличить «не дождались тела» от «стрим висит».
+        """
+        if self._first_chunk_timeout_s is None:
+            return await awaitable
+        try:
+            return await asyncio.wait_for(
+                awaitable, timeout=self._first_chunk_timeout_s
+            )
+        except asyncio.TimeoutError as exc:
+            _log.warning(
+                "minimax: %s: no first byte within %.1fs — считаем провайдера "
+                "мёртвым и передаём в fallback-цепочку",
+                op,
+                self._first_chunk_timeout_s,
+            )
+            # Та же метрика, что в _handle_failure / _note_429:
+            # [llm_fallback_metric] — RcutilsLogger-friendly single-string.
+            _log.info(
+                f"[llm_fallback_metric] provider=minimax "
+                f"reason=first_chunk_timeout op={op} "
+                f"timeout_s={self._first_chunk_timeout_s:.0f} action=fallback"
+            )
+            # Raise as our domain TimeoutError so the health-aware
+            # fallback chain classifies this as a transient failure
+            # (TTL escalation from issue #2718 then kicks in).
+            raise TimeoutError(
+                f"minimax: {op} first-byte timeout "
+                f"after {self._first_chunk_timeout_s:.1f}s",
+                provider="minimax",
+            ) from exc
+
     async def stream(
         self,
         messages: Iterable[LLMMessage],
@@ -368,7 +443,15 @@ class HarnessMiniMaxProvider(LLMProvider):  # type: ignore[misc]
                 # Validate the initial request by peeking at the first
                 # chunk. We do this by attempting ``__anext__`` and
                 # then re-inserting the chunk via a queue.
-                first_chunk = await inner_stream.__anext__()
+                #
+                # Issue #2718: race that peek against
+                # ``first_chunk_timeout_s`` — a hung provider would
+                # otherwise burn the full per-request ``timeout``
+                # (default 30 s) on the first attempt, multiplied by
+                # ``max_attempts`` retries.
+                first_chunk = await self._wrap_first_chunk(
+                    inner_stream.__anext__(), op="stream.peek"
+                )
                 queue: asyncio.Queue[LLMChunk | BaseException | None] = asyncio.Queue()
 
                 async def _replay() -> AsyncIterator[LLMChunk]:
@@ -528,7 +611,14 @@ class HarnessMiniMaxProvider(LLMProvider):  # type: ignore[misc]
         while attempts < self._retry.max_attempts:
             attempts += 1
             try:
-                response = await fn(messages, tools=tools, settings=settings)
+                # Issue #2718: race the FIRST byte against
+                # ``first_chunk_timeout_s`` so a hung provider does not
+                # burn the full ``timeout`` budget (default 30 s) on a
+                # single attempt. ``_wrap_first_chunk`` re-raises
+                # ``TimeoutError`` (our domain error) on deadline.
+                response = await self._wrap_first_chunk(
+                    fn(messages, tools=tools, settings=settings), op="complete"
+                )
                 self._reset_429_counter()
                 return response
             except (RateLimitError, TimeoutError) as exc:
@@ -618,6 +708,7 @@ def build_minimax_provider(
     *,
     env: Mapping[str, str] | None = None,
     retry: RetryPolicy | None = None,
+    first_chunk_timeout_s: float | None = None,
     client: AsyncOpenAI | None = None,
 ) -> MiniMaxProvider:
     """Build a :class:`MiniMaxProvider` from a :class:`LLMConfig`.
@@ -687,6 +778,13 @@ def build_minimax_provider(
         base_url=DEFAULT_BASE_URL,
         timeout=timeout,
         retry=retry,
+        # Issue #2718: ``None`` from caller → constructor default
+        # (``DEFAULT_FIRST_CHUNK_TIMEOUT_S`` = 10 s); pass-through
+        # otherwise. We forward the raw value rather than substituting
+        # the default ourselves so a future caller can disable the
+        # timeout entirely by passing ``None`` (== "no first-chunk
+        # guard") — same intent as the constructor signature.
+        first_chunk_timeout_s=first_chunk_timeout_s,
         client=client,
         # 🔴 FIX (live 06.08): вернули DEFAULT_THINKING_POLICY — вчера (b5879b79)
         # thinking={"type":"disabled"} падал TypeError, т.к. шёл в kwargs →
