@@ -76,14 +76,33 @@ def _install_rclpy_stub() -> None:
     rclpy_cb = types.ModuleType("rclpy.callback_groups")
     rclpy_cb.ReentrantCallbackGroup = type("ReentrantCallbackGroup", (), {})
 
+    # Issue #2781 — mcp_server.py now imports ``SetParametersResult`` for
+    # its own voice_memory e2e_mode parameters callback (mirrors
+    # speaker_id_node's e2e_mode). Needs the same stub treatment as the
+    # rest of this ROS2-free shim.
+    class _FakeSetParametersResult:
+        def __init__(self, successful: bool = True, reason: str = ""):
+            self.successful = successful
+            self.reason = reason
+
+    rcl_interfaces = types.ModuleType("rcl_interfaces")
+    rcl_interfaces_msg = types.ModuleType("rcl_interfaces.msg")
+    rcl_interfaces_msg.SetParametersResult = _FakeSetParametersResult
+    rcl_interfaces.msg = rcl_interfaces_msg
+
     std_msgs = types.ModuleType("std_msgs")
     std_msgs_msg = types.ModuleType("std_msgs.msg")
     std_msgs_msg.String = type("String", (), {})
     std_msgs.msg = std_msgs_msg
 
-    for mod in [rclpy, rclpy_node, rclpy_qos, rclpy_cb, std_msgs, std_msgs_msg]:
+    for mod in [
+        rclpy, rclpy_node, rclpy_qos, rclpy_cb,
+        rcl_interfaces, rcl_interfaces_msg,
+        std_msgs, std_msgs_msg,
+    ]:
         sys.modules[mod.__name__] = mod
     sys.modules["std_msgs.msg"] = std_msgs_msg
+    sys.modules["rcl_interfaces.msg"] = rcl_interfaces_msg
 
 
 def _load_mcp_server_module():

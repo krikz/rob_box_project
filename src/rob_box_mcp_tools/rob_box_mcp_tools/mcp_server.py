@@ -12,17 +12,34 @@ ROS 2 интерфейс:
 - Публикует: /mcp/tools (String) - JSON список доступных инструментов
 - Подписывается на: /mcp/execute (String) - JSON запросы на выполнение
 - Публикует: /mcp/result (String) - JSON результаты выполнения
+
+Runtime-параметр (``ros2 param set``, НЕ топик — issue #2781, по образцу
+speaker_id_node.e2e_mode из issue #2750/#2763):
+    e2e_mode (bool) — переключить активную БД долгосрочной памяти
+        (voice_facts, ``memory_save``) боевая ↔ e2e_db_path. Владелец —
+        только E2E-харнесс (``ros2 param set /mcp_server e2e_mode
+        true|false``). См. ``parameters_callback`` / ``_apply_e2e_mode``.
+        Реализовано только для legacy VoiceMemory (``/data/voice_memory.db``,
+        активный бэкенд в проде на 22.09.2026) — при
+        ``MCP_USE_HARNESS_VOICE_MEMORY=1`` переключение отказывает
+        (fail-fast, см. docstring ``_apply_e2e_mode``).
+
+Parameters:
+    e2e_db_path (str) — изолированная БД памяти для E2E-режима, переключается
+        параметром e2e_mode выше [/data/voice_memory.e2e.db]
 """
 
 import rclpy
 from rclpy.node import Node
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
+from rcl_interfaces.msg import SetParametersResult
 from std_msgs.msg import String
 import asyncio
 import json
 import math
 import os
+import threading
 import time
 from typing import Any, Dict, Optional
 
@@ -219,12 +236,45 @@ class MCPServer(Node):
         # (minimax). Используется для выбора списка голосов (Q4).
         self.declare_parameter("tts_provider", "minimax")
 
+        # Issue #2781 — E2E-изоляция долгосрочной памяти (voice_facts),
+        # по образцу speaker_id_node.e2e_mode (issue #2750/#2763). memory_save
+        # пишет факты в self.voice_memory (legacy VoiceMemory →
+        # /data/voice_memory.db), и до этой правки изоляция дикторов НЕ
+        # накрывала этот писатель: акт «Знакомство» ночного марафона
+        # регистрирует голоса через speaker_id_node (изолирован) И называет
+        # LLM факты через memory_save (НЕ изолирован) — 59 из 116 фактов
+        # боевой /data/voice_memory.db на 22.09.2026 оказались синтезированным
+        # кастом марафона ("Саша"/"Борис"). См. ``parameters_callback`` /
+        # ``_apply_e2e_mode`` ниже — тот же ``ros2 param set`` паттерн, что у
+        # speaker_id_node (bool-параметр, не топик — синхронный ответ
+        # вызывающему в exit-коде, seam_without_consumer его не видит).
+        self.declare_parameter("e2e_db_path", "/data/voice_memory.e2e.db")
+        self.declare_parameter("e2e_mode", False)
+
         # Реестр инструментов
         self.registry = MCPToolRegistry()
+
+        # Issue #2781 — состояние переключателя e2e_mode для voice_memory
+        # (см. docstring declare_parameter выше и _apply_e2e_mode). Боевой
+        # путь запоминается в _init_voice_memory() (None, если активен
+        # harness-адаптер MCP_USE_HARNESS_VOICE_MEMORY=1 — для него
+        # переключение не реализовано, см. _apply_e2e_mode).
+        self._voice_memory_prod_db_path: "str | None" = None
+        self._voice_memory_ollama_url: "str | None" = None
+        self._voice_memory_e2e_db_path: str = str(
+            self.get_parameter("e2e_db_path").value or "/data/voice_memory.e2e.db"
+        )
+        self._voice_memory_e2e_mode_active: bool = False
+        self._voice_memory_lock = threading.Lock()
 
         # Долгосрочная память (VoiceMemory) — инициализировать ДО регистрации инструментов
         self.voice_memory = None
         self._init_voice_memory()
+        # Issue #2781 — единственный побочный эффект в parameters_callback:
+        # e2e_mode. Регистрируется здесь (после _init_voice_memory), чтобы
+        # ``self.voice_memory`` / ``self._voice_memory_prod_db_path`` уже
+        # существовали к моменту первого возможного ``ros2 param set``.
+        self.add_on_set_parameters_callback(self.parameters_callback)
 
         # FAQ store + event profile (event mode)
         self.faq_store = None
@@ -1213,6 +1263,13 @@ class MCPServer(Node):
         comment above ``_USE_HARNESS_VOICE_MEMORY`` for why: their table
         names collide with incompatible schemas already living in
         harness_voice.db).
+
+        Issue #2781 — ``self._voice_memory_prod_db_path`` stays ``None``
+        when the harness adapter branch below is taken: ``_apply_e2e_mode``
+        only knows how to re-point the legacy ``_VoiceMemory`` class at a
+        different SQLite file, and treats ``None`` as "no E2E target for
+        this backend" (fails the ``ros2 param set`` instead of silently
+        no-op'ing — see its docstring).
         """
         if _USE_HARNESS_VOICE_MEMORY and _VoiceMemoryAdapter is not None:
             import os
@@ -1250,6 +1307,11 @@ class MCPServer(Node):
 
         try:
             self.voice_memory = _VoiceMemory(db_path=db_path, ollama_base_url=ollama_url)
+            # Issue #2781 — запоминаем боевой путь/ollama_url, чтобы
+            # _apply_e2e_mode мог переоткрыть VoiceMemory на e2e_db_path и
+            # вернуться обратно, не завися от переменных окружения второй раз.
+            self._voice_memory_prod_db_path = db_path
+            self._voice_memory_ollama_url = ollama_url
             stats = self.voice_memory.get_stats()
             self.get_logger().info(
                 f"🧠 VoiceMemory инициализирована: {db_path} "
@@ -1259,6 +1321,134 @@ class MCPServer(Node):
         except Exception as exc:
             self.get_logger().error(f"❌ Ошибка инициализации VoiceMemory: {exc}")
             self.voice_memory = None
+
+    # ── E2E isolation for voice_facts (issue #2781) ─────────────────────────
+    #
+    # По образцу speaker_id_node.e2e_mode (issue #2750/#2763, ADR-0128 §
+    # "Seam guard"): ``ros2 param set`` вместо топика — синхронный ответ
+    # вызывающему в exit-коде, seam_without_consumer.py (ADR-0021) не видит
+    # паблишера в bash-харнессе как «шов без потребителя».
+
+    def parameters_callback(self, params):
+        """``ros2 param set`` роутер mcp_server (issue #2781).
+
+        Тот же компромисс, что у ``speaker_id_node.parameters_callback``:
+        Humble даёт только валидирующий ``add_on_set_parameters_callback``,
+        и побочный эффект (переоткрыть voice_memory на другом файле) живёт
+        прямо в нём. Только ``e2e_mode`` имеет эффект; ``e2e_db_path``
+        читается один раз в ``__init__`` и не перехватывается здесь.
+        """
+        result_ok = True
+        for param in params:
+            if param.name == "e2e_mode":
+                if not self._apply_e2e_mode(bool(param.value)):
+                    result_ok = False
+        return SetParametersResult(successful=result_ok)
+
+    def _wipe_e2e_voice_memory_db_file(self) -> None:
+        """Стереть файл ``e2e_db_path`` (и -wal/-shm/-journal) перед каждым ON.
+
+        По образцу ``speaker_id_node._wipe_e2e_db_file``. НИКОГДА не трогает
+        ``self._voice_memory_prod_db_path`` — путь для удаления берётся из
+        ``self._voice_memory_e2e_db_path`` напрямую (константа узла, не то,
+        что можно подменить через ``ros2 param set``).
+        """
+        import os as _os
+
+        for suffix in ("", "-wal", "-shm", "-journal"):
+            path = f"{self._voice_memory_e2e_db_path}{suffix}"
+            try:
+                if _os.path.exists(path):
+                    _os.remove(path)
+            except OSError as exc:
+                self.get_logger().warning(
+                    f"⚠️ не удалось удалить {path!r} перед E2E-прогоном "
+                    f"({type(exc).__name__}: {exc}) — e2e-база памяти может "
+                    "унаследовать факты с прошлого марафона"
+                )
+
+    def _apply_e2e_mode(self, enabled: bool) -> bool:
+        """Переключить voice_memory (voice_facts) боевая ↔ E2E. ``True`` — успех.
+
+        Issue #2781 — до этой правки изоляция БД дикторов (#2750/#2763)
+        накрывала только ``speakers.db``: акт «Знакомство» ночного марафона
+        и регистрирует голоса (изолировано), и называет LLM факты через
+        ``memory_save`` (НЕ изолировано) — замер на Vision Pi 22.09.2026
+        нашёл 59 из 116 фактов боевой ``/data/voice_memory.db``,
+        упоминающих синтезированный каст марафона ("Саша не ест лук",
+        "Борис болеет за Спартак").
+
+        Переход False→True стирает прежний файл ``e2e_db_path`` (см.
+        ``_wipe_e2e_voice_memory_db_file``) и открывает НОВЫЙ экземпляр
+        ``VoiceMemory`` на нём — гарантия пустой e2e-базы держится узлом,
+        не вызывающим скриптом. Переход True→True (повторный
+        ``ros2 param set ... true``) — no-op, не чистит базу второй раз
+        (не обнулять уже накопленные за акт факты). Боевой
+        ``_voice_memory_prod_db_path`` никогда не удаляется и не изменяется.
+
+        ``False`` — отказ (переключение НЕ применено, активная БД осталась
+        прежней): либо E2E-изоляция не реализована для активного бэкенда
+        (``self._voice_memory_prod_db_path is None`` — harness-адаптер
+        ``MCP_USE_HARNESS_VOICE_MEMORY=1`` или ``rob_box_voice`` недоступен,
+        ``self.voice_memory is None``), либо переоткрытие файла бросило
+        исключение. Вызывающий (``activate_e2e_voice_memory_db`` в харнессе)
+        обязан относиться к ``False`` как к ФАТАЛУ: лучше не прогнать акт,
+        чем засорить боевую память.
+        """
+        if enabled == self._voice_memory_e2e_mode_active:
+            self.get_logger().info(
+                f"🧪 e2e_mode (voice_memory): уже "
+                f"{'включён' if enabled else 'выключен'} — no-op"
+            )
+            return True
+
+        if self._voice_memory_prod_db_path is None or _VoiceMemory is None:
+            self.get_logger().error(
+                "❌ e2e_mode (voice_memory): нет боевого пути для переключения — "
+                "либо активен harness-адаптер (MCP_USE_HARNESS_VOICE_MEMORY=1, "
+                "E2E-изоляция для него не реализована, issue #2781 накрывает "
+                "только legacy VoiceMemory/voice_memory.db), либо "
+                "rob_box_voice недоступен и self.voice_memory не инициализирована. "
+                "Переключение отклонено."
+            )
+            return False
+
+        target_path = (
+            self._voice_memory_e2e_db_path
+            if enabled
+            else self._voice_memory_prod_db_path
+        )
+        try:
+            with self._voice_memory_lock:
+                old_memory = self.voice_memory
+                if enabled:
+                    # Гарантия чистой базы — только на переходе в E2E-режим.
+                    self._wipe_e2e_voice_memory_db_file()
+                self.voice_memory = _VoiceMemory(
+                    db_path=target_path,
+                    ollama_base_url=self._voice_memory_ollama_url,
+                )
+                self._voice_memory_e2e_mode_active = enabled
+                if old_memory is not None:
+                    old_memory.close()
+        except Exception as exc:  # noqa: BLE001 — переключение не должно ронять ноду
+            self.get_logger().error(
+                f"❌ e2e_mode (voice_memory)={'ON' if enabled else 'OFF'} "
+                f"переключение провалилось: {type(exc).__name__}: {exc} — "
+                f"активная БД памяти НЕ изменена (осталась "
+                f"{'E2E' if self._voice_memory_e2e_mode_active else 'боевая'})"
+            )
+            return False
+
+        # WARNING, не info: смена активной БД памяти обязана быть видна в
+        # `docker logs voice-assistant` без фильтров (issue #2750 — то же
+        # решение у speaker_id_node._apply_e2e_mode).
+        self.get_logger().warning(
+            f"🧪 mcp_server: e2e_mode (voice_memory)={'ON' if enabled else 'OFF'} — "
+            f"voice_facts (memory_save) теперь пишутся в {target_path!r} "
+            f"({'боевая voice_memory.db НЕ используется, пока режим включён' if enabled else 'вернулись на боевую'})"
+        )
+        return True
 
     def _init_faq_store(self) -> None:
         """Инициализация FAQStore и загрузка event profile (режим мероприятия).
