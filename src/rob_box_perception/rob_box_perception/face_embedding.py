@@ -74,14 +74,34 @@ HailoRT — исключение из ``embed()``, вызывающий код �
 эмбеддинг всех остальных лиц в кадре, поэтому даёт ``None`` на своей
 позиции, а не прерывает ``embed()``.
 
+**Issue #2773: невыровненный кроп — корень внутриперсонного разброса
+0.3–0.85.** ``crop_face`` + ``prepare_arcface_input`` (ниже) вырезают
+прямоугольник вокруг bbox с запасом и анизотропно растягивают его в
+112x112 — без поворота, без приведения пропорций лица к канону. На
+живых данных с робота (галерея одного человека, 20x512, 22.09.2026)
+это давало попарный косинус эмбеддингов медиана 0.302, min −0.007 —
+разброс ОДНОГО человека перекрывает межперсонный, никакой порог не
+разделяет людей надёжно. ``align_face`` (ниже) — канонический путь:
+similarity-transform по 5 точкам лица (которые уже декодирует
+``vision_face_loader._post_process_faces``, ключ ``landmarks``) на
+эталонный шаблон ArcFace/InsightFace 112x112. Старый путь
+``crop_face`` + ``prepare_arcface_input`` НЕ удалён — он остаётся
+фолбеком на случай, когда landmarks недоступны (HEF landmarks-тензоры
+не пришли, детекция деградировала, синтетический вход без geometрии).
+Какой путь сработал чаще — метрика вне рамок этого модуля (см. issue
+#2773 «Что предлагается»).
+
 Touchpoints:
 - ADR-0112 (шов «Ускоритель», hailo_device.open_device).
 - ADR-0121 (миксин ленивой инициализации — Proposed, ещё не внедрён).
 - ADR-0123 (режимы приватности; этот модуль эмбеддингов не решает,
   что с ними делать дальше — это зона ``FaceStore``).
 - Issue #2599 PR-B (ArcFace-эмбеддинги, лицевой трекер, узнавание).
+- Issue #2773 (align_face — выравнивание по landmarks вместо
+  невыровненного растянутого кропа).
 - rob_box_perception.vision_face_loader (RetinaFaceLoader — источник
-  паттерна инициализации и bbox_norm формата).
+  паттерна инициализации и bbox_norm формата; ``_post_process_faces``
+  — источник ключа ``landmarks``, который читает ``align_face``).
 - rob_box_perception.hailo_device (open_device, шов «Ускоритель»).
 - rob_box_perception.gaze (лениво импортирует cv2 внутри функций —
   этот модуль следует той же конвенции).
@@ -521,6 +541,240 @@ def crop_face(frame_rgb: Any, bbox_norm: Tuple[float, float, float, float], marg
         return None
 
     return frame_rgb[y1i:y2i, x1i:x2i]
+
+
+#: Канонический шаблон ArcFace/InsightFace для выравнивания по 5 точкам,
+#: координаты в пикселях выхода 112x112 (общепринятые опорные точки,
+#: см. issue #2773 и любую эталонную реализацию insightface/arcface
+#: preprocessing — ``face_align.py::src`` с этими же числами с точностью
+#: до округления). Порядок точек ОБЯЗАН совпадать с порядком, который
+#: отдаёт ``vision_face_loader._decode_landmarks`` / ``_post_process_faces``
+#: (ключ ``landmarks``): left_eye, right_eye, nose, mouth_left, mouth_right.
+_ARCFACE_TEMPLATE_112: Tuple[Tuple[float, float], ...] = (
+    (38.2946, 51.6963),   # left eye
+    (73.5318, 51.5014),   # right eye
+    (56.0252, 71.7366),   # nose tip
+    (41.5493, 92.3655),   # mouth, left corner
+    (70.7299, 92.2041),   # mouth, right corner
+)
+
+
+def _similarity_transform_umeyama(src: Any, dst: Any) -> Optional[Any]:
+    """Детерминированный similarity-transform (Umeyama, 1991) — 2x3 affine.
+
+    Почему НЕ ``cv2.estimateAffinePartial2D``: без явного ``method`` эта
+    функция использует RANSAC, а RANSAC — инструмент для отсева
+    выбросов среди МНОГИХ избыточных соответствий, не для ровно 5 точек
+    (``align_face`` всегда получает 5 landmarks). На 5 точках RANSAC
+    сэмплит 2-точечные подвыборки и объявляет часть из пяти "выбросами",
+    из-за чего итоговый transform (а) нестабилен — зависит от того,
+    какую подвыборку RANSAC возьмёт, и (б) НЕДЕТЕРМИНИРОВАН — один и
+    тот же кадр может дать разный выровненный кроп, а значит разный
+    эмбеддинг, от запуска к запуску. Для системы узнавания это прямо
+    противоречит цели issue #2773: мы чиним именно разброс эмбеддингов
+    одного человека, а недетерминированное выравнивание — ещё один
+    источник такого разброса, только рукотворный.
+
+    Замер (issue #2773, 300 синтетических лиц: поворот ±0.5 рад, масштаб
+    0.5–3.0x, шум детектора σ=1.5 px; метрика — максимальная невязка
+    пяти точек после трансформа, в пикселях шаблона 112)::
+
+        RANSAC    max-err px: med=1.30 p95=5.19 max=10.23
+        LMEDS     max-err px: med=1.35 p95=3.82 max=10.23
+        Umeyama   max-err px: med=1.30 p95=3.21 max=5.07
+
+    В медиане разницы нет, но у RANSAC/LMEDS вдвое хуже хвост — 10px
+    невязки на шаблоне 112px это лицо, уехавшее почти на глаз, и ровно
+    такие выбросы раздувают внутриперсонный разброс.
+
+    Umeyama — эталонный closed-form least-squares метод (тот же, что
+    insightface's ``face_align.norm_crop`` вызывает через
+    ``skimage.transform.SimilarityTransform.estimate``). skimage в
+    зависимости модуля не тащим — реализация ниже (центрирование, SVD
+    ковариации, коррекция знака при вырожденном/отражённом повороте,
+    масштаб как ``sum(S*d) / var(src)``, сдвиг из центроидов) 1:1
+    повторяет её алгоритм на чистом numpy.
+
+    Args:
+        src, dst: (N, 2) float64 ndarray, N >= 2 (``align_face`` — N=5).
+
+    Returns:
+        (2, 3) float64 матрица ``M`` такая, что
+        ``dst_i ~= M[:, :2] @ src_i + M[:, 2]``, либо ``None``, если
+        ``src`` вырожден: все точки совпадают (или почти совпадают) —
+        дисперсия ``src`` около нуля, а масштаб ниже считается делением
+        на неё (``scale = ... / var_src``), т.е. в вырожденном случае
+        не определён математически, а не "cv2 не смог посчитать" (это
+        поведение старой RANSAC-версии, здесь его больше нет —
+        transform теперь считается ВСЕГДА детерминированной формулой,
+        кроме этого единственного вырожденного случая).
+    """
+    import numpy as np  # type: ignore[import-not-found]
+
+    src = np.asarray(src, dtype=np.float64)
+    dst = np.asarray(dst, dtype=np.float64)
+    num = src.shape[0]
+
+    src_mean = src.mean(axis=0)
+    dst_mean = dst.mean(axis=0)
+    src_demean = src - src_mean
+    dst_demean = dst - dst_mean
+
+    # Дисперсия src — знаменатель масштаба ниже. Точки совпали (или
+    # почти совпали, например все 5 landmarks легли в одну координату
+    # из-за деградировавшей детекции) -> var_src ~ 0 -> similarity
+    # transform математически не определён (масштаб -> inf).
+    var_src = float(np.sum(src_demean ** 2) / num)
+    if var_src < 1e-9:
+        return None
+
+    cov = dst_demean.T @ src_demean / num  # (2, 2)
+
+    u, s, vt = np.linalg.svd(cov)
+    d = np.ones(2)
+    if np.linalg.det(cov) < 0.0:
+        d[1] = -1.0
+
+    rank = np.linalg.matrix_rank(cov)
+    if rank == 0:
+        # На практике недостижимо после var_src-проверки выше (cov=0
+        # только при src_demean=0), оставлено как защита от NaN в SVD.
+        return None
+    if rank == 1:
+        # src коллинеарны (5 точек на одной прямой) — валидный, но
+        # вырожденный по rank случай: Umeyama (1991) требует явно
+        # разрешить неоднозначность знака поворота через det(U)*det(V).
+        if np.linalg.det(u) * np.linalg.det(vt) > 0.0:
+            r = u @ vt
+        else:
+            s_last = d[1]
+            d[1] = -1.0
+            r = u @ np.diag(d) @ vt
+            d[1] = s_last
+    else:
+        r = u @ np.diag(d) @ vt
+
+    scale = float(s @ d) / var_src
+    t = dst_mean - scale * (r @ src_mean)
+
+    m = np.empty((2, 3), dtype=np.float64)
+    m[:, :2] = scale * r
+    m[:, 2] = t
+    return m
+
+
+def align_face(
+    frame_rgb: Any,
+    landmarks: Optional[List[float]],
+    *,
+    output_size: int = ARCFACE_INPUT_SIZE,
+) -> Optional[Any]:
+    """Выровнять лицо по 5 точкам в канонический шаблон ArcFace (issue #2773).
+
+    Канонический ArcFace-препроцессинг — similarity-transform (поворот +
+    равномерный масштаб + сдвиг, БЕЗ анизотропного растяжения) по 5
+    точкам лица на эталонный шаблон 112x112, а не «вырезать
+    прямоугольник и растянуть» (``crop_face`` + ``prepare_arcface_input``
+    ниже — старый путь, который и породил issue #2773: внутриперсонный
+    разброс эмбеддингов 0.3–0.85 на живых данных робота, что перекрывает
+    межперсонный разброс и делает порог узнавания нерабочим). Transform
+    (4 DOF: rotation+uniform-scale+translation — специально НЕ полный
+    affine с 6 DOF, чтобы не давать пропорциям лица ехать вторым путём)
+    считается ``_similarity_transform_umeyama`` — ДЕТЕРМИНИРОВАННЫЙ
+    closed-form least-squares метод на чистом numpy, а не
+    ``cv2.estimateAffinePartial2D`` (см. докстринг
+    ``_similarity_transform_umeyama`` — RANSAC там недетерминирован
+    именно на 5 точках и раздувает разброс эмбеддингов, который эта
+    карточка чинит). cv2 остаётся нужен только для ``cv2.warpAffine``,
+    который применяет посчитанный transform напрямую к ПОЛНОМУ кадру —
+    отдельный шаг вырезания прямоугольника не нужен, warpAffine сам
+    берёт нужную область кадра по transform.
+
+    Args:
+        frame_rgb: HxWx3 RGB uint8 ndarray — ПОЛНЫЙ исходный кадр, НЕ
+            кроп. ``landmarks`` нормализованы в системе координат
+            исходного кадра (контракт ``vision_face_loader
+            ._post_process_faces`` после unproject через
+            ``LetterboxInfo``), поэтому денормализация ниже обязана
+            идти относительно полного кадра — денормализация
+            относительно кропа даст сдвинутые точки и трансформ хуже,
+            чем при отсутствии выравнивания вовсе.
+        landmarks: плоский список из 10 normalized float'ов, порядок
+            ``[left_eye_x, left_eye_y, right_eye_x, right_eye_y,
+            nose_x, nose_y, mouth_left_x, mouth_left_y, mouth_right_x,
+            mouth_right_y]`` — ровно то, что кладёт
+            ``vision_face_loader._post_process_faces`` в VisionEvent
+            под ключом ``landmarks``. ``None`` (landmarks недоступны —
+            HEF landmarks-тензоры не пришли, либо декод дал
+            не-конечные числа) -> ``None``, вызывающий код обязан
+            откатиться на ``crop_face`` + ``prepare_arcface_input``.
+        output_size: сторона выходного квадрата. По умолчанию
+            ``ARCFACE_INPUT_SIZE`` (112 — фактический вход HEF, см.
+            модульный docstring). При ином значении канонический шаблон
+            масштабируется пропорционально (``output_size / 112``).
+
+    Returns:
+        RGB uint8 ndarray формы ``(output_size, output_size, 3)``, либо
+        ``None``, если:
+          - cv2 недоступен (ленивый импорт, как у ``prepare_arcface_input``
+            — модуль обязан импортироваться и без cv2, иначе юнит-тесты
+            геометрии сломают CI, см. модульный docstring). cv2 здесь
+            нужен ТОЛЬКО для ``warpAffine`` — сам transform считается
+            чистым numpy (``_similarity_transform_umeyama``), но раз
+            без warpAffine результат всё равно не собрать, отсутствие
+            cv2 остаётся полноценным None-путём;
+          - ``frame_rgb`` пуст/вырожден, либо ``landmarks`` ``None`` или
+            неверной длины (не 10 элементов), либо содержит NaN/Inf;
+          - 5 точек вырождены настолько, что similarity-transform
+            математически не определён — все точки (почти) совпадают,
+            дисперсия ``src`` около нуля (см. докстринг
+            ``_similarity_transform_umeyama``). Это ЕДИНСТВЕННЫЙ
+            геометрический None-путь: в отличие от старой
+            RANSAC-версии (``cv2.estimateAffinePartial2D``, которая
+            могла тихо не найти transform и на невырожденном входе),
+            детерминированная формула Umeyama считает transform всегда,
+            кроме этого одного вырожденного случая.
+    """
+    if landmarks is None:
+        return None
+    if len(landmarks) != 10:
+        return None
+    if frame_rgb is None:
+        return None
+
+    h, w = frame_rgb.shape[0], frame_rgb.shape[1]
+    if h <= 0 or w <= 0:
+        return None
+
+    try:
+        import cv2  # type: ignore[import-not-found]
+        import numpy as np  # type: ignore[import-not-found]
+    except ImportError:
+        _LOG.warning('cv2/numpy недоступны — align_face невозможен')
+        return None
+
+    pts = np.asarray(landmarks, dtype=np.float64).reshape(5, 2)
+    if not np.all(np.isfinite(pts)):
+        return None
+
+    # Денормализация: landmarks — normalized [0, 1] в системе координат
+    # ПОЛНОГО кадра (не кропа) — та же конвенция, что bbox_cx/bbox_cy в
+    # _post_process_faces.
+    src = pts * np.array([w, h], dtype=np.float64)
+
+    scale = float(output_size) / float(ARCFACE_INPUT_SIZE)
+    dst = np.asarray(_ARCFACE_TEMPLATE_112, dtype=np.float64) * scale
+
+    transform = _similarity_transform_umeyama(src, dst)
+    if transform is None:
+        return None
+    if not np.all(np.isfinite(transform)):
+        return None
+
+    warped = cv2.warpAffine(frame_rgb, transform, (output_size, output_size))
+    if warped.dtype != np.uint8:
+        warped = warped.astype(np.uint8)
+    return warped
 
 
 def prepare_arcface_input(crop_rgb: Any) -> Optional[Any]:
