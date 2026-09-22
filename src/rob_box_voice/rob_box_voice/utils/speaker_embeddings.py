@@ -106,6 +106,78 @@ REGISTER_MATCH_THRESHOLD: float = 0.75
 MIN_AUDIO_DURATION_SEC: float = 0.3  # minimum speech length for reliable embedding
 SAMPLE_RATE: int = 16000            # resemblyzer expects 16 kHz mono float32
 
+# ── Растущая галерея и адаптивный порог (issue #2747) ───────────────────────
+#
+# Замер на живом роботе 22.09.2026 (issue #2747, человек в мастерской, НЕ
+# синтетика): сразу после register_speaker профиль содержит ОДИН эталонный
+# эмбеддинг. Восемь следующих реплик того же человека против этого
+# единственного вектора дали cosine:
+#     0.283, 0.523, 0.531, 0.584, 0.463, 0.473, 0.457, 0.513
+# — то есть КАЖДАЯ реплика оставалась ниже калиброванного IDENTIFY_THRESHOLD
+# (0.72, откалиброван в t_ea3afa6e на распределении 280 same-voice / 666
+# cross-voice пар — см. test_identify_threshold.py). Профиль из одного
+# вектора физически не может держать этот порог: он калиброван на пуле из
+# НЕСКОЛЬКИХ эталонов (identify() берёт MAX по пулу, см. _score_all), а не
+# на «одна случайная фраза против другой случайной фразы».
+#
+# Решение — два взаимосвязанных механизма:
+#   1. GALLERY_WARMUP_SIZE — первые N эмбеддингов после регистрации
+#      автоматически дописываются в профиль при каждом успешном identify()
+#      (см. speaker_id_node._process_utterance → grow_gallery_if_warming_up).
+#      Чем больше пул, тем выше MAX-скор для последующих реплик — тот же
+#      голос, но GALLERY_WARMUP_SIZE независимых образцов вместо одного.
+#   2. adaptive_identify_threshold() — порог identify() мягче, пока галерея
+#      маленькая, и линейно ужесточается до IDENTIFY_THRESHOLD к моменту,
+#      когда галерея дорастает до GALLERY_WARMUP_SIZE.
+#
+# GALLERY_WARMUP_SIZE = 5: из лога issue #2747 видно, что реплики идут с
+# интервалом ~60-70 c (10:03→10:11 на 8 реплик) — пять реплик это одна-две
+# минуты обычного разговора, не «вечное ослабление» защиты. К пятой реплике
+# порог уже равен калиброванному 0.72.
+GALLERY_WARMUP_SIZE: int = 5
+
+# GALLERY_WARMUP_SOFT_THRESHOLD = 0.45: нижняя граница для len(gallery)==1.
+# Обоснование — то же измерение issue #2747. Первая реплика после
+# регистрации (0.283) намеренно ОСТАЁТСЯ ниже порога: она снята практически
+# одновременно с эталоном (импульс «Меня зовут X»), короче и чаще зашумлена
+# служебной интонацией, и её отбрасывание не вредит (это единственная
+# реплика из восьми, которую 0.45 не пропускает). Начиная со второй реплики
+# (0.523) и до последней (0.457 — минимум остатка выборки) все восемь минус
+# одна укладываются выше 0.45: порог пропускает 7 из 8 живых реплик подряд
+# одного человека. Ниже опускать нельзя: REGISTER_MATCH_THRESHOLD=0.75
+# откалиброван на 3.9 % FPR (cross-voice) для пула из НЕСКОЛЬКИХ эталонов —
+# для одиночного вектора FPR будет выше при любом пороге ниже калиброванного,
+# поэтому окно слабины сознательно ограничено GALLERY_WARMUP_SIZE репликами,
+# а не держится вечно (см. adaptive_identify_threshold).
+GALLERY_WARMUP_SOFT_THRESHOLD: float = 0.45
+
+
+def adaptive_identify_threshold(gallery_size: int) -> float:
+    """Issue #2747 — порог ``identify()`` как функция размера галереи спикера.
+
+    ``gallery_size <= 1`` (профиль только что создан, один эталон) →
+    :data:`GALLERY_WARMUP_SOFT_THRESHOLD`. ``gallery_size >=
+    GALLERY_WARMUP_SIZE`` (галерея уже выросла до расчётного размера) →
+    полный калиброванный :data:`IDENTIFY_THRESHOLD`. Между ними — линейная
+    интерполяция: каждый дописанный эмбеддинг чуть-чуть поднимает планку,
+    вместо резкого скачка на пятой реплике.
+
+    Читает ``IDENTIFY_THRESHOLD`` / ``GALLERY_WARMUP_SIZE`` /
+    ``GALLERY_WARMUP_SOFT_THRESHOLD`` как атрибуты МОДУЛЯ (не замыкание) —
+    так же, как ``identify()`` уже читает ``IDENTIFY_THRESHOLD`` — чтобы
+    патч из speaker_id_node (``_se_mod.IDENTIFY_THRESHOLD = ...`` при
+    старте ноды из параметра) подхватывался и здесь.
+    """
+    if gallery_size <= 1:
+        return GALLERY_WARMUP_SOFT_THRESHOLD
+    if gallery_size >= GALLERY_WARMUP_SIZE:
+        return IDENTIFY_THRESHOLD
+    span = GALLERY_WARMUP_SIZE - 1
+    frac = (gallery_size - 1) / span
+    return GALLERY_WARMUP_SOFT_THRESHOLD + frac * (
+        IDENTIFY_THRESHOLD - GALLERY_WARMUP_SOFT_THRESHOLD
+    )
+
 
 @dataclass
 class SpeakerMatch:
@@ -120,6 +192,12 @@ class SpeakerMatch:
     # различает тёзок. None, пока профиль её не получил (старые записи до
     # миграции + спикеры, зарегистрированные вне speaker_id_node).
     epithet: Optional[str] = None
+    # Issue #2747 — сколько эмбеддингов сейчас в галерее этого спикера (ДО
+    # возможного дозаписывания текущей реплики). Нужен speaker_id_node,
+    # чтобы решить, продолжать ли growing gallery (grow_gallery_if_warming_up)
+    # без второго похода в БД, и полезен для диагностики: одинаковый score
+    # значит разное при gallery_size=1 и gallery_size=5.
+    gallery_size: int = 0
 
 
 # ── Lazy import of resemblyzer (not available at build time on CI) ────────────
@@ -351,14 +429,17 @@ class SpeakerDatabase:
             logger.error(f"embed_audio failed: {type(exc).__name__}: {exc}")
             return None
 
-    def _score_all(self, embedding: np.ndarray) -> List[Tuple[str, str, float]]:
+    def _score_all(self, embedding: np.ndarray) -> List[Tuple[str, str, float, int]]:
         """Посчитать best-of-pool cosine similarity для КАЖДОГО известного спикера.
 
-        Возвращает список ``(speaker_id, name, score)``, отсортированный по
-        убыванию score. ``score`` — MAX косинусной близости по всем
-        сохранённым эмбеддингам спикера (не mean — устойчивее к разнородному
-        пулу: шум/громкость/дистанция одной "плохой" фразы не размывают уже
-        подтверждённое совпадение с лучшей референсной записью).
+        Возвращает список ``(speaker_id, name, score, gallery_size)``,
+        отсортированный по убыванию score. ``score`` — MAX косинусной
+        близости по всем сохранённым эмбеддингам спикера (не mean —
+        устойчивее к разнородному пулу: шум/громкость/дистанция одной
+        "плохой" фразы не размывают уже подтверждённое совпадение с лучшей
+        референсной записью). ``gallery_size`` — сколько эмбеддингов сейчас
+        в пуле этого спикера (issue #2747 — вход для
+        ``adaptive_identify_threshold()``).
 
         Общий метод для ``identify()`` (порог IDENTIFY_THRESHOLD) и
         ``identify_candidates()`` (диагностика без порога, issue W5-4 п.4).
@@ -377,7 +458,9 @@ class SpeakerDatabase:
         # numpy-only cosine similarity — не тянем sklearn как обязательную
         # зависимость (issue #1077).
         speaker_scores: dict[str, Tuple[str, float]] = {}
+        speaker_counts: dict[str, int] = {}
         for speaker_id, name, blob in rows:
+            speaker_counts[speaker_id] = speaker_counts.get(speaker_id, 0) + 1
             ref = self._blob_to_ndarray(blob).reshape(1, -1)
             if ref.shape[1] != query.shape[1]:
                 continue
@@ -388,7 +471,10 @@ class SpeakerDatabase:
                 speaker_scores[speaker_id] = (name, sim)
 
         ranked = sorted(
-            ((sid, name, score) for sid, (name, score) in speaker_scores.items()),
+            (
+                (sid, name, score, speaker_counts[sid])
+                for sid, (name, score) in speaker_scores.items()
+            ),
             key=lambda t: -t[2],
         )
         return ranked
@@ -398,17 +484,26 @@ class SpeakerDatabase:
     ) -> Optional[SpeakerMatch]:
         """Find the closest known speaker.  Returns None if confidence < threshold.
 
-        ``threshold`` по умолчанию — модульный ``IDENTIFY_THRESHOLD``
-        (обычное распознавание на ход диалога). Вызывающий код может
-        передать более строгий порог — например, ``register_or_merge()``
-        использует ``REGISTER_MATCH_THRESHOLD`` для решения «слить с
-        существующим профилем vs завести новый» (issue W5-4).
+        ``threshold`` по умолчанию — ``None``, и тогда порог решает
+        :func:`adaptive_identify_threshold` по размеру галереи лучшего
+        кандидата (issue #2747: одиночный эталонный вектор физически не
+        держит калиброванный IDENTIFY_THRESHOLD — см. комментарий у
+        ``GALLERY_WARMUP_SOFT_THRESHOLD``). Вызывающий код может передать
+        ЯВНЫЙ порог, чтобы обойти адаптацию — например,
+        ``register_or_merge()`` всегда передаёт ``REGISTER_MATCH_THRESHOLD``
+        (решение «слить с существующим профилем vs завести новый», issue
+        W5-4 / ADR-0127 — эта проверка НЕ должна смягчаться маленькой
+        галереей, иначе конфликт имён будет пропускаться чаще).
         """
         ranked = self._score_all(embedding)
         if not ranked:
             return None
-        thr = IDENTIFY_THRESHOLD if threshold is None else threshold
-        best_id, best_name, best_score = ranked[0]
+        best_id, best_name, best_score, gallery_size = ranked[0]
+        thr = (
+            adaptive_identify_threshold(gallery_size)
+            if threshold is None
+            else threshold
+        )
 
         if best_score < thr:
             logger.debug(f"Best match {best_name!r} score={best_score:.3f} below threshold {thr}")
@@ -419,6 +514,7 @@ class SpeakerDatabase:
             name=best_name,
             confidence=best_score,
             epithet=self.get_epithet(best_id),
+            gallery_size=gallery_size,
         )
 
     def identify_candidates(
@@ -434,9 +530,45 @@ class SpeakerDatabase:
         """
         ranked = self._score_all(embedding)[: max(0, top_n)]
         return [
-            SpeakerMatch(speaker_id=sid, name=name, confidence=score)
-            for sid, name, score in ranked
+            SpeakerMatch(speaker_id=sid, name=name, confidence=score, gallery_size=size)
+            for sid, name, score, size in ranked
         ]
+
+    def gallery_size(self, speaker_id: str) -> int:
+        """Сколько эмбеддингов сейчас в профиле ``speaker_id`` (issue #2747)."""
+        row = self._conn.execute(
+            "SELECT COUNT(*) FROM embeddings WHERE speaker_id=?", (speaker_id,)
+        ).fetchone()
+        return int(row[0]) if row else 0
+
+    def grow_gallery_if_warming_up(
+        self, match: SpeakerMatch, embedding: np.ndarray
+    ) -> bool:
+        """Issue #2747 — дописать эмбеддинг в профиль, пока галерея маленькая.
+
+        ``match`` уже прошёл ``identify()`` (то есть похож на
+        ``match.speaker_id`` выше адаптивного порога для его ТЕКУЩЕГО
+        размера галереи — отдельной проверки похожести здесь НЕ нужно).
+        Если ``match.gallery_size >= GALLERY_WARMUP_SIZE`` — галерея уже
+        выросла до расчётного размера, порог и так калиброванный, дозапись
+        не нужна (иначе профиль рос бы бесконечно на каждой узнанной
+        фразе — а он должен расти только первые несколько раз, пока
+        одиночный вектор ненадёжен).
+
+        Возвращает ``True``, если эмбеддинг дописан.
+
+        Обоснование, почему проверка похожести не дублируется: она уже
+        встроена в порог, который ПРИВЁЛ к этому ``match`` — на
+        ``gallery_size=1`` это ``GALLERY_WARMUP_SOFT_THRESHOLD=0.45``, что
+        имеет более высокий риск ложного пополнения чужим голосом, чем
+        калиброванный identify_threshold — это ЦЕНА адаптивного порога,
+        осознанно принятая (см. комментарий у ``GALLERY_WARMUP_SOFT_THRESHOLD``
+        про то, почему окно слабины ограничено, а не бессрочное).
+        """
+        if match.gallery_size >= GALLERY_WARMUP_SIZE:
+            return False
+        self.register(match.name, embedding, speaker_id=match.speaker_id)
+        return True
 
     def register(self, name: str, embedding: np.ndarray, speaker_id: Optional[str] = None) -> str:
         """Create a new speaker (or add another embedding to existing speaker_id).

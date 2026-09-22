@@ -218,7 +218,20 @@ class TestIdentifyCrossVoiceThreshold:
     """
 
     def test_cross_voice_cos_69_below_threshold_means_unknown(self, db):
-        """cos ~ 0.69 к ближайшему профилю → is_known=False при пороге 0.72."""
+        """cos ~ 0.69 к ближайшему профилю → is_known=False при пороге 0.72.
+
+        Issue #2747 — с этой карточки в identify() появился АДАПТИВНЫЙ
+        порог по умолчанию (мягче, пока галерея спикера маленькая — см.
+        test_gallery_warmup.py). Этот тест конкретно про КАЛИБРОВАННОЕ
+        значение 0.72, а не про адаптацию, поэтому порог передаётся ЯВНО
+        (``identify()`` поддерживает это для ровно такого случая —
+        register_or_merge() тоже всегда передаёт явный порог, см.
+        speaker_embeddings.py). Без явного threshold на профиле из ОДНОГО
+        эмбеддинга (как здесь) сработал бы мягкий
+        GALLERY_WARMUP_SOFT_THRESHOLD=0.45, и cos~0.69 прошёл бы — это
+        отдельный, намеренный контракт issue #2747, а не регрессия этого
+        теста.
+        """
         base = _unit(42)  # фиксированный seed для воспроизводимости
         sid = db.register("Саша", base)
 
@@ -240,7 +253,7 @@ class TestIdentifyCrossVoiceThreshold:
             f"empirical={expected_cos:.4f}. Перекалибровать _CROSS_VOICE_BELOW_ALPHA."
         )
 
-        match = db.identify(other_voice)
+        match = db.identify(other_voice, threshold=_CALIBRATED_IDENTIFY_THRESHOLD)
 
         assert match is None, (
             f"cross-voice с cos~{_CROSS_VOICE_BELOW_COS:.2f} должен быть НИЖЕ "
@@ -256,7 +269,10 @@ class TestIdentifyCrossVoiceThreshold:
         assert candidates[0].name == "Саша"  # ближайший всё равно «Саша»
 
     def test_cross_voice_below_threshold_no_match_even_with_other_speakers(self, db):
-        """Несколько профилей в БД — чужой голос всё равно отбит порогом."""
+        """Несколько профилей в БД — чужой голос всё равно отбит порогом.
+
+        Явный ``threshold=`` — см. комментарий в тесте выше (issue #2747).
+        """
         own_seed = 42
         base = _unit(own_seed)
         db.register("Саша", base)
@@ -266,7 +282,7 @@ class TestIdentifyCrossVoiceThreshold:
         other_voice = _degraded(
             base, alpha=_CROSS_VOICE_BELOW_ALPHA, noise_seed=99
         )
-        match = db.identify(other_voice)
+        match = db.identify(other_voice, threshold=_CALIBRATED_IDENTIFY_THRESHOLD)
 
         assert match is None, (
             f"при наличии нескольких профилей в БД cross-voice с cos~"

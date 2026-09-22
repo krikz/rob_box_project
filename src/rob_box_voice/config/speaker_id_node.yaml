@@ -17,6 +17,17 @@ speaker_id_node:
     # REGISTER_MATCH_THRESHOLD (тест test_yaml_param_consistency.py).
     identify_threshold: 0.72
     register_match_threshold: 0.75
+    # Issue #2747 — растущая галерея + адаптивный порог. Одиночный
+    # эталонный эмбеддинг сразу после регистрации физически не даёт
+    # identify_threshold=0.72 (замер живого голоса 22.09.2026: 0.28–0.58 на
+    # восьми репликах подряд). Первые gallery_warmup_size реплик
+    # дописываются в профиль при успешном identify(), а порог смягчается до
+    # gallery_warmup_soft_threshold на 1 эмбеддинге и линейно ужесточается
+    # до identify_threshold к gallery_warmup_size-й записи. Числа
+    # обоснованы в speaker_embeddings.GALLERY_WARMUP_SIZE /
+    # GALLERY_WARMUP_SOFT_THRESHOLD.
+    gallery_warmup_size: 5
+    gallery_warmup_soft_threshold: 0.45
     # Issue #2440 — harness-БД фактов для склейки профилей через шов
     # идентичности (тот же файл, что sqlite_db_path у dialogue_node).
     memory_db_path: "/data/harness_voice.db"
