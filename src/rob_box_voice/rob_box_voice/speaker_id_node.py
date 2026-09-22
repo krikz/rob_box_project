@@ -14,21 +14,34 @@ Subscribes:
     /voice/speaker/epithet  (String)  — JSON {"speaker_id","epithet"} — кличка,
                                          придуманная LLM (слой 2 гибрида);
                                          принимается после валидации
+    /voice/speaker/e2e_mode (String)  — JSON {"enabled": true|false} (или голый
+                                         текст "true"/"false") — issue #2750:
+                                         переключить активную БД дикторов
+                                         db_path ↔ e2e_db_path. Владелец —
+                                         только E2E-харнесс.
 
 Publishes:
     /voice/speaker/result (String) — JSON SpeakerMatch or {"is_known":false};
                                      у известного спикера есть поле "epithet"
-                                     (внутренняя кличка, issue #1787)
+                                     (внутренняя кличка, issue #1787). Тем же
+                                     топиком уходят ack на merge и e2e_mode.
     /voice/speaker/epithet_request (String) — JSON {"speaker_id","fallback",
                                      "cluster","hints","messages"} — просьба к
                                      dialogue_node придумать кличку через LLM
 
 Parameters:
     db_path                  (str)   — path to SQLite DB       [/data/speakers.db]
+    e2e_db_path               (str)   — изолированная БД для E2E-режима (issue
+                                       #2750), см. /voice/speaker/e2e_mode
+                                       [/data/speakers.e2e.db]
     identify_threshold       (float) — cosine similarity gate  [0.72]
     register_match_threshold (float) — порог слияния при регистрации (issue
                                        W5-4 + #2348; строже identify_threshold —
                                        см. speaker_embeddings.REGISTER_MATCH_THRESHOLD) [0.75]
+    memory_db_path            (str)   — harness_voice.db, факты через шов
+                                       идентичности (issue #2440) [/data/harness_voice.db]
+    voice_facts_db_path       (str)   — voice_memory.db, второй писатель
+                                       фактов (issue #2751) [/data/voice_memory.db]
     sample_rate              (int)   — PCM sample rate         [16000]
     enabled                  (bool)  — enable/disable node     [true]
 """
@@ -86,6 +99,21 @@ class SpeakerIdNode(Node):
         # оставались висеть под старым id). Тот же файл, что у dialogue_node
         # (sqlite_db_path) — WAL допускает второе подключение на запись.
         self.declare_parameter("memory_db_path", "/data/harness_voice.db")
+        # Issue #2751 — второй писатель фактов, вне шва идентичности:
+        # MCP-инструмент memory_save пишет в voice_facts этого файла (не в
+        # harness_voice.db выше). Пока обе БД живы (миграция #2000 не
+        # доведена до конца, см. ADR-0128), merge() без этого пути молча
+        # терял бы живые факты при склейке профилей. Тот же дефолт, что у
+        # VOICE_MEMORY_DB_PATH в mcp_server.py.
+        self.declare_parameter("voice_facts_db_path", "/data/voice_memory.db")
+        # Issue #2750 — изолированная БД дикторов для E2E-актов знакомства.
+        # По умолчанию не используется: узел открывает db_path (боевую) при
+        # старте и остаётся на ней, пока explicit-сообщение на
+        # /voice/speaker/e2e_mode не переключит его (см. _on_e2e_mode_request).
+        # Раньше «чистую» БД для акта получали ssh-бэкапом+обнулением боевой
+        # speakers.db (issue #2750) — здесь то же самое достигается без
+        # единого прикосновения к боевому файлу.
+        self.declare_parameter("e2e_db_path", "/data/speakers.e2e.db")
         # Issue #2609 — defer resemblyzer warm-load to first real inference
         # unless explicitly opted in. Default False: at boot the robot
         # almost never needs speaker ID on the first few utterances
@@ -111,6 +139,19 @@ class SpeakerIdNode(Node):
             return
 
         # ── Speaker DB (thread-safe via lock) ─────────────────────────────────
+        # Issue #2750 — db_path боевой (запоминаем отдельно от e2e_db_path,
+        # чтобы _on_e2e_mode_request мог вернуться на неё). self._db_lock
+        # охраняет только САМУ замену self._db на новый объект — не каждое
+        # обращение к нему (как и раньше: _process_utterance читает self._db
+        # из executor-потока без блокировки, склейка/rename — из ROS-потока;
+        # это тот же непокрытый гонками участок, что был до этой правки,
+        # честно не расширяем его здесь).
+        self._prod_db_path: str = db_path
+        self._e2e_db_path: str = str(
+            self.get_parameter("e2e_db_path").value or "/data/speakers.e2e.db"
+        )
+        self._e2e_mode_active: bool = False
+        self._db_lock = threading.Lock()
         self._db = SpeakerDatabase(db_path)
         # Patch thresholds from parameters
         import rob_box_voice.utils.speaker_embeddings as _se_mod
@@ -247,6 +288,18 @@ class SpeakerIdNode(Node):
             String,
             "/voice/speaker/epithet",
             self._on_epithet_result,
+            reliable_qos,
+        )
+        # Issue #2750 — переключатель боевая/E2E БД дикторов. JSON
+        # {"enabled": true|false} (плоский true/false текстом тоже
+        # принимается — см. _on_e2e_mode_request). Владеет им ТОЛЬКО
+        # E2E-харнесс (.github/workflows/scripts/e2e_voice_test.sh); ручной
+        # ssh-бэкап+обнуление боевой speakers.db, который эта тема заменяет,
+        # никогда не должен возвращаться.
+        self.create_subscription(
+            String,
+            "/voice/speaker/e2e_mode",
+            self._on_e2e_mode_request,
             reliable_qos,
         )
 
@@ -522,6 +575,108 @@ class SpeakerIdNode(Node):
         )
         self._result_pub.publish(ack)
 
+    def _wipe_e2e_db_file(self) -> None:
+        """Issue #2750 — стереть файл ``e2e_db_path`` перед каждым включением.
+
+        НИКОГДА не трогает ``self._prod_db_path`` — вызывается только из
+        ветки ``enabled=True`` в ``_on_e2e_mode_request``, и путь для
+        удаления берётся из ``self._e2e_db_path`` напрямую (константа
+        узла, не параметр запроса — в топик нельзя передать произвольный
+        путь и стереть что-то ещё).
+        """
+        import os as _os
+
+        for suffix in ("", "-wal", "-shm", "-journal"):
+            path = f"{self._e2e_db_path}{suffix}"
+            try:
+                if _os.path.exists(path):
+                    _os.remove(path)
+            except OSError as exc:
+                self.get_logger().warning(
+                    f"⚠️ не удалось удалить {path!r} перед E2E-прогоном "
+                    f"({type(exc).__name__}: {exc}) — база может унаследовать "
+                    "профили с прошлого марафона"
+                )
+
+    def _on_e2e_mode_request(self, msg: String) -> None:
+        """Issue #2750 — переключить узел между боевой и E2E БД дикторов.
+
+        Ожидаемая нагрузка: JSON ``{"enabled": true}`` / ``{"enabled": false}``
+        или (проще для ssh/``ros2 topic pub``, по образцу
+        ``_on_register_request``) голый текст ``"true"``/``"false"``.
+
+        Зачем это вообще нужно (issue #2750): акт 2 ночного марафона
+        («Знакомство») по сценарию регистрирует РЕАЛЬНЫЕ профили голосов —
+        значит ему нужна ГАРАНТИРОВАННО пустая БД, иначе результат акта
+        нечитаем (шаг ``n211_who_do_you_know`` перечисляет «всех, кого
+        запомнил сегодня» и не проходит детерминированно на грязной базе).
+        До этой правки чистую БД получали ssh-командой снаружи кода перед
+        КАЖДЫМ прогоном (подтверждено владельцем в issue #2750):
+        ``docker exec voice-assistant sh -c "cp /data/speakers.db
+        /data/speakers.db.bak-<UTC>Z"`` + ``DELETE FROM embeddings; DELETE
+        FROM speakers`` — ручная операция поверх БОЕВОГО файла, не в коде,
+        и один раз стёрла профиль живого человека через 19 минут после
+        регистрации. Если этот метод даст оператору лишь «ещё один ручной
+        шаг вместо старого», человек рано или поздно вернётся к
+        ``DELETE FROM`` по боевой — поэтому чистота E2E-БД гарантируется
+        УЗЛОМ САМ, без веры в дисциплину вызывающего кода: каждое
+        включение (§ ниже) удаляет прежний файл ``e2e_db_path`` (и его
+        ``-wal``/``-shm``/``-journal``) и открывает его заново с нуля.
+        Боевой ``db_path`` при этом не трогается вообще никогда — это
+        единственный код, которому разрешено уводить узел с боевой БД.
+
+        ``db_path`` — обычный ROS-параметр, читаемый ОДИН раз в
+        ``__init__`` (открытие ``SpeakerDatabase`` — это открытие sqlite-
+        соединения, не что-то, что перечитывается на лету) — поэтому
+        переключение делает именно этот метод, а не ``ros2 param set``.
+        """
+        raw = (msg.data or "").strip()
+        try:
+            data = json.loads(raw)
+            enabled = bool(data.get("enabled", False)) if isinstance(data, dict) else bool(data)
+        except json.JSONDecodeError:
+            enabled = raw.lower() in ("true", "1", "on", "yes")
+
+        if enabled == self._e2e_mode_active:
+            self.get_logger().info(
+                f"🧪 e2e_mode_request: уже {'включён' if enabled else 'выключен'} — no-op"
+            )
+        else:
+            target_path = self._e2e_db_path if enabled else self._prod_db_path
+            with self._db_lock:
+                old_db = self._db
+                if enabled:
+                    # Гарантия чистой базы — узлом, а не дисциплиной
+                    # вызывающего кода (см. docstring выше). Прежний
+                    # e2e-файл (с прошлого марафона) удаляется целиком
+                    # ДО открытия: SpeakerDatabase создаёт схему заново
+                    # при первом же connect(). Боевой self._prod_db_path
+                    # в этой ветке не участвует вообще.
+                    self._wipe_e2e_db_file()
+                self._db = SpeakerDatabase(target_path)
+                self._e2e_mode_active = enabled
+                old_db.close()
+            # WARNING, не info: смена активной БД дикторов — событие,
+            # которое обязано быть видно в `docker logs voice-assistant`
+            # без фильтров — ровно то, чего не хватало в issue #2750,
+            # когда обнуление происходило вне логов ноды вообще.
+            self.get_logger().warning(
+                f"🧪 speaker_id_node: e2e_mode={'ON' if enabled else 'OFF'} — "
+                f"активная БД дикторов теперь {target_path!r} "
+                f"({'боевая speakers.db НЕ используется, пока режим включён' if enabled else 'вернулись на боевую'})"
+            )
+
+        ack = String()
+        ack.data = json.dumps(
+            {
+                "event": "e2e_mode",
+                "enabled": self._e2e_mode_active,
+                "db_path": self._e2e_db_path if self._e2e_mode_active else self._prod_db_path,
+            },
+            ensure_ascii=False,
+        )
+        self._result_pub.publish(ack)
+
     def _merge_identity(self, src_id: str, dst_id: str) -> Tuple[int, int]:
         """Issue #2440 — склейка через шов идентичности (эмбеддинги + факты).
 
@@ -542,10 +697,17 @@ class SpeakerIdNode(Node):
         db_path = str(
             self.get_parameter("memory_db_path").value or "/data/harness_voice.db"
         )
+        # Issue #2751 — второй писатель фактов (voice_facts в
+        # voice_memory.db), см. docstring VoiceIdentitySeam.__init__.
+        legacy_facts_db_path = str(
+            self.get_parameter("voice_facts_db_path").value or "/data/voice_memory.db"
+        )
         store = SQLiteVoiceMemory(db_path=db_path)
         try:
             await store.init()
-            seam = VoiceIdentitySeam(self._db, store)
+            seam = VoiceIdentitySeam(
+                self._db, store, legacy_facts_db_path=legacy_facts_db_path
+            )
             return await seam.merge(src_id, dst_id)
         finally:
             try:

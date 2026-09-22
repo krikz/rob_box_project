@@ -20,6 +20,14 @@ speaker_id_node:
     # Issue #2440 — harness-БД фактов для склейки профилей через шов
     # идентичности (тот же файл, что sqlite_db_path у dialogue_node).
     memory_db_path: "/data/harness_voice.db"
+    # Issue #2751 — второй писатель фактов (MCP memory_save, таблица
+    # voice_facts) — без этого пути merge() терял бы живые факты, см.
+    # docstring VoiceIdentitySeam.__init__ и ADR-0128.
+    voice_facts_db_path: "/data/voice_memory.db"
+    # Issue #2750 — изолированная БД для E2E-акта «Знакомство»; узел
+    # переключается на неё только по /voice/speaker/e2e_mode, боевую
+    # db_path выше это не трогает. См. speaker_id_node.py:_on_e2e_mode_request.
+    e2e_db_path: "/data/speakers.e2e.db"
     # Issue #2609 — defer resemblyzer warm-load to first real embed_audio.
     # Default False: cold-load is 2-3 s on first inference, acceptable for
     # the biometric cold path (зарегистрироваться / опознать нового
