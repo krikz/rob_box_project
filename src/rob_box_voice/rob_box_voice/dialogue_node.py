@@ -382,6 +382,60 @@ class _FallbackLLM:
 # мёртвым хаком, который только ломал CallerId-механизм rclpy.
 
 
+def _clean_name(value) -> Optional[str]:
+    """Имя из ack — очищенное, или ``None``.
+
+    Отдельная функция, потому что вызывается четырежды и каждый раз
+    одинаково: привести к строке, прогнать через ``sanitize_speaker_name``
+    (он режет служебные префиксы и мусор), пустое считать отсутствующим.
+    """
+    return sanitize_speaker_name(str(value or "")) or None
+
+
+def identity_question(ack: dict) -> Optional[str]:
+    """Вопрос про личность по ack регистрации — или ``None``, если молчим.
+
+    Чистая функция: на входе распарсенный ack, на выходе строка. Вынесена
+    из :meth:`DialogueNode._ask_identity_if_ambiguous` по двум причинам —
+    её можно проверять без сборки ноды, и она держит цикломатическую
+    сложность метода в бюджете ADR-0021 (гард `cc_budget` поймал CC=16
+    при лимите 15, когда логика жила внутри метода).
+
+    Два зеркальных случая, оба описаны в ADR-0127 и issue #2747:
+
+    * ``name_twin`` — человек назвался именем, которое в базе уже есть, а
+      голос до порога слияния не дотянул. Тёзка это или тот же человек,
+      по биометрии не понять;
+    * ``voice_conflict`` — наоборот, голос похож на известного, но имя
+      другое. Живой пример: Саша и Борис звучат для resemblyzer на
+      cos=0.846.
+
+    Молчим (``None``), когда спрашивать не о чем или не о ком: обычная
+    регистрация без неоднозначности, либо повод пришёл, но имени в нём
+    нет — вопрос «ты тот самый или другой?» про неизвестно кого хуже
+    молчания.
+    """
+    twin = ack.get("name_twin") or {}
+    if twin:
+        who = _clean_name(twin.get("name")) or _clean_name(ack.get("name"))
+        if not who:
+            return None
+        return (
+            f"Слушай, у меня уже записан {who}, но голос звучит иначе. "
+            f"Ты тот самый {who} или другой человек?"
+        )
+    conflict = ack.get("voice_conflict") or {}
+    if conflict:
+        other = _clean_name(conflict.get("name"))
+        if not (other and _clean_name(ack.get("name"))):
+            return None
+        return (
+            f"Твой голос очень похож на голос, который я запомнил как "
+            f"{other}. Вы разные люди или это ты под другим именем?"
+        )
+    return None
+
+
 class DialogueNode(Node):
     """ROS2 shell that composes AgentCore over the harness ports."""
     def __init__(self) -> None:  # noqa: D401 — ROS2 ctor signature
@@ -2095,29 +2149,13 @@ class DialogueNode(Node):
         (тот же довод, что у отказа ``register_error`` выше), и к
         следующей реплике повод переспросить уже протухнет.
         """
-        twin = ack.get("name_twin") or {}
-        conflict = ack.get("voice_conflict") or {}
-        name = sanitize_speaker_name(str(ack.get("name") or "")) or None
-        question = None
-        if twin:
-            twin_name = sanitize_speaker_name(str(twin.get("name") or "")) or name
-            if twin_name:
-                question = (
-                    f"Слушай, у меня уже записан {twin_name}, но голос звучит "
-                    f"иначе. Ты тот самый {twin_name} или другой человек?"
-                )
-        elif conflict:
-            other = sanitize_speaker_name(str(conflict.get("name") or "")) or None
-            if other and name:
-                question = (
-                    f"Твой голос очень похож на голос, который я запомнил как "
-                    f"{other}. Вы разные люди или это ты под другим именем?"
-                )
+        question = identity_question(ack)
         if not question:
             return
         self.get_logger().info(
             f"👥 [issue #2747] переспрашиваю про личность: "
-            f"twin={bool(twin)} conflict={bool(conflict)}"
+            f"twin={bool(ack.get('name_twin'))} "
+            f"conflict={bool(ack.get('voice_conflict'))}"
         )
         try:
             self._speak_direct(question)
