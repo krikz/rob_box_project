@@ -134,6 +134,7 @@ from rob_box_voice.core.dialogue_guards import (
     MUSIC_STARTING_TOOLS,
     MUSIC_RETRY_PROMPT_PREFIX,
     MUSIC_STOP_OVERRIDES,
+    build_fact_memory_save_fallback,  # Issue #2780 п.3
     build_hallucinated_midi_retry_prompt,
     build_music_prose_action_fallback,
     build_music_retry_prompt,
@@ -158,6 +159,7 @@ from rob_box_voice.core.dialogue_guards import (
     is_system_template_regurgitated,
     is_tool_call_markup,  # Issue #2760
     is_vocal_request,
+    spoken_matches_claim_category,  # Issue #2780 п.3
     user_wants_music,
     user_wants_performance,
 )
@@ -6418,7 +6420,14 @@ class DialogueNode(Node):
             dj_active=self._dj_session_active(),
         ):
             return
-        if spoken and self._publish_music_prose_action_fallback_if_needed(
+        # Issue #2548 (музыка) + #2780 п.3 (память) — общая точка входа
+        # для fallback'ов «ретрай уже потрачен, а claim повторился».
+        # Диспетчер, а не два отдельных ``if`` подряд: ``_handle_result``
+        # грандфазерен в cc_budget_baseline.json на CC=85 с открытой
+        # картой рефакторинга #2556, и растить его ради второй категории
+        # нечестно — ветвление живёт в
+        # ``_publish_action_claim_fallback_if_needed``.
+        if spoken and self._publish_action_claim_fallback_if_needed(
             spoken=spoken,
             tools_called=tuple(tools_called or ()),
             user_input=user_input,
@@ -7038,6 +7047,52 @@ class DialogueNode(Node):
         except Exception:
             return False
 
+    def _publish_action_claim_fallback_if_needed(
+        self,
+        *,
+        spoken: str,
+        tools_called: Tuple[str, ...],
+        user_input: Optional[str],
+        raw_user_command: Optional[str],
+        is_dj_auto: bool,
+        has_error: bool,
+        speak_text_real: int,
+    ) -> bool:
+        """Issue #2548 + #2780 п.3 — диспетчер fallback'ов после ретрая.
+
+        Одноразовый ретрай action-claim'а (``_action_claim_retry_used``)
+        тратится на ПЕРВОМ ложном заявлении в ходе. Если модель повторяет
+        заявление второй репликой того же хода, guard уже молчит, и без
+        подмены ``spoken`` юзер услышит уверенное «всё готово» / «всё на
+        месте» про несделанное. Каждая категория
+        :data:`ACTION_CLAIM_RULES`, у которой есть честная констатация на
+        замену, получает свой ``_publish_*_fallback_if_needed``; здесь —
+        единственная точка входа из ``_handle_result``.
+
+        Порядок: музыка (#2548) → память (#2780). Ветки не пересекаются
+        — у каждой свой контекстный гейт (музыка требует DJ-сессию или
+        music-keyword, память — «запомни/запиши/сохрани» не про точку и
+        не про трек), так что порядок тут даёт стабильность, а не
+        приоритет.
+
+        Returns:
+            ``True`` — fallback опубликован, вызывающий обязан сделать
+            ``return`` из ``_handle_result`` (оригинальный ``spoken``
+            в TTS НЕ идёт).
+        """
+        kwargs = dict(
+            spoken=spoken,
+            tools_called=tools_called,
+            user_input=user_input,
+            raw_user_command=raw_user_command,
+            is_dj_auto=is_dj_auto,
+            has_error=has_error,
+            speak_text_real=speak_text_real,
+        )
+        if self._publish_music_prose_action_fallback_if_needed(**kwargs):
+            return True
+        return self._publish_fact_memory_save_fallback_if_needed(**kwargs)
+
     def _publish_music_prose_action_fallback_if_needed(
         self,
         *,
@@ -7099,16 +7154,15 @@ class DialogueNode(Node):
 
         Если ретрай был по waypoint-claim, а не music-claim, fallback
         не должен срабатывать на ЛЮБОЙ spoken после ретрая.
+
+        Issue #2780 п.3: тело переехало в
+        :func:`spoken_matches_claim_category` (``core/dialogue_guards.py``)
+        — та же проверка нужна для категории ``fact_memory_save``, и
+        держать две копии ``next(... claim_re.search ...)`` рядом незачем.
+        Метод остаётся тонкой обёрткой: его зовёт
+        ``_publish_music_prose_action_fallback_if_needed``.
         """
-        music_rule = next(
-            (r for r in ACTION_CLAIM_RULES
-             if r.category == "music_prose_action"),
-            None,
-        )
-        return bool(
-            music_rule is not None
-            and music_rule.claim_re.search(spoken)
-        )
+        return spoken_matches_claim_category("music_prose_action", spoken)
 
     def _emit_music_prose_action_fallback(
         self,
@@ -7124,6 +7178,135 @@ class DialogueNode(Node):
             f"🛟 [issue 2548 fallback] action-claim повторился после "
             f"ретрая — публикую констатацию вместо claim'а: "
             f"spoken={spoken[:80]!r}"
+        )
+        try:
+            self._publish_response(fallback, animation="neutral")
+        except Exception as exc:  # noqa: BLE001
+            try:
+                self.get_logger().warning(
+                    f"⚠️ fallback publish failed: {exc}"
+                )
+            except Exception:
+                pass
+
+    @staticmethod
+    def _fact_memory_save_rule():
+        """Issue #2780 п.3 — правило ``fact_memory_save`` из таблицы.
+
+        Единственный источник правды и для гейта по ``user_re``, и для
+        списка закрывающих тулов (``memory_save`` — факт,
+        ``register_speaker`` — имя) лежит в :data:`ACTION_CLAIM_RULES`.
+        Копировать оттуда что-либо сюда нельзя: добавленный в правило
+        тул молча перестанет закрывать заявку, и робот начнёт извиняться
+        за запись, которая на самом деле прошла.
+        """
+        return next(
+            (r for r in ACTION_CLAIM_RULES
+             if r.category == "fact_memory_save"),
+            None,
+        )
+
+    def _fact_memory_save_tools(self) -> frozenset:
+        """Issue #2780 п.3 — тулы, закрывающие заявку ``fact_memory_save``."""
+        rule = self._fact_memory_save_rule()
+        return rule.tools if rule is not None else frozenset()
+
+    def _fact_memory_fallback_eligible(
+        self, user_input: Optional[str],
+    ) -> bool:
+        """Issue #2780 п.3 — юзер в этом ходе правда просил ЗАПОМНИТЬ?
+
+        Аналог :meth:`_music_prose_fallback_eligible`, только гейт другой:
+        у памяти нет DJ-сессии и music-keyword'ов, зато есть ``user_re``
+        того же правила («запомни/запиши/сохрани/не забудь/заметь», с
+        negative lookahead на точку/трек — у них свои правила и свои
+        тулы). Без этого гейта потраченный на waypoint-claim ретрай
+        заставил бы «Не получилось точно сохранить факт» звучать в
+        совершенно постороннем ходе.
+        """
+        rule = self._fact_memory_save_rule()
+        if not user_input or rule is None:
+            return False
+        try:
+            return bool(rule.user_re.search(user_input))
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _publish_fact_memory_save_fallback_if_needed(
+        self,
+        *,
+        spoken: str,
+        tools_called: Tuple[str, ...],
+        user_input: Optional[str],
+        raw_user_command: Optional[str],
+        is_dj_auto: bool,
+        has_error: bool,
+        speak_text_real: int,
+    ) -> bool:
+        """Issue #2780 п.3 — fallback spoken после НЕудачного memory-ретрая.
+
+        Прогон 35734532425, акт «Знакомство», шаг ``n206_boris_memory`` —
+        один ход, три реплики подряд:
+
+        1. «Запомнил: Спартак с 98-го, пицца раз в неделю.» ``tools=[]``
+           → Bug E guard поймал, потратил одноразовый ретрай;
+        2. ретрай честно признался («у меня в памяти сбой, проверь»);
+        3. «Всё на месте, Спартак и пицца в памяти, запись подтверждена.»
+           ``tools=['memory_context']`` — ЧТЕНИЕ памяти, не запись.
+
+        На третьей реплике ``_action_claim_retry_used`` уже True: guard
+        в этом ходе больше не выстрелит, и юзер уходит с верой в запись,
+        которой нет. PR #2782 научил ``claim_re`` ловить формулировку
+        («всё на месте», «запись подтверждена») — эта ветка подменяет
+        такой ``spoken`` честной констатацией ПЕРЕД публикацией в TTS.
+
+        Условия все ОДНОВРЕМЕННО:
+
+        1. ``_action_claim_retry_used == True`` — ретрай уже потрачен
+           в этой user-turn;
+        2. ни один тул из ``rule.tools`` (``memory_save`` /
+           ``register_speaker``) не вызван. ВАЖНО: в отличие от
+           музыкального fallback'а здесь НЕЛЬЗЯ требовать пустой
+           ``tools_called`` — в живом логе он равен ``['memory_context']``
+           (чтение), и проверка «список пуст» пропустила бы ровно тот
+           случай, ради которого карточка заведена;
+        3. ``speak_text_real == 0`` (как у остальных guard'ов цепочки);
+        4. юзер в этом ходе просил запомнить — ``user_re`` правила
+           (см. :meth:`_fact_memory_fallback_eligible`);
+        5. ``spoken`` всё ещё матчит ``claim_re`` категории
+           ``fact_memory_save``;
+        6. не ``is_dj_auto`` (юзер молчал — просьбы запомнить не было)
+           и нет ``result.error`` — честное сообщение об ошибке LLM
+           не маскируем.
+
+        Returns:
+            ``True`` — fallback опубликован, вызывающий должен вернуть
+            ``return`` из ``_handle_result``.
+        """
+        if (
+            is_dj_auto
+            or has_error
+            or speak_text_real != 0
+            or (set(tools_called or ()) & self._fact_memory_save_tools())
+            or not getattr(self, "_action_claim_retry_used", False)
+        ):
+            return False
+        if not self._fact_memory_fallback_eligible(
+            raw_user_command or user_input,
+        ):
+            return False
+        if not spoken_matches_claim_category("fact_memory_save", spoken):
+            return False
+        self._emit_fact_memory_save_fallback(spoken)
+        return True
+
+    def _emit_fact_memory_save_fallback(self, spoken: str) -> None:
+        """Issue #2780 п.3 — публикуем честный fallback + warning в лог."""
+        fallback = build_fact_memory_save_fallback()
+        self.get_logger().warning(
+            f"🛟 [issue 2780 fallback] подтверждение записи в память "
+            f"повторилось после ретрая без memory_save — публикую "
+            f"констатацию вместо claim'а: spoken={spoken[:80]!r}"
         )
         try:
             self._publish_response(fallback, animation="neutral")
