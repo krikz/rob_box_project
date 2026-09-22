@@ -187,6 +187,8 @@ PLANNING_NARRATION_TOOL_NAMES: tuple = (
     "search_web",
     "listen_for_response",
     "navigate_to_waypoint",
+    # Issue #2760 — имя всплыло в живой разметке вызова, прочитанной вслух.
+    "register_speaker",
 )
 
 #: Начала реплики, где модель говорит о собеседнике в третьем лице.
@@ -205,6 +207,19 @@ def is_planning_narration(spoken_text: str) -> bool:
     if not spoken_text:
         return False
     low = spoken_text.lower()
+    # NB (issue #2760): к этому моменту текст уже прошёл ``strip_markdown``,
+    # который снимает ``_..._`` парами через весь текст — в живом логе
+    # ``register_speaker``/``memory_save``/``speaker_id`` приехали сюда как
+    # ``registerspeaker``/``memorysave``/``speakerid``, и поиск подстрокой
+    # не совпал ни разу. Из-за этого правило ведёт себя непоследовательно:
+    # одно упоминание тула (одно подчёркивание, пары нет) → mute, три
+    # упоминания (подчёркивания схлопнулись) → озвучиваем. Чинить это
+    # нормализацией НЕЛЬЗЯ мимоходом: цена ошибки здесь не ретрай, а
+    # полная тишина в ответ («что умеешь?» → «Я умею: speak_text, …»
+    # ушло бы в mute, см. test_issue_1882_planning_narration.py).
+    # Разметку протокола ловит отдельный, не зависящий от подчёркиваний
+    # :func:`is_tool_call_markup` (#2760); политика mute для прозаичных
+    # упоминаний — отдельное решение.
     if any(name in low for name in PLANNING_NARRATION_TOOL_NAMES):
         return True
     head = low.lstrip(" \t*#>-—«\"'")[:40]
@@ -2529,6 +2544,85 @@ def build_system_regurgitate_retry_prompt(user_input: Optional[str]) -> str:
         "❌ ЗАПРЕЩЕНО отвечать одной директивой без действия.\n"
         "✅ В ЭТОМ же turn ответь обычным русским языком (без XML-обёрток "
         "и meta-маркеров), вызови нужный tool и заверши 'done'."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Issue #2760 — модель ПЕЧАТАЕТ вызов тула вместо того, чтобы его сделать.
+#
+# Live Vision Pi, прогон 35704637846 (акт 2, шаг n204_boris_intro_long)::
+#
+#   spoken='<function_calls>\n<invoke name="register_speaker">\n
+#           <parameter name="name">Борис</parameter>\n</invoke>\n
+#           <invoke name="memory_save">…</invoke>\n</function_calls>'
+#   tools=[] finish_reason='stop'
+#
+# Дальше без задержки: ``📤 LLM OUTPUT`` → два TTS-чанка → робот читает
+# разметку вслух, а текст оседает в истории как реплика ассистента
+# (следующий ход учится на этом примере).
+#
+# Отличие от #2175: там модель возвращает кусок СИСТЕМНОГО промпта, здесь —
+# синтаксис ВЫЗОВА инструмента. Отличие от #2549/#2559: там модель
+# ОПИСЫВАЕТ действие прозой («сделала», «перезапущу»), и детектор ищет
+# глаголы; здесь глаголов нет вообще — есть теги.
+#
+# Разбор причины (модель MiniMax-M3 отправляет решение в канал content
+# при исправно переданных тулах), восстановление намерения и сам регекс —
+# в :mod:`rob_box_harness.core.tool_loop.markup_recovery` и
+# ``text_classify``. Здесь — последний рубеж: не дать тегам прозвучать.
+# ---------------------------------------------------------------------------
+# ⚠️ Регекс намеренно ДУБЛИРУЕТСЯ с
+# ``rob_box_harness.core.tool_loop.text_classify.TOOL_CALL_MARKUP_RE``.
+# Свести в один модуль нельзя: harness — нижний слой, он не имеет права
+# импортировать voice, а этот модуль обязан оставаться pure-Python без
+# зависимостей (см. шапку файла). Слои решают РАЗНЫЕ задачи: там —
+# восстановить намерение внутри цикла тулов, здесь — не дать тегам
+# прозвучать. Правку одного регекса переносить во второй; эквивалентность
+# закреплена тестом ``test_issue_2760_tool_call_markup.py``.
+TOOL_CALL_MARKUP_RE = re.compile(
+    # Родной диалект MiniMax (официальный tool_calling_guide.md):
+    # <minimax:tool_call><invoke name="..."><parameter name="...">.
+    r"</?minimax:tool_call\s*>"
+    # Диалект, который робот получил живьём 22.09 (Anthropic-style).
+    r"|</?function_?calls\s*>"
+    r"|</?tool_?calls?\s*>"
+    r"|<\s*/?\s*(?:minimax:|antml:)?invoke(?:\s+name\s*=|\s*>)"
+    r"|<\s*/?\s*(?:minimax:|antml:)?parameter(?:\s+name\s*=|\s*>)"
+    r"|<\s*antml:",
+    re.IGNORECASE,
+)
+
+
+def is_tool_call_markup(spoken_text: Optional[str]) -> bool:
+    """Issue #2760 — в ``spoken`` лежит разметка вызова тула, а не речь.
+
+    ``True``, если текст содержит хоть один маркер из
+    :data:`TOOL_CALL_MARKUP_RE`. Пустая строка / ``None`` → ``False``.
+    """
+    if not spoken_text:
+        return False
+    return bool(TOOL_CALL_MARKUP_RE.search(spoken_text))
+
+
+def build_tool_call_markup_retry_prompt(user_input: Optional[str]) -> str:
+    """Issue #2760 — CRITICAL-ретрай на «вызов тула написан текстом».
+
+    Тот же контракт, что у :func:`build_system_regurgitate_retry_prompt`:
+    одна попытка, промпт прямо называет ошибку и требует настоящий
+    tool-call.
+    """
+    cleaned = _strip_trailing_critical_block(user_input or "")
+    return (
+        f"{cleaned}\n\n"
+        "[CRITICAL] В прошлом цикле ты НАПИСАЛ вызов инструментов текстом "
+        "(``<function_calls><invoke name=\"...\">...``) вместо того, чтобы "
+        "их вызвать. Инструменты не сработали, а разметку прочитал вслух "
+        "синтезатор речи — пользователь услышал теги.\n"
+        "❌ ЗАПРЕЩЕНО писать ``<function_calls>``, ``<invoke>``, "
+        "``<parameter>`` и любые другие теги протокола в текст ответа.\n"
+        "✅ В ЭТОМ же turn вызови нужные инструменты штатным механизмом "
+        "tool-calls, а в текст ответа напиши только человеческую фразу "
+        "на русском."
     )
 
 

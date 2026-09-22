@@ -110,6 +110,13 @@ from .core.dialogue_guards import (
     is_system_template_regurgitated_in_ssml as _is_system_template_regurgitated_ssml,
 )
 
+# Issue #2760 — тот же приём для разметки протокола tool-calls: модель
+# печатает ``<function_calls><invoke name="...">`` текстом, dialogue-guard
+# требует ретрай, а этот уровень гарантирует, что теги не прозвучат, даже
+# если реплика пришла мимо него (прогон 35704637846: два чанка ушли в
+# синтез). Детектор ``search``-овый, поэтому работает и на сыром SSML.
+from .core.dialogue_guards import is_tool_call_markup as _is_tool_call_markup
+
 # Issue #2003 / ADR-0056 — speculative chunk-level pre-generation.
 # Pure-Python package, no rclpy/asyncio in the data-class modules
 # (only :class:`speculative_executor.SpeculativeExecutor` is
@@ -2627,6 +2634,29 @@ class TTSNode(Node):
                         speech_id,
                         success=False,
                         error="system_template_regurgitated",
+                        batch_id=chunk_data.get("batch_id"),
+                        batch_index=chunk_data.get("batch_index"),
+                        batch_total=chunk_data.get("batch_total"),
+                        dialogue_id=dialogue_id,
+                    )
+                return
+
+            # Issue #2760 — defense-in-depth: разметку вызова тулов не
+            # синтезируем никогда. На роботе (прогон 35704637846) она
+            # прошла весь тракт и была прочитана вслух.
+            if _is_tool_call_markup(ssml):
+                self.get_logger().warning(
+                    "🚫 [issue 2760] TTS refused — LLM написала вызов тула "
+                    f"текстом: speech_id={speech_id[:8]}, "
+                    f"voice={chunk_data.get('voice') or 'default'}, "
+                    f"ssml={ssml[:200]!r}"
+                )
+                _publish_finished = getattr(self, "_publish_tts_finished", None)
+                if _publish_finished is not None:
+                    _publish_finished(
+                        speech_id,
+                        success=False,
+                        error="tool_call_markup",
                         batch_id=chunk_data.get("batch_id"),
                         batch_index=chunk_data.get("batch_index"),
                         batch_total=chunk_data.get("batch_total"),

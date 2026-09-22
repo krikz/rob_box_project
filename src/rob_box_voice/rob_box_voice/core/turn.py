@@ -57,6 +57,7 @@ from .dialogue_guards import (
     build_phantom_action_retry_prompt,
     build_renardo_code_retry_prompt,
     build_system_regurgitate_retry_prompt,
+    build_tool_call_markup_retry_prompt,  # Issue #2760
     build_tool_retry_prompt,
     build_unbacked_action_retry_prompt,
     build_universal_action_claim_retry_prompt,
@@ -71,6 +72,7 @@ from .dialogue_guards import (
     is_metalanguage_babble,
     is_planning_narration,
     is_system_template_regurgitated,
+    is_tool_call_markup,  # Issue #2760
     user_wants_performance,
 )
 
@@ -563,6 +565,39 @@ class SystemRegurgitateGuard:
 
 
 @dataclass(frozen=True)
+class ToolCallMarkupGuard:
+    """Issue #2760 — LLM printed the tool-call protocol instead of calling it.
+
+    Live run 35704637846 (act 2, ``n204_boris_intro_long``): ``spoken``
+    was ``<function_calls><invoke name="register_speaker">…`` with
+    ``tools=[]``, and tts_node synthesized it — the robot read the tags
+    out loud.
+
+    Runs FIRST, before :class:`SystemRegurgitateGuard`: protocol markup
+    is not speech in any sense, and no other guard recognises it (the
+    action-claim family looks for verbs; #2175 looks for ``<system>``).
+
+    Returns ``RETRY`` with :func:`build_tool_call_markup_retry_prompt`.
+    """
+
+    name: str = "tool_call_markup"
+
+    def evaluate(self, ctx: GuardContext) -> Optional[Verdict]:
+        if ctx.reply.speak_text_real > 0:
+            return None
+        if not ctx.reply.spoken:
+            return None
+        if not is_tool_call_markup(ctx.reply.spoken):
+            return None
+        prompt = build_tool_call_markup_retry_prompt(ctx.turn.user_input)
+        return Verdict(
+            kind=VerdictKind.RETRY,
+            guard_name=self.name,
+            prompt=prompt,
+        )
+
+
+@dataclass(frozen=True)
 class ToolSkippedGuard:
     """Issue #1777 / #1762 — user asked for a specific tool, LLM skipped it.
 
@@ -1010,6 +1045,7 @@ class PhantomActionGuard:
 #: to PUBLISH A MODIFIED TEXT, which none of the three kinds express).
 #: See issue #2556 PR body.
 DEFAULT_GUARD_ORDER: Tuple[type, ...] = (
+    ToolCallMarkupGuard,
     SystemRegurgitateGuard,
     ToolSkippedGuard,
     BabbleGuard,

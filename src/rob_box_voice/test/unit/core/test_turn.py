@@ -41,6 +41,7 @@ from rob_box_voice.core.turn import (
     PlanningNarrationHardMute,
     Reply,
     SystemRegurgitateGuard,
+    ToolCallMarkupGuard,
     ToolSkippedGuard,
     TurnContext,
     TurnGuards,
@@ -843,7 +844,9 @@ class TestDefaultGuardsFactory:
     def test_default_order_without_music(self) -> None:
         guards = default_guards()
         names = [getattr(g, "name", type(g).__name__) for g in guards]
-        assert names[0] == "system_regurgitate"
+        # Issue #2760 — разметка протокола ловится раньше всех.
+        assert names[0] == "tool_call_markup"
+        assert names[1] == "system_regurgitate"
         assert "tool_skipped" in names
         assert "babble" in names
         assert "embedded_renardo_code" in names
@@ -861,8 +864,9 @@ class TestDefaultGuardsFactory:
         adapter = music_guard_adapter(_fake_evaluate)
         guards = default_guards(music_guard=adapter)
         names = [getattr(g, "name", type(g).__name__) for g in guards]
-        assert names[0] == "system_regurgitate"
-        assert names[1] == "music"
+        assert names[0] == "tool_call_markup"  # issue #2760
+        assert names[1] == "system_regurgitate"
+        assert names[2] == "music"
         # Music sits BEFORE babble (legacy ordering requirement).
         assert names.index("music") < names.index("babble")
 
@@ -915,6 +919,7 @@ class TestGuardOrderInvariant:
         """Pin the full order. Inserting a new guard anywhere requires a
         deliberate edit to this test — that's the point (issue #2556)."""
         assert [cls.__name__ for cls in DEFAULT_GUARD_ORDER] == [
+            "ToolCallMarkupGuard",
             "SystemRegurgitateGuard",
             "ToolSkippedGuard",
             "BabbleGuard",
@@ -927,14 +932,21 @@ class TestGuardOrderInvariant:
             "PlanningNarrationHardMute",
         ]
 
-    def test_system_regurgitate_is_first(self) -> None:
+    def test_tool_call_markup_is_first(self) -> None:
+        """Issue #2760 — разметка протокола tool-calls не речь ни в каком
+        смысле: её ловим раньше всех, включая #2175. Остальные guard'ы
+        её не распознают (они ищут ``<system>`` или глаголы) и либо
+        промолчат, либо наклеят свой CRITICAL поверх тегов."""
+        assert DEFAULT_GUARD_ORDER[0] is ToolCallMarkupGuard
+
+    def test_system_regurgitate_is_first_of_the_retry_family(self) -> None:
         """Hard invariant from the legacy ``_handle_result`` comment next
         to the #2175 call site: system_regurgitate must run BEFORE
         babble / renardo / any action-claim guard, so a regurgitated
         ``<system>`` template never gets the babble CRITICAL pasted on
         top of it, and is never mistaken for an action-claim
         hallucination."""
-        assert DEFAULT_GUARD_ORDER[0] is SystemRegurgitateGuard
+        assert DEFAULT_GUARD_ORDER[1] is SystemRegurgitateGuard
 
     @pytest.mark.parametrize(
         "later_guard",

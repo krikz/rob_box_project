@@ -274,9 +274,13 @@ _PSEUDO_TOOL_CALL_RE = re.compile(r"^<[^<>]{1,160}>$")
 _PENDING_RETRY_KEY: str = "reply_retracted"
 
 
+from rob_box_harness.core.tool_loop.markup_recovery import (  # Issue #2760
+    parse_tool_call_markup,
+)
 from rob_box_harness.core.tool_loop.text_classify import (  # noqa: F401 — back-compat aliases
     _PSEUDO_TOOL_CALL_RE,
     is_pseudo_tool_call as _is_pseudo_tool_call,
+    is_tool_call_markup,  # Issue #2760
 )
 
 
@@ -942,7 +946,16 @@ class AgentCore:
         # live 01.09 — заглушка вида ``<compose_music composition here>``.
         # Юзер её не слышал (ход ничего не сделал), а в истории она работает
         # как обучающий пример: следующий ход модель копирует её дословно.
-        return _is_pseudo_tool_call(spoken or "")
+        if _is_pseudo_tool_call(spoken or ""):
+            return True
+        # Issue #2760 — тот же механизм, но в полном синтаксисе протокола:
+        # ``<function_calls><invoke name="memory_save">…``. Штатный путь —
+        # восстановление намерения в цикле тулов (``parse_tool_call_markup``),
+        # сюда текст доезжает только если имя тула не опознано. Записать его
+        # в историю нельзя: прогон 35704637846 показал ровно этот механизм —
+        # разметка легла ходом ``[13] assistant`` и модель скопировала её на
+        # следующем шаге (n204 → n206).
+        return is_tool_call_markup(spoken or "")
 
     async def discard_last_reply(self) -> bool:
         """Retract the most recently persisted assistant turn for this user.
@@ -1134,7 +1147,44 @@ class AgentCore:
                 continue
 
             if not response.tool_calls:
-                break
+                # Issue #2760 — MiniMax-M3 иногда отправляет решение не в
+                # канал function-calling, а текстом:
+                # ``<function_calls><invoke name="memory_save">…``. Тулы мы
+                # предложили, стрим разобрали штатно, finish_reason='stop' —
+                # это выбор модели, не наша ошибка (разбор в
+                # :mod:`.tool_loop.markup_recovery`).
+                #
+                # Намерение известно точно, поэтому восстанавливаем его, а не
+                # платим за ретрай. Прав это не расширяет: исполняются только
+                # тулы из ``openai_tools`` этого же запроса. Не разобралось —
+                # уходим дальше по общему пути (guard'ы на стороне voice не
+                # дадут тегам прозвучать).
+                recovered = parse_tool_call_markup(
+                    response.content, tools=openai_tools
+                )
+                if recovered:
+                    logging.getLogger(__name__).warning(
+                        "[issue 2760] модель написала вызов тула текстом "
+                        "(%s) — восстанавливаю намерение: %s",
+                        (response.content or "")[:80],
+                        [name for name, _ in recovered],
+                    )
+                    response = replace(
+                        response,
+                        # Текст был разметкой, а не речью: озвучивать его
+                        # нечего, и в историю он попасть не должен.
+                        content="",
+                        tool_calls=tuple(
+                            ToolCall(
+                                id=f"recovered_{idx}",
+                                name=name,
+                                arguments=args,
+                            )
+                            for idx, (name, args) in enumerate(recovered)
+                        ),
+                    )
+                else:
+                    break
 
             # Record unique tool names actually invoked, and count
             # speak_text occurrences (issue #992 — the raw count lets
