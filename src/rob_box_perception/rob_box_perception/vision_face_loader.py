@@ -16,6 +16,18 @@ PR-A scope: **только детекция лица** — ``event_type="face"``
 ``embedding_id`` / ``display_name`` остаются пустыми (это PR-B, ArcFace).
 Эмбеддинги не считаются, БД нет → privacy-review для PR-A не требуется.
 
+Issue #2773 (после PR-B, "PR-C"): landmarks-тензоры, которые HEF УЖЕ
+отдавал, но PR-A их выбрасывал, теперь декодируются тем же анкерным
+декодером, что и боксы (``_decode_landmarks``), проходят тот же
+confidence-фильтр и NMS, что и боксы (СОГЛАСОВАННО — одни и те же
+индексы отбора), и unproject'ятся в координаты исходного кадра тем же
+``LetterboxInfo``, что и bbox. Landmarks кладутся в VisionEvent-dict
+под ключом ``landmarks`` — контракт с ``face_embedding.align_face``,
+см. докстринг ``_post_process_faces``. Причина: ArcFace на невыровненном
+кропе (bbox + запас + анизотропный resize) даёт внутриперсонный разброс
+эмбеддингов 0.3–0.85, который перекрывает межперсонный (issue #2773,
+живые замеры на роботе 22.09.2026) — выравнивание по 5 точкам это чинит.
+
 Спецификация модели (hailo_model_zoo retinaface_mobilenet_v1, проверено
 по ``cfg/networks/retinaface_mobilenet_v1.yaml`` и
 ``core/postprocessing/face_detection_postprocessing.py``):
@@ -41,8 +53,11 @@ Failure policy (ADR-0018 capability-honest): любой сбой HailoRT
 Touchpoints:
 - ADR-0089 §2.1 Phase 2 (retinaface_mobilenet_v1.hef).
 - Issue #2599 PR-A (детекция лица без идентификации).
+- Issue #2773 (landmarks decode, выравнивание ArcFace-входа).
 - rob_box_perception.vision_hailo_loader (StubHEFLoader, LetterboxInfo,
   is_stub_event, filter_by_confidence — переиспользуются).
+- rob_box_perception.face_embedding.align_face (потребитель ключа
+  ``landmarks``).
 """
 
 from __future__ import annotations
@@ -167,6 +182,70 @@ def _decode_boxes(box_predictions: Any, anchors: Any) -> Any:
     return np.stack([x1, y1, x2, y2], axis=1)
 
 
+def _decode_landmarks(landmark_predictions: Any, anchors: Any) -> Any:
+    # НЕ ПРОВЕРЕНО НА РЕАЛЬНОМ HEF (issue #2773 честно): делитель 10 ниже
+    # и порядок 5 точек (left_eye, right_eye, nose, mouth_left,
+    # mouth_right) взяты по сверке с эталонной biubug6/Pytorch_Retinaface
+    # реализацией, а НЕ измерены на фактическом выходе
+    # retinaface_mobilenet_v1.hef — hailo_model_zoo postprocessing config
+    # в этом репозитории не лежит. Если на живом роботе landmarks
+    # окажутся систематически смещены или точки перепутаны местами —
+    # первое место для перепроверки именно здесь, а не в unproject/NMS.
+    """RetinaFace landmark decode: regression -> normalized (x, y) x 5 точек, letterbox-space.
+
+    landmark_predictions: (N, 10) [dx1, dy1, dx2, dy2, ..., dx5, dy5] —
+    5 точек лица в фиксированном порядке biubug6/Pytorch_Retinaface
+    (совпадает с порядком, который требует issue #2773 для контракта
+    VisionEvent): left_eye, right_eye, nose, mouth_left, mouth_right.
+    anchors: (N, 4) [cx, cy, w, h] — те же анкеры, что и для боксов.
+
+    Масштабный делитель (ЧЕСТНО — не проверено на реальном HEF, только
+    сверено с эталонной реализацией, а не измерено): в эталонном
+    biubug6/Pytorch_Retinaface ``utils/box_utils.py::decode_landm``
+    landmarks декодируются как::
+
+        landm_k = anchor_center + pre_k * variances[0] * anchor_wh
+
+    где ``variances = (0.1, 0.2)`` (тот же cfg_mnet, на который уже
+    ссылается докстринг ``_build_anchors`` для anchors и который
+    задаёт ``BOX_VARIANCE_CENTER = 10.0`` для box-центра: ``variances[0]
+    = 0.1 == 1 / BOX_VARIANCE_CENTER``). То есть у landmarks используется
+    ТОТ ЖЕ делитель 10, что и у box-центра (dx/dy), а не делитель 5,
+    которым box декодирует размер (dw/dh) — у landmarks аналога
+    "размера" нет, регрессия только по смещению точки. hailo_model_zoo
+    компилирует эту же эталонную реализацию в HEF (см. модульный
+    docstring про ``retinaface_mobilenet_v1``), поэтому формула должна
+    совпадать, но: hailo_model_zoo postprocessing config
+    (``core/postprocessing/face_detection_postprocessing.py``) в этом
+    репозитории не лежит и в рамках issue #2773 не читался напрямую —
+    если на живом HEF landmarks выйдут смещёнными сильнее, чем боксы,
+    это первое место для перепроверки (сверить с фактическим
+    ``face_detection_postprocessing.py`` из hailo_model_zoo на роботе).
+
+    Формула по каждой из 5 точек:
+        x_k = a_cx + dx_k / 10 * a_w
+        y_k = a_cy + dy_k / 10 * a_h
+
+    Returns:
+        (N, 10) в том же порядке каналов, что вход: [x1, y1, ..., x5, y5],
+        normalized в letterbox-space (до unproject через LetterboxInfo).
+    """
+    import numpy as np  # type: ignore[import-not-found]
+
+    a_cx = anchors[:, 0]
+    a_cy = anchors[:, 1]
+    a_w = anchors[:, 2]
+    a_h = anchors[:, 3]
+
+    decoded = np.empty_like(landmark_predictions, dtype=np.float32)
+    for k in range(5):
+        dx = landmark_predictions[:, 2 * k]
+        dy = landmark_predictions[:, 2 * k + 1]
+        decoded[:, 2 * k] = a_cx + dx / BOX_VARIANCE_CENTER * a_w
+        decoded[:, 2 * k + 1] = a_cy + dy / BOX_VARIANCE_CENTER * a_h
+    return decoded
+
+
 def _softmax(logits: Any, axis: int) -> Any:
     """Численно стабильный softmax вдоль заданной оси."""
     import numpy as np  # type: ignore[import-not-found]
@@ -211,6 +290,51 @@ def _xyxy_to_cxcywh_normalized(
     w = x2 - x1
     h = y2 - y1
     return cx, cy, w, h
+
+
+def _unproject_landmarks_normalized(
+    landmarks: Any,
+    letterbox_info: Optional[LetterboxInfo],
+) -> Any:
+    """5 точек лица в letterbox-space -> normalized координаты исходного кадра.
+
+    Тот же unproject, что ``_xyxy_to_cxcywh_normalized`` делает для
+    bbox'а (issue #2773 требует ИМЕННО эту обратную проекцию для
+    landmarks — точки обязаны быть в системе координат исходного кадра,
+    а не letterbox-тензора 736x1280, иначе ``align_face`` в
+    ``face_embedding.py`` посчитает similarity-transform по неверным
+    координатам и выравнивание будет хуже, чем его отсутствие):
+        letterbox px = xy * (letterbox_w, letterbox_h)
+        unproject (вычесть pad, разделить на scale) -> исходный кадр px
+        нормализовать на (orig_w, orig_h)
+    Если ``letterbox_info`` None (синтетический вход без паддинга в
+    юнит-тестах) — точки уже в model-input space, возвращаются как есть
+    — та же конвенция, что и у bbox.
+
+    Args:
+        landmarks: (N, 10) [x1, y1, ..., x5, y5], normalized letterbox-space.
+        letterbox_info: метаданные letterbox или None.
+
+    Returns:
+        (N, 10) в исходном кадре, normalized [0, 1] (может выйти за
+        пределы [0, 1] для точек у самой границы кадра — вызывающий код
+        это не клампит, ровно как и bbox).
+    """
+    if letterbox_info is None or letterbox_info.scale <= 0.0:
+        return landmarks
+
+    lw = letterbox_info.letterbox_w
+    lh = letterbox_info.letterbox_h
+    ow = letterbox_info.orig_w
+    oh = letterbox_info.orig_h
+
+    out = landmarks.copy()
+    for k in range(5):
+        x = landmarks[:, 2 * k]
+        y = landmarks[:, 2 * k + 1]
+        out[:, 2 * k] = (x * lw - letterbox_info.pad_left) / letterbox_info.scale / ow
+        out[:, 2 * k + 1] = (y * lh - letterbox_info.pad_top) / letterbox_info.scale / oh
+    return out
 
 
 def _normalize_output_layout(
@@ -273,7 +397,17 @@ def _post_process_faces(
 
     Returns:
         List[dict] в формате VisionEvent-полей. ``event_type="face"``,
-        ``embedding_id`` / ``display_name`` пустые (PR-A).
+        ``embedding_id`` / ``display_name`` пустые (PR-A). ``landmarks``
+        (issue #2773, PR-C) — плоский список из 10 normalized float'ов
+        исходного кадра ``[left_eye_x, left_eye_y, right_eye_x,
+        right_eye_y, nose_x, nose_y, mouth_left_x, mouth_left_y,
+        mouth_right_x, mouth_right_y]``, либо ``None``, если landmarks
+        не удалось декодировать (нет landmark-тензоров на входе —
+        обратная совместимость с 6-тензорным PR-A выходом синтетических
+        тестов — либо декод дал не-конечные числа). Ключ ``landmarks``
+        присутствует ВСЕГДА, даже когда значение ``None`` — контракт с
+        ``face_embedding.align_face``, который ждёт ключ, а не его
+        отсутствие.
     """
     import numpy as np  # type: ignore[import-not-found]
 
@@ -282,18 +416,26 @@ def _post_process_faces(
 
     anchors = _build_anchors()
 
+    n_branches = len(FEATURE_MAP_SIZES)
+    # Обратная совместимость: некоторые синтетические входы (PR-A,
+    # старые фикстуры) несут только (box, class) на branch, без
+    # landmarks. Полный retinaface-выход — 3 тензора на branch.
+    has_landmarks = len(raw_outputs) >= 3 * n_branches
+
     boxes_list: List[Any] = []
     scores_list: List[Any] = []
+    landmarks_list: List[Any] = []
     offset = 0
-    for idx in range(len(FEATURE_MAP_SIZES)):
+    for idx in range(n_branches):
         fh, fw = FEATURE_MAP_SIZES[idx]
         n_anchors = fh * fw * 2
+        stride = 3 if has_landmarks else 2
 
         box_t = _normalize_output_layout(
-            raw_outputs[idx * 3 + 0], fh, fw, _BOX_CHANNELS
+            raw_outputs[idx * stride + 0], fh, fw, _BOX_CHANNELS
         ).reshape(-1, _BOX_CHANNELS // 2)  # (N, 4)  [dx, dy, dw, dh]
         cls_t = _normalize_output_layout(
-            raw_outputs[idx * 3 + 1], fh, fw, _CLASS_CHANNELS
+            raw_outputs[idx * stride + 1], fh, fw, _CLASS_CHANNELS
         ).reshape(-1, _CLASS_CHANNELS // 2)  # (N, 2)  [bg, face]
 
         branch_anchors = anchors[offset:offset + n_anchors]
@@ -306,8 +448,17 @@ def _post_process_faces(
         boxes_list.append(decoded)
         scores_list.append(face_scores)
 
+        if has_landmarks:
+            lmk_t = _normalize_output_layout(
+                raw_outputs[idx * stride + 2], fh, fw, _LANDMARK_CHANNELS
+            ).reshape(-1, _LANDMARK_CHANNELS // 2)  # (N, 10)
+            landmarks_list.append(
+                _decode_landmarks(lmk_t.astype(np.float32), branch_anchors)
+            )
+
     boxes = np.concatenate(boxes_list, axis=0)
     scores = np.concatenate(scores_list, axis=0)
+    landmarks = np.concatenate(landmarks_list, axis=0) if has_landmarks else None
 
     # Confidence filter до NMS.
     keep = scores >= confidence_threshold
@@ -315,6 +466,8 @@ def _post_process_faces(
         return []
     boxes = boxes[keep]
     scores = scores[keep]
+    if landmarks is not None:
+        landmarks = landmarks[keep]
 
     # NMS. Все боксы — один класс ("face"), поэтому class_ids = 0.
     # Переиспользуем _nms_per_class из vision_hailo_loader (single-class
@@ -335,11 +488,24 @@ def _post_process_faces(
 
     boxes = boxes[keep_idx]
     scores = scores[keep_idx]
+    if landmarks is not None:
+        # Те же индексы NMS-отбора, что и для боксов (issue #2773:
+        # точки обязаны пройти СОГЛАСОВАННЫЙ с боксами отбор, иначе
+        # landmarks[i] будет относиться к другому лицу, чем bbox[i]).
+        landmarks = landmarks[keep_idx]
 
     cx, cy, w, h = _xyxy_to_cxcywh_normalized(boxes, letterbox_info)
+    if landmarks is not None:
+        landmarks = _unproject_landmarks_normalized(landmarks, letterbox_info)
 
     events: List[Dict[str, Any]] = []
     for i in range(len(scores)):
+        landmarks_out: Optional[List[float]] = None
+        if landmarks is not None:
+            row = [float(v) for v in landmarks[i]]
+            if all(np.isfinite(v) for v in row):
+                landmarks_out = row
+
         events.append({
             'source_camera': source_camera,
             'event_type': 'face',
@@ -354,6 +520,7 @@ def _post_process_faces(
             'embedding_id': '',
             'display_name': '',
             'attributes_json': '',
+            'landmarks': landmarks_out,
         })
     return events
 

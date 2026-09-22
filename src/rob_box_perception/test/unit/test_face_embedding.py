@@ -19,6 +19,18 @@ Hailo-слой в тестах ArcFaceEmbedder подменяется фейко
   6. crop_brightness_contrast — метрика ворот качества кропа (issue #2749):
      почти чёрный кроп даёт низкие mean/контраст, светлый/контрастный —
      нет; ``None`` при вырожденном/пустом кропе (cv2-зависимые проверки).
+  7. align_face (issue #2773) — similarity-transform по 5 точкам на
+     канонический шаблон ArcFace: точное совпадение шаблона -> выход
+     совпадает с шаблоном; повёрнутый/смещённый/масштабированный набор
+     точек -> выравнивание восстанавливает канонические позиции;
+     None-пути (landmarks None/неверной длины/NaN, cv2 недоступен,
+     вырожденные точки).
+
+ЧЕСТНО (issue #2773 acceptance): geometрические тесты ``align_face``
+ниже проверяют, что функция считает и применяет similarity-transform
+корректно на СИНТЕТИЧЕСКИХ точках (математика cv2), а не на реальном
+лице с реального HEF — насколько лучше реальные эмбеддинги на живом
+роботе, тестами не проверено, это отдельный замер на железе.
 """
 
 from __future__ import annotations
@@ -338,3 +350,234 @@ def test_crop_brightness_contrast_none_on_empty_or_none_crop():
     empty = np.zeros((0, 10, 3), dtype=np.uint8)
     assert face_mod.crop_brightness_contrast(empty) is None
     assert face_mod.crop_brightness_contrast(None) is None
+
+
+# ---------- align_face (issue #2773) ----------------------------------------
+#
+# Канонический ArcFace-препроцессинг вместо невыровненного растянутого
+# кропа (crop_face + prepare_arcface_input) — корень внутриперсонного
+# разброса эмбеддингов 0.3-0.85 на живом роботе (issue #2773). Тесты
+# ниже проверяют геометрию similarity-transform на синтетических точках:
+# они не могут подтвердить улучшение на реальных лицах (для этого нужен
+# живой HEF + живая галерея), только то, что cv2.estimateAffinePartial2D
+# + cv2.warpAffine действительно восстанавливают канонические позиции
+# точек при известном повороте/масштабе/сдвиге.
+
+def _rotate_scale_translate(points, angle_deg, scale, tx, ty):
+    """Применить известный similarity-transform к набору 2D точек (numpy)."""
+    theta = np.deg2rad(angle_deg)
+    cos_t, sin_t = np.cos(theta), np.sin(theta)
+    rot = np.array([[cos_t, -sin_t], [sin_t, cos_t]]) * scale
+    pts = np.asarray(points, dtype=np.float64)
+    return pts @ rot.T + np.array([tx, ty], dtype=np.float64)
+
+
+def test_similarity_transform_umeyama_identity():
+    pts = np.array(
+        [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0], [0.5, 0.5]],
+        dtype=np.float64,
+    )
+    m = face_mod._similarity_transform_umeyama(pts, pts)
+    assert m is not None
+    assert np.allclose(m[:, :2], np.eye(2), atol=1e-9)
+    assert np.allclose(m[:, 2], [0.0, 0.0], atol=1e-9)
+
+
+def test_similarity_transform_umeyama_recovers_known_transform():
+    """Точки, полученные из шаблона известным R/scale/t, обязаны точно
+    восстанавливаться обратно — прямая проверка формулы Umeyama, без
+    промежуточного round-trip через изображение/warpAffine."""
+    template = np.asarray(face_mod._ARCFACE_TEMPLATE_112, dtype=np.float64)
+    src = _rotate_scale_translate(
+        template, angle_deg=32.0, scale=1.4, tx=-20.0, ty=50.0
+    )
+    m = face_mod._similarity_transform_umeyama(src, template)
+    assert m is not None
+    recovered = (m[:, :2] @ src.T).T + m[:, 2]
+    assert np.allclose(recovered, template, atol=1e-6)
+
+
+def test_similarity_transform_umeyama_is_deterministic():
+    """Формула детерминирована по построению (в отличие от RANSAC) —
+    повторный вызов на тех же точках обязан дать побитово тот же результат."""
+    template = np.asarray(face_mod._ARCFACE_TEMPLATE_112, dtype=np.float64)
+    src = _rotate_scale_translate(
+        template, angle_deg=-10.0, scale=0.7, tx=5.0, ty=5.0
+    )
+    m1 = face_mod._similarity_transform_umeyama(src, template)
+    m2 = face_mod._similarity_transform_umeyama(src, template)
+    assert m1 is not None and m2 is not None
+    assert np.array_equal(m1, m2)
+
+
+def test_similarity_transform_umeyama_none_on_degenerate_src():
+    dst = np.asarray(face_mod._ARCFACE_TEMPLATE_112, dtype=np.float64)
+    src = np.array([[10.0, 10.0]] * 5, dtype=np.float64)
+    assert face_mod._similarity_transform_umeyama(src, dst) is None
+
+
+def test_align_face_recovers_canonical_template_under_rotation_scale_shift():
+    """Точки, полученные из шаблона известным поворотом/масштабом/сдвигом,
+    после align_face обязаны лечь обратно в канонические позиции шаблона
+    — маркеры-цвета, нарисованные в исходном кадре в этих точках, должны
+    оказаться в выровненном 112x112 РОВНО там, где их ожидает канон.
+    """
+    pytest.importorskip('cv2')
+    import cv2  # noqa: E402 (importorskip выше гарантирует наличие)
+
+    template = np.asarray(face_mod._ARCFACE_TEMPLATE_112, dtype=np.float64)
+    # Известный transform: поворот 15°, масштаб 1.8x, сдвиг (60, 40) —
+    # заведомо НЕ идентичность, чтобы тест не проходил случайно.
+    src_pts = _rotate_scale_translate(
+        template, angle_deg=15.0, scale=1.8, tx=60.0, ty=40.0
+    )
+
+    frame_w, frame_h = 400, 400
+    frame = np.zeros((frame_h, frame_w, 3), dtype=np.uint8)
+    colors = [
+        (255, 0, 0),
+        (0, 255, 0),
+        (0, 0, 255),
+        (255, 255, 0),
+        (0, 255, 255),
+    ]
+    for (x, y), color in zip(src_pts, colors):
+        cv2.circle(
+            frame, (int(round(x)), int(round(y))), radius=6,
+            color=color, thickness=-1,
+        )
+
+    landmarks: list = []
+    for x, y in src_pts:
+        landmarks.append(x / frame_w)
+        landmarks.append(y / frame_h)
+
+    aligned = face_mod.align_face(frame, landmarks, output_size=112)
+
+    assert aligned is not None
+    assert aligned.shape == (112, 112, 3)
+    assert aligned.dtype == np.uint8
+
+    for (tx, ty), color in zip(template, colors):
+        xi, yi = int(round(tx)), int(round(ty))
+        patch = aligned[max(0, yi - 2):yi + 3, max(0, xi - 2):xi + 3]
+        mean_color = patch.reshape(-1, 3).mean(axis=0)
+        assert np.allclose(mean_color, color, atol=40), (
+            f'канонический маркер {color} не найден у шаблонной точки '
+            f'({tx}, {ty}): получено {mean_color}'
+        )
+
+
+def test_align_face_output_size_scaling():
+    """output_size != 112 -> шаблон масштабируется пропорционально, а не
+    остаётся зафиксированным на 112x112 (иначе выход был бы обрезан)."""
+    pytest.importorskip('cv2')
+    output_size = 224
+    scale = output_size / face_mod.ARCFACE_INPUT_SIZE
+    template = np.asarray(face_mod._ARCFACE_TEMPLATE_112, dtype=np.float64) * scale
+
+    frame = np.zeros((output_size, output_size, 3), dtype=np.uint8)
+    landmarks: list = []
+    for x, y in template:
+        landmarks.append(x / output_size)
+        landmarks.append(y / output_size)
+
+    aligned = face_mod.align_face(frame, landmarks, output_size=output_size)
+    assert aligned is not None
+    assert aligned.shape == (output_size, output_size, 3)
+
+
+def test_align_face_none_when_landmarks_none():
+    frame = np.zeros((200, 200, 3), dtype=np.uint8)
+    assert face_mod.align_face(frame, None) is None
+
+
+def test_align_face_none_when_landmarks_wrong_length():
+    frame = np.zeros((200, 200, 3), dtype=np.uint8)
+    assert face_mod.align_face(frame, [0.1, 0.2, 0.3]) is None
+    assert face_mod.align_face(frame, []) is None
+
+
+def test_align_face_none_when_frame_none():
+    landmarks = [0.1] * 10
+    assert face_mod.align_face(None, landmarks) is None
+
+
+def test_align_face_none_on_non_finite_landmarks():
+    pytest.importorskip('cv2')
+    frame = np.zeros((200, 200, 3), dtype=np.uint8)
+    landmarks = [0.1] * 10
+    landmarks[0] = float('nan')
+    assert face_mod.align_face(frame, landmarks) is None
+
+    landmarks_inf = [0.1] * 10
+    landmarks_inf[3] = float('inf')
+    assert face_mod.align_face(frame, landmarks_inf) is None
+
+
+def test_align_face_none_on_degenerate_points():
+    """5 совпадающих точек -> вырожденная геометрия: дисперсия src ~ 0,
+    similarity-transform (Umeyama) математически не определён (масштаб
+    считается делением на дисперсию src) -> align_face обязан вернуть
+    None, а не упасть и не подставить произвольный transform.
+    """
+    pytest.importorskip('cv2')
+    frame = np.zeros((200, 200, 3), dtype=np.uint8)
+    landmarks = [0.5, 0.5] * 5
+    assert face_mod.align_face(frame, landmarks) is None
+
+
+def test_align_face_is_deterministic_across_repeated_calls():
+    """Один и тот же вход дважды -> побитово одинаковый результат.
+
+    Ловит именно регрессию на RANSAC (``cv2.estimateAffinePartial2D``
+    без явного ``method``): RANSAC сэмплит случайные подмножества из 5
+    точек и может отдать разный transform от вызова к вызову для ОДНОГО
+    И ТОГО ЖЕ входа, что в системе узнавания означает разный эмбеддинг
+    для одного и того же кадра. ``_similarity_transform_umeyama`` —
+    детерминированная closed-form формула, поэтому результат обязан
+    совпадать побитово при повторном вызове с теми же аргументами.
+    """
+    pytest.importorskip('cv2')
+    template = np.asarray(face_mod._ARCFACE_TEMPLATE_112, dtype=np.float64)
+    src_pts = _rotate_scale_translate(
+        template, angle_deg=-27.0, scale=0.9, tx=15.0, ty=-8.0
+    )
+    frame_w, frame_h = 300, 300
+    frame = np.random.RandomState(7).randint(
+        0, 255, size=(frame_h, frame_w, 3)
+    ).astype(np.uint8)
+
+    landmarks: list = []
+    for x, y in src_pts:
+        landmarks.append(x / frame_w)
+        landmarks.append(y / frame_h)
+
+    result_a = face_mod.align_face(frame, landmarks, output_size=112)
+    result_b = face_mod.align_face(frame, landmarks, output_size=112)
+
+    assert result_a is not None
+    assert result_b is not None
+    assert np.array_equal(result_a, result_b), (
+        'align_face обязан быть детерминированным — побитово одинаковый '
+        'результат на одинаковом входе (issue #2773: RANSAC-регрессия)'
+    )
+
+
+def test_align_face_none_without_cv2(monkeypatch):
+    """cv2 недоступен -> None, а не исключение (модуль обязан работать
+    без cv2 — см. модульный docstring про ленивый импорт)."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _fake_import(name, *args, **kwargs):
+        if name == 'cv2':
+            raise ImportError('cv2 недоступен (тест)')
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, '__import__', _fake_import)
+
+    frame = np.zeros((200, 200, 3), dtype=np.uint8)
+    landmarks = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.05]
+    assert face_mod.align_face(frame, landmarks) is None

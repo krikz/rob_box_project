@@ -52,6 +52,7 @@ for key in ('hailo_enabled', 'hef_path', 'stub_period_sec',
             # FACE_STORE_ROOT, FACE_PRIVACY_MODE, FACE_IDENTIFY_THRESHOLD).
             'arcface_enabled', 'arcface_hef_path', 'face_store_root',
             'face_privacy_mode', 'face_identify_threshold',
+            'face_enroll_threshold',
             'min_track_sec', 'min_face_px',
             # Ворота качества кропа (issue #2749) — см. комментарий у
             # min_crop_mean/min_crop_contrast в hailo_models.yaml.
@@ -92,7 +93,13 @@ ARCFACE_ENABLED="${ARCFACE_ENABLED:-false}"
 ARCFACE_HEF_PATH="${ARCFACE_HEF_PATH:-}"
 FACE_STORE_ROOT="${FACE_STORE_ROOT:-/data/faces}"
 FACE_PRIVACY_MODE="${FACE_PRIVACY_MODE:-workshop}"
-FACE_IDENTIFY_THRESHOLD="${FACE_IDENTIFY_THRESHOLD:-0.45}"
+# ЗАГЛУШКА до sweep по ADR-0123 §6 (issue #2771) — НЕ калиброванные
+# значения. identify — «похож достаточно, чтобы назвать имя»; enroll —
+# заметно строже, «похож достаточно, чтобы дописать эмбеддинг в
+# галерею» (issue #2772). Прежний дефолт 0.45 пускал чужих (тёща
+# опознана как «Деньчик» при score=0.483).
+FACE_IDENTIFY_THRESHOLD="${FACE_IDENTIFY_THRESHOLD:-0.6}"
+FACE_ENROLL_THRESHOLD="${FACE_ENROLL_THRESHOLD:-0.75}"
 MIN_TRACK_SEC="${MIN_TRACK_SEC:-2.0}"
 MIN_FACE_PX="${MIN_FACE_PX:-48.0}"
 # Ворота качества кропа (issue #2749) — обоснование чисел см. в
@@ -110,7 +117,7 @@ echo "[start_vision_face] config: HAILO_ENABLED=${HAILO_ENABLED} HEF_PATH=${HEF_
 echo "[start_vision_face] topics: output=${OUTPUT_TOPIC}"
 echo "[start_vision_face] confidence_threshold=${CONFIDENCE_THRESHOLD} nms_iou=${NMS_IOU_THRESHOLD}"
 echo "[start_vision_face] arcface: ARCFACE_ENABLED=${ARCFACE_ENABLED} ARCFACE_HEF_PATH=${ARCFACE_HEF_PATH:-<none>}"
-echo "[start_vision_face] face store: root=${FACE_STORE_ROOT} privacy_mode=${FACE_PRIVACY_MODE} identify_threshold=${FACE_IDENTIFY_THRESHOLD}"
+echo "[start_vision_face] face store: root=${FACE_STORE_ROOT} privacy_mode=${FACE_PRIVACY_MODE} identify_threshold=${FACE_IDENTIFY_THRESHOLD} enroll_threshold=${FACE_ENROLL_THRESHOLD}"
 echo "[start_vision_face] face limits: min_track_sec=${MIN_TRACK_SEC} min_face_px=${MIN_FACE_PX} min_crop_mean=${MIN_CROP_MEAN} min_crop_contrast=${MIN_CROP_CONTRAST} max_embeds_per_frame=${MAX_EMBEDS_PER_FRAME} max_embeddings=${MAX_EMBEDDINGS} keep_encounters=${KEEP_ENCOUNTERS} max_strangers=${MAX_STRANGERS}"
 
 if [ "${ARCFACE_ENABLED}" = "true" ] && [ -z "${ARCFACE_HEF_PATH}" ]; then
@@ -164,6 +171,7 @@ LAUNCH_ARGS=(
     face_store_root:=${FACE_STORE_ROOT}
     face_privacy_mode:=${FACE_PRIVACY_MODE}
     face_identify_threshold:=${FACE_IDENTIFY_THRESHOLD}
+    face_enroll_threshold:=${FACE_ENROLL_THRESHOLD}
     min_track_sec:=${MIN_TRACK_SEC}
     min_face_px:=${MIN_FACE_PX}
     min_crop_mean:=${MIN_CROP_MEAN}

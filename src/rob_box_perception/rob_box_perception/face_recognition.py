@@ -50,6 +50,67 @@ Issue #2599 PR-B, ADR-0123 §3/§4/§6.
 согласуется с границей ``FaceStore`` (ADR-0123 §5: хранилище снимки
 принципиально не разглядывает) — фильтр стоит строго ВЫШЕ неё, пока
 кроп ещё живой массив, а не готовые JPEG-байты.
+
+**Ворота качества кропа, часть 2: геометрия и резкость** (issue #2774).
+Яркость/контраст ловят «кроп есть, но там ничего не видно» (тень,
+пересвет). Они НЕ ловят другой, не менее опасный отказ: кроп ЕСТЬ, он
+яркий и контрастный, но геометрически обрублен. Живой пример на
+роботе (issue #2774) — запись ``b49470e1-...``, встреча №19: бокс
+упёрся в верхний край кадра, ``crop_face`` (``face_embedding.py``)
+честно склампил его к границе и молча отдал результат — в кадре
+остались подбородок, рот и шея, глаз нет вообще. Такой вектор
+проходит любые ворота яркости/контраста и работает отмычкой в галерее,
+потому что счёт узнавания в ``FaceStore`` — max по галерее (issue
+#2774: «один мусорный вектор похож на что угодно чуть больше, чем
+надо»). Поэтому здесь же, в :meth:`FaceRecognizer._crop_all`,
+пересчитывается — от исходного ``bbox`` и того же ``margin``, что уйдёт
+в ``crop_face`` — какая доля ЗАПРОШЕННОГО (bbox+margin) прямоугольника
+реально попадает в кадр (:func:`_crop_coverage`, ``DEFAULT_MIN_CROP_
+COVERAGE``), и отдельно — не срезана ли ИМЕННО верхняя граница
+(``DEFAULT_MAX_TOP_CLIP_FRAC``): верх не равноценен низу и бокам, там
+глаза. Мы не можем поправить ``crop_face``, чтобы он сообщал об этом
+сам (issue #2773 сейчас параллельно переписывает и его, и декодер
+landmarks в ``vision_face_loader``) — поэтому геометрия клампа
+продублирована здесь по формуле из докстринга ``crop_face``.
+
+Резкость (:func:`~rob_box_perception.face_embedding.sharpness`)
+до этой карточки считалась, но НЕ была воротами — она входила только
+слагаемым в скоринг «лучшего кадра трека» (``face_tracker.
+_observation_score``, ``SCORE_WEIGHT_SHARPNESS``). Смазанный, но яркий
+и геометрически целый кроп такие ворота раньше проходил свободно.
+Теперь та же величина используется дважды, с двумя разными ролями,
+явно разведёнными (см. :meth:`FaceRecognizer._pixel_quality_reject_
+reason` про ворота и ``face_tracker.py`` про скоринг): здесь —
+порог «пускать/не пускать» (``DEFAULT_MIN_SHARPNESS``), там — не
+изменившееся слагаемое выбора лучшего из УЖЕ пропущенных кадров.
+
+Все причины отказа (``dark``/``flat``/``clipped``/``blurry``) считаются
+в один словарь и отдаются в :meth:`stats` — issue #2749 и #2774 прямо
+требуют, чтобы этот фильтр был видимым, а не вторым тихим источником
+«почему робот меня не видит».
+
+**Выравнивание по landmark'ам** (issue #2773, соседняя карточка).
+Когда детектор отдаёт 5 точек лица (``det['landmarks']`` — плоский
+список из 10 float, normalized [0,1] в координатах кадра, порядок
+left_eye/right_eye/nose/mouth_left/mouth_right; либо ``None``, если
+точек нет), :meth:`FaceRecognizer._crop_all` пробует выровнять лицо по
+шаблону ArcFace через ``face_embedding.align_face`` — канонический
+similarity-transform вместо простого прямоугольного кропа с
+анизотропным ресайзом (issue #2773: без выравнивания внутриперсонный
+разброс эмбеддингов 0.3–0.85, порог узнавания пришлось опустить до
+0.45, отсюда и спутанные имена). Если landmarks нет, ``align_face``
+недоступна (модуль face_embedding у соседнего агента ещё не готов —
+импорт устойчив к этому, см. ниже) или вернула ``None`` — используется
+прежний путь ``crop_face``; частота фолбека считается отдельно и тоже
+уходит в :meth:`stats`.
+
+Важно: выровненная 112x112 картинка идёт ТОЛЬКО эмбеддеру. Снимок
+встречи, который видят люди в Telegram/Quest (ADR-0123 §8), обязан
+остаться человекочитаемым прямоугольным кропом ``crop_face`` — не
+квадратом ArcFace. Поэтому с этой карточки на каждую детекцию есть два
+разных артефакта: вход эмбеддера (``embed_crops`` в ``_crop_all``) и
+снимок встречи (``snapshot_crops``, из которого же считаются и ворота
+качества, и итоговый JPEG в :meth:`_on_encounter`).
 """
 
 from __future__ import annotations
@@ -64,6 +125,22 @@ from rob_box_perception.face_embedding import (
     encode_jpeg,
     sharpness,
 )
+
+try:
+    # align_face — issue #2773, пишет параллельно другой агент в этом же
+    # PR-окне. Импорт устойчив ровно к той же ситуации, для которой
+    # face_tracker._cosine_similarity уже держит fallback на face_embedding:
+    # на момент запуска ЭТИХ тестов функции может ещё не быть в файле
+    # соседа (или файл ещё не импортируется вовсе) — модуль не имеет права
+    # упасть на импорте из-за чужой незаконченной работы. Если align_face
+    # недоступна, узнавание просто всегда идёт фолбеком на crop_face (см.
+    # ``FaceRecognizer._align_or_fallback``), а не падает.
+    from rob_box_perception.face_embedding import (  # type: ignore[import-not-found]
+        align_face,
+    )
+except ImportError:
+    align_face = None  # type: ignore[assignment]
+
 from rob_box_perception.face_tracker import FaceObservation, FaceTracker
 
 #: Запас вокруг bbox'а лица при кропе (ADR-0123 §4.2: «40 % по краям,
@@ -102,6 +179,59 @@ DEFAULT_MIN_CROP_MEAN = 20.0
 #: остаётся про другой (пока не пойманный вживую) случай отказа. Живой
 #: человек в той же базе (``b49470e1-...``) — контраст 170–208.
 DEFAULT_MIN_CROP_CONTRAST = 25.0
+
+#: Минимальная доля ЗАПРОШЕННОГО (bbox с запасом ``crop_margin``,
+#: сторона умножается на ``1 + 2*margin`` — формула из докстринга
+#: ``face_embedding.crop_face``) прямоугольника, которая обязана
+#: попасть в кадр, иначе кроп отбраковывается как ``clipped`` (issue
+#: #2774). ``crop_face`` клампит бокс к границам кадра молча, ничего не
+#: сообщая наверх о том, что и сколько отрезано — правкой этого самого
+#: кламп-сообщения занимается issue #2773 (файл сейчас параллельно
+#: переписывает другой агент, трогать нельзя), поэтому здесь же, зная
+#: тот же bbox/margin/размер кадра, что уйдут в ``crop_face``, геометрия
+#: запроса пересчитывается заново (:func:`_crop_coverage`).
+#:
+#: Живой пример issue #2774: запись ``b49470e1-...``, встреча №19 —
+#: бокс упёрся в верхний край кадра, в кропе остались подбородок/рот/шея,
+#: глаз нет вообще. Точных чисел кламп-прямоугольника этого случая нет
+#: (на диске сохранился только итоговый JPEG, не геометрия запроса), порог
+#: 0.85 подобран из здравого смысла запаса: ``DEFAULT_CROP_MARGIN=0.4``
+#: делает запрошенный прямоугольник почти вдвое шире самой детекции —
+#: потеря больше 15% его площади уже заметно режет именно ту рамку, ради
+#: которой margin вообще заводили (причёска/уши, ADR-0123 §4.2), а не
+#: только "лишний" запас по краям.
+DEFAULT_MIN_CROP_COVERAGE = 0.85
+
+#: Максимальная доля высоты запроса, которую можно срезать ИМЕННО
+#: сверху, прежде чем кроп отбраковывается — отдельная, более строгая
+#: проверка (issue #2774), а не частный случай ``DEFAULT_MIN_CROP_
+#: COVERAGE``. Верх не равноценен низу и бокам: там глаза, и без них
+#: эмбеддинг ArcFace бессмыслен, даже если формально ``coverage`` кропа
+#: ещё выше 0.85 (крупный запрошенный прямоугольник может потерять
+#: сверху немного площади, но ровно ту полосу, где были глаза). Порог
+#: заметно строже общего покрытия (5% против допустимых 15% по
+#: ``DEFAULT_MIN_CROP_COVERAGE``) — в этой asимметрии весь смысл
+#: отдельной проверки.
+DEFAULT_MAX_TOP_CLIP_FRAC = 0.05
+
+#: Порог ворот резкости (variance-of-Laplacian, см. ``face_embedding.
+#: sharpness``) — issue #2774. У той же величины теперь ДВЕ разные роли,
+#: явно разведённые (см. докстринг :meth:`FaceRecognizer.
+#: _pixel_quality_reject_reason`): здесь — порог "пускать/не пускать" ДО
+#: эмбеддинга, а не слагаемое скоринга "лучшего кадра трека"
+#: (``face_tracker._observation_score``, ``SCORE_WEIGHT_SHARPNESS`` —
+#: тот код не менялся и не должен).
+#:
+#: Число подобрано по нормировке ``face_tracker.SCORE_SHARPNESS_NORM``
+#: (=500.0; докстринг там же: "резкие кадры веб/USB-камер обычно дают
+#: значения в районе сотен-полутора тысяч", то есть sharpness_term
+#: резкого кадра там близок к 1.0). Порог ворот здесь — на порядок ниже
+#: этой нормировки (500/10): заведомо ниже вклада сколько-нибудь резкого
+#: кадра в скоринг, но далеко не ноль, который даёт статичный/сильно
+#: смазанный кроп — некалиброванных живых чисел смазанного кропа с
+#: issue #2774 нет, порог не претендует на точность, только на то, чтобы
+#: не пропускать явную мазню.
+DEFAULT_MIN_SHARPNESS = 50.0
 
 #: Окно, внутри которого голосовое опознание считается относящимся к
 #: лицу в кадре (ADR-0123 §6 «в окне встречи»). Шире — и робот привяжет
@@ -149,6 +279,16 @@ class FaceRecognizer:
             (issue #2749, см. ``DEFAULT_MIN_CROP_MEAN``).
         min_crop_contrast: ворота качества кропа — порог контраста
             ``p95-p5`` (issue #2749, см. ``DEFAULT_MIN_CROP_CONTRAST``).
+        min_crop_coverage: ворота качества кропа — минимальная доля
+            запрошенного (bbox+margin) прямоугольника, попавшая в кадр
+            (issue #2774, см. ``DEFAULT_MIN_CROP_COVERAGE``).
+        max_top_clip_frac: ворота качества кропа — максимальная доля
+            высоты, срезанная именно сверху (issue #2774, см.
+            ``DEFAULT_MAX_TOP_CLIP_FRAC``).
+        min_sharpness: ворота качества кропа — порог резкости
+            (variance-of-Laplacian); НЕ путать со слагаемым скоринга
+            лучшего кадра трека в ``face_tracker`` (issue #2774, см.
+            ``DEFAULT_MIN_SHARPNESS``).
         voice_merge_window_sec: окно слияния с голосом (ADR-0123 §6).
         store_snapshots: писать ли снимок встречи. Решение «лечь ли ему
             на диск» всё равно принимает ``FaceStore`` по режиму — здесь
@@ -166,6 +306,9 @@ class FaceRecognizer:
         min_embed_px: float = DEFAULT_MIN_EMBED_PX,
         min_crop_mean: float = DEFAULT_MIN_CROP_MEAN,
         min_crop_contrast: float = DEFAULT_MIN_CROP_CONTRAST,
+        min_crop_coverage: float = DEFAULT_MIN_CROP_COVERAGE,
+        max_top_clip_frac: float = DEFAULT_MAX_TOP_CLIP_FRAC,
+        min_sharpness: float = DEFAULT_MIN_SHARPNESS,
         voice_merge_window_sec: float = DEFAULT_VOICE_MERGE_WINDOW_SEC,
         max_embeds_per_frame: int = DEFAULT_MAX_EMBEDS_PER_FRAME,
         store_snapshots: bool = True,
@@ -178,6 +321,9 @@ class FaceRecognizer:
         self._min_embed_px = float(min_embed_px)
         self._min_crop_mean = float(min_crop_mean)
         self._min_crop_contrast = float(min_crop_contrast)
+        self._min_crop_coverage = float(min_crop_coverage)
+        self._max_top_clip_frac = float(max_top_clip_frac)
+        self._min_sharpness = float(min_sharpness)
         self._voice_merge_window_sec = float(voice_merge_window_sec)
         self._max_embeds_per_frame = max(1, int(max_embeds_per_frame))
         self._store_snapshots = bool(store_snapshots)
@@ -198,10 +344,27 @@ class FaceRecognizer:
         self._embed_calls = 0
         self._embed_ms_total = 0.0
         self._embed_skipped_budget = 0
-        #: Кропы, отброшенные воротами качества (issue #2749) — почти
-        #: чёрные/плоские, не дошли даже до эмбеддера. Отдельно от
-        #: ``embed_failures`` (там ArcFace/HailoRT реально падает).
+        #: Кропы, отброшенные воротами качества (issue #2749, #2774) — не
+        #: дошли даже до эмбеддера. Отдельно от ``embed_failures`` (там
+        #: ArcFace/HailoRT реально падает). ``_crop_rejected_total`` —
+        #: сумма по всем причинам, ``_crop_rejected_by_reason`` — та же
+        #: сумма с разбивкой (issue #2774: «тихий фильтр обязан быть
+        #: видимым» — тот же аргумент, что issue #2748 уже применило к
+        #: причинам пропуска слияния с голосом ниже).
         self._crop_rejected_total = 0
+        self._crop_rejected_by_reason: Dict[str, int] = {
+            'dark': 0,      # средняя яркость ниже min_crop_mean (issue #2749)
+            'flat': 0,      # контраст p95-p5 ниже min_crop_contrast (issue #2749)
+            'clipped': 0,   # coverage/top-clip ниже порога (issue #2774)
+            'blurry': 0,    # sharpness ниже min_sharpness (issue #2774)
+        }
+
+        # Выравнивание по landmark'ам (issue #2773) — как часто эмбеддер
+        # реально получил выровненный 112x112 вход, и как часто пришлось
+        # откатиться на старый путь crop_face (нет landmarks, align_face
+        # недоступна/ещё не приземлилась у соседа, либо вернула None).
+        self._align_used_total = 0
+        self._align_fallback_total = 0
 
         # Issue #2748 — «слияний=0» само по себе не говорит, ПОЧЕМУ: некого
         # было сливать (голос не опознан) или не с чем (в кадре не одно
@@ -262,11 +425,18 @@ class FaceRecognizer:
 
         frame_h, frame_w = int(image.shape[0]), int(image.shape[1])
 
-        crops, face_px_list = self._crop_all(detections, image, frame_w, frame_h)
-        embeddings = self._embed_all(crops)
+        # Два разных артефакта на детекцию с #2773/#2774: embed_crops —
+        # вход эмбеддера (выровненный по landmarks 112x112, если получилось,
+        # иначе фолбек-кроп crop_face), snapshot_crops — человекочитаемый
+        # прямоугольный кроп crop_face, который и только который идёт в
+        # снимок встречи (ADR-0123 §8) и в скоринг "лучшего кадра трека".
+        embed_crops, snapshot_crops, face_px_list = self._crop_all(
+            detections, image, frame_w, frame_h
+        )
+        embeddings = self._embed_all(embed_crops)
 
         observations = self._make_observations(
-            detections, crops, embeddings, face_px_list, frame_w, frame_h, ts
+            detections, snapshot_crops, embeddings, face_px_list, frame_w, frame_h, ts
         )
 
         # 1. Кто в кадре — на каждом кадре, только чтение.
@@ -278,7 +448,7 @@ class FaceRecognizer:
         promoted = self._tracker.update(observations, ts)
         self._tracker.expire(ts)
         for encounter in promoted:
-            self._on_encounter(encounter, detections, crops)
+            self._on_encounter(encounter, detections, snapshot_crops)
 
         return detections
 
@@ -292,8 +462,26 @@ class FaceRecognizer:
         image: Any,
         frame_w: int,
         frame_h: int,
-    ) -> Tuple[List[Any], List[float]]:
-        """Кропы лиц с запасом + размер лица в пикселях."""
+    ) -> Tuple[List[Any], List[Any], List[float]]:
+        """Два артефакта на детекцию + размер лица в пикселях (issue #2773/#2774).
+
+        Returns:
+            ``(embed_crops, snapshot_crops, face_px_list)``:
+              - ``embed_crops`` — вход эмбеддера: выровненный по
+                landmarks кроп (``face_embedding.align_face``), либо,
+                если выравнивание не сработало/недоступно, тот же кроп,
+                что и ``snapshot_crops`` (фолбек, issue #2773).
+              - ``snapshot_crops`` — человекочитаемый прямоугольный кроп
+                ``crop_face`` с запасом; именно он, и только он, уходит в
+                снимок встречи (ADR-0123 §8) и в скоринг «лучшего кадра
+                трека» (``face_tracker``). Ворота качества (яркость/
+                контраст/резкость/геометрия) тоже считаются на НЁМ —
+                это единственный артефакт, который гарантированно
+                существует независимо от того, есть ли landmarks.
+            Оба списка той же длины и с ``None`` на тех же позициях, что
+            и раньше: budget-пропуск (``DEFAULT_MAX_EMBEDS_PER_FRAME``)
+            или отказ ворот качества трактуются как отсутствующий кроп.
+        """
         bboxes: List[Any] = []
         face_px_list: List[float] = []
         for det in detections:
@@ -320,40 +508,152 @@ class FaceRecognizer:
         if len(eligible) > len(chosen):
             self._embed_skipped_budget += len(eligible) - len(chosen)
 
-        crops: List[Any] = []
+        embed_crops: List[Any] = []
+        snapshot_crops: List[Any] = []
         for idx, bbox in enumerate(bboxes):
             if idx not in chosen:
-                crops.append(None)
+                embed_crops.append(None)
+                snapshot_crops.append(None)
                 continue
-            crop = crop_face(image, bbox, margin=self._crop_margin)
-            if crop is not None and not self._crop_quality_ok(crop):
-                # Ворота качества (issue #2749): кроп живой, но почти
-                # чёрный/плоский — не эмбеддим и не кладём в снимок,
-                # трактуем как отсутствующий кроп (тот же путь, что и
-                # бюджетный пропуск выше).
-                self._crop_rejected_total += 1
-                crop = None
-            crops.append(crop)
-        return crops, face_px_list
 
-    def _crop_quality_ok(self, crop: Any) -> bool:
-        """Ворота качества кропа перед эмбеддингом (issue #2749).
+            # Ворота геометрии (issue #2774) — ДО вызова crop_face: если
+            # запрошенный прямоугольник заведомо обрублен кадром, нет
+            # смысла даже резать пиксели.
+            coverage, top_clip_frac = _crop_coverage(
+                bbox, self._crop_margin, frame_w, frame_h
+            )
+            if (
+                coverage < self._min_crop_coverage
+                or top_clip_frac > self._max_top_clip_frac
+            ):
+                self._reject_crop('clipped')
+                embed_crops.append(None)
+                snapshot_crops.append(None)
+                continue
+
+            snap = crop_face(image, bbox, margin=self._crop_margin)
+            if snap is None:
+                # Геометрия формально прошла, но crop_face всё равно не
+                # дал кропа (округление на границе пикселя) — тот же
+                # отказ по смыслу, что и явный клам выше.
+                self._reject_crop('clipped')
+                embed_crops.append(None)
+                snapshot_crops.append(None)
+                continue
+
+            reason = self._pixel_quality_reject_reason(snap)
+            if reason is not None:
+                # Ворота качества (issue #2749/#2774): кроп живой, но
+                # почти чёрный/плоский/смазанный — не эмбеддим и не
+                # кладём в снимок, трактуем как отсутствующий кроп (тот
+                # же путь, что и бюджетный/геометрический пропуск выше).
+                self._reject_crop(reason)
+                embed_crops.append(None)
+                snapshot_crops.append(None)
+                continue
+
+            snapshot_crops.append(snap)
+            landmarks = detections[idx].get('landmarks')
+            embed_crops.append(self._align_or_fallback(image, landmarks, snap))
+
+        return embed_crops, snapshot_crops, face_px_list
+
+    def _reject_crop(self, reason: str) -> None:
+        """Счётчики отказа ворот качества кропа — сумма + причина (issue #2774)."""
+        self._crop_rejected_total += 1
+        self._crop_rejected_by_reason[reason] = (
+            self._crop_rejected_by_reason.get(reason, 0) + 1
+        )
+
+    def _pixel_quality_reject_reason(self, crop: Any) -> Optional[str]:
+        """Ворота качества кропа перед эмбеддингом: пиксельная часть (issue #2749/#2774).
 
         Фильтровать нужно ЗДЕСЬ, пока кроп ещё живой numpy-массив:
         ``FaceStore`` ниже по стеку принципиально не разглядывает снимки
         (ADR-0123 §5, см. его докстринг) — граница режимов приватности
         проведена там намеренно, и нарушать её нельзя; а после кодирования
         в JPEG для записи встречи уже поздно — пиксели надо смотреть
-        раньше. Возвращает ``True``, если метрики посчитать не удалось
-        (cv2 недоступен, см. ``crop_brightness_contrast``) — деградировать
-        до "не эмбеддим вообще" из-за отсутствующего cv2 хуже, чем
-        пропустить один некалиброванный кроп через ворота.
+        раньше.
+
+        Три независимых проверки одного и того же кропа, каждая ловит
+        свой отказ:
+          - ``mean < min_crop_mean`` -> ``'dark'`` (issue #2749: тень,
+            забитая экспозиция);
+          - ``contrast < min_crop_contrast`` -> ``'flat'`` (issue #2749:
+            пересвет в сплошной кадр);
+          - ``sharpness < min_sharpness`` -> ``'blurry'`` (issue #2774:
+            смазанный кадр — раньше эта же величина участвовала только в
+            скоринге "лучшего кадра трека" в ``face_tracker``, здесь у
+            неё ДРУГАЯ роль — порог "пускать/не пускать" ДО эмбеддинга;
+            обе роли используют один и тот же ``face_embedding.
+            sharpness()``, но не путают друг друга).
+
+        ``crop_brightness_contrast`` и ``sharpness`` используют один и
+        тот же ленивый импорт ``cv2`` (см. их докстринги в
+        ``face_embedding.py``) — то есть если недоступен один, недоступен
+        и другой. Поэтому единственный сигнал "cv2 нет" — ``None`` от
+        ``crop_brightness_contrast`` — открывает ВСЕ три ворот сразу, а
+        не только яркость/контраст: пробовать ``sharpness`` отдельным
+        вызовом при недоступном cv2 бессмысленно, она в этом случае
+        всегда возвращает ``0.0`` (не ``None``!) и ложно провалила бы
+        ворота резкости на КАЖДОМ кропе в окружении без cv2 — тогда как
+        деградировать до "не эмбеддим вообще" хуже, чем пропустить один
+        некалиброванный кроп через ворота (тот же аргумент, что и в
+        #2749).
+
+        Returns:
+            ``None``, если кроп прошёл все ворота (или метрики посчитать
+            не удалось — cv2 недоступен); иначе строка причины отказа.
         """
         metrics = crop_brightness_contrast(crop)
         if metrics is None:
-            return True
+            return None
         mean, contrast = metrics
-        return mean >= self._min_crop_mean and contrast >= self._min_crop_contrast
+        if mean < self._min_crop_mean:
+            return 'dark'
+        if contrast < self._min_crop_contrast:
+            return 'flat'
+        if sharpness(crop) < self._min_sharpness:
+            return 'blurry'
+        return None
+
+    def _align_or_fallback(
+        self,
+        image: Any,
+        landmarks: Optional[List[float]],
+        fallback_crop: Any,
+    ) -> Any:
+        """Выровненный вход эмбеддера по landmarks, либо фолбек на ``crop_face`` (issue #2773).
+
+        ``align_face`` может отсутствовать (соседний агент ещё не
+        дописал ``face_embedding.py`` — см. импорт в начале модуля) или
+        вернуть ``None`` (битые/отсутствующие точки, cv2 недоступен —
+        контракт ``align_face``). Любой из этих случаев — фолбек на
+        прежний путь: тот же ``fallback_crop`` (``crop_face``), что и так
+        уже посчитан и прошёл ворота качества, идёт эмбеддеру напрямую
+        (``ArcFaceEmbedder.embed`` сам приводит его к 112x112).
+
+        Исключение из самого ``align_face`` ловится здесь же и не
+        поднимается выше: один кадр с битыми landmarks не должен ронять
+        узнавание остальных лиц кадра (тот же принцип capability-honest,
+        что и у ``_embed_all`` для сбоя ArcFace, но на уровень раньше).
+        """
+        if landmarks is not None and align_face is not None:
+            try:
+                aligned = align_face(image, landmarks)
+            except Exception as exc:  # noqa: BLE001 — один плохой набор точек не должен ронять кадр
+                aligned = None
+                self._log(
+                    'warn',
+                    f'align_face упал на landmarks: {exc!r} — фолбек на '
+                    f'crop_face для этой детекции (issue #2773).',
+                )
+            if aligned is not None:
+                self._align_used_total += 1
+                return aligned
+
+        self._align_fallback_total += 1
+        return fallback_crop
 
     def _embed_all(self, crops: List[Any]) -> List[Any]:
         """Один батч в ArcFace на кадр, а не по вызову на лицо."""
@@ -391,16 +691,23 @@ class FaceRecognizer:
     def _make_observations(
         self,
         detections: List[Dict[str, Any]],
-        crops: List[Any],
+        snapshot_crops: List[Any],
         embeddings: List[Any],
         face_px_list: List[float],
         frame_w: int,
         frame_h: int,
         ts: float,
     ) -> List[FaceObservation]:
+        """Построить наблюдения трекера — ``crop`` здесь ВСЕГДА snapshot (crop_face), не вход эмбеддера.
+
+        Это то, что уйдёт в JPEG снимка встречи (ADR-0123 §8) и в скоринг
+        «лучшего кадра трека» в ``face_tracker`` — сознательно не
+        выровненный 112x112 квадрат, который мог получить эмбеддер
+        (issue #2773/#2774, см. докстринг ``_crop_all``).
+        """
         observations: List[FaceObservation] = []
         for idx, det in enumerate(detections):
-            crop = crops[idx]
+            crop = snapshot_crops[idx]
             observations.append(
                 FaceObservation(
                     ts=ts,
@@ -453,7 +760,7 @@ class FaceRecognizer:
         self,
         encounter: Any,
         detections: List[Dict[str, Any]],
-        crops: List[Any],
+        snapshot_crops: List[Any],
     ) -> None:
         """Встреча состоялась: записать её и поднять повод заговорить."""
         self._encounters_total += 1
@@ -500,16 +807,32 @@ class FaceRecognizer:
         else:
             self._recognized_total += 1
 
+        # Второй кандидат и зазор до него (issue #2771). Голосовой
+        # speaker_id_node печатает их с самого начала
+        # (`best=... second=... gap=...`), лицевой канал — нет, и именно
+        # поэтому ложное принятие 22.09.2026 (тёща опознана как «Деньчик»
+        # при sim=0.483) в логе ничем не отличалось от настоящего
+        # узнавания: одно число без контекста нечем поверить. Зазор —
+        # первое, на что смотрят при калибровке порога (ADR-0123 §6).
+        runner_up = ''
+        if getattr(match, 'runner_up_similarity', None) is not None:
+            runner_up = ' second={rid} rsim={rsim:.3f} gap={gap:.3f}'.format(
+                rid=(match.runner_up_person_id or '?')[:8],
+                rsim=match.runner_up_similarity,
+                gap=match.similarity - match.runner_up_similarity,
+            )
+
         self._log(
             'info',
             '👤 Встреча: {who} (person={pid} sim={sim:.3f} new={new} '
-            'encounters={n} face={px:.0f}px)'.format(
+            'encounters={n} face={px:.0f}px{runner_up})'.format(
                 who=match.name or 'незнакомец',
                 pid=match.person_id[:8],
                 sim=match.similarity,
                 new=match.is_new,
                 n=match.encounter_count,
                 px=encounter.max_face_px,
+                runner_up=runner_up,
             ),
         )
 
@@ -689,6 +1012,13 @@ class FaceRecognizer:
             ) if self._embed_calls else 0.0,
             'embed_skipped_budget': self._embed_skipped_budget,
             'crop_rejected_total': self._crop_rejected_total,
+            # Issue #2774 — разбивка причин, тем же аргументом, что и
+            # voice_merge_skip_* выше: «отклонено=N» не говорит, ПОЧЕМУ.
+            'crop_rejected_by_reason': dict(self._crop_rejected_by_reason),
+            # Issue #2773 — как часто эмбеддер получил выровненный по
+            # landmarks вход против фолбека на crop_face.
+            'align_used_total': self._align_used_total,
+            'align_fallback_total': self._align_fallback_total,
             'active_tracks': self._tracker.active_track_count(),
             'store': store_stats,
         }
@@ -712,3 +1042,71 @@ def _iou_cxcywh(
         return 0.0
     union = max(0.0, a[2] * a[3]) + max(0.0, b[2] * b[3]) - inter
     return float(inter / union) if union > 0.0 else 0.0
+
+
+def _crop_coverage(
+    bbox: Tuple[float, float, float, float],
+    margin: float,
+    frame_w: int,
+    frame_h: int,
+) -> Tuple[float, float]:
+    """Доля запрошенного (bbox+margin) прямоугольника в кадре + доля, срезанная сверху (issue #2774).
+
+    Дублирует геометрию клампа ``face_embedding.crop_face`` (см. его
+    докстринг: сторона расширяется до ``1 + 2*margin`` от исходного
+    bbox). ``crop_face`` клампит бокс к границам кадра молча, не сообщая
+    наверх, что и сколько отрезано — а поправить это можно только внутри
+    ``face_embedding.py``, который сейчас параллельно переписывает другой
+    агент (issue #2773), трогать нельзя. Поэтому геометрия запроса
+    пересчитывается заново здесь же, от тех же входов (``bbox``,
+    ``margin``, размер кадра), что уйдут в ``crop_face`` следом.
+
+    Args:
+        bbox: ``(cx, cy, w, h)``, normalized [0, 1] — как отдаёт
+            ``vision_face_loader`` (``bbox_cx``/``bbox_cy``/``bbox_w``/
+            ``bbox_h``).
+        margin: тот же параметр, что уйдёт в ``crop_face(..., margin=)``.
+        frame_w, frame_h: размер кадра в пикселях.
+
+    Returns:
+        ``(coverage, top_clip_frac)``:
+          - ``coverage`` — площадь пересечения запрошенного прямоугольника
+            с кадром, делённая на площадь запрошенного прямоугольника.
+            ``1.0`` — ничего не срезано, ``0.0`` — бокс вырожден или
+            целиком снаружи кадра.
+          - ``top_clip_frac`` — доля ВЫСОТЫ запрошенного прямоугольника,
+            срезанная именно сверху (``0.0``, если верх не срезан). Верх
+            не равноценен низу/бокам: там глаза, без которых эмбеддинг
+            ArcFace бессмыслен (issue #2774, живой пример на роботе —
+            запись ``b49470e1-...``, встреча №19: подбородок/рот/шея без
+            единого глаза).
+    """
+    cx, cy, bw, bh = bbox
+    if bw <= 0.0 or bh <= 0.0 or frame_w <= 0 or frame_h <= 0:
+        return 0.0, 1.0
+
+    exp_w = bw * (1.0 + 2.0 * margin)
+    exp_h = bh * (1.0 + 2.0 * margin)
+
+    x1 = (cx - exp_w / 2.0) * frame_w
+    y1 = (cy - exp_h / 2.0) * frame_h
+    x2 = (cx + exp_w / 2.0) * frame_w
+    y2 = (cy + exp_h / 2.0) * frame_h
+
+    req_w = x2 - x1
+    req_h = y2 - y1
+    req_area = req_w * req_h
+    if req_area <= 0.0:
+        return 0.0, 1.0
+
+    x1i = max(0.0, x1)
+    y1i = max(0.0, y1)
+    x2i = min(float(frame_w), x2)
+    y2i = min(float(frame_h), y2)
+
+    clamped_w = max(0.0, x2i - x1i)
+    clamped_h = max(0.0, y2i - y1i)
+    coverage = (clamped_w * clamped_h) / req_area
+
+    top_clip_frac = max(0.0, (y1i - y1) / req_h) if req_h > 0.0 else 1.0
+    return coverage, top_clip_frac
