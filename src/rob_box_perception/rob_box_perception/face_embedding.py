@@ -91,9 +91,14 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from typing import Any, List, Optional, Tuple
 
 from rob_box_perception.hailo_device import open_device
+from rob_box_perception.vision_hailo_loader import (
+    _is_recoverable_stream_abort,
+    _next_reinit_backoff_sec,
+)
 
 _LOG = logging.getLogger(__name__)
 
@@ -148,6 +153,15 @@ class ArcFaceEmbedder:
         #: True, если HailoRT отдаёт выход уже в FLOAT32 (деквантует сам).
         self._output_is_float: bool = False
         self._init_failed: Optional[BaseException] = None
+        # ---- HAILO_STREAM_ABORT(63) recovery state (issue #2625) ----
+        # 1:1 паттерн RealHEFLoader/RetinaFaceLoader — см. docstring
+        # vision_hailo_loader.RealHEFLoader._ensure_initialized. Общая
+        # детекция/backoff переиспользованы через импорт, reset/retry
+        # копируется по месту (тот же аргумент, что и у RetinaFaceLoader:
+        # ADR-0121 миксин остаётся Proposed).
+        self._recovering_from_abort: bool = False
+        self._reinit_backoff_sec: float = 0.0
+        self._reinit_not_before: float = 0.0
 
     # ----------------------------------------------------------------
     # Lazy initialization (паттерн RetinaFaceLoader._ensure_initialized)
@@ -158,11 +172,74 @@ class ArcFaceEmbedder:
             return
         if self._init_failed is not None:
             raise self._init_failed
+        if self._recovering_from_abort:
+            self._retry_after_abort()
+            return
         try:
             self._init_locked()
         except BaseException as exc:  # noqa: BLE001 (capability-honest)
             self._init_failed = exc
             raise
+
+    def _retry_after_abort(self) -> None:
+        """Reinit после `HAILO_STREAM_ABORT(63)` с backoff (issue #2625).
+
+        1:1 паттерн ``RealHEFLoader._retry_after_abort`` (vision_hailo_loader.py).
+        """
+        now = time.monotonic()
+        if now < self._reinit_not_before:
+            remaining = self._reinit_not_before - now
+            raise RuntimeError(
+                f'HailoRT pipeline recovering from HAILO_STREAM_ABORT(63): '
+                f'backoff активен ещё {remaining:.1f}s (issue #2625).'
+            )
+        try:
+            self._init_locked()
+        except BaseException as exc:  # noqa: BLE001 (capability-honest)
+            self._reinit_backoff_sec = _next_reinit_backoff_sec(
+                self._reinit_backoff_sec
+            )
+            self._reinit_not_before = time.monotonic() + self._reinit_backoff_sec
+            _LOG.warning(
+                'Переинициализация ArcFace после HAILO_STREAM_ABORT(63) '
+                f'снова не удалась: {exc!r}. Следующая попытка через '
+                f'{self._reinit_backoff_sec:.1f}s (issue #2625).'
+            )
+            raise
+        _LOG.warning(
+            'ArcFace HailoRT пайплайн переподнят после '
+            'HAILO_STREAM_ABORT(63) (issue #2625) — реинициализация '
+            'прошла успешно.'
+        )
+        self._recovering_from_abort = False
+        self._reinit_backoff_sec = 0.0
+        self._reinit_not_before = 0.0
+
+    def _reset_after_stream_abort(self, exc: BaseException) -> None:
+        """Сбросить lazy-init состояние после abort'а (issue #2625 п.1).
+
+        1:1 паттерн ``RealHEFLoader._reset_after_stream_abort``. Оставляет
+        ``_embedding_dim``/``_quant_scale``/``_quant_zero_point``/
+        ``_output_is_float`` как есть — это метаданные формы/квантования
+        HEF, они не меняются между переинициализациями того же файла и
+        безвредны как "последнее известное" значение до следующего
+        успешного ``_init_locked()``.
+        """
+        _LOG.warning(
+            'ArcFace HailoRT pipeline abort обнаружен '
+            f'(HAILO_STREAM_ABORT(63) pattern): {exc!r}. Сбрасываю '
+            'состояние эмбеддера для переинициализации на следующем '
+            'вызове embed() (issue #2625, ADR-0112 §5 п.1).'
+        )
+        self._configured = None
+        self._bindings = None
+        self._infer_model = None
+        self._init_failed = None
+        self._vdevice = None
+        self._device = None
+        self._recovering_from_abort = True
+        self._reinit_backoff_sec = 0.0
+        self._reinit_not_before = 0.0
 
     def _init_locked(self) -> None:
         if not os.path.isfile(self._hef_path):
@@ -349,6 +426,8 @@ class ArcFaceEmbedder:
                 self._bindings.input(self._input_name).set_buffer(input_tensor)
                 self._configured.run([self._bindings], timeout=1000)
             except Exception as exc:  # noqa: BLE001 (capability-honest)
+                if _is_recoverable_stream_abort(exc):
+                    self._reset_after_stream_abort(exc)
                 raise RuntimeError(f'HailoRT run() failed: {exc!r}') from exc
 
             raw = self._bindings.output(self._output_name).get_buffer()

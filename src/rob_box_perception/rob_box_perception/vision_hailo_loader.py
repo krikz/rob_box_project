@@ -33,6 +33,7 @@ Binding install strategy — см. ADR-0099:
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 from dataclasses import dataclass
@@ -40,9 +41,81 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from rob_box_perception.hailo_device import open_device
 
+_LOG = logging.getLogger(__name__)
+
 
 # Default HailoRT VDevice id. На Vision Pi с одним AI HAT+ всегда 0.
 DEFAULT_VDEVICE_ID = 0
+
+
+# ============================================================================
+# HAILO_STREAM_ABORT(63) recovery (issue #2625)
+# ============================================================================
+#
+# ADR-0112 §5 п.1: hailort.service не изолирует клиентов друг от друга.
+# Если ЛЮБОЙ другой процесс, взявший /dev/hailo0, умирает грязно, пайплайн
+# живой ноды уходит в HAILO_STREAM_ABORT(63):
+#
+#   [HailoRT] [error] CHECK_SUCCESS failed with status=HAILO_STREAM_ABORT(63)
+#     - Can't handle inference request since pipeline status is
+#       HAILO_STREAM_ABORT(63).
+#
+# Это НЕ отказ инициализации (тот случай уже покрыт `_init_failed` —
+# кешируется навсегда, см. `_ensure_initialized`). Это смерть уже
+# поднятого пайплайна СОСЕДА, которая утаскивает за собой наш собственный
+# `run()`. Дальше процесс жив, контейнер healthy, но каждый следующий
+# кадр упирается в тот же 63 — до ручного `docker restart`, если не
+# распознать это как восстановимое состояние и не дать ленивой
+# инициализации подняться заново.
+
+#: Первая попытка реинициализации после abort — без задержки (issue #2625
+#: п.2: "первая попытка сразу"). Если она тоже упадёт — растущий backoff,
+#: чтобы не молотить `_init_locked()` (VDevice/HEF/configure) на каждый
+#: кадр (~0.5с тик, см. vision_hailo_node timer_period).
+REINIT_BACKOFF_INITIAL_SEC: float = 0.5
+#: Потолок backoff — не растим до минут, иначе после реального
+#: восстановления соседа нода будет "спать" неоправданно долго.
+REINIT_BACKOFF_MAX_SEC: float = 30.0
+REINIT_BACKOFF_MULTIPLIER: float = 2.0
+
+
+def _is_recoverable_stream_abort(exc: BaseException) -> bool:
+    """True, если ``exc`` — сигнатура ``HAILO_STREAM_ABORT(63)`` (issue #2625).
+
+    Строковое сопоставление, а не проверка типа/атрибута исключения:
+    `hailo_platform` в разных версиях оборачивает статус в разные классы
+    (`HailoRTStatusException` / голый `RuntimeError` / что-то ещё), а
+    `RealHEFLoader.infer` сам дополнительно оборачивает любой сбой `run()`
+    в `RuntimeError(f'HailoRT run() failed: {exc!r}')` — текст исходного
+    сообщения при этом сохраняется внутри `repr()`. Единственный
+    стабильный маркер — буквальная подстрока статуса, которую HailoRT
+    печатает в CHECK_SUCCESS (см. raw-лог issue #2625, 15.09.2026):
+    ``HAILO_STREAM_ABORT(63)``.
+
+    ПРИМЕЧАНИЕ (честность, ADR-0018): точный класс исключения, которое
+    `hailo_platform.InferModel.run()`/`ConfiguredInferModel.run()` кидает
+    при abort, эмпирически не проверен — нет доступа к железу/hailo_platform
+    в этой среде. Строковый матчинг — сознательно широкий (устойчив к
+    variациям класса между версиями HailoRT), но именно поэтому проверяется
+    здесь, до оборачивания в `infer()`, на ОРИГИНАЛЬНОМ исключении.
+    """
+    return 'STREAM_ABORT' in str(exc).upper()
+
+
+def _next_reinit_backoff_sec(current_backoff_sec: float) -> float:
+    """Следующий интервал backoff'а реинициализации (issue #2625 п.2).
+
+    ``current_backoff_sec <= 0`` (ещё не пробовали после этого abort'а,
+    либо только что восстановились) → первая попытка была немедленной,
+    следующая — уже с ``REINIT_BACKOFF_INITIAL_SEC``. Дальше — геометрический
+    рост, зажатый ``REINIT_BACKOFF_MAX_SEC``.
+    """
+    if current_backoff_sec <= 0.0:
+        return REINIT_BACKOFF_INITIAL_SEC
+    return min(
+        current_backoff_sec * REINIT_BACKOFF_MULTIPLIER,
+        REINIT_BACKOFF_MAX_SEC,
+    )
 
 
 # YOLOv8n входной размер (hailo_model_zoo даёт HEF именно под 640×640).
@@ -258,6 +331,18 @@ class RealHEFLoader(HEFLoader):
         self._output_name: Optional[str] = None
         # Флаг фатальной ошибки init (для _tick vs init различения).
         self._init_failed: Optional[BaseException] = None
+        # ---- HAILO_STREAM_ABORT(63) recovery state (issue #2625) ----
+        # True между «abort пойман в infer()» и «reinit успешно завершён».
+        # Отличается от _init_failed: это НЕ фатальный отказ, а сигнал
+        # «сосед по /dev/hailo0 умер, пайплайн нужно поднять заново».
+        self._recovering_from_abort: bool = False
+        # 0.0 = следующая попытка реинициализации немедленная (issue #2625
+        # п.2: "первая попытка сразу"). Растёт после каждой неудачной
+        # попытки reinit через _next_reinit_backoff_sec.
+        self._reinit_backoff_sec: float = 0.0
+        # monotonic timestamp: раньше этого момента _ensure_initialized
+        # не пытается переинициализировать железо (backoff gate).
+        self._reinit_not_before: float = 0.0
 
     # ----------------------------------------------------------------
     # Lazy initialization
@@ -282,20 +367,99 @@ class RealHEFLoader(HEFLoader):
 
         Note:
             Метод идемпотентен: после первой успешной инициализации
-            последующие вызовы — no-op. При ошибке инициализации
+            последующие вызовы — no-op. При ошибке ПЕРВОЙ инициализации
             `_init_failed` запоминается, повторные вызовы re-raise
             ту же ошибку (без reinit-цикла на каждый кадр).
+
+            Отдельный путь (issue #2625): если пайплайн уже когда-то
+            успешно поднимался и упал в `HAILO_STREAM_ABORT(63)` (см.
+            `infer()` → `_reset_after_stream_abort`), `_init_failed`
+            НЕ используется — вместо него `_recovering_from_abort` +
+            growing backoff (`_reinit_backoff_sec`/`_reinit_not_before`).
+            Разница принципиальна: отказ инициализации — стабильное
+            условие (нет HEF/нет hailo_platform), а abort соседа —
+            временное, и его нельзя кешировать навсегда, иначе нода
+            останется degraded даже после того, как сосед сам поднимется.
         """
         if self._configured is not None:
             return
         if self._init_failed is not None:
             raise self._init_failed
+        if self._recovering_from_abort:
+            self._retry_after_abort()
+            return
         try:
             self._init_locked()
         except BaseException as exc:  # noqa: BLE001 (capability-honest)
             # Запоминаем для fail-fast + DI.
             self._init_failed = exc
             raise
+
+    def _retry_after_abort(self) -> None:
+        """Попытка reinit после `HAILO_STREAM_ABORT(63)` с backoff (issue #2625).
+
+        Вызывается только когда `_recovering_from_abort` True. Не кеширует
+        неудачу в `_init_failed` (см. docstring `_ensure_initialized`) —
+        вместо этого копит growing backoff и re-raise'ит исходную ошибку
+        reinit'а на этот кадр, оставляя следующую попытку следующему.
+        """
+        now = time.monotonic()
+        if now < self._reinit_not_before:
+            remaining = self._reinit_not_before - now
+            raise RuntimeError(
+                f'HailoRT pipeline recovering from HAILO_STREAM_ABORT(63): '
+                f'backoff активен ещё {remaining:.1f}s (issue #2625).'
+            )
+        try:
+            self._init_locked()
+        except BaseException as exc:  # noqa: BLE001 (capability-honest)
+            self._reinit_backoff_sec = _next_reinit_backoff_sec(
+                self._reinit_backoff_sec
+            )
+            self._reinit_not_before = time.monotonic() + self._reinit_backoff_sec
+            _LOG.warning(
+                'Переинициализация после HAILO_STREAM_ABORT(63) снова не '
+                f'удалась: {exc!r}. Следующая попытка через '
+                f'{self._reinit_backoff_sec:.1f}s (issue #2625).'
+            )
+            raise
+        # Reinit удался — пайплайн живой, явный лог восстановления
+        # (issue #2625 п.3: иначе снова тихое состояние, только «тихо-хорошее»).
+        _LOG.warning(
+            'HailoRT пайплайн переподнят после HAILO_STREAM_ABORT(63) '
+            '(issue #2625) — реинициализация прошла успешно.'
+        )
+        self._recovering_from_abort = False
+        self._reinit_backoff_sec = 0.0
+        self._reinit_not_before = 0.0
+
+    def _reset_after_stream_abort(self, exc: BaseException) -> None:
+        """Сбросить lazy-init состояние после `HAILO_STREAM_ABORT(63)` (issue #2625 п.1).
+
+        Вызывается из `infer()`, когда `run()` падает с сигнатурой abort'а
+        (`_is_recoverable_stream_abort`). Сбрасывает `_configured` /
+        `_bindings` / `_infer_model` / `_init_failed`, чтобы следующий
+        вызов `_ensure_initialized()` поднял пайплайн заново, а не считал
+        его фатально сломанным. `_vdevice`/`_device`/`_output_name` тоже
+        сбрасываются — они привязаны к тому же мёртвому пайплайну.
+        """
+        _LOG.warning(
+            'HailoRT pipeline abort обнаружен '
+            f'(HAILO_STREAM_ABORT(63) pattern): {exc!r}. Сбрасываю '
+            'состояние лоадера для переинициализации на следующем кадре '
+            '(issue #2625, ADR-0112 §5 п.1 — клиенты hailort.service не '
+            'изолированы, чужая грязная смерть утащила наш пайплайн).'
+        )
+        self._configured = None
+        self._bindings = None
+        self._infer_model = None
+        self._init_failed = None
+        self._vdevice = None
+        self._device = None
+        self._output_name = None
+        self._recovering_from_abort = True
+        self._reinit_backoff_sec = 0.0
+        self._reinit_not_before = 0.0
 
     def _init_locked(self) -> None:
         """Собственно инициализация (без кеширования ошибки)."""
@@ -435,6 +599,11 @@ class RealHEFLoader(HEFLoader):
             # Output читается из ТОГО ЖЕ binding (numpy уже заполнен run'ом).
             raw_output = self._bindings.output(self._output_name).get_buffer()
         except Exception as exc:  # noqa: BLE001
+            if _is_recoverable_stream_abort(exc):
+                # issue #2625: сосед по /dev/hailo0 умер грязно и утащил
+                # наш пайплайн в abort — восстановимо, не фатально.
+                # Сбрасываем lazy-init state, следующий кадр переподнимет.
+                self._reset_after_stream_abort(exc)
             raise RuntimeError(
                 f'HailoRT run() failed: {exc!r}',
             ) from exc
