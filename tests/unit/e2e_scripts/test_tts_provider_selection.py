@@ -84,24 +84,32 @@ class TestMapTtsVoice:
         for voice in SCENARIO_VOICES:
             assert map_voice("yandex", voice) == voice
 
+    # Таблица ИЗМЕРЕНА 22.09.2026 (4b3c4a8cf, PR #2743): старая пара
+    # zahar/filipp = baya/xenia давала max-cos 0.722 — ровно на границе
+    # IDENTIFY_THRESHOLD=0.72. Методика и сырые данные:
+    # scripts/e2e/measure_tts_voice_distinctness.py,
+    # evidence/tts-voice-distinctness-2026-09-22/.
     @pytest.mark.parametrize(
         "voice,expected",
         [
             ("anton", "aidar"),
             ("ermil", "eugene"),
-            ("zahar", "baya"),
+            ("zahar", "kseniya"),
             ("filipp", "xenia"),
         ],
     )
     def test_silero_mapping(self, voice, expected):
         assert map_voice("silero", voice) == expected
 
+    # Тоже измерено 22.09.2026: старая пара anton/ermil
+    # (ReliableMan/HandsomeChildhoodFriend) = 0.739, а на живом роботе 0.846 —
+    # акт 2 склеил двух дикторов в один профиль (run 35667281570).
     @pytest.mark.parametrize(
         "voice,expected",
         [
             ("anton", "Russian_ReliableMan"),
-            ("ermil", "Russian_HandsomeChildhoodFriend"),
-            ("zahar", "Russian_Bad-temperedBoy"),
+            ("ermil", "Russian_PessimisticGirl"),
+            ("zahar", "Russian_CrazyQueen"),
             ("filipp", "Russian_AttractiveGuy"),
         ],
     )
