@@ -63,6 +63,95 @@ SPEAKER_RESULT_TOPIC = '/voice/speaker/result'
 #: единственный способ понять, работает ли узнавание, не лазая в /data.
 STATS_LOG_PERIOD_SEC = 60.0
 
+#: Раз в сколько сводок повторять предупреждение «align_used=0» (issue
+#: #2777). На живом роботе 22.09 инцидент разбирали по строке `[лицо]`,
+#: где 59 кропов отброшено из 3 встреч и оба «пустых» трека не оставили
+#: ни одного эмбеддинга — а выяснить, работает ли вообще выравнивание по
+#: landmark'ам (issue #2773, единственный непроверенный на железе пункт
+#: PR), было НЕЧЕМ: ни причин отказа кропа, ни align_used/align_fallback
+#: в лог не попадали. Печатать предупреждение КАЖДУЮ сводку (раз в
+#: ``STATS_LOG_PERIOD_SEC`` = 60с) — спам на весь день работы ноды;
+#: не печатать вовсе — снова тот же слепой угол. Компромисс: первая
+#: сводка предупреждает всегда (диагноз обязан быть виден сразу после
+#: старта, не через 10 минут), дальше — раз в
+#: ``ALIGN_DEAD_WARNING_PERIOD_CALLS`` сводок.
+ALIGN_DEAD_WARNING_PERIOD_CALLS = 10
+
+
+def _format_crop_reject_suffix(by_reason: Dict[str, int]) -> str:
+    """Суффикс причин отказа кропа для строки `[лицо]` (issue #2774, #2777).
+
+    Тот же приём, что уже применён к ``voice_merge_skip_*`` в
+    :meth:`VisionFaceNode._log_stats` (issue #2748): печатаем ТОЛЬКО
+    ненулевые причины, чтобы в спокойном режиме (кропы почти не
+    отбраковываются) строка не пухла нулями. На инциденте 22.09 без этой
+    разбивки ``кропов_отброшено=59`` не говорило вообще ничего — 59 могло
+    быть «почти всё clipped геометрией» или «почти всё blurry», и это два
+    разных фикса.
+
+    Названия причин (``dark``/``flat``/``clipped``/``blurry``) — те же
+    английские ключи, что в ``FaceRecognizer._crop_rejected_by_reason``,
+    в тестах (``test_face_recognition.py``) и, если появится, в CLI
+    (issue #2775). Решение: НЕ переводить их на русский, хотя остальная
+    строка `[лицо]` русская — это внутренние коды причины (как код
+    ошибки), а не текст для человека с улицы; их будут grep'ать вместе с
+    тестами и кодом ворот качества, и вторая, переведённая, вокабулярка
+    для одного и того же понятия только создала бы риск разъехаться.
+
+    Args:
+        by_reason: ``stats()['crop_rejected_by_reason']`` — уже
+            copy-дикт, порядок ключей (dark, flat, clipped, blurry)
+            наследуется от ``FaceRecognizer.__init__``.
+
+    Returns:
+        ``''``, если причин нет вовсе (все нули или пустой dict), иначе
+        `` (clipped=51 blurry=8)`` — с ведущим пробелом, чтобы вызывающий
+        код мог просто конкатенировать к ``кропов_отброшено=N``.
+    """
+    active_reasons = [f'{reason}={count}' for reason, count in by_reason.items() if count]
+    if not active_reasons:
+        return ''
+    return ' (' + ' '.join(active_reasons) + ')'
+
+
+def _align_dead_warning(
+    align_used_total: int, align_fallback_total: int, log_stats_calls: int
+) -> Optional[str]:
+    """Текст предупреждения «выравнивание не работает», если пора его печатать.
+
+    Условие диагноза: за всё время работы ноды ArcFace ни разу не получил
+    выровненный по landmark'ам вход (``align_used_total == 0``), при этом
+    фолбек на старый ``crop_face`` сработал хотя бы раз
+    (``align_fallback_total > 0``). Это ровно то состояние, в котором
+    выравнивание из issue #2773 либо не подключено, либо landmarks с
+    живого HEF не декодируются (декод сверялся с эталонной реализацией
+    RetinaFace офлайн — issue #2773 — но НЕ измерялся на железе; issue
+    #2777 фиксирует это как главный непроверенный пункт PR).
+
+    Троттлинг — см. :data:`ALIGN_DEAD_WARNING_PERIOD_CALLS`: срабатывает
+    на первом вызове (``log_stats_calls == 1``) и затем каждые N вызовов.
+
+    Args:
+        align_used_total: ``stats()['align_used_total']``.
+        align_fallback_total: ``stats()['align_fallback_total']``.
+        log_stats_calls: порядковый номер вызова ``_log_stats`` (с 1).
+
+    Returns:
+        Текст warning'а или ``None``, если предупреждать рано/нечего.
+    """
+    if align_used_total != 0 or align_fallback_total <= 0:
+        return None
+    if log_stats_calls % ALIGN_DEAD_WARNING_PERIOD_CALLS != 1:
+        return None
+    return (
+        "[лицо] выравнивание по landmark'ам НЕ РАБОТАЕТ ни разу с запуска "
+        f'(align_used=0, align_fallback={align_fallback_total}): все кропы '
+        'идут в ArcFace через старый путь crop_face без выравнивания '
+        "(issue #2773). Проверить, декодируются ли landmarks с живого "
+        'HEF — сверка со stub/офлайн-эталоном RetinaFace это не '
+        'гарантирует (issue #2777).'
+    )
+
 
 class RecognizingFaceLoader(HEFLoader):
     """Декоратор детектора: bbox'ы от RetinaFace + имена от ArcFace.
@@ -123,6 +212,11 @@ class VisionFaceNode(VisionHailoNode):
         # обрывается ЗДЕСЬ, до вызова note_voice_identification, поэтому
         # recognizer её никогда не видит.
         self._speaker_unknown_total: int = 0
+        #: Сколько раз уже сработал ``_log_stats`` — троттлинг предупреждения
+        #: про мёртвое выравнивание (issue #2777) считает по этому счётчику,
+        #: а не по времени: таймер и так тикает с фиксированным периодом
+        #: ``STATS_LOG_PERIOD_SEC``, дополнительные часы не нужны.
+        self._log_stats_calls: int = 0
 
         if self._recognizer is not None:
             self._subscribe_speaker_result()
@@ -370,6 +464,7 @@ class VisionFaceNode(VisionHailoNode):
             stats = self._recognizer.stats()
         except Exception:  # noqa: BLE001
             return
+        self._log_stats_calls += 1
         store = stats.get('store', {}) or {}
         # crop_rejected_total (issue #2749): кропы, отброшенные воротами
         # качества (почти чёрные/плоские) ДО эмбеддинга — без счётчика в
@@ -396,9 +491,15 @@ class VisionFaceNode(VisionHailoNode):
         # значит «пока нет ни одной записи с ≥2 эмбеддингами», а не ошибку.
         cohesion = store.get('gallery_cohesion')
         cohesion_str = f'{cohesion:.3f}' if cohesion is not None else 'н/д'
+        # issue #2774 — та же «причины ТОЛЬКО когда есть пропуск» логика,
+        # что и skip_suffix выше, применена к отказу кропа: суффикс сам по
+        # себе пустой, если crop_rejected_by_reason весь в нулях.
+        crop_reject_suffix = _format_crop_reject_suffix(
+            stats.get('crop_rejected_by_reason', {}) or {}
+        )
         self.get_logger().info(
             '[лицо] режим=%s встреч=%d узнано=%d новых=%d слияний=%d%s '
-            'ошибок_эмбеддинга=%d кропов_отброшено=%d треков=%d | '
+            'ошибок_эмбеддинга=%d кропов_отброшено=%d%s треков=%d | '
             'в базе: людей=%s с_именем=%s gallery_cohesion=%s '
             'enroll_отклонено=%d'
             % (
@@ -410,6 +511,7 @@ class VisionFaceNode(VisionHailoNode):
                 skip_suffix,
                 stats.get('embed_failures', 0),
                 stats.get('crop_rejected_total', 0),
+                crop_reject_suffix,
                 stats.get('active_tracks', 0),
                 store.get('people', '?'),
                 store.get('named', '?'),
@@ -417,6 +519,44 @@ class VisionFaceNode(VisionHailoNode):
                 store.get('enroll_rejected_total', 0),
             )
         )
+        # Issue #2777 — вторая строка, отдельно от «сколько встреч/узнано»:
+        # align_used/align_fallback и embed_skipped_budget — это диагностика
+        # ПОЧЕМУ, а не результат сам по себе, и первая строка и так на
+        # пределе читаемости (её смотрят глазами в `docker logs`, не
+        # парсером — см. код-ревью PR #2777). align_used/align_fallback
+        # печатаются ВСЕГДА (а не только при пропусках, как skip_suffix
+        # выше): «align_used=0» — это диагноз сам по себе, и его нельзя
+        # прятать за условием «есть хоть один пропуск», иначе тихая
+        # деградация выравнивания (issue #2773 — главный непроверенный на
+        # живом HEF пункт PR) останется незаметной ровно так же, как
+        # незаметен был crop_rejected_total до issue #2749.
+        #
+        # embed_skipped_budget (issue #2777, было в stats() и раньше, в
+        # сводку не попадало) — печатаем тут же, а не как часть первой
+        # строки: это НЕ отказ ворот качества (crop_rejected_*), а срез по
+        # бюджету NPU (DEFAULT_MAX_EMBEDS_PER_FRAME) — трек всё равно
+        # получит эмбеддинг на следующем кадре. Смешивать его со
+        # crop_rejected_total было бы неверно диагностически (один — «кроп
+        # никогда не будет годным», другой — «кроп будет эмбеднут позже»),
+        # а полностью молчать о нём — снова слепое пятно: на кадре с толпой
+        # он объясняет, почему у трека долго нет эмбеддинга без единой
+        # причины отказа.
+        self.get_logger().info(
+            "[лицо] выравнивание: align_used=%d align_fallback=%d | "
+            'бюджет NPU: embed_skipped_budget=%d'
+            % (
+                stats.get('align_used_total', 0),
+                stats.get('align_fallback_total', 0),
+                stats.get('embed_skipped_budget', 0),
+            )
+        )
+        warning = _align_dead_warning(
+            stats.get('align_used_total', 0),
+            stats.get('align_fallback_total', 0),
+            self._log_stats_calls,
+        )
+        if warning:
+            self.get_logger().warning(warning)
 
 
 def main(args: Optional[List[str]] = None) -> None:
