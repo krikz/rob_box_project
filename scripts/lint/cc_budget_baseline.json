@@ -13,9 +13,6 @@
     "src/rob_box_voice/rob_box_voice/core/dj_mode.py": {
       "DJModeController._apply_enable_payload": 18
     },
-    "src/rob_box_voice/rob_box_voice/core/music_guard.py": {
-      "MusicGuard.evaluate": 17
-    },
     "src/rob_box_voice/rob_box_voice/core/music_stack_validation.py": {
       "classify_sclang_log": 19
     },
@@ -124,12 +121,6 @@
       "method": "DJModeController._apply_enable_payload",
       "cc": 18,
       "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
-    },
-    {
-      "path": "src/rob_box_voice/rob_box_voice/core/music_guard.py",
-      "method": "MusicGuard.evaluate",
-      "cc": 17,
-      "since": "Bumped 16->17 by #2565 (issue 2565, fix(voice): stop_command_guard deferral on phantom-action). The phantom-action deferral branch (`if phantom is not None:` inside FORCE_STOP) adds +1 CC; refactor card covered under existing _run_turn / music_guard decomp backlog (ADR-0021 R1)."
     },
     {
       "path": "src/rob_box_voice/rob_box_voice/core/music_stack_validation.py",

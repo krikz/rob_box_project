@@ -17,7 +17,9 @@ Owns two families of heuristics:
   decides whether the user asked for a track, :func:`is_music_stop_command`
   recognises stop-commands that must NOT be treated as music requests,
   :func:`is_vocal_request` recognises «спой/пой/песня» where ``speak_text``
-  alone is a valid outcome, and :func:`build_music_retry_prompt` builds
+  alone is a valid outcome, :func:`is_music_state_query` recognises
+  «играет ли сейчас музыка?» where ``get_music_state`` is the whole answer,
+  and :func:`build_music_retry_prompt` builds
   the Bug-C retry prompt that demands ``execute_music_code``.
 * **Non-music tool guard** (issue #1777 / #1762) — расширение Bug C на
   все явные tool-based запросы (``get_current_time``, ``search_web``,
@@ -834,6 +836,127 @@ def is_vocal_request(user_input: str) -> bool:
         return False
     low = user_input.lower()
     return any(kw in low for kw in MUSIC_GUARD_VOCAL_KEYWORDS)
+
+
+# ---------------------------------------------------------------------------
+# 🔴 FIX (e2e 35665111906, night-marathon акт 1, шаг n110_silence_baseline):
+# «Робот, у тебя сейчас играет какая-нибудь музыка?» — это ВОПРОС О СОСТОЯНИИ,
+# а не просьба включить. Живой лог робота::
+#
+#   ✅ [turn] spoken='Проверил — музыка сейчас не играет, активных паттернов
+#             нет, AI и диджей стоят' tools=['get_music_state']
+#   [WARN] 🎵 [issue 992 Bug C] user asked for music but LLM skipped
+#          execute_music_code (tools=['get_music_state']); retry 1/3
+#
+# ``user_wants_music`` говорит True (пара «играет … музыка» ловится
+# :data:`MUSIC_CONTINUATION_RE`), ``get_music_state`` за воспроизведение не
+# считается — и Bug C требовал ``execute_music_code``, то есть ровно тот тул,
+# который шаг держит в ``must_not_call``. Ответ был ПРАВИЛЬНЫЙ, а гуард гнал
+# робота включать музыку на «якоре тишины».
+#
+# Это третье исключение того же рода, что ``is_music_stop_command``
+# (стоп-команда не должна запускать музыку) и ``is_vocal_request``
+# (спеть можно и без бита). Детектор узкий по построению: любой явный
+# императив запуска («включи музыку», «поставь что-нибудь») ветирует
+# вопрос — цена ложного срабатывания здесь выше, чем лишний ретрай.
+# ---------------------------------------------------------------------------
+
+#: Существительные, которыми юзер называет звучащее, когда спрашивает о
+#: состоянии. Уже, чем :data:`_MUSIC_NOUNS`: жанры сюда не нужны — «какой
+#: сейчас джаз» живьём не встречается, а «продолжай джаз» ловит
+#: :data:`MUSIC_CONTINUATION_RE` как просьбу развить материал.
+_MUSIC_STATE_NOUNS: str = (
+    r"музык|трек|мелоди|песн|композиц|бит|плейлист|плеер|паттерн"
+)
+
+#: Формы вопроса о состоянии музыки. Порядок альтернатив значения не имеет —
+#: срабатывает любая.
+MUSIC_STATE_QUERY_PATTERNS: tuple = (
+    # «играет ли», «звучит ли что-нибудь», «крутится ли трек».
+    # Частица «ли» в императиве не встречается — самый надёжный маркер
+    # (та же логика, что в :data:`QUESTION_MARKERS`).
+    r"(?:игра|звуч|крут|включен)\w*\s+ли\b",
+    # «что играет», «что сейчас играет», «что у тебя играет»,
+    # «что сейчас звучит», «что там за трек играет».
+    r"\bчто\b[\s\w-]{0,24}?(?:игра|звуч)\w*",
+    # «(сейчас) играет какая-нибудь музыка», «играет что-нибудь»,
+    # «звучит что-то». Живой кейс n110 — именно эта ветка.
+    r"(?:игра|звуч|крут)\w*\s+(?:сейчас\s+|там\s+|вообще\s+|у\s+тебя\s+)?"
+    r"(?:как\w+|что-нибудь|что-то|чего-нибудь|хоть\s+что)",
+    # «музыка играет», «трек всё ещё звучит», «бит сейчас крутится».
+    # Существительное ПЕРЕД глаголом: «включи музыку» так не пишется,
+    # а «играть музыку» (глагол перед существительным) сюда не попадает.
+    r"\b(?:" + _MUSIC_STATE_NOUNS + r")\w*\s+(?:\w+\s+){0,2}?(?:игра|звуч|крут)\w*",
+    # «какая сейчас музыка», «какой трек», «что за трек».
+    r"(?:как\w+|что\s+за)\s+(?:\w+\s+){0,2}?\b(?:" + _MUSIC_STATE_NOUNS + r")\w*",
+)
+
+MUSIC_STATE_QUERY_RE = re.compile(
+    "|".join(MUSIC_STATE_QUERY_PATTERNS), re.IGNORECASE
+)
+
+#: Императивы запуска, которые превращают вопрос в команду. Проверяются
+#: ПЕРЕД паттернами: «включи что-нибудь, что сейчас играет по радио» — это
+#: просьба включить, и Bug C для неё обязан остаться. Ошибка в эту сторону
+#: безопасна: поведение остаётся сегодняшним (нудж).
+MUSIC_STATE_QUERY_OVERRIDES: tuple = (
+    "включи",
+    "включай",
+    "вруби",
+    "врубай",
+    "поставь",
+    "запусти",
+    "запускай",
+    "сыграй",
+    "играй",
+    "наиграй",
+    "спой",
+    "зачитай",
+    "сгенерируй",
+    "сочини",
+    "замути",
+    "запили",
+    "накидай",
+    "продолж",
+    "пусть ",
+    "чтобы ",
+)
+
+#: Read-only музыкальные тулы: они ОТВЕЧАЮТ на вопрос о состоянии, ничего
+#: не запуская. Если хоть один вызван — просьба юзера удовлетворена и
+#: Bug C нудить нечего.
+#:
+#: ``gen_play_from_library`` / ``load_track`` сюда НЕ входят намеренно: они
+#: запускают воспроизведение и уже учтены в
+#: :data:`USER_MUSIC_SATISFYING_TOOLS`.
+MUSIC_STATE_QUERY_TOOLS: frozenset = frozenset({
+    "get_music_state",
+    "list_tracks",
+    "gen_list_library",
+    "gen_search_library",
+    "gen_get_track_info",
+})
+
+
+def is_music_state_query(user_input: str) -> bool:
+    """Issue #992 Bug C — спрашивает ли юзер о СОСТОЯНИИ музыки?
+
+    «Играет ли сейчас музыка?», «что играет?», «какой трек?» — на такие
+    реплики правильный ответ это ``get_music_state`` + текст, а не
+    ``execute_music_code``. Bug C нудит только когда LLM не вызвала ни
+    одного read-only музыкального тула (см.
+    :data:`MUSIC_STATE_QUERY_TOOLS`) — иначе мы замаскируем настоящий
+    случай «LLM вообще ничего не вызвала».
+
+    Любой императив запуска из :data:`MUSIC_STATE_QUERY_OVERRIDES`
+    («включи музыку», «поставь что-нибудь») снимает вопрос — это команда.
+    """
+    if not user_input:
+        return False
+    low = user_input.lower()
+    if any(kw in low for kw in MUSIC_STATE_QUERY_OVERRIDES):
+        return False
+    return bool(MUSIC_STATE_QUERY_RE.search(low))
 
 
 # ---------------------------------------------------------------------------
