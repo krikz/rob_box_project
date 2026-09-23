@@ -1111,41 +1111,53 @@ class SpeakerIdNode(Node):
         voice-stack-degrades-silently). Валидация: только конечные
         числа — NaN/inf ломают сравнение ``score >= band_high`` в
         ``classify_name_confidence`` непредсказуемо.
+
+        Issue #2828: тем же путём живёт ``register_match_threshold`` —
+        акт «вы разные люди?» форсирует его, чтобы ``voice_conflict``
+        случался гарантированно, а не по везению синтетических голосов.
+        Без перехвата здесь ``ros2 param set`` менял бы только реестр, и
+        харнесс, прочитав значение обратно, счёл бы подмену сработавшей.
         """
         result_ok = True
         for param in params:
             if param.name == "e2e_mode":
                 if not self._apply_e2e_mode(bool(param.value)):
                     result_ok = False
-            elif param.name == "name_confidence_band_high":
-                try:
-                    value = float(param.value)
-                except (TypeError, ValueError):
+            elif param.name in self._LIVE_FLOAT_PARAMS:
+                if not self._apply_live_float(param.name, param.value):
                     result_ok = False
-                    continue
-                if not math.isfinite(value):
-                    result_ok = False
-                    continue
-                self._name_confidence_band_high = value
-                self.get_logger().info(
-                    f"🔄 [2809] name_confidence_band_high -> {value!r} "
-                    f"(no restart needed)"
-                )
-            elif param.name == "name_confidence_min_gap":
-                try:
-                    value = float(param.value)
-                except (TypeError, ValueError):
-                    result_ok = False
-                    continue
-                if not math.isfinite(value):
-                    result_ok = False
-                    continue
-                self._name_confidence_min_gap = value
-                self.get_logger().info(
-                    f"🔄 [2809] name_confidence_min_gap -> {value!r} "
-                    f"(no restart needed)"
-                )
         return SetParametersResult(successful=result_ok)
+
+    #: Параметры-числа, которые узел подхватывает без рестарта:
+    #: имя параметра → атрибут узла (``None`` — порог в модуле
+    #: ``speaker_embeddings``, его ``register_or_merge`` читает на вызове).
+    _LIVE_FLOAT_PARAMS = {
+        "name_confidence_band_high": "_name_confidence_band_high",
+        "name_confidence_min_gap": "_name_confidence_min_gap",
+        "register_match_threshold": None,
+    }
+
+    def _apply_live_float(self, name: str, raw) -> bool:
+        """Применить число из ``_LIVE_FLOAT_PARAMS``; ``False`` — отказ.
+
+        Только конечные числа: NaN/inf ломают сравнения порогов
+        непредсказуемо.
+        """
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return False
+        if not math.isfinite(value):
+            return False
+        attr = self._LIVE_FLOAT_PARAMS[name]
+        if attr is None:
+            _se_mod.REGISTER_MATCH_THRESHOLD = value
+        else:
+            setattr(self, attr, value)
+        self.get_logger().info(
+            f"🔄 [2809/2828] {name} -> {value!r} (no restart needed)"
+        )
+        return True
 
     def _apply_e2e_mode(self, enabled: bool) -> bool:
         """Переключить активную БД дикторов боевая ↔ E2E. ``True`` — успех.

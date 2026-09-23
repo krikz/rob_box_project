@@ -164,3 +164,31 @@ def test_unrelated_param_unaffected(node):
     assert result.successful is True
     assert node._name_confidence_band_high == pytest.approx(band_before)
     assert node._name_confidence_min_gap == pytest.approx(gap_before)
+
+
+def test_register_match_threshold_applied_immediately(node, monkeypatch):
+    """Issue #2828 — акт «вы разные люди?» форсирует порог слияния, чтобы
+    ``voice_conflict`` случался гарантированно. ``register_or_merge``
+    читает порог из модуля на каждом вызове — туда он и должен попасть,
+    иначе ``ros2 param set`` меняет только реестр (silent-degrade)."""
+    se_mod = sid_node._se_mod
+    monkeypatch.setattr(se_mod, "REGISTER_MATCH_THRESHOLD", 0.75)
+
+    result = node.parameters_callback(
+        [_FakeParam("register_match_threshold", 0.0)]
+    )
+
+    assert result.successful is True
+    assert se_mod.REGISTER_MATCH_THRESHOLD == pytest.approx(0.0)
+
+
+def test_register_match_threshold_rejects_nan(node, monkeypatch):
+    se_mod = sid_node._se_mod
+    monkeypatch.setattr(se_mod, "REGISTER_MATCH_THRESHOLD", 0.75)
+
+    result = node.parameters_callback(
+        [_FakeParam("register_match_threshold", float("nan"))]
+    )
+
+    assert result.successful is False
+    assert se_mod.REGISTER_MATCH_THRESHOLD == pytest.approx(0.75)
