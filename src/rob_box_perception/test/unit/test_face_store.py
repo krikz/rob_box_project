@@ -31,6 +31,7 @@ import importlib
 import json
 import logging
 import math
+import shutil
 import sys
 from pathlib import Path
 
@@ -353,8 +354,270 @@ class TestGalleryWarmup:
 
 
 # ============================================================================
-# 2. Рост галереи и вытеснение самого далёкого от медоида (issue #2772)
+# 1c. Именованная запись побеждает безымянный дубль (issue #2771,
+#     живая проверка 23.09.2026: «в очках — незнакомец, без очков —
+#     Дэнчик» — прогрев (TestGalleryWarmup выше) чинит РОСТ молодой
+#     галереи, но не чинит уже заведённый дубль).
 # ============================================================================
+
+# ============================================================================
+# 1c. Именованная запись побеждает безымянный дубль (issue #2771,
+#     живая проверка 23.09.2026: «в очках — незнакомец, без очков —
+#     Дэнчик» — прогрев (TestGalleryWarmup выше) чинит РОСТ молодой
+#     галереи, но не чинит уже заведённый дубль).
+# ============================================================================
+class TestDisambiguateNamedBeatsDuplicate:
+    """``_disambiguate``: если лучший best-of-gallery score достаётся
+    БЕЗЫМЯННОЙ записи, но ИМЕНОВАННАЯ запись тоже проходит
+    ``identify_threshold`` и отстаёт не больше чем на
+    ``disambiguation_gap``, а галереи двух записей сами «слипаются»
+    (кросс-сходство >= ``identify_threshold``) — отвечаем именем и не
+    растим безымянный дубль.
+
+    Геометрия тестов: все эмбеддинги лежат в плоскости span(e0, e1)
+    (``_combo(theta)``), где косинус между двумя точками — ``cos(a-b)``
+    ровно по построению — так же, как в остальном файле. Числа проверены
+    отдельным numpy-расчётом (см. отчёт PR), не только «на глаз».
+    """
+
+    @staticmethod
+    def _standalone_person(tmp_path, tag, thetas, name=None):
+        """Строит ОДНОГО человека в отдельном изолированном хранилище
+        (``identify_threshold=0.0``, ``enroll_threshold=0.0`` — единственная
+        известная запись матчит сама себя всегда, поэтому ``thetas``
+        ложатся в галерею ровно как переданы, без риска зацепить чужую
+        запись). Возвращает путь к каталогу записи на диске и её
+        ``person_id`` — для последующего ``shutil.copytree`` в общий
+        ``root``, где уже будут действовать целевые (строгие) пороги
+        теста."""
+        src_root = tmp_path / f'src_{tag}'
+        store = fs.FaceStore(
+            root=str(src_root), mode=fs.MODE_WORKSHOP,
+            identify_threshold=0.0, enroll_threshold=0.0,
+            gallery_warmup_size=1,
+        )
+        first = store.record_encounter(_combo(thetas[0]))
+        for theta in thetas[1:]:
+            store.record_encounter(_combo(theta))
+        if name is not None:
+            store.attach_name(first.person_id, name)
+        return src_root / first.person_id, first.person_id
+
+    def _combined_store(self, tmp_path, people, **store_kwargs):
+        """``people`` — список ``(person_dir, person_id)`` от
+        ``_standalone_person``. Копирует каждую запись в общий ``root`` и
+        открывает НАД НИМ новый ``FaceStore`` с параметрами теста."""
+        combined_root = tmp_path / 'combined'
+        combined_root.mkdir()
+        for person_dir, person_id in people:
+            shutil.copytree(person_dir, combined_root / person_id)
+        return fs.FaceStore(
+            root=str(combined_root), mode=fs.MODE_WORKSHOP, **store_kwargs,
+        )
+
+    def test_close_gap_and_sticky_galleries_prefers_named(self, tmp_path):
+        """Живой сценарий 07:07:48Z/23.09: дубль обходит именованную
+        запись по max score, но зазор мал (0.030 в этом тесте, живой
+        замер — 0.047) и галереи «слипаются» — правило обязано выбрать
+        имя. Именованная запись выращена НЕСКОЛЬКИМИ ракурсами (0.0..1.0
+        рад) — ровно то, что даёт прогрев (gallery_warmup_size) на живом
+        роботе; дубль — один-единственный ракурс."""
+        named_dir, named_pid = self._standalone_person(
+            tmp_path, 'named', [0.0, 0.15, 0.3, 0.5, 1.0], name='Дэнчик',
+        )
+        dup_dir, dup_pid = self._standalone_person(tmp_path, 'dup', [1.6])
+
+        store = self._combined_store(
+            tmp_path, [(named_dir, named_pid), (dup_dir, dup_pid)],
+            identify_threshold=0.6, enroll_threshold=0.75,
+            disambiguation_gap=0.10,
+        )
+
+        match = store.record_encounter(_combo(1.35))
+
+        assert match.name == 'Дэнчик', (
+            'должны узнать по имени, а не остаться незнакомцем'
+        )
+        assert match.person_id == named_pid
+        assert match.disambiguated is True
+        assert match.is_new is False
+        dup_summary = next(
+            p for p in store.people() if p['person_id'] == dup_pid
+        )
+        assert dup_summary['encounter_count'] == 1, (
+            'безымянный дубль не растёт этой встречей'
+        )
+        assert dup_summary['embeddings'] == 1
+        assert store.stats()['disambig_named_total'] == 1
+
+    def test_identify_also_reports_disambiguation(self, tmp_path):
+        """identify() (read-only) обязан согласовываться с
+        record_encounter — иначе диагностика (Telegram/health) и реальное
+        узнавание расходились бы во мнении, кто есть кто. И, в отличие
+        от record_encounter, ничего не дописывает."""
+        named_dir, named_pid = self._standalone_person(
+            tmp_path, 'named', [0.0, 0.15, 0.3, 0.5, 1.0], name='Дэнчик',
+        )
+        dup_dir, dup_pid = self._standalone_person(tmp_path, 'dup', [1.6])
+
+        store = self._combined_store(
+            tmp_path, [(named_dir, named_pid), (dup_dir, dup_pid)],
+            identify_threshold=0.6, enroll_threshold=0.75,
+            disambiguation_gap=0.10,
+        )
+        gallery_before = len(store.gallery(named_pid))
+
+        match = store.identify(_combo(1.35))
+
+        assert match is not None
+        assert match.name == 'Дэнчик'
+        assert match.person_id == named_pid
+        assert match.disambiguated is True
+        assert len(store.gallery(named_pid)) == gallery_before, (
+            'identify() ничего не дописывает'
+        )
+
+    def test_gap_too_large_keeps_duplicate_unresolved(self, tmp_path):
+        """Живой сценарий 06:35:55Z/23.09: именованная запись (в этом
+        тесте — 0.454) НЕ проходит identify_threshold вовсе — правило не
+        должно её выбрать, человек остаётся незнакомцем (не покрытая
+        пока часть issue #2771, см. докстринг DEFAULT_DISAMBIGUATION_GAP:
+        настоящий sweep по ADR-0123 §6 решит и её)."""
+        store = fs.FaceStore(
+            root=str(tmp_path), mode=fs.MODE_WORKSHOP,
+            identify_threshold=0.6, enroll_threshold=0.75,
+            disambiguation_gap=0.10,
+        )
+        named = store.record_encounter(_combo(0.0))
+        store.attach_name(named.person_id, 'Дэнчик')
+        duplicate = store.record_encounter(_combo(1.2))
+
+        match = store.record_encounter(_combo(1.1))
+
+        assert match.disambiguated is False
+        assert match.person_id == duplicate.person_id
+        assert match.name is None, (
+            'именованная запись не прошла identify - остаётся незнакомец'
+        )
+        assert store.stats()['disambig_named_total'] == 0
+
+    def test_unrelated_galleries_do_not_merge_despite_close_scores(
+        self, tmp_path,
+    ):
+        """Защита от дыры «чужой получает имя хозяина» (исходный симптом
+        issue #2771 - тёща опознана как «Деньчик»): даже если ОБЕ записи
+        проходят identify_threshold с маленьким зазором, правило не
+        срабатывает, когда сами галереи не похожи друг на друга (кросс-
+        сходство ниже identify_threshold) - верный признак, что речь НЕ
+        о дубле одного человека, а о случайном совпадении с двумя
+        разными людьми в один момент."""
+        store = fs.FaceStore(
+            root=str(tmp_path), mode=fs.MODE_WORKSHOP,
+            identify_threshold=0.6, enroll_threshold=0.75,
+            disambiguation_gap=0.10,
+        )
+        unnamed = store.record_encounter(_combo(0.0))
+        named = store.record_encounter(_combo(1.5))
+        store.attach_name(named.person_id, 'Деньчик')
+
+        # noqa: SLF001 - тест внутренностей намеренно
+        cross = store._gallery_cross_similarity(
+            store._records[unnamed.person_id], store._records[named.person_id],
+        )
+        assert cross < 0.6, (
+            'сетап теста должен обеспечивать несвязанные галереи'
+        )
+
+        match = store.record_encounter(_combo(0.7))
+
+        assert match.disambiguated is False
+        assert match.person_id == unnamed.person_id
+        assert match.name is None, (
+            'разные, непохожие друг на друга галереи не должны склеиваться '
+            'в одно имя только из-за случайно близких score к query'
+        )
+        assert store.stats()['disambig_named_total'] == 0
+
+    def test_stranger_below_threshold_never_gets_a_name(self, tmp_path):
+        """Отрицательный тест минимального контракта: эмбеддинг, который
+        вообще не проходит identify_threshold ни к одной записи, не
+        должен получить имя ни при каких обстоятельствах - disambiguate
+        применяется ТОЛЬКО когда лучший скор уже прошёл порог."""
+        store = fs.FaceStore(
+            root=str(tmp_path), mode=fs.MODE_WORKSHOP,
+            identify_threshold=0.6, enroll_threshold=0.75,
+            disambiguation_gap=0.10,
+        )
+        named = store.record_encounter(_combo(0.0))
+        store.attach_name(named.person_id, 'Дэнчик')
+
+        far = _combo(float(np.pi / 2))  # cos(pi/2)=0.0 - далеко от всех
+        match = store.record_encounter(far)
+
+        assert match.is_new is True
+        assert match.name is None
+        assert match.disambiguated is False
+        assert store.stats()['disambig_named_total'] == 0
+
+    def test_named_already_on_top_is_unaffected(self, tmp_path):
+        """Обычное узнавание (топ уже именован) не должно трогаться
+        правилом вообще - regression-guard, что disambiguate не меняет
+        поведение вне своего узкого случая."""
+        store = fs.FaceStore(
+            root=str(tmp_path), mode=fs.MODE_WORKSHOP,
+            identify_threshold=0.6, enroll_threshold=0.9,
+            disambiguation_gap=0.10, gallery_warmup_size=1,
+        )
+        named = store.record_encounter(_combo(0.0))
+        store.attach_name(named.person_id, 'Дэнчик')
+
+        match = store.record_encounter(_noisy_copy(_combo(0.0)))
+        assert match.disambiguated is False
+        assert match.person_id == named.person_id
+        assert match.name == 'Дэнчик'
+        assert store.stats()['disambig_named_total'] == 0
+
+    def test_named_candidate_further_down_scored_list_is_still_found(
+        self, tmp_path,
+    ):
+        """Именованный кандидат необязательно второй в _score_all - если
+        между ним и топом затесались ЕЩЁ безымянные дубли (здесь их два),
+        правило обязано пройти дальше по списку, а не остановиться на
+        первом безымянном runner-up."""
+        named_dir, named_pid = self._standalone_person(
+            tmp_path, 'named', [0.0, 0.15, 0.3, 0.5, 1.0], name='Дэнчик',
+        )
+        dup_a_dir, dup_a_pid = self._standalone_person(
+            tmp_path, 'dup_a', [1.6],
+        )
+        dup_b_dir, dup_b_pid = self._standalone_person(
+            tmp_path, 'dup_b', [1.3],
+        )
+
+        store = self._combined_store(
+            tmp_path,
+            [
+                (named_dir, named_pid),
+                (dup_a_dir, dup_a_pid),
+                (dup_b_dir, dup_b_pid),
+            ],
+            identify_threshold=0.6, enroll_threshold=0.75,
+            disambiguation_gap=0.10,
+        )
+
+        match = store.record_encounter(_combo(1.35))
+
+        assert match.disambiguated is True
+        assert match.person_id == named_pid
+        assert match.name == 'Дэнчик'
+        for dup_pid in (dup_a_pid, dup_b_pid):
+            summary = next(
+                p for p in store.people() if p['person_id'] == dup_pid
+            )
+            assert summary['encounter_count'] == 1, (
+                'дубли не растут этой встречей'
+            )
+
 
 class TestGalleryEviction:
 
