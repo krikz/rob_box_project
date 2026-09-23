@@ -438,19 +438,35 @@ class SpeakerIdNode(Node):
         self._pending_register_name: Optional[str] = None
         self._pending_register_lock = threading.Lock()
 
-        # Recent embeddings ring-buffer: (timestamp, embedding, duration_sec) —
-        # keep last 20 utterances. LLM may take 2-5s to call register_speaker,
-        # so a single _last_embedding can be overwritten by ambient noise.
-        # Keep a window instead. Issue #2769 — duration_sec хранится вместе с
-        # эмбеддингом, чтобы register_speaker (приходит позже, отдельным
-        # топиком) мог передать ЕЁ в register_or_merge(duration_sec=...) —
-        # без этого поля гейт MIN_REGISTER_AUDIO_DURATION_SEC нечем было бы
-        # проверить на этом пути (в отличие от pending_name-ветки, где
-        # длительность известна сразу в _process_utterance).
-        self._recent_embeddings: Deque[Tuple[float, np.ndarray, float]] = collections.deque(
-            maxlen=20
-        )
+        # Recent embeddings ring-buffer: (timestamp, embedding, duration_sec,
+        # utterance_id) — keep last 20 utterances. LLM may take 2-5s to call
+        # register_speaker, so a single _last_embedding can be overwritten by
+        # ambient noise. Keep a window instead. Issue #2769 — duration_sec
+        # хранится вместе с эмбеддингом, чтобы register_speaker (приходит
+        # позже, отдельным топиком) мог передать ЕЁ в
+        # register_or_merge(duration_sec=...) — без этого поля гейт
+        # MIN_REGISTER_AUDIO_DURATION_SEC нечем было бы проверить на этом
+        # пути (в отличие от pending_name-ветки, где длительность известна
+        # сразу в _process_utterance).
+        #
+        # Issue #2829 (ADR-0131 PR-2) — utterance_id добавлен четвёртым
+        # полем: _on_register_request ищет эмбеддинг ИМЕННО той фразы, в
+        # которой человек назвал своё имя (переданный dialogue_node id
+        # текущего хода), а не "самый свежий за MAX_EMBED_AGE_SEC от кого
+        # угодно" (см. _on_register_request).
+        self._recent_embeddings: Deque[
+            Tuple[float, np.ndarray, float, Optional[str]]
+        ] = collections.deque(maxlen=20)
         self._MAX_EMBED_AGE_SEC: float = 30.0
+        # Issue #2829 — сколько ждём (короткий bounded retry, НЕ безлимитный
+        # _pending_register_name) эмбеддинг фразы, если register_speaker
+        # приехал чуть раньше, чем speaker_id_node успел досчитать
+        # embedding для того же utterance_id (редкая гонка — обычно
+        # dialogue_node уже дождался ПОЛНОГО /voice/speaker/result этой же
+        # фразы через UtteranceSpeakerRegistry.resolve() ДО вызова LLM/tool,
+        # так что эмбеддинг почти всегда уже здесь).
+        self._REGISTER_UTTERANCE_WAIT_SEC: float = 1.5
+        self._REGISTER_UTTERANCE_POLL_SEC: float = 0.05
 
         # Issue #1787 — окно последних реплик КАЖДОГО спикера: на нём
         # считаются темы (epithets.extract_tags) и валентность. 50 — из
@@ -622,9 +638,24 @@ class SpeakerIdNode(Node):
         self._executor.submit(self._process_utterance, pcm_bytes, utterance_id)
 
     def _on_register_request(self, msg: String) -> None:
-        """Register the current (or next) speaker under the given name.
+        """Register the speaker of ONE SPECIFIC utterance under a name.
 
-        Expected JSON: {"name": "Иван"} or {"name": "Иван", "speaker_id": "<uuid>"}
+        Expected JSON: {"name": "Иван", "utterance_id": "<12-hex>"}
+        (speaker_id optional -- explicit merge target).
+
+        Issue #2829 (ADR-0131 PR-2) -- before this fix, a request without
+        a fresh embedding set _pending_register_name with NO deadline:
+        the NEXT utterance from ANYONE got registered under that name,
+        whenever it arrived (live case 23.09 10:53: "Will register next
+        utterance as 'Дэнчик'" -> registered 43s later, quite possibly a
+        different person). That branch is REMOVED. Registration is now
+        bound to the utterance_id of the phrase in which the person
+        introduced themselves -- supplied by dialogue_node (it already
+        knows the current turn's utterance_id, see
+        dialogue_node._current_turn_utterance_id / RegisterSpeakerTool).
+        No matching embedding (never arrived for that id, or it aged out
+        of the 20-utterance ring buffer) -- honest register_error
+        (#2769's path), never a silent "whoever speaks next" fallback.
         """
         try:
             data = json.loads(msg.data)
@@ -638,36 +669,110 @@ class SpeakerIdNode(Node):
             return
 
         speaker_id_hint: Optional[str] = data.get("speaker_id")
+        utterance_id = str(data.get("utterance_id") or "").strip() or None
 
-        # If we have a fresh embedding from the latest utterance, register immediately
-        now = time.time()
+        if not utterance_id:
+            self.get_logger().warning(
+                f"⚠️ [issue #2829] register_request for '{name}' has no "
+                "utterance_id -- honest refusal instead of registering "
+                "whoever speaks next"
+            )
+            self._publish_register_error(
+                name, error="no_utterance_context", utterance_id=None
+            )
+            return
+
+        embedding, duration = self._find_embedding_for_utterance(utterance_id)
+        if embedding is not None:
+            self._executor.submit(
+                self._do_register,
+                name,
+                embedding,
+                speaker_id_hint,
+                duration,
+                utterance_id,
+            )
+            self.get_logger().info(
+                f"📝 [issue #2829] Registering '{name}' from utterance "
+                f"{utterance_id} (embedding already present)"
+            )
+            return
+
+        # Embedding not there YET -- speaker_id_node may still be running
+        # inference for this exact utterance (rare: dialogue_node's
+        # UtteranceSpeakerRegistry.resolve() for THIS utterance normally
+        # already waited for the full /voice/speaker/result before the
+        # LLM/tool call happened, so by the time this message arrives the
+        # embedding is almost always already in _recent_embeddings -- see
+        # ADR-0131 §PR-2). Short BOUNDED retry, not an unbounded pend.
+        self.get_logger().info(
+            f"📝 [issue #2829] utterance {utterance_id} not in ring buffer "
+            f"yet -- waiting up to {self._REGISTER_UTTERANCE_WAIT_SEC}s"
+        )
+        self._executor.submit(
+            self._register_after_wait, name, speaker_id_hint, utterance_id
+        )
+
+    def _find_embedding_for_utterance(
+        self, utterance_id: str
+    ) -> Tuple[Optional[np.ndarray], Optional[float]]:
+        """Issue #2829 -- exact-id lookup in the recent-embeddings ring
+        buffer (see its docstring in __init__ for the 4-tuple shape).
+        """
         with self._pending_register_lock:
-            # Find most recent embedding within MAX_EMBED_AGE_SEC
-            best_embedding = None
-            best_duration: Optional[float] = None
-            best_ts = 0.0
-            for ts, emb, dur in reversed(self._recent_embeddings):
-                if now - ts <= self._MAX_EMBED_AGE_SEC and ts > best_ts:
-                    best_embedding = emb
-                    best_duration = dur
-                    best_ts = ts
-            if best_embedding is not None:
-                self._executor.submit(
-                    self._do_register,
-                    name,
-                    best_embedding,
-                    speaker_id_hint,
-                    best_duration,
+            for _ts, emb, dur, uid in reversed(self._recent_embeddings):
+                if uid == utterance_id:
+                    return emb, dur
+        return None, None
+
+    def _register_after_wait(
+        self, name: str, speaker_id_hint: Optional[str], utterance_id: str
+    ) -> None:
+        """Issue #2829 -- bounded poll for a not-yet-arrived embedding.
+
+        Runs on the executor (never blocks the ROS callback thread).
+        Gives up honestly after _REGISTER_UTTERANCE_WAIT_SEC -- no
+        unbounded _pending_register_name fallback.
+        """
+        deadline = time.monotonic() + self._REGISTER_UTTERANCE_WAIT_SEC
+        while time.monotonic() < deadline:
+            embedding, duration = self._find_embedding_for_utterance(utterance_id)
+            if embedding is not None:
+                self._do_register(
+                    name, embedding, speaker_id_hint, duration, utterance_id
                 )
-                self.get_logger().info(
-                    f"📝 Registering '{name}' from embedding {now - best_ts:.1f}s ago"
-                )
-            else:
-                # No fresh utterance yet — pend for the next one
-                self._pending_register_name = name
-                self.get_logger().info(
-                    f"📝 Will register next utterance as '{name}'"
-                )
+                return
+            time.sleep(self._REGISTER_UTTERANCE_POLL_SEC)
+        self.get_logger().warning(
+            f"⚠️ [issue #2829] register_request for '{name}': no embedding "
+            f"for utterance={utterance_id} within "
+            f"{self._REGISTER_UTTERANCE_WAIT_SEC}s -- honest refusal"
+        )
+        self._publish_register_error(
+            name, error="utterance_not_found", utterance_id=utterance_id
+        )
+
+    def _publish_register_error(
+        self, name: str, error: str, utterance_id: Optional[str]
+    ) -> None:
+        """Issue #2829 -- same ack shape as the #2769 too_short path
+        (event: "register_error" on /voice/speaker/result), new error
+        reasons for "no utterance context"/"utterance not found".
+        dialogue_node's existing handler (_on_speaker_result) already
+        asks the person to repeat on ANY register_error reason (see
+        PR-2's dialogue_node.py diff) -- no new UX branch needed there.
+        """
+        ack = String()
+        ack.data = json.dumps(
+            {
+                "event": "register_error",
+                "error": error,
+                "name": name,
+                "utterance_id": utterance_id,
+            },
+            ensure_ascii=False,
+        )
+        self._result_pub.publish(ack)
 
     # ── Processing ────────────────────────────────────────────────────────────
 
@@ -714,7 +819,9 @@ class SpeakerIdNode(Node):
 
         # Store as latest embedding for possible registration
         with self._pending_register_lock:
-            self._recent_embeddings.append((time.time(), embedding, duration_sec))
+            self._recent_embeddings.append(
+                (time.time(), embedding, duration_sec, utterance_id)
+            )
             pending_name = self._pending_register_name
             self._pending_register_name = None
 
@@ -867,15 +974,43 @@ class SpeakerIdNode(Node):
             self._growth_session = None
             return
 
-        if match is not None and match.speaker_id != session["speaker_id"]:
-            # Реплика уверенно опознана как ДРУГОЙ человек — якорь больше не
-            # актуален (кто-то другой заговорил / подошёл). Не дописываем и
-            # закрываем сессию: продолжать доверять якорю после прямого
-            # акустического опровержения нельзя.
+        # Issue #2829 -- реплика, НЕ опознанная как владелец сессии,
+        # закрывает сессию, вместо того чтобы молча дописаться (было:
+        # вето срабатывало ТОЛЬКО когда identify() уверенно называл
+        # ДРУГОГО известного спикера -- незнакомый голос без совпадений
+        # проходил насквозь и дописывался в чужую галерею, живой пример
+        # "Дэнчик x2" из issue).
+        #
+        # ``match`` (аргумент выше) уже применяет калиброванный
+        # ``identify_threshold`` и может быть ``None`` даже для ЗАКОННОГО
+        # владельца сессии на раннем этапе роста -- именно поэтому growth
+        # вообще существует (#2747: живой хозяин с 1 эталоном в галерее
+        # даёт cos~0.523, ниже порога 0.72). Требовать
+        # ``match.speaker_id == owner`` сломало бы рост с нуля.
+        #
+        # Вместо порога на АБСОЛЮТНЫЙ score берём топ-1 кандидата БЕЗ
+        # порога (``identify_candidates``, issue W5-4 п.4) -- если даже
+        # САМЫЙ похожий профиль во всей БД не владелец сессии, эта
+        # реплика точно не его: либо уверенно другой известный (старое
+        # вето, теперь частный случай), либо голос, который ближе к
+        # кому-то ДРУГОМУ, чем к владельцу, даже не набирая
+        # identify_threshold ни для кого. Это НЕ адаптивный акустический
+        # порог, отклонённый в #2747 (там пробовали калибровать ГРАНИЦУ
+        # принятия по cosine — тут используется ТОЛЬКО ранжирование
+        # "кто ближе", а решение "дописывать вообще" остаётся на
+        # непрерывности сессии.
+        top = self._db.identify_candidates(embedding, top_n=1)
+        top_is_owner = bool(top) and top[0].speaker_id == session["speaker_id"]
+        if not top_is_owner:
+            best_desc = (
+                f"'{top[0].name}' score={top[0].confidence:.3f}"
+                if top
+                else "БД пуста"
+            )
             self.get_logger().info(
-                f"🌙 [issue #2747] growth-сессия '{session['name']}' закрыта: "
-                f"реплика уверенно опознана как '{match.name}' "
-                f"(score={match.confidence:.3f}) — другой человек у микрофона"
+                f"🌙 [issue #2829] growth-сессия '{session['name']}' закрыта: "
+                f"реплика ближе к {best_desc}, чем к владельцу сессии — "
+                "не дописываем (риск отравить чужую галерею)"
             )
             self._growth_session = None
             return
