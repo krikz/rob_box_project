@@ -36,6 +36,15 @@
       "_manual_not_generated": "issue #2809 -- этот акт НЕ входит в SSoT gen_night_marathon.py. Перегенерация манифеста скриптом ЗАТРЁТ эту запись -- см. \"generated_by\" в самом файле сценария."
     },
     {
+      "act": "2c",
+      "title": "Вы разные люди?",
+      "stability": "new-unproven",
+      "steps": 3,
+      "scenario_file": ".github/e2e/scenarios/night/night_marathon_act2c_voice_conflict_question_v1.json",
+      "acceptance_file": ".github/e2e/scenarios/night/night_marathon_act2c_voice_conflict_question_acceptance_v1.json",
+      "_manual_not_generated": "issue #2828 -- этот акт НЕ входит в SSoT gen_night_marathon.py. Перегенерация манифеста скриптом ЗАТРЁТ эту запись -- см. \"generated_by\" в самом файле сценария."
+    },
+    {
       "act": 3,
       "title": "Кто там бубнил на фоне",
       "stability": "expected-partially-red",

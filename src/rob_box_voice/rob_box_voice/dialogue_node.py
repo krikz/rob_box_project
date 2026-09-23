@@ -198,6 +198,10 @@ from rob_box_voice.core.turn import (
     reset_budget as turn_guards_reset_budget,
 )
 from rob_box_voice.core.speech_accumulator import SpeechAccumulator
+from rob_box_voice.core.identity_ack import (
+    IdentityAckQuestion,
+    identity_ack_plan,
+)
 from rob_box_voice.core.dj_mode import DJHook, DJModeController
 from rob_box_voice.core.speak_helpers import (
     EffectAwaiterRegistry, build_ssml_payload,
@@ -658,6 +662,10 @@ class DialogueNode(Node):
         # спросить, и потребляется/обнуляется при сборке system_context той
         # же реплики -- см. _pending_identity_hint_lines.
         self._pending_identity_hint: Optional[dict] = None
+        # Issue #2828 -- переспрос по ack регистрации (voice_conflict /
+        # name_twin): придержать до выдачи ответа хода, затем прочитать
+        # ответ человека. См. rob_box_voice.core.identity_ack.
+        self._identity_ack = IdentityAckQuestion()
         self._identity_question_session_gap_sec: float = float(
             self.get_parameter("identity_question_session_gap_sec").value
         )
@@ -862,6 +870,11 @@ class DialogueNode(Node):
                 callback_group=cbg)
             self._speaker_register_pub = self.create_publisher(
                 String, "/voice/speaker/register", 10)
+            # Issue #2828 -- ответ «это я» на переспрос про личность
+            # склеивает профили тем же путём, что ручная склейка
+            # оператора (speaker_id_node._on_merge_request).
+            self._speaker_merge_pub = self.create_publisher(
+                String, "/voice/speaker/merge", 10)
             # Issue #1787 — реплики опознанного спикера уходят в
             # speaker_id_node, который считает по ним темы и выбирает
             # внутреннюю кличку (эпитет). Текст есть только здесь, БД
@@ -2234,25 +2247,118 @@ class DialogueNode(Node):
         не косинус, — склеить два профиля постфактум дёшево
         (``/voice/speaker/merge``), а восстановить стёртую личность нечем.
 
-        Говорим напрямую (``_speak_direct``), а не через хинт в следующий
-        ход: ack регистрации — событие fire-and-forget, LLM его не видит
-        (тот же довод, что у отказа ``register_error`` выше), и к
-        следующей реплике повод переспросить уже протухнет.
+        Говорим мимо LLM, а не через хинт в следующий ход: ack
+        регистрации — событие fire-and-forget, LLM его не видит (тот же
+        довод, что у отказа ``register_error`` выше), и к следующей
+        реплике повод переспросить уже протухнет.
+
+        Issue #2828: но ack приходит, пока ход ещё идёт — LLM после
+        ``register_speaker`` дописывает приветствие. Сказанный сразу
+        вопрос тут же перебивался «Привет, Борис!»: робот спрашивал и сам
+        отвечал. Поэтому посреди хода вопрос ПРИДЕРЖИВАЕТСЯ и звучит
+        вместо ответа хода (:meth:`_deliver_turn_result`) либо, если
+        ответ уже ушёл, сразу после него — последней репликой. Ответ
+        человека читает :meth:`_resolve_identity_ack_answer`.
         """
         question = identity_question(ack)
         if not question:
             return
+        plan = identity_ack_plan(ack, question)
+        with self._task_lock:
+            held = self._run_task is not None
+            if held:
+                self._identity_ack_state().hold(plan)
         self.get_logger().info(
             f"👥 [issue #2747] переспрашиваю про личность: "
             f"twin={bool(ack.get('name_twin'))} "
-            f"conflict={bool(ack.get('voice_conflict'))}"
+            f"conflict={bool(ack.get('voice_conflict'))} "
+            f"held_until_turn_end={held}"
         )
+        if not held:
+            self._speak_identity_question(plan)
+
+    def _identity_ack_state(self) -> IdentityAckQuestion:
+        """Состояние переспроса (issue #2828); лениво — для нод из тестов,
+        собранных через ``object.__new__`` без ``__init__``."""
+        state = getattr(self, "_identity_ack", None)
+        if state is None:
+            state = self._identity_ack = IdentityAckQuestion()
+        return state
+
+    def _speak_identity_question(self, plan: Optional[dict]) -> None:
+        """Задать переспрос и ждать ответ. ``None`` — спрашивать нечего."""
+        if plan is None:
+            return
         try:
-            self._speak_direct(question)
+            self._speak_direct(plan["question"])
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warning(
                 f"не смог переспросить про личность: {exc!r}"
             )
+            return
+        self._identity_ack_state().arm(plan)
+
+    def _deliver_turn_result(self, result: Any, **kwargs: Any) -> None:
+        """Выдать ответ хода — или заменить его переспросом (issue #2828).
+
+        Если посреди хода пришёл ack с ``voice_conflict``/``name_twin``,
+        ответ LLM того же хода («Привет, Борис! Запомнил») писался без
+        знания о конфликте и прямо противоречит вопросу. Звучит ровно
+        одно из двух — вопрос, и робот ждёт ответа человека.
+        """
+        with self._task_lock:
+            plan = self._identity_ack_state().take_held()
+        if plan is None:
+            self._handle_result(result, **kwargs)
+            return
+        self.get_logger().info(
+            "👥 [issue #2828] ответ хода заменён переспросом про личность: "
+            f"{str(getattr(result, 'spoken_text', '') or '')[:80]!r}"
+        )
+        self._speak_identity_question(plan)
+
+    def _resolve_identity_ack_answer(self, user_input: str) -> None:
+        """Прочитать реплику как ответ на переспрос (issue #2828).
+
+        «Это я» — склеить новый профиль в известный через
+        ``/voice/speaker/merge``; «мы разные» — оставить как есть
+        (профили и так раздельные, инвариант ADR-0127); непонятно — тоже
+        ничего не склеивать. Во всех трёх случаях LLM получает разовую
+        подсказку с вопросом и исходом (``_build_dynamic_system_context``).
+        """
+        outcome = self._identity_ack_state().consume(
+            user_input, classify_identity_confirmation(user_input)
+        )
+        if outcome is None:
+            return
+        plan, same = outcome
+        self.get_logger().info(
+            f"👥 [issue #2828] ответ на переспрос: same={same} "
+            f"kind={plan['kind']} new={plan['new_id'][:8]} "
+            f"known={plan['known_id'][:8]}"
+        )
+        if same is True:
+            self._merge_identity_profiles(plan)
+
+    def _merge_identity_profiles(self, plan: dict) -> None:
+        """«Это я» — склеить ``new_id`` в ``known_id`` и поправить снимок."""
+        pub = getattr(self, "_speaker_merge_pub", None)
+        if pub is None or not (plan["new_id"] and plan["known_id"]):
+            self.get_logger().warning(
+                "👥 [issue #2828] склеить нечем: нет merge-паблишера или id"
+            )
+            return
+        msg = String()
+        msg.data = json.dumps(
+            {"src_speaker_id": plan["new_id"],
+             "dst_speaker_id": plan["known_id"]},
+            ensure_ascii=False,
+        )
+        pub.publish(msg)
+        with self._speaker_lock:
+            if self._current_speaker.get("speaker_id") == plan["new_id"]:
+                self._current_speaker["speaker_id"] = plan["known_id"]
+                self._current_speaker["name"] = plan["known_name"]
 
     def _on_speaker_result(self, msg: String) -> None:
         """Issue #1077 — результат голосовой биометрии (speaker_id_node).
@@ -3668,6 +3774,9 @@ class DialogueNode(Node):
         # если подсказки нет) -- не добавляет ветвление в этот метод, чей CC
         # уже на грани баджета (cc_budget baseline=24).
         lines.extend(self._pending_identity_hint_lines())
+        # Issue #2828 -- вопрос и исход переспроса по ack регистрации:
+        # вопрос шёл мимо LLM, без подсказки она не поймёт ответ.
+        lines.extend(self._identity_ack_state().pop_hint_lines())
         lines.append("  </user_profile>")
         lines.append("  <hardware>")
         lines.append(f"    <battery>{battery}</battery>")
@@ -4043,7 +4152,9 @@ class DialogueNode(Node):
                 f"truncated_tool_args={getattr(result, 'truncated_tool_args', None)!r} "
                 f"error={result.error!r}"
             )
-            self._handle_result(
+            # Issue #2828 -- переспрос про личность, пришедший посреди
+            # хода, звучит вместо ответа хода (см. _deliver_turn_result).
+            self._deliver_turn_result(
                 result,
                 user_input=user_input,
                 is_dj_auto=was_dj_auto,
@@ -4071,9 +4182,17 @@ class DialogueNode(Node):
             # or the test driver (and any future hook that watches
             # ``self._run_task``) would lose the retry. Only clear the
             # slot when no replacement was scheduled.
+            # Issue #2828 -- ack с переспросом, пришедший уже ПОСЛЕ выдачи
+            # ответа хода, забираем под тем же локом, что освобождает слот:
+            # иначе он проскочил бы между «ход идёт» и «хода нет» и потерялся.
+            leftover_identity_question = None
             with self._task_lock:
                 if self._run_task is asyncio.current_task():
                     self._run_task = None
+                    leftover_identity_question = (
+                        self._identity_ack_state().take_held()
+                    )
+            self._speak_identity_question(leftover_identity_question)
             # S7 (scheduler-segments-merge, issue #968) — drain any user
             # phrases that arrived while THIS turn's LLM cycle was in
             # flight (barge_in_policy=classify, quick_decide=PENDING_LLM,
@@ -5792,6 +5911,9 @@ class DialogueNode(Node):
         if from_tg:
             user_input = f"[TG] {user_input}"
         elif self._speaker_id_enabled and not was_dj_auto:
+            # Issue #2828 -- ответ на переспрос по ack регистрации читаем
+            # по СЫРОЙ реплике, до префиксов [Spkr:...]/[Speaker:...].
+            self._resolve_identity_ack_answer(user_input)
             user_input = await self._apply_speaker_identity(
                 user_input, speaker_context
             )
