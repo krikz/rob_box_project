@@ -463,24 +463,59 @@ def _stack_chord(
 _BASS_SHAPE_DENSE = (0, 0, 2, 1)
 _BASS_SHAPE_SPARSE = (0, 2)
 
+#: Длина ноты-подхода к следующему аккорду, биты.
+#:
+#: 🔴 FIX (live 23.09, #2839, «гимн — лютый мусор»): подход длился целый
+#: шаг баса (бит у плотной темы, два у редкой) и был хроматическим. При
+#: смене аккорда каждые полтакта это половина всей басовой партии — и
+#: вся она вне лада: у гимна в до мажоре бас играл C F# G G# A G# G C#.
+#: Подход — затакт в следующую опору, а не опора сама по себе: восьмая
+#: в конце окна, всё остальное окно звучит тон аккорда.
+_APPROACH_BEATS = 0.5
 
-def _approach_note(previous: int, target: int) -> int:
-    """Нота-подход к ``target``: полутон снизу или сверху, что ближе к ``previous``.
 
-    Подход — то, чем осмысленная басовая линия отличается от механической.
-    Без него бас просто перескакивает на новый корень, и смена гармонии
-    ничем не подготовлена; с ним последняя нота перед сменой ведёт в неё
-    за полтона, и линия слышится как ЛИНИЯ, а не как набор опор.
+def _approach_note(
+    held: int, target: int, scale_pcs: frozenset
+) -> Optional[int]:
+    """Нота-подход к ``target``: соседняя ступень лада снизу или сверху.
 
-    Сторона выбирается по близости к предыдущей ноте, чтобы бас шёл
-    плавно, а не прыгал октавами ради подхода.
+    Подход — то, чем осмысленная басовая линия отличается от механической:
+    последняя восьмая перед сменой гармонии ведёт в новый корень шагом, и
+    линия слышится как ЛИНИЯ, а не как набор опор.
+
+    🔴 FIX (live 23.09, #2839): подход был хроматическим (полутон к корню)
+    и потому почти всегда вне лада. Теперь это соседняя СТУПЕНЬ лада
+    (полутон или тон от корня). Хроматический полутон остаётся только там,
+    где лад не даёт ступени ближе тона — в пентатонике с её терцовыми
+    дырами; и тогда это короткая проходящая нота, разрешающаяся в корень
+    ровно на полтона.
+
+    Из двух сторон берётся ближайшая к ``held`` (звучащему перед подходом
+    тону аккорда), чтобы бас шёл плавно; сторона, совпадающая с ``held``,
+    отбрасывается — повтор той же ноты подходом не является. Ниже
+    :data:`BASS_MIDI_FLOOR` подход не опускается. Если после этого
+    подходить нечем (корень на полу, а ступень сверху уже звучит) —
+    ``None``: окно дозвучит тоном аккорда.
     """
-    below, above = target - 1, target + 1
-    return below if abs(below - previous) <= abs(above - previous) else above
+    candidates: List[int] = []
+    for direction in (-1, 1):
+        diatonic = [
+            target + direction * distance
+            for distance in (1, 2)
+            if (target + direction * distance) % 12 in scale_pcs
+        ]
+        candidates.append(diatonic[0] if diatonic else target + direction)
+    usable = [
+        note for note in candidates
+        if note != held and note >= BASS_MIDI_FLOOR
+    ]
+    if not usable:
+        return None
+    return min(usable, key=lambda note: (abs(note - held), -note))
 
 
 def _build_bass(
-    chords: Sequence[ChordWindow], dense: bool
+    chords: Sequence[ChordWindow], dense: bool, scale_pcs: frozenset
 ) -> Tuple[Tuple[Optional[int], float], ...]:
     """Бас: тоны аккорда по долям, с подходом к следующему аккорду.
 
@@ -489,9 +524,12 @@ def _build_bass(
     под которыми она рассыпается. Разреженная тема получает половины,
     чтобы бас не забивал её собственное движение.
 
-    Последняя нота перед сменой гармонии заменяется на подход к корню
-    следующего аккорда (:func:`_approach_note`) — кроме случая, когда на
-    всё окно приходится одна нота: там опора важнее движения.
+    Перед сменой гармонии последняя нота окна ДЕЛИТСЯ: тон аккорда звучит
+    до последней восьмой, а в неё ложится подход к корню следующего
+    аккорда (:func:`_approach_note`, :data:`_APPROACH_BEATS`). Подход не
+    ставится, когда на всё окно приходится одна нота: там опора важнее
+    движения. ``scale_pcs`` — классы высоты лада темы, из них берётся
+    ступень подхода.
 
     Окна гармонии переменной длины (см. :func:`_pick_chords`), поэтому шаг
     раскладывается по фактической длине окна, а остаток достаётся
@@ -504,7 +542,6 @@ def _build_bass(
     step = 1.0 if dense else 2.0
     shape = _BASS_SHAPE_DENSE if dense else _BASS_SHAPE_SPARSE
     out: List[Tuple[Optional[int], float]] = []
-    previous = chords[0].root_midi if chords else BASS_MIDI_FLOOR
     for index, chord in enumerate(chords):
         following = chords[(index + 1) % len(chords)]
         changes = following.pitch_classes[0] != chord.pitch_classes[0]
@@ -516,13 +553,24 @@ def _build_bass(
         remainder = chord.beats - count * step
         for position in range(count):
             is_last = position == count - 1
-            if is_last and changes and count > 1:
-                note = _approach_note(previous, following.root_midi)
-            else:
-                note = tones[shape[position % len(shape)]]
-            out.append((note, step + (remainder if is_last else 0.0)))
-            previous = note
+            note = tones[shape[position % len(shape)]]
+            dur = step + (remainder if is_last else 0.0)
+            approach = None
+            if is_last and changes and count > 1 and dur > _APPROACH_BEATS:
+                approach = _approach_note(note, following.root_midi, scale_pcs)
+            if approach is None:
+                out.append((note, dur))
+                continue
+            out.append((note, dur - _APPROACH_BEATS))
+            out.append((approach, _APPROACH_BEATS))
     return tuple(out)
+
+
+def _scale_pitch_classes(root: str, scale: str) -> frozenset:
+    """Классы высоты (0..11) лада темы."""
+    intervals = SCALE_INTERVALS.get(scale, SCALE_INTERVALS["minor"])
+    root_semitone = VALID_ROOTS.index(root) if root in VALID_ROOTS else 0
+    return frozenset((root_semitone + i) % 12 for i in intervals)
 
 
 def _build_pad(
@@ -723,7 +771,7 @@ def harmonize(
         dense=dense,
         chords=chords,
         lead=tuple((midi, float(dur)) for midi, dur in notes),
-        bass=_build_bass(chords, dense),
+        bass=_build_bass(chords, dense, _scale_pitch_classes(root, scale)),
         pad=_build_pad(chords, dense),
         counter=_build_counter(timed, chords),
         drums=_build_drums(hist, dense),

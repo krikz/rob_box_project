@@ -854,12 +854,16 @@ class TestFixedThemeMidi:
         assert "p2_motif" not in code
         assert "Pvar" not in lead
 
-    def test_bass_approaches_the_next_chord_by_a_semitone(self):
-        """Последняя нота баса перед сменой гармонии ведёт в неё за полтона.
+    def test_bass_approaches_the_next_chord_by_a_short_scale_step(self):
+        """Перед сменой гармонии бас ведёт в новый корень шагом по ладу.
 
         Подход — то, чем осмысленная басовая линия отличается от
         механической: без него бас просто перескакивает на новый корень и
         смена гармонии ничем не подготовлена.
+
+        #2839: подход был хроматическим полутоном длиной в целый шаг баса —
+        у гимна в до мажоре пол-партии звучало вне лада. Теперь это
+        короткая (≤ 0.5 бита) ступень лада в конце окна.
         """
         from rob_box_mcp_tools.core.harmonize import harmonize
 
@@ -875,12 +879,21 @@ class TestFixedThemeMidi:
         roots = [c.pitch_classes[0] for c in harmony.chords]
         assert len(set(roots)) > 1, "гармония должна смениться"
 
-        bass = [n for n, _dur in harmony.bass]
-        # Нота перед сменой окна отстоит от корня следующего окна на полтона.
-        first = harmony.chords[0]
-        boundary = int(first.beats / (1.0 if harmony.dense else 2.0)) - 1
-        following_root = harmony.chords[1].root_midi
-        assert abs(bass[boundary] - following_root) == 1
+        # Нота, звучащая последней перед началом второго окна.
+        boundary = harmony.chords[1].start
+        cursor = 0.0
+        approach = None
+        for note, dur in harmony.bass:
+            cursor += dur
+            if cursor >= boundary:
+                approach = (note, dur)
+                break
+        assert approach is not None
+        note, dur = approach
+        c_major = {0, 2, 4, 5, 7, 9, 11}
+        assert dur <= 0.5, "подход — затакт, а не опора"
+        assert note % 12 in c_major, "подход обязан быть ступенью лада"
+        assert 1 <= abs(note - harmony.chords[1].root_midi) <= 2
 
     def test_dense_theme_gets_octaves_and_second_voice(self):
         """Плотная тема выдерживает полный наряд аранжировки.
