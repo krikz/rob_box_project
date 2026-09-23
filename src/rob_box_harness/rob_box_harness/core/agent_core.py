@@ -369,6 +369,34 @@ _MUSIC_LAUNCH_TOOLS: frozenset[str] = frozenset({
 })
 
 
+def _extract_track_name(
+    tool_calls: Iterable[ToolCall],
+    previous: str | None = None,
+) -> str | None:
+    """Issue #2857 — the ``name`` argument of the LAST ``compose_music``
+    call in ``tool_calls``, or ``previous`` when this batch didn't call
+    it (or called it without a usable name).
+
+    Cheap by design: ``compose_music``'s ``name`` argument (see
+    ``ComposeMusicTool`` in ``rob_box_mcp_tools/tools/music.py``) is
+    already sitting on the ``ToolCall`` the model just produced — no
+    extra round-trip needed. Used by the DJ fallback
+    (``ensure_dj_music_response``) to announce the actual track instead
+    of the generic «Готово, играю.».
+    """
+    name = previous
+    for call in tool_calls:
+        if call.name != "compose_music":
+            continue
+        args = call.arguments or {}
+        if not isinstance(args, Mapping):
+            continue
+        candidate = args.get("name")
+        if isinstance(candidate, str) and candidate.strip():
+            name = candidate.strip()
+    return name
+
+
 # ---------------------------------------------------------------------------
 # Result type
 # ---------------------------------------------------------------------------
@@ -447,6 +475,12 @@ class DialogResult:
     # exhaustion. AgentCore itself ALSO uses the flag (see
     # ``_run_with_tools``) to ask the model for a shorter retry.
     truncated_tool_args: bool = False
+    # Issue #2857 — the ``name`` argument of the LAST ``compose_music``
+    # call this turn (``None`` if compose_music wasn't called, or was
+    # called without a usable ``name``). The dialogue_node DJ fallback
+    # uses this to announce the actual track instead of the generic
+    # «Готово, играю.» — see ``ensure_dj_music_response``.
+    track_name: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -874,6 +908,7 @@ class AgentCore:
                 result.finish_reason = outcome.finish_reason
                 result.raw_response = outcome.raw_response
                 result.truncated_tool_args = outcome.truncated_tool_args
+                result.track_name = outcome.track_name
                 if not is_dj_auto:
                     # Persist an HONEST assistant turn: the text actually
                     # spoken via speak_text (or a real plain-text reply), NOT
@@ -1118,6 +1153,10 @@ class AgentCore:
         seen: set[str] = set()
         speak_text_count: int = 0
         speak_text_real_count: int = 0
+        # Issue #2857 — updated (never reset) each batch via
+        # ``_extract_track_name``; the DJ fallback wants the LAST
+        # compose_music name this turn.
+        track_name: str | None = None
         # Actual text spoken via speak_text this turn — used for an honest
         # conversation history (persisting "done" instead of what was really
         # said made the LLM echo old topics; see process_input).
@@ -1210,6 +1249,10 @@ class AgentCore:
             speak_text_count, speak_text_real_count = counts[:2]
             for text in counts[2]:
                 spoken_texts.append(text)
+            # Issue #2857 — cheap track-name capture for the DJ fallback;
+            # a plain re-assignment (helper owns the branching), so this
+            # doesn't add to this method's CC.
+            track_name = _extract_track_name(response.tool_calls, track_name)
 
             # Append the assistant turn that contained the tool_calls
             # (required by OpenAI Chat-Completions ordering rules).
@@ -1342,6 +1385,7 @@ class AgentCore:
             spoken_texts=spoken_texts,
             seen=seen,
             tool_error_occurred=tool_error_occurred,
+            track_name=track_name,
         )
 
     def _record_tool_calls(
@@ -1524,6 +1568,7 @@ class AgentCore:
         spoken_texts: list[str],
         seen: set[str],
         tool_error_occurred: bool,
+        track_name: str | None = None,
     ) -> _ToolLoopOutcome:
         """Run the babble filter (issue #1253) and assemble the outcome.
 
@@ -1548,6 +1593,7 @@ class AgentCore:
             speak_text_count=speak_text_count,
             speak_text_real_count=speak_text_real_count,
             spoken_texts=spoken_texts,
+            track_name=track_name,
         )
         if babble_outcome is not None:
             return babble_outcome
@@ -1557,6 +1603,7 @@ class AgentCore:
             speak_text_count=speak_text_count,
             speak_text_real_count=speak_text_real_count,
             spoken_texts=spoken_texts,
+            track_name=track_name,
         )
 
     async def _execute_tool_batch(

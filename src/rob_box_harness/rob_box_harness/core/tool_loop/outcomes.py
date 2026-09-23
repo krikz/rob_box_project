@@ -48,6 +48,12 @@ class _ToolLoopOutcome:
         Issue #1899 — propagated from the last ``LLMResponse.truncated_tool_args``.
         ``True`` when the last stream assembled tool-call arguments that
         were cut off mid-JSON (most often ``finish_reason='length'``).
+    track_name:
+        Issue #2857 — the ``name`` argument of the LAST ``compose_music``
+        call this turn (``None`` if compose_music wasn't called, or was
+        called without a usable ``name``). Cheap, already-available data
+        the DJ fallback uses to announce the track it just started
+        instead of the generic «Готово, играю.».
     """
     spoken_text: str
     tools_called: list[str]
@@ -57,6 +63,7 @@ class _ToolLoopOutcome:
     speak_text_real_count: int
     spoken_via_tool: str
     truncated_tool_args: bool = False
+    track_name: str | None = None
 
 
 __all__ = ["_ToolLoopOutcome"]

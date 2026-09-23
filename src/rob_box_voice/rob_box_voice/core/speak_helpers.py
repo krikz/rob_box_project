@@ -22,7 +22,7 @@ import json
 import re
 import threading
 import uuid
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 # voice-vr 12 (issue #2197, ADR-0080 §1.3 / §2.3): единое место сборки
 # SSML — раньше здесь был ``f"<speak>{text}</speak>"`` без экранирования.
@@ -275,6 +275,25 @@ _DJ_DEGENERATE_MARKERS: frozenset[str] = frozenset({
 #: other DJ hooks (``Принял.``, «Понял.»).
 _DJ_FALLBACK_PHRASE: str = "Готово, играю."
 
+#: Issue #2857 (round 2, live 23.09.2026 review) — templates for the
+#: DJ auto-transition announcement. A single fixed template
+#: («{persona}: дальше — {theme}!») turned out just as robotic as the
+#: generic phrase it replaced once ``theme`` (a whole party description,
+#: not a track) got stuffed into it, AND the persona name was repeated
+#: on every single transition. Fixed by:
+#: * NEVER using ``theme`` as a track substitute (it's a party
+#:   description, not a song title — too long, wrong shape);
+#: * dropping the persona prefix entirely (it was the same words every
+#:   transition — exactly the dull repetition being fixed);
+#: * rotating through a few short templates, chosen deterministically
+#:   by the transition number so tests stay stable and the phrase
+#:   still varies across a DJ set instead of repeating verbatim.
+_DJ_TRACK_TEMPLATES: Tuple[str, ...] = (
+    "Дальше — {track}!",
+    "Следом — {track}!",
+    "Новый трек — {track}!",
+)
+
 
 def ensure_dj_music_response(
     spoken: str,
@@ -282,8 +301,7 @@ def ensure_dj_music_response(
     *,
     is_dj_auto: bool = False,
     track_name: Optional[str] = None,
-    theme: Optional[str] = None,
-    persona: Optional[str] = None,
+    transition_count: int = 0,
 ) -> str:
     """Return a DJ-style fallback when music tools ran without real
     user-facing text (issue #2557; #2857 extends it — see below).
@@ -311,11 +329,11 @@ def ensure_dj_music_response(
     Issue #2857 also replaces the flat ``"Готово, играю."`` on
     autonomous DJ transitions (``is_dj_auto=True``): the generic
     phrase is only appropriate when the USER directly asked for music
-    and got no reply text. On a DJ auto-transition, a short
-    track-specific line is more informative — built from whatever is
-    cheaply available this turn (``track_name``, else ``theme``, else
-    ``persona``). If none of those are available, stay silent
-    (``""``) rather than repeat the dull phrase every transition.
+    and got no reply text. On a DJ auto-transition, a short,
+    templated line names the actual track (``track_name`` — the real
+    ``compose_music(name=...)`` argument, NOT ``theme``, which is a
+    whole party description). If no track name is available, stay
+    silent (``""``) rather than repeat a dull phrase every transition.
 
     Pure / no ROS, no side effects — caller decides whether to publish.
     Designed to be the single source of truth so the dialogue_node
@@ -353,14 +371,14 @@ def ensure_dj_music_response(
         return _DJ_FALLBACK_PHRASE
     # DJ auto-transition without any spoken line: prefer a short,
     # track-specific announcement over the generic phrase; silence
-    # beats a robotic "Готово, играю." repeated every ~45s.
-    name = (track_name or theme or "").strip()
+    # beats a robotic "Готово, играю." repeated every ~45s. ``theme``
+    # is deliberately NOT used here — it's a party description
+    # ("гангста-вечеринка в чёрном квартале..."), not a track title.
+    name = (track_name or "").strip()
     if not name:
         return ""
-    persona = (persona or "").strip()
-    if persona:
-        return f"{persona}: дальше — {name}!"
-    return f"Дальше — {name}!"
+    template = _DJ_TRACK_TEMPLATES[transition_count % len(_DJ_TRACK_TEMPLATES)]
+    return template.format(track=name)
 
 
 #: Regexes applied by :func:`strip_markdown` in order. Each tuple is
