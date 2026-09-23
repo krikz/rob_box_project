@@ -3902,3 +3902,44 @@ class TestMusicQualityValidator:
         assert ok is True
         assert err == ""
 
+
+# ---------------------------------------------------------------------------
+# Issue #2856 — set_dj_mode передаёт лимиты сета в /voice/dj_mode
+# ---------------------------------------------------------------------------
+
+
+class TestSetDjModeSetLimits:
+    """``max_minutes`` / ``max_tracks`` доезжают до DJModeController payload'ом."""
+
+    @staticmethod
+    def _published_payload(**kwargs):
+        import json as _json
+        from rob_box_mcp_tools.tools.music import SetDjModeTool
+
+        node = MagicMock()
+        tool = SetDjModeTool(node, manager=None)
+        result = tool.execute(**kwargs)
+        publisher = node.create_publisher.return_value
+        msg = publisher.publish.call_args[0][0]
+        return _json.loads(msg.data), result
+
+    def test_schema_exposes_limits(self):
+        from rob_box_mcp_tools.tools.music import SetDjModeTool
+
+        names = {p.name for p in SetDjModeTool(MagicMock()).parameters}
+        assert {"max_minutes", "max_tracks", "plan"} <= names
+
+    def test_max_minutes_and_tracks_reach_payload(self):
+        payload, result = self._published_payload(
+            enabled=True, next_transition_sec=45, max_minutes=30, max_tracks=5,
+        )
+        assert payload["max_minutes"] == 30
+        assert payload["max_tracks"] == 5
+        assert "лимит: 30 мин" in result.message
+        assert "лимит: 5 треков" in result.message
+
+    def test_limits_omitted_when_not_given(self):
+        payload, _ = self._published_payload(enabled=True, next_transition_sec=45)
+        assert "max_minutes" not in payload
+        assert "max_tracks" not in payload
+

@@ -51,6 +51,18 @@ class DJState:
     # пересчёта. ``None`` — данных нет (топик ещё не пришёл, форма не
     # играет) — тогда ``tick()`` этим полем не гейтится вообще.
     form_ends_at: Optional[float] = None
+    # Issue #2856 — лимит сета по ВРЕМЕНИ. ``started_at`` — стенное время
+    # генуинного старта сета (``0.0`` — неизвестно, ``tick()`` взведёт при
+    # первом вызове). ``max_seconds`` / ``max_tracks`` — явный лимит от
+    # юзера через ``set_dj_mode(max_minutes=..., max_tracks=...)``; ``None``
+    # / ``0`` — лимита нет (без плана действует ``DJ_SET_DEFAULT_MAX_S``).
+    # ``final_dispatched`` — финальный трек ПО ЛИМИТУ уже отдан модели:
+    # следующий переход — остановка, а не ещё один трек.
+    started_at: float = 0.0
+    last_transition_at: float = 0.0
+    max_seconds: Optional[float] = None
+    max_tracks: int = 0
+    final_dispatched: bool = False
 
 
 @dataclass
@@ -87,11 +99,34 @@ class DJModeController:
     # после N переходов DJ сам выключается (юзер может включить снова).
     # 🔴 FIX (live 15:20 06.08): 8 переходов ≈ 6 минут сета — юзер слышал
     # «однотипное потом замолчал». Поднято до 24 (~18 мин при 45с).
+    #
+    # 🔴 FIX (issue #2856): с #2461 переход ждёт конца формы
+    # (``form_ends_at``), реальный интервал 150-200 с → 24 перехода ≈
+    # 60-80 минут (живой сет 23.09 14:51 → #17 в 15:39, конца не видно).
+    # Счётчик переходов остаётся только страховкой; основной лимит сета
+    # без плана — по ВРЕМЕНИ (``DJ_SET_DEFAULT_MAX_S``).
     DJ_AUTO_MAX_TRANSITIONS: int = 24
+    # Issue #2856 — длительность сета без плана по умолчанию. Юзер может
+    # задать свою через ``set_dj_mode(max_minutes=N)``.
+    DJ_SET_DEFAULT_MAX_S: float = 20 * 60.0
+    # Границы явных лимитов из ``set_dj_mode`` (защита от мусора модели).
+    DJ_SET_MAX_MINUTES_RANGE: tuple = (1, 180)
+    # Минимум 2: переход #1 («СТАРТ ВЕЧЕРИНКИ») финальным не бывает.
+    DJ_SET_MAX_TRACKS_RANGE: tuple = (2, 50)
 
-    def __init__(self, *, hook: DJHook, logger: logging.Logger) -> None:
+    def __init__(
+        self,
+        *,
+        hook: DJHook,
+        logger: logging.Logger,
+        clock: Callable[[], float] = time.time,
+    ) -> None:
         self._hook = hook
         self._logger = logger
+        # Issue #2856 — стенные часы инжектируются, чтобы тест мог прогнать
+        # часовой сет за миллисекунды. Должны быть той же эпохи, что и
+        # ``form_ends_at`` (``time.time()``, см. DJState).
+        self._clock = clock
         self.state = DJState()
         self._persona_default = hook.persona_default
 
@@ -169,7 +204,7 @@ class DJModeController:
             self._logger.info(f"🎧 DJ persona: {self.state.persona!r}")
         next_sec = data.get("next_transition_sec")
         delay = float(max(15, min(300, int(next_sec)))) if next_sec else 60.0
-        self.state.next_transition_at = time.time() + delay
+        self.state.next_transition_at = self._clock() + delay
         # 🔴 FIX (live 15:30 06.08): план сета из set_dj_mode(plan=...) —
         # DJ идёт по плану и завершается финальным объявлением, а не
         # молча по лимиту DJ_AUTO_MAX_TRANSITIONS.
@@ -221,7 +256,47 @@ class DJModeController:
                 f"(был #{self.state.transition_count})"
             )
             self.state.transition_count = 0
+        self._apply_set_limits(data, is_fresh_start=is_fresh_start)
         self._logger.info(f"🎧 DJ Mode ON — next transition in {delay:.0f}s")
+
+    @staticmethod
+    def _clamped_int(value: Any, bounds: tuple) -> Optional[int]:
+        """``value`` → int в ``bounds``; мусор/``<=0`` → ``None`` (лимита нет)."""
+        if value is None or isinstance(value, bool):
+            return None
+        try:
+            number = int(float(value))
+        except (TypeError, ValueError):
+            return None
+        if number <= 0:
+            return None
+        low, high = bounds
+        return max(low, min(high, number))
+
+    def _apply_set_limits(self, data: dict, *, is_fresh_start: bool) -> None:
+        """Issue #2856 — старт отсчёта сета и явные лимиты юзера.
+
+        ``max_minutes`` — общая длительность сета ОТ СТАРТА (не «ещё N минут
+        от этого вызова»): модель повторяет аргументы на каждом переходе, и
+        отсчёт «от вызова» двигал бы дедлайн бесконечно — ровно тот баг,
+        который здесь чинится.
+        """
+        if is_fresh_start or not self.state.started_at:
+            self.state.started_at = self._clock()
+            self.state.last_transition_at = 0.0
+            self.state.final_dispatched = False
+        minutes = self._clamped_int(
+            data.get("max_minutes"), self.DJ_SET_MAX_MINUTES_RANGE
+        )
+        if minutes is not None:
+            self.state.max_seconds = minutes * 60.0
+            self._logger.info(f"🎧 DJ лимит сета: {minutes} мин от старта")
+        tracks = self._clamped_int(
+            data.get("max_tracks"), self.DJ_SET_MAX_TRACKS_RANGE
+        )
+        if tracks is not None:
+            self.state.max_tracks = tracks
+            self._logger.info(f"🎧 DJ лимит сета: {tracks} треков")
 
     def _reset_state(self, *, farewell: bool = True) -> None:
         # Capture persona before clearing state so the farewell hook can
@@ -235,6 +310,12 @@ class DJModeController:
         self.state.persona = ""
         # Issue #2461 — не тащить дедлайн формы прошлого сета в следующий.
         self.state.form_ends_at = None
+        # Issue #2856 — лимиты и отсчёт времени принадлежат одному сету.
+        self.state.started_at = 0.0
+        self.state.last_transition_at = 0.0
+        self.state.max_seconds = None
+        self.state.max_tracks = 0
+        self.state.final_dispatched = False
         # 🔴 FIX (live 11:46): без этого enabled оставался True после
         # авто-стопа → следующий tick (5с) видел next_transition_at=0.0 и
         # запускал НОВЫЙ DJ-цикл #1 — DJ «оживал» через 5 секунд после
@@ -256,7 +337,11 @@ class DJModeController:
         """Called from the shell's 5-second timer."""
         if not self.state.enabled:
             return
-        now = time.time()
+        now = self._clock()
+        if not self.state.started_at:
+            # Включили в обход handle_message (тесты, рестарт) — отсчёт
+            # сета с первого тика, а не с эпохи 0 (иначе сразу «финал»).
+            self.state.started_at = now
         gate_at = self.state.next_transition_at
         # Issue #2461 — форма как НИЖНЯЯ граница перехода, не единственный
         # источник. ``next_transition_sec`` (через ``next_transition_at``)
@@ -281,35 +366,95 @@ class DJModeController:
             self.state.next_transition_at = now + self.POSTPONE_INTERVAL_S
             return
 
-        # Hard-stop when the plan is exhausted.
+        # Hard-stop when the plan / set limit is exhausted.
         plan_tracks = self.state.set_plan.count("Трек ")
         next_n = self.state.transition_count + 1
+        if self._should_stop(next_n, plan_tracks):
+            self._reset_state()
+            return
+
+        if self._set_limit_reached(next_n, now, plan_tracks):
+            # Issue #2856 — этот переход последний: объявленный финальный
+            # трек + прощание вместо молчаливого обрыва на следующем тике.
+            self.state.final_dispatched = True
+            self._logger.info(
+                f"🎧 DJ лимит сета достигнут — переход #{next_n} финальный "
+                f"(сет идёт {now - self.state.started_at:.0f}с)"
+            )
+        self.state.transition_count = next_n
+        self.state.last_transition_at = now
+        self.state.next_transition_at = now + self.FALLBACK_INTERVAL_S
+        self._logger.info(f"🎧 DJ auto-transition #{next_n}")
+        # Issue #992 Bug B — ``from_tick=True`` lets the dispatcher
+        # reset its synchronous-retry budget for this fresh transition.
+        self._hook.dispatch(self.build_auto_prompt(next_n), True)
+
+    def _should_stop(self, next_n: int, plan_tracks: int) -> bool:
+        """True — сет исчерпан, переход ``next_n`` не играть, а выключить DJ."""
+        if self.state.final_dispatched:
+            # Issue #2856 — финальный трек по лимиту уже отыгран, а модель
+            # не выключила DJ сама. Прощание скажет хук ``on_stop``.
+            self._logger.info(
+                f"🛑 DJ auto-stop: финальный трек сета отыгран "
+                f"(переход #{next_n} не нужен)"
+            )
+            return True
         # 🔴 FIX (live 11:19 DJ): save_dj_set_plan тула НЕТ — set_plan всегда
         # пуст → plan_tracks=0 → авто-стоп никогда не срабатывал → DJ
         # крутился бесконечно (#22+, час музыки, юзер не может выйти).
         # Фолбэк: если плана нет — жёсткий лимит переходов
         # (DJ_AUTO_MAX_TRANSITIONS), после которого DJ сам выключается.
+        # С #2856 это только страховка: основной лимит — по времени.
         if plan_tracks == 0 and next_n > self.DJ_AUTO_MAX_TRANSITIONS:
             self._logger.warning(
                 f"🛑 DJ auto-stop: переход #{next_n} превысил лимит "
                 f"без плана ({self.DJ_AUTO_MAX_TRANSITIONS}) — "
                 "save_dj_set_plan не вызывался, останавливаю DJ"
             )
-            self._reset_state()
-            return
+            return True
         if plan_tracks > 0 and next_n > plan_tracks + self.DJ_AUTO_STOP_THRESHOLD:
             self._logger.warning(
                 f"🛑 DJ auto-stop: transition #{next_n} beyond plan ({plan_tracks})"
             )
-            self._reset_state()
-            return
+            return True
+        return False
 
-        self.state.transition_count = next_n
-        self.state.next_transition_at = now + self.FALLBACK_INTERVAL_S
-        self._logger.info(f"🎧 DJ auto-transition #{next_n}")
-        # Issue #992 Bug B — ``from_tick=True`` lets the dispatcher
-        # reset its synchronous-retry budget for this fresh transition.
-        self._hook.dispatch(self.build_auto_prompt(next_n), True)
+    def _set_limit_s(self, plan_tracks: int) -> Optional[float]:
+        """Лимит сета по времени: явный от юзера, иначе дефолт — только без плана."""
+        if self.state.max_seconds:
+            return self.state.max_seconds
+        if plan_tracks == 0:
+            return self.DJ_SET_DEFAULT_MAX_S
+        return None
+
+    def _set_limit_reached(self, n: int, now: float, plan_tracks: int) -> bool:
+        """Issue #2856 — переход ``n`` должен стать финальным треком сета.
+
+        Трек перехода ``n`` играет примерно до ``now + интервал``. Финальным
+        он становится, когда ЕЩЁ ОДИН трек после него уже не влезет в лимит:
+        ``now + 2·интервал > started_at + лимит``. Тогда финальный трек
+        доигрывает не позже лимита, и сет заканчивается объявленным финалом
+        + прощанием, а не обрывом. Если оценка промахнулась и мы уже за
+        лимитом — условие тем более истинно: всё равно объявленный финал,
+        не обрыв. Интервал — длина последнего перехода (с #2461 это реальная
+        длина формы, 150-200 с); до второго перехода — ``FALLBACK_INTERVAL_S``.
+
+        Переход #1 («СТАРТ ВЕЧЕРИНКИ») финальным не бывает. Финал по плану
+        здесь не решается — его, как и раньше, решает ``build_auto_prompt``.
+        """
+        if n <= 1:
+            return False
+        track_limit = self.state.max_tracks or (
+            self.DJ_AUTO_MAX_TRANSITIONS if plan_tracks == 0 else 0
+        )
+        if track_limit and n >= track_limit:
+            return True
+        limit_s = self._set_limit_s(plan_tracks)
+        if limit_s is None:
+            return False
+        last = self.state.last_transition_at
+        interval = (now - last) if last else self.FALLBACK_INTERVAL_S
+        return now + 2 * interval > self.state.started_at + limit_s
 
     # ── Prompt builders ─────────────────────────────────────────────
 
@@ -415,7 +560,12 @@ class DJModeController:
             f"План сета:\n{self.state.set_plan}\n" if self.state.set_plan else ""
         )
         plan_tracks = self.state.set_plan.count("Трек ") if self.state.set_plan else 0
-        if plan_tracks and n >= plan_tracks:
+        # Issue #2856 — финал по лимиту времени/треков (``final_dispatched``
+        # взводит ``tick()``) звучит так же, как финал по плану.
+        limit_final = (
+            self.state.final_dispatched and n == self.state.transition_count
+        )
+        if (plan_tracks and n >= plan_tracks) or limit_final:
             return (
                 f"[DJ_AUTO переход #{n} — ФИНАЛЬНЫЙ ТРЕК] "
                 f"Ты {persona}. {theme_line}{plan_block}"

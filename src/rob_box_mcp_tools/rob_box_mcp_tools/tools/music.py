@@ -4240,7 +4240,29 @@ class SetDjModeTool(MCPTool):
                     "каждый начинается с 'Трек N:', например: "
                     "'Трек 1: энергичный старт 128bpm\\nТрек 2: диско-хит 90-х\\nТрек 3: финальный вальс'. "
                     "Передавай при ПЕРВОМ включении DJ — робот пройдёт по плану "
-                    "и на последнем треке объявит 'вечеринка заканчивается' и сам выключит DJ."
+                    "и на последнем треке объявит 'вечеринка заканчивается' и сам выключит DJ. "
+                    "Если юзер ПЕРЕЧИСЛИЛ треки/артистов в просьбе — это и есть план: "
+                    "передай их сюда, по одному 'Трек N: ...' на строку."
+                ),
+                required=False,
+            ),
+            MCPToolParameter(
+                name="max_minutes",
+                type="integer",
+                description=(
+                    "Общая длительность сета в минутах ОТ СТАРТА (1–180). Передавай, "
+                    "если юзер назвал длительность («поиграй полчаса» → 30). "
+                    "Без плана и без этого параметра сет длится ~20 минут; "
+                    "перед лимитом робот сыграет объявленный финальный трек и попрощается."
+                ),
+                required=False,
+            ),
+            MCPToolParameter(
+                name="max_tracks",
+                type="integer",
+                description=(
+                    "Сколько треков сыграть в сете (2–50). Передавай, если юзер назвал "
+                    "число треков («поставь пять треков» → 5), а списка треков нет."
                 ),
                 required=False,
             ),
@@ -4271,6 +4293,8 @@ class SetDjModeTool(MCPTool):
         theme: Optional[str],
         persona: Optional[str],
         plan: Optional[str],
+        max_minutes: Optional[int] = None,
+        max_tracks: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Собрать JSON-payload для /voice/dj_mode из аргументов LLM.
 
@@ -4293,6 +4317,13 @@ class SetDjModeTool(MCPTool):
         # корректно завершается с финальным объявлением, а не молча по лимиту.
         if plan and isinstance(plan, str) and plan.strip():
             payload["plan"] = plan.strip()
+        # Issue #2856 — явные лимиты сета от юзера. Клампит и валидирует
+        # DJModeController (единственный потребитель), здесь — только
+        # пропуск осмысленных чисел.
+        if max_minutes is not None and not isinstance(max_minutes, bool):
+            payload["max_minutes"] = max_minutes
+        if max_tracks is not None and not isinstance(max_tracks, bool):
+            payload["max_tracks"] = max_tracks
         return payload
 
     @staticmethod
@@ -4301,8 +4332,10 @@ class SetDjModeTool(MCPTool):
         enabled: bool,
         persona: Optional[str],
         plan: Optional[str],
+        max_minutes: Optional[int] = None,
+        max_tracks: Optional[int] = None,
     ) -> str:
-        """Хвост строки лога/сообщения: интервал, персона, план."""
+        """Хвост строки лога/сообщения: интервал, персона, план, лимиты."""
         parts: List[str] = []
         if next_transition_sec and enabled:
             parts.append(f" (следующий через {next_transition_sec}с)")
@@ -4310,16 +4343,21 @@ class SetDjModeTool(MCPTool):
             parts.append(f", персона: {persona}")
         if plan:
             parts.append(f", план: {len(plan.splitlines())} треков")
+        if max_minutes and enabled:
+            parts.append(f", лимит: {max_minutes} мин")
+        if max_tracks and enabled:
+            parts.append(f", лимит: {max_tracks} треков")
         return "".join(parts)
 
-    def execute(self, enabled: bool, next_transition_sec: Optional[int] = None, theme: Optional[str] = None, transition_seconds: Optional[int] = None, persona: Optional[str] = None, plan: Optional[str] = None) -> MCPToolResult:
+    def execute(self, enabled: bool, next_transition_sec: Optional[int] = None, theme: Optional[str] = None, transition_seconds: Optional[int] = None, persona: Optional[str] = None, plan: Optional[str] = None, max_minutes: Optional[int] = None, max_tracks: Optional[int] = None) -> MCPToolResult:
         """Опубликовать команду включения/выключения DJ-режима."""
         from std_msgs.msg import String as _String
         next_transition_sec = self._coerce_transition_seconds(
             next_transition_sec, transition_seconds
         )
         payload = self._build_dj_payload(
-            enabled, next_transition_sec, theme, persona, plan
+            enabled, next_transition_sec, theme, persona, plan,
+            max_minutes=max_minutes, max_tracks=max_tracks,
         )
         msg = _String()
         msg.data = json.dumps(payload)
@@ -4328,7 +4366,8 @@ class SetDjModeTool(MCPTool):
             self._manager.set_dj_mode(enabled)
         action = "включён" if enabled else "выключен"
         log_suffix = self._format_log_suffix(
-            next_transition_sec, enabled, persona, plan
+            next_transition_sec, enabled, persona, plan,
+            max_minutes=max_minutes, max_tracks=max_tracks,
         )
         self.log_info(f"🎧 DJ-режим {action}{log_suffix}")
         return MCPToolResult(success=True, message=f"DJ-режим {action}{log_suffix}")
