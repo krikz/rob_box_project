@@ -1736,6 +1736,126 @@ class TestMusicManagerKnownSynthNames:
 
 
 # ---------------------------------------------------------------------------
+# Issue #2838 — разрешённые синты = подтверждённые scsynth, а не отправленные
+# ---------------------------------------------------------------------------
+
+
+def _foxdot_init_preload() -> list:
+    """``startupSynths`` + ``customSynths`` из РЕАЛЬНОГО foxdot_init.sc."""
+    from pathlib import Path
+
+    here = Path(__file__).resolve()
+    root = next(
+        p for p in here.parents
+        if (p / "docker").is_dir() and (p / "src").is_dir()
+    )
+    sc = root / "docker" / "vision" / "voice_assistant" / "foxdot_init.sc"
+    content = sc.read_text(encoding="utf-8")
+    names: list = []
+    for var in ("startupSynths", "customSynths"):
+        match = re.search(r"var " + var + r" = \[(.*?)\];", content, re.S)
+        assert match, var
+        names += re.findall(r'"([^"]+)"', match.group(1))
+    return names
+
+
+def _sclang_log_for(names) -> str:
+    """Лог sclang в формате foxdot_init.sc (как /tmp/sclang.log на роботе)."""
+    lines = [
+        "FoxDot OSCdef registered. Ready to compile SynthDefs.",
+        "Server running: true",
+    ]
+    lines += [f"SynthDef in scsynth: {name}" for name in names]
+    lines.append(f"SynthDef preload finished: {len(names)} defs")
+    return "\n".join(lines) + "\n"
+
+
+@pytest.mark.unit
+class TestKnownSynthNamesServerTruth:
+    """RAW 23.09.2026 (issue #2838): валидатор подсказал 'sine' на 'seepline',
+    LLM сыграла ``d2 >> sine(...)``, execute_music_code → «успешно», scsynth →
+    235 × "SynthDef sine not found". 'sine' был в ``_synthdefs_added``
+    (sdef.add() отправил /foxdot по UDP), но в прелоаде foxdot_init.sc его нет
+    и до сервера он не доехал."""
+
+    #: renardo-палитра, которую Python-сторона «добавила» (sdef.add()):
+    #: весь прелоад + синты, которых в прелоаде нет (как 'sine' на роботе).
+    RENARDO_ONLY = {"sine", "vinsine", "siren"}
+
+    def _mgr(self, tmp_path):
+        preload = _foxdot_init_preload()
+        log = tmp_path / "sclang.log"
+        log.write_text(_sclang_log_for(preload), encoding="utf-8")
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        mgr._synthdefs_added = set(preload) - {"masterlimiter", "masterfilter"}
+        mgr._synthdefs_added |= self.RENARDO_ONLY
+        mgr._evaluate_music_stack_health(sclang_log_path=str(log))
+        return mgr, set(preload)
+
+    def test_known_set_is_what_sclang_confirmed_in_scsynth(self, tmp_path):
+        mgr, preload = self._mgr(tmp_path)
+        known = mgr.known_synth_names()
+        assert "sine" not in known
+        assert not (self.RENARDO_ONLY & known)
+        assert known <= preload
+        assert "masterfilter" not in known and "masterlimiter" not in known
+        assert {"epiano", "sinepad", "supersawlead"} <= known
+
+    def test_renardo_synth_missing_from_preload_is_rejected(self, tmp_path):
+        mgr, _ = self._mgr(tmp_path)
+        code = "d2 >> sine([3,5,7,5,3,5,7,5], dur=0.5, oct=5, amp=0.18)"
+        with patch("builtins.exec") as mock_exec:
+            result = mgr.execute_code(code)
+        assert result["success"] is False
+        assert "'sine'" in result["error"]
+        mock_exec.assert_not_called()
+
+    def test_seepline_suggestion_is_a_synth_loaded_on_server(self, tmp_path):
+        mgr, preload = self._mgr(tmp_path)
+        with patch("builtins.exec") as mock_exec:
+            result = mgr.execute_code(
+                "p4 >> seepline([3,5,7,5], dur=0.5, amp=0.18)"
+            )
+        assert result["success"] is False
+        error = result["error"]
+        assert "имелся в виду 'sine'" not in error
+        suggested = error.split("имелся в виду ")[1].split("?")[0].strip("'")
+        assert suggested in preload
+        mock_exec.assert_not_called()
+
+    def test_unconfirmed_synths_are_logged_at_startup(self, tmp_path):
+        mgr, _ = self._mgr(tmp_path)
+        warnings: list = []
+        mgr._log_warning = warnings.append
+        mgr._log_synth_truth_discrepancy()
+        assert len(warnings) == 1
+        assert "#2838" in warnings[0]
+        for name in sorted(self.RENARDO_ONLY):
+            assert repr(name) in warnings[0]
+
+    def test_unverified_fallback_when_sclang_log_is_missing(self, tmp_path):
+        """Лога нет → подтверждения нет → прежний список отправленных
+        (задокументированный fallback) + предупреждение, что он не проверен."""
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        mgr._synthdefs_added = {"pluck", "sine"}
+        absent = str(tmp_path / "absent.log")
+        mgr._evaluate_music_stack_health(sclang_log_path=absent)
+        assert mgr._server_confirmed_synths is None
+        assert {"pluck", "sine"} <= mgr.known_synth_names()
+        warnings: list = []
+        mgr._log_warning = warnings.append
+        mgr._log_synth_truth_discrepancy()
+        assert "не проверен сервером" in warnings[0]
+
+    def test_still_none_before_renardo_initialization(self, tmp_path):
+        """Документированный контракт: пустой _synthdefs_added → None
+        (проверка выключена), даже если прелоад подтверждён."""
+        mgr, _ = self._mgr(tmp_path)
+        mgr._synthdefs_added = set()
+        assert mgr.known_synth_names() is None
+
+
+# ---------------------------------------------------------------------------
 # MusicManager.execute_code — валидация имён синтов (live-инцидент 21.09.2026)
 # ---------------------------------------------------------------------------
 

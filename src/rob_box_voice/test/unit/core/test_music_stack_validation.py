@@ -7,7 +7,9 @@ import pytest
 
 from rob_box_voice.core.music_stack_validation import (
     classify_sclang_log,
+    confirmed_synths_from_log,
     contains_merge_conflict_markers,
+    load_confirmed_synths,
     format_music_stack_report,
     is_plugin_dependent_synthdef,
     load_sclang_health,
@@ -154,6 +156,47 @@ def test_classify_sclang_log_matches_actual_foxdot_init_log_format():
 
     assert result.is_healthy is True
     assert result.missing_synths == ()
+
+
+# Issue #2838 — RAW-фрагмент /tmp/sclang.log с Vision Pi (23.09.2026).
+_ROBOT_SCLANG_TAIL = """\
+FoxDot OSCdef registered. Ready to compile SynthDefs.
+Server running: true
+SynthDef in scsynth: ambi
+SynthDef in scsynth: sinepad
+SynthDef in scsynth: masterfilter
+SynthDef preload finished: 63 defs
+Master filter armed at tail of RootNode (node 999)
+WARNING: SynthDef bassguitar too big for sending. Retrying via synthdef file
+"""
+
+
+def test_confirmed_synths_from_log_lists_only_server_confirmed_names():
+    confirmed = confirmed_synths_from_log(_ROBOT_SCLANG_TAIL)
+    assert confirmed == frozenset({"ambi", "sinepad", "masterfilter"})
+    # 'sine' ни разу не подтверждён — на роботе scsynth отбил его 235 раз.
+    assert "sine" not in confirmed
+    # "too big ... Retrying" — не подтверждение прихода.
+    assert "bassguitar" not in confirmed
+
+
+def test_confirmed_synths_from_log_is_none_until_preload_finished():
+    """Прелоад не дописан → список неполон → None, а не урезанная «истина»."""
+    partial = "SynthDef in scsynth: ambi\nSynthDef in scsynth: arpy\n"
+    assert confirmed_synths_from_log(partial) is None
+
+
+def test_confirmed_synths_from_log_drops_names_reported_not_found():
+    log_text = _ROBOT_SCLANG_TAIL + "*** ERROR: SynthDef sinepad not found\n"
+    assert "sinepad" not in confirmed_synths_from_log(log_text)
+
+
+def test_load_confirmed_synths_reads_file_and_none_when_absent(tmp_path):
+    log = tmp_path / "sclang.log"
+    log.write_text(_ROBOT_SCLANG_TAIL, encoding="utf-8")
+    expected = frozenset({"ambi", "sinepad", "masterfilter"})
+    assert load_confirmed_synths(log) == expected
+    assert load_confirmed_synths(tmp_path / "absent.log") is None
 
 
 def test_classify_sclang_log_accepts_variant_readiness_phrase():
