@@ -2244,6 +2244,56 @@ def test_process_input_works_without_begin_group_on_tool_provider(
 
 
 # ---------------------------------------------------------------------------
+# Issue #2859 — begin_turn(): граница хода для per-turn гардов провайдера
+# (SchedulerToolExecutor: «один трек за ход»). В отличие от begin_group()
+# зовётся ОДИН раз на ход, даже если пачек tool_calls несколько.
+# ---------------------------------------------------------------------------
+
+
+class _TurnTrackingToolProvider(_FakeToolProvider):
+    """_FakeToolProvider + begin_turn(), mirroring SchedulerToolExecutor."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.begin_turn_call_count = 0
+
+    def begin_turn(self) -> None:
+        self.begin_turn_call_count += 1
+
+
+def test_begin_turn_called_once_per_turn_across_batches(
+    llm: _FakeLLMProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    tools_provider = _TurnTrackingToolProvider()
+    llm.responses = [
+        LLMResponse(
+            content="",
+            tool_calls=(
+                ToolCall(id="c1", name="echo", arguments={"text": "a"}),
+            ),
+        ),
+        LLMResponse(
+            content="",
+            tool_calls=(
+                ToolCall(id="c2", name="echo", arguments={"text": "b"}),
+            ),
+        ),
+        LLMResponse(content="done", tool_calls=()),
+    ]
+    core_obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    _wake(core_obj)
+
+    asyncio.run(core_obj.process_input("q1", history=[]))
+    assert tools_provider.begin_turn_call_count == 1
+
+    _wake(core_obj)
+    asyncio.run(core_obj.process_input("q2", history=[]))
+    assert tools_provider.begin_turn_call_count == 2
+
+
+# ---------------------------------------------------------------------------
 # Issue #1280 — LLM stream must be aborted on barge-in (new STT input)
 # ---------------------------------------------------------------------------
 

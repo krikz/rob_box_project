@@ -34,6 +34,10 @@ from typing import Any, Callable, Optional
 
 from rob_box_llm.provider import ToolCall, ToolResult
 
+from rob_box_voice.core.track_start_guard import (
+    TrackStartGuard,
+    refusal_content,
+)
 from rob_box_voice.scheduler.delta import DeltaOp, DeltaOpKind, TaskDelta
 from rob_box_voice.scheduler.task_scheduler import (
     ChannelKind,
@@ -158,6 +162,17 @@ class SchedulerToolExecutor:
         # ungrouped tasks keep group_id=None like before this feature).
         self._current_group_id: Optional[str] = None
         self._current_seg_idx: int = 0
+        # Issue #2859 — не больше одного успешного запуска трека за ход.
+        self._track_guard = TrackStartGuard()
+
+    def begin_turn(self) -> None:
+        """Граница хода LLM (issue #2859).
+
+        Вызывается ``AgentCore._run_with_tools`` один раз в начале хода
+        (в отличие от :meth:`begin_group`, который зовётся на каждую
+        пачку tool_calls). Снимает лимит «один трек за ход».
+        """
+        self._track_guard.reset()
 
     def begin_group(self) -> str:
         """Start a new segment group (issue #968, S2.3).
@@ -203,7 +218,7 @@ class SchedulerToolExecutor:
 
         channel = channel_for_tool(call.name)
         if channel is None:
-            return await self._underlying.execute(call)
+            return await self._execute_direct(call)
 
         scheduler = self._ensure_scheduler()
         # C3 (#1995): when the scheduler raises (no loop, init failed)
@@ -262,6 +277,33 @@ class SchedulerToolExecutor:
             ),
             is_error=False,
         )
+
+    async def _execute_direct(self, call: ToolCall) -> ToolResult:
+        """Bypass-исполнение с лимитом «один трек за ход» (issue #2859).
+
+        Все запускающие трек тулы идут bypass-путём (см. ``_MUSIC_TOOLS``),
+        поэтому гард стоит здесь. Повторный запуск в том же ходе не
+        доходит до провайдера: каждый такой вызов начинается с
+        ``Clock.clear()``, и на живом DJ-переходе #23 трек сменился 8 раз
+        за 25 секунд. Отказ — не ошибка тула (``is_error=False``): трек
+        играет, и фильтр бабла #1253 не должен глушить итоговую реплику.
+        """
+        guard = self._track_guard
+        if guard.should_refuse(call.name):
+            _LOG.warning(
+                "issue #2859: refusing %s — track already started "
+                "this turn by %s",
+                call.name,
+                guard.started_tool,
+            )
+            return ToolResult(
+                tool_call_id=call.id,
+                content=refusal_content(call.name, guard.started_tool),
+                is_error=False,
+            )
+        result = await self._underlying.execute(call)
+        guard.record(call.name, is_error=bool(result.is_error))
+        return result
 
     async def _execute_task_delta(self, call: ToolCall) -> ToolResult:
         """S6.2 — apply ``task_delta`` directly via ``TaskScheduler.update``.
