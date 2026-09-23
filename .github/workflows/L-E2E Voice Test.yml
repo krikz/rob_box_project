@@ -236,7 +236,7 @@ jobs:
           # что GATE-1 падал раньше и до source не доходили.
           #
           # bug(issue #1735, live run 33248080006): e2e_voice_test.sh:329 ТАКЖЕ
-          # source'ит e2e_voice_wake_gate.sh (ADR-0027 §5.2, classify_step_expect)
+          # source'ит e2e_voice_wake_gate.sh (ADR-0029 §2.3, classify_step_expect)
           # — этот файл сюда не копировался вообще. Скрипт не падает целиком
           # (нет set -e), но classify_step_expect не определена →
           # expect="$(classify_step_expect ...)" тихо резолвится в пустую строку

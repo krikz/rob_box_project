@@ -1,4 +1,4 @@
-# ADR-0127: visibility of adjacent-churn в карточке component-review
+# ADR-AF-0070: visibility of adjacent-churn в карточке component-review
 
 | Поле | Значение |
 |---|---|
@@ -255,7 +255,7 @@ echo
 
 ## 7. Acceptance
 
-- [ ] Новый ADR закоммичен в develop (`docs/adr/0127-...md`).
+- [ ] Новый ADR закоммичен в develop (`docs/adr/AF-0070-...md`).
 - [ ] `agent-flow-nightly-review.sh` содержит helper `adjacent_churn()`.
 - [ ] Тело компонентной карточки содержит секцию «Соседние churn-слоты
       в этом окне» с легендой.
@@ -289,7 +289,7 @@ echo
 +# Печатает TSV: <component>\t<files>\t+<add>\t-<del>\t<coverage_status>
 +# coverage_status ∈ {own_card, max_excluded}.
 +# Сам компонент $1 пропускается.
-+# (ADR-0127)
++# (ADR-AF-0070)
 +adjacent_churn() {  # $1=component
 +    local comp="$1"
 +    local covered=0 entry
