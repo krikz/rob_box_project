@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from .arranger import BEATS_PER_BAR, SCALE_INTERVALS, VALID_ROOTS
-from .harmonize import DEFAULT_DRUM_STYLE, harmonize
+from .harmonize import DEFAULT_DRUM_STYLE, _weighted_percentile, harmonize
 from .rtttl import parse_rtttl
 
 __all__ = [
@@ -189,6 +189,7 @@ def melody_to_compose_params(
     """
     melody = _snap_to_bar(_normalize_tempo(melody))
     melody = _normalize_lead_register(melody)
+    melody = _fix_isolated_lead_outliers(melody)
     root, scale = detect_key(
         [m for m, _ in melody.notes],
         [d for _, d in melody.notes],
@@ -321,6 +322,76 @@ def _normalize_lead_register(melody: RtttlMelody) -> RtttlMelody:
             (None if m is None else m + shift, dur) for m, dur in melody.notes
         ),
     )
+
+
+#: Перцентили (взвешенные длительностью), задающие «корпус темы» для
+#: :func:`_fix_isolated_lead_outliers` — 10-й и 90-й, тот же выбор, что и
+#: у потолка подклада (``harmonize._PAD_CEILING_PERCENTILE``): достаточно
+#: широкий, чтобы не задеть саму тему, и достаточно узкий, чтобы короткий
+#: затакт/проходящая нота в него не попали.
+_LEAD_OUTLIER_LO_PERCENTILE = 0.10
+_LEAD_OUTLIER_HI_PERCENTILE = 0.90
+
+#: Дальше скольких полутонов от края корпуса нота считается «выбросом» и
+#: переносится октавой ближе. 12 — сама октава: issue #2876 явно требует
+#: убирать именно скачки БОЛЬШЕ октавы, оставляя обычные широкие ходы
+#: мелодии (терцдецима, октава с хвостиком в рабочем диапазоне) нетронутыми.
+_LEAD_OUTLIER_OCTAVE_SPAN = 12
+
+
+def _fix_isolated_lead_outliers(melody: RtttlMelody) -> RtttlMelody:
+    """Затакт/одиночную ноту дальше октавы от корпуса темы — подтянуть к нему.
+
+    🔴 FIX (issue #2876, живой прогон 23.09.2026, «диджей Снупдог» — Still
+    Dre): :func:`_normalize_lead_register` переносит ВСЮ тему октавами как
+    один блок — она не может починить одну ноту внутри уже нормальной
+    темы. У Still Dre затакт перед каждой фразой (4 раза, четверть длины
+    соседних нот) стоял на MIDI 72, тело фразы — на 87-89; после общего
+    сдвига в рабочий регистр это 60 против 75-77 — скачок в 15-17
+    полутонов на КАЖДОМ повторе затакта, и потолок подклада
+    (``harmonize._pad_ceiling``) до FIX #2876 в этом модуле садился на
+    затакт же, утаскивая подклад в бас.
+
+    «Корпус темы» — диапазон между 10-м и 90-м перцентилем высоты нот,
+    взвешенным длительностью (:func:`~core.harmonize._weighted_percentile`,
+    тот же приём, что у потолка подклада): короткий затакт не может
+    сдвинуть перцентиль, его вес тонет в весе длинных нот тела фразы.
+
+    Нота дальше :data:`_LEAD_OUTLIER_OCTAVE_SPAN` полутонов от ближайшего
+    края корпуса переносится ЦЕЛЫМИ октавами навстречу корпусу — ровно
+    «затакт переносится октавой к теме» из акцептанса, но универсально
+    (не только затакты, любая одиночная нота вне корпуса), и ровно
+    настолько, чтобы выйти из-под четвертьоктавного разрыва, не залезая
+    внутрь корпуса дальше необходимого.
+
+    Применяется ПОСЛЕ :func:`_normalize_lead_register` (весь блок уже в
+    рабочем регистре) и ДО :func:`~core.harmonize.harmonize` — по той же
+    причине: гармонизация строит бас/пэд от фактической высоты нот темы.
+    """
+    pairs = [(m, dur) for m, dur in melody.notes if m is not None]
+    if len(pairs) < 2:
+        return melody
+    core_lo = int(round(_weighted_percentile(pairs, _LEAD_OUTLIER_LO_PERCENTILE)))
+    core_hi = int(round(_weighted_percentile(pairs, _LEAD_OUTLIER_HI_PERCENTILE)))
+
+    changed = False
+    out: List[Tuple[Optional[int], float]] = []
+    for m, dur in melody.notes:
+        if m is None:
+            out.append((m, dur))
+            continue
+        note = m
+        while note < core_lo - _LEAD_OUTLIER_OCTAVE_SPAN:
+            note += 12
+        while note > core_hi + _LEAD_OUTLIER_OCTAVE_SPAN:
+            note -= 12
+        if note != m:
+            changed = True
+        out.append((note, dur))
+
+    if not changed:
+        return melody
+    return RtttlMelody(bpm=melody.bpm, notes=tuple(out))
 
 
 def _snap_to_bar(melody: RtttlMelody) -> RtttlMelody:
