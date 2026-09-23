@@ -35,7 +35,9 @@ ADR-0132), но уже видит, что выбрано за неё.
 5. ``_fix_isolated_lead_outliers`` → подтяжка выбросов → ``lead_outliers``.
 6. ``detect_key`` → тональность аккомпанемента → ``key`` с разрывом и
    альтернативами (``detect_key_ranked``); root/scale вызова при ``name=``
-   игнорируются — предупреждение (починка — PR-2).
+   перегармонизируют тему (PR-2) → ``key=explicit→X (auto Y)`` и
+   предупреждение, если тема в заданном ладу меньше чем на
+   :data:`KEY_FIT_WARN`.
 7. ``harmonize.DENSE_ONSETS_PER_BEAT`` → dense/sparse → ``density``.
 8. ``_pick_chords`` → аккорды → ``chords`` по тактам.
 9. ``_pad_ceiling``/``PAD_BASS_CLEARANCE``/``_stack_chord`` → регистр пэда →
@@ -50,15 +52,17 @@ ADR-0132), но уже видит, что выбрано за неё.
     диапазоны — уже в звучащей высоте.
 16. ``_heavy_brass_safety_net`` (tools/music.py) → выключает второй голос
     и октавы → предупреждение ``safety net <синт>``.
-17. ``resolve_form``/``_snap_plan_to_theme`` → неизвестная форма → arc,
-    секции под длину темы → ``form`` + предупреждение, таймлайн секций.
+17. ``resolve_form``/``_snap_plan_to_theme`` → секции под длину темы →
+    ``form``, таймлайн секций; неизвестная форма в ``compose_music`` с PR-2 —
+    ошибка (здесь остаётся страховка «→arc» с предупреждением).
 18. ``FORMS``/``ROLE_PROFILE``/``COUNTER_OF_LEAD``/``FIXED_THEME_AMP_FLOOR``
     → баланс и динамика → пока НЕ показаны (только таймлайн формы).
 19. ``_motif_variants``/``_dur_var`` → вариации сочинённой музыки → пока НЕ
     показаны.
 20. ``_autofill_bass`` → бас ``dub`` сам добавлен → виден как партия баса.
 21. ``render``: кламп bpm, неверная тоника → C, swing ≤ 0.3,
-    ``BARS_PER_CHORD`` → предупреждение о клампе bpm; остальное пока нет.
+    ``BARS_PER_CHORD`` → в ``compose_music`` с PR-2 неверный ввод — ошибка
+    (``arranger.check_*``); кламп в ``render`` остался страховкой рантайма.
 22. ``renardo_sanitizer`` (слоты, длина рисунка, кап amp) → раньше
     терялось в ``compose_music`` → внешние предупреждения партитуры.
 23. ``_repeat_warning`` → «совпало с прошлым треком» → в ``message``, как
@@ -90,6 +94,10 @@ KEY_GAP_UNSURE = 0.05
 
 #: Рабочий диапазон лида (ADR-0132 §8: инвариант «лид в [55, 88]»).
 LEAD_RANGE = (55, 88)
+
+#: Доля длительности темы в явно заданном ладу, ниже которой — предупреждение
+#: (ADR-0132 PR-2): тональность выполнена, но спорит с мелодией — решает модель.
+KEY_FIT_WARN = 0.7
 
 #: Доля длительности баса вне лада, выше которой — предупреждение.
 BASS_OUT_OF_KEY_WARN = 0.25
@@ -242,13 +250,20 @@ def _prep_decisions_text(prep: Dict[str, Any]) -> Dict[str, str]:
     }
 
 
-def _harmony_decisions_text(harmony) -> Dict[str, str]:
+def _key_decision_text(harmony, prep: Optional[Dict[str, Any]]) -> str:
+    detected = (prep or {}).get("key_detected")
+    if (prep or {}).get("key_source") == "explicit" and detected:
+        return f"explicit→{harmony.root} {harmony.scale} (auto {detected[0]} {detected[1]})"
+    return f"auto→{harmony.root} {harmony.scale}"
+
+
+def _harmony_decisions_text(harmony, prep: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
     dec = getattr(harmony, "decisions", {}) or {}
     kind = "dense" if harmony.dense else "sparse"
     step = dec.get("bass_step", 1.0 if harmony.dense else 2.0)
     return {
         "density": f"auto→{kind}({harmony.density:.2f}/бит, порог {dec.get('dense_threshold', '?')})",
-        "key": f"auto→{harmony.root} {harmony.scale}",
+        "key": _key_decision_text(harmony, prep),
         "chords": f"auto→{len(harmony.chords)} смен",
         "bass_style": f"auto→тоны аккорда, шаг {step:g}",
         "bass_approach": f"auto→{dec.get('bass_approaches', '?')}",
@@ -263,7 +278,7 @@ def _decisions(spec, harmony, prep: Optional[Dict[str, Any]]) -> Dict[str, str]:
     if prep:
         out.update(_prep_decisions_text(prep))
     if harmony is not None:
-        out.update(_harmony_decisions_text(harmony))
+        out.update(_harmony_decisions_text(harmony, prep))
     arr = getattr(spec, "decisions", {}) or {}
     for knob in ("counter", "theme_octaves"):
         if knob in arr:
@@ -277,10 +292,12 @@ def _key_block(spec, harmony, prep: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     ranked = list((prep or {}).get("key_ranked") or [])
     if harmony is None:
         return {"root": spec.root, "scale": spec.scale, "source": "задана вызовом"}
+    block = _explicit_key_fields(prep)
     return {
         "root": harmony.root,
         "scale": harmony.scale,
-        "source": "определена по теме",
+        "source": "задана вызовом" if block else "определена по теме",
+        **block,
         "gap": (prep or {}).get("key_gap"),
         "alternatives": [
             {"root": r, "scale": s, "score": sc} for r, s, sc in ranked[1:]
@@ -289,13 +306,44 @@ def _key_block(spec, harmony, prep: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+def _explicit_key_fields(prep: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Поля явной тональности (PR-2): что определилось бы само и насколько
+    тема ложится в заданный лад. Пусто, если тональность не задавалась."""
+    if (prep or {}).get("key_source") != "explicit":
+        return {}
+    detected = prep.get("key_detected") or ("?", "?")
+    return {
+        "detected": {"root": detected[0], "scale": detected[1]},
+        "fit": prep.get("key_fit"),
+    }
+
+
 def _key_warnings(key: Dict[str, Any]) -> List[str]:
+    if "detected" in key:
+        return _explicit_key_warnings(key)
     gap, alts = key.get("gap"), key.get("alternatives") or []
     if gap is None or not alts or gap >= KEY_GAP_UNSURE:
         return []
     alt = alts[0]
     return [
         f"тональность неуверенная: разрыв {gap:.3f} с {alt['root']} {alt['scale']}"
+    ]
+
+
+def _explicit_key_warnings(key: Dict[str, Any]) -> List[str]:
+    """Явная тональность спорит с темой — выполнено, но модель предупреждена.
+
+    Разрыв «неуверенной» авто-тональности здесь не показывается: выбор
+    сделан вызовом, а не автоматикой.
+    """
+    fit = key.get("fit")
+    if fit is None or fit >= KEY_FIT_WARN:
+        return []
+    det = key["detected"]
+    return [
+        f"заданная тональность {key['root']} {key['scale']} спорит с темой: "
+        f"в ладу только {fit:.0%} длительности нот (по нотам — "
+        f"{det['root']} {det['scale']}); аккомпанемент построен в заданной"
     ]
 
 
@@ -321,9 +369,11 @@ def _spec_warnings(spec, harmony) -> List[str]:
     if (spec.form or "").strip().lower() not in FORMS:
         out.append(f"форма {spec.form!r} неизвестна — играет arc")
     if harmony is not None and (spec.root, spec.scale) != (harmony.root, harmony.scale):
+        # Страховка рассинхрона: с PR-2 compose_music передаёт тональность
+        # вызова в гармонизацию, и расхождения быть не должно.
         out.append(
-            f"root/scale вызова ({spec.root} {spec.scale}) не применены к "
-            f"аккомпанементу: он построен в {harmony.root} {harmony.scale}"
+            f"root/scale спецификации ({spec.root} {spec.scale}) расходятся с "
+            f"аккомпанементом: он построен в {harmony.root} {harmony.scale}"
         )
     return out
 
@@ -353,6 +403,11 @@ def _parts_text(parts: Dict[str, Dict[str, Any]]) -> str:
 
 def _key_text(key: Dict[str, Any]) -> str:
     base = f"{key['root']} {key['scale']}"
+    if "detected" in key:
+        det = key["detected"]
+        fit = key.get("fit")
+        fit_text = f", тема в ладу {fit:.0%}" if fit is not None else ""
+        return f"{base} (задана вызовом; по нотам {det['root']} {det['scale']}{fit_text})"
     if key.get("gap") is None:
         return f"{base} ({key['source']})"
     alts = ", ".join(

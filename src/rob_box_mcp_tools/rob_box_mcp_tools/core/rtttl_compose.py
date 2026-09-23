@@ -30,6 +30,7 @@ __all__ = [
     "detect_key",
     "detect_key_ranked",
     "melody_to_compose_params",
+    "key_fit",
 ]
 
 #: Профили Крумхансл-Шмуклера: насколько «своей» слышится каждая ступень
@@ -301,7 +302,10 @@ def detect_key(
 
 
 def melody_to_compose_params(
-    melody: RtttlMelody, drum_style: str = DEFAULT_DRUM_STYLE
+    melody: RtttlMelody,
+    drum_style: str = DEFAULT_DRUM_STYLE,
+    root: Optional[str] = None,
+    scale: Optional[str] = None,
 ) -> Dict[str, object]:
     """RTTTL-мелодия → плоские параметры ``compose_music``.
 
@@ -329,6 +333,16 @@ def melody_to_compose_params(
     свёртка темпа, хвостовая пауза, перенос регистра темы, подтянутые
     выбросы, ранжированные кандидаты тональности. Только запись: на ноты
     и на аккомпанемент она не влияет (golden-тест ``test_arranger_golden``).
+
+    ``root`` / ``scale`` (ADR-0132 PR-2) — явная тональность от модели:
+    аккомпанемент ПЕРЕГАРМОНИЗИРУЕТСЯ в ней вместо определённой по теме
+    (тема играется как есть — абсолютным MIDI). Заданная только тоника
+    берёт лад определённой тональности, заданный только лад — её тонику.
+    Значения должны быть уже проверены (``arranger.check_root`` /
+    ``check_scale``). Оба ``None`` — прежнее поведение байт-в-байт.
+    Спорная с мелодией тональность не отклоняется — решает модель, а в
+    ``decisions`` пишутся ``key_detected`` и ``key_fit`` (доля
+    длительности темы в заданном ладу) для предупреждения партитуры.
     """
     source_bpm = melody.bpm
     folded = _normalize_tempo(melody)
@@ -339,9 +353,16 @@ def melody_to_compose_params(
         [m for m, _ in melody.notes],
         [d for _, d in melody.notes],
     )
-    root, scale = ranked[0].root, ranked[0].scale
+    explicit = root is not None or scale is not None
+    root = root or ranked[0].root
+    scale = scale or ranked[0].scale
     midi: List[str] = ["None" if m is None else str(int(m)) for m, _ in melody.notes]
     dur: List[str] = [f"{d:g}" for _, d in melody.notes]
+    decisions = _prep_decisions(
+        source_bpm, (folded, snapped, registered, melody), ranked
+    )
+    if explicit:
+        decisions.update(_explicit_key_decisions(melody, ranked[0], root, scale))
     return {
         "bpm": melody.bpm,
         "root": root,
@@ -351,9 +372,36 @@ def melody_to_compose_params(
         "harmony": harmonize(
             melody.notes, melody.bpm, root, scale, drum_style=drum_style
         ),
-        "decisions": _prep_decisions(
-            source_bpm, (folded, snapped, registered, melody), ranked
-        ),
+        "decisions": decisions,
+    }
+
+
+def key_fit(
+    notes: Sequence[Tuple[Optional[int], float]], root: str, scale: str
+) -> float:
+    """Доля звучащей длительности темы, лежащая в ладу ``root scale``.
+
+    Мера спора явной тональности с мелодией (ADR-0132 PR-2): у верной
+    тональности обычно ≥ 0.9, у параллельной — столько же, у чужой — меньше
+    половины. Без звучащих нот — 1.0 (спорить не с чем).
+    """
+    intervals = SCALE_INTERVALS.get(scale, SCALE_INTERVALS["minor"])
+    tonic = VALID_ROOTS.index(root) if root in VALID_ROOTS else 0
+    pcs = {(tonic + i) % 12 for i in intervals}
+    total = sum(float(d) for m, d in notes if m is not None)
+    inside = sum(float(d) for m, d in notes if m is not None and int(m) % 12 in pcs)
+    return round(inside / total, 3) if total > 0 else 1.0
+
+
+def _explicit_key_decisions(
+    melody: RtttlMelody, detected: KeyCandidate, root: str, scale: str
+) -> Dict[str, object]:
+    """Запись явной тональности вызова рядом с определённой (ADR-0132 PR-2)."""
+    return {
+        "key_source": "explicit",
+        "key_explicit": (root, scale),
+        "key_detected": (detected.root, detected.scale),
+        "key_fit": key_fit(melody.notes, root, scale),
     }
 
 

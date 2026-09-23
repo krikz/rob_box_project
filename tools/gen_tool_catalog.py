@@ -344,6 +344,15 @@ def _composition_roots() -> list[str]:
     return roots
 
 
+def _composition_scales() -> list[str]:
+    """``compose_music.scale`` enum — the arranger's scale table (ADR-0132 PR-2:
+    an unknown scale is now an error, so the LLM must see the same list)."""
+    scales = list(_load_arranger().SCALE_INTERVALS)
+    if not scales:
+        raise ToolSourceError("arranger.SCALE_INTERVALS is empty")
+    return scales
+
+
 def _groove_loops() -> list[str]:
     """``compose_music.groove_loop`` enum — the loop catalog data file (#2841).
 
@@ -384,6 +393,7 @@ DYNAMIC_ENUMS = {
     ("play_sound", "sound"): _sound_pack_triggers,
     ("compose_music", "form"): _composition_forms,
     ("compose_music", "root"): _composition_roots,
+    ("compose_music", "scale"): _composition_scales,
     ("compose_music", "groove_loop"): _groove_loops,
     ("compose_music", "drum_style"): _drum_styles,
 }

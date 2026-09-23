@@ -244,6 +244,129 @@ class ArrangementError(ValueError):
     """Спецификация не может быть развёрнута в корректный Renardo-код."""
 
 
+# ---------------------------------------------------------------------------
+# Проверка ввода (ADR-0132 PR-2): ошибка со списком вместо тихой замены
+# ---------------------------------------------------------------------------
+#
+# ``render``/``resolve_form`` по-прежнему страхуют рантайм (кламп bpm/swing,
+# неизвестная форма → arc, тоника → C), но до них неверное значение от
+# модели больше не доходит: ``compose_music`` проверяет ввод этими
+# функциями и возвращает понятную ошибку — модель исправит вызов, а не
+# будет думать, что сыграно то, что она просила. Стиль — как у
+# ``harmonize.check_drum_style``.
+
+#: Допустимый свинг восьмых (``render`` клампит сюда же).
+SWING_RANGE = (0.0, 0.3)
+
+#: Бемоль → диез той же высоты (тоника пишется в ``VALID_ROOTS`` диезами).
+_FLAT_SUFFIXES = ("b", "♭")
+_SHARP_SUFFIXES = ("#", "♯")
+
+
+def check_form(form: Optional[str]) -> str:
+    """Нормализовать форму (``None``/пусто → :data:`DEFAULT_FORM`).
+
+    Raises:
+        ArrangementError: неизвестная форма — со списком допустимых.
+    """
+    name = (form or DEFAULT_FORM).strip().lower()
+    if name not in FORMS:
+        raise ArrangementError(
+            f"Неизвестная форма form={form!r}. Доступны: "
+            f"{', '.join(sorted(FORMS))}. Повтори вызов с одной из них "
+            "или без form (по умолчанию arc)."
+        )
+    return name
+
+
+def check_root(root: Optional[str]) -> Optional[str]:
+    """Нормализовать тонику: ``'a'`` → ``'A'``, ``'Bb'`` → ``'A#'``.
+
+    ``None``/пусто → ``None`` (тоника не задана). Бемоль переводится в
+    диез той же высоты — это та же нота, а не замена.
+
+    Raises:
+        ArrangementError: не нота — со списком допустимых.
+    """
+    text = (root or "").strip()
+    if not text:
+        return None
+    letter, accidental = text[:1].upper(), text[1:]
+    if letter in VALID_ROOTS and accidental in ("",) + _SHARP_SUFFIXES + _FLAT_SUFFIXES:
+        shift = 1 if accidental in _SHARP_SUFFIXES else -1 if accidental else 0
+        return VALID_ROOTS[(VALID_ROOTS.index(letter) + shift) % 12]
+    raise ArrangementError(
+        f"Неизвестная тоника root={root!r}. Доступны: {', '.join(VALID_ROOTS)} "
+        "(бемоль можно: Bb = A#). Тоника — только нота, лад задаётся "
+        "отдельно: «ля минор» → root=\"A\", scale=\"minor\"."
+    )
+
+
+def check_scale(scale: Optional[str]) -> Optional[str]:
+    """Нормализовать лад к имени из :data:`SCALE_INTERVALS` (без учёта регистра).
+
+    ``None``/пусто → ``None`` (лад не задан).
+
+    Raises:
+        ArrangementError: неизвестный лад — со списком допустимых.
+    """
+    text = (scale or "").strip()
+    if not text:
+        return None
+    by_lower = {name.lower(): name for name in SCALE_INTERVALS}
+    if text.lower() in by_lower:
+        return by_lower[text.lower()]
+    raise ArrangementError(
+        f"Неизвестный лад scale={scale!r}. Доступны: "
+        f"{', '.join(SCALE_INTERVALS)}."
+    )
+
+
+def _as_number(value: object, knob: str) -> float:
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        raise ArrangementError(f"{knob}={value!r} — не число.") from None
+
+
+def check_bpm(bpm: object) -> Optional[float]:
+    """Проверить темп (``None`` → ``None``: темп не задан).
+
+    Raises:
+        ArrangementError: не число или вне :data:`BPM_RANGE` — раньше
+            молча зажималось в ``render``.
+    """
+    if bpm is None:
+        return None
+    value = _as_number(bpm, "bpm")
+    lo, hi = BPM_RANGE
+    if not lo <= value <= hi:
+        raise ArrangementError(
+            f"bpm={value:g} вне диапазона {lo:g}–{hi:g}. Задай темп в этих "
+            "пределах или не задавай (при name= темп возьмётся из мелодии)."
+        )
+    return value
+
+
+def check_swing(swing: object) -> float:
+    """Проверить свинг (``None`` → 0.0).
+
+    Raises:
+        ArrangementError: не число или вне :data:`SWING_RANGE` — раньше
+            молча зажималось в ``render``.
+    """
+    if swing is None:
+        return 0.0
+    value = _as_number(swing, "swing")
+    lo, hi = SWING_RANGE
+    if not lo <= value <= hi:
+        raise ArrangementError(
+            f"swing={value:g} вне диапазона {lo:g}–{hi:g}. 0 — ровная сетка, "
+            "0.1–0.2 — джаз/шафл/фанк."
+        )
+    return value
+
+
 @dataclass
 class Layer:
     """Один слой аранжировки — материал без формы.
