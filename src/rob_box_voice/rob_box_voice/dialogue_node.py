@@ -506,6 +506,15 @@ def classify_identity_confirmation(text: str) -> Optional[bool]:
 
 
 class DialogueNode(Node):
+    # Issue #2829 (ADR-0131 PR-2) -- явный список ``register_error``
+    # причин, которые озвучиваем ("не расслышал, повтори"): намеренно
+    # НЕ "любой event==register_error", чтобы будущее расширение ack
+    # новым (нам неизвестным) кодом ошибки не начало внезапно что-то
+    # говорить без синхронной правки здесь (тот же контракт, что
+    # защищал одиночный "too_short" до этого PR, см. #2769).
+    _SPOKEN_REGISTER_ERRORS = frozenset(
+        {"too_short", "no_utterance_context", "utterance_not_found"}
+    )
     """ROS2 shell that composes AgentCore over the harness ports."""
     def __init__(self) -> None:  # noqa: D401 — ROS2 ctor signature
         super().__init__("dialogue_node")
@@ -661,6 +670,10 @@ class DialogueNode(Node):
         # Issue #2829 — какой utterance_id уже резолвнут в _current_speaker
         # (см. _resolve_speaker_for_utterance) -- не резолвим дважды.
         self._last_resolved_utterance_id: Optional[str] = None
+        # Issue #2829 (ADR-0131 PR-2) — utterance_id ТЕКУЩЕГО хода, читает
+        # RegisterSpeakerTool (mcp_tools/tools/dialogue.py) через
+        # getattr(self.node, ...) при вызове register_speaker.
+        self._current_turn_utterance_id: Optional[str] = None
         self._speaker_resolve_timeout_sec: float = float(
             self.get_parameter("speaker_resolve_timeout_sec").value
         )
@@ -2507,13 +2520,31 @@ class DialogueNode(Node):
         # просит повторить фразу, а не ждёт, пока LLM додумается переспросить
         # по обрывку ack, который она никогда не видит (register_speaker —
         # fire-and-forget публикация в топик, а не синхронный tool-result).
-        if data.get("event") == "register_error" and data.get("error") == "too_short":
+        if (
+            data.get("event") == "register_error"
+            and data.get("error") in self._SPOKEN_REGISTER_ERRORS
+        ):
             name = data.get("name")
-            self.get_logger().warning(
-                f"⚠️ [issue #2769] Регистрация '{name}' отклонена — реплика "
-                f"{data.get('duration_s')}с короче требуемых "
-                f"{data.get('min_required_s')}с"
-            )
+            error = data.get("error")
+            if error == "too_short":
+                self.get_logger().warning(
+                    f"⚠️ [issue #2769] Регистрация '{name}' отклонена — "
+                    f"реплика {data.get('duration_s')}с короче требуемых "
+                    f"{data.get('min_required_s')}с"
+                )
+            else:
+                # Issue #2829 (ADR-0131 PR-2) — "no_utterance_context"
+                # (register_speaker без utterance_id — не должно
+                # происходить в проде, только легаси/тесты) или
+                # "utterance_not_found" (эмбеддинг для этой фразы не
+                # успел появиться за _REGISTER_UTTERANCE_WAIT_SEC).
+                # Раньше это молча уходило в _pending_register_name без
+                # срока и цепляло "следующую фразу кого угодно" — теперь
+                # честный отказ, тот же голосовой ответ, что у #2769.
+                self.get_logger().warning(
+                    f"⚠️ [issue #2829] Регистрация '{name}' отклонена: "
+                    f"{error} (utterance_id={data.get('utterance_id')})"
+                )
             try:
                 # Issue #2765 — мужской род: у робота мужской голос, а
                 # эта реплика захардкожена и промпт её не правит.
@@ -3429,7 +3460,9 @@ class DialogueNode(Node):
                 # подсказку-гипотезу для _build_dynamic_system_context
                 # (см. _pending_identity_hint_lines), либо просто ставит
                 # [Speaker:tentative] без имени.
-                user_input = self._handle_tentative_speaker(sp, user_input)
+                user_input = self._handle_tentative_speaker(
+                    sp, user_input, utterance_id
+                )
         else:
             if speaker_context is None:
                 user_input = f"[Speaker:unknown] {user_input}"
@@ -3510,7 +3543,11 @@ class DialogueNode(Node):
         return user_input
 
     def _confirm_tentative_speaker(
-        self, speaker_id: str, name: str, user_input: str
+        self,
+        speaker_id: str,
+        name: str,
+        user_input: str,
+        utterance_id: Optional[str] = None,
     ) -> str:
         """Словесное "да, это я" -- дальше ведём себя так, как будто
         биометрия сама уверенно опознала: мутируем ``_current_speaker``
@@ -3548,11 +3585,15 @@ class DialogueNode(Node):
             f"(id={speaker_id[:8]})"
         )
         if state is not None:
-            self._publish_confirmed_identity_growth(speaker_id, name)
+            self._publish_confirmed_identity_growth(
+                speaker_id, name, utterance_id
+            )
             state["growth_registered"] = True
         return user_input
 
-    def _publish_confirmed_identity_growth(self, speaker_id: str, name: str) -> None:
+    def _publish_confirmed_identity_growth(
+        self, speaker_id: str, name: str, utterance_id: Optional[str] = None
+    ) -> None:
         """Issue #2809/#2757 -- рост галереи ТЕМ ЖЕ путём, что явная
         регистрация: публикуем в ``/voice/speaker/register`` (тот же
         топик и обработчик, что LLM-тул ``register_speaker`` и голосовая
@@ -3562,20 +3603,24 @@ class DialogueNode(Node):
         ``MIN_REGISTER_AUDIO_DURATION_SEC`` -- уже существующая логика
         speaker_id_node, здесь не дублируется.
 
-        Честная оговорка: эмбеддинг для регистрации берётся из САМОЙ
-        свежей реплики speaker_id_node (обычно это и есть подтверждающее
-        "да") -- если оно короче ``MIN_REGISTER_AUDIO_DURATION_SEC``,
-        сработает штатный гейт issue #2769 и робот попросит сказать ещё
-        пару слов. Это существующее поведение общего топика, не новый
-        баг этого фикса.
+        Issue #2829 (ADR-0131 PR-2) -- ``utterance_id`` — id ЭТОЙ самой
+        реплики (словесное "да, это я"), передаётся вызывающим кодом
+        (``_confirm_tentative_speaker``, тот же ход). speaker_id_node
+        ищет эмбеддинг ИМЕННО этой фразы (см.
+        ``_on_register_request``/``_find_embedding_for_utterance``), а
+        не "самую свежую за 30с от кого угодно" — старое поведение,
+        которое эта строка раньше неявно подразумевала (комментарий
+        "эмбеддинг ... из САМОЙ свежей реплики" ниже был честен про
+        старый механизм; теперь он не нужен: id есть).
         """
         pub = getattr(self, "_speaker_register_pub", None)
         if pub is None:
             return
+        payload = {"name": name, "speaker_id": speaker_id}
+        if utterance_id:
+            payload["utterance_id"] = utterance_id
         msg = String()
-        msg.data = json.dumps(
-            {"name": name, "speaker_id": speaker_id}, ensure_ascii=False
-        )
+        msg.data = json.dumps(payload, ensure_ascii=False)
         pub.publish(msg)
         self.get_logger().info(
             f"🌱 [issue #2809/#2757] запрошен рост галереи после "
@@ -3583,7 +3628,9 @@ class DialogueNode(Node):
             f"speaker_id={speaker_id[:8]}"
         )
 
-    def _handle_tentative_speaker(self, sp: dict, user_input: str) -> str:
+    def _handle_tentative_speaker(
+        self, sp: dict, user_input: str, utterance_id: Optional[str] = None
+    ) -> str:
         """Диспетчер переспроса для tentative-случая (см. блок выше).
 
         ``single`` (живой хозяин, конкурента с другим именем нет) может
@@ -3609,7 +3656,7 @@ class DialogueNode(Node):
 
         if state.get("confirmed") and state.get("name"):
             return self._confirm_tentative_speaker(
-                full_sid, state["name"], user_input
+                full_sid, state["name"], user_input, utterance_id
             )
         if state.get("confirmed") is False:
             return self._tag_tentative(user_input)
@@ -4250,6 +4297,12 @@ class DialogueNode(Node):
     ) -> None:
         with self._task_lock:
             self._run_task = asyncio.current_task()
+        # Issue #2829 (ADR-0131 PR-2) — RegisterSpeakerTool (mcp_tools,
+        # runs in-process as this node's tool) reads this to stamp
+        # /voice/speaker/register with the CURRENT turn's utterance_id,
+        # so speaker_id_node registers the phrase the person actually
+        # introduced themselves in, not "whoever speaks next".
+        self._current_turn_utterance_id = utterance_id
         self._run_cancelled = False
         # Issue #992 Bug B / Bug C — ``is_dj_auto`` is threaded through
         # ``_dispatch_turn`` rather than read from ``self`` so a

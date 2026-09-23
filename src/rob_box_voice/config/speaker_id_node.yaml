@@ -40,6 +40,10 @@ speaker_id_node:
     # speaker_id_node._apply_growth_session.
     gallery_warmup_size: 5
     gallery_growth_session_gap_sec: 30.0
+    # Issue #2829 (ADR-0131 PR-2) -- нижний порог: реплика должна быть
+    # похожа на владельца сессии хотя бы на growth_owner_min_score,
+    # иначе НЕ дописывается (см. speaker_id_node._apply_growth_session).
+    growth_owner_min_score: 0.65
     # Issue #2440 — harness-БД фактов для склейки профилей через шов
     # идентичности (тот же файл, что sqlite_db_path у dialogue_node).
     memory_db_path: "/data/harness_voice.db"

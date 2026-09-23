@@ -1035,8 +1035,24 @@ class RegisterSpeakerTool(MCPTool):
                 ),
             )
         # publish в /voice/speaker/register — speaker_id_node привяжет d-vector
+        # Issue #2829 (ADR-0131 PR-2) — utterance_id ТЕКУЩЕГО хода
+        # (dialogue_node._current_turn_utterance_id, выставляется в
+        # _run_turn до тул-лупа): speaker_id_node регистрирует ИМЕННО
+        # фразу, в которой человек представился, а не "следующую фразу
+        # кого угодно" (см. speaker_id_node._on_register_request).
+        # ``node`` здесь — сам dialogue_node (tool исполняется
+        # in-process, tool_provider=ros_mcp); getattr — на случай
+        # других tool_provider/тестов, где узел этого поля не имеет.
         msg = String()
-        msg.data = json.dumps({"name": name_clean}, ensure_ascii=False)
+        msg.data = json.dumps(
+            {
+                "name": name_clean,
+                "utterance_id": getattr(
+                    self.node, "_current_turn_utterance_id", None
+                ),
+            },
+            ensure_ascii=False,
+        )
         self._speaker_register_pub.publish(msg)
         self.log_info(f"[register_speaker] published name={name_clean!r}")
         return MCPToolResult(

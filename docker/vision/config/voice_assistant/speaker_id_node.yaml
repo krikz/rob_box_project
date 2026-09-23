@@ -27,6 +27,8 @@ speaker_id_node:
     # файл — живой конфиг деплоя, держим в синхроне).
     gallery_warmup_size: 5
     gallery_growth_session_gap_sec: 30.0
+    # Issue #2829 (ADR-0131 PR-2) -- см. src/rob_box_voice/config/speaker_id_node.yaml
+    growth_owner_min_score: 0.65
     # Issue #2440 — harness-БД фактов для склейки профилей через шов
     # идентичности (тот же файл, что sqlite_db_path у dialogue_node).
     memory_db_path: "/data/harness_voice.db"
