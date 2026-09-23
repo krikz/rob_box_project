@@ -317,3 +317,28 @@ def test_epithet_result_ignores_garbage_json(node):
     node._on_epithet_result(types.SimpleNamespace(data='{"epithet": "Кулибин"}'))
     # Ни одного спикера в БД не появилось и не сломалось.
     assert node._db.list_speakers() == []
+
+
+def test_llm_stranger_epithet_keeps_dictionary_one_for_named_profile(node):
+    """Issue #2864 — живой прогон: LLM назвала Сашу «Незнакомец».
+
+    speaker_id_node обязан отклонить такую кличку для профиля с именем
+    и оставить словарную — иначе LLM на «кого запомнил?» насчитывает
+    лишнего человека.
+    """
+    _capture_requests(node)
+    sid = node._db.register("Саша", _embedding(16))
+    node._db.set_epithet(sid, "Наблюдатель", ep.REASON_FIRST_SEEN)
+
+    node._on_epithet_result(
+        types.SimpleNamespace(
+            data=json.dumps(
+                {"speaker_id": sid, "epithet": "Незнакомец"},
+                ensure_ascii=False,
+            )
+        )
+    )
+
+    profile = node._db.get_speaker_profile(sid)
+    assert profile["name"] == "Саша"
+    assert profile["epithet"] == "Наблюдатель"

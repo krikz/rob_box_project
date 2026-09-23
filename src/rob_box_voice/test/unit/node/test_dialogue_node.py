@@ -371,6 +371,20 @@ class TestBuildDynamicSystemContext:
         # Issue #2440 — полный id, без усечения до 8 символов.
         assert "<speaker_id>sp_1234567890</speaker_id>" in ctx
 
+    def test_epithet_rule_says_epithet_is_not_another_person(self):
+        """Issue #2864 — кличку Саши «Незнакомец» LLM посчитала третьим
+        человеком. Правило рядом с кличкой обязано сказать, что это
+        второе обозначение ТОГО ЖЕ собеседника, а не ещё один знакомый."""
+        n = _make_node({"provider": "yandex"})
+        n._current_speaker = {"is_known": True, "name": "Саша",
+                              "confidence": 0.9, "speaker_id": "sp_2b276f43",
+                              "epithet": "Наблюдатель"}
+        ctx = n._build_dynamic_system_context()
+        assert '<epithet internal="true">Наблюдатель</epithet>' in ctx
+        rule = ctx.split("<epithet_rule>", 1)[1].split("</epithet_rule>", 1)[0]
+        assert "НЕ отдельный человек" in rule
+        assert "перечисляешь знакомых" in rule
+
     def test_invalid_speaker_name_sanitized(self):
         n = _make_node({"provider": "yandex"})
         n._current_speaker = {"is_known": True, "name": "Null", "confidence": 0.0}
