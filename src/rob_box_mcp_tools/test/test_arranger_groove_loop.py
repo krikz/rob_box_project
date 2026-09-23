@@ -123,8 +123,9 @@ def test_rendered_loop_passes_sanitizer_only_with_flag():
     assert "../../1_pitchglitch_samples/_loop_/dnb_2" in allowed.code
 
 
-def test_pack0_loop_passes_sanitizer_without_flag():
+def test_pack0_loop_is_gated_like_pack1():
     code = render(_free_spec(groove_loop="foxdot"))
-    result = sanitize_renando(code, 0.7)
+    assert sanitize_renando(code, 0.7).quality_errors
+    result = sanitize_renando(code, 0.7, pack1_loops_enabled=True)
     assert result.quality_errors == ()
     assert result.slot_error is None

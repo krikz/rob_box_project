@@ -81,8 +81,11 @@ def test_denial_for_pack1_when_flag_off_names_the_flag():
     assert sample_loops.PACK1_LOOPS_ENV in reason
 
 
-def test_no_denial_for_pack0_even_when_flag_off():
-    assert sample_loops.loop_denial("foxdot", enabled=False) is None
+def test_pack0_loop_is_also_behind_the_flag():
+    """Все файлы каталога моно, loop — PlayBuf.ar(2): до прослушки даже
+    foxdot не «всегда можно»."""
+    assert sample_loops.loop_denial("foxdot", enabled=False) is not None
+    assert sample_loops.loop_denial("foxdot", enabled=True) is None
 
 
 def test_no_denial_for_pack1_when_flag_on():
@@ -150,8 +153,8 @@ def test_rewritten_code_passes_sanitizer_again():
     assert second.code == first.code
 
 
-def test_pack0_loop_passes_without_flag():
-    result = sanitize_renando('d3 >> loop("foxdot", dur=8)', MAX_AMP)
+def test_pack0_loop_passes_with_flag():
+    result = sanitize_renando('d3 >> loop("foxdot", dur=8)', MAX_AMP, pack1_loops_enabled=True)
     assert result.quality_errors == ()
     assert "loop('foxdot', dur=8" in result.code
 
