@@ -235,6 +235,7 @@ from rob_box_voice.tts_voice_registry import (
 )
 # Issue #1787 — сборка промпта и валидация клички, придуманной LLM.
 from rob_box_voice.core import epithets
+from rob_box_voice.core.utterance_binding import UtteranceIdBinder
 from rob_box_voice.core.utterance_speaker import UtteranceSpeakerRegistry
 # ADR-0101 §3.1 — ``Occasion`` импортирован выше (PR-B, #2536); старая
 # однострочная запись из PR-A удалена как дубликат (использовалась только в
@@ -311,6 +312,13 @@ ASYNCIO_LOOP_DRIVER_SHUTDOWN_TIMEOUT_S: float = 2.0
 # drops the OLDEST queued phrase (keep the most recent user intent) and
 # logs a warning — see _on_stt.
 _PENDING_USER_MESSAGES_MAX: int = 5
+
+# Issue #2862 — сколько ``_on_stt`` ждёт ``/voice/stt/utterance`` своей
+# фразы, если текст обогнал id. Оба топика публикуются stt_node подряд из
+# одного потока, расхождение — задержка планировщика executor'а (мс), а не
+# секунды. Текст без id вовсе (GUI/bench/инъекция харнесса) платит эту
+# задержку один раз и идёт с ``utterance_id=None``.
+_UTTERANCE_ID_WAIT_SEC: float = 0.5
 
 # Issue #1389 compatibility alias. ``LLMSkipReason`` is now the canonical
 # source; this tuple remains for callers that imported the merged #1395 symbol.
@@ -666,8 +674,10 @@ class DialogueNode(Node):
         # как «последнее РАЗРЕШЁННОЕ по utterance_id значение» -- теперь
         # его пишет только _apply_speaker_identity, после resolve().
         self._utterance_speaker = UtteranceSpeakerRegistry()
-        self._pending_utterance_id: Optional[str] = None
-        self._utterance_id_lock = threading.Lock()
+        # Issue #2862 -- id связывается с фразой по ТЕКСТУ, а не по порядку
+        # прихода /voice/stt/utterance vs /voice/stt/result (DDS порядок
+        # между топиками не гарантирует, колбэки Reentrant).
+        self._utterance_ids = UtteranceIdBinder()
         # Issue #2829 — какой utterance_id уже резолвнут в _current_speaker
         # (см. _resolve_speaker_for_utterance) -- не резолвим дважды.
         self._last_resolved_utterance_id: Optional[str] = None
@@ -894,11 +904,11 @@ class DialogueNode(Node):
         self.create_subscription(
             String, "/voice/stt/speaker", self._on_speaker, qos_r,
             callback_group=cbg)
-        # Issue #2829 (ADR-0131) — utterance_id этой фразы, публикуется
-        # stt_node ПЕРЕД /voice/stt/result (тот же порядок гарантий, что
-        # у /voice/stt/speaker выше). Храним ОДИН pending слот -- stt_node
-        # публикует последовательно из одного потока, интерливинга между
-        # utterance_id и result для одного и того же source нет.
+        # Issue #2829 (ADR-0131) — utterance_id этой фразы. Issue #2862 —
+        # JSON {"utterance_id", "text"}; порядок относительно
+        # /voice/stt/result НЕ гарантирован, связываем по тексту
+        # (UtteranceIdBinder), _on_stt ждёт id своей фразы до
+        # _UTTERANCE_ID_WAIT_SEC.
         self.create_subscription(
             String, "/voice/stt/utterance", self._on_stt_utterance, qos_r,
             callback_group=cbg)
@@ -2474,41 +2484,40 @@ class DialogueNode(Node):
                 self._current_speaker["name"] = plan["known_name"]
 
     def _on_stt_utterance(self, msg: String) -> None:
-        """Issue #2829 (ADR-0131) — id фразы, публикуется stt_node ПЕРЕД
-        ``/voice/stt/result`` для той же фразы. Храним как единственный
-        pending слот и забираем в ``_on_stt`` (см.
-        ``_pop_pending_utterance_id``).
+        """Issue #2829 (ADR-0131) — id фразы от stt_node.
+
+        Issue #2862 — JSON ``{"utterance_id", "text"}``. Кладём в
+        :class:`UtteranceIdBinder` под текстом фразы; ``_on_stt`` заберёт
+        id по тому же тексту независимо от того, какой топик доехал первым.
+        Сообщение без текста не с чем связать — отбрасываем.
         """
         try:
             data = json.loads(msg.data or "{}")
         except (json.JSONDecodeError, TypeError):
             return
-        utterance_id = data.get("utterance_id")
-        if not utterance_id:
+        binder = getattr(self, "_utterance_ids", None)
+        if binder is None or not isinstance(data, dict):
             return
-        with self._utterance_id_lock:
-            self._pending_utterance_id = str(utterance_id)
+        binder.offer(str(data.get("text") or ""), str(data.get("utterance_id") or ""))
 
-    def _pop_pending_utterance_id(self) -> Optional[str]:
-        """Consume the pending ``utterance_id`` set by ``_on_stt_utterance``.
+    def _claim_utterance_id(self, raw_text: str, wait: bool) -> Optional[str]:
+        """Issue #2862 — id ЭТОЙ фразы (по тексту), с коротким ожиданием,
+        если ``/voice/stt/result`` обогнал ``/voice/stt/utterance``.
 
-        Popped (not just read) so a phrase that never triggers a turn
-        (rejected/silenced by ``SttAdmission``) does not leak its id into
-        the NEXT phrase's resolution.
+        Забирается ДО SttAdmission: фраза, которая не станет ходом
+        (backlog no_wake_word, silenced, rejected), всё равно поглощает
+        свой id — он не может достаться следующей фразе. Не нашлось за
+        отведённое время → ``None`` (честный unknown), а опоздавший id
+        будет выброшен binder'ом.
 
-        Tolerates test doubles built via ``object.__new__(DialogueNode)``
-        (no ``__init__``, see e.g. ``test_dialogue_node.py``/
-        ``test_barge_in_policy.py``) that never ran the constructor and so
-        have no ``_utterance_id_lock`` -- same lazy-init spirit as the
-        ``_stt_admission`` fallback a few lines below in ``_on_stt``.
+        ``wait=False`` для Telegram-ввода (у него id не бывает). Test
+        doubles через ``object.__new__(DialogueNode)`` без binder'а →
+        ``None``.
         """
-        lock = getattr(self, "_utterance_id_lock", None)
-        if lock is None:
+        binder = getattr(self, "_utterance_ids", None)
+        if binder is None:
             return None
-        with lock:
-            uid = self._pending_utterance_id
-            self._pending_utterance_id = None
-        return uid
+        return binder.claim(raw_text, _UTTERANCE_ID_WAIT_SEC if wait else 0.0)
 
     def _on_speaker_result(self, msg: String) -> None:
         """Issue #1077 — результат голосовой биометрии (speaker_id_node).
@@ -2739,11 +2748,11 @@ class DialogueNode(Node):
         raw_text = (msg.data or "").strip()
         if not raw_text:
             return
-        # Issue #2829 (ADR-0131) -- pop-по-приходу: если фраза не дойдёт
-        # до _dispatch_cleaned (SttAdmission её отбросит/засайленсит),
-        # id НЕ должен утечь в следующую фразу.
-        utterance_id = self._pop_pending_utterance_id()
         text, tg_chat_id = parse_tg_prefix(raw_text)
+        # Issue #2829/#2862 (ADR-0131) -- id забирается по тексту ДО
+        # SttAdmission: если фраза не дойдёт до _dispatch_cleaned (backlog,
+        # silenced, rejected), её id НЕ должен утечь в следующую фразу.
+        utterance_id = self._claim_utterance_id(raw_text, wait=tg_chat_id is None)
         if tg_chat_id is not None:
             # Issue #1195 — store chat id for echo routing.
             self._active_tg_chat_id = tg_chat_id

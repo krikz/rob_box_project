@@ -951,13 +951,13 @@ class STTNode(Node):
             )
             self.get_logger().info(f"✅ ПРИНЯТО ({source}): {text}")
             if source == _SRC_RESPEAKER:
-                # Issue #2829 (ADR-0131) — utterance_id ПЕРЕД всем остальным:
-                # dialogue_node запоминает id как "pending" и связывает его
-                # со следующим /voice/stt/result. speaker_id_node считает
-                # utterance_id тем же способом от тех же PCM-байт
-                # /audio/speech_audio — id совпадёт без какой-либо
-                # координации между нодами.
-                self._publish_utterance_id(audio_bytes)
+                # Issue #2829 (ADR-0131) — utterance_id фразы. speaker_id_node
+                # считает его тем же способом от тех же PCM-байт
+                # /audio/speech_audio — id совпадёт без координации нод.
+                # Issue #2862 — id едет ВМЕСТЕ с текстом: dialogue_node
+                # связывает его с /voice/stt/result по тексту, порядок
+                # доставки двух топиков не важен.
+                self._publish_utterance_id(audio_bytes, text)
                 # Issue #1077 — speaker публикуем ПЕРЕД результатом: dialogue_node
                 # хранит tag по тексту и забирает его в _on_stt. Если бы speaker
                 # шёл после result, гонка топиков могла бы потерять корреляцию.
@@ -1881,7 +1881,7 @@ class STTNode(Node):
 
         return text
 
-    def _publish_utterance_id(self, audio_bytes: bytes) -> None:
+    def _publish_utterance_id(self, audio_bytes: bytes, text: str) -> None:
         """Issue #2829 (ADR-0131) — publish this phrase's ``utterance_id``.
 
         Deterministic hash of the raw PCM bytes this node just recognised
@@ -1892,10 +1892,16 @@ class STTNode(Node):
         ``_publish_speaker``, which skips when there is no Yandex speaker
         tag) so dialogue_node ALWAYS has an id to correlate against, even
         on the Vosk-fallback path.
+
+        Issue #2862 — ``text`` is the exact string that goes to
+        ``/voice/stt/result`` next: dialogue_node joins the two topics by
+        text, because DDS does not order delivery across topics.
         """
         utterance_id = compute_utterance_id(audio_bytes)
         msg = String()
-        msg.data = json.dumps({"utterance_id": utterance_id}, ensure_ascii=False)
+        msg.data = json.dumps(
+            {"utterance_id": utterance_id, "text": text}, ensure_ascii=False
+        )
         self.utterance_pub.publish(msg)
 
     def _publish_speaker(self, text: str, duration_s: float = 0.0) -> None:
