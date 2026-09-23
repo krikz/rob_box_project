@@ -27,20 +27,43 @@
 меняются по форме; тема при этом фиксирована, и любой такой сдвиг
 развалил бы согласие баса с мелодией. Абсолютные ноты развалить нельзя.
 Как абсолютный MIDI попадает в Renardo — см. ``core.rtttl``.
+
+Ручки вместо скрытых эвристик (ADR-0132, PR-3)
+----------------------------------------------
+Каждое музыкальное авто-решение раскладки — отдельное поле
+:class:`HarmonizeOptions` (тональность, аккорды, гармонический ритм,
+плотность, бас, подходы, пэд, регистр пэда, ударные, октава и выбросы
+темы). Значение по умолчанию каждой ручки — ``auto``, то есть ровно
+сегодняшнее поведение: golden-снимок ``test_arranger_golden`` обязан
+совпадать байт-в-байт. Не-``auto`` значение — осознанный выбор вызывающего
+(модели, с PR-4), а не новая эвристика: код исполняет его буквально.
+Итог каждой ручки пишется в ``Harmonization.decisions`` и оттуда — в
+строку «Решения по умолчанию» партитуры (:mod:`core.score_sheet`). Ручки,
+которые решает сборка слоёв (второй голос, октавы темы, громкости), —
+в ``arranger.ArrangeOptions``. Проверка значений — в ``__post_init__``:
+неизвестное значение → ``ValueError`` со списком, а не тихая замена.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from statistics import median
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
-from .arranger import BEATS_PER_BAR, SCALE_INTERVALS, VALID_ROOTS
+from .arranger import (
+    BEATS_PER_BAR,
+    PAD_STAB_SUS,
+    SCALE_INTERVALS,
+    VALID_ROOTS,
+    check_root,
+)
 
 __all__ = [
     "ChordWindow",
     "Harmonization",
+    "HarmonizeOptions",
     "harmonize",
+    "parse_chord",
 ]
 
 #: Порог плотности темы: атак на один бит.
@@ -129,6 +152,174 @@ _CHROMATIC_PENALTY = 1.6
 _CADENCE_BONUS = 1.2
 
 
+# ---------------------------------------------------------------------------
+# Ручки раскладки (ADR-0132 PR-3)
+# ---------------------------------------------------------------------------
+
+#: Значение любой ручки «как сегодня» — решает автоматика.
+AUTO = "auto"
+
+#: Ручка -> допустимые строковые значения. Первое — значение по умолчанию.
+KNOB_VALUES: Dict[str, Tuple[str, ...]] = {
+    # auto — корреляция Крумхансл + опора на тоническое трезвучие (#2873);
+    # profile — чистый Крумхансл (гистограмма высот без позиций).
+    "key_detection": (AUTO, "profile"),
+    # fix — подтянуть к корпусу ноты дальше октавы от него (#2876); keep —
+    # играть тему как записана.
+    "lead_outliers": ("fix", "keep"),
+    # auto — окно полтакта со склейкой одинаковых (частоту смены задаёт
+    # мелодия); bar — не чаще аккорда на такт; half — окно полтакта без
+    # инерции (аккорд может меняться каждые полтакта).
+    "harmonic_rhythm": (AUTO, "bar", "half"),
+    # auto — по атакам на бит (DENSE_ONSETS_PER_BEAT); sparse/dense —
+    # принудительно (шаг баса и пэда, второй голос, октавы темы).
+    "density": (AUTO, "sparse", "dense"),
+    # auto — тоны аккорда по форме (корень-корень-квинта-терция у плотной,
+    # корень-квинта у редкой); root — только корни; root_fifth — корень и
+    # квинта; pedal — тоника лада на всё окно; off — без баса.
+    "bass_style": (AUTO, "root", "root_fifth", "pedal", "off"),
+    # auto — подход в последнюю восьмую окна из двух и более нот; on — и в
+    # окне из одной ноты; off — без подходов.
+    "bass_approach": (AUTO, "on", "off"),
+    # auto/stab — удары аккорда по долям с коротким sus; sustain — аккорд
+    # держится всё окно; off — без пэда.
+    "pad_style": (AUTO, "stab", "sustain", "off"),
+}
+
+#: Именованные регистры пэда ``(низ, верх)`` в звучащем MIDI. ``auto`` —
+#: потолок от низа корпуса темы и пол над басом (#2876).
+PAD_REGISTERS: Dict[str, Tuple[int, int]] = {
+    "low": (48, 60),    # C3–C4
+    "mid": (55, 67),    # G3–G4
+    "high": (60, 72),   # C4–C5
+}
+
+#: Явный регистр пэда ``(низ, верх)``: не уже октавы (иначе трезвучие не
+#: укладывается без выхода за край) и в пределах слышимого на динамике.
+PAD_REGISTER_SPAN_MIN = 12
+PAD_REGISTER_LIMITS = (36, 96)
+
+#: Сдвиг темы целыми октавами от записанного регистра.
+LEAD_OCTAVE_RANGE = (-2, 2)
+LEAD_OCTAVE_WORDS = (AUTO, "keep")
+
+
+def parse_chord(name: str) -> Tuple[int, int, int]:
+    """Имя аккорда → классы высоты трезвучия ``(корень, терция, квинта)``.
+
+    ``Am`` — минор, ``F`` — мажор, бемоль можно (``Bbm`` = ``A#m``).
+
+    Raises:
+        ValueError: не аккорд — с примером формата.
+    """
+    text = (name or "").strip()
+    minor = len(text) > 1 and text.endswith("m")
+    root_text = text[:-1] if minor else text
+    try:
+        root = check_root(root_text)
+    except ValueError:
+        root = None
+    if root is None:
+        raise ValueError(
+            f"Неизвестный аккорд {name!r}. Формат: тоника + «m» для минора "
+            "(Am, F, C#m, Bb)."
+        )
+    pc = VALID_ROOTS.index(root)
+    third = 3 if minor else 4
+    return (pc, (pc + third) % 12, (pc + 7) % 12)
+
+
+def _check_word(knob: str, value: object) -> None:
+    allowed = KNOB_VALUES[knob]
+    if value not in allowed:
+        raise ValueError(
+            f"Неизвестное значение {knob}={value!r}. Доступны: {', '.join(allowed)}."
+        )
+
+
+def _check_lead_octave(value: object) -> None:
+    if value in LEAD_OCTAVE_WORDS:
+        return
+    lo, hi = LEAD_OCTAVE_RANGE
+    if isinstance(value, bool) or not isinstance(value, int) or not lo <= value <= hi:
+        raise ValueError(
+            f"lead_octave={value!r}: допустимо auto, keep или целое {lo:+d}..{hi:+d} "
+            "(октавы от записанного регистра темы)."
+        )
+
+
+def _check_pad_register(value: object) -> None:
+    if value == AUTO or value in PAD_REGISTERS:
+        return
+    ok = (
+        isinstance(value, tuple) and len(value) == 2
+        and all(isinstance(v, int) and not isinstance(v, bool) for v in value)
+    )
+    lo_limit, hi_limit = PAD_REGISTER_LIMITS
+    if ok and lo_limit <= value[0] and value[1] <= hi_limit \
+            and value[1] - value[0] >= PAD_REGISTER_SPAN_MIN:
+        return
+    raise ValueError(
+        f"pad_register={value!r}: допустимо auto, {', '.join(PAD_REGISTERS)} или "
+        f"(низ, верх) MIDI в {lo_limit}..{hi_limit}, не уже октавы."
+    )
+
+
+@dataclass(frozen=True)
+class HarmonizeOptions:
+    """Ручки подготовки темы и раскладки на партии (ADR-0132 PR-3).
+
+    Все по умолчанию — ``auto`` (``lead_outliers`` — ``fix``, ``chords``/
+    ``drums``/``hats`` — ``None``): сегодняшнее поведение байт-в-байт.
+    Допустимые значения — :data:`KNOB_VALUES`, :data:`PAD_REGISTERS`,
+    :data:`LEAD_OCTAVE_RANGE`.
+
+    Attributes:
+        key_detection: ``auto`` | ``profile`` — чем определять тональность
+            (``rtttl_compose.detect_key_ranked``).
+        lead_octave: ``auto`` (к рабочему регистру) | ``keep`` | целое
+            -2..+2 — октавы от записанного регистра темы.
+        lead_outliers: ``fix`` | ``keep``.
+        chords: имена аккордов по тактам (``("Am", "F", "C", "G")``), по
+            кругу; ``None`` — выводить из мелодии.
+        harmonic_rhythm, density, bass_style, bass_approach, pad_style: см.
+            :data:`KNOB_VALUES`.
+        pad_register: ``auto`` | ``low`` | ``mid`` | ``high`` | ``(низ, верх)``.
+        drums, hats: рисунок вместо выведенного (16 шагов на такт, как у
+            ``_build_drums``); ``None`` — выводить.
+    """
+
+    key_detection: str = AUTO
+    lead_octave: Union[str, int] = AUTO
+    lead_outliers: str = "fix"
+    chords: Optional[Tuple[str, ...]] = None
+    harmonic_rhythm: str = AUTO
+    density: str = AUTO
+    bass_style: str = AUTO
+    bass_approach: str = AUTO
+    pad_style: str = AUTO
+    pad_register: Union[str, Tuple[int, int]] = AUTO
+    drums: Optional[str] = None
+    hats: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        for knob in KNOB_VALUES:
+            _check_word(knob, getattr(self, knob))
+        _check_lead_octave(self.lead_octave)
+        if isinstance(self.pad_register, list):
+            object.__setattr__(self, "pad_register", tuple(self.pad_register))
+        _check_pad_register(self.pad_register)
+        if self.chords is not None:
+            object.__setattr__(self, "chords", tuple(self.chords))
+            if not self.chords:
+                raise ValueError("chords: пустой список — задай хотя бы один аккорд или None.")
+            for name in self.chords:
+                parse_chord(name)
+        for knob in ("drums", "hats"):
+            if getattr(self, knob) is not None and not isinstance(getattr(self, knob), str):
+                raise ValueError(f"{knob}: рисунок должен быть строкой, получено {getattr(self, knob)!r}.")
+
+
 @dataclass(frozen=True)
 class ChordWindow:
     """Аккорд одного окна гармонизации (такта темы).
@@ -177,6 +368,11 @@ class Harmonization:
     counter: Tuple[Tuple[Optional[int], float], ...]
     drums: str
     hats: str
+    #: Длина звучания аккорда пэда в битах (ADR-0132 PR-3, ``pad_style``):
+    #: короткий удар остинато (:data:`arranger.PAD_STAB_SUS`) или ``None`` —
+    #: аккорд держится всю свою длительность (``sustain``). Аранжировщик
+    #: ставит его слою пэда как ``sus``.
+    pad_sus: Optional[float] = PAD_STAB_SUS
     #: ADR-0132: что автоматика решила при раскладке (шаг баса и пэда,
     #: число подходов баса, потолок пэда от темы, стиль ударных). Только
     #: запись для партитуры: в сравнении объектов не участвует и на ноты
@@ -345,6 +541,7 @@ def _best_chord(
     is_edge: bool,
     tonic_pcs: Tuple[int, ...],
     previous: Optional[Tuple[int, ...]],
+    change_penalty: float = _CHANGE_PENALTY,
 ) -> Tuple[int, ...]:
     """Выбрать аккорд окна с лучшим взвешенным скором.
 
@@ -352,7 +549,7 @@ def _best_chord(
     диатоническим (разводит аккорды лада с общими нотами; хроматическому
     он давал выиграть по совпадению баса), штраф недиатоническому, бонус
     за совпадение с первой нотой окна, бонус тонике на стыке лупа, штраф
-    за смену аккорда.
+    за смену аккорда (``change_penalty``; 0 у ``harmonic_rhythm=half``).
     """
     best: Tuple[int, ...] = tonic_pcs
     best_score = float("-inf")
@@ -367,7 +564,7 @@ def _best_chord(
         if is_edge and pcs == tonic_pcs:
             score += _CADENCE_BONUS * scale_factor
         if previous is not None and pcs != previous:
-            score -= _CHANGE_PENALTY * scale_factor
+            score -= change_penalty * scale_factor
         if score > best_score:
             best_score = score
             best = pcs
@@ -379,6 +576,7 @@ def _pick_chords(
     total_beats: float,
     root: str,
     scale: str,
+    options: Optional["HarmonizeOptions"] = None,
 ) -> Tuple[ChordWindow, ...]:
     """Выбрать гармонию: аккорд на каждые полтакта, соседние одинаковые слить.
 
@@ -392,14 +590,43 @@ def _pick_chords(
     Скор окна: длительности нот, попавших в аккорд (корень весомее), бонус
     за совпадение с первой нотой окна, бонус тонике на стыке лупа, штрафы
     недиатоническому аккорду и смене аккорда.
+
+    ADR-0132 PR-3: ``options.chords`` — аккорды по тактам вместо выведенных
+    (:func:`_explicit_windows`); ``options.harmonic_rhythm`` — окно и
+    инерция (:func:`_auto_windows`); ``options.pad_register`` — регистр
+    тонов пэда (:func:`_pad_bounds`). По умолчанию — всё как раньше.
     """
+    options = options or HarmonizeOptions()
     intervals = SCALE_INTERVALS.get(scale, SCALE_INTERVALS["minor"])
     root_semitone = VALID_ROOTS.index(root) if root in VALID_ROOTS else 0
-    candidates = _chord_candidates(root_semitone, intervals)
-    pad_ceiling = _pad_ceiling(timed)
-    tonic_pcs = _triad_pitch_classes(0, root_semitone, intervals)
+    if options.chords:
+        window = float(BEATS_PER_BAR)
+        picked = _explicit_windows(options.chords, total_beats)
+    else:
+        window = BEATS_PER_BAR if options.harmonic_rhythm == "bar" else BEATS_PER_BAR / 2.0
+        picked = _auto_windows(
+            timed, total_beats, root_semitone, intervals, window,
+            0.0 if options.harmonic_rhythm == "half" else _CHANGE_PENALTY,
+        )
+    chords = _merge_windows(picked, window, root_semitone, intervals)
+    ceiling, floor = _pad_bounds(timed, chords, options.pad_register)
+    return tuple(
+        replace(chord, tones=_stack_chord(chord.pitch_classes, ceiling, floor))
+        for chord in chords
+    )
 
-    window = BEATS_PER_BAR / 2.0
+
+def _auto_windows(
+    timed: Sequence[Tuple[float, Optional[int], float]],
+    total_beats: float,
+    root_semitone: int,
+    intervals: Sequence[int],
+    window: float,
+    change_penalty: float,
+) -> List[Tuple[float, Tuple[int, ...]]]:
+    """Аккорд каждого окна длиной ``window``, выведенный из нот темы."""
+    candidates = _chord_candidates(root_semitone, intervals)
+    tonic_pcs = _triad_pitch_classes(0, root_semitone, intervals)
     count = max(1, int(round(total_beats / window)))
 
     picked: List[Tuple[float, Tuple[int, ...]]] = []
@@ -415,15 +642,48 @@ def _pick_chords(
         scale_factor = min(1.0, sum(weights.values()) / window)
 
         best = _best_chord(
-            candidates, weights, scale_factor, downbeat, is_edge, tonic_pcs, previous
+            candidates, weights, scale_factor, downbeat, is_edge, tonic_pcs,
+            previous, change_penalty,
         )
         picked.append((begin, best))
         previous = best
+    return picked
 
-    # Слияние: соседние окна с одним аккордом становятся одним окном.
-    # Тона подклада (``tones``) достраиваются ВТОРЫМ проходом ниже — им
-    # нужен фактический потолок баса, а он известен только когда вся
-    # гармония (root_midi каждого окна) уже выбрана.
+
+def _explicit_windows(
+    names: Sequence[str], total_beats: float
+) -> List[Tuple[float, Tuple[int, ...]]]:
+    """Аккорды по тактам от вызывающего (ADR-0132 PR-3), по кругу.
+
+    Raises:
+        ValueError: аккордов больше, чем тактов в теме, — лишние не
+            прозвучали бы ни разу, а молча выбрасывать их нельзя.
+    """
+    bars = max(1, int(round(total_beats / BEATS_PER_BAR)))
+    if len(names) > bars:
+        raise ValueError(
+            f"chords: {len(names)} аккордов на тему из {bars} тактов — "
+            "по одному аккорду на такт, лишние не прозвучат."
+        )
+    triads = [parse_chord(name) for name in names]
+    return [
+        (float(bar * BEATS_PER_BAR), triads[bar % len(triads)])
+        for bar in range(bars)
+    ]
+
+
+def _merge_windows(
+    picked: Sequence[Tuple[float, Tuple[int, ...]]],
+    window: float,
+    root_semitone: int,
+    intervals: Sequence[int],
+) -> List[ChordWindow]:
+    """Соседние окна с одним аккордом становятся одним окном.
+
+    Тона подклада (``tones``) достраиваются ВТОРЫМ проходом
+    (:func:`_pad_bounds`) — им нужен фактический потолок баса, а он
+    известен только когда вся гармония (root_midi каждого окна) выбрана.
+    """
     chords: List[ChordWindow] = []
     for begin, pcs in picked:
         if chords and chords[-1].pitch_classes == pcs:
@@ -440,15 +700,31 @@ def _pick_chords(
                 pitch_classes=pcs,
             )
         )
+    return chords
 
-    # 🔴 FIX (issue #2876, «Still Dre»): потолок подклада раньше знал
-    # только о теме (:func:`_pad_ceiling`) — не о басе, который тоже
-    # строится из этой же гармонии (:func:`_build_bass`). У Still Dre
-    # ceiling от заниженной темы (58) сел прямо на потолок баса (48):
-    # оба слоя звучали в одной полосе. Считаем фактический потолок баса
-    # ПО ТЕМ ЖЕ аккордам (``root_midi + смещение тона от корня`` — та же
-    # арифметика, что в :func:`_build_bass`) и поднимаем потолок подклада
-    # над ним минимум на :data:`PAD_BASS_CLEARANCE`.
+
+def _pad_bounds(
+    timed: Sequence[Tuple[float, Optional[int], float]],
+    chords: Sequence[ChordWindow],
+    register: Union[str, Tuple[int, int]] = AUTO,
+) -> Tuple[int, int]:
+    """``(потолок, пол)`` укладки пэда (:func:`_stack_chord`).
+
+    Явный регистр (ADR-0132 PR-3, ``pad_register``) берётся как есть:
+    ``(низ, верх)`` из :data:`PAD_REGISTERS` или заданный числами.
+
+    ``auto`` — 🔴 FIX (issue #2876, «Still Dre»): потолок подклада раньше
+    знал только о теме (:func:`_pad_ceiling`) — не о басе, который тоже
+    строится из этой же гармонии (:func:`_build_bass`). У Still Dre
+    ceiling от заниженной темы (58) сел прямо на потолок баса (48): оба
+    слоя звучали в одной полосе. Считаем фактический потолок баса ПО ТЕМ
+    ЖЕ аккордам (``root_midi + смещение тона от корня`` — та же
+    арифметика, что в :func:`_build_bass`) и поднимаем потолок подклада
+    над ним минимум на :data:`PAD_BASS_CLEARANCE`.
+    """
+    if register != AUTO:
+        low, high = PAD_REGISTERS.get(register, register)  # type: ignore[arg-type]
+        return int(high), int(low)
     bass_ceiling = max(
         (
             chord.root_midi + max((pc - chord.pitch_classes[0]) % 12 for pc in chord.pitch_classes)
@@ -457,13 +733,7 @@ def _pick_chords(
         default=BASS_MIDI_FLOOR,
     )
     stack_floor = max(PAD_MIDI_FLOOR, bass_ceiling + PAD_BASS_CLEARANCE)
-    final_ceiling = max(pad_ceiling, stack_floor)
-
-    chords = [
-        replace(chord, tones=_stack_chord(chord.pitch_classes, final_ceiling, stack_floor))
-        for chord in chords
-    ]
-    return tuple(chords)
+    return max(_pad_ceiling(timed), stack_floor), stack_floor
 
 
 #: Нижний перцентиль темы (по весу длительности), от которого отсчитывается
@@ -630,8 +900,72 @@ def _build_bass(
     return _bass_line(chords, dense, scale_pcs)[0]
 
 
+#: ``bass_style`` → форма линии в окне (индексы тонов аккорда). ``auto`` —
+#: :data:`_BASS_SHAPE_DENSE`/:data:`_BASS_SHAPE_SPARSE` по плотности.
+_BASS_STYLE_SHAPES: Dict[str, Tuple[int, ...]] = {
+    "root": (0,),
+    "root_fifth": (0, 2),
+}
+
+
+def _bass_shape(style: str, dense: bool) -> Tuple[int, ...]:
+    """Форма басовой линии для ``bass_style`` (ADR-0132 PR-3)."""
+    if style in _BASS_STYLE_SHAPES:
+        return _BASS_STYLE_SHAPES[style]
+    return _BASS_SHAPE_DENSE if dense else _BASS_SHAPE_SPARSE
+
+
+def _wants_approach(
+    mode: str, is_last: bool, changes: bool, count: int, dur: float
+) -> bool:
+    """Ставить ли подход в последнюю восьмую ноты (``bass_approach``).
+
+    ``auto`` — прежнее правило: только в окне из двух и более нот (в окне
+    из одной ноты опора важнее движения). ``on`` — и в окне из одной ноты.
+    ``off`` — никогда. Подход возможен только в последней ноте окна перед
+    сменой корня и только если она длиннее самого подхода.
+    """
+    if mode == "off" or not (is_last and changes and dur > _APPROACH_BEATS):
+        return False
+    return mode == "on" or count > 1
+
+
+def _pedal_bass(
+    chords: Sequence[ChordWindow], tonic_pc: int
+) -> Tuple[Tuple[Optional[int], float], ...]:
+    """Педаль (``bass_style=pedal``): тоника лада на всё окно каждого аккорда."""
+    note = _lift(tonic_pc, BASS_MIDI_FLOOR)
+    return tuple((note, float(chord.beats)) for chord in chords)
+
+
+def _styled_bass(
+    chords: Sequence[ChordWindow],
+    dense: bool,
+    scale_pcs: frozenset,
+    options: "HarmonizeOptions",
+    tonic_pc: int,
+) -> Tuple[Tuple[Tuple[Optional[int], float], ...], int]:
+    """Бас по ручкам ``bass_style``/``bass_approach`` (ADR-0132 PR-3).
+
+    ``off`` — партии нет (пустой кортеж: аранжировщик слой не добавит),
+    ``pedal`` — :func:`_pedal_bass` без подходов, остальное —
+    :func:`_bass_line`.
+    """
+    if options.bass_style == "off":
+        return (), 0
+    if options.bass_style == "pedal":
+        return _pedal_bass(chords, tonic_pc), 0
+    return _bass_line(
+        chords, dense, scale_pcs, style=options.bass_style, approach=options.bass_approach
+    )
+
+
 def _bass_line(
-    chords: Sequence[ChordWindow], dense: bool, scale_pcs: frozenset
+    chords: Sequence[ChordWindow],
+    dense: bool,
+    scale_pcs: frozenset,
+    style: str = "auto",
+    approach: str = "auto",
 ) -> Tuple[Tuple[Tuple[Optional[int], float], ...], int]:
     """Бас и число поставленных нот-подходов (ADR-0132: видно в партитуре).
 
@@ -656,9 +990,12 @@ def _bass_line(
 
     Аккорды берутся ПО КРУГУ: тема зациклена, и последнее окно ведёт не в
     тишину, а обратно в первое.
+
+    ``style`` (:func:`_bass_shape`) и ``approach`` (:func:`_wants_approach`)
+    — ручки ADR-0132 PR-3; ``auto`` у обеих — поведение выше.
     """
     step = 1.0 if dense else 2.0
-    shape = _BASS_SHAPE_DENSE if dense else _BASS_SHAPE_SPARSE
+    shape = _bass_shape(style, dense)
     out: List[Tuple[Optional[int], float]] = []
     approaches = 0
     for index, chord in enumerate(chords):
@@ -674,14 +1011,15 @@ def _bass_line(
             is_last = position == count - 1
             note = tones[shape[position % len(shape)]]
             dur = step + (remainder if is_last else 0.0)
-            approach = None
-            if is_last and changes and count > 1 and dur > _APPROACH_BEATS:
-                approach = _approach_note(note, following.root_midi, scale_pcs)
-            if approach is None:
+            if _wants_approach(approach, is_last, changes, count, dur):
+                passing = _approach_note(note, following.root_midi, scale_pcs)
+            else:
+                passing = None
+            if passing is None:
                 out.append((note, dur))
                 continue
             out.append((note, dur - _APPROACH_BEATS))
-            out.append((approach, _APPROACH_BEATS))
+            out.append((passing, _APPROACH_BEATS))
             approaches += 1
     return tuple(out), approaches
 
@@ -691,6 +1029,22 @@ def _scale_pitch_classes(root: str, scale: str) -> frozenset:
     intervals = SCALE_INTERVALS.get(scale, SCALE_INTERVALS["minor"])
     root_semitone = VALID_ROOTS.index(root) if root in VALID_ROOTS else 0
     return frozenset((root_semitone + i) % 12 for i in intervals)
+
+
+def _styled_pad(
+    chords: Sequence[ChordWindow], dense: bool, style: str
+) -> Tuple[Tuple[Tuple[Optional[Tuple[int, ...]], float], ...], Optional[float]]:
+    """Пэд по ручке ``pad_style`` (ADR-0132 PR-3) и его ``sus``.
+
+    ``auto``/``stab`` — остинато :func:`_build_pad` с коротким ударом
+    :data:`arranger.PAD_STAB_SUS`; ``sustain`` — один аккорд на окно
+    гармонии, звучит всю длину (``sus=None``); ``off`` — партии нет.
+    """
+    if style == "off":
+        return (), PAD_STAB_SUS
+    if style == "sustain":
+        return tuple((chord.tones, float(chord.beats)) for chord in chords), None
+    return _build_pad(chords, dense), PAD_STAB_SUS
 
 
 def _build_pad(
@@ -940,6 +1294,7 @@ def harmonize(
     root: str,
     scale: str,
     drum_style: str = DEFAULT_DRUM_STYLE,
+    options: Optional[HarmonizeOptions] = None,
 ) -> Harmonization:
     """Разложить тему на партии: аккорды, бас, пэд, контрмелодию, ударные.
 
@@ -951,28 +1306,39 @@ def harmonize(
         scale: лад, определённый по теме.
         drum_style: жанровый каркас ударных (:data:`DRUM_STYLES`, issue
             #2841); ``auto`` — прежний рисунок, выведенный из темы.
+        options: ручки раскладки (:class:`HarmonizeOptions`, ADR-0132 PR-3);
+            ``None`` — все ``auto``, прежнее поведение байт-в-байт.
+            Ручки подготовки темы (``key_detection``, ``lead_octave``,
+            ``lead_outliers``) здесь не читаются — их исполняет
+            ``rtttl_compose.melody_to_compose_params`` до вызова.
 
     Returns:
         :class:`Harmonization` — все партии в абсолютных MIDI и битах.
 
     Raises:
         ValueError: тема пустая или состоит из одних пауз — выводить
-            гармонию не из чего; либо неизвестный ``drum_style``.
+            гармонию не из чего; неизвестный ``drum_style``; аккордов
+            ``options.chords`` больше, чем тактов в теме.
     """
     style = check_drum_style(drum_style)
+    options = options or HarmonizeOptions()
     if not notes:
         raise ValueError("Пустая тема: гармонизировать нечего.")
     if all(midi is None for midi, _dur in notes):
         raise ValueError("Тема состоит из одних пауз: гармонизировать нечего.")
 
     timed, total = _timed(notes)
-    chords = _pick_chords(timed, total, root, scale)
+    chords = _pick_chords(timed, total, root, scale, options)
     hist = _onset_histogram(timed)
 
     onsets = sum(1 for _onset, midi, _dur in timed if midi is not None)
     density = onsets / total if total > 0 else 0.0
-    dense = density >= DENSE_ONSETS_PER_BEAT
-    bass, approaches = _bass_line(chords, dense, _scale_pitch_classes(root, scale))
+    dense = _resolve_dense(density, options.density)
+    tonic_pc = VALID_ROOTS.index(root) if root in VALID_ROOTS else 0
+    bass, approaches = _styled_bass(
+        chords, dense, _scale_pitch_classes(root, scale), options, tonic_pc
+    )
+    pad, pad_sus = _styled_pad(chords, dense, options.pad_style)
 
     return Harmonization(
         bpm=int(bpm),
@@ -984,12 +1350,25 @@ def harmonize(
         chords=chords,
         lead=tuple((midi, float(dur)) for midi, dur in notes),
         bass=bass,
-        pad=_build_pad(chords, dense),
+        pad=pad,
         counter=_build_counter(timed, chords),
-        drums=_build_drums(hist, dense, style),
-        hats=_build_hats(timed, style),
-        decisions=_harmony_decisions(timed, dense, approaches, style),
+        drums=_build_drums(hist, dense, style) if options.drums is None else options.drums,
+        hats=_build_hats(timed, style) if options.hats is None else options.hats,
+        pad_sus=pad_sus,
+        decisions={
+            **_harmony_decisions(timed, dense, approaches, style),
+            **_option_decisions(options),
+        },
     )
+
+
+def _resolve_dense(density: float, mode: str) -> bool:
+    """Плотная ли тема: по атакам на бит или по ручке ``density`` (PR-3)."""
+    if mode == "dense":
+        return True
+    if mode == "sparse":
+        return False
+    return density >= DENSE_ONSETS_PER_BEAT
 
 
 def _harmony_decisions(
@@ -1011,4 +1390,23 @@ def _harmony_decisions(
         "pad_step": step,
         "pad_theme_ceiling": _pad_ceiling(timed),
         "drum_style": style,
+    }
+
+
+def _option_decisions(options: HarmonizeOptions) -> Dict[str, object]:
+    """Значения ручек раскладки, с которыми построены партии (ADR-0132 PR-3).
+
+    Партитура по ним пишет ``ручка=auto→…`` или заданное значение.
+    ``chords``/``drums``/``hats`` — ``auto`` или ``explicit``.
+    """
+    return {
+        "knob_density": options.density,
+        "knob_harmonic_rhythm": options.harmonic_rhythm,
+        "knob_chords": AUTO if options.chords is None else "explicit",
+        "knob_bass_style": options.bass_style,
+        "knob_bass_approach": options.bass_approach,
+        "knob_pad_style": options.pad_style,
+        "knob_pad_register": options.pad_register,
+        "knob_drums": AUTO if options.drums is None else "explicit",
+        "knob_hats": AUTO if options.hats is None else "explicit",
     }

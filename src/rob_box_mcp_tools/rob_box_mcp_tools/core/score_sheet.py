@@ -17,8 +17,13 @@
 бас ``moogbass`` выглядел бы на две октавы выше, чем слышен.
 
 Строка «Решения по умолчанию» перечисляет ручки в виде
-``ручка=auto→значение``: сегодня модель их менять не может (ручки — PR-4
-ADR-0132), но уже видит, что выбрано за неё.
+``ручка=auto→значение``: сегодня модель их менять не может (ручки в
+``compose_music`` — PR-4 ADR-0132), но уже видит, что выбрано за неё.
+С PR-3 ядро принимает ручки (``harmonize.HarmonizeOptions``,
+``arranger.ArrangeOptions``); ручка, заданная не ``auto``, пишется без
+``auto→`` — её значением (``bass_style=root, шаг 1``, ``pad_style=off``),
+а ручки, у которых ``auto`` в строке не видно (гармонический ритм,
+регистр пэда, хэты, громкости), появляются только когда заданы.
 
 Инвентаризация скрытых решений (ADR-0132 §2, 23 пункта) и где они видны
 -----------------------------------------------------------------------
@@ -243,32 +248,95 @@ def _prep_decisions_text(prep: Dict[str, Any]) -> Dict[str, str]:
     source, bpm = prep.get("source_bpm"), prep.get("bpm")
     tempo = "без свёртки" if source == bpm else f"{source}→{bpm}"
     shift = int(prep.get("lead_shift", 0))
+    octave_mode = prep.get("lead_octave_mode", "auto")
+    shift_text = f"{shift // 12:+d} окт" if shift else "0"
+    moved = prep.get("outliers_moved", 0)
     return {
         "tempo_fold": f"auto→{tempo}",
-        "lead_octave": f"auto→{shift // 12:+d} окт" if shift else "auto→0",
-        "lead_outliers": f"auto→fix({prep.get('outliers_moved', 0)} нот)",
+        "lead_octave": f"{_mode_text(octave_mode)}→{shift_text}",
+        "lead_outliers": (
+            "keep" if prep.get("lead_outliers_mode") == "keep" else f"auto→fix({moved} нот)"
+        ),
     }
+
+
+def _mode_text(mode: Any) -> str:
+    """Значение ручки для партитуры: ``auto`` или заданное (``+1`` у октавы)."""
+    if isinstance(mode, int) and not isinstance(mode, bool):
+        return f"{mode:+d}"
+    return str(mode)
 
 
 def _key_decision_text(harmony, prep: Optional[Dict[str, Any]]) -> str:
     detected = (prep or {}).get("key_detected")
     if (prep or {}).get("key_source") == "explicit" and detected:
         return f"explicit→{harmony.root} {harmony.scale} (auto {detected[0]} {detected[1]})"
-    return f"auto→{harmony.root} {harmony.scale}"
+    method = (prep or {}).get("key_detection", "auto")
+    return f"{method}→{harmony.root} {harmony.scale}"
+
+
+def _knob_text(dec: Dict[str, Any], knob: str, auto_text: str, explicit_text: str) -> str:
+    """``auto→…`` для ``auto``, иначе текст заданного значения (ADR-0132 PR-3)."""
+    return auto_text if dec.get(f"knob_{knob}", "auto") == "auto" else explicit_text
+
+
+def _bass_text(dec: Dict[str, Any], step: float) -> str:
+    style = dec.get("knob_bass_style", "auto")
+    if style in ("off", "pedal"):
+        return str(style)
+    return _knob_text(dec, "bass_style", f"auto→тоны аккорда, шаг {step:g}", f"{style}, шаг {step:g}")
+
+
+def _pad_text(dec: Dict[str, Any], step: float) -> str:
+    style = dec.get("knob_pad_style", "auto")
+    stab = f"stab(шаг {dec.get('pad_step', step):g}, sus {PAD_STAB_SUS:g})"
+    if style in ("off", "sustain"):
+        return str(style)
+    return _knob_text(dec, "pad_style", f"auto→{stab}", stab)
+
+
+def _optional_knobs_text(dec: Dict[str, Any]) -> Dict[str, str]:
+    """Ручки, которых в строке нет, пока они ``auto`` (ADR-0132 PR-3)."""
+    out: Dict[str, str] = {}
+    if dec.get("knob_harmonic_rhythm", "auto") != "auto":
+        out["harmonic_rhythm"] = str(dec["knob_harmonic_rhythm"])
+    register = dec.get("knob_pad_register", "auto")
+    if register != "auto":
+        out["pad_register"] = (
+            _range_text(*register) if isinstance(register, tuple) else str(register)
+        )
+    if dec.get("knob_hats", "auto") != "auto":
+        out["hats"] = "задан рисунком"
+    return out
 
 
 def _harmony_decisions_text(harmony, prep: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
     dec = getattr(harmony, "decisions", {}) or {}
     kind = "dense" if harmony.dense else "sparse"
     step = dec.get("bass_step", 1.0 if harmony.dense else 2.0)
+    measured = f"{harmony.density:.2f}/бит"
+    approaches = dec.get("bass_approaches", "?")
     return {
-        "density": f"auto→{kind}({harmony.density:.2f}/бит, порог {dec.get('dense_threshold', '?')})",
+        "density": _knob_text(
+            dec, "density",
+            f"auto→{kind}({measured}, порог {dec.get('dense_threshold', '?')})",
+            f"{kind}(измерено {measured})",
+        ),
         "key": _key_decision_text(harmony, prep),
-        "chords": f"auto→{len(harmony.chords)} смен",
-        "bass_style": f"auto→тоны аккорда, шаг {step:g}",
-        "bass_approach": f"auto→{dec.get('bass_approaches', '?')}",
-        "pad_style": f"auto→stab(шаг {dec.get('pad_step', step):g}, sus {PAD_STAB_SUS:g})",
-        "drums": f"auto→выведены ({dec.get('drum_style', 'auto')})",
+        "chords": _knob_text(
+            dec, "chords", f"auto→{len(harmony.chords)} смен",
+            f"explicit→{len(harmony.chords)} смен",
+        ),
+        "bass_style": _bass_text(dec, step),
+        "bass_approach": _knob_text(
+            dec, "bass_approach", f"auto→{approaches}",
+            f"{dec.get('knob_bass_approach')}→{approaches}",
+        ),
+        "pad_style": _pad_text(dec, step),
+        "drums": _knob_text(
+            dec, "drums", f"auto→выведены ({dec.get('drum_style', 'auto')})", "задан рисунком",
+        ),
+        **_optional_knobs_text(dec),
     }
 
 
@@ -280,9 +348,13 @@ def _decisions(spec, harmony, prep: Optional[Dict[str, Any]]) -> Dict[str, str]:
     if harmony is not None:
         out.update(_harmony_decisions_text(harmony, prep))
     arr = getattr(spec, "decisions", {}) or {}
+    knobs = arr.get("knobs") or {}
     for knob in ("counter", "theme_octaves"):
         if knob in arr:
-            out[knob] = f"auto→{arr[knob]}"
+            forced = knobs.get(knob, "auto") != "auto"
+            out[knob] = str(arr[knob]) if forced else f"auto→{arr[knob]}"
+    if arr.get("levels"):
+        out["levels"] = ",".join(f"{role}×{value:g}" for role, value in arr["levels"].items())
     form_known = (spec.form or "").strip().lower() in FORMS
     out["form"] = spec.form if form_known else f"{spec.form}→arc (неизвестная)"
     return out

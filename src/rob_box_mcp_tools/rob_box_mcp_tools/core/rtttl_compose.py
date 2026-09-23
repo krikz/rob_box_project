@@ -12,6 +12,18 @@
 строит вокруг неё. Ступени лада (``lead_notes``) сюда не подходят: в них
 нельзя выразить хроматические ноты (диез/бемоль вне лада), поэтому точность
 мелодии была бы потеряна.
+
+Ручки подготовки темы (ADR-0132 PR-3)
+-------------------------------------
+Три авто-решения подготовки — ``HarmonizeOptions.key_detection``
+(``auto`` — корреляция + тональный центр #2873, ``profile`` — чистый
+Крумхансл), ``lead_octave`` (``auto`` — к рабочему регистру, ``keep``,
+либо -2..+2 октавы от записанного) и ``lead_outliers`` (``fix``/``keep``)
+— исполняются здесь, до :func:`~core.harmonize.harmonize`; остальные
+ручки передаются в неё. Выбранное значение каждой ручки пишется в
+``decisions`` (``key_detection``, ``lead_octave_mode``,
+``lead_outliers_mode``) для партитуры. Все по умолчанию — байт-в-байт
+прежнее поведение (``test_arranger_golden``).
 """
 
 from __future__ import annotations
@@ -20,7 +32,13 @@ from dataclasses import dataclass
 from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 from .arranger import BEATS_PER_BAR, SCALE_INTERVALS, VALID_ROOTS
-from .harmonize import DEFAULT_DRUM_STYLE, _weighted_percentile, harmonize
+from .harmonize import (
+    AUTO,
+    DEFAULT_DRUM_STYLE,
+    HarmonizeOptions,
+    _weighted_percentile,
+    harmonize,
+)
 from .rtttl import parse_rtttl
 
 __all__ = [
@@ -235,6 +253,7 @@ def _minor_variant(weights: Dict[int, float], root: int) -> str:
 def detect_key_ranked(
     midi_notes: Sequence[Optional[int]],
     durations: Optional[Sequence[float]] = None,
+    method: str = AUTO,
 ) -> List[KeyCandidate]:
     """Все 24 кандидата ``(тоника, лад)`` по убыванию скора.
 
@@ -256,6 +275,10 @@ def detect_key_ranked(
 
     ADR-0132: разрыв между первым и вторым кандидатом — мера уверенности,
     её показывает партитура. Без звучащих нот — ``[("C", "major", 0.0)]``.
+
+    ``method`` (ADR-0132 PR-3, ручка ``key_detection``): ``auto`` — обе
+    части скора; ``profile`` — только гистограмма (чистый Крумхансл со
+    штрафом за ноты вне лада), без позиционной опоры.
     """
     if durations is None:
         durations = [1.0] * len(midi_notes)
@@ -268,9 +291,10 @@ def detect_key_ranked(
         return [KeyCandidate("C", "major", 0.0)]
 
     weights = _pitch_weights(sounding)
+    positional = method != "profile"
     scored = [
         (root, scale, _profile_score(weights, root, scale)
-         + _tonal_center_score(sounding, root, scale))
+         + (_tonal_center_score(sounding, root, scale) if positional else 0.0))
         for root in range(12)
         for scale in ("major", "minor")
     ]
@@ -306,6 +330,7 @@ def melody_to_compose_params(
     drum_style: str = DEFAULT_DRUM_STYLE,
     root: Optional[str] = None,
     scale: Optional[str] = None,
+    options: Optional[HarmonizeOptions] = None,
 ) -> Dict[str, object]:
     """RTTTL-мелодия → плоские параметры ``compose_music``.
 
@@ -343,15 +368,21 @@ def melody_to_compose_params(
     Спорная с мелодией тональность не отклоняется — решает модель, а в
     ``decisions`` пишутся ``key_detected`` и ``key_fit`` (доля
     длительности темы в заданном ладу) для предупреждения партитуры.
+
+    ``options`` (ADR-0132 PR-3) — ручки :class:`core.harmonize.HarmonizeOptions`:
+    ``key_detection``/``lead_octave``/``lead_outliers`` исполняются здесь,
+    остальные — в :func:`~core.harmonize.harmonize`. ``None`` — все ``auto``.
     """
+    options = options or HarmonizeOptions()
     source_bpm = melody.bpm
     folded = _normalize_tempo(melody)
     snapped = _snap_to_bar(folded)
-    registered = _normalize_lead_register(snapped)
-    melody = _fix_isolated_lead_outliers(registered)
+    registered = _apply_lead_octave(snapped, options.lead_octave)
+    melody = _apply_lead_outliers(registered, options.lead_outliers)
     ranked = detect_key_ranked(
         [m for m, _ in melody.notes],
         [d for _, d in melody.notes],
+        method=options.key_detection,
     )
     explicit = root is not None or scale is not None
     root = root or ranked[0].root
@@ -361,6 +392,7 @@ def melody_to_compose_params(
     decisions = _prep_decisions(
         source_bpm, (folded, snapped, registered, melody), ranked
     )
+    decisions.update(_prep_option_decisions(options))
     if explicit:
         decisions.update(_explicit_key_decisions(melody, ranked[0], root, scale))
     return {
@@ -370,9 +402,43 @@ def melody_to_compose_params(
         "lead_midi": ", ".join(midi),
         "lead_dur": ", ".join(dur),
         "harmony": harmonize(
-            melody.notes, melody.bpm, root, scale, drum_style=drum_style
+            melody.notes, melody.bpm, root, scale, drum_style=drum_style,
+            options=options,
         ),
         "decisions": decisions,
+    }
+
+
+def _apply_lead_octave(melody: "RtttlMelody", mode: object) -> "RtttlMelody":
+    """Регистр темы по ручке ``lead_octave`` (ADR-0132 PR-3).
+
+    ``auto`` — :func:`_normalize_lead_register` (к рабочему регистру);
+    ``keep`` — как записано; целое N — ровно N октав от записанного.
+    """
+    if mode == AUTO:
+        return _normalize_lead_register(melody)
+    shift = 0 if mode == "keep" else 12 * int(mode)  # type: ignore[call-overload]
+    if shift == 0:
+        return melody
+    return RtttlMelody(
+        bpm=melody.bpm,
+        notes=tuple((None if m is None else m + shift, d) for m, d in melody.notes),
+    )
+
+
+def _apply_lead_outliers(melody: "RtttlMelody", mode: str) -> "RtttlMelody":
+    """Выбросы темы по ручке ``lead_outliers``: ``fix`` — подтянуть, ``keep`` — нет."""
+    if mode == "keep":
+        return melody
+    return _fix_isolated_lead_outliers(melody)
+
+
+def _prep_option_decisions(options: HarmonizeOptions) -> Dict[str, object]:
+    """Значения ручек подготовки темы (ADR-0132 PR-3) — для партитуры."""
+    return {
+        "key_detection": options.key_detection,
+        "lead_octave_mode": options.lead_octave,
+        "lead_outliers_mode": options.lead_outliers,
     }
 
 

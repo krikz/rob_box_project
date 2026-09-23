@@ -78,6 +78,19 @@ RC4 дал форме огибающую amp, но мелодия внутри �
 (``renardo_lib/TempoClock.py:290``) для жанров, где ровная сетка физически
 не звучит как жанр (джаз, блюз, шафл). Материал по определению
 (``CompositionSpec.swing``), не форма — арранжировщик его только выводит.
+
+Ручки сборки (ADR-0132, PR-3)
+=============================
+
+Музыкальные авто-решения сборки выведенной аранжировки — второй голос,
+удвоение темы октавой, баланс громкостей ролей — стали ручками
+:class:`ArrangeOptions` (``counter``, ``theme_octaves``, ``levels``), ноты
+партий — ручками ``harmonize.HarmonizeOptions``. По умолчанию все ``auto``
+= сегодняшнее поведение байт-в-байт (``test_arranger_golden``); итог
+каждой ручки пишется в ``CompositionSpec.decisions`` для партитуры
+(:mod:`core.score_sheet`). Автоматикой остаётся только то, что чинит звук
+или рантайм (слоты, ``SYNTH_SEMITONE_SHIFT``, клампы ``render``). До
+модели ручки доходят в PR-4 (параметры ``compose_music``).
 """
 
 from __future__ import annotations
@@ -439,6 +452,72 @@ class CompositionSpec:
     #: удвоение темы, сдвиги синтов) — только запись для партитуры,
     #: :func:`render` её не читает.
     decisions: Dict[str, object] = field(default_factory=dict, compare=False)
+    #: ADR-0132 PR-3 (ручка ``levels``): множитель базовой громкости роли
+    #: из :data:`ROLE_PROFILE` (и лупа). Пусто — баланс по умолчанию.
+    levels: Dict[str, float] = field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Ручки сборки слоёв (ADR-0132 PR-3)
+# ---------------------------------------------------------------------------
+
+#: Допустимые значения ручек ``counter``/``theme_octaves``.
+ON_OFF_AUTO: Tuple[str, ...] = ("auto", "on", "off")
+
+#: Пределы множителя громкости роли. 0 — роль молчит; выше 2 баланс
+#: ломается раньше, чем лимитер (``_cap_amp``/``masterlimiter``) успевает
+#: что-то спасти.
+LEVEL_RANGE = (0.0, 2.0)
+
+
+def _check_level(role: object, value: object) -> None:
+    roles = sorted(set(ROLE_PROFILE) | {LOOP_ROLE})
+    if role not in roles:
+        raise ArrangementError(
+            f"levels: неизвестная роль {role!r}. Доступны: {', '.join(roles)}."
+        )
+    lo, hi = LEVEL_RANGE
+    number = isinstance(value, (int, float)) and not isinstance(value, bool)
+    if not number or not lo <= float(value) <= hi:  # type: ignore[arg-type]
+        raise ArrangementError(
+            f"levels: {role}={value!r} — нужен множитель {lo:g}..{hi:g} (1 — как есть)."
+        )
+
+
+@dataclass(frozen=True)
+class ArrangeOptions:
+    """Ручки сборки выведенной аранжировки (ADR-0132 PR-3).
+
+    Ноты партий решает ``harmonize.HarmonizeOptions``; здесь — то, что
+    решается при раскладке партий в слои и при рендере. Все по умолчанию —
+    сегодняшнее поведение байт-в-байт (``test_arranger_golden``). Модуль
+    не импортирует ``harmonize`` (его грузит ``tools/gen_tool_catalog.py``
+    отдельным файлом), поэтому классы живут раздельно.
+
+    Attributes:
+        counter: ``auto`` — второй голос только у плотной темы; ``on`` — и
+            у редкой; ``off`` — без второго голоса.
+        theme_octaves: ``auto`` — удвоение темы по параметру
+            ``theme_octaves`` :func:`spec_from_flat`, плотности и высоте
+            темы (:func:`_should_octave_double`); ``on`` — всегда;
+            ``off`` — никогда.
+        levels: роль → множитель громкости (``{"bass": 0.5}``), 0..2.
+    """
+
+    counter: str = "auto"
+    theme_octaves: str = "auto"
+    levels: Dict[str, float] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        for knob in ("counter", "theme_octaves"):
+            if getattr(self, knob) not in ON_OFF_AUTO:
+                raise ArrangementError(
+                    f"Неизвестное значение {knob}={getattr(self, knob)!r}. "
+                    f"Доступны: {', '.join(ON_OFF_AUTO)}."
+                )
+        for role, value in dict(self.levels).items():
+            _check_level(role, value)
+        object.__setattr__(self, "levels", {r: float(v) for r, v in dict(self.levels).items()})
 
 
 def _fmt(value: float) -> str:
@@ -974,8 +1053,13 @@ def _render_layer(
     layer: Layer,
     plan: Sequence[Tuple[str, int, Dict[str, float]]],
     use_filter: bool,
+    level: float = 1.0,
 ) -> Optional[str]:
-    """Отрендерить одну строку Renardo-кода, либо None если слой молчит."""
+    """Отрендерить одну строку Renardo-кода, либо None если слой молчит.
+
+    ``level`` — множитель базовой громкости роли (ручка ``levels``,
+    ADR-0132 PR-3); 1.0 — баланс :data:`ROLE_PROFILE` как есть.
+    """
     profile = ROLE_PROFILE.get(layer.role)
     if profile is None:
         raise ArrangementError(
@@ -983,6 +1067,7 @@ def _render_layer(
             f"Доступны: {', '.join(sorted(ROLE_PROFILE))}."
         )
     player, role_oct, base_amp = profile
+    base_amp = base_amp * level
 
     if _is_silent_drum_layer(layer):
         # Паттерн из одних точек/пробелов — ни одного удара. Это тот же
@@ -1101,8 +1186,11 @@ def _render_loop_layer(
     plan: Sequence[Tuple[str, int, Dict[str, float]]],
     bpm: float,
     player: str,
+    level: float = 1.0,
 ) -> str:
     """Отрендерить жанровый луп: ``loop(имя, dur=N, beat_stretch=1, amp=...)``.
+
+    ``level`` — множитель громкости лупа (ручка ``levels``, ADR-0132 PR-3).
 
     ``beat_stretch=1`` растягивает файл ровно на ``dur`` битов, поэтому
     луп идёт в темп формы, а не в свой родной. ``dur`` — ближайшая к
@@ -1120,7 +1208,7 @@ def _render_loop_layer(
         raise ArrangementError(f"groove_loop: неизвестный луп {layer.pattern!r}.")
     has_drums = any("drums" in intensities for _n, _b, intensities in plan)
     source, scale = ("drums", 1.0) if has_drums else ("pad", LOOP_PAD_FOLLOW)
-    amps, durs = _amp_envelope(source, plan, LOOP_BASE_AMP * scale)
+    amps, durs = _amp_envelope(source, plan, LOOP_BASE_AMP * scale * level)
     amp_expr = _fmt(amps[0]) if len(amps) == 1 else f"var({_fmt_list(amps)}, {_fmt_list(durs)})"
     beats = loops.loop_beats(info, bpm)
     return (
@@ -1143,17 +1231,22 @@ def _append_layer_lines(
     Луп (#2841) рендерится после остальных, потому что его слот — первый
     свободный из d1-d3, а занятость известна только по уже готовым строкам.
     """
+    levels = getattr(spec, "levels", None) or {}
     count = 0
     for layer in spec.layers:
         if layer.role == LOOP_ROLE:
             continue
-        rendered = _render_layer(layer, plan, use_filter=spec.filter_sweep)
+        rendered = _render_layer(
+            layer, plan, use_filter=spec.filter_sweep, level=levels.get(layer.role, 1.0)
+        )
         if rendered is not None:
             lines.append(rendered)
             count += 1
     for layer in spec.layers:
         if layer.role == LOOP_ROLE:
-            lines.append(_render_loop_layer(layer, plan, bpm, _free_loop_slot(lines)))
+            lines.append(_render_loop_layer(
+                layer, plan, bpm, _free_loop_slot(lines), level=levels.get(LOOP_ROLE, 1.0)
+            ))
             count += 1
     return count
 
@@ -1596,6 +1689,17 @@ def _resolve_counter_synth_default(
     return lead_synth
 
 
+def _counter_enabled(mode: str, dense: bool) -> bool:
+    """Играет ли второй голос (ручка ``counter``, ADR-0132 PR-3).
+
+    ``auto`` — только у плотной темы (см. комментарий в
+    :func:`_add_derived_layers`), ``on``/``off`` — принудительно.
+    """
+    if mode == "auto":
+        return dense
+    return mode == "on"
+
+
 def _add_derived_layers(
     layers: List[Layer],
     harmony,
@@ -1607,6 +1711,7 @@ def _add_derived_layers(
     counter_synth: Optional[str],
     drums_sample: int,
     hats_sample: int,
+    options: Optional[ArrangeOptions] = None,
 ) -> None:
     """Разложить готовую гармонизацию темы в слои аранжировки.
 
@@ -1618,7 +1723,12 @@ def _add_derived_layers(
 
     Перкуссия не добавляется намеренно: её слот занимает контрмелодия,
     а грув уже несут выведенные бочка и хэты.
+
+    ``options`` (ADR-0132 PR-3) — ручки ``counter`` и ``theme_octaves``
+    (:class:`ArrangeOptions`); ``sus`` пэда берётся из
+    ``harmony.pad_sus`` (ручка ``pad_style`` гармонизации).
     """
+    options = options or ArrangeOptions()
     _add_drum_layer_if_present(layers, "drums", harmony.drums, drums_sample)
     _add_drum_layer_if_present(layers, "hats", harmony.hats, hats_sample)
 
@@ -1628,16 +1738,18 @@ def _add_derived_layers(
     # это гибель: её узнают по тонкой одинокой линии и по тишине вокруг.
     # См. harmonize::DENSE_ONSETS_PER_BEAT.
     dense = getattr(harmony, "dense", True)
+    counter_part = harmony.counter if _counter_enabled(options.counter, dense) else ()
+    pad_sus = getattr(harmony, "pad_sus", PAD_STAB_SUS)
     for role, synth, part in (
         ("bass", bass_synth, harmony.bass),
         ("lead", lead_synth, harmony.lead),
         ("pad", pad_synth, harmony.pad),
-        ("counter", counter_synth, harmony.counter if dense else ()),
+        ("counter", counter_synth, counter_part),
     ):
         if not (synth and synth.strip()) or not part:
             continue
         notes = [note for note, _dur in part]
-        if _should_octave_double(role, theme_octaves, dense, notes):
+        if _should_octave_double(role, theme_octaves, dense, notes, options.theme_octaves):
             notes = [_octave_double(note) for note in notes]
         # Последний шаг: поправка на собственное транспонирование синта.
         # До этой строки всё выше рассуждало о ЗВУЧАЩЕЙ высоте — регистры,
@@ -1655,7 +1767,7 @@ def _add_derived_layers(
                 # Подклад ведёт остинато: удар должен быть короче шага
                 # сетки, иначе соседние аккорды сливаются в выдержанный
                 # звук и ритм пропадает (см. harmonize::_build_pad).
-                sus=PAD_STAB_SUS if role == "pad" else None,
+                sus=pad_sus if role == "pad" else None,
             )
         )
 
@@ -1680,15 +1792,25 @@ def _fits_octave_double(notes: Sequence[object]) -> bool:
     return bool(pitches) and min(pitches) >= MIN_MIDI_FOR_OCTAVE_DOUBLE
 
 
-def _should_octave_double(role: str, theme_octaves: bool, dense: bool, notes: Sequence[object]) -> bool:
+def _should_octave_double(
+    role: str, theme_octaves: bool, dense: bool, notes: Sequence[object], mode: str = "auto"
+) -> bool:
     """Удваивать ли тему октавой вниз для этого слоя.
 
     Удвоение нужно только лид-голосу, при включённой опции и в плотной
     теме: плотная, громкая тема от удвоения выигрывает в весе, редкая —
     теряет характер. Дополнительно тема должна иметь запас высоты, чтобы
     удвоение не село на регистр баса (:func:`_fits_octave_double`).
+
+    ``mode`` — ручка ``theme_octaves`` (ADR-0132 PR-3): ``auto`` — правило
+    выше; ``on`` — удваивать всегда (осознанный выбор, даже у редкой или
+    низкой темы); ``off`` — никогда.
     """
-    return role == "lead" and theme_octaves and dense and _fits_octave_double(notes)
+    if role != "lead" or mode == "off":
+        return False
+    if mode == "on":
+        return True
+    return theme_octaves and dense and _fits_octave_double(notes)
 
 
 def _octave_double(note):
@@ -1732,6 +1854,7 @@ def spec_from_flat(
     repeat: bool = True,
     swing: float = 0.0,
     groove_loop: Optional[str] = None,
+    options: Optional[ArrangeOptions] = None,
 ) -> CompositionSpec:
     """Собрать :class:`CompositionSpec` из плоских скалярных аргументов.
 
@@ -1755,6 +1878,12 @@ def spec_from_flat(
     ``groove_loop`` (issue #2841) — имя лупа из каталога
     :mod:`core.sample_loops`; добавляет слой ``loop(...)`` в свободный
     d-слот и в выведенной, и в сочинённой аранжировке.
+
+    ``options`` (:class:`ArrangeOptions`, ADR-0132 PR-3) — ручки сборки:
+    ``counter``/``theme_octaves`` действуют на выведенную аранжировку,
+    ``levels`` — на любую (множитель громкости роли в :func:`render`).
+    ``None`` — все ``auto``, прежнее поведение байт-в-байт. Значения ручек
+    пишутся в ``decisions`` спецификации для партитуры.
     """
     layers: List[Layer] = []
     _add_loop_layer(layers, groove_loop)
@@ -1796,6 +1925,7 @@ def spec_from_flat(
             counter_synth=synths["counter"],
             drums_sample=drums_sample,
             hats_sample=hats_sample,
+            options=options,
         )
         return CompositionSpec(
             bpm=float(bpm),
@@ -1812,8 +1942,10 @@ def spec_from_flat(
             repeat=bool(repeat),
             swing=swing,
             decisions=arrangement_decisions(
-                harmony, theme_octaves=bool(theme_octaves), synths=synths
+                harmony, theme_octaves=bool(theme_octaves), synths=synths,
+                options=options,
             ),
+            levels=_levels_of(options),
         )
 
     # 🔴 FIX (live 31.08): здесь стояло sample=3 намертво. В библиотеке
@@ -1854,13 +1986,30 @@ def spec_from_flat(
         progression=tuple(int(v) for v in parse_notes(progression)),
         repeat=bool(repeat),
         swing=swing,
+        decisions=_composed_decisions(options),
+        levels=_levels_of(options),
     )
 
 
-def _counter_decision(dense: bool, counter_synth: Optional[str], part) -> str:
+def _levels_of(options: Optional[ArrangeOptions]) -> Dict[str, float]:
+    """Множители громкости ролей из ручки ``levels`` (пусто — баланс как есть)."""
+    return dict(options.levels) if options is not None else {}
+
+
+def _composed_decisions(options: Optional[ArrangeOptions]) -> Dict[str, object]:
+    """Решения сочинённого трека для партитуры: только заданные ``levels``."""
+    levels = _levels_of(options)
+    return {"levels": levels} if levels else {}
+
+
+def _counter_decision(
+    dense: bool, counter_synth: Optional[str], part, mode: str = "auto"
+) -> str:
     """Почему второй голос звучит или нет (зеркало :func:`_add_derived_layers`)."""
     if not counter_synth:
         return "off (counter_synth выключен)"
+    if mode != "auto":
+        return _forced_decision(mode, bool(part))
     if not dense:
         return "off (редкая тема)"
     if not part:
@@ -1868,8 +2017,17 @@ def _counter_decision(dense: bool, counter_synth: Optional[str], part) -> str:
     return "on"
 
 
-def _octaves_decision(theme_octaves: bool, dense: bool, notes) -> str:
+def _forced_decision(mode: str, has_part: bool) -> str:
+    """Итог ручки ``on``/``off`` (ADR-0132 PR-3) словами для партитуры."""
+    if mode == "off":
+        return "off (задано)"
+    return "on (задано)" if has_part else "off (нечего играть)"
+
+
+def _octaves_decision(theme_octaves: bool, dense: bool, notes, mode: str = "auto") -> str:
     """Почему тема удвоена октавой или нет (зеркало :func:`_should_octave_double`)."""
+    if mode != "auto":
+        return _forced_decision(mode, True)
     if not theme_octaves:
         return "off (theme_octaves=False)"
     if not dense:
@@ -1880,19 +2038,32 @@ def _octaves_decision(theme_octaves: bool, dense: bool, notes) -> str:
 
 
 def arrangement_decisions(
-    harmony, *, theme_octaves: bool, synths: Dict[str, Optional[str]]
+    harmony,
+    *,
+    theme_octaves: bool,
+    synths: Dict[str, Optional[str]],
+    options: Optional[ArrangeOptions] = None,
 ) -> Dict[str, object]:
     """Авто-решения сборки выведенной аранжировки (ADR-0132, для партитуры).
 
     Повторяют условия :func:`_add_derived_layers` / :func:`_should_octave_double`
     словами, не участвуя в сборке: код рендера от них не зависит.
     ``synths`` — итоговые синты ролей (counter — уже после фолбэка).
+    ``options`` (PR-3) — ручки: их значения в ``knobs``, множители в
+    ``levels``.
     """
+    options = options or ArrangeOptions()
     dense = bool(getattr(harmony, "dense", True))
     lead_notes = [note for note, _dur in harmony.lead]
     return {
-        "counter": _counter_decision(dense, synths.get("counter"), harmony.counter),
-        "theme_octaves": _octaves_decision(theme_octaves, dense, lead_notes),
+        "counter": _counter_decision(
+            dense, synths.get("counter"), harmony.counter, options.counter
+        ),
+        "theme_octaves": _octaves_decision(
+            theme_octaves, dense, lead_notes, options.theme_octaves
+        ),
+        "knobs": {"counter": options.counter, "theme_octaves": options.theme_octaves},
+        "levels": dict(options.levels),
         "synth_shift": {
             role: SYNTH_SEMITONE_SHIFT.get(synth, 0)
             for role, synth in synths.items()

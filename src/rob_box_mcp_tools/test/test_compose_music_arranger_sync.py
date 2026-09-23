@@ -82,6 +82,18 @@ _INTERNALLY_DERIVED: frozenset[str] = frozenset(
     }
 )
 
+#: Параметры ``spec_from_flat``, которые УЖЕ есть в ядре, но до модели
+#: доходят следующим PR по плану миграции (AF/ADR-0013: мелкие PR). Это не
+#: «выводится сам», а временная, названная дыра со сроком: каждая запись
+#: указывает PR, который её закрывает, и тот PR обязан удалить запись
+#: (иначе ``test_pending_exposure_is_not_yet_model_facing`` упадёт).
+_PENDING_EXPOSURE: dict[str, str] = {
+    # ADR-0132 PR-3: ручки сборки (counter / theme_octaves / levels) —
+    # arranger.ArrangeOptions в ядре. Отдельными параметрами compose_music
+    # (вариант A ADR-0132) их выводит PR-4.
+    "options": "ADR-0132 PR-4",
+}
+
 
 def test_every_spec_from_flat_param_reaches_the_model_or_is_derived() -> None:
     """Параметр ``spec_from_flat``, влияющий на звук, не может быть немым.
@@ -101,7 +113,7 @@ def test_every_spec_from_flat_param_reaches_the_model_or_is_derived() -> None:
     spec_params = set(inspect.signature(spec_from_flat).parameters) - {"self"}
     exec_params = set(inspect.signature(ComposeMusicTool.execute).parameters) - {"self"}
 
-    orphaned = spec_params - _INTERNALLY_DERIVED - exec_params
+    orphaned = spec_params - _INTERNALLY_DERIVED - set(_PENDING_EXPOSURE) - exec_params
     assert not orphaned, (
         f"spec_from_flat принимает {sorted(orphaned)}, но ComposeMusicTool.execute() "
         f"их не запрашивает у модели и не выводит сам (не в _INTERNALLY_DERIVED) — "
@@ -143,6 +155,23 @@ def test_internally_derived_params_are_not_also_model_facing() -> None:
         f"{sorted(double_facing)} числятся в _INTERNALLY_DERIVED как выводимые "
         f"автоматически, но ComposeMusicTool.execute() их тоже принимает от "
         f"модели напрямую — обоснование в _INTERNALLY_DERIVED больше не точно"
+    )
+
+
+def test_pending_exposure_is_not_yet_model_facing() -> None:
+    """``_PENDING_EXPOSURE`` не протухает: запись снимается вместе с дырой.
+
+    Как только ``execute()`` начнёт принимать параметр напрямую (PR-4
+    ADR-0132 для ``options``), запись обязана уйти из списка; и наоборот —
+    параметр, которого ``spec_from_flat`` больше не принимает, в списке
+    держать нельзя.
+    """
+    spec_params = set(inspect.signature(spec_from_flat).parameters) - {"self"}
+    exec_params = set(inspect.signature(ComposeMusicTool.execute).parameters) - {"self"}
+    pending = set(_PENDING_EXPOSURE)
+    assert not pending - spec_params, f"устарели: {sorted(pending - spec_params)}"
+    assert not pending & exec_params, (
+        f"{sorted(pending & exec_params)} уже доходят до модели — убери из _PENDING_EXPOSURE"
     )
 
 
