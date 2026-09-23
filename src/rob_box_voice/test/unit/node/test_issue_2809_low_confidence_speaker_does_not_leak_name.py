@@ -166,8 +166,9 @@ REPLAY_DATASET = [
     ),
     (
         "constructed_band_with_wide_gap",
-        0.75, 0.55, True,
-        "constructed (not in 23.09 live data): band, but gap=0.20 >= 0.15 -> name",
+        0.75, 0.55, False,
+        "constructed (not in 23.09 live data): band, gap=0.20 -- issue #2889: "
+        "gap no longer promotes to name (stranger Gena 0.777/0.611 was named)",
     ),
 ]
 
@@ -353,13 +354,15 @@ class TestClassifyNameConfidenceThreeWay:
         )
         assert result == sid_node.NAME_CONFIDENT
 
-    def test_confident_via_wide_gap_in_band(self):
+    def test_wide_gap_in_band_is_contested_not_confident(self):
+        # Issue #2889: разрыв до другого имени в полосе больше не делает
+        # имя уверенным (незнакомец Гена 0.777 vs 0.611 был назван Борисом).
         best = SpeakerMatch(speaker_id="a", name="Boris", confidence=0.75)
         other = SpeakerMatch(speaker_id="b", name="Sasha", confidence=0.55)
         result = sid_node.classify_name_confidence(
             best, [best, other], band_high=0.80, min_gap=0.15
         )
-        assert result == sid_node.NAME_CONFIDENT
+        assert result == sid_node.NAME_TENTATIVE_CONTESTED
 
     def test_duplicate_profile_of_same_person_yields_single_not_contested(self):
         best = SpeakerMatch(speaker_id="1ae4b0ac", name="Denchik", confidence=0.75)
