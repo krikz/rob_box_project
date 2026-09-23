@@ -3682,14 +3682,17 @@ class DialogueNode(Node):
     def _publish_confirmed_identity_growth(
         self, speaker_id: str, name: str, utterance_id: Optional[str] = None
     ) -> None:
-        """Issue #2809/#2757 -- рост галереи ТЕМ ЖЕ путём, что явная
-        регистрация: публикуем в ``/voice/speaker/register`` (тот же
-        топик и обработчик, что LLM-тул ``register_speaker`` и голосовая
-        команда "запомни мой голос"), с ``speaker_id``-подсказкой, чтобы
-        ``_do_register`` дописал эмбеддинг в ЭТОТ профиль напрямую, а не
-        гадал по имени (ADR-0127). Калибровка порогов слияния и гейт
-        ``MIN_REGISTER_AUDIO_DURATION_SEC`` -- уже существующая логика
-        speaker_id_node, здесь не дублируется.
+        """Issue #2809/#2757 -- рост галереи подтверждённого профиля.
+
+        Топик тот же, что у LLM-тула ``register_speaker``
+        (``/voice/speaker/register``), но с ``purpose: "growth"`` (issue
+        #2906): speaker_id_node ведёт такой запрос НЕ через
+        ``_do_register``/``register_or_merge``, а через
+        ``_do_confirmed_growth`` -- дописывает эмбеддинг в ЭТОТ профиль по
+        правилам роста владельца (#2833), новый якорь не заводит и
+        ``register_error`` не публикует. Поэтому короткое «да, это я» не
+        превращается в «Не расслышал» -- та реплика остаётся только для
+        регистрации по просьбе LLM (``_SPOKEN_REGISTER_ERRORS``).
 
         Issue #2829 (ADR-0131 PR-2) -- ``utterance_id`` — id ЭТОЙ самой
         реплики (словесное "да, это я"), передаётся вызывающим кодом
@@ -3704,7 +3707,13 @@ class DialogueNode(Node):
         pub = getattr(self, "_speaker_register_pub", None)
         if pub is None:
             return
-        payload = {"name": name, "speaker_id": speaker_id}
+        # Issue #2906 -- ``purpose: "growth"``: это НЕ регистрация, а рост
+        # галереи уже известного (только что подтверждённого) профиля.
+        # speaker_id_node ведёт его отдельным путём (без register_or_merge,
+        # без нового якоря, без register_error): раньше короткое «да, это
+        # я» (1.65с) отклонялось как too_short, и робот говорил «Не
+        # расслышал», хотя всё расслышал.
+        payload = {"name": name, "speaker_id": speaker_id, "purpose": "growth"}
         if utterance_id:
             payload["utterance_id"] = utterance_id
         msg = String()
