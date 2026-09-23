@@ -106,11 +106,15 @@ dialogue_node:
     speaker_id_enabled: true
     speaker_db_path: /data/speakers.db
     # Issue #2809 -- переспрос про tentative-личность максимум раз за
-    # сессию; сессия = та же непрерывность, что у роста галереи в
-    # speaker_id_node (PR #2757, gallery_growth_session_gap_sec) --
-    # значение НАМЕРЕННО зеркалит тот же дефолт 30s, независимый
-    # параметр отдельного процесса.
-    identity_question_session_gap_sec: 30.0
+    # сессию. Два окна (прогон 35857257981: "да" пришло через 84s и
+    # не было прочитано при общем окне 30s):
+    # * identity_answer_window_sec -- сколько заданный вопрос ждёт ответа;
+    # * identity_question_session_gap_sec -- сколько паузы переживает
+    #   решённое "да"/"нет". Раньше 30s (зеркало
+    #   gallery_growth_session_gap_sec), но паузы живого диалога и шаги
+    #   харнесса (~60s) длиннее -- робот переспрашивал посреди разговора.
+    identity_question_session_gap_sec: 120.0
+    identity_answer_window_sec: 180.0
     # Бэклог-аккумулятор фоновой речи без wake-слова.
     accumulate_no_wake_enabled: true
     accumulate_window_sec: 180.0

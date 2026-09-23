@@ -29,8 +29,10 @@
       "label": "n702_sasha_followup",
       "voice": "anton",
       "text": "Робот, ты меня узнал по голосу, я тот же, кто заходил недавно?",
-      "patterns": [],
-      "_why": "Вторая реплика A ПОСЛЕ регистрации. node_params форсировал name_confidence_band_high=0.99 — score синтетики (0.87-0.96) заведомо ниже планки, конкурента с другим именем в базе ещё нет (Борис не зарегистрирован) → classify_name_confidence обязана вернуть NAME_TENTATIVE_SINGLE, и dialogue_node обязан задать вопрос-гипотезу «Саша, это ты?» в ЭТОМ ходе. Проверка вопроса — в СЛЕДУЮЩЕМ шаге (n703, when_robot_asked читает РЕЧЬ ЭТОГО шага)."
+      "patterns": [
+        "identity question hint set: kind=single"
+      ],
+      "_why": "Вторая реплика A ПОСЛЕ регистрации. node_params форсировал name_confidence_band_high=0.99 — score синтетики (0.87-0.96) заведомо ниже планки, конкурента с другим именем в базе ещё нет (Борис не зарегистрирован) → classify_name_confidence обязана вернуть NAME_TENTATIVE_SINGLE, и dialogue_node обязан задать вопрос-гипотезу «Саша, это ты?» в ЭТОМ ходе. Проверка вопроса — в СЛЕДУЮЩЕМ шаге (n703, when_robot_asked читает РЕЧЬ ЭТОГО шага). patterns: лог-маркер «identity question hint set: kind=single» — подсказка-гипотеза реально выставлена dialogue_node, а не LLM сама решила спросить (прогон 35857257981)."
     },
     {
       "label": "n703_sasha_confirm_yes",
@@ -38,33 +40,42 @@
       "text": "Робот, да, это я.",
       "when_robot_asked": "Саш.*это ты|это ты.*Саш",
       "required_question": true,
-      "patterns": [],
+      "patterns": [
+        "identity answer read: answer=True",
+        "Speaker confirmed verbally",
+        "рост галереи после словесного подтверждения"
+      ],
       "acceptance": {
         "expected_keywords": ["Саш"],
         "must_not_call": ["register_speaker"],
         "expected_tool_calls": [],
-        "_comment": "issue #2809: required_question=true — если робот НЕ спросил «Саша, это ты?» на предыдущем шаге (n702), этот шаг сам по себе FAIL (детерминированность акта). 'Да' -> имя используется до конца сессии (PR #2818 _confirm_tentative_speaker), рост галереи идёт через /voice/speaker/register (ROS-топик), НЕ через MCP-тул register_speaker — must_not_call ловит регрессию 'ответ да породил повторную явную регистрацию'."
+        "_comment": "issue #2809: required_question=true — если робот НЕ спросил «Саша, это ты?» на предыдущем шаге (n702), этот шаг сам по себе FAIL (детерминированность акта). 'Да' -> имя используется до конца сессии (PR #2818 _confirm_tentative_speaker), рост галереи идёт через /voice/speaker/register (ROS-топик), НЕ через MCP-тул register_speaker — must_not_call ловит регрессию 'ответ да породил повторную явную регистрацию'.",
+        "_comment_mechanism": "issue #2809, прогон 35857257981: «да» пришло через 84s после вопроса, окно 30s пересоздало состояние (asked=False), ответ не прочитан — а шаг был зелёным только потому, что LLM повторила «Саш» из истории. patterns проверяют САМ механизм по логу voice-assistant: ответ прочитан (identity answer read: answer=True), подтверждение сработало (Speaker confirmed verbally), рост галереи запрошен (🌱). Ответ держит identity_answer_window_sec=180s (dialogue_node.yaml), отдельно от identity_question_session_gap_sec."
       }
     },
     {
       "label": "n704_sasha_no_repeat_question",
       "voice": "anton",
       "text": "Робот, а что ты обо мне запомнил из того, что я говорил?",
-      "patterns": [],
+      "patterns": [
+        "Speaker verbal confirmation reused"
+      ],
       "acceptance": {
         "must_not_say": ["это ты"],
         "expected_tool_calls": [],
         "must_not_call": [],
-        "_comment": "Ещё реплика A в ТОЙ ЖЕ сессии после подтверждённого 'да' — вопрос не должен повторяться (PR #2818: один раз за сессию, identity_question_session_gap_sec=30s ещё не истёк)."
+        "_comment": "Ещё реплика A после подтверждённого «да» (шаги харнесса ~60s, больше прежних 30s). patterns: «Speaker verbal confirmation reused» — решённое состояние пережило паузу и имя ушло в LLM как [Spkr:...] из подтверждения, а не из истории диалога; must_not_say «это ты» — вопрос не повторён. Держит identity_question_session_gap_sec=120s (dialogue_node.yaml)."
       }
     },
     {
       "label": "n705_sasha_after_gap",
       "voice": "anton",
       "text": "Робот, ты ещё здесь, помнишь меня?",
-      "sleep_before_sec": 35,
-      "patterns": [],
-      "_why": "issue #2809: пауза 35s > identity_question_session_gap_sec=30s (dialogue_node.yaml) — сессия считается прервавшейся, tentative-цикл вправе начаться заново. Борис ещё не зарегистрирован (регистрируется ниже, n708) — конкурента с другим именем всё ещё нет, значит снова NAME_TENTATIVE_SINGLE и снова вопрос-гипотеза «Саша, это ты?» в ЭТОМ ходе. Проверка — в n706 ниже."
+      "sleep_before_sec": 150,
+      "patterns": [
+        "identity question hint set: kind=single"
+      ],
+      "_why": "issue #2809: пауза 150s > identity_question_session_gap_sec=120s (dialogue_node.yaml; было 30s, поднято после прогона 35857257981) — сессия считается прервавшейся, tentative-цикл вправе начаться заново. Борис ещё не зарегистрирован (регистрируется ниже, n708) — конкурента с другим именем всё ещё нет, значит снова NAME_TENTATIVE_SINGLE и снова вопрос-гипотеза «Саша, это ты?» в ЭТОМ ходе (patterns: hint set). Проверка вопроса — в n706 ниже."
     },
     {
       "label": "n706_sasha_confirm_no",
@@ -72,7 +83,9 @@
       "text": "Робот, нет, я не Саша, ты обознался.",
       "when_robot_asked": "Саш.*это ты|это ты.*Саш",
       "required_question": true,
-      "patterns": [],
+      "patterns": [
+        "identity answer read: answer=False"
+      ],
       "acceptance": {
         "must_not_call": ["register_speaker"],
         "expected_tool_calls": [],
@@ -88,7 +101,7 @@
         "must_not_say": ["Саш"],
         "expected_tool_calls": [],
         "must_not_call": [],
-        "_comment": "После 'нет' имя не должно звучать до конца сессии (PR #2818: отказ -> тишина, вопрос не повторяется)."
+        "_comment": "После 'нет' имя не должно звучать до конца сессии (PR #2818: отказ -> тишина, вопрос не повторяется). Шаг ~60s после n706 — отказ держит identity_question_session_gap_sec=120s."
       }
     },
     {

@@ -652,10 +652,9 @@ class DialogueNode(Node):
         # ("<Имя>, это ты?" / "Как тебя зовут?"), не чаще одного раза за
         # сессию на кандидата. Ключ -- полный speaker_id (см.
         # _tentative_session_state); значение -- {"asked", "confirmed",
-        # "name", "growth_registered", "last_seen_at"}. Сессия -- тот же
-        # якорь непрерывности, что у роста галереи в speaker_id_node
-        # (PR #2757, gallery_growth_session_gap_sec) -- см.
-        # identity_question_session_gap_sec ниже, тот же дефолт 30s.
+        # "name", "growth_registered", "last_seen_at"}. Сколько паузы
+        # переживает состояние -- см. _tentative_state_window_sec
+        # (identity_answer_window_sec / identity_question_session_gap_sec).
         self._identity_confirmations: dict = {}
         # Подсказка-гипотеза для _build_dynamic_system_context, выставляется
         # в _apply_speaker_identity РОВНО на тот один раз, когда решаем
@@ -668,6 +667,9 @@ class DialogueNode(Node):
         self._identity_ack = IdentityAckQuestion()
         self._identity_question_session_gap_sec: float = float(
             self.get_parameter("identity_question_session_gap_sec").value
+        )
+        self._identity_answer_window_sec: float = float(
+            self.get_parameter("identity_answer_window_sec").value
         )
         # Бэклог-аккумулятор фоновой речи без wake-слова (docs/plans/
         # 2026-08-20-voice-backlog-accumulator-design.md).
@@ -1306,7 +1308,20 @@ class DialogueNode(Node):
         # разные процессы, общего источника правды для рантайм-параметра
         # между ними в этом репо нет (см. семейство barge_in_policy/
         # e2e_mode -- тот же паттерн: параметр каждого узла независим).
-        self.declare_parameter("identity_question_session_gap_sec", 30.0)
+        #
+        # Issue #2809 (живой прогон 35857257981): значение поднято с 30s до
+        # 120s. 30s зеркалили gallery_growth_session_gap_sec, но паузы между
+        # репликами живого диалога (и шагами харнесса, ~60s) длиннее --
+        # принятое решение ("да"/"нет") сбрасывалось посреди разговора, и
+        # робот переспрашивал заново (n704/n707). Этот параметр теперь
+        # держит только РЕШЁННОЕ состояние; ожидание ответа -- отдельное
+        # окно identity_answer_window_sec ниже.
+        self.declare_parameter("identity_question_session_gap_sec", 120.0)
+        # Issue #2809 -- сколько секунд заданный вопрос ("Саша, это ты?")
+        # ждёт ответа. В прогоне 35857257981 "да" пришло через 84s (шаг
+        # харнесса ~60s + переспрос STT "не расслышал") -- при общем окне
+        # 30s состояние пересоздавалось с asked=False и ответ не читался.
+        self.declare_parameter("identity_answer_window_sec", 180.0)
         # issue #1077: сколько фраз подряд с одним speaker_tag нужно для
         # подтверждения профиля. 2 = защита от нестабильных tags Yandex;
         # 1 = мгновенное подтверждение (если tag стабилен).
@@ -3261,14 +3276,26 @@ class DialogueNode(Node):
     # (classify_identity_confirmation) -- без NLU, без второго диалогового
     # состояния поверх обычного turn-цикла.
 
+    def _tentative_state_window_sec(self, state: dict) -> float:
+        """Сколько секунд паузы переживает ``state``.
+
+        Вопрос задан, ответа ещё нет -- ``identity_answer_window_sec``:
+        ответ приходит следующей репликой, но она бывает сильно позже
+        (живой прогон 35857257981: 84s, шаги харнесса ~60s). Решённое
+        состояние ("да"/"нет") -- ``identity_question_session_gap_sec``.
+        """
+        if state.get("asked") and state.get("confirmed") is None:
+            return getattr(self, "_identity_answer_window_sec", 180.0)
+        return getattr(self, "_identity_question_session_gap_sec", 120.0)
+
     def _tentative_session_state(self, speaker_id: str) -> dict:
-        """Состояние переспроса для ``speaker_id`` -- новое, если сессия
-        прервалась (пауза дольше ``identity_question_session_gap_sec``,
-        тот же якорь непрерывности, что у роста галереи в PR #2757)."""
+        """Состояние переспроса для ``speaker_id`` -- новое, если пауза
+        дольше окна этого состояния (см. ``_tentative_state_window_sec``)."""
         now = time.monotonic()
-        gap = getattr(self, "_identity_question_session_gap_sec", 30.0)
         state = self._identity_confirmations.get(speaker_id)
-        if state is None or (now - state.get("last_seen_at", 0.0)) > gap:
+        if state is None or (
+            now - state.get("last_seen_at", 0.0)
+        ) > self._tentative_state_window_sec(state):
             state = {
                 "asked": False,
                 "confirmed": None,
@@ -3297,6 +3324,10 @@ class DialogueNode(Node):
             return
         answer = classify_identity_confirmation(user_input)
         state["confirmed"] = bool(answer)
+        self.get_logger().info(
+            f"👤 [issue 2809] identity answer read: answer={answer!r} "
+            f"-> confirmed={state['confirmed']}"
+        )
         if answer and tentative_name:
             state["name"] = tentative_name
 
@@ -3330,12 +3361,21 @@ class DialogueNode(Node):
         tag = f"[Spkr:{name}]"
         if tag not in user_input:
             user_input = f"{tag} {user_input}"
+        state = self._identity_confirmations.get(speaker_id)
+        if state is not None and state.get("growth_registered"):
+            # Отдельная строка для реплик ПОСЛЕ подтверждения -- по ней
+            # E2E (n704) отличает "имя из пережившего паузу состояния" от
+            # "LLM повторила имя из истории".
+            self.get_logger().info(
+                f"👤 [issue 2809] Speaker verbal confirmation reused: "
+                f"{name!r} (id={speaker_id[:8]})"
+            )
+            return user_input
         self.get_logger().info(
             f"👤 [issue 2809] Speaker confirmed verbally: {name!r} "
             f"(id={speaker_id[:8]})"
         )
-        state = self._identity_confirmations.get(speaker_id)
-        if state is not None and not state.get("growth_registered"):
+        if state is not None:
             self._publish_confirmed_identity_growth(speaker_id, name)
             state["growth_registered"] = True
         return user_input
@@ -3410,6 +3450,10 @@ class DialogueNode(Node):
                     sp.get("tentative_conf") or sp.get("confidence") or 0.0
                 ),
             }
+            self.get_logger().info(
+                f"👤 [issue 2809] identity question hint set: "
+                f"kind={tentative_kind} (id={full_sid[:8]})"
+            )
         return self._tag_tentative(user_input)
 
     # Issue #1787 — сколько ждём LLM на выдумывание клички. Это фоновая
