@@ -456,6 +456,50 @@ def identity_question(ack: dict) -> Optional[str]:
     return None
 
 
+# Issue #2809 (продолжение) -- ответ на переспрос про tentative-личность
+# ("<Имя>, это ты?" / "Как тебя зовут?"). Простая, консервативная эвристика
+# по словам-границам (не по подстрокам -- "давай" не должно матчить "да"),
+# как и просил координатор: не NLU, а короткий словарь. Неоднозначный или
+# нераспознанный ответ -- ``None``, вызывающий код трактует его как отказ
+# (issue #2809: "неоднозначный ответ = не подтверждено").
+_IDENTITY_YES_WORDS = frozenset({
+    "да", "ага", "угу", "точно", "верно", "конечно", "именно",
+})
+_IDENTITY_YES_PHRASES = ("это я", "я и есть", "он самый", "она самая")
+_IDENTITY_NO_WORDS = frozenset({"нет", "неа", "не"})
+_IDENTITY_NO_PHRASES = ("не я", "обознал", "другой человек", "не тот")
+
+
+def classify_identity_confirmation(text: str) -> Optional[bool]:
+    """Да/нет/непонятно на переспрос личности -- ``True``/``False``/``None``.
+
+    Слова сравниваются ЦЕЛИКОМ (по границам, через ``str.split()``), а не
+    подстрокой -- иначе «давай, пожалуй» матчил бы «да» и «пожалуй» тоже
+    что-то не то. Фразы (``_IDENTITY_YES_PHRASES``/``_NO_PHRASES``) —
+    подстрокой, это устойчивые составные обороты, ложных срабатываний на
+    обычных словах не даёт.
+
+    И да-, и нет-сигналы одновременно (или ни одного) — ``None``:
+    неоднозначно, вызывающий код (``DialogueNode._resolve_pending_
+    tentative_answer``) трактует это как отказ, не как повод спросить
+    ещё раз (issue #2809: «не чаще одного переспроса на кандидата за
+    сессию»).
+    """
+    norm = text.strip().lower()
+    words = set(norm.replace(",", " ").replace(".", " ").split())
+    has_yes = bool(words & _IDENTITY_YES_WORDS) or any(
+        p in norm for p in _IDENTITY_YES_PHRASES
+    )
+    has_no = bool(words & _IDENTITY_NO_WORDS) or any(
+        p in norm for p in _IDENTITY_NO_PHRASES
+    )
+    if has_yes and not has_no:
+        return True
+    if has_no and not has_yes:
+        return False
+    return None
+
+
 class DialogueNode(Node):
     """ROS2 shell that composes AgentCore over the harness ports."""
     def __init__(self) -> None:  # noqa: D401 — ROS2 ctor signature
@@ -600,6 +644,23 @@ class DialogueNode(Node):
             self.get_parameter("speaker_id_enabled").value)
         self._current_speaker: dict = {"is_known": False}
         self._speaker_lock = threading.Lock()
+        # Issue #2809 (продолжение) -- переспрос про tentative-личность
+        # ("<Имя>, это ты?" / "Как тебя зовут?"), не чаще одного раза за
+        # сессию на кандидата. Ключ -- полный speaker_id (см.
+        # _tentative_session_state); значение -- {"asked", "confirmed",
+        # "name", "growth_registered", "last_seen_at"}. Сессия -- тот же
+        # якорь непрерывности, что у роста галереи в speaker_id_node
+        # (PR #2757, gallery_growth_session_gap_sec) -- см.
+        # identity_question_session_gap_sec ниже, тот же дефолт 30s.
+        self._identity_confirmations: dict = {}
+        # Подсказка-гипотеза для _build_dynamic_system_context, выставляется
+        # в _apply_speaker_identity РОВНО на тот один раз, когда решаем
+        # спросить, и потребляется/обнуляется при сборке system_context той
+        # же реплики -- см. _pending_identity_hint_lines.
+        self._pending_identity_hint: Optional[dict] = None
+        self._identity_question_session_gap_sec: float = float(
+            self.get_parameter("identity_question_session_gap_sec").value
+        )
         # Бэклог-аккумулятор фоновой речи без wake-слова (docs/plans/
         # 2026-08-20-voice-backlog-accumulator-design.md).
         self._speech_accumulator = SpeechAccumulator(
@@ -1224,6 +1285,15 @@ class DialogueNode(Node):
         self.declare_parameter("sqlite_db_path", "~/.rob_box/voice.db")
         self.declare_parameter("speaker_id_enabled", True)
         self.declare_parameter("speaker_db_path", "/data/speakers.db")
+        # Issue #2809 (продолжение) -- сколько секунд молчания/паузы ещё
+        # считается той же "сессией" переспроса про tentative-личность
+        # (одна попытка на кандидата за сессию). Тот же дефолт 30s, что
+        # gallery_growth_session_gap_sec у speaker_id_node (PR #2757) --
+        # намеренно зеркалим значение, а не импортируем его: узлы это
+        # разные процессы, общего источника правды для рантайм-параметра
+        # между ними в этом репо нет (см. семейство barge_in_policy/
+        # e2e_mode -- тот же паттерн: параметр каждого узла независим).
+        self.declare_parameter("identity_question_session_gap_sec", 30.0)
         # issue #1077: сколько фраз подряд с одним speaker_tag нужно для
         # подтверждения профиля. 2 = защита от нестабильных tags Yandex;
         # 1 = мгновенное подтверждение (если tag стабилен).
@@ -3047,10 +3117,194 @@ class DialogueNode(Node):
                 self.get_logger().info(
                     f"👤 [issue 1077] Speaker: {name!r} conf={conf:.2f}"
                 )
+            else:
+                # Issue #2809 -- speaker_id_node уже подавил имя само
+                # (payload {"is_known": True, "name": None,
+                # "tentative_name"/"tentative_conf"/"tentative_kind": ...}):
+                # is_name_confident() решила "зона сомнения" -- match
+                # похож на кого-то из галереи, но недостаточно, чтобы
+                # называть человека этим именем как факт. is_known=True
+                # тут остаётся полезным сигналом для эпитета/счётчика
+                # реплик (уже учтён выше через
+                # _publish_speaker_observation). Дальше -- переспрос про
+                # tentative-личность (issue #2809, продолжение после
+                # ревью координатора): _handle_tentative_speaker решает,
+                # разрешён ли ещё один вопрос в этой сессии
+                # (identity_question_session_gap_sec), был ли уже ответ
+                # ("да"/"нет"), и либо переиспользует confident-путь
+                # (после словесного "да"), либо кладёт разовую
+                # подсказку-гипотезу для _build_dynamic_system_context
+                # (см. _pending_identity_hint_lines), либо просто ставит
+                # [Speaker:tentative] без имени.
+                user_input = self._handle_tentative_speaker(sp, user_input)
         else:
             if speaker_context is None:
                 user_input = f"[Speaker:unknown] {user_input}"
         return user_input
+
+    # -- Issue #2809 (продолжение): переспрос про tentative-личность --------
+    #
+    # Не второй механизм рядом с PR #2798 (_ask_identity_if_ambiguous) --
+    # тот реагирует на ack регистрации (event="registered", синхронный
+    # fire-and-forget сразу после явного register_speaker), а здесь нет
+    # никакого ack: passive identify() просто идёт каждой репликой.
+    # Поэтому вопрос не произносится напрямую (_speak_direct), а кладётся
+    # ОДИН раз как подсказка-гипотеза в <system_context> -- LLM решает,
+    # уместно ли спросить сейчас, тем же голосом, что и весь остальной
+    # диалог. Ответ читается на СЛЕДУЮЩЕЙ реплике простой эвристикой
+    # (classify_identity_confirmation) -- без NLU, без второго диалогового
+    # состояния поверх обычного turn-цикла.
+
+    def _tentative_session_state(self, speaker_id: str) -> dict:
+        """Состояние переспроса для ``speaker_id`` -- новое, если сессия
+        прервалась (пауза дольше ``identity_question_session_gap_sec``,
+        тот же якорь непрерывности, что у роста галереи в PR #2757)."""
+        now = time.monotonic()
+        gap = getattr(self, "_identity_question_session_gap_sec", 30.0)
+        state = self._identity_confirmations.get(speaker_id)
+        if state is None or (now - state.get("last_seen_at", 0.0)) > gap:
+            state = {
+                "asked": False,
+                "confirmed": None,
+                "name": None,
+                "growth_registered": False,
+            }
+            self._identity_confirmations[speaker_id] = state
+        state["last_seen_at"] = now
+        return state
+
+    def _resolve_pending_tentative_answer(
+        self, state: dict, tentative_name: Optional[str], user_input: str
+    ) -> None:
+        """Если в этой сессии уже спрашивали и ответа ещё нет -- прочитать
+        ТЕКУЩУЮ (первую после вопроса) реплику как да/нет.
+
+        Issue #2809: решение принимается СРАЗУ и окончательно на первой
+        же следующей реплике -- неоднозначный ответ (``None`` от
+        ``classify_identity_confirmation``) трактуется как отказ
+        (``False``), а не как "жду ещё". Без этого вопрос повис бы до
+        конца сессии в ожидании явного "да"/"нет" и мог бы случайно
+        сработать на совершенно не связанной более поздней реплике,
+        где просто встретилось слово "да".
+        """
+        if not (state["asked"] and state["confirmed"] is None):
+            return
+        answer = classify_identity_confirmation(user_input)
+        state["confirmed"] = bool(answer)
+        if answer and tentative_name:
+            state["name"] = tentative_name
+
+    def _tag_tentative(self, user_input: str) -> str:
+        tag = "[Speaker:tentative]"
+        if tag not in user_input:
+            user_input = f"{tag} {user_input}"
+        return user_input
+
+    def _confirm_tentative_speaker(
+        self, speaker_id: str, name: str, user_input: str
+    ) -> str:
+        """Словесное "да, это я" -- дальше ведём себя так, как будто
+        биометрия сама уверенно опознала: мутируем ``_current_speaker``
+        (тот же снимок следующим шагом читает
+        ``_build_dynamic_system_context`` этой же реплики) и возвращаем
+        обычный ``[Spkr:...]`` -- переиспользуем confident-путь целиком,
+        вторую копию его логики не заводим.
+
+        Issue #6 (ADR-0123 §6, #2771): это ЛОКАЛЬНАЯ мутация снимка
+        dialogue_node, наружу (``/voice/speaker/result``, откуда читает
+        vision_face_node) она не публикуется -- гипотеза не может
+        просочиться в слияние лиц раньше настоящего подтверждения
+        биометрией.
+        """
+        with self._speaker_lock:
+            self._current_speaker["name"] = name
+            self._current_speaker.pop("tentative_name", None)
+            self._current_speaker.pop("tentative_conf", None)
+            self._current_speaker.pop("tentative_kind", None)
+        tag = f"[Spkr:{name}]"
+        if tag not in user_input:
+            user_input = f"{tag} {user_input}"
+        self.get_logger().info(
+            f"👤 [issue 2809] Speaker confirmed verbally: {name!r} "
+            f"(id={speaker_id[:8]})"
+        )
+        state = self._identity_confirmations.get(speaker_id)
+        if state is not None and not state.get("growth_registered"):
+            self._publish_confirmed_identity_growth(speaker_id, name)
+            state["growth_registered"] = True
+        return user_input
+
+    def _publish_confirmed_identity_growth(self, speaker_id: str, name: str) -> None:
+        """Issue #2809/#2757 -- рост галереи ТЕМ ЖЕ путём, что явная
+        регистрация: публикуем в ``/voice/speaker/register`` (тот же
+        топик и обработчик, что LLM-тул ``register_speaker`` и голосовая
+        команда "запомни мой голос"), с ``speaker_id``-подсказкой, чтобы
+        ``_do_register`` дописал эмбеддинг в ЭТОТ профиль напрямую, а не
+        гадал по имени (ADR-0127). Калибровка порогов слияния и гейт
+        ``MIN_REGISTER_AUDIO_DURATION_SEC`` -- уже существующая логика
+        speaker_id_node, здесь не дублируется.
+
+        Честная оговорка: эмбеддинг для регистрации берётся из САМОЙ
+        свежей реплики speaker_id_node (обычно это и есть подтверждающее
+        "да") -- если оно короче ``MIN_REGISTER_AUDIO_DURATION_SEC``,
+        сработает штатный гейт issue #2769 и робот попросит сказать ещё
+        пару слов. Это существующее поведение общего топика, не новый
+        баг этого фикса.
+        """
+        pub = getattr(self, "_speaker_register_pub", None)
+        if pub is None:
+            return
+        msg = String()
+        msg.data = json.dumps(
+            {"name": name, "speaker_id": speaker_id}, ensure_ascii=False
+        )
+        pub.publish(msg)
+        self.get_logger().info(
+            f"🌱 [issue #2809/#2757] запрошен рост галереи после "
+            f"словесного подтверждения: name={name!r} "
+            f"speaker_id={speaker_id[:8]}"
+        )
+
+    def _handle_tentative_speaker(self, sp: dict, user_input: str) -> str:
+        """Диспетчер переспроса для tentative-случая (см. блок выше).
+
+        ``single`` (живой хозяин, конкурента с другим именем нет) может
+        дойти до вопроса с ИМЕНЕМ кандидата. ``contested`` (n210: голос
+        похож сразу на нескольких людей с разными именами) -- имя
+        кандидата НИКУДА не идёт, даже в подсказку-гипотезу: критично,
+        что в n210 само слово "Борис" запрещено (must_not_say), и вопрос
+        "Борис, это ты?" тоже завалил бы приёмку.
+        """
+        full_sid = str(sp.get("speaker_id") or "")
+        tentative_kind = str(sp.get("tentative_kind") or "")
+        if not full_sid or tentative_kind not in ("single", "contested"):
+            return self._tag_tentative(user_input)
+
+        tentative_name = None
+        if tentative_kind == "single":
+            tentative_name = sanitize_speaker_name(
+                str(sp.get("tentative_name") or "")
+            ) or None
+
+        state = self._tentative_session_state(full_sid)
+        self._resolve_pending_tentative_answer(state, tentative_name, user_input)
+
+        if state.get("confirmed") and state.get("name"):
+            return self._confirm_tentative_speaker(
+                full_sid, state["name"], user_input
+            )
+        if state.get("confirmed") is False:
+            return self._tag_tentative(user_input)
+        if not state["asked"]:
+            state["asked"] = True
+            self._pending_identity_hint = {
+                "kind": tentative_kind,
+                "name": tentative_name,
+                "confidence": float(
+                    sp.get("tentative_conf") or sp.get("confidence") or 0.0
+                ),
+            }
+        return self._tag_tentative(user_input)
 
     # Issue #1787 — сколько ждём LLM на выдумывание клички. Это фоновая
     # задача, никто её не слушает в реальном времени: словарная кличка уже
@@ -3259,6 +3513,49 @@ class DialogueNode(Node):
             f'cleanup="{cleanup_attr}" />'
         )
 
+    def _pending_identity_hint_lines(self) -> list:
+        """Issue #2809 (продолжение) -- строки подсказки-гипотезы для
+        ``<user_profile>``, выставленной ``_handle_tentative_speaker`` этой
+        же реплики. Потребляет и обнуляет ``self._pending_identity_hint``
+        сразу -- подсказка одноразовая, следующий вызов
+        ``_build_dynamic_system_context`` (следующая реплика) её уже не
+        увидит, даже если ``_apply_speaker_identity`` почему-то не
+        вызовется.
+
+        ``contested`` (n210: голос похож на нескольких людей с разными
+        именами) НИКОГДА не несёт имени кандидата -- ни одного, даже в
+        рамках "как его зовут". ``single`` (живой хозяин, конкурента с
+        другим именем нет) несёт ОДНО конкретное имя-гипотезу.
+        """
+        hint = getattr(self, "_pending_identity_hint", None)
+        if not hint:
+            return []
+        self._pending_identity_hint = None
+        if hint.get("kind") == "single" and hint.get("name"):
+            conf = float(hint.get("confidence") or 0.0)
+            name = hint["name"]
+            return [
+                f'    <name_hypothesis confidence="{conf:.2f}">{name}'
+                f"</name_hypothesis>",
+                "    <name_hypothesis_rule>Голос похож на человека выше, "
+                "но биометрия не уверена -- это ГИПОТЕЗА, не факт. Не "
+                "утверждай это имя как точное и не используй его, пока "
+                "не подтвердят. Если уместно, ОДИН раз вежливо уточни: "
+                f'"{name}, это ты?" — ответ придёт следующей репликой. '
+                "Дальше в этом разговоре про личность не "
+                "переспрашивай.</name_hypothesis_rule>",
+            ]
+        if hint.get("kind") == "contested":
+            return [
+                "    <identity_question_rule>Голос похож сразу на "
+                "нескольких знакомых с разными именами -- кто именно из "
+                "них, неясно. НЕ называй никаких имён и не предполагай, "
+                "кто это. Если уместно, ОДИН раз вежливо спроси: \"Как "
+                "тебя зовут?\" Дальше в этом разговоре про личность не "
+                "переспрашивай.</identity_question_rule>",
+            ]
+        return []
+
     def _build_dynamic_system_context(self) -> str:
         """Two-system-prompt pattern: собрать <system_context> snapshot.
 
@@ -3364,6 +3661,13 @@ class DialogueNode(Node):
                 "ответе — используй только как признак «это тот же "
                 "человек».</epithet_rule>"
             )
+        # Issue #2809 (продолжение) -- разовая подсказка-гипотеза про
+        # tentative-личность, если _apply_speaker_identity этой же реплики
+        # решила, что сейчас уместно спросить (см. _handle_tentative_speaker
+        # и _pending_identity_hint_lines). Вызов безусловный (список пуст,
+        # если подсказки нет) -- не добавляет ветвление в этот метод, чей CC
+        # уже на грани баджета (cc_budget baseline=24).
+        lines.extend(self._pending_identity_hint_lines())
         lines.append("  </user_profile>")
         lines.append("  <hardware>")
         lines.append(f"    <battery>{battery}</battery>")

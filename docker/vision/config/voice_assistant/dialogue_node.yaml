@@ -130,6 +130,8 @@ dialogue_node:
     sqlite_db_path: /data/harness_voice.db
     speaker_id_enabled: true
     speaker_db_path: /data/speakers.db
+    # Issue #2809 -- см. src/rob_box_voice/config/dialogue_node.yaml
+    identity_question_session_gap_sec: 30.0
     startup_greeting_sec: 12.0
     startup_greeting_text: "Я на связи, все системы в норме!"
     tool_provider: ros_mcp

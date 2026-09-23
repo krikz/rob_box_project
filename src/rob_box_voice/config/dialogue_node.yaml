@@ -105,6 +105,12 @@ dialogue_node:
     # префикс [Говорит <имя>] / [Говорит: незнакомец] + session lock.
     speaker_id_enabled: true
     speaker_db_path: /data/speakers.db
+    # Issue #2809 -- переспрос про tentative-личность максимум раз за
+    # сессию; сессия = та же непрерывность, что у роста галереи в
+    # speaker_id_node (PR #2757, gallery_growth_session_gap_sec) --
+    # значение НАМЕРЕННО зеркалит тот же дефолт 30s, независимый
+    # параметр отдельного процесса.
+    identity_question_session_gap_sec: 30.0
     # Бэклог-аккумулятор фоновой речи без wake-слова.
     accumulate_no_wake_enabled: true
     accumulate_window_sec: 180.0
