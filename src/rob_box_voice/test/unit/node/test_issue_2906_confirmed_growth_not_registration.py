@@ -326,7 +326,10 @@ def test_llm_registration_too_short_still_says_not_heard(
         a.get("event") == "register_error" and a.get("error") == "too_short"
         for a in acks
     ), acks
-    assert NOT_HEARD in _spoken(dialogue_node)
+    # Фикстура моделирует «ход идёт» (_run_task задан): с #2908 просьба
+    # повторить придерживается и ЗАМЕНИТ ответ хода (_deliver_turn_result).
+    held = dialogue_node._identity_ack_state().take_held()
+    assert held is not None and NOT_HEARD in held["question"], held
     assert speaker_node._db.list_speakers() == []
 
 
