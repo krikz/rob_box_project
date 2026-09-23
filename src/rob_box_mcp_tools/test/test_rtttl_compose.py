@@ -9,6 +9,7 @@ from rob_box_mcp_tools.core.rtttl_compose import (
     melody_to_compose_params,
     rtttl_to_melody,
 )
+from rob_box_mcp_tools.core.rtttl_library import RtttlLibrary
 
 
 def test_rtttl_to_melody_parses_bpm_and_notes():
@@ -214,3 +215,25 @@ def test_theme_already_in_working_register_is_not_shifted():
     melody = rtttl_to_melody("fifth:d=4,o=5,b=63:8p,8g5,8g5,8g5,2d#5")
     params = melody_to_compose_params(melody)
     assert params["lead_midi"] == "None, 79, 79, 79, 75"
+
+
+def test_real_archive_known_themes_capped_after_register_normalize(tmp_path):
+    """Регрессия живого прогона 23.09 (issue #2840): нормализация по одной
+    медиане пропускала ``terminat`` — median=80 (уже в рабочем регистре,
+    сдвиг 0), но max=99 (несколько высоких проходящих нот тянут потолок
+    за собой, медиана их не видит). Проверяем на РЕАЛЬНОМ архиве
+    (``RtttlLibrary()`` без ``archive_path`` — настоящий бандл), не на
+    реконструированных записях."""
+    lib = RtttlLibrary(db_path=str(tmp_path / "real_register.db"))
+    keys = [
+        "national_2", "hallofth", "stilldre",
+        "terminat", "mariobro", "russiann",
+    ]
+    for key in keys:
+        rec = lib.get(key)
+        assert rec is not None, key
+        melody = rtttl_to_melody(rec["rtttl"])
+        params = melody_to_compose_params(melody)
+        tokens = params["lead_midi"].split(", ")
+        lead_pitches = [int(tok) for tok in tokens if tok != "None"]
+        assert max(lead_pitches) <= 88, (key, lead_pitches)
