@@ -312,119 +312,23 @@ def test_lead_has_no_pickup_driven_octave_leap(pad_register_harmonies, key):
 
 
 # ---------------------------------------------------------------------------
-# #2873: тональность эталонных тем реального архива
+# #2873/ADR-0132 §7 (PR-8): точная таблица ожидаемой тональности по каждой
+# теме архива (бывшая ``_KEY_REFERENCE``/``_KEY_KNOWN_MISSES`` + xfail-тесты
+# ``test_reference_theme_key``/``test_known_key_misses``) БОЛЬШЕ НЕ ГЕЙТ CI.
+#
+# Подгонка весов ``detect_key`` под 36 конкретных тем однажды уже сменила
+# тональность у 24% архива (issue #2873) — «улучшало» ровно те темы, ради
+# которых её правили, и портило случайное подмножество остальных. Такой
+# тест поощряет тот же цикл: жалоба на тему X → хак под X → регрессия Y.
+#
+# Вместо гейта:
+#   * ``scripts/music/reference_report.py`` — информационный отчёт точности
+#     ``detect_key`` (auto vs profile) по этим же темам + по сиду-выборке
+#     архива. НЕ падает, только печатает таблицу.
+#   * ``test/test_arrangement_invariants.py`` — гейт CI: инварианты
+#     аранжировки (бас в ладу/аккорде, регистры, лид, санитайзер,
+#     детерминизм), а не конкретная тональность конкретной песни.
 # ---------------------------------------------------------------------------
-
-#: ``ключ архива → (тоника, "major"|"minor")``. Гармонический минор
-#: засчитывается как минор: его выбирает отдельное правило (вводный тон),
-#: а здесь проверяется тональный центр. Обоснование — по нотам записи.
-_KEY_REFERENCE = {
-    # Григ, «В пещере горного короля»: B C# D E F# D F# — 1-2-♭3-4-5 си-минора
-    # от первой ноты; дальше хроматическая секвенция (F C# F · E C E), фраза
-    # обрывается на A (VII). До #2873 — ля-мажор (живой прогон 23.09).
-    "hallofth_2": ("B", "minor"),
-    "mountainking": ("B", "minor"),  # та же тема, другая запись
-    # Та же тема в ля-миноре: A B C D E C E, секвенция D# B D# · D A# D.
-    "hallofth": ("A", "minor"),
-    "hallofth_3": ("A", "minor"),
-    # И в до-миноре: C D E♭ F G E♭ G.
-    "inthehal": ("C", "minor"),
-    # Гимн России: затакт G, сильная доля — C; F натуральный, конец на V.
-    "national_2": ("C", "major"),
-    # Бетховен, «К Элизе»: E D# E D# E B D C A — ля-минор, G# — вводный тон.
-    "furelise": ("A", "minor"),
-    # «Ода к радости»: A A B♭ C C B♭ A G F F G A — 3-3-4-5-5-4-3-2-1 фа-мажора.
-    "odetojoy": ("F", "major"),
-    # Та же ода в ре-мажоре: F# F# G A A G F# E D D E F#.
-    "odetojoy_2": ("D", "major"),
-    # Пятая Бетховена тоном ниже оригинала: F F F D♭ · E♭ E♭ E♭ C — си-♭-минор.
-    "5thsymph": ("A#", "minor"),
-    # Имперский марш квартой ниже: D D D B♭ F D B♭ F D — ре-минор (B♭ = ♭6).
-    "imperial": ("D", "minor"),
-    # «Тетрис» (Коробейники): E B C D C B A A C E D C B — ля-минор.
-    "tetris": ("A", "minor"),
-    "tetris_2": ("A#", "minor"),  # та же тема полутоном выше
-    # Super Mario, главная тема: E E E C E G — до-мажор.
-    "supermar_4": ("C", "major"),
-    # Бах, «Иисус — моя радость»: G G A B D C C E D D G F# G — соль-мажор.
-    "jesujoyo": ("G", "major"),
-    # Моцарт, «Маленькая ночная серенада»: G…B A G, F# вместо F — соль-мажор.
-    "eineklei": ("G", "major"),
-    # Бах, «Шутка» (Badinerie): B D B F# B F# D F# D B — си-минор.
-    "badineri": ("B", "minor"),
-    # Моцарт, 40-я: B♭ A G G F E♭ E♭ D C — соль-минор.
-    "mozart40": ("G", "minor"),
-    # Вивальди, «Зима»: A♭ B♭ A♭ G F G F E♭ — фа-минор.
-    "4seasons_5": ("F", "minor"),
-    # Верди, «Сердце красавицы»: D# D# D# F# E C# · C# C# C# E D# B — си-мажор.
-    "ladonnae": ("B", "major"),
-    # Марш из «Индианы Джонса»: E F G C · D E F — до-мажор; и полутоном выше.
-    "indianaj_4": ("C", "major"),
-    "raidersm": ("C#", "major"),
-    # Бонд-вамп: C D D D D C C C C E♭ E♭ E♭ E♭ D D D C — до-минор.
-    "james_bond": ("C", "minor"),
-    # «Миссия невыполнима»: E♭ C G · E♭ C F# — до-минор (C — тоника вампа).
-    "missionimpossi": ("C", "minor"),
-    # «Розовая пантера»: D# E F# G D# E F# G C B D# E — ми-минор.
-    "pinkpant": ("E", "minor"),
-    # Моцарт, «Турецкое рондо»: B A G# A C D C B C E — ля-минор.
-    "rondoala": ("A", "minor"),
-    # Still D.R.E.: A A A … G G G — ля-минор; «Next Episode»: D A A G A G F.
-    "stilldre": ("A", "minor"),
-    "nextepis": ("D", "minor"),
-    # Terminator: педаль G#, A# B G# (1-2-♭3), F# — VII натурального минора.
-    "terminat": ("G#", "minor"),
-    # Мажорные темы, начатые с ТЕРЦИИ: первая нота указывает на минор от
-    # терции, тоника держится гистограммой и затактом.
-    # «Jingle Bells»: A A A · A A A · A C F G A — фа-мажор (живой фикс 14.09).
-    "jinglebe_2": ("F", "major"),
-    # «The First Noel»: E D C D E F G — до-мажор.
-    "thefirst": ("C", "major"),
-    # «White Christmas»: F# G F# F F# G G# A — ре-мажор.
-    "whitechr": ("D", "major"),
-    # «Rudolph»: G A G E C A G — 5-6-5-3-1-6-5 до-мажора.
-    "rudolpht_2": ("C", "major"),
-    "rudolpht_4": ("C", "major"),
-}
-
-#: Известные промахи — фиксируем честно, а не прячем. ``strict``: если
-#: определение улучшат, тест упадёт и попросит перенести тему в таблицу.
-_KEY_KNOWN_MISSES = {
-    # Токката ре-минор: A G A(4 доли) G F D E C#(2) D — начинается с
-    # выдержанной доминанты A, у ре-минора C# вне натурального лада.
-    # Сейчас — ля-мажор (на origin/develop тоже ля-мажор).
-    "toccata": ("D", "minor"),
-    # «Jingle Bells» в соль-мажоре: B B B · B B B · B D G A B — вся тема на
-    # терции B, тоника G звучит один раз; выигрывает си-минор. На
-    # origin/develop было верно — регрессия #2873, принята сознательно.
-    "jinglebe_5": ("G", "major"),
-}
-
-
-@pytest.fixture(scope="module")
-def key_library(tmp_path_factory):
-    db = tmp_path_factory.mktemp("rtttl_keys") / "lib.db"
-    return RtttlLibrary(db_path=str(db))
-
-
-def _detected_key(library, name):
-    entry = library.get(name)
-    assert entry is not None, f"темы {name} нет в архиве"
-    params = melody_to_compose_params(rtttl_to_melody(entry["rtttl"]))
-    family = "major" if params["scale"] == "major" else "minor"
-    return params["root"], family
-
-
-@pytest.mark.parametrize("name, expected", sorted(_KEY_REFERENCE.items()))
-def test_reference_theme_key(key_library, name, expected):
-    """issue #2873: тоника и лад эталонных тем реального архива."""
-    assert _detected_key(key_library, name) == expected
-
-
-@pytest.mark.parametrize("name, expected", sorted(_KEY_KNOWN_MISSES.items()))
-@pytest.mark.xfail(strict=True, reason="известный промах #2873")
-def test_known_key_misses(key_library, name, expected):
-    assert _detected_key(key_library, name) == expected
 
 
 def test_opening_on_tonic_beats_long_final_subtonic():
