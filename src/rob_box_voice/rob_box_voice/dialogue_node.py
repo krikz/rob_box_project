@@ -207,6 +207,7 @@ from rob_box_voice.core.session_epoch import TURN_EPOCH, SessionEpoch
 from rob_box_voice.core.turn_speech import (
     TurnSpeechHold, decide_turn_speech, wants_lyrics,
 )
+from rob_box_voice.core.turn_speech_gate import TurnSpeechGate
 from rob_box_voice.core.speak_helpers import (
     EffectAwaiterRegistry, build_ssml_payload,
     ensure_dj_music_response, split_into_chunks,
@@ -726,6 +727,9 @@ class DialogueNode(Node):
         # name_twin): придержать до выдачи ответа хода, затем прочитать
         # ответ человека. См. rob_box_voice.core.identity_ack.
         self._identity_ack = IdentityAckQuestion()
+        # Issue #2913 -- speak_text хода не обгоняет исход register_speaker
+        # и заменяется придержанным вопросом так же, как итоговый ответ.
+        self._speech_gate = self._turn_speech_gate()
         self._identity_question_session_gap_sec: float = float(
             self.get_parameter("identity_question_session_gap_sec").value
         )
@@ -2118,20 +2122,26 @@ class DialogueNode(Node):
         # logged a warning, which let a broken scheduler ride along
         # unnoticed (see §8а.1 honest status: «живая часть падает
         # молча»).
-        from rob_box_voice.scheduler.tool_executor import (
-            SchedulerToolExecutor,
-        )
-
-        scheduler_executor = SchedulerToolExecutor(
-            provider_adapter,
-            on_event=self._on_task_event,
-        )
+        scheduler_executor = self._make_scheduler_executor(provider_adapter)
         self._scheduler_executor = scheduler_executor
         self.get_logger().info(
             "✅ W7b: tool calls routed through TaskScheduler "
             "(voice/music/anim channels; stop_music deferred)."
         )
         return scheduler_executor
+
+    def _make_scheduler_executor(self, provider_adapter: Any) -> Any:
+        """W7b-обёртка над провайдером тулов. Issue #2913 -- с гейтом речи
+        хода: speak_text не обгоняет исход register_speaker."""
+        from rob_box_voice.scheduler.tool_executor import (
+            SchedulerToolExecutor,
+        )
+
+        return SchedulerToolExecutor(
+            provider_adapter,
+            on_event=self._on_task_event,
+            speech_gate=self._turn_speech_gate(),
+        )
 
     def _on_task_event(self, event: str, payload: dict) -> None:
         """W7c: publish scheduler lifecycle events to /harness/task_events.
@@ -2403,6 +2413,8 @@ class DialogueNode(Node):
             held = self._run_task is not None
             if held:
                 self._identity_ack_state().hold(plan)
+                # Issue #2913 -- и реплики speak_text этого хода тоже.
+                self._turn_speech_gate().mute()
         if not held:
             # Хода нет — его ответ (если был) уже прозвучал.
             self._speak_identity_question(plan, after_answer=True)
@@ -2433,6 +2445,16 @@ class DialogueNode(Node):
             "name": ack.get("name"),
             "error": ack.get("error"),
         }
+
+    def _turn_speech_gate(self) -> TurnSpeechGate:
+        """Гейт речи speak_text хода (issue #2913); лениво -- для нод из
+        тестов, собранных через ``object.__new__`` без ``__init__``."""
+        gate = getattr(self, "_speech_gate", None)
+        if gate is None:
+            gate = self._speech_gate = TurnSpeechGate(
+                log=lambda line: self.get_logger().info(line)
+            )
+        return gate
 
     def _identity_ack_state(self) -> IdentityAckQuestion:
         """Состояние переспроса (issue #2828); лениво — для нод из тестов,
@@ -2624,6 +2646,26 @@ class DialogueNode(Node):
             data = json.loads(msg.data or "{}")
         except (json.JSONDecodeError, TypeError):
             return
+        if data.get("event") in ("registered", "register_error"):
+            try:
+                self._on_register_outcome(data)
+            finally:
+                # Issue #2913 -- исход регистрации известен (вопрос/отказ,
+                # если нужен, уже придержан): speak_text хода, ждущая его
+                # в TurnSpeechGate, решается по нему.
+                self._turn_speech_gate().registration_settled()
+            return
+        # Issue #2863 — любой другой служебный ack (ack склейки,
+        # переименования) — не результат биометрии и не должен затирать
+        # узнанного диктора.
+        if data.get("event"):
+            return
+        self._on_speaker_match(data)
+
+    def _on_register_outcome(self, data: dict) -> None:
+        """Ack регистрации от speaker_id_node: ``registered`` (возможно, с
+        поводом переспросить) или ``register_error``. Вынесено из
+        :meth:`_on_speaker_result` (issue #2913)."""
         # Registration ack — не speaker match.
         if data.get("event") == "registered":
             self.get_logger().info(
@@ -2673,12 +2715,10 @@ class DialogueNode(Node):
             # выдан — звучит после него в согласованной форме (без «не
             # расслышал» поверх приветствия по имени).
             self._queue_identity_question(self._register_retry_plan(data))
-            return
-        # Issue #2863 — любой другой служебный ack (register_error с
-        # неозвучиваемым кодом, ack склейки) — не результат биометрии и
-        # не должен затирать узнанного диктора.
-        if data.get("event"):
-            return
+        # register_error с неозвучиваемым кодом — молча.
+
+    def _on_speaker_match(self, data: dict) -> None:
+        """Результат биометрии одной фразы (не служебный ack)."""
         # Issue #2829 (ADR-0131) — join point: этот результат помечен
         # utterance_id (speaker_id_node считает его от тех же PCM-байт,
         # что видел stt_node). submit() будит _apply_speaker_identity,
@@ -4473,6 +4513,8 @@ class DialogueNode(Node):
         epoch_token = TURN_EPOCH.set(session_epoch)
         with self._task_lock:
             self._run_task = asyncio.current_task()
+        # Issue #2913 -- решения о речи speak_text -- по этому ходу.
+        self._turn_speech_gate().begin_turn()
         # Issue #2829 (ADR-0131 PR-2) — the CURRENT turn's utterance_id,
         # so speaker_id_node registers the phrase the person actually
         # introduced themselves in, not "whoever speaks next". Issue

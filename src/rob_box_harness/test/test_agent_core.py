@@ -2078,6 +2078,26 @@ def test_order_tool_calls_music_prelude_before_speak_text() -> None:
     assert deferred == {"c1"}
 
 
+def test_order_tool_calls_register_speaker_before_speak_text() -> None:
+    """Issue #2913 — register_speaker раньше реплик пачки: речь хода ждёт
+    исхода регистрации, и ожидание должно быть взведено до того, как
+    голосовой канал возьмёт реплику."""
+    from rob_box_harness.core.agent_core import _order_tool_calls
+
+    ordered, _deferred = _order_tool_calls(
+        [
+            _call("c1", "speak_text"),
+            _call("c2", "memory_save"),
+            _call("c3", "register_speaker"),
+        ]
+    )
+    assert [c.name for c in ordered] == [
+        "register_speaker",
+        "speak_text",
+        "memory_save",
+    ]
+
+
 def test_order_tool_calls_stop_music_alone_not_deferred() -> None:
     """A lone stop_music has no voice to wait for — not deferred."""
     from rob_box_harness.core.agent_core import _order_tool_calls
