@@ -49,6 +49,7 @@ from ..core.arranger import (
     spec_from_flat,
 )
 from ..core import renardo_sanitizer, sample_loops
+from ..core.score_sheet import analyze_melody, describe
 from ..core.harmonize import DRUM_STYLES, check_drum_style, style_patterns
 from ..core.rtttl_compose import melody_to_compose_params, rtttl_to_melody
 from ..core.rtttl_library import RtttlLibrary
@@ -1505,6 +1506,9 @@ class MusicManager:
                 "success": True,
                 "message": "Код выполнен успешно. ⚠️ " + " ".join(quality_warnings),
                 "code": code,
+                # ADR-0132: compose_music переписывает message своим текстом
+                # и раньше эти предупреждения терял — отдаём их отдельно.
+                "warnings": quality_warnings,
             }
 
         return {"success": True, "message": "Код выполнен успешно", "code": code}
@@ -2699,19 +2703,23 @@ class ComposeMusicTool(MCPTool):
         Optional[str],
         Optional[str],
         Optional[str],
+        Any,
+        Dict[str, Any],
     ]:
         """Подтянуть параметры темы из RTTTL по имени.
 
         Возвращает ``(error, bpm, root, scale, lead_midi, lead_dur,
-        melody_title, harmony)``. Если первый элемент — ``MCPToolResult``,
-        вызов завершается ошибкой, остальные поля None.
+        melody_title, harmony, params)``. Если первый элемент —
+        ``MCPToolResult``, вызов завершается ошибкой, остальные поля None.
 
         ``harmony`` — тема, разложенная на бас, пэд, контрмелодию и
         ударные (:mod:`core.harmonize`). Именно она, а не присланные
-        моделью ноты, становится аккомпанементом.
+        моделью ноты, становится аккомпанементом. ``params`` — полный
+        выход ``melody_to_compose_params`` (там ``decisions`` для партитуры,
+        ADR-0132); без ``name`` — пустой dict.
         """
         if not name:
-            return None, bpm, root, scale, None, None, None, None
+            return None, bpm, root, scale, None, None, None, None, {}
         rec = self._resolve_melody(name, variants)
         if rec is None:
             return (
@@ -2724,7 +2732,7 @@ class ComposeMusicTool(MCPTool):
                         "импровизацию за оригинал."
                     ),
                 ),
-                None, None, None, None, None, None, None,
+                None, None, None, None, None, None, None, {},
             )
         try:
             params = melody_to_compose_params(
@@ -2736,7 +2744,7 @@ class ComposeMusicTool(MCPTool):
                     success=False,
                     error=f"Не удалось разобрать RTTTL мелодии {name!r}: {exc}",
                 ),
-                None, None, None, None, None, None, None,
+                None, None, None, None, None, None, None, {},
             )
         melody_title = str(rec.get("title") or rec.get("name") or name)
         resolved_bpm: Any = bpm if bpm is not None else params["bpm"]
@@ -2753,6 +2761,7 @@ class ComposeMusicTool(MCPTool):
             lead_dur_resolved,
             melody_title,
             params.get("harmony"),
+            params,
         )
 
     @staticmethod
@@ -2913,7 +2922,7 @@ class ComposeMusicTool(MCPTool):
             return err
         # Известная мелодия по имени: ищем в RTTTL-библиотеке, конвертируем
         # ноты в параметры композитора и заполняем ими вызов.
-        err, bpm, root, scale, lead_midi, lead_dur, melody_title, harmony = (
+        err, bpm, root, scale, lead_midi, lead_dur, melody_title, harmony, prep = (
             self._resolve_rtttl_params(
                 name, variants, bpm, root, scale,
                 lead_synth, drums, bass_synth, bass_notes, pad_synth, pad_notes,
@@ -3022,6 +3031,83 @@ class ComposeMusicTool(MCPTool):
         if not result["success"]:
             return MCPToolResult(success=False, error=result["error"])
 
+        flat = {
+            "bpm": bpm, "root": root, "scale": scale, "form": form or "arc",
+            "drums": drums, "drums_sample": drums_sample,
+            "hats_sample": hats_sample, "bass_synth": bass_synth,
+            "lead_synth": lead_synth, "lead_notes": lead_notes,
+            "progression": progression, "name": name,
+            "groove_loop": groove_loop, "drum_style": drum_style,
+        }
+        return self._compose_success(
+            spec=spec,
+            result=result,
+            name=name,
+            melody_title=melody_title,
+            flat=flat,
+            score=self._score_sheet(
+                spec, result.get("code") or code, harmony, prep,
+                melody_title, self._score_warnings(result, did_override, lead_synth),
+            ),
+        )
+
+    @staticmethod
+    def _score_warnings(
+        result: Dict[str, Any], heavy_brass: bool, lead_synth: Optional[str]
+    ) -> List[str]:
+        """Внешние предупреждения партитуры: санитайзер + safety net синта.
+
+        ADR-0132: раньше предупреждения санитайзера уходили только в
+        ``message`` execute_code, который compose_music перезаписывал, —
+        модель их не видела вовсе.
+        """
+        warnings = [str(w) for w in (result.get("warnings") or [])]
+        if heavy_brass:
+            warnings.append(
+                f"safety net {lead_synth}: второй голос и удвоение темы "
+                "выключены (длинный релиз синта даёт эхо)"
+            )
+        return warnings
+
+    def _score_sheet(
+        self,
+        spec: Any,
+        code: str,
+        harmony: Any,
+        prep: Dict[str, Any],
+        melody_title: Optional[str],
+        warnings: List[str],
+    ) -> Optional[Dict[str, Any]]:
+        """Партитура сыгранного трека (ADR-0132) — без права уронить ответ.
+
+        Музыка уже звучит: сбой описания не должен превращать успешный
+        вызов в ошибку, но и молчать о нём нельзя — он уходит в лог и в
+        ``score['error']``.
+        """
+        try:
+            return describe(
+                spec=spec,
+                code=code,
+                harmony=harmony,
+                prep_decisions=prep.get("decisions"),
+                title=melody_title,
+                warnings=warnings,
+            )
+        except Exception as exc:  # noqa: BLE001 — описание не ломает музыку
+            self.log_error(f"[compose_music] партитура не собрана: {exc!r}")
+            return {"error": repr(exc), "text": ""}
+
+    def _compose_success(
+        self,
+        *,
+        spec: Any,
+        result: Dict[str, Any],
+        name: Optional[str],
+        melody_title: Optional[str],
+        flat: Dict[str, Any],
+        score: Optional[Dict[str, Any]],
+    ) -> MCPToolResult:
+        """Хвост успешного ``execute``: тайминги формы, данные, сообщение."""
         duration_s = form_duration_seconds(spec.form, spec.bpm, getattr(spec, "theme_bars", 0))
         self._apply_form_deadline(spec, duration_s)
         self._notify_music_state()
@@ -3038,22 +3124,19 @@ class ComposeMusicTool(MCPTool):
         # выбор, если title явно не то (см. _melody_alternatives).
         if name:
             result["alternatives"] = self._melody_alternatives(name, melody_title)
-        flat = {
-            "bpm": bpm, "root": root, "scale": scale, "form": form or "arc",
-            "drums": drums, "drums_sample": drums_sample,
-            "hats_sample": hats_sample, "bass_synth": bass_synth,
-            "lead_synth": lead_synth, "lead_notes": lead_notes,
-            "progression": progression, "name": name,
-            "groove_loop": groove_loop, "drum_style": drum_style,
-        }
+        # ADR-0132: партитура — что на самом деле сыграно и что автоматика
+        # решила за модель. Полная — в data, короткий текст — в message.
+        result["score"] = score
         repeat_warning = self._repeat_warning(flat)
         self._last_flat = flat
+        message = self._format_compose_message(
+            melody_title, form_summary(spec.form), duration_s, repeat_warning,
+        )
+        score_text = (score or {}).get("text")
         return MCPToolResult(
             success=True,
             data=result,
-            message=self._format_compose_message(
-                melody_title, form_summary(spec.form), duration_s, repeat_warning,
-            ),
+            message=message + ("\n" + score_text if score_text else ""),
         )
 
     def _notify_music_state(self) -> None:
@@ -3681,6 +3764,19 @@ class LookupMelodyTool(MCPTool):
     def destructive(self) -> bool:
         return False
 
+    @staticmethod
+    def _analysis(rtttl: Optional[str]) -> Dict[str, Any]:
+        """Короткий анализ темы (ADR-0132): тональность+альтернативы, диапазон.
+
+        Тот же конвейер, что у ``compose_music(name=)``, поэтому тональность
+        здесь совпадает с той, в которой будет построен аккомпанемент.
+        Нерабочая RTTTL не роняет поиск: анализ честно говорит, что его нет.
+        """
+        try:
+            return analyze_melody(melody_to_compose_params(rtttl_to_melody(rtttl or "")))
+        except (ValueError, IndexError, KeyError) as exc:
+            return {"error": str(exc), "text": f"Анализ недоступен: {exc}."}
+
     def execute(
         self,
         name: str,
@@ -3700,6 +3796,7 @@ class LookupMelodyTool(MCPTool):
                     alternatives = _search_alternatives(
                         self._rtttl_library, candidate, title
                     )
+                    analysis = self._analysis(rec.get("rtttl"))
                     return MCPToolResult(
                         success=True,
                         data={
@@ -3707,6 +3804,7 @@ class LookupMelodyTool(MCPTool):
                             "title": title,
                             "rtttl": rec.get("rtttl"),
                             "alternatives": alternatives,
+                            "analysis": analysis,
                         },
                         message=(
                             f"Нашёл «{title}». Точные ноты в data['rtttl'] "
@@ -3715,7 +3813,7 @@ class LookupMelodyTool(MCPTool):
                             "юзер — если это явно другая песня, посмотри "
                             "data['alternatives'] или вызови search_melody "
                             "с другим написанием. Сыграй ноты сам, не "
-                            "импровизируй."
+                            "импровизируй. " + analysis["text"]
                         ),
                     )
         # 2. Фолбэк — курируемые мелодии в SQLite (type='melody', миграция 012).

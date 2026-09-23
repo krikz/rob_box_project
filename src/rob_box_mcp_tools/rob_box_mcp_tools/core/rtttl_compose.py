@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 from .arranger import BEATS_PER_BAR, SCALE_INTERVALS, VALID_ROOTS
 from .harmonize import DEFAULT_DRUM_STYLE, _weighted_percentile, harmonize
@@ -26,7 +26,9 @@ from .rtttl import parse_rtttl
 __all__ = [
     "RtttlMelody",
     "rtttl_to_melody",
+    "KeyCandidate",
     "detect_key",
+    "detect_key_ranked",
     "melody_to_compose_params",
 ]
 
@@ -210,11 +212,30 @@ def _tonal_center_score(
     )
 
 
-def detect_key(
+class KeyCandidate(NamedTuple):
+    """Кандидат тональности с его скором (ADR-0132: уверенность видна модели)."""
+
+    root: str
+    scale: str
+    score: float
+
+
+def _minor_variant(weights: Dict[int, float], root: int) -> str:
+    """Натуральный минор или гармонический — решает седьмая ступень.
+
+    Повышенная (вводный тон) против натуральной — единственное, чем они
+    отличаются, и профиль минора их не различает (он один на оба).
+    """
+    raised_seventh = weights.get((root + 11) % 12, 0.0)
+    natural_seventh = weights.get((root + 10) % 12, 0.0)
+    return "harmonicMinor" if raised_seventh > natural_seventh else "minor"
+
+
+def detect_key_ranked(
     midi_notes: Sequence[Optional[int]],
     durations: Optional[Sequence[float]] = None,
-) -> Tuple[str, str]:
-    """Определить ``(тоника, лад)`` по абсолютным MIDI-нотам темы.
+) -> List[KeyCandidate]:
+    """Все 24 кандидата ``(тоника, лад)`` по убыванию скора.
 
     Скор каждой пары (тоника, лад) складывается из двух частей:
 
@@ -227,10 +248,13 @@ def detect_key(
        знает, ГДЕ звучит нота, и на хроматических темах промахивается на
        тон-кварту (#2873).
 
-    Паузы (``None``) игнорируются. Без нот — ``("C", "major")``.
+    Сортировка устойчивая: при равном скоре первым остаётся кандидат,
+    раньше стоящий в переборе (C major, C minor, C# major, ...) — ровно
+    тот, кого выбирал ``max()`` в прежнем :func:`detect_key`. Минорный
+    кандидат уточняется до ``harmonicMinor`` по седьмой ступени.
 
-    Тональность нужна не для самой темы (она играется абсолютным MIDI),
-    а для баса и подклада, которые аранжировщик достраивает вокруг неё.
+    ADR-0132: разрыв между первым и вторым кандидатом — мера уверенности,
+    её показывает партитура. Без звучащих нот — ``[("C", "major", 0.0)]``.
     """
     if durations is None:
         durations = [1.0] * len(midi_notes)
@@ -240,29 +264,40 @@ def detect_key(
         if midi is not None
     ]
     if not sounding:
-        return "C", "major"
+        return [KeyCandidate("C", "major", 0.0)]
 
     weights = _pitch_weights(sounding)
-    candidates = [
-        (root, scale) for root in range(12) for scale in ("major", "minor")
+    scored = [
+        (root, scale, _profile_score(weights, root, scale)
+         + _tonal_center_score(sounding, root, scale))
+        for root in range(12)
+        for scale in ("major", "minor")
     ]
-    best_root, best_scale = max(
-        candidates,
-        key=lambda c: (
-            _profile_score(weights, *c) + _tonal_center_score(sounding, *c)
-        ),
-    )
+    scored.sort(key=lambda item: item[2], reverse=True)
+    return [
+        KeyCandidate(
+            VALID_ROOTS[root],
+            scale if scale == "major" else _minor_variant(weights, root),
+            score,
+        )
+        for root, scale, score in scored
+    ]
 
-    if best_scale == "major":
-        return VALID_ROOTS[best_root], "major"
 
-    # Натуральный минор или гармонический — решает седьмая ступень:
-    # повышенная (вводный тон) против натуральной. Это единственное, чем
-    # они отличаются, и профиль минора их не различает (он один на оба).
-    raised_seventh = weights.get((best_root + 11) % 12, 0.0)
-    natural_seventh = weights.get((best_root + 10) % 12, 0.0)
-    scale = "harmonicMinor" if raised_seventh > natural_seventh else "minor"
-    return VALID_ROOTS[best_root], scale
+def detect_key(
+    midi_notes: Sequence[Optional[int]],
+    durations: Optional[Sequence[float]] = None,
+) -> Tuple[str, str]:
+    """Определить ``(тоника, лад)`` по абсолютным MIDI-нотам темы.
+
+    Лучший кандидат :func:`detect_key_ranked` (там — как считается скор).
+    Паузы (``None``) игнорируются. Без нот — ``("C", "major")``.
+
+    Тональность нужна не для самой темы (она играется абсолютным MIDI),
+    а для баса и подклада, которые аранжировщик достраивает вокруг неё.
+    """
+    best = detect_key_ranked(midi_notes, durations)[0]
+    return best.root, best.scale
 
 
 def melody_to_compose_params(
@@ -289,14 +324,22 @@ def melody_to_compose_params(
 
     ``drum_style`` — жанровый каркас ударных темы (issue #2841, см.
     :data:`core.harmonize.DRUM_STYLES`); ``auto`` — прежний рисунок.
+
+    ``decisions`` (ADR-0132) — что автоматика решила за модель по дороге:
+    свёртка темпа, хвостовая пауза, перенос регистра темы, подтянутые
+    выбросы, ранжированные кандидаты тональности. Только запись: на ноты
+    и на аккомпанемент она не влияет (golden-тест ``test_arranger_golden``).
     """
-    melody = _snap_to_bar(_normalize_tempo(melody))
-    melody = _normalize_lead_register(melody)
-    melody = _fix_isolated_lead_outliers(melody)
-    root, scale = detect_key(
+    source_bpm = melody.bpm
+    folded = _normalize_tempo(melody)
+    snapped = _snap_to_bar(folded)
+    registered = _normalize_lead_register(snapped)
+    melody = _fix_isolated_lead_outliers(registered)
+    ranked = detect_key_ranked(
         [m for m, _ in melody.notes],
         [d for _, d in melody.notes],
     )
+    root, scale = ranked[0].root, ranked[0].scale
     midi: List[str] = ["None" if m is None else str(int(m)) for m, _ in melody.notes]
     dur: List[str] = [f"{d:g}" for _, d in melody.notes]
     return {
@@ -308,6 +351,47 @@ def melody_to_compose_params(
         "harmony": harmonize(
             melody.notes, melody.bpm, root, scale, drum_style=drum_style
         ),
+        "decisions": _prep_decisions(
+            source_bpm, (folded, snapped, registered, melody), ranked
+        ),
+    }
+
+
+#: Сколько кандидатов тональности кроме лучшего показывать в решениях.
+_KEY_ALTERNATIVES = 3
+
+
+def _prep_decisions(
+    source_bpm: int,
+    steps: Tuple[RtttlMelody, RtttlMelody, RtttlMelody, RtttlMelody],
+    ranked: Sequence[KeyCandidate],
+) -> Dict[str, object]:
+    """Запись авто-решений подготовки темы (ADR-0132) — только для партитуры.
+
+    ``steps`` — тема после каждого шага конвейера: свёртка темпа,
+    выравнивание по такту, перенос регистра, подтяжка выбросов. Решения
+    считаются сравнением соседних шагов, сами шаги не трогаются.
+    """
+    folded, snapped, registered, final = steps
+    before = [m for m, _ in snapped.notes if m is not None]
+    after = [m for m, _ in registered.notes if m is not None]
+    moved = sum(
+        1 for (a, _da), (b, _db) in zip(registered.notes, final.notes) if a != b
+    )
+    gap = ranked[0].score - ranked[1].score if len(ranked) > 1 else 0.0
+    return {
+        "source_bpm": int(source_bpm),
+        "bpm": int(final.bpm),
+        "tail_pad_beats": round(
+            sum(d for _, d in snapped.notes) - sum(d for _, d in folded.notes), 4
+        ),
+        "lead_shift": (after[0] - before[0]) if before else 0,
+        "outliers_moved": moved,
+        "key_ranked": [
+            (c.root, c.scale, round(c.score, 3))
+            for c in ranked[: 1 + _KEY_ALTERNATIVES]
+        ],
+        "key_gap": round(gap, 3),
     }
 
 
