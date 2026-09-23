@@ -258,6 +258,31 @@ jobs:
             -o addopts="" \
             -p no:cacheprovider
 
+      # Issue #2890: изоляция акта E2E — сброс окна диалога dialogue_node и
+      # e2e-памяти фактов в начале каждого акта. Тест исполняет НАСТОЯЩИЙ
+      # isolate_act_start из e2e_voice_test.sh против фейкового робота
+      # (состояние параметров узлов — файлы). Нужны только bash + python3.
+      - name: E2E act isolation (issue #2890)
+        run: |
+          python -m pytest tests/unit/e2e_scripts/test_issue_2890_act_isolation.py \
+            -v \
+            -o addopts="" \
+            -p no:cacheprovider
+
+      # Issue #2890: e2e-изоляция voice_memory у mcp_server (#2781) + защита
+      # боевой /data/voice_memory.db от стирания. src/rob_box_mcp_tools/test/
+      # не гоняется ни одним workflow (G-Run Tests собирает пакеты без него),
+      # поэтому файл подключён здесь; rclpy — стабы внутри теста, VoiceMemory
+      # — настоящий (stdlib sqlite3). httpx/openai нужны импорту rob_box_harness.
+      - name: mcp_server voice_memory e2e isolation (issue #2781/#2890)
+        run: |
+          pip install httpx openai
+          PYTHONPATH="src/rob_box_harness:src/rob_box_llm:src/rob_box_core:src/rob_box_voice:src/rob_box_mcp_tools" \
+          python -m pytest src/rob_box_mcp_tools/test/test_issue_2781_voice_memory_e2e_isolation.py \
+            -v \
+            -o addopts="" \
+            -p no:cacheprovider
+
       - name: Seam-without-consumer guard self-tests (issue #2118)
         run: |
           python -m unittest scripts.lint.test_seam_without_consumer -v

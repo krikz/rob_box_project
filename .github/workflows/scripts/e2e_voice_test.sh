@@ -398,6 +398,23 @@ _read_e2e_mode() {
         | grep -aoE 'Boolean value is: (True|False)' | tail -1
 }
 activate_e2e_speaker_db() {
+    # Issue #2890 — узел стирает e2e-базу только на переходе false→true.
+    # Если прошлый прогон не вернул узел на боевую (❌ в его deactivate),
+    # set true стал бы no-op и акт унаследовал бы чужой каст — выключаем
+    # сначала и проверяем, что выключилось.
+    case "$(_read_e2e_mode)" in
+        *True*)
+            log "⚠️ speaker_id_node: e2e_mode остался включён с прошлого прогона — выключаю, чтобы включение стёрло /data/speakers.e2e.db заново"
+            robot_ros "ros2 param set /speaker_id_node e2e_mode false --no-daemon" >/dev/null 2>&1
+            case "$(_read_e2e_mode)" in
+                *False*) ;;
+                *)
+                    echo "E2E_FATAL: speaker_id_node не выключил застрявший e2e_mode — e2e-база дикторов не будет стёрта перед актом (issue #2890)" >&2
+                    exit 2
+                    ;;
+            esac
+            ;;
+    esac
     robot_ros "ros2 param set /speaker_id_node e2e_mode true --no-daemon" >/dev/null 2>&1
     case "$(_read_e2e_mode)" in
         *True*)
@@ -462,6 +479,21 @@ _read_mcp_e2e_mode() {
         | grep -aoE 'Boolean value is: (True|False)' | tail -1
 }
 activate_e2e_memory_db() {
+    # Issue #2890 — то же, что у activate_e2e_speaker_db: застрявший с
+    # прошлого прогона e2e_mode=true сделал бы включение no-op без стирания.
+    case "$(_read_mcp_e2e_mode)" in
+        *True*)
+            log "⚠️ mcp_server: e2e_mode остался включён с прошлого прогона — выключаю, чтобы включение стёрло /data/voice_memory.e2e.db заново"
+            robot_ros "ros2 param set /mcp_server e2e_mode false --no-daemon" >/dev/null 2>&1
+            case "$(_read_mcp_e2e_mode)" in
+                *False*) ;;
+                *)
+                    echo "E2E_FATAL: mcp_server не выключил застрявший e2e_mode — e2e-память фактов не будет стёрта перед актом (issue #2890)" >&2
+                    exit 2
+                    ;;
+            esac
+            ;;
+    esac
     robot_ros "ros2 param set /mcp_server e2e_mode true --no-daemon" >/dev/null 2>&1
     case "$(_read_mcp_e2e_mode)" in
         *True*)
@@ -490,6 +522,90 @@ deactivate_e2e_memory_db() {
             log "   почини вручную: ssh <robot> \"docker exec voice-assistant bash -lc 'source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; ros2 param set /mcp_server e2e_mode false --no-daemon'\""
             ;;
     esac
+}
+
+# --- issue #2890: изоляция АКТА, а не только БД дикторов --------------------
+# До этой правки акт был изолирован только по speakers.e2e.db. Окно ходов
+# LLM в dialogue_node переживало переход между актами, а e2e-память фактов
+# включалась лишь сценариям с memory_save. Прогон акта 2b 35903232434 сразу
+# после акта 2 35900007906: в контексте LLM стоял ход акта 2 «[Spkr:Саша]
+# поищи … про чай», и новой Саше (профиль 5baad325; старая 243092d7 стёрта)
+# робот сказал факт старой — «зелёный чай без сахара и лук ни в каком виде».
+#
+# Теперь в начале КАЖДОГО прогона сценария (isolate_act_start):
+#   1. окно диалога сбрасывается тем же _reset_dialogue_session, что у фразы
+#      «новая сессия», но молча — ros2 param set /dialogue_node
+#      e2e_session_reset_token <уникальный токен>, токен читается ОБРАТНО
+#      (отказ сброса = колбэк отклоняет значение = токен не совпал = FATAL);
+#   2. сценарий, который стирает каст дикторов (register_speaker), стирает
+#      и e2e-память фактов: факты о стёртых людях — тот же каст.
+#
+# Намеренная зависимость от предыдущего акта — ТОЛЬКО явным флагом сценария
+# ``"inherits_previous_act": true`` (генерируемые акты 3-10 ночного марафона:
+# манифест «акт N опирается на состояние актов < N», акт 10 пересказывает
+# всю ночь). Флаг не спасает от стирания БД и несовместим с register_speaker:
+# акт, стирающий каст, не может наследовать разговор об этом касте.
+
+# rc: 0 — наследует, 1 — нет (или файла нет), 2 — ошибка схемы (не булево).
+scenario_inherits_previous_act() {
+    [ -f "$1" ] || return 1
+    python3 - "$1" <<'PY'
+import json, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as fh:
+        data = json.load(fh)
+except Exception:
+    sys.exit(1)
+value = data.get("inherits_previous_act", False) if isinstance(data, dict) else False
+if value is True:
+    sys.exit(0)
+if value is False:
+    sys.exit(1)
+print(f"E2E_FATAL: inherits_previous_act обязан быть true|false, а не {value!r} (issue #2890)", file=sys.stderr)
+sys.exit(2)
+PY
+}
+_read_dialogue_reset_token() {
+    robot_ros "ros2 param get /dialogue_node e2e_session_reset_token --no-daemon" 2>/dev/null \
+        | grep -aoE 'String value is: [A-Za-z0-9_.-]+' | tail -1 | sed 's/^String value is: //'
+}
+reset_dialogue_session_for_act() {  # $1 = токен (только [A-Za-z0-9_.-], с буквы)
+    local token="$1"
+    robot_ros "ros2 param set /dialogue_node e2e_session_reset_token $token --no-daemon" >/dev/null 2>&1
+    if [ "$(_read_dialogue_reset_token)" = "$token" ]; then
+        log "🧹 dialogue_node: окно диалога сброшено перед актом (token=$token) — ходы прошлых актов LLM не увидит"
+        return 0
+    fi
+    # ФАТАЛ: без сброса вердикт акта нечитаем — LLM отвечает по ходам
+    # чужого акта (issue #2890). Лучше честно не прогнать акт.
+    echo "E2E_FATAL: dialogue_node не подтвердил сброс сессии перед актом (token=$token) — акт увидел бы ходы прошлого акта (issue #2890)" >&2
+    echo "           проверь вручную: ssh <robot> \"docker exec voice-assistant bash -lc 'source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; ros2 param get /dialogue_node e2e_session_reset_token --no-daemon'\"" >&2
+    exit 2
+}
+isolate_act_start() {  # $1 = файл сценария
+    local scenario="$1" inherits=0 registers=1
+    scenario_inherits_previous_act "$scenario" || inherits=$?
+    [ "$inherits" = "2" ] && exit 2
+    scenario_registers_speakers "$scenario" && registers=0
+    if [ "$inherits" = "0" ] && [ "$registers" = "0" ]; then
+        echo "E2E_FATAL: сценарий регистрирует дикторов (стирает каст) и при этом inherits_previous_act=true — наследовать разговор о стёртом касте нельзя (issue #2890)" >&2
+        exit 2
+    fi
+    # Issue #2750 — изолированная БД дикторов ДО первого шага. Якорь —
+    # СОДЕРЖИМОЕ сценария (issue #2763), не имя файла.
+    if [ "$registers" = "0" ]; then
+        activate_e2e_speaker_db
+    fi
+    # Issue #2781 — memory_save пишет в e2e-память. Issue #2890 — стёртый
+    # каст дикторов стирает и факты о нём.
+    if [ "$registers" = "0" ] || scenario_writes_memory "$scenario"; then
+        activate_e2e_memory_db
+    fi
+    if [ "$inherits" = "0" ]; then
+        log "🔗 акт наследует окно диалога прошлого акта (inherits_previous_act=true) — сброс сессии пропущен намеренно"
+    else
+        reset_dialogue_session_for_act "e2e-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+    fi
 }
 
 # --- issue #2809 — node_params: сценарий форсирует зону сомнения переспроса --
@@ -2411,15 +2527,19 @@ start_recording
 # Keep it in the run artifact so e2e reports expose infrastructure health.
 observe_step "${SCENARIO_FILE:+scenario}${SCENARIO_FILE:-single}" > "$OUT_DIR/health_snapshot.json" || true
 
-# Issue #2750 — акт «Знакомство» получает изолированную БД дикторов ДО
-# первого шага. Якорь — СОДЕРЖИМОЕ сценария (issue #2763), не имя файла.
-if [ -n "$SCENARIO_FILE" ] && scenario_registers_speakers "$SCENARIO_FILE"; then
-    activate_e2e_speaker_db
-fi
-# Issue #2781 — тот же сценарий (или другой) может писать долгосрочную
-# память через memory_save — отдельная изоляция, отдельный узел (mcp_server).
-if [ -n "$SCENARIO_FILE" ] && scenario_writes_memory "$SCENARIO_FILE"; then
-    activate_e2e_memory_db
+# Гарантированная остановка записи, возврат speaker_id_node/mcp_server на
+# боевые БД и восстановление node_params при любом завершении
+# (PASS/FAIL/ошибка). Все хелперы идемпотентны: повторный вызов — noop
+# (пустой REC_PID / E2E_*_DB_ACTIVATED=0 / пустой node_params_originals).
+# Issue #2890 — trap ставится ДО изоляции акта: E2E_FATAL сброса сессии
+# (или памяти) после уже включённой e2e-БД дикторов обязан вернуть узел
+# на боевую, а не оставить мастерскую на e2e-базе.
+trap 'restore_node_params; deactivate_e2e_speaker_db; deactivate_e2e_memory_db; stop_recording' EXIT
+
+# Issue #2890 — изоляция акта ДО первого шага: e2e-БД дикторов (#2750),
+# e2e-память фактов (#2781) и окно диалога dialogue_node. См. isolate_act_start.
+if [ -n "$SCENARIO_FILE" ]; then
+    isolate_act_start "$SCENARIO_FILE"
 fi
 # Issue #2809 — node_params override (см. apply_node_params выше). Применяем
 # ДО первого шага, как и изоляцию БД: акт «переспрос личности» форсирует
@@ -2427,12 +2547,6 @@ fi
 if [ -n "$SCENARIO_FILE" ]; then
     apply_node_params "$SCENARIO_FILE"
 fi
-
-# Гарантированная остановка записи, возврат speaker_id_node/mcp_server на
-# боевые БД и восстановление node_params при любом завершении
-# (PASS/FAIL/ошибка). Все хелперы идемпотентны: повторный вызов — noop
-# (пустой REC_PID / E2E_*_DB_ACTIVATED=0 / пустой node_params_originals).
-trap 'restore_node_params; deactivate_e2e_speaker_db; deactivate_e2e_memory_db; stop_recording' EXIT
 
 PASS=1
 if [ -n "$SCENARIO_FILE" ]; then

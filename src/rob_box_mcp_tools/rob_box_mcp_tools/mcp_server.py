@@ -1374,17 +1374,36 @@ class MCPServer(Node):
         """
         import os as _os
 
+        # Issue #2890 — боевая voice_memory.db не стирается НИКОГДА, даже
+        # если e2e_db_path в конфиге указал на неё же (опечатка в YAML,
+        # симлинк): исключение прерывает переключение в _apply_e2e_mode,
+        # харнесс получает отказ e2e_mode и фейлит акт.
+        prod = self._voice_memory_prod_db_path
+        if prod and _os.path.realpath(prod) == _os.path.realpath(
+            self._voice_memory_e2e_db_path
+        ):
+            raise RuntimeError(
+                f"e2e_db_path {self._voice_memory_e2e_db_path!r} совпадает с "
+                f"боевой {prod!r} — стирать отказываюсь"
+            )
+        removed = []
         for suffix in ("", "-wal", "-shm", "-journal"):
             path = f"{self._voice_memory_e2e_db_path}{suffix}"
             try:
                 if _os.path.exists(path):
                     _os.remove(path)
+                    removed.append(path)
             except OSError as exc:
                 self.get_logger().warning(
                     f"⚠️ не удалось удалить {path!r} перед E2E-прогоном "
                     f"({type(exc).__name__}: {exc}) — e2e-база памяти может "
                     "унаследовать факты с прошлого марафона"
                 )
+        # Issue #2890 — явная строка сброса e2e-памяти фактов в логе робота.
+        self.get_logger().warning(
+            f"🧹 mcp_server: e2e-память фактов сброшена перед актом — "
+            f"удалено {len(removed)} файл(ов) {self._voice_memory_e2e_db_path!r}"
+        )
 
     def _apply_e2e_mode(self, enabled: bool) -> bool:
         """Переключить voice_memory (voice_facts) боевая ↔ E2E. ``True`` — успех.

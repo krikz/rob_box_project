@@ -1363,6 +1363,14 @@ class DialogueNode(Node):
             "new_session_phrases",
             list(self._DEFAULT_NEW_SESSION_PHRASES),
         )
+        # Issue #2890 — E2E-харнесс сбрасывает сессию диалога в начале
+        # каждого акта: ``ros2 param set /dialogue_node
+        # e2e_session_reset_token <уникальный токен>`` (тот же приём
+        # ``ros2 param set``, что e2e_mode у speaker_id_node/mcp_server).
+        # Новое значение = тихий сброс «новая сессия» без подтверждения
+        # голосом; при отказе сброса колбэк отклоняет значение, и харнесс
+        # видит это, прочитав параметр обратно. См. parameters_callback.
+        self.declare_parameter("e2e_session_reset_token", "")
         # 🔴 FIX (live 06.08): стриминг LLM через конфиг (llm_streaming).
         # Замер без стриминга: false → complete() (полный ответ).
         self.declare_parameter("llm_streaming", False)
@@ -1508,7 +1516,13 @@ class DialogueNode(Node):
         что в ``_resolve_barge_in_policy``.
         """
         for param in params:
-            if param.name == "barge_in_policy":
+            if param.name == "e2e_session_reset_token":
+                if not self._reset_session_for_e2e_act(str(param.value or "")):
+                    return SetParametersResult(
+                        successful=False,
+                        reason="issue 2890: e2e session reset failed",
+                    )
+            elif param.name == "barge_in_policy":
                 raw = str(param.value or "replace").strip().lower()
                 if raw not in self._BARGE_IN_POLICIES:
                     self.get_logger().warning(
@@ -8835,8 +8849,14 @@ class DialogueNode(Node):
         self._dispatch_turn(combined, raw_user_command=combined)
         return True
 
-    def _reset_dialogue_session(self) -> None:
+    def _reset_dialogue_session(self, *, announce: bool = True):
         """Issue #XXXX — сброс текущей диалоговой сессии.
+
+        ``announce=False`` (issue #2890, E2E-сброс между актами) — тот же
+        сброс, но молча: без IMMUNE-окна TTS и без фразы «Начинаю новую
+        сессию…», которая иначе попала бы в запись первого шага акта.
+        Возвращает future очистки окна ходов (``None``, если asyncio-цикла
+        нет) — E2E-путь ждёт её, чтобы подтверждать сброс, а не надеяться.
 
         Полный сброс состояния текущего диалога: in-flight turn, DSM → IDLE,
         бэклог-аккумулятор, speaker-состояние, таймер сессии и история
@@ -8866,14 +8886,15 @@ class DialogueNode(Node):
         # STOP (пришедший в той же STT-фразе) не отменил подтверждение
         # «Начинаю новую сессию…». 700 мс — с запасом на синтез Yandex
         # (~300-500 мс) + ALSA-буфер + grace перед AEC-эхо.
-        try:
-            ignore_msg = String()
-            ignore_msg.data = "IGNORE_STOP_MS:700"
-            self._tts_control_pub.publish(ignore_msg)
-        except Exception as exc:  # noqa: BLE001 — best-effort, не роняем reset
-            self.get_logger().warn(
-                f"⚠️ [issue 1563] IGNORE_STOP_MS publish failed: {exc}"
-            )
+        if announce:
+            try:
+                ignore_msg = String()
+                ignore_msg.data = "IGNORE_STOP_MS:700"
+                self._tts_control_pub.publish(ignore_msg)
+            except Exception as exc:  # noqa: BLE001 — best-effort, не роняем reset
+                self.get_logger().warn(
+                    f"⚠️ [issue 1563] IGNORE_STOP_MS publish failed: {exc}"
+                )
         # 2. Бэклог-аккумулятор фоновой речи (если реализован).
         acc = getattr(self, "_speech_accumulator", None)
         if acc is not None:
@@ -8911,22 +8932,25 @@ class DialogueNode(Node):
         # 6. История диалога — in-memory окно ходов в AgentCore.
         #    Обёртка остаётся async для совместимости с loop-диспетчером.
         loop = getattr(self, "_loop", None)
+        clear_future = None
         if loop is not None:
             try:
-                asyncio.run_coroutine_threadsafe(
+                clear_future = asyncio.run_coroutine_threadsafe(
                     self._clear_session_turns(), loop
                 )
             except Exception:  # noqa: BLE001
                 pass
         # 7. Публикуем состояние и подтверждение.
         self._publish_state()
-        self._publish_response(
-            "Начинаю новую сессию. Всё, что было до этого, забыто.",
-            animation="neutral",
-        )
+        if announce:
+            self._publish_response(
+                "Начинаю новую сессию. Всё, что было до этого, забыто.",
+                animation="neutral",
+            )
+        return clear_future
 
-    async def _clear_session_turns(self) -> None:
-        """Очистить in-memory окно ходов текущей сессии."""
+    async def _clear_session_turns(self) -> bool:
+        """Очистить in-memory окно ходов текущей сессии. ``True`` — очищено."""
         try:
             core = getattr(self, "_core", None)
             if core is not None:
@@ -8934,10 +8958,61 @@ class DialogueNode(Node):
             self.get_logger().info(
                 "🧹 [new-session] in-memory turn window cleared"
             )
+            return True
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warning(
                 f"⚠️ [new-session] clear_history failed: {exc}"
             )
+            return False
+
+    #: Issue #2890 — сколько ждать очистки окна ходов в asyncio-цикле.
+    _E2E_RESET_TIMEOUT_S = 5.0
+
+    def _reset_session_for_e2e_act(self, token: str) -> bool:
+        """Issue #2890 — тихий сброс сессии перед актом E2E. ``True`` — сброшено.
+
+        Вызывается из ``parameters_callback`` (``e2e_session_reset_token``).
+        До этой правки акты E2E были изолированы только по БД дикторов
+        (e2e_mode стирает ``/data/speakers.e2e.db``), а окно ходов LLM
+        переживало переход: в акте 2b (run 35903232434) LLM видела ход
+        акта 2 «[Spkr:Саша] поищи … про чай» и сказала НОВОЙ Саше факт
+        старой. Сброс — тот же ``_reset_dialogue_session``, что у фразы
+        «новая сессия», но без голосового подтверждения.
+
+        Пустой токен — no-op (дефолт параметра при старте ноды). ``False``
+        — окно ходов не подтверждено очищенным: колбэк отклонит значение,
+        харнесс прочитает параметр обратно и зафейлит акт.
+        """
+        token = token.strip()
+        if not token:
+            return True
+        try:
+            clear_future = self._reset_dialogue_session(announce=False)
+            cleared = bool(
+                clear_future is not None
+                and clear_future.result(timeout=self._E2E_RESET_TIMEOUT_S)
+            )
+        except Exception as exc:  # noqa: BLE001 — сброс не должен ронять ноду
+            self.get_logger().error(
+                f"❌ [issue 2890] e2e-сброс сессии (token={token!r}) "
+                f"провалился: {type(exc).__name__}: {exc}"
+            )
+            return False
+        if not cleared:
+            self.get_logger().error(
+                f"❌ [issue 2890] e2e-сброс сессии (token={token!r}): окно "
+                "ходов LLM НЕ подтверждено очищенным — акт увидел бы ходы "
+                "прошлого акта"
+            )
+            return False
+        # WARNING, не info: строка обязана быть видна в `docker logs
+        # voice-assistant` без фильтров — по ней проверяют изоляцию акта.
+        self.get_logger().warning(
+            f"🧪 dialogue_node: e2e-сброс сессии перед актом "
+            f"(token={token!r}) — окно ходов LLM очищено, speaker-состояние "
+            "и DSM сброшены"
+        )
+        return True
 
     def _maybe_log_skip_summary(self, window_s: float = 300.0) -> None:
         """Issue #1101 — периодическая сводка по пропускам LLM.
