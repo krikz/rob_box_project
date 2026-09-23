@@ -3803,11 +3803,11 @@ class DialogueNode(Node):
             )
             return
 
-        proposal = epithets.sanitize_llm_epithet(getattr(response, "content", ""))
+        proposal, why = epithets.check_llm_epithet(getattr(response, "content", ""))
         if not proposal:
             self.get_logger().info(
                 f"🔤 [issue 1787] ответ LLM не похож на кличку "
-                f"({str(getattr(response, 'content', ''))[:40]!r}) — "
+                f"({str(getattr(response, 'content', ''))[:40]!r}, причина={why}) — "
                 f"остаётся {fallback!r}"
             )
             return

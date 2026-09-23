@@ -61,6 +61,13 @@ REASON_NEW_TOPIC = "new_topic"
 REASON_USER_OVERRIDE = "user_override"
 REASON_LLM = "llm"
 
+# Причины отказа LLM-клички (issue #2886: пишутся в лог speaker_id_node,
+# чтобы по логу было видно, какая проверка сработала).
+REJECT_EMPTY = "empty"
+REJECT_INVALID = "invalid"
+REJECT_STRANGER = "stranger"
+REJECT_TAKEN = "taken"
+
 # Границы для клички, придуманной LLM (слой 2 гибрида). Одно слово —
 # чтобы эпитет оставался меткой, а не фразой («Весело-Угрюмый-Кентавр»
 # из research §4.2 — ровно то, что здесь отсекается).
@@ -492,18 +499,28 @@ def build_llm_prompt(
     )
 
 
-def sanitize_llm_epithet(raw: Optional[str], *, taken: Iterable[str] = ()) -> Optional[str]:
-    """Проверить кличку, придуманную LLM. ``None`` — не годится.
+def check_llm_epithet(
+    raw: Optional[str], *, taken: Iterable[str] = ()
+) -> Tuple[Optional[str], Optional[str]]:
+    """Проверить кличку, придуманную LLM: ``(кличка, None)`` или ``(None, причина)``.
 
-    Отбраковываются: пустой ответ, несколько слов, слишком короткое или
-    длинное слово, посторонние символы (цифры, эмодзи, кавычки), кличка
-    со смыслом «неизвестный человек» (issue #2864) и уже занятая кличка. ``None`` означает «оставить словарного кандидата» —
-    именно поэтому словарный слой пишется в БД ДО запроса к LLM: у
-    робота всегда есть рабочая метка, даже если сеть легла или модель
-    вернула мусор (ADR-0008 — деградация без тишины).
+    Причины отказа (issue #2886 — раньше в логе было только «отклонена»,
+    и нельзя было понять, сработал фильтр или уникальность):
+
+    * ``REJECT_EMPTY`` — пустой ответ;
+    * ``REJECT_INVALID`` — не похоже на кличку: несколько слов, длина вне
+      границ, посторонние символы (цифры, эмодзи), маленькая буква;
+    * ``REJECT_STRANGER`` — смысл «неизвестный человек» (issue #2864);
+    * ``REJECT_TAKEN`` — кличка уже у другого профиля (сравнение без
+      учёта регистра).
+
+    Отказ означает «оставить словарного кандидата» — именно поэтому
+    словарный слой пишется в БД ДО запроса к LLM: у робота всегда есть
+    рабочая метка, даже если сеть легла или модель вернула мусор
+    (ADR-0008 — деградация без тишины).
     """
     if not raw:
-        return None
+        return None, REJECT_EMPTY
     text = str(raw).strip()
     # «Кличка: Кулибин» — модель любит подписать ответ. Двоеточие делит
     # подпись и саму кличку; без этого в БД уехало бы слово «Кличка».
@@ -512,18 +529,23 @@ def sanitize_llm_epithet(raw: Optional[str], *, taken: Iterable[str] = ()) -> Op
     # Дальше LLM часто добавляет пояснение или кавычки — берём первое слово.
     word = text.strip().strip("\"'«»`.,!?:;()[]").split()
     if not word:
-        return None
+        return None, REJECT_EMPTY
     label = word[0].strip("\"'«»`.,!?:;()[]")
     if not (LLM_EPITHET_MIN_LEN <= len(label) <= LLM_EPITHET_MAX_LEN):
-        return None
+        return None, REJECT_INVALID
     if not _LLM_EPITHET_RE.match(label):
-        return None
+        return None, REJECT_INVALID
     if is_stranger_epithet(label):
-        return None
+        return None, REJECT_STRANGER
     taken_lower = {str(t).strip().lower() for t in taken if t}
     if label.lower() in taken_lower:
-        return None
-    return label
+        return None, REJECT_TAKEN
+    return label, None
+
+
+def sanitize_llm_epithet(raw: Optional[str], *, taken: Iterable[str] = ()) -> Optional[str]:
+    """Кличка от LLM или ``None``, если не годится (причина — ``check_llm_epithet``)."""
+    return check_llm_epithet(raw, taken=taken)[0]
 
 
 def is_stranger_epithet(label: Optional[str]) -> bool:
@@ -582,7 +604,13 @@ __all__ = [
     "LLM_EPITHET_MAX_LEN",
     "LLM_EPITHET_MIN_LEN",
     "REASON_LLM",
+    "REJECT_EMPTY",
+    "REJECT_INVALID",
+    "REJECT_STRANGER",
+    "REJECT_TAKEN",
     "build_llm_prompt",
+    "check_llm_epithet",
+    "is_stranger_epithet",
     "sanitize_llm_epithet",
     "DEFAULT_POOL_NEUTRAL",
     "DEFAULT_POOL_RESTLESS",

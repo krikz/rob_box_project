@@ -342,3 +342,98 @@ def test_llm_stranger_epithet_keeps_dictionary_one_for_named_profile(node):
     profile = node._db.get_speaker_profile(sid)
     assert profile["name"] == "Саша"
     assert profile["epithet"] == "Наблюдатель"
+
+
+# ── Issue #2886: причина отказа LLM-клички в логе ────────────────────────────
+
+
+def _info_lines(node) -> list:
+    return [str(c.args[0]) for c in node.get_logger.return_value.info.call_args_list]
+
+
+def _send_llm_epithet(node, speaker_id: str, label) -> None:
+    node._on_epithet_result(
+        types.SimpleNamespace(
+            data=json.dumps(
+                {"speaker_id": speaker_id, "epithet": label}, ensure_ascii=False
+            )
+        )
+    )
+
+
+def test_issue_2886_second_profile_same_llm_epithet_rejected_as_taken(node):
+    """Последовательность из issue #2886 (E2E акт 2, run 35900007906).
+
+    Саша получает от LLM «Собеседник» — принято. Потом LLM предлагает то же
+    «Собеседник» Борису — отказ. Ветка отказа — уникальность (кличка занята
+    Сашей), а НЕ фильтр «незнакомца» #2864: это видно и по логу
+    (``taken_by=<id Саши>``), и напрямую по ``is_stranger_epithet``.
+    """
+    _capture_requests(node)
+    sasha = node._db.register("Саша", _embedding(20))
+    node._ensure_epithet(sasha)
+    _send_llm_epithet(node, sasha, "Собеседник")
+    assert node._db.get_epithet(sasha) == "Собеседник"
+
+    boris = node._db.register("Борис", _embedding(21))
+    node._ensure_epithet(boris)
+    boris_dictionary = node._db.get_epithet(boris)
+    _send_llm_epithet(node, boris, "Собеседник")
+
+    assert node._db.get_epithet(boris) == boris_dictionary
+    assert node._db.get_epithet(sasha) == "Собеседник"
+    assert ep.is_stranger_epithet("Собеседник") is False
+
+    rejects = [line for line in _info_lines(node) if "отклонена" in line]
+    assert len(rejects) == 1, rejects
+    assert f"taken_by={sasha[:8]}" in rejects[0], rejects[0]
+    assert boris[:8] in rejects[0]
+
+
+@pytest.mark.parametrize("label, reason", [
+    ("Незнакомец", "stranger"),
+    ("Агент007", "invalid"),
+    ("", "empty"),
+])
+def test_issue_2886_reject_log_names_reason(node, label, reason):
+    """Каждая ветка отказа видна в логе, а не только «отклонена»."""
+    _capture_requests(node)
+    sid = node._db.register("Саша", _embedding(22))
+    node._ensure_epithet(sid)
+    before = node._db.get_epithet(sid)
+
+    _send_llm_epithet(node, sid, label)
+
+    assert node._db.get_epithet(sid) == before
+    rejects = [line for line in _info_lines(node) if "отклонена" in line]
+    assert len(rejects) == 1, rejects
+    assert f"причина={reason}" in rejects[0], rejects[0]
+
+
+def test_issue_2886_dictionary_label_freed_by_llm_rename_is_reused(node):
+    """Почему у Саши и Бориса первым был один и тот же «Странник».
+
+    Уникальность словарного слоя — по ТЕКУЩИМ кличкам (``taken_epithets``
+    читает ``speakers.epithet``). Пока «Странник» у Саши, второй профиль
+    его не получит ни при каком сдвиге. Когда LLM переименовала Сашу в
+    «Собеседник», «Странник» освободился, и Борису его выдали законно: в
+    любой момент времени две метки не совпадают. Так задумано.
+    """
+    _capture_requests(node)
+    sasha = node._db.register("Саша", _embedding(23))
+    node._db.set_epithet(sasha, "Странник", ep.REASON_FIRST_SEEN)
+    probes = [f"probe-{i}" for i in range(100)]
+    busy = node._db.taken_epithets()
+    assert all(
+        ep.choose_epithet([], speaker_id=p, taken=busy).label != "Странник"
+        for p in probes
+    )
+
+    _send_llm_epithet(node, sasha, "Собеседник")
+
+    free = node._db.taken_epithets()
+    assert "Странник" not in free
+    assert any(
+        ep.choose_epithet([], speaker_id=p, taken=free).label == "Странник"
+        for p in probes
+    )

@@ -429,3 +429,28 @@ def test_sanitize_llm_epithet_keeps_ordinary_labels(good):
 def test_llm_prompt_forbids_stranger_epithets():
     prompt = ep.build_llm_prompt(["привет"], fallback="Наблюдатель")
     assert "незнакомц" in prompt.lower()
+
+
+# ── Issue #2886: у отказа есть причина ───────────────────────────────────────
+
+
+@pytest.mark.parametrize("raw, taken, reason", [
+    (None, (), "empty"),
+    ("", (), "empty"),
+    ("Агент007", (), "invalid"),
+    ("кулибин", (), "invalid"),
+    ("Незнакомец", (), "stranger"),
+    ("Собеседник", ("собеседник",), "taken"),
+])
+def test_issue_2886_check_llm_epithet_names_reject_reason(raw, taken, reason):
+    label, why = ep.check_llm_epithet(raw, taken=taken)
+    assert label is None
+    assert why == reason
+
+
+def test_issue_2886_sobesednik_is_not_a_stranger_label():
+    """«Собеседник» не значит «незнакомец»: фильтр #2864 его пропускает,
+    отказ Борису в issue #2886 — по занятости, не по фильтру."""
+    assert ep.is_stranger_epithet("Собеседник") is False
+    label, why = ep.check_llm_epithet("Собеседник", taken=())
+    assert label == "Собеседник" and why is None
