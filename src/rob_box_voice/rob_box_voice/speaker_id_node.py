@@ -108,6 +108,20 @@ class SpeakerIdNode(Node):
         # ── Parameters ────────────────────────────────────────────────────────
         self.declare_parameter("db_path", "/data/speakers.db")
         self.declare_parameter("identify_threshold", 0.72)
+        # Issue #2809 -- второй, более строгий порог: НАЗЫВАТЬ имя
+        # спикера (Spkr-тег в user_input, <user_profile><name> в
+        # system_context) можно только при высокой уверенности.
+        # identify_threshold=0.72 решает более дешёвую задачу
+        # "is_known да/нет" (нужна хоть какая-то персонализация --
+        # эпитет, счётчик реплик), а называть чужое имя вслух --
+        # дороже: 0.72 < confidence < 0.85 регулярно даёт match с
+        # ДРУГИМ реальным диктором (run 35788126541, n210:
+        # confidence=0.763 -> LLM назвала подошедшего незнакомца
+        # именем "Борис"). НЕ путать с identify_threshold (ADR-0127 --
+        # трогать его отдельно и осторожно): этот порог не влияет на
+        # is_known/эпитет/подсчёт реплик, только гейтит имя, которое
+        # реально долетает до LLM.
+        self.declare_parameter("confident_identify_threshold", 0.85)
         # Issue W5-4 + #2348 — отдельный, более строгий порог для решения
         # «слить с существующим профилем при регистрации vs завести новый»
         # внутри register_or_merge(). Калибровка по
@@ -183,6 +197,10 @@ class SpeakerIdNode(Node):
         db_path: str = self.get_parameter("db_path").value
         threshold: float = self.get_parameter("identify_threshold").value
         register_threshold: float = self.get_parameter("register_match_threshold").value
+        # Issue #2809 -- см. declare_parameter выше.
+        self._confident_identify_threshold: float = float(
+            self.get_parameter("confident_identify_threshold").value
+        )
         gallery_warmup_size: int = int(self.get_parameter("gallery_warmup_size").value)
         self._growth_session_gap_sec: float = float(
             self.get_parameter("gallery_growth_session_gap_sec").value
@@ -1412,11 +1430,28 @@ class SpeakerIdNode(Node):
         наравне с обычным узнаванием (см. ``_on_speaker_result`` там —
         гейт только на ``is_known``, поле ``source`` не проверяется).
         """
+        # Issue #2809 -- имя произносится LLM только при высокой уверенности.
+        # identify_threshold (0.72) уже пропустил match как "is_known" --
+        # этого достаточно для эпитета/счётчика реплик, но НЕДОСТАТОЧНО,
+        # чтобы называть человека по имени: между 0.72 и
+        # confident_identify_threshold (0.85) match регулярно указывает на
+        # ДРУГОГО реального диктора (run 35788126541, n210 -- confidence
+        # 0.763 дал имя "Борис" незнакомцу). source="register" -- явная
+        # регистрация голоса человеком секунду назад, а не догадка по
+        # cosine-похожести; там имя правильное по определению, порог
+        # уверенности к нему не применяем.
+        confident_threshold = getattr(
+            self, "_confident_identify_threshold", 0.85
+        )
+        name_confident = (
+            bool(source) or match.confidence >= confident_threshold
+        ) if match else False
         if match:
+            published_name = match.name if name_confident else None
             payload = {
                 "is_known": True,
                 "speaker_id": match.speaker_id,
-                "name": match.name,
+                "name": published_name,
                 "confidence": round(match.confidence, 4),
                 # Issue #1787 — внутренняя кличка. None до первой реплики
                 # (профиль из старой БД) — потребитель обязан это терпеть.
@@ -1425,8 +1460,9 @@ class SpeakerIdNode(Node):
             if source:
                 payload["source"] = source
             self.get_logger().info(
-                f"📢 Publishing: is_known=true name={match.name!r} "
+                f"📢 Publishing: is_known=true name={published_name!r} "
                 f"epithet={match.epithet!r} conf={match.confidence:.3f}"
+                + ("" if name_confident else " (name suppressed: low confidence, issue #2809)")
                 + (f" source={source!r}" if source else "")
             )
         else:
