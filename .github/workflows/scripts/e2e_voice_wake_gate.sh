@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ============================================================================
 # e2e_voice_wake_gate.sh — pure helpers для wake-gate pre-flight diagnostic
-# (ADR-0027 §5.2, retro t_be491fba).
+# (ADR-0029 §2.3 cold-start known-state, retro t_be491fba).
 #
 # Этот файл source'ится из e2e_voice_test.sh И из unit-тестов. НЕ выполняет
 # main flow, НЕ читает ENV напрямую — все параметры через аргументы.
@@ -70,7 +70,7 @@ wake_gate_cleared_since() {
     #     grep -E "✅ ПРИНЯТО( \([^)]*\))?: Робот"   → 5 совпадений
     # То есть wake-gate НИКОГДА не считался пройденным. Симптом не всплывал
     # только потому, что preflight сам был мёртвым кодом (см. e2e_voice_test.sh,
-    # блок ADR-0027 §5.2). После починки preflight'а этот баг дал бы вечный
+    # блок ADR-0029 §2.3). После починки preflight'а этот баг дал бы вечный
     # SKIP всем шагам с expect="wake-gated" — то есть тихо «зелёный» прогон,
     # который ничего не проверяет.
     #
