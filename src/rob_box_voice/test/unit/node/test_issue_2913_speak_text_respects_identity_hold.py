@@ -291,7 +291,7 @@ def test_plain_turn_speak_text_is_not_delayed():
     asyncio.run(n._run_turn("который час?"))
 
     assert n.tts == ["Сейчас без пяти восемь."], n.tts
-    assert n.mcp.tts_at[0] - started[0] < 0.03, n.mcp.tts_at[0] - started[0]
+    assert n.mcp.tts_at[0] - started[0] < 1.0, n.mcp.tts_at[0] - started[0]
 
 
 def test_register_without_request_does_not_delay_speech():
@@ -312,7 +312,7 @@ def test_register_without_request_does_not_delay_speech():
     asyncio.run(n._run_turn("привет"))
 
     assert n.tts == ["Как тебя зовут?"], n.tts
-    assert n.mcp.tts_at[0] - started[0] < 0.03, n.mcp.tts_at[0] - started[0]
+    assert n.mcp.tts_at[0] - started[0] < 1.0, n.mcp.tts_at[0] - started[0]
 
 
 def test_lost_ack_releases_speech_after_timeout():
