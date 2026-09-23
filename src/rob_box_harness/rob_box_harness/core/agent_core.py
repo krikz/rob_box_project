@@ -1098,6 +1098,12 @@ class AgentCore:
         :class:`ToolExecutionError` (transport-level) aborts the
         turn because that's a wiring problem, not a tool problem.
         """
+        # Issue #2859 — граница хода для per-turn гардов провайдера
+        # (``SchedulerToolExecutor``: «один трек за ход»). Необязательный
+        # хук, как ``begin_group`` ниже: у простых провайдеров его нет.
+        begin_turn = getattr(self._tools, "begin_turn", None)
+        if begin_turn is not None:
+            begin_turn()
         tool_schemas = await self._tools.discover()
         openai_tools = [_tool_spec_to_openai(spec) for spec in tool_schemas]
         # Полный набор держим отдельно: при включённом сужении список
