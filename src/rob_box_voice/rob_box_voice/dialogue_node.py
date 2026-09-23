@@ -224,7 +224,10 @@ from rob_box_voice.speaker_profiles import (
     extract_speaker_name,
     format_speaker_context,
 )
-from rob_box_voice.tts_voice_registry import format_tts_context
+from rob_box_voice.tts_voice_registry import (
+    default_voice_for,
+    format_tts_context,
+)
 # Issue #1787 — сборка промпта и валидация клички, придуманной LLM.
 from rob_box_voice.core import epithets
 # ADR-0101 §3.1 — ``Occasion`` импортирован выше (PR-B, #2536); старая
@@ -273,6 +276,23 @@ def _xml_attr(value: str) -> str:
         .replace("<", "&lt;")
         .replace(">", "&gt;")
     )
+
+
+def _resolve_tts_voice_tag(
+    current_voice: str | None, tts_provider: str
+) -> str:
+    """Issue #2817 -- factual ``<tts_voice>`` value for the LLM context.
+
+    Was previously a hardcoded ``"Yandex_Maxim"`` regardless of which
+    provider/voice was actually speaking (live log 23.09: MiniMax
+    `male-qn-qingse` was active, the tag still said Yandex). ``current_voice``
+    already tracks the ACTUAL voice after a fallback (issue #1229) -- use
+    it, and fall back to the ACTIVE provider's default, never Yandex's.
+
+    Extracted from :meth:`DialogueNode._build_dynamic_system_context` so
+    the branch lives here, not in that method (ADR-0021 R1 -- cc_budget).
+    """
+    return current_voice or default_voice_for(tts_provider)
 
 
 ASYNCIO_LOOP_DRIVER_MAX_WORKERS: int = 1
@@ -3286,8 +3306,15 @@ class DialogueNode(Node):
             )
         except Exception:  # noqa: BLE001 — registry сбойнул, не валим диалог
             tts_context_line = f"[TTS] provider: {tts_provider}"
-        # голос по умолчанию — Yandex anton (определяем по TTS config)
-        tts_voice = "Yandex_Maxim"  # default — male
+        # ФАКТИЧЕСКИЙ голос (issue #2817): раньше здесь был
+        # захардкожен "Yandex_Maxim" безотносительно того,
+        # какой провайдер реально активен — живой лог 23.09 поймал
+        # MiniMax `male-qn-qingse`, а <tts_voice> всё равно показывал
+        # Yandex-имя. `current_voice` выше уже учитывает
+        # фактический голос после фолбэка (issue #1229) — берём
+        # его, а не статику, и при его отсутствии — дефолт
+        # АКТИВНОГО провайдера, а не Yandex.
+        tts_voice = _resolve_tts_voice_tag(current_voice, tts_provider)
 
         # hardware (если есть доступ к батарее через /robot_status tool,
         # модель сама вызовет — но snapshot даёт baseline)

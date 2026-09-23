@@ -453,19 +453,20 @@ def test_speaker_context_without_system_prompt_is_first(
     assert sent[1].role == "user"
 
 
-def test_dynamic_system_sits_last_before_the_user_turn(
+def test_dynamic_system_folded_into_the_user_turn(
     llm: _FakeLLMProvider,
     tools_provider: _FakeToolProvider,
     memory: _FakeMemoryStore,
     dsm: DialogueStateMachine,
 ) -> None:
-    """Волатильный снапшот стоит вплотную к текущей реплике, а не в шапке.
+    """Issue #2817 — снапшот НЕ отдельное system-сообщение перед user.
 
-    Раньше ``dynamic_system`` вставлялся в ``messages[1]`` — то есть перед
-    всей историей. Модель читала «вот что происходит сейчас», а следом
-    двадцать ходов прошлого разговора, и отличить, что снапшот новее, было
-    не по чему. Порядок сообщений — единственный сигнал времени, который у
-    неё есть, поэтому снапшот теперь последний перед user.
+    Живой лог 23.09 (MiniMax-M2): модель ответила на отдельное
+    system-сообщение с ``<system_context>`` ("Системное уведомление
+    принято к сведению...") и проигнорировала следующий за ним
+    user-ход. Снапшот теперь склеен в ОДНО user-сообщение вместе
+    с текстом — последнее сообщение этого хода всегда user и это
+    единственное сообщение, требующее ответа.
     """
     obj = AgentCore(
         llm=llm,
@@ -482,14 +483,15 @@ def test_dynamic_system_sits_last_before_the_user_turn(
     ))
     sent = llm.calls[0][0]
     assert sent[0].content == "БАЗОВЫЙ ПРОМПТ"
-    # speaker_context — идентичность собеседника, остаётся в шапке.
+    # speaker_context — остаётся в шапке.
     assert sent[1].role == "system"
     assert "Контекст о собеседнике" in sent[1].content
-    # Снапшот — предпоследний, вплотную к реплике.
-    assert sent[-2].role == "system"
-    assert "<system_context>" in sent[-2].content
+    # Снапшот и реплика юзера — ОДНО сообщение, последнее в списке.
     assert sent[-1].role == "user"
-    assert sent[-1].content == "привет"
+    assert "<system_context>" in sent[-1].content
+    assert sent[-1].content.endswith("привет")
+    # Никакого role=system между шапкой/историей и этим user-ходом.
+    assert all(m.role != "system" for m in sent[2:-1])
 
 
 def test_dynamic_system_stays_after_history(
@@ -498,7 +500,8 @@ def test_dynamic_system_stays_after_history(
     memory: _FakeMemoryStore,
     dsm: DialogueStateMachine,
 ) -> None:
-    """С непустой историей снапшот всё равно оказывается ПОСЛЕ неё."""
+    """С непустой историей снапшот всё равно оказывается ПОСЛЕ неё, и
+    по-прежнему НЕ отдельным role=system сообщением (issue #2817)."""
     from rob_box_harness.memory import Turn
 
     obj = AgentCore(
@@ -521,13 +524,61 @@ def test_dynamic_system_stays_after_history(
     sent = llm.calls[0][0]
     contents = [m.content for m in sent]
     assert "старая реплика" in contents
-    snapshot = next(i for i, m in enumerate(sent) if "СВЕЖЕЕ" in m.content)
     history = contents.index("старая реплика")
+    # Снапшот теперь живёт ВНУТРИ последнего user-сообщения,
+    # а не как отдельная запись в contents — ищем его как подстроку.
+    snapshot = next(
+        i for i, c in enumerate(contents) if "СВЕЖЕЕ" in c
+    )
     assert snapshot > history, (
         "снапшот обязан стоять после истории — иначе модель не может "
         f"понять, что он свежее: {[m.role for m in sent]}"
     )
     assert sent[-1].role == "user"
+    assert sent[snapshot] is sent[-1], "снапшот должен быть частью user-хода"
+
+
+def test_no_system_message_immediately_precedes_the_current_user_turn(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """Issue #2817 / #2766 — инвариант: последнее сообщение этого хода всегда
+    ``role=user``, и сообщение прямо перед ним (конец истории) не
+    ``role=system``. Живой регресс (issue #2817): [...assistant(предыдущий ответ),
+    system(<system_context>...с privacy_note...), user(текст)] — MiniMax ответила
+    на system-сообщение вместо реплики пользователя. С непустой историей
+    (a не шапкой, где легитимно живёт speaker_context) сообщение перед
+    user-ходом — это последний ход истории (assistant), никогда не system.
+    """
+    from rob_box_harness.memory import Turn
+
+    obj = AgentCore(
+        llm=llm,
+        tools=tools_provider,
+        memory=memory,
+        dsm=dsm,
+        system_prompt="БАЗОВЫЙ ПРОМПТ",
+        history_trim_limit=20,
+    )
+    obj._turn_window.extend([
+        Turn(role="user", content="доброе утро"),
+        Turn(role="assistant", content="доброе утро!"),
+    ])
+    _wake(obj)
+    asyncio.run(obj.process_input(
+        "привет",
+        dynamic_system="<system_context><user_profile><name>unknown</name></user_profile></system_context>",
+    ))
+    sent = llm.calls[0][0]
+    assert sent[-1].role == "user"
+    assert sent[-2].role != "system", (
+        "role=system вплотную перед текущим user-ходом — тот самый "
+        f"паттерн из issue #2817: {[m.role for m in sent]}"
+    )
+    assert sent[-2].role == "assistant"
+    assert sent[-2].content == "доброе утро!"
 
 
 # ---------------------------------------------------------------------------
@@ -775,9 +826,14 @@ def test_two_agent_configs_one_engine() -> None:
     assert persona_msgs[0][0] == "system"
     assert "РОББОКС" in persona_msgs[0][1]
     assert "ТАРС" in operator_msgs[0][1]
-    # Срез доезжает последним системным сообщением перед репликой.
-    assert persona_msgs[-2] == ("system", "ПЛЕЕР: сначала gen_list_library, потом gen_play_from_library.")
-    assert operator_msgs[-2] == ("system", "ОПЕРАТОР: для озвучки роботом вызывай say.")
+    # Срез доезжает внутри последнего user-сообщения (issue #2817 —
+    # склеен с репликой, а не отдельным system-сообщением перед ней).
+    assert persona_msgs[-1][0] == "user"
+    assert "ПЛЕЕР: сначала gen_list_library, потом gen_play_from_library." in persona_msgs[-1][1]
+    assert persona_msgs[-1][1].endswith("поставь музыку")
+    assert operator_msgs[-1][0] == "user"
+    assert "ОПЕРАТОР: для озвучки роботом вызывай say." in operator_msgs[-1][1]
+    assert operator_msgs[-1][1].endswith("поставь музыку")
     # Поведение разное.
     assert persona_msgs != operator_msgs
     assert core_persona.known_skills() == ("player",)
