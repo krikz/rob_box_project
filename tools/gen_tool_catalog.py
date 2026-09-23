@@ -387,6 +387,69 @@ def _drum_styles() -> list[str]:
     raise ToolSourceError(f"DRUM_STYLES not found in {path}")
 
 
+def _harmonize_constant(name: str) -> Any:
+    """Top-level constant of ``core/harmonize.py``, read by AST (ADR-0132 PR-4).
+
+    Like :func:`_drum_styles`, but the value may reference other literal
+    top-level constants by name (``KNOB_VALUES`` is written with ``AUTO``),
+    so those names are substituted before ``literal_eval``.
+    """
+    import ast
+
+    path = REPO_ROOT / "src" / "rob_box_mcp_tools" / "rob_box_mcp_tools" / "core" / "harmonize.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    known = _collect_module_constants(tree)
+    for node in tree.body:
+        target = node.target if isinstance(node, ast.AnnAssign) else (
+            node.targets[0] if isinstance(node, ast.Assign) else None
+        )
+        if isinstance(target, ast.Name) and target.id == name and node.value is not None:
+            value = _SubstituteNames(known).visit(node.value)
+            return ast.literal_eval(ast.fix_missing_locations(value))
+    raise ToolSourceError(f"{name} not found in {path}")
+
+
+class _SubstituteNames(ast.NodeTransformer):
+    """Replace ``Name`` nodes by the literal value of a known constant."""
+
+    def __init__(self, known: dict[str, Any]) -> None:
+        self._known = known
+
+    def visit_Name(self, node: ast.Name) -> ast.AST:  # noqa: N802 — ast API
+        if node.id in self._known:
+            return ast.copy_location(ast.Constant(self._known[node.id]), node)
+        return node
+
+
+def _harmonize_knob(knob: str):
+    """``compose_music.<knob>`` enum — ``harmonize.KNOB_VALUES[knob]`` (ADR-0132 PR-4)."""
+
+    def resolve() -> list[str]:
+        values = list(_harmonize_constant("KNOB_VALUES")[knob])
+        if not values:
+            raise ToolSourceError(f"harmonize.KNOB_VALUES[{knob!r}] is empty")
+        return values
+
+    return resolve
+
+
+def _on_off_auto() -> list[str]:
+    """``compose_music.counter``/``theme_octaves`` enum — ``arranger.ON_OFF_AUTO``."""
+    return list(_load_arranger().ON_OFF_AUTO)
+
+
+def _lead_octave_choices() -> list[str]:
+    """``compose_music.lead_octave`` enum — mirrors ``compose_knobs.lead_octave_choices``.
+
+    ``compose_knobs`` imports ``harmonize`` relatively and cannot be loaded as
+    a file, so the two-line rule is repeated here; ``test_compose_music_knobs``
+    pins the catalog enum to the tool's own one.
+    """
+    lo, hi = _harmonize_constant("LEAD_OCTAVE_RANGE")
+    words = list(_harmonize_constant("LEAD_OCTAVE_WORDS"))
+    return words + [f"{n:+d}" if n else "0" for n in range(lo, hi + 1)]
+
+
 #: ``(tool_name, param_name)`` → resolver, for enums built from runtime data
 #: rather than from a literal in the tool module.
 DYNAMIC_ENUMS = {
@@ -396,6 +459,17 @@ DYNAMIC_ENUMS = {
     ("compose_music", "scale"): _composition_scales,
     ("compose_music", "groove_loop"): _groove_loops,
     ("compose_music", "drum_style"): _drum_styles,
+    # ADR-0132 PR-4: ручки аранжировщика — значения из ядра, не копия.
+    ("compose_music", "key_detection"): _harmonize_knob("key_detection"),
+    ("compose_music", "harmonic_rhythm"): _harmonize_knob("harmonic_rhythm"),
+    ("compose_music", "density"): _harmonize_knob("density"),
+    ("compose_music", "bass_style"): _harmonize_knob("bass_style"),
+    ("compose_music", "bass_approach"): _harmonize_knob("bass_approach"),
+    ("compose_music", "pad_style"): _harmonize_knob("pad_style"),
+    ("compose_music", "lead_outliers"): _harmonize_knob("lead_outliers"),
+    ("compose_music", "counter"): _on_off_auto,
+    ("compose_music", "theme_octaves"): _on_off_auto,
+    ("compose_music", "lead_octave"): _lead_octave_choices,
 }
 
 

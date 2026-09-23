@@ -1,7 +1,9 @@
 """compose_music / lookup_melody отдают партитуру и анализ (ADR-0132, PR-1).
 
-* ``compose_music`` кладёт ``data["score"]`` (dict + text) и дописывает
-  короткий текст в ``message``; ``data["alternatives"]`` (#2896) остаётся.
+* ``compose_music`` отдаёт модели ОДИН раз компактный текст партитуры —
+  ``data["score"]`` (строка); структурный dict — ``tool.last_score`` и лог,
+  в ответ модели не идёт (ADR-0132 PR-4, бюджет контекста);
+  ``data["alternatives"]`` (#2896) остаётся.
 * Предупреждения санитайзера (``execute_code`` → ``warnings``) больше не
   теряются: попадают в партитуру и в сообщение.
 * ``lookup_melody`` отдаёт блок анализа: тональность+альтернативы,
@@ -48,15 +50,15 @@ def test_compose_by_name_returns_score_and_keeps_alternatives(mock_node, rtttl_l
     tool, _mgr = _compose_tool(mock_node, rtttl_library)
     result = tool.execute(name="national anthem of russia", **_ARR)
     assert result.success is True
-    score = result.data["score"]
+    score = tool.last_score
     assert score["title"] == result.data["title"]
     assert len(score["chords"]) == score["theme"]["bars"]
     assert {"lead", "bass", "pad"} <= set(score["parts"])
     assert "density" in score["decisions"]
-    assert score["text"] and score["text"] in result.message
-    assert "Партитура" in result.message
+    assert score["text"] and result.data["score"] == score["text"]
+    assert "Партитура" in result.data["score"]
     assert "alternatives" in result.data  # #2896 сосуществует с партитурой
-    json.dumps(result.data["score"], ensure_ascii=False)  # уходит в JSON-ответ
+    json.dumps(score, ensure_ascii=False)  # уходит в лог JSON-ом
 
 
 def test_sanitizer_warnings_are_forwarded(mock_node, rtttl_library):
@@ -67,17 +69,17 @@ def test_sanitizer_warnings_are_forwarded(mock_node, rtttl_library):
     )
     result = tool.execute(name="tetris", **_ARR)
     assert result.success is True
-    assert "W1 предупреждение санитайзера" in result.data["score"]["warnings"]
-    assert "W1 предупреждение санитайзера" in result.message
+    assert "W1 предупреждение санитайзера" in tool.last_score["warnings"]
+    assert "W1 предупреждение санитайзера" in result.data["score"]
 
 
 def test_heavy_brass_safety_net_is_visible_in_score(mock_node, rtttl_library):
     tool, _mgr = _compose_tool(mock_node, rtttl_library)
-    result = tool.execute(
+    tool.execute(
         name="national anthem of russia", lead_synth="imperialbrass",
         bass_synth="moogbass", pad_synth="strings",
     )
-    score = result.data["score"]
+    score = tool.last_score
     assert any("safety net imperialbrass" in w for w in score["warnings"])
     assert score["decisions"]["counter"].startswith("auto→off")
 
@@ -86,8 +88,8 @@ def test_explicit_root_scale_with_name_reach_the_score(mock_node, rtttl_library)
     """ADR-0132 PR-2: root/scale при name= больше не игнорируются —
     аккомпанемент построен в заданной тональности, партитура это называет."""
     tool, _mgr = _compose_tool(mock_node, rtttl_library)
-    result = tool.execute(name="tetris", root="F#", scale="major", **_ARR)
-    score = result.data["score"]
+    tool.execute(name="tetris", root="F#", scale="major", **_ARR)
+    score = tool.last_score
     assert (score["key"]["root"], score["key"]["scale"]) == ("F#", "major")
     assert score["key"]["source"] == "задана вызовом"
     assert score["decisions"]["key"].startswith("explicit→F# major (auto ")
@@ -102,8 +104,8 @@ def test_composed_track_without_name_has_score(mock_node, rtttl_library):
         pad_notes="0, 2, 4", bass_synth="dub", bass_notes="0, 4",
     )
     assert result.success is True
-    assert result.data["score"]["theme"] is None
-    assert result.data["score"]["text"] in result.message
+    assert tool.last_score["theme"] is None
+    assert result.data["score"] == tool.last_score["text"]
 
 
 def test_score_failure_does_not_break_playing_track(mock_node, rtttl_library):
@@ -113,7 +115,8 @@ def test_score_failure_does_not_break_playing_track(mock_node, rtttl_library):
     ):
         result = tool.execute(name="tetris", **_ARR)
     assert result.success is True
-    assert "boom" in result.data["score"]["error"]
+    assert "boom" in tool.last_score["error"]
+    assert result.data["score"].startswith("Партитура не собрана") and "boom" in result.data["score"]
 
 
 def test_lookup_melody_returns_analysis(mock_node, rtttl_library):

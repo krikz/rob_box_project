@@ -40,6 +40,7 @@ from rob_box_voice.core.sc_only_custom_synthdefs import (
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 from ..core.arranger import (
     FORMS,
+    ON_OFF_AUTO,
     VALID_ROOTS,
     SCALE_INTERVALS,
     ArrangementError,
@@ -56,7 +57,8 @@ from ..core.arranger import (
 )
 from ..core import renardo_sanitizer, sample_loops
 from ..core.score_sheet import analyze_melody, describe
-from ..core.harmonize import DRUM_STYLES, check_drum_style, style_patterns
+from ..core.compose_knobs import ComposeKnobs, build_knobs, lead_octave_choices
+from ..core.harmonize import DRUM_STYLES, KNOB_VALUES, check_drum_style, style_patterns
 from ..core.rtttl_compose import melody_to_compose_params, rtttl_to_melody
 from ..core.rtttl_library import RtttlLibrary
 
@@ -2174,6 +2176,11 @@ class ComposeMusicTool(MCPTool):
         #: настолько подробно, чтобы заметить, что третий трек подряд идёт
         #: в ля миноре с тем же движением тоники.
         self._last_flat: Dict[str, Any] = {}
+        #: Полная структурная партитура последнего успешного трека (ADR-0132).
+        #: В ответ модели НЕ идёт (там только компактный текст, PR-4: ~3.8 КБ
+        #: JSON на каждый вызов съедали контекст) — для логов, тестов и
+        #: внутренних потребителей.
+        self.last_score: Optional[Dict[str, Any]] = None
 
     @staticmethod
     def _fmt(value: Any) -> str:
@@ -2261,12 +2268,18 @@ class ComposeMusicTool(MCPTool):
                     "lead_synth + bass_synth + pad_synth (по желанию "
                     "drums_sample/hats_sample, form и bpm как оверрайд "
                     "темпа). lead_notes/lead_dur/bass_notes/pad_notes/"
-                    "progression/drums/hats/perc указывать не нужно и не "
+                    "progression/perc указывать не нужно и не "
                     "импровизируй ноты по памяти — они будут проигнорированы. "
                     "root/scale при name= работают: аккомпанемент "
                     "перегармонизируется в заданной тональности, тема "
                     "играется как есть; без них тональность определится "
-                    "по нотам (видно в партитуре)."
+                    "по нотам (видно в партитуре). drums/hats при name= "
+                    "заменяют выведенный рисунок ударных. Аранжировку "
+                    "меняют ручки (key_detection, chords, harmonic_rhythm, "
+                    "density, bass_style, bass_approach, pad_style, "
+                    "pad_register, counter, theme_octaves, lead_octave, "
+                    "lead_outliers, levels) — по умолчанию auto (у "
+                    "lead_outliers — fix), это прежнее звучание."
                 ),
                 required=False,
             ),
@@ -2337,8 +2350,9 @@ class ComposeMusicTool(MCPTool):
                 "o — малый, n — перкуссия, точка — пауза. Длина 4, 8 или 16 "
                 "знаков. Рисунок сочиняй под жанр (ровная четверть, бэкбит, "
                 "брейкбит, синкопа) — не переноси один и тот же из трека в "
-                "трек. Пропусти для музыки без ударных. Игнорируется при "
-                "заданном name: рисунок ударных выводится из атак мелодии.",
+                "трек. Пропусти для музыки без ударных. При name= заменяет "
+                "рисунок, выведенный из атак мелодии (по умолчанию — "
+                "выведенный).",
                 required=False,
             ),
             MCPToolParameter(
@@ -2359,8 +2373,9 @@ class ComposeMusicTool(MCPTool):
                 description="Паттерн хэтов: дефис — удар, точка — пауза. "
                 "Длина 4, 8 или 16 знаков. Плотность хэтов — половина "
                 "жанра: ровные шестнадцатые, скупые восьмые и синкопа "
-                "звучат по-разному на одном и том же бите. Игнорируется "
-                "при заданном name: хэты выводит система из мелодии.",
+                "звучат по-разному на одном и том же бите. При name= "
+                "заменяет хэты, выведенные из мелодии (по умолчанию — "
+                "выведенные).",
                 required=False,
             ),
             MCPToolParameter(
@@ -2420,7 +2435,7 @@ class ComposeMusicTool(MCPTool):
                     "это сухие соло-инструменты с коротким релизом, "
                     "не превращающие трек в кашу; "
                     "imperialbrass — ТОЛЬКО как секция/хоровой подклад "
-                    "(theme_octaves=False, counter_synth='none' или "
+                    "(theme_octaves=off, counter_synth='none' или "
                     "counter_synth вообще не указывай — оба варианта "
                     "отключают второй голос), не как "
                     "солирующая линия: у imperialbrass тяжёлый envelope "
@@ -2507,8 +2522,8 @@ class ComposeMusicTool(MCPTool):
                     "сочинённой музыке (без name) такого слоя нет вообще. "
                     "Даже при name он звучит, только если тема плотная — "
                     "марш/гимн/чиптюн, частые атаки; на разреженной, "
-                    "тихой теме второго голоса нет, и параметр окажется "
-                    "no-op. По умолчанию (поле не задано) — тот же тембр, "
+                    "тихой теме второго голоса нет (если не задать ручку "
+                    "counter=on). По умолчанию (поле не задано) — тот же тембр, "
                     "что lead_synth: унисон в терцию, безопасный вариант. "
                     "Контрастный тембр звучит богаче — тема медью "
                     "(imperialbrass), второй голос струнными (strings), а "
@@ -2523,19 +2538,18 @@ class ComposeMusicTool(MCPTool):
             ),
             MCPToolParameter(
                 name="theme_octaves",
-                type="boolean",
+                type="string",
                 description=(
-                    "Удвоение темы октавой вниз — вес, характерный для "
-                    "марша/гимна. Как и counter_synth, действует ТОЛЬКО "
-                    "при заданном name и только на плотной теме; на "
-                    "разреженной теме или теме с нотами ниже C4 удвоения "
-                    "не будет независимо от значения флага. По умолчанию "
-                    "true (включено). Поставь false, если удвоение "
-                    "делает тему слишком грузной там, где нужна тонкая "
-                    "одинокая линия — например лиричная минорная тема, "
-                    "где монофоничность часть характера."
+                    "Ручка (только с name=): удвоение темы октавой вниз — "
+                    "вес марша/гимна. auto — только на плотной теме не "
+                    "ниже C4 (у imperialbrass выключено: длинный релиз "
+                    "даёт эхо); on — всегда; off — никогда (тонкая "
+                    "одинокая линия). По умолчанию auto."
                 ),
                 required=False,
+                enum=list(ON_OFF_AUTO),
+                enum_strict=False,
+                default="auto",
             ),
             MCPToolParameter(
                 name="repeat",
@@ -2599,6 +2613,147 @@ class ComposeMusicTool(MCPTool):
                 "они не звучат как жанр независимо от инструментов.",
                 required=False,
             ),
+            # ADR-0132 PR-4: ручки аранжировщика (вариант A — отдельные
+            # параметры). Все, кроме levels, действуют только с name=
+            # (без него — ошибка, не тихий no-op). Значения — из ядра
+            # (harmonize.KNOB_VALUES / arranger.ON_OFF_AUTO), в каталог
+            # их кладёт tools/gen_tool_catalog.py::DYNAMIC_ENUMS.
+            MCPToolParameter(
+                name="key_detection",
+                type="string",
+                description="Ручка (только с name=): как определять тональность "
+                "темы. auto — профиль Крумхансла + опора на тоническое "
+                "трезвучие; profile — чистый профиль Крумхансла (попробуй, "
+                "если партитура показала спорную тональность). Точную "
+                "тональность задают root/scale. По умолчанию auto.",
+                required=False,
+                enum=list(KNOB_VALUES["key_detection"]),
+                enum_strict=False,
+                default="auto",
+            ),
+            MCPToolParameter(
+                name="chords",
+                type="string",
+                description="Ручка (только с name=): свои аккорды вместо "
+                "выведенных — имена по тактам через «|», по кругу, напр. "
+                "Am|F|C|G (минор — «m», бемоль — «b»). Аккордов не больше, "
+                "чем тактов темы. По умолчанию auto — из мелодии.",
+                required=False,
+                default="auto",
+            ),
+            MCPToolParameter(
+                name="harmonic_rhythm",
+                type="string",
+                description="Ручка (только с name=): как часто меняются "
+                "аккорды. auto — по мелодии (окно полтакта, одинаковые "
+                "склеиваются); bar — не чаще раза в такт (спокойнее); "
+                "half — каждые полтакта. По умолчанию auto.",
+                required=False,
+                enum=list(KNOB_VALUES["harmonic_rhythm"]),
+                enum_strict=False,
+                default="auto",
+            ),
+            MCPToolParameter(
+                name="density",
+                type="string",
+                description="Ручка (только с name=): плотность аранжировки. "
+                "auto — по частоте атак темы; sparse — бас и пэд реже, без "
+                "второго голоса и октав; dense — шаг в долю, второй голос и "
+                "октавы. По умолчанию auto.",
+                required=False,
+                enum=list(KNOB_VALUES["density"]),
+                enum_strict=False,
+                default="auto",
+            ),
+            MCPToolParameter(
+                name="bass_style",
+                type="string",
+                description="Ручка (только с name=): басовая линия. auto — "
+                "тоны аккорда; root — только основные тоны; root_fifth — "
+                "основной тон и квинта; pedal — тоника лада на весь такт; "
+                "off — без баса. По умолчанию auto.",
+                required=False,
+                enum=list(KNOB_VALUES["bass_style"]),
+                enum_strict=False,
+                default="auto",
+            ),
+            MCPToolParameter(
+                name="bass_approach",
+                type="string",
+                description="Ручка (только с name=): проходящая нота баса "
+                "в следующий аккорд. auto — в тактах из 2+ нот; on — везде; "
+                "off — без подходов. По умолчанию auto.",
+                required=False,
+                enum=list(KNOB_VALUES["bass_approach"]),
+                enum_strict=False,
+                default="auto",
+            ),
+            MCPToolParameter(
+                name="pad_style",
+                type="string",
+                description="Ручка (только с name=): подклад. auto (= stab) — "
+                "короткие удары аккорда по долям; sustain — аккорд тянется "
+                "весь такт; off — без подклада. По умолчанию auto.",
+                required=False,
+                enum=list(KNOB_VALUES["pad_style"]),
+                enum_strict=False,
+                default="auto",
+            ),
+            MCPToolParameter(
+                name="pad_register",
+                type="string",
+                description="Ручка (только с name=): регистр подклада в "
+                "звучащих MIDI. auto — под корпусом темы и над басом; "
+                "low — 48-60 (C3-C4); mid — 55-67 (G3-G4); high — 60-72 "
+                "(C4-C5); или свой диапазон «низ-верх», напр. 55-67 (в "
+                "36..96, не уже октавы). По умолчанию auto.",
+                required=False,
+                default="auto",
+            ),
+            MCPToolParameter(
+                name="counter",
+                type="string",
+                description="Ручка (только с name=): второй голос "
+                "(контрмелодия, тембр — counter_synth). auto — только на "
+                "плотной теме; on — и на редкой; off — без второго голоса. "
+                "По умолчанию auto.",
+                required=False,
+                enum=list(ON_OFF_AUTO),
+                enum_strict=False,
+                default="auto",
+            ),
+            MCPToolParameter(
+                name="lead_octave",
+                type="string",
+                description="Ручка (только с name=): регистр мелодии. auto — "
+                "к рабочему регистру; keep — как записано в базе; -2..+2 — "
+                "столько октав от записанного. По умолчанию auto.",
+                required=False,
+                enum=lead_octave_choices(),
+                enum_strict=False,
+                default="auto",
+            ),
+            MCPToolParameter(
+                name="lead_outliers",
+                type="string",
+                description="Ручка (только с name=): одиночные ноты темы "
+                "дальше октавы от её корпуса. fix — перенести на октаву к "
+                "корпусу; keep — играть как записано. По умолчанию fix.",
+                required=False,
+                enum=list(KNOB_VALUES["lead_outliers"]),
+                enum_strict=False,
+                default="fix",
+            ),
+            MCPToolParameter(
+                name="levels",
+                type="string",
+                description="Ручка: громкость партий — множитель к балансу, "
+                "«роль=число» через запятую, напр. bass=0.5,pad=0.8. Роли: "
+                "lead, bass, pad, counter, drums, hats, perc, loop; 0 — "
+                "молчит, 1 — как есть, максимум 2. Работает и без name. "
+                "По умолчанию — все 1.",
+                required=False,
+            ),
         ]
 
     @property
@@ -2628,6 +2783,8 @@ class ComposeMusicTool(MCPTool):
         lead_synth: Optional[str],
         counter_synth: Optional[str],
         theme_octaves: bool,
+        counter_mode: str = "auto",
+        octaves_mode: str = "auto",
     ) -> Tuple[Optional[str], bool, bool]:
         """Отключить counter_synth и theme_octaves для тяжёлых брасс-лидов.
 
@@ -2653,6 +2810,9 @@ class ComposeMusicTool(MCPTool):
         нормализуется в ``spec_from_flat`` до ``None`` и слой просто не
         добавляется — какое конкретно слово используем здесь, для
         результата не важно, но не 'none', чтобы не путать читающего код.
+
+        ADR-0132 PR-4: явная ручка ``counter``/``theme_octaves`` (не
+        ``auto``) — тоже явный выбор модели, её safety net не трогает.
         """
         if not name:
             return counter_synth, theme_octaves, False
@@ -2665,11 +2825,12 @@ class ComposeMusicTool(MCPTool):
         # слово-отключение ('none'/'off'/'null') — тогда безопас-нету
         # нечего перетирать, нужный результат (слоя нет) уже запрошен.
         # Перетираем только когда там РЕАЛЬНЫЙ синт.
-        counter_is_default = normalize_synth(counter_synth) is None
+        counter_is_default = counter_mode == "auto" and normalize_synth(counter_synth) is None
         effective_counter: Optional[str] = "off" if counter_is_default else counter_synth
         # theme_octaves: True (default) → False; явный False не трогаем.
-        effective_octaves = False if theme_octaves else theme_octaves
-        did_override = counter_is_default or theme_octaves is True
+        octaves_default = octaves_mode == "auto" and theme_octaves is True
+        effective_octaves = False if octaves_default else theme_octaves
+        did_override = counter_is_default or octaves_default
         return effective_counter, effective_octaves, did_override
 
     @staticmethod
@@ -2709,6 +2870,7 @@ class ComposeMusicTool(MCPTool):
         pad_synth: Optional[str],
         pad_notes: Optional[str],
         drum_style: str = "auto",
+        options: Any = None,
     ) -> Tuple[
         Optional[MCPToolResult],
         Any,
@@ -2730,7 +2892,8 @@ class ComposeMusicTool(MCPTool):
         ударные (:mod:`core.harmonize`). Именно она, а не присланные
         моделью ноты, становится аккомпанементом. ``params`` — полный
         выход ``melody_to_compose_params`` (там ``decisions`` для партитуры,
-        ADR-0132); без ``name`` — пустой dict.
+        ADR-0132); без ``name`` — пустой dict. ``options`` — ручки
+        ``HarmonizeOptions`` (ADR-0132 PR-4); ``None`` — все ``auto``.
         """
         if not name:
             return None, bpm, root, scale, None, None, None, None, {}
@@ -2753,13 +2916,15 @@ class ComposeMusicTool(MCPTool):
             # (раньше при name= молча игнорировались).
             params = melody_to_compose_params(
                 rtttl_to_melody(rec["rtttl"]), drum_style=drum_style,
-                root=root, scale=scale,
+                root=root, scale=scale, options=options,
             )
         except ValueError as exc:
+            # Ошибку ручки (напр. аккордов chords больше, чем тактов темы)
+            # harmonize тоже бросает ValueError — текст называет причину.
             return (
                 MCPToolResult(
                     success=False,
-                    error=f"Не удалось разобрать RTTTL мелодии {name!r}: {exc}",
+                    error=f"Не удалось построить аранжировку мелодии {name!r}: {exc}",
                 ),
                 None, None, None, None, None, None, None, {},
             )
@@ -2831,6 +2996,41 @@ class ComposeMusicTool(MCPTool):
             return None, style, drums, hats
         style_drums, style_hats = style_patterns(style, dense=False)
         return None, style, drums or style_drums, hats or style_hats
+
+    @staticmethod
+    def _parse_knobs(
+        name: Optional[str],
+        drums: Optional[str],
+        hats: Optional[str],
+        values: Dict[str, Any],
+    ) -> Tuple[Optional[MCPToolResult], Optional[ComposeKnobs]]:
+        """Ручки аранжировщика из параметров вызова (ADR-0132 PR-4).
+
+        Возвращает ``(ошибка, ручки)``. Неизвестное значение — ошибка со
+        списком допустимых (не тихая замена). Ручки выведенной аранжировки
+        без ``name=`` — тоже ошибка: сочинённый трек строится из нот модели,
+        и такая ручка молча ничего бы не сделала. При ``name=`` явные
+        ``drums``/``hats`` заменяют выведенный рисунок (раньше отбрасывались).
+        """
+        try:
+            knobs = build_knobs(
+                values, drums=drums if name else None, hats=hats if name else None
+            )
+        except ValueError as exc:
+            return MCPToolResult(success=False, error=str(exc)), None
+        orphaned = [] if name else knobs.name_only_set()
+        if orphaned:
+            return MCPToolResult(
+                success=False,
+                error=(
+                    f"Ручки {', '.join(orphaned)} действуют только с name= "
+                    "(аранжировка, выведенная из известной мелодии). Для "
+                    "сочинённого трека бас, пэд и аккорды задаются нотами "
+                    "(bass_notes, pad_notes, progression) — убери эти ручки "
+                    "и повтори вызов; levels работает всегда."
+                ),
+            ), None
+        return None, knobs
 
     @staticmethod
     def _groove_loop_denial(groove_loop: Optional[str]) -> Optional[MCPToolResult]:
@@ -2942,11 +3142,23 @@ class ComposeMusicTool(MCPTool):
         pad_notes: Optional[str] = None,
         progression: Optional[str] = None,
         counter_synth: Optional[str] = None,
-        theme_octaves: bool = True,
+        theme_octaves: Any = "auto",
         repeat: bool = False,
         swing: float = 0.0,
         groove_loop: Optional[str] = None,
         drum_style: Optional[str] = None,
+        key_detection: Optional[str] = None,
+        chords: Optional[str] = None,
+        harmonic_rhythm: Optional[str] = None,
+        density: Optional[str] = None,
+        bass_style: Optional[str] = None,
+        bass_approach: Optional[str] = None,
+        pad_style: Optional[str] = None,
+        pad_register: Optional[str] = None,
+        counter: Optional[str] = None,
+        lead_octave: Any = None,
+        lead_outliers: Optional[str] = None,
+        levels: Any = None,
     ) -> MCPToolResult:
         # Единая точка нормализации «синта нет» (issue #2836): модель
         # иногда пишет lead_synth/bass_synth/pad_synth='none' буквально —
@@ -2972,13 +3184,24 @@ class ComposeMusicTool(MCPTool):
         err, style, drums, hats = self._apply_drum_style(drum_style, name, drums, hats)
         if err is not None:
             return err
+        # ADR-0132 PR-4: ручки аранжировщика → опции ядра.
+        err, knobs = self._parse_knobs(name, drums, hats, dict(
+            key_detection=key_detection, chords=chords,
+            harmonic_rhythm=harmonic_rhythm, density=density,
+            bass_style=bass_style, bass_approach=bass_approach,
+            pad_style=pad_style, pad_register=pad_register, counter=counter,
+            theme_octaves=theme_octaves, lead_octave=lead_octave,
+            lead_outliers=lead_outliers, levels=levels,
+        ))
+        if knobs is None:
+            return cast(MCPToolResult, err)
         # Известная мелодия по имени: ищем в RTTTL-библиотеке, конвертируем
         # ноты в параметры композитора и заполняем ими вызов.
         err, bpm, root, scale, lead_midi, lead_dur, melody_title, harmony, prep = (
             self._resolve_rtttl_params(
                 name, variants, bpm, root, scale,
                 lead_synth, drums, bass_synth, bass_notes, pad_synth, pad_notes,
-                drum_style=style,
+                drum_style=style, options=knobs.harmonize,
             )
         )
         if err is not None:
@@ -3012,7 +3235,9 @@ class ComposeMusicTool(MCPTool):
             name=name,
             lead_synth=lead_synth,
             counter_synth=counter_synth,
-            theme_octaves=theme_octaves,
+            theme_octaves=knobs.theme_octaves,
+            counter_mode=str(knobs.arrange.counter),
+            octaves_mode=str(knobs.arrange.theme_octaves),
         )
         if did_override:
             self.log_info(
@@ -3071,6 +3296,7 @@ class ComposeMusicTool(MCPTool):
                 repeat=repeat,
                 swing=swing,
                 groove_loop=groove_loop,
+                options=knobs.arrange,
             )
             code = render(spec)
         except ArrangementError as exc:
@@ -3177,19 +3403,29 @@ class ComposeMusicTool(MCPTool):
         if name:
             result["alternatives"] = self._melody_alternatives(name, melody_title)
         # ADR-0132: партитура — что на самом деле сыграно и что автоматика
-        # решила за модель. Полная — в data, короткий текст — в message.
-        result["score"] = score
+        # решила за модель. PR-4: модели — ОДИН раз компактный текст
+        # (data["score"]); прод-путь (harness ros_mcp._result) отдаёт LLM
+        # repr(data), а message при наличии data не показывает вовсе, поэтому
+        # текст живёт в data, а не в message. Структурный dict (~3.8 КБ) в
+        # ответ не идёт — лог и self.last_score.
+        result["score"] = self._keep_score(score)
         repeat_warning = self._repeat_warning(flat)
         self._last_flat = flat
         message = self._format_compose_message(
             melody_title, form_summary(spec.form), duration_s, repeat_warning,
         )
-        score_text = (score or {}).get("text")
-        return MCPToolResult(
-            success=True,
-            data=result,
-            message=message + ("\n" + score_text if score_text else ""),
+        return MCPToolResult(success=True, data=result, message=message)
+
+    def _keep_score(self, score: Optional[Dict[str, Any]]) -> str:
+        """Запомнить полную партитуру (лог + ``last_score``), вернуть текст для модели."""
+        self.last_score = score
+        score = score or {}
+        self.log_debug(
+            "партитура: " + json.dumps(score, ensure_ascii=False, default=str)
         )
+        if score.get("text"):
+            return str(score["text"])
+        return f"Партитура не собрана: {score.get('error') or 'нет данных'}"
 
     def _notify_music_state(self) -> None:
         """Опубликовать /voice/music/state (issue 989 Fix C)."""
