@@ -173,6 +173,14 @@ _MUSIC_PRELUDE_TOOLS: frozenset[str] = frozenset(
     {"execute_music_code", "set_vibe_preset", "load_track"}
 )
 _VOICE_TOOLS: frozenset[str] = frozenset({"speak_text"})
+# Issue #2913 — ``register_speaker`` исполняется до реплик пачки: речь хода
+# ждёт исхода регистрации (dialogue_node ``TurnSpeechGate``), и ожидание
+# взводится только когда тул уже отправил запрос. Иначе в пачке
+# ``[speak_text, <медленный тул>, register_speaker]`` реплика успевала бы
+# уйти в TTS раньше, чем ход узнал, что регистрация вообще будет. Сам тул —
+# публикация в топик (миллисекунды), порядок речи и музыки не меняет.
+_REGISTER_FIRST_TOOLS: frozenset[str] = frozenset({"register_speaker"})
+_RUN_FIRST_TOOLS: frozenset[str] = _MUSIC_PRELUDE_TOOLS | _REGISTER_FIRST_TOOLS
 _DEFER_TO_END_TOOLS: frozenset[str] = frozenset(
     {"stop_music", "stop_navigation"}
 )
@@ -225,7 +233,8 @@ def _order_tool_calls(
 
     Returns ``(ordered, deferred_call_ids)``:
 
-    * ``ordered`` — stable partition: music prelude tools first, then the
+    * ``ordered`` — stable partition: music prelude tools and
+      ``register_speaker`` (issue #2913) first, then the
       remaining tools in their original relative order, then destructive
       tools last.
     * ``deferred_call_ids`` — ids of destructive calls whose side effect
@@ -242,7 +251,7 @@ def _order_tool_calls(
     def _partition_key(call: ToolCall) -> int:
         if call.name in _DEFER_TO_END_TOOLS:
             return 2
-        if call.name in _MUSIC_PRELUDE_TOOLS:
+        if call.name in _RUN_FIRST_TOOLS:
             return 0
         return 1
 
