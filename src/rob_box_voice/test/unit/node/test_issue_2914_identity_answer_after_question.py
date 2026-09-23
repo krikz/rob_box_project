@@ -278,3 +278,70 @@ class TestAnswerOnlyFromReplyAfterQuestion:
         _turn(n, "да это я", utterance_id="utt-706")
         assert _state(n)["confirmed"] is True
         assert n._current_speaker["name"] == "Саша"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Вторая половина #2914: ретрай гарда не говорит поверх вопроса
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Дословно из docker logs voice-assistant, run 35923951507 (комментарий в
+# issue #2914): ретрай #1777/#1762 по memory_search озвучил имя как факт
+# через 4 с после «Саша, это ты?».
+RETRY_LLM = (
+    "Здравствуй! Я здесь, всё в порядке. Помню: ты Саша, "
+    "чинишь технику по вечерам."
+)
+N705_RAW = "ты еще здесь помнишь меня"
+
+
+def _node_with_real_tool_guard():
+    """Как ``_node``, но гард #1777/#1762 настоящий: он сам решает, что
+    «ты еще здесь помнишь меня» требует memory_search, и диспатчит
+    синтетический ретрай (его ловим в ``n.dispatched``)."""
+    n = _node()
+    del n._apply_tool_skipped_guard
+    n._tool_retry_used = False
+    n._synthetic_retries_left = 3
+    n._reopen_dialogue_for_retry = MagicMock()
+    return n
+
+
+def _run_dispatched(n):
+    """Выполнить задиспатченные ходы так, как их выполнил бы loop."""
+    while n.dispatched:
+        text, kw = n.dispatched.pop(0)
+        kw = {k: v for k, v in kw.items() if k != "was_idle"}
+        _turn(n, text, **kw)
+
+
+class TestNoGuardRetryOverIdentityQuestion:
+    def test_memory_search_retry_does_not_speak_over_question(self, clock):
+        """Лог n705: вопрос → ретрай memory_search → «Помню: ты Саша».
+        В TTS должен остаться только вопрос."""
+        n = _node_with_real_tool_guard()
+        n.llm_reply = N705_LLM
+        _turn(n, N705_TEXT, utterance_id="utt-705", raw_user_command=N705_RAW)
+        assert n.tts == [QUESTION], n.tts
+
+        n.llm_reply = RETRY_LLM
+        _run_dispatched(n)
+
+        assert n.tts == [QUESTION], n.tts
+        # Вопрос по-прежнему ждёт ответа человека.
+        assert _state(n)["confirmed"] is None
+
+    def test_tool_retry_still_works_without_identity_question(self, clock):
+        """#1777/#1762 не сломан: без вопроса о личности ретрай идёт."""
+        n = _node_with_real_tool_guard()
+
+        class _Known:
+            async def resolve(self, utterance_id, timeout):
+                return {"is_known": True, "speaker_id": SASHA_ID,
+                        "name": "Саша", "confidence": 0.95}
+
+        n._utterance_speaker = _Known()
+        n.llm_reply = "Да, я здесь."
+        _turn(n, N705_TEXT, utterance_id="utt-705", raw_user_command=N705_RAW)
+        assert n.tts == ["Да, я здесь."], n.tts
+        assert len(n.dispatched) == 1, n.dispatched
+        assert n.dispatched[0][1].get("is_synthetic") is True

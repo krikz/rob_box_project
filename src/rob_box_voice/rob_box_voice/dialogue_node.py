@@ -2460,6 +2460,9 @@ class DialogueNode(Node):
                 f"не смог озвучить переспрос ({plan.get('kind')}): {exc!r}"
             )
             return
+        # Issue #2914 -- ретраи гардов этого хода говорить поверх вопроса
+        # не должны (см. _apply_post_turn_retry_guards).
+        self._identity_question_asked_in_turn = True
         # Issue #2888 -- ответ на tentative-вопрос читает свой путь #2809
         # (_resolve_pending_tentative_answer), склеивать там нечего.
         # Issue #2908 -- просьба повторить после отказа регистрации --
@@ -4553,6 +4556,8 @@ class DialogueNode(Node):
         # включая сам ретрай (иначе отложенный DIALOGUE_END залипнет).
         self._retry_dispatched_in_turn = False
         self._retry_budget_exhausted_in_turn = False
+        # Issue #2914 -- «в этом ходе прозвучал вопрос о личности».
+        self._identity_question_asked_in_turn = False
         guard_retry_pending = False
         # Issue #918 — turn может быть отменён или упасть ДО присваивания
         # result (speaker-профиль, LLM, тул-луп). Инициализируем None
@@ -4726,6 +4731,12 @@ class DialogueNode(Node):
                     retries_allowed=self._session_epoch_gate().retries_allowed(
                         turn_epoch=session_epoch, cancelled=turn_cancelled
                     ),
+                    # Issue #2914 -- вопрос о личности прозвучал вместо
+                    # ответа хода или прозвучит после него (leftover).
+                    identity_question_asked=(
+                        leftover_identity_question is not None
+                        or self._identity_question_asked_in_turn
+                    ),
                 )
             )
             # Issue #2874 — гуарды сказали своё: ход с ретраем молчит,
@@ -4797,6 +4808,7 @@ class DialogueNode(Node):
         was_dj_auto: bool,
         user_input: str,
         retries_allowed: bool,
+        identity_question_asked: bool = False,
     ) -> tuple[bool, bool]:
         """Music-гуард (Bug B/C) + tool-skipped гуард из ``finally`` хода.
 
@@ -4804,11 +4816,25 @@ class DialogueNode(Node):
         Issue #2835 — при ``retries_allowed=False`` (ход отменён barge-in'ом
         или «новой сессией», либо пережил сброс) гуарды не зовутся вовсе:
         ретрай такого хода — [CRITICAL]-ход в уже чужой сессии.
+
+        Issue #2914 — ``identity_question_asked``: в ходе задан вопрос о
+        личности (#2828/#2888/#2908). Ретрай чинит ответ ЭТОГО хода, а
+        ответ заменён вопросом (или вопрос звучит последним) — ретрай
+        отвечал бы на ту же реплику заново поверх вопроса (run
+        35923951507: «Помню: ты Саша…» через 4 с после «Саша, это ты?»).
+        Не диспатчим вовсе, а не глушим озвучку: ретрай — отдельный ход,
+        его вывод ушёл бы в историю LLM и прошёл весь speaker-путь.
         """
         if not retries_allowed:
             self.get_logger().info(
                 "🧹 [issue 2835] ход отменён/сессия сброшена — "
                 "post-turn ретраи (music/tool) не диспатчим"
+            )
+            return False, False
+        if identity_question_asked:
+            self.get_logger().info(
+                "👤 [issue #2914] в ходе задан вопрос о личности — "
+                "post-turn ретраи (music/tool) не диспатчим: ждём ответ человека"
             )
             return False, False
         tools_called = result.tools_called if result else ()
