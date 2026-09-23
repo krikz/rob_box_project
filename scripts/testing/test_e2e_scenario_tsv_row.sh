@@ -76,7 +76,7 @@ WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
 
 # =============================================================================
-# CASE 1 — night_marathon_act2_acquaintance_v1.json: 19 обычных шагов, НИ ОДИН
+# CASE 1 — night_marathon_act2_acquaintance_v1.json: 20 обычных шагов, НИ ОДИН
 # не задаёт when_robot_asked/required_question/sleep_before_sec. Это ровно
 # та ситуация, что сломал регресс #2824 — каждый такой шаг должен пройти
 # через реальный read-цикл с ПУСТЫМ when_robot_asked и required_question=0,
@@ -91,8 +91,8 @@ expected_labels_2=(
     n203_sasha_memory_tea n204_boris_intro_long n204b_boris_voice_note
     n204c_boris_voice_reason n205a_boris_warmup n205b_boris_warmup_spartak
     n205c_boris_warmup_tease n206_boris_memory n207_recall_sasha
-    n208_memory_search_tea n209_recall_boris n210_grisha_no_name
-    n211_who_do_you_know
+    n209_recall_boris n210_grisha_no_name n211_who_do_you_know
+    n212_session_reset_before_search n213_memory_search_tea_after_reset
 )
 
 act2_rows_seen=0
@@ -124,13 +124,13 @@ while IFS=$'\x1f' eval "$E2E_SCENARIO_ROW_READ"; do
     i=$((i + 1))
 done < "$PARSED2"
 
-[ "$act2_rows_seen" -eq 19 ] \
-    && ok "act2: прочитано 19 строк через реальный read-цикл" \
-    || bad "act2: прочитано $act2_rows_seen строк, ожидали 19"
+[ "$act2_rows_seen" -eq 20 ] \
+    && ok "act2: прочитано 20 строк через реальный read-цикл" \
+    || bad "act2: прочитано $act2_rows_seen строк, ожидали 20"
 [ "$act2_label_mismatch" -eq 0 ] && ok "act2: все label на своих местах (текст/label не сдвинулись)"
-[ "$act2_bad_when" -eq 0 ] && ok "act2: when_robot_asked пуст у ВСЕХ 19 шагов"
-[ "$act2_bad_required" -eq 0 ] && ok "act2: required_question='0' у ВСЕХ 19 шагов"
-[ "$act2_bad_sleep" -eq 0 ] && ok "act2: sleep_before_sec='0.0' у ВСЕХ 19 шагов"
+[ "$act2_bad_when" -eq 0 ] && ok "act2: when_robot_asked пуст у ВСЕХ 20 шагов"
+[ "$act2_bad_required" -eq 0 ] && ok "act2: required_question='0' у ВСЕХ 20 шагов"
+[ "$act2_bad_sleep" -eq 0 ] && ok "act2: sleep_before_sec='0.0' у ВСЕХ 20 шагов"
 
 # =============================================================================
 # CASE 2 — night_marathon_act2b_identity_question_v1.json: смесь шагов с

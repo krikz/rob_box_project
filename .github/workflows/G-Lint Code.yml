@@ -247,6 +247,17 @@ jobs:
             -o addopts="" \
             -p no:cacheprovider
 
+      # Issue #2865: проверка #2793 (memory_search по voice_facts) в акте 2
+      # марафона не должна снова стать тавтологией — вопрос только после
+      # сброса сессии, ключ не из вопроса, паттерн «поиск вернул хиты»
+      # сверяется с НАСТОЯЩЕЙ строкой лога MemorySearchTool. Только stdlib.
+      - name: E2E act 2 memory_search after reset (issue #2865)
+        run: |
+          python -m pytest tests/unit/e2e_scripts/test_issue_2865_memory_search_after_reset.py \
+            -v \
+            -o addopts="" \
+            -p no:cacheprovider
+
       - name: Seam-without-consumer guard self-tests (issue #2118)
         run: |
           python -m unittest scripts.lint.test_seam_without_consumer -v

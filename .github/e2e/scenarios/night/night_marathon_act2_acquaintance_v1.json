@@ -167,21 +167,6 @@
       }
     },
     {
-      "label": "n208_memory_search_tea",
-      "voice": "anton",
-      "text": "Робот, поищи у себя в памяти, что я говорил про чай.",
-      "patterns": [],
-      "acceptance": {
-        "expected_tool_calls": [
-          "memory_search"
-        ],
-        "expected_keywords": [
-          "чай"
-        ],
-        "must_not_call": []
-      }
-    },
-    {
       "label": "n209_recall_boris",
       "voice": "ermil",
       "text": "Робот, а про меня что помнишь?",
@@ -232,6 +217,33 @@
         "expected_tool_calls": [],
         "must_not_call": [],
         "_comment": "Оба зарегистрированных должны быть названы. Гриши в списке быть не должно — раньше это можно было проверить только глазами, теперь есть явный must_not_say (issue #2779 AC3)."
+      }
+    },
+    {
+      "label": "n212_session_reset_before_search",
+      "voice": "anton",
+      "text": "Робот, новая сессия, забудь этот разговор.",
+      "patterns": [
+        "session reset|session_reset|Новая сессия|new session"
+      ],
+      "_why": "Issue #2865: без сброса факт n203 лежит в окне чата, и LLM отвечает на n213 из истории, не зовя memory_search (run 35886659057, n208: tools=[]). Паттерн — строка «🧹 [new-session] session reset» из dialogue_node.reset_session: если сброс не случился, n213 ничего не доказывает, и этот шаг обязан покраснеть сам."
+    },
+    {
+      "label": "n213_memory_search_tea_after_reset",
+      "voice": "anton",
+      "text": "Робот, поищи у себя в памяти, что я говорил про чай.",
+      "patterns": [
+        "\\[memory_search\\] query=.* [1-9][0-9]* results"
+      ],
+      "acceptance": {
+        "expected_tool_calls": [
+          "memory_search"
+        ],
+        "expected_keywords": [
+          "зелён|зелен"
+        ],
+        "must_not_call": [],
+        "_comment": "Issue #2865 / #2793: вопрос задаётся ПОСЛЕ сброса сессии (n212) — факт о чае есть только в voice_facts. Зелёный = memory_search вызван, вернул >=1 хит и робот произнёс факт («зелёный»), которого нет ни в вопросе, ни в окне чата."
       }
     }
   ]
