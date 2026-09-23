@@ -6171,6 +6171,17 @@ class DialogueNode(Node):
         Каждый шаг живёт в собственном helper'е, чтобы уложиться в
         ADR-0021 R1 (CC≤15) для новых методов.
         """
+        # Issue #2875 — счёт реально запущенных треков сета: номер трека
+        # плана и финал берутся из него, а не из номера DJ-перехода.
+        # getattr: юнит-тесты собирают ноду через object.__new__ без _dj.
+        dj = getattr(self, "_dj", None)
+        if dj is not None:
+            dj.note_turn_tools(
+                getattr(result, "tools_called", None),
+                MUSIC_STARTING_TOOLS,
+                is_dj_auto=was_dj_auto,
+                turn_text=user_input,
+            )
         if self._apply_stop_music_deferral(result):
             self._flush_music_cleanup_if_idle(was_dj_auto)
             return

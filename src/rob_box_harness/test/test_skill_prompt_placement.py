@@ -157,16 +157,58 @@ def test_skill_text_survives_a_deep_session() -> None:
 
 
 def test_skill_text_is_the_last_system_message() -> None:
-    """Ближе системного сообщения к реплике юзера уже некуда."""
+    """Скилл едет В ТЕКУЩЕЙ реплике юзера — ближе к ходу уже некуда.
+
+    Имя теста историческое (Move A, 1382a5f93: скилл был последним
+    ``role=system``). Issue #2817 (8c7f0d61b) сознательно склеил
+    ``<system_context>`` и фрагмент скилла с текстом юзера в ОДНО
+    user-сообщение: MiniMax отвечал на system-сообщение перед репликой
+    вместо самой реплики. Issue #2875 проверил: инвариант «скилл вплотную к
+    ходу» выполняется, просто внутри того же сообщения; тест был красным
+    потому, что не обновили вместе с #2822.
+    """
     provider = _CapturingProvider()
     core = _core(provider, skill_prompts={"composer": _COMPOSER_TEXT})
     core.set_active_skill("composer")
     _run(core, "сыграй бит")
 
     messages = provider.calls[0]
-    system_positions = [i for i, m in enumerate(messages) if m.role == "system"]
-    assert _index_of(messages, _COMPOSER_TEXT) == max(system_positions)
-    assert messages[-1].role == "user"
+    last = messages[-1]
+    assert last.role == "user"
+    assert _index_of(messages, _COMPOSER_TEXT) == len(messages) - 1
+    content = str(last.content)
+    # Фрагмент перед текстом юзера, сам текст — последним.
+    assert content.index(_COMPOSER_TEXT) < content.index("сыграй бит")
+    assert content.endswith("сыграй бит")
+    # Кроме мастер-промпта на позиции 0, system-сообщений в хвосте нет.
+    assert [i for i, m in enumerate(messages) if m.role == "system"] == [0]
+
+
+def test_skill_text_reaches_dj_auto_turns() -> None:
+    """Issue #2875 — DJ_AUTO-ход (``is_dj_auto=True``) несёт текст скилла.
+
+    Гипотеза из живого лога 23.09 («в DJ-ходах скилла нет») проверена:
+    лог обрезает сообщения до ~200 символов, а скилл стоит после
+    ``<system_context>`` внутри последнего user-сообщения — в обрезку он
+    не попадал. Код доставляет его и в DJ-ход.
+    """
+    provider = _CapturingProvider()
+    core = _core(provider, skill_prompts={"composer": _COMPOSER_TEXT})
+    core.set_active_skill("composer")
+    asyncio.run(
+        core.process_input(
+            "[DJ_AUTO переход #2] сыграй трек",
+            is_dj_auto=True,
+            dynamic_system="<system_context>снапшот</system_context>",
+            preclassified_event=DialogueEvent.STT_RESULT,
+        )
+    )
+
+    last = provider.calls[0][-1]
+    content = str(last.content)
+    assert last.role == "user"
+    assert content.index("<system_context>") < content.index(_COMPOSER_TEXT)
+    assert content.index(_COMPOSER_TEXT) < content.index("[DJ_AUTO переход #2]")
 
 
 def test_system_prompt_stays_at_position_zero() -> None:

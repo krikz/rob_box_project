@@ -20,13 +20,27 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 
 # States where DJ-mode should defer its transition by 15 seconds.
 _NON_IDLE_STATES = frozenset({"DIALOGUE", "SILENCED"})
+
+# Issue #2875 — строка плана «Трек N: <что играть>» (как её пишет
+# set_dj_mode(plan=...) по dj.txt).
+_PLAN_ENTRY_RE = re.compile(r"^\s*Трек\s*(\d+)\s*[:.)\-—–]\s*(.+?)\s*$")
+
+
+def plan_entry(plan: str, track_no: int) -> str:
+    """Текст строки ``Трек <track_no>: ...`` плана или ``""``."""
+    for line in plan.splitlines():
+        match = _PLAN_ENTRY_RE.match(line)
+        if match and int(match.group(1)) == track_no:
+            return match.group(2)
+    return ""
 
 
 @dataclass
@@ -63,6 +77,19 @@ class DJState:
     max_seconds: Optional[float] = None
     max_tracks: int = 0
     final_dispatched: bool = False
+    # Issue #2875 — сколько треков РЕАЛЬНО запущено в этом сете (ход, где
+    # был вызван тул из ``MUSIC_STARTING_TOOLS``; считает нода через
+    # :meth:`DJModeController.note_turn_tools`). Номер трека плана и финал
+    # (по плану и по лимиту ``max_tracks``) берутся отсюда, а не из
+    # ``transition_count``: провалившийся переход (модель не вызвала
+    # compose_music) больше не «съедает» трек плана. ``final_track_no`` —
+    # номер трека, который объявлен финальным по лимиту (#2856).
+    tracks_started: int = 0
+    final_track_no: int = 0
+    # Issue #2875 (дополнение) — отложенное прощание: стенное время, когда
+    # его сказать (``None`` — не ждём), и персона, от чьего имени.
+    farewell_at: Optional[float] = None
+    farewell_persona: str = ""
 
 
 @dataclass
@@ -113,6 +140,9 @@ class DJModeController:
     DJ_SET_MAX_MINUTES_RANGE: tuple = (1, 180)
     # Минимум 2: переход #1 («СТАРТ ВЕЧЕРИНКИ») финальным не бывает.
     DJ_SET_MAX_TRACKS_RANGE: tuple = (2, 50)
+    # Issue #2875 — прощание ждёт конец финальной формы, но не дольше этого
+    # (страховка от протухшего/ошибочного ``form_ends_at``).
+    FAREWELL_MAX_DEFER_S: float = 300.0
 
     def __init__(
         self,
@@ -159,8 +189,10 @@ class DJModeController:
         """Issue #2835 — выключить DJ без прощальной фразы.
 
         Для «новой сессии»: нода сама говорит «Начинаю новую сессию…»,
-        прощание DJ поверх неё — второй голос в тот же момент.
+        прощание DJ поверх неё — второй голос в тот же момент. Отложенное
+        прощание (#2875) тоже отменяется — по той же причине.
         """
+        self.state.farewell_at = None
         self._reset_state(farewell=False)
 
     def _apply_enable_payload(self, data: dict, *, is_fresh_start: bool) -> None:
@@ -285,6 +317,11 @@ class DJModeController:
             self.state.started_at = self._clock()
             self.state.last_transition_at = 0.0
             self.state.final_dispatched = False
+            # Issue #2875 — счёт треков принадлежит одному сету; прощание
+            # прошлого сета, не успевшее прозвучать, новому не нужно.
+            self.state.tracks_started = 0
+            self.state.final_track_no = 0
+            self.state.farewell_at = None
         minutes = self._clamped_int(
             data.get("max_minutes"), self.DJ_SET_MAX_MINUTES_RANGE
         )
@@ -303,6 +340,8 @@ class DJModeController:
         # address the user with the correct DJ name (issue #1101).
         farewell_persona = self.state.persona or self._persona_default
         farewell_theme = self.state.theme or ""
+        # Issue #2875 — конец формы нужен прощанию (см. _farewell_after_form).
+        form_ends_at = self.state.form_ends_at
         self.state.next_transition_at = 0.0
         self.state.transition_count = 0
         self.state.theme = ""
@@ -316,6 +355,8 @@ class DJModeController:
         self.state.max_seconds = None
         self.state.max_tracks = 0
         self.state.final_dispatched = False
+        self.state.tracks_started = 0
+        self.state.final_track_no = 0
         # 🔴 FIX (live 11:46): без этого enabled оставался True после
         # авто-стопа → следующий tick (5с) видел next_transition_at=0.0 и
         # запускал НОВЫЙ DJ-цикл #1 — DJ «оживал» через 5 секунд после
@@ -323,21 +364,66 @@ class DJModeController:
         # надёжный выключатель: tick() сразу возвращается.
         self.state.enabled = False
         self._logger.info("🎧 DJ Mode OFF")
-        if farewell and self._hook.on_stop is not None:
-            try:
-                self._hook.on_stop(farewell_persona)
-            except Exception as exc:  # noqa: BLE001
-                self._logger.warning(
-                    f"⚠️ DJ on_stop hook failed: {type(exc).__name__}: {exc}"
-                )
+        if farewell:
+            self._farewell_after_form(farewell_persona, form_ends_at)
+
+    # ── Farewell (issue #2875 addendum) ─────────────────────────────
+
+    def _farewell_after_form(
+        self, persona: str, form_ends_at: Optional[float]
+    ) -> None:
+        """Прощание — после конца играющей формы, а не поверх её начала.
+
+        Живой прогон 23.09 17:54: финальный переход → compose_music
+        (repeat=false, форма ~250 с) → через 2 с set_dj_mode(enabled=false)
+        → «Вечеринка подошла к концу…» прозвучало В НАЧАЛЕ финального
+        трека. Если форма ещё играет — прощание откладывается до её конца
+        (не дольше ``FAREWELL_MAX_DEFER_S``); ``tick()`` его произнесёт.
+        ``form_ends_at`` сохраняется, чтобы ``tick()`` видел остановку
+        музыки (mcp_server присылает ``null``) и прощался сразу.
+        """
+        now = self._clock()
+        if form_ends_at is None or form_ends_at <= now:
+            self._say_farewell(persona)
+            return
+        self.state.form_ends_at = form_ends_at
+        self.state.farewell_at = min(form_ends_at, now + self.FAREWELL_MAX_DEFER_S)
+        self.state.farewell_persona = persona
+        self._logger.info(
+            f"🎧 DJ прощание отложено до конца формы "
+            f"(через {self.state.farewell_at - now:.0f}с)"
+        )
+
+    def _say_farewell(self, persona: str) -> None:
+        if self._hook.on_stop is None:
+            return
+        try:
+            self._hook.on_stop(persona)
+        except Exception as exc:  # noqa: BLE001
+            self._logger.warning(
+                f"⚠️ DJ on_stop hook failed: {type(exc).__name__}: {exc}"
+            )
+
+    def _fire_due_farewell(self, now: float) -> None:
+        """Сказать отложенное прощание: форма доиграла или музыка стоп."""
+        due_at = self.state.farewell_at
+        if due_at is None:
+            return
+        music_stopped = self.state.form_ends_at is None
+        if now < due_at and not music_stopped:
+            return
+        self.state.farewell_at = None
+        self._say_farewell(self.state.farewell_persona)
 
     # ── Tick ────────────────────────────────────────────────────────
 
     def tick(self) -> None:
         """Called from the shell's 5-second timer."""
+        now = self._clock()
+        # Issue #2875 — отложенное прощание живёт после выключения DJ.
+        self._fire_due_farewell(now)
         if not self.state.enabled:
             return
-        now = self._clock()
         if not self.state.started_at:
             # Включили в обход handle_message (тесты, рестарт) — отсчёт
             # сета с первого тика, а не с эпохи 0 (иначе сразу «финал»).
@@ -377,6 +463,9 @@ class DJModeController:
             # Issue #2856 — этот переход последний: объявленный финальный
             # трек + прощание вместо молчаливого обрыва на следующем тике.
             self.state.final_dispatched = True
+            # Issue #2875 — финал «закрыт», только когда этот трек реально
+            # запустился; провал перехода даёт финалу ещё одну попытку.
+            self.state.final_track_no = self.state.tracks_started + 1
             self._logger.info(
                 f"🎧 DJ лимит сета достигнут — переход #{next_n} финальный "
                 f"(сет идёт {now - self.state.started_at:.0f}с)"
@@ -391,12 +480,21 @@ class DJModeController:
 
     def _should_stop(self, next_n: int, plan_tracks: int) -> bool:
         """True — сет исчерпан, переход ``next_n`` не играть, а выключить DJ."""
-        if self.state.final_dispatched:
+        started = self.state.tracks_started
+        if self.state.final_dispatched and started >= self.state.final_track_no:
             # Issue #2856 — финальный трек по лимиту уже отыгран, а модель
             # не выключила DJ сама. Прощание скажет хук ``on_stop``.
+            # Issue #2875 — «отыгран» = реально запущен (счётчик треков).
             self._logger.info(
                 f"🛑 DJ auto-stop: финальный трек сета отыгран "
                 f"(переход #{next_n} не нужен)"
+            )
+            return True
+        if plan_tracks > 0 and started >= plan_tracks:
+            # Issue #2875 — все треки плана реально сыграны, модель не
+            # выключила DJ сама после финального.
+            self._logger.info(
+                f"🛑 DJ auto-stop: план сыгран ({started}/{plan_tracks} треков)"
             )
             return True
         # 🔴 FIX (live 11:19 DJ): save_dj_set_plan тула НЕТ — set_plan всегда
@@ -439,22 +537,107 @@ class DJModeController:
         не обрыв. Интервал — длина последнего перехода (с #2461 это реальная
         длина формы, 150-200 с); до второго перехода — ``FALLBACK_INTERVAL_S``.
 
-        Переход #1 («СТАРТ ВЕЧЕРИНКИ») финальным не бывает. Финал по плану
-        здесь не решается — его, как и раньше, решает ``build_auto_prompt``.
+        Переход #1 («СТАРТ ВЕЧЕРИНКИ») финальным не бывает, пока в сете не
+        сыграно ни одного трека. Финал по плану здесь не решается — его, как
+        и раньше, решает ``build_auto_prompt``.
+
+        Issue #2875 — лимит ``max_tracks`` сравнивается с номером
+        СЛЕДУЮЩЕГО ТРЕКА (``tracks_started + 1``), а не перехода: переход,
+        где модель не запустила музыку, трек не расходует.
         """
-        if n <= 1:
+        track_no = self.state.tracks_started + 1
+        if n <= 1 and track_no <= 1:
             return False
         track_limit = self.state.max_tracks or (
             self.DJ_AUTO_MAX_TRANSITIONS if plan_tracks == 0 else 0
         )
-        if track_limit and n >= track_limit:
+        if track_limit and track_no >= track_limit:
             return True
+        if n <= 1:
+            return False
         limit_s = self._set_limit_s(plan_tracks)
         if limit_s is None:
             return False
         last = self.state.last_transition_at
         interval = (now - last) if last else self.FALLBACK_INTERVAL_S
         return now + 2 * interval > self.state.started_at + limit_s
+
+    # ── Track accounting (issue #2875) ──────────────────────────────
+
+    def note_turn_tools(
+        self,
+        tools_called: Optional[Iterable[str]],
+        music_tools: Iterable[str],
+        *,
+        is_dj_auto: bool = False,
+        turn_text: str = "",
+    ) -> bool:
+        """Учесть завершённый ход: запустил ли он трек в идущем сете.
+
+        Нода зовёт это на КАЖДЫЙ ход (DJ_AUTO, ретрай, реплика юзера) с
+        ``result.tools_called`` и ``MUSIC_STARTING_TOOLS`` — тем же
+        сигналом «музыка стартовала», по которому работают её гарды.
+        Считается ход, а не вызов: два compose_music за ход — один трек
+        (#2859 и так не даёт больше одного запуска за ход).
+
+        Трек СЕТА — ход DJ_AUTO (``is_dj_auto``) или ход юзера, который сам
+        управлял сетом (``set_dj_mode`` в том же ходе): «ты диджей … играй
+        X, Y, Z» с ``set_dj_mode`` + ``compose_music``. ``/voice/dj_mode``
+        доходит до ноды раньше результата хода (живой лог 23.09 17:30:21),
+        так что DJ к этому моменту уже включён, и переход #1 сыграет Трек 2.
+
+        Ретраи DJ-перехода (Bug D / music-гард) идут с ``is_dj_auto=False``
+        (живой лог 23.09 17:32:33), но несут текст перехода — маркер
+        ``[DJ_AUTO`` в ``turn_text`` тоже делает ход ходом сета.
+
+        Музыкальная просьба юзера посреди сета без ``set_dj_mode``
+        («сыграй тему марио») — заказ гостя, см. :meth:`_hold_for_user_track`.
+
+        Returns:
+            True — засчитан трек сета.
+        """
+        if not self.state.enabled or not tools_called:
+            return False
+        tools = set(tools_called)
+        if not tools & set(music_tools):
+            return False
+        set_turn = is_dj_auto or "[DJ_AUTO" in (turn_text or "")
+        if not set_turn and "set_dj_mode" not in tools:
+            self._hold_for_user_track()
+            return False
+        self.state.tracks_started += 1
+        self._logger.info(
+            f"🎧 DJ трек #{self.state.tracks_started} запущен "
+            f"(переход #{self.state.transition_count})"
+        )
+        return True
+
+    def _hold_for_user_track(self) -> None:
+        """Заказ юзера посреди сета доигрывает форму, потом сет продолжается.
+
+        Живой прогон 23.09 17:52: «сыграй тему марио…» посреди сета →
+        играет Марио → переход #6 в 17:54:52 его заменил. Выбран вариант
+        «сет ждёт заказ», а не «заказ выключает DJ»:
+
+        * юзер сам задал сету рамки (план, ``max_minutes``) — одна просьба
+          посреди вечеринки это заказ гостя диджею, а не отмена вечеринки;
+          выключение молча выбросило бы план и потребовало бы новой команды;
+        * «хватит/выключи диджея» по-прежнему выключает DJ явно (stop-гарды);
+        * механизм уже есть: переход гейтится концом формы (#2461), здесь
+          только гарантируем, что до ``/voice/music/form`` нового трека
+          переход не выстрелит по старому ``next_transition_at``.
+
+        Заказ не расходует трек плана и лимит ``max_tracks``: трек не из
+        сета (лимит по времени #2856 при этом идёт как шёл).
+        """
+        now = self._clock()
+        hold_until = now + self.FALLBACK_INTERVAL_S
+        if self.state.next_transition_at < hold_until:
+            self.state.next_transition_at = hold_until
+        self._logger.info(
+            "🎧 DJ: заказ юзера посреди сета — следующий переход не раньше "
+            f"{hold_until - now:.0f}с и конца его формы (трек сета не засчитан)"
+        )
 
     # ── Prompt builders ─────────────────────────────────────────────
 
@@ -504,6 +687,31 @@ class DJModeController:
             return False
         return True
 
+    def _plan_track_line(self, track_no: int) -> str:
+        """Issue #2875 — какой трек плана играть сейчас и как.
+
+        Пусто без плана. Названные песни играются из RTTTL-библиотеки
+        через ``compose_music(name=...)``: живой прогон 23.09 — модель
+        заявила, что Still Dre / Next Episode «не лежат» в архиве, хотя
+        stilldre_2 / nextepis там есть; lookup_melody она не вызывала.
+        """
+        if not self.state.set_plan:
+            return ""
+        entry = plan_entry(self.state.set_plan, track_no)
+        if not entry:
+            return (
+                f"▶ Сейчас по плану — Трек {track_no}: сыграй его через "
+                "compose_music. "
+            )
+        return (
+            f"▶ Сейчас по плану — Трек {track_no}: «{entry}». Сыграй его "
+            f'ПРЯМО СЕЙЧАС: compose_music(name="{entry}") — названные песни '
+            "играются из RTTTL-библиотеки (при сомнении в названии сначала "
+            f'lookup_melody(name="{entry}")). Если в строке плана не песня, а '
+            "описание — compose_music в этом духе. НЕ говори, что трека нет, "
+            "не вызвав lookup_melody. "
+        )
+
     def build_auto_prompt(self, n: int) -> str:
         persona = self.state.persona or self._persona_default
         theme_line = (
@@ -538,7 +746,29 @@ class DJModeController:
             "между треками. ✅ search_samples(<стиль>) — для "
             "реальных сэмплов и разнообразия тембров между треками."
         )
-        if n == 1:
+        plan_block = (
+            f"План сета:\n{self.state.set_plan}\n" if self.state.set_plan else ""
+        )
+        plan_tracks = self.state.set_plan.count("Трек ") if self.state.set_plan else 0
+        # Issue #2875 — номер трека плана = треки, РЕАЛЬНО запущенные в сете
+        # + 1, а не номер перехода: провал перехода трек не съедает.
+        track_no = self.state.tracks_started + 1
+        track_line = self._plan_track_line(track_no)
+        if n == 1 and plan_tracks and track_no < plan_tracks:
+            # Issue #2875 — план уже задан юзером: без ресёрча и нового
+            # плана, сразу играем его трек. Живой прогон 23.09: промпт
+            # ниже гнал модель в search_web + новый план, трек не звучал
+            # 4 минуты.
+            return (
+                "[DJ_AUTO — СТАРТ ВЕЧЕРИНКИ] "
+                f"Ты {persona} — первый в мире робот-диджей. {theme_line}"
+                f"{plan_block}"
+                "План сета УЖЕ ЕСТЬ — НЕ исследуй материал (search_web / "
+                "gen_search_library не нужны) и НЕ составляй новый план. "
+                f"{track_line}{library_line} {stage_marker}{length_line} "
+                f"Затем представься как {persona} через speak_text."
+            )
+        if n == 1 and not plan_tracks:
             return (
                 "[DJ_AUTO — СТАРТ ВЕЧЕРИНКИ] "
                 f"Ты {persona} — первый в мире робот-диджей. {theme_line}"
@@ -556,31 +786,28 @@ class DJModeController:
                 f"{length_line} "
                 f"Затем представься как {persona} через speak_text."
             )
-        plan_block = (
-            f"План сета:\n{self.state.set_plan}\n" if self.state.set_plan else ""
-        )
-        plan_tracks = self.state.set_plan.count("Трек ") if self.state.set_plan else 0
         # Issue #2856 — финал по лимиту времени/треков (``final_dispatched``
         # взводит ``tick()``) звучит так же, как финал по плану.
         limit_final = (
             self.state.final_dispatched and n == self.state.transition_count
         )
-        if (plan_tracks and n >= plan_tracks) or limit_final:
+        if (plan_tracks and track_no >= plan_tracks) or limit_final:
             return (
                 f"[DJ_AUTO переход #{n} — ФИНАЛЬНЫЙ ТРЕК] "
                 f"Ты {persona}. {theme_line}{plan_block}"
-                f"{library_line} "
+                f"{track_line}{library_line} "
                 "Это ПОСЛЕДНИЙ трек сета. Сыграй завершающий трек через "
                 "compose_music с repeat=false (форма сама доводит его до "
                 "спокойного финала и затухания — не проси зацикленный трек). "
                 "Затем ОБЯЗАТЕЛЬНО вызови set_dj_mode(enabled=false) — "
-                "DJ-режим завершается. Прощание НЕ говори и НЕ пиши текст: "
-                "система сама скажет «вечеринка подошла к концу»."
+                "DJ-режим завершается. Прощание НЕ говори и НЕ пиши текст, "
+                "и НЕ вызывай speak_text в этом ходе: система сама скажет "
+                "«вечеринка подошла к концу», когда трек доиграет."
             )
         return (
             f"[DJ_AUTO переход #{n}] "
             f"Ты {persona}. {theme_line}{plan_block}"
-            f"{library_line} {stage_marker} "
+            f"{track_line}{library_line} {stage_marker} "
             "Сыграй следующий трек через compose_music (repeat=true, другой "
             "bpm/root/scale/synth в духе темы, чем предыдущий трек). "
             f"{length_line} "
@@ -594,4 +821,4 @@ class DJModeController:
         )
 
 
-__all__ = ["DJModeController", "DJState", "DJHook"]
+__all__ = ["DJModeController", "DJState", "DJHook", "plan_entry"]
