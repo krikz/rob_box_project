@@ -275,9 +275,18 @@ class TestHarnessContract:
         assert "--tts-provider) E2E_TTS_PROVIDER=" in text
 
     def test_yandex_key_no_longer_unconditional_fatal(self):
-        """Без ключа Yandex прогон обязан оставаться возможным (silero)."""
+        """Без ключа Yandex прогон обязан оставаться возможным (silero).
+
+        Инвариант: фатал ``E2E_FATAL: YANDEX_API_KEY не задан`` допустим
+        ТОЛЬКО под условием ``--tts-provider=yandex``. Если сообщения нет —
+        тоже ок (Yandex вообще выпилили). Если оно есть — рядом обязано
+        быть условие провайдера. Контекст см. ADR-0080 (issue #2803).
+        """
         text = E2E_SCRIPT.read_text(encoding="utf-8")
-        assert 'E2E_FATAL: YANDEX_API_KEY не задан"' not in text
+        assert (
+            'E2E_FATAL: YANDEX_API_KEY не задан' not in text
+            or '[ "$E2E_TTS_PROVIDER" = "yandex" ]' in text
+        )
         assert (
             '[ "$E2E_TTS_PROVIDER" = "yandex" ] && [ -z "${YANDEX_API_KEY:-}" ]' in text
         )
