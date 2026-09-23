@@ -40,12 +40,15 @@ from rob_box_mcp_tools.tools.music import (  # noqa: E402
     MusicManager,
     ComposeMusicTool,
     ExecuteMusicCodeTool,
+    PreviewArrangementTool,
+    SaveArrangementPresetTool,
     StopMusicTool,
     SetVibePresetTool,
     GetMusicStateTool,
     LookupMelodyTool,
     TrackLibrary,
 )
+from rob_box_mcp_tools.core.arrangement_presets import ArrangementPresetStore  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -2889,6 +2892,170 @@ class TestComposeMusicToolMelodyByName:
         )
         assert result.success is True
         assert result.data.get("title") is None
+
+
+class TestArrangementPresetApplication:
+    """ADR-0132 PR-7 — пресет ручек по мелодии в ``compose_music(name=...)``.
+
+    Явная ручка вызова всегда побеждает пресет; пресет подмешивается,
+    только когда вызов её не задал.
+    """
+
+    _ARR = dict(lead_synth="blip", bass_synth="dub", pad_synth="warmpad")
+
+    def _rtttl_library(self):
+        rtttl_library = Mock()
+        rtttl_library.get.return_value = {
+            "name": "fifth",
+            "title": "Beethoven's Fifth",
+            "rtttl": "fifth:d=4,o=5,b=63:8p,8g5,8g5,8g5,2d#5",
+        }
+        return rtttl_library
+
+    def _store(self, tmp_path, knobs):
+        shipped = tmp_path / "shipped.json"
+        shipped.write_text(
+            '{"fifth": {"title": "Beethoven\'s Fifth", "knobs": %s}}'
+            % __import__("json").dumps(knobs),
+            encoding="utf-8",
+        )
+        return ArrangementPresetStore(
+            shipped_path=shipped, learned_root=str(tmp_path / "learned")
+        )
+
+    def _tool(self, mock_node, tmp_path, knobs):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        mgr.execute_code = Mock(return_value={"success": True})
+        store = self._store(tmp_path, knobs)
+        tool = ComposeMusicTool(mock_node, mgr, self._rtttl_library(), store)
+        return tool, mgr, store
+
+    def test_preset_applied_when_no_explicit_knob(self, mock_node, tmp_path):
+        tool, mgr, _store = self._tool(mock_node, tmp_path, {"bass_style": "root"})
+        result = tool.execute(name="fifth", **self._ARR)
+        assert result.success is True
+        assert tool.last_score is not None
+        assert "Пресет: Beethoven's Fifth (bass_style=root)" in tool.last_score["text"]
+        assert tool.last_score["decisions"]["bass_style"].startswith("root")
+
+    def test_explicit_knob_wins_over_preset(self, mock_node, tmp_path):
+        tool, mgr, _store = self._tool(mock_node, tmp_path, {"bass_style": "root"})
+        result = tool.execute(name="fifth", bass_style="off", **self._ARR)
+        assert result.success is True
+        # Явная ручка выиграла — эффективное значение "off", а не "root" из
+        # пресета, и партитура не приписывает это решение пресету.
+        assert tool.last_score["decisions"]["bass_style"] == "off"
+        assert tool.last_score.get("preset") is None
+
+    def test_no_matching_preset_is_a_silent_noop(self, mock_node, tmp_path):
+        """Пресет-стор без ключа резолвленной мелодии — вызов не меняется."""
+        tool, _mgr, _store = self._tool(mock_node, tmp_path, {"bass_style": "root"})
+        tool._preset_store = ArrangementPresetStore(
+            shipped_path=tmp_path / "empty_shipped.json",
+            learned_root=str(tmp_path / "empty_learned"),
+        )
+        kwargs = {"name": "fifth", **self._ARR}
+        merged, note = tool._resolve_preset(kwargs)
+        assert merged == kwargs
+        assert note is None
+
+    def test_last_played_preset_records_effective_knobs(self, mock_node, tmp_path):
+        tool, mgr, _store = self._tool(mock_node, tmp_path, {"bass_style": "root"})
+        result = tool.execute(name="fifth", **self._ARR)
+        assert result.success is True
+        played = tool.last_played_preset
+        assert played is not None
+        assert played["melody_key"] == "fifth"
+        assert played["title"] == "Beethoven's Fifth"
+        assert played["knobs"]["bass_style"] == "root"
+        assert played["knobs"]["lead_synth"] == "blip"
+
+    def test_last_played_preset_is_none_without_name(self, mock_node, tmp_path):
+        tool, mgr, _store = self._tool(mock_node, tmp_path, {})
+        result = tool.execute(
+            bpm=100, root="C", scale="minor", lead_synth="blip", lead_notes="0,2,4,7"
+        )
+        assert result.success is True
+        assert tool.last_played_preset is None
+
+    def test_preview_arrangement_applies_the_same_preset(self, mock_node, tmp_path):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        store = self._store(tmp_path, {"bass_style": "root"})
+        preview = PreviewArrangementTool(mock_node, mgr, self._rtttl_library(), store)
+        result = preview.execute(name="fifth", **self._ARR)
+        assert result.success is True
+        assert "Пресет: Beethoven's Fifth (bass_style=root)" in result.data["score"]
+
+
+class TestSaveArrangementPresetTool:
+    """ADR-0132 PR-7 — сохраняет ручки ПОСЛЕДНЕГО сыгранного трека.
+
+    Похвала/просьба-гейт живёт ВНЕ этого тула (rob_box_harness.core.
+    agent_core._gate_save_arrangement_preset — MCP-процесс не видит
+    истории диалога); тул сам только персистит то, что реально сыграно.
+    """
+
+    _ARR = dict(lead_synth="blip", bass_synth="dub", pad_synth="warmpad")
+
+    def _rtttl_library(self):
+        rtttl_library = Mock()
+        rtttl_library.get.return_value = {
+            "name": "fifth",
+            "title": "Beethoven's Fifth",
+            "rtttl": "fifth:d=4,o=5,b=63:8p,8g5,8g5,8g5,2d#5",
+        }
+        return rtttl_library
+
+    def _tools(self, mock_node, tmp_path):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        mgr.execute_code = Mock(return_value={"success": True})
+        store = ArrangementPresetStore(
+            shipped_path=tmp_path / "missing_shipped.json",
+            learned_root=str(tmp_path / "learned"),
+        )
+        compose = ComposeMusicTool(mock_node, mgr, self._rtttl_library(), store)
+        save = SaveArrangementPresetTool(mock_node, compose, store)
+        return compose, save, store
+
+    def test_refuses_when_nothing_played_yet(self, mock_node, tmp_path):
+        _compose, save, _store = self._tools(mock_node, tmp_path)
+        result = save.execute()
+        assert result.success is False
+        assert "Нечего сохранять" in result.error
+
+    def test_refuses_after_a_composed_without_name_track(self, mock_node, tmp_path):
+        compose, save, _store = self._tools(mock_node, tmp_path)
+        compose.execute(bpm=100, root="C", scale="minor", lead_synth="blip", lead_notes="0,2,4,7")
+        result = save.execute()
+        assert result.success is False
+
+    def test_saves_the_last_played_knobs_and_the_store_carries_them(self, mock_node, tmp_path):
+        compose, save, store = self._tools(mock_node, tmp_path)
+        compose.execute(name="fifth", **self._ARR)
+        result = save.execute(note="звучит собранно", approved_by_user_quote="кайф, сохрани")
+        assert result.success is True
+        assert result.data["melody_key"] == "fifth"
+        assert result.data["title"] == "Beethoven's Fifth"
+        assert result.data["knobs"]["lead_synth"] == "blip"
+        assert result.data["note"] == "звучит собранно"
+        assert result.data["approved_by_user_quote"] == "кайф, сохрани"
+        assert "created_at" in result.data
+
+        stored = store.get("fifth")
+        assert stored is not None
+        assert stored["title"] == "Beethoven's Fifth"
+        assert stored["knobs"]["bass_synth"] == "dub"
+
+    def test_saved_preset_then_applies_on_the_next_call(self, mock_node, tmp_path):
+        compose, save, _store = self._tools(mock_node, tmp_path)
+        compose.execute(name="fifth", bass_style="root", **self._ARR)
+        save.execute(approved_by_user_quote="класс")
+        # Новый вызов той же мелодии без явной ручки — bass_style подтянут
+        # из только что сохранённого learned-пресета.
+        result = compose.execute(name="fifth", **self._ARR)
+        assert result.success is True
+        assert compose.last_score["decisions"]["bass_style"].startswith("root")
+        assert "Пресет: Beethoven's Fifth (bass_style=root)" in compose.last_score["text"]
 
 
 class TestComposeMusicToolRealArchiveWeakMatch:

@@ -537,6 +537,8 @@ def _render_text(sheet: Dict[str, Any]) -> str:
     lines.append(f"Партии (звучащая высота): {_parts_text(sheet['parts'])}.")
     if sheet["drums"]:
         lines.append("Ударные: " + "; ".join(f"{k} {v}" for k, v in sheet["drums"].items()))
+    if sheet.get("preset"):
+        lines.append(f"Пресет: {sheet['preset']}.")
     lines.append(
         "Решения по умолчанию: "
         + "; ".join(f"{k}={v}" for k, v in sheet["decisions"].items()) + "."
@@ -593,6 +595,7 @@ def describe(
     prep_decisions: Optional[Dict[str, Any]] = None,
     title: Optional[str] = None,
     warnings: Sequence[str] = (),
+    preset_note: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Партитура трека: dict + ``text`` (компактный русский, ~1 КБ).
 
@@ -604,6 +607,9 @@ def describe(
         prep_decisions: ``melody_to_compose_params(...)["decisions"]``.
         title: название сыгранной записи.
         warnings: внешние предупреждения (санитайзер).
+        preset_note: ADR-0132 PR-7 — «<title> (ручка=значение, …)», когда
+            вызов подмешал пресет ручек по мелодии; ``None`` — пресет не
+            применялся.
     """
     parts, drums = _parts(spec)
     checks = _checks(parts, harmony, code)
@@ -611,6 +617,7 @@ def describe(
     theme_bars = int(getattr(spec, "theme_bars", 0) or 0)
     sheet: Dict[str, Any] = {
         "title": title,
+        "preset": preset_note,
         "bpm": max(BPM_RANGE[0], min(BPM_RANGE[1], float(spec.bpm))),
         "bpm_note": _bpm_note(spec, prep_decisions),
         "duration_seconds": round(form_duration_seconds(spec.form, spec.bpm, theme_bars), 1),

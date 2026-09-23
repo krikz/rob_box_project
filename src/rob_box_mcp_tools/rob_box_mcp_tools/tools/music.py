@@ -57,6 +57,7 @@ from ..core.arranger import (
     spec_from_flat,
 )
 from ..core import renardo_sanitizer, sample_loops
+from ..core.arrangement_presets import PRESET_KNOB_FIELDS, ArrangementPresetStore
 from ..core.score_sheet import analyze_melody, describe
 from ..core.compose_knobs import ComposeKnobs, build_knobs, lead_octave_choices
 from ..core.harmonize import DRUM_STYLES, KNOB_VALUES, check_drum_style, style_patterns
@@ -65,6 +66,27 @@ from ..core.rtttl_library import RtttlLibrary
 
 # Live 13.08 — символы сэмплов в play("x-o-") для предзагрузки буферов.
 _PLAY_SYMBOLS_RE = re.compile(r'play\(\s*"([^"]*)"')
+
+#: ADR-0132 PR-7 — «был ли параметр реально передан вызовом» (нужно
+#: :meth:`ComposeMusicTool._resolve_preset`, чтобы явная ручка всегда
+#: побеждала пресет). ``execute()`` держит ПОЛНУЮ именованную сигнатуру
+#: (``tools/gen_tool_catalog.py`` парсит её AST-ом статически — тот же
+#: контракт, что схема ``parameters``, см. класс регрессии #2463 в
+#: ``test_compose_music_arranger_sync.py``), но каждый параметр-ручка
+#: получает ЭТОТ сентинел вместо обычного дефолта: «не передано» отличимо
+#: от «передано тем же значением, что дефолт», не теряя ни имени
+#: параметра, ни того, что он optional, для статического парсера.
+_UNSET: Any = object()
+
+
+def _explicit_kwargs(local_vars: Dict[str, Any]) -> Dict[str, Any]:
+    """``locals()`` внутри ``execute(...)`` → только реально переданные ручки.
+
+    Отбрасывает ``self`` и любой параметр, оставшийся на :data:`_UNSET`
+    (модель его не передала — значение возьмёт дефолт ``_execute_named``
+    или, для ручек аранжировки, :meth:`ComposeMusicTool._resolve_preset`).
+    """
+    return {k: v for k, v in local_vars.items() if k != "self" and v is not _UNSET}
 
 
 # ---------------------------------------------------------------------------
@@ -2691,10 +2713,15 @@ class ComposeMusicTool(MCPTool):
         node,
         manager: MusicManager,
         rtttl_library: Optional[RtttlLibrary] = None,
+        preset_store: Optional[ArrangementPresetStore] = None,
     ) -> None:
         super().__init__(node)
         self._manager = manager
         self._rtttl_library = rtttl_library
+        #: ADR-0132 PR-7: пресеты ручек по мелодии (shipped + learned).
+        #: ``None`` (тесты старых сборок) — пресеты просто не применяются,
+        #: вызов ведёт себя как до PR-7.
+        self._preset_store = preset_store
         #: Плоские параметры предыдущего успешного вызова. Нужны только для
         #: обратной связи модели: она не видит своих прошлых tool-вызовов
         #: настолько подробно, чтобы заметить, что третий трек подряд идёт
@@ -2705,6 +2732,16 @@ class ComposeMusicTool(MCPTool):
         #: JSON на каждый вызов съедали контекст) — для логов, тестов и
         #: внутренних потребителей.
         self.last_score: Optional[Dict[str, Any]] = None
+        #: ADR-0132 PR-7: строка «пресет: <title> (…)» для текущей сборки
+        #: партитуры — читается :meth:`_score_sheet`, взводится
+        #: :meth:`_resolve_preset` перед каждым вызовом (в т.ч. ``None``,
+        #: когда пресет не подмешивался).
+        self._pending_preset_note: Optional[str] = None
+        #: ADR-0132 PR-7: ручки последнего УСПЕШНО сыгранного трека по
+        #: мелодии (``name=``) — то, что ``save_arrangement_preset``
+        #: сохранит как пресет. ``None`` — последний трек не был по
+        #: известной мелодии (сочинённый) или ещё не игрался.
+        self.last_played_preset: Optional[Dict[str, Any]] = None
 
     @staticmethod
     def _fmt(value: Any) -> str:
@@ -2745,6 +2782,69 @@ class ComposeMusicTool(MCPTool):
             if rec is not None:
                 return rec
         return None
+
+    def _resolve_preset(
+        self, kwargs: Dict[str, Any]
+    ) -> Tuple[Dict[str, Any], Optional[str]]:
+        """Подмешать пресет ручек в *kwargs* (ADR-0132 PR-7).
+
+        Явные ручки всегда побеждают: поле берётся из пресета, только
+        если вызывающая сторона его НЕ передала (``kwargs`` — уже те
+        аргументы, что реально пришли в ``execute(**kwargs)``, а не
+        значения по умолчанию сигнатуры — см. :meth:`execute`).
+
+        Возвращает ``(merged_kwargs, preset_note)``: ``preset_note`` —
+        строка для партитуры («<title> (ручка=значение, …)»), заполнена,
+        только если пресет реально что-то подмешал.
+        """
+        name = kwargs.get("name")
+        if not name or self._preset_store is None:
+            return kwargs, None
+        rec = self._resolve_melody(name, kwargs.get("variants"))
+        melody_key = str(rec.get("name") or "") if rec else ""
+        preset = self._preset_store.get(melody_key) if melody_key else None
+        if preset is None:
+            return kwargs, None
+        explicit = set(kwargs.keys())
+        applied = {
+            k: v for k, v in (preset.get("knobs") or {}).items() if k not in explicit
+        }
+        if not applied:
+            return kwargs, None
+        merged = {**kwargs, **applied}
+        title = preset.get("title") or melody_key
+        knob_text = ", ".join(f"{k}={v}" for k, v in applied.items())
+        return merged, f"{title} ({knob_text})"
+
+    def _remember_played_preset(
+        self, name: Optional[str], melody_title: Optional[str], effective: Dict[str, Any]
+    ) -> None:
+        """Запомнить ручки успешно сыгранного трека по мелодии (ADR-0132 PR-7).
+
+        Источник для ``save_arrangement_preset`` — тул не переигрывает
+        трек, а сохраняет то, что реально только что прозвучало.
+        ``None`` без ``name=`` (сочинённый трек — пресетам сохранять
+        нечего, ключа мелодии нет).
+        """
+        if not name or self._preset_store is None:
+            # Без стора сохранять всё равно некуда (save_arrangement_preset
+            # не сможет обратиться к пресетам) — не тратим лишний запрос к
+            # RTTTL-библиотеке ради поля, у которого нет потребителя.
+            self.last_played_preset = None
+            return
+        rec = self._resolve_melody(name, effective.get("variants"))
+        melody_key = str(rec.get("name") or "") if rec else ""
+        if not melody_key:
+            self.last_played_preset = None
+            return
+        self.last_played_preset = {
+            "melody_key": melody_key,
+            "title": melody_title or melody_key,
+            "knobs": {
+                k: v for k, v in effective.items()
+                if k in PRESET_KNOB_FIELDS and v is not None
+            },
+        }
 
     def _melody_alternatives(
         self, name: Optional[str], chosen_title: Optional[str]
@@ -3082,6 +3182,72 @@ class ComposeMusicTool(MCPTool):
         self,
         name: Optional[str] = None,
         variants: Optional[List[str]] = None,
+        bpm: Any = _UNSET,
+        root: Optional[str] = None,
+        scale: Optional[str] = None,
+        form: Any = _UNSET,
+        drums: Optional[str] = None,
+        drums_sample: int = 0,
+        hats_sample: int = 3,
+        perc: Optional[str] = None,
+        perc_sample: int = 0,
+        hats: Optional[str] = None,
+        bass_synth: Any = _UNSET,
+        bass_notes: Optional[str] = None,
+        lead_synth: Any = _UNSET,
+        lead_notes: Optional[str] = None,
+        lead_dur: Optional[str] = None,
+        pad_synth: Any = _UNSET,
+        pad_notes: Optional[str] = None,
+        progression: Optional[str] = None,
+        counter_synth: Any = _UNSET,
+        theme_octaves: Any = _UNSET,
+        repeat: bool = False,
+        swing: float = 0.0,
+        groove_loop: Optional[str] = None,
+        drum_style: Any = _UNSET,
+        key_detection: Any = _UNSET,
+        chords: Any = _UNSET,
+        harmonic_rhythm: Any = _UNSET,
+        density: Any = _UNSET,
+        bass_style: Any = _UNSET,
+        bass_approach: Any = _UNSET,
+        pad_style: Any = _UNSET,
+        pad_register: Any = _UNSET,
+        counter: Any = _UNSET,
+        lead_octave: Any = _UNSET,
+        lead_outliers: Any = _UNSET,
+        levels: Any = _UNSET,
+    ) -> MCPToolResult:
+        """Точка входа тула (ADR-0132 PR-7): подмешать пресет, затем сыграть.
+
+        Именованная сигнатура — тот же контракт, что схема ``parameters``
+        (``tools/gen_tool_catalog.py`` парсит её статически, класс
+        регрессии #2463). Параметры-ручки (:data:`PRESET_KNOB_FIELDS`)
+        держат сентинел :data:`_UNSET` вместо обычного дефолта: только так
+        внутри метода отличимо «модель это не передала» от «передала тем
+        же значением, что дефолт» — контракт «явная ручка всегда
+        побеждает пресет» (:meth:`_resolve_preset`) требует именно этого
+        различия, а не просто *какого-то* значения по умолчанию.
+        Остальные параметры дефолт не различают — пресетам они не
+        принадлежат (:data:`PRESET_KNOB_FIELDS`), поведение то же, что до
+        PR-7. Конкретные дефолты (0, 3, ``"auto"`` и т.д.) — в
+        :meth:`_execute_named`, единственном месте, которое их знает.
+        """
+        kwargs = _explicit_kwargs(locals())
+        merged, preset_note = self._resolve_preset(kwargs)
+        self._pending_preset_note = preset_note
+        result = self._execute_named(**merged)
+        if result.success:
+            self._remember_played_preset(
+                merged.get("name"), result.data.get("title") if result.data else None, merged,
+            )
+        return result
+
+    def _execute_named(
+        self,
+        name: Optional[str] = None,
+        variants: Optional[List[str]] = None,
         bpm: Optional[float] = None,
         root: Optional[str] = None,
         scale: Optional[str] = None,
@@ -3388,6 +3554,7 @@ class ComposeMusicTool(MCPTool):
                 prep_decisions=prep.get("decisions"),
                 title=melody_title,
                 warnings=warnings,
+                preset_note=self._pending_preset_note,
             )
         except Exception as exc:  # noqa: BLE001 — описание не ломает музыку
             self.log_error(f"[compose_music] партитура не собрана: {exc!r}")
@@ -3488,14 +3655,17 @@ class PreviewArrangementTool(MCPTool):
         node,
         manager: MusicManager,
         rtttl_library: Optional[RtttlLibrary] = None,
+        preset_store: Optional[ArrangementPresetStore] = None,
     ) -> None:
         super().__init__(node)
         self._manager = manager
         # Внутренний ComposeMusicTool НЕ регистрируется как тул — это
         # единственный владелец логики сборки аранжировки
         # (_build_arrangement и всё, что она вызывает). preview_arrangement
-        # переиспользует её вызовом метода, а не копией кода.
-        self._composer = ComposeMusicTool(node, manager, rtttl_library)
+        # переиспользует её вызовом метода, а не копией кода. ADR-0132 PR-7:
+        # тот же preset_store, что и у compose_music — превью подмешивает
+        # ровно тот пресет, что применился бы при реальном проигрывании.
+        self._composer = ComposeMusicTool(node, manager, rtttl_library, preset_store)
 
     @property
     def name(self) -> str:
@@ -3561,6 +3731,57 @@ class PreviewArrangementTool(MCPTool):
         return None
 
     def execute(
+        self,
+        name: Optional[str] = None,
+        variants: Optional[List[str]] = None,
+        bpm: Any = _UNSET,
+        root: Optional[str] = None,
+        scale: Optional[str] = None,
+        form: Any = _UNSET,
+        drums: Optional[str] = None,
+        drums_sample: int = 0,
+        hats_sample: int = 3,
+        perc: Optional[str] = None,
+        perc_sample: int = 0,
+        hats: Optional[str] = None,
+        bass_synth: Any = _UNSET,
+        bass_notes: Optional[str] = None,
+        lead_synth: Any = _UNSET,
+        lead_notes: Optional[str] = None,
+        lead_dur: Optional[str] = None,
+        pad_synth: Any = _UNSET,
+        pad_notes: Optional[str] = None,
+        progression: Optional[str] = None,
+        counter_synth: Any = _UNSET,
+        theme_octaves: Any = _UNSET,
+        repeat: bool = False,
+        swing: float = 0.0,
+        groove_loop: Optional[str] = None,
+        drum_style: Any = _UNSET,
+        key_detection: Any = _UNSET,
+        chords: Any = _UNSET,
+        harmonic_rhythm: Any = _UNSET,
+        density: Any = _UNSET,
+        bass_style: Any = _UNSET,
+        bass_approach: Any = _UNSET,
+        pad_style: Any = _UNSET,
+        pad_register: Any = _UNSET,
+        counter: Any = _UNSET,
+        lead_octave: Any = _UNSET,
+        lead_outliers: Any = _UNSET,
+        levels: Any = _UNSET,
+    ) -> MCPToolResult:
+        """ADR-0132 PR-7: партитура превью подмешивает тот же пресет, что
+        сыграл бы ``compose_music`` — иначе превью соврало бы о ручках,
+        которые реально применятся при следующем ``compose_music``. Та же
+        сигнатура-с-сентинелом, что ``ComposeMusicTool.execute`` — см. его
+        докстринг (общий AST-контракт ``tools/gen_tool_catalog.py``)."""
+        kwargs = _explicit_kwargs(locals())
+        merged, preset_note = self._composer._resolve_preset(kwargs)
+        self._composer._pending_preset_note = preset_note
+        return self._execute_named(**merged)
+
+    def _execute_named(
         self,
         name: Optional[str] = None,
         variants: Optional[List[str]] = None,
@@ -3647,6 +3868,105 @@ class PreviewArrangementTool(MCPTool):
             success=True,
             data={"score": text, "title": built.melody_title},
             message=text,
+        )
+
+
+class SaveArrangementPresetTool(MCPTool):
+    """Сохранить ручки ПОСЛЕДНЕГО сыгранного трека как пресет (ADR-0132 PR-7).
+
+    Не переигрывает трек и не принимает ноты/тембры вручную — сохраняет
+    ровно то, что реально прозвучало на последнем успешном
+    ``compose_music(name=...)`` в этом сеансе
+    (:attr:`ComposeMusicTool.last_played_preset`). Пресет применяется
+    автоматически на будущих вызовах ``compose_music`` той же мелодии,
+    когда модель не задаёт эти ручки явно (:meth:`ComposeMusicTool._resolve_preset`).
+
+    HARD GATE (владелец репо, ADR-0132 §7): модель не оценивает своё
+    творение сама — вызов проходит, только если последняя реплика юзера
+    содержит явную похвалу или прямую просьбу сохранить. Это НЕ проверяется
+    здесь (MCP-процесс не видит истории диалога) — гейт стоит в
+    ``rob_box_harness.core.agent_core._execute_tool_batch``
+    (``_gate_save_arrangement_preset``), которая одна знает последнюю
+    реплику юзера за батч tool_calls; без похвалы вызов сюда не доходит
+    вовсе. ``approved_by_user_quote`` эта же точка переписывает на
+    РЕАЛЬНУЮ реплику — модель не может её подделать.
+    """
+
+    def __init__(
+        self,
+        node,
+        compose_tool: ComposeMusicTool,
+        preset_store: ArrangementPresetStore,
+    ) -> None:
+        super().__init__(node)
+        self._compose_tool = compose_tool
+        self._preset_store = preset_store
+
+    @property
+    def name(self) -> str:
+        return "save_arrangement_preset"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Сохранить ручки ПОСЛЕДНЕГО сыгранного compose_music(name=...) "
+            "трека как пресет — при следующих запросах этой же мелодии "
+            "ручки, которые ты явно не задашь, подставятся из пресета "
+            "автоматически. Вызывай ТОЛЬКО когда юзер явно похвалил именно "
+            "эту аранжировку («кайф», «супер», «класс», «отлично» и т.п.) "
+            "или прямо попросил сохранить/запомнить вариант — иначе вызов "
+            "будет отклонён (ты не оцениваешь своё исполнение сама). Ничего "
+            "не переигрывает и не принимает ноты — только запоминает уже "
+            "сыгранные тембры/ручки."
+        )
+
+    @property
+    def parameters(self) -> List[MCPToolParameter]:
+        return [
+            MCPToolParameter(
+                name="note",
+                type="string",
+                description="Короткая заметка о том, почему этот вариант "
+                "хорош (по желанию) — попадёт в пресет для будущих справок.",
+                required=False,
+            ),
+        ]
+
+    @property
+    def execution_type(self) -> ToolExecutionType:
+        return ToolExecutionType.FAST
+
+    @property
+    def destructive(self) -> bool:
+        return False
+
+    def execute(
+        self, note: Optional[str] = None, approved_by_user_quote: Optional[str] = None,
+    ) -> MCPToolResult:
+        played = self._compose_tool.last_played_preset
+        if not played:
+            return MCPToolResult(
+                success=False,
+                error=(
+                    "Нечего сохранять: последний успешный трек в этом "
+                    "сеансе не был сыгран по известной мелодии "
+                    "(compose_music с name=), либо сеанс ещё не играл "
+                    "ничего. Сыграй мелодию через compose_music(name=...), "
+                    "прежде чем сохранять её пресет."
+                ),
+            )
+        saved = self._preset_store.save(
+            played["melody_key"],
+            title=str(played["title"]),
+            knobs=played["knobs"],
+            note=note or "",
+            approved_by_user_quote=approved_by_user_quote or "",
+        )
+        knob_text = ", ".join(f"{k}={v}" for k, v in played["knobs"].items())
+        return MCPToolResult(
+            success=True,
+            data=saved,
+            message=f"Пресет «{played['title']}» сохранён: {knob_text or '(без ручек)'}.",
         )
 
 

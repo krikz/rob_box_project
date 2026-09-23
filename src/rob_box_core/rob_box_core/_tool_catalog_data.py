@@ -4804,6 +4804,40 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'starts_music': False,
         'satisfies_user_music': False,
         'execution_type': 'fast',
+        'name': 'save_arrangement_preset',
+        'description': 'Сохранить ручки ПОСЛЕДНЕГО сыгранного compose_music(name=...) '
+                       'трека как пресет — при следующих запросах этой же мелодии '
+                       'ручки, которые ты явно не задашь, подставятся из пресета '
+                       'автоматически. Вызывай ТОЛЬКО когда юзер явно похвалил именно '
+                       'эту аранжировку («кайф», «супер», «класс», «отлично» и т.п.) '
+                       'или прямо попросил сохранить/запомнить вариант — иначе вызов '
+                       'будет отклонён (ты не оцениваешь своё исполнение сама). Ничего '
+                       'не переигрывает и не принимает ноты — только запоминает уже '
+                       'сыгранные тембры/ручки.',
+        'parameters': {   'type': 'object',
+                          'properties': {   'note': {   'type': 'string',
+                                                        'description': 'Короткая '
+                                                                       'заметка о том, '
+                                                                       'почему этот '
+                                                                       'вариант хорош '
+                                                                       '(по желанию) — '
+                                                                       'попадёт в '
+                                                                       'пресет для '
+                                                                       'будущих '
+                                                                       'справок.'}},
+                          'required': [],
+                          'additionalProperties': False},
+        'signature': {   'params': ['note', 'approved_by_user_quote'],
+                         'required': [],
+                         'accepts_kwargs': False},
+        'skill': ('composer',)},
+    {   'llm_visible': True,
+        'read_only': False,
+        'destructive': False,
+        'idempotent': False,
+        'starts_music': False,
+        'satisfies_user_music': False,
+        'execution_type': 'fast',
         'name': 'save_track',
         'description': 'Сохранить Renardo-трек в медиатеку робота для повторного '
                        'воспроизведения. Если code не передан — сохраняется код '

@@ -18,7 +18,13 @@ setup(
     # Регрессия закрыта тестом test_slice_policy_packaging.py.
     package_data={
         # sample_loops.json — каталог лупов и белый список pack 1 (#2841).
-        'rob_box_mcp_tools.data': ['*.yaml', 'rtttl_melodies.jsonl.gz', 'sample_loops.json'],
+        # arrangement_presets.json — shipped-пресеты ручек compose_music
+        # (ADR-0132 PR-7): рецепты под конкретные песни, вынесенные из
+        # composer.txt.
+        'rob_box_mcp_tools.data': [
+            '*.yaml', 'rtttl_melodies.jsonl.gz', 'sample_loops.json',
+            'arrangement_presets.json',
+        ],
     },
     data_files=[
         ('share/ament_index/resource_index/packages',
