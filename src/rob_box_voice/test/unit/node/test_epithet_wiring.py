@@ -267,12 +267,12 @@ def test_llm_epithet_replaces_dictionary_one(node):
 
     node._on_epithet_result(
         types.SimpleNamespace(
-            data=json.dumps({"speaker_id": sid, "epithet": "Ферзегрыз"})
+            data=json.dumps({"speaker_id": sid, "epithet": "Грозный ферзегрыз"})
         )
     )
 
     profile = node._db.get_speaker_profile(sid)
-    assert profile["epithet"] == "Ферзегрыз"
+    assert profile["epithet"] == "Грозный ферзегрыз"
     assert profile["epithet_history"][-1]["old"] == dictionary_label
     assert profile["epithet_history"][-1]["reason"] == ep.REASON_LLM
     assert sent  # запрос к LLM действительно уходил
@@ -299,17 +299,20 @@ def test_llm_epithet_cannot_steal_taken_label(node):
     _capture_requests(node)
     first = node._db.register("Денис", _embedding(14))
     second = node._db.register("Денис", _embedding(15))
-    node._db.set_epithet(first, "Кулибин", ep.REASON_LLM)
+    node._db.set_epithet(first, "Ночной паяльщик моторов", ep.REASON_LLM)
     node._db.set_epithet(second, "Электрик", ep.REASON_FIRST_SEEN)
 
     node._on_epithet_result(
         types.SimpleNamespace(
-            data=json.dumps({"speaker_id": second, "epithet": "Кулибин"})
+            data=json.dumps(
+                {"speaker_id": second, "epithet": "Ночной паяльщик моторов"},
+                ensure_ascii=False,
+            )
         )
     )
 
     assert node._db.get_epithet(second) == "Электрик"
-    assert node._db.get_epithet(first) == "Кулибин"
+    assert node._db.get_epithet(first) == "Ночной паяльщик моторов"
 
 
 def test_epithet_result_ignores_garbage_json(node):
@@ -372,16 +375,16 @@ def test_issue_2886_second_profile_same_llm_epithet_rejected_as_taken(node):
     _capture_requests(node)
     sasha = node._db.register("Саша", _embedding(20))
     node._ensure_epithet(sasha)
-    _send_llm_epithet(node, sasha, "Собеседник")
-    assert node._db.get_epithet(sasha) == "Собеседник"
+    _send_llm_epithet(node, sasha, "Мудрый собеседник")
+    assert node._db.get_epithet(sasha) == "Мудрый собеседник"
 
     boris = node._db.register("Борис", _embedding(21))
     node._ensure_epithet(boris)
     boris_dictionary = node._db.get_epithet(boris)
-    _send_llm_epithet(node, boris, "Собеседник")
+    _send_llm_epithet(node, boris, "Мудрый собеседник")
 
     assert node._db.get_epithet(boris) == boris_dictionary
-    assert node._db.get_epithet(sasha) == "Собеседник"
+    assert node._db.get_epithet(sasha) == "Мудрый собеседник"
     assert ep.is_stranger_epithet("Собеседник") is False
 
     rejects = [line for line in _info_lines(node) if "отклонена" in line]
@@ -392,7 +395,7 @@ def test_issue_2886_second_profile_same_llm_epithet_rejected_as_taken(node):
 
 @pytest.mark.parametrize("label, reason", [
     ("Незнакомец", "stranger"),
-    ("Агент007", "invalid"),
+    ("Агент 007", "invalid"),
     ("", "empty"),
 ])
 def test_issue_2886_reject_log_names_reason(node, label, reason):
@@ -429,7 +432,7 @@ def test_issue_2886_dictionary_label_freed_by_llm_rename_is_reused(node):
         for p in probes
     )
 
-    _send_llm_epithet(node, sasha, "Собеседник")
+    _send_llm_epithet(node, sasha, "Мудрый собеседник")
 
     free = node._db.taken_epithets()
     assert "Странник" not in free
@@ -437,3 +440,57 @@ def test_issue_2886_dictionary_label_freed_by_llm_rename_is_reused(node):
         ep.choose_epithet([], speaker_id=p, taken=free).label == "Странник"
         for p in probes
     )
+
+
+# ── Issue #2887: кличка 2–4 слова ────────────────────────────────────────────
+
+
+def test_issue_2887_multiword_llm_epithet_is_stored_whole(node):
+    _capture_requests(node)
+    sid = node._db.register("Саша", _embedding(24))
+    node._ensure_epithet(sid)
+
+    _send_llm_epithet(node, sid, "Мудрый собеседник-спортсмен")
+
+    assert node._db.get_epithet(sid) == "Мудрый собеседник-спортсмен"
+
+
+def test_issue_2887_single_word_llm_epithet_keeps_dictionary_one(node):
+    _capture_requests(node)
+    sid = node._db.register("Саша", _embedding(25))
+    node._ensure_epithet(sid)
+    before = node._db.get_epithet(sid)
+
+    _send_llm_epithet(node, sid, "Кулибин")
+
+    assert node._db.get_epithet(sid) == before
+    rejects = [line for line in _info_lines(node) if "отклонена" in line]
+    assert "причина=word_count" in rejects[0], rejects
+
+
+def test_issue_2887_llm_epithet_with_other_persons_name_is_rejected(node):
+    """Кличка с именем Бориса у Саши читалась бы как упоминание Бориса."""
+    _capture_requests(node)
+    node._db.register("Борис", _embedding(26))
+    sasha = node._db.register("Саша", _embedding(27))
+    node._ensure_epithet(sasha)
+    before = node._db.get_epithet(sasha)
+
+    _send_llm_epithet(node, sasha, "Весёлый Борис-путешественник")
+
+    assert node._db.get_epithet(sasha) == before
+    rejects = [line for line in _info_lines(node) if "отклонена" in line]
+    assert "причина=name" in rejects[0], rejects
+
+
+def test_issue_2887_stranger_word_inside_multiword_label_is_rejected(node):
+    _capture_requests(node)
+    sid = node._db.register("Саша", _embedding(28))
+    node._ensure_epithet(sid)
+    before = node._db.get_epithet(sid)
+
+    _send_llm_epithet(node, sid, "Мудрый незнакомец")
+
+    assert node._db.get_epithet(sid) == before
+    rejects = [line for line in _info_lines(node) if "отклонена" in line]
+    assert "причина=stranger" in rejects[0], rejects

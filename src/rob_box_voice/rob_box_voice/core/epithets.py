@@ -22,6 +22,22 @@ LLM) закрыта детерминированно, а не вероятнос
 корректности — и потому вынесен в follow-up (ADR-0008: не тащим сетевую
 зависимость в путь, который обязан работать offline).
 
+Форма клички (решение товарища Шифу, 23.09.2026, issue #2887)
+-------------------------------------------------------------
+* **LLM-кличка — 2–4 слова** («Мудрый собеседник-спортсмен», «Ночной
+  паяльщик моторов»), из черт, которые человек сам о себе рассказал.
+  Раньше здесь было «ровно одно слово» (со ссылкой на
+  «Весело-Угрюмый-Кентавр» из research §4.2) — правило изменено.
+  Одно слово и 5+ слов отклоняются, а не обрезаются: обрезка фразы
+  («Мудрый собеседник который любит») даёт обрывок, а не кличку, тогда
+  как словарный фолбек уже лежит в профиле.
+* **Словарная кличка остаётся одним словом.** Она живёт секунды — до
+  ответа LLM — и дольше только офлайн. Собирать её из частей
+  («Тихий» + «Ладья») без морфологии нельзя: прилагательное не
+  согласуется с родом существительного («Тихий Ладья»). Заодно формы
+  не пересекаются: словарная (1 слово) не может совпасть с LLM-кличкой
+  (2–4 слова).
+
 Модуль — **чистый stdlib** (как ``speaker_profiles``): ни rclpy, ни numpy,
 ни sqlite. Всё, что связано с хранением, живёт в
 ``utils/speaker_embeddings.py``; всё, что связано с ROS-топиками — в
@@ -64,17 +80,37 @@ REASON_LLM = "llm"
 # Причины отказа LLM-клички (issue #2886: пишутся в лог speaker_id_node,
 # чтобы по логу было видно, какая проверка сработала).
 REJECT_EMPTY = "empty"
+REJECT_WORD_COUNT = "word_count"
 REJECT_INVALID = "invalid"
 REJECT_STRANGER = "stranger"
+REJECT_NAME = "name"
 REJECT_TAKEN = "taken"
 
-# Границы для клички, придуманной LLM (слой 2 гибрида). Одно слово —
-# чтобы эпитет оставался меткой, а не фразой («Весело-Угрюмый-Кентавр»
-# из research §4.2 — ровно то, что здесь отсекается).
-LLM_EPITHET_MIN_LEN: int = 3
-LLM_EPITHET_MAX_LEN: int = 20
+# Границы для клички, придуманной LLM (слой 2 гибрида). Issue #2887
+# (решение Шифу 23.09.2026): 2–4 слова вместо одного. Дефис внутри слова
+# допустим и словом не считается («собеседник-спортсмен» — одно слово).
+# 48 символов вмещают четыре длинных слова и не пускают абзац.
+LLM_EPITHET_MIN_WORDS: int = 2
+LLM_EPITHET_MAX_WORDS: int = 4
+LLM_EPITHET_MIN_LEN: int = 5
+LLM_EPITHET_MAX_LEN: int = 48
 
-_LLM_EPITHET_RE = re.compile(r"^[А-ЯЁA-Z][а-яёa-z]+(?:-[А-ЯЁA-Za-zа-яё]+)?$")
+# Первое слово — с большой буквы (как было у однословной клички: отсекает
+# обрывки прозы), остальные — любого регистра («Ночной паяльщик моторов»).
+_LLM_EPITHET_FIRST_RE = re.compile(r"^[А-ЯЁA-Z][а-яёa-z]+(?:-[А-ЯЁA-Za-zа-яё]+)*$")
+_LLM_EPITHET_WORD_RE = re.compile(r"^[А-ЯЁA-Za-zа-яё]+(?:-[А-ЯЁA-Za-zа-яё]+)*$")
+
+# Слова, которых в кличке не бывает, а в отказе/подписи модели — бывают:
+# «Не могу придумать», «Я бы назвал…», «Вот кличка». Пока кличка была
+# одним словом, такие ответы отсекала длина; у 2–4 слов нужна явная сверка.
+_NON_EPITHET_WORDS = frozenset((
+    "не", "нет", "я", "мне", "вы", "вот", "это", "могу", "придумать",
+    "извините", "простите", "кличка", "прозвище", "ответ", "sorry",
+))
+
+# Разделители «кличка — пояснение»: тире (не дефис внутри слова), запятая,
+# точка, скобка, перевод строки. Всё после первого — пояснение модели.
+_EXPLANATION_SPLIT_RE = re.compile(r"\s[-–—]\s|[—–,.;!?()\[\]\n]")
 
 # Issue #2864 — кличка со смыслом «неизвестный человек» у профиля, который
 # робот уже знает (живой прогон: LLM назвала представившегося Сашу
@@ -88,6 +124,12 @@ STRANGER_EPITHET_STEMS: Tuple[str, ...] = (
     "незнаком", "неизвест", "неопознан", "аноним", "инкогнито",
     "безымян", "гост", "чуж", "посторон", "некто", "никто",
     "stranger", "unknown", "anonym", "guest", "nobody", "incognito",
+)
+# Issue #2887 — у кличек из 2–4 слов основа «гост» ловит слова, которые
+# про гостя не говорят: «Гостеприимный повар», «Гостиничный администратор».
+# Однословная кличка на них не натыкалась, многословная — будет.
+STRANGER_EPITHET_EXCEPTIONS: Tuple[str, ...] = (
+    "гостеприим", "гостиниц", "гостиничн", "гостинец", "гостинц",
 )
 
 _WORD_RE = re.compile(r"[а-яёa-z0-9\-]+", re.IGNORECASE)
@@ -476,10 +518,11 @@ def build_llm_prompt(
 ) -> str:
     """Собрать запрос к LLM на выдумывание клички.
 
+    Issue #2887 (решение Шифу 23.09.2026): просим 2–4 слова из черт
+    человека — того, что он рассказал о себе, — а не общую метку.
     Словарный кандидат (``fallback``) и соседи по кластеру (``hints``)
-    идут в промпт не как ограничение, а как **пример нужного регистра**:
-    LLM свободна придумать своё слово, но видит, чего от неё ждут —
-    одно существительное, а не эпитет-фразу.
+    идут в промпт как **слова-ориентиры по теме**, не как образец формы:
+    они однословные, а нужна кличка из нескольких слов.
     """
     recent = "\n".join(f"- {m}" for m in list(messages)[-5:] if m)
     hint_line = ", ".join(hints[:3]) if hints else fallback
@@ -489,18 +532,84 @@ def build_llm_prompt(
         "НИКОГДА не произносится вслух.\n\n"
         f"Основная тема собеседника: {cluster}.\n"
         f"Последние реплики:\n{recent or '- (пока нечего показать)'}\n\n"
-        f"Примеры нужного стиля: {hint_line}.\n\n"
-        "Верни РОВНО ОДНО слово — существительное на русском, с большой "
-        "буквы, без кавычек, пояснений и знаков препинания. Кличка должна "
-        "быть уважительной: без насмешек над внешностью, здоровьем, "
-        "национальностью и без грубых слов. Это человек, которого робот "
-        "уже знает, — не называй его незнакомцем, гостем, анонимом или "
-        "чужаком."
+        f"Слова-ориентиры по теме (можно взять за основу): {hint_line}.\n\n"
+        f"Верни кличку из {LLM_EPITHET_MIN_WORDS}–{LLM_EPITHET_MAX_WORDS} слов "
+        "на русском, первое слово с большой буквы, например «Мудрый "
+        "собеседник-спортсмен» или «Ночной паяльщик моторов». Собери её из "
+        "того, что человек рассказал о себе: занятия, увлечения, манера "
+        "речи — чтобы она подходила именно ему, а не любому. Без кавычек, "
+        "пояснений, цифр и знаков препинания (дефис внутри слова можно). "
+        "Не используй имя человека. Кличка должна быть уважительной: без "
+        "насмешек над внешностью, здоровьем, национальностью и без грубых "
+        "слов. Это человек, которого робот уже знает, — не называй его "
+        "незнакомцем, гостем, анонимом или чужаком."
     )
 
 
+def normalize_epithet(label: Optional[str]) -> str:
+    """Ключ сравнения кличек: нижний регистр, ё→е, одиночные пробелы.
+
+    Issue #2887 — занятость сверяется по всей кличке целиком; без
+    нормализации «Мудрый  Собеседник» и «мудрый собеседник» считались бы
+    разными метками.
+    """
+    return " ".join(str(label or "").lower().replace("ё", "е").split())
+
+
+def _extract_llm_label(raw: str) -> List[str]:
+    """Вырезать из ответа LLM слова клички (без подписи и пояснений)."""
+    text = str(raw).strip()
+    # «Кличка: Кулибин» — модель любит подписать ответ. Двоеточие делит
+    # подпись и саму кличку; без этого в БД уехала бы «Кличка».
+    if ":" in text:
+        text = text.rsplit(":", 1)[-1]
+    # «Мудрый собеседник — любит бег» / «…, потому что…» — пояснение
+    # отрезаем по первому разделителю.
+    text = _EXPLANATION_SPLIT_RE.split(text.strip().strip("\"'«»`"), 1)[0]
+    words = [w.strip("\"'«»`") for w in text.split()]
+    return [w for w in words if w]
+
+
+def _label_format_problem(words: Sequence[str]) -> Optional[str]:
+    """Причина отказа по форме клички (число слов, символы) или ``None``."""
+    if not (LLM_EPITHET_MIN_WORDS <= len(words) <= LLM_EPITHET_MAX_WORDS):
+        return REJECT_WORD_COUNT
+    label = " ".join(words)
+    if not (LLM_EPITHET_MIN_LEN <= len(label) <= LLM_EPITHET_MAX_LEN):
+        return REJECT_INVALID
+    if not _LLM_EPITHET_FIRST_RE.match(words[0]):
+        return REJECT_INVALID
+    if not all(_LLM_EPITHET_WORD_RE.match(w) for w in words[1:]):
+        return REJECT_INVALID
+    if any(w.lower() in _NON_EPITHET_WORDS for w in words):
+        return REJECT_INVALID
+    return None
+
+
+def _has_person_name(label: str, names: Iterable[str]) -> bool:
+    """В кличке есть имя знакомого человека (своё или чужое).
+
+    Кличка с именем читается LLM как упоминание этого человека:
+    «Борис-путешественник» у Саши — ровно та путаница, от которой кличка
+    защищает. Имена от 4 букв сверяются по основе без последней буквы
+    («Борис» ловит «Борисыч»), короче — только целиком.
+    """
+    parts = re.split(r"[\s-]+", normalize_epithet(label))
+    for name in names:
+        key = normalize_epithet(name)
+        if not key or " " in key:
+            continue
+        stem = key[:-1] if len(key) >= 4 else key
+        if any(p == key or (len(key) >= 4 and p.startswith(stem)) for p in parts):
+            return True
+    return False
+
+
 def check_llm_epithet(
-    raw: Optional[str], *, taken: Iterable[str] = ()
+    raw: Optional[str],
+    *,
+    taken: Iterable[str] = (),
+    names: Iterable[str] = (),
 ) -> Tuple[Optional[str], Optional[str]]:
     """Проверить кличку, придуманную LLM: ``(кличка, None)`` или ``(None, причина)``.
 
@@ -508,56 +617,59 @@ def check_llm_epithet(
     и нельзя было понять, сработал фильтр или уникальность):
 
     * ``REJECT_EMPTY`` — пустой ответ;
-    * ``REJECT_INVALID`` — не похоже на кличку: несколько слов, длина вне
-      границ, посторонние символы (цифры, эмодзи), маленькая буква;
     * ``REJECT_STRANGER`` — смысл «неизвестный человек» (issue #2864);
-    * ``REJECT_TAKEN`` — кличка уже у другого профиля (сравнение без
-      учёта регистра).
+      проверяется до числа слов, чтобы однословный «Незнакомец» в логе
+      был виден как незнакомец, а не как «одно слово»;
+    * ``REJECT_WORD_COUNT`` — не 2–4 слова (issue #2887). Лишнее не
+      обрезаем: обрывок фразы хуже словарной клички, которая уже в БД;
+    * ``REJECT_INVALID`` — длина вне границ, цифры/эмодзи, маленькая
+      буква у первого слова, слова отказа («Не могу придумать»);
+    * ``REJECT_NAME`` — в кличке имя знакомого человека (``names``);
+    * ``REJECT_TAKEN`` — кличка уже у другого профиля; сравнение всей
+      клички целиком через ``normalize_epithet``.
 
     Отказ означает «оставить словарного кандидата» — именно поэтому
     словарный слой пишется в БД ДО запроса к LLM: у робота всегда есть
     рабочая метка, даже если сеть легла или модель вернула мусор
     (ADR-0008 — деградация без тишины).
     """
-    if not raw:
+    words = _extract_llm_label(raw) if raw else []
+    if not words:
         return None, REJECT_EMPTY
-    text = str(raw).strip()
-    # «Кличка: Кулибин» — модель любит подписать ответ. Двоеточие делит
-    # подпись и саму кличку; без этого в БД уехало бы слово «Кличка».
-    if ":" in text:
-        text = text.rsplit(":", 1)[-1]
-    # Дальше LLM часто добавляет пояснение или кавычки — берём первое слово.
-    word = text.strip().strip("\"'«»`.,!?:;()[]").split()
-    if not word:
-        return None, REJECT_EMPTY
-    label = word[0].strip("\"'«»`.,!?:;()[]")
-    if not (LLM_EPITHET_MIN_LEN <= len(label) <= LLM_EPITHET_MAX_LEN):
-        return None, REJECT_INVALID
-    if not _LLM_EPITHET_RE.match(label):
-        return None, REJECT_INVALID
+    label = " ".join(words)
     if is_stranger_epithet(label):
         return None, REJECT_STRANGER
-    taken_lower = {str(t).strip().lower() for t in taken if t}
-    if label.lower() in taken_lower:
+    problem = _label_format_problem(words)
+    if problem:
+        return None, problem
+    if _has_person_name(label, names):
+        return None, REJECT_NAME
+    if normalize_epithet(label) in {normalize_epithet(t) for t in taken if t}:
         return None, REJECT_TAKEN
     return label, None
 
 
-def sanitize_llm_epithet(raw: Optional[str], *, taken: Iterable[str] = ()) -> Optional[str]:
+def sanitize_llm_epithet(
+    raw: Optional[str], *, taken: Iterable[str] = (), names: Iterable[str] = ()
+) -> Optional[str]:
     """Кличка от LLM или ``None``, если не годится (причина — ``check_llm_epithet``)."""
-    return check_llm_epithet(raw, taken=taken)[0]
+    return check_llm_epithet(raw, taken=taken, names=names)[0]
 
 
 def is_stranger_epithet(label: Optional[str]) -> bool:
     """Кличка по смыслу означает «неизвестный человек» (issue #2864).
 
-    Проверяется каждая часть составной клички («Кулибин-Незнакомец»):
-    достаточно одной, чтобы метка читалась как отдельный безымянный
-    человек. См. ``STRANGER_EPITHET_STEMS``.
+    Проверяется каждое слово и каждая часть через дефис
+    («Кулибин-Незнакомец», «Мудрый незнакомец»): достаточно одной, чтобы
+    метка читалась как отдельный безымянный человек. См.
+    ``STRANGER_EPITHET_STEMS`` и ``STRANGER_EPITHET_EXCEPTIONS``.
     """
-    parts = str(label or "").lower().replace("ё", "е").split("-")
+    parts = re.split(r"[\s-]+", normalize_epithet(label))
     return any(
-        part.startswith(STRANGER_EPITHET_STEMS) for part in parts if part
+        part.startswith(STRANGER_EPITHET_STEMS)
+        and not part.startswith(STRANGER_EPITHET_EXCEPTIONS)
+        for part in parts
+        if part
     )
 
 
@@ -602,15 +714,20 @@ def find_distinctive_topic(
 __all__ = [
     "CLUSTER_KEYWORDS",
     "LLM_EPITHET_MAX_LEN",
+    "LLM_EPITHET_MAX_WORDS",
     "LLM_EPITHET_MIN_LEN",
+    "LLM_EPITHET_MIN_WORDS",
     "REASON_LLM",
     "REJECT_EMPTY",
     "REJECT_INVALID",
+    "REJECT_NAME",
     "REJECT_STRANGER",
     "REJECT_TAKEN",
+    "REJECT_WORD_COUNT",
     "build_llm_prompt",
     "check_llm_epithet",
     "is_stranger_epithet",
+    "normalize_epithet",
     "sanitize_llm_epithet",
     "DEFAULT_POOL_NEUTRAL",
     "DEFAULT_POOL_RESTLESS",

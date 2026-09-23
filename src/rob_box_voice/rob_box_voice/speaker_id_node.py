@@ -1926,7 +1926,8 @@ class SpeakerIdNode(Node):
     def _on_epithet_result(self, msg: String) -> None:
         """Принять кличку, придуманную LLM, и применить её после проверки.
 
-        Expected JSON: ``{"speaker_id": "<uuid>", "epithet": "Кулибин"}``.
+        Expected JSON: ``{"speaker_id": "<uuid>", "epithet": "Ночной паяльщик моторов"}``
+        (2–4 слова, issue #2887).
 
         Всё, что не прошло ``sanitize_llm_epithet`` (фраза вместо слова,
         цифры, уже занятая кличка), отбрасывается с причиной в логе
@@ -1944,8 +1945,12 @@ class SpeakerIdNode(Node):
         if not speaker_id:
             return
 
+        # Issue #2887 — имена всех знакомых: кличка с чужим (или своим)
+        # именем читается LLM как упоминание этого человека.
         label, why = epithets.check_llm_epithet(
-            raw, taken=self._db.taken_epithets(exclude_speaker_id=speaker_id)
+            raw,
+            taken=self._db.taken_epithets(exclude_speaker_id=speaker_id),
+            names=[row["name"] for row in self._db.list_speakers() if row["name"]],
         )
         if not label:
             # Issue #2886 — причина в логе: иначе «отклонена» у одного
@@ -1964,9 +1969,9 @@ class SpeakerIdNode(Node):
 
     def _epithet_owner(self, raw, speaker_id: str) -> str:
         """Короткий id профиля, у которого уже есть кличка ``raw`` (для лога)."""
-        wanted = epithets.sanitize_llm_epithet(raw) or str(raw or "")
+        wanted = epithets.normalize_epithet(epithets.sanitize_llm_epithet(raw) or raw)
         for row in self._db.list_speakers():
-            if row["id"] != speaker_id and (row["epithet"] or "").lower() == wanted.lower():
+            if row["id"] != speaker_id and epithets.normalize_epithet(row["epithet"]) == wanted:
                 return row["id"][:8]
         return "?"
 
