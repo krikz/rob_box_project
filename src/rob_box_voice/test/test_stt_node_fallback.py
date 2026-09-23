@@ -1544,13 +1544,14 @@ class TestProviderChainNormalization:
 
         return STTNode._normalize_provider_chain(chain, logger=logger)
 
-    def test_default_order_is_minimax_yandex_vosk(self):
+    def test_default_order_is_yandex_minimax_vosk(self):
+        """Issue #2866: счёт Yandex пополнен — Yandex снова primary."""
         from rob_box_voice.stt_node import DEFAULT_STT_PROVIDER_CHAIN
 
-        assert DEFAULT_STT_PROVIDER_CHAIN == ["minimax", "yandex", "vosk"]
+        assert DEFAULT_STT_PROVIDER_CHAIN == ["yandex", "minimax", "vosk"]
 
     def test_empty_chain_falls_back_to_default(self):
-        assert self._normalize([]) == ["minimax", "yandex", "vosk"]
+        assert self._normalize([]) == ["yandex", "minimax", "vosk"]
 
     def test_vosk_is_forced_last(self):
         """Vosk в середине — переносится в конец: он последний рубеж."""
@@ -1588,8 +1589,8 @@ class TestProviderChainNormalization:
 
     def test_garbage_chain_falls_back_to_default(self):
         assert self._normalize(["whisper", "azure"]) == [
-            "minimax",
             "yandex",
+            "minimax",
             "vosk",
         ]
 
