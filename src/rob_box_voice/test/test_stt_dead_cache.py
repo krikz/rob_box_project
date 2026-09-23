@@ -25,6 +25,7 @@ import time
 import pytest
 
 from rob_box_voice.stt_fallback import (
+    DEFAULT_DEAD_TTL_PERMANENT_LADDER,
     DEFAULT_DEAD_TTL_S,
     DEFAULT_DEAD_TTL_TRANSIENT_S,
     ProviderDeadCache,
@@ -136,6 +137,106 @@ class TestProviderDeadCache:
         assert cache.is_dead("yandex") is False
 
 
+class TestPermanentFailureEscalation:
+    """Issue #2767 — лестница эскалации TTL для повторных permanent-отказов.
+
+    Живой инцидент 23.09: Yandex STT падает с PERMISSION_DENIED (нет прав
+    на папку в IAM) КАЖДЫЙ раз — 300с плоского TTL не «лечит» проблему с
+    правами, нода просто простукивает мёртвого провайдера заново каждые
+    5 минут бесконечно. Эскалация (аналог tts_node._transient_ttl_for_streak
+    из PR #2712/#2721, но по другой оси — здесь эскалируем PERMANENT, а не
+    транзиентные отказы) снижает частоту повторных проверок.
+    """
+
+    def test_first_permanent_failure_uses_base_ttl(self):
+        clock = _FakeClock()
+        cache = ProviderDeadCache(clock=clock)
+
+        ttl = cache.mark_dead("yandex", "PERMISSION_DENIED", transient=False)
+
+        assert ttl == DEFAULT_DEAD_TTL_S
+
+    def test_second_consecutive_permanent_failure_escalates(self):
+        """TTL истёк, попробовали снова, снова PERMISSION_DENIED —
+        2-й подряд отказ получает удлинённый TTL (x3 base), а не те же
+        300с по кругу."""
+        clock = _FakeClock()
+        cache = ProviderDeadCache(clock=clock)
+
+        ttl1 = cache.mark_dead(
+            "yandex", "PERMISSION_DENIED", transient=False
+        )
+        clock.advance(ttl1 + 1)
+        assert cache.is_dead("yandex") is False  # TTL истёк, воскрес
+
+        ttl2 = cache.mark_dead(
+            "yandex", "PERMISSION_DENIED", transient=False
+        )
+
+        assert ttl1 == DEFAULT_DEAD_TTL_S
+        assert ttl2 == (
+            DEFAULT_DEAD_TTL_S * DEFAULT_DEAD_TTL_PERMANENT_LADDER[1]
+        )
+        assert ttl2 > ttl1
+
+    def test_third_and_further_permanent_failures_cap_at_top_rung(self):
+        clock = _FakeClock()
+        cache = ProviderDeadCache(clock=clock)
+        top_rung = DEFAULT_DEAD_TTL_S * DEFAULT_DEAD_TTL_PERMANENT_LADDER[-1]
+
+        for _ in range(5):
+            ttl = cache.mark_dead(
+                "yandex", "PERMISSION_DENIED", transient=False
+            )
+            clock.advance(ttl + 1)
+
+        # Последний (5-й подряд) отказ уже на верхней ступени лестницы.
+        assert ttl == top_rung
+
+    def test_success_resets_permanent_escalation_streak(self):
+        """Баланс/права починили — следующий отказ снова с базового TTL,
+        а не продолжает эскалацию с прошлой серии."""
+        clock = _FakeClock()
+        cache = ProviderDeadCache(clock=clock)
+
+        ttl1 = cache.mark_dead("yandex", "PERMISSION_DENIED", transient=False)
+        clock.advance(ttl1 + 1)
+        ttl2 = cache.mark_dead("yandex", "PERMISSION_DENIED", transient=False)
+        assert ttl2 > ttl1  # эскалация подтверждена
+
+        cache.mark_alive("yandex")  # права починили
+
+        ttl3 = cache.mark_dead("yandex", "PERMISSION_DENIED", transient=False)
+        assert ttl3 == DEFAULT_DEAD_TTL_S  # сброшено к базовому
+
+    def test_explicit_ttl_bypasses_escalation(self):
+        """Ручной override (диагностика/тест) не трогает streak-счётчик."""
+        clock = _FakeClock()
+        cache = ProviderDeadCache(clock=clock)
+
+        cache.mark_dead("yandex", "manual", transient=False, ttl_s=1.0)
+        clock.advance(2)
+        ttl = cache.mark_dead("yandex", "PERMISSION_DENIED", transient=False)
+
+        # explicit override не считался streak'ом
+        assert ttl == DEFAULT_DEAD_TTL_S
+
+    def test_escalation_is_per_provider(self):
+        """Эскалация MiniMax не влияет на Yandex — независимые счётчики."""
+        clock = _FakeClock()
+        cache = ProviderDeadCache(clock=clock)
+
+        ttl_yandex_1 = cache.mark_dead(
+            "yandex", "PERMISSION_DENIED", transient=False
+        )
+        clock.advance(ttl_yandex_1 + 1)
+        cache.mark_dead("yandex", "PERMISSION_DENIED", transient=False)
+
+        ttl_minimax_1 = cache.mark_dead("minimax", "quota", transient=False)
+
+        assert ttl_minimax_1 == DEFAULT_DEAD_TTL_S  # 1-й отказ minimax — база
+
+
 class TestDeadCachePersistence:
     """Рестарт ноды не должен снова платить таймаут мёртвому облаку (#2676)."""
 
@@ -202,8 +303,13 @@ class TestPermanentFailureClassification:
 
 class TestProviderPolicy:
     def test_policy_gives_each_provider_its_own_retries(self):
-        """MiniMax с 1 retry, Yandex без retry — раньше так было нельзя."""
-        minimax = _StubProvider("minimax", [None, None])
+        """MiniMax с 1 retry, Yandex без retry — раньше так было нельзя.
+
+        Первый ответ MiniMax — реальный транзиентный сбой (не ``empty``,
+        issue #2767: ``empty`` больше не ретраится вовсе), иначе retry
+        не сработал бы и тест перестал бы проверять то, что заявлено.
+        """
+        minimax = _StubProvider("minimax", [STTTimeoutError("deadline"), None])
         yandex = _StubProvider("yandex", [None])
         vosk = _StubProvider("vosk", ["расскажи анекдот"])
 
@@ -224,8 +330,12 @@ class TestProviderPolicy:
         assert vosk.calls == 1
 
     def test_missing_policy_falls_back_to_legacy_rule(self):
-        """Провайдер без явной политики живёт по старому правилу."""
-        first = _StubProvider("minimax", [None, None])
+        """Провайдер без явной политики живёт по старому правилу.
+
+        Первый ответ — транзиентный сбой (не ``empty``, issue #2767),
+        иначе retry не сработал бы вовсе.
+        """
+        first = _StubProvider("minimax", [STTTimeoutError("deadline"), None])
         second = _StubProvider("vosk", ["длинная фраза"])
 
         text, _ = select_recognition(

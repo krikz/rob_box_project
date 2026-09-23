@@ -56,6 +56,7 @@ FallbackReason = Literal[
     "rejected_short",  # итоговое отклонение — слишком короткая итоговая фраза
     "no_provider",  # нет ни одного доступного провайдера
     "dead",  # провайдер в кэше «мёртвых» (квота/ключ/сеть), пропущен
+    "budget_exceeded",  # общий бюджет фразы исчерпан, провайдер пропущен
 ]
 
 # Минимальная разумная длина итоговой фразы. Vosk 0.42 возвращает
@@ -92,6 +93,34 @@ DEFAULT_DEAD_TTL_S = 300.0
 # моргнуть, наказывать провайдера на 5 минут за один DEADLINE_EXCEEDED —
 # перебор. Совпадает с ``tts_node.provider_dead_ttl_transient_s``.
 DEFAULT_DEAD_TTL_TRANSIENT_S = 30.0
+
+# Issue #2767 — лестница эскалации для ПОВТОРНЫХ permanent-отказов
+# (auth/quota) одного провайдера, аналог ``tts_node._transient_ttl_for_streak``
+# (PR #2712/#2721), но по другой оси: там эскалируют транзиентные отказы,
+# здесь — постоянные. Живой пример 23.09: Yandex STT падает с
+# PERMISSION_DENIED (нет прав на папку в IAM) КАЖДЫЙ раз, когда TTL
+# истекает — 300с не «лечит» проблему с правами, и нода честно платит
+# 0ms (dead-skip, дёшево) но тратит cycle на probe каждые 5 минут. Лестница
+# 1x → 3x → 6x base (300 → 900 → 1800с) резко снижает частоту повторных
+# проверок мёртвого-по-факту провайдера, не отменяя автоматическое
+# воскрешение (провайдер оживает сразу на первом успехе — mark_alive).
+DEFAULT_DEAD_TTL_PERMANENT_LADDER = (1.0, 3.0, 6.0)
+
+# Issue #2767 — общий бюджет времени на всю цепочку одной фразы. Живой
+# инцидент 23.09: 7 из 8 фраз отклонены, ~9-10с каждая, потому что empty
+# ретраился (см. DEFAULT_DEAD_TTL_PERMANENT_LADDER) и Yandex гонялся
+# заново на protuхшем auth. С фиксом п.1-2 обычный проход укладывается в
+# minimax(~4с, 1 попытка) + yandex(до 12с DEFAULT_YANDEX_TIMEOUT_S, если
+# ещё не в dead_cache) + vosk(~1.5-2с локально) ≈ 18с — это ожидаемый
+# ХУДШИЙ однопроходный сценарий (холодный старт, ни один провайдер ещё не
+# в кэше). 20с — потолок с небольшим запасом: не режет ни один нормальный
+# проход, но обрывает АНОМАЛЬНЫЕ повторы (например, несколько transient
+# retry подряд у нескольких облаков), не давая цепочке уйти за 30+ секунд
+# как в issue. Бюджет НЕ прерывает уже запущенный вызов (см. ``_measure``)
+# и ВСЕГДА даёт шанс последнему провайдеру в цепочке (обычно Vosk —
+# дешёвый офлайн-фолбэк, который нельзя резать бюджетом, иначе фраза
+# останется вовсе без текста).
+DEFAULT_MAX_TOTAL_BUDGET_S = 20.0
 
 
 class STTProvider(Protocol):
@@ -204,6 +233,11 @@ class ProviderDeadCache:
         self._lock = threading.Lock()
         self._dead_until: dict[str, float] = {}
         self._reason: dict[str, str] = {}
+        # Issue #2767 — счётчик подряд-идущих PERMANENT-отказов (auth/quota)
+        # на провайдера, для лестницы эскалации TTL. Отдельно от транзиентных
+        # (у STT транзиентный TTL плоский — эскалации там нет, в отличие
+        # от TTS/LLM: транзиентная сеть у нас и так короткая, 30с).
+        self._permanent_streak: dict[str, int] = {}
 
     # -- запросы ---------------------------------------------------------
 
@@ -229,6 +263,23 @@ class ProviderDeadCache:
         with self._lock:
             self._dead_until.pop(provider, None)
             self._reason.pop(provider, None)
+            self._permanent_streak.pop(provider, None)
+
+    def _permanent_ttl_for_streak(self, provider: str) -> float:
+        """TTL для ОЧЕРЕДНОГО подряд-идущего permanent-отказа (issue #2767).
+
+        1-й отказ → ``self._ttl_s`` (300с по умолчанию), 2-й → x3 (900с),
+        3-й и далее → x6 (1800с). Сброс — на первом успехе
+        (:meth:`mark_alive`). Считает КАЖДЫЙ вызов :meth:`mark_dead` с
+        ``transient=False`` без явного ``ttl_s`` — вызывающая сторона
+        (``_run_provider``) обязана звать это ровно один раз на отказ.
+        """
+        streak = self._permanent_streak.get(provider, 0) + 1
+        self._permanent_streak[provider] = streak
+        rung = DEFAULT_DEAD_TTL_PERMANENT_LADDER[
+            min(streak, len(DEFAULT_DEAD_TTL_PERMANENT_LADDER)) - 1
+        ]
+        return self._ttl_s * rung
 
     def mark_dead(
         self,
@@ -240,12 +291,22 @@ class ProviderDeadCache:
     ) -> float:
         """Пометить провайдера мёртвым. Возвращает применённый TTL.
 
-        ``transient=True`` (сеть/5xx/таймаут) → короткий TTL;
-        ``transient=False`` (квота/ключ) → длинный.
+        ``transient=True`` (сеть/5xx/таймаут) → короткий плоский TTL;
+        ``transient=False`` (квота/ключ) → длинный TTL, эскалирующий при
+        повторных подряд-идущих permanent-отказах этого провайдера
+        (:meth:`_permanent_ttl_for_streak`, issue #2767) — иначе Yandex с
+        протухшим IAM-правом на папку простукивается заново каждые 300с
+        бесконечно, хотя это не «рассосётся» само.
+
+        Явный ``ttl_s`` (например, ручной override в тестах/диагностике)
+        отключает и классификацию, и эскалацию — используется как есть.
         """
-        if ttl_s is None:
-            ttl_s = self._transient_ttl_s if transient else self._ttl_s
         with self._lock:
+            if ttl_s is None:
+                if transient:
+                    ttl_s = self._transient_ttl_s
+                else:
+                    ttl_s = self._permanent_ttl_for_streak(provider)
             self._dead_until[provider] = self._clock() + float(ttl_s)
             self._reason[provider] = str(reason)[:300]
         return float(ttl_s)
@@ -475,15 +536,35 @@ def _run_provider(
     min_text_chars: int,
     attempts: List[STTAttempt],
     dead_cache: Optional[ProviderDeadCache],
+    *,
+    deadline: Optional[float] = None,
+    clock: Callable[[], float] = time.monotonic,
 ) -> Optional[str]:
     """Отработать одного провайдера с его retry-бюджетом.
 
     Возвращает текст при ``reason == "ok"``, иначе ``None`` (цепочка
     идёт дальше). Побочно наполняет ``attempts`` и обновляет
     ``dead_cache``.
+
+    Retry (``policy.max_retries``) применяется ТОЛЬКО к транзиентным
+    отказам (``timeout``/``error``) — issue #2767. До фикса повтор
+    случался и на ``empty``: живой лог 23.09 показывал
+    ``minimax:empty(3641ms)->minimax:empty(3866ms)`` — «пусто» это не
+    сбой сети, которому может помочь секунда ожидания и второй заход,
+    это провайдер честно не услышал речь в тех же байтах. Повтор на
+    тех же байтах гарантированно даст тот же ``empty`` — чистая трата
+    ~3.6с на фразу. ``low_confidence`` по той же причине не ретраится.
+
+    ``deadline`` (issue #2767 п.3, общий бюджет фразы) останавливает
+    RETRY этого провайдера, если бюджет уже исчерпан — но не прерывает
+    уже начавшийся вызов (см. ``_measure``, gRPC/HTTP не отменяем).
     """
     for attempt_idx in range(max(0, policy.max_retries) + 1):
         if attempt_idx > 0:
+            if deadline is not None and clock() >= deadline:
+                # Бюджет фразы исчерпан — не тратим его на повтор,
+                # переходим к следующему провайдеру (или к финалу).
+                break
             # Линейный backoff (для 1 retry — один sleep).
             time.sleep(policy.retry_backoff_s)
 
@@ -508,17 +589,43 @@ def _run_provider(
                 dead_cache.mark_alive(provider.name)
             return text
 
-        if reason in ("timeout", "error") and dead_cache is not None:
-            permanent = is_permanent_failure(exc)
+        if reason not in ("timeout", "error"):
+            # empty / low_confidence — не транзиентный сбой, повтор
+            # того же провайдера на тех же байтах бесполезен (issue #2767).
+            break
+
+        permanent = is_permanent_failure(exc)
+        if dead_cache is not None:
             dead_cache.mark_dead(
                 provider.name,
                 error or reason,
                 transient=not permanent,
             )
-            if permanent:
-                # Квота/ключ — повтор вернёт ровно то же самое.
-                break
+        if permanent:
+            # Квота/ключ — повтор вернёт ровно то же самое, даже без
+            # dead_cache (легаси-режим, ``ProviderDeadCache is None``).
+            break
     return None
+
+
+def _skip_for_budget(
+    provider: STTProvider,
+    attempts: List[STTAttempt],
+    max_total_s: float,
+) -> None:
+    """Залогировать пропуск провайдера из-за исчерпанного бюджета фразы.
+
+    Вынесено отдельной функцией (issue #2767) по требованию cc_budget
+    (ADR-0021 R1) — инлайн увеличивал CC ``select_recognition``.
+    """
+    attempts.append(
+        STTAttempt(
+            provider=provider.name,
+            reason="budget_exceeded",
+            latency_ms=0,
+            error=f"phrase budget {max_total_s:.0f}s exceeded, skipped",
+        )
+    )
 
 
 def select_recognition(
@@ -531,6 +638,8 @@ def select_recognition(
     min_text_chars: int = DEFAULT_MIN_TEXT_CHARS,
     policies: Optional[Mapping[str, ProviderPolicy]] = None,
     dead_cache: Optional[ProviderDeadCache] = None,
+    max_total_s: Optional[float] = DEFAULT_MAX_TOTAL_BUDGET_S,
+    clock: Callable[[], float] = time.monotonic,
 ) -> tuple[Optional[str], List[STTAttempt]]:
     """Прогнать цепочку провайдеров по приоритету, с retry и фолбеком.
 
@@ -553,6 +662,15 @@ def select_recognition(
             Отсутствующие имена падают на legacy-правило.
         dead_cache: Кэш «мёртвых» провайдеров (issue #2365 Phase 2).
             ``None`` — старое поведение, каждый раз ходим во все облака.
+        max_total_s: Общий бюджет времени на всю цепочку (issue #2767 п.3,
+            см. :data:`DEFAULT_MAX_TOTAL_BUDGET_S`). ``None`` отключает
+            бюджет (легаси-поведение). Бюджет НЕ прерывает уже начавшийся
+            вызов провайдера и НЕ отбирает попытку у ПОСЛЕДНЕГО провайдера
+            в цепочке (обычно Vosk — дешёвый офлайн-фолбэк): его пропуск
+            оставил бы фразу вовсе без текста, что хуже, чем «долго, но
+            распознали».
+        clock: Источник времени для бюджета (по умолчанию
+            ``time.monotonic``; подменяется в тестах на управляемые часы).
 
     Returns:
         ``(text, attempts)``. ``text`` — первый непустой НЕ-короткий результат
@@ -566,14 +684,36 @@ def select_recognition(
         raise ValueError("providers sequence must be non-empty")
 
     attempts: List[STTAttempt] = []
+    live = _live_providers(providers, dead_cache, attempts)
+    last_index = len(live) - 1
+    deadline = None if max_total_s is None else clock() + max_total_s
 
-    for index, provider in enumerate(_live_providers(providers, dead_cache, attempts)):
+    for index, provider in enumerate(live):
+        if (
+            index not in (0, last_index)
+            and deadline is not None
+            and clock() >= deadline
+        ):
+            # Бюджет фразы уже исчерпан ДО этого провайдера — пропускаем.
+            # Первый провайдер (index=0) и последний (обычно офлайн-Vosk)
+            # бюджетом не режем: первый — потому что фраза должна получить
+            # хоть одну попытку, последний — потому что это дешёвый
+            # локальный фолбэк, без него фраза осталась бы вовсе без текста.
+            _skip_for_budget(provider, attempts, max_total_s)
+            continue
         policy = _policy_for(
             provider, index, policies, timeout_s, max_retries, retry_backoff_s
         )
         _prepare_provider(provider)
         text = _run_provider(
-            provider, audio_bytes, policy, min_text_chars, attempts, dead_cache
+            provider,
+            audio_bytes,
+            policy,
+            min_text_chars,
+            attempts,
+            dead_cache,
+            deadline=deadline,
+            clock=clock,
         )
         if text is not None:
             return text, attempts
