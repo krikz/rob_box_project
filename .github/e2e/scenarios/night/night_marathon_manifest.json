@@ -22,7 +22,7 @@
       "act": 2,
       "title": "Знакомство и прогрев голосов",
       "stability": "new-unproven",
-      "steps": 19,
+      "steps": 20,
       "scenario_file": ".github/e2e/scenarios/night/night_marathon_act2_acquaintance_v1.json",
       "acceptance_file": ".github/e2e/scenarios/night/night_marathon_act2_acquaintance_acceptance_v1.json"
     },
@@ -109,5 +109,5 @@
       "acceptance_file": ".github/e2e/scenarios/night/night_marathon_act10_finale_memory_acceptance_v1.json"
     }
   ],
-  "total_steps": 135
+  "total_steps": 136
 }
