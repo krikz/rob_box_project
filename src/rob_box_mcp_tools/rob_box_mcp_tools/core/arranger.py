@@ -1241,6 +1241,69 @@ def _compensate(note, shift: int):
 PAD_STAB_SUS = 0.4
 
 
+#: Слова, которыми модель (или safety-net в tools/music.py) просит «слоя
+#: нет» для любого ``*_synth``. Сравнение регистронезависимо и после
+#: ``strip()`` — ``' None '``/``'NONE'`` тоже схлопываются.
+NO_SYNTH_WORDS = frozenset({"none", "off", "null"})
+
+
+def normalize_synth(value: Optional[str]) -> Optional[str]:
+    """Схлопнуть «синта нет» в ``None`` — единая точка на входе.
+
+    До issue #2836 «синта нет» понимали по-разному: код, добавляющий слой
+    (:func:`_add_derived_layers`, цикл в :func:`spec_from_flat`), считал
+    пустым только ``None``/``''``. А ``_heavy_brass_safety_net`` в
+    ``tools/music.py`` подставлял literal-строку ``'none'`` — она truthy,
+    поэтому доходила до :class:`Layer` как настоящий синт и рендерилась
+    ``d3 >> none([...])``. SynthDef с именем ``none`` не существует в
+    scsynth, и ``renardo_sanitizer`` отклонял код («Синта 'none' не
+    существует»).
+
+    ``None``/``''``/``'none'``/``'off'``/``'null'`` (любой регистр, с
+    пробелами по краям) теперь везде означают одно и то же: слоя нет.
+    """
+    if value is None:
+        return None
+    stripped = value.strip()
+    if not stripped or stripped.lower() in NO_SYNTH_WORDS:
+        return None
+    return stripped
+
+
+def _resolve_counter_synth_default(
+    counter_synth: Optional[str], lead_synth: str
+) -> Optional[str]:
+    """Разрешить counter_synth к финальному значению перед добавлением слоя.
+
+    Три исхода из сырого (ненормализованного) значения:
+
+    * реальный синт → возвращается как есть (нормализованный, без
+      пробелов);
+    * не задан вовсе (``None``/``''``) → фолбэк на ``lead_synth`` — второй
+      голос звучит тембром темы (унисон в терцию, всегда безопасный
+      вариант по умолчанию);
+    * явное слово-отключение (``'none'``/``'off'``/``'null'``, issue
+      #2836) → ``None`` без фолбэка — второй голос выключен, а не
+      восстановлен обратно на lead_synth.
+
+    Решение «фолбэк или отключение» смотрит на СЫРОЕ значение, до
+    :func:`normalize_synth`: нормализация схлопывает «не задано» и
+    «явно отключено» в одно и то же ``None``, и только здесь, различая
+    их заранее, можно выбрать между двумя разными исходами.
+    """
+    is_disable_word = (
+        counter_synth is not None
+        and counter_synth.strip() != ""
+        and counter_synth.strip().lower() in NO_SYNTH_WORDS
+    )
+    normalized = normalize_synth(counter_synth)
+    if normalized is not None:
+        return normalized
+    if is_disable_word:
+        return None
+    return lead_synth
+
+
 def _add_derived_layers(
     layers: List[Layer],
     harmony,
@@ -1403,6 +1466,13 @@ def spec_from_flat(
     form = (form or DEFAULT_FORM).strip()
     swing = float(swing or 0.0)
 
+    # Единая точка нормализации «синта нет» (issue #2836): None/''/'none'/
+    # 'off'/'null' (любой регистр) → None, до того как значение доберётся
+    # до кода, решающего добавлять слой или нет.
+    lead_synth = normalize_synth(lead_synth)
+    bass_synth = normalize_synth(bass_synth)
+    pad_synth = normalize_synth(pad_synth)
+
     if harmony is not None:
         if not (lead_synth and lead_synth.strip()):
             raise ArrangementError(
@@ -1416,12 +1486,12 @@ def spec_from_flat(
             lead_synth=lead_synth,
             bass_synth=bass_synth,
             pad_synth=pad_synth,
-            # Свой тембр второго голоса, если задан. По умолчанию — тембр
-            # темы: два голоса одним инструментом читаются как одна партия
-            # в терцию, что всегда безопасно. Но контрастный тембр (тема
-            # медью, второй голос струнными) звучит богаче, поэтому выбор
-            # оставлен наружу.
-            counter_synth=counter_synth or lead_synth,
+            # См. _resolve_counter_synth_default: по умолчанию — тембр
+            # темы (унисон в терцию), явное 'none'/'off'/'null' —
+            # отключение без фолбэка на lead_synth.
+            counter_synth=_resolve_counter_synth_default(
+                counter_synth, lead_synth
+            ),
             drums_sample=drums_sample,
             hats_sample=hats_sample,
         )

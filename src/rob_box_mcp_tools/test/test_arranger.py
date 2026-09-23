@@ -42,6 +42,7 @@ from rob_box_mcp_tools.core.arranger import (  # noqa: E402
     ArrangementError,
     CompositionSpec,
     Layer,
+    normalize_synth,
     parse_midi,
     form_duration_seconds,
     form_summary,
@@ -950,6 +951,51 @@ class TestFixedThemeMidi:
         assert "strings(" in counter       # контрастный тембр дошёл до кода
         assert "pluck(" not in counter     # а не тембр темы (фолбэк не сработал)
 
+    @pytest.mark.parametrize(
+        "disable_word",
+        ["none", "None", "NONE", "off", "OFF", "null", " null "],
+    )
+    def test_counter_synth_disable_words_drop_the_layer(self, disable_word):
+        """counter_synth='none'/'off'/'null' (issue #2836) — второй голос
+        не добавляется и в код не попадает несуществующий синт ``none``.
+
+        ``''``/``None`` (не заданное значение) сюда намеренно НЕ входят:
+        для них действует другое, более старое поведение — фолбэк на
+        тембр lead_synth (см.
+        ``test_dense_theme_gets_octaves_and_second_voice`` и
+        ``TestNormalizeSynth`` для самой нормализации).
+        """
+        from rob_box_mcp_tools.core.harmonize import harmonize
+
+        notes = [(72 + (i % 5), 0.25) for i in range(32)]
+        harmony = harmonize(notes, bpm=120, root="C", scale="major")
+        assert harmony.dense is True
+
+        code = render(spec_from_flat(
+            harmony=harmony, bpm=harmony.bpm, root=harmony.root,
+            scale=harmony.scale, form="arc", lead_synth="pluck",
+            bass_synth="dub", pad_synth="warmpad", counter_synth=disable_word,
+        ))
+        assert "none(" not in code
+        assert "d3 >>" not in code
+
+    def test_lead_bass_pad_synth_disable_words_drop_those_layers(self):
+        """Общее правило распространяется на bass/pad, не только counter."""
+        from rob_box_mcp_tools.core.harmonize import harmonize
+
+        notes = [(72 + (i % 5), 0.25) for i in range(32)]
+        harmony = harmonize(notes, bpm=120, root="C", scale="major")
+        assert harmony.dense is True
+
+        code = render(spec_from_flat(
+            harmony=harmony, bpm=harmony.bpm, root=harmony.root,
+            scale=harmony.scale, form="arc", lead_synth="pluck",
+            bass_synth="none", pad_synth="Off",
+        ))
+        assert "none(" not in code
+        assert "p1 >>" not in code  # bass отсутствует
+        assert "p3 >>" not in code  # pad отсутствует
+
     def test_theme_octaves_false_disables_doubling_on_a_dense_theme(self):
         """theme_octaves=False снимает удвоение даже на плотной теме.
 
@@ -992,3 +1038,29 @@ class TestFixedThemeMidi:
     def test_parse_midi_rejects_non_number(self):
         with pytest.raises(ArrangementError):
             parse_midi("74, abc")
+
+
+class TestNormalizeSynth:
+    """``normalize_synth`` — единая точка «синта нет» (issue #2836)."""
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            None, "", "   ", "none", "None", "NONE", "  none  ",
+            "off", "OFF", "null", "Null",
+        ],
+    )
+    def test_no_layer_spellings_collapse_to_none(self, value):
+        assert normalize_synth(value) is None
+
+    @pytest.mark.parametrize(
+        "value, expected",
+        [
+            ("imperialbrass", "imperialbrass"),
+            ("  strings  ", "strings"),
+            # содержит 'none' как подстроку, но не как отдельное слово
+            ("nonexistent", "nonexistent"),
+        ],
+    )
+    def test_real_synth_names_pass_through_stripped(self, value, expected):
+        assert normalize_synth(value) == expected
