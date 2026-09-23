@@ -2091,14 +2091,45 @@ PY
 #                                     вызван ДО первого голосового ответа
 #                                     (verbal-only LLM answer regression guard)
 # Пишет acceptance.json в OUT_DIR.
-check_acceptance() {  # $1=label $2=acceptance_json_string $3=before_rfc3339
-    local label="$1" acc_json="$2" before="$3"
+check_acceptance() {  # $1=label $2=acceptance_json_string $3=before_rfc3339 [$4=attempt_tag]
+    # $4 (issue #2846) — «попытка N/M», если у шага есть retry_acceptance.
+    # Без него в логе шага подряд стояли
+    #   ACCEPTANCE[n201_sasha_intro_long]: ❌ discovery tool ... AFTER verbal answer
+    #   ACCEPTANCE[n201_sasha_intro_long]: ✅ all checks passed
+    # и это читалось как противоречивый вердикт ОДНОЙ проверки, хотя это две
+    # разные попытки (ретрай, run 35875477264). Итог шага — одна строка
+    # «STEP <label>: итог — …» в scenario-цикле.
+    local label="$1" acc_json="$2" before="$3" attempt_tag="${4:-}"
     local rc=0
-    local logs logs_file
+    local logs logs_file tag_str=""
+    [ -n "$attempt_tag" ] && tag_str=" ${attempt_tag}"
     logs="$(${ROBOT_SSH} "docker logs voice-assistant --since '${before}' 2>&1" 2>/dev/null || echo '')"
     # Логи шага тоже пишем в файл (ARG_MAX защита, как в check_gate1_aggregate).
     logs_file="$OUT_DIR/.acceptance_${label}.txt"
     printf '%s' "$logs" > "$logs_file"
+
+    # Issue #2846: исход register_speaker ищется в логе speaker_id_node. Если
+    # LLM вызвала тул последним действием хода, ack ноды (до 1.5с ожидания
+    # эмбеддинга, speaker_id_node._REGISTER_UTTERANCE_WAIT_SEC) может лечь в
+    # лог позже начала проверки — тогда дочитываем лог, а не красим шаг за
+    # чужую гонку. Исхода нет и после ожидания — FAIL «не подтверждена».
+    local _reg_wait_max="${E2E_REGISTRATION_ACK_WAIT_SEC:-6}" _reg_waited=0
+    case "$_reg_wait_max" in ''|*[!0-9]*) _reg_wait_max=6 ;; esac
+    while [ "$_reg_waited" -lt "$_reg_wait_max" ] \
+        && ACC_JSON="$acc_json" LOGS_FILE="$logs_file" \
+           PYTHONPATH="$SCRIPT_DIR_E2E${PYTHONPATH:+:$PYTHONPATH}" \
+           python3 -c 'import json, os, sys
+from e2e_tool_match import registration_pending
+logs = open(os.environ["LOGS_FILE"], encoding="utf-8", errors="replace").read()
+sys.exit(0 if registration_pending(json.loads(os.environ["ACC_JSON"]), logs) else 1)' 2>/dev/null; do
+        sleep 1
+        _reg_waited=$((_reg_waited + 1))
+        logs="$(${ROBOT_SSH} "docker logs voice-assistant --since '${before}' 2>&1" 2>/dev/null || echo '')"
+        printf '%s' "$logs" > "$logs_file"
+    done
+    if [ "$_reg_waited" -gt 0 ]; then
+        log "ACCEPTANCE[${label}]${tag_str}: ждали исход регистрации от speaker_id_node ${_reg_waited}s (лимит ${_reg_wait_max}s)"
+    fi
 
     # Прогон acceptance-чекера в Python (читает acc_json + logs → pass/fail + reason).
     ACC_JSON="$acc_json" LOGS_FILE="$logs_file" \
@@ -2116,6 +2147,12 @@ from e2e_tool_match import (
 )
 # Issue #2764: expected_keywords матчатся по речи робота, не по всему логу.
 from e2e_tool_match import keyword_hit, robot_speech
+# Issue #2846: вызов register_speaker != регистрация принята speaker_id_node.
+from e2e_tool_match import (
+    registration_expected,
+    registration_failures,
+    registration_outcome,
+)
 acc = json.loads(os.environ["ACC_JSON"])
 with open(os.environ["LOGS_FILE"], encoding="utf-8", errors="replace") as _f:
     logs = _f.read()
@@ -2279,6 +2316,12 @@ if discovery_tool_errors:
     failures.extend(discovery_tool_errors)
 if discovery_failures:
     failures.extend(discovery_failures)
+# Issue #2846: отказ/отсутствие исхода регистрации и склейка профиля — часть
+# ЭТОГО же вердикта (раньше склейку проверял отдельный bash-блок ПОСЛЕ
+# «✅ all checks passed», а отказ не проверял никто).
+registration = registration_outcome(logs)
+registration_fail = registration_failures(acc, logs)
+failures.extend(registration_fail)
 if not voice_change_ok:
     failures.append(voice_change_detail)
 if response_max_ms and measured_ms and measured_ms > response_max_ms:
@@ -2304,6 +2347,10 @@ result = {
     "discovery_tools": discovery_tools,
     "discovery_records": discovery_records,
     "discovery_first_voice_pos": voice_pos,
+    # Issue #2846: исход регистрации голоса по логу speaker_id_node.
+    "registration_expected": registration_expected(acc),
+    "registration": registration,
+    "registration_failures": registration_fail,
     "voice_changed": voice_changed_req,
     "voice_change_ok": voice_change_ok,
     "voice_change_detail": voice_change_detail,
@@ -2317,10 +2364,21 @@ PY
     # Итоговый rc — из acceptance.json (pass → 0)
     if grep -q '"pass": *true' "$OUT_DIR/acceptance.json"; then
         rc=0
-        log "ACCEPTANCE[${label}]: ✅ $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["reason"])' "$OUT_DIR/acceptance.json")"
+        log "ACCEPTANCE[${label}]${tag_str}: ✅ $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["reason"])' "$OUT_DIR/acceptance.json")"
     else
         rc=1
-        log "ACCEPTANCE[${label}]: ❌ $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["reason"])' "$OUT_DIR/acceptance.json")"
+        log "ACCEPTANCE[${label}]${tag_str}: ❌ $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["reason"])' "$OUT_DIR/acceptance.json")"
+    fi
+    # Склейка профиля (issue #2846 перенёс её в вердикт выше) — сохраняем
+    # прежний артефакт speaker_merges.log и подсказку, куда смотреть.
+    local _merges
+    _merges="$(python3 -c 'import json,sys
+for m in json.load(open(sys.argv[1], encoding="utf-8")).get("registration", {}).get("merged", []): print(m)' "$OUT_DIR/acceptance.json" 2>/dev/null)"
+    if [ -n "$_merges" ] && [ "$rc" != "0" ]; then
+        printf '%s\n' "$_merges" | while IFS= read -r _m; do
+            printf '%s\n' "STEP ${label}: ${_m}" >> "$OUT_DIR/speaker_merges.log" 2>/dev/null || true
+        done
+        log "ACCEPTANCE[${label}]${tag_str}: склейка — существующий профиль дополнен, отдельного не заведено. Смотреть register_match_threshold в speaker_id_node и различимость голосов TTS-провайдера ${E2E_TTS_PROVIDER_RESOLVED:-${E2E_TTS_PROVIDER:-?}} (у minimax Russian_ReliableMan и Russian_HandsomeChildhoodFriend неразличимы для resemblyzer)."
     fi
     return $rc
 }
@@ -2499,6 +2557,9 @@ if [ -n "$SCENARIO_FILE" ]; then
         acc_ok_any=0
         pat_checked=0
         acc_checked=0
+        # issue #2846 — причины провала acceptance на КАЖДОЙ попытке, чтобы
+        # итоговая строка шага говорила, чем закончились прежние попытки.
+        acc_fail_history=""
         while :; do
             last_fail_what=""
             STEP_BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -2567,52 +2628,33 @@ for p in json.load(sys.stdin):
             # пишем acceptance.json и (если ERROR) — FAIL (хотя цикл прошёл).
             if [ -n "$acceptance_json" ] && [ "$acceptance_json" != "{}" ]; then
                 acc_checked=1
+                # Регистрация диктора, которая СКЛЕИЛАСЬ с чужим профилем, не
+                # является регистрацией (живой прогон 35667281570, акт 2,
+                # n204_boris_intro_long: «🔗 Speaker 'Борис' merged into
+                # existing profile (id=dc417cef)» — Саша исчез из
+                # speakers.db, а шаг был OK). Раньше это проверял отдельный
+                # bash-блок ЗДЕСЬ, уже ПОСЛЕ строки
+                # «ACCEPTANCE[…]: ✅ all checks passed» — вердикт шага
+                # печатался двумя противоречащими строками. Issue #2846
+                # перенёс склейку в check_acceptance (registration_failures в
+                # e2e_tool_match.py) вместе с новой проверкой ОТКАЗА
+                # регистрации: одна строка ACCEPTANCE на попытку, и она уже
+                # учитывает исход регистрации. speaker_merges.log и подсказка
+                # про register_match_threshold печатаются оттуда же.
+                _acc_tag=""
+                if [ "$retry_acceptance" -gt 0 ]; then
+                    _acc_tag="попытка $((attempt_n + 1))/$((retry_acceptance + 1))"
+                fi
                 OUT_DIR="$OUT_DIR" STEP_LABEL="$label" \
-                    check_acceptance "$label" "$acceptance_json" "$STEP_BEFORE"
+                    check_acceptance "$label" "$acceptance_json" "$STEP_BEFORE" "$_acc_tag"
                 if [ $? != 0 ]; then
                     step_ok=0
                     last_fail_what="${last_fail_what:+$last_fail_what+}acceptance"
+                    _acc_prev_fail="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["reason"])' "$OUT_DIR/acceptance.json" 2>/dev/null || echo '?')"
+                    acc_fail_history="${acc_fail_history:+$acc_fail_history | }${_acc_tag:-попытка 1}: ${_acc_prev_fail}"
                 else
-                    # Регистрация диктора, которая СКЛЕИЛАСЬ с чужим профилем,
-                    # не является регистрацией.
-                    #
-                    # bug(живой прогон 35667281570, акт 2, 22.09.2026). Шаг
-                    # n204_boris_intro_long получил OK, потому что acceptance
-                    # проверяет только факт вызова register_speaker. А в логах
-                    # робота за то же окно:
-                    #   user_input='[Spkr:Саша] ... Меня зовут Борис ...'
-                    #   🔗 Speaker 'Борис' merged into existing profile
-                    #      (id=dc417cef) — voice matched an already-known speaker
-                    #   ✅ [issue 1077] Speaker registered: 'Борис' id=dc417cef
-                    # То есть голос Бориса опознан как Саша, Борис склеен в
-                    # профиль Саши, а профиль ПЕРЕИМЕНОВАН — Саша исчез.
-                    # В /data/speakers.db после акта остался ОДИН диктор
-                    # «Борис» с двумя эмбеддингами вместо двух дикторов.
-                    # Текст шага при этом прямо просит «Запомни мой голос
-                    # ОТДЕЛЬНО от Сашиного... я не хочу, чтобы ты нас путал».
-                    # Зелёный шаг поверх потерянной личности — ровно тот
-                    # красивый PASS, против которого ADR-0018.
-                    case "$acceptance_json" in
-                        *register_speaker*)
-                            _merge_log="$(${ROBOT_SSH} "docker logs voice-assistant --since '${STEP_BEFORE}' 2>&1" 2>/dev/null \
-                                | grep -oE "Speaker '[^']*' merged into existing profile \(id=[0-9a-f]*\)" | tail -1)"
-                            if [ -n "$_merge_log" ]; then
-                                step_ok=0
-                                last_fail_what="${last_fail_what:+$last_fail_what+}speaker_merged"
-                                log "STEP ${label}: ❌ регистрация СКЛЕИЛАСЬ с уже известным диктором: ${_merge_log}"
-                                log "STEP ${label}: это НЕ новый профиль — существующий переименован, прежняя личность потеряна. Шаг просит запомнить голос ОТДЕЛЬНО, значит проверка не пройдена."
-                                log "STEP ${label}: смотреть register_match_threshold в speaker_id_node и различимость голосов TTS-провайдера ${E2E_TTS_PROVIDER_RESOLVED:-$E2E_TTS_PROVIDER} (у minimax Russian_ReliableMan и Russian_HandsomeChildhoodFriend неразличимы для resemblyzer)."
-                                printf '%s\n' "STEP ${label}: ${_merge_log}" >> "$OUT_DIR/speaker_merges.log" 2>/dev/null || true
-                            else
-                                acc_ok_any=1
-                                log "STEP ${label}: ✅ acceptance PASS"
-                            fi
-                            ;;
-                        *)
-                            acc_ok_any=1
-                            log "STEP ${label}: ✅ acceptance PASS"
-                            ;;
-                    esac
+                    acc_ok_any=1
+                    log "STEP ${label}: ✅ acceptance PASS${_acc_tag:+ (${_acc_tag})}"
                 fi
             fi
             # Retry при FAIL patterns/acceptance (если разрешён сценарием)
@@ -2652,7 +2694,18 @@ sys.stdout.write(robot_speech(sys.stdin.read()))
             # ('E2E_STEP <label> SKIP wake-gate-cold-start').
             :
         elif [ "$step_ok" = "1" ]; then
-            emit_step "${label} OK"
+            # issue #2846 — ретрай (retry_acceptance, 04d4ba2f6: LLM
+            # недетерминирован) остаётся штатным: ПОСЛЕДНЯЯ попытка решает.
+            # Но «OK» после проваленной попытки обязан это говорить сам, а не
+            # прятаться за строкой ✅ под строкой ❌: итог — одна строка, и в
+            # E2E_STEP уходит after_retry=N (статус по-прежнему OK, сводка
+            # считает его как OK).
+            if [ "$attempt_n" -gt 0 ]; then
+                log "STEP ${label}: итог — ✅ OK с попытки $((attempt_n + 1))/$((retry_acceptance + 1)); прежние попытки провалились: ${acc_fail_history:-паттерны шага}"
+                emit_step "${label} OK after_retry=${attempt_n}"
+            else
+                emit_step "${label} OK"
+            fi
         else
             PASS=0
             mark_fail_kind feature
@@ -2675,10 +2728,10 @@ sys.stdout.write(robot_speech(sys.stdin.read()))
                && [ "$pat_ok_any" = "1" ] && [ "$acc_ok_any" = "1" ]; then
                 log "STEP ${label}: ❌ улики разъехались по попыткам: паттерны проходили в одной попытке, acceptance — в другой, вместе ни разу."
                 log "STEP ${label}: почти наверняка паттерн шага ловит ОДНОРАЗОВОЕ событие (напр. «[backlog] flushed to LLM»), которое на повторе не повторяется. Шаг как написан НЕ проверяем ретраем — это дефект СЦЕНАРИЯ, а не робота: либо убери retry_acceptance, либо перенеси одноразовый паттерн в отдельный шаг без ретрая."
-                log "STEP ${label}: ❌ провалилось на последней попытке: ${_where}"
+                log "STEP ${label}: итог — ❌ FAIL, провалилось на последней попытке: ${_where}"
                 emit_step "${label} FAIL retry_split_evidence"
             else
-                log "STEP ${label}: ❌ проверка не прошла после retry — ${_where}"
+                log "STEP ${label}: итог — ❌ FAIL, проверка не прошла после retry — ${_where}"
                 emit_step "${label} FAIL"
             fi
         fi

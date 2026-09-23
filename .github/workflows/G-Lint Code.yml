@@ -230,6 +230,23 @@ jobs:
             -o addopts="" \
             -p no:cacheprovider
 
+      # Issue #2846: вердикт шага E2E-харнесса по исходу register_speaker.
+      # Тот же класс дефекта (ADR-0057 "тест написан, но не в CI"):
+      # tests/unit/e2e_scripts/ не гоняется ни одним workflow, а этот тест
+      # исполняет НАСТОЯЩИЕ check_acceptance и scenario-цикл из
+      # e2e_voice_test.sh на фикстурах лога робота (прогон 35875477264 —
+      # шаг OK при отклонённой регистрации). Нужны только bash + python3,
+      # ни ssh, ни робота. Каталог целиком сюда НЕ подключён: в контейнере
+      # python:3.11-slim в нём 29 тестов красные уже на develop f9b826d
+      # (test_e2e_voice_test_gate1, test_wake_gate_preflight) — подключать
+      # каталог надо отдельной задачей, разобрав их.
+      - name: E2E harness registration verdict (issue #2846)
+        run: |
+          python -m pytest tests/unit/e2e_scripts/test_issue_2846_registration_verdict.py \
+            -v \
+            -o addopts="" \
+            -p no:cacheprovider
+
       - name: Seam-without-consumer guard self-tests (issue #2118)
         run: |
           python -m unittest scripts.lint.test_seam_without_consumer -v

@@ -71,7 +71,9 @@ from __future__ import annotations
 import re
 
 __all__ = ["TOOL_NAME_RE", "invocation_markers", "tool_invoked",
-           "first_invocation_position", "VOICE_CYCLE_MARKERS"]
+           "first_invocation_position", "VOICE_CYCLE_MARKERS",
+           "registration_outcome", "registration_expected",
+           "registration_failures", "registration_pending"]
 
 # Маркеры голосового ответа (любой из них обозначает «робот начал говорить»).
 # Используются для assertion «discovery tool был вызван ДО голосового ответа»
@@ -238,3 +240,181 @@ def keyword_hit(logs: str, kw: str) -> bool:
     if not speech:
         return False
     return any(v.strip() and v.strip() in speech for v in kw.lower().split("|"))
+
+
+# ── Issue #2846: «register_speaker вызван» != «голос зарегистрирован» ─────────
+#
+# Живой прогон 35875477264 (акт 2, develop f9b826d): шаги n201…n202c получили
+# ``E2E_STEP … OK``, а speaker_id_node отклонял КАЖДУЮ регистрацию:
+#
+#   [speaker_id_node] ⚠️ [issue #2829] register_request for 'Саша' has no
+#       utterance_id -- honest refusal instead of registering whoever speaks next
+#   [dialogue_node]   ⚠️ [issue #2829] Регистрация 'Саша' отклонена:
+#       no_utterance_context (utterance_id=None)
+#
+# ``expected_tool_calls``/``discovery_tools`` доказывают только, что LLM
+# ДЁРНУЛА тул. register_speaker — fire-and-forget публикация в топик: тул
+# «выполнен успешно» и тогда, когда нода биометрии профиль не завела.
+# Исход регистрации виден ТОЛЬКО по логу speaker_id_node / dialogue_node.
+#
+# Регэкспы ниже — копии f-строк из кода робота, а не «похожий вид»
+# (src/rob_box_voice/rob_box_voice/speaker_id_node.py):
+#   _do_register:            ✅ Speaker '{name}' registered (id=…)
+#   _do_register (ADR-0127): ⚠️ Speaker '{name}' (id=…) — голос похож на уже известного …
+#   _do_register:            🔗 Speaker '{name}' merged into existing profile (id=…)
+#   _on_register_request:    register_request for '{name}' has no utterance_id
+#   _register_after_wait:    register_request for '{name}': no embedding for utterance=…
+#   _do_register (#2769):    Registration of '{name}' rejected — audio too short
+# и dialogue_node.py (_on_speaker_result):
+#   Регистрация '{name}' отклонена: {error} (utterance_id=…)
+#   Регистрация '{name}' отклонена — реплика …с короче …   (too_short)
+# Отказ ищется по ОБЕИМ нодам: dialogue_node параллельно правят (#2842), и
+# если его строка поменяется, строка speaker_id_node всё равно поймает отказ.
+
+REGISTER_TOOL = "register_speaker"
+
+_REG_ACCEPTED_RES = (
+    # Новый профиль (и тёзка #2747 — у него та же строка).
+    re.compile(r"✅ Speaker '([^']*)' registered \(id=[0-9a-f]*\)"),
+    # ADR-0127: голос похож на чужой, имя другое — заведён ОТДЕЛЬНЫЙ профиль.
+    # Это принятая регистрация (данные целы); переспрос проверяют n722/n723.
+    re.compile(r"Speaker '([^']*)' \(id=[0-9a-f]*\) — голос похож на уже известного"),
+)
+_REG_MERGED_RE = re.compile(
+    r"Speaker '([^']*)' merged into existing profile \(id=[0-9a-f]*\)"
+)
+_REG_REJECTED_RES = (
+    (re.compile(r"register_request for '([^']*)' has no utterance_id"),
+     "no_utterance_context"),
+    (re.compile(r"register_request for '([^']*)': no embedding for utterance="),
+     "utterance_not_found"),
+    (re.compile(r"Registration of '([^']*)' rejected"), "too_short"),
+)
+# Причину dialogue_node печатает явно после двоеточия; у too_short вместо
+# двоеточия тире — тогда причины в строке нет, и это too_short.
+_REG_REJECTED_DIALOGUE_RE = re.compile(
+    r"Регистрация '([^']*)' отклонена(?::\s*([A-Za-z_]+))?"
+)
+
+
+def registration_outcome(logs: str) -> dict:
+    """Что speaker_id_node СДЕЛАЛ с регистрациями в окне ``logs``.
+
+    ``{"accepted": [имя, …], "merged": [строка, …],
+    "rejected": [{"name": …, "reason": …}, …]}`` — без дублей: один и тот
+    же отказ печатают обе ноды, в вердикт он должен попасть один раз.
+    """
+    accepted: list = []
+    merged: list = []
+    rejected: list = []
+    seen_rej: set = set()
+    if not logs:
+        return {"accepted": accepted, "merged": merged, "rejected": rejected}
+    for pat in _REG_ACCEPTED_RES:
+        for name in pat.findall(logs):
+            if name not in accepted:
+                accepted.append(name)
+    for m in _REG_MERGED_RE.finditer(logs):
+        if m.group(0) not in merged:
+            merged.append(m.group(0))
+
+    def _add(name: str, reason: str) -> None:
+        if (name, reason) not in seen_rej:
+            seen_rej.add((name, reason))
+            rejected.append({"name": name, "reason": reason})
+
+    for pat, reason in _REG_REJECTED_RES:
+        for name in pat.findall(logs):
+            _add(name, reason)
+    for name, reason in _REG_REJECTED_DIALOGUE_RE.findall(logs):
+        _add(name, reason or "too_short")
+    return {"accepted": accepted, "merged": merged, "rejected": rejected}
+
+
+def _acc_list(acc: dict, key: str) -> list:
+    val = acc.get(key) or []
+    if not isinstance(val, list):
+        return []
+    return [v for v in val if isinstance(v, str)]
+
+
+def registration_expected(acc: dict) -> bool:
+    """Обязан ли шаг ДОКАЗАТЬ, что регистрация голоса принята.
+
+    Авто-правило: да, если ``register_speaker`` есть в ``expected_tool_calls``
+    или ``discovery_tools`` шага — сценарий, требующий вызова тула, требует
+    и его результата (иначе зелёный шаг поверх пустой базы дикторов).
+    Явное булево ``require_registration_accepted`` перекрывает авто-правило
+    в обе стороны. Не-булево значение — ошибка схемы (её отдаёт
+    :func:`registration_failures`), при нём действует авто-правило.
+    """
+    flag = acc.get("require_registration_accepted")
+    if isinstance(flag, bool):
+        return flag
+    return (REGISTER_TOOL in _acc_list(acc, "expected_tool_calls")
+            or REGISTER_TOOL in _acc_list(acc, "discovery_tools"))
+
+
+def _registration_in_scope(acc: dict) -> bool:
+    """Шаг вообще про регистрацию (в т.ч. ``must_not_call: [register_speaker]``)
+    — тогда склейка профиля тоже проверяется, как в прежней bash-проверке
+    ``*register_speaker*`` scenario-цикла (run 35667281570)."""
+    return (registration_expected(acc)
+            or REGISTER_TOOL in _acc_list(acc, "must_not_call"))
+
+
+def registration_pending(acc: dict, logs: str) -> bool:
+    """True — исход регистрации ожидается, но в логе его ещё нет.
+
+    speaker_id_node ждёт эмбеддинг фразы до 1.5с (_REGISTER_UTTERANCE_WAIT_SEC)
+    после вызова тула. Если LLM дёрнула тул последним действием хода, ack
+    может лечь в лог позже, чем харнесс начнёт проверку — check_acceptance
+    дочитывает лог, пока эта функция True (не дольше таймаута).
+    """
+    if not registration_expected(acc):
+        return False
+    out = registration_outcome(logs)
+    return not (out["accepted"] or out["merged"] or out["rejected"])
+
+
+def registration_failures(acc: dict, logs: str) -> list:
+    """Причины FAIL шага по исходу регистрации (пустой список — всё честно).
+
+    * отказ speaker_id_node (``no_utterance_context`` / ``utterance_not_found``
+      / ``too_short``) — FAIL, даже если тул «выполнен успешно»;
+    * регистрация ожидалась, но ни принятия, ни отказа в логе нет — FAIL:
+      не доказано — не принято (ADR-0018);
+    * склейка с уже известным профилем — FAIL (перенесено из bash-проверки
+      scenario-цикла, чтобы вердикт шага был ОДНОЙ строкой, а не
+      «✅ all checks passed» и следом «❌ регистрация СКЛЕИЛАСЬ»).
+    """
+    failures: list = []
+    flag = acc.get("require_registration_accepted")
+    if flag is not None and not isinstance(flag, bool):
+        failures.append(
+            f"require_registration_accepted must be true/false, got {flag!r}"
+        )
+    if not _registration_in_scope(acc):
+        return failures
+    out = registration_outcome(logs)
+    if out["merged"]:
+        failures.append(
+            "speaker registration merged into an existing profile: "
+            + "; ".join(out["merged"])
+            + " (not a separate profile, run 35667281570)"
+        )
+    if not registration_expected(acc):
+        return failures
+    if out["rejected"]:
+        failures.append(
+            "speaker registration REJECTED by speaker_id_node: "
+            + ", ".join(f"{r['name']!r} {r['reason']}" for r in out["rejected"])
+            + " (issue #2846: register_speaker was called, no profile saved)"
+        )
+    elif not (out["accepted"] or out["merged"]):
+        failures.append(
+            "speaker registration NOT confirmed: no \"✅ Speaker '<name>' "
+            "registered\" from speaker_id_node in the step log (issue #2846: "
+            "a register_speaker call alone does not prove the voice was saved)"
+        )
+    return failures
