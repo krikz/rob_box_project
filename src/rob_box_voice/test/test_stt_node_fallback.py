@@ -1994,3 +1994,101 @@ class TestGrpcErrorMapping:
         )
         mapped = _map_grpc_error(original, 12.0)
         assert mapped is original
+
+
+# ---------------------------------------------------------------------------
+# Issue #2891 — Yandex v3 шлёт final/final_refinement на КАЖДЫЙ сегмент фразы.
+# ---------------------------------------------------------------------------
+
+
+def _yandex_response(event_type, text="", final_index=0):
+    """Фейковый StreamingResponse v3 (поля — как в stt.proto)."""
+    from types import SimpleNamespace
+
+    alts = [SimpleNamespace(text=text)] if text else []
+    update = SimpleNamespace(alternatives=alts)
+    resp = SimpleNamespace(
+        WhichOneof=lambda _oneof: event_type,
+        audio_cursors=SimpleNamespace(final_index=final_index),
+    )
+    if event_type == "final_refinement":
+        resp.final_refinement = SimpleNamespace(
+            final_index=final_index, normalized_text=update
+        )
+    elif event_type in ("final", "partial"):
+        setattr(resp, event_type, update)
+    return resp
+
+
+class TestYandexAllSegments:
+    """Issue #2891 — «Робот, здравствуй, я Саша…» не должно стать «робот здравствуй»."""
+
+    @staticmethod
+    def _run(node, responses, phase="REAL_TIME"):
+        node.yandex_stub.RecognizeStreaming.side_effect = (
+            lambda gen, metadata=None, timeout=None: iter(responses)
+        )
+        return node._recognize_yandex_phase(
+            b"\x00" * 8000,
+            phase=phase,
+            enable_speech_analysis=(phase == "REAL_TIME"),
+        )
+
+    @pytest.mark.parametrize("phase", ["REAL_TIME", "FULL_DATA"])
+    def test_two_segments_with_refinements_give_full_text(self, stt_node_no_vosk, phase):
+        responses = [
+            _yandex_response("partial", "робот здравствуй"),
+            _yandex_response("final", "робот здравствуй", 0),
+            _yandex_response("final_refinement", "Робот, здравствуй.", 0),
+            _yandex_response("partial", "я саша чиню"),
+            _yandex_response("final", "я саша чиню тут технику по вечерам", 1),
+            _yandex_response(
+                "final_refinement", "Я Саша, чиню тут технику по вечерам.", 1
+            ),
+        ]
+        text = self._run(stt_node_no_vosk, responses, phase)
+        assert text == "Робот, здравствуй. Я Саша, чиню тут технику по вечерам."
+
+    @pytest.mark.parametrize("phase", ["REAL_TIME", "FULL_DATA"])
+    def test_last_segment_without_refinement_uses_its_final(self, stt_node_no_vosk, phase):
+        responses = [
+            _yandex_response("final", "робот здравствуй", 0),
+            _yandex_response("final_refinement", "Робот, здравствуй.", 0),
+            _yandex_response("final", "я саша", 1),
+        ]
+        text = self._run(stt_node_no_vosk, responses, phase)
+        assert text == "Робот, здравствуй. я саша"
+
+    def test_single_segment_as_before(self, stt_node_no_vosk):
+        responses = [
+            _yandex_response("partial", "робот привет"),
+            _yandex_response("final", "робот привет", 0),
+            _yandex_response("final_refinement", "Робот, привет.", 0),
+        ]
+        assert self._run(stt_node_no_vosk, responses) == "Робот, привет."
+
+    def test_no_final_falls_back_to_last_partial(self, stt_node_no_vosk):
+        responses = [
+            _yandex_response("partial", "робот"),
+            _yandex_response("partial", "робот стоп"),
+        ]
+        assert self._run(stt_node_no_vosk, responses) == "робот стоп"
+
+    def test_speaker_tag_kept_with_multiple_segments(self, stt_node_no_vosk):
+        from types import SimpleNamespace
+
+        speaker = SimpleNamespace(
+            WhichOneof=lambda _oneof: "speaker_analysis",
+            speaker_analysis=SimpleNamespace(speaker_tag="1"),
+        )
+        responses = [
+            _yandex_response("final", "робот здравствуй", 0),
+            _yandex_response("final_refinement", "Робот, здравствуй.", 0),
+            speaker,
+            _yandex_response("final", "я саша", 1),
+            _yandex_response("final_refinement", "Я Саша.", 1),
+        ]
+        stt_node_no_vosk._last_speaker_tag = None
+        text = self._run(stt_node_no_vosk, responses)
+        assert text == "Робот, здравствуй. Я Саша."
+        assert stt_node_no_vosk._last_speaker_tag == "1"
