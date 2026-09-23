@@ -2570,6 +2570,23 @@ class TestComposeMusicToolGrooveLoop:
         assert result.success is False
         assert "groove_loop" in result.error
 
+    def test_flag_refusal_wins_over_full_slots(self, mock_node, monkeypatch):
+        """Issue #2878 — живой прогон 23.09.2026: с флагом выключенным
+        модель раньше сперва получала «слоты d1-d3 заняты» (перестроила
+        аранжировку впустую), и только вторым вызовом — отказ по флагу.
+        Флаг проверяется ДО занятости слотов: здесь заняты все три
+        (drums/hats из ``_KW`` + ``perc``), и всё равно первым и
+        единственным приходит отказ по флагу.
+        """
+        monkeypatch.delenv("ROB_BOX_PACK1_LOOPS", raising=False)
+        kw = dict(self._KW, perc="..n...n...n...n.")
+        with patch("builtins.exec") as mock_exec:
+            result = self._tool(mock_node).execute(groove_loop="break_1", **kw)
+        assert result.success is False
+        assert "ROB_BOX_PACK1_LOOPS" in result.error
+        assert "d1-d3" not in result.error
+        mock_exec.assert_not_called()
+
 
 @pytest.mark.unit
 class TestComposeMusicToolDrumStyle:
@@ -2626,7 +2643,12 @@ class TestComposeMusicToolDrumStyle:
         code = mgr.execute_code.call_args.args[0]
         assert "X...X...X...X..." not in code
 
-    def test_none_style_frees_drum_slots_for_loop(self, mock_node):
+    def test_none_style_frees_drum_slots_for_loop(self, mock_node, monkeypatch):
+        # Issue #2878: ``groove_loop`` теперь проверяется по флагу ДО
+        # построения аранжировки (см. TestComposeMusicToolGrooveLoop) —
+        # этот тест про drum_style/слоты, не про флаг, поэтому включаем
+        # его явно, как и в остальных тестах пака 1.
+        monkeypatch.setenv("ROB_BOX_PACK1_LOOPS", "1")
         tool, mgr = self._tool(mock_node, "t:d=4,o=5,b=100:c,e,g,c6")
         tool.execute(name="t", drum_style="none", groove_loop="foxdot", **self._ARR)
         code = mgr.execute_code.call_args.args[0]

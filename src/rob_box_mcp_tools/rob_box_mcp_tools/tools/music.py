@@ -2727,6 +2727,30 @@ class ComposeMusicTool(MCPTool):
         style_drums, style_hats = style_patterns(style, dense=False)
         return None, style, drums or style_drums, hats or style_hats
 
+    @staticmethod
+    def _groove_loop_denial(groove_loop: Optional[str]) -> Optional[MCPToolResult]:
+        """Ранний отказ по каталогу/флагу pack 1 для ``groove_loop``.
+
+        Issue #2878 — вызывается ДО ``spec_from_flat``/``render`` (которые
+        уже проверяют занятость слотов d1-d3), чтобы при выключенном
+        ``ROB_BOX_PACK1_LOOPS`` модель получала отказ по флагу сразу, а не
+        после лишнего круга «слоты заняты → перестрой аранжировку».
+        Пустой/``none`` ``groove_loop`` — не отказ, слоя просто не будет.
+        """
+        name = (groove_loop or "").strip()
+        if not name or name.lower() == "none":
+            return None
+        if sample_loops.find_loop(name) is None:
+            # Неизвестное имя — не флаг, пусть спецификация даёт свою
+            # ошибку с полным списком каталога (``_add_loop_layer``,
+            # core/arranger.py) как и раньше; сообщение уже содержит
+            # "groove_loop" и текст не должен разъезжаться с этим путём.
+            return None
+        if sample_loops.pack1_loops_enabled():
+            return None
+        denial = sample_loops.loop_denial(name, False)
+        return MCPToolResult(success=False, error=denial)
+
     def _build_compose_result_data(
         self, spec: Any, raw_result: Dict[str, Any], duration_s: float
     ) -> Dict[str, Any]:
@@ -2889,6 +2913,18 @@ class ComposeMusicTool(MCPTool):
         bpm = float(bpm) if bpm is not None else 120.0
         root = root or "C"
         scale = scale or "minor"
+
+        # Issue #2878: флаг/белый список pack 1 (ROB_BOX_PACK1_LOOPS)
+        # проверяется ДО построения аранжировки. Раньше отказ по флагу
+        # приходил только на этапе sanitize_renando() внутри execute_code
+        # (после spec_from_flat/render, т.е. ПОСЛЕ проверки d1-d3 слотов
+        # в _free_loop_slot) — модель сначала получала «слоты заняты»,
+        # тратила ход на перестройку аранжировки, и только потом узнавала,
+        # что луп всё равно выключен флагом. Живой лог 23.09.2026 (issue
+        # #2878): ровно этот двойной круг сорвал DJ-переход #3.
+        err = self._groove_loop_denial(groove_loop)
+        if err is not None:
+            return err
 
         try:
             spec = spec_from_flat(
