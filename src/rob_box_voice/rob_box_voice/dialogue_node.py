@@ -203,6 +203,7 @@ from rob_box_voice.core.identity_ack import (
     identity_ack_plan,
 )
 from rob_box_voice.core.dj_mode import DJHook, DJModeController
+from rob_box_voice.core.session_epoch import TURN_EPOCH, SessionEpoch
 from rob_box_voice.core.speak_helpers import (
     EffectAwaiterRegistry, build_ssml_payload,
     ensure_dj_music_response, split_into_chunks,
@@ -998,7 +999,7 @@ class DialogueNode(Node):
             self.get_logger().warning(f"⚠️ [dialogue_node] /odom подписка не удалась: {exc}")
         self.create_subscription(
             String, "/voice/dj_mode",
-            lambda m: self._dj.handle_message(m.data), 10, callback_group=cbg)
+            lambda m: self._on_dj_mode_msg(m.data), 10, callback_group=cbg)
         # Issue #2461 — структурный канал конца прохода формы для DJ-тикера.
         # НАРОЧНО отдельный топик, не ``/voice/music/state``: тот несёт
         # ровно "playing"/"idle" под ТОЧНОЕ РАВЕНСТВО в audio_node
@@ -1095,6 +1096,9 @@ class DialogueNode(Node):
             max_user_retries=3,
             logger=self.get_logger(),
         )
+        # Issue #2835 — поколение диалоговой сессии: ход/ретрай, родившийся
+        # до «новой сессии», после неё не запускается и не включает DJ.
+        self._session_epoch = SessionEpoch()
 
         # Issue #2241 / ADR-0080 §2.4 — TurnGuards is the future home of the
         # guard order + retry budget. During the incremental migration
@@ -3324,6 +3328,9 @@ class DialogueNode(Node):
                 from_tg=from_tg,
                 backlog_pending=backlog_pending,
                 utterance_id=utterance_id,
+                # Issue #2835 — поколение сессии, в котором родился ход
+                # (для ретрая изнутри хода — поколение родителя).
+                session_epoch=self._session_epoch_gate().epoch_for_dispatch(),
             ),
             self._loop,
         )
@@ -4307,7 +4314,13 @@ class DialogueNode(Node):
         from_tg: bool = False,
         backlog_pending: bool = False,
         utterance_id: str | None = None,
+        session_epoch: int | None = None,
     ) -> None:
+        # Issue #2835 — ход/ретрай, поставленный в loop до «новой сессии»,
+        # а стартовавший после неё, не запускается вовсе.
+        if not self._admit_turn_epoch(session_epoch):
+            return
+        epoch_token = TURN_EPOCH.set(session_epoch)
         with self._task_lock:
             self._run_task = asyncio.current_task()
         # Issue #2829 (ADR-0131 PR-2) — the CURRENT turn's utterance_id,
@@ -4364,6 +4377,7 @@ class DialogueNode(Node):
         # нет» от «код ниже упал» — и ВСЕГДА довести DIALOGUE_END +
         # _publish_state до конца.
         result = None
+        turn_cancelled = False
         try:
             # Issue #1077 — перед LLM-вызовом обновляем профиль спикера и
             # собираем контекст о нём (имя, факты, число диалогов). Только
@@ -4447,6 +4461,7 @@ class DialogueNode(Node):
             guard_retry_pending = bool(self._retry_dispatched_in_turn)
         except asyncio.CancelledError:
             self.get_logger().info("🛑 Turn cancelled (barge-in)")
+            turn_cancelled = True
             # Issue #1160 — Prometheus metrics: barge-in (пользователь
             # перебил робота wake-word'ом во время TTS/LLM-ответа).
             if is_metrics_enabled():
@@ -4512,35 +4527,20 @@ class DialogueNode(Node):
             # ретраем, поэтому закрывать диалог здесь нужно только если
             # ретрай НЕ был задиспатчен — иначе ретрай-тур придёт в IDLE
             # и его process_input короткозамкнётся без вызова LLM.
-            music_retry_dispatched = self._apply_music_guard(
-                was_dj_auto=was_dj_auto,
-                user_input=raw_user_command or user_input,
-                tools_called=result.tools_called if result else (),
-                # Issue #2565 — phantom-action deferral needs the LLM's
-                # reply text to detect «запустил/загрузил» claims before
-                # the FORCE_STOP branch silences the active track. Pass
-                # ``spoken_text`` (post-strip-history, pre-TTS) so the
-                # :func:`is_phantom_music_action` detector sees the
-                # actual response.
-                spoken=(result.spoken_text if result else None),
-            )
-            # Issue #1777 / #1762 — Bug C retry для non-music tool-based
-            # запросов. Раньше ретрай работал ТОЛЬКО для music (issue
-            # #992 Bug C). Теперь если юзер явно просит
-            # ``get_current_time`` / ``search_web`` / ``set_voice`` /
-            # ``memory_search`` / ``faq_search`` и LLM не вызвал tool
-            # (tools пустой), отправляем ОДИН CRITICAL retry с явным
-            # указанием нужного tool. Защита от ping-pong: один
-            # ретрай на turn (см. ``_tool_retry_used``).
-            #
-            # Вызывается ПОСЛЕ music guard и babble guard — чтобы не
-            # гонять их по очереди и не дублировать retry для
-            # пересекающихся случаев (например «который час» не должен
-            # матчиться music guard'ом).
-            tool_retry_dispatched = self._apply_tool_skipped_guard(
-                user_input=raw_user_command or user_input,
-                tools_called=result.tools_called if result else (),
-                other_retry_dispatched=music_retry_dispatched,
+            # Issue #2835 — отменённый (barge-in / «новая сессия») или
+            # пережитый сбросом ход ретраев НЕ порождает: у отменённого
+            # ``result=None`` → ``tools_called=()``, и Bug C принимал это за
+            # «музыку просили, тула не вызвали» → [CRITICAL]-ретрай после
+            # сброса (живой лог 23.09 14:18:08).
+            music_retry_dispatched, tool_retry_dispatched = (
+                self._apply_post_turn_retry_guards(
+                    result=result,
+                    was_dj_auto=was_dj_auto,
+                    user_input=raw_user_command or user_input,
+                    retries_allowed=self._session_epoch_gate().retries_allowed(
+                        turn_epoch=session_epoch, cancelled=turn_cancelled
+                    ),
+                )
             )
             # Issue #992 Bug D — defer the DIALOGUE_END transition
             # when the babble detector scheduled a retry. The retry's
@@ -4560,6 +4560,136 @@ class DialogueNode(Node):
                 pending_queue_dispatched=pending_queue_dispatched,
                 tool_retry_dispatched=tool_retry_dispatched,
             )
+            TURN_EPOCH.reset(epoch_token)
+
+    # ── Issue #2835 — поколение сессии ────────────────────────────────
+
+    def _session_epoch_gate(self) -> SessionEpoch:
+        """Ленивый доступ к :class:`SessionEpoch`.
+
+        Тестовые фикстуры на ``object.__new__(DialogueNode)`` не проходят
+        ``__init__`` — создаём счётчик по первому требованию.
+        """
+        gate = getattr(self, "_session_epoch", None)
+        if gate is None:
+            gate = SessionEpoch()
+            self._session_epoch = gate
+        return gate
+
+    def _admit_turn_epoch(self, session_epoch: Optional[int]) -> bool:
+        """Пускать ли ход поколения ``session_epoch`` (issue #2835).
+
+        Ход, поставленный в loop до «новой сессии» (ретрай гуарда, дренаж
+        очереди), после сброса отбрасывается. Пропущенный ход текущего
+        поколения снимает забор на включение DJ.
+        """
+        gate = self._session_epoch_gate()
+        if gate.is_stale(session_epoch):
+            self.get_logger().warning(
+                f"🧹 [issue 2835] ход из сессии #{session_epoch} отброшен — "
+                f"после сброса идёт сессия #{gate.current}"
+            )
+            return False
+        gate.note_turn_started(session_epoch)
+        return True
+
+    def _apply_post_turn_retry_guards(
+        self,
+        *,
+        result: Optional["DialogResult"],
+        was_dj_auto: bool,
+        user_input: str,
+        retries_allowed: bool,
+    ) -> tuple[bool, bool]:
+        """Music-гуард (Bug B/C) + tool-skipped гуард из ``finally`` хода.
+
+        Возвращает ``(music_retry_dispatched, tool_retry_dispatched)``.
+        Issue #2835 — при ``retries_allowed=False`` (ход отменён barge-in'ом
+        или «новой сессией», либо пережил сброс) гуарды не зовутся вовсе:
+        ретрай такого хода — [CRITICAL]-ход в уже чужой сессии.
+        """
+        if not retries_allowed:
+            self.get_logger().info(
+                "🧹 [issue 2835] ход отменён/сессия сброшена — "
+                "post-turn ретраи (music/tool) не диспатчим"
+            )
+            return False, False
+        tools_called = result.tools_called if result else ()
+        music_retry_dispatched = self._apply_music_guard(
+            was_dj_auto=was_dj_auto,
+            user_input=user_input,
+            tools_called=tools_called,
+            # Issue #2565 — phantom-action deferral needs the LLM's
+            # reply text to detect «запустил/загрузил» claims before
+            # the FORCE_STOP branch silences the active track. Pass
+            # ``spoken_text`` (post-strip-history, pre-TTS) so the
+            # :func:`is_phantom_music_action` detector sees the
+            # actual response.
+            spoken=(result.spoken_text if result else None),
+        )
+        # Issue #1777 / #1762 — Bug C retry для non-music tool-based
+        # запросов (``get_current_time`` / ``search_web`` / ``set_voice`` /
+        # ``memory_search`` / ``faq_search``): ОДИН CRITICAL retry с явным
+        # указанием нужного tool. Вызывается ПОСЛЕ music guard — чтобы не
+        # дублировать retry для пересекающихся случаев.
+        tool_retry_dispatched = self._apply_tool_skipped_guard(
+            user_input=user_input,
+            tools_called=tools_called,
+            other_retry_dispatched=music_retry_dispatched,
+        )
+        return music_retry_dispatched, tool_retry_dispatched
+
+    def _on_dj_mode_msg(self, payload: str) -> None:
+        """``/voice/dj_mode`` → DJ-контроллер, с забором issue #2835.
+
+        ``set_dj_mode`` исполняет mcp_server (другой процесс) и шлёт топик —
+        запоздалое ``enabled=true`` от хода, начатого до «новой сессии»,
+        приходит уже после сброса. Пока в новой сессии не начался ни один
+        ход, включение игнорируется; выключение проходит всегда.
+        """
+        if not self._session_epoch_gate().admits_dj_payload(payload):
+            self.get_logger().warning(
+                "🧹 [issue 2835] запоздалый set_dj_mode(enabled=true) от хода "
+                f"до «новой сессии» — игнорирую: {payload[:120]!r}"
+            )
+            return
+        self._dj.handle_message(payload)
+
+    def _publish_dj_off(self, reason: str) -> None:
+        """Опубликовать ``/voice/dj_mode`` ``enabled=false``.
+
+        Нужен mcp_server'у: его DJ-watchdog (``MusicManager.set_dj_mode``)
+        живёт по этому топику. Собственная подписка ноды получит эхо —
+        ``DJModeController.handle_message`` на уже выключенном DJ прощание
+        не говорит (issue #2835).
+        """
+        try:
+            dj_msg = String()
+            dj_msg.data = json.dumps({"enabled": False})
+            if getattr(self, "_dj_mode_pub", None) is None:
+                self._dj_mode_pub = self.create_publisher(
+                    String, "/voice/dj_mode", 10
+                )
+            self._dj_mode_pub.publish(dj_msg)
+            self.get_logger().info(f"🎵 DJ off published ({reason})")
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(f"🎵 DJ off publish failed: {exc}")
+
+    def _reset_session_music_and_dj(self) -> None:
+        """Issue #2835 — «новая сессия» гасит DJ, музыку и бюджеты гуарда.
+
+        DJ выключается МОЛЧА: прощание «Вечеринка подошла к концу» поверх
+        «Начинаю новую сессию…» — второй голос в тот же момент.
+        """
+        dj = getattr(self, "_dj", None)
+        if dj is not None:
+            dj.reset_silently()
+        self._publish_dj_off(reason="new_session")
+        self._pending_music_cleanup = False
+        self._publish_music_cleanup(reason="new_session")
+        guard = getattr(self, "_music_guard", None)
+        if guard is not None:
+            guard.reset_for_new_session()
 
     # ── Issue #992 Bug B / Bug C — DJ-mode music guard ────────────────
 
@@ -7505,21 +7635,7 @@ class DialogueNode(Node):
                         # DJ продолжал генерить переходы (#5, #6...) и после
                         # «говори» снова включал музыку («продолжил диджейский
                         # сет»). Публикуем set_dj_mode(enabled=false) сами.
-                        try:
-                            dj_msg = String()
-                            dj_msg.data = json.dumps({"enabled": False})
-                            if getattr(self, "_dj_mode_pub", None) is None:
-                                self._dj_mode_pub = self.create_publisher(
-                                    String, "/voice/dj_mode", 10
-                                )
-                            self._dj_mode_pub.publish(dj_msg)
-                            self.get_logger().info(
-                                "🎵 DJ off published (stop-command fallback)"
-                            )
-                        except Exception as exc:  # noqa: BLE001
-                            self.get_logger().warning(
-                                f"🎵 DJ off publish failed: {exc}"
-                            )
+                        self._publish_dj_off(reason="stop-command fallback")
                     # Короткая диагностика: что именно вернул провайдер.
                     raw_hint = ""
                     if raw is not None:
@@ -8496,8 +8612,17 @@ class DialogueNode(Node):
         подтверждения публикуем ``IGNORE_STOP_MS:700`` — TTS игнорирует
         STOP-команды в этом окне и спокойно синтезирует/воспроизводит.
         """
+        # 0. Issue #2835 — новое поколение сессии ДО отмены хода: его
+        # ``finally`` (отмена асинхронная) уже увидит, что сессия сброшена,
+        # и не пошлёт [CRITICAL]-ретрай; ходы/ретраи, стоящие в loop,
+        # отбросятся на старте; запоздалый set_dj_mode(enabled=true) —
+        # проигнорируется.
+        self._session_epoch_gate().advance()
         # 1. Отменяем in-flight turn (barge-in + stop TTS + release effects).
         self._cancel_run("new session reset", stop_tts=True)
+        # 1b. Issue #2835 — DJ выключен (молча), музыка остановлена,
+        # бюджеты MusicGuard с нуля.
+        self._reset_session_music_and_dj()
         # 1a. Issue #1563 — открыть IMMUNE-окно для TTS, чтобы barge-in
         # STOP (пришедший в той же STT-фразе) не отменил подтверждение
         # «Начинаю новую сессию…». 700 мс — с запасом на синтез Yandex

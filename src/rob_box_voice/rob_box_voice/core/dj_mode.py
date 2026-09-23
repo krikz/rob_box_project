@@ -115,7 +115,18 @@ class DJModeController:
         if enabled:
             self._apply_enable_payload(data, is_fresh_start=not was_enabled)
         else:
-            self._reset_state()
+            # Issue #2835 — прощание только если DJ реально играл: «выключи»
+            # по уже выключенному DJ (эхо собственной публикации ноды после
+            # «новой сессии») не должно говорить «Вечеринка подошла к концу».
+            self._reset_state(farewell=was_enabled)
+
+    def reset_silently(self) -> None:
+        """Issue #2835 — выключить DJ без прощальной фразы.
+
+        Для «новой сессии»: нода сама говорит «Начинаю новую сессию…»,
+        прощание DJ поверх неё — второй голос в тот же момент.
+        """
+        self._reset_state(farewell=False)
 
     def _apply_enable_payload(self, data: dict, *, is_fresh_start: bool) -> None:
         # 🔴 FIX (live 03.09 07:58): тема обновлялась ТОЛЬКО на генуинном
@@ -212,7 +223,7 @@ class DJModeController:
             self.state.transition_count = 0
         self._logger.info(f"🎧 DJ Mode ON — next transition in {delay:.0f}s")
 
-    def _reset_state(self) -> None:
+    def _reset_state(self, *, farewell: bool = True) -> None:
         # Capture persona before clearing state so the farewell hook can
         # address the user with the correct DJ name (issue #1101).
         farewell_persona = self.state.persona or self._persona_default
@@ -231,7 +242,7 @@ class DJModeController:
         # надёжный выключатель: tick() сразу возвращается.
         self.state.enabled = False
         self._logger.info("🎧 DJ Mode OFF")
-        if self._hook.on_stop is not None:
+        if farewell and self._hook.on_stop is not None:
             try:
                 self._hook.on_stop(farewell_persona)
             except Exception as exc:  # noqa: BLE001

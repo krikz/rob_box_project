@@ -212,6 +212,15 @@ class MusicGuard:
         """
         self._dj_retry_count = 0
 
+    def reset_for_new_session(self) -> None:
+        """Issue #2835 — «новая сессия»: оба бюджета с нуля.
+
+        Счётчики ретраев принадлежат сессии: недожжённый бюджет старой
+        сессии (DJ или юзер-музыка) не должен влиять на первые ходы новой.
+        """
+        self._dj_retry_count = 0
+        self._user_retry_count = 0
+
     # ------------------------------------------------------------------
     # Policy — the decision tree that used to live inline in
     # :meth:`DialogueNode._apply_music_guard`.
