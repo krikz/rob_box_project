@@ -2939,6 +2939,12 @@ class ComposeMusicTool(MCPTool):
         self._apply_form_deadline(spec, duration_s)
         self._notify_music_state()
         self._build_compose_result_data(spec, result, duration_s)
+        # issue #2877: результат обязан называть РЕАЛЬНО сыгранную запись —
+        # раньше title жил только в тексте message, и диджей мог объявить
+        # одну песню (из своей же реплики), сыграв другую, если название
+        # разошлось где-то по пути. None при name= не задан (сочинённый трек
+        # без темы из библиотеки — объявлять нечего).
+        result["title"] = melody_title
         flat = {
             "bpm": bpm, "root": root, "scale": scale, "form": form or "arc",
             "drums": drums, "drums_sample": drums_sample,
