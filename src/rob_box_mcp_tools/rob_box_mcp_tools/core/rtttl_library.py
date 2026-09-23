@@ -226,28 +226,6 @@ def _tokens(query: str) -> List[str]:
     ]
 
 
-#: Скобочные пояснения в title архива («(Alton Towers Theme)», «(Remix)»,
-#: «(Live)») — пометка КОНКРЕТНОЙ загрузки/редакции той же песни, не
-#: содержательное отличие. См. :func:`_clean_title_tokens`.
-_PAREN_RE = re.compile(r"\([^)]*\)")
-
-
-def _clean_title_tokens(title: str) -> "set[str]":
-    """Токены title без скобочных пояснений и служебных номеров редакции.
-
-    Архив хранит несколько загрузок одной и той же темы под похожими
-    title: «Hall Of The Mountain King (Alton Towers Theme) 1/2»,
-    «... (Alton Towers Advert)» — скобки и висящий номер редакции не
-    несут содержательного отличия от «Hall Of The Mountain King». Без
-    этой чистки :meth:`RtttlLibrary._is_weak_match` не отличал бы такое
-    архивное шумовое «лишнее слово» от НАСТОЯЩЕГО признака другой песни
-    (issue #2877: «All The Things She Said» — «She Said» лишние не
-    потому что редакция, а потому что это другая песня).
-    """
-    without_parens = _PAREN_RE.sub(" ", title or "")
-    return {t for t in _tokens(without_parens.lower()) if not t.isdigit()}
-
-
 def _default_archive() -> Union[Path, Any]:
     """Bundled ресурс (importlib.resources) → fallback на дерево исходников."""
     try:
@@ -417,52 +395,6 @@ class RtttlLibrary:
     def _is_garbage(row: sqlite3.Row) -> bool:
         return (row["name"] or "").strip().lower() in _GARBAGE_NAMES
 
-    @staticmethod
-    def _is_weak_match(row: sqlite3.Row, tokens: List[str]) -> bool:
-        """issue #2877: кандидат с ``score > 0`` — ещё не значит ВЕРНЫЙ.
-
-        ``get('stranger things')`` находил ``stranger_2`` («Strangers In
-        The Night») — токен «stranger» матчил «strangers» подстрокой,
-        «things» не встречался в записи вообще, и ``compose_music``
-        молча играл чужую песню под заявленным названием. Два условия:
-
-        1. Любой значимый токен запроса, для которого у кандидата НЕТ ни
-           одного очка (нет ни в name/title/artist/tags/rtttl_name) —
-           совпадение слабое сразу («things» нет нигде в «Strangers In
-           The Night»).
-        2. Для запросов из ≥2 токенов: «лишних» слов в title (за вычетом
-           скобочных пояснений и номеров редакции — см.
-           :func:`_clean_title_tokens`) не может быть ``>=`` числа
-           токенов запроса. Иначе «all the things» находит «All The
-           Things She Said» ТЕМ ЖЕ путём, что «hall of the mountain
-           king» находит настоящую тему Грига — но у Грига «лишнее» это
-           только архивная пометка редакции, а у «All The Things» —
-           «She Said», содержательная часть ДРУГОЙ песни. Однословные
-           запросы («mario», «terminator») это условие не проверяют —
-           единственный токен и так однозначен, а у многих коротких
-           культовых названий title длиннее буквального запроса
-           («Supermario Brothers» для «mario»).
-        """
-        if not tokens:
-            return True
-        name_l = (row["name"] or "").lower()
-        title_l = (row["title"] or "").lower()
-        artist_l = (row["artist"] or "").lower()
-        tags_l = (row["tags"] or "").lower()
-        rtttl_name_l = (row["rtttl_name"] or "").lower()
-        for token in tokens:
-            if (
-                token in title_l or token in name_l or token in rtttl_name_l
-                or token in artist_l or token in tags_l
-            ):
-                continue
-            return True  # значимый токен не встретился нигде — слабо
-        if len(tokens) < 2:
-            return False
-        query_set = set(tokens)
-        extra = _clean_title_tokens(row["title"] or "") - query_set
-        return len(extra) >= len(query_set)
-
     @classmethod
     def _best_in_bucket(
         cls, rows: List[sqlite3.Row], tokens: List[str]
@@ -521,6 +453,28 @@ class RtttlLibrary:
         побеждает автоматически — участвует в ранжировании наравне с
         токен-кандидатами и уступает более качественной записи, если такая
         нашлась (иначе остаётся честным fallback'ом, когда лучшего нет).
+
+        🔴 issue #2896 (регрессия #2882→#2877): раньше здесь был ещё один
+        фильтр — ``_is_weak_match``, честно отклонявший кандидата, если у
+        title было «слишком много лишних слов» относительно токенов
+        запроса. На практике это правило било по СИЛЬНЫМ совпадениям:
+        ``get('super mario')`` не находил «Super Mario Brothers 1»
+        (лишних слов в title больше, чем токенов в запросе), ``get('star
+        wars')`` не находил «Star Wars - Imperial March 1» ровно по той
+        же причине. Единой эвристики, которая отличает «лишние слова —
+        другая песня» (issue #2877, «stranger things» → «Strangers In
+        The Night») от «лишние слова — просто длинное название» (issue
+        #2896, «super mario» → «Super Mario Brothers 1»), не нашлось —
+        каждый фикс под один случай ломал другой.
+
+        Поэтому ``get()`` больше не решает это молчаливым отказом: он
+        всегда возвращает лучшего по тексту кандидата (как до #2882), а
+        ответственность «эта ли песня имелась в виду» переходит на
+        вызывающую сторону — ``ComposeMusicTool``/``LookupMelodyTool``
+        отдают модели ``title`` найденной записи и короткий список
+        альтернатив (:meth:`search`), а промпт скилла composer учит
+        модель сверять их с тем, что просил юзер, вместо того чтобы
+        молча доверять первому результату.
         """
         q = _normalize(name)
         tokens = _tokens(q)
@@ -538,12 +492,6 @@ class RtttlLibrary:
             pool.append(exact)
         best = self._best_in_bucket(pool, tokens)
         if best is None:
-            return None
-        if self._is_weak_match(best, tokens):
-            # issue #2877: скор > 0 есть, но совпадение по смыслу слабое
-            # (не все токены запроса реально встретились в записи, или
-            # title содержит содержательные «лишние» слова — другая
-            # песня). Честное «не нашлось» вместо ближайшего чужого трека.
             return None
         with self._lock:
             full = self._conn.execute(

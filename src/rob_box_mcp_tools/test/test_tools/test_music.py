@@ -2892,12 +2892,16 @@ class TestComposeMusicToolMelodyByName:
 
 
 class TestComposeMusicToolRealArchiveWeakMatch:
-    """issue #2877: интеграция с РЕАЛЬНЫМ RTTTL-архивом (не мок) — живой
-    прогон 23.09, диджей объявил «Stranger Things», сыграл «Strangers In
-    The Night». ``get()`` теперь честно возвращает ``None`` на слабое
-    совпадение, и ``compose_music`` обязан уйти в существующую ветку
-    «мелодия не найдена» (``tools/music.py`` строка ~2662), а не молча
-    сыграть ближайший чужой трек под заявленным названием."""
+    """issue #2896 (регрессия #2882→#2877): интеграция с РЕАЛЬНЫМ
+    RTTTL-архивом (не мок). Первая версия фикса #2877 (``get()`` молча
+    возвращает ``None`` на «слабое» текстовое совпадение) ломала СИЛЬНЫЕ
+    совпадения — ``get('super mario')``/``get('star wars')`` переставали
+    находить точные записи архива. Новый подход: ``get()`` больше не
+    отказывает сам — всегда возвращает лучшего кандидата, а
+    ``compose_music`` отдаёт модели РЕАЛЬНО найденный ``title`` (как и
+    раньше) плюс ``alternatives`` (соседние результаты search()), чтобы
+    модель сама сверяла название с тем, что просил юзер, вместо того
+    чтобы библиотека угадывала это за неё молчанием."""
 
     _ARR = dict(lead_synth="blip", bass_synth="dub", pad_synth="warmpad")
 
@@ -2909,20 +2913,47 @@ class TestComposeMusicToolRealArchiveWeakMatch:
         mgr.execute_code = Mock(return_value={"success": True})
         return ComposeMusicTool(mock_node, mgr, rtttl_library), mgr
 
-    def test_stranger_things_goes_to_unknown_melody_branch(self, mock_node, tmp_path):
+    def test_stranger_things_plays_and_reports_real_title_plus_alternatives(
+        self, mock_node, tmp_path
+    ):
+        """issue #2896: слабое совпадение больше не блокируется молча — оно
+        играет и ЧЕСТНО называет реально найденную запись (не «Stranger
+        Things»), плюс отдаёт альтернативы, чтобы модель могла заметить
+        подмену."""
         tool, mgr = self._make_tool(mock_node, tmp_path)
         result = tool.execute(name="stranger things", **self._ARR)
-        assert result.success is False
-        assert "не найдена в библиотеке" in result.error
-        assert "Stranger" in result.error or "stranger things" in result.error
-        assert not mgr.execute_code.called  # ничего не сыграно под чужим именем
+        assert result.success is True
+        assert mgr.execute_code.called
+        assert result.data["title"]  # реально сыгранная запись, не None
+        assert result.data["title"] != "Stranger Things"
+        assert result.data["title"] in result.message
+        assert "alternatives" in result.data
 
-    def test_all_the_things_goes_to_unknown_melody_branch(self, mock_node, tmp_path):
+    def test_super_mario_no_longer_regressed_to_unknown_melody(
+        self, mock_node, tmp_path
+    ):
+        """issue #2896 живой репро: до #2882 «super mario» играл Марио с
+        первого раза; фикс #2882 сломал это в None. Контроль регрессии:
+        снова играет и называет точный title."""
         tool, mgr = self._make_tool(mock_node, tmp_path)
-        result = tool.execute(name="all the things", **self._ARR)
-        assert result.success is False
-        assert "не найдена в библиотеке" in result.error
-        assert not mgr.execute_code.called
+        result = tool.execute(name="super mario", **self._ARR)
+        assert result.success is True
+        assert mgr.execute_code.called
+        assert result.data["title"] == "Supermario Brothers"
+        assert "Supermario Brothers" in result.message
+
+    def test_star_wars_finds_starwars_compound_name(self, mock_node, tmp_path):
+        """issue #2896: «star wars» находит starwars_* (compound-написание
+        в name), а не отказывает молча."""
+        tool, mgr = self._make_tool(mock_node, tmp_path)
+        result = tool.execute(name="star wars", **self._ARR)
+        assert result.success is True
+        assert mgr.execute_code.called
+        assert "Star Wars" in result.data["title"]
+        assert any(
+            (alt.get("name") or "").startswith("starwars")
+            for alt in result.data["alternatives"]
+        )
 
     def test_strong_match_still_plays_and_reports_its_own_title(
         self, mock_node, tmp_path

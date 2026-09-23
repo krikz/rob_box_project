@@ -300,13 +300,20 @@ def test_real_archive_direct_name_addressing_survives_alias(tmp_path):
 
 
 def test_real_archive_weak_match_table(tmp_path):
-    """issue #2877: живой прогон 23.09 — диджей объявил «Stranger Things»,
-    сыграл «Strangers In The Night» (``get('stranger things')`` находил
-    ``stranger_2`` — «stranger» матчил «strangers» подстрокой, «things» не
-    встречался в записи вовсе). Таблица строгих совпадений (должны
-    остаться НЕТРОНУТЫМИ фиксом) вперемешку со слабыми (должны стать
-    ``None``), все — на РЕАЛЬНОМ архиве (``RtttlLibrary()`` без
-    ``archive_path``, тот же бандл ``data/rtttl_melodies.jsonl.gz``)."""
+    """issue #2896 (регрессия #2882→#2877): первая версия фикса на слабые
+    совпадения (``_is_weak_match``, «Stranger Things» → «Strangers In The
+    Night») системно ломала СИЛЬНЫЕ — ``get('super mario')``/``get('star
+    wars')`` возвращали ``None``, хотя архив содержит точные записи
+    («Super Mario Brothers 1», «Star Wars - Imperial March …»), просто с
+    «лишними» словами в title. Единой эвристики, которая отличает
+    «лишние слова — другая песня» от «лишние слова — длинное название»,
+    не нашлось, поэтому ``get()`` больше не отказывает молча: он всегда
+    возвращает лучшего по тексту кандидата (как до #2882), а прозрачность
+    для модели (title + alternatives) обеспечивают вызывающие тулы
+    (``ComposeMusicTool``/``LookupMelodyTool``, см. ``tools/music.py``) и
+    промпт скилла composer — не сама библиотека. Таблица — на РЕАЛЬНОМ
+    архиве (``RtttlLibrary()`` без ``archive_path``, тот же бандл
+    ``data/rtttl_melodies.jsonl.gz``)."""
     lib = RtttlLibrary(db_path=str(tmp_path / "weak_match.db"))
     assert lib.total() > 10000
 
@@ -327,16 +334,36 @@ def test_real_archive_weak_match_table(tmp_path):
         assert rec is not None, f"{query!r} обязан резолвиться (было {expected_name!r})"
         assert rec["name"] == expected_name, (query, rec)
 
-    # Слабые совпадения — issue #2877: честное None вместо ближайшего
-    # чужого трека под заявленным названием.
-    assert lib.get("stranger things") is None, (
-        "get('stranger things') не должен подсовывать 'Strangers In The "
-        "Night' (stranger_2) — темы Stranger Things в архиве нет"
-    )
-    assert lib.get("all the things") is None, (
-        "get('all the things') не должен подсовывать 'All The Things She "
-        "Said' — это другая песня, а не точное совпадение"
-    )
+    # issue #2896: раньше молча отказывались (regressed None) — теперь
+    # ``get()`` обязан найти сильное совпадение, несмотря на «лишние
+    # слова» в title («Super Mario Brothers 1», «Star Wars - Imperial
+    # March …»).
+    strong_regressions = {
+        "super mario": "supermar_4",
+        "super mario bros": "supermar_4",
+        "imperial march": "starwars_4",
+        "harry potter": "harrypot_3",
+        "nokia tune": "grandeva",
+        "star wars": "starwars_4",
+    }
+    for query, expected_name in strong_regressions.items():
+        rec = lib.get(query)
+        assert rec is not None, f"{query!r} обязан резолвиться (issue #2896)"
+        assert rec["name"] == expected_name, (query, rec)
+
+    # issue #2877 остаётся видимым, но по-другому: get() больше НЕ
+    # отвечает честным None на слабое совпадение — он возвращает лучшего
+    # кандидата и title, а не подменяет его тишиной. Ответственность
+    # «это не та песня» лежит на вызывающей стороне (title + alternatives
+    # в tools/music.py, промпт composer.txt), не на самой библиотеке.
+    for query in ("stranger things", "all the things"):
+        rec = lib.get(query)
+        assert rec is not None, (
+            f"get({query!r}) обязан вернуть лучшего кандидата с title, "
+            "а не молчаливое None (issue #2896) — прозрачность даёт "
+            "вызывающая сторона, не сама библиотека"
+        )
+        assert rec.get("title"), (query, rec)
 
 
 def test_real_archive_query_table_stays_on_topic(tmp_path):
