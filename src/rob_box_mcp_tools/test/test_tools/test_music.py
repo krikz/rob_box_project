@@ -3010,8 +3010,11 @@ class TestComposeMusicToolCounterSynthAndThemeOctaves:
         assert counter.required is False
         assert counter.enum is not None and "strings" in counter.enum
 
+        # ADR-0132 PR-4: ручка auto|on|off (старые true/false execute()
+        # по-прежнему принимает — test_compose_music_knobs).
         octaves = by_name["theme_octaves"]
-        assert octaves.type == "boolean"
+        assert octaves.type == "string"
+        assert octaves.enum == ["auto", "on", "off"]
         assert octaves.required is False
 
     def test_counter_synth_reaches_the_generated_code(self, mock_node):

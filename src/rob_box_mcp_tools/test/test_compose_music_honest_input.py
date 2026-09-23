@@ -308,7 +308,7 @@ def test_tool_valid_edges_still_play(mock_node):
     assert 'Root.default = "A#"' in code
     assert 'Scale.default = "dorian"' in code
     assert f"Clock.bpm = {BPM_RANGE[1]:g}" in code
-    assert result.data["score"]["form"]["name"] == "ambient"
+    assert tool.last_score["form"]["name"] == "ambient"  # PR-4: dict — вне ответа модели
 
 
 def test_tool_name_with_explicit_key_reharmonizes(mock_node, themes):
@@ -328,5 +328,5 @@ def test_tool_name_with_explicit_key_reharmonizes(mock_node, themes):
     assert code != auto_code
     lead_line = [ln for ln in auto_code.splitlines() if ln.startswith("p2 >>")]
     assert lead_line and lead_line[0] in code.splitlines()  # тема не тронута
-    score = result.data["score"]
+    score = tool.last_score  # PR-4: структурная партитура — вне ответа модели
     assert score["decisions"]["key"] == "explicit→D minor (auto C major)"
