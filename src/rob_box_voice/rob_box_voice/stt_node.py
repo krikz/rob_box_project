@@ -202,6 +202,7 @@ from rob_box_voice.core.occasion import (
     OccasionGate,
     VerdictKind,
 )
+from rob_box_voice.core.utterance_id import compute_utterance_id
 
 # #1990 (оператор-agent 05) — источники аудио для wake-роутера (_process_audio).
 # Namespace вейк-слов привязан к источнику, а не только к тексту (целевая §7.1).
@@ -586,6 +587,14 @@ class STTNode(Node):
         # telegram/perception/transport). dialogue_node подписывается и создаёт
         # профиль спикера (scope=speaker:<tag>).
         self.speaker_pub = self.create_publisher(String, "/voice/stt/speaker", 10)
+        # Issue #2829 (ADR-0131) — utterance_id для ЭТОЙ фразы, publish'ится
+        # ПЕРЕД /voice/stt/result (тот же порядок гарантий, что и у
+        # speaker_pub выше: dialogue_node._on_stt читает pending id,
+        # выставленный этим сообщением, до того как читает сам текст).
+        # Отдельный топик, а не поле в /voice/stt/result — контракт
+        # (plain text) там не трогаем, его читают
+        # telegram/perception/GUI/harness-бенчи (см. stt_node.py:585).
+        self.utterance_pub = self.create_publisher(String, "/voice/stt/utterance", 10)
         # Прямой запрос TTS для фразы «не расслышал» (issue #979). tts_node
         # слушает /voice/tts/request тем же JSON-SSML контрактом, что и
         # /voice/dialogue/response — build_ssml_payload даёт ровно это.
@@ -942,6 +951,13 @@ class STTNode(Node):
             )
             self.get_logger().info(f"✅ ПРИНЯТО ({source}): {text}")
             if source == _SRC_RESPEAKER:
+                # Issue #2829 (ADR-0131) — utterance_id ПЕРЕД всем остальным:
+                # dialogue_node запоминает id как "pending" и связывает его
+                # со следующим /voice/stt/result. speaker_id_node считает
+                # utterance_id тем же способом от тех же PCM-байт
+                # /audio/speech_audio — id совпадёт без какой-либо
+                # координации между нодами.
+                self._publish_utterance_id(audio_bytes)
                 # Issue #1077 — speaker публикуем ПЕРЕД результатом: dialogue_node
                 # хранит tag по тексту и забирает его в _on_stt. Если бы speaker
                 # шёл после result, гонка топиков могла бы потерять корреляцию.
@@ -1864,6 +1880,23 @@ class STTNode(Node):
         self.recognizer.SetWords(True)
 
         return text
+
+    def _publish_utterance_id(self, audio_bytes: bytes) -> None:
+        """Issue #2829 (ADR-0131) — publish this phrase's ``utterance_id``.
+
+        Deterministic hash of the raw PCM bytes this node just recognised
+        (see ``core/utterance_id.py``). speaker_id_node computes the same
+        hash from the same ``/audio/speech_audio`` bytes independently —
+        no coordination needed, both land on the same id. Published
+        unconditionally for every accepted ReSpeaker phrase (unlike
+        ``_publish_speaker``, which skips when there is no Yandex speaker
+        tag) so dialogue_node ALWAYS has an id to correlate against, even
+        on the Vosk-fallback path.
+        """
+        utterance_id = compute_utterance_id(audio_bytes)
+        msg = String()
+        msg.data = json.dumps({"utterance_id": utterance_id}, ensure_ascii=False)
+        self.utterance_pub.publish(msg)
 
     def _publish_speaker(self, text: str, duration_s: float = 0.0) -> None:
         """Публикация speaker_tag (issue #1077) на /voice/stt/speaker.

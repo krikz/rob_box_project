@@ -217,7 +217,12 @@ class TestAnswerResolvesConflict:
         """Ответ читается в штатной прелюдии хода, по сырой реплике."""
         n = self._asked_node()
         n._speaker_id_enabled = True
-        n._apply_speaker_identity = AsyncMock(side_effect=lambda ui, _ctx: f"[Spkr:Борис] {ui}")
+        # Issue #2829 (ADR-0131) -- _apply_speaker_identity получил третий
+        # (опциональный) параметр utterance_id; мок должен принимать его,
+        # даже не используя.
+        n._apply_speaker_identity = AsyncMock(
+            side_effect=lambda ui, _ctx, _uid=None: f"[Spkr:Борис] {ui}"
+        )
         n._build_dynamic_system_context = MagicMock(return_value="")
 
         asyncio.run(DialogueNode._prepare_user_input_context(

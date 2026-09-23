@@ -87,6 +87,7 @@ from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPo
 from std_msgs.msg import String
 
 from .core import epithets
+from .core.utterance_id import compute_utterance_id
 from .utils import speaker_embeddings as _se_mod
 from .utils.speaker_embeddings import SpeakerDatabase, SpeakerMatch
 
@@ -609,10 +610,16 @@ class SpeakerIdNode(Node):
     def _on_speech_audio(self, msg: AudioData) -> None:
         """Received a complete speech utterance — run inference asynchronously."""
         pcm_bytes = bytes(msg.data)
+        # Issue #2829 (ADR-0131) — utterance_id считается из ТЕХ ЖЕ байт,
+        # что и в stt_node._publish_utterance_id (одинаковый хеш без
+        # какой-либо координации между нодами — оба читают
+        # /audio/speech_audio).
+        utterance_id = compute_utterance_id(pcm_bytes)
         self.get_logger().info(
-            f"🎤 Received speech audio: {len(pcm_bytes)} bytes ({len(pcm_bytes)/self._sample_rate/2:.1f}s)"
+            f"🎤 Received speech audio: {len(pcm_bytes)} bytes ({len(pcm_bytes)/self._sample_rate/2:.1f}s) "
+            f"utterance_id={utterance_id}"
         )
-        self._executor.submit(self._process_utterance, pcm_bytes)
+        self._executor.submit(self._process_utterance, pcm_bytes, utterance_id)
 
     def _on_register_request(self, msg: String) -> None:
         """Register the current (or next) speaker under the given name.
@@ -664,7 +671,9 @@ class SpeakerIdNode(Node):
 
     # ── Processing ────────────────────────────────────────────────────────────
 
-    def _process_utterance(self, pcm_bytes: bytes) -> None:
+    def _process_utterance(
+        self, pcm_bytes: bytes, utterance_id: Optional[str] = None
+    ) -> None:
         """Compute embedding and identify (or register) speaker.  Runs in thread."""
         t0 = time.monotonic()
         # Issue #2769 — длительность нужна ОТДЕЛЬНО от identify()-гейта
@@ -698,7 +707,7 @@ class SpeakerIdNode(Node):
             # Issue #1160 — Prometheus metrics: не удалось извлечь эмбеддинг —
             # считаем это unknown.
             record_speaker_recognize(known=False, confidence=None)
-            self._publish_result(None)
+            self._publish_result(None, utterance_id=utterance_id)
             return
 
         elapsed = (time.monotonic() - t0) * 1000
@@ -724,7 +733,11 @@ class SpeakerIdNode(Node):
             # после регистрации), перезаписав только что опубликованный
             # источник истины «человек сам назвал своё имя».
             registered = self._do_register(
-                pending_name, embedding, speaker_id=None, duration_sec=duration_sec
+                pending_name,
+                embedding,
+                speaker_id=None,
+                duration_sec=duration_sec,
+                utterance_id=utterance_id,
             )
             # Issue #2769 — _do_register() возвращает False, если реплика
             # оказалась короче MIN_REGISTER_AUDIO_DURATION_SEC: профиль НЕ
@@ -785,7 +798,7 @@ class SpeakerIdNode(Node):
                 band_high=getattr(self, "_name_confidence_band_high", 0.80),
                 min_gap=getattr(self, "_name_confidence_min_gap", 0.15),
             )
-        self._publish_result(match, name_decision=name_decision)
+        self._publish_result(match, name_decision=name_decision, utterance_id=utterance_id)
 
     def _on_tts_finished(self, msg: String) -> None:
         """Issue #2747 — робот договорил: отсчёт паузы человека начинается ЗДЕСЬ.
@@ -1269,6 +1282,7 @@ class SpeakerIdNode(Node):
         embedding: np.ndarray,
         speaker_id: Optional[str],
         duration_sec: Optional[float] = None,
+        utterance_id: Optional[str] = None,
     ) -> bool:
         """Persist speaker embedding to DB and acknowledge.
 
@@ -1324,6 +1338,7 @@ class SpeakerIdNode(Node):
                     "name": name,
                     "duration_s": round(exc.duration_sec, 2),
                     "min_required_s": exc.min_required_sec,
+                    "utterance_id": utterance_id,
                 },
                 ensure_ascii=False,
             )
@@ -1357,6 +1372,7 @@ class SpeakerIdNode(Node):
             "name": name,
             "speaker_id": sid,
             "reused_profile": reused,
+            "utterance_id": utterance_id,
         }
         if outcome.name_conflict:
             # ADR-0127 — dialogue_node получает повод переспросить («я уже
@@ -1416,7 +1432,7 @@ class SpeakerIdNode(Node):
         # sid с cosine≈1.0 (сравнение вектора с самим собой).
         self_match = self._db.identify(embedding, threshold=0.0)
         if self_match is not None:
-            self._publish_result(self_match, source="register")
+            self._publish_result(self_match, source="register", utterance_id=utterance_id)
             # Issue #2747 — открываем growth-сессию: следующие реплики,
             # идущие подряд без большого разрыва (см.
             # _apply_growth_session), будут считаться принадлежащими
@@ -1663,6 +1679,7 @@ class SpeakerIdNode(Node):
         match: Optional[SpeakerMatch],
         source: Optional[str] = None,
         name_decision: Optional[str] = None,
+        utterance_id: Optional[str] = None,
     ) -> None:
         """Serialise and publish the speaker identification result.
 
@@ -1724,6 +1741,12 @@ class SpeakerIdNode(Node):
                 # (профиль из старой БД) — потребитель обязан это терпеть.
                 "epithet": match.epithet,
             }
+            # Issue #2829 (ADR-0131) — id фразы, для которой это результат
+            # биометрии. Добавляем только когда он есть — старые/тестовые
+            # пути без utterance_id получают payload байт-в-байт как
+            # раньше (см. test_issue_2809_low_confidence_speaker_does_not_leak_name.py).
+            if utterance_id:
+                payload["utterance_id"] = utterance_id
             if source:
                 payload["source"] = source
             if not confident:
@@ -1743,6 +1766,8 @@ class SpeakerIdNode(Node):
             )
         else:
             payload = {"is_known": False}
+            if utterance_id:
+                payload["utterance_id"] = utterance_id
             self.get_logger().info("📢 Publishing: is_known=false")
 
         msg = String()

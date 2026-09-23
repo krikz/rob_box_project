@@ -234,6 +234,7 @@ from rob_box_voice.tts_voice_registry import (
 )
 # Issue #1787 — сборка промпта и валидация клички, придуманной LLM.
 from rob_box_voice.core import epithets
+from rob_box_voice.core.utterance_speaker import UtteranceSpeakerRegistry
 # ADR-0101 §3.1 — ``Occasion`` импортирован выше (PR-B, #2536); старая
 # однострочная запись из PR-A удалена как дубликат (использовалась только в
 # type-аннотации под ``from __future__ import annotations``, runtime не нужна).
@@ -648,6 +649,21 @@ class DialogueNode(Node):
             self.get_parameter("speaker_id_enabled").value)
         self._current_speaker: dict = {"is_known": False}
         self._speaker_lock = threading.Lock()
+        # Issue #2829 (ADR-0131) -- единственный источник правды «кто
+        # сказал ЭТУ фразу»: join STT+биометрии по utterance_id вместо
+        # чтения последнего значения _current_speaker (гонка STT против
+        # resemblyzer, см. ADR §"Проблема"). _current_speaker остаётся
+        # как «последнее РАЗРЕШЁННОЕ по utterance_id значение» -- теперь
+        # его пишет только _apply_speaker_identity, после resolve().
+        self._utterance_speaker = UtteranceSpeakerRegistry()
+        self._pending_utterance_id: Optional[str] = None
+        self._utterance_id_lock = threading.Lock()
+        # Issue #2829 — какой utterance_id уже резолвнут в _current_speaker
+        # (см. _resolve_speaker_for_utterance) -- не резолвим дважды.
+        self._last_resolved_utterance_id: Optional[str] = None
+        self._speaker_resolve_timeout_sec: float = float(
+            self.get_parameter("speaker_resolve_timeout_sec").value
+        )
         # Issue #2809 (продолжение) -- переспрос про tentative-личность
         # ("<Имя>, это ты?" / "Как тебя зовут?"), не чаще одного раза за
         # сессию на кандидата. Ключ -- полный speaker_id (см.
@@ -863,6 +879,14 @@ class DialogueNode(Node):
         # _on_stt; храним по тексту и забираем в _on_stt.
         self.create_subscription(
             String, "/voice/stt/speaker", self._on_speaker, qos_r,
+            callback_group=cbg)
+        # Issue #2829 (ADR-0131) — utterance_id этой фразы, публикуется
+        # stt_node ПЕРЕД /voice/stt/result (тот же порядок гарантий, что
+        # у /voice/stt/speaker выше). Храним ОДИН pending слот -- stt_node
+        # публикует последовательно из одного потока, интерливинга между
+        # utterance_id и result для одного и того же source нет.
+        self.create_subscription(
+            String, "/voice/stt/utterance", self._on_stt_utterance, qos_r,
             callback_group=cbg)
         # Issue #1077 — голосовая биометрия: результат speaker_id_node
         # (resemblyzer d-vector, JSON: is_known/speaker_id/name/confidence).
@@ -1322,6 +1346,14 @@ class DialogueNode(Node):
         # харнесса ~60s + переспрос STT "не расслышал") -- при общем окне
         # 30s состояние пересоздавалось с asked=False и ответ не читался.
         self.declare_parameter("identity_answer_window_sec", 180.0)
+        # Issue #2829 (ADR-0131) -- сколько ждать результат голосовой
+        # биометрии ИМЕННО этой фразы, прежде чем честно объявить её
+        # unknown. По логам issue #2829 инференс resemblyzer занимает
+        # 0.6-1.9с (изредка до ~50с сразу после старта ноды -- для этого
+        # выброса таймаут НЕ увеличиваем: лучше unknown, чем 50с тишины
+        # в диалоге или, что было раньше, имя предыдущего собеседника).
+        # 2.5с = запас x1.3 над верхней границей нормального диапазона.
+        self.declare_parameter("speaker_resolve_timeout_sec", 2.5)
         # issue #1077: сколько фраз подряд с одним speaker_tag нужно для
         # подтверждения профиля. 2 = защита от нестабильных tags Yandex;
         # 1 = мгновенное подтверждение (если tag стабилен).
@@ -2340,6 +2372,15 @@ class DialogueNode(Node):
         (профили и так раздельные, инвариант ADR-0127); непонятно — тоже
         ничего не склеивать. Во всех трёх случаях LLM получает разовую
         подсказку с вопросом и исходом (``_build_dynamic_system_context``).
+
+        Issue #2829 (ADR-0131) — вызывающий код (``_prepare_user_input_
+        context``) теперь резолвит ``_current_speaker`` для ЭТОЙ реплики
+        (по ``utterance_id``) ДО этого вызова, поэтому здесь уже видно,
+        КТО именно сейчас ответил. «Да» засчитывается ТОЛЬКО если диктор
+        этой реплики — один из двух профилей, о которых был вопрос
+        (``new_id``/``known_id``); неизвестный или посторонний третий
+        голос не может подтвердить чужую склейку (см.
+        ``_reply_speaker_matches_identity_plan``).
         """
         outcome = self._identity_ack_state().consume(
             user_input, classify_identity_confirmation(user_input)
@@ -2347,6 +2388,19 @@ class DialogueNode(Node):
         if outcome is None:
             return
         plan, same = outcome
+        gate_ok = self._reply_speaker_matches_identity_plan(plan)
+        if same is True and not gate_ok:
+            with self._speaker_lock:
+                cur = self._current_speaker.get("speaker_id") or ""
+            cur_id = str(cur)
+            self.get_logger().warning(
+                "👥 [issue #2829] ответ 'да' на переспрос #2828 "
+                "ПРОИГНОРИРОВАН — диктор реплики "
+                f"({cur_id[:8] or 'unknown'}) не совпадает ни с "
+                f"new={plan['new_id'][:8]}, ни с "
+                f"known={plan['known_id'][:8]}"
+            )
+            same = None
         self.get_logger().info(
             f"👥 [issue #2828] ответ на переспрос: same={same} "
             f"kind={plan['kind']} new={plan['new_id'][:8]} "
@@ -2354,6 +2408,20 @@ class DialogueNode(Node):
         )
         if same is True:
             self._merge_identity_profiles(plan)
+
+    def _reply_speaker_matches_identity_plan(self, plan: dict) -> bool:
+        """Issue #2829 — диктор ТЕКУЩЕЙ (уже резолвнутой) реплики совпадает
+        с одним из двух профилей переспроса #2828. Неизвестный диктор
+        никогда не совпадает — честный отказ, а не оптимистичное «да».
+        """
+        with self._speaker_lock:
+            sp = dict(self._current_speaker)
+        if not sp.get("is_known"):
+            return False
+        current_id = str(sp.get("speaker_id") or "")
+        if not current_id:
+            return False
+        return current_id in (plan.get("new_id"), plan.get("known_id"))
 
     def _merge_identity_profiles(self, plan: dict) -> None:
         """«Это я» — склеить ``new_id`` в ``known_id`` и поправить снимок."""
@@ -2374,6 +2442,43 @@ class DialogueNode(Node):
             if self._current_speaker.get("speaker_id") == plan["new_id"]:
                 self._current_speaker["speaker_id"] = plan["known_id"]
                 self._current_speaker["name"] = plan["known_name"]
+
+    def _on_stt_utterance(self, msg: String) -> None:
+        """Issue #2829 (ADR-0131) — id фразы, публикуется stt_node ПЕРЕД
+        ``/voice/stt/result`` для той же фразы. Храним как единственный
+        pending слот и забираем в ``_on_stt`` (см.
+        ``_pop_pending_utterance_id``).
+        """
+        try:
+            data = json.loads(msg.data or "{}")
+        except (json.JSONDecodeError, TypeError):
+            return
+        utterance_id = data.get("utterance_id")
+        if not utterance_id:
+            return
+        with self._utterance_id_lock:
+            self._pending_utterance_id = str(utterance_id)
+
+    def _pop_pending_utterance_id(self) -> Optional[str]:
+        """Consume the pending ``utterance_id`` set by ``_on_stt_utterance``.
+
+        Popped (not just read) so a phrase that never triggers a turn
+        (rejected/silenced by ``SttAdmission``) does not leak its id into
+        the NEXT phrase's resolution.
+
+        Tolerates test doubles built via ``object.__new__(DialogueNode)``
+        (no ``__init__``, see e.g. ``test_dialogue_node.py``/
+        ``test_barge_in_policy.py``) that never ran the constructor and so
+        have no ``_utterance_id_lock`` -- same lazy-init spirit as the
+        ``_stt_admission`` fallback a few lines below in ``_on_stt``.
+        """
+        lock = getattr(self, "_utterance_id_lock", None)
+        if lock is None:
+            return None
+        with lock:
+            uid = self._pending_utterance_id
+            self._pending_utterance_id = None
+        return uid
 
     def _on_speaker_result(self, msg: String) -> None:
         """Issue #1077 — результат голосовой биометрии (speaker_id_node).
@@ -2421,6 +2526,14 @@ class DialogueNode(Node):
                     f"⚠️ [issue #2769] Не удалось озвучить просьбу повторить: {exc}"
                 )
             return
+        # Issue #2829 (ADR-0131) — join point: этот результат помечен
+        # utterance_id (speaker_id_node считает его от тех же PCM-байт,
+        # что видел stt_node). submit() будит _apply_speaker_identity,
+        # если она уже ждёт именно эту фразу; если ещё не ждёт — результат
+        # ляжет в registry и будет найден при первом resolve().
+        utterance_id = data.get("utterance_id")
+        if utterance_id:
+            self._utterance_speaker.submit(str(utterance_id), data)
         with self._speaker_lock:
             self._current_speaker = data
 
@@ -2578,6 +2691,10 @@ class DialogueNode(Node):
         raw_text = (msg.data or "").strip()
         if not raw_text:
             return
+        # Issue #2829 (ADR-0131) -- pop-по-приходу: если фраза не дойдёт
+        # до _dispatch_cleaned (SttAdmission её отбросит/засайленсит),
+        # id НЕ должен утечь в следующую фразу.
+        utterance_id = self._pop_pending_utterance_id()
         text, tg_chat_id = parse_tg_prefix(raw_text)
         if tg_chat_id is not None:
             # Issue #1195 — store chat id for echo routing.
@@ -2627,6 +2744,7 @@ class DialogueNode(Node):
             speaker_duration_s=speaker_duration_s,
             from_tg=bool(tg_chat_id is not None),
             backlog_pending=backlog_pending,
+            utterance_id=utterance_id,
         )
 
     # -- STT admission helpers -------------------------------------------
@@ -2661,6 +2779,7 @@ class DialogueNode(Node):
         speaker_duration_s: float,
         from_tg: bool,
         backlog_pending: bool,
+        utterance_id: Optional[str] = None,
     ) -> None:
         """Tail of the old ``_on_stt`` after the 12-branch pipeline.
 
@@ -2709,6 +2828,7 @@ class DialogueNode(Node):
             speaker_duration_s=speaker_duration_s,
             from_tg=from_tg,
             backlog_pending=backlog_pending,
+            utterance_id=utterance_id,
         )
 
     def _on_tts_finished(self, msg: String) -> None:
@@ -3107,6 +3227,7 @@ class DialogueNode(Node):
         from_tg: bool = False,
         occasion: "Occasion | None" = None,
         backlog_pending: bool = False,
+        utterance_id: str | None = None,
     ) -> None:
         # ADR-0101 §3.1 / #2536 — повод (ещё не подключён в wake-gate,
         # PR-B…F); сигнатура принимает ``occasion``, логирует только при
@@ -3158,6 +3279,7 @@ class DialogueNode(Node):
                 speaker_duration_s=speaker_duration_s,
                 from_tg=from_tg,
                 backlog_pending=backlog_pending,
+                utterance_id=utterance_id,
             ),
             self._loop,
         )
@@ -3172,10 +3294,49 @@ class DialogueNode(Node):
         "сказал", "говорю", "прошу", "попросил",
     }
 
+    async def _resolve_speaker_for_utterance(
+        self, utterance_id: Optional[str]
+    ) -> None:
+        """Issue #2829 (ADR-0131) — резолвнуть ``_current_speaker`` для
+        ОДНОЙ конкретной фразы и запомнить, что она уже резолвнута.
+
+        Идемпотентность (``_last_resolved_utterance_id``) существует
+        ради #2828 (``_resolve_identity_ack_answer``): та функция должна
+        видеть резолвнутого текущего диктора ДО того, как
+        ``_apply_speaker_identity`` вызывается штатно из
+        ``_prepare_user_input_context`` -- без кеша второй вызов ждал бы
+        ``speaker_resolve_timeout_sec`` ЗАНОВО (utterance уже
+        разрешилась или уже протухла, полученный результат не изменится,
+        а задержка хода удвоилась бы впустую).
+
+        ``utterance_id=None`` (синтетический/ретрай-ход) -- no-op,
+        ``_current_speaker`` остаётся тем, чем было.
+        """
+        if not utterance_id:
+            return
+        if utterance_id == getattr(self, "_last_resolved_utterance_id", None):
+            return
+        resolved = await self._utterance_speaker.resolve(
+            utterance_id, self._speaker_resolve_timeout_sec
+        )
+        if resolved is None:
+            self.get_logger().warning(
+                f"👤 [issue #2829] speaker biometry timeout for "
+                f"utterance={utterance_id} "
+                f"({self._speaker_resolve_timeout_sec:.1f}s) — unknown, "
+                "NOT reusing previous speaker"
+            )
+        with self._speaker_lock:
+            self._current_speaker = resolved if resolved is not None else {
+                "is_known": False
+            }
+        self._last_resolved_utterance_id = utterance_id
+
     async def _apply_speaker_identity(
         self,
         user_input: str,
         speaker_context: Optional[str],
+        utterance_id: Optional[str] = None,
     ) -> str:
         """Issue #1077 — префикс спикера для LLM.
 
@@ -3197,8 +3358,19 @@ class DialogueNode(Node):
         Returns:
             user_input с техническим префиксом спикера (без wake-words).
         """
-        # Даём speaker_id_node время закончить inference (STT быстрее resemblyzer).
-        await asyncio.sleep(0.30)
+        # Issue #2829 (ADR-0131) — резолвим _current_speaker ПО ЭТОЙ фразе
+        # (join по utterance_id). Идемпотентно: если ``_prepare_user_input_
+        # context`` уже резолвнула этот же utterance_id (нужно #2828 —
+        # ответ на переспрос проверяется ДО вызова этого метода), второй
+        # resolve() не ждёт ещё раз (см. ``_resolve_speaker_for_utterance``).
+        await self._resolve_speaker_for_utterance(utterance_id)
+        if not utterance_id:
+            # Нет utterance_id (синтетический/ретрай-ход без новой
+            # фразы -- babble-retry, DJ auto, action-claim retry, ...):
+            # новой аудио-фразы для сверки нет, читаем последний
+            # РАЗРЕШЁННЫЙ снимок как есть (issue #2829 гонка тут
+            # неприменима -- ждать нечего).
+            pass
         with self._speaker_lock:
             sp = dict(self._current_speaker)
         if sp.get("is_known"):
@@ -4074,6 +4246,7 @@ class DialogueNode(Node):
         speaker_duration_s: float = 0.0,
         from_tg: bool = False,
         backlog_pending: bool = False,
+        utterance_id: str | None = None,
     ) -> None:
         with self._task_lock:
             self._run_task = asyncio.current_task()
@@ -4146,6 +4319,7 @@ class DialogueNode(Node):
                 was_dj_auto=was_dj_auto,
                 speaker_context=speaker_context,
                 backlog_pending=backlog_pending,
+                utterance_id=utterance_id,
             )
             # 🔴 FIX (issue #1101): _on_stt уже сделал DSM-переход
             # IDLE→LISTENING→DIALOGUE через WAKE_WORD+STT_RESULT. Передаём
@@ -5929,6 +6103,7 @@ class DialogueNode(Node):
         was_dj_auto: bool,
         speaker_context: Optional[str],
         backlog_pending: bool = False,
+        utterance_id: Optional[str] = None,
     ) -> tuple[str, Any]:
         """Issue #992 / #1077 / #1195 / live 10.08 — user_input prelude.
 
@@ -5955,11 +6130,17 @@ class DialogueNode(Node):
         if from_tg:
             user_input = f"[TG] {user_input}"
         elif self._speaker_id_enabled and not was_dj_auto:
+            # Issue #2829 (ADR-0131) -- резолвим _current_speaker ПО ЭТОЙ
+            # фразе ДО проверки ответа на переспрос #2828: та сверяет
+            # диктора реплики с профилями из вопроса
+            # (_reply_speaker_matches_identity_plan) и должна видеть
+            # текущего, а не предыдущего собеседника.
+            await self._resolve_speaker_for_utterance(utterance_id)
             # Issue #2828 -- ответ на переспрос по ack регистрации читаем
             # по СЫРОЙ реплике, до префиксов [Spkr:...]/[Speaker:...].
             self._resolve_identity_ack_answer(user_input)
             user_input = await self._apply_speaker_identity(
-                user_input, speaker_context
+                user_input, speaker_context, utterance_id
             )
         if backlog_pending:
             user_input = self._inject_backlog_hint(user_input)
