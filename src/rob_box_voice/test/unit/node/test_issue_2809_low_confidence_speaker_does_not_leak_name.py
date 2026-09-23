@@ -224,15 +224,15 @@ def _published_payload(pub_mock):
     return json.loads(msg.data)
 
 
-class TestPublishResultNameConfidentWiring:
-    def test_name_confident_false_suppresses_name(self, sid):
+class TestPublishResultNameDecisionWiring:
+    def test_tentative_single_decision_suppresses_name(self, sid):
         match = SpeakerMatch(
             speaker_id="0ddc1ab9-9af0-4c00-8000-000000000000",
             name="Boris",
             confidence=0.780,
             epithet="Sobesednik",
         )
-        sid._publish_result(match, name_confident=False)
+        sid._publish_result(match, name_decision=sid_node.NAME_TENTATIVE_SINGLE)
 
         payload = _published_payload(sid._result_pub)
         assert payload["is_known"] is True
@@ -241,36 +241,133 @@ class TestPublishResultNameConfidentWiring:
         assert payload["confidence"] == pytest.approx(0.780)
         assert payload["epithet"] == "Sobesednik"
 
-    def test_name_confident_true_publishes_name(self, sid):
+    def test_confident_decision_publishes_name(self, sid):
         match = SpeakerMatch(speaker_id="known-1", name="Boris", confidence=0.91)
-        sid._publish_result(match, name_confident=True)
+        sid._publish_result(match, name_decision=sid_node.NAME_CONFIDENT)
 
         payload = _published_payload(sid._result_pub)
         assert payload["name"] == "Boris"
 
-    def test_register_source_bypasses_name_confident(self, sid):
+    def test_register_source_bypasses_name_decision(self, sid):
         match = SpeakerMatch(speaker_id="new-1", name="Grisha", confidence=0.5)
-        sid._publish_result(match, source="register", name_confident=False)
+        sid._publish_result(match, source="register", name_decision=sid_node.NAME_TENTATIVE_SINGLE)
 
         payload = _published_payload(sid._result_pub)
         assert payload["name"] == "Grisha"
         assert payload["source"] == "register"
 
-    def test_name_confident_none_falls_back_to_band_high_only(self, sid):
+    def test_name_decision_none_falls_back_to_band_high_only(self, sid):
         below = SpeakerMatch(speaker_id="x", name="Boris", confidence=0.780)
         above = SpeakerMatch(speaker_id="y", name="Boris", confidence=0.91)
 
-        sid._publish_result(below, name_confident=None)
+        sid._publish_result(below, name_decision=None)
         assert _published_payload(sid._result_pub)["name"] is None
 
         sid._result_pub.reset_mock()
-        sid._publish_result(above, name_confident=None)
+        sid._publish_result(above, name_decision=None)
         assert _published_payload(sid._result_pub)["name"] == "Boris"
 
     def test_unknown_speaker_untouched(self, sid):
         sid._publish_result(None)
         payload = _published_payload(sid._result_pub)
         assert payload == {"is_known": False}
+
+
+class TestPublishResultTentativeFields:
+    """Issue #2809 (продолжение) -- tentative_name/tentative_conf/
+    tentative_kind в payload /voice/speaker/result, для dialogue_node
+    (переспрос) и как гарантия для vision_face_node (ADR-0123 п.6,
+    issue #2771): ``name`` остаётся None, пока не подтверждено -- лицо
+    не должно слиться по гипотезе."""
+
+    def test_single_decision_carries_name_hypothesis(self, sid):
+        match = SpeakerMatch(
+            speaker_id="1ae4b0ac-0000-0000-0000-000000000000",
+            name="Denchik",
+            confidence=0.771,
+        )
+        sid._publish_result(match, name_decision=sid_node.NAME_TENTATIVE_SINGLE)
+
+        payload = _published_payload(sid._result_pub)
+        assert payload["is_known"] is True
+        assert payload["name"] is None  # НИКОГДА не факт, пока не подтверждено
+        assert payload["tentative_name"] == "Denchik"
+        assert payload["tentative_conf"] == pytest.approx(0.771)
+        assert payload["tentative_kind"] == "single"
+
+    def test_contested_decision_never_carries_a_candidate_name(self, sid):
+        """n210: голос похож на Бориса и Сашу одновременно -- ни одно из
+        двух имён не должно уйти дальше даже как гипотеза."""
+        match = SpeakerMatch(
+            speaker_id="boris-id", name="Boris", confidence=0.780
+        )
+        sid._publish_result(match, name_decision=sid_node.NAME_TENTATIVE_CONTESTED)
+
+        payload = _published_payload(sid._result_pub)
+        assert payload["name"] is None
+        assert "tentative_name" not in payload
+        assert payload["tentative_kind"] == "contested"
+        assert payload["tentative_conf"] == pytest.approx(0.780)
+        # НИ имени "Boris" (реальное имя match), ни какого-либо другого
+        # имени не должно быть НИГДЕ в payload -- сериализуем и проверяем
+        # весь JSON целиком, не только известные ключи.
+        import json as _json
+
+        raw = _json.dumps(payload, ensure_ascii=False)
+        assert "Boris" not in raw
+
+    def test_confident_decision_has_no_tentative_fields(self, sid):
+        match = SpeakerMatch(speaker_id="known-1", name="Boris", confidence=0.91)
+        sid._publish_result(match, name_decision=sid_node.NAME_CONFIDENT)
+
+        payload = _published_payload(sid._result_pub)
+        assert "tentative_name" not in payload
+        assert "tentative_conf" not in payload
+        assert "tentative_kind" not in payload
+
+
+class TestClassifyNameConfidenceThreeWay:
+    """Issue #2809 (продолжение) -- classify_name_confidence различает
+    single/contested (is_name_confident этого не делает, только да/нет)."""
+
+    def test_single_when_no_competitor_with_different_name(self):
+        best = SpeakerMatch(speaker_id="a", name="Denchik", confidence=0.75)
+        result = sid_node.classify_name_confidence(
+            best, [best], band_high=0.80, min_gap=0.15
+        )
+        assert result == sid_node.NAME_TENTATIVE_SINGLE
+
+    def test_contested_when_competitor_gap_too_small(self):
+        best = SpeakerMatch(speaker_id="a", name="Boris", confidence=0.780)
+        other = SpeakerMatch(speaker_id="b", name="Sasha", confidence=0.653)
+        result = sid_node.classify_name_confidence(
+            best, [best, other], band_high=0.80, min_gap=0.15
+        )
+        assert result == sid_node.NAME_TENTATIVE_CONTESTED
+
+    def test_confident_above_band_high_regardless_of_competitor(self):
+        best = SpeakerMatch(speaker_id="a", name="Boris", confidence=0.91)
+        other = SpeakerMatch(speaker_id="b", name="Sasha", confidence=0.85)
+        result = sid_node.classify_name_confidence(
+            best, [best, other], band_high=0.80, min_gap=0.15
+        )
+        assert result == sid_node.NAME_CONFIDENT
+
+    def test_confident_via_wide_gap_in_band(self):
+        best = SpeakerMatch(speaker_id="a", name="Boris", confidence=0.75)
+        other = SpeakerMatch(speaker_id="b", name="Sasha", confidence=0.55)
+        result = sid_node.classify_name_confidence(
+            best, [best, other], band_high=0.80, min_gap=0.15
+        )
+        assert result == sid_node.NAME_CONFIDENT
+
+    def test_duplicate_profile_of_same_person_yields_single_not_contested(self):
+        best = SpeakerMatch(speaker_id="1ae4b0ac", name="Denchik", confidence=0.75)
+        twin = SpeakerMatch(speaker_id="c9e981cb", name="Denchik", confidence=0.40)
+        result = sid_node.classify_name_confidence(
+            best, [best, twin], band_high=0.80, min_gap=0.15
+        )
+        assert result == sid_node.NAME_TENTATIVE_SINGLE
 
 
 @pytest.fixture()

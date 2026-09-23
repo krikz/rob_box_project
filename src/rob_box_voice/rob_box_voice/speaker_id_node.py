@@ -126,13 +126,25 @@ def _gap_to_other_name(
     return None
 
 
-def is_name_confident(
+# Issue #2809 (продолжение) — три исхода "зоны сомнения", а не просто
+# да/нет. Нужно координатору для переспроса: "single" (в базе один
+# похожий кандидат, конкурента с другим именем нет — живой "Дэнчик")
+# может дойти до вопроса С ИМЕНЕМ; "contested" (несколько похожих людей
+# с РАЗНЫМИ именами, малый разрыв — n210: Борис vs Саша) не может нести
+# ни одного имени кандидата дальше — даже в подсказку-гипотезу, не то
+# что вслух (must_not_say в n210 запрещает само слово "Борис").
+NAME_CONFIDENT = "confident"
+NAME_TENTATIVE_SINGLE = "single"
+NAME_TENTATIVE_CONTESTED = "contested"
+
+
+def classify_name_confidence(
     match: Optional[SpeakerMatch],
     candidates: Sequence[SpeakerMatch],
     *,
     band_high: float,
     min_gap: float,
-) -> bool:
+) -> str:
     """Issue #2809 — «зона сомнения + разрыв до другого человека».
 
     Заменяет собой откаченный плоский порог confidence (0.85, PR #2818
@@ -141,31 +153,62 @@ def is_name_confident(
     выше 0.72 — с плоским 0.85 имя не звучало бы НИКОГДА.
 
     ``match`` уже прошёл ``identify_threshold`` (0.72) — сюда попадают
-    только is_known=True. Решение:
+    только is_known=True. Возвращает один из трёх исходов:
 
-    * ``match.confidence >= band_high`` (по умолчанию 0.80) — похоже
-      уверенно, имя озвучиваем независимо от того, кто ещё есть в
-      галерее (синтетика "своя" 23.09: 0.836-0.961, вся выше 0.80).
-    * иначе (полоса ``[identify_threshold, band_high)``) — имя
-      озвучиваем, только если есть конкурент с ДРУГИМ именем и разрыв до
-      него (``_gap_to_other_name``) не меньше ``min_gap`` (по умолчанию
-      0.15). Если конкурента с другим именем нет (единственный человек в
-      базе, как живой "Дэнчик" 0.771/0.757) или разрыв мал (n210:
-      best='Борис' 0.780 vs second='Саша' 0.653, gap=0.127 < 0.15) —
-      имя НЕ озвучиваем: слишком похоже на то, что могли перепутать с
-      конкретным другим голосом (либо просто мало данных для уверенности
-      при единственном профиле в базе).
+    * ``NAME_CONFIDENT`` — ``match.confidence >= band_high`` (по
+      умолчанию 0.80), похоже уверенно, имя озвучиваем независимо от
+      того, кто ещё есть в галерее (синтетика "своя" 23.09: 0.836-0.961,
+      вся выше 0.80). Либо (в полосе ниже band_high) есть конкурент с
+      ДРУГИМ именем и разрыв до него (``_gap_to_other_name``) не меньше
+      ``min_gap`` (по умолчанию 0.15) — явно не тот другой голос.
+    * ``NAME_TENTATIVE_SINGLE`` — полоса ``[identify_threshold,
+      band_high)``, конкурента с другим именем в кандидатах НЕТ
+      (единственный человек в базе, как живой "Дэнчик" 0.771/0.757, или
+      все остальные кандидаты — дубли той же личности). Гипотеза даёт
+      ОДНО конкретное имя — можно спросить "<Имя>, это ты?".
+    * ``NAME_TENTATIVE_CONTESTED`` — та же полоса, но есть конкурент с
+      ДРУГИМ именем и разрыв до него МЕНЬШЕ ``min_gap`` (n210: best=
+      'Борис' 0.780 vs second='Саша' 0.653, gap=0.127 < 0.15) — слишком
+      похоже на то, что перепутали с конкретным другим голосом. Ни одно
+      из двух имён дальше не идёт, даже в подсказку.
 
-    ``None`` вместо имени в этом случае — не "не знаю его вообще"
-    (is_known остаётся True, epithet/speaker_id доступны), а "не уверен
-    настолько, чтобы называть по имени вслух".
+    ``NAME_TENTATIVE_*`` — не "не знаю его вообще" (is_known остаётся
+    True, epithet/speaker_id доступны), а "не уверен настолько, чтобы
+    называть по имени вслух как факт".
+    """
+    if match is None:
+        return NAME_TENTATIVE_CONTESTED  # не должно вызываться без match
+    if match.confidence >= band_high:
+        return NAME_CONFIDENT
+    gap = _gap_to_other_name(match, candidates)
+    if gap is not None and gap >= min_gap:
+        return NAME_CONFIDENT
+    if gap is None:
+        return NAME_TENTATIVE_SINGLE
+    return NAME_TENTATIVE_CONTESTED
+
+
+def is_name_confident(
+    match: Optional[SpeakerMatch],
+    candidates: Sequence[SpeakerMatch],
+    *,
+    band_high: float,
+    min_gap: float,
+) -> bool:
+    """Обёртка над :func:`classify_name_confidence` — просто да/нет.
+
+    Держим отдельно от классификации: часть вызывающего кода (и уже
+    существующие тесты реплея с 23.09) нужен только булев исход, а
+    ``_publish_result``/``_handle_tentative_speaker`` в dialogue_node —
+    полная классификация (single/contested), чтобы решить, можно ли
+    вообще упомянуть имя-гипотезу.
     """
     if match is None:
         return False
-    if match.confidence >= band_high:
-        return True
-    gap = _gap_to_other_name(match, candidates)
-    return gap is not None and gap >= min_gap
+    return (
+        classify_name_confidence(match, candidates, band_high=band_high, min_gap=min_gap)
+        == NAME_CONFIDENT
+    )
 
 
 class SpeakerIdNode(Node):
@@ -728,20 +771,20 @@ class SpeakerIdNode(Node):
             confidence=match.confidence if match else None,
         )
         # Issue #2809 — «зона сомнения + разрыв до другого человека» (см.
-        # is_name_confident/declare_parameter name_confidence_band_high).
-        # top_n=5 — с запасом, чтобы найти конкурента с ДРУГИМ именем,
-        # даже если в топ-2 попали два дубля-профиля одной и той же
-        # личности (issue #2747, "Дэнчик" x2).
-        name_confident: Optional[bool] = None
+        # classify_name_confidence/declare_parameter
+        # name_confidence_band_high). top_n=5 — с запасом, чтобы найти
+        # конкурента с ДРУГИМ именем, даже если в топ-2 попали два
+        # дубля-профиля одной и той же личности (issue #2747, "Дэнчик" x2).
+        name_decision: Optional[str] = None
         if match:
             candidates = self._db.identify_candidates(embedding, top_n=5)
-            name_confident = is_name_confident(
+            name_decision = classify_name_confidence(
                 match,
                 candidates,
                 band_high=getattr(self, "_name_confidence_band_high", 0.80),
                 min_gap=getattr(self, "_name_confidence_min_gap", 0.15),
             )
-        self._publish_result(match, name_confident=name_confident)
+        self._publish_result(match, name_decision=name_decision)
 
     def _on_tts_finished(self, msg: String) -> None:
         """Issue #2747 — робот договорил: отсчёт паузы человека начинается ЗДЕСЬ.
@@ -1563,7 +1606,7 @@ class SpeakerIdNode(Node):
         self,
         match: Optional[SpeakerMatch],
         source: Optional[str] = None,
-        name_confident: Optional[bool] = None,
+        name_decision: Optional[str] = None,
     ) -> None:
         """Serialise and publish the speaker identification result.
 
@@ -1576,25 +1619,45 @@ class SpeakerIdNode(Node):
         наравне с обычным узнаванием (см. ``_on_speaker_result`` там —
         гейт только на ``is_known``, поле ``source`` не проверяется).
 
-        Issue #2809 — ``name_confident`` — решение "зона сомнения + разрыв
-        до другого человека" (см. большой комментарий у declare_parameter
-        ``name_confidence_band_high`` в ``__init__`` и функцию
-        ``is_name_confident`` ниже), посчитанное вызывающим кодом
-        (``_process_utterance``), у которого есть полный список кандидатов
-        ``identify_candidates()``. ``source="register"`` (имя названо
-        человеком секунду назад, не догадка по cosine) обходит это решение
-        безусловно. ``None`` — вызывающий код не считал (старые/тестовые
+        Issue #2809 — ``name_decision`` — исход
+        :func:`classify_name_confidence` ("confident"/"single"/
+        "contested"), посчитанный вызывающим кодом (``_process_utterance``),
+        у которого есть полный список кандидатов ``identify_candidates()``.
+        ``source="register"`` (имя названо человеком секунду назад, не
+        догадка по cosine) обходит это решение безусловно — считается
+        confident. ``None`` — вызывающий код не считал (старые/тестовые
         пути) — консервативный дефолт по одному только confidence, без
-        учёта конкурентов.
+        учёта конкурентов, без tentative-полей.
+
+        При НЕ-confident исходе ``name`` остаётся ``None`` (ADR-0123 §6,
+        issue #2771 — vision_face_node сливает лица только по
+        подтверждённому имени, гипотеза до него доехать не должна), а
+        payload получает три дополнительных поля-гипотезы для
+        dialogue_node (issue #2809, продолжение — переспрос):
+
+        * ``tentative_name`` — лучшая догадка биометрии (только при
+          ``name_decision == "single"`` — при "contested" её нет НИКОГДА,
+          даже как гипотезы: два кандидата с разными именами похожи
+          одинаково, поднимать одно из двух имён рискованно, см. n210);
+        * ``tentative_conf`` — её confidence (дублирует ``confidence``
+          явным именем поля — потребителю не нужно помнить, что это то
+          же число);
+        * ``tentative_kind`` — "single" | "contested", см.
+          ``classify_name_confidence``.
         """
         if match:
             if source:
                 confident = True
-            elif name_confident is not None:
-                confident = name_confident
+                decision = NAME_CONFIDENT
             else:
-                band_high = getattr(self, "_name_confidence_band_high", 0.80)
-                confident = match.confidence >= band_high
+                decision = name_decision or (
+                    NAME_CONFIDENT
+                    if match.confidence >= getattr(
+                        self, "_name_confidence_band_high", 0.80
+                    )
+                    else NAME_TENTATIVE_SINGLE
+                )
+                confident = decision == NAME_CONFIDENT
             published_name = match.name if confident else None
             payload = {
                 "is_known": True,
@@ -1607,10 +1670,19 @@ class SpeakerIdNode(Node):
             }
             if source:
                 payload["source"] = source
+            if not confident:
+                payload["tentative_conf"] = round(match.confidence, 4)
+                payload["tentative_kind"] = decision
+                if decision == NAME_TENTATIVE_SINGLE:
+                    payload["tentative_name"] = match.name
             self.get_logger().info(
                 f"📢 Publishing: is_known=true name={published_name!r} "
                 f"epithet={match.epithet!r} conf={match.confidence:.3f}"
-                + ("" if confident else " (name suppressed: tentative, issue #2809)")
+                + (
+                    ""
+                    if confident
+                    else f" (name suppressed: {decision}, issue #2809)"
+                )
                 + (f" source={source!r}" if source else "")
             )
         else:
