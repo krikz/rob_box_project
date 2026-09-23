@@ -610,13 +610,15 @@ def cmd_list(args: argparse.Namespace) -> int:
         print(f'В {args.db_path!r} нет ни одного профиля.')
         return 0
 
-    header = f"{'speaker_id':38} {'name':16} {'epithet':14} {'created_at (UTC)':20} {'embeddings':>10}"
+    # issue #2887 — кличка теперь 2–4 слова; 48 = epithets.LLM_EPITHET_MAX_LEN,
+    # иначе список обрезал бы её посреди слова (было 14 под одно слово).
+    header = f"{'speaker_id':38} {'name':16} {'epithet':48} {'created_at (UTC)':20} {'embeddings':>10}"
     print(header)
     print('-' * len(header))
     for s in sorted(speakers, key=lambda x: x['created_at']):
         created = _format_created_at(s['created_at'])
         print(
-            f"{s['id']:38} {s['name']:16.16} {(s['epithet'] or '-'):14.14} "
+            f"{s['id']:38} {s['name']:16.16} {(s['epithet'] or '-'):48.48} "
             f"{created:20} {s['embeddings']:>10}"
         )
     print('-' * len(header))

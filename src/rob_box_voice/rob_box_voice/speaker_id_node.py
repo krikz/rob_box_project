@@ -1926,11 +1926,12 @@ class SpeakerIdNode(Node):
     def _on_epithet_result(self, msg: String) -> None:
         """Принять кличку, придуманную LLM, и применить её после проверки.
 
-        Expected JSON: ``{"speaker_id": "<uuid>", "epithet": "Кулибин"}``.
+        Expected JSON: ``{"speaker_id": "<uuid>", "epithet": "Ночной паяльщик моторов"}``
+        (2–4 слова, issue #2887).
 
         Всё, что не прошло ``sanitize_llm_epithet`` (фраза вместо слова,
-        цифры, уже занятая кличка), молча отбрасывается — в профиле
-        остаётся словарный кандидат. Это единственное разумное поведение:
+        цифры, уже занятая кличка), отбрасывается с причиной в логе
+        (issue #2886) — в профиле остаётся словарный кандидат. Это единственное разумное поведение:
         текст пришёл из модели, которую попросили «придумать слово», и
         доверять ему как команде нельзя.
         """
@@ -1944,19 +1945,35 @@ class SpeakerIdNode(Node):
         if not speaker_id:
             return
 
-        label = epithets.sanitize_llm_epithet(
-            raw, taken=self._db.taken_epithets(exclude_speaker_id=speaker_id)
+        # Issue #2887 — имена всех знакомых: кличка с чужим (или своим)
+        # именем читается LLM как упоминание этого человека.
+        label, why = epithets.check_llm_epithet(
+            raw,
+            taken=self._db.taken_epithets(exclude_speaker_id=speaker_id),
+            names=[row["name"] for row in self._db.list_speakers() if row["name"]],
         )
         if not label:
+            # Issue #2886 — причина в логе: иначе «отклонена» у одного
+            # профиля и «принята» у другого неотличимы (фильтр или занятость).
+            if why == epithets.REJECT_TAKEN:
+                why = f"taken_by={self._epithet_owner(raw, speaker_id)}"
             self.get_logger().info(
-                f"🔤 [issue 1787] LLM-кличка {raw!r} отклонена — "
-                f"остаётся словарная у {speaker_id[:8]}"
+                f"🔤 [issue 1787] LLM-кличка {raw!r} отклонена "
+                f"(причина={why}) — остаётся словарная у {speaker_id[:8]}"
             )
             return
         if self._db.set_epithet(speaker_id, label, epithets.REASON_LLM):
             self.get_logger().info(
                 f"🔤 [issue 1787] LLM переименовала {speaker_id[:8]} → {label!r}"
             )
+
+    def _epithet_owner(self, raw, speaker_id: str) -> str:
+        """Короткий id профиля, у которого уже есть кличка ``raw`` (для лога)."""
+        wanted = epithets.normalize_epithet(epithets.sanitize_llm_epithet(raw) or raw)
+        for row in self._db.list_speakers():
+            if row["id"] != speaker_id and epithets.normalize_epithet(row["epithet"]) == wanted:
+                return row["id"][:8]
+        return "?"
 
     def _ensure_epithet(self, speaker_id: str) -> None:
         """Выдать кличку сразу при регистрации, если её ещё нет.

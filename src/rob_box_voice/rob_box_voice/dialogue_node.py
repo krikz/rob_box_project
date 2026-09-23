@@ -3816,12 +3816,14 @@ class DialogueNode(Node):
         hints: list,
         messages: list,
     ) -> None:
-        """Спросить у LLM одно слово-кличку и вернуть его speaker_id_node.
+        """Спросить у LLM кличку (2–4 слова, #2887) и вернуть её speaker_id_node.
 
         Одноразовый запрос мимо диалогового цикла: история разговора сюда
         не идёт (кличка не должна зависеть от текущего контекста робота),
-        инструменты не подключаются, ``max_tokens`` мал — нужно одно
-        слово. Любая ошибка провайдера тихо оставляет словарную кличку:
+        инструменты не подключаются, ``max_tokens`` мал — нужна короткая
+        кличка. 48 токенов (было 16 под одно слово): русский текст —
+        2–4 символа на токен, кличка до 48 символов плюс запас на кавычки
+        и подпись, иначе ответ обрезается посреди слова. Любая ошибка провайдера тихо оставляет словарную кличку:
         она уже записана в БД до этого вызова.
 
         Ответ модели НЕ применяется здесь — он публикуется как
@@ -3839,7 +3841,7 @@ class DialogueNode(Node):
             response = await asyncio.wait_for(
                 llm.complete(
                     [LLMMessage(role="user", content=prompt)],
-                    settings=LLMSettings(max_tokens=16, temperature=1.0),
+                    settings=LLMSettings(max_tokens=48, temperature=1.0),
                 ),
                 timeout=self.EPITHET_LLM_TIMEOUT_S,
             )
@@ -3855,11 +3857,11 @@ class DialogueNode(Node):
             )
             return
 
-        proposal = epithets.sanitize_llm_epithet(getattr(response, "content", ""))
+        proposal, why = epithets.check_llm_epithet(getattr(response, "content", ""))
         if not proposal:
             self.get_logger().info(
                 f"🔤 [issue 1787] ответ LLM не похож на кличку "
-                f"({str(getattr(response, 'content', ''))[:40]!r}) — "
+                f"({str(getattr(response, 'content', ''))[:40]!r}, причина={why}) — "
                 f"остаётся {fallback!r}"
             )
             return
