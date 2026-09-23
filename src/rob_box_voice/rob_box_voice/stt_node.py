@@ -74,13 +74,16 @@ except ImportError:  # pragma: no cover — модуль всегда есть �
 
 # Issue #2365 Phase 2 — цепочка STT-провайдеров по приоритету.
 #
-# Порядок minimax → yandex → vosk выбран владельцем репо 21.09.2026 и
-# зафиксирован в ADR-0124 (он же заменяет порядок vosk → minimax → yandex
-# из ADR-0091 §2.2). Логика та же, что у TTS (``tts_node``:
-# minimax → yandex → silero) и у LLM (``rob_box_harness.health``):
+# Порядок yandex → minimax → vosk — issue #2866 (23.09.2026): товарищ
+# Шифу пополнил счёт Yandex SpeechKit и поставил его primary. До этого
+# (21.09, ADR-0124 §2.1) первым был MiniMax; ADR-0124 в свою очередь
+# заменил vosk → minimax → yandex из ADR-0091 §2.2. Принцип прежний:
 # облака вперёд за качеством, локальная модель — последний рубеж,
-# который работает всегда.
-DEFAULT_STT_PROVIDER_CHAIN = ["minimax", "yandex", "vosk"]
+# который работает всегда. Значение обязано совпадать с
+# ``stt_provider_chain`` в обоих stt_node.yaml (гард:
+# test/test_yaml_param_consistency.py) — YAML перекрывает дефолт
+# ``declare_parameter``, и рассинхрон молча врал бы в dev-окружении.
+DEFAULT_STT_PROVIDER_CHAIN = ["yandex", "minimax", "vosk"]
 
 # Провайдеры, которые нода умеет собирать. Всё остальное в
 # ``stt_provider_chain`` — опечатка оператора, молча игнорируем с warning.
@@ -1412,8 +1415,8 @@ class STTNode(Node):
     def _recognize_with_fallback(self, audio_bytes: bytes) -> "tuple[Optional[str], list]":
         """Прогнать фразу по цепочке провайдеров (ADR-0124).
 
-        Порядок — из ``stt_provider_chain`` (дефолт minimax → yandex →
-        vosk), бюджеты — из ``_provider_policies``, пропуск лежащих
+        Порядок — из ``stt_provider_chain`` (дефолт yandex → minimax →
+        vosk, issue #2866), бюджеты — из ``_provider_policies``, пропуск лежащих
         облаков — через кэш «мёртвых».
 
         Возвращает ``(text, attempts)``.

@@ -28,7 +28,11 @@ stt_node:
     # работает офлайн и без денег на счету — это последний рубеж.
     # Единственный источник истины для порядка (config/stt_chain.yaml
     # удалён: второй YAML для того же значения — класс ошибки #1252/#1734).
-    stt_provider_chain: [minimax, yandex, vosk]
+    # Issue #2866 (23.09.2026): Yandex первым — товарищ Шифу пополнил счёт
+    # Yandex SpeechKit и решил поставить его primary. MiniMax — второй
+    # эшелон. Значение обязано совпадать с DEFAULT_STT_PROVIDER_CHAIN в
+    # stt_node.py (гард: test_yaml_param_consistency.py).
+    stt_provider_chain: [yandex, minimax, vosk]
     # MiniMax STT. Ключ приезжает из ENV MINIMAX_API_KEY (тот же, что у
     # TTS/LLM — см. docker/vision/.env). Без ключа провайдер тихо
     # выпадает из цепочки, робот работает на Yandex + Vosk.

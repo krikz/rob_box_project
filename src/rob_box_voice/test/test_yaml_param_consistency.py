@@ -161,6 +161,49 @@ def test_tts_configs_route_to_minimax():
         )
 
 
+def _default_stt_provider_chain() -> list:
+    """``DEFAULT_STT_PROVIDER_CHAIN`` из исходника stt_node.py (issue #2866).
+
+    Статический разбор через ``ast``, а не импорт: stt_node тянет rclpy,
+    а этот файл обязан идти в CI без ROS runtime.
+    """
+    import ast
+
+    tree = ast.parse((NODE_SRC / "stt_node.py").read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "DEFAULT_STT_PROVIDER_CHAIN"
+            for t in node.targets
+        ):
+            return list(ast.literal_eval(node.value))
+    raise AssertionError("DEFAULT_STT_PROVIDER_CHAIN не найден в stt_node.py")
+
+
+def test_stt_provider_chain_matches_code_default():
+    """Issue #2866 — порядок STT в обоих YAML совпадает с дефолтом кода.
+
+    Тот же класс ошибки, что issue #2440 (дефект A): YAML перекрывает
+    дефолт ``declare_parameter``, поэтому рассинхрон YAML↔код не ломает
+    робота, но молча делает дефолт враньём — dev-окружение без YAML
+    слушает другим провайдером, чем робот. Проверяем значения, а не
+    только имя ключа.
+    """
+    default_chain = _default_stt_provider_chain()
+    assert default_chain[0] == "yandex", (
+        f"DEFAULT_STT_PROVIDER_CHAIN={default_chain} — по решению товарища "
+        f"Шифу (issue #2866, 23.09.2026) primary STT — Yandex"
+    )
+    for path in (SRC_CONFIG / "stt_node.yaml", DOCKER_CONFIG / "stt_node.yaml"):
+        if not path.exists():
+            pytest.skip(f"{path} not found")
+        cfg = _load_config(path, "stt_node")
+        chain = cfg["stt_node"]["ros__parameters"]["stt_provider_chain"]
+        assert list(chain) == default_chain, (
+            f"{path.name}: stt_provider_chain={chain!r} не совпадает с "
+            f"stt_node.DEFAULT_STT_PROVIDER_CHAIN={default_chain} (issue #2866)"
+        )
+
+
 def _speaker_threshold_constants() -> tuple:
     """Загрузить константы порогов из speaker_embeddings (issue #2440).
 
