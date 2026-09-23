@@ -107,6 +107,15 @@ def _nested_schema(node: ast.AST) -> Any:
 #: :func:`_collect_module_constants` per source file.
 _MODULE_CONSTANTS: dict[str, Any] = {}
 
+#: ``{"NAME": <ast.List/ast.Tuple node>}`` for top-level ``NAME = [...]``
+#: assignments in the file being parsed. Kept as raw AST (not literal-
+#: evaluated) because the *elements* are ``MCPToolParameter(...)`` calls,
+#: not literals — this is what lets ``ComposeMusicTool.parameters`` and
+#: ``PreviewArrangementTool.parameters`` (ADR-0132 PR-5) both
+#: ``return _ARRANGEMENT_PARAMETERS`` and have the generator read the same
+#: list once instead of requiring two copies of the schema inline.
+_MODULE_LIST_CONSTANTS: dict[str, ast.AST] = {}
+
 #: ``{"ClassName": {"ATTR": <ast node>}}`` for the file being parsed. Kept as
 #: AST nodes so that ``DIRECTIONS = {"вперёд": {..., math.pi / 2}}`` — whose
 #: *values* are not literals — can still answer ``.keys()``.
@@ -238,6 +247,32 @@ def _collect_module_constants(tree: ast.Module) -> dict[str, Any]:
             for target in targets:
                 constants[target.id] = literal
     return constants
+
+
+def _collect_module_list_constants(tree: ast.Module) -> dict[str, ast.AST]:
+    """Collect top-level ``NAME = [...]`` / ``NAME: T = [...]`` assignments.
+
+    Unlike :func:`_collect_module_constants`, the value is kept as a raw
+    ``ast.List``/``ast.Tuple`` node rather than literal-evaluated — a
+    parameter list's elements are ``MCPToolParameter(...)`` calls, which
+    ``ast.literal_eval`` cannot handle. See ``_ARRANGEMENT_PARAMETERS`` in
+    ``tools/music.py`` (ADR-0132 PR-5).
+    """
+    out: dict[str, ast.AST] = {}
+    for node in tree.body:
+        targets = []
+        if isinstance(node, ast.Assign):
+            targets = [t for t in node.targets if isinstance(t, ast.Name)]
+            value = node.value
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            targets = [node.target]
+            value = node.value
+        else:
+            continue
+        if isinstance(value, (ast.List, ast.Tuple)):
+            for target in targets:
+                out[target.id] = value
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -471,6 +506,13 @@ DYNAMIC_ENUMS = {
     ("compose_music", "theme_octaves"): _on_off_auto,
     ("compose_music", "lead_octave"): _lead_octave_choices,
 }
+# ADR-0132 PR-5: preview_arrangement shares ``_ARRANGEMENT_PARAMETERS`` with
+# compose_music (see ``tools/music.py``) — same computed enums, same
+# resolvers, so the two tools can never drift apart on what values a knob
+# accepts.
+DYNAMIC_ENUMS.update(
+    {("preview_arrangement", param): resolver for (tool, param), resolver in list(DYNAMIC_ENUMS.items()) if tool == "compose_music"}
+)
 
 
 # ---------------------------------------------------------------------------
@@ -535,6 +577,7 @@ SKILL_TOOLS: dict[str, tuple[str, ...]] = {
     ),
     "composer": (
         "compose_music",
+        "preview_arrangement",
         "execute_music_code",
         "set_vibe_preset",
         "search_samples",
@@ -656,7 +699,7 @@ def _assign_skills(entries: list[dict[str, Any]]) -> None:
 
 def extract_tools() -> list[dict[str, Any]]:
     """Read every ``MCPTool`` subclass under ``tools/`` into catalog entries."""
-    global _MODULE_CONSTANTS, _CLASS_CONSTANTS, _CURRENT_CLASS, _PARAM_FACTORIES
+    global _MODULE_CONSTANTS, _MODULE_LIST_CONSTANTS, _CLASS_CONSTANTS, _CURRENT_CLASS, _PARAM_FACTORIES
     entries: list[dict[str, Any]] = []
     shared_constants = _collect_shared_constants()
 
@@ -665,6 +708,7 @@ def extract_tools() -> list[dict[str, Any]]:
             continue
         tree = ast.parse(source.read_text(encoding="utf-8"))
         _MODULE_CONSTANTS = {**shared_constants, **_collect_module_constants(tree)}
+        _MODULE_LIST_CONSTANTS = _collect_module_list_constants(tree)
         _CLASS_CONSTANTS = _collect_class_constants(tree)
         _PARAM_FACTORIES = _collect_param_factories(tree)
 
@@ -790,6 +834,14 @@ def _extract_parameters(fn: ast.AST, cls_name: str, filename: str) -> list[dict[
         if isinstance(node, ast.Return) and node.value is not None:
             returned = node.value
             break
+    # ``return _ARRANGEMENT_PARAMETERS`` — a bare name referring to a
+    # module-level ``NAME = [MCPToolParameter(...), ...]`` (ADR-0132 PR-5:
+    # compose_music/preview_arrangement share one schema list by identity,
+    # not by copy-pasted source).
+    if isinstance(returned, ast.Name):
+        resolved = _MODULE_LIST_CONSTANTS.get(returned.id)
+        if resolved is not None:
+            returned = resolved
     if not isinstance(returned, (ast.List, ast.Tuple)):
         raise ToolSourceError(f"{cls_name} ({filename}): `parameters` must return a list literal")
 

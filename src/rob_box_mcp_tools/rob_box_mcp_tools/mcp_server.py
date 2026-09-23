@@ -93,6 +93,7 @@ from .tools import (
     RtttlLibrary,
     ExecuteMusicCodeTool,
     ComposeMusicTool,
+    PreviewArrangementTool,
     StopMusicTool,
     SetVibePresetTool,
     GetMusicStateTool,
@@ -1138,6 +1139,7 @@ class MCPServer(Node):
         # Форма трека строится кодом, а не LLM (RC4 в
         # docs/analysis/2026-08-30-music-quality-audit.md).
         self.registry.register(ComposeMusicTool(self, music_manager, rtttl_library))
+        self.registry.register(PreviewArrangementTool(self, music_manager, rtttl_library))
         self.registry.register(StopMusicTool(self, music_manager))
         self.registry.register(SetVibePresetTool(self, music_manager))
         self.registry.register(GetMusicStateTool(self, music_manager))
