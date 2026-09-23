@@ -2635,6 +2635,77 @@ def build_system_regurgitate_retry_prompt(user_input: Optional[str]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Issue #2817 / #2766 -- LLM paraphrases internal service content (the
+# <system_context> snapshot or the "[выполнено в прошлом ходе]" history marker)
+# instead of answering the user. Unlike #2175 (verbatim
+# ``<system>...</system>`` regurgitation) the model here does NOT copy XML --
+# it describes it in its own words.
+#
+# Live example, issue #2817 (23.09, MiniMax-M2, run 35828027343):
+#     spoken='Системное уведомление принято к сведению -- это служебная
+#     инструкция, не пользовательское сообщение.' tools=[]
+#
+# Live example, issue #2766 (Vision Pi, hard-mute на весь ход):
+#     spoken='[выполнено в прошлом ходе]
+#     вызваны инструменты: speak_text' tools=[]
+#
+# Root cause (both issues): dynamic system context / history markers used to
+# sit as a bare ``role=system`` message immediately before the current user
+# turn -- see the fix in ``AgentCore.process_input`` (folded into the user
+# turn instead, rob_box_harness). This detector is the safety net: even a
+# well-formed prompt occasionally slips through on a given provider, and a
+# paraphrase must never reach TTS.
+#
+# Unlike #1882's ``PlanningNarrationHardMute`` (issue #2766's original
+# symptom -- the marker's snake_case tool name matched
+# ``is_planning_narration`` and the turn was hard-muted into silence), this
+# guard returns RETRY: the user asked a real question and a corrected answer
+# is one round-trip away, so muting the turn is the anti-goal, not the fix
+# (issue #2766 body: "Hard-mute честно не дал произнести теги, но и ответа
+# пользователь не получил").
+# ---------------------------------------------------------------------------
+_SERVICE_PARAPHRASE_MARKERS = (
+    "системное уведомление",
+    "служебная инструкция",
+    "служебное сообщение",
+    "выполнено в прошлом ходе",
+    "вызваны инструменты",
+)
+
+
+def is_service_context_paraphrased(spoken_text: Optional[str]) -> bool:
+    """Issue #2817 / #2766 -- LLM describes/echoes internal service content
+    (``<system_context>`` snapshot or a "[выполнено в прошлом ходе]"
+    history marker) instead of answering. Case-insensitive substring scan --
+    the model paraphrases freely, so an anchored regex (like #2175's, which
+    only matches verbatim ``<system>...</system>``) would miss it.
+    """
+    if not spoken_text:
+        return False
+    low = spoken_text.lower()
+    return any(marker in low for marker in _SERVICE_PARAPHRASE_MARKERS)
+
+
+def build_service_paraphrase_retry_prompt(user_input: Optional[str]) -> str:
+    """Issue #2817 / #2766 -- one-shot CRITICAL retry: answer the actual
+    user message instead of narrating/paraphrasing service content.
+    """
+    cleaned = _strip_trailing_critical_block(user_input or "")
+    return (
+        f"{cleaned}\n\n"
+        "[CRITICAL] Твой предыдущий ответ пересказал СЛУЖЕБНОЕ содержимое "
+        "(системный контекст или отметку о вызванных в прошлом ходу "
+        "инструментах) вместо ответа на РЕАЛЬНОЕ сообщение пользователя "
+        "выше.\n"
+        "❌ ЗАПРЕЩЕНО упоминать «системное уведомление», «служебная "
+        "инструкция», «выполнено в прошлом ходе», «вызваны инструменты» "
+        "и любые другие описания служебных данных.\n"
+        "✅ В ЭТОМ же turn ответь ПО СУТИ сообщения пользователя обычным "
+        "русским языком."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Issue #2760 — модель ПЕЧАТАЕТ вызов тула вместо того, чтобы его сделать.
 #
 # Live Vision Pi, прогон 35704637846 (акт 2, шаг n204_boris_intro_long)::

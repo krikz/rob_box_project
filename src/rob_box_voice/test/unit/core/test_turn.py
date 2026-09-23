@@ -40,6 +40,7 @@ from rob_box_voice.core.turn import (
     PhantomActionGuard,
     PlanningNarrationHardMute,
     Reply,
+    ServiceContextParaphraseGuard,
     SystemRegurgitateGuard,
     ToolCallMarkupGuard,
     ToolSkippedGuard,
@@ -314,6 +315,71 @@ class TestSystemRegurgitateGuard:
             GuardContext(
                 reply=_reply(
                     spoken="<system>...</system>",
+                    speak_text_real=1,
+                ),
+                turn=_turn(user_input="x"),
+                state=_state(),
+            )
+        )
+        assert v is None
+
+
+class TestServiceContextParaphraseGuard:
+    """Issue #2817 / #2766 -- live examples verbatim from both issues."""
+
+    def test_fires_on_system_context_paraphrase_issue_2817(self) -> None:
+        g = ServiceContextParaphraseGuard()
+        spoken = (
+            "Системное уведомление принято к сведению "
+            "— это служебная инструкция, "
+            "не пользовательское сообщение."
+        )
+        v = g.evaluate(
+            GuardContext(
+                reply=_reply(spoken=spoken),
+                turn=_turn(user_input="меня зовут Саша"),
+                state=_state(),
+            )
+        )
+        assert v is not None, "guard did not fire on issue #2817's live spoken text"
+        assert v.kind is VerdictKind.RETRY, (
+            "must be a RETRY, not a hard-mute -- issue #2766's whole point "
+            "is that muting leaves the user without an answer"
+        )
+        assert v.guard_name == "service_context_paraphrase"
+        assert v.prompt and "CRITICAL" in v.prompt
+
+    def test_fires_on_tools_called_marker_issue_2766(self) -> None:
+        g = ServiceContextParaphraseGuard()
+        v = g.evaluate(
+            GuardContext(
+                reply=_reply(
+                    spoken="[выполнено в прошлом ходе] вызваны инструменты: speak_text"
+                ),
+                turn=_turn(user_input="что ты сейчас видишь?"),
+                state=_state(),
+            )
+        )
+        assert v is not None
+        assert v.kind is VerdictKind.RETRY
+
+    def test_defers_on_normal_reply(self) -> None:
+        g = ServiceContextParaphraseGuard()
+        v = g.evaluate(
+            GuardContext(
+                reply=_reply(spoken="Привет, человек!"),
+                turn=_turn(user_input="привет"),
+                state=_state(),
+            )
+        )
+        assert v is None
+
+    def test_defers_when_speak_text_real_nonzero(self) -> None:
+        g = ServiceContextParaphraseGuard()
+        v = g.evaluate(
+            GuardContext(
+                reply=_reply(
+                    spoken="Системное уведомление",
                     speak_text_real=1,
                 ),
                 turn=_turn(user_input="x"),
@@ -921,6 +987,7 @@ class TestGuardOrderInvariant:
         assert [cls.__name__ for cls in DEFAULT_GUARD_ORDER] == [
             "ToolCallMarkupGuard",
             "SystemRegurgitateGuard",
+            "ServiceContextParaphraseGuard",
             "ToolSkippedGuard",
             "BabbleGuard",
             "EmbeddedRenardoCodeGuard",
@@ -994,6 +1061,30 @@ class TestGuardOrderInvariant:
         registry it's supposed to be built from."""
         guards = default_guards()
         assert [type(g) for g in guards] == list(DEFAULT_GUARD_ORDER)
+
+
+    def test_service_context_paraphrase_precedes_planning_narration_mute(
+        self,
+    ) -> None:
+        """Issue #2766 -- the retry guard MUST run before the hard-mute:
+        the marker's snake_case tool name also matches
+        :func:`is_planning_narration`, so without this ordering
+        ``PlanningNarrationHardMute`` would DISCARD the turn (silence)
+        instead of :class:`ServiceContextParaphraseGuard` RETRYing it."""
+        order = list(DEFAULT_GUARD_ORDER)
+        assert order.index(ServiceContextParaphraseGuard) < order.index(
+            PlanningNarrationHardMute
+        )
+
+    def test_service_context_paraphrase_right_after_system_regurgitate(
+        self,
+    ) -> None:
+        """Same failure family as #2175 -- kept adjacent in the order."""
+        order = list(DEFAULT_GUARD_ORDER)
+        assert (
+            order.index(ServiceContextParaphraseGuard)
+            == order.index(SystemRegurgitateGuard) + 1
+        )
 
     def test_default_guards_with_music_does_not_change_the_rest(self) -> None:
         def _fake_evaluate(turn, reply):

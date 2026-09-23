@@ -178,6 +178,29 @@ _DEFER_TO_END_TOOLS: frozenset[str] = frozenset(
 )
 
 
+def _compose_current_turn_message(
+    dynamic_system: str | None,
+    skill_prompt: str,
+    text: str,
+) -> str:
+    """Issue #2817 -- fold the per-turn ``<system_context>`` snapshot and
+    the active skill fragment into the SAME user message as ``text``,
+    instead of appending them as separate ``role=system`` messages right
+    before it (see the call site in :meth:`AgentCore.process_input` for
+    the live-log regression this fixes). Extracted so the branch count
+    lives here, not in ``process_input`` (ADR-0021 R1 -- cc_budget).
+
+    Order is preserved: context blocks first (freshest info nearest the
+    question), then a blank line, then the literal user text.
+    """
+    context_blocks = [
+        block for block in (dynamic_system, skill_prompt) if block
+    ]
+    if not context_blocks:
+        return text
+    return "\n".join(context_blocks) + "\n\n" + text
+
+
 def _tools_called_from_metadata(turn: Any) -> list[str]:
     """Return the tool names recorded on ``turn`` by ``process_input``.
 
@@ -623,8 +646,10 @@ class AgentCore:
         ``dynamic_system`` (live 10.08, two-system-prompt pattern) — XML
         ``<system_context>...</system_context>`` snapshot собирается
         dialogue_node каждый turn (текущий спикер, TTS-voice, session lock).
-        Кладётся system-сообщением ПОСЛЕДНИМ перед user input — см.
-        комментарий на месте вставки. Если None — не добавляется.
+        🔴 FIX (issue #2817): больше НЕ кладётся отдельным system-сообщением
+        перед user input (модель отвечала на него вместо реальной реплики,
+        см. комментарий на месте вставки) — склеивается в ОДИН user-ход
+        вместе с текстом. Если None — не добавляется.
 
         ``is_synthetic`` — вход сгенерирован нами, а не человеком
         (``[CRITICAL]``-ретраи babble/music guard'ов). Такой turn НЕ
@@ -783,31 +808,35 @@ class AgentCore:
                 # <system_context> snapshot: текущий спикер (resemblyzer),
                 # TTS-voice (gender alignment), session lock state.
                 #
-                # Кладётся ПОСЛЕДНИМ system-сообщением, вплотную к текущей
-                # реплике. Раньше он вставлялся в messages[1], то есть
-                # ПЕРЕД двадцатью ходами истории: модель читала «вот что
-                # происходит сейчас», а следом — два десятка ходов
-                # прошлого разговора, и никакого признака, что снапшот
-                # свежее всей этой истории, у неё не было. Волатильный
-                # runtime-стейт должен стоять там, где он и по времени —
-                # рядом с последним user-ходом.
-                if dynamic_system:
-                    messages.append(
-                        LLMMessage(role="system", content=dynamic_system)
-                    )
-                # Move A — фрагмент активного скилла. Кладётся ПОСЛЕДНИМ
-                # системным сообщением, вплотную к реплике юзера: это тот
-                # же принцип, по которому сюда переехал <system_context>
-                # (см. комментарий выше). Инструкция «как пользоваться
-                # этим инструментом» нужна модели В МОМЕНТ вызова, а не
-                # на позиции 0 за двадцать ходов до него, где её
-                # перевешивает свежий few-shot из истории.
+                # 🔴 FIX (issue #2817): раньше снапшот клался ОТДЕЛЬНЫМ
+                # system-сообщением вплотную к текущей реплике —
+                # ...system(<system_context>...privacy_note...>),
+                # user(текст).
+                # Живой лог 23.09 (MiniMax-M2): модель ответила НА
+                # system-сообщение («Системное уведомление принято к
+                # сведению...») и проигнорировала следующий за ним
+                # user-ход целиком. Роль ``system`` в позиции «последнее
+                # сообщение перед текущим вопросом» читается моделью как
+                # «на это надо отреагировать», а не как фоновый снапшот.
+                #
+                # Снапшот и skill-фрагмент теперь склеиваются В ОДИН
+                # user-ход вместе с текстом юзера — единственное сообщение
+                # этого хода, однозначно «то, на что нужно ответить».
+                # Свежесть не теряется: снапшот по-прежнему собирается на
+                # каждый ход и стоит физически последним перед ответом
+                # модели — просто внутри ОДНОГО сообщения, а не в соседнем
+                # system-сообщении (см.
+                # test_dynamic_system_stays_after_history).
+                #
+                # ``text`` (что уходит в Turn ниже и в историю) НЕ меняется —
+                # склейка живёт только в исходящем LLMMessage.
                 skill_prompt = self._resolve_skill_prompt()
-                if skill_prompt:
-                    messages.append(
-                        LLMMessage(role="system", content=skill_prompt)
-                    )
-                messages.append(LLMMessage(role="user", content=text))
+                llm_user_content = _compose_current_turn_message(
+                    dynamic_system, skill_prompt, text
+                )
+                messages.append(
+                    LLMMessage(role="user", content=llm_user_content)
+                )
                 # 🔴 FIX (live 11:19 DJ): DJ-переходы (is_dj_auto=True) НЕ
                 # пишутся в долгую память — иначе каждый переход (#1..#N)
                 # копит user+assistant пары в SQLite, history_max_turns
