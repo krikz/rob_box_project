@@ -30,6 +30,7 @@ from collections import deque
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping
 
+from rob_box_core.praise_gate import contains_praise
 from rob_box_core.token_estimate import estimate_prompt_tokens
 from rob_box_core.tool_catalog import tools_for_skill
 from rob_box_harness.core.tool_loop import (
@@ -89,6 +90,16 @@ _MAX_TOOL_ITERATIONS: int = 8
 #: mcp_server исполнять то, до чего он не дотягивается: фрагменты лежат в
 #: rob_box_voice, а MCP-сервер — отдельная нода в отдельном контейнере.
 LOAD_SKILL_TOOL: str = "load_skill"
+
+#: ADR-0132 PR-7 — ``save_arrangement_preset`` (composer skill,
+#: ``rob_box_mcp_tools/tools/music.py``) сохраняет ручки последнего
+#: сыгранного трека под именем мелодии как дефолт для БУДУЩИХ
+#: проигрываний. Модель не вправе решить сама, что аранжировка достаточно
+#: хороша для этого — гейт по последней реплике юзера живёт здесь
+#: (единственное место, где agent_core уже знает
+#: ``current_user_input`` за каждый батч tool_calls), не в самом MCP-туле:
+#: тот процесс музыки не видит истории диалога вообще.
+SAVE_ARRANGEMENT_PRESET_TOOL: str = "save_arrangement_preset"
 
 
 def _load_skill_spec(known: tuple[str, ...]) -> dict[str, Any]:
@@ -1696,6 +1707,18 @@ class AgentCore:
                 results_by_call_id[call.id] = self._handle_load_skill(call)
                 continue
 
+            # ADR-0132 PR-7 — save_arrangement_preset: hard gate по
+            # похвале/просьбе сохранить в ПОСЛЕДНЕЙ реплике юзера (см.
+            # SAVE_ARRANGEMENT_PRESET_TOOL docstring). Отказ — не ошибка
+            # тула (как и у track_start_guard): модель должна закончить
+            # ход репликой, а не получить ``is_error``.
+            if call.name == SAVE_ARRANGEMENT_PRESET_TOOL:
+                guarded = _gate_save_arrangement_preset(call, current_user_input)
+                if isinstance(guarded, ToolResult):
+                    results_by_call_id[call.id] = guarded
+                    continue
+                call = guarded
+
             results_by_call_id[call.id] = await self._tools.execute(call)
         return suppressed_texts
 
@@ -2128,6 +2151,40 @@ def _suppressed_speak_text_result(call: ToolCall) -> ToolResult:
             "Верни 'done' сразу после execute_music_code."
         ),
         is_error=True,
+    )
+
+
+def _gate_save_arrangement_preset(
+    call: ToolCall, user_input: str
+) -> ToolCall | ToolResult:
+    """ADR-0132 PR-7 — hard gate: ``save_arrangement_preset`` нужна явная
+    похвала/просьба сохранить в ПОСЛЕДНЕЙ реплике юзера.
+
+    Модель не оценивает свою аранжировку сама — она отдаёт этот трек как
+    дефолт для ВСЕХ будущих проигрываний этой мелодии, и одно субъективное
+    «получилось» не должно масштабироваться на весь архив без ведома
+    юзера. Похвала проходит → ``approved_by_user_quote`` в аргументах
+    переписывается на РЕАЛЬНУЮ реплику (не то, что могла бы придумать
+    модель) и вызов идёт исполняться. Похвалы нет → отказ, не ошибка
+    тула (как ``track_start_guard.refusal_content`` — ход должен
+    закончиться репликой, а не ``is_error``).
+    """
+    if contains_praise(user_input):
+        return replace(
+            call, arguments={**call.arguments, "approved_by_user_quote": user_input}
+        )
+    return ToolResult(
+        tool_call_id=call.id,
+        content=(
+            "[SYSTEM] save_arrangement_preset отклонён: последняя реплика "
+            "юзера не содержит явной похвалы («кайф», «супер», «класс», "
+            "«отлично» и т.п.) или прямой просьбы сохранить/запомнить "
+            "именно этот вариант («сохрани», «запомни этот вариант»). "
+            "Ты не можешь сама решить, что аранжировка достаточно хороша — "
+            "дождись явной реакции юзера, прежде чем вызывать этот тул "
+            "снова."
+        ),
+        is_error=False,
     )
 
 

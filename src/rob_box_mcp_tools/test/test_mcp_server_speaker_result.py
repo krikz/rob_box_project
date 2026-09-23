@@ -145,7 +145,9 @@ def _load_mcp_server_module():
         m.group(1)
         for m in _re.finditer(r"^\s+([A-Z]\w+Tool),\s*$", _src, flags=_re.M)
     ))
-    _extra_tools = ["MusicManager", "TrackLibrary", "RtttlLibrary"]
+    # ADR-0132 PR-7: ArrangementPresetStore isn't a *Tool class (the regex
+    # above only catches those), so it needs listing here like the others.
+    _extra_tools = ["MusicManager", "TrackLibrary", "RtttlLibrary", "ArrangementPresetStore"]
     # Plus the Gen* tools from the inner try-import (different pattern):
     _gen_names = sorted(set(
         m.group(1)

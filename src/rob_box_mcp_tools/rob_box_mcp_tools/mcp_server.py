@@ -94,6 +94,8 @@ from .tools import (
     ExecuteMusicCodeTool,
     ComposeMusicTool,
     PreviewArrangementTool,
+    SaveArrangementPresetTool,
+    ArrangementPresetStore,
     StopMusicTool,
     SetVibePresetTool,
     GetMusicStateTool,
@@ -1136,10 +1138,24 @@ class MCPServer(Node):
         except Exception as exc:
             self.get_logger().error(f"❌ RTTTL library disabled: {exc}")
 
+        # ADR-0132 PR-7: пресеты ручек по мелодии (shipped + learned,
+        # $MUSIC_LIBRARY_PATH — та же персистентная точка, что TrackLibrary
+        # ниже). Один экземпляр — общий для compose_music/preview_arrangement
+        # (тот же пресет, что реально применится) и save_arrangement_preset.
+        preset_store = ArrangementPresetStore()
+
         # Форма трека строится кодом, а не LLM (RC4 в
         # docs/analysis/2026-08-30-music-quality-audit.md).
-        self.registry.register(ComposeMusicTool(self, music_manager, rtttl_library))
-        self.registry.register(PreviewArrangementTool(self, music_manager, rtttl_library))
+        self._compose_music_tool = ComposeMusicTool(
+            self, music_manager, rtttl_library, preset_store
+        )
+        self.registry.register(self._compose_music_tool)
+        self.registry.register(
+            PreviewArrangementTool(self, music_manager, rtttl_library, preset_store)
+        )
+        self.registry.register(
+            SaveArrangementPresetTool(self, self._compose_music_tool, preset_store)
+        )
         self.registry.register(StopMusicTool(self, music_manager))
         self.registry.register(SetVibePresetTool(self, music_manager))
         self.registry.register(GetMusicStateTool(self, music_manager))

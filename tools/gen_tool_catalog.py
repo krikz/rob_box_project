@@ -578,6 +578,7 @@ SKILL_TOOLS: dict[str, tuple[str, ...]] = {
     "composer": (
         "compose_music",
         "preview_arrangement",
+        "save_arrangement_preset",
         "execute_music_code",
         "set_vibe_preset",
         "search_samples",
