@@ -30,8 +30,10 @@
       "voice": "anton",
       "text": "Робот, ты меня узнал по голосу, я тот же, кто заходил недавно?",
       "patterns": [
-        "identity question hint set: kind=single"
+        "identity question hint set: kind=single",
+        "identity question by robot: kind=single"
       ],
+      "_why_2888": "issue #2888: второй паттерн — вопрос «Саша, это ты?» задаёт сам dialogue_node (механизм #2828: вопрос заменяет ответ хода), а не LLM «если уместно». Run 35903232434: hint был, а вопроса не было ни разу из двух.",
       "_why": "Вторая реплика A ПОСЛЕ регистрации. node_params форсировал name_confidence_band_high=0.99 — score синтетики (0.87-0.96) заведомо ниже планки, конкурента с другим именем в базе ещё нет (Борис не зарегистрирован) → classify_name_confidence обязана вернуть NAME_TENTATIVE_SINGLE, и dialogue_node обязан задать вопрос-гипотезу «Саша, это ты?» в ЭТОМ ходе. Проверка вопроса — в СЛЕДУЮЩЕМ шаге (n703, when_robot_asked читает РЕЧЬ ЭТОГО шага). patterns: лог-маркер «identity question hint set: kind=single» — подсказка-гипотеза реально выставлена dialogue_node, а не LLM сама решила спросить (прогон 35857257981)."
     },
     {
@@ -73,7 +75,8 @@
       "text": "Робот, ты ещё здесь, помнишь меня?",
       "sleep_before_sec": 150,
       "patterns": [
-        "identity question hint set: kind=single"
+        "identity question hint set: kind=single",
+        "identity question by robot: kind=single"
       ],
       "_why": "issue #2809: пауза 150s > identity_question_session_gap_sec=120s (dialogue_node.yaml; было 30s, поднято после прогона 35857257981) — сессия считается прервавшейся, tentative-цикл вправе начаться заново. Борис ещё не зарегистрирован (регистрируется ниже, n708) — конкурента с другим именем всё ещё нет, значит снова NAME_TENTATIVE_SINGLE и снова вопрос-гипотеза «Саша, это ты?» в ЭТОМ ходе (patterns: hint set). Проверка вопроса — в n706 ниже."
     },

@@ -91,6 +91,10 @@ def node():
     n._speaker_register_pub = MagicMock()
     n._identity_confirmations = {}
     n._pending_identity_hint = None
+    # Issue #2888 -- _apply_speaker_identity зовётся внутри хода: вопрос о
+    # личности придерживается до выдачи ответа хода (механизм #2828).
+    n._task_lock = threading.Lock()
+    n._run_task = MagicMock()
     # Прод-значения из config/dialogue_node.yaml.
     n._identity_question_session_gap_sec = 120.0
     n._identity_answer_window_sec = 180.0
@@ -206,8 +210,10 @@ class TestSingleHypothesis:
         }
 
         hint_lines = node._pending_identity_hint_lines()
-        assert any("Denchik" in line for line in hint_lines)
-        assert any("name_hypothesis" in line for line in hint_lines)
+        # Issue #2888 -- имя-гипотеза в LLM больше не идёт: вопрос с именем
+        # задаёт робот сам (см. test_issue_2888_*).
+        assert hint_lines
+        assert not any("Denchik" in line for line in hint_lines)
         # Одноразовая: второй вызов подряд (как если бы система собрала
         # system_context дважды по ошибке) ничего не возвращает.
         assert node._pending_identity_hint_lines() == []
