@@ -242,6 +242,99 @@ class TestAcceptanceMirrorsLiveLog:
         assert ensure_dj_music_response(spoken, tools) == spoken
 
 
+# Issue #2857 — speak_text already voiced a real line this turn; the
+# fallback must never stomp it, even though the post-strip ``spoken``
+# field looks empty/degenerate (the LLM's cycle-end contract).
+class TestSpeakTextAlreadySpoke:
+    """Live 23.09.2026 incident: speak_text voiced 'Йоу, народ,
+    гангста-драйв качает!', but the helper still overwrote it with
+    'Готово, играю.' because it only looked at ``spoken``, not whether
+    speak_text ran this turn."""
+
+    def test_speak_text_with_empty_spoken_and_music_tools(self) -> None:
+        result = ensure_dj_music_response(
+            "", ["speak_text", "compose_music", "set_dj_mode"],
+        )
+        assert result == ""
+
+    def test_speak_text_with_done_marker_and_music_tools(self) -> None:
+        result = ensure_dj_music_response(
+            "done", ["speak_text", "execute_music_code"],
+        )
+        assert result == "done"
+
+    def test_speak_text_with_degenerate_marker_and_dj_auto(self) -> None:
+        # Even on a DJ auto-transition (where the fallback would
+        # otherwise try to build a track announcement), speak_text
+        # having run wins — nothing to add.
+        result = ensure_dj_music_response(
+            "готово", ["speak_text", "compose_music"],
+            is_dj_auto=True, track_name="Дюна",
+        )
+        assert result == "готово"
+
+
+# Issue #2857 — on a DJ auto-transition, replace the dull generic
+# phrase with a short track-specific line, or stay silent.
+class TestDjAutoTrackAnnouncement:
+    """Acceptance criteria from issue #2857: DJ-переход без реплики →
+    короткая фраза про трек, а не «Готово, играю.»; без данных —
+    тишина; юзер-реквест сохраняет старую фразу."""
+
+    def test_dj_auto_with_track_name_mentions_track(self) -> None:
+        result = ensure_dj_music_response(
+            "", ["compose_music", "set_dj_mode"],
+            is_dj_auto=True, track_name="Гангста-драйв",
+        )
+        assert "Гангста-драйв" in result
+        assert result != _DJ_FALLBACK_PHRASE
+
+    def test_dj_auto_with_track_name_and_persona(self) -> None:
+        result = ensure_dj_music_response(
+            "done", ["compose_music"],
+            is_dj_auto=True, track_name="Дюна", persona="ДиДжей Роббокс",
+        )
+        assert result == "ДиДжей Роббокс: дальше — Дюна!"
+
+    def test_dj_auto_falls_back_to_theme_without_track_name(self) -> None:
+        result = ensure_dj_music_response(
+            "", ["compose_music"], is_dj_auto=True, theme="ретро-вечеринка",
+        )
+        assert "ретро-вечеринка" in result
+        assert result != _DJ_FALLBACK_PHRASE
+
+    def test_dj_auto_without_any_info_stays_silent(self) -> None:
+        result = ensure_dj_music_response(
+            "", ["compose_music"], is_dj_auto=True,
+        )
+        assert result == ""
+        assert result != _DJ_FALLBACK_PHRASE
+
+    def test_dj_auto_without_info_and_done_marker_stays_silent(self) -> None:
+        result = ensure_dj_music_response(
+            "done", ["set_dj_mode", "lookup_melody"], is_dj_auto=True,
+        )
+        assert result == ""
+
+    def test_direct_user_request_keeps_generic_fallback_phrase(self) -> None:
+        # is_dj_auto=False (default) — the user asked directly and got
+        # no reply text; the generic confirmation is still correct.
+        result = ensure_dj_music_response(
+            "", ["compose_music", "set_dj_mode"], is_dj_auto=False,
+        )
+        assert result == _DJ_FALLBACK_PHRASE
+
+    def test_direct_user_request_with_track_name_still_uses_phrase(
+        self,
+    ) -> None:
+        # Track info being available doesn't matter off the DJ-auto
+        # path — a direct request always gets the generic phrase.
+        result = ensure_dj_music_response(
+            "", ["compose_music"], is_dj_auto=False, track_name="Дюна",
+        )
+        assert result == _DJ_FALLBACK_PHRASE
+
+
 # Defensive: types the helper must accept without crashing.
 class TestDefensiveInputs:
     """Defensive contract — non-string spoken must pass through, similar
