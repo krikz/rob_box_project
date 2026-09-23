@@ -387,3 +387,45 @@ def test_sanitize_llm_epithet_rejects_garbage():
 
 def test_sanitize_llm_epithet_rejects_taken_label():
     assert ep.sanitize_llm_epithet("Кулибин", taken=["кулибин"]) is None
+
+
+# ── Issue #2864: кличка «Незнакомец» у знакомого человека ────────────────────
+
+
+@pytest.mark.parametrize("bad", [
+    "Незнакомец",          # живой прогон: так LLM назвала представившегося Сашу
+    "Незнакомка",
+    "Неизвестный",
+    "Неопознанный",
+    "Аноним",
+    "Инкогнито",
+    "Безымянный",
+    "Гость",
+    "Гостья",
+    "Чужак",
+    "Чужестранец",
+    "Посторонний",
+    "Некто",
+    "Stranger",
+    "Кулибин-Незнакомец",  # часть составной клички
+    "Незнакомёц",      # ё вместо е не спасает
+])
+def test_sanitize_llm_epithet_rejects_stranger_meaning(bad):
+    """Кличка знакомого голоса не может означать «неизвестный человек».
+
+    Иначе на «кого запомнил?» LLM считает её отдельным человеком
+    (n211: «запомнил троих» при двух профилях в БД).
+    """
+    assert ep.sanitize_llm_epithet(bad) is None, bad
+
+
+@pytest.mark.parametrize("good", [
+    "Кулибин", "Наблюдатель", "Странник", "Собеседник", "Инженер",
+])
+def test_sanitize_llm_epithet_keeps_ordinary_labels(good):
+    assert ep.sanitize_llm_epithet(good) == good
+
+
+def test_llm_prompt_forbids_stranger_epithets():
+    prompt = ep.build_llm_prompt(["привет"], fallback="Наблюдатель")
+    assert "незнакомц" in prompt.lower()
