@@ -194,7 +194,12 @@ PY2
 # eval нужен, чтобы этот файл оставался единственным местом, где
 # перечислены имена полей; изменить список — значит поменять одну строку
 # здесь, а не грепать все места, где он продублирован).
-E2E_SCENARIO_ROW_READ='read -r idx label text voice patterns_json acceptance_json expect_raw retry_acceptance when_robot_asked required_question sleep_before_sec'
+# issue #2902 — next_when_robot_asked: when_robot_asked СЛЕДУЮЩЕГО шага. Если
+# речь проваленной попытки уже совпала с ним, робот задал вопрос, на который
+# отвечает следующий шаг, и повтор этой реплики проверял бы другое — ретрай
+# запрещается (retry_block_reason в e2e_tool_match.py). Поле ПОСЛЕДНЕЕ:
+# разделитель \x1f сохраняет позиции, прежние поля не сдвигаются.
+E2E_SCENARIO_ROW_READ='read -r idx label text voice patterns_json acceptance_json expect_raw retry_acceptance when_robot_asked required_question sleep_before_sec next_when_robot_asked'
 
 # parse_scenario_to_tsv() — читает scenario.json, пишет TSV-подобный файл
 # (на самом деле \x1f-separated, не таб — см. ниже) с одной строкой на шаг,
@@ -236,7 +241,8 @@ except Exception:
     pass
 FS = "\x1f"
 sc = json.load(open(sys.argv[1], encoding="utf-8"))
-for i, s in enumerate(sc.get("steps", [])):
+steps = sc.get("steps", [])
+for i, s in enumerate(steps):
     pats = s.get('patterns', [])
     acc = s.get('acceptance', {})
     exp = s.get('expect', 'cycle')
@@ -254,9 +260,11 @@ for i, s in enumerate(sc.get("steps", [])):
         sleep_before = float(s.get('sleep_before_sec', 0) or 0)
     except (TypeError, ValueError):
         sleep_before = 0.0
+    nxt = steps[i + 1] if i + 1 < len(steps) and isinstance(steps[i + 1], dict) else {}
+    next_asked = str(nxt.get('when_robot_asked') or '').replace(FS, ' ').replace('\n', ' ')
     fields = [str(i), s.get('label', f's{i+1}'), s.get('text', ''), s.get('voice', 'anton'),
               json.dumps(pats), json.dumps(acc, ensure_ascii=False), exp, str(retry),
-              when_asked, str(required_q), str(sleep_before)]
+              when_asked, str(required_q), str(sleep_before), next_asked]
     print(FS.join(fields))
 PY
 }

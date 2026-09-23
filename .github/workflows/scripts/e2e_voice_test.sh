@@ -2644,6 +2644,10 @@ if [ -n "$SCENARIO_FILE" ]; then
         # retry_acceptance = доп. попытки при FAIL patterns/acceptance.
         # Нужно для dj01: LLM недетерминирован — если renardo не запустился
         # (execute_music_code не вызван), повторяем команду (e2e run 32595628905).
+        # issue #2902: повтора НЕТ, если проваленная попытка изменила
+        # состояние робота (регистрация принята/склеена, задан вопрос о
+        # личности, речь совпала с when_robot_asked следующего шага) — итог
+        # «FAIL retry_blocked_state_changed», см. retry_block_reason().
         attempt_n=0
         step_ok=0
         cycle_failed=0
@@ -2674,6 +2678,8 @@ if [ -n "$SCENARIO_FILE" ]; then
         # issue #2846 — причины провала acceptance на КАЖДОЙ попытке, чтобы
         # итоговая строка шага говорила, чем закончились прежние попытки.
         acc_fail_history=""
+        # issue #2902 — почему ретрай запрещён (пусто — не запрещался).
+        retry_blocked=""
         while :; do
             last_fail_what=""
             STEP_BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -2778,6 +2784,28 @@ for p in json.load(sys.stdin):
             if [ "$attempt_n" -ge "$retry_acceptance" ]; then
                 break
             fi
+            # issue #2902 — ретрай шага, который ИЗМЕНИЛ состояние робота,
+            # проверяет уже другое (акт 2c n722, run 35912751803: попытка 1
+            # зарегистрировала Бориса и задала переспрос, попытка 2 та же
+            # реплика ушла ОТВЕТОМ на переспрос). Откатить регистрацию/вопрос
+            # харнессу нечем (speakers.db общая с живыми людьми, ожидание
+            # ответа — в памяти dialogue_node), поэтому такой ретрай
+            # запрещается по уликам в логе ЭТОЙ попытки: см.
+            # retry_block_reason() в e2e_tool_match.py. Сбой самого разбора —
+            # тоже запрет: «не доказано, что безопасно» не равно «безопасно».
+            _attempt_logs="$(${ROBOT_SSH} "docker logs voice-assistant --since '${STEP_BEFORE}' 2>&1" 2>/dev/null || echo '')"
+            if ! retry_blocked="$(NEXT_WRA="${next_when_robot_asked:-}" \
+                PYTHONPATH="$SCRIPT_DIR_E2E${PYTHONPATH:+:$PYTHONPATH}" python3 -c '
+import os, sys
+from e2e_tool_match import retry_block_reason
+sys.stdout.write(retry_block_reason(sys.stdin.read(), os.environ.get("NEXT_WRA", "")))
+' <<< "$_attempt_logs")"; then
+                retry_blocked="retry_block_reason() failed — state change not ruled out"
+            fi
+            if [ -n "$retry_blocked" ]; then
+                log "STEP ${label}: ⛔ ретрай НЕ делаю — попытка $((attempt_n + 1)) изменила состояние робота: ${retry_blocked}. Повтор той же реплики проверял бы другое (issue #2902)."
+                break
+            fi
             attempt_n=$((attempt_n + 1))
             log "STEP ${label}: ❌ проверка не прошла — retry ${attempt_n}/${retry_acceptance}"
             sleep "$E2E_RETRY_PAUSE"
@@ -2844,6 +2872,11 @@ sys.stdout.write(robot_speech(sys.stdin.read()))
                 log "STEP ${label}: почти наверняка паттерн шага ловит ОДНОРАЗОВОЕ событие (напр. «[backlog] flushed to LLM»), которое на повторе не повторяется. Шаг как написан НЕ проверяем ретраем — это дефект СЦЕНАРИЯ, а не робота: либо убери retry_acceptance, либо перенеси одноразовый паттерн в отдельный шаг без ретрая."
                 log "STEP ${label}: итог — ❌ FAIL, провалилось на последней попытке: ${_where}"
                 emit_step "${label} FAIL retry_split_evidence"
+            elif [ -n "$retry_blocked" ]; then
+                # issue #2902 — одна строка итога, как у #2855: провал
+                # попытки 1 и причина, по которой повтора не было.
+                log "STEP ${label}: итог — ❌ FAIL на попытке $((attempt_n + 1))/$((retry_acceptance + 1)) — ${_where}; ретрай запрещён: ${retry_blocked}"
+                emit_step "${label} FAIL retry_blocked_state_changed"
             else
                 log "STEP ${label}: итог — ❌ FAIL, проверка не прошла после retry — ${_where}"
                 emit_step "${label} FAIL"

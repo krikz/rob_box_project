@@ -192,6 +192,13 @@ LOG_ACCEPTED = TOOLS_CATALOG + TOOL_CALLED + ACCEPTED + VOICE_ANSWER
 LOG_NO_OUTCOME = TOOLS_CATALOG + TOOL_CALLED + VOICE_ANSWER
 # Попытка 1 прогона 35875477264: голос ДО тула (discovery #2406 FAIL).
 LOG_VOICE_BEFORE_TOOL = TOOLS_CATALOG + VOICE_ANSWER + TOOL_CALLED + ACCEPTED
+# Та же попытка 1, но с исходом регистрации, как в самом прогоне
+# 35875477264 (speaker_id_node отклонял КАЖДУЮ регистрацию). Для
+# scenario-цикла это важно: после ПРИНЯТОЙ регистрации ретрай запрещён
+# (issue #2902 — повтор проверял бы повторную регистрацию, а не первую).
+LOG_VOICE_BEFORE_TOOL_REJECTED = (
+    TOOLS_CATALOG + VOICE_ANSWER + TOOL_CALLED + REJECT_NO_CONTEXT
+)
 
 ACC_N201 = {
     "expected_tool_calls": ["register_speaker"],
@@ -466,7 +473,7 @@ class TestScenarioLoopRetryVerdict:
     def test_issue_2846_run_35875477264_is_fail(self, tmp_path):
         """Попытка 1: голос ДО тула (#2406). Попытка 2: тул ДО голоса, но
         регистрация отклонена. На develop: E2E_STEP … OK."""
-        out = run_scenario(tmp_path, [LOG_VOICE_BEFORE_TOOL, LOG_REJECTED])
+        out = run_scenario(tmp_path, [LOG_VOICE_BEFORE_TOOL_REJECTED, LOG_REJECTED])
         assert step_markers(out) == ["E2E_STEP n201_sasha_intro_long FAIL"], out
         assert "PASS=0" in out
         acc_lines = acceptance_lines(out)
@@ -481,7 +488,7 @@ class TestScenarioLoopRetryVerdict:
     def test_ok_after_retry_says_so(self, tmp_path):
         """Ретрай штатный (04d4ba2f6, LLM недетерминирован) — последняя
         попытка решает. Но OK после проваленной попытки обязан это сказать."""
-        out = run_scenario(tmp_path, [LOG_VOICE_BEFORE_TOOL, LOG_ACCEPTED])
+        out = run_scenario(tmp_path, [LOG_VOICE_BEFORE_TOOL_REJECTED, LOG_ACCEPTED])
         assert step_markers(out) == [
             "E2E_STEP n201_sasha_intro_long OK after_retry=1"
         ], out

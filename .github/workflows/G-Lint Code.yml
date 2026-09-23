@@ -247,6 +247,17 @@ jobs:
             -o addopts="" \
             -p no:cacheprovider
 
+      # Issue #2902: речь робота = только озвученное (spoken= хода, заменённого
+      # переспросом #2828, не речь) и запрет ретрая шага, изменившего
+      # состояние робота. Фикстуры — лог акта 2c n722 (run 35912751803);
+      # исполняются НАСТОЯЩИЕ check_acceptance и scenario-цикл. bash + python3.
+      - name: E2E harness speech channel + state-changing retry (issue #2902)
+        run: |
+          python -m pytest tests/unit/e2e_scripts/test_issue_2902_speech_and_retry.py \
+            -v \
+            -o addopts="" \
+            -p no:cacheprovider
+
       # Issue #2865: проверка #2793 (memory_search по voice_facts) в акте 2
       # марафона не должна снова стать тавтологией — вопрос только после
       # сброса сессии, ключ не из вопроса, паттерн «поиск вернул хиты»
