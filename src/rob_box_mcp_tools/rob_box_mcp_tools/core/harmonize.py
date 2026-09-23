@@ -31,7 +31,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from statistics import median
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -177,6 +177,13 @@ class Harmonization:
     counter: Tuple[Tuple[Optional[int], float], ...]
     drums: str
     hats: str
+    #: ADR-0132: что автоматика решила при раскладке (шаг баса и пэда,
+    #: число подходов баса, потолок пэда от темы, стиль ударных). Только
+    #: запись для партитуры: в сравнении объектов не участвует и на ноты
+    #: не влияет.
+    decisions: Dict[str, object] = field(
+        default_factory=dict, compare=False, hash=False
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -619,7 +626,16 @@ def _approach_note(
 def _build_bass(
     chords: Sequence[ChordWindow], dense: bool, scale_pcs: frozenset
 ) -> Tuple[Tuple[Optional[int], float], ...]:
-    """Бас: тоны аккорда по долям, с подходом к следующему аккорду.
+    """Бас (см. :func:`_bass_line`) — без счёта подходов."""
+    return _bass_line(chords, dense, scale_pcs)[0]
+
+
+def _bass_line(
+    chords: Sequence[ChordWindow], dense: bool, scale_pcs: frozenset
+) -> Tuple[Tuple[Tuple[Optional[int], float], ...], int]:
+    """Бас и число поставленных нот-подходов (ADR-0132: видно в партитуре).
+
+    Бас: тоны аккорда по долям, с подходом к следующему аккорду.
 
     ``dense`` (плотная тема, атака почти на каждой доле — марш, чиптюн)
     даёт бас четвертями: ровный шаг держит такую тему лучше, чем половины,
@@ -644,6 +660,7 @@ def _build_bass(
     step = 1.0 if dense else 2.0
     shape = _BASS_SHAPE_DENSE if dense else _BASS_SHAPE_SPARSE
     out: List[Tuple[Optional[int], float]] = []
+    approaches = 0
     for index, chord in enumerate(chords):
         following = chords[(index + 1) % len(chords)]
         changes = following.pitch_classes[0] != chord.pitch_classes[0]
@@ -665,7 +682,8 @@ def _build_bass(
                 continue
             out.append((note, dur - _APPROACH_BEATS))
             out.append((approach, _APPROACH_BEATS))
-    return tuple(out)
+            approaches += 1
+    return tuple(out), approaches
 
 
 def _scale_pitch_classes(root: str, scale: str) -> frozenset:
@@ -954,6 +972,7 @@ def harmonize(
     onsets = sum(1 for _onset, midi, _dur in timed if midi is not None)
     density = onsets / total if total > 0 else 0.0
     dense = density >= DENSE_ONSETS_PER_BEAT
+    bass, approaches = _bass_line(chords, dense, _scale_pitch_classes(root, scale))
 
     return Harmonization(
         bpm=int(bpm),
@@ -964,9 +983,32 @@ def harmonize(
         dense=dense,
         chords=chords,
         lead=tuple((midi, float(dur)) for midi, dur in notes),
-        bass=_build_bass(chords, dense, _scale_pitch_classes(root, scale)),
+        bass=bass,
         pad=_build_pad(chords, dense),
         counter=_build_counter(timed, chords),
         drums=_build_drums(hist, dense, style),
         hats=_build_hats(timed, style),
+        decisions=_harmony_decisions(timed, dense, approaches, style),
     )
+
+
+def _harmony_decisions(
+    timed: Sequence[Tuple[float, Optional[int], float]],
+    dense: bool,
+    approaches: int,
+    style: str,
+) -> Dict[str, object]:
+    """Запись авто-решений раскладки (ADR-0132) — только для партитуры.
+
+    Значения пересчитываются теми же правилами, что строили партии, и на
+    сами партии не влияют.
+    """
+    step = 1.0 if dense else 2.0
+    return {
+        "dense_threshold": DENSE_ONSETS_PER_BEAT,
+        "bass_step": step,
+        "bass_approaches": approaches,
+        "pad_step": step,
+        "pad_theme_ceiling": _pad_ceiling(timed),
+        "drum_style": style,
+    }

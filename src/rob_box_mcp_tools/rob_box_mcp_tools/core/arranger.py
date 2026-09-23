@@ -312,6 +312,10 @@ class CompositionSpec:
     #: правки нот или длительностей. Это материал (ощущение времени), а не
     #: форма, поэтому поле, а не встроенная логика формы.
     swing: float = 0.0
+    #: ADR-0132: авто-решения сборки выведенной аранжировки (второй голос,
+    #: удвоение темы, сдвиги синтов) — только запись для партитуры,
+    #: :func:`render` её не читает.
+    decisions: Dict[str, object] = field(default_factory=dict, compare=False)
 
 
 def _fmt(value: float) -> str:
@@ -1650,6 +1654,15 @@ def spec_from_flat(
                 "Для выведенной аранжировки нужен lead_synth — тема "
                 "должна чем-то играть."
             )
+        synths = {
+            "lead": lead_synth,
+            "bass": bass_synth,
+            "pad": pad_synth,
+            # См. _resolve_counter_synth_default: по умолчанию — тембр
+            # темы (унисон в терцию), явное 'none'/'off'/'null' —
+            # отключение без фолбэка на lead_synth.
+            "counter": _resolve_counter_synth_default(counter_synth, lead_synth),
+        }
         _add_derived_layers(
             layers,
             harmony,
@@ -1657,12 +1670,7 @@ def spec_from_flat(
             lead_synth=lead_synth,
             bass_synth=bass_synth,
             pad_synth=pad_synth,
-            # См. _resolve_counter_synth_default: по умолчанию — тембр
-            # темы (унисон в терцию), явное 'none'/'off'/'null' —
-            # отключение без фолбэка на lead_synth.
-            counter_synth=_resolve_counter_synth_default(
-                counter_synth, lead_synth
-            ),
+            counter_synth=synths["counter"],
             drums_sample=drums_sample,
             hats_sample=hats_sample,
         )
@@ -1680,6 +1688,9 @@ def spec_from_flat(
             theme_bars=int(harmony.bars),
             repeat=bool(repeat),
             swing=swing,
+            decisions=arrangement_decisions(
+                harmony, theme_octaves=bool(theme_octaves), synths=synths
+            ),
         )
 
     # 🔴 FIX (live 31.08): здесь стояло sample=3 намертво. В библиотеке
@@ -1721,6 +1732,51 @@ def spec_from_flat(
         repeat=bool(repeat),
         swing=swing,
     )
+
+
+def _counter_decision(dense: bool, counter_synth: Optional[str], part) -> str:
+    """Почему второй голос звучит или нет (зеркало :func:`_add_derived_layers`)."""
+    if not counter_synth:
+        return "off (counter_synth выключен)"
+    if not dense:
+        return "off (редкая тема)"
+    if not part:
+        return "off (нечего играть)"
+    return "on"
+
+
+def _octaves_decision(theme_octaves: bool, dense: bool, notes) -> str:
+    """Почему тема удвоена октавой или нет (зеркало :func:`_should_octave_double`)."""
+    if not theme_octaves:
+        return "off (theme_octaves=False)"
+    if not dense:
+        return "off (редкая тема)"
+    if not _fits_octave_double(notes):
+        return "off (тема ниже C4)"
+    return "on"
+
+
+def arrangement_decisions(
+    harmony, *, theme_octaves: bool, synths: Dict[str, Optional[str]]
+) -> Dict[str, object]:
+    """Авто-решения сборки выведенной аранжировки (ADR-0132, для партитуры).
+
+    Повторяют условия :func:`_add_derived_layers` / :func:`_should_octave_double`
+    словами, не участвуя в сборке: код рендера от них не зависит.
+    ``synths`` — итоговые синты ролей (counter — уже после фолбэка).
+    """
+    dense = bool(getattr(harmony, "dense", True))
+    lead_notes = [note for note, _dur in harmony.lead]
+    return {
+        "counter": _counter_decision(dense, synths.get("counter"), harmony.counter),
+        "theme_octaves": _octaves_decision(theme_octaves, dense, lead_notes),
+        "synth_shift": {
+            role: SYNTH_SEMITONE_SHIFT.get(synth, 0)
+            for role, synth in synths.items()
+            if synth
+        },
+        "synths": dict(synths),
+    }
 
 
 def _add_loop_layer(layers: List[Layer], groove_loop: Optional[str]) -> None:
