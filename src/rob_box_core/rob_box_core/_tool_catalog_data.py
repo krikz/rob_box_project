@@ -96,13 +96,27 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                        'form и bpm как '
                                                                        'оверрайд '
                                                                        'темпа). '
-                                                                       'bpm/root/scale/lead_notes/lead_dur/bass_notes/pad_notes/progression/drums/hats/perc '
+                                                                       'lead_notes/lead_dur/bass_notes/pad_notes/progression/drums/hats/perc '
                                                                        'указывать не '
                                                                        'нужно и не '
                                                                        'импровизируй '
                                                                        'ноты по памяти '
                                                                        '— они будут '
-                                                                       'проигнорированы.'},
+                                                                       'проигнорированы. '
+                                                                       'root/scale при '
+                                                                       'name= '
+                                                                       'работают: '
+                                                                       'аккомпанемент '
+                                                                       'перегармонизируется '
+                                                                       'в заданной '
+                                                                       'тональности, '
+                                                                       'тема играется '
+                                                                       'как есть; без '
+                                                                       'них '
+                                                                       'тональность '
+                                                                       'определится по '
+                                                                       'нотам (видно в '
+                                                                       'партитуре).'},
                                             'variants': {   'type': 'array',
                                                             'description': 'Дополнительные '
                                                                            'варианты '
@@ -128,7 +142,9 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                                         'написание/название '
                                                                                         'мелодии.'}},
                                             'bpm': {   'type': 'number',
-                                                       'description': 'Темп, 60-180. '
+                                                       'description': 'Темп, 60-180 '
+                                                                      '(вне диапазона '
+                                                                      '— ошибка). '
                                                                       'Медленное и '
                                                                       'лиричное 70-95, '
                                                                       'грув 100-120, '
@@ -140,12 +156,16 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                             'root': {   'type': 'string',
                                                         'description': 'Тоника: C, D, '
                                                                        'E, F, G, A, B '
-                                                                       '(можно с #). '
-                                                                       'Не нужна при '
-                                                                       'name: '
+                                                                       '(можно с # или '
+                                                                       'b). При name= '
+                                                                       'необязательна: '
+                                                                       'без неё '
                                                                        'тональность '
                                                                        'определится по '
-                                                                       'нотам.',
+                                                                       'нотам, с ней '
+                                                                       'аккомпанемент '
+                                                                       'перестроится в '
+                                                                       'заданной.',
                                                         'enum': [   'C',
                                                                     'C#',
                                                                     'D',
@@ -166,11 +186,26 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                         'lydian, '
                                                                         'phrygian, '
                                                                         'majorPentatonic, '
+                                                                        'minorPentatonic, '
                                                                         'harmonicMinor. '
-                                                                        'Не нужен при '
-                                                                        'name: лад '
+                                                                        'При name= '
+                                                                        'необязателен: '
+                                                                        'без него лад '
                                                                         'определится '
-                                                                        'по нотам.'},
+                                                                        'по нотам, с '
+                                                                        'ним '
+                                                                        'аккомпанемент '
+                                                                        'перестроится '
+                                                                        'в заданном.',
+                                                         'enum': [   'minor',
+                                                                     'major',
+                                                                     'dorian',
+                                                                     'phrygian',
+                                                                     'lydian',
+                                                                     'mixolydian',
+                                                                     'harmonicMinor',
+                                                                     'majorPentatonic',
+                                                                     'minorPentatonic']},
                                             'form': {   'type': 'string',
                                                         'description': 'Форма '
                                                                        'композиции. '
@@ -185,7 +220,10 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                        'ambient — без '
                                                                        'ударных, для '
                                                                        'спокойного и '
-                                                                       'лиричного.',
+                                                                       'лиричного. '
+                                                                       'Другое '
+                                                                       'значение — '
+                                                                       'ошибка.',
                                                         'enum': [   'ambient',
                                                                     'arc',
                                                                     'buildup',
@@ -1157,7 +1195,9 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                             'swing': {   'type': 'number',
                                                          'description': 'Свинг '
                                                                         'восьмых, '
-                                                                        '0-0.3. 0 (по '
+                                                                        '0-0.3 (вне — '
+                                                                        'ошибка). 0 '
+                                                                        '(по '
                                                                         'умолчанию) — '
                                                                         'ровная сетка, '
                                                                         'подходит '

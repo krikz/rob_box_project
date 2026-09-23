@@ -41,7 +41,13 @@ from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 from ..core.arranger import (
     FORMS,
     VALID_ROOTS,
+    SCALE_INTERVALS,
     ArrangementError,
+    check_bpm,
+    check_form,
+    check_root,
+    check_scale,
+    check_swing,
     form_duration_seconds,
     form_summary,
     normalize_synth,
@@ -2254,10 +2260,13 @@ class ComposeMusicTool(MCPTool):
                     "выводит из них аккомпанемент. Задай только тембры "
                     "lead_synth + bass_synth + pad_synth (по желанию "
                     "drums_sample/hats_sample, form и bpm как оверрайд "
-                    "темпа). bpm/root/scale/lead_notes/lead_dur/bass_notes/"
-                    "pad_notes/progression/drums/hats/perc указывать не "
-                    "нужно и не импровизируй ноты по памяти — они будут "
-                    "проигнорированы."
+                    "темпа). lead_notes/lead_dur/bass_notes/pad_notes/"
+                    "progression/drums/hats/perc указывать не нужно и не "
+                    "импровизируй ноты по памяти — они будут проигнорированы. "
+                    "root/scale при name= работают: аккомпанемент "
+                    "перегармонизируется в заданной тональности, тема "
+                    "играется как есть; без них тональность определится "
+                    "по нотам (видно в партитуре)."
                 ),
                 required=False,
             ),
@@ -2280,16 +2289,17 @@ class ComposeMusicTool(MCPTool):
             MCPToolParameter(
                 name="bpm",
                 type="number",
-                description="Темп, 60-180. Медленное и лиричное 70-95, "
-                "грув 100-120, танцевальное 124-140. Не нужен при name: "
-                "темп возьмётся из мелодии.",
+                description="Темп, 60-180 (вне диапазона — ошибка). "
+                "Медленное и лиричное 70-95, грув 100-120, танцевальное "
+                "124-140. Не нужен при name: темп возьмётся из мелодии.",
                 required=False,
             ),
             MCPToolParameter(
                 name="root",
                 type="string",
-                description="Тоника: C, D, E, F, G, A, B (можно с #). "
-                "Не нужна при name: тональность определится по нотам.",
+                description="Тоника: C, D, E, F, G, A, B (можно с # или b). "
+                "При name= необязательна: без неё тональность определится "
+                "по нотам, с ней аккомпанемент перестроится в заданной.",
                 required=False,
                 enum=list(VALID_ROOTS),
                 enum_strict=False,
@@ -2298,9 +2308,12 @@ class ComposeMusicTool(MCPTool):
                 name="scale",
                 type="string",
                 description="Лад: minor, major, dorian, mixolydian, lydian, "
-                "phrygian, majorPentatonic, harmonicMinor. Не нужен при "
-                "name: лад определится по нотам.",
+                "phrygian, majorPentatonic, minorPentatonic, harmonicMinor. "
+                "При name= необязателен: без него лад определится по нотам, "
+                "с ним аккомпанемент перестроится в заданном.",
                 required=False,
+                enum=list(SCALE_INTERVALS),
+                enum_strict=False,
             ),
             MCPToolParameter(
                 name="form",
@@ -2310,7 +2323,8 @@ class ComposeMusicTool(MCPTool):
                     "arc — универсальная дуга; "
                     "verse_chorus — куплет-припев; "
                     "buildup — клубная с дропом; "
-                    "ambient — без ударных, для спокойного и лиричного."
+                    "ambient — без ударных, для спокойного и лиричного. "
+                    "Другое значение — ошибка."
                 ),
                 required=False,
                 enum=sorted(FORMS),
@@ -2579,7 +2593,7 @@ class ComposeMusicTool(MCPTool):
             MCPToolParameter(
                 name="swing",
                 type="number",
-                description="Свинг восьмых, 0-0.3. 0 (по умолчанию) — ровная "
+                description="Свинг восьмых, 0-0.3 (вне — ошибка). 0 (по умолчанию) — ровная "
                 "сетка, подходит большинству жанров. Ставь 0.1-0.2 для "
                 "джаза, блюза, свинга, шафла, фанка — на ровных восьмых "
                 "они не звучат как жанр независимо от инструментов.",
@@ -2735,8 +2749,11 @@ class ComposeMusicTool(MCPTool):
                 None, None, None, None, None, None, None, {},
             )
         try:
+            # ADR-0132 PR-2: явные root/scale перегармонизируют тему
+            # (раньше при name= молча игнорировались).
             params = melody_to_compose_params(
-                rtttl_to_melody(rec["rtttl"]), drum_style=drum_style
+                rtttl_to_melody(rec["rtttl"]), drum_style=drum_style,
+                root=root, scale=scale,
             )
         except ValueError as exc:
             return (
@@ -2748,8 +2765,8 @@ class ComposeMusicTool(MCPTool):
             )
         melody_title = str(rec.get("title") or rec.get("name") or name)
         resolved_bpm: Any = bpm if bpm is not None else params["bpm"]
-        resolved_root: Any = root if root is not None else params["root"]
-        resolved_scale: Any = scale if scale is not None else params["scale"]
+        resolved_root: Any = params["root"]
+        resolved_scale: Any = params["scale"]
         lead_midi_resolved: Optional[str] = cast(Optional[str], params["lead_midi"])
         lead_dur_resolved: Optional[str] = cast(Optional[str], params["lead_dur"])
         return (
@@ -2763,6 +2780,34 @@ class ComposeMusicTool(MCPTool):
             params.get("harmony"),
             params,
         )
+
+    @staticmethod
+    def _check_inputs(
+        form: Optional[str],
+        root: Optional[str],
+        scale: Optional[str],
+        bpm: Optional[float],
+        swing: Optional[float],
+    ) -> Tuple[Optional[MCPToolResult], Dict[str, Any]]:
+        """Проверить form/root/scale/bpm/swing до всякой работы (ADR-0132 PR-2).
+
+        Раньше неизвестная форма молча становилась arc, неверная тоника — C,
+        bpm и swing вне диапазона зажимались в ``render``: модель думала, что
+        сыграно то, что она просила. Теперь — ошибка со списком допустимых
+        значений (как у ``drum_style``). Возвращает ``(ошибка, нормализованные
+        значения)``; ``None`` у root/scale/bpm значит «не задано».
+        """
+        try:
+            values = {
+                "form": check_form(form),
+                "root": check_root(root),
+                "scale": check_scale(scale),
+                "bpm": check_bpm(bpm),
+                "swing": check_swing(swing),
+            }
+        except ArrangementError as exc:
+            return MCPToolResult(success=False, error=str(exc)), {}
+        return None, values
 
     @staticmethod
     def _apply_drum_style(
@@ -2915,6 +2960,13 @@ class ComposeMusicTool(MCPTool):
         bass_synth = normalize_synth(bass_synth)
         pad_synth = normalize_synth(pad_synth)
 
+        # ADR-0132 PR-2: неверный ввод — ошибка со списком, не тихая замена.
+        err, checked = self._check_inputs(form, root, scale, bpm, swing)
+        if err is not None:
+            return err
+        form, root, scale = checked["form"], checked["root"], checked["scale"]
+        bpm, swing = checked["bpm"], checked["swing"]
+
         # Issue #2841: жанровый каркас ударных — проверка и (без name=)
         # заполнение drums/hats, которых модель не дала.
         err, style, drums, hats = self._apply_drum_style(drum_style, name, drums, hats)
@@ -2998,7 +3050,7 @@ class ComposeMusicTool(MCPTool):
                 bpm=bpm,
                 root=root,
                 scale=scale,
-                form=form or "arc",
+                form=form,
                 drums=drums,
                 drums_sample=drums_sample,
                 hats_sample=hats_sample,
@@ -3032,7 +3084,7 @@ class ComposeMusicTool(MCPTool):
             return MCPToolResult(success=False, error=result["error"])
 
         flat = {
-            "bpm": bpm, "root": root, "scale": scale, "form": form or "arc",
+            "bpm": bpm, "root": root, "scale": scale, "form": form,
             "drums": drums, "drums_sample": drums_sample,
             "hats_sample": hats_sample, "bass_synth": bass_synth,
             "lead_synth": lead_synth, "lead_notes": lead_notes,

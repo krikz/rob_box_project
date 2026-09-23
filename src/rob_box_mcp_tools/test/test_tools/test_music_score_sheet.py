@@ -82,12 +82,16 @@ def test_heavy_brass_safety_net_is_visible_in_score(mock_node, rtttl_library):
     assert score["decisions"]["counter"].startswith("auto→off")
 
 
-def test_ignored_root_scale_with_name_is_reported(mock_node, rtttl_library):
-    """Баг ADR-0132 (чинится в PR-2): root/scale при name= не доходят до
-    аккомпанемента. PR-1 его не чинит, но партитура обязана о нём сказать."""
+def test_explicit_root_scale_with_name_reach_the_score(mock_node, rtttl_library):
+    """ADR-0132 PR-2: root/scale при name= больше не игнорируются —
+    аккомпанемент построен в заданной тональности, партитура это называет."""
     tool, _mgr = _compose_tool(mock_node, rtttl_library)
     result = tool.execute(name="tetris", root="F#", scale="major", **_ARR)
-    assert any("не применены" in w for w in result.data["score"]["warnings"])
+    score = result.data["score"]
+    assert (score["key"]["root"], score["key"]["scale"]) == ("F#", "major")
+    assert score["key"]["source"] == "задана вызовом"
+    assert score["decisions"]["key"].startswith("explicit→F# major (auto ")
+    assert not any("расходятся" in w for w in score["warnings"])
 
 
 def test_composed_track_without_name_has_score(mock_node, rtttl_library):

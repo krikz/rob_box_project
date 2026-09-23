@@ -167,15 +167,17 @@ def test_explicitly_disabled_counter_is_reported(archive):
     assert "counter" not in sheet["parts"]
 
 
-def test_external_warnings_and_ignored_key_are_reported(archive):
+def test_external_warnings_and_key_mismatch_are_reported(archive):
     params, spec, code = _build(archive["national_2"]["rtttl"])
-    spec.root, spec.scale = "D", "minor"  # как при name= + root/scale (баг PR-2)
+    # Рассинхрон spec и гармонизации (с PR-2 compose_music его не создаёт,
+    # но партитура-страховка обязана о нём сказать).
+    spec.root, spec.scale = "D", "minor"
     sheet = describe(
         spec=spec, code=code, harmony=params["harmony"],
         prep_decisions=params["decisions"], warnings=["санитайзер: X"],
     )
     assert sheet["warnings"][0] == "санитайзер: X"
-    assert any("не применены" in w for w in sheet["warnings"])
+    assert any("расходятся" in w for w in sheet["warnings"])
     assert "санитайзер: X" in sheet["text"]
 
 
