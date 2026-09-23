@@ -541,6 +541,29 @@ def test_issue_2887_prompt_asks_for_two_to_four_words_from_traits():
     assert "имя" in prompt
 
 
+def _all_dictionary_labels():
+    labels = [e for group in ep.EPITHET_LEXICON.values() for e in group]
+    return labels + list(ep.DEFAULT_POOL_NEUTRAL) + list(ep.DEFAULT_POOL_RESTLESS)
+
+
+def test_issue_2886_no_dictionary_label_means_stranger():
+    """Робот, акт 2b run 35903232434: Борис получил словарную кличку «Гость».
+
+    Фильтр #2864 закрывал только LLM-слой, а словарный пул сам выдавал
+    знакомому человеку метку «незнакомца». Ни одна словарная кличка не
+    должна проходить через ``is_stranger_epithet``.
+    """
+    bad = [e for e in _all_dictionary_labels() if ep.is_stranger_epithet(e)]
+    assert not bad, f"словарные клички-«незнакомцы»: {bad}"
+
+
+@pytest.mark.parametrize("label", ["Гость", "Прохожий", "Визитёр", "Пришелец"])
+def test_issue_2886_visitor_words_are_stranger_labels(label):
+    """Прохожий, визитёр, пришелец — тот же смысл «чужой человек», что и гость."""
+    assert ep.is_stranger_epithet(label) is True
+    assert label not in _all_dictionary_labels()
+
+
 def test_issue_2887_dictionary_layer_stays_single_word():
     """Словарный фолбек — одно слово (обоснование в docstring модуля).
 
