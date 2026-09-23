@@ -16,12 +16,16 @@ speaker_id_node:
     # совпадать с speaker_embeddings.IDENTIFY_THRESHOLD /
     # REGISTER_MATCH_THRESHOLD (тест test_yaml_param_consistency.py).
     identify_threshold: 0.72
-    # Issue #2809 -- отдельный, более строгий порог: НАЗЫВАТЬ имя
-    # спикера вслух (LLM) можно только выше него; is_known/эпитет
-    # работают уже от identify_threshold. См. speaker_id_node.py
-    # (declare_parameter + _publish_result) и
+    # Issue #2809 -- называть имя вслух (LLM) можно уверенно
+    # (band_high) ИЛИ в полосе неопределённости при явном разрыве до
+    # конкурента с другим именем (min_gap) -- плоский порог 0.85
+    # (первая версия фикса) резал живых людей наравне с импостором,
+    # откачен по ревью координатора. is_known/эпитет работают уже от
+    # identify_threshold. См. speaker_id_node.py (is_name_confident,
+    # _gap_to_other_name, _publish_result) и
     # dialogue_node._apply_speaker_identity.
-    confident_identify_threshold: 0.85
+    name_confidence_band_high: 0.80
+    name_confidence_min_gap: 0.15
     register_match_threshold: 0.75
     # Issue #2747 — растущая галерея БЕЗ адаптивного порога. Первая версия
     # этой правки смягчала identify_threshold по размеру галереи — ОТКАЧЕНО

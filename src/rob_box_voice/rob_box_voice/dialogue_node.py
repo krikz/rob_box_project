@@ -3049,27 +3049,36 @@ class DialogueNode(Node):
                 )
             else:
                 # Issue #2809 -- speaker_id_node уже подавил имя само
-                # (payload {"is_known": True, "name": None, ...}) для
-                # low-confidence match (0.72 <= confidence <
-                # confident_identify_threshold): match похож на кого-то из
-                # галереи, но недостаточно, чтобы называть человека этим
-                # именем вслух -- между этими порогами match регулярно
-                # указывает на ДРУГОГО реального диктора (run 35788126541,
-                # n210). is_known=True тут остаётся полезным сигналом для
-                # эпитета/счётчика реплик (уже учтён выше через
-                # _publish_speaker_observation), но НЕ должен доехать до
-                # LLM ни как [Spkr:...] в user_input, ни как
-                # <user_profile><name> в system_context (последнее
-                # получает пустой sp["name"] и само уходит в ветку unknown
-                # -- см. _build_dynamic_system_context). Явный тег без
-                # имени -- чтобы это состояние было видно в логах/тестах, а
-                # не тонуло в "просто ничего не добавили".
+                # (payload {"is_known": True, "name": None, ...}) --
+                # is_name_confident() решила "зона сомнения": либо
+                # confidence ниже name_confidence_band_high и нет
+                # конкурента с другим именем при достаточном разрыве
+                # (n210, live "Дэнчик"), либо оба сразу. match похож на
+                # кого-то из галереи, но недостаточно, чтобы называть
+                # человека этим именем вслух. is_known=True тут остаётся
+                # полезным сигналом для эпитета/счётчика реплик (уже
+                # учтён выше через _publish_speaker_observation), но имя
+                # НЕ должно доехать до LLM ни как [Spkr:...] в
+                # user_input, ни как <user_profile><name> в
+                # system_context (последнее получает пустой sp["name"] и
+                # само уходит в ветку unknown -- см.
+                # _build_dynamic_system_context). Явный тег без имени --
+                # чтобы это состояние было видно в логах/тестах, а не
+                # тонуло в "просто ничего не добавили". Активный
+                # переспрос ("Дэнчик, это ты?", как у PR #2798 для
+                # register-ack voice_conflict/name_twin) сюда НЕ подключён
+                # -- у passive identify() нет ack-события, на которое
+                # реагирует _ask_identity_if_ambiguous, а раскрывать
+                # кандидата в system_context означало бы трогать
+                # privacy_note (зона PR #2817). Оставлено честно как
+                # нерешённое: тег -- гипотеза для LLM, а не гарантированный
+                # переспрос.
                 tag = "[Speaker:tentative]"
                 if tag not in user_input:
                     user_input = f"{tag} {user_input}"
                 self.get_logger().info(
-                    f"👤 [issue 2809] Speaker: tentative (low-confidence "
-                    f"match, id={sid}, conf={conf:.2f}) -- имя не озвучиваем"
+                    f"👤 [issue 2809] Speaker: tentative (band uncertain, "
+                    f"id={sid}, conf={conf:.2f}) -- имя не озвучиваем"
                 )
         else:
             if speaker_context is None:

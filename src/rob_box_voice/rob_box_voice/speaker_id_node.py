@@ -75,7 +75,7 @@ import json
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Deque, Dict, Optional, Tuple
+from typing import Deque, Dict, Optional, Sequence, Tuple
 
 import numpy as np
 import rclpy
@@ -99,6 +99,75 @@ from rob_box_voice.observability import (
 )
 
 
+def _gap_to_other_name(
+    best: SpeakerMatch, candidates: Sequence[SpeakerMatch]
+) -> Optional[float]:
+    """Issue #2809 — разрыв ``best`` до ближайшего кандидата с ДРУГИМ именем.
+
+    Два (и больше) профиля одного человека под одним именем — штатная
+    ситуация (issue #2747: живой "Дэнчик" — профили 1ae4b0ac и c9e981cb).
+    Разрыв между ними ничего не говорит о риске назвать чужого человека —
+    сравнивать нужно с ближайшим РЕАЛЬНЫМ конкурентом, чьё имя отличается.
+    ``candidates`` — топ-N от ``identify_candidates()`` (без порога,
+    отсортирован по убыванию score), обычно включает ``best`` первым
+    элементом.
+
+    Возвращает ``None``, если среди кандидатов нет ни одного с другим
+    именем (единственный человек в базе, либо все кандидаты — дубли той
+    же личности) — сравнивать не с кем.
+    """
+    best_name = (best.name or "").strip().casefold()
+    for cand in candidates:
+        if cand.speaker_id == best.speaker_id:
+            continue
+        cand_name = (cand.name or "").strip().casefold()
+        if cand_name != best_name:
+            return best.confidence - cand.confidence
+    return None
+
+
+def is_name_confident(
+    match: Optional[SpeakerMatch],
+    candidates: Sequence[SpeakerMatch],
+    *,
+    band_high: float,
+    min_gap: float,
+) -> bool:
+    """Issue #2809 — «зона сомнения + разрыв до другого человека».
+
+    Заменяет собой откаченный плоский порог confidence (0.85, PR #2818
+    первая версия) — тот резал по живым людям так же, как по чужим:
+    живой хозяин 23.09 давал 0.708-0.856 за сессию, из них только 1 из 5
+    выше 0.72 — с плоским 0.85 имя не звучало бы НИКОГДА.
+
+    ``match`` уже прошёл ``identify_threshold`` (0.72) — сюда попадают
+    только is_known=True. Решение:
+
+    * ``match.confidence >= band_high`` (по умолчанию 0.80) — похоже
+      уверенно, имя озвучиваем независимо от того, кто ещё есть в
+      галерее (синтетика "своя" 23.09: 0.836-0.961, вся выше 0.80).
+    * иначе (полоса ``[identify_threshold, band_high)``) — имя
+      озвучиваем, только если есть конкурент с ДРУГИМ именем и разрыв до
+      него (``_gap_to_other_name``) не меньше ``min_gap`` (по умолчанию
+      0.15). Если конкурента с другим именем нет (единственный человек в
+      базе, как живой "Дэнчик" 0.771/0.757) или разрыв мал (n210:
+      best='Борис' 0.780 vs second='Саша' 0.653, gap=0.127 < 0.15) —
+      имя НЕ озвучиваем: слишком похоже на то, что могли перепутать с
+      конкретным другим голосом (либо просто мало данных для уверенности
+      при единственном профиле в базе).
+
+    ``None`` вместо имени в этом случае — не "не знаю его вообще"
+    (is_known остаётся True, epithet/speaker_id доступны), а "не уверен
+    настолько, чтобы называть по имени вслух".
+    """
+    if match is None:
+        return False
+    if match.confidence >= band_high:
+        return True
+    gap = _gap_to_other_name(match, candidates)
+    return gap is not None and gap >= min_gap
+
+
 class SpeakerIdNode(Node):
     """Voice-based speaker identification node."""
 
@@ -108,20 +177,77 @@ class SpeakerIdNode(Node):
         # ── Parameters ────────────────────────────────────────────────────────
         self.declare_parameter("db_path", "/data/speakers.db")
         self.declare_parameter("identify_threshold", 0.72)
-        # Issue #2809 -- второй, более строгий порог: НАЗЫВАТЬ имя
-        # спикера (Spkr-тег в user_input, <user_profile><name> в
-        # system_context) можно только при высокой уверенности.
-        # identify_threshold=0.72 решает более дешёвую задачу
-        # "is_known да/нет" (нужна хоть какая-то персонализация --
-        # эпитет, счётчик реплик), а называть чужое имя вслух --
-        # дороже: 0.72 < confidence < 0.85 регулярно даёт match с
-        # ДРУГИМ реальным диктором (run 35788126541, n210:
-        # confidence=0.763 -> LLM назвала подошедшего незнакомца
-        # именем "Борис"). НЕ путать с identify_threshold (ADR-0127 --
-        # трогать его отдельно и осторожно): этот порог не влияет на
-        # is_known/эпитет/подсчёт реплик, только гейтит имя, которое
-        # реально долетает до LLM.
-        self.declare_parameter("confident_identify_threshold", 0.85)
+        # Issue #2809 -- называть имя спикера (Spkr-тег в user_input,
+        # <user_profile><name> в system_context) можно не при любом
+        # match >= identify_threshold=0.72 (та решает более дешёвую
+        # задачу "is_known да/нет" -- нужна хоть какая-то
+        # персонализация, эпитет, счётчик реплик).
+        #
+        # Первая версия этого фикса (плоский порог 0.85) была ОТКАЧЕНА
+        # после ревью координатора: живой хозяин 23.09 даёт 0.708-0.856
+        # за сессию, из них только 1 узнавание из 5 выше 0.72 -- с
+        # порогом 0.85 его бы не называли по имени НИКОГДА (а имя не
+        # доехало бы и до vision_face, см. ADR-0123 §6 / issue #2771).
+        # Плоский порог бьёт по живым людям и по синтетическому
+        # импостору ОДИНАКОВО, хотя это разные распределения.
+        #
+        # Вместо порога -- "зона сомнения + разрыв до другого человека":
+        #   score >= identify_threshold И
+        #     score >= name_confidence_band_high -> имя (уверенно похоже);
+        #     иначе, если есть кандидат с ДРУГИМ именем и
+        #       gap(best, тот кандидат) >= name_confidence_min_gap ->
+        #       имя (похоже, но явно не спутали с конкретным другим
+        #       голосом в базе);
+        #     иначе -> имя не публикуется (is_known=True, name=None) --
+        #       "гипотеза", не факт (см. _is_name_confident,
+        #       _gap_to_other_name ниже).
+        #
+        # Почему разрыв меряется до кандидата с ДРУГИМ именем, а не до
+        # второго по счёту: у одного человека в галерее бывает НЕСКОЛЬКО
+        # профилей под одним именем (issue #2747, живой "Дэнчик" --
+        # 1ae4b0ac + c9e981cb) -- gap между дублями той же личности не
+        # говорит о риске назвать чужого, только между best и ближайшим
+        # РЕАЛЬНЫМ конкурентом.
+        #
+        # Калибровка на живых и синтетических данных 23.09 (develop
+        # 816013f92, .hermes/research или docs/plans -- полная таблица
+        # прогнана в test_issue_2809_..._does_not_leak_name.py):
+        #   импостор n210 (synth "Гриша"~"Захар" vs галерея):
+        #     best='Борис' 0.780, second='Саша' 0.653, gap=0.127 (речь
+        #     6.03s) -> band [0.72,0.80), gap < 0.15 -> tentative (верно
+        #     -- разные люди).
+        #   импостор n204 (synth "Борис" vs галерея из одной "Саши"):
+        #     best='Саша' 0.723, конкурента нет -> band, нет
+        #     разноимённого конкурента -> tentative (верно).
+        #   синтетика "своя" (Борис/Саша против собственных профилей):
+        #     0.836-0.961, ВСЕ >= band_high=0.80 -> имя, независимо от
+        #     gap (верно).
+        #   живой хозяин "Дэнчик" (два профиля под одним именем в базе):
+        #     0.771/0.757 -- band, конкурента с ДРУГИМ именем нет (два
+        #     кандидата -- оба "Дэнчик") -> tentative; 0.856/0.812 (та
+        #     же сессия) -> имя (>= band_high). Компромисс, честно
+        #     озвученный координатором: пока в базе только один
+        #     реальный человек, 0.723 чужого и 0.757 своего по сырому
+        #     косинусу неотличимы -- нормировка по когорте (AS-norm,
+        #     VoxWatch https://arxiv.org/abs/2307.00169) решила бы это
+        #     лучше, но это отдельная задача (см. _log_identify_candidates
+        #     ниже -- туда добавлен только диагностический лог AS-norm,
+        #     не влияющий на решение).
+        #   0.43-0.72 (утро/шум) -- ниже identify_threshold, is_known
+        #     остаётся False, эта логика вообще не запускается.
+        #
+        # Источники по самим числам 0.80/0.15 (эмпирика, не строгий
+        # вывод -- дальнейшая калибровка see AS-norm выше):
+        #   resemblyzer/GE2E: свой голос обычно 0.8-0.95 космос, чужой
+        #   0.3-0.6, 0.6-0.8 -- зона неопределённости; надёжность падает
+        #   на клипах короче ~2.6s (CEUR Vol-4164 paper7,
+        #   https://ceur-ws.org/Vol-4164/paper7.pdf); сокращение тестовой
+        #   речи 3.6s->2.05s даёт +46% EER
+        #   (https://arxiv.org/abs/1810.10884). Сырой косинус resemblyzer
+        #   не калиброван (issue #42 в апстриме: разнополые голоса дали
+        #   0.88 -- https://github.com/resemble-ai/Resemblyzer/issues/42).
+        self.declare_parameter("name_confidence_band_high", 0.80)
+        self.declare_parameter("name_confidence_min_gap", 0.15)
         # Issue W5-4 + #2348 — отдельный, более строгий порог для решения
         # «слить с существующим профилем при регистрации vs завести новый»
         # внутри register_or_merge(). Калибровка по
@@ -198,8 +324,11 @@ class SpeakerIdNode(Node):
         threshold: float = self.get_parameter("identify_threshold").value
         register_threshold: float = self.get_parameter("register_match_threshold").value
         # Issue #2809 -- см. declare_parameter выше.
-        self._confident_identify_threshold: float = float(
-            self.get_parameter("confident_identify_threshold").value
+        self._name_confidence_band_high: float = float(
+            self.get_parameter("name_confidence_band_high").value
+        )
+        self._name_confidence_min_gap: float = float(
+            self.get_parameter("name_confidence_min_gap").value
         )
         gallery_warmup_size: int = int(self.get_parameter("gallery_warmup_size").value)
         self._growth_session_gap_sec: float = float(
@@ -598,7 +727,21 @@ class SpeakerIdNode(Node):
             known=bool(match),
             confidence=match.confidence if match else None,
         )
-        self._publish_result(match)
+        # Issue #2809 — «зона сомнения + разрыв до другого человека» (см.
+        # is_name_confident/declare_parameter name_confidence_band_high).
+        # top_n=5 — с запасом, чтобы найти конкурента с ДРУГИМ именем,
+        # даже если в топ-2 попали два дубля-профиля одной и той же
+        # личности (issue #2747, "Дэнчик" x2).
+        name_confident: Optional[bool] = None
+        if match:
+            candidates = self._db.identify_candidates(embedding, top_n=5)
+            name_confident = is_name_confident(
+                match,
+                candidates,
+                band_high=self._name_confidence_band_high,
+                min_gap=self._name_confidence_min_gap,
+            )
+        self._publish_result(match, name_confident=name_confident)
 
     def _on_tts_finished(self, msg: String) -> None:
         """Issue #2747 — робот договорил: отсчёт паузы человека начинается ЗДЕСЬ.
@@ -1417,7 +1560,10 @@ class SpeakerIdNode(Node):
             )
 
     def _publish_result(
-        self, match: Optional[SpeakerMatch], source: Optional[str] = None
+        self,
+        match: Optional[SpeakerMatch],
+        source: Optional[str] = None,
+        name_confident: Optional[bool] = None,
     ) -> None:
         """Serialise and publish the speaker identification result.
 
@@ -1429,25 +1575,27 @@ class SpeakerIdNode(Node):
         а не «косинус посчитал похожим»; vision_face_node принимает его
         наравне с обычным узнаванием (см. ``_on_speaker_result`` там —
         гейт только на ``is_known``, поле ``source`` не проверяется).
+
+        Issue #2809 — ``name_confident`` — решение "зона сомнения + разрыв
+        до другого человека" (см. большой комментарий у declare_parameter
+        ``name_confidence_band_high`` в ``__init__`` и функцию
+        ``is_name_confident`` ниже), посчитанное вызывающим кодом
+        (``_process_utterance``), у которого есть полный список кандидатов
+        ``identify_candidates()``. ``source="register"`` (имя названо
+        человеком секунду назад, не догадка по cosine) обходит это решение
+        безусловно. ``None`` — вызывающий код не считал (старые/тестовые
+        пути) — консервативный дефолт по одному только confidence, без
+        учёта конкурентов.
         """
-        # Issue #2809 -- имя произносится LLM только при высокой уверенности.
-        # identify_threshold (0.72) уже пропустил match как "is_known" --
-        # этого достаточно для эпитета/счётчика реплик, но НЕДОСТАТОЧНО,
-        # чтобы называть человека по имени: между 0.72 и
-        # confident_identify_threshold (0.85) match регулярно указывает на
-        # ДРУГОГО реального диктора (run 35788126541, n210 -- confidence
-        # 0.763 дал имя "Борис" незнакомцу). source="register" -- явная
-        # регистрация голоса человеком секунду назад, а не догадка по
-        # cosine-похожести; там имя правильное по определению, порог
-        # уверенности к нему не применяем.
-        confident_threshold = getattr(
-            self, "_confident_identify_threshold", 0.85
-        )
-        name_confident = (
-            bool(source) or match.confidence >= confident_threshold
-        ) if match else False
         if match:
-            published_name = match.name if name_confident else None
+            if source:
+                confident = True
+            elif name_confident is not None:
+                confident = name_confident
+            else:
+                band_high = getattr(self, "_name_confidence_band_high", 0.80)
+                confident = match.confidence >= band_high
+            published_name = match.name if confident else None
             payload = {
                 "is_known": True,
                 "speaker_id": match.speaker_id,
@@ -1462,7 +1610,7 @@ class SpeakerIdNode(Node):
             self.get_logger().info(
                 f"📢 Publishing: is_known=true name={published_name!r} "
                 f"epithet={match.epithet!r} conf={match.confidence:.3f}"
-                + ("" if name_confident else " (name suppressed: low confidence, issue #2809)")
+                + ("" if confident else " (name suppressed: tentative, issue #2809)")
                 + (f" source={source!r}" if source else "")
             )
         else:
