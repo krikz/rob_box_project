@@ -204,6 +204,9 @@ from rob_box_voice.core.identity_ack import (
 )
 from rob_box_voice.core.dj_mode import DJHook, DJModeController
 from rob_box_voice.core.session_epoch import TURN_EPOCH, SessionEpoch
+from rob_box_voice.core.turn_speech import (
+    TurnSpeechHold, decide_turn_speech, wants_lyrics,
+)
 from rob_box_voice.core.speak_helpers import (
     EffectAwaiterRegistry, build_ssml_payload,
     ensure_dj_music_response, split_into_chunks,
@@ -4398,6 +4401,7 @@ class DialogueNode(Node):
         # Общий флаг «гуард отправил ретрай» — сбрасывается на КАЖДЫЙ ход,
         # включая сам ретрай (иначе отложенный DIALOGUE_END залипнет).
         self._retry_dispatched_in_turn = False
+        self._retry_budget_exhausted_in_turn = False
         guard_retry_pending = False
         # Issue #918 — turn может быть отменён или упасть ДО присваивания
         # result (speaker-профиль, LLM, тул-луп). Инициализируем None
@@ -4405,6 +4409,7 @@ class DialogueNode(Node):
         # нет» от «код ниже упал» — и ВСЕГДА довести DIALOGUE_END +
         # _publish_state до конца.
         result = None
+        speech_hold: Optional[TurnSpeechHold] = None
         turn_cancelled = False
         try:
             # Issue #1077 — перед LLM-вызовом обновляем профиль спикера и
@@ -4480,6 +4485,9 @@ class DialogueNode(Node):
             )
             # Issue #2828 -- переспрос про личность, пришедший посреди
             # хода, звучит вместо ответа хода (см. _deliver_turn_result).
+            # Issue #2874 -- свободный текст хода придерживается до решения
+            # post-turn гуардов в ``finally`` (_release_turn_speech).
+            speech_hold = self._turn_speech_hold = TurnSpeechHold()
             self._deliver_turn_result(
                 result,
                 user_input=user_input,
@@ -4519,7 +4527,6 @@ class DialogueNode(Node):
                     leftover_identity_question = (
                         self._identity_ack_state().take_held()
                     )
-            self._speak_identity_question(leftover_identity_question)
             # S7 (scheduler-segments-merge, issue #968) — drain any user
             # phrases that arrived while THIS turn's LLM cycle was in
             # flight (barge_in_policy=classify, quick_decide=PENDING_LLM,
@@ -4570,6 +4577,15 @@ class DialogueNode(Node):
                     ),
                 )
             )
+            # Issue #2874 — гуарды сказали своё: ход с ретраем молчит,
+            # отозванный гуардом ответ молчит, остальное звучит. Переспрос
+            # #2828, пришедший после ответа, — после него, как и раньше.
+            self._release_turn_speech(
+                speech_hold,
+                retry_dispatched=music_retry_dispatched or tool_retry_dispatched,
+                was_dj_auto=was_dj_auto,
+            )
+            self._speak_identity_question(leftover_identity_question)
             # Issue #992 Bug D — defer the DIALOGUE_END transition
             # when the babble detector scheduled a retry. The retry's
             # ``_run_turn`` needs the DSM to stay in DIALOGUE so the
@@ -5771,6 +5787,8 @@ class DialogueNode(Node):
                 f"🚦 [issue 1881 retry-budget] исчерпан на turn, отдаю как есть "
                 f"(guard={guard_name})"
             )
+            # Issue #2874 — «как есть» = первая фраза, не сырой монолог.
+            self._retry_budget_exhausted_in_turn = True
             return False
         self._synthetic_retries_left -= 1
         return True
@@ -5786,8 +5804,14 @@ class DialogueNode(Node):
         schedules ``_run_turn`` — fire-and-forget, with a done-callback
         only to log failures (losing the retraction is not fatal, the
         turn stays in history same as before this fix).
+
+        Issue #2874 — отозванный ответ и не звучит: придержанный текст хода
+        выбрасывается (вместо него — ретрай или короткая фраза гуарда).
         """
-        future = asyncio.run_coroutine_threadsafe(
+        hold = getattr(self, "_turn_speech_hold", None)
+        if hold is not None:
+            hold.retract()
+        future =asyncio.run_coroutine_threadsafe(
             self._core.discard_last_reply(), self._loop
         )
 
@@ -7818,19 +7842,92 @@ class DialogueNode(Node):
                 f"🔇 Служебный текст LLM не озвучиваем: {_spoken_stripped[:100]!r}"
             )
             return
-        chunks = split_into_chunks(spoken)
-        if not chunks:
-            self._publish_response(spoken)
-        elif len(chunks) == 1:
-            self._publish_response(chunks[0])
-        else:
-            total = self._publish_response_batch(chunks)
-            self.get_logger().info(
-                f"📦 [dialogue_node] TTS batch: {total} chunks (issue #980)"
-            )
+        # Issue #2874 — внутри хода текст придерживается до решения
+        # post-turn гуардов о ретрае (см. ``_voice_turn_text``).
+        self._voice_turn_text(spoken, user_input=raw_user_command or user_input)
         self.get_logger().info(
             f"📤 LLM OUTPUT: {spoken[:200]!r}" if self._verbose_llm
             else f"✅ Turn done. Response: {spoken[:80]!r}")
+
+    # ── Issue #2874 — свободный текст хода ждёт решения гуардов ─────────
+
+    #: Псевдо-батч в ``_active_batches``, пока текст хода придержан: иначе
+    #: ``_flush_music_cleanup_if_idle`` в ``finally`` хода решит, что TTS
+    #: пуст, и погасит музыку ДО того, как придержанный ответ прозвучит.
+    _HELD_SPEECH_BATCH_ID = "issue-2874-held-turn-speech"
+
+    def _voice_turn_text(self, spoken: str, *, user_input: Optional[str]) -> None:
+        """Озвучить свободный текст хода — или придержать до гуардов.
+
+        Внутри ``_run_turn`` (открыт :class:`TurnSpeechHold`) текст ждёт
+        post-turn гуардов: ход, за которым последует синхронный ретрай,
+        свой текст не озвучивает. Вне хода (прямой вызов
+        ``_handle_result``) — публикуем сразу, как раньше.
+        """
+        hold = getattr(self, "_turn_speech_hold", None)
+        if hold is None:
+            self._publish_turn_text(spoken, user_input=user_input)
+            return
+        hold.hold(spoken, user_input)
+        self._register_active_batch(self._HELD_SPEECH_BATCH_ID, 0)
+
+    def _release_turn_speech(
+        self, hold: Optional[TurnSpeechHold], *, retry_dispatched: bool,
+        was_dj_auto: bool,
+    ) -> None:
+        """Выпустить (или выбросить) придержанный текст хода (issue #2874)."""
+        if hold is None:
+            return
+        if getattr(self, "_turn_speech_hold", None) is hold:
+            self._turn_speech_hold = None
+        if hold.text is None:
+            return
+        self._publish_turn_text(
+            hold.text,
+            user_input=hold.user_input,
+            retry_dispatched=retry_dispatched,
+            retracted=hold.retracted,
+        )
+        self._unregister_active_batch(self._HELD_SPEECH_BATCH_ID)
+        self._flush_music_cleanup_if_idle(was_dj_auto)
+
+    def _publish_turn_text(
+        self, spoken: str, *, user_input: Optional[str],
+        retry_dispatched: bool = False, retracted: bool = False,
+    ) -> None:
+        """Решить через :func:`decide_turn_speech`, что звучит, и опубликовать."""
+        chunks = split_into_chunks(spoken)
+        text = decide_turn_speech(
+            spoken,
+            n_chunks=len(chunks),
+            retry_dispatched=retry_dispatched,
+            retracted=retracted,
+            budget_exhausted=getattr(self, "_retry_budget_exhausted_in_turn", False),
+            music_context=self._music_prose_fallback_eligible(
+                user_input, self._dj_session_active()
+            ),
+            lyrics_requested=wants_lyrics(user_input),
+        )
+        if text is None:
+            self.get_logger().info(
+                "🔇 [issue 2874] ответ хода не озвучиваю (ретрай/отзыв гуардом, "
+                f"retry={retry_dispatched} retracted={retracted}): {spoken[:120]!r}"
+            )
+            return
+        if text != spoken:
+            self.get_logger().warning(
+                f"✂️ [issue 2874] {len(chunks)} чанков → первая фраза "
+                f"{text!r} (было {len(spoken)} симв.)"
+            )
+            chunks = split_into_chunks(text)
+        if len(chunks) <= 1:
+            self._publish_response(chunks[0] if chunks else text)
+            return
+        total = self._publish_response_batch(chunks)
+        self.get_logger().info(
+            f"📦 [dialogue_node] TTS batch: {total} chunks (issue #980)"
+        )
+
     def _publish_state(self) -> None:
         msg = String()
         msg.data = self._dsm.current_state.name
