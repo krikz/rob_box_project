@@ -692,13 +692,19 @@ class TestRecognizeWithFallback:
         assert attempts == []
 
     def test_yandex_only_no_vosk(self, stt_node_no_vosk):
-        """Если Vosk отключён — идём только через Yandex + retry."""
+        """Если Vosk отключён — идём только через Yandex + retry.
+
+        Issue #2767: ``empty`` (None без исключения) больше НЕ ретраится
+        (гарантированно даст тот же ``empty`` на тех же байтах) —
+        1-я попытка здесь обязана быть настоящим транзиентным сбоем,
+        иначе retry не сработает вовсе.
+        """
         calls = []
 
         def fake_yandex(audio):
             calls.append(len(audio))
             if len(calls) == 1:
-                return None  # 1-я: пусто → retry
+                raise STTTimeoutError("deadline exceeded")  # транзиент → retry
             return "расскажи ещё раз"
 
         stt_node_no_vosk._recognize_yandex = fake_yandex
@@ -711,21 +717,25 @@ class TestRecognizeWithFallback:
         assert attempts[1].provider == "yandex"
 
     def test_vosk_fallback_when_yandex_fails(self, stt_node):
-        """Если Yandex падает — идём на Vosk (issue #979)."""
+        """Если Yandex падает — идём на Vosk (issue #979).
+
+        Issue #2767: Yandex здесь падает с ``empty`` — ОДНА попытка (без
+        retry, empty не транзиентен), сразу Vosk. 2 attempts, не 3.
+        """
         stt_node.yandex_stub = MagicMock()
         stt_node.recognizer = MagicMock()
 
-        # Yandex обе попытки — пусто/timeout
+        # Yandex — пусто (empty, без retry — issue #2767)
         stt_node._recognize_yandex = MagicMock(return_value=None)
         # Vosk возвращает валидную фразу
         stt_node._recognize_vosk = MagicMock(return_value="расскажи ещё раз")
 
         text, attempts = stt_node._recognize_with_fallback(b"\x00" * 1000)
         assert text == "расскажи ещё раз"
-        # 2 попытки Yandex + 1 Vosk = 3 attempts
-        assert len(attempts) == 3
-        assert attempts[2].provider == "vosk"
-        assert attempts[2].reason == "ok"
+        # 1 попытка Yandex (empty, без retry) + 1 Vosk = 2 attempts
+        assert len(attempts) == 2
+        assert attempts[1].provider == "vosk"
+        assert attempts[1].reason == "ok"
 
     def test_vosk_short_garbage_rejected(self, stt_node):
         """Короткий Vosk-мусор (1 char) → text=«а» (rejected(short), не None).
@@ -1201,13 +1211,15 @@ class TestAcceptanceE2EWithSynthAudio:
         node.yandex_stub = MagicMock()
         node.recognizer = MagicMock()
 
-        # Yandex: 1-я попытка timeout (None), 2-я — фраза
+        # Yandex: 1-я попытка — реальный timeout (транзиент, ретраится),
+        # 2-я — фраза. Issue #2767: ``empty`` (None без исключения) больше
+        # НЕ ретраится, поэтому 1-я попытка обязана быть настоящим сбоем.
         yandex_calls = []
 
         def fake_yandex(audio):
             yandex_calls.append(1)
             if len(yandex_calls) == 1:
-                return None  # timeout/empty
+                raise STTTimeoutError("deadline exceeded")
             return phrase
 
         vosk_calls = []
@@ -1246,12 +1258,14 @@ class TestAcceptanceE2EWithSynthAudio:
         ]
         successes = 0
         for ph in phrases:
-            # Pure-Python провайдеры (без rclpy)
+            # Pure-Python провайдеры (без rclpy). Issue #2767: ``empty``
+            # (None без исключения) больше НЕ ретраится, поэтому «флап»
+            # для непустых фраз смоделирован реальным STTTimeoutError.
             if ph == "а":
-                primary_responses = [None, None]  # обе попытки пусто
+                primary_responses = [None]  # пусто, без retry — сразу vosk
                 fallback_response = "а"
             else:
-                primary_responses = [None, ph]  # 1-я пусто, 2-я ok
+                primary_responses = [STTTimeoutError("deadline exceeded"), ph]
                 fallback_response = "а"  # мусор
 
             class _P:
@@ -1265,7 +1279,10 @@ class TestAcceptanceE2EWithSynthAudio:
                     self._calls += 1
                     if self._calls > len(self._responses):
                         return None
-                    return self._responses[self._calls - 1]
+                    result = self._responses[self._calls - 1]
+                    if isinstance(result, BaseException):
+                        raise result
+                    return result
 
             class _F:
                 name = "vosk"

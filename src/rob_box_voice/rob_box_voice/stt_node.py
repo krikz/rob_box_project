@@ -36,6 +36,7 @@ try:
     from rob_box_voice.stt_fallback import (
         DEFAULT_DEAD_TTL_S,
         DEFAULT_DEAD_TTL_TRANSIENT_S,
+        DEFAULT_MAX_TOTAL_BUDGET_S,
         DEFAULT_MIN_TEXT_CHARS,
         DEFAULT_YANDEX_MAX_RETRIES,
         DEFAULT_YANDEX_TIMEOUT_S,
@@ -57,6 +58,7 @@ except ImportError:  # pragma: no cover — модуль всегда есть �
     DEFAULT_YANDEX_TIMEOUT_S = 5.0
     DEFAULT_DEAD_TTL_S = 300.0
     DEFAULT_DEAD_TTL_TRANSIENT_S = 30.0
+    DEFAULT_MAX_TOTAL_BUDGET_S = 20.0
     ProviderDeadCache = None  # type: ignore[assignment]
     ProviderPolicy = None  # type: ignore[assignment]
 
@@ -88,6 +90,14 @@ KNOWN_STT_PROVIDERS = frozenset({"minimax", "yandex", "vosk"})
 # без денег на счету. Инвариант «vosk всегда последний» — прямой аналог
 # «silero всегда последний» в ``tts_node._normalize_provider_chain``.
 _LAST_RESORT_PROVIDER = "vosk"
+
+# Issue #2767 — порог для диагностического warning'а «сигнал очень тихий».
+# Живой инцидент 23.09: 7/8 фраз отклонены при audio_rms_dbfs=-56.8 (пиковый
+# -33.7 dBFS) — это НЕ доказывает, что дело в микрофоне (может быть и
+# каскад/эхо), но это отдельная, непроверенная гипотеза, которую стоит
+# явно видеть в логе рядом с cascade-логами, а не откапывать заново на
+# роботе. НЕ используется для автоусиления/AGC — только для лога.
+_QUIET_SIGNAL_HINT_DBFS = -50.0
 
 
 class _NodeSTTAdapter:
@@ -365,6 +375,16 @@ class STTNode(Node):
         self.declare_parameter("provider_dead_ttl_s", DEFAULT_DEAD_TTL_S)
         self.declare_parameter(
             "provider_dead_ttl_transient_s", DEFAULT_DEAD_TTL_TRANSIENT_S
+        )
+        # Issue #2767 — общий бюджет времени на цепочку одной фразы. Живой
+        # инцидент 23.09: без него фраза тонула в каскаде на 9-10с (empty
+        # ретраился, Yandex auth гонялся заново) — этот параметр ставит
+        # верхний предел на АНОМАЛЬНЫЕ повторы, не трогая нормальный
+        # однопроходный сценарий (~18с холодным стартом) и не отбирая
+        # попытку у последнего провайдера в цепочке (обычно Vosk).
+        # 0 или отрицательное значение отключает бюджет (legacy).
+        self.declare_parameter(
+            "stt_phrase_budget_s", DEFAULT_MAX_TOTAL_BUDGET_S
         )
         # Персистентность кэша: рестарт ноды (а их много — см. #2676 OOM)
         # не должен снова слать фразу в облако, про которое мы уже знаем,
@@ -1111,6 +1131,18 @@ class STTNode(Node):
 
     # ── Issue #2365 Phase 2: цепочка minimax → yandex → vosk (ADR-0124) ────
 
+    def _resolve_phrase_budget_s(self) -> Optional[float]:
+        """Общий бюджет фразы (issue #2767 п.3) или ``None`` (легаси).
+
+        Вынесено из :meth:`_init_provider_chain_params` отдельным методом
+        (cc_budget, ADR-0021 R1) — инлайн-условие толкало метод за лимит
+        CC=15. 0/отрицательное значение параметра отключает бюджет
+        (``None`` передаётся в ``select_recognition`` как легаси-режим).
+        """
+        raw = self.get_parameter("stt_phrase_budget_s").value
+        budget = float(raw) if raw is not None else DEFAULT_MAX_TOTAL_BUDGET_S
+        return budget if budget > 0 else None
+
     def _init_provider_chain_params(self) -> None:
         """Прочитать параметры цепочки и собрать кэш «мёртвых».
 
@@ -1156,6 +1188,9 @@ class STTNode(Node):
         self.provider_dead_ttl_transient_s: float = float(
             self.get_parameter("provider_dead_ttl_transient_s").value
             or DEFAULT_DEAD_TTL_TRANSIENT_S
+        )
+        self.stt_phrase_budget_s: Optional[float] = (
+            self._resolve_phrase_budget_s()
         )
         self.provider_state_file: str = str(
             self.get_parameter("provider_state_file").value or ""
@@ -1385,6 +1420,7 @@ class STTNode(Node):
             min_text_chars=self.min_text_chars,
             policies=self._provider_policies(),
             dead_cache=self._provider_dead_cache,
+            max_total_s=self.stt_phrase_budget_s,
         )
         self._log_provider_state("recognize", attempts=attempts)
         return text, attempts
@@ -1586,6 +1622,17 @@ class STTNode(Node):
             f"📊 [issue 1477] audio_rms_dbfs={rms_dbfs:.1f} peak_dbfs={peak_dbfs:.1f} "
             f"duration={duration_s:.2f}s samples={n_samples}"
         )
+        if rms_dbfs < _QUIET_SIGNAL_HINT_DBFS:
+            # Issue #2767 — гипотеза (НЕ доказанная): частые rejected(empty)
+            # могут объясняться слабым сигналом канала микрофона, а не
+            # только каскадом STT. Только диагностика, никакого автогейна.
+            self.get_logger().warning(
+                f"📉 [issue 2767] Очень тихий сигнал: "
+                f"audio_rms_dbfs={rms_dbfs:.1f} "
+                f"< {_QUIET_SIGNAL_HINT_DBFS:.0f} — возможная причина частых "
+                "empty от облачных STT (канал/AGC микрофона), отдельная "
+                "непроверенная гипотеза, усиление НЕ применяется"
+            )
 
         # Фаза 1: REAL_TIME + speech_analysis (production-настройки, нужны
         # для speaker_tag и «булька» — issue #1077/#1251).
