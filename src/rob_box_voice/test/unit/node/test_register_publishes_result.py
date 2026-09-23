@@ -470,7 +470,11 @@ def test_growth_session_vetoed_by_confident_different_speaker(node):
 
 def test_process_utterance_publishes_unknown_for_unmatched_voice(node):
     node._db.register("Саша", _embedding(40))
-    node._db.embed_audio = MagicMock(return_value=_embedding(41))  # ортогональный голос
+    # Issue #2863 — мокать надо embed_audio_ex (его зовёт нода с #2747):
+    # мок голого embed_audio не срабатывал, и тест на самом деле гонял
+    # ветку «эмбеддинга нет», которая теперь честно помечена inconclusive.
+    # 5с речи — фразу реально оценили и не узнали: чистый is_known=false.
+    node._db.embed_audio_ex = MagicMock(return_value=_Embed(_embedding(41)))  # ортогональный голос
 
     node._process_utterance(b"\x00\x00" * 1000)
 

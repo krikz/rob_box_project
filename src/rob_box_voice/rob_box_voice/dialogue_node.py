@@ -2583,6 +2583,11 @@ class DialogueNode(Node):
                     f"⚠️ [issue #2769] Не удалось озвучить просьбу повторить: {exc}"
                 )
             return
+        # Issue #2863 — любой другой служебный ack (register_error с
+        # неозвучиваемым кодом, ack склейки) — не результат биометрии и
+        # не должен затирать узнанного диктора.
+        if data.get("event"):
+            return
         # Issue #2829 (ADR-0131) — join point: этот результат помечен
         # utterance_id (speaker_id_node считает его от тех же PCM-байт,
         # что видел stt_node). submit() будит _apply_speaker_identity,
@@ -2591,6 +2596,13 @@ class DialogueNode(Node):
         utterance_id = data.get("utterance_id")
         if utterance_id:
             self._utterance_speaker.submit(str(utterance_id), data)
+        # Issue #2863 — фраза, которую биометрия не оценила (мало речи /
+        # нет эмбеддинга; частый случай — шум, который STT потом отбросит
+        # как пустой), не сбрасывает последнего узнанного. Для СВОЕЙ фразы
+        # она остаётся is_known=false (registry выше, #2829 — имя не
+        # наследуется), а «кто сейчас» не трогаем.
+        if data.get("inconclusive"):
+            return
         with self._speaker_lock:
             self._current_speaker = data
 
