@@ -51,6 +51,26 @@
     всё, включая имя и эталонный снимок), поэтому здесь — прямая правка
     ``meta.json``/удаление файлов по документированной раскладке.
 
+``suspicious``
+    Отчёт (issue #2771, ADR-0123 §6): безымянные записи, чья галерея
+    кросс-похожа (max косинуса по всем парам векторов) на галерею
+    именованной записи выше ``--threshold``. Это офлайн-версия правила
+    disambiguation, которое ``FaceStore`` уже применяет НА ЛЕТУ при
+    ``record_encounter`` (см. ``face_store.py``, ``_disambiguate``) —
+    здесь она нужна, потому что автослияние по голосу работает не всегда
+    (issue #2747: голос не опознаётся), а зазор в моменте встречи может
+    быть больше ``disambiguation_gap`` даже когда галереи уже явно один
+    и тот же человек. Только читает, ничего не меняет — решение сливать
+    или нет принимает человек, командой ``merge`` ниже.
+
+``merge <from_id> <into_id>``
+    Слить ``from_id`` в ``into_id`` через публичный ``FaceStore.merge()``
+    (перенос эмбеддингов, снимков, счётчика встреч; ``from_id`` удаляется
+    целиком) — не ``rm -rf``. ``into_id`` — та запись, что должна
+    ОСТАТЬСЯ (обычно именованная); имя/``speaker_id`` берутся из неё,
+    не из ``from_id`` (скрипт печатает предупреждение, если похоже, что
+    аргументы перепутаны местами). Разрушительно, необратимо.
+
 ``rebuild <person_id>``
     Пересчитывает галерею эмбеддингов из сохранённых на диске снимков
     (``reference.jpg`` + ``encounters/*_face.jpg``) ТЕКУЩИМ эмбеддером.
@@ -853,6 +873,166 @@ def cmd_rebuild(args: argparse.Namespace) -> int:
 
 
 # =============================================================================
+# suspicious — подозрительные пары «безымянный дубль ~ именованный»
+# (issue #2771, ADR-0123 §6)
+# =============================================================================
+
+def _cross_gallery_similarity(
+    a: Sequence[np.ndarray], b: Sequence[np.ndarray],
+) -> Optional[float]:
+    """Максимум косинуса по всем парам (вектор из ``a``, вектор из ``b``) —
+    та же метрика и тот же приём ``max``, что
+    ``FaceStore._gallery_cross_similarity`` (issue #2771) использует
+    ВНУТРИ ноды для правила разрешения неоднозначности. Здесь —
+    для офлайн-диагностики: у какого безымянного дубля галерея уже
+    «слипается» с чьей-то именованной галереей выше порога, но нода
+    сама этого не увидела (например, обе встречи были порознь, зазор
+    между ними в моменте оказался больше ``disambiguation_gap``, или
+    дубль вообще не встретился с человеком повторно) — такие пары стоит
+    смотреть человеку и сливать вручную командой ``merge``.
+
+    ``None``, если одна из галерей пуста — сравнивать не с чем.
+    """
+    if not a or not b:
+        return None
+    return max(_cosine(x, y) for x in a for y in b)
+
+
+def cmd_suspicious(args: argparse.Namespace) -> int:
+    store = FaceStore(root=args.root)
+    people = store.people()
+    named = [p for p in people if p['name'] is not None]
+    strangers = [p for p in people if p['name'] is None]
+
+    if not named or not strangers:
+        print(
+            f'Нет пар для сравнения под {args.root!r} '
+            f'(именованных={len(named)}, безымянных={len(strangers)}).'
+        )
+        return 0
+
+    galleries: Dict[str, List[np.ndarray]] = {
+        p['person_id']: store.gallery(p['person_id']) for p in people
+    }
+
+    rows = []
+    for stranger in strangers:
+        s_emb = galleries[stranger['person_id']]
+        if not s_emb:
+            continue
+        for person in named:
+            n_emb = galleries[person['person_id']]
+            cross = _cross_gallery_similarity(s_emb, n_emb)
+            if cross is None or cross < args.threshold:
+                continue
+            rows.append((cross, stranger, person))
+
+    if not rows:
+        print(
+            f'Подозрительных пар нет под {args.root!r} '
+            f'(порог={args.threshold:.2f}, '
+            f'именованных={len(named)}, безымянных={len(strangers)}).'
+        )
+        return 0
+
+    rows.sort(key=lambda t: -t[0])
+    header = (
+        f"{'cross':>6} {'безымянный':38} {'встреч':>7}   "
+        f"{'-> именованный':38} {'имя':16}"
+    )
+    print(header)
+    print('-' * len(header))
+    for cross, stranger, person in rows:
+        print(
+            f"{cross:>6.3f} {stranger['person_id']:38} "
+            f"{stranger['encounter_count']:>7}   "
+            f"{person['person_id']:38} {(person['name'] or ''):16.16}"
+        )
+    print('-' * len(header))
+    print(
+        f'{len(rows)} подозрительных пар (порог кросс-сходства='
+        f'{args.threshold:.2f}). '
+        'Похоже на тот же дубль — см. issue #2771: имя приходит от '
+        'голоса, а голос опознаётся не всегда (issue #2747), поэтому '
+        'автослияния может не быть долго. '
+        'Слить вручную: face_store_admin.py merge <безымянный> '
+        '<именованный> --apply'
+    )
+    return 0
+
+
+# =============================================================================
+# merge — слить безымянный дубль в именованную (или любую другую) запись
+# (issue #2771, ADR-0123 §6: FaceStore.merge() уже существует, наружу не
+# выведен)
+# =============================================================================
+
+def cmd_merge(args: argparse.Namespace) -> int:
+    store = FaceStore(root=args.root)
+    people_by_id = {p['person_id']: p for p in store.people()}
+    if args.from_id not in people_by_id:
+        print(
+            f'person_id {args.from_id!r} (from) не найден под {args.root!r}.',
+            file=sys.stderr,
+        )
+        return 2
+    if args.into_id not in people_by_id:
+        print(
+            f'person_id {args.into_id!r} (into) не найден под {args.root!r}.',
+            file=sys.stderr,
+        )
+        return 2
+    if args.from_id == args.into_id:
+        print('from и into совпадают — сливать нечего.', file=sys.stderr)
+        return 2
+
+    frm = people_by_id[args.from_id]
+    into = people_by_id[args.into_id]
+    print(
+        f"План: FaceStore.merge(keep_id={args.into_id!r}, "
+        f"drop_id={args.from_id!r}) — "
+        f"перенесёт {frm['embeddings']} эмбеддингов и "
+        f"{frm['encounter_count']} встреч записи {args.from_id!r} "
+        f"(имя={frm['name']!r}) в {args.into_id!r} "
+        f"(имя={into['name']!r}); запись {args.from_id!r} будет "
+        f"удалена целиком. "
+        "НЕОБРАТИМО (FaceStore.merge не хранит откат — см. face_store.py)."
+    )
+    if into['name'] is None and frm['name'] is not None:
+        print(
+            'ПРЕДУПРЕЖДЕНИЕ: у into нет имени, а у from — есть. '
+            'merge() сохраняет имя ИМЕННО into (см. FaceStore.merge '
+            '— name туда не переносится). Скорее всего нужен '
+            'обратный порядок: merge <into> <from>.',
+            file=sys.stderr,
+        )
+
+    if not args.apply:
+        print(
+            'Dry-run: ничего не изменено. Повтори с --apply '
+            '(и --yes для неинтерактивного запуска).'
+        )
+        return 0
+
+    err = _ensure_node_not_running(args.force, args.node_process_pattern)
+    if err:
+        print(f'ОТКАЗ: {err}', file=sys.stderr)
+        return 3
+
+    if not _confirm(
+        f'Точно слить {args.from_id} -> {args.into_id} '
+        f'(from удалится безвозвратно)?',
+        args.yes,
+    ):
+        print('Отменено.')
+        return 1
+
+    ok = store.merge(keep_id=args.into_id, drop_id=args.from_id)
+    print(f'merge(keep_id={args.into_id!r}, drop_id={args.from_id!r}) -> {ok}')
+    return 0 if ok else 4
+
+
+# =============================================================================
 # argparse
 # =============================================================================
 
@@ -935,6 +1115,63 @@ def build_parser() -> argparse.ArgumentParser:
         help=f'Путь к ArcFace HEF внутри контейнера (по умолчанию {DEFAULT_ARCFACE_HEF!r}).',
     )
     p_rebuild.set_defaults(func=cmd_rebuild)
+
+    p_suspicious = sub.add_parser(
+        'suspicious',
+        help=(
+            'Отчёт: безымянные записи, чья галерея кросс-похожа на '
+            'именованную выше порога (issue #2771) — кандидаты на merge.'
+        ),
+    )
+    p_suspicious.add_argument(
+        '--threshold', type=float, default=0.6,
+        help=(
+            'Порог кросс-сходства галерей (max косинуса по всем парам). '
+            'По умолчанию 0.6 — тот же ориентир, что текущий '
+            'identify_threshold-заглушка (issue #2771/#2772), не '
+            'калиброванное число.'
+        ),
+    )
+    p_suspicious.set_defaults(func=cmd_suspicious)
+
+    p_merge = sub.add_parser(
+        'merge',
+        help=(
+            'Слить безымянный дубль (from) в другую запись (into) через '
+            'FaceStore.merge() — не rm -rf. into сохраняет имя/speaker_id.'
+        ),
+    )
+    p_merge.add_argument(
+        'from_id',
+        help='person_id записи, которая будет УДАЛЕНА (обычно дубль).',
+    )
+    p_merge.add_argument(
+        'into_id',
+        help='person_id записи, которая ОСТАНЕТСЯ (обычно именованная).',
+    )
+    p_merge.add_argument(
+        '--apply', action='store_true',
+        help='Реально выполнить слияние (по умолчанию — dry-run).',
+    )
+    p_merge.add_argument(
+        '--yes', action='store_true',
+        help='Не спрашивать подтверждение (для неинтерактивного запуска).',
+    )
+    p_merge.add_argument(
+        '--force', action='store_true',
+        help=(
+            'Пропустить проверку "не запущена ли нода vision_face" '
+            '(см. docstring модуля).'
+        ),
+    )
+    p_merge.add_argument(
+        '--node-process-pattern', default=DEFAULT_NODE_PROCESS_PATTERN,
+        help=(
+            'Паттерн для "pgrep -f" при проверке живой ноды (по умолчанию '
+            f'{DEFAULT_NODE_PROCESS_PATTERN!r}).'
+        ),
+    )
+    p_merge.set_defaults(func=cmd_merge)
 
     return parser
 
