@@ -12,6 +12,7 @@ import socket
 import struct
 import sys
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
 
@@ -1853,6 +1854,88 @@ class TestKnownSynthNamesServerTruth:
         mgr, _ = self._mgr(tmp_path)
         mgr._synthdefs_added = set()
         assert mgr.known_synth_names() is None
+
+
+#: Реальный /tmp/sclang.log контейнера voice-assistant (Vision Pi, 23.09.2026,
+#: снят координатором #2841): 63 строки "SynthDef in scsynth: X", loop'а нет.
+_ROBOT_SCLANG_LOG = (
+    Path(__file__).resolve().parent.parent / "fixtures" / "sclang_robot_2026-09-23.log"
+)
+
+
+@pytest.mark.unit
+class TestGrooveLoopServerTruth:
+    """Issue #2841 × #2838: ``dN >> loop(...)`` от ``groove_loop`` должен
+    пройти валидатор синтов, который верит только прелоаду foxdot_init.sc.
+
+    ``loop`` — renardo ``LoopPygenSynthDef`` (special_synthdefs.py:19),
+    регистрируется в ``SynthDefs`` (PygenSynthDef.py:76 ``container[name] =
+    self``) и шлётся ``sdef.add()`` → ``loadSynthDef`` → OSC ``/foxdot`` в
+    sclang (ServerManager/__init__.py:490) — тем же неподтверждённым путём,
+    что и 'sine' из #2838. Подтверждение даёт только прелоад, поэтому loop
+    добавлен в ``startupSynths``."""
+
+    def _mgr(self, log_text, tmp_path):
+        log = tmp_path / "sclang.log"
+        log.write_text(log_text, encoding="utf-8")
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        # renardo SynthDefs = весь прелоад + loop (special_synthdefs.py).
+        mgr._synthdefs_added = (
+            set(_foxdot_init_preload()) - {"masterlimiter", "masterfilter"}
+        ) | {"loop"}
+        mgr._evaluate_music_stack_health(sclang_log_path=str(log))
+        return mgr
+
+    @staticmethod
+    def _log_with_repo_preload() -> str:
+        """Реальный лог робота, где строки прелоада заменены на те, что
+        напечатает foxdot_init.sc ИЗ РЕПО (после деплоя образа)."""
+        real = _ROBOT_SCLANG_LOG.read_text(encoding="utf-8")
+        kept = [
+            line for line in real.splitlines()
+            if not line.startswith("SynthDef in scsynth:")
+            and not line.startswith("SynthDef preload finished")
+        ]
+        preload = _foxdot_init_preload()
+        kept += [f"SynthDef in scsynth: {name}" for name in preload]
+        kept.append(f"SynthDef preload finished: {len(preload)} defs")
+        return "\n".join(kept) + "\n"
+
+    def test_robot_log_as_deployed_has_no_loop(self):
+        from rob_box_voice.core.music_stack_validation import confirmed_synths_from_log
+
+        confirmed = confirmed_synths_from_log(_ROBOT_SCLANG_LOG.read_text(encoding="utf-8"))
+        assert confirmed is not None and len(confirmed) == 63
+        assert "loop" not in confirmed
+
+    def test_groove_loop_rejected_with_robot_log_as_deployed(self, tmp_path, monkeypatch):
+        """Честный FAIL до деплоя: образ без нового прелоада → loop отклонён."""
+        monkeypatch.setenv("ROB_BOX_PACK1_LOOPS", "1")
+        mgr = self._mgr(_ROBOT_SCLANG_LOG.read_text(encoding="utf-8"), tmp_path)
+        with patch("builtins.exec") as mock_exec:
+            result = mgr.execute_code("d3 >> loop('dnb_1', dur=4, beat_stretch=1, amp=0.3)")
+        assert result["success"] is False
+        assert "'loop'" in result["error"]
+        mock_exec.assert_not_called()
+
+    def test_repo_preload_confirms_loop(self):
+        assert "loop" in _foxdot_init_preload()
+
+    def test_groove_loop_passes_with_repo_preload_log(self, mock_node, tmp_path, monkeypatch):
+        monkeypatch.setenv("ROB_BOX_PACK1_LOOPS", "1")
+        mgr = self._mgr(self._log_with_repo_preload(), tmp_path)
+        assert "loop" in mgr.known_synth_names()
+        tool = ComposeMusicTool(mock_node, mgr)
+        with patch("builtins.exec") as mock_exec:
+            result = tool.execute(
+                bpm=120, root="A", scale="minor", form="arc",
+                drums="X...o...X...o...", hats="-.-.-.-.",
+                bass_synth="dub", bass_notes="0,0,4,0",
+                lead_synth="blip", lead_notes="0,2,4,7",
+                groove_loop="dnb_1",
+            )
+        assert result.success is True, result.error
+        assert "d3 >> loop('../../1_pitchglitch_samples/_loop_/dnb_1'" in mock_exec.call_args[0][0]
 
 
 # ---------------------------------------------------------------------------

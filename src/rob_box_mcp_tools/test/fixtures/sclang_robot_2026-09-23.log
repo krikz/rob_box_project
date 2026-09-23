@@ -1,0 +1,102 @@
+compiling class library...
+QStandardPaths: XDG_RUNTIME_DIR not set, defaulting to '/tmp/runtime-root'
+WebEngineContext used before QtWebEngine::initialize() or OpenGL context creation failed.
+	Found 862 primitives.
+	Compiling directory '/usr/share/SuperCollider/SCClassLibrary'
+	Compiling directory '/usr/share/SuperCollider/Extensions'
+	numentries = 1177343 / 17765462 = 0.066
+	5647 method selectors, 3146 classes
+	method table size 19077744 bytes, big table size 142123696
+	Number of Symbols 14287
+	Byte Code Size 407450
+	compiled 449 files in 2.79 seconds
+
+Info: 4 methods are currently overwritten by extensions. To see which, execute:
+MethodOverride.printAll
+
+compile done
+localhost : setting clientID to 0.
+internal : setting clientID to 0.
+Class tree inited in 0.11 seconds
+
+
+*** Welcome to SuperCollider 3.11.2. *** For help type ctrl-c ctrl-h (Emacs) or :SChelp (vim) or ctrl-U (sced/gedit).
+sclang started. Waiting 3s for scsynth connection...
+Requested notification messages from server 'localhost'
+localhost: server process has maxLogins 32 - adjusting my options accordingly.
+localhost: keeping clientID (0) as confirmed by server process.
+FoxDot OSCdef registered. Ready to compile SynthDefs.
+Server running: true
+SynthDef in scsynth: ambi
+SynthDef in scsynth: arpy
+SynthDef in scsynth: bass
+SynthDef in scsynth: bell
+SynthDef in scsynth: blip
+SynthDef in scsynth: brass
+SynthDef in scsynth: creep
+SynthDef in scsynth: cs80lead
+SynthDef in scsynth: dirt
+SynthDef in scsynth: donk
+SynthDef in scsynth: dub
+SynthDef in scsynth: ecello
+SynthDef in scsynth: eoboe
+SynthDef in scsynth: epiano
+SynthDef in scsynth: faim
+SynthDef in scsynth: feel
+SynthDef in scsynth: flute
+SynthDef in scsynth: fuzz
+SynthDef in scsynth: gong
+SynthDef in scsynth: hoover
+SynthDef in scsynth: jbass
+SynthDef in scsynth: kalimba
+SynthDef in scsynth: karp
+SynthDef in scsynth: keys
+SynthDef in scsynth: marimba
+SynthDef in scsynth: mhpad
+SynthDef in scsynth: moogbass
+SynthDef in scsynth: noise
+SynthDef in scsynth: organ
+SynthDef in scsynth: organ2
+SynthDef in scsynth: orient
+SynthDef in scsynth: pads
+SynthDef in scsynth: pianovel
+SynthDef in scsynth: pluck
+SynthDef in scsynth: pulse
+SynthDef in scsynth: quin
+SynthDef in scsynth: rave
+SynthDef in scsynth: rhpiano
+SynthDef in scsynth: saw
+SynthDef in scsynth: scatter
+SynthDef in scsynth: sinepad
+SynthDef in scsynth: sitar
+SynthDef in scsynth: soprano
+SynthDef in scsynth: space
+SynthDef in scsynth: square
+SynthDef in scsynth: steeldrum
+SynthDef in scsynth: strings
+SynthDef in scsynth: subbass
+SynthDef in scsynth: tb303
+SynthDef in scsynth: tubularbell
+SynthDef in scsynth: varsaw
+SynthDef in scsynth: viola
+SynthDef in scsynth: wobblebass
+SynthDef in scsynth: warmpad
+SynthDef in scsynth: retrobass
+SynthDef in scsynth: supersawlead
+SynthDef in scsynth: imperialbrass
+SynthDef in scsynth: marchstrings
+SynthDef in scsynth: strangerpulsepad
+SynthDef in scsynth: strangerarp
+SynthDef in scsynth: strangerbrass
+SynthDef in scsynth: masterlimiter
+SynthDef in scsynth: masterfilter
+SynthDef preload finished: 63 defs
+Master filter armed at tail of RootNode (node 999)
+WARNING: Called from SynthDef:buildUgenGraph, method Meta_AudioIn:ar is deprecated and will be removed. Use Meta_SoundIn:ar instead.
+The definition of 'Meta_AudioIn:ar' is to be found here: '/usr/share/SuperCollider/SCClassLibrary/deprecated/3.10/AudioIn.sc'
+PATH: /usr/local/lib/python3.10/dist-packages/renardo_lib/SynthDefManagement/sclang_code/tmp_code/scsynth/audioin.scd
+
+
+WARNING: SynthDef bassguitar too big for sending. Retrying via synthdef file
+WARNING: SynthDef ebass too big for sending. Retrying via synthdef file
+WARNING: SynthDef ebass too big for sending. Retrying via synthdef file
