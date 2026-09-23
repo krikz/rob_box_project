@@ -68,6 +68,7 @@ for _hw in ("pyaudio", "usb", "usb.core", "usb.util", "sounddevice"):
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
+import rob_box_voice.dialogue_node as dialogue_node_module  # noqa: E402
 from rob_box_voice.dialogue_node import (  # noqa: E402
     DialogueNode,
     classify_identity_confirmation,
@@ -90,8 +91,40 @@ def node():
     n._speaker_register_pub = MagicMock()
     n._identity_confirmations = {}
     n._pending_identity_hint = None
-    n._identity_question_session_gap_sec = 30.0
+    # Прод-значения из config/dialogue_node.yaml.
+    n._identity_question_session_gap_sec = 120.0
+    n._identity_answer_window_sec = 180.0
     return n
+
+
+class _FakeClock:
+    """Подменяет ``time`` модуля dialogue_node: ``monotonic`` -- ручные
+    часы, остальное -- настоящий ``time``. Глобальный ``time.monotonic``
+    не трогаем -- на нём живёт event loop ``asyncio.run``."""
+
+    def __init__(self, now: float = 0.0) -> None:
+        self.now = now
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def __getattr__(self, name):
+        import time as _time
+
+        return getattr(_time, name)
+
+
+@pytest.fixture()
+def clock(monkeypatch):
+    fake = _FakeClock(now=1000.0)
+    monkeypatch.setattr(dialogue_node_module, "time", fake)
+    return fake
+
+
+def _logged(node) -> str:
+    return "\n".join(
+        str(c.args[0]) for c in node.get_logger.return_value.info.call_args_list
+    )
 
 
 def _tentative_single(speaker_id=SPEAKER_ID, name="Denchik", conf=0.771):
@@ -306,3 +339,108 @@ class TestContestedHypothesis:
         # Второй раз подсказка не появляется -- заданный вопрос уже
         # интерпретируется как (неоднозначный) ответ, не новый повод спросить.
         assert node._pending_identity_hint is None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Окна по часам -- живой прогон 35857257981 (act2b_identity_question)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestAnswerWindowClock:
+    """В живом прогоне "да, это я" пришло через 84s после "Саша, это ты?"
+    (шаги харнесса ~60s + переспрос STT). При едином окне 30s состояние
+    пересоздавалось с asked=False, ответ не читался, 'Speaker confirmed
+    verbally' в логе не было, а n703 зеленел только потому, что LLM
+    повторила имя из истории."""
+
+    def test_answer_window_is_independent_of_session_gap(self, node, clock):
+        """Даже при прежнем session gap 30s ответ через 84s читается --
+        его держит identity_answer_window_sec, а не якорь сессии."""
+        node._identity_question_session_gap_sec = 30.0
+        node._current_speaker = _tentative_single()
+        _run(node._apply_speaker_identity("privet", speaker_context=None))
+        node._pending_identity_hint_lines()
+
+        clock.now += 84.13
+        node._current_speaker = _tentative_single()
+        result = _run(node._apply_speaker_identity(
+            "да, это я.", speaker_context=None))
+        assert "[Spkr:Denchik]" in result
+        assert node._identity_confirmations[SPEAKER_ID]["confirmed"] is True
+        assert node._pending_identity_hint is None
+
+    def test_answer_after_84s_is_consumed_live_timeline(self, node, clock):
+        clock.now = 716.42
+        node._current_speaker = _tentative_single()
+        _run(node._apply_speaker_identity(
+            "ты меня узнал по голосу", speaker_context=None))
+        assert node._pending_identity_hint is not None
+        node._pending_identity_hint_lines()  # system_context собран
+
+        clock.now = 800.55  # +84.13s -- больше прежних 30s
+        node._current_speaker = _tentative_single()
+        result = _run(node._apply_speaker_identity(
+            "да, это я.", speaker_context=None))
+        assert "[Spkr:Denchik]" in result
+        assert node._identity_confirmations[SPEAKER_ID]["confirmed"] is True
+        assert node._speaker_register_pub.publish.call_count == 1
+        assert "Speaker confirmed verbally: 'Denchik'" in _logged(node)
+
+        clock.now = 866.33  # +65.78s -- n704, тоже больше 30s
+        node._current_speaker = _tentative_single()
+        result2 = _run(node._apply_speaker_identity(
+            "а что ты обо мне запомнил", speaker_context=None))
+        assert "[Spkr:Denchik]" in result2
+        assert node._pending_identity_hint is None  # не переспрашиваем
+        assert node._speaker_register_pub.publish.call_count == 1
+        assert "Speaker verbal confirmation reused: 'Denchik'" in _logged(node)
+
+    def test_pending_question_expires_after_answer_window(self, node, clock):
+        node._current_speaker = _tentative_single()
+        _run(node._apply_speaker_identity("privet", speaker_context=None))
+        node._pending_identity_hint_lines()
+
+        clock.now += 180.5  # дольше identity_answer_window_sec
+        node._current_speaker = _tentative_single()
+        result = _run(node._apply_speaker_identity(
+            "да, это я", speaker_context=None))
+        # Вопрос протух: "да" не считается ответом, вопрос задаётся заново.
+        assert "[Spkr:Denchik]" not in result
+        assert node._identity_confirmations[SPEAKER_ID]["confirmed"] is None
+        assert node._pending_identity_hint is not None
+        assert node._speaker_register_pub.publish.call_count == 0
+
+    def test_declined_survives_harness_step_pause(self, node, clock):
+        """n706 "нет" -> n707 через ~65s: не переспрашиваем, имени нет."""
+        node._current_speaker = _tentative_single()
+        _run(node._apply_speaker_identity("privet", speaker_context=None))
+        node._pending_identity_hint_lines()
+
+        clock.now += 65.0
+        node._current_speaker = _tentative_single()
+        _run(node._apply_speaker_identity("нет, не я", speaker_context=None))
+        assert node._identity_confirmations[SPEAKER_ID]["confirmed"] is False
+
+        clock.now += 65.0
+        node._current_speaker = _tentative_single()
+        result = _run(node._apply_speaker_identity(
+            "как меня зовут", speaker_context=None))
+        assert "Denchik" not in result
+        assert node._pending_identity_hint is None
+
+    def test_settled_answer_resets_after_session_gap(self, node, clock):
+        """n705: пауза дольше identity_question_session_gap_sec после
+        решённого "да" -- новая сессия, вопрос задаётся снова."""
+        node._current_speaker = _tentative_single()
+        _run(node._apply_speaker_identity("privet", speaker_context=None))
+        node._pending_identity_hint_lines()
+        clock.now += 60.0
+        node._current_speaker = _tentative_single()
+        _run(node._apply_speaker_identity("да, это я", speaker_context=None))
+
+        clock.now += 120.5
+        node._current_speaker = _tentative_single()
+        result = _run(node._apply_speaker_identity(
+            "ты ещё здесь", speaker_context=None))
+        assert "[Spkr:Denchik]" not in result
+        assert node._pending_identity_hint is not None
