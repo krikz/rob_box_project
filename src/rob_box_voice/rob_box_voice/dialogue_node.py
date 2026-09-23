@@ -670,9 +670,9 @@ class DialogueNode(Node):
         # Issue #2829 — какой utterance_id уже резолвнут в _current_speaker
         # (см. _resolve_speaker_for_utterance) -- не резолвим дважды.
         self._last_resolved_utterance_id: Optional[str] = None
-        # Issue #2829 (ADR-0131 PR-2) — utterance_id ТЕКУЩЕГО хода, читает
-        # RegisterSpeakerTool (mcp_tools/tools/dialogue.py) через
-        # getattr(self.node, ...) при вызове register_speaker.
+        # Issue #2829 (ADR-0131 PR-2) — utterance_id ТЕКУЩЕГО хода. До
+        # RegisterSpeakerTool (процесс mcp_server) доезжает скрытым
+        # аргументом /mcp/execute через _mcp_turn_context (issue #2842).
         self._current_turn_utterance_id: Optional[str] = None
         self._speaker_resolve_timeout_sec: float = float(
             self.get_parameter("speaker_resolve_timeout_sec").value
@@ -1917,6 +1917,15 @@ class DialogueNode(Node):
         msg.data = self._barge_in_policy
         pub.publish(msg)
 
+    def _mcp_turn_context(self) -> dict:
+        """Контекст хода для скрытых аргументов MCP-тулов (issue #2842).
+
+        Читается ``LLMToolCallAdapter`` в момент отправки запроса тула;
+        при ``tool_provider=ros_mcp`` тул исполняется в процессе
+        ``mcp_server`` и сам до атрибутов этого узла не дотянется.
+        """
+        return {"utterance_id": self._current_turn_utterance_id}
+
     def _build_tool_provider(self) -> ToolProvider:
         # W5a: wire the real ROSMCPToolProvider when ``tool_provider``
         # is the default ``"ros_mcp"``. The previous version silently
@@ -1987,7 +1996,11 @@ class DialogueNode(Node):
                 f"rob_box_mcp_tools.llm_adapter` failed: {exc!r}. "
                 "Check that the install image includes rob_box_mcp_tools."
             ) from exc
-        bridge = LLMToolCallAdapter(self)
+        # Issue #2842 — тулы исполняются в процессе mcp_server, а не
+        # здесь: utterance_id хода (register_speaker) едет скрытым
+        # аргументом подписанного /mcp/execute, см.
+        # llm_adapter.TURN_CONTEXT_ARGS.
+        bridge = LLMToolCallAdapter(self, turn_context=self._mcp_turn_context)
         provider = ROSMCPToolProvider(bridge)
         # Feed the 34 manifests from the harness-side catalog. The
         # provider's update_tools() expects the OpenAI-style envelope
@@ -4297,11 +4310,11 @@ class DialogueNode(Node):
     ) -> None:
         with self._task_lock:
             self._run_task = asyncio.current_task()
-        # Issue #2829 (ADR-0131 PR-2) — RegisterSpeakerTool (mcp_tools,
-        # runs in-process as this node's tool) reads this to stamp
-        # /voice/speaker/register with the CURRENT turn's utterance_id,
+        # Issue #2829 (ADR-0131 PR-2) — the CURRENT turn's utterance_id,
         # so speaker_id_node registers the phrase the person actually
-        # introduced themselves in, not "whoever speaks next".
+        # introduced themselves in, not "whoever speaks next". Issue
+        # #2842: RegisterSpeakerTool runs in the mcp_server process, so
+        # it gets this via _mcp_turn_context → hidden /mcp/execute arg.
         self._current_turn_utterance_id = utterance_id
         self._run_cancelled = False
         # Issue #992 Bug B / Bug C — ``is_dj_auto`` is threaded through

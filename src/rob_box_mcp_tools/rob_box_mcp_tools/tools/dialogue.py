@@ -954,7 +954,19 @@ class RegisterSpeakerTool(MCPTool):
         }
     )
 
-    def execute(self, name: str | None = None, old_name: str | None = None) -> MCPToolResult:
+    def execute(
+        self,
+        name: str | None = None,
+        old_name: str | None = None,
+        utterance_id: str | None = None,
+    ) -> MCPToolResult:
+        """Зарегистрировать голос.
+
+        ``utterance_id`` — СКРЫТЫЙ аргумент (issue #2842): его нет в
+        :attr:`parameters` (LLM его не видит), его подставляет
+        ``LLMToolCallAdapter`` из контекста хода dialogue_node
+        (``llm_adapter.TURN_CONTEXT_ARGS``), вырезая то, что прислала LLM.
+        """
         import json
         from std_msgs.msg import String
 
@@ -1035,22 +1047,22 @@ class RegisterSpeakerTool(MCPTool):
                 ),
             )
         # publish в /voice/speaker/register — speaker_id_node привяжет d-vector
-        # Issue #2829 (ADR-0131 PR-2) — utterance_id ТЕКУЩЕГО хода
-        # (dialogue_node._current_turn_utterance_id, выставляется в
-        # _run_turn до тул-лупа): speaker_id_node регистрирует ИМЕННО
-        # фразу, в которой человек представился, а не "следующую фразу
-        # кого угодно" (см. speaker_id_node._on_register_request).
-        # ``node`` здесь — сам dialogue_node (tool исполняется
-        # in-process, tool_provider=ros_mcp); getattr — на случай
-        # других tool_provider/тестов, где узел этого поля не имеет.
+        # Issue #2829 (ADR-0131 PR-2) — utterance_id ТЕКУЩЕГО хода:
+        # speaker_id_node регистрирует ИМЕННО фразу, в которой человек
+        # представился, а не "следующую фразу кого угодно" (см.
+        # speaker_id_node._on_register_request).
+        # Issue #2842 — при tool_provider=ros_mcp тул исполняется в
+        # процессе mcp_server, ``self.node`` — НЕ dialogue_node, и
+        # атрибута хода у него нет. Поэтому источник правды — скрытый
+        # аргумент ``utterance_id`` из подписанного запроса /mcp/execute
+        # (его подставляет dialogue_node через LLMToolCallAdapter).
+        # getattr — только фолбек для in-process исполнения на самом
+        # dialogue_node.
+        if utterance_id is None:
+            utterance_id = getattr(self.node, "_current_turn_utterance_id", None)
         msg = String()
         msg.data = json.dumps(
-            {
-                "name": name_clean,
-                "utterance_id": getattr(
-                    self.node, "_current_turn_utterance_id", None
-                ),
-            },
+            {"name": name_clean, "utterance_id": utterance_id},
             ensure_ascii=False,
         )
         self._speaker_register_pub.publish(msg)

@@ -200,7 +200,7 @@ def _install_mcp_adapter_with_bridge(
 
     fake_mcp = types.ModuleType("rob_box_mcp_tools")
     fake_adapter = types.ModuleType("rob_box_mcp_tools.llm_adapter")
-    fake_adapter.LLMToolCallAdapter = lambda _node: _StubBridge()
+    fake_adapter.LLMToolCallAdapter = lambda _node, **_kw: _StubBridge()
 
     monkeypatch.setitem(sys.modules, "rob_box_mcp_tools", fake_mcp)
     monkeypatch.setitem(
