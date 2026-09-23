@@ -292,7 +292,7 @@ act(
         step(
             "n201_sasha_intro_long",
             "Робот, привет, давай знакомиться как следует. Меня зовут Саша, я твой "
-            "ночной инженер.",
+            "ночной инженер и механик.",
             voice=SASHA,
             expect="cycle",
             expect_tools=["register_speaker"],
@@ -303,7 +303,12 @@ act(
             "исходная реплика ~25с не доходила до STT. Имя и register_speaker "
             "остаются на этом шаге. expect=cycle: первый шаг акта пробивает "
             "wake-gate. issue #2406: discovery_tools — register_speaker "
-            "должен быть вызван ДО голосового ответа (regression guard).",
+            "должен быть вызван ДО голосового ответа (regression guard). "
+            "Issue #2907: «и механик» удлиняет реплику регистрации (85 → 95 "
+            "символов), чтобы чистой речи после VAD было с запасом над "
+            "порогом эталона 3.0с (run 35916899022: 51 символ дал 2.97с "
+            "→ too_short). Потолок — test_e2e_scenario_playable.sh (<=96 "
+            "символов без WARN): длиннее уже упирается в 15с VAD-окно.",
         ),
         step(
             "n201b_sasha_backstory",
@@ -361,7 +366,7 @@ act(
         step(
             "n204_boris_intro_long",
             "Робот, добрый вечер, меня зовут Борис, я друг Саши и прихожу с "
-            "пиццей примерно раз в неделю.",
+            "пиццей по пятницам, раз в неделю.",
             voice=BORIS,
             expect_tools=["register_speaker"],
             discovery_tools=["register_speaker"],
@@ -370,7 +375,11 @@ act(
             "15с VAD-окна (run 35658231116) — исходная реплика ~24с не "
             "доходила до STT. Имя и register_speaker остаются на этом шаге. "
             "issue #2406: discovery_tools — register_speaker должен быть "
-            "вызван ДО голосового ответа (regression guard).",
+            "вызван ДО голосового ответа (regression guard). Issue #2907: "
+            "«по пятницам» удлиняет реплику регистрации (92 → 96 символов, "
+            "факт «раз в неделю» сохранён) — ровно до потолка "
+            "test_e2e_scenario_playable.sh без WARN; длиннее упирается в 15с "
+            "VAD-окно.",
         ),
         step(
             "n204b_boris_voice_note",
