@@ -253,14 +253,16 @@ def test_unparsable_plan_line_still_names_the_track_number() -> None:
 def test_dj_skill_demands_plan_and_first_track_in_the_same_turn() -> None:
     text = DJ_SKILL.read_text(encoding="utf-8")
 
-    assert "в ОДНОМ ходе ОБА вызова" in text
+    assert "в ОДНОМ ходе ДВА шага" in text
     assert "set_dj_mode(enabled=true, plan=" in text
-    assert 'compose_music(name="X")' in text
+    # Трек играет скилл composer: dj.txt не называет его инструменты
+    # (test_skill_prompt_contract), а маршрутизирует через имя скилла.
+    assert "СРАЗУ сыграй Трек 1" in text
+    assert 'load_skill(skill="composer")' in text
 
 
 def test_dj_skill_forbids_claiming_a_song_is_missing_without_lookup() -> None:
-    text = DJ_SKILL.read_text(encoding="utf-8")
+    text = " ".join(DJ_SKILL.read_text(encoding="utf-8").split())
 
-    assert "lookup_melody" in text
-    assert "RTTTL" in text
-    assert "не\n  вызвав `lookup_melody`" in text or "не вызвав `lookup_melody`" in text
+    assert "библиотеки известных мелодий (RTTTL) скилла composer" in text
+    assert "не проверив библиотеку мелодий composer" in text
