@@ -333,6 +333,37 @@ MUSIC_STOP_OVERRIDES: tuple = (
     "убери музык",
 )
 
+# 🔴 FIX (live 23.09, issue #2834): «стоп диджей» / «стоп диджей блядь» —
+# юзер (TG) написал это в 14:16:55, робот через пару секунд снова заиграл.
+# ``MUSIC_STOP_OVERRIDES`` — набор ФИКСИРОВАННЫХ фраз («диджеить»,
+# «стоп музык»...) и не содержал «стоп диджей» (стоп + голое «диджей», без
+# «ить»/«я»/«режим»). Хуже: ``user_input`` при этом СОВПАДАЛ по слову
+# «диджей» с ``MUSIC_GUARD_KEYWORDS`` (line ~264), поэтому
+# ``user_wants_music`` отвечал True, а ``is_music_stop_command`` — False.
+# Инверсия: гуард решал «юзер просит музыку» вместо «юзер просит
+# остановить музыку», и Bug C retry уходил в ``USER_RETRY`` вместо
+# ``FORCE_STOP`` (``music_guard.py:429`` требует
+# ``is_music_stop_command(...) is True`` до входа в FORCE_STOP-ветку).
+#
+# Решение — общий паттерн «стоп-глагол + музыкальное существительное» (в
+# любом порядке, с матом/хвостами между ними), а не расширение списка
+# фиксированных фраз до бесконечности: «стоп диджей», «стоп диджей
+# блядь», «хватит трек», «выключи сет» и любые будущие варианты ловятся
+# одним правилом. Список фиксированных фраз выше остаётся — он покрывает
+# формы без явного стоп-глагола перед существительным («диджеить» само
+# по себе means «стоп диджеить» в этом словаре) и обратную совместимость
+# со старыми тестами.
+_MUSIC_STOP_VERBS: str = (
+    r"стоп|хватит|выключ\w*|останов\w*|убер\w*|заглуш\w*|заверши\w*"
+)
+_MUSIC_STOP_NOUNS: str = r"музык\w*|дидж\w*|трек\w*|сет\b"
+
+MUSIC_STOP_COMMAND_RE = re.compile(
+    rf"\b(?:{_MUSIC_STOP_VERBS})\b.{{0,20}}?\b(?:{_MUSIC_STOP_NOUNS})"
+    rf"|\b(?:{_MUSIC_STOP_NOUNS})\b.{{0,20}}?\b(?:{_MUSIC_STOP_VERBS})\w*\b",
+    re.IGNORECASE,
+)
+
 # 🔴 FIX (live 10:00): для ГОЛОСОВЫХ запросов («спой/пой/песня»)
 # speak_text достаточно — бит не обязателен (юзер мог попросить
 # спеть ПОД уже играющую музыку, как «спой про мурку в этот
@@ -777,6 +808,57 @@ def user_wants_performance(user_input: str) -> bool:
     return any(kw in low for kw in BABBLE_PERFORMANCE_KEYWORDS)
 
 
+# 🔴 FIX (live 23.09, issue #2834): «давай грига», «включи уже still
+# dre», «ты мне опять спиздел найди баха в рттл», «заебок теперь давай
+# баха на гитаре ебанем» — ни одна подстрока из ``MUSIC_GUARD_KEYWORDS``
+# (там «сыграй/включи музык/трек» — глагол ВСЕГДА в паре с музыкальным
+# СУЩЕСТВИТЕЛЬНЫМ вроде «музыка/трек/мелодия») их не ловит: юзер называет
+# композитора/артиста по имени и не произносит ни «музыка», ни «трек».
+# Живой лог: LLM честно ответила «Григ в деле!» с ``tools=[]``, а гуард
+# промолчал («user does NOT want music») — ровно тот класс бага, что и
+# у жанров в ``_MUSIC_NOUNS`` (см. FIX live 31.08/01.09 выше), только
+# существительное здесь — имя собственное, а не жанр.
+#
+# Решение — та же пара «play-глагол + музыкальный объект», но объект —
+# известный композитор/артист ИЛИ явная отсылка к RTTTL-библиотеке
+# («найди X в рттл/ртттл» — специфичный для этого проекта формат нот,
+# см. ``build_unknown_melody_retry_prompt``). Список композиторов
+# намеренно короткий (те же имена, что в RTTTL-подсказке ретрая) —
+# расширять по мере живых логов, не гадать заранее.
+_MUSIC_KNOWN_COMPOSERS: str = (
+    r"григ\w*|бах[а-я]*|bach\w*|моцарт\w*|mozart\w*|бетховен\w*|beethoven\w*|"
+    r"шопен\w*|chopin\w*|вивальд\w*|vivaldi\w*|чайковск\w*|tchaikovsky\w*|"
+    r"штраус\w*|strauss\w*|верди\w*|verdi\w*|шуберт\w*|schubert\w*|"
+    r"бизе\w*|россини\w*|рахманинов\w*|прокофьев\w*|"
+    r"\bdre\b"  # «still dre» / «dr dre» — «дре» по-русски неоднозначно
+)
+
+#: Play-глаголы для запроса «сыграй/давай <композитор>» — шире, чем
+#: ``_MUSIC_START_VERBS`` (там нет «давай», «найди», «ебан*» — намеренно,
+#: чтобы не плодить babble/chit-chat false positives вне музыкального
+#: контекста). Здесь безопасно: срабатывает ТОЛЬКО в паре с именем
+#: композитора/артиста или явным упоминанием RTTTL-библиотеки.
+_MUSIC_NAMED_REQUEST_VERBS: str = (
+    r"давай\w*|включ\w*|сыграй\w*|игра\w*|поставь\w*|наигра\w*|"
+    r"ебан\w*|вруб\w*|запуст\w*|найд\w*|дай\b"
+)
+
+_MUSIC_NAMED_REQUEST_GAP = r".{0,30}?"
+MUSIC_NAMED_REQUEST_RE = re.compile(
+    rf"\b(?:{_MUSIC_NAMED_REQUEST_VERBS})\b{_MUSIC_NAMED_REQUEST_GAP}"
+    rf"\b(?:{_MUSIC_KNOWN_COMPOSERS})"
+    rf"|\b(?:{_MUSIC_KNOWN_COMPOSERS})\b{_MUSIC_NAMED_REQUEST_GAP}"
+    rf"\b(?:{_MUSIC_NAMED_REQUEST_VERBS})\b",
+    re.IGNORECASE,
+)
+
+#: Отсылка к RTTTL-библиотеке нот («найди баха в рттл», «в ртттл») —
+#: самодостаточный сигнал: RTTTL — специфичный для этого проекта формат
+#: нотной записи, chit-chat это слово не употребляет. Живьём встречается
+#: и с двумя, и с тремя «т» («рттл» / «ртттл»), поэтому ``тт+`` (2+).
+MUSIC_RTTTL_MENTION_RE = re.compile(r"р?тт+л|rtttl", re.IGNORECASE)
+
+
 def user_wants_music(user_input: str, *, logger: Optional[logging.Logger] = None) -> bool:
     """Heuristic: does the user request music / a track?
 
@@ -791,6 +873,21 @@ def user_wants_music(user_input: str, *, logger: Optional[logging.Logger] = None
     if not user_input:
         return False
     low = user_input.lower()
+    # 🔴 FIX (live 23.09, issue #2834): «давай грига», «включи уже still
+    # dre», «найди баха в рттл» — запрос по имени композитора/артиста или
+    # по ссылке на RTTTL-библиотеку, без слов «музыка/трек/мелодия». См.
+    # комментарий над :data:`MUSIC_NAMED_REQUEST_RE`.
+    if (
+        MUSIC_NAMED_REQUEST_RE.search(low)
+        or MUSIC_RTTTL_MENTION_RE.search(low)
+    ):
+        if logger is not None:
+            logger.debug(
+                f"🎵 [music_guard] user_input={user_input!r} matched "
+                f"named-composer/rtttl request → wants_music=True "
+                "(issue #2834)"
+            )
+        return True
     # 🔴 FIX (live 30.08): «продолжай развивать этот бит» / «переходи в
     # джангл» — просьба развить уже играющую музыку. Подстрочных ключей на
     # неё нет, поэтому сначала пробуем пару «глагол + муз. существительное».
@@ -836,7 +933,11 @@ def is_music_stop_command(user_input: str) -> bool:
     if not user_input:
         return False
     low = user_input.lower()
-    return any(kw in low for kw in MUSIC_STOP_OVERRIDES)
+    if any(kw in low for kw in MUSIC_STOP_OVERRIDES):
+        return True
+    # Issue #2834 — общий паттерн «стоп-глагол + муз. существительное»,
+    # см. комментарий над :data:`MUSIC_STOP_COMMAND_RE`.
+    return bool(MUSIC_STOP_COMMAND_RE.search(low))
 
 
 def is_vocal_request(user_input: str) -> bool:

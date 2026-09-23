@@ -674,6 +674,31 @@ class TestEvaluateStopCommand:
             "it is not a music request"
         )
 
+    def test_issue_2834_stop_dj_without_stop_tool_forces_stop(self) -> None:
+        """Issue #2834, live 23.09.2026 (TG): «стоп диджей» → робот через
+        пару секунд снова заиграл. ``is_music_stop_command`` не ловил
+        «стоп» + голое «диджей» (без «ить»/«я»/«режим»), а «диджей» само
+        по себе совпадало с ``MUSIC_GUARD_KEYWORDS`` — гуард решал «юзер
+        хочет музыку» и уходил в ``USER_RETRY`` вместо ``FORCE_STOP``.
+        Со стоп-командой это Bug C с CRITICAL «ты НЕ вызвал музыкальный
+        тул», хотя юзер просил ровно противоположное — остановить.
+        """
+        guard = MusicGuard()
+        verdict = guard.evaluate(
+            was_dj_auto=False,
+            user_input="стоп диджей",
+            tools_called=(),
+            dj_enabled=False,
+            build_music_retry_prompt=_music_prompt,
+        )
+        assert verdict.kind is MusicGuardVerdictKind.FORCE_STOP
+        assert verdict.kind is not MusicGuardVerdictKind.USER_RETRY
+        assert verdict.reason == "stop_command_unbacked"
+        assert guard.user_retry_count == 0, (
+            "Stop-command must NOT consume the user-retry budget — "
+            "it is not a music request"
+        )
+
     def test_stop_command_with_was_dj_auto_falls_through(self) -> None:
         """``was_dj_auto=True`` + ``dj_enabled=False`` — ветка Bug B
         отключена, стоп-команда ловится стоп-веткой, а не бюджетом Bug B."""

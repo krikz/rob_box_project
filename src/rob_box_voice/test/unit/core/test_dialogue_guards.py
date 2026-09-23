@@ -227,6 +227,69 @@ class TestIsVocalRequest:
 
 
 # ---------------------------------------------------------------------------
+# Issue #2834 — live repro table (23.09.2026, TG, Vision Pi).
+#
+# «стоп диджей» → робот через пару секунд снова играет: живой баг —
+# ``is_music_stop_command`` не ловил «стоп» + голое «диджей» (без
+# «ить»/«я»/«режим»). Обратная сторона: «давай грига», «включи уже
+# still dre» и другие именные запросы композитора/артиста уходили в
+# wants=False, потому что ни «музыка», ни «трек» в них не произносятся.
+#
+# ``expected_wants`` для СТОП-фраз намеренно НЕ проверяется этой таблицей:
+# ``user_wants_music`` может оставаться True на «диджей»-подстроке (та же
+# логика, что и для «выключи диджея» — см.
+# ``test_stop_overrides_are_caught_by_stop_detector`` и
+# ``TestMusicStateQueryE2E35665111906.test_stop_command_keeps_its_own_verdict``
+# в ``test_music_guard.py``: гуард полагается на порядок проверок —
+# ``is_music_stop_command`` выигрывает у ``user_wants_music`` В ЛЮБОМ
+# случае, см. ``music_guard.py:429`` — FORCE_STOP проверяется раньше
+# ``user_wants_music`` на строке 474). Форсировать
+# ``user_wants_music=False`` для стоп-фраз ломает этот инвариант (два
+# существующих теста красные), поэтому единственная проверяемая здесь
+# гарантия для стоп-строк — ``is_music_stop_command=True``; отсутствие
+# USER_RETRY доказывается отдельно на уровне ``MusicGuard.evaluate`` в
+# ``test_music_guard.py::TestEvaluateStopCommand::
+# test_issue_2834_stop_dj_without_stop_tool_forces_stop``.
+# ---------------------------------------------------------------------------
+
+ISSUE_2834_LIVE_PHRASE_TABLE: tuple = (
+    # (user_input, expected_stop, expected_wants_music_or_None)
+    # None = не проверяем wants_music для этой строки (см. комментарий выше).
+    ("стоп диджей", True, None),
+    ("стоп диджей блядь", True, None),
+    ("стоп музыка", True, None),
+    ("давай грига", False, True),
+    ("включи уже still dre", False, True),
+    ("ты мне опять спиздел найди баха в рттл", False, True),
+    ("заебок теперь давай баха на гитаре ебанем", False, True),
+)
+
+
+class TestIssue2834LivePhraseTable:
+    """Issue #2834 — юнит-тест с полной таблицей живых фраз из репорта."""
+
+    @pytest.mark.parametrize(
+        "user_input,expected_stop,expected_wants",
+        ISSUE_2834_LIVE_PHRASE_TABLE,
+    )
+    def test_live_phrase(
+        self,
+        user_input: str,
+        expected_stop: bool,
+        expected_wants: Optional[bool],
+    ) -> None:
+        assert is_music_stop_command(user_input) is expected_stop, (
+            f"is_music_stop_command({user_input!r}) should be "
+            f"{expected_stop!r}"
+        )
+        if expected_wants is not None:
+            assert user_wants_music(user_input) is expected_wants, (
+                f"user_wants_music({user_input!r}) should be "
+                f"{expected_wants!r}"
+            )
+
+
+# ---------------------------------------------------------------------------
 # Retry prompt builders
 # ---------------------------------------------------------------------------
 
