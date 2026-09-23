@@ -151,10 +151,14 @@ class MemorySearchTool(MCPTool):
     @property
     def description(self) -> str:
         return (
-            "Поиск по долгосрочной памяти (история разговоров со всех сессий). "
-            "Используй когда нужно вспомнить: 'где мы остановились', 'что я просил раньше', "
-            "'какие были настройки'. "
-            "Возвращает релевантные фрагменты из прошлых разговоров."
+            "Поиск по долгосрочной памяти: сохранённые факты о пользователе "
+            "(memory_save) И история разговоров со всех сессий. "
+            "Используй когда нужно вспомнить что-то про пользователя "
+            "('что я говорил про...', 'что ты обо мне знаешь') или сверить "
+            "факт, который только что сохранил через memory_save — включая "
+            "в этом же разговоре, сразу после сохранения. "
+            "Возвращает и факты, и фрагменты прошлых разговоров, помечая "
+            "каждый результат полем kind: 'fact' | 'turn'."
         )
 
     @property
@@ -216,18 +220,25 @@ class MemorySearchTool(MCPTool):
                 f"(vec={'yes' if memory.embedder.is_available() else 'no'})"
             )
 
-            # Format for LLM readability
+            # Format for LLM readability. Issue #2793 — ``kind`` tells the
+            # LLM (and any test) whether a hit is a saved fact
+            # (``memory_save``, source="fact") or a historical conversation
+            # line (source="fts"/"vec"/"hybrid"); ``.get`` defaults keep this
+            # compatible with any ``VoiceMemory`` stand-in that only ever
+            # returned turns (no "kind"/"category" keys).
             formatted = []
             for r in results:
-                formatted.append(
-                    {
-                        "role": r["role"],
-                        "content": r["content"],
-                        "session": r["session_id"],
-                        "score": round(r.get("score", 0), 4),
-                        "source": r.get("source", "fts"),
-                    }
-                )
+                entry = {
+                    "kind": r.get("kind", "turn"),
+                    "role": r["role"],
+                    "content": r["content"],
+                    "session": r.get("session_id"),
+                    "score": round(r.get("score", 0), 4),
+                    "source": r.get("source", "fts"),
+                }
+                if r.get("kind") == "fact":
+                    entry["category"] = r.get("category")
+                formatted.append(entry)
 
             return MCPToolResult(
                 success=True,
