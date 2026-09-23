@@ -63,7 +63,10 @@ for _hw in ("pyaudio", "usb", "usb.core", "usb.util", "sounddevice"):
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from rob_box_voice import speaker_id_node as sid_node  # noqa: E402
-from rob_box_voice.utils.speaker_embeddings import SpeakerDatabase  # noqa: E402
+from rob_box_voice.utils.speaker_embeddings import (  # noqa: E402
+    SpeakerDatabase,
+    SpeakerMatch,
+)
 
 
 class _Embed:
@@ -130,6 +133,10 @@ def node(tmp_path, monkeypatch):
     instance._epithet_request_pub = None
     instance._growth_session_gap_sec = 30.0
     instance._growth_session = None
+    # Issue #2829 (ADR-0131 PR-2, координатор-ревью) -- нижний порог
+    # + переиспользуемый gap-порог #2809 для growth-гейта.
+    instance._growth_owner_min_score = 0.65
+    instance._name_confidence_min_gap = 0.15
     instance._executor = ThreadPoolExecutor(max_workers=2)
     yield instance
     instance._executor.shutdown(wait=True)
@@ -157,7 +164,16 @@ def test_register_with_matching_embedding_registers_immediately(node):
     node._on_register_request(
         _msg({"name": "Саша", "utterance_id": "utt-abc123"})
     )
-    _wait_until(lambda: node._db.list_speakers() != [])
+    # Issue #2829 -- _do_register выполняется в executor-потоке; ждём
+    # ИМЕННО ack (registered), а не факт записи в БД -- DB-commit и
+    # publish(ack) оба происходят в ТОМ ЖЕ потоке, но GIL может
+    # переключиться на этот (главный) поток между ними, и polling по
+    # одной лишь БД -- гонка.
+    _wait_until(
+        lambda: any(
+            m.get("event") == "registered" for m in node._result_pub.messages
+        )
+    )
 
     speakers = node._db.list_speakers()
     assert len(speakers) == 1
@@ -319,9 +335,11 @@ def test_growth_session_still_grows_for_owner_when_identify_fails(node):
     sid = node._growth_session["speaker_id"]
     node._result_pub.messages.clear()
 
-    # cos ~ 0.523 -- ниже calibrated IDENTIFY_THRESHOLD (0.72), тот же
-    # приём калибровки, что в test_register_publishes_result.py.
-    alpha = float((1.0 / 0.523 ** 2 - 1.0) ** 0.5)
+    # cos ~ 0.68 -- в валидной полосе [growth_owner_min_score=0.65,
+    # identify_threshold=0.72): identify() честно отдаёт None, но
+    # growth-гейт (0.65) реплику пропускает -- тот же приём калибровки,
+    # что в test_register_publishes_result.py.
+    alpha = float((1.0 / 0.68 ** 2 - 1.0) ** 0.5)
     degraded = _degraded(base, alpha=alpha, noise_seed=201)
     node._db.embed_audio_ex = MagicMock(return_value=_Embed(degraded))
 
@@ -348,4 +366,107 @@ def test_growth_session_still_vetoes_confident_different_speaker(node):
 
     assert node._db.gallery_size(sid_anchor) == 1
     assert node._db.gallery_size(sid_other) == 1
+    assert node._growth_session is None
+# ---------------------------------------------------------------------------
+# 5. Координатор-ревью PR-2 (после первого прохода): нижний порог +
+#    профили-тёзки + отрыв до конкурента с другим именем.
+# ---------------------------------------------------------------------------
+
+
+def test_growth_session_rejects_stranger_scoring_below_floor(node):
+    """Главный сценарий issue #2829 п.3, который топ-1-без-порога САМ ПО
+    СЕБЕ не закрывал: в БД зарегистрирован ТОЛЬКО владелец, топ-1
+    тривиально владелец вне зависимости от score. Нижний порог
+    growth_owner_min_score=0.65 обязан отсечь чужой голос со score=0.55."""
+    base = _embedding(400)
+    node._do_register("Хозяин", base, speaker_id=None)
+    sid = node._growth_session["speaker_id"]
+    node._result_pub.messages.clear()
+
+    alpha = float((1.0 / 0.55 ** 2 - 1.0) ** 0.5)
+    stranger = _degraded(base, alpha=alpha, noise_seed=401)
+    node._db.embed_audio_ex = MagicMock(return_value=_Embed(stranger))
+
+    node._process_utterance(b"\x00\x00" * 50000, utterance_id="utt-stranger-055")
+
+    assert node._db.gallery_size(sid) == 1, "score 0.55 < 0.65 -- дописывать нельзя"
+    assert node._growth_session is None, "сессия обязана закрыться на низком score"
+
+
+def test_growth_session_accepts_own_voice_above_floor(node):
+    """Тот же владелец, но score=0.72 (>= growth_owner_min_score и >=
+    identify_threshold) -- обязан дописаться, конкурентов с другим именем
+    в БД нет."""
+    base = _embedding(410)
+    node._do_register("Хозяин", base, speaker_id=None)
+    sid = node._growth_session["speaker_id"]
+    node._result_pub.messages.clear()
+
+    alpha = float((1.0 / 0.72 ** 2 - 1.0) ** 0.5)
+    own_voice = _degraded(base, alpha=alpha, noise_seed=411)
+    node._db.embed_audio_ex = MagicMock(return_value=_Embed(own_voice))
+
+    node._process_utterance(b"\x00\x00" * 50000, utterance_id="utt-own-072")
+
+    assert node._db.gallery_size(sid) == 2, "score 0.72 обязан дописаться"
+    assert node._growth_session is not None
+
+
+def test_growth_session_grows_owner_gallery_when_top1_is_name_twin(node):
+    """Issue #2747 (живой 'Дэнчик' -- два профиля под одним именем):
+    top-1 кандидат оказывается ВТОРЫМ профилем ТОГО ЖЕ имени (другой
+    speaker_id) -- это не 'чужой голос', сравнение по имени
+    (_gap_to_other_name) не считает тёзку конкурентом. Дописать нужно в
+    галерею ВЛАДЕЛЬЦА СЕССИИ (session['speaker_id']), а не в top-1
+    профиль."""
+    base = _embedding(420)
+    node._do_register("Дэнчик", base, speaker_id=None)
+    sid_owner = node._growth_session["speaker_id"]
+    node._result_pub.messages.clear()
+
+    twin_id = "twin-0000-0000-0000-000000000000"
+    embedding = _embedding(421)  # текущая реплика (сам вектор не важен
+    # для этого теста -- identify_candidates замокан ниже, geometry не
+    # участвует в решении).
+    node._db.identify_candidates = MagicMock(
+        return_value=[
+            SpeakerMatch(speaker_id=twin_id, name="Дэнчик", confidence=0.80),
+            SpeakerMatch(speaker_id=sid_owner, name="Дэнчик", confidence=0.75),
+        ]
+    )
+    node._db.embed_audio_ex = MagicMock(return_value=_Embed(embedding))
+
+    node._process_utterance(b"\x00\x00" * 50000, utterance_id="utt-twin")
+
+    assert node._growth_session is not None, "тёзка -- не конкурент, сессия жива"
+    assert node._db.gallery_size(sid_owner) == 2, (
+        "дописать нужно ВЛАДЕЛЬЦУ сессии, а не в top-1 профиль-тёзку"
+    )
+
+
+def test_growth_session_rejects_when_close_to_different_named_competitor(node):
+    """Конкурент с ДРУГИМ именем и малым отрывом (gap < name_confidence_
+    min_gap=0.15) -- реплика могла реально принадлежать ему, дописывать
+    владельцу нельзя (issue #2809/#2818 style gap-защита, переиспользована
+    здесь по прямому запросу координатора)."""
+    base = _embedding(430)
+    node._do_register("Хозяин", base, speaker_id=None)
+    sid_owner = node._growth_session["speaker_id"]
+    node._result_pub.messages.clear()
+
+    other_id = "competitor-0000-0000-0000-000000000000"
+    embedding = _embedding(431)
+    node._db.identify_candidates = MagicMock(
+        return_value=[
+            SpeakerMatch(speaker_id=sid_owner, name="Хозяин", confidence=0.70),
+            SpeakerMatch(speaker_id=other_id, name="Пётр", confidence=0.60),
+        ]
+    )
+    node._db.embed_audio_ex = MagicMock(return_value=_Embed(embedding))
+
+    node._process_utterance(b"\x00\x00" * 50000, utterance_id="utt-small-gap")
+
+    assert node._db.gallery_size(sid_owner) == 1, (
+        "gap=0.10 < 0.15 -- слишком похоже на конкурента, дописывать нельзя"
+    )
     assert node._growth_session is None

@@ -158,6 +158,10 @@ def node(tmp_path, monkeypatch):
     # Issue #2747 — growth-сессия (session-anchor рост галереи).
     instance._growth_session_gap_sec = 30.0
     instance._growth_session = None
+    # Issue #2829 (ADR-0131 PR-2, координатор-ревью) -- нижний порог
+    # + переиспользуемый gap-порог #2809 для growth-гейта.
+    instance._growth_owner_min_score = 0.65
+    instance._name_confidence_min_gap = 0.15
     yield instance
     instance._db.close()
 
@@ -335,27 +339,40 @@ def test_do_register_without_duration_is_not_gated(node):
 def test_growth_session_grows_gallery_even_when_identify_fails(node):
     """КЛЮЧЕВОЙ тест новой версии: рост НЕ зависит от исхода identify().
 
-    Калиброванный порог 0.72 НЕ пропускает cos~0.523 (то самое измерение
-    issue #2747) — обычная идентификация даёт unknown. Но раз growth-сессия
-    открыта (после явной регистрации), эмбеддинг всё равно дописывается в
-    галерею — потому что личность подтверждена НЕПРЕРЫВНОСТЬЮ сессии, а не
-    похожестью голоса."""
+    Калиброванный порог 0.72 НЕ пропускает cos~0.68 -- обычная
+    идентификация даёт unknown. Но раз growth-сессия открыта (после явной
+    регистрации) И похожесть на владельца всё же выше нижнего
+    growth-порога (0.65, issue #2829 координатор-ревью), эмбеддинг всё равно
+    дописывается в галерею -- личность подтверждена НЕПРЕРЫВНОСТЬЮ
+    сессии, а не полной похожестью голоса.
+
+    Issue #2829 (координатор-ревью PR-2): раньше здесь стоял cos~0.523 --
+    то самое измерение issue #2747, взятое ДО того, как у growth-гейта
+    появился нижний порог 0.65. Теперь 0.523 < 0.65, и рост на нём
+    ЗАКОНОМЕРНО не произошёл бы (главный сценарий #2829 п.3 -- чужой
+    голос с похожим на владельца score не должен дописываться). Новое
+    число 0.68 лежит РОВНО в валидной полосе [growth_owner_min_score,
+    identify_threshold) = [0.65, 0.72) -- тест по-прежнему проверяет то же самое
+    утверждение ("growth работает даже когда identify() честно
+    вернул None"), просто на числе, которое остаётся в силе после
+    добавления нижнего порога."""
     base = _embedding(10)
     node._do_register("Деньчик", base, speaker_id=None)
     sid = node._growth_session["speaker_id"]
     assert node._db.gallery_size(sid) == 1
     node._result_pub.messages.clear()
 
-    alpha = float((1.0 / 0.523 ** 2 - 1.0) ** 0.5)
+    alpha = float((1.0 / 0.68 ** 2 - 1.0) ** 0.5)
     second = _degraded(base, alpha=alpha, noise_seed=11)
     node._db.embed_audio_ex = MagicMock(return_value=_Embed(second))
 
-    node._process_utterance(b"\x00\x00" * 1000)
+    node._process_utterance(bytes(2000))
 
     assert node._db.gallery_size(sid) == 2, (
-        "growth-сессия обязана дописать эмбеддинг НЕЗАВИСИМО от identify()"
+        "growth-сессия обязана дописать эмбеддинг НЕЗАВИСИМО от identify(), "
+        "пока похожесть на владельца выше growth_owner_min_score"
     )
-    # identify() на калиброванном пороге реплику не узнал — is_known=false,
+    # identify() на калиброванном пороге реплику не узнал -- is_known=false,
     # рост галереи никак не подделывает результат обычной идентификации.
     assert node._result_pub.messages == [{"is_known": False}]
     assert node._growth_session["count"] == 1

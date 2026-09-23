@@ -293,6 +293,17 @@ class SpeakerIdNode(Node):
         #   0.88 -- https://github.com/resemble-ai/Resemblyzer/issues/42).
         self.declare_parameter("name_confidence_band_high", 0.80)
         self.declare_parameter("name_confidence_min_gap", 0.15)
+        # Issue #2829 (ADR-0131 PR-2, координатор-ревью) -- нижний порог
+        # для решения "эта реплика похожа на владельца growth-сессии
+        # достаточно, чтобы дописать её в галерею". Калибровка 23.09:
+        # живой голос хозяина 0.708-0.856 (утром при плохом канале
+        # 0.43-0.63), синтетические чужие голоса против владельца
+        # 0.53-0.73 -- распределения пересекаются, идеального порога нет
+        # (тот же вывод, что и у IDENTIFY_THRESHOLD/#2747), но 0.65 режет
+        # БОЛЬШЕ чужих голосов, чем упускает живых: из живого диапазона
+        # хозяина теряем только утренний хвост при плохом канале (честная
+        # цена -- лучше не вырасти, чем отравить галерею чужим голосом).
+        self.declare_parameter("growth_owner_min_score", 0.65)
         # Issue W5-4 + #2348 — отдельный, более строгий порог для решения
         # «слить с существующим профилем при регистрации vs завести новый»
         # внутри register_or_merge(). Калибровка по
@@ -374,6 +385,10 @@ class SpeakerIdNode(Node):
         )
         self._name_confidence_min_gap: float = float(
             self.get_parameter("name_confidence_min_gap").value
+        )
+        # Issue #2829 -- см. declare_parameter выше.
+        self._growth_owner_min_score: float = float(
+            self.get_parameter("growth_owner_min_score").value
         )
         gallery_warmup_size: int = int(self.get_parameter("gallery_warmup_size").value)
         self._growth_session_gap_sec: float = float(
@@ -981,36 +996,66 @@ class SpeakerIdNode(Node):
         # проходил насквозь и дописывался в чужую галерею, живой пример
         # "Дэнчик x2" из issue).
         #
-        # ``match`` (аргумент выше) уже применяет калиброванный
-        # ``identify_threshold`` и может быть ``None`` даже для ЗАКОННОГО
-        # владельца сессии на раннем этапе роста -- именно поэтому growth
-        # вообще существует (#2747: живой хозяин с 1 эталоном в галерее
-        # даёт cos~0.523, ниже порога 0.72). Требовать
-        # ``match.speaker_id == owner`` сломало бы рост с нуля.
+        # Первая версия этой правки (топ-1 БЕЗ порога == owner) была
+        # неполной по ревью координатора: если в БД зарегистрирован
+        # ТОЛЬКО владелец сессии (типичная мастерская), топ-1 ВСЕГДА
+        # владелец вне зависимости от score -- главный сценарий issue
+        # (чужой голос в открытой сессии) оставался открытым. Три
+        # условия ниже закрывают его:
         #
-        # Вместо порога на АБСОЛЮТНЫЙ score берём топ-1 кандидата БЕЗ
-        # порога (``identify_candidates``, issue W5-4 п.4) -- если даже
-        # САМЫЙ похожий профиль во всей БД не владелец сессии, эта
-        # реплика точно не его: либо уверенно другой известный (старое
-        # вето, теперь частный случай), либо голос, который ближе к
-        # кому-то ДРУГОМУ, чем к владельцу, даже не набирая
-        # identify_threshold ни для кого. Это НЕ адаптивный акустический
-        # порог, отклонённый в #2747 (там пробовали калибровать ГРАНИЦУ
-        # принятия по cosine — тут используется ТОЛЬКО ранжирование
-        # "кто ближе", а решение "дописывать вообще" остаётся на
-        # непрерывности сессии.
-        top = self._db.identify_candidates(embedding, top_n=1)
-        top_is_owner = bool(top) and top[0].speaker_id == session["speaker_id"]
-        if not top_is_owner:
-            best_desc = (
-                f"'{top[0].name}' score={top[0].confidence:.3f}"
-                if top
+        # 1) ``best.confidence >= growth_owner_min_score`` -- нижний
+        #    порог. Калибровка 23.09: живой хозяин 0.708-0.856 (утром
+        #    при плохом канале 0.43-0.63), синтетические чужие голоса
+        #    против владельца 0.53-0.73 -- распределения пересекаются
+        #    (тот же вывод, что у IDENTIFY_THRESHOLD/#2747), 0.65 --
+        #    компромисс: режет больше чужих, чем упускает живых. Цена
+        #    честно принята: утренний хвост при плохом канале НЕ растит
+        #    галерею -- лучше не вырасти, чем отравиться чужим голосом.
+        # 2) Профили-тёзки (issue #2747, живой "Дэнчик" — 1ae4b0ac и
+        #    c9e981cb) -- top-1 может оказаться ВТОРЫМ профилем ТОГО ЖЕ
+        #    человека (другой speaker_id, то же имя). Это не "другой
+        #    голос" -- сравниваем по имени, как ``_gap_to_other_name``
+        #    (issue #2809/#2818): совпадение имени = не конкурент,
+        #    дописываем в галерею ВЛАДЕЛЬЦА СЕССИИ (не в top-1 профиль).
+        # 3) Если есть конкурент с ДРУГИМ именем -- требуем отрыв
+        #    (``_gap_to_other_name``, тот же порог
+        #    ``name_confidence_min_gap``, что и у #2809): маленький
+        #    разрыв — реплика могла реально принадлежать тому конкуренту,
+        #    дописывать нельзя.
+        candidates = self._db.identify_candidates(embedding, top_n=5)
+        best = candidates[0] if candidates else None
+        owner_id = session["speaker_id"]
+        owner_name_cf = (session["name"] or "").strip().casefold()
+        best_is_owner_or_twin = bool(best) and (
+            best.speaker_id == owner_id
+            or (best.name or "").strip().casefold() == owner_name_cf
+        )
+        veto_reason: Optional[str] = None
+        if not best_is_owner_or_twin:
+            veto_reason = (
+                f"реплика ближе к '{best.name}' score={best.confidence:.3f}, "
+                "чем к владельцу сессии"
+                if best
                 else "БД пуста"
             )
+        elif best.confidence < self._growth_owner_min_score:
+            veto_reason = (
+                f"похожесть на владельца ({best.confidence:.3f}) ниже "
+                f"growth_owner_min_score={self._growth_owner_min_score} — "
+                "недостаточно уверенно, чтобы дописать чужим риском"
+            )
+        else:
+            gap = _gap_to_other_name(best, candidates)
+            if gap is not None and gap < self._name_confidence_min_gap:
+                veto_reason = (
+                    f"разрыв до ближайшего конкурента с другим именем "
+                    f"(gap={gap:.3f}) меньше name_confidence_min_gap="
+                    f"{self._name_confidence_min_gap} — реплика могла быть его"
+                )
+        if veto_reason is not None:
             self.get_logger().info(
                 f"🌙 [issue #2829] growth-сессия '{session['name']}' закрыта: "
-                f"реплика ближе к {best_desc}, чем к владельцу сессии — "
-                "не дописываем (риск отравить чужую галерею)"
+                f"{veto_reason} — не дописываем (риск отравить чужую галерею)"
             )
             self._growth_session = None
             return
@@ -1283,6 +1328,9 @@ class SpeakerIdNode(Node):
         "name_confidence_band_high": "_name_confidence_band_high",
         "name_confidence_min_gap": "_name_confidence_min_gap",
         "register_match_threshold": None,
+        # Issue #2829 -- growth-гейт форсируется на время E2E-акта тем же
+        # путём (ros2 param set), что остальные калибровки этой семьи.
+        "growth_owner_min_score": "_growth_owner_min_score",
     }
 
     def _apply_live_float(self, name: str, raw) -> bool:
