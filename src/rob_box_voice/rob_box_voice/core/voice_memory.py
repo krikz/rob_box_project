@@ -606,26 +606,70 @@ class VoiceMemory:
         speaker_id: Optional[str] = None,
     ) -> List[Dict]:
         """
-        Hybrid tiered search over stored conversation turns.
+        Search stored user facts AND conversation turns (issue #2793).
 
-        Strategy (mirrors EchoVault tiered_search):
+        Before this fix, ``memory_save`` persisted to ``voice_facts`` while
+        this method only ever read ``voice_turns`` -- a fact saved seconds
+        earlier could never be found again, and the LLM told the user
+        "sorry, my memory is broken" (see the issue's live E2E transcript:
+        facts=4 turns=0 in the run's DB, yet ``memory_search`` came back
+        empty). ``voice_facts`` is searched first since it is the store
+        ``memory_save`` actually writes to in production; whatever slots
+        remain under ``limit`` are filled with matching conversation turns,
+        kept for callers that still rely on the original turns-only
+        contract (and for the day ``voice_turns`` gets a writer again).
+
+        Strategy for the turns half (mirrors EchoVault tiered_search):
           1. FTS5 BM25 keyword search -- fast, always available.
           2. If FTS returns < FTS_MIN_RESULTS AND Ollama is available:
              also run vector search, merge by score, deduplicate.
 
         Args:
             query:      Natural language or keyword query (Russian / English).
-            limit:      Max number of results.
-            speaker_id: When given, restrict results to turns belonging to
+            limit:      Max number of results (facts + turns combined).
+            speaker_id: When given, restrict results to rows belonging to
                         ``speaker_id`` OR legacy global rows (NULL).
-                        ``None`` returns all turns regardless of speaker
+                        ``None`` returns all rows regardless of speaker
                         (used by the LLM with no current biometric context).
 
         Returns:
             List of dicts: {id, session_id, role, content, timestamp,
-            speaker_id, score, source}. source = "fts" | "vec" | "hybrid"
+            speaker_id, score, source, kind}.
+            ``kind`` = "fact" | "turn" -- new in #2793 so callers
+            (``MemorySearchTool``) can tell a saved fact apart from a
+            historical conversation line instead of presenting both as an
+            undifferentiated "turn". ``source`` = "fact" | "fts" | "vec" |
+            "hybrid".
         """
-        if not query or not query.strip():
+        if not query or not query.strip() or limit <= 0:
+            return []
+
+        fact_hits = self._fact_search(query, limit, speaker_id=speaker_id)
+
+        remaining = limit - len(fact_hits)
+        turn_hits = (
+            self._search_turns(query, remaining, speaker_id=speaker_id)
+            if remaining > 0
+            else []
+        )
+        for hit in turn_hits:
+            hit.setdefault("kind", "turn")
+
+        return fact_hits + turn_hits
+
+    def _search_turns(
+        self,
+        query: str,
+        limit: int,
+        speaker_id: Optional[str] = None,
+    ) -> List[Dict]:
+        """Hybrid tiered search over ``voice_turns`` only.
+
+        This is the pre-#2793 body of ``search()`` -- unchanged behaviour,
+        just split out so the public ``search()`` can also consult
+        ``voice_facts`` (see its docstring).
+        """
+        if limit <= 0:
             return []
 
         fts_results = self._fts_search(query, limit, speaker_id=speaker_id)
@@ -640,6 +684,71 @@ class VoiceMemory:
             return merged
 
         return fts_results
+
+    def _fact_search(
+        self,
+        query: str,
+        limit: int,
+        speaker_id: Optional[str] = None,
+    ) -> List[Dict]:
+        """Keyword search over ``voice_facts`` (issue #2793).
+
+        No FTS5 index exists for ``voice_facts`` (a handful of short rows
+        per user, not a corpus worth indexing), so this filters in Python
+        with ``str.casefold`` rather than SQL ``LIKE``/``LOWER`` -- SQLite's
+        built-in ``LOWER()`` only folds ASCII, so a raw SQL ``LOWER(fact)
+        LIKE ?`` silently never matches Cyrillic (the primary language
+        here). Any token matching is enough, mirroring the OR-of-tokens
+        behaviour of ``_fts_search`` above. Respects the same speaker
+        scoping rule as ``save_fact``/``get_facts``: ``speaker_id`` OR
+        legacy NULL rows.
+        """
+        if limit <= 0:
+            return []
+        tokens = [t for t in query.casefold().split() if t]
+        if not tokens:
+            return []
+
+        where = ""
+        params: List[Any] = []
+        if speaker_id:
+            where = "WHERE (speaker_id = ? OR speaker_id IS NULL)"
+            params.append(speaker_id)
+
+        try:
+            with self.lock:
+                rows = self.conn.execute(
+                    f"""
+                    SELECT id, fact, category, speaker_id,
+                           created_at, updated_at
+                    FROM voice_facts
+                    {where}
+                    ORDER BY updated_at DESC
+                    """,
+                    params,
+                ).fetchall()
+        except sqlite3.OperationalError:
+            return []
+
+        matches = [
+            r for r in rows if any(t in r["fact"].casefold() for t in tokens)
+        ]
+
+        return [
+            {
+                "id": r["id"],
+                "role": "fact",
+                "content": r["fact"],
+                "session_id": None,
+                "speaker_id": r["speaker_id"],
+                "category": r["category"],
+                "timestamp": r["updated_at"],
+                "score": 1.0,
+                "source": "fact",
+                "kind": "fact",
+            }
+            for r in matches[:limit]
+        ]
 
     def _speaker_clause(self, speaker_id: Optional[str]) -> Tuple[str, list]:
         """

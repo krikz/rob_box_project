@@ -366,6 +366,32 @@ def test_no_prod_path_target_fails_fatally_instead_of_silently_passing(node):
     assert instance._voice_memory_e2e_mode_active is False
 
 
+def test_search_finds_marathon_fact_only_in_e2e_db_not_prod(node):
+    """Issue #2793 — ``memory_search`` должен смотреть в ту же активную БД,
+    что и ``memory_save``. До фикса #2793 ``VoiceMemory.search()`` читал
+    только ``voice_turns`` и никогда ``voice_facts``, поэтому эта проверка
+    падала независимо от изоляции; теперь ``search()`` находит факт сразу
+    после ``save_fact`` в рамках ОДНОГО активного инстанса, и он не течёт
+    в боевую БД, пока e2e_mode включён (та же гарантия, что у get_facts)."""
+    instance, _module = node
+    instance.parameters_callback(_e2e_mode_param(True))
+
+    instance.voice_memory.save_fact("Борис любит зелёный чай без сахара")
+
+    # Тот же активный инстанс сразу находит только что сохранённый факт.
+    hits = instance.voice_memory.search("чай", limit=5)
+    assert any(h["kind"] == "fact" and "чай" in h["content"] for h in hits)
+
+    # В боевую БД факт не попал вовсе.
+    prod_check = VoiceMemory(db_path=instance._voice_memory_prod_db_path)
+    try:
+        assert prod_check.search("чай", limit=5) == [], (
+            "e2e-факт нашёлся в боевой БД поиском — изоляция search() сломана"
+        )
+    finally:
+        prod_check.close()
+
+
 def test_db_switch_failure_returns_unsuccessful_result(node, monkeypatch):
     """Провал переключения (диск недоступен и т. п.) обязан дойти до
     вызывающего ``ros2 param set`` как ``successful=False``."""
