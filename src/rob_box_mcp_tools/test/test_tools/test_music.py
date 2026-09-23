@@ -1907,6 +1907,32 @@ class TestMusicManagerExecuteCodeSynthValidation:
         mock_exec.assert_called_once()
 
 
+@pytest.mark.unit
+class TestMusicManagerExecuteCodePack1Loops:
+    """Issue #2841: лупы пака 1 — только за флагом ROB_BOX_PACK1_LOOPS,
+    по умолчанию выключенным (звук не прослушан на 16 kHz DAC)."""
+
+    CODE = 'd3 >> loop("dnb_1", dur=4, beat_stretch=1, amp=0.3)'
+
+    def test_pack1_loop_rejected_before_exec_when_flag_unset(self, monkeypatch):
+        monkeypatch.delenv("ROB_BOX_PACK1_LOOPS", raising=False)
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec") as mock_exec:
+            result = mgr.execute_code(self.CODE)
+        assert result["success"] is False
+        assert "ROB_BOX_PACK1_LOOPS" in result["error"]
+        mock_exec.assert_not_called()
+
+    def test_pack1_loop_reaches_exec_as_path_when_flag_set(self, monkeypatch):
+        monkeypatch.setenv("ROB_BOX_PACK1_LOOPS", "1")
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec") as mock_exec:
+            result = mgr.execute_code(self.CODE)
+        assert result["success"] is True, result
+        executed = mock_exec.call_args[0][0]
+        assert "../../1_pitchglitch_samples/_loop_/dnb_1" in executed
+
+
 # ---------------------------------------------------------------------------
 # MusicManager — stop_pattern / stop_all
 # ---------------------------------------------------------------------------

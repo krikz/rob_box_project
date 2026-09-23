@@ -1,0 +1,43 @@
+{
+  "_comment": [
+    "Issue #2841 — каталог лупов, которые разрешено играть через loop('<имя>').",
+    "pack0 — дефолтный пак 0_foxdot_default, доступен всегда.",
+    "pack1 — 1_pitchglitch_samples/_loop_: ВСЕ записи ниже — КАНДИДАТЫ, на роботе",
+    "(16 kHz DAC) НЕ прослушаны. Белый список включается только флагом",
+    "ROB_BOX_PACK1_LOOPS=1 (по умолчанию выключен) — после прослушки Шифу.",
+    "Лишнее из кандидатов при прослушке просто удалить из этого файла.",
+    "seconds — длина файла, снята на Vision Pi 23.09.2026 (python wave, моно);",
+    "нужна, чтобы подобрать длину лупа в битах под Clock.bpm."
+  ],
+  "pack1_dir": "1_pitchglitch_samples",
+  "pack0": {
+    "foxdot": {"seconds": 5.431}
+  },
+  "pack1": {
+    "ambient_1": {"seconds": 12.718},
+    "arabic_1": {"seconds": 15.116},
+    "beatbox_1": {"seconds": 2.4},
+    "break_1": {"seconds": 4.227},
+    "dnb_1": {"seconds": 1.396},
+    "dnb_2": {"seconds": 2.922},
+    "dnb_3": {"seconds": 2.927},
+    "electro_1": {"seconds": 4.0},
+    "electro_2": {"seconds": 5.333},
+    "funk_1": {"seconds": 6.0},
+    "future_1": {"seconds": 8.002},
+    "future_2": {"seconds": 8.005},
+    "glitch_1": {"seconds": 1.356},
+    "glitch_2": {"seconds": 3.481},
+    "guitar_1": {"seconds": 9.897},
+    "hiphop_1": {"seconds": 2.352},
+    "hiphop_2": {"seconds": 8.748},
+    "industrial_1": {"seconds": 1.309},
+    "jazzhop_1": {"seconds": 3.478},
+    "jungle_1": {"seconds": 2.0},
+    "jungle_2": {"seconds": 4.235},
+    "perc_1": {"seconds": 2.003},
+    "perc_2": {"seconds": 11.613},
+    "piano_1": {"seconds": 9.6},
+    "yiddish_1": {"seconds": 28.004}
+  }
+}

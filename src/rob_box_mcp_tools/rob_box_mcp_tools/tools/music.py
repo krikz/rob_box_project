@@ -48,7 +48,7 @@ from ..core.arranger import (
     render,
     spec_from_flat,
 )
-from ..core import renardo_sanitizer
+from ..core import renardo_sanitizer, sample_loops
 from ..core.rtttl_compose import melody_to_compose_params, rtttl_to_melody
 from ..core.rtttl_library import RtttlLibrary
 
@@ -1290,7 +1290,11 @@ class MusicManager:
         # перестановка слотов → pianovel→rhpiano → длина рисунка → кап amp.
         # Порядок и сообщения сохранены байт-в-байт.
         sanitized = renardo_sanitizer.sanitize_renando(
-            code, self._max_amp, known_synths=self.known_synth_names()
+            code,
+            self._max_amp,
+            known_synths=self.known_synth_names(),
+            # Issue #2841: лупы пака 1 — только за флагом окружения.
+            pack1_loops_enabled=sample_loops.pack1_loops_enabled(),
         )
         if sanitized.security_error:
             return {"success": False, "error": sanitized.security_error}
