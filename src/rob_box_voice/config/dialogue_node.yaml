@@ -115,6 +115,10 @@ dialogue_node:
     #   харнесса (~60s) длиннее -- робот переспрашивал посреди разговора.
     identity_question_session_gap_sec: 120.0
     identity_answer_window_sec: 180.0
+    # Issue #2829 (ADR-0130) -- сколько ждать биометрию ИМЕННО этой
+    # фразы, прежде чем честно объявить unknown (см. dialogue_node.py
+    # _declare_params).
+    speaker_resolve_timeout_sec: 2.5
     # Бэклог-аккумулятор фоновой речи без wake-слова.
     accumulate_no_wake_enabled: true
     accumulate_window_sec: 180.0

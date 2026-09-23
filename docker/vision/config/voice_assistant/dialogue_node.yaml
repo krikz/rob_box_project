@@ -133,6 +133,8 @@ dialogue_node:
     # Issue #2809 -- см. src/rob_box_voice/config/dialogue_node.yaml
     identity_question_session_gap_sec: 120.0
     identity_answer_window_sec: 180.0
+    # Issue #2829 (ADR-0130) -- см. src/rob_box_voice/config/dialogue_node.yaml
+    speaker_resolve_timeout_sec: 2.5
     startup_greeting_sec: 12.0
     startup_greeting_text: "Я на связи, все системы в норме!"
     tool_provider: ros_mcp
