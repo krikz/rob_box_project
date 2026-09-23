@@ -279,14 +279,25 @@ class TestHarnessContract:
 
         Инвариант: фатал ``E2E_FATAL: YANDEX_API_KEY не задан`` допустим
         ТОЛЬКО под условием ``--tts-provider=yandex``. Если сообщения нет —
-        тоже ок (Yandex вообще выпилили). Если оно есть — рядом обязано
-        быть условие провайдера. Контекст см. ADR-0080 (issue #2803).
+        тоже ок (Yandex вообще выпилили). Если оно есть — КАЖДОЕ его
+        вхождение обязано стоять под этим условием: на той же строке или
+        сразу под ``if``-строкой с ним. Проверка по соседству, а не по
+        наличию подстроки где-то в файле — иначе она не ловит безусловную
+        копию фатала рядом с условной. Контекст см. ADR-0129 (issue #2803).
         """
         text = E2E_SCRIPT.read_text(encoding="utf-8")
-        assert (
-            'E2E_FATAL: YANDEX_API_KEY не задан' not in text
-            or '[ "$E2E_TTS_PROVIDER" = "yandex" ]' in text
-        )
+        guard = '[ "$E2E_TTS_PROVIDER" = "yandex" ]'
+        lines = text.splitlines()
+        for i, line in enumerate(lines):
+            if "E2E_FATAL: YANDEX_API_KEY" not in line:
+                continue
+            prev = next(
+                (p for p in reversed(lines[:i]) if p.strip() and not p.lstrip().startswith("#")),
+                "",
+            )
+            assert guard in line or (prev.lstrip().startswith("if ") and guard in prev), (
+                f"строка {i + 1}: фатал без ключа Yandex не под условием провайдера: {line.strip()!r}"
+            )
         assert (
             '[ "$E2E_TTS_PROVIDER" = "yandex" ] && [ -z "${YANDEX_API_KEY:-}" ]' in text
         )

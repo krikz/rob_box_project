@@ -1,10 +1,10 @@
-# ADR-0080 — test-assert-must-reference-real-script-substring
+# ADR-0129 — test-assert-must-reference-real-script-substring
 
 - **status**: accepted
 - **date**: 2026-09-23
 - **scope**: tests/unit/**, ревью компонента tests/unit
 - **supersedes**: —
-- **fixes**: false-positive в `tests/unit/e2e_scripts/test_tts_provider_selection.py::TestTtsProviderSelection::test_yandex_key_no_longer_unconditional_fatal`
+- **fixes**: false-positive в `tests/unit/e2e_scripts/test_tts_provider_selection.py::TestHarnessContract::test_yandex_key_no_longer_unconditional_fatal`
 - **issue**: #2803
 - **kanban**: t_20825dc6
 
@@ -75,32 +75,45 @@ commit 2f7cf8b265d582e606e1bb266e3f45b6d302c035   (wip(review): baseline для 
 
 ## Решение
 
-### Вариант 2 (принятый): первая assert становится логической связкой
+### Принятое: проверка по соседству, а не по наличию подстроки в файле
 
-```python
-def test_yandex_key_no_longer_unconditional_fatal(self):
-    """Без ключа Yandex прогон обязан оставаться возможным (silero)."""
-    text = E2E_SCRIPT.read_text(encoding="utf-8")
-    # Инвариант: фатал про "не задан ключ" допустим ТОЛЬКО под условием
-    # `--tts-provider=yandex`. Либо сообщения нет вообще, либо рядом с ним —
-    # условие провайдера.
-    assert (
-        'E2E_FATAL: YANDEX_API_KEY не задан' not in text
-        or '[ "$E2E_TTS_PROVIDER" = "yandex" ]' in text
-    )
-    assert (
-        '[ "$E2E_TTS_PROVIDER" = "yandex" ] && [ -z "${YANDEX_API_KEY:-}" ]' in text
-    )
+Первая редакция этого ADR предлагала логическую связку
+`'...не задан' not in text or '[ "$E2E_TTS_PROVIDER" = "yandex" ]' in text`.
+Она тоже почти мёртвая: условие провайдера в скрипте уже есть (строка 302),
+поэтому правая часть `or` истинна всегда, и безусловная копия фатала
+рядом с условной проходит незамеченной. Проверено мутантом — вставка строки
+`echo "E2E_FATAL: YANDEX_API_KEY не задан" >&2; exit 2` после `fi`:
+
+```
+старая связка на мутанте: assert1 = True assert2 = True   ← мутант не пойман
+новая проверка:           AssertionError: строка 306: фатал без ключа Yandex
+                          не под условием провайдера
 ```
 
-Первая assert теперь — это **одна** проверка условности фатала, а не поиск
-фантомной подстроки. Теперь тест ловит **три** регрессии:
+Поэтому проверяется каждое вхождение фатала:
 
-| Регрессия | Старая assert | Новая assert |
+```python
+guard = '[ "$E2E_TTS_PROVIDER" = "yandex" ]'
+lines = text.splitlines()
+for i, line in enumerate(lines):
+    if "E2E_FATAL: YANDEX_API_KEY" not in line:
+        continue
+    prev = next(
+        (p for p in reversed(lines[:i]) if p.strip() and not p.lstrip().startswith("#")),
+        "",
+    )
+    assert guard in line or (prev.lstrip().startswith("if ") and guard in prev)
+```
+
+Вхождение допустимо, если условие провайдера стоит на той же строке
+(однострочник `[ ... ] && { echo ...; }`) или на ближайшей значимой строке
+выше, и та начинается с `if `. Если фатала нет вовсе — проверять нечего,
+тест зелёный. Вторая assert (наличие условия `yandex && -z ключ`) остаётся.
+
+| Регрессия | Связка через `or` | Проверка по соседству |
 |---|---|---|
-| Убрали условие `&&`, оставили текст фатала | False (вторая красная), первая зелёная | True (красная) |
-| Переписали фатал в `"YANDEX_API_KEY is empty"` | False, но обе красные — непонятно какая | True (красная), ясно какая |
-| Заменили фатал на предупреждение `E2E_WARN` | False (первая красная), вторая зелёная | True (красная) |
+| Рядом с условным фаталом появилась безусловная копия | зелёная (дыра) | красная |
+| Условие `&&` убрали, текст фатала оставили | красная только вторая assert | красная обе |
 
 ### Почему НЕ вариант 3 (вынести в отдельный sanity-test)
 
@@ -127,7 +140,7 @@ def test_yandex_key_no_longer_unconditional_fatal(self):
 
 ## Файлы
 
-- Меняется: `tests/unit/e2e_scripts/test_tts_provider_selection.py:277-283`
+- Меняется: `tests/unit/e2e_scripts/test_tts_provider_selection.py::TestHarnessContract::test_yandex_key_no_longer_unconditional_fatal`
 - Контрактная ссылка: `.github/workflows/scripts/e2e_voice_test.sh:302-303`
 - Issue: #2803
 - Kanban: t_20825dc6
