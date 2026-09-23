@@ -983,6 +983,103 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                          'приходится '
                                                                          'просить '
                                                                          'остановить.'},
+                                            'groove_loop': {   'type': 'string',
+                                                               'description': 'Жанровый '
+                                                                              'луп '
+                                                                              'поверх '
+                                                                              'ударных '
+                                                                              '— '
+                                                                              'готовая '
+                                                                              'живая '
+                                                                              'фраза '
+                                                                              '(брейк, '
+                                                                              'джангл, '
+                                                                              'фанк, '
+                                                                              'пиано), '
+                                                                              'растянутая '
+                                                                              'под bpm '
+                                                                              'трека. '
+                                                                              'Встаёт '
+                                                                              'в '
+                                                                              'свободный '
+                                                                              'слот '
+                                                                              'd1-d3, '
+                                                                              'громкость '
+                                                                              'идёт за '
+                                                                              'бочкой '
+                                                                              'формы. '
+                                                                              'Имена: '
+                                                                              'foxdot '
+                                                                              '(всегда), '
+                                                                              'лупы '
+                                                                              'пака '
+                                                                              'pitchglitch '
+                                                                              '— '
+                                                                              'break_1, '
+                                                                              'dnb_1..3, '
+                                                                              'jungle_1..2, '
+                                                                              'hiphop_1..2, '
+                                                                              'jazzhop_1, '
+                                                                              'funk_1, '
+                                                                              'electro_1..2, '
+                                                                              'future_1..2, '
+                                                                              'glitch_1..2, '
+                                                                              'perc_1..2, '
+                                                                              'beatbox_1, '
+                                                                              'industrial_1, '
+                                                                              'piano_1, '
+                                                                              'guitar_1, '
+                                                                              'ambient_1, '
+                                                                              'arabic_1, '
+                                                                              'yiddish_1 '
+                                                                              '— '
+                                                                              'работают, '
+                                                                              'только '
+                                                                              'если '
+                                                                              'владелец '
+                                                                              'включил '
+                                                                              'их '
+                                                                              'после '
+                                                                              'прослушки; '
+                                                                              'иначе '
+                                                                              'вызов '
+                                                                              'вернёт '
+                                                                              'ошибку, '
+                                                                              'и трек '
+                                                                              'надо '
+                                                                              'играть '
+                                                                              'без '
+                                                                              'лупа. '
+                                                                              'Пропусти, '
+                                                                              'если '
+                                                                              'луп не '
+                                                                              'нужен.',
+                                                               'enum': [   'ambient_1',
+                                                                           'arabic_1',
+                                                                           'beatbox_1',
+                                                                           'break_1',
+                                                                           'dnb_1',
+                                                                           'dnb_2',
+                                                                           'dnb_3',
+                                                                           'electro_1',
+                                                                           'electro_2',
+                                                                           'foxdot',
+                                                                           'funk_1',
+                                                                           'future_1',
+                                                                           'future_2',
+                                                                           'glitch_1',
+                                                                           'glitch_2',
+                                                                           'guitar_1',
+                                                                           'hiphop_1',
+                                                                           'hiphop_2',
+                                                                           'industrial_1',
+                                                                           'jazzhop_1',
+                                                                           'jungle_1',
+                                                                           'jungle_2',
+                                                                           'perc_1',
+                                                                           'perc_2',
+                                                                           'piano_1',
+                                                                           'yiddish_1']},
                                             'swing': {   'type': 'number',
                                                          'description': 'Свинг '
                                                                         'восьмых, '
@@ -1027,7 +1124,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                        'counter_synth',
                                        'theme_octaves',
                                        'repeat',
-                                       'swing'],
+                                       'swing',
+                                       'groove_loop'],
                          'required': [],
                          'accepts_kwargs': False},
         'skill': ('composer',)},

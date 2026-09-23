@@ -2447,6 +2447,48 @@ class TestComposeMusicToolFormDeadline:
 
 
 @pytest.mark.unit
+class TestComposeMusicToolGrooveLoop:
+    """Issue #2841: compose_music(groove_loop=...) — луп в свободном d-слоте,
+    pack 1 только за флагом ROB_BOX_PACK1_LOOPS (по умолчанию выключен)."""
+
+    _KW = dict(
+        bpm=120, root="A", scale="minor", form="arc",
+        drums="X...o...X...o...", hats="-.-.-.-.",
+        bass_synth="dub", bass_notes="0,0,4,0",
+        lead_synth="blip", lead_notes="0,2,4,7",
+    )
+
+    def _tool(self, mock_node):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        return ComposeMusicTool(mock_node, mgr)
+
+    def test_schema_exposes_groove_loop_with_catalog_enum(self, mock_node):
+        param = next(p for p in self._tool(mock_node).parameters if p.name == "groove_loop")
+        assert "dnb_1" in param.enum and "foxdot" in param.enum
+
+    def test_pack1_loop_is_refused_without_flag(self, mock_node, monkeypatch):
+        monkeypatch.delenv("ROB_BOX_PACK1_LOOPS", raising=False)
+        with patch("builtins.exec") as mock_exec:
+            result = self._tool(mock_node).execute(groove_loop="break_1", **self._KW)
+        assert result.success is False
+        assert "ROB_BOX_PACK1_LOOPS" in result.error
+        mock_exec.assert_not_called()
+
+    def test_pack1_loop_plays_with_flag(self, mock_node, monkeypatch):
+        monkeypatch.setenv("ROB_BOX_PACK1_LOOPS", "1")
+        with patch("builtins.exec") as mock_exec:
+            result = self._tool(mock_node).execute(groove_loop="break_1", **self._KW)
+        assert result.success is True, result.error
+        executed = mock_exec.call_args[0][0]
+        assert "d3 >> loop('../../1_pitchglitch_samples/_loop_/break_1', dur=8" in executed
+
+    def test_unknown_loop_is_tool_error(self, mock_node):
+        result = self._tool(mock_node).execute(groove_loop="nope_1", **self._KW)
+        assert result.success is False
+        assert "groove_loop" in result.error
+
+
+@pytest.mark.unit
 class TestComposeMusicToolFormCycleEnd:
     """Issue #2461 — момент конца ОДНОГО прохода формы (``_music_form_cycle_ends_at``)
     должен взводиться на любой ``compose_music``, включая ``repeat=True`` —

@@ -2106,6 +2106,7 @@ class ComposeMusicTool(MCPTool):
     _IDENTITY_FIELDS = (
         "root", "scale", "bpm", "progression", "lead_notes", "lead_synth",
         "bass_synth", "drums", "drums_sample", "hats_sample", "form",
+        "groove_loop",
     )
 
     def __init__(
@@ -2479,6 +2480,27 @@ class ComposeMusicTool(MCPTool):
                 required=False,
             ),
             MCPToolParameter(
+                name="groove_loop",
+                type="string",
+                description=(
+                    "Жанровый луп поверх ударных — готовая живая фраза "
+                    "(брейк, джангл, фанк, пиано), растянутая под bpm "
+                    "трека. Встаёт в свободный слот d1-d3, громкость идёт "
+                    "за бочкой формы. Имена: foxdot (всегда), лупы пака "
+                    "pitchglitch — break_1, dnb_1..3, jungle_1..2, "
+                    "hiphop_1..2, jazzhop_1, funk_1, electro_1..2, "
+                    "future_1..2, glitch_1..2, perc_1..2, beatbox_1, "
+                    "industrial_1, piano_1, guitar_1, ambient_1, arabic_1, "
+                    "yiddish_1 — работают, только если владелец включил "
+                    "их после прослушки; иначе вызов вернёт ошибку, и "
+                    "трек надо играть без лупа. Пропусти, если луп не "
+                    "нужен."
+                ),
+                required=False,
+                enum=sorted(sample_loops.loop_catalog()),
+                enum_strict=False,
+            ),
+            MCPToolParameter(
                 name="swing",
                 type="number",
                 description="Свинг восьмых, 0-0.3. 0 (по умолчанию) — ровная "
@@ -2747,6 +2769,7 @@ class ComposeMusicTool(MCPTool):
         theme_octaves: bool = True,
         repeat: bool = False,
         swing: float = 0.0,
+        groove_loop: Optional[str] = None,
     ) -> MCPToolResult:
         # Единая точка нормализации «синта нет» (issue #2836): модель
         # иногда пишет lead_synth/bass_synth/pad_synth='none' буквально —
@@ -2845,6 +2868,7 @@ class ComposeMusicTool(MCPTool):
                 theme_octaves=theme_octaves,
                 repeat=repeat,
                 swing=swing,
+                groove_loop=groove_loop,
             )
             code = render(spec)
         except ArrangementError as exc:
@@ -2867,6 +2891,7 @@ class ComposeMusicTool(MCPTool):
             "hats_sample": hats_sample, "bass_synth": bass_synth,
             "lead_synth": lead_synth, "lead_notes": lead_notes,
             "progression": progression, "name": name,
+            "groove_loop": groove_loop,
         }
         repeat_warning = self._repeat_warning(flat)
         self._last_flat = flat
