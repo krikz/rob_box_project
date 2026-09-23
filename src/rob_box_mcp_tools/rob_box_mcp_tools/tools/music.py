@@ -43,6 +43,7 @@ from ..core.arranger import (
     ArrangementError,
     form_duration_seconds,
     form_summary,
+    normalize_synth,
     render,
     spec_from_flat,
 )
@@ -2295,7 +2296,9 @@ class ComposeMusicTool(MCPTool):
                     "это сухие соло-инструменты с коротким релизом, "
                     "не превращающие трек в кашу; "
                     "imperialbrass — ТОЛЬКО как секция/хоровой подклад "
-                    "(theme_octaves=False, counter_synth='none'), не как "
+                    "(theme_octaves=False, counter_synth='none' или "
+                    "counter_synth вообще не указывай — оба варианта "
+                    "отключают второй голос), не как "
                     "солирующая линия: у imperialbrass тяжёлый envelope "
                     "(длинный релиз ~1.5 с) и при стэке lead+counter+octave "
                     "тема звучит эхом; "
@@ -2381,11 +2384,14 @@ class ComposeMusicTool(MCPTool):
                     "Даже при name он звучит, только если тема плотная — "
                     "марш/гимн/чиптюн, частые атаки; на разреженной, "
                     "тихой теме второго голоса нет, и параметр окажется "
-                    "no-op. По умолчанию — тот же тембр, что lead_synth: "
-                    "унисон в терцию, безопасный вариант. Контрастный "
-                    "тембр звучит богаче — тема медью (imperialbrass), "
-                    "второй голос струнными (strings), а не тем же "
-                    "imperialbrass."
+                    "no-op. По умолчанию (поле не задано) — тот же тембр, "
+                    "что lead_synth: унисон в терцию, безопасный вариант. "
+                    "Контрастный тембр звучит богаче — тема медью "
+                    "(imperialbrass), второй голос струнными (strings), а "
+                    "не тем же imperialbrass. Значение 'none' (как и "
+                    "'off'/'null', любой регистр) явно ВЫКЛЮЧАЕТ второй "
+                    "голос — это не название синта, слой просто не "
+                    "добавляется."
                 ),
                 required=False,
                 enum=list(MELODIC_LEAD_SYNTHS),
@@ -2467,11 +2473,21 @@ class ComposeMusicTool(MCPTool):
         2. ``lead_synth`` входит в :data:`HEAVY_BRASS_LEAD_SYNTHS`;
         3. counter/октава НЕ заданы явно моделью (None/True по умолчанию).
 
-        Если модель явно попросила ``counter_synth='something'`` или
-        ``theme_octaves=False``, безопас-нет НЕ перетирает её выбор.
+        Если модель явно попросила ``counter_synth='something'`` (реальный
+        синт) или ``theme_octaves=False``, безопас-нет НЕ перетирает её
+        выбор.
 
         ``did_override`` нужен тестам и логу: «safety net сработал для
         imperialbrass + name=MountainKing».
+
+        Отключаем через слово 'off' (:data:`arranger.NO_SYNTH_WORDS`), а не
+        буквальную строку ``'none'``: ``'none'`` синтом в scsynth не
+        является, и до фикса issue #2836 такая литеральная строка
+        доходила до Renardo как ``d3 >> none([...])`` и отклонялась
+        ``renardo_sanitizer``. Любое слово из ``NO_SYNTH_WORDS`` в итоге
+        нормализуется в ``spec_from_flat`` до ``None`` и слой просто не
+        добавляется — какое конкретно слово используем здесь, для
+        результата не важно, но не 'none', чтобы не путать читающего код.
         """
         if not name:
             return counter_synth, theme_octaves, False
@@ -2480,9 +2496,12 @@ class ComposeMusicTool(MCPTool):
             or lead_synth.strip().lower() not in ComposeMusicTool.HEAVY_BRASS_LEAD_SYNTHS
         ):
             return counter_synth, theme_octaves, False
-        # counter_synth: None/"" → 'none'; явное значение не трогаем.
-        counter_is_default = counter_synth is None or not counter_synth.strip()
-        effective_counter: Optional[str] = "none" if counter_is_default else counter_synth
+        # counter_synth «дефолтный», если это None/'' ИЛИ уже само по себе
+        # слово-отключение ('none'/'off'/'null') — тогда безопас-нету
+        # нечего перетирать, нужный результат (слоя нет) уже запрошен.
+        # Перетираем только когда там РЕАЛЬНЫЙ синт.
+        counter_is_default = normalize_synth(counter_synth) is None
+        effective_counter: Optional[str] = "off" if counter_is_default else counter_synth
         # theme_octaves: True (default) → False; явный False не трогаем.
         effective_octaves = False if theme_octaves else theme_octaves
         did_override = counter_is_default or theme_octaves is True
@@ -2676,6 +2695,18 @@ class ComposeMusicTool(MCPTool):
         repeat: bool = False,
         swing: float = 0.0,
     ) -> MCPToolResult:
+        # Единая точка нормализации «синта нет» (issue #2836): модель
+        # иногда пишет lead_synth/bass_synth/pad_synth='none' буквально —
+        # без этого такое значение проходило дальше как «синт задан» и
+        # ломалось только глубоко внутри аранжировщика. counter_synth
+        # НЕ трогаем здесь: там значение 'none'/'off' — осмысленная явная
+        # просьба «второго голоса нет», а не опечатка, и её нормализует
+        # spec_from_flat отдельно, различая «не задано» и «отключено явно»
+        # (фолбэк на lead_synth должен сработать только в первом случае).
+        lead_synth = normalize_synth(lead_synth)
+        bass_synth = normalize_synth(bass_synth)
+        pad_synth = normalize_synth(pad_synth)
+
         # Известная мелодия по имени: ищем в RTTTL-библиотеке, конвертируем
         # ноты в параметры композитора и заполняем ими вызов.
         err, bpm, root, scale, lead_midi, lead_dur, melody_title, harmony = (
