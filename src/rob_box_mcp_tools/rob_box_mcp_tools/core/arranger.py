@@ -700,6 +700,30 @@ def _dur_var(
     return _merge_adjacent(values, durations)
 
 
+def _is_blank_drum_pattern(pattern: str) -> bool:
+    """True, если в паттерне нет ни одного удара — только точки/пробелы.
+
+    ``play('. . . . . . . .')`` — валидный Renardo-код, который ничего не
+    издаёт: точка — пауза в ``play``-нотации, пробел — визуальный
+    разделитель групп, который renardo просто игнорирует. Такой слой
+    нужно считать молчащим (issue #2837), а не реальным ударным паттерном.
+    """
+    return not any(ch not in ". " for ch in pattern)
+
+
+def _is_silent_drum_layer(layer: Layer) -> bool:
+    """True, если это ударный слой с паттерном из одних точек/пробелов.
+
+    Вынесено отдельно, чтобы не раздувать цикломатику ``_render_layer``
+    (cc_budget, issue #2837) лишним составным условием.
+    """
+    return (
+        layer.role in DRUM_ROLES
+        and layer.pattern is not None
+        and _is_blank_drum_pattern(layer.pattern)
+    )
+
+
 def _render_drum_layer(
     layer: Layer,
 ) -> Tuple[str, List[str]]:
@@ -820,6 +844,13 @@ def _render_layer(
         )
     player, role_oct, base_amp = profile
 
+    if _is_silent_drum_layer(layer):
+        # Паттерн из одних точек/пробелов — ни одного удара. Это тот же
+        # «слой молчит», что и роль вне текущей секции формы (issue #2837):
+        # play('. . . . . . . .') синтаксически валиден, но реально не
+        # звучит, и guard на количество плееров должен это видеть.
+        return None
+
     # Фиксированная тема (и её второй голос) не имеет права замолчать
     # совсем — её попросили сыграть. См. FIXED_THEME_AMP_FLOOR.
     floor = 0.0
@@ -866,6 +897,30 @@ def _render_layer(
     if layer.role in DRUM_ROLES:
         return line
     return "\n".join(pre_lines + [line]) if pre_lines else line
+
+
+def _no_players_error(
+    spec: CompositionSpec,
+    plan: Sequence[Tuple[str, int, Dict[str, float]]],
+) -> ArrangementError:
+    """Собрать понятную ошибку «0 плееров» для :func:`render` (issue #2837).
+
+    Вынесено отдельно, чтобы не раздувать цикломатику ``render`` — сама
+    функция только считает ``rendered_players`` и решает, звать ли эту
+    фабрику.
+    """
+    form_roles = sorted({r for _n, _b, i in plan for r in i})
+    spec_roles = sorted({layer.role for layer in spec.layers})
+    spec_roles_text = ", ".join(spec_roles) or "(нет слоёв)"
+    form_roles_text = ", ".join(form_roles) or "(ничего)"
+    return ArrangementError(
+        "Ни один слой не звучит: спецификация пуста для формы "
+        f"{spec.form!r}. В спеке заданы роли {spec_roles_text}, "
+        f"а форма {spec.form!r} играет только {form_roles_text}. "
+        "Либо смени форму на ту, что задействует нужные роли, либо "
+        "перепроверь, что паттерны/ступени не пустые (паттерн из одних "
+        "точек и пробелов считается тишиной)."
+    )
 
 
 def render(spec: CompositionSpec) -> str:
@@ -939,17 +994,20 @@ def render(spec: CompositionSpec) -> str:
         # успевает открыться и закрыться.
         lines.append(f"gflt = linvar([700, 4500], {_fmt(total_beats // 2)})")
 
+    # Считаем именно отрисованные строки-плееры, а не длину ``lines``: шапка
+    # не фиксирована — ``progression``/``swing``/``filter_sweep`` добавляют в
+    # неё свои строки (issue #2837, живой прогон 23.09: с filter_sweep=True
+    # шапка всегда 5 строк, и guard на ``len(lines) <= 4`` не срабатывал ни
+    # при каком количестве слоёв).
+    rendered_players = 0
     for layer in spec.layers:
         rendered = _render_layer(layer, plan, use_filter=spec.filter_sweep)
         if rendered is not None:
             lines.append(rendered)
+            rendered_players += 1
 
-    if len(lines) <= 4:
-        raise ArrangementError(
-            "Ни один слой не звучит в выбранной форме — проверь роли "
-            f"(форма {spec.form!r} задействует: "
-            f"{', '.join(sorted({r for _n, _b, i in plan for r in i}))})."
-        )
+    if rendered_players == 0:
+        raise _no_players_error(spec, plan)
 
     if not spec.repeat:
         # Функция, а не lambda: lambda режется AST-фильтром, а Clock.clear
@@ -1117,6 +1175,10 @@ def _add_drum_layer_if_present(
 ) -> None:
     """Добавить ударный слой, если есть паттерн."""
     if not pattern or not pattern.strip():
+        return
+    if _is_blank_drum_pattern(pattern.strip()):
+        # Только точки/пробелы — LLM явно прислала «тишину» под этой ролью
+        # (issue #2837). Не создаём слой вовсе, как и при pattern=None.
         return
     layers.append(
         Layer(

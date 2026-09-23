@@ -385,6 +385,85 @@ class TestValidation:
         with pytest.raises(ArrangementError, match="без слоёв"):
             render(_spec(layers=()))
 
+    def test_ambient_with_only_dotted_percussion_is_rejected(self):
+        """Issue #2837 — живой репро: ``compose_music`` рапортовал success
+
+        для трека без единого звучащего слоя. ``ambient`` не играет
+        drums/hats/perc ни в одной секции формы, а слои из одних точек
+        считались непустыми из-за бага guard'а на ``len(lines) <= 4`` —
+        шапка с ``filter_sweep=True`` (дефолт) всегда 5 строк, и guard не
+        срабатывал ни при каком числе плееров.
+
+        ``spec_from_flat`` отфильтровывает точки-без-ударов ещё на стадии
+        сборки слоёв, поэтому спека приходит в ``render`` вовсе без слоёв —
+        и падает на самом первом (и самом понятном) guard'е.
+        """
+        spec = spec_from_flat(
+            bpm=90,
+            root="A",
+            scale="minor",
+            form="ambient",
+            drums=". . . . . . . .",
+            hats=". . . . . . . .",
+            perc=". . . . . . . .",
+        )
+        assert spec.layers == (), "точки-без-ударов не должны стать слоем"
+        with pytest.raises(ArrangementError, match="без слоёв"):
+            render(spec)
+
+    def test_ambient_with_real_but_unsupported_percussion_is_rejected(self):
+        """Тот же нулевой-плееров исход, но паттерн реально «бьёт» — просто
+
+        ``ambient`` эту роль вообще не играет ни в одной секции. Слой
+        доходит до ``render`` непустым, и проверяется уже новый guard на
+        количество ФАКТИЧЕСКИ отрисованных плееров (issue #2837).
+        """
+        spec = CompositionSpec(
+            bpm=90,
+            root="A",
+            scale="minor",
+            form="ambient",
+            layers=(
+                Layer(role="drums", pattern="X.X.X.X.", sample=1),
+                Layer(role="hats", pattern="X.X.X.X.", sample=3),
+            ),
+        )
+        assert spec.layers != ()
+        with pytest.raises(ArrangementError, match="Ни один слой не звучит"):
+            render(spec)
+
+    def test_dotted_only_drum_pattern_is_treated_as_empty_layer(self):
+        """Точки/пробелы без единого удара = слой молчит (issue #2837)."""
+        spec = spec_from_flat(
+            bpm=90,
+            root="A",
+            scale="minor",
+            form="arc",  # arc играет drums — сюда слой реально попадёт
+            drums=". . . . . . . .",
+            bass_synth="dub",
+            bass_notes="0 0 5 3",
+            pad_synth="warmpad",
+            pad_notes="0 4 7",
+        )
+        code = render(spec)
+        assert "d1 >>" not in code, "точки не должны рендериться в play()"
+
+    def test_ambient_spec_with_pad_and_lead_still_renders(self):
+        """Нормальный ambient-запрос (#2837 acceptance) — не регрессия."""
+        spec = spec_from_flat(
+            bpm=90,
+            root="A",
+            scale="minor",
+            form="ambient",
+            pad_synth="warmpad",
+            pad_notes="0 4 7",
+            lead_synth="blip",
+            lead_notes="0 2 4 7",
+        )
+        code = render(spec)
+        assert "p3 >>" in code  # pad
+        assert "p2 >>" in code  # lead
+
     def test_numbers_are_formatted_readably(self):
         """Код попадает в логи и в save_track — 0.30000000000000004 там лишний."""
         code = render(_spec())
