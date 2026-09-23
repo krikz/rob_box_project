@@ -142,7 +142,7 @@ if apply_node_params "$SCENARIO1"; then
     else
         bad "apply_node_params НЕ применил значение (реестр: $(_registry_get "/speaker_id_node" "name_confidence_band_high" || echo '<нет>'))"
     fi
-    if grep -qE $'^/speaker_id_node\tname_confidence_band_high\t0\\.73$' "$E2E_NODE_PARAM_ORIGINALS_FILE"; then
+    if grep -qE $'^/speaker_id_node\x1fname_confidence_band_high\x1f0\.73$' "$E2E_NODE_PARAM_ORIGINALS_FILE"; then
         ok "apply_node_params запомнил ИСХОДНОЕ значение 0.73 (не дефолт 0.80)"
     else
         bad "apply_node_params не запомнил оригинал корректно: $(cat "$E2E_NODE_PARAM_ORIGINALS_FILE")"

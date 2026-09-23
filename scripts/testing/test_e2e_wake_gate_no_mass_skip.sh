@@ -41,8 +41,13 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 HARNESS="$REPO_ROOT/.github/workflows/scripts/e2e_voice_test.sh"
 WAKE="$REPO_ROOT/.github/workflows/scripts/e2e_voice_wake_gate.sh"
+# issue #2824/#2809: scenario-парсер (s.get('''expect''', '''cycle''')) переехал
+# из HARNESS в LIB (parse_scenario_to_tsv, e2e_voice_lib.sh) -- единая точка
+# истины для scenario-цикла И регресс-теста test_e2e_scenario_tsv_row.sh.
+# CHECK 3 ниже ищет дефолт expect в ОБОИХ файлах, а не только в HARNESS.
+LIB="$REPO_ROOT/.github/workflows/scripts/e2e_voice_lib.sh"
 
-for f in "$HARNESS" "$WAKE"; do
+for f in "$HARNESS" "$WAKE" "$LIB"; do
     [ -f "$f" ] || { printf '❌ отсутствует: %s\n' "$f"; exit 1; }
 done
 
@@ -102,7 +107,7 @@ fi
 # Тест теперь проверяет саму цепочку, а не пересказывает мою ошибку.
 # ---------------------------------------------------------------------------
 printf 'CHECK 3: цепочка JSON → парсер → classify_step_expect согласована\n'
-PARSER_DEFAULT="$(grep -oE "s\.get\('expect', *'[a-z-]*'\)" "$HARNESS" | head -1 | grep -oE "'[a-z-]*'\)" | tr -d "')")"
+PARSER_DEFAULT="$(grep -ohE "s\.get\('expect', *'[a-z-]*'\)" "$HARNESS" "$LIB" | head -1 | grep -oE "'[a-z-]*'\)" | tr -d "')")"
 if [ -z "$PARSER_DEFAULT" ]; then
     bad "не нашёл дефолт expect в парсере сценария — он нужен, чтобы понимать, включено ли авто-повышение"
 else

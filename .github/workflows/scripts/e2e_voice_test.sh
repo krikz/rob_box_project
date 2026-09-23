@@ -2402,40 +2402,27 @@ if [ -n "$SCENARIO_FILE" ]; then
     # sleep_before_sec (issue #2809) — пауза ПЕРЕД шагом (имитация конца
     # сессии дольше identity_question_session_gap_sec).
     cp "$SCENARIO_FILE" "$OUT_DIR/scenario.json"
-    # Парсим в .tsv: idx \t label \t text \t voice \t patterns_json \t acceptance_json \t
-    #                expect_raw \t retry_acceptance \t when_robot_asked \t required_question \t sleep_before_sec
-    # expect_raw — что написано в scenario.json (cycle / wake-gated / backlog / "").
-    # Классификация (auto-detect wake-prefix → wake-gated) делается в bash
-    # через classify_step_expect ПОСЛЕ парсинга, чтобы Python-парсер не
-    # зависел от bash-логики и тестировался отдельно.
-    python3 - "$SCENARIO_FILE" <<'PY' > "$OUT_DIR/scenario_parsed.txt"
-import json, sys
-sc = json.load(open(sys.argv[1], encoding="utf-8"))
-for i, s in enumerate(sc.get("steps", [])):
-    pats = s.get('patterns', [])
-    acc = s.get('acceptance', {})
-    exp = s.get('expect', 'cycle')
-    retry = s.get('retry_acceptance', 0)
-    try:
-        retry = int(retry or 0)
-    except (TypeError, ValueError):
-        retry = 0
-    # issue #2809 -- sanitize like patterns above: TSV breaks on raw \t/\n.
-    when_asked = str(s.get('when_robot_asked') or '').replace('\t', ' ').replace('\n', ' ')
-    required_q = 1 if s.get('required_question') else 0
-    try:
-        sleep_before = float(s.get('sleep_before_sec', 0) or 0)
-    except (TypeError, ValueError):
-        sleep_before = 0.0
-    print(f"{i}\t{s.get('label', f's{i+1}')}\t{s.get('text','')}\t{s.get('voice','anton')}\t{json.dumps(pats)}\t{json.dumps(acc, ensure_ascii=False)}\t{exp}\t{retry}\t{when_asked}\t{required_q}\t{sleep_before}")
-PY
+    # issue #2809 — условный ответ на переспрос ("when_robot_asked" — grep-подобный
+    # паттерн против речи ПРЕДЫДУЩЕГО шага, "required_question" — FAIL, если
+    # робот не спросил, "sleep_before_sec" — пауза перед шагом).
+    #
+    # issue #2824 (регресс, живой прогон 35851587044, develop b2f5560e5):
+    # парсинг и разбор строки TSV вынесены в parse_scenario_to_tsv() и
+    # E2E_SCENARIO_ROW_READ (e2e_voice_lib.sh) — ЕДИНАЯ точка истины,
+    # используемая и здесь, и в scripts/testing/test_e2e_scenario_tsv_row.sh.
+    # Раньше \t-разделитель ломался в самом bash `read` (см. докстринг
+    # parse_scenario_to_tsv для разбора причины), а регресс-тест #2823
+    # проверял python-парсер и bash-цикл ПО ОТДЕЛЬНОСТИ, из-за чего не
+    # поймал взаимодействие между ними — теперь оба места читают ровно
+    # тот же код, что и main flow.
+    parse_scenario_to_tsv "$SCENARIO_FILE" "$OUT_DIR/scenario_parsed.txt"
     # issue #2809 — «речь предыдущего шага» для when_robot_asked. Пустой файл
     # на старте акта: у первого шага сценария просто нет предыдущего шага,
     # значит when_robot_asked на первом шаге не может совпасть НИКОГДА (это
     # осознанное поведение — акт не должен ставить when_robot_asked на шаг 0).
     LAST_STEP_SPEECH_FILE="$OUT_DIR/.last_step_speech.txt"
     : > "$LAST_STEP_SPEECH_FILE"
-    while IFS=$'\t' read -r idx label text voice patterns_json acceptance_json expect_raw retry_acceptance when_robot_asked required_question sleep_before_sec; do
+    while IFS=$'\x1f' eval "$E2E_SCENARIO_ROW_READ"; do
         [ -z "$idx" ] && continue
         case "$retry_acceptance" in
             ''|*[!0-9]*) retry_acceptance=0 ;;
