@@ -1299,6 +1299,16 @@ class SpeakerIdNode(Node):
         """
         import os as _os
 
+        # Issue #2890 — боевая speakers.db не стирается НИКОГДА, даже если
+        # e2e_db_path в конфиге указал на неё же: исключение прерывает
+        # переключение в _apply_e2e_mode, харнесс видит отказ e2e_mode.
+        if _os.path.realpath(self._prod_db_path) == _os.path.realpath(
+            self._e2e_db_path
+        ):
+            raise RuntimeError(
+                f"e2e_db_path {self._e2e_db_path!r} совпадает с боевой "
+                f"{self._prod_db_path!r} — стирать отказываюсь"
+            )
         for suffix in ("", "-wal", "-shm", "-journal"):
             path = f"{self._e2e_db_path}{suffix}"
             try:

@@ -406,3 +406,29 @@ def test_db_switch_failure_returns_unsuccessful_result(node, monkeypatch):
 
     assert result.successful is False
     assert instance._voice_memory_e2e_mode_active is False, "провал не должен был поменять состояние"
+
+
+def test_e2e_path_pointing_at_prod_never_wipes_prod(node):
+    """Issue #2890 — e2e_db_path, указывающий на боевую voice_memory.db,
+    не должен её стереть: включение отклоняется, факты живых людей на месте."""
+    instance, _module = node
+    instance.voice_memory.save_fact("живой человек мастерской пьёт кофе без сахара")
+    instance._voice_memory_e2e_db_path = instance._voice_memory_prod_db_path
+
+    result = instance.parameters_callback(_e2e_mode_param(True))
+
+    assert result.successful is False
+    assert instance._voice_memory_e2e_mode_active is False
+    facts = [f["fact"] for f in instance.voice_memory.get_facts()]
+    assert any("кофе без сахара" in f for f in facts), "боевая voice_memory.db стёрта"
+
+
+def test_enable_logs_explicit_memory_wipe_line(node):
+    """Issue #2890 — сброс e2e-памяти фактов перед актом виден в логе робота."""
+    instance, _module = node
+
+    instance.parameters_callback(_e2e_mode_param(True))
+
+    logger = instance.get_logger.return_value
+    lines = [str(c.args[0]) for c in logger.warning.call_args_list if c.args]
+    assert any("e2e-память фактов сброшена" in line for line in lines), lines

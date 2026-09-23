@@ -211,6 +211,21 @@ def test_db_switch_failure_returns_unsuccessful_result(node, monkeypatch):
     assert node._e2e_mode_active is False, "провал не должен был поменять состояние"
 
 
+def test_e2e_path_pointing_at_prod_never_wipes_prod(node):
+    """Issue #2890 — e2e_db_path, указывающий на боевую speakers.db
+    (опечатка в YAML), не должен её стереть: включение отклоняется, профиль
+    живого человека на месте."""
+    node._db.register("Деньчик", _rand_embedding(7))
+    node._e2e_db_path = node._prod_db_path
+
+    result = node.parameters_callback(_e2e_mode_param(True))
+
+    assert result.successful is False
+    assert node._e2e_mode_active is False
+    names = {s["name"] for s in node._db.list_speakers()}
+    assert "Деньчик" in names, "боевая speakers.db стёрта e2e-включением"
+
+
 def _rand_embedding(seed: int):
     import numpy as np
 
