@@ -2482,6 +2482,9 @@ class DialogueNode(Node):
                 f"не смог озвучить переспрос ({plan.get('kind')}): {exc!r}"
             )
             return
+        # Issue #2914 -- ретраи гардов этого хода говорить поверх вопроса
+        # не должны (см. _apply_post_turn_retry_guards).
+        self._identity_question_asked_in_turn = True
         # Issue #2888 -- ответ на tentative-вопрос читает свой путь #2809
         # (_resolve_pending_tentative_answer), склеивать там нечего.
         # Issue #2908 -- просьба повторить после отказа регистрации --
@@ -3684,8 +3687,30 @@ class DialogueNode(Node):
         state["last_seen_at"] = now
         return state
 
+    def _is_reply_after_question(
+        self, state: dict, utterance_id: Optional[str]
+    ) -> bool:
+        """Issue #2914 -- ход несёт НОВУЮ реплику человека, пришедшую после
+        вопроса, а не хвост хода, в котором вопрос задан.
+
+        Сразу после вопроса ``_run_turn`` может запустить ход без новой
+        реплики (``utterance_id=None``): дренаж S7 фраз, пришедших ПОКА
+        шёл ход, или синтетический ретрай гарда. Их текст ответом не
+        является (run 35923951507: ``answer=False`` через 24 мс после
+        «Саша, это ты?», настоящее «нет» уже не читалось). Вопрос,
+        заданный на ходе без ``utterance_id``, -- прежнее поведение.
+        """
+        asked_on = state.get("asked_utterance_id")
+        if not asked_on:
+            return True
+        return bool(utterance_id) and utterance_id != asked_on
+
     def _resolve_pending_tentative_answer(
-        self, state: dict, tentative_name: Optional[str], user_input: str
+        self,
+        state: dict,
+        tentative_name: Optional[str],
+        user_input: str,
+        utterance_id: Optional[str] = None,
     ) -> None:
         """Если в этой сессии уже спрашивали и ответа ещё нет -- прочитать
         ТЕКУЩУЮ (первую после вопроса) реплику как да/нет.
@@ -3699,6 +3724,12 @@ class DialogueNode(Node):
         где просто встретилось слово "да".
         """
         if not (state["asked"] and state["confirmed"] is None):
+            return
+        if not self._is_reply_after_question(state, utterance_id):
+            self.get_logger().info(
+                "👤 [issue #2914] identity answer NOT read: ход без новой "
+                f"реплики человека (utterance_id={utterance_id!r})"
+            )
             return
         answer = classify_identity_confirmation(user_input)
         state["confirmed"] = bool(answer)
@@ -3834,7 +3865,9 @@ class DialogueNode(Node):
             ) or None
 
         state = self._tentative_session_state(full_sid)
-        self._resolve_pending_tentative_answer(state, tentative_name, user_input)
+        self._resolve_pending_tentative_answer(
+            state, tentative_name, user_input, utterance_id
+        )
 
         if state.get("confirmed") and state.get("name"):
             return self._confirm_tentative_speaker(
@@ -3844,6 +3877,8 @@ class DialogueNode(Node):
             return self._tag_tentative(user_input)
         if not state["asked"]:
             state["asked"] = True
+            # Issue #2914 -- ответом будет только ДРУГАЯ реплика человека.
+            state["asked_utterance_id"] = utterance_id
             self._pending_identity_hint = {
                 "kind": tentative_kind,
                 "name": tentative_name,
@@ -4563,6 +4598,8 @@ class DialogueNode(Node):
         # включая сам ретрай (иначе отложенный DIALOGUE_END залипнет).
         self._retry_dispatched_in_turn = False
         self._retry_budget_exhausted_in_turn = False
+        # Issue #2914 -- «в этом ходе прозвучал вопрос о личности».
+        self._identity_question_asked_in_turn = False
         guard_retry_pending = False
         # Issue #918 — turn может быть отменён или упасть ДО присваивания
         # result (speaker-профиль, LLM, тул-луп). Инициализируем None
@@ -4736,6 +4773,12 @@ class DialogueNode(Node):
                     retries_allowed=self._session_epoch_gate().retries_allowed(
                         turn_epoch=session_epoch, cancelled=turn_cancelled
                     ),
+                    # Issue #2914 -- вопрос о личности прозвучал вместо
+                    # ответа хода или прозвучит после него (leftover).
+                    identity_question_asked=(
+                        leftover_identity_question is not None
+                        or self._identity_question_asked_in_turn
+                    ),
                 )
             )
             # Issue #2874 — гуарды сказали своё: ход с ретраем молчит,
@@ -4807,6 +4850,7 @@ class DialogueNode(Node):
         was_dj_auto: bool,
         user_input: str,
         retries_allowed: bool,
+        identity_question_asked: bool = False,
     ) -> tuple[bool, bool]:
         """Music-гуард (Bug B/C) + tool-skipped гуард из ``finally`` хода.
 
@@ -4814,11 +4858,25 @@ class DialogueNode(Node):
         Issue #2835 — при ``retries_allowed=False`` (ход отменён barge-in'ом
         или «новой сессией», либо пережил сброс) гуарды не зовутся вовсе:
         ретрай такого хода — [CRITICAL]-ход в уже чужой сессии.
+
+        Issue #2914 — ``identity_question_asked``: в ходе задан вопрос о
+        личности (#2828/#2888/#2908). Ретрай чинит ответ ЭТОГО хода, а
+        ответ заменён вопросом (или вопрос звучит последним) — ретрай
+        отвечал бы на ту же реплику заново поверх вопроса (run
+        35923951507: «Помню: ты Саша…» через 4 с после «Саша, это ты?»).
+        Не диспатчим вовсе, а не глушим озвучку: ретрай — отдельный ход,
+        его вывод ушёл бы в историю LLM и прошёл весь speaker-путь.
         """
         if not retries_allowed:
             self.get_logger().info(
                 "🧹 [issue 2835] ход отменён/сессия сброшена — "
                 "post-turn ретраи (music/tool) не диспатчим"
+            )
+            return False, False
+        if identity_question_asked:
+            self.get_logger().info(
+                "👤 [issue #2914] в ходе задан вопрос о личности — "
+                "post-turn ретраи (music/tool) не диспатчим: ждём ответ человека"
             )
             return False, False
         tools_called = result.tools_called if result else ()
