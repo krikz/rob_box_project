@@ -2326,13 +2326,10 @@ _ARRANGEMENT_PARAMETERS: List[MCPToolParameter] = [
                     "brass, soprano, eoboe, bell, marimba, pianovel, epiano — "
                     "это сухие соло-инструменты с коротким релизом, "
                     "не превращающие трек в кашу; "
-                    "imperialbrass — ТОЛЬКО как секция/хоровой подклад "
-                    "(theme_octaves=off, counter_synth='none' или "
-                    "counter_synth вообще не указывай — оба варианта "
-                    "отключают второй голос), не как "
-                    "солирующая линия: у imperialbrass тяжёлый envelope "
-                    "(длинный релиз ~1.5 с) и при стэке lead+counter+octave "
-                    "тема звучит эхом; "
+                    "imperialbrass — долгий релиз (~1.5 с): на теме не "
+                    "больше 2 голосов — к нему counter=off или "
+                    "theme_octaves=off (партитура предупредит, сама "
+                    "ничего не выключает); "
                     "игра/чиптюн → blip/arpy, спокойное → bell/marimba. "
                     "НЕ бери supersawlead/saw — это грубая «стена» звука, "
                     "а не мелодия."
@@ -2434,8 +2431,7 @@ _ARRANGEMENT_PARAMETERS: List[MCPToolParameter] = [
                 description=(
                     "Ручка (только с name=): удвоение темы октавой вниз — "
                     "вес марша/гимна. auto — только на плотной теме не "
-                    "ниже C4 (у imperialbrass выключено: длинный релиз "
-                    "даёт эхо); on — всегда; off — никогда (тонкая "
+                    "ниже C4; on — всегда; off — никогда (тонкая "
                     "одинокая линия). По умолчанию auto."
                 ),
                 required=False,
@@ -2689,8 +2685,6 @@ class ComposeMusicTool(MCPTool):
         name: Optional[str]
         melody_title: Optional[str]
         flat: Dict[str, Any]
-        did_override: bool
-        lead_synth: Optional[str]
 
     def __init__(
         self,
@@ -2797,71 +2791,6 @@ class ComposeMusicTool(MCPTool):
     @property
     def starts_music(self) -> bool:
         return True
-
-    #: SynthDef-ы, которые НЕ подходят как солирующий lead на плотной
-    #: теме — SynthDef с тяжёлым envelope release (длинный релиз ~1.5 с),
-    #: из-за которого стэк lead+counter+theme_octaves звучит «эхом».
-    #: При ``name=`` (известная RTTTL-тема) применяется автоматически
-    #: safety net (live: Григ «hall of the mountain king» 2026-09-15,
-    #: Шифу: «эхо длинное звучит дерьмово»).
-    HEAVY_BRASS_LEAD_SYNTHS: frozenset = frozenset({"imperialbrass"})
-
-    @staticmethod
-    def _heavy_brass_safety_net(
-        *,
-        name: Optional[str],
-        lead_synth: Optional[str],
-        counter_synth: Optional[str],
-        theme_octaves: bool,
-        counter_mode: str = "auto",
-        octaves_mode: str = "auto",
-    ) -> Tuple[Optional[str], bool, bool]:
-        """Отключить counter_synth и theme_octaves для тяжёлых брасс-лидов.
-
-        Возвращает ``(effective_counter_synth, effective_theme_octaves,
-        did_override)``. Применяется ТОЛЬКО когда:
-
-        1. ``name`` задан (известная RTTTL-тема с гармонизацией);
-        2. ``lead_synth`` входит в :data:`HEAVY_BRASS_LEAD_SYNTHS`;
-        3. counter/октава НЕ заданы явно моделью (None/True по умолчанию).
-
-        Если модель явно попросила ``counter_synth='something'`` (реальный
-        синт) или ``theme_octaves=False``, безопас-нет НЕ перетирает её
-        выбор.
-
-        ``did_override`` нужен тестам и логу: «safety net сработал для
-        imperialbrass + name=MountainKing».
-
-        Отключаем через слово 'off' (:data:`arranger.NO_SYNTH_WORDS`), а не
-        буквальную строку ``'none'``: ``'none'`` синтом в scsynth не
-        является, и до фикса issue #2836 такая литеральная строка
-        доходила до Renardo как ``d3 >> none([...])`` и отклонялась
-        ``renardo_sanitizer``. Любое слово из ``NO_SYNTH_WORDS`` в итоге
-        нормализуется в ``spec_from_flat`` до ``None`` и слой просто не
-        добавляется — какое конкретно слово используем здесь, для
-        результата не важно, но не 'none', чтобы не путать читающего код.
-
-        ADR-0132 PR-4: явная ручка ``counter``/``theme_octaves`` (не
-        ``auto``) — тоже явный выбор модели, её safety net не трогает.
-        """
-        if not name:
-            return counter_synth, theme_octaves, False
-        if (
-            not lead_synth
-            or lead_synth.strip().lower() not in ComposeMusicTool.HEAVY_BRASS_LEAD_SYNTHS
-        ):
-            return counter_synth, theme_octaves, False
-        # counter_synth «дефолтный», если это None/'' ИЛИ уже само по себе
-        # слово-отключение ('none'/'off'/'null') — тогда безопас-нету
-        # нечего перетирать, нужный результат (слоя нет) уже запрошен.
-        # Перетираем только когда там РЕАЛЬНЫЙ синт.
-        counter_is_default = counter_mode == "auto" and normalize_synth(counter_synth) is None
-        effective_counter: Optional[str] = "off" if counter_is_default else counter_synth
-        # theme_octaves: True (default) → False; явный False не трогаем.
-        octaves_default = octaves_mode == "auto" and theme_octaves is True
-        effective_octaves = False if octaves_default else theme_octaves
-        did_override = counter_is_default or octaves_default
-        return effective_counter, effective_octaves, did_override
 
     @staticmethod
     def _missing_arrangement_fields(
@@ -3223,7 +3152,7 @@ class ComposeMusicTool(MCPTool):
             score=self._score_sheet(
                 built.spec, result.get("code") or built.code, built.harmony,
                 built.prep, built.melody_title,
-                self._score_warnings(result, built.did_override, built.lead_synth),
+                self._score_warnings(result),
             ),
         )
 
@@ -3274,7 +3203,7 @@ class ComposeMusicTool(MCPTool):
         ADR-0132 PR-5: единственная точка сборки аранжировки, общая для
         ``compose_music`` (играет результат) и ``preview_arrangement``
         (только показывает партитуру). Всё до ``render(spec)`` — валидация
-        входа, RTTTL-резолвинг, ручки, safety net тяжёлых брасс-лидов — было
+        входа, RTTTL-резолвинг, ручки (safety net imperialbrass удалён в PR-6) — было
         первой половиной старого ``execute()`` и здесь не изменилось ни
         строкой; изменилась только точка, где код возвращается вызывающему,
         а не сразу уходит в ``self._manager.execute_code``.
@@ -3345,26 +3274,10 @@ class ComposeMusicTool(MCPTool):
                     ),
                 ), None
 
-        # Safety net: imperialbrass + плотная тема звучит «эхом» из-за
-        # длинного envelope release и дефолтов counter_synth=lead_synth +
-        # theme_octaves=True. Если модель сама их не задала — отключаем.
-        # Live 2026-09-15: Григ «hall of the mountain king» — 3 брасс-голоса
-        # накладывались друг на друга и звучали кашей.
-        counter_synth, theme_octaves, did_override = self._heavy_brass_safety_net(
-            name=name,
-            lead_synth=lead_synth,
-            counter_synth=counter_synth,
-            theme_octaves=knobs.theme_octaves,
-            counter_mode=str(knobs.arrange.counter),
-            octaves_mode=str(knobs.arrange.theme_octaves),
-        )
-        if did_override:
-            self.log_info(
-                f"[compose_music] safety net: lead_synth={lead_synth!r} + "
-                f"name={name!r} → counter_synth={counter_synth!r}, "
-                f"theme_octaves={theme_octaves} (imperialbrass оставляет "
-                f"длинный эхо-хвост, см. live 2026-09-15)"
-            )
+        # ADR-0132 PR-6: safety net imperialbrass (молча гасил counter и
+        # октавы) удалён — долгий хвост синта теперь предупреждение в
+        # партитуре (core.synth_traits), решение за моделью.
+        theme_octaves = knobs.theme_octaves
 
         bpm = float(bpm) if bpm is not None else 120.0
         root = root or "C"
@@ -3439,27 +3352,18 @@ class ComposeMusicTool(MCPTool):
             name=name,
             melody_title=melody_title,
             flat=flat,
-            did_override=did_override,
-            lead_synth=lead_synth,
         )
 
     @staticmethod
-    def _score_warnings(
-        result: Dict[str, Any], heavy_brass: bool, lead_synth: Optional[str]
-    ) -> List[str]:
-        """Внешние предупреждения партитуры: санитайзер + safety net синта.
+    def _score_warnings(result: Dict[str, Any]) -> List[str]:
+        """Внешние предупреждения партитуры: санитайзер.
 
         ADR-0132: раньше предупреждения санитайзера уходили только в
         ``message`` execute_code, который compose_music перезаписывал, —
-        модель их не видела вовсе.
+        модель их не видела вовсе. Предупреждение о долгом хвосте синта
+        (PR-6) партитура считает сама по сыгранным партиям.
         """
-        warnings = [str(w) for w in (result.get("warnings") or [])]
-        if heavy_brass:
-            warnings.append(
-                f"safety net {lead_synth}: второй голос и удвоение темы "
-                "выключены (длинный релиз синта даёт эхо)"
-            )
-        return warnings
+        return [str(w) for w in (result.get("warnings") or [])]
 
     def _score_sheet(
         self,
@@ -3559,7 +3463,7 @@ class PreviewArrangementTool(MCPTool):
 
     Те же параметры, что у ``compose_music`` (:data:`_ARRANGEMENT_PARAMETERS`
     — единый источник схемы), та же сборка (валидация входа, RTTTL-
-    резолвинг, ручки, safety net тяжёлых брасс-лидов, ``spec_from_flat`` +
+    резолвинг, ручки, ``spec_from_flat`` +
     ``render`` — :meth:`ComposeMusicTool._build_arrangement`), но
     ``execute()`` останавливается ДО ``MusicManager.execute_code``: не
     трогает Renardo/SuperCollider, не публикует ``music_state``, не взводит
@@ -3735,11 +3639,7 @@ class PreviewArrangementTool(MCPTool):
             built.harmony,
             built.prep,
             built.melody_title,
-            self._composer._score_warnings(
-                {"warnings": list(sanitized.warnings)},
-                built.did_override,
-                built.lead_synth,
-            ),
+            self._composer._score_warnings({"warnings": list(sanitized.warnings)}),
         )
         score = score or {}
         text = str(score.get("text") or f"Партитура не собрана: {score.get('error') or 'нет данных'}")

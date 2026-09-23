@@ -73,15 +73,22 @@ def test_sanitizer_warnings_are_forwarded(mock_node, rtttl_library):
     assert "W1 предупреждение санитайзера" in result.data["score"]
 
 
-def test_heavy_brass_safety_net_is_visible_in_score(mock_node, rtttl_library):
+def test_long_release_lead_warning_is_visible_in_score(mock_node, rtttl_library):
+    """ADR-0132 PR-6: вместо тихого safety net — предупреждение в партитуре."""
     tool, _mgr = _compose_tool(mock_node, rtttl_library)
-    tool.execute(
+    result = tool.execute(
         name="national anthem of russia", lead_synth="imperialbrass",
         bass_synth="moogbass", pad_synth="strings",
     )
     score = tool.last_score
-    assert any("safety net imperialbrass" in w for w in score["warnings"])
-    assert score["decisions"]["counter"].startswith("auto→off")
+    assert not any("safety net" in w for w in score["warnings"])
+    assert not score["decisions"]["counter"].startswith("auto→off")
+    tail = [w for w in score["warnings"] if "долгий релиз" in w]
+    voices = ("counter" in score["parts"]) + bool(score["parts"]["lead"]["octave_doubled"])
+    assert bool(tail) == (voices == 2)
+    if tail:
+        assert "counter=off или theme_octaves=off" in tail[0]
+        assert "долгий релиз" in result.data["score"]
 
 
 def test_explicit_root_scale_with_name_reach_the_score(mock_node, rtttl_library):
