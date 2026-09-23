@@ -44,6 +44,9 @@ Parameters:
                                         опробован и отклонён на реальных
                                         данных, см. speaker_embeddings.
                                         GALLERY_WARMUP_SIZE) [0.72]
+    identify_min_voiced_sec    (float) — issue #2863: меньше речи — «не узнал»
+                                        публикуется как inconclusive и не
+                                        сбрасывает узнанного диктора [1.0]
     register_match_threshold   (float) — порог слияния при регистрации (issue
                                         W5-4 + #2348; строже identify_threshold —
                                         см. speaker_embeddings.REGISTER_MATCH_THRESHOLD) [0.75]
@@ -304,6 +307,18 @@ class SpeakerIdNode(Node):
         # хозяина теряем только утренний хвост при плохом канале (честная
         # цена -- лучше не вырасти, чем отравить галерею чужим голосом).
         self.declare_parameter("growth_owner_min_score", 0.65)
+        # Issue #2863 — сколько РЕЧИ (voiced_sec после VAD) нужно, чтобы
+        # «не узнал» считалось оценкой «это кто-то другой», а не «не смог
+        # оценить». Ниже порога unknown публикуется с inconclusive=true, и
+        # потребители (mcp_server, dialogue_node) не сбрасывают текущего
+        # узнанного диктора. Своего порога «достаточно для оценки» у
+        # identify() не было: MIN_AUDIO_DURATION_SEC=0.3с — пол для самого
+        # эмбеддинга по ОКНУ записи (комментарий там прямо говорит, что
+        # надёжности он не обещает), MIN_REGISTER_AUDIO_DURATION_SEC=3.0с —
+        # гейт эталона. 1.0с — нижняя граница «less dependable» клипов из
+        # того же обзора (CEUR Vol-4164, см. speaker_embeddings); живые
+        # сбросы из issue — 0.36с и 0.69с речи.
+        self.declare_parameter("identify_min_voiced_sec", 1.0)
         # Issue W5-4 + #2348 — отдельный, более строгий порог для решения
         # «слить с существующим профилем при регистрации vs завести новый»
         # внутри register_or_merge(). Калибровка по
@@ -389,6 +404,10 @@ class SpeakerIdNode(Node):
         # Issue #2829 -- см. declare_parameter выше.
         self._growth_owner_min_score: float = float(
             self.get_parameter("growth_owner_min_score").value
+        )
+        # Issue #2863 -- см. declare_parameter выше.
+        self._identify_min_voiced_sec: float = float(
+            self.get_parameter("identify_min_voiced_sec").value
         )
         gallery_warmup_size: int = int(self.get_parameter("gallery_warmup_size").value)
         self._growth_session_gap_sec: float = float(
@@ -827,7 +846,11 @@ class SpeakerIdNode(Node):
             # Issue #1160 — Prometheus metrics: не удалось извлечь эмбеддинг —
             # считаем это unknown.
             record_speaker_recognize(known=False, confidence=None)
-            self._publish_result(None, utterance_id=utterance_id)
+            # Issue #2863 — эмбеддинга нет, значит и оценки не было:
+            # «не знаю», а не «другой человек».
+            self._publish_result(
+                None, utterance_id=utterance_id, inconclusive="no_embedding"
+            )
             return
 
         elapsed = (time.monotonic() - t0) * 1000
@@ -920,7 +943,32 @@ class SpeakerIdNode(Node):
                 band_high=getattr(self, "_name_confidence_band_high", 0.80),
                 min_gap=getattr(self, "_name_confidence_min_gap", 0.15),
             )
-        self._publish_result(match, name_decision=name_decision, utterance_id=utterance_id)
+        self._publish_result(
+            match,
+            name_decision=name_decision,
+            utterance_id=utterance_id,
+            inconclusive=self._inconclusive_reason(match, duration_sec),
+        )
+
+    def _inconclusive_reason(
+        self, match: Optional[SpeakerMatch], voiced_sec: Optional[float]
+    ) -> Optional[str]:
+        """Issue #2863 — граница «не смог оценить» / «оценил как другого».
+
+        Узнанный (``match``) результат публикуется как есть при любой
+        длительности: калиброванный identify_threshold пройден — это и есть
+        оценка «вот кто говорит» (в т.ч. смена диктора). ``None`` при речи
+        короче ``identify_min_voiced_sec`` — «не знаю»: помечается
+        ``inconclusive``, потребители не сбрасывают узнанного диктора. От
+        #2829 это не отступает — сама фраза по-прежнему is_known=false, имя
+        она не наследует; не стирается только «кто сейчас рядом».
+        """
+        if match is not None or voiced_sec is None:
+            return None
+        min_voiced = getattr(self, "_identify_min_voiced_sec", 1.0)
+        if voiced_sec < min_voiced:
+            return "too_short_for_biometry"
+        return None
 
     def _on_tts_finished(self, msg: String) -> None:
         """Issue #2747 — робот договорил: отсчёт паузы человека начинается ЗДЕСЬ.
@@ -1501,7 +1549,15 @@ class SpeakerIdNode(Node):
         ``True`` — если профиль реально создан/дополнен, чтобы вызывающий
         код (``_process_utterance`` / ``_on_register_request``) не считал
         отказ успешной регистрацией в логах и метриках.
+
+        Issue #2863 — повторный register_speaker того, кого фраза УЖЕ
+        узнала под этим же именем, — не регистрация, а «уже знаю»
+        (см. :meth:`_already_known_as`).
         """
+        known = self._already_known_as(name, embedding, duration_sec) if speaker_id is None else None
+        if known is not None:
+            self._ack_already_known(known, utterance_id)
+            return True
         try:
             outcome = self._db.register_or_merge(
                 name, embedding, speaker_id=speaker_id, duration_sec=duration_sec
@@ -1640,6 +1696,75 @@ class SpeakerIdNode(Node):
                 f"growth-сессия не открыта"
             )
         return True
+
+    def _already_known_as(
+        self, name: str, embedding: np.ndarray, duration_sec: Optional[float]
+    ) -> Optional[SpeakerMatch]:
+        """Issue #2863 — фраза уже узнана (identify_threshold) под этим именем
+        И обычная регистрация не сольёт её чисто в тот же профиль.
+
+        Живой случай (акт 2, run 35886659057): «Саша» узнан на 0.877 по
+        фразе 2.67с, LLM повторно зовёт register_speaker(«Саша») —
+        register_or_merge отказывал по too_short (< 3.0с), робот говорил
+        «Не расслышал», а mcp_server сбрасывал Сашу в ∅. Второй путь к
+        лишнему якорю — score между identify_threshold и
+        REGISTER_MATCH_THRESHOLD: register_or_merge завёл бы профиль-тёзку.
+        В обоих случаях человек уже узнан — ответ «уже знаю», новый эталон
+        не нужен. Если же фраза длинная и score >= порога слияния —
+        ``None``: штатный register_or_merge допишет её в тот же профиль.
+        """
+        match = self._db.identify(embedding)
+        if match is None or not _se_mod._same_speaker_name(match.name, name):
+            return None
+        too_short = (
+            duration_sec is not None
+            and duration_sec < _se_mod.MIN_REGISTER_AUDIO_DURATION_SEC
+        )
+        if too_short or match.confidence < _se_mod.REGISTER_MATCH_THRESHOLD:
+            return match
+        return None
+
+    def _ack_already_known(
+        self, known: SpeakerMatch, utterance_id: Optional[str]
+    ) -> None:
+        """Issue #2863 — честный ack «уже знаю», без нового якоря.
+
+        Форма — обычный ``event="registered"`` (+ ``already_known``): все
+        потребители его уже понимают (mcp_server держит этого диктора
+        текущим, dialogue_node молчит, vision_face_node не реагирует), и
+        ни один не сбрасывает диктора. Рост галереи — по правилам #2833:
+        открывается growth-сессия владельца, дальнейшие фразы проходят тот
+        же гейт ``_apply_growth_session`` (growth_owner_min_score, отрыв от
+        конкурента, потолок галереи). Саму эту фразу повторно не пишем:
+        в ``_process_utterance`` она уже была предъявлена
+        ``_apply_growth_session`` (если сессия была открыта).
+        """
+        self.get_logger().info(
+            f"👌 [issue #2863] register_speaker('{known.name}'): фраза уже "
+            f"узнана как '{known.name}' (id={known.speaker_id[:8]}, "
+            f"score={known.confidence:.3f}) — новый эталон не нужен, «уже знаю»"
+        )
+        ack = String()
+        ack.data = json.dumps(
+            {
+                "event": "registered",
+                "name": known.name,
+                "speaker_id": known.speaker_id,
+                "reused_profile": True,
+                "already_known": True,
+                "utterance_id": utterance_id,
+            },
+            ensure_ascii=False,
+        )
+        self._result_pub.publish(ack)
+        session = self._growth_session
+        if session is None or session["speaker_id"] != known.speaker_id:
+            self._growth_session = {
+                "speaker_id": known.speaker_id,
+                "name": known.name,
+                "last_utterance_at": time.time(),
+                "count": 0,
+            }
 
     # ── Эпитеты (issue #1787) ─────────────────────────────────────────────────
 
@@ -1863,8 +1988,15 @@ class SpeakerIdNode(Node):
         source: Optional[str] = None,
         name_decision: Optional[str] = None,
         utterance_id: Optional[str] = None,
+        inconclusive: Optional[str] = None,
     ) -> None:
         """Serialise and publish the speaker identification result.
+
+        Issue #2863 — ``inconclusive`` (причина, только для ``match=None``):
+        биометрия фразу не оценила (нет эмбеддинга / мало речи). Payload
+        остаётся is_known=false (фраза имя не получает, #2829), но несёт
+        ``"inconclusive": true, "reason": ...`` — сигнал «не знаю», а не
+        «это другой человек»; потребители по нему узнанного не сбрасывают.
 
         Issue #2748 — ``source`` — необязательная метка происхождения
         сигнала. Обычная идентификация по фразе её не ставит (совместимость
@@ -1951,7 +2083,13 @@ class SpeakerIdNode(Node):
             payload = {"is_known": False}
             if utterance_id:
                 payload["utterance_id"] = utterance_id
-            self.get_logger().info("📢 Publishing: is_known=false")
+            if inconclusive:
+                payload["inconclusive"] = True
+                payload["reason"] = inconclusive
+            self.get_logger().info(
+                "📢 Publishing: is_known=false"
+                + (f" (inconclusive: {inconclusive}, issue #2863)" if inconclusive else "")
+            )
 
         msg = String()
         msg.data = json.dumps(payload, ensure_ascii=False)

@@ -41,7 +41,7 @@ import math
 import os
 import threading
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 # Issue #2442 — единый шов «Встреча» вместо самостоятельного
 # ``current_speaker_id``. См. ``_on_speaker_result`` ниже и ADR-0105 §3.
@@ -204,6 +204,29 @@ def _music_form_ends_at_epoch(state: Dict[str, Any]) -> Optional[float]:
     if not isinstance(remaining_s, (int, float)) or remaining_s <= 0:
         return None
     return time.time() + float(remaining_s)
+
+
+def _speaker_signal(data: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+    """``/voice/speaker/result`` → ``(меняет ли «кто сейчас», новый speaker_id)``.
+
+    Issue #2863 — «не знаю» ≠ «это другой человек». Отказ регистрации
+    (``event=register_error``, поля is_known в нём нет вовсе) и фраза,
+    которую биометрия не смогла оценить (``inconclusive``: нет эмбеддинга /
+    мало речи), раньше читались как is_known=false и сбрасывали узнанного
+    диктора в ∅. Теперь они ``(False, None)`` — не сигнал. Сбрасывает
+    только оценённая фраза (``{"is_known": false}`` без пометки, #2829).
+    Модульная функция — чтобы держать CC ``_on_speaker_result`` в бюджете
+    ADR-0021 и чтобы её можно было звать со стаба ноды в тестах.
+    """
+    event = data.get("event")
+    if (event and event != "registered") or data.get("inconclusive"):
+        return False, None
+    raw_sid = data.get("speaker_id")
+    # ``registered`` событие несёт speaker_id даже без is_known; ``and``
+    # отфильтровывает пустые строки и None.
+    if raw_sid and (event == "registered" or data.get("is_known")):
+        return True, str(raw_sid)
+    return True, None
 
 
 class MCPServer(Node):
@@ -616,14 +639,10 @@ class MCPServer(Node):
             return
         if not isinstance(data, dict):
             return
-
-        is_known = bool(data.get("is_known"))
-        raw_sid = data.get("speaker_id")
-        # Используем ``and`` чтобы отфильтровать пустые строки и None.
-        new_speaker_id: Optional[str] = str(raw_sid) if (is_known and raw_sid) else None
-        # ``registered`` событие несёт speaker_id даже без is_known.
-        if data.get("event") == "registered" and raw_sid:
-            new_speaker_id = str(raw_sid)
+        # Issue #2863 — служебные ack и неоценённые фразы не сигнал.
+        relevant, new_speaker_id = _speaker_signal(data)
+        if not relevant:
+            return
 
         old = self._current_encounter_speaker_id()
         if new_speaker_id == old:

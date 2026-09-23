@@ -601,6 +601,57 @@ class TestOnSpeakerResultRegisterError:
             )
         )  # must not raise
 
+    def test_unspoken_register_error_does_not_reset_known_speaker(self):
+        """Issue #2863 — служебный ack с незнакомым кодом ошибки раньше
+        проваливался дальше и затирал узнанного диктора самим ack."""
+        n = _make_node()
+        n._speak_direct = MagicMock()
+        known = {"is_known": True, "speaker_id": "sasha-1", "name": "Саша", "confidence": 0.877}
+        n._current_speaker = dict(known)
+
+        n._on_speaker_result(
+            self._msg({"event": "register_error", "error": "something_else", "name": "Саша"})
+        )
+
+        assert n._current_speaker == known
+
+
+class TestOnSpeakerResultInconclusive:
+    """Issue #2863 — «не смог оценить» не сбрасывает узнанного диктора."""
+
+    def _msg(self, payload: dict):
+        return type("Msg", (), {"data": json.dumps(payload, ensure_ascii=False)})()
+
+    def test_inconclusive_unknown_keeps_current_speaker(self):
+        """Живой лог: речь=0.36s, -66.6 dBFS, STT пустой → раньше сброс в ∅."""
+        n = _make_node()
+        n._utterance_speaker = MagicMock()
+        known = {"is_known": True, "speaker_id": "sasha-1", "name": "Саша", "confidence": 0.877}
+        n._current_speaker = dict(known)
+        payload = {
+            "is_known": False,
+            "utterance_id": "noise-1",
+            "inconclusive": True,
+            "reason": "too_short_for_biometry",
+        }
+
+        n._on_speaker_result(self._msg(payload))
+
+        assert n._current_speaker == known
+        # #2829: для СВОЕЙ фразы результат остаётся «не узнан» — имя она
+        # не наследует (join по utterance_id получает is_known=false).
+        n._utterance_speaker.submit.assert_called_once_with("noise-1", payload)
+
+    def test_evaluated_unknown_still_resets_current_speaker(self):
+        """Фразу реально оценили и не узнали — сброс допустим (#2829)."""
+        n = _make_node()
+        n._utterance_speaker = MagicMock()
+        n._current_speaker = {"is_known": True, "speaker_id": "sasha-1", "name": "Саша"}
+
+        n._on_speaker_result(self._msg({"is_known": False, "utterance_id": "u-2"}))
+
+        assert n._current_speaker == {"is_known": False, "utterance_id": "u-2"}
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  System prompt (legacy: test_system_prompt_injection)
