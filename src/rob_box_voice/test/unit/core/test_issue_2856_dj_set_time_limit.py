@@ -56,8 +56,18 @@ class _StubHook:
         return False
 
 
-def _run_set(payload: dict, *, horizon_s: float = 3 * 3600.0):
-    """Прогнать сет на поддельных часах до остановки DJ (или горизонта)."""
+def _run_set(
+    payload: dict,
+    *,
+    horizon_s: float = 3 * 3600.0,
+    failed_transitions: frozenset = frozenset(),
+):
+    """Прогнать сет на поддельных часах до остановки DJ (или горизонта).
+
+    Issue #2875 — каждый переход сообщает контроллеру, что трек запущен
+    (так делает нода по ``MUSIC_STARTING_TOOLS``), кроме переходов из
+    ``failed_transitions``: там модель музыку не запустила.
+    """
     clock = _Clock(T0)
     hook = _StubHook(clock)
     ctrl = DJModeController(
@@ -70,6 +80,9 @@ def _run_set(payload: dict, *, horizon_s: float = 3 * 3600.0):
         ctrl.tick()
         if len(hook.dispatches) > seen:
             seen = len(hook.dispatches)
+            if seen in failed_transitions:
+                continue
+            ctrl.note_turn_tools(["compose_music"], {"compose_music"})
             # compose_music сыграл форму на 180 с — mcp_server публикует
             # её конец, переход ждёт его (#2461).
             ctrl.state.form_ends_at = clock.now + FORM_S
@@ -182,18 +195,22 @@ class TestPlanlessSetEndsByTime(unittest.TestCase):
 
 
 class TestPlanPathUnchanged(unittest.TestCase):
-    PLAN = "\n".join(f"Трек {i}: номер {i}" for i in range(1, 7))
+    # Issue #2875: 8 треков по 180 с > 20 мин дефолтного лимита. Было 6 —
+    # сет «переживал» лимит только за счёт трёх повторов финала до
+    # страховки plan+3; теперь DJ выключается сразу после финала плана.
+    PLAN = "\n".join(f"Трек {i}: номер {i}" for i in range(1, 9))
 
     def test_plan_set_runs_past_default_time_limit(self) -> None:
-        """План из 6 треков по 180 с — финал по плану, не по дефолтному лимиту."""
+        """План из 8 треков по 180 с — финал по плану, не по дефолтному лимиту."""
         ctrl, hook = _run_set({"next_transition_sec": 45, "plan": self.PLAN})
 
         self.assertFalse(ctrl.state.enabled)
         prompts = [p for _, p in hook.dispatches]
-        # Как и до #2856: финал на треке #6, страховка plan+3 → 9 переходов.
-        self.assertEqual(len(prompts), 6 + DJModeController.DJ_AUTO_STOP_THRESHOLD)
-        self.assertTrue(all(FINAL_MARK not in p for p in prompts[:5]))
-        self.assertIn("переход #6 — ФИНАЛЬНЫЙ ТРЕК", prompts[5])
+        # Финал на треке #8; после реально сыгранного финального трека
+        # плана DJ выключается на следующем тике (issue #2875).
+        self.assertEqual(len(prompts), 8)
+        self.assertTrue(all(FINAL_MARK not in p for p in prompts[:7]))
+        self.assertIn("переход #8 — ФИНАЛЬНЫЙ ТРЕК", prompts[7])
         self.assertGreater(
             hook.stops[0] - T0, DJModeController.DJ_SET_DEFAULT_MAX_S,
             "дефолтный лимит времени не должен резать сет с планом",

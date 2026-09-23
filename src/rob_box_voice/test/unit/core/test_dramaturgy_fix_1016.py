@@ -175,6 +175,9 @@ def test_final_track_when_plan_set() -> None:
     ctrl = _build_controller()
     ctrl.state.theme = "диско"
     ctrl.state.set_plan = "Трек 1: старт\nТрек 2: пик"
+    # Issue #2875 — финал по плану считается по РЕАЛЬНО запущенным трекам,
+    # а не по номеру перехода: Трек 1 сыгран → следующий (Трек 2) последний.
+    ctrl.state.tracks_started = 1
 
     prompt = ctrl.build_auto_prompt(2)
 
