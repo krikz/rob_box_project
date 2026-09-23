@@ -56,6 +56,46 @@ from ..core.rtttl_library import RtttlLibrary
 # Live 13.08 — символы сэмплов в play("x-o-") для предзагрузки буферов.
 _PLAY_SYMBOLS_RE = re.compile(r'play\(\s*"([^"]*)"')
 
+
+# ---------------------------------------------------------------------------
+# issue #2896 — прозрачность RTTTL-поиска для модели
+# ---------------------------------------------------------------------------
+# ``RtttlLibrary.get()`` больше не отказывает молча на слабое текстовое
+# совпадение (фикс под одно слабое совпадение, issue #2877, системно ломал
+# сильные — «super mario», «star wars», issue #2896). Он всегда возвращает
+# лучшего по тексту кандидата; ответственность «эта ли песня» переходит на
+# вызывающую сторону — ``lookup_melody`` и ``compose_music`` отдают модели
+# ``title`` найденной записи (что и раньше) плюс несколько соседей по
+# ``search()``, чтобы модель могла сверить название с тем, что просил юзер,
+# и переспросить/выбрать другой вариант, если title явно не та песня.
+
+
+def _search_alternatives(
+    library: Optional["RtttlLibrary"],
+    query: Optional[str],
+    chosen_title: Optional[str],
+    limit: int = 4,
+) -> List[Dict[str, Optional[str]]]:
+    """До ``limit`` соседних результатов ``search(query)``, кроме выбранной записи."""
+    if not query or library is None:
+        return []
+    alternatives: List[Dict[str, Optional[str]]] = []
+    try:
+        hits = library.search(query, limit=max(limit * 2, 6))
+        for hit in hits:
+            title = hit.get("title") or hit.get("name")
+            if title == chosen_title:
+                continue
+            alternatives.append({"name": hit.get("name"), "title": title})
+            if len(alternatives) >= limit:
+                break
+    except Exception:  # noqa: BLE001 — альтернативы необязательны, не мокнутый
+        # search() в тестах (RtttlLibrary заменён на Mock() без .search)
+        # не должен ронять весь вызов — альтернативы просто пустые.
+        return []
+    return alternatives
+
+
 # ---------------------------------------------------------------------------
 # Pattern-name whitelist (security) — see stop_pattern()
 # ---------------------------------------------------------------------------
@@ -2165,6 +2205,17 @@ class ComposeMusicTool(MCPTool):
                 return rec
         return None
 
+    def _melody_alternatives(
+        self, name: Optional[str], chosen_title: Optional[str]
+    ) -> List[Dict[str, Optional[str]]]:
+        """До 4 ближайших кандидатов ``search()`` помимо выбранной записи.
+
+        См. модульный докстринг у :func:`_search_alternatives` (issue
+        #2896) — ``get()`` больше не отказывает молча на слабое
+        совпадение, эти альтернативы дают модели, чем сверить title.
+        """
+        return _search_alternatives(self._rtttl_library, name, chosen_title)
+
     @property
     def name(self) -> str:
         return "compose_music"
@@ -2981,6 +3032,12 @@ class ComposeMusicTool(MCPTool):
         # разошлось где-то по пути. None при name= не задан (сочинённый трек
         # без темы из библиотеки — объявлять нечего).
         result["title"] = melody_title
+        # issue #2896: get() больше не отказывает молча на слабое текстовое
+        # совпадение — модель обязана сама сверить title с тем, что просил
+        # юзер. alternatives (до 4 соседних результата search()) дают ей
+        # выбор, если title явно не то (см. _melody_alternatives).
+        if name:
+            result["alternatives"] = self._melody_alternatives(name, melody_title)
         flat = {
             "bpm": bpm, "root": root, "scale": scale, "form": form or "arc",
             "drums": drums, "drums_sample": drums_sample,
@@ -3636,17 +3693,29 @@ class LookupMelodyTool(MCPTool):
             for candidate in candidates:
                 rec = self._rtttl_library.get(candidate)
                 if rec is not None:
+                    title = rec.get("title")
+                    # issue #2896: get() возвращает лучшего по тексту
+                    # кандидата, даже если совпадение слабое — альтернативы
+                    # дают модели, чем сверить title с тем, что просил юзер.
+                    alternatives = _search_alternatives(
+                        self._rtttl_library, candidate, title
+                    )
                     return MCPToolResult(
                         success=True,
                         data={
                             "name": rec.get("name"),
-                            "title": rec.get("title"),
+                            "title": title,
                             "rtttl": rec.get("rtttl"),
+                            "alternatives": alternatives,
                         },
                         message=(
-                            f"Нашёл «{rec.get('title')}». Точные ноты в "
-                            "data['rtttl'] (формат RTTTL, как разбирать — в "
-                            "системном промпте). Сыграй эти ноты сам, не импровизируй."
+                            f"Нашёл «{title}». Точные ноты в data['rtttl'] "
+                            "(формат RTTTL, как разбирать — в системном "
+                            f"промпте). Сверь «{title}» с тем, что просил "
+                            "юзер — если это явно другая песня, посмотри "
+                            "data['alternatives'] или вызови search_melody "
+                            "с другим написанием. Сыграй ноты сам, не "
+                            "импровизируй."
                         ),
                     )
         # 2. Фолбэк — курируемые мелодии в SQLite (type='melody', миграция 012).
