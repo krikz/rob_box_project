@@ -74,9 +74,122 @@ _ALIASES = {
     "джингл белс": "jingle bells",
     "звёздные войны": "star wars",
     "звездные войны": "star wars",
+    # Архив хранит русский гимн под существительным «Russia» («National
+    # Anthem Of Russia»), не под прилагательным «Russian» — без этой
+    # замены токен «russian» не матчит запись вовсе, и «russian anthem»
+    # решает голое совпадение «anthem» по полусотне чужих гимнов (#2840).
+    "russian": "russia",
 }
 
 _ALIAS_SORTED = sorted(_ALIASES.items(), key=lambda kv: -len(kv[0]))
+
+#: Известные мусорные записи архива: под правдоподобным именем/тегами лежит
+#: вырожденная запись (короткий мотив, зациклённый N раз, «визжащая» октава).
+#: issue #2840: ``get('russian anthem')`` находил ``russiann`` — 10-нотный
+#: цикл ``2e,d,c,2d,c,d,2e,g,e,1d`` × 2 в o=7 — вместо настоящей темы
+#: Александрова (``national_2``). ``national`` — тот же мусор под другим
+#: слагом. Список не запрещает записи (прямой ``get('russiann')`` по имени
+#: их всё ещё честно найдёт), а только понижает их в ранжировании
+#: неточных/токенных совпадений внутри своего же bucket'а текстового скора
+#: — см. :meth:`RtttlLibrary._best_in_bucket`. Денилист НЕ может перевесить
+#: более высокий текстовый скор другой записи (issue #2840, живой прогон
+#: 23.09: «russian anthem» после первой версии фикса находил случайную
+#: «Irish National Anthem» — качество перебивало смысл названия).
+_GARBAGE_NAMES = frozenset({"russiann", "national"})
+
+#: Буква тона (без диеза/бемоля/октавы) → полутон в пределах октавы.
+_NOTE_PITCH_RE = re.compile(
+    r"^(?P<dur>\d*)(?P<pitch>[a-gp])(?P<mod>[#_]?)(?P<dot1>\.?)"
+    r"(?P<octave>\d?)(?P<dot2>\.?)$",
+    re.IGNORECASE,
+)
+
+
+def _parse_notes_for_quality(rtttl: str) -> tuple:
+    """RTTTL-строка → (список (буква, октава) без пауз, октава по умолчанию).
+
+    Упрощённый разбор для эвристики качества: не обязан быть побитово точным
+    (диезы/точки игнорируются) — важны только буква тона и октава, чтобы
+    оценить разнообразие высот и диапазон.
+    """
+    parts = (rtttl or "").split(":")
+    if len(parts) < 3:
+        return [], 5
+    defaults = parts[1]
+    notes_part = ":".join(parts[2:])
+    m = re.search(r"o\s*=\s*(\d)", defaults, re.IGNORECASE)
+    default_octave = int(m.group(1)) if m else 5
+    notes: List[tuple] = []
+    for tok in notes_part.split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        match = _NOTE_PITCH_RE.match(tok)
+        if not match:
+            continue
+        pitch = match.group("pitch").lower()
+        if pitch == "p":
+            continue
+        octv_str = match.group("octave")
+        octv = int(octv_str) if octv_str else default_octave
+        notes.append((pitch, octv))
+    return notes, default_octave
+
+
+def _shortest_repeating_period(seq: List[tuple]) -> Optional[int]:
+    """Наименьший период ``p < len(seq)``, для которого ``seq`` = мотив × N.
+
+    ``None``, если запись не является целым числом повторов одного мотива.
+    """
+    n = len(seq)
+    for p in range(1, n // 2 + 1):
+        if n % p:
+            continue
+        if all(seq[i] == seq[i % p] for i in range(n)):
+            return p
+    return None
+
+
+def _row_rtttl(row: sqlite3.Row) -> str:
+    """``rtttl`` строки-кандидата, безопасно (не все SELECT его выбирают)."""
+    return row["rtttl"] if "rtttl" in row.keys() else ""
+
+
+def _melody_quality(rtttl: str) -> float:
+    """Эвристическое качество мелодии: длина, разнообразие, повтор, октава.
+
+    Выше — лучше. Используется, чтобы среди кандидатов с близким текстовым
+    совпадением («russian anthem» матчит и мусорный ``russiann``, и
+    настоящую тему по токену «anthem») предпочесть содержательную запись, а
+    не короткий зацикленный мотив в визгливой октаве.
+    """
+    try:
+        notes, default_octave = _parse_notes_for_quality(rtttl)
+    except Exception:
+        return 0.0
+    n = len(notes)
+    if n == 0:
+        return -10.0
+    score = 0.0
+    # Длина: больше нот — содержательнее тема, но с убывающей отдачей.
+    score += min(n, 40) * 0.15
+    # Разнообразие высот: сколько разных ступеней и (ступень, октава) пар.
+    distinct_letters = len({p for p, _ in notes})
+    score += distinct_letters * 1.0
+    distinct_pairs = len({(p, o) for p, o in notes})
+    score += (distinct_pairs / n) * 5.0
+    # Штраф за N-кратный повтор одного короткого мотива (визитная карточка
+    # мусорных записей вроде RussianN — 10 нот × 2).
+    period = _shortest_repeating_period(notes)
+    if period is not None and period < n:
+        repeats = n // period
+        score -= (repeats - 1) * 3.0
+    # Разумность октавы по умолчанию: o=7+ или o<=2 — почти всегда брак
+    # записи (див «визжащий» регистр), а не осмысленный выбор.
+    if default_octave >= 7 or default_octave <= 2:
+        score -= abs(default_octave - 5) * 2.0
+    return score
+
 
 #: Английские стоп-слова, встречающиеся почти в каждом названии («of», «the»,
 #: «and»). Без их отсева LIKE-кандидаты раздуваются до всего архива, LIMIT-окно
@@ -89,11 +202,20 @@ _STOPWORDS = frozenset({
 
 
 def _normalize(query: str) -> str:
-    """Нижний регистр + замена русских/жаргонных имён на канонический англ."""
+    """Нижний регистр + замена русских/жаргонных имён на канонический англ.
+
+    Замена — по границам СЛОВ (``\\b``), не голой подстрокой: латинские
+    алиасы вроде «russian» — обычные английские слова, и подстрочная
+    замена ломает прямую адресацию похожих записей архива (issue #2840,
+    живой прогон 23.09: ``get('russiann')`` после подстрочной замены
+    «russian»→«russia» превращался в ``get('russian')`` — искал ЧУЖУЮ
+    запись вместо честного прямого попадания по имени).
+    """
     q = (query or "").strip().lower()
     for key, value in _ALIAS_SORTED:
-        if key in q:
-            q = q.replace(key, value)
+        pattern = r"\b" + re.escape(key) + r"\b"
+        if re.search(pattern, q):
+            q = re.sub(pattern, value, q)
     return q
 
 
@@ -269,6 +391,41 @@ class RtttlLibrary:
                 score += 1
         return score
 
+    @staticmethod
+    def _is_garbage(row: sqlite3.Row) -> bool:
+        return (row["name"] or "").strip().lower() in _GARBAGE_NAMES
+
+    @classmethod
+    def _best_in_bucket(
+        cls, rows: List[sqlite3.Row], tokens: List[str]
+    ) -> Optional[sqlite3.Row]:
+        """Лучшая строка: сперва по ТЕКСТОВОМУ смыслу, потом по качеству.
+
+        🔴 FIX (live 23.09, issue #2840 регрессия): первая версия смешивала
+        текстовый скор и качество мелодии в одну непрерывную формулу
+        (``score * WEIGHT + quality``). Небольшой перевес качества у
+        случайной «Irish National Anthem» (raw=3, только токен «anthem»)
+        перебивал точный текстовый скор «National Anthem Of Russia»
+        (тоже raw=3) чисто по количеству нот — семантика («russia» в
+        запросе) при этом ни при чём не участвовала.
+
+        Правильный порядок: сначала находим МАКСИМАЛЬНЫЙ текстовый скор
+        среди кандидатов (bucket) — это решает совпадение по смыслу.
+        Качество и денилист работают только ВНУТРИ этого bucket, где
+        текстовое совпадение уже одинаково хорошее: денилист выкидывает
+        мусор, если в bucket'е есть не-мусорная запись, а качество
+        выбирает лучшую среди оставшихся.
+        """
+        scored = [(cls._score(row, tokens), row) for row in rows]
+        scored = [(s, row) for s, row in scored if s > 0]
+        if not scored:
+            return None
+        max_score = max(s for s, _row in scored)
+        bucket = [row for s, row in scored if s == max_score]
+        non_garbage = [row for row in bucket if not cls._is_garbage(row)]
+        pool = non_garbage or bucket
+        return max(pool, key=lambda row: _melody_quality(_row_rtttl(row)))
+
     def _candidates(self, tokens: List[str], cap: int) -> List[sqlite3.Row]:
         """Строки, где хотя бы один токен встречается в полях (метаданные)."""
         clauses = []
@@ -282,41 +439,56 @@ class RtttlLibrary:
             )
             params += [like, like, like, like, like]
         sql = (
-            "SELECT id, name, title, artist, source, tags, rtttl_name "
+            "SELECT id, name, title, artist, source, tags, rtttl_name, rtttl "
             "FROM rtttl_melodies WHERE " + " OR ".join(clauses) + " LIMIT ?"
         )
         return self._conn.execute(sql, params + [cap]).fetchall()
 
     def get(self, name: str) -> Optional[Dict[str, Any]]:
-        """Найти одну мелодию (точное имя → лучший по токенам запроса)."""
+        """Найти одну мелодию (точное имя → лучший по токенам запроса).
+
+        Точное совпадение имени обычно возвращается сразу (прямая
+        адресация: ``get('russiann')`` честно находит ``russiann``). Но
+        если точное имя само в денилисте (``_GARBAGE_NAMES``), оно не
+        побеждает автоматически — участвует в ранжировании наравне с
+        токен-кандидатами и уступает более качественной записи, если такая
+        нашлась (иначе остаётся честным fallback'ом, когда лучшего нет).
+        """
         q = _normalize(name)
         tokens = _tokens(q)
         if not tokens:
             return None
         with self._lock:
-            row = self._conn.execute(
+            exact = self._conn.execute(
                 "SELECT * FROM rtttl_melodies WHERE lower(name) = ? LIMIT 1", (q,)
             ).fetchone()
-            if row is not None:
-                return self._to_dict(row, include_rtttl=True)
+            if exact is not None and not self._is_garbage(exact):
+                return self._to_dict(exact, include_rtttl=True)
             rows = self._candidates(tokens, cap=2000)
-        best: Optional[sqlite3.Row] = None
-        best_score = 0
-        for row in rows:
-            score = self._score(row, tokens)
-            if score > best_score:
-                best_score = score
-                best = row
+        pool = list(rows)
+        if exact is not None and not any(row["id"] == exact["id"] for row in pool):
+            pool.append(exact)
+        best = self._best_in_bucket(pool, tokens)
         if best is None:
             return None
         with self._lock:
             full = self._conn.execute(
                 "SELECT * FROM rtttl_melodies WHERE id = ?", (best["id"],)
             ).fetchone()
-        return self._to_dict(full, include_rtttl=True) if full is not None else None
+        if full is None:
+            return None
+        return self._to_dict(full, include_rtttl=True)
 
     def search(self, query: str, limit: int = 20) -> List[Dict[str, Any]]:
-        """Поиск по токенам запроса (SQL кандидаты → скоринг в Python), top-N."""
+        """Поиск по токенам запроса (SQL кандидаты → скоринг в Python), top-N.
+
+        Сортировка: текстовый скор (главный ключ, как раньше, решает
+        семантику совпадения) → денилист (внутри одного скора мусор тонет
+        под не-мусором) → title (алфавит, прежний тай-брейк) → качество
+        мелодии (последний тай-брейк, для истинных ничьих по скору,
+        денилисту и названию). Качество и денилист НЕ могут перевесить
+        разницу в текстовом скоре — см. :meth:`_best_in_bucket`.
+        """
         q = _normalize(query)
         tokens = _tokens(q)
         if not tokens:
@@ -326,8 +498,15 @@ class RtttlLibrary:
             rows = self._candidates(tokens, cap=limit * 10)
         scored = []
         for row in rows:
-            score = self._score(row, tokens)
-            if score > 0:
-                scored.append((score, row))
-        scored.sort(key=lambda item: (-item[0], (item[1]["title"] or "").lower()))
-        return [self._to_dict(row) for _score, row in scored[:limit]]
+            match = self._score(row, tokens)
+            if match <= 0:
+                continue
+            quality = _melody_quality(_row_rtttl(row))
+            scored.append((match, self._is_garbage(row), row, quality))
+
+        def _sort_key(item: tuple) -> tuple:
+            match, garbage, row, quality = item
+            return (-match, garbage, (row["title"] or "").lower(), -quality)
+
+        scored.sort(key=_sort_key)
+        return [self._to_dict(row) for _m, _g, row, _q in scored[:limit]]
