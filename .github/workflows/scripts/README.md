@@ -79,7 +79,7 @@ agent-flow — env `E2E_TTS_PROVIDER`. Прочие ручки: `E2E_TTS_PROVIDE
 | `verdict.txt` | `PASS`/`FAIL` — вердикт, бинарный по ADR-0015 |
 | `steps.jsonl` | по строке на шаг: `label`, `status`, `detail`, время |
 | `summary.json` | сводка: шаги N/M, GATE-1, RMS/тишина, сверка с golden |
-| `acceptance.json` | GATE-1: ожидаемые/вызванные тулы, ключевые слова |
+| `acceptance.json` | GATE-1: ожидаемые/вызванные тулы, ключевые слова (per-step — ещё и исход `register_speaker`, см. `.github/e2e/docs/GATE-1-DESIGN.md`, issue #2846) |
 | `audio_metrics.json` | RMS/peak/silence по записи |
 | `baseline_diff.json` | сверка записи с golden + `keyword_match_pct` |
 | `transcript.json` | что просили сказать vs что распознал STT |
