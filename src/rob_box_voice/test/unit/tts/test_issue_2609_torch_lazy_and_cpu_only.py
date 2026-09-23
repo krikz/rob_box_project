@@ -44,8 +44,10 @@ Acceptance criteria covered here:
     only inside ``_load_silero_model``).
   * ``speaker_id_node.py`` declares ``resemblyzer_warmup_on_start``
     and only submits ``_warmup`` when the parameter is True.
-  * ``speaker_id_node.yaml`` ships with ``resemblyzer_warmup_on_start: false``
-    explicitly so the choice is visible to operators.
+  * ``speaker_id_node.yaml`` sets ``resemblyzer_warmup_on_start``
+    explicitly so the choice is visible to operators. Issue #2885
+    flipped the value to ``true``: the lazy cold start measured 40-60 s
+    (not 2-3 s), see test_issue_2885_speaker_id_warmup_on_start.py.
   * Runtime check: ``TTSNode.__init__`` does NOT trigger an import of
     ``torch`` (verified via sys.modules manipulation in the test).
 
@@ -342,13 +344,15 @@ def test_speaker_id_warmup_submit_is_gated_on_parameter() -> None:
     )
 
 
-def test_speaker_id_yaml_sets_resemblyzer_warmup_false() -> None:
-    """speaker_id_node.yaml must default the parameter to ``false`` so
-    operators see the choice explicitly.
+def test_speaker_id_yaml_sets_resemblyzer_warmup_explicitly() -> None:
+    """speaker_id_node.yaml must set the parameter explicitly so operators
+    see the choice.
 
-    Setting True by default would re-introduce the RSS bloat on every
-    boot; setting False here, with a comment, makes the trade-off
-    visible at the place where operators edit it.
+    Issue #2609 shipped ``false`` (lazy warm-up). Issue #2885 measured the
+    lazy cold start at 40-60 s — the first phrase after every restart went
+    to the LLM as ``unknown`` — and flipped it to ``true`` (background
+    warm-up at startup). The gate itself (tests above) stays: ``false``
+    is still a valid operator opt-out.
     """
     text = _SPEAKER_ID_YAML.read_text(encoding="utf-8")
     assert "resemblyzer_warmup_on_start" in text, (
@@ -356,16 +360,14 @@ def test_speaker_id_yaml_sets_resemblyzer_warmup_false() -> None:
         "(issue #2609). The choice should be visible at the operator's "
         "config layer, not hidden in node default."
     )
-    # Match the explicit ``resemblyzer_warmup_on_start: false`` line.
     match = re.search(
         r"^\s*resemblyzer_warmup_on_start\s*:\s*(true|false)\s*$",
         text,
         re.MULTILINE,
     )
-    assert match is not None and match.group(1) == "false", (
-        "speaker_id_node.yaml must set resemblyzer_warmup_on_start: false "
-        "explicitly (issue #2609 acceptance). Operators that want "
-        "legacy eager warm-load can flip to true."
+    assert match is not None and match.group(1) == "true", (
+        "speaker_id_node.yaml must set resemblyzer_warmup_on_start: true "
+        "(issue #2885: lazy cold start costs 40-60 s on the first phrase)."
     )
 
 
