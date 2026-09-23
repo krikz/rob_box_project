@@ -29,6 +29,7 @@ from typing import Any, Dict, List, Optional, Tuple, cast
 
 from rob_box_voice.core.music_stack_validation import (
     MusicStackStatus,
+    load_confirmed_synths,
     load_sclang_health,
 )
 from rob_box_voice.core.sc_only_custom_synthdefs import (
@@ -291,6 +292,11 @@ class MusicManager:
         #: мутирует UGen-граф (osc*env) → компаундинг ("too big for
         #: sending") → scsynth не тянет → "late" и троттл (live 20.08).
         self._synthdefs_added: set = set()
+        #: Issue #2838 — SynthDef-ы, приход которых в scsynth подтвердил
+        #: sclang (строки прелоада "SynthDef in scsynth: X" после
+        #: Server.sync). ``None`` — подтверждения нет (лог недоступен или
+        #: прелоад не завершён). Пишет ``_evaluate_music_stack_health``.
+        self._server_confirmed_synths: Optional[frozenset] = None
         #: имя текущего пресета
         self._current_preset: Optional[str] = None
         #: контекст выполнения для renardo
@@ -535,6 +541,7 @@ class MusicManager:
             register_sc_only_custom_synthdefs(_rt, self._renardo_context)
             self._renardo_available = True
             self._renardo_last_error = None
+            self._log_synth_truth_discrepancy()
         except (ImportError, Exception) as exc:
             self._renardo_available = False
             self._renardo_context = {}
@@ -864,19 +871,27 @@ class MusicManager:
     def known_synth_names(self) -> Optional[frozenset]:
         """Множество SynthDef-имён, реально загруженных в scsynth.
 
-        Источники:
-        (a) ``self._synthdefs_added`` — renardo-дефолтная палитра, которую
-            ``_initialize_renardo`` отправила через ``sdef.add()`` (плюс
-            то, что ``_verify_and_retry_synthdefs`` досослала при UDP-
-            потерях, live 12.08);
-        (b) ``CUSTOM_SC_ONLY_SYNTH_NAMES`` — кастомные .scd (warmpad,
-            retrobass, supersawlead, imperialbrass, marchstrings,
-            strangerpulsepad, strangerarp, strangerbrass), которые
-            ``foxdot_init.sc`` грузит напрямую в sclang, а
-            ``register_sc_only_custom_synthdefs`` оборачивает
-            Python-стороной. ``masterlimiter``/``masterfilter`` туда
-            намеренно НЕ входят — это служебные шины мастер-тракта, не
-            тембры для ``lead_synth``/``bass_synth``/``pad_synth``.
+        Issue #2838 (живой прогон 23.09.2026): раньше сюда шёл весь
+        ``self._synthdefs_added`` — то, что Python-сторона renardo
+        ОТПРАВИЛА через ``sdef.add()`` (UDP ``/foxdot`` → sclang, без
+        подтверждения). Часть этих пакетов теряется на порту sclang
+        (drops в ``/proc/net/udp``), и потерянный ``sine`` остался
+        «известным»: валидатор сам подсказал его LLM, та им сыграла —
+        235 × "SynthDef sine not found".
+
+        Теперь источник истины — ``self._server_confirmed_synths``: имена,
+        которые sclang подтвердил в scsynth строкой прелоада "SynthDef in
+        scsynth: X" (печатается после ``Server.sync``, см.
+        ``foxdot_init.sc``). Пересекаем его с тем, для чего есть
+        Python-обёртка (``_synthdefs_added`` ∪ ``CUSTOM_SC_ONLY_SYNTH_NAMES``):
+        синт без обёртки код всё равно не вызовет. Это же отсекает
+        служебные шины ``masterlimiter``/``masterfilter`` — они есть на
+        сервере, но не тембры для ``lead_synth``/``bass_synth``/``pad_synth``.
+
+        Если подтверждения нет (sclang-лог недоступен / прелоад не
+        завершён) — прежнее поведение: ``_synthdefs_added`` ∪
+        ``CUSTOM_SC_ONLY_SYNTH_NAMES``. Оно НЕ проверено сервером; на
+        старте это логируется (``_log_synth_truth_discrepancy``).
 
         Returns:
             ``None``, пока ``_synthdefs_added`` пуст (Renardo ещё не
@@ -884,13 +899,46 @@ class MusicManager:
             ``__new__`` в обход ``__init__``) — вызывающая сторона должна
             трактовать это как «набор неизвестен», а не «ничего не
             разрешено», иначе валидатор блокировал бы ЛЮБОЙ синт до
-            завершения инициализации. Иначе — frozenset реально
-            загруженных имён (нижний регистр — как их печатает sclang).
+            завершения инициализации. Иначе — frozenset имён (нижний
+            регистр — как их печатает sclang).
         """
         added = getattr(self, "_synthdefs_added", None)
         if not added:
             return None
-        return frozenset(added) | frozenset(CUSTOM_SC_ONLY_SYNTH_NAMES)
+        wrapped = frozenset(added) | frozenset(CUSTOM_SC_ONLY_SYNTH_NAMES)
+        confirmed = getattr(self, "_server_confirmed_synths", None)
+        if confirmed is None:
+            return wrapped
+        return wrapped & confirmed
+
+    def _log_synth_truth_discrepancy(self) -> None:
+        """Issue #2838: залогировать расхождение «отправлено» vs «на сервере».
+
+        Вызывается один раз в конце успешного ``_initialize_renardo``.
+        Ничего не меняет — только делает видимым, какие синты Python-сторона
+        считает добавленными, но sclang не подтвердил в scsynth (валидатор
+        их отклоняет и не подсказывает).
+        """
+        confirmed = getattr(self, "_server_confirmed_synths", None)
+        if confirmed is None:
+            self._log_warning(
+                "[music #2838] нет подтверждения прелоада SynthDef-ов в "
+                "sclang-логе — валидатор синтов работает по списку "
+                "ОТПРАВЛЕННЫХ (sdef.add()), он не проверен сервером"
+            )
+            return
+        unconfirmed = sorted(set(self._synthdefs_added) - confirmed)
+        wrapped = set(self._synthdefs_added) | set(CUSTOM_SC_ONLY_SYNTH_NAMES)
+        no_wrapper = sorted(confirmed - wrapped)
+        sent = len(self._synthdefs_added)
+        allowed = len(self.known_synth_names() or ())
+        self._log_warning(
+            f"[music #2838] SynthDef truth: подтверждено в scsynth "
+            f"{len(confirmed)}, отправлено renardo {sent}, "
+            f"разрешено валидатору {allowed}; "
+            f"без подтверждения ({len(unconfirmed)}, отклоняются): "
+            f"{unconfirmed}; на сервере без Python-обёртки: {no_wrapper}"
+        )
 
     # ------------------------------------------------------------------
     # Music-stack health (issue G-MUSIC, architect review v3)
@@ -919,6 +967,7 @@ class MusicManager:
             critical_synths=list(self._critical_synths),
         )
         self._music_stack_status = status
+        self._server_confirmed_synths = load_confirmed_synths(sclang_log_path)
 
         if not status.is_healthy and self._require_healthy:
             # Mark Renardo as unavailable WITHOUT clearing the existing
