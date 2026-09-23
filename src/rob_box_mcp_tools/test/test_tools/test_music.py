@@ -2489,6 +2489,76 @@ class TestComposeMusicToolGrooveLoop:
 
 
 @pytest.mark.unit
+class TestComposeMusicToolDrumStyle:
+    """Issue #2841: compose_music(drum_style=...) — жанровый каркас ударных.
+    С name= стиль уходит в core.harmonize; без name= заполняет drums/hats,
+    которых модель не дала; неизвестный стиль — честная ошибка."""
+
+    _ARR = dict(lead_synth="blip", bass_synth="dub", pad_synth="warmpad")
+    _FREE = dict(
+        bpm=120, root="A", scale="minor", form="arc",
+        bass_synth="dub", bass_notes="0,0,4,0",
+        lead_synth="blip", lead_notes="0,2,4,7",
+    )
+
+    def _tool(self, mock_node, rtttl=None):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        library = None
+        if rtttl is not None:
+            library = Mock()
+            library.get.return_value = {"name": "t", "title": "T", "rtttl": rtttl}
+        tool = ComposeMusicTool(mock_node, mgr, library)
+        mgr.execute_code = Mock(return_value={"success": True})
+        return tool, mgr
+
+    def test_schema_exposes_drum_style_enum(self, mock_node):
+        tool, _ = self._tool(mock_node)
+        param = next(p for p in tool.parameters if p.name == "drum_style")
+        assert {"auto", "four_on_floor", "halftime", "none"} <= set(param.enum)
+
+    def test_name_path_uses_style_skeleton(self, mock_node):
+        tool, mgr = self._tool(mock_node, "t:d=4,o=5,b=100:c,e,g,c6")
+        result = tool.execute(name="t", drum_style="halftime", **self._ARR)
+        assert result.success is True, result.error
+        code = mgr.execute_code.call_args.args[0]
+        assert "d1 >> play('X.......o.......'" in code
+
+    def test_name_path_default_keeps_old_backbeat(self, mock_node):
+        tool, mgr = self._tool(mock_node, "t:d=4,o=5,b=100:c,e,g,c6")
+        tool.execute(name="t", **self._ARR)
+        code = mgr.execute_code.call_args.args[0]
+        assert "d1 >> play('X...o.......o...'" in code  # редкая тема: без бочки на 3
+
+    def test_free_path_fills_missing_drums_from_style(self, mock_node):
+        tool, mgr = self._tool(mock_node)
+        result = tool.execute(drum_style="four_on_floor", **self._FREE)
+        assert result.success is True, result.error
+        code = mgr.execute_code.call_args.args[0]
+        assert "d1 >> play('X...X...X...X...'" in code
+        assert "d2 >> play('..-...-...-...-.'" in code
+
+    def test_free_path_model_drums_win_over_style(self, mock_node):
+        tool, mgr = self._tool(mock_node)
+        tool.execute(drum_style="four_on_floor", drums="X..oX.o.", **self._FREE)
+        code = mgr.execute_code.call_args.args[0]
+        assert "X...X...X...X..." not in code
+
+    def test_none_style_frees_drum_slots_for_loop(self, mock_node):
+        tool, mgr = self._tool(mock_node, "t:d=4,o=5,b=100:c,e,g,c6")
+        tool.execute(name="t", drum_style="none", groove_loop="foxdot", **self._ARR)
+        code = mgr.execute_code.call_args.args[0]
+        assert "play(" not in code
+        assert "d1 >> loop('foxdot'" in code
+
+    def test_unknown_style_is_tool_error(self, mock_node):
+        tool, mgr = self._tool(mock_node)
+        result = tool.execute(drum_style="polka", **self._FREE)
+        assert result.success is False
+        assert "drum_style" in result.error
+        mgr.execute_code.assert_not_called()
+
+
+@pytest.mark.unit
 class TestComposeMusicToolFormCycleEnd:
     """Issue #2461 — момент конца ОДНОГО прохода формы (``_music_form_cycle_ends_at``)
     должен взводиться на любой ``compose_music``, включая ``repeat=True`` —

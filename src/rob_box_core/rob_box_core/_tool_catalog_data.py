@@ -983,6 +983,81 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                          'приходится '
                                                                          'просить '
                                                                          'остановить.'},
+                                            'drum_style': {   'type': 'string',
+                                                              'description': 'Жанровый '
+                                                                             'каркас '
+                                                                             'ударных: '
+                                                                             'four_on_floor '
+                                                                             '— бочка '
+                                                                             'на '
+                                                                             'каждую '
+                                                                             'долю '
+                                                                             '(хаус, '
+                                                                             'диско, '
+                                                                             'техно); '
+                                                                             'backbeat '
+                                                                             '— малый '
+                                                                             'на 2 и 4 '
+                                                                             '(поп, '
+                                                                             'рок); '
+                                                                             'halftime '
+                                                                             '— малый '
+                                                                             'на '
+                                                                             'третьей '
+                                                                             'доле '
+                                                                             '(трэп, '
+                                                                             'даб, '
+                                                                             'медляк); '
+                                                                             'breakbeat '
+                                                                             '— '
+                                                                             'синкопированная '
+                                                                             'бочка '
+                                                                             '(хип-хоп, '
+                                                                             'бум-бэп, '
+                                                                             'брейкс); '
+                                                                             'march — '
+                                                                             'марш; '
+                                                                             'none — '
+                                                                             'без '
+                                                                             'ударных '
+                                                                             '(удобно, '
+                                                                             'когда '
+                                                                             'грув '
+                                                                             'несёт '
+                                                                             'groove_loop). '
+                                                                             'С name= '
+                                                                             'выбирает '
+                                                                             'рисунок '
+                                                                             'вместо '
+                                                                             'выведенного '
+                                                                             'из темы '
+                                                                             '(auto — '
+                                                                             'выведенный, '
+                                                                             'по '
+                                                                             'умолчанию). '
+                                                                             'Без '
+                                                                             'name= '
+                                                                             'заполняет '
+                                                                             'drums/hats, '
+                                                                             'если ты '
+                                                                             'их не '
+                                                                             'задал. '
+                                                                             'Меняй '
+                                                                             'между '
+                                                                             'треками '
+                                                                             '— один '
+                                                                             'бит на '
+                                                                             'весь сет '
+                                                                             'звучит '
+                                                                             'как один '
+                                                                             'трек.',
+                                                              'enum': [   'auto',
+                                                                          'four_on_floor',
+                                                                          'backbeat',
+                                                                          'halftime',
+                                                                          'breakbeat',
+                                                                          'march',
+                                                                          'none']},
                                             'groove_loop': {   'type': 'string',
                                                                'description': 'Жанровый '
                                                                               'луп '
@@ -1125,7 +1200,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                        'theme_octaves',
                                        'repeat',
                                        'swing',
-                                       'groove_loop'],
+                                       'groove_loop',
+                                       'drum_style'],
                          'required': [],
                          'accepts_kwargs': False},
         'skill': ('composer',)},
