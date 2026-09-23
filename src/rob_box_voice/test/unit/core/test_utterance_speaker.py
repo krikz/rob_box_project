@@ -1,4 +1,4 @@
-"""test_utterance_speaker.py -- issue #2829 / ADR-0130.
+"""test_utterance_speaker.py -- issue #2829 / ADR-0131.
 
 Covers the acceptance criteria listed in the issue's PR-1 task:
 

@@ -1,5 +1,5 @@
 """utterance_speaker.py — single source of truth for "who said THIS phrase"
-(issue #2829, ADR-0130).
+(issue #2829, ADR-0131).
 
 Before this module, ``dialogue_node`` decided "who is speaking" by reading
 whatever the *last* ``/voice/speaker/result`` message happened to leave in
@@ -26,7 +26,7 @@ order:
 This is the ONLY module allowed to answer "who said utterance X" from
 biometry. Other historical signals (``speaker_context``/``speaker_tag``
 from ``/voice/stt/speaker``, ``_speaker_by_text``, ``_speaker_tracker``)
-are diagnostic-only after this change -- see ADR-0130 §"Источники: было →
+are diagnostic-only after this change -- see ADR-0131 §"Источники: было →
 стало" for the per-source disposition table.
 """
 

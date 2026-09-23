@@ -7,7 +7,7 @@ from ``audio_node`` -- one message per accepted utterance (see
 buffered utterance is published as a single ``AudioData``, never split or
 re-chunked downstream before either node reads it).
 
-ADR-0130 picked option (a): a hash of those PCM bytes, computed
+ADR-0131 picked option (a): a hash of those PCM bytes, computed
 independently by both nodes, over changing the message type or adding a
 new topic from ``audio_node``. Both nodes call :func:`compute_utterance_id`
 on the *same* ``bytes(msg.data)`` they already extract as their first line

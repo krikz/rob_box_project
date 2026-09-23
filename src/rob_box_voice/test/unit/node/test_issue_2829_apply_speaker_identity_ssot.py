@@ -1,6 +1,6 @@
 """test_issue_2829_apply_speaker_identity_ssot.py
 
-Issue #2829 / ADR-0130 -- ``dialogue_node._apply_speaker_identity`` must
+Issue #2829 / ADR-0131 -- ``dialogue_node._apply_speaker_identity`` must
 join STT and voice-biometry by ``utterance_id`` instead of reading
 whatever ``_current_speaker`` happens to hold after a blind
 ``asyncio.sleep(0.30)``.

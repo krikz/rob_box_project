@@ -587,7 +587,7 @@ class STTNode(Node):
         # telegram/perception/transport). dialogue_node подписывается и создаёт
         # профиль спикера (scope=speaker:<tag>).
         self.speaker_pub = self.create_publisher(String, "/voice/stt/speaker", 10)
-        # Issue #2829 (ADR-0130) — utterance_id для ЭТОЙ фразы, publish'ится
+        # Issue #2829 (ADR-0131) — utterance_id для ЭТОЙ фразы, publish'ится
         # ПЕРЕД /voice/stt/result (тот же порядок гарантий, что и у
         # speaker_pub выше: dialogue_node._on_stt читает pending id,
         # выставленный этим сообщением, до того как читает сам текст).
@@ -951,7 +951,7 @@ class STTNode(Node):
             )
             self.get_logger().info(f"✅ ПРИНЯТО ({source}): {text}")
             if source == _SRC_RESPEAKER:
-                # Issue #2829 (ADR-0130) — utterance_id ПЕРЕД всем остальным:
+                # Issue #2829 (ADR-0131) — utterance_id ПЕРЕД всем остальным:
                 # dialogue_node запоминает id как "pending" и связывает его
                 # со следующим /voice/stt/result. speaker_id_node считает
                 # utterance_id тем же способом от тех же PCM-байт
@@ -1882,7 +1882,7 @@ class STTNode(Node):
         return text
 
     def _publish_utterance_id(self, audio_bytes: bytes) -> None:
-        """Issue #2829 (ADR-0130) — publish this phrase's ``utterance_id``.
+        """Issue #2829 (ADR-0131) — publish this phrase's ``utterance_id``.
 
         Deterministic hash of the raw PCM bytes this node just recognised
         (see ``core/utterance_id.py``). speaker_id_node computes the same

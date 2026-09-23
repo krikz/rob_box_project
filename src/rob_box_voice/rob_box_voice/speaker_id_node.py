@@ -610,7 +610,7 @@ class SpeakerIdNode(Node):
     def _on_speech_audio(self, msg: AudioData) -> None:
         """Received a complete speech utterance — run inference asynchronously."""
         pcm_bytes = bytes(msg.data)
-        # Issue #2829 (ADR-0130) — utterance_id считается из ТЕХ ЖЕ байт,
+        # Issue #2829 (ADR-0131) — utterance_id считается из ТЕХ ЖЕ байт,
         # что и в stt_node._publish_utterance_id (одинаковый хеш без
         # какой-либо координации между нодами — оба читают
         # /audio/speech_audio).
@@ -1741,7 +1741,7 @@ class SpeakerIdNode(Node):
                 # (профиль из старой БД) — потребитель обязан это терпеть.
                 "epithet": match.epithet,
             }
-            # Issue #2829 (ADR-0130) — id фразы, для которой это результат
+            # Issue #2829 (ADR-0131) — id фразы, для которой это результат
             # биометрии. Добавляем только когда он есть — старые/тестовые
             # пути без utterance_id получают payload байт-в-байт как
             # раньше (см. test_issue_2809_low_confidence_speaker_does_not_leak_name.py).
