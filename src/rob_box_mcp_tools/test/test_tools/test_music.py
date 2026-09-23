@@ -2841,6 +2841,79 @@ class TestComposeMusicToolMelodyByName:
         assert "midinote=" not in code
         assert "blip" in code
 
+    def test_result_data_carries_title_of_the_actually_played_record(self, mock_node):
+        """issue #2877: ``data['title']`` — название РЕАЛЬНО сыгранной записи,
+        не только текст message. Без этого поля рассинхрон между тем, что
+        объявляет LLM, и тем, что реально играет ``compose_music``, был
+        виден только в свободном тексте, а не в структурированном ответе."""
+        rtttl_library = Mock()
+        rtttl_library.get.return_value = {
+            "name": "fifth",
+            "title": "Beethoven's Fifth",
+            "rtttl": "fifth:d=4,o=5,b=63:8p,8g5,8g5,8g5,2d#5",
+        }
+        tool, mgr = self._make_tool(mock_node, rtttl_library)
+        mgr.execute_code = Mock(return_value={"success": True})
+        result = tool.execute(name="fifth", **self._ARR)
+        assert result.success is True
+        assert result.data["title"] == "Beethoven's Fifth"
+
+    def test_result_data_has_no_title_when_name_not_given(self, mock_node):
+        """Сочинённый с нуля трек (без ``name=``) — объявлять нечего."""
+        tool, mgr = self._make_tool(mock_node, rtttl_library=None)
+        mgr.execute_code = Mock(return_value={"success": True})
+        result = tool.execute(
+            bpm=100, root="C", scale="minor", lead_synth="blip", lead_notes="0,2,4,7"
+        )
+        assert result.success is True
+        assert result.data.get("title") is None
+
+
+class TestComposeMusicToolRealArchiveWeakMatch:
+    """issue #2877: интеграция с РЕАЛЬНЫМ RTTTL-архивом (не мок) — живой
+    прогон 23.09, диджей объявил «Stranger Things», сыграл «Strangers In
+    The Night». ``get()`` теперь честно возвращает ``None`` на слабое
+    совпадение, и ``compose_music`` обязан уйти в существующую ветку
+    «мелодия не найдена» (``tools/music.py`` строка ~2662), а не молча
+    сыграть ближайший чужой трек под заявленным названием."""
+
+    _ARR = dict(lead_synth="blip", bass_synth="dub", pad_synth="warmpad")
+
+    def _make_tool(self, mock_node, tmp_path):
+        from rob_box_mcp_tools.core.rtttl_library import RtttlLibrary
+
+        rtttl_library = RtttlLibrary(db_path=str(tmp_path / "compose_real.db"))
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        mgr.execute_code = Mock(return_value={"success": True})
+        return ComposeMusicTool(mock_node, mgr, rtttl_library), mgr
+
+    def test_stranger_things_goes_to_unknown_melody_branch(self, mock_node, tmp_path):
+        tool, mgr = self._make_tool(mock_node, tmp_path)
+        result = tool.execute(name="stranger things", **self._ARR)
+        assert result.success is False
+        assert "не найдена в библиотеке" in result.error
+        assert "Stranger" in result.error or "stranger things" in result.error
+        assert not mgr.execute_code.called  # ничего не сыграно под чужим именем
+
+    def test_all_the_things_goes_to_unknown_melody_branch(self, mock_node, tmp_path):
+        tool, mgr = self._make_tool(mock_node, tmp_path)
+        result = tool.execute(name="all the things", **self._ARR)
+        assert result.success is False
+        assert "не найдена в библиотеке" in result.error
+        assert not mgr.execute_code.called
+
+    def test_strong_match_still_plays_and_reports_its_own_title(
+        self, mock_node, tmp_path
+    ):
+        """Контроль: строгое совпадение (issue #2840) фиксом не сломано —
+        реально играет и называет ИМЕННО найденную запись."""
+        tool, mgr = self._make_tool(mock_node, tmp_path)
+        result = tool.execute(name="mario", **self._ARR)
+        assert result.success is True
+        assert mgr.execute_code.called
+        assert result.data["title"] == "Supermario Brothers"
+        assert "Supermario Brothers" in result.message
+
 
 class TestComposeMusicToolCounterSynthAndThemeOctaves:
     """counter_synth и theme_octaves доходят от вызова compose_music до

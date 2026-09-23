@@ -299,6 +299,46 @@ def test_real_archive_direct_name_addressing_survives_alias(tmp_path):
     assert rec["name"] == "russiann"
 
 
+def test_real_archive_weak_match_table(tmp_path):
+    """issue #2877: живой прогон 23.09 — диджей объявил «Stranger Things»,
+    сыграл «Strangers In The Night» (``get('stranger things')`` находил
+    ``stranger_2`` — «stranger» матчил «strangers» подстрокой, «things» не
+    встречался в записи вовсе). Таблица строгих совпадений (должны
+    остаться НЕТРОНУТЫМИ фиксом) вперемешку со слабыми (должны стать
+    ``None``), все — на РЕАЛЬНОМ архиве (``RtttlLibrary()`` без
+    ``archive_path``, тот же бандл ``data/rtttl_melodies.jsonl.gz``)."""
+    lib = RtttlLibrary(db_path=str(tmp_path / "weak_match.db"))
+    assert lib.total() > 10000
+
+    # Строгие совпадения — issue #2840, не должны сдвинуться этим фиксом.
+    expected_names = {
+        "russian anthem": "national_2",
+        "still dre": "stilldre_2",
+        "in the hall of the mountain king": "hallofth_2",
+        "hall of the mountain king": "hallofth_2",
+        "mario": "supermar_4",
+        "terminator": "terminat",
+        "next episode": "nextepis_3",
+        "гимн россии": "unknown_111",
+        "soviet anthem": "unknown_111",
+    }
+    for query, expected_name in expected_names.items():
+        rec = lib.get(query)
+        assert rec is not None, f"{query!r} обязан резолвиться (было {expected_name!r})"
+        assert rec["name"] == expected_name, (query, rec)
+
+    # Слабые совпадения — issue #2877: честное None вместо ближайшего
+    # чужого трека под заявленным названием.
+    assert lib.get("stranger things") is None, (
+        "get('stranger things') не должен подсовывать 'Strangers In The "
+        "Night' (stranger_2) — темы Stranger Things в архиве нет"
+    )
+    assert lib.get("all the things") is None, (
+        "get('all the things') не должен подсовывать 'All The Things She "
+        "Said' — это другая песня, а не точное совпадение"
+    )
+
+
 def test_real_archive_query_table_stays_on_topic(tmp_path):
     """Таблица запросов из живого прогона 23.09 — каждый должен находить
     тему СВОЕЙ песни (по подстроке в title), а не первую попавшуюся с
