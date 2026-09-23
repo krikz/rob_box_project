@@ -4784,6 +4784,26 @@ class DialogueNode(Node):
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warning(f"🎵 DJ off publish failed: {exc}")
 
+    def _force_dj_off_for_stop_command(self, *, reason: str) -> None:
+        """Issue #2897 — стоп-команда юзера гасит DJ-режим в коде.
+
+        Единственный источник правды для «DJ должен выключиться» —
+        ``is_music_stop_command(user_input)`` на стороне вызывающего
+        (:meth:`_apply_music_guard`), а НЕ тул, который решила вызвать
+        модель: ``stop_music`` глушит звук, но никогда не трогал DJ-флаг
+        (см. ``MUSIC_HARD_STOP_TOOLS`` в ``core/dialogue_guards.py``), а
+        модель не обязана сама вызвать ``set_dj_mode(enabled=false)`` —
+        живой инцидент 23.09 показал, что она этого не сделала.
+        ``reset_silently`` — БЕЗ прощания поверх ответа модели, и отменяет
+        уже отложенное прощание (issue #2875): «Вечеринка подошла к концу»
+        вторым голосом поверх «Готово, музыка выключена!» — тот же класс
+        бага, что и #2835 «новая сессия».
+        """
+        if not self._dj.state.enabled:
+            return
+        self._dj.reset_silently()
+        self._publish_dj_off(reason=reason)
+
     def _reset_session_music_and_dj(self) -> None:
         """Issue #2835 — «новая сессия» гасит DJ, музыку и бюджеты гуарда.
 
@@ -6540,6 +6560,22 @@ class DialogueNode(Node):
             own ``DIALOGUE_END`` so the retry's LLM gate fires
             (issue #1204). ``False`` otherwise.
         """
+        # 🔴 FIX (issue #2897, live 23.09 19:27 «Хопер»): юзерская стоп-
+        # команда («хватит диджеить», «стоп диджей») ДОЛЖНА выключать
+        # DJ-режим в коде, независимо от того, какой стоп-тул (если
+        # вообще) закрыла модель. Единственный источник правды —
+        # ``is_music_stop_command(user_input)``, а не ``tools_called``:
+        # живой инцидент — LLM закрыла ``stop_music`` (звук встал), но
+        # ``set_dj_mode(enabled=false)`` не вызвала; ``MusicGuard.evaluate``
+        # для этого случая отдаёт SKIP_NOT_APPLICABLE (reason=stop_command,
+        # см. ниже) — без этой проверки DJ остался бы включён, и тик 46с
+        # спустя запустил финальный переход + перезапустил музыку. Проверка
+        # стоит ДО retry-budget гейта: это не ретрай, а детерминированный
+        # побочный эффект, который обязан сработать при каждой оценке
+        # гуарда на стоп-команде.
+        if is_music_stop_command(user_input):
+            self._force_dj_off_for_stop_command(reason="user_stop_command")
+
         # 🔴 FIX (live 30.08, e2e renardo_evolve rn02): на «продолжай
         # развивать эту мелодию и добавь баса» СРАЗУ сработали Bug D
         # (ответ начинался с «Окей,») и Bug C (музыкального тула нет) —
