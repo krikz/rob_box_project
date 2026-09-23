@@ -17,7 +17,8 @@ setup(
     # mcp_server стартует с пустой политикой и блокирует ВСЕ инструменты.
     # Регрессия закрыта тестом test_slice_policy_packaging.py.
     package_data={
-        'rob_box_mcp_tools.data': ['*.yaml', 'rtttl_melodies.jsonl.gz'],
+        # sample_loops.json — каталог лупов и белый список pack 1 (#2841).
+        'rob_box_mcp_tools.data': ['*.yaml', 'rtttl_melodies.jsonl.gz', 'sample_loops.json'],
     },
     data_files=[
         ('share/ament_index/resource_index/packages',

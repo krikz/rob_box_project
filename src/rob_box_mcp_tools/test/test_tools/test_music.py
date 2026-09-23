@@ -12,6 +12,7 @@ import socket
 import struct
 import sys
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
 
@@ -1855,6 +1856,88 @@ class TestKnownSynthNamesServerTruth:
         assert mgr.known_synth_names() is None
 
 
+#: Реальный /tmp/sclang.log контейнера voice-assistant (Vision Pi, 23.09.2026,
+#: снят координатором #2841): 63 строки "SynthDef in scsynth: X", loop'а нет.
+_ROBOT_SCLANG_LOG = (
+    Path(__file__).resolve().parent.parent / "fixtures" / "sclang_robot_2026-09-23.log"
+)
+
+
+@pytest.mark.unit
+class TestGrooveLoopServerTruth:
+    """Issue #2841 × #2838: ``dN >> loop(...)`` от ``groove_loop`` должен
+    пройти валидатор синтов, который верит только прелоаду foxdot_init.sc.
+
+    ``loop`` — renardo ``LoopPygenSynthDef`` (special_synthdefs.py:19),
+    регистрируется в ``SynthDefs`` (PygenSynthDef.py:76 ``container[name] =
+    self``) и шлётся ``sdef.add()`` → ``loadSynthDef`` → OSC ``/foxdot`` в
+    sclang (ServerManager/__init__.py:490) — тем же неподтверждённым путём,
+    что и 'sine' из #2838. Подтверждение даёт только прелоад, поэтому loop
+    добавлен в ``startupSynths``."""
+
+    def _mgr(self, log_text, tmp_path):
+        log = tmp_path / "sclang.log"
+        log.write_text(log_text, encoding="utf-8")
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        # renardo SynthDefs = весь прелоад + loop (special_synthdefs.py).
+        mgr._synthdefs_added = (
+            set(_foxdot_init_preload()) - {"masterlimiter", "masterfilter"}
+        ) | {"loop"}
+        mgr._evaluate_music_stack_health(sclang_log_path=str(log))
+        return mgr
+
+    @staticmethod
+    def _log_with_repo_preload() -> str:
+        """Реальный лог робота, где строки прелоада заменены на те, что
+        напечатает foxdot_init.sc ИЗ РЕПО (после деплоя образа)."""
+        real = _ROBOT_SCLANG_LOG.read_text(encoding="utf-8")
+        kept = [
+            line for line in real.splitlines()
+            if not line.startswith("SynthDef in scsynth:")
+            and not line.startswith("SynthDef preload finished")
+        ]
+        preload = _foxdot_init_preload()
+        kept += [f"SynthDef in scsynth: {name}" for name in preload]
+        kept.append(f"SynthDef preload finished: {len(preload)} defs")
+        return "\n".join(kept) + "\n"
+
+    def test_robot_log_as_deployed_has_no_loop(self):
+        from rob_box_voice.core.music_stack_validation import confirmed_synths_from_log
+
+        confirmed = confirmed_synths_from_log(_ROBOT_SCLANG_LOG.read_text(encoding="utf-8"))
+        assert confirmed is not None and len(confirmed) == 63
+        assert "loop" not in confirmed
+
+    def test_groove_loop_rejected_with_robot_log_as_deployed(self, tmp_path, monkeypatch):
+        """Честный FAIL до деплоя: образ без нового прелоада → loop отклонён."""
+        monkeypatch.setenv("ROB_BOX_PACK1_LOOPS", "1")
+        mgr = self._mgr(_ROBOT_SCLANG_LOG.read_text(encoding="utf-8"), tmp_path)
+        with patch("builtins.exec") as mock_exec:
+            result = mgr.execute_code("d3 >> loop('dnb_1', dur=4, beat_stretch=1, amp=0.3)")
+        assert result["success"] is False
+        assert "'loop'" in result["error"]
+        mock_exec.assert_not_called()
+
+    def test_repo_preload_confirms_loop(self):
+        assert "loop" in _foxdot_init_preload()
+
+    def test_groove_loop_passes_with_repo_preload_log(self, mock_node, tmp_path, monkeypatch):
+        monkeypatch.setenv("ROB_BOX_PACK1_LOOPS", "1")
+        mgr = self._mgr(self._log_with_repo_preload(), tmp_path)
+        assert "loop" in mgr.known_synth_names()
+        tool = ComposeMusicTool(mock_node, mgr)
+        with patch("builtins.exec") as mock_exec:
+            result = tool.execute(
+                bpm=120, root="A", scale="minor", form="arc",
+                drums="X...o...X...o...", hats="-.-.-.-.",
+                bass_synth="dub", bass_notes="0,0,4,0",
+                lead_synth="blip", lead_notes="0,2,4,7",
+                groove_loop="dnb_1",
+            )
+        assert result.success is True, result.error
+        assert "d3 >> loop('../../1_pitchglitch_samples/_loop_/dnb_1'" in mock_exec.call_args[0][0]
+
+
 # ---------------------------------------------------------------------------
 # MusicManager.execute_code — валидация имён синтов (live-инцидент 21.09.2026)
 # ---------------------------------------------------------------------------
@@ -1905,6 +1988,32 @@ class TestMusicManagerExecuteCodeSynthValidation:
 
         assert result["success"] is True
         mock_exec.assert_called_once()
+
+
+@pytest.mark.unit
+class TestMusicManagerExecuteCodePack1Loops:
+    """Issue #2841: лупы пака 1 — только за флагом ROB_BOX_PACK1_LOOPS,
+    по умолчанию выключенным (звук не прослушан на 16 kHz DAC)."""
+
+    CODE = 'd3 >> loop("dnb_1", dur=4, beat_stretch=1, amp=0.3)'
+
+    def test_pack1_loop_rejected_before_exec_when_flag_unset(self, monkeypatch):
+        monkeypatch.delenv("ROB_BOX_PACK1_LOOPS", raising=False)
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec") as mock_exec:
+            result = mgr.execute_code(self.CODE)
+        assert result["success"] is False
+        assert "ROB_BOX_PACK1_LOOPS" in result["error"]
+        mock_exec.assert_not_called()
+
+    def test_pack1_loop_reaches_exec_as_path_when_flag_set(self, monkeypatch):
+        monkeypatch.setenv("ROB_BOX_PACK1_LOOPS", "1")
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec") as mock_exec:
+            result = mgr.execute_code(self.CODE)
+        assert result["success"] is True, result
+        executed = mock_exec.call_args[0][0]
+        assert "../../1_pitchglitch_samples/_loop_/dnb_1" in executed
 
 
 # ---------------------------------------------------------------------------
@@ -2418,6 +2527,118 @@ class TestComposeMusicToolFormDeadline:
         )
         assert result["stopped"] is False
         assert result.get("held_reason") == "form_not_finished"
+
+
+@pytest.mark.unit
+class TestComposeMusicToolGrooveLoop:
+    """Issue #2841: compose_music(groove_loop=...) — луп в свободном d-слоте,
+    pack 1 только за флагом ROB_BOX_PACK1_LOOPS (по умолчанию выключен)."""
+
+    _KW = dict(
+        bpm=120, root="A", scale="minor", form="arc",
+        drums="X...o...X...o...", hats="-.-.-.-.",
+        bass_synth="dub", bass_notes="0,0,4,0",
+        lead_synth="blip", lead_notes="0,2,4,7",
+    )
+
+    def _tool(self, mock_node):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        return ComposeMusicTool(mock_node, mgr)
+
+    def test_schema_exposes_groove_loop_with_catalog_enum(self, mock_node):
+        param = next(p for p in self._tool(mock_node).parameters if p.name == "groove_loop")
+        assert "dnb_1" in param.enum and "foxdot" in param.enum
+
+    def test_pack1_loop_is_refused_without_flag(self, mock_node, monkeypatch):
+        monkeypatch.delenv("ROB_BOX_PACK1_LOOPS", raising=False)
+        with patch("builtins.exec") as mock_exec:
+            result = self._tool(mock_node).execute(groove_loop="break_1", **self._KW)
+        assert result.success is False
+        assert "ROB_BOX_PACK1_LOOPS" in result.error
+        mock_exec.assert_not_called()
+
+    def test_pack1_loop_plays_with_flag(self, mock_node, monkeypatch):
+        monkeypatch.setenv("ROB_BOX_PACK1_LOOPS", "1")
+        with patch("builtins.exec") as mock_exec:
+            result = self._tool(mock_node).execute(groove_loop="break_1", **self._KW)
+        assert result.success is True, result.error
+        executed = mock_exec.call_args[0][0]
+        assert "d3 >> loop('../../1_pitchglitch_samples/_loop_/break_1', dur=8" in executed
+
+    def test_unknown_loop_is_tool_error(self, mock_node):
+        result = self._tool(mock_node).execute(groove_loop="nope_1", **self._KW)
+        assert result.success is False
+        assert "groove_loop" in result.error
+
+
+@pytest.mark.unit
+class TestComposeMusicToolDrumStyle:
+    """Issue #2841: compose_music(drum_style=...) — жанровый каркас ударных.
+    С name= стиль уходит в core.harmonize; без name= заполняет drums/hats,
+    которых модель не дала; неизвестный стиль — честная ошибка."""
+
+    _ARR = dict(lead_synth="blip", bass_synth="dub", pad_synth="warmpad")
+    _FREE = dict(
+        bpm=120, root="A", scale="minor", form="arc",
+        bass_synth="dub", bass_notes="0,0,4,0",
+        lead_synth="blip", lead_notes="0,2,4,7",
+    )
+
+    def _tool(self, mock_node, rtttl=None):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        library = None
+        if rtttl is not None:
+            library = Mock()
+            library.get.return_value = {"name": "t", "title": "T", "rtttl": rtttl}
+        tool = ComposeMusicTool(mock_node, mgr, library)
+        mgr.execute_code = Mock(return_value={"success": True})
+        return tool, mgr
+
+    def test_schema_exposes_drum_style_enum(self, mock_node):
+        tool, _ = self._tool(mock_node)
+        param = next(p for p in tool.parameters if p.name == "drum_style")
+        assert {"auto", "four_on_floor", "halftime", "none"} <= set(param.enum)
+
+    def test_name_path_uses_style_skeleton(self, mock_node):
+        tool, mgr = self._tool(mock_node, "t:d=4,o=5,b=100:c,e,g,c6")
+        result = tool.execute(name="t", drum_style="halftime", **self._ARR)
+        assert result.success is True, result.error
+        code = mgr.execute_code.call_args.args[0]
+        assert "d1 >> play('X.......o.......'" in code
+
+    def test_name_path_default_keeps_old_backbeat(self, mock_node):
+        tool, mgr = self._tool(mock_node, "t:d=4,o=5,b=100:c,e,g,c6")
+        tool.execute(name="t", **self._ARR)
+        code = mgr.execute_code.call_args.args[0]
+        assert "d1 >> play('X...o.......o...'" in code  # редкая тема: без бочки на 3
+
+    def test_free_path_fills_missing_drums_from_style(self, mock_node):
+        tool, mgr = self._tool(mock_node)
+        result = tool.execute(drum_style="four_on_floor", **self._FREE)
+        assert result.success is True, result.error
+        code = mgr.execute_code.call_args.args[0]
+        assert "d1 >> play('X...X...X...X...'" in code
+        assert "d2 >> play('..-...-...-...-.'" in code
+
+    def test_free_path_model_drums_win_over_style(self, mock_node):
+        tool, mgr = self._tool(mock_node)
+        tool.execute(drum_style="four_on_floor", drums="X..oX.o.", **self._FREE)
+        code = mgr.execute_code.call_args.args[0]
+        assert "X...X...X...X..." not in code
+
+    def test_none_style_frees_drum_slots_for_loop(self, mock_node):
+        tool, mgr = self._tool(mock_node, "t:d=4,o=5,b=100:c,e,g,c6")
+        tool.execute(name="t", drum_style="none", groove_loop="foxdot", **self._ARR)
+        code = mgr.execute_code.call_args.args[0]
+        assert "play(" not in code
+        assert "d1 >> loop('foxdot'" in code
+
+    def test_unknown_style_is_tool_error(self, mock_node):
+        tool, mgr = self._tool(mock_node)
+        result = tool.execute(drum_style="polka", **self._FREE)
+        assert result.success is False
+        assert "drum_style" in result.error
+        mgr.execute_code.assert_not_called()
 
 
 @pytest.mark.unit

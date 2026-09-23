@@ -344,12 +344,48 @@ def _composition_roots() -> list[str]:
     return roots
 
 
+def _groove_loops() -> list[str]:
+    """``compose_music.groove_loop`` enum — the loop catalog data file (#2841).
+
+    Mirrors ``sorted(sample_loops.loop_catalog())``: pack-0 and pack-1 names
+    together (the pack-1 flag gates playback, not the schema).
+    """
+    import json
+
+    path = REPO_ROOT / "src" / "rob_box_mcp_tools" / "rob_box_mcp_tools" / "data" / "sample_loops.json"
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    names = sorted(list(raw.get("pack0", {})) + list(raw.get("pack1", {})))
+    if not names:
+        raise ToolSourceError(f"{path} yielded no loops")
+    return names
+
+
+def _drum_styles() -> list[str]:
+    """``compose_music.drum_style`` enum — ``harmonize.DRUM_STYLES`` (#2841).
+
+    Read by AST, not import: ``harmonize`` imports the arranger relatively,
+    so it cannot be loaded as a standalone file the way the arranger is.
+    """
+    import ast
+
+    path = REPO_ROOT / "src" / "rob_box_mcp_tools" / "rob_box_mcp_tools" / "core" / "harmonize.py"
+    for node in ast.parse(path.read_text(encoding="utf-8")).body:
+        target = node.target if isinstance(node, ast.AnnAssign) else (
+            node.targets[0] if isinstance(node, ast.Assign) else None
+        )
+        if isinstance(target, ast.Name) and target.id == "DRUM_STYLES":
+            return list(ast.literal_eval(node.value))
+    raise ToolSourceError(f"DRUM_STYLES not found in {path}")
+
+
 #: ``(tool_name, param_name)`` → resolver, for enums built from runtime data
 #: rather than from a literal in the tool module.
 DYNAMIC_ENUMS = {
     ("play_sound", "sound"): _sound_pack_triggers,
     ("compose_music", "form"): _composition_forms,
     ("compose_music", "root"): _composition_roots,
+    ("compose_music", "groove_loop"): _groove_loops,
+    ("compose_music", "drum_style"): _drum_styles,
 }
 
 

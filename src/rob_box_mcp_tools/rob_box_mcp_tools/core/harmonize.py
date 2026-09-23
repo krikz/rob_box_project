@@ -666,7 +666,78 @@ def _onset_histogram(
     return hist
 
 
-def _build_drums(hist: Sequence[float], dense: bool) -> str:
+#: Issue #2841 — жанровые каркасы ударных. Живой сет 23.09.2026: у всех
+#: RTTTL-тем один и тот же бит (``X...o...X...o...`` / ``-.-.-.-.``), потому
+#: что каркас ниже прибит намертво. ``auto`` — прежнее поведение (бочка на
+#: 1, малый на 2 и 4, бочка на 3 у плотной темы, хэты по плотности); прочие
+#: стили — готовые рисунки жанра, которые модель выбирает параметром
+#: ``drum_style`` в ``compose_music``.
+DEFAULT_DRUM_STYLE = "auto"
+DRUM_STYLES: Tuple[str, ...] = (
+    "auto", "four_on_floor", "backbeat", "halftime", "breakbeat", "march", "none",
+)
+
+#: Стиль -> (бочка/малый для редкой темы, для плотной). 16 шагов на такт.
+#: Каждый каркас держит опору на первой доле — иначе тема и бит не
+#: сходятся в такт (см. FIX live 14.09 в :func:`_build_drums`).
+_STYLE_DRUMS: Dict[str, Tuple[str, str]] = {
+    # Хаус/диско: бочка на каждую долю. Малого нет — один play() не
+    # кладёт два символа на один шаг, а бочка на 2 и 4 важнее хлопка.
+    "four_on_floor": ("X...X...X...X...", "X...X...X...X..."),
+    # Поп/рок: малый на 2 и 4; плотной теме — бочка ещё и на «и» третьей.
+    "backbeat": ("X...o...X...o...", "X...o...X.X.o..."),
+    # Халфтайм (трэп, даб, медленный рок): малый только на третьей доле.
+    "halftime": ("X.......o.......", "X.....X.o......."),
+    # Брейкбит/бум-бэп: синкопированная бочка вокруг малого на 2 и 4.
+    "breakbeat": ("X...o..X..X.o...", "X.X.o..X..X.o..o"),
+    # Марш: квадратный шаг, дробь малого перед сильной долей.
+    "march": ("X...o...X...o.o.", "X...o.o.X...o.oo"),
+    "none": ("", ""),
+}
+
+#: Стиль -> фиксированный рисунок хэтов. Стиля нет в словаре — хэты по
+#: плотности темы (:func:`_build_hats`, прежнее поведение).
+_STYLE_HATS: Dict[str, str] = {
+    "four_on_floor": "..-...-...-...-.",   # офбит — «хаусный» открытый хэт
+    "halftime": "-.-.-.-.-.-.-.-.",
+    "breakbeat": "-.-.-.---.-.-.-.",
+    "march": "-...-...-...-...",
+    "none": "",
+}
+
+
+def check_drum_style(drum_style: Optional[str]) -> str:
+    """Нормализовать ``drum_style`` (``None``/пусто -> ``auto``).
+
+    Raises:
+        ValueError: неизвестный стиль — сообщение перечисляет допустимые.
+    """
+    style = (drum_style or DEFAULT_DRUM_STYLE).strip().lower()
+    if style not in DRUM_STYLES:
+        raise ValueError(
+            f"Неизвестный drum_style {drum_style!r}. Доступны: "
+            f"{', '.join(DRUM_STYLES)}."
+        )
+    return style
+
+
+def style_patterns(drum_style: str, dense: bool) -> Tuple[str, str]:
+    """Готовые ``(бочка/малый, хэты)`` стиля — для сочинённого трека без темы.
+
+    ``auto`` здесь даёт бэкбит: без темы выводить рисунок не из чего, а
+    бэкбит — то, что ``auto`` и так строит на теме.
+    """
+    style = check_drum_style(drum_style)
+    if style == DEFAULT_DRUM_STYLE:
+        style = "backbeat"
+    sparse, full = _STYLE_DRUMS[style]
+    hats = _STYLE_HATS.get(style, "-.-.-.-.-.-.-.-.")
+    return (full if dense else sparse), hats
+
+
+def _build_drums(
+    hist: Sequence[float], dense: bool, style: str = DEFAULT_DRUM_STYLE
+) -> str:
     """Рисунок бочки и малого: жёсткий каркас + синкопа от мелодии.
 
     🔴 FIX (live 14.09, «ломаные ритмы»): здесь бочка ставилась на первую
@@ -692,7 +763,13 @@ def _build_drums(hist: Sequence[float], dense: bool) -> str:
     вовсе не синкопирован, просто много шестнадцатых. Разнообразие грува
     даёт выбор сэмпла и плотность хэтов; выдумывать его в рисунке бочки
     не нужно.
+
+    Issue #2841: ``style`` не ``auto`` — готовый каркас жанра
+    (:data:`_STYLE_DRUMS`); плотность темы выбирает только его вариант.
     """
+    skeleton = _STYLE_DRUMS.get(style)
+    if skeleton is not None:
+        return skeleton[1] if dense else skeleton[0]
     pattern = ["."] * STEPS_PER_BAR
     pattern[0] = "X"
     pattern[4] = "o"
@@ -702,13 +779,23 @@ def _build_drums(hist: Sequence[float], dense: bool) -> str:
     return "".join(pattern)
 
 
-def _build_hats(timed: Sequence[Tuple[float, Optional[int], float]]) -> str:
+def _build_hats(
+    timed: Sequence[Tuple[float, Optional[int], float]],
+    style: str = DEFAULT_DRUM_STYLE,
+) -> str:
     """Хэты: сетка по плотности темы — 16-е, 8-е или четверти.
 
     Медиана длительности нот — устойчивая мера «мелкости» темы (среднее
     сбивает одна длинная финальная нота). Хэты мельче самой темы звучат
     как суета, крупнее — как будто их забыли включить.
+
+    Issue #2841: у стилей из :data:`_STYLE_HATS` рисунок фиксирован
+    жанром (офбит хауса, четверти марша); ``auto`` и ``backbeat`` —
+    прежняя сетка по плотности.
     """
+    fixed = _STYLE_HATS.get(style)
+    if fixed is not None:
+        return fixed
     durs = [dur for _onset, midi, dur in timed if midi is not None]
     typical = median(durs) if durs else 1.0
     if typical <= 0.3:
@@ -732,6 +819,7 @@ def harmonize(
     bpm: int,
     root: str,
     scale: str,
+    drum_style: str = DEFAULT_DRUM_STYLE,
 ) -> Harmonization:
     """Разложить тему на партии: аккорды, бас, пэд, контрмелодию, ударные.
 
@@ -741,14 +829,17 @@ def harmonize(
         bpm: темп темы.
         root: тоника, определённая по теме (``detect_key``).
         scale: лад, определённый по теме.
+        drum_style: жанровый каркас ударных (:data:`DRUM_STYLES`, issue
+            #2841); ``auto`` — прежний рисунок, выведенный из темы.
 
     Returns:
         :class:`Harmonization` — все партии в абсолютных MIDI и битах.
 
     Raises:
         ValueError: тема пустая или состоит из одних пауз — выводить
-            гармонию не из чего.
+            гармонию не из чего; либо неизвестный ``drum_style``.
     """
+    style = check_drum_style(drum_style)
     if not notes:
         raise ValueError("Пустая тема: гармонизировать нечего.")
     if all(midi is None for midi, _dur in notes):
@@ -774,6 +865,6 @@ def harmonize(
         bass=_build_bass(chords, dense, _scale_pitch_classes(root, scale)),
         pad=_build_pad(chords, dense),
         counter=_build_counter(timed, chords),
-        drums=_build_drums(hist, dense),
-        hats=_build_hats(timed),
+        drums=_build_drums(hist, dense, style),
+        hats=_build_hats(timed, style),
     )

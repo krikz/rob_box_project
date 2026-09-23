@@ -82,6 +82,7 @@ RC4 дал форме огибающую amp, но мелодия внутри �
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -117,6 +118,18 @@ ROLE_PROFILE: Dict[str, Tuple[str, int, float]] = {
 
 #: Роли, которые играют сэмплами через ``play(...)``, а не синтом.
 DRUM_ROLES = frozenset({"drums", "hats", "perc"})
+
+#: Issue #2841 — жанровый луп (``loop(...)``) поверх ударных. В
+#: :data:`ROLE_PROFILE` его нет намеренно: фиксированного слота у лупа
+#: быть не может, все шесть уже розданы. Он занимает первый СВОБОДНЫЙ
+#: из d1-d3 (см. :func:`_render_loop_layer`).
+LOOP_ROLE = "loop"
+LOOP_SLOTS: Tuple[str, ...] = ("d1", "d2", "d3")
+#: Базовая громкость лупа: тише бочки (0.55) — луп несёт фактуру, а не
+#: долю, и не должен перекрывать выведенный из темы бит.
+LOOP_BASE_AMP = 0.35
+#: В форме без ударных (ambient) луп идёт за подкладом, но тише.
+LOOP_PAD_FOLLOW = 0.6
 
 #: Полутоновые интервалы ладов, которые предъявляет схема ``compose_music``.
 #:
@@ -923,6 +936,101 @@ def _no_players_error(
     )
 
 
+def _sample_loops():
+    """Каталог лупов — ленивым импортом, а не на уровне модуля.
+
+    ``tools/gen_tool_catalog.py`` грузит этот файл напрямую, без пакета
+    (ради ``FORMS``/``VALID_ROOTS``), и относительный импорт на уровне
+    модуля там падает. Лупы нужны только при рендере/сборке спецификации.
+    """
+    from . import sample_loops
+
+    return sample_loops
+
+
+_PLAYER_SLOT_RE = re.compile(r"^\s*([dp]\d)\s*>>", re.MULTILINE)
+
+
+def _free_loop_slot(lines: Sequence[str]) -> str:
+    """Первый из d1-d3, который не занят уже отрендеренными слоями.
+
+    Raises:
+        ArrangementError: все три заняты (бочка + хэты + перкуссия или
+            контрмелодия) — лупу честно некуда встать.
+    """
+    used = set(_PLAYER_SLOT_RE.findall("\n".join(lines)))
+    free = next((slot for slot in LOOP_SLOTS if slot not in used), None)
+    if free is None:
+        raise ArrangementError(
+            "groove_loop: слоты d1-d3 уже заняты (бочка, хэты и перкуссия "
+            "или второй голос темы). Убери perc, либо поставь "
+            "drum_style='none' — луп сам несёт грув."
+        )
+    return free
+
+
+def _render_loop_layer(
+    layer: Layer,
+    plan: Sequence[Tuple[str, int, Dict[str, float]]],
+    bpm: float,
+    player: str,
+) -> str:
+    """Отрендерить жанровый луп: ``loop(имя, dur=N, beat_stretch=1, amp=...)``.
+
+    ``beat_stretch=1`` растягивает файл ровно на ``dur`` битов, поэтому
+    луп идёт в темп формы, а не в свой родной. ``dur`` — ближайшая к
+    родной длине степень двойки (:func:`sample_loops.loop_beats`): так
+    скорость и высота меняются меньше всего.
+
+    Громкость идёт за бочкой: где форма снимает ударные (intro, break),
+    молчит и луп. В форме без ударных вовсе (ambient) — за подкладом.
+    Имя остаётся коротким: путь до файла подставит санитайзер, он же
+    проверит флаг pack 1.
+    """
+    loops = _sample_loops()
+    info = loops.find_loop(layer.pattern or "")
+    if info is None:
+        raise ArrangementError(f"groove_loop: неизвестный луп {layer.pattern!r}.")
+    has_drums = any("drums" in intensities for _n, _b, intensities in plan)
+    source, scale = ("drums", 1.0) if has_drums else ("pad", LOOP_PAD_FOLLOW)
+    amps, durs = _amp_envelope(source, plan, LOOP_BASE_AMP * scale)
+    amp_expr = _fmt(amps[0]) if len(amps) == 1 else f"var({_fmt_list(amps)}, {_fmt_list(durs)})"
+    beats = loops.loop_beats(info, bpm)
+    return (
+        f"{player} >> loop({info.name!r}, dur={_fmt(beats)}, "
+        f"beat_stretch=1, amp={amp_expr})"
+    )
+
+
+def _append_layer_lines(
+    lines: List[str],
+    spec: CompositionSpec,
+    plan: Sequence[Tuple[str, int, Dict[str, float]]],
+    bpm: float,
+) -> int:
+    """Дописать в ``lines`` строки всех слоёв; лупы — последними.
+
+    Возвращает число реально отрисованных плееров (луп тоже плеер) —
+    по нему :func:`render` решает, не пустой ли трек (#2837).
+
+    Луп (#2841) рендерится после остальных, потому что его слот — первый
+    свободный из d1-d3, а занятость известна только по уже готовым строкам.
+    """
+    count = 0
+    for layer in spec.layers:
+        if layer.role == LOOP_ROLE:
+            continue
+        rendered = _render_layer(layer, plan, use_filter=spec.filter_sweep)
+        if rendered is not None:
+            lines.append(rendered)
+            count += 1
+    for layer in spec.layers:
+        if layer.role == LOOP_ROLE:
+            lines.append(_render_loop_layer(layer, plan, bpm, _free_loop_slot(lines)))
+            count += 1
+    return count
+
+
 def render(spec: CompositionSpec) -> str:
     """Развернуть спецификацию в Renardo-код с формой.
 
@@ -999,12 +1107,7 @@ def render(spec: CompositionSpec) -> str:
     # неё свои строки (issue #2837, живой прогон 23.09: с filter_sweep=True
     # шапка всегда 5 строк, и guard на ``len(lines) <= 4`` не срабатывал ни
     # при каком количестве слоёв).
-    rendered_players = 0
-    for layer in spec.layers:
-        rendered = _render_layer(layer, plan, use_filter=spec.filter_sweep)
-        if rendered is not None:
-            lines.append(rendered)
-            rendered_players += 1
+    rendered_players = _append_layer_lines(lines, spec, plan, bpm)
 
     if rendered_players == 0:
         raise _no_players_error(spec, plan)
@@ -1501,6 +1604,7 @@ def spec_from_flat(
     progression: Optional[str] = None,
     repeat: bool = True,
     swing: float = 0.0,
+    groove_loop: Optional[str] = None,
 ) -> CompositionSpec:
     """Собрать :class:`CompositionSpec` из плоских скалярных аргументов.
 
@@ -1520,8 +1624,13 @@ def spec_from_flat(
     рисунки ударных берутся из него, а не от модели: они выведены из
     самой мелодии и промахнуться мимо её тональности не могут. За
     моделью остаются тембры, форма и темп.
+
+    ``groove_loop`` (issue #2841) — имя лупа из каталога
+    :mod:`core.sample_loops`; добавляет слой ``loop(...)`` в свободный
+    d-слот и в выведенной, и в сочинённой аранжировке.
     """
     layers: List[Layer] = []
+    _add_loop_layer(layers, groove_loop)
 
     root = (root or "C").strip()
     scale = (scale or "minor").strip()
@@ -1612,6 +1721,26 @@ def spec_from_flat(
         repeat=bool(repeat),
         swing=swing,
     )
+
+
+def _add_loop_layer(layers: List[Layer], groove_loop: Optional[str]) -> None:
+    """Добавить слой жанрового лупа, если он задан (issue #2841).
+
+    Raises:
+        ArrangementError: имени нет в каталоге — сообщение перечисляет
+            доступные, чтобы модель исправилась следующим вызовом.
+    """
+    name = (groove_loop or "").strip()
+    if not name or name.lower() == "none":
+        return
+    loops = _sample_loops()
+    info = loops.find_loop(name)
+    if info is None:
+        known = ", ".join(sorted(loops.loop_catalog()))
+        raise ArrangementError(
+            f"groove_loop {name!r} нет в каталоге лупов. Доступны: {known}."
+        )
+    layers.append(Layer(role=LOOP_ROLE, pattern=info.name))
 
 
 def _autofill_bass(layers: List[Layer], form: str) -> None:

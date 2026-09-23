@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from .arranger import BEATS_PER_BAR, SCALE_INTERVALS, VALID_ROOTS
-from .harmonize import harmonize
+from .harmonize import DEFAULT_DRUM_STYLE, harmonize
 from .rtttl import parse_rtttl
 
 __all__ = [
@@ -162,7 +162,9 @@ def detect_key(
     return VALID_ROOTS[best_root], scale
 
 
-def melody_to_compose_params(melody: RtttlMelody) -> Dict[str, object]:
+def melody_to_compose_params(
+    melody: RtttlMelody, drum_style: str = DEFAULT_DRUM_STYLE
+) -> Dict[str, object]:
     """RTTTL-мелодия → плоские параметры ``compose_music``.
 
     Возвращает dict с ключами:
@@ -181,6 +183,9 @@ def melody_to_compose_params(melody: RtttlMelody) -> Dict[str, object]:
     темы (``harmony``). За моделью остаются тембры, форма и темп — см.
     :mod:`core.harmonize`. Плоские ``lead_midi``/``lead_dur`` остаются в
     ответе для обратной совместимости и для логов.
+
+    ``drum_style`` — жанровый каркас ударных темы (issue #2841, см.
+    :data:`core.harmonize.DRUM_STYLES`); ``auto`` — прежний рисунок.
     """
     melody = _snap_to_bar(_normalize_tempo(melody))
     melody = _normalize_lead_register(melody)
@@ -196,7 +201,9 @@ def melody_to_compose_params(melody: RtttlMelody) -> Dict[str, object]:
         "scale": scale,
         "lead_midi": ", ".join(midi),
         "lead_dur": ", ".join(dur),
-        "harmony": harmonize(melody.notes, melody.bpm, root, scale),
+        "harmony": harmonize(
+            melody.notes, melody.bpm, root, scale, drum_style=drum_style
+        ),
     }
 
 

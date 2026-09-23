@@ -48,7 +48,8 @@ from ..core.arranger import (
     render,
     spec_from_flat,
 )
-from ..core import renardo_sanitizer
+from ..core import renardo_sanitizer, sample_loops
+from ..core.harmonize import DRUM_STYLES, check_drum_style, style_patterns
 from ..core.rtttl_compose import melody_to_compose_params, rtttl_to_melody
 from ..core.rtttl_library import RtttlLibrary
 
@@ -1290,7 +1291,11 @@ class MusicManager:
         # перестановка слотов → pianovel→rhpiano → длина рисунка → кап amp.
         # Порядок и сообщения сохранены байт-в-байт.
         sanitized = renardo_sanitizer.sanitize_renando(
-            code, self._max_amp, known_synths=self.known_synth_names()
+            code,
+            self._max_amp,
+            known_synths=self.known_synth_names(),
+            # Issue #2841: лупы пака 1 — только за флагом окружения.
+            pack1_loops_enabled=sample_loops.pack1_loops_enabled(),
         )
         if sanitized.security_error:
             return {"success": False, "error": sanitized.security_error}
@@ -2102,6 +2107,7 @@ class ComposeMusicTool(MCPTool):
     _IDENTITY_FIELDS = (
         "root", "scale", "bpm", "progression", "lead_notes", "lead_synth",
         "bass_synth", "drums", "drums_sample", "hats_sample", "form",
+        "groove_loop", "drum_style",
     )
 
     def __init__(
@@ -2475,6 +2481,47 @@ class ComposeMusicTool(MCPTool):
                 required=False,
             ),
             MCPToolParameter(
+                name="drum_style",
+                type="string",
+                description=(
+                    "Жанровый каркас ударных: four_on_floor — бочка на "
+                    "каждую долю (хаус, диско, техно); backbeat — малый на "
+                    "2 и 4 (поп, рок); halftime — малый на третьей доле "
+                    "(трэп, даб, медляк); breakbeat — синкопированная бочка "
+                    "(хип-хоп, бум-бэп, брейкс); march — марш; none — без "
+                    "ударных (удобно, когда грув несёт groove_loop). "
+                    "С name= выбирает рисунок вместо выведенного из темы "
+                    "(auto — выведенный, по умолчанию). Без name= "
+                    "заполняет drums/hats, если ты их не задал. Меняй "
+                    "между треками — один бит на весь сет звучит как один "
+                    "трек."
+                ),
+                required=False,
+                enum=list(DRUM_STYLES),
+                enum_strict=False,
+            ),
+            MCPToolParameter(
+                name="groove_loop",
+                type="string",
+                description=(
+                    "Жанровый луп поверх ударных — готовая живая фраза "
+                    "(брейк, джангл, фанк, пиано), растянутая под bpm "
+                    "трека. Встаёт в свободный слот d1-d3, громкость идёт "
+                    "за бочкой формы. Имена: foxdot и лупы пака "
+                    "pitchglitch — break_1, dnb_1..3, jungle_1..2, "
+                    "hiphop_1..2, jazzhop_1, funk_1, electro_1..2, "
+                    "future_1..2, glitch_1..2, perc_1..2, beatbox_1, "
+                    "industrial_1, piano_1, guitar_1, ambient_1, arabic_1, "
+                    "yiddish_1 — работают, только если владелец включил "
+                    "их после прослушки; иначе вызов вернёт ошибку, и "
+                    "трек надо играть без лупа. Пропусти, если луп не "
+                    "нужен."
+                ),
+                required=False,
+                enum=sorted(sample_loops.loop_catalog()),
+                enum_strict=False,
+            ),
+            MCPToolParameter(
                 name="swing",
                 type="number",
                 description="Свинг восьмых, 0-0.3. 0 (по умолчанию) — ровная "
@@ -2592,6 +2639,7 @@ class ComposeMusicTool(MCPTool):
         bass_notes: Optional[str],
         pad_synth: Optional[str],
         pad_notes: Optional[str],
+        drum_style: str = "auto",
     ) -> Tuple[
         Optional[MCPToolResult],
         Any,
@@ -2628,7 +2676,9 @@ class ComposeMusicTool(MCPTool):
                 None, None, None, None, None, None, None,
             )
         try:
-            params = melody_to_compose_params(rtttl_to_melody(rec["rtttl"]))
+            params = melody_to_compose_params(
+                rtttl_to_melody(rec["rtttl"]), drum_style=drum_style
+            )
         except ValueError as exc:
             return (
                 MCPToolResult(
@@ -2653,6 +2703,29 @@ class ComposeMusicTool(MCPTool):
             melody_title,
             params.get("harmony"),
         )
+
+    @staticmethod
+    def _apply_drum_style(
+        drum_style: Optional[str],
+        name: Optional[str],
+        drums: Optional[str],
+        hats: Optional[str],
+    ) -> Tuple[Optional[MCPToolResult], str, Optional[str], Optional[str]]:
+        """Проверить ``drum_style`` и заполнить им рисунки сочинённого трека.
+
+        Issue #2841. Возвращает ``(ошибка, стиль, drums, hats)``. При
+        ``name=`` рисунки выводит :mod:`core.harmonize` (стиль уходит туда),
+        здесь они не трогаются. Без ``name=`` стиль заполняет только те
+        рисунки, которых модель не дала: присланный ею ``drums`` важнее.
+        """
+        try:
+            style = check_drum_style(drum_style)
+        except ValueError as exc:
+            return MCPToolResult(success=False, error=str(exc)), "auto", drums, hats
+        if name or drum_style is None:
+            return None, style, drums, hats
+        style_drums, style_hats = style_patterns(style, dense=False)
+        return None, style, drums or style_drums, hats or style_hats
 
     def _build_compose_result_data(
         self, spec: Any, raw_result: Dict[str, Any], duration_s: float
@@ -2743,6 +2816,8 @@ class ComposeMusicTool(MCPTool):
         theme_octaves: bool = True,
         repeat: bool = False,
         swing: float = 0.0,
+        groove_loop: Optional[str] = None,
+        drum_style: Optional[str] = None,
     ) -> MCPToolResult:
         # Единая точка нормализации «синта нет» (issue #2836): модель
         # иногда пишет lead_synth/bass_synth/pad_synth='none' буквально —
@@ -2756,12 +2831,18 @@ class ComposeMusicTool(MCPTool):
         bass_synth = normalize_synth(bass_synth)
         pad_synth = normalize_synth(pad_synth)
 
+        # Issue #2841: жанровый каркас ударных — проверка и (без name=)
+        # заполнение drums/hats, которых модель не дала.
+        err, style, drums, hats = self._apply_drum_style(drum_style, name, drums, hats)
+        if err is not None:
+            return err
         # Известная мелодия по имени: ищем в RTTTL-библиотеке, конвертируем
         # ноты в параметры композитора и заполняем ими вызов.
         err, bpm, root, scale, lead_midi, lead_dur, melody_title, harmony = (
             self._resolve_rtttl_params(
                 name, variants, bpm, root, scale,
                 lead_synth, drums, bass_synth, bass_notes, pad_synth, pad_notes,
+                drum_style=style,
             )
         )
         if err is not None:
@@ -2841,6 +2922,7 @@ class ComposeMusicTool(MCPTool):
                 theme_octaves=theme_octaves,
                 repeat=repeat,
                 swing=swing,
+                groove_loop=groove_loop,
             )
             code = render(spec)
         except ArrangementError as exc:
@@ -2863,6 +2945,7 @@ class ComposeMusicTool(MCPTool):
             "hats_sample": hats_sample, "bass_synth": bass_synth,
             "lead_synth": lead_synth, "lead_notes": lead_notes,
             "progression": progression, "name": name,
+            "groove_loop": groove_loop, "drum_style": drum_style,
         }
         repeat_warning = self._repeat_warning(flat)
         self._last_flat = flat
