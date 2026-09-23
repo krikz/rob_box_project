@@ -183,6 +183,7 @@ def melody_to_compose_params(melody: RtttlMelody) -> Dict[str, object]:
     ответе для обратной совместимости и для логов.
     """
     melody = _snap_to_bar(_normalize_tempo(melody))
+    melody = _normalize_lead_register(melody)
     root, scale = detect_key(
         [m for m, _ in melody.notes],
         [d for _, d in melody.notes],
@@ -241,6 +242,57 @@ def _normalize_tempo(melody: RtttlMelody) -> RtttlMelody:
     return RtttlMelody(
         bpm=int(round(bpm)),
         notes=tuple((midi, dur * factor) for midi, dur in melody.notes),
+    )
+
+
+#: Центр рабочего регистра лида — MIDI 78 (между C5=72 и C6=84, см.
+#: ``rtttl._to_midi``: ``12*(octave+1)+semitone`` — стандартная MIDI-шкала,
+#: где C4=60). Аранжировщик строит вокруг темы бас (``BASS_MIDI_FLOOR=36``,
+#: C2) и подклад (``PAD_MIDI_FLOOR=48``, C3, потолок — на 2 полутона ниже
+#: САМОЙ НИЗКОЙ ноты темы, см. ``harmonize._pad_ceiling``): если тема стоит
+#: в o=7 (медиана ~MIDI 98, как у мусорной ``russiann``, issue #2840), пэд и
+#: контрмелодия громоздятся следом за ней туда же, в тот же визг, а не под
+#: неё. Транспонирование — единственный рычаг: инструменты аранжировщика
+#: (``imperialbrass`` и т.п.) сами по себе диапазон не ограничивают.
+_LEAD_TARGET_CENTER = 78.0
+
+
+def _normalize_lead_register(melody: RtttlMelody) -> RtttlMelody:
+    """Транспонировать тему ЦЕЛЫМИ октавами в рабочий регистр лида.
+
+    Считает медиану высоты нот темы (без пауз) и сдвигает ВСЕ ноты на
+    ближайшее целое число октав так, чтобы медиана оказалась рядом с
+    :data:`_LEAD_TARGET_CENTER` (~C5–C6). Сдвиг только октавами (кратно 12
+    полутонам) — это не меняет мелодию (интервалы между нотами и лад
+    сохраняются один в один), просто переносит её в другой регистр.
+
+    Тема, уже стоящая в рабочем регистре (медиана в пределах половины
+    октавы от центра — округление даёт сдвиг 0), не трогается вовсе: тесты
+    на конкретные ``lead_midi`` для существующих RTTTL не должны плыть.
+
+    Транспонировать нужно ДО :func:`~core.harmonize.harmonize` — гармонизация
+    строит бас/пэд/контрмелодию от фактической высоты нот темы (пэд —
+    "на 2 полутона ниже самой низкой ноты темы"), так что применённый после
+    неё сдвиг рассинхронизировал бы тему с уже построенным аккомпанементом.
+    """
+    pitches = sorted(m for m, _dur in melody.notes if m is not None)
+    if not pitches:
+        return melody
+    n = len(pitches)
+    mid = n // 2
+    if n % 2:
+        median = float(pitches[mid])
+    else:
+        median = (pitches[mid - 1] + pitches[mid]) / 2.0
+    shift_octaves = round((_LEAD_TARGET_CENTER - median) / 12.0)
+    if shift_octaves == 0:
+        return melody
+    shift = int(shift_octaves) * 12
+    return RtttlMelody(
+        bpm=melody.bpm,
+        notes=tuple(
+            (None if m is None else m + shift, dur) for m, dur in melody.notes
+        ),
     )
 
 

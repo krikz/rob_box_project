@@ -188,3 +188,29 @@ def test_approach_is_chromatic_only_across_a_pentatonic_gap():
     assert _approach_note(45, c3, a_minor_pentatonic) == 47
     # Звучит E3 — сверху ближе, ступень D3 в ладу.
     assert _approach_note(52, c3, a_minor_pentatonic) == 50
+
+
+def test_o7_garbage_style_theme_is_transposed_into_working_register():
+    """issue #2840: тема в o=7 (как мусорная ``russiann``) визжала в C7-G7 —
+    ``imperialbrass([100, 98, 96, ...])``. После нормализации регистра
+    максимум лида обязан лежать не выше MIDI 88."""
+    melody = rtttl_to_melody(
+        "RussianN:d=4,o=7,b=125:"
+        "2e,d,c,2d,c,d,2e,g,e,1d,2e,d,c,2d,c,d,2e,g,e,1d"
+    )
+    before = max(m for m, _ in melody.notes)
+    assert before >= 96  # до нормализации — реально в o=7 (визг)
+
+    params = melody_to_compose_params(melody)
+    tokens = params["lead_midi"].split(", ")
+    lead_pitches = [int(tok) for tok in tokens if tok != "None"]
+    assert max(lead_pitches) <= 88
+
+
+def test_theme_already_in_working_register_is_not_shifted():
+    """Тема, уже стоящая в рабочем регистре лида, не должна транспонироваться
+    — ``lead_midi`` обязан остаться нота в ноту, иначе существующие лупы
+    поплывут по высоте без всякой на то причины."""
+    melody = rtttl_to_melody("fifth:d=4,o=5,b=63:8p,8g5,8g5,8g5,2d#5")
+    params = melody_to_compose_params(melody)
+    assert params["lead_midi"] == "None, 79, 79, 79, 75"
