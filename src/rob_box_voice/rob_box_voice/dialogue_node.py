@@ -473,6 +473,24 @@ def identity_question(ack: dict) -> Optional[str]:
     return None
 
 
+def tentative_identity_question(
+    kind: str, name: Optional[str]
+) -> Optional[str]:
+    """Issue #2888 -- вопрос о tentative-личности, который робот задаёт САМ.
+
+    Раньше вопрос отдавался на усмотрение LLM («Если уместно, ОДИН раз
+    уточни…»), и на роботе она не спросила ни разу из двух, а имя-гипотезу
+    назвала как факт (run 35903232434, акт 2b n702/n705). ``single`` --
+    вопрос с именем единственного кандидата; ``contested`` -- нейтральный,
+    БЕЗ единого имени (n210/n709: имена кандидатов запрещены must_not_say).
+    """
+    if kind == "single" and name:
+        return f"{name}, это ты?"
+    if kind == "contested":
+        return "Как тебя зовут?"
+    return None
+
+
 # Issue #2809 (продолжение) -- ответ на переспрос про tentative-личность
 # ("<Имя>, это ты?" / "Как тебя зовут?"). Простая, консервативная эвристика
 # по словам-границам (не по подстрокам -- "давай" не должно матчить "да"),
@@ -2354,18 +2372,26 @@ class DialogueNode(Node):
         if not question:
             return
         plan = identity_ack_plan(ack, question)
-        with self._task_lock:
-            held = self._run_task is not None
-            if held:
-                self._identity_ack_state().hold(plan)
+        held = self._queue_identity_question(plan)
         self.get_logger().info(
             f"👥 [issue #2747] переспрашиваю про личность: "
             f"twin={bool(ack.get('name_twin'))} "
             f"conflict={bool(ack.get('voice_conflict'))} "
             f"held_until_turn_end={held}"
         )
+
+    def _queue_identity_question(self, plan: dict) -> bool:
+        """Посреди хода -- придержать вопрос до выдачи ответа хода (он
+        ЗАМЕНИТ ответ, :meth:`_deliver_turn_result`), вне хода -- сказать
+        сразу. Общая точка для #2828 (ack регистрации) и #2888
+        (tentative-личность). Возвращает ``True``, если придержан."""
+        with self._task_lock:
+            held = self._run_task is not None
+            if held:
+                self._identity_ack_state().hold(plan)
         if not held:
             self._speak_identity_question(plan)
+        return held
 
     def _identity_ack_state(self) -> IdentityAckQuestion:
         """Состояние переспроса (issue #2828); лениво — для нод из тестов,
@@ -2386,7 +2412,10 @@ class DialogueNode(Node):
                 f"не смог переспросить про личность: {exc!r}"
             )
             return
-        self._identity_ack_state().arm(plan)
+        # Issue #2888 -- ответ на tentative-вопрос читает свой путь #2809
+        # (_resolve_pending_tentative_answer), склеивать там нечего.
+        if plan.get("kind") != "tentative":
+            self._identity_ack_state().arm(plan)
 
     def _deliver_turn_result(self, result: Any, **kwargs: Any) -> None:
         """Выдать ответ хода — или заменить его переспросом (issue #2828).
@@ -3518,10 +3547,11 @@ class DialogueNode(Node):
     # тот реагирует на ack регистрации (event="registered", синхронный
     # fire-and-forget сразу после явного register_speaker), а здесь нет
     # никакого ack: passive identify() просто идёт каждой репликой.
-    # Поэтому вопрос не произносится напрямую (_speak_direct), а кладётся
-    # ОДИН раз как подсказка-гипотеза в <system_context> -- LLM решает,
-    # уместно ли спросить сейчас, тем же голосом, что и весь остальной
-    # диалог. Ответ читается на СЛЕДУЮЩЕЙ реплике простой эвристикой
+    # Issue #2888: вопрос ОДИН раз за сессию задаёт сам робот -- тем же
+    # hold/replace-механизмом #2828 (_queue_identity_question), он
+    # заменяет ответ хода; «если уместно» на усмотрение LLM не срабатывало
+    # (run 35903232434). LLM получает лишь запрет называть имена.
+    # Ответ читается на СЛЕДУЮЩЕЙ реплике простой эвристикой
     # (classify_identity_confirmation) -- без NLU, без второго диалогового
     # состояния поверх обычного turn-цикла.
 
@@ -3717,7 +3747,29 @@ class DialogueNode(Node):
                 f"👤 [issue 2809] identity question hint set: "
                 f"kind={tentative_kind} (id={full_sid[:8]})"
             )
+            self._ask_tentative_identity(tentative_kind, tentative_name)
         return self._tag_tentative(user_input)
+
+    def _ask_tentative_identity(
+        self, kind: str, name: Optional[str]
+    ) -> None:
+        """Issue #2888 -- вопрос «<Имя>, это ты?» / «Как тебя зовут?»
+        задаёт робот, а не LLM: тем же механизмом #2828, что переспрос по
+        ack регистрации. Ход ещё идёт (мы внутри
+        ``_prepare_user_input_context``), поэтому вопрос придерживается и
+        ЗАМЕНЯЕТ ответ хода -- имя-гипотеза не может прозвучать как факт
+        («С возвращением, Саша. Узнал»), а сам вопрос звучит всегда.
+        Ответ читает #2809 (``_resolve_pending_tentative_answer``)."""
+        question = tentative_identity_question(kind, name)
+        if not question:
+            return
+        held = self._queue_identity_question(
+            {"kind": "tentative", "question": question}
+        )
+        self.get_logger().info(
+            f"👤 [issue #2888] identity question by robot: kind={kind} "
+            f"held_until_turn_end={held}"
+        )
 
     # Issue #1787 — сколько ждём LLM на выдумывание клички. Это фоновая
     # задача, никто её не слушает в реальном времени: словарная кличка уже
@@ -3937,35 +3989,32 @@ class DialogueNode(Node):
 
         ``contested`` (n210: голос похож на нескольких людей с разными
         именами) НИКОГДА не несёт имени кандидата -- ни одного, даже в
-        рамках "как его зовут". ``single`` (живой хозяин, конкурента с
-        другим именем нет) несёт ОДНО конкретное имя-гипотезу.
+        рамках "как его зовут". ``single`` с issue #2888 тоже без имени:
+        вопрос с именем задаёт робот сам (``_ask_tentative_identity``).
         """
         hint = getattr(self, "_pending_identity_hint", None)
         if not hint:
             return []
         self._pending_identity_hint = None
+        # Issue #2888 -- вопрос задаёт робот сам (_ask_tentative_identity),
+        # и он заменяет ответ этого хода. Имя-гипотезу LLM больше не
+        # получает: иначе она звучала как факт и оседала в истории диалога.
         if hint.get("kind") == "single" and hint.get("name"):
-            conf = float(hint.get("confidence") or 0.0)
-            name = hint["name"]
             return [
-                f'    <name_hypothesis confidence="{conf:.2f}">{name}'
-                f"</name_hypothesis>",
-                "    <name_hypothesis_rule>Голос похож на человека выше, "
-                "но биометрия не уверена -- это ГИПОТЕЗА, не факт. Не "
-                "утверждай это имя как точное и не используй его, пока "
-                "не подтвердят. Если уместно, ОДИН раз вежливо уточни: "
-                f'"{name}, это ты?" — ответ придёт следующей репликой. '
-                "Дальше в этом разговоре про личность не "
-                "переспрашивай.</name_hypothesis_rule>",
+                "    <identity_question_rule>Голос похож на знакомого, "
+                "но биометрия не уверена, кто это. НЕ называй никаких "
+                "имён и не говори, что узнал. Вопрос о личности робот "
+                "задаёт сам, ответ придёт следующей репликой; сама про "
+                "личность не переспрашивай.</identity_question_rule>",
             ]
         if hint.get("kind") == "contested":
             return [
                 "    <identity_question_rule>Голос похож сразу на "
                 "нескольких знакомых с разными именами -- кто именно из "
                 "них, неясно. НЕ называй никаких имён и не предполагай, "
-                "кто это. Если уместно, ОДИН раз вежливо спроси: \"Как "
-                "тебя зовут?\" Дальше в этом разговоре про личность не "
-                "переспрашивай.</identity_question_rule>",
+                "кто это. Вопрос «Как тебя зовут?» робот задаёт сам; "
+                "сама про личность не переспрашивай."
+                "</identity_question_rule>",
             ]
         return []
 
