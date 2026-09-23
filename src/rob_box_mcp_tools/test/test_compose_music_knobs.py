@@ -240,8 +240,10 @@ def test_derived_arrangement_knob_without_name_is_an_error(mock_node, param, val
 # 3. Умолчания = golden байт-в-байт
 # ---------------------------------------------------------------------------
 
-#: Сочетания golden без imperialbrass (у него на пути тула safety net,
-#: которого нет в пути ядра golden).
+#: Все сочетания golden. До ADR-0132 PR-6 ``ambient_brass_halftime``
+#: (imperialbrass) отсюда исключался: на пути тула стоял safety net, которого
+#: нет в пути ядра golden. PR-6 его удалил — теперь тул обязан играть ровно
+#: golden и для imperialbrass (это и есть проверка смены дефолта).
 _TOOL_COMBOS = {
     "arc_blip": dict(
         drum_style="auto", form="arc", lead_synth="blip", bass_synth="moogbass",
@@ -251,6 +253,11 @@ _TOOL_COMBOS = {
         drum_style="march", form="verse_chorus", lead_synth="pluck", bass_synth="bass",
         pad_synth="warmpad", counter_synth="off", theme_octaves=False,
         repeat=True, drums_sample=2, hats_sample=1,
+    ),
+    "ambient_brass_halftime": dict(
+        drum_style="halftime", form="ambient", lead_synth="imperialbrass",
+        bass_synth="subbass", pad_synth="ambi", counter_synth="pianovel",
+        swing=0.1, repeat=False,
     ),
 }
 
@@ -269,9 +276,9 @@ def _golden_code(mock_node, case, **extra):
 
 
 def test_tool_defaults_are_byte_identical_to_golden(mock_node, cases):
-    """Без ручек тул играет ровно golden (все темы × оба сочетания)."""
+    """Без ручек тул играет ровно golden (все темы × все сочетания)."""
     selected = [c for c in cases if c["combo"] in _TOOL_COMBOS]
-    assert len(selected) >= 80
+    assert len(selected) >= 120
     diverged = [
         f"{c['key']}-{c['combo']}" for c in selected if _golden_code(mock_node, c) != c["code"]
     ]
@@ -293,18 +300,63 @@ def test_theme_octaves_legacy_bool_is_backward_compatible(mock_node, cases):
     assert _golden_code(mock_node, verse, theme_octaves="false") == verse["code"]
 
 
-def test_explicit_knob_is_not_overridden_by_heavy_brass_safety_net(mock_node, themes):
-    """imperialbrass: safety net гасит только auto; явные on — выбор модели."""
-    tool, _mgr = _tool(mock_node, themes[DENSE])
+def test_imperialbrass_default_plays_counter_and_octaves_and_warns(mock_node, themes):
+    """ADR-0132 PR-6: тихого safety net нет — auto играет как у любого синта,
+    а партитура предупреждает о долгом хвосте и называет ручки."""
+    tool, mgr = _tool(mock_node, themes[DENSE])
     tool.execute(name="theme", lead_synth="imperialbrass", bass_synth="bass", pad_synth="strings")
-    assert tool.last_score["decisions"]["counter"].startswith("auto→off")
+    score = tool.last_score
+    assert score["decisions"]["counter"].startswith("auto→on")
+    assert score["decisions"]["theme_octaves"].startswith("auto→on")
+    assert "counter" in score["parts"] and score["parts"]["lead"]["octave_doubled"]
+    assert (
+        "imperialbrass: долгий релиз ≈1.5 с + второй голос + октава = 3 голоса с хвостом "
+        "→ counter=off или theme_octaves=off"
+    ) in score["warnings"]
+    assert "долгий релиз" in tool.last_score["text"]
+    assert not any("safety net" in w for w in score["warnings"])
+    mgr.execute_code.assert_called_once()
+
+
+@pytest.mark.parametrize("knob", [dict(counter="off"), dict(theme_octaves="off"),
+                                  dict(counter_synth="off")])
+def test_imperialbrass_explicit_off_is_respected_and_silences_warning(mock_node, themes, knob):
+    """Модель выключила один из голосов → 2 голоса, предупреждения нет."""
+    tool, _mgr = _tool(mock_node, themes[DENSE])
+    tool.execute(
+        name="theme", lead_synth="imperialbrass", bass_synth="bass", pad_synth="strings", **knob,
+    )
+    score = tool.last_score
+    voices = ("counter" in score["parts"]) + bool(score["parts"]["lead"]["octave_doubled"])
+    assert voices == 1
+    assert not any("долгий релиз" in w for w in score["warnings"])
+
+
+def test_explicit_on_knobs_are_played_with_long_release_lead(mock_node, themes):
+    """Явные on — выбор модели: тул играет 3 голоса и только предупреждает."""
+    tool, _mgr = _tool(mock_node, themes[DENSE])
     tool.execute(
         name="theme", lead_synth="imperialbrass", bass_synth="bass", pad_synth="strings",
         counter="on", theme_octaves="on",
     )
-    decisions = tool.last_score["decisions"]
-    assert decisions["counter"].startswith("on") and decisions["theme_octaves"].startswith("on")
-    assert not any("safety net" in w for w in tool.last_score["warnings"])
+    score = tool.last_score
+    assert score["decisions"]["counter"].startswith("on")
+    assert score["decisions"]["theme_octaves"].startswith("on")
+    assert any("долгий релиз" in w for w in score["warnings"])
+
+
+def test_short_release_lead_with_three_voices_has_no_tail_warning(mock_node, themes):
+    """brass (Env.perc — короткий хвост): 3 голоса без предупреждения."""
+    tool, _mgr = _tool(mock_node, themes[DENSE])
+    tool.execute(name="theme", lead_synth="brass", bass_synth="bass", pad_synth="strings")
+    score = tool.last_score
+    assert "counter" in score["parts"] and score["parts"]["lead"]["octave_doubled"]
+    assert not any("долгий релиз" in w for w in score["warnings"])
+
+
+def test_heavy_brass_safety_net_is_gone():
+    assert not hasattr(ComposeMusicTool, "_heavy_brass_safety_net")
+    assert not hasattr(ComposeMusicTool, "HEAVY_BRASS_LEAD_SYNTHS")
 
 
 # ---------------------------------------------------------------------------

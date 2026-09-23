@@ -55,8 +55,10 @@
 14. ``_should_octave_double`` → удвоение темы → ``theme_octaves`` с причиной.
 15. ``SYNTH_SEMITONE_SHIFT`` → физика синта → «(синт ±N)» у партии;
     диапазоны — уже в звучащей высоте.
-16. ``_heavy_brass_safety_net`` (tools/music.py) → выключает второй голос
-    и октавы → предупреждение ``safety net <синт>``.
+16. ``_heavy_brass_safety_net`` (tools/music.py) молча выключал второй
+    голос и октавы у imperialbrass → с PR-6 удалён: ничего не выключается,
+    по таблице :mod:`core.synth_traits` партитура предупреждает «<синт>:
+    долгий релиз … = 3 голоса с хвостом → counter=off или theme_octaves=off».
 17. ``resolve_form``/``_snap_plan_to_theme`` → секции под длину темы →
     ``form``, таймлайн секций; неизвестная форма в ``compose_music`` с PR-2 —
     ошибка (здесь остаётся страховка «→arc» с предупреждением).
@@ -90,6 +92,7 @@ from .arranger import (
     resolve_form,
 )
 from .harmonize import _weighted_percentile
+from .synth_traits import theme_tail_warning
 
 __all__ = ["describe", "analyze_melody", "note_name", "chord_name"]
 
@@ -433,6 +436,16 @@ def _check_warnings(checks: Dict[str, Any]) -> List[str]:
     return out
 
 
+def _trait_warnings(parts: Dict[str, Dict[str, Any]]) -> List[str]:
+    """Долгий хвост синта при трёх голосах темы (ADR-0132 PR-6)."""
+    lead = parts.get("lead") or {}
+    counter = parts.get("counter") or {}
+    warning = theme_tail_warning(
+        lead.get("synth"), counter.get("synth"), bool(lead.get("octave_doubled")),
+    )
+    return [warning] if warning else []
+
+
 def _spec_warnings(spec, harmony) -> List[str]:
     out: List[str] = []
     bpm = float(spec.bpm)
@@ -590,7 +603,7 @@ def describe(
             для сочинённого трека.
         prep_decisions: ``melody_to_compose_params(...)["decisions"]``.
         title: название сыгранной записи.
-        warnings: внешние предупреждения (санитайзер, safety net синтов).
+        warnings: внешние предупреждения (санитайзер).
     """
     parts, drums = _parts(spec)
     checks = _checks(parts, harmony, code)
@@ -616,7 +629,7 @@ def describe(
         },
         "checks": checks,
         "warnings": list(warnings) + _spec_warnings(spec, harmony)
-        + _key_warnings(key) + _check_warnings(checks),
+        + _key_warnings(key) + _check_warnings(checks) + _trait_warnings(parts),
     }
     sheet["text"] = _render_text(sheet)
     return sheet
