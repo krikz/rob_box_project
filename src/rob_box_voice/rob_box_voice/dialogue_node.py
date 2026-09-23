@@ -7104,6 +7104,66 @@ class DialogueNode(Node):
 
         return results
 
+    def _publish_dj_fallback(
+        self,
+        spoken: str,
+        tools_called: tuple,
+        is_dj_auto: bool,
+        user_input: str,
+        result: DialogResult,
+    ) -> bool:
+        """Issue #2557/#2857 — DJ music-tool fallback publish.
+
+        Extracted out of ``_handle_result`` (issue #2857) purely to
+        keep that method's cyclomatic complexity at its CC-budget
+        baseline — ``ensure_dj_music_response`` in
+        ``core/speak_helpers.py`` remains the single source of truth
+        for the actual decision logic; this wrapper only feeds it the
+        cheap DJ context (the real track name AgentCore already
+        captured off ``compose_music(name=...)`` this turn — see
+        ``result.track_name`` / ``agent_core._extract_track_name`` —
+        plus the transition number for deterministic template
+        rotation) and turns the result into a publish-or-not.
+
+        Returns ``True`` if a response was published OR the turn was
+        deliberately left silent (either way the caller must return
+        without falling through to the rest of ``_handle_result``);
+        ``False`` means nothing changed and the caller should continue
+        as normal (``dj_fallback == spoken`` — e.g. ``speak_text`` ran
+        this turn, or the reply was already real).
+        """
+        _dj_state = (
+            getattr(self._dj, "state", None)
+            if hasattr(self, "_dj") else None
+        )
+        dj_fallback = ensure_dj_music_response(
+            spoken, list(tools_called),
+            is_dj_auto=is_dj_auto,
+            track_name=(getattr(result, "track_name", None) or None),
+            transition_count=getattr(_dj_state, "transition_count", 0) or 0,
+        )
+        if dj_fallback == spoken:
+            return False
+        if dj_fallback:
+            self.get_logger().warning(
+                "🎙 [issue 2557/2857] tools_called с music-tools, "
+                f"spoken={spoken[:60]!r} — публикую DJ fallback. "
+                f"tools={list(tools_called)!r} "
+                f"user_input={user_input!r} is_dj_auto={is_dj_auto}"
+            )
+            self._publish_response(dj_fallback, animation="neutral")
+        else:
+            # DJ auto-transition, no speak_text, and no track name
+            # (compose_music wasn't called, or called without a
+            # usable ``name``) to announce — stay silent rather than
+            # repeat the dull generic phrase.
+            self.get_logger().info(
+                "🎙 [issue 2857] DJ auto-transition без реплики и "
+                "без названия трека — молчу. "
+                f"tools={list(tools_called)!r}"
+            )
+        return True
+
     def _handle_result(
         self,
         result: DialogResult,
@@ -7317,17 +7377,9 @@ class DialogueNode(Node):
         # down). We do NOT retry here (retry budget pressure #2548 /
         # #2549); the master-prompt patch is the upstream fix.
         if tools_called and not result.error:
-            dj_fallback = ensure_dj_music_response(
-                spoken, list(tools_called),
-            )
-            if dj_fallback != spoken:
-                self.get_logger().warning(
-                    "🎙 [issue 2557] tools_called с music-tools, "
-                    f"spoken={spoken[:60]!r} — публикую DJ fallback. "
-                    f"tools={list(tools_called)!r} "
-                    f"user_input={user_input!r} is_dj_auto={is_dj_auto}"
-                )
-                self._publish_response(dj_fallback, animation="neutral")
+            if self._publish_dj_fallback(
+                spoken, tools_called, is_dj_auto, user_input, result,
+            ):
                 return
 # 🔴 FIX (live 02.09): «во время сочинения музыки LLM много говорит».
         # На DJ-переходе речь идёт ТОЛЬКО через speak_text (короткая

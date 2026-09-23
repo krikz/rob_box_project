@@ -38,6 +38,7 @@ def apply_babble_filter(
     speak_text_count: int,
     speak_text_real_count: int,
     spoken_texts: list[str],
+    track_name: str | None = None,
 ) -> _ToolLoopOutcome | None:
     """Return a suppressing outcome for the babble-filter, else ``None``.
 
@@ -77,6 +78,7 @@ def apply_babble_filter(
         speak_text_real_count=speak_text_real_count,
         spoken_via_tool="\n".join(spoken_texts),
         truncated_tool_args=response.truncated_tool_args,
+        track_name=track_name,
     )
 
 
@@ -87,6 +89,7 @@ def build_outcome_from_response(
     speak_text_count: int,
     speak_text_real_count: int,
     spoken_texts: list[str],
+    track_name: str | None = None,
 ) -> _ToolLoopOutcome:
     """Assemble the happy-path :class:`_ToolLoopOutcome` from the last response.
 
@@ -103,4 +106,5 @@ def build_outcome_from_response(
         speak_text_real_count=speak_text_real_count,
         spoken_via_tool="\n".join(spoken_texts),
         truncated_tool_args=response.truncated_tool_args,
+        track_name=track_name,
     )
