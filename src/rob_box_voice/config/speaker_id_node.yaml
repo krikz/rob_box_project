@@ -62,11 +62,13 @@ speaker_id_node:
     # что barge_in_policy у dialogue_node). Ручной ssh cp+DELETE FROM по
     # боевой speakers.db, который этот параметр заменяет, — issue #2750.
     e2e_mode: false
-    # Issue #2609 — defer resemblyzer warm-load to first real embed_audio.
-    # Default False: cold-load is 2-3 s on first inference, acceptable for
-    # the biometric cold path (зарегистрироваться / опознать нового
-    # собеседника). Eager warm-load at startup costs ~70 MB RSS (CPU-only
-    # wheel) on every container restart even when nobody speaks. Set True
-    # only if you want the legacy "always-hot model" behaviour.
-    resemblyzer_warmup_on_start: false
+    # Issue #2885 — прогрев resemblyzer в фоне сразу после старта ноды.
+    # Холодный первый embed — не «2-3 с», как считали в #2609, а 40-60 с
+    # (первый вызов librosa + numba-компиляция; замер в #2885), и первая
+    # фраза после каждого рестарта уходила в LLM без имени. Прогрев не
+    # блокирует подписки: фраза, пришедшая раньше его конца, ждёт в очереди
+    # того же executor'а. Цена — RSS модели+librosa держится с момента
+    # старта, а не с первой фразы (после первой фразы он тот же). false —
+    # ленивый режим #2609 (первая фраза после рестарта ~40 с).
+    resemblyzer_warmup_on_start: true
     sample_rate: 16000

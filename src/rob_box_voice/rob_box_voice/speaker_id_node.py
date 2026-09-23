@@ -381,19 +381,18 @@ class SpeakerIdNode(Node):
         # «топик без потребителя», потому что consumer — сам параметр, а не
         # что-то, что сканер обязан находить отдельно.
         self.declare_parameter("e2e_mode", False)
-        # Issue #2609 — defer resemblyzer warm-load to first real inference
-        # unless explicitly opted in. Default False: at boot the robot
-        # almost never needs speaker ID on the first few utterances
-        # (silence / VAD-only noise → embed_audio returns None anyway),
-        # and the warm-load costs ~600 MB RSS (torch + GE2E model). With
-        # the CPU-only torch wheel (pinned in
-        # docker/vision/voice_*/requirements.txt), the cold-load on first
-        # ``embed_audio`` is ~2-3 s — acceptable for a biometric
-        # emergency path (зарегистрироваться / опознать нового
-        # собеседника), but unacceptable for an always-on warm-load that
-        # pays the cost on EVERY container restart even when nobody
-        # speaks. Set True to restore legacy behaviour (warm at startup).
-        self.declare_parameter("resemblyzer_warmup_on_start", False)
+        # Issue #2885 — прогрев resemblyzer в фоне сразу после старта
+        # (по умолчанию True). Issue #2609 отложил его до первой фразы,
+        # считая холодный первый embed «~2-3 с». Замер (#2885) показал
+        # 40-60 с: почти всё время — первый вызов librosa (lazy-импорт
+        # librosa.core/util + numba-компиляция его ufunc'ов; кэш numba
+        # пишется в site-packages, в свежем контейнере его нет). Первая
+        # фраза после рестарта уходила в LLM «unknown» (биометрия 41 с при
+        # speaker_resolve_timeout 2.5 с). Ленивый режим экономил RSS
+        # только до первой фразы — после неё модель в памяти всё равно, —
+        # поэтому бюджет памяти он не уменьшал. False — вернуть ленивый
+        # режим (ценой ~40 с на первой фразе).
+        self.declare_parameter("resemblyzer_warmup_on_start", True)
 
         self._enabled: bool = self.get_parameter("enabled").value
         self._sample_rate: int = self.get_parameter("sample_rate").value
@@ -519,25 +518,23 @@ class SpeakerIdNode(Node):
 
         # ── Thread pool for inference (non-blocking ROS callbacks) ────────────
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="speaker_id")
-        # Issue #2609 — gate the eager warm-load on a parameter (default
-        # False). The warmup call below triggers resemblyzer's
-        # ``VoiceEncoder(device="cpu")`` which loads torch + the GE2E
-        # model (~600 MB RSS with the old `+cu130` wheel; ~70 MB now after
-        # the CPU-only pin in docker/vision/voice_*/requirements.txt).
-        # On a robot container that runs 9 nodes sharing 4 GB mem_limit,
-        # paying that cost on EVERY boot even when nobody speaks is
-        # wasteful — the lazy path (first real embed_audio) is fine for
-        # biometric, which is a cold path (user explicitly asks
-        # "запомни мой голос" or LLM calls register_speaker). Operators
-        # that want the legacy "warm at startup" behaviour set
-        # ``resemblyzer_warmup_on_start: true`` in speaker_id_node.yaml.
+        # Issue #2885 — прогрев уходит в ТОТ ЖЕ однопоточный executor, что
+        # и _process_utterance: __init__ не ждёт его (подписки создаются
+        # ниже сразу), а фраза, пришедшая до конца прогрева, встаёт в
+        # очередь за ним и обрабатывается, а не теряется. Отдельный поток
+        # не взят сознательно: _load_resemblyzer не под локом, два
+        # параллельных первых вызова загрузили бы модель дважды.
+        # Опт-аут (#2609, ленивый режим) — resemblyzer_warmup_on_start: false.
         if bool(self.get_parameter("resemblyzer_warmup_on_start").value):
-            # Warm up resemblyzer model immediately so first real inference is fast
             self._executor.submit(self._warmup)
+            self.get_logger().info(
+                "🔥 resemblyzer warmup started in background (issue #2885)"
+            )
         else:
             self.get_logger().info(
                 "🪶 resemblyzer warmup deferred to first embed_audio "
-                "(issue #2609: saves ~70 MB RSS on every container restart)"
+                "(resemblyzer_warmup_on_start=false: first phrase after "
+                "restart will take ~40 s, issue #2885)"
             )
 
         # ── QoS ───────────────────────────────────────────────────────────────
@@ -653,15 +650,29 @@ class SpeakerIdNode(Node):
         # multiply`` + empty output array (the embedding call silently
         # returned). Use a noise-shaped warmup so RMS > 0 and the
         # model loads cleanly.
-        import numpy as np
         rng = np.random.default_rng(42)
         warmup = (
             rng.normal(0, 0.05, 16000).clip(-1, 1).astype(np.float32)
         )
         pcm16 = (warmup * 32767).astype(np.int16).tobytes()
-        self._db.embed_audio(pcm16, sample_rate=16000)
+        # Issue #2885 — прогрев обязан пройти ВЕСЬ путь реальной фразы
+        # (librosa → VAD → мел → LSTM): главные ~40 с холодного старта —
+        # первый вызов librosa/numba, а не загрузка модели. Замер: этот
+        # буфер доходит до энкодера (речь=0.99s), следующая 9-с фраза —
+        # 315 ms. Если когда-нибудь перестанет (None) — warning в логе,
+        # а не молчаливый «прогрет».
+        result = self._db.embed_audio_ex(pcm16, sample_rate=16000)
         elapsed_ms = int((_time.monotonic() - t0) * 1000)
-        self.get_logger().info(f"🔥 Resemblyzer warmup done ({elapsed_ms} ms)")
+        if result is None:
+            self.get_logger().warning(
+                f"⚠️ Resemblyzer warmup did NOT reach the encoder ({elapsed_ms} ms) — "
+                "first phrase may still pay the cold start (issue #2885)"
+            )
+            return
+        self.get_logger().info(
+            f"🔥 Resemblyzer warmup done ({elapsed_ms} ms, "
+            f"речь={result.voiced_sec:.2f}s)"
+        )
 
     def _on_speech_audio(self, msg: AudioData) -> None:
         """Received a complete speech utterance — run inference asynchronously."""
