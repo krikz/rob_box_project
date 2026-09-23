@@ -82,7 +82,9 @@ def _run(ctrl, hook, clock, *, failed=frozenset(), horizon_s=3 * 3600.0):
             seen = len(hook.dispatches)
             if seen in failed:
                 continue
-            ctrl.note_turn_tools(["speak_text", "compose_music"], MUSIC)
+            ctrl.note_turn_tools(
+                ["speak_text", "compose_music"], MUSIC, is_dj_auto=True
+            )
             ctrl.state.form_ends_at = clock.now + FORM_S
 
 
@@ -156,13 +158,15 @@ def test_note_turn_tools_counts_only_music_starts_while_enabled() -> None:
     assert not ctrl.note_turn_tools([], MUSIC)
     assert ctrl.state.tracks_started == 0
 
-    assert ctrl.note_turn_tools(["lookup_melody", "compose_music"], MUSIC)
+    assert ctrl.note_turn_tools(
+        ["lookup_melody", "compose_music"], MUSIC, is_dj_auto=True
+    )
     assert ctrl.state.tracks_started == 1
 
 
 def test_fresh_start_and_stop_reset_the_track_counter() -> None:
     ctrl, _, _ = _controller({"plan": PLAN})
-    ctrl.note_turn_tools(["compose_music"], MUSIC)
+    ctrl.note_turn_tools(["compose_music"], MUSIC, is_dj_auto=True)
     ctrl.handle_message(json.dumps({"enabled": False}))
     assert ctrl.state.tracks_started == 0
 

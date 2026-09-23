@@ -6177,7 +6177,10 @@ class DialogueNode(Node):
         dj = getattr(self, "_dj", None)
         if dj is not None:
             dj.note_turn_tools(
-                getattr(result, "tools_called", None), MUSIC_STARTING_TOOLS
+                getattr(result, "tools_called", None),
+                MUSIC_STARTING_TOOLS,
+                is_dj_auto=was_dj_auto,
+                turn_text=user_input,
             )
         if self._apply_stop_music_deferral(result):
             self._flush_music_cleanup_if_idle(was_dj_auto)

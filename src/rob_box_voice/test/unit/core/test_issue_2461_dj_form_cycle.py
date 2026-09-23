@@ -170,11 +170,25 @@ class TestFormEndsAtDoesNotBreakExistingGuards(unittest.TestCase):
 
     def test_reset_state_clears_form_ends_at(self) -> None:
         ctrl = _build_controller()
-        ctrl.state.form_ends_at = time.time() + 100.0
+        ctrl.state.form_ends_at = time.time() - 1.0  # форма уже доиграла
 
         ctrl.handle_message('{"enabled": false}')
 
         self.assertIsNone(ctrl.state.form_ends_at)
+
+    def test_reset_keeps_a_playing_form_for_the_deferred_farewell(self) -> None:
+        """Issue #2875 — форма ещё играет: прощание ждёт её конца, и
+        ``tick()`` нужен её дедлайн (и его обнуление mcp_server'ом при
+        остановке музыки). Новый сет от этого не страдает: будущий
+        дедлайн — это реально играющий трек, прошедший — игнорируется."""
+        ctrl = _build_controller()
+        ends_at = time.time() + 100.0
+        ctrl.state.form_ends_at = ends_at
+
+        ctrl.handle_message('{"enabled": false}')
+
+        self.assertEqual(ctrl.state.form_ends_at, ends_at)
+        self.assertIsNotNone(ctrl.state.farewell_at)
 
 
 if __name__ == "__main__":

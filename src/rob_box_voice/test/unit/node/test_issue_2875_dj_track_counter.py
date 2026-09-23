@@ -38,11 +38,43 @@ def _node_with_dj(enabled: bool = True) -> DialogueNode:
     return node
 
 
-def _finalize(node: DialogueNode, tools: list | None) -> None:
+def _finalize(
+    node: DialogueNode,
+    tools: list | None,
+    *,
+    was_dj_auto: bool = True,
+    user_input: str = "x",
+) -> None:
     result = None if tools is None else SimpleNamespace(tools_called=tools)
     node._finalize_music_cleanup_policy(
-        result=result, was_dj_auto=True, raw_user_command=None, user_input="x",
+        result=result,
+        was_dj_auto=was_dj_auto,
+        raw_user_command=None,
+        user_input=user_input,
     )
+
+
+def test_user_request_mid_set_is_not_a_set_track() -> None:
+    """Дополнение #2875: «сыграй тему марио» посреди сета — заказ, не трек."""
+    node = _node_with_dj()
+
+    _finalize(
+        node, ["compose_music"], was_dj_auto=False,
+        user_input="[TG] сыграй тему марио",
+    )
+
+    assert node._dj.state.tracks_started == 0
+
+
+def test_retry_of_dj_transition_counts_via_turn_text() -> None:
+    node = _node_with_dj()
+
+    _finalize(
+        node, ["compose_music"], was_dj_auto=False,
+        user_input="[Speaker:unknown] [DJ_AUTO переход #2] ...",
+    )
+
+    assert node._dj.state.tracks_started == 1
 
 
 def test_turn_that_started_music_counts_a_track() -> None:

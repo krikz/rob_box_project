@@ -82,7 +82,9 @@ def _run_set(
             seen = len(hook.dispatches)
             if seen in failed_transitions:
                 continue
-            ctrl.note_turn_tools(["compose_music"], {"compose_music"})
+            ctrl.note_turn_tools(
+                ["compose_music"], {"compose_music"}, is_dj_auto=True
+            )
             # compose_music сыграл форму на 180 с — mcp_server публикует
             # её конец, переход ждёт его (#2461).
             ctrl.state.form_ends_at = clock.now + FORM_S
