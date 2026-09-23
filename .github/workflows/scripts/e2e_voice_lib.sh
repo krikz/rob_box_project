@@ -176,3 +176,135 @@ print(json.dumps({"step": step, "probe_rc": rc, "raw": raw[-12000:]}, ensure_asc
 PY2
     return 0
 }
+
+# --- issue #2809 — переспрос личности: pure-функции условного шага/node_params
+#
+# Обе группы функций ниже переиспользуют harness-контракт e2e_mode
+# (ros2 param set, читаем ОБРАТНО, не верим exit-коду) и уже существующий
+# канал robot_speech()/keyword_hit() (e2e_tool_match.py, issue #2764/#2779).
+# Вынесены сюда (а не в главный e2e_voice_test.sh), потому что этот файл —
+# единственный, который безопасно source'ить из unit-тестов (см. шапку файла:
+# "никакого main flow, никакого чтения ENV").
+
+# when_robot_asked_matches() — issue #2809: "спросил ли робот вопрос-гипотезу
+# на ПРЕДЫДУЩЕМ шаге". $1=речь робота за окно предыдущего шага (уже
+# ПРОФИЛЬТРОВАННАЯ через robot_speech() — вызывающий отвечает за канал, эта
+# функция сама логов не читает), $2=grep -E паттерн из scenario.json
+# (when_robot_asked). Контракт идентичен must_not_say/expected_keywords по
+# регистронезависимости, но БЕЗ поддержки "|"-альтернации как отдельного
+# разбора — сам паттерн ЯВЛЯЕТСЯ ERE (grep -E), значит "Саш.*это ты|это
+# ты.*Саш" уже валидный regex сам по себе, доп. парсинг не нужен.
+# Пустой паттерн намеренно считается "не совпало" (return 1) — пустая строка
+# в grep -E совпадает с ЧЕМ УГОДНО (включая тишину), это был бы тихий баг,
+# из-за которого шаг без when_robot_asked ошибочно попал бы в эту ветку.
+when_robot_asked_matches() {  # $1=prev_robot_speech $2=pattern (ERE-подобный)
+    local prev_speech="$1" pattern="$2"
+    [ -z "$pattern" ] && return 1
+    # НЕ `grep -qiE` — регистронезависимость bash-grep для кириллицы зависит
+    # от LC_CTYPE хоста, и под C/C.UTF-8 (частый дефолт минимального образа,
+    # напр. билд-машина katana) она НЕ РАБОТАЕТ: glibc C.UTF-8 декодирует
+    # UTF-8 байты, но НЕ содержит таблиц регистра для не-ASCII — "САША" не
+    # сворачивается к "саша". Живой замер на этой задаче (issue #2809):
+    # `grep -qiE` пропустил "САША, ЭТО ТЫ?" против паттерна в нижнем
+    # регистре под LC_CTYPE=C.UTF-8. Python re.IGNORECASE Unicode-корректен
+    # независимо от локали ОС — тот же принцип, что уже используют
+    # keyword_hit()/tool_invoked() в e2e_tool_match.py (issue #2764/#2779),
+    # не полагаясь на локаль байтового текстового процессора.
+    PREV_SPEECH="$prev_speech" WRA_PATTERN="$pattern" python3 -c '
+import os, re, sys
+pattern = os.environ.get("WRA_PATTERN", "")
+text = os.environ.get("PREV_SPEECH", "")
+try:
+    hit = bool(re.search(pattern, text, re.IGNORECASE))
+except re.error:
+    hit = False
+sys.exit(0 if hit else 1)
+'
+}
+
+# _ros2_param_get_raw() — сырой вывод ``ros2 param get <node> <param>``.
+# Требует функцию robot_ros() в вызывающем окружении (главный скрипт её
+# определяет; unit-тест подменяет своим стабом ДО вызова).
+_ros2_param_get_raw() {  # $1=node $2=param
+    robot_ros "ros2 param get '$1' '$2' --no-daemon" 2>/dev/null
+}
+
+# _ros2_param_value() — вытащить значение из вывода ``ros2 param get``,
+# независимо от типа (Boolean/Integer/Double/String value is: ...).
+_ros2_param_value() {  # $1=raw ros2-param-get output
+    printf '%s' "$1" | grep -aoE '(Boolean|Integer|Double|String) value is: .*' | tail -1 \
+        | sed -E 's/^(Boolean|Integer|Double|String) value is: //'
+}
+
+# _node_param_values_match() — сравнение значения ПОСЛЕ set с запрошенным.
+# Строковое равенство ловит bool/str; числовое — доп. попытка через awk,
+# потому что ``ros2 param get`` может вернуть "0.99" на запрос "0.990000"
+# (или наоборот) — не разные значения, разное форматирование.
+_node_param_values_match() {  # $1=actual $2=requested
+    local a="$1" b="$2"
+    [ "$a" = "$b" ] && return 0
+    awk -v a="$a" -v b="$b" 'BEGIN{ exit !(a+0 == b+0) }' 2>/dev/null
+}
+
+# apply_node_params() — читает top-level ``node_params`` сценария, применяет
+# КАЖДЫЙ параметр, проверяет ЧТЕНИЕМ (не exit-кодом), копит исходные значения
+# в $E2E_NODE_PARAM_ORIGINALS_FILE для restore_node_params(). Пустой/
+# отсутствующий ``node_params`` — no-op. Требует в окружении: robot_ros(),
+# log(), E2E_NODE_PARAM_ORIGINALS_FILE (путь к файлу для restore).
+apply_node_params() {  # $1=scenario_file
+    local scenario_file="$1"
+    local node_params_tsv
+    node_params_tsv="$(python3 - "$scenario_file" <<'NPPY'
+import json, sys
+sc = json.load(open(sys.argv[1], encoding="utf-8"))
+for node, params in (sc.get("node_params", {}) or {}).items():
+    for k, v in (params or {}).items():
+        print("%s\t%s\t%s" % (node, k, v))
+NPPY
+)"
+    [ -z "$node_params_tsv" ] && return 0
+
+    local node param value
+    while IFS=$'\t' read -r node param value; do
+        [ -z "$node" ] && continue
+        local before_raw before_value after_raw after_value
+        before_raw="$(_ros2_param_get_raw "$node" "$param")"
+        before_value="$(_ros2_param_value "$before_raw")"
+        if [ -z "$before_value" ]; then
+            echo "E2E_FATAL: node_params — не удалось прочитать исходное значение ${node} ${param} (без него нечего восстанавливать после акта)" >&2
+            echo "           проверь вручную: ssh <robot> \"docker exec voice-assistant bash -lc 'source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; ros2 param get ${node} ${param} --no-daemon'\"" >&2
+            exit 2
+        fi
+        robot_ros "ros2 param set '${node}' '${param}' '${value}' --no-daemon" >/dev/null 2>&1
+        after_raw="$(_ros2_param_get_raw "$node" "$param")"
+        after_value="$(_ros2_param_value "$after_raw")"
+        if ! _node_param_values_match "$after_value" "$value"; then
+            echo "E2E_FATAL: node_params — ${node} ${param} не применился: сценарий просил '${value}', узел вернул '${after_value}' (parameters_callback отклонил значение либо не перехватывает этот параметр — см. issue #2809)" >&2
+            exit 2
+        fi
+        printf '%s\t%s\t%s\n' "$node" "$param" "$before_value" >> "$E2E_NODE_PARAM_ORIGINALS_FILE"
+        log "🧪 node_params: ${node} ${param} = ${value} (было ${before_value}) — применено и подтверждено чтением"
+    done <<< "$node_params_tsv"
+}
+
+# restore_node_params() — вызывается ТОЛЬКО из trap EXIT, всегда, независимо
+# от PASS/FAIL/обрыва. Восстанавливает КАЖДЫЙ параметр к значению, прочитанному
+# в apply_node_params ДО изменения (не к хардкоду в этом файле). Провал
+# восстановления — НЕ фатал (акт уже закончился), но обязан быть громким в
+# логе прогона (ADR-0018 — молчать о сбое нельзя).
+restore_node_params() {
+    [ -s "$E2E_NODE_PARAM_ORIGINALS_FILE" ] || return 0
+    local node param value after_raw after_value
+    while IFS=$'\t' read -r node param value; do
+        [ -z "$node" ] && continue
+        robot_ros "ros2 param set '${node}' '${param}' '${value}' --no-daemon" >/dev/null 2>&1
+        after_raw="$(_ros2_param_get_raw "$node" "$param")"
+        after_value="$(_ros2_param_value "$after_raw")"
+        if _node_param_values_match "$after_value" "$value"; then
+            log "🧪 node_params: ${node} ${param} восстановлен к исходному ${value}"
+        else
+            log "❌ ВНИМАНИЕ: node_params — ${node} ${param} НЕ восстановлен (просили ${value}, узел вернул ${after_value:-<пусто>}) — робот остался на форсированном значении!"
+            log "   почини вручную: ssh <robot> \"docker exec voice-assistant bash -lc 'source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; ros2 param set ${node} ${param} ${value} --no-daemon'\""
+        fi
+    done < "$E2E_NODE_PARAM_ORIGINALS_FILE"
+}

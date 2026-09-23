@@ -492,6 +492,37 @@ deactivate_e2e_memory_db() {
     esac
 }
 
+# --- issue #2809 — node_params: сценарий форсирует зону сомнения переспроса --
+# Акт «переспрос личности» (night_marathon_act2b_identity_question) должен
+# ГАРАНТИРОВАННО попасть в зону tentative (single/contested), а не confident —
+# синтетические голоса MiniMax опознаются 0.87-0.96, выше band_high=0.80 по
+# умолчанию, и переспрос почти никогда не случается на синтетике. Top-level
+# поле сценария ``node_params`` форсирует конкретный параметр конкретного
+# узла на время акта:
+#
+#   "node_params": {"/speaker_id_node": {"name_confidence_band_high": 0.99}}
+#
+# Реализация (apply_node_params/restore_node_params/_ros2_param_*) вынесена в
+# e2e_voice_lib.sh — она чистые функции (никакого ENV на этапе source),
+# юнит-тестируется отдельно от главного скрипта (scripts/testing/
+# test_e2e_node_params.sh, robot_ros() подменяется стабом через
+# ROBOT_SSH_OVERRIDE, как и весь остальной харнесс).
+#
+# Контракт (тот же принцип честности, что e2e_mode выше): значение не
+# ВЕРИТСЯ на слово exit-коду ``ros2 param set`` — его читают ОБРАТНО и
+# сравнивают с запрошенным, иначе колбэк параметров мог отклонить значение
+# (или узел вообще не перехватывать этот параметр — см. issue #2809 fix в
+# speaker_id_node.parameters_callback) и харнесс решил бы, что переопределение
+# сработало, хотя оно тихо провалилось. Восстановление — К ИСХОДНОМУ
+# значению, ПРОЧИТАННОМУ ДО изменения (не к хардкоду в этом файле), и делается
+# ИЗ trap EXIT — что бы ни случилось со сценарием (PASS/FAIL/обрыв связи),
+# узел обязан вернуться на калиброванное 0.80/0.15, иначе следующий прогон на
+# этом же роботе (или живая мастерская, если робот не был перезапущен)
+# получит зону сомнения, растянутую до 0.99, и все живые люди станут
+# "tentative".
+E2E_NODE_PARAM_ORIGINALS_FILE="${OUT_DIR}/.node_param_originals.tsv"
+: > "$E2E_NODE_PARAM_ORIGINALS_FILE" 2>/dev/null || true
+
 # --- helpers ----------------------------------------------------------------
 log() { echo ">>> $*"; }
 
@@ -2332,11 +2363,18 @@ fi
 if [ -n "$SCENARIO_FILE" ] && scenario_writes_memory "$SCENARIO_FILE"; then
     activate_e2e_memory_db
 fi
+# Issue #2809 — node_params override (см. apply_node_params выше). Применяем
+# ДО первого шага, как и изоляцию БД: акт «переспрос личности» форсирует
+# name_confidence_band_high на время всего прогона.
+if [ -n "$SCENARIO_FILE" ]; then
+    apply_node_params "$SCENARIO_FILE"
+fi
 
-# Гарантированная остановка записи и возврат speaker_id_node/mcp_server на
-# боевые БД при любом завершении (PASS/FAIL/ошибка). Все хелперы идемпотентны:
-# повторный вызов — noop (пустой REC_PID / E2E_*_DB_ACTIVATED=0).
-trap 'deactivate_e2e_speaker_db; deactivate_e2e_memory_db; stop_recording' EXIT
+# Гарантированная остановка записи, возврат speaker_id_node/mcp_server на
+# боевые БД и восстановление node_params при любом завершении
+# (PASS/FAIL/ошибка). Все хелперы идемпотентны: повторный вызов — noop
+# (пустой REC_PID / E2E_*_DB_ACTIVATED=0 / пустой node_params_originals).
+trap 'restore_node_params; deactivate_e2e_speaker_db; deactivate_e2e_memory_db; stop_recording' EXIT
 
 PASS=1
 if [ -n "$SCENARIO_FILE" ]; then
@@ -2347,9 +2385,25 @@ if [ -n "$SCENARIO_FILE" ]; then
     #                         "expected_keywords":["песня"],
     #                         # issue #2406: тул ДО голосового ответа
     #                         "discovery_tools":["register_speaker"],
-    #                         "response_max_ms":60000}}]}
+    #                         "response_max_ms":60000},
+    #           # issue #2809 — условный ответ на переспрос личности:
+    #           "when_robot_asked":"Саш.*это ты|это ты.*Саш",
+    #           "required_question":true,
+    #           "sleep_before_sec":35}]}
+    #
+    # when_robot_asked (issue #2809) — grep -E, регистронезависимо, ищется
+    # ТОЛЬКО в robot_speech() ПРЕДЫДУЩЕГО шага (тот же канал, что и
+    # expected_keywords/must_not_say — issue #2764/#2779, НЕ весь лог шага).
+    # Совпало → шаг играется как обычный. Не совпало → шаг SKIP с причиной
+    # robot_did_not_ask (отдельная строка в E2E_SUMMARY, не OK и не FAIL) —
+    # ЕСЛИ ТОЛЬКО не задан required_question:true, тогда отсутствие вопроса
+    # само по себе FAIL (нужно для детерминированного акта «переспрос
+    # личности», где вопрос ОБЯЗАН прозвучать).
+    # sleep_before_sec (issue #2809) — пауза ПЕРЕД шагом (имитация конца
+    # сессии дольше identity_question_session_gap_sec).
     cp "$SCENARIO_FILE" "$OUT_DIR/scenario.json"
-    # Парсим в .tsv: idx \t label \t text \t voice \t patterns_json \t acceptance_json \t expect_raw \t retry_acceptance
+    # Парсим в .tsv: idx \t label \t text \t voice \t patterns_json \t acceptance_json \t
+    #                expect_raw \t retry_acceptance \t when_robot_asked \t required_question \t sleep_before_sec
     # expect_raw — что написано в scenario.json (cycle / wake-gated / backlog / "").
     # Классификация (auto-detect wake-prefix → wake-gated) делается в bash
     # через classify_step_expect ПОСЛЕ парсинга, чтобы Python-парсер не
@@ -2366,13 +2420,64 @@ for i, s in enumerate(sc.get("steps", [])):
         retry = int(retry or 0)
     except (TypeError, ValueError):
         retry = 0
-    print(f"{i}\t{s.get('label', f's{i+1}')}\t{s.get('text','')}\t{s.get('voice','anton')}\t{json.dumps(pats)}\t{json.dumps(acc, ensure_ascii=False)}\t{exp}\t{retry}")
+    # issue #2809 -- sanitize like patterns above: TSV breaks on raw \t/\n.
+    when_asked = str(s.get('when_robot_asked') or '').replace('\t', ' ').replace('\n', ' ')
+    required_q = 1 if s.get('required_question') else 0
+    try:
+        sleep_before = float(s.get('sleep_before_sec', 0) or 0)
+    except (TypeError, ValueError):
+        sleep_before = 0.0
+    print(f"{i}\t{s.get('label', f's{i+1}')}\t{s.get('text','')}\t{s.get('voice','anton')}\t{json.dumps(pats)}\t{json.dumps(acc, ensure_ascii=False)}\t{exp}\t{retry}\t{when_asked}\t{required_q}\t{sleep_before}")
 PY
-    while IFS=$'\t' read -r idx label text voice patterns_json acceptance_json expect_raw retry_acceptance; do
+    # issue #2809 — «речь предыдущего шага» для when_robot_asked. Пустой файл
+    # на старте акта: у первого шага сценария просто нет предыдущего шага,
+    # значит when_robot_asked на первом шаге не может совпасть НИКОГДА (это
+    # осознанное поведение — акт не должен ставить when_robot_asked на шаг 0).
+    LAST_STEP_SPEECH_FILE="$OUT_DIR/.last_step_speech.txt"
+    : > "$LAST_STEP_SPEECH_FILE"
+    while IFS=$'\t' read -r idx label text voice patterns_json acceptance_json expect_raw retry_acceptance when_robot_asked required_question sleep_before_sec; do
         [ -z "$idx" ] && continue
         case "$retry_acceptance" in
             ''|*[!0-9]*) retry_acceptance=0 ;;
         esac
+        # issue #2809 — sleep_before_sec: пауза ПЕРЕД шагом (имитация конца
+        # сессии диалога дольше identity_question_session_gap_sec). Идёт ДО
+        # STEP_BEFORE (окно логов шага не должно включать саму паузу).
+        case "$sleep_before_sec" in
+            ''|*[!0-9.]*) sleep_before_sec=0 ;;
+        esac
+        if awk "BEGIN{exit !($sleep_before_sec > 0)}" 2>/dev/null; then
+            log "STEP ${label}: sleep_before_sec=${sleep_before_sec}s — пауза перед шагом (issue #2809)"
+            sleep "$sleep_before_sec"
+        fi
+        # issue #2809 — when_robot_asked: условный шаг-ответ на переспрос.
+        # Проверяется ПРОТИВ РЕЧИ ПРЕДЫДУЩЕГО шага (тот же LAST_STEP_SPEECH_FILE,
+        # который заполняется в конце обработки каждого шага ниже — см. issue
+        # 2809 после закрытия retry-цикла). grep -qiE — регистронезависимо,
+        # синтаксис ERE (то же "А|Б" что и expected_keywords/must_not_say).
+        step_skip_no_question=0
+        if [ -n "$when_robot_asked" ]; then
+            _prev_speech="$(cat "$LAST_STEP_SPEECH_FILE" 2>/dev/null || echo '')"
+            if when_robot_asked_matches "$_prev_speech" "$when_robot_asked"; then
+                log "STEP ${label}: when_robot_asked='${when_robot_asked}' — совпало с речью предыдущего шага, играем как обычно"
+            else
+                if [ "$required_question" = "1" ]; then
+                    PASS=0
+                    mark_fail_kind feature
+                    log "STEP ${label}: ❌ required_question — робот НЕ задал ожидаемый вопрос ('${when_robot_asked}' не найден в речи предыдущего шага: '${_prev_speech}')"
+                    emit_step "${label} FAIL robot_did_not_ask"
+                else
+                    log "STEP ${label}: ⏭ SKIP — робот не задал вопрос ('${when_robot_asked}' не найден в речи предыдущего шага), пропускаем без FAIL"
+                    emit_step "${label} SKIP robot_did_not_ask"
+                fi
+                step_skip_no_question=1
+            fi
+        fi
+        if [ "$step_skip_no_question" = "1" ]; then
+            # Шаг не разыгрывался — реальной речи не было, LAST_STEP_SPEECH_FILE
+            # намеренно НЕ трогаем (следующий шаг увидит ту же "тишину").
+            continue
+        fi
         # ADR-0029 §2.3: classify step.expect (auto-detect wake-prefix →
         # wake-gated). Классифицируем в bash, чтобы Python-парсер
         # оставался pure-data.
@@ -2384,6 +2489,11 @@ PY
         step_ok=0
         cycle_failed=0
         step_skipped=0
+        # issue #2809 — начало окна логов ЭТОГО шага (для LAST_STEP_SPEECH_FILE
+        # ниже, после закрытия retry-цикла). Фиксируется на ПЕРВОЙ попытке —
+        # ретраи не должны сдвигать окно вперёд, иначе речь из первой
+        # (неудачной) попытки потеряется для when_robot_asked следующего шага.
+        step_window_start=""
         # Кто именно провалился на ПОСЛЕДНЕЙ попытке и кто проходил хоть раз.
         # bug(run 35658231116, 22.09.2026): step_ok пересчитывается с нуля на
         # каждой попытке, поэтому паттерны и acceptance обязаны сойтись в ОДНОЙ.
@@ -2405,6 +2515,7 @@ PY
         while :; do
             last_fail_what=""
             STEP_BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+            [ -z "$step_window_start" ] && step_window_start="$STEP_BEFORE"
             run_step "$text" "$voice" "$label" "$expect"
             rc=$?
             # Пишем transcript (даже при FAIL — для ретро-анализа, что STT услышал)
@@ -2528,6 +2639,23 @@ for p in json.load(sys.stdin):
             log "STEP ${label}: ❌ проверка не прошла — retry ${attempt_n}/${retry_acceptance}"
             sleep "$E2E_RETRY_PAUSE"
         done
+        # issue #2809 — запоминаем РЕЧЬ РОБОТА за это окно шага для
+        # when_robot_asked СЛЕДУЮЩЕГО шага. Делается ВСЕГДА (даже при
+        # cycle_failed/step_skipped — тогда файл честно останется пустым,
+        # это валидный сигнал "робот ничего не сказал"), поэтому стоит ДО
+        # ветвления по cycle_failed/step_skipped/step_ok ниже.
+        if [ -n "${LAST_STEP_SPEECH_FILE:-}" ]; then
+            _step_logs_for_speech="$(${ROBOT_SSH} "docker logs voice-assistant --since '${step_window_start:-$STEP_BEFORE}' 2>&1" 2>/dev/null || echo '')"
+            if PYTHONPATH="$SCRIPT_DIR_E2E${PYTHONPATH:+:$PYTHONPATH}" python3 -c '
+import sys
+from e2e_tool_match import robot_speech
+sys.stdout.write(robot_speech(sys.stdin.read()))
+' <<< "$_step_logs_for_speech" > "$LAST_STEP_SPEECH_FILE" 2>/dev/null; then
+                :
+            else
+                : > "$LAST_STEP_SPEECH_FILE"
+            fi
+        fi
         if [ "$cycle_failed" = "1" ]; then
             continue
         fi

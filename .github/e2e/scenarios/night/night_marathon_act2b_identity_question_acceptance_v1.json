@@ -1,0 +1,23 @@
+{
+  "name": "night_marathon_act2b_identity_question_acceptance_v1",
+  "schema_version": 1,
+  "_comment": [
+    "GATE-1 (ADR-0022 §4.1) агрегат для акта «переспрос личности» (issue #2809).",
+    "register_speaker обязан прозвучать дважды за акт (Саша n701, Борис n708) —",
+    "без обоих профилей в е2е-БД шаги про 'single' (нет конкурента) и 'contested'",
+    "(есть конкурент с другим именем) неотличимы друг от друга.",
+    "Настоящая проверка ФАКТА переспроса — per-step required_question в",
+    "n703/n706 (see scenario.json when_robot_asked), не здесь: aggregate GATE-1",
+    "не умеет читать who-asked-what по окнам отдельных шагов."
+  ],
+  "expected_tool_calls": [
+    "register_speaker"
+  ],
+  "must_not_call": [],
+  "voice_provenance": {
+    "voice": "anton/ermil/zahar",
+    "tts": "auto (yandex|minimax|silero, см. E2E_TTS_PROVIDER_ORDER)",
+    "volume": 100,
+    "llm": "minimax-m3"
+  }
+}

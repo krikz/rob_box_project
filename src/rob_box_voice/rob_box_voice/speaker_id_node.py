@@ -72,6 +72,7 @@ Parameters:
 
 import collections
 import json
+import math
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -1090,17 +1091,60 @@ class SpeakerIdNode(Node):
         ``ssh <robot> 'ros2 param set /dialogue_node barge_in_policy
         classify'``).
 
-        Только ``e2e_mode`` имеет побочный эффект; остальные параметры
-        узла (``identify_threshold`` и т. п.) читаются один раз в
+        Только ``e2e_mode``, ``name_confidence_band_high`` и
+        ``name_confidence_min_gap`` имеют побочный эффект; остальные
+        параметры узла (``identify_threshold`` и т. п.) читаются один раз в
         ``__init__`` и здесь не перехватываются — ``ros2 param set`` на
         них молча проходит валидацию (значение в реестре параметров
         меняется), но узел его не подхватит без рестарта, как и раньше.
+
+        Issue #2809 (E2E-харнесс переспроса личности, follow-up PR #2818):
+        ``classify_name_confidence`` читал ``self._name_confidence_band_high``
+        / ``self._name_confidence_min_gap`` — снапшот, снятый ОДИН раз в
+        ``__init__``. Харнесс хочет форсировать зону сомнения на время акта
+        (``node_params`` в сценарии: ``ros2 param set /speaker_id_node
+        name_confidence_band_high 0.99``) и восстановить исходное значение
+        после — без перехвата в этом колбэке ``ros2 param set`` тихо менял
+        значение в реестре параметров, но узел продолжал бы решать по
+        старому кешу, и переопределение молча не работало бы (ровно тот
+        silent-degrade, о котором предупреждает
+        voice-stack-degrades-silently). Валидация: только конечные
+        числа — NaN/inf ломают сравнение ``score >= band_high`` в
+        ``classify_name_confidence`` непредсказуемо.
         """
         result_ok = True
         for param in params:
             if param.name == "e2e_mode":
                 if not self._apply_e2e_mode(bool(param.value)):
                     result_ok = False
+            elif param.name == "name_confidence_band_high":
+                try:
+                    value = float(param.value)
+                except (TypeError, ValueError):
+                    result_ok = False
+                    continue
+                if not math.isfinite(value):
+                    result_ok = False
+                    continue
+                self._name_confidence_band_high = value
+                self.get_logger().info(
+                    f"🔄 [2809] name_confidence_band_high -> {value!r} "
+                    f"(no restart needed)"
+                )
+            elif param.name == "name_confidence_min_gap":
+                try:
+                    value = float(param.value)
+                except (TypeError, ValueError):
+                    result_ok = False
+                    continue
+                if not math.isfinite(value):
+                    result_ok = False
+                    continue
+                self._name_confidence_min_gap = value
+                self.get_logger().info(
+                    f"🔄 [2809] name_confidence_min_gap -> {value!r} "
+                    f"(no restart needed)"
+                )
         return SetParametersResult(successful=result_ok)
 
     def _apply_e2e_mode(self, enabled: bool) -> bool:
