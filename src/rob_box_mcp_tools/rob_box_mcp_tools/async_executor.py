@@ -61,7 +61,14 @@ class AsyncToolExecutor:
     - Sequence ID для отмены устаревших tool_calls при прерываниях
     """
 
-    def __init__(self, execute_pub, result_callback: Callable, logger, authenticator=None):
+    def __init__(
+        self,
+        execute_pub,
+        result_callback: Callable,
+        logger,
+        authenticator=None,
+        prepare_parameters: Optional[Callable] = None,
+    ):
         """
         Args:
             execute_pub: ROS publisher для /mcp/execute
@@ -70,8 +77,12 @@ class AsyncToolExecutor:
             authenticator: RequestAuthenticator для подписи запросов. None —
                 публикуем без подписи (mcp_server такой запрос отклонит,
                 см. mcp_auth.py); допустимо только в тестах.
+            prepare_parameters: ``(tool_name, parameters) -> parameters`` —
+                подстановка контекста хода (issue #2842, см.
+                ``llm_adapter.apply_turn_context``). None — как есть.
         """
         self.execute_pub = execute_pub
+        self._prepare_parameters = prepare_parameters
         self.result_callback = result_callback
         self.logger = logger
         self.authenticator = authenticator
@@ -181,6 +192,8 @@ class AsyncToolExecutor:
             }
 
         # Формируем запрос
+        if self._prepare_parameters is not None:
+            parameters = self._prepare_parameters(tool_name, parameters)
         request = {
             "tool_name": tool_name,
             "parameters": parameters,
