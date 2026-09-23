@@ -60,6 +60,42 @@ _KRUMHANSL_MINOR = (
 #: он снимает, а на выбор между двумя одинаково подходящими не влияет.
 _OUT_OF_SCALE_PENALTY = 2.0
 
+#: 🔴 FIX (live 23.09, issue #2873): гистограмма высот одна не знает, ГДЕ
+#: звучит нота. «В пещере горного короля» (си-минор: B C# D E F# D F#,
+#: дальше хроматическая секвенция F C# F · E C E) бо́льшую часть времени
+#: стоит на F# и кончается долгим A — корреляция уверенно выбирала
+#: ля-мажор, а версия в ля-миноре уезжала в ми-минор. Слушатель же
+#: слышит тонику по ПОЗИЦИИ: тема начинается с тоники и в первых нотах
+#: проходит её трезвучие; фрагмент часто кончается на тонике или
+#: доминанте. Поэтому к корреляции добавлена «опора на тоническое
+#: трезвучие» — три позиционных свидетельства, каждое объяснимо на слух.
+#:
+#: Веса подобраны перебором по эталонной таблице (``test_rtttl_compose``,
+#: ``_KEY_REFERENCE``, 36 тем). Порядок величин — как у корреляции, чтобы
+#: позиционная опора решала спор близких тональностей и перевешивала
+#: гистограмму только там, где тема ЯВНО утверждает тонику. Честно: на
+#: части тем запас мал (40-я Моцарта, «Jingle Bells», «Rudolph» — 0.02-0.03),
+#: поэтому любой сдвиг весов проверять прогоном всей таблицы.
+#:
+#: Длина «начала фразы» в звучащих нотах (без пауз): столько нот обычно
+#: занимает первый мотив, утверждающий тональность (B C# D E F# D F# у
+#: Грига, E D# E D# E B D C у «К Элизе»).
+_OPENING_NOTES = 8
+#: Доля начала фразы, лежащая на тоническом трезвучии кандидата.
+_OPENING_TRIAD_WEIGHT = 0.8
+#: Первая сильная нота (затакт пропущен) — звук тонического трезвучия.
+_FIRST_NOTE_WEIGHT = 0.2
+#: Последняя нота — звук тонического трезвучия. Весит меньше первой:
+#: рингтон — часто обрывок, конец которого приходится на середину
+#: периода (у Грига вторая фраза кончается на VII ступени — A в си-миноре).
+_LAST_NOTE_WEIGHT = 0.1
+#: Сколько опоры даёт каждый звук трезвучия. Тоника — полная; квинта —
+#: почти полная (темы часто начинаются с доминанты: «К Элизе», «Тетрис»,
+#: Пятая Бетховена); терция — половина: мажорная тема, начатая с терции
+#: («Jingle Bells» с A в фа-мажоре, «Белое Рождество»), иначе уехала бы
+#: в минор от этой терции.
+_TRIAD_CREDIT = {0: 1.0, 7: 0.75, 3: 0.5, 4: 0.5}
+
 
 def _correlation(xs: Sequence[float], ys: Sequence[float]) -> float:
     """Корреляция Пирсона двух векторов одной длины (0.0 при вырождении)."""
@@ -92,18 +128,104 @@ def rtttl_to_melody(rtttl: str) -> RtttlMelody:
     return RtttlMelody(bpm=bpm, notes=tuple(notes))
 
 
+def _pitch_weights(sounding: Sequence[Tuple[int, float]]) -> Dict[int, float]:
+    """Вес каждого класса высот: сумма КОРНЕЙ длительностей его нот.
+
+    Длительность учитывается (долгая/частая тоника перевешивает проходящие
+    ноты), но сублинейно: рингтон часто кончается выдержанной нотой в 2-4
+    доли, и при линейном весе одна она занимает треть гистограммы короткой
+    темы (у Грига финальное A/2 тянуло тональность в ля-мажор, #2873).
+    """
+    weights: Dict[int, float] = {}
+    for pc, dur in sounding:
+        weights[pc] = weights.get(pc, 0.0) + max(dur, 0.0) ** 0.5
+    return weights
+
+
+def _profile_score(weights: Dict[int, float], root: int, scale: str) -> float:
+    """Корреляция с профилем Крумхансл минус штраф за ноты вне лада."""
+    profile = [weights.get(pc, 0.0) for pc in range(12)]
+    total = sum(profile) or 1.0
+    rotated = profile[root:] + profile[:root]
+    reference = _KRUMHANSL_MAJOR if scale == "major" else _KRUMHANSL_MINOR
+    # Корреляция объясняет ИЕРАРХИЮ ступеней, но ничего не знает о
+    # принадлежности: она не против ноты, которой в ладу нет вовсе.
+    # На коротком фрагменте этого мало — «Jingle Bells» (фа-мажор)
+    # почти не касается своей тоники и всем весом лежит на терции,
+    # из-за чего выигрывал ля-минор, где си-бемоля темы просто нет.
+    # Второй член требует, чтобы лад ещё и СОДЕРЖАЛ ноты темы.
+    in_scale = {i % 12 for i in SCALE_INTERVALS[scale]}
+    outside = sum(
+        w for pc, w in weights.items() if (pc - root) % 12 not in in_scale
+    )
+    return _correlation(rotated, reference) - _OUT_OF_SCALE_PENALTY * (
+        outside / total
+    )
+
+
+def _first_strong_note(sounding: Sequence[Tuple[int, float]]) -> int:
+    """Первая «опорная» нота темы: затакт пропускается.
+
+    Короткая первая нота перед более долгой — затакт (гимн России: G/8,
+    пауза, C/4 на сильной доле). Тональность утверждает нота сильной
+    доли, а не затакт — обычно доминанта.
+    """
+    if len(sounding) > 1 and sounding[0][1] < sounding[1][1]:
+        return sounding[1][0]
+    return sounding[0][0]
+
+
+def _anchor(pc: int, root: int, third: int) -> float:
+    """Опора ноты на тоническое трезвучие (см. :data:`_TRIAD_CREDIT`)."""
+    interval = (pc - root) % 12
+    if interval in (0, 7, third):
+        return _TRIAD_CREDIT[interval]
+    return 0.0
+
+
+def _tonal_center_score(
+    sounding: Sequence[Tuple[int, float]], root: int, scale: str
+) -> float:
+    """Позиционная опора кандидата ``(root, scale)`` — см. #2873.
+
+    Три свидетельства, которые слух использует для тоники:
+
+    * начало фразы (первые :data:`_OPENING_NOTES` нот) лежит на тоническом
+      трезвучии — минорном или мажорном в зависимости от лада, поэтому
+      параллельные тональности (ля-минор / до-мажор) здесь различаются;
+    * первая сильная нота (затакт пропущен) — звук тонического трезвучия;
+    * последняя нота — звук тонического трезвучия.
+    """
+    third = 4 if scale == "major" else 3
+    triad = {root, (root + third) % 12, (root + 7) % 12}
+    opening = sounding[:_OPENING_NOTES]
+    opening_total = sum(d ** 0.5 for _pc, d in opening) or 1.0
+    on_triad = sum(d ** 0.5 for pc, d in opening if pc in triad)
+    first = _first_strong_note(sounding)
+    last = sounding[-1][0]
+    return (
+        _OPENING_TRIAD_WEIGHT * on_triad / opening_total
+        + _FIRST_NOTE_WEIGHT * _anchor(first, root, third)
+        + _LAST_NOTE_WEIGHT * _anchor(last, root, third)
+    )
+
+
 def detect_key(
     midi_notes: Sequence[Optional[int]],
     durations: Optional[Sequence[float]] = None,
 ) -> Tuple[str, str]:
-    """Определить ``(тоника, лад)`` по набору абсолютных MIDI-нот.
+    """Определить ``(тоника, лад)`` по абсолютным MIDI-нотам темы.
 
-    Скор каждой пары (тоника, лад) — суммарная длительность нот, лежащих в
-    ладу (без ``durations`` — просто количество нот). Взвешивание по
-    длительности критично: в хроматических мелодиях (марш, классика)
-    встречаются все 12 ступеней, и простой подсчёт даёт одинаковый скор
-    любому ладу — тоника «теряется», бас и подклад уезжают в случайный лад.
-    Долгая/частая тоника перевешивает проходящие ноты.
+    Скор каждой пары (тоника, лад) складывается из двух частей:
+
+    1. **Гистограмма** (:func:`_profile_score`): корреляция взвешенной по
+       длительности гистограммы высот с профилем Крумхансл минус штраф за
+       ноты вне лада. Без ``durations`` все ноты весят одинаково.
+    2. **Тонический центр** (:func:`_tonal_center_score`): начинается ли
+       тема с трезвучия кандидата, стоят ли звуки этого трезвучия (тоника
+       весомее всех) первой сильной и последней нотой. Гистограмма не
+       знает, ГДЕ звучит нота, и на хроматических темах промахивается на
+       тон-кварту (#2873).
 
     Паузы (``None``) игнорируются. Без нот — ``("C", "major")``.
 
@@ -112,45 +234,26 @@ def detect_key(
     """
     if durations is None:
         durations = [1.0] * len(midi_notes)
-    weights: Dict[int, float] = {}
-    for midi, dur in zip(midi_notes, durations):
-        if midi is not None:
-            pc = midi % 12
-            weights[pc] = weights.get(pc, 0.0) + float(dur)
-    if not weights:
+    sounding = [
+        (int(midi) % 12, float(dur))
+        for midi, dur in zip(midi_notes, durations)
+        if midi is not None
+    ]
+    if not sounding:
         return "C", "major"
 
-    profile = [weights.get(pc, 0.0) for pc in range(12)]
-    total = sum(profile) or 1.0
-    best_root = 0
-    best_major = True
-    best_score = float("-inf")
-    for root_idx in range(12):
-        rotated = profile[root_idx:] + profile[:root_idx]
-        for is_major, reference, scale_name in (
-            (True, _KRUMHANSL_MAJOR, "major"),
-            (False, _KRUMHANSL_MINOR, "minor"),
-        ):
-            # Корреляция объясняет ИЕРАРХИЮ ступеней, но ничего не знает о
-            # принадлежности: она не против ноты, которой в ладу нет вовсе.
-            # На коротком фрагменте этого мало — «Jingle Bells» (фа-мажор)
-            # почти не касается своей тоники и всем весом лежит на терции,
-            # из-за чего выигрывал ля-минор, где си-бемоля темы просто нет.
-            # Второй член требует, чтобы лад ещё и СОДЕРЖАЛ ноты темы.
-            in_scale = {i % 12 for i in SCALE_INTERVALS[scale_name]}
-            outside = sum(
-                w
-                for pc, w in weights.items()
-                if (pc - root_idx) % 12 not in in_scale
-            )
-            score = _correlation(rotated, reference)
-            score -= _OUT_OF_SCALE_PENALTY * (outside / total)
-            if score > best_score:
-                best_score = score
-                best_root = root_idx
-                best_major = is_major
+    weights = _pitch_weights(sounding)
+    candidates = [
+        (root, scale) for root in range(12) for scale in ("major", "minor")
+    ]
+    best_root, best_scale = max(
+        candidates,
+        key=lambda c: (
+            _profile_score(weights, *c) + _tonal_center_score(sounding, *c)
+        ),
+    )
 
-    if best_major:
+    if best_scale == "major":
         return VALID_ROOTS[best_root], "major"
 
     # Натуральный минор или гармонический — решает седьмая ступень:
