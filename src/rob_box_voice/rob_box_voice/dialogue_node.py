@@ -2404,8 +2404,35 @@ class DialogueNode(Node):
             if held:
                 self._identity_ack_state().hold(plan)
         if not held:
-            self._speak_identity_question(plan)
+            # Хода нет — его ответ (если был) уже прозвучал.
+            self._speak_identity_question(plan, after_answer=True)
         return held
+
+    # Issue #2765 — мужской род: у робота мужской голос, а эти реплики
+    # захардкожены и промпт их не правит.
+    _REGISTER_RETRY_TEXT = (
+        "Не расслышал — скажи, пожалуйста, ещё пару слов, "
+        "чтобы я запомнил твой голос."
+    )
+    # Issue #2908 — ответ хода (например, приветствие по имени) уже
+    # прозвучал: «не расслышал» ему противоречило бы. Имя услышано, не
+    # сохранён только голос — так и говорим.
+    _REGISTER_RETRY_AFTER_ANSWER_TEXT = (
+        "Только голос твой я запомнить не успел — скажи, пожалуйста, "
+        "ещё пару слов."
+    )
+
+    def _register_retry_plan(self, ack: dict) -> dict:
+        """Issue #2908 — просьба повторить после отказа регистрации в форме
+        плана переспроса (#2828): ``question`` заменяет ответ хода,
+        ``after_answer`` — если ответ хода уже выдан."""
+        return {
+            "kind": "register_retry",
+            "question": self._REGISTER_RETRY_TEXT,
+            "after_answer": self._REGISTER_RETRY_AFTER_ANSWER_TEXT,
+            "name": ack.get("name"),
+            "error": ack.get("error"),
+        }
 
     def _identity_ack_state(self) -> IdentityAckQuestion:
         """Состояние переспроса (issue #2828); лениво — для нод из тестов,
@@ -2415,20 +2442,29 @@ class DialogueNode(Node):
             state = self._identity_ack = IdentityAckQuestion()
         return state
 
-    def _speak_identity_question(self, plan: Optional[dict]) -> None:
-        """Задать переспрос и ждать ответ. ``None`` — спрашивать нечего."""
+    def _speak_identity_question(
+        self, plan: Optional[dict], after_answer: bool = False
+    ) -> None:
+        """Задать переспрос и ждать ответ. ``None`` — спрашивать нечего.
+
+        ``after_answer`` — ответ хода уже прозвучал: план может нести для
+        этого случая свою формулировку (``after_answer``, issue #2908).
+        """
         if plan is None:
             return
+        text = (after_answer and plan.get("after_answer")) or plan["question"]
         try:
-            self._speak_direct(plan["question"])
+            self._speak_direct(text)
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warning(
-                f"не смог переспросить про личность: {exc!r}"
+                f"не смог озвучить переспрос ({plan.get('kind')}): {exc!r}"
             )
             return
         # Issue #2888 -- ответ на tentative-вопрос читает свой путь #2809
         # (_resolve_pending_tentative_answer), склеивать там нечего.
-        if plan.get("kind") != "tentative":
+        # Issue #2908 -- просьба повторить после отказа регистрации --
+        # тоже не вопрос о склейке.
+        if plan.get("kind") not in ("tentative", "register_retry"):
             self._identity_ack_state().arm(plan)
 
     def _deliver_turn_result(self, result: Any, **kwargs: Any) -> None:
@@ -2444,10 +2480,21 @@ class DialogueNode(Node):
         if plan is None:
             self._handle_result(result, **kwargs)
             return
-        self.get_logger().info(
-            "👥 [issue #2828] ответ хода заменён переспросом про личность: "
-            f"{str(getattr(result, 'spoken_text', '') or '')[:80]!r}"
-        )
+        replaced = str(getattr(result, "spoken_text", "") or "")[:80]
+        if plan.get("kind") == "register_retry":
+            # Issue #2908 -- своя строка: харнесс (e2e_tool_match) по
+            # строке #2828 решает «робот задал вопрос о личности, ретрай
+            # шага запрещён», а после отказа регистрации ретрай полезен.
+            self.get_logger().info(
+                "🔁 [issue #2908] ответ хода заменён просьбой повторить "
+                f"(регистрация '{plan.get('name')}' отклонена: "
+                f"{plan.get('error')}): {replaced!r}"
+            )
+        else:
+            self.get_logger().info(
+                "👥 [issue #2828] ответ хода заменён переспросом про личность: "
+                f"{replaced!r}"
+            )
         self._speak_identity_question(plan)
 
     def _resolve_identity_ack_answer(self, user_input: str) -> None:
@@ -2617,17 +2664,15 @@ class DialogueNode(Node):
                     f"⚠️ [issue #2829] Регистрация '{name}' отклонена: "
                     f"{error} (utterance_id={data.get('utterance_id')})"
                 )
-            try:
-                # Issue #2765 — мужской род: у робота мужской голос, а
-                # эта реплика захардкожена и промпт её не правит.
-                self._speak_direct(
-                    "Не расслышал — скажи, пожалуйста, ещё пару слов, "
-                    "чтобы я запомнил твой голос."
-                )
-            except Exception as exc:  # noqa: BLE001
-                self.get_logger().warning(
-                    f"⚠️ [issue #2769] Не удалось озвучить просьбу повторить: {exc}"
-                )
+            # Issue #2908 — отказ приходит, пока ход ещё идёт: тул
+            # register_speaker уже вернул LLM speaker_id='pending', и она
+            # дописывает «Рад знакомству, Борис!». Сказанное сразу «Не
+            # расслышал» и приветствие звучали подряд. Тот же механизм, что
+            # у переспроса #2828/#2888: посреди хода просьба придерживается
+            # и ЗАМЕНЯЕТ ответ хода (_deliver_turn_result); если ответ уже
+            # выдан — звучит после него в согласованной форме (без «не
+            # расслышал» поверх приветствия по имени).
+            self._queue_identity_question(self._register_retry_plan(data))
             return
         # Issue #2863 — любой другой служебный ack (register_error с
         # неозвучиваемым кодом, ack склейки) — не результат биометрии и
@@ -3682,14 +3727,17 @@ class DialogueNode(Node):
     def _publish_confirmed_identity_growth(
         self, speaker_id: str, name: str, utterance_id: Optional[str] = None
     ) -> None:
-        """Issue #2809/#2757 -- рост галереи ТЕМ ЖЕ путём, что явная
-        регистрация: публикуем в ``/voice/speaker/register`` (тот же
-        топик и обработчик, что LLM-тул ``register_speaker`` и голосовая
-        команда "запомни мой голос"), с ``speaker_id``-подсказкой, чтобы
-        ``_do_register`` дописал эмбеддинг в ЭТОТ профиль напрямую, а не
-        гадал по имени (ADR-0127). Калибровка порогов слияния и гейт
-        ``MIN_REGISTER_AUDIO_DURATION_SEC`` -- уже существующая логика
-        speaker_id_node, здесь не дублируется.
+        """Issue #2809/#2757 -- рост галереи подтверждённого профиля.
+
+        Топик тот же, что у LLM-тула ``register_speaker``
+        (``/voice/speaker/register``), но с ``purpose: "growth"`` (issue
+        #2906): speaker_id_node ведёт такой запрос НЕ через
+        ``_do_register``/``register_or_merge``, а через
+        ``_do_confirmed_growth`` -- дописывает эмбеддинг в ЭТОТ профиль по
+        правилам роста владельца (#2833), новый якорь не заводит и
+        ``register_error`` не публикует. Поэтому короткое «да, это я» не
+        превращается в «Не расслышал» -- та реплика остаётся только для
+        регистрации по просьбе LLM (``_SPOKEN_REGISTER_ERRORS``).
 
         Issue #2829 (ADR-0131 PR-2) -- ``utterance_id`` — id ЭТОЙ самой
         реплики (словесное "да, это я"), передаётся вызывающим кодом
@@ -3704,7 +3752,13 @@ class DialogueNode(Node):
         pub = getattr(self, "_speaker_register_pub", None)
         if pub is None:
             return
-        payload = {"name": name, "speaker_id": speaker_id}
+        # Issue #2906 -- ``purpose: "growth"``: это НЕ регистрация, а рост
+        # галереи уже известного (только что подтверждённого) профиля.
+        # speaker_id_node ведёт его отдельным путём (без register_or_merge,
+        # без нового якоря, без register_error): раньше короткое «да, это
+        # я» (1.65с) отклонялось как too_short, и робот говорил «Не
+        # расслышал», хотя всё расслышал.
+        payload = {"name": name, "speaker_id": speaker_id, "purpose": "growth"}
         if utterance_id:
             payload["utterance_id"] = utterance_id
         msg = String()
@@ -4650,7 +4704,9 @@ class DialogueNode(Node):
                 retry_dispatched=music_retry_dispatched or tool_retry_dispatched,
                 was_dj_auto=was_dj_auto,
             )
-            self._speak_identity_question(leftover_identity_question)
+            self._speak_identity_question(
+                leftover_identity_question, after_answer=True
+            )
             # Issue #992 Bug D — defer the DIALOGUE_END transition
             # when the babble detector scheduled a retry. The retry's
             # ``_run_turn`` needs the DSM to stay in DIALOGUE so the

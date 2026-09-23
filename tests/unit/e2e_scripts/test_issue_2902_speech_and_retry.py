@@ -208,6 +208,11 @@ class TestSpeechIsWhatWasVoiced:
         "marker_line",
         [
             REPLACED,
+            # Issue #2908 — ответ хода заменён просьбой повторить после
+            # отказа регистрации (dialogue_node._deliver_turn_result).
+            _l("dialogue_node", "INFO",
+               "🔁 [issue #2908] ответ хода заменён просьбой повторить "
+               "(регистрация 'Борис' отклонена: too_short): 'Привет, Борис'"),
             _l("dialogue_node", "INFO",
                "🔇 LLM completion marker — skip auto-TTS: 'Привет, Борис'"),
             _l("dialogue_node", "INFO",
@@ -234,7 +239,7 @@ class TestSpeechIsWhatWasVoiced:
                "🔇 [issue 2874] ответ хода не озвучиваю (ретрай/отзыв гуардом, "
                "retry=True retracted=False): 'Привет, Борис'"),
         ],
-        ids=["2828_replaced", "done_marker", "988_short", "988_verbose", "dj",
+        ids=["2828_replaced", "2908_register_retry", "done_marker", "988_short", "988_verbose", "dj",
              "1882_planning", "service_text", "2760_markup", "2175_regurgitate",
              "2874_retracted"],
     )
@@ -551,3 +556,23 @@ class TestScenarioLoopN722:
             "E2E_STEP n723_boris_answer_different OK",
         ], out
         assert "when_robot_asked" in verdict_lines(out, "s1_hello")[0]
+
+
+def test_issue_2908_register_retry_replacement_does_not_block_retry():
+    """Issue #2908: ответ хода заменён просьбой повторить после отказа
+    регистрации — это не вопрос о личности, состояние не изменилось,
+    ретрай шага разрешён; заменённое приветствие речью не считается."""
+    tm = _tm()
+    log = (
+        REGISTER_CALL
+        + _l("speaker_id_node", "WARN",
+             "⚠️ [issue #2769] Registration of 'Борис' rejected — audio too "
+             "short for a reliable anchor: 2.97s < 3.0s required")
+        + _turn("Добрый вечер, Борис! Рад знакомству.", ["register_speaker"])
+        + _l("dialogue_node", "INFO",
+             "🔁 [issue #2908] ответ хода заменён просьбой повторить "
+             "(регистрация 'Борис' отклонена: too_short): "
+             "'Добрый вечер, Борис! Рад знакомству.'")
+    )
+    assert tm.retry_block_reason(log) == ""
+    assert not tm.keyword_hit(log, "Рад знакомству")

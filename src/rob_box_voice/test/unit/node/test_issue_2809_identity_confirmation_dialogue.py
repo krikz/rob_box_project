@@ -252,7 +252,13 @@ class TestSingleHypothesis:
         published = _json.loads(
             node._speaker_register_pub.publish.call_args.args[0].data
         )
-        assert published == {"name": "Denchik", "speaker_id": SPEAKER_ID}
+        # Issue #2906 -- служебный рост помечен purpose="growth", чтобы
+        # speaker_id_node не вёл его путём регистрации.
+        assert published == {
+            "name": "Denchik",
+            "speaker_id": SPEAKER_ID,
+            "purpose": "growth",
+        }
 
         # Следующая реплика той же сессии -- биометрия всё ещё шлёт
         # tentative (confidence не изменился), но подтверждение уже есть:

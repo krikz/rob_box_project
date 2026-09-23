@@ -4,7 +4,9 @@ speaker_id_node.py — Real-time speaker identification using resemblyzer d-vect
 
 Subscribes:
     /audio/speech_audio  (AudioData)  — full speech utterance from audio_node
-    /voice/speaker/register (String)  — JSON {"name":"Иван"} — register current speaker
+    /voice/speaker/register (String)  — JSON {"name":"Иван"} — register current speaker;
+                                         с "purpose":"growth" — служебный рост
+                                         галереи после «да, это я» (issue #2906)
     /voice/speaker/rename   (String)  — JSON {"speaker_id"|"old_name", "new_name"}
     /voice/speaker/merge    (String)  — JSON {"src_speaker_id","dst_speaker_id"} —
                                          issue W5-4, склейка дублей одного голоса
@@ -102,6 +104,17 @@ from rob_box_voice.observability import (
     record_speaker_recognize,
     start_metrics_server,
 )
+
+# Issue #2906 — значение поля ``purpose`` в /voice/speaker/register:
+# служебный рост галереи после словесного «да, это я» (dialogue_node
+# ``_publish_confirmed_identity_growth``). Без поля — обычная регистрация
+# по просьбе человека/LLM (``register_speaker``). Отдельное поле, а не
+# отдельный топик: старый потребитель просто не видит ключа, а новый
+# топик потребовал бы второго подписчика/publisher'а ради одного флага.
+REGISTER_PURPOSE_GROWTH = "growth"
+# Косинус «эта же фраза уже лежит в галерее» (вектор против самого себя
+# ≈ 1.0): защита от двойной записи, если фразу уже дописала growth-сессия.
+_ALREADY_IN_GALLERY_SCORE = 0.9999
 
 
 def _gap_to_other_name(
@@ -722,6 +735,13 @@ class SpeakerIdNode(Node):
         speaker_id_hint: Optional[str] = data.get("speaker_id")
         utterance_id = str(data.get("utterance_id") or "").strip() or None
 
+        # Issue #2906 — служебный рост после словесного подтверждения
+        # («да, это я») — НЕ регистрация: другой путь, без нового якоря и
+        # без register_error (см. _on_growth_request).
+        if data.get("purpose") == REGISTER_PURPOSE_GROWTH:
+            self._on_growth_request(name, speaker_id_hint, utterance_id)
+            return
+
         if not utterance_id:
             self.get_logger().warning(
                 f"⚠️ [issue #2829] register_request for '{name}' has no "
@@ -763,6 +783,109 @@ class SpeakerIdNode(Node):
         self._executor.submit(
             self._register_after_wait, name, speaker_id_hint, utterance_id
         )
+
+    def _on_growth_request(
+        self, name: str, speaker_id: Optional[str], utterance_id: Optional[str]
+    ) -> None:
+        """Issue #2906 — рост галереи ПОДТВЕРЖДЁННОГО владельца.
+
+        Запрос приходит от dialogue_node после словесного «да, это я»
+        (#2809/#2757). До этой правки он шёл тем же путём, что регистрация
+        по просьбе LLM: ``_do_register`` → ``register_or_merge`` →
+        гейт ``MIN_REGISTER_AUDIO_DURATION_SEC`` → короткий ответ «да, это
+        я» (1.65с) получал ``register_error: too_short``, и робот вслух
+        говорил «Не расслышал», хотя всё расслышал. Здесь отказ — штатный
+        исход, а не ошибка: на ``/voice/speaker/result`` ничего не
+        публикуем, только лог. Профиль уже есть (``speaker_id``
+        обязателен) — регистрировать некого, можно только дописать.
+        """
+        if not speaker_id or not utterance_id:
+            self.get_logger().info(
+                f"🌱 [issue #2906] рост галереи '{name}' пропущен: нет "
+                f"speaker_id/utterance_id (speaker_id={speaker_id!r}, "
+                f"utterance_id={utterance_id!r})"
+            )
+            return
+        embedding, duration = self._find_embedding_for_utterance(utterance_id)
+        if embedding is None:
+            self.get_logger().info(
+                f"🌱 [issue #2906] рост галереи '{name}' пропущен: эмбеддинга "
+                f"фразы {utterance_id} нет в буфере"
+            )
+            return
+        self._executor.submit(
+            self._do_confirmed_growth,
+            name,
+            speaker_id,
+            embedding,
+            duration,
+            utterance_id,
+        )
+
+    def _do_confirmed_growth(
+        self,
+        name: str,
+        speaker_id: str,
+        embedding: np.ndarray,
+        duration_sec: Optional[float],
+        utterance_id: str,
+    ) -> bool:
+        """Issue #2906 — дописать фразу-подтверждение в галерею владельца.
+
+        Правила — те же, что у growth-сессии (#2747/#2833,
+        :meth:`_owner_growth_veto`): фраза ближе всего к владельцу (или его
+        тёзке-дублю), не ниже ``growth_owner_min_score``, с отрывом от
+        конкурента с другим именем; потолок ``GALLERY_WARMUP_SIZE``. Плюс
+        гейт длины ``MIN_REGISTER_AUDIO_DURATION_SEC``: короткая фраза —
+        не эталон, её просто не пишем. Новый профиль/якорь не создаётся
+        НИКОГДА — только ``append_reference_embedding`` в существующий.
+
+        Подтверждение само по себе — свидетельство «этот человек сейчас у
+        микрофона», поэтому (как «уже знаю» в #2863) открывается
+        growth-сессия владельца: следующие фразы растят галерею по её
+        обычным правилам. Возвращает ``True``, если эмбеддинг дописан.
+        """
+        self._open_growth_session(speaker_id, name)
+        reason = self._confirmed_growth_skip_reason(
+            speaker_id, name, embedding, duration_sec
+        )
+        if reason is None and not self._db.append_reference_embedding(
+            speaker_id, name, embedding
+        ):
+            reason = (
+                f"галерея уже достигла {_se_mod.GALLERY_WARMUP_SIZE} эмбеддингов"
+            )
+        if reason is not None:
+            self.get_logger().info(
+                f"🌱 [issue #2906] рост галереи '{name}' ({speaker_id[:8]}) по "
+                f"подтверждению не выполнен: {reason} (utterance_id="
+                f"{utterance_id}) — молча, это не ошибка регистрации"
+            )
+            return False
+        self.get_logger().info(
+            f"🌱 [issue #2906] Галерея '{name}' ({speaker_id[:8]}) пополнена "
+            f"фразой-подтверждением {utterance_id}: gallery_size="
+            f"{self._db.gallery_size(speaker_id)}/{_se_mod.GALLERY_WARMUP_SIZE}"
+        )
+        return True
+
+    def _confirmed_growth_skip_reason(
+        self,
+        speaker_id: str,
+        name: str,
+        embedding: np.ndarray,
+        duration_sec: Optional[float],
+    ) -> Optional[str]:
+        """Issue #2906 — почему фразу-подтверждение НЕ дописываем (или None)."""
+        min_sec = _se_mod.MIN_REGISTER_AUDIO_DURATION_SEC
+        if duration_sec is None or duration_sec < min_sec:
+            shown = "н/д" if duration_sec is None else f"{duration_sec:.2f}s"
+            return f"фраза короткая ({shown} < {min_sec:.1f}s)"
+        # Фраза могла уже попасть в галерею через открытую growth-сессию
+        # (_process_utterance) — второй копией не пишем.
+        if self._db.identify(embedding, threshold=_ALREADY_IN_GALLERY_SCORE):
+            return "фраза уже в галерее (дописана growth-сессией)"
+        return self._owner_growth_veto(embedding, speaker_id, name)
 
     def _find_embedding_for_utterance(
         self, utterance_id: str
@@ -1087,36 +1210,9 @@ class SpeakerIdNode(Node):
         #    ``name_confidence_min_gap``, что и у #2809): маленький
         #    разрыв — реплика могла реально принадлежать тому конкуренту,
         #    дописывать нельзя.
-        candidates = self._db.identify_candidates(embedding, top_n=5)
-        best = candidates[0] if candidates else None
-        owner_id = session["speaker_id"]
-        owner_name_cf = (session["name"] or "").strip().casefold()
-        best_is_owner_or_twin = bool(best) and (
-            best.speaker_id == owner_id
-            or (best.name or "").strip().casefold() == owner_name_cf
+        veto_reason = self._owner_growth_veto(
+            embedding, session["speaker_id"], session["name"]
         )
-        veto_reason: Optional[str] = None
-        if not best_is_owner_or_twin:
-            veto_reason = (
-                f"реплика ближе к '{best.name}' score={best.confidence:.3f}, "
-                "чем к владельцу сессии"
-                if best
-                else "БД пуста"
-            )
-        elif best.confidence < self._growth_owner_min_score:
-            veto_reason = (
-                f"похожесть на владельца ({best.confidence:.3f}) ниже "
-                f"growth_owner_min_score={self._growth_owner_min_score} — "
-                "недостаточно уверенно, чтобы дописать чужим риском"
-            )
-        else:
-            gap = _gap_to_other_name(best, candidates)
-            if gap is not None and gap < self._name_confidence_min_gap:
-                veto_reason = (
-                    f"разрыв до ближайшего конкурента с другим именем "
-                    f"(gap={gap:.3f}) меньше name_confidence_min_gap="
-                    f"{self._name_confidence_min_gap} — реплика могла быть его"
-                )
         if veto_reason is not None:
             self.get_logger().info(
                 f"🌙 [issue #2829] growth-сессия '{session['name']}' закрыта: "
@@ -1147,6 +1243,45 @@ class SpeakerIdNode(Node):
             f"gallery_size={self._db.gallery_size(session['speaker_id'])}"
             f"/{_se_mod.GALLERY_WARMUP_SIZE})"
         )
+
+    def _owner_growth_veto(
+        self, embedding: np.ndarray, owner_id: str, owner_name: Optional[str]
+    ) -> Optional[str]:
+        """Гейт роста галереи владельца (#2829/#2833): причина отказа или None.
+
+        Общий для growth-сессии (``_apply_growth_session``) и роста по
+        словесному подтверждению (#2906, ``_do_confirmed_growth``) — одни
+        правила, одна копия. Обоснование трёх условий — в комментарии
+        ``_apply_growth_session``.
+        """
+        candidates = self._db.identify_candidates(embedding, top_n=5)
+        best = candidates[0] if candidates else None
+        owner_name_cf = (owner_name or "").strip().casefold()
+        best_is_owner_or_twin = bool(best) and (
+            best.speaker_id == owner_id
+            or (best.name or "").strip().casefold() == owner_name_cf
+        )
+        if not best_is_owner_or_twin:
+            return (
+                f"реплика ближе к '{best.name}' score={best.confidence:.3f}, "
+                "чем к владельцу сессии"
+                if best
+                else "БД пуста"
+            )
+        if best.confidence < self._growth_owner_min_score:
+            return (
+                f"похожесть на владельца ({best.confidence:.3f}) ниже "
+                f"growth_owner_min_score={self._growth_owner_min_score} — "
+                "недостаточно уверенно, чтобы дописать чужим риском"
+            )
+        gap = _gap_to_other_name(best, candidates)
+        if gap is not None and gap < self._name_confidence_min_gap:
+            return (
+                f"разрыв до ближайшего конкурента с другим именем "
+                f"(gap={gap:.3f}) меньше name_confidence_min_gap="
+                f"{self._name_confidence_min_gap} — реплика могла быть его"
+            )
+        return None
 
     def _log_identify_candidates(
         self, embedding: np.ndarray, voiced_sec: Optional[float] = None
@@ -1784,11 +1919,15 @@ class SpeakerIdNode(Node):
             ensure_ascii=False,
         )
         self._result_pub.publish(ack)
+        self._open_growth_session(known.speaker_id, known.name)
+
+    def _open_growth_session(self, speaker_id: str, name: str) -> None:
+        """Открыть growth-сессию владельца, если она ещё не его (#2863/#2906)."""
         session = self._growth_session
-        if session is None or session["speaker_id"] != known.speaker_id:
+        if session is None or session["speaker_id"] != speaker_id:
             self._growth_session = {
-                "speaker_id": known.speaker_id,
-                "name": known.name,
+                "speaker_id": speaker_id,
+                "name": name,
                 "last_utterance_at": time.time(),
                 "count": 0,
             }
