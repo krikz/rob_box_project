@@ -3644,8 +3644,30 @@ class DialogueNode(Node):
         state["last_seen_at"] = now
         return state
 
+    def _is_reply_after_question(
+        self, state: dict, utterance_id: Optional[str]
+    ) -> bool:
+        """Issue #2914 -- ход несёт НОВУЮ реплику человека, пришедшую после
+        вопроса, а не хвост хода, в котором вопрос задан.
+
+        Сразу после вопроса ``_run_turn`` может запустить ход без новой
+        реплики (``utterance_id=None``): дренаж S7 фраз, пришедших ПОКА
+        шёл ход, или синтетический ретрай гарда. Их текст ответом не
+        является (run 35923951507: ``answer=False`` через 24 мс после
+        «Саша, это ты?», настоящее «нет» уже не читалось). Вопрос,
+        заданный на ходе без ``utterance_id``, -- прежнее поведение.
+        """
+        asked_on = state.get("asked_utterance_id")
+        if not asked_on:
+            return True
+        return bool(utterance_id) and utterance_id != asked_on
+
     def _resolve_pending_tentative_answer(
-        self, state: dict, tentative_name: Optional[str], user_input: str
+        self,
+        state: dict,
+        tentative_name: Optional[str],
+        user_input: str,
+        utterance_id: Optional[str] = None,
     ) -> None:
         """Если в этой сессии уже спрашивали и ответа ещё нет -- прочитать
         ТЕКУЩУЮ (первую после вопроса) реплику как да/нет.
@@ -3659,6 +3681,12 @@ class DialogueNode(Node):
         где просто встретилось слово "да".
         """
         if not (state["asked"] and state["confirmed"] is None):
+            return
+        if not self._is_reply_after_question(state, utterance_id):
+            self.get_logger().info(
+                "👤 [issue #2914] identity answer NOT read: ход без новой "
+                f"реплики человека (utterance_id={utterance_id!r})"
+            )
             return
         answer = classify_identity_confirmation(user_input)
         state["confirmed"] = bool(answer)
@@ -3794,7 +3822,9 @@ class DialogueNode(Node):
             ) or None
 
         state = self._tentative_session_state(full_sid)
-        self._resolve_pending_tentative_answer(state, tentative_name, user_input)
+        self._resolve_pending_tentative_answer(
+            state, tentative_name, user_input, utterance_id
+        )
 
         if state.get("confirmed") and state.get("name"):
             return self._confirm_tentative_speaker(
@@ -3804,6 +3834,8 @@ class DialogueNode(Node):
             return self._tag_tentative(user_input)
         if not state["asked"]:
             state["asked"] = True
+            # Issue #2914 -- ответом будет только ДРУГАЯ реплика человека.
+            state["asked_utterance_id"] = utterance_id
             self._pending_identity_hint = {
                 "kind": tentative_kind,
                 "name": tentative_name,
