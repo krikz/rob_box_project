@@ -738,8 +738,8 @@ class SpeakerIdNode(Node):
             name_confident = is_name_confident(
                 match,
                 candidates,
-                band_high=self._name_confidence_band_high,
-                min_gap=self._name_confidence_min_gap,
+                band_high=getattr(self, "_name_confidence_band_high", 0.80),
+                min_gap=getattr(self, "_name_confidence_min_gap", 0.15),
             )
         self._publish_result(match, name_confident=name_confident)
 
