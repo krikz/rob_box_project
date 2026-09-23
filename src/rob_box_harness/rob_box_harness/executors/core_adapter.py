@@ -68,12 +68,38 @@ def adapt_tool_provider(provider: CoreToolProvider) -> LegacyToolProviderAdapter
     return LegacyToolProviderAdapter(provider)
 
 
+#: ``message`` is a short model-facing hint (next_transition_sec, repeat
+#: warnings, …), not a payload — cap it so a misbehaving tool can't blow up
+#: the LLM-visible tool result. ``data`` is left uncapped: it's already
+#: expected to be compact (PR-4 keeps the score as one text blob).
+_MAX_MESSAGE_CHARS = 500
+
+
 def _result_content(result: CoreToolResult) -> str:
     if result.error is not None:
+        # Error path is untouched by issue #2916 — the bridge already
+        # collapses failures into ``result.error`` upstream.
         return result.error
-    if isinstance(result.value, str):
-        return result.value
-    return repr(result.value)
+    data_text = result.value if isinstance(result.value, str) else repr(result.value)
+
+    message = result.metadata.get("message") if result.metadata else None
+    if not message:
+        # data-only result (or no ``data`` at all, so ``value`` already IS
+        # the message) — unchanged single-text behaviour.
+        return data_text
+
+    message_text = str(message).strip()
+    if not message_text:
+        return data_text
+    if len(message_text) > _MAX_MESSAGE_CHARS:
+        message_text = message_text[: _MAX_MESSAGE_CHARS - 1].rstrip() + "…"
+
+    if message_text == data_text:
+        # Tool set message == repr(data) verbatim — showing it twice would
+        # be the "double duplication" the issue explicitly rules out.
+        return data_text
+
+    return f"{message_text}\n{data_text}"
 
 
 MCPBridgeProviderAdapter = LegacyToolProviderAdapter
