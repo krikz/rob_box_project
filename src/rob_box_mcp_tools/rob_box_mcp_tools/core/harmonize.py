@@ -79,6 +79,25 @@ PAD_CLEARANCE = 2
 #: бас, и оба слоя слиплись бы в кашу.
 PAD_MIDI_FLOOR = 48    # C3
 
+#: Зазор между самым низким тоном подклада и самой ВЫСОКОЙ нотой баса,
+#: полутоны — в звучащей высоте (см. модуль-докстринг: гармонизация вся
+#: считает в звучащих нотах, поправку на транспонирование синта вносит
+#: аранжировщик последним шагом).
+#:
+#: 🔴 FIX (issue #2876, живой прогон 23.09.2026, «диджей Снупдог» —
+#: Still Dre): подклад держался ТОЛЬКО потолком (:func:`_pad_ceiling`,
+#: от самой низкой ноты темы) и понятия не имел, где лежит бас. У Still
+#: Dre бас (``moogbass``, ``SYNTH_SEMITONE_SHIFT['moogbass']=24`` —
+#: звучит на октаву ниже написанного) уходил в F2-C3, а подклад
+#: (``strings``, без сдвига) складывался вниз от заниженного потолка и
+#: садился ровно туда же — F2-A#3. Бас и подклад слились в одну кашу.
+#: Теперь итоговый потолок подклада (:func:`_pick_chords`) поднимается
+#: минимум до фактического потолка баса ПЛЮС этот зазор, а
+#: :func:`_stack_chord` не даёт ни одному тону аккорда провалиться ниже
+#: этой границы, даже если стек «через октаву» на неудачных классах
+#: высоты того бы захотел.
+PAD_BASS_CLEARANCE = 3
+
 #: Насколько корень аккорда весомее остальных его тонов при выборе
 #: гармонии. Без перевеса трезвучия с общими нотами (например i и VI в
 #: миноре — две ноты из трёх общие) выбираются монеткой, и гармония
@@ -209,6 +228,37 @@ def _first_note_in(
         if midi is not None and start <= onset < end:
             return midi
     return None
+
+
+def _weighted_percentile(pairs: Sequence[Tuple[int, float]], pct: float) -> float:
+    """Перцентиль ``pct`` (0..1) значений, взвешенных длительностью.
+
+    🔴 FIX (issue #2876, «Still Dre»): и потолок подклада
+    (:func:`_pad_ceiling`), и нормализация регистра лида
+    (``rtttl_compose._normalize_lead_register``) раньше смотрели на
+    САМУЮ НИЗКУЮ/высокую ноту темы. Одной короткой ноты — затакта,
+    предикта — хватало, чтобы утащить границу за собой: у Still Dre
+    четыре затакта по 0.25 доли на MIDI 72 (после нормализации — 60)
+    стоят рядом с телом темы на 75-77 длинными нотами по целой доле, но
+    именно они, а не корпус темы, определяли потолок подклада.
+
+    Взвешенный перцентиль игнорирует такие выбросы САМ ПО СЕБЕ, без
+    отдельной проверки «короткая ли нота»: вес затакта тонет в весе
+    корпуса темы, и он на результат почти не влияет. Реализация —
+    ближайший ранг (nearest-rank) по накопленному весу, сортировка по
+    значению.
+    """
+    items = sorted(pairs, key=lambda pair: pair[0])
+    total = sum(weight for _value, weight in items)
+    if total <= 0:
+        return float(items[0][0])
+    target = pct * total
+    cumulative = 0.0
+    for value, weight in items:
+        cumulative += weight
+        if cumulative >= target:
+            return float(value)
+    return float(items[-1][0])
 
 
 # ---------------------------------------------------------------------------
@@ -364,6 +414,9 @@ def _pick_chords(
         previous = best
 
     # Слияние: соседние окна с одним аккордом становятся одним окном.
+    # Тона подклада (``tones``) достраиваются ВТОРЫМ проходом ниже — им
+    # нужен фактический потолок баса, а он известен только когда вся
+    # гармония (root_midi каждого окна) уже выбрана.
     chords: List[ChordWindow] = []
     for begin, pcs in picked:
         if chords and chords[-1].pitch_classes == pcs:
@@ -376,25 +429,62 @@ def _pick_chords(
                 beats=float(window),
                 degree=_scale_degree(pcs[0], root_semitone, intervals),
                 root_midi=_lift(pcs[0], BASS_MIDI_FLOOR),
-                tones=_stack_chord(pcs, pad_ceiling),
+                tones=(),
                 pitch_classes=pcs,
             )
         )
+
+    # 🔴 FIX (issue #2876, «Still Dre»): потолок подклада раньше знал
+    # только о теме (:func:`_pad_ceiling`) — не о басе, который тоже
+    # строится из этой же гармонии (:func:`_build_bass`). У Still Dre
+    # ceiling от заниженной темы (58) сел прямо на потолок баса (48):
+    # оба слоя звучали в одной полосе. Считаем фактический потолок баса
+    # ПО ТЕМ ЖЕ аккордам (``root_midi + смещение тона от корня`` — та же
+    # арифметика, что в :func:`_build_bass`) и поднимаем потолок подклада
+    # над ним минимум на :data:`PAD_BASS_CLEARANCE`.
+    bass_ceiling = max(
+        (
+            chord.root_midi + max((pc - chord.pitch_classes[0]) % 12 for pc in chord.pitch_classes)
+            for chord in chords
+        ),
+        default=BASS_MIDI_FLOOR,
+    )
+    stack_floor = max(PAD_MIDI_FLOOR, bass_ceiling + PAD_BASS_CLEARANCE)
+    final_ceiling = max(pad_ceiling, stack_floor)
+
+    chords = [
+        replace(chord, tones=_stack_chord(chord.pitch_classes, final_ceiling, stack_floor))
+        for chord in chords
+    ]
     return tuple(chords)
+
+
+#: Нижний перцентиль темы (по весу длительности), от которого отсчитывается
+#: потолок подклада. 10-й, а не 0-й (минимум): минимум ловит любой
+#: одиночный затакт, 10-й перцентиль требует, чтобы «низа» набралось
+#: заметно (issue #2876, см. :func:`_weighted_percentile`).
+_PAD_CEILING_PERCENTILE = 0.10
 
 
 def _pad_ceiling(
     timed: Sequence[Tuple[float, Optional[int], float]],
 ) -> int:
-    """Потолок подклада: на :data:`PAD_CLEARANCE` ниже самой низкой ноты темы.
+    """Потолок подклада: на :data:`PAD_CLEARANCE` ниже НИЗА корпуса темы.
 
-    Именно самой низкой, а не средней: достаточно одной ноты темы,
-    попавшей в аккорд подклада, чтобы её атака в нём утонула.
+    «Низ корпуса» — 10-й перцентиль высоты нот, взвешенный длительностью
+    (:func:`_weighted_percentile`), а не голый минимум.
+
+    🔴 FIX (issue #2876, «Still Dre»): по голому минимуму хватало ОДНОЙ
+    короткой ноты темы (затакт, предикт), чтобы утащить потолок подклада
+    вниз вместе с собой — даже когда всё тело темы стоит заметно выше.
+    Перцентиль, взвешенный длительностью, такую ноту в расчёт почти не
+    берёт: её вес тонет в весе куда более длинных нот корпуса.
     """
-    pitches = [midi for _onset, midi, _dur in timed if midi is not None]
-    if not pitches:
+    pairs = [(midi, dur) for _onset, midi, dur in timed if midi is not None]
+    if not pairs:
         return PAD_MIDI_FLOOR
-    return max(PAD_MIDI_FLOOR, min(pitches) - PAD_CLEARANCE)
+    low = _weighted_percentile(pairs, _PAD_CEILING_PERCENTILE)
+    return max(PAD_MIDI_FLOOR, int(round(low)) - PAD_CLEARANCE)
 
 
 def _scale_degree(
@@ -415,7 +505,7 @@ def _lift(pitch_class: int, floor_midi: int) -> int:
 
 
 def _stack_chord(
-    pitch_classes: Sequence[int], ceiling: int
+    pitch_classes: Sequence[int], ceiling: int, floor: Optional[int] = None
 ) -> Tuple[int, ...]:
     """Классы высоты → аккорд, уложенный ВНИЗ от ``ceiling``.
 
@@ -439,11 +529,23 @@ def _stack_chord(
     тонко. Теперь вес даёт разделение регистров, а удвоение только роняло
     подклад в бас (у марша — до D2, прямо в басовую партию) и стоило
     лишнего голоса scsynth на каждой доле остинато.
+
+    ``floor`` (issue #2876) — страховка снизу: тон, попавший ниже него,
+    поднимается октавами, пока не выйдет из-под пола. Обычная работа
+    ``ceiling``, поднятого до :data:`PAD_BASS_CLEARANCE` над потолком
+    баса (см. :func:`_pick_chords`), делает это событие редким — но
+    складывая ТРИ ноты подряд вниз с шагом до октавы, нижний тон
+    трезвучия теоретически может провалиться дальше баса, даже когда сам
+    потолок стоит над ним с запасом. Без страховки это был бы тот же
+    баг #2876, просто на другой ступени аккорда.
     """
     out: List[int] = []
     current = ceiling
     for pc in reversed(pitch_classes):
         note = current - ((current - pc) % 12)
+        if floor is not None:
+            while note < floor:
+                note += 12
         out.append(note)
         current = note - 1
     return tuple(sorted(out))

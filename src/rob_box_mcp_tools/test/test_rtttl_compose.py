@@ -237,3 +237,75 @@ def test_real_archive_known_themes_capped_after_register_normalize(tmp_path):
         tokens = params["lead_midi"].split(", ")
         lead_pitches = [int(tok) for tok in tokens if tok != "None"]
         assert max(lead_pitches) <= 88, (key, lead_pitches)
+
+
+# ---------------------------------------------------------------------------
+# #2876: пэд не тонет в басе, затакт не рвёт лид скачком в две октавы
+# ---------------------------------------------------------------------------
+
+#: Живой прогон 23.09.2026 («диджей Снупдог»): ``stilldre_2`` — затакт на
+#: MIDI 60 против тела фразы на 75-77 (скачок 15-17 полутонов), плюс
+#: подклад ``strings`` (41-58) сидел прямо на басе ``moogbass`` (звучащий
+#: диапазон 41-48 после компенсации ``SYNTH_SEMITONE_SHIFT``). Остальные
+#: три темы — тот же архив, без затакта: регрессия на то, что фикс не
+#: портит обычные темы.
+_PAD_REGISTER_THEMES = ("stilldre_2", "national_2", "hallofth_2", "nextepis")
+
+
+@pytest.fixture(scope="module")
+def pad_register_harmonies(tmp_path_factory):
+    from rob_box_mcp_tools.core.rtttl_library import RtttlLibrary as _Lib
+
+    db = tmp_path_factory.mktemp("rtttl_2876") / "lib.db"
+    library = _Lib(db_path=str(db))
+    out = {}
+    for key in _PAD_REGISTER_THEMES:
+        entry = library.get(key)
+        assert entry is not None, f"эталонной темы {key} нет в библиотеке"
+        assert entry["name"] == key, (key, entry["name"])
+        params = melody_to_compose_params(rtttl_to_melody(entry["rtttl"]))
+        out[key] = params["harmony"]
+    return out
+
+
+@pytest.mark.parametrize("key", _PAD_REGISTER_THEMES)
+def test_pad_never_sinks_below_c3(pad_register_harmonies, key):
+    """Пэд не опускается ниже MIDI 48 (C3) ни на одной ноте ни одного тона."""
+    harmony = pad_register_harmonies[key]
+    pad_notes = [
+        note for tones, _dur in harmony.pad if tones is not None for note in tones
+    ]
+    assert pad_notes, key
+    assert min(pad_notes) >= 48, (key, min(pad_notes))
+
+
+@pytest.mark.parametrize("key", _PAD_REGISTER_THEMES)
+def test_pad_never_overlaps_bass_range(pad_register_harmonies, key):
+    """Диапазон пэда и диапазон баса (звучащая высота) не пересекаются.
+
+    До #2876 у ``stilldre_2`` пэд (41-58) и бас (36-48) делили полосу
+    41-48 целиком; потолок пэда знал только о теме, не о басе.
+    """
+    harmony = pad_register_harmonies[key]
+    pad_notes = [
+        note for tones, _dur in harmony.pad if tones is not None for note in tones
+    ]
+    bass_notes = [note for note, _dur in harmony.bass if note is not None]
+    assert pad_notes and bass_notes, key
+    assert min(pad_notes) > max(bass_notes), (
+        key, "пэд", min(pad_notes), "бас", max(bass_notes),
+    )
+
+
+@pytest.mark.parametrize("key", _PAD_REGISTER_THEMES)
+def test_lead_has_no_pickup_driven_octave_leap(pad_register_harmonies, key):
+    """Соседние ноты лида не расходятся больше чем на октаву из-за затакта.
+
+    До #2876 у ``stilldre_2`` затакт на MIDI 60 стоял вплотную к телу
+    фразы на 75-77 — скачок 15-17 полутонов на каждом из четырёх повторов.
+    """
+    harmony = pad_register_harmonies[key]
+    pitches = [note for note, _dur in harmony.lead if note is not None]
+    assert len(pitches) >= 2, key
+    leaps = [abs(a - b) for a, b in zip(pitches, pitches[1:])]
+    assert max(leaps) <= 12, (key, max(leaps))
