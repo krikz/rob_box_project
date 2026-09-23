@@ -557,7 +557,7 @@ mark_fail_kind() {  # $1=kind
 SCRIPT_DIR_E2E="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR_E2E/e2e_voice_lib.sh"
-# ADR-0027 §5.2 wake-gate pre-flight helpers (retro t_be491fba). Source'ится
+# ADR-0029 §2.3 wake-gate pre-flight helpers (retro t_be491fba). Source'ится
 # ПОСЛЕ e2e_voice_lib.sh, но ДО любых операций с docker logs. Pure functions
 # only — никакого main flow, никакого чтения ENV.
 # shellcheck disable=SC1091
@@ -572,12 +572,12 @@ source "$SCRIPT_DIR_E2E/e2e_voice_wake_gate.sh"
 # "single-text mode — preflight N/A". Проверено на живом прогоне
 # 35658231116 (запуск был --scenario, а wake_gate_preflight.json содержал
 # именно этот single-text reason). Следствие: SKIP-гард для
-# expect="wake-gated" (ADR-0027 §5.2) не срабатывал никогда, и cold-start
+# expect="wake-gated" (ADR-0029 §2.3) не срабатывал никогда, и cold-start
 # wake-gate флак краснел как acceptance/feature-fail — ровно тот
 # misdiagnosis, против которого фича и делалась (ретро t_be491fba).
 # Второй слой той же ошибки: run_wake_gate_preflight определяется в либе
 # строкой выше — из старого места она была ещё и не видна.
-# --- ADR-0027 §5.2: wake-gate pre-flight probe ----------------------------
+# --- ADR-0029 §2.3: wake-gate pre-flight probe ----------------------------
 # Retro t_be491fba: rounds 215-222 voice_core_suite_v1 показали fail-streak
 # 3/3+ на cold-start wake-gate. dj02_stop_music шаг имеет ✅ ПОЛНЫЙ ЦИКЛ
 # (акцепт + LLM + TTS) + PATTERN_MISS stop_music → aggregate GATE-1 фейлит
@@ -1508,7 +1508,7 @@ emit_step_fail_or_vad() {
 # --- один атомарный шаг -----------------------------------------------------
 # Ожидаемое поведение определяется параметром $4 (expect_kind):
 #   cycle       — полный цикл STT→LLM→TTS (по дефолту)
-#   wake-gated  — то же, но ADR-0027 §5.2: если WAKE_GATE_CLEARED != 1
+#   wake-gated  — то же, но ADR-0029 §2.3: если WAKE_GATE_CLEARED != 1
 #                 (cold-start not cleared) → SKIP без fail (см. retro
 #                 t_be491fba: cold-start wake-gate flake должен быть
 #                 отделён от acceptance fail). Логирует `[skip:wake-gate-cold-start]`.
@@ -1524,7 +1524,7 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
     safe="$(safe_label "$label")"
     log "=== STEP ${label} (safe=${safe}): voice=${voice} text=\"${text}\" ==="
 
-    # 0. ADR-0027 §5.2: wake-gated SKIP (retro t_be491fba). Если
+    # 0. ADR-0029 §2.3: wake-gated SKIP (retro t_be491fba). Если
     #    expect=wake-gated И preflight показал cold-start NOT cleared —
     #    шаг пропускается (SKIP), не FAIL. Это by design поведение
     #    backlog-аккумулятора: «Робот, ...» без wake → STT получает
@@ -2373,7 +2373,7 @@ PY
         case "$retry_acceptance" in
             ''|*[!0-9]*) retry_acceptance=0 ;;
         esac
-        # ADR-0027 §5.2: classify step.expect (auto-detect wake-prefix →
+        # ADR-0029 §2.3: classify step.expect (auto-detect wake-prefix →
         # wake-gated). Классифицируем в bash, чтобы Python-парсер
         # оставался pure-data.
         expect="$(classify_step_expect "$expect_raw" "$text")"
@@ -2409,7 +2409,7 @@ PY
             rc=$?
             # Пишем transcript (даже при FAIL — для ретро-анализа, что STT услышал)
             parse_transcript "$label" "$STEP_BEFORE" "$text"
-            # ADR-0027 §5.2: rc=3 = SKIP wake-gate-cold-start (не fail, не
+            # ADR-0029 §2.3: rc=3 = SKIP wake-gate-cold-start (не fail, не
             # pass). Шаг пропущен по systemic — backlog-аккумулятор скопит
             # фразу без wake, LLM не получит команду, и aggregate GATE-1
             # не должен фейлить на этом шаге.
@@ -2532,7 +2532,7 @@ for p in json.load(sys.stdin):
             continue
         fi
         if [ "$step_skipped" = "1" ]; then
-            # ADR-0027 §5.2: SKIP — не pass, не fail. Не помечаем fail_kind
+            # ADR-0029 §2.3: SKIP — не pass, не fail. Не помечаем fail_kind
             # и не влияем на PASS aggregate. echo уже сделал run_step
             # ('E2E_STEP <label> SKIP wake-gate-cold-start').
             :
@@ -2569,7 +2569,7 @@ for p in json.load(sys.stdin):
         fi
     done < "$OUT_DIR/scenario_parsed.txt"
 
-    # --- ADR-0027 §5.2: GATE-1 SKIP-логика ------------------------------------
+    # --- ADR-0029 §2.3: GATE-1 SKIP-логика ------------------------------------
     # Если все wake-gated steps были SKIP (cold-start не cleared), aggregate
     # GATE-1 не должен фейлить — это by-design поведение backlog-аккумулятора
     # (см. retro t_be491fba). Фиксируем это в $OUT_DIR/gate1_skip_reason.json
@@ -2622,7 +2622,7 @@ else
     rc=$?
     # Пишем transcript для single-режима
     parse_transcript "single" "$STEP_BEFORE" "$TEXT"
-    # ADR-0027 §5.2: rc=3 = SKIP wake-gate-cold-start. Single mode
+    # ADR-0029 §2.3: rc=3 = SKIP wake-gate-cold-start. Single mode
     # bypass'ит preflight (см. выше — WAKE_GATE_CLEARED=1 для single),
     # но классификация expect может сработать (если юзер дал wake-текст
     # через --text). Защита: rc=3 в single mode = wake-gate flake, FAIL.
