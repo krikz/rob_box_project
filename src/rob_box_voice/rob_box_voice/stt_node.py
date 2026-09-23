@@ -206,6 +206,7 @@ from rob_box_voice.core.occasion import (
     VerdictKind,
 )
 from rob_box_voice.core.utterance_id import compute_utterance_id
+from rob_box_voice.core.yandex_stt_segments import YandexSegmentCollector
 
 # #1990 (оператор-agent 05) — источники аудио для wake-роутера (_process_audio).
 # Namespace вейк-слов привязан к источнику, а не только к тексту (целевая §7.1).
@@ -1781,8 +1782,11 @@ class STTNode(Node):
             # отличил кончившуюся квоту от моргнувшей сети (_map_grpc_error).
             raise _map_grpc_error(e, self.yandex_timeout_s)
 
-        # Обрабатываем ответы
-        final_text = None
+        # Обрабатываем ответы. Issue #2891: Yandex шлёт final/final_refinement
+        # на КАЖДЫЙ сегмент фразы (сегменты режет его EOU) — собираем все,
+        # из стрима не выходим до конца (раньше break на первом refinement
+        # оставлял только первый сегмент: «робот здравствуй» из 7.6 с).
+        segments = YandexSegmentCollector()
         last_partial = None
         speaker_tag: Optional[str] = None
         eou_events = 0
@@ -1820,24 +1824,21 @@ class STTNode(Node):
                     eou_events += 1
                     continue
 
-                elif event_type == "final":
-                    if response.final.alternatives:
-                        final_text = response.final.alternatives[0].text
-
-                elif event_type == "final_refinement":
-                    if response.final_refinement.normalized_text:
-                        final_text = response.final_refinement.normalized_text.alternatives[0].text
-                        break
+                elif event_type in ("final", "final_refinement"):
+                    segments.feed(response, event_type)
         except grpc.RpcError as e:
             self.get_logger().warning(
                 f"⚠️ [issue 1477] phase={phase} stream error: {e.code()} {e.details()}"
             )
             raise _map_grpc_error(e, self.yandex_timeout_s)
 
-        # Issue #1477 — телеметрия по фазе: partials/finals/eou.
+        final_text = segments.text()
+        # Issue #1477 — телеметрия по фазе: partials/finals/eou;
+        # #2891 — число склеенных сегментов.
         self.get_logger().debug(
             f"📊 [issue 1477] phase={phase} partials={partial_count} "
-            f"eou={eou_events} final={final_text!r} last_partial={last_partial!r}"
+            f"eou={eou_events} segments={segments.segment_count} "
+            f"final={final_text!r} last_partial={last_partial!r}"
         )
 
         result_text = None
