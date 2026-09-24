@@ -315,6 +315,81 @@ class TestBabbleRetryE2E(unittest.TestCase):
         finally:
             node.close()
 
+    def test_successful_dj_tools_are_not_babble(self):
+        """Issue #2948 — a turn that already ran the fulfilling tools must
+        NOT be re-dispatched as a babble retry.
+
+        Live 24.09.2026 (Vision Pi): ``process_input`` returned
+        ``spoken='Слушай Still Dre, потом Next Episode подхвачу!'``
+        with ``tools=['set_dj_mode', 'compose_music', 'play_animation']``
+        — a completed, successful DJ-set dispatch. Because «Слушай » is
+        a ``BABBLE_BANNED_OPENERS`` opener and the user's DJ request
+        matched ``user_wants_performance``, the guard fired anyway and
+        re-dispatched the ORIGINAL user command — starting the DJ set a
+        second time. This test scripts the exact same tool batch +
+        spoken text and asserts the retry does NOT fire: exactly one
+        LLM "turn" (the tool-call batch + its final text — 2 provider
+        calls, both part of the SAME dispatch, no synthetic retry) and
+        the DJ-flavour line reaches TTS as-is.
+        """
+        from rob_box_harness.core.tool_registry import ToolSpec
+        from rob_box_harness.tools import FakeToolProvider
+        from rob_box_llm.provider import ToolCall
+
+        tools = FakeToolProvider()
+        for name in ("set_dj_mode", "compose_music", "play_animation"):
+            tools.register(
+                ToolSpec(
+                    name=name,
+                    description=f"Fake {name}.",
+                    parameters={"type": "object", "properties": {}},
+                ),
+                lambda args: json.dumps({"ok": True}),
+            )
+
+        llm = _ScriptedLLMProvider([
+            LLMResponse(
+                content="",
+                tool_calls=(
+                    ToolCall(id="c1", name="set_dj_mode", arguments={"enabled": True}),
+                    ToolCall(id="c2", name="compose_music", arguments={"name": "still dre"}),
+                    ToolCall(id="c3", name="play_animation", arguments={"name": "dj"}),
+                ),
+                finish_reason="tool_calls",
+            ),
+            LLMResponse(
+                content="Слушай Still Dre, потом Next Episode подхвачу!",
+                finish_reason="stop",
+            ),
+        ])
+        node = _TestableDialogueNode(llm=llm, tools=tools)
+        try:
+            node._dsm.on_event(DialogueEvent.WAKE_WORD)
+            node._on_stt(_make_string(
+                "Ты диджей Снупдог. Играй по очереди: Still Dre, потом Next Episode."
+            ))
+            node.drive_one_turn()
+
+            self.assertFalse(
+                node._babble_retry_used,
+                "babble retry must NOT fire when the turn already ran the "
+                "tools fulfilling the request (issue #2948)",
+            )
+            self.assertEqual(
+                llm.call_count, 2,
+                "expected exactly 2 provider calls (tool batch + final "
+                "text) for ONE dispatch — a 3rd call would mean the "
+                f"request was re-dispatched; got {llm.call_count}",
+            )
+            texts = _published_texts(node)
+            joined = " ".join(texts)
+            self.assertIn(
+                "Still Dre", joined,
+                f"the successful DJ line should reach TTS as-is; got {texts!r}",
+            )
+        finally:
+            node.close()
+
     def test_retry_only_fires_once_even_if_retry_also_babbles(self):
         """Babble-retry budget is one-shot per turn.
 

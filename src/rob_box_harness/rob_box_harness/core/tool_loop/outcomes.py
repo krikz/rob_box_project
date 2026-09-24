@@ -54,6 +54,18 @@ class _ToolLoopOutcome:
         called without a usable ``name``). Cheap, already-available data
         the DJ fallback uses to announce the track it just started
         instead of the generic «Готово, играю.».
+    tool_error_occurred:
+        Issue #2949 — ``True`` when at least one tool call THIS TURN
+        returned ``is_error=True`` (refusal / exception surfaced as a
+        tool-role message). A tool being CALLED is not the same as it
+        SUCCEEDING: a refused ``save_arrangement_preset`` still lands in
+        ``tools_called`` (issue #2942's ``CLAIM_JUSTIFYING_TOOLS``
+        whitelist matches on NAME only), letting the LLM claim success
+        for an action that never happened. Previously computed locally
+        as ``tool_error_occurred`` in ``AgentCore._run_with_tools`` and
+        discarded after feeding the babble filter (issue #1253) — now
+        propagated so dialogue_node's action-claim guards can tell
+        "called and worked" from "called and failed".
     """
     spoken_text: str
     tools_called: list[str]
@@ -64,6 +76,7 @@ class _ToolLoopOutcome:
     spoken_via_tool: str
     truncated_tool_args: bool = False
     track_name: str | None = None
+    tool_error_occurred: bool = False
 
 
 __all__ = ["_ToolLoopOutcome"]

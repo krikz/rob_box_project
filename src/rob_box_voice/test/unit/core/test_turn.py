@@ -99,8 +99,13 @@ def _reply(
 def _turn(
     user_input: str = "",
     is_dj_auto: bool = False,
+    tool_error_occurred: bool = False,
 ) -> TurnContext:
-    return TurnContext(user_input=user_input, is_dj_auto=is_dj_auto)
+    return TurnContext(
+        user_input=user_input,
+        is_dj_auto=is_dj_auto,
+        tool_error_occurred=tool_error_occurred,
+    )
 
 
 def _state(budget_left: int = DEFAULT_MAX_SYNTHETIC_RETRIES) -> TurnState:
@@ -463,6 +468,83 @@ class TestBabbleGuard:
             )
         )
         assert v is None
+
+    # ----- issue #2948: successful fulfilling tools ⇒ not babble -----
+
+    def test_defers_when_fulfilling_tools_succeeded(self) -> None:
+        """Live 24.09.2026: ``tools=['set_dj_mode', 'compose_music',
+        'play_animation']``, ``spoken='Слушай Still Dre, потом Next
+        Episode подхвачу!'`` — the DJ request was ALREADY fulfilled by
+        real tool calls. «Слушай » matches ``BABBLE_BANNED_OPENERS`` and
+        the user's DJ-set request matches ``user_wants_performance``, so
+        before the fix the guard fired unconditionally and re-dispatched
+        the ORIGINAL request — starting the DJ set a second time. A
+        short DJ-style line next to a completed action is not babble.
+        """
+        g = BabbleGuard()
+        v = g.evaluate(
+            GuardContext(
+                reply=_reply(
+                    spoken="Слушай Still Dre, потом Next Episode подхвачу!",
+                    tools_called=(
+                        "set_dj_mode", "compose_music", "play_animation",
+                    ),
+                ),
+                turn=_turn(
+                    user_input=(
+                        "Ты диджей Снупдог. Играй по очереди: Still Dre, "
+                        "потом Next Episode."
+                    ),
+                ),
+                state=_state(),
+            )
+        )
+        assert v is None, (
+            "babble guard must NOT retry a turn that already ran the "
+            "tools fulfilling the request (issue #2948 — DJ set started "
+            "twice live)"
+        )
+
+    def test_fires_when_fulfilling_tool_call_errored(self) -> None:
+        """The bypass requires SUCCESS, not just a matching tool NAME
+        (same bar as issue #2949): a called-but-errored fulfilling tool
+        must not suppress the babble retry either.
+        """
+        g = BabbleGuard()
+        v = g.evaluate(
+            GuardContext(
+                reply=_reply(
+                    spoken="Слушай Still Dre, потом Next Episode подхвачу!",
+                    tools_called=("set_dj_mode", "compose_music"),
+                ),
+                turn=_turn(
+                    user_input=(
+                        "Ты диджей Снупдог. Играй по очереди: Still Dre, "
+                        "потом Next Episode."
+                    ),
+                    tool_error_occurred=True,
+                ),
+                state=_state(),
+            )
+        )
+        assert v is not None, (
+            "a fulfilling tool that was called but ERRORED must not "
+            "bypass the babble guard"
+        )
+        assert v.kind is VerdictKind.RETRY
+
+    def test_still_fires_on_babble_with_no_tools_called(self) -> None:
+        """No regression: the classic Bug D case (tools=()) still retries."""
+        g = BabbleGuard()
+        v = g.evaluate(
+            GuardContext(
+                reply=_reply(spoken="Слушай, сейчас устроим!"),
+                turn=_turn(user_input="сыграй рэп"),
+                state=_state(),
+            )
+        )
+        assert v is not None
+        assert v.kind is VerdictKind.RETRY
 
 
 class TestEmbeddedRenardoCodeGuard:

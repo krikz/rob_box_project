@@ -134,6 +134,7 @@ from rob_box_voice.core.dialogue_guards import (
     MUSIC_STARTING_TOOLS,
     MUSIC_RETRY_PROMPT_PREFIX,
     MUSIC_STOP_OVERRIDES,
+    build_action_claim_failure_fallback,  # Issue #2949
     build_fact_memory_save_fallback,  # Issue #2780 п.3
     build_hallucinated_midi_retry_prompt,
     build_music_prose_action_fallback,
@@ -5352,6 +5353,7 @@ class DialogueNode(Node):
         user_input: Optional[str],
         tools_called: tuple,
         speak_text_real: int = 0,
+        tool_error_occurred: bool = False,
     ) -> bool:
         """Issue #992 Bug D — single-shot babble retry dispatcher.
 
@@ -5417,6 +5419,7 @@ class DialogueNode(Node):
             tools_called=tuple(tools_called or ()),
             speak_text_real=int(speak_text_real or 0),
             state=state,
+            tool_error_occurred=bool(tool_error_occurred),
         )
         if decision is None:
             return False
@@ -5710,6 +5713,7 @@ class DialogueNode(Node):
         spoken: str,
         user_input: Optional[str],
         tools_called: tuple,
+        tool_error_occurred: bool = False,
     ) -> bool:
         """Issue #2549 — широкий anti-hallucination guard.
 
@@ -5752,6 +5756,7 @@ class DialogueNode(Node):
         hit = detect_universal_action_claim(
             spoken=spoken,
             tools_called=tuple(tools_called or ()),
+            tool_error_occurred=tool_error_occurred,
         )
         if hit is None:
             return False
@@ -5778,13 +5783,17 @@ class DialogueNode(Node):
         self._mark_retry_dispatched()
         self.get_logger().warning(
             "🧾 [issue 2549] anti-hallucination guard: spoken содержит "
-            f"action-verb «{hit.verb}» ({hit.tense}), tools пуст — "
+            f"action-verb «{hit.verb}» ({hit.tense}), "
+            f"tool_error_occurred={tool_error_occurred!r} — "
             f"head={hit.excerpt!r}, user_input={user_input!r}, "
             f"tools={list(tools_called)!r}"
         )
         self._dispatch_turn(
             build_universal_action_claim_retry_prompt(
-                user_input=user_input, spoken=spoken, hit=hit
+                user_input=user_input,
+                spoken=spoken,
+                hit=hit,
+                tool_error_occurred=tool_error_occurred,
             ),
             is_action_claim_retry=False,  # свой тип, чтобы не путать с Bug E
             is_synthetic=True,
@@ -7740,6 +7749,11 @@ class DialogueNode(Node):
             )
             spoken = ""
         tools_called = tuple(result.tools_called or ())
+        # Issue #2949 — was any tool THIS TURN called-but-errored (refused /
+        # threw)? A called tool alone does not "back" a spoken claim of
+        # success (``CLAIM_JUSTIFYING_TOOLS`` guards below need this to
+        # not treat a refused ``save_arrangement_preset`` as a done deal).
+        tool_error_occurred = bool(getattr(result, "tool_error_occurred", False))
         # Issue #988 — anti-duplicate: when the LLM already called
         # ``speak_text`` during this cycle, the answer (song / poem /
         # phrase) was voiced directly by the MCP tool via
@@ -7940,6 +7954,7 @@ class DialogueNode(Node):
             user_input=raw_user_command or user_input,
             tools_called=tools_called,
             speak_text_real=speak_text_real,
+            tool_error_occurred=tool_error_occurred,
         ):
             return
         # Issue #992 Bug C' — LLM написала сочинённый Renardo-код в реплику
@@ -8006,6 +8021,7 @@ class DialogueNode(Node):
             is_dj_auto=is_dj_auto,
             has_error=result.error is not None,
             speak_text_real=speak_text_real,
+            tool_error_occurred=tool_error_occurred,
         ):
             return
         # Issue #2562 Bug F — «не знаю такой мелодии» без поиска. Round 3
@@ -8046,6 +8062,7 @@ class DialogueNode(Node):
                 spoken=spoken,
                 user_input=raw_user_command or user_input,
                 tools_called=tools_called,
+                tool_error_occurred=tool_error_occurred,
             )
         ):
             return
@@ -8687,8 +8704,9 @@ class DialogueNode(Node):
         is_dj_auto: bool,
         has_error: bool,
         speak_text_real: int,
+        tool_error_occurred: bool = False,
     ) -> bool:
-        """Issue #2548 + #2780 п.3 — диспетчер fallback'ов после ретрая.
+        """Issue #2548 + #2780 п.3 + #2949 — диспетчер fallback'ов после ретрая.
 
         Одноразовый ретрай action-claim'а (``_action_claim_retry_used``)
         тратится на ПЕРВОМ ложном заявлении в ходе. Если модель повторяет
@@ -8699,11 +8717,13 @@ class DialogueNode(Node):
         замену, получает свой ``_publish_*_fallback_if_needed``; здесь —
         единственная точка входа из ``_handle_result``.
 
-        Порядок: музыка (#2548) → память (#2780). Ветки не пересекаются
-        — у каждой свой контекстный гейт (музыка требует DJ-сессию или
-        music-keyword, память — «запомни/запиши/сохрани» не про точку и
-        не про трек), так что порядок тут даёт стабильность, а не
-        приоритет.
+        Порядок: музыка (#2548) → память (#2780) → generic anti-
+        hallucination (#2949). Ветки не пересекаются — у каждой свой
+        контекстный гейт (музыка требует DJ-сессию или music-keyword,
+        память — «запомни/запиши/сохрани» не про точку и не про трек,
+        generic — любой тул из ``CLAIM_JUSTIFYING_TOOLS`` вызван, но
+        ошибся ИЛИ не вызван вовсе), так что порядок тут даёт
+        стабильность, а не приоритет.
 
         Returns:
             ``True`` — fallback опубликован, вызывающий обязан сделать
@@ -8721,7 +8741,70 @@ class DialogueNode(Node):
         )
         if self._publish_music_prose_action_fallback_if_needed(**kwargs):
             return True
-        return self._publish_fact_memory_save_fallback_if_needed(**kwargs)
+        if self._publish_fact_memory_save_fallback_if_needed(**kwargs):
+            return True
+        return self._publish_universal_action_claim_fallback_if_needed(
+            **kwargs, tool_error_occurred=tool_error_occurred
+        )
+
+    def _publish_universal_action_claim_fallback_if_needed(
+        self,
+        *,
+        spoken: str,
+        tools_called: Tuple[str, ...],
+        user_input: Optional[str],
+        raw_user_command: Optional[str],
+        is_dj_auto: bool,
+        has_error: bool,
+        speak_text_real: int,
+        tool_error_occurred: bool = False,
+    ) -> bool:
+        """Issue #2949 — fallback после НЕудачного universal-action-claim ретрая.
+
+        Живой лог 24.09: ``save_arrangement_preset`` вернул отказ
+        («недоступен»), LLM ответила «Записала пресет…», один ретрай
+        (:meth:`_check_universal_action_claim_and_retry`) ушёл с
+        CRITICAL-просьбой либо повторить, либо честно сказать о
+        неудаче — а модель СНОВА заявила об успехе («Записала твоё
+        предпочтение…»). Guard уже потратил свой одноразовый ретрай
+        (``_universal_action_claim_retry_used``) и молчит; без подмены
+        ``spoken`` юзер слышит вторую по счёту ложь подряд.
+
+        Условия — ретрай уже потрачен, ход НЕ DJ-auto и НЕ с ошибкой
+        LLM, и :func:`detect_universal_action_claim` (с той же
+        ``tool_error_occurred``) СНОВА считает заявление непокрытым.
+        Один и тот же детектор для ретрая и для fallback'а — критерий
+        «подкреплено» не может разъехаться между двумя местами.
+        """
+        if (
+            is_dj_auto
+            or has_error
+            or not getattr(self, "_universal_action_claim_retry_used", False)
+        ):
+            return False
+        hit = detect_universal_action_claim(
+            spoken=spoken,
+            tools_called=tuple(tools_called or ()),
+            tool_error_occurred=tool_error_occurred,
+        )
+        if hit is None:
+            return False
+        fallback = build_action_claim_failure_fallback(hit)
+        self.get_logger().warning(
+            "🛟 [issue 2949 fallback] action-claim повторился после "
+            f"ретрая (tool_error_occurred={tool_error_occurred!r}) — "
+            f"публикую честную неудачу вместо claim'а: spoken={spoken[:80]!r}"
+        )
+        try:
+            self._publish_response(fallback, animation="neutral")
+        except Exception as exc:  # noqa: BLE001
+            try:
+                self.get_logger().warning(
+                    f"⚠️ fallback publish failed: {exc}"
+                )
+            except Exception:
+                pass
+        return True
 
     def _publish_music_prose_action_fallback_if_needed(
         self,
