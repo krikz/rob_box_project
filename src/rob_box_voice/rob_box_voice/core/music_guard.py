@@ -372,6 +372,12 @@ class MusicGuard:
             FALLBACK). ``None`` если ветка не сработала (``is_dj_request``
             False) — вызывающий код продолжит обычный Bug C поток.
         """
+        # Без ``is_dj_request`` True эта ветка НЕ срабатывает; ``evaluate``
+        # может вызвать helper для любого user_input (см. issue #2999: пустая
+        # строка / «привет» / «расскажи анекдот» не должны ретраить как
+        # DJ-request). Поэтому первый шаг — ранний return.
+        if not is_dj_request(user_input):
+            return None
         _satisfied = self._dj_request_satisfied(tools_set)
         if _satisfied is not None:
             return MusicGuardVerdict(
