@@ -253,6 +253,30 @@ def _degree_to_semitones(degree: float, intervals: Sequence[int]) -> int:
     octave, step = divmod(index, size)
     return octave * 12 + intervals[step]
 
+#: Верхняя граница числа ОДНОВРЕМЕННО звучащих ролей в одной секции формы
+#: (issue #2978, инвентаризация статей по аранжировке 24.09.2026: «4-5
+#: партий максимум, не дублировать тембр»). Общий предел планирования
+#: состава — таблицы :data:`FORMS` проектируются под него, а не наоборот;
+#: число не подобрано ни под одну конкретную тему архива. Авто-добавленная
+#: роль ``counter`` (см. :func:`_section_intensity`) в подсчёт тоже входит.
+MAX_SIMULTANEOUS_ROLES = 5
+
+#: Максимальный шаг числа одновременно звучащих ролей между СОСЕДНИМИ
+#: секциями формы (issue #2978: «правило ±1 роль между соседними
+#: секциями» — контраст строится постепенным входом/уходом партий, а не
+#: разовой сменой всего состава на границе секции).
+MAX_ROLE_COUNT_STEP = 1
+
+#: Порог интенсивности темы (``lead``), начиная с которого она считается
+#: «солирующей» — звучит заметно, а не фоновым намёком (issue #2978:
+#: «тема звучит поверх минимального аккомпанемента»).
+SOLO_LEAD_INTENSITY = 0.5
+
+#: Сколько сопровождающих (не ``lead``) ролей ещё считается «минимальным
+#: аккомпанементом» рядом с солирующей темой. Больше — это уже обычная
+#: секция с полным составом, а не соло-момент.
+SOLO_MAX_ACCOMPANIMENT_ROLES = 2
+
 #: Формы: имя -> список секций ``(имя, тактов, {роль: интенсивность 0..1})``.
 #:
 #: Интенсивность умножается на базовую амплитуду роли. 0.0 = слой молчит
@@ -262,42 +286,77 @@ def _degree_to_semitones(degree: float, intervals: Sequence[int]) -> int:
 #: Формы намеренно НЕ симметричны: у секций разная длина, а кульминация
 #: приходит после брейка. Симметричная сетка 16/16/16/16 на слух — то же
 #: самое, что луп.
+#:
+#: С issue #2978 каждая форма — ещё и осознанный ПЛАН СОСТАВА: роли явно
+#: входят и уходят по ходу формы (пустая интенсивность = роль отсутствует
+#: в секции, а не просто тише), число одновременных ролей не превышает
+#: :data:`MAX_SIMULTANEOUS_ROLES`, а между соседними секциями оно меняется
+#: не больше чем на :data:`MAX_ROLE_COUNT_STEP` (см.
+#: :func:`form_role_plan_violations` — тест ``test_form_role_plan.py``
+#: гоняет её по каждой форме этого словаря). Роль ``counter`` — вторая
+#: линия выведенной аранжировки — везде, где явно выставлена в ``0.0``,
+#: намеренно выключена: она конкурирует с ``perc``/тесным бюджетом ролей
+#: за место в составе (см. :data:`ROLE_PROFILE`), и там, где формa уже
+#: занята пятью основными ролями (барабаны/хэты/бас/лид/пэд), у неё нет
+#: свободного слота в рамках :data:`MAX_SIMULTANEOUS_ROLES`. В ``ambient``
+#: (единственная форма без давки по ролям) она по-прежнему включается
+#: автоматически через :func:`_section_intensity`.
 FORMS: Dict[str, List[Tuple[str, int, Dict[str, float]]]] = {
     # Универсальная дуга. Дефолт: работает и для DJ-петли, и для трека.
+    #
+    # План состава (roles×count): intro {pad,lead}=2 -> build {pad,lead,
+    # hats}=3 -> main {pad,lead,hats,drums}=4 -> break {pad,lead,bass}=3
+    # -> peak {pad,lead,bass,drums}=4 -> outro {pad,lead,bass}=3. Тема
+    # заявлена сразу, вполголоса, поверх одного пэда — это и открывающие
+    # «минимум 2 голоса», и обязательная issue #2978 соло-секция (лид
+    # ≥ SOLO_LEAD_INTENSITY, аккомпанемент — один пэд). Пик — самая
+    # плотная секция формы (4 роли, как main, но громче: 1.0 против 0.8),
+    # брейк перед ним — провал на 1 роль, а не на весь состав разом.
     "arc": [
-        ("intro",  8,  {"pad": 0.65, "hats": 0.30}),
-        ("build",  8,  {"pad": 0.70, "hats": 0.55, "drums": 0.50, "bass": 0.70}),
-        ("main",  16,  {"pad": 0.45, "hats": 0.80, "drums": 1.00, "bass": 1.00,
-                        "lead": 0.95, "perc": 0.60}),
-        ("break",  8,  {"pad": 0.90, "hats": 0.25, "bass": 0.40, "lead": 0.55}),
-        ("peak",  16,  {"pad": 0.55, "hats": 1.00, "drums": 1.00, "bass": 1.00,
-                        "lead": 1.00, "perc": 0.85}),
-        ("outro",  8,  {"pad": 0.50, "hats": 0.20, "drums": 0.35, "bass": 0.30}),
+        ("intro",  8,  {"pad": 0.55, "lead": 0.55, "counter": 0.0}),
+        ("build",  8,  {"pad": 0.60, "lead": 0.65, "hats": 0.45, "counter": 0.0}),
+        ("main",  16,  {"pad": 0.45, "lead": 0.80, "hats": 0.70, "drums": 0.75,
+                        "counter": 0.0}),
+        ("break",  8,  {"pad": 0.85, "lead": 0.60, "bass": 0.35, "counter": 0.0}),
+        ("peak",  16,  {"pad": 0.55, "lead": 1.00, "bass": 1.00, "drums": 1.00,
+                        "counter": 0.0}),
+        ("outro",  8,  {"pad": 0.50, "lead": 0.35, "bass": 0.30, "counter": 0.0}),
     ],
     # Песенная форма: куплет тише припева, бридж снимает барабаны.
+    #
+    # План состава: intro {pad,hats}=2 -> verse {pad,hats,drums}=3 ->
+    # chorus {pad,hats,drums,lead}=4 -> bridge {pad,bass,lead}=3 (issue
+    # #2978 соло-секция: тема поверх пэда и баса, без ударных) -> chorus2
+    # {pad,bass,lead,drums}=4 -> outro {pad,bass,lead}=3.
     "verse_chorus": [
-        ("intro",   8,  {"pad": 0.60, "hats": 0.35}),
-        ("verse",  16,  {"pad": 0.50, "hats": 0.60, "drums": 0.70, "bass": 0.80,
-                         "lead": 0.55}),
-        ("chorus", 16,  {"pad": 0.60, "hats": 0.90, "drums": 1.00, "bass": 1.00,
-                         "lead": 1.00, "perc": 0.70}),
-        ("bridge",  8,  {"pad": 0.85, "hats": 0.20, "bass": 0.45, "lead": 0.60}),
-        ("chorus2", 16, {"pad": 0.65, "hats": 1.00, "drums": 1.00, "bass": 1.00,
-                         "lead": 1.00, "perc": 0.90}),
-        ("outro",   8,  {"pad": 0.55, "hats": 0.25, "bass": 0.35}),
+        ("intro",   8,  {"pad": 0.60, "hats": 0.35, "counter": 0.0}),
+        ("verse",  16,  {"pad": 0.55, "hats": 0.55, "drums": 0.55, "counter": 0.0}),
+        ("chorus", 16,  {"pad": 0.55, "hats": 0.85, "drums": 0.90, "lead": 0.90,
+                         "counter": 0.0}),
+        ("bridge",  8,  {"pad": 0.85, "bass": 0.40, "lead": 0.60, "counter": 0.0}),
+        ("chorus2", 16, {"pad": 0.60, "bass": 0.95, "lead": 1.00, "drums": 1.00,
+                         "counter": 0.0}),
+        ("outro",   8,  {"pad": 0.50, "bass": 0.30, "lead": 0.35, "counter": 0.0}),
     ],
     # Клубная: длинный разгон, тишина перед дропом, дроп на полную.
+    #
+    # План состава: intro {pad,hats,drums}=3 -> build {pad,hats,drums,
+    # bass}=4 -> gap {pad,bass,lead}=3 (issue #2978 соло-секция: тема
+    # выходит на самой тихой паузе формы, аккомпанемент — только пэд и
+    # бас, ни хэтов, ни бочки) -> drop {pad,bass,lead,drums}=4 -> break
+    # {pad,bass,lead}=3 -> drop2 {pad,bass,lead,drums}=4 -> outro
+    # {pad,bass,lead}=3.
     "buildup": [
-        ("intro",   8,  {"pad": 0.55, "hats": 0.40, "drums": 0.35}),
+        ("intro",   8,  {"pad": 0.55, "hats": 0.40, "drums": 0.35, "counter": 0.0}),
         ("build",  16,  {"pad": 0.70, "hats": 0.75, "drums": 0.70, "bass": 0.75,
-                         "lead": 0.40}),
-        ("gap",     4,  {"pad": 0.80}),
-        ("drop",   16,  {"hats": 1.00, "drums": 1.00, "bass": 1.00, "lead": 1.00,
-                         "perc": 0.90, "pad": 0.35}),
-        ("break",   8,  {"pad": 0.85, "bass": 0.45, "lead": 0.50}),
-        ("drop2",  16,  {"hats": 1.00, "drums": 1.00, "bass": 1.00, "lead": 0.95,
-                         "perc": 1.00, "pad": 0.40}),
-        ("outro",   8,  {"pad": 0.60, "hats": 0.20}),
+                         "counter": 0.0}),
+        ("gap",     4,  {"pad": 0.75, "bass": 0.30, "lead": 0.55, "counter": 0.0}),
+        ("drop",   16,  {"pad": 0.35, "bass": 1.00, "lead": 1.00, "drums": 1.00,
+                         "counter": 0.0}),
+        ("break",   8,  {"pad": 0.85, "bass": 0.45, "lead": 0.50, "counter": 0.0}),
+        ("drop2",  16,  {"pad": 0.40, "bass": 1.00, "lead": 0.95, "drums": 1.00,
+                         "counter": 0.0}),
+        ("outro",   8,  {"pad": 0.55, "bass": 0.25, "lead": 0.30, "counter": 0.0}),
     ],
     # Без ударной сетки: медленные наплывы, для «сделай что-то для души».
     #
@@ -821,6 +880,88 @@ def _section_intensity(role: str, intensities: Dict[str, float]) -> float:
     if role == "counter" and "counter" not in intensities:
         return float(intensities.get("lead", 0.0)) * COUNTER_OF_LEAD
     return float(intensities.get(role, 0.0))
+
+
+def _section_role_set(intensities: Dict[str, float]) -> frozenset:
+    """Роли, реально звучащие в секции (интенсивность > 0), включая
+    авто-``counter`` (:func:`_section_intensity`).
+
+    Единый источник «кто звучит», которым делятся :func:`form_role_plan_violations`
+    (тест FORMS) и :mod:`core.score_sheet` (партитура) — вместо того, чтобы
+    каждый вызывающий заново решал, что считать «ролью в секции».
+    """
+    return frozenset(
+        role for role in ROLE_PROFILE
+        if _section_intensity(role, intensities) > 0.0
+    )
+
+
+def _has_solo_section(
+    plan: Sequence[Tuple[str, int, Dict[str, float]]],
+    role_sets: Sequence[frozenset],
+) -> bool:
+    """Есть ли в форме хотя бы одна секция, где тема солирует (issue #2978).
+
+    «Солирует» — не просто «звучит», а звучит ГРОМЧЕ обычного намёка
+    (:data:`SOLO_LEAD_INTENSITY`) над МИНИМАЛЬНЫМ аккомпанементом (не
+    больше :data:`SOLO_MAX_ACCOMPANIMENT_ROLES` других ролей рядом).
+    """
+    for (_name, _bars, intensities), roles in zip(plan, role_sets):
+        if _section_intensity("lead", intensities) < SOLO_LEAD_INTENSITY:
+            continue
+        accompaniment = roles - {"lead"}
+        if len(accompaniment) <= SOLO_MAX_ACCOMPANIMENT_ROLES:
+            return True
+    return False
+
+
+def form_role_plan_violations(
+    plan: Sequence[Tuple[str, int, Dict[str, float]]],
+) -> List[str]:
+    """Нарушения плана состава формы (issue #2978), по-человечески описанные.
+
+    Не рантайм-проверка — :func:`render` её не вызывает и ничего не
+    подгоняет сама: это КОНТРАКТ таблицы :data:`FORMS`, который правит
+    формы обязаны соблюдать, а тест (``test_form_role_plan.py``) гоняет
+    его по каждой форме словаря, чтобы будущая правка формы не тихо
+    сломала дугу «слои входят и уходят», а получила явную ошибку теста.
+
+    Три правила (см. issue #2978 «Факты»/acceptance, инвентаризация статей
+    по аранжировке):
+
+    1. Не больше :data:`MAX_SIMULTANEOUS_ROLES` ролей одновременно.
+    2. Число одновременных ролей между соседними секциями меняется не
+       больше чем на :data:`MAX_ROLE_COUNT_STEP`.
+    3. Хотя бы одна секция, где тема солирует над минимальным
+       аккомпанементом (:func:`_has_solo_section`).
+
+    Returns:
+        Пустой список — форма валидна; иначе один пункт на нарушение.
+    """
+    role_sets = [_section_role_set(intensities) for _n, _b, intensities in plan]
+    counts = [len(roles) for roles in role_sets]
+    violations: List[str] = []
+    for (name, _bars, _i), count in zip(plan, counts):
+        if count > MAX_SIMULTANEOUS_ROLES:
+            violations.append(
+                f"{name}: {count} ролей одновременно "
+                f"(> {MAX_SIMULTANEOUS_ROLES})"
+            )
+    for (name_a, _ba, _ia), (name_b, _bb, _ib), count_a, count_b in zip(
+        plan, plan[1:], counts, counts[1:]
+    ):
+        if abs(count_b - count_a) > MAX_ROLE_COUNT_STEP:
+            violations.append(
+                f"{name_a}->{name_b}: состав меняется на {count_b - count_a:+d} "
+                f"ролей за раз (> ±{MAX_ROLE_COUNT_STEP})"
+            )
+    if not _has_solo_section(plan, role_sets):
+        violations.append(
+            "нет секции, где тема солирует (lead >= "
+            f"{SOLO_LEAD_INTENSITY}) над минимальным аккомпанементом "
+            f"(<= {SOLO_MAX_ACCOMPANIMENT_ROLES} ролей)"
+        )
+    return violations
 
 
 def _amp_envelope(

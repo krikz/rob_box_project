@@ -66,9 +66,13 @@
     ошибка (здесь остаётся страховка «→arc» с предупреждением).
 19. ``ROLE_PROFILE``/``levels`` → баланс громкости → ``mix_balance`` (issue
     #2963, статическая оценка по коду ``render()``, не измерение микса; в
-    текст выносится только при 3+ «тяжёлых» ролях). ``COUNTER_OF_LEAD``/
-    ``FIXED_THEME_AMP_FLOOR``/``FORMS`` (динамика формы) — по-прежнему НЕ
-    показаны (только таймлайн формы).
+    текст выносится только при 3+ «тяжёлых» ролях). ``FORMS`` (план
+    состава по секциям — issue #2978) → ``form.composition`` (dict) и
+    число ролей в скобках у каждой секции в тексте (``intro(8/2)`` =
+    8 тактов, 2 роли звучит); полный список ролей по секциям — только в
+    dict (в тексте не поместился бы, см. :data:`_TEXT_LIMIT`).
+    ``COUNTER_OF_LEAD``/``FIXED_THEME_AMP_FLOOR`` — по-прежнему НЕ
+    показаны.
 20. ``_motif_variants``/``_dur_var`` → вариации сочинённой музыки → пока НЕ
     показаны.
 21. ``_autofill_bass`` → бас ``dub`` сам добавлен → виден как партия баса.
@@ -96,6 +100,7 @@ from .arranger import (
     SCALE_INTERVALS,
     SYNTH_SEMITONE_SHIFT,
     VALID_ROOTS,
+    _section_role_set,
     form_duration_seconds,
     resolve_form,
 )
@@ -670,13 +675,29 @@ def _theme_block(harmony) -> Optional[Dict[str, Any]]:
 
 
 def _form_block(spec) -> Dict[str, Any]:
+    """Форма трека — таймлайн секций плюс план состава (issue #2978).
+
+    ``composition`` — какие роли реально звучат в каждой секции (та же
+    функция :func:`core.arranger._section_role_set`, что проверяет
+    инварианты плана в :func:`core.arranger.form_role_plan_violations`):
+    партитура показывает состав, а не только длину и громкость секций.
+    """
     theme_bars = int(getattr(spec, "theme_bars", 0) or 0)
     plan = resolve_form(spec.form, theme_bars)
+    composition = [(name, sorted(_section_role_set(intensities))) for name, _b, intensities in plan]
+    # Число ролей в скобках рядом с длиной секции — компактная версия
+    # состава, которая помещается в лимит текста (:data:`_TEXT_LIMIT`);
+    # полный список ролей по секциям — в ``composition`` (только dict).
+    timeline = " ".join(
+        f"{name}({int(bars)}/{len(roles)})"
+        for (name, bars, _i), (_n, roles) in zip(plan, composition)
+    )
     return {
         "name": spec.form if (spec.form or "").strip().lower() in FORMS else "arc",
         "sections": [(name, int(bars)) for name, bars, _i in plan],
-        "timeline": " ".join(f"{name}({int(bars)})" for name, bars, _i in plan),
+        "timeline": timeline,
         "total_bars": sum(int(bars) for _n, bars, _i in plan),
+        "composition": composition,
     }
 
 

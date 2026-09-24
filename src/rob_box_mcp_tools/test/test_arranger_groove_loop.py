@@ -16,6 +16,7 @@ import re
 import pytest
 
 from rob_box_mcp_tools.core.arranger import (
+    FORMS,
     ArrangementError,
     LOOP_ROLE,
     render,
@@ -72,9 +73,26 @@ def test_loop_takes_d1_when_there_are_no_drums():
 
 
 def test_no_free_drum_slot_is_honest_error():
-    with pytest.raises(ArrangementError) as exc:
-        render(_free_spec(perc="..n...n...n...n.", groove_loop="dnb_1"))
-    assert "d1-d3" in str(exc.value)
+    """drums→d1, hats→d2, perc→d3 — луп не находит свободный слот.
+
+    Issue #2978 убрала ``perc`` из плана состава ``arc`` (бюджет ролей на
+    секцию — не больше :data:`MAX_SIMULTANEOUS_ROLES`): в проде эта роль
+    там теперь всегда молчит и слота не занимает. Сценарий «все три слота
+    заняты» по-прежнему нужно уметь проверить, поэтому тест временно даёт
+    ``perc`` собственную форму (тот же приём, что
+    ``test_arranger.py::test_no_bass_invented_for_a_form_that_never_uses_one``),
+    не трогая продовые таблицы :data:`FORMS`.
+    """
+    original = dict(FORMS)
+    FORMS["_test_perc_slot"] = [("only", 8, {"drums": 0.6, "hats": 0.6, "perc": 0.6})]
+    try:
+        with pytest.raises(ArrangementError) as exc:
+            render(_free_spec(form="_test_perc_slot",
+                               perc="..n...n...n...n.", groove_loop="dnb_1"))
+        assert "d1-d3" in str(exc.value)
+    finally:
+        FORMS.clear()
+        FORMS.update(original)
 
 
 def test_loop_length_follows_bpm():
