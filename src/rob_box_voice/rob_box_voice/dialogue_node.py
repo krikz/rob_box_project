@@ -5022,6 +5022,13 @@ class DialogueNode(Node):
             # :func:`is_phantom_music_action` detector sees the
             # actual response.
             spoken=(result.spoken_text if result else None),
+            # Issue #2966 — a music-starting tool NAME in ``tools_called``
+            # doesn't mean it succeeded (``compose_music`` refused for
+            # ``groove_loop`` still shows up here). Thread the turn's
+            # error flag so the guard can tell the two apart.
+            tool_error_occurred=bool(
+                getattr(result, "tool_error_occurred", False)
+            ),
         )
         # Issue #1777 / #1762 — Bug C retry для non-music tool-based
         # запросов (``get_current_time`` / ``search_web`` / ``set_voice`` /
@@ -6826,10 +6833,16 @@ class DialogueNode(Node):
         user_input: str,
         tools_called: tuple,
         spoken: Optional[str] = None,
+        tool_error_occurred: bool = False,
     ) -> bool:
         """Adapter around :meth:`MusicGuard.evaluate` — keeps the ROS2
         side effects (dispatch, speak_direct, dialogue-reopen) out of
         the policy module so :class:`MusicGuard` is unit-testable.
+
+        ``tool_error_occurred`` (issue #2966): threaded from
+        ``result.tool_error_occurred`` so a failed ``compose_music`` call
+        inside a DJ transition is not mistaken for a successful one just
+        because the tool NAME still shows up in ``tools_called``.
 
         Issue #992 Bug B — DJ auto-transitions: the LLM is asked to
         play track #N through the music tools, but it frequently
@@ -6902,6 +6915,7 @@ class DialogueNode(Node):
             build_music_retry_prompt=self._build_music_retry_prompt,
             build_dj_retry_prompt=self._build_dj_retry_prompt,
             spoken=spoken,
+            tool_error_occurred=tool_error_occurred,
         )
 
         if verdict.kind is MusicGuardVerdictKind.SKIP:
@@ -7091,18 +7105,34 @@ class DialogueNode(Node):
         the LLM has ignored the standard auto-prompt at least once,
         so this retry escalates the instruction with an explicit tool
         name and a no-tools rejection clause.
+
+        Issue #2966 (live 24.09) — the retry also fires when
+        ``compose_music`` WAS called but returned ``success=False`` for
+        ANY reason (a rejected parameter, a taken slot, etc.) and the
+        LLM announced the track anyway instead of retrying — a failed
+        compose inside a DJ transition means the transition did not
+        happen, regardless of WHY the call failed. This is deliberately
+        generic (no specific parameter or track named): the wording
+        below does not claim the tool was never called (that would be
+        false in the error case) and tells the model to read the error
+        the tool already returned and drop whatever it rejected, rather
+        than hardcoding one failure mode here.
         """
         n = self._dj.state.transition_count
         base = self._dj.build_auto_prompt(n)
         return (
             base
-            + "\n\n[CRITICAL] В прошлом цикле ты НЕ вызвал "
-            "compose_music — DJ-режим остался без музыки. "
-            "В этом цикле ОБЯЗАТЕЛЬНО вызови compose_music. "
-            "НЕ вызывай speak_text и другие тулы — "
-            "только музыку. Если ты снова не вызовешь "
-            "compose_music, цикл будет считаться пустым и "
-            "робот озвучит 'задумался'."
+            + "\n\n[CRITICAL] В прошлом цикле compose_music НЕ запустил "
+            "трек (не был вызван, или был вызван и вернул ошибку) — "
+            "DJ-режим остался без музыки, играет прежний трек. В этом "
+            "цикле ОБЯЗАТЕЛЬНО вызови compose_music ещё раз и добейся "
+            "успешного результата. Если прошлый вызов вернул ошибку — "
+            "прочитай её текст и повтори БЕЗ параметра, который тул "
+            "отклонил (ошибка называет его явно). НЕ объявляй трек "
+            "голосом, пока compose_music не вернул успех. НЕ вызывай "
+            "speak_text и другие тулы — только музыку. Если ты снова не "
+            "добьёшься успешного compose_music, цикл будет считаться "
+            "пустым и робот озвучит 'задумался'."
         )
 
     # ── Issue #1777 / #1762 — non-music tool-skipped guard ─────────────

@@ -2554,13 +2554,20 @@ class TestComposeMusicToolGrooveLoop:
         param = next(p for p in self._tool(mock_node).parameters if p.name == "groove_loop")
         assert "dnb_1" in param.enum and "foxdot" in param.enum
 
-    def test_pack1_loop_is_refused_without_flag(self, mock_node, monkeypatch):
+    def test_pack1_loop_is_dropped_without_flag_not_refused(self, mock_node, monkeypatch):
+        """Issue #2966 — живой 24.09: hard-отказ рвал DJ-переход целиком
+        (модель объявляла трек, который не заиграл — предыдущий трек
+        продолжал звучать). Тул больше НЕ падает на известном, но
+        выключенном флагом лупе: трек играет БЕЗ лупа, а предупреждение
+        уходит в ``message`` (capability-honest — честно, но не fatal)."""
         monkeypatch.delenv("ROB_BOX_PACK1_LOOPS", raising=False)
         with patch("builtins.exec") as mock_exec:
             result = self._tool(mock_node).execute(groove_loop="break_1", **self._KW)
-        assert result.success is False
-        assert "ROB_BOX_PACK1_LOOPS" in result.error
-        mock_exec.assert_not_called()
+        assert result.success is True, result.error
+        assert "ROB_BOX_PACK1_LOOPS" in result.message
+        mock_exec.assert_called_once()
+        executed = mock_exec.call_args[0][0]
+        assert "loop(" not in executed
 
     def test_pack1_loop_plays_with_flag(self, mock_node, monkeypatch):
         monkeypatch.setenv("ROB_BOX_PACK1_LOOPS", "1")
@@ -2575,22 +2582,23 @@ class TestComposeMusicToolGrooveLoop:
         assert result.success is False
         assert "groove_loop" in result.error
 
-    def test_flag_refusal_wins_over_full_slots(self, mock_node, monkeypatch):
-        """Issue #2878 — живой прогон 23.09.2026: с флагом выключенным
-        модель раньше сперва получала «слоты d1-d3 заняты» (перестроила
-        аранжировку впустую), и только вторым вызовом — отказ по флагу.
-        Флаг проверяется ДО занятости слотов: здесь заняты все три
-        (drums/hats из ``_KW`` + ``perc``), и всё равно первым и
-        единственным приходит отказ по флагу.
+    def test_flag_drop_wins_over_full_slots(self, mock_node, monkeypatch):
+        """Issue #2878 (обновлено #2966) — живой прогон 23.09.2026: с
+        флагом выключенным модель раньше сперва получала «слоты d1-d3
+        заняты» (перестроила аранжировку впустую), и только вторым
+        вызовом — отказ по флагу. Флаг разбирается ДО занятости слотов:
+        здесь заняты все три (drums/hats из ``_KW`` + ``perc``), и
+        трек всё равно играет с первого вызова (луп просто снят), без
+        какой-либо ошибки о занятых слотах.
         """
         monkeypatch.delenv("ROB_BOX_PACK1_LOOPS", raising=False)
         kw = dict(self._KW, perc="..n...n...n...n.")
         with patch("builtins.exec") as mock_exec:
             result = self._tool(mock_node).execute(groove_loop="break_1", **kw)
-        assert result.success is False
-        assert "ROB_BOX_PACK1_LOOPS" in result.error
-        assert "d1-d3" not in result.error
-        mock_exec.assert_not_called()
+        assert result.success is True, result.error
+        assert "ROB_BOX_PACK1_LOOPS" in result.message
+        assert "d1-d3" not in result.message
+        mock_exec.assert_called_once()
 
 
 @pytest.mark.unit

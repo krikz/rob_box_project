@@ -224,6 +224,84 @@ class TestEvaluateDjAuto:
 
 
 # ---------------------------------------------------------------------------
+# Issue #2966 — a music-starting tool NAME in ``tools_called`` does not
+# mean it SUCCEEDED. Live 24.09.2026: ``compose_music`` returned
+# ``success=False`` inside a DJ transition (tool refused a parameter),
+# but the tool's NAME still landed in ``tools_called`` — the old guard
+# treated that as "music started" and returned SKIP, so the LLM's false
+# track announcement went straight to TTS while the previous track kept
+# playing. ``tool_error_occurred`` (threaded from
+# ``DialogResult.tool_error_occurred``) lets the guard tell a real
+# success apart from "tool was called and errored" — this is a general
+# fix for ANY tool failure inside a DJ transition, not specific to any
+# one tool, parameter, or track.
+# ---------------------------------------------------------------------------
+
+
+class TestEvaluateToolErrorDuringDjAuto:
+    def test_music_tool_present_but_errored_does_not_skip(self) -> None:
+        """``compose_music`` in tools_called + tool_error_occurred=True
+        on a DJ auto-transition → DJ_RETRY (Bug B), NOT the success SKIP."""
+        guard = MusicGuard()
+        verdict = guard.evaluate(
+            was_dj_auto=True,
+            user_input="DJ auto prompt",
+            tools_called=("compose_music", "set_dj_mode"),
+            dj_enabled=True,
+            build_dj_retry_prompt=_dj_prompt,
+            tool_error_occurred=True,
+        )
+        assert verdict.kind is MusicGuardVerdictKind.DJ_RETRY
+        assert verdict.reason == "bug_b"
+        assert guard.dj_retry_count == 1
+
+    def test_music_tool_present_without_error_still_skips(self) -> None:
+        """Baseline: no error this turn → legacy SKIP behaviour unchanged."""
+        guard = MusicGuard()
+        verdict = guard.evaluate(
+            was_dj_auto=True,
+            user_input="DJ auto prompt",
+            tools_called=("compose_music", "set_dj_mode"),
+            dj_enabled=True,
+            build_dj_retry_prompt=_dj_prompt,
+            tool_error_occurred=False,
+        )
+        assert verdict.kind is MusicGuardVerdictKind.SKIP
+        assert verdict.reason == "executed"
+
+    def test_tool_error_occurred_defaults_to_false_for_legacy_callers(self) -> None:
+        """Callers that don't thread ``tool_error_occurred`` yet keep the
+        exact legacy behaviour (default ``False``)."""
+        guard = MusicGuard()
+        verdict = guard.evaluate(
+            was_dj_auto=True,
+            user_input="DJ auto prompt",
+            tools_called=("compose_music",),
+            dj_enabled=True,
+            build_dj_retry_prompt=_dj_prompt,
+        )
+        assert verdict.kind is MusicGuardVerdictKind.SKIP
+
+    def test_non_music_tool_error_outside_dj_auto_falls_through_to_user_retry(
+        self,
+    ) -> None:
+        """User-turn (not DJ) with a music tool that errored → falls
+        through past the success shortcut into Bug C's own logic instead
+        of silently SKIPping."""
+        guard = MusicGuard()
+        verdict = guard.evaluate(
+            was_dj_auto=False,
+            user_input="сыграй что-нибудь",
+            tools_called=("compose_music",),
+            dj_enabled=False,
+            build_music_retry_prompt=_music_prompt,
+            tool_error_occurred=True,
+        )
+        assert verdict.kind is MusicGuardVerdictKind.USER_RETRY
+        assert verdict.reason == "bug_c"
+
+
+# ---------------------------------------------------------------------------
 # Bug C — user asked for music but LLM skipped execute_music_code
 # ---------------------------------------------------------------------------
 

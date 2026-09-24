@@ -2533,9 +2533,10 @@ _ARRANGEMENT_PARAMETERS: List[MCPToolParameter] = [
                     "future_1..2, glitch_1..2, perc_1..2, beatbox_1, "
                     "industrial_1, piano_1, guitar_1, ambient_1, arabic_1, "
                     "yiddish_1 — работают, только если владелец включил "
-                    "их после прослушки; иначе вызов вернёт ошибку, и "
-                    "трек надо играть без лупа. Пропусти, если луп не "
-                    "нужен."
+                    "их после прослушки; иначе трек играет БЕЗ лупа "
+                    "(warning в ответе, вызов не падает) — не пытайся "
+                    "повторить тот же groove_loop ещё раз. Пропусти, если "
+                    "луп не нужен."
                 ),
                 required=False,
                 enum=sorted(sample_loops.loop_catalog()),
@@ -2734,6 +2735,11 @@ class ComposeMusicTool(MCPTool):
         name: Optional[str]
         melody_title: Optional[str]
         flat: Dict[str, Any]
+        #: Issue #2966 — непустое, когда ``groove_loop`` был выключен
+        #: флагом ``ROB_BOX_PACK1_LOOPS`` и молча снят с трека, а не
+        #: провалил весь вызов (capability-honest: результат честно
+        #: говорит, что луп не сыграл, но трек всё равно звучит).
+        warning: Optional[str] = None
 
     def __init__(
         self,
@@ -3216,28 +3222,51 @@ class ComposeMusicTool(MCPTool):
         return None, knobs
 
     @staticmethod
-    def _groove_loop_denial(groove_loop: Optional[str]) -> Optional[MCPToolResult]:
-        """Ранний отказ по каталогу/флагу pack 1 для ``groove_loop``.
+    def _resolve_groove_loop(
+        groove_loop: Optional[str],
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """``groove_loop`` под флаг pack 1 — luп снимается, а не падает весь вызов.
 
-        Issue #2878 — вызывается ДО ``spec_from_flat``/``render`` (которые
-        уже проверяют занятость слотов d1-d3), чтобы при выключенном
+        Issue #2878 — изначально это была ранняя ОШИБКА (см. историю ниже),
+        вызывалась ДО ``spec_from_flat``/``render`` (которые уже проверяют
+        занятость слотов d1-d3), чтобы при выключенном
         ``ROB_BOX_PACK1_LOOPS`` модель получала отказ по флагу сразу, а не
         после лишнего круга «слоты заняты → перестрой аранжировку».
-        Пустой/``none`` ``groove_loop`` — не отказ, слоя просто не будет.
+
+        Issue #2966 (живой 24.09) — ошибка на известном, но выключенном
+        флагом лупе рвала DJ-переход целиком: модель не повторяла вызов
+        БЕЗ ``groove_loop``, а объявляла трек, который не проигрывался
+        (предыдущий трек продолжал звучать). Acceptance по этому issue
+        прямо разрешает один из двух путей: не предлагать луп в
+        схеме/промпте, ЛИБО тул сам игнорирует его с предупреждением, а
+        не падает. Выбран второй — вариант с условной схемой означал бы
+        держать ДВЕ версии описания параметра в синхроне с рантайм-флагом
+        (схема — модуль-уровневая константа, см. ``_ARRANGEMENT_PARAMETERS``
+        и docstring ``sample_loops.py``), а здесь один флаг уже разбирается
+        в одном месте. Луп молча не ставится, но предупреждение честно
+        возвращается вызывающему (``_ArrangementBuild.warning``) —
+        capability-honest: трек играет, а не «упал», но модель узнаёт, что
+        лупа не будет, и почему.
+
+        Пустой/``none``/неизвестное имя — не отказ (unknown-имя отдаётся
+        как раньше собственной ошибке ``_add_loop_layer``,
+        ``core/arranger.py`` — сообщение там уже содержит "groove_loop" и
+        не должно разъезжаться с этим путём).
+
+        Returns:
+            ``(groove_loop, warning)`` — ``groove_loop`` для дальнейшей
+            сборки (``None``, если луп снят флагом), ``warning`` — текст
+            для модели или ``None``.
         """
         name = (groove_loop or "").strip()
         if not name or name.lower() == "none":
-            return None
+            return groove_loop, None
         if sample_loops.find_loop(name) is None:
-            # Неизвестное имя — не флаг, пусть спецификация даёт свою
-            # ошибку с полным списком каталога (``_add_loop_layer``,
-            # core/arranger.py) как и раньше; сообщение уже содержит
-            # "groove_loop" и текст не должен разъезжаться с этим путём.
-            return None
+            return groove_loop, None
         if sample_loops.pack1_loops_enabled():
-            return None
+            return groove_loop, None
         denial = sample_loops.loop_denial(name, False)
-        return MCPToolResult(success=False, error=denial)
+        return None, denial
 
     def _build_compose_result_data(
         self, spec: Any, raw_result: Dict[str, Any], duration_s: float
@@ -3462,6 +3491,7 @@ class ComposeMusicTool(MCPTool):
                 built.prep, built.melody_title,
                 self._score_warnings(result),
             ),
+            warning=built.warning,
         )
 
     def _build_arrangement(
@@ -3599,9 +3629,7 @@ class ComposeMusicTool(MCPTool):
         # тратила ход на перестройку аранжировки, и только потом узнавала,
         # что луп всё равно выключен флагом. Живой лог 23.09.2026 (issue
         # #2878): ровно этот двойной круг сорвал DJ-переход #3.
-        err = self._groove_loop_denial(groove_loop)
-        if err is not None:
-            return err, None
+        groove_loop, groove_loop_warning = self._resolve_groove_loop(groove_loop)
 
         try:
             spec = spec_from_flat(
@@ -3660,6 +3688,7 @@ class ComposeMusicTool(MCPTool):
             name=name,
             melody_title=melody_title,
             flat=flat,
+            warning=groove_loop_warning,
         )
 
     @staticmethod
@@ -3712,6 +3741,7 @@ class ComposeMusicTool(MCPTool):
         melody_title: Optional[str],
         flat: Dict[str, Any],
         score: Optional[Dict[str, Any]],
+        warning: Optional[str] = None,
     ) -> MCPToolResult:
         """Хвост успешного ``execute``: тайминги формы, данные, сообщение."""
         duration_s = form_duration_seconds(spec.form, spec.bpm, getattr(spec, "theme_bars", 0))
@@ -3745,6 +3775,11 @@ class ComposeMusicTool(MCPTool):
             duration_s,
             repeat_warning,
         )
+        # Issue #2966: groove_loop был снят флагом ROB_BOX_PACK1_LOOPS —
+        # трек играет БЕЗ лупа, но модель должна честно об этом узнать
+        # (capability-honest), а не решить, что луп встал.
+        if warning:
+            message = f"⚠️ {warning} " + message
         return MCPToolResult(success=True, data=result, message=message)
 
     def _keep_score(self, score: Optional[Dict[str, Any]]) -> str:
@@ -4023,10 +4058,15 @@ class PreviewArrangementTool(MCPTool):
         )
         score = score or {}
         text = str(score.get("text") or f"Партитура не собрана: {score.get('error') or 'нет данных'}")
+        message = text
+        # Issue #2966 — тот же honest-degrade, что и у compose_music:
+        # groove_loop снят флагом, превью должно сказать об этом же тексте.
+        if built.warning:
+            message = f"⚠️ {built.warning} " + message
         return MCPToolResult(
             success=True,
             data={"score": text, "title": built.melody_title},
-            message=text,
+            message=message,
         )
 
 
