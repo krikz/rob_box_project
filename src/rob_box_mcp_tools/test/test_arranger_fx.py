@@ -82,8 +82,17 @@ def test_fx_and_groove_loop_do_not_collide_on_slots():
 
 
 def test_no_free_drum_slot_is_honest_error():
+    """drums→d1, hats→d2, groove_loop→d3 (лупа кладут первым — см. модульный
+    docstring) — для FX не остаётся ни одного слота d1-d3.
+
+    Issue #2978 убрала ``perc`` из плана состава ``arc`` (бюджет ролей на
+    секцию — не больше :data:`MAX_SIMULTANEOUS_ROLES`), поэтому прежний
+    способ забить три слота (``drums``+``hats``+``perc``) больше не
+    работает: ``perc`` в этой форме теперь всегда молчит и слота не
+    занимает. Тот же сценарий («слотов не хватило») даёт связка с лупом.
+    """
     with pytest.raises(ArrangementError) as exc:
-        render(_free_spec(perc="..n...n...n...n.", fx="siren_1"))
+        render(_free_spec(groove_loop="dnb_1", fx="siren_1"))
     assert "d1-d3" in str(exc.value)
 
 
