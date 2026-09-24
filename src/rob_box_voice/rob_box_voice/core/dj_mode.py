@@ -687,6 +687,26 @@ class DJModeController:
             return False
         return True
 
+    def _track_seed(self, track_no: int) -> int:
+        """Issue #2969 — детерминированный сид ``compose_music(seed=...)``.
+
+        Живой лог 24.09.2026: повтор той же темы во втором DJ-сете дал
+        побайтно тот же бас/пэд у The Next Episode (``bass_style``/
+        ``pad_style``/``drum_style`` на ``auto`` — фиксированный вариант,
+        см. ``core.harmonize._apply_seed``). Сид считает ЗДЕСЬ, а не
+        оставляет модели: число, вычисленное промптом на лету, ненадёжно
+        (модель может забыть/выдумать), а системный ГСЧ был бы
+        невоспроизводим при диагностике (issue #2969 acceptance требует
+        «тот же сид → тот же результат»).
+
+        ``started_at`` — эпоха старта ЭТОГО сета (``DJState.started_at``,
+        взводится ``tick()`` при первом переходе): разные запуски
+        DJ-режима получают разный сид даже для того же номера трека и той
+        же темы. ``track_no`` разводит треки ВНУТРИ одного сета.
+        """
+        started = int(self.state.started_at) if self.state.started_at else int(time.time())
+        return (started % 100000) * 100 + track_no
+
     def _plan_track_line(self, track_no: int) -> str:
         """Issue #2875 — какой трек плана играть сейчас и как.
 
@@ -701,25 +721,33 @@ class DJModeController:
         сначала lookup») для обычных запросов юзера; «трек плана» — просто
         ещё один источник имени, к которому применяется то же правило, а
         не отдельный список песен под спецобработку.
+
+        Issue #2969: каждая строка несёт готовый ``seed=`` для
+        ``compose_music`` — тот же повтор темы/сета больше не звучит
+        побайтно так же, как в прошлый раз.
         """
         if not self.state.set_plan:
             return ""
+        seed = self._track_seed(track_no)
         entry = plan_entry(self.state.set_plan, track_no)
         if not entry:
             return (
                 f"▶ Сейчас по плану — Трек {track_no}: сыграй его через "
-                "compose_music. "
+                f"compose_music(seed={seed}). "
             )
         return (
             f"▶ Сейчас по плану — Трек {track_no}: «{entry}». Если это "
             "название конкретной песни/композиции (не жанр и не "
             "описание вайба) — действует RULE #KNOWN-MELODY (см. "
             "composer.txt): НЕ импровизируй по памяти, СНАЧАЛА "
-            f'compose_music(name="{entry}") — тул сам ищет точные ноты в '
-            f'RTTTL-базе; при сомнении в написании названия — lookup_melody('
-            f'name="{entry}") первым отдельным вызовом. Если в строке плана '
-            "не песня, а описание — compose_music в этом духе, без name=. "
-            "НЕ говори, что трека нет, не вызвав lookup_melody. "
+            f'compose_music(name="{entry}", seed={seed}) — тул сам ищет точные '
+            f'ноты в RTTTL-базе; при сомнении в написании названия — '
+            f'lookup_melody(name="{entry}") первым отдельным вызовом. '
+            f"seed={seed} — чтобы повтор той же песни в другом сете звучал не "
+            "тем же басом/пэдом/ударными один в один; при повторе ЭТОЙ песни "
+            "в ЭТОМ сете (не по плану) увеличь seed хотя бы на 1. Если в "
+            "строке плана не песня, а описание — compose_music в этом духе, "
+            "без name=. НЕ говори, что трека нет, не вызвав lookup_melody. "
         )
 
     def build_auto_prompt(self, n: int) -> str:
@@ -792,7 +820,9 @@ class DJModeController:
                 "set_dj_mode(enabled=true, plan=<список треков, каждый с новой "
                 "строки 'Трек N: ...'>, next_transition_sec=<длительность формы "
                 "из ответа compose_music>). Потом сыграй "
-                f"трек #1 через compose_music. {library_line} {stage_marker}"
+                f"трек #1 через compose_music(seed={self._track_seed(track_no)}) "
+                f"— seed, чтобы повтор темы в другом сете звучал не тем же "
+                f"басом/пэдом/ударными. {library_line} {stage_marker}"
                 f"{length_line} "
                 f"Затем представься как {persona} через speak_text."
             )
@@ -819,7 +849,10 @@ class DJModeController:
             f"Ты {persona}. {theme_line}{plan_block}"
             f"{track_line}{library_line} {stage_marker} "
             "Сыграй следующий трек через compose_music (repeat=true, другой "
-            "bpm/root/scale/synth в духе темы, чем предыдущий трек). "
+            "bpm/root/scale/synth в духе темы, чем предыдущий трек; "
+            f"с name=/rtttl= добавь seed={self._track_seed(track_no)}, чтобы "
+            "повтор той же песни в другом сете не звучал тем же "
+            "басом/пэдом/ударными один в один). "
             f"{length_line} "
             "🔥 РАЗОГРЕЙ ТОЛПУ: перед стартом трека вызови speak_text с ОДНОЙ "
             "короткой тематической фразой-выкриком в стиле персоны и в тему "

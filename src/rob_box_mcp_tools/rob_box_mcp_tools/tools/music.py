@@ -2752,6 +2752,44 @@ _ARRANGEMENT_PARAMETERS: List[MCPToolParameter] = [
                 "По умолчанию — все 1.",
                 required=False,
             ),
+            MCPToolParameter(
+                name="seed",
+                type="integer",
+                description=(
+                    "Ручка (только с name=/rtttl=): сид вариативности "
+                    "аранжировки. Ручки bass_style/pad_style/drum_style, "
+                    "оставленные на auto, при заданном seed выбирают "
+                    "КОНКРЕТНЫЙ вариант вместо одного и того же дефолта — "
+                    "тот же сид всегда даёт тот же результат, разные сиды "
+                    "дают разный. ВАЖНО для DJ и повторов: без seed повтор "
+                    "той же песни (в новом сете, на бис) звучит побайтно "
+                    "тем же басом/пэдом/ударными — это баг, не фича. Ставь "
+                    "seed = номер трека в сете (счёт с 1) в каждом "
+                    "compose_music DJ-сета, и другой seed на повторный сет "
+                    "той же темы — например seed = номер_сета*100 + "
+                    "номер_трека. Без name=/rtttl= — ошибка, ручке нечего "
+                    "варьировать. По умолчанию не задан (прежнее поведение)."
+                ),
+                required=False,
+            ),
+            MCPToolParameter(
+                name="rtttl",
+                type="string",
+                description=(
+                    "Точные ноты в формате RTTTL, присланные юзером напрямую "
+                    "(например «играй вот это: имя:d=4,o=5,b=125:8c,8d,8e» "
+                    "или скопированные из другого источника). Если юзер "
+                    "прислал готовую RTTTL-строку — играй ИМЕННО её через "
+                    "этот параметр, НЕ ищи и не заменяй её похожей записью "
+                    "из name=. rtttl побеждает name=: аккомпанемент (бас, "
+                    "пэд, ударные) строится из присланных нот, а не из "
+                    "найденной по имени библиотечной мелодии. name= вместе "
+                    "с rtttl= — только заголовок для сообщения/партитуры, "
+                    "в базе не ищется. Тембры (lead_synth/bass_synth/"
+                    "pad_synth) и ручки — как с name=."
+                ),
+                required=False,
+            ),
 ]
 
 
@@ -3119,6 +3157,7 @@ class ComposeMusicTool(MCPTool):
         pad_notes: Optional[str],
         drum_style: str = "auto",
         options: Any = None,
+        rtttl: Optional[str] = None,
     ) -> Tuple[
         Optional[MCPToolResult],
         Any,
@@ -3130,7 +3169,7 @@ class ComposeMusicTool(MCPTool):
         Any,
         Dict[str, Any],
     ]:
-        """Подтянуть параметры темы из RTTTL по имени.
+        """Подтянуть параметры темы из RTTTL по имени или присланной строке.
 
         Возвращает ``(error, bpm, root, scale, lead_midi, lead_dur,
         melody_title, harmony, params)``. Если первый элемент —
@@ -3140,68 +3179,103 @@ class ComposeMusicTool(MCPTool):
         ударные (:mod:`core.harmonize`). Именно она, а не присланные
         моделью ноты, становится аккомпанементом. ``params`` — полный
         выход ``melody_to_compose_params`` (там ``decisions`` для партитуры,
-        ADR-0132); без ``name`` — пустой dict. ``options`` — ручки
+        ADR-0132); без ``name``/``rtttl`` — пустой dict. ``options`` — ручки
         ``HarmonizeOptions`` (ADR-0132 PR-4); ``None`` — все ``auto``.
+
+        Issue #2969: ``rtttl`` — сырая RTTTL-строка, присланная юзером
+        (например скопированная из своего плеера). Она ВСЕГДА побеждает
+        библиотеку: живой лог 24.09 показал, что модель, имея готовые ноты
+        от юзера в диалоге, всё равно звала ``compose_music(name=...)`` и
+        играла версию из базы — присланное было некуда передать. Разбор
+        (``rtttl_to_melody``) — тот же самый, что и для записи библиотеки;
+        отличается только источник строки. ``name`` при этом остаётся
+        заголовком партитуры/сообщения, но НЕ резолвится в библиотеке — не
+        тратим обращение к ней и не рискуем молча подменить присланные
+        ноты найденной записью.
         """
-        if not name:
+        if not name and not rtttl:
             self._pending_melody_key = None
             self._pending_melody_record = None
             return None, bpm, root, scale, None, None, None, None, {}
-        # issue #2964 (правка товарища Шифу — НЕ жёсткий гейт: история
-        # отката #2882→#2896 показала, что единая эвристика отказа под
-        # одно слабое совпадение («stranger things» → None) ломает сильные
-        # («super mario»). compose_music по-прежнему играет лучшего ПО
-        # ТЕКСТУ кандидата (как и раньше) — честность обеспечивает
-        # прозрачность результата (``match``/``display_title`` ниже,
-        # :func:`match_info`/:func:`display_title`) и общее правило в
-        # промпте скилла composer, а не молчаливый отказ библиотеки.
-        # ``self._resolve_melody`` (не модульная :func:`_resolve_melody_with_candidate`
-        # — той пользуется только ``LookupMelodyTool``, у неё нет метода на
-        # инстансе для подмены): часть тестов (test_compose_music_knobs.py,
-        # test_compose_music_tweak_inherits.py, test_compose_music_honest_input.py)
-        # подменяют ИМЕННО этот метод (``tool._resolve_melody = lambda …``),
-        # чтобы заморозить резолв темы — смена на другую функцию тут молча
-        # ломает заморозку и бьёт по реальной RTTTL-библиотеке/Mock().
-        rec = self._resolve_melody(name, variants)
-        self._pending_melody_record = rec
-        # Issue #2950: тот же resolve, что уже сделан здесь для RTTTL —
-        # :meth:`_remember_last_track` переиспользует его через это поле
-        # вместо ЕЩЁ ОДНОГО ``self._rtttl_library.get(...)`` после
-        # проигрывания (лишний вызов вдвойне бессмысленный: библиотека уже
-        # опрошена парой строк выше, а в тестах с ``side_effect``-списком
-        # кандидатов он же гарантированно уронит ``StopIteration``).
-        self._pending_melody_key = str(rec.get("name") or "") or None if rec else None
-        if rec is None:
-            return (
-                MCPToolResult(
-                    success=False,
-                    error=(
-                        f"Мелодия {name!r} не найдена в библиотеке. Скажи "
-                        "юзеру честно, что не знаешь точных нот, и предложи "
-                        "сыграть что-то в похожем духе — НЕ выдавай "
-                        "импровизацию за оригинал."
+        if rtttl:
+            # Issue #2969 — присланная строка не запись библиотеки: не
+            # резолвим по имени (см. её докстринг выше), наследовать/
+            # сохранять как пресет нечего (:meth:`_remember_last_track` /
+            # :meth:`_remember_played_preset` читают именно это поле), и
+            # ``match``/``display_title`` (issue #2964, ниже) строить не по
+            # чему — ноты уже даны напрямую, а не найдены слабым совпадением.
+            self._pending_melody_key = None
+            self._pending_melody_record = None
+            try:
+                melody = rtttl_to_melody(rtttl)
+            except ValueError as exc:
+                return (
+                    MCPToolResult(
+                        success=False,
+                        error=f"Не удалось разобрать rtttl={rtttl!r}: {exc}",
                     ),
-                ),
-                None, None, None, None, None, None, None, {},
-            )
+                    None, None, None, None, None, None, None, {},
+                )
+            title_source = str(name) if name else "присланные ноты"
+        else:
+            # issue #2964 (правка товарища Шифу — НЕ жёсткий гейт: история
+            # отката #2882→#2896 показала, что единая эвристика отказа под
+            # одно слабое совпадение («stranger things» → None) ломает сильные
+            # («super mario»). compose_music по-прежнему играет лучшего ПО
+            # ТЕКСТУ кандидата (как и раньше) — честность обеспечивает
+            # прозрачность результата (``match``/``display_title`` ниже,
+            # :func:`match_info`/:func:`display_title`) и общее правило в
+            # промпте скилла composer, а не молчаливый отказ библиотеки.
+            # ``self._resolve_melody`` (не модульная :func:`_resolve_melody_with_candidate`
+            # — той пользуется только ``LookupMelodyTool``, у неё нет метода на
+            # инстансе для подмены): часть тестов (test_compose_music_knobs.py,
+            # test_compose_music_tweak_inherits.py, test_compose_music_honest_input.py)
+            # подменяют ИМЕННО этот метод (``tool._resolve_melody = lambda …``),
+            # чтобы заморозить резолв темы — смена на другую функцию тут молча
+            # ломает заморозку и бьёт по реальной RTTTL-библиотеке/Mock().
+            rec = self._resolve_melody(name, variants)
+            self._pending_melody_record = rec
+            # Issue #2950: тот же resolve, что уже сделан здесь для RTTTL —
+            # :meth:`_remember_last_track` переиспользует его через это поле
+            # вместо ЕЩЁ ОДНОГО ``self._rtttl_library.get(...)`` после
+            # проигрывания (лишний вызов вдвойне бессмысленный: библиотека уже
+            # опрошена парой строк выше, а в тестах с ``side_effect``-списком
+            # кандидатов он же гарантированно уронит ``StopIteration``).
+            self._pending_melody_key = str(rec.get("name") or "") or None if rec else None
+            if rec is None:
+                return (
+                    MCPToolResult(
+                        success=False,
+                        error=(
+                            f"Мелодия {name!r} не найдена в библиотеке. Скажи "
+                            "юзеру честно, что не знаешь точных нот, и предложи "
+                            "сыграть что-то в похожем духе — НЕ выдавай "
+                            "импровизацию за оригинал."
+                        ),
+                    ),
+                    None, None, None, None, None, None, None, {},
+                )
+            melody = rtttl_to_melody(rec["rtttl"])
+            title_source = str(rec.get("title") or rec.get("name") or name)
         try:
             # ADR-0132 PR-2: явные root/scale перегармонизируют тему
             # (раньше при name= молча игнорировались).
             params = melody_to_compose_params(
-                rtttl_to_melody(rec["rtttl"]), drum_style=drum_style,
+                melody, drum_style=drum_style,
                 root=root, scale=scale, options=options,
             )
         except ValueError as exc:
             # Ошибку ручки (напр. аккордов chords больше, чем тактов темы)
             # harmonize тоже бросает ValueError — текст называет причину.
+            failed_label = name or "rtttl"
             return (
                 MCPToolResult(
                     success=False,
-                    error=f"Не удалось построить аранжировку мелодии {name!r}: {exc}",
+                    error=f"Не удалось построить аранжировку мелодии {failed_label!r}: {exc}",
                 ),
                 None, None, None, None, None, None, None, {},
             )
-        melody_title = str(rec.get("title") or rec.get("name") or name)
+        melody_title = title_source
         resolved_bpm: Any = bpm if bpm is not None else params["bpm"]
         resolved_root: Any = params["root"]
         resolved_scale: Any = params["scale"]
@@ -3462,6 +3536,8 @@ class ComposeMusicTool(MCPTool):
         lead_octave: Any = _UNSET,
         lead_outliers: Any = _UNSET,
         levels: Any = _UNSET,
+        seed: Optional[int] = None,
+        rtttl: Optional[str] = None,
     ) -> MCPToolResult:
         """Точка входа тула (ADR-0132 PR-7): подмешать пресет, затем сыграть.
 
@@ -3536,6 +3612,8 @@ class ComposeMusicTool(MCPTool):
         lead_octave: Any = None,
         lead_outliers: Optional[str] = None,
         levels: Any = None,
+        seed: Optional[int] = None,
+        rtttl: Optional[str] = None,
     ) -> MCPToolResult:
         err, built = self._build_arrangement(
             name=name, variants=variants, bpm=bpm, root=root, scale=scale,
@@ -3551,6 +3629,7 @@ class ComposeMusicTool(MCPTool):
             bass_style=bass_style, bass_approach=bass_approach,
             pad_style=pad_style, pad_register=pad_register, counter=counter,
             lead_octave=lead_octave, lead_outliers=lead_outliers, levels=levels,
+            seed=seed, rtttl=rtttl,
         )
         if err is not None:
             return err
@@ -3619,6 +3698,8 @@ class ComposeMusicTool(MCPTool):
         lead_octave: Any = None,
         lead_outliers: Optional[str] = None,
         levels: Any = None,
+        seed: Optional[int] = None,
+        rtttl: Optional[str] = None,
     ) -> Tuple[Optional[MCPToolResult], Optional["ComposeMusicTool._ArrangementBuild"]]:
         """Разобрать параметры, построить ``spec``/код — БЕЗ проигрывания.
 
@@ -3649,29 +3730,35 @@ class ComposeMusicTool(MCPTool):
         form, root, scale = checked["form"], checked["root"], checked["scale"]
         bpm, swing = checked["bpm"], checked["swing"]
 
-        # Issue #2841: жанровый каркас ударных — проверка и (без name=)
-        # заполнение drums/hats, которых модель не дала.
-        err, style, drums, hats = self._apply_drum_style(drum_style, name, drums, hats)
+        # Issue #2969: rtttl= ведёт по тому же пути «известная мелодия», что
+        # name= (аккомпанемент выводится из нот, а не пишется моделью).
+        known_melody = name or rtttl
+        # Issue #2841: жанровый каркас ударных — проверка и (без известной
+        # мелодии) заполнение drums/hats, которых модель не дала.
+        err, style, drums, hats = self._apply_drum_style(drum_style, known_melody, drums, hats)
         if err is not None:
             return err, None
-        # ADR-0132 PR-4: ручки аранжировщика → опции ядра.
-        err, knobs = self._parse_knobs(name, drums, hats, dict(
+        # ADR-0132 PR-4: ручки аранжировщика → опции ядра. Хармонайз-ручки
+        # разрешены и здесь же, и ``drums``/``hats`` модели так же заменяют
+        # выведенный рисунок.
+        err, knobs = self._parse_knobs(known_melody, drums, hats, dict(
             key_detection=key_detection, chords=chords,
             harmonic_rhythm=harmonic_rhythm, density=density,
             bass_style=bass_style, bass_approach=bass_approach,
             pad_style=pad_style, pad_register=pad_register, counter=counter,
             theme_octaves=theme_octaves, lead_octave=lead_octave,
-            lead_outliers=lead_outliers, levels=levels,
+            lead_outliers=lead_outliers, levels=levels, seed=seed,
         ))
         if knobs is None:
             return cast(MCPToolResult, err), None
-        # Известная мелодия по имени: ищем в RTTTL-библиотеке, конвертируем
-        # ноты в параметры композитора и заполняем ими вызов.
+        # Известная мелодия по имени или присланным нотам: ищем/разбираем
+        # RTTTL, конвертируем ноты в параметры композитора и заполняем ими
+        # вызов.
         err, bpm, root, scale, lead_midi, lead_dur, melody_title, harmony, prep = (
             self._resolve_rtttl_params(
                 name, variants, bpm, root, scale,
                 lead_synth, drums, bass_synth, bass_notes, pad_synth, pad_notes,
-                drum_style=style, options=knobs.harmonize,
+                drum_style=style, options=knobs.harmonize, rtttl=rtttl,
             )
         )
         if err is not None:
@@ -3679,19 +3766,21 @@ class ComposeMusicTool(MCPTool):
 
         # Аранжировку даёт LLM (не подставляем дефолты): без lead_synth +
         # bass_synth + pad_synth тема звучит голым одиночным синтом — бас и
-        # пэд при name= ничем не автозаполняются. Просим модель дополнить
-        # вызов (live 11.09, уточнено 14.09: ноты/рисунки не требуем).
-        if name:
+        # пэд при name=/rtttl= ничем не автозаполняются. Просим модель
+        # дополнить вызов (live 11.09, уточнено 14.09: ноты/рисунки не
+        # требуем).
+        if known_melody:
             missing = self._missing_arrangement_fields(
                 lead_synth, bass_synth, pad_synth,
             )
             if missing:
+                label = f"Мелодия {name!r} найдена" if name else "Ноты (rtttl=) разобраны"
                 return MCPToolResult(
                     success=False,
                     error=(
-                        f"Мелодия {name!r} найдена, но не задана аранжировка: "
+                        f"{label}, но не задана аранжировка: "
                         f"не хватает {', '.join(missing)}. Вызови compose_music "
-                        f"ещё раз с теми же name/variants и добавь "
+                        f"ещё раз с теми же name/variants/rtttl и добавь "
                         f"{', '.join(missing)}."
                     ),
                 ), None
@@ -4057,6 +4146,8 @@ class PreviewArrangementTool(MCPTool):
         lead_octave: Any = _UNSET,
         lead_outliers: Any = _UNSET,
         levels: Any = _UNSET,
+        seed: Optional[int] = None,
+        rtttl: Optional[str] = None,
     ) -> MCPToolResult:
         """ADR-0132 PR-7 / issue #2950: партитура превью подмешивает то же
         наследование от играющего трека и тот же пресет, что применил бы
@@ -4114,6 +4205,8 @@ class PreviewArrangementTool(MCPTool):
         lead_octave: Any = None,
         lead_outliers: Optional[str] = None,
         levels: Any = None,
+        seed: Optional[int] = None,
+        rtttl: Optional[str] = None,
     ) -> MCPToolResult:
         err, built = self._composer._build_arrangement(
             name=name, variants=variants, bpm=bpm, root=root, scale=scale,
@@ -4129,6 +4222,7 @@ class PreviewArrangementTool(MCPTool):
             bass_style=bass_style, bass_approach=bass_approach,
             pad_style=pad_style, pad_register=pad_register, counter=counter,
             lead_octave=lead_octave, lead_outliers=lead_outliers, levels=levels,
+            seed=seed, rtttl=rtttl,
         )
         if err is not None:
             return err

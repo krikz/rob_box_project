@@ -318,6 +318,10 @@ def _optional_knobs_text(dec: Dict[str, Any]) -> Dict[str, str]:
         )
     if dec.get("knob_hats", "auto") != "auto":
         out["hats"] = "задан рисунком"
+    # Issue #2969: сид виден в партитуре только когда задан — иначе он на
+    # каждый сочинённый/безымянный трек добавлял бы шум "seed=None".
+    if dec.get("seed") is not None:
+        out["seed"] = str(dec["seed"])
     return out
 
 

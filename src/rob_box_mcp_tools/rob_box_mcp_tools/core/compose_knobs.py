@@ -43,6 +43,7 @@ __all__ = [
     "parse_lead_octave",
     "parse_levels",
     "parse_pad_register",
+    "parse_seed",
     "parse_theme_octaves",
 ]
 
@@ -58,6 +59,13 @@ _HARMONIZE_WORDS: Tuple[str, ...] = (
 )
 
 #: Все ручки-параметры ``compose_music`` (порядок — как в схеме тула).
+#: ``seed`` (issue #2969) сюда НЕ входит: этот список становится
+#: :data:`core.arrangement_presets.PRESET_KNOB_FIELDS` и полями
+#: наследования от играющего трека (``_TRACK_INHERIT_FIELDS`` в
+#: ``tools/music.py``) — сид, наоборот, обязан МЕНЯТЬСЯ от вызова к
+#: вызову (issue #2969: тот же сид у той же мелодии на повторе сета и
+#: был исходным багом), а не переживать в пресете/наследоваться от
+#: предыдущего трека той же мелодии.
 KNOB_PARAMS: Tuple[str, ...] = _HARMONIZE_WORDS + (
     "chords",
     "pad_register",
@@ -158,6 +166,24 @@ def parse_levels(value: object) -> Dict[str, float]:
     return levels
 
 
+def parse_seed(value: object) -> Optional[int]:
+    """``seed`` ручки (issue #2969): целое число или ``None``/пусто.
+
+    Строка приходит из JSON tool-вызова так же, как остальные числовые
+    ручки (``"7"``) — модель не обязана знать, что JSON поддерживает int.
+    """
+    if _unset(value):
+        return None
+    if isinstance(value, bool):
+        raise ValueError(f"seed={value!r}: допустимо целое число, не булево.")
+    if isinstance(value, int):
+        return value
+    text = str(value).strip()
+    if not _INT_RE.fullmatch(text):
+        raise ValueError(f"seed={value!r}: допустимо целое число (сид вариативности) или пусто.")
+    return int(text)
+
+
 def parse_theme_octaves(value: object) -> Tuple[object, bool]:
     """``theme_octaves`` → ``(режим ручки, флаг spec_from_flat)``.
 
@@ -233,6 +259,7 @@ def build_knobs(
         lead_octave=parse_lead_octave(knobs.get("lead_octave")),
         drums=drums,
         hats=hats,
+        seed=parse_seed(knobs.get("seed")),
     )
     arrange = ArrangeOptions(
         counter=_word(knobs.get("counter"), AUTO),  # type: ignore[arg-type]

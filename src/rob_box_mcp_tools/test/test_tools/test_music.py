@@ -2910,6 +2910,106 @@ class TestComposeMusicToolMelodyByName:
         assert result.data.get("title") is None
 
 
+class TestComposeMusicToolRtttlParam:
+    """Issue #2969 — ``compose_music(rtttl=...)``: присланные юзером ноты.
+
+    Живой лог 24.09.2026: юзер вставил в TG готовую RTTTL трека («играй
+    вот примерно это»), модель всё равно вызвала ``compose_music(name=...)``
+    и сыграла версию из библиотеки — присланному было некуда попасть.
+    ``rtttl=`` даёт прямой путь мимо библиотеки: ВСЕГДА побеждает ``name=``
+    для источника нот, библиотека вообще не опрашивается.
+    """
+
+    _ARR = dict(lead_synth="blip", bass_synth="dub", pad_synth="warmpad")
+    _RTTTL = "usersong:d=4,o=5,b=100:8c,8d,8e,8f,2g"
+
+    def _make_tool(self, mock_node, rtttl_library=None):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        return ComposeMusicTool(mock_node, mgr, rtttl_library), mgr
+
+    def test_rtttl_plays_the_sent_notes_without_touching_the_library(self, mock_node):
+        rtttl_library = Mock()
+        tool, mgr = self._make_tool(mock_node, rtttl_library)
+        mgr.execute_code = Mock(return_value={"success": True})
+        result = tool.execute(rtttl=self._RTTTL, **self._ARR)
+        assert result.success is True
+        assert not rtttl_library.get.called
+        code = mgr.execute_code.call_args.args[0]
+        assert "dub" in code
+        assert "warmpad" in code
+        assert "Clock.bpm = 100" in code
+
+    def test_rtttl_wins_over_a_name_that_would_resolve_in_the_library(self, mock_node):
+        """``name=`` вместе с ``rtttl=`` — только заголовок, не поиск."""
+        rtttl_library = Mock()
+        rtttl_library.get.return_value = {
+            "name": "fifth",
+            "title": "Beethoven's Fifth",
+            "rtttl": "fifth:d=4,o=5,b=63:8p,8g5,8g5,8g5,2d#5",
+        }
+        tool, mgr = self._make_tool(mock_node, rtttl_library)
+        mgr.execute_code = Mock(return_value={"success": True})
+        result = tool.execute(name="fifth", rtttl=self._RTTTL, **self._ARR)
+        assert result.success is True
+        assert not rtttl_library.get.called
+        code = mgr.execute_code.call_args.args[0]
+        # Темп присланной строки (100), а не библиотечной записи (63) —
+        # значит аранжировка построена из rtttl, не из "fifth".
+        assert "Clock.bpm = 100" in code
+        assert result.data["title"] == "fifth"
+
+    def test_rtttl_without_arrangement_is_rejected(self, mock_node):
+        tool, mgr = self._make_tool(mock_node, rtttl_library=None)
+        mgr.execute_code = Mock(return_value={"success": True})
+        result = tool.execute(rtttl=self._RTTTL)
+        assert result.success is False
+        assert "lead_synth" in result.error
+        assert "bass_synth" in result.error
+        assert "pad_synth" in result.error
+        assert not mgr.execute_code.called
+
+    def test_malformed_rtttl_is_an_honest_failure(self, mock_node):
+        tool, mgr = self._make_tool(mock_node, rtttl_library=None)
+        mgr.execute_code = Mock(return_value={"success": True})
+        result = tool.execute(rtttl="not a valid rtttl string", **self._ARR)
+        assert result.success is False
+        assert not mgr.execute_code.called
+
+    def test_seed_reaches_the_score_decisions(self, mock_node):
+        """``seed=`` доходит до ``harmonize()`` через полный путь тула."""
+        tool, mgr = self._make_tool(mock_node, rtttl_library=None)
+        mgr.execute_code = Mock(return_value={"success": True})
+        result = tool.execute(rtttl=self._RTTTL, seed=7, **self._ARR)
+        assert result.success is True
+        assert tool.last_score["raw_decisions"]["harmony"]["seed"] == 7
+        assert tool.last_score["decisions"]["seed"] == "7"
+
+    def test_seed_without_name_or_rtttl_is_rejected(self, mock_node):
+        """Сид варьирует ручки, выведенные из темы — без темы варьировать нечего."""
+        tool, mgr = self._make_tool(mock_node, rtttl_library=None)
+        mgr.execute_code = Mock(return_value={"success": True})
+        result = tool.execute(
+            seed=7, bpm=100, root="C", scale="minor",
+            lead_synth="blip", lead_notes="0,2,4,7",
+        )
+        assert result.success is False
+        assert "name=" in result.error or "rtttl" in result.error
+
+    def test_two_calls_with_different_seeds_diverge(self, mock_node):
+        """Acceptance issue #2969: тот же трек, разный seed → разный бас/пэд/ударные."""
+        tool1, mgr1 = self._make_tool(mock_node, rtttl_library=None)
+        mgr1.execute_code = Mock(return_value={"success": True})
+        tool1.execute(rtttl=self._RTTTL, seed=1, **self._ARR)
+        code1 = mgr1.execute_code.call_args.args[0]
+
+        tool2, mgr2 = self._make_tool(mock_node, rtttl_library=None)
+        mgr2.execute_code = Mock(return_value={"success": True})
+        tool2.execute(rtttl=self._RTTTL, seed=2, **self._ARR)
+        code2 = mgr2.execute_code.call_args.args[0]
+
+        assert code1 != code2
+
+
 class TestArrangementPresetApplication:
     """ADR-0132 PR-7 — пресет ручек по мелодии в ``compose_music(name=...)``.
 

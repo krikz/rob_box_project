@@ -96,7 +96,9 @@ def test_first_transition_with_plan_plays_track_one_without_research() -> None:
 
     prompt = ctrl.build_auto_prompt(1)
 
-    assert 'compose_music(name="Still Dre")' in prompt
+    # Issue #2969: seed= теперь всегда идёт следом — повтор той же песни
+    # в другом сете не должен звучать тем же басом/пэдом/ударными.
+    assert 'compose_music(name="Still Dre", seed=' in prompt
     assert "Трек 1" in prompt
     assert "search_web(" not in prompt
     assert "gen_search_library(" not in prompt
@@ -122,9 +124,29 @@ def test_track_played_in_the_users_turn_moves_transition_one_to_track_two() -> N
     prompt = ctrl.build_auto_prompt(1)
 
     track_line = prompt.split("▶", 1)[1]
-    assert 'compose_music(name="Next Episode")' in track_line
+    assert 'compose_music(name="Next Episode", seed=' in track_line
     assert "Still Dre" not in track_line
     assert FINAL_MARK not in prompt
+
+
+def test_replaying_the_same_plan_in_a_new_set_gets_a_different_seed() -> None:
+    """Regression issue #2969: живой лог 24.09 — второй DJ-сет с той же
+    темой (тот же план из 5 треков) сыграл The Next Episode побайтно тем
+    же басом/пэдом, что первый. ``seed=`` в промпте перехода обязан
+    отличаться между сетами для того же номера трека — иначе
+    ``compose_music`` снова получит один и тот же ``auto``-вариант."""
+    set1, _, _ = _controller({"plan": PLAN})
+    prompt1 = set1.build_auto_prompt(1)
+    seed1 = int(prompt1.split("seed=", 1)[1].split(")", 1)[0])
+
+    set2, _, clock2 = _controller({"plan": PLAN})
+    clock2.now += 3600.0  # второй сет стартовал позже — другой started_at
+    set2.state.started_at = 0.0  # заставить handle_message переснять его
+    set2.handle_message(json.dumps({"enabled": True, "plan": PLAN}))
+    prompt2 = set2.build_auto_prompt(1)
+    seed2 = int(prompt2.split("seed=", 1)[1].split(")", 1)[0])
+
+    assert seed1 != seed2
 
 
 def test_live_request_ten_minutes_three_tracks_plays_all_three() -> None:
