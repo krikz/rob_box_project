@@ -198,6 +198,44 @@ FX_BASE_AMP = 0.28
 #: встретиться в нескольких формах — набор одинаковый для всех них.
 FX_BOUNDARY_SECTIONS = frozenset({"break", "gap", "bridge", "drop", "drop2", "peak", "swell"})
 
+#: Issue #2980 — «пространство» микса (Renardo ``room=``/``echo=``, уже
+#: подгружены :func:`_initialize_renardo` через ``effect_manager.reload()``,
+#: но до сих пор ничем не заполнены) как системный инструмент секций, а не
+#: под конкретную песню/синт: набор имён секций — тот же приём, что у
+#: :data:`FX_BOUNDARY_SECTIONS` — функция секции в форме, а не её название
+#: само по себе (одни и те же имена встречаются во всех формах).
+#:
+#: ``room`` — секции, где форма явно СНИМАЕТ плотность (интро до входа
+#: ритма, брейк после кульминации, гэп перед дропом, бридж, аутро, все
+#: секции амбиента): открытое, тихое пространство читается как воздух под
+#: пэдом. На плотных секциях (main/peak/drop) room тут не нужен — зал под
+#: полным миксом маскирует атаку баса и бочки, а не добавляет глубину.
+ROOM_SPACE_SECTIONS = frozenset({
+    "intro", "outro", "break", "gap", "bridge", "emerge", "drift", "recede",
+})
+#: ``echo`` — секции-кульминации: акцент на теме (echo повторяет саму
+#: ноту, а не хвост среды room), тот же принцип «яркая фишка на пике», что
+#: и у FX-акцента (issue #2968), не постоянная краска.
+ECHO_ACCENT_SECTIONS = frozenset({"peak", "drop", "drop2", "chorus2", "swell"})
+
+#: Базовое/акцентное значение ``room=`` у пэда (0..1 — доля от того, что
+#: живые пресеты (``migrations/006_music_github_presets.sql``: room=0.3..2)
+#: используют без клиппинга). Вне :data:`ROOM_SPACE_SECTIONS` пэд всё равно
+#: получает немного воздуха — тишина без room звучит суше, чем остальной
+#: микс, а не только на разряженных секциях.
+ROOM_BASE = 0.25
+ROOM_SPACE_BOOST = 0.6
+#: Кап ``room=`` для синта с долгим хвостом (:mod:`core.synth_traits`,
+#: ``long_release``). Зал поверх и без того держащейся ноты копит хвост
+#: ещё сильнее (acceptance issue #2980: «хвосты не копятся») — кап ниже
+#: буста, но не ноль: немного воздуха остаётся, зала — нет.
+ROOM_LONG_RELEASE_CAP = 0.3
+#: Базовое/акцентное значение ``echo=`` темы. Вне пика эхо молчит совсем
+#: (0.0 не рендерится — см. :func:`_render_space_arg`): echo — акцент
+#: пика, не постоянный эффект, в отличие от room.
+ECHO_BASE = 0.0
+ECHO_ACCENT = 0.25
+
 #: Полутоновые интервалы ладов, которые предъявляет схема ``compose_music``.
 #:
 #: Нужны ровно для одного: перевести ``progression`` (ступени лада) в сдвиг
@@ -990,6 +1028,59 @@ def _amp_envelope(
     return _merge_adjacent(amps, durs)
 
 
+def _synth_traits():
+    """Ленивый импорт :mod:`core.synth_traits` — та же причина, что у
+    :func:`_sample_loops`/:func:`_sample_fx`: ``tools/gen_tool_catalog.py``
+    грузит этот файл напрямую, без пакета, и импорт уровня модуля падает.
+    """
+    from . import synth_traits
+
+    return synth_traits
+
+
+def _render_space_arg(
+    synth: Optional[str],
+    plan: Sequence[Tuple[str, int, Dict[str, float]]],
+    sections: frozenset,
+    base: float,
+    accent: float,
+    long_release_cap: Optional[float],
+) -> Optional[str]:
+    """``room=``/``echo=`` var()-огибающая по функции секции (issue #2980).
+
+    Единственное, для чего здесь читается имя синта — узнать длину его
+    хвоста из :mod:`core.synth_traits` (``traits_of``) и не дать
+    залу/эху копить его ещё сильнее; выбор секций и величин не зависит от
+    того, какая это песня или какой конкретно синт — см. докстринги
+    :data:`ROOM_SPACE_SECTIONS`/:data:`ECHO_ACCENT_SECTIONS`.
+
+    Returns:
+        ``None``, если во всех секциях значение 0 (эхо вне пика для роли
+        без акцентных секций в текущей форме) — тогда аргумент вовсе не
+        добавляется в рендер, как и остальные молчащие слои этого модуля.
+    """
+    traits = _synth_traits().traits_of(synth)
+    ceiling = (
+        long_release_cap
+        if long_release_cap is not None and traits is not None and traits.long_release
+        else None
+    )
+    values: List[float] = []
+    durs: List[int] = []
+    for name, bars, _intensities in plan:
+        value = accent if name.lower() in sections else base
+        if ceiling is not None:
+            value = min(value, ceiling)
+        values.append(round(value, 4))
+        durs.append(int(bars) * BEATS_PER_BAR)
+    values, durs = _merge_adjacent(values, durs)
+    if all(v == 0 for v in values):
+        return None
+    if len(values) == 1:
+        return _fmt(values[0])
+    return f"var({_fmt_list(values)}, {_fmt_list(durs)})"
+
+
 #: Scale degrees per octave, used only to fold a transformed motif back
 #: into its own register (see :func:`_fold_into_range`). Renardo's degree
 #: indexing wraps at the scale length — degree N and N+len(scale) are the
@@ -1400,6 +1491,37 @@ def _role_filter_args(layer: Layer, use_filter: bool) -> List[str]:
     return args
 
 
+def _append_space_args(
+    args: List[str],
+    layer: Layer,
+    plan: Sequence[Tuple[str, int, Dict[str, float]]],
+) -> None:
+    """Дописать ``room=``/``echo=`` в ``args`` слоя (issue #2980).
+
+    Пространство по функции секции, не по песне/синту: пэд получает воздух
+    там, где форма снимает плотность (см. докстринг
+    :data:`ROOM_SPACE_SECTIONS`), тема — эхо-акцент на пике (см.
+    :data:`ECHO_ACCENT_SECTIONS`). Оба капаются для синта с долгим хвостом
+    (:mod:`core.synth_traits`), чтобы не копить хвост поверх хвоста.
+    Вынесено из :func:`_render_layer` отдельной функцией ради бюджета
+    цикломатической сложности (``scripts/lint/cc_budget.py``).
+    """
+    if layer.role == "pad":
+        room_expr = _render_space_arg(
+            layer.synth, plan, ROOM_SPACE_SECTIONS, ROOM_BASE, ROOM_SPACE_BOOST,
+            long_release_cap=ROOM_LONG_RELEASE_CAP,
+        )
+        if room_expr is not None:
+            args.append(f"room={room_expr}")
+    elif layer.role in ("lead", "counter"):
+        echo_expr = _render_space_arg(
+            layer.synth, plan, ECHO_ACCENT_SECTIONS, ECHO_BASE, ECHO_ACCENT,
+            long_release_cap=0.0,
+        )
+        if echo_expr is not None:
+            args.append(f"echo={echo_expr}")
+
+
 def _render_layer(
     layer: Layer,
     plan: Sequence[Tuple[str, int, Dict[str, float]]],
@@ -1462,6 +1584,8 @@ def _render_layer(
         args.append(f"amplify={duck_expr}")
 
     args.extend(_role_filter_args(layer, use_filter))
+
+    _append_space_args(args, layer, plan)
 
     line = f"{player} >> {head}, " + ", ".join(args) + ")"
     if layer.role in DRUM_ROLES:
@@ -2509,7 +2633,9 @@ def spec_from_flat(
         progression=tuple(int(v) for v in parse_notes(progression)),
         repeat=bool(repeat),
         swing=swing,
-        decisions=_composed_decisions(options, autofilled_roles),
+        decisions=_composed_decisions(
+            options, autofilled_roles, synths={"pad": pad_synth, "lead": lead_synth},
+        ),
         levels=_levels_of(options),
     )
 
@@ -2522,15 +2648,44 @@ def _levels_of(options: Optional[ArrangeOptions]) -> Dict[str, float]:
 def _composed_decisions(
     options: Optional[ArrangeOptions],
     autofilled_roles: Optional[List[str]] = None,
+    synths: Optional[Dict[str, Optional[str]]] = None,
 ) -> Dict[str, object]:
-    """Решения сочинённого трека: ``levels`` + автозаполненные роли."""
+    """Решения сочинённого трека: ``levels`` + автозаполненные роли + space."""
     decisions: Dict[str, object] = {}
     levels = _levels_of(options)
     if levels:
         decisions["levels"] = levels
     if autofilled_roles:
         decisions["autofilled_roles"] = tuple(autofilled_roles)
+    space = _space_decision_text(synths or {})
+    if space:
+        decisions["space"] = space
     return decisions
+
+
+def _space_decision_text(synths: Dict[str, Optional[str]]) -> Optional[str]:
+    """Текст ``decisions['space']`` для партитуры, или ``None`` (issue #2980).
+
+    ``room``/``echo`` — системное авто-правило по секциям (см. докстринги
+    :data:`ROOM_SPACE_SECTIONS`/:data:`ECHO_ACCENT_SECTIONS`), не ручка
+    ADR-0132 PR-3 — оно одинаково для любой спецификации, поэтому само по
+    себе не «решение», о котором стоит тратить бюджет партитуры (~1 КБ,
+    см. ``test_score_sheet._TEXT_LIMIT``). Строка появляется, только когда
+    есть что сказать ДЕЙСТВЕННОЕ: у синта долгий хвост
+    (:mod:`core.synth_traits`) и зал/эхо у него срезаны капом, а не звучат
+    полным расчётным значением — тот же принцип честности, что у
+    :func:`core.synth_traits.theme_tail_warning` рядом.
+    """
+    traits_of = _synth_traits().traits_of
+    capped = []
+    for role in ("pad", "lead", "counter"):
+        synth = synths.get(role)
+        traits = traits_of(synth) if synth else None
+        if traits is not None and traits.long_release:
+            capped.append(role)
+    if not capped:
+        return None
+    return f"room/echo кап:{'+'.join(capped)}(долгий хвост)"
 
 
 def _counter_decision(
@@ -2601,6 +2756,7 @@ def arrangement_decisions(
             if synth
         },
         "synths": dict(synths),
+        "space": _space_decision_text(synths),
     }
 
 
