@@ -1788,6 +1788,10 @@ CLAIM_JUSTIFYING_TOOLS: frozenset = frozenset({
     "list_tracks", "play_sound", "play_animation",
     "generate_music", "gen_play_from_library", "gen_delete_from_library",
     "gen_search_library", "gen_list_library", "gen_get_track_info",
+    # issue #2942 — save_arrangement_preset (ADR-0132 PR-7): claim
+    # «сохранил/сохраняю пресет» после реального вызова тула не должно
+    # ловиться guard'ом как phantom action.
+    "save_arrangement_preset",
     # nav
     "navigate_to_waypoint", "navigate_to_coordinates", "move_direction",
     "start_mapping", "stop_mapping", "save_waypoint",
@@ -2008,6 +2012,17 @@ PHANTOM_ACTION_VERB_STEMS: str = (
     r"проверял\w*|проверяла\w*|проверяло\w*|проверяли\w*|"
     r"проверяю\w*|проверяешь\w*|проверяет\w*|проверяем\w*|проверяете\w*|"
     r"проверять\w*|проверяй\w*|проверяйте\w*|"
+    # «сохранить» family (issue #2942 — live «Понял, сохраняю эти ручки
+    # на «В пещере горного короля»…» tools=[] перед save_arrangement_preset;
+    # present tense «сохраняю» отсутствовал в словаре целиком — ни в этом
+    # списке, ни в past/future _ACTION_VERBS_* выше).
+    r"сохранил\w*|сохранила\w*|сохранило\w*|сохранили\w*|"
+    r"сохраню\w*|сохранишь\w*|сохранит\w*|сохраним\w*|сохраните\w*|"
+    r"сохранить\w*|сохрани\w*|сохраните\w*|"
+    r"сохранено\w*|сохранена\w*|сохранены\w*|"
+    r"сохранял\w*|сохраняла\w*|сохраняло\w*|сохраняли\w*|"
+    r"сохраняю\w*|сохраняешь\w*|сохраняет\w*|сохраняем\w*|сохраняете\w*|"
+    r"сохранять\w*|сохраняй\w*|сохраняйте\w*|"
     # «подложить» family (не «подложка»!)
     r"подложил\w*|подложила\w*|подложило\w*|подложили\w*|"
     r"подложу\w*|подложишь\w*|подложит\w*|подложим\w*|подложите\w*|"
