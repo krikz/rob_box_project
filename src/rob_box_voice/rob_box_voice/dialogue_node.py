@@ -208,6 +208,10 @@ from rob_box_voice.core.turn_speech import (
     TurnSpeechHold, decide_turn_speech, wants_lyrics,
 )
 from rob_box_voice.core.turn_speech_gate import TurnSpeechGate
+from rob_box_voice.core.self_intro import (
+    extract_self_intro_name,
+    same_person_name,
+)
 from rob_box_voice.core.speak_helpers import (
     EffectAwaiterRegistry, build_ssml_payload,
     ensure_dj_music_response, split_into_chunks,
@@ -1977,7 +1981,35 @@ class DialogueNode(Node):
         при ``tool_provider=ros_mcp`` тул исполняется в процессе
         ``mcp_server`` и сам до атрибутов этого узла не дотянется.
         """
-        return {"utterance_id": self._current_turn_utterance_id}
+        uid = getattr(self, "_current_turn_utterance_id", None)
+        return {
+            "utterance_id": uid,
+            # Issue #2925 -- register_speaker_gate: что человек сказал о
+            # себе в этой реплике и кем она уверенно узнана по голосу.
+            "self_intro_name": getattr(self, "_turn_self_intro", None),
+            "intro_registered": bool(
+                getattr(self, "_turn_intro_registered", False)
+            ),
+            "known_speaker_name": self._confident_speaker_name(uid),
+        }
+
+    def _confident_speaker_name(
+        self, utterance_id: Optional[str]
+    ) -> Optional[str]:
+        """Issue #2925 -- имя, под которым ЭТА реплика уверенно узнана по
+        голосу, или ``None``. Только когда снимок ``_current_speaker``
+        резолвнут именно по ``utterance_id`` хода (ADR-0131): у хода без
+        реплики (Telegram, синтетический) диктора нет, прошлый не в счёт.
+        Tentative-снимок (#2809) несёт ``name=None`` -- тоже ``None``."""
+        if not utterance_id or utterance_id != getattr(
+            self, "_last_resolved_utterance_id", None
+        ):
+            return None
+        with self._speaker_lock:
+            sp = dict(self._current_speaker)
+        if not sp.get("is_known"):
+            return None
+        return sanitize_speaker_name(str(sp.get("name") or "")) or None
 
     def _build_tool_provider(self) -> ToolProvider:
         # W5a: wire the real ROSMCPToolProvider when ``tool_provider``
@@ -3865,6 +3897,12 @@ class DialogueNode(Node):
             ) or None
 
         state = self._tentative_session_state(full_sid)
+        intro = getattr(self, "_turn_self_intro", None)
+        if intro:
+            return self._tentative_with_self_intro(
+                state, full_sid, tentative_name, intro, user_input,
+                utterance_id,
+            )
         self._resolve_pending_tentative_answer(
             state, tentative_name, user_input, utterance_id
         )
@@ -3892,6 +3930,90 @@ class DialogueNode(Node):
             )
             self._ask_tentative_identity(tentative_kind, tentative_name)
         return self._tag_tentative(user_input)
+
+    def _tentative_with_self_intro(
+        self,
+        state: dict,
+        full_sid: str,
+        tentative_name: Optional[str],
+        intro: str,
+        user_input: str,
+        utterance_id: Optional[str],
+    ) -> str:
+        """Issue #2925 -- человек назвал себя в этой же реплике.
+
+        Спрашивать «<Имя>, это ты?» (#2888) или «Как тебя зовут?» тут
+        не о чем -- ответ уже прозвучал. То же имя, что у гипотезы, --
+        это подтверждение, как словесное «да, это я» (#2809: снимок и
+        рост галереи). ДРУГОЕ имя -- вопрос не задаётся, реплика идёт в
+        регистрацию (:meth:`_register_self_intro`), а похожий голос
+        разбирает ADR-0127/#2828 по ack («вы разные люди?»).
+        """
+        if tentative_name and same_person_name(intro, tentative_name):
+            state["asked"] = True
+            state["confirmed"] = True
+            state["name"] = tentative_name
+            return self._confirm_tentative_speaker(
+                full_sid, tentative_name, user_input, utterance_id
+            )
+        self.get_logger().info(
+            f"👤 [issue #2925] вопрос о личности НЕ задан: человек назвал "
+            f"себя {intro!r} (гипотеза биометрии: {tentative_name!r}, "
+            f"id={full_sid[:8]}) -- путь регистрации"
+        )
+        return self._tag_tentative(user_input)
+
+    def _note_self_intro(
+        self, user_input: str, utterance_id: Optional[str]
+    ) -> None:
+        """Issue #2925 -- имя, которым человек назвал себя в реплике хода
+        (:func:`extract_self_intro_name`). Только для живой реплики с
+        ``utterance_id``: регистрировать без неё нечего (ADR-0131)."""
+        intro = extract_self_intro_name(user_input) if utterance_id else None
+        self._turn_self_intro = intro
+        if intro:
+            self.get_logger().info(
+                f"👤 [issue #2925] самопредставление в реплике: {intro!r} "
+                f"(utterance_id={utterance_id})"
+            )
+
+    def _register_self_intro(self, utterance_id: Optional[str]) -> None:
+        """Issue #2925 -- явное представление регистрирует голос само, не
+        дожидаясь, вызовет ли LLM ``register_speaker`` (класс #2406: на
+        роботе «привет я борис …» -- приветствие по имени без тула).
+
+        Тот же запрос, что шлёт тул (``/voice/speaker/register`` с
+        ``utterance_id`` этой реплики), тот же ack и те же пути после
+        него: ADR-0127 (голос похож, имя другое -- отдельный профиль и
+        вопрос #2828), #2863 («уже знаю»), #2908 (отказ). Тул в этом ходе
+        получает ``intro_registered`` и второй запрос не шлёт
+        (``register_speaker_gate``). Не шлём, если реплика уверенно узнана
+        под этим же именем (или только что подтверждена, #2809): нечего
+        регистрировать. Речь хода ждёт ack так же, как после тула (#2913).
+        """
+        intro = getattr(self, "_turn_self_intro", None)
+        pub = getattr(self, "_speaker_register_pub", None)
+        if not intro or not utterance_id or pub is None:
+            return
+        known = self._confident_speaker_name(utterance_id)
+        if known and same_person_name(known, intro):
+            self.get_logger().info(
+                f"👤 [issue #2925] {intro!r} уже узнан по голосу -- "
+                "регистрация по представлению не нужна"
+            )
+            return
+        msg = String()
+        msg.data = json.dumps(
+            {"name": intro, "utterance_id": utterance_id}, ensure_ascii=False
+        )
+        self._turn_speech_gate().registration_sent()
+        pub.publish(msg)
+        self._turn_intro_registered = True
+        self.get_logger().info(
+            f"📝 [issue #2925] регистрация по самопредставлению: "
+            f"name={intro!r} utterance_id={utterance_id} "
+            f"(узнан по голосу как: {known!r})"
+        )
 
     def _ask_tentative_identity(
         self, kind: str, name: Optional[str]
@@ -4556,6 +4678,10 @@ class DialogueNode(Node):
         # #2842: RegisterSpeakerTool runs in the mcp_server process, so
         # it gets this via _mcp_turn_context → hidden /mcp/execute arg.
         self._current_turn_utterance_id = utterance_id
+        # Issue #2925 -- самопредставление этой реплики; выставляет
+        # _prepare_user_input_context (_note_self_intro).
+        self._turn_self_intro = None
+        self._turn_intro_registered = False
         self._run_cancelled = False
         # Issue #992 Bug B / Bug C — ``is_dj_auto`` is threaded through
         # ``_dispatch_turn`` rather than read from ``self`` so a
@@ -6639,9 +6765,13 @@ class DialogueNode(Node):
             # Issue #2828 -- ответ на переспрос по ack регистрации читаем
             # по СЫРОЙ реплике, до префиксов [Spkr:...]/[Speaker:...].
             self._resolve_identity_ack_answer(user_input)
+            # Issue #2925 -- представление в реплике читаем ДО решения о
+            # tentative-вопросе (#2888), регистрируем ПОСЛЕ него.
+            self._note_self_intro(user_input, utterance_id)
             user_input = await self._apply_speaker_identity(
                 user_input, speaker_context, utterance_id
             )
+            self._register_self_intro(utterance_id)
         if backlog_pending:
             user_input = self._inject_backlog_hint(user_input)
         dynamic_system = self._build_dynamic_system_context()

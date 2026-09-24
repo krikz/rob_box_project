@@ -959,6 +959,9 @@ class RegisterSpeakerTool(MCPTool):
         name: str | None = None,
         old_name: str | None = None,
         utterance_id: str | None = None,
+        self_intro_name: str | None = None,
+        intro_registered: bool | None = None,
+        known_speaker_name: str | None = None,
     ) -> MCPToolResult:
         """Зарегистрировать голос.
 
@@ -966,28 +969,18 @@ class RegisterSpeakerTool(MCPTool):
         :attr:`parameters` (LLM его не видит), его подставляет
         ``LLMToolCallAdapter`` из контекста хода dialogue_node
         (``llm_adapter.TURN_CONTEXT_ARGS``), вырезая то, что прислала LLM.
+
+        Issue #2925 — ещё три скрытых аргумента того же хода:
+        ``self_intro_name`` (как человек назвал себя в реплике, если
+        назвал), ``intro_registered`` (робот уже сам отправил регистрацию
+        по этому представлению) и ``known_speaker_name`` (кем реплика
+        УВЕРЕННО узнана по голосу). По ним — :func:`register_speaker_gate`.
         """
         import json
         from std_msgs.msg import String
 
         # Step 1 — if old_name provided, rename the existing entry first.
-        if old_name and old_name.strip():
-            old_clean = old_name.strip()
-            if old_clean.lower() not in {"null", "none"} and len(old_clean) >= 2:
-                rename_msg = String()
-                rename_msg.data = json.dumps(
-                    {"old_name": old_clean, "new_name": (name or "").strip() or old_clean},
-                    ensure_ascii=False,
-                )
-                # Issue #1101 — rename идёт на /voice/speaker/rename
-                # (speaker_id_node._on_rename_request), НЕ на register:
-                # register-хендлер читает только {"name": ...} и
-                # игнорировал бы {old_name, new_name} как пустое имя.
-                self._speaker_rename_pub.publish(rename_msg)
-                self.log_info(
-                    f"[register_speaker] rename {old_clean!r} → "
-                    f"{(name or '').strip()!r}"
-                )
+        self._publish_rename(old_name, name)
 
         if name is None or name.strip() == "":
             if old_name:
@@ -1046,6 +1039,13 @@ class RegisterSpeakerTool(MCPTool):
                     'говорю» — передай name="Денис") и вызови тул ещё раз.'
                 ),
             )
+        # Issue #2925 — регистрация согласуется с тем, что человек сказал
+        # о себе в ЭТОЙ реплике (см. register_speaker_gate).
+        gated = self._gate_result(
+            name_clean, self_intro_name, intro_registered, known_speaker_name
+        )
+        if gated is not None:
+            return gated
         # publish в /voice/speaker/register — speaker_id_node привяжет d-vector
         # Issue #2829 (ADR-0131 PR-2) — utterance_id ТЕКУЩЕГО хода:
         # speaker_id_node регистрирует ИМЕННО фразу, в которой человек
@@ -1079,6 +1079,119 @@ class RegisterSpeakerTool(MCPTool):
                 "новый эталон не создаётся, повторно вызывать не нужно."
             ),
         )
+
+    def _publish_rename(self, old_name: str | None, name: str | None) -> None:
+        """Issue #1101 — поправка имени («я не X, я Y»): rename идёт на
+        /voice/speaker/rename (speaker_id_node._on_rename_request), НЕ на
+        register: register-хендлер читает только {"name": ...} и
+        игнорировал бы {old_name, new_name} как пустое имя. Вынесено из
+        :meth:`execute` (issue #2925, бюджет CC ADR-0021)."""
+        import json
+        from std_msgs.msg import String
+
+        old_clean = (old_name or "").strip()
+        if old_clean.lower() in {"", "null", "none"} or len(old_clean) < 2:
+            return
+        rename_msg = String()
+        rename_msg.data = json.dumps(
+            {"old_name": old_clean, "new_name": (name or "").strip() or old_clean},
+            ensure_ascii=False,
+        )
+        self._speaker_rename_pub.publish(rename_msg)
+        self.log_info(
+            f"[register_speaker] rename {old_clean!r} → "
+            f"{(name or '').strip()!r}"
+        )
+
+    def _gate_result(
+        self,
+        name: str,
+        self_intro_name: str | None,
+        intro_registered: bool | None,
+        known_speaker_name: str | None,
+    ) -> MCPToolResult | None:
+        """Issue #2925 — ответ тула без публикации, или ``None`` (публикуем).
+
+        В ответе нет слова ``pending``: по нему ``SchedulerToolExecutor``
+        (issue #2913) решает, что ack регистрации придёт, и держит речь
+        хода. Здесь запрос не уходит — ждать нечего.
+        """
+        verdict = register_speaker_gate(
+            name, self_intro_name, intro_registered, known_speaker_name
+        )
+        if verdict is None:
+            return None
+        if verdict == "intro_already_sent":
+            self.log_info(
+                f"[register_speaker] #2925: регистрация по представлению "
+                f"'{self_intro_name}' уже отправлена роботом в этом ходе — "
+                f"повторный запрос name={name!r} не публикую"
+            )
+            return MCPToolResult(
+                success=True,
+                data={"registered_name": self_intro_name,
+                      "sent_by_robot": True},
+                message=(
+                    f"Голос уже отправлен на запоминание как "
+                    f"'{self_intro_name}' — человек сам представился. "
+                    "Повторно вызывать не нужно."
+                ),
+            )
+        self.log_warning(
+            f"[register_speaker] #2925 ОТКАЗ: name={name!r} — в реплике "
+            f"человек не представлялся, а голос уверенно узнан как "
+            f"'{known_speaker_name}'. Новый профиль не завожу."
+        )
+        return MCPToolResult(
+            success=False,
+            data={"error": "not_self_introduction",
+                  "received": name, "known_speaker": known_speaker_name},
+            message=(
+                f"Имя '{name}' НЕ зарегистрировано: в этой реплике человек "
+                f"не называл себя, а по голосу это {known_speaker_name}. "
+                "Не говори, что запомнил нового человека; если в реплике "
+                "был факт о человеке — сохрани его через memory_save."
+            ),
+        )
+
+
+def _name_key(name: str | None) -> str:
+    return (name or "").strip().casefold().replace("ё", "е")
+
+
+def register_speaker_gate(
+    name: str,
+    self_intro_name: str | None,
+    intro_registered: bool | None,
+    known_speaker_name: str | None,
+) -> str | None:
+    """Issue #2925 — можно ли публиковать ``register_speaker(name)``.
+
+    ``None`` — публикуем как раньше. Иначе код причины:
+
+    * ``"intro_already_sent"`` — человек назвал себя в реплике, и робот
+      уже сам отправил регистрацию по этой реплике
+      (``dialogue_node._register_self_intro``). Второй запрос с той же
+      фразой — дубль эталона (или второй профиль, если LLM исказила имя).
+    * ``"not_self_introduction"`` — человек себя НЕ называл, голос уверенно
+      узнан как ``known_speaker_name``, а LLM регистрирует ДРУГОЕ имя.
+      Живой случай: «запомни про меня: Дарья болит за Спартак» (ослышка
+      STT «Борис болеет»), голос Борис 0.796 → третий профиль «Дарья».
+
+    Граница: без контекста хода (Telegram, синтетический ход, старый
+    dialogue_node) все три аргумента ``None`` — гейт молчит. Не узнанный
+    уверенно голос (``known_speaker_name=None``) тоже не блокируется: ответ
+    одним именем на «как тебя зовут?» — законная регистрация, а конфликт
+    с похожим голосом разбирает ADR-0127/#2828.
+    """
+    if intro_registered and self_intro_name:
+        return "intro_already_sent"
+    known = _name_key(known_speaker_name)
+    if not known or _name_key(name) == known:
+        return None
+    if self_intro_name and _name_key(self_intro_name) == _name_key(name):
+        return None
+    return "not_self_introduction"
 
 
 # Список поддерживаемых TTS-провайдеров для переключения (issue #1765).
