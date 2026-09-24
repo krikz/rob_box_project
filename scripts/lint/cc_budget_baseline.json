@@ -276,12 +276,6 @@
       "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
     },
     {
-      "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/core/arranger.py",
-      "method": "spec_from_flat",
-      "cc": 15,
-      "since": "Bumped 19->16 after refactor in #2626 (CC-budget guard) — extracted flat-spec normalization helper. Lowered 16->15 in #2836 — extracted _resolve_counter_synth_default so counter_synth 'none'/'off'/'null' disables the layer instead of rendering a literal none() synth. Lowered 15->9 in #2970 — extracted _add_melodic_layers (bass/lead/pad loop + autofill-without-notes fallback) out of spec_from_flat; CC (9) is now under the method limit (15), and the helper itself is too, so the arranger.py entry in the ``exemptions`` block above was removed — this historical entry stays only for the trail. ADR-0021-r1 R-1a/b: legacy-cc cannot be shrunk in place; this entry remains in _legacy_acknowledged so the upstream refactor card can pick it up. Track: PR landed 2026-09-15, baseline refreshed as part of issue #2626 acceptance; refreshed again for #2836; retired for #2970."
-    },
-    {
       "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/core/minimax_music_client.py",
       "method": "MinimaxMusicClient.generate",
       "cc": 25,
