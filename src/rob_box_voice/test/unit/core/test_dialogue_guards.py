@@ -20,6 +20,7 @@ from rob_box_voice.core.dialogue_guards import (
     ACTION_CLAIM_RULES,
     BABBLE_BANNED_OPENERS,
     BABBLE_PERFORMANCE_KEYWORDS,
+    CLAIM_JUSTIFYING_TOOLS,  # Issue #2549 universal action-claim guard
     MUSIC_GUARD_KEYWORDS,
     MUSIC_GUARD_VOCAL_KEYWORDS,
     MUSIC_RETRY_PROMPT_PREFIX,
@@ -42,6 +43,7 @@ from rob_box_voice.core.dialogue_guards import (
     detect_phantom_action_claim,  # Issue #2559 phantom-action
     detect_required_tool,
     detect_unbacked_action_claim,
+    detect_universal_action_claim,  # Issue #2549 universal action-claim guard
     detect_unknown_melody_claim,  # Issue #2562 Bug F
     extract_renardo_code_lines,
     is_metalanguage_babble,
@@ -2437,6 +2439,63 @@ class TestPhantomActionClaimLive2559:
             f"phantom-action guard должен сработать на spoken={spoken!r} "
             f"при user_input={user_input!r} — иначе в #2559 живьём юзер "
             "снова услышит обещание без действия"
+        )
+
+    # ----- issue #2942: «сохраняю» present tense (save_arrangement_preset) --
+
+    def test_save_arrangement_preset_present_tense_claim_is_detected(
+        self,
+    ) -> None:
+        """Live 24.09.2026 (issue #2942, ADR-0132 PR-7): «Понял, сохраняю
+        эти ручки на «В пещере горного короля»…» ушло в TTS с ``tools=[]``
+        перед тем как модель когда-либо вызвала ``save_arrangement_preset``.
+
+        До фикса #2942 present-tense «сохраняю» отсутствовал целиком в
+        словаре guard'а — ни в этом (``PHANTOM_ACTION_VERB_STEMS``), ни в
+        ``_ACTION_VERBS_PAST``/``_ACTION_VERBS_FUTURE`` (у тех вообще нет
+        present tense). Робот мог соврать «сохраняю» без единого тула, и
+        НИ ОДИН guard этого не ловил.
+        """
+        assert detect_phantom_action_claim(
+            user_input="ну не знаю, сохрани пресет на всякий случай",
+            spoken=(
+                "Понял, сохраняю эти ручки на «В пещере горного "
+                "короля»…"
+            ),
+            tools_called=(),
+        ) is True, (
+            "phantom-action guard должен ловить present-tense «сохраняю» "
+            "без вызова save_arrangement_preset (issue #2942 live repro)"
+        )
+
+    def test_save_arrangement_preset_claim_with_tool_called_is_not_a_bug(
+        self,
+    ) -> None:
+        """Тот же claim, но тул РЕАЛЬНО вызван — guard должен молчать."""
+        assert detect_phantom_action_claim(
+            user_input="вот это кайф, сохрани",
+            spoken="Сохраняю эти ручки как пресет.",
+            tools_called=("save_arrangement_preset",),
+        ) is False, (
+            "phantom-action guard не должен срабатывать, когда "
+            "save_arrangement_preset уже вызван"
+        )
+
+    def test_save_arrangement_preset_in_claim_justifying_tools(self) -> None:
+        """Issue #2942: тул-словарь #2549-guard'а (``detect_universal_
+        action_claim``) должен знать про ``save_arrangement_preset`` —
+        иначе past/future tense claim («Сохранил пресет.») после
+        РЕАЛЬНОГО вызова тула ложно ловится как phantom action.
+        """
+        assert "save_arrangement_preset" in CLAIM_JUSTIFYING_TOOLS
+
+        hit = detect_universal_action_claim(
+            spoken="Сохранил пресет для этой мелодии.",
+            tools_called=("save_arrangement_preset",),
+        )
+        assert hit is None, (
+            "universal action-claim guard не должен срабатывать на "
+            "«сохранил» после реального вызова save_arrangement_preset"
         )
 
     # ----- negative case 1: tools_called не пуст ⇒ guard молчит -----
