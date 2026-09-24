@@ -524,6 +524,58 @@ def test_levels_apply_to_composed_tracks_too():
 
 
 # ---------------------------------------------------------------------------
+# Бюджет громкости (issue #2963): levels — только аттенюатор
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("value", [1.0, 0.0, 0.5])
+def test_levels_boundary_values_up_to_one_are_accepted(value):
+    ArrangeOptions(levels={"lead": value})  # не поднимает ArrangementError
+
+
+@pytest.mark.parametrize("value", [1.0001, 1.3, 1.2, 2.0])
+def test_levels_above_one_are_rejected_not_silently_clamped(value):
+    """Issue #2963: потолок 1 — честная ошибка (ADR-0132), а не тихий кламп.
+
+    Живой инцидент 24.09: ``levels='lead=1.3,bass=1.2,...'`` — раньше
+    множитель до 2.0 разгонял роль ГРОМЧЕ базового баланса. С 24.09.2026
+    множитель может только притушить роль (0..1); модель получает ошибку
+    со списком и чинится следующим вызовом, а не молчаливой заменой.
+    """
+    with pytest.raises(ArrangementError, match="0..1"):
+        ArrangeOptions(levels={"lead": value})
+
+
+def test_levels_can_only_lower_the_mix_balance_never_raise_it():
+    """Issue #2963, acceptance: суммарный amp конфига ≤ бюджета (баланс
+    без явных ``levels`` — сегодняшний баланс :data:`ROLE_PROFILE`, ровно
+    тот же бюджет, что аранжировщик и так собрал бы по умолчанию).
+
+    Живой конфиг из issue (второй пример, 10:15:40): ``lead_synth=
+    imperialbrass``, ``theme_octaves=on``, ``levels='lead=1.3,bass=1.2,
+    drums=0.7,hats=0.5,pad=0.8'`` — после клампа ``lead``/``bass`` летят в
+    ошибку (см. тест выше); здесь проверяем сам БЮДЖЕТ на клампнутых
+    значениях (1.0 вместо 1.3/1.2) — то, что реально долетит до эфира при
+    honest-retry модели.
+    """
+    from rob_box_mcp_tools.core.score_sheet import describe as _describe
+
+    params = _params(DENSE)
+    baseline = _spec(params, ArrangeOptions(theme_octaves="on"))
+    levels = {
+        "lead": 1.0, "bass": 1.0, "drums": 0.7, "hats": 0.5, "pad": 0.8,
+    }
+    overridden = _spec(
+        params, ArrangeOptions(theme_octaves="on", levels=levels),
+    )
+    base_sheet = _describe(spec=baseline, code=render(baseline))
+    over_sheet = _describe(spec=overridden, code=render(overridden))
+    budget = base_sheet["mix_balance"]["total"]
+    got = over_sheet["mix_balance"]["total"]
+    assert got <= budget
+
+
+# ---------------------------------------------------------------------------
 # Партитура видит заданные ручки
 # ---------------------------------------------------------------------------
 

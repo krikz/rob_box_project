@@ -139,7 +139,7 @@ def parse_lead_octave(value: object) -> Union[str, int]:
 
 
 def parse_levels(value: object) -> Dict[str, float]:
-    """``"bass=0.5,pad=0.8"`` → ``{"bass": 0.5, "pad": 0.8}``; роли и 0..2 проверит ArrangeOptions."""
+    """``"bass=0.5,pad=0.8"`` → ``{"bass": 0.5, "pad": 0.8}``; роли и 0..1 проверит ArrangeOptions."""
     if isinstance(value, Mapping):
         return dict(value)
     if _unset(value) or _word(value, AUTO) == AUTO:

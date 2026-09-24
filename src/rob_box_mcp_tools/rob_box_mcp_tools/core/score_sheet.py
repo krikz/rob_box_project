@@ -62,8 +62,11 @@
 17. ``resolve_form``/``_snap_plan_to_theme`` → секции под длину темы →
     ``form``, таймлайн секций; неизвестная форма в ``compose_music`` с PR-2 —
     ошибка (здесь остаётся страховка «→arc» с предупреждением).
-18. ``FORMS``/``ROLE_PROFILE``/``COUNTER_OF_LEAD``/``FIXED_THEME_AMP_FLOOR``
-    → баланс и динамика → пока НЕ показаны (только таймлайн формы).
+18. ``ROLE_PROFILE``/``levels`` → баланс громкости → ``mix_balance`` (issue
+    #2963, статическая оценка по коду ``render()``, не измерение микса; в
+    текст выносится только при 3+ «тяжёлых» ролях). ``COUNTER_OF_LEAD``/
+    ``FIXED_THEME_AMP_FLOOR``/``FORMS`` (динамика формы) — по-прежнему НЕ
+    показаны (только таймлайн формы).
 19. ``_motif_variants``/``_dur_var`` → вариации сочинённой музыки → пока НЕ
     показаны.
 20. ``_autofill_bass`` → бас ``dub`` сам добавлен → виден как партия баса.
@@ -84,7 +87,10 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from .arranger import (
     BPM_RANGE,
     FORMS,
+    LOOP_BASE_AMP,
+    LOOP_ROLE,
     PAD_STAB_SUS,
+    ROLE_PROFILE,
     SCALE_INTERVALS,
     SYNTH_SEMITONE_SHIFT,
     VALID_ROOTS,
@@ -446,6 +452,81 @@ def _trait_warnings(parts: Dict[str, Dict[str, Any]]) -> List[str]:
     return [warning] if warning else []
 
 
+# ---------------------------------------------------------------------------
+# Баланс громкости (issue #2963) — ADR-0132 §2 пункт 18: FORMS/ROLE_PROFILE/
+# COUNTER_OF_LEAD/FIXED_THEME_AMP_FLOOR раньше не были видны партитуре вовсе.
+# ---------------------------------------------------------------------------
+
+#: Насколько октавное удвоение лида (вторая одновременная нота в том же
+#: слое) прибавляет к его вкладу в общую громкость. НЕ измерение: два
+#: одновременных тона синта складываются по мощности не строго линейно
+#: (зависит от фазы/тембра), 1.5 — консервативная оценка «между 1 (не
+#: считать вовсе) и 2 (считать как две независимые ноты)». Клиппинг живого
+#: микса этим числом не подтверждён — см. issue #2963 (замер за Шифу).
+_OCTAVE_DOUBLE_WEIGHT = 1.5
+
+#: Роль относится к «тяжёлым» в конкретном треке, если её вклад в общую
+#: громкость не меньше этой доли роли с максимальным вкладом. Только для
+#: текста предупреждения — сам бюджет ничего не отсекает и не понижает
+#: (ADR-0132 PR-6: тихого safety net нет, показываем факт и оставляем
+#: решение модели/Шифу).
+_HEAVY_LAYER_SHARE = 0.6
+
+
+def _layer_peak_amp(layer, levels: Dict[str, float]) -> float:
+    """Оценка пикового ``amp`` одного слоя: ``ROLE_PROFILE`` × ``levels``.
+
+    Статическая оценка ИЗ КОДА (тот же расчёт, что делает ``render()`` для
+    ``amp=``), не измерение микса на роботе. Октавное удвоение лида
+    (``layer.midi`` держит пары нот вместо одиночных — см. ``_octave_double``
+    в ``core.arranger``) добавляет :data:`_OCTAVE_DOUBLE_WEIGHT`: слой
+    реально звучит двумя одновременными тонами, а не одним.
+    """
+    profile = ROLE_PROFILE.get(layer.role)
+    if profile is not None:
+        base_amp = profile[2]
+    elif layer.role == LOOP_ROLE:
+        base_amp = LOOP_BASE_AMP
+    else:
+        return 0.0
+    level = float(levels.get(layer.role, 1.0))
+    doubled = layer.role == "lead" and any(
+        isinstance(note, tuple) for note in (layer.midi or ())
+    )
+    weight = _OCTAVE_DOUBLE_WEIGHT if doubled else 1.0
+    return base_amp * level * weight
+
+
+def _mix_balance(spec) -> Dict[str, Any]:
+    """Оценка суммарной пиковой громкости слоёв (issue #2963).
+
+    Партитура раньше не показывала баланс ролей вовсе (ADR-0132 §2 п.18).
+    Это ЧЕСТНАЯ СТАТИЧЕСКАЯ ОЦЕНКА по формуле ``render()`` (сумма
+    ``ROLE_PROFILE`` × ``levels``, удвоенный лид — с весом), не измерение
+    клиппинга на мастер-шине scsynth: тул не имеет доступа к живому миксу
+    робота. ``levels`` (ADR-0132 PR-3) с 24.09.2026 ограничена 0..1 —
+    ручка может только притушить роль, не разогнать сумму выше того, что
+    аранжировщик и так собрал бы по умолчанию для этого набора ролей.
+    """
+    levels = dict(getattr(spec, "levels", None) or {})
+    layers: Dict[str, float] = {}
+    for layer in spec.layers:
+        amp = _layer_peak_amp(layer, levels)
+        if amp > 0:
+            layers[layer.role] = layers.get(layer.role, 0.0) + amp
+    total = round(sum(layers.values()), 3)
+    heavy = sorted(
+        role for role, amp in layers.items()
+        if layers and amp >= _HEAVY_LAYER_SHARE * max(layers.values())
+    )
+    return {
+        "total": total,
+        "layers": {role: round(amp, 3) for role, amp in layers.items()},
+        "heavy_roles": heavy,
+        "note": "оценка по ROLE_PROFILE×levels из кода, НЕ измерение микса",
+    }
+
+
 def _spec_warnings(spec, harmony) -> List[str]:
     out: List[str] = []
     bpm = float(spec.bpm)
@@ -546,6 +627,12 @@ def _render_text(sheet: Dict[str, Any]) -> str:
         + "; ".join(f"{k}={v}" for k, v in sheet["decisions"].items()) + "."
     )
     lines.append(f"Проверки: {_checks_text(sheet['checks'])}.")
+    balance = sheet.get("mix_balance") or {}
+    if len(balance.get("heavy_roles") or ()) >= 3:
+        lines.append(
+            f"Баланс (оценка, не измерение): ~{balance['total']:g} суммарно, "
+            f"тяжёлые роли {', '.join(balance['heavy_roles'])}."
+        )
     if sheet["warnings"]:
         lines.append("⚠️ " + "; ".join(w[:_TEXT_WARNING_CHARS] for w in sheet["warnings"]) + ".")
     return "\n".join(lines)
@@ -636,6 +723,7 @@ def describe(
         "chords": chords_by_bar(harmony) if harmony is not None else [],
         "parts": parts,
         "drums": drums,
+        "mix_balance": _mix_balance(spec),
         "decisions": _decisions(spec, harmony, prep_decisions),
         # Сырые записи автоматики — для логов/тестов (в текст не идут).
         "raw_decisions": {

@@ -195,7 +195,7 @@ _BAD = [
     ("lead_octave", "+3", ["lead_octave", "keep", "-2..+2"]),
     ("lead_outliers", "drop", ["lead_outliers", "fix, keep"]),
     ("levels", "bass:0.5", ["levels", "bass=0.5,pad=0.8"]),
-    ("levels", "bass=3", ["levels", "0..2"]),
+    ("levels", "bass=3", ["levels", "0..1"]),
     ("levels", "guitar=0.5", ["levels", "Доступны", "bass"]),
     ("chords", "Am F C G", ["chords", "Am|F|C|G"]),
     ("chords", "H|F", ["chords", "Неизвестный аккорд"]),
