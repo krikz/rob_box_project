@@ -37,6 +37,7 @@ from rob_box_mcp_tools.core.arranger import (  # noqa: E402
     BPM_RANGE,
     DEFAULT_FORM,
     FORMS,
+    MAX_THEME_REPEATS,
     OCTAVE_STEP,
     ROLE_PROFILE,
     ArrangementError,
@@ -711,6 +712,69 @@ class TestSummary:
         assert "intro(8)" in summary
         total = sum(bars for _n, bars, _i in FORMS["verse_chorus"])
         assert f"{total} тактов" in summary
+
+    def test_summary_with_theme_reports_real_repeats(self):
+        """Issue #2965: summary must describe the SAME (snapped) plan that
+        render()/form_duration_seconds() use — not the un-fitted default."""
+        summary = form_summary("arc", theme_bars=2)
+        plan = resolve_form("arc", theme_bars=2)
+        total = sum(bars for _n, bars, _i in plan)
+        assert f"{total} тактов" in summary
+        assert "тема в базе 2 такт" in summary
+        assert "тема короткая" in summary
+
+    def test_summary_without_theme_has_no_theme_note(self):
+        assert "тема в базе" not in form_summary("arc")
+
+
+class TestShortThemeRepeatCap:
+    """Issue #2965 («Drop It Like It's Hot», live 24.09): 2-тактовая тема из
+    RTTTL-базы растягивалась на полную 64-тактовую форму ``arc`` — одна и та
+    же фраза без единой вариации повторялась 32 раза подряд (``budget =
+    round(total_bars / theme_bars)`` не имел верхней границы). Форма должна
+    зависеть от длины темы: короткая тема -> короткая форма, а не длинная
+    форма той же фразы.
+    """
+
+    def test_two_bar_theme_form_is_capped_not_the_full_arc(self):
+        plan = resolve_form("arc", theme_bars=2)
+        total_bars = sum(bars for _n, bars, _i in plan)
+        default_total = sum(bars for _n, bars, _i in FORMS["arc"])
+        # Порог: капнутая форма заметно короче нетронутой дуги (64 такта) —
+        # тема не растягивается «в размер», а форма реально сжимается.
+        assert total_bars < default_total / 2
+        assert total_bars <= MAX_THEME_REPEATS * 2
+
+    def test_repeat_budget_never_exceeds_the_cap(self):
+        for theme_bars in (1, 2, 3):
+            plan = resolve_form("arc", theme_bars=theme_bars)
+            total_bars = sum(bars for _n, bars, _i in plan)
+            repeats = total_bars // theme_bars
+            assert repeats <= MAX_THEME_REPEATS, (
+                f"theme_bars={theme_bars} дал {repeats} повторов подряд"
+            )
+
+    def test_reported_duration_matches_the_capped_form(self):
+        """Сообщаемая длительность должна остаться согласованной с реально
+        сыгранной (капнутой) формой — DJ ждёт перехода именно по ней."""
+        bpm = 100.0
+        duration_s = form_duration_seconds("arc", bpm, theme_bars=2)
+        plan = resolve_form("arc", theme_bars=2)
+        total_beats = sum(bars for _n, bars, _i in plan) * BEATS_PER_BAR
+        assert duration_s == pytest.approx(total_beats * 60.0 / bpm)
+        # И заметно короче нетронутой 64-тактовой дуги (154с на 100bpm).
+        default_total_beats = sum(b for _n, b, _i in FORMS["arc"]) * BEATS_PER_BAR
+        default_duration_s = default_total_beats * 60.0 / bpm
+        assert duration_s < default_duration_s / 2
+
+    def test_longer_theme_is_not_penalized(self):
+        """Бюджет должен ограничивать только КОРОТКИЕ темы — тема на 6+
+        тактов и без капа уже укладывалась в разумное число повторов."""
+        plan_uncapped_equivalent = resolve_form("arc", theme_bars=6)
+        total_bars = sum(bars for _n, bars, _i in plan_uncapped_equivalent)
+        # round(64/6) = 11 повторов — меньше MAX_THEME_REPEATS=12, кап не
+        # должен был сработать вовсе.
+        assert total_bars // 6 == 11
 
 
 class TestMotifDevelopment:

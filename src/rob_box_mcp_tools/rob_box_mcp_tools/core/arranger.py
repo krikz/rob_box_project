@@ -170,6 +170,22 @@ SCALE_INTERVALS: Dict[str, Tuple[int, ...]] = {
 #: гармония вообще: слушатель слышит не смену аккорда, а сбой.
 BARS_PER_CHORD = 4
 
+#: Верхняя граница суммарного числа повторов ФИКСИРОВАННОЙ темы за один
+#: проход формы (issue #2965, «Drop It Like It's Hot»).
+#:
+#: :func:`_snap_plan_to_theme` раньше считал бюджет повторов только от
+#: длины формы (``total_bars / theme_bars``) — для темы из RTTTL-базы в
+#: 2 такта на форме ``arc`` (64 такта) это давало бюджет 32: одна и та же
+#: 2-тактовая фраза без единой вариации внутри секции звучала 32 раза
+#: подряд (live 24.09, `docker logs voice-assistant`, ``compose_music``
+#: сыграл «Полная форма звучит 154 секунд» на двух тактах материала).
+#: Бюджет — это число ПОВТОРОВ, а не тактов, поэтому капим именно его:
+#: короткая тема получает короткую форму, а не длинную форму той же
+#: фразы. 12 повторов на форму — это по-прежнему полная дуга
+#: intro→...→outro (см. :func:`_snap_plan_to_theme`), но не получасовой
+#: луп двух тактов.
+MAX_THEME_REPEATS = 12
+
 
 def _degree_to_semitones(degree: float, intervals: Sequence[int]) -> int:
     """Ступень лада -> полутоны, с переносом по октавам.
@@ -654,12 +670,22 @@ def _snap_plan_to_theme(
     минимуме в один повтор шесть секций растянули бы такую тему на
     полчаса; с бюджетом длинная тема сама становится формой и играет
     один-два раза.
+
+    Бюджет также не выше :data:`MAX_THEME_REPEATS` (issue #2965) — с
+    другой стороны той же логики. Для КОРОТКОЙ темы (2-4 такта) бюджет от
+    длины формы получался огромным (32 повтора двухтактовой фразы на
+    64-тактовой ``arc``), и общая длина формы при этом почти не менялась
+    (см. :func:`form_duration_seconds`) — форма растягивалась под тот же
+    объём материала, вместо того чтобы стать короче вместе с темой.
+    Капая бюджет, а не количество тактов напрямую, сохраняем ту же
+    пропорциональную раздачу метода наибольших остатков: форма просто
+    сжимается целиком, оставаясь той же дугой в миниатюре.
     """
     if theme_bars <= 0:
         return list(plan)
 
     total_bars = sum(int(bars) for _n, bars, _i in plan)
-    budget = max(1, int(round(total_bars / float(theme_bars))))
+    budget = max(1, min(MAX_THEME_REPEATS, int(round(total_bars / float(theme_bars)))))
 
     # Наибольшие остатки: сначала целые части, потом по одному повтору
     # тем секциям, у которых дробный хвост больше. Без этого округление
@@ -2137,9 +2163,28 @@ def _autofill_bass(layers: List[Layer], form: str) -> None:
     )
 
 
-def form_summary(name: Optional[str]) -> str:
-    """Однострочное описание формы — для сообщения LLM и для логов."""
-    plan = resolve_form(name)
+def form_summary(name: Optional[str], theme_bars: int = 0) -> str:
+    """Однострочное описание формы — для сообщения LLM и для логов.
+
+    Issue #2965: раньше summary всегда описывал НЕподогнанный план формы
+    (``resolve_form(name)`` без ``theme_bars``) — «интро(8) → ... = 64
+    тактов» — даже когда реально сыгранная форма :func:`resolve_form`
+    подгоняла под 2-тактовую тему из базы и капала повторы
+    (:data:`MAX_THEME_REPEATS`). Текст расходился с тем, что звучит, а
+    ``form_duration_seconds`` — с той же реальной, подогнанной формой.
+    Теперь summary читает ТОТ ЖЕ ``theme_bars``, что и ``render``/
+    ``form_duration_seconds`` (оба зовутся с ``spec.theme_bars`` в
+    ``tools/music.py``), и при короткой теме честно называет её длину и
+    число повторов — «нот мало» словами, а не молчанием.
+    """
+    plan = resolve_form(name, theme_bars)
     total_bars = sum(int(bars) for _n, bars, _i in plan)
     sections = " → ".join(f"{n}({b})" for n, b, _i in plan)
-    return f"{sections} = {total_bars} тактов"
+    summary = f"{sections} = {total_bars} тактов"
+    if theme_bars > 0:
+        repeats = total_bars // theme_bars
+        summary += (
+            f" (тема в базе {theme_bars} такт(ов), повторяется {repeats}×"
+            f"{' — тема короткая, форма сокращена' if theme_bars < 4 else ''})"
+        )
+    return summary
