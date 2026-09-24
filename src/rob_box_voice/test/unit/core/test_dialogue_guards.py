@@ -217,6 +217,41 @@ class TestIsMusicStopCommand:
         assert is_music_stop_command("") is False
         assert is_music_stop_command(None) is False  # type: ignore[arg-type]
 
+    def test_stop_verb_plus_dj_still_matches(self) -> None:
+        """Issue #2971 регресс: «диджея»/«диджеить»/«диджей режим» больше
+        не в ``MUSIC_STOP_OVERRIDES`` как голые подстроки, но со стоп-
+        глаголом рядом их по-прежнему ловит ``MUSIC_STOP_COMMAND_RE``."""
+        assert is_music_stop_command("хватит диджея") is True
+        assert is_music_stop_command("выключи диджея") is True
+        assert is_music_stop_command("хватит диджеить") is True
+        assert is_music_stop_command("выключи диджей режим") is True
+        assert is_music_stop_command("стоп диджей") is True
+
+    def test_bare_dj_noun_without_stop_verb_is_not_stop(self) -> None:
+        """Issue #2971 — живой инцидент 24.09.2026: юзер продиктовал
+        роботу системный промпт «Ты диджей PAUL OAKENFOLD …», который
+        заканчивался словами «…системный промт для робота-диджея». Ни
+        «для диджея», ни «робота-диджея», ни «у диджея» не содержат
+        стоп-глагол — это НЕ стоп-команда, а хвост обычной реплики."""
+        assert is_music_stop_command("это промпт для диджея") is False
+        assert (
+            is_music_stop_command("системный промт для робота-диджея")
+            is False
+        )
+        assert is_music_stop_command("вопрос у диджея") is False
+        assert is_music_stop_command("поставь диджея") is False
+        assert is_music_stop_command("включи диджей режим") is False
+
+    def test_live_incident_long_dj_prompt_is_not_stop(self) -> None:
+        """Issue #2971 — точный хвост промпта из живого лога 24.09.2026
+        11:10 UTC (сокращённая версия «промпт 143 строки» из issue)."""
+        prompt = (
+            "Ты диджей PAUL OAKENFOLD и у нас сегодня вечеринка. "
+            "Скопируй весь блок выше и вставь как системный промт "
+            "для робота-диджея."
+        )
+        assert is_music_stop_command(prompt) is False
+
 
 class TestIsVocalRequest:
     def test_vocal_phrases(self) -> None:

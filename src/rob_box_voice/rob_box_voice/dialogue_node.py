@@ -5123,6 +5123,35 @@ class DialogueNode(Node):
         self._dj.reset_silently()
         self._publish_dj_off(reason=reason)
 
+    @staticmethod
+    def _should_force_dj_off_for_stop_command(
+        user_input: str, tools_called: tuple
+    ) -> bool:
+        """Issue #2971 — should :meth:`_force_dj_off_for_stop_command` run?
+
+        Two conditions, both required:
+
+        1. ``is_music_stop_command(user_input)`` — the raw text looks like
+           a stop-command (issue #2897's original source of truth).
+        2. The model did NOT itself call ``set_dj_mode`` this turn.
+
+        Condition 2 is the issue #2971 fix: live incident 24.09.2026
+        «Paul Oakenfold» — a long DJ-persona prompt ended with «…как
+        системный промт для робота-диджея», the model correctly called
+        ``set_dj_mode(enabled=true)`` + started the track, but the raw
+        ``user_input`` still matched the stop heuristic and force-killed
+        the DJ mode 4s after it started. If the model called
+        ``set_dj_mode`` at all this turn, it already made an explicit
+        decision about the DJ flag — the code must not second-guess that
+        decision from a heuristic over the raw user text. When the model
+        did NOT call it (issue #2897's original failure — it closed
+        ``stop_music`` but forgot ``set_dj_mode(enabled=false)``), this
+        defensive force-off still fires.
+        """
+        if not is_music_stop_command(user_input):
+            return False
+        return "set_dj_mode" not in (tools_called or ())
+
     def _reset_session_music_and_dj(self) -> None:
         """Issue #2835 — «новая сессия» гасит DJ, музыку и бюджеты гуарда.
 
@@ -6948,7 +6977,17 @@ class DialogueNode(Node):
         # стоит ДО retry-budget гейта: это не ретрай, а детерминированный
         # побочный эффект, который обязан сработать при каждой оценке
         # гуарда на стоп-команде.
-        if is_music_stop_command(user_input):
+        #
+        # 🔴 FIX (issue #2971, live 24.09 «Paul Oakenfold»): ``set_dj_mode``
+        # в ``tools_called`` ЭТОГО ХОДА — сигнал, что модель сама явно
+        # решила судьбу DJ-флага в этом ходе (обычно ``enabled=true`` —
+        # юзер только что запустил сет). Живой инцидент: длинный промпт
+        # «Ты диджей PAUL OAKENFOLD …» заканчивался словами «…как системный
+        # промт для робота-диджея», LLM вызвала ``set_dj_mode(enabled=true)``
+        # + ``compose_music`` и запустила сет, а «диджея» в хвосте того же
+        # ``user_input`` матчила стоп-эвристику — DJ гас через 4с после
+        # включения. См. :meth:`_should_force_dj_off_for_stop_command`.
+        if self._should_force_dj_off_for_stop_command(user_input, tools_called):
             self._force_dj_off_for_stop_command(reason="user_stop_command")
 
         # 🔴 FIX (live 30.08, e2e renardo_evolve rn02): на «продолжай
@@ -9817,7 +9856,16 @@ class _DialogueSttHost:
         node = self._node
         if not getattr(node, "_command_intent_gate_enabled", False):
             return False
-        if any(kw in text_lower for kw in node._MUSIC_STOP_OVERRIDES):
+        # 🔴 FIX (issue #2971): раньше сверялись только с
+        # ``node._MUSIC_STOP_OVERRIDES`` (голые фиксированные фразы) —
+        # после того как #2971 убрал из списка «диджеить»/«диджея»/
+        # «диджей режим» (ложные срабатывания на голое существительное
+        # без стоп-глагола), «хватит диджеить» перестало матчить ЭТУ
+        # проверку и команда уходила в command_intent gate вместо LLM.
+        # ``is_music_stop_command`` (списки ФИКСИРОВАННЫХ фраз + общий
+        # паттерн «стоп-глагол + муз. существительное») — единый
+        # источник правды, используемый везде в этом модуле.
+        if self.is_music_stop_command(text_lower):
             return False
         command = node._command_parser.parse(text)
         if (

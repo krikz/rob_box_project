@@ -22,7 +22,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Callable, Optional
 
-from rob_box_voice.core.dialogue_guards import MUSIC_STOP_OVERRIDES
+from rob_box_voice.core.dialogue_guards import is_music_stop_command
 
 
 class QuickVerdict(str, Enum):
@@ -53,8 +53,18 @@ DEDUP_WINDOW_S: float = 0.5
 CONFIDENCE_FLOOR: float = 0.4
 
 
+# 🔴 FIX (issue #2971): раньше сверялись только с
+# ``MUSIC_STOP_OVERRIDES`` (голые фиксированные фразы) — после того как
+# #2971 убрал из списка «диджеить»/«диджея»/«диджей режим» (ложные
+# срабатывания на голое существительное без стоп-глагола, см.
+# ``core/dialogue_guards.py``), «хватит диджеить» перестало матчить
+# ЭТУ проверку и REPLACE-ветка ниже съедала команду, не пропуская её в
+# LLM. Источник правды теперь — тот же ``is_music_stop_command`` (список
+# ФИКСИРОВАННЫХ фраз + общий паттерн «стоп-глагол + муз.
+# существительное»), которым уже пользуется ``dialogue_node`` — единая
+# логика, а не второй частичный список.
 def _is_music_stop_override(text_lower: str) -> bool:
-    return any(kw in text_lower for kw in MUSIC_STOP_OVERRIDES)
+    return is_music_stop_command(text_lower)
 
 
 def quick_decide(
