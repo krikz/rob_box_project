@@ -94,6 +94,14 @@ DEFAULT_DEAD_TTL_S = 300.0
 # перебор. Совпадает с ``tts_node.provider_dead_ttl_transient_s``.
 DEFAULT_DEAD_TTL_TRANSIENT_S = 30.0
 
+# Issue #2924 — средняя ступень лестницы ТРАНЗИЕНТНЫХ отказов (сеть/таймаут),
+# как у TTS (``tts_node._transient_ttl_for_streak``, issue #2702): 1-й отказ
+# подряд → ``transient_ttl_s`` (30с), 2-й → 120с, 3-й и далее → ``ttl_s``
+# (300с). Живой лог 23.09: Yandex STT 16 минут подряд стоял до дедлайна,
+# плоские 30с истекали между фразами (фразы идут раз в ~65с) — и каждая
+# фраза заново платила таймаут.
+DEFAULT_DEAD_TTL_TRANSIENT_MID_S = 120.0
+
 # Issue #2767 — лестница эскалации для ПОВТОРНЫХ permanent-отказов
 # (auth/quota) одного провайдера, аналог ``tts_node._transient_ttl_for_streak``
 # (PR #2712/#2721), но по другой оси: там эскалируют транзиентные отказы,
@@ -234,10 +242,11 @@ class ProviderDeadCache:
         self._dead_until: dict[str, float] = {}
         self._reason: dict[str, str] = {}
         # Issue #2767 — счётчик подряд-идущих PERMANENT-отказов (auth/quota)
-        # на провайдера, для лестницы эскалации TTL. Отдельно от транзиентных
-        # (у STT транзиентный TTL плоский — эскалации там нет, в отличие
-        # от TTS/LLM: транзиентная сеть у нас и так короткая, 30с).
+        # на провайдера, для лестницы эскалации TTL.
         self._permanent_streak: dict[str, int] = {}
+        # Issue #2924 — отдельный счётчик подряд-идущих ТРАНЗИЕНТНЫХ отказов
+        # (сеть/таймаут): плоские 30с не спасали серию фраз от таймаута.
+        self._transient_streak: dict[str, int] = {}
 
     # -- запросы ---------------------------------------------------------
 
@@ -264,6 +273,25 @@ class ProviderDeadCache:
             self._dead_until.pop(provider, None)
             self._reason.pop(provider, None)
             self._permanent_streak.pop(provider, None)
+            self._transient_streak.pop(provider, None)
+
+    def _transient_ttl_for_streak(self, provider: str) -> float:
+        """TTL для ОЧЕРЕДНОГО подряд-идущего транзиентного отказа (issue #2924).
+
+        1-й отказ → ``transient_ttl_s`` (30с), 2-й → 120с, 3-й и далее →
+        ``ttl_s`` (300с) — та же лестница, что у TTS. Средняя ступень зажата
+        между крайними, чтобы лестница оставалась монотонной при любой
+        конфигурации. Сброс — на первом успехе (:meth:`mark_alive`).
+        Вызывающая сторона (``_run_provider``) зовёт :meth:`mark_dead` ровно
+        один раз на провайдера за фразу.
+        """
+        streak = self._transient_streak.get(provider, 0) + 1
+        self._transient_streak[provider] = streak
+        base = self._transient_ttl_s
+        long_ttl = max(self._ttl_s, base)
+        mid = min(max(DEFAULT_DEAD_TTL_TRANSIENT_MID_S, base), long_ttl)
+        ladder = (base, mid, long_ttl)
+        return ladder[min(streak, len(ladder)) - 1]
 
     def _permanent_ttl_for_streak(self, provider: str) -> float:
         """TTL для ОЧЕРЕДНОГО подряд-идущего permanent-отказа (issue #2767).
@@ -291,7 +319,9 @@ class ProviderDeadCache:
     ) -> float:
         """Пометить провайдера мёртвым. Возвращает применённый TTL.
 
-        ``transient=True`` (сеть/5xx/таймаут) → короткий плоский TTL;
+        ``transient=True`` (сеть/5xx/таймаут) → короткий TTL, эскалирующий
+        при повторных подряд-идущих транзиентных отказах
+        (:meth:`_transient_ttl_for_streak`, issue #2924);
         ``transient=False`` (квота/ключ) → длинный TTL, эскалирующий при
         повторных подряд-идущих permanent-отказах этого провайдера
         (:meth:`_permanent_ttl_for_streak`, issue #2767) — иначе Yandex с
@@ -304,7 +334,7 @@ class ProviderDeadCache:
         with self._lock:
             if ttl_s is None:
                 if transient:
-                    ttl_s = self._transient_ttl_s
+                    ttl_s = self._transient_ttl_for_streak(provider)
                 else:
                     ttl_s = self._permanent_ttl_for_streak(provider)
             self._dead_until[provider] = self._clock() + float(ttl_s)
@@ -546,8 +576,11 @@ def _run_provider(
     идёт дальше). Побочно наполняет ``attempts`` и обновляет
     ``dead_cache``.
 
-    Retry (``policy.max_retries``) применяется ТОЛЬКО к транзиентным
-    отказам (``timeout``/``error``) — issue #2767. До фикса повтор
+    Retry (``policy.max_retries``) применяется ТОЛЬКО к транзиентному
+    ``error`` (моргнула сеть). ``timeout`` не повторяется (issue #2924):
+    он уже съел весь бюджет провайдера, второй заход удваивает цену
+    фразы. Отметка «мёртв» — одна на провайдера за фразу (``_mark_failed``).
+    Issue #2767: повтор на ``empty`` тоже убран. До фикса повтор
     случался и на ``empty``: живой лог 23.09 показывал
     ``minimax:empty(3641ms)->minimax:empty(3866ms)`` — «пусто» это не
     сбой сети, которому может помочь секунда ожидания и второй заход,
@@ -559,6 +592,7 @@ def _run_provider(
     RETRY этого провайдера, если бюджет уже исчерпан — но не прерывает
     уже начавшийся вызов (см. ``_measure``, gRPC/HTTP не отменяем).
     """
+    failure: Optional[tuple[str, Optional[BaseException]]] = None
     for attempt_idx in range(max(0, policy.max_retries) + 1):
         if attempt_idx > 0:
             if deadline is not None and clock() >= deadline:
@@ -594,18 +628,35 @@ def _run_provider(
             # того же провайдера на тех же байтах бесполезен (issue #2767).
             break
 
-        permanent = is_permanent_failure(exc)
-        if dead_cache is not None:
-            dead_cache.mark_dead(
-                provider.name,
-                error or reason,
-                transient=not permanent,
-            )
-        if permanent:
-            # Квота/ключ — повтор вернёт ровно то же самое, даже без
-            # dead_cache (легаси-режим, ``ProviderDeadCache is None``).
+        failure = (error or reason, exc)
+        if reason == "timeout" or is_permanent_failure(exc):
+            # Квота/ключ — повтор вернёт ровно то же самое. Таймаут
+            # (issue #2924) — уже съел весь бюджет провайдера; живой лог
+            # 23.09: ``yandex:timeout(5035ms)->yandex:timeout(5025ms)``
+            # на каждой фразе, 10с до фолбека вместо 5.
             break
+    if failure is not None:
+        _mark_failed(dead_cache, provider.name, *failure)
     return None
+
+
+def _mark_failed(
+    dead_cache: Optional[ProviderDeadCache],
+    provider_name: str,
+    error: str,
+    exc: Optional[BaseException],
+) -> None:
+    """Отметить провайдера мёртвым ОДИН раз за фразу (issue #2924).
+
+    Раньше отметка ставилась на каждой попытке: retry удваивал шаг
+    лестницы TTL. Теперь — по последнему отказу, после всех попыток.
+    """
+    if dead_cache is not None:
+        dead_cache.mark_dead(
+            provider_name,
+            error,
+            transient=not is_permanent_failure(exc),
+        )
 
 
 def _skip_for_budget(
