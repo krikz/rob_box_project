@@ -427,22 +427,66 @@ class RtttlLibrary:
         return max(pool, key=lambda row: _melody_quality(_row_rtttl(row)))
 
     def _candidates(self, tokens: List[str], cap: int) -> List[sqlite3.Row]:
-        """Строки, где хотя бы один токен встречается в полях (метаданные)."""
-        clauses = []
-        params: List[str] = []
-        for token in tokens:
-            like = f"%{token}%"
-            clauses.append(
-                "(lower(name) LIKE ? OR lower(title) LIKE ? "
-                "OR lower(artist) LIKE ? OR lower(tags) LIKE ? "
-                "OR lower(rtttl_name) LIKE ?)"
-            )
-            params += [like, like, like, like, like]
-        sql = (
+        """Строки-кандидаты для скоринга: полные совпадения + capped-пул частичных.
+
+        🔴 FIX (issue #2941): раньше был один SQL-запрос — «хотя бы один
+        токен встречается в поле» (``OR`` по токенам) с ``LIMIT cap``
+        ПРИМЕНЁННЫМ В SQL, ДО скоринга в Python. На частых словах («dre»,
+        «anthem», «hot» — по полсотне-сотне совпадений каждое) запись,
+        реально совпадающая по ВСЕМ токенам запроса (``stilldre_2`` для
+        «still dre», ``national_2`` для «russia anthem»), могла просто не
+        попасть в первые ``cap`` строк, которые SQLite отдаёт без
+        ``ORDER BY`` (порядок физического хранения/id) — скоринг такую
+        запись никогда не видел, хотя :meth:`get` (``cap=2000``, почти
+        весь архив) её находил.
+
+        Фикс: запись, где встретились ВСЕ значимые токены запроса (AND по
+        токенам), гарантированно входит в выборку — без лимита, потому что
+        полное совпадение уже само по себе сильный фильтр (пересечение, не
+        объединение). Частичные совпадения (``OR`` хотя бы по одному
+        токену) остаются как раньше, но только как дополняющий пул —
+        capped, для случаев, когда полного совпадения нет вовсе, и для
+        участия в ранжировании тай-брейков. Лимит на итоговое число
+        результатов применяется в :meth:`search` уже ПОСЛЕ скоринга — эта
+        функция отдаёт весь пул кандидатов, а не финальный топ-N.
+        """
+        if not tokens:
+            return []
+
+        def _clause_params() -> tuple:
+            clauses: List[str] = []
+            params: List[str] = []
+            for token in tokens:
+                like = f"%{token}%"
+                clauses.append(
+                    "(lower(name) LIKE ? OR lower(title) LIKE ? "
+                    "OR lower(artist) LIKE ? OR lower(tags) LIKE ? "
+                    "OR lower(rtttl_name) LIKE ?)"
+                )
+                params += [like, like, like, like, like]
+            return clauses, params
+
+        clauses, params = _clause_params()
+        select = (
             "SELECT id, name, title, artist, source, tags, rtttl_name, rtttl "
-            "FROM rtttl_melodies WHERE " + " OR ".join(clauses) + " LIMIT ?"
+            "FROM rtttl_melodies WHERE "
         )
-        return self._conn.execute(sql, params + [cap]).fetchall()
+
+        full_rows: List[sqlite3.Row] = []
+        if len(tokens) > 1:
+            # AND по всем токенам — без LIMIT: гарантированное включение
+            # полных совпадений в выборку для скоринга.
+            and_sql = select + " AND ".join(clauses)
+            full_rows = self._conn.execute(and_sql, params).fetchall()
+
+        or_sql = select + " OR ".join(clauses) + " LIMIT ?"
+        or_rows = self._conn.execute(or_sql, params + [cap]).fetchall()
+
+        if not full_rows:
+            return or_rows
+        seen = {row["id"] for row in full_rows}
+        merged = list(full_rows) + [row for row in or_rows if row["id"] not in seen]
+        return merged
 
     def get(self, name: str) -> Optional[Dict[str, Any]]:
         """Найти одну мелодию (точное имя → лучший по токенам запроса).
@@ -504,20 +548,40 @@ class RtttlLibrary:
     def search(self, query: str, limit: int = 20) -> List[Dict[str, Any]]:
         """Поиск по токенам запроса (SQL кандидаты → скоринг в Python), top-N.
 
-        Сортировка: текстовый скор (главный ключ, как раньше, решает
-        семантику совпадения) → денилист (внутри одного скора мусор тонет
-        под не-мусором) → title (алфавит, прежний тай-брейк) → качество
-        мелодии (последний тай-брейк, для истинных ничьих по скору,
-        денилисту и названию). Качество и денилист НЕ могут перевесить
-        разницу в текстовом скоре — см. :meth:`_best_in_bucket`.
+        Сортировка: текстовый скор (главный ключ — решает семантику
+        совпадения) → денилист (внутри одного скора мусор тонет под
+        не-мусором) → качество мелодии → title (алфавит, последний
+        тай-брейк, для истинных ничьих по скору, денилисту и качеству).
+        Качество и денилист НЕ могут перевесить разницу в текстовом скоре
+        — см. :meth:`_best_in_bucket`.
+
+        🔴 FIX (issue #2941): тай-брейк «качество → title» — тот же
+        порядок, что использует :meth:`_best_in_bucket` (через который
+        работает :meth:`get`). Раньше здесь было «title → качество»: для
+        одинакового скора несколько записей архива с разными title
+        (``«Super Mario Brothers 1»`` vs ``«Supermario Brothers»`` —
+        пробел сортируется раньше буквы) сортировались алфавитно ДО учёта
+        качества, и ``search('super mario')`` ставил первым не тот трек,
+        что находил ``get('super mario')`` — ``get``/``search`` расходились
+        при равном скоре, но разных title. ``LIMIT`` на итоговый размер
+        результата применяется ЗДЕСЬ, уже после скоринга и сортировки —
+        не в SQL (см. :meth:`_candidates`).
         """
         q = _normalize(query)
         tokens = _tokens(q)
         if not tokens:
             return []
         limit = max(1, min(50, int(limit)))
+        # cap для OR-пула частичных совпадений — тот же порог, что у
+        # get() (см. её вызов _candidates(..., cap=2000)): меньший cap,
+        # завязанный на limit (``limit * 10``), давал search()/get()
+        # расходиться на многословных запросах, где не все токены
+        # находят буквальную подстроку ни в одной записи («bros» не
+        # substring «Brothers») — тогда решает не AND-гарантия (см.
+        # _candidates), а сам OR-пул, и его размер обязан совпадать с
+        # тем, что видит get() (issue #2941, «search/get согласованы»).
         with self._lock:
-            rows = self._candidates(tokens, cap=limit * 10)
+            rows = self._candidates(tokens, cap=max(limit * 10, 2000))
         scored = []
         for row in rows:
             match = self._score(row, tokens)
@@ -528,7 +592,7 @@ class RtttlLibrary:
 
         def _sort_key(item: tuple) -> tuple:
             match, garbage, row, quality = item
-            return (-match, garbage, (row["title"] or "").lower(), -quality)
+            return (-match, garbage, -quality, (row["title"] or "").lower())
 
         scored.sort(key=_sort_key)
         return [self._to_dict(row) for _m, _g, row, _q in scored[:limit]]

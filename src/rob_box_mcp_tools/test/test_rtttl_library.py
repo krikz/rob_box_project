@@ -366,6 +366,82 @@ def test_real_archive_weak_match_table(tmp_path):
         assert rec.get("title"), (query, rec)
 
 
+def test_real_archive_search_finds_full_token_match_first(tmp_path):
+    """issue #2941: ``search()`` терял запись, совпадающую по ВСЕМ токенам
+    запроса, если частые токены («dre», «anthem», «hot») раздували
+    SQL-LIKE кандидатов, а ``LIMIT`` в ``_candidates()`` обрезал выборку ДО
+    скоринга — сама запись даже не попадала в Python-скоринг, хотя
+    ``get()`` (с ``cap=2000``) её честно находил. Полное совпадение
+    («stilldre» из «still dre», слитное написание) обязано быть первым в
+    ``search()``, как и в ``get()``."""
+    lib = RtttlLibrary(db_path=str(tmp_path / "search_full.db"))
+    assert lib.total() > 10000
+
+    hits = lib.search("still dre", limit=5)
+    names = [h["name"] for h in hits]
+    assert names, "search('still dre') не должен быть пустым"
+    assert names[0].startswith("stilldre"), names
+    # согласованность: то, что находит get(), search() ставит первым.
+    assert lib.get("still dre")["name"] == names[0]
+
+    for query in ("russia anthem", "national anthem of russia"):
+        hits = lib.search(query, limit=3)
+        names = [h["name"] for h in hits]
+        assert "national_2" in names, (query, names)
+        # в топ-3, как требует issue #2941
+        assert names.index("national_2") < 3, (query, names)
+
+    # next episode — уже работал, не должен сломаться этим фиксом.
+    hits = lib.search("next episode", limit=3)
+    assert [h["name"] for h in hits][0].startswith("nextepis")
+
+    # "drop it like its hot" — найти реальный ключ в архиве, если есть.
+    drop_hit = lib.get("drop it like its hot")
+    assert drop_hit is not None
+    hits = lib.search("drop it like its hot", limit=5)
+    names = [h["name"] for h in hits]
+    assert names, "search('drop it like its hot') не должен быть пустым"
+    assert names[0] == drop_hit["name"], (names, drop_hit["name"])
+
+
+def test_search_get_consistency_across_query_table(tmp_path):
+    """search()/get() согласованы: что находит get(), search() ставит первым
+    (реальный архив, набор запросов из issue #2840/#2896/#2941).
+
+    Запросы, где несколько записей архива честно делят и текстовый скор, И
+    качество мелодии между собой (истинная ничья без семантического
+    победителя, например «harry potter» — три записи с одинаковым
+    ``_melody_quality``) сюда намеренно не включены: и ``get()``
+    (:meth:`RtttlLibrary._best_in_bucket`, ``max()`` по порядку прихода
+    строк), и ``search()`` (устойчивая сортировка по title) детерминированы
+    каждый сам по себе, но тай-брейк для ИСТИННЫХ троек-ничьих — отдельный,
+    не связанный с багом #2941 вопрос (какая из формально равных записей
+    «правильнее» — не решается текстом/качеством, тут ADR-0132 требует
+    ручку/пресет, а не свежий хак под конкретную ничью)."""
+    lib = RtttlLibrary(db_path=str(tmp_path / "search_consistency.db"))
+    queries = [
+        "still dre",
+        "russian anthem",
+        "russia anthem",
+        "soviet anthem",
+        "гимн россии",
+        "super mario",
+        "star wars",
+        "imperial march",
+        "terminator",
+        "next episode",
+        "in the hall of the mountain king",
+        "happy birthday",
+    ]
+    for query in queries:
+        expected = lib.get(query)
+        assert expected is not None, query
+        hits = lib.search(query, limit=5)
+        names = [h["name"] for h in hits]
+        assert names, query
+        assert names[0] == expected["name"], (query, names, expected["name"])
+
+
 def test_real_archive_query_table_stays_on_topic(tmp_path):
     """Таблица запросов из живого прогона 23.09 — каждый должен находить
     тему СВОЕЙ песни (по подстроке в title), а не первую попавшуюся с
