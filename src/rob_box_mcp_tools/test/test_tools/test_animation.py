@@ -26,7 +26,12 @@ class TestPlayAnimationTool:
 
         assert tool.name == "play_animation"
         assert "LED" in tool.description
-        assert len(tool.parameters) == 1
+        # 57e96942d добавил необязательный duration; тест не гонялся в CI
+        # и продолжал ждать один параметр.
+        params = {p.name: p for p in tool.parameters}
+        assert set(params) == {"animation", "duration"}
+        assert params["animation"].required is True
+        assert params["duration"].required is False
 
     def test_available_animations(self, mock_node):
         """Тест списка доступных анимаций."""

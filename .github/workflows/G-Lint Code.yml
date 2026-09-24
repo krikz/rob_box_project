@@ -294,9 +294,9 @@ jobs:
             -p no:cacheprovider
 
       # Issue #2890: e2e-изоляция voice_memory у mcp_server (#2781) + защита
-      # боевой /data/voice_memory.db от стирания. src/rob_box_mcp_tools/test/
-      # не гоняется ни одним workflow (G-Run Tests собирает пакеты без него),
-      # поэтому файл подключён здесь; rclpy — стабы внутри теста, VoiceMemory
+      # боевой /data/voice_memory.db от стирания. Весь src/rob_box_mcp_tools/test/
+      # теперь гоняет G-Run Tests (job «Unit Tests (rob_box_mcp_tools)»); здесь
+      # файл оставлен как ранний гейт линта. rclpy — стабы внутри теста, VoiceMemory
       # — настоящий (stdlib sqlite3). httpx/openai нужны импорту rob_box_harness.
       - name: mcp_server voice_memory e2e isolation (issue #2781/#2890)
         run: |
