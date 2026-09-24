@@ -184,13 +184,31 @@ def _profile_score(weights: Dict[int, float], root: int, scale: str) -> float:
     )
 
 
-def _first_strong_note(sounding: Sequence[Tuple[int, float]]) -> int:
-    """Первая «опорная» нота темы: затакт пропускается.
+def _first_strong_note(
+    sounding: Sequence[Tuple[int, float]], root: Optional[int] = None
+) -> int:
+    """Первая «опорная» нота темы: настоящий затакт пропускается.
 
     Короткая первая нота перед более долгой — затакт (гимн России: G/8,
     пауза, C/4 на сильной доле). Тональность утверждает нота сильной
-    доли, а не затакт — обычно доминанта.
+    доли, а не затакт — обычно доминанта, к тонике кандидата отношения
+    не имеющая.
+
+    🔴 FIX (issue #2961): затакт — это подход К тонике, а не звук самой
+    тоники. Если короткая первая нота — это САМА тоника кандидата (тема
+    Терминатора: 16d перед 8e — D и есть тоника ре-минора), отбрасывать
+    её нельзя: это не затакт, а укороченное вступление в тонику.
+    Проверка — именно на тонику (``root``), не на трезвучие целиком:
+    более широкая проверка (любой звук трезвучия) пробовалась и снята —
+    она меняет то, какая доля темы служит «первой сильной нотой» почти
+    для любого кандидата (у C minor и F minor общая пятая ступень C, и
+    из-за неё ``stilldre_2`` уезжал в C minor вместо F minor), поэтому
+    небезопасна. Тоника — однозначный, не делимый с соседними
+    кандидатами признак: одна и та же нота — тоника ровно одного
+    кандидата на каждой из 12 высот.
     """
+    if root is not None and sounding[0][0] == root:
+        return sounding[0][0]
     if len(sounding) > 1 and sounding[0][1] < sounding[1][1]:
         return sounding[1][0]
     return sounding[0][0]
@@ -214,15 +232,16 @@ def _tonal_center_score(
     * начало фразы (первые :data:`_OPENING_NOTES` нот) лежит на тоническом
       трезвучии — минорном или мажорном в зависимости от лада, поэтому
       параллельные тональности (ля-минор / до-мажор) здесь различаются;
-    * первая сильная нота (затакт пропущен) — звук тонического трезвучия;
+    * первая сильная нота (настоящий затакт пропущен, см. #2961 у
+      :func:`_first_strong_note`) — звук тонического трезвучия;
     * последняя нота — звук тонического трезвучия.
     """
     third = 4 if scale == "major" else 3
-    triad = {root, (root + third) % 12, (root + 7) % 12}
+    triad = frozenset({root, (root + third) % 12, (root + 7) % 12})
     opening = sounding[:_OPENING_NOTES]
     opening_total = sum(d ** 0.5 for _pc, d in opening) or 1.0
     on_triad = sum(d ** 0.5 for pc, d in opening if pc in triad)
-    first = _first_strong_note(sounding)
+    first = _first_strong_note(sounding, root)
     last = sounding[-1][0]
     return (
         _OPENING_TRIAD_WEIGHT * on_triad / opening_total
