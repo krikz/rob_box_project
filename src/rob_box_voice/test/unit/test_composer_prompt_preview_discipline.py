@@ -67,6 +67,42 @@ def test_composer_prompt_keeps_pr2_root_scale_rule() -> None:
     assert "только если юзер" in text.lower()
 
 
+def test_composer_prompt_has_user_speech_rule() -> None:
+    """Issue #2943: живая проверка 24.09.2026 — робот зачитал юзеру
+    партитуру целиком («Партитура чистая: пэд стоит над басом, бас
+    держит только корни (bass_style=root), контрмелодия снята…»),
+    прочитав правило «не "звучит хорошо", а "по партитуре: …"» как
+    указание озвучивать партитуру. Партитура — материал ДЛЯ РЕШЕНИЙ
+    модели, не текст для TTS; юзеру — короткая человеческая фраза без
+    жаргона ручек/синтов/нот."""
+    text = _composer_text()
+    flat = text.replace("\n  ", " ").replace("\n", " ")
+    assert "ЧТО ГОВОРИШЬ ЮЗЕРУ" in text
+    # Старый шаблон озвучки должен быть явно запрещён, а не просто исчезнуть
+    # молча — иначе следующий агент случайно вернёт его как "улучшение".
+    assert "«по партитуре:" in flat and "ЗАПРЕЩЕНА" in flat
+    # Запрет жаргона в речи — конкретные слова, которые нельзя произносить.
+    for jargon in ("bass_style", "pad_style", "«партитура»", "«пэд»", "«контрмелодия»", "«ручка»"):
+        assert jargon in flat, f"{jargon!r} не упомянут как запрещённое слово в речи"
+    # Честность не должна была потеряться при переписывании правила.
+    assert "ADR-0018" in text
+    assert "звучит отлично" in flat
+
+
+def test_composer_prompt_speech_example_has_no_jargon() -> None:
+    """Примеры человеческой фразы («убрал гул в басе», «сделал легче») не
+    должны сами содержать жаргон, который правило запрещает — иначе
+    промпт учит одному, а показывает другое."""
+    text = _composer_text()
+    start = text.index("🗣️ ЧТО ГОВОРИШЬ ЮЗЕРУ")
+    end = text.index("🎛️ ЖАЛОБА", start)
+    section = text[start:end]
+    for forbidden in ("bass_style=root", "bass_style=off", "pad_style=sustain"):
+        assert forbidden not in section, f"пример фразы юзеру содержит жаргон {forbidden!r}"
+    assert "убрал гул в басе" in section
+    assert "сделал легче" in section
+
+
 def test_dj_prompt_does_not_name_composer_tools() -> None:
     """Контракт из ADR §3.6: dj.txt не называет инструменты composer."""
     text = _DJ.read_text(encoding="utf-8")
