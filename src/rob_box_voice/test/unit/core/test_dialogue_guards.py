@@ -30,6 +30,7 @@ from rob_box_voice.core.dialogue_guards import (
     SYSTEM_TEMPLATE_REGURGITATE_RE,
     TOOL_REQUEST_PATTERNS,
     UNKNOWN_MELODY_CLAIM_RE,  # Issue #2562 Bug F
+    build_action_claim_failure_fallback,  # Issue #2949
     build_babble_retry_prompt,
     build_music_prose_action_fallback,
     build_music_retry_exhausted_fallback,
@@ -39,6 +40,7 @@ from rob_box_voice.core.dialogue_guards import (
     build_system_regurgitate_retry_prompt,
     build_tool_retry_prompt,
     build_unbacked_action_retry_prompt,
+    build_universal_action_claim_retry_prompt,  # Issue #2549 / #2949
     build_unknown_melody_retry_prompt,  # Issue #2562 Bug F
     detect_phantom_action_claim,  # Issue #2559 phantom-action
     detect_required_tool,
@@ -2498,6 +2500,50 @@ class TestPhantomActionClaimLive2559:
             "«сохранил» после реального вызова save_arrangement_preset"
         )
 
+    # ----- issue #2949: called-but-ERRORED ≠ backed -----
+
+    def test_tool_called_but_errored_claim_still_detected(self) -> None:
+        """Live 24.09.2026 (issue #2949): ``save_arrangement_preset``
+        вернул отказ («Инструмент 'save_arrangement_preset' недоступен»),
+        LLM всё равно ответила «Записала пресет, горный король теперь
+        всегда будет звучать прозрачно!» с ``tools=['save_arrangement_
+        preset', 'load_skill']``. До фикса #2942's ``CLAIM_JUSTIFYING_
+        TOOLS`` матчил по ИМЕНИ и считал заявление подкреплённым просто
+        потому что тул был ВЫЗВАН — не проверяя, что он реально
+        сработал. ``tool_error_occurred=True`` обязан НЕ дать тому же
+        тулу оправдать claim.
+        """
+        hit = detect_universal_action_claim(
+            spoken=(
+                "Записала пресет, горный король теперь всегда будет "
+                "звучать прозрачно!"
+            ),
+            tools_called=("save_arrangement_preset", "load_skill"),
+            tool_error_occurred=True,
+        )
+        assert hit is not None, (
+            "guard должен ловить claim, когда закрывающий тул был вызван, "
+            "но вернул ошибку/отказ (issue #2949 live repro) — а не "
+            "молчать просто потому что имя тула есть в tools_called"
+        )
+        assert hit.verb.lower().startswith("записал")
+
+    def test_tool_called_and_succeeded_claim_not_detected(self) -> None:
+        """Контраст к предыдущему тесту: тул реально сработал — guard молчит.
+
+        ``tool_error_occurred=False`` (по умолчанию) — старое поведение
+        не должно регрессировать.
+        """
+        hit = detect_universal_action_claim(
+            spoken="Записала пресет, звучит прозрачно.",
+            tools_called=("save_arrangement_preset",),
+            tool_error_occurred=False,
+        )
+        assert hit is None, (
+            "guard НЕ должен срабатывать, когда закрывающий тул реально "
+            "успешно отработал"
+        )
+
     # ----- negative case 1: tools_called не пуст ⇒ guard молчит -----
 
     @pytest.mark.parametrize(
@@ -2907,6 +2953,106 @@ class TestBuildPhantomActionRetryPrompt:
             "user_input должен быть в начале промпта ДО [CRITICAL]-блока — "
             "иначе LLM сначала прочтёт инструкции и забудет запрос"
         )
+
+
+class TestBuildUniversalActionClaimRetryPromptToolError:
+    """Issue #2949 — retry-промпт должен различать «тул не вызван» и
+    «тул вызван, но упал».
+
+    :func:`build_universal_action_claim_retry_prompt` раньше всегда
+    писал «но НЕ вызвал НИ ОДНОГО инструмента (tools=[])», что было бы
+    ложью для ``tools=['save_arrangement_preset', 'load_skill']`` —
+    инструмент КАК РАЗ был вызван, просто отказал. ``tool_error_
+    occurred=True`` переключает текст на честную формулировку про
+    ошибку/отказ и просит либо повторить, либо честно сообщить о
+    неудаче — НЕ просто «вызови тул ещё раз» вслепую.
+    """
+
+    def _hit(self):
+        hit = detect_universal_action_claim(
+            spoken="Записала пресет.",
+            tools_called=("save_arrangement_preset",),
+            tool_error_occurred=True,
+        )
+        assert hit is not None
+        return hit
+
+    def test_error_prompt_mentions_failure_not_empty_tools(self) -> None:
+        prompt = build_universal_action_claim_retry_prompt(
+            user_input="сохрани пресет",
+            spoken="Записала пресет.",
+            hit=self._hit(),
+            tool_error_occurred=True,
+        )
+        assert "tools=[]" not in prompt, (
+            "тул БЫЛ вызван (tools_called непуст) — промпт не должен "
+            "врать, что вызовов не было"
+        )
+        assert "ошиб" in prompt.lower() or "отказ" in prompt.lower(), (
+            "промпт обязан назвать РЕАЛЬНУЮ причину — ошибку/отказ тула, "
+            "а не общее «вызови инструмент»"
+        )
+
+    def test_error_prompt_asks_for_honest_failure_report(self) -> None:
+        prompt = build_universal_action_claim_retry_prompt(
+            user_input="сохрани пресет",
+            spoken="Записала пресет.",
+            hit=self._hit(),
+            tool_error_occurred=True,
+        )
+        assert "не получилось" in prompt.lower() or "не удал" in prompt.lower(), (
+            "промпт должен явно разрешить честно сказать о неудаче — "
+            "acceptance criteria #2949"
+        )
+
+    def test_no_error_prompt_keeps_legacy_wording(self) -> None:
+        """``tool_error_occurred=False`` (default) — старый текст не регрессирует."""
+        hit = detect_universal_action_claim(
+            spoken="Проверю состояние и перезапущу.",
+            tools_called=(),
+        )
+        assert hit is not None
+        prompt = build_universal_action_claim_retry_prompt(
+            user_input="докрути музыку",
+            spoken="Проверю состояние и перезапущу.",
+            hit=hit,
+        )
+        assert "tools=[]" in prompt
+
+
+class TestBuildActionClaimFailureFallback:
+    """Issue #2949 — честная фраза после исчерпания бюджета ретраев.
+
+    Когда одноразовый ретрай уже потрачен и модель СНОВА повторяет
+    непокреплённый claim, fallback обязан НЕ содержать слов успеха
+    («записал», «сохранил», «готово») — иначе юзер услышит вторую ложь
+    подряд вместо честного признания неудачи (ADR-0018).
+    """
+
+    def test_fallback_does_not_repeat_success_claim(self) -> None:
+        hit = detect_universal_action_claim(
+            spoken="Записала пресет.",
+            tools_called=("save_arrangement_preset",),
+            tool_error_occurred=True,
+        )
+        assert hit is not None
+        fallback = build_action_claim_failure_fallback(hit)
+        lowered = fallback.lower()
+        for success_word in ("записал", "сохранил", "готово", "выполнил"):
+            assert success_word not in lowered, (
+                f"fallback не должен содержать {success_word!r} — это "
+                "должна быть честная неудача, не повторный claim"
+            )
+
+    def test_fallback_is_non_empty_string(self) -> None:
+        hit = detect_universal_action_claim(
+            spoken="Записала пресет.",
+            tools_called=("save_arrangement_preset",),
+            tool_error_occurred=True,
+        )
+        assert hit is not None
+        assert isinstance(build_action_claim_failure_fallback(hit), str)
+        assert build_action_claim_failure_fallback(hit).strip() != ""
 
 
 class TestPhantomActionVsBugEOverlap:

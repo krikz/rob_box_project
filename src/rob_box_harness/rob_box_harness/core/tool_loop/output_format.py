@@ -79,6 +79,7 @@ def apply_babble_filter(
         spoken_via_tool="\n".join(spoken_texts),
         truncated_tool_args=response.truncated_tool_args,
         track_name=track_name,
+        tool_error_occurred=tool_error_occurred,
     )
 
 
@@ -90,6 +91,7 @@ def build_outcome_from_response(
     speak_text_real_count: int,
     spoken_texts: list[str],
     track_name: str | None = None,
+    tool_error_occurred: bool = False,
 ) -> _ToolLoopOutcome:
     """Assemble the happy-path :class:`_ToolLoopOutcome` from the last response.
 
@@ -107,4 +109,5 @@ def build_outcome_from_response(
         spoken_via_tool="\n".join(spoken_texts),
         truncated_tool_args=response.truncated_tool_args,
         track_name=track_name,
+        tool_error_occurred=tool_error_occurred,
     )

@@ -52,6 +52,7 @@ from typing import (
 )
 
 from .dialogue_guards import (
+    CLAIM_JUSTIFYING_TOOLS,
     ActionClaimRule,
     build_babble_retry_prompt,
     build_hallucinated_midi_retry_prompt,
@@ -134,12 +135,20 @@ class TurnContext:
             which would leak a dialogue_node-specific type into ``core/``.
         speech_id: Optional speech-id for log correlation. Not interpreted by
             guards; carried for diagnostics.
+        tool_error_occurred: ``True`` when at least one tool call THIS TURN
+            returned ``is_error=True`` (issue #2949 — a tool being CALLED is
+            not the same as it SUCCEEDING; a refused/errored
+            ``save_arrangement_preset`` must not "back" a spoken claim of
+            success, and a real action-fulfilling tool call that errored
+            must not be mistaken for babble-suppression either). Mirrors
+            ``DialogResult.tool_error_occurred`` (``rob_box_harness``).
     """
 
     user_input: str
     is_dj_auto: bool = False
     has_error: bool = False
     speech_id: Optional[str] = None
+    tool_error_occurred: bool = False
 
 
 @dataclass(frozen=True)
@@ -448,6 +457,7 @@ def begin_babble_retry(
     tools_called: tuple,
     speak_text_real: int,
     state: TurnState,
+    tool_error_occurred: bool = False,
 ) -> Optional[BabbleRetryDecision]:
     """Issue #992 Bug D — decide whether to fire ONE babble retry, in pure.
 
@@ -495,6 +505,7 @@ def begin_babble_retry(
         turn=TurnContext(
             user_input=user_input or "",
             is_dj_auto=False,
+            tool_error_occurred=bool(tool_error_occurred),
         ),
         state=state,
     )
@@ -738,6 +749,22 @@ class BabbleGuard:
             # the legacy ``self._babble_retry_used`` short-circuit at
             # ``dialogue_node.py:4232-4233``.
             return None
+        # Issue #2948 — a turn that ALREADY successfully ran the tool(s)
+        # that fulfil the request (music-start / set_dj_mode / etc., see
+        # :data:`CLAIM_JUSTIFYING_TOOLS`) is not babble: a short DJ-style
+        # line NEXT TO a real action ("Слушай Still Dre, потом Next
+        # Episode подхвачу!" with tools=['set_dj_mode', 'compose_music',
+        # 'play_animation']) is flavour text, not an unfulfilled promise.
+        # Retrying here re-dispatches the ORIGINAL user request and the
+        # DJ set starts a second time (live 24.09, issue #2948). Mirrors
+        # the same "tool called AND succeeded" bar as
+        # :func:`detect_universal_action_claim` (issue #2949) — a called
+        # tool that ERRORED does not count as fulfilling the request.
+        if (
+            set(ctx.reply.tools_called) & CLAIM_JUSTIFYING_TOOLS
+            and not ctx.turn.tool_error_occurred
+        ):
+            return None
         if ctx.reply.speak_text_real > 0:
             return None
         if not ctx.reply.spoken:
@@ -979,6 +1006,7 @@ class UniversalActionClaimGuard:
         hit = detect_universal_action_claim(
             spoken=ctx.reply.spoken,
             tools_called=ctx.reply.tools_called,
+            tool_error_occurred=ctx.turn.tool_error_occurred,
         )
         if hit is None:
             return None
@@ -986,6 +1014,7 @@ class UniversalActionClaimGuard:
             user_input=ctx.turn.user_input,
             spoken=ctx.reply.spoken,
             hit=hit,
+            tool_error_occurred=ctx.turn.tool_error_occurred,
         )
         return Verdict(
             kind=VerdictKind.RETRY,

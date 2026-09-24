@@ -1828,6 +1828,7 @@ def detect_universal_action_claim(
     *,
     spoken: Optional[str],
     tools_called: Optional[Tuple[str, ...]],
+    tool_error_occurred: bool = False,
 ) -> Optional[UniversalActionClaimHit]:
     """Issue #2549 — широкий детектор «spoken заявляет действие, tools пуст».
 
@@ -1839,15 +1840,25 @@ def detect_universal_action_claim(
     Триггер — ТОЛЬКО в :data:`spoken`. Условия:
       1. ``spoken`` содержит action-verb в past или future (см.
          :data:`_ACTION_VERBS_PAST` / :data:`_ACTION_VERBS_FUTURE`).
-      2. ``tools_called`` ∩ :data:`CLAIM_JUSTIFYING_TOOLS`` == ∅.
+      2. ``tools_called`` ∩ :data:`CLAIM_JUSTIFYING_TOOLS`` == ∅, ИЛИ
+         вызванный тул вернул ошибку (``tool_error_occurred=True`` —
+         issue #2949: гард #2942 считал заявление подкреплённым, если
+         тул был ВЫЗВАН, даже когда он отказал/упал. «Записала пресет»
+         после ``save_arrangement_preset`` → «недоступен» — тот же
+         hallucination, что и пустой ``tools_called``, просто с тулом
+         в списке. Подкрепляет заявление ТОЛЬКО успешный вызов).
 
-    Если оба — возвращает :class:`UniversalActionClaimHit`, иначе ``None``.
+    Если условие 1 и (условие 2 ИЛИ ошибка) — возвращает
+    :class:`UniversalActionClaimHit`, иначе ``None``.
     """
     if not spoken:
         return None
     called = set(tools_called or ())
-    if called & CLAIM_JUSTIFYING_TOOLS:
-        # LLM вызвал тул, который оправдывает заявление — НЕ вмешиваемся.
+    if (called & CLAIM_JUSTIFYING_TOOLS) and not tool_error_occurred:
+        # LLM вызвал тул, который оправдывает заявление, И тул реально
+        # отработал — НЕ вмешиваемся. Issue #2949: если тул вызван, но
+        # вернул ошибку, ``tool_error_occurred=True`` и мы НЕ бежим
+        # сюда — заявление остаётся непроверенным hallucination.
         return None
 
     # Past tense — приоритет, чаще в спонтанных ответах.
@@ -1871,13 +1882,23 @@ def detect_universal_action_claim(
 
 
 def build_universal_action_claim_retry_prompt(
-    *, user_input: Optional[str], spoken: str, hit: "UniversalActionClaimHit"
+    *,
+    user_input: Optional[str],
+    spoken: str,
+    hit: "UniversalActionClaimHit",
+    tool_error_occurred: bool = False,
 ) -> str:
     """Issue #2549 — синтетический CRITICAL-ретрай на action hallucination.
 
     Тот же контракт, что у :func:`build_unbacked_action_retry_prompt` /
     :func:`build_babble_retry_prompt`: одна попытка, текст промпта прямо
     называет заявление и запрещает его без вызова тула.
+
+    Issue #2949 — ``tool_error_occurred=True`` значит инструмент был
+    вызван, но вернул ошибку/отказ (не пустой ``tools_called``). Текст
+    промпта в этом случае просит честно сообщить о НЕУДАЧЕ, а не просто
+    "вызови инструмент" — модель уже его вызывала, вызов ещё раз того
+    же провалившегося тула не поможет без честного отчёта.
     """
     cleaned = _strip_trailing_critical_block(user_input or "")
     verb_hint = (
@@ -1885,6 +1906,25 @@ def build_universal_action_claim_retry_prompt(
         + hit.verb
         + "», говори «проверяю», «попробую»."
     )
+    if tool_error_occurred:
+        failure_clause = (
+            "но вызванный тобой инструмент ВЕРНУЛ ОШИБКУ/ОТКАЗ — действие "
+            "НЕ выполнено. "
+        )
+        action_clause = (
+            "✅ ОБЯЗАТЕЛЬНО: попробуй ещё раз ИЛИ, если повторный вызов "
+            "тоже не поможет, честно скажи через speak_text, что действие "
+            "НЕ удалось (например «не получилось сохранить») — НЕ повторяй "
+            "прежнее заявление об успехе. "
+        )
+    else:
+        failure_clause = "но НЕ вызвал НИ ОДНОГО инструмента (tools=[]). "
+        action_clause = (
+            "✅ ОБЯЗАТЕЛЬНО: в ЭТОМ же turn вызови соответствующий инструмент "
+            "(compose_music / execute_music_code / load_track / set_vibe_preset "
+            "/ set_volume / set_voice / save_waypoint / get_music_state / "
+            "memory_save / и т.д. по контексту). "
+        )
     return (
         f"{cleaned}\n\n"
         "[CRITICAL] В прошлом цикле ты в spoken описал действие ("
@@ -1892,15 +1932,29 @@ def build_universal_action_claim_retry_prompt(
         + hit.verb
         + "», tense="
         + hit.tense
-        + "), но НЕ вызвал НИ ОДНОГО инструмента (tools=[]). "
-        "Пользователь слышит твои слова, но изменений не произойдёт.\n"
-        "❌ ЗАПРЕЩЕНО отчитываться о выполненном действии без вызова тула.\n"
-        "✅ ОБЯЗАТЕЛЬНО: в ЭТОМ же turn вызови соответствующий инструмент "
-        "(compose_music / execute_music_code / load_track / set_vibe_preset "
-        "/ set_volume / set_voice / save_waypoint / get_music_state / "
-        "memory_save / и т.д. по контексту). "
+        + "), "
+        + failure_clause
+        + "Пользователь слышит твои слова, но изменений не произойдёт.\n"
+        "❌ ЗАПРЕЩЕНО отчитываться о выполненном действии без реального "
+        "успешного вызова тула.\n"
+        + action_clause
         + verb_hint
         + " После вызова верни 'done' или speak_text с результатом."
+    )
+
+
+def build_action_claim_failure_fallback(hit: "UniversalActionClaimHit") -> str:
+    """Issue #2949 — честная фраза после исчерпания бюджета ретраев.
+
+    Когда одноразовый ретрай :func:`build_universal_action_claim_retry_prompt`
+    уже потрачен, а модель СНОВА заявляет о выполненном действии, не
+    подкреплённом успешным тулом — публикуем это вместо заявления. Цена
+    молчаливой деградации выше цены честного «не получилось»: ADR-0018
+    («Честный FAIL лучше красивого PASS»).
+    """
+    return (
+        "Не получилось выполнить — попробуй, пожалуйста, ещё раз "
+        "чуть позже."
     )
 
 

@@ -1427,6 +1427,86 @@ def test_tool_error_substantive_answer_not_suppressed(
     assert result.tools_called == ["memory_context"]
 
 
+def test_tool_error_occurred_propagates_to_dialog_result(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """Issue #2949 — ``DialogResult.tool_error_occurred`` surfaces a
+    called-but-FAILED tool, distinct from ``tools_called`` (which only
+    carries the NAME and looks identical whether the call succeeded or
+    was refused). Live repro: ``save_arrangement_preset`` refused
+    («недоступен»), the LLM still claimed «Записала пресет…» — the
+    dialogue_node action-claim guards need this flag to tell "called
+    and worked" from "called and failed" (the previous behaviour
+    treated ANY call to a whitelisted tool as backing the claim).
+    """
+    from rob_box_llm.provider import ToolResult
+
+    scripted = [
+        LLMResponse(
+            content="",
+            tool_calls=(
+                ToolCall(id="c1", name="save_arrangement_preset", arguments={}),
+            ),
+        ),
+        LLMResponse(content="Записала пресет!", tool_calls=()),
+    ]
+    llm.responses = scripted
+
+    async def refusing_handler(args: dict[str, object]) -> ToolResult:
+        return ToolResult(
+            tool_call_id="c1",
+            content="Инструмент 'save_arrangement_preset' недоступен",
+            is_error=True,
+        )
+    tools_provider._handler_map = {"save_arrangement_preset": refusing_handler}
+
+    core_obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    _wake(core_obj)
+
+    result = asyncio.run(core_obj.process_input("сохрани пресет", history=[]))
+
+    assert result.error is None
+    assert result.tools_called == ["save_arrangement_preset"]
+    assert result.tool_error_occurred is True, (
+        "a refused tool call must set tool_error_occurred=True even "
+        "though its NAME still lands in tools_called"
+    )
+
+
+def test_tool_success_does_not_set_tool_error_occurred(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """Contrast to the previous test: a SUCCESSFUL call keeps the flag False."""
+    scripted = [
+        LLMResponse(
+            content="",
+            tool_calls=(
+                ToolCall(id="c1", name="save_arrangement_preset", arguments={}),
+            ),
+        ),
+        LLMResponse(content="Записала пресет!", tool_calls=()),
+    ]
+    llm.responses = scripted
+
+    async def ok_handler(args: dict[str, object]) -> str:
+        return "saved"
+    tools_provider._handler_map = {"save_arrangement_preset": ok_handler}
+
+    core_obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    _wake(core_obj)
+
+    result = asyncio.run(core_obj.process_input("сохрани пресет", history=[]))
+
+    assert result.error is None
+    assert result.tool_error_occurred is False
+
+
 def test_dj_auto_with_preclassified_event_reaches_llm_from_idle(
     llm: _FakeLLMProvider,
     tools_provider: _FakeToolProvider,

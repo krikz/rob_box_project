@@ -501,6 +501,13 @@ class DialogResult:
     # uses this to announce the actual track instead of the generic
     # «Готово, играю.» — see ``ensure_dj_music_response``.
     track_name: str | None = None
+    # Issue #2949 — True when at least one tool call THIS TURN returned
+    # is_error=True (refusal/exception). ``tools_called`` only carries
+    # NAMES, so a refused ``save_arrangement_preset`` still looks like a
+    # successful call to a guard that only checks membership — this flag
+    # lets dialogue_node's action-claim guards require an actual
+    # SUCCESSFUL result before treating a spoken claim as backed.
+    tool_error_occurred: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -929,6 +936,7 @@ class AgentCore:
                 result.raw_response = outcome.raw_response
                 result.truncated_tool_args = outcome.truncated_tool_args
                 result.track_name = outcome.track_name
+                result.tool_error_occurred = outcome.tool_error_occurred
                 if not is_dj_auto:
                     # Persist an HONEST assistant turn: the text actually
                     # spoken via speak_text (or a real plain-text reply), NOT
@@ -1630,6 +1638,7 @@ class AgentCore:
             speak_text_real_count=speak_text_real_count,
             spoken_texts=spoken_texts,
             track_name=track_name,
+            tool_error_occurred=tool_error_occurred,
         )
 
     async def _execute_tool_batch(
