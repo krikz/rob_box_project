@@ -41,8 +41,16 @@ from .mcp_auth import RequestAuthenticator
 #: хода едет в подписанном запросе ``/mcp/execute`` как обычный аргумент.
 #: В LLM-схеме тула этих параметров НЕТ; присланное LLM значение
 #: вырезается и заменяется значением хода (см. :func:`apply_turn_context`).
+#: Issue #2925 — для ``register_speaker`` ещё и то, что человек сказал о
+#: себе в реплике хода, и кем она уверенно узнана по голосу
+#: (``tools.dialogue.register_speaker_gate``).
 TURN_CONTEXT_ARGS: Mapping[str, Tuple[str, ...]] = {
-    "register_speaker": ("utterance_id",),
+    "register_speaker": (
+        "utterance_id",
+        "self_intro_name",
+        "intro_registered",
+        "known_speaker_name",
+    ),
 }
 
 TurnContextProvider = Callable[[], Mapping[str, Any]]
