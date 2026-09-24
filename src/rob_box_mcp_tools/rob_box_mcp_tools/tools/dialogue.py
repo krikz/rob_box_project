@@ -934,6 +934,15 @@ class RegisterSpeakerTool(MCPTool):
     # produced a junk row in /data/speakers.db (``name='Зовут'``). The
     # set covers the highest-frequency false positives observed on the
     # robot on 2026-08-10/11 (see PR-1101 cleanup migration notes).
+    #
+    # Issue #2932 — расширено заглушечными/служебными именами.
+    # LLM иногда вызывает register_speaker(name="unknown") вместо того,
+    # чтобы спросить настоящее имя (или подставляет технический
+    # плейсхолдер вроде "Guest"/"User"/"Speaker"). Без фильтра тул
+    # публиковал регистрацию под именем "Unknown" в /voice/speaker/register.
+    # Сравнение — точное совпадение ЦЕЛОГО (уже lower()-нутого) имени,
+    # НЕ substring/prefix — поэтому настоящие имена вроде "Юзеф" или
+    # "Гостомысл" фильтр не задевают.
     _NOISE_NAMES: frozenset[str] = frozenset(
         {
             "зовут",
@@ -951,6 +960,24 @@ class RegisterSpeakerTool(MCPTool):
             "имя мне",
             "имя моё",
             "имя мое",
+            # Issue #2932 — заглушечные/служебные имена (плейсхолдеры).
+            "unknown",
+            "неизвестный",
+            "неизвестная",
+            "неизвестно",
+            "незнакомец",
+            "незнакомка",
+            "гость",
+            "user",
+            "пользователь",
+            "speaker",
+            "name",
+            "-",
+            "?",
+            # "null"/"none" не добавлены сюда намеренно: они уже
+            # перехватываются отдельной веткой (literal null/None,
+            # issue #1101) ВЫШЕ по коду, до проверки _NOISE_NAMES —
+            # тут они были бы недостижимым (dead) кодом.
         }
     )
 

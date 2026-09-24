@@ -108,7 +108,16 @@ def _load_dialogue_isolated():
     чтобы ``from .dialogue import *`` (наследие __init__) не выполнялся.
     Затем грузим ``dialogue.py`` напрямую через importlib.
     """
-    sys.modules.setdefault("rob_box_mcp_tools", types.ModuleType("rob_box_mcp_tools"))
+    pkg_root = sys.modules.setdefault(
+        "rob_box_mcp_tools", types.ModuleType("rob_box_mcp_tools")
+    )
+    # Issue #2932 — dialogue.py делает `from ..voice_state import
+    # VoiceStateStore` (и `from ..animations import ...`), т.е. относительные
+    # импорты СОСЕДНИХ модулей пакета, а не только ``base``. Без __path__
+    # на стаб-пакете относительный импорт падает с "'rob_box_mcp_tools' is
+    # not a package" — сами модули (voice_state.py/animations.py) не тянут
+    # rclpy, поэтому безопасно резолвить их из РЕАЛЬНОГО каталога пакета.
+    pkg_root.__path__ = [str(_PKG_ROOT)]
     pkg_tools = types.ModuleType("rob_box_mcp_tools.tools")
     pkg_tools.__path__ = [str(_REPO_ROOT / "rob_box_mcp_tools" / "tools")]
     sys.modules["rob_box_mcp_tools.tools"] = pkg_tools
@@ -177,6 +186,13 @@ def mock_node() -> MagicMock:
     уходит именно на rename-топик (issue #1101).
     """
     node = MagicMock()
+    # Issue #2932 — MagicMock авто-создаёт ЛЮБОЙ несуществующий атрибут как
+    # новый MagicMock (а не бросает AttributeError), поэтому
+    # ``getattr(self.node, "_current_turn_utterance_id", None)`` в
+    # RegisterSpeakerTool.execute() (issue #2842 фолбек) получал бы
+    # MagicMock вместо None и падал на ``json.dumps`` в publish-пейлоаде.
+    # Явно фиксируем отсутствие атрибута — как на реальном mcp_server node.
+    node._current_turn_utterance_id = None
     register_pub = MagicMock()
     rename_pub = MagicMock()
     node.create_publisher.side_effect = lambda msg_type, topic, depth: (
@@ -298,7 +314,9 @@ def test_valid_cyrillic_name_is_published(
     call_args = pub.publish.call_args
     sent_msg = call_args[0][0]
     payload = json.loads(sent_msg.data)
-    assert payload == {"name": "Денис"}
+    # Issue #2829 (ADR-0131 PR-2) — payload несёт utterance_id (None в
+    # тесте: скрытый аргумент не передан, а node-фолбек тоже None).
+    assert payload == {"name": "Денис", "utterance_id": None}
 
 
 def test_lowercase_name_is_capitalized(
@@ -311,7 +329,7 @@ def test_lowercase_name_is_capitalized(
     assert result.data["registered_name"] == "Денис"
 
     sent_msg = mock_node.register_pub.publish.call_args[0][0]
-    assert json.loads(sent_msg.data) == {"name": "Денис"}
+    assert json.loads(sent_msg.data) == {"name": "Денис", "utterance_id": None}
 
 
 def test_name_with_whitespace_is_trimmed(
@@ -323,7 +341,7 @@ def test_name_with_whitespace_is_trimmed(
     assert result.data["registered_name"] == "Антон"
 
     sent_msg = mock_node.register_pub.publish.call_args[0][0]
-    assert json.loads(sent_msg.data) == {"name": "Антон"}
+    assert json.loads(sent_msg.data) == {"name": "Антон", "utterance_id": None}
 
 
 # ---------------------------------------------------------------------------
@@ -354,7 +372,7 @@ def test_rename_publishes_to_rename_topic_not_register(
     # новый name зарегистрирован на register-топик (НЕ на rename).
     assert mock_node.register_pub.publish.called
     register_msg = mock_node.register_pub.publish.call_args[0][0]
-    assert json.loads(register_msg.data) == {"name": "Денис"}
+    assert json.loads(register_msg.data) == {"name": "Денис", "utterance_id": None}
 
 
 def test_rename_without_new_name_only_renames(
@@ -388,4 +406,74 @@ def test_rename_ignores_noise_old_name(
     # rename не публиковался (old_name='null' отброшен).
     mock_node.rename_pub.publish.assert_not_called()
     # register как обычно.
+    assert mock_node.register_pub.publish.called
+
+
+# ---------------------------------------------------------------------------
+# 6. Issue #2932 — заглушечные/служебные имена ("unknown", "гость", ...)
+# LLM вызывала register_speaker(name="unknown") вместо того, чтобы спросить
+# настоящее имя — тул публиковал регистрацию под именем "Unknown"
+# (см. E2E акт2 run 35943180077, robot develop 06ac0d2).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "placeholder",
+    [
+        "unknown",
+        "Unknown",
+        "UNKNOWN",
+        "неизвестный",
+        "Неизвестный",
+        "неизвестная",
+        "незнакомец",
+        "Незнакомец",
+        "незнакомка",
+        "гость",
+        "Гость",
+        "user",
+        "User",
+        "пользователь",
+        "Пользователь",
+        "speaker",
+        "Speaker",
+        "name",
+        "Name",
+        "-",
+        "?",
+    ],
+)
+def test_placeholder_names_are_rejected(
+    tool: RegisterSpeakerTool,
+    mock_node: MagicMock,
+    placeholder: str,
+) -> None:
+    """Служебные/заглушечные имена (issue #2932) не должны публиковаться —
+    ни "-", ни "?" (эти два короче 2 символов и отсеиваются веткой
+    name_too_short, но публикации быть не должно в любом случае)."""
+    result = tool.execute(name=placeholder)
+    assert result.success is False, f"{placeholder!r} должен быть отклонён"
+    assert result.data["error"] in {"noise_name", "name_too_short"}
+    mock_node.register_pub.publish.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "real_name",
+    [
+        "Юзеф",       # содержит "юз" (user) как префикс — не должен отсеиваться
+        "Гостомысл",  # содержит "гост" (гость) как префикс — не должен отсеиваться
+        "Спикеров",   # содержит "спикер" (speaker) как префикс
+        "Насть",      # содержит "я" не относится, но проверим общую целостность
+    ],
+)
+def test_names_containing_noise_prefix_are_published(
+    tool: RegisterSpeakerTool,
+    mock_node: MagicMock,
+    real_name: str,
+) -> None:
+    """Фильтр сравнивает ЦЕЛОЕ имя, а не префикс/substring — реальные имена,
+    начинающиеся с заглушечного слова, проходят и публикуются."""
+    result = tool.execute(name=real_name)
+    assert result.success is True, f"{real_name!r} не должен быть отклонён"
+    assert result.data["registered_name"] == real_name.strip().capitalize()
     assert mock_node.register_pub.publish.called
