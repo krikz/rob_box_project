@@ -188,6 +188,7 @@ def test_cosine_similarity_zero_vector_returns_zero():
 # ---------- ArcFaceEmbedder.embed (fake Hailo layer) -----------------------
 
 def test_embed_returns_normalized_vectors_of_right_length():
+    pytest.importorskip('cv2')  # prepare_arcface_input -> cv2.resize
     embedder = face_mod.ArcFaceEmbedder(hef_path='/tmp/fake_arcface.hef')
     _install_fake_hailo(embedder, output_dim=512)
 
@@ -204,6 +205,7 @@ def test_embed_returns_normalized_vectors_of_right_length():
 
 
 def test_embed_bad_crop_yields_none_without_raising():
+    pytest.importorskip('cv2')  # prepare_arcface_input -> cv2.resize
     embedder = face_mod.ArcFaceEmbedder(hef_path='/tmp/fake_arcface.hef')
     _install_fake_hailo(embedder, output_dim=512)
 

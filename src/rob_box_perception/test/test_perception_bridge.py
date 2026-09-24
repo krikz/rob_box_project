@@ -115,21 +115,21 @@ _mock_rclpy = _types.ModuleType('rclpy')
 _mock_rclpy.init = lambda *a, **kw: None
 _mock_rclpy.shutdown = lambda *a, **kw: None
 _mock_rclpy.ok = lambda: True
-sys.modules.setdefault('rclpy', _mock_rclpy)
+sys.modules['rclpy'] = _mock_rclpy
 
 _mock_rclpy_node = _types.ModuleType('rclpy.node')
 _mock_rclpy_node.Node = _FakeNode
-sys.modules.setdefault('rclpy.node', _mock_rclpy_node)
+sys.modules['rclpy.node'] = _mock_rclpy_node
 
 _cb_mod = _types.ModuleType('rclpy.callback_groups')
 _cb_mod.ReentrantCallbackGroup = type('ReentrantCallbackGroup', (), {})
-sys.modules.setdefault('rclpy.callback_groups', _cb_mod)
+sys.modules['rclpy.callback_groups'] = _cb_mod
 
 _qos_mod = _types.ModuleType('rclpy.qos')
 _qos_mod.HistoryPolicy = _types.SimpleNamespace(KEEP_LAST='KEEP_LAST')
 _qos_mod.ReliabilityPolicy = _types.SimpleNamespace(RELIABLE='RELIABLE')
 _qos_mod.QoSProfile = lambda *a, **kw: MagicMock()
-sys.modules.setdefault('rclpy.qos', _qos_mod)
+sys.modules['rclpy.qos'] = _qos_mod
 
 _std_msgs = _types.ModuleType('std_msgs')
 _std_msgs_msg = _types.ModuleType('std_msgs.msg')
@@ -149,8 +149,8 @@ class _Bool:
 
 _std_msgs_msg.String = _String
 _std_msgs_msg.Bool = _Bool
-sys.modules.setdefault('std_msgs', _std_msgs)
-sys.modules.setdefault('std_msgs.msg', _std_msgs_msg)
+sys.modules['std_msgs'] = _std_msgs
+sys.modules['std_msgs.msg'] = _std_msgs_msg
 
 
 # Import the SUT after the shim is registered so the module's
