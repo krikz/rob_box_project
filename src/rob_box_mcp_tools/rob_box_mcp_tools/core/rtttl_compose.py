@@ -361,9 +361,11 @@ def melody_to_compose_params(
       * ``harmony`` — :class:`core.harmonize.Harmonization`: та же тема,
         разложенная на бас, пэд, контрмелодию и рисунки ударных.
 
-    Мелодия выравнивается по такту (хвостовая пауза доводит луп до целого
-    числа тактов) — иначе луп плывёт относительно ударной сетки и тема
-    звучит «не в тайминг».
+    Мелодия выравнивается по такту с обоих концов: затакт в начале сдвигает
+    сетку паузой-лид-ином, чтобы первая сильная нота темы попала на долю 0
+    такта (:func:`_anacrusis_lead_in`, issue #2960), а хвостовая пауза
+    доводит луп до целого числа тактов (:func:`_snap_to_bar`) — иначе луп
+    плывёт относительно ударной сетки и тема звучит «не в тайминг».
 
     НОТЫ аккомпанемента модель больше не выбирает: они выведены из самой
     темы (``harmony``). За моделью остаются тембры, форма и темп — см.
@@ -395,7 +397,8 @@ def melody_to_compose_params(
     options = options or HarmonizeOptions()
     source_bpm = melody.bpm
     folded = _normalize_tempo(melody)
-    snapped = _snap_to_bar(folded)
+    leadin = _anacrusis_lead_in(folded)
+    snapped = _snap_to_bar(leadin)
     registered = _apply_lead_octave(snapped, options.lead_octave)
     melody = _apply_lead_outliers(registered, options.lead_outliers)
     ranked = detect_key_ranked(
@@ -409,7 +412,7 @@ def melody_to_compose_params(
     midi: List[str] = ["None" if m is None else str(int(m)) for m, _ in melody.notes]
     dur: List[str] = [f"{d:g}" for _, d in melody.notes]
     decisions = _prep_decisions(
-        source_bpm, (folded, snapped, registered, melody), ranked
+        source_bpm, (folded, leadin, snapped, registered, melody), ranked
     )
     decisions.update(_prep_option_decisions(options))
     if explicit:
@@ -535,16 +538,17 @@ _KEY_ALTERNATIVES = 3
 
 def _prep_decisions(
     source_bpm: int,
-    steps: Tuple[RtttlMelody, RtttlMelody, RtttlMelody, RtttlMelody],
+    steps: Tuple[RtttlMelody, RtttlMelody, RtttlMelody, RtttlMelody, RtttlMelody],
     ranked: Sequence[KeyCandidate],
 ) -> Dict[str, object]:
     """Запись авто-решений подготовки темы (ADR-0132) — только для партитуры.
 
     ``steps`` — тема после каждого шага конвейера: свёртка темпа,
-    выравнивание по такту, перенос регистра, подтяжка выбросов. Решения
-    считаются сравнением соседних шагов, сами шаги не трогаются.
+    затактовый лид-ин (issue #2960), выравнивание по такту, перенос
+    регистра, подтяжка выбросов. Решения считаются сравнением соседних
+    шагов, сами шаги не трогаются.
     """
-    folded, snapped, registered, final = steps
+    folded, leadin, snapped, registered, final = steps
     before = [m for m, _ in snapped.notes if m is not None]
     after = [m for m, _ in registered.notes if m is not None]
     moved = sum(
@@ -554,8 +558,11 @@ def _prep_decisions(
     return {
         "source_bpm": int(source_bpm),
         "bpm": int(final.bpm),
+        "anacrusis_pad_beats": round(
+            sum(d for _, d in leadin.notes) - sum(d for _, d in folded.notes), 4
+        ),
         "tail_pad_beats": round(
-            sum(d for _, d in snapped.notes) - sum(d for _, d in folded.notes), 4
+            sum(d for _, d in snapped.notes) - sum(d for _, d in leadin.notes), 4
         ),
         "lead_shift": (after[0] - before[0]) if before else 0,
         "outliers_moved": moved,
@@ -751,6 +758,53 @@ def _fix_isolated_lead_outliers(melody: RtttlMelody) -> RtttlMelody:
     if not changed:
         return melody
     return RtttlMelody(bpm=melody.bpm, notes=tuple(out))
+
+
+def _anacrusis_lead_in(melody: RtttlMelody) -> RtttlMelody:
+    """Затакт (пикап) — добавить паузу в начало, чтобы сильная доля темы
+    совпала с долей 0 такта аккомпанемента (issue #2960).
+
+    🔴 FIX (live 24.09, гимн России ``national_2``: ``8g,8p,c6,8g.,...``):
+    тема начинается с короткой затактовой ноты (``G``, восьмая), за ней —
+    первая ОПОРНАЯ, сильная нота (``C6``, четверть). Аранжировщик ставит
+    ПЕРВУЮ ноту темы на долю 0 (см. :func:`~core.harmonize.harmonize`,
+    :func:`_timed`) — поэтому опорная нота гимна («си-») оказывалась на
+    доле 1, а не на сильной доле такта, и била мимо каркаса ударных
+    (бочка ``X`` на 0/4, малый ``o`` на 2/4) и смен аккорда пэда (тоже по
+    долям такта): на слух — «ноты промахиваются».
+
+    Детектор — тот же критерий, что уже используется для тональности
+    (:func:`_first_strong_note`): если первая звучащая нота темы КОРОЧЕ
+    следующей звучащей ноты, она — затакт, а следующая — первая сильная
+    нота фразы. Общий признак затакта (пикап слабее и короче опорной
+    ноты), без привязки к конкретной песне (ADR-0132).
+
+    Величина паузы — ровно столько долей, чтобы онсет первой сильной ноты
+    (считая паузы между затактом и ней) стал кратен такту
+    (:data:`~core.arranger.BEATS_PER_BAR`): затакт оказывается в хвосте
+    нового вступительного такта (доигрывает его последними долями — «или
+    в intro», см. issue), а первая сильная нота начинает СЛЕДУЮЩИЙ такт
+    ровно с доли 0, синхронно с ударными и первой сменой аккорда пэда.
+
+    Тема без затакта (первая звучащая нота не короче второй, как в
+    большинстве RTTTL-рингтонов) не трогается — байт-в-байт прежнее
+    поведение (``test_arranger_golden``).
+    """
+    notes = melody.notes
+    sounding_idx = [i for i, (m, _d) in enumerate(notes) if m is not None]
+    if len(sounding_idx) < 2:
+        return melody
+    first_i, second_i = sounding_idx[0], sounding_idx[1]
+    first_dur = notes[first_i][1]
+    second_dur = notes[second_i][1]
+    if first_dur >= second_dur:
+        return melody
+    onset = sum(d for _, d in notes[:second_i])
+    remainder = onset % BEATS_PER_BAR
+    if remainder == 0:
+        return melody
+    pad = BEATS_PER_BAR - remainder
+    return RtttlMelody(bpm=melody.bpm, notes=((None, pad),) + tuple(notes))
 
 
 def _snap_to_bar(melody: RtttlMelody) -> RtttlMelody:

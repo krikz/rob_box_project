@@ -34,48 +34,50 @@
    ``title`` (+ ``data["alternatives"]`` от #2896, вне партитуры).
 2. ``rtttl_compose._normalize_tempo`` → свёртка темпа в 60–180 →
    ``tempo_fold`` + пометка у bpm.
-3. ``_snap_to_bar`` → хвостовая пауза →
+3. ``_anacrusis_lead_in`` → затакт сдвигает сетку темы →
+   ``raw_decisions['prep']['anacrusis_pad_beats']`` (только dict, issue #2960).
+4. ``_snap_to_bar`` → хвостовая пауза →
    ``raw_decisions['prep']['tail_pad_beats']`` (только dict).
-4. ``_normalize_lead_register`` → перенос темы октавами → ``lead_octave``.
-5. ``_fix_isolated_lead_outliers`` → подтяжка выбросов → ``lead_outliers``.
-6. ``detect_key`` → тональность аккомпанемента → ``key`` с разрывом и
+5. ``_normalize_lead_register`` → перенос темы октавами → ``lead_octave``.
+6. ``_fix_isolated_lead_outliers`` → подтяжка выбросов → ``lead_outliers``.
+7. ``detect_key`` → тональность аккомпанемента → ``key`` с разрывом и
    альтернативами (``detect_key_ranked``); root/scale вызова при ``name=``
    перегармонизируют тему (PR-2) → ``key=explicit→X (auto Y)`` и
    предупреждение, если тема в заданном ладу меньше чем на
    :data:`KEY_FIT_WARN`.
-7. ``harmonize.DENSE_ONSETS_PER_BEAT`` → dense/sparse → ``density``.
-8. ``_pick_chords`` → аккорды → ``chords`` по тактам.
-9. ``_pad_ceiling``/``PAD_BASS_CLEARANCE``/``_stack_chord`` → регистр пэда →
-   диапазон пэда + проверки «пэд над басом», «пэд vs низ темы».
-10. ``_build_bass``/``_approach_note`` → бас → ``bass_style``,
+8. ``harmonize.DENSE_ONSETS_PER_BEAT`` → dense/sparse → ``density``.
+9. ``_pick_chords`` → аккорды → ``chords`` по тактам.
+10. ``_pad_ceiling``/``PAD_BASS_CLEARANCE``/``_stack_chord`` → регистр пэда →
+    диапазон пэда + проверки «пэд над басом», «пэд vs низ темы».
+11. ``_build_bass``/``_approach_note`` → бас → ``bass_style``,
     ``bass_approach``, проверка «бас вне лада».
-11. ``_build_pad``/``PAD_STAB_SUS`` → стаккато пэда → ``pad_style``.
-12. ``_build_counter`` → второй голос → ``counter`` с причиной.
-13. ``_build_drums``/``_build_hats`` → ударные → строка «Ударные», ``drums``.
-14. ``_should_octave_double`` → удвоение темы → ``theme_octaves`` с причиной.
-15. ``SYNTH_SEMITONE_SHIFT`` → физика синта → «(синт ±N)» у партии;
+12. ``_build_pad``/``PAD_STAB_SUS`` → стаккато пэда → ``pad_style``.
+13. ``_build_counter`` → второй голос → ``counter`` с причиной.
+14. ``_build_drums``/``_build_hats`` → ударные → строка «Ударные», ``drums``.
+15. ``_should_octave_double`` → удвоение темы → ``theme_octaves`` с причиной.
+16. ``SYNTH_SEMITONE_SHIFT`` → физика синта → «(синт ±N)» у партии;
     диапазоны — уже в звучащей высоте.
-16. ``_heavy_brass_safety_net`` (tools/music.py) молча выключал второй
+17. ``_heavy_brass_safety_net`` (tools/music.py) молча выключал второй
     голос и октавы у imperialbrass → с PR-6 удалён: ничего не выключается,
     по таблице :mod:`core.synth_traits` партитура предупреждает «<синт>:
     долгий релиз … = 3 голоса с хвостом → counter=off или theme_octaves=off».
-17. ``resolve_form``/``_snap_plan_to_theme`` → секции под длину темы →
+18. ``resolve_form``/``_snap_plan_to_theme`` → секции под длину темы →
     ``form``, таймлайн секций; неизвестная форма в ``compose_music`` с PR-2 —
     ошибка (здесь остаётся страховка «→arc» с предупреждением).
-18. ``ROLE_PROFILE``/``levels`` → баланс громкости → ``mix_balance`` (issue
+19. ``ROLE_PROFILE``/``levels`` → баланс громкости → ``mix_balance`` (issue
     #2963, статическая оценка по коду ``render()``, не измерение микса; в
     текст выносится только при 3+ «тяжёлых» ролях). ``COUNTER_OF_LEAD``/
     ``FIXED_THEME_AMP_FLOOR``/``FORMS`` (динамика формы) — по-прежнему НЕ
     показаны (только таймлайн формы).
-19. ``_motif_variants``/``_dur_var`` → вариации сочинённой музыки → пока НЕ
+20. ``_motif_variants``/``_dur_var`` → вариации сочинённой музыки → пока НЕ
     показаны.
-20. ``_autofill_bass`` → бас ``dub`` сам добавлен → виден как партия баса.
-21. ``render``: кламп bpm, неверная тоника → C, swing ≤ 0.3,
+21. ``_autofill_bass`` → бас ``dub`` сам добавлен → виден как партия баса.
+22. ``render``: кламп bpm, неверная тоника → C, swing ≤ 0.3,
     ``BARS_PER_CHORD`` → в ``compose_music`` с PR-2 неверный ввод — ошибка
     (``arranger.check_*``); кламп в ``render`` остался страховкой рантайма.
-22. ``renardo_sanitizer`` (слоты, длина рисунка, кап amp) → раньше
+23. ``renardo_sanitizer`` (слоты, длина рисунка, кап amp) → раньше
     терялось в ``compose_music`` → внешние предупреждения партитуры.
-23. ``_repeat_warning`` → «совпало с прошлым треком» → в ``message``, как
+24. ``_repeat_warning`` → «совпало с прошлым треком» → в ``message``, как
     и было.
 """
 
