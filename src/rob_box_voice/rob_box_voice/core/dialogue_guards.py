@@ -93,6 +93,18 @@ MUSIC_HARD_STOP_TOOLS: frozenset = frozenset({
     "stop_music",
 })
 
+#: Тулы, которые закрывают DJ-запрос юзера (issue #2999): ``load_skill('dj')``
+#: подгружает инструкции, ``set_dj_mode`` включает автономный DJ-цикл.
+#: При наличии любого из них в ``tools_called`` guard СРАЗУ даёт SKIP —
+#: LLM сделала свою работу, дальше DJ-цикл гонит музыку сам.
+#: ``load_skill`` в чистом виде (без set_dj_mode) тоже считается
+#: закрытым: skill_router подгружает фрагмент, а DJ-цикл ещё впереди.
+DJ_REQUEST_SATISFYING_TOOLS: frozenset = frozenset({
+    "set_dj_mode",
+    "load_skill",
+})
+
+
 #: Tools that put existing playback into a mode rather than starting it.
 #: They keep music alive for the cleanup logic but must NOT satisfy the DJ
 #: retry guard — calling ``set_dj_mode`` without playing anything is
@@ -851,6 +863,313 @@ def is_vocal_request(user_input: str) -> bool:
         return False
     low = user_input.lower()
     return any(kw in low for kw in MUSIC_GUARD_VOCAL_KEYWORDS)
+
+
+# ---------------------------------------------------------------------------
+# Issue #2999 (live 24.09.2026, vision-pi 11:40 UTC): «ты диджей Снупдог…» —
+# юзер просит НАЗНАЧИТЬ диджей-персону и/или запустить DJ-сет. Это НЕ
+# «поставь трек» и НЕ «включи музыку»: правильный инструмент — ``set_dj_mode``
+# (после ``load_skill('dj')``), а не ``compose_music``/``execute_music_code``.
+#
+# Bug C guard ловил слово «диджей» через :data:`MUSIC_GUARD_KEYWORDS` и слал
+# CRITICAL-промпт, требующий музыкальный тул; LLM в ответ отвечала словами
+# («бит качает», «Still D.R.E. в D мажоре») с ``tools=[]`` — потому что
+# настоящий ответ на «стань диджеем» это set_dj_mode, а не compose_music.
+# Гард крутил USER_RETRY 15 раз подряд (5 запросов × 3 ретрая) и НИКОГДА не
+# давал LLM шанс позвать правильный тул.
+# ---------------------------------------------------------------------------
+
+DJ_REQUEST_PERSONA_KEYWORDS: tuple = (
+    "ты диджей",
+    "будь диджей",
+    "стань диджей",
+    "будешь диджей",
+    "ты dj ",
+    "стань dj ",
+    "будь dj ",
+    "диджей режим",
+    "dj mode",
+    "dj-сет",
+    "dj set",
+    "диджей-сет",
+    "диджей set",
+)
+
+_DJ_CONTEXT_NOUNS: str = (
+    r"вечеринк|сет(?!а)|"
+    r"дискотек|караоке-?вечеринк|club-?сет|party\s*-?mix"
+)
+_DJ_CONTEXT_VERBS: str = (
+    r"ты|стань|будь|будешь|запусти|запускай|вруби|врубай|включи|"
+    r"сделай|давай|играй|сыграй|поехали|погнали|запустим|"
+    r"сделаем|давайте"
+)
+
+DJ_REQUEST_CONTEXT_RE = re.compile(
+    r"(?:" + _DJ_CONTEXT_VERBS + r")\b[\s\w-]{0,32}?\b(?:" + _DJ_CONTEXT_NOUNS + r")\w*",
+    re.IGNORECASE,
+)
+
+
+def is_dj_request(user_input: str) -> bool:
+    """Issue #2999 — юзер назначает DJ-персону или запускает DJ-сет.
+
+    Отличается от :func:`user_wants_music` тем, что инструмент ответа
+    другой: для DJ-сет'а это ``set_dj_mode`` (после ``load_skill('dj')``),
+    а для «поставь трек» — ``compose_music``/``execute_music_code``. Если
+    :func:`user_wants_music` срабатывает на «диджей» в любом контексте,
+    :func:`is_dj_request` срабатывает ТОЛЬКО когда намерение — именно
+    DJ-режим, а не разовый трек.
+
+    Сужение по построению: «диджей» как существительное-тема без
+    DJ-императива (например, «диджей играет в наушниках») сюда не
+    попадает — этот случай закрывает :func:`is_music_stop_command` /
+    :func:`user_wants_performance`. Ложный DJ-request ведёт к ретраю
+    CRITICAL-промпта «вызови set_dj_mode», что хуже сегодняшней
+    тишины, поэтому детектор узкий.
+    """
+    if not user_input:
+        return False
+    low = user_input.lower()
+    if any(kw in low for kw in DJ_REQUEST_PERSONA_KEYWORDS):
+        return True
+    if DJ_REQUEST_CONTEXT_RE.search(low):
+        return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Issue #2999 (live 24.09.2026, vision-pi 11:40 UTC): «ты диджей Снупдог…» —
+# юзер просит НАЗНАЧИТЬ диджей-персону и/или запустить DJ-сет. Это НЕ
+# «поставь трек» и НЕ «включи музыку»: правильный инструмент — ``set_dj_mode``
+# (после ``load_skill('dj')``), а не ``compose_music``/``execute_music_code``.
+#
+# Bug C guard ловил слово «диджей» через :data:`MUSIC_GUARD_KEYWORDS` и слал
+# CRITICAL-промпт, требующий музыкальный тул; LLM в ответ отвечала словами
+# («бит качает», «Still D.R.E. в D мажоре») с ``tools=[]`` — потому что
+# настоящий ответ на «стань диджеем» это set_dj_mode, а не compose_music.
+# Гард крутил USER_RETRY 15 раз подряд (5 запросов × 3 ретрая) и НИКОГДА не
+# давал LLM шанс позвать правильный тул.
+# ---------------------------------------------------------------------------
+
+DJ_REQUEST_PERSONA_KEYWORDS: tuple = (
+    "ты диджей",
+    "будь диджей",
+    "стань диджей",
+    "будешь диджей",
+    "ты dj ",
+    "стань dj ",
+    "будь dj ",
+    "диджей режим",
+    "dj mode",
+    "dj-сет",
+    "dj set",
+    "диджей-сет",
+    "диджей set",
+)
+
+_DJ_CONTEXT_NOUNS: str = (
+    r"вечеринк|сет(?!а)|"
+    r"дискотек|караоке-?вечеринк|club-?сет|party\s*-?mix"
+)
+_DJ_CONTEXT_VERBS: str = (
+    r"ты|стань|будь|будешь|запусти|запускай|вруби|врубай|включи|"
+    r"сделай|давай|играй|сыграй|поехали|погнали|запустим|"
+    r"сделаем|давайте"
+)
+
+DJ_REQUEST_CONTEXT_RE = re.compile(
+    r"(?:" + _DJ_CONTEXT_VERBS + r")\b[\s\w-]{0,32}?\b(?:" + _DJ_CONTEXT_NOUNS + r")\w*",
+    re.IGNORECASE,
+)
+
+
+def is_dj_request(user_input: str) -> bool:
+    """Issue #2999 — юзер назначает DJ-персону или запускает DJ-сет.
+
+    Отличается от :func:`user_wants_music` тем, что инструмент ответа
+    другой: для DJ-сет'а это ``set_dj_mode`` (после ``load_skill('dj')``),
+    а для «поставь трек» — ``compose_music``/``execute_music_code``. Если
+    :func:`user_wants_music` срабатывает на «диджей» в любом контексте,
+    :func:`is_dj_request` срабатывает ТОЛЬКО когда намерение — именно
+    DJ-режим, а не разовый трек.
+
+    Сужение по построению: «диджей» как существительное-тема без
+    DJ-императива (например, «диджей играет в наушниках») сюда не
+    попадает — этот случай закрывает :func:`is_music_stop_command` /
+    :func:`user_wants_performance`. Ложный DJ-request ведёт к ретраю
+    CRITICAL-промпта «вызови set_dj_mode», что хуже сегодняшней
+    тишины, поэтому детектор узкий.
+    """
+    if not user_input:
+        return False
+    low = user_input.lower()
+    if any(kw in low for kw in DJ_REQUEST_PERSONA_KEYWORDS):
+        return True
+    if DJ_REQUEST_CONTEXT_RE.search(low):
+        return True
+    return False
+
+
+def is_vocal_request_after_marker(user_input: str) -> bool:
+    return False  # marker to find anchor again
+
+
+# ---------------------------------------------------------------------------
+# Issue #2999 (live 24.09.2026, vision-pi 11:40 UTC): «ты диджей Снупдог…» —
+# юзер просит НАЗНАЧИТЬ диджей-персону и/или запустить DJ-сет. Это НЕ
+# «поставь трек» и НЕ «включи музыку»: правильный инструмент — ``set_dj_mode``
+# (после ``load_skill('dj')``), а не ``compose_music``/``execute_music_code``.
+#
+# Bug C guard ловил слово «диджей» через :data:`MUSIC_GUARD_KEYWORDS` и слал
+# CRITICAL-промпт, требующий музыкальный тул; LLM в ответ отвечала словами
+# («бит качает», «Still D.R.E. в D мажоре») с ``tools=[]`` — потому что
+# настоящий ответ на «стань диджеем» это set_dj_mode, а не compose_music.
+# Гард крутил USER_RETRY 15 раз подряд (5 запросов × 3 ретрая) и НИКОГДА не
+# давал LLM шанс позвать правильный тул.
+# ---------------------------------------------------------------------------
+
+DJ_REQUEST_PERSONA_KEYWORDS: tuple = (
+    "ты диджей",
+    "будь диджей",
+    "стань диджей",
+    "будешь диджей",
+    "ты dj ",
+    "стань dj ",
+    "будь dj ",
+    "диджей режим",
+    "dj mode",
+    "dj-сет",
+    "dj set",
+    "диджей-сет",
+    "диджей set",
+)
+
+_DJ_CONTEXT_NOUNS: str = (
+    r"вечеринк|сет(?!а)|"
+    r"дискотек|караоке-?вечеринк|club-?сет|party\s*-?mix"
+)
+_DJ_CONTEXT_VERBS: str = (
+    r"ты|стань|будь|будешь|запусти|запускай|вруби|врубай|включи|"
+    r"сделай|давай|играй|сыграй|поехали|погнали|запустим|"
+    r"сделаем|давайте"
+)
+
+DJ_REQUEST_CONTEXT_RE = re.compile(
+    r"(?:" + _DJ_CONTEXT_VERBS + r")\b[\s\w-]{0,32}?\b(?:" + _DJ_CONTEXT_NOUNS + r")\w*",
+    re.IGNORECASE,
+)
+
+
+def is_dj_request(user_input: str) -> bool:
+    """Issue #2999 — юзер назначает DJ-персону или запускает DJ-сет."""
+    if not user_input:
+        return False
+    low = user_input.lower()
+    if any(kw in low for kw in DJ_REQUEST_PERSONA_KEYWORDS):
+        return True
+    if DJ_REQUEST_CONTEXT_RE.search(low):
+        return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Issue #2999 (live 24.09.2026, vision-pi 11:40 UTC): «ты диджей Снупдог…» —
+# юзер просит НАЗНАЧИТЬ диджей-персону и/или запустить DJ-сет. Это НЕ
+# «поставь трек» и НЕ «включи музыку»: правильный инструмент — ``set_dj_mode``
+# (после ``load_skill('dj')``), а не ``compose_music``/``execute_music_code``.
+#
+# Bug C guard ловил слово «диджей» через :data:`MUSIC_GUARD_KEYWORDS` и слал
+# CRITICAL-промпт, требующий музыкальный тул; LLM в ответ отвечала словами
+# («бит качает», «Still D.R.E. в D мажоре») с ``tools=[]`` — потому что
+# настоящий ответ на «стань диджеем» это set_dj_mode, а не compose_music.
+# Гард крутил USER_RETRY 15 раз подряд (5 запросов × 3 ретрая) и НИКОГДА не
+# давал LLM шанс позвать правильный тул.
+#
+# Отделяем DJ-request от music-request: ключевая фраза сигнализирует
+# НАЗНАЧЕНИЕ персоны/запуск сета, а не «положи трек на плеер».
+# ---------------------------------------------------------------------------
+
+#: Императивы назначения персоны. Сюда же ловится «стань/будь диджеем» — это
+#: явный запрос на DJ-режим, а не на очередной трек. ``диджей режим`` и
+#: ``dj mode`` — устоявшиеся формы в живых логах.
+DJ_REQUEST_PERSONA_KEYWORDS: tuple = (
+    "ты диджей",
+    "будь диджей",
+    "стань диджей",
+    "будешь диджей",
+    "ты dj ",
+    "стань dj ",
+    "будь dj ",
+    "диджей режим",
+    "dj mode",
+    "dj-сет",
+    "dj set",
+    "диджей-сет",
+    "диджей set",
+)
+
+#: Сюжетные ключевые слова (вечеринка/сет) в сочетании с императивом или
+#: вопросом — признак DJ-сессии. Сами по себе «вечеринк» без «включи/играй»
+#: НЕ ловятся (юзер может обсуждать план вечеринки без запроса на музыку).
+_DJ_CONTEXT_NOUNS: str = (
+    r"вечеринк|сет(?!а)|"
+    r"дискотек|караоке-?вечеринк|club-?сет|party\s*-?mix"
+)
+#: Глаголы, которые в сочетании с DJ-контекстом превращают фразу в DJ-запрос.
+_DJ_CONTEXT_VERBS: str = (
+    r"ты|стань|будь|будешь|запусти|запускай|вруби|врубай|включи|"
+    r"сделай|давай|играй|сыграй|поехали|погнали|запустим|"
+    r"сделаем|давайте"
+)
+
+#: regex для сюжетных DJ-запросов: «давай DJ-сет», «вруби вечеринку».
+DJ_REQUEST_CONTEXT_RE = re.compile(
+    r"(?:" + _DJ_CONTEXT_VERBS + r")\b[\s\w-]{0,32}?\b(?:" + _DJ_CONTEXT_NOUNS + r")\w*",
+    re.IGNORECASE,
+)
+
+
+def is_dj_request(user_input: str) -> bool:
+    """Issue #2999 — юзер назначает DJ-персону или запускает DJ-сет.
+
+    Отличается от :func:`user_wants_music` тем, что инструмент ответа
+    другой: для DJ-сет'а это ``set_dj_mode`` (после ``load_skill('dj')``),
+    а для «поставь трек» — ``compose_music``/``execute_music_code``. Если
+    :func:`user_wants_music` срабатывает на «диджей» в любом контексте,
+    :func:`is_dj_request` срабатывает ТОЛЬКО когда намерение — именно
+    DJ-режим, а не разовый трек.
+
+    Examples::
+
+        "ты диджей Снупдог"               → True
+        "стань диджеем на вечеринку"      → True
+        "давай запустим dj-сет"           → True
+        "вруби вечеринку"                  → True
+        "поставь диджей-сет"               → True
+        "включи трек"                      → False  (просто музыка)
+        "сыграй джаз"                     → False  (просто музыка)
+        "диджей играет в наушниках"        → False  (обсуждение, не запрос)
+        "объясни кто такой диджей"        → False  (вопрос, не запрос)
+        "хватит диджеить"                 → False  (стоп; не путаем с
+                                                   is_music_stop_command)
+        "выключи диджея"                  → False  (стоп)
+
+    Сужение по построению: «диджей» как существительное-тема без
+    DJ-императива (например, «диджей играет в наушниках») сюда не
+    попадает — этот случай закрывает :func:`is_music_stop_command` /
+    :func:`user_wants_performance`. Ложный DJ-request ведёт к ретраю
+    CRITICAL-промпта «вызови set_dj_mode», что хуже сегодняшней
+    тишины, поэтому детектор узкий.
+    """
+    if not user_input:
+        return False
+    low = user_input.lower()
+    if any(kw in low for kw in DJ_REQUEST_PERSONA_KEYWORDS):
+        return True
+    if DJ_REQUEST_CONTEXT_RE.search(low):
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -2348,6 +2667,45 @@ def build_music_retry_prompt(
         "вызов: строку никто не выполнит, музыка не изменится. "
         "Если и сейчас не вызовешь tool — цикл останется пустым."
     )
+
+def build_dj_request_retry_prompt(user_input: str) -> str:
+    """Issue #2999 — синтетический CRITICAL для DJ-request ретрая.
+
+    Bug C guard вёл LLM в «вызови compose_music/execute_music_code», хотя
+    настоящий ответ на «стань диджеем / запусти DJ-сет» — это
+    ``load_skill('dj')`` + ``set_dj_mode(enabled=True, theme=...)``. Здесь
+    CRITICAL прямо называет оба нужных тула и ЗАПРЕЩАЕТ звать
+    compose_music/execute_music_code как самостоятельный ответ.
+
+    ``load_skill('dj')`` обязателен первым: без него у LLM нет
+    persona-инструкций (DJ-сет, плавные переходы, лимит треков/минут),
+    и она отвечает как попало.
+    """
+    user_input = user_input or ""
+    return (
+        "[CRITICAL] Юзер попросил тебя стать диджеем или запустить DJ-сет "
+        "(запрос: «" + user_input + "»). "
+        "Ты НЕ вызвал ни load_skill('dj'), ни set_dj_mode — это и есть "
+        "DJ-запрос, НЕ track-mode и НЕ «поставь один трек». "
+        "НЕ вызывай compose_music / execute_music_code в качестве ответа: "
+        "правильный путь — DJ-режим, который сам гонит музыку. "
+        "ОБЯЗАТЕЛЬНО В ЭТОМ ЖЕ turn последовательно:\n"
+        "1) load_skill('dj') — подгрузит DJ-инструкции (плавные переходы, "
+        "план сета, лимит треков и минут);\n"
+        "2) get_music_state — проверь, что играет; если ничего — "
+        "СНАЧАЛА compose_music(...) (запустит первый трек), иначе DJ "
+        "включится на пустоту;\n"
+        "3) set_dj_mode(enabled=True, theme='<тема из запроса юзера>') — "
+        "включит DJ-цикл. theme вытащи из «" + user_input + "» "
+        "(например «гангста вечеринка», «на чёрном квартале», "
+        "«кисломолочная вечеринка»); если темы в запросе нет — theme "
+        "опусти, фолбэк решит DJ.\n"
+        "После set_dj_mode НЕ вызывай compose_music сам: DJ-цикл сделает "
+        "это через POSTPONE_INTERVAL_S (~45 c). "
+        "Если load_skill('dj') вернул ошибку — НЕ придумывай DJ-фразы, "
+        "скажи юзеру что не получилось, что не хватает скилла."
+    )
+
 
 def build_unbacked_action_retry_prompt(
     *, user_input: str, spoken: str, rule: "ActionClaimRule"
