@@ -575,3 +575,83 @@ def test_issue_2887_dictionary_layer_stays_single_word():
         for label in pool:
             assert " " not in label, label
             assert ep.check_llm_epithet(label)[0] is None, label
+
+
+# ── Issue #2926: отказ модели не должен проходить как кличка ────────────────
+
+
+@pytest.mark.parametrize("bad", [
+    "Пока нечего показать",         # живой прогон, акт 2 run 35933157262
+    "Ничего не могу сказать",
+    "Недостаточно данных пока",
+    "Затрудняюсь дать кличку",
+    "Невозможно точно сказать",
+    "Неясно что сказать пока",
+    "Непонятно кто это пока",
+    # "Неизвестно" сюда не идёт: это уже «незнакомец» (#2864,
+    # STRANGER_EPITHET_STEMS), стоит первым в порядке проверки — см.
+    # test_issue_2926_unknown_word_is_stranger_not_refusal ниже.
+])
+def test_issue_2926_rejects_refusal_phrases(bad):
+    """«Пока нечего показать» и похожие отказы — не кличка, а служебный ответ.
+
+    По форме (2–4 слова, первое с большой буквы) такая фраза неотличима от
+    кличек #2887, поэтому нужна отдельная сверка по смыслу, как у
+    «незнакомца» (#2864).
+    """
+    assert ep.check_llm_epithet(bad) == (None, "refusal")
+    assert ep.sanitize_llm_epithet(bad) is None, bad
+    assert ep.is_refusal_epithet(bad) is True, bad
+
+
+@pytest.mark.parametrize("good", [
+    "Ничейный мастер дебюта",        # «ничья» — шахматный термин, не «ничего»
+    "Показательный мастер спорта",   # «показательный» ≠ «пока»/«показать»
+    "Покорительный дух странника",   # «покори…» — другой корень, не «пока»
+    "Мудрый собеседник-спортсмен",
+    "Ночной паяльщик моторов",
+])
+def test_issue_2926_refusal_check_has_no_false_positives(good):
+    """Проверка по целому слову — префиксы «пока»/«ничего» не должны ловить
+
+    похожие, но смысловые не связанные с отказом слова: «показательный»,
+    «покорительный», «ничейный» (шахматная ничья).
+    """
+    assert ep.is_refusal_epithet(good) is False, good
+    assert ep.check_llm_epithet(good)[0] == good, good
+
+
+def test_issue_2926_unknown_word_is_stranger_not_refusal():
+    """«Неизвестно» отклоняется раньше — по смыслу «незнакомец» (#2864).
+
+    ``is_stranger_epithet`` проверяется в ``check_llm_epithet`` первой, а
+    «неизвест…» уже входит в ``STRANGER_EPITHET_STEMS``. «неизвестно» в
+    ``REFUSAL_EPITHET_WORDS`` — намеренный запасной путь на случай, если
+    список кличек-незнакомцев когда-то сузят.
+    """
+    assert ep.check_llm_epithet("Неизвестно пока что") == (None, "stranger")
+
+
+def test_issue_2926_no_dictionary_label_means_refusal():
+    """Ни одна словарная кличка не должна читаться как отказ модели."""
+    bad = [e for e in _all_dictionary_labels() if ep.is_refusal_epithet(e)]
+    assert not bad, f"словарные клички-«отказы»: {bad}"
+
+
+def test_issue_2926_prompt_no_longer_echoes_refusal_placeholder():
+    """Плейсхолдер пустой истории раньше буквально был «пока нечего показать»
+
+    — модель дословно повторяла его как кличку (issue #2926). Новый
+    плейсхолдер не похож на ответ, а промпт разрешает вернуть «-», когда
+    фактов о человеке нет.
+    """
+    prompt = ep.build_llm_prompt([], fallback="Странник")
+    assert "пока нечего показать" not in prompt.lower()
+    assert "-" in prompt
+    assert "фактов" in prompt.lower() or "не хватает" in prompt.lower()
+
+
+def test_issue_2926_check_llm_epithet_names_refusal_reason():
+    label, why = ep.check_llm_epithet("Пока нечего показать")
+    assert label is None
+    assert why == ep.REJECT_REFUSAL == "refusal"
