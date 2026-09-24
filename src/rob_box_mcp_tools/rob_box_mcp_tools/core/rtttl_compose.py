@@ -413,16 +413,55 @@ def _apply_lead_octave(melody: "RtttlMelody", mode: object) -> "RtttlMelody":
     """Регистр темы по ручке ``lead_octave`` (ADR-0132 PR-3).
 
     ``auto`` — :func:`_normalize_lead_register` (к рабочему регистру);
-    ``keep`` — как записано; целое N — ровно N октав от записанного.
+    ``keep`` — как записано, БЕЗ нормализации; целое N — N октав от уже
+    НОРМАЛИЗОВАННОГО регистра (см. ниже), с клампом в рабочий диапазон.
+
+    🔴 FIX (live 24.09, issue #2962): ручной сдвиг применялся поверх
+    СЫРОЙ, ненормализованной темы — ``_LEAD_MAX_CEILING`` в этом случае не
+    проверялся вовсе. Live-прогон: ``terminat`` (auto переносит в рабочий
+    регистр, медиана ~80) + ``lead_octave='+1'`` → тема уехала в MIDI
+    104-111 (свист, «темы не слышно»), контрмелодия следом за ней — до 107
+    (:func:`~core.harmonize._build_counter` кладёт её от нот темы, поэтому
+    отдельного клампа не требует — чинится клампом самой темы).
+
+    Теперь ручной сдвиг считается от того же нормализованного регистра,
+    что и ``auto`` (:func:`_normalize_lead_register`) — ``+1``/``-1``
+    значит «на октаву выше/ниже РАБОЧЕГО регистра», а не записанного as
+    is. Если результат не помещается в :data:`_LEAD_MAX_CEILING` /
+    :data:`_LEAD_MIN_FLOOR` — честная ``ValueError`` вместо тихого выхода
+    за рабочий диапазон: смысла в частичном (не целую октаву) сдвиге нет
+    — это была бы уже не та тема.
     """
     if mode == AUTO:
         return _normalize_lead_register(melody)
-    shift = 0 if mode == "keep" else 12 * int(mode)  # type: ignore[call-overload]
-    if shift == 0:
+    if mode == "keep":
         return melody
+    shift_octaves = int(mode)  # type: ignore[call-overload]
+    if shift_octaves == 0:
+        return melody
+    base = _normalize_lead_register(melody)
+    pitches = [m for m, _dur in base.notes if m is not None]
+    if not pitches:
+        return base
+    shift = 12 * shift_octaves
+    lo, hi = min(pitches), max(pitches)
+    if hi + shift > _LEAD_MAX_CEILING:
+        raise ValueError(
+            f"lead_octave={mode!r}: тема уже у потолка рабочего регистра "
+            f"после нормализации (макс. нота {hi}, потолок "
+            f"{_LEAD_MAX_CEILING}) — выше сдвигать нельзя, иначе тема "
+            "уйдёт в свист. Оставь auto/keep или меньший сдвиг."
+        )
+    if lo + shift < _LEAD_MIN_FLOOR:
+        raise ValueError(
+            f"lead_octave={mode!r}: тема уже у пола рабочего регистра "
+            f"после нормализации (мин. нота {lo}, пол {_LEAD_MIN_FLOOR}) "
+            "— ниже сдвигать нельзя, тема утонет в басу. Оставь auto/keep "
+            "или меньший сдвиг."
+        )
     return RtttlMelody(
-        bpm=melody.bpm,
-        notes=tuple((None if m is None else m + shift, d) for m, d in melody.notes),
+        bpm=base.bpm,
+        notes=tuple((None if m is None else m + shift, d) for m, d in base.notes),
     )
 
 

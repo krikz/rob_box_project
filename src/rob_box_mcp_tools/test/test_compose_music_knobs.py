@@ -112,7 +112,10 @@ _REACH = [
     ("counter", "on", SPARSE, "a", "counter", "on"),
     ("theme_octaves", "off", DENSE, "a", "theme_octaves", "off"),
     ("theme_octaves", "on", SPARSE, "a", "theme_octaves", "on"),
-    ("lead_octave", "+1", DENSE, "h", "lead_octave", 1),
+    # issue #2962: сдвиг теперь считается от нормализованного регистра и
+    # клампится в рабочий диапазон — "-1" от DENSE (нормализован 70-86)
+    # укладывается (58-74), "+1" упёрся бы в потолок 88 (86+12=98).
+    ("lead_octave", "-1", DENSE, "h", "lead_octave", -1),
     ("lead_octave", "keep", SHIFTED, "h", "lead_octave", "keep"),
     ("lead_outliers", "keep", OUTLIERS, "h", "lead_outliers", "keep"),
     ("levels", "bass=0.5,pad=0.8", DENSE, "a", "levels", {"bass": 0.5, "pad": 0.8}),
