@@ -1220,3 +1220,73 @@ class TestNormalizeSynth:
     )
     def test_real_synth_names_pass_through_stripped(self, value, expected):
         assert normalize_synth(value) == expected
+
+
+class TestSynthWithoutNotesAutofills:
+    """issue #2970: живой DJ-сет «Oakenfold» 24.09, трек 1.
+
+    Ровно этот вызов ``compose_music`` — синты заказаны для bass/lead/pad,
+    ступеней роли (``*_notes``) нет: ``_add_melodic_layer`` возвращал
+    ``False`` и вызывающий код просто шёл дальше, не добавляя слой. Трек
+    играл только ``d1``/``d2`` (бочка и хэты), а тул отвечал ``success``,
+    как будто заказанные тембры звучат.
+    """
+
+    def _oakenfold_call(self, **overrides):
+        base = dict(
+            bpm=124, root="A", scale="minor", form="arc",
+            drums="X...X...X...X...", hats="..-...-...-...-.",
+            bass_synth="wobblebass", lead_synth="soprano", pad_synth="strings",
+            repeat=True,
+        )
+        base.update(overrides)
+        return spec_from_flat(**base)
+
+    def test_bass_lead_pad_layers_all_present_without_notes(self):
+        spec = self._oakenfold_call()
+        roles = {layer.role for layer in spec.layers}
+        assert {"bass", "lead", "pad"} <= roles, (
+            f"заказанные без нот роли пропали молча: есть только {roles}"
+        )
+
+    def test_autofilled_layers_carry_the_requested_synth(self):
+        spec = self._oakenfold_call()
+        by_role = {layer.role: layer for layer in spec.layers}
+        assert by_role["bass"].synth == "wobblebass"
+        assert by_role["lead"].synth == "soprano"
+        assert by_role["pad"].synth == "strings"
+
+    def test_autofilled_layers_render_as_real_players(self):
+        code = render(self._oakenfold_call())
+        assert "p1 >>" in code  # bass
+        assert "p2 >>" in code  # lead
+        assert "p3 >>" in code  # pad
+        assert "wobblebass" in code
+        assert "soprano" in code
+        assert "strings" in code
+
+    def test_decisions_record_which_roles_were_autofilled(self):
+        spec = self._oakenfold_call()
+        assert set(spec.decisions.get("autofilled_roles", ())) == {
+            "bass", "lead", "pad",
+        }
+
+    def test_score_sheet_text_lists_the_autofilled_layers(self):
+        from rob_box_mcp_tools.core.score_sheet import describe
+
+        spec = self._oakenfold_call()
+        code = render(spec)
+        sheet = describe(spec=spec, code=code, harmony=None)
+        text = sheet["text"]
+        assert "wobblebass" in text
+        assert "soprano" in text
+        assert "strings" in text
+        assert "тоника лада, нот не было" in text
+
+    def test_layer_with_real_notes_is_never_overridden_by_autofill(self):
+        """Роль с реальными нотами не трогается — автозаполнение только
+        для ролей, у которых синт есть, а нот нет."""
+        spec = self._oakenfold_call(lead_notes="0, 4, 7, 4")
+        lead = next(layer for layer in spec.layers if layer.role == "lead")
+        assert lead.degrees == (0.0, 4.0, 7.0, 4.0)
+        assert "lead" not in spec.decisions.get("autofilled_roles", ())

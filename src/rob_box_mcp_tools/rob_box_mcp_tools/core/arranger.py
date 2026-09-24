@@ -1860,6 +1860,54 @@ def _octave_double(note):
     return (int(note) - 12, int(note))
 
 
+def _add_melodic_layers(
+    layers: List[Layer],
+    *,
+    bass_synth: Optional[str], bass_notes: Optional[str],
+    lead_synth: Optional[str], lead_notes: Optional[str],
+    lead_midi: Optional[str], lead_dur: Optional[str],
+    pad_synth: Optional[str], pad_notes: Optional[str],
+) -> List[str]:
+    """Собрать bass/lead/pad-слои «сочинённого» пути, ступень за ступенью.
+
+    Роль без синта не добавляется вовсе. Роль с синтом и ступенями — как
+    прислала модель. Роль с синтом, но без ступеней (issue #2970: живой
+    сет «Oakenfold», ``bass_synth``/``lead_synth``/``pad_synth`` без
+    ``*_notes`` — слой молча пропадал, ``compose_music`` отвечал
+    ``success``, трек звучал одной бочкой и хэтами) — синт в вызове уже
+    решение модели поставить роль в состав, а не пожелание; ошибка на
+    забытых нотах уронила бы весь вызов ради одной роли, хотя барабаны и
+    остальные собраны нормально. Получает опору по тонике лада вместо
+    (:func:`_autofill_role_without_notes`).
+
+    Returns:
+        Роли, которым досталась опора по тонике, а не ноты модели — для
+        партитуры (``decisions["autofilled_roles"]``).
+    """
+    autofilled_roles: List[str] = []
+    for role, synth, notes in (
+        ("bass", bass_synth, bass_notes),
+        ("lead", lead_synth, lead_notes),
+        ("pad", pad_synth, pad_notes),
+    ):
+        if not (synth and synth.strip()):
+            continue
+
+        # Тема абсолютным MIDI (известная мелодия из RTTTL): играем дословно,
+        # в ступени лада не переводим — иначе хроматические ноты теряются.
+        if role == "lead" and _add_lead_midi_layer(
+            layers, synth, lead_midi or "", lead_dur
+        ):
+            continue
+
+        if _add_melodic_layer(layers, role, synth, notes, lead_dur):
+            continue
+
+        _autofill_role_without_notes(layers, role, synth)
+        autofilled_roles.append(role)
+    return autofilled_roles
+
+
 def spec_from_flat(
     *,
     harmony=None,
@@ -1895,8 +1943,10 @@ def spec_from_flat(
     надёжнее заполняют десяток простых полей, чем одну структуру с
     массивом объектов внутри.
 
-    Слой добавляется только если для него есть И синт, И ступени —
-    полупустой слой молча пропускается, а не роняет запрос.
+    Слой без синта не добавляется вовсе — роль не заказана. Слой с синтом,
+    но без ступеней (issue #2970), тоже не пропадает молча: он получает
+    опору по тонике лада (:func:`_autofill_role_without_notes`) — синт в
+    вызове уже решение модели включить роль, а не пожелание.
 
     ``lead_midi`` — путь ТОЧНОГО воспроизведения известной темы абсолютным
     MIDI (из RTTTL-библиотеки): играется дословно с ``lead_dur``, в ступени
@@ -1991,23 +2041,13 @@ def spec_from_flat(
     _add_drum_layer_if_present(layers, "hats", hats, hats_sample)
     _add_drum_layer_if_present(layers, "perc", perc, perc_sample)
 
-    for role, synth, notes in (
-        ("bass", bass_synth, bass_notes),
-        ("lead", lead_synth, lead_notes),
-        ("pad", pad_synth, pad_notes),
-    ):
-        if not (synth and synth.strip()):
-            continue
-
-        # Тема абсолютным MIDI (известная мелодия из RTTTL): играем дословно,
-        # в ступени лада не переводим — иначе хроматические ноты теряются.
-        if role == "lead" and _add_lead_midi_layer(
-            layers, synth, lead_midi or "", lead_dur
-        ):
-            continue
-
-        _add_melodic_layer(layers, role, synth, notes, lead_dur)
-
+    autofilled_roles = _add_melodic_layers(
+        layers,
+        bass_synth=bass_synth, bass_notes=bass_notes,
+        lead_synth=lead_synth, lead_notes=lead_notes,
+        lead_midi=lead_midi, lead_dur=lead_dur,
+        pad_synth=pad_synth, pad_notes=pad_notes,
+    )
     _autofill_bass(layers, form)
 
     return CompositionSpec(
@@ -2019,7 +2059,7 @@ def spec_from_flat(
         progression=tuple(int(v) for v in parse_notes(progression)),
         repeat=bool(repeat),
         swing=swing,
-        decisions=_composed_decisions(options),
+        decisions=_composed_decisions(options, autofilled_roles),
         levels=_levels_of(options),
     )
 
@@ -2029,10 +2069,18 @@ def _levels_of(options: Optional[ArrangeOptions]) -> Dict[str, float]:
     return dict(options.levels) if options is not None else {}
 
 
-def _composed_decisions(options: Optional[ArrangeOptions]) -> Dict[str, object]:
-    """Решения сочинённого трека для партитуры: только заданные ``levels``."""
+def _composed_decisions(
+    options: Optional[ArrangeOptions],
+    autofilled_roles: Optional[List[str]] = None,
+) -> Dict[str, object]:
+    """Решения сочинённого трека: ``levels`` + автозаполненные роли."""
+    decisions: Dict[str, object] = {}
     levels = _levels_of(options)
-    return {"levels": levels} if levels else {}
+    if levels:
+        decisions["levels"] = levels
+    if autofilled_roles:
+        decisions["autofilled_roles"] = tuple(autofilled_roles)
+    return decisions
 
 
 def _counter_decision(
@@ -2124,6 +2172,55 @@ def _add_loop_layer(layers: List[Layer], groove_loop: Optional[str]) -> None:
             f"groove_loop {name!r} нет в каталоге лупов. Доступны: {known}."
         )
     layers.append(Layer(role=LOOP_ROLE, pattern=info.name))
+
+
+#: Опора по тонике лада для роли, у которой синт заказан, а ступеней нет
+#: (issue #2970). Каждая роль получает свой минимальный, но узнаваемый
+#: рисунок — не выдуманную гармонию, только тонику и её ближайших
+#: диатонических соседей (ступени лада, не полутона — Scale.default сам
+#: подставит нужные интервалы для minor/major/что угодно):
+#:
+#: * ``bass`` — тот же мотив, что и у :func:`_autofill_bass` (тоника,
+#:   тоника, «квинта» в терминах ступеней, тоника): опора под ритм-секцию.
+#: * ``lead`` — короткий тонический мотив с движением к терции и обратно:
+#:   узнаваемо как тема, а не как дрон.
+#: * ``pad`` — тоника и «квинта» по целому такту (``ROLE_DEFAULT_DUR["pad"]
+#:   == 4``): держит гармонию, не пытаясь угадать смену аккордов модели.
+_ROLE_AUTOFILL_DEGREES: Dict[str, Tuple[float, ...]] = {
+    "bass": (0, 0, 4, 0),
+    "lead": (0, 2, 4, 2),
+    "pad": (0, 4),
+}
+
+
+def _autofill_role_without_notes(
+    layers: List[Layer], role: str, synth: str
+) -> None:
+    """Добавить слой роли по тонике лада — синт заказан, а нот роли нет.
+
+    🔴 FIX (issue #2970, живой сет «Oakenfold» 24.09): ``compose_music(...,
+    bass_synth='wobblebass', lead_synth='soprano', pad_synth='strings')``
+    без ``bass_notes``/``lead_notes``/``pad_notes`` раньше молча не добавлял
+    ни одного из трёх слоёв (:func:`_add_melodic_layer` возвращает ``False``
+    на пустых ступенях, вызывающий код просто шёл дальше) — трек играл
+    только бочку и хэты, а ``compose_music`` отвечал ``success: True``, как
+    будто заказанные тембры звучат.
+
+    Выбор в пользу автозаполнения, а не ошибки (acceptance issue #2970):
+    синт в вызове — явное решение модели включить роль в состав; ошибка на
+    забытых нотах уронила бы весь вызов и трек, хотя барабаны и остальные
+    роли собраны нормально. Опора по тонике (:data:`_ROLE_AUTOFILL_DEGREES`)
+    гарантированно консонирует с чем угодно ещё звучащим — как и у
+    :func:`_autofill_bass`, ноты не выдумываются, а берутся из тоники лада.
+    """
+    layers.append(
+        Layer(
+            role=role,
+            synth=synth.strip(),
+            degrees=_ROLE_AUTOFILL_DEGREES[role],
+            dur=ROLE_DEFAULT_DUR[role],
+        )
+    )
 
 
 def _autofill_bass(layers: List[Layer], form: str) -> None:
