@@ -308,7 +308,11 @@ class TestHarmonyAndMotion:
             if line.startswith(("d1 >>", "d2 >>", "d3 >>")):
                 assert "lpf=gflt" not in line
         assert "gflt = linvar(" in code
-        assert "lpf=gflt" in next(l for l in code.splitlines() if l.startswith("p1 >>"))
+        # issue #2979: бас (p1) больше не участвует в свипе-яркости — он
+        # держит свою статичную полосу (см. TestRoleBands ниже), сюда едет
+        # только pad (p3): lpf=gflt.
+        assert "lpf=gflt" in next(l for l in code.splitlines() if l.startswith("p3 >>"))
+        assert "lpf=gflt" not in next(l for l in code.splitlines() if l.startswith("p1 >>"))
 
     def test_filter_sweep_can_be_disabled(self):
         code = render(_spec(filter_sweep=False))

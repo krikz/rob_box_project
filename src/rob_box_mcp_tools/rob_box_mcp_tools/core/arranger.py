@@ -132,6 +132,41 @@ ROLE_PROFILE: Dict[str, Tuple[str, int, float]] = {
 #: Роли, которые играют сэмплами через ``play(...)``, а не синтом.
 DRUM_ROLES = frozenset({"drums", "hats", "perc"})
 
+
+def _octave_hz(octave: int) -> float:
+    """Частота нижней границы научной октавы (issue #2979).
+
+    ``C_n = 16.3516 * 2**n`` Гц (A4=440 Гц) — справочная шкала (Scientific
+    Pitch Notation), НЕ измерение и не подбор под трек. Используется только
+    чтобы вывести границы частотных полос ролей из их СОБСТВЕННЫХ октав в
+    :data:`ROLE_PROFILE`, одинаково для любой темы/синта.
+    """
+    return 16.3516 * (2 ** octave)
+
+
+#: Роль -> (тип фильтра плеера, частота среза в Гц) — «этажи» ролей
+#: (issue #2979): партии не толкаются в одной полосе, потому что верхние
+#: держащие роли не лезут в полосу баса, а бас не лезет выше своей.
+#:
+#: Значения выведены из октав :data:`ROLE_PROFILE`, а не подобраны на слух:
+#: * ``pad``/``lead``/``counter`` — HPF на нижней границе СОБСТВЕННОЙ
+#:   октавы роли. Самая низкая штатная нота роли и так не ниже этой
+#:   частоты (:func:`_render_melodic_args` берёт ``oct`` из того же
+#:   профиля) — полоса режет только то, что физически принадлежит басу:
+#:   гул, просочившийся снизу, никогда собственный материал роли.
+#: * ``bass`` — LPF на границе ДВУМЯ октавами выше басовой. Это пропускает
+#:   2-ю и 3-ю гармоники фундаментальной ноты (нужны для восприятия высоты
+#:   на маленьком динамике/16 kHz ReSpeaker — сам фундаментал там на грани
+#:   воспроизводимости, см. acceptance issue #2979; АЧХ капсюля не
+#:   измерена, это оценка по стандартной шкале, не по стенду) и обрезает
+#:   выше — не долезая до регистра лида.
+ROLE_BAND: Dict[str, Tuple[str, float]] = {
+    "bass": ("lpf", round(_octave_hz(ROLE_PROFILE["bass"][1] + 2), 1)),
+    "pad": ("hpf", round(_octave_hz(ROLE_PROFILE["pad"][1]), 1)),
+    "lead": ("hpf", round(_octave_hz(ROLE_PROFILE["lead"][1]), 1)),
+    "counter": ("hpf", round(_octave_hz(ROLE_PROFILE["counter"][1]), 1)),
+}
+
 #: Issue #2841 — жанровый луп (``loop(...)``) поверх ударных. В
 #: :data:`ROLE_PROFILE` его нет намеренно: фиксированного слота у лупа
 #: быть не может, все шесть уже розданы. Он занимает первый СВОБОДНЫЙ
@@ -490,6 +525,16 @@ class CompositionSpec:
     #: ADR-0132 PR-3 (ручка ``levels``): множитель базовой громкости роли
     #: из :data:`ROLE_PROFILE` (и лупа). Пусто — баланс по умолчанию.
     levels: Dict[str, float] = field(default_factory=dict)
+    #: Issue #2979: автодакинг баса под рисунок бочки (``amplify=var(...)``,
+    #: :func:`_duck_expr_from_drum_pattern`) — включён по умолчанию, как и
+    #: :attr:`filter_sweep`: это правка сведения «этажей», а не вкусовая
+    #: ручка под трек.
+    duck_bass: bool = True
+    #: Issue #2979: тот же автодакинг для пэда — опционально, выключен по
+    #: умолчанию (acceptance: «и пэда, опционально»). Пэд держит гармонию
+    #: всей секцией (см. :func:`_fmt_chord`), и не в каждом жанре ему нужно
+    #: продавливаться под бочку так же, как басу.
+    duck_pad: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -1101,16 +1146,132 @@ def _render_melodic_args(
     return args
 
 
+#: Issue #2979 — автодакинг держащих ролей по рисунку бочки, БЕЗ ``chop=``
+#: (санитайзер режет его как щёлкающий на 16 kHz DAC, renardo_sanitizer.py
+#: :229) и без сайдчейн-компандера (masterfilter.scd запрещает динамику с
+#: состоянием). Решение — тот же приём, что сам санитайзер подсказывает
+#: игроку как безопасную замену: степенчатый ``amplify=var([1, 0.3], ...)``.
+#:
+#: Доля от полной громкости в момент удара бочки. 0.3 взято из подсказки
+#: самого санитайзера (``"Для дакинга используй amplify=var([1,0.3],
+#: [0.5,0.5])"``) — не число под конкретный трек, а согласованная с уже
+#: существующим текстом ошибки величина.
+DUCK_FLOOR = 0.3
+
+#: Доля шага рисунка бочки, которую занимает провал дакинга. Половина шага
+#: — провал слышен и пропускает транзиент бочки, вторая половина уже
+#: отдана обратно басу/пэду, а не держит его приглушённым до следующего
+#: удара.
+DUCK_ATTACK_FRACTION = 0.5
+
+
+def _duck_expr_from_drum_pattern(pattern: str) -> Optional[str]:
+    """Огибающая ``amplify=var(...)`` из рисунка бочки (issue #2979).
+
+    Каждый не-паузный символ рисунка ``play(...)`` роли ``drums`` (уже
+    приведён к степени двойки, см. :func:`_normalize_bar_pattern`, #1803)
+    — удар бочки. На этом шаге держащий слой проваливается до
+    :data:`DUCK_FLOOR` на :data:`DUCK_ATTACK_FRACTION` шага, остаток шага
+    (и любые паузы до следующего удара) — снова полная громкость.
+    ``var()`` длиной в один такт зацикливается сам (как и рисунок бочки),
+    поэтому дакинг остаётся синхронным с бочкой на любом повторе.
+
+    Returns:
+        Строку ``var([...], [...])`` либо ``None`` — в рисунке нет ни
+        одного удара (пустая роль), дакать нечего.
+    """
+    n = len(pattern)
+    if n == 0 or all(ch == "." for ch in pattern):
+        return None
+
+    step_beats = BEATS_PER_BAR / n
+    values: List[float] = []
+    durs: List[float] = []
+    i = 0
+    while i < n:
+        if pattern[i] == ".":
+            run = 0
+            while i < n and pattern[i] == ".":
+                run += 1
+                i += 1
+            values.append(1.0)
+            durs.append(run * step_beats)
+            continue
+        attack = step_beats * DUCK_ATTACK_FRACTION
+        values.append(DUCK_FLOOR)
+        durs.append(attack)
+        i += 1
+        rest = step_beats - attack
+        while i < n and pattern[i] == ".":
+            rest += step_beats
+            i += 1
+        if rest > 0:
+            values.append(1.0)
+            durs.append(rest)
+
+    values, durs = _merge_adjacent(values, durs)
+    if len(values) <= 1:
+        return None
+    return f"var({_fmt_list(values)}, {_fmt_list(durs)})"
+
+
+def _role_filter_args(layer: Layer, use_filter: bool) -> List[str]:
+    """Собрать ``lpf=``/``hpf=`` аргументы держащего слоя.
+
+    Вынесено из :func:`_render_layer`, чтобы не раздувать её цикломатику
+    (CC-бюджет ``scripts/lint/cc_budget.py``).
+
+    Фильтр-свип (``gflt``) вешаем на держащие слои. На ударные не вешаем:
+    срезанная атака бочки слышна как проваленный грув.
+    🔴 FIX (live 14.09, «солло не все ноты играет»): свип ездит от 700 Гц,
+    и на нижнем краю он срезает ВСЁ, что выше. У имперского марша выше
+    700 Гц лежат 37% нот темы (она идёт до D6 = 1175 Гц), а бас и подклад —
+    целиком ниже: 0 нот из 36 и 0 из 108. Поэтому аккомпанемент звучал
+    целым, а тема циклически теряла ноты по ходу свипа.
+
+    Фиксированную тему форма вправе делать тише и ярче, но не вправе
+    стирать — тот же принцип, что у FIXED_THEME_AMP_FLOOR и что у ударных,
+    которые исключены из свипа с самого начала. Сочинённой с нуля мелодии
+    свип по-прежнему достаётся: там он краска, а не потеря материала.
+
+    🔴 Issue #2979: бас из свипа исключён — свип едет до 4500 Гц и делает
+    бас ярче лида, а бас на маленьком динамике и так на грани
+    воспроизводимости (см. :data:`ROLE_BAND`). Бас держит свою СТАТИЧНУЮ
+    полосу, а не гуляющую по всей форме.
+
+    Issue #2979: «этажи» ролей — HPF снизу для pad/lead/counter (не лезть в
+    бас), LPF для баса (не лезть выше своих гармоник). Статичные, из
+    ROLE_PROFILE (:data:`ROLE_BAND`), не гуляют по треку и не заменяют
+    gflt-свип выше — это два разных параметра плеера (hpf/lpf/gflt все
+    валидны одновременно). Фиксированную тему не трогаем по той же причине,
+    что и свип: она обязана звучать целиком.
+    """
+    args: List[str] = []
+    fixed_theme = layer.midi is not None and layer.role in ("lead", "counter")
+    if fixed_theme:
+        return args
+    if use_filter and layer.role in ("pad", "lead"):
+        args.append("lpf=gflt")
+    band = ROLE_BAND.get(layer.role)
+    if band is not None:
+        kind, hz = band
+        args.append(f"{kind}={_fmt(hz)}")
+    return args
+
+
 def _render_layer(
     layer: Layer,
     plan: Sequence[Tuple[str, int, Dict[str, float]]],
     use_filter: bool,
     level: float = 1.0,
+    duck_expr: Optional[str] = None,
 ) -> Optional[str]:
     """Отрендерить одну строку Renardo-кода, либо None если слой молчит.
 
     ``level`` — множитель базовой громкости роли (ручка ``levels``,
     ADR-0132 PR-3); 1.0 — баланс :data:`ROLE_PROFILE` как есть.
+    ``duck_expr`` — готовая огибающая ``var(...)`` автодакинга (issue
+    #2979, :func:`_duck_expr_from_drum_pattern`); ``None`` — слой не дакается.
     """
     profile = ROLE_PROFILE.get(layer.role)
     if profile is None:
@@ -1153,22 +1314,13 @@ def _render_layer(
         args = _render_melodic_args(layer, plan, role_oct)
 
     args.append(f"amp={amp_expr}")
-    # Фильтр-свип вешаем на держащие слои. На ударные не вешаем: срезанная
-    # атака бочки слышна как проваленный грув.
-    # 🔴 FIX (live 14.09, «солло не все ноты играет»): свип ездит от 700 Гц,
-    # и на нижнем краю он срезает ВСЁ, что выше. У имперского марша выше
-    # 700 Гц лежат 37% нот темы (она идёт до D6 = 1175 Гц), а бас и
-    # подклад — целиком ниже: 0 нот из 36 и 0 из 108. Поэтому аккомпанемент
-    # звучал целым, а тема циклически теряла ноты по ходу свипа.
-    #
-    # Фиксированную тему форма вправе делать тише и ярче, но не вправе
-    # стирать — тот же принцип, что у FIXED_THEME_AMP_FLOOR и что у
-    # ударных, которые исключены из свипа с самого начала (срезанная атака
-    # бочки слышна как проваленный грув). Сочинённой с нуля мелодии свип
-    # по-прежнему достаётся: там он краска, а не потеря материала.
-    fixed_theme = layer.midi is not None and layer.role in ("lead", "counter")
-    if use_filter and layer.role in ("bass", "pad", "lead") and not fixed_theme:
-        args.append("lpf=gflt")
+    # Issue #2979: автодакинг под рисунок бочки. Отдельный от amp параметр
+    # (amplify — умножает amp, см. local_test/RENARDO_REFERENCE.md:83) —
+    # форма и дакинг не должны переписывать друг друга.
+    if duck_expr is not None:
+        args.append(f"amplify={duck_expr}")
+
+    args.extend(_role_filter_args(layer, use_filter))
 
     line = f"{player} >> {head}, " + ", ".join(args) + ")"
     if layer.role in DRUM_ROLES:
@@ -1350,6 +1502,43 @@ def _render_fx_layer(
     )
 
 
+#: Роли, которым автодакинг (issue #2979) вообще разрешён и по какому полю
+#: :class:`CompositionSpec` он включён. Бас — по умолчанию (``duck_bass``,
+#: держащая роль, которую бочка должна «продавливать» первой по правилу
+#: «этажей» из issue). Пэд — опционально (``duck_pad``): он тоже держащая
+#: роль, но не басовая, и не каждому треку это нужно.
+_DUCK_ROLE_FLAGS: Dict[str, str] = {"bass": "duck_bass", "pad": "duck_pad"}
+
+
+def _duck_target(spec: CompositionSpec, role: str) -> bool:
+    """Дакается ли эта роль в данной спецификации (issue #2979)."""
+    flag = _DUCK_ROLE_FLAGS.get(role)
+    return flag is not None and bool(getattr(spec, flag, False))
+
+
+def _form_duck_expr(
+    spec: CompositionSpec, plan: Sequence[Tuple[str, int, Dict[str, float]]]
+) -> Optional[str]:
+    """Огибающая дакинга по рисунку бочки, если она реально где-то звучит.
+
+    ``None``, если ни одна роль этого трека не просит дакинг, слоя ``drums``
+    нет, его паттерн пуст/тишина, либо текущая форма ни в одной секции не
+    задействует роль ``drums`` (например ``ambient``) — иначе бас/пэд
+    пульсировали бы под удар, которого никто не услышит.
+    """
+    if not any(_duck_target(spec, role) for role in _DUCK_ROLE_FLAGS):
+        return None
+    drum_layer = next((cand for cand in spec.layers if cand.role == "drums"), None)
+    if drum_layer is None or not drum_layer.pattern:
+        return None
+    if _is_silent_drum_layer(drum_layer):
+        return None
+    form_roles = {r for _name, _bars, intensities in plan for r in intensities}
+    if "drums" not in form_roles:
+        return None
+    return _duck_expr_from_drum_pattern(drum_layer.pattern)
+
+
 def _append_layer_lines(
     lines: List[str],
     spec: CompositionSpec,
@@ -1367,12 +1556,15 @@ def _append_layer_lines(
     и стабильный порядок делает распределение слотов детерминированным.
     """
     levels = getattr(spec, "levels", None) or {}
+    duck_expr = _form_duck_expr(spec, plan)
     count = 0
     for layer in spec.layers:
         if layer.role in (LOOP_ROLE, FX_ROLE):
             continue
+        layer_duck = duck_expr if _duck_target(spec, layer.role) else None
         rendered = _render_layer(
-            layer, plan, use_filter=spec.filter_sweep, level=levels.get(layer.role, 1.0)
+            layer, plan, use_filter=spec.filter_sweep, level=levels.get(layer.role, 1.0),
+            duck_expr=layer_duck,
         )
         if rendered is not None:
             lines.append(rendered)
