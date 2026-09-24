@@ -89,6 +89,17 @@ def _explicit_kwargs(local_vars: Dict[str, Any]) -> Dict[str, Any]:
     return {k: v for k, v in local_vars.items() if k != "self" and v is not _UNSET}
 
 
+#: Issue #2950 — поля, наследуемые подстройкой звучания ТЕКУЩЕГО трека
+#: (той же мелодии), если вызов их явно не задал: те же ручки, что живут
+#: в пресете (:data:`PRESET_KNOB_FIELDS` — тембры, ``drum_style``,
+#: ``form``, ``bpm``, ручки ``compose_knobs``), плюс ``root``/``scale`` —
+#: они сознательно НЕ входят в пресет (пресеты — рецепт тембров и
+#: артикуляции, не тональности), но подстройка играющего трека обязана
+#: их сохранить: иначе жалоба «бас гудит» рискует заодно сменить лад,
+#: который модель явно не трогала.
+_TRACK_INHERIT_FIELDS: Tuple[str, ...] = PRESET_KNOB_FIELDS + ("root", "scale")
+
+
 # ---------------------------------------------------------------------------
 # issue #2896 — прозрачность RTTTL-поиска для модели
 # ---------------------------------------------------------------------------
@@ -470,6 +481,22 @@ class MusicManager:
         # compose_music(). None = музыка не игралась (или была остановлена/
         # заменена — см. clear_form_deadline()).
         self._music_form_cycle_ends_at: Optional[float] = None
+        # Issue #2950 — снимок ручек последнего успешно сыгранного
+        # ИМЕНОВАННОГО трека (compose_music(name=...)), из которого
+        # подстройка звучания той же мелодии («бас гудит» → только
+        # levels) наследует недостающие тембры/форму/bpm/ручки, вместо
+        # честной ошибки «не хватает lead_synth, bass_synth, …», которая
+        # раньше заставляла модель выдумывать новые синты. Общий holder на
+        # ``MusicManager``, а не на ``ComposeMusicTool`` — ``preview_arrangement``
+        # держит СВОЙ отдельный внутренний ``ComposeMusicTool``
+        # (см. ``PreviewArrangementTool.__init__``), но делит с реальным
+        # тулом один и тот же ``manager``, поэтому только здесь наследование
+        # видно обоим. ``None`` — трек ещё не играли, либо последний
+        # сыгранный не был по ``name=`` (наследовать нечего — нет мелодии,
+        # с которой можно было бы совпасть). Пишет
+        # ``ComposeMusicTool._remember_last_track``, читает
+        # ``ComposeMusicTool._inherit_last_track``.
+        self.last_track_arrangement: Optional[Dict[str, Any]] = None
         # stats — surfaced via get_state() for the AgentCore safety-net
         self._auto_stop_count: int = 0
         # ------------------------------------------------------------------
@@ -2742,6 +2769,21 @@ class ComposeMusicTool(MCPTool):
         #: сохранит как пресет. ``None`` — последний трек не был по
         #: известной мелодии (сочинённый) или ещё не игрался.
         self.last_played_preset: Optional[Dict[str, Any]] = None
+        #: Issue #2950: текст «унаследовано от текущего трека: …» для
+        #: партитуры текущей сборки — читается :meth:`_score_sheet`,
+        #: взводится :meth:`_inherit_last_track` перед каждым вызовом
+        #: (``None``, когда наследования не было — другая мелодия, первый
+        #: вызов в сеансе, или все поля и так заданы явно).
+        self._pending_inherited_note: Optional[str] = None
+        #: Issue #2950: ``melody_key`` (внутренний ключ RTTTL-библиотеки,
+        #: не отображаемый title), резолвленный ТЕКУЩЕЙ сборкой —
+        #: взводится :meth:`_resolve_rtttl_params` (единственное место,
+        #: которое и так обязано резолвить ``name=`` для самой сборки),
+        #: читается :meth:`_remember_last_track` сразу после успешного
+        #: проигрывания, чтобы не резолвить мелодию ЕЩЁ РАЗ отдельным
+        #: вызовом ``_resolve_melody``. ``None`` — сочинённый трек без
+        #: ``name=`` (наследовать/запоминать нечего).
+        self._pending_melody_key: Optional[str] = None
 
     @staticmethod
     def _fmt(value: Any) -> str:
@@ -2843,6 +2885,80 @@ class ComposeMusicTool(MCPTool):
             "knobs": {
                 k: v for k, v in effective.items()
                 if k in PRESET_KNOB_FIELDS and v is not None
+            },
+        }
+
+    def _inherit_last_track(
+        self, kwargs: Dict[str, Any]
+    ) -> Tuple[Dict[str, Any], Optional[str]]:
+        """Унаследовать недостающие ручки от играющего трека той же мелодии.
+
+        Issue #2950 — живой лог 24.09: жалоба «бас гудит» на трек, который
+        только что играл, была ``compose_music(name=X, levels=…)``; тул
+        отвечал «не хватает lead_synth, bass_synth, …» (тембры не выводятся
+        для ``name=``, см. :meth:`_missing_arrangement_fields`), и модель на
+        втором вызове ВЫДУМЫВАЛА новые синты — звучание сменилось целиком
+        ради подстройки одной ручки.
+
+        Срабатывает, только если ``name=`` резолвится (:meth:`_resolve_melody`)
+        в ТУ ЖЕ мелодию, что играл последний успешный именованный трек —
+        сверка по ``melody_key``, а не по сырой строке, иначе синонимы/
+        ``variants`` ломали бы совпадение. Источник —
+        ``MusicManager.last_track_arrangement`` (общий с ``preview_arrangement``,
+        см. его докстринг). Явно переданные в *kwargs* поля — всегда
+        побеждают, здесь заполняются только пропуски.
+
+        Возвращает ``(merged_kwargs, note)``: ``note`` — «унаследовано от
+        текущего трека: ручка=значение, …» для партитуры, ``None`` —
+        наследования не было (другая мелодия / нет предыдущего трека /
+        нечего добавить).
+        """
+        name = kwargs.get("name")
+        last = self._manager.last_track_arrangement
+        if not name or not isinstance(last, dict):
+            return kwargs, None
+        rec = self._resolve_melody(name, kwargs.get("variants"))
+        melody_key = str(rec.get("name") or "") if rec else ""
+        if not melody_key or melody_key != last.get("melody_key"):
+            return kwargs, None
+        explicit = set(kwargs.keys())
+        fields = last.get("fields") or {}
+        inherited = {k: v for k, v in fields.items() if k not in explicit}
+        if not inherited:
+            return kwargs, None
+        merged = {**kwargs, **inherited}
+        knob_text = ", ".join(f"{k}={self._fmt(v)}" for k, v in inherited.items())
+        return merged, f"унаследовано от текущего трека: {knob_text}"
+
+    def _remember_last_track(self, effective: Dict[str, Any]) -> None:
+        """Запомнить ручки успешно сыгранного трека для наследования (issue #2950).
+
+        Пишет в ``MusicManager.last_track_arrangement`` (не в атрибут этого
+        тула) — ``preview_arrangement`` держит свой ОТДЕЛЬНЫЙ внутренний
+        ``ComposeMusicTool`` (см. ``PreviewArrangementTool.__init__``) и
+        должен видеть то же наследование, что реальный ``compose_music``;
+        общий ``manager`` — единственное, что их связывает.
+
+        ``melody_key`` берётся из :attr:`_pending_melody_key`, взведённого
+        :meth:`_resolve_rtttl_params` В ТОМ ЖЕ вызове (единственный resolve
+        RTTTL-библиотеки на успешный вызов — НЕ резолвит мелодию заново:
+        второй ``self._rtttl_library.get(...)`` после уже состоявшегося
+        проигрывания был бы избыточным сетевым/дисковым обращением и в
+        тестах с ``Mock(side_effect=[...])`` конечной длины гарантированно
+        валит ``StopIteration``). ``None`` — сочинённый трек без ``name=``
+        (наследовать/запоминать нечего), и неявная перезапись гарантирует,
+        что сыгранный поверх старого именованного трека сочинённый трек не
+        оставит наследование «висеть» на прежней мелодии.
+        """
+        melody_key = self._pending_melody_key
+        if not melody_key:
+            self._manager.last_track_arrangement = None
+            return
+        self._manager.last_track_arrangement = {
+            "melody_key": melody_key,
+            "fields": {
+                k: v for k, v in effective.items()
+                if k in _TRACK_INHERIT_FIELDS and v is not None
             },
         }
 
@@ -2955,8 +3071,16 @@ class ComposeMusicTool(MCPTool):
         ``HarmonizeOptions`` (ADR-0132 PR-4); ``None`` — все ``auto``.
         """
         if not name:
+            self._pending_melody_key = None
             return None, bpm, root, scale, None, None, None, None, {}
         rec = self._resolve_melody(name, variants)
+        # Issue #2950: тот же resolve, что уже сделан здесь для RTTTL —
+        # :meth:`_remember_last_track` переиспользует его через это поле
+        # вместо ЕЩЁ ОДНОГО ``self._rtttl_library.get(...)`` после
+        # проигрывания (лишний вызов вдвойне бессмысленный: библиотека уже
+        # опрошена парой строк выше, а в тестах с ``side_effect``-списком
+        # кандидатов он же гарантированно уронит ``StopIteration``).
+        self._pending_melody_key = str(rec.get("name") or "") or None if rec else None
         if rec is None:
             return (
                 MCPToolResult(
@@ -3183,8 +3307,15 @@ class ComposeMusicTool(MCPTool):
         name: Optional[str] = None,
         variants: Optional[List[str]] = None,
         bpm: Any = _UNSET,
-        root: Optional[str] = None,
-        scale: Optional[str] = None,
+        # Issue #2950: было ``Optional[str] = None`` — неотличимо от «явно
+        # передан root=None» в ``_explicit_kwargs``/``_inherit_last_track``
+        # (наследование иначе не могло понять, что root/scale НЕ заданы
+        # вызовом, и никогда их не подставляло). Тот же сентинел, что уже
+        # использует ``bpm``/``form``/тембры — схема (``root``/``scale`` в
+        # :data:`_ARRANGEMENT_PARAMETERS`) дефолт по Python не читает, менять
+        # снаружи нечего.
+        root: Any = _UNSET,
+        scale: Any = _UNSET,
         form: Any = _UNSET,
         drums: Optional[str] = None,
         drums_sample: int = 0,
@@ -3235,13 +3366,21 @@ class ComposeMusicTool(MCPTool):
         :meth:`_execute_named`, единственном месте, которое их знает.
         """
         kwargs = _explicit_kwargs(locals())
+        # Issue #2950: наследование от играющего трека — ДО пресета, чтобы
+        # свежая подстройка сеанса («играл с bass_style=root минуту назад»)
+        # перевешивала статичный сохранённый пресет мелодии, а не наоборот
+        # (_resolve_preset ниже видит унаследованные поля как «уже заданы»
+        # вызовом и не трогает их).
+        kwargs, inherited_note = self._inherit_last_track(kwargs)
         merged, preset_note = self._resolve_preset(kwargs)
         self._pending_preset_note = preset_note
+        self._pending_inherited_note = inherited_note
         result = self._execute_named(**merged)
         if result.success:
             self._remember_played_preset(
                 merged.get("name"), result.data.get("title") if result.data else None, merged,
             )
+            self._remember_last_track(merged)
         return result
 
     def _execute_named(
@@ -3555,6 +3694,7 @@ class ComposeMusicTool(MCPTool):
                 title=melody_title,
                 warnings=warnings,
                 preset_note=self._pending_preset_note,
+                inherited_note=self._pending_inherited_note,
             )
         except Exception as exc:  # noqa: BLE001 — описание не ломает музыку
             self.log_error(f"[compose_music] партитура не собрана: {exc!r}")
@@ -3735,8 +3875,15 @@ class PreviewArrangementTool(MCPTool):
         name: Optional[str] = None,
         variants: Optional[List[str]] = None,
         bpm: Any = _UNSET,
-        root: Optional[str] = None,
-        scale: Optional[str] = None,
+        # Issue #2950: было ``Optional[str] = None`` — неотличимо от «явно
+        # передан root=None» в ``_explicit_kwargs``/``_inherit_last_track``
+        # (наследование иначе не могло понять, что root/scale НЕ заданы
+        # вызовом, и никогда их не подставляло). Тот же сентинел, что уже
+        # использует ``bpm``/``form``/тембры — схема (``root``/``scale`` в
+        # :data:`_ARRANGEMENT_PARAMETERS`) дефолт по Python не читает, менять
+        # снаружи нечего.
+        root: Any = _UNSET,
+        scale: Any = _UNSET,
         form: Any = _UNSET,
         drums: Optional[str] = None,
         drums_sample: int = 0,
@@ -3771,14 +3918,20 @@ class PreviewArrangementTool(MCPTool):
         lead_outliers: Any = _UNSET,
         levels: Any = _UNSET,
     ) -> MCPToolResult:
-        """ADR-0132 PR-7: партитура превью подмешивает тот же пресет, что
-        сыграл бы ``compose_music`` — иначе превью соврало бы о ручках,
-        которые реально применятся при следующем ``compose_music``. Та же
-        сигнатура-с-сентинелом, что ``ComposeMusicTool.execute`` — см. его
-        докстринг (общий AST-контракт ``tools/gen_tool_catalog.py``)."""
+        """ADR-0132 PR-7 / issue #2950: партитура превью подмешивает то же
+        наследование от играющего трека и тот же пресет, что применил бы
+        ``compose_music`` — иначе превью соврало бы о ручках, которые
+        реально применятся при следующем ``compose_music``. ``_composer``
+        — отдельный внутренний ``ComposeMusicTool`` (см. ``__init__``), но
+        делит ``self._manager`` с реальным тулом, поэтому
+        ``_inherit_last_track`` видит то же ``last_track_arrangement``. Та
+        же сигнатура-с-сентинелом, что ``ComposeMusicTool.execute`` — см.
+        его докстринг (общий AST-контракт ``tools/gen_tool_catalog.py``)."""
         kwargs = _explicit_kwargs(locals())
+        kwargs, inherited_note = self._composer._inherit_last_track(kwargs)
         merged, preset_note = self._composer._resolve_preset(kwargs)
         self._composer._pending_preset_note = preset_note
+        self._composer._pending_inherited_note = inherited_note
         return self._execute_named(**merged)
 
     def _execute_named(

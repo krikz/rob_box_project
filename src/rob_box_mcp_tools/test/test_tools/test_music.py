@@ -94,6 +94,8 @@ def _make_manager(*, sc_running: bool = False, renardo_available: bool = False) 
     mgr._music_form_deadline_at = None
     # issue #2461 — form-cycle end (arms regardless of repeat)
     mgr._music_form_cycle_ends_at = None
+    # issue #2950 — last named track snapshot for tweak inheritance
+    mgr.last_track_arrangement = None
     # issue #1000 — DJ mode flag (default off; tests can call mgr.set_dj_mode(True))
     mgr._dj_mode_enabled = False
     mgr._check_supercollider = Mock(return_value=sc_running)
@@ -3050,8 +3052,15 @@ class TestSaveArrangementPresetTool:
         compose, save, _store = self._tools(mock_node, tmp_path)
         compose.execute(name="fifth", bass_style="root", **self._ARR)
         save.execute(approved_by_user_quote="класс")
-        # Новый вызов той же мелодии без явной ручки — bass_style подтянут
-        # из только что сохранённого learned-пресета.
+        # Issue #2950: сразу после успешного проигрывания той же мелодии
+        # вызов унаследовал бы bass_style от НЕЁ ЖЕ (см.
+        # test_compose_music_tweak_inherits.py) — это отдельный, более
+        # специфичный механизм («подстройка играющего трека»), и он
+        # законно перекрывает пресет здесь же, в том же вызове. Чтобы
+        # изолированно проверить именно ПРЕСЕТ (сценарий этого теста —
+        # «в СЛЕДУЮЩИЙ раз, без связи с тем, что играло только что»),
+        # сбрасываем «последний трек» между вызовами.
+        compose._manager.last_track_arrangement = None
         result = compose.execute(name="fifth", **self._ARR)
         assert result.success is True
         assert compose.last_score["decisions"]["bass_style"].startswith("root")

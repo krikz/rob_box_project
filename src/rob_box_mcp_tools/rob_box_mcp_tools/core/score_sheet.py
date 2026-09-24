@@ -539,6 +539,8 @@ def _render_text(sheet: Dict[str, Any]) -> str:
         lines.append("Ударные: " + "; ".join(f"{k} {v}" for k, v in sheet["drums"].items()))
     if sheet.get("preset"):
         lines.append(f"Пресет: {sheet['preset']}.")
+    if sheet.get("inherited"):
+        lines.append(f"{sheet['inherited']}.")
     lines.append(
         "Решения по умолчанию: "
         + "; ".join(f"{k}={v}" for k, v in sheet["decisions"].items()) + "."
@@ -596,6 +598,7 @@ def describe(
     title: Optional[str] = None,
     warnings: Sequence[str] = (),
     preset_note: Optional[str] = None,
+    inherited_note: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Партитура трека: dict + ``text`` (компактный русский, ~1 КБ).
 
@@ -610,6 +613,11 @@ def describe(
         preset_note: ADR-0132 PR-7 — «<title> (ручка=значение, …)», когда
             вызов подмешал пресет ручек по мелодии; ``None`` — пресет не
             применялся.
+        inherited_note: issue #2950 — «унаследовано от текущего трека:
+            ручка=значение, …», когда вызов подмешал недостающие ручки от
+            последнего сыгранного трека той же мелодии (подстройка
+            звучания без пересборки всей аранжировки); ``None`` —
+            наследования не было.
     """
     parts, drums = _parts(spec)
     checks = _checks(parts, harmony, code)
@@ -618,6 +626,7 @@ def describe(
     sheet: Dict[str, Any] = {
         "title": title,
         "preset": preset_note,
+        "inherited": inherited_note,
         "bpm": max(BPM_RANGE[0], min(BPM_RANGE[1], float(spec.bpm))),
         "bpm_note": _bpm_note(spec, prep_decisions),
         "duration_seconds": round(form_duration_seconds(spec.form, spec.bpm, theme_bars), 1),
