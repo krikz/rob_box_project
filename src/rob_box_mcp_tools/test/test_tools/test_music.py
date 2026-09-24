@@ -2602,6 +2602,74 @@ class TestComposeMusicToolGrooveLoop:
 
 
 @pytest.mark.unit
+class TestComposeMusicToolFx:
+    """Issue #2968: compose_music(fx=...) — одиночный FX-акцент, pack 1
+    только за тем же флагом ROB_BOX_PACK1_LOOPS (по умолчанию выключен).
+    Тот же non-fatal контракт, что groove_loop получил в #2966 (см.
+    TestComposeMusicToolGrooveLoop выше) — акцент снимается флагом молча,
+    трек играет, предупреждение уходит в message, вызов не падает."""
+
+    _KW = dict(
+        bpm=120, root="A", scale="minor", form="arc",
+        drums="X...o...X...o...", hats="-.-.-.-.",
+        bass_synth="dub", bass_notes="0,0,4,0",
+        lead_synth="blip", lead_notes="0,2,4,7",
+    )
+
+    def _tool(self, mock_node):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        return ComposeMusicTool(mock_node, mgr)
+
+    def test_schema_exposes_fx_with_catalog_enum(self, mock_node):
+        param = next(p for p in self._tool(mock_node).parameters if p.name == "fx")
+        assert "gunshot_1" in param.enum and "siren_1" in param.enum
+
+    def test_fx_is_dropped_without_flag_not_refused(self, mock_node, monkeypatch):
+        """Тот же принцип, что #2966 для groove_loop: известный, но
+        выключенный флагом FX не должен рвать весь compose_music-вызов —
+        трек играет без FX, предупреждение честно уходит в message."""
+        monkeypatch.delenv("ROB_BOX_PACK1_LOOPS", raising=False)
+        with patch("builtins.exec") as mock_exec:
+            result = self._tool(mock_node).execute(fx="gunshot_1", **self._KW)
+        assert result.success is True, result.error
+        assert "ROB_BOX_PACK1_LOOPS" in result.message
+        mock_exec.assert_called_once()
+        executed = mock_exec.call_args[0][0]
+        assert "loop(" not in executed
+
+    def test_fx_plays_with_flag(self, mock_node, monkeypatch):
+        monkeypatch.setenv("ROB_BOX_PACK1_LOOPS", "1")
+        with patch("builtins.exec") as mock_exec:
+            result = self._tool(mock_node).execute(fx="gunshot_1", **self._KW)
+        assert result.success is True, result.error
+        executed = mock_exec.call_args[0][0]
+        assert (
+            "d3 >> loop('../../1_pitchglitch_samples/u/upper/"
+            "005_Snare_AltGunShot_Kaonaya.wav'" in executed
+        )
+
+    def test_unknown_fx_is_tool_error(self, mock_node):
+        result = self._tool(mock_node).execute(fx="nope_1", **self._KW)
+        assert result.success is False
+        assert "fx" in result.error
+
+    def test_groove_loop_and_fx_warnings_combine(self, mock_node, monkeypatch):
+        """Оба слоя сняты одним и тем же флагом — модель должна узнать
+        про оба, а не только про groove_loop (первый в порядке резолва)."""
+        monkeypatch.delenv("ROB_BOX_PACK1_LOOPS", raising=False)
+        kw = dict(self._KW, drums=None, hats="-.-.-.-.")
+        with patch("builtins.exec") as mock_exec:
+            result = self._tool(mock_node).execute(
+                groove_loop="break_1", fx="siren_1", **kw
+            )
+        assert result.success is True, result.error
+        assert result.message.count("ROB_BOX_PACK1_LOOPS") == 2
+        mock_exec.assert_called_once()
+        executed = mock_exec.call_args[0][0]
+        assert "loop(" not in executed
+
+
+@pytest.mark.unit
 class TestComposeMusicToolDrumStyle:
     """Issue #2841: compose_music(drum_style=...) — жанровый каркас ударных.
     С name= стиль уходит в core.harmonize; без name= заполняет drums/hats,

@@ -1184,6 +1184,71 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                            'perc_2',
                                                                            'piano_1',
                                                                            'yiddish_1']},
+                                            'fx': {   'type': 'string',
+                                                      'description': 'Одиночный '
+                                                                     'FX-акцент (issue '
+                                                                     '#2968) — редкий, '
+                                                                     'короткий всплеск '
+                                                                     'на стыках '
+                                                                     'секций/брейке, '
+                                                                     'не в каждом '
+                                                                     'такте (выстрел, '
+                                                                     'сирена, скрэтч, '
+                                                                     'лазер и т.п.), в '
+                                                                     'отличие от '
+                                                                     'groove_loop, '
+                                                                     'который играет '
+                                                                     'ПОСТОЯННО. '
+                                                                     'Встаёт в '
+                                                                     'свободный слот '
+                                                                     'd1-d3 (тот же '
+                                                                     'пул, что '
+                                                                     'groove_loop — '
+                                                                     'вместе может не '
+                                                                     'хватить слотов). '
+                                                                     'Имя не '
+                                                                     'выдумывай: '
+                                                                     'сначала '
+                                                                     "search_samples(query='<жанр/настроение>', "
+                                                                     "pack='1_pitchglitch_samples') "
+                                                                     '— вернёт '
+                                                                     'кандидатов из '
+                                                                     'белого списка по '
+                                                                     'ЖАНРОВОМУ ТЕГУ '
+                                                                     "(data['fx_by_tag']), "
+                                                                     'затем сюда — '
+                                                                     'точное имя '
+                                                                     'оттуда. '
+                                                                     'Работает, только '
+                                                                     'если владелец '
+                                                                     'включил белый '
+                                                                     'список после '
+                                                                     'прослушки (тот '
+                                                                     'же флаг, что и у '
+                                                                     'groove_loop); '
+                                                                     'иначе трек '
+                                                                     'играет БЕЗ fx '
+                                                                     '(warning в '
+                                                                     'ответе, вызов не '
+                                                                     'падает) — не '
+                                                                     'пытайся '
+                                                                     'повторить тот же '
+                                                                     'fx ещё раз. '
+                                                                     'Пропусти, если '
+                                                                     'FX не нужен.',
+                                                      'enum': [   'gunshot_1',
+                                                                  'gunshot_2',
+                                                                  'laser_1',
+                                                                  'laser_2',
+                                                                  'laser_3',
+                                                                  'laser_4',
+                                                                  'laser_5',
+                                                                  'scratch_1',
+                                                                  'scratch_2',
+                                                                  'scratch_3',
+                                                                  'scratch_4',
+                                                                  'scratch_5',
+                                                                  'siren_1']},
                                             'swing': {   'type': 'number',
                                                          'description': 'Свинг '
                                                                         'восьмых, '
@@ -1556,10 +1621,10 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                          'bass, pad, '
                                                                          'counter, '
                                                                          'drums, hats, '
-                                                                         'perc, loop; '
-                                                                         '0 — молчит, '
-                                                                         '1 — как '
-                                                                         'есть, '
+                                                                         'perc, loop, '
+                                                                         'fx; 0 — '
+                                                                         'молчит, 1 — '
+                                                                         'как есть, '
                                                                          'максимум 2. '
                                                                          'Работает и '
                                                                          'без name. По '
@@ -1699,6 +1764,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                        'repeat',
                                        'swing',
                                        'groove_loop',
+                                       'fx',
                                        'drum_style',
                                        'key_detection',
                                        'chords',
@@ -4361,6 +4427,71 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                            'perc_2',
                                                                            'piano_1',
                                                                            'yiddish_1']},
+                                            'fx': {   'type': 'string',
+                                                      'description': 'Одиночный '
+                                                                     'FX-акцент (issue '
+                                                                     '#2968) — редкий, '
+                                                                     'короткий всплеск '
+                                                                     'на стыках '
+                                                                     'секций/брейке, '
+                                                                     'не в каждом '
+                                                                     'такте (выстрел, '
+                                                                     'сирена, скрэтч, '
+                                                                     'лазер и т.п.), в '
+                                                                     'отличие от '
+                                                                     'groove_loop, '
+                                                                     'который играет '
+                                                                     'ПОСТОЯННО. '
+                                                                     'Встаёт в '
+                                                                     'свободный слот '
+                                                                     'd1-d3 (тот же '
+                                                                     'пул, что '
+                                                                     'groove_loop — '
+                                                                     'вместе может не '
+                                                                     'хватить слотов). '
+                                                                     'Имя не '
+                                                                     'выдумывай: '
+                                                                     'сначала '
+                                                                     "search_samples(query='<жанр/настроение>', "
+                                                                     "pack='1_pitchglitch_samples') "
+                                                                     '— вернёт '
+                                                                     'кандидатов из '
+                                                                     'белого списка по '
+                                                                     'ЖАНРОВОМУ ТЕГУ '
+                                                                     "(data['fx_by_tag']), "
+                                                                     'затем сюда — '
+                                                                     'точное имя '
+                                                                     'оттуда. '
+                                                                     'Работает, только '
+                                                                     'если владелец '
+                                                                     'включил белый '
+                                                                     'список после '
+                                                                     'прослушки (тот '
+                                                                     'же флаг, что и у '
+                                                                     'groove_loop); '
+                                                                     'иначе трек '
+                                                                     'играет БЕЗ fx '
+                                                                     '(warning в '
+                                                                     'ответе, вызов не '
+                                                                     'падает) — не '
+                                                                     'пытайся '
+                                                                     'повторить тот же '
+                                                                     'fx ещё раз. '
+                                                                     'Пропусти, если '
+                                                                     'FX не нужен.',
+                                                      'enum': [   'gunshot_1',
+                                                                  'gunshot_2',
+                                                                  'laser_1',
+                                                                  'laser_2',
+                                                                  'laser_3',
+                                                                  'laser_4',
+                                                                  'laser_5',
+                                                                  'scratch_1',
+                                                                  'scratch_2',
+                                                                  'scratch_3',
+                                                                  'scratch_4',
+                                                                  'scratch_5',
+                                                                  'siren_1']},
                                             'swing': {   'type': 'number',
                                                          'description': 'Свинг '
                                                                         'восьмых, '
@@ -4733,10 +4864,10 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                          'bass, pad, '
                                                                          'counter, '
                                                                          'drums, hats, '
-                                                                         'perc, loop; '
-                                                                         '0 — молчит, '
-                                                                         '1 — как '
-                                                                         'есть, '
+                                                                         'perc, loop, '
+                                                                         'fx; 0 — '
+                                                                         'молчит, 1 — '
+                                                                         'как есть, '
                                                                          'максимум 2. '
                                                                          'Работает и '
                                                                          'без name. По '
@@ -4876,6 +5007,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                        'repeat',
                                        'swing',
                                        'groove_loop',
+                                       'fx',
                                        'drum_style',
                                        'key_detection',
                                        'chords',
@@ -5334,7 +5466,14 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'description': 'Поиск Renardo-сэмплов по ключевому слову в имени файла. '
                        'Возвращает букву, sample_index и готовый play_code. Используй '
                        "когда нужно найти неизвестную букву/индекс сэмпла. query='*' — "
-                       'обзор всех доступных букв и количества сэмплов в паке.',
+                       'обзор всех доступных букв и количества сэмплов в паке. Для '
+                       "pack='1_pitchglitch_samples' запрос дополнительно ищет по "
+                       'ЖАНРОВЫМ ТЕГАМ белого списка FX (issue #2968) — например '
+                       "query='dnb' или query='gangsta' находит подходящие FX-одиночки "
+                       '(выстрел/сирена/скрэтч/лазер) по тегу, а не по имени файла; '
+                       "результат — в data['fx_by_tag'], с рабочим play_code через "
+                       'compose_music(fx=...) (spack= в паке 1 не работает, см. '
+                       '#2841).',
         'parameters': {   'type': 'object',
                           'properties': {   'query': {   'type': 'string',
                                                          'description': 'Ключевое '

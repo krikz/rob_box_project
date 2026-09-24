@@ -404,6 +404,23 @@ def _groove_loops() -> list[str]:
     return names
 
 
+def _fx_names() -> list[str]:
+    """``compose_music.fx`` enum — the FX catalog data file (#2968).
+
+    Mirrors ``sorted(sample_fx.fx_catalog())`` (same pattern as
+    :func:`_groove_loops` for ``data/sample_loops.json``) — the pack-1 flag
+    gates playback, not the schema.
+    """
+    import json
+
+    path = REPO_ROOT / "src" / "rob_box_mcp_tools" / "rob_box_mcp_tools" / "data" / "sample_fx.json"
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    names = sorted(raw.get("fx", {}))
+    if not names:
+        raise ToolSourceError(f"{path} yielded no fx")
+    return names
+
+
 def _drum_styles() -> list[str]:
     """``compose_music.drum_style`` enum — ``harmonize.DRUM_STYLES`` (#2841).
 
@@ -493,6 +510,7 @@ DYNAMIC_ENUMS = {
     ("compose_music", "root"): _composition_roots,
     ("compose_music", "scale"): _composition_scales,
     ("compose_music", "groove_loop"): _groove_loops,
+    ("compose_music", "fx"): _fx_names,
     ("compose_music", "drum_style"): _drum_styles,
     # ADR-0132 PR-4: ручки аранжировщика — значения из ядра, не копия.
     ("compose_music", "key_detection"): _harmonize_knob("key_detection"),
