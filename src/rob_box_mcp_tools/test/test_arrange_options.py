@@ -51,6 +51,10 @@ DENSE, SPARSE, KEY_DISPUTED, OUTLIERS, SHIFTED = (
     "imperial", "pinkpant", "hallofth_2", "stilldre_2", "tetris",
 )
 
+#: Тема из живого прогона issue #2962 (Терминатор, ``lead_octave='+1'``
+#: с ``lead_synth='viola'``/``counter_synth='flute'`` уехал в MIDI 104-111).
+TERMINATOR = "terminat"
+
 _SYNTHS = dict(lead_synth="pluck", bass_synth="bass", pad_synth="strings")
 
 
@@ -177,14 +181,63 @@ def test_key_detection_profile_is_pure_krumhansl():
     assert prof["harmony"].root == prof["root"]
 
 
-def test_lead_octave_plus_one_raises_lead_by_octave():
-    keep = _params(SHIFTED, HarmonizeOptions(lead_octave="keep"))
-    up = _params(SHIFTED, HarmonizeOptions(lead_octave=1))
-    for (a, da), (b, db) in zip(keep["harmony"].lead, up["harmony"].lead):
+def test_lead_octave_minus_one_shifts_from_normalized_register():
+    """issue #2962: ручной сдвиг — от НОРМАЛИЗОВАННОГО регистра, не от сырого.
+
+    ``SHIFTED`` (tetris) auto переносит на октаву вниз (``lead_shift ==
+    -12``, см. следующий тест). ``lead_octave=-1`` должен лечь ещё на
+    октаву ниже ЭТОГО же нормализованного регистра, а не octave-1 от
+    сырой (незаписанной) темы.
+    """
+    auto = _params(SHIFTED)
+    down = _params(SHIFTED, HarmonizeOptions(lead_octave=-1))
+    for (a, da), (b, db) in zip(auto["harmony"].lead, down["harmony"].lead):
         assert da == db
-        assert (a is None and b is None) or b == a + 12
-    assert up["decisions"]["lead_shift"] == keep["decisions"]["lead_shift"] + 12
-    assert up["decisions"]["lead_octave_mode"] == 1
+        assert (a is None and b is None) or b == a - 12
+    assert (
+        down["decisions"]["lead_shift"]
+        == auto["decisions"]["lead_shift"] - 12
+    )
+    assert down["decisions"]["lead_octave_mode"] == -1
+
+
+def test_lead_octave_plus_one_errors_when_normalized_register_is_at_ceiling():
+    """issue #2962: '+1' поверх нормализованного регистра выше потолка —
+    честная ошибка.
+
+    Раньше сдвиг считался от СЫРОЙ темы и потолок (``_LEAD_MAX_CEILING``)
+    для ручного режима не проверялся вовсе — живой прогон ``terminat`` +
+    ``lead_octave='+1'`` уехал в MIDI 104-111 (свист). ``SHIFTED`` (tetris)
+    нормализован в 69-81; ``+1`` дал бы максимум 93 — выше потолка 88,
+    поэтому тул обязан честно отказать, а не тихо сыграть выше рабочего
+    регистра.
+    """
+    with pytest.raises(ValueError, match="потолка"):
+        _params(SHIFTED, HarmonizeOptions(lead_octave=1))
+
+
+def test_acceptance_issue_2962_terminator_lead_octave_plus_one():
+    """Acceptance issue #2962: точный сценарий живого прогона 24.09.
+
+    ``compose_music(name='terminat', lead_synth='viola', lead_octave='+1',
+    counter_synth='flute')`` дал лид в MIDI 83-111 и контрмелодию флейты
+    до 107 — ``_LEAD_MAX_CEILING=88`` соблюдался только в ``auto``. Тема
+    ``terminat`` в рабочем регистре уже стоит у потолка (auto: 59-87),
+    поэтому ``+1`` обязан честно отказать, а не тихо уйти в свист; ни у
+    лида, ни у контрмелодии (которая всегда кладётся НИЖЕ ноты темы,
+    см. ``harmonize._build_counter``) не должно быть ни одной ноты выше
+    потолка ни в одном режиме.
+    """
+    from rob_box_mcp_tools.core.rtttl_compose import _LEAD_MAX_CEILING
+
+    auto = _params(TERMINATOR)
+    lead_notes = [m for m, _ in auto["harmony"].lead if m is not None]
+    counter_notes = [m for m, _ in auto["harmony"].counter if m is not None]
+    assert max(lead_notes) <= _LEAD_MAX_CEILING
+    assert max(counter_notes) <= _LEAD_MAX_CEILING
+
+    with pytest.raises(ValueError, match="потолка"):
+        _params(TERMINATOR, HarmonizeOptions(lead_octave=1))
 
 
 def test_lead_octave_keep_disables_register_normalization():
@@ -485,8 +538,11 @@ def test_score_sheet_default_line_says_auto():
 
 
 def test_score_sheet_reflects_explicit_knobs():
+    # issue #2962: KEY_DISPUTED нормализован в 71-83 (auto lead_shift=-12),
+    # "+1" упёрся бы в потолок 88 (83+12=95) и дал бы ValueError — здесь
+    # проверяется только текст партитуры, поэтому берём "-1" (59-71, ОК).
     opts = HarmonizeOptions(
-        key_detection="profile", lead_octave=1, bass_style="root",
+        key_detection="profile", lead_octave=-1, bass_style="root",
         bass_approach="off", pad_style="off", harmonic_rhythm="bar",
         pad_register="mid", density="sparse",
     )
@@ -494,7 +550,7 @@ def test_score_sheet_reflects_explicit_knobs():
     spec = _spec(params, ArrangeOptions(counter="off", theme_octaves="on", levels={"bass": 0.5}))
     text = _decisions_text(params, spec)
     for fragment in (
-        "key=profile→", "lead_octave=+1→", "bass_style=root, шаг 2",
+        "key=profile→", "lead_octave=-1→", "bass_style=root, шаг 2",
         "bass_approach=off→0", "pad_style=off", "harmonic_rhythm=bar",
         "pad_register=mid", "density=sparse(измерено", "counter=off (задано)",
         "theme_octaves=on (задано)", "levels=bass×0.5",
