@@ -3243,7 +3243,7 @@ class ComposeMusicTool(MCPTool):
         self, spec: Any, raw_result: Dict[str, Any], duration_s: float
     ) -> Dict[str, Any]:
         """Обогатить результат execute_code полями ``form`` и ``duration_seconds``."""
-        raw_result["form"] = form_summary(spec.form)
+        raw_result["form"] = form_summary(spec.form, getattr(spec, "theme_bars", 0))
         # Issue #1811 follow-up (live 02.09): диджей ставил
         # next_transition_sec=45, а форма играет 96-190 секунд — дроп и
         # кульминация не звучали НИ РАЗУ за 30 часов лога. Длительность
@@ -3443,7 +3443,10 @@ class ComposeMusicTool(MCPTool):
             return err
         assert built is not None  # для mypy: err is None ⇒ built задан
 
-        self.log_info(f"Композиция: {form_summary(built.spec.form)}")
+        self.log_info(
+            "Композиция: "
+            f"{form_summary(built.spec.form, getattr(built.spec, 'theme_bars', 0))}"
+        )
         result = self._manager.execute_code(built.code, pattern_name="composition")
         if not result["success"]:
             return MCPToolResult(success=False, error=result["error"])
@@ -3737,7 +3740,10 @@ class ComposeMusicTool(MCPTool):
         repeat_warning = self._repeat_warning(flat)
         self._last_flat = flat
         message = self._format_compose_message(
-            melody_title, form_summary(spec.form), duration_s, repeat_warning,
+            melody_title,
+            form_summary(spec.form, getattr(spec, "theme_bars", 0)),
+            duration_s,
+            repeat_warning,
         )
         return MCPToolResult(success=True, data=result, message=message)
 
