@@ -1829,6 +1829,7 @@ def detect_universal_action_claim(
     spoken: Optional[str],
     tools_called: Optional[Tuple[str, ...]],
     tool_error_occurred: bool = False,
+    repeated_call_args: bool = False,
 ) -> Optional[UniversalActionClaimHit]:
     """Issue #2549 — широкий детектор «spoken заявляет действие, tools пуст».
 
@@ -1846,19 +1847,31 @@ def detect_universal_action_claim(
          тул был ВЫЗВАН, даже когда он отказал/упал. «Записала пресет»
          после ``save_arrangement_preset`` → «недоступен» — тот же
          hallucination, что и пустой ``tools_called``, просто с тулом
-         в списке. Подкрепляет заявление ТОЛЬКО успешный вызов).
+         в списке. Подкрепляет заявление ТОЛЬКО успешный вызов), ИЛИ
+         вызов — байт-в-байт повтор ПРЕДЫДУЩЕГО успешного вызова
+         (``repeated_call_args=True`` — issue #2967: LLM заявляет
+         «переделал/поменял», но вызвала ``compose_music`` с ТЕМИ ЖЕ
+         аргументами, что и в прошлый раз — по факту ничего не
+         изменилось, заявление о переменах не подкреплено, кто бы что
+         ни вызвал. Сравнение аргументов делает вызывающий код
+         (dialogue_node), сюда приходит уже готовый факт).
 
-    Если условие 1 и (условие 2 ИЛИ ошибка) — возвращает
-    :class:`UniversalActionClaimHit`, иначе ``None``.
+    Если условие 1 и (условие 2 ИЛИ ошибка ИЛИ повтор аргументов) —
+    возвращает :class:`UniversalActionClaimHit`, иначе ``None``.
     """
     if not spoken:
         return None
     called = set(tools_called or ())
-    if (called & CLAIM_JUSTIFYING_TOOLS) and not tool_error_occurred:
-        # LLM вызвал тул, который оправдывает заявление, И тул реально
-        # отработал — НЕ вмешиваемся. Issue #2949: если тул вызван, но
-        # вернул ошибку, ``tool_error_occurred=True`` и мы НЕ бежим
-        # сюда — заявление остаётся непроверенным hallucination.
+    if (
+        (called & CLAIM_JUSTIFYING_TOOLS)
+        and not tool_error_occurred
+        and not repeated_call_args
+    ):
+        # LLM вызвал тул, который оправдывает заявление, тул реально
+        # отработал, И это НЕ повтор прошлого вызова — НЕ вмешиваемся.
+        # Issue #2949: тул вызван, но вернул ошибку — не бежим сюда.
+        # Issue #2967: тул вызван с теми же аргументами, что и в прошлый
+        # раз — заявление о переменах тоже не подкреплено.
         return None
 
     # Past tense — приоритет, чаще в спонтанных ответах.
@@ -1887,6 +1900,7 @@ def build_universal_action_claim_retry_prompt(
     spoken: str,
     hit: "UniversalActionClaimHit",
     tool_error_occurred: bool = False,
+    repeated_call_args: bool = False,
 ) -> str:
     """Issue #2549 — синтетический CRITICAL-ретрай на action hallucination.
 
@@ -1899,6 +1913,10 @@ def build_universal_action_claim_retry_prompt(
     промпта в этом случае просит честно сообщить о НЕУДАЧЕ, а не просто
     "вызови инструмент" — модель уже его вызывала, вызов ещё раз того
     же провалившегося тула не поможет без честного отчёта.
+
+    Issue #2967 — ``repeated_call_args=True`` значит инструмент был
+    вызван, но с ТЕМИ ЖЕ аргументами, что и в прошлый раз — заявление о
+    перемене не подкреплено, потому что ничего не поменялось.
     """
     cleaned = _strip_trailing_critical_block(user_input or "")
     verb_hint = (
@@ -1906,7 +1924,17 @@ def build_universal_action_claim_retry_prompt(
         + hit.verb
         + "», говори «проверяю», «попробую»."
     )
-    if tool_error_occurred:
+    if repeated_call_args:
+        failure_clause = (
+            "но вызвал инструмент С ТЕМИ ЖЕ АРГУМЕНТАМИ, что и в прошлый "
+            "раз — по факту НИЧЕГО не изменилось. "
+        )
+        action_clause = (
+            "✅ ОБЯЗАТЕЛЬНО: в ЭТОМ же turn вызови инструмент С ДРУГИМИ "
+            "аргументами (другое имя/стиль/параметры) — повтор прежних "
+            "аргументов не считается переменой. "
+        )
+    elif tool_error_occurred:
         failure_clause = (
             "но вызванный тобой инструмент ВЕРНУЛ ОШИБКУ/ОТКАЗ — действие "
             "НЕ выполнено. "

@@ -1139,6 +1139,13 @@ class DialogueNode(Node):
             max_user_retries=3,
             logger=self.get_logger(),
         )
+        # Issue #2967 — full argument dict of the last SUCCESSFUL
+        # ``compose_music`` call, across turns. Compared against the
+        # current turn's ``result.music_call_args`` (byte-for-byte) so
+        # the #2549 anti-hallucination guard can catch a spoken
+        # «переделал/поменял» claim backed by a no-op replay of the same
+        # arguments — see ``_compute_repeated_music_call_args``.
+        self._last_music_call_args: Optional[dict] = None
         # Issue #2835 — поколение диалоговой сессии: ход/ретрай, родившийся
         # до «новой сессии», после неё не запускается и не включает DJ.
         self._session_epoch = SessionEpoch()
@@ -4728,6 +4735,15 @@ class DialogueNode(Node):
         # включая сам ретрай (иначе отложенный DIALOGUE_END залипнет).
         self._retry_dispatched_in_turn = False
         self._retry_budget_exhausted_in_turn = False
+        # Issue #2967 — DJ-переход провалился (нет музыкального тула) И
+        # ретрай-бюджет Bug B на этом ходе исчерпан, значит НИКАКОГО
+        # ретрая за этим ходом не последует. Ход всё равно не должен
+        # звучать: это очередной пустой анонс без трека, а не финальный
+        # ход сета. Отдельный от ``_retry_dispatched_in_turn`` флаг —
+        # он влияет ТОЛЬКО на решение "озвучивать ли этот ход" и НЕ
+        # должен откладывать DIALOGUE_END (ретрая не будет, откладывать
+        # закрытие сессии не для чего — см. ``_release_turn_speech``).
+        self._dj_giveup_silent_in_turn = False
         # Issue #2914 -- «в этом ходе прозвучал вопрос о личности».
         self._identity_question_asked_in_turn = False
         guard_retry_pending = False
@@ -4914,9 +4930,18 @@ class DialogueNode(Node):
             # Issue #2874 — гуарды сказали своё: ход с ретраем молчит,
             # отозванный гуардом ответ молчит, остальное звучит. Переспрос
             # #2828, пришедший после ответа, — после него, как и раньше.
+            # Issue #2967 — ``_dj_giveup_silent_in_turn`` тоже молчит: DJ-
+            # переход провалился и ретрай-бюджет на нём исчерпан, но это
+            # НЕ повод отложить DIALOGUE_END (см. ``_finalize_turn_dsm``
+            # ниже, которому передаётся исходный ``music_retry_dispatched``
+            # без этой добавки).
             self._release_turn_speech(
                 speech_hold,
-                retry_dispatched=music_retry_dispatched or tool_retry_dispatched,
+                retry_dispatched=(
+                    music_retry_dispatched
+                    or tool_retry_dispatched
+                    or getattr(self, "_dj_giveup_silent_in_turn", False)
+                ),
                 was_dj_auto=was_dj_auto,
             )
             self._speak_identity_question(
@@ -5106,6 +5131,9 @@ class DialogueNode(Node):
         guard = getattr(self, "_music_guard", None)
         if guard is not None:
             guard.reset_for_new_session()
+        # Issue #2967 — прошлая сессия не должна «забраковывать» первый
+        # compose_music новой сессии как повтор.
+        self._last_music_call_args = None
 
     # ── Issue #992 Bug B / Bug C — DJ-mode music guard ────────────────
 
@@ -5707,12 +5735,41 @@ class DialogueNode(Node):
         )
         return True
 
+    def _repeated_music_call_args(self, result: Any) -> bool:
+        """Issue #2967 — this turn's ``compose_music`` args repeat the
+        last stored (successful) call, byte-for-byte?
+
+        Systemic, not phrase-based: the #2549 guard below only cares
+        about the FACT «tool was called with the same arguments again»,
+        never about which words the LLM used to describe it. Always
+        updates the stored baseline to THIS turn's args (when
+        ``compose_music`` was called) so a genuine change becomes the
+        new baseline and a caught repeat does not loop forever — the
+        retry's OWN reply is compared against the retry's own args next.
+
+        ``result.music_call_args`` is ``None`` when ``compose_music``
+        wasn't called this turn — nothing to compare, and the stored
+        baseline is left untouched (a turn with no music call says
+        nothing about whether the NEXT music call repeats the one
+        before it).
+        """
+        args = getattr(result, "music_call_args", None)
+        if args is None:
+            return False
+        # Defensive ``getattr``: test doubles built via
+        # ``object.__new__(DialogueNode)`` skip ``__init__`` and may
+        # never have set the baseline attribute.
+        previous = getattr(self, "_last_music_call_args", None)
+        self._last_music_call_args = args
+        return previous is not None and previous == args
+
     def _check_universal_action_claim_and_retry(
         self,
         *,
         spoken: str,
         user_input: Optional[str],
         tools_called: tuple,
+        repeated_call_args: bool = False,
         tool_error_occurred: bool = False,
     ) -> bool:
         """Issue #2549 — широкий anti-hallucination guard.
@@ -5784,7 +5841,8 @@ class DialogueNode(Node):
         self.get_logger().warning(
             "🧾 [issue 2549] anti-hallucination guard: spoken содержит "
             f"action-verb «{hit.verb}» ({hit.tense}), "
-            f"tool_error_occurred={tool_error_occurred!r} — "
+            f"tool_error_occurred={tool_error_occurred!r} "
+            f"repeated_call_args={repeated_call_args!r} — "
             f"head={hit.excerpt!r}, user_input={user_input!r}, "
             f"tools={list(tools_called)!r}"
         )
@@ -5794,6 +5852,7 @@ class DialogueNode(Node):
                 spoken=spoken,
                 hit=hit,
                 tool_error_occurred=tool_error_occurred,
+                repeated_call_args=repeated_call_args,
             ),
             is_action_claim_retry=False,  # свой тип, чтобы не путать с Bug E
             is_synthetic=True,
@@ -7014,10 +7073,37 @@ class DialogueNode(Node):
             )
             return False
 
+        # Issue #2967 — Bug B retry-budget exhausted on THIS DJ-transition
+        # attempt marks the turn silent (extracted to a helper so this
+        # method's CC stays at its cc_budget baseline).
+        self._mark_dj_giveup_silent_if_budget_exhausted(verdict)
+
         # SKIP_NOT_APPLICABLE — guard deliberately skipped (stop-command,
         # user did not request music, DJ off, etc.). Policy module already
         # logged the diagnostic.
         return False
+
+    def _mark_dj_giveup_silent_if_budget_exhausted(
+        self, verdict: MusicGuardVerdict
+    ) -> None:
+        """Issue #2967 — DJ Bug-B retry budget exhausted → this turn is
+        silent, WITHOUT touching ``music_retry_dispatched``.
+
+        No retry follows (``MusicGuard`` already logged and reset its
+        own counter), but the turn still failed to start music — its
+        spoken text is just another empty announcement, not the
+        informative one. Split out of :meth:`_apply_music_guard` so
+        that method's CC stays at its cc_budget baseline; DIALOGUE_END
+        must proceed normally here (no retry means nothing to wait
+        for), which is why this does NOT return a bool the caller could
+        mistake for ``music_retry_dispatched`` — see
+        ``_dj_giveup_silent_in_turn`` docstring in ``_run_turn``.
+        """
+        if (
+            verdict.kind is MusicGuardVerdictKind.SKIP_NOT_APPLICABLE
+            and verdict.reason == "bug_b_budget_exhausted"
+        ):
+            self._dj_giveup_silent_in_turn = True
 
     def _publish_music_retry_exhausted_fallback(
         self,
@@ -7754,6 +7840,12 @@ class DialogueNode(Node):
         # success (``CLAIM_JUSTIFYING_TOOLS`` guards below need this to
         # not treat a refused ``save_arrangement_preset`` as a done deal).
         tool_error_occurred = bool(getattr(result, "tool_error_occurred", False))
+        # Issue #2967 — computed ONCE per turn (the check has a side
+        # effect: it also updates ``self._last_music_call_args`` to this
+        # turn's value). Both action-claim call sites below (the retry
+        # and its post-budget fallback) reuse this SAME value so the
+        # detector's verdict cannot disagree with itself within one turn.
+        repeated_music_args = self._repeated_music_call_args(result)
         # Issue #988 — anti-duplicate: when the LLM already called
         # ``speak_text`` during this cycle, the answer (song / poem /
         # phrase) was voiced directly by the MCP tool via
@@ -8022,6 +8114,7 @@ class DialogueNode(Node):
             has_error=result.error is not None,
             speak_text_real=speak_text_real,
             tool_error_occurred=tool_error_occurred,
+            repeated_call_args=repeated_music_args,
         ):
             return
         # Issue #2562 Bug F — «не знаю такой мелодии» без поиска. Round 3
@@ -8063,6 +8156,7 @@ class DialogueNode(Node):
                 user_input=raw_user_command or user_input,
                 tools_called=tools_called,
                 tool_error_occurred=tool_error_occurred,
+                repeated_call_args=repeated_music_args,
             )
         ):
             return
@@ -8705,6 +8799,7 @@ class DialogueNode(Node):
         has_error: bool,
         speak_text_real: int,
         tool_error_occurred: bool = False,
+        repeated_call_args: bool = False,
     ) -> bool:
         """Issue #2548 + #2780 п.3 + #2949 — диспетчер fallback'ов после ретрая.
 
@@ -8744,7 +8839,9 @@ class DialogueNode(Node):
         if self._publish_fact_memory_save_fallback_if_needed(**kwargs):
             return True
         return self._publish_universal_action_claim_fallback_if_needed(
-            **kwargs, tool_error_occurred=tool_error_occurred
+            **kwargs,
+            tool_error_occurred=tool_error_occurred,
+            repeated_call_args=repeated_call_args,
         )
 
     def _publish_universal_action_claim_fallback_if_needed(
@@ -8758,6 +8855,7 @@ class DialogueNode(Node):
         has_error: bool,
         speak_text_real: int,
         tool_error_occurred: bool = False,
+        repeated_call_args: bool = False,
     ) -> bool:
         """Issue #2949 — fallback после НЕудачного universal-action-claim ретрая.
 
@@ -8786,6 +8884,7 @@ class DialogueNode(Node):
             spoken=spoken,
             tools_called=tuple(tools_called or ()),
             tool_error_occurred=tool_error_occurred,
+            repeated_call_args=repeated_call_args,
         )
         if hit is None:
             return False
