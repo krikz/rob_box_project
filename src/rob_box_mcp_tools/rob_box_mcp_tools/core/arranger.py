@@ -144,6 +144,25 @@ LOOP_BASE_AMP = 0.35
 #: В форме без ударных (ambient) луп идёт за подкладом, но тише.
 LOOP_PAD_FOLLOW = 0.6
 
+#: Issue #2968 — одиночный FX-акцент (выстрел/сирена/скрэтч/лазер).
+#: Отдельная роль, не вариант :data:`LOOP_ROLE`: у лупа и FX разная
+#: логика громкости (луп следует за бочкой всю активную секцию, FX молчит
+#: почти всегда и звучит коротким всплеском на стыках) и разный каталог
+#: (:mod:`core.sample_fx` вместо :mod:`core.sample_loops`), хотя рендерятся
+#: оба через один и тот же ``loop(...)`` синт (нет отдельного FX-синта в
+#: Renardo — см. ``core/sample_fx.py``). Слот — тот же общий пул d1-d3.
+FX_ROLE = "fx"
+#: Базовая громкость FX-акцента — заметно тише лупа (0.35): по acceptance
+#: issue #2968 это «умеренная громкость», не перекрывающая микс, а не ещё
+#: один слой ударных.
+FX_BASE_AMP = 0.28
+#: Секции формы, которые считаются «стыком» для FX-акцента (issue #2968:
+#: «редко, на стыках секций/break», не в каждом такте). Имена взяты из
+#: :data:`FORMS` — секция, где форма явно меняет характер (брейк, гэп,
+#: бридж, дроп, кульминация), а не ровный проигрыш. Одно и то же имя может
+#: встретиться в нескольких формах — набор одинаковый для всех них.
+FX_BOUNDARY_SECTIONS = frozenset({"break", "gap", "bridge", "drop", "drop2", "peak", "swell"})
+
 #: Полутоновые интервалы ладов, которые предъявляет схема ``compose_music``.
 #:
 #: Нужны ровно для одного: перевести ``progression`` (ступени лада) в сдвиг
@@ -492,7 +511,7 @@ LEVEL_RANGE = (0.0, 1.0)
 
 
 def _check_level(role: object, value: object) -> None:
-    roles = sorted(set(ROLE_PROFILE) | {LOOP_ROLE})
+    roles = sorted(set(ROLE_PROFILE) | {LOOP_ROLE, FX_ROLE})
     if role not in roles:
         raise ArrangementError(
             f"levels: неизвестная роль {role!r}. Доступны: {', '.join(roles)}."
@@ -1196,20 +1215,28 @@ def _sample_loops():
 _PLAYER_SLOT_RE = re.compile(r"^\s*([dp]\d)\s*>>", re.MULTILINE)
 
 
-def _free_loop_slot(lines: Sequence[str]) -> str:
+def _free_loop_slot(lines: Sequence[str], what: str = "groove_loop") -> str:
     """Первый из d1-d3, который не занят уже отрендеренными слоями.
+
+    Общая для лупа (#2841) и FX-одиночки (#2968) — оба претендуют на один
+    и тот же пул d1-d3, поэтому занятость нужно считать по уже добавленным
+    строкам ОБОИХ, а не двумя независимыми пулами (иначе loop и fx могли бы
+    получить один и тот же слот и затереть друг друга).
+
+    Args:
+        what: имя параметра для текста ошибки (``groove_loop`` или ``fx``).
 
     Raises:
         ArrangementError: все три заняты (бочка + хэты + перкуссия или
-            контрмелодия) — лупу честно некуда встать.
+            контрмелодия) — слою честно некуда встать.
     """
     used = set(_PLAYER_SLOT_RE.findall("\n".join(lines)))
     free = next((slot for slot in LOOP_SLOTS if slot not in used), None)
     if free is None:
         raise ArrangementError(
-            "groove_loop: слоты d1-d3 уже заняты (бочка, хэты и перкуссия "
+            f"{what}: слоты d1-d3 уже заняты (бочка, хэты и перкуссия "
             "или второй голос темы). Убери perc, либо поставь "
-            "drum_style='none' — луп сам несёт грув."
+            "drum_style='none' — луп/FX сам несёт грув."
         )
     return free
 
@@ -1250,24 +1277,99 @@ def _render_loop_layer(
     )
 
 
+def _sample_fx():
+    """Каталог FX (#2968) — ленивым импортом, та же причина, что :func:`_sample_loops`."""
+    from . import sample_fx
+
+    return sample_fx
+
+
+def _render_fx_layer(
+    layer: Layer,
+    plan: Sequence[Tuple[str, int, Dict[str, float]]],
+    player: str,
+    level: float = 1.0,
+) -> str:
+    """Отрендерить одиночный FX-акцент (issue #2968): ``loop(<fx>, ...)``.
+
+    Тот же синт, что жанровый луп (:func:`_render_loop_layer`) — в Renardo
+    нет отдельного «одноразового сэмпла», только ``loop(...)`` с путём к
+    файлу пака 1 (:mod:`core.sample_fx`). Разница — в намерении:
+
+    * ``beat_stretch`` НЕ ставится (нативная скорость): растяжка меняет
+      высоту, а «выстрел»/«сирена» с уехавшей высотой звучит не как эффект,
+      а как брак; жанровому лупу, наоборот, стретч нужен, чтобы попасть в
+      темп.
+    * ``amp`` включён только в секциях-«стыках» (:data:`FX_BOUNDARY_SECTIONS`)
+      — acceptance issue #2968 прямо просит «редко, на стыках секций/break»,
+      не постоянный слой.
+    * ``dur`` — длина САМОЙ КОРОТКОЙ активной секции в битах: ``loop(...)``
+      перезапускает сэмпл каждые ``dur`` битов от начала трека, поэтому
+      более короткий период даёт FX шанс попасть в каждое окно, когда он
+      слышен, вместо одного триггера на весь трек. Секунды сэмпла в
+      каталоге нет (ни один файл не прослушан и не измерен — issue
+      честно передаёт кандидатов, не заявляя точных длин), поэтому длина
+      подгоняется под форму, а не под файл, как у лупа.
+
+    Raises:
+        ArrangementError: у текущей формы нет ни одной секции из
+            :data:`FX_BOUNDARY_SECTIONS` — фактически fx был бы молчащим
+            слоем на любом bpm, это честная ошибка, а не тихая тишина
+            (тот же принцип, что :func:`_no_players_error`).
+    """
+    fx = _sample_fx()
+    info = fx.find_fx(layer.pattern or "")
+    if info is None:
+        raise ArrangementError(f"fx: неизвестный FX {layer.pattern!r}.")
+
+    boundary_bars = [
+        int(bars) for name, bars, _i in plan if name.lower() in FX_BOUNDARY_SECTIONS
+    ]
+    if not boundary_bars:
+        section_names = ", ".join(sorted({n for n, _b, _i in plan}))
+        raise ArrangementError(
+            "fx: у текущей формы нет секции-стыка "
+            f"({', '.join(sorted(FX_BOUNDARY_SECTIONS))}), доступны только "
+            f"{section_names} — FX не смог бы прозвучать ни разу. Смени "
+            "форму или играй без fx."
+        )
+
+    amps: List[float] = []
+    durs: List[int] = []
+    for name, bars, _intensities in plan:
+        active = name.lower() in FX_BOUNDARY_SECTIONS
+        amps.append(round(FX_BASE_AMP * level, 4) if active else 0.0)
+        durs.append(int(bars) * BEATS_PER_BAR)
+    amps, durs = _merge_adjacent(amps, durs)
+    amp_expr = _fmt(amps[0]) if len(amps) == 1 else f"var({_fmt_list(amps)}, {_fmt_list(durs)})"
+
+    period_beats = min(boundary_bars) * BEATS_PER_BAR
+    return (
+        f"{player} >> loop({info.name!r}, dur={_fmt(period_beats)}, "
+        f"amp={amp_expr})"
+    )
+
+
 def _append_layer_lines(
     lines: List[str],
     spec: CompositionSpec,
     plan: Sequence[Tuple[str, int, Dict[str, float]]],
     bpm: float,
 ) -> int:
-    """Дописать в ``lines`` строки всех слоёв; лупы — последними.
+    """Дописать в ``lines`` строки всех слоёв; луп и FX — последними.
 
-    Возвращает число реально отрисованных плееров (луп тоже плеер) —
+    Возвращает число реально отрисованных плееров (луп и FX тоже плееры) —
     по нему :func:`render` решает, не пустой ли трек (#2837).
 
-    Луп (#2841) рендерится после остальных, потому что его слот — первый
-    свободный из d1-d3, а занятость известна только по уже готовым строкам.
+    Луп (#2841) и FX (#2968) рендерятся после остальных, потому что их
+    слот — первый свободный из d1-d3, а занятость известна только по уже
+    готовым строкам. Луп — раньше FX: оба претендуют на один и тот же пул,
+    и стабильный порядок делает распределение слотов детерминированным.
     """
     levels = getattr(spec, "levels", None) or {}
     count = 0
     for layer in spec.layers:
-        if layer.role == LOOP_ROLE:
+        if layer.role in (LOOP_ROLE, FX_ROLE):
             continue
         rendered = _render_layer(
             layer, plan, use_filter=spec.filter_sweep, level=levels.get(layer.role, 1.0)
@@ -1279,6 +1381,13 @@ def _append_layer_lines(
         if layer.role == LOOP_ROLE:
             lines.append(_render_loop_layer(
                 layer, plan, bpm, _free_loop_slot(lines), level=levels.get(LOOP_ROLE, 1.0)
+            ))
+            count += 1
+    for layer in spec.layers:
+        if layer.role == FX_ROLE:
+            lines.append(_render_fx_layer(
+                layer, plan, _free_loop_slot(lines, what="fx"),
+                level=levels.get(FX_ROLE, 1.0),
             ))
             count += 1
     return count
@@ -1935,6 +2044,7 @@ def spec_from_flat(
     repeat: bool = True,
     swing: float = 0.0,
     groove_loop: Optional[str] = None,
+    fx: Optional[str] = None,
     options: Optional[ArrangeOptions] = None,
 ) -> CompositionSpec:
     """Собрать :class:`CompositionSpec` из плоских скалярных аргументов.
@@ -1962,6 +2072,12 @@ def spec_from_flat(
     :mod:`core.sample_loops`; добавляет слой ``loop(...)`` в свободный
     d-слот и в выведенной, и в сочинённой аранжировке.
 
+    ``fx`` (issue #2968) — имя одиночного FX-акцента из каталога
+    :mod:`core.sample_fx` (выстрел/сирена/скрэтч/лазер); добавляет слой,
+    звучащий коротко и редко на стыках секций формы (см.
+    :func:`_render_fx_layer`), а не постоянно, как ``groove_loop``. Тот же
+    общий пул d1-d3 и тот же флаг пака 1.
+
     ``options`` (:class:`ArrangeOptions`, ADR-0132 PR-3) — ручки сборки:
     ``counter``/``theme_octaves`` действуют на выведенную аранжировку,
     ``levels`` — на любую (множитель громкости роли в :func:`render`).
@@ -1970,6 +2086,7 @@ def spec_from_flat(
     """
     layers: List[Layer] = []
     _add_loop_layer(layers, groove_loop)
+    _add_fx_layer(layers, fx)
 
     root = (root or "C").strip()
     scale = (scale or "minor").strip()
@@ -2221,6 +2338,27 @@ def _autofill_role_without_notes(
             dur=ROLE_DEFAULT_DUR[role],
         )
     )
+
+
+def _add_fx_layer(layers: List[Layer], fx: Optional[str]) -> None:
+    """Добавить слой одиночного FX-акцента, если он задан (issue #2968).
+
+    Зеркало :func:`_add_loop_layer` — отдельный каталог (:mod:`core.sample_fx`),
+    отдельная роль (:data:`FX_ROLE`), но тот же принцип: неизвестное имя —
+    честная ошибка со списком доступных, а не тихий пропуск слоя.
+
+    Raises:
+        ArrangementError: имени нет в белом списке FX.
+    """
+    name = (fx or "").strip()
+    if not name or name.lower() == "none":
+        return
+    fx_mod = _sample_fx()
+    info = fx_mod.find_fx(name)
+    if info is None:
+        known = ", ".join(sorted(fx_mod.fx_catalog()))
+        raise ArrangementError(f"fx {name!r} нет в белом списке FX. Доступны: {known}.")
+    layers.append(Layer(role=FX_ROLE, pattern=info.name))
 
 
 def _autofill_bass(layers: List[Layer], form: str) -> None:

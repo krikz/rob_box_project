@@ -56,7 +56,7 @@ from ..core.arranger import (
     render,
     spec_from_flat,
 )
-from ..core import renardo_sanitizer, sample_loops
+from ..core import renardo_sanitizer, sample_fx, sample_loops
 from ..core.arrangement_presets import PRESET_KNOB_FIELDS, ArrangementPresetStore
 from ..core.score_sheet import analyze_melody, describe
 from ..core.compose_knobs import ComposeKnobs, build_knobs, lead_octave_choices
@@ -2603,6 +2603,29 @@ _ARRANGEMENT_PARAMETERS: List[MCPToolParameter] = [
                 enum_strict=False,
             ),
             MCPToolParameter(
+                name="fx",
+                type="string",
+                description=(
+                    "Одиночный FX-акцент (issue #2968) — редкий, короткий "
+                    "всплеск на стыках секций/брейке, не в каждом такте "
+                    "(выстрел, сирена, скрэтч, лазер и т.п.), в отличие от "
+                    "groove_loop, который играет ПОСТОЯННО. Встаёт в "
+                    "свободный слот d1-d3 (тот же пул, что groove_loop — "
+                    "вместе может не хватить слотов). Имя не выдумывай: "
+                    "сначала search_samples(query='<жанр/настроение>', "
+                    "pack='1_pitchglitch_samples') — вернёт кандидатов из "
+                    "белого списка по ЖАНРОВОМУ ТЕГУ (data['fx_by_tag']), "
+                    "затем сюда — точное имя оттуда. Работает, только если "
+                    "владелец включил белый список после прослушки (тот же "
+                    "флаг, что и у groove_loop); иначе трек играет БЕЗ fx "
+                    "(warning в ответе, вызов не падает) — не пытайся "
+                    "повторить тот же fx ещё раз. Пропусти, если FX не нужен."
+                ),
+                required=False,
+                enum=sorted(sample_fx.fx_catalog()),
+                enum_strict=False,
+            ),
+            MCPToolParameter(
                 name="swing",
                 type="number",
                 description="Свинг восьмых, 0-0.3 (вне — ошибка). 0 (по умолчанию) — ровная "
@@ -2747,7 +2770,7 @@ _ARRANGEMENT_PARAMETERS: List[MCPToolParameter] = [
                 type="string",
                 description="Ручка: громкость партий — множитель к балансу, "
                 "«роль=число» через запятую, напр. bass=0.5,pad=0.8. Роли: "
-                "lead, bass, pad, counter, drums, hats, perc, loop; 0 — "
+                "lead, bass, pad, counter, drums, hats, perc, loop, fx; 0 — "
                 "молчит, 1 — как есть, максимум 2. Работает и без name. "
                 "По умолчанию — все 1.",
                 required=False,
@@ -2772,7 +2795,7 @@ class ComposeMusicTool(MCPTool):
     _IDENTITY_FIELDS = (
         "root", "scale", "bpm", "progression", "lead_notes", "lead_synth",
         "bass_synth", "drums", "drums_sample", "hats_sample", "form",
-        "groove_loop", "drum_style",
+        "groove_loop", "drum_style", "fx",
     )
 
     @dataclass
@@ -3352,6 +3375,32 @@ class ComposeMusicTool(MCPTool):
         denial = sample_loops.loop_denial(name, False)
         return None, denial
 
+    @staticmethod
+    def _resolve_fx(fx: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+        """``fx`` под флаг пака 1 — акцент снимается, а не падает весь вызов.
+
+        Issue #2968, тот же принцип, что :meth:`_resolve_groove_loop`
+        (issue #2966 — hard error на выключенном флагом лупе рвал
+        DJ-переход целиком, модель не повторяла вызов без него, а трек
+        не проигрывался вовсе). FX — тот же класс риска: capability-honest
+        путь — молча не ставить слой, но честно вернуть предупреждение
+        (``_ArrangementBuild.warning``), а не проваливать весь трек.
+
+        Returns:
+            ``(fx, warning)`` — ``fx`` для дальнейшей сборки (``None``,
+            если акцент снят флагом), ``warning`` — текст для модели или
+            ``None``.
+        """
+        name = (fx or "").strip()
+        if not name or name.lower() == "none":
+            return fx, None
+        if sample_fx.find_fx(name) is None:
+            return fx, None
+        if sample_fx.fx_enabled():
+            return fx, None
+        denial = sample_fx.fx_denial(name, False)
+        return None, denial
+
     def _build_compose_result_data(
         self, spec: Any, raw_result: Dict[str, Any], duration_s: float
     ) -> Dict[str, Any]:
@@ -3449,6 +3498,7 @@ class ComposeMusicTool(MCPTool):
         repeat: bool = False,
         swing: float = 0.0,
         groove_loop: Optional[str] = None,
+        fx: Optional[str] = None,
         drum_style: Any = _UNSET,
         key_detection: Any = _UNSET,
         chords: Any = _UNSET,
@@ -3523,6 +3573,7 @@ class ComposeMusicTool(MCPTool):
         repeat: bool = False,
         swing: float = 0.0,
         groove_loop: Optional[str] = None,
+        fx: Optional[str] = None,
         drum_style: Optional[str] = None,
         key_detection: Optional[str] = None,
         chords: Optional[str] = None,
@@ -3545,7 +3596,7 @@ class ComposeMusicTool(MCPTool):
             lead_synth=lead_synth, lead_notes=lead_notes, lead_dur=lead_dur,
             pad_synth=pad_synth, pad_notes=pad_notes, progression=progression,
             counter_synth=counter_synth, theme_octaves=theme_octaves,
-            repeat=repeat, swing=swing, groove_loop=groove_loop,
+            repeat=repeat, swing=swing, groove_loop=groove_loop, fx=fx,
             drum_style=drum_style, key_detection=key_detection, chords=chords,
             harmonic_rhythm=harmonic_rhythm, density=density,
             bass_style=bass_style, bass_approach=bass_approach,
@@ -3606,6 +3657,7 @@ class ComposeMusicTool(MCPTool):
         repeat: bool = False,
         swing: float = 0.0,
         groove_loop: Optional[str] = None,
+        fx: Optional[str] = None,
         drum_style: Optional[str] = None,
         key_detection: Optional[str] = None,
         chords: Optional[str] = None,
@@ -3714,6 +3766,7 @@ class ComposeMusicTool(MCPTool):
         # что луп всё равно выключен флагом. Живой лог 23.09.2026 (issue
         # #2878): ровно этот двойной круг сорвал DJ-переход #3.
         groove_loop, groove_loop_warning = self._resolve_groove_loop(groove_loop)
+        fx, fx_warning = self._resolve_fx(fx)
 
         try:
             spec = spec_from_flat(
@@ -3748,6 +3801,7 @@ class ComposeMusicTool(MCPTool):
                 repeat=repeat,
                 swing=swing,
                 groove_loop=groove_loop,
+                fx=fx,
                 options=knobs.arrange,
             )
             code = render(spec)
@@ -3762,8 +3816,14 @@ class ComposeMusicTool(MCPTool):
             "hats_sample": hats_sample, "bass_synth": bass_synth,
             "lead_synth": lead_synth, "lead_notes": lead_notes,
             "progression": progression, "name": name,
-            "groove_loop": groove_loop, "drum_style": drum_style,
+            "groove_loop": groove_loop, "drum_style": drum_style, "fx": fx,
         }
+        # Issue #2966/#2968 — оба предупреждения снятых флагом слоёв идут
+        # вместе: трек мог потерять и луп, и FX одним вызовом, и модель
+        # должна узнать про оба, а не только про первый.
+        combined_warning = " ".join(
+            w for w in (groove_loop_warning, fx_warning) if w
+        ) or None
         return None, ComposeMusicTool._ArrangementBuild(
             spec=spec,
             code=code,
@@ -3772,7 +3832,7 @@ class ComposeMusicTool(MCPTool):
             name=name,
             melody_title=melody_title,
             flat=flat,
-            warning=groove_loop_warning,
+            warning=combined_warning,
         )
 
     @staticmethod
@@ -4044,6 +4104,7 @@ class PreviewArrangementTool(MCPTool):
         repeat: bool = False,
         swing: float = 0.0,
         groove_loop: Optional[str] = None,
+        fx: Optional[str] = None,
         drum_style: Any = _UNSET,
         key_detection: Any = _UNSET,
         chords: Any = _UNSET,
@@ -4101,6 +4162,7 @@ class PreviewArrangementTool(MCPTool):
         repeat: bool = False,
         swing: float = 0.0,
         groove_loop: Optional[str] = None,
+        fx: Optional[str] = None,
         drum_style: Optional[str] = None,
         key_detection: Optional[str] = None,
         chords: Optional[str] = None,
@@ -4123,7 +4185,7 @@ class PreviewArrangementTool(MCPTool):
             lead_synth=lead_synth, lead_notes=lead_notes, lead_dur=lead_dur,
             pad_synth=pad_synth, pad_notes=pad_notes, progression=progression,
             counter_synth=counter_synth, theme_octaves=theme_octaves,
-            repeat=repeat, swing=swing, groove_loop=groove_loop,
+            repeat=repeat, swing=swing, groove_loop=groove_loop, fx=fx,
             drum_style=drum_style, key_detection=key_detection, chords=chords,
             harmonic_rhythm=harmonic_rhythm, density=density,
             bass_style=bass_style, bass_approach=bass_approach,
@@ -5395,7 +5457,14 @@ class SearchSamplesTool(MCPTool):
             "Поиск Renardo-сэмплов по ключевому слову в имени файла. "
             "Возвращает букву, sample_index и готовый play_code. "
             "Используй когда нужно найти неизвестную букву/индекс сэмпла. "
-            "query='*' — обзор всех доступных букв и количества сэмплов в паке."
+            "query='*' — обзор всех доступных букв и количества сэмплов в паке. "
+            "Для pack='1_pitchglitch_samples' запрос дополнительно ищет "
+            "по ЖАНРОВЫМ ТЕГАМ белого списка FX (issue #2968) — например "
+            "query='dnb' или query='gangsta' находит подходящие "
+            "FX-одиночки (выстрел/сирена/скрэтч/лазер) по тегу, а не по "
+            "имени файла; результат — в data['fx_by_tag'], с рабочим "
+            "play_code через compose_music(fx=...) (spack= в паке 1 не "
+            "работает, см. #2841)."
         )
 
     @property
@@ -5439,6 +5508,67 @@ class SearchSamplesTool(MCPTool):
     def destructive(self) -> bool:
         return False
 
+    @staticmethod
+    def _fx_candidate(info: Any, enabled: bool) -> Dict[str, Any]:
+        """Один элемент ``fx_by_tag`` — кандидат FX с рабочим play_code.
+
+        Issue #2968 (наказ Шифу: системно, не под конкретный жанр) — выбор
+        FX идёт через тег, а не через зашитое имя файла; здесь только
+        формат ответа, сам подбор — в :meth:`_annotate_fx`.
+        """
+        return {
+            "name": info.name,
+            "tags": list(info.tags),
+            "compose_music_call": f"compose_music(fx={info.name!r}, ...)",
+            "enabled": enabled,
+        }
+
+    def _annotate_fx(self, result: Dict[str, Any], query: str, pack: str) -> None:
+        """Дополнить ответ пака 1 белым списком FX (issue #2968).
+
+        Два независимых источника, оба через каталог :mod:`core.sample_fx`,
+        не через жёстко зашитое сопоставление «жанр → сэмпл»:
+
+        1. ``results[i]`` из обычного поиска по имени файла — если найденный
+           файл ЕСТЬ в белом списке FX, ``play_code`` заменяется на рабочий
+           (``loop(...)``, а не ``spack=1``, который в этой сборке Renardo
+           — no-op, см. #2841); если файла в списке нет, добавляется
+           честная пометка, что spack= его не сыграет.
+        2. ``fx_by_tag`` — ``query`` сверяется с жанровыми ТЕГАМИ каталога
+           (``core.sample_fx.fx_by_genre``), а не с именем файла: «жанр →
+           теги → поиск» — так модель находит FX по смыслу запроса
+           (dnb/gangsta/hiphop/…), а не по знанию конкретных имён файлов.
+        """
+        from ..core import sample_fx
+
+        catalog = sample_fx.fx_catalog()
+        enabled = sample_fx.fx_enabled()
+        by_basename = {info.path.rsplit("/", 1)[-1]: info for info in catalog.values()}
+
+        for r in result.get("results") or []:
+            info = by_basename.get(r.get("filename"))
+            if info is None:
+                r["note"] = (
+                    "spack= не выбирает пак в этой сборке Renardo (см. "
+                    "#2841) — play_code выше не сыграет пак 1. Сэмпл не в "
+                    "белом списке FX (issue #2968); play_code ниже рабочий "
+                    "только для сэмплов из fx_by_tag."
+                )
+                continue
+            r["fx_name"] = info.name
+            r["fx_whitelisted"] = True
+            r["play_code"] = (
+                f"compose_music(fx={info.name!r}, ...)"
+                if enabled
+                else f"loop({info.name!r}, ...) — выключен флагом ROB_BOX_PACK1_LOOPS"
+            )
+
+        tag_names = sample_fx.fx_by_genre(query)
+        if tag_names:
+            result["fx_by_tag"] = [
+                self._fx_candidate(catalog[name], enabled) for name in sorted(tag_names)
+            ]
+
     def execute(
         self,
         query: str,
@@ -5452,6 +5582,9 @@ class SearchSamplesTool(MCPTool):
             self._samples_path, query, pack, case, rotate=self._rotation
         )
         self._rotation += 1
+
+        if pack != "0_foxdot_default" and "error" not in result:
+            self._annotate_fx(result, query, pack)
 
         if "error" in result:
             hint = result.get("hint", "")
@@ -5475,8 +5608,20 @@ class SearchSamplesTool(MCPTool):
 
         found = result.get("found", 0)
         results_list = result.get("results", [])
+        fx_by_tag = result.get("fx_by_tag") or []
 
         if found == 0:
+            if fx_by_tag:
+                names = ", ".join(c["name"] for c in fx_by_tag)
+                return MCPToolResult(
+                    success=True,
+                    data=result,
+                    message=(
+                        f"По имени файла ничего не найдено, но по тегу "
+                        f"'{query}' в белом списке FX (issue #2968) есть: "
+                        f"{names} — см. data['fx_by_tag']."
+                    ),
+                )
             return MCPToolResult(
                 success=True,
                 data=result,
@@ -5495,6 +5640,12 @@ class SearchSamplesTool(MCPTool):
         total = result.get("total_found", found)
         play_codes = [r["play_code"] for r in results_list[:5]]
         suffix = f" ... и ещё {total - len(play_codes)}" if total > len(play_codes) else ""
+        fx_suffix = (
+            f" | по тегу '{query}' в белом списке FX также: "
+            + ", ".join(c["name"] for c in fx_by_tag)
+            if fx_by_tag
+            else ""
+        )
         return MCPToolResult(
             success=True,
             data=result,
@@ -5502,6 +5653,7 @@ class SearchSamplesTool(MCPTool):
                 f"Найдено {total} сэмплов по запросу '{query}': "
                 + ", ".join(play_codes)
                 + suffix
+                + fx_suffix
             ),
         )
 

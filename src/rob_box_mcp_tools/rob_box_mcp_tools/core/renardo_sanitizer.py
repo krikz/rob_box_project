@@ -26,7 +26,7 @@ import re
 from dataclasses import dataclass
 from typing import Dict, FrozenSet, List, Optional, Tuple
 
-from . import sample_loops
+from . import sample_fx, sample_loops
 
 # ---------------------------------------------------------------------------
 # Safety filter — compiled once at import time
@@ -342,6 +342,11 @@ def _resolve_loops(code: str, pack1_enabled: bool) -> Tuple[str, List[str]]:
     HARD error: в любом из этих случаев Renardo сыграл бы тишину или
     непрослушанный звук без единого сообщения.
 
+    Issue #2968: одиночные FX (выстрел/сирена/скрэтч/лазер) играются тем
+    же ``loop(...)`` синтом (нет отдельного FX-синта в Renardo), но живут в
+    отдельном каталоге ``core.sample_fx`` — имя ищется там ВТОРЫМ шагом,
+    если его нет среди лупов, тем же флагом пака 1.
+
     Returns:
         ``(код, ошибки)`` — код с переписанными путями (при ошибках
         вызывающий всё равно вернёт исходный).
@@ -357,12 +362,27 @@ def _resolve_loops(code: str, pack1_enabled: bool) -> Tuple[str, List[str]]:
                 f"например loop('foxdot', dur=4) — получено {arg!r}."
             )
             return match.group(0)
-        denial = sample_loops.loop_denial(literal.group("value"), pack1_enabled)
-        if denial is not None:
-            errors.append(denial)
-            return match.group(0)
-        info = sample_loops.find_loop(literal.group("value"))
-        return f">> loop({info.path!r}"
+        name = literal.group("value")
+        loop_info = sample_loops.find_loop(name)
+        if loop_info is not None:
+            denial = sample_loops.loop_denial(name, pack1_enabled)
+            if denial is not None:
+                errors.append(denial)
+                return match.group(0)
+            return f">> loop({loop_info.path!r}"
+        fx_info = sample_fx.find_fx(name)
+        if fx_info is not None:
+            denial = sample_fx.fx_denial(name, pack1_enabled)
+            if denial is not None:
+                errors.append(denial)
+                return match.group(0)
+            return f">> loop({fx_info.path!r}"
+        known = ", ".join(sorted(sample_loops.loop_catalog()) + sorted(sample_fx.fx_catalog()))
+        errors.append(
+            f"Лупа/FX {name!r} нет в каталоге — Renardo его не найдёт и "
+            f"сыграет тишину без ошибки. Доступные имена: {known}."
+        )
+        return match.group(0)
 
     return _LOOP_CALL_RE.sub(_rewrite, code), errors
 
