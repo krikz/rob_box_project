@@ -382,6 +382,11 @@ def _decisions(spec, harmony, prep: Optional[Dict[str, Any]]) -> Dict[str, str]:
         out["autofilled"] = (
             ",".join(arr["autofilled_roles"]) + " (тоника лада, нот не было)"
         )
+    if arr.get("space"):
+        # issue #2980: room/echo — системное авто-правило по секциям, не
+        # ручка (см. arranger._space_decision_text); партитура называет
+        # его тем же способом, что остальные авто-решения (§3.4 ADR-0132).
+        out["space"] = str(arr["space"])
     form_known = (spec.form or "").strip().lower() in FORMS
     out["form"] = spec.form if form_known else f"{spec.form}→arc (неизвестная)"
     return out
