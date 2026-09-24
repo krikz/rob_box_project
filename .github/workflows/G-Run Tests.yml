@@ -646,10 +646,6 @@ jobs:
           apt-get update -qq && apt-get install -y --no-install-recommends \
             ros-humble-nav2-msgs \
           && rm -rf /var/lib/apt/lists/*
-          # launch_testing из apt собран под pytest 6 и роняет pytest 9
-          # (тот же обход, что в unit-tests выше).
-          export PYTHONPATH="/usr/local/lib/python3.10/dist-packages:${PYTHONPATH:-}"
-          pip uninstall -y launch_testing launch_testing_ros 2>/dev/null || true
           python3 -m pip install --quiet --no-cache-dir \
             httpx openai msgpack aiohttp requests pyyaml pytz
 
@@ -659,6 +655,12 @@ jobs:
           source /opt/ros/humble/setup.bash
           export PYTHONPATH="/usr/local/lib/python3.10/dist-packages:$PYTHONPATH"
           export LANG=C.UTF-8 LC_ALL=C.UTF-8 PYTHONIOENCODING=utf-8
+          # launch_testing из apt собран под pytest 6 и роняет pytest 9.
+          # Удалять ТОЛЬКО после source setup.bash: пакет лежит в
+          # /opt/ros/humble/..., без ROS-окружения pip его не видит — так
+          # было в run 35963939649 (uninstall в шаге без source). Скрипт
+          # вдобавок глушит плагины через -p no:*.
+          pip uninstall -y launch_testing launch_testing_ros 2>/dev/null || true
           python3 -c "import pytest; assert pytest.__version__ >= '8', f'WRONG pytest: {pytest.__version__}'"
           bash scripts/testing/run_mcp_tools_unit_tests.sh "${{ github.workspace }}/mcp_tools_junit"
 

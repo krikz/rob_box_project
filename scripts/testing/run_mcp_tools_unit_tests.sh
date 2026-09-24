@@ -62,9 +62,13 @@ for f in "${TEST_FILES[@]}"; do
   rc=0
   # -o addopts="" — pytest.ini пакета включает --cov, а pytest-cov в
   # раннере не гарантирован; -p no:* — apt-плагины ROS, собранные под
-  # pytest 6, роняют pytest 9 (тот же набор, что у остальных пакетов).
+  # pytest 6, роняют pytest 9. Глушим по ИМЕНАМ entry point'ов
+  # (launch_testing, launch_ros), а не по именам пакетов: первый CI-прогон
+  # (run 35963939649) упал INTERNALERROR на всех 62 файлах — plugin
+  # launch_testing_ros_pytest_entrypoint зарегистрирован как «launch_ros»,
+  # и -p no:launch_testing_ros его не отключал.
   ( cd "$PKG_DIR" && timeout "$PER_FILE_TIMEOUT" python3 -m pytest \
-      -p no:launch_testing -p no:launch_testing_ros \
+      -p no:launch_testing -p no:launch_ros \
       -p no:ament_flake8 -p no:ament_pep257 \
       -p no:ament_copyright -p no:ament_xmllint \
       -p no:ament_lint -p no:colcon_core \
