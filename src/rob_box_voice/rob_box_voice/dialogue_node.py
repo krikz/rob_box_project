@@ -137,6 +137,7 @@ from rob_box_voice.core.dialogue_guards import (
     build_fact_memory_save_fallback,  # Issue #2780 п.3
     build_hallucinated_midi_retry_prompt,
     build_music_prose_action_fallback,
+    build_dj_request_retry_prompt,
     build_music_retry_prompt,
     build_phantom_action_retry_prompt,  # Issue #2559 phantom-action
     build_renardo_code_retry_prompt,
@@ -5560,6 +5561,11 @@ class DialogueNode(Node):
             dj_enabled=self._dj.state.enabled,
             build_music_retry_prompt=self._build_music_retry_prompt,
             build_dj_retry_prompt=self._build_dj_retry_prompt,
+            # Issue #2999 — DJ-request ветке нужен свой CRITICAL-промпт
+            # (явно «вызови load_skill('dj') + set_dj_mode», НЕ
+            # «вызови compose_music»), иначе guard крутит тот же
+            # неправильный Bug-C промпт вхолостую 15 раз подряд.
+            build_dj_request_retry_prompt=self._build_dj_request_retry_prompt,
             spoken=spoken,
         )
 
@@ -5635,6 +5641,36 @@ class DialogueNode(Node):
                 # user's words — the real request is ``raw_user_command``
                 # and it was already written to history by the turn that
                 # triggered this retry.
+                is_synthetic=True,
+            )
+            return True
+
+        if verdict.kind is MusicGuardVerdictKind.DJ_REQUEST_RETRY:
+            # Issue #2999 — юзер попросил DJ-сет / «стань диджеем», LLM
+            # ответила spoken-фразой без set_dj_mode. Тот же контракт, что
+            # у USER_RETRY: discard + reopen_dialogue + dispatch synthetic
+            # turn с DJ-специфичным CRITICAL (load_skill('dj') + set_dj_mode).
+            # Свой budget ``music_dj_request`` НЕ шарит с ``music_user``:
+            # DJ-запрос и track-запрос — разные намерения, и если модель
+            # не вывозит DJ, она не вывозит и track-mode, и наоборот.
+            assert verdict.prompt is not None
+            if not self._consume_synthetic_retry(guard_name="music_dj_request"):
+                self._discard_last_music_reply()
+                self._speak_direct(
+                    "DJ-режим не запустился — попробуй ещё раз."
+                )
+                return False
+            # Тот же гейт «в этом ходе ретрай уже отправлен», что и у
+            # USER_RETRY — иначе babble-/tool-guards в следующем цикле
+            # могут задиспатчить ещё один ретрай (см. ``_retry_dispatched_in_turn``
+            # в начале ``_apply_music_guard``).
+            self._mark_retry_dispatched()
+            self._discard_last_music_reply()
+            self._reopen_dialogue_for_retry()
+            self._dispatch_turn(
+                verdict.prompt,
+                was_idle=False,
+                raw_user_command=user_input,
                 is_synthetic=True,
             )
             return True
@@ -5765,6 +5801,18 @@ class DialogueNode(Node):
         )
 
     # ── Issue #1777 / #1762 — non-music tool-skipped guard ─────────────
+    def _build_dj_request_retry_prompt(self, user_input: str) -> str:
+        """Issue #2999 — synthetic CRITICAL for DJ-request retry.
+
+        Делегирует :func:`rob_box_voice.core.dialogue_guards.build_dj_request_retry_prompt`,
+        чтобы политика жила в чистом модуле (тестируется без ROS2).
+        Адаптер только прокидывает user_input.
+
+        ``verdict.prompt`` в :class:`MusicGuardVerdict` уже содержит
+        результат этой функции — здесь чистый адаптер.
+        """
+        return build_dj_request_retry_prompt(user_input)
+
 
     def _apply_tool_skipped_guard(
         self,
