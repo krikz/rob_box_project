@@ -62,7 +62,7 @@ from ..core.score_sheet import analyze_melody, describe
 from ..core.compose_knobs import ComposeKnobs, build_knobs, lead_octave_choices
 from ..core.harmonize import DRUM_STYLES, KNOB_VALUES, check_drum_style, style_patterns
 from ..core.rtttl_compose import melody_to_compose_params, rtttl_to_melody
-from ..core.rtttl_library import RtttlLibrary
+from ..core.rtttl_library import RtttlLibrary, display_title, match_info
 
 # Live 13.08 — символы сэмплов в play("x-o-") для предзагрузки буферов.
 _PLAY_SYMBOLS_RE = re.compile(r'play\(\s*"([^"]*)"')
@@ -137,6 +137,66 @@ def _search_alternatives(
         # не должен ронять весь вызов — альтернативы просто пустые.
         return []
     return alternatives
+
+
+# ---------------------------------------------------------------------------
+# issue #2964 — прозрачность вместо молчаливой подмены песни
+# ---------------------------------------------------------------------------
+# ``RtttlLibrary.get()`` (см. её докстринг) сознательно всегда возвращает
+# лучшего ПО ТЕКСТУ кандидата — даже при слабом совпадении (issue #2896).
+# Раньше единственной защитой было предупреждение в message: «сверь title
+# с тем, что просил юзер». Живой прогон 24.09 показал, что LLM (minimax)
+# это предупреждение игнорирует и играет что дали.
+#
+# Товарищ Шифу (правка к #2964): жёсткий порог/гейт по этому поводу НЕ
+# нужен — история отката #2882→#2896 показала, что единая эвристика
+# отказа под одно слабое совпадение («stranger things» → None) ломает
+# сильные («super mario»). Вместо гейта — ``core.rtttl_library.match_info``/
+# ``display_title`` (IDF-вес по корпусу, БЕЗ хардкод-списка стоп-слов) дают
+# тулу и промпту скилла composer честную структурированную сверку; решение
+# «это та же песня или нет» остаётся у модели по общему правилу в промпте.
+
+
+def _resolve_melody_with_candidate(
+    library: Optional["RtttlLibrary"],
+    name: str,
+    variants: Optional[List[str]],
+) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
+    """Пройти ``name`` → ``variants`` по порядку, вернуть первое найденное.
+
+    Тот же порядок кандидатов, что и раньше (``name`` первым, затем
+    ``variants``) — это НЕ вердикт «эта ли песня», просто первая запись,
+    которую ``library.get()`` вообще нашла хоть как-то (issue #2896: он
+    всегда возвращает лучшего по тексту кандидата). Возвращает
+    ``(candidate, rec)`` — ``candidate`` нужен вызывающей стороне, чтобы
+    строить ``alternatives``/``match_info`` против ТОГО ЖЕ запроса, что
+    реально нашёл запись. ``(None, None)``, если ничего не нашлось вовсе.
+    """
+    if library is None:
+        return None, None
+    for candidate in [name] + [v for v in (variants or []) if v]:
+        rec = library.get(candidate)
+        if rec is not None:
+            return candidate, rec
+    return None, None
+
+
+def _mismatch_note(match: Optional[Dict[str, Any]], requested: str) -> str:
+    """Текст-предупреждение, если запрос покрыт записью не полностью.
+
+    Не вердикт (см. модульный докстринг выше про issue #2964) — явно
+    называет, какие значимые слова запроса не нашлись в найденной записи,
+    чтобы модель сама решила, объявлять ли найденное под именем из
+    запроса (общее правило — в промпте скилла composer, не здесь).
+    """
+    if not match or not match.get("unmatched"):
+        return ""
+    unmatched = ", ".join(match["unmatched"])
+    return (
+        f" ⚠️ Из запроса «{requested}» не нашлись слова: {unmatched} — "
+        "возможно, это другая песня. Не объявляй найденное под именем из "
+        "запроса, если по смыслу это не она."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2784,6 +2844,13 @@ class ComposeMusicTool(MCPTool):
         #: вызовом ``_resolve_melody``. ``None`` — сочинённый трек без
         #: ``name=`` (наследовать/запоминать нечего).
         self._pending_melody_key: Optional[str] = None
+        #: Issue #2964: сырая запись RTTTL-библиотеки, резолвленная ТЕКУЩЕЙ
+        #: сборкой (:meth:`_resolve_rtttl_params`) — читается
+        #: :meth:`_compose_success` для честной прозрачности результата
+        #: (``display_title``/``match``, :func:`display_title`/
+        #: :func:`match_info`) без ЕЩЁ ОДНОГО обращения к библиотеке.
+        #: ``None`` — сочинённый трек без ``name=`` или мелодия не нашлась.
+        self._pending_melody_record: Optional[Dict[str, Any]] = None
 
     @staticmethod
     def _fmt(value: Any) -> str:
@@ -3072,8 +3139,25 @@ class ComposeMusicTool(MCPTool):
         """
         if not name:
             self._pending_melody_key = None
+            self._pending_melody_record = None
             return None, bpm, root, scale, None, None, None, None, {}
+        # issue #2964 (правка товарища Шифу — НЕ жёсткий гейт: история
+        # отката #2882→#2896 показала, что единая эвристика отказа под
+        # одно слабое совпадение («stranger things» → None) ломает сильные
+        # («super mario»). compose_music по-прежнему играет лучшего ПО
+        # ТЕКСТУ кандидата (как и раньше) — честность обеспечивает
+        # прозрачность результата (``match``/``display_title`` ниже,
+        # :func:`match_info`/:func:`display_title`) и общее правило в
+        # промпте скилла composer, а не молчаливый отказ библиотеки.
+        # ``self._resolve_melody`` (не модульная :func:`_resolve_melody_with_candidate`
+        # — той пользуется только ``LookupMelodyTool``, у неё нет метода на
+        # инстансе для подмены): часть тестов (test_compose_music_knobs.py,
+        # test_compose_music_tweak_inherits.py, test_compose_music_honest_input.py)
+        # подменяют ИМЕННО этот метод (``tool._resolve_melody = lambda …``),
+        # чтобы заморозить резолв темы — смена на другую функцию тут молча
+        # ломает заморозку и бьёт по реальной RTTTL-библиотеке/Mock().
         rec = self._resolve_melody(name, variants)
+        self._pending_melody_record = rec
         # Issue #2950: тот же resolve, что уже сделан здесь для RTTTL —
         # :meth:`_remember_last_track` переиспользует его через это поле
         # вместо ЕЩЁ ОДНОГО ``self._rtttl_library.get(...)`` после
@@ -3728,8 +3812,23 @@ class ComposeMusicTool(MCPTool):
         # совпадение — модель обязана сама сверить title с тем, что просил
         # юзер. alternatives (до 4 соседних результата search()) дают ей
         # выбор, если title явно не то (см. _melody_alternatives).
+        shown_title = melody_title
+        mismatch_note = ""
         if name:
             result["alternatives"] = self._melody_alternatives(name, melody_title)
+            # issue #2964: прозрачная (не вердиктная) сверка — какие
+            # значимые слова запроса нашлись/не нашлись в найденной записи
+            # (IDF-вес по корпусу архива, без хардкод-списка стоп-слов), и
+            # человеко-понятное название (``display_title`` — артист
+            # вместо голого «Theme» у записей с неинформативным title,
+            # напр. Терминатора). Решение «это та же песня» — у модели, по
+            # общему правилу в промпте скилла composer.
+            if self._rtttl_library is not None and self._pending_melody_record is not None:
+                match = match_info(self._rtttl_library, self._pending_melody_record, name)
+                shown_title = display_title(self._rtttl_library, self._pending_melody_record)
+                result["display_title"] = shown_title
+                result["match"] = match
+                mismatch_note = _mismatch_note(match, name)
         # ADR-0132: партитура — что на самом деле сыграно и что автоматика
         # решила за модель. PR-4: модели — ОДИН раз компактный текст
         # (data["score"]); прод-путь (harness ros_mcp._result) отдаёт LLM
@@ -3740,10 +3839,10 @@ class ComposeMusicTool(MCPTool):
         repeat_warning = self._repeat_warning(flat)
         self._last_flat = flat
         message = self._format_compose_message(
-            melody_title,
+            shown_title,
             form_summary(spec.form, getattr(spec, "theme_bars", 0)),
             duration_s,
-            repeat_warning,
+            repeat_warning + mismatch_note,
         )
         return MCPToolResult(success=True, data=result, message=message)
 
@@ -4773,39 +4872,45 @@ class LookupMelodyTool(MCPTool):
         variants: Optional[List[str]] = None,
     ) -> MCPToolResult:
         """Найти ноты и вернуть сырую RTTTL-строку (без воспроизведения)."""
-        candidates = [name] + [v for v in (variants or []) if v]
         # 1. RTTTL-библиотека — приоритет.
         if self._rtttl_library is not None:
-            for candidate in candidates:
-                rec = self._rtttl_library.get(candidate)
-                if rec is not None:
-                    title = rec.get("title")
-                    # issue #2896: get() возвращает лучшего по тексту
-                    # кандидата, даже если совпадение слабое — альтернативы
-                    # дают модели, чем сверить title с тем, что просил юзер.
-                    alternatives = _search_alternatives(
-                        self._rtttl_library, candidate, title
-                    )
-                    analysis = self._analysis(rec.get("rtttl"))
-                    return MCPToolResult(
-                        success=True,
-                        data={
-                            "name": rec.get("name"),
-                            "title": title,
-                            "rtttl": rec.get("rtttl"),
-                            "alternatives": alternatives,
-                            "analysis": analysis,
-                        },
-                        message=(
-                            f"Нашёл «{title}». Точные ноты в data['rtttl'] "
-                            "(формат RTTTL, как разбирать — в системном "
-                            f"промпте). Сверь «{title}» с тем, что просил "
-                            "юзер — если это явно другая песня, посмотри "
-                            "data['alternatives'] или вызови search_melody "
-                            "с другим написанием. Сыграй ноты сам, не "
-                            "импровизируй. " + analysis["text"]
-                        ),
-                    )
+            # issue #2964 (правка товарища Шифу — НЕ жёсткий гейт, см.
+            # модульный докстринг у _resolve_melody_with_candidate): как и
+            # раньше (issue #2896), берётся лучший ПО ТЕКСТУ кандидат —
+            # ``get()`` его всё равно всегда находит. Честность — в
+            # прозрачности результата: реальное название (``display_title``
+            # — с исполнителем, если title сам по себе неинформативен по
+            # корпусу, напр. «Theme») и явная сверка значимых слов запроса
+            # (``match`` — :func:`match_info`, IDF по корпусу, без
+            # хардкод-списка стоп-слов). Решение «это та же песня» —
+            # у модели, по общему правилу в промпте скилла composer.
+            candidate, rec = _resolve_melody_with_candidate(
+                self._rtttl_library, name, variants
+            )
+            if rec is not None:
+                title = rec.get("title")
+                shown_title = display_title(self._rtttl_library, rec)
+                alternatives = _search_alternatives(self._rtttl_library, candidate, title)
+                match = match_info(self._rtttl_library, rec, candidate or name)
+                analysis = self._analysis(rec.get("rtttl"))
+                return MCPToolResult(
+                    success=True,
+                    data={
+                        "name": rec.get("name"),
+                        "title": title,
+                        "display_title": shown_title,
+                        "rtttl": rec.get("rtttl"),
+                        "alternatives": alternatives,
+                        "match": match,
+                        "analysis": analysis,
+                    },
+                    message=(
+                        f"Нашёл «{shown_title}». Точные ноты в data['rtttl'] "
+                        "(формат RTTTL, как разбирать — в системном "
+                        f"промпте). Сыграй ноты сам, не импровизируй. "
+                        + analysis["text"] + _mismatch_note(match, candidate or name)
+                    ),
+                )
         # 2. Фолбэк — курируемые мелодии в SQLite (type='melody', миграция 012).
         entry = self._library.find_melody(name)
         if entry is None:
