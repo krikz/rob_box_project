@@ -3821,21 +3821,15 @@ class ComposeMusicTool(MCPTool):
         # пэд при name=/rtttl= ничем не автозаполняются. Просим модель
         # дополнить вызов (live 11.09, уточнено 14.09: ноты/рисунки не
         # требуем).
-        if known_melody:
-            missing = self._missing_arrangement_fields(
-                lead_synth, bass_synth, pad_synth,
-            )
-            if missing:
-                label = f"Мелодия {name!r} найдена" if name else "Ноты (rtttl=) разобраны"
-                return MCPToolResult(
-                    success=False,
-                    error=(
-                        f"{label}, но не задана аранжировка: "
-                        f"не хватает {', '.join(missing)}. Вызови compose_music "
-                        f"ещё раз с теми же name/variants/rtttl и добавь "
-                        f"{', '.join(missing)}."
-                    ),
-                ), None
+        err = self._require_arrangement_for_known_melody(
+            known_melody=known_melody,
+            name=name,
+            lead_synth=lead_synth,
+            bass_synth=bass_synth,
+            pad_synth=pad_synth,
+        )
+        if err is not None:
+            return err, None
 
         # ADR-0132 PR-6: safety net imperialbrass (молча гасил counter и
         # октавы) удалён — долгий хвост синта теперь предупреждение в
@@ -3922,6 +3916,41 @@ class ComposeMusicTool(MCPTool):
             melody_title=melody_title,
             flat=flat,
             warning=combined_warning,
+        )
+
+    def _require_arrangement_for_known_melody(
+        self,
+        *,
+        known_melody: Optional[str],
+        name: Optional[str],
+        lead_synth: Optional[str],
+        bass_synth: Optional[str],
+        pad_synth: Optional[str],
+    ) -> Optional[MCPToolResult]:
+        """Ошибка, если известная мелодия не дополнена аранжировкой.
+
+        При ``name=``/``rtttl=`` аранжировку пишет LLM, а не дефолты: тема
+        без ``lead_synth`` + ``bass_synth`` + ``pad_synth`` звучит голым
+        одиночным синтом, и бас с пэдом ничем не автозаполняются. Просим
+        модель дополнить вызов (live 11.09, уточнено 14.09: ноты/рисунки
+        не требуем).
+        """
+        if not known_melody:
+            return None
+        missing = self._missing_arrangement_fields(
+            lead_synth, bass_synth, pad_synth,
+        )
+        if not missing:
+            return None
+        label = f"Мелодия {name!r} найдена" if name else "Ноты (rtttl=) разобраны"
+        return MCPToolResult(
+            success=False,
+            error=(
+                f"{label}, но не задана аранжировка: "
+                f"не хватает {', '.join(missing)}. Вызови compose_music "
+                f"ещё раз с теми же name/variants/rtttl и добавь "
+                f"{', '.join(missing)}."
+            ),
         )
 
     @staticmethod
