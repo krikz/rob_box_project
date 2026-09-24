@@ -242,6 +242,143 @@ class TestAcceptanceMirrorsLiveLog:
         assert ensure_dj_music_response(spoken, tools) == spoken
 
 
+# Issue #2857 — speak_text already voiced a real line this turn; the
+# fallback must never stomp it, even though the post-strip ``spoken``
+# field looks empty/degenerate (the LLM's cycle-end contract).
+class TestSpeakTextAlreadySpoke:
+    """Live 23.09.2026 incident: speak_text voiced 'Йоу, народ,
+    гангста-драйв качает!', but the helper still overwrote it with
+    'Готово, играю.' because it only looked at ``spoken``, not whether
+    speak_text ran this turn."""
+
+    def test_speak_text_with_empty_spoken_and_music_tools(self) -> None:
+        result = ensure_dj_music_response(
+            "", ["speak_text", "compose_music", "set_dj_mode"],
+        )
+        assert result == ""
+
+    def test_speak_text_with_done_marker_and_music_tools(self) -> None:
+        result = ensure_dj_music_response(
+            "done", ["speak_text", "execute_music_code"],
+        )
+        assert result == "done"
+
+    def test_speak_text_with_degenerate_marker_and_dj_auto(self) -> None:
+        # Even on a DJ auto-transition (where the fallback would
+        # otherwise try to build a track announcement), speak_text
+        # having run wins — nothing to add.
+        result = ensure_dj_music_response(
+            "готово", ["speak_text", "compose_music"],
+            is_dj_auto=True, track_name="Дюна",
+        )
+        assert result == "готово"
+
+
+# Issue #2857 (round 2, live 23.09.2026 review of round 1) — replace
+# the dull generic phrase with a short, ROTATING track-specific line
+# on a DJ auto-transition, or stay silent. Round 1 shipped a single
+# fixed template with a persona prefix and a ``theme`` fallback; the
+# coordinator's live check showed that produced its OWN flavour of
+# blandness — persona repeated verbatim every transition, and
+# ``theme`` (a whole party description) is not a track name at all:
+#
+#   ensure_dj_music_response('done', ['compose_music', 'set_dj_mode'],
+#       is_dj_auto=True, persona='ДиДжей Снупдог',
+#       theme='гангста-вечеринка в чёрном квартале, диджей Снупдог')
+#   -> 'ДиДжей Снупдог: дальше — гангста-вечеринка в чёрном ...!'
+#
+# Fixed: ``theme``/``persona`` params are GONE; only the real track
+# name (``compose_music(name=...)``, threaded in cheaply via
+# ``DialogResult.track_name``) is ever announced, through one of a
+# few short templates picked deterministically by ``transition_count``.
+class TestDjAutoTrackAnnouncement:
+    """Acceptance criteria from issue #2857: DJ-переход без реплики →
+    короткая фраза про РЕАЛЬНЫЙ трек (не про тему), без повтора
+    персоны, ротация шаблонов по номеру перехода; без данных —
+    тишина; юзер-реквест сохраняет старую фразу."""
+
+    def test_dj_auto_with_track_name_mentions_track(self) -> None:
+        result = ensure_dj_music_response(
+            "", ["compose_music", "set_dj_mode"],
+            is_dj_auto=True, track_name="Гангста-драйв",
+        )
+        assert "Гангста-драйв" in result
+        assert result != _DJ_FALLBACK_PHRASE
+
+    def test_dj_auto_never_uses_theme_as_track(self) -> None:
+        # Regression for the exact live shape from the coordinator's
+        # review: a long ``theme`` string must NEVER end up in the
+        # phrase — only ``track_name`` may. No ``theme`` kwarg exists
+        # any more (TypeError if a caller still passes it).
+        with pytest.raises(TypeError):
+            ensure_dj_music_response(
+                "done", ["compose_music"],
+                is_dj_auto=True,
+                theme="гангста-вечеринка в чёрном квартале, диджей Снупдог",
+            )
+
+    def test_dj_auto_phrase_has_no_persona_prefix(self) -> None:
+        # No ``persona`` kwarg any more — the phrase never repeats the
+        # DJ's name on every single transition.
+        result = ensure_dj_music_response(
+            "done", ["compose_music"],
+            is_dj_auto=True, track_name="Still D.R.E.",
+        )
+        assert "ДиДжей" not in result
+        assert ":" not in result
+
+    @pytest.mark.parametrize("n,expected", [
+        (0, "Дальше — Still D.R.E.!"),
+        (1, "Следом — Next Episode!"),
+        (2, "Новый трек — Nuthin' But A G Thang!"),
+        # Wraps around — deterministic, not random, so the phrase still
+        # varies across a long set without needing extra templates.
+        (3, "Дальше — Gin And Juice!"),
+    ])
+    def test_dj_auto_template_rotates_by_transition_count(
+        self, n, expected,
+    ) -> None:
+        track = expected.split("— ", 1)[1].rstrip("!")
+        result = ensure_dj_music_response(
+            "", ["compose_music"],
+            is_dj_auto=True, track_name=track, transition_count=n,
+        )
+        assert result == expected
+
+    def test_dj_auto_without_track_name_stays_silent(self) -> None:
+        result = ensure_dj_music_response(
+            "", ["compose_music"], is_dj_auto=True,
+        )
+        assert result == ""
+        assert result != _DJ_FALLBACK_PHRASE
+
+    def test_dj_auto_without_track_name_and_done_marker_stays_silent(
+        self,
+    ) -> None:
+        result = ensure_dj_music_response(
+            "done", ["set_dj_mode", "lookup_melody"], is_dj_auto=True,
+        )
+        assert result == ""
+
+    def test_direct_user_request_keeps_generic_fallback_phrase(self) -> None:
+        # is_dj_auto=False (default) — the user asked directly and got
+        # no reply text; the generic confirmation is still correct.
+        result = ensure_dj_music_response(
+            "", ["compose_music", "set_dj_mode"], is_dj_auto=False,
+        )
+        assert result == _DJ_FALLBACK_PHRASE
+
+    def test_direct_user_request_with_track_name_still_uses_phrase(
+        self,
+    ) -> None:
+        # Track info being available doesn't matter off the DJ-auto
+        # path — a direct request always gets the generic phrase.
+        result = ensure_dj_music_response(
+            "", ["compose_music"], is_dj_auto=False, track_name="Дюна",
+        )
+        assert result == _DJ_FALLBACK_PHRASE
+
+
 # Defensive: types the helper must accept without crashing.
 class TestDefensiveInputs:
     """Defensive contract — non-string spoken must pass through, similar

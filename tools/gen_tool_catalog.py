@@ -107,6 +107,15 @@ def _nested_schema(node: ast.AST) -> Any:
 #: :func:`_collect_module_constants` per source file.
 _MODULE_CONSTANTS: dict[str, Any] = {}
 
+#: ``{"NAME": <ast.List/ast.Tuple node>}`` for top-level ``NAME = [...]``
+#: assignments in the file being parsed. Kept as raw AST (not literal-
+#: evaluated) because the *elements* are ``MCPToolParameter(...)`` calls,
+#: not literals — this is what lets ``ComposeMusicTool.parameters`` and
+#: ``PreviewArrangementTool.parameters`` (ADR-0132 PR-5) both
+#: ``return _ARRANGEMENT_PARAMETERS`` and have the generator read the same
+#: list once instead of requiring two copies of the schema inline.
+_MODULE_LIST_CONSTANTS: dict[str, ast.AST] = {}
+
 #: ``{"ClassName": {"ATTR": <ast node>}}`` for the file being parsed. Kept as
 #: AST nodes so that ``DIRECTIONS = {"вперёд": {..., math.pi / 2}}`` — whose
 #: *values* are not literals — can still answer ``.keys()``.
@@ -240,6 +249,32 @@ def _collect_module_constants(tree: ast.Module) -> dict[str, Any]:
     return constants
 
 
+def _collect_module_list_constants(tree: ast.Module) -> dict[str, ast.AST]:
+    """Collect top-level ``NAME = [...]`` / ``NAME: T = [...]`` assignments.
+
+    Unlike :func:`_collect_module_constants`, the value is kept as a raw
+    ``ast.List``/``ast.Tuple`` node rather than literal-evaluated — a
+    parameter list's elements are ``MCPToolParameter(...)`` calls, which
+    ``ast.literal_eval`` cannot handle. See ``_ARRANGEMENT_PARAMETERS`` in
+    ``tools/music.py`` (ADR-0132 PR-5).
+    """
+    out: dict[str, ast.AST] = {}
+    for node in tree.body:
+        targets = []
+        if isinstance(node, ast.Assign):
+            targets = [t for t in node.targets if isinstance(t, ast.Name)]
+            value = node.value
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            targets = [node.target]
+            value = node.value
+        else:
+            continue
+        if isinstance(value, (ast.List, ast.Tuple)):
+            for target in targets:
+                out[target.id] = value
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Dynamic descriptions
 # ---------------------------------------------------------------------------
@@ -344,13 +379,158 @@ def _composition_roots() -> list[str]:
     return roots
 
 
+def _composition_scales() -> list[str]:
+    """``compose_music.scale`` enum — the arranger's scale table (ADR-0132 PR-2:
+    an unknown scale is now an error, so the LLM must see the same list)."""
+    scales = list(_load_arranger().SCALE_INTERVALS)
+    if not scales:
+        raise ToolSourceError("arranger.SCALE_INTERVALS is empty")
+    return scales
+
+
+def _groove_loops() -> list[str]:
+    """``compose_music.groove_loop`` enum — the loop catalog data file (#2841).
+
+    Mirrors ``sorted(sample_loops.loop_catalog())``: pack-0 and pack-1 names
+    together (the pack-1 flag gates playback, not the schema).
+    """
+    import json
+
+    path = REPO_ROOT / "src" / "rob_box_mcp_tools" / "rob_box_mcp_tools" / "data" / "sample_loops.json"
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    names = sorted(list(raw.get("pack0", {})) + list(raw.get("pack1", {})))
+    if not names:
+        raise ToolSourceError(f"{path} yielded no loops")
+    return names
+
+
+def _fx_names() -> list[str]:
+    """``compose_music.fx`` enum — the FX catalog data file (#2968).
+
+    Mirrors ``sorted(sample_fx.fx_catalog())`` (same pattern as
+    :func:`_groove_loops` for ``data/sample_loops.json``) — the pack-1 flag
+    gates playback, not the schema.
+    """
+    import json
+
+    path = REPO_ROOT / "src" / "rob_box_mcp_tools" / "rob_box_mcp_tools" / "data" / "sample_fx.json"
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    names = sorted(raw.get("fx", {}))
+    if not names:
+        raise ToolSourceError(f"{path} yielded no fx")
+    return names
+
+
+def _drum_styles() -> list[str]:
+    """``compose_music.drum_style`` enum — ``harmonize.DRUM_STYLES`` (#2841).
+
+    Read by AST, not import: ``harmonize`` imports the arranger relatively,
+    so it cannot be loaded as a standalone file the way the arranger is.
+    """
+    import ast
+
+    path = REPO_ROOT / "src" / "rob_box_mcp_tools" / "rob_box_mcp_tools" / "core" / "harmonize.py"
+    for node in ast.parse(path.read_text(encoding="utf-8")).body:
+        target = node.target if isinstance(node, ast.AnnAssign) else (
+            node.targets[0] if isinstance(node, ast.Assign) else None
+        )
+        if isinstance(target, ast.Name) and target.id == "DRUM_STYLES":
+            return list(ast.literal_eval(node.value))
+    raise ToolSourceError(f"DRUM_STYLES not found in {path}")
+
+
+def _harmonize_constant(name: str) -> Any:
+    """Top-level constant of ``core/harmonize.py``, read by AST (ADR-0132 PR-4).
+
+    Like :func:`_drum_styles`, but the value may reference other literal
+    top-level constants by name (``KNOB_VALUES`` is written with ``AUTO``),
+    so those names are substituted before ``literal_eval``.
+    """
+    import ast
+
+    path = REPO_ROOT / "src" / "rob_box_mcp_tools" / "rob_box_mcp_tools" / "core" / "harmonize.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    known = _collect_module_constants(tree)
+    for node in tree.body:
+        target = node.target if isinstance(node, ast.AnnAssign) else (
+            node.targets[0] if isinstance(node, ast.Assign) else None
+        )
+        if isinstance(target, ast.Name) and target.id == name and node.value is not None:
+            value = _SubstituteNames(known).visit(node.value)
+            return ast.literal_eval(ast.fix_missing_locations(value))
+    raise ToolSourceError(f"{name} not found in {path}")
+
+
+class _SubstituteNames(ast.NodeTransformer):
+    """Replace ``Name`` nodes by the literal value of a known constant."""
+
+    def __init__(self, known: dict[str, Any]) -> None:
+        self._known = known
+
+    def visit_Name(self, node: ast.Name) -> ast.AST:  # noqa: N802 — ast API
+        if node.id in self._known:
+            return ast.copy_location(ast.Constant(self._known[node.id]), node)
+        return node
+
+
+def _harmonize_knob(knob: str):
+    """``compose_music.<knob>`` enum — ``harmonize.KNOB_VALUES[knob]`` (ADR-0132 PR-4)."""
+
+    def resolve() -> list[str]:
+        values = list(_harmonize_constant("KNOB_VALUES")[knob])
+        if not values:
+            raise ToolSourceError(f"harmonize.KNOB_VALUES[{knob!r}] is empty")
+        return values
+
+    return resolve
+
+
+def _on_off_auto() -> list[str]:
+    """``compose_music.counter``/``theme_octaves`` enum — ``arranger.ON_OFF_AUTO``."""
+    return list(_load_arranger().ON_OFF_AUTO)
+
+
+def _lead_octave_choices() -> list[str]:
+    """``compose_music.lead_octave`` enum — mirrors ``compose_knobs.lead_octave_choices``.
+
+    ``compose_knobs`` imports ``harmonize`` relatively and cannot be loaded as
+    a file, so the two-line rule is repeated here; ``test_compose_music_knobs``
+    pins the catalog enum to the tool's own one.
+    """
+    lo, hi = _harmonize_constant("LEAD_OCTAVE_RANGE")
+    words = list(_harmonize_constant("LEAD_OCTAVE_WORDS"))
+    return words + [f"{n:+d}" if n else "0" for n in range(lo, hi + 1)]
+
+
 #: ``(tool_name, param_name)`` → resolver, for enums built from runtime data
 #: rather than from a literal in the tool module.
 DYNAMIC_ENUMS = {
     ("play_sound", "sound"): _sound_pack_triggers,
     ("compose_music", "form"): _composition_forms,
     ("compose_music", "root"): _composition_roots,
+    ("compose_music", "scale"): _composition_scales,
+    ("compose_music", "groove_loop"): _groove_loops,
+    ("compose_music", "fx"): _fx_names,
+    ("compose_music", "drum_style"): _drum_styles,
+    # ADR-0132 PR-4: ручки аранжировщика — значения из ядра, не копия.
+    ("compose_music", "key_detection"): _harmonize_knob("key_detection"),
+    ("compose_music", "harmonic_rhythm"): _harmonize_knob("harmonic_rhythm"),
+    ("compose_music", "density"): _harmonize_knob("density"),
+    ("compose_music", "bass_style"): _harmonize_knob("bass_style"),
+    ("compose_music", "bass_approach"): _harmonize_knob("bass_approach"),
+    ("compose_music", "pad_style"): _harmonize_knob("pad_style"),
+    ("compose_music", "lead_outliers"): _harmonize_knob("lead_outliers"),
+    ("compose_music", "counter"): _on_off_auto,
+    ("compose_music", "theme_octaves"): _on_off_auto,
+    ("compose_music", "lead_octave"): _lead_octave_choices,
 }
+# ADR-0132 PR-5: preview_arrangement shares ``_ARRANGEMENT_PARAMETERS`` with
+# compose_music (see ``tools/music.py``) — same computed enums, same
+# resolvers, so the two tools can never drift apart on what values a knob
+# accepts.
+DYNAMIC_ENUMS.update(
+    {("preview_arrangement", param): resolver for (tool, param), resolver in list(DYNAMIC_ENUMS.items()) if tool == "compose_music"}
+)
 
 
 # ---------------------------------------------------------------------------
@@ -415,6 +595,8 @@ SKILL_TOOLS: dict[str, tuple[str, ...]] = {
     ),
     "composer": (
         "compose_music",
+        "preview_arrangement",
+        "save_arrangement_preset",
         "execute_music_code",
         "set_vibe_preset",
         "search_samples",
@@ -536,7 +718,7 @@ def _assign_skills(entries: list[dict[str, Any]]) -> None:
 
 def extract_tools() -> list[dict[str, Any]]:
     """Read every ``MCPTool`` subclass under ``tools/`` into catalog entries."""
-    global _MODULE_CONSTANTS, _CLASS_CONSTANTS, _CURRENT_CLASS, _PARAM_FACTORIES
+    global _MODULE_CONSTANTS, _MODULE_LIST_CONSTANTS, _CLASS_CONSTANTS, _CURRENT_CLASS, _PARAM_FACTORIES
     entries: list[dict[str, Any]] = []
     shared_constants = _collect_shared_constants()
 
@@ -545,6 +727,7 @@ def extract_tools() -> list[dict[str, Any]]:
             continue
         tree = ast.parse(source.read_text(encoding="utf-8"))
         _MODULE_CONSTANTS = {**shared_constants, **_collect_module_constants(tree)}
+        _MODULE_LIST_CONSTANTS = _collect_module_list_constants(tree)
         _CLASS_CONSTANTS = _collect_class_constants(tree)
         _PARAM_FACTORIES = _collect_param_factories(tree)
 
@@ -670,6 +853,14 @@ def _extract_parameters(fn: ast.AST, cls_name: str, filename: str) -> list[dict[
         if isinstance(node, ast.Return) and node.value is not None:
             returned = node.value
             break
+    # ``return _ARRANGEMENT_PARAMETERS`` — a bare name referring to a
+    # module-level ``NAME = [MCPToolParameter(...), ...]`` (ADR-0132 PR-5:
+    # compose_music/preview_arrangement share one schema list by identity,
+    # not by copy-pasted source).
+    if isinstance(returned, ast.Name):
+        resolved = _MODULE_LIST_CONSTANTS.get(returned.id)
+        if resolved is not None:
+            returned = resolved
     if not isinstance(returned, (ast.List, ast.Tuple)):
         raise ToolSourceError(f"{cls_name} ({filename}): `parameters` must return a list literal")
 

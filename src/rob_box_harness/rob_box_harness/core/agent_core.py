@@ -30,6 +30,7 @@ from collections import deque
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping
 
+from rob_box_core.praise_gate import contains_praise
 from rob_box_core.token_estimate import estimate_prompt_tokens
 from rob_box_core.tool_catalog import tools_for_skill
 from rob_box_harness.core.tool_loop import (
@@ -89,6 +90,16 @@ _MAX_TOOL_ITERATIONS: int = 8
 #: mcp_server исполнять то, до чего он не дотягивается: фрагменты лежат в
 #: rob_box_voice, а MCP-сервер — отдельная нода в отдельном контейнере.
 LOAD_SKILL_TOOL: str = "load_skill"
+
+#: ADR-0132 PR-7 — ``save_arrangement_preset`` (composer skill,
+#: ``rob_box_mcp_tools/tools/music.py``) сохраняет ручки последнего
+#: сыгранного трека под именем мелодии как дефолт для БУДУЩИХ
+#: проигрываний. Модель не вправе решить сама, что аранжировка достаточно
+#: хороша для этого — гейт по последней реплике юзера живёт здесь
+#: (единственное место, где agent_core уже знает
+#: ``current_user_input`` за каждый батч tool_calls), не в самом MCP-туле:
+#: тот процесс музыки не видит истории диалога вообще.
+SAVE_ARRANGEMENT_PRESET_TOOL: str = "save_arrangement_preset"
 
 
 def _load_skill_spec(known: tuple[str, ...]) -> dict[str, Any]:
@@ -173,9 +184,84 @@ _MUSIC_PRELUDE_TOOLS: frozenset[str] = frozenset(
     {"execute_music_code", "set_vibe_preset", "load_track"}
 )
 _VOICE_TOOLS: frozenset[str] = frozenset({"speak_text"})
+# Issue #2913 — ``register_speaker`` исполняется до реплик пачки: речь хода
+# ждёт исхода регистрации (dialogue_node ``TurnSpeechGate``), и ожидание
+# взводится только когда тул уже отправил запрос. Иначе в пачке
+# ``[speak_text, <медленный тул>, register_speaker]`` реплика успевала бы
+# уйти в TTS раньше, чем ход узнал, что регистрация вообще будет. Сам тул —
+# публикация в топик (миллисекунды), порядок речи и музыки не меняет.
+_REGISTER_FIRST_TOOLS: frozenset[str] = frozenset({"register_speaker"})
+_RUN_FIRST_TOOLS: frozenset[str] = _MUSIC_PRELUDE_TOOLS | _REGISTER_FIRST_TOOLS
 _DEFER_TO_END_TOOLS: frozenset[str] = frozenset(
     {"stop_music", "stop_navigation"}
 )
+
+
+def _compose_current_turn_message(
+    dynamic_system: str | None,
+    skill_prompt: str,
+    text: str,
+) -> str:
+    """Issue #2817 -- fold the per-turn ``<system_context>`` snapshot and
+    the active skill fragment into the SAME user message as ``text``,
+    instead of appending them as separate ``role=system`` messages right
+    before it (see the call site in :meth:`AgentCore.process_input` for
+    the live-log regression this fixes). Extracted so the branch count
+    lives here, not in ``process_input`` (ADR-0021 R1 -- cc_budget).
+
+    Order is preserved: context blocks first (freshest info nearest the
+    question), then a blank line, then the literal user text.
+    """
+    context_blocks = [
+        block for block in (dynamic_system, skill_prompt) if block
+    ]
+    if not context_blocks:
+        return text
+    return "\n".join(context_blocks) + "\n\n" + text
+
+
+#: Issue #2955 — source-tag prefixes dialogue_node glues onto the RAW
+#: STT transcript before it ever reaches :meth:`AgentCore.process_input`
+#: as ``text``: ``[TG] `` for Telegram-sourced turns (issue #1195), and
+#: ``[Spkr:<name>]`` / ``[Speaker:unknown]`` / ``[Speaker:tentative]``
+#: for voice-biometry hints (issue #1077 / #2809). None of these are
+#: words the user said — a praise/vocal-request gate scanning the tag
+#: itself (instead of the utterance after it) would be scanning the
+#: wrong text. Only one tag is ever applied per turn today
+#: (``_prepare_user_input_context`` branches ``if from_tg / elif
+#: speaker_id_enabled``), but the loop below tolerates a hypothetical
+#: stack without special-casing the count.
+_SOURCE_PREFIX_RE = re.compile(
+    r"^(?:\[(?:TG|Spkr:[^\]]*|Speaker:[^\]]*)\]\s*)+"
+)
+
+
+def _raw_user_utterance(text: str) -> str:
+    """Issue #2955 -- the user's OWN words, for the praise/vocal-request
+    gates (``_gate_save_arrangement_preset``, ``_is_hallucinated_speak_text``).
+
+    Both gates used to read the LAST ``role=user`` LLMMessage off the
+    live ``messages`` list (:meth:`AgentCore._find_last_user_input`) --
+    but that message is the COMPOSED turn (``_compose_current_turn_message``):
+    the ``<system_context>`` snapshot (speaker profile, memory, active
+    skill -- issue #2817/#2822) glued in FRONT of the literal user text.
+    A word like «нравится» sitting in a speaker's PROFILE inside that
+    snapshot then unlocked ``contains_praise`` for a request that carried
+    no praise at all (live 24.09.2026, issue #2955).
+
+    ``text`` here is :meth:`AgentCore.process_input`'s own ``text``
+    argument -- the value BEFORE ``_compose_current_turn_message`` glues
+    the context blocks on. dialogue_node builds it as *source prefix +
+    STT transcript* only; the ``<system_context>`` block is assembled
+    separately (``dynamic_system``) and joined into the outgoing
+    LLMMessage, never into ``text`` itself. Reading the gate input off
+    ``text`` therefore sidesteps the system_context bleed structurally --
+    there is no context block to strip, only the source-tag prefix
+    (:data:`_SOURCE_PREFIX_RE`).
+    """
+    if not text:
+        return ""
+    return _SOURCE_PREFIX_RE.sub("", text)
 
 
 def _tools_called_from_metadata(turn: Any) -> list[str]:
@@ -202,7 +288,8 @@ def _order_tool_calls(
 
     Returns ``(ordered, deferred_call_ids)``:
 
-    * ``ordered`` — stable partition: music prelude tools first, then the
+    * ``ordered`` — stable partition: music prelude tools and
+      ``register_speaker`` (issue #2913) first, then the
       remaining tools in their original relative order, then destructive
       tools last.
     * ``deferred_call_ids`` — ids of destructive calls whose side effect
@@ -219,7 +306,7 @@ def _order_tool_calls(
     def _partition_key(call: ToolCall) -> int:
         if call.name in _DEFER_TO_END_TOOLS:
             return 2
-        if call.name in _MUSIC_PRELUDE_TOOLS:
+        if call.name in _RUN_FIRST_TOOLS:
             return 0
         return 1
 
@@ -346,6 +433,62 @@ _MUSIC_LAUNCH_TOOLS: frozenset[str] = frozenset({
 })
 
 
+def _extract_track_name(
+    tool_calls: Iterable[ToolCall],
+    previous: str | None = None,
+) -> str | None:
+    """Issue #2857 — the ``name`` argument of the LAST ``compose_music``
+    call in ``tool_calls``, or ``previous`` when this batch didn't call
+    it (or called it without a usable name).
+
+    Cheap by design: ``compose_music``'s ``name`` argument (see
+    ``ComposeMusicTool`` in ``rob_box_mcp_tools/tools/music.py``) is
+    already sitting on the ``ToolCall`` the model just produced — no
+    extra round-trip needed. Used by the DJ fallback
+    (``ensure_dj_music_response``) to announce the actual track instead
+    of the generic «Готово, играю.».
+    """
+    name = previous
+    for call in tool_calls:
+        if call.name != "compose_music":
+            continue
+        args = call.arguments or {}
+        if not isinstance(args, Mapping):
+            continue
+        candidate = args.get("name")
+        if isinstance(candidate, str) and candidate.strip():
+            name = candidate.strip()
+    return name
+
+
+def _extract_music_call_args(
+    tool_calls: Iterable[ToolCall],
+    previous: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Issue #2967 — full argument dict of the LAST ``compose_music`` call
+    in ``tool_calls``, or ``previous`` when this batch didn't call it.
+
+    Mirrors :func:`_extract_track_name` (same cheap "last wins" scan over
+    ``tool_calls``), but keeps the WHOLE args dict instead of just
+    ``name``. dialogue_node uses this to detect a spoken «переделал» /
+    «поменял» claim that is backed by a ``compose_music`` call whose
+    arguments are byte-for-byte identical to the PREVIOUS successful
+    call — i.e. the model claims a change but replayed the same
+    combination the user just rejected (live 24.09.2026: «imperialbrass
+    + march», забракованный товарищем Шифу, вызван повторно без единого
+    отличия).
+    """
+    args_dict = previous
+    for call in tool_calls:
+        if call.name != "compose_music":
+            continue
+        args = call.arguments or {}
+        if not isinstance(args, Mapping):
+            continue
+        args_dict = dict(args)
+    return args_dict
+
+
 # ---------------------------------------------------------------------------
 # Result type
 # ---------------------------------------------------------------------------
@@ -424,6 +567,25 @@ class DialogResult:
     # exhaustion. AgentCore itself ALSO uses the flag (see
     # ``_run_with_tools``) to ask the model for a shorter retry.
     truncated_tool_args: bool = False
+    # Issue #2857 — the ``name`` argument of the LAST ``compose_music``
+    # call this turn (``None`` if compose_music wasn't called, or was
+    # called without a usable ``name``). The dialogue_node DJ fallback
+    # uses this to announce the actual track instead of the generic
+    # «Готово, играю.» — see ``ensure_dj_music_response``.
+    track_name: str | None = None
+    # Issue #2967 — full argument dict of the LAST ``compose_music`` call
+    # this turn (``None`` if compose_music wasn't called). dialogue_node
+    # compares this against the previous turn's stored value to catch a
+    # spoken «переделал/поменял» claim backed by a no-op replay of the
+    # same arguments (see :func:`_extract_music_call_args`).
+    music_call_args: dict[str, Any] | None = None
+    # Issue #2949 — True when at least one tool call THIS TURN returned
+    # is_error=True (refusal/exception). ``tools_called`` only carries
+    # NAMES, so a refused ``save_arrangement_preset`` still looks like a
+    # successful call to a guard that only checks membership — this flag
+    # lets dialogue_node's action-claim guards require an actual
+    # SUCCESSFUL result before treating a spoken claim as backed.
+    tool_error_occurred: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -623,8 +785,10 @@ class AgentCore:
         ``dynamic_system`` (live 10.08, two-system-prompt pattern) — XML
         ``<system_context>...</system_context>`` snapshot собирается
         dialogue_node каждый turn (текущий спикер, TTS-voice, session lock).
-        Кладётся system-сообщением ПОСЛЕДНИМ перед user input — см.
-        комментарий на месте вставки. Если None — не добавляется.
+        🔴 FIX (issue #2817): больше НЕ кладётся отдельным system-сообщением
+        перед user input (модель отвечала на него вместо реальной реплики,
+        см. комментарий на месте вставки) — склеивается в ОДИН user-ход
+        вместе с текстом. Если None — не добавляется.
 
         ``is_synthetic`` — вход сгенерирован нами, а не человеком
         (``[CRITICAL]``-ретраи babble/music guard'ов). Такой turn НЕ
@@ -783,31 +947,35 @@ class AgentCore:
                 # <system_context> snapshot: текущий спикер (resemblyzer),
                 # TTS-voice (gender alignment), session lock state.
                 #
-                # Кладётся ПОСЛЕДНИМ system-сообщением, вплотную к текущей
-                # реплике. Раньше он вставлялся в messages[1], то есть
-                # ПЕРЕД двадцатью ходами истории: модель читала «вот что
-                # происходит сейчас», а следом — два десятка ходов
-                # прошлого разговора, и никакого признака, что снапшот
-                # свежее всей этой истории, у неё не было. Волатильный
-                # runtime-стейт должен стоять там, где он и по времени —
-                # рядом с последним user-ходом.
-                if dynamic_system:
-                    messages.append(
-                        LLMMessage(role="system", content=dynamic_system)
-                    )
-                # Move A — фрагмент активного скилла. Кладётся ПОСЛЕДНИМ
-                # системным сообщением, вплотную к реплике юзера: это тот
-                # же принцип, по которому сюда переехал <system_context>
-                # (см. комментарий выше). Инструкция «как пользоваться
-                # этим инструментом» нужна модели В МОМЕНТ вызова, а не
-                # на позиции 0 за двадцать ходов до него, где её
-                # перевешивает свежий few-shot из истории.
+                # 🔴 FIX (issue #2817): раньше снапшот клался ОТДЕЛЬНЫМ
+                # system-сообщением вплотную к текущей реплике —
+                # ...system(<system_context>...privacy_note...>),
+                # user(текст).
+                # Живой лог 23.09 (MiniMax-M2): модель ответила НА
+                # system-сообщение («Системное уведомление принято к
+                # сведению...») и проигнорировала следующий за ним
+                # user-ход целиком. Роль ``system`` в позиции «последнее
+                # сообщение перед текущим вопросом» читается моделью как
+                # «на это надо отреагировать», а не как фоновый снапшот.
+                #
+                # Снапшот и skill-фрагмент теперь склеиваются В ОДИН
+                # user-ход вместе с текстом юзера — единственное сообщение
+                # этого хода, однозначно «то, на что нужно ответить».
+                # Свежесть не теряется: снапшот по-прежнему собирается на
+                # каждый ход и стоит физически последним перед ответом
+                # модели — просто внутри ОДНОГО сообщения, а не в соседнем
+                # system-сообщении (см.
+                # test_dynamic_system_stays_after_history).
+                #
+                # ``text`` (что уходит в Turn ниже и в историю) НЕ меняется —
+                # склейка живёт только в исходящем LLMMessage.
                 skill_prompt = self._resolve_skill_prompt()
-                if skill_prompt:
-                    messages.append(
-                        LLMMessage(role="system", content=skill_prompt)
-                    )
-                messages.append(LLMMessage(role="user", content=text))
+                llm_user_content = _compose_current_turn_message(
+                    dynamic_system, skill_prompt, text
+                )
+                messages.append(
+                    LLMMessage(role="user", content=llm_user_content)
+                )
                 # 🔴 FIX (live 11:19 DJ): DJ-переходы (is_dj_auto=True) НЕ
                 # пишутся в долгую память — иначе каждый переход (#1..#N)
                 # копит user+assistant пары в SQLite, history_max_turns
@@ -837,7 +1005,25 @@ class AgentCore:
                             metadata=user_metadata,
                         )
                     )
-                outcome = await self._run_with_tools(messages)
+                # Issue #2955 -- the praise/vocal-request gates must see
+                # the RAW user utterance, not the composed
+                # ``<system_context>...`` + text turn above. ``text`` is
+                # exactly that raw value (see ``_raw_user_utterance``
+                # docstring).
+                # Issue #2967 — force a tool call on a DJ auto-transition's
+                # first attempt (base tick AND its Bug-B synchronous
+                # retries all carry ``is_dj_auto=True``, see
+                # ``dialogue_node._dispatch_dj_turn``): the live DJ set
+                # showed minimax answering with plain text and no tool
+                # call 2-3 times before the retry finally landed
+                # ``compose_music``. ``tool_choice="required"`` closes
+                # that gap at the source instead of relying entirely on
+                # the synchronous-retry safety net.
+                outcome = await self._run_with_tools(
+                    messages,
+                    raw_user_input=_raw_user_utterance(text),
+                    force_tool_choice="required" if is_dj_auto else None,
+                )
                 result.spoken_text = outcome.spoken_text
                 result.tools_called = list(outcome.tools_called)
                 result.speak_text_count = outcome.speak_text_count
@@ -845,6 +1031,9 @@ class AgentCore:
                 result.finish_reason = outcome.finish_reason
                 result.raw_response = outcome.raw_response
                 result.truncated_tool_args = outcome.truncated_tool_args
+                result.track_name = outcome.track_name
+                result.music_call_args = outcome.music_call_args
+                result.tool_error_occurred = outcome.tool_error_occurred
                 if not is_dj_auto:
                     # Persist an HONEST assistant turn: the text actually
                     # spoken via speak_text (or a real plain-text reply), NOT
@@ -1040,11 +1229,44 @@ class AgentCore:
             out.pop()
         return out
 
+    def _settings_with_forced_tool_choice(
+        self, force_tool_choice: str | None
+    ) -> "LLMSettings | None":
+        """Issue #2967 — ``self._llm_settings`` overlaid with a forced
+        ``tool_choice``, or ``None`` when nothing is forced.
+
+        ``None`` means "no override" — :meth:`_stream_response` then
+        falls back to the instance default, matching the pre-#2967
+        behaviour byte-for-byte when ``force_tool_choice`` is ``None``.
+        ``replace()`` returns a NEW instance so ``self._llm_settings``
+        itself (and any other in-flight caller holding it) is untouched.
+        """
+        if force_tool_choice is None:
+            return None
+        return replace(
+            self._llm_settings or LLMSettings(), tool_choice=force_tool_choice
+        )
+
     async def _run_with_tools(
         self,
         messages: list[LLMMessage],
+        *,
+        raw_user_input: str | None = None,
+        force_tool_choice: str | None = None,
     ) -> _ToolLoopOutcome:
         """Run the LLM tool loop and return a :class:`_ToolLoopOutcome`.
+
+        ``force_tool_choice`` (issue #2967) — overrides ``tool_choice``
+        on the FIRST completion request of this turn ONLY (subsequent
+        iterations, after tool results are fed back, go through
+        unforced so the model can still finish with plain text /
+        ``speak_text`` per the cycle-end contract). Used by DJ
+        auto-transitions: the live DJ set showed minimax replying with
+        plain text and no tool call on the first attempt 2-3 times in a
+        row before the Bug-B synchronous retry finally landed a
+        ``compose_music`` call — forcing ``tool_choice="required"``
+        closes that gap at the source instead of relying entirely on
+        the retry.
 
         ``messages`` is the live message list — tool-result messages
         are appended in-place so the LLM sees a coherent conversation
@@ -1052,6 +1274,15 @@ class AgentCore:
         mutated rather than rebuilt: the upstream providers expect
         an ordered list and rebuilding from scratch would lose the
         interleaved tool/assistant ordering the wire format requires.
+
+        ``raw_user_input`` (issue #2955) — the user's OWN words, pre-
+        computed by :meth:`process_input` via ``_raw_user_utterance``
+        and fed to the #1708 / ADR-0132 gates below instead of the
+        composed ``<system_context>...`` turn. ``None`` (direct callers
+        that bypass ``process_input``, e.g. tests) falls back to
+        :meth:`_find_last_user_input`, which re-derives it from
+        ``messages`` the old (pre-#2955) way — good enough when there is
+        no ``dynamic_system``/``skill_prompt`` bleed to worry about.
 
         The loop terminates when:
 
@@ -1069,6 +1300,12 @@ class AgentCore:
         :class:`ToolExecutionError` (transport-level) aborts the
         turn because that's a wiring problem, not a tool problem.
         """
+        # Issue #2859 — граница хода для per-turn гардов провайдера
+        # (``SchedulerToolExecutor``: «один трек за ход»). Необязательный
+        # хук, как ``begin_group`` ниже: у простых провайдеров его нет.
+        begin_turn = getattr(self._tools, "begin_turn", None)
+        if begin_turn is not None:
+            begin_turn()
         tool_schemas = await self._tools.discover()
         openai_tools = [_tool_spec_to_openai(spec) for spec in tool_schemas]
         # Полный набор держим отдельно: при включённом сужении список
@@ -1089,6 +1326,14 @@ class AgentCore:
         seen: set[str] = set()
         speak_text_count: int = 0
         speak_text_real_count: int = 0
+        # Issue #2857 — updated (never reset) each batch via
+        # ``_extract_track_name``; the DJ fallback wants the LAST
+        # compose_music name this turn.
+        track_name: str | None = None
+        # Issue #2967 — same "last wins, never reset within the turn"
+        # bookkeeping as ``track_name``, but keeps the full args dict so
+        # dialogue_node can detect a no-op replay of the previous call.
+        music_call_args: dict[str, Any] | None = None
         # Actual text spoken via speak_text this turn — used for an honest
         # conversation history (persisting "done" instead of what was really
         # said made the LLM echo old topics; see process_input).
@@ -1098,8 +1343,15 @@ class AgentCore:
         # tool-call, no speak_text) that is babble, not an answer — the
         # robot would voice «дан» / «бит не получился» instead of acting.
         tool_error_occurred: bool = False
+        # Issue #2967 — force a tool call on the FIRST request of this
+        # turn only (see the ``force_tool_choice`` docstring above).
+        # Extracted to a helper so this method's CC stays at its
+        # cc_budget baseline.
+        _first_call_settings = self._settings_with_forced_tool_choice(
+            force_tool_choice
+        )
         response: LLMResponse = await self._stream_response(
-            messages, tools=openai_tools
+            messages, tools=openai_tools, settings=_first_call_settings
         )
 
         # Issue #1217 — deepseek-v4-flash intermittently answers with a bare
@@ -1181,6 +1433,15 @@ class AgentCore:
             speak_text_count, speak_text_real_count = counts[:2]
             for text in counts[2]:
                 spoken_texts.append(text)
+            # Issue #2857 — cheap track-name capture for the DJ fallback;
+            # a plain re-assignment (helper owns the branching), so this
+            # doesn't add to this method's CC.
+            track_name = _extract_track_name(response.tool_calls, track_name)
+            # Issue #2967 — same capture, full args dict (repeated-call
+            # detection, see ``_extract_music_call_args``).
+            music_call_args = _extract_music_call_args(
+                response.tool_calls, music_call_args
+            )
 
             # Append the assistant turn that contained the tool_calls
             # (required by OpenAI Chat-Completions ordering rules).
@@ -1226,9 +1487,15 @@ class AgentCore:
             # recent user message so the heuristic can tell a vocal
             # request («спой куплет» — backing mode) apart from a
             # non-vocal request («сыграй бит про колобка в нига стайле»
-            # — instrumental). Walk the message list in reverse: the
-            # LAST user-role entry is the current turn.
-            _current_user_input = self._find_last_user_input(messages)
+            # — instrumental). Issue #2955 — prefer the RAW utterance the
+            # caller precomputed (no ``<system_context>`` bleed); only
+            # direct ``_run_with_tools`` callers without it fall back to
+            # re-deriving from ``messages``.
+            _current_user_input = (
+                raw_user_input
+                if raw_user_input is not None
+                else self._find_last_user_input(messages)
+            )
             # Music tools that appear ANYWHERE in this LLM batch (both
             # before and after the candidate speak_text). The order
             # inside the batch doesn't matter for the guard — the LLM
@@ -1313,6 +1580,8 @@ class AgentCore:
             spoken_texts=spoken_texts,
             seen=seen,
             tool_error_occurred=tool_error_occurred,
+            track_name=track_name,
+            music_call_args=music_call_args,
         )
 
     def _record_tool_calls(
@@ -1404,6 +1673,17 @@ class AgentCore:
 
         Walking in reverse keeps the operation O(distance to last user
         message) instead of O(N) over the full history.
+
+        Issue #2955 — this is now only the FALLBACK for direct
+        ``_run_with_tools`` callers that don't pass ``raw_user_input``
+        (e.g. tests). Live turns from :meth:`process_input` go through
+        ``_raw_user_utterance(text)`` instead: the message this method
+        would find is the COMPOSED turn (``<system_context>`` snapshot +
+        skill prompt + literal text glued together by
+        ``_compose_current_turn_message``), and a word like «нравится»
+        sitting in a speaker's PROFILE inside that snapshot used to
+        unlock the praise gate for a request that carried no praise at
+        all (live 24.09.2026).
         """
         for msg in reversed(messages):
             if msg.role == "user" and msg.content:
@@ -1495,6 +1775,8 @@ class AgentCore:
         spoken_texts: list[str],
         seen: set[str],
         tool_error_occurred: bool,
+        track_name: str | None = None,
+        music_call_args: dict[str, Any] | None = None,
     ) -> _ToolLoopOutcome:
         """Run the babble filter (issue #1253) and assemble the outcome.
 
@@ -1519,6 +1801,8 @@ class AgentCore:
             speak_text_count=speak_text_count,
             speak_text_real_count=speak_text_real_count,
             spoken_texts=spoken_texts,
+            track_name=track_name,
+            music_call_args=music_call_args,
         )
         if babble_outcome is not None:
             return babble_outcome
@@ -1528,6 +1812,9 @@ class AgentCore:
             speak_text_count=speak_text_count,
             speak_text_real_count=speak_text_real_count,
             spoken_texts=spoken_texts,
+            track_name=track_name,
+            music_call_args=music_call_args,
+            tool_error_occurred=tool_error_occurred,
         )
 
     async def _execute_tool_batch(
@@ -1604,6 +1891,18 @@ class AgentCore:
             if call.name == LOAD_SKILL_TOOL:
                 results_by_call_id[call.id] = self._handle_load_skill(call)
                 continue
+
+            # ADR-0132 PR-7 — save_arrangement_preset: hard gate по
+            # похвале/просьбе сохранить в ПОСЛЕДНЕЙ реплике юзера (см.
+            # SAVE_ARRANGEMENT_PRESET_TOOL docstring). Отказ — не ошибка
+            # тула (как и у track_start_guard): модель должна закончить
+            # ход репликой, а не получить ``is_error``.
+            if call.name == SAVE_ARRANGEMENT_PRESET_TOOL:
+                guarded = _gate_save_arrangement_preset(call, current_user_input)
+                if isinstance(guarded, ToolResult):
+                    results_by_call_id[call.id] = guarded
+                    continue
+                call = guarded
 
             results_by_call_id[call.id] = await self._tools.execute(call)
         return suppressed_texts
@@ -2037,6 +2336,40 @@ def _suppressed_speak_text_result(call: ToolCall) -> ToolResult:
             "Верни 'done' сразу после execute_music_code."
         ),
         is_error=True,
+    )
+
+
+def _gate_save_arrangement_preset(
+    call: ToolCall, user_input: str
+) -> ToolCall | ToolResult:
+    """ADR-0132 PR-7 — hard gate: ``save_arrangement_preset`` нужна явная
+    похвала/просьба сохранить в ПОСЛЕДНЕЙ реплике юзера.
+
+    Модель не оценивает свою аранжировку сама — она отдаёт этот трек как
+    дефолт для ВСЕХ будущих проигрываний этой мелодии, и одно субъективное
+    «получилось» не должно масштабироваться на весь архив без ведома
+    юзера. Похвала проходит → ``approved_by_user_quote`` в аргументах
+    переписывается на РЕАЛЬНУЮ реплику (не то, что могла бы придумать
+    модель) и вызов идёт исполняться. Похвалы нет → отказ, не ошибка
+    тула (как ``track_start_guard.refusal_content`` — ход должен
+    закончиться репликой, а не ``is_error``).
+    """
+    if contains_praise(user_input):
+        return replace(
+            call, arguments={**call.arguments, "approved_by_user_quote": user_input}
+        )
+    return ToolResult(
+        tool_call_id=call.id,
+        content=(
+            "[SYSTEM] save_arrangement_preset отклонён: последняя реплика "
+            "юзера не содержит явной похвалы («кайф», «супер», «класс», "
+            "«отлично» и т.п.) или прямой просьбы сохранить/запомнить "
+            "именно этот вариант («сохрани», «запомни этот вариант»). "
+            "Ты не можешь сама решить, что аранжировка достаточно хороша — "
+            "дождись явной реакции юзера, прежде чем вызывать этот тул "
+            "снова."
+        ),
+        is_error=False,
     )
 
 

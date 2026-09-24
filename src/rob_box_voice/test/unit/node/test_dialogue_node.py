@@ -371,6 +371,20 @@ class TestBuildDynamicSystemContext:
         # Issue #2440 — полный id, без усечения до 8 символов.
         assert "<speaker_id>sp_1234567890</speaker_id>" in ctx
 
+    def test_epithet_rule_says_epithet_is_not_another_person(self):
+        """Issue #2864 — кличку Саши «Незнакомец» LLM посчитала третьим
+        человеком. Правило рядом с кличкой обязано сказать, что это
+        второе обозначение ТОГО ЖЕ собеседника, а не ещё один знакомый."""
+        n = _make_node({"provider": "yandex"})
+        n._current_speaker = {"is_known": True, "name": "Саша",
+                              "confidence": 0.9, "speaker_id": "sp_2b276f43",
+                              "epithet": "Наблюдатель"}
+        ctx = n._build_dynamic_system_context()
+        assert '<epithet internal="true">Наблюдатель</epithet>' in ctx
+        rule = ctx.split("<epithet_rule>", 1)[1].split("</epithet_rule>", 1)[0]
+        assert "НЕ отдельный человек" in rule
+        assert "перечисляешь знакомых" in rule
+
     def test_invalid_speaker_name_sanitized(self):
         n = _make_node({"provider": "yandex"})
         n._current_speaker = {"is_known": True, "name": "Null", "confidence": 0.0}
@@ -586,6 +600,57 @@ class TestOnSpeakerResultRegisterError:
                 }
             )
         )  # must not raise
+
+    def test_unspoken_register_error_does_not_reset_known_speaker(self):
+        """Issue #2863 — служебный ack с незнакомым кодом ошибки раньше
+        проваливался дальше и затирал узнанного диктора самим ack."""
+        n = _make_node()
+        n._speak_direct = MagicMock()
+        known = {"is_known": True, "speaker_id": "sasha-1", "name": "Саша", "confidence": 0.877}
+        n._current_speaker = dict(known)
+
+        n._on_speaker_result(
+            self._msg({"event": "register_error", "error": "something_else", "name": "Саша"})
+        )
+
+        assert n._current_speaker == known
+
+
+class TestOnSpeakerResultInconclusive:
+    """Issue #2863 — «не смог оценить» не сбрасывает узнанного диктора."""
+
+    def _msg(self, payload: dict):
+        return type("Msg", (), {"data": json.dumps(payload, ensure_ascii=False)})()
+
+    def test_inconclusive_unknown_keeps_current_speaker(self):
+        """Живой лог: речь=0.36s, -66.6 dBFS, STT пустой → раньше сброс в ∅."""
+        n = _make_node()
+        n._utterance_speaker = MagicMock()
+        known = {"is_known": True, "speaker_id": "sasha-1", "name": "Саша", "confidence": 0.877}
+        n._current_speaker = dict(known)
+        payload = {
+            "is_known": False,
+            "utterance_id": "noise-1",
+            "inconclusive": True,
+            "reason": "too_short_for_biometry",
+        }
+
+        n._on_speaker_result(self._msg(payload))
+
+        assert n._current_speaker == known
+        # #2829: для СВОЕЙ фразы результат остаётся «не узнан» — имя она
+        # не наследует (join по utterance_id получает is_known=false).
+        n._utterance_speaker.submit.assert_called_once_with("noise-1", payload)
+
+    def test_evaluated_unknown_still_resets_current_speaker(self):
+        """Фразу реально оценили и не узнали — сброс допустим (#2829)."""
+        n = _make_node()
+        n._utterance_speaker = MagicMock()
+        n._current_speaker = {"is_known": True, "speaker_id": "sasha-1", "name": "Саша"}
+
+        n._on_speaker_result(self._msg({"is_known": False, "utterance_id": "u-2"}))
+
+        assert n._current_speaker == {"is_known": False, "utterance_id": "u-2"}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

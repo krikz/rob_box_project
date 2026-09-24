@@ -16,6 +16,16 @@ speaker_id_node:
     # совпадать с speaker_embeddings.IDENTIFY_THRESHOLD /
     # REGISTER_MATCH_THRESHOLD (тест test_yaml_param_consistency.py).
     identify_threshold: 0.72
+    # Issue #2809 -- называть имя вслух (LLM) можно уверенно
+    # (band_high) ИЛИ в полосе неопределённости при явном разрыве до
+    # конкурента с другим именем (min_gap) -- плоский порог 0.85
+    # (первая версия фикса) резал живых людей наравне с импостором,
+    # откачен по ревью координатора. is_known/эпитет работают уже от
+    # identify_threshold. См. speaker_id_node.py (is_name_confident,
+    # _gap_to_other_name, _publish_result) и
+    # dialogue_node._apply_speaker_identity.
+    name_confidence_band_high: 0.80
+    name_confidence_min_gap: 0.15
     register_match_threshold: 0.75
     # Issue #2747 — растущая галерея БЕЗ адаптивного порога. Первая версия
     # этой правки смягчала identify_threshold по размеру галереи — ОТКАЧЕНО
@@ -30,6 +40,10 @@ speaker_id_node:
     # speaker_id_node._apply_growth_session.
     gallery_warmup_size: 5
     gallery_growth_session_gap_sec: 30.0
+    # Issue #2829 (ADR-0131 PR-2) -- нижний порог: реплика должна быть
+    # похожа на владельца сессии хотя бы на growth_owner_min_score,
+    # иначе НЕ дописывается (см. speaker_id_node._apply_growth_session).
+    growth_owner_min_score: 0.65
     # Issue #2440 — harness-БД фактов для склейки профилей через шов
     # идентичности (тот же файл, что sqlite_db_path у dialogue_node).
     memory_db_path: "/data/harness_voice.db"
@@ -48,11 +62,13 @@ speaker_id_node:
     # что barge_in_policy у dialogue_node). Ручной ssh cp+DELETE FROM по
     # боевой speakers.db, который этот параметр заменяет, — issue #2750.
     e2e_mode: false
-    # Issue #2609 — defer resemblyzer warm-load to first real embed_audio.
-    # Default False: cold-load is 2-3 s on first inference, acceptable for
-    # the biometric cold path (зарегистрироваться / опознать нового
-    # собеседника). Eager warm-load at startup costs ~70 MB RSS (CPU-only
-    # wheel) on every container restart even when nobody speaks. Set True
-    # only if you want the legacy "always-hot model" behaviour.
-    resemblyzer_warmup_on_start: false
+    # Issue #2885 — прогрев resemblyzer в фоне сразу после старта ноды.
+    # Холодный первый embed — не «2-3 с», как считали в #2609, а 40-60 с
+    # (первый вызов librosa + numba-компиляция; замер в #2885), и первая
+    # фраза после каждого рестарта уходила в LLM без имени. Прогрев не
+    # блокирует подписки: фраза, пришедшая раньше его конца, ждёт в очереди
+    # того же executor'а. Цена — RSS модели+librosa держится с момента
+    # старта, а не с первой фразы (после первой фразы он тот же). false —
+    # ленивый режим #2609 (первая фраза после рестарта ~40 с).
+    resemblyzer_warmup_on_start: true
     sample_rate: 16000

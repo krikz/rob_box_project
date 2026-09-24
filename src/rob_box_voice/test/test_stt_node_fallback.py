@@ -692,13 +692,20 @@ class TestRecognizeWithFallback:
         assert attempts == []
 
     def test_yandex_only_no_vosk(self, stt_node_no_vosk):
-        """Если Vosk отключён — идём только через Yandex + retry."""
+        """Если Vosk отключён — идём только через Yandex + retry.
+
+        Issue #2767: ``empty`` (None без исключения) больше НЕ ретраится
+        (гарантированно даст тот же ``empty`` на тех же байтах) —
+        1-я попытка здесь обязана быть настоящим транзиентным сбоем сети
+        (не ``timeout`` — он тоже не ретраится, issue #2924), иначе retry
+        не сработает вовсе.
+        """
         calls = []
 
         def fake_yandex(audio):
             calls.append(len(audio))
             if len(calls) == 1:
-                return None  # 1-я: пусто → retry
+                raise ConnectionError("UNAVAILABLE: network flap")  # транзиент → retry
             return "расскажи ещё раз"
 
         stt_node_no_vosk._recognize_yandex = fake_yandex
@@ -711,21 +718,25 @@ class TestRecognizeWithFallback:
         assert attempts[1].provider == "yandex"
 
     def test_vosk_fallback_when_yandex_fails(self, stt_node):
-        """Если Yandex падает — идём на Vosk (issue #979)."""
+        """Если Yandex падает — идём на Vosk (issue #979).
+
+        Issue #2767: Yandex здесь падает с ``empty`` — ОДНА попытка (без
+        retry, empty не транзиентен), сразу Vosk. 2 attempts, не 3.
+        """
         stt_node.yandex_stub = MagicMock()
         stt_node.recognizer = MagicMock()
 
-        # Yandex обе попытки — пусто/timeout
+        # Yandex — пусто (empty, без retry — issue #2767)
         stt_node._recognize_yandex = MagicMock(return_value=None)
         # Vosk возвращает валидную фразу
         stt_node._recognize_vosk = MagicMock(return_value="расскажи ещё раз")
 
         text, attempts = stt_node._recognize_with_fallback(b"\x00" * 1000)
         assert text == "расскажи ещё раз"
-        # 2 попытки Yandex + 1 Vosk = 3 attempts
-        assert len(attempts) == 3
-        assert attempts[2].provider == "vosk"
-        assert attempts[2].reason == "ok"
+        # 1 попытка Yandex (empty, без retry) + 1 Vosk = 2 attempts
+        assert len(attempts) == 2
+        assert attempts[1].provider == "vosk"
+        assert attempts[1].reason == "ok"
 
     def test_vosk_short_garbage_rejected(self, stt_node):
         """Короткий Vosk-мусор (1 char) → text=«а» (rejected(short), не None).
@@ -1192,7 +1203,7 @@ class TestAcceptanceE2EWithSynthAudio:
         ],
     )
     def test_realistic_3to4_word_phrase(self, phrase):
-        """Каждая фраза: Yandex 1-я → timeout, 2-я → ok."""
+        """Каждая фраза: Yandex 1-я → сетевой сбой, 2-я → ok."""
         node = _make_stt_node_stub(
             yandex_api_key="FAKE",
             yandex_timeout_s=5.0,
@@ -1201,13 +1212,16 @@ class TestAcceptanceE2EWithSynthAudio:
         node.yandex_stub = MagicMock()
         node.recognizer = MagicMock()
 
-        # Yandex: 1-я попытка timeout (None), 2-я — фраза
+        # Yandex: 1-я попытка — сетевой сбой (транзиентный error, ретраится),
+        # 2-я — фраза. Issue #2767: ``empty`` (None без исключения) больше
+        # НЕ ретраится, issue #2924: ``timeout`` тоже — поэтому 1-я попытка
+        # обязана быть именно сетевой ошибкой.
         yandex_calls = []
 
         def fake_yandex(audio):
             yandex_calls.append(1)
             if len(yandex_calls) == 1:
-                return None  # timeout/empty
+                raise ConnectionError("UNAVAILABLE: network flap")
             return phrase
 
         vosk_calls = []
@@ -1246,12 +1260,14 @@ class TestAcceptanceE2EWithSynthAudio:
         ]
         successes = 0
         for ph in phrases:
-            # Pure-Python провайдеры (без rclpy)
+            # Pure-Python провайдеры (без rclpy). Issue #2767: ``empty``
+            # (None без исключения) больше НЕ ретраится, issue #2924:
+            # ``timeout`` тоже — «флап» смоделирован сетевой ошибкой.
             if ph == "а":
-                primary_responses = [None, None]  # обе попытки пусто
+                primary_responses = [None]  # пусто, без retry — сразу vosk
                 fallback_response = "а"
             else:
-                primary_responses = [None, ph]  # 1-я пусто, 2-я ok
+                primary_responses = [ConnectionError("UNAVAILABLE: network flap"), ph]
                 fallback_response = "а"  # мусор
 
             class _P:
@@ -1265,7 +1281,10 @@ class TestAcceptanceE2EWithSynthAudio:
                     self._calls += 1
                     if self._calls > len(self._responses):
                         return None
-                    return self._responses[self._calls - 1]
+                    result = self._responses[self._calls - 1]
+                    if isinstance(result, BaseException):
+                        raise result
+                    return result
 
             class _F:
                 name = "vosk"
@@ -1527,13 +1546,14 @@ class TestProviderChainNormalization:
 
         return STTNode._normalize_provider_chain(chain, logger=logger)
 
-    def test_default_order_is_minimax_yandex_vosk(self):
+    def test_default_order_is_yandex_minimax_vosk(self):
+        """Issue #2866: счёт Yandex пополнен — Yandex снова primary."""
         from rob_box_voice.stt_node import DEFAULT_STT_PROVIDER_CHAIN
 
-        assert DEFAULT_STT_PROVIDER_CHAIN == ["minimax", "yandex", "vosk"]
+        assert DEFAULT_STT_PROVIDER_CHAIN == ["yandex", "minimax", "vosk"]
 
     def test_empty_chain_falls_back_to_default(self):
-        assert self._normalize([]) == ["minimax", "yandex", "vosk"]
+        assert self._normalize([]) == ["yandex", "minimax", "vosk"]
 
     def test_vosk_is_forced_last(self):
         """Vosk в середине — переносится в конец: он последний рубеж."""
@@ -1571,8 +1591,8 @@ class TestProviderChainNormalization:
 
     def test_garbage_chain_falls_back_to_default(self):
         assert self._normalize(["whisper", "azure"]) == [
-            "minimax",
             "yandex",
+            "minimax",
             "vosk",
         ]
 
@@ -1976,3 +1996,248 @@ class TestGrpcErrorMapping:
         )
         mapped = _map_grpc_error(original, 12.0)
         assert mapped is original
+
+
+# ---------------------------------------------------------------------------
+# Issue #2891 — Yandex v3 шлёт final/final_refinement на КАЖДЫЙ сегмент фразы.
+# ---------------------------------------------------------------------------
+
+
+def _yandex_response(event_type, text="", final_index=0):
+    """Фейковый StreamingResponse v3 (поля — как в stt.proto)."""
+    from types import SimpleNamespace
+
+    alts = [SimpleNamespace(text=text)] if text else []
+    update = SimpleNamespace(alternatives=alts)
+    resp = SimpleNamespace(
+        WhichOneof=lambda _oneof: event_type,
+        audio_cursors=SimpleNamespace(final_index=final_index),
+    )
+    if event_type == "final_refinement":
+        resp.final_refinement = SimpleNamespace(
+            final_index=final_index, normalized_text=update
+        )
+    elif event_type in ("final", "partial"):
+        setattr(resp, event_type, update)
+    return resp
+
+
+class TestYandexAllSegments:
+    """Issue #2891 — «Робот, здравствуй, я Саша…» не должно стать «робот здравствуй»."""
+
+    @staticmethod
+    def _run(node, responses, phase="REAL_TIME"):
+        node.yandex_stub.RecognizeStreaming.side_effect = (
+            lambda gen, metadata=None, timeout=None: iter(responses)
+        )
+        return node._recognize_yandex_phase(
+            b"\x00" * 8000,
+            phase=phase,
+            enable_speech_analysis=(phase == "REAL_TIME"),
+        )
+
+    @pytest.mark.parametrize("phase", ["REAL_TIME", "FULL_DATA"])
+    def test_two_segments_with_refinements_give_full_text(self, stt_node_no_vosk, phase):
+        responses = [
+            _yandex_response("partial", "робот здравствуй"),
+            _yandex_response("final", "робот здравствуй", 0),
+            _yandex_response("final_refinement", "Робот, здравствуй.", 0),
+            _yandex_response("partial", "я саша чиню"),
+            _yandex_response("final", "я саша чиню тут технику по вечерам", 1),
+            _yandex_response(
+                "final_refinement", "Я Саша, чиню тут технику по вечерам.", 1
+            ),
+        ]
+        text = self._run(stt_node_no_vosk, responses, phase)
+        assert text == "Робот, здравствуй. Я Саша, чиню тут технику по вечерам."
+
+    @pytest.mark.parametrize("phase", ["REAL_TIME", "FULL_DATA"])
+    def test_last_segment_without_refinement_uses_its_final(self, stt_node_no_vosk, phase):
+        responses = [
+            _yandex_response("final", "робот здравствуй", 0),
+            _yandex_response("final_refinement", "Робот, здравствуй.", 0),
+            _yandex_response("final", "я саша", 1),
+        ]
+        text = self._run(stt_node_no_vosk, responses, phase)
+        assert text == "Робот, здравствуй. я саша"
+
+    def test_single_segment_as_before(self, stt_node_no_vosk):
+        responses = [
+            _yandex_response("partial", "робот привет"),
+            _yandex_response("final", "робот привет", 0),
+            _yandex_response("final_refinement", "Робот, привет.", 0),
+        ]
+        assert self._run(stt_node_no_vosk, responses) == "Робот, привет."
+
+    def test_no_final_falls_back_to_last_partial(self, stt_node_no_vosk):
+        responses = [
+            _yandex_response("partial", "робот"),
+            _yandex_response("partial", "робот стоп"),
+        ]
+        assert self._run(stt_node_no_vosk, responses) == "робот стоп"
+
+    def test_speaker_tag_kept_with_multiple_segments(self, stt_node_no_vosk):
+        from types import SimpleNamespace
+
+        speaker = SimpleNamespace(
+            WhichOneof=lambda _oneof: "speaker_analysis",
+            speaker_analysis=SimpleNamespace(speaker_tag="1"),
+        )
+        responses = [
+            _yandex_response("final", "робот здравствуй", 0),
+            _yandex_response("final_refinement", "Робот, здравствуй.", 0),
+            speaker,
+            _yandex_response("final", "я саша", 1),
+            _yandex_response("final_refinement", "Я Саша.", 1),
+        ]
+        stt_node_no_vosk._last_speaker_tag = None
+        text = self._run(stt_node_no_vosk, responses)
+        assert text == "Робот, здравствуй. Я Саша."
+        assert stt_node_no_vosk._last_speaker_tag == "1"
+
+
+class TestIssue2931YandexFirstSegment:
+    """Issue #2931 — «Робот, привет, давай знакомиться…» трижды пришло без
+    «робот» (E2E run 35943180077, n201). Прогон через настоящий
+    ``_recognize_yandex_phase``: «робот» сервер показал только partial'ом,
+    final его сегмента не прислал."""
+
+    @staticmethod
+    def _timed(event_type, text, start, end, final_index=0):
+        resp = _yandex_response(event_type, text, final_index)
+        getattr(resp, event_type).alternatives[0].start_time_ms = start
+        getattr(resp, event_type).alternatives[0].end_time_ms = end
+        return resp
+
+    def test_first_word_only_in_partial_is_kept_and_logged(self, stt_node_no_vosk, caplog):
+        node = stt_node_no_vosk
+        responses = [
+            self._timed("partial", "робот", 0, 640),
+            self._timed("partial", "привет давай", 1900, 2600),
+            self._timed("final", "привет давай знакомиться как следует", 1900, 6100, 0),
+            _yandex_response("eou_update"),
+        ]
+        node.yandex_stub.RecognizeStreaming.side_effect = lambda gen, metadata=None, timeout=None: iter(responses)
+        with caplog.at_level(logging.INFO, logger="test_stt_node_fallback"):
+            text = node._recognize_yandex_phase(b"\x00" * 8000, phase="REAL_TIME", enable_speech_analysis=True)
+        assert text == "робот привет давай знакомиться как следует"
+        info = [r.getMessage() for r in caplog.records if r.levelno == logging.INFO and "[#2931]" in r.getMessage()]
+        assert len(info) == 1, info
+        assert "P×1'робот'@0-640" in info[0] and "F#0'" in info[0] and "segments=2" in info[0], info[0]
+
+
+# ---------------------------------------------------------------------------
+# Issue #2924 — Yandex STT DEADLINE_EXCEEDED: сервер молчит весь дедлайн.
+# ---------------------------------------------------------------------------
+
+
+class TestIssue2924YandexStreamDeadline:
+    """23.09 23:22–23:39: каждый вызов Yandex стоял до дедлайна 5 с, не
+    прислав ни одного partial, и сам ожил без рестарта ноды.
+
+    Фикс: в лог ошибки стрима — сколько ответов успело прийти (отличает
+    «сервер молчал» от «не закрыл стрим»); после DEADLINE_EXCEEDED канал
+    пересоздаётся, чтобы следующая фраза не шла по зависшему соединению.
+    """
+
+    @staticmethod
+    def _install_rpc_error(monkeypatch, code):
+        from rob_box_voice import stt_node as stt_node_module
+
+        class _RpcError(Exception):
+            def code(self):
+                return code
+
+            def details(self):
+                return "Deadline Exceeded"
+
+        monkeypatch.setattr(stt_node_module.grpc, "RpcError", _RpcError, raising=False)
+        return _RpcError
+
+    @staticmethod
+    def _stream(responses, error):
+        def _gen():
+            yield from responses
+            raise error
+
+        return _gen()
+
+    @staticmethod
+    def _warnings(caplog):
+        return [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+
+    def test_deadline_with_silent_server_resets_channel(self, stt_node_no_vosk, monkeypatch, caplog):
+        from rob_box_voice import stt_node as stt_node_module
+
+        rpc_error = self._install_rpc_error(monkeypatch, stt_node_module.grpc.StatusCode.DEADLINE_EXCEEDED)
+        node = stt_node_no_vosk
+        old_channel = MagicMock()
+        node.yandex_channel = old_channel
+        node.initialize_yandex = MagicMock()
+        node.yandex_stub.RecognizeStreaming.side_effect = lambda gen, metadata=None, timeout=None: self._stream(
+            [], rpc_error()
+        )
+
+        with caplog.at_level(logging.DEBUG, logger="test_stt_node_fallback"):
+            with pytest.raises(STTTimeoutError):
+                node._recognize_yandex_phase(b"\x00" * 8000, phase="REAL_TIME", enable_speech_analysis=True)
+
+        old_channel.close.assert_called_once()
+        node.initialize_yandex.assert_called_once()
+        warnings = self._warnings(caplog)
+        assert any("responses=0" in m and "phase=REAL_TIME" in m for m in warnings), warnings
+
+    def test_deadline_after_segments_logs_how_much_arrived(self, stt_node_no_vosk, monkeypatch, caplog):
+        from rob_box_voice import stt_node as stt_node_module
+
+        rpc_error = self._install_rpc_error(monkeypatch, stt_node_module.grpc.StatusCode.DEADLINE_EXCEEDED)
+        node = stt_node_no_vosk
+        node.yandex_channel = MagicMock()
+        node.initialize_yandex = MagicMock()
+        responses = [
+            _yandex_response("partial", "робот здравствуй"),
+            _yandex_response("final", "робот здравствуй", 0),
+            _yandex_response("eou_update"),
+        ]
+        node.yandex_stub.RecognizeStreaming.side_effect = lambda gen, metadata=None, timeout=None: self._stream(
+            responses, rpc_error()
+        )
+
+        with caplog.at_level(logging.DEBUG, logger="test_stt_node_fallback"):
+            with pytest.raises(STTTimeoutError):
+                node._recognize_yandex_phase(b"\x00" * 8000, phase="REAL_TIME", enable_speech_analysis=True)
+
+        warnings = self._warnings(caplog)
+        assert any(
+            "responses=3" in m and "partials=1" in m and "eou=1" in m and "segments=1" in m for m in warnings
+        ), warnings
+
+    def test_unavailable_does_not_reset_channel(self, stt_node_no_vosk, monkeypatch):
+        """Пересоздание — только на DEADLINE_EXCEEDED, не на любую ошибку."""
+        from rob_box_voice import stt_node as stt_node_module
+
+        rpc_error = self._install_rpc_error(monkeypatch, stt_node_module.grpc.StatusCode.UNAVAILABLE)
+        node = stt_node_no_vosk
+        node.yandex_channel = MagicMock()
+        node.initialize_yandex = MagicMock()
+        node.yandex_stub.RecognizeStreaming.side_effect = lambda gen, metadata=None, timeout=None: self._stream(
+            [], rpc_error()
+        )
+
+        with pytest.raises(rpc_error):
+            node._recognize_yandex_phase(b"\x00" * 8000, phase="REAL_TIME", enable_speech_analysis=True)
+        node.initialize_yandex.assert_not_called()
+
+    def test_eou_update_is_counted(self, stt_node_no_vosk, caplog):
+        """В v3 oneof-поле называется ``eou_update``; до #2924 в телеметрии
+        всегда стояло eou=0 (сравнивали с несуществующим ``end_of_utterance``)."""
+        node = stt_node_no_vosk
+        responses = [
+            _yandex_response("final", "робот привет", 0),
+            _yandex_response("eou_update"),
+        ]
+        node.yandex_stub.RecognizeStreaming.side_effect = lambda gen, metadata=None, timeout=None: iter(responses)
+        with caplog.at_level(logging.DEBUG, logger="test_stt_node_fallback"):
+            text = node._recognize_yandex_phase(b"\x00" * 8000, phase="REAL_TIME", enable_speech_analysis=True)
+        assert text == "робот привет"
+        assert any("eou=1" in r.getMessage() for r in caplog.records)

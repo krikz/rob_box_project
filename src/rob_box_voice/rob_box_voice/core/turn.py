@@ -15,6 +15,7 @@ Scope (this module):
   "first verdict wins" rule.
 * The default guard implementations:
   - :class:`SystemRegurgitateGuard` (issue #2175),
+  - :class:`ServiceContextParaphraseGuard` (issue #2817 / #2766),
   - :class:`ToolSkippedGuard` (issue #1777 / #1762),
   - :class:`BabbleGuard` (issue #992 Bug D),
   - :class:`EmbeddedRenardoCodeGuard` (issue #992 Bug C'),
@@ -51,11 +52,13 @@ from typing import (
 )
 
 from .dialogue_guards import (
+    CLAIM_JUSTIFYING_TOOLS,
     ActionClaimRule,
     build_babble_retry_prompt,
     build_hallucinated_midi_retry_prompt,
     build_phantom_action_retry_prompt,
     build_renardo_code_retry_prompt,
+    build_service_paraphrase_retry_prompt,  # Issue #2817 / #2766
     build_system_regurgitate_retry_prompt,
     build_tool_call_markup_retry_prompt,  # Issue #2760
     build_tool_retry_prompt,
@@ -71,6 +74,7 @@ from .dialogue_guards import (
     extract_renardo_code_lines,
     is_metalanguage_babble,
     is_planning_narration,
+    is_service_context_paraphrased,  # Issue #2817 / #2766
     is_system_template_regurgitated,
     is_tool_call_markup,  # Issue #2760
     user_wants_performance,
@@ -131,12 +135,20 @@ class TurnContext:
             which would leak a dialogue_node-specific type into ``core/``.
         speech_id: Optional speech-id for log correlation. Not interpreted by
             guards; carried for diagnostics.
+        tool_error_occurred: ``True`` when at least one tool call THIS TURN
+            returned ``is_error=True`` (issue #2949 — a tool being CALLED is
+            not the same as it SUCCEEDING; a refused/errored
+            ``save_arrangement_preset`` must not "back" a spoken claim of
+            success, and a real action-fulfilling tool call that errored
+            must not be mistaken for babble-suppression either). Mirrors
+            ``DialogResult.tool_error_occurred`` (``rob_box_harness``).
     """
 
     user_input: str
     is_dj_auto: bool = False
     has_error: bool = False
     speech_id: Optional[str] = None
+    tool_error_occurred: bool = False
 
 
 @dataclass(frozen=True)
@@ -445,6 +457,7 @@ def begin_babble_retry(
     tools_called: tuple,
     speak_text_real: int,
     state: TurnState,
+    tool_error_occurred: bool = False,
 ) -> Optional[BabbleRetryDecision]:
     """Issue #992 Bug D — decide whether to fire ONE babble retry, in pure.
 
@@ -492,6 +505,7 @@ def begin_babble_retry(
         turn=TurnContext(
             user_input=user_input or "",
             is_dj_auto=False,
+            tool_error_occurred=bool(tool_error_occurred),
         ),
         state=state,
     )
@@ -557,6 +571,42 @@ class SystemRegurgitateGuard:
         if not is_system_template_regurgitated(ctx.reply.spoken):
             return None
         prompt = build_system_regurgitate_retry_prompt(ctx.turn.user_input)
+        return Verdict(
+            kind=VerdictKind.RETRY,
+            guard_name=self.name,
+            prompt=prompt,
+        )
+
+
+@dataclass(frozen=True)
+class ServiceContextParaphraseGuard:
+    """Issue #2817 / #2766 -- LLM paraphrases internal service content (the
+    ``<system_context>`` snapshot or a "[выполнено в прошлом ходе]" history
+    marker) instead of answering the user.
+
+    Runs right after :class:`SystemRegurgitateGuard` -- same failure family
+    (the model treats internal plumbing as something to react to), but the
+    text is a free-form paraphrase rather than verbatim XML, so #2175's
+    anchored regex does not fire (see :func:`is_service_context_paraphrased`).
+
+    Returns ``RETRY`` (never a hard-mute): the user asked a real question,
+    so muting the turn is the anti-goal -- issue #2766's original symptom
+    was exactly this trade-off going the wrong way (the marker's
+    snake_case tool name tripped :class:`PlanningNarrationHardMute`,
+    which DISCARDs, leaving the robot silent where a corrected answer was
+    one round-trip away).
+    """
+
+    name: str = "service_context_paraphrase"
+
+    def evaluate(self, ctx: GuardContext) -> Optional[Verdict]:
+        if ctx.reply.speak_text_real > 0:
+            return None
+        if not ctx.reply.spoken:
+            return None
+        if not is_service_context_paraphrased(ctx.reply.spoken):
+            return None
+        prompt = build_service_paraphrase_retry_prompt(ctx.turn.user_input)
         return Verdict(
             kind=VerdictKind.RETRY,
             guard_name=self.name,
@@ -698,6 +748,22 @@ class BabbleGuard:
             # alternative would be an unbounded LLM ping-pong. Mirrors
             # the legacy ``self._babble_retry_used`` short-circuit at
             # ``dialogue_node.py:4232-4233``.
+            return None
+        # Issue #2948 — a turn that ALREADY successfully ran the tool(s)
+        # that fulfil the request (music-start / set_dj_mode / etc., see
+        # :data:`CLAIM_JUSTIFYING_TOOLS`) is not babble: a short DJ-style
+        # line NEXT TO a real action ("Слушай Still Dre, потом Next
+        # Episode подхвачу!" with tools=['set_dj_mode', 'compose_music',
+        # 'play_animation']) is flavour text, not an unfulfilled promise.
+        # Retrying here re-dispatches the ORIGINAL user request and the
+        # DJ set starts a second time (live 24.09, issue #2948). Mirrors
+        # the same "tool called AND succeeded" bar as
+        # :func:`detect_universal_action_claim` (issue #2949) — a called
+        # tool that ERRORED does not count as fulfilling the request.
+        if (
+            set(ctx.reply.tools_called) & CLAIM_JUSTIFYING_TOOLS
+            and not ctx.turn.tool_error_occurred
+        ):
             return None
         if ctx.reply.speak_text_real > 0:
             return None
@@ -940,6 +1006,7 @@ class UniversalActionClaimGuard:
         hit = detect_universal_action_claim(
             spoken=ctx.reply.spoken,
             tools_called=ctx.reply.tools_called,
+            tool_error_occurred=ctx.turn.tool_error_occurred,
         )
         if hit is None:
             return None
@@ -947,6 +1014,7 @@ class UniversalActionClaimGuard:
             user_input=ctx.turn.user_input,
             spoken=ctx.reply.spoken,
             hit=hit,
+            tool_error_occurred=ctx.turn.tool_error_occurred,
         )
         return Verdict(
             kind=VerdictKind.RETRY,
@@ -1047,6 +1115,7 @@ class PhantomActionGuard:
 DEFAULT_GUARD_ORDER: Tuple[type, ...] = (
     ToolCallMarkupGuard,
     SystemRegurgitateGuard,
+    ServiceContextParaphraseGuard,  # Issue #2817 / #2766
     ToolSkippedGuard,
     BabbleGuard,
     EmbeddedRenardoCodeGuard,
@@ -1074,22 +1143,25 @@ def default_guards(
     1. :class:`SystemRegurgitateGuard` — must fire BEFORE babble so the
        regurgitated template doesn't get the babble CRITICAL pasted on top
        (issue #2175 follow-up).
-    2. ``music_guard`` — TD-2 extraction from
+    2. :class:`ServiceContextParaphraseGuard` — LLM paraphrases
+       ``<system_context>`` / history markers instead of answering
+       (issue #2817 / #2766); RETRY, not a hard-mute.
+    3. ``music_guard`` — TD-2 extraction from
        :mod:`rob_box_voice.core.music_guard`. Caller passes either a
        :class:`Guard` (already wrapped via :func:`music_guard_adapter`) or
        a raw ``MusicGuard`` instance (we wrap it transparently).
-    3. :class:`ToolSkippedGuard` — non-music tool retry (issue #1777).
-    4. :class:`BabbleGuard` — metalanguage / planning narration.
-    5. :class:`EmbeddedRenardoCodeGuard` — Renardo code in text.
-    6. :class:`HallucinatedMidiGuard` — fantasy MIDI pattern (issue #2560).
-    7. :class:`UnbackedActionClaimGuard` — claimed but didn't call (Bug E).
-    8. :class:`UnknownMelodyClaimGuard` — "don't know" without search
+    4. :class:`ToolSkippedGuard` — non-music tool retry (issue #1777).
+    5. :class:`BabbleGuard` — metalanguage / planning narration.
+    6. :class:`EmbeddedRenardoCodeGuard` — Renardo code in text.
+    7. :class:`HallucinatedMidiGuard` — fantasy MIDI pattern (issue #2560).
+    8. :class:`UnbackedActionClaimGuard` — claimed but didn't call (Bug E).
+    9. :class:`UnknownMelodyClaimGuard` — "don't know" without search
        (issue #2562 Bug F).
-    9. :class:`UniversalActionClaimGuard` — wide action-claim fallback
-       (issue #2549).
-    10. :class:`PhantomActionGuard` — widest action-claim fallback (issue
+    10. :class:`UniversalActionClaimGuard` — wide action-claim fallback
+        (issue #2549).
+    11. :class:`PhantomActionGuard` — widest action-claim fallback (issue
         #2559).
-    11. :class:`PlanningNarrationHardMute` — hard-mute (DISCARD).
+    12. :class:`PlanningNarrationHardMute` — hard-mute (DISCARD).
 
     The dialogue_node adapter passes its already-constructed
     :class:`MusicGuard` instance via ``music_guard=...``. If it is ``None``
@@ -1234,6 +1306,7 @@ __all__ = [
     "UniversalActionClaimGuard",
     "UnknownMelodyClaimGuard",
     "PlanningNarrationHardMute",
+    "ServiceContextParaphraseGuard",
     "SystemRegurgitateGuard",
     "TurnContext",
     "TurnGuards",

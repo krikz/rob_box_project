@@ -172,7 +172,9 @@ def test_make_hailo_node_launch_hailo_includes_legacy_input_no_nms():
 def test_make_hailo_node_launch_default_confidence_override():
     """confidence_threshold_default пробрасывается в DeclareLaunchArgument."""
     factory = _load_factory()
+    from launch import LaunchContext
     from launch.actions import DeclareLaunchArgument
+    from launch.utilities import perform_substitutions
 
     ld = factory.make_hailo_node_launch(
         executable='vision_face',
@@ -183,7 +185,12 @@ def test_make_hailo_node_launch_default_confidence_override():
     args_by_name = {
         e.name: e for e in ld.entities if isinstance(e, DeclareLaunchArgument)
     }
-    assert args_by_name['confidence_threshold'].default_value == '0.42', (
+    # Humble: ``DeclareLaunchArgument.default_value`` — список
+    # Substitution'ов, а не строка; раскрываем его в пустом контексте.
+    default = perform_substitutions(
+        LaunchContext(), args_by_name['confidence_threshold'].default_value
+    )
+    assert default == '0.42', (
         'default_value confidence_threshold должен быть '
         'confidence_threshold_default (0.42), не hardcoded.'
     )
@@ -192,6 +199,8 @@ def test_make_hailo_node_launch_default_confidence_override():
 def test_make_hailo_node_launch_node_executable_and_name_match():
     """Node(executable=name) и Node(name=name) — один executable-параметр."""
     factory = _load_factory()
+    from launch import LaunchContext
+    from launch.utilities import perform_substitutions
     from launch_ros.actions import Node
 
     ld = factory.make_hailo_node_launch(
@@ -204,11 +213,16 @@ def test_make_hailo_node_launch_node_executable_and_name_match():
     nodes = [e for e in ld.entities if isinstance(e, Node)]
     assert len(nodes) == 1
     node = nodes[0]
-    assert node.executable == 'vision_hailo'
-    assert node.name == 'vision_hailo'
-    assert node.package == 'rob_box_perception'
-    assert node.output == 'screen'
-    assert isinstance(node.parameters, list) and len(node.parameters) == 1
+    # launch_ros 0.19 (Humble) не даёт публичных ``executable``/``name``/
+    # ``package``/``parameters``: пакет и executable — ``node_package`` /
+    # ``node_executable``, ``node_name`` бросает RuntimeError до execute(),
+    # поэтому имя и параметры читаем из name-mangled полей конструктора,
+    # а ``output`` — список Substitution'ов.
+    assert node.node_executable == 'vision_hailo'
+    assert node._Node__node_name == 'vision_hailo'
+    assert node.node_package == 'rob_box_perception'
+    assert perform_substitutions(LaunchContext(), node.output) == 'screen'
+    assert len(node._Node__parameters) == 1
 
 
 def test_vision_face_launch_smoke_returns_launch_description():

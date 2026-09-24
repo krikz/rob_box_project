@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+import pytest
+
+from rob_box_mcp_tools.core.arranger import BEATS_PER_BAR
 from rob_box_mcp_tools.core.rtttl_compose import (
+    RtttlMelody,
+    detect_contour_breaks,
+    detect_half_time_risk,
     detect_key,
     melody_to_compose_params,
     rtttl_to_melody,
 )
+from rob_box_mcp_tools.core.rtttl_library import RtttlLibrary
 
 
 def test_rtttl_to_melody_parses_bpm_and_notes():
@@ -82,3 +89,486 @@ def test_melody_snapped_to_bar_with_tail_rest():
     # 2 восьмые = 1.0 доля, не кратно 4 → хвостовая пауза 3.0.
     assert params["lead_midi"] == "79, 79, None"
     assert params["lead_dur"] == "0.5, 0.5, 3"
+
+
+def test_melody_without_anacrusis_is_not_padded_at_head():
+    """Первая звучащая нота НЕ короче второй → не затакт, лид-ин не добавляется
+    (byte-identical golden для тем без затакта, issue #2960)."""
+    melody = rtttl_to_melody("x:d=8,o=5,b=100:8g5,8g5")
+    params = melody_to_compose_params(melody)
+    assert params["lead_midi"] == "79, 79, None"
+    assert params["decisions"]["anacrusis_pad_beats"] == 0.0
+
+
+def test_anacrusis_pad_puts_first_strong_note_on_bar_downbeat():
+    """issue #2960: гимн России (``national_2``, RTTTL ``8g,8p,c6,...``)
+    начинается с затакта — короткой ноты G перед сильной C6. Аранжировщик
+    раньше ставил ПЕРВУЮ ноту темы (затакт) на долю 0, поэтому опорная нота
+    C6 («си-») оказывалась на доле 1 — мимо каркаса ударных (X на 0/4) и
+    смены аккорда пэда (по тактам). Детектор затакта должен сдвинуть сетку
+    паузой так, чтобы онсет C6 стал кратен такту (4 доли), и совпал со
+    сменой аккорда.
+    """
+    library = RtttlLibrary()
+    entry = library.get("national_2")
+    assert entry is not None
+    melody = rtttl_to_melody(entry["rtttl"])
+    params = melody_to_compose_params(melody)
+
+    # Лид-ин затакта записан в decisions (ADR-0132 — для партитуры).
+    pad = params["decisions"]["anacrusis_pad_beats"]
+    assert pad > 0
+
+    midi_tokens = [None if t == "None" else int(t) for t in params["lead_midi"].split(", ")]
+    dur_tokens = [float(t) for t in params["lead_dur"].split(", ")]
+
+    # Онсет первой звучащей ноты после лид-ина (G затакт) и следующей за ним
+    # сильной ноты (C — «си-» гимна: pitch-class 0).
+    onset = 0.0
+    sounding = []
+    for m, d in zip(midi_tokens, dur_tokens):
+        if m is not None:
+            sounding.append((onset, m))
+        onset += d
+    strong_onset, strong_midi = sounding[1]
+    assert strong_midi % 12 == 0  # C
+    assert strong_onset % BEATS_PER_BAR == 0
+
+    # Смена аккорда пэда совпадает с онсетом сильной ноты.
+    chord_starts = {c.start for c in params["harmony"].chords}
+    assert strong_onset in chord_starts
+
+
+# ---------------------------------------------------------------------------
+# #2839: бас эталонных тем держится лада
+# ---------------------------------------------------------------------------
+
+#: Эталонные темы из встроенной библиотеки (ключи ``RtttlLibrary.get``).
+#: Гимн — тот самый, на котором 23.09 бас играл C F# G G# A G# G C#.
+_REFERENCE_THEMES = (
+    "national_2", "hallofth", "hallofth_2", "stilldre", "terminat", "mariobro",
+)
+
+
+@pytest.fixture(scope="module")
+def reference_harmonies(tmp_path_factory):
+    from rob_box_mcp_tools.core.rtttl_library import RtttlLibrary
+
+    db = tmp_path_factory.mktemp("rtttl") / "lib.db"
+    library = RtttlLibrary(db_path=str(db))
+    out = {}
+    for key in _REFERENCE_THEMES:
+        entry = library.get(key)
+        assert entry is not None, f"эталонной темы {key} нет в библиотеке"
+        params = melody_to_compose_params(rtttl_to_melody(entry["rtttl"]))
+        out[key] = params["harmony"]
+    return out
+
+
+def _scale_pcs(harmony):
+    from rob_box_mcp_tools.core.arranger import SCALE_INTERVALS, VALID_ROOTS
+
+    root = VALID_ROOTS.index(harmony.root)
+    return {(root + i) % 12 for i in SCALE_INTERVALS[harmony.scale]}
+
+
+def _chord_under(harmony, beat):
+    for chord in harmony.chords:
+        if chord.start <= beat < chord.start + chord.beats:
+            return chord
+    return harmony.chords[-1]
+
+
+@pytest.mark.parametrize("key", _REFERENCE_THEMES)
+def test_reference_bass_stays_in_key(reference_harmonies, key):
+    """Внеладовых нот баса (по длительности) не больше 10%.
+
+    До #2839 хроматический подход длиной в целый шаг баса давал 20-39%
+    внеладового баса на этих темах — на слух «лютый мусор».
+    """
+    harmony = reference_harmonies[key]
+    scale = _scale_pcs(harmony)
+    total = sum(dur for _note, dur in harmony.bass)
+    outside = sum(
+        dur for note, dur in harmony.bass
+        if note is not None and note % 12 not in scale
+    )
+    assert outside / total <= 0.10, f"{key}: вне лада {outside / total:.1%}"
+
+
+@pytest.mark.parametrize("key", _REFERENCE_THEMES)
+def test_reference_bass_length_matches_theme(reference_harmonies, key):
+    """Инвариант: сумма длительностей баса равна длине темы нота в ноту."""
+    harmony = reference_harmonies[key]
+    assert sum(d for _n, d in harmony.bass) == sum(d for _n, d in harmony.lead)
+
+
+@pytest.mark.parametrize("key", _REFERENCE_THEMES)
+def test_reference_bass_long_notes_are_in_key_or_in_chord(
+    reference_harmonies, key
+):
+    """Внеладовая нота баса длиннее полубита допустима только как тон аккорда.
+
+    Короткий проход — краска; длинная внеладовая нота — фальшь. Исключение
+    — тон заимствованного аккорда, выбранного гармонизацией: там бас
+    обязан играть вместе с подкладом, иначе разойдётся уже с ним.
+    """
+    harmony = reference_harmonies[key]
+    scale = _scale_pcs(harmony)
+    cursor = 0.0
+    for note, dur in harmony.bass:
+        if note is not None and dur > 0.5 and note % 12 not in scale:
+            chord = _chord_under(harmony, cursor)
+            assert note % 12 in chord.pitch_classes, (
+                f"{key}: длинная внеладовая нота {note} на бите {cursor}"
+            )
+        cursor += dur
+
+
+def test_approach_is_chromatic_only_across_a_pentatonic_gap():
+    """Хроматика в подходе — только там, где у лада нет ступени ближе тона.
+
+    В ля-минорной пентатонике (A C D E G) под корнем C нет ступени на
+    полутон или тон ниже (B и A# вне лада), поэтому подход снизу —
+    хроматический B, разрешающийся в корень на полтона. Сверху D —
+    ступень лада, и если она ближе к звучащей ноте, берётся она.
+    """
+    from rob_box_mcp_tools.core.harmonize import _approach_note
+
+    a_minor_pentatonic = frozenset({9, 0, 2, 4, 7})
+    c3 = 48
+    # Звучит A2 — снизу ближе, ступени нет → хроматический B2 на полтона.
+    assert _approach_note(45, c3, a_minor_pentatonic) == 47
+    # Звучит E3 — сверху ближе, ступень D3 в ладу.
+    assert _approach_note(52, c3, a_minor_pentatonic) == 50
+
+
+def test_o7_garbage_style_theme_is_transposed_into_working_register():
+    """issue #2840: тема в o=7 (как мусорная ``russiann``) визжала в C7-G7 —
+    ``imperialbrass([100, 98, 96, ...])``. После нормализации регистра
+    максимум лида обязан лежать не выше MIDI 88."""
+    melody = rtttl_to_melody(
+        "RussianN:d=4,o=7,b=125:"
+        "2e,d,c,2d,c,d,2e,g,e,1d,2e,d,c,2d,c,d,2e,g,e,1d"
+    )
+    before = max(m for m, _ in melody.notes)
+    assert before >= 96  # до нормализации — реально в o=7 (визг)
+
+    params = melody_to_compose_params(melody)
+    tokens = params["lead_midi"].split(", ")
+    lead_pitches = [int(tok) for tok in tokens if tok != "None"]
+    assert max(lead_pitches) <= 88
+
+
+def test_theme_already_in_working_register_is_not_shifted():
+    """Тема, уже стоящая в рабочем регистре лида, не должна транспонироваться
+    — ``lead_midi`` обязан остаться нота в ноту, иначе существующие лупы
+    поплывут по высоте без всякой на то причины."""
+    melody = rtttl_to_melody("fifth:d=4,o=5,b=63:8p,8g5,8g5,8g5,2d#5")
+    params = melody_to_compose_params(melody)
+    assert params["lead_midi"] == "None, 79, 79, 79, 75"
+
+
+def test_real_archive_known_themes_capped_after_register_normalize(tmp_path):
+    """Регрессия живого прогона 23.09 (issue #2840): нормализация по одной
+    медиане пропускала ``terminat`` — median=80 (уже в рабочем регистре,
+    сдвиг 0), но max=99 (несколько высоких проходящих нот тянут потолок
+    за собой, медиана их не видит). Проверяем на РЕАЛЬНОМ архиве
+    (``RtttlLibrary()`` без ``archive_path`` — настоящий бандл), не на
+    реконструированных записях."""
+    lib = RtttlLibrary(db_path=str(tmp_path / "real_register.db"))
+    keys = [
+        "national_2", "hallofth", "stilldre",
+        "terminat", "mariobro", "russiann",
+    ]
+    for key in keys:
+        rec = lib.get(key)
+        assert rec is not None, key
+        melody = rtttl_to_melody(rec["rtttl"])
+        params = melody_to_compose_params(melody)
+        tokens = params["lead_midi"].split(", ")
+        lead_pitches = [int(tok) for tok in tokens if tok != "None"]
+        assert max(lead_pitches) <= 88, (key, lead_pitches)
+
+
+# ---------------------------------------------------------------------------
+# #2876: пэд не тонет в басе, затакт не рвёт лид скачком в две октавы
+# ---------------------------------------------------------------------------
+
+#: Живой прогон 23.09.2026 («диджей Снупдог»): ``stilldre_2`` — затакт на
+#: MIDI 60 против тела фразы на 75-77 (скачок 15-17 полутонов), плюс
+#: подклад ``strings`` (41-58) сидел прямо на басе ``moogbass`` (звучащий
+#: диапазон 41-48 после компенсации ``SYNTH_SEMITONE_SHIFT``). Остальные
+#: три темы — тот же архив, без затакта: регрессия на то, что фикс не
+#: портит обычные темы.
+_PAD_REGISTER_THEMES = ("stilldre_2", "national_2", "hallofth_2", "nextepis")
+
+
+@pytest.fixture(scope="module")
+def pad_register_harmonies(tmp_path_factory):
+    from rob_box_mcp_tools.core.rtttl_library import RtttlLibrary as _Lib
+
+    db = tmp_path_factory.mktemp("rtttl_2876") / "lib.db"
+    library = _Lib(db_path=str(db))
+    out = {}
+    for key in _PAD_REGISTER_THEMES:
+        entry = library.get(key)
+        assert entry is not None, f"эталонной темы {key} нет в библиотеке"
+        assert entry["name"] == key, (key, entry["name"])
+        params = melody_to_compose_params(rtttl_to_melody(entry["rtttl"]))
+        out[key] = params["harmony"]
+    return out
+
+
+@pytest.mark.parametrize("key", _PAD_REGISTER_THEMES)
+def test_pad_never_sinks_below_c3(pad_register_harmonies, key):
+    """Пэд не опускается ниже MIDI 48 (C3) ни на одной ноте ни одного тона."""
+    harmony = pad_register_harmonies[key]
+    pad_notes = [
+        note for tones, _dur in harmony.pad if tones is not None for note in tones
+    ]
+    assert pad_notes, key
+    assert min(pad_notes) >= 48, (key, min(pad_notes))
+
+
+@pytest.mark.parametrize("key", _PAD_REGISTER_THEMES)
+def test_pad_never_overlaps_bass_range(pad_register_harmonies, key):
+    """Диапазон пэда и диапазон баса (звучащая высота) не пересекаются.
+
+    До #2876 у ``stilldre_2`` пэд (41-58) и бас (36-48) делили полосу
+    41-48 целиком; потолок пэда знал только о теме, не о басе.
+    """
+    harmony = pad_register_harmonies[key]
+    pad_notes = [
+        note for tones, _dur in harmony.pad if tones is not None for note in tones
+    ]
+    bass_notes = [note for note, _dur in harmony.bass if note is not None]
+    assert pad_notes and bass_notes, key
+    assert min(pad_notes) > max(bass_notes), (
+        key, "пэд", min(pad_notes), "бас", max(bass_notes),
+    )
+
+
+@pytest.mark.parametrize("key", _PAD_REGISTER_THEMES)
+def test_lead_has_no_pickup_driven_octave_leap(pad_register_harmonies, key):
+    """Соседние ноты лида не расходятся больше чем на октаву из-за затакта.
+
+    До #2876 у ``stilldre_2`` затакт на MIDI 60 стоял вплотную к телу
+    фразы на 75-77 — скачок 15-17 полутонов на каждом из четырёх повторов.
+    """
+    harmony = pad_register_harmonies[key]
+    pitches = [note for note, _dur in harmony.lead if note is not None]
+    assert len(pitches) >= 2, key
+    leaps = [abs(a - b) for a, b in zip(pitches, pitches[1:])]
+    assert max(leaps) <= 12, (key, max(leaps))
+
+
+# ---------------------------------------------------------------------------
+# #2873/ADR-0132 §7 (PR-8): точная таблица ожидаемой тональности по каждой
+# теме архива (бывшая ``_KEY_REFERENCE``/``_KEY_KNOWN_MISSES`` + xfail-тесты
+# ``test_reference_theme_key``/``test_known_key_misses``) БОЛЬШЕ НЕ ГЕЙТ CI.
+#
+# Подгонка весов ``detect_key`` под 36 конкретных тем однажды уже сменила
+# тональность у 24% архива (issue #2873) — «улучшало» ровно те темы, ради
+# которых её правили, и портило случайное подмножество остальных. Такой
+# тест поощряет тот же цикл: жалоба на тему X → хак под X → регрессия Y.
+#
+# Вместо гейта:
+#   * ``scripts/music/reference_report.py`` — информационный отчёт точности
+#     ``detect_key`` (auto vs profile) по этим же темам + по сиду-выборке
+#     архива. НЕ падает, только печатает таблицу.
+#   * ``test/test_arrangement_invariants.py`` — гейт CI: инварианты
+#     аранжировки (бас в ладу/аккорде, регистры, лид, санитайзер,
+#     детерминизм), а не конкретная тональность конкретной песни.
+# ---------------------------------------------------------------------------
+
+
+def test_opening_on_tonic_beats_long_final_subtonic():
+    """Позиционная опора (#2873) без архива: тема начинается с 1-2-♭3-4-5
+    си-минора, а кончается долгим A (VII ступень). Первая нота и начало
+    фразы держат си-минор против гистограммы."""
+    b, cs, d, e, fs, a = 71, 73, 74, 76, 78, 81
+    midi = [b, cs, d, e, fs, d, fs, b, a, fs, d, fs, a]
+    durs = [0.25] * 12 + [2.0]
+    root, scale = detect_key(midi, durs)
+    assert root == "B"
+    assert scale in ("minor", "harmonicMinor")
+
+
+def test_pickup_on_dominant_does_not_become_tonic():
+    """Затакт (короткая нота перед долгой) не утверждает тонику: гимн
+    начинается с G/8 перед C/4, тональность — до-мажор, не соль."""
+    g4, c5, e5, f5 = 67, 72, 76, 77
+    midi = [g4, c5, g4, e5, f5, e5, c5, g4]
+    durs = [0.5, 1.0, 0.5, 1.0, 0.5, 0.5, 1.0, 1.0]
+    assert detect_key(midi, durs) == ("C", "major")
+
+
+def test_short_first_note_on_tonic_triad_is_not_a_pickup():
+    """Общий тай-брейк параллельного мажора/минора (issue #2961).
+
+    Короткая первая нота — НЕ всегда затакт: если она сама входит в
+    тоническое трезвучие кандидата (а не только «короче следующей»),
+    отбрасывать её нельзя — иначе тема, начинающаяся с укороченной
+    тоники и затем подолгу стоящая на терции (относительный мажор той
+    же гаммы), гармонизуется в терцовый мажор вместо истинного минора:
+    гистограмма высот у параллельных D minor/F major идентична, разница
+    — только в том, ГДЕ в теме звучит тоника. Синтетический пример ниже
+    транспонируем в любую тональность (не привязан к конкретной песне
+    архива): 16-я D перед долгими E-F-E-F, короткая тоника, две долгие
+    ноты на терции (F) — раньше (без правки) уезжало в F major, эта
+    правка удерживает D minor.
+    """
+    d, e, f, a = 62, 64, 65, 69
+    midi = [d, e, f, e, f, a]
+    durs = [0.25, 0.5, 4.0, 0.5, 4.0, 1.0]
+    assert detect_key(midi, durs) == ("D", "minor")
+
+
+# ---------------------------------------------------------------------------
+# issue #2959: общий детектор качества мелодии (contour breaks / half-time).
+#
+# Разбор гимна России в живой сессии 24.09.2026 показал класс ошибки
+# (нота промахнулась на октаву в кульминации восходящей фразы), но товарищ
+# Шифу попросил не чинить руками одну запись, а построить ОБЩИЙ детектор —
+# эти тесты фиксируют его поведение на синтетических примерах (не на
+# конкретной песне) плюс регресс на реальном архиве, где он действительно
+# ловит два независимых транскрипта одной темы (``national_2``/``soviethy``).
+# ---------------------------------------------------------------------------
+
+
+def test_contour_break_autofixes_unambiguous_octave_error():
+    """3-шаговый разбег вверх, скачок вниз почти на октаву, фраза кончается
+    паузой — ровно паттерн «великая слава» из issue #2959 (синтетически,
+    не завязано на саму песню). Однозначно чинится."""
+    melody = RtttlMelody(
+        bpm=120,
+        notes=(
+            (72, 1.0), (74, 1.0), (76, 1.0), (77, 1.0), (67, 1.0), (None, 1.0),
+        ),
+    )
+    breaks = detect_contour_breaks(melody)
+    assert len(breaks) == 1
+    b = breaks[0]
+    assert b.index == 4
+    assert b.auto_fixable is True
+    assert b.octave_shift == 12
+    # продолжает разбег шагом (77->79)
+    assert b.note_at + b.octave_shift == 79
+
+
+def test_contour_break_short_run_is_flagged_not_fixed():
+    """Всего 2 шага разбега перед скачком — детектор ПОМЕЧАЕТ, но не правит
+    (issue #2959, живая проверка: ровно такой 2-шаговый разбег на РЕАЛЬНОМ
+    архиве оказался законным ходом мелодии — B5->E5, «свя-щЕн-ная» —
+    а не ошибкой; см. докстринг ``detect_contour_breaks``)."""
+    melody = RtttlMelody(
+        bpm=120, notes=((72, 1.0), (74, 1.0), (76, 1.0), (65, 1.0)),
+    )
+    breaks = detect_contour_breaks(melody)
+    assert len(breaks) == 1
+    assert breaks[0].auto_fixable is False
+    assert breaks[0].octave_shift == 0
+
+
+def test_contour_break_ignores_leap_across_rest():
+    """Скачок ЧЕРЕЗ паузу — не разрыв: пауза сама и есть граница фразы
+    (issue #2959, живая проверка на «К Элизе»: разбег обрывается паузой, а
+    с неё стартует повтор темы на новой высоте — не ошибка транскрипции)."""
+    melody = RtttlMelody(
+        bpm=120,
+        notes=(
+            (72, 1.0), (74, 1.0), (76, 1.0), (77, 1.0), (None, 0.5), (60, 1.0),
+        ),
+    )
+    assert detect_contour_breaks(melody) == []
+
+
+def test_contour_break_not_fixed_when_it_resolves_smoothly_forward():
+    """Скачок, который сам сразу гладко разрешается следующим шагом, —
+    встроен в непрерывную линию (реальный широкий мелодический ход, не
+    одинокая ошибка): помечается, но не правится (issue #2959, живая
+    проверка: ровно такой паттерн — «The Final Countdown», скачок к
+    кульминации и сразу шаг вниз на разрешение)."""
+    melody = RtttlMelody(
+        bpm=120,
+        notes=(
+            (81, 1.0), (79, 1.0), (78, 1.0), (76, 1.0), (84, 1.0), (83, 1.0),
+        ),
+    )
+    breaks = detect_contour_breaks(melody)
+    assert len(breaks) == 1
+    assert breaks[0].auto_fixable is False
+
+
+def test_melody_to_compose_params_applies_contour_fix_and_records_decisions():
+    """Проводка через ``melody_to_compose_params``: однозначный разрыв
+    применяется к фактическим ``lead_midi``, а решение видно в
+    ``decisions`` (партитура/``lookup_melody``, ADR-0132)."""
+    from rob_box_mcp_tools.core.harmonize import HarmonizeOptions
+
+    melody = RtttlMelody(
+        bpm=120,
+        notes=(
+            (72, 1.0), (74, 1.0), (76, 1.0), (77, 1.0), (67, 1.0), (None, 1.0),
+        ),
+    )
+    options = HarmonizeOptions(lead_octave="keep")
+    params = melody_to_compose_params(melody, options=options)
+    midi = [
+        int(x) if x != "None" else None
+        for x in params["lead_midi"].split(", ")
+    ]
+    assert midi[4] == 79  # 67 -> +12
+    assert params["decisions"]["contour_breaks_fixed"] == 1
+    assert params["decisions"]["contour_breaks_flagged"] == 0
+
+
+def test_half_time_risk_flags_dense_all_short_notes_at_high_tempo():
+    """Длинная тема, высокий темп, почти все ноты <= 16-й, ни одной
+    долгой — эвристика «половинные длительности» (issue #2959)."""
+    notes = tuple((72 + (i % 5), 0.25) for i in range(30))
+    melody = RtttlMelody(bpm=180, notes=notes)
+    risk = detect_half_time_risk(melody)
+    assert risk is not None
+    assert "половинных" in risk
+
+
+def test_half_time_risk_none_with_a_long_note():
+    """Та же плотная тема, но с одной долгой нотой — подозрение снимается."""
+    notes = tuple((72 + (i % 5), 0.25) for i in range(29)) + ((72, 2.0),)
+    melody = RtttlMelody(bpm=180, notes=notes)
+    assert detect_half_time_risk(melody) is None
+
+
+def test_half_time_risk_none_at_normal_tempo():
+    """Тот же ритм на небыстром темпе — обычное дело для рингтона, не
+    подозрительно (issue #2959, живая проверка: наивная версия без порога
+    по темпу помечала ~40% архива — попсовые рингтоны штатно состоят из
+    одних восьмых/шестнадцатых)."""
+    notes = tuple((72 + (i % 5), 0.25) for i in range(30))
+    melody = RtttlMelody(bpm=90, notes=notes)
+    assert detect_half_time_risk(melody) is None
+
+
+def test_half_time_risk_none_for_short_motif():
+    """Короткий мотив (сигнал/рифф) без долгих нот — законно, не гейтить."""
+    melody = RtttlMelody(bpm=200, notes=((72, 0.25), (74, 0.25), (76, 0.25)))
+    assert detect_half_time_risk(melody) is None
+
+
+def test_real_archive_national_2_and_soviethy_contour_fix(tmp_path):
+    """Регресс на реальном архиве (issue #2959): ОДНА и та же тема
+    Александрова хранится дважды под разными именами (``national_2``,
+    ``soviethy`` — «Soviet Hymne», транспонированная копия) и в ОБЕИХ
+    независимо ловится один и тот же класс ошибки (октава в кульминации
+    восходящей фразы) — детектор не завязан на конкретное имя/запись, он
+    находит паттерн там, где он реально есть."""
+    lib = RtttlLibrary(db_path=str(tmp_path / "quality_real.db"))
+    for name in ("national_2", "soviethy"):
+        rec = lib.get(name)
+        assert rec is not None
+        melody = rtttl_to_melody(rec["rtttl"])
+        breaks = detect_contour_breaks(melody)
+        fixed = [b for b in breaks if b.auto_fixable]
+        assert fixed, f"{name}: ожидался хотя бы один однозначный разрыв"

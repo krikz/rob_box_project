@@ -78,10 +78,24 @@ RC4 дал форме огибающую amp, но мелодия внутри �
 (``renardo_lib/TempoClock.py:290``) для жанров, где ровная сетка физически
 не звучит как жанр (джаз, блюз, шафл). Материал по определению
 (``CompositionSpec.swing``), не форма — арранжировщик его только выводит.
+
+Ручки сборки (ADR-0132, PR-3)
+=============================
+
+Музыкальные авто-решения сборки выведенной аранжировки — второй голос,
+удвоение темы октавой, баланс громкостей ролей — стали ручками
+:class:`ArrangeOptions` (``counter``, ``theme_octaves``, ``levels``), ноты
+партий — ручками ``harmonize.HarmonizeOptions``. По умолчанию все ``auto``
+= сегодняшнее поведение байт-в-байт (``test_arranger_golden``); итог
+каждой ручки пишется в ``CompositionSpec.decisions`` для партитуры
+(:mod:`core.score_sheet`). Автоматикой остаётся только то, что чинит звук
+или рантайм (слоты, ``SYNTH_SEMITONE_SHIFT``, клампы ``render``). До
+модели ручки доходят в PR-4 (параметры ``compose_music``).
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -118,6 +132,110 @@ ROLE_PROFILE: Dict[str, Tuple[str, int, float]] = {
 #: Роли, которые играют сэмплами через ``play(...)``, а не синтом.
 DRUM_ROLES = frozenset({"drums", "hats", "perc"})
 
+
+def _octave_hz(octave: int) -> float:
+    """Частота нижней границы научной октавы (issue #2979).
+
+    ``C_n = 16.3516 * 2**n`` Гц (A4=440 Гц) — справочная шкала (Scientific
+    Pitch Notation), НЕ измерение и не подбор под трек. Используется только
+    чтобы вывести границы частотных полос ролей из их СОБСТВЕННЫХ октав в
+    :data:`ROLE_PROFILE`, одинаково для любой темы/синта.
+    """
+    return 16.3516 * (2 ** octave)
+
+
+#: Роль -> (тип фильтра плеера, частота среза в Гц) — «этажи» ролей
+#: (issue #2979): партии не толкаются в одной полосе, потому что верхние
+#: держащие роли не лезут в полосу баса, а бас не лезет выше своей.
+#:
+#: Значения выведены из октав :data:`ROLE_PROFILE`, а не подобраны на слух:
+#: * ``pad``/``lead``/``counter`` — HPF на нижней границе СОБСТВЕННОЙ
+#:   октавы роли. Самая низкая штатная нота роли и так не ниже этой
+#:   частоты (:func:`_render_melodic_args` берёт ``oct`` из того же
+#:   профиля) — полоса режет только то, что физически принадлежит басу:
+#:   гул, просочившийся снизу, никогда собственный материал роли.
+#: * ``bass`` — LPF на границе ДВУМЯ октавами выше басовой. Это пропускает
+#:   2-ю и 3-ю гармоники фундаментальной ноты (нужны для восприятия высоты
+#:   на маленьком динамике/16 kHz ReSpeaker — сам фундаментал там на грани
+#:   воспроизводимости, см. acceptance issue #2979; АЧХ капсюля не
+#:   измерена, это оценка по стандартной шкале, не по стенду) и обрезает
+#:   выше — не долезая до регистра лида.
+ROLE_BAND: Dict[str, Tuple[str, float]] = {
+    "bass": ("lpf", round(_octave_hz(ROLE_PROFILE["bass"][1] + 2), 1)),
+    "pad": ("hpf", round(_octave_hz(ROLE_PROFILE["pad"][1]), 1)),
+    "lead": ("hpf", round(_octave_hz(ROLE_PROFILE["lead"][1]), 1)),
+    "counter": ("hpf", round(_octave_hz(ROLE_PROFILE["counter"][1]), 1)),
+}
+
+#: Issue #2841 — жанровый луп (``loop(...)``) поверх ударных. В
+#: :data:`ROLE_PROFILE` его нет намеренно: фиксированного слота у лупа
+#: быть не может, все шесть уже розданы. Он занимает первый СВОБОДНЫЙ
+#: из d1-d3 (см. :func:`_render_loop_layer`).
+LOOP_ROLE = "loop"
+LOOP_SLOTS: Tuple[str, ...] = ("d1", "d2", "d3")
+#: Базовая громкость лупа: тише бочки (0.55) — луп несёт фактуру, а не
+#: долю, и не должен перекрывать выведенный из темы бит.
+LOOP_BASE_AMP = 0.35
+#: В форме без ударных (ambient) луп идёт за подкладом, но тише.
+LOOP_PAD_FOLLOW = 0.6
+
+#: Issue #2968 — одиночный FX-акцент (выстрел/сирена/скрэтч/лазер).
+#: Отдельная роль, не вариант :data:`LOOP_ROLE`: у лупа и FX разная
+#: логика громкости (луп следует за бочкой всю активную секцию, FX молчит
+#: почти всегда и звучит коротким всплеском на стыках) и разный каталог
+#: (:mod:`core.sample_fx` вместо :mod:`core.sample_loops`), хотя рендерятся
+#: оба через один и тот же ``loop(...)`` синт (нет отдельного FX-синта в
+#: Renardo — см. ``core/sample_fx.py``). Слот — тот же общий пул d1-d3.
+FX_ROLE = "fx"
+#: Базовая громкость FX-акцента — заметно тише лупа (0.35): по acceptance
+#: issue #2968 это «умеренная громкость», не перекрывающая микс, а не ещё
+#: один слой ударных.
+FX_BASE_AMP = 0.28
+#: Секции формы, которые считаются «стыком» для FX-акцента (issue #2968:
+#: «редко, на стыках секций/break», не в каждом такте). Имена взяты из
+#: :data:`FORMS` — секция, где форма явно меняет характер (брейк, гэп,
+#: бридж, дроп, кульминация), а не ровный проигрыш. Одно и то же имя может
+#: встретиться в нескольких формах — набор одинаковый для всех них.
+FX_BOUNDARY_SECTIONS = frozenset({"break", "gap", "bridge", "drop", "drop2", "peak", "swell"})
+
+#: Issue #2980 — «пространство» микса (Renardo ``room=``/``echo=``, уже
+#: подгружены :func:`_initialize_renardo` через ``effect_manager.reload()``,
+#: но до сих пор ничем не заполнены) как системный инструмент секций, а не
+#: под конкретную песню/синт: набор имён секций — тот же приём, что у
+#: :data:`FX_BOUNDARY_SECTIONS` — функция секции в форме, а не её название
+#: само по себе (одни и те же имена встречаются во всех формах).
+#:
+#: ``room`` — секции, где форма явно СНИМАЕТ плотность (интро до входа
+#: ритма, брейк после кульминации, гэп перед дропом, бридж, аутро, все
+#: секции амбиента): открытое, тихое пространство читается как воздух под
+#: пэдом. На плотных секциях (main/peak/drop) room тут не нужен — зал под
+#: полным миксом маскирует атаку баса и бочки, а не добавляет глубину.
+ROOM_SPACE_SECTIONS = frozenset({
+    "intro", "outro", "break", "gap", "bridge", "emerge", "drift", "recede",
+})
+#: ``echo`` — секции-кульминации: акцент на теме (echo повторяет саму
+#: ноту, а не хвост среды room), тот же принцип «яркая фишка на пике», что
+#: и у FX-акцента (issue #2968), не постоянная краска.
+ECHO_ACCENT_SECTIONS = frozenset({"peak", "drop", "drop2", "chorus2", "swell"})
+
+#: Базовое/акцентное значение ``room=`` у пэда (0..1 — доля от того, что
+#: живые пресеты (``migrations/006_music_github_presets.sql``: room=0.3..2)
+#: используют без клиппинга). Вне :data:`ROOM_SPACE_SECTIONS` пэд всё равно
+#: получает немного воздуха — тишина без room звучит суше, чем остальной
+#: микс, а не только на разряженных секциях.
+ROOM_BASE = 0.25
+ROOM_SPACE_BOOST = 0.6
+#: Кап ``room=`` для синта с долгим хвостом (:mod:`core.synth_traits`,
+#: ``long_release``). Зал поверх и без того держащейся ноты копит хвост
+#: ещё сильнее (acceptance issue #2980: «хвосты не копятся») — кап ниже
+#: буста, но не ноль: немного воздуха остаётся, зала — нет.
+ROOM_LONG_RELEASE_CAP = 0.3
+#: Базовое/акцентное значение ``echo=`` темы. Вне пика эхо молчит совсем
+#: (0.0 не рендерится — см. :func:`_render_space_arg`): echo — акцент
+#: пика, не постоянный эффект, в отличие от room.
+ECHO_BASE = 0.0
+ECHO_ACCENT = 0.25
+
 #: Полутоновые интервалы ладов, которые предъявляет схема ``compose_music``.
 #:
 #: Нужны ровно для одного: перевести ``progression`` (ступени лада) в сдвиг
@@ -144,6 +262,22 @@ SCALE_INTERVALS: Dict[str, Tuple[int, ...]] = {
 #: гармония вообще: слушатель слышит не смену аккорда, а сбой.
 BARS_PER_CHORD = 4
 
+#: Верхняя граница суммарного числа повторов ФИКСИРОВАННОЙ темы за один
+#: проход формы (issue #2965, «Drop It Like It's Hot»).
+#:
+#: :func:`_snap_plan_to_theme` раньше считал бюджет повторов только от
+#: длины формы (``total_bars / theme_bars``) — для темы из RTTTL-базы в
+#: 2 такта на форме ``arc`` (64 такта) это давало бюджет 32: одна и та же
+#: 2-тактовая фраза без единой вариации внутри секции звучала 32 раза
+#: подряд (live 24.09, `docker logs voice-assistant`, ``compose_music``
+#: сыграл «Полная форма звучит 154 секунд» на двух тактах материала).
+#: Бюджет — это число ПОВТОРОВ, а не тактов, поэтому капим именно его:
+#: короткая тема получает короткую форму, а не длинную форму той же
+#: фразы. 12 повторов на форму — это по-прежнему полная дуга
+#: intro→...→outro (см. :func:`_snap_plan_to_theme`), но не получасовой
+#: луп двух тактов.
+MAX_THEME_REPEATS = 12
+
 
 def _degree_to_semitones(degree: float, intervals: Sequence[int]) -> int:
     """Ступень лада -> полутоны, с переносом по октавам.
@@ -157,6 +291,30 @@ def _degree_to_semitones(degree: float, intervals: Sequence[int]) -> int:
     octave, step = divmod(index, size)
     return octave * 12 + intervals[step]
 
+#: Верхняя граница числа ОДНОВРЕМЕННО звучащих ролей в одной секции формы
+#: (issue #2978, инвентаризация статей по аранжировке 24.09.2026: «4-5
+#: партий максимум, не дублировать тембр»). Общий предел планирования
+#: состава — таблицы :data:`FORMS` проектируются под него, а не наоборот;
+#: число не подобрано ни под одну конкретную тему архива. Авто-добавленная
+#: роль ``counter`` (см. :func:`_section_intensity`) в подсчёт тоже входит.
+MAX_SIMULTANEOUS_ROLES = 5
+
+#: Максимальный шаг числа одновременно звучащих ролей между СОСЕДНИМИ
+#: секциями формы (issue #2978: «правило ±1 роль между соседними
+#: секциями» — контраст строится постепенным входом/уходом партий, а не
+#: разовой сменой всего состава на границе секции).
+MAX_ROLE_COUNT_STEP = 1
+
+#: Порог интенсивности темы (``lead``), начиная с которого она считается
+#: «солирующей» — звучит заметно, а не фоновым намёком (issue #2978:
+#: «тема звучит поверх минимального аккомпанемента»).
+SOLO_LEAD_INTENSITY = 0.5
+
+#: Сколько сопровождающих (не ``lead``) ролей ещё считается «минимальным
+#: аккомпанементом» рядом с солирующей темой. Больше — это уже обычная
+#: секция с полным составом, а не соло-момент.
+SOLO_MAX_ACCOMPANIMENT_ROLES = 2
+
 #: Формы: имя -> список секций ``(имя, тактов, {роль: интенсивность 0..1})``.
 #:
 #: Интенсивность умножается на базовую амплитуду роли. 0.0 = слой молчит
@@ -166,42 +324,77 @@ def _degree_to_semitones(degree: float, intervals: Sequence[int]) -> int:
 #: Формы намеренно НЕ симметричны: у секций разная длина, а кульминация
 #: приходит после брейка. Симметричная сетка 16/16/16/16 на слух — то же
 #: самое, что луп.
+#:
+#: С issue #2978 каждая форма — ещё и осознанный ПЛАН СОСТАВА: роли явно
+#: входят и уходят по ходу формы (пустая интенсивность = роль отсутствует
+#: в секции, а не просто тише), число одновременных ролей не превышает
+#: :data:`MAX_SIMULTANEOUS_ROLES`, а между соседними секциями оно меняется
+#: не больше чем на :data:`MAX_ROLE_COUNT_STEP` (см.
+#: :func:`form_role_plan_violations` — тест ``test_form_role_plan.py``
+#: гоняет её по каждой форме этого словаря). Роль ``counter`` — вторая
+#: линия выведенной аранжировки — везде, где явно выставлена в ``0.0``,
+#: намеренно выключена: она конкурирует с ``perc``/тесным бюджетом ролей
+#: за место в составе (см. :data:`ROLE_PROFILE`), и там, где формa уже
+#: занята пятью основными ролями (барабаны/хэты/бас/лид/пэд), у неё нет
+#: свободного слота в рамках :data:`MAX_SIMULTANEOUS_ROLES`. В ``ambient``
+#: (единственная форма без давки по ролям) она по-прежнему включается
+#: автоматически через :func:`_section_intensity`.
 FORMS: Dict[str, List[Tuple[str, int, Dict[str, float]]]] = {
     # Универсальная дуга. Дефолт: работает и для DJ-петли, и для трека.
+    #
+    # План состава (roles×count): intro {pad,lead}=2 -> build {pad,lead,
+    # hats}=3 -> main {pad,lead,hats,drums}=4 -> break {pad,lead,bass}=3
+    # -> peak {pad,lead,bass,drums}=4 -> outro {pad,lead,bass}=3. Тема
+    # заявлена сразу, вполголоса, поверх одного пэда — это и открывающие
+    # «минимум 2 голоса», и обязательная issue #2978 соло-секция (лид
+    # ≥ SOLO_LEAD_INTENSITY, аккомпанемент — один пэд). Пик — самая
+    # плотная секция формы (4 роли, как main, но громче: 1.0 против 0.8),
+    # брейк перед ним — провал на 1 роль, а не на весь состав разом.
     "arc": [
-        ("intro",  8,  {"pad": 0.65, "hats": 0.30}),
-        ("build",  8,  {"pad": 0.70, "hats": 0.55, "drums": 0.50, "bass": 0.70}),
-        ("main",  16,  {"pad": 0.45, "hats": 0.80, "drums": 1.00, "bass": 1.00,
-                        "lead": 0.95, "perc": 0.60}),
-        ("break",  8,  {"pad": 0.90, "hats": 0.25, "bass": 0.40, "lead": 0.55}),
-        ("peak",  16,  {"pad": 0.55, "hats": 1.00, "drums": 1.00, "bass": 1.00,
-                        "lead": 1.00, "perc": 0.85}),
-        ("outro",  8,  {"pad": 0.50, "hats": 0.20, "drums": 0.35, "bass": 0.30}),
+        ("intro",  8,  {"pad": 0.55, "lead": 0.55, "counter": 0.0}),
+        ("build",  8,  {"pad": 0.60, "lead": 0.65, "hats": 0.45, "counter": 0.0}),
+        ("main",  16,  {"pad": 0.45, "lead": 0.80, "hats": 0.70, "drums": 0.75,
+                        "counter": 0.0}),
+        ("break",  8,  {"pad": 0.85, "lead": 0.60, "bass": 0.35, "counter": 0.0}),
+        ("peak",  16,  {"pad": 0.55, "lead": 1.00, "bass": 1.00, "drums": 1.00,
+                        "counter": 0.0}),
+        ("outro",  8,  {"pad": 0.50, "lead": 0.35, "bass": 0.30, "counter": 0.0}),
     ],
     # Песенная форма: куплет тише припева, бридж снимает барабаны.
+    #
+    # План состава: intro {pad,hats}=2 -> verse {pad,hats,drums}=3 ->
+    # chorus {pad,hats,drums,lead}=4 -> bridge {pad,bass,lead}=3 (issue
+    # #2978 соло-секция: тема поверх пэда и баса, без ударных) -> chorus2
+    # {pad,bass,lead,drums}=4 -> outro {pad,bass,lead}=3.
     "verse_chorus": [
-        ("intro",   8,  {"pad": 0.60, "hats": 0.35}),
-        ("verse",  16,  {"pad": 0.50, "hats": 0.60, "drums": 0.70, "bass": 0.80,
-                         "lead": 0.55}),
-        ("chorus", 16,  {"pad": 0.60, "hats": 0.90, "drums": 1.00, "bass": 1.00,
-                         "lead": 1.00, "perc": 0.70}),
-        ("bridge",  8,  {"pad": 0.85, "hats": 0.20, "bass": 0.45, "lead": 0.60}),
-        ("chorus2", 16, {"pad": 0.65, "hats": 1.00, "drums": 1.00, "bass": 1.00,
-                         "lead": 1.00, "perc": 0.90}),
-        ("outro",   8,  {"pad": 0.55, "hats": 0.25, "bass": 0.35}),
+        ("intro",   8,  {"pad": 0.60, "hats": 0.35, "counter": 0.0}),
+        ("verse",  16,  {"pad": 0.55, "hats": 0.55, "drums": 0.55, "counter": 0.0}),
+        ("chorus", 16,  {"pad": 0.55, "hats": 0.85, "drums": 0.90, "lead": 0.90,
+                         "counter": 0.0}),
+        ("bridge",  8,  {"pad": 0.85, "bass": 0.40, "lead": 0.60, "counter": 0.0}),
+        ("chorus2", 16, {"pad": 0.60, "bass": 0.95, "lead": 1.00, "drums": 1.00,
+                         "counter": 0.0}),
+        ("outro",   8,  {"pad": 0.50, "bass": 0.30, "lead": 0.35, "counter": 0.0}),
     ],
     # Клубная: длинный разгон, тишина перед дропом, дроп на полную.
+    #
+    # План состава: intro {pad,hats,drums}=3 -> build {pad,hats,drums,
+    # bass}=4 -> gap {pad,bass,lead}=3 (issue #2978 соло-секция: тема
+    # выходит на самой тихой паузе формы, аккомпанемент — только пэд и
+    # бас, ни хэтов, ни бочки) -> drop {pad,bass,lead,drums}=4 -> break
+    # {pad,bass,lead}=3 -> drop2 {pad,bass,lead,drums}=4 -> outro
+    # {pad,bass,lead}=3.
     "buildup": [
-        ("intro",   8,  {"pad": 0.55, "hats": 0.40, "drums": 0.35}),
+        ("intro",   8,  {"pad": 0.55, "hats": 0.40, "drums": 0.35, "counter": 0.0}),
         ("build",  16,  {"pad": 0.70, "hats": 0.75, "drums": 0.70, "bass": 0.75,
-                         "lead": 0.40}),
-        ("gap",     4,  {"pad": 0.80}),
-        ("drop",   16,  {"hats": 1.00, "drums": 1.00, "bass": 1.00, "lead": 1.00,
-                         "perc": 0.90, "pad": 0.35}),
-        ("break",   8,  {"pad": 0.85, "bass": 0.45, "lead": 0.50}),
-        ("drop2",  16,  {"hats": 1.00, "drums": 1.00, "bass": 1.00, "lead": 0.95,
-                         "perc": 1.00, "pad": 0.40}),
-        ("outro",   8,  {"pad": 0.60, "hats": 0.20}),
+                         "counter": 0.0}),
+        ("gap",     4,  {"pad": 0.75, "bass": 0.30, "lead": 0.55, "counter": 0.0}),
+        ("drop",   16,  {"pad": 0.35, "bass": 1.00, "lead": 1.00, "drums": 1.00,
+                         "counter": 0.0}),
+        ("break",   8,  {"pad": 0.85, "bass": 0.45, "lead": 0.50, "counter": 0.0}),
+        ("drop2",  16,  {"pad": 0.40, "bass": 1.00, "lead": 0.95, "drums": 1.00,
+                         "counter": 0.0}),
+        ("outro",   8,  {"pad": 0.55, "bass": 0.25, "lead": 0.30, "counter": 0.0}),
     ],
     # Без ударной сетки: медленные наплывы, для «сделай что-то для души».
     #
@@ -229,6 +422,129 @@ VALID_ROOTS = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
 
 class ArrangementError(ValueError):
     """Спецификация не может быть развёрнута в корректный Renardo-код."""
+
+
+# ---------------------------------------------------------------------------
+# Проверка ввода (ADR-0132 PR-2): ошибка со списком вместо тихой замены
+# ---------------------------------------------------------------------------
+#
+# ``render``/``resolve_form`` по-прежнему страхуют рантайм (кламп bpm/swing,
+# неизвестная форма → arc, тоника → C), но до них неверное значение от
+# модели больше не доходит: ``compose_music`` проверяет ввод этими
+# функциями и возвращает понятную ошибку — модель исправит вызов, а не
+# будет думать, что сыграно то, что она просила. Стиль — как у
+# ``harmonize.check_drum_style``.
+
+#: Допустимый свинг восьмых (``render`` клампит сюда же).
+SWING_RANGE = (0.0, 0.3)
+
+#: Бемоль → диез той же высоты (тоника пишется в ``VALID_ROOTS`` диезами).
+_FLAT_SUFFIXES = ("b", "♭")
+_SHARP_SUFFIXES = ("#", "♯")
+
+
+def check_form(form: Optional[str]) -> str:
+    """Нормализовать форму (``None``/пусто → :data:`DEFAULT_FORM`).
+
+    Raises:
+        ArrangementError: неизвестная форма — со списком допустимых.
+    """
+    name = (form or DEFAULT_FORM).strip().lower()
+    if name not in FORMS:
+        raise ArrangementError(
+            f"Неизвестная форма form={form!r}. Доступны: "
+            f"{', '.join(sorted(FORMS))}. Повтори вызов с одной из них "
+            "или без form (по умолчанию arc)."
+        )
+    return name
+
+
+def check_root(root: Optional[str]) -> Optional[str]:
+    """Нормализовать тонику: ``'a'`` → ``'A'``, ``'Bb'`` → ``'A#'``.
+
+    ``None``/пусто → ``None`` (тоника не задана). Бемоль переводится в
+    диез той же высоты — это та же нота, а не замена.
+
+    Raises:
+        ArrangementError: не нота — со списком допустимых.
+    """
+    text = (root or "").strip()
+    if not text:
+        return None
+    letter, accidental = text[:1].upper(), text[1:]
+    if letter in VALID_ROOTS and accidental in ("",) + _SHARP_SUFFIXES + _FLAT_SUFFIXES:
+        shift = 1 if accidental in _SHARP_SUFFIXES else -1 if accidental else 0
+        return VALID_ROOTS[(VALID_ROOTS.index(letter) + shift) % 12]
+    raise ArrangementError(
+        f"Неизвестная тоника root={root!r}. Доступны: {', '.join(VALID_ROOTS)} "
+        "(бемоль можно: Bb = A#). Тоника — только нота, лад задаётся "
+        "отдельно: «ля минор» → root=\"A\", scale=\"minor\"."
+    )
+
+
+def check_scale(scale: Optional[str]) -> Optional[str]:
+    """Нормализовать лад к имени из :data:`SCALE_INTERVALS` (без учёта регистра).
+
+    ``None``/пусто → ``None`` (лад не задан).
+
+    Raises:
+        ArrangementError: неизвестный лад — со списком допустимых.
+    """
+    text = (scale or "").strip()
+    if not text:
+        return None
+    by_lower = {name.lower(): name for name in SCALE_INTERVALS}
+    if text.lower() in by_lower:
+        return by_lower[text.lower()]
+    raise ArrangementError(
+        f"Неизвестный лад scale={scale!r}. Доступны: "
+        f"{', '.join(SCALE_INTERVALS)}."
+    )
+
+
+def _as_number(value: object, knob: str) -> float:
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        raise ArrangementError(f"{knob}={value!r} — не число.") from None
+
+
+def check_bpm(bpm: object) -> Optional[float]:
+    """Проверить темп (``None`` → ``None``: темп не задан).
+
+    Raises:
+        ArrangementError: не число или вне :data:`BPM_RANGE` — раньше
+            молча зажималось в ``render``.
+    """
+    if bpm is None:
+        return None
+    value = _as_number(bpm, "bpm")
+    lo, hi = BPM_RANGE
+    if not lo <= value <= hi:
+        raise ArrangementError(
+            f"bpm={value:g} вне диапазона {lo:g}–{hi:g}. Задай темп в этих "
+            "пределах или не задавай (при name= темп возьмётся из мелодии)."
+        )
+    return value
+
+
+def check_swing(swing: object) -> float:
+    """Проверить свинг (``None`` → 0.0).
+
+    Raises:
+        ArrangementError: не число или вне :data:`SWING_RANGE` — раньше
+            молча зажималось в ``render``.
+    """
+    if swing is None:
+        return 0.0
+    value = _as_number(swing, "swing")
+    lo, hi = SWING_RANGE
+    if not lo <= value <= hi:
+        raise ArrangementError(
+            f"swing={value:g} вне диапазона {lo:g}–{hi:g}. 0 — ровная сетка, "
+            "0.1–0.2 — джаз/шафл/фанк."
+        )
+    return value
 
 
 @dataclass
@@ -299,6 +615,93 @@ class CompositionSpec:
     #: правки нот или длительностей. Это материал (ощущение времени), а не
     #: форма, поэтому поле, а не встроенная логика формы.
     swing: float = 0.0
+    #: ADR-0132: авто-решения сборки выведенной аранжировки (второй голос,
+    #: удвоение темы, сдвиги синтов) — только запись для партитуры,
+    #: :func:`render` её не читает.
+    decisions: Dict[str, object] = field(default_factory=dict, compare=False)
+    #: ADR-0132 PR-3 (ручка ``levels``): множитель базовой громкости роли
+    #: из :data:`ROLE_PROFILE` (и лупа). Пусто — баланс по умолчанию.
+    levels: Dict[str, float] = field(default_factory=dict)
+    #: Issue #2979: автодакинг баса под рисунок бочки (``amplify=var(...)``,
+    #: :func:`_duck_expr_from_drum_pattern`) — включён по умолчанию, как и
+    #: :attr:`filter_sweep`: это правка сведения «этажей», а не вкусовая
+    #: ручка под трек.
+    duck_bass: bool = True
+    #: Issue #2979: тот же автодакинг для пэда — опционально, выключен по
+    #: умолчанию (acceptance: «и пэда, опционально»). Пэд держит гармонию
+    #: всей секцией (см. :func:`_fmt_chord`), и не в каждом жанре ему нужно
+    #: продавливаться под бочку так же, как басу.
+    duck_pad: bool = False
+
+
+# ---------------------------------------------------------------------------
+# Ручки сборки слоёв (ADR-0132 PR-3)
+# ---------------------------------------------------------------------------
+
+#: Допустимые значения ручек ``counter``/``theme_octaves``.
+ON_OFF_AUTO: Tuple[str, ...] = ("auto", "on", "off")
+
+#: Пределы множителя громкости роли. 0 — роль молчит; потолок 1 (issue
+#: #2963, было 2 до 24.09.2026): множитель — усилитель, не аттенюатор,
+#: и в паре с несколькими одновременно звучащими тяжёлыми ролями (лид в
+#: октавах, контрголос, бас, марш) он и без того близок к бюджету громкости
+#: (:data:`ROLE_PROFILE`) — выше 1 масштаб суммы летит раньше, чем
+#: покомпонентный кап (``_cap_amp``/``masterlimiter``) успевает что-то
+#: спасти: ``_cap_amp`` режет КАЖДЫЙ ``amp=`` по отдельности своим max_amp
+#: (по умолчанию 0.85 в ``MusicManager``), а не их сумму.
+LEVEL_RANGE = (0.0, 1.0)
+
+
+def _check_level(role: object, value: object) -> None:
+    roles = sorted(set(ROLE_PROFILE) | {LOOP_ROLE, FX_ROLE})
+    if role not in roles:
+        raise ArrangementError(
+            f"levels: неизвестная роль {role!r}. Доступны: {', '.join(roles)}."
+        )
+    lo, hi = LEVEL_RANGE
+    number = isinstance(value, (int, float)) and not isinstance(value, bool)
+    if not number or not lo <= float(value) <= hi:  # type: ignore[arg-type]
+        raise ArrangementError(
+            f"levels: {role}={value!r} — нужен множитель {lo:g}..{hi:g} (1 — как есть)."
+        )
+
+
+@dataclass(frozen=True)
+class ArrangeOptions:
+    """Ручки сборки выведенной аранжировки (ADR-0132 PR-3).
+
+    Ноты партий решает ``harmonize.HarmonizeOptions``; здесь — то, что
+    решается при раскладке партий в слои и при рендере. Все по умолчанию —
+    сегодняшнее поведение байт-в-байт (``test_arranger_golden``). Модуль
+    не импортирует ``harmonize`` (его грузит ``tools/gen_tool_catalog.py``
+    отдельным файлом), поэтому классы живут раздельно.
+
+    Attributes:
+        counter: ``auto`` — второй голос только у плотной темы; ``on`` — и
+            у редкой; ``off`` — без второго голоса.
+        theme_octaves: ``auto`` — удвоение темы по параметру
+            ``theme_octaves`` :func:`spec_from_flat`, плотности и высоте
+            темы (:func:`_should_octave_double`); ``on`` — всегда;
+            ``off`` — никогда.
+        levels: роль → множитель громкости (``{"bass": 0.5}``), 0..1
+            (issue #2963: потолок 1 — множитель может только притушить
+            роль, не разогнать её выше бюджета :data:`ROLE_PROFILE`).
+    """
+
+    counter: str = "auto"
+    theme_octaves: str = "auto"
+    levels: Dict[str, float] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        for knob in ("counter", "theme_octaves"):
+            if getattr(self, knob) not in ON_OFF_AUTO:
+                raise ArrangementError(
+                    f"Неизвестное значение {knob}={getattr(self, knob)!r}. "
+                    f"Доступны: {', '.join(ON_OFF_AUTO)}."
+                )
+        for role, value in dict(self.levels).items():
+            _check_level(role, value)
+        object.__setattr__(self, "levels", {r: float(v) for r, v in dict(self.levels).items()})
 
 
 def _fmt(value: float) -> str:
@@ -435,12 +838,22 @@ def _snap_plan_to_theme(
     минимуме в один повтор шесть секций растянули бы такую тему на
     полчаса; с бюджетом длинная тема сама становится формой и играет
     один-два раза.
+
+    Бюджет также не выше :data:`MAX_THEME_REPEATS` (issue #2965) — с
+    другой стороны той же логики. Для КОРОТКОЙ темы (2-4 такта) бюджет от
+    длины формы получался огромным (32 повтора двухтактовой фразы на
+    64-тактовой ``arc``), и общая длина формы при этом почти не менялась
+    (см. :func:`form_duration_seconds`) — форма растягивалась под тот же
+    объём материала, вместо того чтобы стать короче вместе с темой.
+    Капая бюджет, а не количество тактов напрямую, сохраняем ту же
+    пропорциональную раздачу метода наибольших остатков: форма просто
+    сжимается целиком, оставаясь той же дугой в миниатюре.
     """
     if theme_bars <= 0:
         return list(plan)
 
     total_bars = sum(int(bars) for _n, bars, _i in plan)
-    budget = max(1, int(round(total_bars / float(theme_bars))))
+    budget = max(1, min(MAX_THEME_REPEATS, int(round(total_bars / float(theme_bars)))))
 
     # Наибольшие остатки: сначала целые части, потом по одному повтору
     # тем секциям, у которых дробный хвост больше. Без этого округление
@@ -507,6 +920,88 @@ def _section_intensity(role: str, intensities: Dict[str, float]) -> float:
     return float(intensities.get(role, 0.0))
 
 
+def _section_role_set(intensities: Dict[str, float]) -> frozenset:
+    """Роли, реально звучащие в секции (интенсивность > 0), включая
+    авто-``counter`` (:func:`_section_intensity`).
+
+    Единый источник «кто звучит», которым делятся :func:`form_role_plan_violations`
+    (тест FORMS) и :mod:`core.score_sheet` (партитура) — вместо того, чтобы
+    каждый вызывающий заново решал, что считать «ролью в секции».
+    """
+    return frozenset(
+        role for role in ROLE_PROFILE
+        if _section_intensity(role, intensities) > 0.0
+    )
+
+
+def _has_solo_section(
+    plan: Sequence[Tuple[str, int, Dict[str, float]]],
+    role_sets: Sequence[frozenset],
+) -> bool:
+    """Есть ли в форме хотя бы одна секция, где тема солирует (issue #2978).
+
+    «Солирует» — не просто «звучит», а звучит ГРОМЧЕ обычного намёка
+    (:data:`SOLO_LEAD_INTENSITY`) над МИНИМАЛЬНЫМ аккомпанементом (не
+    больше :data:`SOLO_MAX_ACCOMPANIMENT_ROLES` других ролей рядом).
+    """
+    for (_name, _bars, intensities), roles in zip(plan, role_sets):
+        if _section_intensity("lead", intensities) < SOLO_LEAD_INTENSITY:
+            continue
+        accompaniment = roles - {"lead"}
+        if len(accompaniment) <= SOLO_MAX_ACCOMPANIMENT_ROLES:
+            return True
+    return False
+
+
+def form_role_plan_violations(
+    plan: Sequence[Tuple[str, int, Dict[str, float]]],
+) -> List[str]:
+    """Нарушения плана состава формы (issue #2978), по-человечески описанные.
+
+    Не рантайм-проверка — :func:`render` её не вызывает и ничего не
+    подгоняет сама: это КОНТРАКТ таблицы :data:`FORMS`, который правит
+    формы обязаны соблюдать, а тест (``test_form_role_plan.py``) гоняет
+    его по каждой форме словаря, чтобы будущая правка формы не тихо
+    сломала дугу «слои входят и уходят», а получила явную ошибку теста.
+
+    Три правила (см. issue #2978 «Факты»/acceptance, инвентаризация статей
+    по аранжировке):
+
+    1. Не больше :data:`MAX_SIMULTANEOUS_ROLES` ролей одновременно.
+    2. Число одновременных ролей между соседними секциями меняется не
+       больше чем на :data:`MAX_ROLE_COUNT_STEP`.
+    3. Хотя бы одна секция, где тема солирует над минимальным
+       аккомпанементом (:func:`_has_solo_section`).
+
+    Returns:
+        Пустой список — форма валидна; иначе один пункт на нарушение.
+    """
+    role_sets = [_section_role_set(intensities) for _n, _b, intensities in plan]
+    counts = [len(roles) for roles in role_sets]
+    violations: List[str] = []
+    for (name, _bars, _i), count in zip(plan, counts):
+        if count > MAX_SIMULTANEOUS_ROLES:
+            violations.append(
+                f"{name}: {count} ролей одновременно "
+                f"(> {MAX_SIMULTANEOUS_ROLES})"
+            )
+    for (name_a, _ba, _ia), (name_b, _bb, _ib), count_a, count_b in zip(
+        plan, plan[1:], counts, counts[1:]
+    ):
+        if abs(count_b - count_a) > MAX_ROLE_COUNT_STEP:
+            violations.append(
+                f"{name_a}->{name_b}: состав меняется на {count_b - count_a:+d} "
+                f"ролей за раз (> ±{MAX_ROLE_COUNT_STEP})"
+            )
+    if not _has_solo_section(plan, role_sets):
+        violations.append(
+            "нет секции, где тема солирует (lead >= "
+            f"{SOLO_LEAD_INTENSITY}) над минимальным аккомпанементом "
+            f"(<= {SOLO_MAX_ACCOMPANIMENT_ROLES} ролей)"
+        )
+    return violations
+
+
 def _amp_envelope(
     role: str,
     plan: Sequence[Tuple[str, int, Dict[str, float]]],
@@ -531,6 +1026,59 @@ def _amp_envelope(
         amps.append(round(base_amp * intensity, 4))
         durs.append(int(bars) * BEATS_PER_BAR)
     return _merge_adjacent(amps, durs)
+
+
+def _synth_traits():
+    """Ленивый импорт :mod:`core.synth_traits` — та же причина, что у
+    :func:`_sample_loops`/:func:`_sample_fx`: ``tools/gen_tool_catalog.py``
+    грузит этот файл напрямую, без пакета, и импорт уровня модуля падает.
+    """
+    from . import synth_traits
+
+    return synth_traits
+
+
+def _render_space_arg(
+    synth: Optional[str],
+    plan: Sequence[Tuple[str, int, Dict[str, float]]],
+    sections: frozenset,
+    base: float,
+    accent: float,
+    long_release_cap: Optional[float],
+) -> Optional[str]:
+    """``room=``/``echo=`` var()-огибающая по функции секции (issue #2980).
+
+    Единственное, для чего здесь читается имя синта — узнать длину его
+    хвоста из :mod:`core.synth_traits` (``traits_of``) и не дать
+    залу/эху копить его ещё сильнее; выбор секций и величин не зависит от
+    того, какая это песня или какой конкретно синт — см. докстринги
+    :data:`ROOM_SPACE_SECTIONS`/:data:`ECHO_ACCENT_SECTIONS`.
+
+    Returns:
+        ``None``, если во всех секциях значение 0 (эхо вне пика для роли
+        без акцентных секций в текущей форме) — тогда аргумент вовсе не
+        добавляется в рендер, как и остальные молчащие слои этого модуля.
+    """
+    traits = _synth_traits().traits_of(synth)
+    ceiling = (
+        long_release_cap
+        if long_release_cap is not None and traits is not None and traits.long_release
+        else None
+    )
+    values: List[float] = []
+    durs: List[int] = []
+    for name, bars, _intensities in plan:
+        value = accent if name.lower() in sections else base
+        if ceiling is not None:
+            value = min(value, ceiling)
+        values.append(round(value, 4))
+        durs.append(int(bars) * BEATS_PER_BAR)
+    values, durs = _merge_adjacent(values, durs)
+    if all(v == 0 for v in values):
+        return None
+    if len(values) == 1:
+        return _fmt(values[0])
+    return f"var({_fmt_list(values)}, {_fmt_list(durs)})"
 
 
 #: Scale degrees per octave, used only to fold a transformed motif back
@@ -700,6 +1248,30 @@ def _dur_var(
     return _merge_adjacent(values, durations)
 
 
+def _is_blank_drum_pattern(pattern: str) -> bool:
+    """True, если в паттерне нет ни одного удара — только точки/пробелы.
+
+    ``play('. . . . . . . .')`` — валидный Renardo-код, который ничего не
+    издаёт: точка — пауза в ``play``-нотации, пробел — визуальный
+    разделитель групп, который renardo просто игнорирует. Такой слой
+    нужно считать молчащим (issue #2837), а не реальным ударным паттерном.
+    """
+    return not any(ch not in ". " for ch in pattern)
+
+
+def _is_silent_drum_layer(layer: Layer) -> bool:
+    """True, если это ударный слой с паттерном из одних точек/пробелов.
+
+    Вынесено отдельно, чтобы не раздувать цикломатику ``_render_layer``
+    (cc_budget, issue #2837) лишним составным условием.
+    """
+    return (
+        layer.role in DRUM_ROLES
+        and layer.pattern is not None
+        and _is_blank_drum_pattern(layer.pattern)
+    )
+
+
 def _render_drum_layer(
     layer: Layer,
 ) -> Tuple[str, List[str]]:
@@ -806,12 +1378,164 @@ def _render_melodic_args(
     return args
 
 
+#: Issue #2979 — автодакинг держащих ролей по рисунку бочки, БЕЗ ``chop=``
+#: (санитайзер режет его как щёлкающий на 16 kHz DAC, renardo_sanitizer.py
+#: :229) и без сайдчейн-компандера (masterfilter.scd запрещает динамику с
+#: состоянием). Решение — тот же приём, что сам санитайзер подсказывает
+#: игроку как безопасную замену: степенчатый ``amplify=var([1, 0.3], ...)``.
+#:
+#: Доля от полной громкости в момент удара бочки. 0.3 взято из подсказки
+#: самого санитайзера (``"Для дакинга используй amplify=var([1,0.3],
+#: [0.5,0.5])"``) — не число под конкретный трек, а согласованная с уже
+#: существующим текстом ошибки величина.
+DUCK_FLOOR = 0.3
+
+#: Доля шага рисунка бочки, которую занимает провал дакинга. Половина шага
+#: — провал слышен и пропускает транзиент бочки, вторая половина уже
+#: отдана обратно басу/пэду, а не держит его приглушённым до следующего
+#: удара.
+DUCK_ATTACK_FRACTION = 0.5
+
+
+def _duck_expr_from_drum_pattern(pattern: str) -> Optional[str]:
+    """Огибающая ``amplify=var(...)`` из рисунка бочки (issue #2979).
+
+    Каждый не-паузный символ рисунка ``play(...)`` роли ``drums`` (уже
+    приведён к степени двойки, см. :func:`_normalize_bar_pattern`, #1803)
+    — удар бочки. На этом шаге держащий слой проваливается до
+    :data:`DUCK_FLOOR` на :data:`DUCK_ATTACK_FRACTION` шага, остаток шага
+    (и любые паузы до следующего удара) — снова полная громкость.
+    ``var()`` длиной в один такт зацикливается сам (как и рисунок бочки),
+    поэтому дакинг остаётся синхронным с бочкой на любом повторе.
+
+    Returns:
+        Строку ``var([...], [...])`` либо ``None`` — в рисунке нет ни
+        одного удара (пустая роль), дакать нечего.
+    """
+    n = len(pattern)
+    if n == 0 or all(ch == "." for ch in pattern):
+        return None
+
+    step_beats = BEATS_PER_BAR / n
+    values: List[float] = []
+    durs: List[float] = []
+    i = 0
+    while i < n:
+        if pattern[i] == ".":
+            run = 0
+            while i < n and pattern[i] == ".":
+                run += 1
+                i += 1
+            values.append(1.0)
+            durs.append(run * step_beats)
+            continue
+        attack = step_beats * DUCK_ATTACK_FRACTION
+        values.append(DUCK_FLOOR)
+        durs.append(attack)
+        i += 1
+        rest = step_beats - attack
+        while i < n and pattern[i] == ".":
+            rest += step_beats
+            i += 1
+        if rest > 0:
+            values.append(1.0)
+            durs.append(rest)
+
+    values, durs = _merge_adjacent(values, durs)
+    if len(values) <= 1:
+        return None
+    return f"var({_fmt_list(values)}, {_fmt_list(durs)})"
+
+
+def _role_filter_args(layer: Layer, use_filter: bool) -> List[str]:
+    """Собрать ``lpf=``/``hpf=`` аргументы держащего слоя.
+
+    Вынесено из :func:`_render_layer`, чтобы не раздувать её цикломатику
+    (CC-бюджет ``scripts/lint/cc_budget.py``).
+
+    Фильтр-свип (``gflt``) вешаем на держащие слои. На ударные не вешаем:
+    срезанная атака бочки слышна как проваленный грув.
+    🔴 FIX (live 14.09, «солло не все ноты играет»): свип ездит от 700 Гц,
+    и на нижнем краю он срезает ВСЁ, что выше. У имперского марша выше
+    700 Гц лежат 37% нот темы (она идёт до D6 = 1175 Гц), а бас и подклад —
+    целиком ниже: 0 нот из 36 и 0 из 108. Поэтому аккомпанемент звучал
+    целым, а тема циклически теряла ноты по ходу свипа.
+
+    Фиксированную тему форма вправе делать тише и ярче, но не вправе
+    стирать — тот же принцип, что у FIXED_THEME_AMP_FLOOR и что у ударных,
+    которые исключены из свипа с самого начала. Сочинённой с нуля мелодии
+    свип по-прежнему достаётся: там он краска, а не потеря материала.
+
+    🔴 Issue #2979: бас из свипа исключён — свип едет до 4500 Гц и делает
+    бас ярче лида, а бас на маленьком динамике и так на грани
+    воспроизводимости (см. :data:`ROLE_BAND`). Бас держит свою СТАТИЧНУЮ
+    полосу, а не гуляющую по всей форме.
+
+    Issue #2979: «этажи» ролей — HPF снизу для pad/lead/counter (не лезть в
+    бас), LPF для баса (не лезть выше своих гармоник). Статичные, из
+    ROLE_PROFILE (:data:`ROLE_BAND`), не гуляют по треку и не заменяют
+    gflt-свип выше — это два разных параметра плеера (hpf/lpf/gflt все
+    валидны одновременно). Фиксированную тему не трогаем по той же причине,
+    что и свип: она обязана звучать целиком.
+    """
+    args: List[str] = []
+    fixed_theme = layer.midi is not None and layer.role in ("lead", "counter")
+    if fixed_theme:
+        return args
+    if use_filter and layer.role in ("pad", "lead"):
+        args.append("lpf=gflt")
+    band = ROLE_BAND.get(layer.role)
+    if band is not None:
+        kind, hz = band
+        args.append(f"{kind}={_fmt(hz)}")
+    return args
+
+
+def _append_space_args(
+    args: List[str],
+    layer: Layer,
+    plan: Sequence[Tuple[str, int, Dict[str, float]]],
+) -> None:
+    """Дописать ``room=``/``echo=`` в ``args`` слоя (issue #2980).
+
+    Пространство по функции секции, не по песне/синту: пэд получает воздух
+    там, где форма снимает плотность (см. докстринг
+    :data:`ROOM_SPACE_SECTIONS`), тема — эхо-акцент на пике (см.
+    :data:`ECHO_ACCENT_SECTIONS`). Оба капаются для синта с долгим хвостом
+    (:mod:`core.synth_traits`), чтобы не копить хвост поверх хвоста.
+    Вынесено из :func:`_render_layer` отдельной функцией ради бюджета
+    цикломатической сложности (``scripts/lint/cc_budget.py``).
+    """
+    if layer.role == "pad":
+        room_expr = _render_space_arg(
+            layer.synth, plan, ROOM_SPACE_SECTIONS, ROOM_BASE, ROOM_SPACE_BOOST,
+            long_release_cap=ROOM_LONG_RELEASE_CAP,
+        )
+        if room_expr is not None:
+            args.append(f"room={room_expr}")
+    elif layer.role in ("lead", "counter"):
+        echo_expr = _render_space_arg(
+            layer.synth, plan, ECHO_ACCENT_SECTIONS, ECHO_BASE, ECHO_ACCENT,
+            long_release_cap=0.0,
+        )
+        if echo_expr is not None:
+            args.append(f"echo={echo_expr}")
+
+
 def _render_layer(
     layer: Layer,
     plan: Sequence[Tuple[str, int, Dict[str, float]]],
     use_filter: bool,
+    level: float = 1.0,
+    duck_expr: Optional[str] = None,
 ) -> Optional[str]:
-    """Отрендерить одну строку Renardo-кода, либо None если слой молчит."""
+    """Отрендерить одну строку Renardo-кода, либо None если слой молчит.
+
+    ``level`` — множитель базовой громкости роли (ручка ``levels``,
+    ADR-0132 PR-3); 1.0 — баланс :data:`ROLE_PROFILE` как есть.
+    ``duck_expr`` — готовая огибающая ``var(...)`` автодакинга (issue
+    #2979, :func:`_duck_expr_from_drum_pattern`); ``None`` — слой не дакается.
+    """
     profile = ROLE_PROFILE.get(layer.role)
     if profile is None:
         raise ArrangementError(
@@ -819,6 +1543,14 @@ def _render_layer(
             f"Доступны: {', '.join(sorted(ROLE_PROFILE))}."
         )
     player, role_oct, base_amp = profile
+    base_amp = base_amp * level
+
+    if _is_silent_drum_layer(layer):
+        # Паттерн из одних точек/пробелов — ни одного удара. Это тот же
+        # «слой молчит», что и роль вне текущей секции формы (issue #2837):
+        # play('. . . . . . . .') синтаксически валиден, но реально не
+        # звучит, и guard на количество плееров должен это видеть.
+        return None
 
     # Фиксированная тема (и её второй голос) не имеет права замолчать
     # совсем — её попросили сыграть. См. FIXED_THEME_AMP_FLOOR.
@@ -845,27 +1577,277 @@ def _render_layer(
         args = _render_melodic_args(layer, plan, role_oct)
 
     args.append(f"amp={amp_expr}")
-    # Фильтр-свип вешаем на держащие слои. На ударные не вешаем: срезанная
-    # атака бочки слышна как проваленный грув.
-    # 🔴 FIX (live 14.09, «солло не все ноты играет»): свип ездит от 700 Гц,
-    # и на нижнем краю он срезает ВСЁ, что выше. У имперского марша выше
-    # 700 Гц лежат 37% нот темы (она идёт до D6 = 1175 Гц), а бас и
-    # подклад — целиком ниже: 0 нот из 36 и 0 из 108. Поэтому аккомпанемент
-    # звучал целым, а тема циклически теряла ноты по ходу свипа.
-    #
-    # Фиксированную тему форма вправе делать тише и ярче, но не вправе
-    # стирать — тот же принцип, что у FIXED_THEME_AMP_FLOOR и что у
-    # ударных, которые исключены из свипа с самого начала (срезанная атака
-    # бочки слышна как проваленный грув). Сочинённой с нуля мелодии свип
-    # по-прежнему достаётся: там он краска, а не потеря материала.
-    fixed_theme = layer.midi is not None and layer.role in ("lead", "counter")
-    if use_filter and layer.role in ("bass", "pad", "lead") and not fixed_theme:
-        args.append("lpf=gflt")
+    # Issue #2979: автодакинг под рисунок бочки. Отдельный от amp параметр
+    # (amplify — умножает amp, см. local_test/RENARDO_REFERENCE.md:83) —
+    # форма и дакинг не должны переписывать друг друга.
+    if duck_expr is not None:
+        args.append(f"amplify={duck_expr}")
+
+    args.extend(_role_filter_args(layer, use_filter))
+
+    _append_space_args(args, layer, plan)
 
     line = f"{player} >> {head}, " + ", ".join(args) + ")"
     if layer.role in DRUM_ROLES:
         return line
     return "\n".join(pre_lines + [line]) if pre_lines else line
+
+
+def _no_players_error(
+    spec: CompositionSpec,
+    plan: Sequence[Tuple[str, int, Dict[str, float]]],
+) -> ArrangementError:
+    """Собрать понятную ошибку «0 плееров» для :func:`render` (issue #2837).
+
+    Вынесено отдельно, чтобы не раздувать цикломатику ``render`` — сама
+    функция только считает ``rendered_players`` и решает, звать ли эту
+    фабрику.
+    """
+    form_roles = sorted({r for _n, _b, i in plan for r in i})
+    spec_roles = sorted({layer.role for layer in spec.layers})
+    spec_roles_text = ", ".join(spec_roles) or "(нет слоёв)"
+    form_roles_text = ", ".join(form_roles) or "(ничего)"
+    return ArrangementError(
+        "Ни один слой не звучит: спецификация пуста для формы "
+        f"{spec.form!r}. В спеке заданы роли {spec_roles_text}, "
+        f"а форма {spec.form!r} играет только {form_roles_text}. "
+        "Либо смени форму на ту, что задействует нужные роли, либо "
+        "перепроверь, что паттерны/ступени не пустые (паттерн из одних "
+        "точек и пробелов считается тишиной)."
+    )
+
+
+def _sample_loops():
+    """Каталог лупов — ленивым импортом, а не на уровне модуля.
+
+    ``tools/gen_tool_catalog.py`` грузит этот файл напрямую, без пакета
+    (ради ``FORMS``/``VALID_ROOTS``), и относительный импорт на уровне
+    модуля там падает. Лупы нужны только при рендере/сборке спецификации.
+    """
+    from . import sample_loops
+
+    return sample_loops
+
+
+_PLAYER_SLOT_RE = re.compile(r"^\s*([dp]\d)\s*>>", re.MULTILINE)
+
+
+def _free_loop_slot(lines: Sequence[str], what: str = "groove_loop") -> str:
+    """Первый из d1-d3, который не занят уже отрендеренными слоями.
+
+    Общая для лупа (#2841) и FX-одиночки (#2968) — оба претендуют на один
+    и тот же пул d1-d3, поэтому занятость нужно считать по уже добавленным
+    строкам ОБОИХ, а не двумя независимыми пулами (иначе loop и fx могли бы
+    получить один и тот же слот и затереть друг друга).
+
+    Args:
+        what: имя параметра для текста ошибки (``groove_loop`` или ``fx``).
+
+    Raises:
+        ArrangementError: все три заняты (бочка + хэты + перкуссия или
+            контрмелодия) — слою честно некуда встать.
+    """
+    used = set(_PLAYER_SLOT_RE.findall("\n".join(lines)))
+    free = next((slot for slot in LOOP_SLOTS if slot not in used), None)
+    if free is None:
+        raise ArrangementError(
+            f"{what}: слоты d1-d3 уже заняты (бочка, хэты и перкуссия "
+            "или второй голос темы). Убери perc, либо поставь "
+            "drum_style='none' — луп/FX сам несёт грув."
+        )
+    return free
+
+
+def _render_loop_layer(
+    layer: Layer,
+    plan: Sequence[Tuple[str, int, Dict[str, float]]],
+    bpm: float,
+    player: str,
+    level: float = 1.0,
+) -> str:
+    """Отрендерить жанровый луп: ``loop(имя, dur=N, beat_stretch=1, amp=...)``.
+
+    ``level`` — множитель громкости лупа (ручка ``levels``, ADR-0132 PR-3).
+
+    ``beat_stretch=1`` растягивает файл ровно на ``dur`` битов, поэтому
+    луп идёт в темп формы, а не в свой родной. ``dur`` — ближайшая к
+    родной длине степень двойки (:func:`sample_loops.loop_beats`): так
+    скорость и высота меняются меньше всего.
+
+    Громкость идёт за бочкой: где форма снимает ударные (intro, break),
+    молчит и луп. В форме без ударных вовсе (ambient) — за подкладом.
+    Имя остаётся коротким: путь до файла подставит санитайзер, он же
+    проверит флаг pack 1.
+    """
+    loops = _sample_loops()
+    info = loops.find_loop(layer.pattern or "")
+    if info is None:
+        raise ArrangementError(f"groove_loop: неизвестный луп {layer.pattern!r}.")
+    has_drums = any("drums" in intensities for _n, _b, intensities in plan)
+    source, scale = ("drums", 1.0) if has_drums else ("pad", LOOP_PAD_FOLLOW)
+    amps, durs = _amp_envelope(source, plan, LOOP_BASE_AMP * scale * level)
+    amp_expr = _fmt(amps[0]) if len(amps) == 1 else f"var({_fmt_list(amps)}, {_fmt_list(durs)})"
+    beats = loops.loop_beats(info, bpm)
+    return (
+        f"{player} >> loop({info.name!r}, dur={_fmt(beats)}, "
+        f"beat_stretch=1, amp={amp_expr})"
+    )
+
+
+def _sample_fx():
+    """Каталог FX (#2968) — ленивым импортом, та же причина, что :func:`_sample_loops`."""
+    from . import sample_fx
+
+    return sample_fx
+
+
+def _render_fx_layer(
+    layer: Layer,
+    plan: Sequence[Tuple[str, int, Dict[str, float]]],
+    player: str,
+    level: float = 1.0,
+) -> str:
+    """Отрендерить одиночный FX-акцент (issue #2968): ``loop(<fx>, ...)``.
+
+    Тот же синт, что жанровый луп (:func:`_render_loop_layer`) — в Renardo
+    нет отдельного «одноразового сэмпла», только ``loop(...)`` с путём к
+    файлу пака 1 (:mod:`core.sample_fx`). Разница — в намерении:
+
+    * ``beat_stretch`` НЕ ставится (нативная скорость): растяжка меняет
+      высоту, а «выстрел»/«сирена» с уехавшей высотой звучит не как эффект,
+      а как брак; жанровому лупу, наоборот, стретч нужен, чтобы попасть в
+      темп.
+    * ``amp`` включён только в секциях-«стыках» (:data:`FX_BOUNDARY_SECTIONS`)
+      — acceptance issue #2968 прямо просит «редко, на стыках секций/break»,
+      не постоянный слой.
+    * ``dur`` — длина САМОЙ КОРОТКОЙ активной секции в битах: ``loop(...)``
+      перезапускает сэмпл каждые ``dur`` битов от начала трека, поэтому
+      более короткий период даёт FX шанс попасть в каждое окно, когда он
+      слышен, вместо одного триггера на весь трек. Секунды сэмпла в
+      каталоге нет (ни один файл не прослушан и не измерен — issue
+      честно передаёт кандидатов, не заявляя точных длин), поэтому длина
+      подгоняется под форму, а не под файл, как у лупа.
+
+    Raises:
+        ArrangementError: у текущей формы нет ни одной секции из
+            :data:`FX_BOUNDARY_SECTIONS` — фактически fx был бы молчащим
+            слоем на любом bpm, это честная ошибка, а не тихая тишина
+            (тот же принцип, что :func:`_no_players_error`).
+    """
+    fx = _sample_fx()
+    info = fx.find_fx(layer.pattern or "")
+    if info is None:
+        raise ArrangementError(f"fx: неизвестный FX {layer.pattern!r}.")
+
+    boundary_bars = [
+        int(bars) for name, bars, _i in plan if name.lower() in FX_BOUNDARY_SECTIONS
+    ]
+    if not boundary_bars:
+        section_names = ", ".join(sorted({n for n, _b, _i in plan}))
+        raise ArrangementError(
+            "fx: у текущей формы нет секции-стыка "
+            f"({', '.join(sorted(FX_BOUNDARY_SECTIONS))}), доступны только "
+            f"{section_names} — FX не смог бы прозвучать ни разу. Смени "
+            "форму или играй без fx."
+        )
+
+    amps: List[float] = []
+    durs: List[int] = []
+    for name, bars, _intensities in plan:
+        active = name.lower() in FX_BOUNDARY_SECTIONS
+        amps.append(round(FX_BASE_AMP * level, 4) if active else 0.0)
+        durs.append(int(bars) * BEATS_PER_BAR)
+    amps, durs = _merge_adjacent(amps, durs)
+    amp_expr = _fmt(amps[0]) if len(amps) == 1 else f"var({_fmt_list(amps)}, {_fmt_list(durs)})"
+
+    period_beats = min(boundary_bars) * BEATS_PER_BAR
+    return (
+        f"{player} >> loop({info.name!r}, dur={_fmt(period_beats)}, "
+        f"amp={amp_expr})"
+    )
+
+
+#: Роли, которым автодакинг (issue #2979) вообще разрешён и по какому полю
+#: :class:`CompositionSpec` он включён. Бас — по умолчанию (``duck_bass``,
+#: держащая роль, которую бочка должна «продавливать» первой по правилу
+#: «этажей» из issue). Пэд — опционально (``duck_pad``): он тоже держащая
+#: роль, но не басовая, и не каждому треку это нужно.
+_DUCK_ROLE_FLAGS: Dict[str, str] = {"bass": "duck_bass", "pad": "duck_pad"}
+
+
+def _duck_target(spec: CompositionSpec, role: str) -> bool:
+    """Дакается ли эта роль в данной спецификации (issue #2979)."""
+    flag = _DUCK_ROLE_FLAGS.get(role)
+    return flag is not None and bool(getattr(spec, flag, False))
+
+
+def _form_duck_expr(
+    spec: CompositionSpec, plan: Sequence[Tuple[str, int, Dict[str, float]]]
+) -> Optional[str]:
+    """Огибающая дакинга по рисунку бочки, если она реально где-то звучит.
+
+    ``None``, если ни одна роль этого трека не просит дакинг, слоя ``drums``
+    нет, его паттерн пуст/тишина, либо текущая форма ни в одной секции не
+    задействует роль ``drums`` (например ``ambient``) — иначе бас/пэд
+    пульсировали бы под удар, которого никто не услышит.
+    """
+    if not any(_duck_target(spec, role) for role in _DUCK_ROLE_FLAGS):
+        return None
+    drum_layer = next((cand for cand in spec.layers if cand.role == "drums"), None)
+    if drum_layer is None or not drum_layer.pattern:
+        return None
+    if _is_silent_drum_layer(drum_layer):
+        return None
+    form_roles = {r for _name, _bars, intensities in plan for r in intensities}
+    if "drums" not in form_roles:
+        return None
+    return _duck_expr_from_drum_pattern(drum_layer.pattern)
+
+
+def _append_layer_lines(
+    lines: List[str],
+    spec: CompositionSpec,
+    plan: Sequence[Tuple[str, int, Dict[str, float]]],
+    bpm: float,
+) -> int:
+    """Дописать в ``lines`` строки всех слоёв; луп и FX — последними.
+
+    Возвращает число реально отрисованных плееров (луп и FX тоже плееры) —
+    по нему :func:`render` решает, не пустой ли трек (#2837).
+
+    Луп (#2841) и FX (#2968) рендерятся после остальных, потому что их
+    слот — первый свободный из d1-d3, а занятость известна только по уже
+    готовым строкам. Луп — раньше FX: оба претендуют на один и тот же пул,
+    и стабильный порядок делает распределение слотов детерминированным.
+    """
+    levels = getattr(spec, "levels", None) or {}
+    duck_expr = _form_duck_expr(spec, plan)
+    count = 0
+    for layer in spec.layers:
+        if layer.role in (LOOP_ROLE, FX_ROLE):
+            continue
+        layer_duck = duck_expr if _duck_target(spec, layer.role) else None
+        rendered = _render_layer(
+            layer, plan, use_filter=spec.filter_sweep, level=levels.get(layer.role, 1.0),
+            duck_expr=layer_duck,
+        )
+        if rendered is not None:
+            lines.append(rendered)
+            count += 1
+    for layer in spec.layers:
+        if layer.role == LOOP_ROLE:
+            lines.append(_render_loop_layer(
+                layer, plan, bpm, _free_loop_slot(lines), level=levels.get(LOOP_ROLE, 1.0)
+            ))
+            count += 1
+    for layer in spec.layers:
+        if layer.role == FX_ROLE:
+            lines.append(_render_fx_layer(
+                layer, plan, _free_loop_slot(lines, what="fx"),
+                level=levels.get(FX_ROLE, 1.0),
+            ))
+            count += 1
+    return count
 
 
 def render(spec: CompositionSpec) -> str:
@@ -939,17 +1921,15 @@ def render(spec: CompositionSpec) -> str:
         # успевает открыться и закрыться.
         lines.append(f"gflt = linvar([700, 4500], {_fmt(total_beats // 2)})")
 
-    for layer in spec.layers:
-        rendered = _render_layer(layer, plan, use_filter=spec.filter_sweep)
-        if rendered is not None:
-            lines.append(rendered)
+    # Считаем именно отрисованные строки-плееры, а не длину ``lines``: шапка
+    # не фиксирована — ``progression``/``swing``/``filter_sweep`` добавляют в
+    # неё свои строки (issue #2837, живой прогон 23.09: с filter_sweep=True
+    # шапка всегда 5 строк, и guard на ``len(lines) <= 4`` не срабатывал ни
+    # при каком количестве слоёв).
+    rendered_players = _append_layer_lines(lines, spec, plan, bpm)
 
-    if len(lines) <= 4:
-        raise ArrangementError(
-            "Ни один слой не звучит в выбранной форме — проверь роли "
-            f"(форма {spec.form!r} задействует: "
-            f"{', '.join(sorted({r for _n, _b, i in plan for r in i}))})."
-        )
+    if rendered_players == 0:
+        raise _no_players_error(spec, plan)
 
     if not spec.repeat:
         # Функция, а не lambda: lambda режется AST-фильтром, а Clock.clear
@@ -1118,6 +2098,10 @@ def _add_drum_layer_if_present(
     """Добавить ударный слой, если есть паттерн."""
     if not pattern or not pattern.strip():
         return
+    if _is_blank_drum_pattern(pattern.strip()):
+        # Только точки/пробелы — LLM явно прислала «тишину» под этой ролью
+        # (issue #2837). Не создаём слой вовсе, как и при pattern=None.
+        return
     layers.append(
         Layer(
             role=role,
@@ -1241,6 +2225,80 @@ def _compensate(note, shift: int):
 PAD_STAB_SUS = 0.4
 
 
+#: Слова, которыми модель (или safety-net в tools/music.py) просит «слоя
+#: нет» для любого ``*_synth``. Сравнение регистронезависимо и после
+#: ``strip()`` — ``' None '``/``'NONE'`` тоже схлопываются.
+NO_SYNTH_WORDS = frozenset({"none", "off", "null"})
+
+
+def normalize_synth(value: Optional[str]) -> Optional[str]:
+    """Схлопнуть «синта нет» в ``None`` — единая точка на входе.
+
+    До issue #2836 «синта нет» понимали по-разному: код, добавляющий слой
+    (:func:`_add_derived_layers`, цикл в :func:`spec_from_flat`), считал
+    пустым только ``None``/``''``. А ``_heavy_brass_safety_net`` в
+    ``tools/music.py`` подставлял literal-строку ``'none'`` — она truthy,
+    поэтому доходила до :class:`Layer` как настоящий синт и рендерилась
+    ``d3 >> none([...])``. SynthDef с именем ``none`` не существует в
+    scsynth, и ``renardo_sanitizer`` отклонял код («Синта 'none' не
+    существует»).
+
+    ``None``/``''``/``'none'``/``'off'``/``'null'`` (любой регистр, с
+    пробелами по краям) теперь везде означают одно и то же: слоя нет.
+    """
+    if value is None:
+        return None
+    stripped = value.strip()
+    if not stripped or stripped.lower() in NO_SYNTH_WORDS:
+        return None
+    return stripped
+
+
+def _resolve_counter_synth_default(
+    counter_synth: Optional[str], lead_synth: str
+) -> Optional[str]:
+    """Разрешить counter_synth к финальному значению перед добавлением слоя.
+
+    Три исхода из сырого (ненормализованного) значения:
+
+    * реальный синт → возвращается как есть (нормализованный, без
+      пробелов);
+    * не задан вовсе (``None``/``''``) → фолбэк на ``lead_synth`` — второй
+      голос звучит тембром темы (унисон в терцию, всегда безопасный
+      вариант по умолчанию);
+    * явное слово-отключение (``'none'``/``'off'``/``'null'``, issue
+      #2836) → ``None`` без фолбэка — второй голос выключен, а не
+      восстановлен обратно на lead_synth.
+
+    Решение «фолбэк или отключение» смотрит на СЫРОЕ значение, до
+    :func:`normalize_synth`: нормализация схлопывает «не задано» и
+    «явно отключено» в одно и то же ``None``, и только здесь, различая
+    их заранее, можно выбрать между двумя разными исходами.
+    """
+    is_disable_word = (
+        counter_synth is not None
+        and counter_synth.strip() != ""
+        and counter_synth.strip().lower() in NO_SYNTH_WORDS
+    )
+    normalized = normalize_synth(counter_synth)
+    if normalized is not None:
+        return normalized
+    if is_disable_word:
+        return None
+    return lead_synth
+
+
+def _counter_enabled(mode: str, dense: bool) -> bool:
+    """Играет ли второй голос (ручка ``counter``, ADR-0132 PR-3).
+
+    ``auto`` — только у плотной темы (см. комментарий в
+    :func:`_add_derived_layers`), ``on``/``off`` — принудительно.
+    """
+    if mode == "auto":
+        return dense
+    return mode == "on"
+
+
 def _add_derived_layers(
     layers: List[Layer],
     harmony,
@@ -1252,6 +2310,7 @@ def _add_derived_layers(
     counter_synth: Optional[str],
     drums_sample: int,
     hats_sample: int,
+    options: Optional[ArrangeOptions] = None,
 ) -> None:
     """Разложить готовую гармонизацию темы в слои аранжировки.
 
@@ -1263,7 +2322,12 @@ def _add_derived_layers(
 
     Перкуссия не добавляется намеренно: её слот занимает контрмелодия,
     а грув уже несут выведенные бочка и хэты.
+
+    ``options`` (ADR-0132 PR-3) — ручки ``counter`` и ``theme_octaves``
+    (:class:`ArrangeOptions`); ``sus`` пэда берётся из
+    ``harmony.pad_sus`` (ручка ``pad_style`` гармонизации).
     """
+    options = options or ArrangeOptions()
     _add_drum_layer_if_present(layers, "drums", harmony.drums, drums_sample)
     _add_drum_layer_if_present(layers, "hats", harmony.hats, hats_sample)
 
@@ -1273,16 +2337,18 @@ def _add_derived_layers(
     # это гибель: её узнают по тонкой одинокой линии и по тишине вокруг.
     # См. harmonize::DENSE_ONSETS_PER_BEAT.
     dense = getattr(harmony, "dense", True)
+    counter_part = harmony.counter if _counter_enabled(options.counter, dense) else ()
+    pad_sus = getattr(harmony, "pad_sus", PAD_STAB_SUS)
     for role, synth, part in (
         ("bass", bass_synth, harmony.bass),
         ("lead", lead_synth, harmony.lead),
         ("pad", pad_synth, harmony.pad),
-        ("counter", counter_synth, harmony.counter if dense else ()),
+        ("counter", counter_synth, counter_part),
     ):
         if not (synth and synth.strip()) or not part:
             continue
         notes = [note for note, _dur in part]
-        if _should_octave_double(role, theme_octaves, dense, notes):
+        if _should_octave_double(role, theme_octaves, dense, notes, options.theme_octaves):
             notes = [_octave_double(note) for note in notes]
         # Последний шаг: поправка на собственное транспонирование синта.
         # До этой строки всё выше рассуждало о ЗВУЧАЩЕЙ высоте — регистры,
@@ -1300,7 +2366,7 @@ def _add_derived_layers(
                 # Подклад ведёт остинато: удар должен быть короче шага
                 # сетки, иначе соседние аккорды сливаются в выдержанный
                 # звук и ритм пропадает (см. harmonize::_build_pad).
-                sus=PAD_STAB_SUS if role == "pad" else None,
+                sus=pad_sus if role == "pad" else None,
             )
         )
 
@@ -1325,15 +2391,25 @@ def _fits_octave_double(notes: Sequence[object]) -> bool:
     return bool(pitches) and min(pitches) >= MIN_MIDI_FOR_OCTAVE_DOUBLE
 
 
-def _should_octave_double(role: str, theme_octaves: bool, dense: bool, notes: Sequence[object]) -> bool:
+def _should_octave_double(
+    role: str, theme_octaves: bool, dense: bool, notes: Sequence[object], mode: str = "auto"
+) -> bool:
     """Удваивать ли тему октавой вниз для этого слоя.
 
     Удвоение нужно только лид-голосу, при включённой опции и в плотной
     теме: плотная, громкая тема от удвоения выигрывает в весе, редкая —
     теряет характер. Дополнительно тема должна иметь запас высоты, чтобы
     удвоение не село на регистр баса (:func:`_fits_octave_double`).
+
+    ``mode`` — ручка ``theme_octaves`` (ADR-0132 PR-3): ``auto`` — правило
+    выше; ``on`` — удваивать всегда (осознанный выбор, даже у редкой или
+    низкой темы); ``off`` — никогда.
     """
-    return role == "lead" and theme_octaves and dense and _fits_octave_double(notes)
+    if role != "lead" or mode == "off":
+        return False
+    if mode == "on":
+        return True
+    return theme_octaves and dense and _fits_octave_double(notes)
 
 
 def _octave_double(note):
@@ -1348,6 +2424,54 @@ def _octave_double(note):
     if isinstance(note, (tuple, list)):
         return tuple(note)
     return (int(note) - 12, int(note))
+
+
+def _add_melodic_layers(
+    layers: List[Layer],
+    *,
+    bass_synth: Optional[str], bass_notes: Optional[str],
+    lead_synth: Optional[str], lead_notes: Optional[str],
+    lead_midi: Optional[str], lead_dur: Optional[str],
+    pad_synth: Optional[str], pad_notes: Optional[str],
+) -> List[str]:
+    """Собрать bass/lead/pad-слои «сочинённого» пути, ступень за ступенью.
+
+    Роль без синта не добавляется вовсе. Роль с синтом и ступенями — как
+    прислала модель. Роль с синтом, но без ступеней (issue #2970: живой
+    сет «Oakenfold», ``bass_synth``/``lead_synth``/``pad_synth`` без
+    ``*_notes`` — слой молча пропадал, ``compose_music`` отвечал
+    ``success``, трек звучал одной бочкой и хэтами) — синт в вызове уже
+    решение модели поставить роль в состав, а не пожелание; ошибка на
+    забытых нотах уронила бы весь вызов ради одной роли, хотя барабаны и
+    остальные собраны нормально. Получает опору по тонике лада вместо
+    (:func:`_autofill_role_without_notes`).
+
+    Returns:
+        Роли, которым досталась опора по тонике, а не ноты модели — для
+        партитуры (``decisions["autofilled_roles"]``).
+    """
+    autofilled_roles: List[str] = []
+    for role, synth, notes in (
+        ("bass", bass_synth, bass_notes),
+        ("lead", lead_synth, lead_notes),
+        ("pad", pad_synth, pad_notes),
+    ):
+        if not (synth and synth.strip()):
+            continue
+
+        # Тема абсолютным MIDI (известная мелодия из RTTTL): играем дословно,
+        # в ступени лада не переводим — иначе хроматические ноты теряются.
+        if role == "lead" and _add_lead_midi_layer(
+            layers, synth, lead_midi or "", lead_dur
+        ):
+            continue
+
+        if _add_melodic_layer(layers, role, synth, notes, lead_dur):
+            continue
+
+        _autofill_role_without_notes(layers, role, synth)
+        autofilled_roles.append(role)
+    return autofilled_roles
 
 
 def spec_from_flat(
@@ -1376,6 +2500,9 @@ def spec_from_flat(
     progression: Optional[str] = None,
     repeat: bool = True,
     swing: float = 0.0,
+    groove_loop: Optional[str] = None,
+    fx: Optional[str] = None,
+    options: Optional[ArrangeOptions] = None,
 ) -> CompositionSpec:
     """Собрать :class:`CompositionSpec` из плоских скалярных аргументов.
 
@@ -1383,8 +2510,10 @@ def spec_from_flat(
     надёжнее заполняют десяток простых полей, чем одну структуру с
     массивом объектов внутри.
 
-    Слой добавляется только если для него есть И синт, И ступени —
-    полупустой слой молча пропускается, а не роняет запрос.
+    Слой без синта не добавляется вовсе — роль не заказана. Слой с синтом,
+    но без ступеней (issue #2970), тоже не пропадает молча: он получает
+    опору по тонике лада (:func:`_autofill_role_without_notes`) — синт в
+    вызове уже решение модели включить роль, а не пожелание.
 
     ``lead_midi`` — путь ТОЧНОГО воспроизведения известной темы абсолютным
     MIDI (из RTTTL-библиотеки): играется дословно с ``lead_dur``, в ступени
@@ -1395,13 +2524,38 @@ def spec_from_flat(
     рисунки ударных берутся из него, а не от модели: они выведены из
     самой мелодии и промахнуться мимо её тональности не могут. За
     моделью остаются тембры, форма и темп.
+
+    ``groove_loop`` (issue #2841) — имя лупа из каталога
+    :mod:`core.sample_loops`; добавляет слой ``loop(...)`` в свободный
+    d-слот и в выведенной, и в сочинённой аранжировке.
+
+    ``fx`` (issue #2968) — имя одиночного FX-акцента из каталога
+    :mod:`core.sample_fx` (выстрел/сирена/скрэтч/лазер); добавляет слой,
+    звучащий коротко и редко на стыках секций формы (см.
+    :func:`_render_fx_layer`), а не постоянно, как ``groove_loop``. Тот же
+    общий пул d1-d3 и тот же флаг пака 1.
+
+    ``options`` (:class:`ArrangeOptions`, ADR-0132 PR-3) — ручки сборки:
+    ``counter``/``theme_octaves`` действуют на выведенную аранжировку,
+    ``levels`` — на любую (множитель громкости роли в :func:`render`).
+    ``None`` — все ``auto``, прежнее поведение байт-в-байт. Значения ручек
+    пишутся в ``decisions`` спецификации для партитуры.
     """
     layers: List[Layer] = []
+    _add_loop_layer(layers, groove_loop)
+    _add_fx_layer(layers, fx)
 
     root = (root or "C").strip()
     scale = (scale or "minor").strip()
     form = (form or DEFAULT_FORM).strip()
     swing = float(swing or 0.0)
+
+    # Единая точка нормализации «синта нет» (issue #2836): None/''/'none'/
+    # 'off'/'null' (любой регистр) → None, до того как значение доберётся
+    # до кода, решающего добавлять слой или нет.
+    lead_synth = normalize_synth(lead_synth)
+    bass_synth = normalize_synth(bass_synth)
+    pad_synth = normalize_synth(pad_synth)
 
     if harmony is not None:
         if not (lead_synth and lead_synth.strip()):
@@ -1409,6 +2563,15 @@ def spec_from_flat(
                 "Для выведенной аранжировки нужен lead_synth — тема "
                 "должна чем-то играть."
             )
+        synths = {
+            "lead": lead_synth,
+            "bass": bass_synth,
+            "pad": pad_synth,
+            # См. _resolve_counter_synth_default: по умолчанию — тембр
+            # темы (унисон в терцию), явное 'none'/'off'/'null' —
+            # отключение без фолбэка на lead_synth.
+            "counter": _resolve_counter_synth_default(counter_synth, lead_synth),
+        }
         _add_derived_layers(
             layers,
             harmony,
@@ -1416,14 +2579,10 @@ def spec_from_flat(
             lead_synth=lead_synth,
             bass_synth=bass_synth,
             pad_synth=pad_synth,
-            # Свой тембр второго голоса, если задан. По умолчанию — тембр
-            # темы: два голоса одним инструментом читаются как одна партия
-            # в терцию, что всегда безопасно. Но контрастный тембр (тема
-            # медью, второй голос струнными) звучит богаче, поэтому выбор
-            # оставлен наружу.
-            counter_synth=counter_synth or lead_synth,
+            counter_synth=synths["counter"],
             drums_sample=drums_sample,
             hats_sample=hats_sample,
+            options=options,
         )
         return CompositionSpec(
             bpm=float(bpm),
@@ -1439,6 +2598,11 @@ def spec_from_flat(
             theme_bars=int(harmony.bars),
             repeat=bool(repeat),
             swing=swing,
+            decisions=arrangement_decisions(
+                harmony, theme_octaves=bool(theme_octaves), synths=synths,
+                options=options,
+            ),
+            levels=_levels_of(options),
         )
 
     # 🔴 FIX (live 31.08): здесь стояло sample=3 намертво. В библиотеке
@@ -1451,23 +2615,13 @@ def spec_from_flat(
     _add_drum_layer_if_present(layers, "hats", hats, hats_sample)
     _add_drum_layer_if_present(layers, "perc", perc, perc_sample)
 
-    for role, synth, notes in (
-        ("bass", bass_synth, bass_notes),
-        ("lead", lead_synth, lead_notes),
-        ("pad", pad_synth, pad_notes),
-    ):
-        if not (synth and synth.strip()):
-            continue
-
-        # Тема абсолютным MIDI (известная мелодия из RTTTL): играем дословно,
-        # в ступени лада не переводим — иначе хроматические ноты теряются.
-        if role == "lead" and _add_lead_midi_layer(
-            layers, synth, lead_midi or "", lead_dur
-        ):
-            continue
-
-        _add_melodic_layer(layers, role, synth, notes, lead_dur)
-
+    autofilled_roles = _add_melodic_layers(
+        layers,
+        bass_synth=bass_synth, bass_notes=bass_notes,
+        lead_synth=lead_synth, lead_notes=lead_notes,
+        lead_midi=lead_midi, lead_dur=lead_dur,
+        pad_synth=pad_synth, pad_notes=pad_notes,
+    )
     _autofill_bass(layers, form)
 
     return CompositionSpec(
@@ -1479,7 +2633,221 @@ def spec_from_flat(
         progression=tuple(int(v) for v in parse_notes(progression)),
         repeat=bool(repeat),
         swing=swing,
+        decisions=_composed_decisions(
+            options, autofilled_roles, synths={"pad": pad_synth, "lead": lead_synth},
+        ),
+        levels=_levels_of(options),
     )
+
+
+def _levels_of(options: Optional[ArrangeOptions]) -> Dict[str, float]:
+    """Множители громкости ролей из ручки ``levels`` (пусто — баланс как есть)."""
+    return dict(options.levels) if options is not None else {}
+
+
+def _composed_decisions(
+    options: Optional[ArrangeOptions],
+    autofilled_roles: Optional[List[str]] = None,
+    synths: Optional[Dict[str, Optional[str]]] = None,
+) -> Dict[str, object]:
+    """Решения сочинённого трека: ``levels`` + автозаполненные роли + space."""
+    decisions: Dict[str, object] = {}
+    levels = _levels_of(options)
+    if levels:
+        decisions["levels"] = levels
+    if autofilled_roles:
+        decisions["autofilled_roles"] = tuple(autofilled_roles)
+    space = _space_decision_text(synths or {})
+    if space:
+        decisions["space"] = space
+    return decisions
+
+
+def _space_decision_text(synths: Dict[str, Optional[str]]) -> Optional[str]:
+    """Текст ``decisions['space']`` для партитуры, или ``None`` (issue #2980).
+
+    ``room``/``echo`` — системное авто-правило по секциям (см. докстринги
+    :data:`ROOM_SPACE_SECTIONS`/:data:`ECHO_ACCENT_SECTIONS`), не ручка
+    ADR-0132 PR-3 — оно одинаково для любой спецификации, поэтому само по
+    себе не «решение», о котором стоит тратить бюджет партитуры (~1 КБ,
+    см. ``test_score_sheet._TEXT_LIMIT``). Строка появляется, только когда
+    есть что сказать ДЕЙСТВЕННОЕ: у синта долгий хвост
+    (:mod:`core.synth_traits`) и зал/эхо у него срезаны капом, а не звучат
+    полным расчётным значением — тот же принцип честности, что у
+    :func:`core.synth_traits.theme_tail_warning` рядом.
+    """
+    traits_of = _synth_traits().traits_of
+    capped = []
+    for role in ("pad", "lead", "counter"):
+        synth = synths.get(role)
+        traits = traits_of(synth) if synth else None
+        if traits is not None and traits.long_release:
+            capped.append(role)
+    if not capped:
+        return None
+    return f"room/echo кап:{'+'.join(capped)}(долгий хвост)"
+
+
+def _counter_decision(
+    dense: bool, counter_synth: Optional[str], part, mode: str = "auto"
+) -> str:
+    """Почему второй голос звучит или нет (зеркало :func:`_add_derived_layers`)."""
+    if not counter_synth:
+        return "off (counter_synth выключен)"
+    if mode != "auto":
+        return _forced_decision(mode, bool(part))
+    if not dense:
+        return "off (редкая тема)"
+    if not part:
+        return "off (нечего играть)"
+    return "on"
+
+
+def _forced_decision(mode: str, has_part: bool) -> str:
+    """Итог ручки ``on``/``off`` (ADR-0132 PR-3) словами для партитуры."""
+    if mode == "off":
+        return "off (задано)"
+    return "on (задано)" if has_part else "off (нечего играть)"
+
+
+def _octaves_decision(theme_octaves: bool, dense: bool, notes, mode: str = "auto") -> str:
+    """Почему тема удвоена октавой или нет (зеркало :func:`_should_octave_double`)."""
+    if mode != "auto":
+        return _forced_decision(mode, True)
+    if not theme_octaves:
+        return "off (theme_octaves=False)"
+    if not dense:
+        return "off (редкая тема)"
+    if not _fits_octave_double(notes):
+        return "off (тема ниже C4)"
+    return "on"
+
+
+def arrangement_decisions(
+    harmony,
+    *,
+    theme_octaves: bool,
+    synths: Dict[str, Optional[str]],
+    options: Optional[ArrangeOptions] = None,
+) -> Dict[str, object]:
+    """Авто-решения сборки выведенной аранжировки (ADR-0132, для партитуры).
+
+    Повторяют условия :func:`_add_derived_layers` / :func:`_should_octave_double`
+    словами, не участвуя в сборке: код рендера от них не зависит.
+    ``synths`` — итоговые синты ролей (counter — уже после фолбэка).
+    ``options`` (PR-3) — ручки: их значения в ``knobs``, множители в
+    ``levels``.
+    """
+    options = options or ArrangeOptions()
+    dense = bool(getattr(harmony, "dense", True))
+    lead_notes = [note for note, _dur in harmony.lead]
+    return {
+        "counter": _counter_decision(
+            dense, synths.get("counter"), harmony.counter, options.counter
+        ),
+        "theme_octaves": _octaves_decision(
+            theme_octaves, dense, lead_notes, options.theme_octaves
+        ),
+        "knobs": {"counter": options.counter, "theme_octaves": options.theme_octaves},
+        "levels": dict(options.levels),
+        "synth_shift": {
+            role: SYNTH_SEMITONE_SHIFT.get(synth, 0)
+            for role, synth in synths.items()
+            if synth
+        },
+        "synths": dict(synths),
+        "space": _space_decision_text(synths),
+    }
+
+
+def _add_loop_layer(layers: List[Layer], groove_loop: Optional[str]) -> None:
+    """Добавить слой жанрового лупа, если он задан (issue #2841).
+
+    Raises:
+        ArrangementError: имени нет в каталоге — сообщение перечисляет
+            доступные, чтобы модель исправилась следующим вызовом.
+    """
+    name = (groove_loop or "").strip()
+    if not name or name.lower() == "none":
+        return
+    loops = _sample_loops()
+    info = loops.find_loop(name)
+    if info is None:
+        known = ", ".join(sorted(loops.loop_catalog()))
+        raise ArrangementError(
+            f"groove_loop {name!r} нет в каталоге лупов. Доступны: {known}."
+        )
+    layers.append(Layer(role=LOOP_ROLE, pattern=info.name))
+
+
+#: Опора по тонике лада для роли, у которой синт заказан, а ступеней нет
+#: (issue #2970). Каждая роль получает свой минимальный, но узнаваемый
+#: рисунок — не выдуманную гармонию, только тонику и её ближайших
+#: диатонических соседей (ступени лада, не полутона — Scale.default сам
+#: подставит нужные интервалы для minor/major/что угодно):
+#:
+#: * ``bass`` — тот же мотив, что и у :func:`_autofill_bass` (тоника,
+#:   тоника, «квинта» в терминах ступеней, тоника): опора под ритм-секцию.
+#: * ``lead`` — короткий тонический мотив с движением к терции и обратно:
+#:   узнаваемо как тема, а не как дрон.
+#: * ``pad`` — тоника и «квинта» по целому такту (``ROLE_DEFAULT_DUR["pad"]
+#:   == 4``): держит гармонию, не пытаясь угадать смену аккордов модели.
+_ROLE_AUTOFILL_DEGREES: Dict[str, Tuple[float, ...]] = {
+    "bass": (0, 0, 4, 0),
+    "lead": (0, 2, 4, 2),
+    "pad": (0, 4),
+}
+
+
+def _autofill_role_without_notes(
+    layers: List[Layer], role: str, synth: str
+) -> None:
+    """Добавить слой роли по тонике лада — синт заказан, а нот роли нет.
+
+    🔴 FIX (issue #2970, живой сет «Oakenfold» 24.09): ``compose_music(...,
+    bass_synth='wobblebass', lead_synth='soprano', pad_synth='strings')``
+    без ``bass_notes``/``lead_notes``/``pad_notes`` раньше молча не добавлял
+    ни одного из трёх слоёв (:func:`_add_melodic_layer` возвращает ``False``
+    на пустых ступенях, вызывающий код просто шёл дальше) — трек играл
+    только бочку и хэты, а ``compose_music`` отвечал ``success: True``, как
+    будто заказанные тембры звучат.
+
+    Выбор в пользу автозаполнения, а не ошибки (acceptance issue #2970):
+    синт в вызове — явное решение модели включить роль в состав; ошибка на
+    забытых нотах уронила бы весь вызов и трек, хотя барабаны и остальные
+    роли собраны нормально. Опора по тонике (:data:`_ROLE_AUTOFILL_DEGREES`)
+    гарантированно консонирует с чем угодно ещё звучащим — как и у
+    :func:`_autofill_bass`, ноты не выдумываются, а берутся из тоники лада.
+    """
+    layers.append(
+        Layer(
+            role=role,
+            synth=synth.strip(),
+            degrees=_ROLE_AUTOFILL_DEGREES[role],
+            dur=ROLE_DEFAULT_DUR[role],
+        )
+    )
+
+
+def _add_fx_layer(layers: List[Layer], fx: Optional[str]) -> None:
+    """Добавить слой одиночного FX-акцента, если он задан (issue #2968).
+
+    Зеркало :func:`_add_loop_layer` — отдельный каталог (:mod:`core.sample_fx`),
+    отдельная роль (:data:`FX_ROLE`), но тот же принцип: неизвестное имя —
+    честная ошибка со списком доступных, а не тихий пропуск слоя.
+
+    Raises:
+        ArrangementError: имени нет в белом списке FX.
+    """
+    name = (fx or "").strip()
+    if not name or name.lower() == "none":
+        return
+    fx_mod = _sample_fx()
+    info = fx_mod.find_fx(name)
+    if info is None:
+        known = ", ".join(sorted(fx_mod.fx_catalog()))
+        raise ArrangementError(f"fx {name!r} нет в белом списке FX. Доступны: {known}.")
+    layers.append(Layer(role=FX_ROLE, pattern=info.name))
 
 
 def _autofill_bass(layers: List[Layer], form: str) -> None:
@@ -1526,9 +2894,28 @@ def _autofill_bass(layers: List[Layer], form: str) -> None:
     )
 
 
-def form_summary(name: Optional[str]) -> str:
-    """Однострочное описание формы — для сообщения LLM и для логов."""
-    plan = resolve_form(name)
+def form_summary(name: Optional[str], theme_bars: int = 0) -> str:
+    """Однострочное описание формы — для сообщения LLM и для логов.
+
+    Issue #2965: раньше summary всегда описывал НЕподогнанный план формы
+    (``resolve_form(name)`` без ``theme_bars``) — «интро(8) → ... = 64
+    тактов» — даже когда реально сыгранная форма :func:`resolve_form`
+    подгоняла под 2-тактовую тему из базы и капала повторы
+    (:data:`MAX_THEME_REPEATS`). Текст расходился с тем, что звучит, а
+    ``form_duration_seconds`` — с той же реальной, подогнанной формой.
+    Теперь summary читает ТОТ ЖЕ ``theme_bars``, что и ``render``/
+    ``form_duration_seconds`` (оба зовутся с ``spec.theme_bars`` в
+    ``tools/music.py``), и при короткой теме честно называет её длину и
+    число повторов — «нот мало» словами, а не молчанием.
+    """
+    plan = resolve_form(name, theme_bars)
     total_bars = sum(int(bars) for _n, bars, _i in plan)
     sections = " → ".join(f"{n}({b})" for n, b, _i in plan)
-    return f"{sections} = {total_bars} тактов"
+    summary = f"{sections} = {total_bars} тактов"
+    if theme_bars > 0:
+        repeats = total_bars // theme_bars
+        summary += (
+            f" (тема в базе {theme_bars} такт(ов), повторяется {repeats}×"
+            f"{' — тема короткая, форма сокращена' if theme_bars < 4 else ''})"
+        )
+    return summary

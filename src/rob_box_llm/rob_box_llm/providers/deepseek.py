@@ -265,6 +265,9 @@ class _OpenAICompatibleProvider(LLMProvider):
         # both shapes natively, so we pass through unchanged.
         timeout: Union[float, "httpx.Timeout", None] = 30.0,
         client: Optional[AsyncOpenAI] = None,
+        # Issue #2939: ``None`` — дефолт SDK (2 скрытых ретрая); harness
+        # передаёт 0, чтобы ретраи были только свои, видимые в логе.
+        max_retries: Optional[int] = None,
     ) -> None:
         self.name = name
         self._base_url = base_url
@@ -272,10 +275,14 @@ class _OpenAICompatibleProvider(LLMProvider):
         if client is not None:
             self._client = client
         else:
+            extra: dict[str, Any] = {}
+            if max_retries is not None:
+                extra["max_retries"] = max_retries
             self._client = AsyncOpenAI(
                 base_url=base_url,
                 api_key=api_key or "no-key-configured",
                 timeout=timeout,
+                **extra,
             )
 
     # -- capability introspection -----------------------------------------

@@ -55,9 +55,11 @@ ROBOT_USER="${ROBOT_USER:-ros2}"
 GITHUB_RUN_ID="${GITHUB_RUN_ID:-}"
 # NOTE (retro t_0a5d65af, round-50): НЕЛЬЗЯ ставить "LC_ALL=C " префиксом в
 # ROBOT_SSH — при раскрытии ${ROBOT_SSH} bash выполняет "LC_ALL=C" как КОМАНДУ
-# (rc=127 command not found), весь ROBOT_SSH возвращает пусто, check_cycle
-# видит пустые логи и выдаёт no_accept при живом роботе. Locale префикс
-# работает только как литерал перед командой, не через переменную.
+# (rc=127 command not found), весь ROBOT_SSH возвращает пусто. С issue #2933
+# check_cycle различает такой сбой SSH (rc!=0 → rc=3 «логи недоступны, не
+# переигрывать») от «робот действительно не принял» (rc=1) — но лучше
+# в такой сбой вообще не попадать: locale-префикс работает только как
+# литерал перед командой, не через переменную.
 ROBOT_SSH="sshpass -p ${SSHPASS:-open} ssh -n -o StrictHostKeyChecking=no ${ROBOT_USER}@${ROBOT_HOST}"
 # Override для локального тестирования (юнит-тесты): если задан ROBOT_SSH_OVERRIDE,
 # используем его вместо ssh-команды. Позволяет bash-юнит-тестам подсунуть
@@ -398,6 +400,23 @@ _read_e2e_mode() {
         | grep -aoE 'Boolean value is: (True|False)' | tail -1
 }
 activate_e2e_speaker_db() {
+    # Issue #2890 — узел стирает e2e-базу только на переходе false→true.
+    # Если прошлый прогон не вернул узел на боевую (❌ в его deactivate),
+    # set true стал бы no-op и акт унаследовал бы чужой каст — выключаем
+    # сначала и проверяем, что выключилось.
+    case "$(_read_e2e_mode)" in
+        *True*)
+            log "⚠️ speaker_id_node: e2e_mode остался включён с прошлого прогона — выключаю, чтобы включение стёрло /data/speakers.e2e.db заново"
+            robot_ros "ros2 param set /speaker_id_node e2e_mode false --no-daemon" >/dev/null 2>&1
+            case "$(_read_e2e_mode)" in
+                *False*) ;;
+                *)
+                    echo "E2E_FATAL: speaker_id_node не выключил застрявший e2e_mode — e2e-база дикторов не будет стёрта перед актом (issue #2890)" >&2
+                    exit 2
+                    ;;
+            esac
+            ;;
+    esac
     robot_ros "ros2 param set /speaker_id_node e2e_mode true --no-daemon" >/dev/null 2>&1
     case "$(_read_e2e_mode)" in
         *True*)
@@ -462,6 +481,21 @@ _read_mcp_e2e_mode() {
         | grep -aoE 'Boolean value is: (True|False)' | tail -1
 }
 activate_e2e_memory_db() {
+    # Issue #2890 — то же, что у activate_e2e_speaker_db: застрявший с
+    # прошлого прогона e2e_mode=true сделал бы включение no-op без стирания.
+    case "$(_read_mcp_e2e_mode)" in
+        *True*)
+            log "⚠️ mcp_server: e2e_mode остался включён с прошлого прогона — выключаю, чтобы включение стёрло /data/voice_memory.e2e.db заново"
+            robot_ros "ros2 param set /mcp_server e2e_mode false --no-daemon" >/dev/null 2>&1
+            case "$(_read_mcp_e2e_mode)" in
+                *False*) ;;
+                *)
+                    echo "E2E_FATAL: mcp_server не выключил застрявший e2e_mode — e2e-память фактов не будет стёрта перед актом (issue #2890)" >&2
+                    exit 2
+                    ;;
+            esac
+            ;;
+    esac
     robot_ros "ros2 param set /mcp_server e2e_mode true --no-daemon" >/dev/null 2>&1
     case "$(_read_mcp_e2e_mode)" in
         *True*)
@@ -491,6 +525,121 @@ deactivate_e2e_memory_db() {
             ;;
     esac
 }
+
+# --- issue #2890: изоляция АКТА, а не только БД дикторов --------------------
+# До этой правки акт был изолирован только по speakers.e2e.db. Окно ходов
+# LLM в dialogue_node переживало переход между актами, а e2e-память фактов
+# включалась лишь сценариям с memory_save. Прогон акта 2b 35903232434 сразу
+# после акта 2 35900007906: в контексте LLM стоял ход акта 2 «[Spkr:Саша]
+# поищи … про чай», и новой Саше (профиль 5baad325; старая 243092d7 стёрта)
+# робот сказал факт старой — «зелёный чай без сахара и лук ни в каком виде».
+#
+# Теперь в начале КАЖДОГО прогона сценария (isolate_act_start):
+#   1. окно диалога сбрасывается тем же _reset_dialogue_session, что у фразы
+#      «новая сессия», но молча — ros2 param set /dialogue_node
+#      e2e_session_reset_token <уникальный токен>, токен читается ОБРАТНО
+#      (отказ сброса = колбэк отклоняет значение = токен не совпал = FATAL);
+#   2. сценарий, который стирает каст дикторов (register_speaker), стирает
+#      и e2e-память фактов: факты о стёртых людях — тот же каст.
+#
+# Намеренная зависимость от предыдущего акта — ТОЛЬКО явным флагом сценария
+# ``"inherits_previous_act": true`` (генерируемые акты 3-10 ночного марафона:
+# манифест «акт N опирается на состояние актов < N», акт 10 пересказывает
+# всю ночь). Флаг не спасает от стирания БД и несовместим с register_speaker:
+# акт, стирающий каст, не может наследовать разговор об этом касте.
+
+# rc: 0 — наследует, 1 — нет (или файла нет), 2 — ошибка схемы (не булево).
+scenario_inherits_previous_act() {
+    [ -f "$1" ] || return 1
+    python3 - "$1" <<'PY'
+import json, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as fh:
+        data = json.load(fh)
+except Exception:
+    sys.exit(1)
+value = data.get("inherits_previous_act", False) if isinstance(data, dict) else False
+if value is True:
+    sys.exit(0)
+if value is False:
+    sys.exit(1)
+print(f"E2E_FATAL: inherits_previous_act обязан быть true|false, а не {value!r} (issue #2890)", file=sys.stderr)
+sys.exit(2)
+PY
+}
+_read_dialogue_reset_token() {
+    robot_ros "ros2 param get /dialogue_node e2e_session_reset_token --no-daemon" 2>/dev/null \
+        | grep -aoE 'String value is: [A-Za-z0-9_.-]+' | tail -1 | sed 's/^String value is: //'
+}
+reset_dialogue_session_for_act() {  # $1 = токен (только [A-Za-z0-9_.-], с буквы)
+    local token="$1"
+    robot_ros "ros2 param set /dialogue_node e2e_session_reset_token $token --no-daemon" >/dev/null 2>&1
+    if [ "$(_read_dialogue_reset_token)" = "$token" ]; then
+        log "🧹 dialogue_node: окно диалога сброшено перед актом (token=$token) — ходы прошлых актов LLM не увидит"
+        return 0
+    fi
+    # ФАТАЛ: без сброса вердикт акта нечитаем — LLM отвечает по ходам
+    # чужого акта (issue #2890). Лучше честно не прогнать акт.
+    echo "E2E_FATAL: dialogue_node не подтвердил сброс сессии перед актом (token=$token) — акт увидел бы ходы прошлого акта (issue #2890)" >&2
+    echo "           проверь вручную: ssh <robot> \"docker exec voice-assistant bash -lc 'source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; ros2 param get /dialogue_node e2e_session_reset_token --no-daemon'\"" >&2
+    exit 2
+}
+isolate_act_start() {  # $1 = файл сценария
+    local scenario="$1" inherits=0 registers=1
+    scenario_inherits_previous_act "$scenario" || inherits=$?
+    [ "$inherits" = "2" ] && exit 2
+    scenario_registers_speakers "$scenario" && registers=0
+    if [ "$inherits" = "0" ] && [ "$registers" = "0" ]; then
+        echo "E2E_FATAL: сценарий регистрирует дикторов (стирает каст) и при этом inherits_previous_act=true — наследовать разговор о стёртом касте нельзя (issue #2890)" >&2
+        exit 2
+    fi
+    # Issue #2750 — изолированная БД дикторов ДО первого шага. Якорь —
+    # СОДЕРЖИМОЕ сценария (issue #2763), не имя файла.
+    if [ "$registers" = "0" ]; then
+        activate_e2e_speaker_db
+    fi
+    # Issue #2781 — memory_save пишет в e2e-память. Issue #2890 — стёртый
+    # каст дикторов стирает и факты о нём.
+    if [ "$registers" = "0" ] || scenario_writes_memory "$scenario"; then
+        activate_e2e_memory_db
+    fi
+    if [ "$inherits" = "0" ]; then
+        log "🔗 акт наследует окно диалога прошлого акта (inherits_previous_act=true) — сброс сессии пропущен намеренно"
+    else
+        reset_dialogue_session_for_act "e2e-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+    fi
+}
+
+# --- issue #2809 — node_params: сценарий форсирует зону сомнения переспроса --
+# Акт «переспрос личности» (night_marathon_act2b_identity_question) должен
+# ГАРАНТИРОВАННО попасть в зону tentative (single/contested), а не confident —
+# синтетические голоса MiniMax опознаются 0.87-0.96, выше band_high=0.80 по
+# умолчанию, и переспрос почти никогда не случается на синтетике. Top-level
+# поле сценария ``node_params`` форсирует конкретный параметр конкретного
+# узла на время акта:
+#
+#   "node_params": {"/speaker_id_node": {"name_confidence_band_high": 0.99}}
+#
+# Реализация (apply_node_params/restore_node_params/_ros2_param_*) вынесена в
+# e2e_voice_lib.sh — она чистые функции (никакого ENV на этапе source),
+# юнит-тестируется отдельно от главного скрипта (scripts/testing/
+# test_e2e_node_params.sh, robot_ros() подменяется стабом через
+# ROBOT_SSH_OVERRIDE, как и весь остальной харнесс).
+#
+# Контракт (тот же принцип честности, что e2e_mode выше): значение не
+# ВЕРИТСЯ на слово exit-коду ``ros2 param set`` — его читают ОБРАТНО и
+# сравнивают с запрошенным, иначе колбэк параметров мог отклонить значение
+# (или узел вообще не перехватывать этот параметр — см. issue #2809 fix в
+# speaker_id_node.parameters_callback) и харнесс решил бы, что переопределение
+# сработало, хотя оно тихо провалилось. Восстановление — К ИСХОДНОМУ
+# значению, ПРОЧИТАННОМУ ДО изменения (не к хардкоду в этом файле), и делается
+# ИЗ trap EXIT — что бы ни случилось со сценарием (PASS/FAIL/обрыв связи),
+# узел обязан вернуться на калиброванное 0.80/0.15, иначе следующий прогон на
+# этом же роботе (или живая мастерская, если робот не был перезапущен)
+# получит зону сомнения, растянутую до 0.99, и все живые люди станут
+# "tentative".
+E2E_NODE_PARAM_ORIGINALS_FILE="${OUT_DIR}/.node_param_originals.tsv"
+: > "$E2E_NODE_PARAM_ORIGINALS_FILE" 2>/dev/null || true
 
 # --- helpers ----------------------------------------------------------------
 log() { echo ">>> $*"; }
@@ -557,7 +706,7 @@ mark_fail_kind() {  # $1=kind
 SCRIPT_DIR_E2E="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR_E2E/e2e_voice_lib.sh"
-# ADR-0027 §5.2 wake-gate pre-flight helpers (retro t_be491fba). Source'ится
+# ADR-0029 §2.3 wake-gate pre-flight helpers (retro t_be491fba). Source'ится
 # ПОСЛЕ e2e_voice_lib.sh, но ДО любых операций с docker logs. Pure functions
 # only — никакого main flow, никакого чтения ENV.
 # shellcheck disable=SC1091
@@ -572,12 +721,12 @@ source "$SCRIPT_DIR_E2E/e2e_voice_wake_gate.sh"
 # "single-text mode — preflight N/A". Проверено на живом прогоне
 # 35658231116 (запуск был --scenario, а wake_gate_preflight.json содержал
 # именно этот single-text reason). Следствие: SKIP-гард для
-# expect="wake-gated" (ADR-0027 §5.2) не срабатывал никогда, и cold-start
+# expect="wake-gated" (ADR-0029 §2.3) не срабатывал никогда, и cold-start
 # wake-gate флак краснел как acceptance/feature-fail — ровно тот
 # misdiagnosis, против которого фича и делалась (ретро t_be491fba).
 # Второй слой той же ошибки: run_wake_gate_preflight определяется в либе
 # строкой выше — из старого места она была ещё и не видна.
-# --- ADR-0027 §5.2: wake-gate pre-flight probe ----------------------------
+# --- ADR-0029 §2.3: wake-gate pre-flight probe ----------------------------
 # Retro t_be491fba: rounds 215-222 voice_core_suite_v1 показали fail-streak
 # 3/3+ на cold-start wake-gate. dj02_stop_music шаг имеет ✅ ПОЛНЫЙ ЦИКЛ
 # (акцепт + LLM + TTS) + PATTERN_MISS stop_music → aggregate GATE-1 фейлит
@@ -1277,11 +1426,30 @@ synth_command() {  # $1=text $2=voice $3=out_wav
 
 # Проверка полного цикла в логах робота с момента BEFORE.
 # Возвращает: 0 = полный цикл (акцепт+LLM+TTS в ПРАВИЛЬНОМ ПОРЯДКЕ),
-#             1 = нет акцепта, 2 = LLM/TTS error
+#             1 = нет акцепта (ПРИНЯТО в логах ДЕЙСТВИТЕЛЬНО нет — можно
+#                 переигрывать реплику),
+#             2 = LLM/TTS error,
+#             3 = issue #2933 — ПРИНЯТО есть (робот реплику принял), но
+#                 полный цикл ещё НЕ подтверждён: либо логи с робота не
+#                 прочитались (SSH/docker недоступны), либо TTS/LLM ещё не
+#                 закрылись в окне (ретрай гарда — 2× process_input/TTS —
+#                 может не уложиться в E2E_REACTION_WINDOW). Это НЕ «нет
+#                 акцепта»: caller (run_step) обязан ДОЖДАТЬСЯ цикла, а не
+#                 переигрывать команду — иначе робот получает дубли (run
+#                 35941885025, n704 ×3: три полных цикла в логах робота,
+#                 харнесс трижды написал no_accept).
 check_cycle() {  # $1=before_rfc3339
     local before="$1"
-    local logs
-    logs="$(${ROBOT_SSH} "docker logs voice-assistant --since '${before}' 2>&1" 2>/dev/null || echo '')"
+    local logs ssh_rc
+    logs="$(${ROBOT_SSH} "docker logs voice-assistant --since '${before}' 2>&1" 2>/dev/null)"
+    ssh_rc=$?
+    if [ "$ssh_rc" != "0" ]; then
+        # issue #2933: раньше `|| echo ''` схлопывал SSH-сбой в тот же rc=1,
+        # что и «робот молчит» — и caller переигрывал реплику вслепую.
+        # «Логи не прочитались» и «робот не принял» — разные диагнозы.
+        log "check_cycle: ⚠️ docker logs недоступны по SSH (rc=${ssh_rc}) — не «нет акцепта», перечитываю"
+        return 3
+    fi
     # 1) акцепт STT
     if ! printf '%s' "$logs" | grep -q "ПРИНЯТО"; then
         return 1   # нет акцепта → retry команды
@@ -1290,7 +1458,8 @@ check_cycle() {  # $1=before_rfc3339
     #    не чиним. 429/quota — НЕ красный: minimax квота (2056) исчерпана
     #    постоянно, но fallback-цепочка на deepseek (PR #1099) в develop
     #    работает — цикл завершается на следующем провайдере. Если TTS уже
-    #    есть — fallback сработал, не ошибка; если TTS нет — retry (return 1).
+    #    есть — fallback сработал, не ошибка; если TTS нет — ПРИНЯТО уже
+    #    зафиксировано, ждём (return 3), не переигрываем (issue #2933).
     if printf '%s' "$logs" | grep -qE "Empty assistant response|LLM.*(error|failed)"; then
         printf '%s' "$logs" | grep -E "Empty assistant response|LLM.*(error|failed)" | tail -3 > "$OUT_DIR/llm_error.txt"
         return 2
@@ -1298,8 +1467,8 @@ check_cycle() {  # $1=before_rfc3339
     if printf '%s' "$logs" | grep -qE "429 Too Many|quota"; then
         if ! printf '%s' "$logs" | grep -q "TTS finished"; then
             printf '%s' "$logs" | grep -E "429|quota" | tail -3 > "$OUT_DIR/llm_quota.txt"
-            log "⚠️ minimax 429/quota в логах, TTS не завершился — retry (fallback deepseek)"
-            return 1
+            log "⚠️ minimax 429/quota в логах, TTS не завершился, но ПРИНЯТО есть — жду (fallback deepseek), не переигрываю"
+            return 3
         fi
     fi
     # 3) ПОРЯДОК: LLM INPUT команды должен быть ПОСЛЕ ПРИНЯТО,
@@ -1324,7 +1493,11 @@ check_cycle() {  # $1=before_rfc3339
         tts_ts="$(printf '%s' "$logs" | grep 'TTS finished' | head -1 | grep -oE '[0-9]{2}:[0-9]{2}:[0-9]{2}' | head -1)"
     fi
     if [ -z "$accept_ts" ] || [ -z "$tts_ts" ]; then
-        return 1
+        # issue #2933: ПРИНЯТО в логах ЕСТЬ (мы уже прошли проверку в п.1) —
+        # либо timestamp не спарсился, либо «TTS finished» ещё не пришёл в
+        # окно (ретрай гарда — 2 process_input/2 TTS — не уложился в
+        # E2E_REACTION_WINDOW). Это НЕ «нет акцепта»: не переигрываем.
+        return 3
     fi
     # LLM INPUT может отсутствовать (DJ/короткий ответ) — но если есть,
     # TTS должен быть ПОСЛЕ него. В любом случае TTS должен быть ПОСЛЕ акцепта.
@@ -1333,7 +1506,10 @@ check_cycle() {  # $1=before_rfc3339
             : # tts после llm — ок
         else
             printf '%s' "$logs" | grep -E "ПРИНЯТО|LLM INPUT|TTS finished" | tail -5 > "$OUT_DIR/stale_cycle.txt"
-            return 1   # TTS ДО LLM INPUT = приветствие/старый цикл, не реакция
+            # issue #2933: ПРИНЯТО есть — самый свежий «TTS finished» в окне
+            # ещё относится к предыдущему циклу (ретрай гарда не успел
+            # закрыться). Не «нет акцепта» — ждём, не переигрываем.
+            return 3
         fi
     fi
     if awk "BEGIN{exit !($tts_ts > $accept_ts)}"; then
@@ -1341,7 +1517,10 @@ check_cycle() {  # $1=before_rfc3339
         return 0
     fi
     printf '%s' "$logs" | grep -E "ПРИНЯТО|LLM INPUT|TTS finished" | tail -5 > "$OUT_DIR/stale_cycle.txt"
-    return 1   # TTS ДО акцепта = приветствие
+    # issue #2933: ПРИНЯТО есть — найденный «TTS finished» лишь ВЫГЛЯДИТ
+    # стоящим до акцепта (обычно wall-clock fallback без даты/суток).
+    # Не «нет акцепта» — ждём подтверждения, не переигрываем.
+    return 3
 }
 
 # Проверка ожидаемых паттернов (для фич, напр. speaker_analysis)
@@ -1508,7 +1687,7 @@ emit_step_fail_or_vad() {
 # --- один атомарный шаг -----------------------------------------------------
 # Ожидаемое поведение определяется параметром $4 (expect_kind):
 #   cycle       — полный цикл STT→LLM→TTS (по дефолту)
-#   wake-gated  — то же, но ADR-0027 §5.2: если WAKE_GATE_CLEARED != 1
+#   wake-gated  — то же, но ADR-0029 §2.3: если WAKE_GATE_CLEARED != 1
 #                 (cold-start not cleared) → SKIP без fail (см. retro
 #                 t_be491fba: cold-start wake-gate flake должен быть
 #                 отделён от acceptance fail). Логирует `[skip:wake-gate-cold-start]`.
@@ -1524,7 +1703,7 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
     safe="$(safe_label "$label")"
     log "=== STEP ${label} (safe=${safe}): voice=${voice} text=\"${text}\" ==="
 
-    # 0. ADR-0027 §5.2: wake-gated SKIP (retro t_be491fba). Если
+    # 0. ADR-0029 §2.3: wake-gated SKIP (retro t_be491fba). Если
     #    expect=wake-gated И preflight показал cold-start NOT cleared —
     #    шаг пропускается (SKIP), не FAIL. Это by design поведение
     #    backlog-аккумулятора: «Робот, ...» без wake → STT получает
@@ -1721,26 +1900,45 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
     fi
 
     # 3. Retry-цикл акцепта
-    local attempt reaction rc
+    #
+    # issue #2933 (run 35941885025, n704 ×3): робот трижды отработал ПОЛНЫЙ
+    # цикл (ПРИНЯТО → LLM → TTS) в своих логах, а харнесс трижды написал
+    # «нет акцепта» и переиграл реплику — робот получил три дубля одной
+    # команды. Причина — check_cycle() не различал «ПРИНЯТО ЕСТЬ, но цикл
+    # ещё не закрылся в окне проверки (ретрай гарда — 2×process_input/TTS —
+    # не всегда укладывается в E2E_REACTION_WINDOW), либо логи с робота не
+    # прочитались по SSH» и «робот реально не услышал» (rc=1). Теперь
+    # check_cycle возвращает отдельный rc=3 для первого случая, и здесь мы
+    # НЕ переигрываем paplay, пока не убедимся, что акцепта правда не было —
+    # только продолжаем ждать/перечитывать логи ТОГО ЖЕ окна.
+    local attempt reaction rc accepted_before=""
     reaction=0
     for attempt in $(seq 1 "$E2E_MAX_ATTEMPTS"); do
-        BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
-        log "STEP ${label}: PLAY attempt ${attempt}/${E2E_MAX_ATTEMPTS}"
-        # Громкость динамика 100% (по умолчанию; явный >100% доступен через
-        # inputs.volume в workflow, e.g. -f volume=120).
-        pactl set-sink-volume @DEFAULT_SINK@ 100% 2>/dev/null || true
-        # cleanup-resilience (ретро 11.08 t_26a6d362): если eq-файл пропал
-        # (OUT_DIR удалён внешним cleanup на 249) — пере-синтезируем и EQ,
-        # а не получаем ложный FAIL от paplay open(): No such file.
-        if [ ! -f "$OUT_DIR/cmd_${safe}_eq.wav" ]; then
-            log "STEP ${label}: cmd_${safe}_eq.wav отсутствует перед play — пере-синтез (cleanup-resilience)"
-            ensure_outdir
-            synth_command "$text" "$voice" "$OUT_DIR/cmd_${safe}.wav" > "$OUT_DIR/synth_${safe}.log" 2>&1 \
-                || { log "STEP ${label}: FAIL — повторный синтез ${E2E_TTS_PROVIDER_RESOLVED:-$E2E_TTS_PROVIDER} упал ($(tail -1 "$OUT_DIR/synth_${safe}.log"))"; emit_step "${label} FAIL synth"; mark_fail_kind synth; return 1; }
-            ensure_outdir
-            ffmpeg -nostdin -y -i "$OUT_DIR/cmd_${safe}.wav" -af "highpass=f=100,volume=3.0,alimiter=limit=0.98,adelay=1500|all=1" -ac 1 -ar 16000 "$OUT_DIR/cmd_${safe}_eq.wav" 2>/dev/null
+        if [ -n "$accepted_before" ]; then
+            # ПРИНЯТО уже зафиксировано на предыдущей проверке этого шага —
+            # НЕ переигрываем команду повторно (issue #2933: дубли на
+            # роботе), просто ждём/перечитываем логи того же окна.
+            BEFORE="$accepted_before"
+            log "STEP ${label}: attempt ${attempt}/${E2E_MAX_ATTEMPTS} — ПРИНЯТО уже было, PLAY пропущен, жду завершения цикла (issue #2933)"
+        else
+            BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+            log "STEP ${label}: PLAY attempt ${attempt}/${E2E_MAX_ATTEMPTS}"
+            # Громкость динамика 100% (по умолчанию; явный >100% доступен через
+            # inputs.volume в workflow, e.g. -f volume=120).
+            pactl set-sink-volume @DEFAULT_SINK@ 100% 2>/dev/null || true
+            # cleanup-resilience (ретро 11.08 t_26a6d362): если eq-файл пропал
+            # (OUT_DIR удалён внешним cleanup на 249) — пере-синтезируем и EQ,
+            # а не получаем ложный FAIL от paplay open(): No such file.
+            if [ ! -f "$OUT_DIR/cmd_${safe}_eq.wav" ]; then
+                log "STEP ${label}: cmd_${safe}_eq.wav отсутствует перед play — пере-синтез (cleanup-resilience)"
+                ensure_outdir
+                synth_command "$text" "$voice" "$OUT_DIR/cmd_${safe}.wav" > "$OUT_DIR/synth_${safe}.log" 2>&1 \
+                    || { log "STEP ${label}: FAIL — повторный синтез ${E2E_TTS_PROVIDER_RESOLVED:-$E2E_TTS_PROVIDER} упал ($(tail -1 "$OUT_DIR/synth_${safe}.log"))"; emit_step "${label} FAIL synth"; mark_fail_kind synth; return 1; }
+                ensure_outdir
+                ffmpeg -nostdin -y -i "$OUT_DIR/cmd_${safe}.wav" -af "highpass=f=100,volume=3.0,alimiter=limit=0.98,adelay=1500|all=1" -ac 1 -ar 16000 "$OUT_DIR/cmd_${safe}_eq.wav" 2>/dev/null
+            fi
+            paplay "$OUT_DIR/cmd_${safe}_eq.wav" && log "  PLAY_DONE" || log "  PLAY_FAIL"
         fi
-        paplay "$OUT_DIR/cmd_${safe}_eq.wav" && log "  PLAY_DONE" || log "  PLAY_FAIL"
         sleep "$E2E_REACTION_WINDOW"
 
         check_cycle "$BEFORE"
@@ -1754,12 +1952,25 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
             emit_step "${label} FAIL llm_error (см. $OUT_DIR/llm_error.txt)"
             mark_fail_kind llm_error
             return 2
+        elif [ "$rc" = "3" ]; then
+            accepted_before="$BEFORE"
+            log "STEP ${label}: ПРИНЯТО есть, цикл ещё не подтверждён (логи недоступны или ретрай гарда не уложился в окно) — жду (attempt ${attempt}), НЕ переигрываю"
+        else
+            log "STEP ${label}: нет акцепта (attempt ${attempt}) — повтор"
         fi
-        log "STEP ${label}: нет акцепта (attempt ${attempt}) — повтор"
         sleep "$E2E_RETRY_PAUSE"
     done
 
     if [ "$reaction" != "1" ]; then
+        if [ -n "$accepted_before" ]; then
+            # issue #2933: ПРИНЯТО было — это НЕ no_accept. Честный FAIL
+            # называет настоящую причину: цикл LLM/TTS не подтверждён в
+            # логах за отведённое число попыток, а не «робот не услышал».
+            log "STEP ${label}: ❌ ПРИНЯТО было, но цикл LLM/TTS не подтверждён в логах после ${E2E_MAX_ATTEMPTS} попыток (issue #2933)"
+            emit_step "${label} FAIL cycle_unconfirmed_after_accept"
+            mark_fail_kind no_reaction
+            return 1
+        fi
         # Та же развилка, что и в backlog-ветке: «робот не ответил» и «робот
         # не услышал, потому что audio_node отбросил звук до STT» — разные
         # диагнозы, и второй не имеет права выглядеть как первый.
@@ -2060,14 +2271,45 @@ PY
 #                                     вызван ДО первого голосового ответа
 #                                     (verbal-only LLM answer regression guard)
 # Пишет acceptance.json в OUT_DIR.
-check_acceptance() {  # $1=label $2=acceptance_json_string $3=before_rfc3339
-    local label="$1" acc_json="$2" before="$3"
+check_acceptance() {  # $1=label $2=acceptance_json_string $3=before_rfc3339 [$4=attempt_tag]
+    # $4 (issue #2846) — «попытка N/M», если у шага есть retry_acceptance.
+    # Без него в логе шага подряд стояли
+    #   ACCEPTANCE[n201_sasha_intro_long]: ❌ discovery tool ... AFTER verbal answer
+    #   ACCEPTANCE[n201_sasha_intro_long]: ✅ all checks passed
+    # и это читалось как противоречивый вердикт ОДНОЙ проверки, хотя это две
+    # разные попытки (ретрай, run 35875477264). Итог шага — одна строка
+    # «STEP <label>: итог — …» в scenario-цикле.
+    local label="$1" acc_json="$2" before="$3" attempt_tag="${4:-}"
     local rc=0
-    local logs logs_file
+    local logs logs_file tag_str=""
+    [ -n "$attempt_tag" ] && tag_str=" ${attempt_tag}"
     logs="$(${ROBOT_SSH} "docker logs voice-assistant --since '${before}' 2>&1" 2>/dev/null || echo '')"
     # Логи шага тоже пишем в файл (ARG_MAX защита, как в check_gate1_aggregate).
     logs_file="$OUT_DIR/.acceptance_${label}.txt"
     printf '%s' "$logs" > "$logs_file"
+
+    # Issue #2846: исход register_speaker ищется в логе speaker_id_node. Если
+    # LLM вызвала тул последним действием хода, ack ноды (до 1.5с ожидания
+    # эмбеддинга, speaker_id_node._REGISTER_UTTERANCE_WAIT_SEC) может лечь в
+    # лог позже начала проверки — тогда дочитываем лог, а не красим шаг за
+    # чужую гонку. Исхода нет и после ожидания — FAIL «не подтверждена».
+    local _reg_wait_max="${E2E_REGISTRATION_ACK_WAIT_SEC:-6}" _reg_waited=0
+    case "$_reg_wait_max" in ''|*[!0-9]*) _reg_wait_max=6 ;; esac
+    while [ "$_reg_waited" -lt "$_reg_wait_max" ] \
+        && ACC_JSON="$acc_json" LOGS_FILE="$logs_file" \
+           PYTHONPATH="$SCRIPT_DIR_E2E${PYTHONPATH:+:$PYTHONPATH}" \
+           python3 -c 'import json, os, sys
+from e2e_tool_match import registration_pending
+logs = open(os.environ["LOGS_FILE"], encoding="utf-8", errors="replace").read()
+sys.exit(0 if registration_pending(json.loads(os.environ["ACC_JSON"]), logs) else 1)' 2>/dev/null; do
+        sleep 1
+        _reg_waited=$((_reg_waited + 1))
+        logs="$(${ROBOT_SSH} "docker logs voice-assistant --since '${before}' 2>&1" 2>/dev/null || echo '')"
+        printf '%s' "$logs" > "$logs_file"
+    done
+    if [ "$_reg_waited" -gt 0 ]; then
+        log "ACCEPTANCE[${label}]${tag_str}: ждали исход регистрации от speaker_id_node ${_reg_waited}s (лимит ${_reg_wait_max}s)"
+    fi
 
     # Прогон acceptance-чекера в Python (читает acc_json + logs → pass/fail + reason).
     ACC_JSON="$acc_json" LOGS_FILE="$logs_file" \
@@ -2085,6 +2327,12 @@ from e2e_tool_match import (
 )
 # Issue #2764: expected_keywords матчатся по речи робота, не по всему логу.
 from e2e_tool_match import keyword_hit, robot_speech
+# Issue #2846: вызов register_speaker != регистрация принята speaker_id_node.
+from e2e_tool_match import (
+    registration_expected,
+    registration_failures,
+    registration_outcome,
+)
 acc = json.loads(os.environ["ACC_JSON"])
 with open(os.environ["LOGS_FILE"], encoding="utf-8", errors="replace") as _f:
     logs = _f.read()
@@ -2248,6 +2496,12 @@ if discovery_tool_errors:
     failures.extend(discovery_tool_errors)
 if discovery_failures:
     failures.extend(discovery_failures)
+# Issue #2846: отказ/отсутствие исхода регистрации и склейка профиля — часть
+# ЭТОГО же вердикта (раньше склейку проверял отдельный bash-блок ПОСЛЕ
+# «✅ all checks passed», а отказ не проверял никто).
+registration = registration_outcome(logs)
+registration_fail = registration_failures(acc, logs)
+failures.extend(registration_fail)
 if not voice_change_ok:
     failures.append(voice_change_detail)
 if response_max_ms and measured_ms and measured_ms > response_max_ms:
@@ -2273,6 +2527,10 @@ result = {
     "discovery_tools": discovery_tools,
     "discovery_records": discovery_records,
     "discovery_first_voice_pos": voice_pos,
+    # Issue #2846: исход регистрации голоса по логу speaker_id_node.
+    "registration_expected": registration_expected(acc),
+    "registration": registration,
+    "registration_failures": registration_fail,
     "voice_changed": voice_changed_req,
     "voice_change_ok": voice_change_ok,
     "voice_change_detail": voice_change_detail,
@@ -2286,10 +2544,21 @@ PY
     # Итоговый rc — из acceptance.json (pass → 0)
     if grep -q '"pass": *true' "$OUT_DIR/acceptance.json"; then
         rc=0
-        log "ACCEPTANCE[${label}]: ✅ $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["reason"])' "$OUT_DIR/acceptance.json")"
+        log "ACCEPTANCE[${label}]${tag_str}: ✅ $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["reason"])' "$OUT_DIR/acceptance.json")"
     else
         rc=1
-        log "ACCEPTANCE[${label}]: ❌ $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["reason"])' "$OUT_DIR/acceptance.json")"
+        log "ACCEPTANCE[${label}]${tag_str}: ❌ $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["reason"])' "$OUT_DIR/acceptance.json")"
+    fi
+    # Склейка профиля (issue #2846 перенёс её в вердикт выше) — сохраняем
+    # прежний артефакт speaker_merges.log и подсказку, куда смотреть.
+    local _merges
+    _merges="$(python3 -c 'import json,sys
+for m in json.load(open(sys.argv[1], encoding="utf-8")).get("registration", {}).get("merged", []): print(m)' "$OUT_DIR/acceptance.json" 2>/dev/null)"
+    if [ -n "$_merges" ] && [ "$rc" != "0" ]; then
+        printf '%s\n' "$_merges" | while IFS= read -r _m; do
+            printf '%s\n' "STEP ${label}: ${_m}" >> "$OUT_DIR/speaker_merges.log" 2>/dev/null || true
+        done
+        log "ACCEPTANCE[${label}]${tag_str}: склейка — существующий профиль дополнен, отдельного не заведено. Смотреть register_match_threshold в speaker_id_node и различимость голосов TTS-провайдера ${E2E_TTS_PROVIDER_RESOLVED:-${E2E_TTS_PROVIDER:-?}} (у minimax Russian_ReliableMan и Russian_HandsomeChildhoodFriend неразличимы для resemblyzer)."
     fi
     return $rc
 }
@@ -2322,21 +2591,26 @@ start_recording
 # Keep it in the run artifact so e2e reports expose infrastructure health.
 observe_step "${SCENARIO_FILE:+scenario}${SCENARIO_FILE:-single}" > "$OUT_DIR/health_snapshot.json" || true
 
-# Issue #2750 — акт «Знакомство» получает изолированную БД дикторов ДО
-# первого шага. Якорь — СОДЕРЖИМОЕ сценария (issue #2763), не имя файла.
-if [ -n "$SCENARIO_FILE" ] && scenario_registers_speakers "$SCENARIO_FILE"; then
-    activate_e2e_speaker_db
-fi
-# Issue #2781 — тот же сценарий (или другой) может писать долгосрочную
-# память через memory_save — отдельная изоляция, отдельный узел (mcp_server).
-if [ -n "$SCENARIO_FILE" ] && scenario_writes_memory "$SCENARIO_FILE"; then
-    activate_e2e_memory_db
-fi
+# Гарантированная остановка записи, возврат speaker_id_node/mcp_server на
+# боевые БД и восстановление node_params при любом завершении
+# (PASS/FAIL/ошибка). Все хелперы идемпотентны: повторный вызов — noop
+# (пустой REC_PID / E2E_*_DB_ACTIVATED=0 / пустой node_params_originals).
+# Issue #2890 — trap ставится ДО изоляции акта: E2E_FATAL сброса сессии
+# (или памяти) после уже включённой e2e-БД дикторов обязан вернуть узел
+# на боевую, а не оставить мастерскую на e2e-базе.
+trap 'restore_node_params; deactivate_e2e_speaker_db; deactivate_e2e_memory_db; stop_recording' EXIT
 
-# Гарантированная остановка записи и возврат speaker_id_node/mcp_server на
-# боевые БД при любом завершении (PASS/FAIL/ошибка). Все хелперы идемпотентны:
-# повторный вызов — noop (пустой REC_PID / E2E_*_DB_ACTIVATED=0).
-trap 'deactivate_e2e_speaker_db; deactivate_e2e_memory_db; stop_recording' EXIT
+# Issue #2890 — изоляция акта ДО первого шага: e2e-БД дикторов (#2750),
+# e2e-память фактов (#2781) и окно диалога dialogue_node. См. isolate_act_start.
+if [ -n "$SCENARIO_FILE" ]; then
+    isolate_act_start "$SCENARIO_FILE"
+fi
+# Issue #2809 — node_params override (см. apply_node_params выше). Применяем
+# ДО первого шага, как и изоляцию БД: акт «переспрос личности» форсирует
+# name_confidence_band_high на время всего прогона.
+if [ -n "$SCENARIO_FILE" ]; then
+    apply_node_params "$SCENARIO_FILE"
+fi
 
 PASS=1
 if [ -n "$SCENARIO_FILE" ]; then
@@ -2347,43 +2621,106 @@ if [ -n "$SCENARIO_FILE" ]; then
     #                         "expected_keywords":["песня"],
     #                         # issue #2406: тул ДО голосового ответа
     #                         "discovery_tools":["register_speaker"],
-    #                         "response_max_ms":60000}}]}
+    #                         "response_max_ms":60000},
+    #           # issue #2809 — условный ответ на переспрос личности:
+    #           "when_robot_asked":"Саш.*это ты|это ты.*Саш",
+    #           "required_question":true,
+    #           "sleep_before_sec":35}]}
+    #
+    # when_robot_asked (issue #2809) — grep -E, регистронезависимо, ищется
+    # ТОЛЬКО в robot_speech() ПРЕДЫДУЩЕГО шага (тот же канал, что и
+    # expected_keywords/must_not_say — issue #2764/#2779, НЕ весь лог шага).
+    # Совпало → шаг играется как обычный. Не совпало → шаг SKIP с причиной
+    # robot_did_not_ask (отдельная строка в E2E_SUMMARY, не OK и не FAIL) —
+    # ЕСЛИ ТОЛЬКО не задан required_question:true, тогда отсутствие вопроса
+    # само по себе FAIL (нужно для детерминированного акта «переспрос
+    # личности», где вопрос ОБЯЗАН прозвучать).
+    # sleep_before_sec (issue #2809) — пауза ПЕРЕД шагом (имитация конца
+    # сессии дольше identity_question_session_gap_sec).
     cp "$SCENARIO_FILE" "$OUT_DIR/scenario.json"
-    # Парсим в .tsv: idx \t label \t text \t voice \t patterns_json \t acceptance_json \t expect_raw \t retry_acceptance
-    # expect_raw — что написано в scenario.json (cycle / wake-gated / backlog / "").
-    # Классификация (auto-detect wake-prefix → wake-gated) делается в bash
-    # через classify_step_expect ПОСЛЕ парсинга, чтобы Python-парсер не
-    # зависел от bash-логики и тестировался отдельно.
-    python3 - "$SCENARIO_FILE" <<'PY' > "$OUT_DIR/scenario_parsed.txt"
-import json, sys
-sc = json.load(open(sys.argv[1], encoding="utf-8"))
-for i, s in enumerate(sc.get("steps", [])):
-    pats = s.get('patterns', [])
-    acc = s.get('acceptance', {})
-    exp = s.get('expect', 'cycle')
-    retry = s.get('retry_acceptance', 0)
-    try:
-        retry = int(retry or 0)
-    except (TypeError, ValueError):
-        retry = 0
-    print(f"{i}\t{s.get('label', f's{i+1}')}\t{s.get('text','')}\t{s.get('voice','anton')}\t{json.dumps(pats)}\t{json.dumps(acc, ensure_ascii=False)}\t{exp}\t{retry}")
-PY
-    while IFS=$'\t' read -r idx label text voice patterns_json acceptance_json expect_raw retry_acceptance; do
+    # issue #2809 — условный ответ на переспрос ("when_robot_asked" — grep-подобный
+    # паттерн против речи ПРЕДЫДУЩЕГО шага, "required_question" — FAIL, если
+    # робот не спросил, "sleep_before_sec" — пауза перед шагом).
+    #
+    # issue #2824 (регресс, живой прогон 35851587044, develop b2f5560e5):
+    # парсинг и разбор строки TSV вынесены в parse_scenario_to_tsv() и
+    # E2E_SCENARIO_ROW_READ (e2e_voice_lib.sh) — ЕДИНАЯ точка истины,
+    # используемая и здесь, и в scripts/testing/test_e2e_scenario_tsv_row.sh.
+    # Раньше \t-разделитель ломался в самом bash `read` (см. докстринг
+    # parse_scenario_to_tsv для разбора причины), а регресс-тест #2823
+    # проверял python-парсер и bash-цикл ПО ОТДЕЛЬНОСТИ, из-за чего не
+    # поймал взаимодействие между ними — теперь оба места читают ровно
+    # тот же код, что и main flow.
+    parse_scenario_to_tsv "$SCENARIO_FILE" "$OUT_DIR/scenario_parsed.txt"
+    # issue #2809 — «речь предыдущего шага» для when_robot_asked. Пустой файл
+    # на старте акта: у первого шага сценария просто нет предыдущего шага,
+    # значит when_robot_asked на первом шаге не может совпасть НИКОГДА (это
+    # осознанное поведение — акт не должен ставить when_robot_asked на шаг 0).
+    LAST_STEP_SPEECH_FILE="$OUT_DIR/.last_step_speech.txt"
+    : > "$LAST_STEP_SPEECH_FILE"
+    while IFS=$'\x1f' eval "$E2E_SCENARIO_ROW_READ"; do
         [ -z "$idx" ] && continue
         case "$retry_acceptance" in
             ''|*[!0-9]*) retry_acceptance=0 ;;
         esac
-        # ADR-0027 §5.2: classify step.expect (auto-detect wake-prefix →
+        # issue #2809 — sleep_before_sec: пауза ПЕРЕД шагом (имитация конца
+        # сессии диалога дольше identity_question_session_gap_sec). Идёт ДО
+        # STEP_BEFORE (окно логов шага не должно включать саму паузу).
+        case "$sleep_before_sec" in
+            ''|*[!0-9.]*) sleep_before_sec=0 ;;
+        esac
+        if awk "BEGIN{exit !($sleep_before_sec > 0)}" 2>/dev/null; then
+            log "STEP ${label}: sleep_before_sec=${sleep_before_sec}s — пауза перед шагом (issue #2809)"
+            sleep "$sleep_before_sec"
+        fi
+        # issue #2809 — when_robot_asked: условный шаг-ответ на переспрос.
+        # Проверяется ПРОТИВ РЕЧИ ПРЕДЫДУЩЕГО шага (тот же LAST_STEP_SPEECH_FILE,
+        # который заполняется в конце обработки каждого шага ниже — см. issue
+        # 2809 после закрытия retry-цикла). grep -qiE — регистронезависимо,
+        # синтаксис ERE (то же "А|Б" что и expected_keywords/must_not_say).
+        step_skip_no_question=0
+        if [ -n "$when_robot_asked" ]; then
+            _prev_speech="$(cat "$LAST_STEP_SPEECH_FILE" 2>/dev/null || echo '')"
+            if when_robot_asked_matches "$_prev_speech" "$when_robot_asked"; then
+                log "STEP ${label}: when_robot_asked='${when_robot_asked}' — совпало с речью предыдущего шага, играем как обычно"
+            else
+                if [ "$required_question" = "1" ]; then
+                    PASS=0
+                    mark_fail_kind feature
+                    log "STEP ${label}: ❌ required_question — робот НЕ задал ожидаемый вопрос ('${when_robot_asked}' не найден в речи предыдущего шага: '${_prev_speech}')"
+                    emit_step "${label} FAIL robot_did_not_ask"
+                else
+                    log "STEP ${label}: ⏭ SKIP — робот не задал вопрос ('${when_robot_asked}' не найден в речи предыдущего шага), пропускаем без FAIL"
+                    emit_step "${label} SKIP robot_did_not_ask"
+                fi
+                step_skip_no_question=1
+            fi
+        fi
+        if [ "$step_skip_no_question" = "1" ]; then
+            # Шаг не разыгрывался — реальной речи не было, LAST_STEP_SPEECH_FILE
+            # намеренно НЕ трогаем (следующий шаг увидит ту же "тишину").
+            continue
+        fi
+        # ADR-0029 §2.3: classify step.expect (auto-detect wake-prefix →
         # wake-gated). Классифицируем в bash, чтобы Python-парсер
         # оставался pure-data.
         expect="$(classify_step_expect "$expect_raw" "$text")"
         # retry_acceptance = доп. попытки при FAIL patterns/acceptance.
         # Нужно для dj01: LLM недетерминирован — если renardo не запустился
         # (execute_music_code не вызван), повторяем команду (e2e run 32595628905).
+        # issue #2902: повтора НЕТ, если проваленная попытка изменила
+        # состояние робота (регистрация принята/склеена, задан вопрос о
+        # личности, речь совпала с when_robot_asked следующего шага) — итог
+        # «FAIL retry_blocked_state_changed», см. retry_block_reason().
         attempt_n=0
         step_ok=0
         cycle_failed=0
         step_skipped=0
+        # issue #2809 — начало окна логов ЭТОГО шага (для LAST_STEP_SPEECH_FILE
+        # ниже, после закрытия retry-цикла). Фиксируется на ПЕРВОЙ попытке —
+        # ретраи не должны сдвигать окно вперёд, иначе речь из первой
+        # (неудачной) попытки потеряется для when_robot_asked следующего шага.
+        step_window_start=""
         # Кто именно провалился на ПОСЛЕДНЕЙ попытке и кто проходил хоть раз.
         # bug(run 35658231116, 22.09.2026): step_ok пересчитывается с нуля на
         # каждой попытке, поэтому паттерны и acceptance обязаны сойтись в ОДНОЙ.
@@ -2402,14 +2739,20 @@ PY
         acc_ok_any=0
         pat_checked=0
         acc_checked=0
+        # issue #2846 — причины провала acceptance на КАЖДОЙ попытке, чтобы
+        # итоговая строка шага говорила, чем закончились прежние попытки.
+        acc_fail_history=""
+        # issue #2902 — почему ретрай запрещён (пусто — не запрещался).
+        retry_blocked=""
         while :; do
             last_fail_what=""
             STEP_BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+            [ -z "$step_window_start" ] && step_window_start="$STEP_BEFORE"
             run_step "$text" "$voice" "$label" "$expect"
             rc=$?
             # Пишем transcript (даже при FAIL — для ретро-анализа, что STT услышал)
             parse_transcript "$label" "$STEP_BEFORE" "$text"
-            # ADR-0027 §5.2: rc=3 = SKIP wake-gate-cold-start (не fail, не
+            # ADR-0029 §2.3: rc=3 = SKIP wake-gate-cold-start (не fail, не
             # pass). Шаг пропущен по systemic — backlog-аккумулятор скопит
             # фразу без wake, LLM не получит команду, и aggregate GATE-1
             # не должен фейлить на этом шаге.
@@ -2469,52 +2812,33 @@ for p in json.load(sys.stdin):
             # пишем acceptance.json и (если ERROR) — FAIL (хотя цикл прошёл).
             if [ -n "$acceptance_json" ] && [ "$acceptance_json" != "{}" ]; then
                 acc_checked=1
+                # Регистрация диктора, которая СКЛЕИЛАСЬ с чужим профилем, не
+                # является регистрацией (живой прогон 35667281570, акт 2,
+                # n204_boris_intro_long: «🔗 Speaker 'Борис' merged into
+                # existing profile (id=dc417cef)» — Саша исчез из
+                # speakers.db, а шаг был OK). Раньше это проверял отдельный
+                # bash-блок ЗДЕСЬ, уже ПОСЛЕ строки
+                # «ACCEPTANCE[…]: ✅ all checks passed» — вердикт шага
+                # печатался двумя противоречащими строками. Issue #2846
+                # перенёс склейку в check_acceptance (registration_failures в
+                # e2e_tool_match.py) вместе с новой проверкой ОТКАЗА
+                # регистрации: одна строка ACCEPTANCE на попытку, и она уже
+                # учитывает исход регистрации. speaker_merges.log и подсказка
+                # про register_match_threshold печатаются оттуда же.
+                _acc_tag=""
+                if [ "$retry_acceptance" -gt 0 ]; then
+                    _acc_tag="попытка $((attempt_n + 1))/$((retry_acceptance + 1))"
+                fi
                 OUT_DIR="$OUT_DIR" STEP_LABEL="$label" \
-                    check_acceptance "$label" "$acceptance_json" "$STEP_BEFORE"
+                    check_acceptance "$label" "$acceptance_json" "$STEP_BEFORE" "$_acc_tag"
                 if [ $? != 0 ]; then
                     step_ok=0
                     last_fail_what="${last_fail_what:+$last_fail_what+}acceptance"
+                    _acc_prev_fail="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["reason"])' "$OUT_DIR/acceptance.json" 2>/dev/null || echo '?')"
+                    acc_fail_history="${acc_fail_history:+$acc_fail_history | }${_acc_tag:-попытка 1}: ${_acc_prev_fail}"
                 else
-                    # Регистрация диктора, которая СКЛЕИЛАСЬ с чужим профилем,
-                    # не является регистрацией.
-                    #
-                    # bug(живой прогон 35667281570, акт 2, 22.09.2026). Шаг
-                    # n204_boris_intro_long получил OK, потому что acceptance
-                    # проверяет только факт вызова register_speaker. А в логах
-                    # робота за то же окно:
-                    #   user_input='[Spkr:Саша] ... Меня зовут Борис ...'
-                    #   🔗 Speaker 'Борис' merged into existing profile
-                    #      (id=dc417cef) — voice matched an already-known speaker
-                    #   ✅ [issue 1077] Speaker registered: 'Борис' id=dc417cef
-                    # То есть голос Бориса опознан как Саша, Борис склеен в
-                    # профиль Саши, а профиль ПЕРЕИМЕНОВАН — Саша исчез.
-                    # В /data/speakers.db после акта остался ОДИН диктор
-                    # «Борис» с двумя эмбеддингами вместо двух дикторов.
-                    # Текст шага при этом прямо просит «Запомни мой голос
-                    # ОТДЕЛЬНО от Сашиного... я не хочу, чтобы ты нас путал».
-                    # Зелёный шаг поверх потерянной личности — ровно тот
-                    # красивый PASS, против которого ADR-0018.
-                    case "$acceptance_json" in
-                        *register_speaker*)
-                            _merge_log="$(${ROBOT_SSH} "docker logs voice-assistant --since '${STEP_BEFORE}' 2>&1" 2>/dev/null \
-                                | grep -oE "Speaker '[^']*' merged into existing profile \(id=[0-9a-f]*\)" | tail -1)"
-                            if [ -n "$_merge_log" ]; then
-                                step_ok=0
-                                last_fail_what="${last_fail_what:+$last_fail_what+}speaker_merged"
-                                log "STEP ${label}: ❌ регистрация СКЛЕИЛАСЬ с уже известным диктором: ${_merge_log}"
-                                log "STEP ${label}: это НЕ новый профиль — существующий переименован, прежняя личность потеряна. Шаг просит запомнить голос ОТДЕЛЬНО, значит проверка не пройдена."
-                                log "STEP ${label}: смотреть register_match_threshold в speaker_id_node и различимость голосов TTS-провайдера ${E2E_TTS_PROVIDER_RESOLVED:-$E2E_TTS_PROVIDER} (у minimax Russian_ReliableMan и Russian_HandsomeChildhoodFriend неразличимы для resemblyzer)."
-                                printf '%s\n' "STEP ${label}: ${_merge_log}" >> "$OUT_DIR/speaker_merges.log" 2>/dev/null || true
-                            else
-                                acc_ok_any=1
-                                log "STEP ${label}: ✅ acceptance PASS"
-                            fi
-                            ;;
-                        *)
-                            acc_ok_any=1
-                            log "STEP ${label}: ✅ acceptance PASS"
-                            ;;
-                    esac
+                    acc_ok_any=1
+                    log "STEP ${label}: ✅ acceptance PASS${_acc_tag:+ (${_acc_tag})}"
                 fi
             fi
             # Retry при FAIL patterns/acceptance (если разрешён сценарием)
@@ -2524,20 +2848,70 @@ for p in json.load(sys.stdin):
             if [ "$attempt_n" -ge "$retry_acceptance" ]; then
                 break
             fi
+            # issue #2902 — ретрай шага, который ИЗМЕНИЛ состояние робота,
+            # проверяет уже другое (акт 2c n722, run 35912751803: попытка 1
+            # зарегистрировала Бориса и задала переспрос, попытка 2 та же
+            # реплика ушла ОТВЕТОМ на переспрос). Откатить регистрацию/вопрос
+            # харнессу нечем (speakers.db общая с живыми людьми, ожидание
+            # ответа — в памяти dialogue_node), поэтому такой ретрай
+            # запрещается по уликам в логе ЭТОЙ попытки: см.
+            # retry_block_reason() в e2e_tool_match.py. Сбой самого разбора —
+            # тоже запрет: «не доказано, что безопасно» не равно «безопасно».
+            _attempt_logs="$(${ROBOT_SSH} "docker logs voice-assistant --since '${STEP_BEFORE}' 2>&1" 2>/dev/null || echo '')"
+            if ! retry_blocked="$(NEXT_WRA="${next_when_robot_asked:-}" \
+                PYTHONPATH="$SCRIPT_DIR_E2E${PYTHONPATH:+:$PYTHONPATH}" python3 -c '
+import os, sys
+from e2e_tool_match import retry_block_reason
+sys.stdout.write(retry_block_reason(sys.stdin.read(), os.environ.get("NEXT_WRA", "")))
+' <<< "$_attempt_logs")"; then
+                retry_blocked="retry_block_reason() failed — state change not ruled out"
+            fi
+            if [ -n "$retry_blocked" ]; then
+                log "STEP ${label}: ⛔ ретрай НЕ делаю — попытка $((attempt_n + 1)) изменила состояние робота: ${retry_blocked}. Повтор той же реплики проверял бы другое (issue #2902)."
+                break
+            fi
             attempt_n=$((attempt_n + 1))
             log "STEP ${label}: ❌ проверка не прошла — retry ${attempt_n}/${retry_acceptance}"
             sleep "$E2E_RETRY_PAUSE"
         done
+        # issue #2809 — запоминаем РЕЧЬ РОБОТА за это окно шага для
+        # when_robot_asked СЛЕДУЮЩЕГО шага. Делается ВСЕГДА (даже при
+        # cycle_failed/step_skipped — тогда файл честно останется пустым,
+        # это валидный сигнал "робот ничего не сказал"), поэтому стоит ДО
+        # ветвления по cycle_failed/step_skipped/step_ok ниже.
+        if [ -n "${LAST_STEP_SPEECH_FILE:-}" ]; then
+            _step_logs_for_speech="$(${ROBOT_SSH} "docker logs voice-assistant --since '${step_window_start:-$STEP_BEFORE}' 2>&1" 2>/dev/null || echo '')"
+            if PYTHONPATH="$SCRIPT_DIR_E2E${PYTHONPATH:+:$PYTHONPATH}" python3 -c '
+import sys
+from e2e_tool_match import robot_speech
+sys.stdout.write(robot_speech(sys.stdin.read()))
+' <<< "$_step_logs_for_speech" > "$LAST_STEP_SPEECH_FILE" 2>/dev/null; then
+                :
+            else
+                : > "$LAST_STEP_SPEECH_FILE"
+            fi
+        fi
         if [ "$cycle_failed" = "1" ]; then
             continue
         fi
         if [ "$step_skipped" = "1" ]; then
-            # ADR-0027 §5.2: SKIP — не pass, не fail. Не помечаем fail_kind
+            # ADR-0029 §2.3: SKIP — не pass, не fail. Не помечаем fail_kind
             # и не влияем на PASS aggregate. echo уже сделал run_step
             # ('E2E_STEP <label> SKIP wake-gate-cold-start').
             :
         elif [ "$step_ok" = "1" ]; then
-            emit_step "${label} OK"
+            # issue #2846 — ретрай (retry_acceptance, 04d4ba2f6: LLM
+            # недетерминирован) остаётся штатным: ПОСЛЕДНЯЯ попытка решает.
+            # Но «OK» после проваленной попытки обязан это говорить сам, а не
+            # прятаться за строкой ✅ под строкой ❌: итог — одна строка, и в
+            # E2E_STEP уходит after_retry=N (статус по-прежнему OK, сводка
+            # считает его как OK).
+            if [ "$attempt_n" -gt 0 ]; then
+                log "STEP ${label}: итог — ✅ OK с попытки $((attempt_n + 1))/$((retry_acceptance + 1)); прежние попытки провалились: ${acc_fail_history:-паттерны шага}"
+                emit_step "${label} OK after_retry=${attempt_n}"
+            else
+                emit_step "${label} OK"
+            fi
         else
             PASS=0
             mark_fail_kind feature
@@ -2560,16 +2934,21 @@ for p in json.load(sys.stdin):
                && [ "$pat_ok_any" = "1" ] && [ "$acc_ok_any" = "1" ]; then
                 log "STEP ${label}: ❌ улики разъехались по попыткам: паттерны проходили в одной попытке, acceptance — в другой, вместе ни разу."
                 log "STEP ${label}: почти наверняка паттерн шага ловит ОДНОРАЗОВОЕ событие (напр. «[backlog] flushed to LLM»), которое на повторе не повторяется. Шаг как написан НЕ проверяем ретраем — это дефект СЦЕНАРИЯ, а не робота: либо убери retry_acceptance, либо перенеси одноразовый паттерн в отдельный шаг без ретрая."
-                log "STEP ${label}: ❌ провалилось на последней попытке: ${_where}"
+                log "STEP ${label}: итог — ❌ FAIL, провалилось на последней попытке: ${_where}"
                 emit_step "${label} FAIL retry_split_evidence"
+            elif [ -n "$retry_blocked" ]; then
+                # issue #2902 — одна строка итога, как у #2855: провал
+                # попытки 1 и причина, по которой повтора не было.
+                log "STEP ${label}: итог — ❌ FAIL на попытке $((attempt_n + 1))/$((retry_acceptance + 1)) — ${_where}; ретрай запрещён: ${retry_blocked}"
+                emit_step "${label} FAIL retry_blocked_state_changed"
             else
-                log "STEP ${label}: ❌ проверка не прошла после retry — ${_where}"
+                log "STEP ${label}: итог — ❌ FAIL, проверка не прошла после retry — ${_where}"
                 emit_step "${label} FAIL"
             fi
         fi
     done < "$OUT_DIR/scenario_parsed.txt"
 
-    # --- ADR-0027 §5.2: GATE-1 SKIP-логика ------------------------------------
+    # --- ADR-0029 §2.3: GATE-1 SKIP-логика ------------------------------------
     # Если все wake-gated steps были SKIP (cold-start не cleared), aggregate
     # GATE-1 не должен фейлить — это by-design поведение backlog-аккумулятора
     # (см. retro t_be491fba). Фиксируем это в $OUT_DIR/gate1_skip_reason.json
@@ -2622,7 +3001,7 @@ else
     rc=$?
     # Пишем transcript для single-режима
     parse_transcript "single" "$STEP_BEFORE" "$TEXT"
-    # ADR-0027 §5.2: rc=3 = SKIP wake-gate-cold-start. Single mode
+    # ADR-0029 §2.3: rc=3 = SKIP wake-gate-cold-start. Single mode
     # bypass'ит preflight (см. выше — WAKE_GATE_CLEARED=1 для single),
     # но классификация expect может сработать (если юзер дал wake-текст
     # через --text). Защита: rc=3 в single mode = wake-gate flake, FAIL.

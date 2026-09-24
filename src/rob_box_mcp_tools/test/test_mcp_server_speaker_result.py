@@ -145,7 +145,9 @@ def _load_mcp_server_module():
         m.group(1)
         for m in _re.finditer(r"^\s+([A-Z]\w+Tool),\s*$", _src, flags=_re.M)
     ))
-    _extra_tools = ["MusicManager", "TrackLibrary", "RtttlLibrary"]
+    # ADR-0132 PR-7: ArrangementPresetStore isn't a *Tool class (the regex
+    # above only catches those), so it needs listing here like the others.
+    _extra_tools = ["MusicManager", "TrackLibrary", "RtttlLibrary", "ArrangementPresetStore"]
     # Plus the Gen* tools from the inner try-import (different pattern):
     _gen_names = sorted(set(
         m.group(1)
@@ -374,3 +376,70 @@ class TestOnSpeakerResult:
         assert "uuid-a" in transition_logs[0]
         assert "uuid-b" in transition_logs[1]
         assert node._current_encounter_speaker_id() == "uuid-b"
+
+
+class TestIssue2863KeepKnownSpeaker:
+    """Issue #2863 — «не знаю» ≠ «это другой человек».
+
+    Живой лог (акт 2, run 35886659057): отказ register_speaker по too_short
+    для УЖЕ узнанного Саши давал
+    ``current_speaker_id: 2b276f43-… → ∅ (unknown / is_known=false)`` —
+    в register_error нет поля is_known, и оно читалось как false.
+    """
+
+    def _prime(self, handler) -> None:
+        handler(_msg(json.dumps(
+            {"is_known": True, "speaker_id": "uuid-sasha", "name": "Саша", "confidence": 0.877}
+        )))
+
+    @pytest.mark.parametrize(
+        "error", ["too_short", "utterance_not_found", "no_utterance_context"]
+    )
+    def test_register_error_keeps_current_speaker(self, error: str) -> None:
+        node = _StubNode()
+        handler = _bind_handler(node)
+        self._prime(handler)
+
+        handler(_msg(json.dumps(
+            {"event": "register_error", "error": error, "name": "Саша",
+             "utterance_id": "e8f9080d4787"}
+        )))
+
+        assert node._current_encounter_speaker_id() == "uuid-sasha"
+        assert not any("→ ∅" in m for m in node.logger.infos)
+
+    def test_inconclusive_unknown_keeps_current_speaker(self) -> None:
+        """Шум/короткая фраза (речь=0.36s, STT пустой) — биометрия не
+        оценила, текущий диктор остаётся."""
+        node = _StubNode()
+        handler = _bind_handler(node)
+        self._prime(handler)
+
+        handler(_msg(json.dumps(
+            {"is_known": False, "utterance_id": "noise-1", "inconclusive": True,
+             "reason": "too_short_for_biometry"}
+        )))
+
+        assert node._current_encounter_speaker_id() == "uuid-sasha"
+
+    def test_already_known_ack_keeps_current_speaker(self) -> None:
+        node = _StubNode()
+        handler = _bind_handler(node)
+        self._prime(handler)
+
+        handler(_msg(json.dumps(
+            {"event": "registered", "name": "Саша", "speaker_id": "uuid-sasha",
+             "reused_profile": True, "already_known": True}
+        )))
+
+        assert node._current_encounter_speaker_id() == "uuid-sasha"
+
+    def test_evaluated_unknown_still_resets(self) -> None:
+        """#2829: фразу реально оценили как «не узнан» — сброс остаётся."""
+        node = _StubNode()
+        handler = _bind_handler(node)
+        self._prime(handler)
+
+        handler(_msg(json.dumps({"is_known": False, "utterance_id": "u-2"})))
+
+        assert node._current_encounter_speaker_id() is None

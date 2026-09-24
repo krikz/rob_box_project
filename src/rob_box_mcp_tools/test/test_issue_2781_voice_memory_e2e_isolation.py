@@ -366,6 +366,32 @@ def test_no_prod_path_target_fails_fatally_instead_of_silently_passing(node):
     assert instance._voice_memory_e2e_mode_active is False
 
 
+def test_search_finds_marathon_fact_only_in_e2e_db_not_prod(node):
+    """Issue #2793 — ``memory_search`` должен смотреть в ту же активную БД,
+    что и ``memory_save``. До фикса #2793 ``VoiceMemory.search()`` читал
+    только ``voice_turns`` и никогда ``voice_facts``, поэтому эта проверка
+    падала независимо от изоляции; теперь ``search()`` находит факт сразу
+    после ``save_fact`` в рамках ОДНОГО активного инстанса, и он не течёт
+    в боевую БД, пока e2e_mode включён (та же гарантия, что у get_facts)."""
+    instance, _module = node
+    instance.parameters_callback(_e2e_mode_param(True))
+
+    instance.voice_memory.save_fact("Борис любит зелёный чай без сахара")
+
+    # Тот же активный инстанс сразу находит только что сохранённый факт.
+    hits = instance.voice_memory.search("чай", limit=5)
+    assert any(h["kind"] == "fact" and "чай" in h["content"] for h in hits)
+
+    # В боевую БД факт не попал вовсе.
+    prod_check = VoiceMemory(db_path=instance._voice_memory_prod_db_path)
+    try:
+        assert prod_check.search("чай", limit=5) == [], (
+            "e2e-факт нашёлся в боевой БД поиском — изоляция search() сломана"
+        )
+    finally:
+        prod_check.close()
+
+
 def test_db_switch_failure_returns_unsuccessful_result(node, monkeypatch):
     """Провал переключения (диск недоступен и т. п.) обязан дойти до
     вызывающего ``ros2 param set`` как ``successful=False``."""
@@ -380,3 +406,29 @@ def test_db_switch_failure_returns_unsuccessful_result(node, monkeypatch):
 
     assert result.successful is False
     assert instance._voice_memory_e2e_mode_active is False, "провал не должен был поменять состояние"
+
+
+def test_e2e_path_pointing_at_prod_never_wipes_prod(node):
+    """Issue #2890 — e2e_db_path, указывающий на боевую voice_memory.db,
+    не должен её стереть: включение отклоняется, факты живых людей на месте."""
+    instance, _module = node
+    instance.voice_memory.save_fact("живой человек мастерской пьёт кофе без сахара")
+    instance._voice_memory_e2e_db_path = instance._voice_memory_prod_db_path
+
+    result = instance.parameters_callback(_e2e_mode_param(True))
+
+    assert result.successful is False
+    assert instance._voice_memory_e2e_mode_active is False
+    facts = [f["fact"] for f in instance.voice_memory.get_facts()]
+    assert any("кофе без сахара" in f for f in facts), "боевая voice_memory.db стёрта"
+
+
+def test_enable_logs_explicit_memory_wipe_line(node):
+    """Issue #2890 — сброс e2e-памяти фактов перед актом виден в логе робота."""
+    instance, _module = node
+
+    instance.parameters_callback(_e2e_mode_param(True))
+
+    logger = instance.get_logger.return_value
+    lines = [str(c.args[0]) for c in logger.warning.call_args_list if c.args]
+    assert any("e2e-память фактов сброшена" in line for line in lines), lines

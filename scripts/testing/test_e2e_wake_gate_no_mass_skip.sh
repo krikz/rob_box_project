@@ -4,7 +4,7 @@
 # ЗАЧЕМ (поймано 22.09.2026 на живом прогоне 35664554084, до того как
 # испортило ночной марафон).
 #
-# ADR-0027 §5.2 даёт гард: шаг с expect="wake-gated" пропускается (SKIP), если
+# ADR-0029 §2.3 даёт гард: шаг с expect="wake-gated" пропускается (SKIP), если
 # cold-start wake-gate не пройден. Пробу делает run_wake_gate_preflight, и
 # зовёт она wake_gate_cleared_since "$E2E_RUN_BEFORE", то есть
 # `docker logs --since <старт прогона>`. В момент старта это окно ПУСТО по
@@ -28,7 +28,7 @@
 #   2. ПЕРВЫЙ wake-gated шаг прогона играется всегда — он и есть cold-start
 #      проба (тот же довод, что в single-text ветке preflight'а).
 #   3. SKIP остаётся возможен — но только для ПОСЛЕДУЮЩИХ шагов, когда проба
-#      уже израсходована и гейт всё равно не открылся. Фича ADR-0027 не
+#      уже израсходована и гейт всё равно не открылся. Фича ADR-0029 не
 #      выключена, она перестала быть самоисполняющейся.
 #
 # Тест офлайновый: читает текст харнесса и сценарии, робота не требует.
@@ -41,8 +41,13 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 HARNESS="$REPO_ROOT/.github/workflows/scripts/e2e_voice_test.sh"
 WAKE="$REPO_ROOT/.github/workflows/scripts/e2e_voice_wake_gate.sh"
+# issue #2824/#2809: scenario-парсер (s.get('''expect''', '''cycle''')) переехал
+# из HARNESS в LIB (parse_scenario_to_tsv, e2e_voice_lib.sh) -- единая точка
+# истины для scenario-цикла И регресс-теста test_e2e_scenario_tsv_row.sh.
+# CHECK 3 ниже ищет дефолт expect в ОБОИХ файлах, а не только в HARNESS.
+LIB="$REPO_ROOT/.github/workflows/scripts/e2e_voice_lib.sh"
 
-for f in "$HARNESS" "$WAKE"; do
+for f in "$HARNESS" "$WAKE" "$LIB"; do
     [ -f "$f" ] || { printf '❌ отсутствует: %s\n' "$f"; exit 1; }
 done
 
@@ -69,9 +74,9 @@ else
         bad "нет каскад-гарда: пропустив первый wake-gated шаг, акцепта не получить, и весь акт уйдёт в SKIP"
     fi
     if printf '%s' "$guard" | grep -q 'emit_step "${label} SKIP wake-gate-cold-start"'; then
-        ok "SKIP по-прежнему возможен — фича ADR-0027 не выключена"
+        ok "SKIP по-прежнему возможен — фича ADR-0029 не выключена"
     else
-        bad "SKIP исчез совсем: гард ADR-0027 §5.2 вырезан, а не исправлен"
+        bad "SKIP исчез совсем: гард ADR-0029 §2.3 вырезан, а не исправлен"
     fi
 fi
 
@@ -102,7 +107,7 @@ fi
 # Тест теперь проверяет саму цепочку, а не пересказывает мою ошибку.
 # ---------------------------------------------------------------------------
 printf 'CHECK 3: цепочка JSON → парсер → classify_step_expect согласована\n'
-PARSER_DEFAULT="$(grep -oE "s\.get\('expect', *'[a-z-]*'\)" "$HARNESS" | head -1 | grep -oE "'[a-z-]*'\)" | tr -d "')")"
+PARSER_DEFAULT="$(grep -ohE "s\.get\('expect', *'[a-z-]*'\)" "$HARNESS" "$LIB" | head -1 | grep -oE "'[a-z-]*'\)" | tr -d "')")"
 if [ -z "$PARSER_DEFAULT" ]; then
     bad "не нашёл дефолт expect в парсере сценария — он нужен, чтобы понимать, включено ли авто-повышение"
 else
@@ -115,7 +120,7 @@ CLS_EMPTY="$(classify_step_expect "" "Робот, как дела")"
 printf '  classify(%s, «Робот, ...») = %s   classify(пусто, «Робот, ...») = %s\n' \
     "'$PARSER_DEFAULT'" "$CLS_DEFAULT" "$CLS_EMPTY"
 if [ "$CLS_EMPTY" != "wake-gated" ]; then
-    bad "авто-повышение по wake-префиксу сломано: classify(пусто) = '$CLS_EMPTY', ждали wake-gated. Гард ADR-0027 §5.2 перестал быть достижимым вообще."
+    bad "авто-повышение по wake-префиксу сломано: classify(пусто) = '$CLS_EMPTY', ждали wake-gated. Гард ADR-0029 §2.3 перестал быть достижимым вообще."
 else
     ok "авто-повышение по wake-префиксу живо (для пустого expect)"
 fi

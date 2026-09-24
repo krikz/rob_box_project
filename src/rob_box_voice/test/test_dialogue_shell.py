@@ -1482,7 +1482,7 @@ class TestToolProviderWiring(unittest.TestCase):
 
         fake_mcp = _types.ModuleType("rob_box_mcp_tools")
         fake_mcp_adapter = _types.ModuleType("rob_box_mcp_tools.llm_adapter")
-        fake_mcp_adapter.LLMToolCallAdapter = lambda _node: _StubBridge()
+        fake_mcp_adapter.LLMToolCallAdapter = lambda _node, **_kw: _StubBridge()
 
         saved = {
             k: sys.modules.get(k)

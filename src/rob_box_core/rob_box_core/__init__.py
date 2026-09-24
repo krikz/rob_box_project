@@ -17,6 +17,7 @@ from rob_box_core.avatar_command import (
 )
 from rob_box_core.clock import Clock, MockClock, SystemClock
 from rob_box_core.memory import Fact, InMemoryStore, MemoryHit, MemoryStore, Turn
+from rob_box_core.praise_gate import PRAISE_WORDS, SAVE_REQUEST_WORDS, contains_praise
 from rob_box_core.ports import (
     ToolContext,
     ToolDescriptor,
@@ -99,6 +100,10 @@ __all__ = [
     "DEFAULT_ROBOT_VOICE_CONFIG",
     "SAMPLE_RATE_HZ",
     "BYTES_PER_S",
+    # praise_gate (ADR-0132 PR-7): save_arrangement_preset hard gate.
+    "PRAISE_WORDS",
+    "SAVE_REQUEST_WORDS",
+    "contains_praise",
 ]
 
 __version__ = "0.1.0"

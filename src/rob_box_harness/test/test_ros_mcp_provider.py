@@ -55,6 +55,108 @@ async def test_ros_adapter_executes_existing_bridge_off_event_loop() -> None:
     assert bridge.calls == [("status", {}, 2.5)]
 
 
+# -- Issue #2916 — ``message`` alongside ``data`` must survive -------------
+
+
+class _MessageAndDataBridge:
+    """Bridge stub returning both ``data`` and a model-facing ``message``."""
+
+    def execute_tool_call_sync(
+        self,
+        tool_name: str,
+        parameters: dict[str, Any],
+        timeout: float | None = None,
+    ) -> Mapping[str, Any]:
+        return {
+            "success": True,
+            "message": "next_transition_sec: 8.0",
+            "data": {"bpm": 120},
+        }
+
+
+def test_ros_adapter_keeps_message_in_metadata_when_data_present() -> None:
+    provider = ROSMCPToolProvider(_MessageAndDataBridge())
+    provider.register_tool(
+        ToolDescriptor(name="status", description="status", parameters={})
+    )
+
+    result = asyncio.run(provider.invoke("status", {}))
+
+    assert result.value == {"bpm": 120}
+    assert result.metadata.get("message") == "next_transition_sec: 8.0"
+
+
+class _DataOnlyBridge:
+    def execute_tool_call_sync(
+        self,
+        tool_name: str,
+        parameters: dict[str, Any],
+        timeout: float | None = None,
+    ) -> Mapping[str, Any]:
+        return {"success": True, "data": {"bpm": 120}}
+
+
+def test_ros_adapter_no_message_metadata_when_data_only() -> None:
+    provider = ROSMCPToolProvider(_DataOnlyBridge())
+    provider.register_tool(
+        ToolDescriptor(name="status", description="status", parameters={})
+    )
+
+    result = asyncio.run(provider.invoke("status", {}))
+
+    assert result.value == {"bpm": 120}
+    assert "message" not in result.metadata
+
+
+class _MessageOnlyBridge:
+    def execute_tool_call_sync(
+        self,
+        tool_name: str,
+        parameters: dict[str, Any],
+        timeout: float | None = None,
+    ) -> Mapping[str, Any]:
+        return {"success": True, "message": "ok, done"}
+
+
+def test_ros_adapter_message_only_is_unchanged() -> None:
+    provider = ROSMCPToolProvider(_MessageOnlyBridge())
+    provider.register_tool(
+        ToolDescriptor(name="status", description="status", parameters={})
+    )
+
+    result = asyncio.run(provider.invoke("status", {}))
+
+    assert result.value == "ok, done"
+    assert "message" not in result.metadata
+
+
+class _FailingBridgeWithData:
+    def execute_tool_call_sync(
+        self,
+        tool_name: str,
+        parameters: dict[str, Any],
+        timeout: float | None = None,
+    ) -> Mapping[str, Any]:
+        return {
+            "success": False,
+            "message": "нет развивающих паттернов",
+            "data": {"partial": True},
+        }
+
+
+def test_ros_adapter_error_path_metadata_unaffected() -> None:
+    provider = ROSMCPToolProvider(_FailingBridgeWithData())
+    provider.register_tool(
+        ToolDescriptor(name="status", description="status", parameters={})
+    )
+
+    result = asyncio.run(provider.invoke("status", {}))
+
+    assert result.error == "нет развивающих паттернов"
+    assert result.value == {"partial": True}
+    assert "message" not in result.metadata
+
+
 async def test_ros_adapter_uses_typed_unknown_tool_error() -> None:
     provider, bridge = _provider()
 

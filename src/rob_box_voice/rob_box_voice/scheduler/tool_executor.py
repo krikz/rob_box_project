@@ -27,13 +27,22 @@ silence the robot.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import uuid
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Union
 
 from rob_box_llm.provider import ToolCall, ToolResult
 
+from rob_box_voice.core.track_start_guard import (
+    SPEAK_TOOL,
+    TrackStartGuard,
+    refusal_content,
+    speak_refusal_content,
+    trim_dj_speech,
+)
+from rob_box_voice.core.turn_speech_gate import REGISTER_TOOL, TurnSpeechGate
 from rob_box_voice.scheduler.delta import DeltaOp, DeltaOpKind, TaskDelta
 from rob_box_voice.scheduler.task_scheduler import (
     ChannelKind,
@@ -113,6 +122,14 @@ def _parse_delta_op(raw: Any) -> DeltaOp:
     return DeltaOp(kind=kind, seg_idx=raw.get("seg_idx"), args=raw.get("args"))
 
 
+def _registration_pending(result: ToolResult) -> bool:
+    """Issue #2913 — ``register_speaker`` действительно отправил запрос в
+    speaker_id_node (тул вернул ``speaker_id: 'pending'``), значит исход
+    придёт ack'ом. Остальные ответы тула (спросить имя, шумовое имя,
+    ошибка) ack не порождают."""
+    return not result.is_error and "pending" in str(result.content or "")
+
+
 def channel_for_tool(tool: str) -> Optional[ChannelKind]:
     """Return the scheduler channel for *tool*, or ``None`` for bypass.
 
@@ -147,8 +164,13 @@ class SchedulerToolExecutor:
         scheduler: Optional[TaskScheduler] = None,
         *,
         on_event: Optional[Callable[[str, dict[str, Any]], None]] = None,
+        speech_gate: Optional[TurnSpeechGate] = None,
     ) -> None:
         self._underlying = underlying
+        # Issue #2913 — speak_text хода не обгоняет исход register_speaker
+        # и не звучит, если ход отвечает вопросом о личности. None — без
+        # гейта (как до #2913).
+        self._speech_gate = speech_gate
         self._scheduler = scheduler
         self._on_event = on_event
         self._scheduler_attempted = False
@@ -158,6 +180,17 @@ class SchedulerToolExecutor:
         # ungrouped tasks keep group_id=None like before this feature).
         self._current_group_id: Optional[str] = None
         self._current_seg_idx: int = 0
+        # Issue #2859 — не больше одного успешного запуска трека за ход.
+        self._track_guard = TrackStartGuard()
+
+    def begin_turn(self) -> None:
+        """Граница хода LLM (issue #2859).
+
+        Вызывается ``AgentCore._run_with_tools`` один раз в начале хода
+        (в отличие от :meth:`begin_group`, который зовётся на каждую
+        пачку tool_calls). Снимает лимит «один трек за ход».
+        """
+        self._track_guard.reset()
 
     def begin_group(self) -> str:
         """Start a new segment group (issue #968, S2.3).
@@ -201,9 +234,20 @@ class SchedulerToolExecutor:
         if call.name == "task_delta":
             return await self._execute_task_delta(call)
 
+        # Issue #2878 — DJ-ход: не больше одной (двух на старте сета)
+        # реплики speak_text, и та, что проходит, обрезана до ~140
+        # символов. speak_text маршрутизируется на VOICE-канал ниже (не
+        # bypass-путём, см. ``_execute_direct``), поэтому гард стоит
+        # именно тут, до ``channel_for_tool``.
+        if call.name == SPEAK_TOOL:
+            guarded = self._apply_dj_speak_guard(call)
+            if isinstance(guarded, ToolResult):
+                return guarded
+            call = guarded
+
         channel = channel_for_tool(call.name)
         if channel is None:
-            return await self._underlying.execute(call)
+            return await self._execute_direct(call)
 
         scheduler = self._ensure_scheduler()
         # C3 (#1995): when the scheduler raises (no loop, init failed)
@@ -262,6 +306,79 @@ class SchedulerToolExecutor:
             ),
             is_error=False,
         )
+
+    async def _execute_direct(self, call: ToolCall) -> ToolResult:
+        """Bypass-исполнение с лимитом «один трек за ход» (issue #2859).
+
+        Все запускающие трек тулы идут bypass-путём (см. ``_MUSIC_TOOLS``),
+        поэтому гард стоит здесь. Повторный запуск в том же ходе не
+        доходит до провайдера: каждый такой вызов начинается с
+        ``Clock.clear()``, и на живом DJ-переходе #23 трек сменился 8 раз
+        за 25 секунд. Отказ — не ошибка тула (``is_error=False``): трек
+        играет, и фильтр бабла #1253 не должен глушить итоговую реплику.
+        """
+        guard = self._track_guard
+        if guard.should_refuse(call.name):
+            _LOG.warning(
+                "issue #2859: refusing %s — track already started "
+                "this turn by %s",
+                call.name,
+                guard.started_tool,
+            )
+            return ToolResult(
+                tool_call_id=call.id,
+                content=refusal_content(call.name, guard.started_tool),
+                is_error=False,
+            )
+        gate = self._speech_gate
+        registering = gate is not None and call.name == REGISTER_TOOL
+        if registering:
+            # Issue #2913 — взвести ДО публикации: ack может прийти раньше,
+            # чем вернётся тул.
+            gate.registration_sent()
+        result = await self._underlying.execute(call)
+        if registering and not _registration_pending(result):
+            # Запрос не ушёл (name=None → «спроси имя», шумовое имя,
+            # ошибка) — ack не будет, речь хода ждать нечего.
+            gate.registration_settled()
+        guard.record(call.name, is_error=bool(result.is_error), args=call.arguments)
+        return result
+
+    def _apply_dj_speak_guard(
+        self, call: ToolCall
+    ) -> Union[ToolResult, ToolCall]:
+        """Enforce the DJ-turn ``speak_text`` limit (issue #2878).
+
+        Returns a refusal :class:`ToolResult` once the turn's
+        :meth:`TrackStartGuard.speak_limit` is spent, otherwise the same
+        (or text-trimmed, see :func:`trim_dj_speech`) call to execute.
+        Non-DJ turns (:attr:`TrackStartGuard.is_dj_turn` ``False``) are
+        untouched — trimming and the limit both apply to DJ turns only.
+        """
+        guard = self._track_guard
+        if not guard.is_dj_turn:
+            return call
+        if guard.should_refuse_speak():
+            _LOG.warning(
+                "issue #2878: refusing speak_text — DJ speak limit (%d) "
+                "reached this turn (%d already said)",
+                guard.speak_limit,
+                guard.speak_count,
+            )
+            return ToolResult(
+                tool_call_id=call.id,
+                content=speak_refusal_content(guard.speak_count, guard.speak_limit),
+                is_error=False,
+            )
+        guard.record_speak()
+        text = call.arguments.get("text")
+        if isinstance(text, str):
+            trimmed = trim_dj_speech(text)
+            if trimmed != text:
+                call = dataclasses.replace(
+                    call, arguments={**call.arguments, "text": trimmed}
+                )
+        return call
 
     async def _execute_task_delta(self, call: ToolCall) -> ToolResult:
         """S6.2 — apply ``task_delta`` directly via ``TaskScheduler.update``.
@@ -418,7 +535,22 @@ class SchedulerToolExecutor:
     ) -> Callable[[SchedulerTask], Any]:
         """Build the per-channel executor for *call*."""
 
+        gate = self._speech_gate if call.name == SPEAK_TOOL else None
+        ticket = gate.ticket() if gate is not None else None
+
         async def _run(_task: SchedulerTask) -> Any:
+            if gate is not None and not await gate.admit(
+                ticket, str(call.arguments.get("text") or "")
+            ):
+                # Issue #2913 — ход отвечает придержанным вопросом о
+                # личности / просьбой повторить (_deliver_turn_result).
+                return ToolResult(
+                    tool_call_id=call.id,
+                    content=json.dumps(
+                        {"status": "suppressed", "reason": "identity_question"}
+                    ),
+                    is_error=False,
+                )
             if deferred:
                 # stop_music must not fire while speech is still queued
                 # or playing (issue #968). Wait for the voice channel to

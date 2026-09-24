@@ -41,7 +41,7 @@ import math
 import os
 import threading
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 # Issue #2442 — единый шов «Встреча» вместо самостоятельного
 # ``current_speaker_id``. См. ``_on_speaker_result`` ниже и ADR-0105 §3.
@@ -93,6 +93,9 @@ from .tools import (
     RtttlLibrary,
     ExecuteMusicCodeTool,
     ComposeMusicTool,
+    PreviewArrangementTool,
+    SaveArrangementPresetTool,
+    ArrangementPresetStore,
     StopMusicTool,
     SetVibePresetTool,
     GetMusicStateTool,
@@ -204,6 +207,29 @@ def _music_form_ends_at_epoch(state: Dict[str, Any]) -> Optional[float]:
     if not isinstance(remaining_s, (int, float)) or remaining_s <= 0:
         return None
     return time.time() + float(remaining_s)
+
+
+def _speaker_signal(data: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+    """``/voice/speaker/result`` → ``(меняет ли «кто сейчас», новый speaker_id)``.
+
+    Issue #2863 — «не знаю» ≠ «это другой человек». Отказ регистрации
+    (``event=register_error``, поля is_known в нём нет вовсе) и фраза,
+    которую биометрия не смогла оценить (``inconclusive``: нет эмбеддинга /
+    мало речи), раньше читались как is_known=false и сбрасывали узнанного
+    диктора в ∅. Теперь они ``(False, None)`` — не сигнал. Сбрасывает
+    только оценённая фраза (``{"is_known": false}`` без пометки, #2829).
+    Модульная функция — чтобы держать CC ``_on_speaker_result`` в бюджете
+    ADR-0021 и чтобы её можно было звать со стаба ноды в тестах.
+    """
+    event = data.get("event")
+    if (event and event != "registered") or data.get("inconclusive"):
+        return False, None
+    raw_sid = data.get("speaker_id")
+    # ``registered`` событие несёт speaker_id даже без is_known; ``and``
+    # отфильтровывает пустые строки и None.
+    if raw_sid and (event == "registered" or data.get("is_known")):
+        return True, str(raw_sid)
+    return True, None
 
 
 class MCPServer(Node):
@@ -616,14 +642,10 @@ class MCPServer(Node):
             return
         if not isinstance(data, dict):
             return
-
-        is_known = bool(data.get("is_known"))
-        raw_sid = data.get("speaker_id")
-        # Используем ``and`` чтобы отфильтровать пустые строки и None.
-        new_speaker_id: Optional[str] = str(raw_sid) if (is_known and raw_sid) else None
-        # ``registered`` событие несёт speaker_id даже без is_known.
-        if data.get("event") == "registered" and raw_sid:
-            new_speaker_id = str(raw_sid)
+        # Issue #2863 — служебные ack и неоценённые фразы не сигнал.
+        relevant, new_speaker_id = _speaker_signal(data)
+        if not relevant:
+            return
 
         old = self._current_encounter_speaker_id()
         if new_speaker_id == old:
@@ -1116,9 +1138,24 @@ class MCPServer(Node):
         except Exception as exc:
             self.get_logger().error(f"❌ RTTTL library disabled: {exc}")
 
+        # ADR-0132 PR-7: пресеты ручек по мелодии (shipped + learned,
+        # $MUSIC_LIBRARY_PATH — та же персистентная точка, что TrackLibrary
+        # ниже). Один экземпляр — общий для compose_music/preview_arrangement
+        # (тот же пресет, что реально применится) и save_arrangement_preset.
+        preset_store = ArrangementPresetStore()
+
         # Форма трека строится кодом, а не LLM (RC4 в
         # docs/analysis/2026-08-30-music-quality-audit.md).
-        self.registry.register(ComposeMusicTool(self, music_manager, rtttl_library))
+        self._compose_music_tool = ComposeMusicTool(
+            self, music_manager, rtttl_library, preset_store
+        )
+        self.registry.register(self._compose_music_tool)
+        self.registry.register(
+            PreviewArrangementTool(self, music_manager, rtttl_library, preset_store)
+        )
+        self.registry.register(
+            SaveArrangementPresetTool(self, self._compose_music_tool, preset_store)
+        )
         self.registry.register(StopMusicTool(self, music_manager))
         self.registry.register(SetVibePresetTool(self, music_manager))
         self.registry.register(GetMusicStateTool(self, music_manager))
@@ -1355,17 +1392,36 @@ class MCPServer(Node):
         """
         import os as _os
 
+        # Issue #2890 — боевая voice_memory.db не стирается НИКОГДА, даже
+        # если e2e_db_path в конфиге указал на неё же (опечатка в YAML,
+        # симлинк): исключение прерывает переключение в _apply_e2e_mode,
+        # харнесс получает отказ e2e_mode и фейлит акт.
+        prod = self._voice_memory_prod_db_path
+        if prod and _os.path.realpath(prod) == _os.path.realpath(
+            self._voice_memory_e2e_db_path
+        ):
+            raise RuntimeError(
+                f"e2e_db_path {self._voice_memory_e2e_db_path!r} совпадает с "
+                f"боевой {prod!r} — стирать отказываюсь"
+            )
+        removed = []
         for suffix in ("", "-wal", "-shm", "-journal"):
             path = f"{self._voice_memory_e2e_db_path}{suffix}"
             try:
                 if _os.path.exists(path):
                     _os.remove(path)
+                    removed.append(path)
             except OSError as exc:
                 self.get_logger().warning(
                     f"⚠️ не удалось удалить {path!r} перед E2E-прогоном "
                     f"({type(exc).__name__}: {exc}) — e2e-база памяти может "
                     "унаследовать факты с прошлого марафона"
                 )
+        # Issue #2890 — явная строка сброса e2e-памяти фактов в логе робота.
+        self.get_logger().warning(
+            f"🧹 mcp_server: e2e-память фактов сброшена перед актом — "
+            f"удалено {len(removed)} файл(ов) {self._voice_memory_e2e_db_path!r}"
+        )
 
     def _apply_e2e_mode(self, enabled: bool) -> bool:
         """Переключить voice_memory (voice_facts) боевая ↔ E2E. ``True`` — успех.

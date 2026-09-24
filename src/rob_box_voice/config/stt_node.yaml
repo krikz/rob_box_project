@@ -50,7 +50,14 @@ stt_node:
     # config/stt_chain.yaml больше нет: второй YAML для того же значения
     # уже дважды стоил нам инцидента (issue #1252 → #1734), а issue #1004
     # требует, чтобы каждый ключ был объявлен через declare_parameter.
-    stt_provider_chain: [minimax, yandex, vosk]
+    #
+    # Issue #2866 (23.09.2026): порядок yandex → minimax → vosk. Причина
+    # смены — товарищ Шифу пополнил счёт Yandex SpeechKit и решил сделать
+    # его primary (до этого с 21.09 первым был MiniMax, ADR-0124 §2.1).
+    # Значение обязано совпадать с DEFAULT_STT_PROVIDER_CHAIN в
+    # stt_node.py и с docker/vision/config/voice_assistant/stt_node.yaml
+    # (гард: test/test_yaml_param_consistency.py).
+    stt_provider_chain: [yandex, minimax, vosk]
 
     # ===== MiniMax STT (issue #2365) =====
     # Ключ берётся из ENV MINIMAX_API_KEY (приоритет) или из
@@ -76,3 +83,10 @@ stt_node:
     # Персистентность кэша между рестартами ноды (их много — см. #2676).
     # Пустая строка отключает файл (dev-окружение без /data).
     provider_state_file: ""
+
+    # Issue #2767 — общий бюджет времени на цепочку одной фразы. 20с —
+    # ожидаемый худший однопроходный сценарий (minimax ~4с + yandex до
+    # 12с холодным стартом + vosk ~2с) с небольшим запасом; режет только
+    # аномальные повторы, не забирает попытку у последнего провайдера
+    # (обычно Vosk). 0/отрицательное значение отключает бюджет.
+    stt_phrase_budget_s: 20.0

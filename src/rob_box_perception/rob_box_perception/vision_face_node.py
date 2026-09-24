@@ -251,6 +251,12 @@ class VisionFaceNode(VisionHailoNode):
         # не может вырасти дальше семени, и каждый новый ракурс заводит
         # нового «человека».
         self.declare_parameter('face_gallery_warmup_size', 5)
+        # issue #2771: максимальный зазор best-of-gallery score, при
+        # котором FaceStore предпочитает ИМЕНОВАННУЮ запись безымянному
+        # дублю (см. face_store.DEFAULT_DISAMBIGUATION_GAP - обоснование
+        # цифры 0.10 живыми зазорами 0.047/0.087 из хронологии issue #2771,
+        # 22-23.09.2026).
+        self.declare_parameter('face_disambiguation_gap', 0.10)
         self.declare_parameter('min_track_sec', 2.0)
         self.declare_parameter('min_face_px', 48.0)
         # Ворота качества кропа (issue #2749): почти чёрный/плоский кроп
@@ -343,6 +349,9 @@ class VisionFaceNode(VisionHailoNode):
             enroll_threshold=enroll_threshold,
             gallery_warmup_size=int(
                 self.get_parameter('face_gallery_warmup_size').value
+            ),
+            disambiguation_gap=float(
+                self.get_parameter('face_disambiguation_gap').value
             ),
             max_embeddings=int(self.get_parameter('max_embeddings').value),
             keep_encounters=int(self.get_parameter('keep_encounters').value),
@@ -510,7 +519,7 @@ class VisionFaceNode(VisionHailoNode):
             '[лицо] режим=%s встреч=%d узнано=%d новых=%d слияний=%d%s '
             'ошибок_эмбеддинга=%d кропов_отброшено=%d%s треков=%d | '
             'в базе: людей=%s с_именем=%s gallery_cohesion=%s '
-            'enroll_отклонено=%d прогрев=%d/%s'
+            'enroll_отклонено=%d прогрев=%d/%s разрешено_неоднозначностей=%d'
             % (
                 store.get('mode', '?'),
                 stats.get('encounters_total', 0),
@@ -528,6 +537,7 @@ class VisionFaceNode(VisionHailoNode):
                 store.get('enroll_rejected_total', 0),
                 store.get('enroll_warmup_total', 0),
                 store.get('gallery_warmup_size', '?'),
+                store.get('disambig_named_total', 0),
             )
         )
         # Issue #2777 — вторая строка, отдельно от «сколько встреч/узнано»:

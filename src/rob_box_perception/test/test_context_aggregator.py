@@ -103,11 +103,11 @@ _mock_rclpy = _types.ModuleType('rclpy')
 _mock_rclpy.init = lambda *a, **kw: None
 _mock_rclpy.shutdown = lambda *a, **kw: None
 _mock_rclpy.ok = lambda: True
-sys.modules.setdefault('rclpy', _mock_rclpy)
+sys.modules['rclpy'] = _mock_rclpy
 
 _mock_rclpy_node = _types.ModuleType('rclpy.node')
 _mock_rclpy_node.Node = _FakeNode
-sys.modules.setdefault('rclpy.node', _mock_rclpy_node)
+sys.modules['rclpy.node'] = _mock_rclpy_node
 
 _interfaces = _types.ModuleType('rcl_interfaces')
 
@@ -123,18 +123,18 @@ class _Log:
 
 _interfaces_msg = _types.ModuleType('rcl_interfaces.msg')
 _interfaces_msg.Log = _Log
-sys.modules.setdefault('rcl_interfaces', _interfaces)
-sys.modules.setdefault('rcl_interfaces.msg', _interfaces_msg)
+sys.modules['rcl_interfaces'] = _interfaces
+sys.modules['rcl_interfaces.msg'] = _interfaces_msg
 
 _cb_mod = _types.ModuleType('rclpy.callback_groups')
 _cb_mod.ReentrantCallbackGroup = type('ReentrantCallbackGroup', (), {})
-sys.modules.setdefault('rclpy.callback_groups', _cb_mod)
+sys.modules['rclpy.callback_groups'] = _cb_mod
 
 _qos_mod = _types.ModuleType('rclpy.qos')
 _qos_mod.HistoryPolicy = _types.SimpleNamespace(KEEP_LAST='KEEP_LAST')
 _qos_mod.ReliabilityPolicy = _types.SimpleNamespace(RELIABLE='RELIABLE')
 _qos_mod.QoSProfile = lambda *a, **kw: MagicMock()
-sys.modules.setdefault('rclpy.qos', _qos_mod)
+sys.modules['rclpy.qos'] = _qos_mod
 
 _std_msgs = _types.ModuleType('std_msgs')
 _std_msgs_msg = _types.ModuleType('std_msgs.msg')
@@ -154,8 +154,8 @@ class _Bool:
 
 _std_msgs_msg.String = _String
 _std_msgs_msg.Bool = _Bool
-sys.modules.setdefault('std_msgs', _std_msgs)
-sys.modules.setdefault('std_msgs.msg', _std_msgs_msg)
+sys.modules['std_msgs'] = _std_msgs
+sys.modules['std_msgs.msg'] = _std_msgs_msg
 
 # ── geometry_msgs shim ───────────────────────────────────────────────────
 _geom = _types.ModuleType('geometry_msgs')
@@ -221,8 +221,8 @@ _geom_msg.Pose = _Pose
 _geom_msg.PoseStamped = _PoseStamped
 _geom_msg.Twist = _Twist
 _geom_msg.TwistWithCovariance = _TwistWithCovariance
-sys.modules.setdefault('geometry_msgs', _geom)
-sys.modules.setdefault('geometry_msgs.msg', _geom_msg)
+sys.modules['geometry_msgs'] = _geom
+sys.modules['geometry_msgs.msg'] = _geom_msg
 
 # ── nav_msgs shim ────────────────────────────────────────────────────────
 _nav = _types.ModuleType('nav_msgs')
@@ -241,8 +241,8 @@ class _Odometry:
 
 
 _nav_msg.Odometry = _Odometry
-sys.modules.setdefault('nav_msgs', _nav)
-sys.modules.setdefault('nav_msgs.msg', _nav_msg)
+sys.modules['nav_msgs'] = _nav
+sys.modules['nav_msgs.msg'] = _nav_msg
 
 # ── control_msgs shim ────────────────────────────────────────────────────
 # context_aggregator_node.py imports DynamicJointState from control_msgs.msg
@@ -260,8 +260,8 @@ class _DynamicJointState:
 
 
 _control_msg.DynamicJointState = _DynamicJointState
-sys.modules.setdefault('control_msgs', _control)
-sys.modules.setdefault('control_msgs.msg', _control_msg)
+sys.modules['control_msgs'] = _control
+sys.modules['control_msgs.msg'] = _control_msg
 
 # ── rob_box_perception_msgs shim ─────────────────────────────────────────
 # context_aggregator_node.py tries to import ``PerceptionEvent`` from this
@@ -294,10 +294,13 @@ class _PerceptionEvent:
 
 
 _msgs_msg.PerceptionEvent = _PerceptionEvent
-sys.modules.setdefault('rob_box_perception_msgs', _msgs)
-sys.modules.setdefault('rob_box_perception_msgs.msg', _msgs_msg)
+sys.modules['rob_box_perception_msgs'] = _msgs
+sys.modules['rob_box_perception_msgs.msg'] = _msgs_msg
 
-# Import after the shim is registered.
+# Import after the shim is registered.  Fresh import: another test file may
+# have already imported the node against ITS stubs (conftest.py rolls the
+# stubs back after each module, but not the real module bound to them).
+sys.modules.pop('rob_box_perception.context_aggregator_node', None)
 from geometry_msgs.msg import Point, PoseStamped, Quaternion  # noqa: E402
 from nav_msgs.msg import Odometry  # noqa: E402
 import rclpy  # noqa: E402  — resolves to the shim module registered above

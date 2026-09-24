@@ -105,6 +105,20 @@ dialogue_node:
     # префикс [Говорит <имя>] / [Говорит: незнакомец] + session lock.
     speaker_id_enabled: true
     speaker_db_path: /data/speakers.db
+    # Issue #2809 -- переспрос про tentative-личность максимум раз за
+    # сессию. Два окна (прогон 35857257981: "да" пришло через 84s и
+    # не было прочитано при общем окне 30s):
+    # * identity_answer_window_sec -- сколько заданный вопрос ждёт ответа;
+    # * identity_question_session_gap_sec -- сколько паузы переживает
+    #   решённое "да"/"нет". Раньше 30s (зеркало
+    #   gallery_growth_session_gap_sec), но паузы живого диалога и шаги
+    #   харнесса (~60s) длиннее -- робот переспрашивал посреди разговора.
+    identity_question_session_gap_sec: 120.0
+    identity_answer_window_sec: 180.0
+    # Issue #2829 (ADR-0131) -- сколько ждать биометрию ИМЕННО этой
+    # фразы, прежде чем честно объявить unknown (см. dialogue_node.py
+    # _declare_params).
+    speaker_resolve_timeout_sec: 2.5
     # Бэклог-аккумулятор фоновой речи без wake-слова.
     accumulate_no_wake_enabled: true
     accumulate_window_sec: 180.0

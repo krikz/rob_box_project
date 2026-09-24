@@ -9,7 +9,7 @@ Pure-Python, без rclpy/vosk/grpc. ``select_recognition`` принимает
 Acceptance (issue #979):
 - "фраза из 3-4 слов после TTS распознаётся в >80% случаев"
 - Фраза Vosk-мусора ("а", "а а") отклоняется как "rejected_short"
-- Retry один раз при timeout Yandex
+- Retry один раз при сетевой ошибке Yandex (timeout — без повтора, issue #2924)
 - Метрика logger.info с provider/reason/latency_ms появляется
 - e2e: yandex:ok → без fallback; yandex:timeout*2 → vosk:ok
 """
@@ -21,6 +21,7 @@ from typing import List, Optional
 import pytest
 
 from rob_box_voice.stt_fallback import (
+    DEFAULT_MAX_TOTAL_BUDGET_S,
     DEFAULT_MIN_TEXT_CHARS,
     DEFAULT_YANDEX_MAX_RETRIES,
     DEFAULT_YANDEX_TIMEOUT_S,
@@ -158,22 +159,31 @@ class TestPrimarySuccess:
 
 
 class TestRetryBehaviour:
-    def test_empty_first_attempt_triggers_retry(self):
-        # Yandex: 1-я попытка → None, 2-я → PHRASE
-        primary = FakeProvider("yandex", [None, PHASE3_PHRASE])
-        fallback = FakeProvider("vosk", [LONG_PHRASE])
+    def test_empty_does_not_retry_moves_to_next_provider(self):
+        """Issue #2767: ``empty`` — НЕ транзиентный сбой, повтор того же
+        провайдера на тех же байтах бесполезен (гарантированно даст тот
+        же ``empty``). Живой лог 23.09:
+        ``minimax:empty(3641ms)->minimax:empty(3866ms)`` — retry на empty
+        тратил лишние ~3.6с на КАЖДУЮ фразу без единого шанса на успех.
+        Теперь primary пробуется РОВНО один раз и цепочка сразу идёт
+        дальше, даже если ``max_retries`` в политике > 0.
+        """
+        # только 1 ответ — retry на empty упал бы (issue #2767)
+        primary = FakeProvider("yandex", [None])
+        fallback = FakeProvider("vosk", [PHASE3_PHRASE])
 
         text, attempts = select_recognition(
             [primary, fallback],
             b"\x00\x00" * 800,
-            retry_backoff_s=0.0,  # ускорим тест
+            retry_backoff_s=0.0,
         )
 
         assert text == PHASE3_PHRASE
-        assert primary.call_count == 2  # retry сработал
-        assert fallback.call_count == 0
+        assert primary.call_count == 1  # НЕТ повтора на empty
+        assert fallback.call_count == 1
         assert len(attempts) == 2
-        assert attempts[0].reason == "empty"  # провайдер вернул None → empty
+        assert attempts[0].reason == "empty"
+        assert attempts[0].attempt_index == 0
         assert attempts[1].reason == "ok"
 
     def test_error_first_attempt_triggers_retry(self):
@@ -196,8 +206,9 @@ class TestRetryBehaviour:
         assert attempts[0].reason == "error"
         assert "grpc timeout" in (attempts[0].error or "")
 
-    def test_timeout_both_attempts_falls_back_to_vosk(self):
-        # Yandex "висит" дольше timeout_s обе попытки
+    def test_timeout_is_not_retried_falls_back_to_vosk(self):
+        # Issue #2924: Yandex "висит" дольше timeout_s — второй заход в той же
+        # фразе НЕ делается (до фикса было yandex:timeout->yandex:timeout).
         primary = FakeProvider(
             "yandex",
             [LONG_PHRASE, LONG_PHRASE],  # любой ответ после timeout
@@ -208,26 +219,34 @@ class TestRetryBehaviour:
         text, attempts = select_recognition(
             [primary, fallback],
             b"\x00\x00" * 800,
-            timeout_s=0.02,  # обе попытки > 50ms > 20ms
+            timeout_s=0.02,  # попытка > 50ms > 20ms
             retry_backoff_s=0.0,
         )
 
         assert text == LONG_PHRASE
-        assert primary.call_count == 2
+        assert primary.call_count == 1
         assert fallback.call_count == 1
         assert attempts[0].reason == "timeout"
-        assert attempts[1].reason == "timeout"
-        assert attempts[2].provider == "vosk"
-        assert attempts[2].reason == "ok"
+        assert attempts[1].provider == "vosk"
+        assert attempts[1].reason == "ok"
 
     def test_no_retry_on_fallback_provider(self):
-        # Vosk (fallback) ошибся — мы НЕ retry, идём дальше (или сдаёмся)
+        # Vosk (fallback) ошибся — мы НЕ retry, идём дальше (или сдаёмся).
+        # Оба вызова primary — реальные транзиентные ошибки (не empty,
+        # issue #2767: empty не ретраится вовсе, здесь мы теста ради
+        # проверяем, что retry primary'я — это именно про index==0, а не
+        # про fallback).
         primary = FakeProvider(
             "yandex",
             [None, None],
-            exceptions=[None, RuntimeError("grpc fail")],
+            exceptions=[
+                RuntimeError("grpc fail 1"),
+                RuntimeError("grpc fail 2"),
+            ],
         )
-        fallback = FakeProvider("vosk", [None], exceptions=[ValueError("bad audio")])
+        fallback = FakeProvider(
+            "vosk", [None], exceptions=[ValueError("bad audio")]
+        )
 
         text, attempts = select_recognition(
             [primary, fallback],
@@ -269,9 +288,10 @@ class TestFallbackDecisions:
 
     def test_empty_vs_low_confidence_distinct(self):
         """issue #979: пустой ответ провайдера = reason "empty",
-        короткий не-пустой = reason "low_confidence"."""
-        # Пустой ответ → empty
-        primary = FakeProvider("yandex", [None, None])
+        короткий не-пустой = reason "low_confidence". Issue #2767: ни
+        один из них не ретраится — по одной попытке на провайдера."""
+        # Пустой ответ → empty (без retry — issue #2767)
+        primary = FakeProvider("yandex", [None])
         fallback = FakeProvider("vosk", [""])
         text, attempts = select_recognition(
             [primary, fallback],
@@ -279,13 +299,13 @@ class TestFallbackDecisions:
             retry_backoff_s=0.0,
         )
         assert text is None
+        assert len(attempts) == 2
         assert attempts[0].reason == "empty"
-        assert attempts[1].reason == "empty"
-        assert attempts[2].reason == "empty"  # Vosk вернул "" → empty
+        assert attempts[1].reason == "empty"  # Vosk вернул "" → empty
 
         # Короткий не-пустой → low_confidence, но текст возвращается
         # (rejected(short), не rejected(empty)) — caller переспросит.
-        primary2 = FakeProvider("yandex", [None, None])
+        primary2 = FakeProvider("yandex", [None])
         fallback2 = FakeProvider("vosk", [VOSK_GARBAGE])
         text2, attempts2 = select_recognition(
             [primary2, fallback2],
@@ -293,8 +313,8 @@ class TestFallbackDecisions:
             retry_backoff_s=0.0,
         )
         assert text2 == VOSK_GARBAGE
-        assert attempts2[2].reason == "low_confidence"
-        assert attempts2[2].text == VOSK_GARBAGE
+        assert attempts2[1].reason == "low_confidence"
+        assert attempts2[1].text == VOSK_GARBAGE
 
     def test_provider_raises_stt_timeout_error(self):
         """STTTimeoutError → reason=timeout (не error)."""
@@ -316,19 +336,23 @@ class TestFallbackDecisions:
             retry_backoff_s=0.0,
         )
         assert text == PHASE3_PHRASE
-        # primary: 2 попытки (initial + 1 retry), обе timeout
+        # primary: 1 попытка, timeout НЕ ретраится (issue #2924)
         assert attempts[0].reason == "timeout"
-        assert attempts[1].reason == "timeout"
-        assert attempts[1].provider == "yandex"
+        assert attempts[0].provider == "yandex"
         # fallback: vosk, ok
-        assert attempts[2].provider == "vosk"
-        assert attempts[2].reason == "ok"
+        assert attempts[1].provider == "vosk"
+        assert attempts[1].reason == "ok"
 
     def test_three_word_phrase_after_tts_accepted(self):
         # Главный acceptance: фраза из 3-4 слов после TTS → ok
-        # Yandex 1-я: timeout (None), 2-я: PHASE3_PHRASE → ok
-        # Vosk (fallback) не дёрнут т.к. Yandex 2-я попытка → ok
-        primary = FakeProvider("yandex", [None, PHASE3_PHRASE])
+        # Yandex 1-я: моргнула сеть (транзиентный error — ретраится; issue
+        # #2767: ``empty`` НЕ ретраится, #2924: ``timeout`` тоже НЕ
+        # ретраится), 2-я: PHASE3_PHRASE → ok. Vosk (fallback) не дёрнут.
+        primary = FakeProvider(
+            "yandex",
+            [None, PHASE3_PHRASE],
+            exceptions=[RuntimeError("UNAVAILABLE: network flap"), None],
+        )
         fallback = FakeProvider("vosk", [VOSK_GARBAGE])
 
         text, attempts = select_recognition(
@@ -359,6 +383,176 @@ class TestFallbackDecisions:
 
         assert text == "abc"
         assert attempts[-1].reason == "low_confidence"
+
+
+# ---------------------------------------------------------------------------
+# select_recognition — phrase budget (issue #2767 п.3)
+# ---------------------------------------------------------------------------
+
+
+class _FakeClock:
+    """Управляемые монотонные часы — бюджет тестируем без реального sleep.
+
+    На Windows monotonic-тик ~15.6мс (issue #2799/PR #2800) — реальный
+    time.sleep() в тесте бюджета был бы одновременно медленным и хрупким.
+    Вместо этого fake-провайдер сам двигает часы внутри recognize().
+    """
+
+    def __init__(self, start: float = 1000.0) -> None:
+        self.now = start
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+class _ClockAdvancingProvider:
+    """Провайдер, который сам продвигает fake-часы на время своего вызова
+    (имитирует долгий сетевой звонок без реального sleep)."""
+
+    def __init__(self, name, response, clock, advance_by=0.0):
+        self.name = name
+        self._response = response
+        self._clock = clock
+        self._advance_by = advance_by
+        self.calls = 0
+
+    def recognize(self, audio_bytes):
+        self.calls += 1
+        self._clock.advance(self._advance_by)
+        return self._response
+
+
+class TestPhraseBudget:
+    def test_default_budget_constant(self):
+        # issue #2767: 20с — худший однопроходный сценарий с запасом.
+        assert DEFAULT_MAX_TOTAL_BUDGET_S == 20.0
+
+    def test_first_provider_always_tried_even_over_budget(self):
+        """Бюджет не может оставить фразу вовсе без единой попытки."""
+        clock = _FakeClock()
+        primary = _ClockAdvancingProvider(
+            "minimax", "привет робот", clock, advance_by=0.0
+        )
+
+        text, attempts = select_recognition(
+            [primary],
+            b"\x00\x00" * 800,
+            max_total_s=0.0,  # бюджет исчерпан с самого начала
+            clock=clock,
+        )
+
+        assert primary.calls == 1
+        assert text == "привет робот"
+        assert attempts[0].reason == "ok"
+
+    def test_last_provider_always_tried_even_over_budget(self):
+        """Живой сценарий issue #2767: minimax+yandex сожрали весь бюджет —
+        Vosk (дешёвый офлайн-фолбэк, последний в цепочке) ВСЁ РАВНО
+        получает шанс, иначе фраза осталась бы вовсе без текста."""
+        clock = _FakeClock()
+        # minimax «висит» 15с (имитация холодного cloud timeout).
+        minimax = _ClockAdvancingProvider(
+            "minimax", None, clock, advance_by=15.0
+        )
+        vosk = _ClockAdvancingProvider(
+            "vosk", "расскажи ещё раз", clock, advance_by=1.5
+        )
+
+        text, attempts = select_recognition(
+            [minimax, vosk],
+            b"\x00\x00" * 800,
+            max_total_s=10.0,  # уже меньше, чем потратил один minimax
+            clock=clock,
+            retry_backoff_s=0.0,
+        )
+
+        assert vosk.calls == 1  # последний провайдер — бюджет его не режет
+        assert text == "расскажи ещё раз"
+        assert attempts[-1].reason == "ok"
+
+    def test_middle_provider_skipped_once_budget_exhausted(self):
+        """3 провайдера: 1-й сжигает весь бюджет, 2-й (средний) пропускается
+        с reason=budget_exceeded, 3-й (последний, Vosk) всё равно пробуется."""
+        clock = _FakeClock()
+        minimax = _ClockAdvancingProvider(
+            "minimax", None, clock, advance_by=15.0
+        )
+        yandex = _ClockAdvancingProvider(
+            "yandex", "не должно вызваться", clock, advance_by=12.0
+        )
+        vosk = _ClockAdvancingProvider(
+            "vosk", "расскажи ещё раз", clock, advance_by=1.5
+        )
+
+        text, attempts = select_recognition(
+            [minimax, yandex, vosk],
+            b"\x00\x00" * 800,
+            max_total_s=10.0,
+            clock=clock,
+            retry_backoff_s=0.0,
+        )
+
+        assert minimax.calls == 1
+        assert yandex.calls == 0  # пропущен по бюджету
+        assert vosk.calls == 1  # последний — не режем
+        assert text == "расскажи ещё раз"
+
+        budget_attempts = [
+            a for a in attempts if a.reason == "budget_exceeded"
+        ]
+        assert len(budget_attempts) == 1
+        assert budget_attempts[0].provider == "yandex"
+
+    def test_budget_none_disables_cap(self):
+        """Легаси-режим: max_total_s=None — бюджет никого не режет."""
+        clock = _FakeClock()
+        minimax = _ClockAdvancingProvider(
+            "minimax", None, clock, advance_by=50.0
+        )
+        yandex = _ClockAdvancingProvider(
+            "yandex", None, clock, advance_by=50.0
+        )
+        vosk = _ClockAdvancingProvider(
+            "vosk", "расскажи ещё раз", clock, advance_by=1.0
+        )
+
+        text, attempts = select_recognition(
+            [minimax, yandex, vosk],
+            b"\x00\x00" * 800,
+            max_total_s=None,
+            clock=clock,
+            retry_backoff_s=0.0,
+        )
+
+        assert minimax.calls == 1
+        assert yandex.calls == 1  # НЕ пропущен, бюджет отключён
+        assert vosk.calls == 1
+        assert text == "расскажи ещё раз"
+        assert all(a.reason != "budget_exceeded" for a in attempts)
+
+    def test_budget_does_not_abort_running_call(self):
+        """Бюджет НЕ прерывает уже начавшийся вызов — только решает,
+        стоит ли НАЧИНАТЬ следующий (см. docstring _run_provider:
+        gRPC/HTTP не отменяем)."""
+        clock = _FakeClock()
+        # Один провайдер, который сам «съедает» весь бюджет ВНУТРИ вызова —
+        # вызов должен всё равно завершиться штатно (не оборваться).
+        primary = _ClockAdvancingProvider(
+            "minimax", "привет робот", clock, advance_by=100.0
+        )
+
+        text, attempts = select_recognition(
+            [primary],
+            b"\x00\x00" * 800,
+            max_total_s=5.0,
+            clock=clock,
+        )
+
+        assert text == "привет робот"
+        assert attempts[0].reason == "ok"
 
 
 # ---------------------------------------------------------------------------
@@ -459,9 +653,14 @@ class TestAcceptanceE2E:
         ],
     )
     def test_short_phrase_after_tts_succeeds(self, phrase):
-        # Каждый раз: Yandex 1-я попытка fail (имитация timeout-флапа),
-        # 2-я попытка ok (5s timeout легко укладывается).
-        primary = FakeProvider("yandex", [None, phrase])
+        # Каждый раз: Yandex 1-я попытка — сетевой флап (транзиентный error,
+        # ретраится), 2-я попытка ok. ``empty`` НЕ ретраится (issue #2767),
+        # ``timeout`` тоже (issue #2924) — поэтому флап здесь error.
+        primary = FakeProvider(
+            "yandex",
+            [None, phrase],
+            exceptions=[RuntimeError("UNAVAILABLE: network flap"), None],
+        )
         fallback = FakeProvider("vosk", [VOSK_GARBAGE])
 
         text, attempts = select_recognition(
@@ -475,7 +674,8 @@ class TestAcceptanceE2E:
         assert attempts[-1].provider == "yandex"
 
     def test_acceptance_8_out_of_10_with_vosk_garbage(self):
-        """Имитируем 10 фраз: 8 через Yandex (после retry), 2 — мусор."""
+        """Имитируем 10 фраз: 8 через Yandex (после retry сетевого флапа),
+        2 — мусор."""
         phrases = [
             "расскажи ещё раз",  # 1. retry→ok
             "повтори ещё раз",  # 2. retry→ok
@@ -492,12 +692,18 @@ class TestAcceptanceE2E:
         successes = 0
         for ph in phrases:
             if ph == "а":
-                # Совсем короткая — yandex пуст, vosk мусор → None
-                primary = FakeProvider("yandex", [None, None])
+                # Совсем короткая — yandex пуст (без retry, issue #2767),
+                # vosk мусор → None
+                primary = FakeProvider("yandex", [None])
                 fallback = FakeProvider("vosk", ["а"])
             else:
-                # yandex: 1-я пусто, 2-я фраза → ok
-                primary = FakeProvider("yandex", [None, ph])
+                # yandex: 1-я сетевой флап (error, ретраится), 2-я
+                # фраза → ok
+                primary = FakeProvider(
+                    "yandex",
+                    [None, ph],
+                    exceptions=[RuntimeError("UNAVAILABLE: network flap"), None],
+                )
                 fallback = FakeProvider("vosk", ["а"])
             text, _ = select_recognition(
                 [primary, fallback],

@@ -822,10 +822,21 @@ class FaceRecognizer:
                 gap=match.similarity - match.runner_up_similarity,
             )
 
+        # issue #2771: помечаем в самой строке "Встреча", когда FaceStore
+        # разрешил неоднозначность "безымянный дубль против именованной
+        # записи" в пользу имени (см. FaceMatch.disambiguated,
+        # FaceStore._disambiguate) - без этой пометки лог выглядел бы как
+        # обычное узнавание, и калибровка disambiguation_gap (issue #2771,
+        # sweep ADR-0123 §6) не имела бы по чему считать частоту срабатывания.
+        disambig = (
+            ' устранена_неоднозначность=True'
+            if getattr(match, 'disambiguated', False) else ''
+        )
+
         self._log(
             'info',
             '👤 Встреча: {who} (person={pid} sim={sim:.3f} new={new} '
-            'encounters={n} face={px:.0f}px{runner_up})'.format(
+            'encounters={n} face={px:.0f}px{runner_up}{disambig})'.format(
                 who=match.name or 'незнакомец',
                 pid=match.person_id[:8],
                 sim=match.similarity,
@@ -833,6 +844,7 @@ class FaceRecognizer:
                 n=match.encounter_count,
                 px=encounter.max_face_px,
                 runner_up=runner_up,
+                disambig=disambig,
             ),
         )
 

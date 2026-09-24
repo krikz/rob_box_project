@@ -702,6 +702,7 @@ def test_stats_survives_store_stats_exception():
 # кропа, не трогая границу ``FaceStore`` (ADR-0123 §5).
 
 def test_black_crop_rejected_before_embedder():
+    pytest.importorskip('cv2')  # без cv2 пиксельные ворота открыты (degraded)
     embedder = FakeEmbedder()
     store = FakeStore()
     rec = FaceRecognizer(embedder=embedder, store=store)
@@ -733,6 +734,7 @@ def test_phantom_shadow_track_never_records_encounter():
     не проходит ворота качества -> эмбеддинга у Встречи нет -> запись в
     FaceStore не создаётся ("выдумка не доезжает до Личности").
     """
+    pytest.importorskip('cv2')  # без cv2 пиксельные ворота открыты (degraded)
     tracker = FaceTracker(min_track_sec=1.0, min_face_px=48.0, max_gap_sec=5.0)
     embedder = FakeEmbedder()
     store = FakeStore()
@@ -752,6 +754,7 @@ def test_phantom_shadow_track_never_records_encounter():
 
 
 def test_crop_rejected_total_accumulates_across_frames():
+    pytest.importorskip('cv2')  # без cv2 пиксельные ворота открыты (degraded)
     embedder = FakeEmbedder()
     store = FakeStore()
     rec = FaceRecognizer(embedder=embedder, store=store)
@@ -789,6 +792,7 @@ def test_crop_quality_thresholds_are_configurable_not_hardcoded():
 
 def test_black_crop_rejected_reason_is_dark():
     """Причина отказа чёрного кропа — 'dark' (mean ниже порога), не другая."""
+    pytest.importorskip('cv2')  # без cv2 пиксельные ворота открыты (degraded)
     embedder = FakeEmbedder()
     store = FakeStore()
     rec = FaceRecognizer(embedder=embedder, store=store)
@@ -902,6 +906,7 @@ def test_crop_geometry_thresholds_are_configurable():
 # что и проверяется через monkeypatch модульной функции.
 
 def test_blurry_crop_rejected_before_embedder(monkeypatch):
+    pytest.importorskip('cv2')  # без cv2 пиксельные ворота открыты (degraded)
     embedder = FakeEmbedder()
     store = FakeStore()
     rec = FaceRecognizer(embedder=embedder, store=store, min_sharpness=100.0)

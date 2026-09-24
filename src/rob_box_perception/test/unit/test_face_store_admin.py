@@ -647,3 +647,172 @@ class TestShallowLocationImport:
         result = admin._import_face_store()
         assert result is sys.modules['rob_box_perception.face_store']
         assert called['n'] == 0
+
+
+# ============================================================================
+# 8. suspicious — офлайн-отчёт о безымянных дублях (issue #2771)
+# ============================================================================
+
+class TestSuspicious:
+    def test_reports_pair_above_threshold(self, store, tmp_path, capsys):
+        """named-запись (галерея вокруг _basis(0)) и «дубль», чей вектор
+        даёт cos=0.5 к ней - НИЖЕ identify_threshold=0.6 (стора по
+        умолчанию, значит record_encounter честно заводит отдельную
+        безымянную запись), но ВЫШЕ threshold=0.4 отчёта suspicious -
+        именно такая пара и должна найтись."""
+        named_id = _make_healthy_person(store, 'a')
+        half_and_half = 0.5 * _basis(0) + (3 ** 0.5 / 2) * _basis(1)
+        stranger = store.record_encounter(half_and_half.astype(np.float32))
+        assert stranger.name is None, 'сетап: это обязано остаться незнакомцем'
+
+        args = _make_args(root=str(tmp_path), threshold=0.4)
+        rc = admin.cmd_suspicious(args)
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert named_id in out
+        assert stranger.person_id in out
+
+    def test_no_pairs_below_threshold(self, store, tmp_path, capsys):
+        _make_healthy_person(store, 'a')
+        store.record_encounter(_basis(5))  # ортогонален - далёкий незнакомец
+
+        args = _make_args(root=str(tmp_path), threshold=0.9)
+        rc = admin.cmd_suspicious(args)
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert 'Подозрительных пар нет' in out
+
+    def test_empty_store_is_a_clean_no_op(self, tmp_path, capsys):
+        args = _make_args(root=str(tmp_path), threshold=0.6)
+        rc = admin.cmd_suspicious(args)
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert 'Нет пар для сравнения' in out
+
+    def test_cross_gallery_similarity_helper_matches_face_store(self):
+        """_cross_gallery_similarity() в admin — независимый пересчёт той
+        же метрики, что FaceStore._gallery_cross_similarity() использует
+        внутри ноды (issue #2771). Оба обязаны сходиться на одном и том
+        же наборе векторов - иначе офлайн-отчёт и живое поведение ноды
+        расходились бы в том, что считается "подозрительной парой"."""
+        a = [_basis(0), _basis(1)]
+        b = [_noisy_copy(_basis(1), seed=1)]
+        assert admin._cross_gallery_similarity(a, b) == pytest.approx(
+            max(fs._cosine(x, y) for x in a for y in b), abs=1e-6
+        )
+
+    def test_cross_gallery_similarity_none_for_empty_gallery(self):
+        assert admin._cross_gallery_similarity([], [_basis(0)]) is None
+        assert admin._cross_gallery_similarity([_basis(0)], []) is None
+
+
+# ============================================================================
+# 9. merge — слить безымянный дубль через FaceStore.merge() (issue #2771)
+# ============================================================================
+
+class TestMerge:
+    def test_dry_run_does_not_touch_disk(self, store, tmp_path):
+        named_id = _make_healthy_person(store, 'a')
+        dup = store.record_encounter(_basis(5))
+        dup_dir = tmp_path / dup.person_id
+
+        args = _make_args(
+            root=str(tmp_path), from_id=dup.person_id, into_id=named_id,
+            apply=False,
+        )
+        rc = admin.cmd_merge(args)
+
+        assert rc == 0
+        assert dup_dir.exists(), 'dry-run не должен трогать диск'
+
+    def test_apply_merges_via_face_store_merge(
+        self, store, tmp_path, monkeypatch,
+    ):
+        named_id = _make_healthy_person(store, 'a')
+        dup = store.record_encounter(_basis(5))
+        dup_dir = tmp_path / dup.person_id
+
+        monkeypatch.setattr(admin, '_node_running_via_pgrep', _never_running)
+        args = _make_args(
+            root=str(tmp_path), from_id=dup.person_id, into_id=named_id,
+            apply=True, yes=True,
+        )
+        rc = admin.cmd_merge(args)
+
+        assert rc == 0
+        assert not dup_dir.exists(), 'from_id обязан быть удалён целиком'
+
+        # round-trip: свежий FaceStore на том же root видит объединённую
+        # запись под именем и с бОльшим числом эмбеддингов.
+        reloaded = fs.FaceStore(root=str(tmp_path), mode=fs.MODE_WORKSHOP)
+        merged = next(
+            p for p in reloaded.people() if p['person_id'] == named_id
+        )
+        assert merged['name'] == 'Здоровый-a'
+        assert merged['embeddings'] >= 2
+
+    def test_refuses_without_force_when_node_running(self, store, tmp_path):
+        named_id = _make_healthy_person(store, 'a')
+        dup = store.record_encounter(_basis(5))
+        dup_dir = tmp_path / dup.person_id
+
+        args = _make_args(
+            root=str(tmp_path), from_id=dup.person_id, into_id=named_id,
+            apply=True, yes=True, force=False,
+        )
+        original = admin._node_running_via_pgrep
+        # type: ignore[assignment]
+        admin._node_running_via_pgrep = _always_running
+        try:
+            rc = admin.cmd_merge(args)
+        finally:
+            # type: ignore[assignment]
+            admin._node_running_via_pgrep = original
+
+        assert rc == 3
+        assert dup_dir.exists()
+
+    def test_missing_from_id_is_a_clean_error(self, store, tmp_path):
+        named_id = _make_healthy_person(store, 'a')
+        args = _make_args(
+            root=str(tmp_path), from_id='does-not-exist', into_id=named_id,
+            apply=True, yes=True,
+        )
+        assert admin.cmd_merge(args) == 2
+
+    def test_missing_into_id_is_a_clean_error(self, store, tmp_path):
+        dup = store.record_encounter(_basis(5))
+        args = _make_args(
+            root=str(tmp_path), from_id=dup.person_id,
+            into_id='does-not-exist',
+            apply=True, yes=True,
+        )
+        assert admin.cmd_merge(args) == 2
+
+    def test_same_id_twice_is_a_clean_error(self, store, tmp_path):
+        named_id = _make_healthy_person(store, 'a')
+        args = _make_args(
+            root=str(tmp_path), from_id=named_id, into_id=named_id,
+            apply=True, yes=True,
+        )
+        assert admin.cmd_merge(args) == 2
+
+    def test_warns_when_into_has_no_name_and_from_does(
+        self, store, tmp_path, capsys,
+    ):
+        """Похоже на перепутанные аргументы - merge() сохраняет имя
+        ИМЕННО into, значит слияние 'именованный -> безымянный' стёрло бы
+        имя. Скрипт обязан предупредить, а не молча выполнить."""
+        stranger = store.record_encounter(_basis(5))
+        named_id = _make_healthy_person(store, 'b')
+
+        args = _make_args(
+            root=str(tmp_path), from_id=named_id, into_id=stranger.person_id,
+            apply=False,
+        )
+        admin.cmd_merge(args)
+        err = capsys.readouterr().err
+        assert 'ПРЕДУПРЕЖДЕНИЕ' in err

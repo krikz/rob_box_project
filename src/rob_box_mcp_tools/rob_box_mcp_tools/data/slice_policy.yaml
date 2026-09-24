@@ -98,6 +98,8 @@ slices:
     - search_samples
     - lookup_melody
     - search_melody
+    - save_arrangement_preset
+    - preview_arrangement
     # навигация и mapping
     - navigate_to_waypoint
     - navigate_to_coordinates

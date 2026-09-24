@@ -70,6 +70,7 @@ def node(tmp_path):
     instance._db = SpeakerDatabase(str(tmp_path / "speakers.db"))
     instance._speech_log = {}
     instance._speech_log_lock = threading.Lock()
+    instance._epithet_llm_reasked = set()
     instance.get_logger = MagicMock(return_value=MagicMock())
     yield instance
     instance._db.close()
@@ -267,12 +268,12 @@ def test_llm_epithet_replaces_dictionary_one(node):
 
     node._on_epithet_result(
         types.SimpleNamespace(
-            data=json.dumps({"speaker_id": sid, "epithet": "Ферзегрыз"})
+            data=json.dumps({"speaker_id": sid, "epithet": "Грозный ферзегрыз"})
         )
     )
 
     profile = node._db.get_speaker_profile(sid)
-    assert profile["epithet"] == "Ферзегрыз"
+    assert profile["epithet"] == "Грозный ферзегрыз"
     assert profile["epithet_history"][-1]["old"] == dictionary_label
     assert profile["epithet_history"][-1]["reason"] == ep.REASON_LLM
     assert sent  # запрос к LLM действительно уходил
@@ -299,17 +300,20 @@ def test_llm_epithet_cannot_steal_taken_label(node):
     _capture_requests(node)
     first = node._db.register("Денис", _embedding(14))
     second = node._db.register("Денис", _embedding(15))
-    node._db.set_epithet(first, "Кулибин", ep.REASON_LLM)
+    node._db.set_epithet(first, "Ночной паяльщик моторов", ep.REASON_LLM)
     node._db.set_epithet(second, "Электрик", ep.REASON_FIRST_SEEN)
 
     node._on_epithet_result(
         types.SimpleNamespace(
-            data=json.dumps({"speaker_id": second, "epithet": "Кулибин"})
+            data=json.dumps(
+                {"speaker_id": second, "epithet": "Ночной паяльщик моторов"},
+                ensure_ascii=False,
+            )
         )
     )
 
     assert node._db.get_epithet(second) == "Электрик"
-    assert node._db.get_epithet(first) == "Кулибин"
+    assert node._db.get_epithet(first) == "Ночной паяльщик моторов"
 
 
 def test_epithet_result_ignores_garbage_json(node):
@@ -317,3 +321,244 @@ def test_epithet_result_ignores_garbage_json(node):
     node._on_epithet_result(types.SimpleNamespace(data='{"epithet": "Кулибин"}'))
     # Ни одного спикера в БД не появилось и не сломалось.
     assert node._db.list_speakers() == []
+
+
+def test_llm_stranger_epithet_keeps_dictionary_one_for_named_profile(node):
+    """Issue #2864 — живой прогон: LLM назвала Сашу «Незнакомец».
+
+    speaker_id_node обязан отклонить такую кличку для профиля с именем
+    и оставить словарную — иначе LLM на «кого запомнил?» насчитывает
+    лишнего человека.
+    """
+    _capture_requests(node)
+    sid = node._db.register("Саша", _embedding(16))
+    node._db.set_epithet(sid, "Наблюдатель", ep.REASON_FIRST_SEEN)
+
+    node._on_epithet_result(
+        types.SimpleNamespace(
+            data=json.dumps(
+                {"speaker_id": sid, "epithet": "Незнакомец"},
+                ensure_ascii=False,
+            )
+        )
+    )
+
+    profile = node._db.get_speaker_profile(sid)
+    assert profile["name"] == "Саша"
+    assert profile["epithet"] == "Наблюдатель"
+
+
+# ── Issue #2886: причина отказа LLM-клички в логе ────────────────────────────
+
+
+def _info_lines(node) -> list:
+    return [str(c.args[0]) for c in node.get_logger.return_value.info.call_args_list]
+
+
+def _send_llm_epithet(node, speaker_id: str, label) -> None:
+    node._on_epithet_result(
+        types.SimpleNamespace(
+            data=json.dumps(
+                {"speaker_id": speaker_id, "epithet": label}, ensure_ascii=False
+            )
+        )
+    )
+
+
+def test_issue_2886_second_profile_same_llm_epithet_rejected_as_taken(node):
+    """Последовательность из issue #2886 (E2E акт 2, run 35900007906).
+
+    Саша получает от LLM «Собеседник» — принято. Потом LLM предлагает то же
+    «Собеседник» Борису — отказ. Ветка отказа — уникальность (кличка занята
+    Сашей), а НЕ фильтр «незнакомца» #2864: это видно и по логу
+    (``taken_by=<id Саши>``), и напрямую по ``is_stranger_epithet``.
+    """
+    _capture_requests(node)
+    sasha = node._db.register("Саша", _embedding(20))
+    node._ensure_epithet(sasha)
+    _send_llm_epithet(node, sasha, "Мудрый собеседник")
+    assert node._db.get_epithet(sasha) == "Мудрый собеседник"
+
+    boris = node._db.register("Борис", _embedding(21))
+    node._ensure_epithet(boris)
+    boris_dictionary = node._db.get_epithet(boris)
+    _send_llm_epithet(node, boris, "Мудрый собеседник")
+
+    assert node._db.get_epithet(boris) == boris_dictionary
+    assert node._db.get_epithet(sasha) == "Мудрый собеседник"
+    assert ep.is_stranger_epithet("Собеседник") is False
+
+    rejects = [line for line in _info_lines(node) if "отклонена" in line]
+    assert len(rejects) == 1, rejects
+    assert f"taken_by={sasha[:8]}" in rejects[0], rejects[0]
+    assert boris[:8] in rejects[0]
+
+
+@pytest.mark.parametrize("label, reason", [
+    ("Незнакомец", "stranger"),
+    ("Агент 007", "invalid"),
+    ("", "empty"),
+])
+def test_issue_2886_reject_log_names_reason(node, label, reason):
+    """Каждая ветка отказа видна в логе, а не только «отклонена»."""
+    _capture_requests(node)
+    sid = node._db.register("Саша", _embedding(22))
+    node._ensure_epithet(sid)
+    before = node._db.get_epithet(sid)
+
+    _send_llm_epithet(node, sid, label)
+
+    assert node._db.get_epithet(sid) == before
+    rejects = [line for line in _info_lines(node) if "отклонена" in line]
+    assert len(rejects) == 1, rejects
+    assert f"причина={reason}" in rejects[0], rejects[0]
+
+
+def test_issue_2886_dictionary_label_freed_by_llm_rename_is_reused(node):
+    """Почему у Саши и Бориса первым был один и тот же «Странник».
+
+    Уникальность словарного слоя — по ТЕКУЩИМ кличкам (``taken_epithets``
+    читает ``speakers.epithet``). Пока «Странник» у Саши, второй профиль
+    его не получит ни при каком сдвиге. Когда LLM переименовала Сашу в
+    «Собеседник», «Странник» освободился, и Борису его выдали законно: в
+    любой момент времени две метки не совпадают. Так задумано.
+    """
+    _capture_requests(node)
+    sasha = node._db.register("Саша", _embedding(23))
+    node._db.set_epithet(sasha, "Странник", ep.REASON_FIRST_SEEN)
+    probes = [f"probe-{i}" for i in range(100)]
+    busy = node._db.taken_epithets()
+    assert all(
+        ep.choose_epithet([], speaker_id=p, taken=busy).label != "Странник"
+        for p in probes
+    )
+
+    _send_llm_epithet(node, sasha, "Мудрый собеседник")
+
+    free = node._db.taken_epithets()
+    assert "Странник" not in free
+    assert any(
+        ep.choose_epithet([], speaker_id=p, taken=free).label == "Странник"
+        for p in probes
+    )
+
+
+# ── Issue #2887: кличка 2–4 слова ────────────────────────────────────────────
+
+
+def test_issue_2887_multiword_llm_epithet_is_stored_whole(node):
+    _capture_requests(node)
+    sid = node._db.register("Саша", _embedding(24))
+    node._ensure_epithet(sid)
+
+    _send_llm_epithet(node, sid, "Мудрый собеседник-спортсмен")
+
+    assert node._db.get_epithet(sid) == "Мудрый собеседник-спортсмен"
+
+
+def test_issue_2887_single_word_llm_epithet_keeps_dictionary_one(node):
+    _capture_requests(node)
+    sid = node._db.register("Саша", _embedding(25))
+    node._ensure_epithet(sid)
+    before = node._db.get_epithet(sid)
+
+    _send_llm_epithet(node, sid, "Кулибин")
+
+    assert node._db.get_epithet(sid) == before
+    rejects = [line for line in _info_lines(node) if "отклонена" in line]
+    assert "причина=word_count" in rejects[0], rejects
+
+
+def test_issue_2887_llm_epithet_with_other_persons_name_is_rejected(node):
+    """Кличка с именем Бориса у Саши читалась бы как упоминание Бориса."""
+    _capture_requests(node)
+    node._db.register("Борис", _embedding(26))
+    sasha = node._db.register("Саша", _embedding(27))
+    node._ensure_epithet(sasha)
+    before = node._db.get_epithet(sasha)
+
+    _send_llm_epithet(node, sasha, "Весёлый Борис-путешественник")
+
+    assert node._db.get_epithet(sasha) == before
+    rejects = [line for line in _info_lines(node) if "отклонена" in line]
+    assert "причина=name" in rejects[0], rejects
+
+
+def test_issue_2887_stranger_word_inside_multiword_label_is_rejected(node):
+    _capture_requests(node)
+    sid = node._db.register("Саша", _embedding(28))
+    node._ensure_epithet(sid)
+    before = node._db.get_epithet(sid)
+
+    _send_llm_epithet(node, sid, "Мудрый незнакомец")
+
+    assert node._db.get_epithet(sid) == before
+
+
+# ── Issue #2934: переспрос LLM-клички, когда появились факты ────────────────
+
+
+def test_issue_2934_no_reask_without_enough_facts(node):
+    """Меньше EPITHET_REASK_MIN_MESSAGES реплик — переспроса быть не должно.
+
+    Регистрация шлёт один запрос (первое знакомство, #1787). Если фактов
+    всё ещё мало, второй запрос отправляться не должен.
+    """
+    sent = _capture_requests(node)
+    sid = node._db.register("Саша", _embedding(29))
+    node._ensure_epithet(sid)
+    assert len(sent) == 1  # только первый запрос, при регистрации
+
+    for i in range(ep.EPITHET_REASK_MIN_MESSAGES - 2):
+        node._process_observation(sid, f"{CHESS_TALK} {i}")
+
+    assert len(sent) == 1, sent
+
+
+def test_issue_2934_reask_after_facts_accumulate(node):
+    """EPITHET_REASK_MIN_MESSAGES реплик набралось — просим LLM снова."""
+    sent = _capture_requests(node)
+    sid = node._db.register("Саша", _embedding(30))
+    node._ensure_epithet(sid)
+    assert len(sent) == 1
+
+    for i in range(ep.EPITHET_REASK_MIN_MESSAGES):
+        node._process_observation(sid, f"{CHESS_TALK} {i}")
+
+    assert len(sent) == 2, sent
+    assert sent[1]["speaker_id"] == sid
+    assert sid in node._epithet_llm_reasked
+
+    proposal = "Ночной ценитель гамбитов"
+    _send_llm_epithet(node, sid, proposal)
+    assert node._db.get_epithet(sid) == proposal
+
+
+def test_issue_2934_reask_happens_once_per_session(node):
+    """Не чаще раза на профиль за сессию, пока кличка словарная."""
+    sent = _capture_requests(node)
+    sid = node._db.register("Саша", _embedding(31))
+    node._ensure_epithet(sid)
+
+    for i in range(ep.EPITHET_REASK_MIN_MESSAGES * 5):
+        node._process_observation(sid, f"{CHESS_TALK} {i}")
+
+    # 1 запрос при регистрации + 1 переспрос — и ни одного больше, сколько
+    # бы реплик ни пришло дальше в той же сессии узла.
+    assert len(sent) == 2, sent
+
+
+def test_issue_2934_existing_llm_epithet_is_not_reasked(node):
+    """Уже есть LLM-кличка — переспроса быть не должно (#2887)."""
+    sent = _capture_requests(node)
+    sid = node._db.register("Саша", _embedding(32))
+    node._ensure_epithet(sid)
+    _send_llm_epithet(node, sid, "Ночной ценитель гамбитов")
+    assert node._db.get_epithet(sid) == "Ночной ценитель гамбитов"
+    sent.clear()
+
+    for i in range(ep.EPITHET_REASK_MIN_MESSAGES * 3):
+        node._process_observation(sid, f"{CHESS_TALK} {i}")
+
+    assert sent == []
+    assert node._db.get_epithet(sid) == "Ночной ценитель гамбитов"

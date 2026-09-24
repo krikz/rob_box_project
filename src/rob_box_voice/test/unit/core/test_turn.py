@@ -40,6 +40,7 @@ from rob_box_voice.core.turn import (
     PhantomActionGuard,
     PlanningNarrationHardMute,
     Reply,
+    ServiceContextParaphraseGuard,
     SystemRegurgitateGuard,
     ToolCallMarkupGuard,
     ToolSkippedGuard,
@@ -98,8 +99,13 @@ def _reply(
 def _turn(
     user_input: str = "",
     is_dj_auto: bool = False,
+    tool_error_occurred: bool = False,
 ) -> TurnContext:
-    return TurnContext(user_input=user_input, is_dj_auto=is_dj_auto)
+    return TurnContext(
+        user_input=user_input,
+        is_dj_auto=is_dj_auto,
+        tool_error_occurred=tool_error_occurred,
+    )
 
 
 def _state(budget_left: int = DEFAULT_MAX_SYNTHETIC_RETRIES) -> TurnState:
@@ -323,6 +329,71 @@ class TestSystemRegurgitateGuard:
         assert v is None
 
 
+class TestServiceContextParaphraseGuard:
+    """Issue #2817 / #2766 -- live examples verbatim from both issues."""
+
+    def test_fires_on_system_context_paraphrase_issue_2817(self) -> None:
+        g = ServiceContextParaphraseGuard()
+        spoken = (
+            "Системное уведомление принято к сведению "
+            "— это служебная инструкция, "
+            "не пользовательское сообщение."
+        )
+        v = g.evaluate(
+            GuardContext(
+                reply=_reply(spoken=spoken),
+                turn=_turn(user_input="меня зовут Саша"),
+                state=_state(),
+            )
+        )
+        assert v is not None, "guard did not fire on issue #2817's live spoken text"
+        assert v.kind is VerdictKind.RETRY, (
+            "must be a RETRY, not a hard-mute -- issue #2766's whole point "
+            "is that muting leaves the user without an answer"
+        )
+        assert v.guard_name == "service_context_paraphrase"
+        assert v.prompt and "CRITICAL" in v.prompt
+
+    def test_fires_on_tools_called_marker_issue_2766(self) -> None:
+        g = ServiceContextParaphraseGuard()
+        v = g.evaluate(
+            GuardContext(
+                reply=_reply(
+                    spoken="[выполнено в прошлом ходе] вызваны инструменты: speak_text"
+                ),
+                turn=_turn(user_input="что ты сейчас видишь?"),
+                state=_state(),
+            )
+        )
+        assert v is not None
+        assert v.kind is VerdictKind.RETRY
+
+    def test_defers_on_normal_reply(self) -> None:
+        g = ServiceContextParaphraseGuard()
+        v = g.evaluate(
+            GuardContext(
+                reply=_reply(spoken="Привет, человек!"),
+                turn=_turn(user_input="привет"),
+                state=_state(),
+            )
+        )
+        assert v is None
+
+    def test_defers_when_speak_text_real_nonzero(self) -> None:
+        g = ServiceContextParaphraseGuard()
+        v = g.evaluate(
+            GuardContext(
+                reply=_reply(
+                    spoken="Системное уведомление",
+                    speak_text_real=1,
+                ),
+                turn=_turn(user_input="x"),
+                state=_state(),
+            )
+        )
+        assert v is None
+
+
 class TestToolSkippedGuard:
     def test_fires_when_user_asked_for_time(self) -> None:
         g = ToolSkippedGuard()
@@ -397,6 +468,83 @@ class TestBabbleGuard:
             )
         )
         assert v is None
+
+    # ----- issue #2948: successful fulfilling tools ⇒ not babble -----
+
+    def test_defers_when_fulfilling_tools_succeeded(self) -> None:
+        """Live 24.09.2026: ``tools=['set_dj_mode', 'compose_music',
+        'play_animation']``, ``spoken='Слушай Still Dre, потом Next
+        Episode подхвачу!'`` — the DJ request was ALREADY fulfilled by
+        real tool calls. «Слушай » matches ``BABBLE_BANNED_OPENERS`` and
+        the user's DJ-set request matches ``user_wants_performance``, so
+        before the fix the guard fired unconditionally and re-dispatched
+        the ORIGINAL request — starting the DJ set a second time. A
+        short DJ-style line next to a completed action is not babble.
+        """
+        g = BabbleGuard()
+        v = g.evaluate(
+            GuardContext(
+                reply=_reply(
+                    spoken="Слушай Still Dre, потом Next Episode подхвачу!",
+                    tools_called=(
+                        "set_dj_mode", "compose_music", "play_animation",
+                    ),
+                ),
+                turn=_turn(
+                    user_input=(
+                        "Ты диджей Снупдог. Играй по очереди: Still Dre, "
+                        "потом Next Episode."
+                    ),
+                ),
+                state=_state(),
+            )
+        )
+        assert v is None, (
+            "babble guard must NOT retry a turn that already ran the "
+            "tools fulfilling the request (issue #2948 — DJ set started "
+            "twice live)"
+        )
+
+    def test_fires_when_fulfilling_tool_call_errored(self) -> None:
+        """The bypass requires SUCCESS, not just a matching tool NAME
+        (same bar as issue #2949): a called-but-errored fulfilling tool
+        must not suppress the babble retry either.
+        """
+        g = BabbleGuard()
+        v = g.evaluate(
+            GuardContext(
+                reply=_reply(
+                    spoken="Слушай Still Dre, потом Next Episode подхвачу!",
+                    tools_called=("set_dj_mode", "compose_music"),
+                ),
+                turn=_turn(
+                    user_input=(
+                        "Ты диджей Снупдог. Играй по очереди: Still Dre, "
+                        "потом Next Episode."
+                    ),
+                    tool_error_occurred=True,
+                ),
+                state=_state(),
+            )
+        )
+        assert v is not None, (
+            "a fulfilling tool that was called but ERRORED must not "
+            "bypass the babble guard"
+        )
+        assert v.kind is VerdictKind.RETRY
+
+    def test_still_fires_on_babble_with_no_tools_called(self) -> None:
+        """No regression: the classic Bug D case (tools=()) still retries."""
+        g = BabbleGuard()
+        v = g.evaluate(
+            GuardContext(
+                reply=_reply(spoken="Слушай, сейчас устроим!"),
+                turn=_turn(user_input="сыграй рэп"),
+                state=_state(),
+            )
+        )
+        assert v is not None
+        assert v.kind is VerdictKind.RETRY
 
 
 class TestEmbeddedRenardoCodeGuard:
@@ -921,6 +1069,7 @@ class TestGuardOrderInvariant:
         assert [cls.__name__ for cls in DEFAULT_GUARD_ORDER] == [
             "ToolCallMarkupGuard",
             "SystemRegurgitateGuard",
+            "ServiceContextParaphraseGuard",
             "ToolSkippedGuard",
             "BabbleGuard",
             "EmbeddedRenardoCodeGuard",
@@ -994,6 +1143,30 @@ class TestGuardOrderInvariant:
         registry it's supposed to be built from."""
         guards = default_guards()
         assert [type(g) for g in guards] == list(DEFAULT_GUARD_ORDER)
+
+
+    def test_service_context_paraphrase_precedes_planning_narration_mute(
+        self,
+    ) -> None:
+        """Issue #2766 -- the retry guard MUST run before the hard-mute:
+        the marker's snake_case tool name also matches
+        :func:`is_planning_narration`, so without this ordering
+        ``PlanningNarrationHardMute`` would DISCARD the turn (silence)
+        instead of :class:`ServiceContextParaphraseGuard` RETRYing it."""
+        order = list(DEFAULT_GUARD_ORDER)
+        assert order.index(ServiceContextParaphraseGuard) < order.index(
+            PlanningNarrationHardMute
+        )
+
+    def test_service_context_paraphrase_right_after_system_regurgitate(
+        self,
+    ) -> None:
+        """Same failure family as #2175 -- kept adjacent in the order."""
+        order = list(DEFAULT_GUARD_ORDER)
+        assert (
+            order.index(ServiceContextParaphraseGuard)
+            == order.index(SystemRegurgitateGuard) + 1
+        )
 
     def test_default_guards_with_music_does_not_change_the_rest(self) -> None:
         def _fake_evaluate(turn, reply):

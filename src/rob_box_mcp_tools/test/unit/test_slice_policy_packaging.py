@@ -99,6 +99,26 @@ class TestSlicePolicyPackaging:
             f"package_data {patterns}"
         )
 
+    def test_every_json_in_data_dir_is_covered(self):
+        """Новый JSON рядом с каталогами лупов/FX не должен тихо выпасть.
+
+        Живой инцидент 24.09: ``sample_fx.json`` (#2968) не был добавлен в
+        ``package_data`` — на роботе файла не оказалось, ``fx_catalog()``
+        бросил FileNotFoundError на импорте ``music.py``, и ``mcp_server``
+        ушёл в crash loop (недоступны ВСЕ инструменты).
+        """
+        kwargs = _setup_kwargs()
+        patterns = ast.literal_eval(kwargs["package_data"])["rob_box_mcp_tools.data"]
+        uncovered = [
+            f.name
+            for f in _DATA_DIR.glob("*.json")
+            if not any(pathlib.PurePath(f.name).match(p) for p in patterns)
+        ]
+        assert not uncovered, (
+            f"JSON-ресурсы {uncovered} не покрыты ни одним шаблоном "
+            f"package_data {patterns}"
+        )
+
     def test_rtttl_archive_exists_and_is_packaged(self):
         """Архив мелодий (10460 RTTTL) обязан доезжать до install-дерева."""
         assert (_DATA_DIR / "rtttl_melodies.jsonl.gz").is_file(), (

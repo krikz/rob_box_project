@@ -20,6 +20,7 @@ from rob_box_voice.core.dialogue_guards import (
     ACTION_CLAIM_RULES,
     BABBLE_BANNED_OPENERS,
     BABBLE_PERFORMANCE_KEYWORDS,
+    CLAIM_JUSTIFYING_TOOLS,  # Issue #2549 universal action-claim guard
     MUSIC_GUARD_KEYWORDS,
     MUSIC_GUARD_VOCAL_KEYWORDS,
     MUSIC_RETRY_PROMPT_PREFIX,
@@ -29,6 +30,7 @@ from rob_box_voice.core.dialogue_guards import (
     SYSTEM_TEMPLATE_REGURGITATE_RE,
     TOOL_REQUEST_PATTERNS,
     UNKNOWN_MELODY_CLAIM_RE,  # Issue #2562 Bug F
+    build_action_claim_failure_fallback,  # Issue #2949
     build_babble_retry_prompt,
     build_music_prose_action_fallback,
     build_music_retry_exhausted_fallback,
@@ -38,10 +40,12 @@ from rob_box_voice.core.dialogue_guards import (
     build_system_regurgitate_retry_prompt,
     build_tool_retry_prompt,
     build_unbacked_action_retry_prompt,
+    build_universal_action_claim_retry_prompt,  # Issue #2549 / #2949
     build_unknown_melody_retry_prompt,  # Issue #2562 Bug F
     detect_phantom_action_claim,  # Issue #2559 phantom-action
     detect_required_tool,
     detect_unbacked_action_claim,
+    detect_universal_action_claim,  # Issue #2549 universal action-claim guard
     detect_unknown_melody_claim,  # Issue #2562 Bug F
     extract_renardo_code_lines,
     is_metalanguage_babble,
@@ -213,6 +217,41 @@ class TestIsMusicStopCommand:
         assert is_music_stop_command("") is False
         assert is_music_stop_command(None) is False  # type: ignore[arg-type]
 
+    def test_stop_verb_plus_dj_still_matches(self) -> None:
+        """Issue #2971 регресс: «диджея»/«диджеить»/«диджей режим» больше
+        не в ``MUSIC_STOP_OVERRIDES`` как голые подстроки, но со стоп-
+        глаголом рядом их по-прежнему ловит ``MUSIC_STOP_COMMAND_RE``."""
+        assert is_music_stop_command("хватит диджея") is True
+        assert is_music_stop_command("выключи диджея") is True
+        assert is_music_stop_command("хватит диджеить") is True
+        assert is_music_stop_command("выключи диджей режим") is True
+        assert is_music_stop_command("стоп диджей") is True
+
+    def test_bare_dj_noun_without_stop_verb_is_not_stop(self) -> None:
+        """Issue #2971 — живой инцидент 24.09.2026: юзер продиктовал
+        роботу системный промпт «Ты диджей PAUL OAKENFOLD …», который
+        заканчивался словами «…системный промт для робота-диджея». Ни
+        «для диджея», ни «робота-диджея», ни «у диджея» не содержат
+        стоп-глагол — это НЕ стоп-команда, а хвост обычной реплики."""
+        assert is_music_stop_command("это промпт для диджея") is False
+        assert (
+            is_music_stop_command("системный промт для робота-диджея")
+            is False
+        )
+        assert is_music_stop_command("вопрос у диджея") is False
+        assert is_music_stop_command("поставь диджея") is False
+        assert is_music_stop_command("включи диджей режим") is False
+
+    def test_live_incident_long_dj_prompt_is_not_stop(self) -> None:
+        """Issue #2971 — точный хвост промпта из живого лога 24.09.2026
+        11:10 UTC (сокращённая версия «промпт 143 строки» из issue)."""
+        prompt = (
+            "Ты диджей PAUL OAKENFOLD и у нас сегодня вечеринка. "
+            "Скопируй весь блок выше и вставь как системный промт "
+            "для робота-диджея."
+        )
+        assert is_music_stop_command(prompt) is False
+
 
 class TestIsVocalRequest:
     def test_vocal_phrases(self) -> None:
@@ -224,6 +263,69 @@ class TestIsVocalRequest:
         assert is_vocal_request("сыграй джаз") is False
         assert is_vocal_request("") is False
         assert is_vocal_request(None) is False  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# Issue #2834 — live repro table (23.09.2026, TG, Vision Pi).
+#
+# «стоп диджей» → робот через пару секунд снова играет: живой баг —
+# ``is_music_stop_command`` не ловил «стоп» + голое «диджей» (без
+# «ить»/«я»/«режим»). Обратная сторона: «давай грига», «включи уже
+# still dre» и другие именные запросы композитора/артиста уходили в
+# wants=False, потому что ни «музыка», ни «трек» в них не произносятся.
+#
+# ``expected_wants`` для СТОП-фраз намеренно НЕ проверяется этой таблицей:
+# ``user_wants_music`` может оставаться True на «диджей»-подстроке (та же
+# логика, что и для «выключи диджея» — см.
+# ``test_stop_overrides_are_caught_by_stop_detector`` и
+# ``TestMusicStateQueryE2E35665111906.test_stop_command_keeps_its_own_verdict``
+# в ``test_music_guard.py``: гуард полагается на порядок проверок —
+# ``is_music_stop_command`` выигрывает у ``user_wants_music`` В ЛЮБОМ
+# случае, см. ``music_guard.py:429`` — FORCE_STOP проверяется раньше
+# ``user_wants_music`` на строке 474). Форсировать
+# ``user_wants_music=False`` для стоп-фраз ломает этот инвариант (два
+# существующих теста красные), поэтому единственная проверяемая здесь
+# гарантия для стоп-строк — ``is_music_stop_command=True``; отсутствие
+# USER_RETRY доказывается отдельно на уровне ``MusicGuard.evaluate`` в
+# ``test_music_guard.py::TestEvaluateStopCommand::
+# test_issue_2834_stop_dj_without_stop_tool_forces_stop``.
+# ---------------------------------------------------------------------------
+
+ISSUE_2834_LIVE_PHRASE_TABLE: tuple = (
+    # (user_input, expected_stop, expected_wants_music_or_None)
+    # None = не проверяем wants_music для этой строки (см. комментарий выше).
+    ("стоп диджей", True, None),
+    ("стоп диджей блядь", True, None),
+    ("стоп музыка", True, None),
+    ("давай грига", False, True),
+    ("включи уже still dre", False, True),
+    ("ты мне опять спиздел найди баха в рттл", False, True),
+    ("заебок теперь давай баха на гитаре ебанем", False, True),
+)
+
+
+class TestIssue2834LivePhraseTable:
+    """Issue #2834 — юнит-тест с полной таблицей живых фраз из репорта."""
+
+    @pytest.mark.parametrize(
+        "user_input,expected_stop,expected_wants",
+        ISSUE_2834_LIVE_PHRASE_TABLE,
+    )
+    def test_live_phrase(
+        self,
+        user_input: str,
+        expected_stop: bool,
+        expected_wants: Optional[bool],
+    ) -> None:
+        assert is_music_stop_command(user_input) is expected_stop, (
+            f"is_music_stop_command({user_input!r}) should be "
+            f"{expected_stop!r}"
+        )
+        if expected_wants is not None:
+            assert user_wants_music(user_input) is expected_wants, (
+                f"user_wants_music({user_input!r}) should be "
+                f"{expected_wants!r}"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -2376,6 +2478,107 @@ class TestPhantomActionClaimLive2559:
             "снова услышит обещание без действия"
         )
 
+    # ----- issue #2942: «сохраняю» present tense (save_arrangement_preset) --
+
+    def test_save_arrangement_preset_present_tense_claim_is_detected(
+        self,
+    ) -> None:
+        """Live 24.09.2026 (issue #2942, ADR-0132 PR-7): «Понял, сохраняю
+        эти ручки на «В пещере горного короля»…» ушло в TTS с ``tools=[]``
+        перед тем как модель когда-либо вызвала ``save_arrangement_preset``.
+
+        До фикса #2942 present-tense «сохраняю» отсутствовал целиком в
+        словаре guard'а — ни в этом (``PHANTOM_ACTION_VERB_STEMS``), ни в
+        ``_ACTION_VERBS_PAST``/``_ACTION_VERBS_FUTURE`` (у тех вообще нет
+        present tense). Робот мог соврать «сохраняю» без единого тула, и
+        НИ ОДИН guard этого не ловил.
+        """
+        assert detect_phantom_action_claim(
+            user_input="ну не знаю, сохрани пресет на всякий случай",
+            spoken=(
+                "Понял, сохраняю эти ручки на «В пещере горного "
+                "короля»…"
+            ),
+            tools_called=(),
+        ) is True, (
+            "phantom-action guard должен ловить present-tense «сохраняю» "
+            "без вызова save_arrangement_preset (issue #2942 live repro)"
+        )
+
+    def test_save_arrangement_preset_claim_with_tool_called_is_not_a_bug(
+        self,
+    ) -> None:
+        """Тот же claim, но тул РЕАЛЬНО вызван — guard должен молчать."""
+        assert detect_phantom_action_claim(
+            user_input="вот это кайф, сохрани",
+            spoken="Сохраняю эти ручки как пресет.",
+            tools_called=("save_arrangement_preset",),
+        ) is False, (
+            "phantom-action guard не должен срабатывать, когда "
+            "save_arrangement_preset уже вызван"
+        )
+
+    def test_save_arrangement_preset_in_claim_justifying_tools(self) -> None:
+        """Issue #2942: тул-словарь #2549-guard'а (``detect_universal_
+        action_claim``) должен знать про ``save_arrangement_preset`` —
+        иначе past/future tense claim («Сохранил пресет.») после
+        РЕАЛЬНОГО вызова тула ложно ловится как phantom action.
+        """
+        assert "save_arrangement_preset" in CLAIM_JUSTIFYING_TOOLS
+
+        hit = detect_universal_action_claim(
+            spoken="Сохранил пресет для этой мелодии.",
+            tools_called=("save_arrangement_preset",),
+        )
+        assert hit is None, (
+            "universal action-claim guard не должен срабатывать на "
+            "«сохранил» после реального вызова save_arrangement_preset"
+        )
+
+    # ----- issue #2949: called-but-ERRORED ≠ backed -----
+
+    def test_tool_called_but_errored_claim_still_detected(self) -> None:
+        """Live 24.09.2026 (issue #2949): ``save_arrangement_preset``
+        вернул отказ («Инструмент 'save_arrangement_preset' недоступен»),
+        LLM всё равно ответила «Записала пресет, горный король теперь
+        всегда будет звучать прозрачно!» с ``tools=['save_arrangement_
+        preset', 'load_skill']``. До фикса #2942's ``CLAIM_JUSTIFYING_
+        TOOLS`` матчил по ИМЕНИ и считал заявление подкреплённым просто
+        потому что тул был ВЫЗВАН — не проверяя, что он реально
+        сработал. ``tool_error_occurred=True`` обязан НЕ дать тому же
+        тулу оправдать claim.
+        """
+        hit = detect_universal_action_claim(
+            spoken=(
+                "Записала пресет, горный король теперь всегда будет "
+                "звучать прозрачно!"
+            ),
+            tools_called=("save_arrangement_preset", "load_skill"),
+            tool_error_occurred=True,
+        )
+        assert hit is not None, (
+            "guard должен ловить claim, когда закрывающий тул был вызван, "
+            "но вернул ошибку/отказ (issue #2949 live repro) — а не "
+            "молчать просто потому что имя тула есть в tools_called"
+        )
+        assert hit.verb.lower().startswith("записал")
+
+    def test_tool_called_and_succeeded_claim_not_detected(self) -> None:
+        """Контраст к предыдущему тесту: тул реально сработал — guard молчит.
+
+        ``tool_error_occurred=False`` (по умолчанию) — старое поведение
+        не должно регрессировать.
+        """
+        hit = detect_universal_action_claim(
+            spoken="Записала пресет, звучит прозрачно.",
+            tools_called=("save_arrangement_preset",),
+            tool_error_occurred=False,
+        )
+        assert hit is None, (
+            "guard НЕ должен срабатывать, когда закрывающий тул реально "
+            "успешно отработал"
+        )
+
     # ----- negative case 1: tools_called не пуст ⇒ guard молчит -----
 
     @pytest.mark.parametrize(
@@ -2785,6 +2988,106 @@ class TestBuildPhantomActionRetryPrompt:
             "user_input должен быть в начале промпта ДО [CRITICAL]-блока — "
             "иначе LLM сначала прочтёт инструкции и забудет запрос"
         )
+
+
+class TestBuildUniversalActionClaimRetryPromptToolError:
+    """Issue #2949 — retry-промпт должен различать «тул не вызван» и
+    «тул вызван, но упал».
+
+    :func:`build_universal_action_claim_retry_prompt` раньше всегда
+    писал «но НЕ вызвал НИ ОДНОГО инструмента (tools=[])», что было бы
+    ложью для ``tools=['save_arrangement_preset', 'load_skill']`` —
+    инструмент КАК РАЗ был вызван, просто отказал. ``tool_error_
+    occurred=True`` переключает текст на честную формулировку про
+    ошибку/отказ и просит либо повторить, либо честно сообщить о
+    неудаче — НЕ просто «вызови тул ещё раз» вслепую.
+    """
+
+    def _hit(self):
+        hit = detect_universal_action_claim(
+            spoken="Записала пресет.",
+            tools_called=("save_arrangement_preset",),
+            tool_error_occurred=True,
+        )
+        assert hit is not None
+        return hit
+
+    def test_error_prompt_mentions_failure_not_empty_tools(self) -> None:
+        prompt = build_universal_action_claim_retry_prompt(
+            user_input="сохрани пресет",
+            spoken="Записала пресет.",
+            hit=self._hit(),
+            tool_error_occurred=True,
+        )
+        assert "tools=[]" not in prompt, (
+            "тул БЫЛ вызван (tools_called непуст) — промпт не должен "
+            "врать, что вызовов не было"
+        )
+        assert "ошиб" in prompt.lower() or "отказ" in prompt.lower(), (
+            "промпт обязан назвать РЕАЛЬНУЮ причину — ошибку/отказ тула, "
+            "а не общее «вызови инструмент»"
+        )
+
+    def test_error_prompt_asks_for_honest_failure_report(self) -> None:
+        prompt = build_universal_action_claim_retry_prompt(
+            user_input="сохрани пресет",
+            spoken="Записала пресет.",
+            hit=self._hit(),
+            tool_error_occurred=True,
+        )
+        assert "не получилось" in prompt.lower() or "не удал" in prompt.lower(), (
+            "промпт должен явно разрешить честно сказать о неудаче — "
+            "acceptance criteria #2949"
+        )
+
+    def test_no_error_prompt_keeps_legacy_wording(self) -> None:
+        """``tool_error_occurred=False`` (default) — старый текст не регрессирует."""
+        hit = detect_universal_action_claim(
+            spoken="Проверю состояние и перезапущу.",
+            tools_called=(),
+        )
+        assert hit is not None
+        prompt = build_universal_action_claim_retry_prompt(
+            user_input="докрути музыку",
+            spoken="Проверю состояние и перезапущу.",
+            hit=hit,
+        )
+        assert "tools=[]" in prompt
+
+
+class TestBuildActionClaimFailureFallback:
+    """Issue #2949 — честная фраза после исчерпания бюджета ретраев.
+
+    Когда одноразовый ретрай уже потрачен и модель СНОВА повторяет
+    непокреплённый claim, fallback обязан НЕ содержать слов успеха
+    («записал», «сохранил», «готово») — иначе юзер услышит вторую ложь
+    подряд вместо честного признания неудачи (ADR-0018).
+    """
+
+    def test_fallback_does_not_repeat_success_claim(self) -> None:
+        hit = detect_universal_action_claim(
+            spoken="Записала пресет.",
+            tools_called=("save_arrangement_preset",),
+            tool_error_occurred=True,
+        )
+        assert hit is not None
+        fallback = build_action_claim_failure_fallback(hit)
+        lowered = fallback.lower()
+        for success_word in ("записал", "сохранил", "готово", "выполнил"):
+            assert success_word not in lowered, (
+                f"fallback не должен содержать {success_word!r} — это "
+                "должна быть честная неудача, не повторный claim"
+            )
+
+    def test_fallback_is_non_empty_string(self) -> None:
+        hit = detect_universal_action_claim(
+            spoken="Записала пресет.",
+            tools_called=("save_arrangement_preset",),
+            tool_error_occurred=True,
+        )
+        assert hit is not None
+        assert isinstance(build_action_claim_failure_fallback(hit), str)
+        assert build_action_claim_failure_fallback(hit).strip() != ""
 
 
 class TestPhantomActionVsBugEOverlap:

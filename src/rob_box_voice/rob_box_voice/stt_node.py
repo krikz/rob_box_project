@@ -36,6 +36,7 @@ try:
     from rob_box_voice.stt_fallback import (
         DEFAULT_DEAD_TTL_S,
         DEFAULT_DEAD_TTL_TRANSIENT_S,
+        DEFAULT_MAX_TOTAL_BUDGET_S,
         DEFAULT_MIN_TEXT_CHARS,
         DEFAULT_YANDEX_MAX_RETRIES,
         DEFAULT_YANDEX_TIMEOUT_S,
@@ -57,6 +58,7 @@ except ImportError:  # pragma: no cover — модуль всегда есть �
     DEFAULT_YANDEX_TIMEOUT_S = 5.0
     DEFAULT_DEAD_TTL_S = 300.0
     DEFAULT_DEAD_TTL_TRANSIENT_S = 30.0
+    DEFAULT_MAX_TOTAL_BUDGET_S = 20.0
     ProviderDeadCache = None  # type: ignore[assignment]
     ProviderPolicy = None  # type: ignore[assignment]
 
@@ -72,13 +74,16 @@ except ImportError:  # pragma: no cover — модуль всегда есть �
 
 # Issue #2365 Phase 2 — цепочка STT-провайдеров по приоритету.
 #
-# Порядок minimax → yandex → vosk выбран владельцем репо 21.09.2026 и
-# зафиксирован в ADR-0124 (он же заменяет порядок vosk → minimax → yandex
-# из ADR-0091 §2.2). Логика та же, что у TTS (``tts_node``:
-# minimax → yandex → silero) и у LLM (``rob_box_harness.health``):
+# Порядок yandex → minimax → vosk — issue #2866 (23.09.2026): товарищ
+# Шифу пополнил счёт Yandex SpeechKit и поставил его primary. До этого
+# (21.09, ADR-0124 §2.1) первым был MiniMax; ADR-0124 в свою очередь
+# заменил vosk → minimax → yandex из ADR-0091 §2.2. Принцип прежний:
 # облака вперёд за качеством, локальная модель — последний рубеж,
-# который работает всегда.
-DEFAULT_STT_PROVIDER_CHAIN = ["minimax", "yandex", "vosk"]
+# который работает всегда. Значение обязано совпадать с
+# ``stt_provider_chain`` в обоих stt_node.yaml (гард:
+# test/test_yaml_param_consistency.py) — YAML перекрывает дефолт
+# ``declare_parameter``, и рассинхрон молча врал бы в dev-окружении.
+DEFAULT_STT_PROVIDER_CHAIN = ["yandex", "minimax", "vosk"]
 
 # Провайдеры, которые нода умеет собирать. Всё остальное в
 # ``stt_provider_chain`` — опечатка оператора, молча игнорируем с warning.
@@ -88,6 +93,14 @@ KNOWN_STT_PROVIDERS = frozenset({"minimax", "yandex", "vosk"})
 # без денег на счету. Инвариант «vosk всегда последний» — прямой аналог
 # «silero всегда последний» в ``tts_node._normalize_provider_chain``.
 _LAST_RESORT_PROVIDER = "vosk"
+
+# Issue #2767 — порог для диагностического warning'а «сигнал очень тихий».
+# Живой инцидент 23.09: 7/8 фраз отклонены при audio_rms_dbfs=-56.8 (пиковый
+# -33.7 dBFS) — это НЕ доказывает, что дело в микрофоне (может быть и
+# каскад/эхо), но это отдельная, непроверенная гипотеза, которую стоит
+# явно видеть в логе рядом с cascade-логами, а не откапывать заново на
+# роботе. НЕ используется для автоусиления/AGC — только для лога.
+_QUIET_SIGNAL_HINT_DBFS = -50.0
 
 
 class _NodeSTTAdapter:
@@ -192,6 +205,8 @@ from rob_box_voice.core.occasion import (
     OccasionGate,
     VerdictKind,
 )
+from rob_box_voice.core.utterance_id import compute_utterance_id
+from rob_box_voice.core.yandex_stt_segments import YandexSegmentCollector
 
 # #1990 (оператор-agent 05) — источники аудио для wake-роутера (_process_audio).
 # Namespace вейк-слов привязан к источнику, а не только к тексту (целевая §7.1).
@@ -365,6 +380,16 @@ class STTNode(Node):
         self.declare_parameter("provider_dead_ttl_s", DEFAULT_DEAD_TTL_S)
         self.declare_parameter(
             "provider_dead_ttl_transient_s", DEFAULT_DEAD_TTL_TRANSIENT_S
+        )
+        # Issue #2767 — общий бюджет времени на цепочку одной фразы. Живой
+        # инцидент 23.09: без него фраза тонула в каскаде на 9-10с (empty
+        # ретраился, Yandex auth гонялся заново) — этот параметр ставит
+        # верхний предел на АНОМАЛЬНЫЕ повторы, не трогая нормальный
+        # однопроходный сценарий (~18с холодным стартом) и не отбирая
+        # попытку у последнего провайдера в цепочке (обычно Vosk).
+        # 0 или отрицательное значение отключает бюджет (legacy).
+        self.declare_parameter(
+            "stt_phrase_budget_s", DEFAULT_MAX_TOTAL_BUDGET_S
         )
         # Персистентность кэша: рестарт ноды (а их много — см. #2676 OOM)
         # не должен снова слать фразу в облако, про которое мы уже знаем,
@@ -566,6 +591,14 @@ class STTNode(Node):
         # telegram/perception/transport). dialogue_node подписывается и создаёт
         # профиль спикера (scope=speaker:<tag>).
         self.speaker_pub = self.create_publisher(String, "/voice/stt/speaker", 10)
+        # Issue #2829 (ADR-0131) — utterance_id для ЭТОЙ фразы, publish'ится
+        # ПЕРЕД /voice/stt/result (тот же порядок гарантий, что и у
+        # speaker_pub выше: dialogue_node._on_stt читает pending id,
+        # выставленный этим сообщением, до того как читает сам текст).
+        # Отдельный топик, а не поле в /voice/stt/result — контракт
+        # (plain text) там не трогаем, его читают
+        # telegram/perception/GUI/harness-бенчи (см. stt_node.py:585).
+        self.utterance_pub = self.create_publisher(String, "/voice/stt/utterance", 10)
         # Прямой запрос TTS для фразы «не расслышал» (issue #979). tts_node
         # слушает /voice/tts/request тем же JSON-SSML контрактом, что и
         # /voice/dialogue/response — build_ssml_payload даёт ровно это.
@@ -636,6 +669,36 @@ class STTNode(Node):
         except Exception as e:
             self.get_logger().error(f"❌ Ошибка инициализации Yandex STT: {e}")
             self.yandex_stub = None
+
+    def _on_yandex_stream_error(self, exc, context: str) -> BaseException:
+        """gRPC-ошибка стрима Yandex STT → лог + типизированное исключение.
+
+        Issue #2924: 23.09 с 23:22 по 23:39 каждый вызов стоял до дедлайна
+        (5 с), не прислав НИ ОДНОГО partial (на фразах с «Робот» не сработал
+        ранний «бульк», который в норме срабатывает через 0.5 с), потом сам
+        ожил без рестарта ноды. Канал — один долгоживущий, без keepalive.
+        Гипотеза (не доказана): зависшее TCP-соединение канала, которое ядро
+        рвёт только через ~15 мин ретрансмиссий. Поэтому после
+        DEADLINE_EXCEEDED канал пересоздаём: следующая фраза пойдёт по
+        свежему соединению, а не по тому, что висит. Цена — один TLS-хендшейк.
+        """
+        self.get_logger().warning(
+            f"⚠️ [issue 1477] stream error: {exc.code()} {exc.details()} [#2924 {context}]"
+        )
+        if exc.code() == grpc.StatusCode.DEADLINE_EXCEEDED:
+            self._reset_yandex_channel()
+        return _map_grpc_error(exc, self.yandex_timeout_s)
+
+    def _reset_yandex_channel(self) -> None:
+        """Закрыть канал Yandex STT и открыть новый (issue #2924)."""
+        old = getattr(self, "yandex_channel", None)
+        if old is not None:
+            try:
+                old.close()
+            except Exception as e:  # noqa: BLE001 — закрытие не должно ронять STT
+                self.get_logger().warning(f"⚠️ [#2924] close старого канала Yandex STT: {e}")
+        self.get_logger().warning("🔌 [#2924] DEADLINE_EXCEEDED → пересоздаю канал Yandex STT")
+        self.initialize_yandex()
 
     def initialize_vosk(self):
         """Load Vosk model (fallback provider).
@@ -922,6 +985,13 @@ class STTNode(Node):
             )
             self.get_logger().info(f"✅ ПРИНЯТО ({source}): {text}")
             if source == _SRC_RESPEAKER:
+                # Issue #2829 (ADR-0131) — utterance_id фразы. speaker_id_node
+                # считает его тем же способом от тех же PCM-байт
+                # /audio/speech_audio — id совпадёт без координации нод.
+                # Issue #2862 — id едет ВМЕСТЕ с текстом: dialogue_node
+                # связывает его с /voice/stt/result по тексту, порядок
+                # доставки двух топиков не важен.
+                self._publish_utterance_id(audio_bytes, text)
                 # Issue #1077 — speaker публикуем ПЕРЕД результатом: dialogue_node
                 # хранит tag по тексту и забирает его в _on_stt. Если бы speaker
                 # шёл после result, гонка топиков могла бы потерять корреляцию.
@@ -1111,6 +1181,18 @@ class STTNode(Node):
 
     # ── Issue #2365 Phase 2: цепочка minimax → yandex → vosk (ADR-0124) ────
 
+    def _resolve_phrase_budget_s(self) -> Optional[float]:
+        """Общий бюджет фразы (issue #2767 п.3) или ``None`` (легаси).
+
+        Вынесено из :meth:`_init_provider_chain_params` отдельным методом
+        (cc_budget, ADR-0021 R1) — инлайн-условие толкало метод за лимит
+        CC=15. 0/отрицательное значение параметра отключает бюджет
+        (``None`` передаётся в ``select_recognition`` как легаси-режим).
+        """
+        raw = self.get_parameter("stt_phrase_budget_s").value
+        budget = float(raw) if raw is not None else DEFAULT_MAX_TOTAL_BUDGET_S
+        return budget if budget > 0 else None
+
     def _init_provider_chain_params(self) -> None:
         """Прочитать параметры цепочки и собрать кэш «мёртвых».
 
@@ -1156,6 +1238,9 @@ class STTNode(Node):
         self.provider_dead_ttl_transient_s: float = float(
             self.get_parameter("provider_dead_ttl_transient_s").value
             or DEFAULT_DEAD_TTL_TRANSIENT_S
+        )
+        self.stt_phrase_budget_s: Optional[float] = (
+            self._resolve_phrase_budget_s()
         )
         self.provider_state_file: str = str(
             self.get_parameter("provider_state_file").value or ""
@@ -1361,8 +1446,8 @@ class STTNode(Node):
     def _recognize_with_fallback(self, audio_bytes: bytes) -> "tuple[Optional[str], list]":
         """Прогнать фразу по цепочке провайдеров (ADR-0124).
 
-        Порядок — из ``stt_provider_chain`` (дефолт minimax → yandex →
-        vosk), бюджеты — из ``_provider_policies``, пропуск лежащих
+        Порядок — из ``stt_provider_chain`` (дефолт yandex → minimax →
+        vosk, issue #2866), бюджеты — из ``_provider_policies``, пропуск лежащих
         облаков — через кэш «мёртвых».
 
         Возвращает ``(text, attempts)``.
@@ -1385,6 +1470,7 @@ class STTNode(Node):
             min_text_chars=self.min_text_chars,
             policies=self._provider_policies(),
             dead_cache=self._provider_dead_cache,
+            max_total_s=self.stt_phrase_budget_s,
         )
         self._log_provider_state("recognize", attempts=attempts)
         return text, attempts
@@ -1586,6 +1672,17 @@ class STTNode(Node):
             f"📊 [issue 1477] audio_rms_dbfs={rms_dbfs:.1f} peak_dbfs={peak_dbfs:.1f} "
             f"duration={duration_s:.2f}s samples={n_samples}"
         )
+        if rms_dbfs < _QUIET_SIGNAL_HINT_DBFS:
+            # Issue #2767 — гипотеза (НЕ доказанная): частые rejected(empty)
+            # могут объясняться слабым сигналом канала микрофона, а не
+            # только каскадом STT. Только диагностика, никакого автогейна.
+            self.get_logger().warning(
+                f"📉 [issue 2767] Очень тихий сигнал: "
+                f"audio_rms_dbfs={rms_dbfs:.1f} "
+                f"< {_QUIET_SIGNAL_HINT_DBFS:.0f} — возможная причина частых "
+                "empty от облачных STT (канал/AGC микрофона), отдельная "
+                "непроверенная гипотеза, усиление НЕ применяется"
+            )
 
         # Фаза 1: REAL_TIME + speech_analysis (production-настройки, нужны
         # для speaker_tag и «булька» — issue #1077/#1251).
@@ -1715,12 +1812,20 @@ class STTNode(Node):
             # отличил кончившуюся квоту от моргнувшей сети (_map_grpc_error).
             raise _map_grpc_error(e, self.yandex_timeout_s)
 
-        # Обрабатываем ответы
-        final_text = None
+        # Обрабатываем ответы. Issue #2891: Yandex шлёт final/final_refinement
+        # на КАЖДЫЙ сегмент фразы (сегменты режет его EOU) — собираем все,
+        # из стрима не выходим до конца (раньше break на первом refinement
+        # оставлял только первый сегмент: «робот здравствуй» из 7.6 с).
+        segments = YandexSegmentCollector()
         last_partial = None
         speaker_tag: Optional[str] = None
         eou_events = 0
         partial_count = 0
+        # Issue #2924 — сколько ответов сервер успел прислать до ошибки.
+        # Отличает «сервер молчал весь дедлайн» от «прислал сегменты, но не
+        # закрыл стрим» — 23.09 этого не было в логе, и причину пришлось
+        # выводить по косвенному признаку (не сработал ранний «бульк»).
+        response_count = 0
         # Issue #2365 Phase 2: gRPC-ошибка стрима прилетает ЗДЕСЬ, при
         # итерации, а не на вызове RecognizeStreaming — тот лишь открывает
         # стрим. До 21.09.2026 цикл не был обёрнут, поэтому реальный код
@@ -1729,7 +1834,11 @@ class STTNode(Node):
         # ни до кэша «мёртвых» — в метрике стояло голое reason=error.
         try:
             for response in responses:
+                response_count += 1
                 event_type = response.WhichOneof("Event")
+                # #2931: сборщику нужны и partial (текст, который сервер не
+                # зафиксировал в final), и eou_update (для trace).
+                segments.feed(response, event_type)
 
                 if event_type == "partial":
                     partial_count += 1
@@ -1750,28 +1859,30 @@ class STTNode(Node):
                 elif event_type == "conversation_analysis":
                     continue
 
-                elif event_type == "end_of_utterance":
+                elif event_type == "eou_update":
+                    # #2924: в v3 oneof-поле называется eou_update (было
+                    # "end_of_utterance" — такого нет, счётчик всегда был 0).
                     eou_events += 1
                     continue
-
-                elif event_type == "final":
-                    if response.final.alternatives:
-                        final_text = response.final.alternatives[0].text
-
-                elif event_type == "final_refinement":
-                    if response.final_refinement.normalized_text:
-                        final_text = response.final_refinement.normalized_text.alternatives[0].text
-                        break
         except grpc.RpcError as e:
-            self.get_logger().warning(
-                f"⚠️ [issue 1477] phase={phase} stream error: {e.code()} {e.details()}"
+            raise self._on_yandex_stream_error(
+                e,
+                f"phase={phase} responses={response_count} "
+                f"partials={partial_count} eou={eou_events} "
+                f"segments={segments.segment_count} "
+                f"stream=[{segments.trace()}]",
             )
-            raise _map_grpc_error(e, self.yandex_timeout_s)
 
-        # Issue #1477 — телеметрия по фазе: partials/finals/eou.
-        self.get_logger().debug(
-            f"📊 [issue 1477] phase={phase} partials={partial_count} "
-            f"eou={eou_events} final={final_text!r} last_partial={last_partial!r}"
+        final_text = segments.text()
+        # Issue #1477 — телеметрия по фазе: partials/finals/eou;
+        # #2891 — число склеенных сегментов; #2931 — события стрима на INFO:
+        # без них «робот» из начала фразы пропал, а чем именно (partial без
+        # final / пустой final / уточнение не туда / сервер не услышал) —
+        # по логу робота было не понять.
+        self.get_logger().info(
+            f"📊 [#2931] yandex phase={phase} partials={partial_count} "
+            f"eou={eou_events} segments={segments.segment_count} "
+            f"stream=[{segments.trace()}] final={final_text!r}"
         )
 
         result_text = None
@@ -1817,6 +1928,29 @@ class STTNode(Node):
         self.recognizer.SetWords(True)
 
         return text
+
+    def _publish_utterance_id(self, audio_bytes: bytes, text: str) -> None:
+        """Issue #2829 (ADR-0131) — publish this phrase's ``utterance_id``.
+
+        Deterministic hash of the raw PCM bytes this node just recognised
+        (see ``core/utterance_id.py``). speaker_id_node computes the same
+        hash from the same ``/audio/speech_audio`` bytes independently —
+        no coordination needed, both land on the same id. Published
+        unconditionally for every accepted ReSpeaker phrase (unlike
+        ``_publish_speaker``, which skips when there is no Yandex speaker
+        tag) so dialogue_node ALWAYS has an id to correlate against, even
+        on the Vosk-fallback path.
+
+        Issue #2862 — ``text`` is the exact string that goes to
+        ``/voice/stt/result`` next: dialogue_node joins the two topics by
+        text, because DDS does not order delivery across topics.
+        """
+        utterance_id = compute_utterance_id(audio_bytes)
+        msg = String()
+        msg.data = json.dumps(
+            {"utterance_id": utterance_id, "text": text}, ensure_ascii=False
+        )
+        self.utterance_pub.publish(msg)
 
     def _publish_speaker(self, text: str, duration_s: float = 0.0) -> None:
         """Публикация speaker_tag (issue #1077) на /voice/stt/speaker.

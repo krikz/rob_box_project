@@ -9,7 +9,7 @@
     {
       "label": "n201_sasha_intro_long",
       "voice": "anton",
-      "text": "Робот, привет, давай знакомиться как следует. Меня зовут Саша, я твой ночной инженер.",
+      "text": "Робот, привет, давай знакомиться как следует. Меня зовут Саша, я твой ночной инженер и механик.",
       "patterns": [],
       "acceptance": {
         "expected_tool_calls": [
@@ -19,7 +19,7 @@
           "register_speaker"
         ],
         "must_not_call": [],
-        "_comment": "Разбито на n201/n201b/n201c: audio_node режет речь длиннее 15с VAD-окна (run 35658231116, ❌ Речь отклонена: 17.37с), исходная реплика ~25с не доходила до STT. Имя и register_speaker остаются на этом шаге. expect=cycle: первый шаг акта пробивает wake-gate. issue #2406: discovery_tools — register_speaker должен быть вызван ДО голосового ответа (regression guard)."
+        "_comment": "Разбито на n201/n201b/n201c: audio_node режет речь длиннее 15с VAD-окна (run 35658231116, ❌ Речь отклонена: 17.37с), исходная реплика ~25с не доходила до STT. Имя и register_speaker остаются на этом шаге. expect=cycle: первый шаг акта пробивает wake-gate. issue #2406: discovery_tools — register_speaker должен быть вызван ДО голосового ответа (regression guard). Issue #2907: «и механик» удлиняет реплику регистрации (85 → 95 символов), чтобы чистой речи после VAD было с запасом над порогом эталона 3.0с (run 35916899022: 51 символ дал 2.97с → too_short). Потолок — test_e2e_scenario_playable.sh (<=96 символов без WARN): длиннее уже упирается в 15с VAD-окно."
       },
       "expect": "cycle",
       "retry_acceptance": 1
@@ -83,7 +83,7 @@
     {
       "label": "n204_boris_intro_long",
       "voice": "ermil",
-      "text": "Робот, добрый вечер, меня зовут Борис, я друг Саши и прихожу с пиццей примерно раз в неделю.",
+      "text": "Робот, добрый вечер, меня зовут Борис, я друг Саши и прихожу с пиццей по пятницам, раз в неделю.",
       "patterns": [],
       "acceptance": {
         "expected_tool_calls": [
@@ -93,7 +93,7 @@
           "register_speaker"
         ],
         "must_not_call": [],
-        "_comment": "Разбито на n204/n204b/n204c: audio_node режет речь длиннее 15с VAD-окна (run 35658231116) — исходная реплика ~24с не доходила до STT. Имя и register_speaker остаются на этом шаге. issue #2406: discovery_tools — register_speaker должен быть вызван ДО голосового ответа (regression guard)."
+        "_comment": "Разбито на n204/n204b/n204c: audio_node режет речь длиннее 15с VAD-окна (run 35658231116) — исходная реплика ~24с не доходила до STT. Имя и register_speaker остаются на этом шаге. issue #2406: discovery_tools — register_speaker должен быть вызван ДО голосового ответа (regression guard). Issue #2907: «по пятницам» удлиняет реплику регистрации (92 → 96 символов, факт «раз в неделю» сохранён) — ровно до потолка test_e2e_scenario_playable.sh без WARN; длиннее упирается в 15с VAD-окно."
       },
       "retry_acceptance": 1
     },
@@ -167,21 +167,6 @@
       }
     },
     {
-      "label": "n208_memory_search_tea",
-      "voice": "anton",
-      "text": "Робот, поищи у себя в памяти, что я говорил про чай.",
-      "patterns": [],
-      "acceptance": {
-        "expected_tool_calls": [
-          "memory_search"
-        ],
-        "expected_keywords": [
-          "чай"
-        ],
-        "must_not_call": []
-      }
-    },
-    {
       "label": "n209_recall_boris",
       "voice": "ermil",
       "text": "Робот, а про меня что помнишь?",
@@ -220,7 +205,10 @@
       "patterns": [],
       "acceptance": {
         "must_not_say": [
-          "Гриш"
+          "Гриш",
+          "троих",
+          "трёх человек|трех человек|три человека",
+          "Незнакомец"
         ],
         "expected_keywords": [
           "Саш",
@@ -229,6 +217,33 @@
         "expected_tool_calls": [],
         "must_not_call": [],
         "_comment": "Оба зарегистрированных должны быть названы. Гриши в списке быть не должно — раньше это можно было проверить только глазами, теперь есть явный must_not_say (issue #2779 AC3)."
+      }
+    },
+    {
+      "label": "n212_session_reset_before_search",
+      "voice": "anton",
+      "text": "Робот, новая сессия, забудь этот разговор.",
+      "patterns": [
+        "session reset|session_reset|Новая сессия|new session"
+      ],
+      "_why": "Issue #2865: без сброса факт n203 лежит в окне чата, и LLM отвечает на n213 из истории, не зовя memory_search (run 35886659057, n208: tools=[]). Паттерн — строка «🧹 [new-session] session reset» из dialogue_node.reset_session: если сброс не случился, n213 ничего не доказывает, и этот шаг обязан покраснеть сам."
+    },
+    {
+      "label": "n213_memory_search_tea_after_reset",
+      "voice": "anton",
+      "text": "Робот, поищи у себя в памяти, что я говорил про чай.",
+      "patterns": [
+        "\\[memory_search\\] query=.* [1-9][0-9]* results"
+      ],
+      "acceptance": {
+        "expected_tool_calls": [
+          "memory_search"
+        ],
+        "expected_keywords": [
+          "зелён|зелен"
+        ],
+        "must_not_call": [],
+        "_comment": "Issue #2865 / #2793: вопрос задаётся ПОСЛЕ сброса сессии (n212) — факт о чае есть только в voice_facts. Зелёный = memory_search вызван, вернул >=1 хит и робот произнёс факт («зелёный»), которого нет ни в вопросе, ни в окне чата."
       }
     }
   ]

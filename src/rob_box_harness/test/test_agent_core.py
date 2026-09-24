@@ -453,19 +453,20 @@ def test_speaker_context_without_system_prompt_is_first(
     assert sent[1].role == "user"
 
 
-def test_dynamic_system_sits_last_before_the_user_turn(
+def test_dynamic_system_folded_into_the_user_turn(
     llm: _FakeLLMProvider,
     tools_provider: _FakeToolProvider,
     memory: _FakeMemoryStore,
     dsm: DialogueStateMachine,
 ) -> None:
-    """Волатильный снапшот стоит вплотную к текущей реплике, а не в шапке.
+    """Issue #2817 — снапшот НЕ отдельное system-сообщение перед user.
 
-    Раньше ``dynamic_system`` вставлялся в ``messages[1]`` — то есть перед
-    всей историей. Модель читала «вот что происходит сейчас», а следом
-    двадцать ходов прошлого разговора, и отличить, что снапшот новее, было
-    не по чему. Порядок сообщений — единственный сигнал времени, который у
-    неё есть, поэтому снапшот теперь последний перед user.
+    Живой лог 23.09 (MiniMax-M2): модель ответила на отдельное
+    system-сообщение с ``<system_context>`` ("Системное уведомление
+    принято к сведению...") и проигнорировала следующий за ним
+    user-ход. Снапшот теперь склеен в ОДНО user-сообщение вместе
+    с текстом — последнее сообщение этого хода всегда user и это
+    единственное сообщение, требующее ответа.
     """
     obj = AgentCore(
         llm=llm,
@@ -482,14 +483,15 @@ def test_dynamic_system_sits_last_before_the_user_turn(
     ))
     sent = llm.calls[0][0]
     assert sent[0].content == "БАЗОВЫЙ ПРОМПТ"
-    # speaker_context — идентичность собеседника, остаётся в шапке.
+    # speaker_context — остаётся в шапке.
     assert sent[1].role == "system"
     assert "Контекст о собеседнике" in sent[1].content
-    # Снапшот — предпоследний, вплотную к реплике.
-    assert sent[-2].role == "system"
-    assert "<system_context>" in sent[-2].content
+    # Снапшот и реплика юзера — ОДНО сообщение, последнее в списке.
     assert sent[-1].role == "user"
-    assert sent[-1].content == "привет"
+    assert "<system_context>" in sent[-1].content
+    assert sent[-1].content.endswith("привет")
+    # Никакого role=system между шапкой/историей и этим user-ходом.
+    assert all(m.role != "system" for m in sent[2:-1])
 
 
 def test_dynamic_system_stays_after_history(
@@ -498,7 +500,8 @@ def test_dynamic_system_stays_after_history(
     memory: _FakeMemoryStore,
     dsm: DialogueStateMachine,
 ) -> None:
-    """С непустой историей снапшот всё равно оказывается ПОСЛЕ неё."""
+    """С непустой историей снапшот всё равно оказывается ПОСЛЕ неё, и
+    по-прежнему НЕ отдельным role=system сообщением (issue #2817)."""
     from rob_box_harness.memory import Turn
 
     obj = AgentCore(
@@ -521,13 +524,61 @@ def test_dynamic_system_stays_after_history(
     sent = llm.calls[0][0]
     contents = [m.content for m in sent]
     assert "старая реплика" in contents
-    snapshot = next(i for i, m in enumerate(sent) if "СВЕЖЕЕ" in m.content)
     history = contents.index("старая реплика")
+    # Снапшот теперь живёт ВНУТРИ последнего user-сообщения,
+    # а не как отдельная запись в contents — ищем его как подстроку.
+    snapshot = next(
+        i for i, c in enumerate(contents) if "СВЕЖЕЕ" in c
+    )
     assert snapshot > history, (
         "снапшот обязан стоять после истории — иначе модель не может "
         f"понять, что он свежее: {[m.role for m in sent]}"
     )
     assert sent[-1].role == "user"
+    assert sent[snapshot] is sent[-1], "снапшот должен быть частью user-хода"
+
+
+def test_no_system_message_immediately_precedes_the_current_user_turn(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """Issue #2817 / #2766 — инвариант: последнее сообщение этого хода всегда
+    ``role=user``, и сообщение прямо перед ним (конец истории) не
+    ``role=system``. Живой регресс (issue #2817): [...assistant(предыдущий ответ),
+    system(<system_context>...с privacy_note...), user(текст)] — MiniMax ответила
+    на system-сообщение вместо реплики пользователя. С непустой историей
+    (a не шапкой, где легитимно живёт speaker_context) сообщение перед
+    user-ходом — это последний ход истории (assistant), никогда не system.
+    """
+    from rob_box_harness.memory import Turn
+
+    obj = AgentCore(
+        llm=llm,
+        tools=tools_provider,
+        memory=memory,
+        dsm=dsm,
+        system_prompt="БАЗОВЫЙ ПРОМПТ",
+        history_trim_limit=20,
+    )
+    obj._turn_window.extend([
+        Turn(role="user", content="доброе утро"),
+        Turn(role="assistant", content="доброе утро!"),
+    ])
+    _wake(obj)
+    asyncio.run(obj.process_input(
+        "привет",
+        dynamic_system="<system_context><user_profile><name>unknown</name></user_profile></system_context>",
+    ))
+    sent = llm.calls[0][0]
+    assert sent[-1].role == "user"
+    assert sent[-2].role != "system", (
+        "role=system вплотную перед текущим user-ходом — тот самый "
+        f"паттерн из issue #2817: {[m.role for m in sent]}"
+    )
+    assert sent[-2].role == "assistant"
+    assert sent[-2].content == "доброе утро!"
 
 
 # ---------------------------------------------------------------------------
@@ -775,9 +826,14 @@ def test_two_agent_configs_one_engine() -> None:
     assert persona_msgs[0][0] == "system"
     assert "РОББОКС" in persona_msgs[0][1]
     assert "ТАРС" in operator_msgs[0][1]
-    # Срез доезжает последним системным сообщением перед репликой.
-    assert persona_msgs[-2] == ("system", "ПЛЕЕР: сначала gen_list_library, потом gen_play_from_library.")
-    assert operator_msgs[-2] == ("system", "ОПЕРАТОР: для озвучки роботом вызывай say.")
+    # Срез доезжает внутри последнего user-сообщения (issue #2817 —
+    # склеен с репликой, а не отдельным system-сообщением перед ней).
+    assert persona_msgs[-1][0] == "user"
+    assert "ПЛЕЕР: сначала gen_list_library, потом gen_play_from_library." in persona_msgs[-1][1]
+    assert persona_msgs[-1][1].endswith("поставь музыку")
+    assert operator_msgs[-1][0] == "user"
+    assert "ОПЕРАТОР: для озвучки роботом вызывай say." in operator_msgs[-1][1]
+    assert operator_msgs[-1][1].endswith("поставь музыку")
     # Поведение разное.
     assert persona_msgs != operator_msgs
     assert core_persona.known_skills() == ("player",)
@@ -1369,6 +1425,86 @@ def test_tool_error_substantive_answer_not_suppressed(
     assert result.error is None
     assert result.spoken_text == "no memory found"
     assert result.tools_called == ["memory_context"]
+
+
+def test_tool_error_occurred_propagates_to_dialog_result(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """Issue #2949 — ``DialogResult.tool_error_occurred`` surfaces a
+    called-but-FAILED tool, distinct from ``tools_called`` (which only
+    carries the NAME and looks identical whether the call succeeded or
+    was refused). Live repro: ``save_arrangement_preset`` refused
+    («недоступен»), the LLM still claimed «Записала пресет…» — the
+    dialogue_node action-claim guards need this flag to tell "called
+    and worked" from "called and failed" (the previous behaviour
+    treated ANY call to a whitelisted tool as backing the claim).
+    """
+    from rob_box_llm.provider import ToolResult
+
+    scripted = [
+        LLMResponse(
+            content="",
+            tool_calls=(
+                ToolCall(id="c1", name="save_arrangement_preset", arguments={}),
+            ),
+        ),
+        LLMResponse(content="Записала пресет!", tool_calls=()),
+    ]
+    llm.responses = scripted
+
+    async def refusing_handler(args: dict[str, object]) -> ToolResult:
+        return ToolResult(
+            tool_call_id="c1",
+            content="Инструмент 'save_arrangement_preset' недоступен",
+            is_error=True,
+        )
+    tools_provider._handler_map = {"save_arrangement_preset": refusing_handler}
+
+    core_obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    _wake(core_obj)
+
+    result = asyncio.run(core_obj.process_input("сохрани пресет", history=[]))
+
+    assert result.error is None
+    assert result.tools_called == ["save_arrangement_preset"]
+    assert result.tool_error_occurred is True, (
+        "a refused tool call must set tool_error_occurred=True even "
+        "though its NAME still lands in tools_called"
+    )
+
+
+def test_tool_success_does_not_set_tool_error_occurred(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """Contrast to the previous test: a SUCCESSFUL call keeps the flag False."""
+    scripted = [
+        LLMResponse(
+            content="",
+            tool_calls=(
+                ToolCall(id="c1", name="save_arrangement_preset", arguments={}),
+            ),
+        ),
+        LLMResponse(content="Записала пресет!", tool_calls=()),
+    ]
+    llm.responses = scripted
+
+    async def ok_handler(args: dict[str, object]) -> str:
+        return "saved"
+    tools_provider._handler_map = {"save_arrangement_preset": ok_handler}
+
+    core_obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    _wake(core_obj)
+
+    result = asyncio.run(core_obj.process_input("сохрани пресет", history=[]))
+
+    assert result.error is None
+    assert result.tool_error_occurred is False
 
 
 def test_dj_auto_with_preclassified_event_reaches_llm_from_idle(
@@ -2022,6 +2158,26 @@ def test_order_tool_calls_music_prelude_before_speak_text() -> None:
     assert deferred == {"c1"}
 
 
+def test_order_tool_calls_register_speaker_before_speak_text() -> None:
+    """Issue #2913 — register_speaker раньше реплик пачки: речь хода ждёт
+    исхода регистрации, и ожидание должно быть взведено до того, как
+    голосовой канал возьмёт реплику."""
+    from rob_box_harness.core.agent_core import _order_tool_calls
+
+    ordered, _deferred = _order_tool_calls(
+        [
+            _call("c1", "speak_text"),
+            _call("c2", "memory_save"),
+            _call("c3", "register_speaker"),
+        ]
+    )
+    assert [c.name for c in ordered] == [
+        "register_speaker",
+        "speak_text",
+        "memory_save",
+    ]
+
+
 def test_order_tool_calls_stop_music_alone_not_deferred() -> None:
     """A lone stop_music has no voice to wait for — not deferred."""
     from rob_box_harness.core.agent_core import _order_tool_calls
@@ -2185,6 +2341,56 @@ def test_process_input_works_without_begin_group_on_tool_provider(
     result = asyncio.run(core_obj.process_input("q", history=[]))
     assert result.error is None
     assert result.tools_called == ["echo"]
+
+
+# ---------------------------------------------------------------------------
+# Issue #2859 — begin_turn(): граница хода для per-turn гардов провайдера
+# (SchedulerToolExecutor: «один трек за ход»). В отличие от begin_group()
+# зовётся ОДИН раз на ход, даже если пачек tool_calls несколько.
+# ---------------------------------------------------------------------------
+
+
+class _TurnTrackingToolProvider(_FakeToolProvider):
+    """_FakeToolProvider + begin_turn(), mirroring SchedulerToolExecutor."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.begin_turn_call_count = 0
+
+    def begin_turn(self) -> None:
+        self.begin_turn_call_count += 1
+
+
+def test_begin_turn_called_once_per_turn_across_batches(
+    llm: _FakeLLMProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    tools_provider = _TurnTrackingToolProvider()
+    llm.responses = [
+        LLMResponse(
+            content="",
+            tool_calls=(
+                ToolCall(id="c1", name="echo", arguments={"text": "a"}),
+            ),
+        ),
+        LLMResponse(
+            content="",
+            tool_calls=(
+                ToolCall(id="c2", name="echo", arguments={"text": "b"}),
+            ),
+        ),
+        LLMResponse(content="done", tool_calls=()),
+    ]
+    core_obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    _wake(core_obj)
+
+    asyncio.run(core_obj.process_input("q1", history=[]))
+    assert tools_provider.begin_turn_call_count == 1
+
+    _wake(core_obj)
+    asyncio.run(core_obj.process_input("q2", history=[]))
+    assert tools_provider.begin_turn_call_count == 2
 
 
 # ---------------------------------------------------------------------------

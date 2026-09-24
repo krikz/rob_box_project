@@ -112,6 +112,45 @@ CURRENT_EMBEDDING_VERSION = 2
 #: ракурс заводил нового «человека».
 DEFAULT_GALLERY_WARMUP_SIZE = 5
 
+# issue #2771 (живая проверка 23.09.2026, develop 816013f92): прогрев
+# галереи (выше) чинит РОСТ галереи молодой записи, но не чинит уже
+# заведённый дубль. Живой сценарий - "Дэнчик"/"a659ddab": очки роняют
+# сходство с настоящей записью с 0.737 до 0.582 (промах на 0.018 мимо
+# identify=0.60), заводится третья запись "в очках"; на следующей
+# встрече настоящая запись УЖЕ проходит порог (rsim=0.610..0.650), но
+# свежий дубль набирает больше (0.618..0.721) и выигрывает по ``max``
+# (``_score_all``) - человек остаётся незнакомцем, хотя правильный
+# ответ лежит в базе и проходит порог. Полная хронология - комментарии
+# issue #2771 от 22-23.09.2026.
+#
+# ``_disambiguate`` разруливает ровно этот случай: если лучший скор -
+# у БЕЗЫМЯННОЙ записи, но ИМЕНОВАННАЯ запись тоже проходит
+# ``identify_threshold`` и отстаёт не больше чем на
+# ``DEFAULT_DISAMBIGUATION_GAP`` - отвечаем именем и НЕ дописываем
+# эмбеддинг в галерею безымянного дубля (реассайн на именованную запись
+# означает, что ``_should_enroll``/прогрев в ``record_encounter``
+# применяются к НЕЙ, а не к дублю).
+#
+# Цифра 0.10 - не подбор по данным (настоящий sweep всё ещё issue
+# #2771), а покрытие двух живых зазоров из хронологии 22-23.09.2026, где
+# правильный ответ уже лежал в базе и проходил порог: ``gap=0.047``
+# (07:07:48Z, "Дэнчик" 0.610 против дубля 0.657) и ``gap=0.087``
+# (16:45:23, "Дэнчик" 0.634 против дубля 0.721) - оба заведомо меньше
+# 0.10 с запасом. Больший зазор (``gap=0.083`` в 06:35:55Z) правило и не
+# должно трогать: там именованная запись (0.536) вообще НЕ проходила
+# ``identify_threshold`` - это отдельная, не покрытая пока часть
+# проблемы (см. §6 ADR-0123: настоящий sweep решит и её).
+#
+# Второе условие ("слипается", не просто "близко по одному кадру"):
+# кросс-сходство ГАЛЕРЕЙ безымянной и именованной записи (см.
+# ``_gallery_cross_similarity``) обязано само по себе пройти
+# ``identify_threshold``. Без этого условия правило могло бы сработать
+# на ЧУЖОМ человеке, который просто оказался на полпути между двумя
+# случайными записями в один-единственный момент (одна встреча - не
+# доказательство, что записи вообще похожи ДРУГ НА ДРУГА); риск
+# остаточный при малых галереях (см. докстринг ``_disambiguate`` и PR).
+DEFAULT_DISAMBIGUATION_GAP = 0.10
+
 _META_FILENAME = 'meta.json'
 _EMBEDDINGS_FILENAME = 'embeddings.npy'
 _REFERENCE_FILENAME = 'reference.jpg'
@@ -144,6 +183,12 @@ class FaceMatch:
     encounter_count: int
     runner_up_person_id: Optional[str] = None
     runner_up_similarity: Optional[float] = None
+    #: issue #2771: True, если это совпадение - результат
+    #: ``_disambiguate`` (безымянный дубль проигнорирован в пользу
+    #: именованной записи, прошедшей ``identify_threshold`` в пределах
+    #: ``disambiguation_gap``). Диагностика для лога "Встреча" и
+    #: сводки ``[лицо]`` - не влияет на остальной контракт FaceMatch.
+    disambiguated: bool = False
 
 
 @dataclass
@@ -274,6 +319,7 @@ class FaceStore:
         identify_threshold: float = 0.6,
         enroll_threshold: float = 0.75,
         gallery_warmup_size: int = DEFAULT_GALLERY_WARMUP_SIZE,
+        disambiguation_gap: float = DEFAULT_DISAMBIGUATION_GAP,
         max_embeddings: int = 20,
         keep_encounters: int = 10,
         max_strangers: int = 500,
@@ -291,6 +337,7 @@ class FaceStore:
         self._identify_threshold = identify_threshold
         self._enroll_threshold = enroll_threshold
         self._gallery_warmup_size = max(1, int(gallery_warmup_size))
+        self._disambiguation_gap = max(0.0, float(disambiguation_gap))
         self._max_embeddings = max(1, int(max_embeddings))
         self._keep_encounters = max(0, int(keep_encounters))
         self._max_strangers = max(0, int(max_strangers))
@@ -313,6 +360,14 @@ class FaceStore:
         # если прогрев замер, а отказы растут — галереи созрели и
         # работает строгий режим #2772.
         self._enroll_warmup_total = 0
+        # issue #2771: сколько раз ``_disambiguate`` отдало предпочтение
+        # именованной записи вместо безымянного дубля, набравшего более
+        # высокий best-of-gallery score. Диагностический аналог
+        # ``enroll_rejected_total``/``enroll_warmup_total`` - если этот
+        # счётчик растёт быстро, значит база копит дубли одного и того
+        # же человека и по ней пора делать merge (см. face_store_admin.py
+        # ``suspicious``), а не считать правило "починкой" сам по себе.
+        self._disambig_named_total = 0
         self._load_from_disk()
 
     # ── Свойства/статистика ──────────────────────────────────────────────
@@ -362,6 +417,7 @@ class FaceStore:
                 'gallery_cohesion': gallery_cohesion,
                 'enroll_rejected_total': self._enroll_rejected_total,
                 'enroll_warmup_total': self._enroll_warmup_total,
+                'disambig_named_total': self._disambig_named_total,
                 'gallery_warmup_size': self._gallery_warmup_size,
                 'disk_bytes': disk_bytes,
             }
@@ -504,6 +560,88 @@ class FaceStore:
         scored.sort(key=lambda t: -t[1])
         return scored
 
+    def _gallery_cross_similarity(
+        self, a: '_Record', b: '_Record',
+    ) -> Optional[float]:
+        """Кросс-сходство ГАЛЕРЕЙ двух записей - максимум косинуса по всем
+        парам (вектор из ``a.embeddings``, вектор из ``b.embeddings``), тот
+        же приём ``max``, что ``_score_all``/докстринг там же: одна удачно
+        совпавшая пара ракурсов - уже достаточное свидетельство, что две
+        записи "слипаются" и, вероятно, описывают одного человека, а не
+        просто оказались случайно похожи в один конкретный момент.
+
+        ``None``, если у любой из записей нет ни одного эмбеддинга -
+        сравнивать не с чем (тот же принцип, что ``_gallery_cohesion``:
+        отсутствие измерения - не 0.0, а именно ``None``).
+
+        Используется ТОЛЬКО ``_disambiguate`` (issue #2771) как вторая,
+        независимая от текущей встречи проверка "это правда дубль", а не
+        совпадение по одному неудачному кадру - см. докстринг
+        ``DEFAULT_DISAMBIGUATION_GAP`` про остаточный риск без неё.
+        """
+        if not a.embeddings or not b.embeddings:
+            return None
+        return max(_cosine(x, y) for x in a.embeddings for y in b.embeddings)
+
+    def _disambiguate(self, scored: List[tuple]) -> tuple:
+        """issue #2771 - разрешить неоднозначность «безымянный дубль
+        обошёл именованную запись по max score» (см. докстринг
+        ``DEFAULT_DISAMBIGUATION_GAP`` выше - живой сценарий «Дэнчик»/
+        «a659ddab»).
+
+        ``scored`` - результат ``_score_all`` (отсортирован по убыванию).
+        Возвращает ``(index, disambiguated)``: ``index`` - позиция в
+        ``scored``, которую следует считать победителем;
+        ``disambiguated=True``, только если победитель СМЕНИЛСЯ с
+        безымянного (позиция 0) на именованного кандидата.
+
+        Правило срабатывает, только если ВЫПОЛНЕНЫ ВСЕ условия сразу:
+
+        1. Лучший скор (``scored[0]``) принадлежит записи БЕЗ имени -
+           если топ уже именован, менять нечего, правило не трогает
+           обычное узнавание вообще.
+        2. Есть именованный кандидат, чей score сам по себе проходит
+           ``identify_threshold`` (не только «был бы похож, если бы не
+           дубль» - он обязан быть похож независимо).
+        3. Зазор между лучшим (безымянным) и этим именованным кандидатом
+           не превышает ``disambiguation_gap``.
+        4. Галереи безымянного и именованного кандидата «слипаются» -
+           ``_gallery_cross_similarity`` между ними сама проходит
+           ``identify_threshold``. Это условие отделяет настоящий дубль
+           («тот же человек, две записи») от совпадения по одной
+           случайной встрече: без него можно было бы по ошибке присвоить
+           имя человеку, который просто один раз оказался похож сразу на
+           обе записи, не будучи похож на именованную запись вообще
+           (риск описан честно в PR - при МАЛЫХ галереях с 1-2 векторами
+           это условие мало что фильтрует, полноценная защита появится
+           вместе со sweep из ADR-0123 §6).
+
+        Среди нескольких именованных кандидатов, прошедших (2)-(4),
+        выбирается тот, что стоит РАНЬШЕ в ``scored`` (то есть с более
+        высоким score) - естественный порядок, `scored` уже отсортирован.
+        """
+        if not scored:
+            return 0, False
+        best_id, best_sim = scored[0]
+        if self._records[best_id].name is not None:
+            return 0, False
+        best_rec = self._records[best_id]
+        for idx in range(1, len(scored)):
+            person_id, sim = scored[idx]
+            if sim < self._identify_threshold:
+                # scored отсортирован по убыванию - дальше будет только хуже.
+                break
+            rec = self._records[person_id]
+            if rec.name is None:
+                continue
+            if best_sim - sim > self._disambiguation_gap:
+                continue
+            cross = self._gallery_cross_similarity(best_rec, rec)
+            if cross is None or cross < self._identify_threshold:
+                continue
+            return idx, True
+        return 0, False
+
     def identify(self, embedding: Any) -> Optional[FaceMatch]:
         """Только чтение — сравнить эмбеддинг с известными галереями, ничего
         не создавать и не дописывать (ADR-0123 §5 контракт: ``identify``
@@ -514,11 +652,20 @@ class FaceStore:
             scored = self._score_all(emb)
             if not scored or scored[0][1] < self._identify_threshold:
                 return None
-            person_id, sim = scored[0]
+            idx, disambiguated = self._disambiguate(scored)
+            if idx == 0:
+                person_id, sim = scored[0]
+                runner_up_person_id, runner_up_similarity = (
+                    scored[1] if len(scored) > 1 else (None, None)
+                )
+            else:
+                # issue #2771: безымянный дубль (scored[0]) обошёл
+                # именованную запись только по max score - runner-up
+                # теперь честно показывает ИМЕННО этот бывший "победитель",
+                # а не scored[1] (см. докстринг _disambiguate/FaceMatch).
+                person_id, sim = scored[idx]
+                runner_up_person_id, runner_up_similarity = scored[0]
             rec = self._records[person_id]
-            runner_up_person_id, runner_up_similarity = (
-                scored[1] if len(scored) > 1 else (None, None)
-            )
             return FaceMatch(
                 person_id=person_id,
                 name=rec.name,
@@ -527,6 +674,7 @@ class FaceStore:
                 encounter_count=rec.encounter_count,
                 runner_up_person_id=runner_up_person_id,
                 runner_up_similarity=runner_up_similarity,
+                disambiguated=disambiguated,
             )
 
     def record_encounter(
@@ -549,13 +697,28 @@ class FaceStore:
             now = self._clock()
             scored = self._score_all(emb)
 
+            disambiguated = False
             if scored and scored[0][1] >= self._identify_threshold:
-                person_id, sim = scored[0]
+                idx, disambiguated = self._disambiguate(scored)
+                if idx == 0:
+                    person_id, sim = scored[0]
+                    runner_up_person_id, runner_up_similarity = (
+                        scored[1] if len(scored) > 1 else (None, None)
+                    )
+                else:
+                    # issue #2771: не растим и не пачкаем галерею
+                    # безымянного дубля (scored[0]) - вся дальнейшая
+                    # логика (encounter_count/_should_enroll/снимки)
+                    # ниже работает с ИМЕНОВАННОЙ записью, выбранной
+                    # _disambiguate. Дубль остаётся как есть: следующая
+                    # встреча снова попробует его же, и если человек
+                    # опять не пройдёт disambiguation - дубль по-прежнему
+                    # доступен для ручного merge (face_store_admin.py).
+                    person_id, sim = scored[idx]
+                    runner_up_person_id, runner_up_similarity = scored[0]
+                    self._disambig_named_total += 1
                 rec = self._records[person_id]
                 is_new = False
-                runner_up_person_id, runner_up_similarity = (
-                    scored[1] if len(scored) > 1 else (None, None)
-                )
             else:
                 # Незнакомец. ADR-0123 §2: workshop — на диск как знакомый,
                 # без имени; exhibition — только в памяти сессии; strict —
@@ -623,6 +786,7 @@ class FaceStore:
                 encounter_count=rec.encounter_count,
                 runner_up_person_id=runner_up_person_id,
                 runner_up_similarity=runner_up_similarity,
+                disambiguated=disambiguated,
             )
 
     # ── Галерея эмбеддингов ──────────────────────────────────────────────

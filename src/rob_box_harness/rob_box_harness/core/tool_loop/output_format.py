@@ -20,7 +20,7 @@ Issue #2630 PR-C — выделить ~12 CC из :meth:`AgentCore._run_with_too
 from __future__ import annotations
 
 import logging
-from typing import Callable
+from typing import Any, Callable
 
 from rob_box_harness.core.tool_loop.outcomes import _ToolLoopOutcome
 from rob_box_llm.provider import LLMResponse
@@ -38,6 +38,8 @@ def apply_babble_filter(
     speak_text_count: int,
     speak_text_real_count: int,
     spoken_texts: list[str],
+    track_name: str | None = None,
+    music_call_args: dict[str, Any] | None = None,
 ) -> _ToolLoopOutcome | None:
     """Return a suppressing outcome for the babble-filter, else ``None``.
 
@@ -77,6 +79,9 @@ def apply_babble_filter(
         speak_text_real_count=speak_text_real_count,
         spoken_via_tool="\n".join(spoken_texts),
         truncated_tool_args=response.truncated_tool_args,
+        track_name=track_name,
+        music_call_args=music_call_args,
+        tool_error_occurred=tool_error_occurred,
     )
 
 
@@ -87,6 +92,9 @@ def build_outcome_from_response(
     speak_text_count: int,
     speak_text_real_count: int,
     spoken_texts: list[str],
+    track_name: str | None = None,
+    music_call_args: dict[str, Any] | None = None,
+    tool_error_occurred: bool = False,
 ) -> _ToolLoopOutcome:
     """Assemble the happy-path :class:`_ToolLoopOutcome` from the last response.
 
@@ -103,4 +111,7 @@ def build_outcome_from_response(
         speak_text_real_count=speak_text_real_count,
         spoken_via_tool="\n".join(spoken_texts),
         truncated_tool_args=response.truncated_tool_args,
+        track_name=track_name,
+        music_call_args=music_call_args,
+        tool_error_occurred=tool_error_occurred,
     )

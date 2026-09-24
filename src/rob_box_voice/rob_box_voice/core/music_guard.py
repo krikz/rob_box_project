@@ -212,6 +212,15 @@ class MusicGuard:
         """
         self._dj_retry_count = 0
 
+    def reset_for_new_session(self) -> None:
+        """Issue #2835 — «новая сессия»: оба бюджета с нуля.
+
+        Счётчики ретраев принадлежат сессии: недожжённый бюджет старой
+        сессии (DJ или юзер-музыка) не должен влиять на первые ходы новой.
+        """
+        self._dj_retry_count = 0
+        self._user_retry_count = 0
+
     # ------------------------------------------------------------------
     # Policy — the decision tree that used to live inline in
     # :meth:`DialogueNode._apply_music_guard`.
@@ -278,6 +287,51 @@ class MusicGuard:
 
         return None
 
+    def _music_started_verdict(
+        self, music_started: set, tool_error_occurred: bool
+    ) -> Optional[MusicGuardVerdict]:
+        """Issue #2966 — a music-starting tool NAME in ``tools_called``
+        does NOT mean it succeeded.
+
+        Live 24.09.2026: ``compose_music`` returned ``success=False``
+        (a rejected parameter) INSIDE a DJ transition, but the tool's
+        NAME still landed in ``tools_called`` — the old inline check
+        (``if music_started: SKIP``) read that as "music started" and
+        returned success, so the LLM's false track announcement went
+        straight to TTS while the previous track kept playing.
+
+        Returns the ``SKIP`` verdict on a REAL success (resets both
+        retry budgets, same as the legacy behaviour). Returns ``None``
+        (fall through to Bug B/C below, which retries) when either no
+        music tool was called at all, or one WAS called but the turn
+        also had a tool error — we can't tell from names alone whether
+        the failed call was the music-starting one, but falling through
+        to a budgeted synchronous retry is safe either way: worst case
+        one wasted retry, never a silently wrong announcement.
+
+        Split out of :meth:`evaluate` so its own CC does not grow — the
+        baseline already sat at the class ceiling (ADR-0021 R1), same
+        reasoning as :meth:`_user_music_already_satisfied`.
+        """
+        if not music_started:
+            return None
+        if tool_error_occurred:
+            self._log_warning(
+                "🎵 [issue 2966] music tool in tools_called "
+                f"({sorted(music_started)!r}) but tool_error_occurred=True "
+                "— NOT treating as success, falling through to Bug B/C"
+            )
+            return None
+        # Success — reset both budgets so a future failure gets a fresh
+        # allocation. Mirrors the legacy 2787/2788 reset.
+        self._dj_retry_count = 0
+        self._user_retry_count = 0
+        self._log_debug(
+            f"🎵 [music_guard] music tool in tools_called "
+            f"({sorted(music_started)!r}) → SKIP (counters reset)"
+        )
+        return MusicGuardVerdict(kind=MusicGuardVerdictKind.SKIP, reason="executed")
+
     def evaluate(
         self,
         *,
@@ -288,6 +342,7 @@ class MusicGuard:
         build_music_retry_prompt=None,
         build_dj_retry_prompt=None,
         spoken: Optional[str] = None,
+        tool_error_occurred: bool = False,
     ) -> MusicGuardVerdict:
         """Decide what the post-turn music guard should do.
 
@@ -326,6 +381,19 @@ class MusicGuard:
                 «spoken unknown yet» (e.g. ``_dispatch_dj_turn`` path
                 before the LLM ran) — deferral is skipped, FORCE_STOP
                 stays as before (back-compat).
+            tool_error_occurred: Issue #2966 — live 24.09: ``compose_music``
+                returned ``success=False`` (``groove_loop`` refused —
+                lupы выключены флагом) INSIDE a DJ transition, and the
+                LLM did not retry — it just announced the new track name
+                while the PREVIOUS track kept playing. ``tools_called``
+                alone can't tell a failed call from a real one (the tool
+                name is recorded either way), so a music-starting tool
+                being present is no longer treated as unconditional
+                success when at least one tool errored THIS turn — Bug B
+                (DJ auto) below decides instead, which means a real
+                synchronous retry instead of a silently wrong
+                announcement. ``False`` (default) keeps the legacy
+                behaviour for callers that don't thread this through yet.
 
         Returns:
             :class:`MusicGuardVerdict` whose ``kind`` tells the adapter
@@ -359,19 +427,15 @@ class MusicGuard:
         # Без этого Bug C ретраил «сгенерируй трек про X» (не-vocal, без
         # execute_music_code) → retry-prompt гнал LLM в фантомный handle_music.
         _music_started = tools_set & MUSIC_STARTING_TOOLS
-        if _music_started:
-            # Success — reset both budgets so a future failure gets a
-            # fresh allocation. Mirrors the legacy 2787/2788 reset.
-            self._dj_retry_count = 0
-            self._user_retry_count = 0
-            self._log_debug(
-                f"🎵 [music_guard] music tool in tools_called "
-                f"({sorted(_music_started)!r}) → SKIP (counters reset)"
-            )
-            return MusicGuardVerdict(
-                kind=MusicGuardVerdictKind.SKIP,
-                reason="executed",
-            )
+        # Issue #2966 — split into a helper so evaluate()'s own CC does not
+        # grow (baseline already sat at the ceiling): the helper carries
+        # the extra "was it a real success or a swallowed error" branch,
+        # evaluate() keeps a single ``if``, same shape as before.
+        success_verdict = self._music_started_verdict(
+            _music_started, tool_error_occurred
+        )
+        if success_verdict is not None:
+            return success_verdict
 
         # Bug B — DJ auto-transition completed without music.
         if was_dj_auto and dj_enabled:

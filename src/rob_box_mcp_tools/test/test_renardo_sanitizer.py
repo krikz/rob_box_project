@@ -136,3 +136,46 @@ def test_unknown_synth_check_is_case_insensitive():
         known_synths=KNOWN_SYNTHS,
     )
     assert result.quality_errors == ()
+
+
+# ---------------------------------------------------------------------------
+# Issue #2838 — подсказка «Возможно, имелся в виду» предложила 'sine',
+# которого не было в scsynth (235 × "SynthDef sine not found").
+# Подсказка обязана браться ТОЛЬКО из переданного known_synths —
+# множества, реально подтверждённого сервером
+# (см. MusicManager.known_synth_names).
+# ---------------------------------------------------------------------------
+
+
+SERVER_CONFIRMED = frozenset(
+    {"epiano", "sinepad", "pianovel", "pluck", "blip"}
+)
+
+
+def test_suggestion_for_seepline_never_proposes_a_synth_missing_on_server():
+    """RAW 23.09.2026: 'seepline' → подсказали 'sine'. Без 'sine' в
+    подтверждённом множестве подсказка — ближайшее ИЗ него имя."""
+    result = sanitize_renando(
+        "p4 >> seepline([3, 5, 7, 5], dur=0.5, amp=0.18)",
+        MAX_AMP,
+        known_synths=SERVER_CONFIRMED,
+    )
+    assert len(result.quality_errors) == 1
+    error = result.quality_errors[0]
+    assert "'sine'" not in error
+    suggested = error.split("имелся в виду ")[1].split("?")[0].strip("'")
+    assert suggested in SERVER_CONFIRMED
+
+
+def test_synth_missing_on_server_is_rejected_and_not_suggested():
+    """Второй ход того же инцидента: LLM взяла подсказанный 'sine'. Если его
+    нет на сервере — это HARD error, а не «успешно» и 235 отказов scsynth."""
+    result = sanitize_renando(
+        "d2 >> sine([3, 5, 7, 5], dur=0.5, oct=5, amp=0.18)",
+        MAX_AMP,
+        known_synths=SERVER_CONFIRMED,
+    )
+    errors = result.quality_errors
+    assert errors
+    assert any("Синта 'sine' не существует" in e for e in errors)
+    assert not any("имелся в виду 'sine'" in e for e in errors)

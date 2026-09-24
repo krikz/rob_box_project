@@ -321,16 +321,61 @@ MUSIC_GUARD_KEYWORDS: tuple = (
 # в silence_commands перехватывала такие команды до LLM. Эти фразы
 # пробивают silence-гейт и идут в LLM (который вызовет stop_music +
 # set_dj_mode(enabled=false)).
+#
+# 🔴 FIX (live 24.09, issue #2971): «диджеить», «диджея», «диджей режим»
+# ЗДЕСЬ БЫЛИ голыми подстроками без стоп-глагола — «для диджея», «у
+# диджея», «робота-диджея» (кусок системного промпта «Ты диджей PAUL
+# OAKENFOLD …», который юзер просто зачитывал роботу для копирования)
+# все содержат «диджея» и детерминированно гасили только что включённый
+# DJ-режим через :meth:`DialogueNode._force_dj_off_for_stop_command`.
+# Убраны из списка ФИКСИРОВАННЫХ фраз: :data:`MUSIC_STOP_COMMAND_RE`
+# ниже уже ловит все легитимные формы этих же фраз («хватит диджеить»,
+# «выключи диджея», «стоп диджей режим», …) ТРЕБУЯ рядом стоп-глагол —
+# то есть регресса нет, а класс ложных срабатываний на голое
+# существительное закрыт. Остальные фразы в списке ниже стоп-глагол уже
+# содержат («выключи», «стоп», «останови», «убери») и тем же классом
+# бага не страдают.
 MUSIC_STOP_OVERRIDES: tuple = (
-    "диджеить",
-    "диджея",
-    "диджей режим",
     "выключи музыку",
     "выключ музыку",
     "музыку выключ",
     "стоп музык",
     "останови музык",
     "убери музык",
+)
+
+# 🔴 FIX (live 23.09, issue #2834): «стоп диджей» / «стоп диджей блядь» —
+# юзер (TG) написал это в 14:16:55, робот через пару секунд снова заиграл.
+# ``MUSIC_STOP_OVERRIDES`` — набор ФИКСИРОВАННЫХ фраз («выключи музыку»,
+# «стоп музык»...) и не содержал «стоп диджей» (стоп + голое «диджей», без
+# «ить»/«я»/«режим»). Хуже: ``user_input`` при этом СОВПАДАЛ по слову
+# «диджей» с ``MUSIC_GUARD_KEYWORDS`` (line ~264), поэтому
+# ``user_wants_music`` отвечал True, а ``is_music_stop_command`` — False.
+# Инверсия: гуард решал «юзер просит музыку» вместо «юзер просит
+# остановить музыку», и Bug C retry уходил в ``USER_RETRY`` вместо
+# ``FORCE_STOP`` (``music_guard.py:429`` требует
+# ``is_music_stop_command(...) is True`` до входа в FORCE_STOP-ветку).
+#
+# Решение — общий паттерн «стоп-глагол + музыкальное существительное» (в
+# любом порядке, с матом/хвостами между ними), а не расширение списка
+# фиксированных фраз до бесконечности: «стоп диджей», «стоп диджей
+# блядь», «хватит трек», «выключи сет» и любые будущие варианты ловятся
+# одним правилом. Список фиксированных фраз выше остаётся ТОЛЬКО для
+# устоявшихся полных словоформ со стоп-глаголом уже внутри строки
+# («выключи музыку», «стоп музык»...) — issue #2971 убрал из него голые
+# существительные без глагола («диджеить», «диджея», «диджей режим»),
+# которые ложно матчили «для диджея» / «робота-диджея» внутри обычной
+# реплики; эти формы со стоп-глаголом («хватит диджеить», «выключи
+# диджея») по-прежнему ловятся регэкспом ниже.
+_MUSIC_STOP_VERBS: str = (
+    r"стоп|хватит|выключ\w*|останов\w*|убер\w*|заглуш\w*|заверши\w*"
+)
+_MUSIC_STOP_NOUNS: str = r"музык\w*|дидж\w*|трек\w*|сет\b"
+
+MUSIC_STOP_COMMAND_RE = re.compile(
+    rf"\b(?:{_MUSIC_STOP_VERBS})\b.{{0,20}}?\b(?:{_MUSIC_STOP_NOUNS})"
+    rf"|\b(?:{_MUSIC_STOP_NOUNS})\b.{{0,20}}?\b(?:{_MUSIC_STOP_VERBS})\w*\b",
+    re.IGNORECASE,
 )
 
 # 🔴 FIX (live 10:00): для ГОЛОСОВЫХ запросов («спой/пой/песня»)
@@ -777,6 +822,57 @@ def user_wants_performance(user_input: str) -> bool:
     return any(kw in low for kw in BABBLE_PERFORMANCE_KEYWORDS)
 
 
+# 🔴 FIX (live 23.09, issue #2834): «давай грига», «включи уже still
+# dre», «ты мне опять спиздел найди баха в рттл», «заебок теперь давай
+# баха на гитаре ебанем» — ни одна подстрока из ``MUSIC_GUARD_KEYWORDS``
+# (там «сыграй/включи музык/трек» — глагол ВСЕГДА в паре с музыкальным
+# СУЩЕСТВИТЕЛЬНЫМ вроде «музыка/трек/мелодия») их не ловит: юзер называет
+# композитора/артиста по имени и не произносит ни «музыка», ни «трек».
+# Живой лог: LLM честно ответила «Григ в деле!» с ``tools=[]``, а гуард
+# промолчал («user does NOT want music») — ровно тот класс бага, что и
+# у жанров в ``_MUSIC_NOUNS`` (см. FIX live 31.08/01.09 выше), только
+# существительное здесь — имя собственное, а не жанр.
+#
+# Решение — та же пара «play-глагол + музыкальный объект», но объект —
+# известный композитор/артист ИЛИ явная отсылка к RTTTL-библиотеке
+# («найди X в рттл/ртттл» — специфичный для этого проекта формат нот,
+# см. ``build_unknown_melody_retry_prompt``). Список композиторов
+# намеренно короткий (те же имена, что в RTTTL-подсказке ретрая) —
+# расширять по мере живых логов, не гадать заранее.
+_MUSIC_KNOWN_COMPOSERS: str = (
+    r"григ\w*|бах[а-я]*|bach\w*|моцарт\w*|mozart\w*|бетховен\w*|beethoven\w*|"
+    r"шопен\w*|chopin\w*|вивальд\w*|vivaldi\w*|чайковск\w*|tchaikovsky\w*|"
+    r"штраус\w*|strauss\w*|верди\w*|verdi\w*|шуберт\w*|schubert\w*|"
+    r"бизе\w*|россини\w*|рахманинов\w*|прокофьев\w*|"
+    r"\bdre\b"  # «still dre» / «dr dre» — «дре» по-русски неоднозначно
+)
+
+#: Play-глаголы для запроса «сыграй/давай <композитор>» — шире, чем
+#: ``_MUSIC_START_VERBS`` (там нет «давай», «найди», «ебан*» — намеренно,
+#: чтобы не плодить babble/chit-chat false positives вне музыкального
+#: контекста). Здесь безопасно: срабатывает ТОЛЬКО в паре с именем
+#: композитора/артиста или явным упоминанием RTTTL-библиотеки.
+_MUSIC_NAMED_REQUEST_VERBS: str = (
+    r"давай\w*|включ\w*|сыграй\w*|игра\w*|поставь\w*|наигра\w*|"
+    r"ебан\w*|вруб\w*|запуст\w*|найд\w*|дай\b"
+)
+
+_MUSIC_NAMED_REQUEST_GAP = r".{0,30}?"
+MUSIC_NAMED_REQUEST_RE = re.compile(
+    rf"\b(?:{_MUSIC_NAMED_REQUEST_VERBS})\b{_MUSIC_NAMED_REQUEST_GAP}"
+    rf"\b(?:{_MUSIC_KNOWN_COMPOSERS})"
+    rf"|\b(?:{_MUSIC_KNOWN_COMPOSERS})\b{_MUSIC_NAMED_REQUEST_GAP}"
+    rf"\b(?:{_MUSIC_NAMED_REQUEST_VERBS})\b",
+    re.IGNORECASE,
+)
+
+#: Отсылка к RTTTL-библиотеке нот («найди баха в рттл», «в ртттл») —
+#: самодостаточный сигнал: RTTTL — специфичный для этого проекта формат
+#: нотной записи, chit-chat это слово не употребляет. Живьём встречается
+#: и с двумя, и с тремя «т» («рттл» / «ртттл»), поэтому ``тт+`` (2+).
+MUSIC_RTTTL_MENTION_RE = re.compile(r"р?тт+л|rtttl", re.IGNORECASE)
+
+
 def user_wants_music(user_input: str, *, logger: Optional[logging.Logger] = None) -> bool:
     """Heuristic: does the user request music / a track?
 
@@ -791,6 +887,21 @@ def user_wants_music(user_input: str, *, logger: Optional[logging.Logger] = None
     if not user_input:
         return False
     low = user_input.lower()
+    # 🔴 FIX (live 23.09, issue #2834): «давай грига», «включи уже still
+    # dre», «найди баха в рттл» — запрос по имени композитора/артиста или
+    # по ссылке на RTTTL-библиотеку, без слов «музыка/трек/мелодия». См.
+    # комментарий над :data:`MUSIC_NAMED_REQUEST_RE`.
+    if (
+        MUSIC_NAMED_REQUEST_RE.search(low)
+        or MUSIC_RTTTL_MENTION_RE.search(low)
+    ):
+        if logger is not None:
+            logger.debug(
+                f"🎵 [music_guard] user_input={user_input!r} matched "
+                f"named-composer/rtttl request → wants_music=True "
+                "(issue #2834)"
+            )
+        return True
     # 🔴 FIX (live 30.08): «продолжай развивать этот бит» / «переходи в
     # джангл» — просьба развить уже играющую музыку. Подстрочных ключей на
     # неё нет, поэтому сначала пробуем пару «глагол + муз. существительное».
@@ -836,7 +947,11 @@ def is_music_stop_command(user_input: str) -> bool:
     if not user_input:
         return False
     low = user_input.lower()
-    return any(kw in low for kw in MUSIC_STOP_OVERRIDES)
+    if any(kw in low for kw in MUSIC_STOP_OVERRIDES):
+        return True
+    # Issue #2834 — общий паттерн «стоп-глагол + муз. существительное»,
+    # см. комментарий над :data:`MUSIC_STOP_COMMAND_RE`.
+    return bool(MUSIC_STOP_COMMAND_RE.search(low))
 
 
 def is_vocal_request(user_input: str) -> bool:
@@ -1687,6 +1802,10 @@ CLAIM_JUSTIFYING_TOOLS: frozenset = frozenset({
     "list_tracks", "play_sound", "play_animation",
     "generate_music", "gen_play_from_library", "gen_delete_from_library",
     "gen_search_library", "gen_list_library", "gen_get_track_info",
+    # issue #2942 — save_arrangement_preset (ADR-0132 PR-7): claim
+    # «сохранил/сохраняю пресет» после реального вызова тула не должно
+    # ловиться guard'ом как phantom action.
+    "save_arrangement_preset",
     # nav
     "navigate_to_waypoint", "navigate_to_coordinates", "move_direction",
     "start_mapping", "stop_mapping", "save_waypoint",
@@ -1723,6 +1842,8 @@ def detect_universal_action_claim(
     *,
     spoken: Optional[str],
     tools_called: Optional[Tuple[str, ...]],
+    tool_error_occurred: bool = False,
+    repeated_call_args: bool = False,
 ) -> Optional[UniversalActionClaimHit]:
     """Issue #2549 — широкий детектор «spoken заявляет действие, tools пуст».
 
@@ -1734,15 +1855,37 @@ def detect_universal_action_claim(
     Триггер — ТОЛЬКО в :data:`spoken`. Условия:
       1. ``spoken`` содержит action-verb в past или future (см.
          :data:`_ACTION_VERBS_PAST` / :data:`_ACTION_VERBS_FUTURE`).
-      2. ``tools_called`` ∩ :data:`CLAIM_JUSTIFYING_TOOLS`` == ∅.
+      2. ``tools_called`` ∩ :data:`CLAIM_JUSTIFYING_TOOLS`` == ∅, ИЛИ
+         вызванный тул вернул ошибку (``tool_error_occurred=True`` —
+         issue #2949: гард #2942 считал заявление подкреплённым, если
+         тул был ВЫЗВАН, даже когда он отказал/упал. «Записала пресет»
+         после ``save_arrangement_preset`` → «недоступен» — тот же
+         hallucination, что и пустой ``tools_called``, просто с тулом
+         в списке. Подкрепляет заявление ТОЛЬКО успешный вызов), ИЛИ
+         вызов — байт-в-байт повтор ПРЕДЫДУЩЕГО успешного вызова
+         (``repeated_call_args=True`` — issue #2967: LLM заявляет
+         «переделал/поменял», но вызвала ``compose_music`` с ТЕМИ ЖЕ
+         аргументами, что и в прошлый раз — по факту ничего не
+         изменилось, заявление о переменах не подкреплено, кто бы что
+         ни вызвал. Сравнение аргументов делает вызывающий код
+         (dialogue_node), сюда приходит уже готовый факт).
 
-    Если оба — возвращает :class:`UniversalActionClaimHit`, иначе ``None``.
+    Если условие 1 и (условие 2 ИЛИ ошибка ИЛИ повтор аргументов) —
+    возвращает :class:`UniversalActionClaimHit`, иначе ``None``.
     """
     if not spoken:
         return None
     called = set(tools_called or ())
-    if called & CLAIM_JUSTIFYING_TOOLS:
-        # LLM вызвал тул, который оправдывает заявление — НЕ вмешиваемся.
+    if (
+        (called & CLAIM_JUSTIFYING_TOOLS)
+        and not tool_error_occurred
+        and not repeated_call_args
+    ):
+        # LLM вызвал тул, который оправдывает заявление, тул реально
+        # отработал, И это НЕ повтор прошлого вызова — НЕ вмешиваемся.
+        # Issue #2949: тул вызван, но вернул ошибку — не бежим сюда.
+        # Issue #2967: тул вызван с теми же аргументами, что и в прошлый
+        # раз — заявление о переменах тоже не подкреплено.
         return None
 
     # Past tense — приоритет, чаще в спонтанных ответах.
@@ -1766,13 +1909,28 @@ def detect_universal_action_claim(
 
 
 def build_universal_action_claim_retry_prompt(
-    *, user_input: Optional[str], spoken: str, hit: "UniversalActionClaimHit"
+    *,
+    user_input: Optional[str],
+    spoken: str,
+    hit: "UniversalActionClaimHit",
+    tool_error_occurred: bool = False,
+    repeated_call_args: bool = False,
 ) -> str:
     """Issue #2549 — синтетический CRITICAL-ретрай на action hallucination.
 
     Тот же контракт, что у :func:`build_unbacked_action_retry_prompt` /
     :func:`build_babble_retry_prompt`: одна попытка, текст промпта прямо
     называет заявление и запрещает его без вызова тула.
+
+    Issue #2949 — ``tool_error_occurred=True`` значит инструмент был
+    вызван, но вернул ошибку/отказ (не пустой ``tools_called``). Текст
+    промпта в этом случае просит честно сообщить о НЕУДАЧЕ, а не просто
+    "вызови инструмент" — модель уже его вызывала, вызов ещё раз того
+    же провалившегося тула не поможет без честного отчёта.
+
+    Issue #2967 — ``repeated_call_args=True`` значит инструмент был
+    вызван, но с ТЕМИ ЖЕ аргументами, что и в прошлый раз — заявление о
+    перемене не подкреплено, потому что ничего не поменялось.
     """
     cleaned = _strip_trailing_critical_block(user_input or "")
     verb_hint = (
@@ -1780,6 +1938,35 @@ def build_universal_action_claim_retry_prompt(
         + hit.verb
         + "», говори «проверяю», «попробую»."
     )
+    if repeated_call_args:
+        failure_clause = (
+            "но вызвал инструмент С ТЕМИ ЖЕ АРГУМЕНТАМИ, что и в прошлый "
+            "раз — по факту НИЧЕГО не изменилось. "
+        )
+        action_clause = (
+            "✅ ОБЯЗАТЕЛЬНО: в ЭТОМ же turn вызови инструмент С ДРУГИМИ "
+            "аргументами (другое имя/стиль/параметры) — повтор прежних "
+            "аргументов не считается переменой. "
+        )
+    elif tool_error_occurred:
+        failure_clause = (
+            "но вызванный тобой инструмент ВЕРНУЛ ОШИБКУ/ОТКАЗ — действие "
+            "НЕ выполнено. "
+        )
+        action_clause = (
+            "✅ ОБЯЗАТЕЛЬНО: попробуй ещё раз ИЛИ, если повторный вызов "
+            "тоже не поможет, честно скажи через speak_text, что действие "
+            "НЕ удалось (например «не получилось сохранить») — НЕ повторяй "
+            "прежнее заявление об успехе. "
+        )
+    else:
+        failure_clause = "но НЕ вызвал НИ ОДНОГО инструмента (tools=[]). "
+        action_clause = (
+            "✅ ОБЯЗАТЕЛЬНО: в ЭТОМ же turn вызови соответствующий инструмент "
+            "(compose_music / execute_music_code / load_track / set_vibe_preset "
+            "/ set_volume / set_voice / save_waypoint / get_music_state / "
+            "memory_save / и т.д. по контексту). "
+        )
     return (
         f"{cleaned}\n\n"
         "[CRITICAL] В прошлом цикле ты в spoken описал действие ("
@@ -1787,15 +1974,29 @@ def build_universal_action_claim_retry_prompt(
         + hit.verb
         + "», tense="
         + hit.tense
-        + "), но НЕ вызвал НИ ОДНОГО инструмента (tools=[]). "
-        "Пользователь слышит твои слова, но изменений не произойдёт.\n"
-        "❌ ЗАПРЕЩЕНО отчитываться о выполненном действии без вызова тула.\n"
-        "✅ ОБЯЗАТЕЛЬНО: в ЭТОМ же turn вызови соответствующий инструмент "
-        "(compose_music / execute_music_code / load_track / set_vibe_preset "
-        "/ set_volume / set_voice / save_waypoint / get_music_state / "
-        "memory_save / и т.д. по контексту). "
+        + "), "
+        + failure_clause
+        + "Пользователь слышит твои слова, но изменений не произойдёт.\n"
+        "❌ ЗАПРЕЩЕНО отчитываться о выполненном действии без реального "
+        "успешного вызова тула.\n"
+        + action_clause
         + verb_hint
         + " После вызова верни 'done' или speak_text с результатом."
+    )
+
+
+def build_action_claim_failure_fallback(hit: "UniversalActionClaimHit") -> str:
+    """Issue #2949 — честная фраза после исчерпания бюджета ретраев.
+
+    Когда одноразовый ретрай :func:`build_universal_action_claim_retry_prompt`
+    уже потрачен, а модель СНОВА заявляет о выполненном действии, не
+    подкреплённом успешным тулом — публикуем это вместо заявления. Цена
+    молчаливой деградации выше цены честного «не получилось»: ADR-0018
+    («Честный FAIL лучше красивого PASS»).
+    """
+    return (
+        "Не получилось выполнить — попробуй, пожалуйста, ещё раз "
+        "чуть позже."
     )
 
 
@@ -1907,6 +2108,17 @@ PHANTOM_ACTION_VERB_STEMS: str = (
     r"проверял\w*|проверяла\w*|проверяло\w*|проверяли\w*|"
     r"проверяю\w*|проверяешь\w*|проверяет\w*|проверяем\w*|проверяете\w*|"
     r"проверять\w*|проверяй\w*|проверяйте\w*|"
+    # «сохранить» family (issue #2942 — live «Понял, сохраняю эти ручки
+    # на «В пещере горного короля»…» tools=[] перед save_arrangement_preset;
+    # present tense «сохраняю» отсутствовал в словаре целиком — ни в этом
+    # списке, ни в past/future _ACTION_VERBS_* выше).
+    r"сохранил\w*|сохранила\w*|сохранило\w*|сохранили\w*|"
+    r"сохраню\w*|сохранишь\w*|сохранит\w*|сохраним\w*|сохраните\w*|"
+    r"сохранить\w*|сохрани\w*|сохраните\w*|"
+    r"сохранено\w*|сохранена\w*|сохранены\w*|"
+    r"сохранял\w*|сохраняла\w*|сохраняло\w*|сохраняли\w*|"
+    r"сохраняю\w*|сохраняешь\w*|сохраняет\w*|сохраняем\w*|сохраняете\w*|"
+    r"сохранять\w*|сохраняй\w*|сохраняйте\w*|"
     # «подложить» family (не «подложка»!)
     r"подложил\w*|подложила\w*|подложило\w*|подложили\w*|"
     r"подложу\w*|подложишь\w*|подложит\w*|подложим\w*|подложите\w*|"
@@ -2631,6 +2843,77 @@ def build_system_regurgitate_retry_prompt(user_input: Optional[str]) -> str:
         "❌ ЗАПРЕЩЕНО отвечать одной директивой без действия.\n"
         "✅ В ЭТОМ же turn ответь обычным русским языком (без XML-обёрток "
         "и meta-маркеров), вызови нужный tool и заверши 'done'."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Issue #2817 / #2766 -- LLM paraphrases internal service content (the
+# <system_context> snapshot or the "[выполнено в прошлом ходе]" history marker)
+# instead of answering the user. Unlike #2175 (verbatim
+# ``<system>...</system>`` regurgitation) the model here does NOT copy XML --
+# it describes it in its own words.
+#
+# Live example, issue #2817 (23.09, MiniMax-M2, run 35828027343):
+#     spoken='Системное уведомление принято к сведению -- это служебная
+#     инструкция, не пользовательское сообщение.' tools=[]
+#
+# Live example, issue #2766 (Vision Pi, hard-mute на весь ход):
+#     spoken='[выполнено в прошлом ходе]
+#     вызваны инструменты: speak_text' tools=[]
+#
+# Root cause (both issues): dynamic system context / history markers used to
+# sit as a bare ``role=system`` message immediately before the current user
+# turn -- see the fix in ``AgentCore.process_input`` (folded into the user
+# turn instead, rob_box_harness). This detector is the safety net: even a
+# well-formed prompt occasionally slips through on a given provider, and a
+# paraphrase must never reach TTS.
+#
+# Unlike #1882's ``PlanningNarrationHardMute`` (issue #2766's original
+# symptom -- the marker's snake_case tool name matched
+# ``is_planning_narration`` and the turn was hard-muted into silence), this
+# guard returns RETRY: the user asked a real question and a corrected answer
+# is one round-trip away, so muting the turn is the anti-goal, not the fix
+# (issue #2766 body: "Hard-mute честно не дал произнести теги, но и ответа
+# пользователь не получил").
+# ---------------------------------------------------------------------------
+_SERVICE_PARAPHRASE_MARKERS = (
+    "системное уведомление",
+    "служебная инструкция",
+    "служебное сообщение",
+    "выполнено в прошлом ходе",
+    "вызваны инструменты",
+)
+
+
+def is_service_context_paraphrased(spoken_text: Optional[str]) -> bool:
+    """Issue #2817 / #2766 -- LLM describes/echoes internal service content
+    (``<system_context>`` snapshot or a "[выполнено в прошлом ходе]"
+    history marker) instead of answering. Case-insensitive substring scan --
+    the model paraphrases freely, so an anchored regex (like #2175's, which
+    only matches verbatim ``<system>...</system>``) would miss it.
+    """
+    if not spoken_text:
+        return False
+    low = spoken_text.lower()
+    return any(marker in low for marker in _SERVICE_PARAPHRASE_MARKERS)
+
+
+def build_service_paraphrase_retry_prompt(user_input: Optional[str]) -> str:
+    """Issue #2817 / #2766 -- one-shot CRITICAL retry: answer the actual
+    user message instead of narrating/paraphrasing service content.
+    """
+    cleaned = _strip_trailing_critical_block(user_input or "")
+    return (
+        f"{cleaned}\n\n"
+        "[CRITICAL] Твой предыдущий ответ пересказал СЛУЖЕБНОЕ содержимое "
+        "(системный контекст или отметку о вызванных в прошлом ходу "
+        "инструментах) вместо ответа на РЕАЛЬНОЕ сообщение пользователя "
+        "выше.\n"
+        "❌ ЗАПРЕЩЕНО упоминать «системное уведомление», «служебная "
+        "инструкция», «выполнено в прошлом ходе», «вызваны инструменты» "
+        "и любые другие описания служебных данных.\n"
+        "✅ В ЭТОМ же turn ответь ПО СУТИ сообщения пользователя обычным "
+        "русским языком."
     )
 
 

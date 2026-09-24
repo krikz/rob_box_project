@@ -37,11 +37,13 @@ from rob_box_mcp_tools.core.arranger import (  # noqa: E402
     BPM_RANGE,
     DEFAULT_FORM,
     FORMS,
+    MAX_THEME_REPEATS,
     OCTAVE_STEP,
     ROLE_PROFILE,
     ArrangementError,
     CompositionSpec,
     Layer,
+    normalize_synth,
     parse_midi,
     form_duration_seconds,
     form_summary,
@@ -306,7 +308,11 @@ class TestHarmonyAndMotion:
             if line.startswith(("d1 >>", "d2 >>", "d3 >>")):
                 assert "lpf=gflt" not in line
         assert "gflt = linvar(" in code
-        assert "lpf=gflt" in next(l for l in code.splitlines() if l.startswith("p1 >>"))
+        # issue #2979: бас (p1) больше не участвует в свипе-яркости — он
+        # держит свою статичную полосу (см. TestRoleBands ниже), сюда едет
+        # только pad (p3): lpf=gflt.
+        assert "lpf=gflt" in next(l for l in code.splitlines() if l.startswith("p3 >>"))
+        assert "lpf=gflt" not in next(l for l in code.splitlines() if l.startswith("p1 >>"))
 
     def test_filter_sweep_can_be_disabled(self):
         code = render(_spec(filter_sweep=False))
@@ -383,6 +389,85 @@ class TestValidation:
     def test_empty_spec_is_rejected(self):
         with pytest.raises(ArrangementError, match="без слоёв"):
             render(_spec(layers=()))
+
+    def test_ambient_with_only_dotted_percussion_is_rejected(self):
+        """Issue #2837 — живой репро: ``compose_music`` рапортовал success
+
+        для трека без единого звучащего слоя. ``ambient`` не играет
+        drums/hats/perc ни в одной секции формы, а слои из одних точек
+        считались непустыми из-за бага guard'а на ``len(lines) <= 4`` —
+        шапка с ``filter_sweep=True`` (дефолт) всегда 5 строк, и guard не
+        срабатывал ни при каком числе плееров.
+
+        ``spec_from_flat`` отфильтровывает точки-без-ударов ещё на стадии
+        сборки слоёв, поэтому спека приходит в ``render`` вовсе без слоёв —
+        и падает на самом первом (и самом понятном) guard'е.
+        """
+        spec = spec_from_flat(
+            bpm=90,
+            root="A",
+            scale="minor",
+            form="ambient",
+            drums=". . . . . . . .",
+            hats=". . . . . . . .",
+            perc=". . . . . . . .",
+        )
+        assert spec.layers == (), "точки-без-ударов не должны стать слоем"
+        with pytest.raises(ArrangementError, match="без слоёв"):
+            render(spec)
+
+    def test_ambient_with_real_but_unsupported_percussion_is_rejected(self):
+        """Тот же нулевой-плееров исход, но паттерн реально «бьёт» — просто
+
+        ``ambient`` эту роль вообще не играет ни в одной секции. Слой
+        доходит до ``render`` непустым, и проверяется уже новый guard на
+        количество ФАКТИЧЕСКИ отрисованных плееров (issue #2837).
+        """
+        spec = CompositionSpec(
+            bpm=90,
+            root="A",
+            scale="minor",
+            form="ambient",
+            layers=(
+                Layer(role="drums", pattern="X.X.X.X.", sample=1),
+                Layer(role="hats", pattern="X.X.X.X.", sample=3),
+            ),
+        )
+        assert spec.layers != ()
+        with pytest.raises(ArrangementError, match="Ни один слой не звучит"):
+            render(spec)
+
+    def test_dotted_only_drum_pattern_is_treated_as_empty_layer(self):
+        """Точки/пробелы без единого удара = слой молчит (issue #2837)."""
+        spec = spec_from_flat(
+            bpm=90,
+            root="A",
+            scale="minor",
+            form="arc",  # arc играет drums — сюда слой реально попадёт
+            drums=". . . . . . . .",
+            bass_synth="dub",
+            bass_notes="0 0 5 3",
+            pad_synth="warmpad",
+            pad_notes="0 4 7",
+        )
+        code = render(spec)
+        assert "d1 >>" not in code, "точки не должны рендериться в play()"
+
+    def test_ambient_spec_with_pad_and_lead_still_renders(self):
+        """Нормальный ambient-запрос (#2837 acceptance) — не регрессия."""
+        spec = spec_from_flat(
+            bpm=90,
+            root="A",
+            scale="minor",
+            form="ambient",
+            pad_synth="warmpad",
+            pad_notes="0 4 7",
+            lead_synth="blip",
+            lead_notes="0 2 4 7",
+        )
+        code = render(spec)
+        assert "p3 >>" in code  # pad
+        assert "p2 >>" in code  # lead
 
     def test_numbers_are_formatted_readably(self):
         """Код попадает в логи и в save_track — 0.30000000000000004 там лишний."""
@@ -632,6 +717,69 @@ class TestSummary:
         total = sum(bars for _n, bars, _i in FORMS["verse_chorus"])
         assert f"{total} тактов" in summary
 
+    def test_summary_with_theme_reports_real_repeats(self):
+        """Issue #2965: summary must describe the SAME (snapped) plan that
+        render()/form_duration_seconds() use — not the un-fitted default."""
+        summary = form_summary("arc", theme_bars=2)
+        plan = resolve_form("arc", theme_bars=2)
+        total = sum(bars for _n, bars, _i in plan)
+        assert f"{total} тактов" in summary
+        assert "тема в базе 2 такт" in summary
+        assert "тема короткая" in summary
+
+    def test_summary_without_theme_has_no_theme_note(self):
+        assert "тема в базе" not in form_summary("arc")
+
+
+class TestShortThemeRepeatCap:
+    """Issue #2965 («Drop It Like It's Hot», live 24.09): 2-тактовая тема из
+    RTTTL-базы растягивалась на полную 64-тактовую форму ``arc`` — одна и та
+    же фраза без единой вариации повторялась 32 раза подряд (``budget =
+    round(total_bars / theme_bars)`` не имел верхней границы). Форма должна
+    зависеть от длины темы: короткая тема -> короткая форма, а не длинная
+    форма той же фразы.
+    """
+
+    def test_two_bar_theme_form_is_capped_not_the_full_arc(self):
+        plan = resolve_form("arc", theme_bars=2)
+        total_bars = sum(bars for _n, bars, _i in plan)
+        default_total = sum(bars for _n, bars, _i in FORMS["arc"])
+        # Порог: капнутая форма заметно короче нетронутой дуги (64 такта) —
+        # тема не растягивается «в размер», а форма реально сжимается.
+        assert total_bars < default_total / 2
+        assert total_bars <= MAX_THEME_REPEATS * 2
+
+    def test_repeat_budget_never_exceeds_the_cap(self):
+        for theme_bars in (1, 2, 3):
+            plan = resolve_form("arc", theme_bars=theme_bars)
+            total_bars = sum(bars for _n, bars, _i in plan)
+            repeats = total_bars // theme_bars
+            assert repeats <= MAX_THEME_REPEATS, (
+                f"theme_bars={theme_bars} дал {repeats} повторов подряд"
+            )
+
+    def test_reported_duration_matches_the_capped_form(self):
+        """Сообщаемая длительность должна остаться согласованной с реально
+        сыгранной (капнутой) формой — DJ ждёт перехода именно по ней."""
+        bpm = 100.0
+        duration_s = form_duration_seconds("arc", bpm, theme_bars=2)
+        plan = resolve_form("arc", theme_bars=2)
+        total_beats = sum(bars for _n, bars, _i in plan) * BEATS_PER_BAR
+        assert duration_s == pytest.approx(total_beats * 60.0 / bpm)
+        # И заметно короче нетронутой 64-тактовой дуги (154с на 100bpm).
+        default_total_beats = sum(b for _n, b, _i in FORMS["arc"]) * BEATS_PER_BAR
+        default_duration_s = default_total_beats * 60.0 / bpm
+        assert duration_s < default_duration_s / 2
+
+    def test_longer_theme_is_not_penalized(self):
+        """Бюджет должен ограничивать только КОРОТКИЕ темы — тема на 6+
+        тактов и без капа уже укладывалась в разумное число повторов."""
+        plan_uncapped_equivalent = resolve_form("arc", theme_bars=6)
+        total_bars = sum(bars for _n, bars, _i in plan_uncapped_equivalent)
+        # round(64/6) = 11 повторов — меньше MAX_THEME_REPEATS=12, кап не
+        # должен был сработать вовсе.
+        assert total_bars // 6 == 11
+
 
 class TestMotifDevelopment:
     """#1805: sections used to change only ``amp`` — the melody played the
@@ -854,12 +1002,16 @@ class TestFixedThemeMidi:
         assert "p2_motif" not in code
         assert "Pvar" not in lead
 
-    def test_bass_approaches_the_next_chord_by_a_semitone(self):
-        """Последняя нота баса перед сменой гармонии ведёт в неё за полтона.
+    def test_bass_approaches_the_next_chord_by_a_short_scale_step(self):
+        """Перед сменой гармонии бас ведёт в новый корень шагом по ладу.
 
         Подход — то, чем осмысленная басовая линия отличается от
         механической: без него бас просто перескакивает на новый корень и
         смена гармонии ничем не подготовлена.
+
+        #2839: подход был хроматическим полутоном длиной в целый шаг баса —
+        у гимна в до мажоре пол-партии звучало вне лада. Теперь это
+        короткая (≤ 0.5 бита) ступень лада в конце окна.
         """
         from rob_box_mcp_tools.core.harmonize import harmonize
 
@@ -875,12 +1027,21 @@ class TestFixedThemeMidi:
         roots = [c.pitch_classes[0] for c in harmony.chords]
         assert len(set(roots)) > 1, "гармония должна смениться"
 
-        bass = [n for n, _dur in harmony.bass]
-        # Нота перед сменой окна отстоит от корня следующего окна на полтона.
-        first = harmony.chords[0]
-        boundary = int(first.beats / (1.0 if harmony.dense else 2.0)) - 1
-        following_root = harmony.chords[1].root_midi
-        assert abs(bass[boundary] - following_root) == 1
+        # Нота, звучащая последней перед началом второго окна.
+        boundary = harmony.chords[1].start
+        cursor = 0.0
+        approach = None
+        for note, dur in harmony.bass:
+            cursor += dur
+            if cursor >= boundary:
+                approach = (note, dur)
+                break
+        assert approach is not None
+        note, dur = approach
+        c_major = {0, 2, 4, 5, 7, 9, 11}
+        assert dur <= 0.5, "подход — затакт, а не опора"
+        assert note % 12 in c_major, "подход обязан быть ступенью лада"
+        assert 1 <= abs(note - harmony.chords[1].root_midi) <= 2
 
     def test_dense_theme_gets_octaves_and_second_voice(self):
         """Плотная тема выдерживает полный наряд аранжировки.
@@ -950,6 +1111,51 @@ class TestFixedThemeMidi:
         assert "strings(" in counter       # контрастный тембр дошёл до кода
         assert "pluck(" not in counter     # а не тембр темы (фолбэк не сработал)
 
+    @pytest.mark.parametrize(
+        "disable_word",
+        ["none", "None", "NONE", "off", "OFF", "null", " null "],
+    )
+    def test_counter_synth_disable_words_drop_the_layer(self, disable_word):
+        """counter_synth='none'/'off'/'null' (issue #2836) — второй голос
+        не добавляется и в код не попадает несуществующий синт ``none``.
+
+        ``''``/``None`` (не заданное значение) сюда намеренно НЕ входят:
+        для них действует другое, более старое поведение — фолбэк на
+        тембр lead_synth (см.
+        ``test_dense_theme_gets_octaves_and_second_voice`` и
+        ``TestNormalizeSynth`` для самой нормализации).
+        """
+        from rob_box_mcp_tools.core.harmonize import harmonize
+
+        notes = [(72 + (i % 5), 0.25) for i in range(32)]
+        harmony = harmonize(notes, bpm=120, root="C", scale="major")
+        assert harmony.dense is True
+
+        code = render(spec_from_flat(
+            harmony=harmony, bpm=harmony.bpm, root=harmony.root,
+            scale=harmony.scale, form="arc", lead_synth="pluck",
+            bass_synth="dub", pad_synth="warmpad", counter_synth=disable_word,
+        ))
+        assert "none(" not in code
+        assert "d3 >>" not in code
+
+    def test_lead_bass_pad_synth_disable_words_drop_those_layers(self):
+        """Общее правило распространяется на bass/pad, не только counter."""
+        from rob_box_mcp_tools.core.harmonize import harmonize
+
+        notes = [(72 + (i % 5), 0.25) for i in range(32)]
+        harmony = harmonize(notes, bpm=120, root="C", scale="major")
+        assert harmony.dense is True
+
+        code = render(spec_from_flat(
+            harmony=harmony, bpm=harmony.bpm, root=harmony.root,
+            scale=harmony.scale, form="arc", lead_synth="pluck",
+            bass_synth="none", pad_synth="Off",
+        ))
+        assert "none(" not in code
+        assert "p1 >>" not in code  # bass отсутствует
+        assert "p3 >>" not in code  # pad отсутствует
+
     def test_theme_octaves_false_disables_doubling_on_a_dense_theme(self):
         """theme_octaves=False снимает удвоение даже на плотной теме.
 
@@ -992,3 +1198,99 @@ class TestFixedThemeMidi:
     def test_parse_midi_rejects_non_number(self):
         with pytest.raises(ArrangementError):
             parse_midi("74, abc")
+
+
+class TestNormalizeSynth:
+    """``normalize_synth`` — единая точка «синта нет» (issue #2836)."""
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            None, "", "   ", "none", "None", "NONE", "  none  ",
+            "off", "OFF", "null", "Null",
+        ],
+    )
+    def test_no_layer_spellings_collapse_to_none(self, value):
+        assert normalize_synth(value) is None
+
+    @pytest.mark.parametrize(
+        "value, expected",
+        [
+            ("imperialbrass", "imperialbrass"),
+            ("  strings  ", "strings"),
+            # содержит 'none' как подстроку, но не как отдельное слово
+            ("nonexistent", "nonexistent"),
+        ],
+    )
+    def test_real_synth_names_pass_through_stripped(self, value, expected):
+        assert normalize_synth(value) == expected
+
+
+class TestSynthWithoutNotesAutofills:
+    """issue #2970: живой DJ-сет «Oakenfold» 24.09, трек 1.
+
+    Ровно этот вызов ``compose_music`` — синты заказаны для bass/lead/pad,
+    ступеней роли (``*_notes``) нет: ``_add_melodic_layer`` возвращал
+    ``False`` и вызывающий код просто шёл дальше, не добавляя слой. Трек
+    играл только ``d1``/``d2`` (бочка и хэты), а тул отвечал ``success``,
+    как будто заказанные тембры звучат.
+    """
+
+    def _oakenfold_call(self, **overrides):
+        base = dict(
+            bpm=124, root="A", scale="minor", form="arc",
+            drums="X...X...X...X...", hats="..-...-...-...-.",
+            bass_synth="wobblebass", lead_synth="soprano", pad_synth="strings",
+            repeat=True,
+        )
+        base.update(overrides)
+        return spec_from_flat(**base)
+
+    def test_bass_lead_pad_layers_all_present_without_notes(self):
+        spec = self._oakenfold_call()
+        roles = {layer.role for layer in spec.layers}
+        assert {"bass", "lead", "pad"} <= roles, (
+            f"заказанные без нот роли пропали молча: есть только {roles}"
+        )
+
+    def test_autofilled_layers_carry_the_requested_synth(self):
+        spec = self._oakenfold_call()
+        by_role = {layer.role: layer for layer in spec.layers}
+        assert by_role["bass"].synth == "wobblebass"
+        assert by_role["lead"].synth == "soprano"
+        assert by_role["pad"].synth == "strings"
+
+    def test_autofilled_layers_render_as_real_players(self):
+        code = render(self._oakenfold_call())
+        assert "p1 >>" in code  # bass
+        assert "p2 >>" in code  # lead
+        assert "p3 >>" in code  # pad
+        assert "wobblebass" in code
+        assert "soprano" in code
+        assert "strings" in code
+
+    def test_decisions_record_which_roles_were_autofilled(self):
+        spec = self._oakenfold_call()
+        assert set(spec.decisions.get("autofilled_roles", ())) == {
+            "bass", "lead", "pad",
+        }
+
+    def test_score_sheet_text_lists_the_autofilled_layers(self):
+        from rob_box_mcp_tools.core.score_sheet import describe
+
+        spec = self._oakenfold_call()
+        code = render(spec)
+        sheet = describe(spec=spec, code=code, harmony=None)
+        text = sheet["text"]
+        assert "wobblebass" in text
+        assert "soprano" in text
+        assert "strings" in text
+        assert "тоника лада, нот не было" in text
+
+    def test_layer_with_real_notes_is_never_overridden_by_autofill(self):
+        """Роль с реальными нотами не трогается — автозаполнение только
+        для ролей, у которых синт есть, а нот нет."""
+        spec = self._oakenfold_call(lead_notes="0, 4, 7, 4")
+        lead = next(layer for layer in spec.layers if layer.role == "lead")
+        assert lead.degrees == (0.0, 4.0, 7.0, 4.0)
+        assert "lead" not in spec.decisions.get("autofilled_roles", ())

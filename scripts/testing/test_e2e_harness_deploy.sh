@@ -138,27 +138,35 @@ done
 # этом просит «Запомни мой голос ОТДЕЛЬНО от Сашиного, ... я не хочу, чтобы
 # ты нас путал». Зелёный шаг поверх потерянной личности — ровно тот красивый
 # PASS, против которого ADR-0018.
+#
+# Issue #2846: проверка переехала из bash-блока scenario-цикла (он печатал
+# «❌ СКЛЕИЛАСЬ» ПОСЛЕ «ACCEPTANCE[…]: ✅ all checks passed») в
+# registration_failures() в e2e_tool_match.py — там же, где проверка ОТКАЗА
+# регистрации. Поведение (FAIL шага, speaker_merges.log) проверяется
+# функционально в tests/unit/e2e_scripts/test_issue_2846_registration_verdict.py;
+# здесь — только что проводка не потерялась.
 # ---------------------------------------------------------------------------
 printf 'CHECK 5: склейка профиля диктора не считается успешной регистрацией\n'
-if grep -q 'merged into existing profile' "$HARNESS"; then
-    ok "харнесс ищет маркер склейки профиля"
-    if grep -q 'speaker_merged' "$HARNESS"; then
-        ok "склейка отражается в причине провала шага (speaker_merged)"
+TOOL_MATCH="$SCRIPTS_DIR/e2e_tool_match.py"
+if grep -q 'merged into existing profile' "$TOOL_MATCH"; then
+    ok "e2e_tool_match.py ищет маркер склейки профиля"
+    if grep -q 'registration_failures' "$HARNESS"; then
+        ok "check_acceptance включает registration_failures() в вердикт шага"
     else
-        fail "склейка найдена, но не попадает в причину провала — шаг останется зелёным"
+        fail "registration_failures() не вызывается из харнесса — склейка и отказ регистрации не попадут в вердикт, шаг останется зелёным"
     fi
     if grep -q 'speaker_merges.log' "$HARNESS"; then
         ok "склейка пишется в артефакт speaker_merges.log"
     else
         fail "склейка не пишется в артефакты — ретро-инженер её не увидит"
     fi
-    if grep -qF 'register_speaker*)' "$HARNESS"; then
-        ok "проверка включается только для шагов, ожидающих register_speaker"
+    if grep -q 'REGISTER_TOOL in _acc_list(acc, "must_not_call")' "$TOOL_MATCH"; then
+        ok "проверка включается только для шагов, где фигурирует register_speaker"
     else
         fail "проверка не привязана к register_speaker — сработает там, где не надо"
     fi
 else
-    fail "харнесс НЕ проверяет склейку профилей: шаг с register_speaker остаётся зелёным, даже когда профиль слился с чужим и был переименован (run 35667281570)"
+    fail "НЕ проверяется склейка профилей: шаг с register_speaker остаётся зелёным, даже когда профиль слился с чужим (run 35667281570)"
 fi
 
 printf '\n'

@@ -203,13 +203,57 @@ def _build_core(
     return core, tools, llm
 
 
-def _run(core: AgentCore, text: str) -> Any:
-    return asyncio.run(core.process_input(text, history=[]))
+def _run(core: AgentCore, text: str, *, dynamic_system: str | None = None) -> Any:
+    return asyncio.run(
+        core.process_input(text, history=[], dynamic_system=dynamic_system)
+    )
 
 
 # ---------------------------------------------------------------------
 # Pure-function helper tests — drive the heuristic directly.
 # ---------------------------------------------------------------------
+
+
+class TestRawUserUtterance:
+    """Issue #2955 — direct coverage of ``_raw_user_utterance``, the
+    helper both this guard and the ADR-0132 praise gate now use for
+    ``current_user_input`` instead of re-reading the composed
+    ``<system_context>...`` LLM turn.
+    """
+
+    def test_no_prefix_passthrough(self) -> None:
+        assert agent_core._raw_user_utterance("сыграй ещё раз") == "сыграй ещё раз"
+
+    def test_strips_tg_prefix(self) -> None:
+        # dialogue_node: user_input = f"[TG] {user_input}" (issue #1195).
+        assert agent_core._raw_user_utterance(
+            "[TG] вот это кайф, огонь! сохрани этот вариант"
+        ) == "вот это кайф, огонь! сохрани этот вариант"
+
+    def test_strips_spkr_name_prefix(self) -> None:
+        # dialogue_node: tag = f"[Spkr:{name}]" (issue #1077).
+        assert agent_core._raw_user_utterance(
+            "[Spkr:Антон] сыграй ещё раз"
+        ) == "сыграй ещё раз"
+
+    def test_strips_speaker_unknown_prefix(self) -> None:
+        assert agent_core._raw_user_utterance(
+            "[Speaker:unknown] сыграй ещё раз"
+        ) == "сыграй ещё раз"
+
+    def test_strips_speaker_tentative_prefix(self) -> None:
+        assert agent_core._raw_user_utterance(
+            "[Speaker:tentative] сыграй ещё раз"
+        ) == "сыграй ещё раз"
+
+    def test_empty_and_none_safe(self) -> None:
+        assert agent_core._raw_user_utterance("") == ""
+
+    def test_does_not_touch_bracket_text_mid_sentence(self) -> None:
+        # Only a LEADING tag is stripped — a user quoting brackets mid
+        # sentence must survive untouched.
+        text = "сыграй трек [колобок] ещё раз"
+        assert agent_core._raw_user_utterance(text) == text
 
 
 class TestIsVocalRequest:
@@ -825,6 +869,90 @@ class TestIssue1708GuardIntegration:
         executed_names = [c.name for c in tools.executed]
         assert executed_names == ["generate_music"], (
             f"only generate_music should run; got {executed_names!r}"
+        )
+        assert result.speak_text_real_count == 0
+
+
+class TestIssue2955SystemContextDoesNotLeakIntoGuard:
+    """Issue #2955 — same flaw as the ADR-0132 praise gate: this guard
+    also reads ``current_user_input`` (see
+    ``test_issue_adr0132_save_arrangement_preset_gate.py``, which pins
+    the sibling regression). A vocal cue like «спой» sitting in the
+    ``<system_context>`` snapshot (speaker profile/memory — issue
+    #2817/#2822), rather than in what the user actually said, must NOT
+    make ``_is_vocal_request`` see the turn as vocal.
+    """
+
+    def test_vocal_word_in_system_context_does_not_make_request_vocal(self) -> None:
+        """Utterance is NON-vocal («сыграй бит в нига стайле») but the
+        glued system_context snapshot mentions «спой» (e.g. a memory
+        fact about the speaker's habits). The guard must still fire —
+        exactly like ``test_hallucinated_lyrics_are_suppressed`` — because
+        the ACTUAL request carries no vocal cue.
+        """
+        system_context_with_vocal_word = (
+            "<system_context>\n"
+            "  <speaker>Антон любит, когда робот спой ему вечером песню "
+            "перед сном</speaker>\n"
+            "</system_context>"
+        )
+        scripted = [
+            LLMResponse(
+                content="",
+                tool_calls=(
+                    ToolCall(
+                        id="m1",
+                        name="execute_music_code",
+                        arguments={
+                            "code": "p1 >> blip([0,2,4], dur=0.5)",
+                            "segments": 96,
+                        },
+                    ),
+                    ToolCall(
+                        id="s1",
+                        name="speak_text",
+                        arguments={
+                            "text": (
+                                "Нига-стайл, Колобок-флоу, уехал я, "
+                                "братан, в тёмны..."
+                            ),
+                        },
+                    ),
+                ),
+                finish_reason="tool_calls",
+            ),
+            LLMResponse(content="done", tool_calls=()),
+        ]
+
+        async def music_handler(_args: dict[str, object]) -> str:
+            return json_dumps_ok()
+
+        async def speak_handler(_args: dict[str, object]) -> str:
+            raise AssertionError(
+                "suppressed speak_text reached executor — system_context "
+                "vocal word must not unlock backing mode (issue #2955)"
+            )
+
+        core, tools, _llm = _build_core(
+            scripted,
+            manifest=_build_music_manifest(),
+            handler_map={
+                "execute_music_code": music_handler,
+                "speak_text": speak_handler,
+            },
+            fail_on_execute_names={"speak_text"},
+        )
+
+        result = _run(
+            core,
+            "сыграй бит в нига стайле про колобка",
+            dynamic_system=system_context_with_vocal_word,
+        )
+
+        executed_names = [c.name for c in tools.executed]
+        assert executed_names == ["execute_music_code"], (
+            f"only music tool should run; speak_text must stay suppressed "
+            f"despite the system_context vocal word; got {executed_names!r}"
         )
         assert result.speak_text_real_count == 0
 

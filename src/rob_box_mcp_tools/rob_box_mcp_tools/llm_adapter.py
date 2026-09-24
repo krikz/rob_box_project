@@ -17,7 +17,7 @@ llm_adapter.py - Адаптер для интеграции MCP tools с LLM API
 import json
 import uuid
 import asyncio
-from typing import Dict, Any, List, Optional, Callable
+from typing import Dict, Any, List, Mapping, Optional, Callable, Tuple
 import time
 import threading
 
@@ -35,6 +35,53 @@ from .base import ToolExecutionType
 from .mcp_auth import RequestAuthenticator
 
 
+#: Issue #2842 — аргументы тулов, которые подставляет ХОД диалога, а не LLM.
+#: При ``tool_provider=ros_mcp`` тул исполняется в процессе ``mcp_server``,
+#: где нет ``dialogue_node._current_turn_utterance_id`` — поэтому контекст
+#: хода едет в подписанном запросе ``/mcp/execute`` как обычный аргумент.
+#: В LLM-схеме тула этих параметров НЕТ; присланное LLM значение
+#: вырезается и заменяется значением хода (см. :func:`apply_turn_context`).
+#: Issue #2925 — для ``register_speaker`` ещё и то, что человек сказал о
+#: себе в реплике хода, и кем она уверенно узнана по голосу
+#: (``tools.dialogue.register_speaker_gate``).
+TURN_CONTEXT_ARGS: Mapping[str, Tuple[str, ...]] = {
+    "register_speaker": (
+        "utterance_id",
+        "self_intro_name",
+        "intro_registered",
+        "known_speaker_name",
+    ),
+}
+
+TurnContextProvider = Callable[[], Mapping[str, Any]]
+
+
+def apply_turn_context(
+    tool_name: str,
+    parameters: Mapping[str, Any],
+    turn_context: Optional[TurnContextProvider],
+) -> Dict[str, Any]:
+    """Подставить в аргументы тула скрытый контекст хода (issue #2842).
+
+    Для тулов из :data:`TURN_CONTEXT_ARGS` ключи контекста сначала
+    вырезаются из ``parameters`` (LLM не может их подделать), затем
+    подставляются из ``turn_context()``, если там не ``None``. Остальные
+    тулы проходят без изменений (копия ``parameters``).
+    """
+    params = dict(parameters)
+    keys = TURN_CONTEXT_ARGS.get(tool_name)
+    if not keys:
+        return params
+    for key in keys:
+        params.pop(key, None)
+    context = turn_context() if turn_context is not None else {}
+    for key in keys:
+        value = context.get(key)
+        if value is not None:
+            params[key] = value
+    return params
+
+
 class LLMToolCallAdapter:
     """
     Адаптер для обработки tool calls из OpenAI-совместимых LLM API
@@ -45,7 +92,13 @@ class LLMToolCallAdapter:
     Версия 2.0: Поддержка async execution, параллельное выполнение, прерывания
     """
 
-    def __init__(self, node: Node, *, sender: Optional[str] = None):
+    def __init__(
+        self,
+        node: Node,
+        *,
+        sender: Optional[str] = None,
+        turn_context: Optional[TurnContextProvider] = None,
+    ):
         """
         Инициализация адаптера
 
@@ -62,8 +115,13 @@ class LLMToolCallAdapter:
             sender: Явное имя отправителя, если нужно подписать запросы
                 от имени, отличного от имени ROS-ноды (например, для
                 тестов). По умолчанию — ``node.get_name()``.
+            turn_context: Issue #2842 — источник контекста текущего хода
+                (``{"utterance_id": ...}``), который подставляется в
+                аргументы тулов из :data:`TURN_CONTEXT_ARGS`. ``None`` —
+                контекста нет: скрытые аргументы только вырезаются.
         """
         self.node = node
+        self._turn_context = turn_context
 
         # Создаём ReentrantCallbackGroup для обработки результатов в отдельном потоке
         # Это позволяет on_result() вызываться даже когда execute_tool_call_sync() блокирует основной поток
@@ -117,6 +175,7 @@ class LLMToolCallAdapter:
             result_callback=self._on_async_result,
             logger=node.get_logger(),
             authenticator=self.authenticator,
+            prepare_parameters=self._prepare_parameters,
         )
 
         # Tool Call Accumulator для streaming
@@ -159,6 +218,12 @@ class LLMToolCallAdapter:
         except Exception as e:
             self.node.get_logger().error(f"❌ Ошибка обработки результата: {e}")
 
+    def _prepare_parameters(
+        self, tool_name: str, parameters: Mapping[str, Any]
+    ) -> Dict[str, Any]:
+        """Аргументы запроса ``/mcp/execute`` с контекстом хода (issue #2842)."""
+        return apply_turn_context(tool_name, parameters, self._turn_context)
+
     def _on_async_result(self, request_id: str, result: Dict[str, Any]) -> None:
         """
         Callback для async executor когда получен результат
@@ -188,7 +253,11 @@ class LLMToolCallAdapter:
         request_id = str(uuid.uuid4())
 
         # Формируем запрос
-        request = {"tool_name": tool_name, "parameters": parameters, "request_id": request_id}
+        request = {
+            "tool_name": tool_name,
+            "parameters": self._prepare_parameters(tool_name, parameters),
+            "request_id": request_id,
+        }
 
         # Регистрируем callback если передан
         if callback:
@@ -226,7 +295,11 @@ class LLMToolCallAdapter:
         self.result_events[request_id] = result_event
 
         # Формируем запрос
-        request = {"tool_name": tool_name, "parameters": parameters, "request_id": request_id}
+        request = {
+            "tool_name": tool_name,
+            "parameters": self._prepare_parameters(tool_name, parameters),
+            "request_id": request_id,
+        }
 
         # Публикуем запрос
         request_msg = String()

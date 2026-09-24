@@ -230,3 +230,66 @@ def load_sclang_health(
         )
 
     return classify_sclang_log(log_text, critical_synths=list(critical_synths or []))
+
+
+# ---------------------------------------------------------------------------
+# Issue #2838 — какие SynthDef-ы РЕАЛЬНО есть в scsynth
+# ---------------------------------------------------------------------------
+# Живой прогон 23.09.2026: валидатор синтов подсказал LLM 'sine' («Возможно,
+# имелся в виду 'sine'?»), она им воспользовалась — и scsynth 235 раз ответил
+# "SynthDef sine not found". Разрешённое множество строилось по тому, что
+# Python-сторона renardo ОТПРАВИЛА (sdef.add() → UDP /foxdot → sclang), а не по
+# тому, что сервер ПРИНЯЛ: /foxdot идёт по UDP без подтверждения, на порту
+# sclang 57120 копятся drops, и потерянный синт остаётся в «известных».
+#
+# Единственное подтверждение, которое у нас есть, — строки прелоада
+# foxdot_init.sc "SynthDef in scsynth: X", которые печатаются только ПОСЛЕ
+# Server.sync (т.е. scsynth обработал /d_recv). Им и верим.
+_PRELOAD_FINISHED_RE = re.compile(
+    r"SynthDef\s+preload\s+finished", re.IGNORECASE
+)
+
+
+def confirmed_synths_from_log(log_text: str) -> frozenset[str] | None:
+    """Имена SynthDef-ов, приход которых в scsynth подтвердил sclang.
+
+    Returns:
+        frozenset имён в нижнем регистре; ``None``, если прелоад в логе ещё
+        не завершён (нет строки "SynthDef preload finished") — тогда список
+        неполон и выдавать его за «всё, что есть на сервере» нельзя.
+        Имена, про которые позже в логе сказано "SynthDef X not found",
+        исключаются (та же логика, что в :func:`classify_sclang_log`).
+    """
+
+    if not _PRELOAD_FINISHED_RE.search(log_text):
+        return None
+    loaded: set[str] = set()
+    for line in log_text.splitlines():
+        loaded_match = _LOADED_SYNTH_RE.search(line)
+        if loaded_match:
+            loaded.add(loaded_match.group(1).lower())
+        missing_match = _MISSING_SYNTH_RE.search(line)
+        if missing_match:
+            loaded.discard(missing_match.group(1).lower())
+    return frozenset(loaded)
+
+
+def load_confirmed_synths(
+    log_path: str | Path | None = None,
+) -> frozenset[str] | None:
+    """Прочитать sclang-лог и вернуть :func:`confirmed_synths_from_log`.
+
+    Путь разрешается так же, как в :func:`load_sclang_health`. ``None`` —
+    лог отсутствует / не читается / прелоад не завершён.
+    """
+
+    resolved = (
+        Path(log_path)
+        if log_path is not None
+        else Path(os.environ.get("SCLANG_LOG_PATH", "/tmp/sclang.log"))
+    )
+    try:
+        log_text = resolved.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    return confirmed_synths_from_log(log_text)

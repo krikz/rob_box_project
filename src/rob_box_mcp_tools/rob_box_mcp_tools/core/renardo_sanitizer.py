@@ -13,7 +13,9 @@
     result.warnings                 # мягкие предупреждения для LLM
 
 Модуль чистый: без Renardo, без ROS, без I/O. Его можно тестировать
-напрямую, не поднимая ``MusicManager`` и звуковой стек.
+напрямую, не поднимая ``MusicManager`` и звуковой стек. Единственное
+чтение — каталог лупов из ресурсов пакета (:mod:`core.sample_loops`,
+issue #2841), окружение модуль не читает: флаг pack 1 передаёт вызывающий.
 """
 
 from __future__ import annotations
@@ -23,6 +25,8 @@ import difflib
 import re
 from dataclasses import dataclass
 from typing import Dict, FrozenSet, List, Optional, Tuple
+
+from . import sample_fx, sample_loops
 
 # ---------------------------------------------------------------------------
 # Safety filter — compiled once at import time
@@ -80,6 +84,14 @@ _DEV_PATTERN_RE = re.compile(
 # 16 kHz DAC; spack= (не 0) → сырые глитчевые сэмплы pitchglitch-пака.
 _CHOP_RE = re.compile(r"\bchop\s*=\s*(?!0\b)")
 _SPACK_NONZERO_RE = re.compile(r"\bspack\s*=\s*[1-9]")
+# Issue #2841: запрет spack остаётся, но причина уже проверенная — в
+# установленной renardo_lib ``getBufferFromSymbol`` параметр spack
+# игнорирует, ``spack=1`` молча играет пак 0. Дорога к паку 1 — только
+# ``loop('<имя>')`` из каталога core/sample_loops (см. _resolve_loops).
+#
+# ``<слот> >> loop(<первый аргумент>`` и строковый литерал в нём.
+_LOOP_CALL_RE = re.compile(r">>\s*loop\(\s*(?P<arg>[^,)]*)")
+_STRING_LITERAL_RE = re.compile(r"""^(['"])(?P<value>[^'"]*)\1$""")
 
 # Issue #1804 — на роботе физически смонтированы только d1-d3/p1-p3.
 # Токен слева от ``>>`` в форме [dpsl]+цифра — это renardo-плеер; если он
@@ -196,7 +208,7 @@ def _validate_music_code(code: str) -> Tuple[List[str], List[str]]:
     1. Абсолютные частоты (``freq=440`` / ``hz=220`` / ``midinote=69``)
        → HARD error (Renardo ожидает ступени).
     2. ``chop=`` (не ноль) → HARD error (щелчки на 16 kHz DAC).
-    3. ``spack=`` (не ноль) → HARD error (сырые глитчевые сэмплы).
+    3. ``spack=`` (не ноль) → HARD error (в этой renardo_lib — no-op, #2841).
     4. ``dur=`` у каждого не-play плеера → WARNING.
     5. Многоголосный трек без развивающих паттернов → WARNING.
 
@@ -223,9 +235,10 @@ def _validate_music_code(code: str) -> Tuple[List[str], List[str]]:
 
     if _SPACK_NONZERO_RE.search(code):
         errors.append(
-            "spack=1 (пак 1_pitchglitch_samples) запрещён — сырые "
-            "глитчевые сэмплы звучат как «звук из базы». Используй "
-            "дефолтный пак (без spack=) или sample=P[0,1,2,3]."
+            "spack= не выбирает пак в этой сборке Renardo (параметр "
+            "игнорируется — прозвучал бы пак 0 под видом пака 1). Убери "
+            "spack= и бери вариант через sample=; жанровый луп — через "
+            "loop('<имя>') из каталога лупов."
         )
 
     players = list(_PLAYER_LINE_RE.finditer(code))
@@ -313,6 +326,65 @@ def _validate_synth_names(code: str, known_synths: Optional[FrozenSet[str]]) -> 
             "а слой молча пропадает."
         )
     return errors
+
+
+# ---------------------------------------------------------------------------
+# Issue #2841 — лупы: каталог, белый список pack 1 за флагом, путь до файла
+# ---------------------------------------------------------------------------
+
+
+def _resolve_loops(code: str, pack1_enabled: bool) -> Tuple[str, List[str]]:
+    """Проверить каждый ``>> loop(...)`` и переписать имя в путь до файла.
+
+    Короткое имя из каталога (``dnb_1``) заменяется на путь, который
+    ``BufferManager`` реально найдёт (см. :mod:`core.sample_loops`).
+    Не-литерал, имя вне каталога и pack-1 луп при выключенном флаге —
+    HARD error: в любом из этих случаев Renardo сыграл бы тишину или
+    непрослушанный звук без единого сообщения.
+
+    Issue #2968: одиночные FX (выстрел/сирена/скрэтч/лазер) играются тем
+    же ``loop(...)`` синтом (нет отдельного FX-синта в Renardo), но живут в
+    отдельном каталоге ``core.sample_fx`` — имя ищется там ВТОРЫМ шагом,
+    если его нет среди лупов, тем же флагом пака 1.
+
+    Returns:
+        ``(код, ошибки)`` — код с переписанными путями (при ошибках
+        вызывающий всё равно вернёт исходный).
+    """
+    errors: List[str] = []
+
+    def _rewrite(match: re.Match) -> str:
+        arg = match.group("arg").strip()
+        literal = _STRING_LITERAL_RE.match(arg)
+        if literal is None:
+            errors.append(
+                "loop(...) принимает имя лупа только строковым литералом, "
+                f"например loop('foxdot', dur=4) — получено {arg!r}."
+            )
+            return match.group(0)
+        name = literal.group("value")
+        loop_info = sample_loops.find_loop(name)
+        if loop_info is not None:
+            denial = sample_loops.loop_denial(name, pack1_enabled)
+            if denial is not None:
+                errors.append(denial)
+                return match.group(0)
+            return f">> loop({loop_info.path!r}"
+        fx_info = sample_fx.find_fx(name)
+        if fx_info is not None:
+            denial = sample_fx.fx_denial(name, pack1_enabled)
+            if denial is not None:
+                errors.append(denial)
+                return match.group(0)
+            return f">> loop({fx_info.path!r}"
+        known = ", ".join(sorted(sample_loops.loop_catalog()) + sorted(sample_fx.fx_catalog()))
+        errors.append(
+            f"Лупа/FX {name!r} нет в каталоге — Renardo его не найдёт и "
+            f"сыграет тишину без ошибки. Доступные имена: {known}."
+        )
+        return match.group(0)
+
+    return _LOOP_CALL_RE.sub(_rewrite, code), errors
 
 
 # ---------------------------------------------------------------------------
@@ -478,6 +550,7 @@ def sanitize_renando(
     code: str,
     max_amp: float,
     known_synths: Optional[FrozenSet[str]] = None,
+    pack1_loops_enabled: bool = False,
 ) -> SanitizeResult:
     """Прогнать код через весь pipeline очистки за один вызов.
 
@@ -485,6 +558,8 @@ def sanitize_renando(
     ``MusicManager.execute_code``: безопасность → музыкальный валидатор
     (+ существование синтов, если известен ``known_synths``) →
     перестановка слотов → pianovel/piano→rhpiano → длина рисунка → кап amp.
+    Лупы (#2841) проверяются вместе с музыкальным валидатором; имя из
+    каталога переписывается в путь до файла только на чистом коде.
 
     Args:
         code: строка Renardo-кода.
@@ -493,6 +568,9 @@ def sanitize_renando(
             :meth:`MusicManager.known_synth_names`). ``None`` (по умолчанию)
             выключает проверку — используется, когда набор ещё не известен,
             и в юнит-тестах этого модуля, которым рантайм не нужен.
+        pack1_loops_enabled: белый список лупов пака 1 включён (флаг
+            ``ROB_BOX_PACK1_LOOPS``, issue #2841). По умолчанию выключен:
+            модуль сам окружение не читает, флаг передаёт вызывающий.
 
     Returns:
         :class:`SanitizeResult` с отсанированным кодом и ошибками/варнингами.
@@ -502,13 +580,17 @@ def sanitize_renando(
         return SanitizeResult(code=code, security_error=security_error)
 
     quality_errors, warnings = _validate_music_code(code)
-    quality_errors = list(quality_errors) + _validate_synth_names(code, known_synths)
+    resolved_code, loop_errors = _resolve_loops(code, pack1_loops_enabled)
+    quality_errors = (
+        list(quality_errors) + loop_errors + _validate_synth_names(code, known_synths)
+    )
     if quality_errors:
         return SanitizeResult(
             code=code,
             quality_errors=tuple(quality_errors),
             warnings=tuple(warnings),
         )
+    code = resolved_code
 
     code, slot_error = _remap_illegal_slots(code)
     if slot_error:

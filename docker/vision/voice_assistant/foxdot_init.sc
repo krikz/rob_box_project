@@ -41,7 +41,13 @@ var startupSynths = [
     "orient", "pads", "pianovel", "pluck", "pulse", "quin",
     "rave", "rhpiano", "saw", "scatter", "sinepad", "sitar",
     "soprano", "space", "square", "steeldrum", "strings", "subbass",
-    "tb303", "tubularbell", "varsaw", "viola", "wobblebass"
+    "tb303", "tubularbell", "varsaw", "viola", "wobblebass",
+    // #2841: сэмпл-плеер лупов (renardo LoopPygenSynthDef, special_synthdefs.py).
+    // Не тембр палитры, но compose_music(groove_loop=...) пишет `dN >> loop(...)`,
+    // а валидатор синтов (#2838) верит только строкам "SynthDef in scsynth: X"
+    // этого прелоада. renardo шлёт loop.scd тем же /foxdot → sclang, что и
+    // остальные sdef.add(), — без подтверждения. Файл лежит в renardoSynthDir.
+    "loop"
 ];
 var customSynthDir = "/ws/custom_synthdefs";
 var customSynths = ["warmpad", "retrobass", "supersawlead", "imperialbrass", "marchstrings", "strangerpulsepad", "strangerarp", "strangerbrass", "masterlimiter", "masterfilter"];

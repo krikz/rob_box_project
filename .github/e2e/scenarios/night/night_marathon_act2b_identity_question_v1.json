@@ -1,0 +1,151 @@
+{
+  "name": "night_marathon_act2b_identity_question_v1",
+  "stability": "new-unproven",
+  "act": "2b",
+  "title": "Переспрос личности",
+  "description": "Issue #2809 (follow-up PR #2818): при сомнительной голосовой биометрии робот один раз за сессию переспрашивает личность — «<Имя>, это ты?» (single, один кандидат) или нейтральное «Как тебя зовут?» (contested, без имён). Синтетические голоса MiniMax опознаются уверенно (0.87-0.96), поэтому node_params форсирует name_confidence_band_high=0.99 на весь акт — иначе переспрос почти никогда не случится на синтетике. Акт САМОДОСТАТОЧЕН (не зависит от профилей акта 2): e2e_mode стирает e2e-БД дикторов при каждом активирующем прогоне харнесса, поэтому Саша и Борис регистрируются заново здесь же.",
+  "_why_not_deterministic_for_voice_c": "Шаг с третьим голосом (n710_gena_reply_if_asked) проверяет ТОЛЬКО отсутствие чужих имён в ответе робота (must_not_say) — сам факт переспроса контестед-формой не форсируется как FAIL (required_question не ставится), потому что contested-исход зависит от того, насколько синтетический голос C акустически похож на A/B в эмбеддинге resemblyzer, а это не гарантируется на уровне JSON-сценария (см. measure_tts_voice_distinctness.py — различимость голосов измерена, а НЕ специально подобрана под contested).",
+  "generated_by": "MANUAL — не трогать gen_night_marathon.py: этот акт не входит в его SSoT (сюжетная генерация), правь файл руками.",
+  "node_params": {
+    "/speaker_id_node": {
+      "name_confidence_band_high": 0.99
+    }
+  },
+  "steps": [
+    {
+      "label": "n701_sasha_intro",
+      "voice": "anton",
+      "text": "Робот, здравствуй, я Саша, чиню тут технику по вечерам, сегодня перебираю колёса и зарядку.",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": ["register_speaker"],
+        "discovery_tools": ["register_speaker"],
+        "must_not_call": []
+      },
+      "retry_acceptance": 1,
+      "_why": "Регистрация голоса A. Тот же приём, что n201_sasha_intro_long в акте 2 — реплика с именем, вписана в бюджет VAD (issue #2809: акт самодостаточен, свежая e2e-БД).",
+      "_why_2907": "Issue #2907: хвост «сегодня перебираю колёса и зарядку» удлиняет реплику регистрации (55 → 91 символ). Исходная фраза давала 3.2-3.8с чистой речи после VAD при пороге эталона 3.0с (too_short → ретрай); потолок длины — test_e2e_scenario_playable.sh (<=96 символов без WARN, 15с VAD-окно). Хвост не содержит ни имён, ни слов, которые проверяются в ответах робота дальше по акту."
+    },
+    {
+      "label": "n702_sasha_followup",
+      "voice": "anton",
+      "text": "Робот, ты меня узнал по голосу, я тот же, кто заходил недавно?",
+      "patterns": [
+        "identity question hint set: kind=single",
+        "identity question by robot: kind=single"
+      ],
+      "_why_2888": "issue #2888: второй паттерн — вопрос «Саша, это ты?» задаёт сам dialogue_node (механизм #2828: вопрос заменяет ответ хода), а не LLM «если уместно». Run 35903232434: hint был, а вопроса не было ни разу из двух.",
+      "_why": "Вторая реплика A ПОСЛЕ регистрации. node_params форсировал name_confidence_band_high=0.99 — score синтетики (0.87-0.96) заведомо ниже планки, конкурента с другим именем в базе ещё нет (Борис не зарегистрирован) → classify_name_confidence обязана вернуть NAME_TENTATIVE_SINGLE, и dialogue_node обязан задать вопрос-гипотезу «Саша, это ты?» в ЭТОМ ходе. Проверка вопроса — в СЛЕДУЮЩЕМ шаге (n703, when_robot_asked читает РЕЧЬ ЭТОГО шага). patterns: лог-маркер «identity question hint set: kind=single» — подсказка-гипотеза реально выставлена dialogue_node, а не LLM сама решила спросить (прогон 35857257981)."
+    },
+    {
+      "label": "n703_sasha_confirm_yes",
+      "voice": "anton",
+      "text": "Робот, да, это я.",
+      "when_robot_asked": "Саш.*это ты|это ты.*Саш",
+      "required_question": true,
+      "patterns": [
+        "identity answer read: answer=True",
+        "Speaker confirmed verbally",
+        "рост галереи после словесного подтверждения"
+      ],
+      "acceptance": {
+        "expected_keywords": ["Саш"],
+        "must_not_call": ["register_speaker"],
+        "expected_tool_calls": [],
+        "_comment": "issue #2809: required_question=true — если робот НЕ спросил «Саша, это ты?» на предыдущем шаге (n702), этот шаг сам по себе FAIL (детерминированность акта). 'Да' -> имя используется до конца сессии (PR #2818 _confirm_tentative_speaker), рост галереи идёт через /voice/speaker/register (ROS-топик), НЕ через MCP-тул register_speaker — must_not_call ловит регрессию 'ответ да породил повторную явную регистрацию'.",
+        "_comment_mechanism": "issue #2809, прогон 35857257981: «да» пришло через 84s после вопроса, окно 30s пересоздало состояние (asked=False), ответ не прочитан — а шаг был зелёным только потому, что LLM повторила «Саш» из истории. patterns проверяют САМ механизм по логу voice-assistant: ответ прочитан (identity answer read: answer=True), подтверждение сработало (Speaker confirmed verbally), рост галереи запрошен (🌱). Ответ держит identity_answer_window_sec=180s (dialogue_node.yaml), отдельно от identity_question_session_gap_sec."
+      }
+    },
+    {
+      "label": "n704_sasha_no_repeat_question",
+      "voice": "anton",
+      "text": "Робот, а что ты обо мне запомнил из того, что я говорил?",
+      "patterns": [
+        "Speaker verbal confirmation reused"
+      ],
+      "acceptance": {
+        "must_not_say": ["это ты"],
+        "expected_tool_calls": [],
+        "must_not_call": [],
+        "_comment": "Ещё реплика A после подтверждённого «да» (шаги харнесса ~60s, больше прежних 30s). patterns: «Speaker verbal confirmation reused» — решённое состояние пережило паузу и имя ушло в LLM как [Spkr:...] из подтверждения, а не из истории диалога; must_not_say «это ты» — вопрос не повторён. Держит identity_question_session_gap_sec=120s (dialogue_node.yaml)."
+      }
+    },
+    {
+      "label": "n705_sasha_after_gap",
+      "voice": "anton",
+      "text": "Робот, ты ещё здесь, помнишь меня?",
+      "sleep_before_sec": 150,
+      "patterns": [
+        "identity question hint set: kind=single",
+        "identity question by robot: kind=single"
+      ],
+      "_why": "issue #2809: пауза 150s > identity_question_session_gap_sec=120s (dialogue_node.yaml; было 30s, поднято после прогона 35857257981) — сессия считается прервавшейся, tentative-цикл вправе начаться заново. Борис ещё не зарегистрирован (регистрируется ниже, n708) — конкурента с другим именем всё ещё нет, значит снова NAME_TENTATIVE_SINGLE и снова вопрос-гипотеза «Саша, это ты?» в ЭТОМ ходе (patterns: hint set). Проверка вопроса — в n706 ниже."
+    },
+    {
+      "label": "n706_sasha_confirm_no",
+      "voice": "anton",
+      "text": "Робот, нет, я не Саша, ты обознался.",
+      "when_robot_asked": "Саш.*это ты|это ты.*Саш",
+      "required_question": true,
+      "patterns": [
+        "identity answer read: answer=False"
+      ],
+      "acceptance": {
+        "must_not_call": ["register_speaker"],
+        "expected_tool_calls": [],
+        "_comment": "issue #2809: новая сессия после gap ОБЯЗАНА переспросить (required_question) — иначе gap-логика сессии сломана. 'Нет' -> тихо до конца этой сессии, имя больше не звучит (см. n707)."
+      }
+    },
+    {
+      "label": "n707_sasha_after_no",
+      "voice": "anton",
+      "text": "Робот, а сейчас как меня по-твоему зовут?",
+      "patterns": [],
+      "acceptance": {
+        "must_not_say": ["Саш"],
+        "expected_tool_calls": [],
+        "must_not_call": [],
+        "_comment": "После 'нет' имя не должно звучать до конца сессии (PR #2818: отказ -> тишина, вопрос не повторяется). Шаг ~60s после n706 — отказ держит identity_question_session_gap_sec=120s."
+      }
+    },
+    {
+      "label": "n708_boris_intro",
+      "voice": "ermil",
+      "text": "Робот, привет, я Борис, заглянул проверить проводку, в щитке у окна опять что-то потрескивает.",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": ["register_speaker"],
+        "discovery_tools": ["register_speaker"],
+        "must_not_call": []
+      },
+      "retry_acceptance": 1,
+      "_why": "Регистрация голоса B — второй профиль в е2е-БД. Нужен, чтобы у C (ниже) при похожести на A/B появился реальный конкурент с ДРУГИМ именем (contested-путь).",
+      "_why_2907": "Issue #2907: хвост «в щитке у окна опять что-то потрескивает» удлиняет реплику регистрации (52 → 94 символа) — 51 символ тем же голосом ermil дал 2.97с речи после VAD при пороге 3.0с (run 35916899022). Имя Саши в хвост намеренно НЕ добавлено: n709/n710 проверяют must_not_say «Саш» в ответах третьему голосу."
+    },
+    {
+      "label": "n709_gena_intro",
+      "voice": "zahar",
+      "text": "Робот, я заскочил на секунду, представляться пока не буду.",
+      "patterns": [],
+      "acceptance": {
+        "must_not_say": ["Саш", "Борис"],
+        "expected_tool_calls": [],
+        "must_not_call": [],
+        "_comment": "Третий голос (issue #2809, contested-контекст): в базе уже два разных имени (Саша, Борис). Робот НЕ должен назвать ни одно из них C — ни в single-гипотезе (третий голос не должен звучать как чистый Саша/Борис), ни тем более в contested (тот вообще не несёт имени, см. PR #2818 must_not_say прецедент n210_grisha_no_name в акте 2)."
+      }
+    },
+    {
+      "label": "n710_gena_reply_if_asked",
+      "voice": "zahar",
+      "text": "Робот, это пока не важно, я ещё подумаю.",
+      "when_robot_asked": "как (тебя )?зовут|представиться|назов",
+      "patterns": [],
+      "acceptance": {
+        "must_not_say": ["Саш", "Борис"],
+        "expected_tool_calls": [],
+        "must_not_call": [],
+        "_comment": "issue #2809: required_question НЕ ставится — contested-переспрос («Как тебя зовут?») зависит от акустического сходства синтетического голоса C с A/B, не гарантирован JSON-сценарием (см. _why_not_deterministic_for_voice_c в шапке файла). Если робот спросил — этот шаг играется и всё равно не должен раскрыть чужое имя; если не спросил — SKIP, акт не проверяет здесь ничего сверх n709."
+      }
+    }
+  ]
+}
