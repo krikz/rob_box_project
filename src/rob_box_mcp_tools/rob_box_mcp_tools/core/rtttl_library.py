@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import math
 import os
 import re
 import sqlite3
@@ -24,7 +25,7 @@ from importlib.resources import as_file, files
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, TextIO, Union
 
-__all__ = ["RtttlLibrary"]
+__all__ = ["RtttlLibrary", "covers_tokens", "match_info"]
 
 #: Имя архива внутри пакета ``rob_box_mcp_tools/data/``.
 _ARCHIVE_NAME = "rtttl_melodies.jsonl.gz"
@@ -226,6 +227,164 @@ def _tokens(query: str) -> List[str]:
     ]
 
 
+#: Поля, которые опознают запись (НЕ ``tags`` — жанровые метки, а не
+#: опознавание; общее слово вроде «anthem»/«movie» в тегах даёт ложное
+#: покрытие — от этого уже страдал скоринг, см. :meth:`RtttlLibrary._score`).
+_IDENTITY_FIELDS: tuple = ("name", "title", "artist", "rtttl_name")
+
+
+def _identity_haystack(record: Dict[str, Any]) -> str:
+    return " ".join(str(record.get(f) or "").lower() for f in _IDENTITY_FIELDS)
+
+
+def covers_tokens(record: Dict[str, Any], query: str) -> bool:
+    """Все значимые токены *query* нашлись в опознавательных полях *record*?
+
+    Низкоуровневый строгий (не взвешенный) критерий — каждый токен ЛИБО
+    есть подстрокой в ``name``/``title``/``artist``/``rtttl_name``, ЛИБО
+    нет. :func:`match_info` строит на нём взвешенную (IDF) версию для
+    тулов — сам этот критерий тулами больше НЕ используется как вердикт
+    found/not-found (issue #2964, товарищ Шифу: «жёсткий порог … тоже не
+    делай», см. историю отката #2882→#2896 — единой эвристики отказа не
+    нашлось, «лишние слова» отличают и «другую песню», и просто длинное
+    название). Полезен как отдельная проверка и как строительный блок.
+    """
+    tokens = _tokens(_normalize(query))
+    if not tokens:
+        return False
+    haystack = _identity_haystack(record)
+    return all(token in haystack for token in tokens)
+
+
+#: Кэш IDF-веса токена — процесс живёт долго (нода), а вес токена не
+#: меняется, пока архив не переимпортирован. Кэш живёт на самом
+#: инстансе :class:`RtttlLibrary` (см. :meth:`RtttlLibrary.token_weights`),
+#: поэтому разные инстансы (например, в тестах — маленькие синтетические
+#: архивы с разными БД) не путают чужие веса.
+class _TokenWeights:
+    """IDF-подобный вес токена по корпусу архива — БЕЗ списка стоп-слов.
+
+    issue #2964 (правка товарища Шифу): раньше рассматривался хардкод-
+    список общих слов («theme», «main», «soundtrack», «song» — сотни
+    записей архива буквально называются «Theme»). Вместо списка — частота
+    самого токена В ЭТОМ ЖЕ корпусе: токен, который встречается в сотнях
+    записей, получает вес около нуля САМ, без переписывания под «Theme» —
+    то же правило одинаково понижает любое другое частое слово, которое
+    сегодня в архиве не бросилось в глаза.
+    """
+
+    def __init__(self, library: "RtttlLibrary") -> None:
+        self._library = library
+        self._cache: Dict[str, float] = {}
+
+    def __call__(self, token: str) -> float:
+        cached = self._cache.get(token)
+        if cached is not None:
+            return cached
+        total = self._library.total()
+        df = self._library.document_frequency(token)
+        weight = math.log((total + 1) / max(df, 1))
+        self._cache[token] = weight
+        return weight
+
+
+def _is_informative_title(weights: "_TokenWeights", title: str) -> bool:
+    """Хотя бы один токен title достаточно редок в корпусе (не «Theme»)?
+
+    Порог — свойство корпуса (токен встречается меньше чем в ~1% архива),
+    а не список запрещённых слов: любое слово, ставшее таким же частым в
+    архиве, как «theme», получает тот же исход автоматически.
+    """
+    tokens = _tokens(title.lower())
+    if not tokens:
+        return False
+    threshold = math.log(100.0)  # df/total <= ~1%
+    return any(weights(t) >= threshold for t in tokens)
+
+
+def display_title(library: "RtttlLibrary", record: Dict[str, Any]) -> str:
+    """Название записи для показа модели — с исполнителем, если title общий.
+
+    issue #2964: сотни записей архива честно называются ``title='Theme'``,
+    настоящее название — в ``artist`` (``theme_178``: title «Theme»,
+    artist «Terminatorv v2.0» — правильная тема Терминатора, НЕ ошибка
+    записи). ``lookup_melody('terminator theme')`` не должен отвечать
+    голым «Нашёл «Theme»» — юзер не поймёт, что это Терминатор. Критерий
+    информативности title — тот же корпусный вес :class:`_TokenWeights`,
+    без разбора «title == 'Theme'»: любой другой такой же частый title
+    в архиве получит ту же добавку artist автоматически.
+    """
+    title = str(record.get("title") or "").strip()
+    artist = str(record.get("artist") or "").strip()
+    if not title:
+        return artist or str(record.get("rtttl_name") or record.get("name") or "")
+    try:
+        weights = library.token_weights()
+        informative = _is_informative_title(weights, title)
+    except Exception:  # noqa: BLE001 — вызывающая сторона мокает библиотеку
+        # в юнит-тестах (Mock() без token_weights()); без реального корпуса
+        # честнее не выдумывать доп. текст, чем упасть на служебном вызове.
+        informative = True
+    if artist and not informative:
+        return f"{title} — {artist}"
+    return title
+
+
+def match_info(library: "RtttlLibrary", record: Dict[str, Any], query: str) -> Dict[str, Any]:
+    """Прозрачная (не вердиктная) сверка *record* с токенами *query*.
+
+    issue #2964: ``get()``/``search()`` осознанно всегда возвращают ЛУЧШЕГО
+    по тексту кандидата, даже при слабом совпадении (issue #2896/#2877 —
+    единой эвристики отказа не нашлось: «лишние слова» отличают и «другую
+    песню» от нужной, и просто длинное название той же песни). Раньше
+    единственной защитой было message «сверь title сама» — LLM (minimax)
+    это игнорировал и играл что дали (``lookup_melody('Gin and Juice')`` →
+    «Everybody's Changing», ``lookup_melody('Nuthin But A G Thang')`` →
+    «If I Can Poppin Them Thangs», ``compose_music(name='stranger
+    things')`` реально сыграл «Strangers In The Night»).
+
+    Эта функция НЕ выносит вердикт found/not-found (жёсткого порога нет —
+    история отката #2882→#2896: «stranger things» ломало «super mario»).
+    Она отдаёт ЧЕСТНУЮ структурированную сверку — решение, это та же песня
+    или нет, остаётся у модели (промпт скилла composer):
+
+    - ``matched``/``unmatched`` — какие значимые токены запроса нашлись в
+      опознавательных полях записи (:func:`covers_tokens`, потокенно), а
+      какие нет.
+    - ``coverage`` — доля ВЗВЕШЕННОГО (IDF, :class:`_TokenWeights`) веса
+      запроса, которая покрылась. Частый токен вроде «theme» весит около
+      нуля и почти не двигает coverage сам по себе — вес считается по
+      корпусу архива, а не по списку слов.
+    """
+    tokens = _tokens(_normalize(query))
+    if not tokens:
+        return {"matched": [], "unmatched": [], "coverage": 0.0}
+    try:
+        weights = library.token_weights()
+    except Exception:  # noqa: BLE001 — вызывающая сторона мокает библиотеку
+        # в юнит-тестах (Mock() без token_weights()) — без реального корпуса
+        # честнее считать каждый токен равнозначным, чем упасть.
+        weights = None
+    haystack = _identity_haystack(record)
+    matched: List[str] = []
+    unmatched: List[str] = []
+    matched_weight = 0.0
+    total_weight = 0.0
+    for token in tokens:
+        try:
+            w = max(float(weights(token)), 0.0) if weights is not None else 1.0
+        except Exception:  # noqa: BLE001 — тот же мокнутый вызов
+            w = 1.0
+        total_weight += w
+        if token in haystack:
+            matched.append(token)
+            matched_weight += w
+        else:
+            unmatched.append(token)
+    coverage = (matched_weight / total_weight) if total_weight > 0 else 0.0
+    return {"matched": matched, "unmatched": unmatched, "coverage": round(coverage, 3)}
+
+
 def _default_archive() -> Union[Path, Any]:
     """Bundled ресурс (importlib.resources) → fallback на дерево исходников."""
     try:
@@ -274,6 +433,8 @@ class RtttlLibrary:
             Path(archive_path) if archive_path else _default_archive()
         )
         self._lock = threading.Lock()
+        # issue #2964 — IDF-вес токена по корпусу архива, см. _TokenWeights.
+        self._token_weights = _TokenWeights(self)
 
         os.makedirs(os.path.dirname(self._db_path) or ".", exist_ok=True)
         self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
@@ -367,6 +528,27 @@ class RtttlLibrary:
     def total(self) -> int:
         with self._lock:
             return self._conn.execute("SELECT COUNT(*) FROM rtttl_melodies").fetchone()[0]
+
+    def document_frequency(self, token: str) -> int:
+        """В скольких записях архива *token* встречается подстрокой.
+
+        Основа IDF-веса (issue #2964, :class:`_TokenWeights`) — без
+        отдельного индекса: колонки уже покрыты индексами по
+        name/title/artist (см. ``_SCHEMA``), а сам счёт по 10К строк на
+        ``LIKE`` укладывается в единицы миллисекунд.
+        """
+        like = f"%{token}%"
+        with self._lock:
+            return self._conn.execute(
+                "SELECT COUNT(*) FROM rtttl_melodies WHERE "
+                "lower(name) LIKE ? OR lower(title) LIKE ? "
+                "OR lower(artist) LIKE ? OR lower(rtttl_name) LIKE ?",
+                (like, like, like, like),
+            ).fetchone()[0]
+
+    def token_weights(self) -> "_TokenWeights":
+        """Взвешиватель токенов (issue #2964) — с кэшем на этом инстансе."""
+        return self._token_weights
 
     @staticmethod
     def _score(row: sqlite3.Row, tokens: List[str]) -> int:

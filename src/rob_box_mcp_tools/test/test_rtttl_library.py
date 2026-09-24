@@ -6,7 +6,12 @@ import gzip
 import json
 from pathlib import Path
 
-from rob_box_mcp_tools.core.rtttl_library import RtttlLibrary
+from rob_box_mcp_tools.core.rtttl_library import (
+    RtttlLibrary,
+    covers_tokens,
+    display_title,
+    match_info,
+)
 
 
 def _make_archive(tmp_path: Path) -> Path:
@@ -460,3 +465,166 @@ def test_real_archive_query_table_stays_on_topic(tmp_path):
         rec = lib.get(query)
         assert rec is not None, query
         assert substr in (rec["title"] or "").lower(), (query, rec)
+
+
+def test_covers_tokens_rejects_gin_and_juice_found_everybodys_changing(tmp_path):
+    """issue #2964: живой прогон 24.09 — ``lookup_melody('Gin and Juice')``
+    находил «Everybody's Changing» (Keane) — ни один значимый токен запроса
+    не встречается в записи, но ``get()`` всё равно честно (по тексту)
+    отдаёт лучшего кандидата (issue #2896). ``covers_tokens()`` обязана
+    механически отличить это от настоящего совпадения — без объявления
+    оригинала."""
+    lib = RtttlLibrary(db_path=str(tmp_path / "gin.db"))
+    rec = lib.get("Gin and Juice")
+    assert rec is not None
+    assert rec["name"] == "everybod_8"
+    assert rec["title"] == "Everybody's Changing"
+    assert covers_tokens(rec, "Gin and Juice") is False
+
+
+def test_covers_tokens_rejects_nuthin_but_a_g_thang_found_poppin_them_thangs(tmp_path):
+    """issue #2964: ``lookup_melody('Nuthin But A G Thang')`` находил «If I
+    Can Poppin Them Thangs» (50 Cent) — «nuthin»/«g» не покрыты, «thang» —
+    просто общая подстрока «thangs». compose_music играл эту запись под
+    видом G Thang молча."""
+    lib = RtttlLibrary(db_path=str(tmp_path / "gthang.db"))
+    rec = lib.get("Nuthin But A G Thang")
+    assert rec is not None
+    assert rec["name"] == "ificanpo"
+    assert rec["title"] == "If I Can Poppin Them Thangs"
+    assert covers_tokens(rec, "Nuthin But A G Thang") is False
+
+
+def test_covers_tokens_rejects_stranger_things_found_strangers_in_the_night(tmp_path):
+    """issue #2964 (комментарий от 24.09, сет «80s analog horror»):
+    ``compose_music(name='stranger things')`` сыграл «Strangers In The
+    Night» (Sinatra) под видом «Очень странных дел» — «stranger» покрыт
+    подстрокой «strangers», но значимый токен «things» в записи не
+    встречается вовсе. Совпадение окончания слова не должно засчитываться
+    как честное совпадение темы."""
+    lib = RtttlLibrary(db_path=str(tmp_path / "stranger.db"))
+    rec = lib.get("stranger things")
+    assert rec is not None
+    assert rec["name"] == "stranger_2"
+    assert rec["title"] == "Strangers In The Night"
+    assert covers_tokens(rec, "stranger things") is False
+
+
+def test_covers_tokens_keeps_terminator_theme_honest_via_artist(tmp_path):
+    """issue #2964 (внимание из тикета): ``theme_178`` — title «Theme»,
+    artist «Terminatorv v2.0» — правильная тема Терминатора. ``covers_
+    tokens()`` обязана учитывать artist, а не только title, иначе честный
+    критерий сломал бы этот РАБОЧИЙ кейс."""
+    lib = RtttlLibrary(db_path=str(tmp_path / "terminator.db"))
+    rec = lib.get("terminator theme")
+    assert rec is not None
+    assert rec["name"] == "theme_178"
+    assert rec["title"] == "Theme"
+    assert rec["artist"] == "Terminatorv v2.0"
+    assert covers_tokens(rec, "terminator theme") is True
+
+    rec2 = lib.get("terminator")
+    assert rec2 is not None
+    assert rec2["name"] == "terminat"
+    assert covers_tokens(rec2, "terminator") is True
+
+
+def test_covers_tokens_synthetic_field_rules():
+    """Юнит-уровень (без архива): какие поля учитываются, а какие — нет."""
+    record = {
+        "name": "mario",
+        "title": "Super Mario Brothers 1",
+        "artist": "Nintendo",
+        "tags": ["game", "juice"],
+        "rtttl_name": "MarioBro",
+    }
+    # Все токены покрыты (частично title, частично name) — честное совпадение.
+    assert covers_tokens(record, "super mario") is True
+    # tags намеренно не участвуют — «juice» есть только в tags, не в
+    # title/artist/name/rtttl_name, значит НЕ засчитывается.
+    assert covers_tokens(record, "mario juice") is False
+    # Пустой/бессмысленный запрос — не «покрыт» (нет значимых токенов).
+    assert covers_tokens(record, "") is False
+    assert covers_tokens(record, "the of") is False  # только стоп-слова
+
+
+# ---------------------------------------------------------------------------
+# match_info / display_title / token_weights — issue #2964 (правка товарища
+# Шифу): БЕЗ жёсткого порога found=False и БЕЗ хардкод-списка стоп-слов
+# («theme»/«main»/«soundtrack»/…). Вес токена — IDF по самому корпусу
+# архива; частый токен сам весит около нуля. Решение «это та же песня» —
+# у модели (промпт скилла composer), тул отдаёт честную структурированную
+# сверку.
+# ---------------------------------------------------------------------------
+
+
+def test_token_weight_discounts_frequent_theme_without_a_stopword_list(tmp_path):
+    """«theme» встречается в сотнях записей архива → вес почти нулевой сам
+    по себе (IDF), «terminator» — редкий токен → вес высокий. Ни одно слово
+    не в списке — это чистая статистика корпуса."""
+    lib = RtttlLibrary(db_path=str(tmp_path / "weights.db"))
+    weights = lib.token_weights()
+    theme_weight = weights("theme")
+    terminator_weight = weights("terminator")
+    assert theme_weight < terminator_weight
+    # «theme» — не буквально ноль, но кратно меньше редкого токена.
+    assert theme_weight < terminator_weight / 2
+
+
+def test_match_info_stranger_things_theme_flags_phantom_of_the_opera_confusion(tmp_path):
+    """Живой случай из комментария к issue #2964: ``compose_music(name=
+    'stranger things theme')`` сыграл ``theme_136`` — «Призрак оперы»
+    (title «Theme», artist «Phantom Of The Opera»), а не «Очень странных
+    дел». «theme» покрыт (и почти не весит), но значимые «stranger» и
+    «things» не совпадают вовсе — match_info честно это показывает
+    (низкое coverage), без отдельной ветки кода под этот кейс."""
+    lib = RtttlLibrary(db_path=str(tmp_path / "stranger_theme.db"))
+    rec = lib.get("stranger things theme")
+    assert rec is not None
+    assert rec["name"] == "theme_136"
+    assert rec["artist"] == "Phantom Of The Opera"
+    mi = match_info(lib, rec, "stranger things theme")
+    assert mi["matched"] == ["theme"]
+    assert set(mi["unmatched"]) == {"stranger", "things"}
+    assert mi["coverage"] < 0.3  # «theme» весит мало — низкое покрытие
+    # display_title подставляет исполнителя, раз title сам по себе
+    # неинформативен — юзер должен понять, что это НЕ Очень странные дела.
+    assert display_title(lib, rec) == "Theme — Phantom Of The Opera"
+
+
+def test_match_info_terminator_theme_full_coverage_via_artist(tmp_path):
+    """Контроль: ``theme_178`` (title «Theme», artist «Terminatorv v2.0»)
+    — ПРАВИЛЬНАЯ тема Терминатора (внимание из тикета) — общее правило не
+    должно её ломать. Оба значимых токена покрыты (artist + title),
+    coverage=1.0."""
+    lib = RtttlLibrary(db_path=str(tmp_path / "terminator_theme.db"))
+    rec = lib.get("terminator theme")
+    assert rec is not None
+    assert rec["name"] == "theme_178"
+    mi = match_info(lib, rec, "terminator theme")
+    assert mi["unmatched"] == []
+    assert mi["coverage"] == 1.0
+    assert display_title(lib, rec) == "Theme — Terminatorv v2.0"
+
+
+def test_match_info_self_query_never_false_negatives_on_sample(tmp_path):
+    """Системная проверка (не пара-по-паре): если запрос — это ТОЧНО title
+    записи архива, ``match_info`` обязан дать coverage≈1.0 — общее
+    правило работает не только на кейсах из тикета. Сэмпл, не весь архив
+    (10к записей × SQL document_frequency на тест — дорого)."""
+    lib = RtttlLibrary(db_path=str(tmp_path / "self_query.db"))
+    conn = lib._conn  # noqa: SLF001 — тестовый прямой доступ, тот же паттерн, что выше
+    rows = conn.execute(
+        "SELECT title FROM rtttl_melodies WHERE title != '' "
+        "ORDER BY RANDOM() LIMIT 40"
+    ).fetchall()
+    low_coverage = []
+    for row in rows:
+        title = row["title"]
+        rec = lib.get(title)
+        if rec is None:
+            continue
+        mi = match_info(lib, rec, title)
+        if mi["coverage"] < 0.99:
+            low_coverage.append((title, rec["name"], mi))
+    assert not low_coverage, low_coverage

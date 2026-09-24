@@ -2852,7 +2852,13 @@ class TestComposeMusicToolMelodyByName:
             None,
             {
                 "name": "imperial",
-                "title": "Imperial March",
+                # issue #2964: covers_tokens() проверяет опознавательные
+                # поля ПРОТИВ кандидата, который реально нашёл запись
+                # («darth vader», не исходного «imperial march») — title
+                # обязан покрывать оба токена варианта, иначе честный
+                # резолв (_resolve_melody_honest) отклонит совпадение как
+                # вероятно другую песню.
+                "title": "Imperial March (Darth Vader Theme)",
                 "rtttl": "imperial:d=4,o=5,b=80:8g5,8g5,8g5",
             },
         ]
@@ -3097,21 +3103,28 @@ class TestComposeMusicToolRealArchiveWeakMatch:
         mgr.execute_code = Mock(return_value={"success": True})
         return ComposeMusicTool(mock_node, mgr, rtttl_library), mgr
 
-    def test_stranger_things_plays_and_reports_real_title_plus_alternatives(
+    def test_stranger_things_plays_but_transparently_flags_the_mismatch(
         self, mock_node, tmp_path
     ):
-        """issue #2896: слабое совпадение больше не блокируется молча — оно
-        играет и ЧЕСТНО называет реально найденную запись (не «Stranger
-        Things»), плюс отдаёт альтернативы, чтобы модель могла заметить
-        подмену."""
+        """issue #2896 → issue #2964 (комментарий 24.09, сет «80s analog
+        horror»): слабое совпадение по-прежнему не блокируется молча
+        (жёсткий гейт под этот случай товарищ Шифу отклонил — история
+        отката #2882→#2896 показала, что такая эвристика ломает сильные
+        совпадения, напр. «super mario»). ``compose_music(name='stranger
+        things')`` реально играет «Strangers In The Night» (Sinatra), но
+        результат ОБЯЗАН честно и структурированно показать: «stranger»
+        совпал (подстрока «strangers»), а значимый токен «things» — нет.
+        Решение, объявлять ли найденное под именем «stranger things»,
+        остаётся у модели (правило — в промпте скилла composer)."""
         tool, mgr = self._make_tool(mock_node, tmp_path)
         result = tool.execute(name="stranger things", **self._ARR)
         assert result.success is True
         assert mgr.execute_code.called
-        assert result.data["title"]  # реально сыгранная запись, не None
-        assert result.data["title"] != "Stranger Things"
-        assert result.data["title"] in result.message
-        assert "alternatives" in result.data
+        assert result.data["title"] == "Strangers In The Night"
+        assert result.data["match"]["unmatched"] == ["things"]
+        assert "stranger" in result.data["match"]["matched"]
+        assert result.data["match"]["coverage"] < 1.0
+        assert "things" in result.message  # честное предупреждение в тексте
 
     def test_super_mario_no_longer_regressed_to_unknown_melody(
         self, mock_node, tmp_path
@@ -3150,6 +3163,83 @@ class TestComposeMusicToolRealArchiveWeakMatch:
         assert mgr.execute_code.called
         assert result.data["title"] == "Supermario Brothers"
         assert "Supermario Brothers" in result.message
+
+
+class TestComposeMusicToolHonestMismatchRealArchive:
+    """issue #2964: живой DJ-сет 24.09 — модель молча играла ДРУГУЮ песню
+    под именем той, что просил юзер (предупреждение в message #2896
+    минимакс игнорировал). Товарищ Шифу отклонил жёсткий гейт
+    found=False/отказ (история отката #2882→#2896: такая эвристика ломает
+    сильные совпадения вроде «super mario»). Вместо гейта —
+    ``compose_music`` по-прежнему играет лучшего ПО ТЕКСТУ кандидата, но
+    результат ОБЯЗАН честно и структурированно показать (``data['match']``
+    — :func:`match_info`, IDF по корпусу архива, БЕЗ хардкод-списка
+    стоп-слов), какие значимые слова запроса совпали, а какие нет —
+    решение объявлять ли найденное под запрошенным именем остаётся у
+    модели (правило — в промпте скилла composer)."""
+
+    _ARR = dict(lead_synth="blip", bass_synth="dub", pad_synth="warmpad")
+
+    def _make_tool(self, mock_node, tmp_path):
+        from rob_box_mcp_tools.core.rtttl_library import RtttlLibrary
+
+        rtttl_library = RtttlLibrary(db_path=str(tmp_path / "compose_honest.db"))
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        mgr.execute_code = Mock(return_value={"success": True})
+        return ComposeMusicTool(mock_node, mgr, rtttl_library), mgr
+
+    def test_gin_and_juice_plays_but_flags_the_mismatch(self, mock_node, tmp_path):
+        """Live 24.09: ``lookup_melody('Gin and Juice')`` нашёл «Everybody's
+        Changing» (Keane) — «juice» не встречается вовсе («gin» совпадает
+        только подстрокой внутри «chanGINg», как и остальной поиск
+        архива матчит по подстроке, не по целому слову). compose_music
+        всё ещё играет (тот же лучший по тексту кандидат, что нашёл бы
+        get()), но обязан честно назвать несовпадение — «juice» юзер
+        точно называл, а в найденной записи его нет."""
+        tool, mgr = self._make_tool(mock_node, tmp_path)
+        result = tool.execute(name="Gin and Juice", **self._ARR)
+        assert result.success is True
+        assert mgr.execute_code.called
+        assert result.data["title"] == "Everybody's Changing"
+        assert result.data["match"]["unmatched"] == ["juice"]
+        assert result.data["match"]["coverage"] < 1.0
+        assert result.data["alternatives"] is not None
+        assert "juice" in result.message.lower()
+
+    def test_nuthin_but_a_g_thang_plays_but_flags_the_mismatch(
+        self, mock_node, tmp_path
+    ):
+        """Live 24.09: ``compose_music({'name': 'If I Can Poppin Them
+        Thangs', ...})`` реально сыграл под видом «Nuthin' But a G Thang».
+        Результат обязан честно показать, что «nuthin»/«but» не нашлись —
+        решение, объявлять ли это как G Thang, остаётся у модели."""
+        tool, mgr = self._make_tool(mock_node, tmp_path)
+        result = tool.execute(name="Nuthin But A G Thang", **self._ARR)
+        assert result.success is True
+        assert mgr.execute_code.called
+        assert result.data["title"] == "If I Can Poppin Them Thangs"
+        assert "nuthin" in result.data["match"]["unmatched"]
+        assert result.data["match"]["coverage"] < 1.0
+
+    def test_terminator_theme_plays_with_full_coverage_and_artist_in_display(
+        self, mock_node, tmp_path
+    ):
+        """Внимание из тикета: ``theme_178`` (title «Theme», artist
+        «Terminatorv v2.0») — ПРАВИЛЬНАЯ тема Терминатора. ``data['title']``
+        остаётся сырым title записи (обратная совместимость, issue #2877),
+        а ``data['display_title']`` (issue #2964) добавляет исполнителя,
+        раз «Theme» само по себе неинформативно по корпусу архива — иначе
+        сообщение «Играю «Theme»» ничего не говорит юзеру про Терминатора.
+        Полное покрытие («terminator» покрыт artist, «theme» — title)."""
+        tool, mgr = self._make_tool(mock_node, tmp_path)
+        result = tool.execute(name="terminator theme", **self._ARR)
+        assert result.success is True
+        assert mgr.execute_code.called
+        assert result.data["title"] == "Theme"
+        assert "Terminatorv" in result.data["display_title"]
+        assert result.data["match"]["unmatched"] == []
+        assert result.data["match"]["coverage"] == 1.0
+        assert "Terminatorv" in result.message
 
 
 class TestComposeMusicToolCounterSynthAndThemeOctaves:
@@ -3554,7 +3644,15 @@ class TestLookupMelodyTool:
         rtttl_library = Mock()
         rtttl_library.get.side_effect = [
             None,  # primary name не нашёлся
-            {"name": "starwars_3", "title": "Imperial March", "rtttl": "x:d=4,o=5,b=80:c"},
+            {
+                "name": "starwars_3",
+                # issue #2964: covers_tokens() сверяет запись с кандидатом,
+                # который её реально нашёл («darth vader») — title обязан
+                # покрывать оба его токена, иначе честный резолв отклонит
+                # совпадение как вероятно другую песню.
+                "title": "Imperial March (Darth Vader Theme)",
+                "rtttl": "x:d=4,o=5,b=80:c",
+            },
         ]
         manager = Mock()
         tool = LookupMelodyTool(mock_node, library, manager, rtttl_library)
@@ -3569,6 +3667,57 @@ class TestLookupMelodyTool:
             "darth vader",
         ]
         manager.execute_code.assert_not_called()
+
+
+class TestLookupMelodyToolTransparencyRealArchive:
+    """issue #2964: живой DJ-сет 24.09 — ``lookup_melody`` находил ДРУГУЮ
+    песню и предупреждал в message «сверь title», а minimax предупреждение
+    игнорировал. Товарищ Шифу отклонил жёсткий гейт found=False (история
+    отката #2882→#2896 — единая эвристика отказа ломает сильные
+    совпадения). Вместо гейта — честная СТРУКТУРИРОВАННАЯ сверка
+    (``data['match']`` — :func:`match_info`, IDF по корпусу, без
+    хардкод-списка стоп-слов): какие значимые слова запроса нашлись/не
+    нашлись. Решение — у модели, по общему правилу в промпте composer."""
+
+    def _make_tool(self, mock_node, tmp_path):
+        from rob_box_mcp_tools.core.rtttl_library import RtttlLibrary
+
+        rtttl_library = RtttlLibrary(db_path=str(tmp_path / "lookup_honest.db"))
+        manager = Mock()
+        return LookupMelodyTool(mock_node, Mock(), manager, rtttl_library), manager
+
+    def test_gin_and_juice_flags_juice_as_unmatched(self, mock_node, tmp_path):
+        tool, manager = self._make_tool(mock_node, tmp_path)
+        result = tool.execute("Gin and Juice")
+        assert result.success is True
+        assert result.data["title"] == "Everybody's Changing"
+        assert result.data["match"]["unmatched"] == ["juice"]
+        assert result.data["match"]["coverage"] < 1.0
+        assert result.data["alternatives"] is not None
+        manager.execute_code.assert_not_called()
+
+    def test_nuthin_but_a_g_thang_flags_nuthin_as_unmatched(self, mock_node, tmp_path):
+        tool, manager = self._make_tool(mock_node, tmp_path)
+        result = tool.execute("Nuthin But A G Thang")
+        assert result.success is True
+        assert result.data["title"] == "If I Can Poppin Them Thangs"
+        assert "nuthin" in result.data["match"]["unmatched"]
+        assert result.data["match"]["coverage"] < 1.0
+        manager.execute_code.assert_not_called()
+
+    def test_terminator_theme_reports_full_coverage_via_artist(self, mock_node, tmp_path):
+        """theme_178 (title «Theme», artist «Terminatorv v2.0») — правильная
+        тема; полное покрытие («terminator» покрыт artist, «theme» —
+        title), и display_title добавляет исполнителя, раз голое «Theme»
+        неинформативно по корпусу архива (сотни записей так называются)."""
+        tool, manager = self._make_tool(mock_node, tmp_path)
+        result = tool.execute("terminator theme")
+        assert result.success is True
+        assert result.data["title"] == "Theme"
+        assert "Terminatorv" in result.data["display_title"]
+        assert result.data["match"]["unmatched"] == []
+        assert result.data["match"]["coverage"] == 1.0
+        assert result.data["name"] == "theme_178"
 
 
 def test_find_melody_resolves_slug_title_and_tag(tmp_path):
