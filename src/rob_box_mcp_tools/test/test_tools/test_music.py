@@ -4136,16 +4136,31 @@ class TestMusicSessionLifecycle:
         assert result["idle_seconds"] >= 300.0
 
     # ----- Issue #990 — segments safety-net deadline -----------------------
+    # 🔴 FIX (issue #3005): segments_deadline fires ONLY when ``idle >= ttl``
+    # (юзер вышел из диалога с активной музыкой) — иначе сбрасываем deadline,
+    # как для DJ mode. До фикса deadline мог убить только что запущенный
+    # user-requested трек (живой лог vision-pi 24.09.2026 14:50).
 
-    def test_auto_stop_fires_at_segments_deadline(self):
-        """If the TTS batch never completes, music stops at the deadline."""
+    def test_auto_stop_fires_at_segments_deadline_when_idle_exceeded_ttl(self):
+        """``segments_deadline`` гасит музыку только когда юзер ушёл (idle >= ttl).
+
+        ДО фикса #3005: дедлайн убивал музыку даже во время активного
+        диалога (``idle < ttl``) — LLM мог сильно занизить ``segments``
+        и зарезать трёхминутный эмбиент за 60 секунд.
+
+        ПОСЛЕ фикса: ``segments_deadline`` срабатывает ТОЛЬКО когда
+        ``idle >= ttl`` (юзер ушёл или watchdog видит, что диалога
+        давно нет). В активном диалоге deadline сбрасывается — следующий
+        ``compose_music`` / ``execute_music_code`` установит новый.
+        """
         mgr = _make_manager(sc_running=True, renardo_available=True)
         with patch("builtins.exec"):
             mgr.execute_code("p1 >> pluck([0])", pattern_name="p1", segments=16)
         assert mgr._music_deadline_at is not None
-        # Simulate the watchdog firing after the deadline (idle < TTL).
+        # idle (≈deadline seconds) >= ttl → дедлайн гасит музыку.
+        deadline_at = mgr._music_deadline_at
         result = mgr.auto_stop_idle_music(
-            ttl_seconds=300, now=mgr._music_deadline_at + 1
+            ttl_seconds=10, now=deadline_at + 1
         )
         assert result["stopped"] is True
         assert result.get("stop_reason") == "segments_deadline"
@@ -4185,13 +4200,19 @@ class TestMusicSessionLifecycle:
         assert result["stopped"] is False
         assert result.get("stop_reason") is None
 
-    def test_auto_stop_uses_deadline_before_idle_ttl(self):
-        """The deadline takes priority over the idle TTL (#990)."""
+    def test_auto_stop_uses_deadline_when_idle_exceeded_ttl(self):
+        """Deadline приоритетнее idle_ttl когда юзер ушёл (idle >= ttl).
+
+        Если оба условия выполнены — дедлайн срабатывает первым (более
+        точный контракт от LLM). ``ttl=10`` гарантирует, что idle
+        действительно превысил TTL к моменту срабатывания дедлайна.
+        """
         mgr = _make_manager(sc_running=True, renardo_available=True)
         with patch("builtins.exec"):
             mgr.execute_code("p1 >> pluck([0])", pattern_name="p1", segments=16)
-        now = mgr._music_deadline_at + 0.5
-        result = mgr.auto_stop_idle_music(ttl_seconds=999, now=now)
+        deadline_at = mgr._music_deadline_at
+        now = deadline_at + 0.5
+        result = mgr.auto_stop_idle_music(ttl_seconds=10, now=now)
         assert result["stopped"] is True
         assert result.get("stop_reason") == "segments_deadline"
 
@@ -4208,17 +4229,51 @@ class TestMusicSessionLifecycle:
         assert result["stopped"] is True
         assert result.get("stop_reason") == "idle_ttl"
 
-    def test_segments_stop_reports_the_segments_value(self):
+    def test_segments_stop_reports_the_segments_value_when_idle_exceeded_ttl(self):
         """``deadline_segments`` в результате — чтобы из лога было видно,
-        какую цифру напросила LLM."""
+        какую цифру напросила LLM. Срабатывает только при idle >= ttl
+        (issue #3005)."""
         mgr = _make_manager(sc_running=True, renardo_available=True)
         with patch("builtins.exec"):
             mgr.execute_code("p1 >> pluck([0])", pattern_name="p1", segments=16)
+        deadline_at = mgr._music_deadline_at
         result = mgr.auto_stop_idle_music(
-            ttl_seconds=300, now=mgr._music_deadline_at + 1
+            ttl_seconds=10, now=deadline_at + 1
         )
         assert result.get("stop_reason") == "segments_deadline"
         assert result.get("deadline_segments") == 16
+
+    # ----- Issue #3005 — deadline guard для user-requested трека ----------
+
+    def test_segments_deadline_reset_when_user_in_dialogue(self):
+        """``segments_deadline`` НЕ гасит музыку во время активного диалога.
+
+        Если юзер только что попросил музыку и диалог ещё активен
+        (``idle < ttl``), deadline сбрасывается, а не убивает трек. Это
+        зеркальный тест к DJ mode (live log vision-pi 24.09.2026 14:50:
+        LLM передал ``segments=8``, deadline ~60 с, watchdog убил
+        трёхминутный эмбиент).
+        """
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", pattern_name="p1", segments=16)
+        assert mgr._music_deadline_at is not None
+        deadline_at = mgr._music_deadline_at
+        # ttl=300 (default в проде), юзер в диалоге (idle ≈ 64 с < ttl).
+        result = mgr.auto_stop_idle_music(
+            ttl_seconds=300, now=deadline_at + 1
+        )
+        # Ничего не убито — deadline сброшен.
+        assert result["stopped"] is False
+        assert result.get("stop_reason") is None
+        assert mgr._music_deadline_at is None
+        assert mgr._music_deadline_segments is None
+        # Следующий тик watchdog'а: без новой активности и без
+        # deadline — idle всё ещё меньше ttl, ничего не делаем.
+        result2 = mgr.auto_stop_idle_music(
+            ttl_seconds=300, now=deadline_at + 100
+        )
+        assert result2["stopped"] is False
 
     def test_stop_all_clears_segments_deadline(self):
         """tts_batch_complete → stop_all must cancel the backstop."""
