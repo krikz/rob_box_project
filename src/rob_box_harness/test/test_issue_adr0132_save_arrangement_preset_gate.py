@@ -197,8 +197,10 @@ def _build_core(
     return core, tools, llm
 
 
-def _run(core: AgentCore, text: str) -> Any:
-    return asyncio.run(core.process_input(text, history=[]))
+def _run(core: AgentCore, text: str, *, dynamic_system: str | None = None) -> Any:
+    return asyncio.run(
+        core.process_input(text, history=[], dynamic_system=dynamic_system)
+    )
 
 
 def _save_call(quote: str | None = None) -> ToolCall:
@@ -346,6 +348,103 @@ def test_negative_feedback_is_refused_not_misread_as_praise() -> None:
     _run(core, "не нравится, сделай по-другому")
 
     assert tools.executed == []
+
+
+# ---------------------------------------------------------------------
+# 4) Issue #2955 -- the gate must read the RAW utterance, not the
+#    composed ``<system_context>...`` + text turn dialogue_node builds
+#    (issue #2817/#2822). A word like «нравится» sitting in a speaker's
+#    PROFILE inside the snapshot must NOT unlock the gate; conversely, a
+#    real praise/save-request in the utterance must still work even
+#    with a system_context glued in front of it, and the saved quote
+#    must be the utterance alone.
+# ---------------------------------------------------------------------
+
+_SYSTEM_CONTEXT_WITH_PRAISE_WORD = (
+    "<system_context>\n"
+    "  <speaker>Антон, профиль: обычно говорит быстро, "
+    "  дружелюбный, ему нравится джаз</speaker>\n"
+    "  <memory>Хранит факт: нравится вечерний сет</memory>\n"
+    "</system_context>"
+)
+
+
+def test_praise_word_in_system_context_does_not_unlock_gate() -> None:
+    """Live 24.09.2026 (issue #2955): «нравится» in the SPEAKER PROFILE
+    inside ``<system_context>`` must not read as the user's own praise.
+    The utterance itself («сыграй ещё раз») carries no praise/save-
+    request -> refused, exactly like ``test_no_praise_refuses_without_executing``."""
+    scripted = [
+        LLMResponse(
+            content="",
+            tool_calls=(_save_call(quote="модель придумала цитату"),),
+            finish_reason="tool_calls",
+        ),
+        LLMResponse(content="done", tool_calls=()),
+    ]
+
+    async def save_handler(_args: dict[str, object]) -> str:
+        raise AssertionError(
+            "save_arrangement_preset reached the executor -- system_context "
+            "praise word must not unlock the gate (issue #2955)"
+        )
+
+    core, tools, _llm = _build_core(
+        scripted,
+        handler_map={"save_arrangement_preset": save_handler},
+        fail_on_execute_names={"save_arrangement_preset"},
+    )
+
+    _run(
+        core,
+        "сыграй ещё раз",
+        dynamic_system=_SYSTEM_CONTEXT_WITH_PRAISE_WORD,
+    )
+
+    assert tools.executed == [], f"tool must not execute; got {tools.executed!r}"
+
+
+def test_real_praise_with_system_context_executes_with_clean_quote() -> None:
+    """Live 24.09.2026 (issue #2955): «вот это кайф, огонь! сохрани этот
+    вариант» IS real praise + a save-request -- gate must still unlock
+    with a ``<system_context>`` snapshot glued in front of it by
+    ``_compose_current_turn_message``, and ``approved_by_user_quote``
+    must be EXACTLY the utterance, with no system_context bleed
+    (previously observed live: ``'<system_conte...'``)."""
+    real_user_text = "вот это кайф, огонь! сохрани этот вариант"
+    scripted = [
+        LLMResponse(
+            content="",
+            tool_calls=(_save_call(quote="выдуманная моделью цитата"),),
+            finish_reason="tool_calls",
+        ),
+        LLMResponse(content="done", tool_calls=()),
+    ]
+
+    seen_args: dict[str, Any] = {}
+
+    async def save_handler(args: dict[str, object]) -> str:
+        seen_args.update(args)
+        return '{"success": true, "melody_key": "fifth"}'
+
+    core, tools, _llm = _build_core(
+        scripted,
+        handler_map={"save_arrangement_preset": save_handler},
+    )
+
+    _run(
+        core,
+        real_user_text,
+        dynamic_system=_SYSTEM_CONTEXT_WITH_PRAISE_WORD,
+    )
+
+    assert [c.name for c in tools.executed] == ["save_arrangement_preset"]
+    quote = seen_args.get("approved_by_user_quote")
+    assert quote == real_user_text, (
+        f"approved_by_user_quote must be the RAW utterance alone, no "
+        f"system_context bleed; got {quote!r}"
+    )
+    assert "system_context" not in (quote or "")
 
 
 if __name__ == "__main__":  # pragma: no cover

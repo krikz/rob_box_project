@@ -220,6 +220,50 @@ def _compose_current_turn_message(
     return "\n".join(context_blocks) + "\n\n" + text
 
 
+#: Issue #2955 — source-tag prefixes dialogue_node glues onto the RAW
+#: STT transcript before it ever reaches :meth:`AgentCore.process_input`
+#: as ``text``: ``[TG] `` for Telegram-sourced turns (issue #1195), and
+#: ``[Spkr:<name>]`` / ``[Speaker:unknown]`` / ``[Speaker:tentative]``
+#: for voice-biometry hints (issue #1077 / #2809). None of these are
+#: words the user said — a praise/vocal-request gate scanning the tag
+#: itself (instead of the utterance after it) would be scanning the
+#: wrong text. Only one tag is ever applied per turn today
+#: (``_prepare_user_input_context`` branches ``if from_tg / elif
+#: speaker_id_enabled``), but the loop below tolerates a hypothetical
+#: stack without special-casing the count.
+_SOURCE_PREFIX_RE = re.compile(
+    r"^(?:\[(?:TG|Spkr:[^\]]*|Speaker:[^\]]*)\]\s*)+"
+)
+
+
+def _raw_user_utterance(text: str) -> str:
+    """Issue #2955 -- the user's OWN words, for the praise/vocal-request
+    gates (``_gate_save_arrangement_preset``, ``_is_hallucinated_speak_text``).
+
+    Both gates used to read the LAST ``role=user`` LLMMessage off the
+    live ``messages`` list (:meth:`AgentCore._find_last_user_input`) --
+    but that message is the COMPOSED turn (``_compose_current_turn_message``):
+    the ``<system_context>`` snapshot (speaker profile, memory, active
+    skill -- issue #2817/#2822) glued in FRONT of the literal user text.
+    A word like «нравится» sitting in a speaker's PROFILE inside that
+    snapshot then unlocked ``contains_praise`` for a request that carried
+    no praise at all (live 24.09.2026, issue #2955).
+
+    ``text`` here is :meth:`AgentCore.process_input`'s own ``text``
+    argument -- the value BEFORE ``_compose_current_turn_message`` glues
+    the context blocks on. dialogue_node builds it as *source prefix +
+    STT transcript* only; the ``<system_context>`` block is assembled
+    separately (``dynamic_system``) and joined into the outgoing
+    LLMMessage, never into ``text`` itself. Reading the gate input off
+    ``text`` therefore sidesteps the system_context bleed structurally --
+    there is no context block to strip, only the source-tag prefix
+    (:data:`_SOURCE_PREFIX_RE`).
+    """
+    if not text:
+        return ""
+    return _SOURCE_PREFIX_RE.sub("", text)
+
+
 def _tools_called_from_metadata(turn: Any) -> list[str]:
     """Return the tool names recorded on ``turn`` by ``process_input``.
 
@@ -927,7 +971,14 @@ class AgentCore:
                             metadata=user_metadata,
                         )
                     )
-                outcome = await self._run_with_tools(messages)
+                # Issue #2955 -- the praise/vocal-request gates must see
+                # the RAW user utterance, not the composed
+                # ``<system_context>...`` + text turn above. ``text`` is
+                # exactly that raw value (see ``_raw_user_utterance``
+                # docstring).
+                outcome = await self._run_with_tools(
+                    messages, raw_user_input=_raw_user_utterance(text)
+                )
                 result.spoken_text = outcome.spoken_text
                 result.tools_called = list(outcome.tools_called)
                 result.speak_text_count = outcome.speak_text_count
@@ -1135,6 +1186,8 @@ class AgentCore:
     async def _run_with_tools(
         self,
         messages: list[LLMMessage],
+        *,
+        raw_user_input: str | None = None,
     ) -> _ToolLoopOutcome:
         """Run the LLM tool loop and return a :class:`_ToolLoopOutcome`.
 
@@ -1144,6 +1197,15 @@ class AgentCore:
         mutated rather than rebuilt: the upstream providers expect
         an ordered list and rebuilding from scratch would lose the
         interleaved tool/assistant ordering the wire format requires.
+
+        ``raw_user_input`` (issue #2955) — the user's OWN words, pre-
+        computed by :meth:`process_input` via ``_raw_user_utterance``
+        and fed to the #1708 / ADR-0132 gates below instead of the
+        composed ``<system_context>...`` turn. ``None`` (direct callers
+        that bypass ``process_input``, e.g. tests) falls back to
+        :meth:`_find_last_user_input`, which re-derives it from
+        ``messages`` the old (pre-#2955) way — good enough when there is
+        no ``dynamic_system``/``skill_prompt`` bleed to worry about.
 
         The loop terminates when:
 
@@ -1332,9 +1394,15 @@ class AgentCore:
             # recent user message so the heuristic can tell a vocal
             # request («спой куплет» — backing mode) apart from a
             # non-vocal request («сыграй бит про колобка в нига стайле»
-            # — instrumental). Walk the message list in reverse: the
-            # LAST user-role entry is the current turn.
-            _current_user_input = self._find_last_user_input(messages)
+            # — instrumental). Issue #2955 — prefer the RAW utterance the
+            # caller precomputed (no ``<system_context>`` bleed); only
+            # direct ``_run_with_tools`` callers without it fall back to
+            # re-deriving from ``messages``.
+            _current_user_input = (
+                raw_user_input
+                if raw_user_input is not None
+                else self._find_last_user_input(messages)
+            )
             # Music tools that appear ANYWHERE in this LLM batch (both
             # before and after the candidate speak_text). The order
             # inside the batch doesn't matter for the guard — the LLM
@@ -1511,6 +1579,17 @@ class AgentCore:
 
         Walking in reverse keeps the operation O(distance to last user
         message) instead of O(N) over the full history.
+
+        Issue #2955 — this is now only the FALLBACK for direct
+        ``_run_with_tools`` callers that don't pass ``raw_user_input``
+        (e.g. tests). Live turns from :meth:`process_input` go through
+        ``_raw_user_utterance(text)`` instead: the message this method
+        would find is the COMPOSED turn (``<system_context>`` snapshot +
+        skill prompt + literal text glued together by
+        ``_compose_current_turn_message``), and a word like «нравится»
+        sitting in a speaker's PROFILE inside that snapshot used to
+        unlock the praise gate for a request that carried no praise at
+        all (live 24.09.2026).
         """
         for msg in reversed(messages):
             if msg.role == "user" and msg.content:
