@@ -364,6 +364,13 @@ def _decisions(spec, harmony, prep: Optional[Dict[str, Any]]) -> Dict[str, str]:
             out[knob] = str(arr[knob]) if forced else f"auto→{arr[knob]}"
     if arr.get("levels"):
         out["levels"] = ",".join(f"{role}×{value:g}" for role, value in arr["levels"].items())
+    if arr.get("autofilled_roles"):
+        # issue #2970: синт заказан, ступеней роли не было — партия
+        # звучит по тонике лада, а не по нотам модели; партитура обязана
+        # это назвать, а не просто показать партию как обычную.
+        out["autofilled"] = (
+            ",".join(arr["autofilled_roles"]) + " (тоника лада, нот не было)"
+        )
     form_known = (spec.form or "").strip().lower() in FORMS
     out["form"] = spec.form if form_known else f"{spec.form}→arc (неизвестная)"
     return out
