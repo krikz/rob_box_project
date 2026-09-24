@@ -104,6 +104,9 @@
     },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/operator_admin.py": {
       "ShowMetricsTool.execute": 18
+    },
+    "src/rob_box_voice/rob_box_voice/core/music_guard.py": {
+      "MusicGuard.evaluate": 16
     }
   },
   "_refactor_cards": {

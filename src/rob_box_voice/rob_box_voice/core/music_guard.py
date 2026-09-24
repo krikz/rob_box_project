@@ -36,11 +36,13 @@ from enum import Enum
 from typing import Optional, Tuple
 
 from .dialogue_guards import (
+    DJ_REQUEST_SATISFYING_TOOLS,
     MUSIC_HARD_STOP_TOOLS,
     MUSIC_STARTING_TOOLS,
     MUSIC_STATE_QUERY_TOOLS,
     USER_MUSIC_SATISFYING_TOOLS,
     build_music_retry_exhausted_fallback,
+    is_dj_request,
     is_music_state_query,
     is_music_stop_command,
     is_phantom_music_action,
@@ -86,6 +88,22 @@ class MusicGuardVerdictKind(str, Enum):
     #: Guard deliberately skipped (stop-command OR user did not ask for
     #: music OR DJ was off). Adapter only logs a diagnostic.
     SKIP_NOT_APPLICABLE = "skip_not_applicable"
+
+    #: Issue #2999 — юзер назначил DJ-персону или попросил запустить DJ-сет
+    #: (``is_dj_request``), а LLM в ответ выдала spoken-фразу без
+    #: ``set_dj_mode``/``load_skill``. НЕ то же самое, что ``USER_RETRY``:
+    #: тот требует ``compose_music``/``execute_music_code``, а здесь
+    #: правильный путь — DJ-цикл (``load_skill('dj')`` → ``set_dj_mode``).
+    #: Адаптер публикует ``build_dj_request_retry_prompt`` через тот же
+    #: ``_dispatch_turn(is_synthetic=True)`` путь, что USER_RETRY, но с
+    #: другой фразой.
+    DJ_REQUEST_RETRY = "dj_request_retry"
+
+    #: Issue #2999 — DJ-запрос юзера закрыт, и в ``tools_called`` есть
+    #: ``set_dj_mode`` или ``load_skill('dj')``. Guard просто отходит.
+    #: НЕ сбрасывает ``_user_retry_count``: ретрай-budget на DJ-запрос
+    #: отдельный (см. ``DJ_REQUEST_RETRY``).
+    DJ_REQUEST_SATISFIED = "dj_request_satisfied"
 
 
 @dataclass(frozen=True)
@@ -153,18 +171,29 @@ class MusicGuard:
     #: itself — the CRITICAL retry text is still wrong for those turns, this
     #: just delays the "растерялся" fallback and burns more LLM round-trips.
     DEFAULT_MAX_USER_RETRIES: int = 8
+    #: Issue #2999 — отдельный budget на DJ-request ретраи, потому что
+    #: USER_RETRY-budget на «ты диджей…» приводил к 15+ пустым ходам подряд
+    #: (5 запросов × 3 ретрая) в живой сессии 24.09. 2 ретрая достаточно:
+    #: либо LLM после первого CRITICAL «вызови set_dj_mode» понимает, либо
+    #: фолбэк «DJ не вышло, попробуй ещё раз» юзеру понятнее, чем 15 ходов
+    #: тишины. Больше ретраев тут = больше «фантомных» set_dj_mode от LLM,
+    #: которая на самом деле не поняла, что от неё хотят.
+    DEFAULT_MAX_DJ_REQUEST_RETRIES: int = 2
 
     def __init__(
         self,
         *,
         max_dj_retries: int = DEFAULT_MAX_DJ_RETRIES,
         max_user_retries: int = DEFAULT_MAX_USER_RETRIES,
+        max_dj_request_retries: int = DEFAULT_MAX_DJ_REQUEST_RETRIES,
         logger: Optional[logging.Logger] = None,
     ) -> None:
         self._max_dj_retries = max_dj_retries
         self._max_user_retries = max_user_retries
+        self._max_dj_request_retries = max_dj_request_retries
         self._dj_retry_count: int = 0
         self._user_retry_count: int = 0
+        self._dj_request_retry_count: int = 0
         self._logger = logger
 
     # ------------------------------------------------------------------
@@ -181,12 +210,22 @@ class MusicGuard:
         return self._user_retry_count
 
     @property
+    def dj_request_retry_count(self) -> int:
+        """Issue #2999 — текущий счётчик DJ-request ретраев этого хода."""
+        return self._dj_request_retry_count
+
+    @property
     def max_dj_retries(self) -> int:
         return self._max_dj_retries
 
     @property
     def max_user_retries(self) -> int:
         return self._max_user_retries
+
+    @property
+    def max_dj_request_retries(self) -> int:
+        """Issue #2999 — потолок DJ-request ретраев перед фолбэком."""
+        return self._max_dj_request_retries
 
     # ------------------------------------------------------------------
     # Budget control — only the DialogueNode adapter calls these.
@@ -200,8 +239,14 @@ class MusicGuard:
         was not a babble retry, not a DJ auto, and not the synthetic
         music-retry prompt. The DJ budget is intentionally NOT reset —
         a DJ transition is independent of the user-music budget.
+
+        Issue #2999 — также сбрасываем ``_dj_request_retry_count``:
+        каждый новый юзерский запрос на DJ-сет стартует со свежим
+        бюджетом; иначе ретраи на «ты диджей Снупдог #2» наследовали
+        бы неудачу от прошлого DJ-запроса в той же сессии.
         """
         self._user_retry_count = 0
+        self._dj_request_retry_count = 0
 
     def reset_for_new_dj_transition(self) -> None:
         """Reset the DJ budget when a fresh 5 s tick fires a transition.
@@ -278,6 +323,96 @@ class MusicGuard:
 
         return None
 
+    def _dj_request_satisfied(self, tools_set: set) -> Optional[str]:
+        """Issue #2999 — закрыт ли DJ-запрос юзера сделанным тулом?
+
+        Возвращает ``reason``-тег для ``SKIP_NOT_APPLICABLE`` или ``None``,
+        если ретрай ещё нужен. Намеренно отдельный метод (как
+        :meth:`_user_music_already_satisfied` для Bug C), чтобы не
+        раздувать CC :meth:`evaluate`.
+
+        Логика:
+        * ``set_dj_mode`` в ``tools_called`` — DJ-цикл включён, дальше
+          музыка гонится сама. Считается закрытым вне зависимости от
+          того, был ли это ``enabled=True`` или ``False`` — речь идёт
+          о том, что LLM выполнила DJ-намерение юзера (явное действие).
+        * ``load_skill`` в ``tools_called`` — skill_router подгрузил
+          нужный фрагмент. Этого достаточно для SKIP: даже если
+          ``set_dj_mode`` ещё не зван, подсказки уже в контексте LLM и
+          следующий ход LLM вызовет его сам.
+        * Другие инструменты (speak_text, compose_music в режиме
+          одного трека) — НЕ закрывают DJ-запрос.
+        """
+        _closed = tools_set & DJ_REQUEST_SATISFYING_TOOLS
+        if not _closed:
+            return None
+        # Сбрасываем DJ-request budget: если LLM сама закрыла DJ-запрос,
+        # следующий ход стартует с чистого листа.
+        self._dj_request_retry_count = 0
+        self._log_debug(
+            "🎵 [issue 2999] DJ-request закрыт тул-вызовом "
+            f"({sorted(_closed)!r}) → SKIP"
+        )
+        return "dj_request_satisfied"
+
+    def _evaluate_dj_request_if_applicable(
+        self,
+        *,
+        user_input: str,
+        tools_set: set,
+        build_dj_request_retry_prompt,
+    ) -> Optional[MusicGuardVerdict]:
+        """Issue #2999 — DJ-request ветка :meth:`evaluate` (helper).
+
+        Вынесена из :meth:`evaluate` ради CC-бюджета ADR-0021 R1.
+
+        Returns:
+            ``MusicGuardVerdict`` если DJ-request был распознан и нужно
+            вернуть решение (SKIP_NOT_APPLICABLE, DJ_REQUEST_RETRY или
+            FALLBACK). ``None`` если ветка не сработала (``is_dj_request``
+            False) — вызывающий код продолжит обычный Bug C поток.
+        """
+        _satisfied = self._dj_request_satisfied(tools_set)
+        if _satisfied is not None:
+            return MusicGuardVerdict(
+                kind=MusicGuardVerdictKind.SKIP_NOT_APPLICABLE,
+                reason=_satisfied,
+            )
+        if self._dj_request_retry_count < self._max_dj_request_retries:
+            self._dj_request_retry_count += 1
+            prompt = (
+                build_dj_request_retry_prompt(user_input)
+                if build_dj_request_retry_prompt is not None
+                else (
+                    "[CRITICAL] Юзер попросил DJ-сет — "
+                    "вызови load_skill('dj') и set_dj_mode"
+                )
+            )
+            self._log_warning(
+                "🎵 [issue 2999] DJ-запрос без set_dj_mode/load_skill "
+                f"(user_input={user_input!r}, "
+                f"tools={sorted(tools_set)!r}); "
+                f"DJ-specific retry {self._dj_request_retry_count}/"
+                f"{self._max_dj_request_retries}"
+            )
+            return MusicGuardVerdict(
+                kind=MusicGuardVerdictKind.DJ_REQUEST_RETRY,
+                reason="dj_request_no_set_dj_mode",
+                prompt=prompt,
+            )
+        # Budget исчерпан — DJ-specific фолбэк с предложением альтернативы.
+        self._dj_request_retry_count = 0
+        fallback_text = build_music_retry_exhausted_fallback(user_input)
+        self._log_warning(
+            "🎵 [issue 2999] DJ-request budget исчерпан; fallback "
+            f"(user_input={user_input!r})"
+        )
+        return MusicGuardVerdict(
+            kind=MusicGuardVerdictKind.FALLBACK,
+            reason="dj_request_retry_exhausted",
+            prompt=fallback_text,
+        )
+
     def evaluate(
         self,
         *,
@@ -288,6 +423,7 @@ class MusicGuard:
         build_music_retry_prompt=None,
         build_dj_retry_prompt=None,
         spoken: Optional[str] = None,
+        build_dj_request_retry_prompt=None,
     ) -> MusicGuardVerdict:
         """Decide what the post-turn music guard should do.
 
@@ -469,6 +605,25 @@ class MusicGuard:
                 kind=MusicGuardVerdictKind.SKIP,
                 reason="executed_via_library",
             )
+
+        # Issue #2999 — DJ-request intercept. ДО ``user_wants_music``, потому
+        # что юзерская фраза «ты диджей Снупдог…» матчится словом «диджей»
+        # через :data:`MUSIC_GUARD_KEYWORDS` → ``user_wants_music`` бы
+        # вернул True → Bug C ретраил бы с CRITICAL-промптом про
+        # ``compose_music``/``execute_music_code``, а LLM реально должна
+        # звать ``set_dj_mode`` (DJ-цикл сам гонит музыку). Такой
+        # неправильный CRITICAL-промпт вёл к 15 пустым ходам подряд
+        # (5 запросов × 3 ретрая, см. live 24.09.2026 11:40 UTC).
+        # Ветка вынесена в :meth:`_evaluate_dj_request_if_applicable` —
+        # ``evaluate()`` остаётся в CC-бюджете ADR-0021 R1 (+1 к
+        # baseline — допустимо: новая feature, см. ADR-0021 §R1 R-1d).
+        dj_verdict = self._evaluate_dj_request_if_applicable(
+            user_input=user_input,
+            tools_set=tools_set,
+            build_dj_request_retry_prompt=build_dj_request_retry_prompt,
+        )
+        if dj_verdict is not None:
+            return dj_verdict
 
         # Bug C — user asked for music but LLM skipped execute_music_code.
         if not user_wants_music(user_input):
