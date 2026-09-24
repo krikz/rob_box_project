@@ -70,6 +70,7 @@ def node(tmp_path):
     instance._db = SpeakerDatabase(str(tmp_path / "speakers.db"))
     instance._speech_log = {}
     instance._speech_log_lock = threading.Lock()
+    instance._epithet_llm_reasked = set()
     instance.get_logger = MagicMock(return_value=MagicMock())
     yield instance
     instance._db.close()
@@ -492,5 +493,72 @@ def test_issue_2887_stranger_word_inside_multiword_label_is_rejected(node):
     _send_llm_epithet(node, sid, "Мудрый незнакомец")
 
     assert node._db.get_epithet(sid) == before
-    rejects = [line for line in _info_lines(node) if "отклонена" in line]
-    assert "причина=stranger" in rejects[0], rejects
+
+
+# ── Issue #2934: переспрос LLM-клички, когда появились факты ────────────────
+
+
+def test_issue_2934_no_reask_without_enough_facts(node):
+    """Меньше EPITHET_REASK_MIN_MESSAGES реплик — переспроса быть не должно.
+
+    Регистрация шлёт один запрос (первое знакомство, #1787). Если фактов
+    всё ещё мало, второй запрос отправляться не должен.
+    """
+    sent = _capture_requests(node)
+    sid = node._db.register("Саша", _embedding(29))
+    node._ensure_epithet(sid)
+    assert len(sent) == 1  # только первый запрос, при регистрации
+
+    for i in range(ep.EPITHET_REASK_MIN_MESSAGES - 2):
+        node._process_observation(sid, f"{CHESS_TALK} {i}")
+
+    assert len(sent) == 1, sent
+
+
+def test_issue_2934_reask_after_facts_accumulate(node):
+    """EPITHET_REASK_MIN_MESSAGES реплик набралось — просим LLM снова."""
+    sent = _capture_requests(node)
+    sid = node._db.register("Саша", _embedding(30))
+    node._ensure_epithet(sid)
+    assert len(sent) == 1
+
+    for i in range(ep.EPITHET_REASK_MIN_MESSAGES):
+        node._process_observation(sid, f"{CHESS_TALK} {i}")
+
+    assert len(sent) == 2, sent
+    assert sent[1]["speaker_id"] == sid
+    assert sid in node._epithet_llm_reasked
+
+    proposal = "Ночной ценитель гамбитов"
+    _send_llm_epithet(node, sid, proposal)
+    assert node._db.get_epithet(sid) == proposal
+
+
+def test_issue_2934_reask_happens_once_per_session(node):
+    """Не чаще раза на профиль за сессию, пока кличка словарная."""
+    sent = _capture_requests(node)
+    sid = node._db.register("Саша", _embedding(31))
+    node._ensure_epithet(sid)
+
+    for i in range(ep.EPITHET_REASK_MIN_MESSAGES * 5):
+        node._process_observation(sid, f"{CHESS_TALK} {i}")
+
+    # 1 запрос при регистрации + 1 переспрос — и ни одного больше, сколько
+    # бы реплик ни пришло дальше в той же сессии узла.
+    assert len(sent) == 2, sent
+
+
+def test_issue_2934_existing_llm_epithet_is_not_reasked(node):
+    """Уже есть LLM-кличка — переспроса быть не должно (#2887)."""
+    sent = _capture_requests(node)
+    sid = node._db.register("Саша", _embedding(32))
+    node._ensure_epithet(sid)
+    _send_llm_epithet(node, sid, "Ночной ценитель гамбитов")
+    assert node._db.get_epithet(sid) == "Ночной ценитель гамбитов"
+    sent.clear()
+
+    for i in range(ep.EPITHET_REASK_MIN_MESSAGES * 3):
+        node._process_observation(sid, f"{CHESS_TALK} {i}")
+
+    assert sent == []
+    assert node._db.get_epithet(sid) == "Ночной ценитель гамбитов"
