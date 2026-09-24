@@ -100,21 +100,21 @@ _rclpy = types.ModuleType('rclpy')
 _rclpy.init = lambda *a, **kw: None
 _rclpy.shutdown = lambda *a, **kw: None
 _rclpy.ok = lambda: True
-sys.modules.setdefault('rclpy', _rclpy)
+sys.modules['rclpy'] = _rclpy
 
 _rclpy_node = types.ModuleType('rclpy.node')
 _rclpy_node.Node = _FakeNode
-sys.modules.setdefault('rclpy.node', _rclpy_node)
+sys.modules['rclpy.node'] = _rclpy_node
 
 _cb_mod = types.ModuleType('rclpy.callback_groups')
 _cb_mod.ReentrantCallbackGroup = type('ReentrantCallbackGroup', (), {})
-sys.modules.setdefault('rclpy.callback_groups', _cb_mod)
+sys.modules['rclpy.callback_groups'] = _cb_mod
 
 _qos_mod = types.ModuleType('rclpy.qos')
 _qos_mod.HistoryPolicy = types.SimpleNamespace(KEEP_LAST='KEEP_LAST')
 _qos_mod.ReliabilityPolicy = types.SimpleNamespace(RELIABLE='RELIABLE')
 _qos_mod.QoSProfile = lambda *a, **kw: MagicMock()
-sys.modules.setdefault('rclpy.qos', _qos_mod)
+sys.modules['rclpy.qos'] = _qos_mod
 
 # ---- std_msgs / geometry_msgs / nav_msgs / control_msgs / rcl_interfaces stubs ----
 _std_msgs = types.ModuleType('std_msgs')
@@ -129,8 +129,8 @@ class _String:
 
 _std_msgs_msg.String = _String
 _std_msgs_msg.Bool = type('Bool', (), {'data': False})
-sys.modules.setdefault('std_msgs', _std_msgs)
-sys.modules.setdefault('std_msgs.msg', _std_msgs_msg)
+sys.modules['std_msgs'] = _std_msgs
+sys.modules['std_msgs.msg'] = _std_msgs_msg
 
 _geom = types.ModuleType('geometry_msgs')
 _geom_msg = types.ModuleType('geometry_msgs.msg')
@@ -195,8 +195,8 @@ _geom_msg.Pose = _Pose
 _geom_msg.PoseStamped = _PoseStamped
 _geom_msg.Twist = _Twist
 _geom_msg.TwistWithCovariance = _TwistWithCovariance
-sys.modules.setdefault('geometry_msgs', _geom)
-sys.modules.setdefault('geometry_msgs.msg', _geom_msg)
+sys.modules['geometry_msgs'] = _geom
+sys.modules['geometry_msgs.msg'] = _geom_msg
 
 _nav = types.ModuleType('nav_msgs')
 _nav_msg = types.ModuleType('nav_msgs.msg')
@@ -212,8 +212,8 @@ class _Odometry:
 
 
 _nav_msg.Odometry = _Odometry
-sys.modules.setdefault('nav_msgs', _nav)
-sys.modules.setdefault('nav_msgs.msg', _nav_msg)
+sys.modules['nav_msgs'] = _nav
+sys.modules['nav_msgs.msg'] = _nav_msg
 
 _ctrl = types.ModuleType('control_msgs')
 _ctrl_msg = types.ModuleType('control_msgs.msg')
@@ -227,8 +227,8 @@ class _DynamicJointState:
 
 
 _ctrl_msg.DynamicJointState = _DynamicJointState
-sys.modules.setdefault('control_msgs', _ctrl)
-sys.modules.setdefault('control_msgs.msg', _ctrl_msg)
+sys.modules['control_msgs'] = _ctrl
+sys.modules['control_msgs.msg'] = _ctrl_msg
 
 _rcl_iface = types.ModuleType('rcl_interfaces')
 _rcl_iface_msg = types.ModuleType('rcl_interfaces.msg')
@@ -244,8 +244,8 @@ class _Log:
 
 
 _rcl_iface_msg.Log = _Log
-sys.modules.setdefault('rcl_interfaces', _rcl_iface)
-sys.modules.setdefault('rcl_interfaces.msg', _rcl_iface_msg)
+sys.modules['rcl_interfaces'] = _rcl_iface
+sys.modules['rcl_interfaces.msg'] = _rcl_iface_msg
 
 # ---- rob_box_perception_msgs stubs ----
 _perception_msgs = types.ModuleType('rob_box_perception_msgs')
@@ -309,8 +309,8 @@ class _VisionEvent:
 
 _perception_msgs_msg.PerceptionEvent = _PerceptionEvent
 _perception_msgs_msg.VisionEvent = _VisionEvent
-sys.modules.setdefault('rob_box_perception_msgs', _perception_msgs)
-sys.modules.setdefault('rob_box_perception_msgs.msg', _perception_msgs_msg)
+sys.modules['rob_box_perception_msgs'] = _perception_msgs
+sys.modules['rob_box_perception_msgs.msg'] = _perception_msgs_msg
 
 # ---- utils stubs (просто чтобы import работал) ----
 # issue #2703/#2704 фикс-побочка: __path__ раньше был [] (пустой). Это
@@ -332,11 +332,10 @@ _node_monitor = types.ModuleType('rob_box_perception.utils.node_monitor')
 _node_monitor.NodeAvailabilityMonitor = MagicMock
 _time_provider = types.ModuleType('rob_box_perception.utils.time_provider')
 _time_provider.TimeAwarenessProvider = MagicMock
-sys.modules.setdefault('rob_box_perception.utils', _utils_pkg)
-sys.modules.setdefault('rob_box_perception.utils.internet_monitor',
-                       _internet_monitor)
-sys.modules.setdefault('rob_box_perception.utils.node_monitor', _node_monitor)
-sys.modules.setdefault('rob_box_perception.utils.time_provider', _time_provider)
+sys.modules['rob_box_perception.utils'] = _utils_pkg
+sys.modules['rob_box_perception.utils.internet_monitor'] = _internet_monitor
+sys.modules['rob_box_perception.utils.node_monitor'] = _node_monitor
+sys.modules['rob_box_perception.utils.time_provider'] = _time_provider
 
 # ---- import rob_box_perception.context_aggregator_node ----
 repo_root = '/home/builder/rob_box_project/.worktrees/t_b9b6cf73'
@@ -346,6 +345,10 @@ if pkg_root not in sys.path:
 
 # Должны уже быть в sys.modules из-за контекста — но явно импортируем.
 importlib.import_module('rob_box_perception')
+# Fresh import against the stubs above (with VisionEvent): test_context_aggregator.py
+# imports the same node against its own stubs WITHOUT VisionEvent, and the
+# cached copy would come back here with ``VisionEvent is None``.
+sys.modules.pop('rob_box_perception.context_aggregator_node', None)
 context_aggregator_module = importlib.import_module(
     'rob_box_perception.context_aggregator_node'
 )
