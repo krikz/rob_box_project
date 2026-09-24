@@ -759,6 +759,16 @@ def analyze_melody(params: Dict[str, Any]) -> Dict[str, Any]:
     theme = _theme_block(harmony) or {}
     alts = [f"{r} {s} {sc:.2f}" for r, s, sc in ranked[1:3]]
     gap = prep.get("key_gap")
+    fixed_n = prep.get("contour_breaks_fixed") or 0
+    flagged_n = prep.get("contour_breaks_flagged") or 0
+    half_time_risk = prep.get("half_time_risk")
+    quality_bits: List[str] = []
+    if fixed_n:
+        quality_bits.append(f"октавных разрывов исправлено: {fixed_n}")
+    if flagged_n:
+        quality_bits.append(f"разрывов контура под вопросом: {flagged_n}")
+    if half_time_risk:
+        quality_bits.append(f"риск half-time: {half_time_risk}")
     text = (
         f"Анализ: {harmony.root} {harmony.scale}"
         + (f" (разрыв {gap:.2f}; альт.: {', '.join(alts)})" if gap is not None else "")
@@ -766,6 +776,7 @@ def analyze_melody(params: Dict[str, Any]) -> Dict[str, Any]:
         f"диапазон {_range_text(theme.get('lo'), theme.get('hi'))}; "
         f"плотность {theme.get('density', 0):.2f} атак/бит "
         f"({'плотная' if theme.get('dense') else 'редкая'})."
+        + (f" {'; '.join(quality_bits)}." if quality_bits else "")
     )
     return {
         "root": harmony.root,
@@ -780,5 +791,8 @@ def analyze_melody(params: Dict[str, Any]) -> Dict[str, Any]:
         "hi": theme.get("hi"),
         "density": theme.get("density"),
         "dense": theme.get("dense"),
+        "contour_breaks_fixed": fixed_n,
+        "contour_breaks_flagged": flagged_n,
+        "half_time_risk": half_time_risk,
         "text": text,
     }

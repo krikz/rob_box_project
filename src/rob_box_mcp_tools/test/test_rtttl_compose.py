@@ -6,6 +6,9 @@ import pytest
 
 from rob_box_mcp_tools.core.arranger import BEATS_PER_BAR
 from rob_box_mcp_tools.core.rtttl_compose import (
+    RtttlMelody,
+    detect_contour_breaks,
+    detect_half_time_risk,
     detect_key,
     melody_to_compose_params,
     rtttl_to_melody,
@@ -420,3 +423,152 @@ def test_short_first_note_on_tonic_triad_is_not_a_pickup():
     midi = [d, e, f, e, f, a]
     durs = [0.25, 0.5, 4.0, 0.5, 4.0, 1.0]
     assert detect_key(midi, durs) == ("D", "minor")
+
+
+# ---------------------------------------------------------------------------
+# issue #2959: общий детектор качества мелодии (contour breaks / half-time).
+#
+# Разбор гимна России в живой сессии 24.09.2026 показал класс ошибки
+# (нота промахнулась на октаву в кульминации восходящей фразы), но товарищ
+# Шифу попросил не чинить руками одну запись, а построить ОБЩИЙ детектор —
+# эти тесты фиксируют его поведение на синтетических примерах (не на
+# конкретной песне) плюс регресс на реальном архиве, где он действительно
+# ловит два независимых транскрипта одной темы (``national_2``/``soviethy``).
+# ---------------------------------------------------------------------------
+
+
+def test_contour_break_autofixes_unambiguous_octave_error():
+    """3-шаговый разбег вверх, скачок вниз почти на октаву, фраза кончается
+    паузой — ровно паттерн «великая слава» из issue #2959 (синтетически,
+    не завязано на саму песню). Однозначно чинится."""
+    melody = RtttlMelody(
+        bpm=120,
+        notes=(
+            (72, 1.0), (74, 1.0), (76, 1.0), (77, 1.0), (67, 1.0), (None, 1.0),
+        ),
+    )
+    breaks = detect_contour_breaks(melody)
+    assert len(breaks) == 1
+    b = breaks[0]
+    assert b.index == 4
+    assert b.auto_fixable is True
+    assert b.octave_shift == 12
+    # продолжает разбег шагом (77->79)
+    assert b.note_at + b.octave_shift == 79
+
+
+def test_contour_break_short_run_is_flagged_not_fixed():
+    """Всего 2 шага разбега перед скачком — детектор ПОМЕЧАЕТ, но не правит
+    (issue #2959, живая проверка: ровно такой 2-шаговый разбег на РЕАЛЬНОМ
+    архиве оказался законным ходом мелодии — B5->E5, «свя-щЕн-ная» —
+    а не ошибкой; см. докстринг ``detect_contour_breaks``)."""
+    melody = RtttlMelody(
+        bpm=120, notes=((72, 1.0), (74, 1.0), (76, 1.0), (65, 1.0)),
+    )
+    breaks = detect_contour_breaks(melody)
+    assert len(breaks) == 1
+    assert breaks[0].auto_fixable is False
+    assert breaks[0].octave_shift == 0
+
+
+def test_contour_break_ignores_leap_across_rest():
+    """Скачок ЧЕРЕЗ паузу — не разрыв: пауза сама и есть граница фразы
+    (issue #2959, живая проверка на «К Элизе»: разбег обрывается паузой, а
+    с неё стартует повтор темы на новой высоте — не ошибка транскрипции)."""
+    melody = RtttlMelody(
+        bpm=120,
+        notes=(
+            (72, 1.0), (74, 1.0), (76, 1.0), (77, 1.0), (None, 0.5), (60, 1.0),
+        ),
+    )
+    assert detect_contour_breaks(melody) == []
+
+
+def test_contour_break_not_fixed_when_it_resolves_smoothly_forward():
+    """Скачок, который сам сразу гладко разрешается следующим шагом, —
+    встроен в непрерывную линию (реальный широкий мелодический ход, не
+    одинокая ошибка): помечается, но не правится (issue #2959, живая
+    проверка: ровно такой паттерн — «The Final Countdown», скачок к
+    кульминации и сразу шаг вниз на разрешение)."""
+    melody = RtttlMelody(
+        bpm=120,
+        notes=(
+            (81, 1.0), (79, 1.0), (78, 1.0), (76, 1.0), (84, 1.0), (83, 1.0),
+        ),
+    )
+    breaks = detect_contour_breaks(melody)
+    assert len(breaks) == 1
+    assert breaks[0].auto_fixable is False
+
+
+def test_melody_to_compose_params_applies_contour_fix_and_records_decisions():
+    """Проводка через ``melody_to_compose_params``: однозначный разрыв
+    применяется к фактическим ``lead_midi``, а решение видно в
+    ``decisions`` (партитура/``lookup_melody``, ADR-0132)."""
+    from rob_box_mcp_tools.core.harmonize import HarmonizeOptions
+
+    melody = RtttlMelody(
+        bpm=120,
+        notes=(
+            (72, 1.0), (74, 1.0), (76, 1.0), (77, 1.0), (67, 1.0), (None, 1.0),
+        ),
+    )
+    options = HarmonizeOptions(lead_octave="keep")
+    params = melody_to_compose_params(melody, options=options)
+    midi = [
+        int(x) if x != "None" else None
+        for x in params["lead_midi"].split(", ")
+    ]
+    assert midi[4] == 79  # 67 -> +12
+    assert params["decisions"]["contour_breaks_fixed"] == 1
+    assert params["decisions"]["contour_breaks_flagged"] == 0
+
+
+def test_half_time_risk_flags_dense_all_short_notes_at_high_tempo():
+    """Длинная тема, высокий темп, почти все ноты <= 16-й, ни одной
+    долгой — эвристика «половинные длительности» (issue #2959)."""
+    notes = tuple((72 + (i % 5), 0.25) for i in range(30))
+    melody = RtttlMelody(bpm=180, notes=notes)
+    risk = detect_half_time_risk(melody)
+    assert risk is not None
+    assert "половинных" in risk
+
+
+def test_half_time_risk_none_with_a_long_note():
+    """Та же плотная тема, но с одной долгой нотой — подозрение снимается."""
+    notes = tuple((72 + (i % 5), 0.25) for i in range(29)) + ((72, 2.0),)
+    melody = RtttlMelody(bpm=180, notes=notes)
+    assert detect_half_time_risk(melody) is None
+
+
+def test_half_time_risk_none_at_normal_tempo():
+    """Тот же ритм на небыстром темпе — обычное дело для рингтона, не
+    подозрительно (issue #2959, живая проверка: наивная версия без порога
+    по темпу помечала ~40% архива — попсовые рингтоны штатно состоят из
+    одних восьмых/шестнадцатых)."""
+    notes = tuple((72 + (i % 5), 0.25) for i in range(30))
+    melody = RtttlMelody(bpm=90, notes=notes)
+    assert detect_half_time_risk(melody) is None
+
+
+def test_half_time_risk_none_for_short_motif():
+    """Короткий мотив (сигнал/рифф) без долгих нот — законно, не гейтить."""
+    melody = RtttlMelody(bpm=200, notes=((72, 0.25), (74, 0.25), (76, 0.25)))
+    assert detect_half_time_risk(melody) is None
+
+
+def test_real_archive_national_2_and_soviethy_contour_fix(tmp_path):
+    """Регресс на реальном архиве (issue #2959): ОДНА и та же тема
+    Александрова хранится дважды под разными именами (``national_2``,
+    ``soviethy`` — «Soviet Hymne», транспонированная копия) и в ОБЕИХ
+    независимо ловится один и тот же класс ошибки (октава в кульминации
+    восходящей фразы) — детектор не завязан на конкретное имя/запись, он
+    находит паттерн там, где он реально есть."""
+    lib = RtttlLibrary(db_path=str(tmp_path / "quality_real.db"))
+    for name in ("national_2", "soviethy"):
+        rec = lib.get(name)
+        assert rec is not None
+        melody = rtttl_to_melody(rec["rtttl"])
+        breaks = detect_contour_breaks(melody)
+        fixed = [b for b in breaks if b.auto_fixable]
+        assert fixed, f"{name}: ожидался хотя бы один однозначный разрыв"
