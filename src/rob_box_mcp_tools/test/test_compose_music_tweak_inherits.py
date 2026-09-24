@@ -23,8 +23,6 @@ from __future__ import annotations
 import sys
 from unittest.mock import MagicMock, Mock, patch
 
-import pytest
-
 for _mod in [
     "rclpy", "rclpy.node", "rclpy.action", "rclpy.qos", "std_msgs",
     "std_msgs.msg", "geometry_msgs", "geometry_msgs.msg", "nav2_msgs",
