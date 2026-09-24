@@ -101,6 +101,26 @@ else
     log "lock $LOCK_FILE не найден — считаем ротацию неактивной (cleanup можно)"
 fi
 
+# --- 1.5. MAINTENANCE gate (issue #3009) -------------------------------------
+# Inline-проверка (без source lib_agent_flow_common): remote через git ls-remote,
+# local fallback через git -C REPO_DIR show. Шифу ставит MAINTENANCE-файл
+# в develop чтобы приостановить работу воркеров на время ручных правок.
+# Срабатывает → exit 0 (тик пропускается, не ошибка).
+if [ -n "${GH_REPO:-}" ] \
+    && git ls-remote "https://github.com/${GH_REPO}.git" \
+        "${MAINTENANCE_BRANCH:-develop}:${MAINTENANCE_FILE:-MAINTENANCE}" \
+        2>/dev/null | grep -q .; then
+    log "[MAINTENANCE] gate active on remote — skip"
+    exit 0
+fi
+if [ -n "${REPO_DIR:-}" ] && [ -d "$REPO_DIR" ] \
+    && git -C "$REPO_DIR" show \
+        "${MAINTENANCE_BRANCH:-develop}:${MAINTENANCE_FILE:-MAINTENANCE}" \
+        >/dev/null 2>&1; then
+    log "[MAINTENANCE] gate active locally in ${REPO_DIR} — skip"
+    exit 0
+fi
+
 # --- 2. Проверка: свежий e2e-прогон на 249? (mtime guard на самом хосте) ----
 # Даже если локальный flock свободен, e2e-прогон МОЖЕТ идти с другого хоста
 # (workflow L-E2E шлёт харнесс на 249 напрямую с GitHub runner). Двойная

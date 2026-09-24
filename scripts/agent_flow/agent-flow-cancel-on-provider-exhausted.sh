@@ -103,12 +103,38 @@ RETRO_TAG="<!-- retro-key:${RETRO_KEY} -->"
 
 # -------- helpers --------
 
+# MAINTENANCE gate (issue #3009). Inline-проверка без source
+# lib_agent_flow_common: remote через git ls-remote, local fallback через
+# git -C REPO_DIR show. Шифу ставит MAINTENANCE-файл в develop чтобы
+# приостановить работу воркеров на время ручных правок. Срабатывает →
+# exit 0 (тик пропускается, не ошибка).
+_af_maintenance_gate_inline() {
+    local _branch="${MAINTENANCE_BRANCH:-develop}"
+    local _file="${MAINTENANCE_FILE:-MAINTENANCE}"
+    local _remote_ref="${_branch}:${_file}"
+    if [ -n "${GH_REPO:-}" ] \
+        && git ls-remote "https://github.com/${GH_REPO}.git" "$_remote_ref" \
+            2>/dev/null | grep -q .; then
+        log "[MAINTENANCE] gate active on remote ${_remote_ref} — skip"
+        exit 0
+    fi
+    if [ -n "${REPO_DIR:-}" ] && [ -d "$REPO_DIR" ] \
+        && git -C "$REPO_DIR" show "${_branch}:${_file}" >/dev/null 2>&1; then
+        log "[MAINTENANCE] gate active locally in ${REPO_DIR} (${_branch}:${_file}) — skip"
+        exit 0
+    fi
+    return 0
+}
+
 # Один инстанс. Если уже идёт — exit 0 (тик пропускаем, no-agent cron).
 exec 9>"$LOCK_FILE"
 if ! flock -n 9; then
     log "⏳ another instance holds $LOCK_FILE — skip"
     exit 0
 fi
+
+# MAINTENANCE gate (issue #3009) — после flock, до основной работы.
+_af_maintenance_gate_inline
 
 usage() {
     cat <<EOF

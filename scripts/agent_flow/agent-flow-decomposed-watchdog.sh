@@ -104,6 +104,26 @@ if ! flock -n 9; then
     exit 0
 fi
 
+# --- MAINTENANCE gate (issue #3009) -----------------------------------------
+# Inline-проверка (без source lib_agent_flow_common): remote через
+# git ls-remote, local fallback через git -C REPO_DIR show. Шифу ставит
+# MAINTENANCE-файл в develop чтобы приостановить работу воркеров на время
+# ручных правок. Срабатывает → exit 0 (тик пропускается, не ошибка).
+_branch="${MAINTENANCE_BRANCH:-develop}"
+_file="${MAINTENANCE_FILE:-MAINTENANCE}"
+if [ -n "${GH_REPO:-}" ] \
+    && git ls-remote "https://github.com/${GH_REPO}.git" "${_branch}:${_file}" \
+        2>/dev/null | grep -q .; then
+    echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] decomposed-watchdog: [MAINTENANCE] gate active on remote — skip" >&2
+    exit 0
+fi
+if [ -n "${REPO_DIR:-}" ] && [ -d "$REPO_DIR" ] \
+    && git -C "$REPO_DIR" show "${_branch}:${_file}" >/dev/null 2>&1; then
+    echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] decomposed-watchdog: [MAINTENANCE] gate active locally in ${REPO_DIR} — skip" >&2
+    exit 0
+fi
+unset _branch _file
+
 # --- pre-flight: python3 + sqlite3 module ----------------------------------
 if ! command -v python3 >/dev/null 2>&1; then
     echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] decomposed-watchdog: python3 not on PATH — exit 1" >&2
