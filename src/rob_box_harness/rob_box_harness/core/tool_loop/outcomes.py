@@ -11,6 +11,7 @@ any AgentCore dependency.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -54,6 +55,13 @@ class _ToolLoopOutcome:
         called without a usable ``name``). Cheap, already-available data
         the DJ fallback uses to announce the track it just started
         instead of the generic «Готово, играю.».
+    music_call_args:
+        Issue #2967 — full argument dict of the LAST ``compose_music``
+        call this turn (``None`` if compose_music wasn't called). Same
+        "last wins" capture as ``track_name`` but keeps every argument,
+        not just ``name`` — dialogue_node compares it against the
+        previous turn's stored args to catch a spoken action-claim
+        backed by a no-op replay of the same ``compose_music`` call.
     tool_error_occurred:
         Issue #2949 — ``True`` when at least one tool call THIS TURN
         returned ``is_error=True`` (refusal / exception surfaced as a
@@ -76,6 +84,7 @@ class _ToolLoopOutcome:
     spoken_via_tool: str
     truncated_tool_args: bool = False
     track_name: str | None = None
+    music_call_args: dict[str, Any] | None = None
     tool_error_occurred: bool = False
 
 

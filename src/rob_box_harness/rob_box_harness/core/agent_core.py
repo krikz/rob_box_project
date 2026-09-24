@@ -461,6 +461,34 @@ def _extract_track_name(
     return name
 
 
+def _extract_music_call_args(
+    tool_calls: Iterable[ToolCall],
+    previous: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Issue #2967 — full argument dict of the LAST ``compose_music`` call
+    in ``tool_calls``, or ``previous`` when this batch didn't call it.
+
+    Mirrors :func:`_extract_track_name` (same cheap "last wins" scan over
+    ``tool_calls``), but keeps the WHOLE args dict instead of just
+    ``name``. dialogue_node uses this to detect a spoken «переделал» /
+    «поменял» claim that is backed by a ``compose_music`` call whose
+    arguments are byte-for-byte identical to the PREVIOUS successful
+    call — i.e. the model claims a change but replayed the same
+    combination the user just rejected (live 24.09.2026: «imperialbrass
+    + march», забракованный товарищем Шифу, вызван повторно без единого
+    отличия).
+    """
+    args_dict = previous
+    for call in tool_calls:
+        if call.name != "compose_music":
+            continue
+        args = call.arguments or {}
+        if not isinstance(args, Mapping):
+            continue
+        args_dict = dict(args)
+    return args_dict
+
+
 # ---------------------------------------------------------------------------
 # Result type
 # ---------------------------------------------------------------------------
@@ -545,6 +573,12 @@ class DialogResult:
     # uses this to announce the actual track instead of the generic
     # «Готово, играю.» — see ``ensure_dj_music_response``.
     track_name: str | None = None
+    # Issue #2967 — full argument dict of the LAST ``compose_music`` call
+    # this turn (``None`` if compose_music wasn't called). dialogue_node
+    # compares this against the previous turn's stored value to catch a
+    # spoken «переделал/поменял» claim backed by a no-op replay of the
+    # same arguments (see :func:`_extract_music_call_args`).
+    music_call_args: dict[str, Any] | None = None
     # Issue #2949 — True when at least one tool call THIS TURN returned
     # is_error=True (refusal/exception). ``tools_called`` only carries
     # NAMES, so a refused ``save_arrangement_preset`` still looks like a
@@ -976,8 +1010,19 @@ class AgentCore:
                 # ``<system_context>...`` + text turn above. ``text`` is
                 # exactly that raw value (see ``_raw_user_utterance``
                 # docstring).
+                # Issue #2967 — force a tool call on a DJ auto-transition's
+                # first attempt (base tick AND its Bug-B synchronous
+                # retries all carry ``is_dj_auto=True``, see
+                # ``dialogue_node._dispatch_dj_turn``): the live DJ set
+                # showed minimax answering with plain text and no tool
+                # call 2-3 times before the retry finally landed
+                # ``compose_music``. ``tool_choice="required"`` closes
+                # that gap at the source instead of relying entirely on
+                # the synchronous-retry safety net.
                 outcome = await self._run_with_tools(
-                    messages, raw_user_input=_raw_user_utterance(text)
+                    messages,
+                    raw_user_input=_raw_user_utterance(text),
+                    force_tool_choice="required" if is_dj_auto else None,
                 )
                 result.spoken_text = outcome.spoken_text
                 result.tools_called = list(outcome.tools_called)
@@ -987,6 +1032,7 @@ class AgentCore:
                 result.raw_response = outcome.raw_response
                 result.truncated_tool_args = outcome.truncated_tool_args
                 result.track_name = outcome.track_name
+                result.music_call_args = outcome.music_call_args
                 result.tool_error_occurred = outcome.tool_error_occurred
                 if not is_dj_auto:
                     # Persist an HONEST assistant turn: the text actually
@@ -1183,13 +1229,44 @@ class AgentCore:
             out.pop()
         return out
 
+    def _settings_with_forced_tool_choice(
+        self, force_tool_choice: str | None
+    ) -> "LLMSettings | None":
+        """Issue #2967 — ``self._llm_settings`` overlaid with a forced
+        ``tool_choice``, or ``None`` when nothing is forced.
+
+        ``None`` means "no override" — :meth:`_stream_response` then
+        falls back to the instance default, matching the pre-#2967
+        behaviour byte-for-byte when ``force_tool_choice`` is ``None``.
+        ``replace()`` returns a NEW instance so ``self._llm_settings``
+        itself (and any other in-flight caller holding it) is untouched.
+        """
+        if force_tool_choice is None:
+            return None
+        return replace(
+            self._llm_settings or LLMSettings(), tool_choice=force_tool_choice
+        )
+
     async def _run_with_tools(
         self,
         messages: list[LLMMessage],
         *,
         raw_user_input: str | None = None,
+        force_tool_choice: str | None = None,
     ) -> _ToolLoopOutcome:
         """Run the LLM tool loop and return a :class:`_ToolLoopOutcome`.
+
+        ``force_tool_choice`` (issue #2967) — overrides ``tool_choice``
+        on the FIRST completion request of this turn ONLY (subsequent
+        iterations, after tool results are fed back, go through
+        unforced so the model can still finish with plain text /
+        ``speak_text`` per the cycle-end contract). Used by DJ
+        auto-transitions: the live DJ set showed minimax replying with
+        plain text and no tool call on the first attempt 2-3 times in a
+        row before the Bug-B synchronous retry finally landed a
+        ``compose_music`` call — forcing ``tool_choice="required"``
+        closes that gap at the source instead of relying entirely on
+        the retry.
 
         ``messages`` is the live message list — tool-result messages
         are appended in-place so the LLM sees a coherent conversation
@@ -1253,6 +1330,10 @@ class AgentCore:
         # ``_extract_track_name``; the DJ fallback wants the LAST
         # compose_music name this turn.
         track_name: str | None = None
+        # Issue #2967 — same "last wins, never reset within the turn"
+        # bookkeeping as ``track_name``, but keeps the full args dict so
+        # dialogue_node can detect a no-op replay of the previous call.
+        music_call_args: dict[str, Any] | None = None
         # Actual text spoken via speak_text this turn — used for an honest
         # conversation history (persisting "done" instead of what was really
         # said made the LLM echo old topics; see process_input).
@@ -1262,8 +1343,15 @@ class AgentCore:
         # tool-call, no speak_text) that is babble, not an answer — the
         # robot would voice «дан» / «бит не получился» instead of acting.
         tool_error_occurred: bool = False
+        # Issue #2967 — force a tool call on the FIRST request of this
+        # turn only (see the ``force_tool_choice`` docstring above).
+        # Extracted to a helper so this method's CC stays at its
+        # cc_budget baseline.
+        _first_call_settings = self._settings_with_forced_tool_choice(
+            force_tool_choice
+        )
         response: LLMResponse = await self._stream_response(
-            messages, tools=openai_tools
+            messages, tools=openai_tools, settings=_first_call_settings
         )
 
         # Issue #1217 — deepseek-v4-flash intermittently answers with a bare
@@ -1349,6 +1437,11 @@ class AgentCore:
             # a plain re-assignment (helper owns the branching), so this
             # doesn't add to this method's CC.
             track_name = _extract_track_name(response.tool_calls, track_name)
+            # Issue #2967 — same capture, full args dict (repeated-call
+            # detection, see ``_extract_music_call_args``).
+            music_call_args = _extract_music_call_args(
+                response.tool_calls, music_call_args
+            )
 
             # Append the assistant turn that contained the tool_calls
             # (required by OpenAI Chat-Completions ordering rules).
@@ -1488,6 +1581,7 @@ class AgentCore:
             seen=seen,
             tool_error_occurred=tool_error_occurred,
             track_name=track_name,
+            music_call_args=music_call_args,
         )
 
     def _record_tool_calls(
@@ -1682,6 +1776,7 @@ class AgentCore:
         seen: set[str],
         tool_error_occurred: bool,
         track_name: str | None = None,
+        music_call_args: dict[str, Any] | None = None,
     ) -> _ToolLoopOutcome:
         """Run the babble filter (issue #1253) and assemble the outcome.
 
@@ -1707,6 +1802,7 @@ class AgentCore:
             speak_text_real_count=speak_text_real_count,
             spoken_texts=spoken_texts,
             track_name=track_name,
+            music_call_args=music_call_args,
         )
         if babble_outcome is not None:
             return babble_outcome
@@ -1717,6 +1813,7 @@ class AgentCore:
             speak_text_real_count=speak_text_real_count,
             spoken_texts=spoken_texts,
             track_name=track_name,
+            music_call_args=music_call_args,
             tool_error_occurred=tool_error_occurred,
         )
 
