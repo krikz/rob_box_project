@@ -46,6 +46,7 @@
 
 from __future__ import annotations
 
+import zlib
 from dataclasses import dataclass, field, replace
 from statistics import median
 from typing import Dict, List, Optional, Sequence, Tuple, Union
@@ -301,6 +302,18 @@ class HarmonizeOptions:
     pad_register: Union[str, Tuple[int, int]] = AUTO
     drums: Optional[str] = None
     hats: Optional[str] = None
+    #: Issue #2969 — сид вариативности аранжировки. ``None`` (по умолчанию)
+    #: — прежнее поведение байт-в-байт (``bass_style``/``pad_style``/
+    #: ``drum_style`` в ``auto`` строят фиксированный вариант — см. живой
+    #: лог 24.09: повтор той же темы во втором DJ-сете дал побайтно тот же
+    #: бас/пэд, а рисунок ударных не менялся весь сет). Заданный ``seed``
+    #: детерминированно выбирает вариант ``auto``-ручек (:func:`_apply_seed`)
+    #: — тот же сид всегда даёт тот же результат (тест на воспроизводимость),
+    #: разные сиды — разный результат при прочих равных. DJ передаёт сюда
+    #: номер сета/трека (см. ``prompts/skills/dj.txt``), а не системный ГСЧ:
+    #: не севший на плечи ``random`` — повтор сида воспроизводим намеренно,
+    #: а не только тестами.
+    seed: Optional[int] = None
 
     def __post_init__(self) -> None:
         for knob in KNOB_VALUES:
@@ -318,6 +331,11 @@ class HarmonizeOptions:
         for knob in ("drums", "hats"):
             if getattr(self, knob) is not None and not isinstance(getattr(self, knob), str):
                 raise ValueError(f"{knob}: рисунок должен быть строкой, получено {getattr(self, knob)!r}.")
+        bad_seed = self.seed is not None and (
+            isinstance(self.seed, bool) or not isinstance(self.seed, int)
+        )
+        if bad_seed:
+            raise ValueError(f"seed={self.seed!r}: допустимо целое число или None.")
 
 
 @dataclass(frozen=True)
@@ -1180,6 +1198,56 @@ _STYLE_HATS: Dict[str, str] = {
 }
 
 
+#: Issue #2969 — варианты ``auto``-ручек, из которых сид выбирает одну.
+#: Ни одна не совпадает с постоянным поведением ``auto`` дословно ради
+#: заметности: тот, кто задал сид, услышит другую аранжировку, а не то же
+#: самое под новым именем. ``off``/``none`` сюда не входят — сид меняет
+#: ВАРИАНТ звучащей партии, а не убирает её.
+_SEED_BASS_STYLES: Tuple[str, ...] = (AUTO, "root", "root_fifth")
+_SEED_PAD_STYLES: Tuple[str, ...] = ("stab", "sustain")
+_SEED_DRUM_STYLES: Tuple[str, ...] = (
+    "four_on_floor", "backbeat", "halftime", "breakbeat", "march",
+)
+
+
+def _seed_pick(seed: int, salt: str, choices: Sequence[str]) -> str:
+    """Детерминированный выбор варианта по ``seed`` и ``salt``.
+
+    ``salt`` разводит бас/пэд/ударные по разным индексам одного и того же
+    ``seed`` — иначе все три ручки синхронно переключались бы вместе, и
+    вариативность выглядела бы одной осью, а не тремя независимыми.
+    ``zlib.crc32``, а не ``hash()``: строковый ``hash()`` рандомизирован
+    ``PYTHONHASHSEED`` между процессами — сид перестал бы быть
+    воспроизводимым при перезапуске сервиса.
+    """
+    index = (seed + zlib.crc32(salt.encode("utf-8"))) % len(choices)
+    return choices[index]
+
+
+def _apply_seed(
+    options: "HarmonizeOptions", drum_style: str
+) -> Tuple["HarmonizeOptions", str]:
+    """Подменить ``auto``-ручки конкретным сид-вариантом (issue #2969).
+
+    Только ручки, ОСТАВЛЕННЫЕ на ``auto``: явно заданный ``bass_style``/
+    ``pad_style``/``drum_style`` (модель или пресет) сид не трогает —
+    «явная ручка всегда побеждает» действует и здесь, как и для пресетов
+    (:meth:`tools.music.ComposeMusicTool._resolve_preset`).
+    """
+    if options.seed is None:
+        return options, drum_style
+    updates: Dict[str, str] = {}
+    if options.bass_style == AUTO:
+        updates["bass_style"] = _seed_pick(options.seed, "bass_style", _SEED_BASS_STYLES)
+    if options.pad_style == AUTO:
+        updates["pad_style"] = _seed_pick(options.seed, "pad_style", _SEED_PAD_STYLES)
+    if updates:
+        options = replace(options, **updates)
+    if drum_style == DEFAULT_DRUM_STYLE:
+        drum_style = _seed_pick(options.seed, "drum_style", _SEED_DRUM_STYLES)
+    return options, drum_style
+
+
 def check_drum_style(drum_style: Optional[str]) -> str:
     """Нормализовать ``drum_style`` (``None``/пусто -> ``auto``).
 
@@ -1335,6 +1403,10 @@ def harmonize(
     """
     style = check_drum_style(drum_style)
     options = options or HarmonizeOptions()
+    # Issue #2969: сид выбирает вариант ОСТАВЛЕННЫХ на auto ручек ДО того,
+    # как они читаются ниже — иначе повтор той же темы с другим сидом дал
+    # бы тот же бас/пэд/ударные, только с числом в decisions.
+    options, style = _apply_seed(options, style)
     if not notes:
         raise ValueError("Пустая тема: гармонизировать нечего.")
     if all(midi is None for midi, _dur in notes):
@@ -1423,4 +1495,5 @@ def _option_decisions(options: HarmonizeOptions) -> Dict[str, object]:
         "knob_pad_register": options.pad_register,
         "knob_drums": AUTO if options.drums is None else "explicit",
         "knob_hats": AUTO if options.hats is None else "explicit",
+        "seed": options.seed,
     }
