@@ -18,6 +18,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+from pathlib import Path
 from typing import Any, Dict, List
 from unittest.mock import Mock, patch
 
@@ -58,8 +59,25 @@ except (ImportError, ModuleNotFoundError, ValueError):
     _redact_spec_found = False
 
 if not _redact_spec_found:
-    _redact_mod = Mock()
-    _redact_mod.redact_upstream_body = lambda text: text  # passthrough
+    # find_spec импортирует rob_box_voice/utils/__init__.py, а тот тянет
+    # pyaudio — в CI-образе его нет, и спек «не находится», хотя сам
+    # redact.py чисто stdlib. Раньше тут ставился Mock(), у которого
+    # redact_log_text() возвращал Mock: 5 тестов санитизации падали при
+    # любом прогоне без pyaudio. Грузим настоящий redact.py по пути.
+    _redact_path = (
+        Path(__file__).resolve().parents[3]
+        / "rob_box_voice" / "rob_box_voice" / "utils" / "redact.py"
+    )
+    if _redact_path.is_file():
+        _spec = importlib.util.spec_from_file_location(
+            "rob_box_voice.utils.redact", _redact_path
+        )
+        _redact_mod = importlib.util.module_from_spec(_spec)
+        _spec.loader.exec_module(_redact_mod)
+    else:
+        _redact_mod = Mock()
+        _redact_mod.redact_upstream_body = lambda text: text  # passthrough
+        _redact_mod.redact_log_text = lambda text: text  # passthrough
     sys.modules.setdefault("rob_box_voice.utils", Mock())
     sys.modules["rob_box_voice.utils.redact"] = _redact_mod
 

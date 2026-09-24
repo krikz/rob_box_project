@@ -610,12 +610,73 @@ jobs:
           echo "✅ Все контракты e2e-харнесса соблюдены." >> "$GITHUB_STEP_SUMMARY"
 
   # ============================================================================
+  # rob_box_mcp_tools unit tests
+  # ============================================================================
+  # До этого job'а src/rob_box_mcp_tools/test/ не гонял ни один workflow:
+  # unit-tests выше собирает пакеты без rob_box_mcp_tools, а G-Lint Code
+  # (PR #2899) подключил один файл. В run 35946562609 файл
+  # test_dialogue_register_speaker.py встречается только в rsync-копии
+  # шага Build workspace — ни одной строки PASSED/FAILED.
+  #
+  # Отдельный job, а не ещё один блок в unit-tests: colcon build ему не
+  # нужен (тесты грузят пакеты из src/ через PYTHONPATH), а 61 файл
+  # пофайлово — это ~2 минуты, которые не должны съедать 15-минутный
+  # бюджет соседа. Вся логика — в scripts/testing/run_mcp_tools_unit_tests.sh,
+  # локально запускается тем же скриптом.
+  mcp-tools-unit-tests:
+    name: Unit Tests (rob_box_mcp_tools)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    container:
+      image: ghcr.io/krikz/rob-box-ci:humble
+      options: --user root
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Install test dependencies
+        run: |
+          # nav2_msgs: rob_box_mcp_tools.tools.__init__ импортирует
+          # navigation.py, а тот — nav2_msgs.action. Без пакета
+          # test_animation.py и test_llm_integration.py падают на коллекции.
+          apt-get update -qq && apt-get install -y --no-install-recommends \
+            ros-humble-nav2-msgs \
+          && rm -rf /var/lib/apt/lists/*
+          # launch_testing из apt собран под pytest 6 и роняет pytest 9
+          # (тот же обход, что в unit-tests выше).
+          export PYTHONPATH="/usr/local/lib/python3.10/dist-packages:${PYTHONPATH:-}"
+          pip uninstall -y launch_testing launch_testing_ros 2>/dev/null || true
+          python3 -m pip install --quiet --no-cache-dir \
+            httpx openai msgpack aiohttp requests pyyaml pytz
+
+      - name: Run rob_box_mcp_tools tests
+        run: |
+          set -eo pipefail
+          source /opt/ros/humble/setup.bash
+          export PYTHONPATH="/usr/local/lib/python3.10/dist-packages:$PYTHONPATH"
+          export LANG=C.UTF-8 LC_ALL=C.UTF-8 PYTHONIOENCODING=utf-8
+          python3 -c "import pytest; assert pytest.__version__ >= '8', f'WRONG pytest: {pytest.__version__}'"
+          bash scripts/testing/run_mcp_tools_unit_tests.sh "${{ github.workspace }}/mcp_tools_junit"
+
+      - name: Upload junitxml
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mcp-tools-junit
+          path: ${{ github.workspace }}/mcp_tools_junit/
+          retention-days: 14
+
+  # ============================================================================
   # Test Summary
   # ============================================================================
   test-summary:
     name: Test Summary
     runs-on: ubuntu-latest
-    needs: [unit-tests, e2e-contract-guards]
+    needs: [unit-tests, mcp-tools-unit-tests, e2e-contract-guards]
     if: always()
 
     steps:
@@ -626,10 +687,12 @@ jobs:
           echo "| Test Suite | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|------------|--------|" >> $GITHUB_STEP_SUMMARY
           echo "| Unit Tests | ${{ needs.unit-tests.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Unit Tests (rob_box_mcp_tools) | ${{ needs.mcp-tools-unit-tests.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| E2E Contract Guards | ${{ needs.e2e-contract-guards.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
           if [ "${{ needs.unit-tests.result }}" != "success" ] \
+             || [ "${{ needs.mcp-tools-unit-tests.result }}" != "success" ] \
              || [ "${{ needs.e2e-contract-guards.result }}" != "success" ]; then
             echo "⚠️ **Tests failed!** Check logs above for details." >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY

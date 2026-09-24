@@ -149,12 +149,44 @@ def _load_dialogue_isolated():
     return module
 
 
-_dialogue = _load_dialogue_isolated()
+def _is_polluted_key(name: str) -> bool:
+    return (
+        name == "rob_box_mcp_tools"
+        or name.startswith("rob_box_mcp_tools.")
+        or name in ("std_msgs", "std_msgs.msg")
+    )
+
+
+def _load_dialogue_restoring_sys_modules():
+    """Загрузить dialogue.py и вернуть ``sys.modules`` в исходное состояние.
+
+    Стабы из ``_load_dialogue_isolated`` (урезанный ``rob_box_mcp_tools.base``
+    без ``ToolExecutionType``, пустой ``rob_box_mcp_tools.tools``,
+    ``std_msgs``) нужны только на время exec_module. Если оставить их в
+    ``sys.modules``, файлы, собираемые ПОСЛЕ этого, импортируют стаб вместо
+    настоящего модуля: при прогоне всего ``test/`` одним pytest
+    test_get_current_time.py падал на коллекции с
+    ``cannot import name 'ToolExecutionType' from 'rob_box_mcp_tools.base'``.
+    """
+    saved = {k: v for k, v in sys.modules.items() if _is_polluted_key(k)}
+    real_pkg = saved.get("rob_box_mcp_tools")
+    saved_path = getattr(real_pkg, "__path__", None)
+    try:
+        return _load_dialogue_isolated()
+    finally:
+        for name in [k for k in sys.modules if _is_polluted_key(k)]:
+            del sys.modules[name]
+        sys.modules.update(saved)
+        if real_pkg is not None and saved_path is not None:
+            real_pkg.__path__ = saved_path
+
+
+_dialogue = _load_dialogue_restoring_sys_modules()
 RegisterSpeakerTool = _dialogue.RegisterSpeakerTool
 
 
 @pytest.fixture(autouse=True)
-def _ensure_std_msgs_stub():
+def _ensure_std_msgs_stub(monkeypatch):
     """Восстановить stub std_msgs перед каждым тестом.
 
     test_dialogue_speak_text_batch.py перезаписывает на уровне модуля
@@ -171,8 +203,10 @@ def _ensure_std_msgs_stub():
             self.data = ""
 
     std_msgs_msg.String = _String
-    sys.modules["std_msgs"] = std_msgs
-    sys.modules["std_msgs.msg"] = std_msgs_msg
+    # monkeypatch, а не прямое присваивание: после теста вернуть то, что
+    # было, иначе stub утекает в файлы, которые идут следом.
+    monkeypatch.setitem(sys.modules, "std_msgs", std_msgs)
+    monkeypatch.setitem(sys.modules, "std_msgs.msg", std_msgs_msg)
     yield
 
 
