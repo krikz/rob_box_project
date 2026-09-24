@@ -49,6 +49,9 @@ __all__ = [
     "detect_key_ranked",
     "melody_to_compose_params",
     "key_fit",
+    "ContourBreak",
+    "detect_contour_breaks",
+    "detect_half_time_risk",
 ]
 
 #: Профили Крумхансл-Шмуклера: насколько «своей» слышится каждая ступень
@@ -396,11 +399,14 @@ def melody_to_compose_params(
     """
     options = options or HarmonizeOptions()
     source_bpm = melody.bpm
+    half_time_risk = detect_half_time_risk(melody)
     folded = _normalize_tempo(melody)
     leadin = _anacrusis_lead_in(folded)
     snapped = _snap_to_bar(leadin)
     registered = _apply_lead_octave(snapped, options.lead_octave)
-    melody = _apply_lead_outliers(registered, options.lead_outliers)
+    contour_breaks = detect_contour_breaks(registered)
+    contoured = _apply_contour_fixes(registered, contour_breaks)
+    melody = _apply_lead_outliers(contoured, options.lead_outliers)
     ranked = detect_key_ranked(
         [m for m, _ in melody.notes],
         [d for _, d in melody.notes],
@@ -416,6 +422,9 @@ def melody_to_compose_params(
         source_bpm, (folded, leadin, snapped, registered, melody), ranked
     )
     decisions.update(_prep_option_decisions(options))
+    decisions.update(
+        _prep_quality_decisions(contour_breaks, half_time_risk)
+    )
     if explicit:
         decisions.update(_explicit_key_decisions(melody, ranked[0], root, scale))
     return {
@@ -501,6 +510,38 @@ def _prep_option_decisions(options: HarmonizeOptions) -> Dict[str, object]:
         "key_detection": options.key_detection,
         "lead_octave_mode": options.lead_octave,
         "lead_outliers_mode": options.lead_outliers,
+    }
+
+
+def _prep_quality_decisions(
+    contour_breaks: Sequence[ContourBreak], half_time_risk: Optional[str]
+) -> Dict[str, object]:
+    """Итог общего детектора качества (issue #2959).
+
+    Для партитуры/``lookup_melody``.
+
+    ``contour_breaks_fixed`` — сколько разрывов исправлено автоматически
+    (однозначные одиночные октавные ошибки); ``contour_breaks_flagged`` —
+    сколько осталось только пометкой (правка неоднозначна). Оба числа —
+    не по конкретной записи, а по тому, что реально нашёл/применил
+    :func:`detect_contour_breaks` для ЭТОЙ темы.
+    """
+    fixed = [b for b in contour_breaks if b.auto_fixable]
+    flagged = [b for b in contour_breaks if not b.auto_fixable]
+    return {
+        "contour_breaks_fixed": len(fixed),
+        "contour_breaks_flagged": len(flagged),
+        "contour_break_details": [
+            {
+                "index": b.index,
+                "before": b.note_before,
+                "at": b.note_at,
+                "interval": b.interval,
+                "fixed": b.auto_fixable,
+            }
+            for b in contour_breaks
+        ],
+        "half_time_risk": half_time_risk,
     }
 
 
@@ -688,6 +729,332 @@ def _normalize_lead_register(melody: RtttlMelody) -> RtttlMelody:
         notes=tuple(
             (None if m is None else m + shift, dur) for m, dur in melody.notes
         ),
+    )
+
+
+class ContourBreak(NamedTuple):
+    """Разрыв контура фразы: скачок ПРОТИВ уже установившегося направления.
+
+    ``index`` — позиция в ``RtttlMelody.notes`` (с паузами, для правки на
+    месте). ``note_before``/``note_at`` — MIDI до и на разрыве.
+    ``interval`` — полутона от ``note_before`` до ``note_at`` (знак —
+    направление). ``run_direction`` — направление разбитого хода (+1 вверх,
+    -1 вниз). ``auto_fixable`` — перенос ``note_at`` на октаву навстречу
+    ходу (``octave_shift``, ``±12``) продолжает ход шагом, без создания
+    нового разрыва; для не-однозначных случаев ``octave_shift == 0`` и
+    правка не применяется — только пометка (см. :func:`detect_contour_breaks`).
+    """
+
+    index: int
+    note_before: int
+    note_at: int
+    interval: int
+    run_direction: int
+    auto_fixable: bool
+    octave_shift: int
+
+
+#: Шаг мелодии (полутона), который ещё считается «плавным ходом» и может
+#: наращивать бегущий тренд направления (секунда/терция/кварта — обычный
+#: словарь ступенчатого/скачкообразного, но не «сорвавшегося», движения).
+_CONTOUR_STEP_MAX = 4
+
+#: Минимальный скачок (полутона), который считается «разрывом» контура,
+#: если он идёт ПРОТИВ уже установившегося направления — тритон/септима и
+#: шире редко встречаются как продолжение ровного хода в реальных темах и
+#: являются типичным следом ошибки транскрипции на октаву (issue #2959,
+#: живой прогон 24.09: гимн России, «...вели́кая сла́ва» — после трёх ходов
+#: вверх ``A→B→C6`` следующая нота была записана на септиму НИЖЕ ожидаемого
+#: продолжения, хотя реально мелодия идёт кульминационно вверх).
+_CONTOUR_LEAP_MIN = 7
+
+#: Сколько подряд шагов в ОДНОМ направлении нужно, чтобы считать его
+#: «установившимся трендом» и вообще ПОМЕТИТЬ разрыв — с одного шага
+#: направление не показательно (могло быть просто широкой, но осмысленной
+#: терцией/квартой).
+_CONTOUR_RUN_MIN = 2
+
+#: Сколько подряд шагов нужно для АВТОПРАВКИ (строже :data:`_CONTOUR_RUN_MIN`
+#: — только пометки). 🔴 Живая проверка на архиве (issue #2959): при
+#: run_min=2 детектор ловил и настоящую октавную ошибку гимна (3-шаговый
+#: разбег ``A→B→C6`` перед разрывом), и ЛОЖНОЕ срабатывание на той же
+#: записи — двухшаговый разбег ``G5→A5→B5`` перед совершенно законным
+#: мелодическим ходом вниз на квинту (``B5→E5``, обычная фигура, не
+#: ошибка). Требование трёх шагов разбега отличает «мелодия явно набрала
+#: направление» от «просто два соседних интервала подряд» — без этого
+#: узла автоправка молча портила бы настоящую музыку.
+_CONTOUR_RUN_MIN_FIX = 3
+
+#: Насколько широким (полутонов) может быть шаг ПОСЛЕ применения фикса,
+#: чтобы он всё ещё правдоподобно продолжал ровный ход — чуть шире
+#: :data:`_CONTOUR_STEP_MAX`, потому что кульминация фразы иногда берёт
+#: шаг чуть больше обычного (issue #2959: реальный скачок к D6 — секунда
+#: от C6, вписывается с запасом).
+_CONTOUR_FIX_MAX_RESULT_STEP = _CONTOUR_STEP_MAX + 2
+
+#: Диапазон (полутона) вокруг ровной октавы, в котором сам разрыв должен
+#: лежать, чтобы считаться ПОХОЖИМ на октавную ошибку, а не на широкий, но
+#: законный ход мелодии вниз/вверх — реальная октавная опечатка даёт
+#: разрыв примерно «октава минус/плюс маленький шаг» (12 ± до
+#: :data:`_CONTOUR_STEP_MAX`), а не любой большой интервал.
+_CONTOUR_FIX_LEAP_RANGE = (12 - _CONTOUR_STEP_MAX, 12 + _CONTOUR_STEP_MAX)
+
+
+def detect_contour_breaks(melody: RtttlMelody) -> List[ContourBreak]:
+    """Найти скачки, разрывающие уже установившийся ход мелодии.
+
+    🔴 Источник (issue #2959, живой прогон 24.09.2026): «национальный
+    гимн» в архиве RTTTL оказался записан с октавной ошибкой ровно в
+    точке кульминации восходящей фразы — вместо продолжения вверх мелодия
+    «падала» на септиму. Товарищ Шифу попросил ОБЩИЙ детектор такого
+    класса ошибок (не патч одной записи, ADR-0132/ADR-0018): скачок
+    ПРОТИВ уже установившегося направления (не менее
+    :data:`_CONTOUR_RUN_MIN` шагов подряд одним курсом, каждый шаг —
+    не шире :data:`_CONTOUR_STEP_MAX` полутонов) величиной от
+    :data:`_CONTOUR_LEAP_MIN` полутонов и больше — типичный след того,
+    что записанная нота промахнулась на октаву мимо настоящей.
+
+    Пауза (``None``) МЕЖДУ двумя нотами обрывает тренд и НЕ участвует в
+    проверке разрыва вовсе — она почти всегда сама и есть граница фразы
+    (следующая фраза законно начинается на другой высоте, это не ошибка).
+
+    🔴 FIX (живая проверка на реальном архиве, вторая итерация): первая
+    версия работала по списку ЗВУЧАЩИХ нот без пауз (`_pitched_with_index`,
+    удалено) — интервал между нотами считался и ЧЕРЕЗ паузу. На «К Элизе»
+    (``furelise``) это ловило ложное срабатывание: после разбега
+    восходящими шагами арпеджио обрывается ПАУЗОЙ, и с паузы начинается
+    повтор темы («ми-ре#-ми...») на новой высоте — совершенно законный
+    возврат к началу пьесы, а не «упавшая на октаву» нота. Разрыв через
+    паузу детектор больше не проверяет вовсе.
+
+    Каждый найденный разрыв возвращается как :class:`ContourBreak`.
+    ``auto_fixable=True`` — только если ВСЁ сразу: перенос ноты на октаву
+    НАВСТРЕЧУ ходу превращает разрыв в шаг не шире
+    :data:`_CONTOUR_FIX_MAX_RESULT_STEP` полутонов в ТУ ЖЕ сторону, что и
+    установившийся тренд; разбег не короче :data:`_CONTOUR_RUN_MIN_FIX`
+    шагов; сам разрыв — в пределах :data:`_CONTOUR_FIX_LEAP_RANGE`; и нота
+    НЕ разрешается гладко дальше по мелодии (см. 🔴 FIX ниже). Иначе —
+    только пометка (``octave_shift == 0``), без правки: то же правило
+    «честный FAIL лучше красивого PASS» (AGENTS.md) — детектор не гадает,
+    если после фикса разрыв не закрывается уверенно.
+
+    🔴 FIX (живая проверка, третья итерация): «The Final Countdown»
+    (``finalcou``) после первых двух фильтров всё ещё ловился ложно —
+    3+-шаговый спуск, затем скачок ВВЕРХ к высокой ноте (реальная
+    кульминация риффа), и СРАЗУ ЗА НЕЙ, без паузы, шаг вниз на разрешение
+    (её собственный «выдох»). У настоящей октавной ошибки (гимн России)
+    такого гладкого продолжения нет — ошибочная нота либо последняя перед
+    паузой, либо сама рвёт мелодию дальше. Поэтому нота, чей СЛЕДУЮЩИЙ
+    (смежный, без паузы) сосед — маленький шаг от неё самой, в
+    ``auto_fixable`` не идёт: она уже встроена в непрерывную линию,
+    трогать её — рисковать задуманным широким ходом, а не ошибкой.
+
+    Работает на ЛЮБОЙ записи архива (не завязан на конкретную мелодию,
+    имя или список): применяется как общий шаг пайплайна
+    (:func:`melody_to_compose_params`) и как отдельный аудит
+    (``scripts/music/melody_quality_report.py``).
+    """
+    breaks: List[ContourBreak] = []
+    run_dir = 0
+    run_len = 0
+    # (индекс в notes, MIDI) последней ноты, смежной с текущей (без
+    # паузы между ними).
+    prev: Optional[Tuple[int, int]] = None
+    for i, (m, _d) in enumerate(melody.notes):
+        if m is None:
+            # Пауза — граница фразы: тренд не переживает её, и разрыв
+            # через неё не проверяется (следующая нота начинает НОВЫЙ
+            # отсчёт, а не продолжает прерванный).
+            run_dir = 0
+            run_len = 0
+            prev = None
+            continue
+        if prev is None:
+            prev = (i, m)
+            continue
+        prev_idx, prev_m = prev
+        delta = m - prev_m
+
+        is_established_run = run_len >= _CONTOUR_RUN_MIN and run_dir != 0
+        leap_dir = 1 if delta > 0 else -1
+        is_reversal = (
+            is_established_run
+            and abs(delta) >= _CONTOUR_LEAP_MIN
+            and leap_dir == -run_dir
+        )
+        if is_reversal:
+            breaks.append(
+                _evaluate_contour_break(melody, i, prev_m, m, run_dir, run_len)
+            )
+            # Разрыв закрывает тренд — не каскадировать на следующий шаг.
+            run_dir = 0
+            run_len = 0
+            prev = (i, m)
+            continue
+
+        step_dir = 1 if delta > 0 else (-1 if delta < 0 else 0)
+        is_step = 0 < abs(delta) <= _CONTOUR_STEP_MAX
+        if is_step and step_dir == run_dir:
+            run_len += 1
+        elif is_step:
+            run_dir = step_dir
+            run_len = 1
+        else:
+            run_dir = 0
+            run_len = 0
+        prev = (i, m)
+    return breaks
+
+
+def _evaluate_contour_break(
+    melody: RtttlMelody,
+    index: int,
+    prev_m: int,
+    m: int,
+    run_dir: int,
+    run_len: int,
+) -> ContourBreak:
+    """Собрать :class:`ContourBreak` и решить ``auto_fixable`` для разрыва.
+
+    Вынесено из :func:`detect_contour_breaks` отдельной функцией — там
+    решается ТОЛЬКО когда разрыв вообще есть (бегущий тренд + скачок
+    против него), здесь — насколько он однозначен для автоправки. См.
+    докстринг :func:`detect_contour_breaks` про все условия и их историю
+    (живые проверки на реальном архиве, три итерации).
+    """
+    delta = m - prev_m
+    shift = 12 * run_dir
+    fixed_delta = (m + shift) - prev_m
+    leap_near_octave = (
+        _CONTOUR_FIX_LEAP_RANGE[0] <= abs(delta) <= _CONTOUR_FIX_LEAP_RANGE[1]
+    )
+    # Нота УЖЕ гладко разрешается ДАЛЬШЕ по мелодии (следующая, смежная,
+    # без паузы — маленький шаг) — значит, встроена в непрерывную линию
+    # и это, вероятнее всего, ЗАДУМАННЫЙ широкий ход (скачок к
+    # кульминации, шаг вниз на разрешение), а не одинокая ошибка
+    # транскрипции. Реальная октавная опечатка либо завершает фразу перед
+    # паузой, либо сама продолжает разрыв — не разрешается гладко.
+    has_next = index + 1 < len(melody.notes)
+    next_m = melody.notes[index + 1][0] if has_next else None
+    resolves_forward = (
+        next_m is not None and abs(next_m - m) <= _CONTOUR_STEP_MAX
+    )
+    fixed_step_ok = 0 < fixed_delta * run_dir <= _CONTOUR_FIX_MAX_RESULT_STEP
+    auto_fixable = (
+        run_len >= _CONTOUR_RUN_MIN_FIX
+        and leap_near_octave
+        and not resolves_forward
+        and fixed_step_ok
+    )
+    return ContourBreak(
+        index=index,
+        note_before=prev_m,
+        note_at=m,
+        interval=delta,
+        run_direction=run_dir,
+        auto_fixable=auto_fixable,
+        octave_shift=shift if auto_fixable else 0,
+    )
+
+
+def _apply_contour_fixes(
+    melody: RtttlMelody, breaks: Sequence[ContourBreak]
+) -> RtttlMelody:
+    """Применить ТОЛЬКО однозначные (``auto_fixable``) правки.
+
+    Правки берутся из :func:`detect_contour_breaks`.
+    """
+    shifts = {
+        b.index: b.octave_shift
+        for b in breaks
+        if b.auto_fixable and b.octave_shift
+    }
+    if not shifts:
+        return melody
+    notes = list(melody.notes)
+    for idx, shift in shifts.items():
+        m, dur = notes[idx]
+        if m is not None:
+            notes[idx] = (m + shift, dur)
+    return RtttlMelody(bpm=melody.bpm, notes=tuple(notes))
+
+
+#: Минимум звучащих нот, чтобы половинно-темповую эвристику вообще
+#: применять — короткие мотивы (сигналы, риффы) слишком коротки, чтобы
+#: статистика длительностей вообще что-то показывала.
+_HALF_TIME_MIN_NOTES = 24
+
+#: Темп (b=), ниже которого россыпь мелких длительностей — обычное дело
+#: (медленная тема из одних восьмых при b=70 звучит нормально) и эвристика
+#: не применяется вовсе.
+_HALF_TIME_MIN_BPM = 150
+
+#: Длительность (в долях такта), начиная с которой нота считается «долгой»
+#: (половинная и длиннее). Достаточно ОДНОЙ такой ноты на тему, чтобы
+#: снять подозрение.
+_HALF_TIME_LONG_NOTE_BEATS = 2.0
+
+#: Длительность (в долях такта) — «шестнадцатая или мельче»: собственно
+#: единица, которую подозреваем как «записанную вместо восьмой/четверти».
+_HALF_TIME_FINE_NOTE_BEATS = 0.25
+
+#: Доля нот темы мельче :data:`_HALF_TIME_FINE_NOTE_BEATS`, начиная с
+#: которой это уже не «немного быстрых проходящих нот», а «весь ритм
+#: составлен из самой мелкой единицы».
+_HALF_TIME_FINE_FRACTION = 0.7
+
+
+def detect_half_time_risk(melody: RtttlMelody) -> Optional[str]:
+    """Эвристика «запись в половинных длительностях» — ТОЛЬКО пометка.
+
+    Без правки — см. подробности ниже.
+
+    🔴 issue #2959: у гимна России весь ритм был записан вдвое мельче
+    настоящего (половинная — четвертью и т.п.) при темпе, который сам по
+    себе не выглядит подозрительно (``b=125`` — в рабочем диапазоне,
+    :func:`_normalize_tempo` его не трогает). Без эталонной партитуры
+    отличить «так и задумано» от «записано вдвое мельче» алгоритмически
+    нельзя — поэтому это ТОЛЬКО предупреждение (в духе AGENTS.md «честный
+    FAIL лучше красивого PASS»), не автоправка.
+
+    🔴 Живая проверка на архиве (issue #2959, вторая итерация): первая
+    версия («нет ни одной ноты ≥ половинной, темп ≥100») помечала ~4000 из
+    10461 записей (40% архива) — архив ``mixed3`` почти целиком состоит из
+    попсовых рингтонов, у которых «весь ритм из восьмых/шестнадцатых на
+    быстром темпе» — норма жанра, а не брак. Такой уровень шума
+    бесполезен для модели («подозрительно почти всё» = «не подозрительно
+    ничто»). Порог ужесточён по трём осям сразу (не по одной — иначе то же
+    перекрытие с нормой жанра): длинная тема
+    (:data:`_HALF_TIME_MIN_NOTES`+ нот), высокий темп
+    (:data:`_HALF_TIME_MIN_BPM`+) И подавляющее большинство нот темы
+    (:data:`_HALF_TIME_FINE_FRACTION`) короче шестнадцатой
+    (:data:`_HALF_TIME_FINE_NOTE_BEATS`) — то есть ритм не просто «быстрый
+    рингтон», а «явно весь записан на ступень мельче своей естественной
+    единицы». На архиве это ~0.7% записей (см.
+    ``scripts/music/melody_quality_report.py``) — сам ``national_2``
+    (b=125) под порог :data:`_HALF_TIME_MIN_BPM` не попадает: это
+    ОБЩИЙ, а не подогнанный под гимн детектор (задача issue #2959 —
+    системная эвристика, не фикс одной записи).
+
+    Не привязан к конкретной записи/имени/тегу — тот же вызов для любой
+    темы архива.
+    """
+    durations = [d for m, d in melody.notes if m is not None]
+    if len(durations) < _HALF_TIME_MIN_NOTES:
+        return None
+    if melody.bpm < _HALF_TIME_MIN_BPM:
+        return None
+    if any(d >= _HALF_TIME_LONG_NOTE_BEATS for d in durations):
+        return None
+    fine = sum(1 for d in durations if d <= _HALF_TIME_FINE_NOTE_BEATS)
+    fine_fraction = fine / len(durations)
+    if fine_fraction < _HALF_TIME_FINE_FRACTION:
+        return None
+    return (
+        f"{len(durations)} нот, b={melody.bpm}, {fine_fraction:.0%} нот "
+        f"<= {_HALF_TIME_FINE_NOTE_BEATS:g} доли и ни одной >= "
+        f"{_HALF_TIME_LONG_NOTE_BEATS:g} долей — похоже на запись в "
+        "половинных длительностях (весь ритм на ступень мельче метра)"
     )
 
 
