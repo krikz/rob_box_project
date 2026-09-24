@@ -658,6 +658,9 @@ class DialogueNode(Node):
         self._run_task: Optional[asyncio.Task] = None
         self._task_lock = threading.Lock()
         self._run_cancelled: bool = False
+        # Issue #2939 — ход, отменённый новой фразой: сессию у него уже
+        # принял следующий ход, закрывать её (DIALOGUE_END) ему нельзя.
+        self._handed_over_task: Optional[asyncio.Task] = None
         # S7 (scheduler-segments-merge, issue #968) — phrases that arrive
         # while a turn's LLM cycle is still in flight (barge_in_policy=
         # "classify", quick_decide=PENDING_LLM) are queued here instead of
@@ -4935,6 +4938,7 @@ class DialogueNode(Node):
                 music_retry_dispatched=music_retry_dispatched,
                 pending_queue_dispatched=pending_queue_dispatched,
                 tool_retry_dispatched=tool_retry_dispatched,
+                session_handed_over=self._take_session_handover(),
             )
             TURN_EPOCH.reset(epoch_token)
 
@@ -6567,6 +6571,7 @@ class DialogueNode(Node):
         music_retry_dispatched: bool,
         pending_queue_dispatched: bool,
         tool_retry_dispatched: bool,
+        session_handed_over: bool = False,
     ) -> None:
         """Issue #992 Bug D / S7 — финальный DSM-переход в ``_run_turn``.
 
@@ -6577,7 +6582,9 @@ class DialogueNode(Node):
           (``guard_retry_pending`` / ``music_retry_dispatched`` /
           ``tool_retry_dispatched``),
         * очередь pending-сообщений не была слита в follow-up turn
-          (``pending_queue_dispatched``).
+          (``pending_queue_dispatched``),
+        * ход не отменён новой фразой (``session_handed_over``, issue
+          #2939): её приём уже перевёл DSM в DIALOGUE для СЛЕДУЮЩЕГО хода.
 
         Иначе ретрай/follow-up придёт в ``IDLE`` и короткозамкнётся без
         LLM (issue #992 Bug D, #1204). После успешного DIALOGUE_END
@@ -6590,6 +6597,7 @@ class DialogueNode(Node):
             and not music_retry_dispatched
             and not pending_queue_dispatched
             and not tool_retry_dispatched
+            and not session_handed_over
         ):
             self._dsm.on_event(DialogueEvent.DIALOGUE_END)
             # Issue #1160 — Prometheus metrics: сессия закрылась
@@ -9354,8 +9362,31 @@ class DialogueNode(Node):
             return
         self.get_logger().info(summary)
         self._last_skip_summary_ts = now
-    def _cancel_run(self, reason: str, *, stop_tts: bool = True) -> None:
+
+    def _take_session_handover(self) -> bool:
+        """Передал ли текущий ход сессию следующему (#2939).
+
+        Живой лог 24.09: barge-in отменил висящий ход, приём новой фразы
+        перевёл DSM в DIALOGUE, а ``finally`` отменённого хода закрыл
+        сессию (DIALOGUE_END → IDLE). Следующий ход пришёл в IDLE,
+        ``AgentCore`` не позвал LLM — пустой ответ за 1 мс и «Принял.».
+        Отметка ставится и тогда, когда ход успел доиграть сам, а отмена
+        опоздала: новая фраза всё равно уже принята — закрывать нечего.
+        """
+        task = asyncio.current_task()
+        with self._task_lock:
+            marked = getattr(self, "_handed_over_task", None) is task
+            if marked:
+                self._handed_over_task = None
+        return marked
+
+    def _cancel_run(
+        self, reason: str, *, stop_tts: bool = True, hand_over: bool = False
+    ) -> None:
         """Cancel the in-flight LLM turn, optionally muting TTS.
+
+        ``hand_over=True`` (issue #2939) — отмена ради новой фразы, которая
+        сама продолжит сессию: отменённый ход не должен её закрывать.
 
         S1.2 (scheduler-segments-merge, R1) — cancelling the turn and
         muting TTS used to be one inseparable action. ``barge_in_policy=
@@ -9368,6 +9399,8 @@ class DialogueNode(Node):
         self._run_cancelled = True
         with self._task_lock:
             task = self._run_task
+            if hand_over and task is not None and not task.done():
+                self._handed_over_task = task
         if task is not None and not task.done():
             self.get_logger().info(f"🛑 Cancel: {reason}")
             self._loop.call_soon_threadsafe(task.cancel)
@@ -9665,7 +9698,9 @@ class _DialogueSttHost:
         return True
 
     def cancel_inflight(self, stop_tts: bool) -> None:
-        self._node._cancel_run("new STT input", stop_tts=stop_tts)
+        # Issue #2939 — за отменой всегда идёт DispatchTriggerStep:
+        # сессию принимает новый ход.
+        self._node._cancel_run("new STT input", stop_tts=stop_tts, hand_over=True)
 
     def transition_idle_to_wake(self) -> bool:
         node = self._node
