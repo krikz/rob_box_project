@@ -77,6 +77,15 @@ REASON_NEW_TOPIC = "new_topic"
 REASON_USER_OVERRIDE = "user_override"
 REASON_LLM = "llm"
 
+# Issue #2934 — при регистрации (REASON_FIRST_SEEN) о человеке ещё нет
+# фактов, и LLM честно отвечает «-» (#2927): словарная кличка остаётся
+# навсегда, клички из 2–4 слов (#2887) перестают появляться вообще.
+# Сколько реплик спикера должно накопиться, прежде чем есть смысл
+# попросить LLM снова — маленькое число: кличка фоновая, ждать
+# MIN_WORDS_FOR_TAGS-объёма речи означало бы держать очередной запрос
+# до момента, когда тема разговора уже сменится.
+EPITHET_REASK_MIN_MESSAGES: int = 3
+
 # Причины отказа LLM-клички (issue #2886: пишутся в лог speaker_id_node,
 # чтобы по логу было видно, какая проверка сработала).
 REJECT_EMPTY = "empty"
@@ -746,6 +755,36 @@ def should_review(
     return (now_ts - float(last_review_ts)) >= min_interval_days * SECONDS_PER_DAY
 
 
+def should_reask_llm_epithet(
+    epithet_history: Sequence[dict],
+    message_count: int,
+    *,
+    min_messages: int = EPITHET_REASK_MIN_MESSAGES,
+) -> bool:
+    """Пора ли снова попросить LLM кличку, когда накопились факты (#2934).
+
+    При первом знакомстве (``REASON_FIRST_SEEN``) LLM спрашивают кличку
+    раньше, чем человек успел о себе что-то рассказать — #2927 сделал
+    честный отказ ``-`` штатным для этого момента, и без повторного
+    запроса словарная кличка остаётся навсегда: клички из 2–4 слов
+    (#2887) не появляются вообще.
+
+    ``True`` только пока кличка словарная: если последняя запись в
+    ``epithet_history`` — ``REASON_LLM``, LLM её уже придумала, и трогать
+    не нужно (#2887 — LLM-кличка не перезаписывается). Пустая история
+    (профиль без единого пересмотра) тоже считается «ещё словарной».
+
+    Частоту («не чаще раза на профиль за сессию») эта функция не
+    считает — у неё нет состояния между вызовами; это обязанность
+    вызывающего кода (``speaker_id_node._epithet_llm_reasked``).
+    """
+    if message_count < min_messages:
+        return False
+    if epithet_history and epithet_history[-1].get("reason") == REASON_LLM:
+        return False
+    return True
+
+
 def find_distinctive_topic(
     current_tags: Sequence[str],
     new_tags: Sequence[TagScore],
@@ -768,6 +807,7 @@ def find_distinctive_topic(
 
 __all__ = [
     "CLUSTER_KEYWORDS",
+    "EPITHET_REASK_MIN_MESSAGES",
     "LLM_EPITHET_MAX_LEN",
     "LLM_EPITHET_MAX_WORDS",
     "LLM_EPITHET_MIN_LEN",
@@ -804,4 +844,5 @@ __all__ = [
     "find_distinctive_topic",
     "score_sentiment",
     "should_review",
+    "should_reask_llm_epithet",
 ]

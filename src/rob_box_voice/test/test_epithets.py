@@ -655,3 +655,55 @@ def test_issue_2926_check_llm_epithet_names_refusal_reason():
     label, why = ep.check_llm_epithet("Пока нечего показать")
     assert label is None
     assert why == ep.REJECT_REFUSAL == "refusal"
+
+
+# ── Issue #2934: переспрос LLM-клички, когда появились факты ────────────────
+
+
+def test_issue_2934_no_reask_before_enough_messages():
+    """Меньше EPITHET_REASK_MIN_MESSAGES реплик — фактов ещё мало, не спрашиваем."""
+    assert ep.should_reask_llm_epithet([], 0) is False
+    assert (
+        ep.should_reask_llm_epithet([], ep.EPITHET_REASK_MIN_MESSAGES - 1) is False
+    )
+
+
+def test_issue_2934_reask_once_facts_accumulated():
+    """Реплик накопилось достаточно, кличка всё ещё словарная — переспрашиваем."""
+    history = [{"ts": 1.0, "old": None, "new": "Странник", "reason": ep.REASON_FIRST_SEEN}]
+    assert (
+        ep.should_reask_llm_epithet(history, ep.EPITHET_REASK_MIN_MESSAGES) is True
+    )
+
+
+def test_issue_2934_empty_history_still_dictionary():
+    """Профиль без единой записи в истории тоже 'ещё словарный' (#2934)."""
+    assert ep.should_reask_llm_epithet([], ep.EPITHET_REASK_MIN_MESSAGES) is True
+
+
+def test_issue_2934_llm_epithet_is_not_overwritten():
+    """Если последний пересмотр — REASON_LLM, кличку не трогаем (#2887)."""
+    history = [
+        {"ts": 1.0, "old": None, "new": "Странник", "reason": ep.REASON_FIRST_SEEN},
+        {"ts": 2.0, "old": "Странник", "new": "Ночной паяльщик моторов", "reason": ep.REASON_LLM},
+    ]
+    assert (
+        ep.should_reask_llm_epithet(history, ep.EPITHET_REASK_MIN_MESSAGES * 10)
+        is False
+    )
+
+
+def test_issue_2934_new_topic_reason_still_dictionary():
+    """REASON_NEW_TOPIC — тоже словарный пересмотр (#1787), можно переспрашивать."""
+    history = [
+        {"ts": 1.0, "old": None, "new": "Странник", "reason": ep.REASON_FIRST_SEEN},
+        {
+            "ts": 2.0,
+            "old": "Странник",
+            "new": "Наблюдатель",
+            "reason": f"{ep.REASON_NEW_TOPIC}:техно",
+        },
+    ]
+    assert (
+        ep.should_reask_llm_epithet(history, ep.EPITHET_REASK_MIN_MESSAGES) is True
+    )

@@ -484,6 +484,12 @@ class SpeakerIdNode(Node):
         # активной сессии (ничего не растим).
         self._growth_session: Optional[dict] = None
 
+        # Issue #2934 — speaker_id, для которых уже переспрашивали LLM
+        # кличку после появления фактов (см. ``_process_observation``).
+        # Живёт до перезапуска узла — «не чаще раза на профиль за сессию»
+        # буквально про время жизни этого множества.
+        self._epithet_llm_reasked: set = set()
+
         # ── Pending registration ───────────────────────────────────────────────
         # Set when user says "запомни мой голос как [name]" via /voice/speaker/register.
         # The NEXT speech utterance will be registered under this name.
@@ -1996,6 +2002,8 @@ class SpeakerIdNode(Node):
                 )
                 return
 
+            self._maybe_reask_llm_epithet(speaker_id, profile, tags, messages)
+
             # Пересмотр — только при новой доминирующей теме И не чаще
             # раза в MIN_REVIEW_INTERVAL_DAYS (research §4.1: стабильность
             # клички важнее реактивности).
@@ -2060,6 +2068,38 @@ class SpeakerIdNode(Node):
         )
         self._request_llm_epithet(speaker_id, candidate, messages or [])
         return candidate.label
+
+    def _maybe_reask_llm_epithet(
+        self, speaker_id: str, profile: dict, tags: list, messages: list
+    ) -> None:
+        """Issue #2934 — переспросить LLM кличку, когда накопились факты.
+
+        При регистрации (``_ensure_epithet``) LLM просят кличку раньше,
+        чем человек успел о себе что-то рассказать, и #2927 сделал
+        честный отказ ``-`` штатным для этого момента: без повторного
+        запроса словарная кличка остаётся навсегда, клички из 2–4 слов
+        (#2887) не появляются вообще. ``epithets.should_reask_llm_epithet``
+        решает, пора ли (порог реплик и «кличка ещё словарная»);
+        ``_epithet_llm_reasked`` держит частоту — не чаще раза на профиль
+        за сессию узла.
+        """
+        if speaker_id in self._epithet_llm_reasked:
+            return
+        if not epithets.should_reask_llm_epithet(
+            profile["epithet_history"], len(messages)
+        ):
+            return
+        self._epithet_llm_reasked.add(speaker_id)
+        dominant_cluster = tags[0].cluster if tags else "default"
+        self._request_llm_epithet(
+            speaker_id,
+            epithets.EpithetCandidate(
+                label=profile["epithet"],
+                source_cluster=dominant_cluster,
+                confidence=0.5,
+            ),
+            messages,
+        )
 
     def _request_llm_epithet(self, speaker_id: str, candidate, messages: list) -> None:
         """Попросить dialogue_node придумать кличку через LLM (слой 2)."""
