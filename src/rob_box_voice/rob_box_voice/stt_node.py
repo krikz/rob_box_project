@@ -1836,6 +1836,9 @@ class STTNode(Node):
             for response in responses:
                 response_count += 1
                 event_type = response.WhichOneof("Event")
+                # #2931: сборщику нужны и partial (текст, который сервер не
+                # зафиксировал в final), и eou_update (для trace).
+                segments.feed(response, event_type)
 
                 if event_type == "partial":
                     partial_count += 1
@@ -1861,24 +1864,25 @@ class STTNode(Node):
                     # "end_of_utterance" — такого нет, счётчик всегда был 0).
                     eou_events += 1
                     continue
-
-                elif event_type in ("final", "final_refinement"):
-                    segments.feed(response, event_type)
         except grpc.RpcError as e:
             raise self._on_yandex_stream_error(
                 e,
                 f"phase={phase} responses={response_count} "
                 f"partials={partial_count} eou={eou_events} "
-                f"segments={segments.segment_count}",
+                f"segments={segments.segment_count} "
+                f"stream=[{segments.trace()}]",
             )
 
         final_text = segments.text()
         # Issue #1477 — телеметрия по фазе: partials/finals/eou;
-        # #2891 — число склеенных сегментов.
-        self.get_logger().debug(
-            f"📊 [issue 1477] phase={phase} partials={partial_count} "
+        # #2891 — число склеенных сегментов; #2931 — события стрима на INFO:
+        # без них «робот» из начала фразы пропал, а чем именно (partial без
+        # final / пустой final / уточнение не туда / сервер не услышал) —
+        # по логу робота было не понять.
+        self.get_logger().info(
+            f"📊 [#2931] yandex phase={phase} partials={partial_count} "
             f"eou={eou_events} segments={segments.segment_count} "
-            f"final={final_text!r} last_partial={last_partial!r}"
+            f"stream=[{segments.trace()}] final={final_text!r}"
         )
 
         result_text = None

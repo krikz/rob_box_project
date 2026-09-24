@@ -2096,6 +2096,36 @@ class TestYandexAllSegments:
         assert stt_node_no_vosk._last_speaker_tag == "1"
 
 
+class TestIssue2931YandexFirstSegment:
+    """Issue #2931 — «Робот, привет, давай знакомиться…» трижды пришло без
+    «робот» (E2E run 35943180077, n201). Прогон через настоящий
+    ``_recognize_yandex_phase``: «робот» сервер показал только partial'ом,
+    final его сегмента не прислал."""
+
+    @staticmethod
+    def _timed(event_type, text, start, end, final_index=0):
+        resp = _yandex_response(event_type, text, final_index)
+        getattr(resp, event_type).alternatives[0].start_time_ms = start
+        getattr(resp, event_type).alternatives[0].end_time_ms = end
+        return resp
+
+    def test_first_word_only_in_partial_is_kept_and_logged(self, stt_node_no_vosk, caplog):
+        node = stt_node_no_vosk
+        responses = [
+            self._timed("partial", "робот", 0, 640),
+            self._timed("partial", "привет давай", 1900, 2600),
+            self._timed("final", "привет давай знакомиться как следует", 1900, 6100, 0),
+            _yandex_response("eou_update"),
+        ]
+        node.yandex_stub.RecognizeStreaming.side_effect = lambda gen, metadata=None, timeout=None: iter(responses)
+        with caplog.at_level(logging.INFO, logger="test_stt_node_fallback"):
+            text = node._recognize_yandex_phase(b"\x00" * 8000, phase="REAL_TIME", enable_speech_analysis=True)
+        assert text == "робот привет давай знакомиться как следует"
+        info = [r.getMessage() for r in caplog.records if r.levelno == logging.INFO and "[#2931]" in r.getMessage()]
+        assert len(info) == 1, info
+        assert "P×1'робот'@0-640" in info[0] and "F#0'" in info[0] and "segments=2" in info[0], info[0]
+
+
 # ---------------------------------------------------------------------------
 # Issue #2924 — Yandex STT DEADLINE_EXCEEDED: сервер молчит весь дедлайн.
 # ---------------------------------------------------------------------------
