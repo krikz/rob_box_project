@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from rob_box_mcp_tools.core.arranger import BEATS_PER_BAR
 from rob_box_mcp_tools.core.rtttl_compose import (
     detect_key,
     melody_to_compose_params,
@@ -85,6 +86,54 @@ def test_melody_snapped_to_bar_with_tail_rest():
     # 2 восьмые = 1.0 доля, не кратно 4 → хвостовая пауза 3.0.
     assert params["lead_midi"] == "79, 79, None"
     assert params["lead_dur"] == "0.5, 0.5, 3"
+
+
+def test_melody_without_anacrusis_is_not_padded_at_head():
+    """Первая звучащая нота НЕ короче второй → не затакт, лид-ин не добавляется
+    (byte-identical golden для тем без затакта, issue #2960)."""
+    melody = rtttl_to_melody("x:d=8,o=5,b=100:8g5,8g5")
+    params = melody_to_compose_params(melody)
+    assert params["lead_midi"] == "79, 79, None"
+    assert params["decisions"]["anacrusis_pad_beats"] == 0.0
+
+
+def test_anacrusis_pad_puts_first_strong_note_on_bar_downbeat():
+    """issue #2960: гимн России (``national_2``, RTTTL ``8g,8p,c6,...``)
+    начинается с затакта — короткой ноты G перед сильной C6. Аранжировщик
+    раньше ставил ПЕРВУЮ ноту темы (затакт) на долю 0, поэтому опорная нота
+    C6 («си-») оказывалась на доле 1 — мимо каркаса ударных (X на 0/4) и
+    смены аккорда пэда (по тактам). Детектор затакта должен сдвинуть сетку
+    паузой так, чтобы онсет C6 стал кратен такту (4 доли), и совпал со
+    сменой аккорда.
+    """
+    library = RtttlLibrary()
+    entry = library.get("national_2")
+    assert entry is not None
+    melody = rtttl_to_melody(entry["rtttl"])
+    params = melody_to_compose_params(melody)
+
+    # Лид-ин затакта записан в decisions (ADR-0132 — для партитуры).
+    pad = params["decisions"]["anacrusis_pad_beats"]
+    assert pad > 0
+
+    midi_tokens = [None if t == "None" else int(t) for t in params["lead_midi"].split(", ")]
+    dur_tokens = [float(t) for t in params["lead_dur"].split(", ")]
+
+    # Онсет первой звучащей ноты после лид-ина (G затакт) и следующей за ним
+    # сильной ноты (C — «си-» гимна: pitch-class 0).
+    onset = 0.0
+    sounding = []
+    for m, d in zip(midi_tokens, dur_tokens):
+        if m is not None:
+            sounding.append((onset, m))
+        onset += d
+    strong_onset, strong_midi = sounding[1]
+    assert strong_midi % 12 == 0  # C
+    assert strong_onset % BEATS_PER_BAR == 0
+
+    # Смена аккорда пэда совпадает с онсетом сильной ноты.
+    chord_starts = {c.start for c in params["harmony"].chords}
+    assert strong_onset in chord_starts
 
 
 # ---------------------------------------------------------------------------

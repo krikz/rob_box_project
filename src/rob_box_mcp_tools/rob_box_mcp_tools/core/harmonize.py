@@ -1295,6 +1295,7 @@ def harmonize(
     scale: str,
     drum_style: str = DEFAULT_DRUM_STYLE,
     options: Optional[HarmonizeOptions] = None,
+    anacrusis_pad: float = 0.0,
 ) -> Harmonization:
     """Разложить тему на партии: аккорды, бас, пэд, контрмелодию, ударные.
 
@@ -1311,6 +1312,18 @@ def harmonize(
             Ручки подготовки темы (``key_detection``, ``lead_octave``,
             ``lead_outliers``) здесь не читаются — их исполняет
             ``rtttl_compose.melody_to_compose_params`` до вызова.
+        anacrusis_pad: пауза, вставленная в НАЧАЛО ``notes`` только ради
+            выравнивания затакта по сетке такта
+            (``rtttl_compose._anacrusis_lead_in``, issue #2960) — не часть
+            темы, а технический сдвиг. Считается ЧАСТЬЮ длины лупа (бас,
+            пэд, аккорды, ``bars`` — весь каркас честно держит вступительный
+            такт), но исключается из знаменателя :data:`density`
+            (см. ниже): иначе тишина перед затактом искусственно занижает
+            плотность и через :func:`_resolve_dense` молча выключает
+            контрголос/октавное удвоение темы (regression #2960 live —
+            гимн России с ``imperialbrass`` терял контрголос только из-за
+              добавленной паузы, не из-за самой темы). ``0.0`` (по
+            умолчанию) — прежнее поведение байт-в-байт.
 
     Returns:
         :class:`Harmonization` — все партии в абсолютных MIDI и битах.
@@ -1332,7 +1345,8 @@ def harmonize(
     hist = _onset_histogram(timed)
 
     onsets = sum(1 for _onset, midi, _dur in timed if midi is not None)
-    density = onsets / total if total > 0 else 0.0
+    material_total = max(total - max(anacrusis_pad, 0.0), 0.0)
+    density = onsets / material_total if material_total > 0 else 0.0
     dense = _resolve_dense(density, options.density)
     tonic_pc = VALID_ROOTS.index(root) if root in VALID_ROOTS else 0
     bass, approaches = _styled_bass(
