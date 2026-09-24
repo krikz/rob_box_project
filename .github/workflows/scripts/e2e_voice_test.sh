@@ -55,9 +55,11 @@ ROBOT_USER="${ROBOT_USER:-ros2}"
 GITHUB_RUN_ID="${GITHUB_RUN_ID:-}"
 # NOTE (retro t_0a5d65af, round-50): НЕЛЬЗЯ ставить "LC_ALL=C " префиксом в
 # ROBOT_SSH — при раскрытии ${ROBOT_SSH} bash выполняет "LC_ALL=C" как КОМАНДУ
-# (rc=127 command not found), весь ROBOT_SSH возвращает пусто, check_cycle
-# видит пустые логи и выдаёт no_accept при живом роботе. Locale префикс
-# работает только как литерал перед командой, не через переменную.
+# (rc=127 command not found), весь ROBOT_SSH возвращает пусто. С issue #2933
+# check_cycle различает такой сбой SSH (rc!=0 → rc=3 «логи недоступны, не
+# переигрывать») от «робот действительно не принял» (rc=1) — но лучше
+# в такой сбой вообще не попадать: locale-префикс работает только как
+# литерал перед командой, не через переменную.
 ROBOT_SSH="sshpass -p ${SSHPASS:-open} ssh -n -o StrictHostKeyChecking=no ${ROBOT_USER}@${ROBOT_HOST}"
 # Override для локального тестирования (юнит-тесты): если задан ROBOT_SSH_OVERRIDE,
 # используем его вместо ssh-команды. Позволяет bash-юнит-тестам подсунуть
@@ -1424,11 +1426,30 @@ synth_command() {  # $1=text $2=voice $3=out_wav
 
 # Проверка полного цикла в логах робота с момента BEFORE.
 # Возвращает: 0 = полный цикл (акцепт+LLM+TTS в ПРАВИЛЬНОМ ПОРЯДКЕ),
-#             1 = нет акцепта, 2 = LLM/TTS error
+#             1 = нет акцепта (ПРИНЯТО в логах ДЕЙСТВИТЕЛЬНО нет — можно
+#                 переигрывать реплику),
+#             2 = LLM/TTS error,
+#             3 = issue #2933 — ПРИНЯТО есть (робот реплику принял), но
+#                 полный цикл ещё НЕ подтверждён: либо логи с робота не
+#                 прочитались (SSH/docker недоступны), либо TTS/LLM ещё не
+#                 закрылись в окне (ретрай гарда — 2× process_input/TTS —
+#                 может не уложиться в E2E_REACTION_WINDOW). Это НЕ «нет
+#                 акцепта»: caller (run_step) обязан ДОЖДАТЬСЯ цикла, а не
+#                 переигрывать команду — иначе робот получает дубли (run
+#                 35941885025, n704 ×3: три полных цикла в логах робота,
+#                 харнесс трижды написал no_accept).
 check_cycle() {  # $1=before_rfc3339
     local before="$1"
-    local logs
-    logs="$(${ROBOT_SSH} "docker logs voice-assistant --since '${before}' 2>&1" 2>/dev/null || echo '')"
+    local logs ssh_rc
+    logs="$(${ROBOT_SSH} "docker logs voice-assistant --since '${before}' 2>&1" 2>/dev/null)"
+    ssh_rc=$?
+    if [ "$ssh_rc" != "0" ]; then
+        # issue #2933: раньше `|| echo ''` схлопывал SSH-сбой в тот же rc=1,
+        # что и «робот молчит» — и caller переигрывал реплику вслепую.
+        # «Логи не прочитались» и «робот не принял» — разные диагнозы.
+        log "check_cycle: ⚠️ docker logs недоступны по SSH (rc=${ssh_rc}) — не «нет акцепта», перечитываю"
+        return 3
+    fi
     # 1) акцепт STT
     if ! printf '%s' "$logs" | grep -q "ПРИНЯТО"; then
         return 1   # нет акцепта → retry команды
@@ -1437,7 +1458,8 @@ check_cycle() {  # $1=before_rfc3339
     #    не чиним. 429/quota — НЕ красный: minimax квота (2056) исчерпана
     #    постоянно, но fallback-цепочка на deepseek (PR #1099) в develop
     #    работает — цикл завершается на следующем провайдере. Если TTS уже
-    #    есть — fallback сработал, не ошибка; если TTS нет — retry (return 1).
+    #    есть — fallback сработал, не ошибка; если TTS нет — ПРИНЯТО уже
+    #    зафиксировано, ждём (return 3), не переигрываем (issue #2933).
     if printf '%s' "$logs" | grep -qE "Empty assistant response|LLM.*(error|failed)"; then
         printf '%s' "$logs" | grep -E "Empty assistant response|LLM.*(error|failed)" | tail -3 > "$OUT_DIR/llm_error.txt"
         return 2
@@ -1445,8 +1467,8 @@ check_cycle() {  # $1=before_rfc3339
     if printf '%s' "$logs" | grep -qE "429 Too Many|quota"; then
         if ! printf '%s' "$logs" | grep -q "TTS finished"; then
             printf '%s' "$logs" | grep -E "429|quota" | tail -3 > "$OUT_DIR/llm_quota.txt"
-            log "⚠️ minimax 429/quota в логах, TTS не завершился — retry (fallback deepseek)"
-            return 1
+            log "⚠️ minimax 429/quota в логах, TTS не завершился, но ПРИНЯТО есть — жду (fallback deepseek), не переигрываю"
+            return 3
         fi
     fi
     # 3) ПОРЯДОК: LLM INPUT команды должен быть ПОСЛЕ ПРИНЯТО,
@@ -1471,7 +1493,11 @@ check_cycle() {  # $1=before_rfc3339
         tts_ts="$(printf '%s' "$logs" | grep 'TTS finished' | head -1 | grep -oE '[0-9]{2}:[0-9]{2}:[0-9]{2}' | head -1)"
     fi
     if [ -z "$accept_ts" ] || [ -z "$tts_ts" ]; then
-        return 1
+        # issue #2933: ПРИНЯТО в логах ЕСТЬ (мы уже прошли проверку в п.1) —
+        # либо timestamp не спарсился, либо «TTS finished» ещё не пришёл в
+        # окно (ретрай гарда — 2 process_input/2 TTS — не уложился в
+        # E2E_REACTION_WINDOW). Это НЕ «нет акцепта»: не переигрываем.
+        return 3
     fi
     # LLM INPUT может отсутствовать (DJ/короткий ответ) — но если есть,
     # TTS должен быть ПОСЛЕ него. В любом случае TTS должен быть ПОСЛЕ акцепта.
@@ -1480,7 +1506,10 @@ check_cycle() {  # $1=before_rfc3339
             : # tts после llm — ок
         else
             printf '%s' "$logs" | grep -E "ПРИНЯТО|LLM INPUT|TTS finished" | tail -5 > "$OUT_DIR/stale_cycle.txt"
-            return 1   # TTS ДО LLM INPUT = приветствие/старый цикл, не реакция
+            # issue #2933: ПРИНЯТО есть — самый свежий «TTS finished» в окне
+            # ещё относится к предыдущему циклу (ретрай гарда не успел
+            # закрыться). Не «нет акцепта» — ждём, не переигрываем.
+            return 3
         fi
     fi
     if awk "BEGIN{exit !($tts_ts > $accept_ts)}"; then
@@ -1488,7 +1517,10 @@ check_cycle() {  # $1=before_rfc3339
         return 0
     fi
     printf '%s' "$logs" | grep -E "ПРИНЯТО|LLM INPUT|TTS finished" | tail -5 > "$OUT_DIR/stale_cycle.txt"
-    return 1   # TTS ДО акцепта = приветствие
+    # issue #2933: ПРИНЯТО есть — найденный «TTS finished» лишь ВЫГЛЯДИТ
+    # стоящим до акцепта (обычно wall-clock fallback без даты/суток).
+    # Не «нет акцепта» — ждём подтверждения, не переигрываем.
+    return 3
 }
 
 # Проверка ожидаемых паттернов (для фич, напр. speaker_analysis)
@@ -1868,26 +1900,45 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
     fi
 
     # 3. Retry-цикл акцепта
-    local attempt reaction rc
+    #
+    # issue #2933 (run 35941885025, n704 ×3): робот трижды отработал ПОЛНЫЙ
+    # цикл (ПРИНЯТО → LLM → TTS) в своих логах, а харнесс трижды написал
+    # «нет акцепта» и переиграл реплику — робот получил три дубля одной
+    # команды. Причина — check_cycle() не различал «ПРИНЯТО ЕСТЬ, но цикл
+    # ещё не закрылся в окне проверки (ретрай гарда — 2×process_input/TTS —
+    # не всегда укладывается в E2E_REACTION_WINDOW), либо логи с робота не
+    # прочитались по SSH» и «робот реально не услышал» (rc=1). Теперь
+    # check_cycle возвращает отдельный rc=3 для первого случая, и здесь мы
+    # НЕ переигрываем paplay, пока не убедимся, что акцепта правда не было —
+    # только продолжаем ждать/перечитывать логи ТОГО ЖЕ окна.
+    local attempt reaction rc accepted_before=""
     reaction=0
     for attempt in $(seq 1 "$E2E_MAX_ATTEMPTS"); do
-        BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
-        log "STEP ${label}: PLAY attempt ${attempt}/${E2E_MAX_ATTEMPTS}"
-        # Громкость динамика 100% (по умолчанию; явный >100% доступен через
-        # inputs.volume в workflow, e.g. -f volume=120).
-        pactl set-sink-volume @DEFAULT_SINK@ 100% 2>/dev/null || true
-        # cleanup-resilience (ретро 11.08 t_26a6d362): если eq-файл пропал
-        # (OUT_DIR удалён внешним cleanup на 249) — пере-синтезируем и EQ,
-        # а не получаем ложный FAIL от paplay open(): No such file.
-        if [ ! -f "$OUT_DIR/cmd_${safe}_eq.wav" ]; then
-            log "STEP ${label}: cmd_${safe}_eq.wav отсутствует перед play — пере-синтез (cleanup-resilience)"
-            ensure_outdir
-            synth_command "$text" "$voice" "$OUT_DIR/cmd_${safe}.wav" > "$OUT_DIR/synth_${safe}.log" 2>&1 \
-                || { log "STEP ${label}: FAIL — повторный синтез ${E2E_TTS_PROVIDER_RESOLVED:-$E2E_TTS_PROVIDER} упал ($(tail -1 "$OUT_DIR/synth_${safe}.log"))"; emit_step "${label} FAIL synth"; mark_fail_kind synth; return 1; }
-            ensure_outdir
-            ffmpeg -nostdin -y -i "$OUT_DIR/cmd_${safe}.wav" -af "highpass=f=100,volume=3.0,alimiter=limit=0.98,adelay=1500|all=1" -ac 1 -ar 16000 "$OUT_DIR/cmd_${safe}_eq.wav" 2>/dev/null
+        if [ -n "$accepted_before" ]; then
+            # ПРИНЯТО уже зафиксировано на предыдущей проверке этого шага —
+            # НЕ переигрываем команду повторно (issue #2933: дубли на
+            # роботе), просто ждём/перечитываем логи того же окна.
+            BEFORE="$accepted_before"
+            log "STEP ${label}: attempt ${attempt}/${E2E_MAX_ATTEMPTS} — ПРИНЯТО уже было, PLAY пропущен, жду завершения цикла (issue #2933)"
+        else
+            BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+            log "STEP ${label}: PLAY attempt ${attempt}/${E2E_MAX_ATTEMPTS}"
+            # Громкость динамика 100% (по умолчанию; явный >100% доступен через
+            # inputs.volume в workflow, e.g. -f volume=120).
+            pactl set-sink-volume @DEFAULT_SINK@ 100% 2>/dev/null || true
+            # cleanup-resilience (ретро 11.08 t_26a6d362): если eq-файл пропал
+            # (OUT_DIR удалён внешним cleanup на 249) — пере-синтезируем и EQ,
+            # а не получаем ложный FAIL от paplay open(): No such file.
+            if [ ! -f "$OUT_DIR/cmd_${safe}_eq.wav" ]; then
+                log "STEP ${label}: cmd_${safe}_eq.wav отсутствует перед play — пере-синтез (cleanup-resilience)"
+                ensure_outdir
+                synth_command "$text" "$voice" "$OUT_DIR/cmd_${safe}.wav" > "$OUT_DIR/synth_${safe}.log" 2>&1 \
+                    || { log "STEP ${label}: FAIL — повторный синтез ${E2E_TTS_PROVIDER_RESOLVED:-$E2E_TTS_PROVIDER} упал ($(tail -1 "$OUT_DIR/synth_${safe}.log"))"; emit_step "${label} FAIL synth"; mark_fail_kind synth; return 1; }
+                ensure_outdir
+                ffmpeg -nostdin -y -i "$OUT_DIR/cmd_${safe}.wav" -af "highpass=f=100,volume=3.0,alimiter=limit=0.98,adelay=1500|all=1" -ac 1 -ar 16000 "$OUT_DIR/cmd_${safe}_eq.wav" 2>/dev/null
+            fi
+            paplay "$OUT_DIR/cmd_${safe}_eq.wav" && log "  PLAY_DONE" || log "  PLAY_FAIL"
         fi
-        paplay "$OUT_DIR/cmd_${safe}_eq.wav" && log "  PLAY_DONE" || log "  PLAY_FAIL"
         sleep "$E2E_REACTION_WINDOW"
 
         check_cycle "$BEFORE"
@@ -1901,12 +1952,25 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
             emit_step "${label} FAIL llm_error (см. $OUT_DIR/llm_error.txt)"
             mark_fail_kind llm_error
             return 2
+        elif [ "$rc" = "3" ]; then
+            accepted_before="$BEFORE"
+            log "STEP ${label}: ПРИНЯТО есть, цикл ещё не подтверждён (логи недоступны или ретрай гарда не уложился в окно) — жду (attempt ${attempt}), НЕ переигрываю"
+        else
+            log "STEP ${label}: нет акцепта (attempt ${attempt}) — повтор"
         fi
-        log "STEP ${label}: нет акцепта (attempt ${attempt}) — повтор"
         sleep "$E2E_RETRY_PAUSE"
     done
 
     if [ "$reaction" != "1" ]; then
+        if [ -n "$accepted_before" ]; then
+            # issue #2933: ПРИНЯТО было — это НЕ no_accept. Честный FAIL
+            # называет настоящую причину: цикл LLM/TTS не подтверждён в
+            # логах за отведённое число попыток, а не «робот не услышал».
+            log "STEP ${label}: ❌ ПРИНЯТО было, но цикл LLM/TTS не подтверждён в логах после ${E2E_MAX_ATTEMPTS} попыток (issue #2933)"
+            emit_step "${label} FAIL cycle_unconfirmed_after_accept"
+            mark_fail_kind no_reaction
+            return 1
+        fi
         # Та же развилка, что и в backlog-ветке: «робот не ответил» и «робот
         # не услышал, потому что audio_node отбросил звук до STT» — разные
         # диагнозы, и второй не имеет права выглядеть как первый.

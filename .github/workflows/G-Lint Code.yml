@@ -258,6 +258,19 @@ jobs:
             -o addopts="" \
             -p no:cacheprovider
 
+      # Issue #2933 (run 35941885025, n704 ×3): check_cycle() не отличал
+      # «ПРИНЯТО есть, цикл ещё не закрылся в окне (ретрай гарда / SSH-сбой)»
+      # от «робот не услышал» — обе ветки отдавали rc=1, и run_step()
+      # переигрывал paplay вслепую, хотя робот уже отработал полный цикл
+      # (робот получал дубли команды). Тест исполняет НАСТОЯЩИЕ check_cycle
+      # и run_step из e2e_voice_test.sh на фикстурах лога робота этого run.
+      - name: E2E harness false no_accept on accepted-but-unconfirmed cycle (issue #2933)
+        run: |
+          python -m pytest tests/unit/e2e_scripts/test_issue_2933_false_no_accept.py \
+            -v \
+            -o addopts="" \
+            -p no:cacheprovider
+
       # Issue #2865: проверка #2793 (memory_search по voice_facts) в акте 2
       # марафона не должна снова стать тавтологией — вопрос только после
       # сброса сессии, ключ не из вопроса, паттерн «поиск вернул хиты»
