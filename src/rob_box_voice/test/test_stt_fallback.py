@@ -9,7 +9,7 @@ Pure-Python, без rclpy/vosk/grpc. ``select_recognition`` принимает
 Acceptance (issue #979):
 - "фраза из 3-4 слов после TTS распознаётся в >80% случаев"
 - Фраза Vosk-мусора ("а", "а а") отклоняется как "rejected_short"
-- Retry один раз при timeout Yandex
+- Retry один раз при сетевой ошибке Yandex (timeout — без повтора, issue #2924)
 - Метрика logger.info с provider/reason/latency_ms появляется
 - e2e: yandex:ok → без fallback; yandex:timeout*2 → vosk:ok
 """
@@ -26,7 +26,6 @@ from rob_box_voice.stt_fallback import (
     DEFAULT_YANDEX_MAX_RETRIES,
     DEFAULT_YANDEX_TIMEOUT_S,
     STTAttempt,
-    STTTimeoutError,
     is_short_phrase,
     log_attempts,
     select_recognition,
@@ -207,8 +206,9 @@ class TestRetryBehaviour:
         assert attempts[0].reason == "error"
         assert "grpc timeout" in (attempts[0].error or "")
 
-    def test_timeout_both_attempts_falls_back_to_vosk(self):
-        # Yandex "висит" дольше timeout_s обе попытки
+    def test_timeout_is_not_retried_falls_back_to_vosk(self):
+        # Issue #2924: Yandex "висит" дольше timeout_s — второй заход в той же
+        # фразе НЕ делается (до фикса было yandex:timeout->yandex:timeout).
         primary = FakeProvider(
             "yandex",
             [LONG_PHRASE, LONG_PHRASE],  # любой ответ после timeout
@@ -219,17 +219,16 @@ class TestRetryBehaviour:
         text, attempts = select_recognition(
             [primary, fallback],
             b"\x00\x00" * 800,
-            timeout_s=0.02,  # обе попытки > 50ms > 20ms
+            timeout_s=0.02,  # попытка > 50ms > 20ms
             retry_backoff_s=0.0,
         )
 
         assert text == LONG_PHRASE
-        assert primary.call_count == 2
+        assert primary.call_count == 1
         assert fallback.call_count == 1
         assert attempts[0].reason == "timeout"
-        assert attempts[1].reason == "timeout"
-        assert attempts[2].provider == "vosk"
-        assert attempts[2].reason == "ok"
+        assert attempts[1].provider == "vosk"
+        assert attempts[1].reason == "ok"
 
     def test_no_retry_on_fallback_provider(self):
         # Vosk (fallback) ошибся — мы НЕ retry, идём дальше (или сдаёмся).
@@ -337,23 +336,22 @@ class TestFallbackDecisions:
             retry_backoff_s=0.0,
         )
         assert text == PHASE3_PHRASE
-        # primary: 2 попытки (initial + 1 retry), обе timeout
+        # primary: 1 попытка, timeout НЕ ретраится (issue #2924)
         assert attempts[0].reason == "timeout"
-        assert attempts[1].reason == "timeout"
-        assert attempts[1].provider == "yandex"
+        assert attempts[0].provider == "yandex"
         # fallback: vosk, ok
-        assert attempts[2].provider == "vosk"
-        assert attempts[2].reason == "ok"
+        assert attempts[1].provider == "vosk"
+        assert attempts[1].reason == "ok"
 
     def test_three_word_phrase_after_tts_accepted(self):
         # Главный acceptance: фраза из 3-4 слов после TTS → ok
-        # Yandex 1-я: реальный timeout (транзиент — ретраится, issue #2767:
-        # ``empty`` НЕ ретраится, поэтому здесь нужен настоящий сбой),
-        # 2-я: PHASE3_PHRASE → ok. Vosk (fallback) не дёрнут.
+        # Yandex 1-я: моргнула сеть (транзиентный error — ретраится; issue
+        # #2767: ``empty`` НЕ ретраится, #2924: ``timeout`` тоже НЕ
+        # ретраится), 2-я: PHASE3_PHRASE → ok. Vosk (fallback) не дёрнут.
         primary = FakeProvider(
             "yandex",
             [None, PHASE3_PHRASE],
-            exceptions=[STTTimeoutError("deadline exceeded"), None],
+            exceptions=[RuntimeError("UNAVAILABLE: network flap"), None],
         )
         fallback = FakeProvider("vosk", [VOSK_GARBAGE])
 
@@ -655,13 +653,13 @@ class TestAcceptanceE2E:
         ],
     )
     def test_short_phrase_after_tts_succeeds(self, phrase):
-        # Каждый раз: Yandex 1-я попытка — реальный timeout-флап (транзиент,
+        # Каждый раз: Yandex 1-я попытка — сетевой флап (транзиентный error,
         # ретраится), 2-я попытка ok. ``empty`` НЕ ретраится (issue #2767),
-        # поэтому флап здесь смоделирован через STTTimeoutError, а не None.
+        # ``timeout`` тоже (issue #2924) — поэтому флап здесь error.
         primary = FakeProvider(
             "yandex",
             [None, phrase],
-            exceptions=[STTTimeoutError("deadline exceeded"), None],
+            exceptions=[RuntimeError("UNAVAILABLE: network flap"), None],
         )
         fallback = FakeProvider("vosk", [VOSK_GARBAGE])
 
@@ -676,7 +674,7 @@ class TestAcceptanceE2E:
         assert attempts[-1].provider == "yandex"
 
     def test_acceptance_8_out_of_10_with_vosk_garbage(self):
-        """Имитируем 10 фраз: 8 через Yandex (после timeout-retry),
+        """Имитируем 10 фраз: 8 через Yandex (после retry сетевого флапа),
         2 — мусор."""
         phrases = [
             "расскажи ещё раз",  # 1. retry→ok
@@ -699,12 +697,12 @@ class TestAcceptanceE2E:
                 primary = FakeProvider("yandex", [None])
                 fallback = FakeProvider("vosk", ["а"])
             else:
-                # yandex: 1-я timeout-флап (транзиент, ретраится), 2-я
+                # yandex: 1-я сетевой флап (error, ретраится), 2-я
                 # фраза → ok
                 primary = FakeProvider(
                     "yandex",
                     [None, ph],
-                    exceptions=[STTTimeoutError("deadline exceeded"), None],
+                    exceptions=[RuntimeError("UNAVAILABLE: network flap"), None],
                 )
                 fallback = FakeProvider("vosk", ["а"])
             text, _ = select_recognition(

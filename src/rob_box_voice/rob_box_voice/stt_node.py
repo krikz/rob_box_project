@@ -670,6 +670,36 @@ class STTNode(Node):
             self.get_logger().error(f"❌ Ошибка инициализации Yandex STT: {e}")
             self.yandex_stub = None
 
+    def _on_yandex_stream_error(self, exc, context: str) -> BaseException:
+        """gRPC-ошибка стрима Yandex STT → лог + типизированное исключение.
+
+        Issue #2924: 23.09 с 23:22 по 23:39 каждый вызов стоял до дедлайна
+        (5 с), не прислав НИ ОДНОГО partial (на фразах с «Робот» не сработал
+        ранний «бульк», который в норме срабатывает через 0.5 с), потом сам
+        ожил без рестарта ноды. Канал — один долгоживущий, без keepalive.
+        Гипотеза (не доказана): зависшее TCP-соединение канала, которое ядро
+        рвёт только через ~15 мин ретрансмиссий. Поэтому после
+        DEADLINE_EXCEEDED канал пересоздаём: следующая фраза пойдёт по
+        свежему соединению, а не по тому, что висит. Цена — один TLS-хендшейк.
+        """
+        self.get_logger().warning(
+            f"⚠️ [issue 1477] stream error: {exc.code()} {exc.details()} [#2924 {context}]"
+        )
+        if exc.code() == grpc.StatusCode.DEADLINE_EXCEEDED:
+            self._reset_yandex_channel()
+        return _map_grpc_error(exc, self.yandex_timeout_s)
+
+    def _reset_yandex_channel(self) -> None:
+        """Закрыть канал Yandex STT и открыть новый (issue #2924)."""
+        old = getattr(self, "yandex_channel", None)
+        if old is not None:
+            try:
+                old.close()
+            except Exception as e:  # noqa: BLE001 — закрытие не должно ронять STT
+                self.get_logger().warning(f"⚠️ [#2924] close старого канала Yandex STT: {e}")
+        self.get_logger().warning("🔌 [#2924] DEADLINE_EXCEEDED → пересоздаю канал Yandex STT")
+        self.initialize_yandex()
+
     def initialize_vosk(self):
         """Load Vosk model (fallback provider).
 
@@ -1791,6 +1821,11 @@ class STTNode(Node):
         speaker_tag: Optional[str] = None
         eou_events = 0
         partial_count = 0
+        # Issue #2924 — сколько ответов сервер успел прислать до ошибки.
+        # Отличает «сервер молчал весь дедлайн» от «прислал сегменты, но не
+        # закрыл стрим» — 23.09 этого не было в логе, и причину пришлось
+        # выводить по косвенному признаку (не сработал ранний «бульк»).
+        response_count = 0
         # Issue #2365 Phase 2: gRPC-ошибка стрима прилетает ЗДЕСЬ, при
         # итерации, а не на вызове RecognizeStreaming — тот лишь открывает
         # стрим. До 21.09.2026 цикл не был обёрнут, поэтому реальный код
@@ -1799,6 +1834,7 @@ class STTNode(Node):
         # ни до кэша «мёртвых» — в метрике стояло голое reason=error.
         try:
             for response in responses:
+                response_count += 1
                 event_type = response.WhichOneof("Event")
 
                 if event_type == "partial":
@@ -1820,17 +1856,21 @@ class STTNode(Node):
                 elif event_type == "conversation_analysis":
                     continue
 
-                elif event_type == "end_of_utterance":
+                elif event_type == "eou_update":
+                    # #2924: в v3 oneof-поле называется eou_update (было
+                    # "end_of_utterance" — такого нет, счётчик всегда был 0).
                     eou_events += 1
                     continue
 
                 elif event_type in ("final", "final_refinement"):
                     segments.feed(response, event_type)
         except grpc.RpcError as e:
-            self.get_logger().warning(
-                f"⚠️ [issue 1477] phase={phase} stream error: {e.code()} {e.details()}"
+            raise self._on_yandex_stream_error(
+                e,
+                f"phase={phase} responses={response_count} "
+                f"partials={partial_count} eou={eou_events} "
+                f"segments={segments.segment_count}",
             )
-            raise _map_grpc_error(e, self.yandex_timeout_s)
 
         final_text = segments.text()
         # Issue #1477 — телеметрия по фазе: partials/finals/eou;
