@@ -411,6 +411,7 @@ def melody_to_compose_params(
     scale = scale or ranked[0].scale
     midi: List[str] = ["None" if m is None else str(int(m)) for m, _ in melody.notes]
     dur: List[str] = [f"{d:g}" for _, d in melody.notes]
+    anacrusis_pad = sum(d for _, d in leadin.notes) - sum(d for _, d in folded.notes)
     decisions = _prep_decisions(
         source_bpm, (folded, leadin, snapped, registered, melody), ranked
     )
@@ -425,7 +426,7 @@ def melody_to_compose_params(
         "lead_dur": ", ".join(dur),
         "harmony": harmonize(
             melody.notes, melody.bpm, root, scale, drum_style=drum_style,
-            options=options,
+            options=options, anacrusis_pad=anacrusis_pad,
         ),
         "decisions": decisions,
     }
