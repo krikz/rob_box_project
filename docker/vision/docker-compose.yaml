@@ -293,9 +293,10 @@ services:
       - RENARDO_REF_PATH=/renardo_ref/RENARDO_REFERENCE.md
       - RENARDO_SAMPLES_PATH=/root/.config/renardo/samples
       # Pack-1 samples: жанровые лупы (#2841) + FX-одиночки (#2968).
-      # "1" открывает весь каталог 1_pitchglitch_samples (лупы И fx одним
-      # флагом — см. core/sample_loops.py, core/sample_fx.py).
-      - ROB_BOX_PACK1_LOOPS=1
+      # ВЫКЛЮЧЕНО: сэмплы моно, а loop-синт стерео (PlayBuf.ar(2)) →
+      # "Buffer UGen channel mismatch" + late-флуд = клиппинг (revert b9ae10cd1).
+      # Включать после фикса mono→stereo (см. core/sample_loops.py).
+      - ROB_BOX_PACK1_LOOPS=0
       # /mcp/execute sender authentication (see rob_box_mcp_tools/mcp_auth.py).
       # dialogue_node and mcp_server run in THIS container, so they share the
       # secret through a file on the /data volume — created automatically on
