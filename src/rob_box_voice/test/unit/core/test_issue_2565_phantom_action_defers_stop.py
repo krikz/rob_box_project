@@ -184,13 +184,25 @@ class TestPhantomActionDefersForceStop:
     def test_phantom_action_does_not_consume_user_retry_budget(self) -> None:
         """Deferral НЕ должен списывать user-retry budget — мы вообще ничего
         не делаем (CRITICAL-retry сам разберётся в :func:`_check_unbacked_action_claim_and_retry`).
+
+        Issue #2971 регресс: раньше тут стоял ``user_input="поставь
+        диджея"`` и попадал в FORCE_STOP-ветку ТОЛЬКО из-за той же
+        голой-подстроки-«диджея» бага, что чинит #2971 (``поставь``
+        не стоп-глагол — юзер просит ЗАПУСТИТЬ, а не остановить). После
+        фикса ``is_music_stop_command("поставь диджея")`` корректно
+        ``False``, и этот кейс больше не проверяет phantom-action
+        deferral. Заменено на «выключи музыку, поставь диджея» — явный
+        стоп-глагол («выключи») + муз. объект даёт настоящую
+        стоп-команду, которая вместе с action-claim в ``spoken`` (см.
+        :func:`detect_unbacked_action_claim`) действительно проверяет
+        deferral-ветку, как и было задумано.
         """
         guard = MusicGuard()
         # Prime the budget to verify it's not consumed.
         guard._user_retry_count = 0
         guard.evaluate(
             was_dj_auto=False,
-            user_input="поставь диджея",
+            user_input="выключи музыку, поставь диджея",
             tools_called=(),
             dj_enabled=False,
             spoken="Запускаю расслабленную лаундж-композицию через compose_music.",
