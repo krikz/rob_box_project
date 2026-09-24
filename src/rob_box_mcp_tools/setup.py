@@ -21,9 +21,16 @@ setup(
         # arrangement_presets.json — shipped-пресеты ручек compose_music
         # (ADR-0132 PR-7): рецепты под конкретные песни, вынесенные из
         # composer.txt.
+        # sample_fx.json — белый список одиночных FX (#2968, PR #2983):
+        # обязательно явно, глоб *.yaml его не ловит — иначе mcp_server
+        # падает в crash-loop с FileNotFoundError на data/sample_fx.json
+        # сразу после деплоя (issue #2997, 24.09.2026, staging).
+        # Регрессия закрыта тестом
+        # test_package_data_includes_data_files.py — любой .json/.yaml/
+        # .jsonl* в data/ без покрытия тут = красный тест.
         'rob_box_mcp_tools.data': [
             '*.yaml', 'rtttl_melodies.jsonl.gz', 'sample_loops.json',
-            'arrangement_presets.json',
+            'arrangement_presets.json', 'sample_fx.json',
         ],
     },
     data_files=[
