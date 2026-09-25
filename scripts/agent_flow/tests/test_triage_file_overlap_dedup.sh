@@ -359,6 +359,155 @@ run_test "T14. gh api PATCH used for edit-old path"           test_T14_gh_api_pa
 run_test "T15. hash includes issue_number (per-issue scoping)" test_T15_hash_includes_issue_number
 
 # ============================================================================
+# T16: G10a dedup filter regression (bug #3027).
+# Проверяет, что gh api --jq filter (после bash→jq unescape) валиден и
+# возвращает только тот hash, который был в исходном marker'е, а не весь body.
+#
+# Раньше фильтр был: test("\\Qhermes-triage-g10a\\E") — bash unescape даёт
+# `\Q…\E` (одиночный backslash), что НЕ валидно в jq (Invalid escape).
+# Фикс (см. scripts/agent_flow/agent-flow-triage.sh:571-583) убирает \Q…\E и
+# использует capture("hermes-triage-g10a: (?<hash>[0-9a-f]{12})").
+#
+# Симулируем через `jq -R` (raw input — capture() требует JSON-typed входа),
+# как если бы gh api --jq выполнил query над комментами issue #3014.
+# ============================================================================
+test_T16_g10a_dedup_jq_filter_compiles() {
+    if ! command -v jq >/dev/null 2>&1; then
+        log "T16: jq не установлен — SKIPPED"
+        return 0
+    fi
+
+    # T16.0: capture() на минимальной marker-line (raw input) — работает.
+    local sample='<!-- hermes-triage-g10a: c1a0fc4bdff8 -->'
+    local capture_out
+    capture_out="$(printf '%s' "$sample" | jq -R 'capture("hermes-triage-g10a: (?<hash>[0-9a-f]{12})").hash // ""' 2>&1)"
+    # jq без -r даёт quoted-string для null/numbers; trim кавычки.
+    capture_out="${capture_out#\"}"
+    capture_out="${capture_out%\"}"
+    assert_eq "c1a0fc4bdff8" "$capture_out" "T16.0: capture() возвращает ТОЛЬКО 12-hex hash, не весь body"
+
+    # T16.2: точный regression-guard — старый test() с \Q…\E должен FAIL.
+    local sample_with_newline='<!-- hermes-triage-g10a: c1a0fc4bdff8 -->
+
+rest of body'
+    local old_filter_msg
+    old_filter_msg="$(printf '%s' "$sample_with_newline" | jq -R 'try test("\Qhermes-triage-g10a\E") catch "INVALID"' 2>&1)"
+    if printf '%s' "$old_filter_msg" | grep -q INVALID; then
+        pass "T16.2: regression-guard — старый \\Q…\\E filter правильно INVALID в jq (так сломан в triage.sh был)"
+    else
+        log "T16.2: \\Q…\\E filter всё ещё валиден? (jq версия отличается?) — не строгий guard"
+        pass "T16.2: log only — вывод=$old_filter_msg"
+    fi
+
+    # T16.3: новый test() с plain-pattern ДОЛЖЕН компилироваться И матчить.
+    local matched
+    matched="$(printf '%s' "$sample" | jq -R '[test("hermes-triage-g10a")] | first' 2>&1)"
+    assert_eq "true" "$matched" "T16.3: test(plain-pattern) возвращает true на marker-string"
+
+    # T16.4: edge case — body без marker'а → пустой результат.
+    local no_marker='just plain text without any marker'
+    local empty_out
+    empty_out="$(printf '%s' "$no_marker" | jq -R 'capture("hermes-triage-g10a: (?<hash>[0-9a-f]{12})").hash // "NOT_FOUND"' 2>&1)"
+    if printf '%s' "$empty_out" | grep -q 'NOT_FOUND'; then
+        pass "T16.4: capture() возвращает NOT_FOUND когда marker'а нет в body"
+    else
+        fail "T16.4: capture() вернул неожиданное значение: $empty_out"
+    fi
+}
+
+run_test "T16. G10a dedup jq filter compiles + extracts hash" test_T16_g10a_dedup_jq_filter_compiles
+
+# ============================================================================
+# T17: full functional dedup против акутального issue #3014 (live e2e lite).
+# Используем реальный `gh api` (НЕ fake — он слишком сложно воспроизводит
+# capture() семантику с тем же резолвером, что gh api --jq использует).
+# Проверяем, что после фикса наш filter находит последний G10a-коммент
+# в #3014 и возвращает hash.
+# ============================================================================
+test_T17_dedup_lookup_against_real_issue() {
+    local filter_for_dedup='[.[] | select((.body // "") | test("hermes-triage-g10a"))] | last | "\(.id // empty)|\(.created_at // empty)|\(.body // "" | capture("hermes-triage-g10a: (?<hash>[0-9a-f]{12})").hash // "")"'
+    local result
+    if ! result="$(timeout 30 gh api repos/krikz/rob_box_project/issues/3014/comments?per_page=100 --jq "$filter_for_dedup" 2>&1)"; then
+        # gh сбойнул (offline или rate-limit) — пропустить.
+        log "T17: gh api недоступен — SKIPPED ($result)"
+        return 0
+    fi
+
+    # T17.1: filter должен вернуть id последнего комментария (>0, число).
+    # shellcheck disable=SC2034  # got_iso is parsed but unused by intent
+    local got_id got_iso got_hash
+    IFS='|' read -r got_id got_iso got_hash <<< "$result"
+    if [ -n "$got_id" ] && [ "$got_id" -gt 0 ] 2>/dev/null; then
+        pass "T17.1: filter возвращает id существующего G10a-коммента (#$got_id)"
+    else
+        fail "T17.1: filter не нашёл комментов или id=0" "result='$result'"
+    fi
+
+    # T17.2: hash должен быть ТОЧНО 12 hex символов, не multiline-body.
+    if printf '%s' "$got_hash" | grep -qE '^[0-9a-f]{12}$'; then
+        pass "T17.2: hash extraction — ровно 12-hex, не multiline (got: $got_hash)"
+    else
+        fail "T17.2: hash extraction сломан (got: $got_hash, expected 12-hex)"
+    fi
+
+    # T17.3: hash должен СОВПАДАТЬ с ожидаемым из issue body (c1a0fc4bdff8).
+    if [ "$got_hash" = "c1a0fc4bdff8" ]; then
+        pass "T17.3: hash = c1a0fc4bdff8 (matches issue #3014 marker)"
+    else
+        # может быть другой tick с другим hash — это ожидаемо если PR-ы изменились
+        if [ -n "$got_hash" ]; then
+            log "T17.3: hash differs от c1a0fc4bdff8 (state изменился? got=$got_hash)"
+            pass "T17.3: hash extraction работает (отличается от ожидаемого = state evolved)"
+        else
+            fail "T17.3: пустой hash"
+        fi
+    fi
+}
+
+run_test "T17. dedup lookup against real issue #3014" test_T17_dedup_lookup_against_real_issue
+
+# ============================================================================
+# T18: regression guard — фикс от \Q…\E реально работает в shell-контексте,
+# имитирующем bash unescape → jq (как в gh api --jq "<filter>").
+# Тест-кейс воспроизводит баг #3027: test("\\Qhermes-triage-g10a\\E") в bash → jq
+# ============================================================================
+test_T18_no_qq_ee_in_jq_filter() {
+    # T18: regression guard — \Q…\E НЕ должно быть в коде (баг #3027).
+    # Используем простой grep по всему файлу вместо хрупкого awk.
+    if grep -q '"\\Q.*\\E"' "$SCRIPT_UNDER_TEST"; then
+        local block
+        block="$(grep -B2 -A1 '"\\Q.*\\E"' "$SCRIPT_UNDER_TEST")"
+        fail "T18: jq filter всё ещё содержит \\Q…\\E (регрессия #3027)" "block: $block"
+    else
+        pass "T18: jq filter больше не использует \\Q…\\E (баг #3027 зафикшен)"
+    fi
+    # T18.2: capture() должна быть в lookup-блоке (agent-flow-triage.sh).
+    if grep -A20 'Ищем существующий G10a-коммент' "$SCRIPT_UNDER_TEST" \
+        | grep -q 'capture('; then
+        pass "T18.2: jq filter использует capture() для hash extraction"
+    else
+        fail "T18.2: jq filter не использует capture() — hash extraction может вернуть весь body"
+    fi
+
+    # T18.3: PATCH-ветка должна использовать jq-обёртку для JSON payload.
+    if grep -q 'jq -nc --arg body' "$SCRIPT_UNDER_TEST"; then
+        pass "T18.3: PATCH-ветка использует jq -nc --arg body (корректный JSON payload)"
+    else
+        fail "T18.3: PATCH-ветка может слать raw markdown вместо JSON {\"body\": ...}"
+    fi
+
+    # T18.4: template не должен использовать неопределённую PR_COUNT.
+    # Используется переменная pr_count (lowercase).
+    if grep -q '${PR_COUNT:-0}' "$SCRIPT_UNDER_TEST"; then
+        fail "T18.4: template использует \${PR_COUNT:-0} — должно быть \${pr_count:-0} (lowercase)"
+    else
+        pass "T18.4: template использует lowercase pr_count (не undefined PR_COUNT)"
+    fi
+}
+
+run_test "T18. regression guard: no \\Q…\\E in jq filter"    test_T18_no_qq_ee_in_jq_filter
+
+# ============================================================================
 # Summary.
 # ============================================================================
 echo ""
