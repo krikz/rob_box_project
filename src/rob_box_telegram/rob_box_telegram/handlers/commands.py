@@ -26,10 +26,27 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from ..auth import authorized
+from ..face_card import (
+    build_face_collage,
+    find_summary,
+    format_face_summary,
+    format_faces_table,
+    load_detail,
+    list_people,
+)
 from ..keyboard_layouts import MAIN_MENU_KEYBOARD, MOVEMENT_KEYBOARD
 from ..radio import get_radio_mode, set_radio_mode
 
 logger = logging.getLogger(__name__)
+
+
+#: Filesystem location of the live face store inside the telegram-bot
+#: container. Same host directory (``./data/faces`` under
+#: ``docker/vision/``) is bind-mounted read-only into both
+#: ``vision-face`` (writer, :no-ro) and ``telegram-bot`` (reader,
+#: :ro) — see ``docker/vision/docker-compose.yaml``. Issue #3025 +
+#: ADR-0123 §4: the bot must never write here.
+FACE_STORE_MOUNT = "/data/faces"
 
 
 def _node(context: ContextTypes.DEFAULT_TYPE):
