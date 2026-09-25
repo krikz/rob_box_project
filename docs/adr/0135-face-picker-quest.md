@@ -3,7 +3,7 @@
 **Дата:** 2026-09-25
 **Статус:** Proposed
 **Автор:** architect (товарищ Шифу, kanban t_0a407042 / issue #3026)
-**Связанные:** issue #3026 (эта карточка), issue #3025 (парная Telegram-фаза, эталон коллажа и формата `/faces`/`/face`), ADR-0027 (§3 «единый multiplexed WSS», §3.1 транспорт, §2 latency-budget), ADR-0080 (§2.2 инвариант 3 — каталог как SSOT), ADR-0089 §8 (бывшая строгая политика лица), ADR-0123 (режимы приватности лиц), ADR-0129 (DJ/persona swap — пример JSON_CMD-расширения), `docs/architecture/captain-bridge.md`, `docs/architecture/meta-quest-api.md`.
+**Связанные:** issue #3026 (эта карточка), issue #3025 (парная Telegram-фаза, эталон коллажа и формата `/faces`/`/face`), ADR-0027 (§3 «единый multiplexed WSS», §3.1 транспорт, §2 latency-budget), ADR-0080 (§2.2 шов протокола мостика — каталог как SSOT, §3 инварианты), ADR-0089 §8 (бывшая строгая политика лица), ADR-0123 (режимы приватности лиц), `docs/architecture/captain-bridge.md`, `docs/architecture/meta-quest-api.md`.
 
 ## 1. Контекст
 
@@ -24,7 +24,7 @@ Telegram-фаза лицевых команд (#3025, в работе парал
 | 5 | Объём/латентность | Список лиц — JSON единицы КБ; коллаж — один BINARY_FRAME ~150 КБ JPEG. Запросы по нажатию кнопки, не поток — не конкурируют с teleop-latency-бюджетом (ADR-0027 §2). |
 | 6 | Слияние в Quest | **Не делаем в этой фазе.** Это пишущая операция с конфликтом против живой `vision_face_node` (ADR-0123 §6); правильное решение будет принято в #3025 §4 (один лёгкий канал к ноде или отказ). Quest повторит тот же выбор, не плодит второй механизм. |
 
-Один общий принцип пронизывает все шесть решений: **архитектурная симметрия с уже работающими механизмами** (Telegram-фаза #3025, voice_picker в `rob_box_quest`, tts_picker_menu в WebXR-клиенте). Мы не плодим новые параллельные каналы и модули там, где уже есть рабочий шаблон. ADR-0080 §2.2 инвариант 3 («каталог — SSOT, никаких параллельных данных») трактуем расширенно: и для wire-каталога, и для «как сервер отдаёт медиа-данные клиенту».
+Один общий принцип пронизывает все шесть решений: **архитектурная симметрия с уже работающими механизмами** (Telegram-фаза #3025, voice_picker в `rob_box_quest`, tts_picker_menu в WebXR-клиенте). Мы не плодим новые параллельные каналы и модули там, где уже есть рабочий шаблон. ADR-0080 §2.2 «Шов протокола мостика: каталог вместо пяти копий» (`rob_box_core.bridge_protocol` как SSOT) трактуем расширенно: и для wire-каталога команд, и для «как сервер отдаёт медиа-данные клиенту».
 
 ## 3. Транспорт — почему WSS, а не HTTP и не STREAM_CATALOG
 
@@ -55,7 +55,7 @@ JSON_CMD {cmd:"face_get", person_id:"<id>"}      → BINARY_FRAME на stream_id
 # (UI рисует честный «снимки отключены режимом приватности» — ADR-0018).
 ```
 
-- **Плюсы:** Не плодит параллельные каналы (ADR-0027 §3). Heartbeat и watchdog уже есть. Гейт аутентификации (HELLO+session_pin, `_on_hello` в ws_server.py:1691) — бесплатно. Каталог команд расширяется через тот же `rob_box_core.bridge_protocol` SSOT, типы регенерируются в `wire/protocol_generated.ts` (ADR-0080 §2.2 инвариант 3). Точно повторяет образец `voice_list`/`preview_voice_audio`, который уже работает в проде.
+- **Плюсы:** Не плодит параллельные каналы (ADR-0027 §3). Heartbeat и watchdog уже есть. Гейт аутентификации (HELLO+session_pin, `_on_hello` в ws_server.py:1691) — бесплатно. Каталог команд расширяется через тот же `rob_box_core.bridge_protocol` SSOT (ADR-0080 §2.2), типы регенерируются в `wire/protocol_generated.ts`. Точно повторяет образец `voice_list`/`preview_voice_audio`, который уже работает в проде.
 - **Минусы:** Требует одной правки в каталоге + регенерации типов. Двухшаговая операция (`face_get` → ack со stream_id → BINARY_FRAME) чуть сложнее, чем HTTP GET — но она уже реализована для превью-голоса.
 - **Вердикт:** **Выбран.** Прямая аналогия с работающим механизмом; единственный когнитивный overhead — обновление каталога и регенерация TS.
 
@@ -233,7 +233,7 @@ UI в этой фазе для merge: кнопок нет (только `OPEN` �
 В духе ADR-0013 (incremental delivery) — отдельные карточки, не один большой PR.
 
 1. **Сборка коллажа — общий модуль + юнит-тесты.** `face_collage.build_face_collage()` с тестами на разметку 4×3, подписи размеров, обработку `face_snapshot=null` (из #3025 §«Спека команд»). Без ROS, без `aiohttp`.
-2. **Wire-каталог: face_list / face_get.** Правки в `rob_box_core.bridge_protocol` (новые `CommandSpec`/`EventSpec`), регенерация `protocol_generated.ts` (`tools/gen_bridge_protocol_ts.py`), добавление полей в `wire/messages.ts` (по образцу `VoiceInfo`). Тесты на каталог — обязательны (ADR-0080 §2.2 инвариант 3 + ADR-0057 namespace-collision-guard).
+2. **Wire-каталог: face_list / face_get.** Правки в `rob_box_core.bridge_protocol` (новые `CommandSpec`/`EventSpec`), регенерация `protocol_generated.ts` (`tools/gen_bridge_protocol_ts.py`), добавление полей в `wire/messages.ts` (по образцу `VoiceInfo`). Тесты на каталог — обязательны (ADR-0080 §2.2 «каталог как SSOT» + ADR-0057 namespace-collision-guard).
 3. **Серверная сторона:** `FaceStore`-readonly-фасад в `rob_box_quest` (тонкая обёртка вокруг `face_collage.build_face_collage()` + обработка `mode_recorded` из meta.json → nack-причины). JSON_CMD-handler в `ws_server.py` (по образцу `set_voice`). Тесты на nack-причины (strict/exhibition-stranger/unknown-person).
 4. **WebXR scene:** `scene/face_picker_menu.ts` + `scene/face_card_panel.ts` + `state/face_picker_state.ts`. Юнит-тесты на state (по образцу `tts_picker_state` тестов).
 5. **E2E voice-команда:** «Робот, покажи лица» — готовится как e2e-команда в `.github/e2e/voice_commands/`, прогоняется отдельным e2e-процессом (НЕ этой карточкой; см. контракт воркера).
