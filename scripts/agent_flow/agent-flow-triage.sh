@@ -1528,11 +1528,19 @@ process_issues_json() {
             _g10b_hash="$(printf '%s\n' "${number}|${_g10b_kind}|${_g10b_pr}" \
                 | sha1sum | awk '{print substr($1,1,12)}')"
             _g10b_marker_line="<!-- ${AGENT_FLOW_ISSUE_RESOLVED_MARKER}: ${_g10b_hash} -->"
-            _g10b_marker_jq="$(printf '%s' "$AGENT_FLOW_ISSUE_RESOLVED_MARKER" | sed 's/[][\\^$.*?+|(){}]/\\&/g')"
 
             # Find existing G10b comment (last 100 comments by id+date+hash).
+            # Marker `hermes-triage-g10b` содержит только [a-z0-9-] — regex-спецсимволов
+            # НЕТ, поэтому plain-pattern (без \Q…\E литерализации) достаточно.
+            # Hash извлекаем через capture() против точного паттерна
+            # 'hermes-triage-g10b: ([0-9a-f]{12})' — это надёжнее, чем sub() который
+            # оставлял весь body после prefix-strip (баг #3027 — тот же, что в G10a,
+            # пофикшенный в PR #3030 для G10a; здесь зеркалируем).
+            # Без фикса: `\Q…\E` literal-quote после bash unescape даёт invalid jq
+            # escape ("invalid escape sequence \Q"), фильтр падает → _g10b_existing
+            # всегда пуст → каждый cron-тик = новый коммент (issue #3013, 6 за 12 мин).
             _g10b_existing="$(gh api "repos/${GH_REPO}/issues/${number}/comments?per_page=100" \
-                --jq "[.[] | select((.body // \"\") | test(\"\\Q${_g10b_marker_jq}\\E\"))] | last | \"\\(.id // empty)|\\(.created_at // empty)|\\(.body // \"\")\" | sub(\"\\Q${_g10b_marker_jq}\\E: \"; \"\") | sub(\" -->$\"; \"\")" 2>/dev/null || true)"
+                --jq "[.[] | select((.body // \"\") | test(\"${AGENT_FLOW_ISSUE_RESOLVED_MARKER}\"))] | last | \"\\(.id // empty)|\\(.created_at // empty)|\\((.body // \"\") | capture(\"${AGENT_FLOW_ISSUE_RESOLVED_MARKER}: (?<hash>[0-9a-f]{12})\").hash // \"\")\"" 2>/dev/null || true)"
             _g10b_existing_id="" _g10b_existing_hash="" _g10b_existing_iso=""
             if [ -n "$_g10b_existing" ]; then
                 _g10b_existing_id="$(printf '%s' "$_g10b_existing" | awk -F'|' '{print $1}')"
