@@ -10,6 +10,7 @@ forwarding happens and the user receives an acknowledgement.
 from __future__ import annotations
 
 import importlib
+import io
 import sys
 import types
 import unittest
@@ -282,17 +283,36 @@ class TestFaceHandlers(unittest.IsolatedAsyncioTestCase):
         update.message.reply_photo.assert_not_awaited()
 
     async def test_face_handler_sends_photo_when_collage_available(self):
-        """End-to-end-ish: a tmp dir with a real JPEG reference
-        triggers both ``reply_photo`` (with bytes) and ``reply_text``
-        is NOT called.
+        """Happy path: tmp dir with a real JPEG reference triggers
+        ``reply_photo`` (with JPEG bytes) carrying the summary as caption,
+        and ``reply_text`` is NOT called (the caption is enough).
 
-        PIL is a soft dependency; the test skips if missing — the
-        empty-store branch above still runs in that case.
+        PIL is a soft dependency; the test skips if missing or shadowed
+        by a MagicMock in ``sys.modules`` (see ``_install_fake_dependencies``
+        which sets ``pil_module.Image = MagicMock()`` to keep
+        ``commands.py`` importable without PIL — but that same mock
+        would silently swallow ``Image.new/save`` and produce a 0-byte
+        reference.jpg, which then makes ``build_face_collage`` return
+        ``None``).  We probe with a real call to ``Image.new(...).save``
+        to confirm the PIL module is functional before exercising the
+        handler.
         """
         try:
-            from PIL import Image  # noqa: F401
+            from PIL import Image
         except Exception:
             self.skipTest("PIL not installed — collage builder unavailable")
+
+        # Reject the test harness's MagicMock PIL (see top of file).
+        probe_buf = io.BytesIO()
+        try:
+            Image.new("RGB", (1, 1), color=(0, 0, 0)).save(probe_buf, format="JPEG")
+        except Exception:
+            self.skipTest(
+                "PIL is shadowed by a MagicMock in this test run — "
+                "skipping collage happy path (covered by test_face_card.py)"
+            )
+        if not probe_buf.getvalue().startswith(b"\xff\xd8"):
+            self.skipTest("PIL did not produce a valid JPEG — skipping")
 
         import tempfile
         from pathlib import Path
@@ -332,6 +352,39 @@ class TestFaceHandlers(unittest.IsolatedAsyncioTestCase):
         self.assertIn("последняя встреча по лицу", caption)
         # No separate reply_text on the happy path — caption is enough
         update.message.reply_text.assert_not_awaited()
+
+    async def test_face_handler_without_photos_sends_text_only(self):
+        """No reference.jpg, no encounters/*.jpg → collage is None →
+        handler sends ONLY ``reply_text`` (the сводка) and NOT
+        ``reply_photo``. This is the legitimate «лицо только что создано
+        без эмбеддингов» branch that must not raise.
+        """
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            person = root / "4ff0ddc5"
+            person.mkdir()
+            (person / "meta.json").write_text(
+                '{"name": "Дэнчик", "person_id": "4ff0ddc5", '
+                '"speaker_id": "1ae4b0ac", "encounter_count": 0, '
+                '"mode_recorded": "operator"}',
+                encoding="utf-8",
+            )
+            # No reference.jpg, no encounters/ — build_face_collage → None.
+
+            self.commands.FACE_STORE_MOUNT = td
+            update, context = self._make_update_and_context(args=["4ff0ddc5"])
+            await self.commands.face_handler(update, context)
+
+        update.message.reply_text.assert_awaited_once()
+        text = update.message.reply_text.call_args.kwargs.get(
+            "text"
+        ) or update.message.reply_text.call_args.args[0]
+        self.assertIn("Дэнчик", text)
+        self.assertIn("последняя встреча по лицу", text)
+        update.message.reply_photo.assert_not_awaited()
 
 
 if __name__ == "__main__":
