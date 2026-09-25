@@ -1552,6 +1552,138 @@ INHERITS_REASON = (
 
 
 # =============================================================================
+# ADR-0134 §4 (Task 4) — provider-aware distinctness guard
+# =============================================================================
+# Перед сменой TTS-провайдера разработчик должен прогнать скрипт локально с
+# --voice-distinctness-on, чтобы увидеть, не пересекутся ли голоса синтеза
+# на уровне speaker_id_node (cos >= IDENTIFY_THRESHOLD). При минимум ОДНОЙ
+# паре выше порога — SystemExit(2) с диагностикой (какие голоса, в каких
+# шагах, какой cos). В CI флаг НЕ ставится: для текущего набора
+# (provider=yandex) файла замера в репо нет, guard уйдёт в warning, а не
+# в fail (ADR-0134 §5).
+#
+# Структура файла замера (см. evidence/tts-voice-distinctness-2026-09-22/
+# minimax_voices.json): ``scenario_pairs`` — список пар сценарий-голосов
+# (``anton``, ``ermil``, ``zahar``, ``filipp``, …) и их cos после прогона
+# на конкретном провайдере. Это и есть таблица истинности: «Саша vs Борис»
+# на yandex/minimax/silero даёт разные cos, и мы смотрим в НЕЁ, а не в
+# сырые inter_voice_max_cos (те — про провайдер-голоса, не про наш сценарий).
+def _validate_voice_distinctness(
+    steps: List[Dict[str, Any]],
+    provider: Optional[str],
+    threshold: float,
+) -> None:
+    """Поднять SystemExit(2), если какая-то пара сценарий-голосов >= threshold.
+
+    Если файл замера для ``provider`` отсутствует — WARNING в stderr и тихий
+    возврат (helper не должен ломать CI на отсутствии чужих замеров).
+    Если ``provider is None`` — перебираем все доступные файлы замеров и
+    падаем на ПЕРВОМ конфликте (fail-fast, как требует ADR-0134 §4).
+    """
+    evidence_dir = Path(REPO) / "evidence" / _DISTINCTNESS_EVIDENCE_DIR
+    if provider:
+        files = [evidence_dir / (provider + "_voices.json")]
+    else:
+        files = sorted(evidence_dir.glob("*_voices.json"))
+    if not files or not any(p.exists() for p in files):
+        print(
+            "[voice-distinctness] WARNING: no *_voices.json in %s — "
+            "guard skipped (CI default)." % evidence_dir,
+            file=sys.stderr,
+        )
+        return
+    # Собираем уникальные voice= из шагов (для диагностики, чтобы печатать,
+    # какие сценарий-голоса участвуют в конфликте). None отбрасываем:
+    # voice=SASHA по умолчанию, но в ряде шагов явный voice пропущен.
+    scenario_voices = sorted({s["voice"] for s in steps if s.get("voice")})
+    for path in files:
+        if not path.exists():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            print(
+                "[voice-distinctness] WARNING: cannot read %s (%s) — skipped"
+                % (path, exc),
+                file=sys.stderr,
+            )
+            continue
+        pairs = data.get("scenario_pairs") or []
+        if not pairs:
+            continue
+        conflicts = []
+        for p in pairs:
+            try:
+                cos = float(p.get("cos"))
+            except (TypeError, ValueError):
+                continue
+            if cos >= threshold:
+                conflicts.append(p)
+        if conflicts:
+            print(
+                "[voice-distinctness] FAIL provider=%s threshold=%.3f "
+                "(>= %d conflicting pair(s)):" % (path.stem, threshold, len(conflicts)),
+                file=sys.stderr,
+            )
+            print(
+                "  scenario voices in this run: %s" % ", ".join(scenario_voices),
+                file=sys.stderr,
+            )
+            for c in conflicts:
+                print(
+                    "    pair scenario=%s <-> %s provider=%s/%s cos=%.3f"
+                    % (
+                        c.get("scenario_voices", ["?", "?"])[0],
+                        c.get("scenario_voices", ["?", "?"])[1],
+                        c.get("provider_voices", ["?", "?"])[0],
+                        c.get("provider_voices", ["?", "?"])[1],
+                        float(c.get("cos", 0.0)),
+                    ),
+                    file=sys.stderr,
+                )
+            raise SystemExit(2)
+        print(
+            "[voice-distinctness] OK provider=%s (max pair cos < %.3f)"
+            % (path.stem, threshold),
+            file=sys.stderr,
+        )
+
+
+def _all_steps() -> List[Dict[str, Any]]:
+    """Свести steps всех актов в один список (для guard'а)."""
+    out: List[Dict[str, Any]] = []
+    for a in ACTS:
+        out.extend(a.get("steps") or [])
+    return out
+
+
+def _parse_cli(argv: Sequence[str]) -> Dict[str, Any]:
+    """Мини-CLI: --voice-distinctness-on, --tts-provider=NAME, --threshold=F."""
+    opts: Dict[str, Any] = {
+        "voice_distinctness_on": False,
+        "tts_provider": None,
+        "threshold": None,
+    }
+    for arg in argv:
+        if arg == "--voice-distinctness-on":
+            opts["voice_distinctness_on"] = True
+        elif arg.startswith("--tts-provider="):
+            opts["tts_provider"] = arg.split("=", 1)[1].strip() or None
+        elif arg.startswith("--voice-distinctness-threshold="):
+            try:
+                opts["threshold"] = float(arg.split("=", 1)[1])
+            except ValueError:
+                pass
+    # Default threshold — IDENTIFY_THRESHOLD из measure_tts_voice_distinctness
+    # (SSoT для run-скриптов, дублирует rob_box_voice.utils.speaker_embeddings).
+    if opts["threshold"] is None:
+        from measure_tts_voice_distinctness import IDENTIFY_THRESHOLD  # noqa: E402
+
+        opts["threshold"] = IDENTIFY_THRESHOLD
+    return opts
+
+
+# =============================================================================
 # Запись файлов
 # =============================================================================
 def emit() -> None:
@@ -1629,4 +1761,13 @@ def emit() -> None:
 
 
 if __name__ == "__main__":
+    opts = _parse_cli(sys.argv[1:])
+    # ADR-0134 §4: guard ТОЛЬКО при явном --voice-distinctness-on. В CI флаг
+    # не ставится, иначе прогон свалится на act 2 + provider=minimax (там
+    # 2 пары выше 0.72) ещё ДО записи JSON, а мы этого не хотим до явного
+    # решения Шифу (ADR-0134 §5: «CI default = warning, не error»).
+    if opts["voice_distinctness_on"]:
+        _validate_voice_distinctness(
+            _all_steps(), opts["tts_provider"], float(opts["threshold"])
+        )
     emit()
