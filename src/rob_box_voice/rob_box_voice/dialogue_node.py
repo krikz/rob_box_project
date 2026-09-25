@@ -4879,20 +4879,6 @@ class DialogueNode(Node):
             # _run_task. Multiple queued phrases are glued into ONE
             # follow-up turn, never N.
             pending_queue_dispatched = self._drain_pending_user_messages()
-            # Issue #935 v3: if LLM called stop_music(), defer cleanup until
-            # TTS finishes.  Otherwise keep music playing until next dialogue.
-            # Issue #992: a second stop_music() call from a follow-up LLM
-            # turn (while a previous cleanup is still pending) must be
-            # ignored — the flag is already set and the next batch_complete
-            # for any active batch will fire cleanup.
-            # Issue #2631 (ADR-0021 R1) — большая ветка cleanup-policy (CC=13)
-            # вынесена в helper.
-            self._finalize_music_cleanup_policy(
-                result=result,
-                was_dj_auto=was_dj_auto,
-                raw_user_command=raw_user_command,
-                user_input=user_input,
-            )
             # Issue #992 Bug B / Bug C — DJ-mode post-turn guard.
             # ``is_dj_auto`` was threaded through the dispatch path so no
             # shared flag needs to be cleared here. The guard may
@@ -4911,6 +4897,21 @@ class DialogueNode(Node):
             # ``result=None`` → ``tools_called=()``, и Bug C принимал это за
             # «музыку просили, тула не вызвали» → [CRITICAL]-ретрай после
             # сброса (живой лог 23.09 14:18:08).
+            #
+            # 🔴 FIX (issue #3005): guard запускается ПЕРЕД
+            # ``_finalize_music_cleanup_policy``. Раньше cleanup-finalize
+            # стоял первым и для хода «спой/сыграй» без тула вооружал
+            # ``_pending_music_cleanup=True``, а catch-up в
+            # ``_flush_music_cleanup_if_idle`` тут же публиковал
+            # ``music_cleanup(reason="tts_batch_complete")`` → mcp_server
+            # гасил Renardo за секунды ДО Bug C-ретрая, который только
+            # ещё собирался диспатчить новый ``compose_music``. Юзер
+            # слышал «шляпу»: старт → стоп → старт. Если guard сейчас
+            # постановит ``USER_RETRY``/``DJ_RETRY``/``TOOL_RETRY``,
+            # отдаём inner-туру право на свой собственный cleanup-finalize
+            # с обнулённым ``_pending_music_cleanup`` (он снимет его,
+            # если LLM реально вызвал music-тул). Для всех остальных
+            # вердиктов cleanup работает как раньше.
             music_retry_dispatched, tool_retry_dispatched = (
                 self._apply_post_turn_retry_guards(
                     result=result,
@@ -4927,6 +4928,37 @@ class DialogueNode(Node):
                     ),
                 )
             )
+            # Issue #3005 — если guard диспатчил ретрай (любой из music/
+            # tool), outer-finalize ПРОПУСКАЕМ: ретрай-тур сам отработает
+            # cleanup в своём finally. Если дать finalize'у отработать
+            # здесь, catch-up может опубликовать
+            # ``music_cleanup(reason="tts_batch_complete")`` РАНЬШЕ
+            # ретрай-тура → флап «старт → стоп → старт». Снимаем
+            # pending-флаг, чтобы ретрай-тур увидел чистое состояние.
+            any_retry_dispatched = (
+                music_retry_dispatched or tool_retry_dispatched
+            )
+            if any_retry_dispatched:
+                self._pending_music_cleanup = False
+                self.get_logger().info(
+                    "🎵 [issue 3005] post-turn guard диспатчил ретрай — "
+                    "outer-finalize пропущен, ретрай-тур отработает cleanup сам"
+                )
+            else:
+                # Issue #935 v3: if LLM called stop_music(), defer cleanup until
+                # TTS finishes.  Otherwise keep music playing until next dialogue.
+                # Issue #992: a second stop_music() call from a follow-up LLM
+                # turn (while a previous cleanup is still pending) must be
+                # ignored — the flag is already set and the next batch_complete
+                # for any active batch will fire cleanup.
+                # Issue #2631 (ADR-0021 R1) — большая ветка cleanup-policy (CC=13)
+                # вынесена в helper.
+                self._finalize_music_cleanup_policy(
+                    result=result,
+                    was_dj_auto=was_dj_auto,
+                    raw_user_command=raw_user_command,
+                    user_input=user_input,
+                )
             # Issue #2874 — гуарды сказали своё: ход с ретраем молчит,
             # отозванный гуардом ответ молчит, остальное звучит. Переспрос
             # #2828, пришедший после ответа, — после него, как и раньше.
