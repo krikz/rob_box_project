@@ -35,7 +35,7 @@ from typing import Dict, List, Optional
 
 from control_msgs.msg import DynamicJointState
 
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import Pose, PoseWithCovarianceStamped
 
 from nav_msgs.msg import Odometry
 
@@ -92,7 +92,11 @@ class ContextAggregatorNode(Node):
 
         # ============ Текущее состояние (кэш) ============
         self.current_vision: Optional[Dict] = None
-        self.current_pose: Optional[PoseStamped] = None
+        # Issue #2826: rtabmap публикует PoseWithCovarianceStamped;
+        # current_pose хранит нормализованный geometry_msgs/Pose
+        # (берётся из msg.pose.pose в on_robot_pose), чтобы PerceptionEvent.pose
+        # оставался типом Pose.
+        self.current_pose: Optional[Pose] = None
         self.current_odom: Optional[Odometry] = None
         self.current_sensors: Dict = {}
         self.last_apriltags: List[int] = []
@@ -142,8 +146,13 @@ class ContextAggregatorNode(Node):
         )
 
         # Pose
+        # Issue #2826: rtabmap публикует ``/rtabmap/localization_pose`` как
+        # ``geometry_msgs/PoseWithCovarianceStamped``. До фикса подписка была
+        # на ``PoseStamped`` — DDS не сматчивал publisher/subscriber, и
+        # ``/perception/context_update`` оставался без позы. Внутри callback
+        # нормализуем до ``geometry_msgs/Pose`` (``msg.pose.pose``).
         self.pose_sub = self.create_subscription(
-            PoseStamped,
+            PoseWithCovarianceStamped,
             '/rtabmap/localization_pose',
             self.on_robot_pose,
             10
@@ -318,11 +327,20 @@ class ContextAggregatorNode(Node):
             e for e in self._hailo_events if e['time'] > cutoff
         ]
 
-    def on_robot_pose(self, msg: PoseStamped):
-        """Обновление позиции."""
-        self.current_pose = msg
-        x = msg.pose.position.x
-        y = msg.pose.position.y
+    def on_robot_pose(self, msg: PoseWithCovarianceStamped):
+        """Обновление позиции (issue #2826).
+
+        rtabmap публикует ``/rtabmap/localization_pose`` как
+        ``PoseWithCovarianceStamped``. До фикса подписка была на
+        ``PoseStamped``, DDS не сматчивал publisher/subscriber, и
+        ``/perception/context_update`` оставался без позы. Берём
+        ``msg.pose.pose`` (``geometry_msgs/Pose``), а не всю обёртку —
+        так ``current_pose`` остаётся совместимым с ``PerceptionEvent.pose``
+        (``geometry_msgs/Pose`` в rob_box_perception_msgs/msg/PerceptionEvent.msg).
+        """
+        self.current_pose = msg.pose.pose
+        x = msg.pose.pose.position.x
+        y = msg.pose.pose.position.y
         self.get_logger().debug(f'📍 Pose: ({x:.2f}, {y:.2f})')
 
     def on_odometry(self, msg: Odometry):
@@ -564,8 +582,12 @@ class ContextAggregatorNode(Node):
         )
 
         # Pose
+        # Issue #2826: current_pose хранит нормализованный geometry_msgs/Pose
+        # (берём ``msg.pose.pose`` в on_robot_pose). До фикса тут было
+        # ``event.pose = self.current_pose.pose``, потому что current_pose
+        # был PoseStamped; теперь current_pose сразу Pose, и лишний .pose не нужен.
         if self.current_pose:
-            event.pose = self.current_pose.pose
+            event.pose = self.current_pose
 
         # Velocity & Moving
         if self.current_odom:

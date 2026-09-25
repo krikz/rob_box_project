@@ -180,7 +180,7 @@ ros2 run rob_box_perception health_monitor
 - `/apriltag/detections` (apriltag_msgs/AprilTagDetectionArray) - AprilTag маркеры
 - `/voice/stt/result` (std_msgs/String) - что сказал пользователь
 - `/voice/dialogue/response` (std_msgs/String) - что ответил робот
-- `/rtabmap/localization_pose` (geometry_msgs/PoseStamped) - позиция на карте
+- `/rtabmap/localization_pose` (geometry_msgs/PoseWithCovarianceStamped) - позиция на карте
 - `/odom` (nav_msgs/Odometry) - одометрия
 - `/device/snapshot` (robot_sensor_hub_msg/DeviceSnapshot) - сенсоры ESP32
 - `/sensors/motor_state/*` (vesc_msgs/VescStateStamped) - состояние моторов
@@ -226,7 +226,7 @@ ros2 launch rob_box_perception internal_dialogue.launch.py
 | `/apriltag/detections` | AprilTagDetectionArray | apriltag_node | AprilTag маркеры |
 | `/voice/stt/result` | String | stt_node | Распознанная речь |
 | `/voice/dialogue/response` | String | dialogue_node | Ответы робота |
-| `/rtabmap/localization_pose` | PoseStamped | rtabmap | Позиция на карте |
+| `/rtabmap/localization_pose` | PoseWithCovarianceStamped | rtabmap | Позиция на карте |
 | `/odom` | Odometry | ros2_control | Одометрия |
 | `/rosout` | Log | ROS2 Core | **Логи всех нод (ERROR/WARN)** |
 
