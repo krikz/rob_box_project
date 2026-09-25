@@ -98,6 +98,10 @@ def test_post_turn_retry_guards_runs_before_finalize_cleanup_policy() -> None:
     src_lines = src.splitlines()
 
     # Find first call (not definition) of each helper inside _run_turn.
+    # Issue #3005: cleanup-finalize guard may live in a dedicated helper
+    # ``_finalize_music_cleanup_after_retry_guard`` (extracted to keep CC
+    # of ``_run_turn`` ≤15, ADR-0021 R1) — accept either the direct call
+    # in ``_run_turn`` or the helper call as the gate-equivalent.
     methods = _class_methods(src)
     run_turn = methods["_run_turn"]
     start_line = run_turn.lineno
@@ -110,7 +114,12 @@ def test_post_turn_retry_guards_runs_before_finalize_cleanup_policy() -> None:
         # Crude but effective: skip ``def`` lines, find first call.
         if apply_call_line is None and "_apply_post_turn_retry_guards(" in line and "def _apply_post_turn_retry_guards" not in line:
             apply_call_line = i
-        if finalize_call_line is None and "_finalize_music_cleanup_policy(" in line and "def _finalize_music_cleanup_policy" not in line:
+        # Accept the helper call as well — that's the gate-equivalent path
+        # extracted in #3005 to keep _run_turn CC ≤15.
+        if finalize_call_line is None and (
+            "_finalize_music_cleanup_policy(" in line
+            or "_finalize_music_cleanup_after_retry_guard(" in line
+        ) and "def _finalize_music_cleanup" not in line:
             finalize_call_line = i
         if apply_call_line is not None and finalize_call_line is not None:
             break
@@ -120,25 +129,34 @@ def test_post_turn_retry_guards_runs_before_finalize_cleanup_policy() -> None:
         "Issue #992 Bug B/C регрессирует (DJ/music guard) + #2627 R2."
     )
     assert finalize_call_line is not None, (
-        "_run_turn не вызывает _finalize_music_cleanup_policy — "
-        "cleanup-policy снят. Issue #935/#992 регрессирует (фронт-чистка)."
+        "_run_turn не вызывает _finalize_music_cleanup_policy / "
+        "_finalize_music_cleanup_after_retry_guard — cleanup-policy снят. "
+        "Issue #935/#992 регрессирует (фронт-чистка)."
     )
     assert apply_call_line < finalize_call_line, (
         f"_apply_post_turn_retry_guards (line {apply_call_line}) должен идти ДО "
-        f"_finalize_music_cleanup_policy (line {finalize_call_line}) в "
-        "_run_turn.finally. Иначе catch-up cleanup-policy опубликует "
-        "music_cleanup раньше, чем guard успеет диспатчить Bug C-ретрай — "
-        "флап «start → стоп → старт» (issue #3005)."
+        f"_finalize_music_cleanup_policy / _finalize_music_cleanup_after_retry_guard "
+        f"(line {finalize_call_line}) в _run_turn.finally. Иначе catch-up "
+        "cleanup-policy опубликует music_cleanup раньше, чем guard успеет "
+        "диспатчить Bug C-ретрай — флап «start → стоп → старт» (issue #3005)."
     )
 
 
 def test_retry_dispatched_branch_skips_finalize_cleanup_policy() -> None:
     """Если guard диспатчил ретрай, ``_finalize_music_cleanup_policy`` НЕ зовётся.
 
-    Контракт: в ``finally`` _run_turn есть ``if any_retry_dispatched:``
-    (ветка «ретрай отправлен — cleanup-финализируй потом»), внутри которой
-    НЕТ вызова ``_finalize_music_cleanup_policy``, а ВНЕ этой ветки
-    (``else``) — есть.
+    Контракт: в ``finally`` _run_turn (или в вынесенном helper'е
+    ``_finalize_music_cleanup_after_retry_guard``, ADR-0021 R1) есть
+    ``if any_retry_dispatched:`` — ветка «ретрай отправлен — cleanup
+    финализируй потом». Внутри этой ветки НЕТ вызова
+    ``_finalize_music_cleanup_policy``. ВНЕ этой ветки — есть.
+
+    Допускаем две формы:
+
+    * ``if cond: …; else: _finalize_music_cleanup_policy(...)`` —
+      explicit else.
+    * ``if cond: …; return`` + post-if ``_finalize_music_cleanup_policy(
+      ...)`` — early-return (guard-форма, чище для CC).
 
     Структура развилась вместе с develop (issue #2627 R2): теперь guard
     возвращает пару ``(music_retry_dispatched, tool_retry_dispatched)``, и
@@ -147,54 +165,90 @@ def test_retry_dispatched_branch_skips_finalize_cleanup_policy() -> None:
     """
     src = DIALOGUE_NODE.read_text(encoding="utf-8-sig")
     methods = _class_methods(src)
-    run_turn = methods["_run_turn"]
+    search_roots = [
+        methods["_run_turn"],
+        methods.get("_finalize_music_cleanup_after_retry_guard"),
+    ]
 
-    # Find the ``if any_retry_dispatched:`` branch in _run_turn.finally.
+    # Find the ``if any_retry_dispatched:`` branch.
     # We accept any structural nesting as long as the ``if`` branch does
-    # NOT call ``_finalize_music_cleanup_policy`` and the ``else`` branch
+    # NOT call ``_finalize_music_cleanup_policy`` and the post-if branch
+    # (explicit ``else`` OR code after the if in the enclosing function)
     # DOES. Note: also accept the legacy ``if music_retry_dispatched:``
     # form as a graceful fallback if someone reverts the union.
     found_branch = None
     candidate_test_ids = {"any_retry_dispatched", "music_retry_dispatched"}
-    for node in ast.walk(run_turn):
-        if not isinstance(node, ast.If):
+    for root in search_roots:
+        if root is None:
             continue
-        # Walk test expression looking for ``any_retry_dispatched``
-        # (or, gracefully, ``music_retry_dispatched``).
-        test = node.test
-        if not isinstance(test, ast.Name):
-            continue
-        if test.id not in candidate_test_ids:
-            continue
-        # Found a candidate. Verify the IF body does NOT call
-        # _finalize_music_cleanup_policy, and the ELSE body DOES.
-        if_body_finalize = any(
-            isinstance(c, ast.Call)
-            and isinstance(c.func, ast.Attribute)
-            and c.func.attr == "_finalize_music_cleanup_policy"
-            for c in ast.walk(ast.Module(body=node.body, type_ignores=[]))
-        )
-        else_finalize = False
-        if node.orelse:
-            else_finalize = any(
+        # Walk top-level ``if`` blocks in root first (early-return form).
+        # ast.walk recurses into body, so to find the *enclosing* function's
+        # post-if code we have to inspect the parent. Build parent map.
+        parent_map: dict = {}
+        for parent in ast.walk(root):
+            for child in ast.iter_child_nodes(parent):
+                parent_map[child] = parent
+
+        def _post_if_calls_finalize(if_node) -> bool:
+            """Code in the same function AFTER the if, but NOT inside the if body."""
+            enclosing = parent_map.get(if_node, root)
+            if enclosing is None:
+                enclosing = root
+            # Locate the if's position within enclosing.body.
+            sibling_index = None
+            for idx, sibling in enumerate(getattr(enclosing, "body", [])):
+                if sibling is if_node:
+                    sibling_index = idx
+                    break
+            if sibling_index is None:
+                return False
+            after_stmts = list(enclosing.body[sibling_index + 1:])
+            # If there's an explicit else, the post-if code is inside node.orelse.
+            if getattr(if_node, "orelse", []):
+                after_stmts = list(if_node.orelse)
+            post_module = ast.Module(body=after_stmts, type_ignores=[])
+            for c in ast.walk(post_module):
+                if (isinstance(c, ast.Call)
+                        and isinstance(c.func, ast.Attribute)
+                        and c.func.attr == "_finalize_music_cleanup_policy"):
+                    return True
+            return False
+
+        for node in ast.walk(root):
+            if not isinstance(node, ast.If):
+                continue
+            # Walk test expression looking for ``any_retry_dispatched``
+            # (or, gracefully, ``music_retry_dispatched``).
+            test = node.test
+            if not isinstance(test, ast.Name):
+                continue
+            if test.id not in candidate_test_ids:
+                continue
+            # Found a candidate. Verify the IF body does NOT call
+            # _finalize_music_cleanup_policy, and the post-if branch DOES.
+            if_body_finalize = any(
                 isinstance(c, ast.Call)
                 and isinstance(c.func, ast.Attribute)
                 and c.func.attr == "_finalize_music_cleanup_policy"
-                for c in ast.walk(ast.Module(body=node.orelse, type_ignores=[]))
+                for c in ast.walk(ast.Module(body=node.body, type_ignores=[]))
             )
-        if if_body_finalize:
-            # Wrong branch has the call — keep searching.
-            continue
-        if else_finalize:
-            found_branch = node
+            if if_body_finalize:
+                # Wrong branch has the call — keep searching.
+                continue
+            if _post_if_calls_finalize(node):
+                found_branch = node
+                break
+        if found_branch is not None:
             break
 
     assert found_branch is not None, (
-        "В ``finally`` _run_turn должна быть ветка "
-        "``if any_retry_dispatched: <чистим pending>`` (или "
-        "``if music_retry_dispatched:`` как legacy-форма) с ``else``, "
-        "внутри которого зовётся _finalize_music_cleanup_policy. "
-        "Без этого флап «start → стоп → старт» (issue #3005) возвращается."
+        "В ``finally`` _run_turn (или в вынесенном helper'е "
+        "_finalize_music_cleanup_after_retry_guard, ADR-0021 R1) должна быть "
+        "ветка ``if any_retry_dispatched: <чистим pending>`` (или "
+        "``if music_retry_dispatched:`` как legacy-форма), ВНЕ которой "
+        "(explicit else или post-if early-return) зовётся "
+        "_finalize_music_cleanup_policy. Без этого флап «start → стоп → "
+        "старт» (issue #3005) возвращается."
     )
 
 
@@ -210,43 +264,54 @@ def test_retry_branch_clears_pending_music_cleanup_flag() -> None:
     ``if any_retry_dispatched:`` (объединение music+tool из
     ``_apply_post_turn_retry_guards``), но семантически эквивалентно —
     внутри всё равно идёт ``self._pending_music_cleanup = False``.
+
+    Issue #3005 ADR-0021 R1: гейт вынесен в helper. Ищем ветку в ОБОИХ.
     """
     src = DIALOGUE_NODE.read_text(encoding="utf-8-sig")
     methods = _class_methods(src)
-    run_turn = methods["_run_turn"]
+    search_roots = [
+        methods["_run_turn"],
+        methods.get("_finalize_music_cleanup_after_retry_guard"),
+    ]
 
     # Find ``if any_retry_dispatched:`` (or legacy ``if music_retry_dispatched:``)
-    # branch in _run_turn.
+    # branch in _run_turn (or extracted helper).
     found = False
     candidate_test_ids = {"any_retry_dispatched", "music_retry_dispatched"}
-    for node in ast.walk(run_turn):
-        if not isinstance(node, ast.If):
+    for root in search_roots:
+        if root is None:
             continue
-        if not isinstance(node.test, ast.Name):
-            continue
-        if node.test.id not in candidate_test_ids:
-            continue
-        # Inside the IF body, look for ``self._pending_music_cleanup = False``
-        cleared = False
-        for sub in ast.walk(ast.Module(body=node.body, type_ignores=[])):
-            if not isinstance(sub, ast.Assign):
+        for node in ast.walk(root):
+            if not isinstance(node, ast.If):
                 continue
-            for target in sub.targets:
-                if (isinstance(target, ast.Attribute)
-                        and target.attr == "_pending_music_cleanup"
-                        and isinstance(target.value, ast.Name)
-                        and target.value.id == "self"):
-                    if isinstance(sub.value, ast.Constant) and sub.value.value is False:
-                        cleared = True
-                        break
-        if cleared:
-            found = True
+            if not isinstance(node.test, ast.Name):
+                continue
+            if node.test.id not in candidate_test_ids:
+                continue
+            # Inside the IF body, look for ``self._pending_music_cleanup = False``
+            cleared = False
+            for sub in ast.walk(ast.Module(body=node.body, type_ignores=[])):
+                if not isinstance(sub, ast.Assign):
+                    continue
+                for target in sub.targets:
+                    if (isinstance(target, ast.Attribute)
+                            and target.attr == "_pending_music_cleanup"
+                            and isinstance(target.value, ast.Name)
+                            and target.value.id == "self"):
+                        if isinstance(sub.value, ast.Constant) and sub.value.value is False:
+                            cleared = True
+                            break
+            if cleared:
+                found = True
+                break
+        if found:
             break
 
     assert found, (
         "В ветке ``if any_retry_dispatched:`` (или legacy "
-        "``if music_retry_dispatched:``) _run_turn.finally должен "
-        "стоять ``self._pending_music_cleanup = False``, чтобы ретрай-тур "
+        "``if music_retry_dispatched:``) _run_turn.finally / "
+        "_finalize_music_cleanup_after_retry_guard должен стоять "
+        "``self._pending_music_cleanup = False``, чтобы ретрай-тур "
         "стартовал с чистым состоянием. Иначе catch-up на tts_batch_complete "
         "убьёт только что запущенный compose_music."
     )
@@ -259,18 +324,29 @@ def test_apply_music_guard_still_disarms_when_no_retry() -> None:
     ходов без ретрая (force-stop, fallback, normal chat). Если кто-то
     случайно поставит ``return` после ``_apply_music_guard``, этот тест
     упадёт.
+
+    Issue #3005 ADR-0021 R1: путь вызова может идти через helper
+    ``_finalize_music_cleanup_after_retry_guard`` — проверяем ОБА варианта.
     """
     src = DIALOGUE_NODE.read_text(encoding="utf-8-sig")
     methods = _class_methods(src)
     run_turn = methods["_run_turn"]
 
     # The finally block must still contain a path that calls
-    # _finalize_music_cleanup_policy. We've already verified the order
-    # in test_apply_music_guard_runs_before_finalize_cleanup_policy;
-    # here we verify the call is still reachable.
+    # _finalize_music_cleanup_policy OR its helper. We've already verified
+    # the order in test_apply_music_guard_runs_before_finalize_cleanup_policy;
+    # here we verify the call is still reachable (directly or via helper).
     src_text = ast.unparse(run_turn)
-    assert "_finalize_music_cleanup_policy" in src_text, (
-        "_finalize_music_cleanup_policy всё ещё должен зваться из "
-        "_run_turn.finally (для ходов без ретрая — force_stop, fallback, "
-        "normal chat). Если его убрали — регресс cleanup #935/#992."
+    helper = methods.get("_finalize_music_cleanup_after_retry_guard")
+    helper_text = ast.unparse(helper) if helper is not None else ""
+    combined = src_text + "\n" + helper_text
+    assert (
+        "_finalize_music_cleanup_policy" in combined
+        or "_finalize_music_cleanup_after_retry_guard" in combined
+    ), (
+        "_finalize_music_cleanup_policy / _finalize_music_cleanup_after_retry_guard "
+        "всё ещё должны зваться из _run_turn.finally (для ходов без ретрая — "
+        "force_stop, fallback, normal chat). Если их убрали — регресс cleanup "
+        "#935/#992 (issue #3005 helper extraction). "
+        f"src_text len={len(src_text)}, helper_text len={len(helper_text)}."
     )

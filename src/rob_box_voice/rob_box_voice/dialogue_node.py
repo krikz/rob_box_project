@@ -4935,30 +4935,17 @@ class DialogueNode(Node):
             # ``music_cleanup(reason="tts_batch_complete")`` РАНЬШЕ
             # ретрай-тура → флап «старт → стоп → старт». Снимаем
             # pending-флаг, чтобы ретрай-тур увидел чистое состояние.
-            any_retry_dispatched = (
-                music_retry_dispatched or tool_retry_dispatched
+            # Логика ветвления вынесена в
+            # :meth:`_finalize_music_cleanup_after_retry_guard`, чтобы
+            # удержать CC ``_run_turn`` ≤15 (ADR-0021 R1).
+            self._finalize_music_cleanup_after_retry_guard(
+                music_retry_dispatched=music_retry_dispatched,
+                tool_retry_dispatched=tool_retry_dispatched,
+                result=result,
+                was_dj_auto=was_dj_auto,
+                raw_user_command=raw_user_command,
+                user_input=user_input,
             )
-            if any_retry_dispatched:
-                self._pending_music_cleanup = False
-                self.get_logger().info(
-                    "🎵 [issue 3005] post-turn guard диспатчил ретрай — "
-                    "outer-finalize пропущен, ретрай-тур отработает cleanup сам"
-                )
-            else:
-                # Issue #935 v3: if LLM called stop_music(), defer cleanup until
-                # TTS finishes.  Otherwise keep music playing until next dialogue.
-                # Issue #992: a second stop_music() call from a follow-up LLM
-                # turn (while a previous cleanup is still pending) must be
-                # ignored — the flag is already set and the next batch_complete
-                # for any active batch will fire cleanup.
-                # Issue #2631 (ADR-0021 R1) — большая ветка cleanup-policy (CC=13)
-                # вынесена в helper.
-                self._finalize_music_cleanup_policy(
-                    result=result,
-                    was_dj_auto=was_dj_auto,
-                    raw_user_command=raw_user_command,
-                    user_input=user_input,
-                )
             # Issue #2874 — гуарды сказали своё: ход с ретраем молчит,
             # отозванный гуардом ответ молчит, остальное звучит. Переспрос
             # #2828, пришедший после ответа, — после него, как и раньше.
@@ -6653,6 +6640,54 @@ class DialogueNode(Node):
                 "🎵 turn finished, no active batches — fired music_cleanup "
                 "(issue 992 prelude-deferral catch-up)"
             )
+
+    def _finalize_music_cleanup_after_retry_guard(
+        self,
+        *,
+        music_retry_dispatched: bool,
+        tool_retry_dispatched: bool,
+        result: Optional["DialogResult"],
+        was_dj_auto: bool,
+        raw_user_command: Optional[str],
+        user_input: str,
+    ) -> None:
+        """Issue #3005 — guard «свежей музыки» перед outer-finalize.
+
+        Если :meth:`_apply_post_turn_retry_guards` задиспатчил music- или
+        tool-retry, отдаём cleanup-finalize ретрай-туру (он отработает
+        его в своём ``finally`` с чистым ``_pending_music_cleanup``).
+        Если дать ``_finalize_music_cleanup_policy`` отработать здесь,
+        catch-up в ``_flush_music_cleanup_if_idle`` может опубликовать
+        ``music_cleanup(reason="tts_batch_complete")`` РАНЬШЕ ретрай-тура
+        → флап «старт → стоп → старт» (живой лог Vision Pi 14:50–14:55,
+        issue #3005).
+
+        Вынесено из ``_run_turn``, чтобы удержать его CC ≤15 (ADR-0021 R1).
+        """
+        any_retry_dispatched = (
+            music_retry_dispatched or tool_retry_dispatched
+        )
+        if any_retry_dispatched:
+            self._pending_music_cleanup = False
+            self.get_logger().info(
+                "🎵 [issue 3005] post-turn guard диспатчил ретрай — "
+                "outer-finalize пропущен, ретрай-тур отработает cleanup сам"
+            )
+            return
+        # Issue #935 v3: if LLM called stop_music(), defer cleanup until
+        # TTS finishes.  Otherwise keep music playing until next dialogue.
+        # Issue #992: a second stop_music() call from a follow-up LLM
+        # turn (while a previous cleanup is still pending) must be
+        # ignored — the flag is already set and the next batch_complete
+        # for any active batch will fire cleanup.
+        # Issue #2631 (ADR-0021 R1) — большая ветка cleanup-policy (CC=13)
+        # вынесена в helper.
+        self._finalize_music_cleanup_policy(
+            result=result,
+            was_dj_auto=was_dj_auto,
+            raw_user_command=raw_user_command,
+            user_input=user_input,
+        )
 
     def _finalize_music_cleanup_policy(
         self,
