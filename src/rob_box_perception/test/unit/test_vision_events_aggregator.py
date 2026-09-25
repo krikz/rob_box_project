@@ -188,6 +188,20 @@ class _TwistWithCovariance:
         self.twist = _Twist()
 
 
+class _PoseWithCovariance:
+
+    def __init__(self):
+        self.pose = _Pose()
+        self.covariance = [0.0] * 36
+
+
+class _PoseWithCovarianceStamped:
+
+    def __init__(self):
+        self.pose = _PoseWithCovariance()
+        self.header = MagicMock()
+
+
 _geom_msg.Vector3 = _Vector3
 _geom_msg.Point = _Point
 _geom_msg.Quaternion = _Quaternion
@@ -195,6 +209,11 @@ _geom_msg.Pose = _Pose
 _geom_msg.PoseStamped = _PoseStamped
 _geom_msg.Twist = _Twist
 _geom_msg.TwistWithCovariance = _TwistWithCovariance
+# Issue #2826: rtabmap публикует PoseWithCovarianceStamped, и
+# context_aggregator_node импортирует эти типы из geometry_msgs.msg —
+# без shim'ов тут pytest-collect роняет ImportError на нашем stub.
+_geom_msg.PoseWithCovariance = _PoseWithCovariance
+_geom_msg.PoseWithCovarianceStamped = _PoseWithCovarianceStamped
 sys.modules['geometry_msgs'] = _geom
 sys.modules['geometry_msgs.msg'] = _geom_msg
 
