@@ -75,22 +75,24 @@ def _calls_in_branch(branch_node, attr: str) -> bool:
 # ── Tests ────────────────────────────────────────────────────────────────
 
 
-def test_apply_music_guard_runs_before_finalize_cleanup_policy() -> None:
-    """``_apply_music_guard`` стоит ДО ``_finalize_music_cleanup_policy``.
+def test_post_turn_retry_guards_runs_before_finalize_cleanup_policy() -> None:
+    """``_apply_post_turn_retry_guards`` стоит ДО ``_finalize_music_cleanup_policy``.
 
     ДО фикса: ``_finalize_music_cleanup_policy(...)`` стоял первым → для
     хода «сыграй/спой» без music-тула вооружал ``_pending_music_cleanup
     =True`` и catch-up сразу публиковал ``music_cleanup(reason="tts_
     batch_complete")``. Только ЗАТЕМ ``_apply_music_guard`` диспатчил
-    Bug C-retry с новым ``compose_music``, но Renardo уже убит.
+    Bug C-ретрай с новым ``compose_music``, но Renardo уже убит.
 
-    ПОСЛЕ фикса: ``_apply_music_guard`` срабатывает ПЕРВЫМ, и если он
-    диспатчит ретрай, outer-finalize cleanup-policy пропускается через
-    гейт ``if music_retry_dispatched``.
+    ПОСЛЕ фикса (develop HEAD переименовал guard в
+    ``_apply_post_turn_retry_guards`` — объединение music/tool/babble,
+    см. issue #2627/ADR-0021a R2): guard срабатывает ПЕРВЫМ, и если он
+    диспатчил ретрай (любой из music/tool), outer-finalize cleanup-policy
+    пропускается через гейт ``if any_retry_dispatched:``.
 
     Тестовая страховка: внутри ``_run_turn`` текстовый порядок вызовов
-    ``_apply_music_guard`` и ``_finalize_music_cleanup_policy``. Если
-    кто-то снова поставит cleanup-policy ПЕРЕД guard — этот тест упадёт.
+    ``_apply_post_turn_retry_guards`` и ``_finalize_music_cleanup_policy``.
+    Если кто-то снова поставит cleanup-policy ПЕРЕД guard — этот тест упадёт.
     """
     src = DIALOGUE_NODE.read_text(encoding="utf-8-sig")
     src_lines = src.splitlines()
@@ -106,7 +108,7 @@ def test_apply_music_guard_runs_before_finalize_cleanup_policy() -> None:
         if i < start_line:
             continue
         # Crude but effective: skip ``def`` lines, find first call.
-        if apply_call_line is None and "_apply_music_guard(" in line and "def _apply_music_guard" not in line:
+        if apply_call_line is None and "_apply_post_turn_retry_guards(" in line and "def _apply_post_turn_retry_guards" not in line:
             apply_call_line = i
         if finalize_call_line is None and "_finalize_music_cleanup_policy(" in line and "def _finalize_music_cleanup_policy" not in line:
             finalize_call_line = i
@@ -114,15 +116,15 @@ def test_apply_music_guard_runs_before_finalize_cleanup_policy() -> None:
             break
 
     assert apply_call_line is not None, (
-        "_run_turn не вызывает _apply_music_guard — guard снят. "
-        "Issue #992 Bug B/C регрессирует (DJ/music guard)."
+        "_run_turn не вызывает _apply_post_turn_retry_guards — guard снят. "
+        "Issue #992 Bug B/C регрессирует (DJ/music guard) + #2627 R2."
     )
     assert finalize_call_line is not None, (
         "_run_turn не вызывает _finalize_music_cleanup_policy — "
         "cleanup-policy снят. Issue #935/#992 регрессирует (фронт-чистка)."
     )
     assert apply_call_line < finalize_call_line, (
-        f"_apply_music_guard (line {apply_call_line}) должен идти ДО "
+        f"_apply_post_turn_retry_guards (line {apply_call_line}) должен идти ДО "
         f"_finalize_music_cleanup_policy (line {finalize_call_line}) в "
         "_run_turn.finally. Иначе catch-up cleanup-policy опубликует "
         "music_cleanup раньше, чем guard успеет диспатчить Bug C-ретрай — "
@@ -133,32 +135,39 @@ def test_apply_music_guard_runs_before_finalize_cleanup_policy() -> None:
 def test_retry_dispatched_branch_skips_finalize_cleanup_policy() -> None:
     """Если guard диспатчил ретрай, ``_finalize_music_cleanup_policy`` НЕ зовётся.
 
-    Контракт: в ``finally`` _run_turn есть ``if music_retry_dispatched:``
+    Контракт: в ``finally`` _run_turn есть ``if any_retry_dispatched:``
     (ветка «ретрай отправлен — cleanup-финализируй потом»), внутри которой
     НЕТ вызова ``_finalize_music_cleanup_policy``, а ВНЕ этой ветки
     (``else``) — есть.
+
+    Структура развилась вместе с develop (issue #2627 R2): теперь guard
+    возвращает пару ``(music_retry_dispatched, tool_retry_dispatched)``, и
+    гейт объединяет их в ``any_retry_dispatched = music or tool`` —
+    cleanup пропускается для ОБОИХ видов ретрая (issue #3005).
     """
     src = DIALOGUE_NODE.read_text(encoding="utf-8-sig")
     methods = _class_methods(src)
     run_turn = methods["_run_turn"]
 
-    # Find the ``if music_retry_dispatched:`` branch in _run_turn.finally.
+    # Find the ``if any_retry_dispatched:`` branch in _run_turn.finally.
     # We accept any structural nesting as long as the ``if`` branch does
     # NOT call ``_finalize_music_cleanup_policy`` and the ``else`` branch
-    # DOES.
+    # DOES. Note: also accept the legacy ``if music_retry_dispatched:``
+    # form as a graceful fallback if someone reverts the union.
     found_branch = None
+    candidate_test_ids = {"any_retry_dispatched", "music_retry_dispatched"}
     for node in ast.walk(run_turn):
         if not isinstance(node, ast.If):
             continue
-        # Walk test expression looking for ``music_retry_dispatched``.
+        # Walk test expression looking for ``any_retry_dispatched``
+        # (or, gracefully, ``music_retry_dispatched``).
         test = node.test
         if not isinstance(test, ast.Name):
             continue
-        if test.id != "music_retry_dispatched":
+        if test.id not in candidate_test_ids:
             continue
-        # Found a candidate. Verify it's inside _run_turn.finally.
-        # Verify the IF body does NOT call _finalize_music_cleanup_policy.
-        # Verify the ELSE body DOES.
+        # Found a candidate. Verify the IF body does NOT call
+        # _finalize_music_cleanup_policy, and the ELSE body DOES.
         if_body_finalize = any(
             isinstance(c, ast.Call)
             and isinstance(c.func, ast.Attribute)
@@ -182,7 +191,8 @@ def test_retry_dispatched_branch_skips_finalize_cleanup_policy() -> None:
 
     assert found_branch is not None, (
         "В ``finally`` _run_turn должна быть ветка "
-        "``if music_retry_dispatched: <чистим pending>`` с ``else``, "
+        "``if any_retry_dispatched: <чистим pending>`` (или "
+        "``if music_retry_dispatched:`` как legacy-форма) с ``else``, "
         "внутри которого зовётся _finalize_music_cleanup_policy. "
         "Без этого флап «start → стоп → старт» (issue #3005) возвращается."
     )
@@ -195,19 +205,26 @@ def test_retry_branch_clears_pending_music_cleanup_flag() -> None:
     ``_schedule_music_cleanup`` увидит ``_pending_music_cleanup=True``, и
     если active batches пусты, catch-up опубликует cleanup → убьёт
     только что запущенную inner-туром музыку.
+
+    Развилось вместе с develop (#2627 R2): ветка идёт под
+    ``if any_retry_dispatched:`` (объединение music+tool из
+    ``_apply_post_turn_retry_guards``), но семантически эквивалентно —
+    внутри всё равно идёт ``self._pending_music_cleanup = False``.
     """
     src = DIALOGUE_NODE.read_text(encoding="utf-8-sig")
     methods = _class_methods(src)
     run_turn = methods["_run_turn"]
 
-    # Find ``if music_retry_dispatched:`` branch in _run_turn.
+    # Find ``if any_retry_dispatched:`` (or legacy ``if music_retry_dispatched:``)
+    # branch in _run_turn.
     found = False
+    candidate_test_ids = {"any_retry_dispatched", "music_retry_dispatched"}
     for node in ast.walk(run_turn):
         if not isinstance(node, ast.If):
             continue
         if not isinstance(node.test, ast.Name):
             continue
-        if node.test.id != "music_retry_dispatched":
+        if node.test.id not in candidate_test_ids:
             continue
         # Inside the IF body, look for ``self._pending_music_cleanup = False``
         cleared = False
@@ -227,7 +244,8 @@ def test_retry_branch_clears_pending_music_cleanup_flag() -> None:
             break
 
     assert found, (
-        "В ветке ``if music_retry_dispatched:`` _run_turn.finally должен "
+        "В ветке ``if any_retry_dispatched:`` (или legacy "
+        "``if music_retry_dispatched:``) _run_turn.finally должен "
         "стоять ``self._pending_music_cleanup = False``, чтобы ретрай-тур "
         "стартовал с чистым состоянием. Иначе catch-up на tts_batch_complete "
         "убьёт только что запущенный compose_music."
