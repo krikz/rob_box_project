@@ -77,6 +77,7 @@ from rob_box_harness.health import (
     check_deepseek_balance,
 )
 from rob_box_harness.identity import Acquaintance, MemoryIdentitySeam
+from rob_box_harness.identity.base import FaceSignal  # ADR-0135 §2.1
 from rob_box_harness.memory import (
     Fact,
     InMemoryStore,
@@ -8734,7 +8735,6 @@ class DialogueNode(Node):
         # /perception/face/meeting (контракт Vision Pi, ADR-0135 §5.2).
         if self._face_voice_hint_enabled:
             try:
-                from rob_box_harness.identity.base import FaceSignal
                 self._identity.note_face_seen(
                     FaceSignal(
                         person_id=marker.person_id,
