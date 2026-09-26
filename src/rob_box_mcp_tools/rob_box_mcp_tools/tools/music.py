@@ -2061,12 +2061,36 @@ class MusicManager:
         # 🔴 FIX (live 10:13 DJ): при активном DJ-режиме дедлайн
         # ИГНОРИРУЕТСЯ — DJ-сет непрерывен (переходы каждые 30-120с),
         # segments-дедлайн #990 (~30с) убивал музыку посреди сета.
-        # DJ-флаг ставится через set_dj_mode() (одна точка записи).
+        # DJ-флаг ставится через set_dj_mode() (однаная точка записи).
+        # 🔴 FIX (issue #3005): симметричный гард для user-requested
+        # трека (TRACK mode). LLM может сильно занизить ``segments``
+        # (например, ``compose_music(segments=8)`` для трёхминутного
+        # эмбиента), и тогда deadline (~60 с) срабатывает раньше, чем
+        # юзер успевает насладиться треком. Если с момента старта
+        # музыки прошло МЕНЬШЕ ``idle_ttl`` — не убиваем, а сбрасываем
+        # deadline, как для DJ: следующий ``compose_music`` /
+        # ``execute_music_code`` установит новый, если понадобится.
         deadline = self._music_deadline_at
         if deadline is not None and now_m >= deadline:
             if self.dj_mode_enabled:
                 # DJ живёт по idle-TTL; сбросим дедлайн — следующий
                 # переход продлит сессию.
+                self._music_deadline_at = None
+                self._music_deadline_segments = None
+                return result
+            if idle < ttl:
+                # Issue #3005 — user-requested трек живёт по idle-TTL,
+                # как DJ-сет. ``idle < ttl`` означает «юзер ещё в
+                # диалоге с активной музыкой» (TTL = 1800 с по
+                # умолчанию, куда больше типичной длины трека).
+                # Сбрасываем deadline, иначе следующий тик watchdog'а
+                # через 5 с убьёт трек, который юзер только что
+                # попросил (живой лог vision-pi 24.09.2026 14:50).
+                self._log_warning(
+                    "🎵 [issue 3005] segments-deadline истёк, но юзер "
+                    f"в диалоге (idle={idle:.1f}s < ttl={ttl:.0f}s) — "
+                    "сбрасываю deadline, жду idle_ttl"
+                )
                 self._music_deadline_at = None
                 self._music_deadline_segments = None
                 return result
