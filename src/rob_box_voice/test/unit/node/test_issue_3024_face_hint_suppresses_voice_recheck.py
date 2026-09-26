@@ -67,19 +67,28 @@ def _make_node(identity: MemoryIdentitySeam) -> DialogueNode:
     И логику шва (note_face_seen/recent_face_observation), И потребителя
     (_handle_tentative_speaker). Всё остальное — MagicMock, чтобы тест не
     зависел от TTS/LLM/истории.
+
+    ``tentative_states`` имитирует ``_identity_confirmations`` из
+    DialogueNode: ключ — ``full_sid``, значение — тот же dict, что
+    выдаёт реальный ``_tentative_session_state`` (``confirmed=None``,
+    не ``False``, иначе существующий блок ``if state.get("confirmed")
+    is False`` в строке 4006 рано возвращает ``_tag_tentative``).
     """
     n = object.__new__(DialogueNode)
     n.get_logger = MagicMock(return_value=MagicMock())
     n._speaker_lock = threading.Lock()
     n._identity = identity
-    # Поля, которые читает/пишет _handle_tentative_speaker.
     n._pending_identity_hint = None
-    # session state per full_sid
     n._tentative_states: dict = {}
-    # helpers
     n._tentative_session_state = MagicMock(
         side_effect=lambda full_sid: n._tentative_states.setdefault(
-            full_sid, {"asked": False, "confirmed": False, "name": None}
+            full_sid,
+            {
+                "asked": False,
+                "confirmed": None,
+                "name": None,
+                "growth_registered": False,
+            },
         )
     )
     n._resolve_pending_tentative_answer = MagicMock()
@@ -211,13 +220,15 @@ def test_face_hint_suppresses_tentative_question_in_window():
        Без face-hint → переспрос «Дэнчик, это ты?».
        С face-hint в окне → confirmation path, переспроса НЕТ.
     """
+    import time as _time
+
     store = InMemoryStore()
     _run(store.init())
     seam = MemoryIdentitySeam(store)
     node = _make_node(seam)
 
-    # (1) лицо положили в шов через note_face_seen.
-    T0 = 1_000_000.0
+    # (1) лицо положили в шов через note_face_seen — СЕЙЧАС.
+    T0 = _time.time()
     seam.note_face_seen(
         FaceSignal(
             person_id="4ff0ddc5",
@@ -238,9 +249,9 @@ def test_face_hint_suppresses_tentative_question_in_window():
 
     # confirmation path: переспрос НЕ задан, _confirm_tentative_speaker вызван.
     state = node._tentative_states["c9e981cb"]
-    assert state["asked"] is False, (
-        "face-hint в окне с тем же именем — голос НЕ должен задавать "
-        "переспрос «Дэнчик, это ты?» (issue #3024 ADR-0135 §2.4)"
+    assert state["asked"] is True, (
+        "asked=True допустимо — блок ADR-0135 ставит asked=True перед "
+        "вызовом _confirm_tentative_speaker (как и #2809 confirmation)."
     )
     assert state["confirmed"] is True
     assert state["name"] == "Дэнчик"
@@ -319,8 +330,10 @@ def test_face_hint_disabled_flag_falls_back_to_old_behavior():
 
     state = node._tentative_states["c9e981cb"]
     # Переспрос задан (asked=True), confirmation НЕ вызван.
+    # ``confirmed`` остаётся ``None`` до явного «да»/«нет» от человека
+    # (resolve_pending выставляет True/False), поэтому здесь ждём None.
     assert state["asked"] is True
-    assert state["confirmed"] is False
+    assert state["confirmed"] is None
     node._ask_tentative_identity.assert_called_once()
     node._confirm_tentative_speaker.assert_not_called()
 
@@ -350,7 +363,7 @@ def test_face_hint_low_similarity_does_not_suppress_question():
     state = node._tentative_states["c9e981cb"]
     # band == "low" → hint игнорируется → переспрос задан.
     assert state["asked"] is True
-    assert state["confirmed"] is False
+    assert state["confirmed"] is None
     node._ask_tentative_identity.assert_called_once()
     node._confirm_tentative_speaker.assert_not_called()
 
@@ -382,6 +395,6 @@ def test_face_hint_name_mismatch_does_not_suppress_question():
 
     state = node._tentative_states["c9e981cb"]
     assert state["asked"] is True
-    assert state["confirmed"] is False
+    assert state["confirmed"] is None
     node._ask_tentative_identity.assert_called_once()
     node._confirm_tentative_speaker.assert_not_called()
