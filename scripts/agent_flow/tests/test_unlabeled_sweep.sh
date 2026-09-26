@@ -14,16 +14,21 @@
 #   - gh issue edit/comment/close → пишут вызовы в /tmp/log для анализа
 #
 # Кейсы:
-#   T1:  OPEN, age=10h, без меток → nothing (fresh, age<STALE_HOURS_1)
-#   T2:  OPEN, age=25h, без меток → label stale-candidate + comment
-#   T3:  OPEN, age=30h, stale-candidate, без reopen → close
-#   T4:  OPEN, age=30h, stale-candidate, reopen ДО метки → close
-#   T5:  OPEN, age=30h, stale-candidate, reopen ПОСЛЕ метки → un-stale, не close
-#   T6:  OPEN с меткой `hermes` → skip
-#   T7:  idempotency: повторный тик не дублирует stale-комментарий
-#   T8:  timeline API сдох → fail-closed (skip close)
-#   T9:  OPEN с меткой `e2e-done` → skip
-#   T10: shellcheck-clean + syntax-OK + required helpers exist
+#   T1:  helper presence + syntax + shellcheck + process_label_added_at
+#   T2:  OPEN, age=10h, без меток → nothing (fresh, age<STALE_HOURS_1)
+#   T3:  OPEN, age=25h, без меток → label stale-candidate + comment
+#   T4:  OPEN, age=30h, stale-candidate, без reopen → close
+#   T5:  OPEN, age=30h, stale-candidate, reopen ДО метки → close
+#   T6:  OPEN, age=30h, stale-candidate, reopen ПОСЛЕ метки → un-stale, не close
+#   T7:  OPEN с меткой `hermes` → skip
+#   T8:  idempotency: повторный тик не дублирует stale-комментарий
+#   T9:  timeline API сдох → fail-closed (skip close)
+#   T10: OPEN с меткой `e2e-done` → skip
+#   T11: ENV_FILE robustness — HERMES_HOME=профиль → fallback находит .env
+#   T12: gh CLI --reason "not planned" (с пробелом) — регресс t_e198c3f3
+#   T13: GraphQL rate-limit → REST fallback (ретро t_291506bf)
+#   T14: process_label_added_at: stale-candidate + process ПОСЛЕ → un-stale (B1.5)
+#   T15: regression: stale-candidate + process ДО → close (B1.5 не снимает наоборот)
 #
 # Usage:
 #   bash test_unlabeled_sweep.sh
@@ -234,7 +239,7 @@ else
   echo "  ✗ has_label(): библиотека не подключена или не содержит функцию"
 fi
 
-HELPERS=(to_epoch last_reopen_at stale_labeled_at \
+HELPERS=(to_epoch last_reopen_at stale_labeled_at process_label_added_at \
          has_recent_marker_comment now_minus_h_iso)
 for fn in "${HELPERS[@]}"; do
   if grep -qE "^${fn}\(\)|^function ${fn} " "$SCRIPT_UNDER_TEST"; then
@@ -820,6 +825,62 @@ if echo "$T12B_OUT" | grep -q 'errored=1 source=none'; then
 else
   FAIL=$((FAIL+1)); FAILED_CASES+=("T12b: tick done не помечен errored=1 source=none")
   echo "  ✗ tick done не помечен errored=1 source=none"
+fi
+
+# ----------------------------------------------------------------------------
+# T13: OPEN с stale-candidate + process-метка ПОСЛЕ метки → un-stale + no close
+#      (ретро t_2928c1c7, race case issue #2754). BRANCH B1.5.
+# ----------------------------------------------------------------------------
+echo
+echo "--- T13: OPEN с stale-candidate + process-метка ПОСЛЕ → un-stale (BRANCH B1.5, ретро t_2928c1c7) ---"
+ISSUES_JSON='[
+  {"number":8001,"title":"hermes tagged after stale","updatedAt":"'"$NOW_MINUS_30H"'","createdAt":"'"$NOW_MINUS_30H"'","labels":[{"name":"stale-candidate"}]}
+]'
+# Stale-метка 25h ago, process-метка (hermes) 1h ago → ПОСЛЕ.
+PROCESS_LABEL_TIME="$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo '2026-08-18T19:00:00Z')"
+TIMELINE_JSON='[
+  {"event":"labeled","label":{"name":"stale-candidate"},"created_at":"'"$STALE_LABEL_TIME"'"},
+  {"event":"labeled","label":{"name":"hermes"},"created_at":"'"$PROCESS_LABEL_TIME"'"}
+]'
+COMMENTS_JSON='[]'
+emit_mock_runner "t13" "$ISSUES_JSON" "$TIMELINE_JSON" "$COMMENTS_JSON"
+bash "$WORK_DIR/run_t13.sh" >/dev/null 2>&1 || true
+if [ -f "$WORK_DIR/t13.calls" ]; then
+  assert_contains "$WORK_DIR/t13.calls" "edit: 8001 --repo krikz/rob_box_project --remove-label stale-candidate" "T13: 8001 → remove stale-candidate (BRANCH B1.5: process-метка ПОСЛЕ)"
+  assert_not_contains "$WORK_DIR/t13.calls" "close: 8001" "T13: 8001 НЕ close (process-метка защитила)"
+  assert_contains "$WORK_DIR/t13.calls" "comment: 8001" "T13: 8001 → dedup-comment снят"
+else
+  FAIL=$((FAIL+1)); FAILED_CASES+=("T13 calls log missing")
+  echo "  ✗ T13 calls log missing"
+fi
+
+# ----------------------------------------------------------------------------
+# T14: OPEN с stale-candidate БЕЗ process-меток после → НЕ снимать (regression guard).
+#      Проверяет, что B1.5 не снимает метку наоборот (когда process-метка
+#      была ДО stale_labeled_at — это нормальный stale-cycle).
+# ----------------------------------------------------------------------------
+echo
+echo "--- T14: OPEN с stale-candidate, process-метка была ДО stale_labeled_at → close (regression guard B1.5) ---"
+ISSUES_JSON='[
+  {"number":8002,"title":"hermes tagged BEFORE stale (старый процесс, потом drift)","updatedAt":"'"$NOW_MINUS_30H"'","createdAt":"'"$NOW_MINUS_30H"'","labels":[{"name":"stale-candidate"}]}
+]'
+# Process-метка (hermes) поставлена 30h ago, stale-candidate 25h ago → process ДО.
+# Тут сейчас stale-candidate — это просто разметка без process-метки (юзер
+# снял process вручную? нет, race). Но для regression: если process-метка
+# была ДО stale, B1.5 НЕ должен снимать — идём в B2/B3 (close).
+EARLY_PROCESS_LABEL="$(date -u -d '30 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo '2026-08-17T14:00:00Z')"
+TIMELINE_JSON='[
+  {"event":"labeled","label":{"name":"hermes"},"created_at":"'"$EARLY_PROCESS_LABEL"'"},
+  {"event":"labeled","label":{"name":"stale-candidate"},"created_at":"'"$STALE_LABEL_TIME"'"}
+]'
+COMMENTS_JSON='[]'
+emit_mock_runner "t14" "$ISSUES_JSON" "$TIMELINE_JSON" "$COMMENTS_JSON"
+bash "$WORK_DIR/run_t14.sh" >/dev/null 2>&1 || true
+if [ -f "$WORK_DIR/t14.calls" ]; then
+  assert_contains "$WORK_DIR/t14.calls" "close: 8002" "T14: 8002 → close (process-метка была ДО, не защищает)"
+else
+  FAIL=$((FAIL+1)); FAILED_CASES+=("T14 calls log missing")
+  echo "  ✗ T14 calls log missing"
 fi
 
 # ----------------------------------------------------------------------------

@@ -323,6 +323,30 @@ print(matches[-1].get("created_at", "") if matches else "")
 ' || true
 }
 
+# Получить ISO-время ПОСЛЕДНЕЙ установки process-метки (hermes/needs-e2e/
+# e2e-done/e2e:rejected/no-e2e-required), или пусто. Используется в BRANCH
+# B1.5 для детекта race: если воркер/юзер поставил process-метку ПОСЛЕ
+# установки stale-candidate — sweep должен снять stale-candidate, чтобы
+# close-окно не убило issue, которая уже в процессе (ретро t_2928c1c7,
+# race case issue #2754, ADR-0022 GATE-2).
+process_label_added_at() {  # $1=issue_number
+  gh api "repos/${GH_REPO}/issues/${1}/timeline?per_page=100" \
+    2>/dev/null | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    print(""); sys.exit(0)
+process_labels = {"hermes", "needs-e2e", "e2e-done", "e2e:rejected", "no-e2e-required"}
+matches = [
+    e for e in data
+    if isinstance(e, dict) and e.get("event") == "labeled"
+    and ((e.get("label") or {}).get("name", "") in process_labels)
+]
+print(matches[-1].get("created_at", "") if matches else "")
+' || true
+}
+
 # Конвертировать ISO-время в epoch; пусто → echo 0.
 to_epoch() {  # $1=iso_time
   local t="$1"
@@ -371,14 +395,21 @@ while IFS=$'\t' read -r number title updated_at created_at labels_csv; do
   labels_norm="$(printf '%s' "$labels_csv" | tr '[:upper:]' '[:lower:]')"
 
   # Already in process → skip
-  if has_label "$labels_norm" "$ISSUE_LABEL" \
-     || has_label "$labels_norm" "$NEEDS_E2E_LABEL" \
-     || has_label "$labels_norm" "$DONE_LABEL" \
-     || has_label "$labels_norm" "$REJECTED_LABEL" \
-     || has_label "$labels_norm" "$NO_E2E_LABEL"; then
-    skipped=$((skipped+1))
-    log "issue #${number}: уже в process-цикле (${labels_norm}) — skip"
-    continue
+  # ИСКЛЮЧЕНИЕ: если у issue есть stale-candidate — мы должны попасть в
+  # BRANCH B и проверить B1.5 (process-метка ПОСЛЕ stale → un-stale),
+  # даже если process-метка уже на месте. Иначе race case (ретро t_2928c1c7,
+  # issue #2754) не защитить: sweep будет skip'ать такие issues вечно и
+  # stale-candidate не снимется.
+  if ! has_label "$labels_norm" "$STALE_LABEL"; then
+    if has_label "$labels_norm" "$ISSUE_LABEL" \
+       || has_label "$labels_norm" "$NEEDS_E2E_LABEL" \
+       || has_label "$labels_norm" "$DONE_LABEL" \
+       || has_label "$labels_norm" "$REJECTED_LABEL" \
+       || has_label "$labels_norm" "$NO_E2E_LABEL"; then
+      skipped=$((skipped+1))
+      log "issue #${number}: уже в process-цикле (${labels_norm}) — skip"
+      continue
+    fi
   fi
 
   upd_epoch="$(to_epoch "$updated_at")"
@@ -408,6 +439,28 @@ while IFS=$'\t' read -r number title updated_at created_at labels_csv; do
         gh issue edit "$number" --repo "$GH_REPO" --remove-label "$STALE_LABEL" >/dev/null 2>&1 || true
         gh issue comment "$number" --repo "$GH_REPO" --body \
           "agent-flow: ♻️ user-reopen обнаружен после метки ${STALE_LABEL} (${labeled_at_iso}). Метка снята — issue возвращена в OPEN без меток. Авто-закрывалка не тронет, пока процесс не возьмёт её в работу." >/dev/null 2>&1 || true
+      fi
+      un_staled=$((un_staled+1))
+      continue
+    fi
+
+    # --- B1.5: process-метка (hermes/needs-e2e/e2e-done/e2e:rejected/
+    #          no-e2e-required) добавлена ПОСЛЕ stale_labeled_at → un-stale.
+    # Race window (ретро t_2928c1c7, issue #2754 ADR-0134):
+    #   T0   sweep ставит stale-candidate
+    #   T0+Δ воркер/юзер ставит process-метку (hermes/needs-e2e/...)
+    #   T1   close-окно 48h без детекта этой ситуации → issue закрывается
+    # Решение: снимаем stale-candidate, оставляем process-метку — sweep
+    # больше не тронет, юзер продолжает работу. Симметрично B1 (user-reopen).
+    process_added_at_iso="$(process_label_added_at "$number")"
+    process_added_at_epoch="$(to_epoch "$process_added_at_iso")"
+    if [ -n "$process_added_at_iso" ] && [ "$process_added_at_iso" != "null" ] \
+       && [ "$process_added_at_epoch" -gt "$labeled_at_epoch" ] 2>/dev/null; then
+      log "issue #${number}: process-метка (${process_added_at_iso}) ПОСЛЕ stale_labeled_at (${labeled_at_iso}) — un-stale"
+      if [ "$DRY_RUN" != "true" ]; then
+        gh issue edit "$number" --repo "$GH_REPO" --remove-label "$STALE_LABEL" >/dev/null 2>&1 || true
+        gh issue comment "$number" --repo "$GH_REPO" --body \
+          "agent-flow: ♻️ process-метка появилась после stale-candidate (${labeled_at_iso}). Метка снята — sweep больше не тронет. Продолжайте работу." >/dev/null 2>&1 || true
       fi
       un_staled=$((un_staled+1))
       continue
