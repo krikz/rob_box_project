@@ -1,6 +1,7 @@
 """Unit tests for FoxDot / SuperCollider music stack validation helpers."""
 
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,7 @@ from rob_box_voice.core.renardo_synthdef_patches import (
     patch_organ_scd_content,
     patch_brass_scd_content,
     patch_tb303_scd_content,
+    patch_fuzz_scd_content,
     apply_renardo_synthdef_patches,
     resolve_conflicted_scd_content,
 )
@@ -342,6 +344,128 @@ def test_apply_renardo_synthdef_patches_patches_tb303_file_in_place(tmp_path):
     assert patched_files == ["tb303.scd"]
     assert "LeakDC.ar" in patched
     assert "atk.max(0.02)" in patched
+
+
+# ---------------------------------------------------------------------------
+# fuzz SynthDef patch — issue #3008 (live 24.09.2026)
+#
+# Upstream renardo_lib fuzz.scd aliased and clicked on 16 kHz scsynth because
+# (a) LFSaw has infinite harmonics and the synth shipped with no filter at all,
+# (b) the envelope hard-coded `curve:'step'` ignored atk/rel arguments and
+# clicked on every note, (c) there was no `lpf=` arg, so Renardo-side
+# `lpf=523.3` was a silent no-op. These tests pin the three fixes. ADR-0129.
+# ---------------------------------------------------------------------------
+
+
+def test_patch_fuzz_scd_content_replaces_step_envelope_with_real_attack_release():
+    source = (
+        "SynthDef.new(\\fuzz, {|amp=1, sus=1|\n"
+        "var osc, env;\n"
+        "osc = LFSaw.ar(freq);\n"
+        "env = EnvGen.ar(Env(times:[sus*0.8, 0.01], levels:[amp, amp, amp*0.01],"
+        " curve:'step'), doneAction:0);\n"
+        "ReplaceOut.ar(bus, osc * env)\n"
+        "}).add;\n"
+    )
+
+    patched = patch_fuzz_scd_content(source)
+
+    assert "curve:'step'" not in patched, (
+        "step-огибающая даёт щелчки на каждой ноте (issue #3008)"
+    )
+    assert "curve: -4" in patched
+    assert "atk.max(0.005)" in patched
+    assert "rel.max(0.05)" in patched
+
+
+def test_patch_fuzz_scd_content_adds_anti_aliasing_lowpass_relative_to_sample_rate():
+    source = (
+        "SynthDef.new(\\fuzz, {|amp=1, sus=1|\n"
+        "var osc;\n"
+        "osc = LFSaw.ar(freq);\n"
+        "ReplaceOut.ar(bus, osc)\n"
+        "}).add;\n"
+    )
+
+    patched = patch_fuzz_scd_content(source)
+
+    # Anti-aliasing must be tied to the actual server sample rate, not a
+    # hard-coded Hz number — same rule as masterfilter.scd §правило 3.
+    assert "SampleRate.ir" in patched, (
+        "срез должен быть от SampleRate, иначе на 16 kHz режет слишком высоко"
+    )
+    assert "LPF.ar" in patched
+    assert "CheckBadValues.ar" in patched, (
+        "один сломанный плеер не должен убивать весь слой (NaN → 0)"
+    )
+
+
+def test_patch_fuzz_scd_content_adds_lpf_argument_so_userspace_lpf_works():
+    source = (
+        "SynthDef.new(\\fuzz, {|amp=1, sus=1| var osc;\n"
+        "osc = LFSaw.ar(freq);\n"
+        "ReplaceOut.ar(bus, osc)\n"
+        "}).add;\n"
+    )
+
+    patched = patch_fuzz_scd_content(source)
+
+    # Renardo/FoxDot code like `p1 >> fuzz(..., lpf=523.3)` (live 24.09)
+    # must actually filter the sound; before the patch `lpf` was a no-op.
+    assert "lpf=4000" in patched, "в шапке должен быть default-арг lpf"
+    # `lpf` из шапки должен попасть в тело и использоваться в расчёте среза
+    # (через `cutoff = min(lpf.max(80), …)`, чтобы LPF.ar ниже зависел от него).
+    assert re.search(r"cutoff\s*=\s*min\(lpf", patched), (
+        "lpf из шапки должен влиять на частоту среза LPF.ar"
+    )
+
+
+def test_apply_renardo_synthdef_patches_patches_fuzz_file_in_place(tmp_path):
+    """End-to-end: 'битый' upstream fuzz.scd → стабильный патч на диске."""
+    fuzz_file = tmp_path / "fuzz.scd"
+    fuzz_file.write_text(
+        "SynthDef.new(\\fuzz, {|amp=1, sus=1, freq=0|\n"
+        "var osc;\n"
+        "osc = LFSaw.ar(LFSaw.kr(freq, 0, freq, freq * 2));\n"
+        "ReplaceOut.ar(bus, osc)\n"
+        "}).add;\n",
+        encoding="utf-8",
+    )
+
+    patched_files = apply_renardo_synthdef_patches(tmp_path)
+    patched = fuzz_file.read_text(encoding="utf-8")
+
+    assert "fuzz.scd" in patched_files
+    assert patched_files == ["fuzz.scd"]
+    # Все три исправления применены:
+    assert "SampleRate.ir" in patched
+    assert "curve: -4" in patched
+    assert "lpf=4000" in patched
+    assert "curve:'step'" not in patched
+
+
+def test_apply_renardo_synthdef_patches_is_idempotent_on_already_patched_fuzz(tmp_path):
+    """Повторный прогон патча на уже патченном файле — no-op (важно для
+    стартапа voice-assistant, который вызывает фикс каждый раз)."""
+    fuzz_file = tmp_path / "fuzz.scd"
+    fuzz_file.write_text(
+        "SynthDef.new(\\fuzz, {|amp=1, sus=1| var osc; "
+        "osc = LFSaw.ar(freq); ReplaceOut.ar(bus, osc)}).add;\n",
+        encoding="utf-8",
+    )
+
+    first_pass = apply_renardo_synthdef_patches(tmp_path)
+    content_after_first = fuzz_file.read_text(encoding="utf-8")
+
+    second_pass = apply_renardo_synthdef_patches(tmp_path)
+    content_after_second = fuzz_file.read_text(encoding="utf-8")
+
+    assert first_pass == ["fuzz.scd"]
+    assert second_pass == [], (
+        f"повторный прогон не должен трогать уже патченный файл, "
+        f"получили {second_pass!r}"
+    )
+    assert content_after_first == content_after_second
 
 
 # ---------------------------------------------------------------------------
