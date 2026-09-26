@@ -3963,19 +3963,28 @@ class DialogueNode(Node):
         # ADR-0135 §2.4 — face→voice hint: если есть СВЕЖИЙ face-hint с
         # тем же именем и band=='high' (sim >= high_threshold), голос
         # НЕ задаёт переспрос «<Имя>, это ты?» — идём в confirmation
-        # path тем же способом, как если бы человек словесно ответил
+        # path тем же способом, как если бы человек словечно ответил
         # «да» (issue #2809). Голос ничего не знает про Vision
         # ``person_id`` (разные стабильные UUID, ADR-0123 §6 Phase 2),
         # сшивка идёт по имени — единственному общему атрибуту.
+        #
+        # ``getattr(..., False)`` — защита от unit-тестов, которые
+        # собирают DialogueNode через ``object.__new__`` без прохождения
+        # ``__init__`` (наследие legacy-стиля с моками rclpy): атрибут
+        # может отсутствовать, и тогда логика face-hint просто
+        # выключается (== ADR-0135 §2.5 деградация к текущему
+        # поведению). На проде после ``__init__`` атрибут всегда есть.
         if (
-            self._face_voice_hint_enabled
+            getattr(self, "_face_voice_hint_enabled", False)
             and tentative_name
             and not state.get("asked")
         ):
             face_obs = (
                 self._identity.recent_face_observation_by_name(
                     tentative_name,
-                    window_sec=self._face_voice_hint_window_sec,
+                    window_sec=getattr(
+                        self, "_face_voice_hint_window_sec", 30.0
+                    ),
                 )
             )
             if (
