@@ -39,8 +39,9 @@ from __future__ import annotations
 
 import abc
 import time
+from collections import deque
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Deque, Dict, Optional
 
 from rob_box_harness.memory import (
     MemoryStore,
@@ -48,6 +49,13 @@ from rob_box_harness.memory import (
     merge_speaker_facts,
     touch_speaker,
 )
+
+# ADR-0135 §2.4 — полосы уверенности для face hint.
+# Дефолты из ADR-0123 §6 (high) и ADR-0089 §2.2 (low стаб-зеркало).
+DEFAULT_FACE_HINT_HIGH = 0.78
+DEFAULT_FACE_HINT_LOW = 0.65
+DEFAULT_FACE_HINT_WINDOW_SEC = 30.0
+DEFAULT_FACE_HINT_BUFFER_CAPACITY = 8
 
 
 @dataclass(frozen=True)
@@ -66,6 +74,68 @@ class Acquaintance:
     confidence: float | None = None
 
 
+def _classify_face_band(
+    similarity: float,
+    *,
+    high: float = DEFAULT_FACE_HINT_HIGH,
+    low: float = DEFAULT_FACE_HINT_LOW,
+) -> str:
+    """Полоса уверенности face-hint (ADR-0135 §2.4)."""
+    if similarity >= high:
+        return "high"
+    if similarity >= low:
+        return "tentative"
+    return "low"
+
+
+@dataclass(frozen=True)
+class FaceSignal:
+    """Сырой сигнал лица из vision_node → ``IdentitySeam.note_face_seen``.
+
+    Структурно-типизирован (ADR-0135 §2.1): шов не зависит от
+    ``rob_box_perception``, dataclass'ы достаточно для сериализации
+    через ``/vision/hailo/events`` → ``parse_meeting_marker`` (см.
+    ``dialogue_node._on_vision_event``).
+    """
+
+    person_id: str       # UUID из FaceStore
+    name: Optional[str]  # имя, если FaceStore его уже знает
+    similarity: float    # 0..1, score ArcFace-матча
+    is_new: bool         # новая запись (created_at == сейчас) или старая
+    source_camera: str
+    captured_at: float   # unix-time; для freshness-окна
+
+
+@dataclass(frozen=True)
+class FaceObservation:
+    """Наблюдение лица, прочитанное через ``IdentitySeam.recent_face_observation``.
+
+    Не пишется в долговременный стор (ADR-0135 §2.2: «наблюдение, а не
+    обновление профиля») — это in-memory подсказка для потребителей шва
+    (``dialogue_node``) о том, что лицо только что видело кандидата с
+    указанной уверенностью.
+    """
+
+    person_id: str
+    name: Optional[str]
+    similarity: float
+    captured_at: float
+    is_new: bool
+    confidence_band: str   # "high" | "tentative" | "low" (см. ADR-0135 §2.4)
+
+    def age_sec(self, *, now: Optional[float] = None) -> float:
+        return (now if now is not None else time.time()) - self.captured_at
+
+    def is_recent(
+        self,
+        *,
+        window_sec: float = DEFAULT_FACE_HINT_WINDOW_SEC,
+        now: Optional[float] = None,
+    ) -> bool:
+        """Свежесть в пределах окна ``window_sec`` (дефолт 30с, ADR-0135 §2.4)."""
+        return self.age_sec(now=now) <= window_sec
+
+
 class IdentitySeam(abc.ABC):
     """Шов идентичности: память + (в подклассе) адаптер биометрии.
 
@@ -75,6 +145,15 @@ class IdentitySeam(abc.ABC):
 
     def __init__(self, memory: MemoryStore) -> None:
         self._memory = memory
+        # ADR-0135 §2.2 — in-memory кольцевой буфер face-наблюдений per
+        # person_id. Ключ = person_id (Vision), потому что человек-человек
+        # ещё не сшиты (см. ADR-0123 §6 Phase 2). Буфер живёт только в
+        # памяти процесса — это НАБЛЮДЕНИЕ, а не обновление Acquaintance.
+        self._face_observations: Dict[str, Deque[FaceObservation]] = {}
+        self._face_buffer_capacity: int = DEFAULT_FACE_HINT_BUFFER_CAPACITY
+        self._face_high_threshold: float = DEFAULT_FACE_HINT_HIGH
+        self._face_low_threshold: float = DEFAULT_FACE_HINT_LOW
+        self._face_window_sec: float = DEFAULT_FACE_HINT_WINDOW_SEC
 
     @abc.abstractmethod
     def resolve(self, signal: Any) -> Acquaintance | None:
@@ -122,6 +201,119 @@ class IdentitySeam(abc.ABC):
         facts_moved = await merge_speaker_facts(self._memory, src_id, dst_id)
         return 0, facts_moved
 
+    # ------------------------------------------------------------------
+    # ADR-0135 §2.2 — FaceSignal → in-memory ring buffer
+    # ------------------------------------------------------------------
+
+    def configure_face_hint(
+        self,
+        *,
+        buffer_capacity: int = DEFAULT_FACE_HINT_BUFFER_CAPACITY,
+        high_threshold: float = DEFAULT_FACE_HINT_HIGH,
+        low_threshold: float = DEFAULT_FACE_HINT_LOW,
+        window_sec: float = DEFAULT_FACE_HINT_WINDOW_SEC,
+    ) -> None:
+        """Задать параметры face-hint (вызывается из конфига ноды).
+
+        Те же дефолты, что в ADR-0135 §2.6. Метод аддитивный — старые
+        швы без face-hint продолжают работать (если его не звали,
+        буфер пуст и ``recent_face_observation`` всегда возвращает
+        ``None``, см. ADR-0135 §2.5 деградация).
+        """
+        self._face_buffer_capacity = int(buffer_capacity)
+        self._face_high_threshold = float(high_threshold)
+        self._face_low_threshold = float(low_threshold)
+        self._face_window_sec = float(window_sec)
+
+    def note_face_seen(
+        self, signal: FaceSignal, *, now: Optional[float] = None
+    ) -> FaceObservation:
+        """Положить наблюдение лица в кольцевой буфер (ADR-0135 §2.2).
+
+        Синхронная (in-memory), без записи в долговременный стор
+        (это НАБЛЮДЕНИЕ, а не обновление ``Acquaintance``: лицо
+        остаётся источником подсказки, а не источником ``name``
+        — пока владелец не сделает полную arbitration ADR-0123 §6).
+        """
+        ts = now if now is not None else time.time()
+        band = _classify_face_band(
+            signal.similarity,
+            high=self._face_high_threshold,
+            low=self._face_low_threshold,
+        )
+        obs = FaceObservation(
+            person_id=signal.person_id,
+            name=signal.name,
+            similarity=float(signal.similarity),
+            captured_at=float(signal.captured_at or ts),
+            is_new=bool(signal.is_new),
+            confidence_band=band,
+        )
+        buf = self._face_observations.setdefault(
+            signal.person_id, deque(maxlen=self._face_buffer_capacity)
+        )
+        buf.append(obs)
+        return obs
+
+    def recent_face_observation(
+        self,
+        person_id: str,
+        *,
+        window_sec: Optional[float] = None,
+        now: Optional[float] = None,
+    ) -> Optional[FaceObservation]:
+        """Самое свежее наблюдение лица для ``person_id`` в окне.
+
+        Возвращает ``None``, если буфер пуст, ключа нет, или последнее
+        наблюдение протухло (старше ``window_sec``). Дефолт окна — из
+        ``configure_face_hint`` (ADR-0135 §2.6 дефолт 30с).
+        """
+        buf = self._face_observations.get(person_id)
+        if not buf:
+            return None
+        win = self._face_window_sec if window_sec is None else float(window_sec)
+        ts = now if now is not None else time.time()
+        for obs in reversed(buf):
+            if (ts - obs.captured_at) <= win:
+                return obs
+        return None
+
+    def recent_face_observation_by_name(
+        self,
+        name: str,
+        *,
+        window_sec: Optional[float] = None,
+        now: Optional[float] = None,
+    ) -> Optional[FaceObservation]:
+        """Самое свежее наблюдение лица С ЗАДАННЫМ ИМЕНЕМ в окне.
+
+        Нужно голосовому потребителю ``_handle_tentative_speaker``:
+        voice знает имя кандидата (``tentative_name``), но НЕ знает
+        ``person_id`` (Vision-пространство). Сшивка по имени — единственная
+        доступная до полной arbitration ADR-0123 §6 (Phase 2). Когда
+        arbitration появится, можно будет добавить
+        ``recent_face_observation_by_biometric_uuid`` без удаления этого.
+
+        Если ``name`` пустой (``face_store`` ещё не знает имени) —
+        возвращает ``None``: голос не может сшить безымянный face-hint
+        с именем-кандидатом от speaker_id_node.
+        """
+        if not name:
+            return None
+        win = self._face_window_sec if window_sec is None else float(window_sec)
+        ts = now if now is not None else time.time()
+        best: Optional[FaceObservation] = None
+        for buf in self._face_observations.values():
+            for obs in reversed(buf):
+                if obs.name != name:
+                    continue
+                if (ts - obs.captured_at) > win:
+                    continue
+                if best is None or obs.captured_at > best.captured_at:
+                    best = obs
+                break  # самое свежее для этого person_id уже нашли
+        return best
+
 
 class MemoryIdentitySeam(IdentitySeam):
     """Памятный шов без биометрии.
@@ -140,6 +332,12 @@ class MemoryIdentitySeam(IdentitySeam):
 
 __all__ = [
     "Acquaintance",
+    "DEFAULT_FACE_HINT_BUFFER_CAPACITY",
+    "DEFAULT_FACE_HINT_HIGH",
+    "DEFAULT_FACE_HINT_LOW",
+    "DEFAULT_FACE_HINT_WINDOW_SEC",
+    "FaceObservation",
+    "FaceSignal",
     "IdentitySeam",
     "MemoryIdentitySeam",
 ]
