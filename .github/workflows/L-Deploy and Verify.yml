@@ -317,6 +317,41 @@ jobs:
             sleep 5
           done
 
+      # t_ea209b2d (issue #3018): после Update Code обязательно переустановить
+      # systemd unit (robbox-vision.service) и health-monitor timer+service
+      # (robbox-vision-health.{timer,service}). Без этого Vision Pi продолжает
+      # держать устаревший unit без Restart=on-failure и без health-timer, и
+      # падение любого контейнера оставляет стек лежать до ручного вмешательства
+      # (как было с 22.09.2026 15:13 по 25.09.2026 13:13).
+      #
+      # Идемпотентно: переустановка поверх существующих файлов безопасна
+      # (setup_vision_pi.sh → setup_autostart + setup_health_monitor).
+      - name: "[Vision Pi] Reinstall Systemd Units + Health Timer (issue #3018)"
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🔧 Reinstalling systemd units + health timer on Vision Pi"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          # Проверяем, изменились ли setup_vision_pi.sh / health-check скрипт.
+          # Если файлы на Pi отличаются от origin/develop → переустанавливаем.
+          # diff возвращает 0, если файлы идентичны.
+          if sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
+              "cd ~/rob_box_project && \
+               diff -q scripts/setup/setup_vision_pi.sh <(git show origin/develop:scripts/setup/setup_vision_pi.sh) >/dev/null 2>&1 && \
+               diff -q scripts/monitoring/robbox_vision_health_check.sh <(git show origin/develop:scripts/monitoring/robbox_vision_health_check.sh) >/dev/null 2>&1"; then
+            echo "✅ systemd unit + health-check скрипт не менялись — skip reinstall"
+          else
+            echo "⚠️  setup_vision_pi.sh или health-check изменились — переустанавливаем"
+            # Запускаем ТОЛЬКО setup_autostart + setup_health_monitor через
+            # отдельный helper (без apt install / clone repo / zram-swap).
+            sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
+              'set -e; export USER=ros2 HOME=/home/ros2; \
+               bash ~/rob_box_project/scripts/setup/reinstall_vision_pi_systemd.sh && \
+               sudo systemctl daemon-reload && \
+               echo "✅ systemd units + health-timer reinstalled"'
+          fi
+
       - name: "[Vision Pi] Ensure HEF models (#2398, #2599) — Ресурсный пак"
         if: '!inputs.dry_run'
         run: |
