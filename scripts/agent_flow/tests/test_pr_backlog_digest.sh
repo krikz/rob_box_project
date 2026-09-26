@@ -336,7 +336,7 @@ JSON
 test_proposal_section() {
     local proposal="$REPO_ROOT/docs/design/AGENT_FLOW_PROPOSAL.md"
     [ -f "$proposal" ] || { echo "missing: $proposal" >&2; return 1; }
-    grep -qE '^### 3\.5 .*[Pp]r.[Bb]acklog.[Dd]igest' "$proposal" \
+    grep -qE '^### 3\.4 .*[Pp]r.[Bb]acklog.[Dd]igest' "$proposal" \
         || { echo "AGENT_FLOW_PROPOSAL.md missing PR backlog digest section" >&2; return 1; }
 }
 

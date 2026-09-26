@@ -212,7 +212,37 @@ max_runtime: 1800 (default) | 3600 (крупная: label `priority:P0` или b
    до следующего тика (5 мин).
 5. Ошибка close → warning, destructive cleanup отложен, следующий тик повторяет.
 
-### 3.4 `e2e-process` (cron, every 1 hour)
+### 3.4 `pr-backlog-digest` (cron, every 24h @ 09:00 Europe/Berlin)
+
+**Inputs:** `gh pr list --state open --json number,title,labels,mergeable,mergeStateStatus,updatedAt,headRefName` (один запрос); cross-check `gh issue list --label stale-candidate`.
+
+**Назначение (PM-ретро t_cd2053b7, архитектор-рекомендация t_d2ab84d7):** PM-шпаргалка «сколько PR лежит без движения N дней» до этого делалась вручную раз в ретро. С 17 OPEN MERGEABLE+GREEN PR Шифу нужна ежедневная сводка — автоматически, чтобы не гонять ручной `gh pr list` каждый день. Один Telegram message ≈30 строк утром, чтобы Шифу видел состояние конвейера до начала работы.
+
+**Алгоритм:**
+
+1. **Гейты:** flock, MAINTENANCE (skip-early), окно по часу (`DIGEST_HOUR=9`), sentinel `/tmp/agent-flow-pr-backlog-digest-YYYY-MM-DD.done` (защита от двойного cron-tick'а в течение дня). `--dry-run` (env `DIGEST_DRY_RUN=true`) пишет в `/tmp/agent-flow-pr-backlog-digest.log` без Telegram.
+2. **Группировка (по `mergeable` + `mergeStateStatus`):**
+   - **Группа A** (готовы к merge): `MERGEABLE=true` + `mergeStateStatus=CLEAN` + есть label `e2e-done`. Сортировка: старые сверху (`updatedAt` ↑ по возрасту в днях).
+   - **Группа B** (в работе / ждут e2e): `MERGEABLE=true` + `CLEAN`, без `e2e-done`. Сортировка: старые сверху.
+   - **Группа C** (risk): `CONFLICTING` или `mergeStateStatus ∈ {DIRTY, UNKNOWN}` или `MERGEABLE` + `UNSTABLE/BLOCKED`.
+3. **Cross-check issues** с label `stale-candidate` (особенно если есть активный PR — race case из ретро t_d2ab84d7): warning-секция в digest с номером issue и коротким заголовком. Шифу видит «N issue(s) stale-candidate: #2754, #...».
+4. **Подсчёт `needs-review`:** сумма PR с этим label. По дизайну 0 — норма (см. ADR-0014 §H3, e2e-done → needs-review reconcile); если > 0 — отдельный сигнал (merge-gate не отработал).
+5. **Telegram:** один message через `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage` (chat_id=495039871, Krikz Ster). `TELEGRAM_BOT_TOKEN` подгружается через `af_load_profile_env` (default — agent-flow профиль, см. ретро 12.08 t_5af222ea — single-owner архитектура).
+6. **Fail-closed:** пустой `gh pr list` output (или python parse упал) → exit 1, sentinel НЕ создаётся → watchdog подхватит. НЕ ретраить бесконечно.
+
+**Что НЕ делает (явно):**
+
+- НЕ алертит per-PR (spam). Один digest в день.
+- НЕ меняет `needs-review` семантику (см. ADR-0014 §H3).
+- НЕ мерджит (Q22 — только Шифу).
+- НЕ интегрирует с e2e-process / unlabeled-sweep / merge-gate (изоляция, single-responsibility).
+- НЕ читает body PR (только labels + mergeable + mergeStateStatus).
+
+**SOT-раскладка:** `scripts/agent_flow/install.sh` (EXPECTED[] + `ensure_pr_backlog_digest_cron`); живёт во всех 6 target-папках профилей. Drift-detect контролирует.
+
+**Refs:** t_d2ab84d7 (architect), t_cd2053b7 (PM ретро + шпаргалка `/tmp/t_cd2053b7/pr-backlog-2026-09-26.md`), ADR-0014 §H3.
+
+### 3.5 `e2e-process` (cron, every 1 hour)
 
 **Inputs:** карточки с label `needs-e2e` (ветка `z-{agent}/<id>-*` смержена в `z-{e2e}/test-round-N`).
 
@@ -274,7 +304,7 @@ max_runtime: 1800 (default) | 3600 (крупная: label `priority:P0` или b
 
 **State:** хранить `N` (текущий round) можно в **имени ветки** (max N) либо в файлике `state/e2e_round.txt` в репо (fallback).
 
-### 3.5 Юзер (финальное решение)
+### 3.6 Юзер (финальное решение)
 
 **Действия:**
 
