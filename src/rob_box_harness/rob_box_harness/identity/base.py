@@ -80,12 +80,7 @@ def _classify_face_band(
     high: float = DEFAULT_FACE_HINT_HIGH,
     low: float = DEFAULT_FACE_HINT_LOW,
 ) -> str:
-    """Полоса уверенности face-hint (ADR-0135 §2.4).
-
-    * ``high`` — отменяет голосовой переспрос #2809;
-    * ``tentative`` — присутствует в логе/контексте, но НЕ отменяет;
-    * ``low`` — игнорируется (стаб-фильтр зеркалит ADR-0089 §2.2).
-    """
+    """Полоса уверенности face-hint (ADR-0135 §2.4)."""
     if similarity >= high:
         return "high"
     if similarity >= low:
