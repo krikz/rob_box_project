@@ -278,6 +278,14 @@ EXPECTED=(
     # где labels сняли руками. Регистрация cron-job делается в
     # ensure_conflict_sweep_cron ниже.
     agent-flow-conflict-sweep.sh
+    # Daily PR-backlog digest для Шифа (PM-ретро t_cd2053b7, архитектор
+    # t_d2ab84d7, devops-карточка t_f158469f). no_agent cron-job в 09:00
+    # Europe/Berlin: один gh pr list запрос, группировка по mergeable +
+    # mergeStateStatus (A = MERGEABLE+GREEN+e2e-done, B = MERGEABLE+GREEN
+    # без e2e-done, C = CONFLICTING/DIRTY), cross-check issues со
+    # stale-candidate (race case из t_d2ab84d7), один Telegram message
+    # Шифу (chat_id=495039871). Dry-run через DIGEST_DRY_RUN=true.
+    agent-flow-pr-backlog-digest.sh
 # Fail-streak escalation watchdog (ретро 28.08 t_faac94b0): no-agent,
     # вызывается ИЗ launcher'а (после e2e-process.sh tick), не отдельным
     # cron-job. При streak ≥ WARN → issue-comment, при streak ≥ PAUSE →
@@ -1075,6 +1083,26 @@ ensure_conflict_sweep_cron() {
     ensure_cron_job devops "Agent Flow Conflict Sweep (ADR-0014 fallback)" "agent-flow-conflict-sweep.sh" "every 1h" interval
 }
 ensure_conflict_sweep_cron
+echo "==> Ensure cron job registration: PR backlog digest (PM-ретро t_cd2053b7, devops t_f158469f)"
+# Проблема: PM-шпаргалка `/tmp/t_cd2053b7/pr-backlog-2026-09-26.md` делалась
+# вручную раз в ретро (17 OPEN PR, все MERGEABLE+GREEN, но Шифу не видел
+# ежедневной сводки). Архитектор t_d2ab84d7 рекомендовал отдельный devops-job.
+#
+# Решение: ensure_pr_backlog_digest_cron() — идемпотентная функция,
+# регистрирующая interval-job (every 24h, target 09:00 Europe/Berlin) в
+# devops-профиле, no_agent (скрипт = agent-flow-pr-backlog-digest.sh).
+# Сам скрипт дополнительно фильтрует окно по DIGEST_HOUR (default 9) и
+# sentinel /tmp/agent-flow-pr-backlog-digest-YYYY-MM-DD.done, чтобы
+# двойной cron-tick не слал 2 раза в день. Interval "every 24h" даёт
+# cron-планировщику шанс запустить (09:00-09:59 local); скрипт сам решит,
+# отправлять ли.
+#
+# Регистрация переживает install.sh: каждый запуск (в т.ч. auto-fix из
+# drift-detect) проверяет jobs.json и создаёт недостающий job.
+ensure_pr_backlog_digest_cron() {
+    ensure_cron_job devops "Agent Flow PR Backlog Digest (Шифу daily)" "agent-flow-pr-backlog-digest.sh" "every 24h" interval
+}
+ensure_pr_backlog_digest_cron
 echo "==> Ensure cron job registration: orphan needs-e2e sweep (ретро t_78a6ffa3)"
 # Проблема: agent-flow-needs-e2e-orphan-watchdog.sh раскладывается install.sh,
 # но cron-job НЕ создаётся автоматически. Без него паттерн «needs-e2e без PR»
