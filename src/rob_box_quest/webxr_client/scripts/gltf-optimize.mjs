@@ -100,20 +100,28 @@ async function optimizeFile(io, inputPath, sharpEncoder, meshoptEncoder) {
     meshopt({ encoder: meshoptEncoder ?? undefined }),
   ];
 
-  // Optional: texture compression via sharp (WebP). Skipped if sharp isn't
-  // installed or fails to load — geometry compression above is the primary
-  // size win; texture compress is a progressive enhancement.
-  if (sharpEncoder) {
-    transforms.push(
-      textureCompress({
-        encoder: sharpEncoder,
-        targetFormat: "webp",
-        quality: 80,
-      })
-    );
-  }
-
   await doc.transform(...transforms);
+
+  // Optional: texture compression via sharp (WebP). Best-effort: geometry
+  // compression above is the primary size win; texture compress is a
+  // progressive enhancement. Some sources (e.g. Tripo3D exports) embed JPEG
+  // color profiles that sharp/libvips cannot decode — in that case we keep
+  // the original textures and fall back to geometry-only optimization.
+  if (sharpEncoder) {
+    try {
+      await doc.transform(
+        textureCompress({
+          encoder: sharpEncoder,
+          targetFormat: "webp",
+          quality: 80,
+        })
+      );
+    } catch (err) {
+      console.warn(
+        `  ⚠ texture compression skipped for ${inputPath}: ${err.message}`
+      );
+    }
+  }
 
   const outPath = inputPath.replace(/\.(glb|gltf)$/i, OUTPUT_SUFFIX);
   await ensureDir(dirname(outPath));

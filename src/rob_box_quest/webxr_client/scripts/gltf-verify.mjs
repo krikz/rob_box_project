@@ -86,6 +86,9 @@ async function listAssets(root) {
     for (const entry of entries) {
       const full = join(dir, entry.name);
       if (entry.isDirectory()) {
+        // `_raw/` holds gitignored source glTF (see .gitignore) — it is not
+        // part of the committed-asset compression contract, so skip it.
+        if (entry.name === "_raw") continue;
         await walk(full);
       } else if ([".glb", ".gltf"].includes(extname(entry.name).toLowerCase())) {
         out.push(full);
