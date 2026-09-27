@@ -3787,6 +3787,7 @@ class DialogueNode(Node):
         self,
         state: dict,
         tentative_name: Optional[str],
+        confidence: float,
         user_input: str,
         utterance_id: Optional[str] = None,
     ) -> None:
@@ -4019,6 +4020,7 @@ class DialogueNode(Node):
             full_sid=full_sid,
             tentative_kind=tentative_kind,
             tentative_name=tentative_name,
+            confidence=float(sp.get("tentative_conf") or sp.get("confidence") or 0.0),
             user_input=user_input,
             utterance_id=utterance_id,
         )
@@ -4047,9 +4049,7 @@ class DialogueNode(Node):
             self._pending_identity_hint = {
                 "kind": tentative_kind,
                 "name": tentative_name,
-                "confidence": float(
-                    state.get("confidence") or 0.0
-                ),
+                "confidence": confidence,
             }
             self.get_logger().info(
                 f"👤 [issue 2809] identity question hint set: "
