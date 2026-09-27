@@ -1,0 +1,52 @@
+name: "L: Auto Bug on Deploy Failure"
+
+on:
+  workflow_run:
+    workflows:
+      - "L: Deploy and Verify"
+    types:
+      - completed
+
+jobs:
+  collect-deploy-failure:
+    if: ${{ github.event.workflow_run.conclusion == 'failure' }}
+    runs-on: [self-hosted, rob-box]
+    permissions:
+      contents: read
+      issues: write
+      actions: read
+    steps:
+      - name: Checkout workflow revision
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 1
+          clean: true
+
+      - name: Collect Vision Pi crash evidence
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SSHPASS: ${{ secrets.ROBOT_SSH_PASS }}
+          VISION_PI_IP: 10.1.1.11
+          GITHUB_REF_NAME: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          if [ -z "$SSHPASS" ]; then
+            echo "ROBOT_SSH_PASS is not configured; cannot collect remote Docker evidence."
+            exit 1
+          fi
+
+          bash scripts/ci/auto-bug-on-deploy-failure.sh             "${{ github.event.workflow_run.id }}"             vision_pi             -             -             "${{ github.event.workflow_run.created_at }}"             "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"             "${{ github.event.workflow_run.html_url }}"
+
+      - name: Collect Main Pi crash evidence
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SSHPASS: ${{ secrets.ROBOT_SSH_PASS }}
+          MAIN_PI_IP: 10.1.1.10
+          GITHUB_REF_NAME: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          if [ -z "$SSHPASS" ]; then
+            echo "ROBOT_SSH_PASS is not configured; cannot collect remote Docker evidence."
+            exit 1
+          fi
+
+          bash scripts/ci/auto-bug-on-deploy-failure.sh             "${{ github.event.workflow_run.id }}"             main_pi             -             -             "${{ github.event.workflow_run.created_at }}"             "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"             "${{ github.event.workflow_run.html_url }}"
