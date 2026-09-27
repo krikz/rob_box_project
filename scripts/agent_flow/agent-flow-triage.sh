@@ -570,12 +570,14 @@ for r in results:
 
     # Ищем существующий G10a-коммент в последних 100 комментах.
     # Возвращает: "<comment_id>|<iso_date>|<hash>" или пусто.
-    # jq filter экранирует marker (regex-спецсимволов нет, но на всякий).
-    local _marker_jq
-    _marker_jq="$(printf '%s' "$AGENT_FLOW_FILE_OVERLAP_MARKER" | sed 's/[][\\^$.*?+|(){}]/\\&/g')"
+    # Marker `hermes-triage-g10a` содержит только [a-z0-9-] — regex-спецсимволов
+    # НЕТ, поэтому plain-pattern (без \Q…\E литерализации) достаточно.
+    # Hash извлекаем через capture() против точного паттерна
+    # 'hermes-triage-g10a: ([0-9a-f]{12})' — это надёжнее, чем sub() который
+    # оставлял весь body после prefix-strip (баг #3027).
     local _existing
     _existing="$(gh api "repos/${GH_REPO}/issues/${number}/comments?per_page=100" \
-        --jq "[.[] | select((.body // \"\") | test(\"\\Q${_marker_jq}\\E\"))] | last | \"\\(.id // empty)|\\(.created_at // empty)|\\(.body // \"\")\" | sub(\"\\Q${_marker_jq}\\E: \"; \"\") | sub(\" -->$\"; \"\")" 2>/dev/null || true)"
+        --jq "[.[] | select((.body // \"\") | test(\"${AGENT_FLOW_FILE_OVERLAP_MARKER}\"))] | last | \"\\(.id // empty)|\\(.created_at // empty)|\\((.body // \"\") | capture(\"${AGENT_FLOW_FILE_OVERLAP_MARKER}: (?<hash>[0-9a-f]{12})\").hash // \"\")\"" 2>/dev/null || true)"
 
     _existing_id="" _existing_hash="" _existing_iso=""
     if [ -n "$_existing" ]; then
@@ -613,7 +615,7 @@ for r in results:
 
 Triage **НЕ создал** kanban-карточку для этого issue — обнаружен file-overlap с уже открытым PR, который правит тот же файл (\`${_fo_ifile}\`).
 
-OPEN PR, которые уже правят этот файл (${PR_COUNT:-0} обнаруженно):
+OPEN PR, которые уже правят этот файл (${pr_count:-0} обнаруженно):
 ${overlap_list}
 
 **Почему так:** race-window между воркерами — несколько worker'ов увидели один и тот же root-cause-defect в develop и стартанули каждый свою карточку. Per-branch OPEN-PR guard (G5/G6b) не ловит (разные ветки), G9a intra-tick не ловит (разные заголовки), G8 fingerprint не ловит (\`${_fo_ifile}\` не в whitelist). Новый G10a ловит cross-branch дубль по file-overlap.
@@ -636,13 +638,15 @@ ${overlap_list}
             ;;
         edit)
             # Edit существующего коммента через gh api PATCH.
-            # Body передаём через stdin чтобы избежать ARG_MAX и quoting-проблем
-            # с эмодзи/Markdown. gh api --input - читает body из stdin.
-            printf '%s' "$_full_body" | gh api \
-                --method PATCH \
-                -H "Content-Type: application/json" \
-                "repos/${GH_REPO}/issues/comments/${_existing_id}" \
-                --input - >/dev/null 2>&1 || true
+            # gh api PATCH ожидает JSON-тело {"body": "..."}, а не raw markdown.
+            # Собираем payload через jq, чтобы избежать ручного string-escape
+            # (в body есть backticks, эмодзи, переносы строк).
+            jq -nc --arg body "$_full_body" '{body: $body}' \
+                | gh api \
+                    --method PATCH \
+                    -H "Content-Type: application/json" \
+                    "repos/${GH_REPO}/issues/comments/${_existing_id}" \
+                    --input - >/dev/null 2>&1 || true
             ;;
         new)
             # Fallback: если existing-коммент не найден (первый раз пишем).

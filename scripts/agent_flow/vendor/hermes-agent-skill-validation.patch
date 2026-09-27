@@ -1,0 +1,106 @@
+diff --git a/hermes_cli/kanban_db.py b/hermes_cli/kanban_db.py
+index 8696c95..38b51b6 100644
+--- a/hermes_cli/kanban_db.py
++++ b/hermes_cli/kanban_db.py
+@@ -3336,6 +3336,87 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
+     return normalize_profile_name(assignee)
+ 
+ 
++def _profile_skill_names(assignee: Optional[str]) -> Optional[frozenset[str]]:
++    """Return the set of skill names installed on ``assignee``'s profile.
++
++    ``None`` means "no profile to validate against" — either the task has no
++    assignee or the assignee is not a Hermes profile (plugin/CLI worker lanes
++    resolve their own capabilities and have no ``skills/`` tree). Callers
++    should treat ``None`` as "validation skipped", NOT as an empty profile.
++
++    Skill identity mirrors the on-disk layout ``skills/<category>/<skill>/
++    SKILL.md`` (and ``skills/<skill>/SKILL.md`` for uncategorized skills), so
++    the canonical name is ``SKILL.md``'s parent directory name. The profile's
++    own excluded paths (deps, support dirs) are skipped via
++    :func:`agent.skill_utils.is_excluded_skill_path`.
++    """
++    if assignee is None:
++        return None
++    from agent.skill_utils import iter_skill_index_files
++    from hermes_cli.profiles import get_profile_dir, profile_exists
++
++    # Non-profile assignees (external worker lanes) have no skills tree; the
++    # dispatcher treats them as first-class lanes, so don't reject their tasks.
++    if not profile_exists(assignee):
++        return None
++
++    skills_dir = get_profile_dir(assignee) / "skills"
++    if not skills_dir.is_dir():
++        return frozenset()
++
++    # Walk via the shared ``iter_skill_index_files`` helper — the SAME walker
++    # the prompt builder and skill loader use. ``Path.rglob`` does NOT follow
++    # symlinks by default, which silently misses every skill that lives under
++    # a symlinked category directory (e.g. ``software-development``,
++    # ``research``, ``productivity`` — those category dirs are symlinks to
++    # the shared source at ``~/.hermes/skills/<category>``). Using the shared
++    # walker keeps kanban validation in lockstep with the runtime skill
++    # discovery, so a per-task ``skills=[...]`` that resolves at spawn time
++    # cannot be rejected here for being "not installed". Regression for
++    # t_1ab37fa8 (retro: SOUL.md claimed skills the profile never reported).
++    names: set[str] = set()
++    try:
++        for md in iter_skill_index_files(skills_dir, "SKILL.md"):
++            skill_name = md.parent.name
++            if skill_name:
++                names.add(skill_name)
++    except OSError:
++        # Unreadable skills tree — be conservative and skip validation rather
++        # than bricking task creation over a permission hiccup.
++        return None
++    return frozenset(names)
++
++
++def _validate_skills_for_assignee(assignee: Optional[str], skills: list[str]) -> None:
++    """Reject per-task skills that are not installed on the assignee profile.
++
++    Guard against the classic agent mistake (t_6c6c98fb): an LLM worker picks
++    ``skills=[\"devops\"]`` for ``assignee=\"architect\"`` because the skill
++    *sounds* right for the task, even though it belongs to a different
++    profile. The task then gets created and the worker crashes on spawn
++    because ``--skills devops`` fails to resolve. Fail fast here with a
++    message that names the offending skill and the owning profile so the
++    agent can fix the assignee instead of the skill.
++
++    Non-profile assignees (external lanes) and unknown profiles skip the
++    check entirely — see :func:`_profile_skill_names`.
++    """
++    if not assignee or not skills:
++        return
++    installed = _profile_skill_names(assignee)
++    if installed is None:
++        return
++    missing = [s for s in skills if s not in installed]
++    if missing:
++        quoted = ", ".join(repr(s) for s in missing)
++        noun = "skill" if len(missing) == 1 else "skills"
++        raise ValueError(
++            f"{quoted} {noun} not installed in profile {assignee!r}; "
++            "skill names belong to the profile that owns them — fix the "
++            "assignee or drop the per-task skills. Installed skills: "
++            + (", ".join(sorted(installed)) if installed else "(none)")
++        )
++
+ def create_task(
+     conn: sqlite3.Connection,
+     *,
+@@ -3610,6 +3691,13 @@ def create_task(
+                 "capabilities (e.g. `web`, `browser`, `terminal`)."
+             )
+         skills_list = cleaned
++    # Cross-check per-task skills against the assignee profile's installed
++    # skills. An LLM worker can pick a skill that *sounds* right for the task
++    # but belongs to a different profile (t_6c6c98fb: assignee=architect with
++    # skills=[devops]); the task would be created and then the worker would
++    # crash on spawn when `--skills devops` fails to resolve. Fail fast here.
++    _validate_skills_for_assignee(assignee, skills_list or [])
++
+ 
+     # Idempotency check — return the existing task instead of creating a
+     # duplicate. Done BEFORE entering write_txn to keep the fast path fast
