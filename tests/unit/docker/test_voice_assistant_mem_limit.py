@@ -171,11 +171,18 @@ def test_voice_assistant_comment_mentions_adr0122(compose_doc: dict) -> None:
     рядом с mem_limit — чтобы будущий разработчик понимал контекст."""
     raw = COMPOSE_FILE.read_text(encoding="utf-8")
     # Найти блок voice-assistant (грубо — до следующего top-level ключа)
-    m = re.search(
-        r"^  voice-assistant:\n(?:[ \t]+.*\n)+?(?=^  [a-z]|\Z)", raw, re.MULTILINE
+    lines = raw.split("\n")
+    start = next(
+        (i for i, line in enumerate(lines) if line == "  voice-assistant:"),
+        None,
     )
-    assert m, "could not extract voice-assistant block from compose"
-    block = m.group(0)
+    assert start is not None, "could not extract voice-assistant block from compose"
+    end = len(lines)
+    for i in range(start + 1, len(lines)):
+        if re.match(r"^  [a-z]", lines[i]):
+            end = i
+            break
+    block = "\n".join(lines[start:end])
     assert "ADR-0122" in block or "issue #2676" in block, (
         "voice-assistant block should reference ADR-0122 or issue #2676 "
         "next to mem_limit (regression guard for #929-style context loss)"

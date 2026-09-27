@@ -764,7 +764,7 @@ def test_aclose_is_idempotent():
 
 
 def test_provider_installs_api_key_redaction_on_sdk_and_httpx_loggers(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     api_key = "minimax-auto-filter-secret-do-not-log"
     monkeypatch.setenv("MINIMAX_API_KEY", api_key)
@@ -786,16 +786,26 @@ def test_provider_installs_api_key_redaction_on_sdk_and_httpx_loggers(
         p, _ = _make_minimax()
         del p
 
-        with caplog.at_level(logging.INFO):
-            # codeql[py/clear-text-logging-sensitive-data]: synthetic test key; asserts redaction to "***"
-            provider_logger.info("Authorization: Bearer %s", api_key)
-            # codeql[py/clear-text-logging-sensitive-data]: synthetic test key; asserts redaction to "***"
-            httpx_logger.info("Authorization: Bearer %s", api_key)
-
-        assert [record.getMessage() for record in caplog.records] == [
-            "Authorization: Bearer ***",
-            "Authorization: Bearer ***",
-        ]
+        # The provider must attach the redaction filter to both loggers, and
+        # the filter must mask the synthetic key even in records that mention it.
+        for logger in (provider_logger, httpx_logger):
+            assert any(
+                isinstance(item, MiniMaxRedactedLogFilter)
+                for item in logger.filters
+            )
+            record = logging.LogRecord(
+                name=logger.name,
+                level=logging.INFO,
+                pathname=__file__,
+                lineno=0,
+                msg="Authorization: Bearer %s",
+                args=(api_key,),
+                exc_info=None,
+            )
+            assert record.getMessage() == "Authorization: Bearer " + api_key
+            for item in logger.filters:
+                item.filter(record)
+            assert record.getMessage() == "Authorization: Bearer ***"
     finally:
         for logger, filters in previous_filters.items():
             logger.filters[:] = filters

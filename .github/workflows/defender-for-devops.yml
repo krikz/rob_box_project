@@ -40,6 +40,9 @@ jobs:
       # The Windows Bandit launcher currently fails with MAX_PATH before scanning the repo.
       # Checkov also reports pre-existing OpenAPI findings outside application code.
       GDN_CHECKOV_SKIPPATH: docs/schemas/action-protocol/openapi.yaml
+      # CKV_GHA_7 assumes workflow_dispatch inputs are build entry points; our
+      # dispatch-inputs are manual diagnostic tools (robot SSH hosts), not builds.
+      GDN_CHECKOV_SKIPCHECK: CKV_GHA_7
 
     steps:
     - uses: actions/checkout@v7
