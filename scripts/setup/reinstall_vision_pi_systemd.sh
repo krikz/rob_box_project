@@ -13,18 +13,10 @@
 #   - Запускать от пользователя, который будет владеть unit (по умолчанию
 #     ros2). $USER должен быть ros2 (или тем, кто запускает docker compose).
 #   - Требует sudo (запись в /etc/systemd/system, install в /usr/local/bin).
-#
-# Зачем отдельный скрипт:
-#   - setup_vision_pi.sh — это полная переустановка Vision Pi (apt, clone,
-#     zram-swap, …). На этапе деплоя CI это лишнее и рискованное.
-#   - Нужен именно "refresh unit + timer" из CI.
 # ============================================================================
 
 set -euo pipefail
 
-# USER должен быть ros2 (или другим владельцем unit). Если не задан —
-# используем текущего, но тогда setup_autostart может создать unit с другим
-# User= и сломать текущий стек.
 if [[ -z "${USER:-}" ]]; then
     USER="$(id -un)"
 fi
@@ -35,11 +27,16 @@ if [[ "$USER" != "ros2" ]]; then
 fi
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+SETUP_SCRIPT="$SCRIPT_DIR/setup_vision_pi.sh"
 
-# Source setup_vision_pi.sh — он определяет все helper-функции
-# (setup_autostart, setup_health_monitor, log_*, и т.д.). main() НЕ вызываем.
-# awk вырезает всё до первой строки "^main() {" (включительно).
-source <(awk '/^main\(\) \{/{exit} {print}' "$SCRIPT_DIR/setup_vision_pi.sh")
+# setup_health_monitor() использует BASH_SOURCE[0] для поиска
+# ../monitoring/robbox_vision_health_check.sh. Поэтому нельзя source'ить
+# через process substitution <(awk ...): там BASH_SOURCE укажет на /dev/fd/*.
+# Временный файл рядом с setup_vision_pi.sh сохраняет корректный dirname.
+FILTERED_SETUP="$(mktemp "$SCRIPT_DIR/.setup_vision_pi.filtered.XXXXXX.sh")"
+trap 'rm -f "$FILTERED_SETUP"' EXIT
+awk '/^main\(\) \{/{exit} {print}' "$SETUP_SCRIPT" > "$FILTERED_SETUP"
+source "$FILTERED_SETUP"
 
 echo "🔧 Reinstalling systemd units + health-timer (user=$USER, home=$HOME)"
 
